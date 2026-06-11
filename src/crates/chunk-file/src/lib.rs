@@ -120,6 +120,19 @@ pub enum Error {
     #[error("end-marker entry carries a non-zero id {id:?}")]
     BadEndMarker { id: ChunkId },
 
+    #[error("chunk entry {index} uses the reserved zero end-marker id")]
+    ReservedChunkId { index: usize },
+
+    #[error("chunk {id:?} span ends at {end} but the file slice holds {file_len} bytes")]
+    ChunkOutOfBounds {
+        id: ChunkId,
+        end: u64,
+        file_len: usize,
+    },
+
+    #[error("chunk {id:?} was not planned (all planned chunks already written)")]
+    UnplannedChunk { id: ChunkId },
+
     #[error("expected chunk {expected:?}, got {got:?}")]
     WrongChunkId { expected: ChunkId, got: ChunkId },
 
@@ -147,6 +160,14 @@ pub struct Toc<'a> {
     entries: Ref<&'a [u8], [TocEntry]>,
 }
 
+impl std::fmt::Debug for Toc<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Toc")
+            .field("num_chunks", &self.num_chunks())
+            .finish()
+    }
+}
+
 impl<'a> Toc<'a> {
     /// The byte size of a TOC with `num_chunks` chunks.
     pub const fn byte_size(num_chunks: usize) -> usize {
@@ -165,15 +186,19 @@ impl<'a> Toc<'a> {
     /// not discovered as a bogus slice later.
     pub fn parse(file: &'a [u8], toc_offset: usize, num_chunks: u32) -> Result<Self, Error> {
         let n = num_chunks as usize;
-        let toc_size = Self::byte_size(n);
-        let toc_end = toc_offset.saturating_add(toc_size);
-
-        if file.len() < toc_end {
+        // Size the TOC in u64 so a hostile num_chunks can't wrap usize
+        // on 32-bit targets (u32::MAX entries × 12 exceeds u32 range);
+        // the cast below is safe once the length check bounds it by the
+        // file size.
+        let toc_size_u64 = (num_chunks as u64 + 1) * size_of::<TocEntry>() as u64;
+        if (file.len() as u64) < toc_offset as u64 + toc_size_u64 {
             return Err(Error::TocTooShort {
-                expected: toc_size,
+                expected: usize::try_from(toc_size_u64).unwrap_or(usize::MAX),
                 actual: file.len().saturating_sub(toc_offset),
             });
         }
+        let toc_size = toc_size_u64 as usize;
+        let toc_end = toc_offset + toc_size;
 
         let toc_bytes = &file[toc_offset..toc_end];
         let entries: Ref<&[u8], [TocEntry]> =
@@ -212,6 +237,14 @@ impl<'a> Toc<'a> {
         }
         if entries[n].id != END_MARKER_ID {
             return Err(Error::BadEndMarker { id: entries[n].id });
+        }
+        // The zero id is reserved for the end marker; a chunk entry
+        // carrying it would be unaddressable (and ambiguous with the
+        // marker) — reject it like the duplicate-id case.
+        for (i, entry) in entries.iter().take(n).enumerate() {
+            if entry.id == END_MARKER_ID {
+                return Err(Error::ReservedChunkId { index: i });
+            }
         }
         // Duplicate-id check in O(n log n): sort (id, index) pairs and
         // compare neighbors. Today's TOCs hold dozens of entries, but
@@ -263,11 +296,17 @@ impl<'a> Toc<'a> {
     ///
     /// The `file` slice is typically the full memory-mapped file — the
     /// same slice [`parse`](Toc::parse) validated the offsets against.
+    /// A shorter slice (caller bug) is rejected, never an
+    /// out-of-bounds panic.
     pub fn data<'f>(&self, file: &'f [u8], id: ChunkId) -> Result<&'f [u8], Error> {
         let meta = self.get(id).ok_or(Error::ChunkNotFound { id })?;
         let start = meta.offset as usize;
         let end = start + meta.size as usize;
-        Ok(&file[start..end])
+        file.get(start..end).ok_or(Error::ChunkOutOfBounds {
+            id,
+            end: end as u64,
+            file_len: file.len(),
+        })
     }
 
     /// Iterate over all chunks' metadata, in TOC order.
@@ -312,6 +351,10 @@ impl TocWriter {
     /// [`Toc::parse`] rejects duplicates at read time. Direct raw-layer
     /// producers are expected to have a fixed id set.
     pub fn plan(&mut self, id: ChunkId, size: u64) {
+        debug_assert!(
+            id != END_MARKER_ID,
+            "chunk id must not be the reserved end-marker sentinel",
+        );
         debug_assert!(
             !self.chunks.iter().any(|c| c.id == id),
             "duplicate chunk id: {:?}",
@@ -375,7 +418,7 @@ impl<W: Write> ChunkWriter<W> {
         let planned = match self.remaining.pop_front() {
             Some(p) => p,
             None => {
-                return Err(Error::ChunkNotFound { id });
+                return Err(Error::UnplannedChunk { id });
             }
         };
 
@@ -396,6 +439,15 @@ impl<W: Write> ChunkWriter<W> {
 
         self.inner.write_all(data)?;
         Ok(())
+    }
+
+    /// Return the underlying writer without the all-chunks-written
+    /// check that [`finish`](ChunkWriter::finish) performs. For callers
+    /// that enforce the plan by construction (they build the plan and
+    /// the payload sequence from the same list) and write payloads
+    /// directly to avoid intermediate copies.
+    pub fn into_inner(self) -> W {
+        self.inner
     }
 
     /// Finish writing.  Returns an error if not all planned chunks were
@@ -577,6 +629,38 @@ mod tests {
         assert!(matches!(
             Toc::parse(&file, 0, 4),
             Err(Error::DuplicateChunkId { id, index: 3 }) if id == *b"AAAA"
+        ));
+    }
+
+    #[test]
+    fn data_with_short_file_slice_errors_instead_of_panicking() {
+        let file = write_file(&[(*b"PRIM", b"data")]);
+        let toc = Toc::parse(&file, 0, 1).unwrap();
+        // A slice shorter than the one validated at parse time is a
+        // caller bug — surfaced as an error, never an OOB panic.
+        assert!(matches!(
+            toc.data(&file[..file.len() - 1], *b"PRIM"),
+            Err(Error::ChunkOutOfBounds { id, .. }) if id == *b"PRIM"
+        ));
+        // The full slice still works.
+        assert_eq!(toc.data(&file, *b"PRIM").unwrap(), b"data");
+    }
+
+    #[test]
+    fn rejects_reserved_zero_id_among_chunk_entries() {
+        // A chunk entry carrying the end-marker id would be
+        // unaddressable; gix's decoder rejected mid-TOC sentinels and
+        // so do we.
+        let mut file = Vec::new();
+        let toc_size = Toc::byte_size(2) as u64;
+        file.extend_from_slice(IntoBytes::as_bytes(&TocEntry::new(*b"AAAA", toc_size)));
+        file.extend_from_slice(IntoBytes::as_bytes(&TocEntry::new(END_MARKER_ID, toc_size + 1)));
+        file.extend_from_slice(IntoBytes::as_bytes(&TocEntry::new(END_MARKER_ID, toc_size + 2)));
+        file.extend_from_slice(b"xy");
+
+        assert!(matches!(
+            Toc::parse(&file, 0, 2),
+            Err(Error::ReservedChunkId { index: 1 })
         ));
     }
 

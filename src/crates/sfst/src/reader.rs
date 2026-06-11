@@ -142,8 +142,8 @@ impl<'a> Reader<'a> {
     /// page-aligned — a caller advising the kernel should align it inward
     /// to avoid touching the primary's edge page.
     pub fn cold_region(&self) -> Option<(usize, usize)> {
-        let (offset, len) = self.container.chunk_span(CHUNK_PRIMARY)?;
-        let start = offset + len;
+        let meta = self.container.chunk_meta(CHUNK_PRIMARY)?;
+        let start = (meta.offset + meta.size) as usize;
         let end = self.data.len();
         if end > start {
             Some((start, end - start))

@@ -65,19 +65,32 @@ pub enum Error {
     #[error("unsupported version: {0}")]
     UnsupportedVersion(u32),
 
-    /// The TOC failed to parse or validate, or a chunk span is malformed.
+    /// The TOC failed to parse or validate — carries the raw layer's
+    /// structured error so callers can match the specific failure
+    /// (duplicate id, non-monotonic offset, out-of-bounds, ...).
     #[error("TOC error: {0}")]
-    Toc(String),
+    Toc(#[from] crate::Error),
+
+    /// The container framing is malformed beyond the TOC itself —
+    /// a chunkless header, an implausible chunk count, or a chunk span
+    /// too short for its crc32 trailer.
+    #[error("malformed container: {0}")]
+    Malformed(String),
+
+    /// A writer was driven outside its contract — wrong chunk count,
+    /// duplicate or reserved id. A producer bug, never file corruption.
+    #[error("writer misuse: {0}")]
+    Misuse(String),
 
     /// No chunk with the requested id exists in the TOC.
-    #[error("chunk '{}' not found", id_str(id))]
+    #[error("chunk '{}' not found", id_str(*id))]
     ChunkNotFound { id: ChunkId },
 
     /// A chunk's stored crc32 trailer doesn't match the crc32 computed
     /// over its payload bytes — the chunk is corrupt.
     #[error(
         "chunk '{}' CRC mismatch: stored {expected:#010x}, computed {actual:#010x}",
-        id_str(id)
+        id_str(*id)
     )]
     CrcMismatch {
         id: ChunkId,
@@ -90,7 +103,7 @@ pub enum Error {
     Io(#[from] std::io::Error),
 }
 
-fn id_str(id: &ChunkId) -> String {
+fn id_str(id: ChunkId) -> String {
     id.escape_ascii().to_string()
 }
 
@@ -134,7 +147,7 @@ impl<'a> Container<'a> {
         // zero here is corruption (or a foreign file), not a valid
         // degenerate case.
         if num_chunks == 0 {
-            return Err(Error::Toc(
+            return Err(Error::Malformed(
                 "container must have at least one chunk".to_string(),
             ));
         }
@@ -143,11 +156,11 @@ impl<'a> Container<'a> {
         // bytes, so the on-disk body bounds the legal value.
         let max_chunks = data.len().saturating_sub(HEADER_SIZE) / size_of::<TocEntry>();
         if num_chunks as usize > max_chunks {
-            return Err(Error::Toc(format!(
+            return Err(Error::Malformed(format!(
                 "num_chunks ({num_chunks}) exceeds plausible maximum ({max_chunks})"
             )));
         }
-        let toc = Toc::parse(data, HEADER_SIZE, num_chunks).map_err(|e| Error::Toc(e.to_string()))?;
+        let toc = Toc::parse(data, HEADER_SIZE, num_chunks)?;
 
         Ok(Self { data, toc })
     }
@@ -163,11 +176,11 @@ impl<'a> Container<'a> {
         let span = self
             .data
             .get(start..start + meta.size as usize)
-            .ok_or_else(|| Error::Toc("chunk span out of bounds".to_string()))?;
+            .ok_or_else(|| Error::Malformed("chunk span out of bounds".to_string()))?;
         if span.len() < CRC_LEN {
-            return Err(Error::Toc(format!(
+            return Err(Error::Malformed(format!(
                 "chunk '{}' shorter than its CRC trailer",
-                id_str(&id)
+                id_str(id)
             )));
         }
         let (payload, crc_bytes) = span.split_at(span.len() - CRC_LEN);
@@ -188,14 +201,23 @@ impl<'a> Container<'a> {
         self.toc.get(id).is_some()
     }
 
-    /// A chunk's on-disk span — absolute `(offset, len)` within the
-    /// container, **including** the 4-byte crc32 trailer. Resolved from
-    /// the TOC alone: no payload byte is read or verified, so this is
-    /// the right primitive for layout decisions (page-cache advice,
-    /// readahead hints) that must not fault payload pages in.
-    pub fn chunk_span(&self, id: ChunkId) -> Option<(usize, usize)> {
-        let meta = self.toc.get(id)?;
-        Some((meta.offset as usize, meta.size as usize))
+    /// A chunk's on-disk placement ([`ChunkMeta`]: container-relative
+    /// `offset` plus `size`, the size **including** the 4-byte crc32
+    /// trailer). Resolved from the TOC alone: no payload byte is read
+    /// or verified, so this is the right primitive for layout decisions
+    /// (page-cache advice, readahead hints) that must not fault payload
+    /// pages in.
+    pub fn chunk_meta(&self, id: ChunkId) -> Option<crate::ChunkMeta> {
+        self.toc.get(id)
+    }
+}
+
+impl std::fmt::Debug for Container<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Container")
+            .field("len", &self.data.len())
+            .field("toc", &self.toc)
+            .finish()
     }
 }
 
@@ -208,6 +230,20 @@ impl<'a> Container<'a> {
 /// reorders. Each payload gains a trailing crc32 on write. For files
 /// built chunk-by-chunk, prefer [`StreamingWriter`], which doesn't
 /// require holding every payload at once.
+///
+/// ```
+/// use chunk_file::container::{Container, ContainerBuilder};
+///
+/// let mut builder = ContainerBuilder::new(*b"DEMO", 1);
+/// builder.add_chunk(*b"HEAD", b"hot prefix");
+/// builder.add_chunk(*b"BODY", b"payload bytes");
+/// let mut file = Vec::new();
+/// builder.write_to(&mut file)?;
+///
+/// let container = Container::open(&file, b"DEMO", 1)?;
+/// assert_eq!(container.chunk(*b"BODY")?, b"payload bytes");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct ContainerBuilder<'a> {
     magic: [u8; 4],
     version: u32,
@@ -245,14 +281,21 @@ impl<'a> ContainerBuilder<'a> {
                 "container must have at least one chunk",
             ));
         }
-        // Reject duplicate ids before any byte is written — a release
-        // build must not produce a file the reader will reject.
+        // Reject duplicate or reserved ids before any byte is written —
+        // a release build must not produce a file the reader will
+        // reject.
         let mut seen = HashSet::with_capacity(self.chunks.len());
         for (id, _) in &self.chunks {
+            if *id == END_MARKER_ID {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "chunk id must not be the reserved end-marker sentinel",
+                ));
+            }
             if !seen.insert(*id) {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    format!("duplicate chunk id '{}'", id_str(id)),
+                    format!("duplicate chunk id '{}'", id_str(*id)),
                 ));
             }
         }
@@ -267,20 +310,20 @@ impl<'a> ContainerBuilder<'a> {
         for (id, payload) in &self.chunks {
             toc.plan(*id, (payload.len() + CRC_LEN) as u64);
         }
-        let mut chunk_writer = toc
+        let chunk_writer = toc
             .write_toc(&mut *w, HEADER_SIZE as u64)
             .map_err(io_from_raw)?;
-        let mut trailer_buf = Vec::new();
-        for (id, payload) in &self.chunks {
-            // The raw ChunkWriter validates id + exact size; hand it the
-            // payload and trailer as one planned span.
-            trailer_buf.clear();
-            trailer_buf.reserve(payload.len() + CRC_LEN);
-            trailer_buf.extend_from_slice(payload);
-            trailer_buf.extend_from_slice(&crc32fast::hash(payload).to_le_bytes());
-            chunk_writer.write_chunk(*id, &trailer_buf).map_err(io_from_raw)?;
+        // Skip the raw ChunkWriter's per-chunk id/size validation: the
+        // plan above was built from the same `self.chunks` this loop
+        // walks, so the invariants hold by construction, and writing
+        // payload + trailer directly avoids copying each payload into
+        // an intermediate buffer (the streaming writer's pattern; the
+        // byte-equality test pins that both writers agree).
+        let w = chunk_writer.into_inner();
+        for (_, payload) in &self.chunks {
+            w.write_all(payload)?;
+            w.write_all(&crc32fast::hash(payload).to_le_bytes())?;
         }
-        chunk_writer.finish().map_err(io_from_raw)?;
         w.flush()?;
         Ok(())
     }
@@ -306,8 +349,27 @@ fn io_from_raw(e: crate::Error) -> std::io::Error {
 /// memory is one chunk, not the whole file. [`finish`](StreamingWriter::finish)
 /// seeks back, writes the real TOC, and returns the sink positioned at
 /// end of file.
+///
+/// ```
+/// use std::io::Cursor;
+/// use chunk_file::container::{Container, StreamingWriter};
+///
+/// let mut writer = StreamingWriter::new(Cursor::new(Vec::new()), *b"DEMO", 1, 2)?;
+/// writer.write_chunk(*b"HEAD", b"hot prefix")?; // pack -> write -> drop, one at a time
+/// writer.write_chunk(*b"BODY", b"payload bytes")?;
+/// let file = writer.finish()?.into_inner();
+///
+/// let container = Container::open(&file, b"DEMO", 1)?;
+/// assert_eq!(container.chunk(*b"HEAD")?, b"hot prefix");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct StreamingWriter<W> {
     out: W,
+    /// Sink position at construction — the container's first byte. All
+    /// patch seeks are relative to it, so a container can be written at
+    /// any offset within a larger file; TOC offsets stay
+    /// container-relative either way.
+    base: u64,
     num_chunks: u32,
     /// (id, on-disk span = payload + crc) per chunk written so far —
     /// the TOC patch in [`finish`](StreamingWriter::finish) replays it
@@ -319,14 +381,19 @@ pub struct StreamingWriter<W> {
 
 impl<W: Write + Seek> StreamingWriter<W> {
     /// Write the header and reserve the TOC region for `num_chunks`
-    /// chunks. The sink is assumed positioned at the container's start
-    /// (offset 0 of the file).
+    /// chunks. The container starts wherever the sink is currently
+    /// positioned — the position is captured and the TOC patch seeks
+    /// relative to it, so a container can be written at a non-zero
+    /// offset within a larger file (the reader is then handed the
+    /// sub-slice starting there); TOC offsets are container-relative
+    /// either way.
     pub fn new(mut out: W, magic: [u8; 4], version: u32, num_chunks: u32) -> Result<Self, Error> {
         if num_chunks == 0 {
-            return Err(Error::Toc(
+            return Err(Error::Misuse(
                 "container must have at least one chunk".to_string(),
             ));
         }
+        let base = out.stream_position()?;
         out.write_all(&encode_header(magic, version, num_chunks))?;
         // Reserve the TOC region; patched in finish(). The transient
         // zero buffer is 12 × (num_chunks + 1) bytes — noise next to
@@ -335,6 +402,7 @@ impl<W: Write + Seek> StreamingWriter<W> {
         out.write_all(&vec![0u8; toc_size])?;
         Ok(Self {
             out,
+            base,
             num_chunks,
             written: Vec::with_capacity(num_chunks as usize),
             seen: HashSet::with_capacity(num_chunks as usize),
@@ -344,15 +412,23 @@ impl<W: Write + Seek> StreamingWriter<W> {
     /// Stream one chunk: payload bytes followed by their crc32 trailer.
     /// Chunks land in call order; `id` must be unique.
     pub fn write_chunk(&mut self, id: ChunkId, payload: &[u8]) -> Result<(), Error> {
+        if id == END_MARKER_ID {
+            return Err(Error::Misuse(
+                "chunk id must not be the reserved end-marker sentinel".to_string(),
+            ));
+        }
         if self.written.len() as u32 == self.num_chunks {
-            return Err(Error::Toc(format!(
+            return Err(Error::Misuse(format!(
                 "chunk '{}' exceeds the planned count ({})",
-                id_str(&id),
+                id_str(id),
                 self.num_chunks
             )));
         }
         if !self.seen.insert(id) {
-            return Err(Error::Toc(format!("duplicate chunk id '{}'", id_str(&id))));
+            return Err(Error::Misuse(format!(
+                "duplicate chunk id '{}'",
+                id_str(id)
+            )));
         }
         self.out.write_all(payload)?;
         self.out
@@ -366,13 +442,14 @@ impl<W: Write + Seek> StreamingWriter<W> {
     /// written than planned.
     pub fn finish(mut self) -> Result<W, Error> {
         if self.written.len() as u32 != self.num_chunks {
-            return Err(Error::Toc(format!(
+            return Err(Error::Misuse(format!(
                 "{} planned chunks were not written",
                 self.num_chunks as usize - self.written.len()
             )));
         }
         let toc_size = Toc::byte_size(self.num_chunks as usize);
-        self.out.seek(SeekFrom::Start(HEADER_SIZE as u64))?;
+        self.out
+            .seek(SeekFrom::Start(self.base + HEADER_SIZE as u64))?;
         let mut offset = (HEADER_SIZE + toc_size) as u64;
         for (id, span) in &self.written {
             self.out
@@ -455,14 +532,14 @@ mod tests {
         // Fewer chunks than planned.
         let mut w = StreamingWriter::new(Cursor::new(Vec::new()), MAGIC, VERSION, 2).unwrap();
         w.write_chunk(*b"AAAA", b"x").unwrap();
-        assert!(matches!(w.finish(), Err(Error::Toc(msg)) if msg.contains("not written")));
+        assert!(matches!(w.finish(), Err(Error::Misuse(msg)) if msg.contains("not written")));
 
         // More chunks than planned.
         let mut w = StreamingWriter::new(Cursor::new(Vec::new()), MAGIC, VERSION, 1).unwrap();
         w.write_chunk(*b"AAAA", b"x").unwrap();
         assert!(matches!(
             w.write_chunk(*b"BBBB", b"y"),
-            Err(Error::Toc(msg)) if msg.contains("planned count")
+            Err(Error::Misuse(msg)) if msg.contains("planned count")
         ));
 
         // Duplicate id.
@@ -470,14 +547,51 @@ mod tests {
         w.write_chunk(*b"AAAA", b"x").unwrap();
         assert!(matches!(
             w.write_chunk(*b"AAAA", b"y"),
-            Err(Error::Toc(msg)) if msg.contains("duplicate")
+            Err(Error::Misuse(msg)) if msg.contains("duplicate")
+        ));
+
+        // The reserved end-marker id is refused.
+        let mut w = StreamingWriter::new(Cursor::new(Vec::new()), MAGIC, VERSION, 1).unwrap();
+        assert!(matches!(
+            w.write_chunk(crate::END_MARKER_ID, b"x"),
+            Err(Error::Misuse(msg)) if msg.contains("reserved")
         ));
 
         // Zero chunks is rejected up front.
         assert!(matches!(
             StreamingWriter::new(Cursor::new(Vec::new()), MAGIC, VERSION, 0),
-            Err(Error::Toc(_))
+            Err(Error::Misuse(_))
         ));
+    }
+
+    #[test]
+    fn streaming_writer_at_nonzero_base_appends_a_valid_container() {
+        // A container embedded past a prefix: the TOC patch must land
+        // relative to the captured base, and the produced bytes must
+        // match a standalone build exactly.
+        let prefix = b"sixteen bytes!!!";
+        let mut cursor = Cursor::new(prefix.to_vec());
+        cursor.seek(SeekFrom::End(0)).unwrap();
+        let mut w = StreamingWriter::new(cursor, MAGIC, VERSION, SAMPLE.len() as u32).unwrap();
+        for (id, payload) in SAMPLE {
+            w.write_chunk(*id, payload).unwrap();
+        }
+        let bytes = w.finish().unwrap().into_inner();
+
+        assert_eq!(&bytes[..prefix.len()], prefix, "prefix untouched");
+        assert_eq!(&bytes[prefix.len()..], build(SAMPLE), "container identical");
+        let c = Container::open(&bytes[prefix.len()..], &MAGIC, VERSION).unwrap();
+        assert_eq!(c.chunk(*b"AAAA").unwrap(), b"alpha payload");
+    }
+
+    #[test]
+    fn builder_rejects_reserved_end_marker_id() {
+        let mut b = ContainerBuilder::new(MAGIC, VERSION);
+        b.add_chunk(crate::END_MARKER_ID, b"x");
+        let mut out = Vec::new();
+        let err = b.write_to(&mut out).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(out.is_empty());
     }
 
     #[test]
@@ -503,7 +617,7 @@ mod tests {
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&[0u8; 12]); // end marker only
         match Container::open(&bytes, &MAGIC, VERSION).err() {
-            Some(Error::Toc(msg)) => assert!(msg.contains("at least one chunk"), "{msg}"),
+            Some(Error::Malformed(msg)) => assert!(msg.contains("at least one chunk"), "{msg}"),
             other => panic!("expected Toc, got {other:?}"),
         }
     }
@@ -537,29 +651,29 @@ mod tests {
     }
 
     #[test]
-    fn chunk_span_is_toc_only_and_includes_the_crc_trailer() {
+    fn chunk_meta_is_toc_only_and_includes_the_crc_trailer() {
         let bytes = build(SAMPLE);
         let c = Container::open(&bytes, &MAGIC, VERSION).unwrap();
 
         // Spans tile the body exactly: first chunk starts right after
         // the TOC, each span is payload + 4-byte trailer, the last ends
         // at EOF.
-        let mut expected_offset = HEADER_SIZE + Toc::byte_size(SAMPLE.len());
+        let mut expected_offset = (HEADER_SIZE + Toc::byte_size(SAMPLE.len())) as u64;
         for (id, payload) in SAMPLE {
-            let (offset, len) = c.chunk_span(*id).unwrap();
-            assert_eq!(offset, expected_offset);
-            assert_eq!(len, payload.len() + 4);
-            expected_offset += len;
+            let meta = c.chunk_meta(*id).unwrap();
+            assert_eq!(meta.offset, expected_offset);
+            assert_eq!(meta.size, (payload.len() + 4) as u64);
+            expected_offset += meta.size;
         }
-        assert_eq!(expected_offset, bytes.len());
-        assert_eq!(c.chunk_span(*b"NOPE"), None);
+        assert_eq!(expected_offset, bytes.len() as u64);
+        assert_eq!(c.chunk_meta(*b"NOPE"), None);
 
         // TOC-only: a corrupted payload doesn't affect span resolution.
         let mut corrupt = bytes.clone();
         let last = corrupt.len() - 1;
         corrupt[last] ^= 0x01;
         let cc = Container::open(&corrupt, &MAGIC, VERSION).unwrap();
-        assert_eq!(cc.chunk_span(*b"CCCC"), c.chunk_span(*b"CCCC"));
+        assert_eq!(cc.chunk_meta(*b"CCCC"), c.chunk_meta(*b"CCCC"));
     }
 
     #[test]
@@ -617,8 +731,8 @@ mod tests {
         let mut bytes = build(&[(*b"AAAA", b"x")]);
         bytes[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
         match Container::open(&bytes, &MAGIC, VERSION).err() {
-            Some(Error::Toc(msg)) => assert!(msg.contains("plausible maximum"), "{msg}"),
-            other => panic!("expected Toc, got {other:?}"),
+            Some(Error::Malformed(msg)) => assert!(msg.contains("plausible maximum"), "{msg}"),
+            other => panic!("expected Malformed, got {other:?}"),
         }
     }
 
