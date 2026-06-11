@@ -42,7 +42,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::Result;
-use crate::writer::fsync_dir;
 
 const MAGIC: &[u8; 4] = b"NSEQ";
 const VERSION: u8 = 1;
@@ -118,30 +117,16 @@ fn encode_envelope(reserved: u64) -> [u8; ENVELOPE_LEN] {
     buf
 }
 
-/// Durably persist `reserved` to `path`: tmp → fsync(file) → rename →
-/// fsync(parent dir). The parent-dir fsync is non-negotiable here — a
-/// high-water file lost on power loss would reintroduce the seq-reuse
-/// regression it exists to prevent.
+/// Durably persist `reserved` to `path` via the shared atomic-write
+/// sequence (tmp → fsync(file) → rename → fsync(parent dir)). The
+/// parent-dir fsync is non-negotiable here — a high-water file lost on
+/// power loss would reintroduce the seq-reuse regression it exists to
+/// prevent.
 ///
 /// Public counterpart of [`read_seq_highwater`] for tooling and tests;
 /// normal allocation goes through [`SeqAllocator`].
 pub fn write_seq_highwater(path: &Path, reserved: u64) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        crate::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "seq high-water path has no parent directory",
-        ))
-    })?;
-    std::fs::create_dir_all(parent)?;
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        use std::io::Write;
-        f.write_all(&encode_envelope(reserved))?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)?;
-    fsync_dir(parent)?;
+    file_registry::durable::write_atomic(path, &encode_envelope(reserved))?;
     Ok(())
 }
 

@@ -334,48 +334,18 @@ pub fn build_and_write(
     let t_start = Instant::now();
 
     let t = Instant::now();
-    let tmp_path = out_path.with_extension("sfst.tmp");
-    let file = std::fs::File::create(&tmp_path)?;
-    // Every fallible step between temp-file creation and the rename
-    // (incl. the rename itself) runs inside the closure so a failure
-    // anywhere reaps the partial temp file. The boot-time sweep
-    // (`cleanup_temp_files` in otel-ledger's `Registry::recover`)
-    // remains the backstop for paths this can't cover (panic, power
-    // loss), but a leak shouldn't sit there until the next boot
-    // confusing a crash investigation.
-    let result: Result<(crate::Summary, Metadata, u64), IndexError> = (|| {
-        let (buf, summary, metadata) = build_into(wal_index, std::io::BufWriter::new(file))?;
-        let file = buf.into_inner().map_err(|e| e.into_error())?;
-        file.sync_all()?;
-        let file_size = file.metadata()?.len();
-        drop(file);
-
-        std::fs::rename(&tmp_path, out_path)?;
-        // Make the rename itself durable: without the parent-dir fsync a
-        // power loss can drop the new directory entry even though the WAL
-        // that produced this index was already durably deleted — losing the
-        // seq's data with no recovery path. Mirrors the WAL writer.
-        if let Some(parent) = out_path.parent() {
-            std::fs::File::open(parent)?.sync_all()?;
-        }
-        Ok((summary, metadata, file_size))
-    })();
-    let (summary, metadata, file_size) = match result {
-        Ok(parts) => parts,
-        Err(e) => {
-            // Best-effort: post-rename failures legitimately find no
-            // temp file anymore; anything else is worth a trace.
-            if let Err(remove_err) = std::fs::remove_file(&tmp_path) {
-                if remove_err.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(
-                        "failed to remove partial temp index {}: {remove_err}",
-                        tmp_path.display(),
-                    );
-                }
-            }
-            return Err(e);
-        }
-    };
+    // The guard owns the temp file's lifecycle: any failure before
+    // commit reaps the partial temp (the boot-time sweep remains the
+    // backstop for panic/power loss); commit performs fsync + rename +
+    // parent-dir fsync — the rename must be durable, or a power loss
+    // could drop the new directory entry even though the WAL that
+    // produced this index was already durably deleted, losing the
+    // seq's data with no recovery path.
+    let (guard, file) = file_registry::durable::AtomicFile::create(out_path)?;
+    let (buf, summary, metadata) = build_into(wal_index, std::io::BufWriter::new(file))?;
+    let file = buf.into_inner().map_err(|e| e.into_error())?;
+    let file_size = file.metadata()?.len();
+    guard.commit(file)?;
     tracing::info!(
         "index written path={} size_kb={} write_ms={} total_ms={}",
         out_path.display(),

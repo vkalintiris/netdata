@@ -236,7 +236,7 @@ impl Stream {
         writer.write_all(&header.to_bytes())?;
         writer.flush()?;
 
-        fsync_dir(self.dir.path())?;
+        file_registry::durable::fsync_dir(self.dir.path())?;
 
         self.pending_events.push(FileEvent::Created {
             file_id,
@@ -417,12 +417,6 @@ impl Writer {
         }
         Ok(events)
     }
-}
-
-pub(crate) fn fsync_dir(dir: &std::path::Path) -> Result<()> {
-    let dir_file = File::open(dir)?;
-    dir_file.sync_all()?;
-    Ok(())
 }
 
 #[cfg(test)]

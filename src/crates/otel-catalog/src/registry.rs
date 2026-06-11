@@ -282,18 +282,8 @@ impl Registry {
                     Some(n) => n,
                     None => continue,
                 };
-                if name.ends_with(&format!(".{CATALOG_EXT}.tmp")) {
-                    match std::fs::remove_file(&path) {
-                        Ok(()) => tracing::info!(
-                            file = %path.display(),
-                            "removed stale catalog tmp file"
-                        ),
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => tracing::warn!(
-                            file = %path.display(),
-                            "failed to remove stale catalog tmp file: {e}"
-                        ),
-                    }
+                if file_registry::durable::is_tmp(&path) {
+                    file_registry::durable::remove_stale_tmp(&path);
                     continue;
                 }
                 let stem = match name.strip_suffix(&format!(".{CATALOG_EXT}")) {

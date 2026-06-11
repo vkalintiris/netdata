@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use file_registry::{FileId, TenantId};
 use sfsq::logs::SfstCandidate;
@@ -54,7 +54,7 @@ impl Registry {
     /// Cleans up stale `.tmp` files (from interrupted index writes) before
     /// scanning.
     pub fn recover(&mut self) {
-        cleanup_temp_files(self.sfst.dir());
+        file_registry::durable::sweep_tmp(self.sfst.dir());
 
         self.wal.recover().unwrap_or_else(|e| {
             tracing::error!("failed to recover WAL registry: {e}");
@@ -350,29 +350,6 @@ impl TenantRegistries {
             }
         }
         (sfsts, wals)
-    }
-}
-
-fn cleanup_temp_files(dir: &Path) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
-    for dir_entry in entries.flatten() {
-        let path = dir_entry.path();
-        if path.extension().is_some_and(|ext| ext == "tmp") {
-            match std::fs::remove_file(&path) {
-                Ok(()) => tracing::info!("removed stale tmp file path={}", path.display()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    tracing::warn!(
-                        "failed to remove stale tmp file path={}: {e}",
-                        path.display()
-                    )
-                }
-            }
-        }
     }
 }
 

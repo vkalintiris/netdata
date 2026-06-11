@@ -139,7 +139,7 @@ async fn handle_request(
         min_timestamp_s,
         max_timestamp_s,
     );
-    if let Err(e) = write_local_atomic(&path, &bytes).await {
+    if let Err(e) = write_local_atomic(&path, bytes).await {
         tracing::error!(
             tenant = %tenant_id,
             path = %path.display(),
@@ -210,25 +210,17 @@ pub(crate) fn scope_path(
         ))
 }
 
-async fn write_local_atomic(final_path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = final_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let tmp_path = final_path.with_extension("catalog.tmp");
-    let mut file = tokio::fs::File::create(&tmp_path).await?;
-    use tokio::io::AsyncWriteExt;
-    file.write_all(bytes).await?;
-    file.sync_all().await?;
-    drop(file);
-    tokio::fs::rename(&tmp_path, final_path).await?;
-    // Make the rename itself durable: a catalog gates the eviction of
-    // the SFSTs it describes, so losing the directory entry on power
-    // loss would orphan their uploaded/rotated state. Mirrors the WAL
-    // writer's parent-dir fsync.
-    if let Some(parent) = final_path.parent() {
-        tokio::fs::File::open(parent).await?.sync_all().await?;
-    }
-    Ok(())
+/// Durable atomic catalog write — the shared tmp → fsync → rename →
+/// parent-dir-fsync sequence, off the runtime thread. The dir-fsync
+/// matters here: a catalog gates the eviction of the SFSTs it
+/// describes, so losing the directory entry on power loss would
+/// orphan their uploaded/rotated state. A failed write reaps its own
+/// temp file (the guard inside `write_atomic`).
+async fn write_local_atomic(final_path: &Path, bytes: Vec<u8>) -> std::io::Result<()> {
+    let path = final_path.to_path_buf();
+    tokio::task::spawn_blocking(move || file_registry::durable::write_atomic(&path, &bytes))
+        .await
+        .map_err(std::io::Error::other)?
 }
 
 #[cfg(test)]
