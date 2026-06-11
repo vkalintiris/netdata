@@ -12,7 +12,7 @@
 //! opening the file.
 //!
 //! The registry tracks locally-present catalog files, mirrors the API
-//! shape of [`sfst::Registry`], and is consulted by retention and by
+//! shape of `sfst::Registry`, and is consulted by retention and by
 //! query-time discovery.
 
 use std::collections::BTreeMap;

@@ -113,7 +113,7 @@ impl OtelLogsHandler {
             // check open_range defers). Runs once per (seq, index) under
             // singleflight; skipped entirely on a cache hit.
             let init = async move {
-                match tokio::task::spawn_blocking(move || sfst::index_range(&path, range)).await {
+                match tokio::task::spawn_blocking(move || sfst_indexer::index_range(&path, range)).await {
                     Ok(Ok((summary, bytes))) => {
                         if u64::from(summary.total_logs) != expected {
                             Err(format!(

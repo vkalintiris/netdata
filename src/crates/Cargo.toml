@@ -51,7 +51,8 @@ members = [
     "wal",
     "wal-otap",
 
-    # SFST query
+    # SFST build + query
+    "sfst-indexer",
     "sfsq",
 
     # LogQL
@@ -208,6 +209,7 @@ rdp = { path = "rdp" }
 fst-index = { path = "fst-index" }
 treight = { path = "treight" }
 sfst = { path = "sfst" }
+sfst-indexer = { path = "sfst-indexer" }
 sfsq = { path = "sfsq" }
 sd-compat = { path = "sd-compat" }
 

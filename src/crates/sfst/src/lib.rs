@@ -37,7 +37,7 @@
 //! ```
 
 mod error;
-pub mod indexer;
+mod index_reader;
 pub mod query;
 mod reader;
 mod schema;
@@ -45,11 +45,9 @@ mod writer;
 
 pub mod registry;
 
-pub use error::{Error, IndexError};
+pub use error::Error;
 pub use file_registry::ServiceStream;
-pub use indexer::{
-    BitmapFilter, IndexReader, IndexResult, build_and_write, index, index_range, index_with_options,
-};
+pub use index_reader::{BitmapFilter, IndexReader};
 pub use query::{
     Bucket, FacetResult, Filter, Grid, Matcher, MaterializedRow, Timeline, Timestamps,
     compile_pattern, compile_query,
@@ -59,24 +57,30 @@ pub use registry::{File, Registry};
 
 /// Highest SFST sequence on disk across every tenant subdir of
 /// `base`. Returns `0` when `base` is missing or empty. Paired with
-/// [`wal::scan_max_sequence_recursive`]; the ingestor takes the max
+/// `wal::scan_max_sequence_recursive`; the ingestor takes the max
 /// of both at startup so the seq counter stays monotonic even when
 /// WALs have been cleaned up but SFSTs remain.
 pub fn scan_max_sequence_recursive(base: &std::path::Path) -> std::io::Result<u64> {
     file_registry::scan_max_sequence_recursive(base, registry::SFST_EXT)
 }
 pub use schema::{
-    BitmapValue, FieldEntry, FieldTable, FieldTier, Histogram, IdRanges, KvId, Metadata,
-    StreamBatch, Summary,
+    BitmapValue, DEFAULT_CARDINALITY_THRESHOLD, FieldEntry, FieldTable, FieldTier, HighField,
+    Histogram, IdRanges, KvId, Metadata, StreamBatch, Summary,
 };
-// Internal on-disk chunk representation: re-exported crate-wide for the
-// indexer/reader but kept out of the public API (no external consumers).
-pub(crate) use schema::HighField;
 pub use writer::{Writer, pack};
 
-// ── Format constants ─────────────────────────────────────────────
+// ── Format vocabulary ────────────────────────────────────────────
+//
+// The container's magic, version, and chunk ids are public producer
+// vocabulary: a streaming builder (`sfst-indexer`'s `build_into`)
+// emits chunks through `chunk_file::container::StreamingWriter`
+// directly and must name them. `FORMAT.md` is the source of truth for
+// what each id carries and the canonical chunk order; [`Writer`] is
+// the reference implementation of that order.
 
-const MAGIC: &[u8; 4] = b"SFST";
+/// Container magic, first 4 bytes of every SFST file.
+pub const MAGIC: &[u8; 4] = b"SFST";
+
 // v3: high-card chunks switched from `Vec<String>` keys to the string-arena
 //     layout (keys_blob + key_lens).
 // v4: stream-batch chunks switched from `Vec<Vec<KvId>>` to the fixed-width
@@ -85,12 +89,17 @@ const MAGIC: &[u8; 4] = b"SFST";
 //     helper. Every chunk payload is followed by a crc32 over its stored
 //     (compressed) bytes, verified on access. Older files are rejected on
 //     open.
-const VERSION: u32 = 5;
+/// Current container version. Readers reject any other version.
+pub const VERSION: u32 = 5;
 
-const CHUNK_SUMMARY: chunk_file::ChunkId = *b"SUMR";
-const CHUNK_META: chunk_file::ChunkId = *b"META";
-const CHUNK_PRIMARY: chunk_file::ChunkId = *b"PRIM";
-const CHUNK_TIMS: chunk_file::ChunkId = *b"TIMS";
+/// Chunk id of the [`Summary`] chunk.
+pub const CHUNK_SUMMARY: chunk_file::ChunkId = *b"SUMR";
+/// Chunk id of the [`Metadata`] chunk.
+pub const CHUNK_META: chunk_file::ChunkId = *b"META";
+/// Chunk id of the primary (low-cardinality) FST chunk.
+pub const CHUNK_PRIMARY: chunk_file::ChunkId = *b"PRIM";
+/// Chunk id of the chronological per-log timestamps chunk.
+pub const CHUNK_TIMS: chunk_file::ChunkId = *b"TIMS";
 
 /// Minimum number of logs in each stream batch. Files with fewer than
 /// `MIN_LOGS_PER_BATCH` total logs use a single batch; otherwise the
@@ -141,20 +150,20 @@ pub fn stream_batch_size(total_logs: u32) -> u32 {
 /// Chunk id for the mid-card field FST at `index`. The id encodes the
 /// index in its trailing two bytes, big-endian, so each mid-card chunk
 /// has a unique 4-byte id of the form `b"MF{hi}{lo}"`.
-fn mid_field_id(index: u16) -> chunk_file::ChunkId {
+pub fn mid_field_id(index: u16) -> chunk_file::ChunkId {
     [b'M', b'F', (index >> 8) as u8, (index & 0xff) as u8]
 }
 
 /// Chunk id for the high-card field sorted list at `index`. Same shape
 /// as [`mid_field_id`] but with prefix `b"HF"`.
-fn high_field_id(index: u16) -> chunk_file::ChunkId {
+pub fn high_field_id(index: u16) -> chunk_file::ChunkId {
     [b'H', b'F', (index >> 8) as u8, (index & 0xff) as u8]
 }
 
 /// Chunk id for the stream-batch chunk at `index` (0..[`MAX_STREAM_BATCHES`]).
 /// Encodes the index as a single ASCII digit in the trailing byte, e.g.
 /// `b"SB00"` through `b"SB07"`.
-fn stream_batch_id(index: u8) -> chunk_file::ChunkId {
+pub fn stream_batch_id(index: u8) -> chunk_file::ChunkId {
     [b'S', b'B', b'0', b'0' + index]
 }
 

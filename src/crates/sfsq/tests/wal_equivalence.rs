@@ -7,8 +7,9 @@
 //! the engine. Every fixture here goes through the *production* path —
 //! OTLP `ResourceLogs` → `otel_ingestor::arrow_bridge::encode` (real
 //! OTAP frames, `_nd_kv_hash` sidecars included) → `wal::Writer` →
-//! either `sfst::index` + `LogsShard::evaluate` or `WalScan::scan` +
-//! `evaluate` — and the two shards are compared component by component.
+//! either `sfst_indexer::index` + `LogsShard::evaluate` or
+//! `WalScan::scan` + `evaluate` — and the two shards are compared
+//! component by component.
 //!
 //! Scope: this covers both the **statistics** shard (matched count,
 //! facets, timeline, field table — `wal_data_stats_equal_whole_file_index`)
@@ -309,7 +310,7 @@ fn write_wal(dir: &Path, corpus: &Corpus) -> PathBuf {
 /// Index the WAL into an SFST and wrap it as an engine candidate.
 fn index_candidate(wal_path: &Path, dir: &Path) -> SfstCandidate {
     let sfst_path = dir.join("harness.sfst");
-    let result = sfst::index(wal_path, &sfst_path).expect("index");
+    let result = sfst_indexer::index(wal_path, &sfst_path).expect("index");
     SfstCandidate {
         summary: result.summary,
         file_seq: 1,
@@ -778,14 +779,14 @@ fn index_range_whole_file_matches_disk_index() {
         let wal_path = write_wal(dir.path(), &corpus);
         let file_len = std::fs::metadata(&wal_path).unwrap().len();
 
-        let (mem_summary, mem_bytes) = sfst::index_range(
+        let (mem_summary, mem_bytes) = sfst_indexer::index_range(
             &wal_path,
             wal::FrameRange::new(wal::HEADER_SIZE as u64, file_len),
         )
         .expect("index_range");
 
         let sfst_path = dir.path().join("disk.sfst");
-        let disk = sfst::index(&wal_path, &sfst_path).expect("index");
+        let disk = sfst_indexer::index(&wal_path, &sfst_path).expect("index");
         let disk_bytes = std::fs::read(&sfst_path).unwrap();
 
         assert_eq!(
@@ -826,16 +827,16 @@ fn index_range_interior_split_partitions_logs() {
 
         // Split after the middle frame — a real frame boundary.
         let split = frames[frames.len() / 2 - 1].end_offset;
-        let (a_sum, a_bytes) = sfst::index_range(
+        let (a_sum, a_bytes) = sfst_indexer::index_range(
             &wal_path,
             wal::FrameRange::new(wal::HEADER_SIZE as u64, split),
         )
         .unwrap();
         let (b_sum, b_bytes) =
-            sfst::index_range(&wal_path, wal::FrameRange::new(split, file_len)).unwrap();
+            sfst_indexer::index_range(&wal_path, wal::FrameRange::new(split, file_len)).unwrap();
 
         let whole_path = dir.path().join("whole.sfst");
-        let whole = sfst::index(&wal_path, &whole_path).unwrap();
+        let whole = sfst_indexer::index(&wal_path, &whole_path).unwrap();
 
         // Logs partition exactly, by both the index and the scan.
         assert_eq!(
@@ -990,7 +991,7 @@ fn wal_data_stats_equal_whole_file_index() {
 
             let mut live_candidates: Vec<SfstCandidate> = Vec::new();
             for (i, chunk) in chunks.iter().enumerate() {
-                let (summary, bytes) = sfst::index_range(&wal_path, chunk.range).unwrap();
+                let (summary, bytes) = sfst_indexer::index_range(&wal_path, chunk.range).unwrap();
                 live_candidates.push(SfstCandidate {
                     summary,
                     file_seq: i as u64,
@@ -1122,7 +1123,7 @@ fn wal_data_rows_match_whole_file_index() {
 
     let mut live: Vec<SfstCandidate> = Vec::new();
     for (i, chunk) in chunks.iter().enumerate() {
-        let (summary, bytes) = sfst::index_range(&wal_path, chunk.range).unwrap();
+        let (summary, bytes) = sfst_indexer::index_range(&wal_path, chunk.range).unwrap();
         live.push(SfstCandidate {
             summary,
             file_seq: 1,
@@ -1191,7 +1192,7 @@ fn index_range_empty_range_is_a_valid_zero_log_sfst() {
     let dir = tempfile::tempdir().expect("tempdir");
     let wal_path = write_wal(dir.path(), &corpus);
 
-    let (summary, bytes) = sfst::index_range(
+    let (summary, bytes) = sfst_indexer::index_range(
         &wal_path,
         wal::FrameRange::new(wal::HEADER_SIZE as u64, wal::HEADER_SIZE as u64),
     )

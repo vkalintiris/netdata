@@ -15,7 +15,6 @@ chrono = { workspace = true, features = ["serde"] }
 thiserror = { workspace = true }
 chunk-file = { workspace = true }
 file-registry = { workspace = true }
-sfst = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

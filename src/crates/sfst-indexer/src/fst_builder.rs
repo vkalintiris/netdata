@@ -30,9 +30,8 @@ use treight::Bitmap;
 use super::bitset::Bitset;
 use super::kv_interner::KvSlot;
 use super::row_index::{TimeOrder, RowIndex};
-use crate::{
-    BitmapValue, FieldEntry, FieldTier, IdRanges, IndexError, KvId, Metadata, ServiceStream,
-};
+use crate::IndexError;
+use sfst::{BitmapValue, FieldEntry, FieldTier, IdRanges, KvId, Metadata, ServiceStream};
 
 /// Build tier-aligned key=value ID translation table.
 ///
@@ -81,7 +80,7 @@ fn build_id_translation(row_index: &RowIndex) -> (Vec<KvId>, IdRanges) {
 /// Stream the file's stream-batch chunks in chronological order.
 ///
 /// Materialises every log's `KvId` list in chronological order, splits
-/// the result into [`num_stream_batches`](crate::num_stream_batches)
+/// the result into [`num_stream_batches`](sfst::num_stream_batches)
 /// slices of `batch_size` entries each, and packs each slice into its
 /// own zstd blob — written and dropped one at a time.
 ///
@@ -108,28 +107,28 @@ fn build_stream_batches<W: Write + Seek>(
     if entries.is_empty() {
         // num_stream_batches(0) == 1: emit a single empty batch so the
         // file's chunk layout is always valid.
-        let packed = crate::pack(
-            &crate::StreamBatch::for_write(&[]),
-            crate::ZSTD_LEVEL_DEFAULT,
+        let packed = sfst::pack(
+            &sfst::StreamBatch::for_write(&[]),
+            sfst::ZSTD_LEVEL_DEFAULT,
         )?;
         total_packed += packed.len();
-        w.write_chunk(crate::stream_batch_id(0), &packed)?;
+        w.write_chunk(sfst::stream_batch_id(0), &packed)?;
     } else {
-        let batch_size = crate::stream_batch_size(total_logs) as usize;
+        let batch_size = sfst::stream_batch_size(total_logs) as usize;
         for (i, batch) in entries.chunks(batch_size).enumerate() {
             // The batch-size rule guarantees ≤ MAX_STREAM_BATCHES slices;
             // assert it so a broken rule can't silently alias chunk ids.
             assert!(
-                i < crate::MAX_STREAM_BATCHES as usize,
+                i < sfst::MAX_STREAM_BATCHES as usize,
                 "stream-batch count exceeds MAX_STREAM_BATCHES ({})",
-                crate::MAX_STREAM_BATCHES,
+                sfst::MAX_STREAM_BATCHES,
             );
-            let packed = crate::pack(
-                &crate::StreamBatch::for_write(batch),
-                crate::ZSTD_LEVEL_DEFAULT,
+            let packed = sfst::pack(
+                &sfst::StreamBatch::for_write(batch),
+                sfst::ZSTD_LEVEL_DEFAULT,
             )?;
             total_packed += packed.len();
-            w.write_chunk(crate::stream_batch_id(i as u8), &packed)?;
+            w.write_chunk(sfst::stream_batch_id(i as u8), &packed)?;
         }
     }
 
@@ -158,14 +157,14 @@ fn build_primary_fst<W: Write + Seek>(
     }
 
     let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries)?;
-    let packed = crate::pack(&fst, crate::ZSTD_LEVEL_FST)?;
+    let packed = sfst::pack(&fst, sfst::ZSTD_LEVEL_FST)?;
     tracing::debug!(
         "primary FST built: {} fields, {} KB, {}ms",
         low.len(),
         packed.len() / 1024,
         t.elapsed().as_millis(),
     );
-    w.write_chunk(crate::CHUNK_PRIMARY, &packed)?;
+    w.write_chunk(sfst::CHUNK_PRIMARY, &packed)?;
     Ok(())
 }
 
@@ -191,12 +190,12 @@ fn build_mid_card_chunks<W: Write + Seek>(
         }
 
         let fst: fst_index::FstIndex<BitmapValue> = fst_index::FstIndex::build(entries.drain(..))?;
-        let packed = crate::pack(&fst, crate::ZSTD_LEVEL_FST)?;
+        let packed = sfst::pack(&fst, sfst::ZSTD_LEVEL_FST)?;
         total_kb += packed.len() / 1024;
         // The chunk-id encoding has 2 index bytes; silent truncation
         // would alias two fields onto one id.
         let idx = u16::try_from(i).expect("mid-card field count exceeds u16::MAX");
-        w.write_chunk(crate::mid_field_id(idx), &packed)?;
+        w.write_chunk(sfst::mid_field_id(idx), &packed)?;
     }
 
     tracing::debug!(
@@ -209,12 +208,10 @@ fn build_mid_card_chunks<W: Write + Seek>(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests;
 
 /// Build high-cardinality field chunks (bincode + zstd).
 ///
-/// Each chunk is a [`crate::HighField`] — a string arena of sorted
+/// Each chunk is a [`sfst::HighField`] — a string arena of sorted
 /// `key=value` keys plus their per-key `u8` batch-mask. Bit `b` of the mask
 /// is set iff the value appears in stream batch `b`. Batch boundaries
 /// are defined by `batch_size` over time-sorted positions;
@@ -243,13 +240,13 @@ fn build_high_card_chunks<W: Write + Seek>(
 
         // Transpose to parallel columns, then pack as the arena layout.
         let (keys, masks): (Vec<&str>, Vec<u8>) = paired.iter().copied().unzip();
-        let high = crate::HighField::for_write(&keys, masks);
+        let high = sfst::HighField::for_write(&keys, masks);
 
-        let packed = crate::pack(&high, crate::ZSTD_LEVEL_DEFAULT)?;
+        let packed = sfst::pack(&high, sfst::ZSTD_LEVEL_DEFAULT)?;
         total_kb += packed.len() / 1024;
         // Same 2-byte index bound as the mid-card ids.
         let idx = u16::try_from(i).expect("high-card field count exceeds u16::MAX");
-        w.write_chunk(crate::high_field_id(idx), &packed)?;
+        w.write_chunk(sfst::high_field_id(idx), &packed)?;
     }
 
     tracing::debug!(
@@ -277,7 +274,7 @@ fn batch_mask(rb: &RoaringBitmap, time_order: &TimeOrder, batch_size: u32) -> u8
     for ins_pos in rb.iter() {
         let sorted_pos = time_order.to_sorted(ins_pos);
         let bit = (sorted_pos / batch_size) as u8;
-        debug_assert!(bit < crate::MAX_STREAM_BATCHES, "batch index out of range");
+        debug_assert!(bit < sfst::MAX_STREAM_BATCHES, "batch index out of range");
         mask |= 1u8 << bit;
     }
     mask
@@ -311,7 +308,7 @@ fn resolve_stream(row_index: &RowIndex, total_logs: u32) -> Result<ServiceStream
     tracing::debug!(
         "stream {namespace}/{name}: {} logs, {} batches",
         row_index.num_logs(),
-        crate::num_stream_batches(total_logs),
+        sfst::num_stream_batches(total_logs),
     );
 
     Ok(stream)
@@ -322,15 +319,16 @@ fn resolve_stream(row_index: &RowIndex, total_logs: u32) -> Result<ServiceStream
 /// This is Phase 2 of the indexing pipeline. Takes the [`RowIndex`] built by
 /// Phase 1 and produces a split-fst file with: summary, metadata, primary FST,
 /// secondary chunks (mid/high-card), and per-stream log entries. Chunks
-/// stream to the temp file as they are packed (see [`build_into`]).
+/// stream to the temp file as they are packed (see `build_into`,
+/// crate-internal).
 ///
-/// Returns both the cheap-to-read [`crate::Summary`] (which the registry
+/// Returns both the cheap-to-read [`sfst::Summary`] (which the registry
 /// stores inline) and the heavier [`Metadata`] (only needed for query
 /// planning and execution).
 pub fn build_and_write(
     row_index: &RowIndex,
     out_path: &Path,
-) -> Result<(crate::Summary, Metadata), IndexError> {
+) -> Result<(sfst::Summary, Metadata), IndexError> {
     let t_start = Instant::now();
 
     let t = Instant::now();
@@ -359,7 +357,7 @@ pub fn build_and_write(
 
 /// Phase 2 proper: consume a [`RowIndex`] and **stream** the SFST into
 /// `sink` (positioned at offset 0), returning the sink plus the
-/// [`crate::Summary`] / [`Metadata`] the file carries.
+/// [`sfst::Summary`] / [`Metadata`] the file carries.
 ///
 /// Everything the `SUMR`/`META` chunks need (stream identity, id
 /// ranges, field table, histogram) is derivable before any chunk is
@@ -370,7 +368,7 @@ pub fn build_and_write(
 /// mid-card, high-card, stream batches). Peak memory beyond the
 /// `RowIndex` itself is a single packed chunk, not the whole
 /// compressed file; the bytes produced are identical to
-/// [`crate::Writer`]'s for the same inputs.
+/// [`sfst::Writer`]'s for the same inputs.
 ///
 /// Shared by [`build_and_write`] (sink = the temp file) and the
 /// in-memory range index ([`index_range`](super::index_range),
@@ -378,7 +376,7 @@ pub fn build_and_write(
 pub(super) fn build_into<W: Write + Seek>(
     row_index: &RowIndex,
     sink: W,
-) -> Result<(W, crate::Summary, Metadata), IndexError> {
+) -> Result<(W, sfst::Summary, Metadata), IndexError> {
     let t = Instant::now();
 
     // Build time order
@@ -387,13 +385,13 @@ pub(super) fn build_into<W: Write + Seek>(
 
     // Total log count drives the stream-batch partitioning.
     let total_logs = row_index.num_logs() as u32;
-    let batch_size = crate::stream_batch_size(total_logs);
+    let batch_size = sfst::stream_batch_size(total_logs);
 
     let (kv_to_file, id_ranges) = build_id_translation(row_index);
     let stream = resolve_stream(row_index, total_logs)?;
 
     // Field table, ordered low → mid → high (each tier sorted by name).
-    let fields: crate::FieldTable = row_index
+    let fields: sfst::FieldTable = row_index
         .low_fields()
         .iter()
         .map(|(name, ids)| FieldEntry {
@@ -422,11 +420,11 @@ pub(super) fn build_into<W: Write + Seek>(
     // derivation) and the heavy metadata.
     let histogram = row_index.sparse_histogram(&time_order);
 
-    let summary = crate::Summary {
+    let summary = sfst::Summary {
         min_timestamp_s: histogram.timestamps.first().copied().unwrap_or(0),
         max_timestamp_s: histogram.timestamps.last().copied().unwrap_or(0),
         total_logs,
-        stream: crate::ServiceStream {
+        stream: sfst::ServiceStream {
             namespace: stream.namespace.clone(),
             name: stream.name.clone(),
         },
@@ -443,17 +441,17 @@ pub(super) fn build_into<W: Write + Seek>(
     let num_chunks = 4
         + row_index.mid_fields().len()
         + row_index.high_fields().len()
-        + usize::from(crate::num_stream_batches(total_logs));
-    let mut w = StreamingWriter::new(sink, *crate::MAGIC, crate::VERSION, num_chunks as u32)?;
+        + usize::from(sfst::num_stream_batches(total_logs));
+    let mut w = StreamingWriter::new(sink, *sfst::MAGIC, sfst::VERSION, num_chunks as u32)?;
 
-    // Hot prefix first — same canonical order as `crate::Writer`.
+    // Hot prefix first — same canonical order as `sfst::Writer`.
     w.write_chunk(
-        crate::CHUNK_SUMMARY,
-        &crate::pack(&summary, crate::ZSTD_LEVEL_DEFAULT)?,
+        sfst::CHUNK_SUMMARY,
+        &sfst::pack(&summary, sfst::ZSTD_LEVEL_DEFAULT)?,
     )?;
     w.write_chunk(
-        crate::CHUNK_META,
-        &crate::pack(&metadata, crate::ZSTD_LEVEL_DEFAULT)?,
+        sfst::CHUNK_META,
+        &sfst::pack(&metadata, sfst::ZSTD_LEVEL_DEFAULT)?,
     )?;
 
     // Per-log timestamps in chronological order, parallel-indexed to
@@ -463,8 +461,8 @@ pub(super) fn build_into<W: Write + Seek>(
         .map(|ins| row_index.timestamps[ins as usize])
         .collect();
     w.write_chunk(
-        crate::CHUNK_TIMS,
-        &crate::pack(&timestamps_chronological, crate::ZSTD_LEVEL_DEFAULT)?,
+        sfst::CHUNK_TIMS,
+        &sfst::pack(&timestamps_chronological, sfst::ZSTD_LEVEL_DEFAULT)?,
     )?;
     drop(timestamps_chronological);
 

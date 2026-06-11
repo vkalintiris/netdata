@@ -3860,7 +3860,6 @@ dependencies = [
  "file-registry",
  "serde",
  "serde_json",
- "sfst",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
@@ -3932,6 +3931,7 @@ dependencies = [
  "serde_json",
  "sfsq",
  "sfst",
+ "sfst-indexer",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -5350,6 +5350,7 @@ dependencies = [
  "regex",
  "serde",
  "sfst",
+ "sfst-indexer",
  "tempfile",
  "tokio-util",
  "tracing",
@@ -5363,18 +5364,34 @@ version = "0.1.0"
 dependencies = [
  "bincode 2.0.1",
  "bridge",
- "bumpalo",
  "chrono",
  "chunk-file",
  "clap",
  "file-registry",
  "fst-index",
- "hashbrown 0.17.1",
  "memmap2",
  "regex",
- "roaring 0.11.2",
  "serde",
  "serde_bytes",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "treight",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
+name = "sfst-indexer"
+version = "0.1.3"
+dependencies = [
+ "bumpalo",
+ "chunk-file",
+ "file-registry",
+ "fst-index",
+ "hashbrown 0.17.1",
+ "roaring 0.11.2",
+ "sfst",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
@@ -5383,7 +5400,6 @@ dependencies = [
  "uuid",
  "wal",
  "wal-otap",
- "zstd",
 ]
 
 [[package]]

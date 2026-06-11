@@ -97,7 +97,7 @@ fn start_indexing(
     );
 
     tokio::task::spawn_blocking(move || {
-        let resp = match sfst::index(&wal_path, &sfst_path) {
+        let resp = match sfst_indexer::index(&wal_path, &sfst_path) {
             Ok(result) => IndexerResponse::Indexed {
                 seq,
                 path: sfst_path,

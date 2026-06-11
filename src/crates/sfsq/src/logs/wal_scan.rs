@@ -19,7 +19,7 @@
 //! - filter patterns anchor identically: both compile through
 //!   [`sfst::compile_pattern`] / [`sfst::compile_query`];
 //! - field tables classify identically: same distinct-pair cardinality
-//!   rule, same [`sfst::indexer::DEFAULT_CARDINALITY_THRESHOLD`].
+//!   rule, same [`sfst::DEFAULT_CARDINALITY_THRESHOLD`].
 //!
 //! What this module re-implements — and what the equivalence tests must
 //! hold against the SFST engine — is the *evaluation*: OR-within-field /
@@ -417,7 +417,7 @@ impl ScanSink {
                 .push(t as u32);
         }
 
-        let threshold = sfst::indexer::DEFAULT_CARDINALITY_THRESHOLD as usize;
+        let threshold = sfst::DEFAULT_CARDINALITY_THRESHOLD as usize;
         let tier_of = |cardinality: usize| -> FieldTier {
             if cardinality < threshold {
                 FieldTier::Low

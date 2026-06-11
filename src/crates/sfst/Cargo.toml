@@ -26,14 +26,6 @@ file-registry = { workspace = true }
 memmap2 = { workspace = true }
 tracing = { workspace = true }
 
-# Indexer (WAL → SFST conversion)
-bumpalo = { workspace = true }
-hashbrown = { workspace = true }
-roaring = { workspace = true }
-twox-hash = { workspace = true, features = ["xxhash64"] }
-wal = { workspace = true }
-wal-otap = { workspace = true }
-
 [dev-dependencies]
 tempfile = { workspace = true }
 uuid = { workspace = true }

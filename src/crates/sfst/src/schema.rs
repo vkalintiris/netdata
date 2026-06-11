@@ -1,9 +1,10 @@
 //! On-disk schema for SFST log indexes.
 //!
 //! These are the typed payloads carried by an SFST file's named chunks.
-//! Producers (the [`crate::indexer`] module) construct them; consumers
-//! decode them via the typed accessors on [`crate::Reader`]. The
-//! container layout and chunk encoding are specified in `FORMAT.md`.
+//! Producers (the WAL indexer in the `sfst-indexer` crate) construct
+//! them; consumers decode them via the typed accessors on
+//! [`crate::Reader`]. The container layout and chunk encoding are
+//! specified in `FORMAT.md`.
 
 use file_registry::ServiceStream;
 use serde::{Deserialize, Serialize};
@@ -107,14 +108,21 @@ pub struct FieldEntry {
 }
 
 /// Cardinality tier for a field. The cardinality threshold `T` and
-/// its 10× cutoff (set by the producer; default 100) define the
-/// boundaries: `< T` is low, `[T, 10·T)` is mid, `≥ 10·T` is high.
+/// its 10× cutoff (set by the producer; default
+/// [`DEFAULT_CARDINALITY_THRESHOLD`]) define the boundaries: `< T` is
+/// low, `[T, 10·T)` is mid, `≥ 10·T` is high.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FieldTier {
     Low,
     Mid,
     High,
 }
+
+/// Default cardinality threshold for [`FieldTier`] classification.
+/// Public so every producer of field tables — the WAL indexer in
+/// `sfst-indexer` and the WAL row scan in `sfsq` — classifies with the
+/// same boundaries unless explicitly overridden.
+pub const DEFAULT_CARDINALITY_THRESHOLD: u32 = 100;
 
 impl FieldEntry {
     /// High-cardinality — rejected by `facets`/`timeline`, so not
@@ -198,8 +206,8 @@ pub struct BitmapValue {
 /// Body of a high-card field chunk (the `HF{i}` chunks).
 ///
 /// The `key=value` strings are stored as a **string arena**: one
-/// contiguous [`keys_blob`](Self::keys_blob) byte buffer plus the parallel
-/// [`key_lens`](Self::key_lens) (per-key byte length) and
+/// contiguous `keys_blob` byte buffer plus the parallel
+/// `key_lens` (per-key byte length) and
 /// [`masks`](Self::masks) (per-key stream-batch bitmask, bit `b` set iff
 /// the value appears in batch `b` — see [`crate::num_stream_batches`]).
 /// Keys are sorted lexicographically.
@@ -211,10 +219,10 @@ pub struct BitmapValue {
 /// per-string length prefix), whereas raw `u32` offsets would varint-inflate
 /// to ≈5 B/key. The columnar layout (lengths and masks each contiguous) also
 /// compresses marginally tighter under zstd than the old interleaved form.
-/// In memory, [`offsets`](Self::offsets) is the prefix-sum of `key_lens`
+/// In memory, `offsets` is the prefix-sum of `key_lens`
 /// (rebuilt on load, not serialized) so key access is O(1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct HighField {
+pub struct HighField {
     /// All `field=value` keys concatenated, in sorted order. `serde_bytes`
     /// decodes this in one bulk copy instead of serde's per-byte `Vec<u8>`
     /// seq path (the dominant high-card scan cost); wire-identical under
@@ -243,7 +251,7 @@ impl HighField {
     /// this value exists to be packed, not read. Key access
     /// ([`key`](Self::key), [`keys`](Self::keys),
     /// [`binary_search`](Self::binary_search)) is only valid after a load,
-    /// where the reader calls [`rebuild_offsets`](Self::rebuild_offsets);
+    /// where the reader calls `rebuild_offsets` (crate-internal);
     /// calling it on a write-form value panics (debug-asserted).
     pub fn for_write<S: AsRef<str>>(keys: &[S], masks: Vec<u8>) -> Self {
         let total_bytes: usize = keys.iter().map(|key| key.as_ref().len()).sum();
@@ -282,7 +290,7 @@ impl HighField {
 
     /// The `i`-th `field=value` key as bytes (keys are valid UTF-8). Only
     /// valid once `offsets` is built — on load, or via
-    /// [`rebuild_offsets`](Self::rebuild_offsets); never on a
+    /// `rebuild_offsets` (crate-internal); never on a
     /// [`for_write`](Self::for_write) value.
     pub fn key(&self, i: usize) -> &[u8] {
         debug_assert_eq!(
@@ -442,3 +450,6 @@ impl PartialEq for StreamBatch {
 }
 
 impl Eq for StreamBatch {}
+
+#[cfg(test)]
+mod tests;

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// One uploaded SFST file tracked by the catalog.
 ///
 /// Each entry corresponds to exactly one SFST, which itself contains
-/// exactly one stream — see [`sfst::ServiceStream`].
+/// exactly one stream — see [`file_registry::ServiceStream`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogEntry {
     pub id: FileId,

@@ -41,8 +41,8 @@ pub fn pack<T: Serialize + ?Sized>(value: &T, zstd_level: i32) -> Result<Vec<u8>
 ///
 /// This is the format's buffer-all **reference writer** — every chunk
 /// is held in memory until [`write_to`](Writer::write_to). The
-/// production indexer instead streams chunks one at a time through
-/// `chunk_file::container::StreamingWriter` (see the indexer's
+/// production indexer (`sfst-indexer`) instead streams chunks one at a
+/// time through `chunk_file::container::StreamingWriter` (see its
 /// `build_into`), producing byte-identical files since both follow the
 /// same canonical chunk order.
 pub struct Writer {

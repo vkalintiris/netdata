@@ -10,7 +10,8 @@
 //! 4. **Vec\<i64\>** — nanosecond timestamp per log position, used to build the
 //!    time-sort remap and sparse histogram.
 
-use crate::{Histogram, IndexError};
+use crate::IndexError;
+use sfst::Histogram;
 use bumpalo::Bump;
 use file_registry::ServiceStream;
 use roaring::RoaringBitmap;

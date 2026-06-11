@@ -1,5 +1,10 @@
 //! WAL → SFST indexing pipeline.
 //!
+//! The build side of the [`sfst`] format: everything that turns a WAL
+//! file of OTAP frames into an on-disk (or in-memory) SFST index lives
+//! here, so the format crate stays free of the WAL/Arrow decode stack
+//! and format-only consumers never compile it.
+//!
 //! Two-phase build:
 //!
 //! - **Phase 1** (read) — [`wal_otap::decode_file`] decodes each WAL
@@ -8,7 +13,8 @@
 //!   accumulates the string interner + per-attribute bitmaps + per-log
 //!   entries + per-log timestamps.
 //! - **Phase 2** (write) — [`build_and_write`] consumes the `RowIndex` and
-//!   emits the on-disk SFST file via [`crate::Writer`].
+//!   emits the on-disk SFST file through [`sfst`]'s public format
+//!   vocabulary (chunk ids, magic, version, `pack`).
 //!
 //! The public entry points are [`index`] (defaults) and
 //! [`index_with_options`] (cardinality threshold override). The frame
@@ -17,14 +23,14 @@
 //! reimplement it.
 
 mod bitset;
+mod error;
 mod fst_builder;
 pub mod kv_interner;
-pub mod reader;
 pub mod row_index;
 
+pub use error::IndexError;
 pub use fst_builder::build_and_write;
 pub use kv_interner::KvSlot;
-pub use reader::{BitmapFilter, IndexReader};
 
 use fst_builder::build_into;
 
@@ -32,14 +38,8 @@ use std::path::Path;
 
 use bumpalo::Bump;
 
-use crate::{IndexError, Metadata, Summary};
 use row_index::RowIndex;
-
-/// Default cardinality threshold for tier classification (see
-/// [`crate::FieldTier`]). Public so every producer of field tables — the
-/// indexer here and the WAL row scan in `sfsq` — classifies with the same
-/// boundaries unless explicitly overridden.
-pub const DEFAULT_CARDINALITY_THRESHOLD: u32 = 100;
+use sfst::{Metadata, Summary};
 
 /// Result of indexing a WAL file.
 ///
@@ -60,7 +60,7 @@ pub struct IndexResult {
 ///
 /// Reads the WAL file at `wal_path` and writes the index to `sfst_path`.
 pub fn index(wal_path: &Path, sfst_path: &Path) -> Result<IndexResult, IndexError> {
-    index_with_options(wal_path, sfst_path, DEFAULT_CARDINALITY_THRESHOLD)
+    index_with_options(wal_path, sfst_path, sfst::DEFAULT_CARDINALITY_THRESHOLD)
 }
 
 /// Build a split-FST index from a WAL file with an explicit cardinality
@@ -104,16 +104,16 @@ pub fn index_with_options(
 /// a chunk of an active WAL; see [`wal::FrameRange`] / `open_range` for the
 /// frame-boundary and durable-prefix soundness checks.
 ///
-/// The returned bytes parse with [`IndexReader::open`]. The caller cross-
-/// checks `summary.total_logs` against the expected record count for the
-/// range (the registry's `entry_count`) to confirm the prefix wasn't
+/// The returned bytes parse with [`sfst::IndexReader::open`]. The caller
+/// cross-checks `summary.total_logs` against the expected record count for
+/// the range (the registry's `entry_count`) to confirm the prefix wasn't
 /// truncated — the count check that [`wal::Reader::open_range`] defers.
 pub fn index_range(
     wal_path: &Path,
     range: wal::FrameRange,
 ) -> Result<(Summary, Vec<u8>), IndexError> {
     let arena = Bump::with_capacity(32 * 1024 * 1024);
-    let mut row_index = RowIndex::new(&arena, DEFAULT_CARDINALITY_THRESHOLD);
+    let mut row_index = RowIndex::new(&arena, sfst::DEFAULT_CARDINALITY_THRESHOLD);
 
     let stats = wal_otap::decode_range(wal_path, range, &mut row_index)?;
     tracing::debug!(
