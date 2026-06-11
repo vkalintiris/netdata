@@ -10,7 +10,7 @@ mod dir;
 pub use dir::{FileDir, scan_max_sequence_recursive};
 
 mod query;
-pub use query::Query;
+pub use query::{Query, range_overlaps};
 
 mod registry;
 pub use registry::FileRegistry;

@@ -24,3 +24,27 @@ pub struct Query {
     /// `compute_ns_hash(s.namespace, s.name)`).
     pub stream: Option<ServiceStream>,
 }
+
+impl Query {
+    /// Whether a file whose data spans `[min_s, max_s]` overlaps this
+    /// query's window — see [`range_overlaps`] for the rule.
+    pub fn overlaps(&self, min_s: u32, max_s: u32) -> bool {
+        range_overlaps(&self.time_range, min_s, max_s)
+    }
+}
+
+/// The one time-overlap rule every registry and catalog uses: a data
+/// range `[min, max]` (inclusive on both ends) overlaps a query window
+/// `[start, end)` (half-open) iff `max >= start && min < end`; an empty
+/// window (`start >= end`) matches nothing.
+///
+/// Centralized because a drift between copies of this predicate means
+/// silent query gaps — one source skipping files another would serve.
+/// Generic over the unit so second-based (`u32`) and nanosecond-based
+/// (`u64`) candidates share it.
+pub fn range_overlaps<T: Ord + Copy>(window: &Range<T>, min: T, max: T) -> bool {
+    if window.start >= window.end {
+        return false;
+    }
+    max >= window.start && min < window.end
+}

@@ -208,18 +208,14 @@ impl Registry {
 }
 
 /// True iff the file's `[min, max]` second range shares any second with
-/// the query's half-open `[start, end)` range.
+/// the query's half-open `[start, end)` range — the shared
+/// [`file_registry::range_overlaps`] rule.
 ///
-/// Edge cases:
-/// - Empty SFSTs (`total_logs == 0`, `min == max == 0`) overlap with any
-///   query that includes second 0; in practice they're filtered earlier
-///   by retention.
-/// - A query with `start == end` is empty and matches no file.
+/// Edge case: empty SFSTs (`total_logs == 0`, `min == max == 0`)
+/// overlap with any query that includes second 0; in practice they're
+/// filtered earlier by retention.
 fn range_overlaps(summary: &Summary, q: &Range<u32>) -> bool {
-    if q.start >= q.end {
-        return false;
-    }
-    summary.max_timestamp_s >= q.start && summary.min_timestamp_s < q.end
+    file_registry::range_overlaps(q, summary.min_timestamp_s, summary.max_timestamp_s)
 }
 
 /// Read the `SUMR` chunk of an SFST file and decode the summary.

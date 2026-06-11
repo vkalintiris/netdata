@@ -263,14 +263,14 @@ impl Registry {
 }
 
 /// True iff the file's nanosecond range `[min, max]` (inclusive on both
-/// ends) overlaps the query's `[q_start_ns, q_end_ns)` (half-open).
-///
-/// An empty query (`start >= end`) matches no file.
+/// ends) overlaps the query's `[q_start_ns, q_end_ns)` (half-open) —
+/// the shared [`file_registry::range_overlaps`] rule in nanoseconds.
 fn range_overlaps_ns(file: &File, q_start_ns: u64, q_end_ns: u64) -> bool {
-    if q_start_ns >= q_end_ns {
-        return false;
-    }
-    file.max_timestamp_ns.0 >= q_start_ns && file.min_timestamp_ns.0 < q_end_ns
+    file_registry::range_overlaps(
+        &(q_start_ns..q_end_ns),
+        file.min_timestamp_ns.0,
+        file.max_timestamp_ns.0,
+    )
 }
 
 /// Read and parse the WAL file header.

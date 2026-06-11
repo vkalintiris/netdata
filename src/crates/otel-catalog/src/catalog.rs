@@ -127,14 +127,10 @@ impl Catalog {
 
 /// True iff the entry's `[min_timestamp_s, max_timestamp_s]` range
 /// (inclusive on both ends) shares any second with the query's
-/// `[start, end)` range (half-open).
-///
-/// An empty query (`start >= end`) matches no entry.
+/// `[start, end)` range (half-open) — the shared
+/// [`file_registry::range_overlaps`] rule.
 fn range_overlaps(entry: &CatalogEntry, q: &Range<u32>) -> bool {
-    if q.start >= q.end {
-        return false;
-    }
-    entry.max_timestamp_s >= q.start && entry.min_timestamp_s < q.end
+    file_registry::range_overlaps(q, entry.min_timestamp_s, entry.max_timestamp_s)
 }
 
 #[derive(Serialize, Deserialize)]

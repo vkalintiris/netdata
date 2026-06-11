@@ -341,7 +341,7 @@ fn file_overlaps(f: &File, q: &Query) -> bool {
     if f.min_timestamp_s == 0 && f.max_timestamp_s == 0 {
         return true;
     }
-    f.max_timestamp_s >= q.time_range.start && f.min_timestamp_s < q.time_range.end
+    q.overlaps(f.min_timestamp_s, f.max_timestamp_s)
 }
 
 /// Read and parse a catalog file from `path`, then return the entries
