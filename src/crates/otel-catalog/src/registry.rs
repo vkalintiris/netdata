@@ -229,7 +229,8 @@ impl Registry {
     ///
     /// Stale `*.catalog.tmp` files — left behind when a rotation was
     /// interrupted between writing the temp file and renaming it — are
-    /// deleted while walking, mirroring the SFST dir's temp sweep;
+    /// deleted while walking, mirroring the SFST dir's temp sweep
+    /// (`cleanup_temp_files` in otel-ledger's `Registry::recover`);
     /// nothing else ever reaps them.
     pub fn recover(&mut self) {
         let date_entries = match std::fs::read_dir(&self.base_dir) {

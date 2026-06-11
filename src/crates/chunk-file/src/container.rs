@@ -134,10 +134,12 @@ impl<'a> Container<'a> {
         // zero here is corruption (or a foreign file), not a valid
         // degenerate case.
         if num_chunks == 0 {
-            return Err(Error::Toc("container has no chunks".to_string()));
+            return Err(Error::Toc(
+                "container must have at least one chunk".to_string(),
+            ));
         }
         // Defense in depth: a corrupted header claiming u32::MAX chunks
-        // would otherwise demand a ~51 GiB TOC. Each TOC entry is 12
+        // would otherwise demand a ≈48 GiB TOC. Each TOC entry is 12
         // bytes, so the on-disk body bounds the legal value.
         let max_chunks = data.len().saturating_sub(HEADER_SIZE) / size_of::<TocEntry>();
         if num_chunks as usize > max_chunks {
@@ -491,7 +493,7 @@ mod tests {
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&[0u8; 12]); // end marker only
         match Container::open(&bytes, &MAGIC, VERSION).err() {
-            Some(Error::Toc(msg)) => assert!(msg.contains("no chunks"), "{msg}"),
+            Some(Error::Toc(msg)) => assert!(msg.contains("at least one chunk"), "{msg}"),
             other => panic!("expected Toc, got {other:?}"),
         }
     }
@@ -505,7 +507,7 @@ mod tests {
         let clean = build(SAMPLE);
         let toc_end = HEADER_SIZE + Toc::byte_size(SAMPLE.len());
         for i in HEADER_SIZE..toc_end {
-            for bit in [0x01u8, 0x80] {
+            for bit in (0..8).map(|b| 1u8 << b) {
                 let mut corrupt = clean.clone();
                 corrupt[i] ^= bit;
                 let Ok(c) = Container::open(&corrupt, &MAGIC, VERSION) else {

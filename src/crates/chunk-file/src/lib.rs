@@ -300,6 +300,13 @@ impl TocWriter {
 
     /// Declare a chunk to be written.  Chunks are written in the order
     /// they are planned.
+    ///
+    /// Duplicate ids get debug-only protection here — the container
+    /// writers guard at runtime before reaching this point
+    /// ([`container::ContainerBuilder::write_to`] /
+    /// [`container::StreamingWriter::write_chunk`]), and
+    /// [`Toc::parse`] rejects duplicates at read time. Direct raw-layer
+    /// producers are expected to have a fixed id set.
     pub fn plan(&mut self, id: ChunkId, size: u64) {
         debug_assert!(
             !self.chunks.iter().any(|c| c.id == id),
