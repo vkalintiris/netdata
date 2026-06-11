@@ -5,7 +5,7 @@
 //!
 //! # Pre-computed attribute hashes (`_nd_kv_hash`)
 //!
-//! The downstream indexer (`sfst::indexer`) builds an inverted bitmap index
+//! The downstream indexer (`sfst_indexer`) builds an inverted bitmap index
 //! keyed by `"key=value"` strings. Without optimization, it must format
 //! every attribute as `"key=value"`, compute `xxhash64` over it, and look
 //! the result up in a string interner — for every attribute on every log
@@ -15,7 +15,7 @@
 //! To avoid this, the **producer** (this module) pre-computes
 //! `xxhash64("key=value")` for every attribute while the typed proto
 //! values are still in hand, and stores the hashes as a synthetic
-//! `_nd_kv_hash` attribute. The **consumer** (`sfst::indexer`) then uses
+//! `_nd_kv_hash` attribute. The **consumer** (`sfst_indexer`) then uses
 //! these hashes for hash-only lookups in its string interner — on a cache
 //! hit (the hash is already interned), it skips string formatting entirely.
 //!

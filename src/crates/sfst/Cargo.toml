@@ -1,6 +1,6 @@
 [package]
 name = "sfst"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Container format for split FST indexes with a chunk-file TOC"

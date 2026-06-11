@@ -41,6 +41,11 @@ use bumpalo::Bump;
 use row_index::RowIndex;
 use sfst::{Metadata, Summary};
 
+/// Initial capacity of the per-build bump arena that backs the
+/// [`RowIndex`]'s interned strings and bitmaps. Sized so a typical
+/// rotation-sized WAL builds without an arena grow.
+const INDEX_ARENA_BYTES: usize = 32 * 1024 * 1024;
+
 /// Result of indexing a WAL file.
 ///
 /// The earliest log date is derivable from `summary.min_timestamp_s` — it
@@ -73,7 +78,7 @@ pub fn index_with_options(
     sfst_path: &Path,
     cardinality_threshold: u32,
 ) -> Result<IndexResult, IndexError> {
-    let arena = Bump::with_capacity(32 * 1024 * 1024);
+    let arena = Bump::with_capacity(INDEX_ARENA_BYTES);
     let mut row_index = RowIndex::new(&arena, cardinality_threshold);
 
     let stats = wal_otap::decode_file(wal_path, &mut row_index)?;
@@ -112,7 +117,7 @@ pub fn index_range(
     wal_path: &Path,
     range: wal::FrameRange,
 ) -> Result<(Summary, Vec<u8>), IndexError> {
-    let arena = Bump::with_capacity(32 * 1024 * 1024);
+    let arena = Bump::with_capacity(INDEX_ARENA_BYTES);
     let mut row_index = RowIndex::new(&arena, sfst::DEFAULT_CARDINALITY_THRESHOLD);
 
     let stats = wal_otap::decode_range(wal_path, range, &mut row_index)?;

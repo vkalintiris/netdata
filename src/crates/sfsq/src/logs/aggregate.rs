@@ -106,7 +106,7 @@ impl LogsShard {
     /// Maps the source itself — standalone entry point for callers
     /// holding only a candidate. [`run`](super::engine::run) instead maps
     /// every source once and goes through
-    /// [`evaluate_mapped`](LogsShard::evaluate_mapped) so the page pass
+    /// `evaluate_mapped` (crate-internal) so the page pass
     /// reads the same mapping.
     pub fn evaluate(candidate: &SfstCandidate, query: &LogsQuery) -> LogsShard {
         let Some(mapped) = mmap::map_source(&candidate.source) else {

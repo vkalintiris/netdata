@@ -5360,7 +5360,7 @@ dependencies = [
 
 [[package]]
 name = "sfst"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "bincode 2.0.1",
  "bridge",

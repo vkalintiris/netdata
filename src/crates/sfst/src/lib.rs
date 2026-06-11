@@ -164,6 +164,11 @@ pub fn high_field_id(index: u16) -> chunk_file::ChunkId {
 /// Encodes the index as a single ASCII digit in the trailing byte, e.g.
 /// `b"SB00"` through `b"SB07"`.
 pub fn stream_batch_id(index: u8) -> chunk_file::ChunkId {
+    // An out-of-range index would silently produce a non-digit trailing
+    // byte (`b'0' + 8` is `b'8'`, but `b'0' + 10` is `b':'`) — an id no
+    // reader looks for. The cap is a format invariant, so catch misuse
+    // in debug rather than at runtime cost.
+    debug_assert!(index < MAX_STREAM_BATCHES, "batch index out of range");
     [b'S', b'B', b'0', b'0' + index]
 }
 
