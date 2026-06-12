@@ -12,14 +12,20 @@ name = "certstream"
 path = "src/bin/certstream.rs"
 
 [[bin]]
+name = "github"
+path = "src/bin/github.rs"
+
+[[bin]]
 name = "jetstream"
 path = "src/bin/jetstream.rs"
 
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+flate2 = { workspace = true }
 futures = { workspace = true }
 opentelemetry-proto = { workspace = true }
+reqwest = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

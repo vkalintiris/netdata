@@ -2,13 +2,18 @@ use std::io::{BufRead, BufReader};
 use std::time::{Duration, Instant};
 
 use flate2::read::GzDecoder;
+use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+use crate::Source;
+use crate::otel::{SEVERITY_INFO, bool_val, json_to_any_value, kv, now_unix_nanos, str_val};
+
+pub struct Github;
+
 #[derive(Debug, Deserialize)]
 pub struct GitHubEvent {
-    #[allow(dead_code)]
     pub id: String,
     #[serde(rename = "type")]
     pub event_type: String,
@@ -34,7 +39,6 @@ pub struct Org {
     pub login: String,
 }
 
-/// Cursor tracking which hour to download next.
 struct HourCursor {
     year: i32,
     month: u32,
@@ -43,7 +47,6 @@ struct HourCursor {
 }
 
 impl HourCursor {
-    /// Create a cursor from a "YYYY-MM-DD-H" string.
     fn parse(s: &str) -> anyhow::Result<Self> {
         let parts: Vec<&str> = s.split('-').collect();
         if parts.len() != 4 {
@@ -57,20 +60,16 @@ impl HourCursor {
         })
     }
 
-    /// Create a cursor for the previous UTC hour.
     fn previous_hour() -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
         let secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs();
-        // Go back one hour
-        let secs = secs.saturating_sub(3600);
+            .as_secs()
+            .saturating_sub(3600);
         let days = secs / 86400;
         let day_secs = secs % 86400;
         let hour = (day_secs / 3600) as u32;
-
-        // Convert days since epoch to civil date
         let (y, m, d) = days_to_civil(days as i64);
         Self {
             year: y as i32,
@@ -94,7 +93,6 @@ impl HourCursor {
         )
     }
 
-    /// Advance to the next hour.
     fn advance(&mut self) {
         self.hour += 1;
         if self.hour >= 24 {
@@ -128,7 +126,6 @@ fn days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
-/// Convert days since Unix epoch to (year, month, day).
 fn days_to_civil(days: i64) -> (i64, u64, u64) {
     let z = days + 719468;
     let era = z.div_euclid(146097);
@@ -143,7 +140,83 @@ fn days_to_civil(days: i64) -> (i64, u64, u64) {
     (y, m, d)
 }
 
+const PROMOTED_ROOT_KEYS: &[&str] = &["id", "type", "public", "created_at"];
+
+fn strip_promoted_keys(raw_json: &serde_json::Value) -> serde_json::Value {
+    let mut body = raw_json.clone();
+    if let Some(obj) = body.as_object_mut() {
+        for key in PROMOTED_ROOT_KEYS {
+            obj.remove(*key);
+        }
+        if let Some(actor) = obj.get_mut("actor").and_then(|a| a.as_object_mut()) {
+            actor.remove("login");
+        }
+        if let Some(repo) = obj.get_mut("repo").and_then(|r| r.as_object_mut()) {
+            repo.remove("name");
+        }
+        if let Some(org) = obj.get_mut("org").and_then(|o| o.as_object_mut()) {
+            org.remove("login");
+        }
+    }
+    body
+}
+
+fn parse_iso8601_to_nanos(dt: &str) -> u64 {
+    parse_iso8601_inner(dt).unwrap_or_else(now_unix_nanos)
+}
+
+fn parse_iso8601_inner(dt: &str) -> Option<u64> {
+    let dt = dt.trim();
+    let (date_part, time_part) = dt.split_once('T')?;
+    let time_part = time_part.strip_suffix('Z').unwrap_or(time_part);
+
+    let mut date_iter = date_part.split('-');
+    let year: i64 = date_iter.next()?.parse().ok()?;
+    let month: u64 = date_iter.next()?.parse().ok()?;
+    let day: u64 = date_iter.next()?.parse().ok()?;
+
+    let (time_hms, frac_str) = match time_part.split_once('.') {
+        Some((hms, frac)) => (hms, Some(frac)),
+        None => (time_part, None),
+    };
+
+    let mut time_iter = time_hms.split(':');
+    let hour: u64 = time_iter.next()?.parse().ok()?;
+    let min: u64 = time_iter.next()?.parse().ok()?;
+    let sec: u64 = time_iter.next()?.parse().ok()?;
+
+    let frac_nanos: u64 = if let Some(frac) = frac_str {
+        let mut s = frac.to_string();
+        s.truncate(9);
+        while s.len() < 9 {
+            s.push('0');
+        }
+        s.parse().unwrap_or(0)
+    } else {
+        0
+    };
+
+    let days = days_from_civil(year, month as i64, day as i64)?;
+    let total_secs = days * 86400 + hour * 3600 + min * 60 + sec;
+    Some(total_secs * 1_000_000_000 + frac_nanos)
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> Option<u64> {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400) as u64;
+    let doy = {
+        let m = if month > 2 { month - 3 } else { month + 9 };
+        (153 * m as u64 + 2) / 5 + day as u64 - 1
+    };
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe as i64 - 719468;
+    if days < 0 { None } else { Some(days as u64) }
+}
+
 /// Download, decompress, parse, and replay events from GH Archive.
+/// Loops forever advancing hour-by-hour. Handles download failures with
+/// per-error-type retries (404 → 60s, other → 30s).
 pub async fn replay_loop(
     start: Option<String>,
     rate: u64,
@@ -245,7 +318,6 @@ async fn download_and_parse(
 
     info!(compressed_bytes = compressed.len(), "Downloaded archive");
 
-    // Decompress and parse in a blocking task to avoid starving the async runtime.
     let events = tokio::task::spawn_blocking(move || {
         let decoder = GzDecoder::new(&compressed[..]);
         let reader = BufReader::new(decoder);
@@ -283,7 +355,6 @@ async fn download_and_parse(
             events.push((event, raw_json));
         }
 
-        // Sort by created_at (should already be roughly ordered).
         events.sort_by(|(a, _), (b, _)| a.created_at.cmp(&b.created_at));
 
         events
@@ -292,4 +363,41 @@ async fn download_and_parse(
     .map_err(|e| DownloadError::Other(e.into()))?;
 
     Ok(events)
+}
+
+impl Source for Github {
+    const SERVICE_NAME: &'static str = "github-gharchive";
+    const SCOPE_NAME: &'static str = "github-otel-bridge";
+    const SCOPE_VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+    type Event = GitHubEvent;
+
+    fn event_to_log_record(event: &GitHubEvent, raw_json: &serde_json::Value) -> LogRecord {
+        let now_ns = now_unix_nanos();
+        let original_ns = parse_iso8601_to_nanos(&event.created_at);
+
+        let mut attributes = vec![
+            kv("github.event.type", str_val(&event.event_type)),
+            kv("github.actor", str_val(&event.actor.login)),
+            kv("github.repo", str_val(&event.repo.name)),
+            kv("github.public", bool_val(event.public)),
+        ];
+
+        if let Some(org) = &event.org {
+            attributes.push(kv("github.org", str_val(&org.login)));
+        }
+
+        let body = strip_promoted_keys(raw_json);
+
+        LogRecord {
+            time_unix_nano: now_ns,
+            observed_time_unix_nano: original_ns,
+            severity_number: SEVERITY_INFO,
+            severity_text: "INFO".to_string(),
+            body: Some(json_to_any_value(&body)),
+            attributes,
+            event_name: event.event_type.clone(),
+            ..Default::default()
+        }
+    }
 }

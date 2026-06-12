@@ -8,6 +8,7 @@ Streams real-world log events to otel-plugin via OTLP gRPC on `:4317`.
 |---|---|---|
 | `certstream` | Certificate Transparency Log (WebSocket) | Live stream |
 | `jetstream` | Bluesky Jetstream firehose (WebSocket) | Live stream |
+| `github` | GH Archive (HTTP + gzip) | Historical replay |
 
 ### Common options
 
@@ -64,3 +65,25 @@ cargo run --release -p otel-streams --bin jetstream \
 ```
 
 Source-specific: `--jetstream-url <URL>` [default: `wss://jetstream2.us-east.bsky.network/subscribe`], `--collections <LIST>`.
+
+---
+
+## github
+
+Replays GitHub event archives from [GH Archive](https://www.gharchive.org/) as
+OTel logs. Downloads hourly `.json.gz` files and replays them at a configurable
+rate. Defaults to the previous UTC hour and advances forward indefinitely.
+
+### Run
+
+```bash
+cargo run --release -p otel-streams --bin github
+```
+
+### Specific hour
+
+```bash
+cargo run --release -p otel-streams --bin github -- --start 2024-06-01-12
+```
+
+Source-specific: `--start <YYYY-MM-DD-H>` [default: previous UTC hour], `--rate <N>` [default: 100, 0 = unlimited].

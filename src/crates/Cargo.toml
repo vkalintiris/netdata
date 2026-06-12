@@ -35,7 +35,6 @@ members = [
 
     # Stress test tools
     "otel-streams",
-    "github-otel-bridge",
 
     # IPC / RPC
     "ferryboat",

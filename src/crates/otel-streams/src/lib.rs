@@ -3,6 +3,7 @@ use serde::Deserialize;
 
 pub mod args;
 pub mod certstream;
+pub mod github;
 pub mod jetstream;
 pub mod otel;
 pub mod runner;
