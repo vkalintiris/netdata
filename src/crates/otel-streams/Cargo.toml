@@ -1,5 +1,5 @@
 [package]
-name = "wiki-otel-bridge"
+name = "otel-streams"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,20 +8,24 @@ rust-version.workspace = true
 workspace = true
 
 [[bin]]
-name = "wiki-otel-bridge"
-path = "src/main.rs"
+name = "certstream"
+path = "src/bin/certstream.rs"
+
+[[bin]]
+name = "jetstream"
+path = "src/bin/jetstream.rs"
 
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
 opentelemetry-proto = { workspace = true }
-# Pinned to 0.12: reqwest-eventsource (below) has no reqwest-0.13-compatible release.
-reqwest = { version = "0.12", features = ["stream"] }
-reqwest-eventsource = { workspace = true }
+rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+url = { workspace = true }

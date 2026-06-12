@@ -34,11 +34,8 @@ members = [
     "flatten-otel",
 
     # Stress test tools
-    "jetstream-otel-bridge",
-    "certstream-otel-bridge",
-    "wiki-otel-bridge",
+    "otel-streams",
     "github-otel-bridge",
-    "tlc-otel-bridge",
 
     # IPC / RPC
     "ferryboat",
@@ -254,8 +251,7 @@ fsst-rs = "0.5"
 futures-util = { version = "0.3", features = ["sink"] }
 flate2 = "1"
 reqwest = { version = "0.13.2", features = ["stream"] }
-# wiki-otel-bridge pins its own reqwest 0.12 (reqwest-eventsource has no 0.13-compatible release)
-reqwest-eventsource = "0.6"
+
 
 [profile.dev]
 opt-level = 1
