@@ -56,11 +56,6 @@ impl Sender {
             );
             match channel_endpoint.connect().await {
                 Ok(ch) => break ch,
-                Err(e) if attempt == 1 => {
-                    return Err(anyhow::anyhow!(
-                        "OTel endpoint {endpoint} not reachable: {e}"
-                    ));
-                }
                 Err(e) => {
                     info!(
                         "OTel endpoint not ready: {e}, retrying in {}s...",

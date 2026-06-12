@@ -10,7 +10,7 @@ use tracing::{error, info, warn};
 use crate::Source;
 use crate::otel::{SEVERITY_INFO, bool_val, json_to_any_value, kv, now_unix_nanos, str_val};
 
-pub struct Github;
+pub struct GitHub;
 
 #[derive(Debug, Deserialize)]
 pub struct GitHubEvent {
@@ -221,13 +221,12 @@ pub async fn replay_loop(
     start: Option<String>,
     rate: u64,
     tx: mpsc::Sender<(GitHubEvent, serde_json::Value)>,
-) {
+) -> anyhow::Result<()> {
     let mut cursor = match start {
         Some(s) => match HourCursor::parse(&s) {
             Ok(c) => c,
             Err(e) => {
-                error!("Failed to parse --start: {e}");
-                return;
+                return Err(e);
             }
         },
         None => HourCursor::previous_hour(),
@@ -275,8 +274,7 @@ pub async fn replay_loop(
             }
 
             if tx.send((event, raw_json)).await.is_err() {
-                warn!("Mapper channel closed, stopping replay loop");
-                return;
+                return Ok(());
             }
         }
 
@@ -365,7 +363,7 @@ async fn download_and_parse(
     Ok(events)
 }
 
-impl Source for Github {
+impl Source for GitHub {
     const SERVICE_NAME: &'static str = "github-gharchive";
     const SCOPE_NAME: &'static str = "github-otel-bridge";
     const SCOPE_VERSION: &'static str = env!("CARGO_PKG_VERSION");

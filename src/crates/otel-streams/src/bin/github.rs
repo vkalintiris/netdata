@@ -1,12 +1,7 @@
-use std::time::Duration;
-
 use clap::Parser;
-use tokio::sync::mpsc;
 
-use otel_streams::Source;
 use otel_streams::args;
-use otel_streams::github::{self, Github};
-use otel_streams::sender::{OtelConfig, Sender};
+use otel_streams::github::{self, GitHub};
 
 #[derive(Parser)]
 #[command(name = "github")]
@@ -29,33 +24,9 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     args::init_tls_and_logging(&args.common.log_level);
 
-    let (record_tx, record_rx) = mpsc::channel(1000);
-
-    let flush_interval = Duration::from_millis(args.common.flush_interval_ms);
-    let config = OtelConfig {
-        endpoint: args.common.otel_endpoint,
-        batch_size: args.common.batch_size,
-        flush_interval,
-        tenant_id: args.common.tenant_id,
-        service_name: Github::SERVICE_NAME,
-        scope_name: Github::SCOPE_NAME,
-        scope_version: Github::SCOPE_VERSION,
-    };
-    let mut sender = Sender::new(config, record_rx).await?;
-    let _sender_handle = tokio::spawn(async move { sender.run().await });
-
-    let (event_tx, mut event_rx) = mpsc::channel(1000);
-
-    let _mapper_handle = tokio::spawn(async move {
-        while let Some((event, raw_json)) = event_rx.recv().await {
-            let record = Github::event_to_log_record(&event, &raw_json);
-            if record_tx.send(record).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    github::replay_loop(args.start, args.rate, event_tx).await;
-
-    Ok(())
+    otel_streams::runner::run::<GitHub, _, _>("GH Archive", &args.common, move |tx| {
+        let start = args.start.clone();
+        async move { github::replay_loop(start, args.rate, tx).await }
+    })
+    .await
 }
