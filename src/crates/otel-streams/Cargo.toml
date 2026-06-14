@@ -16,6 +16,10 @@ name = "github"
 path = "src/bin/github.rs"
 
 [[bin]]
+name = "synth"
+path = "src/bin/synth.rs"
+
+[[bin]]
 name = "jetstream"
 path = "src/bin/jetstream.rs"
 

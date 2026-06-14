@@ -8,6 +8,7 @@ pub mod jetstream;
 pub mod otel;
 pub mod runner;
 pub mod sender;
+pub mod synth;
 pub mod ws;
 
 pub trait Source: Send + 'static {
