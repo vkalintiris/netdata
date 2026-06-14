@@ -11,6 +11,7 @@ this index in the same change that adds, renames, or removes a spec.
 | Spec | Scope | Main consumers |
 |---|---|---|
 | [go-v2-host-scope.md](go-v2-host-scope.md) | Go framework V2 host-scope and vnode metric routing contract. | Go V2 collector work, `metrix`, `jobruntime`, `chartengine`, go.d collector docs and skills. |
+| [mcp-build-run.md](mcp-build-run.md) | MCP build/run tool contracts: two-profile model, single build dir per worktree, dedicated-tree ownership, install-path/lock conventions, job/run lifecycle. | `packaging/tools/automation/mcp/` server work. |
 | [prometheus-profiles.md](prometheus-profiles.md) | go.d prometheus chart-profile format, selection modes, app-segment resolution, and chart-context assembly. | prometheus collector profile work, chart-context/UI app-section contract, profile authoring. |
 | [query-planner-tier-selection.md](query-planner-tier-selection.md) | Automatic storage-tier selection for metric query planning. | Query planner code, API data paths, MCP metric query behavior. |
 | [sensitive-data-discipline.md](sensitive-data-discipline.md) | Sensitive-data rules for committed artifacts, scripts, skills, specs, SOWs, commit messages, and PR text. | All repository work, SOW audits, private/public skills, token-safe scripts. |
