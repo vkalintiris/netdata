@@ -29,8 +29,10 @@ from ._common import get_runs
 
 _FUNCTION = "otel-logs"
 
-# Bearer minting (loopback /api/v3/info + a Cloud round-trip) gets its own budget,
-# capped below the caller's `timeout` so it can't starve the function call.
+# Per-call ceiling for bearer minting's two HTTP hops (loopback /api/v3/info +
+# the Cloud round-trip), capped below the caller's `timeout` so a slow mint can't
+# consume the whole budget meant for the function call. Not a floor: a very small
+# `timeout` still yields a small mint budget that may be too tight for the hops.
 _MINT_TIMEOUT = 20
 
 _AgentId = Annotated[str, Field(description="A ready agent (from netdata_agent_declare + netdata_run_start).")]
@@ -135,8 +137,7 @@ def register(mcp: FastMCP) -> None:
         # call anonymously and let the 412 hint below explain the gate.
         auth: str | None = None
         if bearer.cloud_token():
-            # Minting has its own budget so it can't consume the whole `timeout`
-            # and starve the function call (and so timeout=1 still allows a mint).
+            # Cap the mint budget below `timeout` so it can't starve the function call.
             auth, berr = await bearer.resolve_bearer(run.port, timeout=min(timeout, _MINT_TIMEOUT))
             if auth is None:
                 return OtelLogsResult(

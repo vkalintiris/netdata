@@ -37,10 +37,12 @@ def register(mcp: FastMCP) -> None:
         name="netdata_agent_otel_config",
         description=(
             "Set the otel-plugin configuration for a declared agent, applied on the "
-            "next netdata_run_start (or restart=true). Only the fields you pass are "
-            "set; the rest keep the plugin defaults. Storage dirs are always isolated "
-            "under the agent's run dir. Use the rotation/retention knobs with small "
-            "values to force multi-file / eviction edge cases over a known corpus."
+            "next netdata_run_start (or restart=true). This REPLACES any prior otel "
+            "config (it does not merge): each call, pass every knob you want set — an "
+            "omitted knob reverts to the plugin default, not its prior value. Storage "
+            "dirs are always isolated under the agent's run dir. Use the rotation/"
+            "retention knobs with small values to force multi-file / eviction edge "
+            "cases over a known corpus."
         ),
     )
     async def netdata_agent_otel_config(

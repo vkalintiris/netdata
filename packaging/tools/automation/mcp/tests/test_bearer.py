@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from netdata_mcp import bearer
 
 SENTINEL = "sk-SENTINEL-cloud-token-zzz"
@@ -7,6 +9,15 @@ SENTINEL = "sk-SENTINEL-cloud-token-zzz"
 
 def setup_function(_fn):
     bearer._CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_cloud_env(monkeypatch):
+    # The suite runs in dev shells that may export these (the tool documents
+    # NETDATA_CLOUD_TOKEN); clear them so cloud_token()/env defaults are tested
+    # against a known-empty environment, not the developer's shell.
+    monkeypatch.delenv("NETDATA_CLOUD_TOKEN", raising=False)
+    monkeypatch.delenv("NETDATA_CLOUD_HOSTNAME", raising=False)
 
 
 # ── env reading ───────────────────────────────────────────────────────────────
@@ -33,6 +44,15 @@ def test_usable_until_milliseconds_normalized():
 def test_usable_until_zero_or_invalid_uses_fallback_window():
     assert bearer._usable_until(0, now=100) == 100 + bearer._FALLBACK_TTL_S
     assert bearer._usable_until("nope", now=100) == 100 + bearer._FALLBACK_TTL_S
+
+
+def test_usable_until_short_ttl_floors_above_now_not_below():
+    # A token expiring sooner than the refresh buffer must still cache briefly
+    # (>= now) rather than landing in the past and re-minting every call — but
+    # never past the actual expiry.
+    now = 1_000_000.0
+    horizon = bearer._usable_until(int(now) + 120, now=now)  # 2-min TTL
+    assert now < horizon <= now + 120
 
 
 # ── identity extraction ────────────────────────────────────────────────────────
@@ -110,6 +130,13 @@ def test_resolve_bearer_without_cloud_token_errs():
 def test_scrub_masks_secrets():
     out = bearer._scrub(f"oops {SENTINEL} and BEARER-xyz", SENTINEL, "BEARER-xyz")
     assert SENTINEL not in out and "BEARER-xyz" not in out
+
+
+def test_scrub_handles_overlapping_secrets():
+    # Longest-first ordering: the longer secret must not be left half-masked when
+    # a shorter one is its prefix.
+    out = bearer._scrub("leak abcxyz here", "abc", "abcxyz")
+    assert "abcxyz" not in out and "abc" not in out and "xyz" not in out
 
 
 def test_mint_sends_descriptive_user_agent(monkeypatch):

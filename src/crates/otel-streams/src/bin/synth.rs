@@ -43,6 +43,9 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if args.field_cardinality == 0 {
+        anyhow::bail!("--field-cardinality must be >= 1");
+    }
     args::init_tls_and_logging(&args.common.log_level);
 
     let spread = (args.count as u64).saturating_mul(args.spacing_nanos);

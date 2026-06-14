@@ -78,6 +78,13 @@ def test_both_profiles_build_the_otel_plugin():
         assert profiles.PROFILES[name]["ENABLE_PLUGIN_OTEL"] == "On"
 
 
+def test_no_dead_signal_viewer_flag():
+    # ENABLE_PLUGIN_OTEL_SIGNAL_VIEWER is no longer a CMake option; it must not
+    # be reintroduced into either profile (would draw an unused-variable warning).
+    for name in ("debug", "optimized"):
+        assert "ENABLE_PLUGIN_OTEL_SIGNAL_VIEWER" not in profiles.PROFILES[name]
+
+
 def test_profiles_differ_only_by_build_type_and_checks():
     assert profiles.PROFILES["debug"]["CMAKE_BUILD_TYPE"] == "Debug"
     assert profiles.PROFILES["optimized"]["CMAKE_BUILD_TYPE"] == "RelWithDebInfo"

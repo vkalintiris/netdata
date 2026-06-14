@@ -51,6 +51,9 @@ _USER_AGENT = "netdata-build-mcp/1.0"
 # window from the mint time — the agent issues ~3h bearers, so 2h leaves margin.
 _REFRESH_BUFFER_S = 3600
 _FALLBACK_TTL_S = 7200
+# Floor so a short-lived token (real expiry < the refresh buffer) still caches
+# briefly instead of re-minting on every call; never cached past actual expiry.
+_MIN_CACHE_S = 60
 
 # Loopback-only opener for the agent /api/v3/info probe: never via a proxy.
 _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -85,9 +88,9 @@ _LOCK = asyncio.Lock()
 def _scrub(text: str, *secrets: str) -> str:
     """Mask any secret substring so it cannot leak through an error string."""
     out = text
-    for s in secrets:
-        if s:
-            out = out.replace(s, "<REDACTED>")
+    # Longest-first so a secret that contains another isn't left half-masked.
+    for s in sorted((s for s in secrets if s), key=len, reverse=True):
+        out = out.replace(s, "<REDACTED>")
     return out
 
 
@@ -101,7 +104,9 @@ def _usable_until(expiration: object, now: float) -> float:
         return now + _FALLBACK_TTL_S
     if exp > 1_000_000_000_000:  # milliseconds
         exp //= 1000
-    return exp - _REFRESH_BUFFER_S
+    # Refresh an hour before expiry, but cache at least _MIN_CACHE_S so a
+    # short-lived token doesn't re-mint on every call — and never past expiry.
+    return min(float(exp), max(exp - _REFRESH_BUFFER_S, now + _MIN_CACHE_S))
 
 
 def _extract_identity(data: object) -> tuple[tuple[str, str, str] | None, str | None]:
