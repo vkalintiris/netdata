@@ -32,7 +32,7 @@ from mcp.server.fastmcp import FastMCP
 from .agents import AgentRegistry
 from .jobs import JobRegistry
 from .run import RunRegistry
-from .tools import agent_mcp, agents, build, configure, job_control, otel_config, run
+from .tools import agent_mcp, agents, build, configure, job_control, otel_config, otel_logs, run
 
 _INSTRUCTIONS = (
     "Configure, build, and run the Netdata Agent from a local worktree. "
@@ -86,6 +86,7 @@ def build_server() -> FastMCP:
     agents.register(mcp)
     run.register(mcp)
     otel_config.register(mcp)
+    otel_logs.register(mcp)
     agent_mcp.register(mcp)
     return mcp
 
