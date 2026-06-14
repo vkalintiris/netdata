@@ -13,7 +13,6 @@ members = [
     "journal-log-writer",
     "journal-engine",
     "journal-registry",
-    "sd-compat",
 
     # Netdata plugin workspace members
     "netdata-plugin/error",
@@ -204,7 +203,6 @@ treight = { path = "treight" }
 sfst = { path = "sfst" }
 sfst-indexer = { path = "sfst-indexer" }
 sfsq = { path = "sfsq" }
-sd-compat = { path = "sd-compat" }
 
 # Netdata plugin crates
 netdata-plugin-error = { path = "netdata-plugin/error" }
