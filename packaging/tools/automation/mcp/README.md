@@ -111,6 +111,25 @@ netdata_agent_query_metrics(agent_id="agent", metric="system.cpu", after=-60, be
   `scripts/snapshot_agent_tools.py`); a pinned surface, refreshed on demand.
 - No auth/claim needed — localhost `/mcp` is open; forwarding is per-call.
 
+## OTel logs: configure, feed, query
+
+A dedicated surface for iterating on the OTel-logs path against a ready agent:
+
+| Tool | What |
+|------|------|
+| `netdata_agent_otel_config(agent_id, …)` | Set otel-plugin knobs (WAL rotation, index retention, endpoint) applied on the next start. REPLACES prior config. |
+| `netdata_agent_otel_push(agent_id, count, …)` | One-shot: send a deterministic synthetic OTLP corpus (`otel-streams synth`) to the agent. |
+| `netdata_agent_otel_stream_{start,status,stop}(…)` | Run a live source (`source=certstream\|jetstream\|github`) as a start/status/stop daemon. |
+| `netdata_agent_otel_logs(agent_id, …)` | Query the `otel-logs` function (typed params; mints a Cloud bearer when `NETDATA_CLOUD_TOKEN` is set). |
+
+- **push/stream** shell out to `cargo run -p otel-streams --bin <name>` (built on
+  demand from `<worktree>/src/crates`); they target the agent's local OTLP
+  receiver, so no Cloud token is needed.
+- **otel_logs** is access-gated (`SIGNED_ID`): on a claimed agent with a Cloud
+  token it auto-mints a bearer; otherwise it returns 412 with a hint.
+- Typical loop: `otel_config` (tiny thresholds) → `otel_push` → `otel_logs` to
+  assert rotation/retention over a known corpus.
+
 ## Cloud claiming
 
 When `NETDATA_CLAIM_TOKEN` is set in the **server's environment** (see `.env` /

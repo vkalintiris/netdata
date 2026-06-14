@@ -109,8 +109,9 @@ async plumbing) are intentionally not restated here.
 
 ## OTel-logs automation surface
 
-This subsystem exists to iterate on the **OTel-logs** path end to end. Three
-pieces, plus one hard constraint a future reader cannot infer from the code:
+This subsystem exists to iterate on the **OTel-logs** path end to end —
+configure → feed (synthetic or live) → query — plus one hard constraint a future
+reader cannot infer from the code:
 
 - **Run-time otel config (`netdata_agent_otel_config`).** Sets typed otel knobs
   (OTLP endpoint, WAL `max_file_size`/`max_log_entries`/`max_file_duration`,
@@ -121,13 +122,26 @@ pieces, plus one hard constraint a future reader cannot infer from the code:
   rest take plugin defaults. The OTLP endpoint is an auto-assigned free loopback
   port surfaced as `RunInfo.otlp_endpoint`. Purpose: force storage edge cases
   (rotation/retention) with tiny thresholds + small data.
-- **Synthetic push (`otel-streams` `synth` bin).** Generates a deterministic
-  batch of OTLP `LogRecord`s (monotonic timestamps; cycled severity as low-card
-  `level`; `host`/`code` over `--field-cardinality` as mid-card; unique `seq` as
-  high-card) and sends them through the **same production `Sender` /
-  `build_export_request`** the live sources use. Reproducible by params (no RNG,
-  no clock). This is the input generator for verification; the MCP wrapper that
-  drives it is deferred with the "otel-streams as a tool" follow-up.
+- **Synthetic push (`netdata_agent_otel_push` → `otel-streams` `synth`).**
+  Generates a deterministic batch of OTLP `LogRecord`s (monotonic timestamps;
+  cycled severity as low-card `level`; `host`/`code` over `--field-cardinality`
+  as mid-card; unique `seq` as high-card) and sends them through the **same
+  production `Sender` / `build_export_request`** the live sources use.
+  Reproducible by params (no RNG, no clock). The MCP tool is **one-shot,
+  synchronous**: it resolves the agent's `otlp_endpoint`, runs synth to
+  completion, and returns records-sent / success / log tail.
+- **Live streams (`netdata_agent_otel_stream_{start,status,stop}`).** The
+  real-world sources (certstream/jetstream/github) are daemons, so they get a
+  start/status/stop lifecycle (one **source-enum** trio, not a tool per source)
+  backed by a `StreamRegistry` reusing `runner.py`'s process-group spawn +
+  SIGTERM→SIGKILL teardown (mirrors `RunRegistry`; torn down on server
+  shutdown). Source-specific params (`url`/`collections`/`start`/`rate`) are
+  rejected when they don't match the chosen `source`.
+- **Invocation (push + streams).** Both shell out to `cargo run -p otel-streams
+  --bin <name>` from `<worktree>/src/crates` — otel-streams is **not** built by
+  the agent's cmake build, so cargo builds it on first call and caches it. No
+  Cloud token/bearer here: the push targets the agent's local OTLP receiver, not
+  the access-gated function, so no secret surface (`tenant_id` is an identifier).
 - **Dedicated query tool (`netdata_agent_otel_logs`).** POSTs a typed
   `OtelLogsRequest` straight to `/api/v3/function?function=otel-logs` —
   deliberately **not** via the `/mcp` `execute_function` wrapper, so every wire
