@@ -47,10 +47,6 @@ members = [
     "sfst-indexer",
     "sfsq",
 
-    # LogQL
-    "nlogql",
-    "nlogql-eval",
-
     # Netdata NetFlow workspace members
     "netflow-plugin",
 
