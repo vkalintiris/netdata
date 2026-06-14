@@ -9,16 +9,20 @@ It mutates the USER's config, never the repo. Because global config carries an
 absolute path to this checkout, re-run it after switching your primary worktree.
 
 Launched agents are auto-claimed to Netdata Cloud, so this wires the claim
-credentials into the client's per-server env. The token is REQUIRED: pass
---claim-token or set NETDATA_CLAIM_TOKEN (rooms/url optional). The token is
-written into the user-global client config (and briefly on the `claude` argv) —
-that is the intended cost of pinning it per-server.
+credentials into the client's per-server env. It also wires a Netdata Cloud REST
+token (NETDATA_CLOUD_TOKEN), which the server uses to mint per-agent bearers for
+access-gated functions (e.g. otel-logs). Both tokens are REQUIRED: pass
+--claim-token / --cloud-token or set NETDATA_CLAIM_TOKEN / NETDATA_CLOUD_TOKEN
+(rooms/url and cloud-hostname optional). The tokens are written into the
+user-global client config (and briefly on the `claude` argv) — that is the
+intended cost of pinning them per-server.
 
 stdlib-only on purpose: it must run on a fresh clone before `uv sync`.
 
 Usage:
     python3 setup_mcp.py [--tool opencode|claude|all] [--source-dir <repo-root>]
         [--claim-token T] [--claim-rooms R] [--claim-url U]
+        [--cloud-token T] [--cloud-hostname H]
 Or via the build:
     ninja setup-mcp
 """
@@ -48,8 +52,8 @@ def _action(cmd_desc: str) -> None:
 
 
 def _redact(text: str) -> str:
-    """Mask NETDATA_CLAIM_*=<value> so a forwarded CLI error can't leak the token."""
-    return re.sub(r"(NETDATA_CLAIM_[A-Z]+=)\S+", r"\1***", text)
+    """Mask NETDATA_{CLAIM,CLOUD}_*=<value> so a forwarded CLI error can't leak a token."""
+    return re.sub(r"(NETDATA_(?:CLAIM|CLOUD)_[A-Z]+=)\S+", r"\1***", text)
 
 
 def tool_dir(source_dir: Path) -> Path:
@@ -93,32 +97,58 @@ def resolve_claim_creds(args: argparse.Namespace, environ: dict) -> dict[str, st
     return creds
 
 
+# ── cloud credentials ─────────────────────────────────────────────────────────
+def resolve_cloud_creds(args: argparse.Namespace, environ: dict) -> dict[str, str]:
+    """Resolve NETDATA_CLOUD_* for injection: CLI flag wins, else the env var.
+
+    The Cloud REST token is REQUIRED (B1): the server needs it to mint per-agent
+    bearers for access-gated functions like otel-logs. Hostname is optional and
+    omitted when unset (the server defaults to app.netdata.cloud). Blank counts
+    as unset.
+    """
+    def pick(cli_val: str | None, env_key: str) -> str:
+        return ((cli_val if cli_val is not None else environ.get(env_key)) or "").strip()
+
+    cloud_token = pick(args.cloud_token, "NETDATA_CLOUD_TOKEN")
+    if not cloud_token:
+        raise SystemExit(
+            "cloud token required: pass --cloud-token or set NETDATA_CLOUD_TOKEN. "
+            "The server uses it to mint per-agent bearers for access-gated functions."
+        )
+    creds = {"NETDATA_CLOUD_TOKEN": cloud_token}
+    hostname = pick(args.cloud_hostname, "NETDATA_CLOUD_HOSTNAME")
+    if hostname:
+        creds["NETDATA_CLOUD_HOSTNAME"] = hostname
+    return creds
+
+
 # ── opencode ────────────────────────────────────────────────────────────────
-def opencode_entry(td: Path, claim: dict[str, str]) -> dict:
+def opencode_entry(td: Path, inject_env: dict[str, str]) -> dict:
     """The opencode `mcp.<name>` entry: a local stdio server rooted at this checkout.
 
-    Claim creds go in `environment` (opencode's per-server env map) so the launched
-    netdata claims to Cloud; they are not on the command line.
+    Claim + cloud creds go in `environment` (opencode's per-server env map) so the
+    launched server claims to Cloud and can mint bearers; they are not on the
+    command line.
     """
     return {
         "type": "local",
         "command": ["uv", "run", "netdata-build-mcp", "--transport", "stdio"],
         "cwd": str(td),
-        "environment": dict(claim),
+        "environment": dict(inject_env),
         "enabled": True,
     }
 
 
-def merge_opencode_config(config: dict, td: Path, claim: dict[str, str]) -> dict:
+def merge_opencode_config(config: dict, td: Path, inject_env: dict[str, str]) -> dict:
     """Return `config` with only `mcp.netdata-build` set; every other key untouched."""
     out = dict(config)
     mcp = dict(out.get("mcp") or {})
-    mcp[SERVER_NAME] = opencode_entry(td, claim)
+    mcp[SERVER_NAME] = opencode_entry(td, inject_env)
     out["mcp"] = mcp
     return out
 
 
-def setup_opencode(td: Path, claim: dict[str, str], cfg_path: Path = OPENCODE_CONFIG) -> None:
+def setup_opencode(td: Path, inject_env: dict[str, str], cfg_path: Path = OPENCODE_CONFIG) -> None:
     if cfg_path.exists():
         try:
             config = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -129,7 +159,7 @@ def setup_opencode(td: Path, claim: dict[str, str], cfg_path: Path = OPENCODE_CO
             ) from exc
     else:
         config = {}
-    updated = merge_opencode_config(config, td, claim)
+    updated = merge_opencode_config(config, td, inject_env)
     if updated == config:
         _say(f"opencode: '{SERVER_NAME}' already current in {cfg_path}")
         return
@@ -140,25 +170,26 @@ def setup_opencode(td: Path, claim: dict[str, str], cfg_path: Path = OPENCODE_CO
 
 
 # ── Claude Code ─────────────────────────────────────────────────────────────
-def claude_command(td: Path, claim: dict[str, str]) -> list[str]:
+def claude_command(td: Path, inject_env: dict[str, str]) -> list[str]:
     """`claude mcp add` argv: user scope, stdio, rooted at this checkout via --directory.
 
-    Claim creds are passed as `--env KEY=VALUE` (before the `--` server separator).
-    NOTE: these values are on the `claude` argv, so they are briefly visible in `ps`
-    while this command runs — the accepted cost of pinning creds per-server.
+    Claim + cloud creds are passed as `--env KEY=VALUE` (before the `--` server
+    separator). NOTE: these values are on the `claude` argv, so they are briefly
+    visible in `ps` while this command runs — the accepted cost of pinning creds
+    per-server.
     """
     # `claude mcp add --env <env...>` is variadic, so it greedily eats the next
     # positional. Put the server name BEFORE a single --env, and terminate the
     # KEY=val list with `--` (which also separates the server command).
     cmd = ["claude", "mcp", "add", "--scope", "user", SERVER_NAME]
-    if claim:
+    if inject_env:
         cmd.append("--env")
-        cmd += [f"{key}={value}" for key, value in claim.items()]
+        cmd += [f"{key}={value}" for key, value in inject_env.items()]
     cmd += ["--", "uv", "run", "--directory", str(td), "netdata-build-mcp", "--transport", "stdio"]
     return cmd
 
 
-def setup_claude(td: Path, claim: dict[str, str]) -> None:
+def setup_claude(td: Path, inject_env: dict[str, str]) -> None:
     if shutil.which("claude") is None:
         _say("claude: CLI not on PATH — skipping (install Claude Code to use it).")
         return
@@ -169,9 +200,9 @@ def setup_claude(td: Path, claim: dict[str, str]) -> None:
         ["claude", "mcp", "remove", "--scope", "user", SERVER_NAME],
         capture_output=True, text=True,
     )
-    cmd = claude_command(td, claim)
-    # Don't echo the resolved --env values (they carry the token); show a redacted form.
-    _action("claude mcp add --scope user [--env NETDATA_CLAIM_*=***] " + SERVER_NAME + " -- ...")
+    cmd = claude_command(td, inject_env)
+    # Don't echo the resolved --env values (they carry tokens); show a redacted form.
+    _action("claude mcp add --scope user [--env NETDATA_{CLAIM,CLOUD}_*=***] " + SERVER_NAME + " -- ...")
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
         # Scrub the token: claude's stderr may echo the --env values on failure.
@@ -190,6 +221,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--claim-token", help="Netdata Cloud claim token (else NETDATA_CLAIM_TOKEN; required)")
     p.add_argument("--claim-rooms", help="Cloud room id(s) (else NETDATA_CLAIM_ROOMS; optional)")
     p.add_argument("--claim-url", help="Cloud base URL (else NETDATA_CLAIM_URL; optional)")
+    p.add_argument("--cloud-token", help="Netdata Cloud REST token for bearer minting (else NETDATA_CLOUD_TOKEN; required)")
+    p.add_argument("--cloud-hostname", help="Cloud REST host (else NETDATA_CLOUD_HOSTNAME; optional, default app.netdata.cloud)")
     return p.parse_args(argv)
 
 
@@ -201,14 +234,19 @@ def main(argv: list[str] | None = None, environ: dict | None = None) -> int:
         _say(f"error: MCP tool dir not found: {td}")
         return 2
 
-    # Resolve claim creds up front: missing token fails fast, before wiring anything.
-    claim = resolve_claim_creds(args, os.environ if environ is None else environ)
+    # Resolve creds up front: a missing required token fails fast, before wiring
+    # anything. Claim + cloud creds are merged into one per-server env map.
+    src_environ = os.environ if environ is None else environ
+    inject_env = {
+        **resolve_claim_creds(args, src_environ),
+        **resolve_cloud_creds(args, src_environ),
+    }
 
     tools = ["opencode", "claude"] if args.tool == "all" else [args.tool]
     errors: list[str] = []
     for t in tools:
         try:
-            setup_opencode(td, claim) if t == "opencode" else setup_claude(td, claim)
+            setup_opencode(td, inject_env) if t == "opencode" else setup_claude(td, inject_env)
         except Exception as exc:  # one tool's failure must not abort the others
             errors.append(f"{t}: {exc}")
 

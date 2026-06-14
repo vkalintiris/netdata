@@ -10,10 +10,11 @@ function's capabilities with ``info=true``.
 Access requirement: ``otel-logs`` declares ``SIGNED_ID | SAME_SPACE |
 SENSITIVE_DATA`` (otel-ledger/src/ledger/rpc/handler.rs), so a local, unclaimed,
 anonymous agent rejects it with HTTP 412 ("authenticated via Netdata Cloud SSO")
-on every transport — there is no localhost bypass. Querying requires a claimed
-agent and an ``Authorization: Bearer`` token carrying that access (mint via the
-``query-netdata-agents`` machinery). The push side (otel-streams ``synth``) and
-``info`` probing do not need this; live query verification does.
+on every transport — there is no localhost bypass. When ``NETDATA_CLOUD_TOKEN``
+is in the server env, this tool mints+sends a Cloud bearer for the (claimed)
+agent automatically (see ``bearer.py``); without it the call stays anonymous and
+returns 412. The push side (otel-streams ``synth``) and ``info`` probing do not
+need auth; live query verification does.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field
 
-from .. import agentfn
+from .. import agentfn, bearer
 from ._common import get_runs
 
 _FUNCTION = "otel-logs"
@@ -123,16 +124,33 @@ def register(mcp: FastMCP) -> None:
             anchor=anchor, tenant=tenant,
         )
         base = f"http://127.0.0.1:{run.port}"
-        status, data, err = await agentfn.call_function(base, _FUNCTION, payload, timeout=timeout)
         endpoint = agentfn.function_url(base, _FUNCTION, timeout)
+        # otel-logs is access-gated (SIGNED_ID). When a Cloud token is present,
+        # mint+send a bearer so the call is authenticated; a mint failure is a
+        # hard error (an anonymous retry would just 412). With no Cloud token we
+        # call anonymously and let the 412 hint below explain the gate.
+        auth: str | None = None
+        if bearer.cloud_token():
+            auth, berr = await bearer.resolve_bearer(run.port, timeout=timeout)
+            if auth is None:
+                return OtelLogsResult(
+                    agent_id=agent_id, endpoint=endpoint, request=payload,
+                    error=f"could not obtain a Netdata Cloud bearer ({berr}). "
+                    "otel-logs requires a signed-in identity; ensure the agent is "
+                    "claimed and cloud_connected (netdata_run_status).",
+                )
+        status, data, err = await agentfn.call_function(
+            base, _FUNCTION, payload, timeout=timeout, bearer=auth
+        )
         if err is not None:
             return OtelLogsResult(agent_id=agent_id, endpoint=endpoint, http_status=status,
                                   request=payload, error=err)
         # A 412 here is the function's access gate, not a malformed request:
         # otel-logs needs SIGNED_ID, which a local unclaimed agent lacks.
         hint = (
-            " (otel-logs requires a signed-in identity: claim the agent and pass a "
-            "Cloud-minted bearer — a local unclaimed agent always gets 412 here)"
+            " (otel-logs requires a signed-in identity. Set NETDATA_CLOUD_TOKEN in "
+            "the server env so this tool mints a bearer, and ensure the agent is "
+            "claimed + cloud_connected)"
             if status == 412 else ""
         )
         return OtelLogsResult(

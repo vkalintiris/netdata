@@ -99,7 +99,10 @@ def test_claude_command_without_claim_has_no_env():
 
 
 def _args(**kw):
-    base = {"claim_token": None, "claim_rooms": None, "claim_url": None}
+    base = {
+        "claim_token": None, "claim_rooms": None, "claim_url": None,
+        "cloud_token": None, "cloud_hostname": None,
+    }
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -128,11 +131,35 @@ def test_resolve_claim_fails_without_token():
         setup_mcp.resolve_claim_creds(_args(claim_token="   "), {})
 
 
-def test_redact_masks_claim_values():
-    s = "Invalid: --env NETDATA_CLAIM_TOKEN=qzzwSECRET NETDATA_CLAIM_ROOMS=room-1 oops"
+def test_resolve_cloud_cli_beats_env():
+    creds = setup_mcp.resolve_cloud_creds(
+        _args(cloud_token="cli-ctok", cloud_hostname="cli.host"),
+        {"NETDATA_CLOUD_TOKEN": "env-ctok", "NETDATA_CLOUD_HOSTNAME": "env.host"},
+    )
+    assert creds == {"NETDATA_CLOUD_TOKEN": "cli-ctok", "NETDATA_CLOUD_HOSTNAME": "cli.host"}
+
+
+def test_resolve_cloud_falls_back_to_env_and_trims():
+    creds = setup_mcp.resolve_cloud_creds(
+        _args(), {"NETDATA_CLOUD_TOKEN": " env-ctok "}
+    )
+    assert creds == {"NETDATA_CLOUD_TOKEN": "env-ctok"}
+    assert "NETDATA_CLOUD_HOSTNAME" not in creds  # optional, unset -> omitted
+
+
+def test_resolve_cloud_fails_without_token():
+    with pytest.raises(SystemExit, match="cloud token required"):
+        setup_mcp.resolve_cloud_creds(_args(), {})
+    with pytest.raises(SystemExit):  # whitespace-only counts as unset
+        setup_mcp.resolve_cloud_creds(_args(cloud_token="   "), {})
+
+
+def test_redact_masks_claim_and_cloud_values():
+    s = ("Invalid: --env NETDATA_CLAIM_TOKEN=qzzwSECRET NETDATA_CLAIM_ROOMS=room-1 "
+         "NETDATA_CLOUD_TOKEN=ckSECRET oops")
     out = setup_mcp._redact(s)
-    assert "qzzwSECRET" not in out and "room-1" not in out
-    assert "NETDATA_CLAIM_TOKEN=***" in out and "NETDATA_CLAIM_ROOMS=***" in out
+    assert "qzzwSECRET" not in out and "room-1" not in out and "ckSECRET" not in out
+    assert "NETDATA_CLAIM_TOKEN=***" in out and "NETDATA_CLOUD_TOKEN=***" in out
 
 
 def test_parse_args_defaults():
@@ -140,3 +167,4 @@ def test_parse_args_defaults():
     assert a.tool == "all"
     assert a.source_dir is None
     assert a.claim_token is None and a.claim_rooms is None and a.claim_url is None
+    assert a.cloud_token is None and a.cloud_hostname is None

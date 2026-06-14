@@ -143,10 +143,30 @@ pieces, plus one hard constraint a future reader cannot infer from the code:
   localhost bypass exists). Bearer tokens are signature-guarded local files and
   a minted token inherits only the caller's own access, so a `SIGNED_ID` bearer
   requires an already-SSO'd identity. Consequence: the **push side and `info`
-  probing work on a plain local agent, but live query verification requires a
-  claimed agent + a Cloud-minted bearer** (the `query-netdata-agents`
-  mechanism). The query tool's code is transport-correct regardless; the gate is
-  the agent's, not the request's.
+  probing work on a plain local agent, but a real query requires a claimed
+  agent + a Cloud-minted bearer**. The query tool's code is transport-correct
+  regardless; the gate is the agent's, not the request's.
+
+- **Bearer auth (`bearer.py`).** To satisfy that gate, when `NETDATA_CLOUD_TOKEN`
+  is in the server env the `otel_logs` tool mints a per-agent bearer and sends it
+  as `Authorization: Bearer` (lazily, on the first query — not at run_start). The
+  mint mirrors the `query-netdata-agents` flow: read the agent's identity from
+  `/api/v3/info` (`agents[0].mg`/`.nd`/`.cloud.claim_id`), then
+  `GET https://<NETDATA_CLOUD_HOSTNAME>/api/v2/bearer_get_token?node_id&machine_guid&claim_id`
+  with the Cloud token in the header. Bearers are cached **in-process** keyed by
+  machine_guid with a refresh buffer (no secrets on disk; a restart re-mints).
+  With no Cloud token the call stays anonymous (→ 412 with a hint). A mint
+  failure is a hard error (an anonymous retry would just 412); it usually means
+  the agent is not yet claimed/`cloud_connected`.
+  - **Token-safety (HARD):** `NETDATA_CLOUD_TOKEN` and minted bearers are
+    secrets — never logged, never returned in tool output, never on a command
+    line (header only); error strings are scrubbed of both. A no-leak unit test
+    drives a mint failure with a sentinel token and asserts it never surfaces.
+  - **Provisioning:** `setup_mcp.py` requires a Cloud token (like the claim
+    token) and injects `NETDATA_CLOUD_TOKEN` (+ optional `NETDATA_CLOUD_HOSTNAME`,
+    default `app.netdata.cloud`) into the client per-server env, alongside the
+    claim creds. Same accepted cost as the claim token (briefly on the `claude`
+    argv; written to the user-global client config).
 
 ## Agent MCP wrapper
 

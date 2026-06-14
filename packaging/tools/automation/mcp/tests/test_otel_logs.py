@@ -1,3 +1,5 @@
+import asyncio
+
 from netdata_mcp import agentfn
 from netdata_mcp.tools.otel_logs import build_payload
 
@@ -45,3 +47,44 @@ def test_function_url():
     assert agentfn.function_url("http://127.0.0.1:19999/", "otel-logs", 30).startswith(
         "http://127.0.0.1:19999/api/v3/function?"
     )
+
+
+class _FakeResp:
+    status = 200
+
+    def read(self):
+        return b'{"ok": true}'
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _capture_request(monkeypatch):
+    """Patch the agentfn opener to capture the urllib.Request it sends."""
+    captured = {}
+
+    def fake_open(req, timeout=None):
+        captured["headers"] = dict(req.header_items())
+        return _FakeResp()
+
+    monkeypatch.setattr(agentfn._LOCAL_OPENER, "open", fake_open)
+    return captured
+
+
+def test_call_function_sends_bearer_when_given(monkeypatch):
+    cap = _capture_request(monkeypatch)
+    status, data, err = asyncio.run(
+        agentfn.call_function("http://127.0.0.1:1", "otel-logs", {"info": True}, bearer="BEARER-xyz")
+    )
+    assert status == 200 and err is None
+    # urllib title-cases header keys
+    assert cap["headers"].get("Authorization") == "Bearer BEARER-xyz"
+
+
+def test_call_function_anonymous_has_no_authorization(monkeypatch):
+    cap = _capture_request(monkeypatch)
+    asyncio.run(agentfn.call_function("http://127.0.0.1:1", "otel-logs", {"info": True}))
+    assert "Authorization" not in cap["headers"]

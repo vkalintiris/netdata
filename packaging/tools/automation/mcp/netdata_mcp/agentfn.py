@@ -5,7 +5,10 @@ netdata serves functions at ``POST /api/v3/function?function=<name>``; the
 request body is forwarded verbatim to the plugin as the function payload (see
 ``api_v1_function`` → ``rrd_function_run(..., w->payload)``). The call is
 synchronous — one POST returns the function's JSON result. Localhost agents
-allow anonymous function access, so no auth is needed.
+allow anonymous access to most functions; access-gated ones (``SIGNED_ID``)
+need an ``Authorization: Bearer`` token (see ``bearer.py``), passed via the
+optional ``bearer`` argument. The token is sent only as a header — never logged
+and never echoed back to the caller.
 """
 
 from __future__ import annotations
@@ -27,12 +30,13 @@ def function_url(base_url: str, function: str, timeout: int) -> str:
     return f"{base_url.rstrip('/')}/api/v3/function?{q}"
 
 
-def _post(base_url: str, function: str, payload: dict | None, timeout: int):
+def _post(base_url: str, function: str, payload: dict | None, timeout: int, bearer: str | None):
     url = function_url(base_url, function, timeout)
     body = json.dumps(payload or {}).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=body, method="POST", headers={"Content-Type": "application/json"}
-    )
+    headers = {"Content-Type": "application/json"}
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    req = urllib.request.Request(url, data=body, method="POST", headers=headers)
     try:
         with _LOCAL_OPENER.open(req, timeout=timeout + 5) as resp:
             status, raw = resp.status, resp.read()
@@ -50,9 +54,11 @@ def _post(base_url: str, function: str, payload: dict | None, timeout: int):
 
 
 async def call_function(
-    base_url: str, function: str, payload: dict[str, Any] | None = None, timeout: int = 60
+    base_url: str, function: str, payload: dict[str, Any] | None = None, timeout: int = 60,
+    *, bearer: str | None = None,
 ) -> tuple[int | None, Any, str | None]:
     """POST ``payload`` to ``function`` on ``base_url``; return
-    ``(http_status, parsed_json, error)``. Never raises — failures come back as
-    the error string so the calling tool returns cleanly."""
-    return await asyncio.to_thread(_post, base_url, function, payload, timeout)
+    ``(http_status, parsed_json, error)``. When ``bearer`` is given it is sent
+    as ``Authorization: Bearer`` (for access-gated functions). Never raises —
+    failures come back as the error string so the calling tool returns cleanly."""
+    return await asyncio.to_thread(_post, base_url, function, payload, timeout, bearer)
