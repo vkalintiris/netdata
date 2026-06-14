@@ -50,8 +50,11 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    if args.count == 0 {
-        anyhow::bail!("--count must be >= 1");
+    // generate() allocates a Vec of `count` records up front, so bound it to
+    // avoid OOM-ing the workstation on a fat-fingered --count.
+    const MAX_COUNT: usize = 10_000_000;
+    if args.count == 0 || args.count > MAX_COUNT {
+        anyhow::bail!("--count must be between 1 and {MAX_COUNT}");
     }
     if args.field_cardinality == 0 {
         anyhow::bail!("--field-cardinality must be >= 1");

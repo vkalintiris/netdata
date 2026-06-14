@@ -154,8 +154,9 @@ false positives — trust the build.**
 
 Both profiles share one curated plugin set: common system-monitoring features on
 (apps, cgroups, network-viewer, systemd-journal/units, local-listeners, debugfs,
-dbengine, dashboard); heavy-to-build (go.d, ML, OTEL, NetFlow, eBPF) and rarely
-used plugins off. Definitions live in
+dbengine, dashboard); heavy-to-build (go.d, ML, NetFlow, eBPF) and rarely used
+plugins off. The OTEL plugin is the deliberate exception — always on, despite its
+build cost, because this tool exists for OTel-logs development. Definitions live in
 [`netdata_mcp/profiles.py`](netdata_mcp/profiles.py).
 
 ## Transports: stdio (default) vs http
