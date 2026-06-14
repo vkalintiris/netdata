@@ -40,6 +40,12 @@ CLOUD_TOKEN_ENV = "NETDATA_CLOUD_TOKEN"
 CLOUD_HOSTNAME_ENV = "NETDATA_CLOUD_HOSTNAME"
 DEFAULT_CLOUD_HOSTNAME = "app.netdata.cloud"
 
+# Cloud (app.netdata.cloud) sits behind Cloudflare, whose managed WAF rules
+# reject the default urllib User-Agent with "error code: 1010" (banned browser
+# signature) before auth is even checked. Send a plain descriptive UA — verified
+# to pass — so the mint reaches the API.
+_USER_AGENT = "netdata-build-mcp/1.0"
+
 # Re-mint when within this many seconds of a real expiry (matches the cloud
 # frontend's 1h buffer). When Cloud returns expiration=0, fall back to a fixed
 # window from the mint time — the agent issues ~3h bearers, so 2h leaves margin.
@@ -131,7 +137,10 @@ def _mint(node_id: str, mg: str, claim: str, token: str, hostname: str, timeout:
     The Cloud token rides in the Authorization header only — never the URL."""
     q = urllib.parse.urlencode({"node_id": node_id, "machine_guid": mg, "claim_id": claim})
     url = f"https://{hostname}/api/v2/bearer_get_token?{q}"
-    req = urllib.request.Request(url, method="GET", headers={"Authorization": f"Bearer {token}"})
+    req = urllib.request.Request(
+        url, method="GET",
+        headers={"Authorization": f"Bearer {token}", "User-Agent": _USER_AGENT},
+    )
     try:
         # Cloud is off-host: use the default opener (proxy honored if configured).
         with urllib.request.urlopen(req, timeout=timeout) as resp:

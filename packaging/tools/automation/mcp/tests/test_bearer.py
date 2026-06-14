@@ -99,6 +99,32 @@ def test_scrub_masks_secrets():
     assert SENTINEL not in out and "BEARER-xyz" not in out
 
 
+def test_mint_sends_descriptive_user_agent(monkeypatch):
+    # Cloud is behind Cloudflare, which 1010-bans the default urllib UA. The
+    # mint MUST send a non-urllib User-Agent (regression guard).
+    captured = {}
+
+    class _Resp:
+        def read(self):
+            return b'{"token": "B", "expiration": 0}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["ua"] = req.get_header("User-agent")
+        return _Resp()
+
+    monkeypatch.setattr(bearer.urllib.request, "urlopen", fake_urlopen)
+    parsed, err = bearer._mint("ND", "MG", "CL", "ctok", "app.netdata.cloud", 30)
+    assert err is None and parsed["token"] == "B"
+    assert captured["ua"] == bearer._USER_AGENT
+    assert "urllib" not in (captured["ua"] or "").lower()
+
+
 def test_mint_error_never_leaks_cloud_token(monkeypatch):
     # urlopen raising with the token in its message must come back scrubbed.
     def boom(*a, **k):
