@@ -82,7 +82,12 @@ impl Sender {
         })
     }
 
-    pub async fn run(&mut self) {
+    /// Drain the channel, flushing on batch-size/timer and once more on close.
+    /// Returns the number of batches that failed to export — live sources ignore
+    /// it (transient errors against a long stream are fine), but a one-shot
+    /// verification tool (synth) uses it to avoid reporting false success.
+    pub async fn run(&mut self) -> u64 {
+        let mut failures = 0u64;
         let mut flush_timer = time::interval(self.flush_interval);
         flush_timer.tick().await;
 
@@ -93,29 +98,31 @@ impl Sender {
                         Some(record) => {
                             self.batch.push(record);
                             if self.batch.len() >= self.batch_size {
-                                self.flush().await;
+                                if !self.flush().await { failures += 1; }
                                 flush_timer.reset();
                             }
                         }
                         None => {
-                            if !self.batch.is_empty() {
-                                self.flush().await;
+                            if !self.batch.is_empty() && !self.flush().await {
+                                failures += 1;
                             }
                             info!("Event channel closed, sender shutting down");
-                            return;
+                            return failures;
                         }
                     }
                 }
                 _ = flush_timer.tick() => {
-                    if !self.batch.is_empty() {
-                        self.flush().await;
+                    if !self.batch.is_empty() && !self.flush().await {
+                        failures += 1;
                     }
                 }
             }
         }
     }
 
-    async fn flush(&mut self) {
+    /// Export the current batch. Returns `true` on success, `false` on export
+    /// error (logged, not propagated — callers decide what to do with the count).
+    async fn flush(&mut self) -> bool {
         let records = std::mem::replace(&mut self.batch, Vec::with_capacity(self.batch_size));
         let count = records.len();
         let export = build_export_request(
@@ -135,9 +142,11 @@ impl Sender {
         match self.client.export(request).await {
             Ok(_response) => {
                 info!(count, "Flushed batch");
+                true
             }
             Err(e) => {
                 error!(count, error = %e, "Failed to send batch");
+                false
             }
         }
     }

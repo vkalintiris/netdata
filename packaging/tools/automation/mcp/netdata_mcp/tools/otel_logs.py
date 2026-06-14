@@ -65,6 +65,24 @@ class OtelLogsResult(BaseModel):
     message: str = ""
 
 
+def classify_status(status: int | None) -> tuple[str | None, str]:
+    """Map an otel-logs HTTP status to ``(error, message)``. Only 2xx is
+    success (``error=None``); 412 is the SIGNED_ID access gate; any other
+    non-2xx is an error so a caller checking ``error is None`` can't mistake a
+    4xx/5xx for data."""
+    if status is not None and 200 <= status < 300:
+        return None, "ok"
+    if status == 412:
+        msg = (
+            "otel-logs returned 412 — access-gated (SIGNED_ID). Set NETDATA_CLOUD_TOKEN "
+            "in the server env so this tool mints a bearer, and ensure the agent is "
+            "claimed + cloud_connected."
+        )
+        return msg, msg
+    msg = f"otel-logs returned HTTP {status}"
+    return msg, msg
+
+
 def build_payload(
     *, info: bool, after: int | None, before: int | None, query: str | None,
     selections: dict[str, list[str]] | None, facets: list[str] | None, histogram: str | None,
@@ -152,20 +170,9 @@ def register(mcp: FastMCP) -> None:
         if err is not None:
             return OtelLogsResult(agent_id=agent_id, endpoint=endpoint, http_status=status,
                                   request=payload, error=err)
-        # A 412 is the function's access gate (otel-logs needs SIGNED_ID), not a
-        # malformed request — surface it as the message, not a misleading "ok".
-        if status is not None and 200 <= status < 300:
-            message = "ok"
-        elif status == 412:
-            message = (
-                "otel-logs returned 412 — access-gated (SIGNED_ID). Set NETDATA_CLOUD_TOKEN "
-                "in the server env so this tool mints a bearer, and ensure the agent is "
-                "claimed + cloud_connected."
-            )
-        else:
-            message = f"otel-logs returned HTTP {status}"
+        result_error, message = classify_status(status)
         return OtelLogsResult(
             agent_id=agent_id, endpoint=endpoint, http_status=status, request=payload,
             response=data if isinstance(data, dict) else {"value": data},
-            message=message,
+            error=result_error, message=message,
         )

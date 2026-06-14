@@ -9,6 +9,7 @@ deterministic corpora.
 
 from __future__ import annotations
 
+import re
 from typing import Annotated
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -16,7 +17,21 @@ from pydantic import Field
 
 from ..runtime import OtelConfig
 from ._common import get_agents, get_runs
-from .models import RunInfo, agent_declared, run_info, unknown_agent
+from .models import RunInfo, agent_declared, agent_error, run_info, unknown_agent
+
+# Reject a malformed OTLP endpoint here so the caller gets a clean error now,
+# instead of an opaque agent-launch failure several tool calls later.
+_HOST_PORT_RE = re.compile(r"^[^\s:]+:(\d{1,5})$")
+
+
+def _endpoint_error(agent_id: str, value: str) -> RunInfo | None:
+    """Return an error RunInfo if ``value`` is not a valid host:port, else None."""
+    m = _HOST_PORT_RE.match(value)
+    if m is None:
+        return agent_error(agent_id, f"otlp_endpoint must be 'host:port', got {value!r}")
+    if not (1 <= int(m.group(1)) <= 65535):
+        return agent_error(agent_id, f"otlp_endpoint port out of range (1-65535): {value!r}")
+    return None
 
 _AgentId = Annotated[str, Field(description="The declared agent to configure.")]
 _Endpoint = Annotated[
@@ -59,6 +74,10 @@ def register(mcp: FastMCP) -> None:
     ) -> RunInfo:
         if get_agents(ctx).get(agent_id) is None:
             return unknown_agent(agent_id)
+        if otlp_endpoint is not None:
+            err = _endpoint_error(agent_id, otlp_endpoint)
+            if err is not None:
+                return err
         cfg = OtelConfig(
             otlp_endpoint=otlp_endpoint,
             wal_max_file_size=wal_max_file_size,
@@ -70,8 +89,6 @@ def register(mcp: FastMCP) -> None:
             index_max_total_size=index_max_total_size,
         )
         spec = get_agents(ctx).set_otel(agent_id, cfg)
-        if spec is None:  # raced with an undeclare; treat as unknown
-            return unknown_agent(agent_id)
         live = get_runs(ctx).get(agent_id)
         if live is not None and not live.done:
             return run_info(

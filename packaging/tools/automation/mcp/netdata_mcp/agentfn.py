@@ -30,6 +30,13 @@ def function_url(base_url: str, function: str, timeout: int) -> str:
     return f"{base_url.rstrip('/')}/api/v3/function?{q}"
 
 
+def _scrub(text: str, bearer: str | None) -> str:
+    """Defensively mask the bearer in any error string. The agent never echoes
+    the Authorization header, but error/preview text is returned to the caller,
+    so never risk leaking a minted token."""
+    return text.replace(bearer, "<REDACTED>") if bearer else text
+
+
 def _post(base_url: str, function: str, payload: dict | None, timeout: int, bearer: str | None):
     url = function_url(base_url, function, timeout)
     body = json.dumps(payload or {}).encode("utf-8")
@@ -37,20 +44,33 @@ def _post(base_url: str, function: str, payload: dict | None, timeout: int, bear
     if bearer:
         headers["Authorization"] = f"Bearer {bearer}"
     req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+    # Honor the "never raises" contract: a body read can itself raise
+    # (IncompleteRead/OSError), and an exception thrown inside an `except` block
+    # would propagate past a sibling `except` — so guard each read separately.
     try:
         with _LOCAL_OPENER.open(req, timeout=timeout + 5) as resp:
-            status, raw = resp.status, resp.read()
+            status = resp.status
+            try:
+                raw = resp.read()
+            except Exception as exc:
+                return None, None, _scrub(f"reading response from {url} failed: {exc!r}", bearer)
     except urllib.error.HTTPError as exc:  # error responses can still carry a JSON body
-        status, raw = exc.code, exc.read()
+        status = exc.code
+        try:
+            raw = exc.read()
+        except Exception as read_exc:
+            return None, None, _scrub(
+                f"reading error body from {url} (HTTP {status}) failed: {read_exc!r}", bearer
+            )
     except Exception as exc:  # connection refused, timeout, etc.
-        return None, None, f"request to {url} failed: {exc!r}"
+        return None, None, _scrub(f"request to {url} failed: {exc!r}", bearer)
     if not raw:
         return status, None, None
     try:
         return status, json.loads(raw), None
     except json.JSONDecodeError:
         preview = raw[:200].decode("utf-8", "replace")
-        return status, None, f"non-JSON response (status {status}): {preview!r}"
+        return status, None, _scrub(f"non-JSON response (status {status}): {preview!r}", bearer)
 
 
 async def call_function(

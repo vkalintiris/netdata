@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use tokio::sync::mpsc;
+use tokio::time;
 use tracing::info;
 
 use otel_streams::args::{self, CommonArgs};
@@ -38,11 +39,20 @@ struct Args {
     /// multiple of it collides. Use seeds in [0, field-cardinality).
     #[arg(long, default_value_t = 0)]
     seed: u64,
+
+    /// Max seconds to wait for the OTLP endpoint to accept a connection before
+    /// giving up. The shared sender retries forever (right for live streams);
+    /// this one-shot tool bounds it so a typo'd/unready endpoint fails fast.
+    #[arg(long, default_value_t = 30)]
+    connect_timeout_secs: u64,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if args.count == 0 {
+        anyhow::bail!("--count must be >= 1");
+    }
     if args.field_cardinality == 0 {
         anyhow::bail!("--field-cardinality must be >= 1");
     }
@@ -72,7 +82,19 @@ async fn main() -> anyhow::Result<()> {
         scope_name: "synth",
         scope_version: "1.0",
     };
-    let mut sender = Sender::new(config, rx).await?;
+    // Bound the connect: the shared Sender retries forever (right for live
+    // streams), but this one-shot tool must fail fast on a bad/unready endpoint.
+    let mut sender =
+        match time::timeout(Duration::from_secs(args.connect_timeout_secs), Sender::new(config, rx))
+            .await
+        {
+            Ok(res) => res?,
+            Err(_) => anyhow::bail!(
+                "timed out after {}s connecting to {}",
+                args.connect_timeout_secs,
+                args.common.otel_endpoint
+            ),
+        };
     let handle = tokio::spawn(async move { sender.run().await });
 
     for record in records {
@@ -81,7 +103,10 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|_| anyhow::anyhow!("sender stopped before all records were queued"))?;
     }
     drop(tx); // closes the channel → sender flushes the remainder and returns
-    handle.await?;
+    let failures = handle.await?;
+    if failures > 0 {
+        anyhow::bail!("{failures} batch(es) failed to export to {}", args.common.otel_endpoint);
+    }
 
     info!(count = total, endpoint = %args.common.otel_endpoint, "synthetic logs sent");
     Ok(())

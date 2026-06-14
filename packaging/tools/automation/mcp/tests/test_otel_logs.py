@@ -1,7 +1,7 @@
 import asyncio
 
 from netdata_mcp import agentfn
-from netdata_mcp.tools.otel_logs import build_payload
+from netdata_mcp.tools.otel_logs import build_payload, classify_status
 
 
 def _payload(**kw):
@@ -88,3 +88,46 @@ def test_call_function_anonymous_has_no_authorization(monkeypatch):
     cap = _capture_request(monkeypatch)
     asyncio.run(agentfn.call_function("http://127.0.0.1:1", "otel-logs", {"info": True}))
     assert "Authorization" not in cap["headers"]
+
+
+class _RaisingResp:
+    status = 200
+
+    def read(self):
+        raise OSError("connection reset mid-body")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_call_function_never_raises_on_read_error(monkeypatch):
+    # A body read that raises must come back as an error tuple, not propagate
+    # (the tool's "never raises" contract).
+    monkeypatch.setattr(agentfn._LOCAL_OPENER, "open", lambda req, timeout=None: _RaisingResp())
+    status, data, err = asyncio.run(agentfn.call_function("http://127.0.0.1:1", "otel-logs", {}))
+    assert data is None and err is not None and "failed" in err
+
+
+def test_call_function_scrubs_bearer_from_error(monkeypatch):
+    def boom(req, timeout=None):
+        raise RuntimeError("upstream said Bearer BEARER-SECRET-123 is bad")
+
+    monkeypatch.setattr(agentfn._LOCAL_OPENER, "open", boom)
+    _, _, err = asyncio.run(
+        agentfn.call_function("http://127.0.0.1:1", "otel-logs", {}, bearer="BEARER-SECRET-123")
+    )
+    assert "BEARER-SECRET-123" not in err and "<REDACTED>" in err
+
+
+def test_classify_status():
+    assert classify_status(200) == (None, "ok")
+    assert classify_status(204) == (None, "ok")
+    err412, msg412 = classify_status(412)
+    assert err412 is not None and "SIGNED_ID" in err412 and msg412 == err412
+    err500, _ = classify_status(500)
+    assert err500 is not None and "500" in err500
+    err_none, _ = classify_status(None)
+    assert err_none is not None  # unknown status is an error, not success
