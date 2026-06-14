@@ -167,6 +167,12 @@ pieces, plus one hard constraint a future reader cannot infer from the code:
     default `app.netdata.cloud`) into the client per-server env, alongside the
     claim creds. Same accepted cost as the claim token (briefly on the `claude`
     argv; written to the user-global client config).
+  - **Cloudflare gotcha:** `app.netdata.cloud` is behind Cloudflare, whose WAF
+    rejects the default `Python-urllib/*` User-Agent with `HTTP 403 "error code:
+    1010"` (banned signature) before auth runs. The mint request therefore sends
+    a plain `User-Agent: netdata-build-mcp/1.0`. Validated end to end: a claimed,
+    cloud_connected agent + 25 pushed synth logs → `otel_logs` minted a bearer
+    and returned all 25 rows with correct facets.
 
 ## Agent MCP wrapper
 
