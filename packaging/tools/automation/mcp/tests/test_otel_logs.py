@@ -1,4 +1,6 @@
 import asyncio
+import io
+import urllib.error
 
 from netdata_mcp import agentfn
 from netdata_mcp.tools.otel_logs import build_payload, classify_status
@@ -120,6 +122,28 @@ def test_call_function_scrubs_bearer_from_error(monkeypatch):
         agentfn.call_function("http://127.0.0.1:1", "otel-logs", {}, bearer="BEARER-SECRET-123")
     )
     assert "BEARER-SECRET-123" not in err and "<REDACTED>" in err
+
+
+def test_call_function_extracts_status_from_http_error(monkeypatch):
+    # A 412 (the access gate) arrives as an HTTPError carrying a JSON body — the
+    # core path for this tool. _post must extract the code and parse the body.
+    def http_error(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 412, "Precondition Failed", {}, io.BytesIO(b'{"status": 412}')
+        )
+
+    monkeypatch.setattr(agentfn._LOCAL_OPENER, "open", http_error)
+    status, data, err = asyncio.run(agentfn.call_function("http://127.0.0.1:1", "otel-logs", {}))
+    assert status == 412 and err is None and data == {"status": 412}
+
+
+def test_call_function_http_error_empty_body(monkeypatch):
+    def http_error(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 500, "err", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(agentfn._LOCAL_OPENER, "open", http_error)
+    status, data, err = asyncio.run(agentfn.call_function("http://127.0.0.1:1", "otel-logs", {}))
+    assert status == 500 and data is None and err is None
 
 
 def test_classify_status():

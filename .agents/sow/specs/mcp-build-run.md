@@ -142,10 +142,13 @@ pieces, plus one hard constraint a future reader cannot infer from the code:
   raw HTTP *and* `/mcp` (which passes the caller's access straight through; no
   localhost bypass exists). Bearer tokens are signature-guarded local files and
   a minted token inherits only the caller's own access, so a `SIGNED_ID` bearer
-  requires an already-SSO'd identity. Consequence: the **push side and `info`
-  probing work on a plain local agent, but a real query requires a claimed
-  agent + a Cloud-minted bearer**. The query tool's code is transport-correct
-  regardless; the gate is the agent's, not the request's.
+  requires an already-SSO'd identity. The gate is enforced before the function
+  handler runs, so it applies to **every** `/api/v3/function` call including
+  `info=true` — there is no info exemption. Consequence: only the **push side**
+  (OTLP/gRPC to the receiver, a separate endpoint) works on a plain local agent;
+  **both `info` probing and live queries require a claimed agent + a Cloud-minted
+  bearer**. The query tool's code is transport-correct regardless; the gate is
+  the agent's, not the request's.
 
 - **Bearer auth (`bearer.py`).** To satisfy that gate, when `NETDATA_CLOUD_TOKEN`
   is in the server env the `otel_logs` tool mints a per-agent bearer and sends it
@@ -154,7 +157,8 @@ pieces, plus one hard constraint a future reader cannot infer from the code:
   `/api/v3/info` (`agents[0].mg`/`.nd`/`.cloud.claim_id`), then
   `GET https://<NETDATA_CLOUD_HOSTNAME>/api/v2/bearer_get_token?node_id&machine_guid&claim_id`
   with the Cloud token in the header. Bearers are cached **in-process** keyed by
-  machine_guid with a refresh buffer (no secrets on disk; a restart re-mints).
+  `(machine_guid, claim_id)` with a refresh buffer (no secrets on disk; a re-claim
+  re-mints, and a restart re-mints).
   With no Cloud token the call stays anonymous (→ 412 with a hint). A mint
   failure is a hard error (an anonymous retry would just 412); it usually means
   the agent is not yet claimed/`cloud_connected`.

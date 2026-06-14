@@ -13,8 +13,10 @@ anonymous agent rejects it with HTTP 412 ("authenticated via Netdata Cloud SSO")
 on every transport — there is no localhost bypass. When ``NETDATA_CLOUD_TOKEN``
 is in the server env, this tool mints+sends a Cloud bearer for the (claimed)
 agent automatically (see ``bearer.py``); without it the call stays anonymous and
-returns 412. The push side (otel-streams ``synth``) and ``info`` probing do not
-need auth; live query verification does.
+returns 412. The gate is enforced before the handler runs, so it applies to
+**every** call including ``info=true`` — there is no info exemption. Only the
+push side (otel-streams ``synth``) is auth-free, because it targets the OTLP
+receiver, not this function endpoint.
 """
 
 from __future__ import annotations
@@ -30,9 +32,10 @@ from ._common import get_runs
 _FUNCTION = "otel-logs"
 
 # Per-call ceiling for bearer minting's two HTTP hops (loopback /api/v3/info +
-# the Cloud round-trip), capped below the caller's `timeout` so a slow mint can't
-# consume the whole budget meant for the function call. Not a floor: a very small
-# `timeout` still yields a small mint budget that may be too tight for the hops.
+# the Cloud round-trip). The mint runs before the function call and adds to total
+# wall clock; this caps that overhead. The function's own budget (the `timeout`
+# in the request URL) is unaffected. Not a floor: a very small `timeout` still
+# yields a small mint budget that may be too tight for the hops.
 _MINT_TIMEOUT = 20
 
 _AgentId = Annotated[str, Field(description="A ready agent (from netdata_agent_declare + netdata_run_start).")]
