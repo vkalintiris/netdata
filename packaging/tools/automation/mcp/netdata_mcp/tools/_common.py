@@ -11,6 +11,7 @@ from .. import buildcfg
 from ..agents import AgentRegistry
 from ..jobs import JobRegistry
 from ..run import RunRegistry
+from ..streams import StreamRegistry
 from .models import JobInfo, input_error
 
 # Kept in sync with profiles.PROFILES (enforced by tests/test_profiles.py) so the
@@ -30,6 +31,10 @@ def get_agents(ctx: Context) -> AgentRegistry:
 
 def get_runs(ctx: Context) -> RunRegistry:
     return ctx.request_context.lifespan_context.runs
+
+
+def get_streams(ctx: Context) -> StreamRegistry:
+    return ctx.request_context.lifespan_context.streams
 
 
 def validate_build_worktree(worktree: str) -> JobInfo | None:

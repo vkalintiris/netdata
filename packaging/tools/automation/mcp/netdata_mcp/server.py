@@ -32,7 +32,19 @@ from mcp.server.fastmcp import FastMCP
 from .agents import AgentRegistry
 from .jobs import JobRegistry
 from .run import RunRegistry
-from .tools import agent_mcp, agents, build, configure, job_control, otel_config, otel_logs, run
+from .streams import StreamRegistry
+from .tools import (
+    agent_mcp,
+    agents,
+    build,
+    configure,
+    job_control,
+    otel_config,
+    otel_logs,
+    otel_push,
+    otel_stream,
+    run,
+)
 
 _INSTRUCTIONS = (
     "Configure, build, and run the Netdata Agent from a local worktree. "
@@ -54,6 +66,7 @@ class AppContext:
     registry: JobRegistry
     agents: AgentRegistry
     runs: RunRegistry
+    streams: StreamRegistry
 
 
 @asynccontextmanager
@@ -61,10 +74,12 @@ async def _lifespan(_server: FastMCP):
     registry = JobRegistry()
     agent_registry = AgentRegistry()
     runs = RunRegistry()
+    streams = StreamRegistry()
     try:
-        yield AppContext(registry=registry, agents=agent_registry, runs=runs)
+        yield AppContext(registry=registry, agents=agent_registry, runs=runs, streams=streams)
     finally:
-        # Don't leave cmake/ninja/netdata children running after the server stops.
+        # Don't leave cmake/ninja/netdata/cargo children running after the server stops.
+        await streams.stop_all()
         await runs.stop_all()
         await registry.cancel_all()
 
@@ -87,6 +102,8 @@ def build_server() -> FastMCP:
     run.register(mcp)
     otel_config.register(mcp)
     otel_logs.register(mcp)
+    otel_push.register(mcp)
+    otel_stream.register(mcp)
     agent_mcp.register(mcp)
     return mcp
 
