@@ -62,13 +62,20 @@ def test_both_profiles_disable_heavy_plugins_and_enable_common_ones():
     for name in ("debug", "optimized"):
         p = profiles.PROFILES[name]
         # heavy → off
-        for off in ("ENABLE_PLUGIN_OTEL", "ENABLE_PLUGIN_NETFLOW", "ENABLE_PLUGIN_GO",
+        for off in ("ENABLE_PLUGIN_NETFLOW", "ENABLE_PLUGIN_GO",
                     "ENABLE_PLUGIN_EBPF", "ENABLE_ML"):
             assert p[off] == "Off", f"{off} should be Off in {name}"
         # curated common → on
         for on in ("ENABLE_PLUGIN_SYSTEMD_JOURNAL", "ENABLE_PLUGIN_LOCAL_LISTENERS",
                    "ENABLE_PLUGIN_DEBUGFS"):
             assert p[on] == "On", f"{on} should be On in {name}"
+
+
+def test_both_profiles_build_the_otel_plugin():
+    # The otel plugin is the deliberate heavy-but-on exception: this tool exists
+    # for OTel-logs development, so every build must include it.
+    for name in ("debug", "optimized"):
+        assert profiles.PROFILES[name]["ENABLE_PLUGIN_OTEL"] == "On"
 
 
 def test_profiles_differ_only_by_build_type_and_checks():

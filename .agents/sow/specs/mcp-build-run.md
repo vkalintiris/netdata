@@ -13,8 +13,11 @@ async plumbing) are intentionally not restated here.
   - `debug` — `Debug` + internal runtime checks.
   - `optimized` — `RelWithDebInfo`.
 - Both share one **curated, user-reviewed plugin set** (heavy/rare plugins off:
-  go.d, ML, OTEL, eBPF, NetFlow, exporters, etc.; kept on: systemd journal/units,
+  go.d, ML, eBPF, NetFlow, exporters, etc.; kept on: systemd journal/units,
   journal-file reader, local-listeners, debugfs).
+- **The otel plugin is the deliberate exception: always ON** despite its build
+  cost, because this tool exists for OTel-logs development (build/run/verify the
+  otel subsystem). `ENABLE_PLUGIN_OTEL=On` in both profiles.
 - Rationale: a deliberately small surface for LLM-driven builds. Extra knobs
   (ASan, per-plugin toggles, a runtime-overrides layer) were **deferred**, not
   rejected — re-addable later if a concrete need appears.
