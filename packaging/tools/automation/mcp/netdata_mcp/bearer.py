@@ -74,9 +74,11 @@ class _Cached:
     usable_until: float  # unix seconds; cache is valid while now < usable_until
 
 
-# In-memory cache keyed by machine_guid (B2: no secrets on disk). A mint lock
-# serializes concurrent first-calls for the same agent so we mint once.
-_CACHE: dict[str, _Cached] = {}
+# In-memory cache, no secrets on disk. Keyed by (machine_guid, claim_id) so a
+# re-claim (new claim_id, same machine_guid) misses and re-mints rather than
+# serving a bearer minted under the old claim. A mint lock serializes concurrent
+# first-calls so we mint once.
+_CACHE: dict[tuple[str, str], _Cached] = {}
 _LOCK = asyncio.Lock()
 
 
@@ -146,7 +148,10 @@ def _mint(node_id: str, mg: str, claim: str, token: str, hostname: str, timeout:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
     except urllib.error.HTTPError as exc:
-        body = exc.read()[:200].decode("utf-8", "replace")
+        try:  # reading the error body can itself raise (IncompleteRead/OSError)
+            body = exc.read()[:200].decode("utf-8", "replace")
+        except Exception:
+            body = "<error body unavailable>"
         return None, _scrub(f"Cloud mint HTTP {exc.code}: {body}", token)
     except Exception as exc:
         return None, _scrub(f"Cloud mint request failed: {exc!r}", token)
@@ -164,8 +169,9 @@ def _resolve_sync(port: int, token: str, hostname: str, timeout: int, now: float
     if identity is None:
         return None, err
     mg, nd, claim = identity
+    key = (mg, claim)
 
-    cached = _CACHE.get(mg)
+    cached = _CACHE.get(key)
     if cached is not None and now < cached.usable_until:
         return cached.token, None
 
@@ -173,7 +179,7 @@ def _resolve_sync(port: int, token: str, hostname: str, timeout: int, now: float
     if parsed is None:
         return None, err
     minted = str(parsed["token"])
-    _CACHE[mg] = _Cached(token=minted, usable_until=_usable_until(parsed.get("expiration"), now))
+    _CACHE[key] = _Cached(token=minted, usable_until=_usable_until(parsed.get("expiration"), now))
     return minted, None
 
 

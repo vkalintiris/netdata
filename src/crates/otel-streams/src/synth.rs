@@ -29,8 +29,10 @@ pub struct SynthParams {
     /// Distinct values per mid-cardinality attribute (`host`, `code`): a knob
     /// to push fields across the low/mid/high tier boundaries.
     pub field_cardinality: usize,
-    /// Deterministic offset applied to value selection, so distinct seeds give
-    /// distinct-but-reproducible corpora.
+    /// Offset added to the record index before the `% field_cardinality` that
+    /// picks `host`/`code`. Seeds differing by less than `field_cardinality`
+    /// give distinct corpora; seeds differing by a multiple of it collide. Use
+    /// seeds in `[0, field_cardinality)` for guaranteed-distinct corpora.
     pub seed: u64,
 }
 
@@ -44,7 +46,9 @@ pub fn generate(p: &SynthParams) -> Vec<LogRecord> {
         .map(|i| {
             let n = i as u64 + p.seed;
             let (sev_text, sev_num) = SEVERITIES[i % SEVERITIES.len()];
-            let ts = p.start_time_nanos + (i as u64) * p.spacing_nanos;
+            let ts = p
+                .start_time_nanos
+                .saturating_add((i as u64).saturating_mul(p.spacing_nanos));
             LogRecord {
                 time_unix_nano: ts,
                 observed_time_unix_nano: ts,

@@ -82,6 +82,19 @@ def test_resolve_sync_remints_when_expired(monkeypatch):
     assert t1 == "B1" and t2 == "B2"
 
 
+def test_resolve_sync_remints_on_new_claim_id(monkeypatch):
+    # Same machine_guid, rotated claim_id (re-claim) must miss the cache and
+    # re-mint rather than serve the bearer minted under the old claim.
+    ids = iter([("MG", "ND", "CL-old"), ("MG", "ND", "CL-new")])
+    monkeypatch.setattr(bearer, "_get_identity", lambda port, t: (next(ids), None))
+    seq = iter([{"token": "B-old", "expiration": 0}, {"token": "B-new", "expiration": 0}])
+    monkeypatch.setattr(bearer, "_mint", lambda *a: (next(seq), None))
+
+    t1, _ = bearer._resolve_sync(1, "c", "h", 30, now=0.0)
+    t2, _ = bearer._resolve_sync(1, "c", "h", 30, now=1.0)  # within window, but new claim_id
+    assert t1 == "B-old" and t2 == "B-new"
+
+
 def test_resolve_sync_propagates_identity_error(monkeypatch):
     monkeypatch.setattr(bearer, "_get_identity", lambda port, t: (None, "not claimed"))
     tok, err = bearer._resolve_sync(1, "c", "h", 30, now=0.0)

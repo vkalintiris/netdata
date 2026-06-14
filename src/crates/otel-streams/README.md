@@ -9,6 +9,7 @@ Streams real-world log events to otel-plugin via OTLP gRPC on `:4317`.
 | `certstream` | Certificate Transparency Log (WebSocket) | Live stream |
 | `jetstream` | Bluesky Jetstream firehose (WebSocket) | Live stream |
 | `github` | GH Archive (HTTP + gzip) | Historical replay |
+| `synth` | Deterministic in-process generator | Synthetic test corpus |
 
 ### Common options
 
@@ -87,3 +88,26 @@ cargo run --release -p otel-streams --bin github -- --start 2024-06-01-12
 ```
 
 Source-specific: `--start <YYYY-MM-DD-H>` [default: previous UTC hour], `--rate <N>` [default: 100, 0 = unlimited].
+
+---
+
+## synth
+
+Generates a **deterministic, reproducible** batch of OTLP log records and sends
+them through the same `Sender` / `build_export_request` path as the live
+sources. Unlike the live streams, output is a pure function of the parameters
+(no RNG, no clock inside generation), so it produces known-exact corpora for
+verifying the otel-logs subsystem — e.g. forcing WAL rotation/eviction over a
+known count, or exercising low/mid/high field-cardinality tiers.
+
+Each record carries: a monotonic timestamp; a cycled severity (low-cardinality
+`level`); `host`/`code` over `--field-cardinality` distinct values (mid); and a
+unique `seq` (high).
+
+### Run
+
+```bash
+cargo run --release -p otel-streams --bin synth -- --count 25 --field-cardinality 4
+```
+
+Source-specific: `--count <N>` [default: 100], `--field-cardinality <N>` [default: 100], `--spacing-nanos <NS>` [default: 1e9], `--start-time-nanos <NS>` [default: now − count·spacing], `--seed <N>` [default: 0].

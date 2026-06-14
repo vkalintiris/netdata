@@ -129,10 +129,10 @@ pieces, plus one hard constraint a future reader cannot infer from the code:
   no clock). This is the input generator for verification; the MCP wrapper that
   drives it is deferred with the "otel-streams as a tool" follow-up.
 - **Dedicated query tool (`netdata_agent_otel_logs`).** POSTs a typed
-  `OtelLogsRequest` straight to `/api/v3/function?function=otel-logs` (decision
-  D2=B — not via the `/mcp` `execute_function` wrapper), exposing every wire
-  param and returning the parsed response for assertion; `info=true` probes the
-  function descriptor.
+  `OtelLogsRequest` straight to `/api/v3/function?function=otel-logs` —
+  deliberately **not** via the `/mcp` `execute_function` wrapper, so every wire
+  param is exposed and the parsed response is returned for assertion;
+  `info=true` probes the function descriptor.
 
 - **Access-gating constraint (durable; verified 2026-06-14).** The `otel-logs`
   function declares `access = SIGNED_ID | SAME_SPACE | SENSITIVE_DATA`

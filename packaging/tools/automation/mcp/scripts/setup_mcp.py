@@ -101,8 +101,9 @@ def resolve_claim_creds(args: argparse.Namespace, environ: dict) -> dict[str, st
 def resolve_cloud_creds(args: argparse.Namespace, environ: dict) -> dict[str, str]:
     """Resolve NETDATA_CLOUD_* for injection: CLI flag wins, else the env var.
 
-    The Cloud REST token is REQUIRED (B1): the server needs it to mint per-agent
-    bearers for access-gated functions like otel-logs. Hostname is optional and
+    The Cloud REST token is REQUIRED (like the claim token): the server needs it
+    to mint per-agent bearers for access-gated functions like otel-logs. Hostname
+    is optional and
     omitted when unset (the server defaults to app.netdata.cloud). Blank counts
     as unset.
     """

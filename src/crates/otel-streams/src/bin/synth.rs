@@ -33,7 +33,9 @@ struct Args {
     #[arg(long)]
     start_time_nanos: Option<u64>,
 
-    /// Deterministic value-selection offset (distinct seeds → distinct corpora).
+    /// Value-selection offset added before the field-cardinality modulo. Seeds
+    /// differing by less than --field-cardinality give distinct corpora; a
+    /// multiple of it collides. Use seeds in [0, field-cardinality).
     #[arg(long, default_value_t = 0)]
     seed: u64,
 }
@@ -43,9 +45,10 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     args::init_tls_and_logging(&args.common.log_level);
 
-    let start = args.start_time_nanos.unwrap_or_else(|| {
-        now_unix_nanos().saturating_sub(args.count as u64 * args.spacing_nanos)
-    });
+    let spread = (args.count as u64).saturating_mul(args.spacing_nanos);
+    let start = args
+        .start_time_nanos
+        .unwrap_or_else(|| now_unix_nanos().saturating_sub(spread));
     let records = generate(&SynthParams {
         count: args.count,
         start_time_nanos: start,

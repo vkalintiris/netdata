@@ -29,6 +29,10 @@ from ._common import get_runs
 
 _FUNCTION = "otel-logs"
 
+# Bearer minting (loopback /api/v3/info + a Cloud round-trip) gets its own budget,
+# capped below the caller's `timeout` so it can't starve the function call.
+_MINT_TIMEOUT = 20
+
 _AgentId = Annotated[str, Field(description="A ready agent (from netdata_agent_declare + netdata_run_start).")]
 _Info = Annotated[bool, Field(description="If true, return the function's capability descriptor (accepted params, help) instead of querying.")]
 _After = Annotated[int | None, Field(description="Window start, unix seconds (inclusive). Omit for the function default.")]
@@ -131,7 +135,9 @@ def register(mcp: FastMCP) -> None:
         # call anonymously and let the 412 hint below explain the gate.
         auth: str | None = None
         if bearer.cloud_token():
-            auth, berr = await bearer.resolve_bearer(run.port, timeout=timeout)
+            # Minting has its own budget so it can't consume the whole `timeout`
+            # and starve the function call (and so timeout=1 still allows a mint).
+            auth, berr = await bearer.resolve_bearer(run.port, timeout=min(timeout, _MINT_TIMEOUT))
             if auth is None:
                 return OtelLogsResult(
                     agent_id=agent_id, endpoint=endpoint, request=payload,
@@ -145,16 +151,20 @@ def register(mcp: FastMCP) -> None:
         if err is not None:
             return OtelLogsResult(agent_id=agent_id, endpoint=endpoint, http_status=status,
                                   request=payload, error=err)
-        # A 412 here is the function's access gate, not a malformed request:
-        # otel-logs needs SIGNED_ID, which a local unclaimed agent lacks.
-        hint = (
-            " (otel-logs requires a signed-in identity. Set NETDATA_CLOUD_TOKEN in "
-            "the server env so this tool mints a bearer, and ensure the agent is "
-            "claimed + cloud_connected)"
-            if status == 412 else ""
-        )
+        # A 412 is the function's access gate (otel-logs needs SIGNED_ID), not a
+        # malformed request — surface it as the message, not a misleading "ok".
+        if status is not None and 200 <= status < 300:
+            message = "ok"
+        elif status == 412:
+            message = (
+                "otel-logs returned 412 — access-gated (SIGNED_ID). Set NETDATA_CLOUD_TOKEN "
+                "in the server env so this tool mints a bearer, and ensure the agent is "
+                "claimed + cloud_connected."
+            )
+        else:
+            message = f"otel-logs returned HTTP {status}"
         return OtelLogsResult(
             agent_id=agent_id, endpoint=endpoint, http_status=status, request=payload,
             response=data if isinstance(data, dict) else {"value": data},
-            message=f"ok{hint}",
+            message=message,
         )
