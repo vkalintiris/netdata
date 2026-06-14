@@ -6,6 +6,14 @@ Unlike the generic ``netdata_agent_execute_function``, this POSTs an
 endpoint, exposing every wire param and returning the parsed response so an LLM
 can assert on it (matched counts, facets, histogram, rows) — and probe the
 function's capabilities with ``info=true``.
+
+Access requirement: ``otel-logs`` declares ``SIGNED_ID | SAME_SPACE |
+SENSITIVE_DATA`` (otel-ledger/src/ledger/rpc/handler.rs), so a local, unclaimed,
+anonymous agent rejects it with HTTP 412 ("authenticated via Netdata Cloud SSO")
+on every transport — there is no localhost bypass. Querying requires a claimed
+agent and an ``Authorization: Bearer`` token carrying that access (mint via the
+``query-netdata-agents`` machinery). The push side (otel-streams ``synth``) and
+``info`` probing do not need this; live query verification does.
 """
 
 from __future__ import annotations
@@ -120,8 +128,15 @@ def register(mcp: FastMCP) -> None:
         if err is not None:
             return OtelLogsResult(agent_id=agent_id, endpoint=endpoint, http_status=status,
                                   request=payload, error=err)
+        # A 412 here is the function's access gate, not a malformed request:
+        # otel-logs needs SIGNED_ID, which a local unclaimed agent lacks.
+        hint = (
+            " (otel-logs requires a signed-in identity: claim the agent and pass a "
+            "Cloud-minted bearer — a local unclaimed agent always gets 412 here)"
+            if status == 412 else ""
+        )
         return OtelLogsResult(
             agent_id=agent_id, endpoint=endpoint, http_status=status, request=payload,
             response=data if isinstance(data, dict) else {"value": data},
-            message="ok",
+            message=f"ok{hint}",
         )

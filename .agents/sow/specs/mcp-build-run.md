@@ -107,6 +107,47 @@ async plumbing) are intentionally not restated here.
   unclaimed when the server env carries no token. The token is written into the
   user-global client configs (accepted, never committed).
 
+## OTel-logs automation surface
+
+This subsystem exists to iterate on the **OTel-logs** path end to end. Three
+pieces, plus one hard constraint a future reader cannot infer from the code:
+
+- **Run-time otel config (`netdata_agent_otel_config`).** Sets typed otel knobs
+  (OTLP endpoint, WAL `max_file_size`/`max_log_entries`/`max_file_duration`,
+  CRC/compression, index `max_files`/`max_total_size`) on a declared agent;
+  applied on the next `netdata_run_start`. The runtime writes them to
+  `<run_dir>/etc/otel.yaml` and **pins `[directories] config` to `<run_dir>/etc`**
+  so the otel plugin reads exactly that file. Only set fields are emitted; the
+  rest take plugin defaults. The OTLP endpoint is an auto-assigned free loopback
+  port surfaced as `RunInfo.otlp_endpoint`. Purpose: force storage edge cases
+  (rotation/retention) with tiny thresholds + small data.
+- **Synthetic push (`otel-streams` `synth` bin).** Generates a deterministic
+  batch of OTLP `LogRecord`s (monotonic timestamps; cycled severity as low-card
+  `level`; `host`/`code` over `--field-cardinality` as mid-card; unique `seq` as
+  high-card) and sends them through the **same production `Sender` /
+  `build_export_request`** the live sources use. Reproducible by params (no RNG,
+  no clock). This is the input generator for verification; the MCP wrapper that
+  drives it is deferred with the "otel-streams as a tool" follow-up.
+- **Dedicated query tool (`netdata_agent_otel_logs`).** POSTs a typed
+  `OtelLogsRequest` straight to `/api/v3/function?function=otel-logs` (decision
+  D2=B — not via the `/mcp` `execute_function` wrapper), exposing every wire
+  param and returning the parsed response for assertion; `info=true` probes the
+  function descriptor.
+
+- **Access-gating constraint (durable; verified 2026-06-14).** The `otel-logs`
+  function declares `access = SIGNED_ID | SAME_SPACE | SENSITIVE_DATA`
+  (`otel-ledger/src/ledger/rpc/handler.rs`). A **local, unclaimed, anonymous**
+  caller gets at most `HTTP_ACCESS_ANONYMOUS_DATA`, so the function returns
+  **HTTP 412** ("authenticated via Netdata Cloud SSO") on **every** transport —
+  raw HTTP *and* `/mcp` (which passes the caller's access straight through; no
+  localhost bypass exists). Bearer tokens are signature-guarded local files and
+  a minted token inherits only the caller's own access, so a `SIGNED_ID` bearer
+  requires an already-SSO'd identity. Consequence: the **push side and `info`
+  probing work on a plain local agent, but live query verification requires a
+  claimed agent + a Cloud-minted bearer** (the `query-netdata-agents`
+  mechanism). The query tool's code is transport-correct regardless; the gate is
+  the agent's, not the request's.
+
 ## Agent MCP wrapper
 
 - A `ready` agent's own Netdata MCP (`http://127.0.0.1:<port>/mcp`) is re-exposed
