@@ -24,9 +24,6 @@ members = [
     "netdata-plugin/bridge",
     "netdata-plugin/charts-derive",
 
-    # Netdata log viewer workspace members
-    "journal-function",
-
     # Netdata OTEL workspace members
     "otel-plugin",
     "otel-ledger",
@@ -214,9 +211,6 @@ netdata-plugin-error = { path = "netdata-plugin/error" }
 netdata-plugin-protocol = { path = "netdata-plugin/protocol" }
 netdata-plugin-schema = { path = "netdata-plugin/schema" }
 rt = { path = "netdata-plugin/rt" }
-
-# Netdata log viewer crates
-journal-function = { path = "journal-function" }
 
 # Netdata OTEL crates
 
