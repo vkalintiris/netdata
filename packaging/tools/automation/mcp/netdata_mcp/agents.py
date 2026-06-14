@@ -10,9 +10,10 @@ In-memory only (does not survive a server restart).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import buildcfg, runtime
+from .runtime import OtelConfig
 
 
 @dataclass
@@ -20,6 +21,9 @@ class AgentSpec:
     agent_id: str
     worktree: str
     profile: str
+    # otel-plugin tuning applied at the next launch/restart (set via
+    # netdata_agent_otel_config). Preserved across idempotent re-declare.
+    otel: OtelConfig = field(default_factory=OtelConfig)
 
 
 class AgentRegistry:
@@ -41,3 +45,14 @@ class AgentRegistry:
 
     def get(self, agent_id: str) -> AgentSpec | None:
         return self._agents.get(agent_id)
+
+    def set_otel(self, agent_id: str, otel: OtelConfig) -> AgentSpec | None:
+        """Replace the agent's otel config; applied at the next launch/restart.
+
+        Returns the updated spec, or None if the agent isn't declared.
+        """
+        spec = self._agents.get(agent_id)
+        if spec is None:
+            return None
+        spec.otel = otel
+        return spec

@@ -14,7 +14,10 @@ import re
 import socket
 import urllib.request
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+
+import yaml
 
 from . import profiles
 
@@ -90,6 +93,68 @@ def _default_conf(agent_id: str, rd: Path) -> dict[str, dict[str, str]]:
     }
 
 
+@dataclass
+class OtelConfig:
+    """Caller-tunable otel-plugin options, mapped onto ``otel.yaml`` at launch.
+
+    Every field is optional: ``None`` means "leave the plugin default" and the
+    key is omitted from the generated otel.yaml (which the plugin partial-merges
+    over its own defaults). The storage dirs are not exposed — they are always
+    pinned under the run dir for per-agent isolation. The rotation/retention
+    knobs are the edge-case drivers (tiny thresholds force multi-file splits and
+    evictions over small, deterministic corpora).
+    """
+
+    otlp_endpoint: str | None = None          # endpoint.path; None → auto free loopback port
+    wal_max_file_size: str | None = None      # logs.wal.rotation.default.max_file_size
+    wal_max_log_entries: int | None = None    # logs.wal.rotation.default.max_log_entries
+    wal_max_file_duration: str | None = None  # logs.wal.rotation.default.max_file_duration
+    wal_crc_enabled: bool | None = None        # logs.wal.crc_enabled
+    wal_compression_enabled: bool | None = None  # logs.wal.compression_enabled
+    index_max_files: int | None = None         # logs.index.retention.default.max_files
+    index_max_total_size: str | None = None    # logs.index.retention.default.max_total_size
+
+
+def _otel_doc(cfg: OtelConfig, rd: Path, otlp_endpoint: str) -> dict:
+    """The otel.yaml document: pinned per-agent storage + endpoint, plus any set knobs.
+
+    Only fields the caller set are emitted; the plugin keeps its defaults for the
+    rest. ``logs.wal.dir`` / ``logs.index.dir`` are always under the run dir so
+    each agent's WAL/index are isolated.
+    """
+    wal: dict = {"dir": str(rd / "lib" / "otel" / "wal")}
+    index: dict = {"dir": str(rd / "lib" / "otel" / "index")}
+    if cfg.wal_crc_enabled is not None:
+        wal["crc_enabled"] = cfg.wal_crc_enabled
+    if cfg.wal_compression_enabled is not None:
+        wal["compression_enabled"] = cfg.wal_compression_enabled
+    rotation = {
+        k: v
+        for k, v in (
+            ("max_file_size", cfg.wal_max_file_size),
+            ("max_log_entries", cfg.wal_max_log_entries),
+            ("max_file_duration", cfg.wal_max_file_duration),
+        )
+        if v is not None
+    }
+    if rotation:
+        wal["rotation"] = {"default": rotation}
+    retention = {
+        k: v
+        for k, v in (
+            ("max_files", cfg.index_max_files),
+            ("max_total_size", cfg.index_max_total_size),
+        )
+        if v is not None
+    }
+    if retention:
+        index["retention"] = {"default": retention}
+    return {
+        "endpoint": {"path": otlp_endpoint},
+        "logs": {"wal": wal, "index": index},
+    }
+
+
 def _ini_safe(s: str) -> str:
     # Strip newlines (the section/key injection vector) and null bytes; defensive
     # ahead of exposing overrides to callers. ';', '#', '=' are intentionally NOT
@@ -107,22 +172,44 @@ def _render_ini(conf: dict[str, dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def generate_runtime(agent_id: str, overrides: dict[str, dict[str, str]] | None = None) -> tuple[Path, Path]:
-    """Create the isolated run dir + write netdata.conf; return (run_dir, conf_path).
+def generate_runtime(
+    agent_id: str,
+    overrides: dict[str, dict[str, str]] | None = None,
+    otel: OtelConfig | None = None,
+) -> tuple[Path, Path, str]:
+    """Create the isolated run dir, write netdata.conf + otel.yaml; return
+    ``(run_dir, conf_path, otlp_endpoint)``.
 
     ``overrides`` is the per-agent extension point ({section: {key: value}}),
-    deep-merged over the defaults — the hook for future runtime overrides
-    (db mode, plugin toggles, log target, ...). Not exposed via a tool yet.
+    deep-merged over the defaults — the hook for runtime overrides (db mode,
+    plugin toggles, log target, ...).
+
+    The otel plugin (always built, see ``profiles``) reads ``otel.yaml`` from its
+    user config dir. We pin ``[directories] config`` to ``<run_dir>/etc`` so the
+    plugin loads the otel.yaml we generate there (netdata derives
+    ``NETDATA_USER_CONFIG_DIR`` from that key and re-exports it to plugins; the
+    ``-c`` flag only loads the file, not the dir). ``otlp_endpoint`` defaults to a
+    free loopback port so parallel agents don't collide on 4317; it is returned
+    so the caller can record where to push OTLP data.
     """
     rd = run_dir(agent_id)
     for sub in ("etc", "cache", "lib", "log"):
         (rd / sub).mkdir(parents=True, exist_ok=True)
+
     conf = _default_conf(agent_id, rd)
+    # Pin the user config dir so the otel plugin finds the otel.yaml below.
+    conf.setdefault("directories", {})["config"] = str(rd / "etc")
     for section, kv in (overrides or {}).items():
         conf.setdefault(section, {}).update(kv)
     conf_path = rd / "etc" / "netdata.conf"
     conf_path.write_text(_render_ini(conf), encoding="utf-8")
-    return rd, conf_path
+
+    cfg = otel or OtelConfig()
+    otlp_endpoint = cfg.otlp_endpoint or f"127.0.0.1:{free_port()}"
+    otel_yaml = yaml.safe_dump(_otel_doc(cfg, rd, otlp_endpoint), sort_keys=False)
+    (rd / "etc" / "otel.yaml").write_text(otel_yaml, encoding="utf-8")
+
+    return rd, conf_path, otlp_endpoint
 
 
 def launch_command(netdata_bin: Path, port: int, conf_path: Path) -> list[str]:

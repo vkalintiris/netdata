@@ -2,6 +2,7 @@ import socket
 from pathlib import Path
 
 import pytest
+import yaml
 
 from netdata_mcp import runtime
 
@@ -40,7 +41,7 @@ def test_launch_command_shape():
 
 def test_generate_runtime_writes_isolated_conf(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime.Path, "home", classmethod(lambda cls: tmp_path))
-    rd, conf = runtime.generate_runtime("agent-x")
+    rd, conf, _otlp = runtime.generate_runtime("agent-x")
     assert rd == tmp_path / "opt" / "netdata-mcp" / "run" / "agent-x"
     for sub in ("etc", "cache", "lib", "log"):
         assert (rd / sub).is_dir()
@@ -52,16 +53,53 @@ def test_generate_runtime_writes_isolated_conf(tmp_path, monkeypatch):
     assert "[global]" in text
     assert "hostname = mcp-agent-x" in text
     assert "is ephemeral node = yes" in text
+    # config dir pinned to the run dir's etc so the otel plugin finds otel.yaml
+    assert f"config = {rd / 'etc'}" in text
 
 
 def test_generate_runtime_applies_overrides(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime.Path, "home", classmethod(lambda cls: tmp_path))
-    _, conf = runtime.generate_runtime(
+    _, conf, _otlp = runtime.generate_runtime(
         "agent-y", overrides={"db": {"mode": "dbengine"}, "plugins": {"go.d": "no"}}
     )
     text = conf.read_text()
     assert "mode = dbengine" in text and "mode = ram" not in text  # override won
     assert "[plugins]" in text and "go.d = no" in text  # new section added
+
+
+def test_generate_runtime_writes_otel_yaml_with_isolated_storage_and_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime.Path, "home", classmethod(lambda cls: tmp_path))
+    rd, _conf, otlp = runtime.generate_runtime("agent-o")
+    doc = yaml.safe_load((rd / "etc" / "otel.yaml").read_text())
+    # storage is always pinned under the run dir (per-agent isolation)
+    assert doc["logs"]["wal"]["dir"] == str(rd / "lib" / "otel" / "wal")
+    assert doc["logs"]["index"]["dir"] == str(rd / "lib" / "otel" / "index")
+    # endpoint auto-assigned on loopback and reported back
+    assert doc["endpoint"]["path"] == otlp
+    assert otlp.startswith("127.0.0.1:")
+    # unset knobs are omitted (plugin keeps its defaults)
+    assert "rotation" not in doc["logs"]["wal"]
+    assert "retention" not in doc["logs"]["index"]
+
+
+def test_generate_runtime_otel_emits_only_set_knobs(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime.Path, "home", classmethod(lambda cls: tmp_path))
+    cfg = runtime.OtelConfig(
+        otlp_endpoint="127.0.0.1:4317",
+        wal_max_log_entries=10,
+        index_max_files=2,
+        wal_crc_enabled=False,
+    )
+    rd, _conf, otlp = runtime.generate_runtime("agent-k", otel=cfg)
+    doc = yaml.safe_load((rd / "etc" / "otel.yaml").read_text())
+    assert otlp == "127.0.0.1:4317"  # caller endpoint wins over auto-assign
+    assert doc["endpoint"]["path"] == "127.0.0.1:4317"
+    assert doc["logs"]["wal"]["rotation"]["default"] == {"max_log_entries": 10}
+    assert doc["logs"]["index"]["retention"]["default"] == {"max_files": 2}
+    assert doc["logs"]["wal"]["crc_enabled"] is False
+    # untouched knobs stay out
+    assert "max_file_size" not in doc["logs"]["wal"]["rotation"]["default"]
+    assert "compression_enabled" not in doc["logs"]["wal"]
 
 
 def test_claim_env_empty_without_token():

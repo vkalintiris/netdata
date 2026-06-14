@@ -127,6 +127,7 @@ class RunInfo(BaseModel):
     worktree: str | None = None
     port: int | None = Field(default=None, description="Assigned loopback port.")
     url: str | None = Field(default=None, description="http://127.0.0.1:<port> once the agent is ready.")
+    otlp_endpoint: str | None = Field(default=None, description="Where the otel plugin listens for OTLP/gRPC data (host:port); send test logs here.")
     current_phase: str | None = Field(default=None, description="configure | install | launch.")
     elapsed_seconds: float = 0.0
     returncode: int | None = Field(default=None, description="netdata's exit code once a launched agent has stopped/failed (negative = killed by signal).")
@@ -157,6 +158,7 @@ def run_info(run: Run, *, message: str = "") -> RunInfo:
         worktree=run.worktree,
         port=run.port,
         url=(f"http://127.0.0.1:{run.port}" if ready else None),
+        otlp_endpoint=run.otlp_endpoint or None,
         current_phase=run.current_phase,
         elapsed_seconds=round(run.elapsed(), 1),
         returncode=run.returncode,

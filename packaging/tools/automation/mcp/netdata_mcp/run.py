@@ -52,6 +52,7 @@ class Run:
     port: int
     run_dir: Path
     conf_path: Path
+    otlp_endpoint: str = ""  # where the otel plugin listens for OTLP/gRPC data
     buffer: LogBuffer = field(default_factory=LogBuffer)
     state: RunState = "building"
     error: str | None = None
@@ -120,7 +121,8 @@ class RunRegistry:
 
     async def start(
         self, agent_id: str, worktree: str, profile: str,
-        *, restart: bool = False, probe: Probe | None = None,
+        *, otel: runtime.OtelConfig | None = None,
+        restart: bool = False, probe: Probe | None = None,
     ) -> tuple[Run, str]:
         """Launch a run for an agent (fire-and-poll); return ``(run, outcome)``.
 
@@ -148,10 +150,10 @@ class RunRegistry:
                 outcome = "started"
 
             port = runtime.free_port()
-            rd, conf = runtime.generate_runtime(agent_id)
+            rd, conf, otlp_endpoint = runtime.generate_runtime(agent_id, otel=otel)
             run = Run(
                 agent_id=agent_id, worktree=worktree, profile=profile,
-                port=port, run_dir=rd, conf_path=conf,
+                port=port, run_dir=rd, conf_path=conf, otlp_endpoint=otlp_endpoint,
             )
             self._runs[agent_id] = run
             run._task = asyncio.get_running_loop().create_task(
