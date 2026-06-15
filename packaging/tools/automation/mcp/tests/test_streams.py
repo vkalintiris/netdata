@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 
 from netdata_mcp import streams
 
@@ -92,5 +93,43 @@ def test_registry_stop_unknown_returns_none():
     async def run():
         reg = streams.StreamRegistry()
         assert await reg.stop("nope") is None
+
+    asyncio.run(run())
+
+
+def test_run_synth_timeout_kills_and_reports(tmp_path):
+    async def run():
+        wt = _crates(tmp_path)
+        rc, tail, err = await streams.run_synth(wt, ["sleep", "30"], timeout=1)
+        assert rc is None and err is not None and "timed out" in err
+
+    asyncio.run(run())
+
+
+def _alive(marker: str) -> bool:
+    return subprocess.run(["pgrep", "-f", f"sleep {marker}"], capture_output=True).returncode == 0
+
+
+def test_run_synth_cancel_kills_child(tmp_path):
+    # Outer cancellation must not orphan the shielded cargo/synth process group.
+    async def run():
+        wt = _crates(tmp_path)
+        marker = "99887766554433"  # unique sleep duration to grep for
+        task = asyncio.create_task(streams.run_synth(wt, ["sleep", marker], timeout=60))
+        for _ in range(50):  # wait until the child is actually up
+            await asyncio.sleep(0.1)
+            if _alive(marker):
+                break
+        assert _alive(marker), "child never spawned"
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        for _ in range(20):  # give the SIGKILL a moment to land
+            if not _alive(marker):
+                break
+            await asyncio.sleep(0.1)
+        assert not _alive(marker), "child was orphaned after outer cancel"
 
     asyncio.run(run())

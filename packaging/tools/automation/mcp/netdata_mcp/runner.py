@@ -91,10 +91,10 @@ def kill_process_group(proc: asyncio.subprocess.Process | None, sig: int) -> Non
 class Cancellable(Protocol):
     """A unit of work the cancel helpers below can drive to a terminal state.
 
-    Both :class:`~netdata_mcp.jobs.Job` and :class:`~netdata_mcp.run.Run`
-    satisfy this structurally: a backing ``_task``, a ``done`` flag, and a
-    SIGTERM (``request_cancel``) / SIGKILL (``force_kill``) pair on their
-    process group.
+    :class:`~netdata_mcp.jobs.Job`, :class:`~netdata_mcp.run.Run`, and
+    :class:`~netdata_mcp.streams.Stream` satisfy this structurally: a backing
+    ``_task``, a ``done`` flag, and a SIGTERM (``request_cancel``) / SIGKILL
+    (``force_kill``) pair on their process group.
     """
 
     _task: asyncio.Task | None

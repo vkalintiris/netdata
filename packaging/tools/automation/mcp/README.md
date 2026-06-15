@@ -289,6 +289,9 @@ netdata_mcp/
   runtime.py       # agent run dir + netdata.conf gen, port, readiness probe ── core
   agents.py        # AgentRegistry (agent-id -> worktree/profile)  ── core
   run.py           # Run + RunRegistry (launch/readiness/stop)     ── core
+  bearer.py        # Cloud per-agent bearer minting/cache (otel-logs auth) ── core
+  agentfn.py       # call a netdata function over HTTP (otel-logs) ── core
+  streams.py       # Stream + StreamRegistry, synth/stream cargo runners ── core
   server.py        # FastMCP instance, lifespan-held registries
   tools/
     job_control.py # netdata_job_status / _logs / _cancel
@@ -296,6 +299,10 @@ netdata_mcp/
     build.py       # netdata_build_start
     agents.py      # netdata_agent_declare
     run.py         # netdata_run_start / _status / _logs / _stop
+    otel_config.py # netdata_agent_otel_config
+    otel_logs.py   # netdata_agent_otel_logs
+    otel_push.py   # netdata_agent_otel_push (one-shot synth)
+    otel_stream.py # netdata_agent_otel_stream_{start,status,stop}
 ```
 
 Adding a capability domain = a new `tools/<domain>.py` exposing `register(mcp)`

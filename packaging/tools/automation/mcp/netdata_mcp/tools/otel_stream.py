@@ -37,6 +37,9 @@ class StreamInfo(BaseModel):
     agent_id: str = ""
     source: str | None = None
     otel_endpoint: str | None = None
+    # The registry's Stream.state is Literal[running|stopped|failed]; this wire
+    # model also carries response-only states (unknown = no such stream, error =
+    # bad request) that never exist in the registry, so it stays a free str.
     state: str = Field(description="running | stopped | failed | unknown | error")
     returncode: int | None = None
     log_tail: str | None = None

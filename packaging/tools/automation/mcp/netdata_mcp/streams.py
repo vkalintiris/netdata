@@ -84,6 +84,8 @@ def stream_cmd(
     if tenant_id:
         cmd += ["--tenant-id", tenant_id]
     if url:  # certstream/jetstream have differently-named url flags
+        if source not in ("certstream", "jetstream"):  # belt-and-braces for direct callers
+            raise ValueError(f"url is only valid for certstream/jetstream, not {source!r}")
         cmd += ["--certstream-url" if source == "certstream" else "--jetstream-url", url]
     if collections:  # jetstream only
         cmd += ["--collections", collections]
@@ -96,8 +98,14 @@ def stream_cmd(
 
 async def run_synth(worktree: str, cmd: list[str], *, timeout: int) -> tuple[int | None, str, str | None]:
     """Run a one-shot synth ``cmd`` to completion in the worktree's crates dir.
-    Returns ``(returncode, log_tail, error)``; never raises. On timeout the whole
-    process group is killed and ``error`` is set."""
+    Returns ``(returncode, log_tail, error)`` and does not raise on a timeout or
+    spawn failure. ``rc == 0`` is authoritative end-to-end success: the synth
+    binary ``bail!``s (non-zero) if any batch failed to export, so the caller
+    needn't second-guess a zero exit.
+
+    On timeout — or on outer cancellation — the whole process group is killed so
+    the shielded task can't leave a cargo/synth child running unobserved.
+    """
     buffer = LogBuffer()
     holder: dict[str, asyncio.subprocess.Process] = {}
     task = asyncio.get_running_loop().create_task(
@@ -107,8 +115,19 @@ async def run_synth(worktree: str, cmd: list[str], *, timeout: int) -> tuple[int
         rc = await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
     except asyncio.TimeoutError:
         kill_process_group(holder.get("p"), signal.SIGKILL)
-        await task  # rejoin the killed process
+        await task  # rejoin the killed task; the proc is gone (no-op) or reaped
         return None, buffer.tail(20), f"synth timed out after {timeout}s (first run also builds it)"
+    except asyncio.CancelledError:
+        # Outer cancel (e.g. client disconnect on http transport): shield kept
+        # the task — and its cargo/synth process group — alive, so kill it before
+        # propagating, or it would run unobserved (CancelledError is a
+        # BaseException and bypasses the `except Exception` below).
+        kill_process_group(holder.get("p"), signal.SIGKILL)
+        try:
+            await task
+        except BaseException:
+            pass
+        raise
     except Exception as exc:  # spawn failure (e.g. cargo not found)
         return None, buffer.tail(20), f"failed to run synth: {exc!r}"
     return rc, buffer.tail(20), None
@@ -173,6 +192,7 @@ class StreamRegistry:
         try:
             stream.buffer.append(f"[stream {stream.source} -> {stream.otel_endpoint}] {' '.join(cmd)}")
             rc = await run_command(cmd, crates_dir(worktree), stream.buffer.append, on_spawn=stream._set_proc)
+            stream._proc = None  # process is gone; drop the handle (mirrors Run)
             stream.returncode = rc
             # A daemon that exits on its own is a failure unless we asked it to stop.
             stream.state = "stopped" if stream._cancelled else "failed"

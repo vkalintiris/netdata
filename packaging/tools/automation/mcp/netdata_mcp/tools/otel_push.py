@@ -89,5 +89,5 @@ def register(mcp: FastMCP) -> None:
             )
         return OtelPushResult(
             agent_id=agent_id, otel_endpoint=run.otlp_endpoint, count=count,
-            success=True, returncode=0, log_tail=tail, message=f"sent {count} records",
+            success=True, returncode=rc, log_tail=tail, message=f"sent {count} records",
         )
