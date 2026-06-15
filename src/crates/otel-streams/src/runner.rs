@@ -22,7 +22,8 @@ where
         batch_size: common.batch_size,
         flush_interval,
         tenant_id: common.tenant_id.clone(),
-        service_name: S::SERVICE_NAME,
+        service_name: S::SERVICE_NAME.to_string(),
+        service_namespace: None,
         scope_name: S::SCOPE_NAME,
         scope_version: S::SCOPE_VERSION,
     };

@@ -16,7 +16,11 @@ pub struct OtelConfig {
     pub batch_size: usize,
     pub flush_interval: Duration,
     pub tenant_id: Option<String>,
-    pub service_name: &'static str,
+    // Runtime (not &'static): synth sets service_name/namespace from CLI to vary
+    // the (namespace, name) stream identity per invocation. Live sources pass
+    // their static SERVICE_NAME and no namespace.
+    pub service_name: String,
+    pub service_namespace: Option<String>,
     pub scope_name: &'static str,
     pub scope_version: &'static str,
 }
@@ -28,7 +32,8 @@ pub struct Sender {
     flush_interval: Duration,
     rx: mpsc::Receiver<LogRecord>,
     tenant_header: Option<MetadataValue<tonic::metadata::Ascii>>,
-    service_name: &'static str,
+    service_name: String,
+    service_namespace: Option<String>,
     scope_name: &'static str,
     scope_version: &'static str,
 }
@@ -77,6 +82,7 @@ impl Sender {
             rx,
             tenant_header,
             service_name: config.service_name,
+            service_namespace: config.service_namespace,
             scope_name: config.scope_name,
             scope_version: config.scope_version,
         })
@@ -127,7 +133,8 @@ impl Sender {
         let count = records.len();
         let export = build_export_request(
             records,
-            self.service_name,
+            &self.service_name,
+            self.service_namespace.as_deref(),
             self.scope_name,
             self.scope_version,
         );

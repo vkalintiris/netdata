@@ -23,6 +23,8 @@ _FieldCard = Annotated[int, Field(description="Distinct values per mid-cardinali
 _Spacing = Annotated[int, Field(description="Nanoseconds between consecutive records.", ge=0)]
 _StartTime = Annotated[int | None, Field(description="First record timestamp (unix nanos). Default: now − count·spacing, so the batch lands in the recent past.", ge=0)]
 _Seed = Annotated[int, Field(description="Deterministic value-selection offset; seeds within [0, field_cardinality) give distinct corpora.", ge=0)]
+_ServiceName = Annotated[str | None, Field(description="Resource service.name for this batch (default 'otel-streams-synth'). otel-logs keys a storage stream on (service.namespace, service.name); vary it per push to create distinct queryable services.")]
+_ServiceNamespace = Annotated[str | None, Field(description="Resource service.namespace for this batch (default: empty/catch-all). Pair with service_name to push multiple service streams for query testing.")]
 _Tenant = Annotated[str | None, Field(description="Tenant id sent via the X-Scope-OrgID gRPC header.")]
 _BatchSize = Annotated[int, Field(description="Max records per gRPC export request.", ge=1)]
 _FlushMs = Annotated[int, Field(description="Max ms before flushing a partial batch.", ge=1)]
@@ -60,6 +62,8 @@ def register(mcp: FastMCP) -> None:
         spacing_nanos: _Spacing = 1_000_000_000,
         start_time_nanos: _StartTime = None,
         seed: _Seed = 0,
+        service_name: _ServiceName = None,
+        service_namespace: _ServiceNamespace = None,
         tenant_id: _Tenant = None,
         batch_size: _BatchSize = 100,
         flush_interval_ms: _FlushMs = 1000,
@@ -79,6 +83,7 @@ def register(mcp: FastMCP) -> None:
             spacing_nanos=spacing_nanos, start_time_nanos=start_time_nanos, seed=seed,
             tenant_id=tenant_id, batch_size=batch_size, flush_interval_ms=flush_interval_ms,
             connect_timeout_secs=connect_timeout_secs,
+            service_name=service_name, service_namespace=service_namespace,
         )
         rc, tail, err = await streams.run_synth(run.worktree, cmd, timeout=timeout)
         if err is not None or rc != 0:

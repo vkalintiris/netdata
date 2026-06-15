@@ -14,18 +14,22 @@ def test_synth_cmd_basics():
     assert cmd[:7] == ["cargo", "run", "--quiet", "-p", "otel-streams", "--bin", "synth"]
     assert "--otel-endpoint" in cmd and "http://127.0.0.1:4317" in cmd
     assert cmd[cmd.index("--count") + 1] == "25"
-    # omitted optionals stay out
+    # omitted optionals stay out (synth applies its own defaults)
     assert "--start-time-nanos" not in cmd and "--tenant-id" not in cmd
+    assert "--service-name" not in cmd and "--service-namespace" not in cmd
 
 
 def test_synth_cmd_includes_set_optionals():
     cmd = streams.synth_cmd(
         "h:1", count=1, field_cardinality=1, spacing_nanos=0, start_time_nanos=123,
         seed=5, tenant_id="t1", batch_size=1, flush_interval_ms=1, connect_timeout_secs=1,
+        service_name="api", service_namespace="prod",
     )
     assert cmd[cmd.index("--start-time-nanos") + 1] == "123"
     assert cmd[cmd.index("--tenant-id") + 1] == "t1"
     assert cmd[cmd.index("--seed") + 1] == "5"
+    assert cmd[cmd.index("--service-name") + 1] == "api"
+    assert cmd[cmd.index("--service-namespace") + 1] == "prod"
 
 
 def test_stream_cmd_certstream_url_flag():

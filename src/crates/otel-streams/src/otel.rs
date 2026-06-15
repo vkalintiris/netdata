@@ -70,13 +70,22 @@ pub fn json_to_any_value(value: &serde_json::Value) -> AnyValue {
 pub fn build_export_request(
     log_records: Vec<LogRecord>,
     service_name: &str,
+    service_namespace: Option<&str>,
     scope_name: &str,
     scope_version: &str,
 ) -> ExportLogsServiceRequest {
+    // service.name always; service.namespace only when set. The otel-ledger
+    // indexer derives a file's single (namespace, name) stream from these two
+    // resource attributes, so a batch must carry one identity (callers vary it
+    // per invocation to create distinct streams).
+    let mut attributes = vec![kv("service.name", str_val(service_name))];
+    if let Some(namespace) = service_namespace {
+        attributes.push(kv("service.namespace", str_val(namespace)));
+    }
     ExportLogsServiceRequest {
         resource_logs: vec![ResourceLogs {
             resource: Some(Resource {
-                attributes: vec![kv("service.name", str_val(service_name))],
+                attributes,
                 dropped_attributes_count: 0,
                 entity_refs: vec![],
             }),
@@ -103,4 +112,46 @@ pub fn now_unix_nanos() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resource_attrs(req: &ExportLogsServiceRequest) -> Vec<(String, String)> {
+        req.resource_logs[0]
+            .resource
+            .as_ref()
+            .unwrap()
+            .attributes
+            .iter()
+            .map(|kv| {
+                let v = match kv.value.as_ref().and_then(|a| a.value.as_ref()) {
+                    Some(any_value::Value::StringValue(s)) => s.clone(),
+                    other => format!("{other:?}"),
+                };
+                (kv.key.clone(), v)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn omits_namespace_when_unset() {
+        let req = build_export_request(vec![], "svc", None, "scope", "1.0");
+        let attrs = resource_attrs(&req);
+        assert_eq!(attrs, vec![("service.name".into(), "svc".into())]);
+    }
+
+    #[test]
+    fn emits_namespace_when_set() {
+        let req = build_export_request(vec![], "api", Some("prod"), "scope", "1.0");
+        let attrs = resource_attrs(&req);
+        assert_eq!(
+            attrs,
+            vec![
+                ("service.name".into(), "api".into()),
+                ("service.namespace".into(), "prod".into()),
+            ]
+        );
+    }
 }

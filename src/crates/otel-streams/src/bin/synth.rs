@@ -40,6 +40,16 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     seed: u64,
 
+    /// Resource `service.name`. The otel-ledger indexer keys a storage stream on
+    /// (service.namespace, service.name), so vary this (and --service-namespace)
+    /// per invocation to push distinct service streams.
+    #[arg(long, default_value = "otel-streams-synth")]
+    service_name: String,
+
+    /// Resource `service.namespace`. Omitted → the empty/catch-all namespace.
+    #[arg(long)]
+    service_namespace: Option<String>,
+
     /// Max seconds to wait for the OTLP endpoint to accept a connection before
     /// giving up. The shared sender retries forever (right for live streams);
     /// this one-shot tool bounds it so a typo'd/unready endpoint fails fast.
@@ -81,7 +91,8 @@ async fn main() -> anyhow::Result<()> {
         batch_size: args.common.batch_size,
         flush_interval: Duration::from_millis(args.common.flush_interval_ms),
         tenant_id: args.common.tenant_id.clone(),
-        service_name: "otel-streams-synth",
+        service_name: args.service_name.clone(),
+        service_namespace: args.service_namespace.clone(),
         scope_name: "synth",
         scope_version: "1.0",
     };

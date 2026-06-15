@@ -48,6 +48,7 @@ def synth_cmd(
     otel_endpoint: str, *, count: int, field_cardinality: int, spacing_nanos: int,
     start_time_nanos: int | None, seed: int, tenant_id: str | None,
     batch_size: int, flush_interval_ms: int, connect_timeout_secs: int,
+    service_name: str | None = None, service_namespace: str | None = None,
 ) -> list[str]:
     """Argv for the one-shot synth generator."""
     cmd = [
@@ -65,6 +66,12 @@ def synth_cmd(
         cmd += ["--start-time-nanos", str(start_time_nanos)]
     if tenant_id:
         cmd += ["--tenant-id", tenant_id]
+    # service.name/namespace key the otel-ledger storage stream; omitted leaves
+    # synth's own defaults (name "otel-streams-synth", empty namespace).
+    if service_name:
+        cmd += ["--service-name", service_name]
+    if service_namespace:
+        cmd += ["--service-namespace", service_namespace]
     return cmd
 
 
