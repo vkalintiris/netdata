@@ -119,7 +119,7 @@ A dedicated surface for iterating on the OTel-logs path against a ready agent:
 |------|------|
 | `netdata_agent_otel_config(agent_id, …)` | Set otel-plugin knobs (WAL rotation, index retention, endpoint) applied on the next start. REPLACES prior config. |
 | `netdata_agent_otel_push(agent_id, count, …)` | One-shot: send a deterministic synthetic OTLP corpus (`otel-streams synth`) to the agent. |
-| `netdata_agent_otel_stream_{start,status,stop}(…)` | Run a live source (`source=certstream\|jetstream\|github`) as a start/status/stop daemon. |
+| `netdata_agent_otel_stream_{start,status,stop,list}(…)` | Run a live source (`source=certstream\|jetstream\|github`) as a daemon; `list` enumerates all streams. |
 | `netdata_agent_otel_logs(agent_id, …)` | Query the `otel-logs` function (typed params; mints a Cloud bearer when `NETDATA_CLOUD_TOKEN` is set). |
 
 - **push/stream** shell out to `cargo run -p otel-streams --bin <name>` (built on
@@ -302,7 +302,7 @@ netdata_mcp/
     otel_config.py # netdata_agent_otel_config
     otel_logs.py   # netdata_agent_otel_logs
     otel_push.py   # netdata_agent_otel_push (one-shot synth)
-    otel_stream.py # netdata_agent_otel_stream_{start,status,stop}
+    otel_stream.py # netdata_agent_otel_stream_{start,status,stop,list}
 ```
 
 Adding a capability domain = a new `tools/<domain>.py` exposing `register(mcp)`

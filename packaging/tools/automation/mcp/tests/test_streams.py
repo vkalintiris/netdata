@@ -97,6 +97,20 @@ def test_registry_stop_unknown_returns_none():
     asyncio.run(run())
 
 
+def test_registry_list_enumerates_streams(tmp_path):
+    async def run():
+        reg = streams.StreamRegistry()
+        wt = _crates(tmp_path)
+        assert reg.list() == []
+        a = reg.start("ag", wt, "127.0.0.1:1", "certstream", ["sleep", "30"])
+        b = reg.start("ag", wt, "127.0.0.1:1", "jetstream", ["sleep", "30"])
+        ids = {s.stream_id for s in reg.list()}
+        assert ids == {a.stream_id, b.stream_id}
+        await reg.stop_all(wait=3.0)
+
+    asyncio.run(run())
+
+
 def test_run_synth_timeout_kills_and_reports(tmp_path):
     async def run():
         wt = _crates(tmp_path)

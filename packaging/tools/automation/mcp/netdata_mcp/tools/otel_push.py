@@ -21,7 +21,7 @@ _AgentId = Annotated[str, Field(description="A ready agent (declare + run_start)
 _Count = Annotated[int, Field(description="Number of synthetic log records to send.", ge=1, le=10_000_000)]
 _FieldCard = Annotated[int, Field(description="Distinct values per mid-cardinality attribute (host, code).", ge=1)]
 _Spacing = Annotated[int, Field(description="Nanoseconds between consecutive records.", ge=0)]
-_StartTime = Annotated[int | None, Field(description="First record timestamp (unix nanos). Default: now − count·spacing, so the batch lands in the recent past.")]
+_StartTime = Annotated[int | None, Field(description="First record timestamp (unix nanos). Default: now − count·spacing, so the batch lands in the recent past.", ge=0)]
 _Seed = Annotated[int, Field(description="Deterministic value-selection offset; seeds within [0, field_cardinality) give distinct corpora.", ge=0)]
 _Tenant = Annotated[str | None, Field(description="Tenant id sent via the X-Scope-OrgID gRPC header.")]
 _BatchSize = Annotated[int, Field(description="Max records per gRPC export request.", ge=1)]
@@ -33,7 +33,7 @@ _Timeout = Annotated[int, Field(description="Max seconds to wait for the whole p
 class OtelPushResult(BaseModel):
     agent_id: str
     otel_endpoint: str | None = None
-    count: int | None = None
+    count: int | None = Field(default=None, description="Records requested (and sent, when success=True).")
     success: bool = False
     returncode: int | None = None
     log_tail: str | None = Field(default=None, description="Last lines of the synth output (build + send).")

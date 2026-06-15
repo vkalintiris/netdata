@@ -47,6 +47,10 @@ class StreamInfo(BaseModel):
     message: str = ""
 
 
+class StreamList(BaseModel):
+    streams: list[StreamInfo] = Field(default_factory=list, description="All streams the server has started (running + terminal).")
+
+
 def _info(s: streams.Stream, *, message: str = "") -> StreamInfo:
     return StreamInfo(
         stream_id=s.stream_id, agent_id=s.agent_id, source=s.source,
@@ -132,4 +136,13 @@ def register(mcp: FastMCP) -> None:
         s = await get_streams(ctx).stop(stream_id)
         if s is None:
             return StreamInfo(state="unknown", error=f"No such stream {stream_id!r}.")
-        return _info(s, message="stream stopped")
+        # The stream may have already exited on its own before we stopped it.
+        msg = "stream stopped" if s.state == "stopped" else f"stream was already {s.state}"
+        return _info(s, message=msg)
+
+    @mcp.tool(
+        name="netdata_agent_otel_stream_list",
+        description="List all otel streams this server has started (running and terminal), with state.",
+    )
+    async def netdata_agent_otel_stream_list(ctx: Context) -> StreamList:
+        return StreamList(streams=[_info(s) for s in get_streams(ctx).list()])

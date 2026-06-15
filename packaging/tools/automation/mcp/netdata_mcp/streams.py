@@ -83,8 +83,14 @@ def stream_cmd(
     ]
     if tenant_id:
         cmd += ["--tenant-id", tenant_id]
-    if url:  # certstream/jetstream have differently-named url flags
-        if source not in ("certstream", "jetstream"):  # belt-and-braces for direct callers
+    # `url` is guarded but collections/start/rate are not — by design, not
+    # oversight: url's FLAG NAME is source-dependent (--certstream-url vs
+    # --jetstream-url), so a wrong source would silently emit a plausible-but-
+    # wrong flag; the explicit check prevents that. The others have fixed flag
+    # names, so a mismatch is just an unknown flag the bin rejects loudly.
+    # (validate_source_params rejects all mismatches upstream regardless.)
+    if url:
+        if source not in ("certstream", "jetstream"):
             raise ValueError(f"url is only valid for certstream/jetstream, not {source!r}")
         cmd += ["--certstream-url" if source == "certstream" else "--jetstream-url", url]
     if collections:  # jetstream only
@@ -115,14 +121,21 @@ async def run_synth(worktree: str, cmd: list[str], *, timeout: int) -> tuple[int
         rc = await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
     except asyncio.TimeoutError:
         kill_process_group(holder.get("p"), signal.SIGKILL)
-        await task  # rejoin the killed task; the proc is gone (no-op) or reaped
+        try:
+            await task  # rejoin the killed task; proc is gone (no-op) or reaped
+        except BaseException:
+            pass
         return None, buffer.tail(20), f"synth timed out after {timeout}s (first run also builds it)"
     except asyncio.CancelledError:
         # Outer cancel (e.g. client disconnect on http transport): shield kept
-        # the task — and its cargo/synth process group — alive, so kill it before
-        # propagating, or it would run unobserved (CancelledError is a
-        # BaseException and bypasses the `except Exception` below).
-        kill_process_group(holder.get("p"), signal.SIGKILL)
+        # the task — and its cargo/synth process group — alive, so tear it down
+        # before propagating (CancelledError is a BaseException and bypasses the
+        # `except Exception` below).
+        proc = holder.get("p")
+        if proc is not None:
+            kill_process_group(proc, signal.SIGKILL)
+        else:
+            task.cancel()  # not spawned yet → cancel run_command so its finally cleans up
         try:
             await task
         except BaseException:
@@ -192,7 +205,6 @@ class StreamRegistry:
         try:
             stream.buffer.append(f"[stream {stream.source} -> {stream.otel_endpoint}] {' '.join(cmd)}")
             rc = await run_command(cmd, crates_dir(worktree), stream.buffer.append, on_spawn=stream._set_proc)
-            stream._proc = None  # process is gone; drop the handle (mirrors Run)
             stream.returncode = rc
             # A daemon that exits on its own is a failure unless we asked it to stop.
             stream.state = "stopped" if stream._cancelled else "failed"
@@ -203,6 +215,7 @@ class StreamRegistry:
             stream.state = "stopped" if stream._cancelled else "failed"
             stream.buffer.append(f"[error: {exc}]")
         finally:
+            stream._proc = None  # process is gone on every path; drop the handle (mirrors Run)
             if stream.state not in _TERMINAL:  # cancelled task bypasses except
                 stream.state = "stopped"
 
