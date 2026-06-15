@@ -132,13 +132,22 @@ reader cannot infer from the code:
   completion, and returns records-sent / success / log tail.
   - **Service identity (`service_name` / `service_namespace`).** The push sets
     the OTLP resource attributes `service.name` (default `otel-streams-synth`)
-    and `service.namespace` (default empty). otel-ledger keys a storage **stream**
-    on `(service.namespace, service.name)` — one identity per indexed file — so
-    each batch carries a single identity; push multiple batches with distinct
+    and `service.namespace`. otel-ledger keys a storage **stream** on
+    `(service.namespace, service.name)` — one identity per indexed file — so each
+    batch carries a single identity; push multiple batches with distinct
     identities to create multiple streams. Both are **queryable by their literal
     field names** (`service.name`, `service.namespace`) via `otel_logs`
     `selections`/`facets`/`query`: resource attributes are flattened into the
     same key namespace as log/scope attributes at ingest, with no remapping.
+  - **Absent vs empty (verified live).** `service.name` is **always emitted**
+    (even `""`), so it is always a queryable field. `service.namespace` is
+    emitted **only when set**: omitting it (the default) emits no token, so those
+    records are *not* a queryable `service.namespace` value (the stream's
+    namespace defaults to `""` for storage partitioning, but there is no facet to
+    select on) — they are reachable only via `service.name`. Passing
+    `service_namespace=""` *explicitly* emits an empty-valued token that **is**
+    queryable as `service.namespace=[""]`. This is standard OTel semantics:
+    an absent attribute differs from a present-but-empty one.
 - **Live streams (`netdata_agent_otel_stream_{start,status,stop}`).** The
   real-world sources (certstream/jetstream/github) are daemons, so they get a
   start/status/stop lifecycle (one **source-enum** trio, not a tool per source)

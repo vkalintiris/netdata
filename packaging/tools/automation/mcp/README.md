@@ -118,7 +118,7 @@ A dedicated surface for iterating on the OTel-logs path against a ready agent:
 | Tool | What |
 |------|------|
 | `netdata_agent_otel_config(agent_id, …)` | Set otel-plugin knobs (WAL rotation, index retention, endpoint) applied on the next start. REPLACES prior config. |
-| `netdata_agent_otel_push(agent_id, count, …)` | One-shot: send a deterministic synthetic OTLP corpus (`otel-streams synth`) to the agent. `service_name`/`service_namespace` set the resource identity (one stream per batch; query by literal `service.name`/`service.namespace`). |
+| `netdata_agent_otel_push(agent_id, count, …)` | One-shot: send a deterministic synthetic OTLP corpus (`otel-streams synth`) to the agent. `service_name`/`service_namespace` set the resource identity (one stream per batch; query by literal `service.name`/`service.namespace`). `service_name` is always emitted (queryable even when `""`); an omitted `service_namespace` emits no token (not queryable — reachable via `service.name`), while `service_namespace=""` emits a queryable empty value. |
 | `netdata_agent_otel_stream_{start,status,stop,list}(…)` | Run a live source (`source=certstream\|jetstream\|github`) as a daemon; `list` enumerates all streams. |
 | `netdata_agent_otel_logs(agent_id, …)` | Query the `otel-logs` function (typed params; mints a Cloud bearer when `NETDATA_CLOUD_TOKEN` is set). |
 

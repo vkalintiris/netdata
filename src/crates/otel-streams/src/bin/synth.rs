@@ -46,7 +46,9 @@ struct Args {
     #[arg(long, default_value = "otel-streams-synth")]
     service_name: String,
 
-    /// Resource `service.namespace`. Omitted → the empty/catch-all namespace.
+    /// Resource `service.namespace`. Omitted emits no token (the stream's
+    /// namespace defaults to "" for storage, but it is not a queryable value);
+    /// pass "" explicitly to emit a queryable empty value.
     #[arg(long)]
     service_namespace: Option<String>,
 
