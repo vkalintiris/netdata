@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use sfst::{IndexReader, ValueKind};
+use sfst::{FieldTier, IndexReader, ValueKind};
 
 /// The synthetic timestamp column. SFST rows are stored time-sorted, so this
 /// column is the table's output ordering (advertised to DataFusion later).
@@ -48,6 +48,9 @@ impl ColKind {
 pub struct ColumnSpec {
     pub name: String,
     pub kind: ColKind,
+    /// Cardinality tier (drives facet-pushdown eligibility: `facets()` cannot
+    /// answer high-card fields, so they are never pushed).
+    pub tier: FieldTier,
 }
 
 /// The table's Arrow schema plus the per-attribute pivot specs. Schema field 0
@@ -89,6 +92,7 @@ impl SfstSchema {
             specs.push(ColumnSpec {
                 name: fe.name.clone(),
                 kind,
+                tier: fe.tier,
             });
         }
 

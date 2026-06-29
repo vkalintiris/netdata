@@ -66,6 +66,16 @@ impl SfstTable {
     pub fn open_path(path: impl AsRef<std::path::Path>) -> std::result::Result<Self, sfst::Error> {
         Self::open(std::fs::read(path)?)
     }
+
+    /// The file bytes (shared); used by the aggregate-pushdown plan.
+    pub(crate) fn data(&self) -> Arc<Vec<u8>> {
+        self.data.clone()
+    }
+
+    /// The table's schema + per-column specs (kind + tier).
+    pub(crate) fn sfst_schema(&self) -> &SfstSchema {
+        &self.schema
+    }
 }
 
 #[async_trait]

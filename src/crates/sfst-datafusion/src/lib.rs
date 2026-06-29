@@ -22,10 +22,30 @@
 //! Not wired into production; the v9 format and the ng-index seal path are
 //! untouched. See the SOW for the recorded design forks (D1–D5) to revisit.
 
+mod aggregate;
 mod exec;
 mod pushdown;
 mod schema;
 mod table;
 
+use std::sync::Arc;
+
 pub use schema::{ColKind, ColumnSpec, SfstSchema, TS_COLUMN};
 pub use table::SfstTable;
+
+/// A `SessionContext` wired for SFST: the facet aggregation-pushdown optimizer
+/// rule plus the query planner that plans its node. Use this instead of
+/// `SessionContext::new()` to get `COUNT(*) GROUP BY <field>` answered from
+/// facet bitmaps; without it, queries still run correctly via the normal plan.
+pub fn session_context() -> datafusion::prelude::SessionContext {
+    use datafusion::execution::session_state::SessionStateBuilder;
+    use datafusion::prelude::SessionContext;
+
+    let state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_query_planner(Arc::new(aggregate::SfstQueryPlanner))
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.add_optimizer_rule(Arc::new(aggregate::SfstFacetRule));
+    ctx
+}

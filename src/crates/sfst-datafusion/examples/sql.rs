@@ -10,7 +10,6 @@
 
 use std::sync::Arc;
 
-use datafusion::prelude::SessionContext;
 use sfst_datafusion::SfstTable;
 
 #[tokio::main]
@@ -22,7 +21,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let table = SfstTable::open_path(&path)?;
-    let ctx = SessionContext::new();
+    // Pushdown-enabled context: COUNT(*) GROUP BY <field> hits the facet bitmaps.
+    let ctx = sfst_datafusion::session_context();
     ctx.register_table("logs", Arc::new(table))?;
 
     ctx.sql(&sql).await?.show().await?;

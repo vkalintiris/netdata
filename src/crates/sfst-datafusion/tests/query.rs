@@ -252,6 +252,134 @@ async fn order_by_timestamp_needs_no_sort() {
     );
 }
 
+// ── Stage D: facet aggregation pushdown ─────────────────────────────────────
+
+/// A pushdown-enabled context with the fixture registered as `logs`.
+async fn pushed_ctx(path: &std::path::Path) -> SessionContext {
+    let table = SfstTable::open_path(path).expect("open fixture");
+    let ctx = sfst_datafusion::session_context();
+    ctx.register_table("logs", Arc::new(table)).expect("register");
+    ctx
+}
+
+/// Run a `GROUP BY` query and return `(group, count)` rows as a sorted vec
+/// (NULL group sorts first), so two result sets compare order-independently.
+async fn group_counts(ctx: &SessionContext, sql: &str) -> Vec<(Option<String>, i64)> {
+    use datafusion::arrow::array::{Array, AsArray, StringArray};
+    use datafusion::arrow::datatypes::Int64Type;
+
+    let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
+    let mut out = Vec::new();
+    for b in &batches {
+        let keys = b.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        let counts = b.column(1).as_primitive::<Int64Type>();
+        for i in 0..b.num_rows() {
+            let k = if keys.is_null(i) {
+                None
+            } else {
+                Some(keys.value(i).to_string())
+            };
+            out.push((k, counts.value(i)));
+        }
+    }
+    out.sort();
+    out
+}
+
+async fn explain_text(ctx: &SessionContext, sql: &str) -> String {
+    let batches = ctx
+        .sql(&format!("EXPLAIN {sql}"))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    pretty_format_batches(&batches).unwrap().to_string()
+}
+
+/// Find a low/mid-card scalar Str field with cardinality >= 2 — eligible for
+/// facet pushdown and interesting enough to have multiple groups.
+fn pick_facet_field(path: &std::path::Path) -> Option<String> {
+    let data = std::fs::read(path).unwrap();
+    let reader = sfst::IndexReader::open(&data).unwrap();
+    let kinds: HashMap<String, ValueKind> =
+        reader.tree().derive_scalar_kinds().into_iter().collect();
+    reader
+        .field_table()
+        .iter()
+        .find(|f| {
+            !matches!(f.tier, sfst::FieldTier::High)
+                && !f.name.contains("[]")
+                && f.cardinality >= 2
+                && matches!(kinds.get(&f.name), Some(ValueKind::Str))
+        })
+        .map(|f| f.name.clone())
+}
+
+/// Facet pushdown must (a) actually fire and (b) return exactly what the normal
+/// aggregation plan returns — including the NULL group for rows lacking the field.
+#[tokio::test]
+async fn facet_pushdown_matches_normal_plan() {
+    let Some(path) = fixture() else { return };
+    let Some(field) = pick_facet_field(&path) else {
+        eprintln!("SKIP: no low/mid scalar field in fixture");
+        return;
+    };
+    let sql = format!(r#"SELECT "{field}" AS g, count(*) AS n FROM logs GROUP BY "{field}""#);
+
+    let pushed = pushed_ctx(&path).await;
+    let normal = ctx_with_fixture(&path).await; // plain SessionContext::new()
+
+    let explain = explain_text(&pushed, &sql).await;
+    assert!(
+        explain.contains("SfstFacet"),
+        "facet pushdown should fire:\n{explain}"
+    );
+
+    let got = group_counts(&pushed, &sql).await;
+    let expected = group_counts(&normal, &sql).await;
+    assert_eq!(got, expected, "pushed facet result must equal the normal plan");
+    assert!(got.len() >= 2, "expected multiple groups");
+}
+
+/// A high-card group column and a WHERE that constrains the group column must
+/// both fall back to the normal plan (no SfstFacet node).
+#[tokio::test]
+async fn facet_pushdown_falls_back() {
+    let Some(path) = fixture() else { return };
+    let ctx = pushed_ctx(&path).await;
+
+    let data = std::fs::read(&path).unwrap();
+    let reader = sfst::IndexReader::open(&data).unwrap();
+
+    // High-card group column → fall back.
+    if let Some(hc) = reader
+        .field_table()
+        .iter()
+        .find(|f| matches!(f.tier, sfst::FieldTier::High) && !f.name.contains("[]"))
+        .map(|f| f.name.clone())
+    {
+        let sql = format!(r#"SELECT "{hc}", count(*) FROM logs GROUP BY "{hc}""#);
+        let explain = explain_text(&ctx, &sql).await;
+        assert!(
+            !explain.contains("SfstFacet"),
+            "high-card group must NOT push:\n{explain}"
+        );
+    }
+
+    // WHERE constrains the group column → fall back (facets exclude own selection).
+    if let Some(field) = pick_facet_field(&path) {
+        let sql = format!(
+            r#"SELECT "{field}", count(*) FROM logs WHERE "{field}" = 'x' GROUP BY "{field}""#
+        );
+        let explain = explain_text(&ctx, &sql).await;
+        assert!(
+            !explain.contains("SfstFacet"),
+            "WHERE on the group column must NOT push:\n{explain}"
+        );
+    }
+}
+
 /// Column-direct reads of a high-card field (the SB-scan path) must return the
 /// exact values the row-major `materialize_rows` oracle extracts.
 #[tokio::test]
@@ -283,6 +411,26 @@ async fn high_card_field_values_match_oracle() {
             .map(|(_, v)| v.clone())
             .collect();
         assert_eq!(direct[i], expected, "high-card {field} at position {i}");
+    }
+}
+
+/// Timing harness: facet pushdown vs the normal aggregation plan for the same
+/// GROUP BY. Run with `--ignored --nocapture`.
+#[tokio::test]
+#[ignore = "timing harness; run with --ignored --nocapture"]
+async fn bench_facet_pushdown() {
+    let Some(path) = fixture() else { return };
+    let Some(field) = pick_facet_field(&path) else { return };
+    let sql = format!(r#"SELECT "{field}", count(*) FROM logs GROUP BY "{field}""#);
+
+    for (label, ctx) in [
+        ("pushed", pushed_ctx(&path).await),
+        ("normal", ctx_with_fixture(&path).await),
+    ] {
+        let t = std::time::Instant::now();
+        let rows = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+        let n: usize = rows.iter().map(|b| b.num_rows()).sum();
+        println!("  {:>10.3?}  groups={n:<6}  [{label}]  {sql}", t.elapsed());
     }
 }
 
