@@ -37,11 +37,16 @@ pub use table::SfstTable;
 /// rule plus the query planner that plans its node. Use this instead of
 /// `SessionContext::new()` to get `COUNT(*) GROUP BY <field>` answered from
 /// facet bitmaps; without it, queries still run correctly via the normal plan.
+///
+/// `information_schema` is enabled, so `SHOW TABLES`, `SHOW COLUMNS FROM <t>`,
+/// and `SELECT … FROM information_schema.columns` work (alongside `DESCRIBE`).
 pub fn session_context() -> datafusion::prelude::SessionContext {
     use datafusion::execution::session_state::SessionStateBuilder;
-    use datafusion::prelude::SessionContext;
+    use datafusion::prelude::{SessionConfig, SessionContext};
 
+    let config = SessionConfig::new().with_information_schema(true);
     let state = SessionStateBuilder::new()
+        .with_config(config)
         .with_default_features()
         .with_query_planner(Arc::new(aggregate::SfstQueryPlanner))
         .build();
