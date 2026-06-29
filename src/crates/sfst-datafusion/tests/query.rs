@@ -380,6 +380,100 @@ async fn facet_pushdown_falls_back() {
     }
 }
 
+// ── Stage D: timeline (date_bin) pushdown ────────────────────────────────────
+
+/// `(bucket_ns, count)` rows from a 1-D `GROUP BY date_bin(...)`, sorted.
+async fn timeline_1d(ctx: &SessionContext, sql: &str) -> Vec<(i64, i64)> {
+    use datafusion::arrow::array::AsArray;
+    use datafusion::arrow::datatypes::{Int64Type, TimestampNanosecondType};
+
+    let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
+    let mut out = Vec::new();
+    for b in &batches {
+        let t = b.column(0).as_primitive::<TimestampNanosecondType>();
+        let n = b.column(1).as_primitive::<Int64Type>();
+        for i in 0..b.num_rows() {
+            out.push((t.value(i), n.value(i)));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// `(bucket_ns, value, count)` rows from a 2-D `GROUP BY date_bin(...), field`.
+async fn timeline_2d(ctx: &SessionContext, sql: &str) -> Vec<(i64, Option<String>, i64)> {
+    use datafusion::arrow::array::{Array, AsArray, StringArray};
+    use datafusion::arrow::datatypes::{Int64Type, TimestampNanosecondType};
+
+    let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
+    let mut out = Vec::new();
+    for b in &batches {
+        let t = b.column(0).as_primitive::<TimestampNanosecondType>();
+        let g = b.column(1).as_any().downcast_ref::<StringArray>().unwrap();
+        let n = b.column(2).as_primitive::<Int64Type>();
+        for i in 0..b.num_rows() {
+            let key = if g.is_null(i) {
+                None
+            } else {
+                Some(g.value(i).to_string())
+            };
+            out.push((t.value(i), key, n.value(i)));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// 1-D time histogram: pushdown must fire and match the normal plan exactly
+/// (this is the date_bin bucket-alignment correctness check).
+#[tokio::test]
+async fn timeline_1d_pushdown_matches_normal() {
+    let Some(path) = fixture() else { return };
+    let sql =
+        r#"SELECT date_bin(INTERVAL '1 minute', timestamp) AS t, count(*) AS n FROM logs GROUP BY t"#;
+
+    let pushed = pushed_ctx(&path).await;
+    let normal = ctx_with_fixture(&path).await;
+
+    let explain = explain_text(&pushed, sql).await;
+    assert!(
+        explain.contains("SfstTimeline"),
+        "timeline pushdown should fire:\n{explain}"
+    );
+
+    let got = timeline_1d(&pushed, sql).await;
+    let expected = timeline_1d(&normal, sql).await;
+    assert_eq!(got, expected, "pushed timeline must equal the normal plan");
+    assert!(got.len() >= 2, "expected several time buckets");
+}
+
+/// 2-D time × value grid: pushdown must fire and match the normal plan,
+/// including the NULL (absent-field) group per bucket.
+#[tokio::test]
+async fn timeline_2d_pushdown_matches_normal() {
+    let Some(path) = fixture() else { return };
+    let Some(field) = pick_facet_field(&path) else {
+        eprintln!("SKIP: no low/mid scalar field in fixture");
+        return;
+    };
+    let sql = format!(
+        r#"SELECT date_bin(INTERVAL '1 minute', timestamp) AS t, "{field}" AS g, count(*) AS n FROM logs GROUP BY t, "{field}""#
+    );
+
+    let pushed = pushed_ctx(&path).await;
+    let normal = ctx_with_fixture(&path).await;
+
+    let explain = explain_text(&pushed, &sql).await;
+    assert!(
+        explain.contains("SfstTimeline"),
+        "2-D timeline pushdown should fire:\n{explain}"
+    );
+
+    let got = timeline_2d(&pushed, &sql).await;
+    let expected = timeline_2d(&normal, &sql).await;
+    assert_eq!(got, expected, "pushed 2-D timeline must equal the normal plan");
+}
+
 /// Column-direct reads of a high-card field (the SB-scan path) must return the
 /// exact values the row-major `materialize_rows` oracle extracts.
 #[tokio::test]
@@ -423,14 +517,17 @@ async fn bench_facet_pushdown() {
     let Some(field) = pick_facet_field(&path) else { return };
     let sql = format!(r#"SELECT "{field}", count(*) FROM logs GROUP BY "{field}""#);
 
-    for (label, ctx) in [
-        ("pushed", pushed_ctx(&path).await),
-        ("normal", ctx_with_fixture(&path).await),
-    ] {
-        let t = std::time::Instant::now();
-        let rows = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
-        let n: usize = rows.iter().map(|b| b.num_rows()).sum();
-        println!("  {:>10.3?}  groups={n:<6}  [{label}]  {sql}", t.elapsed());
+    let tl = r#"SELECT date_bin(INTERVAL '10 seconds', timestamp) AS t, count(*) AS n FROM logs GROUP BY t"#;
+    for (label, q) in [("facet", sql.as_str()), ("timeline-1d", tl)] {
+        for (ctx_label, ctx) in [
+            ("pushed", pushed_ctx(&path).await),
+            ("normal", ctx_with_fixture(&path).await),
+        ] {
+            let t = std::time::Instant::now();
+            let rows = ctx.sql(q).await.unwrap().collect().await.unwrap();
+            let n: usize = rows.iter().map(|b| b.num_rows()).sum();
+            println!("  {:>10.3?}  rows={n:<6}  [{label}/{ctx_label}]", t.elapsed());
+        }
     }
 }
 

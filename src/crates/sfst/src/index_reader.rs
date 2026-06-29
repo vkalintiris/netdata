@@ -723,6 +723,26 @@ impl<'a> IndexReader<'a> {
         })
     }
 
+    /// Per-bucket matched counts for `grid` — the field-less timeline backing
+    /// `GROUP BY date_bin(timestamp)`. `totals[i]` is the number of logs
+    /// matching `filter` whose timestamp falls in bucket `i`; buckets past the
+    /// file's time range are zero (the grid clamps naturally). This is the
+    /// time-axis analogue of [`matched_count`](Self::matched_count) — one bucket
+    /// edge resolution, then a `range_cardinality` per bucket.
+    pub fn timeline_totals(
+        &self,
+        filter: &BitmapFilter,
+        grid: Grid,
+    ) -> Result<Vec<u64>, crate::Error> {
+        let full = filter.full();
+        Ok(self
+            .load_timestamps()?
+            .bucket_ranges(grid)
+            .into_iter()
+            .map(|(lo, hi)| full.range_cardinality(lo, hi))
+            .collect())
+    }
+
     // ── Query helpers (private) ──────────────────────────────────────
 
     /// Locate a field by name and return its tier + tier-relative chunk

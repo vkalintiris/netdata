@@ -76,6 +76,12 @@ impl SfstTable {
     pub(crate) fn sfst_schema(&self) -> &SfstSchema {
         &self.schema
     }
+
+    /// Chronological `(min, max)` timestamp bounds (ns); used to size the
+    /// `date_bin` grid for timeline pushdown.
+    pub(crate) fn ts_bounds(&self) -> (i64, i64) {
+        (self.min_ts_ns, self.max_ts_ns)
+    }
 }
 
 #[async_trait]

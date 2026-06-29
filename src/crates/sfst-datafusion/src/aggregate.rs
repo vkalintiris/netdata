@@ -17,10 +17,11 @@ use std::sync::Arc;
 
 use datafusion::arrow::array::{
     ArrayRef, BooleanBuilder, Float64Builder, Int64Array, Int64Builder, RecordBatch, StringBuilder,
+    TimestampNanosecondArray,
 };
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::tree_node::Transformed;
-use datafusion::common::{DFSchemaRef, DataFusionError, Result};
+use datafusion::common::{DFSchemaRef, DataFusionError, Result, ScalarValue};
 use datafusion::datasource::source_as_provider;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::execution::{SessionState, TaskContext};
@@ -41,7 +42,7 @@ use datafusion::physical_planner::{
     DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner,
 };
 
-use sfst::{Filter, FieldTier, IndexReader};
+use sfst::{FieldTier, Filter, Grid, IndexReader};
 
 use crate::pushdown::{self, Pushable};
 use crate::schema::ColKind;
@@ -74,18 +75,49 @@ impl OptimizerRule for SfstFacetRule {
         plan: LogicalPlan,
         _config: &dyn OptimizerConfig,
     ) -> Result<Transformed<LogicalPlan>> {
-        match try_build_node(&plan) {
-            Some(node) => Ok(Transformed::yes(LogicalPlan::Extension(Extension {
+        if let Some(node) = try_build_facet_node(&plan) {
+            return Ok(Transformed::yes(LogicalPlan::Extension(Extension {
                 node: Arc::new(node),
-            }))),
-            None => Ok(Transformed::no(plan)),
+            })));
         }
+        if let Some(node) = try_build_timeline_node(&plan) {
+            return Ok(Transformed::yes(LogicalPlan::Extension(Extension {
+                node: Arc::new(node),
+            })));
+        }
+        Ok(Transformed::no(plan))
     }
+}
+
+/// Peel an optional WHERE `Filter` off `input`, require a `TableScan` over an
+/// `SfstTable`, and return the table plus the complete set of WHERE conjuncts
+/// (gathered from the Filter node and any predicates already pushed into the
+/// scan). The borrowed `&SfstTable` is valid for the returned `provider`'s
+/// lifetime, so the caller keeps `provider` alive.
+fn scan_table<'a>(
+    input: &'a LogicalPlan,
+    provider: &'a mut Option<Arc<dyn datafusion::catalog::TableProvider>>,
+) -> Option<(&'a SfstTable, Vec<Expr>)> {
+    let mut node = input;
+    let mut predicates: Vec<Expr> = Vec::new();
+    if let LogicalPlan::Filter(filter) = node {
+        predicates.extend(split_conjunction(&filter.predicate).into_iter().cloned());
+        node = filter.input.as_ref();
+    }
+    let LogicalPlan::TableScan(scan) = node else {
+        return None;
+    };
+    for f in &scan.filters {
+        predicates.extend(split_conjunction(f).into_iter().cloned());
+    }
+    *provider = Some(source_as_provider(&scan.source).ok()?);
+    let table = (provider.as_ref().unwrap().as_ref() as &dyn Any).downcast_ref::<SfstTable>()?;
+    Some((table, predicates))
 }
 
 /// Recognise the pushdown pattern and build the facet node, or `None` to fall
 /// back to the normal plan.
-fn try_build_node(plan: &LogicalPlan) -> Option<SfstFacetNode> {
+fn try_build_facet_node(plan: &LogicalPlan) -> Option<SfstFacetNode> {
     let LogicalPlan::Aggregate(Aggregate {
         input,
         group_expr,
@@ -109,24 +141,8 @@ fn try_build_node(plan: &LogicalPlan) -> Option<SfstFacetNode> {
         return None;
     }
 
-    // Peel an optional WHERE Filter, then require a TableScan over an SfstTable.
-    // Predicates can live on the Filter node and/or already pushed into the
-    // scan; gather both so translation sees the complete WHERE.
-    let mut node_input = input.as_ref();
-    let mut predicates: Vec<Expr> = Vec::new();
-    if let LogicalPlan::Filter(filter) = node_input {
-        predicates.extend(split_conjunction(&filter.predicate).into_iter().cloned());
-        node_input = filter.input.as_ref();
-    }
-    let LogicalPlan::TableScan(scan) = node_input else {
-        return None;
-    };
-    for f in &scan.filters {
-        predicates.extend(split_conjunction(f).into_iter().cloned());
-    }
-
-    let provider = source_as_provider(&scan.source).ok()?;
-    let table = (provider.as_ref() as &dyn Any).downcast_ref::<SfstTable>()?;
+    let mut provider = None;
+    let (table, predicates) = scan_table(input.as_ref(), &mut provider)?;
     let sfst_schema = table.sfst_schema();
 
     // The group column must be a low/mid scalar attribute: `facets()` errors on
@@ -193,6 +209,157 @@ fn is_count_star(expr: &Expr) -> bool {
             [arg] => matches!(arg, Expr::Literal(_, _)),
             _ => false,
         }
+}
+
+/// Largest grid this rule will build; beyond it (e.g. 1-second buckets over a
+/// year) we fall back rather than allocate an enormous bucket vector.
+const MAX_TIMELINE_BUCKETS: usize = 1_000_000;
+
+/// Recognise `COUNT(*) GROUP BY date_bin(timestamp) [, <field>]` and build the
+/// timeline node, or `None` to fall back.
+fn try_build_timeline_node(plan: &LogicalPlan) -> Option<SfstTimelineNode> {
+    let LogicalPlan::Aggregate(Aggregate {
+        input,
+        group_expr,
+        aggr_expr,
+        schema,
+        ..
+    }) = plan
+    else {
+        return None;
+    };
+    let [agg] = aggr_expr.as_slice() else {
+        return None;
+    };
+    if !is_count_star(agg) || group_expr.is_empty() || group_expr.len() > 2 {
+        return None;
+    }
+
+    // Identify the single date_bin group expr and an optional scalar value
+    // group expr, tracking their output-column positions (group columns come
+    // first in the Aggregate schema, in group_expr order).
+    let mut date_bin: Option<(usize, i64, i64)> = None; // (pos, stride_ns, origin_ns)
+    let mut value: Option<(usize, String)> = None; // (pos, field)
+    for (i, g) in group_expr.iter().enumerate() {
+        if let Some((stride, origin)) = parse_date_bin(g) {
+            if date_bin.is_some() {
+                return None;
+            }
+            date_bin = Some((i, stride, origin));
+        } else if let Some(name) = column_name(g) {
+            if value.is_some() {
+                return None;
+            }
+            value = Some((i, name));
+        } else {
+            return None;
+        }
+    }
+    let (time_pos, stride_ns, origin_ns) = date_bin?;
+
+    let mut provider = None;
+    let (table, predicates) = scan_table(input.as_ref(), &mut provider)?;
+    let sfst_schema = table.sfst_schema();
+
+    // Optional value field: low/mid scalar only (timeline errors on high-card,
+    // and a list column's grouping is not a per-value timeline).
+    let value_field = match &value {
+        Some((_, name)) => {
+            let spec = sfst_schema.specs.iter().find(|s| &s.name == name)?;
+            if spec.kind == ColKind::List || spec.tier == FieldTier::High {
+                return None;
+            }
+            Some((name.clone(), spec.kind))
+        }
+        None => None,
+    };
+
+    // Translate WHERE: equality predicates (not on the value field, which
+    // timeline excludes from its own histogram) + a time window clamping the grid.
+    let mut eq_filter: Vec<(String, String)> = Vec::new();
+    let mut lo = i64::MIN;
+    let mut hi = i64::MAX;
+    for pred in &predicates {
+        match pushdown::classify(pred, sfst_schema) {
+            Some(Pushable::Equals { field, value: v }) => {
+                if value.as_ref().is_some_and(|(_, f)| f == &field) {
+                    return None;
+                }
+                eq_filter.push((field, v));
+            }
+            Some(Pushable::TimeLo(v)) => lo = lo.max(v),
+            Some(Pushable::TimeHi(v)) => hi = hi.min(v),
+            None => return None,
+        }
+    }
+
+    // Size the grid to the data range (clamped by the WHERE window) and align it
+    // to date_bin's boundaries: bucket k starts at origin + k*stride.
+    let (min_ts, max_ts) = table.ts_bounds();
+    let range_start = min_ts.max(lo);
+    let range_end = max_ts.saturating_add(1).min(hi);
+    let (bucket_start_ns, num_buckets) = if range_end <= range_start {
+        (origin_ns, 0)
+    } else {
+        let start = origin_ns + (range_start - origin_ns).div_euclid(stride_ns) * stride_ns;
+        let n = (((range_end - start) as i128 + stride_ns as i128 - 1) / stride_ns as i128) as usize;
+        (start, n)
+    };
+    if num_buckets > MAX_TIMELINE_BUCKETS {
+        return None;
+    }
+
+    Some(SfstTimelineNode {
+        data: table.data(),
+        stride_ns,
+        bucket_start_ns,
+        num_buckets,
+        value_field,
+        eq_filter,
+        time_pos,
+        value_pos: value.as_ref().map(|(i, _)| *i),
+        group_cols: group_expr.len(),
+        schema: schema.clone(),
+    })
+}
+
+/// Parse `date_bin(<interval>, <timestamp-col>[, <origin>])` over the timestamp
+/// column into `(stride_ns, origin_ns)`. Rejects month-based (variable-width)
+/// strides and any non-timestamp source.
+fn parse_date_bin(expr: &Expr) -> Option<(i64, i64)> {
+    let inner = match expr {
+        Expr::Alias(a) => a.expr.as_ref(),
+        e => e,
+    };
+    let Expr::ScalarFunction(sf) = inner else {
+        return None;
+    };
+    if sf.func.name() != "date_bin" {
+        return None;
+    }
+    if column_name(sf.args.get(1)?).as_deref() != Some(crate::schema::TS_COLUMN) {
+        return None;
+    }
+    let stride_ns = match sf.args.first()? {
+        Expr::Literal(ScalarValue::IntervalMonthDayNano(Some(v)), _) => {
+            if v.months != 0 {
+                return None; // calendar-month buckets are not fixed-width
+            }
+            (v.days as i64)
+                .checked_mul(86_400_000_000_000)?
+                .checked_add(v.nanoseconds)?
+        }
+        _ => return None,
+    };
+    if stride_ns <= 0 {
+        return None;
+    }
+    let origin_ns = match sf.args.get(2) {
+        None => 0,
+        Some(Expr::Literal(ScalarValue::TimestampNanosecond(Some(o), _), _)) => *o,
+        Some(_) => return None,
+    };
+    Some((stride_ns, origin_ns))
 }
 
 // ── Logical node ──────────────────────────────────────────────────────────
@@ -310,18 +477,33 @@ impl ExtensionPlanner for SfstExtensionPlanner {
         _physical_inputs: &[Arc<dyn ExecutionPlan>],
         _session: &SessionState,
     ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        let Some(node) = node.as_any().downcast_ref::<SfstFacetNode>() else {
-            return Ok(None);
-        };
-        let arrow_schema: SchemaRef = Arc::new(node.schema.as_arrow().clone());
-        Ok(Some(Arc::new(SfstFacetExec::new(
-            node.data.clone(),
-            node.field.clone(),
-            node.kind,
-            node.eq_filter.clone(),
-            node.lo..node.hi,
-            arrow_schema,
-        ))))
+        if let Some(node) = node.as_any().downcast_ref::<SfstFacetNode>() {
+            let arrow_schema: SchemaRef = Arc::new(node.schema.as_arrow().clone());
+            return Ok(Some(Arc::new(SfstFacetExec::new(
+                node.data.clone(),
+                node.field.clone(),
+                node.kind,
+                node.eq_filter.clone(),
+                node.lo..node.hi,
+                arrow_schema,
+            ))));
+        }
+        if let Some(node) = node.as_any().downcast_ref::<SfstTimelineNode>() {
+            let arrow_schema: SchemaRef = Arc::new(node.schema.as_arrow().clone());
+            return Ok(Some(Arc::new(SfstTimelineExec::new(
+                node.data.clone(),
+                node.stride_ns,
+                node.bucket_start_ns,
+                node.num_buckets,
+                node.value_field.clone(),
+                node.eq_filter.clone(),
+                node.time_pos,
+                node.value_pos,
+                node.group_cols,
+                arrow_schema,
+            ))));
+        }
+        Ok(None)
     }
 }
 
@@ -484,6 +666,317 @@ impl ExecutionPlan for SfstFacetExec {
         Ok(self)
     }
 
+    fn execute(
+        &self,
+        _partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        let batch = self.build_batch()?;
+        Ok(Box::pin(MemoryStream::try_new(
+            vec![batch],
+            self.schema.clone(),
+            None,
+        )?))
+    }
+}
+
+// ── Timeline node + exec (date_bin GROUP BY) ────────────────────────────────
+
+#[derive(Clone)]
+struct SfstTimelineNode {
+    data: Arc<Vec<u8>>,
+    stride_ns: i64,
+    bucket_start_ns: i64,
+    num_buckets: usize,
+    /// `Some((field, kind))` for the 2-D time×value grid; `None` for a plain
+    /// per-bucket total.
+    value_field: Option<(String, ColKind)>,
+    eq_filter: Vec<(String, String)>,
+    /// Output-column index of the `date_bin` (time) column.
+    time_pos: usize,
+    /// Output-column index of the value column (2-D only).
+    value_pos: Option<usize>,
+    /// Number of group columns (count column follows them).
+    group_cols: usize,
+    schema: DFSchemaRef,
+}
+
+impl SfstTimelineNode {
+    fn value_name(&self) -> Option<&String> {
+        self.value_field.as_ref().map(|(n, _)| n)
+    }
+}
+
+impl fmt::Debug for SfstTimelineNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt_for_explain(f)
+    }
+}
+
+impl PartialEq for SfstTimelineNode {
+    fn eq(&self, o: &Self) -> bool {
+        Arc::ptr_eq(&self.data, &o.data)
+            && self.stride_ns == o.stride_ns
+            && self.bucket_start_ns == o.bucket_start_ns
+            && self.num_buckets == o.num_buckets
+            && self.value_name() == o.value_name()
+            && self.eq_filter == o.eq_filter
+            && self.time_pos == o.time_pos
+            && self.value_pos == o.value_pos
+            && self.group_cols == o.group_cols
+    }
+}
+impl Eq for SfstTimelineNode {}
+
+impl Hash for SfstTimelineNode {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (Arc::as_ptr(&self.data) as *const () as usize).hash(state);
+        self.stride_ns.hash(state);
+        self.bucket_start_ns.hash(state);
+        self.num_buckets.hash(state);
+        self.value_name().hash(state);
+        self.eq_filter.hash(state);
+        self.time_pos.hash(state);
+        self.value_pos.hash(state);
+        self.group_cols.hash(state);
+    }
+}
+
+impl PartialOrd for SfstTimelineNode {
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        (
+            Arc::as_ptr(&self.data) as *const () as usize,
+            self.stride_ns,
+            self.bucket_start_ns,
+            self.num_buckets,
+            self.value_name(),
+            &self.eq_filter,
+            self.time_pos,
+            self.value_pos,
+            self.group_cols,
+        )
+            .partial_cmp(&(
+                Arc::as_ptr(&o.data) as *const () as usize,
+                o.stride_ns,
+                o.bucket_start_ns,
+                o.num_buckets,
+                o.value_name(),
+                &o.eq_filter,
+                o.time_pos,
+                o.value_pos,
+                o.group_cols,
+            ))
+    }
+}
+
+impl UserDefinedLogicalNodeCore for SfstTimelineNode {
+    fn name(&self) -> &str {
+        "SfstTimeline"
+    }
+    fn inputs(&self) -> Vec<&LogicalPlan> {
+        vec![]
+    }
+    fn schema(&self) -> &DFSchemaRef {
+        &self.schema
+    }
+    fn expressions(&self) -> Vec<Expr> {
+        vec![]
+    }
+    fn fmt_for_explain(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.value_name() {
+            Some(field) => write!(
+                f,
+                "SfstTimeline: date_bin({}ns) x \"{}\", count(*) via timeline bitmaps",
+                self.stride_ns, field
+            ),
+            None => write!(
+                f,
+                "SfstTimeline: date_bin({}ns), count(*) via timeline bitmaps",
+                self.stride_ns
+            ),
+        }
+    }
+    fn with_exprs_and_inputs(&self, _exprs: Vec<Expr>, _inputs: Vec<LogicalPlan>) -> Result<Self> {
+        Ok(self.clone())
+    }
+}
+
+struct SfstTimelineExec {
+    data: Arc<Vec<u8>>,
+    stride_ns: i64,
+    bucket_start_ns: i64,
+    num_buckets: usize,
+    value_field: Option<(String, ColKind)>,
+    eq_filter: Vec<(String, String)>,
+    time_pos: usize,
+    value_pos: Option<usize>,
+    group_cols: usize,
+    schema: SchemaRef,
+    cache: Arc<PlanProperties>,
+}
+
+impl SfstTimelineExec {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        data: Arc<Vec<u8>>,
+        stride_ns: i64,
+        bucket_start_ns: i64,
+        num_buckets: usize,
+        value_field: Option<(String, ColKind)>,
+        eq_filter: Vec<(String, String)>,
+        time_pos: usize,
+        value_pos: Option<usize>,
+        group_cols: usize,
+        schema: SchemaRef,
+    ) -> Self {
+        let cache = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Self {
+            data,
+            stride_ns,
+            bucket_start_ns,
+            num_buckets,
+            value_field,
+            eq_filter,
+            time_pos,
+            value_pos,
+            group_cols,
+            schema,
+            cache,
+        }
+    }
+
+    fn build_batch(&self) -> Result<RecordBatch> {
+        let reader = IndexReader::open(&self.data).map_err(exec_err)?;
+        let mut filter = Filter::new();
+        for (k, v) in &self.eq_filter {
+            filter = filter.select(k.clone(), v.clone());
+        }
+        let compiled = reader.compile_filter(&filter, None).map_err(exec_err)?;
+        let grid = Grid::new(self.bucket_start_ns, self.stride_ns, self.num_buckets);
+
+        let mut times: Vec<i64> = Vec::new();
+        let mut values: Vec<Option<String>> = Vec::new();
+        let mut counts: Vec<i64> = Vec::new();
+
+        match &self.value_field {
+            Some((field, _)) => {
+                // 2-D: emit one row per (bucket, value) with a positive count,
+                // plus the absent-field (NULL) group from `unset`.
+                let tl = reader
+                    .timeline(field, &compiled, grid)
+                    .map_err(exec_err)?;
+                for (b, bucket) in tl.buckets.iter().enumerate() {
+                    let ts = self.bucket_start_ns + b as i64 * self.stride_ns;
+                    for (j, dim) in tl.dimensions.iter().enumerate() {
+                        if bucket.counts[j] > 0 {
+                            times.push(ts);
+                            values.push(Some(dim.clone()));
+                            counts.push(bucket.counts[j] as i64);
+                        }
+                    }
+                    if bucket.unset > 0 {
+                        times.push(ts);
+                        values.push(None);
+                        counts.push(bucket.unset as i64);
+                    }
+                }
+            }
+            None => {
+                // 1-D: one row per non-empty bucket.
+                let totals = reader.timeline_totals(&compiled, grid).map_err(exec_err)?;
+                for (b, total) in totals.iter().enumerate() {
+                    if *total > 0 {
+                        times.push(self.bucket_start_ns + b as i64 * self.stride_ns);
+                        counts.push(*total as i64);
+                    }
+                }
+            }
+        }
+
+        // Assemble columns in the Aggregate's output order.
+        let mut cols: Vec<Option<ArrayRef>> = (0..=self.group_cols).map(|_| None).collect();
+        cols[self.time_pos] = Some(Arc::new(TimestampNanosecondArray::from(times)) as ArrayRef);
+        cols[self.group_cols] = Some(Arc::new(Int64Array::from(counts)) as ArrayRef);
+        if let (Some(vpos), Some((_, kind))) = (self.value_pos, &self.value_field) {
+            cols[vpos] = Some(build_opt_column(*kind, &values));
+        }
+        let columns: Vec<ArrayRef> = cols.into_iter().map(Option::unwrap).collect();
+        RecordBatch::try_new(self.schema.clone(), columns).map_err(Into::into)
+    }
+}
+
+/// Build a typed value column from optional string values (NULL = absent-field
+/// group). Mirrors the group-key typing used elsewhere.
+fn build_opt_column(kind: ColKind, values: &[Option<String>]) -> ArrayRef {
+    match kind {
+        ColKind::Int => {
+            let mut b = Int64Builder::new();
+            for v in values {
+                b.append_option(v.as_ref().and_then(|s| s.parse::<i64>().ok()));
+            }
+            Arc::new(b.finish())
+        }
+        ColKind::Double => {
+            let mut b = Float64Builder::new();
+            for v in values {
+                b.append_option(v.as_ref().and_then(|s| s.parse::<f64>().ok()));
+            }
+            Arc::new(b.finish())
+        }
+        ColKind::Bool => {
+            let mut b = BooleanBuilder::new();
+            for v in values {
+                b.append_option(v.as_ref().and_then(|s| s.parse::<bool>().ok()));
+            }
+            Arc::new(b.finish())
+        }
+        // Str, and List (excluded from pushdown) → Utf8.
+        _ => {
+            let mut b = StringBuilder::new();
+            for v in values {
+                match v {
+                    Some(s) => b.append_value(s),
+                    None => b.append_null(),
+                }
+            }
+            Arc::new(b.finish())
+        }
+    }
+}
+
+impl fmt::Debug for SfstTimelineExec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SfstTimelineExec")
+    }
+}
+
+impl DisplayAs for SfstTimelineExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "SfstTimelineExec: {} bucket(s) (timeline bitmaps)", self.num_buckets)
+    }
+}
+
+impl ExecutionPlan for SfstTimelineExec {
+    fn name(&self) -> &str {
+        "SfstTimelineExec"
+    }
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.cache
+    }
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+    fn with_new_children(
+        self: Arc<Self>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        Ok(self)
+    }
     fn execute(
         &self,
         _partition: usize,
