@@ -51,6 +51,9 @@ members = [
     "sfsq",
     "sfsq-cli",
 
+    # SFST ↔ DataFusion experiment (SOW-20260629)
+    "sfst-datafusion",
+
     # OTLP→WAL/indexing experiment (SOW-20260627)
     "ng-ingest",
     "ng-index",

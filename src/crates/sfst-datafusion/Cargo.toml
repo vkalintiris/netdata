@@ -1,0 +1,20 @@
+[package]
+name = "sfst-datafusion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Experiment (SOW-20260629-datafusion-sfst-stage-a): expose a single SFST file as
+# a DataFusion TableProvider so SQL runs over the existing SFST index. Stage A is
+# an integration proof; see the SOW for the recorded design forks to revisit.
+
+[dependencies]
+sfst = { workspace = true }
+async-trait = { workspace = true }
+# datafusion re-exports arrow; the crate intentionally does NOT add a separate
+# arrow pin to [workspace.dependencies] (keeps the heavy dep tree leaf-local).
+datafusion = "54"
+
+[dev-dependencies]
+tokio = { workspace = true }
