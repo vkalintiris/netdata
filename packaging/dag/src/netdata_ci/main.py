@@ -12,7 +12,7 @@ import dagger
 from dagger import DefaultPath, Ignore, enum_type, function, object_type
 
 from . import build as build_mod
-from . import envs
+from . import envs, pkgs
 from .matrix import build_matrix, docker_matrix, get_distro, packaging_matrix, static_matrix
 
 # Netdata source tree; defaults to the repository this module lives in.
@@ -84,6 +84,16 @@ class NetdataCi:
         return envs.build_env(get_distro(distro, version), platform)
 
     @function
+    def pkg_env(
+        self,
+        distro: str,
+        version: str,
+        platform: str = "linux/amd64",
+    ) -> dagger.Container:
+        """Container with everything needed to build native packages."""
+        return pkgs.pkg_env(get_distro(distro, version), platform)
+
+    @function
     def build(
         self,
         source: NetdataSource,
@@ -100,3 +110,32 @@ class NetdataCi:
         parallelism (0 = one job per CPU).
         """
         return build_mod.source_build(get_distro(distro, version), platform, source, jobs)
+
+    @function
+    async def package(
+        self,
+        source: NetdataSource,
+        distro: str,
+        version: str,
+        platform: str = "linux/amd64",
+        jobs: int = 0,
+    ) -> dagger.Directory:
+        """Build native DEB/RPM packages for one distro/arch.
+
+        DEB via cpack; RPM via the spec (interim, per SOW D11=C). Returns
+        the artifacts directory; chain `export --path=./artifacts` to copy
+        the packages out.
+        """
+        return await pkgs.package(get_distro(distro, version), platform, source, jobs)
+
+    @function
+    async def test_package(
+        self,
+        distro: str,
+        version: str,
+        artifacts: dagger.Directory,
+        platform: str = "linux/amd64",
+    ) -> str:
+        """Install built packages in a clean base image and boot the agent."""
+        ctr = pkgs.test_package(get_distro(distro, version), platform, artifacts)
+        return await ctr.stdout()

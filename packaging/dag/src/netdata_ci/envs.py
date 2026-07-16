@@ -294,9 +294,7 @@ def env_spec(d: Distro) -> EnvSpec:
             return EnvSpec(
                 PkgMgr.DNF,
                 _OL_DEPS,
-                setup=(
-                    ("dnf", "config-manager", "--set-enabled", "ol9_codeready_builder"),
-                ),
+                setup=(("dnf", "config-manager", "--set-enabled", "ol9_codeready_builder"),),
             )
         case "opensuse":
             return EnvSpec(PkgMgr.ZYPPER, _SUSE_DEPS)
