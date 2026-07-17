@@ -12,6 +12,7 @@ import dagger
 from dagger import DefaultPath, Ignore, enum_type, function, object_type
 
 from . import build as build_mod
+from . import docker as docker_mod
 from . import envs, pkgs
 from . import static as static_mod
 from .matrix import build_matrix, docker_matrix, get_distro, packaging_matrix, static_matrix
@@ -142,6 +143,20 @@ class NetdataCi:
         netdata-<arch>-<version>.gz.run and the -latest alias.
         """
         return await static_mod.static_build(source, arch, jobs)
+
+    @function
+    def docker_image(
+        self,
+        source: NetdataSource,
+        platform: str = "linux/amd64",
+        jobs: int = 0,
+    ) -> dagger.Container:
+        """Build the official agent container image natively.
+
+        Chain `export --path=img.tar` for a loadable tarball, or `publish`
+        to push to a registry.
+        """
+        return docker_mod.docker_image(source, platform, jobs)
 
     @function
     async def test_package(
