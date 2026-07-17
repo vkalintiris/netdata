@@ -61,17 +61,37 @@ class PkgMgr(enum.StrEnum):
     ZYPPER = "zypper"
 
 
+class RustSource(enum.StrEnum):
+    """Where a build environment's Rust toolchain comes from.
+
+    Every build environment carries Rust; this records provenance, never
+    presence. The static (Alpine/musl) family uses the distro packages:
+    32-bit ARM musl has no rustup host toolchain (Tier 2 without host
+    tools), and distro rust is also what CI's static builder uses.
+    """
+
+    RUSTUP = "rustup"
+    DISTRO = "distro"
+
+
 @dataclass(frozen=True)
 class EnvSpec:
+    """Everything needed to bootstrap an environment container."""
+
+    base_image: str
     mgr: PkgMgr
     deps: tuple[str, ...]
-    # Files written before setup runs: (path, contents).
+    # Files written before prep runs: (path, contents).
     files: tuple[tuple[str, str], ...] = ()
+    # Shell run before repo setup (e.g. "apt-get update").
+    prep: str = ""
     # Repo-enablement commands run before installing deps.
     setup: tuple[tuple[str, ...], ...] = ()
     # Extra install flags, e.g. --allowerasing where curl-minimal conflicts
     # with the real curl (EL9+ and Amazon Linux base images).
     install_flags: tuple[str, ...] = ()
+    # For RustSource.DISTRO, deps must list the distro rust packages.
+    rust: RustSource = RustSource.RUSTUP
 
 
 _ALPINE_DEPS = (
@@ -247,84 +267,87 @@ enabled=1
 
 
 def env_spec(d: Distro) -> EnvSpec:
+    mgr: PkgMgr
+    deps: tuple[str, ...]
+    files: tuple[tuple[str, str], ...] = ()
+    setup: tuple[tuple[str, ...], ...] = ()
+    flags: tuple[str, ...] = ()
     match d.name:
         case "alpine":
-            return EnvSpec(PkgMgr.APK, _ALPINE_DEPS)
+            mgr, deps = PkgMgr.APK, _ALPINE_DEPS
         case "archlinux":
-            return EnvSpec(PkgMgr.PACMAN, _ARCH_DEPS)
+            mgr, deps = PkgMgr.PACMAN, _ARCH_DEPS
         case "debian" | "ubuntu":
-            return EnvSpec(PkgMgr.APT, _DEB_DEPS)
+            mgr, deps = PkgMgr.APT, _DEB_DEPS
         case "fedora":
-            return EnvSpec(PkgMgr.DNF, _FEDORA_DEPS)
+            mgr, deps = PkgMgr.DNF, _FEDORA_DEPS
         case "amazonlinux":
-            return EnvSpec(
-                PkgMgr.DNF,
-                tuple(p for p in _FEDORA_DEPS if p != "ccache"),
-                install_flags=("--allowerasing",),
-            )
+            mgr, deps = PkgMgr.DNF, tuple(p for p in _FEDORA_DEPS if p != "ccache")
+            flags = ("--allowerasing",)
         case "centos-stream":
-            return EnvSpec(
-                PkgMgr.DNF,
-                _EL_DEPS,
-                setup=(
-                    _DNF_CONFIG_MANAGER,
-                    ("dnf", "config-manager", "--set-enabled", "crb"),
-                ),
-                install_flags=("--allowerasing",),
+            mgr, deps = PkgMgr.DNF, _EL_DEPS
+            setup = (
+                _DNF_CONFIG_MANAGER,
+                ("dnf", "config-manager", "--set-enabled", "crb"),
             )
+            flags = ("--allowerasing",)
         case "rockylinux" if d.version == "8":
-            return EnvSpec(
-                PkgMgr.DNF,
-                _EL_DEPS,
-                setup=(
-                    _DNF_CONFIG_MANAGER,
-                    ("dnf", "config-manager", "--set-enabled", "powertools"),
-                    ("dnf", "install", "-y", "libarchive"),
-                ),
-                install_flags=("--allowerasing",),
+            mgr, deps = PkgMgr.DNF, _EL_DEPS
+            setup = (
+                _DNF_CONFIG_MANAGER,
+                ("dnf", "config-manager", "--set-enabled", "powertools"),
+                ("dnf", "install", "-y", "libarchive"),
             )
+            flags = ("--allowerasing",)
         case "rockylinux":
-            return EnvSpec(
-                PkgMgr.DNF,
-                _EL_DEPS,
-                setup=(
-                    _DNF_CONFIG_MANAGER,
-                    ("dnf", "config-manager", "--set-enabled", "crb"),
-                ),
-                install_flags=("--allowerasing",),
+            mgr, deps = PkgMgr.DNF, _EL_DEPS
+            setup = (
+                _DNF_CONFIG_MANAGER,
+                ("dnf", "config-manager", "--set-enabled", "crb"),
             )
+            flags = ("--allowerasing",)
         case "oraclelinux" if d.version == "8":
-            return EnvSpec(
-                PkgMgr.DNF,
-                _OL_DEPS,
-                files=(("/etc/yum.repos.d/ol8_codeready.repo", _OL8_CODEREADY_REPO),),
-            )
+            mgr, deps = PkgMgr.DNF, _OL_DEPS
+            files = (("/etc/yum.repos.d/ol8_codeready.repo", _OL8_CODEREADY_REPO),)
         case "oraclelinux":
-            return EnvSpec(
-                PkgMgr.DNF,
-                _OL_DEPS,
-                setup=(("dnf", "config-manager", "--set-enabled", "ol9_codeready_builder"),),
-            )
+            mgr, deps = PkgMgr.DNF, _OL_DEPS
+            setup = (("dnf", "config-manager", "--set-enabled", "ol9_codeready_builder"),)
         case "opensuse":
-            return EnvSpec(PkgMgr.ZYPPER, _SUSE_DEPS)
+            mgr, deps = PkgMgr.ZYPPER, _SUSE_DEPS
         case "centos":
             raise ValueError("centos 7 has no source-build environment (skip-local-build)")
         case _:
             raise ValueError(f"no environment spec for distro {d.name}")
+    return EnvSpec(
+        d.base_image,
+        mgr,
+        deps,
+        files=files,
+        prep=d.env_prep,
+        setup=setup,
+        install_flags=flags,
+    )
 
 
 def _install_cmd(spec: EnvSpec) -> list[str]:
     match spec.mgr:
         case PkgMgr.APK:
-            return ["apk", "add", "--no-cache", *spec.deps]
+            return ["apk", "add", "--no-cache", *spec.install_flags, *spec.deps]
         case PkgMgr.APT:
-            return ["apt-get", "install", "-y", "--no-install-recommends", *spec.deps]
+            return [
+                "apt-get",
+                "install",
+                "-y",
+                "--no-install-recommends",
+                *spec.install_flags,
+                *spec.deps,
+            ]
         case PkgMgr.DNF:
             return ["dnf", "install", "-y", *spec.install_flags, *spec.deps]
         case PkgMgr.PACMAN:
-            return ["pacman", "--noconfirm", "--needed", "-S", *spec.deps]
+            return ["pacman", "--noconfirm", "--needed", "-S", *spec.install_flags, *spec.deps]
         case PkgMgr.ZYPPER:
-            return ["zypper", "install", "-y", *spec.deps]
+            return ["zypper", "install", "-y", *spec.install_flags, *spec.deps]
 
 
 def go_arch(platform: str) -> str:
@@ -369,11 +392,15 @@ def install_rust(ctr: dagger.Container, platform: str) -> dagger.Container:
     )
 
 
-def build_env(d: Distro, platform: str) -> dagger.Container:
-    """Container with everything needed to build the agent from source."""
-    spec = env_spec(d)
+def base_env(spec: EnvSpec, platform: str) -> dagger.Container:
+    """Bootstrap an environment container, without toolchains.
 
-    ctr = dag.container(platform=dagger.Platform(platform)).from_(d.base_image)
+    The single bootstrap sequence every environment goes through: base
+    image, PATH, files, prep, repo setup, dependency install. Used directly
+    only for non-build environments (the docker runtime stage); build
+    environments go through bootstrap().
+    """
+    ctr = dag.container(platform=dagger.Platform(platform)).from_(spec.base_image)
 
     # Some images (opensuse) define no PATH in their OCI config; docker
     # injects a default at runtime but dagger does not, so set it explicitly.
@@ -387,17 +414,31 @@ def build_env(d: Distro, platform: str) -> dagger.Container:
     for path, contents in spec.files:
         ctr = ctr.with_new_file(path, contents)
 
-    if d.env_prep:
-        ctr = ctr.with_exec(["sh", "-c", d.env_prep])
+    if spec.prep:
+        ctr = ctr.with_exec(["sh", "-c", spec.prep])
 
     for cmd in spec.setup:
         ctr = ctr.with_exec(list(cmd))
 
-    ctr = ctr.with_exec(_install_cmd(spec))
-    ctr = install_go(ctr, platform)
-    ctr = install_rust(ctr, platform)
+    return ctr.with_exec(_install_cmd(spec))
 
+
+def bootstrap(spec: EnvSpec, platform: str) -> dagger.Container:
+    """Bootstrap a build environment: base_env plus the Go and Rust toolchains.
+
+    Every build environment carries both toolchains, unconditionally.
+    spec.rust records where Rust comes from: the pinned rustup install, or
+    the distro packages already listed in spec.deps.
+    """
+    ctr = install_go(base_env(spec, platform), platform)
+    if spec.rust is RustSource.RUSTUP:
+        ctr = install_rust(ctr, platform)
     return ctr
+
+
+def build_env(d: Distro, platform: str) -> dagger.Container:
+    """Container with everything needed to build the agent from source."""
+    return bootstrap(env_spec(d), platform)
 
 
 # Distros whose BUILD environment can install ccache from base repos.

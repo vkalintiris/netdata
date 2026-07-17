@@ -16,9 +16,8 @@ relying on it must define their own healthcheck.
 from __future__ import annotations
 
 import dagger
-from dagger import dag
 
-from .envs import install_go, install_rust, with_build_caches
+from .envs import EnvSpec, PkgMgr, base_env, bootstrap, with_build_caches
 
 DEBIAN_IMAGE = "debian:trixie"
 
@@ -128,29 +127,12 @@ _SETUID_PLUGINS = (
 )
 
 
-def _debian_with(deps: tuple[str, ...], platform: str) -> dagger.Container:
-    return (
-        dag.container(platform=dagger.Platform(platform))
-        .from_(DEBIAN_IMAGE)
-        .with_env_variable("DEBIAN_FRONTEND", "noninteractive")
-        .with_exec(
-            [
-                "sh",
-                "-c",
-                "codename=\"$(awk -F= '/VERSION_CODENAME/{print $2}' /etc/os-release)\" && "
-                'echo "deb http://deb.debian.org/debian ${codename}-backports main"'
-                " > /etc/apt/sources.list.d/backports.list",
-            ]
-        )
-        .with_exec(["apt-get", "update"])
-        .with_exec(["apt-get", "install", "-y", "--no-install-recommends", *deps])
-    )
+_BUILDER_SPEC = EnvSpec(DEBIAN_IMAGE, PkgMgr.APT, _BUILDER_DEPS, prep="apt-get update\n")
+_RUNTIME_SPEC = EnvSpec(DEBIAN_IMAGE, PkgMgr.APT, _RUNTIME_DEPS, prep="apt-get update\n")
 
 
 def docker_builder_env(platform: str) -> dagger.Container:
-    ctr = _debian_with(_BUILDER_DEPS, platform)
-    ctr = install_go(ctr, platform)
-    return install_rust(ctr, platform)
+    return bootstrap(_BUILDER_SPEC, platform)
 
 
 def _flag(name: str, on: bool) -> str:
@@ -282,7 +264,8 @@ def docker_image(
     app = builder.directory("/app")
 
     runtime = (
-        _debian_with(_RUNTIME_DEPS, platform)
+        # The shipped image base: shared bootstrap, no toolchains (base_env).
+        base_env(_RUNTIME_SPEC, platform)
         .with_exec(["sh", "-c", "apt-get purge -y dpkg-dev || true"])
         .with_directory("/", app)
         .with_exec(["sh", "-c", _RUNTIME_SETUP])

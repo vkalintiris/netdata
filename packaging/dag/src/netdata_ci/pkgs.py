@@ -14,19 +14,17 @@ here nor distro-dependent follow CMake defaults, as they do today.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import dagger
 from dagger import dag
 
 from .envs import (
     EnvSpec,
-    PkgMgr,
+    bootstrap,
     compiler_launcher_args,
     env_spec,
     has_ccache,
-    install_go,
-    install_rust,
     with_build_caches,
 )
 from .matrix import Distro, PkgType
@@ -252,6 +250,7 @@ def pkg_env_spec(d: Distro, platform: str) -> EnvSpec:
     # the source-build envs deliberately do not enable it, so extend here.
     files = base.files
     setup = base.setup
+    flags = base.install_flags
     match d.name:
         case "rockylinux" | "centos-stream":
             setup = (*setup, ("dnf", "install", "-y", "epel-release"))
@@ -264,7 +263,9 @@ def pkg_env_spec(d: Distro, platform: str) -> EnvSpec:
                     _OL_DEVELOPER_EPEL_REPO.format(major=ver),
                 ),
             )
-    return EnvSpec(base.mgr, deps, files=files, setup=setup, install_flags=base.install_flags)
+        case "opensuse":
+            flags = (*flags, "--allow-downgrade")
+    return replace(base, deps=deps, files=files, setup=setup, install_flags=flags)
 
 
 # --- feature availability per packaging environment --------------------------
@@ -383,36 +384,7 @@ def packaging_configure_args(d: Distro, platform: str, build_type: str = "Debug"
 
 def pkg_env(d: Distro, platform: str) -> dagger.Container:
     """Container with everything needed to build native packages."""
-    spec = pkg_env_spec(d, platform)
-
-    ctr = dag.container(platform=dagger.Platform(platform)).from_(d.base_image)
-    ctr = ctr.with_env_variable(
-        "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    )
-    if spec.mgr is PkgMgr.APT:
-        ctr = ctr.with_env_variable("DEBIAN_FRONTEND", "noninteractive")
-    for path, contents in spec.files:
-        ctr = ctr.with_new_file(path, contents)
-    if d.env_prep:
-        ctr = ctr.with_exec(["sh", "-c", d.env_prep])
-    for cmd in spec.setup:
-        ctr = ctr.with_exec(list(cmd))
-
-    install: list[str]
-    match spec.mgr:
-        case PkgMgr.APT:
-            install = ["apt-get", "install", "-y", "--no-install-recommends", *spec.deps]
-        case PkgMgr.DNF:
-            install = ["dnf", "install", "-y", *spec.install_flags, *spec.deps]
-        case PkgMgr.ZYPPER:
-            install = ["zypper", "install", "-y", "--allow-downgrade", *spec.deps]
-        case _:
-            raise ValueError(f"unsupported packaging package manager {spec.mgr}")
-    ctr = ctr.with_exec(install)
-
-    ctr = install_go(ctr, platform)
-    ctr = install_rust(ctr, platform)
-    return ctr
+    return bootstrap(pkg_env_spec(d, platform), platform)
 
 
 # Docker platform -> (rpm arch, GOARCH).

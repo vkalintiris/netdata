@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import dagger
 from dagger import dag
 
-from .envs import install_go, with_build_caches
+from .envs import EnvSpec, PkgMgr, RustSource, bootstrap, with_build_caches
 
 ALPINE_IMAGE = "alpine:3.23"
 NP = "/opt/netdata"  # NETDATA_INSTALL_PATH
@@ -159,15 +159,20 @@ STATIC_ARCHS: dict[str, StaticArch] = {
 }
 
 
+# Rust is DISTRO-provenance: _STATIC_DEPS lists cargo/rust (Alpine builds
+# them for all four static arches; rustup has no 32-bit ARM musl host).
+_STATIC_SPEC = EnvSpec(
+    ALPINE_IMAGE,
+    PkgMgr.APK,
+    _STATIC_DEPS,
+    files=(("/usr/lib/pkgconfig/snappy.pc", _SNAPPY_PC),),
+    rust=RustSource.DISTRO,
+)
+
+
 def static_env(a: StaticArch) -> dagger.Container:
     """Alpine builder with static libraries and toolchains."""
-    ctr = (
-        dag.container(platform=dagger.Platform(a.platform))
-        .from_(ALPINE_IMAGE)
-        .with_exec(["apk", "add", "--no-cache", *_STATIC_DEPS])
-        .with_new_file("/usr/lib/pkgconfig/snappy.pc", _SNAPPY_PC)
-    )
-    return install_go(ctr, a.platform)
+    return bootstrap(_STATIC_SPEC, a.platform)
 
 
 def _untar(ctr: dagger.Container, url: str, sha256: str, path: str) -> dagger.Container:
