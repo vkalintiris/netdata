@@ -13,6 +13,7 @@ from dagger import DefaultPath, Ignore, enum_type, function, object_type
 
 from . import build as build_mod
 from . import envs, pkgs
+from . import static as static_mod
 from .matrix import build_matrix, docker_matrix, get_distro, packaging_matrix, static_matrix
 
 # Netdata source tree; defaults to the repository this module lives in.
@@ -127,6 +128,20 @@ class NetdataCi:
         the packages out.
         """
         return await pkgs.package(get_distro(distro, version), platform, source, jobs)
+
+    @function
+    async def static(
+        self,
+        source: NetdataSource,
+        arch: str = "x86_64",
+        jobs: int = 0,
+    ) -> dagger.Directory:
+        """Build the self-extracting static installer (.gz.run) for an arch.
+
+        Returns the artifacts directory containing
+        netdata-<arch>-<version>.gz.run and the -latest alias.
+        """
+        return await static_mod.static_build(source, arch, jobs)
 
     @function
     async def test_package(

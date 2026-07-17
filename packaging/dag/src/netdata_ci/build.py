@@ -39,7 +39,6 @@ _COMMON_ON = (
 _COMMON_OFF = (
     "NETDATA_JOURNAL_FILE_READER",
     "PLUGIN_CUPS",
-    "PLUGIN_EBPF",
     "BUNDLED_JSONC",
     "PLUGIN_NETFLOW",
     "PLUGIN_OTEL",
@@ -61,11 +60,13 @@ BUILD_DIR = "build"
 SRC_DIR = "/netdata"
 
 
-def configure_args(d: Distro) -> list[str]:
+def configure_args(d: Distro, platform: str) -> list[str]:
     systemd = d.name not in _NO_SYSTEMD
     features: dict[str, bool] = {name: True for name in _COMMON_ON}
     features["PLUGIN_SYSTEMD_JOURNAL"] = systemd
     features["PLUGIN_SYSTEMD_UNITS"] = systemd
+    # The installer force-enables eBPF on x86 hardware (netdata-installer.sh:256).
+    features["PLUGIN_EBPF"] = platform in ("linux/amd64", "linux/386")
     features.update({name: False for name in _COMMON_OFF})
 
     args = ["cmake", "-S", ".", "-B", BUILD_DIR]
@@ -92,7 +93,7 @@ def source_build(
         .with_directory(SRC_DIR, source)
         .with_workdir(SRC_DIR)
         .with_env_variable("DISABLE_TELEMETRY", "1")
-        .with_exec(configure_args(d))
+        .with_exec(configure_args(d, platform))
         .with_exec(["sh", "-c", f"cmake --build {BUILD_DIR} --parallel {parallel}"])
         .with_exec(["cmake", "--install", BUILD_DIR])
     )
