@@ -12,12 +12,16 @@ import dagger
 from dagger import DefaultPath, Ignore, enum_type, function, object_type
 
 from . import build as build_mod
+from . import ci as ci_mod
 from . import docker as docker_mod
 from . import envs, pkgs, stream, tests
 from . import static as static_mod
 from .matrix import build_matrix, docker_matrix, get_distro, packaging_matrix, static_matrix
 
 # Netdata source tree; defaults to the repository this module lives in.
+# packaging/dag is excluded entirely: nothing in the agent build consumes
+# it, and including it would invalidate every cached build on any edit to
+# this module's own code.
 NetdataSource = Annotated[
     dagger.Directory,
     DefaultPath("/"),
@@ -26,8 +30,7 @@ NetdataSource = Annotated[
             ".git",
             "build",
             "fluent-bit/build",
-            "packaging/dag/sdk",
-            "packaging/dag/.venv",
+            "packaging/dag",
         ]
     ),
 ]
@@ -157,6 +160,17 @@ class NetdataCi:
         to push to a registry.
         """
         return docker_mod.docker_image(source, platform, jobs)
+
+    @function
+    async def ci(self, source: NetdataSource, tier: str = "smoke", slots: int = 0) -> str:
+        """Run a tier of CI jobs concurrently and report per-job results.
+
+        Tiers: smoke (default) | build | packages | static | image | full.
+        `slots` caps concurrent heavy jobs (default 1 - each job already
+        uses every CPU). Non-native architectures are excluded; run those
+        on the shared engine.
+        """
+        return await ci_mod.run_ci(source, tier, slots)
 
     @function
     async def go_test(self, source: NetdataSource) -> str:

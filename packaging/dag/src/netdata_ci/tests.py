@@ -49,9 +49,15 @@ done
 exit $status
 """
 
+# setarch -R disables ASLR for the test process: ASan's shadow mapping
+# randomly collides with high-entropy ASLR (hosts with mmap_rnd_bits=32),
+# crashing at startup before any test runs. CI runner VMs patch this at
+# the kernel level; containers inherit the host's setting, so we must not
+# depend on it.
 _C_UNITTEST = """
 set -e
-ASAN_OPTIONS=detect_leaks=0 /opt/netdata/usr/sbin/netdata -W unittest
+ASAN_OPTIONS=detect_leaks=0 setarch "$(uname -m)" -R \
+  /opt/netdata/usr/sbin/netdata -W unittest
 """
 
 
@@ -97,6 +103,8 @@ def c_test(source: dagger.Directory, jobs: int = 0) -> dagger.Container:
         .with_exec(args)
         .with_exec(["sh", "-c", f"cmake --build {build_mod.BUILD_DIR} --parallel {parallel}"])
         .with_exec(["cmake", "--install", build_mod.BUILD_DIR])
-        .with_exec(["sh", "-c", _C_UNITTEST])
+        # Privileged: the default seccomp profile blocks personality(2),
+        # which setarch -R needs. CI does the same via seccomp=unconfined.
+        .with_exec(["sh", "-c", _C_UNITTEST], insecure_root_capabilities=True)
     )
     return ctr
