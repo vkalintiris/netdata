@@ -13,7 +13,7 @@ from dagger import DefaultPath, Ignore, enum_type, function, object_type
 
 from . import build as build_mod
 from . import docker as docker_mod
-from . import envs, pkgs
+from . import envs, pkgs, stream, tests
 from . import static as static_mod
 from .matrix import build_matrix, docker_matrix, get_distro, packaging_matrix, static_matrix
 
@@ -157,6 +157,21 @@ class NetdataCi:
         to push to a registry.
         """
         return docker_mod.docker_image(source, platform, jobs)
+
+    @function
+    async def go_test(self, source: NetdataSource) -> str:
+        """gofmt/vet/build/test -race across every Go module."""
+        return await tests.go_test(source).stdout()
+
+    @function
+    async def c_test(self, source: NetdataSource, jobs: int = 0) -> str:
+        """Address-sanitized Debug build + the in-binary C unit tests."""
+        return await tests.c_test(source, jobs).stdout()
+
+    @function
+    async def stream_test(self, source: NetdataSource, jobs: int = 0) -> str:
+        """Parent/child streaming smoke test with bearer-protection checks."""
+        return await stream.stream_test(source, jobs).stdout()
 
     @function
     async def test_package(
