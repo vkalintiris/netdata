@@ -63,29 +63,32 @@ async def run_ci(
     tier: str = "smoke",
     slots: int = 0,
     build_type: str = "Debug",
+    jobs: int = 0,
 ) -> str:
     sem = asyncio.Semaphore(slots if slots > 0 else _DEFAULT_SLOTS)
-    jobs: list[Awaitable[str]] = []
+    queued: list[Awaitable[str]] = []
 
     def build_job(d: Distro) -> Callable[[], Awaitable[object]]:
         def fn() -> Awaitable[object]:
-            return build_mod.source_build(d, _NATIVE, source, build_type=build_type).sync()
+            return build_mod.source_build(
+                d, _NATIVE, source, jobs=jobs, build_type=build_type
+            ).sync()
 
         return fn
 
     def pkg_job(d: Distro) -> Callable[[], Awaitable[object]]:
         async def fn() -> None:
-            artifacts = await pkgs.package(d, _NATIVE, source, build_type=build_type)
+            artifacts = await pkgs.package(d, _NATIVE, source, jobs=jobs, build_type=build_type)
             await pkgs.test_package(d, _NATIVE, artifacts).sync()
 
         return fn
 
     if tier in ("smoke", "full"):
         d = next(x for x in active_distros() if x.name == "debian" and x.version == "12")
-        jobs += [
+        queued += [
             _gated(sem, "build debian:12", build_job(d)),
             _gated(sem, "go-test", lambda: tests.go_test(source).sync()),
-            _gated(sem, "c-test", lambda: tests.c_test(source).sync()),
+            _gated(sem, "c-test", lambda: tests.c_test(source, jobs=jobs).sync()),
             _gated(sem, "stream-test", lambda: stream.stream_test(source).sync()),
         ]
 
@@ -93,7 +96,7 @@ async def run_ci(
         for d in active_distros():
             if d.skip_local_build or (d.name, d.version) == ("debian", "12"):
                 continue
-            jobs.append(_gated(sem, f"build {d.name}:{d.version}", build_job(d)))
+            queued.append(_gated(sem, f"build {d.name}:{d.version}", build_job(d)))
 
     if tier in ("packages", "full"):
         for d in active_distros():
@@ -101,30 +104,32 @@ async def run_ci(
                 continue
             if not any(a in _NATIVE_PKG_ARCHES for a in d.packages.arches):
                 continue
-            jobs.append(_gated(sem, f"package {d.name}:{d.version}", pkg_job(d)))
+            queued.append(_gated(sem, f"package {d.name}:{d.version}", pkg_job(d)))
 
     if tier in ("static", "full"):
-        jobs.append(
+        queued.append(
             _gated(
                 sem,
                 "static x86_64",
-                lambda: static_mod.static_build(source, "x86_64", build_type=build_type),
+                lambda: static_mod.static_build(source, "x86_64", jobs=jobs, build_type=build_type),
             )
         )
 
     if tier in ("image", "full"):
-        jobs.append(
+        queued.append(
             _gated(
                 sem,
                 "docker-image",
-                lambda: docker_mod.docker_image(source, _NATIVE, build_type=build_type).sync(),
+                lambda: docker_mod.docker_image(
+                    source, _NATIVE, jobs=jobs, build_type=build_type
+                ).sync(),
             )
         )
 
-    if not jobs:
+    if not queued:
         raise ValueError(f"unknown tier {tier!r} (smoke|build|packages|static|image|full)")
 
-    results = await asyncio.gather(*jobs)
+    results = await asyncio.gather(*queued)
     report = "\n".join(sorted(results))
     failed = sum(1 for r in results if r.startswith("FAIL"))
     summary = f"\n{len(results) - failed}/{len(results)} jobs passed (tier={tier})"

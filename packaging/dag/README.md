@@ -85,3 +85,9 @@ regenerates the vendored SDK under `sdk/` (gitignored).
 Non-native architectures build via QEMU (slow) — prefer the shared
 engine for those and for full-matrix runs. Windows and macOS cannot be
 built here (Linux containers only); they remain on GitHub CI.
+
+## Progress in scripts
+
+Interactive runs show per-job `ok/FAIL` lines live in the TUI. Piped or
+scripted runs should add `--progress=plain` to see step-level progress;
+the compact renderer only emits heartbeats until completion.

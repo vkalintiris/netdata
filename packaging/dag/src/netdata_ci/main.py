@@ -174,15 +174,17 @@ class NetdataCi:
         tier: str = "smoke",
         slots: int = 0,
         build_type: str = "Debug",
+        jobs: int = 0,
     ) -> str:
         """Run a tier of CI jobs concurrently and report per-job results.
 
         Tiers: smoke (default) | build | packages | static | image | full.
-        `slots` caps concurrent heavy jobs (default 1 - each job already
-        uses every CPU). Non-native architectures are excluded; run those
+        `slots` caps concurrent heavy jobs (default 1); `jobs` caps each
+        build's compile parallelism (default: one per CPU) so slots*jobs
+        can be budgeted to the machine. Non-native architectures are excluded; run those
         on the shared engine.
         """
-        return await ci_mod.run_ci(source, tier, slots, build_type)
+        return await ci_mod.run_ci(source, tier, slots, build_type, jobs)
 
     @function
     async def go_test(self, source: NetdataSource) -> str:
