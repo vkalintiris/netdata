@@ -76,6 +76,7 @@ class EnvSpec:
 
 _ALPINE_DEPS = (
     "alpine-sdk",
+    "ccache",
     "bison",
     "cmake",
     "coreutils",
@@ -107,6 +108,7 @@ _ALPINE_DEPS = (
 
 _ARCH_DEPS = (
     "bison",
+    "ccache",
     "cmake",
     "curl",
     "flex",
@@ -131,6 +133,7 @@ _ARCH_DEPS = (
 
 _DEB_DEPS = (
     "bison",
+    "ccache",
     # Not in the CI-resolved list: there apt runs without
     # --no-install-recommends and certs arrive via Recommends. We install
     # lean, so TLS trust must be explicit (debian images ship none).
@@ -165,6 +168,7 @@ _DEB_DEPS = (
 
 _FEDORA_DEPS = (
     "bison",
+    "ccache",
     "cmake",
     "curl",
     "elfutils-libelf-devel",
@@ -195,13 +199,14 @@ _FEDORA_DEPS = (
 )
 
 # EL rebuilds (CentOS Stream, Rocky) additionally need kernel headers.
-_EL_DEPS = (*_FEDORA_DEPS, "kernel-headers")
+_EL_DEPS = (*(p for p in _FEDORA_DEPS if p != "ccache"), "kernel-headers")
 
 # Oracle Linux repos lack findutils/pcre2-devel in the resolved set.
-_OL_DEPS = tuple(p for p in _FEDORA_DEPS if p not in ("findutils", "pcre2-devel"))
+_OL_DEPS = tuple(p for p in _FEDORA_DEPS if p not in ("findutils", "pcre2-devel", "ccache"))
 
 _SUSE_DEPS = (
     "bison",
+    "ccache",
     "cmake",
     "curl",
     "flex",
@@ -252,7 +257,11 @@ def env_spec(d: Distro) -> EnvSpec:
         case "fedora":
             return EnvSpec(PkgMgr.DNF, _FEDORA_DEPS)
         case "amazonlinux":
-            return EnvSpec(PkgMgr.DNF, _FEDORA_DEPS, install_flags=("--allowerasing",))
+            return EnvSpec(
+                PkgMgr.DNF,
+                tuple(p for p in _FEDORA_DEPS if p != "ccache"),
+                install_flags=("--allowerasing",),
+            )
         case "centos-stream":
             return EnvSpec(
                 PkgMgr.DNF,
@@ -389,3 +398,50 @@ def build_env(d: Distro, platform: str) -> dagger.Container:
     ctr = install_rust(ctr, platform)
 
     return ctr
+
+
+# Distros whose BUILD environment can install ccache from base repos.
+# EL/Amazon lack it there (EPEL-only); their packaging envs enable EPEL
+# and are handled separately.
+_CCACHE_BUILD_DISTROS = ("alpine", "archlinux", "debian", "ubuntu", "fedora", "opensuse")
+
+
+def has_ccache(d: Distro, packaging: bool = False) -> bool:
+    if d.name in _CCACHE_BUILD_DISTROS:
+        return True
+    # EL packaging envs carry EPEL; Amazon has no EPEL equivalent.
+    return packaging and d.name in ("rockylinux", "centos-stream", "oraclelinux")
+
+
+def compiler_launcher_args(enabled: bool) -> list[str]:
+    if not enabled:
+        return []
+    return [
+        "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
+        "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
+    ]
+
+
+def with_build_caches(ctr: dagger.Container, key: str) -> dagger.Container:
+    """Mount shared toolchain caches (ccache, Go, cargo).
+
+    Cache-volume contents are excluded from Dagger's cache keys, so these
+    accelerate re-executions without affecting layer caching. `key` scopes
+    compiler-output caches per environment; Go and cargo-registry caches
+    are safely global.
+    """
+    return (
+        ctr.with_mounted_cache("/ccache", dag.cache_volume(f"ccache-{key}"))
+        .with_env_variable("CCACHE_DIR", "/ccache")
+        # Compiler mtimes are unstable across images; hash the compiler.
+        .with_env_variable("CCACHE_COMPILERCHECK", "content")
+        .with_env_variable("CCACHE_MAXSIZE", "10G")
+        .with_mounted_cache("/go-build-cache", dag.cache_volume("go-build-cache"))
+        .with_env_variable("GOCACHE", "/go-build-cache")
+        .with_mounted_cache("/go-mod-cache", dag.cache_volume("go-mod-cache"))
+        .with_env_variable("GOMODCACHE", "/go-mod-cache")
+        .with_mounted_cache("/cargo-registry", dag.cache_volume("cargo-registry"))
+        .with_env_variable("CARGO_HOME", "/cargo-registry")
+        .with_mounted_cache("/cargo-target", dag.cache_volume(f"cargo-target-{key}"))
+        .with_env_variable("CARGO_TARGET_DIR", "/cargo-target")
+    )

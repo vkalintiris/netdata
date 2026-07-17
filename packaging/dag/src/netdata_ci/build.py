@@ -70,6 +70,7 @@ def configure_args(d: Distro, platform: str, build_type: str = "Debug") -> list[
     features.update({name: False for name in _COMMON_OFF})
 
     args = ["cmake", "-S", ".", "-B", BUILD_DIR]
+    args += envs.compiler_launcher_args(envs.has_ccache(d))
     args.append(f"-DCMAKE_BUILD_TYPE={build_type}")
     args.append(f"-DCMAKE_INSTALL_PREFIX={INSTALL_PREFIX}")
     for name, on in features.items():
@@ -90,8 +91,9 @@ def source_build(
     several builds concurrently should budget jobs across them.
     """
     parallel = str(jobs) if jobs > 0 else "$(nproc)"
+    key = f"{d.name}-{d.version}-{platform.replace('/', '-')}"
     ctr = (
-        envs.build_env(d, platform)
+        envs.with_build_caches(envs.build_env(d, platform), key)
         .with_directory(SRC_DIR, source)
         .with_workdir(SRC_DIR)
         .with_env_variable("DISABLE_TELEMETRY", "1")

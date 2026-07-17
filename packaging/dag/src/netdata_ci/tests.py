@@ -81,7 +81,16 @@ def go_test(source: dagger.Directory) -> dagger.Container:
         .with_workdir("/netdata")
         .with_env_variable("DISABLE_TELEMETRY", "1")
         .with_env_variable("HOME", "/home/runner")
-        .with_env_variable("GOCACHE", "/home/runner/.cache/go-build")
+        # Non-root user needs owned cache mounts (root-owned volumes are
+        # unwritable for it).
+        .with_mounted_cache(
+            "/go-build-cache", dagger.dag.cache_volume("go-build-cache"), owner="runner"
+        )
+        .with_env_variable("GOCACHE", "/go-build-cache")
+        .with_mounted_cache(
+            "/go-mod-cache", dagger.dag.cache_volume("go-mod-cache"), owner="runner"
+        )
+        .with_env_variable("GOMODCACHE", "/go-mod-cache")
         .with_env_variable("GOPATH", "/home/runner/go")
         .with_user("runner")
         .with_exec(["sh", "-c", _GO_MODULE_TEST])
@@ -94,9 +103,9 @@ def c_test(source: dagger.Directory, jobs: int = 0) -> dagger.Container:
     d = get_distro(*_DISTRO)
     parallel = str(jobs) if jobs > 0 else "$(nproc)"
     args = build_mod.configure_args(d, "linux/amd64")
-    args += ["-DCMAKE_BUILD_TYPE=Debug", "-DENABLE_ADDRESS_SANITIZER=On"]
+    args.append("-DENABLE_ADDRESS_SANITIZER=On")
     ctr = (
-        envs.build_env(d, "linux/amd64")
+        envs.with_build_caches(envs.build_env(d, "linux/amd64"), "c-test")
         .with_directory("/netdata", source)
         .with_workdir("/netdata")
         .with_env_variable("DISABLE_TELEMETRY", "1")

@@ -18,7 +18,7 @@ from __future__ import annotations
 import dagger
 from dagger import dag
 
-from .envs import install_go, install_rust
+from .envs import install_go, install_rust, with_build_caches
 
 DEBIAN_IMAGE = "debian:trixie"
 
@@ -27,6 +27,7 @@ NETDATA_GID = 201
 
 _BUILDER_DEPS = (
     "autoconf",
+    "ccache",
     "autoconf-archive",
     "automake",
     "bison",
@@ -170,6 +171,8 @@ def docker_configure_args(build_type: str = "Debug") -> list[str]:
         "-B",
         "build",
         "-DCMAKE_INSTALL_PREFIX=",
+        "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
+        "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
         f"-DCMAKE_BUILD_TYPE={build_type}",
         _flag("PLUGIN_GO", True),
         _flag("PLUGIN_PYTHON", True),
@@ -255,7 +258,7 @@ def docker_image(
     parallel = str(jobs) if jobs > 0 else "$(nproc)"
 
     builder = (
-        docker_builder_env(platform)
+        with_build_caches(docker_builder_env(platform), f"docker-{platform.replace('/', '-')}")
         .with_directory("/opt/netdata.git", source)
         .with_workdir("/opt/netdata.git")
         .with_env_variable("DISABLE_TELEMETRY", "1")

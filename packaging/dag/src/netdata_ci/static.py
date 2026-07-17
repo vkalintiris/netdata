@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import dagger
 from dagger import dag
 
-from .envs import install_go
+from .envs import install_go, with_build_caches
 
 ALPINE_IMAGE = "alpine:3.23"
 NP = "/opt/netdata"  # NETDATA_INSTALL_PATH
@@ -364,6 +364,8 @@ def static_configure_args(a: StaticArch, build_type: str = "Debug") -> list[str]
         ".",
         "-B",
         "build",
+        "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
+        "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
         f"-DCMAKE_INSTALL_PREFIX={NP}",
         f"-DCMAKE_BUILD_TYPE={build_type}",
         "-DSTATIC_BUILD=On",
@@ -517,7 +519,8 @@ async def static_build(
         ctr = ctr.with_env_variable(k, v)
 
     ctr = (
-        ctr.with_directory("/netdata", source)
+        with_build_caches(ctr, f"static-{a.arch}")
+        .with_directory("/netdata", source)
         .with_workdir("/netdata")
         .with_env_variable("DISABLE_TELEMETRY", "1")
         .with_env_variable("CFLAGS", cflags)

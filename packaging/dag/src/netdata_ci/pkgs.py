@@ -19,13 +19,23 @@ from dataclasses import dataclass
 import dagger
 from dagger import dag
 
-from .envs import EnvSpec, PkgMgr, env_spec, install_go, install_rust
+from .envs import (
+    EnvSpec,
+    PkgMgr,
+    compiler_launcher_args,
+    env_spec,
+    has_ccache,
+    install_go,
+    install_rust,
+    with_build_caches,
+)
 from .matrix import Distro, PkgType
 
 # --- packaging environments -------------------------------------------------
 
 _DEB_PKG_DEPS = (
     "bison",
+    "ccache",
     "build-essential",
     "ca-certificates",
     "clang",
@@ -73,6 +83,7 @@ _DEB_PKG_DEPS = (
 
 _FEDORA_PKG_DEPS = (
     "bash",
+    "ccache",
     "bison",
     "clang",
     "cmake",
@@ -145,7 +156,7 @@ _AMAZON_PKG_DEPS = (
     *tuple(
         p
         for p in _EL_PKG_DEPS
-        if p not in ("freeipmi-devel", "pkgconfig(libmongoc-1.0)", "lm_sensors", "nc")
+        if p not in ("freeipmi-devel", "pkgconfig(libmongoc-1.0)", "lm_sensors", "nc", "ccache")
     ),
     "bison-devel",
     "flex-devel",
@@ -153,6 +164,7 @@ _AMAZON_PKG_DEPS = (
 
 _SUSE_PKG_DEPS = (
     "autoconf",
+    "ccache",
     "automake",
     "bison",
     "clang",
@@ -314,6 +326,7 @@ def packaging_configure_args(d: Distro, platform: str, build_type: str = "Debug"
         BUILD_DIR,
         "-G",
         "Ninja",
+        *compiler_launcher_args(has_ccache(d, packaging=True)),
         f"-DCMAKE_BUILD_TYPE={build_type}",
         "-DCMAKE_INSTALL_PREFIX=/",
         "-DBUILD_FOR_PACKAGING=On",
@@ -477,8 +490,9 @@ def _package_deb(
         'arch="$(echo "$base" | cut -f 3 -d _)"; '
         'mv "$pkg" "/artifacts/${name}_${ver}+${distid}_${arch}.${ext}"; done'
     )
+    key = f"pkg-{d.name}-{d.version}-{platform.replace('/', '-')}"
     ctr = (
-        pkg_env(d, platform)
+        with_build_caches(pkg_env(d, platform), key)
         .with_directory(SRC_DIR, source)
         .with_workdir(SRC_DIR)
         .with_env_variable("DISABLE_TELEMETRY", "1")
@@ -518,8 +532,9 @@ async def _package_rpm(
         f"{topdir}/{s}" for s in ("BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS")
     )
 
+    key = f"pkg-{d.name}-{d.version}-{platform.replace('/', '-')}"
     ctr = (
-        pkg_env(d, platform)
+        with_build_caches(pkg_env(d, platform), key)
         .with_env_variable("DISABLE_TELEMETRY", "1")
         .with_env_variable("GOOS", "linux")
         .with_env_variable("GOARCH", goarch)
