@@ -59,6 +59,9 @@ members = [
 
     # Plugin IPC library
     "netipc",
+
+    # Support bundle tool
+    "support-bundle",
 ]
 
 [workspace.package]
@@ -273,6 +276,12 @@ url = "2"
 
 crc32fast = "1"
 tempfile = { version = "3" }
+tar = "0.4"
+zip = { version = "4", default-features = false, features = ["deflate"] }
+webpki-roots = "1"
+wmi = "0.17"
+winreg = "0.55"
+windows-sys = "0.60"
 
 proptest = "1.9"
 zstd = "0.13"

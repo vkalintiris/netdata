@@ -8,15 +8,13 @@ on:
     paths:
       - '.github/workflows/netdata-support-bundle.yml'
       - '.github/ISSUE_TEMPLATE/BUG_REPORT.yml'
-      - 'packaging/installer/netdata-support-bundle.sh'
-      - 'packaging/installer/netdata-support-bundle.ps1'
+      - 'src/crates/support-bundle/**'
       - 'packaging/installer/SUPPORT-BUNDLE.md'
   pull_request:
     paths:
       - '.github/workflows/netdata-support-bundle.yml'
       - '.github/ISSUE_TEMPLATE/BUG_REPORT.yml'
-      - 'packaging/installer/netdata-support-bundle.sh'
-      - 'packaging/installer/netdata-support-bundle.ps1'
+      - 'src/crates/support-bundle/**'
       - 'packaging/installer/SUPPORT-BUNDLE.md'
 
 permissions:
@@ -27,41 +25,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  posix:
-    name: POSIX sanitization (${{ matrix.shell }})
-    runs-on: ubuntu-latest
+  test:
+    name: Tests and selftest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        shell:
-          - sh
-          - dash
-          - busybox
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install BusyBox
-        if: matrix.shell == 'busybox'
-        run: sudo apt-get update && sudo apt-get install -y busybox
+      - name: Unit tests (sanitizer vector suite)
+        working-directory: src/crates
+        run: cargo test -p support-bundle
 
-      - name: Parse and run adversarial self-test
-        env:
-          TEST_SHELL: ${{ matrix.shell }}
-        run: |
-          set -eu
-          if [ "$TEST_SHELL" = busybox ]; then
-            busybox sh -n packaging/installer/netdata-support-bundle.sh
-            busybox sh packaging/installer/netdata-support-bundle.sh --selftest
-          else
-            "$TEST_SHELL" -n packaging/installer/netdata-support-bundle.sh
-            "$TEST_SHELL" packaging/installer/netdata-support-bundle.sh --selftest
-          fi
+      - name: Clippy (all targets, tests included)
+        working-directory: src/crates
+        run: cargo clippy -p support-bundle --all-targets -- -D warnings
+
+      - name: Build release binary
+        working-directory: src/crates
+        run: cargo build --release -p support-bundle
+
+      - name: Runtime selftest
+        working-directory: src/crates
+        run: cargo run --release -p support-bundle -- --selftest
 
   posix-e2e:
     name: POSIX end-to-end bundle
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      - name: Build
+        working-directory: src/crates
+        run: cargo build --release -p support-bundle
 
       - name: Build and validate a fixture bundle
         run: |
@@ -71,8 +72,8 @@ jobs:
           sudo chmod 644 /etc/netdata/netdata.conf
           output=$(mktemp -d)
           extract=$(mktemp -d)
-          sh packaging/installer/netdata-support-bundle.sh --timeout 3 --since 1 -o "$output"
-          bundle=$(find "$output" -maxdepth 1 \( -name '*.tar.gz' -o -name '*.tar.zst' \) -print -quit)
+          src/crates/target/release/netdata-support-bundle --timeout 3 --since 1 -o "$output"
+          bundle=$(find "$output" -maxdepth 1 -name '*.tar.zst' -print -quit)
           test -n "$bundle"
           tar -xf "$bundle" -C "$extract"
           root=$(find "$extract" -mindepth 1 -maxdepth 1 -type d -print -quit)
@@ -90,34 +91,15 @@ jobs:
           jq -e '.schema == "netdata-support-bundle/v1" and (.files | length > 0)' "$root/MANIFEST.json"
           jq -e '.files[] | select(.path == "04-config/netdata.conf" and .bytes > 0)' "$root/MANIFEST.json"
 
-  macos-posix:
-    name: macOS POSIX sanitization
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Parse and run adversarial self-test
-        run: |
-          set -eu
-          sh -n packaging/installer/netdata-support-bundle.sh
-          sh packaging/installer/netdata-support-bundle.sh --selftest
-
-  powershell-core:
-    name: PowerShell 7 sanitization
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Run adversarial self-test
-        shell: pwsh
-        run: ./packaging/installer/netdata-support-bundle.ps1 -SelfTest
-
-  windows-powershell:
-    name: Windows PowerShell 5.1 sanitization
+  windows-e2e:
+    name: Windows end-to-end bundle
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Run adversarial self-test
-        shell: powershell
-        run: .\packaging\installer\netdata-support-bundle.ps1 -SelfTest
+
+      - name: Build
+        working-directory: src/crates
+        run: cargo build --release -p support-bundle
 
       - name: Build and validate a fixture bundle
         shell: powershell
@@ -131,7 +113,8 @@ jobs:
               "KEEP-NONSECRET-CONTENT`npassword=SENTINEL-E2E-PASSWORD`n",
               $utf8)
           $output = Join-Path $env:RUNNER_TEMP ('netdata-support-bundle-e2e-' + [guid]::NewGuid())
-          .\packaging\installer\netdata-support-bundle.ps1 -Output $output -TimeoutSeconds 3 -SinceHours 1
+          & src\crates\target\release\netdata-support-bundle.exe -o $output --timeout 3 --since 1
+          if ($LASTEXITCODE -ne 0) { throw "collection failed with exit $LASTEXITCODE" }
           $zip = Get-ChildItem $output -Filter '*.zip' | Select-Object -First 1
           if (-not $zip) { throw 'bundle zip was not created' }
           Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -143,6 +126,12 @@ jobs:
               $reader = New-Object System.IO.StreamReader($configEntry.Open(), $utf8, $true)
               try { $config = $reader.ReadToEnd() } finally { $reader.Dispose() }
               if ($config -notmatch 'KEEP-NONSECRET-CONTENT' -or $config -match 'SENTINEL-E2E-PASSWORD') { throw 'config survival/redaction contract failed' }
+              foreach ($entry in $archive.Entries) {
+                  if ($entry.Length -eq 0) { continue }
+                  $r = New-Object System.IO.StreamReader($entry.Open(), $utf8, $true)
+                  try { $text = $r.ReadToEnd() } finally { $r.Dispose() }
+                  if ($text -match 'SENTINEL-E2E-PASSWORD') { throw "planted secret survived in $($entry.FullName)" }
+              }
               $manifestStream = $manifestEntry.Open()
               try {
                   $memory = New-Object System.IO.MemoryStream

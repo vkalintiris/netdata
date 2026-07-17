@@ -479,6 +479,11 @@ advanced correlations and fast root cause analysis, native horizontal scalabilit
 	%else
 	-DENABLE_PLUGIN_OTEL=Off \
 	%endif
+	%if 0%{_have_rust}
+	-DENABLE_SUPPORT_BUNDLE=On \
+	%else
+	-DENABLE_SUPPORT_BUNDLE=Off \
+	%endif
 	-DENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE=On \
 	-DENABLE_BUNDLED_JSONC=Off \
 	-DENABLE_BUNDLED_YAML=Off \
@@ -610,7 +615,9 @@ rm -rf "${RPM_BUILD_ROOT}"
 %endif
 %{_sbindir}/systemd-cat-native
 %{_sbindir}/%{name}-claim.sh
+%if 0%{_have_rust}
 %{_sbindir}/%{name}-support-bundle
+%endif
 
 %{_unitdir}/%{name}.service
 %{_unitdir}/%{name}-updater.timer

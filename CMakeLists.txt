@@ -193,6 +193,18 @@ cmake_dependent_option(ENABLE_ND_MCP "Build nd-mcp stdio-to-websocket bridge for
 option(ENABLE_PLUGIN_SCRIPTS "Enable the experimental scripts plugin (Nagios compatibility module)" ON)
 cmake_dependent_option(ENABLE_PLUGIN_OTEL "Enable collection of OpenTelemetry metrics and logs" ${DEFAULT_FEATURE_STATE} "OS_LINUX" False)
 cmake_dependent_option(ENABLE_PLUGIN_NETFLOW "Enable NetFlow/IPFIX/sFlow flow analysis plugin" False "NOT OS_WINDOWS" False)
+
+# netdata-support-bundle diagnostic tool (Rust). Auto-disabled with a warning
+# when no cargo toolchain is available, so source builds on platforms without
+# Rust still succeed - they just lose this one tool.
+option(ENABLE_SUPPORT_BUNDLE "Build the netdata-support-bundle diagnostic tool (requires Rust)" True)
+if(ENABLE_SUPPORT_BUNDLE)
+  find_program(CARGO_EXECUTABLE cargo)
+  if(NOT CARGO_EXECUTABLE)
+    message(WARNING "netdata-support-bundle requires a Rust toolchain (cargo not found in PATH) - disabling ENABLE_SUPPORT_BUNDLE")
+    set(ENABLE_SUPPORT_BUNDLE False)
+  endif()
+endif()
 option(ENABLE_PLUGIN_PYTHON "Enable metric collectors written in Python" ${DEFAULT_FEATURE_STATE})
 
 cmake_dependent_option(ENABLE_PLUGIN_APPS "Enable per-process resource usage monitoring" ${DEFAULT_FEATURE_STATE} "OS_LINUX OR OS_FREEBSD OR OS_MACOS OR OS_WINDOWS" False)
@@ -251,7 +263,7 @@ mark_as_advanced(FORCE_LEGACY_LIBBPF)
 cmake_dependent_option(ENABLE_NETDATA_JOURNAL_FILE_READER "Enable netdata's journal file reader implementation" False "ENABLE_PLUGIN_SYSTEMD_JOURNAL" False)
 
 # Setup Rust/Corrosion for plugins that need it
-if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL OR ENABLE_PLUGIN_NETFLOW)
+if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL OR ENABLE_PLUGIN_NETFLOW OR ENABLE_SUPPORT_BUNDLE)
     include(FetchContent)
     FetchContent_Declare(
         Corrosion
@@ -278,6 +290,9 @@ if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL OR ENABLE_PLUGIN_NET
     endif()
     if(ENABLE_PLUGIN_NETFLOW)
         list(APPEND _WORKSPACE_CRATES netflow-plugin)
+    endif()
+    if(ENABLE_SUPPORT_BUNDLE)
+        list(APPEND _WORKSPACE_CRATES support-bundle)
     endif()
     if(_WORKSPACE_CRATES)
         corrosion_import_crate(MANIFEST_PATH src/crates/Cargo.toml
@@ -308,6 +323,10 @@ if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL OR ENABLE_PLUGIN_NET
                 "CARGO_PROFILE_RELEASE_LTO=off"
                 "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8")
       endif()
+    endif()
+
+    if(ENABLE_SUPPORT_BUNDLE AND STATIC_BUILD)
+      corrosion_add_target_rustflags(netdata-support-bundle "-C" "target-feature=+crt-static")
     endif()
 
     if(ENABLE_PLUGIN_NETFLOW)
@@ -3852,6 +3871,19 @@ if(ENABLE_PLUGIN_OTEL)
     install(DIRECTORY COMPONENT plugin-otel DESTINATION etc/netdata/otel.d/v1/metrics)
 endif()
 
+#
+# netdata-support-bundle
+#
+# user-facing diagnostic tool: on PATH as `netdata-support-bundle`, like netdatacli
+#
+if(ENABLE_SUPPORT_BUNDLE)
+    # same destination as netdata and netdatacli on every platform
+    corrosion_install(TARGETS netdata-support-bundle
+                      PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+                      RUNTIME DESTINATION "${BINDIR}"
+                      COMPONENT netdata)
+endif()
+
 
 #
 # netflow-plugin
@@ -4250,13 +4282,6 @@ if(NOT OS_WINDOWS)
           packaging/installer/netdata-updater.sh
           COMPONENT netdata
           DESTINATION usr/libexec/netdata)
-
-  # user-facing support-bundle tool: on PATH as `netdata-support-bundle`, like netdatacli
-  install(PROGRAMS
-          packaging/installer/netdata-support-bundle.sh
-          COMPONENT netdata
-          DESTINATION "${BINDIR}"
-          RENAME netdata-support-bundle)
 
   install(FILES
           system/netdata.conf
@@ -4702,11 +4727,6 @@ if(OS_WINDOWS)
                       /usr/bin/msys-yaml-0-2.dll
                       /usr/bin/msys-uv-1.dll
                       DESTINATION "${BINDIR}")
-
-        # user-facing support-bundle tool (Windows PowerShell implementation)
-        install(PROGRAMS packaging/installer/netdata-support-bundle.ps1
-                COMPONENT netdata
-                DESTINATION usr/libexec/netdata)
 
         # Make bash & netdata happy
         install(DIRECTORY DESTINATION tmp)
