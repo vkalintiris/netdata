@@ -50,6 +50,7 @@ _STATIC_DEPS = (
     "brotli-dev",
     "brotli-static",
     "cargo",
+    "ccache",
     "clang",
     "cmake",
     "coreutils",

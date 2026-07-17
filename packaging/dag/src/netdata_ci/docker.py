@@ -244,11 +244,15 @@ def docker_image(
         .with_directory("/opt/netdata.git", source)
         .with_workdir("/opt/netdata.git")
         .with_env_variable("DISABLE_TELEMETRY", "1")
-        .with_env_variable(
-            "CFLAGS", "-O2 -funroll-loops -pipe" if build_type != "Debug" else "-Og -ggdb -pipe"
-        )
         .with_env_variable("LDFLAGS", "-Wl,--gc-sections")
-        .with_exec(
+    )
+    # Optimized parity CFLAGS (gen-cflags) only. Debug builds rely on the
+    # CMake Debug defaults (-O0 -g): at -Og, xxhash demands always_inline
+    # of its SSE2 kernels but GCC's -Og inliner refuses, failing the build.
+    if build_type != "Debug":
+        builder = builder.with_env_variable("CFLAGS", "-O2 -funroll-loops -pipe")
+    builder = (
+        builder.with_exec(
             [
                 "sh",
                 "-c",
