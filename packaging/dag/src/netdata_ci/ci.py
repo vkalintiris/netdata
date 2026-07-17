@@ -40,8 +40,12 @@ async def _run(name: str, coro: Awaitable[object]) -> str:
         await coro
     except Exception as exc:
         detail = str(exc).strip().splitlines()
-        return f"FAIL {name}: {detail[-1] if detail else exc!r}"
-    return f"ok   {name}"
+        line = f"FAIL {name}: {detail[-1] if detail else exc!r}"
+    else:
+        line = f"ok   {name}"
+    # Stream per-job results as they land; the final report repeats them.
+    print(line, flush=True)
+    return line
 
 
 def _gated(
@@ -54,19 +58,24 @@ def _gated(
     return runner()
 
 
-async def run_ci(source: dagger.Directory, tier: str = "smoke", slots: int = 0) -> str:
+async def run_ci(
+    source: dagger.Directory,
+    tier: str = "smoke",
+    slots: int = 0,
+    build_type: str = "Debug",
+) -> str:
     sem = asyncio.Semaphore(slots if slots > 0 else _DEFAULT_SLOTS)
     jobs: list[Awaitable[str]] = []
 
     def build_job(d: Distro) -> Callable[[], Awaitable[object]]:
         def fn() -> Awaitable[object]:
-            return build_mod.source_build(d, _NATIVE, source).sync()
+            return build_mod.source_build(d, _NATIVE, source, build_type=build_type).sync()
 
         return fn
 
     def pkg_job(d: Distro) -> Callable[[], Awaitable[object]]:
         async def fn() -> None:
-            artifacts = await pkgs.package(d, _NATIVE, source)
+            artifacts = await pkgs.package(d, _NATIVE, source, build_type=build_type)
             await pkgs.test_package(d, _NATIVE, artifacts).sync()
 
         return fn
@@ -99,13 +108,17 @@ async def run_ci(source: dagger.Directory, tier: str = "smoke", slots: int = 0) 
             _gated(
                 sem,
                 "static x86_64",
-                lambda: static_mod.static_build(source, "x86_64"),
+                lambda: static_mod.static_build(source, "x86_64", build_type=build_type),
             )
         )
 
     if tier in ("image", "full"):
         jobs.append(
-            _gated(sem, "docker-image", lambda: docker_mod.docker_image(source, _NATIVE).sync())
+            _gated(
+                sem,
+                "docker-image",
+                lambda: docker_mod.docker_image(source, _NATIVE, build_type=build_type).sync(),
+            )
         )
 
     if not jobs:

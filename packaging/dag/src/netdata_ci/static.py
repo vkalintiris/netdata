@@ -353,7 +353,7 @@ def _flag(name: str, on: bool) -> str:
     return f"-DENABLE_{name}={'On' if on else 'Off'}"
 
 
-def static_configure_args(a: StaticArch) -> list[str]:
+def static_configure_args(a: StaticArch, build_type: str = "Debug") -> list[str]:
     """Effective CMake config of the static build (installer-derived)."""
     x86 = a.arch == "x86_64"
     full = not a.arm32 or a.arch == "armv7l"  # armv6l drops journal/otel/netflow
@@ -365,11 +365,13 @@ def static_configure_args(a: StaticArch) -> list[str]:
         "-B",
         "build",
         f"-DCMAKE_INSTALL_PREFIX={NP}",
+        f"-DCMAKE_BUILD_TYPE={build_type}",
         "-DSTATIC_BUILD=On",
         "-DBUILD_SHARED_LIBS=Off",
         "-DENABLE_LIBBACKTRACE=On",
-        "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=On",
-        "-DUSE_LTO=On",
+        # LTO only for optimized builds (parity mode); Debug skips it.
+        f"-DCMAKE_INTERPROCEDURAL_OPTIMIZATION={'Off' if build_type == 'Debug' else 'On'}",
+        f"-DUSE_LTO={'Off' if build_type == 'Debug' else 'On'}",
         _flag("PLUGIN_GO", True),
         _flag("PLUGIN_PYTHON", True),
         _flag("PLUGIN_CHARTS", True),
@@ -442,6 +444,7 @@ async def static_build(
     source: dagger.Directory,
     arch: str = "x86_64",
     jobs: int = 0,
+    build_type: str = "Debug",
 ) -> dagger.Directory:
     """Build the self-extracting static installer; returns artifacts dir."""
     if arch not in STATIC_ARCHS:
@@ -460,8 +463,9 @@ async def static_build(
     ioping = build_ioping(a)
     nfacct = build_nfacct(a)
 
+    opt = "-O2 -funroll-loops" if build_type != "Debug" else "-O1 -ggdb"
     cflags = (
-        f"{a.tuning_flags} -O2 -pipe -funroll-loops -I/openssl-static/include"
+        f"{a.tuning_flags} {opt} -pipe -I/openssl-static/include"
         " -I/libnetfilter-acct-static/include/libnetfilter_acct -I/curl-local/include/curl"
         " -I/usr/include/libmnl"
     )
@@ -521,7 +525,7 @@ async def static_build(
         .with_env_variable("PKG_CONFIG", "pkg-config --static")
         .with_env_variable("PKG_CONFIG_PATH", pkg_config_path)
         .with_env_variable("RUSTFLAGS", "-C target-feature=+crt-static")
-        .with_exec(static_configure_args(a))
+        .with_exec(static_configure_args(a, build_type))
         .with_exec(["sh", "-c", f"cmake --build build --parallel {parallel}"])
         .with_exec(["cmake", "--install", "build"])
         # Install-type stamp (job 71) and conf fixup (job 72).

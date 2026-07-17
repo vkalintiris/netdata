@@ -106,6 +106,7 @@ class NetdataCi:
         version: str,
         platform: str = "linux/amd64",
         jobs: int = 0,
+        build_type: str = "Debug",
     ) -> dagger.Container:
         """Compile and install the agent from source for one distro.
 
@@ -114,7 +115,9 @@ class NetdataCi:
         /opt/netdata; chain `terminal` to inspect it. `jobs` caps build
         parallelism (0 = one job per CPU).
         """
-        return build_mod.source_build(get_distro(distro, version), platform, source, jobs)
+        return build_mod.source_build(
+            get_distro(distro, version), platform, source, jobs, build_type
+        )
 
     @function
     async def package(
@@ -124,6 +127,7 @@ class NetdataCi:
         version: str,
         platform: str = "linux/amd64",
         jobs: int = 0,
+        build_type: str = "Debug",
     ) -> dagger.Directory:
         """Build native DEB/RPM packages for one distro/arch.
 
@@ -131,7 +135,7 @@ class NetdataCi:
         the artifacts directory; chain `export --path=./artifacts` to copy
         the packages out.
         """
-        return await pkgs.package(get_distro(distro, version), platform, source, jobs)
+        return await pkgs.package(get_distro(distro, version), platform, source, jobs, build_type)
 
     @function
     async def static(
@@ -139,13 +143,14 @@ class NetdataCi:
         source: NetdataSource,
         arch: str = "x86_64",
         jobs: int = 0,
+        build_type: str = "Debug",
     ) -> dagger.Directory:
         """Build the self-extracting static installer (.gz.run) for an arch.
 
         Returns the artifacts directory containing
         netdata-<arch>-<version>.gz.run and the -latest alias.
         """
-        return await static_mod.static_build(source, arch, jobs)
+        return await static_mod.static_build(source, arch, jobs, build_type)
 
     @function
     def docker_image(
@@ -153,16 +158,23 @@ class NetdataCi:
         source: NetdataSource,
         platform: str = "linux/amd64",
         jobs: int = 0,
+        build_type: str = "Debug",
     ) -> dagger.Container:
         """Build the official agent container image natively.
 
         Chain `export --path=img.tar` for a loadable tarball, or `publish`
         to push to a registry.
         """
-        return docker_mod.docker_image(source, platform, jobs)
+        return docker_mod.docker_image(source, platform, jobs, build_type)
 
     @function
-    async def ci(self, source: NetdataSource, tier: str = "smoke", slots: int = 0) -> str:
+    async def ci(
+        self,
+        source: NetdataSource,
+        tier: str = "smoke",
+        slots: int = 0,
+        build_type: str = "Debug",
+    ) -> str:
         """Run a tier of CI jobs concurrently and report per-job results.
 
         Tiers: smoke (default) | build | packages | static | image | full.
@@ -170,7 +182,7 @@ class NetdataCi:
         uses every CPU). Non-native architectures are excluded; run those
         on the shared engine.
         """
-        return await ci_mod.run_ci(source, tier, slots)
+        return await ci_mod.run_ci(source, tier, slots, build_type)
 
     @function
     async def go_test(self, source: NetdataSource) -> str:

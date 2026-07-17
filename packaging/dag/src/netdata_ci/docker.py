@@ -156,7 +156,7 @@ def _flag(name: str, on: bool) -> str:
     return f"-DENABLE_{name}={'On' if on else 'Off'}"
 
 
-def docker_configure_args() -> list[str]:
+def docker_configure_args(build_type: str = "Debug") -> list[str]:
     """Effective config of the official image build (installer-derived).
 
     Mirrors the Dockerfile's installer flags: system protobuf, no ebpf,
@@ -170,6 +170,7 @@ def docker_configure_args() -> list[str]:
         "-B",
         "build",
         "-DCMAKE_INSTALL_PREFIX=",
+        f"-DCMAKE_BUILD_TYPE={build_type}",
         _flag("PLUGIN_GO", True),
         _flag("PLUGIN_PYTHON", True),
         _flag("PLUGIN_CHARTS", True),
@@ -247,7 +248,9 @@ cp -a /etc/netdata /etc/netdata.stock
 """
 
 
-def docker_image(source: dagger.Directory, platform: str, jobs: int = 0) -> dagger.Container:
+def docker_image(
+    source: dagger.Directory, platform: str, jobs: int = 0, build_type: str = "Debug"
+) -> dagger.Container:
     """Build the official agent container image natively."""
     parallel = str(jobs) if jobs > 0 else "$(nproc)"
 
@@ -256,7 +259,9 @@ def docker_image(source: dagger.Directory, platform: str, jobs: int = 0) -> dagg
         .with_directory("/opt/netdata.git", source)
         .with_workdir("/opt/netdata.git")
         .with_env_variable("DISABLE_TELEMETRY", "1")
-        .with_env_variable("CFLAGS", "-O2 -funroll-loops -pipe")
+        .with_env_variable(
+            "CFLAGS", "-O2 -funroll-loops -pipe" if build_type != "Debug" else "-Og -ggdb -pipe"
+        )
         .with_env_variable("LDFLAGS", "-Wl,--gc-sections")
         .with_exec(
             [
@@ -266,7 +271,7 @@ def docker_image(source: dagger.Directory, platform: str, jobs: int = 0) -> dagg
                 " > ./system/.install-type",
             ]
         )
-        .with_exec(docker_configure_args())
+        .with_exec(docker_configure_args(build_type))
         .with_exec(["sh", "-c", f"cmake --build build --parallel {parallel}"])
         .with_exec(["cmake", "--install", "build"])
         .with_exec(["sh", "-c", _APP_ASSEMBLY.format(setuid_plugins=" ".join(_SETUID_PLUGINS))])

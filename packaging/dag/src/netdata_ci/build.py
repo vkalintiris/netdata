@@ -60,7 +60,7 @@ BUILD_DIR = "build"
 SRC_DIR = "/netdata"
 
 
-def configure_args(d: Distro, platform: str) -> list[str]:
+def configure_args(d: Distro, platform: str, build_type: str = "Debug") -> list[str]:
     systemd = d.name not in _NO_SYSTEMD
     features: dict[str, bool] = {name: True for name in _COMMON_ON}
     features["PLUGIN_SYSTEMD_JOURNAL"] = systemd
@@ -70,6 +70,7 @@ def configure_args(d: Distro, platform: str) -> list[str]:
     features.update({name: False for name in _COMMON_OFF})
 
     args = ["cmake", "-S", ".", "-B", BUILD_DIR]
+    args.append(f"-DCMAKE_BUILD_TYPE={build_type}")
     args.append(f"-DCMAKE_INSTALL_PREFIX={INSTALL_PREFIX}")
     for name, on in features.items():
         args.append(f"-DENABLE_{name}={'On' if on else 'Off'}")
@@ -81,6 +82,7 @@ def source_build(
     platform: str,
     source: dagger.Directory,
     jobs: int = 0,
+    build_type: str = "Debug",
 ) -> dagger.Container:
     """Compile and install the agent from source in the distro's build env.
 
@@ -93,7 +95,7 @@ def source_build(
         .with_directory(SRC_DIR, source)
         .with_workdir(SRC_DIR)
         .with_env_variable("DISABLE_TELEMETRY", "1")
-        .with_exec(configure_args(d, platform))
+        .with_exec(configure_args(d, platform, build_type))
         .with_exec(["sh", "-c", f"cmake --build {BUILD_DIR} --parallel {parallel}"])
         .with_exec(["cmake", "--install", BUILD_DIR])
     )

@@ -202,6 +202,16 @@ _SUSE_PKG_DEPS = (
 # Tumbleweed carries netfilter_acct and xen on top of the Leap set.
 _TUMBLEWEED_EXTRA = ("libnetfilter_acct1", "libnetfilter_acct-devel", "xen-devel")
 
+# Oracle's EPEL rebuild (helper-images ships the same definition).
+_OL_DEVELOPER_EPEL_REPO = """\
+[ol{major}_developer_EPEL]
+name=Oracle Linux $releasever EPEL Packages for Development ($basearch)
+baseurl=https://yum$ociregion.$ocidomain/repo/OracleLinux/OL{major}/developer/EPEL/$basearch/
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-oracle
+gpgcheck=1
+enabled=1
+"""
+
 
 def pkg_env_spec(d: Distro, platform: str) -> EnvSpec:
     """Packaging environment spec: build deps + package tooling."""
@@ -226,9 +236,23 @@ def pkg_env_spec(d: Distro, platform: str) -> EnvSpec:
                 deps = (*deps, *_TUMBLEWEED_EXTRA)
         case _:
             raise ValueError(f"no packaging environment for distro {d.name}")
-    return EnvSpec(
-        base.mgr, deps, files=base.files, setup=base.setup, install_flags=base.install_flags
-    )
+    # Packaging needs EPEL on the EL family (libunwind-devel, libmongoc):
+    # the source-build envs deliberately do not enable it, so extend here.
+    files = base.files
+    setup = base.setup
+    match d.name:
+        case "rockylinux" | "centos-stream":
+            setup = (*setup, ("dnf", "install", "-y", "epel-release"))
+        case "oraclelinux":
+            ver = "8" if d.version == "8" else "9" if d.version == "9" else "10"
+            files = (
+                *files,
+                (
+                    f"/etc/yum.repos.d/ol{ver}-epel.repo",
+                    _OL_DEVELOPER_EPEL_REPO.format(major=ver),
+                ),
+            )
+    return EnvSpec(base.mgr, deps, files=files, setup=setup, install_flags=base.install_flags)
 
 
 # --- feature availability per packaging environment --------------------------
@@ -277,7 +301,7 @@ def _flag(name: str, on: bool) -> str:
     return f"-DENABLE_{name}={'On' if on else 'Off'}"
 
 
-def packaging_configure_args(d: Distro, platform: str) -> list[str]:
+def packaging_configure_args(d: Distro, platform: str, build_type: str = "Debug") -> list[str]:
     amd64 = platform in ("linux/amd64",)
     arm64 = platform in ("linux/arm64", "linux/arm64/v8")
     feats = pkg_features(d, amd64, arm64)
@@ -290,7 +314,7 @@ def packaging_configure_args(d: Distro, platform: str) -> list[str]:
         BUILD_DIR,
         "-G",
         "Ninja",
-        "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+        f"-DCMAKE_BUILD_TYPE={build_type}",
         "-DCMAKE_INSTALL_PREFIX=/",
         "-DBUILD_FOR_PACKAGING=On",
         _flag("DASHBOARD", True),
@@ -440,6 +464,7 @@ def _package_deb(
     platform: str,
     source: dagger.Directory,
     parallel: str,
+    build_type: str,
 ) -> dagger.Directory:
     rpm_arch, goarch = _PLATFORM_ARCH[platform]
     # Embed the distro id in the artifact name, as the repos require.
@@ -462,7 +487,7 @@ def _package_deb(
         .with_new_file(
             f"{SRC_DIR}/system/.install-type", _install_type_stamp("binpkg-deb", rpm_arch, d)
         )
-        .with_exec(packaging_configure_args(d, platform))
+        .with_exec(packaging_configure_args(d, platform, build_type))
         .with_exec(["sh", "-c", f"cmake --build {BUILD_DIR} --parallel {parallel}"])
         .with_workdir(BUILD_DIR)
         .with_exec(["cpack", "-V", "-G", "DEB"])
@@ -548,6 +573,7 @@ async def package(
     platform: str,
     source: dagger.Directory,
     jobs: int = 0,
+    build_type: str = "Debug",
 ) -> dagger.Directory:
     """Build native DEB/RPM packages; returns the artifacts directory."""
     if d.packages is None:
@@ -556,7 +582,9 @@ async def package(
     parallel = str(jobs) if jobs > 0 else "$(nproc)"
 
     if d.packages.type is PkgType.DEB:
-        return _package_deb(d, platform, source, parallel)
+        return _package_deb(d, platform, source, parallel, build_type)
+    # The spec drives its own cmake invocation; build_type does not apply
+    # to RPMs until CPack RPM support replaces the spec path (SOW D11).
     return await _package_rpm(d, platform, source)
 
 
