@@ -27,7 +27,22 @@ runs itself in a container on first use.
 
 ## Usage
 
-Run from anywhere in the repository (`-m packaging/dag` when outside it):
+The CLI finds the module by walking UP from your cwd, so from the
+repository root (or anywhere outside `packaging/dag`) the module must be
+named explicitly — `-m` goes before `call`:
+
+```sh
+dagger -m packaging/dag call build-env --distro=DEBIAN_12 terminal
+```
+
+Inside `packaging/dag/` auto-discovery works and `-m` is unneeded:
+
+```sh
+cd packaging/dag
+dagger call build-env --distro=DEBIAN_12 terminal
+```
+
+The examples below assume one of the two forms:
 
 ```sh
 dagger functions                          # discover the surface
