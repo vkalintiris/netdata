@@ -32,6 +32,20 @@ NetdataSource = Annotated[
             "build",
             "fluent-bit/build",
             "packaging/dag",
+            # Local-only files are not build input and must never reach
+            # the (shared) engine: secrets, per-user working memory,
+            # runtime scratch. Dagger does NOT read .gitignore.
+            ".env",
+            ".agents",
+            ".local",
+            ".claude",
+            # Root-level export/scratch conventions. Globs are
+            # root-anchored (dockerignore semantics, verified): deep
+            # *.log/*.tar test fixtures are unaffected.
+            "artifacts",
+            "*.log",
+            "*.tar",
+            "*.gz.run",
         ]
     ),
 ]
