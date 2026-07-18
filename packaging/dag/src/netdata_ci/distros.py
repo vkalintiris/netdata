@@ -783,6 +783,8 @@ def _el_family(
     image: str,
     setup: tuple[tuple[str, ...], ...],
     prebuilt_distro: str,
+    pkg_deps: tuple[str, ...] = _EL_PKG_DEPS,
+    features: PkgFeatures = _EL_FEATURES,
 ) -> DistroSpec:
     """CentOS Stream / Rocky: CRB-style repos + EPEL for packaging."""
     return DistroSpec(
@@ -793,11 +795,11 @@ def _el_family(
             env=EnvSpec(
                 image,
                 PkgMgr.DNF,
-                _EL_PKG_DEPS,
+                pkg_deps,
                 setup=(*setup, *_EPEL_SETUP),
                 install_flags=("--allowerasing",),
             ),
-            features=_EL_FEATURES,
+            features=features,
             test_install=_EL_TEST_INSTALL,
             prebuilt_distro=prebuilt_distro,
         ),
@@ -806,11 +808,14 @@ def _el_family(
 
 def _oraclelinux(
     image: str,
-    major: str,
     files: tuple[tuple[str, str], ...],
     setup: tuple[tuple[str, ...], ...],
+    pkg_files: tuple[tuple[str, str], ...],
+    pkg_setup: tuple[tuple[str, ...], ...],
     prebuilt_distro: str,
 ) -> DistroSpec:
+    """Oracle Linux: per-release codeready + EPEL mechanisms differ, so
+    the packaging env's files/setup are declared explicitly per entry."""
     return DistroSpec(
         build=EnvSpec(image, PkgMgr.DNF, _OL_DEPS, files=files, setup=setup),
         packaging=RpmPackaging(
@@ -818,8 +823,8 @@ def _oraclelinux(
                 image,
                 PkgMgr.DNF,
                 _EL_PKG_DEPS,
-                files=(*files, _ol_epel_file(major)),
-                setup=setup,
+                files=pkg_files,
+                setup=pkg_setup,
             ),
             features=_EL_FEATURES,
             test_install=_FEDORA_TEST_INSTALL,
@@ -939,8 +944,16 @@ SPECS: Mapping[Distro, DistroSpec] = {
     Distro.CENTOS_STREAM_9: _el_family(
         "quay.io/centos/centos:stream9", _CRB_SETUP, "centos-stream 9"
     ),
+    # EPEL 10's Stream view lacks mongo-c-driver-devel (checked
+    # 2026-07-18; Rocky 10's EPEL has it) — no mongodb exporter here.
+    # helper-images' cs10 builder installs it and so presumably fails
+    # upstream today (tracked as a follow-up finding).
     Distro.CENTOS_STREAM_10: _el_family(
-        "quay.io/centos/centos:stream10", _CRB_SETUP, "centos-stream 10"
+        "quay.io/centos/centos:stream10",
+        _CRB_SETUP,
+        "centos-stream 10",
+        pkg_deps=tuple(p for p in _EL_PKG_DEPS if p != "pkgconfig(libmongoc-1.0)"),
+        features=PkgFeatures(mongodb=False, nfacct=False, xenstat=False, freeipmi=True),
     ),
     Distro.DEBIAN_11: _deb_family("debian:bullseye", _APT_UPDATE, _DEB_FEATURES, "debian 11"),
     Distro.DEBIAN_12: _deb_family("debian:bookworm", _APT_UPDATE, _DEB_FEATURES, "debian 12"),
@@ -955,23 +968,34 @@ SPECS: Mapping[Distro, DistroSpec] = {
     ),
     Distro.ORACLELINUX_8: _oraclelinux(
         "oraclelinux:8",
-        "8",
         files=(("/etc/yum.repos.d/ol8_codeready.repo", _OL8_CODEREADY_REPO),),
         setup=(),
+        pkg_files=(
+            ("/etc/yum.repos.d/ol8_codeready.repo", _OL8_CODEREADY_REPO),
+            _ol_epel_file("8"),
+        ),
+        pkg_setup=(),
         prebuilt_distro="oraclelinux 8",
     ),
     Distro.ORACLELINUX_9: _oraclelinux(
         "oraclelinux:9",
-        "9",
         files=(),
         setup=(("dnf", "config-manager", "--set-enabled", "ol9_codeready_builder"),),
+        pkg_files=(_ol_epel_file("9"),),
+        pkg_setup=(("dnf", "config-manager", "--set-enabled", "ol9_codeready_builder"),),
         prebuilt_distro="oraclelinux 9",
     ),
+    # OL10 ships EPEL as a package (oracle-epel-release-el10); no
+    # hand-written developer-EPEL repo file exists for it.
     Distro.ORACLELINUX_10: _oraclelinux(
         "oraclelinux:10",
-        "10",
         files=(),
         setup=(("dnf", "config-manager", "--set-enabled", "ol10_codeready_builder"),),
+        pkg_files=(),
+        pkg_setup=(
+            ("dnf", "config-manager", "--set-enabled", "ol10_codeready_builder"),
+            ("dnf", "install", "-y", "oracle-epel-release-el10"),
+        ),
         prebuilt_distro="oraclelinux 10",
     ),
     Distro.ROCKYLINUX_8: _el_family("rockylinux:8", _ROCKY8_SETUP, "rockylinux 8"),

@@ -64,6 +64,20 @@ class NetdataCi:
         return pkgs.pkg_env(distro, platform)
 
     @function
+    def static_env(self, arch: str = "x86_64") -> dagger.Container:
+        """Alpine builder environment for the static (.gz.run) build."""
+        if arch not in static_mod.STATIC_ARCHS:
+            raise ValueError(
+                f"unsupported static arch {arch} (know: {sorted(static_mod.STATIC_ARCHS)})"
+            )
+        return static_mod.static_env(static_mod.STATIC_ARCHS[arch])
+
+    @function
+    def docker_env(self, platform: str = "linux/amd64") -> dagger.Container:
+        """Builder environment of the official container image."""
+        return docker_mod.docker_builder_env(platform)
+
+    @function
     def build(
         self,
         source: NetdataSource,
