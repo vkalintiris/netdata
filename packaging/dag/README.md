@@ -1,11 +1,16 @@
 # netdata-ci — the Netdata agent pipeline as a Dagger module
 
 This module builds, packages, and tests the Netdata agent in containers,
-natively: the distro matrix, build environments, toolchain pins, CMake
+natively: distro definitions, build environments, toolchain pins, CMake
 profiles, packaging, and static-build recipes are all typed Python in
 `src/netdata_ci/` — no shell-script or YAML orchestration. Results are
 content-cached by the Dagger engine, so unchanged steps are free on
 re-runs.
+
+The module is capability-oriented: every function operates on one
+specific distro (a typed enum — invalid targets are rejected by the CLI).
+Which targets a CI run covers is declared on top, in `ci.py`'s tier
+tuples, never derived from a matrix.
 
 ## Setup
 
@@ -30,12 +35,13 @@ dagger functions                          # discover the surface
 dagger call ci                            # smoke tier: one build + all tests
 dagger call ci --tier=full                # everything native-arch
 
-dagger call build --distro=debian --version=12    # one source build
-dagger call build-env --distro=fedora --version=43 terminal   # debug shell
+dagger call build --distro=DEBIAN_12              # one source build
+dagger call build-env --distro=FEDORA_43 terminal # debug shell
+dagger call build-env --help                      # lists every distro
 
-dagger call package --distro=debian --version=12 \
+dagger call package --distro=DEBIAN_12 \
     export --path=./artifacts             # DEB/RPM artifacts
-dagger call test-package --distro=debian --version=12 \
+dagger call test-package --distro=DEBIAN_12 \
     --artifacts=./artifacts               # clean-image install + boot
 
 dagger call static --arch=x86_64 export --path=./artifacts    # .gz.run
@@ -44,8 +50,6 @@ dagger call docker-image export --path=./netdata-img.tar      # OCI image
 dagger call go-test                       # Go modules: fmt/vet/build/race
 dagger call c-test                        # ASAN build + C unit tests
 dagger call stream-test                   # parent/child streaming check
-
-dagger call matrix --kind=PACKAGING       # CI-compatible job matrix JSON
 ```
 
 Every build accepts `--jobs=N` to cap compile parallelism (default: one
@@ -66,17 +70,17 @@ already ran returns instantly for you.
 
 ## Layout
 
-| File        | Owns |
-|-------------|------|
-| `matrix.py` | distros, versions, arches, package targets (the matrix) |
-| `envs.py`   | build environments: per-distro deps, repo setup, Go/Rust pins |
-| `build.py`  | source-build CMake profile and build/install steps |
-| `pkgs.py`   | packaging environments, DEB (cpack) and RPM (spec) builds, install tests |
-| `static.py` | static builder env, bundled-dep builds, makeself archive |
-| `docker.py` | both stages of the official container image |
-| `tests.py`  | Go and C test jobs |
-| `stream.py` | parent/child streaming integration test |
-| `ci.py`     | tier orchestration |
+| File         | Owns |
+|--------------|------|
+| `distros.py` | the Distro enum and each distro's complete definition (envs, packaging, features) |
+| `envs.py`    | environment mechanics: bootstrap sequence, package managers, Go/Rust pins, caches |
+| `build.py`   | source-build CMake profile and build/install steps |
+| `pkgs.py`    | DEB (cpack) and RPM (spec) build mechanics, install tests |
+| `static.py`  | static builder env, bundled-dep builds, makeself archive |
+| `docker.py`  | both stages of the official container image |
+| `tests.py`   | Go and C test jobs |
+| `stream.py`  | parent/child streaming integration test |
+| `ci.py`      | declared CI tiers (the only place that enumerates distros) |
 
 Module development: `uv run --group dev mypy src/netdata_ci/` and
 `uv run --group dev ruff check src/` must stay clean; `dagger develop`

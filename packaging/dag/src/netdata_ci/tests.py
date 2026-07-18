@@ -12,10 +12,10 @@ import dagger
 
 from . import build as build_mod
 from . import envs
-from .matrix import get_distro
+from .distros import SPECS, Distro
 
 # Test workloads run on the reference distro.
-_DISTRO = ("debian", "12")
+_DISTRO = Distro.DEBIAN_12
 
 # CI scope and semantics (go-tests.yml + get-go-version.py): modules under
 # src/go plus the standalone cgroup-name module; CGO-off builds compile the
@@ -68,9 +68,8 @@ def go_test(source: dagger.Directory) -> dagger.Container:
     permission-denied behavior that root cannot observe. unixodbc-dev
     matches CI's explicit CGO dependency for the ibm.d packages.
     """
-    d = get_distro(*_DISTRO)
     ctr = (
-        envs.build_env(d, "linux/amd64")
+        envs.bootstrap(SPECS[_DISTRO].build, "linux/amd64")
         .with_exec(["apt-get", "install", "-y", "--no-install-recommends", "unixodbc-dev"])
         .with_exec(["useradd", "-m", "-s", "/bin/sh", "runner"])
         # Minimal containers ship no machine-id; the journal host-identity
@@ -100,12 +99,12 @@ def go_test(source: dagger.Directory) -> dagger.Container:
 
 def c_test(source: dagger.Directory, jobs: int = 0) -> dagger.Container:
     """Address-sanitized Debug build + the in-binary C unit tests."""
-    d = get_distro(*_DISTRO)
+    spec = SPECS[_DISTRO]
     parallel = str(jobs) if jobs > 0 else "$(nproc)"
-    args = build_mod.configure_args(d, "linux/amd64")
+    args = build_mod.configure_args(spec, "linux/amd64")
     args.append("-DENABLE_ADDRESS_SANITIZER=On")
     ctr = (
-        envs.with_build_caches(envs.build_env(d, "linux/amd64"), "c-test")
+        envs.with_build_caches(envs.bootstrap(spec.build, "linux/amd64"), "c-test")
         .with_directory("/netdata", source)
         .with_workdir("/netdata")
         .with_env_variable("DISABLE_TELEMETRY", "1")

@@ -1,11 +1,10 @@
-"""Build environments for the Netdata agent pipeline.
+"""Environment mechanics for the Netdata agent pipeline.
 
-Everything a distro needs to compile the agent from source lives here as
-typed data: package lists per family, repository enablement, and pinned
-toolchains (Go, Rust). Seeded from packaging/installer/
-install-required-packages.sh (the `netdata` bundle, as CI source builds
-resolve it) and packaging/check-for-go-toolchain.sh (2026-07-16); those
-scripts are reference material only and are never executed by this module.
+The machinery that turns an EnvSpec — a complete, declarative description
+of an environment — into a container: the bootstrap sequence, package
+manager command rendering, pinned toolchains (Go, Rust), and the shared
+build caches. The per-distro EnvSpec data lives in distros.py; this module
+knows how to execute a spec, never which distros exist.
 """
 
 from __future__ import annotations
@@ -15,8 +14,6 @@ from dataclasses import dataclass
 
 import dagger
 from dagger import dag
-
-from .matrix import Distro
 
 # Pinned Go toolchain (netdata requires >= 1.26.0).
 GO_VERSION = "1.26.5"
@@ -53,11 +50,18 @@ _GO_ARCH: dict[str, str] = {
 }
 
 
+# The default PATH set on every environment. Some images (opensuse) define
+# no PATH in their OCI config; docker injects a default at runtime but
+# dagger does not, so it must be explicit.
+STD_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
 class PkgMgr(enum.StrEnum):
     APK = "apk"
     APT = "apt"
     DNF = "dnf"
     PACMAN = "pacman"
+    YUM = "yum"
     ZYPPER = "zypper"
 
 
@@ -90,243 +94,11 @@ class EnvSpec:
     # Extra install flags, e.g. --allowerasing where curl-minimal conflicts
     # with the real curl (EL9+ and Amazon Linux base images).
     install_flags: tuple[str, ...] = ()
+    # Environment variables applied after the default PATH — a spec may
+    # override PATH itself (centos7: devtoolset-11 + pinned cmake).
+    env: tuple[tuple[str, str], ...] = ()
     # For RustSource.DISTRO, deps must list the distro rust packages.
     rust: RustSource = RustSource.RUSTUP
-
-
-_ALPINE_DEPS = (
-    "alpine-sdk",
-    "ccache",
-    "bison",
-    "cmake",
-    "coreutils",
-    "curl",
-    "curl-dev",
-    "elfutils-dev",
-    "flex",
-    "g++",
-    "gcc",
-    "git",
-    "gzip",
-    "json-c-dev",
-    "libatomic",
-    "libmnl-dev",
-    "libuv-dev",
-    "lz4-dev",
-    "make",
-    "openssl-dev",
-    "patch",
-    "pcre2-dev",
-    "pkgconf",
-    "python3",
-    "tar",
-    "util-linux-dev",
-    "yaml-dev",
-    "zlib-dev",
-    "zstd-dev",
-)
-
-_ARCH_DEPS = (
-    "bison",
-    "ccache",
-    "cmake",
-    "curl",
-    "flex",
-    "gcc",
-    "git",
-    "gzip",
-    "json-c",
-    "libelf",
-    "libmnl",
-    "libuv",
-    "libyaml",
-    "lz4",
-    "make",
-    "openssl",
-    "pcre2",
-    "pkgconfig",
-    "python3",
-    "tar",
-    "util-linux",
-    "zlib",
-)
-
-_DEB_DEPS = (
-    "bison",
-    "ccache",
-    # Not in the CI-resolved list: there apt runs without
-    # --no-install-recommends and certs arrive via Recommends. We install
-    # lean, so TLS trust must be explicit (debian images ship none).
-    "ca-certificates",
-    "cmake",
-    "curl",
-    "flex",
-    "g++",
-    "gcc",
-    "git",
-    "gzip",
-    "libatomic1",
-    "libcurl4-openssl-dev",
-    "libelf-dev",
-    "libjson-c-dev",
-    "liblz4-dev",
-    "libmnl-dev",
-    "libpcre2-dev",
-    "libssl-dev",
-    "libsystemd-dev",
-    "libuv1-dev",
-    "libyaml-dev",
-    "libzstd-dev",
-    "make",
-    "patch",
-    "pkg-config",
-    "python3",
-    "tar",
-    "uuid-dev",
-    "zlib1g-dev",
-)
-
-_FEDORA_DEPS = (
-    "bison",
-    "ccache",
-    "cmake",
-    "curl",
-    "elfutils-libelf-devel",
-    "findutils",
-    "flex",
-    "gcc",
-    "gcc-c++",
-    "git",
-    "gzip",
-    "json-c-devel",
-    "libatomic",
-    "libcurl-devel",
-    "libmnl-devel",
-    "libuuid-devel",
-    "libuv-devel",
-    "libyaml-devel",
-    "libzstd-devel",
-    "lz4-devel",
-    "make",
-    "openssl-devel",
-    "patch",
-    "pcre2-devel",
-    "pkgconfig",
-    "python3",
-    "systemd-devel",
-    "tar",
-    "zlib-devel",
-)
-
-# EL rebuilds (CentOS Stream, Rocky) additionally need kernel headers.
-_EL_DEPS = (*(p for p in _FEDORA_DEPS if p != "ccache"), "kernel-headers")
-
-# Oracle Linux repos lack findutils/pcre2-devel in the resolved set.
-_OL_DEPS = tuple(p for p in _FEDORA_DEPS if p not in ("findutils", "pcre2-devel", "ccache"))
-
-_SUSE_DEPS = (
-    "bison",
-    "ccache",
-    "cmake",
-    "curl",
-    "flex",
-    "gcc",
-    "gcc-c++",
-    "git",
-    "gzip",
-    "libatomic1",
-    "libcurl-devel",
-    "libelf-devel",
-    "libjson-c-devel",
-    "liblz4-devel",
-    "libmnl-devel",
-    "libopenssl-devel",
-    "libuuid-devel",
-    "libuv-devel",
-    "libyaml-devel",
-    "libzstd-devel",
-    "make",
-    "pcre2-devel",
-    "pkg-config",
-    "python3",
-    "systemd-devel",
-    "tar",
-    "zlib-devel",
-)
-
-_DNF_CONFIG_MANAGER = ("dnf", "install", "-y", "dnf-command(config-manager)")
-
-_OL8_CODEREADY_REPO = """\
-[ol8_codeready_builder]
-name=Oracle Linux $releasever CodeReady Builder ($basearch)
-baseurl=http://yum.oracle.com/repo/OracleLinux/OL8/codeready/builder/$basearch
-gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-oracle
-gpgcheck=1
-enabled=1
-"""
-
-
-def env_spec(d: Distro) -> EnvSpec:
-    mgr: PkgMgr
-    deps: tuple[str, ...]
-    files: tuple[tuple[str, str], ...] = ()
-    setup: tuple[tuple[str, ...], ...] = ()
-    flags: tuple[str, ...] = ()
-    match d.name:
-        case "alpine":
-            mgr, deps = PkgMgr.APK, _ALPINE_DEPS
-        case "archlinux":
-            mgr, deps = PkgMgr.PACMAN, _ARCH_DEPS
-        case "debian" | "ubuntu":
-            mgr, deps = PkgMgr.APT, _DEB_DEPS
-        case "fedora":
-            mgr, deps = PkgMgr.DNF, _FEDORA_DEPS
-        case "amazonlinux":
-            mgr, deps = PkgMgr.DNF, tuple(p for p in _FEDORA_DEPS if p != "ccache")
-            flags = ("--allowerasing",)
-        case "centos-stream":
-            mgr, deps = PkgMgr.DNF, _EL_DEPS
-            setup = (
-                _DNF_CONFIG_MANAGER,
-                ("dnf", "config-manager", "--set-enabled", "crb"),
-            )
-            flags = ("--allowerasing",)
-        case "rockylinux" if d.version == "8":
-            mgr, deps = PkgMgr.DNF, _EL_DEPS
-            setup = (
-                _DNF_CONFIG_MANAGER,
-                ("dnf", "config-manager", "--set-enabled", "powertools"),
-                ("dnf", "install", "-y", "libarchive"),
-            )
-            flags = ("--allowerasing",)
-        case "rockylinux":
-            mgr, deps = PkgMgr.DNF, _EL_DEPS
-            setup = (
-                _DNF_CONFIG_MANAGER,
-                ("dnf", "config-manager", "--set-enabled", "crb"),
-            )
-            flags = ("--allowerasing",)
-        case "oraclelinux" if d.version == "8":
-            mgr, deps = PkgMgr.DNF, _OL_DEPS
-            files = (("/etc/yum.repos.d/ol8_codeready.repo", _OL8_CODEREADY_REPO),)
-        case "oraclelinux":
-            mgr, deps = PkgMgr.DNF, _OL_DEPS
-            setup = (("dnf", "config-manager", "--set-enabled", "ol9_codeready_builder"),)
-        case "opensuse":
-            mgr, deps = PkgMgr.ZYPPER, _SUSE_DEPS
-        case "centos":
-            raise ValueError("centos 7 has no source-build environment (skip-local-build)")
-        case _:
-            raise ValueError(f"no environment spec for distro {d.name}")
-    return EnvSpec(
-        d.base_image,
-        mgr,
-        deps,
-        files=files,
-        prep=d.env_prep,
-        setup=setup,
-        install_flags=flags,
-    )
 
 
 def _install_cmd(spec: EnvSpec) -> list[str]:
@@ -346,6 +118,8 @@ def _install_cmd(spec: EnvSpec) -> list[str]:
             return ["dnf", "install", "-y", *spec.install_flags, *spec.deps]
         case PkgMgr.PACMAN:
             return ["pacman", "--noconfirm", "--needed", "-S", *spec.install_flags, *spec.deps]
+        case PkgMgr.YUM:
+            return ["yum", "install", "-y", *spec.install_flags, *spec.deps]
         case PkgMgr.ZYPPER:
             return ["zypper", "install", "-y", *spec.install_flags, *spec.deps]
 
@@ -402,14 +176,13 @@ def base_env(spec: EnvSpec, platform: str) -> dagger.Container:
     """
     ctr = dag.container(platform=dagger.Platform(platform)).from_(spec.base_image)
 
-    # Some images (opensuse) define no PATH in their OCI config; docker
-    # injects a default at runtime but dagger does not, so set it explicitly.
-    ctr = ctr.with_env_variable(
-        "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    )
+    ctr = ctr.with_env_variable("PATH", STD_PATH)
 
     if spec.mgr is PkgMgr.APT:
         ctr = ctr.with_env_variable("DEBIAN_FRONTEND", "noninteractive")
+
+    for name, value in spec.env:
+        ctr = ctr.with_env_variable(name, value)
 
     for path, contents in spec.files:
         ctr = ctr.with_new_file(path, contents)
@@ -436,22 +209,9 @@ def bootstrap(spec: EnvSpec, platform: str) -> dagger.Container:
     return ctr
 
 
-def build_env(d: Distro, platform: str) -> dagger.Container:
-    """Container with everything needed to build the agent from source."""
-    return bootstrap(env_spec(d), platform)
-
-
-# Distros whose BUILD environment can install ccache from base repos.
-# EL/Amazon lack it there (EPEL-only); their packaging envs enable EPEL
-# and are handled separately.
-_CCACHE_BUILD_DISTROS = ("alpine", "archlinux", "debian", "ubuntu", "fedora", "opensuse")
-
-
-def has_ccache(d: Distro, packaging: bool = False) -> bool:
-    if d.name in _CCACHE_BUILD_DISTROS:
-        return True
-    # EL packaging envs carry EPEL; Amazon has no EPEL equivalent.
-    return packaging and d.name in ("rockylinux", "centos-stream", "oraclelinux")
+def has_ccache(spec: EnvSpec) -> bool:
+    """Whether the environment carries ccache — the spec is the fact."""
+    return "ccache" in spec.deps
 
 
 def compiler_launcher_args(enabled: bool) -> list[str]:

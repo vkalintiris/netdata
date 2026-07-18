@@ -3,14 +3,17 @@
 Tiers:
 - smoke: one source build, go/c tests, and the streaming test — the
   pre-push sanity set.
-- build: every distro in the build matrix (native platform).
-- packages: every native-platform packaging entry, each install-tested.
+- build: the declared source-build set (native platform).
+- packages: the declared packaging set, each install-tested.
 - static: the x86_64 self-extracting installer.
 - image: the container image.
 - full: all of the above.
 
-Non-native architectures are excluded here: they emulate via QEMU and
-belong on the shared engine, not a workstation.
+The tier tuples below are DECLARATIONS — the module's capability layer
+never enumerates distros; which targets run is decided here, deliberately,
+until the real CI declaration layer (M2) replaces this file's role.
+Non-native architectures are excluded: they emulate via QEMU and belong on
+the shared engine, not a workstation.
 """
 
 from __future__ import annotations
@@ -24,15 +27,71 @@ from . import build as build_mod
 from . import docker as docker_mod
 from . import pkgs, stream, tests
 from . import static as static_mod
-from .matrix import Distro, active_distros
+from .distros import Distro
 
 _NATIVE = "linux/amd64"
-_NATIVE_PKG_ARCHES = ("amd64", "x86_64")
 
 # Concurrent heavy jobs. Each job already parallelizes across all CPUs,
 # and ASAN test runs are memory-hungry: one slot is right for a
 # workstation; raise it on the shared engine.
 _DEFAULT_SLOTS = 1
+
+_SMOKE_DISTRO = Distro.DEBIAN_12
+
+# Source-build declarations. amazonlinux-2, centos-7, and oraclelinux-10
+# have build environments but are not declared here, matching what CI
+# builds today (their packaging jobs still compile from source below).
+_BUILD_TIER: tuple[Distro, ...] = (
+    Distro.ALPINE_EDGE,
+    Distro.ALPINE_3_23,
+    Distro.ALPINE_3_22,
+    Distro.AMAZONLINUX_2023,
+    Distro.ARCHLINUX,
+    Distro.CENTOS_STREAM_9,
+    Distro.CENTOS_STREAM_10,
+    Distro.DEBIAN_11,
+    Distro.DEBIAN_12,
+    Distro.DEBIAN_13,
+    Distro.FEDORA_43,
+    Distro.FEDORA_44,
+    Distro.OPENSUSE_16_0,
+    Distro.OPENSUSE_TUMBLEWEED,
+    Distro.ORACLELINUX_8,
+    Distro.ORACLELINUX_9,
+    Distro.ROCKYLINUX_8,
+    Distro.ROCKYLINUX_9,
+    Distro.ROCKYLINUX_10,
+    Distro.UBUNTU_22_04,
+    Distro.UBUNTU_24_04,
+    Distro.UBUNTU_25_10,
+    Distro.UBUNTU_26_04,
+)
+
+# Packaging declarations: every distro with a native package product.
+_PACKAGES_TIER: tuple[Distro, ...] = (
+    Distro.AMAZONLINUX_2,
+    Distro.AMAZONLINUX_2023,
+    Distro.CENTOS_7,
+    Distro.CENTOS_STREAM_9,
+    Distro.CENTOS_STREAM_10,
+    Distro.DEBIAN_11,
+    Distro.DEBIAN_12,
+    Distro.DEBIAN_13,
+    Distro.FEDORA_43,
+    Distro.FEDORA_44,
+    Distro.OPENSUSE_16_0,
+    Distro.OPENSUSE_TUMBLEWEED,
+    Distro.ORACLELINUX_8,
+    Distro.ORACLELINUX_9,
+    Distro.ORACLELINUX_10,
+    Distro.ROCKYLINUX_8,
+    Distro.ROCKYLINUX_9,
+    Distro.ROCKYLINUX_10,
+    Distro.UBUNTU_22_04,
+    Distro.UBUNTU_24_04,
+    Distro.UBUNTU_25_10,
+    Distro.UBUNTU_26_04,
+)
 
 
 async def _run(name: str, coro: Awaitable[object]) -> str:
@@ -84,27 +143,22 @@ async def run_ci(
         return fn
 
     if tier in ("smoke", "full"):
-        d = next(x for x in active_distros() if x.name == "debian" and x.version == "12")
         queued += [
-            _gated(sem, "build debian:12", build_job(d)),
+            _gated(sem, f"build {_SMOKE_DISTRO.value}", build_job(_SMOKE_DISTRO)),
             _gated(sem, "go-test", lambda: tests.go_test(source).sync()),
             _gated(sem, "c-test", lambda: tests.c_test(source, jobs=jobs).sync()),
-            _gated(sem, "stream-test", lambda: stream.stream_test(source).sync()),
+            _gated(sem, "stream-test", lambda: stream.stream_test(source, jobs=jobs).sync()),
         ]
 
     if tier in ("build", "full"):
-        for d in active_distros():
-            if d.skip_local_build or (d.name, d.version) == ("debian", "12"):
+        for d in _BUILD_TIER:
+            if d is _SMOKE_DISTRO:
                 continue
-            queued.append(_gated(sem, f"build {d.name}:{d.version}", build_job(d)))
+            queued.append(_gated(sem, f"build {d.value}", build_job(d)))
 
     if tier in ("packages", "full"):
-        for d in active_distros():
-            if d.packages is None:
-                continue
-            if not any(a in _NATIVE_PKG_ARCHES for a in d.packages.arches):
-                continue
-            queued.append(_gated(sem, f"package {d.name}:{d.version}", pkg_job(d)))
+        for d in _PACKAGES_TIER:
+            queued.append(_gated(sem, f"package {d.value}", pkg_job(d)))
 
     if tier in ("static", "full"):
         queued.append(

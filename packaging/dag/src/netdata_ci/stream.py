@@ -14,9 +14,9 @@ import uuid
 import dagger
 
 from . import build as build_mod
-from .matrix import get_distro
+from .distros import Distro
 
-_DISTRO = ("debian", "12")
+_DISTRO = Distro.DEBIAN_12
 _PARENT_PORT = 22000
 
 _PARENT_CONF = """\
@@ -69,10 +69,9 @@ echo "stream-test-ok hosts=2 bearer-protected"
 
 def stream_test(source: dagger.Directory, jobs: int = 0) -> dagger.Container:
     """Parent/child streaming + bearer-protection assertions."""
-    d = get_distro(*_DISTRO)
     api_key = str(uuid.uuid5(uuid.NAMESPACE_DNS, "netdata-ci-stream-test"))
 
-    agent = build_mod.source_build(d, "linux/amd64", source, jobs)
+    agent = build_mod.source_build(_DISTRO, "linux/amd64", source, jobs)
     netdata = "/opt/netdata/usr/sbin/netdata"
 
     parent = (
