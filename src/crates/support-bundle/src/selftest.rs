@@ -12,7 +12,7 @@ fn test_identity() -> Identity {
 /// The .sh heredoc vector file, verbatim (plus the runtime-assembled
 /// Authorization line, split here so secret scanners do not flag the source).
 fn sh_vector_text() -> String {
-    let text = r#"api key = SENTINEL-1
+    let mut text = r#"api key = SENTINEL-1
 password: SENTINEL-3
 "claim_token": "SENTINEL-4"
 url: https://admin:SENTINEL-5@app.example.com/x
@@ -28,10 +28,6 @@ connect user:SENTINEL-15@unix(/run/x)/db ok
 cmdline: claim.sh api key = SENTINEL-12 end
 password: q
 "api_token": 731942
-private_key: |
-  SENTINEL-YAML-LINE1
-  SENTINEL-YAML-LINE2
-after_block = ok
 [11111111-2222-3333-4444-555555555555]
 -----BEGIN RSA PRIVATE KEY-----
 U0VOVElORUwtMTMtUEVNLUJPRFk=
@@ -49,21 +45,9 @@ mail ops@example.com mac aa:bb:cc:dd:ee:ff at 2026-07-16T13:38:34Z
 "password_escq": "ab\"SENTINEL-ESCQ"
 PWD=SENTINEL-PWD
 "api_token": -98765
-"access_key": ["SENTINEL-ARR"]
-tabbed_secret_block: |
-\tSENTINEL-TAB-LINE
-after_tab = ok
-password_ind: |2
-  SENTINEL-IND2
-after_ind = ok
-password_chomp: |+2
-  SENTINEL-CHOMP
-after_chomp = ok
 home /home/alice/x and /Users/bob/y
 "#
     .to_string();
-    // the raw string cannot hold a tab escape: splice the real tab in
-    let mut text = text.replace("\\tSENTINEL-TAB-LINE", "\tSENTINEL-TAB-LINE");
     let bw = format!("{}{}", "Bea", "rer");
     text.push_str(&format!("Authorization: {bw} SENTINEL-2abc\n"));
     text
@@ -106,31 +90,11 @@ const SH_ABSENT: &[(&str, &str)] = &[
     ),
     ("SENTINEL-PWD", "PWD= secret alias survived"),
     ("98765", "negative-number JSON scalar survived"),
-    (
-        "SENTINEL-ARR",
-        "structured (array) JSON secret value survived",
-    ),
-    (
-        "SENTINEL-TAB",
-        "tab-indented YAML block-scalar secret survived",
-    ),
-    (
-        "SENTINEL-IND2",
-        "explicit-indent (|2) YAML block scalar secret survived",
-    ),
-    (
-        "SENTINEL-CHOMP",
-        "chomp-then-indent (|+2) YAML block scalar secret survived",
-    ),
     ("/home/alice", "other-user home path not pseudonymized"),
     ("/Users/bob", "other-user Users path not pseudonymized"),
 ];
 
 const SH_PRESENT: &[(&str, &str)] = &[
-    (
-        "after_block = ok",
-        "YAML block withholding ate following content",
-    ),
     ("destination = tcp:", "destination protocol prefix lost"),
     ("unix:/run/nd.sock", "socket-path destination was mangled"),
     (
@@ -156,9 +120,6 @@ const SH_PRESENT: &[(&str, &str)] = &[
         "@unix(/run/x)/db ok",
         "mid-line unix( DSN rule broke the tail",
     ),
-    ("after_tab = ok", "tab YAML block withholding overran"),
-    ("after_ind = ok", "|2 block withholding overran"),
-    ("after_chomp = ok", "|+2 block withholding overran"),
     ("/home/user-", "home path pseudonym missing"),
     ("/Users/user-", "Users path pseudonym missing"),
 ];
@@ -330,8 +291,8 @@ const PS1_VECTORS: &[Ps1Vector] = &[
 ];
 
 /// Vectors for the rules the Rust implementation adds beyond the scripts:
-/// short credential aliases (pass/pwd/pat, whole-word), escape-aware JSON
-/// strings, and secret-keyed JSON containers.
+/// short credential aliases (pass/pat whole-word, pwd substring),
+/// escape-aware JSON strings, and compact/camelCase secret spellings.
 const RUST_VECTORS: &[Ps1Vector] = &[
     Ps1Vector {
         input: "pass: SENTINEL-R1",
@@ -345,6 +306,12 @@ const RUST_VECTORS: &[Ps1Vector] = &[
     },
     Ps1Vector {
         input: "smtp_pass: SENTINEL-R3",
+        must_not: &["SENTINEL"],
+        must: &["[REDACTED]"],
+    },
+    // pwd matches as a substring (upstream parity): sshpwd, dbpwd, ...
+    Ps1Vector {
+        input: "sshpwd = SENTINEL-R8",
         must_not: &["SENTINEL"],
         must: &["[REDACTED]"],
     },
@@ -367,21 +334,6 @@ const RUST_VECTORS: &[Ps1Vector] = &[
         input: r#"{"password":"pre\"SENTINEL-R5 tail"}"#,
         must_not: &["SENTINEL", "tail"],
         must: &["[REDACTED]"],
-    },
-    Ps1Vector {
-        input: r#"{"api_token":{"value":"SENTINEL-R6"},"next":1}"#,
-        must_not: &["SENTINEL"],
-        must: &["[REDACTED]", "\"next\":1"],
-    },
-    Ps1Vector {
-        input: r#"{"api_token":["SENTINEL-R7","SENTINEL-R7b"],"after":true}"#,
-        must_not: &["SENTINEL"],
-        must: &["[REDACTED]", "\"after\":true"],
-    },
-    Ps1Vector {
-        input: r#"{"files":[{"name":"ok.txt"}],"count":1}"#,
-        must_not: &["REDACTED"],
-        must: &["ok.txt", "\"count\":1"],
     },
     Ps1Vector {
         input: ";password = SENTINEL-SEMI",
@@ -509,30 +461,20 @@ pub fn run_vectors() -> Vec<String> {
             }
         }
     }
-    // multi-line secret-keyed JSON container must be withheld through its
-    // closing boundary, keeping unrelated content after it
-    let json_in = concat!(
-        "{\n",
-        "  \"claim_token\": {\n",
-        "    \"v\": \"SENTINEL-RJSON\"\n",
-        "  },\n",
-        "  \"keep\": \"yes\"\n",
-        "}\n",
-    );
-    let json = s.sanitize_text(json_in);
-    if json.contains("SENTINEL-RJSON")
-        || !json.contains("[REDACTED-BLOCK]")
-        || !json.contains("\"keep\": \"yes\"")
-    {
-        fails.push(format!(
-            "rust: multi-line JSON container not withheld correctly -> {json:?}"
-        ));
+    // cross-file pseudonym stability: a NEW user in a second file must not
+    // reuse a pseudonym already assigned in the first (the scripts restore
+    // their user-N counter from the map file; the Rust sanitizer's maps live
+    // across the whole run — this pins that contract)
+    let mut s = Sanitizer::new(true, test_identity());
+    let first = s.sanitize_text("home /home/firstuser/data\n");
+    let second = s.sanitize_text("home /home/seconduser/data\n");
+    if second.contains("seconduser") {
+        fails.push("rust (leak): second-file home user not pseudonymized".to_string());
     }
-    // an unterminated container fails closed to EOF
-    let json_open = "{\n  \"api_token\": [\n    \"SENTINEL-ROPEN\"\n";
-    let json = s.sanitize_text(json_open);
-    if json.contains("SENTINEL-ROPEN") {
-        fails.push("rust: unterminated JSON container leaked its body".to_string());
+    if !first.contains("/home/user-1/") || second.contains("user-1") || !second.contains("user-2") {
+        fails.push(format!(
+            "rust: cross-file pseudonym collision (first {first:?}, second {second:?})"
+        ));
     }
 
     // --- the .ps1 file-level block tests ---
@@ -549,21 +491,6 @@ pub fn run_vectors() -> Vec<String> {
         || !pem.contains("after line")
     {
         fails.push("ps1: PEM block not fully withheld".to_string());
-    }
-    let yaml_in = concat!(
-        "jobs:\n",
-        "  - name: x\n",
-        "    private_key: |\n",
-        "      SENTINEL-YAML-LINE1\n",
-        "      SENTINEL-YAML-LINE2\n",
-        "    after: ok\n",
-    );
-    let yaml = s.sanitize_text(yaml_in);
-    if yaml.contains("SENTINEL-YAML")
-        || !yaml.contains("[REDACTED BLOCK]")
-        || !yaml.contains("after: ok")
-    {
-        fails.push("ps1: YAML block scalar not withheld correctly".to_string());
     }
 
     fails

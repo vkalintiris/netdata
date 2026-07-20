@@ -17,6 +17,7 @@ const SECRET_KEY_WORDS: &[&str] = &[
     "token",
     "password",
     "passwd",
+    "pwd",
     "secret",
     "community",
     "bearer",
@@ -50,7 +51,8 @@ const SECRET_KEY_WORDS: &[&str] = &[
 /// Short credential aliases that appear as real keys in collector configs
 /// (python.d modules use `pass:`). Matched as WHOLE words of the normalized
 /// key, never as substrings — `bypass`, `compass` and `pattern` must survive.
-const SECRET_KEY_EXACT_WORDS: &[&str] = &["pass", "pwd", "pat"];
+/// (`pwd` is unambiguous even as a substring, so it lives in the list above.)
+const SECRET_KEY_EXACT_WORDS: &[&str] = &["pass", "pat"];
 
 /// Keys ENDING in these words describe secrets rather than being secrets
 /// ("bearer token protection", "api key file"). Exemption is decided by the
@@ -154,7 +156,6 @@ struct Regexes {
     uuid_section: Regex,
     json_quoted: Regex,
     json_scalar: Regex,
-    json_container: Regex,
     short_secret: Regex,
     url_creds: Regex,
     go_dsn: Regex,
@@ -163,7 +164,6 @@ struct Regexes {
     basic: Regex,
     query_secret: Regex,
     argv_secret: Regex,
-    yaml_block_header: Regex,
     pem_begin: Regex,
     pem_end: Regex,
     email: Regex,
@@ -190,9 +190,6 @@ impl Regexes {
             json_scalar: n(
                 r#""((?:[^"\\]|\\.)+)"[ \t]*:[ \t]*(-?[0-9][0-9.eE+-]*|true|false|null)"#,
             ),
-            // secret keys whose value is an object/array: the whole container
-            // is redacted (across lines when needed)
-            json_container: n(r#""((?:[^"\\]|\\.)+)"[ \t]*:[ \t]*[\[{]"#),
             // short credential aliases (pass/pwd/pat) mid-line, guarded by a
             // non-alphanumeric boundary so bypass/pattern/path never match
             short_secret: n(r#"(?i)((?:^|[^A-Za-z0-9])(?:pass|pwd|pat)[ ]?[=:][ ]?)([^&" \t\[]+)"#),
@@ -214,12 +211,6 @@ impl Regexes {
             // safe direction; do not "fix" this into an under-redaction.
             argv_secret: n(
                 r#"(?i)(([\w.-]*(?:token|password|passwd|secret|apikey|api_key|community|bearer)|(?:api|license|auth|access) key|proxy (?:user|pass|password)) ?[=:] ?)([^&" \t\[]+)"#,
-            ),
-            // tabs count as indentation; the indent indicator ("|2") and
-            // chomping indicator ("|+") are valid in EITHER order per YAML,
-            // so both "|2+" and "|+2" open a block
-            yaml_block_header: n(
-                r"^[ \t]*[A-Za-z0-9_. -]+:[ \t]*[|>](?:[0-9][+-]?|[+-][0-9]?)?[ \t]*$",
             ),
             // union: sh allows [A-Z ], ps1 [A-Z0-9 ]
             pem_begin: n(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY"),
@@ -276,20 +267,6 @@ pub struct Sanitizer {
     // when the map grows (never per line)
     fq_sorted: Vec<String>,
     fq_dirty: bool,
-    // multi-line withholding state, reset per file
-}
-
-/// Multi-line withholding state (PEM blocks, YAML block scalars, JSON
-/// containers). Owned by `sanitize_text` as a per-file local, so the
-/// per-line `sanitize_line` API provably cannot carry block context across
-/// calls — dropping it on a panic also resets it for free.
-#[derive(Default)]
-struct BlockState {
-    in_pem: bool,
-    in_yaml: bool,
-    yaml_indent: usize,
-    in_json: bool,
-    json_depth: i32,
 }
 
 impl Sanitizer {
@@ -444,41 +421,7 @@ impl Sanitizer {
         pass(&self.rx.json_scalar, &line)
     }
 
-    /// Redact secret-keyed JSON objects/arrays. A balanced container on the
-    /// line is replaced whole; an unbalanced one truncates the line and arms
-    /// the multi-line withholding state (fail closed to EOF if never closed).
-    fn redact_json_containers(&self, line: &str, state: &mut BlockState) -> String {
-        let mut out = String::with_capacity(line.len());
-        let mut rest = line;
-        while let Some(caps) = self.rx.json_container.captures(rest) {
-            let whole = caps.get(0).unwrap();
-            let key = caps.get(1).unwrap().as_str().to_string();
-            if !is_secret_key(&key) || is_diagnostic_key(&key) {
-                out.push_str(&rest[..whole.end()]);
-                rest = &rest[whole.end()..];
-                continue;
-            }
-            let bracket = whole.end() - 1;
-            out.push_str(&rest[..whole.start()]);
-            match scan_balanced(&rest[bracket..]) {
-                Ok(end) => {
-                    out.push_str(&format!("\"{key}\": \"[REDACTED]\""));
-                    rest = &rest[bracket + end..];
-                }
-                Err(depth) => {
-                    out.push_str(&format!("\"{key}\": [REDACTED-BLOCK]"));
-                    state.in_json = true;
-                    state.json_depth = depth;
-                    rest = "";
-                    break;
-                }
-            }
-        }
-        out.push_str(rest);
-        out
-    }
-
-    fn redact_secret_line(&self, line: &str, state: &mut BlockState) -> String {
+    fn redact_secret_line(&self, line: &str) -> String {
         // stream.conf parent side: [<API_KEY>] / [<MACHINE_GUID>] section
         // headers ARE secrets
         if self.rx.uuid_section.is_match(line) {
@@ -490,8 +433,13 @@ impl Sanitizer {
         };
         if line.contains('"') {
             line = self.redact_json(&line);
-            line = self.redact_json_containers(&line, state);
         }
+        // NOTE (scope): nested JSON arrays/objects under secret keys are NOT
+        // deep-parsed. Rust could balance the brackets reliably, but the JSON
+        // this bundle collects keeps credentials in string/scalar fields
+        // (handled above), and collapsing whole containers whose key merely
+        // contains a secret word ("auth": {...} in API output) destroys
+        // diagnostic value. See SUPPORT-BUNDLE.md "Redaction philosophy".
         line = self
             .rx
             .url_creds
@@ -812,17 +760,10 @@ impl Sanitizer {
         }
     }
 
-    /// Sanitize one line with no multi-line block context (PEM/YAML handling
+    /// Sanitize one line with no multi-line block context (PEM handling
     /// lives in `sanitize_text`).
     pub fn sanitize_line(&mut self, line: &str) -> String {
-        // a discarded per-call state keeps the documented contract honest:
-        // one line in, one line out, no block context survives the call
-        let mut state = BlockState::default();
-        self.sanitize_line_with(line, &mut state)
-    }
-
-    fn sanitize_line_with(&mut self, line: &str, state: &mut BlockState) -> String {
-        let line = self.redact_secret_line(line, state);
+        let line = self.redact_secret_line(line);
         if self.obfuscate {
             self.obfuscate_pii_line(&line)
         } else {
@@ -831,60 +772,35 @@ impl Sanitizer {
     }
 
     /// Sanitize a whole text: per-line redaction plus whole-block withholding
-    /// for multiline secrets (PEM private keys, YAML block scalars under a
-    /// secret key). Fails closed: if the END marker never arrives, the rest
-    /// of the file stays withheld.
+    /// for PEM private keys (clear BEGIN/END markers). Fails closed: if the
+    /// END marker never arrives, the rest of the file stays withheld.
+    ///
+    /// NOTE (scope): multi-line YAML block scalars (`secret: | ...`) are NOT
+    /// specially withheld. Their boundary is indentation-based and genuinely
+    /// ambiguous (tabs, explicit indent indicators, dedents) — every attempt
+    /// spawns another edge case. The common form in the configs collected
+    /// here is an inline `secret: value`, which the key/value rules DO
+    /// redact. See SUPPORT-BUNDLE.md "Redaction philosophy".
     pub fn sanitize_text(&mut self, text: &str) -> String {
-        let mut state = BlockState::default();
+        let mut in_pem = false;
         if text.is_empty() {
             return String::new();
         }
         let mut out = String::with_capacity(text.len());
         for raw in text.split('\n') {
             let line = raw.strip_suffix('\r').unwrap_or(raw);
-            if state.in_pem {
+            if in_pem {
                 if self.rx.pem_end.is_match(line) {
-                    state.in_pem = false;
+                    in_pem = false;
                 }
                 continue;
-            }
-            if state.in_json {
-                // JSON strings cannot contain raw newlines, so each line
-                // starts outside a string; track depth until the container
-                // closes (the closing line is withheld too, fail closed)
-                state.json_depth = scan_json_depth(line, state.json_depth);
-                if state.json_depth <= 0 {
-                    state.in_json = false;
-                }
-                continue;
-            }
-            if state.in_yaml {
-                if line.trim_matches([' ', '\t']).is_empty() {
-                    continue;
-                }
-                let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
-                if indent > state.yaml_indent {
-                    continue;
-                }
-                state.in_yaml = false;
-            }
-            if self.rx.yaml_block_header.is_match(line) {
-                let key_end = line.find(':').unwrap_or(line.len());
-                let key = line[..key_end].trim_start_matches([' ', '\t']);
-                if is_secret_key(key) && !is_diagnostic_key(key) {
-                    state.yaml_indent = line.len() - line.trim_start_matches([' ', '\t']).len();
-                    state.in_yaml = true;
-                    out.push_str(&line[..key_end]);
-                    out.push_str(": [REDACTED BLOCK]\n");
-                    continue;
-                }
             }
             if self.rx.pem_begin.is_match(line) {
-                state.in_pem = true;
+                in_pem = true;
                 out.push_str("[REDACTED PRIVATE KEY BLOCK]\n");
                 continue;
             }
-            out.push_str(&self.sanitize_line_with(line, &mut state));
+            out.push_str(&self.sanitize_line(line));
             out.push('\n');
         }
         // split('\n') manufactures a trailing empty segment when the text
@@ -898,9 +814,9 @@ impl Sanitizer {
     /// Sanitize raw bytes to sanitized bytes, never failing open. Buffers
     /// with NUL bytes (binary or BOM-less UTF-16) are withheld rather than
     /// run through byte-unsafe line redaction; a sanitizer panic withholds
-    /// the content (fail closed; the per-text block state is created fresh
-    /// inside `sanitize_text`, and pseudonym mappings only ever grow, so a
-    /// caught panic cannot cause later under-redaction). The second return
+    /// the content (fail closed; the PEM state is a `sanitize_text` local,
+    /// and pseudonym mappings only ever grow, so a caught panic cannot
+    /// cause later under-redaction). The second return
     /// value names the withheld outcome so the caller can log it. The
     /// collectors cap what lands here, so scanning the whole buffer is
     /// bounded.
@@ -932,53 +848,6 @@ impl Sanitizer {
         let (sanitized, _) = self.sanitize_bytes(&raw);
         std::fs::write(path, sanitized)
     }
-}
-
-/// Scan a JSON container starting at its opening bracket. String-aware
-/// (escaped quotes and bracket characters inside strings do not count).
-/// Returns Ok(byte index just past the matching close) when balanced on this
-/// slice, or Err(open depth) when the container continues past its end.
-fn scan_balanced(s: &str) -> Result<usize, i32> {
-    scan_balanced_from_depth(s, 0)
-}
-
-/// Continue a multi-line container scan on a fresh line (JSON strings cannot
-/// span raw newlines, so the line starts outside a string). Returns the new
-/// open depth.
-fn scan_json_depth(line: &str, depth: i32) -> i32 {
-    match scan_balanced_from_depth(line, depth) {
-        Ok(_) => 0,
-        Err(d) => d,
-    }
-}
-
-fn scan_balanced_from_depth(s: &str, mut depth: i32) -> Result<usize, i32> {
-    let mut in_string = false;
-    let mut escape = false;
-    for (i, c) in s.char_indices() {
-        if in_string {
-            if escape {
-                escape = false;
-            } else if c == '\\' {
-                escape = true;
-            } else if c == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match c {
-            '"' => in_string = true,
-            '{' | '[' => depth += 1,
-            '}' | ']' => {
-                depth -= 1;
-                if depth <= 0 {
-                    return Ok(i + 1);
-                }
-            }
-            _ => {}
-        }
-    }
-    Err(depth)
 }
 
 /// Replace every occurrence of `needle` (ASCII case-insensitive) with

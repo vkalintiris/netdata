@@ -186,28 +186,56 @@ These are excluded by design. **Do not add them.**
 - anything outside netdata's own scope (no full system journals, no other
   services' logs, no packet captures)
 
+## Redaction philosophy
+
+This tool follows the same proportionate posture as established support-bundle
+tools (sosreport, supportconfig, `kubectl cluster-info dump`, Elastic's
+diagnostics): **redact the well-defined, high-value cases robustly, and treat
+redaction as best-effort defense-in-depth — not a guarantee.**
+
+Two facts do the heavy lifting and are why we do not chase completeness:
+
+1. the tool runs on the **user's own host**, under their own account; and
+2. the output is plain-text, organized, and the user is told to **review the
+   bundle before sending it** (`summary.txt` and this document say so).
+
+Concretely, we redact credential-bearing config keys, URL/DSN credentials,
+JWT/Bearer/Basic tokens, PEM key blocks, `stream.conf` API-key sections, and
+PII (IPs, MACs, emails, hostnames, usernames); and we never collect files that
+are *pure* secrets at all (the never-collect list). We deliberately do **not**
+try to parse arbitrary nested structure to prove no secret can ever slip
+through. Rust could balance nested JSON brackets reliably, but the JSON this
+bundle collects keeps credentials in string/scalar fields, and collapsing
+whole containers whose key merely contains a secret word (`"auth": {...}` in
+API output) destroys diagnostic value; YAML block-scalar boundaries are
+indentation-based and genuinely ambiguous for any line-oriented tool. A
+brittle sanitizer that tries to do everything is worse than a stable one that
+does the common cases well; the durable place for structure-aware,
+schema-driven redaction is inside the agent, not this tool. When extending
+the tool, prefer this restraint.
+
 ## Sanitization
 
 Two passes, one sweep, applied to **every** collected file
 (implementation: `src/crates/support-bundle/src/sanitize.rs`):
 
 1. **Secrets — always on, not configurable:**
-   - values of any key whose punctuation-normalized name contains a complete
+   - values of any key whose punctuation-normalized name contains a
      secret word or phrase:
-     `api key, apikey, token, password, passwd, secret, community, bearer,
-     webhook, license key, auth, credential, cookie, passphrase, proxy user,
-     proxy pass, username, dsn, private key, access key, session, recipient,
-     account sid, priv key` — plus the short aliases `pass, pwd, pat`, matched
-     as whole words of the normalized key so `bypass`, `compass` and `pattern`
-     are never touched (substring match on the normalized key otherwise, so
-     `claim_token`, `access token`, `TELEGRAM_BOT_TOKEN`, camelCase and
-     compact spellings all match) — in ini (`k = v`), yaml (`k: v`), env
-     (`K=V`) and JSON (`"k": "v"`) forms, including escaped strings,
-     numeric/scalar values, and nested values. Keys must look like real
-     config keys (≤64 chars, no sentence punctuation) so prose containing
-     "token" is not mangled. Multi-line JSON objects/arrays and YAML
-     block-scalar secret values are withheld through their closing boundary
-     (or to EOF if malformed). Exemptions are decided by the KEY, never the
+     `api key, apikey, token, password, passwd, pwd, secret, community,
+     bearer, webhook, license key, auth, credential, cookie, passphrase,
+     proxy user, proxy pass, username, dsn, private key, access key, session,
+     recipient, account sid, priv key` — plus the short aliases `pass, pat`,
+     matched as whole words of the normalized key so `bypass`, `compass` and
+     `pattern` are never touched (substring aliases are deliberately limited
+     to unambiguous secret tokens; `claim_token`, `access token`,
+     `TELEGRAM_BOT_TOKEN`, camelCase and compact spellings all match) — in
+     ini (`k = v`), yaml (`k: v`), env (`K=V`) and JSON (`"k": "v"`) forms,
+     covering escaped JSON strings and numeric/scalar JSON values. Keys must
+     look like real config keys (≤64 chars, no sentence punctuation) so prose
+     containing "token" is not mangled. Nested JSON objects/arrays and
+     multi-line YAML block scalars are NOT deep-parsed — see "Redaction
+     philosophy" above. Exemptions are decided by the KEY, never the
      value: keys ending in `file path dir directory protection support mode
      level port timeout cookies secure log size options` describe secrets
      rather than being secrets, so `bearer token protection = no` and
