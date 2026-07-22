@@ -110,7 +110,7 @@ class NetdataCi:
         return build_mod.source_build(distro, platform, source, jobs, build_type)
 
     @function
-    async def package(
+    def package(
         self,
         source: NetdataSource,
         distro: Distro,
@@ -118,13 +118,12 @@ class NetdataCi:
         jobs: int = 0,
         build_type: str = "Debug",
     ) -> dagger.Directory:
-        """Build native DEB/RPM packages for one distro/arch.
+        """Build native DEB/RPM packages for one distro/arch, via cpack.
 
-        DEB via cpack; RPM via the spec (interim, per SOW D11=C). Returns
-        the artifacts directory; chain `export --path=./artifacts` to copy
-        the packages out.
+        Returns the artifacts directory; chain `export --path=./artifacts`
+        to copy the packages out.
         """
-        return await pkgs.package(distro, platform, source, jobs, build_type)
+        return pkgs.package(distro, platform, source, jobs, build_type)
 
     @function
     async def static(

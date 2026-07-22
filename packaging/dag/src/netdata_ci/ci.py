@@ -137,7 +137,7 @@ async def run_ci(
 
     def pkg_job(d: Distro) -> Callable[[], Awaitable[object]]:
         async def fn() -> None:
-            artifacts = await pkgs.package(d, _NATIVE, source, jobs=jobs, build_type=build_type)
+            artifacts = pkgs.package(d, _NATIVE, source, jobs=jobs, build_type=build_type)
             await pkgs.test_package(d, _NATIVE, artifacts).sync()
 
         return fn

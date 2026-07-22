@@ -62,15 +62,6 @@ class Distro(enum.Enum):
     UBUNTU_26_04 = "ubuntu-26.04"
 
 
-class RpmLayout(enum.StrEnum):
-    """How this distro's rpm lays out the build tree (%setup semantics)."""
-
-    # rpm >= 4.20 (fedora >= 41, suse >= 16): BUILD/<name>-<version>-build.
-    MODERN = "modern"
-    # Older rpm builds directly under BUILD.
-    CLASSIC = "classic"
-
-
 class RpmProtobuf(enum.StrEnum):
     """How the RPM build links protobuf.
 
@@ -87,10 +78,9 @@ class RpmProtobuf(enum.StrEnum):
 class PkgFeatures:
     """Optional-library features of the packaging build.
 
-    Declares what the packaging environment supports. The DEB (cpack)
-    path drives these directly; the spec-driven RPM path resolves features
-    itself today, so for RPM entries these bind when CPack RPM support
-    replaces the spec (SOW D11 follow-up).
+    Declares what the packaging environment supports; the cpack configure
+    step (packaging_configure_args) drives the build from these directly,
+    for DEB and RPM alike.
     """
 
     mongodb: bool
@@ -118,10 +108,11 @@ class RpmPackaging:
     features: PkgFeatures
     test_install: str
     prebuilt_distro: str
-    layout: RpmLayout = RpmLayout.CLASSIC
     protobuf: RpmProtobuf = RpmProtobuf.SHARED
-    # rpmbuild working tree; suse uses its own convention.
-    topdir: str = "/root/rpmbuild"
+    # The spec's centos_ver == 7 tier (EL <= 7, Amazon Linux 2): CUPS and
+    # the systemd-units plugin are too old to build, C++17 and modern
+    # libbpf do not compile against the toolchain and kernel headers.
+    legacy: bool = False
 
 
 @dataclass(frozen=True)
@@ -391,11 +382,8 @@ _FEDORA_PKG_DEPS = (
     "protobuf-c-devel",
     "protobuf-compiler",
     "protobuf-devel",
-    # rpm-build/rpm-devel: required by the interim spec-driven RPM path
-    # (SOW D11=C); drop again when CPack RPM support replaces it.
+    # CPack's RPM generator shells out to rpmbuild.
     "rpm-build",
-    "rpm-devel",
-    "rpmdevtools",
     "snappy-devel",
     "systemd-devel",
     "systemd-rpm-macros",
@@ -468,9 +456,9 @@ _SUSE_PKG_DEPS = (
     "pkg-config",
     "protobuf-c",
     "protobuf-devel",
+    # CPack's RPM generator shells out to rpmbuild; on openSUSE
+    # rpmdevtools would not pull it in (helper-images hit this).
     "rpm-build",
-    "rpm-devel",
-    "rpmdevtools",
     "snappy-devel",
     "systemd-devel",
     "systemd-rpm-macros",
@@ -531,9 +519,11 @@ _LEGACY_RPM_PKG_DEPS = (
     "protobuf-c-devel",
     "protobuf-compiler",
     "protobuf-devel",
+    # CPack's RPM generator shells out to rpmbuild. No systemd-rpm-macros
+    # here: on EL 7 the %systemd_* scriptlet macros come from the base
+    # systemd package, and EPEL's compat package would add a sysusers
+    # file-attribute generator that changes the built packages' Provides.
     "rpm-build",
-    "rpm-devel",
-    "rpmdevtools",
     "snappy-devel",
     "systemd-devel",
     "wget",
@@ -542,7 +532,8 @@ _LEGACY_RPM_PKG_DEPS = (
 
 _C7_PKG_DEPS = (*_LEGACY_RPM_PKG_DEPS, "bash", "devtoolset-11")
 
-_RPM_TOOLING = ("rpm-build", "rpm-devel", "rpmdevtools")
+# Source builds do not package; they carry no rpm tooling.
+_RPM_TOOLING = ("rpm-build",)
 
 _C7_BUILD_DEPS = tuple(p for p in _C7_PKG_DEPS if p not in _RPM_TOOLING)
 _AL2_BUILD_DEPS = tuple(p for p in _LEGACY_RPM_PKG_DEPS if p not in _RPM_TOOLING)
@@ -666,24 +657,34 @@ _C7_FILES = (
     ("/etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-SIG-SCLo", _C7_SCLO_GPG_KEY),
 )
 
-# centos7/AL2 system cmake is far too old; install a pinned release build
-# (same version and hashes as helper-images pins). Runs as the LAST setup
-# step: the self-extractor needs tar/gzip, which minimal base images
-# (amazonlinux:2) only have after their setup installs them.
+# Pinned CMake release, installed to /opt with a /cmake symlink. RPM
+# packaging needs CMake >= 4.1 (CPack emits the weak dependencies from 4.1
+# on; the top-level CMakeLists.txt refuses older ones), and the centos7/AL2
+# system cmake is far too old to build netdata at all. Same version, hashes
+# (from Kitware's cmake-4.1.6-SHA-256.txt release asset), and layout as
+# helper-images' scripts/install-cmake.sh. Runs as the env's post step: the
+# download and unpack need curl/tar/gzip, which some base images only carry
+# after the dependency install.
 _CMAKE_PIN_STEP = """\
 set -e
-curl --fail -sSL --connect-timeout 20 --retry 3 --output /tmp/cmake-install.sh \
-    "https://github.com/Kitware/CMake/releases/download/v3.27.6/cmake-3.27.6-linux-$(uname -m).sh"
 case "$(uname -m)" in
-x86_64) sum=8c449dabb2b2563ec4e6d5e0fb0ae09e729680efab71527b59015131cea4a042 ;;
-aarch64) sum=a83e01ed1cdf44c2e33e0726513b9a35a8c09e3b5a126fd720b3c8a9d5552368 ;;
+x86_64) sum=d5c2e72820e01f1c3a07092d0a29e209263a7d22f55b4ad7f414ee870ae6b8e0 ;;
+aarch64) sum=8b3e3af8e4b4e95224a4490f4772adb7a512be34c8380fe76e7be003e0fd4394 ;;
 *) echo "no pinned cmake for $(uname -m)"; exit 1 ;;
 esac
-echo "$sum  /tmp/cmake-install.sh" | sha256sum -c -
-mkdir -p /cmake
-sh /tmp/cmake-install.sh --skip-license --prefix=/cmake
-rm -f /tmp/cmake-install.sh
+tarball="cmake-4.1.6-linux-$(uname -m).tar.gz"
+curl --fail -sSL --connect-timeout 20 --retry 3 --max-time 600 \
+    --output "/tmp/${tarball}" \
+    "https://github.com/Kitware/CMake/releases/download/v4.1.6/${tarball}"
+echo "${sum}  /tmp/${tarball}" | sha256sum -c -
+tar -xzf "/tmp/${tarball}" -C /opt
+rm -f "/tmp/${tarball}"
+test -x "/opt/cmake-4.1.6-linux-$(uname -m)/bin/cmake"
+ln -sT "/opt/cmake-4.1.6-linux-$(uname -m)" /cmake
 """
+
+# PATH for environments whose cmake is the pinned /cmake install.
+_PINNED_CMAKE_PATH = (("PATH", f"/cmake/bin:{STD_PATH}"),)
 
 _C7_ENV = (
     ("PATH", f"/opt/rh/devtoolset-11/root/usr/bin:/cmake/bin:{STD_PATH}"),
@@ -693,17 +694,15 @@ _C7_ENV = (
     ),
 )
 
-_AL2_ENV = (("PATH", f"/cmake/bin:{STD_PATH}"),)
-
 _C7_SETUP = (
     ("yum", "install", "-y", "epel-release"),
     ("yum", "update", "-y"),
-    ("sh", "-c", _CMAKE_PIN_STEP),
 )
 _AL2_SETUP = (
     ("yum", "update", "-y"),
+    # The pinned-cmake post step needs tar/gzip; the amazonlinux:2 base
+    # image has neither and the dependency list does not pull them in.
     ("yum", "install", "-y", "tar", "gzip"),
-    ("sh", "-c", _CMAKE_PIN_STEP),
 )
 
 # --- clean-image package install commands (round-trip test) ------------------
@@ -738,10 +737,16 @@ _DEB_FEATURES = PkgFeatures(mongodb=True, nfacct=True, xenstat=True, freeipmi=Tr
 _UBUNTU_LTS_FEATURES = PkgFeatures(mongodb=False, nfacct=True, xenstat=True, freeipmi=True)
 _FEDORA_FEATURES = PkgFeatures(mongodb=True, nfacct=True, xenstat=True, freeipmi=True)
 _EL_FEATURES = PkgFeatures(mongodb=True, nfacct=False, xenstat=False, freeipmi=True)
-_LEGACY_RPM_FEATURES = PkgFeatures(mongodb=True, nfacct=True, xenstat=False, freeipmi=True)
+# The spec's _have_mongo_exporter is 0 on oraclelinux (unlike EL rebuilds).
+_OL_FEATURES = PkgFeatures(mongodb=False, nfacct=False, xenstat=False, freeipmi=True)
+# The spec's _have_nfacct is 0 for every centos_ver/amzn; _have_mongo_exporter
+# is 0 on amzn but 1 on centos 7.
+_C7_FEATURES = PkgFeatures(mongodb=True, nfacct=False, xenstat=False, freeipmi=True)
+_AL2_FEATURES = PkgFeatures(mongodb=False, nfacct=False, xenstat=False, freeipmi=True)
 _AL2023_FEATURES = PkgFeatures(mongodb=False, nfacct=False, xenstat=False, freeipmi=False)
-_LEAP_FEATURES = PkgFeatures(mongodb=False, nfacct=False, xenstat=False, freeipmi=True)
-_TUMBLEWEED_FEATURES = PkgFeatures(mongodb=False, nfacct=True, xenstat=True, freeipmi=True)
+# Leap 16 and Tumbleweed alike: the spec disables nfacct and xenstat for
+# suse_version >= 1600, and mongodb on every suse.
+_SUSE_FEATURES = PkgFeatures(mongodb=False, nfacct=False, xenstat=False, freeipmi=True)
 
 # --- helpers for the repetitive families -------------------------------------
 
@@ -770,11 +775,16 @@ def _fedora(image: str, prebuilt_distro: str) -> DistroSpec:
     return DistroSpec(
         build=EnvSpec(image, PkgMgr.DNF, _FEDORA_DEPS),
         packaging=RpmPackaging(
-            env=EnvSpec(image, PkgMgr.DNF, _FEDORA_PKG_DEPS),
+            env=EnvSpec(
+                image,
+                PkgMgr.DNF,
+                _FEDORA_PKG_DEPS,
+                post=_CMAKE_PIN_STEP,
+                env=_PINNED_CMAKE_PATH,
+            ),
             features=_FEDORA_FEATURES,
             test_install=_FEDORA_TEST_INSTALL,
             prebuilt_distro=prebuilt_distro,
-            layout=RpmLayout.MODERN,
         ),
     )
 
@@ -798,6 +808,8 @@ def _el_family(
                 pkg_deps,
                 setup=(*setup, *_EPEL_SETUP),
                 install_flags=("--allowerasing",),
+                post=_CMAKE_PIN_STEP,
+                env=_PINNED_CMAKE_PATH,
             ),
             features=features,
             test_install=_EL_TEST_INSTALL,
@@ -825,8 +837,10 @@ def _oraclelinux(
                 _EL_PKG_DEPS,
                 files=pkg_files,
                 setup=pkg_setup,
+                post=_CMAKE_PIN_STEP,
+                env=_PINNED_CMAKE_PATH,
             ),
-            features=_EL_FEATURES,
+            features=_OL_FEATURES,
             test_install=_FEDORA_TEST_INSTALL,
             prebuilt_distro=prebuilt_distro,
         ),
@@ -842,13 +856,13 @@ def _opensuse(image: str, extra: tuple[str, ...], features: PkgFeatures, stamp: 
                 PkgMgr.ZYPPER,
                 (*_SUSE_PKG_DEPS, *extra),
                 install_flags=("--allow-downgrade",),
+                post=_CMAKE_PIN_STEP,
+                env=_PINNED_CMAKE_PATH,
             ),
             features=features,
             test_install=_SUSE_TEST_INSTALL,
             prebuilt_distro=stamp,
-            layout=RpmLayout.MODERN,
             protobuf=RpmProtobuf.BUNDLED,
-            topdir="/usr/src/packages",
         ),
     )
 
@@ -881,7 +895,8 @@ SPECS: Mapping[Distro, DistroSpec] = {
             PkgMgr.YUM,
             _AL2_BUILD_DEPS,
             setup=_AL2_SETUP,
-            env=_AL2_ENV,
+            post=_CMAKE_PIN_STEP,
+            env=_PINNED_CMAKE_PATH,
         ),
         systemd=False,
         packaging=RpmPackaging(
@@ -890,11 +905,16 @@ SPECS: Mapping[Distro, DistroSpec] = {
                 PkgMgr.YUM,
                 _LEGACY_RPM_PKG_DEPS,
                 setup=_AL2_SETUP,
-                env=_AL2_ENV,
+                post=_CMAKE_PIN_STEP,
+                env=_PINNED_CMAKE_PATH,
             ),
-            features=_LEGACY_RPM_FEATURES,
+            features=_AL2_FEATURES,
             test_install=_AL2_TEST_INSTALL,
             prebuilt_distro="amazonlinux 2",
+            # The legacy tier bundles protobuf (spec: centos_ver < 8, which
+            # covers AL2 via its %rhel 7 remap); the system one is 2.5.
+            protobuf=RpmProtobuf.BUNDLED,
+            legacy=True,
         ),
     ),
     Distro.AMAZONLINUX_2023: DistroSpec(
@@ -910,6 +930,8 @@ SPECS: Mapping[Distro, DistroSpec] = {
                 PkgMgr.DNF,
                 _AL2023_PKG_DEPS,
                 install_flags=("--allowerasing",),
+                post=_CMAKE_PIN_STEP,
+                env=_PINNED_CMAKE_PATH,
             ),
             features=_AL2023_FEATURES,
             test_install=_AL2023_TEST_INSTALL,
@@ -924,6 +946,7 @@ SPECS: Mapping[Distro, DistroSpec] = {
             _C7_BUILD_DEPS,
             files=_C7_FILES,
             setup=_C7_SETUP,
+            post=_CMAKE_PIN_STEP,
             env=_C7_ENV,
         ),
         systemd=False,
@@ -934,11 +957,16 @@ SPECS: Mapping[Distro, DistroSpec] = {
                 _C7_PKG_DEPS,
                 files=_C7_FILES,
                 setup=_C7_SETUP,
+                post=_CMAKE_PIN_STEP,
                 env=_C7_ENV,
             ),
-            features=_LEGACY_RPM_FEATURES,
+            features=_C7_FEATURES,
             test_install=_C7_TEST_INSTALL,
             prebuilt_distro="centos 7",
+            # The legacy tier bundles protobuf (spec: centos_ver < 8); the
+            # system one is 2.5.
+            protobuf=RpmProtobuf.BUNDLED,
+            legacy=True,
         ),
     ),
     Distro.CENTOS_STREAM_9: _el_family(
@@ -960,11 +988,11 @@ SPECS: Mapping[Distro, DistroSpec] = {
     Distro.DEBIAN_13: _deb_family("debian:trixie", _APT_UPDATE, _DEB_FEATURES, "debian 13"),
     Distro.FEDORA_43: _fedora("fedora:43", "fedora 43"),
     Distro.FEDORA_44: _fedora("fedora:44", "fedora 44"),
-    Distro.OPENSUSE_16_0: _opensuse("opensuse/leap:16.0", (), _LEAP_FEATURES, "opensuse 16.0"),
+    Distro.OPENSUSE_16_0: _opensuse("opensuse/leap:16.0", (), _SUSE_FEATURES, "opensuse 16.0"),
     # PREBUILT_DISTRO carries no version for rolling releases (trailing
     # space is the shipped format).
     Distro.OPENSUSE_TUMBLEWEED: _opensuse(
-        "opensuse/tumbleweed", _TUMBLEWEED_EXTRA, _TUMBLEWEED_FEATURES, "opensuse "
+        "opensuse/tumbleweed", _TUMBLEWEED_EXTRA, _SUSE_FEATURES, "opensuse "
     ),
     Distro.ORACLELINUX_8: _oraclelinux(
         "oraclelinux:8",

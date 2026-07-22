@@ -94,6 +94,10 @@ class EnvSpec:
     # Extra install flags, e.g. --allowerasing where curl-minimal conflicts
     # with the real curl (EL9+ and Amazon Linux base images).
     install_flags: tuple[str, ...] = ()
+    # Shell run after the dependency install (unlike setup, which runs
+    # before it): steps that need the installed tools, e.g. the pinned
+    # CMake download (curl/tar/gzip are deps on several base images).
+    post: str = ""
     # Environment variables applied after the default PATH — a spec may
     # override PATH itself (centos7: devtoolset-11 + pinned cmake).
     env: tuple[tuple[str, str], ...] = ()
@@ -193,7 +197,12 @@ def base_env(spec: EnvSpec, platform: str) -> dagger.Container:
     for cmd in spec.setup:
         ctr = ctr.with_exec(list(cmd))
 
-    return ctr.with_exec(_install_cmd(spec))
+    ctr = ctr.with_exec(_install_cmd(spec))
+
+    if spec.post:
+        ctr = ctr.with_exec(["sh", "-c", spec.post])
+
+    return ctr
 
 
 def bootstrap(spec: EnvSpec, platform: str) -> dagger.Container:

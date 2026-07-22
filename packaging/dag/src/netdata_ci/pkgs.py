@@ -1,10 +1,10 @@
 """Native DEB/RPM packaging of the Netdata agent.
 
-The mechanics of producing native packages: the cpack profile and DEB
-build, the interim spec-driven RPM build (SOW D11=C, replaced when CPack
-RPM support lands), and the clean-image install test. All per-distro
-knowledge (environments, features, install commands, rpm layout) comes
-from the definitions in distros.py.
+The mechanics of producing native packages — one cpack-driven flow for
+both formats — and the clean-image install test. All per-distro knowledge
+(environments, features, install commands) comes from the definitions in
+distros.py; the format-specific package composition lives in the build
+system (packaging/cmake/Modules/Packaging.cmake).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from dataclasses import replace
 import dagger
 from dagger import dag
 
-from .distros import SPECS, DebPackaging, Distro, RpmLayout, RpmPackaging, RpmProtobuf
+from .distros import SPECS, DebPackaging, Distro, RpmPackaging, RpmProtobuf
 from .envs import bootstrap, compiler_launcher_args, has_ccache, with_build_caches
 
 SRC_DIR = "/netdata"
@@ -58,6 +58,8 @@ def packaging_configure_args(distro: Distro, platform: str, build_type: str = "D
     amd64 = platform == "linux/amd64"
     bits64 = platform in _64BIT_PLATFORMS
     feats = pkg.features
+    rpm = pkg if isinstance(pkg, RpmPackaging) else None
+    legacy = rpm is not None and rpm.legacy
 
     args = [
         "cmake",
@@ -71,6 +73,10 @@ def packaging_configure_args(distro: Distro, platform: str, build_type: str = "D
         f"-DCMAKE_BUILD_TYPE={build_type}",
         "-DCMAKE_INSTALL_PREFIX=/",
         "-DBUILD_FOR_PACKAGING=On",
+        # Drives the format-specific payload staging (top-level
+        # CMakeLists.txt) and the per-distro CPack RPM configuration
+        # (Packaging.cmake).
+        f"-DNETDATA_PACKAGING_FORMAT={'rpm' if rpm else 'deb'}",
         _flag("DASHBOARD", True),
         _flag("DBENGINE", True),
         _flag("ML", True),
@@ -87,13 +93,15 @@ def packaging_configure_args(distro: Distro, platform: str, build_type: str = "D
         _flag("PLUGIN_PERF", True),
         _flag("PLUGIN_SLABINFO", True),
         _flag("PLUGIN_SYSTEMD_JOURNAL", True),
-        _flag("PLUGIN_SYSTEMD_UNITS", True),
-        _flag("PLUGIN_CUPS", True),
         _flag("EXPORTER_PROMETHEUS_REMOTE_WRITE", True),
         _flag("BUNDLED_JSONC", False),
         _flag("BUNDLED_YAML", False),
         _flag("LIBBACKTRACE", True),
         _flag("SENTRY", False),
+        # Legacy tier: CUPS and systemd are too old (the spec's
+        # centos_ver == 7 conditionals, mirrored by build-package.sh).
+        _flag("PLUGIN_CUPS", not legacy),
+        _flag("PLUGIN_SYSTEMD_UNITS", not legacy),
         # Distro/arch-dependent features, resolved explicitly.
         _flag("PLUGIN_FREEIPMI", feats.freeipmi),
         _flag("PLUGIN_NFACCT", feats.nfacct),
@@ -101,171 +109,55 @@ def packaging_configure_args(distro: Distro, platform: str, build_type: str = "D
         _flag("PLUGIN_XENSTAT", feats.xenstat and bits64),
         _flag("EXPORTER_MONGODB", feats.mongodb),
         _flag("PLUGIN_EBPF", amd64),
-        _flag("PLUGIN_IBM", amd64 and isinstance(pkg, DebPackaging)),
+        _flag("PLUGIN_IBM", amd64 and not legacy),
     ]
+
+    if legacy:
+        # C++17 and modern libbpf do not compile against the legacy
+        # toolchain and kernel headers. FORCE_LEGACY_LIBBPF is a
+        # dependent option; it is ignored where eBPF is off.
+        args += ["-DUSE_CXX_11=On", "-DFORCE_LEGACY_LIBBPF=On"]
 
     # Each RPM entry declares its protobuf resolution (RPM distros ship no
     # static protobuf); the debian-family -dev packages ship libprotobuf.a,
     # so system protobuf needs no hint there.
-    if isinstance(pkg, RpmPackaging) and pkg.protobuf is RpmProtobuf.BUNDLED:
+    if rpm is not None and rpm.protobuf is RpmProtobuf.BUNDLED:
         args.append(_flag("BUNDLED_PROTOBUF", True))
     else:
         args.append(_flag("BUNDLED_PROTOBUF", False))
-        if isinstance(pkg, RpmPackaging):
+        if rpm is not None:
             args.append("-DProtobuf_LIBRARY=/usr/lib64/libprotobuf.so")
 
     return args
-
-
-# %setup replacement blocks: build from the local SOURCES tree instead of a
-# tarball. RpmLayout.MODERN rpm expects the build tree under
-# BUILD/<name>-<version>-build; CLASSIC rpm builds directly in BUILD.
-_SETUP_MODERN = (
-    "cd %{_topdir}\n rm -rf BUILD\n mkdir -p BUILD\n"
-    " cp -rf %{_topdir}/SOURCES/netdata-%{version} BUILD/netdata-%{version}-build"
-)
-_SETUP_CLASSIC = (
-    "cd %{_topdir}\n rm -rf BUILD\n mkdir -p BUILD\n"
-    " cp -rfT %{_topdir}/SOURCES/netdata-%{version} BUILD"
-)
-
-
-def prepare_spec(spec_text: str, layout: RpmLayout, pkg_version: str) -> str:
-    """Adapt netdata.spec.in to build from local sources at pkg_version."""
-    out: list[str] = []
-    for line in spec_text.splitlines():
-        if line.startswith("Source0"):
-            out.append("")
-        elif line.startswith("%setup"):
-            out.append(_SETUP_MODERN if layout is RpmLayout.MODERN else _SETUP_CLASSIC)
-        else:
-            out.append(line)
-    text = "\n".join(out) + "\n"
-    if layout is RpmLayout.CLASSIC:
-        text = text.replace("${RPM_BUILD_DIR}/%{name}-%{version}", "${RPM_BUILD_DIR}")
-    return text.replace("@PACKAGE_VERSION@", pkg_version)
 
 
 def _install_type_stamp(kind: str, arch: str, prebuilt_distro: str) -> str:
     return f"INSTALL_TYPE='{kind}'\nPREBUILT_ARCH='{arch}'\nPREBUILT_DISTRO='{prebuilt_distro}'\n"
 
 
-def _package_deb(
-    distro: Distro,
-    pkg: DebPackaging,
-    platform: str,
-    source: dagger.Directory,
-    parallel: str,
-    build_type: str,
-) -> dagger.Directory:
-    rpm_arch, goarch = _PLATFORM_ARCH[platform]
-    # Embed the distro id in the artifact name, as the repos require.
-    collect = (
-        'set -e; . /etc/os-release; distid="${ID}${VERSION_ID}"; mkdir -p /artifacts; '
-        f"for p in {BUILD_DIR}/packages/*.deb {BUILD_DIR}/packages/*.ddeb; do "
-        '[ -e "$p" ] || continue; '
-        'ext="${p##*.}"; base="$(basename "$p" ".$ext")"; '
-        'name="$(echo "$base" | cut -f 1 -d _)"; ver="$(echo "$base" | cut -f 2 -d _)"; '
-        'arch="$(echo "$base" | cut -f 3 -d _)"; '
-        'mv "$p" "/artifacts/${name}_${ver}+${distid}_${arch}.${ext}"; done'
-    )
-    key = f"pkg-{distro.value}-{platform.replace('/', '-')}"
-    ctr = (
-        with_build_caches(pkg_env(distro, platform), key)
-        .with_directory(SRC_DIR, source)
-        .with_workdir(SRC_DIR)
-        .with_env_variable("DISABLE_TELEMETRY", "1")
-        .with_env_variable("GOOS", "linux")
-        .with_env_variable("GOARCH", goarch)
-        .with_new_file(
-            f"{SRC_DIR}/system/.install-type",
-            _install_type_stamp("binpkg-deb", rpm_arch, pkg.prebuilt_distro),
-        )
-        .with_exec(packaging_configure_args(distro, platform, build_type))
-        .with_exec(["sh", "-c", f"cmake --build {BUILD_DIR} --parallel {parallel}"])
-        .with_workdir(BUILD_DIR)
-        .with_exec(["cpack", "-V", "-G", "DEB"])
-        .with_exec(["sh", "-c", collect])
-    )
-    return ctr.directory("/artifacts")
+# CI-speed override for rpmbuild's payload compression: distro defaults
+# (zstd -19 on fedora) spend minutes single-threaded on the ~1.6 GB
+# unstripped Debug payload. gzip -1 compresses it in seconds and every
+# target rpm can read and write it (EL7/AL2's rpm 4.11 has no zstd, and
+# the zstd threading flag needs rpm >= 4.16). Header metadata is
+# unaffected; shipping builds keep their distro defaults.
+_RPM_FAST_PAYLOAD = "%_binary_payload w1.gzdio\n"
+
+# The repos require the distro id embedded in DEB artifact names; RPM names
+# are already final (RPM-DEFAULT naming carries the %{dist} tag).
+_COLLECT_DEB = (
+    'set -e; . /etc/os-release; distid="${ID}${VERSION_ID}"; mkdir -p /artifacts; '
+    f"for p in {BUILD_DIR}/packages/*.deb {BUILD_DIR}/packages/*.ddeb; do "
+    '[ -e "$p" ] || continue; '
+    'ext="${p##*.}"; base="$(basename "$p" ".$ext")"; '
+    'name="$(echo "$base" | cut -f 1 -d _)"; ver="$(echo "$base" | cut -f 2 -d _)"; '
+    'arch="$(echo "$base" | cut -f 3 -d _)"; '
+    'mv "$p" "/artifacts/${name}_${ver}+${distid}_${arch}.${ext}"; done'
+)
+_COLLECT_RPM = f"set -e; mkdir -p /artifacts; cp {BUILD_DIR}/packages/*.rpm /artifacts/"
 
 
-async def _package_rpm(
-    distro: Distro,
-    pkg: RpmPackaging,
-    platform: str,
-    source: dagger.Directory,
-) -> dagger.Directory:
-    """Spec-driven rpmbuild, matching the artifacts CI publishes today.
-
-    Interim path per SOW decision D11=C: replaced by CPack RPM support in
-    Packaging.cmake when that follow-up lands.
-    """
-    rpm_arch, goarch = _PLATFORM_ARCH[platform]
-    topdir = pkg.topdir
-
-    raw_version = await source.file("packaging/version").contents()
-    pkg_version = raw_version.strip().lstrip("v").replace("-", ".")
-    spec = prepare_spec(await source.file("netdata.spec.in").contents(), pkg.layout, pkg_version)
-
-    src_path = f"{topdir}/SOURCES/netdata-{pkg_version}"
-    rpmbuild_dirs = " ".join(
-        f"{topdir}/{s}" for s in ("BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS")
-    )
-
-    key = f"pkg-{distro.value}-{platform.replace('/', '-')}"
-    ctr = (
-        with_build_caches(pkg_env(distro, platform), key)
-        .with_env_variable("DISABLE_TELEMETRY", "1")
-        .with_env_variable("GOOS", "linux")
-        .with_env_variable("GOARCH", goarch)
-        .with_exec(["sh", "-c", f"mkdir -p {rpmbuild_dirs}"])
-        .with_directory(src_path, source)
-        .with_new_file(
-            f"{src_path}/system/.install-type",
-            _install_type_stamp("binpkg-rpm", rpm_arch, pkg.prebuilt_distro),
-        )
-        .with_new_file(f"{topdir}/SPECS/netdata.spec", spec)
-        .with_exec(
-            [
-                "rpmbuild",
-                "--nobuild",
-                "--define",
-                "_upstream_go_toolchain 1",
-                "--define",
-                f"_topdir {topdir}/SOURCES",
-                "--define",
-                f"_sourcedir {topdir}/SOURCES",
-                "--define",
-                "source_date_epoch_from_changelog false",
-                "--undefine",
-                "_disable_source_fetch",
-                f"{topdir}/SPECS/netdata.spec",
-            ]
-        )
-        .with_exec(
-            [
-                "rpmbuild",
-                "-bb",
-                "--define",
-                "_upstream_go_toolchain 1",
-                "--rebuild",
-                f"{topdir}/SPECS/netdata.spec",
-            ]
-        )
-        .with_exec(
-            [
-                "sh",
-                "-c",
-                f"mkdir -p /artifacts && find {topdir}/RPMS -type f -name '*.rpm'"
-                " -exec cp {} /artifacts/ \\;",
-            ]
-        )
-    )
-    return ctr.directory("/artifacts")
-
-
-async def package(
+def package(
     distro: Distro,
     platform: str,
     source: dagger.Directory,
@@ -278,11 +170,33 @@ async def package(
 
     match pkg:
         case DebPackaging():
-            return _package_deb(distro, pkg, platform, source, parallel, build_type)
+            generator, kind, collect = "DEB", "binpkg-deb", _COLLECT_DEB
         case RpmPackaging():
-            # The spec drives its own cmake invocation; build_type does not
-            # apply until CPack RPM support replaces the spec path (SOW D11).
-            return await _package_rpm(distro, pkg, platform, source)
+            generator, kind, collect = "RPM", "binpkg-rpm", _COLLECT_RPM
+
+    rpm_arch, goarch = _PLATFORM_ARCH[platform]
+    key = f"pkg-{distro.value}-{platform.replace('/', '-')}"
+    ctr = (
+        with_build_caches(pkg_env(distro, platform), key)
+        .with_directory(SRC_DIR, source)
+        .with_workdir(SRC_DIR)
+        .with_env_variable("DISABLE_TELEMETRY", "1")
+        .with_env_variable("GOOS", "linux")
+        .with_env_variable("GOARCH", goarch)
+        .with_new_file(
+            f"{SRC_DIR}/system/.install-type",
+            _install_type_stamp(kind, rpm_arch, pkg.prebuilt_distro),
+        )
+        .with_exec(packaging_configure_args(distro, platform, build_type))
+        .with_exec(["sh", "-c", f"cmake --build {BUILD_DIR} --parallel {parallel}"])
+        .with_workdir(BUILD_DIR)
+    )
+    if isinstance(pkg, RpmPackaging):
+        # Placed after the build step so editing the macro never
+        # invalidates the cached build layers.
+        ctr = ctr.with_new_file("/etc/rpm/macros", _RPM_FAST_PAYLOAD)
+    ctr = ctr.with_exec(["cpack", "-V", "-G", generator]).with_exec(["sh", "-c", collect])
+    return ctr.directory("/artifacts")
 
 
 # Start the agent, wait for the API, and report version + basic health.

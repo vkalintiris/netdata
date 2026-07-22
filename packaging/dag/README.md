@@ -90,7 +90,7 @@ already ran returns instantly for you.
 | `distros.py` | the Distro enum and each distro's complete definition (envs, packaging, features) |
 | `envs.py`    | environment mechanics: bootstrap sequence, package managers, Go/Rust pins, caches |
 | `build.py`   | source-build CMake profile and build/install steps |
-| `pkgs.py`    | DEB (cpack) and RPM (spec) build mechanics, install tests |
+| `pkgs.py`    | DEB/RPM (cpack) build mechanics, install tests |
 | `static.py`  | static builder env, bundled-dep builds, makeself archive |
 | `docker.py`  | both stages of the official container image |
 | `tests.py`   | Go and C test jobs |
