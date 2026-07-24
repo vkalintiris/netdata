@@ -16,7 +16,7 @@ from dagger import dag
 
 from .distros import SPECS, DebPackaging, Distro, RpmPackaging, RpmProtobuf
 from .envs import bootstrap, compiler_launcher_args, has_ccache, with_build_caches
-from .stock import STOCK_MOUNT
+from .stock import STOCK_MOUNT, stock_check_script
 from .stock import topology_stock as build_topology_stock
 
 SRC_DIR = "/netdata"
@@ -191,7 +191,7 @@ def package(
             generator, kind, collect = "RPM", "binpkg-rpm", _COLLECT_RPM
 
     if topology_stock is None:
-        topology_stock = build_topology_stock(source, platform)
+        topology_stock = build_topology_stock(source)
 
     rpm_arch, goarch = _PLATFORM_ARCH[platform]
     key = f"pkg-{distro.value}-{platform.replace('/', '-')}"
@@ -218,15 +218,6 @@ def package(
     ctr = ctr.with_exec(["cpack", "-V", "-G", generator]).with_exec(["sh", "-c", collect])
     return ctr.directory("/artifacts")
 
-
-# The stock payload ships in the plugin-netflow package; booting alone
-# does not prove the component composition, so assert the files landed.
-_STOCK_CHECK = (
-    "for f in README.md topology-ip-asn.mmdb topology-ip-geo.mmdb topology-ip-intel.json; do "
-    '[ -s "/usr/share/netdata/topology-ip-intel/$f" ] '
-    '|| { echo "missing stock payload file: $f"; exit 1; }; done '
-    '&& echo "stock-payload-ok"'
-)
 
 # Start the agent, wait for the API, and report version + basic health.
 _RUNTIME_CHECK = r"""
@@ -267,6 +258,6 @@ def test_package(
     return (
         ctr.with_directory("/artifacts", artifacts)
         .with_exec(["sh", "-c", pkg.test_install])
-        .with_exec(["sh", "-c", _STOCK_CHECK])
+        .with_exec(["sh", "-c", stock_check_script()])
         .with_exec(["sh", "-c", _RUNTIME_CHECK])
     )

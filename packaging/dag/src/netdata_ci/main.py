@@ -148,18 +148,15 @@ class NetdataCi:
         return await static_mod.static_build(source, arch, jobs, build_type, topology_stock)
 
     @function
-    def topology_stock(
-        self,
-        source: NetdataSource,
-        platform: str = "linux/amd64",
-    ) -> dagger.Directory:
+    def topology_stock(self, source: NetdataSource) -> dagger.Directory:
         """Synthetic topology IP-intel stock payload (CI pull-request parity).
 
         The four-file payload package/static stage by default; exposed for
-        inspection and export. Release-grade payloads are staged externally
-        and passed to package/static via --topology-stock.
+        inspection and export. Arch-independent data, built once on a fixed
+        platform. Release-grade payloads are staged externally and passed
+        to package/static via --topology-stock.
         """
-        return stock_mod.topology_stock(source, platform)
+        return stock_mod.topology_stock(source)
 
     @function
     def docker_image(

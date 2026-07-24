@@ -23,7 +23,7 @@ import dagger
 from dagger import dag
 
 from .envs import EnvSpec, PkgMgr, RustSource, bootstrap, with_build_caches
-from .stock import STOCK_MOUNT
+from .stock import STOCK_MOUNT, stock_check_script
 from .stock import topology_stock as build_topology_stock
 
 ALPINE_IMAGE = "alpine:3.23"
@@ -429,18 +429,6 @@ export PATH="{NP}/bin:${{PATH}}"
 exec "{NP}/bin/srv/netdata" "${{@}}"
 """
 
-# The stock payload installs via the netflow section; assert the four
-# files landed rather than trusting the boot check (which never reads
-# them).
-_STOCK_CHECK = f"""
-set -e
-cd {NP}/usr/share/netdata/topology-ip-intel
-for f in README.md topology-ip-asn.mmdb topology-ip-geo.mmdb topology-ip-intel.json; do
-  [ -s "$f" ] || {{ echo "missing stock payload file: $f"; exit 1; }}
-done
-echo "stock-payload-ok"
-"""
-
 # INTERP present means dynamically linked: the whole point is a static agent.
 _STATIC_CHECK = f"""
 set -e
@@ -493,7 +481,7 @@ async def static_build(
     if not netflow and topology_stock is not None:
         raise ValueError(f"{a.arch} builds without netflow; topology_stock does not apply")
     if netflow and topology_stock is None:
-        topology_stock = build_topology_stock(source, a.platform)
+        topology_stock = build_topology_stock(source)
 
     version = (await source.file("packaging/version").contents()).strip()
     lsm = (await source.file("packaging/makeself/makeself.lsm").contents()).replace(
@@ -598,7 +586,7 @@ async def static_build(
         )
         .with_new_file(f"{NP}/bin/netdata", _NETDATA_WRAPPER, permissions=0o755)
         .with_exec(["sh", "-c", _STATIC_CHECK])
-        .with_exec(["sh", "-c", _STOCK_CHECK if topology_stock is not None else "true"])
+        .with_exec(["sh", "-c", stock_check_script(NP) if topology_stock is not None else "true"])
         .with_exec(["sh", "-c", _RUNTIME_CHECK])
         .with_exec(
             [

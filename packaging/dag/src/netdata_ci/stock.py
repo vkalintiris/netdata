@@ -4,9 +4,11 @@ Natively reproduces the synthetic branch of
 .github/scripts/prepare-topology-ip-intel-stock.sh: three vendored CSV
 rows fed to the repo's topology-ip-intel-downloader produce the four-file
 payload that CMake installs into the plugin-netflow component under
-usr/share/netdata/topology-ip-intel. The build is offline and
-deterministic, so it content-caches once and serves every package and
-static target (the payload is arch-independent data).
+usr/share/netdata/topology-ip-intel. The data sources are local fixtures
+(no upstream fetch); the Go toolchain still resolves modules from the
+proxy on a cold go-mod-cache. The payload is arch-independent data, so it
+builds once on one platform and the cached result serves every package
+and static target.
 
 Release-grade payloads (real DB-IP lite databases) deliberately stay OUT
 of this module: the downloader resolves the current month's artifact URL
@@ -61,7 +63,14 @@ sources:
 """
 
 
-def topology_stock(source: dagger.Directory, platform: str) -> dagger.Directory:
+# The payload is pure data (mmdb/json/README), so it is always built on
+# one fixed platform: one build, one cache entry, no QEMU for arm
+# targets — and no dependency on the base image publishing every
+# consumer's architecture (debian ships no arm/v6 variant).
+_BUILD_PLATFORM = "linux/amd64"
+
+
+def topology_stock(source: dagger.Directory) -> dagger.Directory:
     """Build the synthetic topology IP-intel stock payload.
 
     Runs the repo's downloader tool against the vendored CSV fixtures in a
@@ -69,7 +78,7 @@ def topology_stock(source: dagger.Directory, platform: str) -> dagger.Directory:
     outside the Go tree never invalidate the cached payload.
     """
     ctr = (
-        dag.container(platform=dagger.Platform(platform))
+        dag.container(platform=dagger.Platform(_BUILD_PLATFORM))
         .from_("debian:bookworm-slim")
         .with_env_variable("PATH", STD_PATH)
         .with_env_variable("DEBIAN_FRONTEND", "noninteractive")
@@ -83,7 +92,7 @@ def topology_stock(source: dagger.Directory, platform: str) -> dagger.Directory:
         )
     )
     ctr = (
-        install_go(ctr, platform)
+        install_go(ctr, _BUILD_PLATFORM)
         .with_mounted_cache("/go-build-cache", dag.cache_volume("go-build-cache"))
         .with_env_variable("GOCACHE", "/go-build-cache")
         .with_mounted_cache("/go-mod-cache", dag.cache_volume("go-mod-cache"))
@@ -111,3 +120,20 @@ def topology_stock(source: dagger.Directory, platform: str) -> dagger.Directory:
         )
     )
     return ctr.directory("/stock")
+
+
+def stock_check_script(install_prefix: str = "") -> str:
+    """Shell assertion that the four payload files landed in an install.
+
+    Booting the agent never reads the payload, so the install tests assert
+    the component composition explicitly. `install_prefix` is "" for
+    native packages (prefix /) and the static NP prefix for installers.
+    """
+    d = f"{install_prefix}/usr/share/netdata/topology-ip-intel"
+    return (
+        "set -e; "
+        "for f in README.md topology-ip-asn.mmdb topology-ip-geo.mmdb topology-ip-intel.json; "
+        f'do [ -s "{d}/$f" ] '
+        '|| { echo "missing stock payload file: $f"; exit 1; }; done; '
+        'echo "stock-payload-ok"'
+    )
