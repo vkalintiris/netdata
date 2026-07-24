@@ -51,6 +51,9 @@ static inline size_t svc_rrdset_archive_obsolete_dimensions(RRDSET *st, bool all
     size_t dim_candidates = 0;
     size_t dim_archives = 0;
 
+    // TEMP DIAGNOSTIC (oom investigation): count why obsolete dims are skipped
+    static size_t diag_skip_young = 0, diag_skip_refs = 0, diag_skip_flag = 0, diag_ok = 0, diag_pass = 0;
+
     dfe_start_write(st->rrddim_root_index, rd) {
         bool candidate = (all_dimensions || rrddim_flag_check(rd, RRDDIM_FLAG_OBSOLETE));
 
@@ -60,13 +63,25 @@ static inline size_t svc_rrdset_archive_obsolete_dimensions(RRDSET *st, bool all
             if(rd->collector.last_collected_time.tv_sec + rrdset_free_obsolete_time_s < now) {
                 size_t references = dictionary_acquired_item_references(rd_dfe.item);
                 if(references == 1) {
-                    if(svc_rrddim_obsolete_to_archive(rd))
+                    if(svc_rrddim_obsolete_to_archive(rd)) {
                         dim_archives++;
+                        diag_ok++;
+                    }
+                    else
+                        diag_skip_flag++;
                 }
+                else
+                    diag_skip_refs++;
             }
+            else
+                diag_skip_young++;
         }
     }
     dfe_done(rd);
+
+    if((++diag_pass % 200) == 0)
+        fprintf(stderr, "SVC_DIAG: pass %zu totals: archived=%zu skip_young=%zu skip_refs=%zu skip_dimflag=%zu\n",
+                diag_pass, diag_ok, diag_skip_young, diag_skip_refs, diag_skip_flag);
 
     if(dim_archives != dim_candidates)
         rrdset_flag_set(st, RRDSET_FLAG_OBSOLETE_DIMENSIONS);

@@ -6,6 +6,36 @@
 static Pvoid_t rrddim_Judy_array = NULL;
 static netdata_rwlock_t rrddim_Judy_rwlock;
 
+// TEMP DIAGNOSTIC (oom investigation): track acquire/release call sites of
+// ram-engine metric handles to find who retains them after rrddim_free().
+// Remove before any commit.
+static struct smh_diag_site { void *ra; size_t acquires; size_t releases; } smh_diag_sites[64];
+static SPINLOCK smh_diag_lock = SPINLOCK_INITIALIZER;
+static size_t smh_diag_survivals = 0;
+
+static void smh_diag_track(void *ra, bool acquire) {
+    spinlock_lock(&smh_diag_lock);
+    for(size_t i = 0; i < 64; i++) {
+        if(smh_diag_sites[i].ra == ra || smh_diag_sites[i].ra == NULL) {
+            smh_diag_sites[i].ra = ra;
+            if(acquire) smh_diag_sites[i].acquires++;
+            else smh_diag_sites[i].releases++;
+            break;
+        }
+    }
+    spinlock_unlock(&smh_diag_lock);
+}
+
+static void smh_diag_dump(REFCOUNT surviving_refcount) {
+    spinlock_lock(&smh_diag_lock);
+    fprintf(stderr, "SMH_DIAG: handle survived rrddim_free with refcount %d (survival #%zu)\n",
+            surviving_refcount, smh_diag_survivals);
+    for(size_t i = 0; i < 64 && smh_diag_sites[i].ra; i++)
+        fprintf(stderr, "SMH_DIAG:   site %p acquires=%zu releases=%zu\n",
+                smh_diag_sites[i].ra, smh_diag_sites[i].acquires, smh_diag_sites[i].releases);
+    spinlock_unlock(&smh_diag_lock);
+}
+
 static void __attribute__((constructor)) init_lock(void) {
     netdata_rwlock_init(&rrddim_Judy_rwlock);
 }
@@ -269,6 +299,9 @@ STORAGE_METRIC_HANDLE *rrddim_metric_get_by_id(STORAGE_INSTANCE *si __maybe_unus
     }
     netdata_rwlock_rdunlock(&rrddim_Judy_rwlock);
 
+    if(mh) // TEMP DIAGNOSTIC (oom investigation)
+        smh_diag_track(__builtin_return_address(0), true);
+
     return (STORAGE_METRIC_HANDLE *)mh;
 }
 
@@ -285,12 +318,14 @@ STORAGE_METRIC_HANDLE *rrddim_metric_dup(STORAGE_METRIC_HANDLE *smh) {
     if(!refcount_acquire(&mh->refcount))
         fatal("DB_RAM_ALLOC: cannot acquire an already acquired refcount");
 
+    smh_diag_track(__builtin_return_address(0), true);
     return smh;
 }
 
 void rrddim_metric_release(STORAGE_METRIC_HANDLE *smh) {
     struct mem_metric_handle *mh = (struct mem_metric_handle *)smh;
 
+    smh_diag_track(__builtin_return_address(0), false);
     if(refcount_release_and_acquire_for_deletion(&mh->refcount))
         rrddim_metric_free_handle(mh);
 }
@@ -319,6 +354,12 @@ bool rrddim_metric_release_from_rrddim(STORAGE_METRIC_HANDLE *smh, RRDDIM *rd) {
 
     if(refcount_release_and_acquire_for_deletion(&mh->refcount))
         rrddim_metric_free_handle(mh);
+    else {
+        // TEMP DIAGNOSTIC (oom investigation)
+        size_t n = __atomic_add_fetch(&smh_diag_survivals, 1, __ATOMIC_RELAXED);
+        if(n <= 5 || (n % 100) == 0)
+            smh_diag_dump(refcount_references(&mh->refcount));
+    }
 
     return data_transferred;
 }
