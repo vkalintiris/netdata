@@ -134,6 +134,11 @@ class StaticArch:
     go_env: tuple[tuple[str, str], ...]
     arm32: bool = False
 
+    @property
+    def full(self) -> bool:
+        """Full feature set: armv6l drops journal/otel/netflow."""
+        return not self.arm32 or self.arch == "armv7l"
+
 
 STATIC_ARCHS: dict[str, StaticArch] = {
     "x86_64": StaticArch(
@@ -368,7 +373,7 @@ def static_configure_args(
 ) -> list[str]:
     """Effective CMake config of the static build (installer-derived)."""
     x86 = a.arch == "x86_64"
-    full = not a.arm32 or a.arch == "armv7l"  # armv6l drops journal/otel/netflow
+    full = a.full
     journal = a.arch != "armv6l"
     stock = [f"-DNETDATA_TOPOLOGY_IP_INTEL_STOCK_DIR={stock_dir}"] if stock_dir else []
     return [
@@ -477,7 +482,7 @@ async def static_build(
 
     # The payload installs inside the netflow section of CMakeLists.txt;
     # armv6l disables netflow, so a payload there would be dead input.
-    netflow = not a.arm32 or a.arch == "armv7l"
+    netflow = a.full
     if not netflow and topology_stock is not None:
         raise ValueError(f"{a.arch} builds without netflow; topology_stock does not apply")
     if netflow and topology_stock is None:
