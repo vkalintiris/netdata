@@ -1,0 +1,2313 @@
+ ▐▛███▜▌   Claude Code v2.1.218
+▝▜█████▛▘  Fable 5 · Claude Team
+  ▘▘ ▝▝    ~/repos/nd/oom
+
+
+❯ Our DevOps engineer complains that a recent change (this or last week) caused 
+  children agents to throw OOMs (~/repos/nd/infra). I'm curious if you can      
+  reproduce this somehow. If you check your MCP tools, you'll see you can       
+  configure/build/run an agent. Maybe you can reproduce/recreate a high-memory  
+  consumption scenario by creating many charts/dimensions? I don't know. I can  
+  help you if you need me to run any command (to assist you in finding where    
+  the issue is). Note that this is a dev env, meaning I have a lot of tools     
+  (heaptrack, sanitizers, valgrind, perf, etc).                                 
+
+● I'll start by scanning the last two weeks of commits for changes that could
+  plausibly affect child-agent memory (streaming, dbengine, RRD, buffers), then
+  set up a parent+child reproduction with the build MCP tools.
+
+● Bash(git log --since="2026-07-08" --oneline | head -100)
+  ⎿  92c1988f95 docs: Document stock config install path in log2journal REA
+     DME (#23160)
+     43fa76c11a [ci skip] Update changelog and version for nightly build: v
+     … +97 lines (ctrl+o to expand)
+
+● Bash(git log --since="2026-07-06" --oneline -- src/streaming src/database
+      src/daemon | head -60)
+  ⎿  c9d2ba9bbf Netdata fixes part 87 (#23226)
+     ad3b3174ad Add regression tests for function access verification in MC
+     P (#23225)
+     … +57 lines (ctrl+o to expand)
+
+● Bash(git log --since="2026-07-06" --stat --oneline -- src/streaming | head
+      -120)
+  ⎿  c9d2ba9bbf Netdata fixes part 87 (#23226)
+      src/streaming/stream-replication-receiver.c        |   3 +-
+      src/streaming/stream-sender-execute.c              |   8 +-
+     … +80 lines (ctrl+o to expand)
+
+● Bash(git log --since="2026-07-06" --format="%h %cd %s" --date=short --
+      src/streaming/stream-circular-buffer.c
+      src/streaming/stream-sender-commit.c src/streaming/stre…)
+  ⎿  c9d2ba9bbf 2026-07-24 Netdata fixes part 87 (#23226)
+     4acf89d084 2026-07-22 Netdata fixes part 80 (#23155)
+     ac0d129cfa 2026-07-22 Netdata fixes part 71 (#23142)
+     … +7 lines (ctrl+o to expand)
+
+● Bash(git show 422d2cbd92 -- src/streaming/stream-circular-buffer.c; git show
+      ca10d863f6 -- src/streaming/stream-circular-buffer.c; git show 4acf89d084
+      -- src/streami…)
+  ⎿  commit 422d2cbd929642659940ac0625f605b3a15bfc97
+     Author: Stelios Fragkakis <52996999+stelfrag@users.noreply.github.com>
+     Date:   Sun Jul 19 10:03:23 2026 +0300
+     … +426 lines (ctrl+o to expand)
+
+● Bash(git diff 82c33426a4~1..c9d2ba9bbf --stat --
+      src/streaming/stream-circular-buffer.c
+      src/streaming/stream-circular-buffer.h && git diff
+      82c33426a4~1..c9d2ba9bbf -…)
+  ⎿   src/streaming/stream-circular-buffer.c | 17 +++++++++++++----
+      1 file changed, 13 insertions(+), 4 deletions(-)
+     diff --git a/src/streaming/stream-circular-buffer.c b/src/streaming/st
+     … +41 lines (ctrl+o to expand)
+
+  Searched for 1 pattern, listed 1 directory (ctrl+o to expand)
+
+● Bash(sed -n 1,120p
+      /home/vk/repos/nd/infra/aws/org/us-east-1/staging/netdata/terragrunt.hcl)
+  ⎿  # --------------------------------------------------------------------
+     -------------------------------------------------
+     # TERRAGRUNT CONFIGURATION
+     … +107 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(sed -n 48,100p
+      /home/vk/repos/nd/infra/aws/org/us-east-1/staging/netdata/latest.tpl)
+  ⎿      netdata:
+           data: |
+             [global]
+     … +50 lines (ctrl+o to expand)
+  Called netdata-build 3 times (ctrl+o to expand)
+
+● Bash(git show c9d2ba9bbf --stat | head -40)
+  ⎿  commit c9d2ba9bbf5c18ff731e7de626583cad18360588
+     Author: Stelios Fragkakis <52996999+stelfrag@users.noreply.github.com>
+     Date:   Fri Jul 24 00:26:24 2026 +0300
+     … +36 lines (ctrl+o to expand)
+
+● Bash(git log --since="2026-07-06" --format="%h %cd %s" --date=short --
+      src/libnetdata | head -40; echo ===; git log --since="2026-07-06"
+      --format="%h %cd %s" --date=…)
+  ⎿  4398653460 2026-07-23 Netdata fixes part 83 (#23171)
+     1c96354fac 2026-07-22 Validate NETDATA_HOST_PREFIX in local_listeners
+     (#22923)
+     … +48 lines (ctrl+o to expand)
+
+  Made 1 scratchpad edit +34, read 1 file, listed 1 directory, called netdata-build 2 times (ctrl+o to expand)
+
+● The runner generates a stock per-agent config I can extend. Waiting for the
+  parent to come up:
+
+  Called netdata-build (ctrl+o to expand)
+
+● Explore(Scan diffs for child-memory regressions)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+  Listed 1 directory, called netdata-build (ctrl+o to expand)
+
+● Bash(cat /home/vk/opt/netdata-mcp/run/k3-master/etc/netdata.conf 2>/dev/null;
+      echo ===; ls /home/vk/opt/netdata-mcp/run/k3-master; echo ===; ps aux |
+      grep -i "netdat…)
+  ⎿  [global]
+         hostname = mcp-k3-master
+         is ephemeral node = yes
+     … +33 lines (ctrl+o to expand)
+
+  Searched for 2 patterns, listed 1 directory (ctrl+o to expand)
+
+● Bash(sed -n 330,420p /home/vk/repos/nd/master/packaging/tools/automation/mcp/n
+      etdata_mcp/runtime.py)
+  ⎿      for section, kv in conf.items():
+             lines.append(f"[{_ini_safe(section)}]")
+             for key, value in kv.items():
+     … +88 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(sed -n 140,200p /home/vk/repos/nd/master/packaging/tools/automation/mcp/n
+      etdata_mcp/run.py)
+  ⎿          honestly instead of always claiming a start:
+
+             - ``"already-running"`` - a live run existed and ``restart`` w
+     … +58 lines (ctrl+o to expand)
+
+  Searched for 1 pattern, called netdata-build 2 times (ctrl+o to expand)
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      mkdir -p $SP/agents/parent/{etc,cache,lib,log} $SP/agents/child/{etc,c…)
+  ⎿  child
+     parent
+     plugins
+
+● Write(/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993ee4
+       095/scratchpad/agents/parent/etc/netdata.conf)
+  ⎿  Wrote 41 lines to
+     ../../../../../tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a4
+     7-a2c8-6a5993ee4095/scratchpad/agents/parent/etc/netdata.conf
+      1 [global]
+      2     hostname = oom-repro-parent
+      3 
+      4 [db]
+      5     mode = dbengine
+      6     update every = 1
+      7     storage tiers = 3
+      8     dbengine multihost disk space MB = 1024
+      9     dbengine tier 1 multihost disk space MB = 512
+     … +38 lines (ctrl+o to expand)
+
+● Write(/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993ee4
+       095/scratchpad/agents/parent/etc/stream.conf)
+  ⎿  Wrote 4 lines to
+     ../../../../../tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a4
+     7-a2c8-6a5993ee4095/scratchpad/agents/parent/etc/stream.conf
+      1 [11111111-2222-3333-4444-555555555555]
+      2     enabled = yes
+      3     default memory mode = dbengine
+      4     health enabled by default = no
+
+● Write(/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993ee4
+       095/scratchpad/agents/child/etc/netdata.conf)
+  ⎿  Wrote 44 lines to
+     ../../../../../tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a4
+     7-a2c8-6a5993ee4095/scratchpad/agents/child/etc/netdata.conf
+      1 [global]
+      2     hostname = oom-repro-child
+      3     timezone = GMT+0
+      4     errors flood protection period = 0
+      5 
+      6 [db]
+      7     mode = ram
+      8     update every = 1
+      9     retention = 7200
+     … +43 lines (ctrl+o to expand)
+
+● Write(/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993ee4
+       095/scratchpad/agents/child/etc/stream.conf)
+  ⎿  Wrote 8 lines to
+     ../../../../../tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a4
+     7-a2c8-6a5993ee4095/scratchpad/agents/child/etc/stream.conf
+      1 [stream]
+      2     enabled = yes
+      3     destination = 127.0.0.1:28999
+      4     api key = 11111111-2222-3333-4444-555555555555
+      5     timeout seconds = 60
+      6     buffer size bytes = 1048576
+      7     reconnect delay seconds = 5
+      8     initial clock resync iterations = 60
+
+● Now launch the parent, then the child, saving PIDs per the process-safety
+  rules:
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      /home/vk/opt/netdata-builds/oom/netdata/usr/sbin/netdata -D -p 28999 -…)
+  ⎿  2170082
+     {
+         "version":"v2.10.0-883-g92c1988f95",
+     … +8 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      SYNTH_CHARTS=2000 SYNTH_DIMS=5 /home/vk/opt/netdata-builds/oom/netdata…)
+  ⎿  2171273
+     v2.10.0-883-g92c1988f95 4e551297-b29f-4bde-8c88-231fa3f6e97b
+
+● Bash(sleep 10; curl -s "http://127.0.0.1:28999/api/v1/info" | python3 -c
+      "import json,sys; d=json.load(sys.stdin); print('parent sees hosts:',
+      d['mirrored_hosts'])"…)
+  ⎿  parent sees hosts: ['oom-repro-parent', 'oom-repro-child']
+     child charts: 2805 dims: 11975
+         PID   RSS CMD
+     … +3 lines (ctrl+o to expand)
+
+  Made 1 scratchpad edit +19 (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      chmod +x $SP/memlog.sh…)
+  ⎿  started
+
+  Searched for 2 patterns, listed 1 directory (ctrl+o to expand)
+
+● Bash(sed -n 60,110p src/database/rrddim.c)
+  ⎿      rd->flags = RRDDIM_FLAG_NONE;
+
+         rd->id = string_strdupz(ctr->id);
+     … +47 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      tail -5 $SP/child-rss-HEAD.csv…)
+  ⎿  ts,main_rss_kb,tree_rss_kb,nprocs
+     1784876015,120864,132996,2
+     1784876030,120892,133024,2
+     … +12 lines (ctrl+o to expand)
+
+● Bash(git log --since="2026-06-25" --format="%h %cd %s" --date=short -S
+      "nd_mmap_advanced" -- src/ | head; echo ===; git log --since="2026-06-25"
+      --format="%h %cd %s"…)
+  ⎿  ===
+     c9030f7fb0 2026-07-07 Netdata fixes part 38 (#22999)
+     ===
+
+● Bash(git show c9030f7fb0 --stat | head; git show c9030f7fb0 --
+      src/libnetdata/os/mmap_advanced.c src/libnetdata/os/ | head -80)
+  ⎿  commit c9030f7fb01a34949cbadd10b8ef428bf47c58d1
+     Author: Stelios Fragkakis <52996999+stelfrag@users.noreply.github.com>
+     Date:   Tue Jul 7 18:57:46 2026 +0300
+     … +116 lines (ctrl+o to expand)
+
+● Bash(sleep 120; tail -8 /tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4
+      a47-a2c8-6a5993ee4095/scratchpad/child-rss-HEAD.csv)
+  ⎿  Error: Blocked: sleep 120 followed by: tail -8 
+     /tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993ee4095
+     /scratchpad/child-rss-HEAD.csv. To wait for a condition, use Monitor with 
+     an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a 
+     command you started, use run_in_background: true. Do not chain shorter 
+     sleeps to work around this block.
+● Monitor(child agent RSS fill progress (HEAD build))
+  ⎿  Monitor started · task bmgdrsvbh · persistent
+
+● Bash(for d in /home/vk/opt/netdata-builds/*/netdata/usr/sbin/netdata; do echo
+      -n "$d : "; $d -W buildinfo 2>/dev/null | grep -m1 "Version" || $d -v
+      2>/dev/null; done…)
+  ⎿  /home/vk/opt/netdata-builds/master/netdata/usr/sbin/netdata :     Netd
+     ata Version ____________________________________________ : v2.10.0-813
+     -g92d3d91b7b
+     … +51 lines (ctrl+o to expand)
+
+● Bash(git log -1 --format="%h %cd %s" --date=short fa8bc7161b 2>/dev/null; git
+      merge-base --is-ancestor fa8bc7161b HEAD && echo "696 is ancestor of HEAD"
+      || echo "696…)
+  ⎿  fa8bc7161b 2026-07-05 ng-flatten: parse JSON-object string log bodies
+     into typed columns
+     696 NOT ancestor (feature branch)
+     … +5 lines (ctrl+o to expand)
+
+● Agent "Scan diffs for child-memory regressions" finished · 7m 51s
+
+● Bash(free -g | head -2; SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f
+      6-4a47-a2c8-6a5993ee4095/scratchpad
+      mkdir -p $SP/agents/child696/{etc,cache,lib,log}…)
+  ⎿                 total        used        free      shared  buff/cache
+      available
+     Mem:              31          21           3           0           6
+     … +4 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      SYNTH_CHARTS=2000 SYNTH_DIMS=5 /home/vk/opt/netdata-builds/sjr-json/ne…)
+  ⎿  launched
+     2186421
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      until curl -sf http://127.0.0.1:29002/api/v1/info >/dev/null 2>&1; do…)
+  ⎿  child696 version: v2.10.0-696-gfa8bc7161b
+     child696 charts: 2534 dims: 13623
+     parent sees: ['oom-repro-parent', 'oom-repro-child', 'oom-repro-child6
+     96']
+
+● Both children are streaming to the parent. Baseline (-696) and HEAD (-883) now
+  run identical synthetic loads side by side. Let me verify the synthetic
+  portion is identical on both and see where the chart-count differences come
+  from:
+
+● Bash(for port in 29001 29002; do
+      curl -s "http://127.0.0.1:$port/api/v1/charts" | python3 -c "…)
+  ⎿  port 29001: charts 2902 dims 12235
+       synth                charts= 2000 dims= 10000
+       system               charts=   35 dims=   136
+     … +24 lines (ctrl+o to expand)
+
+● Bash(for port in 29001 29002; do
+      curl -s "http://127.0.0.1:$port/api/v1/charts" | python3 -c "…)
+  ⎿  port 29001: cgroup chart instances: 200 distinct cgroups: 8
+         cgroup_machine-slice/systemd-nspawn_debian13-dev-service
+         cgroup_system-slice/docker-56c3b332b2b194c0d7e4a39270149a3f220ca73
+     … +13 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      grep -i "cgroup-name\|cgroup_name\|spawn" $SP/agents/child/log/collect…)
+  ⎿  time=2026-07-24T09:52:40.411+03:00 comm=netdata source=collector level
+     =error tid=2171273  msg="SPAWN SERVER: Server is already listening on
+     path '/tmp/netdata/netdata-spawn-plugins.sock'"
+     … +44 lines (ctrl+o to expand)
+
+● Bash(git show 70c9e64076 --stat | head -30; echo ===; grep -rn "cgroup-name"
+      CMakeLists.txt | head; echo ===; grep -rn "cgroup-name"
+      packaging/docker/Dockerfile 2>/d…)
+  ⎿  commit 70c9e64076db32a16726f50464b2f07cfb57985d
+     Author: Costa Tsaousis <costa@netdata.cloud>
+     Date:   Mon Jul 13 15:29:03 2026 +0300
+     … +39 lines (ctrl+o to expand)
+● Bash(git show ef3949dce3 | head -120)
+  ⎿  commit ef3949dce3c99a28fb68eb2735920c9b69611069
+     Author: Costa Tsaousis <costa@netdata.cloud>
+     Date:   Thu Jul 16 20:19:28 2026 +0300
+     … +117 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(cd /home/vk/repos/nd/oom/src/collectors/cgroups.plugin/cgroup-name && ls
+      && head -30 go.mod 2>/dev/null)
+  ⎿  capture-wrappers
+     cgroup_resolver.go
+     cgroup_resolver_test.go
+     … +32 lines (ctrl+o to expand)
+
+● Bash(go build -o /tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c
+      8-6a5993ee4095/scratchpad/cgroup-name . && ls -la
+      /tmp/claude-1000/-home-vk-repos-nd-oo…)
+  ⎿  -rwxrwxr-x 1 vk vk 9675813 Jul 24 10:02 /tmp/claude-1000/-home-vk-repo
+     s-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993ee4095/scratchpad/cgroup-name
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      cp $SP/cgroup-name /home/vk/opt/netdata-builds/oom/netdata/usr/libexec…)
+  ⎿  time=2026-07-24T10:03:09.253+03:00 comm=cgroup-name level=info request
+     ="'/home/vk/opt/netdata-builds/oom/netdata/usr/libexec/netdata/plugins
+     .d/cgroup-name' '/system.slice/docker-cb85521f90eb455fb2f21c54995a7298
+     … +12 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      for a in child child696; do…)
+  ⎿  both stopped
+     restarted: HEAD=2209090 696=2209091
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      until curl -sf http://127.0.0.1:29001/api/v1/info >/dev/null 2>&1 && c…)
+  ⎿  time=2026-07-24T10:03:44.190+03:00 comm=netdata source=collector level
+     =error tid=2209591 thread=CGDISCOVER msg="CGROUP: cannot popen(/home/v
+     k/opt/netdata-builds/oom/netdata/usr/libexec/netdata/plugins.d/cgroup-
+     … +24 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(cd /home/vk/repos/nd/oom && grep -rn "spawn-plugins" src/ --include="*.c"
+      | head -5; grep -rn "NETDATA_RUN_DIR" src/libnetdata/os/run_dir.c | head)
+  ⎿  src/collectors/apps.plugin/apps_targets.c:121:    managed_list_add(&tr
+     ee.managers, "spawn-plugins");
+     src/libnetdata/os/run_dir.c:45:    const char *env_dir = getenv("NETDA
+     … +3 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      for a in parent child child696; do…)
+  ⎿  parent=2221049 child=2221983 child696=2221984
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      until curl -sf http://127.0.0.1:29001/api/v1/info >/dev/null 2>&1 && c…)
+  ⎿  netd
+     76
+     time=2026-07-24T09:52:40.411+03:00 comm=netdata source=collector level
+     … +9 lines (ctrl+o to expand)
+
+● Monitor event: "child agent RSS fill progress (HEAD build)"
+
+● Monitor "child agent RSS fill progress (HEAD build)" stream ended
+
+● Old monitor exited with the killed PID — expected. The logs I grepped were
+  stale entries from before the restart; let me wait for collectors to settle
+  and check fresh state:
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      until [ $(curl -s "http://127.0.0.1:29001/api/v1/charts" | python3 -c…)
+  ⎿  Error: Exit code 143
+     Command timed out after 2m 0s
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      for port in 29001 29002; do curl -s "http://127.0.0.1:$port/api/v1/cha…)
+  ⎿  port 29001: 692 charts, 1833 dims; synth: 0 cgroups: 0 []
+     port 29002: 929 charts, 4487 dims; synth: 0 cgroups: 0 []
+     === child stdout errors ===
+     … +2 lines (ctrl+o to expand)
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      tail -30 $SP/agents/child/log/collector.log | cut -c1-220)
+  ⎿  time=2026-07-24T10:05:31.400+03:00 comm=netdata source=collector level
+     =error tid=2222492 thread=CGDISCOVER msg="CGROUP: cannot popen(/home/v
+     k/opt/netdata-builds/oom/netdata/usr/libexec/netdata/plugins.d/cgroup-
+     … +92 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      mkdir -p /tmp/nd-oom/{parent,child,child696}…)
+  ⎿  restarted parent=2239963 child=2240739 child696=2240740 at 10:09:20
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      until curl -sf http://127.0.0.1:29001/api/v1/info >/dev/null 2>&1; do…)
+  ⎿  HEAD child settled
+     port 29001: 2760 charts, 11902 dims; synth: 2000 cgroups: 6
+         cgroup_certstream-server
+     … +15 lines (ctrl+o to expand)
+
+● Bash(docker pull -q netdata/netdata:latest 2>&1 | tail -1; docker run --rm
+      --entrypoint sh netdata/netdata:latest -c 'ls -la
+      /usr/libexec/netdata/plugins.d/ | grep -…)
+  ⎿  docker.io/netdata/netdata:latest
+     -rwxr-xr-x 1 root root   6680738 Jul 23 01:28 cgroup-name
+     -rwsr-xr-x 1 root root   3486216 Jul 23 01:16 cgroup-network
+     … +6 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(sed -n 164,300p src/collectors/cgroups.plugin/cgroup-name/FLOW.md)
+  ⎿  ## Kubernetes Flow
+
+     `k8s_get_kubepod_name(cgroup_path, id)` runs only for ids containing
+     … +134 lines (ctrl+o to expand)
+
+  Searched for 1 pattern, listed 1 directory (ctrl+o to expand)
+
+● Bash(sed -n 120,135p
+      ~/repos/nd/helmchart/charts/netdata/templates/child/daemonset.yaml)
+  ⎿              {{- end }}
+                 {{- range $key, $value := .Values.child.env }}
+                 - name: {{ $key }}
+     … +13 lines (ctrl+o to expand)
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Bash(sed -n 100,130p
+      src/collectors/cgroups.plugin/cgroup-name/kubernetes_sources.go; echo ===;
+      grep -n "nodeName\b" src/collectors/cgroups.plugin/cgroup-name/config…)
+  ⎿                     } else {
+                                kubeSystemNamespace = string(body)
+                        }
+     … +39 lines (ctrl+o to expand)
+
+● Bash(git show 70c9e64076^:src/collectors/cgroups.plugin/cgroup-name.sh.in |
+      grep -n "MY_NODE_NAME\|fieldSelector\|api/v1/pods" | head; echo
+      ===helmchart===; grep -n…)
+  ⎿  416:        url="https://$host/api/v1/pods"
+     417:        [ -n "$MY_NODE_NAME" ] && url+="?fieldSelector=spec.nodeNa
+     me==$MY_NODE_NAME"
+     … +3 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      echo "=== HEAD (883) ==="; tail -4 $SP/child-rss-HEAD.csv…)
+  ⎿  === HEAD (883) ===
+     1784877186,122436,134412,2
+     1784877201,122452,134428,2
+     … +7 lines (ctrl+o to expand)
+
+  Searched for 2 patterns (ctrl+o to expand)
+● Bash(sed -n 370,380p ~/repos/nd/helmchart/charts/netdata/values.yaml; echo
+      ===; grep -rn -B3 -A10 "plugin:cgroups"
+      ~/repos/nd/helmchart/charts/netdata/values.yaml |…)
+  ⎿            hostname = {{ .Values.parent.hostname }}
+             [db]
+               mode = dbengine
+     … +9 lines (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+
+● Write(/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993ee4
+       095/scratchpad/agents/plugins/churn.plugin)
+  ⎿  Wrote 49 lines to
+     ../../../../../tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a4
+     7-a2c8-6a5993ee4095/scratchpad/agents/plugins/churn.plugin
+       1 #!/usr/bin/env python3
+         cgroup
+       3 # name-based filtering is broken. Every CHURN_PERIOD seconds it 
+         creates
+         ds them for
+       5 # CHURN_LIFE seconds, then marks them obsolete and never touches
+       6 import os, sys, time, random
+       7 
+       8 PERIOD = int(os.environ.get("CHURN_PERIOD", "60"))
+      10 NDIMS = int(os.environ.get("CHURN_DIMS", "2"))
+     … +46 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      chmod +x $SP/agents/plugins/churn.plugin…)
+  ⎿  churn plugin deployed at 10:16:00 epoch 1784877360
+
+● Monitor(A/B child RSS comparison every 15 min (fill+churn))
+  ⎿  Monitor started · task bypsrnxex · persistent
+
+  Listed 2 directories (ctrl+o to expand)
+
+● No .env credentials available, so I can't query staging directly — that
+  becomes an ask. Time for an interim report to vk.
+
+  ---
+  Interim findings — child OOM reproduction
+
+  TL;DR: I have a live parent+child reproduction rig mirroring staging
+  (mode=ram, retention=7200, streaming, ~12k dims). There is no steady-state 
+  per-dimension memory regression in the last two weeks — but I found a strong
+  root-cause candidate: the cgroup-name.sh → Go-helper replacement (Jul 13).
+  When that helper is missing or failing, cgroup renaming is disabled entirely,
+  staging's name-based filters (!*cronjob* *) stop matching, and
+  churny/unfiltered pod cgroups accumulate rings in mode=ram until the 512Mi
+  cgroup limit kills the pod.
+
+  What the rig shows so far
+
+  - Staging children run mode=ram, retention=7200, update every=1, 512Mi hard
+  limit, image latest (nightlies). With ~12k dims, the ram DB alone accounts for
+  ~400MB — the deployment rides close to its limit by design, so any behavioral
+  change tips it.
+  - Local A/B on identical load — HEAD (-883) vs pre-window (-696) child, same
+  synthetic 2000 charts × 5 dims, same parent:
+    - Helper working: identical named cgroups on both; HEAD actually has ~20%
+  fewer dims (old netdata.* self-charts gone). No regression.
+    - Helper broken: HEAD monitors raw-id cgroups (docker-<hash>-scope) plus 
+  extra sub-cgroups (…/init, …/buildkit) the old build never charted. On k8s
+  this means the !*cronjob* exclusion can't match and extra cgroups get charts.
+    - Exact log signature when this happens: CGROUP: cgroup-name helper 
+  '…/cgroup-name' is not executable; cgroup renaming is disabled.
+  - The new Go helper (70c9e64076, Jul 13; hotfix ef3949dce3, Jul 16 — already
+  one production issue) differs from the old shell in one risky way: on the
+  API-server path (which is the default — helm's useKubelet is false) it now
+  verifies TLS and fails closed, where the old shell used curl -sSk (never
+  verified). Any TLS/env hiccup in staging → resolution fails → raw names →
+  filter breakage.
+  - A churn experiment is now running on both children (25 new charts/min, 45s
+  lifetime, mimicking cronjob pods) — obsolete charts linger 3600s by default,
+  each holding ram-mode pages. I'll report the HEAD-vs-old divergence and
+  magnitude when the curves develop (monitor posts every 15 min).
+
+  Alternative candidate (if timing says "this week", not "last week")
+
+  - a1caee5999 (Jul 23) — go.d jobmgr lifecycle refactor. go.d runs inside the
+  same container limit on children; a job restart/duplication bug would also
+  balloon memory. The cgroup-name change fits "last week", jobmgr fits "this
+  week".
+
+  What I need from you / DevOps (numbered)
+
+  1. When exactly did OOMs start (first OOMKilled event, and the running
+  image/nightly version at that time)?
+  2. From an OOMing child: kubectl logs <pod> | grep -Ei "cgroup-name|renaming"
+  — do you see cgroup renaming is disabled or helper errors?
+  3. On an OOMing child, do cgroup charts show k8s_… names or raw kubepods… ids?
+  (One look at its dashboard//api/v1/charts answers it.)
+  4. kubectl describe pod / node dmesg: which process got OOM-killed, and does
+  kubectl top pod show steady growth (churn signature) or a step jump
+  (extra-charts signature)?
+  5. Optional: a staging Cloud token — then I can query the staging children
+  myself (chart names, netdata.memory trend) and confirm without waiting on
+  anyone.
+
+  The rig keeps running in the background; next update when the churn curves
+  diverge or you send staging data.
+
+✻ Crunched for 33m 58s
+
+❯ > TL;DR: I have a live parent+child reproduction rig mirroring staging        
+  (mode=ram, retention=7200, streaming, ~12k dims). There is no steady-state    
+  per-dimension memory regression in the last two weeks — but I found a strong  
+  root-cause candidate: the cgroup-name.sh → Go-helper replacement (Jul 13).    
+  When that helper is missing or failing, cgroup renaming is disabled entirely, 
+  staging's name-based filters (!*cronjob* *) stop matching, and                
+  churny/unfiltered pod cgroups accumulate rings in mode=ram until the 512Mi    
+  cgroup limit kills the pod.                                                   
+                                                                                
+  Can you expand on this?                                                       
+
+● Here's the full chain, from the memory model to the OOM, with what's verified
+  vs. still hypothesis.
+
+  1. Why staging children live right at the OOM line (verified math)
+
+  A child in staging runs with [db] mode = ram, update every = 1, retention = 
+  7200 and a 512Mi hard container limit
+  (aws/org/us-east-1/staging/netdata/latest.tpl:58-60,104-109).
+
+  - In mode = ram, every dimension pre-reserves a ring buffer of retention × 4 
+  bytes via anonymous mmap — src/database/rrddim.c:81. With retention=7200
+  that's 28.8KB per dimension.
+  - The mmap is lazy: RSS grows as pages get touched, one 4KB page per dimension
+  per ~17 minutes (1024 samples/page), reaching full size after 2 hours of
+  uptime.
+  - My repro child with ~12k dimensions self-reports netdata.memory rrd = 402MB.
+  Add the ~100-120MB process baseline and you're at ~500MB steady state against
+  a 512Mi limit.
+
+  Point: these children have almost no headroom. They don't need a big
+  regression to OOM — they need any mechanism that adds a few thousand
+  dimensions or keeps dead ones around. That's why nothing showed up in a diff
+  review looking for "per-object memory increases": there isn't one. The
+  regression candidate is behavioral.
+
+  2. What cgroup renaming does, and why names are load-bearing
+
+  The cgroups plugin discovers raw cgroup paths like:
+
+  kubepods-burstable-pod3f1a….slice/cri-containerd-9c2e….scope
+
+  A helper resolves that to a human name like
+  k8s_staging_netdata-child-x7k2q_netdata plus k8s labels (namespace, pod,
+  container). Two things depend on the resolved name:
+
+  - Filtering. Staging's child config says enable by default cgroups names 
+  matching = !*cronjob* * (latest.tpl:78-79). That exclusion exists precisely to
+  keep short-lived cronjob pods from being monitored. It matches against the
+  resolved name — a raw kubepods-…pod<uid> path contains no "cronjob" substring,
+  ever.
+  - Chart identity. Named charts are stable and deduplicable; raw pod-UID paths
+  are unique per pod instance, so every pod restart is a brand-new chart set.
+
+  3. What changed on Jul 13
+
+  Commit 70c9e64076 deleted the 741-line cgroup-name.sh and replaced it with a
+  compiled Go binary (src/collectors/cgroups.plugin/cgroup-name/). The C plugin
+  now spawns that binary per newly discovered cgroup
+  (cgroup-discovery.c:196-276), with up to 9 retries for kubepods cgroups
+  (cgroup-discovery.c:1008).
+
+  New failure modes the shell didn't have:
+
+  - Missing/not-executable binary → renaming globally disabled. I hit this exact
+  branch in my rig: CGROUP: cgroup-name helper '…/cgroup-name' is not 
+  executable; cgroup renaming is disabled. The old script was plain shell — it
+  always existed and always ran. The new binary is a separately built Go
+  artifact (ENABLE_CGROUP_NAME requires ENABLE_PLUGIN_GO in CMake), so any
+  packaging/permissions gap kills renaming outright. (The official nightly
+  docker image does ship it — I pulled and checked — but that's one image
+  variant; static builds, other arches, and custom images are separate
+  questions.)
+  - TLS now fails closed. The old shell fetched pod metadata with curl -sSk —
+  never verified TLS. The Go helper, on the default metadata path (API server —
+  helm's useKubelet defaults to false), verifies against the mounted
+  service-account CA and fails closed on
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ Sorry, I'm interested in this particular bit:                                 
+                                                                                
+  > but I found a strong root-cause candidate: the cgroup-name.sh → Go-helper   
+  replacement (Jul 13). When that helper is missing or failing, cgroup renaming 
+  is disabled entirely, staging's name-based filters (!*cronjob* *) stop        
+  matching, and churny/unfiltered pod cgroups accumulate rings in mode=ram      
+  until the 512Mi cgroup limit kills the pod.                                   
+                                                                                
+                                                                                
+  I'm not familiar on how netdata implements/handles cgroup-related stuff. I    
+  need you to explain it a little bit so that I fully understand it.            
+
+● Let me walk through the whole pipeline — what Netdata actually does with
+  cgroups — and then re-trace the failure chain through it.
+
+  What a cgroup is, to Netdata
+
+  Every container, pod, and systemd service on a Linux box gets a directory
+  under /sys/fs/cgroup/... where the kernel accounts its CPU, memory, and I/O.
+  On a k8s node a pod container looks like:
+
+  /sys/fs/cgroup/kubepods.slice/kubepods-burstable-pod3f1a2b….slice/cri-containe
+  rd-9c2e4d….scope
+
+  That path is the cgroup's id — machine-generated, unique per pod instance, and
+  meaningless to humans.
+
+  The cgroups.plugin pipeline (inside the netdata daemon)
+
+  It's an internal C plugin with a discovery thread (CGDISCOVER, in
+  src/collectors/cgroups.plugin/cgroup-discovery.c) that runs every ~10s:
+
+  1. Walk /sys/fs/cgroup and find all cgroup directories (path-level
+  include/exclude patterns decide where it even looks).
+  2. Rename each newly found cgroup: raw id → friendly name. This is done by
+  spawning an external helper program once per new cgroup
+  (cgroup-discovery.c:196-276). The helper looks up who the cgroup belongs to:
+    - k8s ids (kubepods…): query the Kubernetes API server (or kubelet) for the
+  node's pod list, map container-id → k8s_<namespace>_<podname>_<container> plus
+  k8s labels. Because pod metadata may lag pod startup, k8s renames are retried
+  up to 9 times (cgroup-discovery.c:1008).
+    - docker ids (docker-<64hex>.scope): ask the docker socket for the container
+  name.
+    - If nothing resolves, the cgroup keeps its raw id as its name.
+  3. Filter: decide whether to monitor this cgroup, using pattern lists from
+  netdata.conf. The one staging overrides is name-based:
+  [plugin:cgroups]
+  enable by default cgroups names matching = !*cronjob* *
+  3. i.e. "monitor everything, except anything whose name contains cronjob".
+  This match runs against the resolved name.
+  4. Create charts for each accepted cgroup: ~25 charts / ~50 dimensions (cpu,
+  memory, io, pids, network…).
+  5. Obsolete the charts when the cgroup disappears (pod exits). Obsolete charts
+  are not freed immediately — they linger for cleanup obsolete charts after =
+  3600s by default (src/daemon/config/netdata-conf-db.c:14), holding their
+  memory the whole hour.
+
+  Two more facts that set the stage:
+
+  - In mode = ram (staging children), every dimension owns a ring buffer of
+  retention × 4 bytes = 28.8KB at retention 7200 (src/database/rrddim.c:81). So
+  one pod ≈ 25 charts ≈ 50 dims ≈ ~1.5MB of ring memory + metadata, held until
+  an hour after the pod dies.
+  - Staging children have a 512Mi hard limit and, at their normal dimension
+  count, idle at roughly 450-500MB. There is almost no headroom.
+
+  Why the cronjob exclusion exists at all
+
+  CronJob pods are the pathological case for this pipeline: a new pod (= new
+  cgroup = new chart set) every minute, dead 30 seconds later. Without the
+  exclusion, a child accumulates a rolling window of dead-pod charts: at one
+  cronjob-pod per minute, that's ~60 lingering chart-sets × ~1.5MB ≈ ~90MB of 
+  permanently-wasted memory per churny workload — and staging has multiple
+  cronjobs. Someone was burned by this before; that's why the filter is in the
+  config.
+
+  What changed on Jul 13, and how the chain breaks
+
+  Commit 70c9e64076 replaced the rename helper — a 741-line shell script
+  (cgroup-name.sh) that shipped with every install — with a compiled Go binary
+  (cgroup-name) built and installed separately.
+
+  The chain of consequences when that helper is missing or failing:
+
+  1. Helper unavailable → the plugin logs cgroup renaming is disabled and stops 
+  resolving names entirely (verified in my rig — this is a real branch, not a
+  theory).
+  2. Every cgroup's "name" stays its raw id: kubepods-…pod<uid>…. No raw id
+  contains the string cronjob.
+  3. Therefore !*cronjob* matches nothing → cronjob pods get monitored again,
+  and every name-based filter in the config silently becomes a no-op. In my rig,
+  broken renaming also widened the monitored set (extra sub-cgroups got charts
+  that the named run never created) — so it's "more cgroups" on top of "wrong
+  cgroups".
+  4. Each churned pod now costs ~1.5MB for an hour after death. Plus, raw
+  pod-UID names are unique per pod instance, so nothing is ever reused — every
+  pod cycle is a fresh chart set.
+  5. The child was already at ~450-500MB of 512Mi. The churn tail adds
+  tens-to-hundreds of MB depending on the node's pod turnover → the kernel
+  OOM-kills the container.
+
+  Why the new helper can fail where the shell couldn't:
+
+  - Existence: the shell script was part of the base install; the Go binary is a
+  separate build artifact — a packaging gap in any image variant means it's
+  simply not there (that's the exact branch my dev build hit).
+  - TLS: the old shell fetched pod metadata with curl -sSk — the -k means it
+  never verified TLS. The Go helper verifies the API server's certificate
+  against the mounted service-account CA and fails closed if that doesn't check
+  out. And the API-server path is the default one — the helm chart's useKubelet
+  option defaults to false.
+  - It's young code: it already needed one production hotfix four days after
+  merge (ef3949dce3, a timeout-environment race).
+
+  Honest caveats
+
+  - Verified locally: the "helper missing → renaming disabled → raw names + more
+  cgroups monitored" branch, the 28.8KB/dim ring math, the 3600s obsolete
+  linger, and that a working HEAD behaves identically to the pre-change build
+  (actually slightly leaner).
+  - Still hypothesis: that this is what's happening on staging's children. I
+  could not confirm the helper is actually failing there — that needs one grep
+  in a child pod's logs (kubectl logs <pod> | grep -i renaming) or one look at
+  whether its cgroup charts show k8s_… names or raw kubepods… ids. If the names
+  are fine in staging, this whole candidate is exonerated and the go.d jobmgr
+  refactor from Jul 23 moves to the top of the list.
+
+  The A/B churn experiment is still running in the background — that will put a
+  hard number on step 4 for both the old and new builds.
+
+✻ Brewed for 1m 5s
+
+● Monitor event: "A/B child RSS comparison every 15 min (fill+churn)"
+
+● Bash(for port in 29001 29002; do curl -s
+      "http://127.0.0.1:$port/api/v1/charts" | python3 -c "
+      import json,sys…)
+  ⎿  port 29001: churn charts: 25 total: 2883
+     port 29002: churn charts: 25 total: 3142
+
+● Churn is live on both children (one active generation visible, obsoleted
+  generations hidden but still holding memory for 3600s, as designed). Fill
+  curves are tracking the expected staircase: HEAD=172MiB vs 696=208MiB at the
+  22-minute mark — the old build runs higher purely from its extra
+  self-monitoring dims, no divergence anomaly yet. Next checkpoint in ~15 min.
+
+✻ Cooked for 27s
+
+❯ Netdata Cloud has an AI insights function. It generated the report at         
+  ~/mo/oom-inv.pdf. Beware, it might be wrong.                                  
+
+● Let me read that report and cross-check it against what the rig has
+  established.
+
+  Read 1 file, listed 1 directory (ctrl+o to expand)
+● Bash(git log --format="%h %cd %s" --date=format:"%Y-%m-%d %H:%M"
+      --grep="v2.10.0-738-nightly" | head -2; git log --format="%h %cd %s"
+      --date=format:"%Y-%m-%d %H:%M"…)
+  ⎿  97dcee869d 2026-07-12 00:57 [ci skip] Update changelog and version for
+      nightly build: v2.10.0-738-nightly.
+     7205ce81ae 2026-07-23 00:31 [ci skip] Update changelog and version for
+     … +3 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      for a in child child696; do…)
+  ⎿  [db]
+         cleanup obsolete charts after = 60
+         mode = ram
+
+  Made 1 scratchpad edit +29 (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      chmod +x $SP/memapi.sh…)
+  ⎿  restarted with 60s cleanup: HEAD=2355422 696=2355423 at 10:37:46
+
+● Stop Task
+  ⎿  SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a59
+     93ee4095/scratchpad
+     CHILD=$(cat $SP/agents/child/netdata.pid)… · stopped
+
+● Monitor(rrd accounting leak test: HEAD vs 696 under churn with 60s cleanup)
+  ⎿  Monitor started · task bjw3g8dnl · persistent
+
+● Bash(sed -n 150,260p src/database/ram/rrddim_mem.c)
+  ⎿          return;
+
+         internal_fatal(rrddim_metric_handle_entries_load(mh) != (size_t)rd
+     … +108 lines (ctrl+o to expand)
+
+● Bash(grep -n "release_from_rrddim\|rrddim_metric_release\|refcount_release\|da
+      ta_transferred" src/database/ram/rrddim_mem.c | head; echo ===; sed -n
+      '/void rrddim_me…)
+  ⎿  246:                rrddim_metric_release((STORAGE_METRIC_HANDLE *)mh)
+     ;
+     291:void rrddim_metric_release(STORAGE_METRIC_HANDLE *smh) {
+     … +18 lines (ctrl+o to expand)
+
+● Bash(sed -n 296,330p src/database/ram/rrddim_mem.c; echo === callers of dup
+      ===; grep -rn "storage_metric_dup\|smh_dup\|metric_dup"
+      src/database/rrd*.h src/database/…)
+  ⎿  }
+
+     bool rrddim_metric_release_from_rrddim(STORAGE_METRIC_HANDLE *smh, RRD
+     … +38 lines (ctrl+o to expand)
+
+● The mechanics are sound if every acquirer releases its handle — so the
+  question is empirical, and the leak test will answer it directly. Quick sanity
+  check on the first accounting samples:
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      echo "=== HEAD ==="; tail -3 $SP/child-mem-HEAD.csv 2>/dev/null…)
+  ⎿  === HEAD ===
+     ts,rrd_mb,metadata_mb,strings_mb,buffers_mb,total_mb,charts,dims
+     === 696 ===
+     … +3 lines (ctrl+o to expand)
+
+● Bash(J=$(curl -sf --max-time 5 "http://127.0.0.1:28999/api/v1/allmetrics?forma
+      t=json&filter=netdata.memory" 2>/dev/null); echo "len=${#J}"; echo "$J" |
+      head -c 300)
+  ⎿  len=1302
+     {
+        "netdata.memory": {
+     … +13 lines (ctrl+o to expand)
+
+  Made 1 scratchpad edit +31 (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      pkill -f "$SP/memapi.sh" 2>/dev/null…)
+  ⎿  ts,rrd_mb,metadata_mb,strings_mb,buffers_mb,total_mb,charts,dims
+     1784878798,386.2,11.5,2.1,7.0,412.4,2883,12214
+     1784878798,478.3,0.0,2.2,11.7,514.3,3141,15162
+     1784878798,0.0,36.7,0.9,14.9,291.1,383,1077
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      for v in 808 813; do…)
+  ⎿      plugins = /home/vk/opt/netdata-builds/otel-events/netdata/usr/libe
+     xec/netdata/plugins.d /tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-
+     81f6-4a47-a2c8-6a5993ee4095/scratchpad/agents/plugins
+     launched 808=2367488 813=2367489
+
+● Stop Task
+  ⎿  SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a59
+     93ee4095/scratchpad
+     while true; do… · stopped
+
+● Monitor(4-way rrd accounting leak comparison under churn (HEAD/696/808/813))
+  ⎿  Monitor started · task b5a8ytof6 · persistent
+
+● Rig updated — now a four-way parallel comparison (-696 / -808 / -813 / 
+  HEAD-883) under identical synthetic churn with accelerated (60s)
+  obsolete-chart cleanup, logging netdata's own rrd accounting. Verdict logic:
+  with working cleanup the accounting plateaus minutes after the churn horizon;
+  a leaking build climbs linearly (~1.4MB/min at my churn rate). First results
+  in ~10-20 minutes.
+
+  My read of the Cloud AI report — trust the charts, not the tables
+
+  Reliable and very useful:
+  - Children grow linearly 65-191 MiB/h for 12-24h (sawtooth reset only on
+  restart) — with stable chart counts.
+  - The child's rrd accounting itself climbs continuously (screenshot: 4.5→6
+  GiB) — in mode=ram that counter only grows when ring buffers are allocated and
+  only shrinks when they're freed. Climbing rrd + stable chart counts = dead 
+  dimensions' ring buffers are retained.
+  - Parent is also affected (slower, metadata-dominant, ~20h cycle) — consistent
+  with one root cause amplified through streaming.
+  - Regression window: -738 (built Jul 12, stable) → -858 (built Jul 23, 
+  leaking) — this contains the cgroup-name change (Jul 13) but excludes my other
+  candidate (the ram-ownership refactor, Jul 7, already in the "stable" -738 —
+  though the stable control is a standalone node with no churn, so that
+  exoneration is weak).
+
+  Wrong or unsupported in the report:
+  - "Confirmed leak in dbengine + metadata on children" — contradicted by its
+  own chart screenshot: the child shows dbengine = 0 B (children run mode=ram;
+  dbengine isn't instantiated). The 8-12GB dbengine/metadata numbers in its
+  tables are the parent's profile transposed onto children.
+  - "Correlation with -858 is unambiguous" — circular: the fleet redeploys
+  :latest daily, so every node runs yesterday's nightly whatever day the leak
+  started. The report cannot date the regression.
+  - "High cardinality ruled out" — overstated. Stable chart counts with growing
+  memory doesn't rule out churn; it's exactly what churn + non-freed rings looks
+  like (deleted charts leave no count, but their rings stay).
+
+  Synthesis (working theory, now under test): normal pod churn was always there;
+  since some nightly in (Jul 12, Jul 23], obsoleted charts' ring buffers (and
+  per-dim metadata) are never reclaimed — verified in code that the ram engine's
+  rrd counter stays inflated precisely when a metric handle survives dimension
+  deletion (src/database/ram/rrddim_mem.c:173-192). My earlier cgroup-name
+  finding may additionally be increasing the churn rate (broken name filters),
+  but the non-reclamation is the core defect the report's linear curve points
+  to.
+
+  Still worth getting from DevOps: the date of the first OOMKilled event (3-week
+  mem.oom_kill history or pod restart counts) — that pins the exact nightly,
+  which shortcuts the bisect.
+
+✻ Cooked for 7m 14s
+
+❯ > Still worth getting from DevOps: the date of the first OOMKilled event      
+  (3-week mem.oom_kill history or pod restart counts) — that pins the exact     
+  nightly, which shortcuts the bisect.                                          
+                                                                                
+  Give me the prompt that I should pass to "AI Insights" it might be able to    
+  get it.                                                                       
+
+● Here's a copy-paste prompt for AI Insights. It asks only for dated facts (not
+  interpretation), so it can't repeat the confabulation failure mode of the
+  previous report:
+
+  Establish the exact onset date of the Netdata child pod OOM kills. Facts only,
+  with timestamps and per-node values — no root-cause analysis, no speculation.
+
+  Time window: last 21 days (July 3 - July 24, 2026). For each day, report:
+
+  1. mem.oom_kill events per node, daily: for every node (all netdata children,
+     the parent, and control nodes), list each day's total OOM kills. I need the
+     FIRST day any netdata child pod was OOM-killed in this window, and whether
+     any day before it shows zero kills fleet-wide. Show a day-by-day table.
+
+  2. netdata.uptime resets per child node, daily: count uptime resets per day
+     per node for the same 21 days, separating the ~06:00 UTC daily-deploy
+     restart from any additional same-day resets. Additional resets are the
+     signal. Report the first day each node shows more than one reset.
+
+  3. Netdata build version per day: for each day in the window, which nightly
+     version (netdata.info / build version) was running on the children after
+     that day's ~06:00 UTC deploy? A day-to-version table.
+
+  4. Memory growth-rate per day per child: using the netdata container RSS (or
+     cgroup memory usage of the netdata child pods), compute approximate
+     MiB/hour growth between the daily deploy and the end of that day, per node,
+     per day, for the 21 days. I need the first day the slope becomes clearly
+     positive (>20 MiB/hour sustained) versus earlier flat days.
+
+  5. Chart/dimension count trend: for 2-3 affected child nodes, report
+     netdata.charts_count / netdata.dimensions_count (or the equivalent
+     cardinality metrics) daily min/max for the window — flat vs growing, with
+     values.
+
+  Output format: plain per-day tables with numbers. If data for a metric or day
+  is missing/expired from retention, say "no data" explicitly for that cell —
+  do not interpolate or infer. Do not conclude which build introduced the
+  problem; only report the measured first-occurrence dates and the per-day
+  values above.
+
+  Two notes on interpreting what comes back:
+
+  - The critical cross-check is (1)+(3): first OOM day → the nightly deployed
+  that morning is the prime suspect, and the previous day's nightly is the
+  last-good. That collapses my bisect window to one day of commits.
+  - (4)+(5) double-checks the mechanism: if the slope flipped positive on the
+  same day the OOMs started (and chart counts stayed flat), that's consistent
+  with the retained-rings theory; if chart counts also grew, the churn-source
+  angle (cgroup naming/filtering) gains weight.
+
+  Meanwhile my 4-way rig (696/808/813/883 under identical churn) keeps running —
+  the two answers should triangulate.
+
+✻ Sautéed for 24s
+
+❯ /export cd.txt                                                                
+  ⎿  Conversation exported to: /home/vk/repos/nd/oom/cd.txt
+
+❯ Thanks for the prompt. However, the "AI Insights" feature does not have a     
+  session. It'll start with a clear context. Maybe you can describe the issue   
+  first?                                                                        
+
+● Right — here's a self-contained version with the context up front:
+
+  CONTEXT
+
+  This space monitors a Kubernetes cluster (EKS, staging) that runs Netdata as:
+  - a "child" DaemonSet: one netdata pod per worker node (hostnames like
+    ip-10-200-*.ec2.internal), db mode "ram", streaming to a parent
+  - a "parent" Deployment: netdata-parent-latest, db mode dbengine
+  - standalone control nodes outside the cluster: agent-events, packages
+
+  The child pods (and later the parent pod) have recently started getting
+  OOM-killed by the kernel (cgroup memory limit, CONSTRAINT_MEMCG) roughly
+  every 12-24 hours. Their container RSS grows steadily after each start until
+  the limit is hit. A Kubernetes rolling deploy at ~06:00 UTC daily pulls the
+  netdata/netdata:latest nightly image, so pods restart every morning anyway;
+  the OOM kills are the ADDITIONAL restarts between deploys.
+
+  We know the OOMs are happening. What we do NOT know is WHEN they started.
+  The fleet redeploys :latest daily, so "which build is running now" proves
+  nothing — we need the first-occurrence date to identify which nightly build
+  introduced the problem.
+
+  TASK
+
+  Establish the exact onset date. Facts only, with timestamps and per-node
+  values — no root-cause analysis, no speculation.
+
+  Time window: the last 21 days (July 3 - July 24, 2026). Report:
+
+  1. mem.oom_kill events per node, daily: for every node, a day-by-day table of
+     OOM kill counts. Highlight the FIRST day any netdata child pod was
+     OOM-killed, and confirm the preceding days show zero kills fleet-wide.
+
+  2. netdata.uptime resets per child node, daily: count uptime resets per day
+     per node, separating the ~06:00 UTC daily-deploy restart from any
+     additional same-day resets. The additional resets are the signal. Report
+     the first day each node shows more than one reset.
+
+  3. Netdata build version per day: for each day, which nightly version was
+     running on the children after that morning's deploy (from netdata.info /
+     build version, or the version label history). A day-to-version table.
+
+  4. Memory growth rate per day per child: using the netdata child pod's cgroup
+     memory usage (or container RSS), compute approximate MiB/hour growth
+     between the morning deploy and end of day, per node per day. Report the
+     first day the slope becomes clearly positive (>20 MiB/hour sustained)
+     versus earlier flat days.
+
+  5. Chart/dimension cardinality trend: for 2-3 affected child nodes, daily
+     min/max of chart count and dimension count metrics for the window — flat
+     vs growing, with values.
+
+  OUTPUT FORMAT
+
+  Plain per-day tables with numbers. If data for a metric or day is missing or
+  expired from retention, write "no data" for that cell — do not interpolate or
+  infer. Do not conclude which build introduced the problem; only report
+  measured first-occurrence dates and per-day values.
+
+  The key deliverable is still the cross of (1)+(3): first OOM day → that
+  morning's nightly is the prime suspect and the previous day's is last-good —
+  which would collapse my local bisect to a single day of commits.
+
+✻ Churned for 22s
+
+❯ /export cd.txt                                                                
+  ⎿  Conversation exported to: /home/vk/repos/nd/oom/cd.txt
+
+● Monitor event: "4-way rrd accounting leak comparison under churn
+(HEAD/696/808/813)"
+
+● First tick: all four builds climbing at the same ~1.5MB/min — consistent with
+  churn buildup, but the cleanup horizon should bend the curves soon if
+  reclamation works. While waiting for the next tick, let me check the actual
+  deletion path — whether obsolete-chart cleanup on a streaming child has gating
+  that prevents freeing:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(git log --format="%h %cd %s" --date=format:"%Y-%m-%d %H:%M" -S "piling"
+      -- src/daemon/service.c | head -5; echo ===; git log -3 --format="%h %cd
+      %s" --date=form…)
+  ⎿  e31ede15cd 2026-05-13 08:55 Remove redundant per-host replication gate
+      from obsolete chart cleanup (#22467)
+     ===
+     … +4 lines (ctrl+o to expand)
+
+● Bash(git show fff8552500 -- src/daemon/service.c | head -150)
+  ⎿  commit fff8552500e00d16efd3b839558428ed85a244a5
+     Author: Stelios Fragkakis <52996999+stelfrag@users.noreply.github.com>
+     Date:   Mon Jul 20 13:41:26 2026 +0300
+     … +157 lines (ctrl+o to expand)
+
+● Bash(git show fff8552500 -- src/daemon/service.c | grep -v "^-" | sed -n
+      '/diff --git/,$p' | head -100)  ⎿  diff --git a/src/daemon/service.c b/src/daemon/service.c
+     index 553e0946e7..1ff254cbc5 100644
+     +++ b/src/daemon/service.c
+     … +33 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      for v in HEAD 696 808 813; do…)
+  ⎿  HEAD: rrd 400 -> 406 MB over 5 min = +1.39 MB/min (charts 2883)
+     696: rrd 493 -> 499 MB over 5 min = +1.42 MB/min (charts 3143)
+     808: rrd 494 -> 502 MB over 5 min = +1.77 MB/min (charts 3192)
+     813: rrd 494 -> 502 MB over 5 min = +1.73 MB/min (charts 3191)
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+● Bash(sed -n 120,132p src/database/rrdset.c; sed -n 155,165p
+      src/database/rrdset.c; sed -n 118,126p src/database/rrdset-index-name.c;
+      grep -n "touch_last_accessed\|la…)
+  ⎿      if(unlikely(!(rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE)))) {
+     //        netdata_log_info("Setting obsolete flag on chart 'host:%s/ch
+     art:%s'",
+     … +36 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      for v in child child696 child808 child813; do…)
+  ⎿  child: 1867884 kB (1542 VMAs)
+     child696: 1999352 kB (1820 VMAs)
+     child808: 1985428 kB (1825 VMAs)
+     child813: 1984860 kB (1815 VMAs)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      for v in child child696 child808 child813; do echo "$(date +%s) $v $(a…)
+  ⎿  1784879680 child 1867884
+     1784879680 child696 1999352
+     1784879680 child808 1987608
+     1784879680 child813 1987072
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      until [ $(( $(date +%s) - $(head -1 $SP/vmdata-t0.txt | cut -d' ' -f1)…)
+  ⎿  === after 3 min ===
+     child: VmData 1867884 -> 1872876 kB = 1664 kB/min
+     child696: VmData 1999352 -> 2004440 kB = 1696 kB/min
+     … +2 lines (ctrl+o to expand)
+  ⎿  (timeout 4m)
+
+● Bash(sed -n 74,170p src/daemon/service.c)
+  ⎿      return dim_archives;
+     }
+     … +93 lines (ctrl+o to expand)
+
+● Bash(grep -rn "rrdset_is_replicating" src/database/rrdset.h src/streaming/*.h
+      2>/dev/null | head -3; sed -n '/rrdset_is_replicating/,/^}/p' $(grep -rln
+      "static.*rrds…)
+  ⎿  src/database/rrdset.h:81:#define rrdset_is_replicating(st) (rrdset_fla
+     g_check(st, RRDSET_FLAG_SENDER_REPLICATION_IN_PROGRESS|RRDSET_FLAG_REC
+     EIVER_REPLICATION_IN_PROGRESS) \
+     … +2 lines (ctrl+o to expand)
+
+● Bash(sed -n 78,90p src/database/rrdset.h)
+  ⎿  #define rrdset_flag_clear(st, flag)                 atomic_flags_clear
+     (&((st)->flags), flag)
+     #define rrdset_flag_set_and_clear(st, set, clear)   atomic_flags_set_a
+     … +17 lines (ctrl+o to expand)
+
+● Bash(sed -n 110,155p src/database/rrdset.c)
+  ⎿          db_first_entry_s = db_last_entry_s - st->update_every;
+
+         *first_time_s = db_first_entry_s;
+     … +43 lines (ctrl+o to expand)
+
+● Bash(for port in 29001 29002; do
+      echo "=== port $port gen0 chart query ==="…)
+  ⎿  === port 29001 gen0 chart query ===
+     No metrics where matched to query.
+     === port 29002 gen0 chart query ===
+     No metrics where matched to query.
+
+● Bash(for port in 29001 29002; do
+      echo "=== port $port ==="…)
+  ⎿  === port 29001 ===
+     === port 29002 ===
+       netdata.dictionaries.collectors.callbacks {'conflicts': 10.0}
+     … +33 lines (ctrl+o to expand)
+● Bash(for port in 29003 29004; do
+      echo "=== port $port ==="…)
+  ⎿  === port 29003 ===
+       netdata.dictionaries.rrdset.dictionaries {'active': 2.0}
+       netdata.dictionaries.rrdset.items {'active': 7362.0}
+     … +11 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      python3 - "$SP/agents/child/etc/netdata.conf" <<'EOF'…)
+  ⎿  HEAD child restarted with extended pulse: 2465623 at 11:00:35
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      until curl -sf "http://127.0.0.1:29001/api/v1/info" >/dev/null 2>&1; d…)
+  ⎿  settled 11:00:49
+     11:00:49 rrdset items: {}
+     11:03:49 rrdset items: {}
+     visible charts: 3096
+  ⎿  (timeout 7m)
+
+● Monitor event: "4-way rrd accounting leak comparison under churn
+(HEAD/696/808/813)"
+
+  Searched for 3 patterns (ctrl+o to expand)
+
+● Bash(sed -n 1075,1090p src/daemon/main.c)
+  ⎿      // ---------------------------------------------------------------
+     -------------------------------------------------
+         delta_startup_time("pulse");
+     … +14 lines (ctrl+o to expand)
+
+● Bash(curl -s "http://127.0.0.1:29001/api/v1/charts" | python3 -c "
+      import json,sys…)
+  ⎿  netdata.* charts on HEAD: 236
+     ['netdata.workers_time_rrdcontext', 'netdata.workers_cpu_rrdcontext',
+     'netdata.workers_jobs_by_type_rrdcontext', 'netdata.workers_busy_time_
+     … +7 lines (ctrl+o to expand)
+
+● Bash(curl -s "http://127.0.0.1:29001/api/v1/charts" | python3 -c "
+      import json,sys…)
+  ⎿  dictionar -> []
+     obsolete -> []
+     instances -> []
+     … +7 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      PID=$(cat $SP/agents/child/netdata.pid)…)
+  ⎿  gdb failed
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      PID=$(cat $SP/agents/child/netdata.pid)…)
+  ⎿  Could not attach to process.  If your uid matches the uid of the targe
+     t
+     process, check the setting of /proc/sys/kernel/yama/ptrace_scope, or t
+     … +5 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      kill $(cat $SP/agents/child/netdata.pid); sleep 3…)
+  ⎿  settled unstreamed at 11:06:22
+     1784880382 1823576
+  ⎿  (timeout 5m)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      PID=$(cat $SP/agents/child/netdata.pid)…)
+  ⎿  unstreamed HEAD: VmData 1823576 -> 1846392 kB over 7 min = 3259 kB/min
+  ⎿  (timeout 8m)
+
+● Monitor event: "4-way rrd accounting leak comparison under churn
+(HEAD/696/808/813)"
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      PID=$(cat $SP/agents/child/netdata.pid)…)
+  ⎿  (No output)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      PID=$(cat $SP/agents/child/netdata.pid)…)
+  ⎿      TID COMMAND
+     2493096 netdata
+     2493412 DAEMON_COMMAND
+     … +37 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      PID=$(cat $SP/agents/child/netdata.pid)…)
+  ⎿  2493096 netdata
+     2493412 DAEMON_COMMAND
+     2493414 METASYNC
+     … +68 lines (ctrl+o to expand)
+● Bash(grep -rn "service_main\|\"SERVICE\"" src/daemon/main.c
+      src/daemon/service.c | head -5; echo ===; for v in child696 child808
+      child813; do PID=$(cat /tmp/claude-1…)
+  ⎿  ===
+     child696: 0 SERVICE threads
+     child808: 0 SERVICE threads
+     child813: 0 SERVICE threads
+
+  Listed 1 directory (ctrl+o to expand)
+
+● Bash(grep -n -B3 -A12 "service_main" src/daemon/static_threads.c | head -30;
+      sed -n 290,330p src/daemon/service.c)
+  ⎿  12-void cpuidlejitter_main(void *ptr);
+     13-void health_main(void *ptr);
+     14-void pluginsd_main(void *ptr);
+     … +40 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Cleanup was moved out of a dedicated SERVICE thread into the METASYNC (sqlite 
+  metadata) event loop. When did that move happen, and what gates it there?
+
+● Bash(sed -n 2560,2600p src/database/sqlite/sqlite_metadata.c; echo ===; git
+      log --format="%h %cd %s" --date=short -S "run_maintenace" --
+      src/database/sqlite/sqlite_m…)
+  ⎿      buffer_free(work_buffer);
+
+         if (!is_worker) {
+     … +39 lines (ctrl+o to expand)
+
+● Bash(curl -s "http://127.0.0.1:29001/api/v1/charts" | python3 -c "
+      import json,sys…)
+  ⎿  ['netdata.workers_time_libuv', 'netdata.workers_cpu_libuv', 'netdata.w
+     orkers_jobs_by_type_libuv', 'netdata.workers_busy_time_by_type_libuv',
+      'netdata.workers_avg_time_by_type_libuv', 'netdata.workers_spinlock_l
+     … +6 lines (ctrl+o to expand)
+
+● Bash(for c in netdata.workers_jobs_by_type_libuv
+      netdata.workers_jobs_by_type_metasync; do
+      echo "=== $c ==="…)
+  ⎿  === netdata.workers_jobs_by_type_libuv ===
+       metadata store host: 1
+       metadata store chart: 25
+     … +7 lines (ctrl+o to expand)
+
+● Bash(sed -n 1,73p src/daemon/service.c)
+  ⎿  // SPDX-License-Identifier: GPL-3.0-or-later
+
+     #include "common.h"
+     … +69 lines (ctrl+o to expand)
+
+● Bash(for c in netdata.workers_rrdcontext_value_hub_queue_size
+      netdata.workers_rrdcontext_value_post_processing_queue_size; do
+      echo "=== $c ==="…)
+  ⎿  === netdata.workers_rrdcontext_value_hub_queue_size ===
+     ['time', 'min', 'max', 'average']
+     [
+     … +61 lines (ctrl+o to expand)
+
+● Queues are drained — context processing isn't lagging. Let me check whether
+  RRDMETRIC holds an acquired dictionary reference to the dimension at all, and
+  who else could:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(git log --format="%h %cd %s" --date=short --follow --
+      src/database/rrdset-collection.c | head -8; echo ===; grep -n
+      "rda\|acquired_item_release\|unslot\|obsolet…)
+  ⎿  16f5f7432f 2026-07-21 Netdata fixes part 76 (#23151)
+     a3a77663aa 2026-07-14 Netdata fixes part 61 (#23081)
+     b7914046f1 2026-07-13 Netdata fixes part 59 (#23080)
+     … +16 lines (ctrl+o to expand)
+
+● Bash(git log --format="%h %cd %s" --date=short -S
+      "dictionary_acquired_item_references" -- src/daemon/service.c | head -5;
+      echo === dim-flag gate ===; git log --form…)
+  ⎿  70246b7965 2024-02-06 Move daemon/ under src/ (#16933)
+     === dim-flag gate ===
+     e46080f64f 2025-04-24 Fix memory leaks and service thread corruption (
+     #20159)
+
+● Both gates are old — yet obsolete charts clearly got deleted in production
+  before. So who sets RRDDIM_FLAG_OBSOLETE on the dimensions of an obsoleted
+  chart?
+
+  Searched for 1 pattern (ctrl+o to expand)
+● Bash(sed -n 605,640p src/database/rrddim.c; echo ===; grep -rn
+      "rrddim_is_obsolete___safe_from_collector_thread" src/ --include="*.c" |
+      grep -v "rrddim.c" | head)
+  ⎿          rrddim_flag_clear(rd, RRDDIM_FLAG_META_HIDDEN);
+             rrddim_flag_set(rd, RRDDIM_FLAG_METADATA_UPDATE);
+             rrdhost_flag_set(rd->rrdset->rrdhost, RRDHOST_FLAG_METADATA_UP
+     … +37 lines (ctrl+o to expand)
+
+● Bash(sed -n 525,555p src/plugins.d/pluginsd_parser.c)
+  ⎿          netdata_log_debug(
+                 D_PLUGINSD,
+                 "creating dimension in chart %s, id='%s', name='%s', algor
+     … +28 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Update(/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993ee
+        4095/scratchpad/agents/plugins/churn.plugin)
+  ⎿  Added 6 lines
+      22              out.write(f"DIMENSION dim{d} dim{d} absolute 1 1\n"
+          )
+      23  
+      24  def obsolete_charts(g):
+      25 +    # OBSOLETE_DIMS=1: also mark every dimension obsolete (dime
+         +nsion-level                                                    
+      26 +    # obsoletion), mimicking collectors that obsolete dims indi
+         +vidually.                                                      
+      27 +    # OBSOLETE_DIMS=0: chart-level only, like cgroups.plugin / 
+         +go.d job stop.                                                 
+      28 +    dim_opt = " obsolete" if os.environ.get("OBSOLETE_DIMS", "0
+         +") == "1" else ""                                              
+      29      for c in range(NCHARTS):
+      30          out.write(f"CHART churn.job_{g}_{c} '' 'Churn chart gen
+           {g} idx {c}' 'units' churn churn.job line {2000 + c} 1 obsolet
+          e\n")
+      31 +        for d in range(NDIMS):                                 
+      32 +            out.write(f"DIMENSION dim{d} dim{d} absolute 1 1{di
+         +m_opt}\n")                                                     
+      33  
+      34  next_spawn = time.monotonic()
+      35  while True:
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      kill $(cat $SP/agents/child/netdata.pid); sleep 3…)
+  ⎿  settled with OBSOLETE_DIMS=1 at 11:20:45: 1784881245 1750216
+  ⎿  (timeout 5m)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      PID=$(cat $SP/agents/child/netdata.pid)…)
+  ⎿  dim-obsolete HEAD: VmData 1750216 -> 1776248 kB over 8 min = 3254 kB/m
+     in
+       metadata store host: 5
+     … +10 lines (ctrl+o to expand)
+  ⎿  (timeout 9m 20s)
+
+● Monitor event: "4-way rrd accounting leak comparison under churn
+(HEAD/696/808/813)"
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      sleep 300; for v in HEAD 696 808 813; do…)
+  ⎿  Running in the background (↓ to manage)
+
+● Bash(git show e46080f64f -- src/daemon/service.c | head -120)
+  ⎿  commit e46080f64fef3444f1714f698cc6a5e5dcd06d92
+     Author: Costa Tsaousis <costa@netdata.cloud>
+     Date:   Thu Apr 24 19:23:50 2025 +0300
+     … +117 lines (ctrl+o to expand)
+
+● Bash(sleep 60; cat /tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a
+      2c8-6a5993ee4095/tasks/bc6ik4u8f.output 2>/dev/null)
+  ⎿  Running in the background (↓ to manage)
+
+  Read 1 file (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      python3 - $SP/parent-mem.csv <<'EOF'…)
+  ⎿  parent over 51 min:
+       rrd: 0.0 -> 0.0 MB (+0.0 MB/h)
+       metadata: 36.7 -> 83.7 MB (+55.2 MB/h)
+     … +4 lines (ctrl+o to expand)
+
+● Monitor event: "4-way rrd accounting leak comparison under churn
+(HEAD/696/808/813)"
+
+  Read 1 file (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      for v in HEAD 696 808 813; do…)
+  ⎿  HEAD: rrd +1.88 meta +0.00 strings +0.00 total +1.97 MB/min (charts 30
+     56->3057)
+     696: rrd +1.39 meta +0.00 strings +0.00 total +1.37 MB/min (charts 314
+     … +5 lines (ctrl+o to expand)
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      PID=$(cat $SP/agents/child/netdata.pid)…)
+  ⎿  HEAD steady-state VmData: 1781960 -> 1788616 = 1664 kB/min
+  ⎿  (timeout 5m)
+
+● Background command "Collect the 4-way category slope comparison" completed
+(exit code 0)
+
+● Background command "Compare per-category memory slopes across all four
+children" completed (exit code 0)
+
+❯ You've been doing a lot of stuff, without providing any updates. I'm curious  
+  if you can let me know how you are investigating this.                        
+
+● Fair point — a lot happened. Here's the full picture: the leak is reproduced, 
+  root-caused, and dated. Let me explain how I got here and what I found.
+
+  How I'm investigating
+
+  The rig (all local, from your MCP-built binaries plus three older builds
+  already installed on this box):
+
+  - 1 parent + 4 children, one child per build: -696 (Jul 5, pre-window), -808
+  (Jul 18), -813 (Jul 19), -883 (HEAD) — identical staging-like config
+  (mode=ram, retention=7200, ML off, streaming to the parent).
+  - Two synthetic plugins I wrote: one creates a stable load (2000 charts), the
+  other churns charts — 25 new charts/min, each obsoleted after 45s — mimicking
+  cronjob pods on a k8s node. I set cleanup obsolete charts after = 60 so
+  reclamation (if any) is visible in minutes instead of hours.
+  - Three independent gauges: netdata's own memory accounting (netdata.memory →
+  rrd), kernel-level VmData (anonymous reservations — each ram-mode dimension is
+  its own ~32KB mmap), and netdata's internal worker job counters (which show
+  whether free chart / free dimension ever execute).
+  - Then git blame/archaeology to date every gate in the cleanup path.
+
+  What I found — the leak has three layers
+
+  Layer 1 — the core defect (affects staging): charts obsoleted at chart level 
+  are never freed. Broken since April 2025.
+  - All four builds leak identically under churn: rrd accounting +1.4MB/min,
+  VmData +1.65MB/min, zero free chart events ever — while chart counts stay flat
+  (obsolete charts are hidden, not freed). That flat-count-plus-growing-memory
+  is precisely the signature in the Cloud AI report.
+  - Mechanism: cleanup refuses to archive a dimension unless the dimension
+  carries RRDDIM_FLAG_OBSOLETE (src/daemon/service.c:8). Chart-level obsoletion
+  — what cgroups.plugin, go.d job stops, plugin exits, and child disconnects all
+  use — never sets dimension flags. So every pass counts candidates it can't
+  archive, re-arms the retry flag, and rrdset_free() is unreachable. Proof: I
+  switched my churn plugin to obsolete dimensions as well → free chart: 100, 
+  free dimension: 200 appeared immediately.
+  - Dating: e46080f64f ("Fix memory leaks and service thread corruption",
+  2025-04-24) made the archive counting honest (if(...) dim_archives++ instead
+  of unconditional dim_archives++). Before it, the miscount let rrdset_free()
+  run anyway, which reclaimed everything. A "fix memory leaks" commit created
+  this leak.
+
+  Layer 2 — HEAD only: even freed dimensions keep their ring buffers.
+  - On HEAD with dimension-level obsoletion (frees confirmed firing), memory
+  still grows at full churn rate (+1.66MB/min VmData, steady state). The rings
+  outlive rrddim_free via retained storage-metric handles — the Jul 7 ram-engine
+  ownership refactor's mechanism. Holder not yet identified (rrdcontext is my
+  suspect). This layer is not in what staging runs today, but it's sitting in
+  nightlies ≥ ~Jul 7 wait — it is in staging's -858; it's masked there because
+  layer 1 blocks frees entirely.
+
+  Layer 3 — the trigger: why staging only started OOMing 1-2 weeks ago.
+  - The leak needs churn to bite. Staging's cronjob exclusion (!*cronjob* *)
+  kept churn near zero — that filter depends on cgroup names, and the
+  cgroup-name shell→Go replacement landed Jul 13, inside the report's -738→-858
+  regression window. If renaming fails in the pod environment (I demonstrated
+  the failure branch locally: "cgroup renaming is disabled"), cronjob pods get
+  monitored, each exit is a chart-level obsoletion, and layer 1 turns that into
+  65-191MiB/h of permanent growth — matching the report exactly.
+  - The parent corroborates: my rig's parent, just receiving 4 churny children,
+  grows at +415MB/h with flat chart counts (mirrored charts are obsoleted
+  chart-level too) — matching staging's parent dying on a ~20h cycle.
+
+  Still open
+
+  1. Confirm the staging churn source — the AI Insights onset-date report
+  (first-OOM day + that day's nightly), or one grep on an OOMing child (renaming
+  is disabled, raw kubepods… chart names).
+  2. Identify the handle holder for layer 2 on HEAD.
+  3. Fix design — that's a decision for you/the team: e.g., make chart-level
+  obsoletion propagate to dimensions when archiving (all_dimensions=true path
+  bypassing the per-dim flag check), vs. setting dim flags at obsoletion time.
+  Layer 2 needs its own fix. I can prototype either on this rig and verify with
+  the same churn harness.
+
+  The rig is still running and every measurement above is reproducible from the
+  CSVs in the scratchpad. Want me to prototype the layer-1 fix and validate it
+  under the harness?
+
+✻ Sautéed for 45m 54s
+
+● Monitor event: "4-way rrd accounting leak comparison under churn
+(HEAD/696/808/813)"
+
+● Monitor tick confirms the steady divergence (all four still climbing). While
+  waiting on your call for the fix prototype, let me close open item #2 — who
+  retains the storage-metric handles on HEAD after rrddim_free:
+
+  Searched for 3 patterns (ctrl+o to expand)
+
+● Bash(sed -n '/void rrddim_free/,/^}/p' src/database/rrddim.c | head -60)
+  ⎿  void rrddim_free(RRDSET *st, RRDDIM *rd) {
+         dictionary_del(st->rrddim_root_index, string2str(rd->id));
+     }
+
+● Bash(grep -n "release_from_rrddim\|pulse_db_rrd_memory_sub\|nd_munmap\|freez(r
+      d->db\|db.data" src/database/rrddim.c | head; echo ===; sed -n
+      '/rrddim_delete_callback…)
+  ⎿  81:        rd->db.data = nd_mmap_advanced(NULL, entries * sizeof(stora
+     ge_number), MAP_PRIVATE, 1, false, true, NULL);
+     82:        if(rd->db.data) {
+     … +77 lines (ctrl+o to expand)
+
+● Bash(sed -n 95,150p src/database/ram/rrddim_mem.c)
+  ⎿  static void rrddim_metric_handle_current_entry_store(struct mem_metric
+     _handle *mh, size_t current_entry) {
+         __atomic_store_n(&mh->current_entry, current_entry, __ATOMIC_RELAX
+     … +53 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(sed -n 258,296p src/database/ram/rrddim_mem.c)
+  ⎿      netdata_rwlock_rdlock(&rrddim_Judy_rwlock);
+         {
+             Pvoid_t *PValue = JudyLGet(rrddim_Judy_array, id, PJE0);
+     … +36 lines (ctrl+o to expand)
+
+● Adding minimal diagnostic instrumentation to the ram engine (acquire/release
+  site tracking with periodic dumps, temporary):
+
+● Update(src/database/ram/rrddim_mem.c)
+  ⎿  Added 32 lines
+      272      return (STORAGE_METRIC_HANDLE *)mh;
+      273  }
+      274  
+      275 +// TEMP DIAGNOSTIC (oom investigation): track acquire/release 
+          +call sites of                                                 
+      276 +// ram-engine metric handles to find who retains them after rr
+          +ddim_free().                                                  
+      277 +// Remove before any commit.                                  
+      278 +static struct smh_diag_site { void *ra; size_t acquires; size_
+          +t releases; } smh_diag_sites[64];                             
+      279 +static SPINLOCK smh_diag_lock = SPINLOCK_INITIALIZER;         
+      280 +static size_t smh_diag_survivals = 0;                         
+      281 +                                                              
+      282 +static void smh_diag_track(void *ra, bool acquire) {          
+      283 +    spinlock_lock(&smh_diag_lock);                            
+      284 +    for(size_t i = 0; i < 64; i++) {                          
+      285 +        if(smh_diag_sites[i].ra == ra || smh_diag_sites[i].ra 
+          +== NULL) {                                                    
+      286 +            smh_diag_sites[i].ra = ra;                        
+      287 +            if(acquire) smh_diag_sites[i].acquires++;         
+      288 +            else smh_diag_sites[i].releases++;                
+      289 +            break;                                            
+      290 +        }                                                     
+      291 +    }                                                         
+      292 +    spinlock_unlock(&smh_diag_lock);                          
+      293 +}                                                             
+      294 +                                                              
+      295 +static void smh_diag_dump(REFCOUNT surviving_refcount) {      
+      296 +    spinlock_lock(&smh_diag_lock);                            
+      297 +    fprintf(stderr, "SMH_DIAG: handle survived rrddim_free wit
+          +h refcount %d (survival #%zu)\n",                             
+      298 +            surviving_refcount, smh_diag_survivals);          
+      299 +    for(size_t i = 0; i < 64 && smh_diag_sites[i].ra; i++)    
+      300 +        fprintf(stderr, "SMH_DIAG:   site %p acquires=%zu rele
+          +ases=%zu\n",                                                  
+      301 +                smh_diag_sites[i].ra, smh_diag_sites[i].acquir
+          +es, smh_diag_sites[i].releases);                              
+      302 +    spinlock_unlock(&smh_diag_lock);                          
+      303 +}                                                             
+      304 +                                                              
+      305  STORAGE_METRIC_HANDLE *rrddim_metric_get_by_uuid(STORAGE_INSTA
+           NCE *si, nd_uuid_t *uuid) {
+      306      UUIDMAP_ID id = uuidmap_create(*uuid);
+      307      STORAGE_METRIC_HANDLE *mh = rrddim_metric_get_by_id(si, id
+           );
+     ...
+      315      if(!refcount_acquire(&mh->refcount))
+      316          fatal("DB_RAM_ALLOC: cannot acquire an already acquire
+           d refcount");
+      317  
+      318 +    smh_diag_track(__builtin_return_address(0), true);        
+      319      return smh;
+      320  }
+      321  
+      322  void rrddim_metric_release(STORAGE_METRIC_HANDLE *smh) {
+      323      struct mem_metric_handle *mh = (struct mem_metric_handle *
+           )smh;
+      324  
+      325 +    smh_diag_track(__builtin_return_address(0), false);       
+      326      if(refcount_release_and_acquire_for_deletion(&mh->refcount
+           ))
+      327          rrddim_metric_free_handle(mh);
+      328  }
+
+● Update(src/database/ram/rrddim_mem.c)
+  ⎿  Added 6 lines
+      351  
+      352      if(refcount_release_and_acquire_for_deletion(&mh->refcount
+           ))
+      353          rrddim_metric_free_handle(mh);
+      354 +    else {                                                    
+      355 +        // TEMP DIAGNOSTIC (oom investigation)                
+      356 +        size_t n = __atomic_add_fetch(&smh_diag_survivals, 1, 
+          +__ATOMIC_RELAXED);                                            
+      357 +        if(n <= 5 || (n % 100) == 0)                          
+      358 +            smh_diag_dump(refcount_references(&mh->refcount));
+      359 +    }                                                         
+      360  
+      361      return data_transferred;
+      362  }
+
+  Searched for 1 pattern, listed 1 directory (ctrl+o to expand)
+
+● Update(src/database/ram/rrddim_mem.c)
+  ⎿  Added 3 lines
+      269      }
+      270      netdata_rwlock_rdunlock(&rrddim_Judy_rwlock);
+      271  
+      272 +    if(mh) // TEMP DIAGNOSTIC (oom investigation)             
+      273 +        smh_diag_track(__builtin_return_address(0), true);    
+      274 +                                                              
+      275      return (STORAGE_METRIC_HANDLE *)mh;
+      276  }
+      277  
+● The helpers are defined after get_by_id — must move them to the top of the
+  file:
+
+● Update(src/database/ram/rrddim_mem.c)
+  ⎿  Removed 30 lines
+      275      return (STORAGE_METRIC_HANDLE *)mh;
+      276  }
+      277  
+      278 -// TEMP DIAGNOSTIC (oom investigation): track acquire/release 
+          -call sites of                                                 
+      279 -// ram-engine metric handles to find who retains them after rr
+          -ddim_free().                                                  
+      280 -// Remove before any commit.                                  
+      281 -static struct smh_diag_site { void *ra; size_t acquires; size_
+          -t releases; } smh_diag_sites[64];                             
+      282 -static SPINLOCK smh_diag_lock = SPINLOCK_INITIALIZER;         
+      283 -static size_t smh_diag_survivals = 0;                         
+      284 -                                                              
+      285 -static void smh_diag_track(void *ra, bool acquire) {          
+      286 -    spinlock_lock(&smh_diag_lock);                            
+      287 -    for(size_t i = 0; i < 64; i++) {                          
+      288 -        if(smh_diag_sites[i].ra == ra || smh_diag_sites[i].ra 
+          -== NULL) {                                                    
+      289 -            smh_diag_sites[i].ra = ra;                        
+      290 -            if(acquire) smh_diag_sites[i].acquires++;         
+      291 -            else smh_diag_sites[i].releases++;                
+      292 -            break;                                            
+      293 -        }                                                     
+      294 -    }                                                         
+      295 -    spinlock_unlock(&smh_diag_lock);                          
+      296 -}                                                             
+      297 -                                                              
+      298 -static void smh_diag_dump(REFCOUNT surviving_refcount) {      
+      299 -    spinlock_lock(&smh_diag_lock);                            
+      300 -    fprintf(stderr, "SMH_DIAG: handle survived rrddim_free wit
+          -h refcount %d (survival #%zu)\n",                             
+      301 -            surviving_refcount, smh_diag_survivals);          
+      302 -    for(size_t i = 0; i < 64 && smh_diag_sites[i].ra; i++)    
+      303 -        fprintf(stderr, "SMH_DIAG:   site %p acquires=%zu rele
+          -ases=%zu\n",                                                  
+      304 -                smh_diag_sites[i].ra, smh_diag_sites[i].acquir
+          -es, smh_diag_sites[i].releases);                              
+      305 -    spinlock_unlock(&smh_diag_lock);                          
+      306 -}                                                             
+      307 -                                                              
+      278  STORAGE_METRIC_HANDLE *rrddim_metric_get_by_uuid(STORAGE_INSTA
+           NCE *si, nd_uuid_t *uuid) {
+      279      UUIDMAP_ID id = uuidmap_create(*uuid);
+      280      STORAGE_METRIC_HANDLE *mh = rrddim_metric_get_by_id(si, id
+           );
+
+● Bash(grep -n "^#include\|^struct mem_metric_handle\|^} \*rrddim_Judy"
+      src/database/ram/rrddim_mem.c | head -5; sed -n 1,15p
+      src/database/ram/rrddim_mem.c)
+  ⎿  3:#include "rrddim_mem.h"
+     4:#include "Judy.h"
+     32:struct mem_metric_handle {
+     … +15 lines (ctrl+o to expand)
+
+● Update(src/database/ram/rrddim_mem.c)
+  ⎿  Added 30 lines
+       6  static Pvoid_t rrddim_Judy_array = NULL;
+       7  static netdata_rwlock_t rrddim_Judy_rwlock;
+       8  
+       9 +// TEMP DIAGNOSTIC (oom investigation): track acquire/release c
+         +all sites of                                                   
+      10 +// ram-engine metric handles to find who retains them after rrd
+         +dim_free().                                                    
+      11 +// Remove before any commit.                                   
+      12 +static struct smh_diag_site { void *ra; size_t acquires; size_t
+         + releases; } smh_diag_sites[64];                               
+      13 +static SPINLOCK smh_diag_lock = SPINLOCK_INITIALIZER;          
+      14 +static size_t smh_diag_survivals = 0;                          
+      15 +                                                               
+      16 +static void smh_diag_track(void *ra, bool acquire) {           
+      17 +    spinlock_lock(&smh_diag_lock);                             
+      18 +    for(size_t i = 0; i < 64; i++) {                           
+      19 +        if(smh_diag_sites[i].ra == ra || smh_diag_sites[i].ra =
+         += NULL) {                                                      
+      20 +            smh_diag_sites[i].ra = ra;                         
+      21 +            if(acquire) smh_diag_sites[i].acquires++;          
+      22 +            else smh_diag_sites[i].releases++;                 
+      23 +            break;                                             
+      24 +        }                                                      
+      25 +    }                                                          
+      26 +    spinlock_unlock(&smh_diag_lock);                           
+      27 +}                                                              
+      28 +                                                               
+      29 +static void smh_diag_dump(REFCOUNT surviving_refcount) {       
+      30 +    spinlock_lock(&smh_diag_lock);                             
+      31 +    fprintf(stderr, "SMH_DIAG: handle survived rrddim_free with
+         + refcount %d (survival #%zu)\n",                               
+      32 +            surviving_refcount, smh_diag_survivals);           
+      33 +    for(size_t i = 0; i < 64 && smh_diag_sites[i].ra; i++)     
+      34 +        fprintf(stderr, "SMH_DIAG:   site %p acquires=%zu relea
+         +ses=%zu\n",                                                    
+      35 +                smh_diag_sites[i].ra, smh_diag_sites[i].acquire
+         +s, smh_diag_sites[i].releases);                                
+      36 +    spinlock_unlock(&smh_diag_lock);                           
+      37 +}                                                              
+      38 +                                                               
+      39  static void __attribute__((constructor)) init_lock(void) {
+      40      netdata_rwlock_init(&rrddim_Judy_rwlock);
+      41  }
+
+  Called netdata-build 2 times (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      kill $(cat $SP/agents/child/netdata.pid); sleep 3…)
+  ⎿  instrumented child up: 2687741
+  ⎿  (timeout 3m)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      until grep -q "SMH_DIAG" $SP/agents/child/log/stdout.log 2>/dev/null;…)
+  ⎿  Running in the background (↓ to manage)
+  ⎿  (timeout 7m)
+
+● Monitor event: "4-way rrd accounting leak comparison under churn
+(HEAD/696/808/813)"
+
+● Curious — no survivals logged in 7 minutes. Let me check whether frees are
+  firing at all on the instrumented child and what the accounting says:
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      curl -s "http://127.0.0.1:29001/api/v1/data?chart=netdata.workers_jobs…)
+  ⎿    page allocate: 1
+       metadata store host: 10
+       metadata ctx cleanup: 1
+     … +13 lines (ctrl+o to expand)
+
+● Update(src/daemon/service.c)
+  ⎿  Added 16 lines, removed 1 line
+      51      size_t dim_candidates = 0;
+      52      size_t dim_archives = 0;
+      53  
+      54 +    // TEMP DIAGNOSTIC (oom investigation): count why obsolete 
+         +dims are skipped                                               
+      55 +    static size_t diag_skip_young = 0, diag_skip_refs = 0, diag
+         +_skip_flag = 0, diag_ok = 0, diag_pass = 0;                    
+      56 +                                                               
+      57      dfe_start_write(st->rrddim_root_index, rd) {
+      58          bool candidate = (all_dimensions || rrddim_flag_check(r
+          d, RRDDIM_FLAG_OBSOLETE));
+      59  
+     ...
+      63              if(rd->collector.last_collected_time.tv_sec + rrdse
+          t_free_obsolete_time_s < now) {
+      64                  size_t references = dictionary_acquired_item_re
+          ferences(rd_dfe.item);
+      65                  if(references == 1) {
+      63 -                    if(svc_rrddim_obsolete_to_archive(rd))     
+      66 +                    if(svc_rrddim_obsolete_to_archive(rd)) {   
+      67                          dim_archives++;
+      68 +                        diag_ok++;                             
+      69 +                    }                                          
+      70 +                    else                                       
+      71 +                        diag_skip_flag++;                      
+      72                  }
+      73 +                else                                           
+      74 +                    diag_skip_refs++;                          
+      75              }
+      76 +            else                                               
+      77 +                diag_skip_young++;                             
+      78          }
+      79      }
+      80      dfe_done(rd);
+      81  
+      82 +    if((++diag_pass % 200) == 0)                               
+      83 +        fprintf(stderr, "SVC_DIAG: pass %zu totals: archived=%z
+         +u skip_young=%zu skip_refs=%zu skip_dimflag=%zu\n",            
+      84 +                diag_pass, diag_ok, diag_skip_young, diag_skip_
+         +refs, diag_skip_flag);                                         
+      85 +                                                               
+      86      if(dim_archives != dim_candidates)
+      87          rrdset_flag_set(st, RRDSET_FLAG_OBSOLETE_DIMENSIONS);
+      88  
+
+  Called netdata-build 2 times (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      kill $(cat $SP/agents/child/netdata.pid); sleep 3…)
+  ⎿  Error: Exit code 143
+     Command timed out after 10m 0s
+
+● Monitor event: "4-way rrd accounting leak comparison under churn
+(HEAD/696/808/813)"
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      PID=$(cat $SP/agents/child/netdata.pid); kill -0 $PID && echo "child a…)
+  ⎿  Error: Exit code 1
+     /bin/bash: line 11: kill: (2730123) - No such process
+     0
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      tail -25 $SP/agents/child/log/stdout.log)
+  ⎿  (No output)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      ls -la $SP/agents/child/log/stdout.log; tail -5 $SP/agents/child/log/d…)
+  ⎿  -rw-rw-r-- 1 vk vk 0 Jul 24 11:55 /tmp/claude-1000/-home-vk-repos-nd-o
+     om/7e1ff238-81f6-4a47-a2c8-6a5993ee4095/scratchpad/agents/child/log/st
+     dout.log
+     … +13 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      setsid /usr/bin/env NETDATA_RUN_DIR=/tmp/nd-oom/child SYNTH_CHARTS=200…)
+  ⎿  Error: Exit code 1
+     [1]+  Done                    setsid /usr/bin/env 
+     NETDATA_RUN_DIR=/tmp/nd-oom/child SYNTH_CHARTS=2000 SYNTH_DIMS=5 
+     OBSOLETE_DIMS=1 /home/vk/repos/nd/oom/build/netdata -D -p 29001 -c 
+     $SP/agents/child/etc/netdata.conf > $SP/agents/child/log/stdout.log 2>&1 < 
+     /dev/null
+     /bin/bash: line 7: kill: (2782525) - No such process
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      pgrep -f "build/netdata -D -p 29001" > $SP/agents/child/netdata.pid 2>…)
+  ⎿  found: 2782527
+     2785673
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      ps -o pid,ppid,cmd -p 2782527 2785673 2>/dev/null…)
+  ⎿      PID    PPID CMD
+     2782527       1 /home/vk/repos/nd/oom/build/netdata -D -p 29001 -c /tm
+     p/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993ee40
+     … +2 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      echo 2782527 > $SP/agents/child/netdata.pid…)
+  ⎿  ok
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      until grep -q "SVC_DIAG" $SP/agents/child/log/stdout.log 2>/dev/null;…)
+  ⎿  Running in the background (↓ to manage)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      tail -1 $SP/parent-mem.csv; ps -o rss= -p $(cat $SP/agents/parent/netd…)
+  ⎿  1784884085,0.0,77.2,1.3,29.0,686.0,391,1097
+     parent RSS: 709 MiB
+
+● Bash(sleep 240; grep "SVC_DIAG" /tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff23
+      8-81f6-4a47-a2c8-6a5993ee4095/scratchpad/agents/child/log/stdout.log |
+      tail -8)
+  ⎿  Running in the background (↓ to manage)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      curl -s "http://127.0.0.1:29001/api/v1/info" | python3 -c "import json…)
+  ⎿  uptime: None
+     charts: 3056 churn: 25
+     -rw-rw-r-- 1 vk vk 0 Jul 24 12:07 /tmp/claude-1000/-home-vk-repos-nd-o
+     … +2 lines (ctrl+o to expand)
+
+● stdout.log is empty because netdata re-points stderr at its daemon log.
+  Checking the right file:
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      grep -h "SVC_DIAG\|SMH_DIAG" $SP/agents/child/log/daemon.log $SP/agent…)
+  ⎿  SMH_DIAG:   site 0x58d5400428c2 acquires=14592 releases=0
+     SMH_DIAG:   site 0x58d54002ae41 acquires=256 releases=0
+     SMH_DIAG:   site 0x58d540026f18 acquires=0 releases=256
+     … +6 lines (ctrl+o to expand)
+
+● Bash(SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a5993e
+      e4095/scratchpad
+      PID=$(cat $SP/agents/child/netdata.pid)…)
+  ⎿  base=58d53fb70000 textoff=002d9000
+     == 0x58d5400428c2 -> file offset 0x7ab8c2
+     rrdstats_metadata_collect
+     … +7 lines (ctrl+o to expand)
+
+● Bash(git log --format="%h %cd %s" --date=short --follow --
+      src/database/rrd-metadata.c | head; echo ===; sed -n 1,60p
+      src/database/rrd-metadata.c)  ⎿  cc0502ab96 2025-05-15 Model Context Protocol Server (MCP) for Netdata
+     (#20244)
+     361f621913 2025-04-07 daemon status 27b (#20076)
+     … +54 lines (ctrl+o to expand)
+
+● Line 28 there only reads counters — the address attribution is inline-smeared
+  (optimized build). Let me get the full inline chain:
+
+● Bash(addr2line -e /home/vk/repos/nd/oom/build/netdata -f -C -i 0x7ab8c2 | head
+      -20)
+  ⎿  rrdstats_metadata_collect
+     /home/vk/repos/nd/oom/src/database/rrd-metadata.c:28
+
+● query_context_add resolved correctly, so the method works — let me disassemble
+  around the hot site to see the real containing code:
+
+● Bash(objdump -d --start-address=0x7ab850 --stop-address=0x7ab910
+      /home/vk/repos/nd/oom/build/netdata | grep -E "call|^00|:" | head -30)
+  ⎿  /home/vk/repos/nd/oom/build/netdata:     file format elf64-x86-64
+     Disassembly of section .text:
+     00000000007ab850 <rrdstats_metadata_collect+0x70>:
+     … +27 lines (ctrl+o to expand)
+
+● Monitor event: "4-way rrd accounting leak comparison under churn
+(HEAD/696/808/813)"
+
+● Bash(objdump -d --start-address=0x7ab7e0 --stop-address=0x7ab8d5
+      /home/vk/repos/nd/oom/build/netdata | grep "call\|7ab8b\|7ab8c" | head
+      -15)
+  ⎿    7ab82a:  e8 31 93 36 00          call   b14b60
+     <__netdata_rwlock_rdlock>
+       7ab861:  e8 6a 57 39 00          call   b40fd0
+     <dictionary_foreach_start_
+     rw>
+     … +12 lines (ctrl+o to expand)
+
+● No call there — my offset arithmetic was wrong (p_vaddr ≠ file offset).
+  Computing the load bias properly from the program headers:
+
+● Bash(readelf -l /home/vk/repos/nd/oom/build/netdata 2>/dev/null | grep -A1
+      "LOAD" | head -12;
+      SP=/tmp/claude-1000/-home-vk-repos-nd-oom/7e1ff238-81f6-4a47-a2c8-6a599…)
+  ⎿    LOAD           0x0000000000000000 0x0000000000000000 0x0000000000000
+     000
+                      0x00000000002d99bc 0x00000000002d99bc  R      0x1000
+     … +14 lines (ctrl+o to expand)
+
+● Bash(python3 - <<'EOF'
+      # exec LOAD: p_offset 0x2d99bc -> p_vaddr 0x2da9bc; runtime maps r-xp
+      starts 0x58d53fb70000 with file off 0x2d9000…)
+  ⎿  0x7ac8c2
+     0x794e41
+     0x790f18
+
+● Bash(for a in 0x7ac8c2 0x794e41 0x790f18; do echo "== $a"; addr2line -e
+      /home/vk/repos/nd/oom/build/netdata -f -C -i $a; done)
+  ⎿  == 0x7ac8c2
+     rrddim_metric_get_or_create
+     /home/vk/repos/nd/oom/src/database/ram/rrddim_mem.c:231
+     … +6 lines (ctrl+o to expand)
+
+● Background command "Collect skip-reason counters after settling" completed
+(exit code 0)
+
+  Searched memories, wrote 1 memory (ctrl+o to expand)
+
+● Final root-cause report — children OOMs
+
+  TL;DR: Reproduced and root-caused. Three stacked defects: (1) since Apr 2025,
+  charts obsoleted at chart level are never freed — this is the leak; (2) since
+  Jul 7, ram-engine metric handles are born with refcount 2, so even
+  correctly-freed dimensions leak their ring buffers; (3) the Jul 13 cgroup-name
+  helper replacement is the likely trigger that turned latent leaks into daily
+  OOMs by unleashing cronjob-pod churn. All three are proven on the local rig
+  with instrumented builds; only the staging-side trigger confirmation remains.
+
+  Defect 1 — chart-level obsoletion never frees (the staging child leak)
+
+  - svc_rrddim_obsolete_to_archive (src/daemon/service.c:8) refuses to archive a
+  dimension unless it carries RRDDIM_FLAG_OBSOLETE. Chart-level obsoletion —
+  used by cgroups.plugin (cgroup-discovery.c:47-83), go.d job stops, plugin
+  exits, and child-disconnect mass obsoletion — never sets dimension flags
+  (pluginsd_parser.c:542 sets them only for per-DIMENSION "obsolete").
+  - So every cleanup pass counts candidates it can't archive, re-arms
+  OBSOLETE_DIMENSIONS, and rrdset_free() is unreachable. Proven: zero free chart
+  worker events under chart-level churn on all four builds
+  (-696/-808/-813/-883); frees appear instantly when dimensions are obsoleted
+  explicitly; skip counters show skip_dimflag/skip_refs = 0 once flags are set.
+  - Introduced by e46080f64f ("Fix memory leaks and service thread corruption",
+  2025-04-24): it made the archive count honest, which unmasked the
+  missing-dim-flag hole — before it, miscounting let rrdset_free() run anyway.
+  - Cost on a mode=ram child: ~28.8KB/dim ring + structs + labels per churned
+  chart, forever. Measured: rrd accounting +1.4MB/min and VmData +1.65MB/min at
+  25 churned charts/min, on every build.
+
+  Defect 2 — ram handles born with refcount 2 (nightlies since ~Jul 8)
+
+  - rrddim_metric_get_or_create (src/database/ram/rrddim_mem.c:231): the
+  creation body sets refcount=1, then the while((mh = get_by_id(...)) == NULL)
+  condition re-runs, finds the new handle, and acquires again → one owner, two
+  references. At rrddim_free, the release leaves refcount 1 → ring retained
+  forever.
+  - Proven by instrumentation: every freed dimension logs "handle survived
+  rrddim_free with refcount 1"; the extra acquires resolve to get_or_create
+  itself (14,592 = one per dimension created); query acquire/release pairs are
+  balanced.
+  - From the Jul 7 ownership refactor (9ddc54a5ac, in nightly -738+, so in
+  staging's -858 too). Masked in staging by defect 1 (charts never reach the
+  free path), but it guarantees the leak persists even after defect 1 is fixed.
+  Fix is a one-liner-class change.
+
+  Defect 3 (trigger) — cgroup-name replacement unleashed churn
+
+  - Both leaks need churn to matter. Staging's !*cronjob* * filter kept cronjob
+  churn at zero — it matches resolved names, and the shell→Go helper replacement
+  (70c9e64076, Jul 13, inside the report's -738→-858 window) added new failure
+  modes (missing binary → "cgroup renaming is disabled"; TLS now fails closed
+  where the shell used curl -k). Renaming broken ⇒ filter dead ⇒ every cronjob
+  pod = ~25 charts obsoleted chart-level per run ⇒ defect 1 does the rest.
+  Timing matches "last week".
+  - Still hypothesis for staging specifically — confirm with one grep on an
+  OOMing child (renaming is disabled) or one look at chart names (k8s_… vs raw
+  kubepods…), or the AI Insights onset-date report.
+
+  Parent
+
+  Same mechanism via streaming: mirrored charts from churny children are
+  obsoleted chart-level on the parent. My rig's parent grew ~+280MB/h receiving
+  4 churny children — matching the staging parent's slower ~20h OOM cycle and
+  its metadata-dominant profile.
+
+  Decisions needed (numbered)
+
+  1. Defect-1 fix design — A: set dim OBSOLETE flags when a chart is obsoleted
+  (in rrdset_is_obsolete___safe_from_collector_thread, mirrored in the
+  un-obsolete path); B: archive dims regardless of dim flag when the chart is
+  obsolete (all_dimensions=true pass-through in service.c). My recommendation: B
+  (surgical) — it's confined to the cleanup path where the counting regression
+  lives, no new flag-lifecycle interactions.
+  2. Defect-2 fix — restructure get_or_create so the creation path returns the
+  created handle without re-lookup (or drops one reference). Small, but touches
+  refcount logic — needs careful review either way.
+  3. Diagnostics revert — my temporary SMH_DIAG/SVC_DIAG patches are still in
+  this worktree (rrddim_mem.c, service.c). Revert now, or keep while prototyping
+  the fixes?
+  4. Rig — keep the 5 agents + loggers running (useful for validating fixes), or
+  tear down?
+
+  Say the word on 1-2 and I'll prototype and validate under the same churn
+  harness (leak-vs-plateau is visible within ~10 minutes per run).
+
+✻ Cogitated for 33m 51s
+
+❯ I think you need to write a report that is more detailed about the approach   
+  you followed, reference exact commits, dates, etc. So that I can share this   
+  with another engineer and he can start a new session to actually fix these    
+  issues. Note, the target audience of the document is not only the LLM that    
+  will pick this up, but also the engineer (human) who will work on this. Try   
+  to avoid too many itemized/enumerated lists and provide enough context so     
+  that everything's clear.                                                      
+
+● Write(.local/oom-investigation-report.md)
+  ⎿  Wrote 638 lines to .local/oom-investigation-report.md
+       1 # Children agents OOM — investigation report and fix handoff
+       3 Date: 2026-07-24
+       4 Investigated on: `~/repos/nd/oom` (dedicated worktree, branch `o
+       5 Status: root causes identified and reproduced locally; fixes not
+       6 
+       7 This document is a complete handoff: it explains the production 
+       8 investigation method, the exact defects with commits and code lo
+         cations, the
+         for the fixes
+         d an AI
+     … +922 lines (ctrl+o to expand)
+● Monitor event: "4-way rrd accounting leak comparison under churn
+(HEAD/696/808/813)"
+
+● The handoff report is written:
+  ~/repos/nd/oom/.local/oom-investigation-report.md (gitignored .local/, safe to
+  share as a file).
+
+  It's structured as a self-contained narrative for both the engineer and a
+  fresh LLM session:
+
+  1. The production symptom — staging deployment shape, what the Cloud AI report
+  reliably established (rates, sawtooth, rrd-dominant children /
+  metadata-dominant parent, the -738→-858 bracket) and where it's wrong.
+  2. Investigation method — the 4-build parallel rig, the two workload plugins,
+  the three measurement channels, the instrumented builds, and the pitfalls that
+  cost time (PIE address resolution, stderr→daemon.log, socket path limits) so
+  nobody re-hits them.
+  3. Defect 1 — chart-level obsoletion never frees; full code walk
+  (service.c:5/40/92, rrdset.c:116, pluginsd_parser.c:542), why e46080f64f
+  (2025-04-24) is the regression point, and the evidence.
+  4. Defect 2 — the get_or_create double-acquire in rrddim_mem.c from 9ddc54a5ac
+  (2026-07-07), with the SMH_DIAG evidence and why it means fixing defect 1
+  alone won't stop the leak.
+  5. Defect 3 — the cgroup-name trigger hypothesis (70c9e64076, 2026-07-13),
+  explicitly marked confirmed-locally / unconfirmed-in-staging, with the three
+  ways to confirm it.
+  6. Timeline table with every commit hash and date, the reproduction recipe
+  (configs, env, verdict signals with expected numbers), fix guidance with the
+  recommended option and validation acceptance criteria, the same-failure-search
+  list, and both plugin sources plus raw evidence snapshots in appendices.
+
+  It also flags the loose ends the next session inherits: the two uncommitted 
+  diagnostic patches in this worktree (rrddim_mem.c, service.c — must be
+  reverted before any commit), the still-running rig processes, and the open
+  staging-confirmation items.
+
+  One heads-up: the rig is still running and the monitor keeps ticking (all
+  builds still climbing, as expected). Tell me when you want it torn down, and
+  whether I should revert the diagnostic patches now or leave them for the fix
+  session.
+
+✻ Cogitated for 3m 41s
+
+❯ No. I want the document committed in this branch (along with a commit with    
+  your C changes). I will then export our session so that I can commit that as  
+  well. Then I only have to share the branch with the engineer.                 
+
+● Moving the report into the tracked tree (it's currently under gitignored
+  .local/), adjusting the wording about the diagnostics (they'll now be a commit
+  on this branch), then two commits: the C diagnostics and the report.
+
+● Bash(git status --short | head -10)
+  ⎿   M src/daemon/service.c
+      M src/database/ram/rrddim_mem.c
+     ?? cd.txt
+
+● Bash(mv /home/vk/repos/nd/oom/.local/oom-investigation-report.md
+      /home/vk/repos/nd/oom/oom-investigation-report.md && echo moved)
+  ⎿  moved
+
+● Bash(python3 - <<'EOF'
+      p = "oom-investigation-report.md"…)
+  ⎿  updated
+     427:The two temporary diagnostic patches are committed on this investi
+     gation
+
+● Bash(git add src/database/ram/rrddim_mem.c src/daemon/service.c
+      git commit -m "temp diagnostics: track ram metric-handle refcounts and
+      obsolete-dim skip reasons…)
+  ⎿  [oom 415d862b93] temp diagnostics: track ram metric-handle refcounts a
+     nd obsolete-dim skip reasons
+      2 files changed, 57 insertions(+), 1 deletion(-)
+     … +2 lines (ctrl+o to expand)
+
+● Bash(git add oom-investigation-report.md
+      git commit -m "oom-investigation-report: root causes of the children OOM
+      kills…)
+  ⎿  [oom 2294c1eadd] oom-investigation-report: root causes of the children
+      OOM kills
+      1 file changed, 639 insertions(+)
+     … +7 lines (ctrl+o to expand)
+
+● Done — two commits on branch oom, nothing pushed:
+
+  - 415d862b93 — temp diagnostics (src/database/ram/rrddim_mem.c,
+  src/daemon/service.c): the SMH_DIAG/SVC_DIAG instrumentation, with a clear
+  "MUST be reverted before merging" note in the commit message and TEMP 
+  DIAGNOSTIC markers in the code.
+  - 2294c1eadd — oom-investigation-report.md at the repo root (moved out of
+  gitignored .local/, wording updated to say the diagnostics are committed on
+  this branch and must be reverted before merge).
+
+  cd.txt (your session export) is untracked and left alone for you to re-export
+  and commit yourself. The report references all three defects by commit hash
+  and date, so the engineer can start from just this branch.
+
+  One practical note for the hand-off: the rig processes (5 netdata instances,
+  loggers, monitor) are still running on this box under /tmp/nd-oom/ and the
+  session scratchpad — the report's section 11 tells the next session where the
+  PID files are. If you'd rather hand over a quiet machine, say the word and
+  I'll shut them all down.
+
+✻ Worked for 1m 34s
