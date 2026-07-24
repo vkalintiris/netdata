@@ -23,6 +23,8 @@ import dagger
 from dagger import dag
 
 from .envs import EnvSpec, PkgMgr, RustSource, bootstrap, with_build_caches
+from .stock import STOCK_MOUNT
+from .stock import topology_stock as build_topology_stock
 
 ALPINE_IMAGE = "alpine:3.23"
 NP = "/opt/netdata"  # NETDATA_INSTALL_PATH
@@ -359,11 +361,16 @@ def _flag(name: str, on: bool) -> str:
     return f"-DENABLE_{name}={'On' if on else 'Off'}"
 
 
-def static_configure_args(a: StaticArch, build_type: str = "Debug") -> list[str]:
+def static_configure_args(
+    a: StaticArch,
+    build_type: str = "Debug",
+    stock_dir: str | None = None,
+) -> list[str]:
     """Effective CMake config of the static build (installer-derived)."""
     x86 = a.arch == "x86_64"
     full = not a.arm32 or a.arch == "armv7l"  # armv6l drops journal/otel/netflow
     journal = a.arch != "armv6l"
+    stock = [f"-DNETDATA_TOPOLOGY_IP_INTEL_STOCK_DIR={stock_dir}"] if stock_dir else []
     return [
         "cmake",
         "-S",
@@ -411,6 +418,7 @@ def static_configure_args(a: StaticArch, build_type: str = "Debug") -> list[str]
         _flag("EXPORTER_MONGODB", False),
         _flag("EXPORTER_PROMETHEUS_REMOTE_WRITE", True),
         _flag("SENTRY", False),
+        *stock,
     ]
 
 
@@ -419,6 +427,18 @@ _NETDATA_WRAPPER = f"""\
 export NETDATA_BASH_LOADABLES="DISABLE"
 export PATH="{NP}/bin:${{PATH}}"
 exec "{NP}/bin/srv/netdata" "${{@}}"
+"""
+
+# The stock payload installs via the netflow section; assert the four
+# files landed rather than trusting the boot check (which never reads
+# them).
+_STOCK_CHECK = f"""
+set -e
+cd {NP}/usr/share/netdata/topology-ip-intel
+for f in README.md topology-ip-asn.mmdb topology-ip-geo.mmdb topology-ip-intel.json; do
+  [ -s "$f" ] || {{ echo "missing stock payload file: $f"; exit 1; }}
+done
+echo "stock-payload-ok"
 """
 
 # INTERP present means dynamically linked: the whole point is a static agent.
@@ -453,12 +473,27 @@ async def static_build(
     arch: str = "x86_64",
     jobs: int = 0,
     build_type: str = "Debug",
+    topology_stock: dagger.Directory | None = None,
 ) -> dagger.Directory:
-    """Build the self-extracting static installer; returns artifacts dir."""
+    """Build the self-extracting static installer; returns artifacts dir.
+
+    The topology IP-intel stock payload defaults to the native synthetic
+    build (CI pull-request parity); pass `topology_stock` for a
+    release-grade payload. armv6l builds without netflow and therefore
+    without the payload, mirroring CI's exclusion.
+    """
     if arch not in STATIC_ARCHS:
         raise ValueError(f"unsupported static arch {arch} (know: {sorted(STATIC_ARCHS)})")
     a = STATIC_ARCHS[arch]
     parallel = str(jobs) if jobs > 0 else "$(nproc)"
+
+    # The payload installs inside the netflow section of CMakeLists.txt;
+    # armv6l disables netflow, so a payload there would be dead input.
+    netflow = not a.arm32 or a.arch == "armv7l"
+    if not netflow and topology_stock is not None:
+        raise ValueError(f"{a.arch} builds without netflow; topology_stock does not apply")
+    if netflow and topology_stock is None:
+        topology_stock = build_topology_stock(source, a.platform)
 
     version = (await source.file("packaging/version").contents()).strip()
     lsm = (await source.file("packaging/makeself/makeself.lsm").contents()).replace(
@@ -524,17 +559,22 @@ async def static_build(
     for k, v in a.go_env:
         ctr = ctr.with_env_variable(k, v)
 
+    ctr = with_build_caches(ctr, f"static-{a.arch}").with_directory("/netdata", source)
+    if topology_stock is not None:
+        ctr = ctr.with_directory(STOCK_MOUNT, topology_stock)
     ctr = (
-        with_build_caches(ctr, f"static-{a.arch}")
-        .with_directory("/netdata", source)
-        .with_workdir("/netdata")
+        ctr.with_workdir("/netdata")
         .with_env_variable("DISABLE_TELEMETRY", "1")
         .with_env_variable("CFLAGS", cflags)
         .with_env_variable("LDFLAGS", ldflags)
         .with_env_variable("PKG_CONFIG", "pkg-config --static")
         .with_env_variable("PKG_CONFIG_PATH", pkg_config_path)
         .with_env_variable("RUSTFLAGS", "-C target-feature=+crt-static")
-        .with_exec(static_configure_args(a, build_type))
+        .with_exec(
+            static_configure_args(
+                a, build_type, stock_dir=STOCK_MOUNT if topology_stock is not None else None
+            )
+        )
         .with_exec(["sh", "-c", f"cmake --build build --parallel {parallel}"])
         .with_exec(["cmake", "--install", "build"])
         # Install-type stamp (job 71) and conf fixup (job 72).
@@ -558,6 +598,7 @@ async def static_build(
         )
         .with_new_file(f"{NP}/bin/netdata", _NETDATA_WRAPPER, permissions=0o755)
         .with_exec(["sh", "-c", _STATIC_CHECK])
+        .with_exec(["sh", "-c", _STOCK_CHECK if topology_stock is not None else "true"])
         .with_exec(["sh", "-c", _RUNTIME_CHECK])
         .with_exec(
             [

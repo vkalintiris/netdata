@@ -91,6 +91,7 @@ already ran returns instantly for you.
 | `envs.py`    | environment mechanics: bootstrap sequence, package managers, Go/Rust pins, caches |
 | `build.py`   | source-build CMake profile and build/install steps |
 | `pkgs.py`    | DEB/RPM (cpack) build mechanics, install tests |
+| `stock.py`   | synthetic topology IP-intel stock payload (CI PR parity; release payloads stay external) |
 | `static.py`  | static builder env, bundled-dep builds, makeself archive |
 | `docker.py`  | both stages of the official container image |
 | `tests.py`   | Go and C test jobs |

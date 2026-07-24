@@ -17,6 +17,7 @@ from . import ci as ci_mod
 from . import docker as docker_mod
 from . import envs, pkgs, stream, tests
 from . import static as static_mod
+from . import stock as stock_mod
 from .distros import SPECS, Distro
 
 # Netdata source tree; defaults to the repository this module lives in.
@@ -117,13 +118,16 @@ class NetdataCi:
         platform: str = "linux/amd64",
         jobs: int = 0,
         build_type: str = "Debug",
+        topology_stock: dagger.Directory | None = None,
     ) -> dagger.Directory:
         """Build native DEB/RPM packages for one distro/arch, via cpack.
 
         Returns the artifacts directory; chain `export --path=./artifacts`
-        to copy the packages out.
+        to copy the packages out. The topology IP-intel stock payload
+        defaults to the native synthetic build (CI pull-request parity);
+        pass --topology-stock to stage a release-grade payload.
         """
-        return pkgs.package(distro, platform, source, jobs, build_type)
+        return pkgs.package(distro, platform, source, jobs, build_type, topology_stock)
 
     @function
     async def static(
@@ -132,13 +136,30 @@ class NetdataCi:
         arch: str = "x86_64",
         jobs: int = 0,
         build_type: str = "Debug",
+        topology_stock: dagger.Directory | None = None,
     ) -> dagger.Directory:
         """Build the self-extracting static installer (.gz.run) for an arch.
 
         Returns the artifacts directory containing
-        netdata-<arch>-<version>.gz.run and the -latest alias.
+        netdata-<arch>-<version>.gz.run and the -latest alias. The topology
+        IP-intel stock payload defaults to the native synthetic build (CI
+        pull-request parity; armv6l builds without netflow and takes none).
         """
-        return await static_mod.static_build(source, arch, jobs, build_type)
+        return await static_mod.static_build(source, arch, jobs, build_type, topology_stock)
+
+    @function
+    def topology_stock(
+        self,
+        source: NetdataSource,
+        platform: str = "linux/amd64",
+    ) -> dagger.Directory:
+        """Synthetic topology IP-intel stock payload (CI pull-request parity).
+
+        The four-file payload package/static stage by default; exposed for
+        inspection and export. Release-grade payloads are staged externally
+        and passed to package/static via --topology-stock.
+        """
+        return stock_mod.topology_stock(source, platform)
 
     @function
     def docker_image(

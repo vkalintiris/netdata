@@ -16,6 +16,8 @@ from dagger import dag
 
 from .distros import SPECS, DebPackaging, Distro, RpmPackaging, RpmProtobuf
 from .envs import bootstrap, compiler_launcher_args, has_ccache, with_build_caches
+from .stock import STOCK_MOUNT
+from .stock import topology_stock as build_topology_stock
 
 SRC_DIR = "/netdata"
 BUILD_DIR = "/build"
@@ -53,7 +55,12 @@ def _flag(name: str, on: bool) -> str:
     return f"-DENABLE_{name}={'On' if on else 'Off'}"
 
 
-def packaging_configure_args(distro: Distro, platform: str, build_type: str = "Debug") -> list[str]:
+def packaging_configure_args(
+    distro: Distro,
+    platform: str,
+    build_type: str = "Debug",
+    stock_dir: str | None = None,
+) -> list[str]:
     pkg = _packaging(distro)
     amd64 = platform == "linux/amd64"
     bits64 = platform in _64BIT_PLATFORMS
@@ -112,6 +119,9 @@ def packaging_configure_args(distro: Distro, platform: str, build_type: str = "D
         _flag("PLUGIN_IBM", amd64 and not legacy),
     ]
 
+    if stock_dir is not None:
+        args.append(f"-DNETDATA_TOPOLOGY_IP_INTEL_STOCK_DIR={stock_dir}")
+
     if legacy:
         # C++17 and modern libbpf do not compile against the legacy
         # toolchain and kernel headers. FORCE_LEGACY_LIBBPF is a
@@ -163,8 +173,14 @@ def package(
     source: dagger.Directory,
     jobs: int = 0,
     build_type: str = "Debug",
+    topology_stock: dagger.Directory | None = None,
 ) -> dagger.Directory:
-    """Build native DEB/RPM packages; returns the artifacts directory."""
+    """Build native DEB/RPM packages; returns the artifacts directory.
+
+    The topology IP-intel stock payload defaults to the native synthetic
+    build (CI pull-request parity); pass `topology_stock` to stage a
+    release-grade payload instead.
+    """
     pkg = _packaging(distro)
     parallel = str(jobs) if jobs > 0 else "$(nproc)"
 
@@ -174,11 +190,15 @@ def package(
         case RpmPackaging():
             generator, kind, collect = "RPM", "binpkg-rpm", _COLLECT_RPM
 
+    if topology_stock is None:
+        topology_stock = build_topology_stock(source, platform)
+
     rpm_arch, goarch = _PLATFORM_ARCH[platform]
     key = f"pkg-{distro.value}-{platform.replace('/', '-')}"
     ctr = (
         with_build_caches(pkg_env(distro, platform), key)
         .with_directory(SRC_DIR, source)
+        .with_directory(STOCK_MOUNT, topology_stock)
         .with_workdir(SRC_DIR)
         .with_env_variable("DISABLE_TELEMETRY", "1")
         .with_env_variable("GOOS", "linux")
@@ -187,7 +207,7 @@ def package(
             f"{SRC_DIR}/system/.install-type",
             _install_type_stamp(kind, rpm_arch, pkg.prebuilt_distro),
         )
-        .with_exec(packaging_configure_args(distro, platform, build_type))
+        .with_exec(packaging_configure_args(distro, platform, build_type, stock_dir=STOCK_MOUNT))
         .with_exec(["sh", "-c", f"cmake --build {BUILD_DIR} --parallel {parallel}"])
         .with_workdir(BUILD_DIR)
     )
@@ -198,6 +218,15 @@ def package(
     ctr = ctr.with_exec(["cpack", "-V", "-G", generator]).with_exec(["sh", "-c", collect])
     return ctr.directory("/artifacts")
 
+
+# The stock payload ships in the plugin-netflow package; booting alone
+# does not prove the component composition, so assert the files landed.
+_STOCK_CHECK = (
+    "for f in README.md topology-ip-asn.mmdb topology-ip-geo.mmdb topology-ip-intel.json; do "
+    '[ -s "/usr/share/netdata/topology-ip-intel/$f" ] '
+    '|| { echo "missing stock payload file: $f"; exit 1; }; done '
+    '&& echo "stock-payload-ok"'
+)
 
 # Start the agent, wait for the API, and report version + basic health.
 _RUNTIME_CHECK = r"""
@@ -238,5 +267,6 @@ def test_package(
     return (
         ctr.with_directory("/artifacts", artifacts)
         .with_exec(["sh", "-c", pkg.test_install])
+        .with_exec(["sh", "-c", _STOCK_CHECK])
         .with_exec(["sh", "-c", _RUNTIME_CHECK])
     )
