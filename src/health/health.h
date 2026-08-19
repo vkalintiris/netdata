@@ -118,4 +118,7 @@ void alert_variable_lookup_cleanup(void);
 // build ships one, otherwise the shell implementation.
 void health_notification_program_default(char *dst, size_t dst_size);
 
+// Whether that program can actually be run (see the note on the Windows behaviour).
+bool health_notification_program_is_usable(const char *path);
+
 #endif //NETDATA_HEALTH_H

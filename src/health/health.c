@@ -14,6 +14,26 @@
  * with the native dispatcher, and silently sending no notifications would be the
  * worst possible outcome - so the sibling program is used instead, loudly.
  */
+/*
+ * Can this path be run as the notification program?
+ *
+ * POSIX answers the question directly. Windows cannot: the C runtime's _access()
+ * understands only existence and the read-only attribute, and rejects the execute
+ * mode outright - asking for X_OK there fails for every file, executable or not.
+ * Existence is the best answer available, and it is enough, because the installer
+ * places exactly one notifier.
+ */
+bool health_notification_program_is_usable(const char *path) {
+    if(!path || !*path)
+        return false;
+
+#if defined(OS_WINDOWS)
+    return access(path, R_OK) == 0;
+#else
+    return access(path, X_OK) == 0;
+#endif
+}
+
 void health_notification_program_default(char *dst, size_t dst_size) {
     char native[FILENAME_MAX + 1];
 #if defined(OS_WINDOWS)
@@ -22,7 +42,7 @@ void health_notification_program_default(char *dst, size_t dst_size) {
     snprintfz(native, FILENAME_MAX, "%s/alarm-notify", netdata_configured_primary_plugins_dir);
 #endif
 
-    if(access(native, X_OK) == 0) {
+    if(health_notification_program_is_usable(native)) {
         snprintfz(dst, dst_size, "%s", native);
         return;
     }
@@ -37,7 +57,7 @@ static const char *health_notification_program_configured(void) {
     const char *configured =
         inicfg_get_filename(&netdata_config, CONFIG_SECTION_HEALTH, "script to execute on alarm", filename);
 
-    if(!configured || !*configured || access(configured, X_OK) == 0)
+    if(!configured || !*configured || health_notification_program_is_usable(configured))
         return configured;
 
     // The configured program is unusable. If it is the shell notifier this build no
@@ -45,12 +65,13 @@ static const char *health_notification_program_configured(void) {
     const char *base = strrchr(configured, '/');
 #if defined(OS_WINDOWS)
     const char *base_win = strrchr(configured, '\\');
-    if(base_win > base)
+    if(base_win && (!base || base_win > base))
         base = base_win;
 #endif
-    if(base && strcmp(base + 1, "alarm-notify.sh") == 0 && access(filename, X_OK) == 0) {
+    if(base && strcmp(base + 1, "alarm-notify.sh") == 0 &&
+        health_notification_program_is_usable(filename)) {
         nd_log(NDLS_DAEMON, NDLP_WARNING,
-               "HEALTH: [health].'script to execute on alarm' is '%s', which does not exist. "
+               "HEALTH: [health].'script to execute on alarm' is '%s', which cannot be run. "
                "Using '%s' instead. Please update netdata.conf.",
                configured, filename);
         return inicfg_set(&netdata_config, CONFIG_SECTION_HEALTH, "script to execute on alarm", filename);
@@ -102,8 +123,6 @@ void health_load_config_defaults(void) {
     static bool done = false;
     if(done) return;
     done = true;
-
-    char filename[FILENAME_MAX + 1];
 
     health_globals.config.enabled =
         inicfg_get_boolean(&netdata_config, CONFIG_SECTION_HEALTH,

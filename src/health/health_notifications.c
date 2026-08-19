@@ -115,6 +115,9 @@ static inline void enqueue_alarm_notify_in_progress(ALARM_ENTRY *ae)
 
 #define HEALTH_NOTIFY_MAX_ARGS 40
 
+// The program plus the 33 positional arguments.
+#define HEALTH_NOTIFY_ARGC 34
+
 typedef struct health_notify_command {
     const char *argv[HEALTH_NOTIFY_MAX_ARGS];
     size_t argc;
@@ -124,8 +127,11 @@ typedef struct health_notify_command {
     char alarm_id[UINT64_MAX_LENGTH];
     char alarm_event_id[UINT64_MAX_LENGTH];
     char when[UINT64_MAX_LENGTH];
-    char new_value[64];
-    char old_value[64];
+    // NETDATA_DOUBLE_FORMAT_ZERO is "%0.0f", so DBL_MAX renders as ~309 digits. A
+    // short buffer would not overflow - snprintfz is bounded - but it would hand the
+    // notifier a silently truncated, numerically wrong value.
+    char new_value[512];
+    char old_value[512];
     char duration[UINT64_MAX_LENGTH];
     char non_clear_duration[UINT64_MAX_LENGTH];
     char n_warn[UINT64_MAX_LENGTH];
@@ -141,6 +147,9 @@ static inline void health_notify_add(HEALTH_NOTIFY_COMMAND *cmd, const char *val
     cmd->argv[cmd->argc++] = value ? value : "";
 }
 
+// The argv entries point into `cmd` and at strings the caller owns. That is safe
+// because spawn_popen_run_argv() copies everything before it returns - it blocks on
+// the spawn server's status report. A fire-and-forget spawn would break this.
 static bool prepare_command(HEALTH_NOTIFY_COMMAND *cmd,
                             const char *exec,
                             const char *recipient,
@@ -231,6 +240,16 @@ static bool prepare_command(HEALTH_NOTIFY_COMMAND *cmd,
     health_notify_add(cmd, type);
 
     cmd->argv[cmd->argc] = NULL;
+
+    // The count is a contract with every notification program (33 arguments plus the
+    // program itself). Adding a field without extending HEALTH_NOTIFY_MAX_ARGS would
+    // otherwise truncate argv silently.
+    if(cmd->argc != HEALTH_NOTIFY_ARGC) {
+        netdata_log_error("Notification program arguments: expected %d, prepared %zu.",
+                          HEALTH_NOTIFY_ARGC, cmd->argc);
+        return false;
+    }
+
     return true;
 }
 
@@ -467,7 +486,10 @@ void health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct health_rais
             enqueue_alarm_notify_in_progress(ae);
         }
         else
-            netdata_log_error("Failed to execute alarm notification");
+            netdata_log_error(
+                "Failed to execute alarm notification program '%s'. It is executed directly, "
+                "not through a shell, so a script must start with an interpreter line (#!).",
+                cmd.argv[0]);
 
         health_alarm_log_save(host, ae, false);
     }

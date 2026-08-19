@@ -397,7 +397,7 @@ void analytics_alarms_notifications(void)
     char script[FILENAME_MAX + 1];
     health_notification_program_default(script, sizeof(script));
 
-    if (unlikely(access(script, R_OK) != 0)) {
+    if (unlikely(!health_notification_program_is_usable(script))) {
         netdata_log_info("Alarm notify program %s not found.", script);
         return;
     }
