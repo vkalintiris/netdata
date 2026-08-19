@@ -89,81 +89,99 @@ static int connect_to_spawn_server(const char *path, bool log) {
 
 // --------------------------------------------------------------------------------------------------------------------
 // Encoding and decoding of spawn server request argv type of data
+//
+// The wire format is length-prefixed:
+//
+//     [uint32 count]  then, count times:  [uint32 length][length bytes]['\0']
+//
+// A plain NUL-separated list cannot represent an empty argument, because the empty
+// string is what terminates the list. That mattered: alert notifications pass fixed
+// positional arguments, several of which are routinely empty, and dropping one
+// shifted every argument after it. Lengths make an empty argument representable, and
+// keeping the NUL terminators means the decoded argv can still point straight into
+// the received buffer.
+
+#define ARGV_MAX_ENTRIES 4096
+
+static void argv_append_u32(char **buffer, size_t *used, uint32_t value) {
+    memcpy(&(*buffer)[*used], &value, sizeof(value));
+    *used += sizeof(value);
+}
 
 // Function to encode argv or envp
 static void* argv_encode(const char **argv, size_t *out_size) {
-    size_t buffer_size = 1024; // Initial buffer size
-    size_t buffer_used = 0;
-    char *buffer = mallocz(buffer_size);
+    uint32_t count = 0;
+    size_t needed = sizeof(uint32_t);
 
     if(argv) {
         for (const char **p = argv; *p != NULL; p++) {
-            if (strlen(*p) == 0)
-                continue; // Skip empty strings
-
-            size_t len = strlen(*p) + 1;
-            size_t wanted_size = buffer_used + len + 1;
-
-            if (wanted_size >= buffer_size) {
-                buffer_size *= 2;
-
-                if(buffer_size < wanted_size)
-                    buffer_size = wanted_size;
-
-                buffer = reallocz(buffer, buffer_size);
+            if(count >= ARGV_MAX_ENTRIES) {
+                // A sanity bound, not an expected case: say so rather than truncate
+                // the child's arguments in silence.
+                nd_log(NDLS_COLLECTORS, NDLP_ERR,
+                       "SPAWN SERVER: more than %d arguments given; the rest are dropped.",
+                       ARGV_MAX_ENTRIES);
+                break;
             }
 
-            memcpy(&buffer[buffer_used], *p, len);
-            buffer_used += len;
+            count++;
+            needed += sizeof(uint32_t) + strlen(*p) + 1;
         }
     }
 
-    buffer[buffer_used++] = '\0'; // Final empty string
-    *out_size = buffer_used;
+    char *buffer = mallocz(needed);
+    size_t used = 0;
 
+    argv_append_u32(&buffer, &used, count);
+
+    for(uint32_t i = 0; i < count ;i++) {
+        size_t len = strlen(argv[i]);
+        argv_append_u32(&buffer, &used, (uint32_t)len);
+        memcpy(&buffer[used], argv[i], len + 1); // includes the terminating NUL
+        used += len + 1;
+    }
+
+    *out_size = used;
     return buffer;
 }
 
-static const char *argv_find_next(const char *ptr, const char *end) {
-    return memchr(ptr, '\0', (size_t)(end - ptr));
+static bool argv_read_u32(const char *buffer, size_t size, size_t *offset, uint32_t *value) {
+    if(*offset + sizeof(uint32_t) > size)
+        return false;
+
+    memcpy(value, &buffer[*offset], sizeof(uint32_t));
+    *offset += sizeof(uint32_t);
+    return true;
 }
 
 // Function to decode argv or envp
 static const char** argv_decode(const char *buffer, size_t size) {
-    if(!buffer || !size || buffer[size - 1] != '\0')
+    size_t offset = 0;
+    uint32_t count;
+
+    if(!buffer || !argv_read_u32(buffer, size, &offset, &count) || count > ARGV_MAX_ENTRIES)
         return NULL;
 
-    size_t count = 0;
-    const char *ptr = buffer;
-    const char *end = buffer + size;
-    bool found_final_empty_string = false;
-    while (ptr < end) {
-        if(*ptr) {
-            const char *next = argv_find_next(ptr, end);
-            if(!next)
-                return NULL;
+    // First pass: validate every entry lies inside the buffer and is NUL terminated.
+    size_t probe = offset;
+    for(uint32_t i = 0; i < count ;i++) {
+        uint32_t len;
+        if(!argv_read_u32(buffer, size, &probe, &len))
+            return NULL;
 
-            count++;
-            ptr = next + 1;
-        }
-        else {
-            if(ptr != end - 1)
-                return NULL;
+        if(probe + (size_t)len + 1 > size || buffer[probe + len] != '\0')
+            return NULL;
 
-            found_final_empty_string = true;
-            break;
-        }
+        probe += (size_t)len + 1;
     }
 
-    if(!found_final_empty_string)
-        return NULL;
+    const char **argv = mallocz(((size_t)count + 1) * sizeof(char *));
 
-    const char **argv = mallocz((count + 1) * sizeof(char *));
-
-    ptr = buffer;
-    for (size_t i = 0; i < count; i++) {
-        argv[i] = ptr;
-        ptr = argv_find_next(ptr, end) + 1;
+    for(uint32_t i = 0; i < count ;i++) {
+        uint32_t len;
+        argv_read_u32(buffer, size, &offset, &len);
+        argv[i] = &buffer[offset];
+        offset += (size_t)len + 1;
     }
     argv[count] = NULL; // Null-terminate the array
 
