@@ -389,28 +389,25 @@ void analytics_collectors(void)
 }
 
 /*
- * Run alarm-notify.sh script using the dump_methods parameter
+ * Run the alert notification program with the dump_methods parameter
  * SEND_CUSTOM is always available
  */
 void analytics_alarms_notifications(void)
 {
-    char *script;
-    script = mallocz(
-        sizeof(char) * (strlen(netdata_configured_primary_plugins_dir) + strlen("alarm-notify.sh dump_methods") + 2));
-    sprintf(script, "%s/%s", netdata_configured_primary_plugins_dir, "alarm-notify.sh");
+    char script[FILENAME_MAX + 1];
+    health_notification_program_default(script, sizeof(script));
+
     if (unlikely(access(script, R_OK) != 0)) {
-        netdata_log_info("Alarm notify script %s not found.", script);
-        freez(script);
+        netdata_log_info("Alarm notify program %s not found.", script);
         return;
     }
 
-    strcat(script, " dump_methods");
-
-    netdata_log_debug(D_ANALYTICS, "Executing %s", script);
+    netdata_log_debug(D_ANALYTICS, "Executing %s dump_methods", script);
 
     BUFFER *b = buffer_create(1000, NULL);
     int cnt = 0;
-    POPEN_INSTANCE *instance = spawn_popen_run(script);
+    const char *argv[] = {script, "dump_methods", NULL};
+    POPEN_INSTANCE *instance = spawn_popen_run_argv(argv);
     if (instance) {
         char line[200 + 1];
         FILE *child_stdout = spawn_popen_stdout(instance);
@@ -434,7 +431,6 @@ void analytics_alarms_notifications(void)
             spawn_popen_wait(instance);
         }
     }
-    freez(script);
 
     analytics_set_data_str(&analytics_data.netdata_notification_methods, (char *)buffer_tostring(b));
 

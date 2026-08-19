@@ -277,7 +277,7 @@ typedef uint32_t uid_t;
 // --------------------------------------------------------------------------------------------------------------------
 // NETDATA CLOUD
 
-// BEWARE: this exists in alarm-notify.sh
+// BEWARE: this exists in alarm-notify.sh too (the shell notifier)
 #define DEFAULT_CLOUD_BASE_URL "https://app.netdata.cloud"
 
 // --------------------------------------------------------------------------------------------------------------------

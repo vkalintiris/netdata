@@ -103,7 +103,45 @@ static inline void enqueue_alarm_notify_in_progress(ALARM_ENTRY *ae)
     DOUBLE_LINKED_LIST_APPEND_ITEM_UNSAFE(alarm_notifications_in_progress, ae, prev_in_progress, next_in_progress);
 }
 
-static bool prepare_command(BUFFER *wb,
+/*
+ * The notification program is executed directly, not through a shell.
+ *
+ * Windows has no shell once the bundled MSYS2 root is gone, and going through
+ * `sh -c` also meant every argument had to survive shell quoting: a single quote or
+ * a `$` in an alert's text used to be escaped or replaced before the notifier saw
+ * it. Passing an argv array removes both problems, so the notifier receives each
+ * value exactly as the alert carries it.
+ */
+
+#define HEALTH_NOTIFY_MAX_ARGS 40
+
+typedef struct health_notify_command {
+    const char *argv[HEALTH_NOTIFY_MAX_ARGS];
+    size_t argc;
+
+    // Backing storage for the arguments that have to be formatted.
+    char unique_id[UINT64_MAX_LENGTH];
+    char alarm_id[UINT64_MAX_LENGTH];
+    char alarm_event_id[UINT64_MAX_LENGTH];
+    char when[UINT64_MAX_LENGTH];
+    char new_value[64];
+    char old_value[64];
+    char duration[UINT64_MAX_LENGTH];
+    char non_clear_duration[UINT64_MAX_LENGTH];
+    char n_warn[UINT64_MAX_LENGTH];
+    char n_crit[UINT64_MAX_LENGTH];
+    char transition_id[UUID_STR_LEN];
+} HEALTH_NOTIFY_COMMAND;
+
+// An empty string rather than NULL: argv must keep its fixed positions.
+static inline void health_notify_add(HEALTH_NOTIFY_COMMAND *cmd, const char *value) {
+    if(cmd->argc >= HEALTH_NOTIFY_MAX_ARGS - 1)
+        return;
+
+    cmd->argv[cmd->argc++] = value ? value : "";
+}
+
+static bool prepare_command(HEALTH_NOTIFY_COMMAND *cmd,
                             const char *exec,
                             const char *recipient,
                             const char *registry_hostname,
@@ -139,129 +177,60 @@ static bool prepare_command(BUFFER *wb,
                             const char *component,
                             const char *type
 ) {
-    char buf[8192];
-    size_t n = sizeof(buf) - 1;
-
-    buffer_strcat(wb, "exec");
-
-    if (!sanitize_command_argument_string(buf, exec, n))
+    if(!exec || !*exec)
         return false;
-    buffer_sprintf(wb, " '%s'", buf);
 
-    if (!sanitize_command_argument_string(buf, recipient, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
+    memset(cmd, 0, sizeof(*cmd));
 
-    if (!sanitize_command_argument_string(buf, registry_hostname, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
+    snprintfz(cmd->unique_id, sizeof(cmd->unique_id), "%u", unique_id);
+    snprintfz(cmd->alarm_id, sizeof(cmd->alarm_id), "%u", alarm_id);
+    snprintfz(cmd->alarm_event_id, sizeof(cmd->alarm_event_id), "%u", alarm_event_id);
+    snprintfz(cmd->when, sizeof(cmd->when), "%u", when);
+    snprintfz(cmd->new_value, sizeof(cmd->new_value), NETDATA_DOUBLE_FORMAT_ZERO, new_value);
+    snprintfz(cmd->old_value, sizeof(cmd->old_value), NETDATA_DOUBLE_FORMAT_ZERO, old_value);
+    snprintfz(cmd->duration, sizeof(cmd->duration), "%u", duration);
+    snprintfz(cmd->non_clear_duration, sizeof(cmd->non_clear_duration), "%u", non_clear_duration);
+    snprintfz(cmd->n_warn, sizeof(cmd->n_warn), "%d", n_warn);
+    snprintfz(cmd->n_crit, sizeof(cmd->n_crit), "%d", n_crit);
+    uuid_unparse_lower(*transition_id, cmd->transition_id);
 
-    buffer_sprintf(wb, " '%u'", unique_id);
+    // argv[0] is the program; the 33 arguments follow in their documented order.
+    health_notify_add(cmd, exec);
+    health_notify_add(cmd, recipient);
+    health_notify_add(cmd, registry_hostname);
+    health_notify_add(cmd, cmd->unique_id);
+    health_notify_add(cmd, cmd->alarm_id);
+    health_notify_add(cmd, cmd->alarm_event_id);
+    health_notify_add(cmd, cmd->when);
+    health_notify_add(cmd, alert_name);
+    health_notify_add(cmd, alert_chart_name);
+    health_notify_add(cmd, new_status);
+    health_notify_add(cmd, old_status);
+    health_notify_add(cmd, cmd->new_value);
+    health_notify_add(cmd, cmd->old_value);
+    health_notify_add(cmd, alert_source);
+    health_notify_add(cmd, cmd->duration);
+    health_notify_add(cmd, cmd->non_clear_duration);
+    health_notify_add(cmd, alert_units);
+    health_notify_add(cmd, alert_info);
+    health_notify_add(cmd, new_value_string);
+    health_notify_add(cmd, old_value_string);
+    health_notify_add(cmd, source);
+    health_notify_add(cmd, error_msg);
+    health_notify_add(cmd, cmd->n_warn);
+    health_notify_add(cmd, cmd->n_crit);
+    health_notify_add(cmd, warn_alarms);
+    health_notify_add(cmd, crit_alarms);
+    health_notify_add(cmd, classification);
+    health_notify_add(cmd, edit_command);
+    health_notify_add(cmd, machine_guid);
+    health_notify_add(cmd, cmd->transition_id);
+    health_notify_add(cmd, summary);
+    health_notify_add(cmd, context);
+    health_notify_add(cmd, component);
+    health_notify_add(cmd, type);
 
-    buffer_sprintf(wb, " '%u'", alarm_id);
-
-    buffer_sprintf(wb, " '%u'", alarm_event_id);
-
-    buffer_sprintf(wb, " '%u'", when);
-
-    if (!sanitize_command_argument_string(buf, alert_name, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, alert_chart_name, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, new_status, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, old_status, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    buffer_sprintf(wb, " '" NETDATA_DOUBLE_FORMAT_ZERO "'", new_value);
-
-    buffer_sprintf(wb, " '" NETDATA_DOUBLE_FORMAT_ZERO "'", old_value);
-
-    if (!sanitize_command_argument_string(buf, alert_source, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    buffer_sprintf(wb, " '%u'", duration);
-
-    buffer_sprintf(wb, " '%u'", non_clear_duration);
-
-    if (!sanitize_command_argument_string(buf, alert_units, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, alert_info, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, new_value_string, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, old_value_string, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, source, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, error_msg, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    buffer_sprintf(wb, " '%d'", n_warn);
-
-    buffer_sprintf(wb, " '%d'", n_crit);
-
-    if (!sanitize_command_argument_string(buf, warn_alarms, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, crit_alarms, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, classification, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, edit_command, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, machine_guid, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    char tr_id[UUID_STR_LEN];
-    uuid_unparse_lower(*transition_id, tr_id);
-    if (!sanitize_command_argument_string(buf, tr_id, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, summary, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, context, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, component, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
-    if (!sanitize_command_argument_string(buf, type, n))
-        return false;
-    buffer_sprintf(wb, " '%s'", buf);
-
+    cmd->argv[cmd->argc] = NULL;
     return true;
 }
 
@@ -447,8 +416,8 @@ void health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct health_rais
     size_t n_warn = health_raised_summary_entries(hrm, warn_alarms, ae, RRDCALC_STATUS_WARNING);
     size_t n_crit = health_raised_summary_entries(hrm, crit_alarms, ae, RRDCALC_STATUS_CRITICAL);
 
-    BUFFER *wb = buffer_create(8192, &netdata_buffers_statistics.buffers_health);
-    bool ok = prepare_command(wb,
+    HEALTH_NOTIFY_COMMAND cmd;
+    bool ok = prepare_command(&cmd,
                               exec,
                               recipient,
                               rrdhost_registry_hostname(host),
@@ -487,13 +456,12 @@ void health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct health_rais
                               string2str(ae->type)
     );
 
-    const char *command_to_run = buffer_tostring(wb);
     if (ok) {
         ae->flags |= HEALTH_ENTRY_FLAG_EXEC_RUN;
         ae->exec_run_timestamp = now_realtime_sec(); /* will be updated by real time after spawning */
 
-        netdata_log_debug(D_HEALTH, "executing command '%s'", command_to_run);
-        ae->popen_instance = spawn_popen_run(command_to_run);
+        netdata_log_debug(D_HEALTH, "executing notification program '%s'", cmd.argv[0]);
+        ae->popen_instance = spawn_popen_run_argv(cmd.argv);
         if(ae->popen_instance) {
             ae->flags |= HEALTH_ENTRY_FLAG_EXEC_IN_PROGRESS;
             enqueue_alarm_notify_in_progress(ae);
@@ -504,11 +472,10 @@ void health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct health_rais
         health_alarm_log_save(host, ae, false);
     }
     else
-        netdata_log_error("Failed to format command arguments");
+        netdata_log_error("Failed to prepare the notification program arguments");
 
     buffer_free(warn_alarms);
     buffer_free(crit_alarms);
-    buffer_free(wb);
     freez(edit_command);
 
     return; //health_alarm_wait_for_execution

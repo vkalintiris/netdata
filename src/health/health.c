@@ -3,6 +3,66 @@
 #include "health.h"
 #include "health_internals.h"
 
+/*
+ * Which program dispatches alert notifications.
+ *
+ * A build with a Rust toolchain installs the native dispatcher `alarm-notify`; a
+ * build without one installs the shell implementation `alarm-notify.sh`. Exactly one
+ * of the two is present, so the program is chosen by looking. An explicitly
+ * configured path always wins, with one exception: a configuration left over from an
+ * older installation may still name `alarm-notify.sh` after an upgrade replaced it
+ * with the native dispatcher, and silently sending no notifications would be the
+ * worst possible outcome - so the sibling program is used instead, loudly.
+ */
+void health_notification_program_default(char *dst, size_t dst_size) {
+    char native[FILENAME_MAX + 1];
+#if defined(OS_WINDOWS)
+    snprintfz(native, FILENAME_MAX, "%s/alarm-notify.exe", netdata_configured_primary_plugins_dir);
+#else
+    snprintfz(native, FILENAME_MAX, "%s/alarm-notify", netdata_configured_primary_plugins_dir);
+#endif
+
+    if(access(native, X_OK) == 0) {
+        snprintfz(dst, dst_size, "%s", native);
+        return;
+    }
+
+    snprintfz(dst, dst_size, "%s/alarm-notify.sh", netdata_configured_primary_plugins_dir);
+}
+
+static const char *health_notification_program_configured(void) {
+    char filename[FILENAME_MAX + 1];
+    health_notification_program_default(filename, sizeof(filename));
+
+    const char *configured =
+        inicfg_get_filename(&netdata_config, CONFIG_SECTION_HEALTH, "script to execute on alarm", filename);
+
+    if(!configured || !*configured || access(configured, X_OK) == 0)
+        return configured;
+
+    // The configured program is unusable. If it is the shell notifier this build no
+    // longer ships, use the native one next to it rather than notify nobody.
+    const char *base = strrchr(configured, '/');
+#if defined(OS_WINDOWS)
+    const char *base_win = strrchr(configured, '\\');
+    if(base_win > base)
+        base = base_win;
+#endif
+    if(base && strcmp(base + 1, "alarm-notify.sh") == 0 && access(filename, X_OK) == 0) {
+        nd_log(NDLS_DAEMON, NDLP_WARNING,
+               "HEALTH: [health].'script to execute on alarm' is '%s', which does not exist. "
+               "Using '%s' instead. Please update netdata.conf.",
+               configured, filename);
+        return inicfg_set(&netdata_config, CONFIG_SECTION_HEALTH, "script to execute on alarm", filename);
+    }
+
+    nd_log(NDLS_DAEMON, NDLP_ERR,
+           "HEALTH: [health].'script to execute on alarm' is '%s', which cannot be executed. "
+           "Alert notifications will not be sent.",
+           configured);
+    return configured;
+}
+
 struct health_plugin_globals health_globals = {
     .initialization = {
         .spinlock = SPINLOCK_INITIALIZER,
@@ -73,9 +133,7 @@ void health_load_config_defaults(void) {
     health_globals.config.health_log_retention_s =
         inicfg_get_duration_seconds(&netdata_config, CONFIG_SECTION_HEALTH, "health log retention", HEALTH_LOG_RETENTION_DEFAULT);
 
-    snprintfz(filename, FILENAME_MAX, "%s/alarm-notify.sh", netdata_configured_primary_plugins_dir);
-    health_globals.config.default_exec =
-        string_strdupz(inicfg_get_filename(&netdata_config, CONFIG_SECTION_HEALTH, "script to execute on alarm", filename));
+    health_globals.config.default_exec = string_strdupz(health_notification_program_configured());
 
     health_globals.config.enabled_alerts =
         simple_pattern_create(inicfg_get(&netdata_config, CONFIG_SECTION_HEALTH, "enabled alarms", "*"),

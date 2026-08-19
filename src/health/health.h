@@ -113,4 +113,9 @@ void health_load_config_defaults(void);
 
 void alert_variable_lookup_cleanup(void);
 
+
+// The program that dispatches alert notifications: the native dispatcher when this
+// build ships one, otherwise the shell implementation.
+void health_notification_program_default(char *dst, size_t dst_size);
+
 #endif //NETDATA_HEALTH_H
