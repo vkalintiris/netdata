@@ -208,6 +208,14 @@ else()
     set(NETDATA_RUST_MSRV "1.91")
 endif()
 
+# Windows has no shell notifier to fall back to, so the native one is not optional
+# there - including when it is switched off explicitly.
+if(OS_WINDOWS AND NOT ENABLE_ALARM_NOTIFY_NATIVE)
+    message(FATAL_ERROR
+            "ENABLE_ALARM_NOTIFY_NATIVE cannot be disabled on Windows: the shell notifier "
+            "needs bash and the POSIX helper programs, which Windows does not have.")
+endif()
+
 if(ENABLE_ALARM_NOTIFY_NATIVE)
     # Alert notifications are core functionality, not an optional plugin, so a
     # missing toolchain must not fail the build: it selects the shell notifier
@@ -4498,12 +4506,19 @@ install(FILES
 # Alert notifications are dispatched by exactly one program. The native dispatcher
 # is used when it can be built; otherwise the shell implementation is installed, so
 # a build without a Rust toolchain (for example armv6l static builds) still notifies.
-# The daemon picks whichever is present - see health_globals_default_exec().
+# The daemon picks whichever is present - see health_notification_program_default().
 if(ENABLE_ALARM_NOTIFY_NATIVE)
         corrosion_install(TARGETS alarm-notify
                           PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
                           RUNTIME DESTINATION usr/libexec/netdata/plugins.d
                           COMPONENT netdata)
+
+        # Overlay upgrades (source and static installs) never delete files a newer
+        # build stopped shipping, and a stale alarm-notify.sh stays executable and
+        # keeps being used by any netdata.conf that names it explicitly.
+        install(CODE "
+            file(REMOVE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/usr/libexec/netdata/plugins.d/alarm-notify.sh\")
+        " COMPONENT netdata)
 
         # Compatibility shims for the `custom` notification method, whose sender is
         # user-written shell (POSIX) or PowerShell (Windows).

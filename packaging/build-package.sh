@@ -254,7 +254,7 @@ case "${PKG_TYPE}" in
         # The spec builds the Rust plugins only when a Rust toolchain is
         # present; the v2 builder images always ship one, so this matters
         # only if the script runs outside them.
-        if ! command -v rustc >/dev/null 2>&1; then
+        if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
             add_cmake_option ENABLE_PLUGIN_NETFLOW Off
             add_cmake_option ENABLE_PLUGIN_OTEL Off
             # Without it the shell notifier is installed instead.

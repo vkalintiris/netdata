@@ -1099,6 +1099,13 @@ if [ "$(id -u)" -eq 0 ]; then
     run chmod 0750 "${NETDATA_PREFIX}/usr/libexec/netdata/plugins.d/netflow-plugin"
   fi
 
+  # The alert notification dispatcher. Needed explicitly because the sweep above
+  # restores the execute bit only for *plugin and *.sh, and this is neither.
+  if [ -f "${NETDATA_PREFIX}/usr/libexec/netdata/plugins.d/alarm-notify" ]; then
+    run chown "root:${NETDATA_GROUP}" "${NETDATA_PREFIX}/usr/libexec/netdata/plugins.d/alarm-notify"
+    run chmod 0750 "${NETDATA_PREFIX}/usr/libexec/netdata/plugins.d/alarm-notify"
+  fi
+
 else
   # non-privileged user installation
   run chown "${NETDATA_USER}:${NETDATA_GROUP}" "${NETDATA_LOG_DIR}"

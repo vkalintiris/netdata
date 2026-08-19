@@ -279,6 +279,30 @@ plugins.d/slabinfo.plugin
 plugins.d/xenstat.plugin
 "
 
+# Alert notifications are dispatched by exactly one of these, depending on whether the
+# build had a Rust toolchain. Whichever it is has to be executable, or notifications
+# silently stop - installers that reset permissions under libexec have got this wrong
+# before.
+if [ -d "${NETDATA_LIBEXEC_PREFIX}" ]; then
+    notifier=""
+    for candidate in "plugins.d/alarm-notify" "plugins.d/alarm-notify.sh"; do
+        if [ -e "${NETDATA_LIBEXEC_PREFIX}/${candidate}" ]; then
+            notifier="${candidate}"
+            break
+        fi
+    done
+
+    if [ -z "${notifier}" ]; then
+        echo "!!! no alert notification program found in ${NETDATA_LIBEXEC_PREFIX}/plugins.d"
+        exit 1
+    elif [ ! -x "${NETDATA_LIBEXEC_PREFIX}/${notifier}" ]; then
+        echo "!!! ${NETDATA_LIBEXEC_PREFIX}/${notifier} is not executable"
+        exit 1
+    else
+        echo "### ${notifier} is present and executable"
+    fi
+fi
+
 if [ -d "${NETDATA_LIBEXEC_PREFIX}" ]; then
     success=1
     for part in ${NETDATA_LIBEXEC_PARTS}; do
