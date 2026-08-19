@@ -867,6 +867,16 @@ Runtime input skills:
   Trigger: creating or updating Netdata topology producers, topology Function payloads, topology schema fixtures, graph presentation, correlation rules, direction semantics, topology drilldowns, telemetry overlays, or Cloud topology aggregation fixtures.
   Status: live. Developer-facing topology authoring workflow. End-user/operator-facing AI skills belong under `docs/netdata-ai/skills/`; this project skill is the runtime guidance for repository work.
 
+- `.agents/skills/project-alert-notifications/`
+  Trigger: adding or changing an alert notification method; touching
+  `src/crates/alarm-notify`, `health_notifications.c`, the notification program
+  resolution in `health.c`, analytics' `dump_methods` call,
+  `health_alarm_notify.conf`, or the per-method `metadata.yaml`/`README.md` pairs
+  under `src/health/notifications/`.
+  Purpose: the 33-argument argv contract with the health engine, the native/shell
+  notifier selection, `health_alarm_notify.conf` parsing, the `custom_sender()`
+  compatibility shims, and the differential-test recipe for validating a change.
+
 - `.agents/skills/project-writing-go-modules-framework-v2/`
   Trigger: creating or migrating a Go go.d collector to framework V2; touching `CollectorV2`, `metrix.CollectorStore`, `ChartTemplateYAML` / `charts.yaml`, `charttpl`, `chartengine`, V2 host scopes, or V2 collector tests.
   Purpose: mirror maintainer-preferred framework V2 patterns from accepted collectors so new or migrated modules blend with repository style.
