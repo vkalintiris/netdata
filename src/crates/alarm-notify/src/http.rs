@@ -202,6 +202,9 @@ impl HttpClient {
                 if self.debug {
                     tracing::debug!("request form fields: {:?}", field_names(&pairs));
                 }
+                // `.form()` matches what curl's `--data-urlencode` put on the wire:
+                // a space as `+` and upper-case percent escapes. Verified by capturing
+                // both implementations against the same endpoint.
                 builder = builder.form(&pairs);
             }
             Body::Multipart(pairs) => {
@@ -253,22 +256,33 @@ fn field_names(pairs: &[(String, String)]) -> Vec<&str> {
     pairs.iter().map(|(k, _)| k.as_str()).collect()
 }
 
-/// Strip anything that looks like a credential before a URL reaches a log.
+/// A loggable form of a URL: scheme, host and port only.
 ///
-/// Several endpoints carry the API key in the path or query string
-/// (Telegram bot tokens, Gotify, Opsgenie, Kavenegar), so URLs are never logged raw.
+/// For most of these services the webhook URL *is* the credential, and the secret is
+/// in the path rather than the query string - Slack, Discord, MS Teams, RocketChat,
+/// Flock, SIGNL4, ilert, Fleep, Kavenegar. The shell script never logged the URL at
+/// all, so nothing beyond the endpoint's identity is kept.
 pub fn redact_url(url: &str) -> String {
-    let mut out = match url.split_once('?') {
-        Some((base, _)) => format!("{base}?[REDACTED_QUERY]"),
-        None => url.to_string(),
-    };
-    // Telegram-style `/bot<token>/` and generic long path secrets.
-    if let Some(pos) = out.find("/bot") {
-        if let Some(end) = out[pos + 4..].find('/') {
-            out.replace_range(pos + 4..pos + 4 + end, "[REDACTED_TOKEN]");
+    match reqwest::Url::parse(url) {
+        Ok(parsed) => {
+            let mut out = String::new();
+            out.push_str(parsed.scheme());
+            out.push_str("://");
+            if let Some(host) = parsed.host_str() {
+                out.push_str(host);
+            }
+            if let Some(port) = parsed.port() {
+                out.push(':');
+                out.push_str(&port.to_string());
+            }
+            if parsed.path().len() > 1 || parsed.query().is_some() {
+                out.push_str("/[REDACTED]");
+            }
+            out
         }
+        // Unparseable, so no part of it can be assumed safe to keep.
+        Err(_) => "[REDACTED_URL]".to_string(),
     }
-    out
 }
 
 /// The subset of `curl_options` that maps onto a native client.

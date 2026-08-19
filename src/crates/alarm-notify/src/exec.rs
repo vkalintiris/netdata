@@ -55,7 +55,15 @@ pub fn which(program: &str) -> Option<PathBuf> {
         vec![String::new()]
     };
 
-    for dir in std::env::split_paths(&path) {
+    // The script appended the sbin directories to PATH, which is how a manual run
+    // found sendmail. The daemon's own environment already includes them.
+    let extra: &[&str] = if cfg!(unix) {
+        &["/sbin", "/usr/sbin", "/usr/local/sbin"]
+    } else {
+        &[]
+    };
+
+    for dir in std::env::split_paths(&path).chain(extra.iter().map(PathBuf::from)) {
         for ext in &exts {
             let candidate = dir.join(format!("{program}{ext}"));
             if candidate.is_file() {

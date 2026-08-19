@@ -65,6 +65,17 @@ pub fn email(ctx: &Ctx<'_>) -> bool {
     }
 }
 
+/// Make a value safe to place in a header.
+///
+/// A CR or LF inside a header value would end the header and start a new one, so a
+/// value carrying one could inject headers or body content. Nothing upstream can
+/// currently deliver such a value - alert labels and streamed host names are both
+/// filtered before they reach here - but this assembles headers from alert text, so
+/// it does not rely on that.
+fn header_value(value: &str) -> String {
+    value.replace(['\r', '\n'], " ")
+}
+
 /// Assemble the full RFC 822 message that goes to `sendmail -t`.
 pub fn build_message(ctx: &Ctx<'_>, to: &str) -> String {
     let vars = ctx.msg.template_vars(ctx.args, ctx.cfg);
@@ -84,8 +95,8 @@ pub fn build_message(ctx: &Ctx<'_>, to: &str) -> String {
     };
 
     let mut out = String::new();
-    out.push_str(&format!("To: {to}\n"));
-    out.push_str(&format!("Subject: {subject}\n"));
+    out.push_str(&format!("To: {}\n", header_value(to)));
+    out.push_str(&format!("Subject: {}\n", header_value(&subject)));
     out.push_str("MIME-Version: 1.0\n");
     out.push_str(&format!(
         "Content-Type: multipart/alternative; boundary=\"{BOUNDARY}\"\n"
@@ -95,21 +106,34 @@ pub fn build_message(ctx: &Ctx<'_>, to: &str) -> String {
     // single malformed header; these are two proper headers.
     if ctx.cfg.str("EMAIL_THREADING") != "NO" {
         let reference = format!("<{}-{}@{}>", ctx.args.chart, ctx.args.name, ctx.msg.host);
+        let reference = header_value(&reference);
         out.push_str(&format!("In-Reply-To: {reference}\n"));
         out.push_str(&format!("References: {reference}\n"));
     }
     out.push_str(&format!(
         "X-Netdata-Severity: {}\n",
-        ctx.args.status.to_lowercase()
+        header_value(&ctx.args.status.to_lowercase())
     ));
-    out.push_str(&format!("X-Netdata-Alert-Name: {}\n", ctx.args.name));
-    out.push_str(&format!("X-Netdata-Chart: {}\n", ctx.args.chart));
+    out.push_str(&format!(
+        "X-Netdata-Alert-Name: {}\n",
+        header_value(&ctx.args.name)
+    ));
+    out.push_str(&format!(
+        "X-Netdata-Chart: {}\n",
+        header_value(&ctx.args.chart)
+    ));
     out.push_str(&format!(
         "X-Netdata-Classification: {}\n",
-        ctx.args.classification
+        header_value(&ctx.args.classification)
     ));
-    out.push_str(&format!("X-Netdata-Host: {}\n", ctx.msg.host));
-    out.push_str(&format!("X-Netdata-Role: {}\n", ctx.args.roles));
+    out.push_str(&format!(
+        "X-Netdata-Host: {}\n",
+        header_value(&ctx.msg.host)
+    ));
+    out.push_str(&format!(
+        "X-Netdata-Role: {}\n",
+        header_value(&ctx.args.roles)
+    ));
     out.push('\n');
     out.push_str("This is a MIME-encoded multipart message\n");
     out.push('\n');

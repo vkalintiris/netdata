@@ -44,8 +44,16 @@ fn truncation_helpers() {
     let got = truncate_with_ellipsis(&long, 250, 247);
     assert_eq!(got.chars().count(), 250);
     assert!(got.ends_with("..."));
-    assert_eq!(truncate("abcdef", 3), "abc");
-    assert_eq!(truncate("ab", 3), "ab");
+    assert_eq!(truncate_bytes("abcdef", 3), "abc");
+    assert_eq!(truncate_bytes("ab", 3), "ab");
+    // A cut that would land inside a character moves back to its boundary.
+    assert_eq!(truncate_bytes("aé", 2), "a");
+    assert_eq!(truncate_bytes("aé", 3), "aé");
+    // Byte semantics: 160 bytes of two-byte characters is 80 of them.
+    let greek = "α".repeat(200);
+    let cut = truncate_bytes(&greek, 160);
+    assert_eq!(cut.len(), 160);
+    assert_eq!(cut.chars().count(), 80);
 }
 
 #[test]

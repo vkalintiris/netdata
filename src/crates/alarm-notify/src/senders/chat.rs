@@ -369,8 +369,10 @@ pub async fn fleep(ctx: &Ctx<'_>) -> bool {
     }
     let sender = ctx.cfg.str("FLEEP_SENDER");
     let m = ctx.msg;
+    // A real newline: the script's `\n` was literal text inside a body that was not
+    // valid JSON, so a parsing receiver saw the two characters rather than a break.
     let message = format!(
-        "{} {}, `{}`, *{}*\\n{}",
+        "{} {}, `{}`, *{}*\n{}",
         m.host, m.status_message, ctx.args.chart, m.alarm, ctx.args.info
     );
     let mut sent = false;

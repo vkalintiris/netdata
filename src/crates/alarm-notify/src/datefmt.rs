@@ -32,6 +32,20 @@ pub fn current_year() -> String {
     platform_format(now_secs(), "%Y", false)
 }
 
+/// The timestamp shape RFC 5424 requires, matching what `logger` sends:
+/// microsecond precision and a colon-separated UTC offset.
+pub fn rfc5424_timestamp(epoch_secs: i64) -> String {
+    use chrono::{Local, TimeZone, Utc};
+
+    match Utc.timestamp_opt(epoch_secs, 0).single() {
+        Some(utc_dt) => Local
+            .from_utc_datetime(&utc_dt.naive_utc())
+            .format("%Y-%m-%dT%H:%M:%S%.6f%:z")
+            .to_string(),
+        None => "-".to_string(),
+    }
+}
+
 /// RFC 3339-ish stamp with milliseconds, as PagerDuty expects it.
 pub fn pagerduty_timestamp(epoch_secs: i64) -> String {
     platform_format(epoch_secs, "%Y-%m-%dT%H:%M:%S.000", false)
@@ -83,19 +97,44 @@ fn platform_format(epoch_secs: i64, fmt: &str, utc: bool) -> String {
 }
 
 fn chrono_format(epoch_secs: i64, fmt: &str, utc: bool) -> String {
+    use chrono::format::{Item, StrftimeItems};
     use chrono::{Local, TimeZone, Utc};
-    match Utc.timestamp_opt(epoch_secs, 0).single() {
-        Some(utc_dt) => {
-            if utc {
-                utc_dt.format(fmt).to_string()
-            } else {
+
+    let Some(utc_dt) = Utc.timestamp_opt(epoch_secs, 0).single() else {
+        return String::new();
+    };
+
+    // `date_format` is arbitrary user text, and formatting a specifier chrono does not
+    // support panics when it goes through `to_string()`. On Windows this is the only
+    // formatting path, so one typo would take down every notification. Parse the
+    // format first, and fall back to the default rather than dying.
+    let render = |items: &[Item<'_>]| -> Option<String> {
+        use std::fmt::Write;
+        let mut out = String::new();
+        let result = if utc {
+            write!(out, "{}", utc_dt.format_with_items(items.iter()))
+        } else {
+            write!(
+                out,
+                "{}",
                 Local
                     .from_utc_datetime(&utc_dt.naive_utc())
-                    .format(fmt)
-                    .to_string()
-            }
+                    .format_with_items(items.iter())
+            )
+        };
+        result.ok().map(|()| out)
+    };
+
+    if let Ok(items) = StrftimeItems::new(fmt).parse() {
+        if let Some(out) = render(&items) {
+            return out;
         }
-        None => String::new(),
+    }
+
+    tracing::warn!("date_format '{fmt}' cannot be rendered; using the default format");
+    match StrftimeItems::new(DEFAULT_FORMAT).parse() {
+        Ok(items) => render(&items).unwrap_or_default(),
+        Err(_) => String::new(),
     }
 }
 

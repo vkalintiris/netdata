@@ -19,7 +19,10 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
-serde_json = { workspace = true }
+# preserve_order keeps payload fields in the order the senders write them, which is
+# the order the shell script emitted. Without it the order depends on which other
+# crates happen to be in the same cargo build.
+serde_json = { workspace = true, features = ["preserve_order"] }
 base64 = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

@@ -12,10 +12,18 @@
 
 use std::sync::Arc;
 
-use tracing::field::{Field, Visit};
-use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+use tracing::Level;
+// `Layer` is in scope for `.with_filter()` on both sinks.
+use tracing_subscriber::layer::{Layer, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
+
+// The journal sink and everything that feeds it exist only where there is a journal.
+#[cfg(target_os = "linux")]
+use tracing::field::{Field, Visit};
+#[cfg(target_os = "linux")]
+use tracing::{Event, Subscriber};
+#[cfg(target_os = "linux")]
+use tracing_subscriber::layer::Context;
 
 /// The alert identity attached to every record.
 #[derive(Default)]
@@ -83,6 +91,7 @@ impl LogContext {
         ctx
     }
 
+    #[cfg(target_os = "linux")]
     fn fields(&self, priority: u8, message: &str) -> Vec<(&'static str, String)> {
         vec![
             ("INVOCATION_ID", self.invocation_id.clone()),
@@ -121,6 +130,7 @@ impl LogContext {
 }
 
 /// Netdata's eight syslog priorities.
+#[cfg(target_os = "linux")]
 fn priority_of(level: &Level) -> u8 {
     match *level {
         Level::ERROR => 3,
@@ -178,27 +188,57 @@ pub fn init(ctx: LogContext, debug: bool) -> bool {
     false
 }
 
-/// Extracts an event's `message` field.
+#[cfg(target_os = "linux")]
+/// Extracts an event's message and its other fields.
+///
+/// The structured fields carry the detail that makes a diagnostic actionable - which
+/// config file and line an unsupported construct was on, which path could not be
+/// written - so they are appended to the message text rather than dropped. That keeps
+/// them visible in `journalctl` output and on stderr alike.
 #[derive(Default)]
 struct MessageVisitor {
     message: String,
+    fields: Vec<(String, String)>,
 }
 
-impl Visit for MessageVisitor {
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            self.message = format!("{value:?}");
-            // `record_debug` quotes strings; the message is emitted verbatim.
-            if self.message.starts_with('"') && self.message.ends_with('"') {
-                self.message = self.message[1..self.message.len() - 1].replace("\\\"", "\"");
-            }
+#[cfg(target_os = "linux")]
+impl MessageVisitor {
+    fn record(&mut self, name: &str, value: String) {
+        if name == "message" {
+            self.message = value;
+        } else {
+            self.fields.push((name.to_string(), value));
         }
     }
 
-    fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "message" {
-            self.message = value.to_string();
+    /// The message with its fields appended, e.g. `text (config=/etc/x line=12)`.
+    fn text(&self) -> String {
+        if self.fields.is_empty() {
+            return self.message.clone();
         }
+        let joined = self
+            .fields
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("{} ({joined})", self.message)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        let mut rendered = format!("{value:?}");
+        // `record_debug` quotes strings; values are emitted verbatim.
+        if rendered.len() >= 2 && rendered.starts_with('"') && rendered.ends_with('"') {
+            rendered = rendered[1..rendered.len() - 1].replace("\\\"", "\"");
+        }
+        self.record(field.name(), rendered);
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.record(field.name(), value.to_string());
     }
 }
 
@@ -214,7 +254,7 @@ impl<S: Subscriber> Layer<S> for JournalLayer {
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
         let priority = priority_of(event.metadata().level());
-        self.sink.send(&self.ctx.fields(priority, &visitor.message));
+        self.sink.send(&self.ctx.fields(priority, &visitor.text()));
     }
 }
 

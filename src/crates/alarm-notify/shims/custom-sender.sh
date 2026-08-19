@@ -14,13 +14,17 @@
 #
 # Usage: custom-sender.sh "<space-separated recipients>"
 #
-# For a portable sender that needs no shell at all - the only option on Windows -
-# set CUSTOM_SENDER_COMMAND in health_alarm_notify.conf instead. It is run with the
-# recipients as its first argument and the same variables in its environment.
+# For a portable sender that needs no shell at all, set CUSTOM_SENDER_COMMAND in
+# health_alarm_notify.conf instead. It is run with the recipients as its first
+# argument and the same variables in its environment, on every platform.
 
 #shellcheck source=/dev/null disable=SC2034,SC2154
 
 to="${1}"
+
+# The notifier ran under LC_ALL=C, which is what makes urlencode() below encode bytes
+# rather than code points.
+export LC_ALL=C
 
 # ---------------------------------------------------------------------------
 # helpers the function may call
@@ -73,8 +77,11 @@ duration4human() {
 }
 
 # HTTP helper: prints the response status code, as it always did.
-curl="${curl:-$(command -v curl 2>/dev/null)}"
-curl_options="${curl_options:-}"
+#
+# `curl` is resolved after the configuration is sourced, because the shipped
+# health_alarm_notify.conf contains `curl=""` - the script also resolved it after
+# sourcing, and doing it before would leave every custom_sender() without an HTTP
+# client while still reporting success.
 docurl() {
   if [ -z "${curl}" ]; then
     error "cannot find curl; custom_sender() cannot make HTTP requests"
@@ -103,6 +110,10 @@ do
   [ -f "${CONFIG}" ] || continue
   source "${CONFIG}" || error "failed to load config file '${CONFIG}'."
 done
+
+# Now that the configuration has had its say, resolve what it did not set.
+curl="${curl:-$(command -v curl 2>/dev/null)}"
+curl_options="${curl_options:-}"
 
 [ -z "${to}" ] && exit 1
 

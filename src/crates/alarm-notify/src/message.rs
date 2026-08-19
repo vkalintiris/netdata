@@ -20,6 +20,83 @@ use crate::textutil::{
 const WARN_ROW_TEMPLATE: &str = include_str!("../templates/alarm_row_warning.tpl");
 const CRIT_ROW_TEMPLATE: &str = include_str!("../templates/alarm_row_critical.tpl");
 
+/// The variables a configuration value may reference and have resolved from the
+/// alert, rather than from another configuration value.
+///
+/// The shell script got this for free: it parsed its arguments first and only then
+/// sourced the configuration, so bash expanded `${status}` and friends with the real
+/// values already in scope. The stock `AWSSNS_MESSAGE_FORMAT` relies on exactly that,
+/// and the configuration documents the whole set as available. Values naming one of
+/// these are therefore left alone by the parser and resolved once the alert is known.
+pub const RUNTIME_VARIABLES: &[&str] = &[
+    "host",
+    "url_host",
+    "unique_id",
+    "alarm_id",
+    "event_id",
+    "when",
+    "name",
+    "url_name",
+    "chart",
+    "url_chart",
+    "status",
+    "old_status",
+    "value",
+    "old_value",
+    "src",
+    "duration",
+    "duration_txt",
+    "non_clear_duration",
+    "non_clear_duration_txt",
+    "units",
+    "info",
+    "value_string",
+    "old_value_string",
+    "url_value_string",
+    "image",
+    "color",
+    "goto_url",
+    "calc_expression",
+    "calc_param_values",
+    "total_warnings",
+    "total_critical",
+    "alarm",
+    "status_message",
+    "severity",
+    "raised_for",
+    "date",
+    "date_utc",
+    "summary",
+    "classification",
+    "context",
+    "component",
+    "type",
+    "roles",
+    "transition_id",
+    "child_machine_guid",
+    "notification_description",
+    "args_host",
+    "total_warn_alarms",
+    "total_crit_alarms",
+    "edit_command_line",
+    "edit_command",
+    "line",
+    "s_host",
+    "images_base_url",
+    "alarm_badge",
+    "background_color",
+    "border_color",
+    "text_color",
+    "action_text_color",
+    "rich_status_raised_for",
+    "info_html",
+    "raised_for_html",
+];
+
+pub fn is_runtime_variable(name: &str) -> bool {
+    RUNTIME_VARIABLES.contains(&name)
+}
+
 pub struct Message {
     pub host: String,
     pub notification_description: String,
@@ -344,6 +421,11 @@ impl Message {
         set("component", &args.component);
         set("type", &args.alert_type);
         set("transition_id", &args.transition_id);
+        set("notification_description", &self.notification_description);
+        set("args_host", &args.args_host);
+        set("total_warn_alarms", &args.total_warn_alarms);
+        set("total_crit_alarms", &args.total_crit_alarms);
+        set("edit_command_line", &args.edit_command_line);
         set("child_machine_guid", &args.child_machine_guid);
 
         // Template-only keys.
@@ -359,9 +441,16 @@ impl Message {
 }
 
 fn resolve_host(args: &AlertArgs, cfg: &Config) -> String {
-    if args.args_host.is_empty() {
-        return hostname::short();
-    }
+    // The daemon always supplies a host; this is the manual-run path.
+    let args_host = if args.args_host.is_empty() {
+        hostname::short()
+    } else {
+        args.args_host.clone()
+    };
+    let args = &AlertArgs {
+        args_host,
+        ..args.clone()
+    };
     // Only rewrite to the FQDN for the local node: a child's FQDN is not knowable
     // from here.
     if cfg.str("use_fqdn") == "YES" && args.args_host == hostname::short() {
@@ -417,7 +506,7 @@ fn render_alarm_rows(
         };
         let ts: i64 = val.trim().parse().unwrap_or(0);
         let when = datefmt::format(ts, date_format, false);
-        let elapsed_txt = duration4human(now - ts);
+        let elapsed_txt = duration4human(now.saturating_sub(ts));
         out.push_str(&crate::textutil::expand(template, |k| {
             if k == "key" {
                 Some(key)

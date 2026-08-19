@@ -79,6 +79,21 @@ old script by comparing what both put on the wire.
 - Payload text is JSON-encoded, so an alert whose text contains a quote or a
   backslash no longer produces a broken document.
 
+**Payload shapes that changed with the fixes**
+
+- `kafka` and `fleep` now send `application/json`. Their bodies were not JSON before
+  and were sent with curl's default form content type; a receiver parsing them as JSON
+  could not have succeeded either way.
+- `kafka`'s `value`/`old_value` become JSON `null` when the alert value is `nan`. The
+  script emitted the bare token `nan`, which is not valid JSON.
+- `opsgenie` does the same for an empty value, where the script emitted `"value" : ,`.
+- `fleep`'s message carries a real newline. The script's `\n` was literal text inside
+  a body that was not valid JSON, so a parsing receiver saw two characters.
+- `alerta`'s `rawData` lists the notification's arguments in reverse order, which is
+  what `"${BASH_ARGV[@]}"` would have expanded to had it been populated.
+- `DYNATRACE_SERVER` and `OPSGENIE_API_URL` have a trailing slash trimmed, so a
+  configuration ending in `/` no longer produces a double slash in the request path.
+
 **Behaviour that had to change**
 
 - `EMAIL_CHARSET` defaults to `UTF-8`. It used to come from `locale charmap`, which
@@ -94,6 +109,28 @@ old script by comparing what both put on the wire.
   target (`facility.level@host:port/prefix`) because there is no local syslog socket.
 - Arguments reach the notifier verbatim. They used to pass through a shell command
   string, which replaced `$` with `_` and stripped leading `-`.
+- `syslog` records keep the framing `logger` used, which differs by destination: a
+  local datagram carries no timestamp or host, because the receiving daemon supplies
+  both, and a remote one is RFC 5424, as util-linux has sent since 2.26. The record's
+  tag is the account the Agent runs as, as `logger` reported it, not the recipient's
+  prefix. `logger_options` no longer leaks from one recipient to the next, and
+  bracketed or bare IPv6 targets now work.
+- `ntfy` honours `role_recipients_ntfy[<role>]`. The script documented those entries
+  but always used `DEFAULT_RECIPIENT_NTFY`, so severity modifiers never applied and a
+  role-specific topic was never used. Its Basic credential is also no longer
+  line-wrapped, which `base64` did past 57 bytes.
+- `email` no longer truncates its own header block when `EMAIL_THREADING="NO"`. The
+  script emitted an empty line there, which ended the header section and pushed the
+  `X-Netdata-*` headers into the message body.
+- The `-F` capability probe no longer shares stdin with the message, so it cannot
+  consume part of the mail it is about to send.
+- Header values have CR and LF replaced with a space, so alert text cannot inject a
+  header. Nothing upstream can currently produce such a value; the guard does not rely
+  on that.
+- IRC lines end with CRLF, as RFC 1459 requires.
+- Timestamps in payloads and the SMS length limit are unchanged, but the SMS cut is on
+  bytes (as the script's `LC_ALL=C` cut was) while Pushover's and Discord's limits are
+  applied in characters, which is how those vendors document them.
 
 **Unchanged on purpose**
 
@@ -102,6 +139,15 @@ programs: they own the user's mail routing and cloud credentials, and replacing 
 would change the identity notifications are sent as. On Windows, point the `sendmail`
 setting at a native mail submission program.
 
+## Configuration values that are templates
+
+A configuration value may reference the alert's variables - the shipped
+`AWSSNS_MESSAGE_FORMAT` does - and the configuration documents the whole
+`custom_sender()` variable set as available. The shell script got this for free by
+sourcing the file after parsing its arguments. Here the parser leaves such references
+alone and they are resolved once the alert is known, which also makes `${date}` work;
+bash expanded it before the script had computed it, so it was always empty.
+
 ## Layout
 
 | Path | What it holds |
@@ -109,7 +155,7 @@ setting at a native mail submission program.
 | `src/args.rs` | The 33-argument contract and the mode classifier. |
 | `src/conf_parser.rs` | The `health_alarm_notify.conf` reader. |
 | `src/config.rs` | Typed configuration, defaults, availability screening. |
-| `src/recipients.rs` | Role resolution and the `|critical` severity filter. |
+| `src/recipients.rs` | Role resolution and the `\|critical` severity filter. |
 | `src/message.rs` | Every derived field: status wording, colours, URLs, durations. |
 | `src/senders/` | One module per family of destinations. |
 | `src/http.rs` | The `docurl` replacement, including curl's content-type defaults. |

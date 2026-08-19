@@ -80,10 +80,36 @@ fn unknown_names_fall_back_to_documented_defaults() {
 }
 
 #[test]
-fn record_shape() {
-    let record = format_rfc3164(182, "node1", "netdata", "hello world");
-    assert!(record.starts_with("<182>"), "{record}");
-    assert!(record.ends_with(" node1 netdata: hello world"), "{record}");
+fn the_local_record_carries_no_timestamp_or_host() {
+    // What `logger` puts on /dev/log: journald supplies the rest, and a timestamp
+    // here would become part of the message and cost the record its identifier.
+    assert_eq!(
+        format_local(182, "netdata", "hello world"),
+        "<182>netdata: hello world"
+    );
+}
+
+#[test]
+fn the_remote_record_is_rfc5424() {
+    let record = format_rfc5424(182, "node1", "netdata", "hello world");
+    assert!(record.starts_with("<182>1 "), "{record}");
+    assert!(
+        record.ends_with(" node1 netdata - - hello world"),
+        "{record}"
+    );
+    // VERSION, TIMESTAMP, HOSTNAME, APP-NAME, PROCID, MSGID, then the message.
+    let fields: Vec<&str> = record.splitn(7, ' ').collect();
+    assert_eq!(fields.len(), 7);
+    assert_eq!(fields[0], "<182>1");
+    assert!(fields[1].contains('T'), "timestamp: {}", fields[1]);
+    assert_eq!(fields[4], "-");
+    assert_eq!(fields[5], "-");
+    assert_eq!(fields[6], "hello world");
+}
+
+#[test]
+fn a_missing_hostname_becomes_the_nil_value() {
+    assert!(format_rfc5424(182, "", "netdata", "m").contains(" - netdata - - m"));
 }
 
 #[test]

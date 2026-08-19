@@ -151,7 +151,13 @@ fn allowed_by_criticality(
     match status {
         Status::Critical => {
             if m.critical {
-                if let Err(e) = std::fs::File::create(&tracking_file) {
+                // Create if absent, never truncate: the script used `touch`, and a
+                // recipient name that collided with an existing file must not empty it.
+                if let Err(e) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&tracking_file)
+                {
                     tracing::error!(
                         file = %tracking_file.display(),
                         "cannot create severity tracking file: {e}"

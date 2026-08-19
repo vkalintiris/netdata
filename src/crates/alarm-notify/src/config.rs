@@ -163,6 +163,26 @@ impl Config {
         d
     }
 
+    /// Resolve the alert placeholders the parser deferred.
+    ///
+    /// Called once the alert is known, so a configuration value written as a template
+    /// (the stock `AWSSNS_MESSAGE_FORMAT` is one) carries real values, as it did when
+    /// bash sourced the file after parsing its arguments.
+    pub fn expand_runtime_placeholders(&mut self, vars: &HashMap<String, String>) {
+        for value in self.data.vars.values_mut() {
+            if value.contains("${") {
+                *value = crate::textutil::expand(value, |k| vars.get(k).map(String::as_str));
+            }
+        }
+        for table in self.data.arrays.values_mut() {
+            for value in table.values_mut() {
+                if value.contains("${") {
+                    *value = crate::textutil::expand(value, |k| vars.get(k).map(String::as_str));
+                }
+            }
+        }
+    }
+
     pub fn str(&self, key: &str) -> &str {
         self.data.str(key)
     }

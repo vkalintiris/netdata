@@ -1,8 +1,15 @@
 //! Native syslog delivery.
 //!
 //! The script shelled out to `logger`, which does not exist on Windows and is
-//! util-linux-specific for its `-n`/`-P` remote flags. Emitting RFC 3164 records
-//! directly removes that dependency while keeping the documented recipient grammar:
+//! util-linux-specific for its `-n`/`-P` remote flags. Emitting the records directly
+//! removes that dependency while keeping both the documented recipient grammar and
+//! what `logger` actually put on the wire, which differs by destination:
+//!
+//! * locally, `<PRI>TAG: MESSAGE` - the receiving daemon supplies the timestamp and
+//!   the host, and a timestamp in the datagram would be read as part of the message;
+//! * remotely, RFC 5424, which util-linux has sent by default since 2.26.
+//!
+//! The recipient grammar is unchanged:
 //!
 //! ```text
 //! [[facility.level][@host[:port]]/]prefix
@@ -47,7 +54,17 @@ pub fn syslog(ctx: &Ctx<'_>) -> bool {
             ctx.args.chart,
             ctx.args.value_string
         );
-        let record = format_rfc3164(t.priority_value(), &ctx.msg.host, &t.prefix, &message);
+        // The hostname is the sending node's, as `logger` reported it; the alert's own
+        // host is already the subject of the message text.
+        let record = match &t.server {
+            Some(_) => format_rfc5424(
+                t.priority_value(),
+                &crate::hostname::full(),
+                &syslog_tag(),
+                &message,
+            ),
+            None => format_local(t.priority_value(), &syslog_tag(), &message),
+        };
 
         match deliver(&t, record.as_bytes()) {
             Ok(()) => {
@@ -194,14 +211,40 @@ fn severity_code(name: &str) -> u8 {
     }
 }
 
-/// `<PRI>MMM dd HH:MM:SS HOST TAG: MESSAGE`
-fn format_rfc3164(priority: u8, host: &str, tag: &str, message: &str) -> String {
-    let timestamp = datefmt::format(datefmt::now_secs(), "%b %e %H:%M:%S", false);
-    let tag = sanitize_tag(tag);
-    format!("<{priority}>{timestamp} {host} {tag}: {message}")
+/// The local datagram: `<PRI>TAG: MESSAGE`.
+///
+/// No timestamp and no host - journald and rsyslog fill both in, and anything else
+/// here ends up inside the message text and costs the record its identifier.
+fn format_local(priority: u8, tag: &str, message: &str) -> String {
+    format!("<{priority}>{}: {message}", sanitize_tag(tag))
 }
 
-/// RFC 3164 tags are alphanumeric; anything else terminates the tag.
+/// The remote datagram, RFC 5424: `<PRI>1 TIMESTAMP HOST APP - - MESSAGE`.
+fn format_rfc5424(priority: u8, host: &str, tag: &str, message: &str) -> String {
+    let timestamp = datefmt::rfc5424_timestamp(datefmt::now_secs());
+    let host = if host.is_empty() { "-" } else { host };
+    format!(
+        "<{priority}>1 {timestamp} {host} {} - - {message}",
+        sanitize_tag(tag)
+    )
+}
+
+/// The record's identity, which is what receiver-side rules match on.
+///
+/// `logger` used the invoking user's name, so under the Agent these records have
+/// always been tagged with the account netdata runs as.
+fn syslog_tag() -> String {
+    for key in ["LOGNAME", "USER"] {
+        if let Ok(value) = std::env::var(key) {
+            if !value.trim().is_empty() {
+                return value;
+            }
+        }
+    }
+    "netdata".to_string()
+}
+
+/// Syslog tags are alphanumeric; anything else would terminate the tag.
 fn sanitize_tag(tag: &str) -> String {
     let cleaned: String = tag
         .chars()

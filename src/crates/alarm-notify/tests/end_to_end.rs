@@ -553,3 +553,136 @@ fn a_custom_sender_command_receives_recipients_and_variables() {
         "a b|node1|WARNING"
     );
 }
+
+/// The shipped configuration, not a synthetic one.
+///
+/// A synthetic stock config hid a real defect: `health_alarm_notify.conf` contains
+/// `curl=""`, and the compatibility shim used to resolve `curl` before sourcing it, so
+/// every existing `custom_sender()` lost its HTTP client while still reporting
+/// success. Anything that claims the shipped file keeps working must be tested against
+/// the shipped file.
+#[test]
+fn the_shipped_configuration_drives_an_existing_custom_sender() {
+    if cfg!(not(unix)) {
+        return;
+    }
+    let env = Env::new("");
+    let marker = env.path("shipped-custom-ran.txt");
+
+    let plugins = env.path("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    let shim_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("shims/custom-sender.sh");
+    std::fs::copy(&shim_source, plugins.join("custom-sender.sh")).unwrap();
+
+    // The real stock file, exactly as installed.
+    let shipped = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../health/notifications/health_alarm_notify.conf");
+    std::fs::copy(&shipped, env.path("stock/health_alarm_notify.conf")).unwrap();
+
+    // The user file adds only what a user would.
+    let user_config = format!(
+        concat!(
+            "SEND_EMAIL=\"NO\"\n",
+            "SEND_SYSLOG=\"NO\"\n",
+            "SEND_SMS=\"NO\"\n",
+            "SEND_AWSSNS=\"NO\"\n",
+            "SEND_CUSTOM=\"YES\"\n",
+            "DEFAULT_RECIPIENT_CUSTOM=\"ops-team\"\n",
+            "custom_sender() {{\n",
+            "    local msg=\"${{host}} ${{status_message}}: ${{alarm}}\"\n",
+            "    urlencode \"${{msg}}\" >/dev/null; msg=\"${{REPLY}}\"\n",
+            "    printf '%s|%s|%s\\n' \"${{1}}\" \"${{msg}}\" \"${{curl}}\" > {marker}\n",
+            "    info \"custom sender ran\"\n",
+            "    return 0\n",
+            "}}\n",
+        ),
+        marker = marker.display()
+    );
+    std::fs::write(env.path("user/health_alarm_notify.conf"), user_config).unwrap();
+
+    let out = env
+        .command()
+        .env("NETDATA_PLUGINS_DIR", &plugins)
+        .args(alert_args("WARNING", "CLEAR"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let recorded = std::fs::read_to_string(&marker).expect("custom_sender() ran");
+    let fields: Vec<&str> = recorded.trim().split('|').collect();
+    assert_eq!(fields[0], "ops-team");
+    // urlencode and $REPLY still behave as documented.
+    assert_eq!(
+        fields[1],
+        "node1%20needs%20attention%3a%20disk%20space%20usage%20%3d%2091.5%25"
+    );
+    // And the helpers have a working curl, despite the stock file's `curl=""`.
+    assert!(
+        fields.get(2).is_some_and(|c| !c.is_empty()),
+        "docurl would have had no client: {recorded}"
+    );
+}
+
+/// A configuration value may be a template over the alert's variables.
+#[test]
+fn the_shipped_awssns_message_format_carries_the_alert() {
+    if cfg!(not(unix)) {
+        return;
+    }
+    let env = Env::new("");
+    let shipped = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../health/notifications/health_alarm_notify.conf");
+    std::fs::copy(&shipped, env.path("stock/health_alarm_notify.conf")).unwrap();
+
+    // `aws` is replaced by a recorder, which is what the `aws` setting exists for.
+    let recorder = env.path("fake-aws");
+    let marker = env.path("aws-args.txt");
+    let script = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n", marker.display());
+    std::fs::write(&recorder, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&recorder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let user_config = format!(
+        concat!(
+            "SEND_EMAIL=NO\n",
+            "SEND_SYSLOG=NO\n",
+            "SEND_SMS=NO\n",
+            "SEND_CUSTOM=NO\n",
+            "SEND_AWSSNS=YES\n",
+            "aws=\"{aws}\"\n",
+            "DEFAULT_RECIPIENT_AWSSNS=\"arn:aws:sns:eu-west-1:123456789012:netdata\"\n",
+        ),
+        aws = recorder.display()
+    );
+    std::fs::write(env.path("user/health_alarm_notify.conf"), user_config).unwrap();
+
+    let out = env
+        .command()
+        .args(alert_args("CRITICAL", "WARNING"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let recorded = std::fs::read_to_string(&marker).expect("aws was invoked");
+    let message = recorded
+        .lines()
+        .skip_while(|l| *l != "--message")
+        .nth(1)
+        .expect("--message was passed");
+    // The stock format is "${status} on ${host} at ${date}: ${chart} ${value_string}".
+    assert!(message.starts_with("CRITICAL on node1 at "), "{message}");
+    assert!(message.ends_with(": disk_space./ 91.5%"), "{message}");
+    // The date is filled in, which the shell expansion never managed.
+    assert!(!message.contains("at :"), "date was empty: {message}");
+}

@@ -50,10 +50,35 @@ impl Paths {
     }
 
     /// Per-recipient state for the `|critical` severity filter.
+    ///
+    /// The recipient comes from the configuration and becomes a directory name, so it
+    /// is reduced to a single path component: an absolute recipient would otherwise
+    /// replace the whole prefix and put state outside the cache directory.
     pub fn criticality_tracking_dir(&self, method: &str, recipient: &str) -> PathBuf {
         self.cache_dir
             .join("alarm-notify")
-            .join(method)
-            .join(recipient)
+            .join(sanitize_path_component(method))
+            .join(sanitize_path_component(recipient))
     }
 }
+
+/// Reduce a configuration-supplied string to one safe path component.
+fn sanitize_path_component(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+
+    match cleaned.trim_matches('.') {
+        "" => "_".to_string(),
+        _ => cleaned,
+    }
+}
+
+#[cfg(test)]
+#[path = "paths_tests.rs"]
+mod tests;

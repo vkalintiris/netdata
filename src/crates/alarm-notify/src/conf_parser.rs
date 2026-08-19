@@ -494,10 +494,21 @@ fn expand_braced(
 }
 
 fn lookup(name: &str, scope: &HashMap<String, String>) -> Option<String> {
-    scope
+    if let Some(v) = scope
         .get(name)
         .cloned()
         .or_else(|| std::env::var(name).ok())
+    {
+        return Some(v);
+    }
+
+    // A reference to an alert variable is not an unset variable: it is a template to
+    // resolve once the alert is known. Hand the placeholder back untouched.
+    if crate::message::is_runtime_variable(name) {
+        return Some(format!("${{{name}}}"));
+    }
+
+    None
 }
 
 /// Consume a `(...)`/`{...}` group starting at `chars[at]`, returning its interior

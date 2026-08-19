@@ -17,19 +17,27 @@ fn curl_options_subset_is_understood() {
 }
 
 #[test]
-fn urls_are_redacted_for_logging() {
+fn only_the_endpoint_identity_survives_redaction() {
+    // The secret is in the path for most webhook services.
+    assert_eq!(
+        redact_url("https://hooks.slack.com/services/T00/B00/XXXXsecret"),
+        "https://hooks.slack.com/[REDACTED]"
+    );
     assert_eq!(
         redact_url("https://api.telegram.org/bot123:ABC/sendMessage?chat_id=1"),
-        "https://api.telegram.org/bot[REDACTED_TOKEN]/sendMessage?[REDACTED_QUERY]"
+        "https://api.telegram.org/[REDACTED]"
     );
     assert_eq!(
         redact_url("https://gotify.example/message?token=secret"),
-        "https://gotify.example/message?[REDACTED_QUERY]"
+        "https://gotify.example/[REDACTED]"
     );
     assert_eq!(
-        redact_url("https://hooks.slack.com/services/T/B/X"),
-        "https://hooks.slack.com/services/T/B/X"
+        redact_url("http://127.0.0.1:8080/api/v2/messages/sms"),
+        "http://127.0.0.1:8080/[REDACTED]"
     );
+    // Nothing to hide when there is no path and no query.
+    assert_eq!(redact_url("https://example.com/"), "https://example.com");
+    assert_eq!(redact_url("not a url"), "[REDACTED_URL]");
 }
 
 #[test]

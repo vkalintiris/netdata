@@ -5,7 +5,7 @@ use serde_json::json;
 use crate::exec;
 use crate::http::Request;
 use crate::senders::{Ctx, log_failed, log_sent};
-use crate::textutil::{truncate, underscores_to_spaces};
+use crate::textutil::{truncate_bytes, underscores_to_spaces};
 
 /// The multi-line body the SMS gateways receive.
 fn sms_body(ctx: &Ctx<'_>) -> String {
@@ -210,7 +210,7 @@ pub fn smstools3(ctx: &Ctx<'_>) -> bool {
         return false;
     };
     // Kept to one SMS worth of text, as before.
-    let message = truncate(
+    let message = truncate_bytes(
         &format!(
             "{} {}: {}, {}",
             ctx.msg.host, ctx.msg.status_message, ctx.args.chart, ctx.msg.alarm

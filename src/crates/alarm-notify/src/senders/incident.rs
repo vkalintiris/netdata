@@ -8,7 +8,7 @@ use crate::exec;
 use crate::http::Request;
 use crate::senders::Ctx;
 use crate::senders::push::number_or_string;
-use crate::textutil::{truncate, underscores_to_spaces};
+use crate::textutil::{truncate_bytes, underscores_to_spaces};
 
 pub async fn kafka(ctx: &Ctx<'_>) -> bool {
     if !ctx.enabled("kafka") {
@@ -105,7 +105,7 @@ pub async fn pagerduty(ctx: &Ctx<'_>) -> bool {
                 "https://events.pagerduty.com/v2/enqueue",
                 json!({
                     "payload": {
-                        "summary": truncate(&ctx.args.info, 1024),
+                        "summary": truncate_bytes(&ctx.args.info, 1024),
                         "source": ctx.args.args_host,
                         "severity": severity,
                         "timestamp": timestamp,

@@ -93,13 +93,21 @@ pub fn truncate_with_ellipsis(s: &str, max: usize, keep: usize) -> String {
     format!("{head}...")
 }
 
-/// Hard truncation to `max` characters, no ellipsis (SMS bodies).
-pub fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        s.chars().take(max).collect()
+/// Hard truncation to `max` bytes, no ellipsis (SMS bodies).
+///
+/// Bytes, not characters: the shell ran under `LC_ALL=C`, so its `${v:0:160}` was a
+/// byte cut, and an SMS gateway's limit is on octets too. The cut is moved back to a
+/// character boundary so the result stays valid UTF-8, which the shell could not
+/// guarantee.
+pub fn truncate_bytes(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
     }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
 }
 
 /// Split on commas *and* whitespace, dropping empties - the shell's

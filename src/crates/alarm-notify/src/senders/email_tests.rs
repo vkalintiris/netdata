@@ -31,3 +31,15 @@ fn sender_parsing_covers_every_documented_form() {
         ("Netdata <broken".to_string(), String::new())
     );
 }
+
+#[test]
+fn header_values_cannot_break_out_of_their_header() {
+    assert_eq!(header_value("plain"), "plain");
+    assert_eq!(
+        header_value("evil\r\nBcc: attacker@example.com"),
+        "evil  Bcc: attacker@example.com"
+    );
+    assert_eq!(header_value("a\nb"), "a b");
+    // A body-separating blank line cannot be forged either.
+    assert!(!header_value("x\r\n\r\ninjected body").contains('\n'));
+}

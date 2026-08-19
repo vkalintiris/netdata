@@ -48,6 +48,14 @@ pub fn run(argv: &[String], program_name: &str) -> ExitCode {
     let debug = std::env::var("NETDATA_ALARM_NOTIFY_DEBUG").unwrap_or_default() == "1";
     logging::init(logging::LogContext::from_args(argv, program_name), debug);
 
+    // A panic would otherwise exit silently with 101 and no journal record, leaving an
+    // operator with a failed notification and nothing to read.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("alarm-notify panicked: {info}");
+        previous_hook(info);
+    }));
+
     match args::parse(argv) {
         Invocation::Test { role } => run_test_mode(&role),
         Invocation::DumpMethods => run_dump_methods(),
@@ -99,7 +107,11 @@ fn notify(alert: &AlertArgs, debug: bool) -> ExitCode {
                 "All notification methods are disabled; not sending {}.",
                 msg.notification_description
             );
-            return ExitCode::from(NOTHING_DELIVERED);
+            // Nothing was configured to receive this, which is not a failure. The
+            // daemon stores a non-zero code as the alert's exec_failed flag and
+            // forwards it to Cloud, so an agent with notifications intentionally off
+            // must not mark every transition as failed.
+            return ExitCode::from(DELIVERED);
         }
         // Methods were enabled but nothing was addressable: a misconfiguration the
         // operator needs to see, which is why this is louder than the case above.
@@ -118,6 +130,9 @@ fn notify(alert: &AlertArgs, debug: bool) -> ExitCode {
     };
 
     let msg = Message::build(alert, &cfg, &paths);
+    // Configuration values may be templates over the alert's variables.
+    cfg.expand_runtime_placeholders(&msg.template_vars(alert, &cfg));
+
     let http = match HttpClient::new(&cfg, debug) {
         Ok(c) => c,
         Err(e) => {

@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+#[cfg(target_os = "linux")]
 fn priorities_match_the_syslog_scale() {
     assert_eq!(priority_of(&Level::ERROR), 3);
     assert_eq!(priority_of(&Level::WARN), 4);
@@ -14,6 +15,7 @@ fn debug_flag_wins_over_the_environment() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn record_carries_the_documented_field_set() {
     let ctx = LogContext {
         invocation_id: "inv".into(),
@@ -77,6 +79,7 @@ fn record_carries_the_documented_field_set() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn newlines_are_escaped_in_the_message_field() {
     let ctx = LogContext::default();
     let fields = ctx.fields(3, "line one\nline two");
