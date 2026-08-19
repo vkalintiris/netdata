@@ -46,9 +46,28 @@
               role_recipients_custom[proxyadmin]="proxy-admin"
               role_recipients_custom[sitemgr]="sites"
               ```
+          - name: 'CUSTOM_SENDER_COMMAND'
+            default_value: ''
+            description: "Path to an executable that delivers the notification. Recommended, and the only option on Windows."
+            required: false
+            detailed_description: |
+              The program is run with the recipients as its first argument, and every
+              notification variable in its environment (`host`, `status`, `alarm`,
+              `goto_url`, and the rest of the list documented for `custom_sender()`).
+              It works the same way on every platform, and needs no shell.
+
+              ```sh
+              #!/bin/sh
+              # $1 holds the recipients configured for this role
+              curl -fsS -X POST "https://example.com/hook" \
+                   --data-urlencode "to=$1" \
+                   --data-urlencode "text=$host $status_message: $alarm"
+              ```
+
+              An exit status of 0 means the notification was delivered.
           - name: 'custom_sender()'
             default_value: ''
-            description: "You can look at the other senders in `/usr/libexec/netdata/plugins.d/alarm-notify.sh` for examples of how to modify the function in this configuration file."
+            description: "A shell function you define in this configuration file. Supported on Linux, macOS and FreeBSD; on Windows use `CUSTOM_SENDER_COMMAND` or a `Custom-Sender` PowerShell function instead."
             required: false
             detailed_description: |
               The following is a sample custom_sender() function in health_alarm_notify.conf, to send an SMS via an imaginary HTTPS endpoint to the SMS gateway:

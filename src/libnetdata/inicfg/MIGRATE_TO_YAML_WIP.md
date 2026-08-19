@@ -881,7 +881,7 @@ Health monitoring and alerting settings
 | `in memory max health log entries` | number | Maximum number of health log entries to keep in memory. Older entries are moved to disk. Minimum is 10. Default is 1000. |
 | `postpone alarms during hibernation for` | duration | Delay alert processing after system hibernation/sleep to prevent false alerts during startup. Default is 60 seconds. |
 | `run at least every` | duration | Minimum interval between health checks, even if no data updates occur. Ensures health system stays responsive. Minimum is 1 second. Default is 10 seconds. |
-| `script to execute on alarm` | string | Path to the script that handles alert notifications (email, slack, etc.). Default is "alarm-notify.sh" in the plugins directory. |
+| `script to execute on alarm` | string | Path to the program that handles alert notifications (email, slack, etc.). Default is "alarm-notify" in the plugins directory, or "alarm-notify.sh" in builds without a Rust toolchain. |
 | `use summary for notifications` | boolean | Whether to include a summary of alert status in notifications. Provides context about overall system health. Default is "yes". |
 
 ### Section `CONFIG_SECTION_KERN_DEVSTAT`

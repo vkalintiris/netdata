@@ -7,12 +7,14 @@ Netdata's Agent can send alert notifications directly from each node. It support
 The Agent uses a notification script defined in `netdata.conf` under the `[health]` section:
 
 ```ini
-script to execute on alarm = /usr/libexec/netdata/plugins.d/alarm-notify.sh
+script to execute on alarm = /usr/libexec/netdata/plugins.d/alarm-notify
 ```
 
-The default script is `alarm-notify.sh`.
+The default is `alarm-notify`, the Agent's notification dispatcher. Installations
+built without a Rust toolchain ship `alarm-notify.sh`, a shell implementation of the
+same thing; exactly one of the two is installed, and the Agent finds whichever it is.
 
-This script handles:
+The dispatcher handles:
 
 - Multiple recipients
 - Multiple notification methods
@@ -400,10 +402,10 @@ sudo su -s /bin/bash netdata
 export NETDATA_ALARM_NOTIFY_DEBUG=1
 
 # Test default role (sysadmin)
-./plugins.d/alarm-notify.sh test
+./plugins.d/alarm-notify test
 
 # Test specific role
-./plugins.d/alarm-notify.sh test "webmaster"
+./plugins.d/alarm-notify test "webmaster"
 ```
 
 :::important
@@ -423,7 +425,7 @@ before testing.
 To see the full execution output:
 
 ```bash
-bash -x ./plugins.d/alarm-notify.sh test
+NETDATA_ALARM_NOTIFY_DEBUG=1 ./plugins.d/alarm-notify test
 ```
 
 Then look for the internal calls and re-run the one you want to trace in more detail.
@@ -457,7 +459,7 @@ Here are solutions for common alert notification issues:
    ```bash
    sudo su -s /bin/bash netdata
    export NETDATA_ALARM_NOTIFY_DEBUG=1
-   ./plugins.d/alarm-notify.sh test
+   ./plugins.d/alarm-notify test
    ```
 
 ### Slack Notifications Failing

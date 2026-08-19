@@ -44,7 +44,8 @@ The following options can be defined for this notification
 |:-----|:------------|:--------|:---------:|
 | SEND_CUSTOM | Set `SEND_CUSTOM` to YES | YES | yes |
 | [DEFAULT_RECIPIENT_CUSTOM](#option-default-recipient-custom) | This value is dependent on how you handle the `${to}` variable inside the `custom_sender()` function. |  | yes |
-| [custom_sender()](#option-custom-sender) | You can look at the other senders in `/usr/libexec/netdata/plugins.d/alarm-notify.sh` for examples of how to modify the function in this configuration file. |  | no |
+| [CUSTOM_SENDER_COMMAND](#option-custom-sender-command) | Path to an executable that delivers the notification. Recommended, and the only option on Windows. |  | no |
+| [custom_sender()](#option-custom-sender) | A shell function you define in this configuration file. Supported on Linux, macOS and FreeBSD; on Windows use `CUSTOM_SENDER_COMMAND` or a `Custom-Sender` PowerShell function instead. |  | no |
 
 <a id="option-default-recipient-custom"></a>
 ##### DEFAULT_RECIPIENT_CUSTOM
@@ -58,6 +59,25 @@ role_recipients_custom[webmaster]="marketing development"
 role_recipients_custom[proxyadmin]="proxy-admin"
 role_recipients_custom[sitemgr]="sites"
 ```
+
+
+<a id="option-custom-sender-command"></a>
+##### CUSTOM_SENDER_COMMAND
+
+The program is run with the recipients as its first argument, and every
+notification variable in its environment (`host`, `status`, `alarm`,
+`goto_url`, and the rest of the list documented for `custom_sender()`).
+It works the same way on every platform, and needs no shell.
+
+```sh
+#!/bin/sh
+# $1 holds the recipients configured for this role
+curl -fsS -X POST "https://example.com/hook" \
+     --data-urlencode "to=$1" \
+     --data-urlencode "text=$host $status_message: $alarm"
+```
+
+An exit status of 0 means the notification was delivered.
 
 
 <a id="option-custom-sender"></a>
@@ -172,10 +192,14 @@ sudo su -s /bin/bash netdata
 export NETDATA_ALARM_NOTIFY_DEBUG=1
 
 # send test alarms to sysadmin
-/usr/libexec/netdata/plugins.d/alarm-notify.sh test
+/usr/libexec/netdata/plugins.d/alarm-notify test
 
 # send test alarms to any role
-/usr/libexec/netdata/plugins.d/alarm-notify.sh test "ROLE"
+/usr/libexec/netdata/plugins.d/alarm-notify test "ROLE"
 ```
 
 Note that this will test _all_ alert mechanisms for the selected role.
+
+If your installation was built without a Rust toolchain it ships the shell
+notifier instead; use `alarm-notify.sh` in place of `alarm-notify` above. Only one
+of the two is present.

@@ -115,10 +115,14 @@ sudo su -s /bin/bash netdata
 export NETDATA_ALARM_NOTIFY_DEBUG=1
 
 # send test alarms to sysadmin
-/usr/libexec/netdata/plugins.d/alarm-notify.sh test
+/usr/libexec/netdata/plugins.d/alarm-notify test
 
 # send test alarms to any role
-/usr/libexec/netdata/plugins.d/alarm-notify.sh test "ROLE"
+/usr/libexec/netdata/plugins.d/alarm-notify test "ROLE"
 ```
 
 Note that this will test _all_ alert mechanisms for the selected role.
+
+If your installation was built without a Rust toolchain it ships the shell
+notifier instead; use `alarm-notify.sh` in place of `alarm-notify` above. Only one
+of the two is present.

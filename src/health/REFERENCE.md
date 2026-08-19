@@ -711,7 +711,7 @@ to: ROLE1 ROLE2 ROLE3 ...
 **How It Works:**
 
 - First parameter passed to the `exec` script
-- Default script (`alarm-notify.sh`) treats this as a space-separated list of roles
+- The default dispatcher (`alarm-notify`) treats this as a space-separated list of roles
 - Roles are consulted to find exact recipients per notification method
 
 #### Alert Line `exec`
@@ -724,7 +724,7 @@ exec: SCRIPT
 
 **Default Behavior:**
 
-- Default script is Netdata's `alarm-notify.sh`
+- Default is Netdata's `alarm-notify` dispatcher
 - Supports all notification methods Netdata supports
 - Includes custom hooks
 

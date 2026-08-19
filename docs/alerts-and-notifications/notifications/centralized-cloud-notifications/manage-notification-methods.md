@@ -102,10 +102,10 @@ sudo su -s /bin/bash netdata
 export NETDATA_ALARM_NOTIFY_DEBUG=1
 
 # Test default role (sysadmin)
-./plugins.d/alarm-notify.sh test
+./plugins.d/alarm-notify test
 
 # Test specific role
-./plugins.d/alarm-notify.sh test "webmaster"
+./plugins.d/alarm-notify test "webmaster"
 ```
 
 </details>
