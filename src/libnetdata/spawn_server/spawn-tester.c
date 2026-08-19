@@ -701,6 +701,85 @@ static void test_callback_signal_lifecycle(int argc, const char **argv) {
 #endif
 
 // --------------------------------------------------------------------------------------------------------------------
+// argv fidelity
+//
+// The child must receive exactly the arguments the parent passed, in the same
+// positions. Empty arguments are the interesting case: both transports used to lose
+// them - the POSIX one because its wire format terminated on an empty string, the
+// Windows one because it wrote nothing at all for one - which shifted every later
+// argument. Alert notifications pass fixed positional arguments and several of them
+// are routinely empty, so this is a correctness requirement, not a nicety.
+
+#define ARGV_ECHO_PREFIX "ARG["
+#define ARGV_ECHO_SUFFIX "]\n"
+
+int plugin_echo_argv(int argc, const char **argv) {
+    // Skip argv[0] and the mode selector.
+    for(int i = 2; i < argc ;i++)
+        printf(ARGV_ECHO_PREFIX "%s" ARGV_ECHO_SUFFIX, argv[i]);
+
+    fflush(stdout);
+    exit(0);
+}
+
+void test_argv_fidelity(SPAWN_SERVER *server, const char *argv0) {
+    static const char *cases[] = {
+        "plain",
+        "",                     // the one that used to disappear
+        "with space",
+        "",
+        "trailing-backslash\\",
+        "quote\"inside",
+        "back\\slash\"and-quote",
+        "$dollar and 'quotes'",
+        "-leading-dash",
+        "last",
+    };
+    const size_t cases_count = sizeof(cases) / sizeof(cases[0]);
+
+    const char *params[3 + sizeof(cases) / sizeof(cases[0])];
+    size_t p = 0;
+    params[p++] = argv0;
+    params[p++] = "plugin-echo-argv";
+    for(size_t i = 0; i < cases_count ;i++)
+        params[p++] = cases[i];
+    params[p] = NULL;
+
+    SPAWN_INSTANCE *si = spawn_server_exec(server, STDERR_FILENO, 0, params, NULL, 0, SPAWN_INSTANCE_TYPE_EXEC);
+    if(!si) {
+        nd_log(NDLS_COLLECTORS, NDLP_ERR, "Cannot run myself as plugin (spawn)");
+        exit(1);
+    }
+
+    CLEAN_BUFFER *received = buffer_create(0, NULL);
+    char chunk[4096];
+    ssize_t rc;
+    while((rc = read(spawn_server_instance_read_fd(si), chunk, sizeof(chunk))) > 0)
+        buffer_fast_rawcat(received, chunk, (size_t)rc);
+
+    int code = spawn_server_exec_wait(server, si);
+    if(code != 0) {
+        nd_log(NDLS_COLLECTORS, NDLP_ERR, "argv echo child exited with code %d", code);
+        exit(1);
+    }
+
+    // Rebuild what the child should have printed and compare the whole stream, so a
+    // dropped, added or reordered argument all fail here.
+    CLEAN_BUFFER *expected = buffer_create(0, NULL);
+    for(size_t i = 0; i < cases_count ;i++)
+        buffer_sprintf(expected, ARGV_ECHO_PREFIX "%s" ARGV_ECHO_SUFFIX, cases[i]);
+
+    if(strcmp(buffer_tostring(expected), buffer_tostring(received)) != 0) {
+        nd_log(NDLS_COLLECTORS, NDLP_ERR,
+               "argv was not preserved.\nExpected:\n%s\nReceived:\n%s",
+               buffer_tostring(expected), buffer_tostring(received));
+        exit(1);
+    }
+
+    fprintf(stderr, "all %zu arguments preserved, including empty ones\n", cases_count);
+}
+
+// --------------------------------------------------------------------------------------------------------------------
 
 int main(int argc, const char **argv) {
     if(argc > 1 && strcmp(argv[1], "plugin-kill-to-stop") == 0)
@@ -711,6 +790,9 @@ int main(int argc, const char **argv) {
 
     if(argc > 1 && strcmp(argv[1], "plugin-echo-and-exit") == 0)
         return plugin_echo_and_exit();
+
+    if(argc > 1 && strcmp(argv[1], "plugin-echo-argv") == 0)
+        return plugin_echo_argv(argc, argv);
 
     if(argc > 1 && strcmp(argv[1], "plugin-close-to-stop") == 0)
         return plugin_close_to_stop();
@@ -750,6 +832,10 @@ int main(int argc, const char **argv) {
         fprintf(stderr, "\n\nTESTING fds No %zu (close to stop)\n\n", i + 1);
         test_int_fds_plugin_close_to_stop(server, argv[0]);
     }
+
+    fprintf(stderr, "\n\nTESTING argv fidelity\n\n");
+    test_argv_fidelity(server, argv[0]);
+
     spawn_server_destroy(server);
 
 #if !defined(OS_WINDOWS)

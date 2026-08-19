@@ -65,6 +65,76 @@ void spawn_server_destroy(SPAWN_SERVER *server) {
     }
 }
 
+/*
+ * Append one argument to a Windows command line, quoted the way the C runtime's
+ * command-line parser (and CommandLineToArgvW) expects to read it back.
+ *
+ * Two cases the naive rules get wrong, and both are reachable from alert text now
+ * that notifications are dispatched through argv:
+ *
+ *   - An empty argument must be written as "" or it disappears entirely, shifting
+ *     every later argument in the child's argv.
+ *   - Backslashes are only escapes when they precede a quote, so a run of them
+ *     before a quote - or before the closing quote of a quoted argument, as in a
+ *     path ending in a separator - must be doubled.
+ */
+static void argv_append_windows_arg(BUFFER *wb, const char *s) {
+    bool needs_quotes = (*s == '\0');
+    for(const char *c = s; !needs_quotes && *c ; c++) {
+        switch(*c) {
+            case ' ':
+            case '\v':
+            case '\t':
+            case '\n':
+            case '"':
+                needs_quotes = true;
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    if(!needs_quotes) {
+        buffer_strcat(wb, s);
+        return;
+    }
+
+    buffer_putc(wb, '"');
+
+    const char *c = s;
+    while(*c) {
+        size_t backslashes = 0;
+        while(*c == '\\') {
+            backslashes++;
+            c++;
+        }
+
+        if(!*c) {
+            // These precede the closing quote, so they are escapes: double them.
+            for(size_t i = 0; i < backslashes * 2 ;i++)
+                buffer_putc(wb, '\\');
+            break;
+        }
+
+        if(*c == '"') {
+            for(size_t i = 0; i < backslashes * 2 + 1 ;i++)
+                buffer_putc(wb, '\\');
+            buffer_putc(wb, '"');
+            c++;
+            continue;
+        }
+
+        // Not before a quote, so they are literal.
+        for(size_t i = 0; i < backslashes ;i++)
+            buffer_putc(wb, '\\');
+
+        buffer_putc(wb, *c++);
+    }
+
+    buffer_putc(wb, '"');
+}
+
 static BUFFER *argv_to_windows(const char **argv) {
     // argv[0] is the path
 #if defined(__CYGWIN__) || defined(__MSYS__)
@@ -84,49 +154,10 @@ static BUFFER *argv_to_windows(const char **argv) {
     BUFFER *wb = buffer_create(0, NULL);
 
     for(size_t i = 0; argv[i] ;i++) {
-        const char *s = (i == 0) ? b : argv[i];
-        size_t len = strlen(s);
-        buffer_need_bytes(wb, len * 2 + 1);
+        if(i)
+            buffer_putc(wb, ' ');
 
-        bool needs_quotes = false;
-        for(const char *c = s; !needs_quotes && *c ; c++) {
-            switch(*c) {
-                case ' ':
-                case '\v':
-                case '\t':
-                case '\n':
-                case '"':
-                    needs_quotes = true;
-                    break;
-
-                default:
-                    break;
-            }
-        }
-
-        if(buffer_strlen(wb)) {
-            if (needs_quotes)
-                buffer_strcat(wb, " \"");
-            else
-                buffer_putc(wb, ' ');
-        }
-        else if (needs_quotes)
-            buffer_putc(wb, '"');
-
-        for(const char *c = s; *c ; c++) {
-            switch(*c) {
-                case '"':
-                    buffer_putc(wb, '\\');
-                    // fall through
-
-                default:
-                    buffer_putc(wb, *c);
-                    break;
-            }
-        }
-
-        if(needs_quotes)
-            buffer_strcat(wb, "\"");
+        argv_append_windows_arg(wb, (i == 0) ? b : argv[i]);
     }
 
     return wb;

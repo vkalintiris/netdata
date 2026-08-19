@@ -109,23 +109,34 @@ static void argv_append_u32(char **buffer, size_t *used, uint32_t value) {
 }
 
 // Function to encode argv or envp
+//
+// Each length is measured once and reused for both the allocation and the copy.
+// Measuring twice would mean a string that grew in between - `environ` is shared
+// mutable state - could make the copy write past what was reserved.
 static void* argv_encode(const char **argv, size_t *out_size) {
     uint32_t count = 0;
     size_t needed = sizeof(uint32_t);
+    size_t *lengths = NULL;
 
     if(argv) {
-        for (const char **p = argv; *p != NULL; p++) {
+        while(argv[count] != NULL) {
             if(count >= ARGV_MAX_ENTRIES) {
                 // A sanity bound, not an expected case: say so rather than truncate
-                // the child's arguments in silence.
+                // the list in silence.
                 nd_log(NDLS_COLLECTORS, NDLP_ERR,
-                       "SPAWN SERVER: more than %d arguments given; the rest are dropped.",
+                       "SPAWN PARENT: more than %d entries in an argv/envp list; the rest are dropped.",
                        ARGV_MAX_ENTRIES);
                 break;
             }
-
             count++;
-            needed += sizeof(uint32_t) + strlen(*p) + 1;
+        }
+
+        if(count) {
+            lengths = mallocz(count * sizeof(size_t));
+            for(uint32_t i = 0; i < count ;i++) {
+                lengths[i] = strlen(argv[i]);
+                needed += sizeof(uint32_t) + lengths[i] + 1;
+            }
         }
     }
 
@@ -135,11 +146,14 @@ static void* argv_encode(const char **argv, size_t *out_size) {
     argv_append_u32(&buffer, &used, count);
 
     for(uint32_t i = 0; i < count ;i++) {
-        size_t len = strlen(argv[i]);
+        size_t len = lengths[i];
         argv_append_u32(&buffer, &used, (uint32_t)len);
-        memcpy(&buffer[used], argv[i], len + 1); // includes the terminating NUL
+        memcpy(&buffer[used], argv[i], len);
+        buffer[used + len] = '\0';
         used += len + 1;
     }
+
+    freez(lengths);
 
     *out_size = used;
     return buffer;
@@ -163,13 +177,16 @@ static const char** argv_decode(const char *buffer, size_t size) {
         return NULL;
 
     // First pass: validate every entry lies inside the buffer and is NUL terminated.
+    // The arithmetic is done in 64 bits deliberately: on a 32-bit target `probe +
+    // len + 1` can wrap, and it would wrap in the index too, so the comparison
+    // would pass while addressing memory outside the buffer.
     size_t probe = offset;
     for(uint32_t i = 0; i < count ;i++) {
         uint32_t len;
         if(!argv_read_u32(buffer, size, &probe, &len))
             return NULL;
 
-        if(probe + (size_t)len + 1 > size || buffer[probe + len] != '\0')
+        if((uint64_t)probe + (uint64_t)len + 1 > (uint64_t)size || buffer[probe + len] != '\0')
             return NULL;
 
         probe += (size_t)len + 1;
@@ -179,7 +196,11 @@ static const char** argv_decode(const char *buffer, size_t size) {
 
     for(uint32_t i = 0; i < count ;i++) {
         uint32_t len;
-        argv_read_u32(buffer, size, &offset, &len);
+        if(!argv_read_u32(buffer, size, &offset, &len)) {
+            // Unreachable: the first pass validated the whole buffer.
+            freez((void *)argv);
+            return NULL;
+        }
         argv[i] = &buffer[offset];
         offset += (size_t)len + 1;
     }
