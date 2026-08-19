@@ -1,0 +1,48 @@
+[package]
+name = "alarm-notify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Netdata alert notification dispatcher (native replacement for alarm-notify.sh)"
+
+[lints]
+workspace = true
+
+[lib]
+name = "alarm_notify"
+path = "src/lib.rs"
+
+[[bin]]
+name = "alarm-notify"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+# default-features pulls reqwest's `rustls` feature, which enables
+# rustls-platform-verifier: outbound HTTPS then trusts the OS certificate store
+# (the Windows cert store included), matching what the C side does for ACLK.
+reqwest = { workspace = true, default-features = true, features = [
+    "json",
+    "form",
+    "query",
+    "multipart",
+] }
+# One-shot process: a current-thread runtime only, never the multi-thread pool.
+tokio = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Log records carry the same MESSAGE_ID and ND_ALERT_* fields the shell script fed
+# to `systemd-cat-native`, so existing journalctl queries keep working.
+tracing-journald = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
