@@ -479,6 +479,11 @@ advanced correlations and fast root cause analysis, native horizontal scalabilit
 	%else
 	-DENABLE_PLUGIN_OTEL=Off \
 	%endif
+	%if 0%{_have_rust}
+	-DENABLE_ALARM_NOTIFY_NATIVE=On \
+	%else
+	-DENABLE_ALARM_NOTIFY_NATIVE=Off \
+	%endif
 	-DENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE=On \
 	-DENABLE_BUNDLED_JSONC=Off \
 	-DENABLE_BUNDLED_YAML=Off \
@@ -627,7 +632,12 @@ rm -rf "${RPM_BUILD_ROOT}"
 %{_libexecdir}/%{name}/install-service.sh
 %{_libexecdir}/%{name}/%{name}-updater.sh
 %{_libexecdir}/%{name}/%{name}-uninstaller.sh
+%if 0%{_have_rust}
+%{_libexecdir}/%{name}/plugins.d/alarm-notify
+%{_libexecdir}/%{name}/plugins.d/custom-sender.sh
+%else
 %{_libexecdir}/%{name}/plugins.d/alarm-notify.sh
+%endif
 %{_libexecdir}/%{name}/plugins.d/anonymous-statistics.sh
 %{_libexecdir}/%{name}/plugins.d/cgroup-name
 %{_libexecdir}/%{name}/plugins.d/get-kubernetes-labels.sh

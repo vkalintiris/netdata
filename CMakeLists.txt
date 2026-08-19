@@ -193,6 +193,55 @@ cmake_dependent_option(ENABLE_ND_MCP "Build nd-mcp stdio-to-websocket bridge for
 option(ENABLE_PLUGIN_SCRIPTS "Enable the experimental scripts plugin (Nagios compatibility module)" ON)
 cmake_dependent_option(ENABLE_PLUGIN_OTEL "Enable collection of OpenTelemetry metrics and logs" ${DEFAULT_FEATURE_STATE} "OS_LINUX OR OS_MACOS" False)
 cmake_dependent_option(ENABLE_PLUGIN_NETFLOW "Enable NetFlow/IPFIX/sFlow flow analysis plugin" False "NOT OS_WINDOWS" False)
+
+# The native alert notification dispatcher. It needs a Rust toolchain, so builds
+# without one keep the shell implementation instead (see the install rules below).
+# Windows has neither bash nor the POSIX helper programs the script needs, so there
+# the native dispatcher is the only notifier that can work at all.
+option(ENABLE_ALARM_NOTIFY_NATIVE "Build the native (Rust) alert notification dispatcher" ${DEFAULT_FEATURE_STATE})
+
+# The minimum Rust version, read from the workspace manifest so the two cannot drift.
+file(READ "${CMAKE_SOURCE_DIR}/src/crates/Cargo.toml" _crates_manifest)
+if(_crates_manifest MATCHES "rust-version = \"([0-9]+\\.[0-9]+(\\.[0-9]+)?)\"")
+    set(NETDATA_RUST_MSRV "${CMAKE_MATCH_1}")
+else()
+    set(NETDATA_RUST_MSRV "1.91")
+endif()
+
+if(ENABLE_ALARM_NOTIFY_NATIVE)
+    # Alert notifications are core functionality, not an optional plugin, so a
+    # missing toolchain must not fail the build: it selects the shell notifier
+    # instead. Windows is the exception, where the shell notifier cannot run.
+    find_program(NETDATA_CARGO_EXECUTABLE cargo)
+    find_program(NETDATA_RUSTC_EXECUTABLE rustc)
+
+    set(_alarm_notify_toolchain_problem "")
+    if(NOT NETDATA_CARGO_EXECUTABLE OR NOT NETDATA_RUSTC_EXECUTABLE)
+        set(_alarm_notify_toolchain_problem "no Rust toolchain was found")
+    else()
+        execute_process(COMMAND ${NETDATA_RUSTC_EXECUTABLE} --version
+                        OUTPUT_VARIABLE _rustc_version_output
+                        ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(_rustc_version_output MATCHES "rustc ([0-9]+\\.[0-9]+\\.[0-9]+)")
+            if(CMAKE_MATCH_1 VERSION_LESS NETDATA_RUST_MSRV)
+                set(_alarm_notify_toolchain_problem
+                    "rustc ${CMAKE_MATCH_1} is older than the required ${NETDATA_RUST_MSRV}")
+            endif()
+        endif()
+    endif()
+
+    if(_alarm_notify_toolchain_problem)
+        if(OS_WINDOWS)
+            message(FATAL_ERROR
+                    "ENABLE_ALARM_NOTIFY_NATIVE requires a Rust toolchain on Windows "
+                    "(${_alarm_notify_toolchain_problem}). Windows has no shell notifier to fall back to.")
+        endif()
+        message(WARNING
+                "Alert notifications: ${_alarm_notify_toolchain_problem}. "
+                "Installing the shell notifier (alarm-notify.sh) instead of the native one.")
+        set(ENABLE_ALARM_NOTIFY_NATIVE Off)
+    endif()
+endif()
 option(ENABLE_PLUGIN_PYTHON "Enable metric collectors written in Python" ${DEFAULT_FEATURE_STATE})
 
 cmake_dependent_option(ENABLE_PLUGIN_APPS "Enable per-process resource usage monitoring" ${DEFAULT_FEATURE_STATE} "OS_LINUX OR OS_FREEBSD OR OS_MACOS OR OS_WINDOWS" False)
@@ -286,7 +335,7 @@ mark_as_advanced(FORCE_LEGACY_LIBBPF)
 cmake_dependent_option(ENABLE_NETDATA_JOURNAL_FILE_READER "Enable netdata's journal file reader implementation" False "ENABLE_PLUGIN_SYSTEMD_JOURNAL" False)
 
 # Setup Rust/Corrosion for plugins that need it
-if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL OR ENABLE_PLUGIN_NETFLOW)
+if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL OR ENABLE_PLUGIN_NETFLOW OR ENABLE_ALARM_NOTIFY_NATIVE)
     include(FetchContent)
     FetchContent_Declare(
         Corrosion
@@ -314,9 +363,34 @@ if(ENABLE_NETDATA_JOURNAL_FILE_READER OR ENABLE_PLUGIN_OTEL OR ENABLE_PLUGIN_NET
     if(ENABLE_PLUGIN_NETFLOW)
         list(APPEND _WORKSPACE_CRATES netflow-plugin)
     endif()
+    if(ENABLE_ALARM_NOTIFY_NATIVE)
+        list(APPEND _WORKSPACE_CRATES alarm-notify)
+    endif()
     if(_WORKSPACE_CRATES)
         corrosion_import_crate(MANIFEST_PATH src/crates/Cargo.toml
                                CRATES ${_WORKSPACE_CRATES})
+    endif()
+
+    if(ENABLE_ALARM_NOTIFY_NATIVE)
+      if(STATIC_BUILD)
+        corrosion_add_target_rustflags(alarm-notify "-C" "target-feature=+crt-static")
+      endif()
+      # Same reason as otel-plugin: fat LTO exhausts memory in 32-bit rustc.
+      if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        corrosion_set_env_vars(
+                alarm-notify
+                "CARGO_PROFILE_RELEASE_DEBUG=0"
+                "CARGO_PROFILE_RELEASE_LTO=off"
+                "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8")
+      endif()
+      # The compile-time fallbacks for the paths the daemon normally passes in the
+      # environment, so running the binary by hand still finds its configuration.
+      corrosion_set_env_vars(
+              alarm-notify
+              "NETDATA_BUILD_CONFIG_DIR=${CONFIG_DIR}"
+              "NETDATA_BUILD_STOCK_CONFIG_DIR=${LIBCONFIG_DIR}"
+              "NETDATA_BUILD_CACHE_DIR=${CACHE_DIR}"
+              "NETDATA_BUILD_REGISTRY_DIR=${VARLIB_DIR}/registry")
     endif()
 
     if(ENABLE_PLUGIN_OTEL)
@@ -4421,11 +4495,36 @@ install(FILES
         COMPONENT netdata
         DESTINATION usr/lib/netdata/conf.d/health.d)
 
-configure_file(src/health/notifications/alarm-notify.sh.in src/health/notifications/alarm-notify.sh @ONLY)
-install(PROGRAMS
-        ${CMAKE_BINARY_DIR}/src/health/notifications/alarm-notify.sh
-        COMPONENT netdata
-        DESTINATION usr/libexec/netdata/plugins.d)
+# Alert notifications are dispatched by exactly one program. The native dispatcher
+# is used when it can be built; otherwise the shell implementation is installed, so
+# a build without a Rust toolchain (for example armv6l static builds) still notifies.
+# The daemon picks whichever is present - see health_globals_default_exec().
+if(ENABLE_ALARM_NOTIFY_NATIVE)
+        corrosion_install(TARGETS alarm-notify
+                          PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
+                          RUNTIME DESTINATION usr/libexec/netdata/plugins.d
+                          COMPONENT netdata)
+
+        # Compatibility shims for the `custom` notification method, whose sender is
+        # user-written shell (POSIX) or PowerShell (Windows).
+        if(OS_WINDOWS)
+                install(PROGRAMS
+                        src/crates/alarm-notify/shims/custom-sender.ps1
+                        COMPONENT netdata
+                        DESTINATION usr/libexec/netdata/plugins.d)
+        else()
+                install(PROGRAMS
+                        src/crates/alarm-notify/shims/custom-sender.sh
+                        COMPONENT netdata
+                        DESTINATION usr/libexec/netdata/plugins.d)
+        endif()
+else()
+        configure_file(src/health/notifications/alarm-notify.sh.in src/health/notifications/alarm-notify.sh @ONLY)
+        install(PROGRAMS
+                ${CMAKE_BINARY_DIR}/src/health/notifications/alarm-notify.sh
+                COMPONENT netdata
+                DESTINATION usr/libexec/netdata/plugins.d)
+endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         install(PROGRAMS

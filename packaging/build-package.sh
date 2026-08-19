@@ -257,6 +257,8 @@ case "${PKG_TYPE}" in
         if ! command -v rustc >/dev/null 2>&1; then
             add_cmake_option ENABLE_PLUGIN_NETFLOW Off
             add_cmake_option ENABLE_PLUGIN_OTEL Off
+            # Without it the shell notifier is installed instead.
+            add_cmake_option ENABLE_ALARM_NOTIFY_NATIVE Off
         fi
         ;;
     *) echo "Unrecognized package type ${PKG_TYPE}." ; exit 1 ;;

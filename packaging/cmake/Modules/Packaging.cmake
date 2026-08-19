@@ -392,7 +392,6 @@ set(CPACK_RPM_NETDATA_USER_FILELIST
     "%attr(0750,root,netdata) /usr/libexec/netdata/install-service.sh"
     "%attr(0750,root,netdata) /usr/libexec/netdata/netdata-uninstaller.sh"
     "%attr(0750,root,netdata) /usr/libexec/netdata/netdata-updater.sh"
-    "%attr(0750,root,netdata) /usr/libexec/netdata/plugins.d/alarm-notify.sh"
     "%attr(0750,root,netdata) /usr/libexec/netdata/plugins.d/anonymous-statistics.sh"
     "%attr(0750,root,netdata) /usr/libexec/netdata/plugins.d/cgroup-name"
     "%attr(0750,root,netdata) /usr/libexec/netdata/plugins.d/cgroup-network-helper.sh"
@@ -409,6 +408,18 @@ set(CPACK_RPM_NETDATA_USER_FILELIST
     "%attr(0770,netdata,netdata) %dir /var/lib/netdata/cloud.d"
     "%attr(0770,netdata,netdata) %dir /var/lib/netdata/registry"
     "%attr(0755,netdata,root) %dir /var/log/netdata")
+
+# Alert notifications: exactly one of the two notifiers is installed, so only its
+# entry may be listed here - an entry for a file absent from the staged tree would
+# end up in %files and fail the rpm build.
+if(ENABLE_ALARM_NOTIFY_NATIVE)
+    list(APPEND CPACK_RPM_NETDATA_USER_FILELIST
+        "%attr(0750,root,netdata) /usr/libexec/netdata/plugins.d/alarm-notify"
+        "%attr(0750,root,netdata) /usr/libexec/netdata/plugins.d/custom-sender.sh")
+else()
+    list(APPEND CPACK_RPM_NETDATA_USER_FILELIST
+        "%attr(0750,root,netdata) /usr/libexec/netdata/plugins.d/alarm-notify.sh")
+endif()
 
 if(NETDATA_RPM_DOC_DIR)
   list(APPEND CPACK_RPM_NETDATA_USER_FILELIST
