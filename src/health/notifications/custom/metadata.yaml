@@ -48,7 +48,7 @@
               ```
           - name: 'CUSTOM_SENDER_COMMAND'
             default_value: ''
-            description: "Path to an executable that delivers the notification. Recommended, and the only option on Windows."
+            description: "Path to an executable that delivers the notification. Recommended: it behaves identically on every platform."
             required: false
             detailed_description: |
               The program is run with the recipients as its first argument, and every
@@ -67,7 +67,7 @@
               An exit status of 0 means the notification was delivered.
           - name: 'custom_sender()'
             default_value: ''
-            description: "A shell function you define in this configuration file. Supported on Linux, macOS and FreeBSD; on Windows use `CUSTOM_SENDER_COMMAND` or a `Custom-Sender` PowerShell function instead."
+            description: "A shell function you define in this configuration file. Supported on Linux, macOS and FreeBSD. Windows has no shell, so use `CUSTOM_SENDER_COMMAND` or a `Custom-Sender` PowerShell function there."
             required: false
             detailed_description: |
               The following is a sample custom_sender() function in health_alarm_notify.conf, to send an SMS via an imaginary HTTPS endpoint to the SMS gateway:

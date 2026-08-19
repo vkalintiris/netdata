@@ -4,7 +4,7 @@ Netdata's Agent can send alert notifications directly from each node. It support
 
 ## How It Works
 
-The Agent uses a notification script defined in `netdata.conf` under the `[health]` section:
+The Agent uses a notification program defined in `netdata.conf` under the `[health]` section:
 
 ```ini
 script to execute on alarm = /usr/libexec/netdata/plugins.d/alarm-notify

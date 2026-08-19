@@ -44,8 +44,8 @@ The following options can be defined for this notification
 |:-----|:------------|:--------|:---------:|
 | SEND_CUSTOM | Set `SEND_CUSTOM` to YES | YES | yes |
 | [DEFAULT_RECIPIENT_CUSTOM](#option-default-recipient-custom) | This value is dependent on how you handle the `${to}` variable inside the `custom_sender()` function. |  | yes |
-| [CUSTOM_SENDER_COMMAND](#option-custom-sender-command) | Path to an executable that delivers the notification. Recommended, and the only option on Windows. |  | no |
-| [custom_sender()](#option-custom-sender) | A shell function you define in this configuration file. Supported on Linux, macOS and FreeBSD; on Windows use `CUSTOM_SENDER_COMMAND` or a `Custom-Sender` PowerShell function instead. |  | no |
+| [CUSTOM_SENDER_COMMAND](#option-custom-sender-command) | Path to an executable that delivers the notification. Recommended: it behaves identically on every platform. |  | no |
+| [custom_sender()](#option-custom-sender) | A shell function you define in this configuration file. Supported on Linux, macOS and FreeBSD. Windows has no shell, so use `CUSTOM_SENDER_COMMAND` or a `Custom-Sender` PowerShell function there. |  | no |
 
 <a id="option-default-recipient-custom"></a>
 ##### DEFAULT_RECIPIENT_CUSTOM

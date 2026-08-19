@@ -56,7 +56,7 @@ warning tells the operator to update `netdata.conf`.
 
 1. `src/crates/alarm-notify/src/senders/` - add the sender to the right module and to
    `dispatch_all()`, keeping the existing dispatch order.
-2. `src/config.rs` - add the method to `METHOD_NAMES` (per-role recipients) or
+2. `src/crates/alarm-notify/src/config.rs` - add the method to `METHOD_NAMES` (per-role recipients) or
    `HOST_LEVEL_METHODS`, and add its required keys to `static_screening()`.
 3. `src/health/notifications/health_alarm_notify.conf` - the `SEND_*`,
    `DEFAULT_RECIPIENT_*` and credential keys. A method in `HOST_LEVEL_METHODS` only

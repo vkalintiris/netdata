@@ -504,6 +504,9 @@ GOTIFY_APP_TOKEN=
 # opsgenie configs
 OPSGENIE_API_KEY=
 
+# custom notification configs
+CUSTOM_SENDER_COMMAND=
+
 # signl4 configs
 SIGNL4_WEBHOOK_URL=
 
@@ -2929,6 +2932,35 @@ send_custom() {
 
   # do we have any sender?
   [ -z "${1}" ] && return 1
+
+  # CUSTOM_SENDER_COMMAND is the portable form of this method: an executable, given
+  # the recipients as its first argument and every variable below in its environment.
+  # Supported here too, so the configuration documents the same behaviour whichever
+  # notifier a build ships.
+  if [ -n "${CUSTOM_SENDER_COMMAND}" ]; then
+    if [ ! -x "${CUSTOM_SENDER_COMMAND}" ]; then
+      error "CUSTOM_SENDER_COMMAND '${CUSTOM_SENDER_COMMAND}' is not executable."
+      return 1
+    fi
+
+    if (
+      export host url_host unique_id alarm_id event_id when name url_name chart \
+        url_chart status old_status value old_value src duration duration_txt \
+        non_clear_duration non_clear_duration_txt units info value_string \
+        old_value_string url_value_string image color goto_url calc_expression \
+        calc_param_values total_warnings total_critical alarm status_message severity \
+        raised_for date date_utc summary classification context component type roles \
+        transition_id child_machine_guid notification_description args_host \
+        total_warn_alarms total_crit_alarms edit_command_line images_base_url
+      "${CUSTOM_SENDER_COMMAND}" "${1}"
+    ); then
+      info "sent custom notification to '${1}' for ${notification_description}"
+      return 0
+    fi
+
+    error "failed to send custom notification to '${1}' for ${notification_description}"
+    return 1
+  fi
 
   # call the custom_sender function
   custom_sender "${@}"
