@@ -203,6 +203,8 @@ pub struct Chart {
     collection: Mutex<ChartCollection>,
     dims: RwLock<DimIndex>,
     receiver: Mutex<ReceiverState>,
+    /// Chart variables (`VARIABLE CHART`), used by health.
+    variables: Mutex<HashMap<String, f64>>,
 }
 
 #[derive(Debug, Default)]
@@ -249,6 +251,11 @@ impl Chart {
 
     pub fn update_collection<T>(&self, update: impl FnOnce(&mut ChartCollection) -> T) -> T {
         update(&mut lock(&self.collection))
+    }
+
+    /// `rrdvar_chart_variable_set()`.
+    pub fn set_variable(&self, name: &str, value: f64) {
+        lock(&self.variables).insert(name.to_string(), value);
     }
 
     /// The parser's state on this chart.
@@ -658,6 +665,7 @@ impl Charts {
                     collection: Mutex::new(ChartCollection::default()),
                     dims: RwLock::new(DimIndex::default()),
                     receiver: Mutex::new(ReceiverState::default()),
+                    variables: Mutex::new(HashMap::new()),
                 });
                 let position = index.ordered.len();
                 index.by_id.insert(full_id.clone(), position);

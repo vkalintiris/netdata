@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use crate::chart::Charts;
+use crate::labels::Labels;
 use crate::mode::DbMode;
 use crate::system_info::SystemInfo;
 
@@ -98,6 +99,12 @@ pub struct Host {
     /// `RRDHOST_FLAG_ORPHAN`: a child whose receiver has gone.
     orphan: AtomicBool,
     charts: Charts,
+    /// `host->rrdlabels`.
+    labels: RwLock<Labels>,
+    /// The claim id a child reported (`CLAIMED_ID`), zero when unclaimed.
+    claim_id_of_origin: RwLock<[u8; 16]>,
+    /// Host variables (`VARIABLE HOST`), used by health.
+    variables: Mutex<HashMap<String, f64>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -115,6 +122,9 @@ impl Host {
             receiver: Mutex::new(None),
             orphan: AtomicBool::new(false),
             charts: Charts::default(),
+            labels: RwLock::new(Labels::default()),
+            claim_id_of_origin: RwLock::new([0; 16]),
+            variables: Mutex::new(HashMap::new()),
         }
     }
 
@@ -124,6 +134,39 @@ impl Host {
 
     pub fn is_localhost(&self) -> bool {
         self.is_localhost
+    }
+
+    pub fn labels(&self) -> Labels {
+        self.labels
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn update_labels<T>(&self, update: impl FnOnce(&mut Labels) -> T) -> T {
+        update(&mut self.labels.write().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// `rrdhost_claim_id_get()` for a child: what it reported, if anything.
+    pub fn claim_id(&self) -> Option<[u8; 16]> {
+        let id = *self
+            .claim_id_of_origin
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        (id != [0; 16]).then_some(id)
+    }
+
+    /// `rrdhost_claim_id_of_origin_set()`.
+    pub fn set_claim_id_of_origin(&self, id: [u8; 16]) {
+        *self
+            .claim_id_of_origin
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = id;
+    }
+
+    /// `rrdvar_host_variable_set()`.
+    pub fn set_variable(&self, name: &str, value: f64) {
+        lock(&self.variables).insert(name.to_string(), value);
     }
 
     /// `host->rrdset_root_index`.

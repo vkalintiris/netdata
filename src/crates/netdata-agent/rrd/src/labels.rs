@@ -132,6 +132,42 @@ impl Labels {
         before - self.labels.len()
     }
 
+    /// `rrdlabels_migrate_to_these()`: this set becomes `src` (pairs kept, added or replaced), protected labels stay;
+    /// the version follows `src`. Whether anything changed.
+    pub fn migrate_to_these(&mut self, src: &Labels) -> bool {
+        self.unmark_all();
+        let mut added = 0;
+        let mut cleaned = 0;
+        for label in &src.labels {
+            if let Some(same) = self
+                .labels
+                .iter_mut()
+                .find(|l| l.name == label.name && l.value == label.value)
+            {
+                same.flags |= FLAG_OLD;
+                continue;
+            }
+            added += 1;
+            let new = Label {
+                name: label.name.clone(),
+                value: label.value.clone(),
+                flags: (label.flags & !(FLAG_OLD | FLAG_NEW)) | FLAG_NEW,
+            };
+            let before = self.labels.len();
+            self.labels.retain(|l| l.name != new.name);
+            cleaned += before - self.labels.len();
+            self.labels.push(new);
+        }
+        let removed = self.remove_all_unmarked();
+        self.version = src.version;
+        added > 0 || removed > 0 || cleaned > 0
+    }
+
+    /// `rrdlabels_exist()`.
+    pub fn exists(&self, name: &[u8]) -> bool {
+        self.labels.iter().any(|l| l.name == name)
+    }
+
     /// `rrdlabels_remove_all_unmarked_and_changed()`: whether the cycle added or removed anything.
     pub fn remove_all_unmarked_and_changed(&mut self) -> bool {
         let added = self

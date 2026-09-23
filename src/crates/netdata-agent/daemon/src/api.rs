@@ -20,7 +20,14 @@ fn mirrored_host_status(w: &mut JsonWriter, host: &Host) {
     w.member_add_string("guid", host.machine_guid());
     // Node IDs arrive with claiming: all zero, printed as null.
     w.member_add_null("node_id");
-    w.member_add_null("claim_id");
+    match host.claim_id() {
+        Some(id) => {
+            let mut text = Vec::new();
+            netdata_agent_text::print::print_uuid_lower(&mut text, &id);
+            w.member_add_string("claim_id", &text);
+        }
+        None => w.member_add_null("claim_id"),
+    }
     w.object_close();
 }
 

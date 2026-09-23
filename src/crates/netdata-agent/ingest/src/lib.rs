@@ -17,9 +17,10 @@ use netdata_agent_pluginsd_proto::{
 use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, Dim, dim_flags, flags};
 use netdata_agent_rrd::collection;
 use netdata_agent_rrd::host::Host;
+use netdata_agent_rrd::labels::{self, Labels};
 use netdata_agent_storage::storage_number::{SN_EMPTY_SLOT, SN_FLAG_NOT_ANOMALOUS, SN_FLAG_RESET};
 use netdata_agent_text::parse::{
-    str2i, str2ll, str2ll_encoded, str2ndd_encoded, str2ul, str2ull_encoded,
+    str2i, str2ll, str2ll_encoded, str2ndd_encoded, str2ul, str2ull_encoded, uuid_parse_flexi,
 };
 
 /// `STREAM_CAP_FLOAT_BASELINE` and `STREAM_CAP_ML_MODELS`: the capabilities the handlers consult.
@@ -131,6 +132,8 @@ pub struct Parser {
     /// `parser->user.data_collections_count`.
     pub data_collections_count: u64,
     deferred: Option<DeferredBody>,
+    /// `parser->user.new_host_labels`: collected by LABEL until OVERWRITE.
+    new_host_labels: Option<Labels>,
     /// Bytes for the child (`send_to_plugin`), drained by the caller.
     out: Vec<u8>,
 }
@@ -150,6 +153,7 @@ impl Parser {
             chart_slots: Vec::new(),
             data_collections_count: 0,
             deferred: None,
+            new_host_labels: None,
             out: Vec::new(),
         }
     }
@@ -221,6 +225,10 @@ impl Parser {
             Keyword::Rdstate => self.replay_rrddim_state(w),
             Keyword::Rsstate => self.replay_rrdset_state(w),
             Keyword::Rend => self.replay_end(w),
+            Keyword::Variable => self.variable(w),
+            Keyword::Label => self.label(w),
+            Keyword::Overwrite => self.overwrite(),
+            Keyword::ClaimedId => self.claimed_id(w),
             Keyword::Json => {
                 self.deferred = Some(DeferredBody::new("JSON_PAYLOAD_END"));
                 Ok(())
@@ -229,8 +237,7 @@ impl Parser {
                 self.deferred = Some(DeferredBody::new("FUNCTION_RESULT_END"));
                 Ok(())
             }
-            // Variables, host labels, claiming, Functions and dynamic configuration are ported next
-            // (agent/plan.md); until then they change nothing.
+            // Functions and dynamic configuration are ported next (agent/plan.md); until then they change nothing.
             _ => Ok(()),
         }
     }
@@ -653,6 +660,181 @@ impl Parser {
         }
         self.clabel_count = 0;
         self.clabel_changed = false;
+        Ok(())
+    }
+
+    // ---- host metadata ----
+
+    /// `pluginsd_variable()`: `[GLOBAL|HOST|LOCAL|CHART] name value`; the default is the chart in scope, else the
+    /// host.
+    fn variable(&mut self, w: &Words) -> Rc {
+        let mut name = w.get(1);
+        let mut value = w.get(2);
+        let chart = self.scope.clone();
+        let mut global = chart.is_none();
+        if let Some(n) = name.filter(|n| !n.is_empty()) {
+            if n == b"GLOBAL" || n == b"HOST" {
+                global = true;
+                name = w.get(2);
+                value = w.get(3);
+            } else if n == b"LOCAL" || n == b"CHART" {
+                global = false;
+                name = w.get(2);
+                value = w.get(3);
+            }
+        }
+        let Some(name) = name.filter(|n| !n.is_empty()).map(text) else {
+            return refuse_with("VARIABLE", "missing variable name");
+        };
+        let hostname = self.host.hostname();
+        let chart_id = chart
+            .as_ref()
+            .map_or_else(|| "UNSET".to_string(), |c| c.id().to_string());
+        let Some(value) = value.filter(|v| !v.is_empty()) else {
+            (self.log)(
+                LogLevel::Error,
+                &format!(
+                    "PLUGINSD: 'host:{hostname}/chart:{chart_id}' cannot set {} VARIABLE '{name}' to an empty value",
+                    if global { "HOST" } else { "CHART" }
+                ),
+            );
+            return Ok(());
+        };
+        if !global && chart.is_none() {
+            return refuse_with("VARIABLE", "no chart is defined and no GLOBAL is given");
+        }
+        let (v, used) = str2ndd_encoded(value);
+        if used < value.len() {
+            let message = if used == 0 {
+                format!(
+                    "PLUGINSD: 'host:{hostname}/chart:{chart_id}' the value '{}' of VARIABLE '{name}' cannot be parsed as a number",
+                    text(value)
+                )
+            } else {
+                format!(
+                    "PLUGINSD: 'host:{hostname}/chart:{chart_id}' the value '{}' of VARIABLE '{name}' has leftovers: '{}'",
+                    text(value),
+                    text(&value[used..])
+                )
+            };
+            (self.log)(LogLevel::Error, &message);
+        }
+        match (global, &chart) {
+            (false, Some(chart)) => chart.set_variable(&name, v),
+            _ => self.host.set_variable(&name, v),
+        }
+        Ok(())
+    }
+
+    /// `pluginsd_label()`: `name source value...`; extra words join the value with single spaces.
+    fn label(&mut self, w: &Words) -> Rc {
+        let (Some(name), Some(source), Some(first)) = (w.get(1), w.get(2), w.get(3)) else {
+            return refuse_with("LABEL", "missing parameters");
+        };
+        let mut value = first.to_vec();
+        if w.len() > 4 {
+            let mut remaining = netdata_agent_pluginsd_proto::LINE_MAX;
+            value.clear();
+            let mut i = 3;
+            while i < w.len() && remaining > 2 {
+                let Some(word) = w.get(i) else { break };
+                if i > 3 {
+                    value.push(b' ');
+                    remaining -= 1;
+                }
+                let length = word.len().min(remaining);
+                remaining -= length;
+                value.extend_from_slice(&word[..length]);
+                i += 1;
+            }
+        }
+        let source = netdata_agent_text::parse::str2l(source) as u32;
+        self.new_host_labels
+            .get_or_insert_with(Labels::default)
+            .add(name, &value, source);
+        Ok(())
+    }
+
+    /// `pluginsd_overwrite()`: the collected labels replace the host's; `_is_ephemeral`, `_os` and `_hostname` are
+    /// kept up to date.
+    fn overwrite(&mut self) -> Rc {
+        let new = self.new_host_labels.take();
+        let info = self.host.info();
+        self.host.update_labels(|labels| {
+            if let Some(new) = &new {
+                labels.migrate_to_these(new);
+            }
+            // pluginsd_update_host_ephemerality()
+            let ephemeral = labels
+                .get(b"_is_ephemeral")
+                .is_some_and(|v| !v.is_empty() && netdata_agent_inicfg::test_boolean_value(v));
+            labels.add(
+                b"_is_ephemeral",
+                if ephemeral { b"true" } else { b"false" },
+                labels::SRC_CONFIG,
+            );
+            if !labels.exists(b"_os") {
+                labels.add(b"_os", info.os.as_bytes(), labels::SRC_AUTO);
+            }
+            if !labels.exists(b"_hostname") {
+                labels.add(b"_hostname", info.hostname.as_bytes(), labels::SRC_AUTO);
+            }
+        });
+        Ok(())
+    }
+
+    /// `stream_receiver_pluginsd_claimed_id()`.
+    fn claimed_id(&mut self, w: &Words) -> Rc {
+        let (Some(guid), Some(claim)) = (w.get(1), w.get(2)) else {
+            (self.log)(
+                LogLevel::Error,
+                &format!(
+                    "PLUGINSD: command CLAIMED_ID came malformed, machine_guid '{}', claim_id '{}'",
+                    w.get(1).map_or_else(|| "[unset]".to_string(), text),
+                    w.get(2).map_or_else(|| "[unset]".to_string(), text)
+                ),
+            );
+            return refuse();
+        };
+        if uuid_parse_flexi(guid).is_none() {
+            (self.log)(
+                LogLevel::Error,
+                &format!(
+                    "PLUGINSD: parameter machine guid to CLAIMED_ID command is not valid UUID. Received: '{}'.",
+                    text(guid)
+                ),
+            );
+            return refuse();
+        }
+        let claim_uuid = if claim == b"NULL" {
+            [0; 16]
+        } else {
+            match uuid_parse_flexi(claim) {
+                Some(u) => u,
+                None => {
+                    (self.log)(
+                        LogLevel::Error,
+                        &format!(
+                            "PLUGINSD: parameter claim id to CLAIMED_ID command is not valid UUID. Received: '{}'.",
+                            text(claim)
+                        ),
+                    );
+                    return refuse();
+                }
+            }
+        };
+        if guid != self.host.machine_guid().as_bytes() {
+            (self.log)(
+                LogLevel::Error,
+                &format!(
+                    "PLUGINSD: received claim id for host '{}' but it came over the connection of '{}'",
+                    text(guid),
+                    self.host.machine_guid()
+                ),
+            );
+            return Ok(());
+        }
+        self.host.set_claim_id_of_origin(claim_uuid);
         Ok(())
     }
 
