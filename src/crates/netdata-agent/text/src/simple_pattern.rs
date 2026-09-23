@@ -166,6 +166,13 @@ fn match_word(word: &Word, s: &[u8], wildcarded: &mut Wildcarded) -> bool {
     for (index, m) in word.segments.iter().enumerate() {
         // only the root node carries the case-sensitivity flag in C
         let case_sensitive = index == 0 && word.case_sensitive;
+        let equal = |a: &[u8], b: &[u8]| {
+            if case_sensitive {
+                a == b
+            } else {
+                eq_ignore_case(a, b)
+            }
+        };
         let text = m.text.as_deref().unwrap_or_default();
         let len = str.len();
         if m.len() > len {
@@ -174,14 +181,7 @@ fn match_word(word: &Word, s: &[u8], wildcarded: &mut Wildcarded) -> bool {
         let has_child = index + 1 < word.segments.len();
 
         match m.mode {
-            SimplePatternMode::Exact => {
-                let equal = if case_sensitive {
-                    str == text
-                } else {
-                    eq_ignore_case(str, text)
-                };
-                return equal && !has_child;
-            }
+            SimplePatternMode::Exact => return equal(str, text) && !has_child,
             SimplePatternMode::Substring => {
                 if m.len() == 0 {
                     return true;
@@ -202,13 +202,7 @@ fn match_word(word: &Word, s: &[u8], wildcarded: &mut Wildcarded) -> bool {
                 str = &str[pos + m.len()..];
             }
             SimplePatternMode::Prefix => {
-                let head = &str[..m.len()];
-                let equal = if case_sensitive {
-                    head == text
-                } else {
-                    eq_ignore_case(head, text)
-                };
-                if !equal {
+                if !equal(&str[..m.len()], text) {
                     return false;
                 }
                 if !has_child {
@@ -218,13 +212,7 @@ fn match_word(word: &Word, s: &[u8], wildcarded: &mut Wildcarded) -> bool {
                 str = &str[m.len()..];
             }
             SimplePatternMode::Suffix => {
-                let tail = &str[len - m.len()..];
-                let equal = if case_sensitive {
-                    tail == text
-                } else {
-                    eq_ignore_case(tail, text)
-                };
-                if !equal {
+                if !equal(&str[len - m.len()..], text) {
                     return false;
                 }
                 wildcarded.add(&str[..len - m.len()]);
