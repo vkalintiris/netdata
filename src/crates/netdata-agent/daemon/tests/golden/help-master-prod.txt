@@ -1,0 +1,108 @@
+
+ ^
+ |.-.   .-.   .-.   .-.   .  Netdata                                         
+ |   '-'   '-'   '-'   '-'   X-Ray Vision for your infrastructure!           
+ +----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+--->
+
+ Copyright 2018-2025 Netdata Inc.
+ Released under GNU General Public License v3 or later.
+
+ Home Page  : https://netdata.cloud
+ Source Code: https://github.com/netdata/netdata
+ Docs       : https://learn.netdata.cloud
+ Support    : https://github.com/netdata/netdata/issues
+ License    : https://github.com/netdata/netdata/blob/master/LICENSE.md
+
+ Twitter    : https://twitter.com/netdatahq
+ LinkedIn   : https://linkedin.com/company/netdata-cloud/
+ Facebook   : https://facebook.com/linuxnetdata/
+
+
+ SYNOPSIS: netdata [options]
+
+ Options:
+
+  -c filename              Configuration file to load.
+                           Default: /home/dv/opt/master-prod/netdata/etc/netdata/netdata.conf
+
+  -D                       Do not fork. Run in the foreground.
+                           Default: run in the background
+
+  -d                       Fork. Run in the background.
+                           Default: run in the background
+
+  -h                       Display this help message.
+
+  -P filename              File to save a pid while running.
+                           Default: do not save pid to a file
+
+  -i IP                    The IP address to listen to.
+                           Default: all IP addresses IPv4 and IPv6
+
+  -p port                  API/Web port to use.
+                           Default: 19999
+
+  -s path                  Prefix for /proc and /sys (for containers).
+                           Default: no prefix
+
+  -t seconds               The internal clock of netdata.
+                           Default: 1
+
+  -u username              Run as user.
+                           Default: netdata
+
+  -v                       Print netdata version and exit.
+
+  -V                       Print netdata version and exit.
+
+  -W options               See Advanced options below.
+
+
+ Advanced options:
+
+  -W stacksize=N           Set the stacksize (in bytes).
+
+  -W debug_flags=N         Set runtime tracing to debug.log.
+
+  -W unittest              Run internal unittests and exit.
+
+  -W sqlite-meta-recover   Run recovery on the metadata database and exit.
+
+  -W sqlite-compact        Reclaim metadata database unused space and exit.
+
+  -W sqlite-analyze        Run update statistics and exit.
+
+  -W sqlite-alert-cleanup  Perform maintenance on the alerts table.
+
+  -W createdataset=N       Create a DB engine dataset of N seconds and exit.
+
+  -W stresstest=A,B,C,D,E,F,G
+                           Run a DB engine stress test for A seconds,
+                           with B writers and C readers, with a ramp up
+                           time of D seconds for writers, a page cache
+                           size of E MiB, an optional disk space limit
+                           of F MiB, G libuv workers (default 16) and exit.
+
+  -W prd-array-stress      Run PRD_ARRAY refcount stress test and exit.
+
+  -W set section option value
+                           set netdata.conf option from the command line.
+
+  -W buildinfo             Print the version, the configure options,
+                           a list of optional features, and whether they
+                           are enabled or not.
+
+  -W buildinfojson         Print the version, the configure options,
+                           a list of optional features, and whether they
+                           are enabled or not, in JSON format.
+
+  -W cmakecache            Print the cmake cache used for building this agent
+  -W simple-pattern pattern string
+                           Check if string matches pattern and exit.
+
+
+ Signals netdata handles:
+
+  - HUP                    Close and reopen log files.
+  - USR2                   Reload health configuration.
+

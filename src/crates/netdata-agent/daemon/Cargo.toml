@@ -1,0 +1,24 @@
+[package]
+name = "netdata-agent-daemon"
+description = "The netdata agent daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "netdata"
+path = "src/main.rs"
+
+[dependencies]
+flate2 = { workspace = true }
+mio = { workspace = true }
+netdata-agent-evloop = { workspace = true }
+netdata-agent-inicfg = { workspace = true }
+netdata-agent-text = { workspace = true }
+netdata-agent-web = { workspace = true }
+nix = { workspace = true, features = ["signal", "user", "hostname", "fs", "process"] }
+socket2 = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }

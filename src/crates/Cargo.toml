@@ -61,6 +61,7 @@ members = [
     "netipc",
 
     # Rust agent (the netdata daemon)
+    "netdata-agent/daemon",
     "netdata-agent/evloop",
     "netdata-agent/inicfg",
     "netdata-agent/text",
@@ -92,6 +93,9 @@ netdata-plugin-charts-derive = { path = "netdata-plugin/charts-derive" }
 netdata-plugin-rt = { path = "netdata-plugin/rt" }
 netdata-plugin-types = { path = "netdata-plugin/types" }
 netdata-agent-text = { path = "netdata-agent/text" }
+netdata-agent-inicfg = { path = "netdata-agent/inicfg" }
+netdata-agent-evloop = { path = "netdata-agent/evloop" }
+netdata-agent-web = { path = "netdata-agent/web" }
 opentelemetry = "0.31.0"
 opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "logs"] }
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio", "logs"] }
