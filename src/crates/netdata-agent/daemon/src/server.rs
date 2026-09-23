@@ -14,6 +14,8 @@ use netdata_agent_web::status;
 
 use netdata_agent_text::print::html_escape;
 
+use netdata_agent_streaming::receiver::{PreAdmission, Receivers};
+
 use crate::{api, router};
 
 /// What every worker needs to answer requests.
@@ -84,6 +86,8 @@ pub fn now() -> i64 {
 
 struct Client {
     stream: mio::net::TcpStream,
+    /// `w->user_auth.client_ip` as `accept_socket()` formats it.
+    client_ip: String,
     received: Vec<u8>,
     request: Request,
     output: Vec<u8>,
@@ -95,10 +99,15 @@ pub struct WebWorker {
     listeners: Vec<mio::net::TcpListener>,
     clients: Vec<Option<Client>>,
     shared: Arc<Shared>,
+    receivers: Arc<Receivers>,
 }
 
 impl WebWorker {
-    pub fn new(listeners: Vec<std::net::TcpListener>, shared: Arc<Shared>) -> io::Result<Self> {
+    pub fn new(
+        listeners: Vec<std::net::TcpListener>,
+        shared: Arc<Shared>,
+        receivers: Arc<Receivers>,
+    ) -> io::Result<Self> {
         let listeners = listeners
             .into_iter()
             .map(|l| l.try_clone().map(mio::net::TcpListener::from_std))
@@ -107,6 +116,7 @@ impl WebWorker {
             listeners,
             clients: Vec::new(),
             shared,
+            receivers,
         })
     }
 
@@ -117,7 +127,7 @@ impl WebWorker {
     fn accept(&mut self, cx: &mut Context<'_>, index: usize) {
         loop {
             match self.listeners[index].accept() {
-                Ok((mut stream, _)) => {
+                Ok((mut stream, peer)) => {
                     let slot = self
                         .clients
                         .iter()
@@ -136,6 +146,7 @@ impl WebWorker {
                     }
                     self.clients[slot] = Some(Client {
                         stream,
+                        client_ip: client_ip(&peer),
                         received: Vec::new(),
                         request: Request::default(),
                         output: Vec::new(),
@@ -156,8 +167,24 @@ impl WebWorker {
         }
     }
 
+    /// `stream_receiver_takeover_web_connection()`: the socket leaves this worker for the streaming code; whatever
+    /// arrived after the request is dropped, as C flushes it.
+    fn take_over(&mut self, cx: &mut Context<'_>, slot: usize, pre: PreAdmission) {
+        let Some(mut client) = self.clients[slot].take() else {
+            return;
+        };
+        let _ = cx.registry().deregister(&mut client.stream);
+        let stream = std::net::TcpStream::from(client.stream);
+        match pre {
+            PreAdmission::Refuse(message) => self.receivers.refuse(stream, message),
+            PreAdmission::Proceed(pending) => self.receivers.admit(*pending, stream),
+            PreAdmission::Reply(..) => unreachable!("replies stay on the web connection"),
+        }
+    }
+
     fn serve(&mut self, cx: &mut Context<'_>, slot: usize, event: &Event) {
         let shared = Arc::clone(&self.shared);
+        let receivers = Arc::clone(&self.receivers);
         let token = self.client_token(slot);
         let Some(client) = self.clients[slot].as_mut() else {
             return;
@@ -176,9 +203,16 @@ impl WebWorker {
                         if !client.output.is_empty() {
                             continue;
                         }
-                        if let Some(reply_bytes) = respond(client, &shared) {
-                            client.output = reply_bytes;
-                            client.written = 0;
+                        match respond(client, &shared, &receivers) {
+                            Some(Outcome::Reply(bytes)) => {
+                                client.output = bytes;
+                                client.written = 0;
+                            }
+                            Some(Outcome::Stream(pre)) => {
+                                self.take_over(cx, slot, pre);
+                                return;
+                            }
+                            None => {}
                         }
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -227,8 +261,29 @@ impl WebWorker {
     }
 }
 
+/// `accept_socket()`: the numeric address, `localhost` for the loopback addresses, IPv4-mapped IPv6 unwrapped (after
+/// the loopback check, so `::ffff:127.0.0.1` stays `127.0.0.1`).
+fn client_ip(peer: &std::net::SocketAddr) -> String {
+    let ip = peer.ip().to_string();
+    if ip == "127.0.0.1" || ip == "::1" {
+        return "localhost".to_string();
+    }
+    match ip.strip_prefix("::ffff:") {
+        Some(v4) if peer.is_ipv6() => v4.to_string(),
+        _ => ip,
+    }
+}
+
+/// What a complete request turned into.
+enum Outcome {
+    /// Bytes to send (a whole HTTP response, or a raw streaming refusal that closes the connection).
+    Reply(Vec<u8>),
+    /// A `STREAM` request past the checks made on the web connection: the connection is taken over.
+    Stream(PreAdmission),
+}
+
 /// Validates what was received and, when the request is complete, produces the whole response.
-fn respond(client: &mut Client, shared: &Shared) -> Option<Vec<u8>> {
+fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Option<Outcome> {
     let conn = Connection {
         transport: Transport::Tcp,
         tls_configured: false,
@@ -254,6 +309,23 @@ fn respond(client: &mut Client, shared: &Shared) -> Option<Vec<u8>> {
                     request::MAX_REQUEST_SIZE
                 ),
             )
+        }
+        Validation::Ok if client.request.mode == Some(Mode::Stream) => {
+            // stream_receiver_accept_connection(); the `[web] allow streaming from` ACL comes with the ACLs.
+            let pre = receivers.pre_admit(
+                &client.request.query,
+                client.request.headers.user_agent.as_deref(),
+                &client.client_ip,
+            );
+            client.request = Request::default();
+            client.received.clear();
+            return Some(match pre {
+                PreAdmission::Reply(bytes, _code) => {
+                    client.close_after_write = true;
+                    Outcome::Reply(bytes.as_bytes().to_vec())
+                }
+                other => Outcome::Stream(other),
+            });
         }
         Validation::Ok => dispatch(&client.request, shared),
         Validation::Redirect => Reply {
@@ -316,7 +388,7 @@ fn respond(client: &mut Client, shared: &Shared) -> Option<Vec<u8>> {
     // Ready for the next request on this connection.
     client.request = Request::default();
     client.received.clear();
-    Some(out)
+    Some(Outcome::Reply(out))
 }
 
 const REDIRECT_BODY: &str = "<!DOCTYPE html><!-- SPDX-License-Identifier: GPL-3.0-or-later --><html><body onload=\"window.location.href ='https://'+ window.location.hostname + ':' + window.location.port + window.location.pathname + window.location.search\">Redirecting to safety connection, case your browser does not support redirection, please click <a onclick=\"window.location.href ='https://'+ window.location.hostname + ':'  + window.location.port + window.location.pathname + window.location.search\">here</a>.</body></html>";

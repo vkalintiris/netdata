@@ -32,8 +32,12 @@ const KEEPALIVE_IDLE_MAX_SECONDS: u64 = 3600;
 /// Values `stream_conf_load()` takes from the rest of the daemon.
 #[derive(Debug, Clone, Copy)]
 pub struct LoadDefaults {
-    /// `replication_threads_default()`.
-    pub replication_threads: i64,
+    /// `netdata_conf_cpus()`, for `replication_threads_default()`.
+    pub conf_cpus: i64,
+    /// `os_get_system_cpus_uncached()` and the total RAM, for the profile detection that
+    /// `replication_threads_default()` triggers once this file is loaded (`nd_profile_detect_and_configure()`).
+    pub system_cpus: i64,
+    pub ram_total_bytes: Option<u64>,
     /// `libuv_worker_threads`, for `replication_prefetch_default()`.
     pub libuv_worker_threads: i64,
     /// `netdata_ssl_validate_certificate`.
@@ -238,10 +242,22 @@ impl StreamConf {
         r.enabled = netdata.get_boolean(SECTION_DB, "enable replication", r.enabled);
         r.period = netdata.get_duration_seconds(SECTION_DB, "replication period", r.period);
         r.step = netdata.get_duration_seconds(SECTION_DB, "replication step", r.step);
+        // replication_threads_default(): the parent profile needs more than one CPU, 1 GiB of RAM and an enabled
+        // API key here.
+        let parent_profile = !(defaults.system_cpus <= 1
+            || defaults.ram_total_bytes.is_some_and(|ram| ram < 1 << 30))
+            && self.config.stream_conf_has_api_enabled();
+        let threads_default = if parent_profile {
+            (defaults.conf_cpus / 3).max(4)
+        } else {
+            1
+        };
+        let c = &mut self.config;
+        let s = &mut self.send;
         s.replication_threads = netdata.get_number_range(
             SECTION_DB,
             "replication threads",
-            defaults.replication_threads,
+            threads_default.clamp(1, MAX_REPLICATION_THREADS),
             1,
             MAX_REPLICATION_THREADS,
         );

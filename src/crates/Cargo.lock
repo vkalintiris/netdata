@@ -2920,6 +2920,8 @@ dependencies = [
  "mio",
  "netdata-agent-evloop",
  "netdata-agent-inicfg",
+ "netdata-agent-rrd",
+ "netdata-agent-streaming",
  "netdata-agent-text",
  "netdata-agent-web",
  "nix",
@@ -2965,6 +2967,8 @@ version = "0.1.3"
 name = "netdata-agent-streaming"
 version = "0.1.3"
 dependencies = [
+ "mio",
+ "netdata-agent-evloop",
  "netdata-agent-inicfg",
  "netdata-agent-rrd",
  "netdata-agent-text",

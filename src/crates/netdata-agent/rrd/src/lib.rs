@@ -3,4 +3,6 @@
 
 #![forbid(unsafe_code)]
 
+pub mod host;
+pub mod mode;
 pub mod system_info;

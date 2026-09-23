@@ -12,6 +12,7 @@ mod listen;
 mod router;
 mod server;
 mod static_file;
+mod system;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -19,6 +20,10 @@ use std::sync::Arc;
 
 use netdata_agent_evloop::Pool;
 use netdata_agent_inicfg::{LogLevel, SECTION_GLOBAL, SECTION_WEB};
+use netdata_agent_rrd::host::{Host, HostInfo, Hosts};
+use netdata_agent_rrd::mode::DbMode;
+use netdata_agent_streaming::conf::{LoadDefaults, StreamConf};
+use netdata_agent_streaming::receiver::{self, Receivers, StreamWorker};
 use netdata_agent_web::request::Settings;
 use nix::sys::signal::{SigSet, Signal};
 
@@ -120,6 +125,25 @@ fn run(argv: Vec<String>) -> i32 {
     conf.section_directories();
     conf.flush_log(&mut logger);
 
+    // C loads stream.conf from the profile detection inside netdata_conf_section_global(), before the machine GUID;
+    // the exact place among the other reads is part of the config-order work.
+    let system = system::Resources::probe();
+    let mut stream_conf = StreamConf::default();
+    stream_conf.load(
+        &mut conf.netdata,
+        &conf.dirs.user_config,
+        &conf.dirs.stock_config,
+        LoadDefaults {
+            conf_cpus: system.cpus,
+            system_cpus: system.cpus,
+            ram_total_bytes: system.ram_total_bytes,
+            libuv_worker_threads: system.libuv_worker_threads(),
+            ssl_validate_certificate: true,
+        },
+        &mut logger,
+    );
+    conf.flush_log(&mut logger);
+
     let machine_guid = match guid::machine_guid_get(&conf.dirs.varlib) {
         Ok(guid) => guid,
         Err(err) => {
@@ -175,6 +199,61 @@ fn run(argv: Vec<String>) -> i32 {
         }
     }
 
+    let localhost = Host::new(
+        &machine_guid,
+        true,
+        HostInfo {
+            hostname: conf.hostname.clone(),
+            registry_hostname: conf.hostname.clone(),
+            os: "linux".to_string(),
+            timezone: "unknown".to_string(),
+            abbrev_timezone: "UTC".to_string(),
+            utc_offset: 0,
+            program_name: "netdata".to_string(),
+            program_version: build::NETDATA_VERSION.to_string(),
+            update_every: 1,
+            db_mode: DbMode::Dbengine,
+            history_entries: 0,
+            health_enabled: true,
+            system_info: Default::default(),
+        },
+    );
+    let hosts = Arc::new(Hosts::new(localhost));
+    // stream_thread_get_unsafe(): one thread per core but one, 4..=2048. C starts them on first use.
+    let stream_threads = (system.cpus - 1).clamp(4, 2048) as usize;
+    let stream_load: Arc<std::sync::Mutex<Vec<usize>>> = Arc::default();
+    let stream_pool = {
+        let load = Arc::clone(&stream_load);
+        match Pool::spawn(
+            stream_threads,
+            |i| format!("STREAM[{i}]"),
+            move |_| StreamWorker::new(Arc::clone(&load)),
+        ) {
+            Ok(pool) => pool,
+            Err(err) => {
+                log(
+                    LogLevel::Error,
+                    &format!("Cannot start the stream threads: {err}"),
+                );
+                return 1;
+            }
+        }
+    };
+    let receivers = Arc::new(Receivers::new(
+        stream_conf,
+        Arc::clone(&hosts),
+        stream_load,
+        receiver::Defaults {
+            // No dbengine yet: C falls back to alloc when dbengine is unavailable.
+            db_mode: DbMode::Alloc.name().to_string(),
+            history: 3600,
+            health_enabled: true,
+            update_every: 1,
+            page_size: system.page_size,
+        },
+        stream_pool.handle(),
+        Box::new(log),
+    ));
     let shared = Arc::new(server::Shared {
         settings: Settings {
             gzip: true,
@@ -200,6 +279,7 @@ fn run(argv: Vec<String>) -> i32 {
                     .map(|s| s.try_clone().expect("dup listener"))
                     .collect(),
                 Arc::clone(&shared),
+                Arc::clone(&receivers),
             )
             .expect("web worker")
         },
@@ -226,6 +306,7 @@ fn run(argv: Vec<String>) -> i32 {
 
     log(LogLevel::Info, "shutting down");
     let _ = pool.stop();
+    let _ = stream_pool.stop();
     if let Some(pidfile) = &pidfile {
         let _ = std::fs::remove_file(pidfile);
     }
