@@ -299,7 +299,6 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         info: api::Info {
             version: build::NETDATA_VERSION,
             machine_guid,
-            hostname: conf.hostname.clone(),
         },
         web_dir: conf.dirs.web.clone(),
         hosts: Arc::clone(&hosts),

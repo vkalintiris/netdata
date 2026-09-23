@@ -30,7 +30,7 @@ type Command = (&'static str, bool, fn(&Route<'_>, &Host, &[u8]) -> Reply);
 const API_V1: &[Command] = &[("info", false, |route, _, _| Reply {
     code: status::OK,
     content_type: ContentType::ApplicationJson,
-    body: api::info_json(&route.shared.info),
+    body: api::info_json(&route.shared.info, &route.shared.hosts),
     ..Reply::default()
 })];
 const API_V2: &[Command] = &[];
@@ -188,7 +188,6 @@ mod tests {
             info: api::Info {
                 version: "v0",
                 machine_guid: "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e".into(),
-                hostname: "box".into(),
             },
             web_dir: "/nonexistent-web-dir".into(),
             hosts: Arc::new(netdata_agent_rrd::host::Hosts::new(

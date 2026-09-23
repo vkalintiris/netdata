@@ -95,6 +95,8 @@ pub struct Host {
     node_id: RwLock<[u8; 16]>,
     info: RwLock<HostInfo>,
     receiver: Mutex<Option<Arc<ReceiverSlot>>>,
+    /// `RRDHOST_FLAG_ORPHAN`: a child whose receiver has gone.
+    orphan: AtomicBool,
     charts: Charts,
 }
 
@@ -111,6 +113,7 @@ impl Host {
             node_id: RwLock::new([0; 16]),
             info: RwLock::new(info),
             receiver: Mutex::new(None),
+            orphan: AtomicBool::new(false),
             charts: Charts::default(),
         }
     }
@@ -163,7 +166,27 @@ impl Host {
             return false;
         }
         *receiver = Some(slot);
+        self.orphan
+            .store(false, std::sync::atomic::Ordering::Release);
         true
+    }
+
+    /// `RRDHOST_FLAG_ORPHAN`.
+    pub fn is_orphan(&self) -> bool {
+        self.orphan.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// `rrdhost_ingestion_hops()`: 0 for localhost, else what the child reported.
+    pub fn ingestion_hops(&self) -> i16 {
+        if self.is_localhost {
+            0
+        } else {
+            self.info
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .system_info
+                .hops
+        }
     }
 
     /// `rrdhost_clear_receiver()`: detaches `slot` if it is still the attached one.
@@ -171,6 +194,8 @@ impl Host {
         let mut receiver = lock(&self.receiver);
         if receiver.as_ref().is_some_and(|r| Arc::ptr_eq(r, slot)) {
             *receiver = None;
+            self.orphan
+                .store(true, std::sync::atomic::Ordering::Release);
         }
     }
 }
