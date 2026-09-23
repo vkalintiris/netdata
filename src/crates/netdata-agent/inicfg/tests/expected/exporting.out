@@ -1,0 +1,29 @@
+load	exporting.conf	0	\N -> 1
+get	my_graphite	destination	\N -> localhost:2003
+get	web	enabled	\N -> no
+get	instance_1	enabled	\N -> yes
+get	graphite	enabled	\N -> (null)
+generate	0	0 -> 
+
+[web]
+	enabled = no
+
+# section 'exporting:global' is not used.
+[exporting:global]
+	enabled = yes
+	send configured labels = yes
+
+# section 'prometheus:exporter' is not used.
+[prometheus:exporter]
+	send names instead of ids = yes
+
+[my_graphite]
+	#| >>> [my_graphite].enabled <<<
+	#| found in the config file, but is not used
+	enabled = yes
+
+	destination = localhost:2003
+
+[instance_1]
+	enabled = yes
+<<<END

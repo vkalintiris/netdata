@@ -144,16 +144,7 @@ fn run(argv: Vec<String>) -> i32 {
     );
     conf.flush_log(&mut logger);
 
-    let machine_guid = match guid::machine_guid_get(&conf.dirs.varlib) {
-        Ok(guid) => guid,
-        Err(err) => {
-            log(
-                LogLevel::Error,
-                &format!("Cannot get or save the machine GUID: {err}"),
-            );
-            return 1;
-        }
-    };
+    let machine_guid = guid::machine_guid_get(&conf.dirs.varlib, &mut logger);
 
     // Every thread started from here on inherits these signals blocked; the main thread waits for them.
     let mut handled = SigSet::empty();
@@ -267,6 +258,7 @@ fn run(argv: Vec<String>) -> i32 {
             hostname: conf.hostname.clone(),
         },
         web_dir: conf.dirs.web.clone(),
+        hosts: Arc::clone(&hosts),
     });
     let sockets: Vec<std::net::TcpListener> = listeners.into_iter().map(|l| l.socket).collect();
     let pool = match Pool::spawn(

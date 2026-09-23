@@ -5,7 +5,7 @@
 //! after every receive, exactly where C calls `http_request_validate()`.
 
 use netdata_agent_text::c::{at, c_str, eq_ignore_case, find, find_ignore_case, is_space};
-use netdata_agent_text::parse::{uuid_parse, uuid_parse_flexi};
+use netdata_agent_text::parse::uuid_parse_flexi;
 
 use crate::url::{self, ExpectedSize, Payload};
 
@@ -494,7 +494,7 @@ impl Request {
         } else if is("Sec-WebSocket-Extensions") {
             h.websocket_extensions = Some(v.to_vec());
         } else if is("Mcp-Session-Id") {
-            h.mcp_session_id = uuid_parse(v);
+            h.mcp_session_id = uuid_parse_flexi(v);
         }
     }
 }

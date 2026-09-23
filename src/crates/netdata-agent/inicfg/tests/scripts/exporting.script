@@ -1,0 +1,7 @@
+# a file named exporting.conf: connector:instance sections, reserved and invalid names, duplicate instances
+load	exporting.conf	0	\N
+get	my_graphite	destination	\N
+get	web	enabled	\N
+get	instance_1	enabled	\N
+get	graphite	enabled	\N
+generate	0	0

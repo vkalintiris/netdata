@@ -21,6 +21,6 @@ netdata-agent-rrd = { workspace = true }
 netdata-agent-streaming = { workspace = true }
 netdata-agent-text = { workspace = true }
 netdata-agent-web = { workspace = true }
-nix = { workspace = true, features = ["signal", "user", "hostname", "fs", "process"] }
+nix = { workspace = true, features = ["signal", "user", "hostname", "fs", "process", "time"] }
 socket2 = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }

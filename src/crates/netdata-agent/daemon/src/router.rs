@@ -5,8 +5,11 @@
 //! Not ported yet: ACL and bearer checks (with the `[web]` section), `/mcp` and `/sse`, `/netdata.conf` (it needs
 //! the config reads in C's order), and every API command other than `/api/v1/info`.
 
+use std::sync::Arc;
+
 use netdata_agent_text::c::strsep_skip;
-use netdata_agent_text::parse::uuid_parse;
+use netdata_agent_text::parse::uuid_parse_flexi;
+use netdata_agent_text::print::print_uuid_lower;
 use netdata_agent_web::content_type::ContentType;
 use netdata_agent_web::request::Request;
 use netdata_agent_web::status;
@@ -18,16 +21,16 @@ use crate::static_file;
 /// `FILENAME_MAX`: the path and filename copies are truncated to it.
 pub const FILENAME_MAX: usize = 4096;
 
-/// A host the request is routed to (`RRDHOST *`); only localhost until the host index arrives with streaming.
-pub type Host<'a> = &'a api::Info;
+/// A host the request is routed to (`RRDHOST *`).
+pub type Host = Arc<netdata_agent_rrd::host::Host>;
 
 /// An API command: its name, whether it accepts a sub-path, and its handler (`struct web_api_command`).
-type Command = (&'static str, bool, fn(&Route<'_>, Host<'_>, &[u8]) -> Reply);
+type Command = (&'static str, bool, fn(&Route<'_>, &Host, &[u8]) -> Reply);
 
-const API_V1: &[Command] = &[("info", false, |_, host, _| Reply {
+const API_V1: &[Command] = &[("info", false, |route, _, _| Reply {
     code: status::OK,
     content_type: ContentType::ApplicationJson,
-    body: api::info_json(host),
+    body: api::info_json(&route.shared.info),
     ..Reply::default()
 })];
 const API_V2: &[Command] = &[];
@@ -61,15 +64,15 @@ pub fn process_request(req: &Request, shared: &Shared) -> Reply {
         trailing_slash: end == 0 || path[end - 1] == b'/',
         has_extension: last_marker == Some(b'.'),
     };
-    route.process_url(&shared.info, Some(path))
+    route.process_url(Arc::clone(shared.hosts.localhost()), Some(path))
 }
 
 impl<'a> Route<'a> {
-    fn process_url(&mut self, host: Host<'_>, decoded: Option<&[u8]>) -> Reply {
+    fn process_url(&mut self, host: Host, decoded: Option<&[u8]>) -> Reply {
         let filename = decoded.unwrap_or(b"");
         let mut rest = decoded;
         let version = match strsep_skip(&mut rest, b"/?") {
-            b"api" => return self.api_request(host, rest),
+            b"api" => return self.api_request(&host, rest),
             b"host" => return self.switch_host(host, rest, false),
             b"node" => return self.switch_host(host, rest, true),
             b"v3" => 3,
@@ -89,8 +92,8 @@ impl<'a> Route<'a> {
     }
 
     /// `web_client_switch_host()` for the web server's routes.
-    fn switch_host(&mut self, host: Host<'_>, mut url: Option<&[u8]>, nodeid: bool) -> Reply {
-        if !std::ptr::eq(host, &self.shared.info) {
+    fn switch_host(&mut self, host: Host, mut url: Option<&[u8]>, nodeid: bool) -> Reply {
+        if !Arc::ptr_eq(&host, self.shared.hosts.localhost()) {
             return Reply::text(status::BAD_REQUEST, "Nesting of hosts is not allowed.");
         }
         let tok = strsep_skip(&mut url, b"/");
@@ -111,27 +114,28 @@ impl<'a> Route<'a> {
     }
 
     /// The lookups of `web_client_switch_host()`: by machine GUID, node ID and hostname (node ID first for
-    /// `/node/`), then by the lowercased form of a canonical UUID.
-    fn find_host(&self, tok: &[u8], nodeid: bool) -> Option<Host<'a>> {
-        let shared: &'a Shared = self.shared;
-        let hosts = [&shared.info];
-        let by_guid = |t: &[u8]| hosts.into_iter().find(|h| h.machine_guid.as_bytes() == t);
-        // Node IDs arrive with claiming; no host has one yet.
-        let by_node_id = |_: &[u8]| None;
-        let by_hostname = |t: &[u8]| hosts.into_iter().find(|h| h.hostname.as_bytes() == t);
+    /// `/node/`), then by the canonical lowercase form of whatever `uuid_parse_flexi()` accepts.
+    fn find_host(&self, tok: &[u8], nodeid: bool) -> Option<Host> {
+        let hosts = &self.shared.hosts;
+        let by_guid = |t: &[u8]| hosts.find_by_guid(&String::from_utf8_lossy(t));
+        let by_node_id = |t: &[u8]| uuid_parse_flexi(t).and_then(|u| hosts.find_by_node_id(&u));
         let found = if nodeid {
             by_node_id(tok).or_else(|| by_guid(tok))
         } else {
             by_guid(tok).or_else(|| by_node_id(tok))
         };
-        found.or_else(|| by_hostname(tok)).or_else(|| {
-            uuid_parse(tok)?;
-            by_guid(&tok.to_ascii_lowercase())
-        })
+        found
+            .or_else(|| hosts.find_by_hostname(&String::from_utf8_lossy(tok)))
+            .or_else(|| {
+                let uuid = uuid_parse_flexi(tok)?;
+                let mut canonical = Vec::new();
+                print_uuid_lower(&mut canonical, &uuid);
+                by_guid(&canonical)
+            })
     }
 
     /// `web_client_api_request()`: `/api/<version>/<command>`.
-    fn api_request(&self, host: Host<'_>, mut rest: Option<&[u8]>) -> Reply {
+    fn api_request(&self, host: &Host, mut rest: Option<&[u8]>) -> Reply {
         let table = match strsep_skip(&mut rest, b"/") {
             b"" => return Reply::text(status::BAD_REQUEST, "Which API version?"),
             b"v3" => API_V3,
@@ -145,7 +149,7 @@ impl<'a> Route<'a> {
     }
 
     /// `web_client_api_request_vX()`.
-    fn api_command(&self, host: Host<'_>, endpoint: &[u8], table: &[Command]) -> Reply {
+    fn api_command(&self, host: &Host, endpoint: &[u8], table: &[Command]) -> Reply {
         if endpoint.is_empty() {
             return Reply::text(status::BAD_REQUEST, "Which API command?");
         }
@@ -187,6 +191,27 @@ mod tests {
                 hostname: "box".into(),
             },
             web_dir: "/nonexistent-web-dir".into(),
+            hosts: Arc::new(netdata_agent_rrd::host::Hosts::new(
+                netdata_agent_rrd::host::Host::new(
+                    "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",
+                    true,
+                    netdata_agent_rrd::host::HostInfo {
+                        hostname: "box".into(),
+                        registry_hostname: "box".into(),
+                        os: "linux".into(),
+                        timezone: "UTC".into(),
+                        abbrev_timezone: "UTC".into(),
+                        utc_offset: 0,
+                        program_name: "netdata".into(),
+                        program_version: "v0".into(),
+                        update_every: 1,
+                        db_mode: netdata_agent_rrd::mode::DbMode::Ram,
+                        history_entries: 4096,
+                        health_enabled: false,
+                        system_info: Default::default(),
+                    },
+                ),
+            )),
         }
     }
 
@@ -249,7 +274,7 @@ mod tests {
     #[test]
     fn host_switching_matches_c() {
         let s = shared();
-        let cases: [(&[u8], u16, &[u8]); 4] = [
+        let cases: [(&[u8], u16, &[u8]); 8] = [
             (
                 b"/host/other/api/v1/info",
                 status::NOT_FOUND,
@@ -263,6 +288,24 @@ mod tests {
             (b"/host/box/api/v1/info", status::OK, b""),
             (
                 b"/node/0F4B6E5C-1D2A-4B3C-9D8E-7F6A5B4C3D2E/api/v1/info",
+                status::OK,
+                b"",
+            ),
+            // C's other matches: the localhost alias, the nil node ID of an unclaimed host, and whatever
+            // uuid_parse_flexi() accepts (32 hex digits, trailing text).
+            (b"/host/localhost/api/v1/info", status::OK, b""),
+            (
+                b"/node/00000000-0000-0000-0000-000000000000/api/v1/info",
+                status::OK,
+                b"",
+            ),
+            (
+                b"/host/0F4B6E5C1D2A4B3C9D8E7F6A5B4C3D2E/api/v1/info",
+                status::OK,
+                b"",
+            ),
+            (
+                b"/host/0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2exyz/api/v1/info",
                 status::OK,
                 b"",
             ),

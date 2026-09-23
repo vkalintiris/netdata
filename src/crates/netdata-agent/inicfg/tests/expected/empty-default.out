@@ -1,0 +1,28 @@
+load	empty-default.conf	0	\N -> 1
+get	global	host access prefix	 -> /host
+get	cloud	token	 -> 
+load	.	0	\N -> 1
+generate	0	1 -> 
+# netdata configuration
+#
+# You can download the latest version of this file, using:
+#
+#  wget -O /etc/netdata/netdata.conf http://localhost:19999/netdata.conf
+# or
+#  curl -o /etc/netdata/netdata.conf http://localhost:19999/netdata.conf
+#
+# You can uncomment and change any of the options below.
+# The value shown in the commented settings, is the default value.
+#
+
+# global netdata configuration
+
+[global]
+	host access prefix = /host
+
+[host labels]
+	# name = value
+
+[cloud]
+	# token = 
+<<<END

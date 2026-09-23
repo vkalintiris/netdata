@@ -14,7 +14,7 @@ use std::path::Path;
 
 use netdata_agent_text::c::{c_str, eq_ignore_case, is_space};
 use netdata_agent_text::duration::{duration_parse, duration_parse_seconds, duration_to_string};
-use netdata_agent_text::parse::{str2ndd, strtoll0};
+use netdata_agent_text::parse::{str2ndd, strtoll0, uuid_parse_flexi};
 use netdata_agent_text::size::{size_parse, size_to_string};
 
 pub const SECTION_GLOBAL: &str = "global";
@@ -171,6 +171,46 @@ type Reformat = fn(&[u8]) -> Option<Vec<u8>>;
 pub struct Config {
     sections: Vec<Section>,
     log: Vec<LogLine>,
+    /// `add_connector_instance()`: (connector, instance) section names from exporting.conf, newest first.
+    connector_instances: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+/// `is_valid_connector()`'s list of exporting connector types.
+const CONNECTOR_TYPES: [&[u8]; 21] = [
+    b"graphite",
+    b"graphite:plaintext",
+    b"graphite:http",
+    b"graphite:https",
+    b"json",
+    b"json:plaintext",
+    b"json:http",
+    b"json:https",
+    b"opentsdb",
+    b"opentsdb:telnet",
+    b"opentsdb:http",
+    b"opentsdb:https",
+    b"prometheus_remote_write",
+    b"prometheus_remote_write:http",
+    b"prometheus_remote_write:https",
+    b"kinesis",
+    b"kinesis:plaintext",
+    b"pubsub",
+    b"pubsub:plaintext",
+    b"mongodb",
+    b"mongodb:plaintext",
+];
+
+/// `CONFIG_MAX_NAME`.
+const CONFIG_MAX_NAME: usize = 1024;
+
+/// `is_valid_connector(name, 0)`: the offset of the last `:` when the text before it is a connector type and the
+/// whole name is not itself one (a reserved name).
+fn valid_connector(name: &[u8]) -> Option<usize> {
+    if CONNECTOR_TYPES.contains(&name) {
+        return None;
+    }
+    let separator = name.iter().rposition(|&c| c == b':')?;
+    (separator > 0 && CONNECTOR_TYPES.contains(&&name[..separator])).then_some(separator)
 }
 
 /// `trim()`: leading and trailing `isspace()` removed; `None` when nothing remains.
@@ -328,7 +368,8 @@ impl Config {
         }
         if opt.flags & DEFAULT_SET == 0 {
             opt.flags |= DEFAULT_SET;
-            opt.value_default = default.map(<[u8]>::to_vec);
+            // string_strdupz("") is NULL: an empty default is no default.
+            opt.value_default = default.filter(|d| !d.is_empty()).map(<[u8]>::to_vec);
         }
     }
 
@@ -934,7 +975,8 @@ impl Config {
     /// `stream_conf_has_api_enabled()`: a section named by a UUID, of type `api` (or untyped), is enabled.
     pub fn stream_conf_has_api_enabled(&self) -> bool {
         self.sections.iter().any(|sect| {
-            if !is_canonical_uuid(&sect.name) {
+            // uuid_parse() is uuid_parse_flexi() in Netdata (libnetdata/uuid/uuid.h).
+            if uuid_parse_flexi(&sect.name).is_none() {
                 return false;
             }
             if let Some(o) = sect.find(b"type") {
@@ -947,10 +989,14 @@ impl Config {
         })
     }
 
-    /// `inicfg_load()` from a file. Returns false when the file cannot be opened (C logs unless it is missing).
+    /// `inicfg_load()` from a file. Returns false when the file cannot be opened (C logs unless it is missing). A read
+    /// error ends the file where it happened, as `fgets()` does: a directory opens and loads nothing.
     pub fn load(&mut self, path: &Path, overwrite_used: bool, only_section: Option<&str>) -> bool {
-        match std::fs::read(path) {
-            Ok(content) => {
+        use std::io::Read;
+        match std::fs::File::open(path) {
+            Ok(mut file) => {
+                let mut content = Vec::new();
+                let _ = file.read_to_end(&mut content);
                 let name = path.to_string_lossy().into_owned();
                 self.load_bytes(&content, &name, overwrite_used, only_section);
                 true
@@ -968,10 +1014,17 @@ impl Config {
         }
     }
 
+    /// The exporting connector instances loaded so far (`add_connector_instance(NULL, NULL)`), newest first.
+    pub fn connector_instances(&self) -> &[(Vec<u8>, Vec<u8>)] {
+        &self.connector_instances
+    }
+
     /// `inicfg_load()` over the file's bytes; `filename` is used for messages and the exporting rules.
     ///
     /// With `overwrite_used`, values the program already read are replaced (C passes it for `-c`); with
-    /// `only_section`, only that section is loaded and its existing options are dropped first.
+    /// `only_section`, only that section is loaded and its existing options are dropped first. A filename containing
+    /// `exporting.conf` turns on the connector rules: sections other than `[exporting:global]` and
+    /// `[prometheus:exporter]` must be `<connector type>:<instance>` and are loaded under the instance name.
     pub fn load_bytes(
         &mut self,
         content: &[u8],
@@ -979,10 +1032,11 @@ impl Config {
         overwrite_used: bool,
         only_section: Option<&str>,
     ) {
-        assert!(
-            !filename.contains(EXPORTING_CONF),
-            "exporting.conf connector sections are not supported yet"
-        );
+        let is_exporter_config = filename.contains(EXPORTING_CONF);
+        let mut connectors = 0usize;
+        let mut working_connector: Vec<u8> = Vec::new();
+        let mut working_connector_section: Option<usize> = None;
+        let mut global_exporting_section = false;
         let only_section = only_section.map(str::as_bytes);
         let mut section: Option<usize> = None;
         let mut line = 0usize;
@@ -1005,7 +1059,46 @@ impl Config {
                 continue;
             }
             if s[0] == b'[' && s[s.len() - 1] == b']' {
-                let name = &s[1..s.len() - 1];
+                let mut name = s[1..s.len() - 1].to_vec();
+                if is_exporter_config {
+                    global_exporting_section =
+                        name == b"exporting:global" || name == b"prometheus:exporter";
+                    if !global_exporting_section {
+                        let Some(separator) = valid_connector(&name) else {
+                            // C cut the name at its last ':' while checking, unless it was a reserved name.
+                            let shown = match name.iter().rposition(|&c| c == b':') {
+                                Some(sep) if !CONNECTOR_TYPES.contains(&name.as_slice()) => {
+                                    &name[..sep]
+                                }
+                                _ => &name[..],
+                            };
+                            let message = format!(
+                                "Section ({}) does not specify a valid connector",
+                                lossy(shown)
+                            );
+                            self.log(LogLevel::Error, message);
+                            section = None;
+                            continue;
+                        };
+                        working_connector = name[..separator.min(CONFIG_MAX_NAME)].to_vec();
+                        let mut instance = name[separator + 1..].to_vec();
+                        if instance.is_empty() {
+                            connectors += 1;
+                            instance = format!("instance_{connectors}").into_bytes();
+                        }
+                        working_connector_section = None;
+                        let working_instance = &instance[..instance.len().min(CONFIG_MAX_NAME)];
+                        if self.section_index(working_instance).is_some() {
+                            let message =
+                                format!("Instance ({}) already exists", lossy(working_instance));
+                            self.log(LogLevel::Error, message);
+                            section = None;
+                            continue;
+                        }
+                        name = instance;
+                    }
+                }
+                let name = name.as_slice();
                 let idx = self.section_find_or_create(name);
                 if overwrite_used && only_section == Some(name) {
                     self.sections[idx].options.clear();
@@ -1051,10 +1144,21 @@ impl Config {
                 }
                 None => {
                     options.push(Opt::new(name, value));
-                    options.len() - 1
+                    let o = options.len() - 1;
+                    if is_exporter_config
+                        && !global_exporting_section
+                        && working_connector_section.is_none()
+                    {
+                        let connector = self.section_find_or_create(&working_connector);
+                        working_connector_section = Some(connector);
+                        let instance = self.sections[sect].name.clone();
+                        let connector = self.sections[connector].name.clone();
+                        self.connector_instances.insert(0, (connector, instance));
+                    }
+                    o
                 }
             };
-            options[o].flags |= LOADED;
+            self.sections[sect].options[o].flags |= LOADED;
         }
     }
 
@@ -1222,16 +1326,4 @@ fn write_section(out: &mut Vec<u8>, sect: &Section, only_changed: bool) {
         out.extend_from_slice(&opt.value);
         out.push(b'\n');
     }
-}
-
-/// libuuid `uuid_parse()` acceptance: the 36-character canonical form.
-fn is_canonical_uuid(s: &[u8]) -> bool {
-    s.len() == 36
-        && s.iter().enumerate().all(|(i, &c)| {
-            if matches!(i, 8 | 13 | 18 | 23) {
-                c == b'-'
-            } else {
-                c.is_ascii_hexdigit()
-            }
-        })
 }

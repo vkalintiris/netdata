@@ -717,22 +717,6 @@ pub fn strtoul0(s: &[u8]) -> (u64, usize) {
     (value, used)
 }
 
-/// libuuid `uuid_parse()`: exactly the 36-character canonical form.
-pub fn uuid_parse(s: &[u8]) -> Option<[u8; 16]> {
-    let s = c::c_str(s);
-    if s.len() != 36 {
-        return None;
-    }
-    for (i, &c) in s.iter().enumerate() {
-        let hyphen = matches!(i, 8 | 13 | 18 | 23);
-        if hyphen != (c == b'-') || (!hyphen && !c.is_ascii_hexdigit()) {
-            return None;
-        }
-    }
-    let hex: Vec<u8> = s.iter().copied().filter(|&c| c != b'-').collect();
-    uuid_parse_flexi(&hex)
-}
-
 /// `uuid_parse_flexi()`: 32 hex digits with either no hyphens or exactly four anywhere between byte pairs;
 /// parsing stops after 16 bytes, so trailing text is ignored. `None` where C returns an error (and leaves the
 /// destination untouched).

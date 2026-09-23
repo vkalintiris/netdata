@@ -14,6 +14,7 @@ use netdata_agent_web::status;
 
 use netdata_agent_text::print::html_escape;
 
+use netdata_agent_rrd::host::Hosts;
 use netdata_agent_streaming::receiver::{PreAdmission, Receivers};
 
 use crate::{api, router};
@@ -26,6 +27,7 @@ pub struct Shared {
     pub info: api::Info,
     /// `netdata_configured_web_dir`.
     pub web_dir: String,
+    pub hosts: Arc<Hosts>,
 }
 
 /// A handler's answer (`w->response`).

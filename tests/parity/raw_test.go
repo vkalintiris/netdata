@@ -109,7 +109,9 @@ func TestStaticAndRouting(t *testing.T) {
 		"/nonexistent.js", "/static/", "/netdata-swagger.json", "/bad%20name", "/a/../index.html",
 		"/host/other/api/v1/info", "/host/", "/host/parity-parent", "/host/parity-parent/v3?y",
 		"/api", "/api/v9", "/api/v1", "/api/v1//info", "/api/v1/info/x", "/api/v1/nope%2Fx", "/v1/v2/",
-		"/node/5A1E0000-0000-4000-8000-0000000000AA/x.js",
+		"/node/5A1E0000-0000-4000-8000-0000000000AA/x.js", "/host/localhost/x.js", "/host/localhost",
+		"/node/00000000-0000-0000-0000-000000000000/x.js", "/host/5A1E00000000400080000000000000AA/x.js",
+		"/host/5a1e0000-0000-4000-8000-0000000000aaxyz/x.js",
 	}
 	cases := map[string][]byte{}
 	for _, path := range paths {

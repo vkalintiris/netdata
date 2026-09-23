@@ -68,6 +68,8 @@ impl ReceiverSlot {
 pub struct Host {
     machine_guid: String,
     is_localhost: bool,
+    /// `host->node_id`: zero until the host is claimed.
+    node_id: RwLock<[u8; 16]>,
     info: RwLock<HostInfo>,
     receiver: Mutex<Option<Arc<ReceiverSlot>>>,
 }
@@ -82,6 +84,7 @@ impl Host {
         Host {
             machine_guid: machine_guid.to_string(),
             is_localhost,
+            node_id: RwLock::new([0; 16]),
             info: RwLock::new(info),
             receiver: Mutex::new(None),
         }
@@ -93,6 +96,10 @@ impl Host {
 
     pub fn is_localhost(&self) -> bool {
         self.is_localhost
+    }
+
+    pub fn node_id(&self) -> [u8; 16] {
+        *self.node_id.read().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub fn info(&self) -> HostInfo {
@@ -179,14 +186,24 @@ impl Hosts {
             .cloned()
     }
 
-    /// `rrdhost_find_by_hostname()`: the first host in creation order with this name.
+    /// `rrdhost_find_by_hostname()`: `localhost` is always this agent; otherwise the first host in creation order
+    /// with this name (an empty name matches none).
     pub fn find_by_hostname(&self, hostname: &str) -> Option<Arc<Host>> {
+        if hostname == "localhost" {
+            return Some(Arc::clone(&self.localhost));
+        }
+        if hostname.is_empty() {
+            return None;
+        }
         let index = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        index
-            .ordered
-            .iter()
-            .find(|h| h.hostname() == hostname)
-            .cloned()
+        index.ordered.iter().find(|h| h.hostname() == hostname).cloned()
+    }
+
+    /// `rrdhost_find_by_node_id()`: the first host whose node ID equals the parsed UUID. Unclaimed hosts have a
+    /// zero node ID, so the nil UUID finds the first of them.
+    pub fn find_by_node_id(&self, node_id: &[u8; 16]) -> Option<Arc<Host>> {
+        let index = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        index.ordered.iter().find(|h| h.node_id() == *node_id).cloned()
     }
 
     /// Every host, localhost first, then in creation order.

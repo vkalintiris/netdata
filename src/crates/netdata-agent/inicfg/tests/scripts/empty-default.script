@@ -1,0 +1,6 @@
+# an empty default is no default (string_strdupz("") is NULL); a directory loads as an empty file
+load	empty-default.conf	0	\N
+get	global	host access prefix	
+get	cloud	token	
+load	.	0	\N
+generate	0	1
