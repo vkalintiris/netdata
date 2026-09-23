@@ -9,7 +9,9 @@ mod cli;
 mod conf;
 mod guid;
 mod listen;
+mod router;
 mod server;
+mod static_file;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -185,6 +187,7 @@ fn run(argv: Vec<String>) -> i32 {
             machine_guid,
             hostname: conf.hostname.clone(),
         },
+        web_dir: conf.dirs.web.clone(),
     });
     let sockets: Vec<std::net::TcpListener> = listeners.into_iter().map(|l| l.socket).collect();
     let pool = match Pool::spawn(

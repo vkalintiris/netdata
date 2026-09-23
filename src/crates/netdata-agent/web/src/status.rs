@@ -2,6 +2,7 @@
 
 pub const OK: u16 = 200;
 pub const MOVED_PERM: u16 = 301;
+pub const REDIR_TEMP: u16 = 307;
 pub const BAD_REQUEST: u16 = 400;
 pub const FORBIDDEN: u16 = 403;
 pub const NOT_FOUND: u16 = 404;

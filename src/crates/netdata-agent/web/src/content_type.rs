@@ -129,7 +129,46 @@ const TABLE: &[Entry] = &[
     e("xml", ContentType::ApplicationXml, true),
 ];
 
+/// `mime_types[]` in `src/libnetdata/http/http_defs.c`: file extensions of the static files the web server sends.
+const MIME_TYPES: &[(&str, ContentType)] = &[
+    ("html", ContentType::TextHtml),
+    ("js", ContentType::ApplicationXJavascript),
+    ("css", ContentType::TextCss),
+    ("xml", ContentType::TextXml),
+    ("xsl", ContentType::TextXsl),
+    ("txt", ContentType::TextPlain),
+    ("svg", ContentType::ImageSvgXml),
+    ("ttf", ContentType::ApplicationXFontTruetype),
+    ("otf", ContentType::ApplicationXFontOpentype),
+    ("woff2", ContentType::ApplicationFontWoff2),
+    ("woff", ContentType::ApplicationFontWoff),
+    ("eot", ContentType::ApplicationVndMsFontobj),
+    ("png", ContentType::ImagePng),
+    ("jpg", ContentType::ImageJpg),
+    ("jpeg", ContentType::ImageJpg),
+    ("gif", ContentType::ImageGif),
+    ("bmp", ContentType::ImageBmp),
+    ("ico", ContentType::ImageXicon),
+    ("icns", ContentType::ImageIcns),
+    ("wasm", ContentType::ApplicationWasm),
+];
+
 impl ContentType {
+    /// `contenttype_for_filename()`: by the text after the last dot of the whole path, which may lie in a directory
+    /// name; no extension or an unknown one is `application/octet-stream`.
+    pub fn for_filename(filename: &[u8]) -> Self {
+        let Some(dot) = filename.iter().rposition(|&c| c == b'.') else {
+            return ContentType::ApplicationOctetStream;
+        };
+        let extension = &filename[dot + 1..];
+        MIME_TYPES
+            .iter()
+            .find(|(name, _)| !extension.is_empty() && name.as_bytes() == extension)
+            .map_or(ContentType::ApplicationOctetStream, |&(_, content_type)| {
+                content_type
+            })
+    }
+
     /// `content_type_string2id()`: exact, case-sensitive name match; unknown and empty names are `text/plain`.
     pub fn from_name(name: &[u8]) -> Self {
         TABLE
@@ -169,6 +208,20 @@ impl ContentType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_type_for_filename() {
+        let cases: [(&[u8], ContentType); 5] = [
+            (b"/web/v2/index.html", ContentType::TextHtml),
+            (b"/web/app.woff2", ContentType::ApplicationFontWoff2),
+            (b"/web/conf.d/README", ContentType::ApplicationOctetStream),
+            (b"/web/x.", ContentType::ApplicationOctetStream),
+            (b"/web/x.HTML", ContentType::ApplicationOctetStream),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(ContentType::for_filename(name), expected);
+        }
+    }
 
     #[test]
     fn names_and_headers() {

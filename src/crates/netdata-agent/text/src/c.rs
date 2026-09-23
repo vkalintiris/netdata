@@ -78,6 +78,27 @@ pub fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
+/// `strsep_skip_consecutive_separators()`: the next non-empty token of `rest` delimited by any byte of `separators`.
+/// Returns an empty token once `rest` is exhausted (`None`), or when its last token is empty; C never returns NULL.
+pub fn strsep_skip<'a>(rest: &mut Option<&'a [u8]>, separators: &[u8]) -> &'a [u8] {
+    while let Some(s) = *rest {
+        let token = match s.iter().position(|c| separators.contains(c)) {
+            Some(end) => {
+                *rest = Some(&s[end + 1..]);
+                &s[..end]
+            }
+            None => {
+                *rest = None;
+                s
+            }
+        };
+        if !token.is_empty() {
+            return token;
+        }
+    }
+    b""
+}
+
 const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
 const TWO_POW_31: f64 = 2_147_483_648.0;
 
@@ -140,6 +161,22 @@ pub(crate) fn modf(x: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strsep_skip_matches_c() {
+        let mut rest = Some(&b"//api/v1//info?x"[..]);
+        assert_eq!(strsep_skip(&mut rest, b"/?"), b"api");
+        assert_eq!(rest, Some(&b"v1//info?x"[..]));
+        assert_eq!(strsep_skip(&mut rest, b"/"), b"v1");
+        assert_eq!(strsep_skip(&mut rest, b"/"), b"info?x");
+        assert_eq!(rest, None);
+        assert_eq!(strsep_skip(&mut rest, b"/"), b"");
+        let mut rest = Some(&b"v2/"[..]);
+        assert_eq!(strsep_skip(&mut rest, b"/?"), b"v2");
+        assert_eq!(rest, Some(&b""[..]));
+        assert_eq!(strsep_skip(&mut rest, b"/?"), b"");
+        assert_eq!(rest, None);
+    }
 
     #[test]
     fn conversions_follow_x86_64() {

@@ -62,6 +62,9 @@ type Options struct {
 	// pre-seeds the machine GUID, so two daemons (e.g. two implementations
 	// compared by tests/parity) boot with the same identity.
 	Identity *Identity
+	// WebDir, when set, is the [directories] web path, so two daemons built
+	// with different install prefixes serve the same static files.
+	WebDir string
 }
 
 // Identity is a fixed daemon identity. StreamKey and MachineGUID must be UUIDs.
@@ -103,7 +106,7 @@ const netdataConfTemplate = `[global]
     lib = %[1]s/lib
     log = %[1]s/log
     home = %[1]s/lib
-
+%[7]s
 [web]
     bind to = 127.0.0.1:%[3]d
 
@@ -323,7 +326,11 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	if o.DBEnginePageType != "" {
 		extraDB += fmt.Sprintf("    dbengine page type = %s\n", o.DBEnginePageType)
 	}
-	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB)
+	extraDirs := ""
+	if o.WebDir != "" {
+		extraDirs = fmt.Sprintf("    web = %s\n", o.WebDir)
+	}
+	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs)
 	confPath := filepath.Join(o.RunDir, "etc", "netdata.conf")
 	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {
 		return nil, fmt.Errorf("daemon: write netdata.conf: %w", err)

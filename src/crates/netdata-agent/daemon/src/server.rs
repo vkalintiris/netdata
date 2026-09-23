@@ -12,7 +12,9 @@ use netdata_agent_web::request::{
 use netdata_agent_web::response::{self, Head};
 use netdata_agent_web::status;
 
-use crate::api;
+use netdata_agent_text::print::html_escape;
+
+use crate::{api, router};
 
 /// What every worker needs to answer requests.
 pub struct Shared {
@@ -20,6 +22,8 @@ pub struct Shared {
     pub version: &'static str,
     pub gzip_level: u32,
     pub info: api::Info,
+    /// `netdata_configured_web_dir`.
+    pub web_dir: String,
 }
 
 /// A handler's answer (`w->response`).
@@ -28,17 +32,54 @@ pub struct Reply {
     pub content_type: ContentType,
     pub body: Vec<u8>,
     pub no_cacheable: bool,
+    /// `response.data->date` and `->expires`; 0 lets the header builder derive them.
+    pub date: i64,
+    pub expires: i64,
+    /// Extra header lines (`response.header`), each ending in CRLF.
+    pub headers: Vec<u8>,
+}
+
+impl Default for Reply {
+    fn default() -> Self {
+        Reply {
+            code: status::OK,
+            content_type: ContentType::TextPlain,
+            body: Vec::new(),
+            no_cacheable: false,
+            date: 0,
+            expires: 0,
+            headers: Vec::new(),
+        }
+    }
 }
 
 impl Reply {
-    fn text(code: u16, body: &str) -> Self {
+    pub fn text(code: u16, body: &str) -> Self {
         Reply {
             code,
-            content_type: ContentType::TextPlain,
             body: body.as_bytes().to_vec(),
-            no_cacheable: false,
+            ..Reply::default()
         }
     }
+
+    /// An HTML reply of `prefix` followed by the HTML-escaped `name`, as the C error pages are built.
+    pub fn html(code: u16, prefix: &str, name: &[u8]) -> Self {
+        let mut body = prefix.as_bytes().to_vec();
+        html_escape(&mut body, name);
+        Reply {
+            code,
+            content_type: ContentType::TextHtml,
+            body,
+            ..Reply::default()
+        }
+    }
+}
+
+/// `now_realtime_sec()`.
+pub fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 struct Client {
@@ -219,7 +260,7 @@ fn respond(client: &mut Client, shared: &Shared) -> Option<Vec<u8>> {
             code: status::HTTPS_UPGRADE,
             content_type: ContentType::TextHtml,
             body: REDIRECT_BODY.as_bytes().to_vec(),
-            no_cacheable: false,
+            ..Reply::default()
         },
         Validation::UriTooLong => {
             client.request.url_as_received = b"too long request URI".to_vec();
@@ -247,8 +288,8 @@ fn respond(client: &mut Client, shared: &Shared) -> Option<Vec<u8>> {
     let head = Head {
         code: reply.code,
         content_type: reply.content_type,
-        date: 0,
-        expires: 0,
+        date: reply.date,
+        expires: reply.expires,
         no_cacheable: reply.no_cacheable,
         keepalive: h.keepalive,
         origin: h.origin.as_deref(),
@@ -259,7 +300,7 @@ fn respond(client: &mut Client, shared: &Shared) -> Option<Vec<u8>> {
         has_cookies: false,
         respect_do_not_track: shared.settings.respect_do_not_track,
         tracking_required: false,
-        custom: b"",
+        custom: &reply.headers,
         gzip,
         chunked,
         content_length: body.len(),
@@ -267,10 +308,7 @@ fn respond(client: &mut Client, shared: &Shared) -> Option<Vec<u8>> {
         url_as_received: &client.request.url_as_received,
         transaction,
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    let built = response::build(&head, now);
+    let built = response::build(&head, now());
     let mut out = built.bytes;
     out.extend_from_slice(&body);
 
@@ -299,18 +337,7 @@ fn dispatch(req: &Request, shared: &Shared) -> Reply {
     if req.mode == Some(Mode::Options) {
         return Reply::text(status::OK, "OK");
     }
-    match req.path.as_slice() {
-        b"/api/v1/info" => Reply {
-            code: status::OK,
-            content_type: ContentType::ApplicationJson,
-            body: api::info_json(&shared.info),
-            no_cacheable: true,
-        },
-        _ => Reply::text(
-            status::NOT_FOUND,
-            "File does not exist, or is not accessible: ",
-        ),
-    }
+    router::process_request(req, shared)
 }
 
 impl Worker for WebWorker {

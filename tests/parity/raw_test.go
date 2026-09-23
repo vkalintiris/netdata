@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -73,6 +75,12 @@ func TestRawProtocol(t *testing.T) {
 		"uri-too-long": append(append([]byte("GET /"), bytes.Repeat([]byte("a"), 1<<20)...),
 			[]byte(" HTTP/1.1\r\n\r\n")...),
 	}
+	compareRaw(t, p, cases)
+}
+
+// compareRaw sends each request to both daemons and compares the masked raw responses.
+func compareRaw(t *testing.T, p *Pair, cases map[string][]byte) {
+	t.Helper()
 	for name, request := range cases {
 		t.Run(name, func(t *testing.T) {
 			var got [2][]byte
@@ -88,6 +96,29 @@ func TestRawProtocol(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStaticAndRouting covers URL routing (API versions and commands, dashboard version prefixes, host switching)
+// and static files, with both daemons serving the oracle's web directory.
+func TestStaticAndRouting(t *testing.T) {
+	webDir := filepath.Join(filepath.Dir(os.Getenv("PARITY_ORACLE")), "..", "share", "netdata", "web")
+	if _, err := os.Stat(filepath.Join(webDir, "index.html")); err != nil {
+		t.Fatalf("parity: the oracle's web directory: %v", err)
+	}
+	p := StartPair(t, daemon.Options{WebDir: webDir}, parentIdentity)
+	get := func(path string) []byte { return []byte("GET " + path + " HTTP/1.1\r\n\r\n") }
+	paths := []string{
+		"/", "/index.html", "/v3", "/v3/", "/v3/?x=1", "/v2/", "/v2/index.html", "/nonexistent",
+		"/nonexistent.js", "/static/", "/netdata-swagger.json", "/bad%20name", "/a/../index.html",
+		"/host/other/api/v1/info", "/host/", "/host/parity-parent", "/host/parity-parent/v3?y",
+		"/api", "/api/v9", "/api/v1", "/api/v1//info", "/api/v1/info/x", "/api/v1/nope%2Fx", "/v1/v2/",
+		"/node/5A1E0000-0000-4000-8000-0000000000AA/x.js",
+	}
+	cases := map[string][]byte{}
+	for _, path := range paths {
+		cases[strings.ReplaceAll(path, "/", "_")] = get(path)
+	}
+	compareRaw(t, p, cases)
 }
 
 func truncateBytes(b []byte) string {

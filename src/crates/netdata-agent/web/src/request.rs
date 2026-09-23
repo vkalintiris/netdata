@@ -5,7 +5,7 @@
 //! after every receive, exactly where C calls `http_request_validate()`.
 
 use netdata_agent_text::c::{at, c_str, eq_ignore_case, find, find_ignore_case, is_space};
-use netdata_agent_text::parse::uuid_parse_flexi;
+use netdata_agent_text::parse::{uuid_parse, uuid_parse_flexi};
 
 use crate::url::{self, ExpectedSize, Payload};
 
@@ -155,22 +155,6 @@ pub struct Request {
 
 fn truncated(v: &[u8], max: usize) -> Vec<u8> {
     v[..v.len().min(max)].to_vec()
-}
-
-/// libuuid `uuid_parse()`: exactly the 36-character canonical form.
-fn uuid_parse_strict(s: &[u8]) -> Option<[u8; 16]> {
-    let s = c_str(s);
-    if s.len() != 36 {
-        return None;
-    }
-    for (i, &c) in s.iter().enumerate() {
-        let hyphen = matches!(i, 8 | 13 | 18 | 23);
-        if hyphen != (c == b'-') || (!hyphen && !c.is_ascii_hexdigit()) {
-            return None;
-        }
-    }
-    let hex: Vec<u8> = s.iter().copied().filter(|&c| c != b'-').collect();
-    uuid_parse_flexi(&hex)
 }
 
 impl Request {
@@ -507,7 +491,7 @@ impl Request {
         } else if is("Sec-WebSocket-Extensions") {
             h.websocket_extensions = Some(v.to_vec());
         } else if is("Mcp-Session-Id") {
-            h.mcp_session_id = uuid_parse_strict(v);
+            h.mcp_session_id = uuid_parse(v);
         }
     }
 }

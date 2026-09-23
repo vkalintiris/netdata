@@ -227,9 +227,31 @@ pub fn print_uuid_lower_compact(dst: &mut Vec<u8>, uuid: &[u8; 16]) {
     }
 }
 
+/// `buffer_strcat_htmlescape()`.
+pub fn html_escape(out: &mut Vec<u8>, text: &[u8]) {
+    for &c in c::c_str(text) {
+        match c {
+            b'&' => out.extend_from_slice(b"&amp;"),
+            b'<' => out.extend_from_slice(b"&lt;"),
+            b'>' => out.extend_from_slice(b"&gt;"),
+            b'"' => out.extend_from_slice(b"&quot;"),
+            b'/' => out.extend_from_slice(b"&#x2F;"),
+            b'\'' => out.extend_from_slice(b"&#x27;"),
+            _ => out.push(c),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn html_escape_matches_c() {
+        let mut out = b"x: ".to_vec();
+        html_escape(&mut out, b"a/<b>&\"c'\0ignored");
+        assert_eq!(out, b"x: a&#x2F;&lt;b&gt;&amp;&quot;c&#x27;".to_vec());
+    }
 
     fn printed(f: impl FnOnce(&mut Vec<u8>)) -> String {
         let mut out = Vec::new();
