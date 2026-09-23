@@ -50,6 +50,11 @@ impl RamMetric {
         self.data.len()
     }
 
+    /// The raw storage number in a slot (`rd->db.data[slot]`).
+    pub fn slot(&self, slot: usize) -> u32 {
+        self.data[slot].load(Relaxed)
+    }
+
     /// `rrddim_collect_init()` re-seeds the handle from the chart.
     pub fn reseed(&self, seed: Seed) {
         self.counter.store(seed.counter, Relaxed);

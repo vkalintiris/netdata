@@ -12,3 +12,5 @@ workspace = true
 netdata-agent-storage = { workspace = true }
 netdata-agent-text = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]

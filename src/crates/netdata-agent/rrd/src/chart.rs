@@ -166,6 +166,8 @@ pub struct ChartCollection {
     /// `st->last_collected_time` and `st->last_updated` as (seconds, microseconds).
     pub last_collected: (i64, i64),
     pub last_updated: (i64, i64),
+    /// `st->usec_since_last_update`.
+    pub usec_since_last_update: u64,
 }
 
 /// What the protocol parser keeps on a chart across connections (`st->pluginsd`, `st->replay`,
@@ -442,9 +444,13 @@ pub struct DimMeta {
 pub struct DimCollection {
     pub counter: usize,
     pub last_collected_time: (i64, i64),
+    /// The int and float lanes of C's `collector.collected` union; which one is live follows the FLOAT option.
     pub collected_value: i64,
     pub collected_value_float: f64,
     pub last_collected_value: i64,
+    pub last_collected_value_float: f64,
+    /// `collected_value_max`: the largest magnitude collected, which picks the incremental wrap cap.
+    pub collected_value_max: i64,
     pub last_stored_value: f64,
     pub last_calculated_value: f64,
     pub calculated_value: f64,

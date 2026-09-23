@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod chart;
+pub mod collection;
 pub mod host;
 pub mod labels;
 pub mod mode;
