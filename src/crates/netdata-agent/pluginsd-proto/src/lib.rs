@@ -112,8 +112,8 @@ pub enum Deferred {
     Continue,
     /// The end keyword arrived; the body is complete (the end line is not part of it).
     Done(Vec<u8>),
-    /// The body passed `MAX_DEFERRED_SIZE`: the run ends.
-    TooBig,
+    /// The body passed `MAX_DEFERRED_SIZE` (its size): the run ends.
+    TooBig(usize),
 }
 
 /// A deferred body (`FUNCTION_RESULT_BEGIN` ... `FUNCTION_RESULT_END`, streaming `JSON` ... `JSON_PAYLOAD_END`).
@@ -121,6 +121,8 @@ pub enum Deferred {
 pub struct DeferredBody {
     end_keyword: Vec<u8>,
     body: Vec<u8>,
+    /// Whether the body is kept (`parser->defer.response` set); a discarded body has no size limit.
+    keep: bool,
 }
 
 impl DeferredBody {
@@ -128,6 +130,15 @@ impl DeferredBody {
         DeferredBody {
             end_keyword: end_keyword.as_bytes().to_vec(),
             body: Vec::new(),
+            keep: true,
+        }
+    }
+
+    /// A body nobody waits for (a result for an unknown transaction): skipped up to the end keyword.
+    pub fn discarding(end_keyword: &str) -> Self {
+        DeferredBody {
+            keep: false,
+            ..DeferredBody::new(end_keyword)
         }
     }
 
@@ -140,9 +151,12 @@ impl DeferredBody {
                 return Deferred::Done(std::mem::take(&mut self.body));
             }
         }
+        if !self.keep {
+            return Deferred::Continue;
+        }
         self.body.extend_from_slice(c_str(line));
         if self.body.len() > MAX_DEFERRED_SIZE {
-            return Deferred::TooBig;
+            return Deferred::TooBig(self.body.len());
         }
         Deferred::Continue
     }
@@ -233,6 +247,11 @@ mod tests {
             d.feed(b"  FUNCTION_RESULT_END extra\n"),
             Deferred::Done(b"{\"a\":1}\n".to_vec())
         );
+        // A discarded body never grows too big.
+        let mut d = DeferredBody::discarding("FUNCTION_RESULT_END");
+        let line = vec![b'x'; MAX_DEFERRED_SIZE + 1];
+        assert_eq!(d.feed(&line), Deferred::Continue);
+        assert_eq!(d.feed(b"FUNCTION_RESULT_END\n"), Deferred::Done(Vec::new()));
     }
 
     #[test]

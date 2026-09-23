@@ -220,3 +220,61 @@ fn v1_collections_are_stored_on_the_grid() {
     assert_eq!(q.next_metric().sum, 42.0);
     assert_eq!(p.data_collections_count, 5);
 }
+
+#[test]
+fn functions_are_registered_on_the_host() {
+    let h = host();
+    let (mut p, logs) = parser(&h);
+    let lines = [
+        "FUNCTION GLOBAL \"processes\" 10 \"Running processes\" \"top\" \"0x13\" 5",
+        "FUNCTION GLOBAL \"config\" 120 \"Dynamic configuration\" \"config\" 0x8 1000",
+        "FUNCTION \"gone\" 0 \"h\" \"\" \"member\" 0 7",
+        "FUNCTION_DEL GLOBAL \"gone\"",
+        "FUNCTION_DEL GLOBAL \"config\"",
+        "FUNCTION_PROGRESS abc 1 2",
+        "FUNCTION_RESULT_BEGIN abc 200 application/json 0",
+        "NOT_A_KEYWORD inside a result body",
+        "FUNCTION_RESULT_END",
+        "DYNCFG_ENABLE anything",
+    ];
+    assert!(feed_all(&mut p, &lines).iter().all(|&ok| ok));
+    let names: Vec<_> = h
+        .functions()
+        .all()
+        .into_iter()
+        .map(|(k, _)| String::from_utf8(k).unwrap())
+        .collect();
+    assert_eq!(names, ["processes", "config"]);
+    let f = h.functions().get(b"processes").unwrap();
+    assert_eq!(
+        (
+            f.timeout_s,
+            f.priority,
+            f.access,
+            f.flags,
+            f.help.as_slice()
+        ),
+        (10, 5, 0x13, 0, &b"Running processes"[..])
+    );
+    // Only the daemon removes dynamic configuration.
+    assert_eq!(
+        h.functions().get(b"config").unwrap().flags,
+        nrpc::FLAG_DYNCFG
+    );
+    // FUNCTION x3, FUNCTION_DEL x2 and the finished result.
+    assert_eq!(p.data_collections_count, 6);
+    let logs = logs.lock().unwrap();
+    assert!(
+        logs.iter()
+            .any(|l| l.contains("refusing to unregister dyncfg method 'config'"))
+    );
+    assert!(
+        logs.iter().any(|l| l
+            == "got a FUNCTION_PROGRESS for transaction 'abc', but the transaction is not found.")
+    );
+
+    // The name, timeout and help are required.
+    let (mut p, logs) = parser(&h);
+    assert!(!p.feed(b"FUNCTION GLOBAL \"x\" 10\n"));
+    assert!(logs.lock().unwrap()[0].contains("without providing the required data (global = 'yes', name = 'x', timeout = '10', priority = '(unset)', version = '(unset)', help = '(unset)')"));
+}

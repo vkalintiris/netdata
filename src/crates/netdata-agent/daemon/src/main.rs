@@ -37,7 +37,11 @@ const WEB_SERVER_THREADS: usize = 6;
 fn log(level: LogLevel, message: &str) {
     let level = match level {
         LogLevel::Error => "error",
+        LogLevel::Warning => "warning",
+        LogLevel::Notice => "notice",
         LogLevel::Info => "info",
+        // `[logs] level` defaults to info.
+        LogLevel::Debug => return,
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

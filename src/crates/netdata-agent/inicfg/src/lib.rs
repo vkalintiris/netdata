@@ -153,7 +153,10 @@ impl Section {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
     Error,
+    Warning,
+    Notice,
     Info,
+    Debug,
 }
 
 /// A log line the C code would have written.

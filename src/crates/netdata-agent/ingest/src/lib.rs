@@ -11,8 +11,10 @@
 use std::sync::Arc;
 
 use netdata_agent_inicfg::LogLevel;
+use netdata_agent_nrpc as nrpc;
 use netdata_agent_pluginsd_proto::{
-    CHART_SLOT_MAX, DIMENSION_SLOT_MAX, Deferred, DeferredBody, Keyword, Repertoire, Words,
+    CHART_SLOT_MAX, DIMENSION_SLOT_MAX, Deferred, DeferredBody, Keyword, MAX_DEFERRED_SIZE,
+    Repertoire, Words,
 };
 use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, Dim, dim_flags, flags};
 use netdata_agent_rrd::collection;
@@ -20,12 +22,16 @@ use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::labels::{self, Labels};
 use netdata_agent_storage::storage_number::{SN_EMPTY_SLOT, SN_FLAG_NOT_ANOMALOUS, SN_FLAG_RESET};
 use netdata_agent_text::parse::{
-    str2i, str2ll, str2ll_encoded, str2ndd_encoded, str2ul, str2ull_encoded, uuid_parse_flexi,
+    str2i, str2ll, str2ll_encoded, str2ndd_encoded, str2u, str2ul, str2ull_encoded,
+    uuid_parse_flexi,
 };
 
 /// `STREAM_CAP_FLOAT_BASELINE` and `STREAM_CAP_ML_MODELS`: the capabilities the handlers consult.
 pub const CAP_FLOAT_BASELINE: u32 = 1 << 27;
 pub const CAP_ML_MODELS: u32 = 1 << 26;
+
+/// `PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT`: seconds.
+const FUNCTIONS_TIMEOUT_DEFAULT: i32 = 10;
 
 /// Where the parser writes daemon log lines.
 pub type Logger = Box<dyn FnMut(LogLevel, &str) + Send>;
@@ -132,6 +138,8 @@ pub struct Parser {
     /// `parser->user.data_collections_count`.
     pub data_collections_count: u64,
     deferred: Option<DeferredBody>,
+    /// Whether finishing the deferred body counts as a data collection (a function result).
+    deferred_counts: bool,
     /// `parser->user.new_host_labels`: collected by LABEL until OVERWRITE.
     new_host_labels: Option<Labels>,
     /// Bytes for the child (`send_to_plugin`), drained by the caller.
@@ -153,6 +161,7 @@ impl Parser {
             chart_slots: Vec::new(),
             data_collections_count: 0,
             deferred: None,
+            deferred_counts: false,
             new_host_labels: None,
             out: Vec::new(),
         }
@@ -172,9 +181,22 @@ impl Parser {
                 // STREAM_PATH and ML_MODEL payloads come with paths and ML.
                 Deferred::Done(_) => {
                     self.deferred = None;
+                    // `pluginsd_function_result_end()` counts; the JSON actions do not.
+                    if self.deferred_counts {
+                        self.data_collections_count += 1;
+                    }
                     true
                 }
-                Deferred::TooBig => false,
+                // Only JSON bodies are kept, and a receiver's plugin has no file name.
+                Deferred::TooBig(size) => {
+                    (self.log)(
+                        LogLevel::Error,
+                        &format!(
+                            "PLUGINSD: deferred response is too big ({size} bytes, limit {MAX_DEFERRED_SIZE} bytes) while waiting for keyword 'JSON_PAYLOAD_END' from plugin '' (transaction 'none'). Stopping this plugin."
+                        ),
+                    );
+                    false
+                }
             };
         }
         let words = Words::split(line);
@@ -230,15 +252,28 @@ impl Parser {
             Keyword::Overwrite => self.overwrite(),
             Keyword::ClaimedId => self.claimed_id(w),
             Keyword::Json => {
-                self.deferred = Some(DeferredBody::new("JSON_PAYLOAD_END"));
+                self.json(w);
                 Ok(())
             }
+            Keyword::Function => self.function(w),
+            Keyword::FunctionDel => self.function_del(w),
             Keyword::FunctionResultBegin => {
-                self.deferred = Some(DeferredBody::new("FUNCTION_RESULT_END"));
+                self.function_result_begin(w);
                 Ok(())
             }
-            // Functions and dynamic configuration are ported next (agent/plan.md); until then they change nothing.
-            _ => Ok(()),
+            Keyword::FunctionProgress => {
+                self.function_progress(w);
+                Ok(())
+            }
+            // Obsolete: accepted without effect (`pluginsd_dyncfg_noop()`).
+            Keyword::DyncfgEnable
+            | Keyword::DyncfgRegisterModule
+            | Keyword::DyncfgRegisterJob
+            | Keyword::DyncfgReset
+            | Keyword::ReportJobStatus
+            | Keyword::DeleteJob => Ok(()),
+            // Outside the streaming repertoire: `feed()` never dispatches these.
+            _ => refuse(),
         }
     }
 
@@ -836,6 +871,163 @@ impl Parser {
         }
         self.host.set_claim_id_of_origin(claim_uuid);
         Ok(())
+    }
+
+    // ---- functions (pluginsd_functions.c) ----
+
+    /// `pluginsd_function()`: `[GLOBAL] name timeout help tags access priority version`, always host-wide.
+    fn function(&mut self, w: &Words) -> Rc {
+        let global = w.len() >= 2 && w.get(1) == Some(b"GLOBAL");
+        let i = if global { 2 } else { 1 };
+        let name = w.get(i);
+        let timeout_s = w.get(i + 1);
+        let help = w.get(i + 2);
+        let tags = w.get(i + 3);
+        let access = w.get(i + 4);
+        let priority = w.get(i + 5);
+        let version = w.get(i + 6);
+        let hostname = self.host.hostname();
+        let (Some(name), Some(timeout_s), Some(help)) = (name, timeout_s, help) else {
+            let shown = |v: Option<&[u8]>| v.map_or_else(|| "(unset)".to_string(), text);
+            (self.log)(
+                LogLevel::Error,
+                &format!(
+                    "PLUGINSD: 'host:{hostname}' got a FUNCTION, without providing the required data (global = '{}', name = '{}', timeout = '{}', priority = '{}', version = '{}', help = '{}'). Ignoring it.",
+                    if global { "yes" } else { "no" },
+                    shown(name),
+                    shown(timeout_s),
+                    shown(priority),
+                    shown(version),
+                    shown(help)
+                ),
+            );
+            return refuse();
+        };
+        if !global && let Some(chart) = &self.scope {
+            (self.log)(
+                LogLevel::Notice,
+                &format!(
+                    "PLUGINSD: 'host:{hostname}' got a FUNCTION '{}' within chart '{}' scope - chart-scoped functions are no longer supported, registering it host-wide",
+                    text(name),
+                    chart.id()
+                ),
+            );
+        }
+        let positive_or =
+            |v: Option<&[u8]>, default: i32| match v.filter(|v| !v.is_empty()).map(str2i) {
+                Some(n) if n > 0 => n,
+                _ => default,
+            };
+        let registered = self.host.functions().register(
+            &hostname,
+            &nrpc::MethodDesc {
+                name,
+                help,
+                tags: tags.unwrap_or(b""),
+                timeout_s: positive_or(Some(timeout_s), FUNCTIONS_TIMEOUT_DEFAULT),
+                priority: positive_or(priority, nrpc::PRIORITY_DEFAULT),
+                version: version
+                    .filter(|v| !v.is_empty())
+                    .map_or(nrpc::VERSION_DEFAULT, str2u),
+                access: nrpc::access::from_hex_mapping_old_roles(access.unwrap_or(b"")),
+                sync: false,
+                source: nrpc::Source::Stream,
+            },
+        );
+        if let Err(warning) = registered {
+            (self.log)(LogLevel::Warning, &warning);
+        }
+        self.data_collections_count += 1;
+        Ok(())
+    }
+
+    /// `pluginsd_function_del()`: `[GLOBAL] name`.
+    fn function_del(&mut self, w: &Words) -> Rc {
+        let i = if w.len() >= 2 && w.get(1) == Some(b"GLOBAL") {
+            2
+        } else {
+            1
+        };
+        let hostname = self.host.hostname();
+        let Some(name) = w.get(i).filter(|n| !n.is_empty()) else {
+            (self.log)(
+                LogLevel::Error,
+                &format!(
+                    "PLUGINSD: 'host:{hostname}' got a FUNCTION_DEL without a name. Ignoring it."
+                ),
+            );
+            return refuse();
+        };
+        match self.host.functions().unregister(name, nrpc::Source::Stream) {
+            nrpc::Unregistered::Removed => {}
+            not_removed => {
+                if let nrpc::Unregistered::Refused(warning) = not_removed {
+                    (self.log)(LogLevel::Warning, &warning);
+                }
+                (self.log)(
+                    LogLevel::Debug,
+                    &format!(
+                        "PLUGINSD: 'host:{hostname}' FUNCTION_DEL '{}' - function not found or ownership mismatch",
+                        text(name)
+                    ),
+                );
+            }
+        }
+        self.data_collections_count += 1;
+        Ok(())
+    }
+
+    /// `pluginsd_call_acquire()`: this parent never calls a child's functions yet, so no transaction is known.
+    fn call_not_found(&mut self, keyword: &str, transaction: Option<&[u8]>) {
+        (self.log)(
+            LogLevel::Error,
+            &format!(
+                "got a {keyword} for transaction '{}', but the transaction is not found.",
+                transaction.map_or_else(|| "(unset)".to_string(), text)
+            ),
+        );
+    }
+
+    /// `pluginsd_function_result_begin()`: `transaction status content_type expires`, then the body up to
+    /// `FUNCTION_RESULT_END`.
+    fn function_result_begin(&mut self, w: &Words) {
+        let transaction = w.get(1);
+        let fields = [w.get(1), w.get(2), w.get(3), w.get(4)];
+        if fields.iter().any(|f| f.is_none_or(<[u8]>::is_empty)) {
+            let shown = |v: Option<&[u8]>| v.map_or_else(|| "(unset)".to_string(), text);
+            (self.log)(
+                LogLevel::Error,
+                &format!(
+                    "got a FUNCTION_RESULT_BEGIN without providing the required data (key = '{}', status = '{}', format = '{}', expires = '{}').",
+                    shown(fields[0]),
+                    shown(fields[1]),
+                    shown(fields[2]),
+                    shown(fields[3])
+                ),
+            );
+        }
+        self.call_not_found("FUNCTION_RESULT_BEGIN", transaction);
+        self.deferred = Some(DeferredBody::discarding("FUNCTION_RESULT_END"));
+        self.deferred_counts = true;
+    }
+
+    /// `pluginsd_function_progress()`: `transaction done all`.
+    fn function_progress(&mut self, w: &Words) {
+        self.call_not_found("FUNCTION_PROGRESS", w.get(1));
+    }
+
+    /// `pluginsd_json()`: `JSON keyword`, then the payload up to `JSON_PAYLOAD_END`.
+    fn json(&mut self, w: &Words) {
+        let keyword = w.get(1).unwrap_or(b"");
+        // STREAM_PATH and ML_MODEL payloads come with paths and ML.
+        if keyword != b"STREAM_PATH" && keyword != b"ML_MODEL" {
+            (self.log)(
+                LogLevel::Error,
+                &format!("PLUGINSD: invalid JSON payload keyword '{}'", text(keyword)),
+            );
+        }
+        self.deferred = Some(DeferredBody::new("JSON_PAYLOAD_END"));
+        self.deferred_counts = false;
     }
 
     // ---- v1 data ----

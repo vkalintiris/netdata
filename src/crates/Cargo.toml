@@ -65,6 +65,7 @@ members = [
     "netdata-agent/evloop",
     "netdata-agent/ingest",
     "netdata-agent/inicfg",
+    "netdata-agent/nrpc",
     "netdata-agent/pluginsd-proto",
     "netdata-agent/rrd",
     "netdata-agent/storage",
@@ -105,6 +106,7 @@ netdata-agent-pluginsd-proto = { path = "netdata-agent/pluginsd-proto" }
 netdata-agent-streaming = { path = "netdata-agent/streaming" }
 netdata-agent-rrd = { path = "netdata-agent/rrd" }
 netdata-agent-ingest = { path = "netdata-agent/ingest" }
+netdata-agent-nrpc = { path = "netdata-agent/nrpc" }
 netdata-agent-storage = { path = "netdata-agent/storage" }
 opentelemetry = "0.31.0"
 opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "logs"] }

@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
+use netdata_agent_nrpc::Registry;
+
 use crate::chart::Charts;
 use crate::labels::Labels;
 use crate::mode::DbMode;
@@ -105,6 +107,8 @@ pub struct Host {
     claim_id_of_origin: RwLock<[u8; 16]>,
     /// Host variables (`VARIABLE HOST`), used by health.
     variables: Mutex<HashMap<String, f64>>,
+    /// The functions registered for this host (`rrdhost_nrpc_owner()`).
+    functions: Registry,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -125,7 +129,12 @@ impl Host {
             labels: RwLock::new(Labels::default()),
             claim_id_of_origin: RwLock::new([0; 16]),
             variables: Mutex::new(HashMap::new()),
+            functions: Registry::default(),
         }
+    }
+
+    pub fn functions(&self) -> &Registry {
+        &self.functions
     }
 
     pub fn machine_guid(&self) -> &str {

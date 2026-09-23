@@ -1,0 +1,12 @@
+[package]
+name = "netdata-agent-nrpc"
+description = "The function registry (nRPC) of the netdata agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+netdata-agent-text = { workspace = true }

@@ -568,6 +568,27 @@ mod tests {
     }
 
     #[test]
+    fn strtoull16_matches_glibc() {
+        let cases: [(&[u8], (u64, usize)); 7] = [
+            (b"0x1f", (31, 4)),
+            (b" 1F ", (31, 3)),
+            (b"-1", (u64::MAX, 2)),
+            (b"0xg", (0, 1)),
+            (b"x1", (0, 0)),
+            (b"10000000000000000", (u64::MAX, 17)),
+            (b"", (0, 0)),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                strtoull16(input),
+                expected,
+                "{}",
+                String::from_utf8_lossy(input)
+            );
+        }
+    }
+
+    #[test]
     fn hex_rounding() {
         let cases: &[(&[u8], u64, usize)] = &[
             (b"0x1p0", 1.0f64.to_bits(), 5),
@@ -636,10 +657,12 @@ pub fn strtoull10(s: &[u8]) -> (u64, usize, bool) {
     )
 }
 
-/// The part `strtol()`, `strtoll()` and `strtoul()` share for base 0 in the "C" locale: leading `isspace()`, an
-/// optional sign, then `0x`/`0X` hex (only when a hex digit follows), a leading `0` octal, or decimal. Returns
-/// `(negative, magnitude, overflowed u64, consumed)`, or `None` without digits (nothing is consumed).
-fn scan_base0(s: &[u8]) -> Option<(bool, u64, bool, usize)> {
+/// The part `strtol()`, `strtoll()` and `strtoul()` share for base 0 or 16 in the "C" locale: leading `isspace()`,
+/// an optional sign, then a `0x`/`0X` prefix (only when a hex digit follows) and hex digits; base 0 otherwise takes
+/// a leading `0` as octal, or decimal. Returns `(negative, magnitude, overflowed u64, consumed)`, or `None` without
+/// digits (nothing is consumed).
+fn scan_base(s: &[u8], base: u32) -> Option<(bool, u64, bool, usize)> {
+    debug_assert!(base == 0 || base == 16);
     let mut i = skip_spaces(s, 0);
     let negative = match at(s, i) {
         b'-' => {
@@ -657,6 +680,8 @@ fn scan_base0(s: &[u8]) -> Option<(bool, u64, bool, usize)> {
         && at(s, i + 2).is_ascii_hexdigit()
     {
         (16u32, i + 2)
+    } else if base == 16 {
+        (16, i)
     } else if at(s, i) == b'0' {
         (8, i)
     } else {
@@ -680,10 +705,10 @@ fn scan_base0(s: &[u8]) -> Option<(bool, u64, bool, usize)> {
     Some((negative, magnitude, overflow, j))
 }
 
-/// `strtoll(s, NULL, 0)` in the "C" locale (see `scan_base0`). Out-of-range values clamp to `i64::MAX`/`i64::MIN`
+/// `strtoll(s, NULL, 0)` in the "C" locale (see `scan_base`). Out-of-range values clamp to `i64::MAX`/`i64::MIN`
 /// (glibc sets `ERANGE`). Returns `(value, consumed)`; with no digits nothing is consumed.
 pub fn strtoll0(s: &[u8]) -> (i64, usize) {
-    let Some((negative, magnitude, overflow, used)) = scan_base0(s) else {
+    let Some((negative, magnitude, overflow, used)) = scan_base(s, 0) else {
         return (0, 0);
     };
     let limit: u64 = if negative {
@@ -701,20 +726,26 @@ pub fn strtoll0(s: &[u8]) -> (i64, usize) {
     (value, used)
 }
 
-/// `strtoul(s, NULL, 0)` on LP64 in the "C" locale (see `scan_base0`): a `-` negates modulo 2^64; out-of-range
+/// The unsigned result of a scan: a `-` negates modulo 2^64; overflow of either sign is `u64::MAX`.
+fn unsigned(scan: Option<(bool, u64, bool, usize)>) -> (u64, usize) {
+    match scan {
+        None => (0, 0),
+        Some((_, _, true, used)) => (u64::MAX, used),
+        Some((true, magnitude, false, used)) => (magnitude.wrapping_neg(), used),
+        Some((false, magnitude, false, used)) => (magnitude, used),
+    }
+}
+
+/// `strtoull(s, NULL, 16)` in the "C" locale (see `scan_base`): a `-` negates modulo 2^64; out-of-range values of
+/// either sign are `u64::MAX` (glibc sets `ERANGE`). Returns `(value, consumed)`.
+pub fn strtoull16(s: &[u8]) -> (u64, usize) {
+    unsigned(scan_base(s, 16))
+}
+
+/// `strtoul(s, NULL, 0)` on LP64 in the "C" locale (see `scan_base`): a `-` negates modulo 2^64; out-of-range
 /// values of either sign are `u64::MAX` (glibc sets `ERANGE`). Returns `(value, consumed)`.
 pub fn strtoul0(s: &[u8]) -> (u64, usize) {
-    let Some((negative, magnitude, overflow, used)) = scan_base0(s) else {
-        return (0, 0);
-    };
-    let value = if overflow {
-        u64::MAX
-    } else if negative {
-        magnitude.wrapping_neg()
-    } else {
-        magnitude
-    };
-    (value, used)
+    unsigned(scan_base(s, 0))
 }
 
 /// `uuid_parse_flexi()`: 32 hex digits with either no hyphens or exactly four anywhere between byte pairs;
