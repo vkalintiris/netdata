@@ -365,6 +365,8 @@ impl Receivers {
                 update_every: self.defaults.update_every,
                 page_size: self.defaults.page_size,
                 now: now_realtime_s,
+                // `[db] gap when lost iterations above` (default 1) + 2; the option is read with the [db] section.
+                gap_when_lost_iterations_above: 3,
             },
             log: self.log,
         };

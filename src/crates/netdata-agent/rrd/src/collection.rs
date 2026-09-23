@@ -42,7 +42,8 @@ pub fn timed_next(chart: &Chart, now: (i64, i64), mut duration_since_last_update
         if c.last_collected.0 == 0 {
             duration_since_last_update = (update_every * USEC_PER_SEC) as u64;
         } else if duration_since_last_update == 0 {
-            duration_since_last_update = (as_ut(now) - as_ut(c.last_collected)).max(0) as u64;
+            // dt_usec(): the absolute difference.
+            duration_since_last_update = (as_ut(now) - as_ut(c.last_collected)).unsigned_abs();
         } else {
             let since_last = as_ut(now) - as_ut(c.last_collected);
             if since_last < 0 {
@@ -436,4 +437,25 @@ pub fn set_value(dim: &crate::chart::Dim, collected_time: (i64, i64), value: i64
         d.counter += 1;
     });
     dim.update_meta(|m| m.flags |= dim_flags::UPDATED);
+}
+
+/// `rrddim_set_by_pointer_double()` for a float dimension (an int one goes through `set_value`).
+pub fn set_value_float(dim: &crate::chart::Dim, collected_time: (i64, i64), value: f64) {
+    dim.update_collection(|d| {
+        d.last_collected_time = collected_time;
+        d.collected_value_float = value;
+        d.counter += 1;
+    });
+    dim.update_meta(|m| m.flags |= dim_flags::UPDATED);
+}
+
+/// `rrdset_next_usec_unfiltered()`: a trusted duration is used as given, unless the clock must be synced first.
+pub fn next_usec_unfiltered(chart: &Chart, now: (i64, i64), duration: u64) {
+    let sync = chart.meta().flags & flags::SYNC_CLOCK != 0;
+    let first = chart.collection().last_collected.0 == 0;
+    if first || duration == 0 || sync {
+        timed_next(chart, now, duration);
+    } else {
+        chart.update_collection(|c| c.usec_since_last_update = duration);
+    }
 }

@@ -15,9 +15,12 @@ use netdata_agent_pluginsd_proto::{
     CHART_SLOT_MAX, DIMENSION_SLOT_MAX, Deferred, DeferredBody, Keyword, Repertoire, Words,
 };
 use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, Dim, dim_flags, flags};
+use netdata_agent_rrd::collection;
 use netdata_agent_rrd::host::Host;
 use netdata_agent_storage::storage_number::{SN_EMPTY_SLOT, SN_FLAG_NOT_ANOMALOUS, SN_FLAG_RESET};
-use netdata_agent_text::parse::{str2i, str2ll_encoded, str2ndd_encoded, str2ul, str2ull_encoded};
+use netdata_agent_text::parse::{
+    str2i, str2ll, str2ll_encoded, str2ndd_encoded, str2ul, str2ull_encoded,
+};
 
 /// `STREAM_CAP_FLOAT_BASELINE` and `STREAM_CAP_ML_MODELS`: the capabilities the handlers consult.
 pub const CAP_FLOAT_BASELINE: u32 = 1 << 27;
@@ -37,6 +40,8 @@ pub struct Config {
     pub page_size: i64,
     /// The wall clock in seconds (`now_realtime_sec()`), replaceable in tests.
     pub now: fn() -> i64,
+    /// `gap_when_lost_iterations_above`: `[db] gap when lost iterations above` + 2.
+    pub gap_when_lost_iterations_above: i64,
 }
 
 /// `parser->user.v2`.
@@ -200,6 +205,9 @@ impl Parser {
 
     fn dispatch(&mut self, keyword: Keyword, w: &Words) -> Rc {
         match keyword {
+            Keyword::Begin => self.begin(w),
+            Keyword::Set => self.set(w),
+            Keyword::End => self.end(w),
             Keyword::Chart => self.chart(w),
             Keyword::Dimension => self.dimension(w),
             Keyword::Clabel => self.clabel(w),
@@ -221,8 +229,8 @@ impl Parser {
                 self.deferred = Some(DeferredBody::new("FUNCTION_RESULT_END"));
                 Ok(())
             }
-            // The v1 data path, variables, host labels, claiming, Functions and dynamic configuration are ported
-            // next (agent/plan.md); until then they change nothing.
+            // Variables, host labels, claiming, Functions and dynamic configuration are ported next
+            // (agent/plan.md); until then they change nothing.
             _ => Ok(()),
         }
     }
@@ -645,6 +653,82 @@ impl Parser {
         }
         self.clabel_count = 0;
         self.clabel_changed = false;
+        Ok(())
+    }
+
+    // ---- v1 data ----
+
+    /// The wall clock as (seconds, microseconds): `now_realtime_timeval()` at second resolution of `config.now`.
+    fn now_tv(&self) -> (i64, i64) {
+        ((self.config.now)(), 0)
+    }
+
+    /// `pluginsd_begin()`: the duration since the previous collection, trusted as streaming does.
+    fn begin(&mut self, w: &Words) -> Rc {
+        let slot = w.slot(CHART_SLOT_MAX);
+        let base = if slot.is_some() { 2 } else { 1 };
+        let id = w.get(base);
+        let microseconds_s = w.get(base + 1);
+        let Some(chart) = self.chart_from_slot(id, slot, "BEGIN") else {
+            return refuse();
+        };
+        self.set_scope(&chart);
+        let microseconds = match microseconds_s.filter(|m| !m.is_empty()) {
+            Some(m) => str2ll(m).0.max(0) as u64,
+            None => 0,
+        };
+        if chart.collection().counter_done != 0 {
+            let now = self.now_tv();
+            if microseconds != 0 {
+                collection::next_usec_unfiltered(&chart, now, microseconds);
+            } else {
+                collection::timed_next(&chart, now, 0);
+            }
+        }
+        Ok(())
+    }
+
+    /// `pluginsd_set()`: an empty value collects nothing.
+    fn set(&mut self, w: &Words) -> Rc {
+        let slot = w.slot(DIMENSION_SLOT_MAX);
+        let base = if slot.is_some() { 2 } else { 1 };
+        let dimension = w.get(base);
+        let value = w.get(base + 1);
+        let chart = self.require_scope("SET", "CHART")?;
+        let Some(dim) = self.acquire_dim(&chart, dimension, slot, "SET") else {
+            return refuse();
+        };
+        chart.receiver().set = true;
+        if let Some(value) = value.filter(|v| !v.is_empty()) {
+            let now = self.now_tv();
+            if dim.meta().flags & dim_flags::FLOAT != 0 {
+                collection::set_value_float(&dim, now, str2ndd_encoded(value).0);
+            } else {
+                collection::set_value(&dim, now, str2ll_encoded(value));
+            }
+        }
+        Ok(())
+    }
+
+    /// `pluginsd_end()`: the collection time is the child's (words 1-2) or this host's clock.
+    fn end(&mut self, w: &Words) -> Rc {
+        let tv_sec = w.get(1);
+        let tv_usec = w.get(2);
+        let pending_next = w.get(3).is_some_and(|p| !p.is_empty());
+        let chart = self.require_scope("END", "BEGIN")?;
+        self.clear_scope();
+        self.data_collections_count += 1;
+        let number = |v: Option<&[u8]>| v.filter(|v| !v.is_empty()).map_or(0, |v| str2ll(v).0);
+        let mut tv = (number(tv_sec), number(tv_usec));
+        if tv.0 == 0 {
+            tv = self.now_tv();
+        }
+        collection::timed_done(
+            &chart,
+            tv,
+            pending_next,
+            self.config.gap_when_lost_iterations_above,
+        );
         Ok(())
     }
 

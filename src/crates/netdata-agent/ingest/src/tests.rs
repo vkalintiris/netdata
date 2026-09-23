@@ -41,6 +41,7 @@ fn parser(host: &Arc<Host>) -> (Parser, Arc<Mutex<Vec<String>>>) {
             update_every: 1,
             page_size: 4096,
             now: || NOW,
+            gap_when_lost_iterations_above: 3,
         },
         Box::new(move |_, m| sink.lock().unwrap().push(m.to_string())),
     );
@@ -192,4 +193,30 @@ fn errors_disconnect() {
         .iter()
         .all(|&ok| ok)
     );
+}
+
+#[test]
+fn v1_collections_are_stored_on_the_grid() {
+    let h = host();
+    let (mut p, _) = parser(&h);
+    feed_all(&mut p, &DEFINE[..2]);
+    // Five collections one second apart, timed by the child (END sec usec); the first only starts the clock.
+    for i in 0..5 {
+        let t = NOW - 10 + i;
+        let lines = [
+            "BEGIN 'test.c1' 1000000".to_string(),
+            "SET 'd1' = 42".to_string(),
+            format!("END {t} 0"),
+        ];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
+    }
+    let chart = h.charts().find("test.c1").unwrap();
+    let d1 = chart.dim("d1").unwrap();
+    let ring = d1.ring().unwrap();
+    assert!(chart.collection().counter >= 3, "{:?}", chart.collection());
+    let latest = ring.latest_time_s();
+    let mut q = ring.query(latest, latest);
+    assert_eq!(q.next_metric().sum, 42.0);
+    assert_eq!(p.data_collections_count, 5);
 }
