@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
@@ -200,6 +201,38 @@ func (c Chart) PushLive(conn *stream.Conn) {
 		}
 		conn.End2()
 	}
+}
+
+// Replicate declares the chart (metadata plus retention) on conn and serves
+// the parent's replication requests from the fixture until the dialogue ends.
+// The declared first time is one interval before the first point because the
+// request window (after, before] is exclusive on the left; the child's clock
+// is frozen at the last sample. It fails unless the parent pulled every row.
+func (c Chart) Replicate(conn *stream.Conn, timeout time.Duration) error {
+	ue := c.UpdateEvery
+	if ue <= 0 {
+		ue = 1
+	}
+	firstT := c.FirstT() - int64(ue)
+	lastT := c.LastT()
+	childNow := lastT
+
+	c.Define(conn)
+	conn.ChartDefinitionEnd(firstT, lastT, childNow)
+
+	charts := map[string]stream.ReplayChart{
+		c.ID: {FirstT: firstT, LastT: lastT, UpdateEvery: ue},
+	}
+	served, err := conn.ServeReplication(charts, childNow, func(chart string, after, before int64) []stream.ReplayRow {
+		return c.ReplayWindow(after, before)
+	}, timeout)
+	if err != nil {
+		return fmt.Errorf("replication dialogue: %v (served %v)", err, served)
+	}
+	if want := len(c.ReplayWindow(firstT, lastT)); served[c.ID] != want {
+		return fmt.Errorf("replication served %d rows, want timestamp union size %d", served[c.ID], want)
+	}
+	return nil
 }
 
 // rowTimes is every timestamp any dimension carries, in order.

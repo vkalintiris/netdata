@@ -58,6 +58,17 @@ type Options struct {
 	// replication window, so a streaming fixture can generate rows per
 	// request instead of materializing millions of points.
 	ReplicationStepSeconds int
+	// Identity, when set, replaces the generated hostname and stream key and
+	// pre-seeds the machine GUID, so two daemons (e.g. two implementations
+	// compared by tests/parity) boot with the same identity.
+	Identity *Identity
+}
+
+// Identity is a fixed daemon identity. StreamKey and MachineGUID must be UUIDs.
+type Identity struct {
+	Hostname    string
+	StreamKey   string
+	MachineGUID string
 }
 
 // Daemon is one running netdata under test.
@@ -197,6 +208,28 @@ func newDaemonIdentity() (hostname, streamKey string, err error) {
 	return hostname, streamKey, nil
 }
 
+// resolveIdentity returns the fixed identity when Options carries one, writing
+// its machine GUID where the daemon reads it first (lib/registry), and a fresh
+// random identity otherwise.
+func resolveIdentity(o Options) (hostname, streamKey string, err error) {
+	if o.Identity == nil {
+		return newDaemonIdentity()
+	}
+	id := o.Identity
+	if id.Hostname == "" || id.StreamKey == "" || id.MachineGUID == "" {
+		return "", "", fmt.Errorf("daemon: fixed identity needs hostname, stream key and machine GUID")
+	}
+	registry := filepath.Join(o.RunDir, "lib", "registry")
+	if err := os.MkdirAll(registry, 0o755); err != nil {
+		return "", "", fmt.Errorf("daemon: registry dir: %w", err)
+	}
+	guidPath := filepath.Join(registry, "netdata.public.unique.id")
+	if err := os.WriteFile(guidPath, []byte(id.MachineGUID), 0o644); err != nil {
+		return "", "", fmt.Errorf("daemon: write machine GUID: %w", err)
+	}
+	return id.Hostname, id.StreamKey, nil
+}
+
 // Start writes the test configuration under RunDir, boots the daemon in the
 // foreground and waits until the HTTP API answers.
 func Start(o Options) (*Daemon, error) {
@@ -213,7 +246,7 @@ func Start(o Options) (*Daemon, error) {
 		}
 	}
 
-	hostname, streamKey, err := newDaemonIdentity()
+	hostname, streamKey, err := resolveIdentity(o)
 	if err != nil {
 		return nil, err
 	}

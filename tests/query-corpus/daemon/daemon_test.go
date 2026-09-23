@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -189,6 +190,56 @@ func TestNewDaemonIdentityIsUnique(t *testing.T) {
 	}
 	if !strings.HasPrefix(hostnameA, "query-corpus-") || hostnameA == "" || keyA == "" {
 		t.Fatalf("invalid identity %q/%q", hostnameA, keyA)
+	}
+}
+
+func TestResolveIdentity(t *testing.T) {
+	fixed := &Identity{
+		Hostname:    "parity-parent",
+		StreamKey:   "11111111-2222-4333-8444-555555555555",
+		MachineGUID: "66666666-7777-4888-8999-aaaaaaaaaaaa",
+	}
+	cases := map[string]struct {
+		identity *Identity
+		wantErr  bool
+	}{
+		"fixed identity is used and its GUID seeded": {identity: fixed},
+		"incomplete fixed identity is rejected":      {identity: &Identity{Hostname: "x"}, wantErr: true},
+		"no identity generates one":                  {},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			o := Options{RunDir: t.TempDir(), Identity: tc.identity}
+			hostname, key, err := resolveIdentity(o)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("want an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			guidPath := filepath.Join(o.RunDir, "lib", "registry", "netdata.public.unique.id")
+			if tc.identity == nil {
+				if !strings.HasPrefix(hostname, "query-corpus-") || key == "" {
+					t.Fatalf("generated identity %q/%q", hostname, key)
+				}
+				if _, err := os.Stat(guidPath); !os.IsNotExist(err) {
+					t.Fatalf("generated identity seeded a machine GUID: %v", err)
+				}
+				return
+			}
+			guid, err := os.ReadFile(guidPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := [3]string{hostname, key, string(guid)}
+			want := [3]string{fixed.Hostname, fixed.StreamKey, fixed.MachineGUID}
+			if got != want {
+				t.Fatalf("identity %v, want %v", got, want)
+			}
+		})
 	}
 }
 
