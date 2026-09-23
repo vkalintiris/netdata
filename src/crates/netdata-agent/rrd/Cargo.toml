@@ -1,0 +1,13 @@
+[package]
+name = "netdata-agent-rrd"
+description = "Hosts, charts and dimensions of the netdata agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+netdata-agent-storage = { workspace = true }
+netdata-agent-text = { workspace = true }

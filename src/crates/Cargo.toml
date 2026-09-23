@@ -65,7 +65,9 @@ members = [
     "netdata-agent/evloop",
     "netdata-agent/inicfg",
     "netdata-agent/pluginsd-proto",
+    "netdata-agent/rrd",
     "netdata-agent/storage",
+    "netdata-agent/streaming",
     "netdata-agent/text",
     "netdata-agent/web",
 ]
@@ -99,6 +101,9 @@ netdata-agent-inicfg = { path = "netdata-agent/inicfg" }
 netdata-agent-evloop = { path = "netdata-agent/evloop" }
 netdata-agent-web = { path = "netdata-agent/web" }
 netdata-agent-pluginsd-proto = { path = "netdata-agent/pluginsd-proto" }
+netdata-agent-streaming = { path = "netdata-agent/streaming" }
+netdata-agent-rrd = { path = "netdata-agent/rrd" }
+netdata-agent-storage = { path = "netdata-agent/storage" }
 opentelemetry = "0.31.0"
 opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "logs"] }
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio", "logs"] }

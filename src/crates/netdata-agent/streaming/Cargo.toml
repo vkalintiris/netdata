@@ -1,0 +1,14 @@
+[package]
+name = "netdata-agent-streaming"
+description = "Streaming receiver and sender of the netdata agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+netdata-agent-inicfg = { workspace = true }
+netdata-agent-rrd = { workspace = true }
+netdata-agent-text = { workspace = true }
