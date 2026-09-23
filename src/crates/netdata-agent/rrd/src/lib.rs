@@ -3,6 +3,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod chart;
 pub mod host;
+pub mod labels;
 pub mod mode;
 pub mod system_info;

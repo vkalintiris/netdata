@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
+use crate::chart::Charts;
 use crate::mode::DbMode;
 use crate::system_info::SystemInfo;
 
@@ -57,7 +58,10 @@ impl ReceiverSlot {
 
     /// The first half of `stream_receiver_signal_to_stop_and_wait()`: flag it and shut the socket down, once.
     pub fn stop(&self) {
-        if !self.stop_requested.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        if !self
+            .stop_requested
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
             (self.shutdown)();
         }
     }
@@ -72,6 +76,7 @@ pub struct Host {
     node_id: RwLock<[u8; 16]>,
     info: RwLock<HostInfo>,
     receiver: Mutex<Option<Arc<ReceiverSlot>>>,
+    charts: Charts,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -87,6 +92,7 @@ impl Host {
             node_id: RwLock::new([0; 16]),
             info: RwLock::new(info),
             receiver: Mutex::new(None),
+            charts: Charts::default(),
         }
     }
 
@@ -96,6 +102,11 @@ impl Host {
 
     pub fn is_localhost(&self) -> bool {
         self.is_localhost
+    }
+
+    /// `host->rrdset_root_index`.
+    pub fn charts(&self) -> &Charts {
+        &self.charts
     }
 
     pub fn node_id(&self) -> [u8; 16] {
@@ -196,14 +207,22 @@ impl Hosts {
             return None;
         }
         let index = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        index.ordered.iter().find(|h| h.hostname() == hostname).cloned()
+        index
+            .ordered
+            .iter()
+            .find(|h| h.hostname() == hostname)
+            .cloned()
     }
 
     /// `rrdhost_find_by_node_id()`: the first host whose node ID equals the parsed UUID. Unclaimed hosts have a
     /// zero node ID, so the nil UUID finds the first of them.
     pub fn find_by_node_id(&self, node_id: &[u8; 16]) -> Option<Arc<Host>> {
         let index = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        index.ordered.iter().find(|h| h.node_id() == *node_id).cloned()
+        index
+            .ordered
+            .iter()
+            .find(|h| h.node_id() == *node_id)
+            .cloned()
     }
 
     /// Every host, localhost first, then in creation order.

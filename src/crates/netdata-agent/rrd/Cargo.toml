@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 netdata-agent-storage = { workspace = true }
 netdata-agent-text = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
