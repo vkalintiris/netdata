@@ -5,7 +5,9 @@
 //! differs between runs; nothing may depend on it. This port keeps insertion order, a replaced value taking the place
 //! of the old one.
 
+use netdata_agent_text::json::JsonWriter;
 use netdata_agent_text::sanitize::{rrdlabels_sanitize_name, rrdlabels_sanitize_value};
+use netdata_agent_text::simple_pattern::{SimplePattern, SimplePatternResult};
 
 /// `RRDLABEL_SRC_AUTO`: found by automation.
 pub const SRC_AUTO: u32 = 1 << 0;
@@ -27,6 +29,21 @@ pub const FLAG_INTERNAL: u32 = FLAG_OLD | FLAG_NEW | FLAG_DONT_DELETE;
 /// `RRDLABELS_MAX_NAME_LENGTH` and `RRDLABELS_MAX_VALUE_LENGTH`.
 pub const MAX_NAME_LENGTH: usize = 200;
 pub const MAX_VALUE_LENGTH: usize = 800;
+
+/// What `rrdlabels_match_simple_pattern_parsed()` returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelsMatch {
+    Pattern(SimplePatternResult),
+    /// With `name=value` matching, a label whose name alone matches stops the walk with C's `-1`, which is not a
+    /// positive match.
+    NameMatched,
+}
+
+impl LabelsMatch {
+    pub fn is_positive(self) -> bool {
+        self == LabelsMatch::Pattern(SimplePatternResult::MatchedPositive)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Label {
@@ -161,6 +178,38 @@ impl Labels {
         let removed = self.remove_all_unmarked();
         self.version = src.version;
         added > 0 || removed > 0 || cleaned > 0
+    }
+
+    /// `rrdlabels_match_simple_pattern_parsed()`: the first label that matches decides. With `equal` 0 the names are
+    /// matched (a negative match counts as none); otherwise `name<equal>value`, after the name alone.
+    pub fn match_simple_pattern_parsed(&self, pattern: &SimplePattern, equal: u8) -> LabelsMatch {
+        for label in &self.labels {
+            let result = if equal == 0 {
+                match pattern.matches_extract(&label.name, 0).0 {
+                    SimplePatternResult::MatchedNegative => SimplePatternResult::NotMatched,
+                    other => other,
+                }
+            } else {
+                if pattern.matches(&label.name) {
+                    return LabelsMatch::NameMatched;
+                }
+                let mut pair = label.name.clone();
+                pair.push(equal);
+                pair.extend_from_slice(&label.value);
+                pattern.matches_extract(&pair, 0).0
+            };
+            if result != SimplePatternResult::NotMatched {
+                return LabelsMatch::Pattern(result);
+            }
+        }
+        LabelsMatch::Pattern(SimplePatternResult::NotMatched)
+    }
+
+    /// `rrdlabels_to_buffer_json_members()`.
+    pub fn to_json_members(&self, w: &mut JsonWriter) {
+        for label in &self.labels {
+            w.member_add_string(&label.name, &label.value);
+        }
     }
 
     /// `rrdlabels_exist()`.

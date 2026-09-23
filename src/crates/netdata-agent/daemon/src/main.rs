@@ -14,6 +14,7 @@ mod rrdcontext;
 mod server;
 mod static_file;
 mod system;
+mod v1_contexts;
 
 use std::io::Write;
 use std::process::ExitCode;

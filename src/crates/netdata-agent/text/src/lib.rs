@@ -31,3 +31,4 @@ pub mod print;
 pub mod sanitize;
 pub mod simple_pattern;
 pub mod size;
+pub mod time_window;

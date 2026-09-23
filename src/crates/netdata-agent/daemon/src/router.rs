@@ -3,7 +3,7 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: ACL and bearer checks (with the `[web]` section), `/mcp` and `/sse`, `/netdata.conf` (it needs
-//! the config reads in C's order), and every API command other than `/api/v1/info`.
+//! the config reads in C's order), and the API commands other than `info`, `context` and `contexts`.
 
 use std::sync::Arc;
 
@@ -17,6 +17,7 @@ use netdata_agent_web::status;
 use crate::api;
 use crate::server::{Reply, Shared};
 use crate::static_file;
+use crate::v1_contexts;
 
 /// `FILENAME_MAX`: the path and filename copies are truncated to it.
 pub const FILENAME_MAX: usize = 4096;
@@ -27,14 +28,24 @@ pub type Host = Arc<netdata_agent_rrd::host::Host>;
 /// An API command: its name, whether it accepts a sub-path, and its handler (`struct web_api_command`).
 type Command = (&'static str, bool, fn(&Route<'_>, &Host, &[u8]) -> Reply);
 
-const API_V1: &[Command] = &[("info", false, |route, _, _| Reply {
-    code: status::OK,
-    content_type: ContentType::ApplicationJson,
-    body: api::info_json(&route.shared.info, &route.shared.hosts),
-    ..Reply::default()
-})];
+const API_V1: &[Command] = &[
+    ("info", false, |route, _, _| Reply {
+        code: status::OK,
+        content_type: ContentType::ApplicationJson,
+        body: api::info_json(&route.shared.info, &route.shared.hosts),
+        ..Reply::default()
+    }),
+    ("context", false, |_, host, query| {
+        v1_contexts::context(host, query)
+    }),
+    ("contexts", false, |_, host, query| {
+        v1_contexts::contexts(host, query)
+    }),
+];
 const API_V2: &[Command] = &[];
-const API_V3: &[Command] = &[];
+const API_V3: &[Command] = &[("context", false, |_, host, query| {
+    v1_contexts::context(host, query)
+})];
 
 /// The per-request routing state (`WEB_CLIENT_FLAG_PATH_*`).
 pub struct Route<'a> {

@@ -1269,7 +1269,7 @@ impl Contexts {
     pub fn recalculate_host_retention(&self, reason: u32) {
         let (mut first, mut last) = (0, 0);
         for rc in self.all() {
-            post_process_updates(&rc, true, reason);
+            recalculate_context_retention(&rc, reason);
             let state = lock(&rc.state);
             if first == 0 || (state.first_time_s != 0 && state.first_time_s < first) {
                 first = state.first_time_s;
@@ -1280,6 +1280,12 @@ impl Contexts {
         }
         *lock(&self.retention) = (first, last);
     }
+}
+
+/// `rrdcontext_recalculate_context_retention()`: a forced post-processing (repeated in C while the extreme
+/// cardinality protection removes instances, which is not here yet).
+pub fn recalculate_context_retention(rc: &Context, reason: u32) {
+    post_process_updates(rc, true, reason);
 }
 
 /// `rrdhost_update_cached_retention()` (not global): widens the host's retention.
