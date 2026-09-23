@@ -67,21 +67,27 @@ impl Row {
     }
 }
 
-/// The decoded rows of `tests/vectors/<name>`.
+/// The decoded rows of `tests/vectors/<name>`. Comments are only allowed in
+/// the header, so a data line can never be skipped as one.
 pub fn rows(name: &str) -> Vec<Row> {
     let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "tests", "vectors", name]
         .iter()
         .collect();
     let data = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let rows: Vec<Row> = data
-        .split(|&b| b == b'\n')
-        .enumerate()
-        .filter(|(_, line)| !line.is_empty() && line[0] != b'#')
-        .map(|(n, line)| Row {
+    let mut rows = Vec::new();
+    for (n, line) in data.split(|&b| b == b'\n').enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        if line[0] == b'#' {
+            assert!(rows.is_empty(), "{name}:{}: comment after data", n + 1);
+            continue;
+        }
+        rows.push(Row {
             line: n + 1,
             fields: line.split(|&b| b == b'\t').map(unescape).collect(),
-        })
-        .collect();
+        });
+    }
     assert!(!rows.is_empty(), "{name} has no vectors");
     rows
 }

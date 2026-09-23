@@ -12,7 +12,7 @@
 //! float-to-integer conversions reproduce the x86-64 instructions gcc emits.
 //!
 //! Modules:
-//! - [`print`]: `print_netdata_double()` and the integer / hex / base64 printers.
+//! - [`print`](mod@print): `print_netdata_double()` and the integer / hex / base64 printers.
 //! - [`parse`]: `str2ndd()`, `str2ull_encoded()` and friends, and `strtod()`.
 //! - [`duration`], [`size`]: duration, size and entry-count parsing and rendering.
 //! - [`simple_pattern`]: Netdata simple patterns.

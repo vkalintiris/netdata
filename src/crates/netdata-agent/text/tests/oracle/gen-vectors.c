@@ -7,9 +7,9 @@
 // only argument. Inputs are deterministic (fixed-seed splitmix64).
 //
 // Field encoding (shared with tests/common/mod.rs): bytes 0x20..0x7e except
-// '\' are written as-is, '\' as "\\", every other byte as "\xHH". Lines that
-// start with '#' are comments. Multi-valued fields join items with 0x1f
-// before encoding.
+// '\' and '#' are written as-is, '\' as "\\", every other byte as "\xHH".
+// Lines that start with '#' are comments (data never starts with a raw '#').
+// Multi-valued fields join items with 0x1f before encoding.
 
 #include "libnetdata/libnetdata.h"
 
@@ -35,7 +35,7 @@ static void esc(FILE *f, const void *data, size_t len) {
         unsigned char c = s[i];
         if(c == '\\')
             fputs("\\\\", f);
-        else if(c >= 0x20 && c <= 0x7e)
+        else if(c >= 0x20 && c <= 0x7e && c != '#')
             fputc(c, f);
         else
             fprintf(f, "\\x%02x", c);

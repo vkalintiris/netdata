@@ -1020,36 +1020,36 @@ netdata_fix_chart_name	a"b	-	a_b	3	-
 netdata_fix_chart_id	a"b	-	a_b	3	-
 rrdvar_fix_name	a"b	-	a_b	3	1
 rrd_string_sanitize	a"b	-	a'b	3	-
-text_sanitize:identity:0:0	#	32	#	1	1
-text_sanitize:identity:1:1	#	32	#	1	1
-text_sanitize:rrd:0:1	#	32	#	1	1
-text_sanitize:rrd:1:0	#	32	#	1	1
-text_sanitize:chart:0:1	#	32	#	1	1
-text_sanitize:chart:1:1	#	32	#	1	1
-rrdlabels_sanitize_name	#	32		0	-
-rrdlabels_sanitize_value	#	32	[none]	6	-
-prometheus_rrdlabels_sanitize_name	#	32		0	-
-nrpc_sanitize_name	#	32	#	1	-
-rrdset_strncpyz_name	#	32	#	1	-
-netdata_fix_chart_name	#	-	#	1	-
-netdata_fix_chart_id	#	-	#	1	-
-rrdvar_fix_name	#	-	#	1	0
-rrd_string_sanitize	#	-	#	1	-
-text_sanitize:identity:0:2	a#b	32	a#b	3	3
-text_sanitize:identity:1:2	a#b	32	a#b	3	3
-text_sanitize:rrd:0:2	a#b	32	a#b	3	3
-text_sanitize:rrd:1:0	a#b	32	a#b	3	3
-text_sanitize:chart:0:2	a#b	32	a#b	3	3
-text_sanitize:chart:1:0	a#b	32	a#b	3	3
-rrdlabels_sanitize_name	a#b	32	a_b	3	-
-rrdlabels_sanitize_value	a#b	32	a_b	3	-
-prometheus_rrdlabels_sanitize_name	a#b	32	a_b	3	-
-nrpc_sanitize_name	a#b	32	a#b	3	-
-rrdset_strncpyz_name	a#b	32	a#b	3	-
-netdata_fix_chart_name	a#b	-	a#b	3	-
-netdata_fix_chart_id	a#b	-	a#b	3	-
-rrdvar_fix_name	a#b	-	a#b	3	0
-rrd_string_sanitize	a#b	-	a#b	3	-
+text_sanitize:identity:0:0	\x23	32	\x23	1	1
+text_sanitize:identity:1:1	\x23	32	\x23	1	1
+text_sanitize:rrd:0:1	\x23	32	\x23	1	1
+text_sanitize:rrd:1:0	\x23	32	\x23	1	1
+text_sanitize:chart:0:1	\x23	32	\x23	1	1
+text_sanitize:chart:1:1	\x23	32	\x23	1	1
+rrdlabels_sanitize_name	\x23	32		0	-
+rrdlabels_sanitize_value	\x23	32	[none]	6	-
+prometheus_rrdlabels_sanitize_name	\x23	32		0	-
+nrpc_sanitize_name	\x23	32	\x23	1	-
+rrdset_strncpyz_name	\x23	32	\x23	1	-
+netdata_fix_chart_name	\x23	-	\x23	1	-
+netdata_fix_chart_id	\x23	-	\x23	1	-
+rrdvar_fix_name	\x23	-	\x23	1	0
+rrd_string_sanitize	\x23	-	\x23	1	-
+text_sanitize:identity:0:2	a\x23b	32	a\x23b	3	3
+text_sanitize:identity:1:2	a\x23b	32	a\x23b	3	3
+text_sanitize:rrd:0:2	a\x23b	32	a\x23b	3	3
+text_sanitize:rrd:1:0	a\x23b	32	a\x23b	3	3
+text_sanitize:chart:0:2	a\x23b	32	a\x23b	3	3
+text_sanitize:chart:1:0	a\x23b	32	a\x23b	3	3
+rrdlabels_sanitize_name	a\x23b	32	a_b	3	-
+rrdlabels_sanitize_value	a\x23b	32	a_b	3	-
+prometheus_rrdlabels_sanitize_name	a\x23b	32	a_b	3	-
+nrpc_sanitize_name	a\x23b	32	a\x23b	3	-
+rrdset_strncpyz_name	a\x23b	32	a\x23b	3	-
+netdata_fix_chart_name	a\x23b	-	a\x23b	3	-
+netdata_fix_chart_id	a\x23b	-	a\x23b	3	-
+rrdvar_fix_name	a\x23b	-	a\x23b	3	0
+rrd_string_sanitize	a\x23b	-	a\x23b	3	-
 text_sanitize:identity:0:0	$	32	$	1	1
 text_sanitize:identity:1:0	$	32	$	1	1
 text_sanitize:rrd:0:2	$	32	$	1	1
@@ -15053,21 +15053,21 @@ netdata_fix_chart_name	\x84	-		0	-
 netdata_fix_chart_id	\x84	-		0	-
 rrdvar_fix_name	\x84	-		0	1
 rrd_string_sanitize	\x84	-		0	-
-text_sanitize:identity:0:0	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	35	5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	16	16
-text_sanitize:identity:1:1	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	35	5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	16	16
-text_sanitize:rrd:0:1	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	35	5 ,R/B6 Pe#,	12	12
-text_sanitize:rrd:1:1	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	35	5 ,R/B6 Pe#,	12	12
-text_sanitize:chart:0:1	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	35	5 .R/B6 Pe#.	12	12
-text_sanitize:chart:1:1	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	35	5 .R/B6 Pe#.	12	12
-rrdlabels_sanitize_name	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	35	5_.R/B6_Pe_.	12	-
-rrdlabels_sanitize_value	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	35	5 .R/B6 Pe_.	12	-
-prometheus_rrdlabels_sanitize_name	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	35	5____R_B6_Pe____	16	-
-nrpc_sanitize_name	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	35	5 ,R\\B6 Pe#,	12	-
-rrdset_strncpyz_name	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	35	5_.R/B6_Pe#.	12	-
-netdata_fix_chart_name	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	-	5_.R/B6_Pe#.	12	-
-netdata_fix_chart_id	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	-	5_.R/B6_Pe#.	12	-
-rrdvar_fix_name	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	-	5_.R/B6_Pe#.	12	1
-rrd_string_sanitize	 5\x15\x08\x02,R\\B6\x10Pe#,\x89\x06	-	5 ,R/B6 Pe#,	12	-
+text_sanitize:identity:0:0	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	35	5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	16	16
+text_sanitize:identity:1:1	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	35	5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	16	16
+text_sanitize:rrd:0:1	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	35	5 ,R/B6 Pe\x23,	12	12
+text_sanitize:rrd:1:1	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	35	5 ,R/B6 Pe\x23,	12	12
+text_sanitize:chart:0:1	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	35	5 .R/B6 Pe\x23.	12	12
+text_sanitize:chart:1:1	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	35	5 .R/B6 Pe\x23.	12	12
+rrdlabels_sanitize_name	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	35	5_.R/B6_Pe_.	12	-
+rrdlabels_sanitize_value	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	35	5 .R/B6 Pe_.	12	-
+prometheus_rrdlabels_sanitize_name	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	35	5____R_B6_Pe____	16	-
+nrpc_sanitize_name	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	35	5 ,R\\B6 Pe\x23,	12	-
+rrdset_strncpyz_name	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	35	5_.R/B6_Pe\x23.	12	-
+netdata_fix_chart_name	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	-	5_.R/B6_Pe\x23.	12	-
+netdata_fix_chart_id	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	-	5_.R/B6_Pe\x23.	12	-
+rrdvar_fix_name	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	-	5_.R/B6_Pe\x23.	12	1
+rrd_string_sanitize	 5\x15\x08\x02,R\\B6\x10Pe\x23,\x89\x06	-	5 ,R/B6 Pe\x23,	12	-
 text_sanitize:identity:0:1	\x08P(9\xe4\x95<4\x9e!\x1b$\xae\x03E	32	P(9_<4\x9e!\x1b$\xae\x03E	13	13
 text_sanitize:identity:1:1	\x08P(9\xe4\x95<4\x9e!\x1b$\xae\x03E	32	P(9e495<4\x9e!\x1b$\xae\x03E	16	13
 text_sanitize:rrd:0:1	\x08P(9\xe4\x95<4\x9e!\x1b$\xae\x03E	32	P(9_<4 ! $ E	12	12
@@ -15818,21 +15818,21 @@ netdata_fix_chart_name	b\x09\xee\x13\x10\x14\x06\x95*h\x03_"<J	-	b_ee__h___<J	12
 netdata_fix_chart_id	b\x09\xee\x13\x10\x14\x06\x95*h\x03_"<J	-	b_ee__h___<J	12	-
 rrdvar_fix_name	b\x09\xee\x13\x10\x14\x06\x95*h\x03_"<J	-	b_ee__h___<J	12	1
 rrd_string_sanitize	b\x09\xee\x13\x10\x14\x06\x95*h\x03_"<J	-	b ee *h _'<J	12	-
-text_sanitize:identity:0:0	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H`&r__)\x08_b_#\x02!\x1d\xa6z_\x0f\x07(	21	21
-text_sanitize:identity:1:1	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H`&rd8f1)\x08_bf1#\x02!\x1d\xa6zfe\x0f\x07(	25	21
-text_sanitize:rrd:0:1	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H`&r__) _b_# ! z_ (	19	19
-text_sanitize:rrd:1:0	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H`&rd8f1) _bf1# ! zfe (	23	19
-text_sanitize:chart:0:2	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H__r__) _b_# ! z_ (	19	19
-text_sanitize:chart:1:0	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H__rd8f1) _bf1# ! zfe (	23	19
-rrdlabels_sanitize_name	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H__r_____b_____z___	19	-
-rrdlabels_sanitize_value	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H__rd8f1) _bf1_ _ zfe (	23	-
-prometheus_rrdlabels_sanitize_name	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H__r_____b______z_____	22	-
-nrpc_sanitize_name	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H`&rd8f1) _bf1# ! zfe (	23	-
-rrdset_strncpyz_name	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H__rd8f1)__bf1#_!_zfe_(	23	-
-netdata_fix_chart_name	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	-	H__rd8f1)__bf1#_!_zfe	21	-
-netdata_fix_chart_id	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	-	H__rd8f1)__bf1#_!_zfe	21	-
-rrdvar_fix_name	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	-	H__rd8f1)__bf1#_!_zfe	21	1
-rrd_string_sanitize	H`&r\xd8\xf1)\x08_b\xf1#\x02!\x1d\xa6z\xfe\x0f\x07( 	-	H`&rd8f1) _bf1# ! zfe (	23	-
+text_sanitize:identity:0:0	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H`&r__)\x08_b_\x23\x02!\x1d\xa6z_\x0f\x07(	21	21
+text_sanitize:identity:1:1	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H`&rd8f1)\x08_bf1\x23\x02!\x1d\xa6zfe\x0f\x07(	25	21
+text_sanitize:rrd:0:1	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H`&r__) _b_\x23 ! z_ (	19	19
+text_sanitize:rrd:1:0	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H`&rd8f1) _bf1\x23 ! zfe (	23	19
+text_sanitize:chart:0:2	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H__r__) _b_\x23 ! z_ (	19	19
+text_sanitize:chart:1:0	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H__rd8f1) _bf1\x23 ! zfe (	23	19
+rrdlabels_sanitize_name	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H__r_____b_____z___	19	-
+rrdlabels_sanitize_value	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H__rd8f1) _bf1_ _ zfe (	23	-
+prometheus_rrdlabels_sanitize_name	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H__r_____b______z_____	22	-
+nrpc_sanitize_name	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H`&rd8f1) _bf1\x23 ! zfe (	23	-
+rrdset_strncpyz_name	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	32	H__rd8f1)__bf1\x23_!_zfe_(	23	-
+netdata_fix_chart_name	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	-	H__rd8f1)__bf1\x23_!_zfe	21	-
+netdata_fix_chart_id	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	-	H__rd8f1)__bf1\x23_!_zfe	21	-
+rrdvar_fix_name	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	-	H__rd8f1)__bf1\x23_!_zfe	21	1
+rrd_string_sanitize	H`&r\xd8\xf1)\x08_b\xf1\x23\x02!\x1d\xa6z\xfe\x0f\x07( 	-	H`&rd8f1) _bf1\x23 ! zfe (	23	-
 text_sanitize:identity:0:0	\x1ci;!+('_V\xd9d4O_\x94)<\xef	17	i;!+('_V_d4O_\x94)<	16	16
 text_sanitize:identity:1:2	\x1ci;!+('_V\xd9d4O_\x94)<\xef	17	i;!+('_Vd9d4O_\x94)	16	15
 text_sanitize:rrd:0:1	\x1ci;!+('_V\xd9d4O_\x94)<\xef	17	i;!+('_V_d4O_ )<	16	16
@@ -16178,21 +16178,21 @@ netdata_fix_chart_name	;L_`r,,'E\xe1q	-	;L__r.._Ee1	11	-
 netdata_fix_chart_id	;L_`r,,'E\xe1q	-	;L__r.._Ee1	11	-
 rrdvar_fix_name	;L_`r,,'E\xe1q	-	;L__r.._Ee1	11	1
 rrd_string_sanitize	;L_`r,,'E\xe1q	-	;L_`r,,'Ee1q	12	-
-text_sanitize:identity:0:0	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	23	_CE\x01eV6#Ze&k_=!)5^_*,	21	21
-text_sanitize:identity:1:1	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	23	_CE\x01eV6#Ze&kcd=!)5^d6*	22	20
-text_sanitize:rrd:0:2	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	23	_CE eV6#Ze&k_=!)5^_*,	21	21
-text_sanitize:rrd:1:0	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	23	_CE eV6#Ze&kcd=!)5^d6*	22	20
-text_sanitize:chart:0:0	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	23	_CE eV6#Ze_k__!)5___.	21	21
-text_sanitize:chart:1:2	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	23	_CE eV6#Ze_kcd_!)5_d6_	22	20
-rrdlabels_sanitize_name	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	23	_CE_eV6_Ze_k____5___.	21	-
-rrdlabels_sanitize_value	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	23	_CE eV6_Ze_kcd:_)5_d6_	22	-
-prometheus_rrdlabels_sanitize_name	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	23	_CE_eV6_Ze_k____5____	21	-
-nrpc_sanitize_name	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	23	_CE eV6#Ze&kcd=!)5^d6*	22	-
-rrdset_strncpyz_name	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	23	_CE_eV6#Ze_kcd_!)5_d6_	22	-
-netdata_fix_chart_name	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	-	_CE_eV6#Ze_kcd_!)5_d6_	22	-
-netdata_fix_chart_id	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	-	_CE_eV6#Ze_kcd_!)5_d6_	22	-
-rrdvar_fix_name	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	-	_CE_eV6#Ze_kcd_!)5_d6_	22	1
-rrd_string_sanitize	\x17_CE\x01eV6#Ze&k\xcd=!)5^\xd6*,	-	_CE eV6#Ze&kcd=!)5^d6*,	23	-
+text_sanitize:identity:0:0	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	23	_CE\x01eV6\x23Ze&k_=!)5^_*,	21	21
+text_sanitize:identity:1:1	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	23	_CE\x01eV6\x23Ze&kcd=!)5^d6*	22	20
+text_sanitize:rrd:0:2	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	23	_CE eV6\x23Ze&k_=!)5^_*,	21	21
+text_sanitize:rrd:1:0	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	23	_CE eV6\x23Ze&kcd=!)5^d6*	22	20
+text_sanitize:chart:0:0	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	23	_CE eV6\x23Ze_k__!)5___.	21	21
+text_sanitize:chart:1:2	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	23	_CE eV6\x23Ze_kcd_!)5_d6_	22	20
+rrdlabels_sanitize_name	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	23	_CE_eV6_Ze_k____5___.	21	-
+rrdlabels_sanitize_value	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	23	_CE eV6_Ze_kcd:_)5_d6_	22	-
+prometheus_rrdlabels_sanitize_name	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	23	_CE_eV6_Ze_k____5____	21	-
+nrpc_sanitize_name	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	23	_CE eV6\x23Ze&kcd=!)5^d6*	22	-
+rrdset_strncpyz_name	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	23	_CE_eV6\x23Ze_kcd_!)5_d6_	22	-
+netdata_fix_chart_name	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	-	_CE_eV6\x23Ze_kcd_!)5_d6_	22	-
+netdata_fix_chart_id	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	-	_CE_eV6\x23Ze_kcd_!)5_d6_	22	-
+rrdvar_fix_name	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	-	_CE_eV6\x23Ze_kcd_!)5_d6_	22	1
+rrd_string_sanitize	\x17_CE\x01eV6\x23Ze&k\xcd=!)5^\xd6*,	-	_CE eV6\x23Ze&kcd=!)5^d6*,	23	-
 text_sanitize:identity:0:0	?\xb1-T\x15\x8ccwe6~j\\)t!g\xec\x08Q	10	?\xb1-T\x15\x8ccwe	9	9
 text_sanitize:identity:1:2	?\xb1-T\x15\x8ccwe6~j\\)t!g\xec\x08Q	10	?\xb1-T\x15\x8ccwe	9	9
 text_sanitize:rrd:0:0	?\xb1-T\x15\x8ccwe6~j\\)t!g\xec\x08Q	10	? -T cwe6	9	9
@@ -16538,21 +16538,21 @@ netdata_fix_chart_name	\x03,\x18Bl"B;_\xc6\xb7_l\xa7$Ok\x0d_	-	._Bl_B;_\xc6\xb7_
 netdata_fix_chart_id	\x03,\x18Bl"B;_\xc6\xb7_l\xa7$Ok\x0d_	-	._Bl_B;_\xc6\xb7_l__Ok__	18	-
 rrdvar_fix_name	\x03,\x18Bl"B;_\xc6\xb7_l\xa7$Ok\x0d_	-	._Bl_B;_\xc6\xb7_l__Ok__	18	1
 rrd_string_sanitize	\x03,\x18Bl"B;_\xc6\xb7_l\xa7$Ok\x0d_	-	, Bl'B;_\xc6\xb7_l $Ok _	18	-
-text_sanitize:identity:0:0	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	25	_j<@\xae__ %@&\x86[#e\x1a_\x1d_g	20	20
-text_sanitize:identity:1:0	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	25	_j<@\xae\xdf\xa8c5 %@&\x86[#e\x1ad2\x1d_g	23	20
-text_sanitize:rrd:0:0	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	25	_j<@ __ %@& [#e _ _g	20	20
-text_sanitize:rrd:1:1	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	25	_j<@ \xdf\xa8c5 %@& [#e d2 _g	23	20
-text_sanitize:chart:0:0	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	25	_j<_ __ ___ [#e _ _g	20	20
-text_sanitize:chart:1:0	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	25	_j<_ \xdf\xa8c5 ___ [#e d2 _g	23	20
-rrdlabels_sanitize_name	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	25	_j__________[_e____g	20	-
-rrdlabels_sanitize_value	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	25	_j_@ \xdf\xa8c5 _@_ [_e d2 _g	23	-
-prometheus_rrdlabels_sanitize_name	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	25	_j____________e____g	20	-
-nrpc_sanitize_name	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	25	_j<@ \xdf\xa8c5 %@& [#e d2 _g	23	-
-rrdset_strncpyz_name	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	25	_j<__\xdf\xa8c5_____[#e_d2__g	23	-
-netdata_fix_chart_name	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	-	_j<__\xdf\xa8c5_____[#e_d2	20	-
-netdata_fix_chart_id	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	-	_j<__\xdf\xa8c5_____[#e_d2	20	-
-rrdvar_fix_name	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	-	_j<__\xdf\xa8c5_____[#e_d2	20	1
-rrd_string_sanitize	_j<@\xae\xdf\xa8\xc5 %@&\x86[#e\x1a\xd2\x1d_g	-	_j<@ \xdf\xa8c5 %@& [#e d2 _g	23	-
+text_sanitize:identity:0:0	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	25	_j<@\xae__ %@&\x86[\x23e\x1a_\x1d_g	20	20
+text_sanitize:identity:1:0	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	25	_j<@\xae\xdf\xa8c5 %@&\x86[\x23e\x1ad2\x1d_g	23	20
+text_sanitize:rrd:0:0	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	25	_j<@ __ %@& [\x23e _ _g	20	20
+text_sanitize:rrd:1:1	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	25	_j<@ \xdf\xa8c5 %@& [\x23e d2 _g	23	20
+text_sanitize:chart:0:0	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	25	_j<_ __ ___ [\x23e _ _g	20	20
+text_sanitize:chart:1:0	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	25	_j<_ \xdf\xa8c5 ___ [\x23e d2 _g	23	20
+rrdlabels_sanitize_name	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	25	_j__________[_e____g	20	-
+rrdlabels_sanitize_value	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	25	_j_@ \xdf\xa8c5 _@_ [_e d2 _g	23	-
+prometheus_rrdlabels_sanitize_name	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	25	_j____________e____g	20	-
+nrpc_sanitize_name	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	25	_j<@ \xdf\xa8c5 %@& [\x23e d2 _g	23	-
+rrdset_strncpyz_name	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	25	_j<__\xdf\xa8c5_____[\x23e_d2__g	23	-
+netdata_fix_chart_name	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	-	_j<__\xdf\xa8c5_____[\x23e_d2	20	-
+netdata_fix_chart_id	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	-	_j<__\xdf\xa8c5_____[\x23e_d2	20	-
+rrdvar_fix_name	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	-	_j<__\xdf\xa8c5_____[\x23e_d2	20	1
+rrd_string_sanitize	_j<@\xae\xdf\xa8\xc5 %@&\x86[\x23e\x1a\xd2\x1d_g	-	_j<@ \xdf\xa8c5 %@& [\x23e d2 _g	23	-
 text_sanitize:identity:0:1	2t[,3!G%	33	2t[,3!G%	8	8
 text_sanitize:identity:1:1	2t[,3!G%	33	2t[,3!G%	8	8
 text_sanitize:rrd:0:2	2t[,3!G%	33	2t[,3!G%	8	8
@@ -17453,21 +17453,21 @@ netdata_fix_chart_name	]\xecK0|\xee;"	-	]ecK0_ee	8	-
 netdata_fix_chart_id	]\xecK0|\xee;"	-	]ecK0_ee	8	-
 rrdvar_fix_name	]\xecK0|\xee;"	-	]ecK0_ee	8	1
 rrd_string_sanitize	]\xecK0|\xee;"	-	]ecK0|ee;'	10	-
-text_sanitize:identity:0:1	\x01\x0f\x0a]\x12#Eq_\x04	44	]\x12#Eq_\x04	7	7
-text_sanitize:identity:1:1	\x01\x0f\x0a]\x12#Eq_\x04	44	]\x12#Eq_\x04	7	7
-text_sanitize:rrd:0:2	\x01\x0f\x0a]\x12#Eq_\x04	44	] #Eq_	6	6
-text_sanitize:rrd:1:2	\x01\x0f\x0a]\x12#Eq_\x04	44	] #Eq_	6	6
-text_sanitize:chart:0:2	\x01\x0f\x0a]\x12#Eq_\x04	44	] #Eq_	6	6
-text_sanitize:chart:1:0	\x01\x0f\x0a]\x12#Eq_\x04	44	] #Eq_	6	6
-rrdlabels_sanitize_name	\x01\x0f\x0a]\x12#Eq_\x04	44	]__Eq_	6	-
-rrdlabels_sanitize_value	\x01\x0f\x0a]\x12#Eq_\x04	44	] _Eq_	6	-
-prometheus_rrdlabels_sanitize_name	\x01\x0f\x0a]\x12#Eq_\x04	44	___Eq__	7	-
-nrpc_sanitize_name	\x01\x0f\x0a]\x12#Eq_\x04	44	] #Eq_	6	-
-rrdset_strncpyz_name	\x01\x0f\x0a]\x12#Eq_\x04	44	]_#Eq_	6	-
-netdata_fix_chart_name	\x01\x0f\x0a]\x12#Eq_\x04	-	]_#Eq_	6	-
-netdata_fix_chart_id	\x01\x0f\x0a]\x12#Eq_\x04	-	]_#Eq_	6	-
-rrdvar_fix_name	\x01\x0f\x0a]\x12#Eq_\x04	-	]_#Eq_	6	1
-rrd_string_sanitize	\x01\x0f\x0a]\x12#Eq_\x04	-	] #Eq_	6	-
+text_sanitize:identity:0:1	\x01\x0f\x0a]\x12\x23Eq_\x04	44	]\x12\x23Eq_\x04	7	7
+text_sanitize:identity:1:1	\x01\x0f\x0a]\x12\x23Eq_\x04	44	]\x12\x23Eq_\x04	7	7
+text_sanitize:rrd:0:2	\x01\x0f\x0a]\x12\x23Eq_\x04	44	] \x23Eq_	6	6
+text_sanitize:rrd:1:2	\x01\x0f\x0a]\x12\x23Eq_\x04	44	] \x23Eq_	6	6
+text_sanitize:chart:0:2	\x01\x0f\x0a]\x12\x23Eq_\x04	44	] \x23Eq_	6	6
+text_sanitize:chart:1:0	\x01\x0f\x0a]\x12\x23Eq_\x04	44	] \x23Eq_	6	6
+rrdlabels_sanitize_name	\x01\x0f\x0a]\x12\x23Eq_\x04	44	]__Eq_	6	-
+rrdlabels_sanitize_value	\x01\x0f\x0a]\x12\x23Eq_\x04	44	] _Eq_	6	-
+prometheus_rrdlabels_sanitize_name	\x01\x0f\x0a]\x12\x23Eq_\x04	44	___Eq__	7	-
+nrpc_sanitize_name	\x01\x0f\x0a]\x12\x23Eq_\x04	44	] \x23Eq_	6	-
+rrdset_strncpyz_name	\x01\x0f\x0a]\x12\x23Eq_\x04	44	]_\x23Eq_	6	-
+netdata_fix_chart_name	\x01\x0f\x0a]\x12\x23Eq_\x04	-	]_\x23Eq_	6	-
+netdata_fix_chart_id	\x01\x0f\x0a]\x12\x23Eq_\x04	-	]_\x23Eq_	6	-
+rrdvar_fix_name	\x01\x0f\x0a]\x12\x23Eq_\x04	-	]_\x23Eq_	6	1
+rrd_string_sanitize	\x01\x0f\x0a]\x12\x23Eq_\x04	-	] \x23Eq_	6	-
 text_sanitize:identity:0:2	[1\xc9	11	[1_	3	3
 text_sanitize:identity:1:0	[1\xc9	11	[1c9	4	3
 text_sanitize:rrd:0:0	[1\xc9	11	[1_	3	3
@@ -18608,21 +18608,21 @@ netdata_fix_chart_name	_\x892\x9b~\x10:\x87	-	__2_~_:	7	-
 netdata_fix_chart_id	_\x892\x9b~\x10:\x87	-	__2_~_:	7	-
 rrdvar_fix_name	_\x892\x9b~\x10:\x87	-	__2_~_:	7	1
 rrd_string_sanitize	_\x892\x9b~\x10:\x87	-	_ 2 ~ :	7	-
-text_sanitize:identity:0:1	;R\xd9*F\x16[;\xa6I!`#	2	;	1	1
-text_sanitize:identity:1:1	;R\xd9*F\x16[;\xa6I!`#	2	;	1	1
-text_sanitize:rrd:0:2	;R\xd9*F\x16[;\xa6I!`#	2	;	1	1
-text_sanitize:rrd:1:2	;R\xd9*F\x16[;\xa6I!`#	2	;	1	1
-text_sanitize:chart:0:2	;R\xd9*F\x16[;\xa6I!`#	2	;	1	1
-text_sanitize:chart:1:1	;R\xd9*F\x16[;\xa6I!`#	2	;	1	1
-rrdlabels_sanitize_name	;R\xd9*F\x16[;\xa6I!`#	2		0	-
-rrdlabels_sanitize_value	;R\xd9*F\x16[;\xa6I!`#	2	:	1	-
-prometheus_rrdlabels_sanitize_name	;R\xd9*F\x16[;\xa6I!`#	2		0	-
-nrpc_sanitize_name	;R\xd9*F\x16[;\xa6I!`#	2	;	1	-
-rrdset_strncpyz_name	;R\xd9*F\x16[;\xa6I!`#	2	;	1	-
-netdata_fix_chart_name	;R\xd9*F\x16[;\xa6I!`#	-	;Rd9_F_[;_I!_	13	-
-netdata_fix_chart_id	;R\xd9*F\x16[;\xa6I!`#	-	;Rd9_F_[;_I!_	13	-
-rrdvar_fix_name	;R\xd9*F\x16[;\xa6I!`#	-	;Rd9_F_[;_I!_	13	1
-rrd_string_sanitize	;R\xd9*F\x16[;\xa6I!`#	-	;Rd9*F [; I!`#	14	-
+text_sanitize:identity:0:1	;R\xd9*F\x16[;\xa6I!`\x23	2	;	1	1
+text_sanitize:identity:1:1	;R\xd9*F\x16[;\xa6I!`\x23	2	;	1	1
+text_sanitize:rrd:0:2	;R\xd9*F\x16[;\xa6I!`\x23	2	;	1	1
+text_sanitize:rrd:1:2	;R\xd9*F\x16[;\xa6I!`\x23	2	;	1	1
+text_sanitize:chart:0:2	;R\xd9*F\x16[;\xa6I!`\x23	2	;	1	1
+text_sanitize:chart:1:1	;R\xd9*F\x16[;\xa6I!`\x23	2	;	1	1
+rrdlabels_sanitize_name	;R\xd9*F\x16[;\xa6I!`\x23	2		0	-
+rrdlabels_sanitize_value	;R\xd9*F\x16[;\xa6I!`\x23	2	:	1	-
+prometheus_rrdlabels_sanitize_name	;R\xd9*F\x16[;\xa6I!`\x23	2		0	-
+nrpc_sanitize_name	;R\xd9*F\x16[;\xa6I!`\x23	2	;	1	-
+rrdset_strncpyz_name	;R\xd9*F\x16[;\xa6I!`\x23	2	;	1	-
+netdata_fix_chart_name	;R\xd9*F\x16[;\xa6I!`\x23	-	;Rd9_F_[;_I!_	13	-
+netdata_fix_chart_id	;R\xd9*F\x16[;\xa6I!`\x23	-	;Rd9_F_[;_I!_	13	-
+rrdvar_fix_name	;R\xd9*F\x16[;\xa6I!`\x23	-	;Rd9_F_[;_I!_	13	1
+rrd_string_sanitize	;R\xd9*F\x16[;\xa6I!`\x23	-	;Rd9*F [; I!`\x23	14	-
 text_sanitize:identity:0:0	\xe2\x03	25	_\x03	2	2
 text_sanitize:identity:1:0	\xe2\x03	25	e2\x03	3	2
 text_sanitize:rrd:0:1	\xe2\x03	25	[none]	6	6
@@ -19088,21 +19088,21 @@ netdata_fix_chart_name	=;9<\xa1\x04\x0c(\x09r.\xf3c-(\xda"{\x17;d\x0c\x16	-	_;9<
 netdata_fix_chart_id	=;9<\xa1\x04\x0c(\x09r.\xf3c-(\xda"{\x17;d\x0c\x16	-	_;9<_(_r.f3c-(da_{_;d	21	-
 rrdvar_fix_name	=;9<\xa1\x04\x0c(\x09r.\xf3c-(\xda"{\x17;d\x0c\x16	-	_;9<_(_r.f3c-(da_{_;d	21	1
 rrd_string_sanitize	=;9<\xa1\x04\x0c(\x09r.\xf3c-(\xda"{\x17;d\x0c\x16	-	=;9< ( r.f3c-(da'{ ;d	21	-
-text_sanitize:identity:0:2	|[\xf66'\x1a\x1c\xb8@A#s\x1f	19	|[_6'\x1a\x1c\xb8@A#s\x1f	13	13
-text_sanitize:identity:1:1	|[\xf66'\x1a\x1c\xb8@A#s\x1f	19	|[f66'\x1a\x1c\xb8@A#s\x1f	14	13
-text_sanitize:rrd:0:0	|[\xf66'\x1a\x1c\xb8@A#s\x1f	19	|[_6' @A#s	10	10
-text_sanitize:rrd:1:1	|[\xf66'\x1a\x1c\xb8@A#s\x1f	19	|[f66' @A#s	11	10
-text_sanitize:chart:0:0	|[\xf66'\x1a\x1c\xb8@A#s\x1f	19	_[_6_ _A#s	10	10
-text_sanitize:chart:1:1	|[\xf66'\x1a\x1c\xb8@A#s\x1f	19	_[f66_ _A#s	11	10
-rrdlabels_sanitize_name	|[\xf66'\x1a\x1c\xb8@A#s\x1f	19	_[_6___A_s	10	-
-rrdlabels_sanitize_value	|[\xf66'\x1a\x1c\xb8@A#s\x1f	19	_[f66_ @A_s	11	-
-prometheus_rrdlabels_sanitize_name	|[\xf66'\x1a\x1c\xb8@A#s\x1f	19	___6_____A_s_	13	-
-nrpc_sanitize_name	|[\xf66'\x1a\x1c\xb8@A#s\x1f	19	|[f66' @A#s	11	-
-rrdset_strncpyz_name	|[\xf66'\x1a\x1c\xb8@A#s\x1f	19	_[f66___A#s	11	-
-netdata_fix_chart_name	|[\xf66'\x1a\x1c\xb8@A#s\x1f	-	_[f66___A#s	11	-
-netdata_fix_chart_id	|[\xf66'\x1a\x1c\xb8@A#s\x1f	-	_[f66___A#s	11	-
-rrdvar_fix_name	|[\xf66'\x1a\x1c\xb8@A#s\x1f	-	_[f66___A#s	11	1
-rrd_string_sanitize	|[\xf66'\x1a\x1c\xb8@A#s\x1f	-	|[f66' @A#s	11	-
+text_sanitize:identity:0:2	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	19	|[_6'\x1a\x1c\xb8@A\x23s\x1f	13	13
+text_sanitize:identity:1:1	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	19	|[f66'\x1a\x1c\xb8@A\x23s\x1f	14	13
+text_sanitize:rrd:0:0	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	19	|[_6' @A\x23s	10	10
+text_sanitize:rrd:1:1	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	19	|[f66' @A\x23s	11	10
+text_sanitize:chart:0:0	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	19	_[_6_ _A\x23s	10	10
+text_sanitize:chart:1:1	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	19	_[f66_ _A\x23s	11	10
+rrdlabels_sanitize_name	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	19	_[_6___A_s	10	-
+rrdlabels_sanitize_value	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	19	_[f66_ @A_s	11	-
+prometheus_rrdlabels_sanitize_name	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	19	___6_____A_s_	13	-
+nrpc_sanitize_name	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	19	|[f66' @A\x23s	11	-
+rrdset_strncpyz_name	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	19	_[f66___A\x23s	11	-
+netdata_fix_chart_name	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	-	_[f66___A\x23s	11	-
+netdata_fix_chart_id	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	-	_[f66___A\x23s	11	-
+rrdvar_fix_name	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	-	_[f66___A\x23s	11	1
+rrd_string_sanitize	|[\xf66'\x1a\x1c\xb8@A\x23s\x1f	-	|[f66' @A\x23s	11	-
 text_sanitize:identity:0:1	R!:\x19*xF=\xc9e"\x0a!\xd9\xd8}\xa3QS(="	14	R!:\x19*xF=_e"\x0a!	13	13
 text_sanitize:identity:1:1	R!:\x19*xF=\xc9e"\x0a!\xd9\xd8}\xa3QS(="	14	R!:\x19*xF=c9e"\x0a	13	12
 text_sanitize:rrd:0:1	R!:\x19*xF=\xc9e"\x0a!\xd9\xd8}\xa3QS(="	14	R!: *xF=_e' !	13	13
@@ -19553,21 +19553,21 @@ netdata_fix_chart_name	 )*_.\x93B_:`E	-	)__._B_:_E	10	-
 netdata_fix_chart_id	 )*_.\x93B_:`E	-	)__._B_:_E	10	-
 rrdvar_fix_name	 )*_.\x93B_:`E	-	)__._B_:_E	10	1
 rrd_string_sanitize	 )*_.\x93B_:`E	-	)*_. B_:`E	10	-
-text_sanitize:identity:0:0	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	42	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	17	17
-text_sanitize:identity:1:0	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	42	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	17	17
-text_sanitize:rrd:0:0	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	42	r D D #_ :l'	12	12
-text_sanitize:rrd:1:1	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	42	r D D #_ :l'	12	12
-text_sanitize:chart:0:2	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	42	r D D #_ :l_	12	12
-text_sanitize:chart:1:1	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	42	r D D #_ :l_	12	12
-rrdlabels_sanitize_name	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	42	r_D_D_____l_	12	-
-rrdlabels_sanitize_value	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	42	r D D __ :l_	12	-
-prometheus_rrdlabels_sanitize_name	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	42	r_D__D_____:l____	17	-
-nrpc_sanitize_name	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	42	r D D #_ :l'	12	-
-rrdset_strncpyz_name	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	42	r_D_D_#__:l_	12	-
-netdata_fix_chart_name	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	-	r_D_D_#__:l_	12	-
-netdata_fix_chart_id	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	-	r_D_D_#__:l_	12	-
-rrdvar_fix_name	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	-	r_D_D_#__:l_	12	1
-rrd_string_sanitize	r D\x10\x90D\x1b#_\x06\x1e:l'\x0c\x12\xba	-	r D D #_ :l'	12	-
+text_sanitize:identity:0:0	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	42	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	17	17
+text_sanitize:identity:1:0	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	42	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	17	17
+text_sanitize:rrd:0:0	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	42	r D D \x23_ :l'	12	12
+text_sanitize:rrd:1:1	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	42	r D D \x23_ :l'	12	12
+text_sanitize:chart:0:2	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	42	r D D \x23_ :l_	12	12
+text_sanitize:chart:1:1	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	42	r D D \x23_ :l_	12	12
+rrdlabels_sanitize_name	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	42	r_D_D_____l_	12	-
+rrdlabels_sanitize_value	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	42	r D D __ :l_	12	-
+prometheus_rrdlabels_sanitize_name	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	42	r_D__D_____:l____	17	-
+nrpc_sanitize_name	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	42	r D D \x23_ :l'	12	-
+rrdset_strncpyz_name	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	42	r_D_D_\x23__:l_	12	-
+netdata_fix_chart_name	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	-	r_D_D_\x23__:l_	12	-
+netdata_fix_chart_id	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	-	r_D_D_\x23__:l_	12	-
+rrdvar_fix_name	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	-	r_D_D_\x23__:l_	12	1
+rrd_string_sanitize	r D\x10\x90D\x1b\x23_\x06\x1e:l'\x0c\x12\xba	-	r D D \x23_ :l'	12	-
 text_sanitize:identity:0:0	\x8ckO	28	\x8ckO	3	3
 text_sanitize:identity:1:0	\x8ckO	28	\x8ckO	3	3
 text_sanitize:rrd:0:0	\x8ckO	28	kO	2	2
@@ -19793,21 +19793,21 @@ netdata_fix_chart_name	\xcd\x02\x01\x13\xa9_O+\xdb9\x0c,\xd2GU\x01\x01\xa5h	-	cd
 netdata_fix_chart_id	\xcd\x02\x01\x13\xa9_O+\xdb9\x0c,\xd2GU\x01\x01\xa5h	-	cd__O_db9_.d2GU_h	17	-
 rrdvar_fix_name	\xcd\x02\x01\x13\xa9_O+\xdb9\x0c,\xd2GU\x01\x01\xa5h	-	cd__O_db9_.d2GU_h	17	1
 rrd_string_sanitize	\xcd\x02\x01\x13\xa9_O+\xdb9\x0c,\xd2GU\x01\x01\xa5h	-	cd _O+db9 ,d2GU h	17	-
-text_sanitize:identity:0:2	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	4	Al=	3	3
-text_sanitize:identity:1:2	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	4	Al=	3	3
-text_sanitize:rrd:0:1	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	4	Al=	3	3
-text_sanitize:rrd:1:0	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	4	Al=	3	3
-text_sanitize:chart:0:0	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	4	Al_	3	3
-text_sanitize:chart:1:2	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	4	Al_	3	3
-rrdlabels_sanitize_name	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	4	Al_	3	-
-rrdlabels_sanitize_value	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	4	Al:	3	-
-prometheus_rrdlabels_sanitize_name	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	4	Al_	3	-
-nrpc_sanitize_name	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	4	Al=	3	-
-rrdset_strncpyz_name	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	4	Al_	3	-
-netdata_fix_chart_name	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	-	Al_~;R____c9_#_l2__	19	-
-netdata_fix_chart_id	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	-	Al_~;R____c9_#_l2__	19	-
-rrdvar_fix_name	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	-	Al_~;R____c9_#_l2__	19	1
-rrd_string_sanitize	Al=~;R|^\x03*\xc9\x14#_l2\x09*\x02	-	Al=~;R|^ *c9 #_l2 *	19	-
+text_sanitize:identity:0:2	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	4	Al=	3	3
+text_sanitize:identity:1:2	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	4	Al=	3	3
+text_sanitize:rrd:0:1	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	4	Al=	3	3
+text_sanitize:rrd:1:0	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	4	Al=	3	3
+text_sanitize:chart:0:0	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	4	Al_	3	3
+text_sanitize:chart:1:2	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	4	Al_	3	3
+rrdlabels_sanitize_name	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	4	Al_	3	-
+rrdlabels_sanitize_value	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	4	Al:	3	-
+prometheus_rrdlabels_sanitize_name	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	4	Al_	3	-
+nrpc_sanitize_name	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	4	Al=	3	-
+rrdset_strncpyz_name	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	4	Al_	3	-
+netdata_fix_chart_name	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	-	Al_~;R____c9_\x23_l2__	19	-
+netdata_fix_chart_id	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	-	Al_~;R____c9_\x23_l2__	19	-
+rrdvar_fix_name	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	-	Al_~;R____c9_\x23_l2__	19	1
+rrd_string_sanitize	Al=~;R|^\x03*\xc9\x14\x23_l2\x09*\x02	-	Al=~;R|^ *c9 \x23_l2 *	19	-
 text_sanitize:identity:0:2		16	-	1	1
 text_sanitize:identity:1:1		16	[none]	6	6
 text_sanitize:rrd:0:2		16	-	1	1
@@ -20063,21 +20063,21 @@ netdata_fix_chart_name	\x01r=\x0c\x93\x98\xfc	-	r__fc	5	-
 netdata_fix_chart_id	\x01r=\x0c\x93\x98\xfc	-	r__fc	5	-
 rrdvar_fix_name	\x01r=\x0c\x93\x98\xfc	-	r__fc	5	1
 rrd_string_sanitize	\x01r=\x0c\x93\x98\xfc	-	r= fc	5	-
-text_sanitize:identity:0:1	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	16	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	13	13
-text_sanitize:identity:1:0	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	16	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	13	13
-text_sanitize:rrd:0:1	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	16	N ; i !# { .	12	12
-text_sanitize:rrd:1:1	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	16	N ; i !# { .	12	12
-text_sanitize:chart:0:1	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	16	N ; i !# { .	12	12
-text_sanitize:chart:1:2	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	16	N ; i !# { .	12	12
-rrdlabels_sanitize_name	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	16	N___i______.	12	-
-rrdlabels_sanitize_value	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	16	N : i __ _ .	12	-
-prometheus_rrdlabels_sanitize_name	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	16	N____i_______	13	-
-nrpc_sanitize_name	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	16	N ; i !# { .	12	-
-rrdset_strncpyz_name	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	16	N_;_i_!#_{_.	12	-
-netdata_fix_chart_name	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	-	N_;_i_!#_{_.	12	-
-netdata_fix_chart_id	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	-	N_;_i_!#_{_.	12	-
-rrdvar_fix_name	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	-	N_;_i_!#_{_.	12	1
-rrd_string_sanitize	N\x0b\x8b;\x1ai\x1c!#\x9c{\x1c.	-	N ; i !# { .	12	-
+text_sanitize:identity:0:1	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	16	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	13	13
+text_sanitize:identity:1:0	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	16	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	13	13
+text_sanitize:rrd:0:1	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	16	N ; i !\x23 { .	12	12
+text_sanitize:rrd:1:1	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	16	N ; i !\x23 { .	12	12
+text_sanitize:chart:0:1	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	16	N ; i !\x23 { .	12	12
+text_sanitize:chart:1:2	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	16	N ; i !\x23 { .	12	12
+rrdlabels_sanitize_name	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	16	N___i______.	12	-
+rrdlabels_sanitize_value	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	16	N : i __ _ .	12	-
+prometheus_rrdlabels_sanitize_name	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	16	N____i_______	13	-
+nrpc_sanitize_name	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	16	N ; i !\x23 { .	12	-
+rrdset_strncpyz_name	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	16	N_;_i_!\x23_{_.	12	-
+netdata_fix_chart_name	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	-	N_;_i_!\x23_{_.	12	-
+netdata_fix_chart_id	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	-	N_;_i_!\x23_{_.	12	-
+rrdvar_fix_name	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	-	N_;_i_!\x23_{_.	12	1
+rrd_string_sanitize	N\x0b\x8b;\x1ai\x1c!\x23\x9c{\x1c.	-	N ; i !\x23 { .	12	-
 text_sanitize:identity:0:1	\x12\x1c\x8b\x05\x14**\xf5\xee*\x1f\x1f\x9c	48	\x8b\x05\x14**__*\x1f\x1f\x9c	11	11
 text_sanitize:identity:1:1	\x12\x1c\x8b\x05\x14**\xf5\xee*\x1f\x1f\x9c	48	\x8b\x05\x14**f5ee*\x1f\x1f\x9c	13	11
 text_sanitize:rrd:0:2	\x12\x1c\x8b\x05\x14**\xf5\xee*\x1f\x1f\x9c	48	**__*	5	5
@@ -20483,36 +20483,36 @@ netdata_fix_chart_name	)	-	)	1	-
 netdata_fix_chart_id	)	-	)	1	-
 rrdvar_fix_name	)	-	)	1	0
 rrd_string_sanitize	)	-	)	1	-
-text_sanitize:identity:0:0	#\xc3> K\x14\\\x15	20	#_> K\x14\\\x15	8	8
-text_sanitize:identity:1:0	#\xc3> K\x14\\\x15	20	#c3> K\x14\\\x15	9	8
-text_sanitize:rrd:0:0	#\xc3> K\x14\\\x15	20	#_> K /	7	7
-text_sanitize:rrd:1:2	#\xc3> K\x14\\\x15	20	#c3> K /	8	7
-text_sanitize:chart:0:2	#\xc3> K\x14\\\x15	20	#_> K /	7	7
-text_sanitize:chart:1:2	#\xc3> K\x14\\\x15	20	#c3> K /	8	7
-rrdlabels_sanitize_name	#\xc3> K\x14\\\x15	20	____K_/	7	-
-rrdlabels_sanitize_value	#\xc3> K\x14\\\x15	20	_c3_ K /	8	-
-prometheus_rrdlabels_sanitize_name	#\xc3> K\x14\\\x15	20	____K___	8	-
-nrpc_sanitize_name	#\xc3> K\x14\\\x15	20	#c3> K \\	8	-
-rrdset_strncpyz_name	#\xc3> K\x14\\\x15	20	#c3>_K_/	8	-
-netdata_fix_chart_name	#\xc3> K\x14\\\x15	-	#c3>_K_/	8	-
-netdata_fix_chart_id	#\xc3> K\x14\\\x15	-	#c3>_K_/	8	-
-rrdvar_fix_name	#\xc3> K\x14\\\x15	-	#c3>_K_/	8	1
-rrd_string_sanitize	#\xc3> K\x14\\\x15	-	#c3> K /	8	-
-text_sanitize:identity:0:0	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	\xbdN?;#__\x15	8	8
-text_sanitize:identity:1:0	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	\xbdN?;#e4\x15	8	8
-text_sanitize:rrd:0:1	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N?;#__ )	8	8
-text_sanitize:rrd:1:0	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N?;#e4fb	8	6
-text_sanitize:chart:0:1	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N_;#__ )	8	8
-text_sanitize:chart:1:2	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N_;#e4fb	8	6
-rrdlabels_sanitize_name	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N_______	8	-
-rrdlabels_sanitize_value	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N_:_e4fb	8	-
-prometheus_rrdlabels_sanitize_name	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	_N______	8	-
-nrpc_sanitize_name	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N?;#e4fb	8	-
-rrdset_strncpyz_name	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N_;#e4fb	8	-
-netdata_fix_chart_name	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	-	N_;#e4fb_)_wcd_d3	17	-
-netdata_fix_chart_id	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	-	N_;#e4fb_)_wcd_d3	17	-
-rrdvar_fix_name	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	-	N_;#e4fb_)_wcd_d3	17	1
-rrd_string_sanitize	\x09\xbdN?;#\xe4\xfb\x15)\x19w\xcd?\xd3k3	-	N?;#e4fb ) wcd?d3k3	19	-
+text_sanitize:identity:0:0	\x23\xc3> K\x14\\\x15	20	\x23_> K\x14\\\x15	8	8
+text_sanitize:identity:1:0	\x23\xc3> K\x14\\\x15	20	\x23c3> K\x14\\\x15	9	8
+text_sanitize:rrd:0:0	\x23\xc3> K\x14\\\x15	20	\x23_> K /	7	7
+text_sanitize:rrd:1:2	\x23\xc3> K\x14\\\x15	20	\x23c3> K /	8	7
+text_sanitize:chart:0:2	\x23\xc3> K\x14\\\x15	20	\x23_> K /	7	7
+text_sanitize:chart:1:2	\x23\xc3> K\x14\\\x15	20	\x23c3> K /	8	7
+rrdlabels_sanitize_name	\x23\xc3> K\x14\\\x15	20	____K_/	7	-
+rrdlabels_sanitize_value	\x23\xc3> K\x14\\\x15	20	_c3_ K /	8	-
+prometheus_rrdlabels_sanitize_name	\x23\xc3> K\x14\\\x15	20	____K___	8	-
+nrpc_sanitize_name	\x23\xc3> K\x14\\\x15	20	\x23c3> K \\	8	-
+rrdset_strncpyz_name	\x23\xc3> K\x14\\\x15	20	\x23c3>_K_/	8	-
+netdata_fix_chart_name	\x23\xc3> K\x14\\\x15	-	\x23c3>_K_/	8	-
+netdata_fix_chart_id	\x23\xc3> K\x14\\\x15	-	\x23c3>_K_/	8	-
+rrdvar_fix_name	\x23\xc3> K\x14\\\x15	-	\x23c3>_K_/	8	1
+rrd_string_sanitize	\x23\xc3> K\x14\\\x15	-	\x23c3> K /	8	-
+text_sanitize:identity:0:0	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	\xbdN?;\x23__\x15	8	8
+text_sanitize:identity:1:0	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	\xbdN?;\x23e4\x15	8	8
+text_sanitize:rrd:0:1	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N?;\x23__ )	8	8
+text_sanitize:rrd:1:0	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N?;\x23e4fb	8	6
+text_sanitize:chart:0:1	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N_;\x23__ )	8	8
+text_sanitize:chart:1:2	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N_;\x23e4fb	8	6
+rrdlabels_sanitize_name	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N_______	8	-
+rrdlabels_sanitize_value	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N_:_e4fb	8	-
+prometheus_rrdlabels_sanitize_name	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	_N______	8	-
+nrpc_sanitize_name	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N?;\x23e4fb	8	-
+rrdset_strncpyz_name	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	9	N_;\x23e4fb	8	-
+netdata_fix_chart_name	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	-	N_;\x23e4fb_)_wcd_d3	17	-
+netdata_fix_chart_id	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	-	N_;\x23e4fb_)_wcd_d3	17	-
+rrdvar_fix_name	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	-	N_;\x23e4fb_)_wcd_d3	17	1
+rrd_string_sanitize	\x09\xbdN?;\x23\xe4\xfb\x15)\x19w\xcd?\xd3k3	-	N?;\x23e4fb ) wcd?d3k3	19	-
 text_sanitize:identity:0:0	\x92\x0d"\x0ai\xfaf\x0c\\	8	\x92\x0d"\x0ai_f	7	7
 text_sanitize:identity:1:1	\x92\x0d"\x0ai\xfaf\x0c\\	8	\x92\x0d"\x0aifa	7	6
 text_sanitize:rrd:0:1	\x92\x0d"\x0ai\xfaf\x0c\\	8	' i_f /	7	7
@@ -21428,21 +21428,21 @@ netdata_fix_chart_name	:9l	-	:9l	3	-
 netdata_fix_chart_id	:9l	-	:9l	3	-
 rrdvar_fix_name	:9l	-	:9l	3	0
 rrd_string_sanitize	:9l	-	:9l	3	-
-text_sanitize:identity:0:2	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;_Mm#:_\x15\x09\xac\x0d\xab	12	12
-text_sanitize:identity:1:2	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;e8Mm#:f0\x15\x09\xac	12	10
-text_sanitize:rrd:0:2	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;_Mm#:_ ;/'	11	11
-text_sanitize:rrd:1:2	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;e8Mm#:f0 ;/	12	10
-text_sanitize:chart:0:1	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;_Mm#:_ ;/_	11	11
-text_sanitize:chart:1:1	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;e8Mm#:f0 ;/	12	10
-rrdlabels_sanitize_name	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	__Mm_____/_	11	-
-rrdlabels_sanitize_value	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	:e8Mm_:f0 :/	12	-
-prometheus_rrdlabels_sanitize_name	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	__Mm_:______	12	-
-nrpc_sanitize_name	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;e8Mm#:f0 ;\\	12	-
-rrdset_strncpyz_name	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;e8Mm#:f0_;/	12	-
-netdata_fix_chart_name	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	-	;e8Mm#:f0_;/_	13	-
-netdata_fix_chart_id	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	-	;e8Mm#:f0_;/_	13	-
-rrdvar_fix_name	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	-	;e8Mm#:f0_;/_	13	1
-rrd_string_sanitize	;\xe8Mm#:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	-	;e8Mm#:f0 ;/'	13	-
+text_sanitize:identity:0:2	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;_Mm\x23:_\x15\x09\xac\x0d\xab	12	12
+text_sanitize:identity:1:2	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;e8Mm\x23:f0\x15\x09\xac	12	10
+text_sanitize:rrd:0:2	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;_Mm\x23:_ ;/'	11	11
+text_sanitize:rrd:1:2	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;e8Mm\x23:f0 ;/	12	10
+text_sanitize:chart:0:1	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;_Mm\x23:_ ;/_	11	11
+text_sanitize:chart:1:1	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;e8Mm\x23:f0 ;/	12	10
+rrdlabels_sanitize_name	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	__Mm_____/_	11	-
+rrdlabels_sanitize_value	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	:e8Mm_:f0 :/	12	-
+prometheus_rrdlabels_sanitize_name	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	__Mm_:______	12	-
+nrpc_sanitize_name	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;e8Mm\x23:f0 ;\\	12	-
+rrdset_strncpyz_name	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	13	;e8Mm\x23:f0_;/	12	-
+netdata_fix_chart_name	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	-	;e8Mm\x23:f0_;/_	13	-
+netdata_fix_chart_id	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	-	;e8Mm\x23:f0_;/_	13	-
+rrdvar_fix_name	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	-	;e8Mm\x23:f0_;/_	13	1
+rrd_string_sanitize	;\xe8Mm\x23:\xf0\x15\x09\xac\x0d\xab\xbc\x17;\\"\x8c\x1e	-	;e8Mm\x23:f0 ;/'	13	-
 text_sanitize:identity:0:2	\x90*A)\x1d	28	\x90*A)\x1d	5	5
 text_sanitize:identity:1:2	\x90*A)\x1d	28	\x90*A)\x1d	5	5
 text_sanitize:rrd:0:1	\x90*A)\x1d	28	*A)	3	3
@@ -22733,21 +22733,21 @@ netdata_fix_chart_name	\xe0a \xd7!\x0fL	-	e0a_d7!	7	-
 netdata_fix_chart_id	\xe0a \xd7!\x0fL	-	e0a_d7!	7	-
 rrdvar_fix_name	\xe0a \xd7!\x0fL	-	e0a_d7!	7	1
 rrd_string_sanitize	\xe0a \xd7!\x0fL	-	e0a d7! L	9	-
-text_sanitize:identity:0:0	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	19	_\\_B\x13eh\x07p"3_L#4\x1f_	17	17
-text_sanitize:identity:1:2	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	19	e1\\f7B\x13eh\x07p"3dcL#4	18	15
-text_sanitize:rrd:0:1	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	19	_/_B eh p'3_L#4 _	17	17
-text_sanitize:rrd:1:2	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	19	e1/f7B eh p'3dcL#4	18	15
-text_sanitize:chart:0:0	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	19	_/_B eh p_3_L#4 _	17	17
-text_sanitize:chart:1:1	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	19	e1/f7B eh p_3dcL#4	18	15
-rrdlabels_sanitize_name	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	19	_/_B_eh_p_3_L_4__	17	-
-rrdlabels_sanitize_value	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	19	e1/f7B eh p_3dcL_4	18	-
-prometheus_rrdlabels_sanitize_name	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	19	___B_eh_p_3_L_4__	17	-
-nrpc_sanitize_name	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	19	e1\\f7B eh p'3dcL#4	18	-
-rrdset_strncpyz_name	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	19	e1/f7B_eh_p_3dcL#4	18	-
-netdata_fix_chart_name	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	-	e1/f7B_eh_p_3dcL#4	18	-
-netdata_fix_chart_id	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	-	e1/f7B_eh_p_3dcL#4	18	-
-rrdvar_fix_name	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	-	e1/f7B_eh_p_3dcL#4	18	1
-rrd_string_sanitize	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL#4\x1f\xfc	-	e1/f7B eh p'3dcL#4 fc	21	-
+text_sanitize:identity:0:0	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	19	_\\_B\x13eh\x07p"3_L\x234\x1f_	17	17
+text_sanitize:identity:1:2	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	19	e1\\f7B\x13eh\x07p"3dcL\x234	18	15
+text_sanitize:rrd:0:1	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	19	_/_B eh p'3_L\x234 _	17	17
+text_sanitize:rrd:1:2	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	19	e1/f7B eh p'3dcL\x234	18	15
+text_sanitize:chart:0:0	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	19	_/_B eh p_3_L\x234 _	17	17
+text_sanitize:chart:1:1	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	19	e1/f7B eh p_3dcL\x234	18	15
+rrdlabels_sanitize_name	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	19	_/_B_eh_p_3_L_4__	17	-
+rrdlabels_sanitize_value	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	19	e1/f7B eh p_3dcL_4	18	-
+prometheus_rrdlabels_sanitize_name	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	19	___B_eh_p_3_L_4__	17	-
+nrpc_sanitize_name	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	19	e1\\f7B eh p'3dcL\x234	18	-
+rrdset_strncpyz_name	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	19	e1/f7B_eh_p_3dcL\x234	18	-
+netdata_fix_chart_name	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	-	e1/f7B_eh_p_3dcL\x234	18	-
+netdata_fix_chart_id	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	-	e1/f7B_eh_p_3dcL\x234	18	-
+rrdvar_fix_name	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	-	e1/f7B_eh_p_3dcL\x234	18	1
+rrd_string_sanitize	\x05\xe1\\\xf7B\x13eh\x07p"3\xdcL\x234\x1f\xfc	-	e1/f7B eh p'3dcL\x234 fc	21	-
 text_sanitize:identity:0:1	S\xa0"]-	41	S\xa0"]-	5	5
 text_sanitize:identity:1:0	S\xa0"]-	41	S\xa0"]-	5	5
 text_sanitize:rrd:0:2	S\xa0"]-	41	S ']-	5	5
@@ -22793,21 +22793,21 @@ netdata_fix_chart_name	pd\x14";\x02;*\x14	-	pd__;_;_	8	-
 netdata_fix_chart_id	pd\x14";\x02;*\x14	-	pd__;_;_	8	-
 rrdvar_fix_name	pd\x14";\x02;*\x14	-	pd__;_;_	8	1
 rrd_string_sanitize	pd\x14";\x02;*\x14	-	pd '; ;*	8	-
-text_sanitize:identity:0:0	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	23	\xb4\x84_c\x87; #4__\x01^\x0b7	15	15
-text_sanitize:identity:1:1	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	23	\xb4\x84d5c\x87; #4_fb\x01^\x0b7	17	15
-text_sanitize:rrd:0:2	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	23	_c ; #4__ ^ 7	13	13
-text_sanitize:rrd:1:1	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	23	d5c ; #4_fb ^ 7	15	13
-text_sanitize:chart:0:0	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	23	_c ; #4__ _ 7	13	13
-text_sanitize:chart:1:1	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	23	d5c ; #4_fb _ 7	15	13
-rrdlabels_sanitize_name	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	23	_c____4_____7	13	-
-rrdlabels_sanitize_value	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	23	d5c : _4_fb _ 7	15	-
-prometheus_rrdlabels_sanitize_name	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	23	___c____4_____7	15	-
-nrpc_sanitize_name	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	23	d5c ; #4_fb ^ 7	15	-
-rrdset_strncpyz_name	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	23	d5c_;_#4_fb___7	15	-
-netdata_fix_chart_name	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	-	d5c_;_#4_fb___7	15	-
-netdata_fix_chart_id	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	-	d5c_;_#4_fb___7	15	-
-rrdvar_fix_name	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	-	d5c_;_#4_fb___7	15	1
-rrd_string_sanitize	\xb4\x84\xd5c\x87; #4_\xfb\x01^\x0b7	-	d5c ; #4_fb ^ 7	15	-
+text_sanitize:identity:0:0	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	23	\xb4\x84_c\x87; \x234__\x01^\x0b7	15	15
+text_sanitize:identity:1:1	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	23	\xb4\x84d5c\x87; \x234_fb\x01^\x0b7	17	15
+text_sanitize:rrd:0:2	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	23	_c ; \x234__ ^ 7	13	13
+text_sanitize:rrd:1:1	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	23	d5c ; \x234_fb ^ 7	15	13
+text_sanitize:chart:0:0	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	23	_c ; \x234__ _ 7	13	13
+text_sanitize:chart:1:1	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	23	d5c ; \x234_fb _ 7	15	13
+rrdlabels_sanitize_name	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	23	_c____4_____7	13	-
+rrdlabels_sanitize_value	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	23	d5c : _4_fb _ 7	15	-
+prometheus_rrdlabels_sanitize_name	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	23	___c____4_____7	15	-
+nrpc_sanitize_name	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	23	d5c ; \x234_fb ^ 7	15	-
+rrdset_strncpyz_name	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	23	d5c_;_\x234_fb___7	15	-
+netdata_fix_chart_name	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	-	d5c_;_\x234_fb___7	15	-
+netdata_fix_chart_id	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	-	d5c_;_\x234_fb___7	15	-
+rrdvar_fix_name	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	-	d5c_;_\x234_fb___7	15	1
+rrd_string_sanitize	\xb4\x84\xd5c\x87; \x234_\xfb\x01^\x0b7	-	d5c ; \x234_fb ^ 7	15	-
 text_sanitize:identity:0:1	-[8@\x08=)=;(\xe1\x0a\x97!\x085m	40	-[8@\x08=)=;(_\x0a\x97!\x085m	17	17
 text_sanitize:identity:1:2	-[8@\x08=)=;(\xe1\x0a\x97!\x085m	40	-[8@\x08=)=;(e1\x0a\x97!\x085m	18	17
 text_sanitize:rrd:0:1	-[8@\x08=)=;(\xe1\x0a\x97!\x085m	40	-[8@ =)=;(_ ! 5m	16	16
@@ -22913,21 +22913,21 @@ netdata_fix_chart_name	:W&\x14}\xd39G	-	:W__}d39	8	-
 netdata_fix_chart_id	:W&\x14}\xd39G	-	:W__}d39	8	-
 rrdvar_fix_name	:W&\x14}\xd39G	-	:W__}d39	8	1
 rrd_string_sanitize	:W&\x14}\xd39G	-	:W& }d39G	9	-
-text_sanitize:identity:0:2	(R:\x9d'6(z\xb3#'\x8b;\x88	41	(R:\x9d'6(z\xb3#'\x8b;\x88	14	14
-text_sanitize:identity:1:0	(R:\x9d'6(z\xb3#'\x8b;\x88	41	(R:\x9d'6(z\xb3#'\x8b;\x88	14	14
-text_sanitize:rrd:0:0	(R:\x9d'6(z\xb3#'\x8b;\x88	41	(R: '6(z #' ;	13	13
-text_sanitize:rrd:1:2	(R:\x9d'6(z\xb3#'\x8b;\x88	41	(R: '6(z #' ;	13	13
-text_sanitize:chart:0:0	(R:\x9d'6(z\xb3#'\x8b;\x88	41	(R: _6(z #_ ;	13	13
-text_sanitize:chart:1:2	(R:\x9d'6(z\xb3#'\x8b;\x88	41	(R: _6(z #_ ;	13	13
-rrdlabels_sanitize_name	(R:\x9d'6(z\xb3#'\x8b;\x88	41	_R___6_z_____	13	-
-rrdlabels_sanitize_value	(R:\x9d'6(z\xb3#'\x8b;\x88	41	(R: _6(z __ :	13	-
-prometheus_rrdlabels_sanitize_name	(R:\x9d'6(z\xb3#'\x8b;\x88	41	_R:__6_z______	14	-
-nrpc_sanitize_name	(R:\x9d'6(z\xb3#'\x8b;\x88	41	(R: '6(z #' ;	13	-
-rrdset_strncpyz_name	(R:\x9d'6(z\xb3#'\x8b;\x88	41	(R:__6(z_#__;	13	-
-netdata_fix_chart_name	(R:\x9d'6(z\xb3#'\x8b;\x88	-	(R:__6(z_#__;	13	-
-netdata_fix_chart_id	(R:\x9d'6(z\xb3#'\x8b;\x88	-	(R:__6(z_#__;	13	-
-rrdvar_fix_name	(R:\x9d'6(z\xb3#'\x8b;\x88	-	(R:__6(z_#__;	13	1
-rrd_string_sanitize	(R:\x9d'6(z\xb3#'\x8b;\x88	-	(R: '6(z #' ;	13	-
+text_sanitize:identity:0:2	(R:\x9d'6(z\xb3\x23'\x8b;\x88	41	(R:\x9d'6(z\xb3\x23'\x8b;\x88	14	14
+text_sanitize:identity:1:0	(R:\x9d'6(z\xb3\x23'\x8b;\x88	41	(R:\x9d'6(z\xb3\x23'\x8b;\x88	14	14
+text_sanitize:rrd:0:0	(R:\x9d'6(z\xb3\x23'\x8b;\x88	41	(R: '6(z \x23' ;	13	13
+text_sanitize:rrd:1:2	(R:\x9d'6(z\xb3\x23'\x8b;\x88	41	(R: '6(z \x23' ;	13	13
+text_sanitize:chart:0:0	(R:\x9d'6(z\xb3\x23'\x8b;\x88	41	(R: _6(z \x23_ ;	13	13
+text_sanitize:chart:1:2	(R:\x9d'6(z\xb3\x23'\x8b;\x88	41	(R: _6(z \x23_ ;	13	13
+rrdlabels_sanitize_name	(R:\x9d'6(z\xb3\x23'\x8b;\x88	41	_R___6_z_____	13	-
+rrdlabels_sanitize_value	(R:\x9d'6(z\xb3\x23'\x8b;\x88	41	(R: _6(z __ :	13	-
+prometheus_rrdlabels_sanitize_name	(R:\x9d'6(z\xb3\x23'\x8b;\x88	41	_R:__6_z______	14	-
+nrpc_sanitize_name	(R:\x9d'6(z\xb3\x23'\x8b;\x88	41	(R: '6(z \x23' ;	13	-
+rrdset_strncpyz_name	(R:\x9d'6(z\xb3\x23'\x8b;\x88	41	(R:__6(z_\x23__;	13	-
+netdata_fix_chart_name	(R:\x9d'6(z\xb3\x23'\x8b;\x88	-	(R:__6(z_\x23__;	13	-
+netdata_fix_chart_id	(R:\x9d'6(z\xb3\x23'\x8b;\x88	-	(R:__6(z_\x23__;	13	-
+rrdvar_fix_name	(R:\x9d'6(z\xb3\x23'\x8b;\x88	-	(R:__6(z_\x23__;	13	1
+rrd_string_sanitize	(R:\x9d'6(z\xb3\x23'\x8b;\x88	-	(R: '6(z \x23' ;	13	-
 text_sanitize:identity:0:1	!\x1a"\xcd\xb0UC	40	!\x1a"_UC	6	6
 text_sanitize:identity:1:0	!\x1a"\xcd\xb0UC	40	!\x1a"\xcd\xb0UC	7	6
 text_sanitize:rrd:0:1	!\x1a"\xcd\xb0UC	40	! '_UC	6	6
@@ -22973,21 +22973,21 @@ netdata_fix_chart_name	_-=<\x1dV\x10=\xe7,\xaf\xcc\xd5\\*\x10	-	_-_<_V__e7._ccd5
 netdata_fix_chart_id	_-=<\x1dV\x10=\xe7,\xaf\xcc\xd5\\*\x10	-	_-_<_V__e7._ccd5	16	-
 rrdvar_fix_name	_-=<\x1dV\x10=\xe7,\xaf\xcc\xd5\\*\x10	-	_-_<_V__e7._ccd5	16	1
 rrd_string_sanitize	_-=<\x1dV\x10=\xe7,\xaf\xcc\xd5\\*\x10	-	_-=< V =e7, ccd5/*	18	-
-text_sanitize:identity:0:2	G#:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	1
-text_sanitize:identity:1:2	G#:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	1
-text_sanitize:rrd:0:2	G#:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	1
-text_sanitize:rrd:1:2	G#:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	1
-text_sanitize:chart:0:1	G#:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	1
-text_sanitize:chart:1:1	G#:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	1
-rrdlabels_sanitize_name	G#:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	-
-rrdlabels_sanitize_value	G#:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	-
-prometheus_rrdlabels_sanitize_name	G#:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	-
-nrpc_sanitize_name	G#:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	-
-rrdset_strncpyz_name	G#:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	-
-netdata_fix_chart_name	G#:\xfd\xc1q\x10=*\x18,r',F=	-	G#:fdc1q____.r_.	16	-
-netdata_fix_chart_id	G#:\xfd\xc1q\x10=*\x18,r',F=	-	G#:fdc1q____.r_.	16	-
-rrdvar_fix_name	G#:\xfd\xc1q\x10=*\x18,r',F=	-	G#:fdc1q____.r_.	16	1
-rrd_string_sanitize	G#:\xfd\xc1q\x10=*\x18,r',F=	-	G#:fdc1q =* ,r',F=	18	-
+text_sanitize:identity:0:2	G\x23:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	1
+text_sanitize:identity:1:2	G\x23:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	1
+text_sanitize:rrd:0:2	G\x23:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	1
+text_sanitize:rrd:1:2	G\x23:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	1
+text_sanitize:chart:0:1	G\x23:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	1
+text_sanitize:chart:1:1	G\x23:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	1
+rrdlabels_sanitize_name	G\x23:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	-
+rrdlabels_sanitize_value	G\x23:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	-
+prometheus_rrdlabels_sanitize_name	G\x23:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	-
+nrpc_sanitize_name	G\x23:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	-
+rrdset_strncpyz_name	G\x23:\xfd\xc1q\x10=*\x18,r',F=	2	G	1	-
+netdata_fix_chart_name	G\x23:\xfd\xc1q\x10=*\x18,r',F=	-	G\x23:fdc1q____.r_.	16	-
+netdata_fix_chart_id	G\x23:\xfd\xc1q\x10=*\x18,r',F=	-	G\x23:fdc1q____.r_.	16	-
+rrdvar_fix_name	G\x23:\xfd\xc1q\x10=*\x18,r',F=	-	G\x23:fdc1q____.r_.	16	1
+rrd_string_sanitize	G\x23:\xfd\xc1q\x10=*\x18,r',F=	-	G\x23:fdc1q =* ,r',F=	18	-
 text_sanitize:identity:0:2	\x1c\x95)\x83k\xb6;\x96S,C!\xa9h	16	\x95)\x83k\xb6;\x96S,C!\xa9h	13	13
 text_sanitize:identity:1:1	\x1c\x95)\x83k\xb6;\x96S,C!\xa9h	16	\x95)\x83k\xb6;\x96S,C!\xa9h	13	13
 text_sanitize:rrd:0:0	\x1c\x95)\x83k\xb6;\x96S,C!\xa9h	16	) k ; S,C! h	12	12
@@ -23573,21 +23573,21 @@ netdata_fix_chart_name	$Sz6\x0d\xd7s	-	_Sz6_d7	7	-
 netdata_fix_chart_id	$Sz6\x0d\xd7s	-	_Sz6_d7	7	-
 rrdvar_fix_name	$Sz6\x0d\xd7s	-	_Sz6_d7	7	1
 rrd_string_sanitize	$Sz6\x0d\xd7s	-	$Sz6 d7s	8	-
-text_sanitize:identity:0:0	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	35	1_\x1a'#yp\x8b\x1e"\xb0\xb7>_	14	14
-text_sanitize:identity:1:1	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	35	1c3\x1a'#yp\x8b\x1e"\xb0\xb7>_	15	14
-text_sanitize:rrd:0:2	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	35	1_ '#yp ' >_	12	12
-text_sanitize:rrd:1:2	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	35	1c3 '#yp ' >_	13	12
-text_sanitize:chart:0:0	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	35	1_ _#yp _ >_	12	12
-text_sanitize:chart:1:2	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	35	1c3 _#yp _ >_	13	12
-rrdlabels_sanitize_name	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	35	1____yp_____	12	-
-rrdlabels_sanitize_value	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	35	1c3 __yp _ __	13	-
-prometheus_rrdlabels_sanitize_name	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	35	1____yp_______	14	-
-nrpc_sanitize_name	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	35	1c3 '#yp ' >_	13	-
-rrdset_strncpyz_name	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	35	1c3__#yp___>_	13	-
-netdata_fix_chart_name	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	-	1c3__#yp___>_	13	-
-netdata_fix_chart_id	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	-	1c3__#yp___>_	13	-
-rrdvar_fix_name	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	-	1c3__#yp___>_	13	1
-rrd_string_sanitize	1\xc3\x1a'#yp\x8b\x1e"\xb0\xb7>_	-	1c3 '#yp ' >_	13	-
+text_sanitize:identity:0:0	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	35	1_\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	14	14
+text_sanitize:identity:1:1	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	35	1c3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	15	14
+text_sanitize:rrd:0:2	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	35	1_ '\x23yp ' >_	12	12
+text_sanitize:rrd:1:2	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	35	1c3 '\x23yp ' >_	13	12
+text_sanitize:chart:0:0	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	35	1_ _\x23yp _ >_	12	12
+text_sanitize:chart:1:2	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	35	1c3 _\x23yp _ >_	13	12
+rrdlabels_sanitize_name	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	35	1____yp_____	12	-
+rrdlabels_sanitize_value	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	35	1c3 __yp _ __	13	-
+prometheus_rrdlabels_sanitize_name	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	35	1____yp_______	14	-
+nrpc_sanitize_name	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	35	1c3 '\x23yp ' >_	13	-
+rrdset_strncpyz_name	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	35	1c3__\x23yp___>_	13	-
+netdata_fix_chart_name	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	-	1c3__\x23yp___>_	13	-
+netdata_fix_chart_id	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	-	1c3__\x23yp___>_	13	-
+rrdvar_fix_name	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	-	1c3__\x23yp___>_	13	1
+rrd_string_sanitize	1\xc3\x1a'\x23yp\x8b\x1e"\xb0\xb7>_	-	1c3 '\x23yp ' >_	13	-
 text_sanitize:identity:0:0	\xf8\x02\x85:3"6T\x02W\xef\xaa_}	7	_\x02\x85:3"	6	6
 text_sanitize:identity:1:2	\xf8\x02\x85:3"6T\x02W\xef\xaa_}	7	f8\x02\x85:3	6	5
 text_sanitize:rrd:0:0	\xf8\x02\x85:3"6T\x02W\xef\xaa_}	7	_ :3'6	6	6
@@ -23663,21 +23663,21 @@ netdata_fix_chart_name	i\\=_=\x94(=\x92\x1ei\xeb\x1du\x11x\x1aM\x02\xea	-	i/____
 netdata_fix_chart_id	i\\=_=\x94(=\x92\x1ei\xeb\x1du\x11x\x1aM\x02\xea	-	i/____(__ieb_u_x_M	18	-
 rrdvar_fix_name	i\\=_=\x94(=\x92\x1ei\xeb\x1du\x11x\x1aM\x02\xea	-	i/____(__ieb_u_x_M	18	1
 rrd_string_sanitize	i\\=_=\x94(=\x92\x1ei\xeb\x1du\x11x\x1aM\x02\xea	-	i/=_= (= ieb u x M ea	21	-
-text_sanitize:identity:0:2	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	#\x86_zd\xb7]5(\x92\x16_iO\x88	15	15
-text_sanitize:identity:1:0	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	#\x86c7zd\xb7]5(\x92\x16feiO\x88	17	15
-text_sanitize:rrd:0:2	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	# _zd ]5( _iO	13	13
-text_sanitize:rrd:1:1	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	# c7zd ]5( feiO	15	13
-text_sanitize:chart:0:0	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	# _zd ]5( _iO	13	13
-text_sanitize:chart:1:1	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	# c7zd ]5( feiO	15	13
-rrdlabels_sanitize_name	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	___zd_]5___iO	13	-
-rrdlabels_sanitize_value	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	_ c7zd ]5( feiO	15	-
-prometheus_rrdlabels_sanitize_name	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	___zd__5____iO_	15	-
-nrpc_sanitize_name	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	# c7zd ]5( feiO	15	-
-rrdset_strncpyz_name	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	#_c7zd_]5(_feiO	15	-
-netdata_fix_chart_name	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	-	#_c7zd_]5(_feiO	15	-
-netdata_fix_chart_id	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	-	#_c7zd_]5(_feiO	15	-
-rrdvar_fix_name	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	-	#_c7zd_]5(_feiO	15	1
-rrd_string_sanitize	#\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	-	# c7zd ]5( feiO	15	-
+text_sanitize:identity:0:2	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	\x23\x86_zd\xb7]5(\x92\x16_iO\x88	15	15
+text_sanitize:identity:1:0	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	\x23\x86c7zd\xb7]5(\x92\x16feiO\x88	17	15
+text_sanitize:rrd:0:2	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	\x23 _zd ]5( _iO	13	13
+text_sanitize:rrd:1:1	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	\x23 c7zd ]5( feiO	15	13
+text_sanitize:chart:0:0	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	\x23 _zd ]5( _iO	13	13
+text_sanitize:chart:1:1	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	\x23 c7zd ]5( feiO	15	13
+rrdlabels_sanitize_name	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	___zd_]5___iO	13	-
+rrdlabels_sanitize_value	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	_ c7zd ]5( feiO	15	-
+prometheus_rrdlabels_sanitize_name	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	___zd__5____iO_	15	-
+nrpc_sanitize_name	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	\x23 c7zd ]5( feiO	15	-
+rrdset_strncpyz_name	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	41	\x23_c7zd_]5(_feiO	15	-
+netdata_fix_chart_name	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	-	\x23_c7zd_]5(_feiO	15	-
+netdata_fix_chart_id	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	-	\x23_c7zd_]5(_feiO	15	-
+rrdvar_fix_name	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	-	\x23_c7zd_]5(_feiO	15	1
+rrd_string_sanitize	\x23\x86\xc7zd\xb7]5(\x92\x16\xfeiO\x88	-	\x23 c7zd ]5( feiO	15	-
 text_sanitize:identity:0:0	stg,'\\@\x1a_Vq*_",	44	stg,'\\@\x1a_Vq*_",	15	15
 text_sanitize:identity:1:2	stg,'\\@\x1a_Vq*_",	44	stg,'\\@\x1a_Vq*_",	15	15
 text_sanitize:rrd:0:1	stg,'\\@\x1a_Vq*_",	44	stg,'/@ _Vq*_',	15	15
@@ -23858,21 +23858,21 @@ netdata_fix_chart_name	r\x8ew\xd3n	-	r_wd3	5	-
 netdata_fix_chart_id	r\x8ew\xd3n	-	r_wd3	5	-
 rrdvar_fix_name	r\x8ew\xd3n	-	r_wd3	5	1
 rrd_string_sanitize	r\x8ew\xd3n	-	r wd3n	6	-
-text_sanitize:identity:0:2	M<X#:)\x17';3\x06'$Jv-	31	M<X#:)\x17';3\x06'$Jv-	16	16
-text_sanitize:identity:1:2	M<X#:)\x17';3\x06'$Jv-	31	M<X#:)\x17';3\x06'$Jv-	16	16
-text_sanitize:rrd:0:2	M<X#:)\x17';3\x06'$Jv-	31	M<X#:) ';3 '$Jv-	16	16
-text_sanitize:rrd:1:2	M<X#:)\x17';3\x06'$Jv-	31	M<X#:) ';3 '$Jv-	16	16
-text_sanitize:chart:0:1	M<X#:)\x17';3\x06'$Jv-	31	M<X#:) _;3 __Jv-	16	16
-text_sanitize:chart:1:1	M<X#:)\x17';3\x06'$Jv-	31	M<X#:) _;3 __Jv-	16	16
-rrdlabels_sanitize_name	M<X#:)\x17';3\x06'$Jv-	31	M_X______3___Jv-	16	-
-rrdlabels_sanitize_value	M<X#:)\x17';3\x06'$Jv-	31	M_X_:) _:3 __Jv-	16	-
-prometheus_rrdlabels_sanitize_name	M<X#:)\x17';3\x06'$Jv-	31	M_X_:____3___Jv_	16	-
-nrpc_sanitize_name	M<X#:)\x17';3\x06'$Jv-	31	M<X#:) ';3 '$Jv-	16	-
-rrdset_strncpyz_name	M<X#:)\x17';3\x06'$Jv-	31	M<X#:)__;3___Jv-	16	-
-netdata_fix_chart_name	M<X#:)\x17';3\x06'$Jv-	-	M<X#:)__;3___Jv-	16	-
-netdata_fix_chart_id	M<X#:)\x17';3\x06'$Jv-	-	M<X#:)__;3___Jv-	16	-
-rrdvar_fix_name	M<X#:)\x17';3\x06'$Jv-	-	M<X#:)__;3___Jv-	16	1
-rrd_string_sanitize	M<X#:)\x17';3\x06'$Jv-	-	M<X#:) ';3 '$Jv-	16	-
+text_sanitize:identity:0:2	M<X\x23:)\x17';3\x06'$Jv-	31	M<X\x23:)\x17';3\x06'$Jv-	16	16
+text_sanitize:identity:1:2	M<X\x23:)\x17';3\x06'$Jv-	31	M<X\x23:)\x17';3\x06'$Jv-	16	16
+text_sanitize:rrd:0:2	M<X\x23:)\x17';3\x06'$Jv-	31	M<X\x23:) ';3 '$Jv-	16	16
+text_sanitize:rrd:1:2	M<X\x23:)\x17';3\x06'$Jv-	31	M<X\x23:) ';3 '$Jv-	16	16
+text_sanitize:chart:0:1	M<X\x23:)\x17';3\x06'$Jv-	31	M<X\x23:) _;3 __Jv-	16	16
+text_sanitize:chart:1:1	M<X\x23:)\x17';3\x06'$Jv-	31	M<X\x23:) _;3 __Jv-	16	16
+rrdlabels_sanitize_name	M<X\x23:)\x17';3\x06'$Jv-	31	M_X______3___Jv-	16	-
+rrdlabels_sanitize_value	M<X\x23:)\x17';3\x06'$Jv-	31	M_X_:) _:3 __Jv-	16	-
+prometheus_rrdlabels_sanitize_name	M<X\x23:)\x17';3\x06'$Jv-	31	M_X_:____3___Jv_	16	-
+nrpc_sanitize_name	M<X\x23:)\x17';3\x06'$Jv-	31	M<X\x23:) ';3 '$Jv-	16	-
+rrdset_strncpyz_name	M<X\x23:)\x17';3\x06'$Jv-	31	M<X\x23:)__;3___Jv-	16	-
+netdata_fix_chart_name	M<X\x23:)\x17';3\x06'$Jv-	-	M<X\x23:)__;3___Jv-	16	-
+netdata_fix_chart_id	M<X\x23:)\x17';3\x06'$Jv-	-	M<X\x23:)__;3___Jv-	16	-
+rrdvar_fix_name	M<X\x23:)\x17';3\x06'$Jv-	-	M<X\x23:)__;3___Jv-	16	1
+rrd_string_sanitize	M<X\x23:)\x17';3\x06'$Jv-	-	M<X\x23:) ';3 '$Jv-	16	-
 text_sanitize:identity:0:0		47		0	0
 text_sanitize:identity:1:2		47	-	1	1
 text_sanitize:rrd:0:2		47	-	1	1
@@ -24173,21 +24173,21 @@ netdata_fix_chart_name	\xc2\x1bW\x02\xe4\xa2\xa2:\xf0!B0"5\xb4\x9b\xd3}}	-	c2_W_
 netdata_fix_chart_id	\xc2\x1bW\x02\xe4\xa2\xa2:\xf0!B0"5\xb4\x9b\xd3}}	-	c2_W_\xe4\xa2\xa2:f0!B0_5_d3	19	-
 rrdvar_fix_name	\xc2\x1bW\x02\xe4\xa2\xa2:\xf0!B0"5\xb4\x9b\xd3}}	-	c2_W_\xe4\xa2\xa2:f0!B0_5_d3	19	1
 rrd_string_sanitize	\xc2\x1bW\x02\xe4\xa2\xa2:\xf0!B0"5\xb4\x9b\xd3}}	-	c2 W \xe4\xa2\xa2:f0!B0'5 d3}}	21	-
-text_sanitize:identity:0:0	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	#\x07\x11~_W,E\x041_\x0a,(\x0a_\x16	17	17
-text_sanitize:identity:1:2	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	#\x07\x11~feW,E\x041d1\x0a,(\x0ac4\x16	20	17
-text_sanitize:rrd:0:2	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	# ~_W,E 1_ ,( _	15	15
-text_sanitize:rrd:1:0	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	# ~feW,E 1d1 ,( c4	18	15
-text_sanitize:chart:0:1	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	# ~_W.E 1_ .( _	15	15
-text_sanitize:chart:1:1	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	# ~feW.E 1d1 .( c4	18	15
-rrdlabels_sanitize_name	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	____W.E_1__.___	15	-
-rrdlabels_sanitize_value	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	_ _feW.E 1d1 .( c4	18	-
-prometheus_rrdlabels_sanitize_name	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	_____W_E_1_______	17	-
-nrpc_sanitize_name	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	# ~feW,E 1d1 ,( c4	18	-
-rrdset_strncpyz_name	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	#_~feW.E_1d1_.(_c4	18	-
-netdata_fix_chart_name	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	-	#_~feW.E_1d1_.(	15	-
-netdata_fix_chart_id	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	-	#_~feW.E_1d1_.(	15	-
-rrdvar_fix_name	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	-	#_~feW.E_1d1_.(	15	1
-rrd_string_sanitize	#\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	-	# ~feW,E 1d1 ,( c4	18	-
+text_sanitize:identity:0:0	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	\x23\x07\x11~_W,E\x041_\x0a,(\x0a_\x16	17	17
+text_sanitize:identity:1:2	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	\x23\x07\x11~feW,E\x041d1\x0a,(\x0ac4\x16	20	17
+text_sanitize:rrd:0:2	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	\x23 ~_W,E 1_ ,( _	15	15
+text_sanitize:rrd:1:0	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	\x23 ~feW,E 1d1 ,( c4	18	15
+text_sanitize:chart:0:1	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	\x23 ~_W.E 1_ .( _	15	15
+text_sanitize:chart:1:1	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	\x23 ~feW.E 1d1 .( c4	18	15
+rrdlabels_sanitize_name	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	____W.E_1__.___	15	-
+rrdlabels_sanitize_value	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	_ _feW.E 1d1 .( c4	18	-
+prometheus_rrdlabels_sanitize_name	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	_____W_E_1_______	17	-
+nrpc_sanitize_name	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	\x23 ~feW,E 1d1 ,( c4	18	-
+rrdset_strncpyz_name	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	26	\x23_~feW.E_1d1_.(_c4	18	-
+netdata_fix_chart_name	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	-	\x23_~feW.E_1d1_.(	15	-
+netdata_fix_chart_id	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	-	\x23_~feW.E_1d1_.(	15	-
+rrdvar_fix_name	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	-	\x23_~feW.E_1d1_.(	15	1
+rrd_string_sanitize	\x23\x07\x11~\xfeW,E\x041\xd1\x0a,(\x0a\xc4\x16	-	\x23 ~feW,E 1d1 ,( c4	18	-
 text_sanitize:identity:0:1	2\x02_\x1dp	28	2\x02_\x1dp	5	5
 text_sanitize:identity:1:2	2\x02_\x1dp	28	2\x02_\x1dp	5	5
 text_sanitize:rrd:0:2	2\x02_\x1dp	28	2 _ p	5	5
@@ -24293,21 +24293,21 @@ netdata_fix_chart_name	\x15pz\xd9'\xfe\xa2\x0cNN\xc1\xc9$~Q	-	pzd9_fea2_NNc1_	15
 netdata_fix_chart_id	\x15pz\xd9'\xfe\xa2\x0cNN\xc1\xc9$~Q	-	pzd9_fea2_NNc1_	15	-
 rrdvar_fix_name	\x15pz\xd9'\xfe\xa2\x0cNN\xc1\xc9$~Q	-	pzd9_fea2_NNc1_	15	1
 rrd_string_sanitize	\x15pz\xd9'\xfe\xa2\x0cNN\xc1\xc9$~Q	-	pzd9'fea2 NNc1c9$~Q	19	-
-text_sanitize:identity:0:0	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	11	_,\x01u\x04\x05\x17#6\x97	10	10
-text_sanitize:identity:1:1	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	11	de,\x01u\x04\x05\x17#6	10	9
-text_sanitize:rrd:0:0	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	11	_, u #6 ;	9	9
-text_sanitize:rrd:1:0	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	11	de, u #6 ;	10	9
-text_sanitize:chart:0:2	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	11	_. u #6 ;	9	9
-text_sanitize:chart:1:0	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	11	de. u #6 ;	10	9
-rrdlabels_sanitize_name	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	11	_._u__6__	9	-
-rrdlabels_sanitize_value	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	11	de. u _6 :	10	-
-prometheus_rrdlabels_sanitize_name	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	11	___u____6_	10	-
-nrpc_sanitize_name	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	11	de, u #6 ;	10	-
-rrdset_strncpyz_name	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	11	de._u_#6_;	10	-
-netdata_fix_chart_name	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	-	de._u_#6_;_0__	14	-
-netdata_fix_chart_id	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	-	de._u_#6_;_0__	14	-
-rrdvar_fix_name	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	-	de._u_#6_;_0__	14	1
-rrd_string_sanitize	\xde,\x01u\x04\x05\x17#6\x97;\x96\x890\x17@\x10\x8a\x99	-	de, u #6 ; 0 @	14	-
+text_sanitize:identity:0:0	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	11	_,\x01u\x04\x05\x17\x236\x97	10	10
+text_sanitize:identity:1:1	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	11	de,\x01u\x04\x05\x17\x236	10	9
+text_sanitize:rrd:0:0	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	11	_, u \x236 ;	9	9
+text_sanitize:rrd:1:0	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	11	de, u \x236 ;	10	9
+text_sanitize:chart:0:2	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	11	_. u \x236 ;	9	9
+text_sanitize:chart:1:0	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	11	de. u \x236 ;	10	9
+rrdlabels_sanitize_name	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	11	_._u__6__	9	-
+rrdlabels_sanitize_value	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	11	de. u _6 :	10	-
+prometheus_rrdlabels_sanitize_name	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	11	___u____6_	10	-
+nrpc_sanitize_name	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	11	de, u \x236 ;	10	-
+rrdset_strncpyz_name	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	11	de._u_\x236_;	10	-
+netdata_fix_chart_name	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	-	de._u_\x236_;_0__	14	-
+netdata_fix_chart_id	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	-	de._u_\x236_;_0__	14	-
+rrdvar_fix_name	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	-	de._u_\x236_;_0__	14	1
+rrd_string_sanitize	\xde,\x01u\x04\x05\x17\x236\x97;\x96\x890\x17@\x10\x8a\x99	-	de, u \x236 ; 0 @	14	-
 text_sanitize:identity:0:1	\x1d\xca\x19:\xbe\x162)	6	_\x19:\xbe\x16	5	5
 text_sanitize:identity:1:2	\x1d\xca\x19:\xbe\x162)	6	ca\x19:\xbe	5	4
 text_sanitize:rrd:0:0	\x1d\xca\x19:\xbe\x162)	6	_ : 2	5	5
@@ -24428,21 +24428,21 @@ netdata_fix_chart_name	u)\xc6	-	u)	2	-
 netdata_fix_chart_id	u)\xc6	-	u)	2	-
 rrdvar_fix_name	u)\xc6	-	u)	2	1
 rrd_string_sanitize	u)\xc6	-	u)c6	4	-
-text_sanitize:identity:0:2	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	\\)_\x15rk#=\x19\x98H__\x15\x19h\x1e\x8e"8	20	20
-text_sanitize:identity:1:2	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	\\)e3\x15rk#=\x19\x98Hdde4\x15\x19h\x1e	20	17
-text_sanitize:rrd:0:0	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/)_ rk#= H__ h '8 y	19	19
-text_sanitize:rrd:1:1	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/)e3 rk#= Hdde4 h '8	20	17
-text_sanitize:chart:0:0	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/)_ rk#_ H__ h _8 y	19	19
-text_sanitize:chart:1:0	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/)e3 rk#_ Hdde4 h _8	20	17
-rrdlabels_sanitize_name	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/___rk___H___h__8_y	19	-
-rrdlabels_sanitize_value	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/)e3 rk_: Hdde4 h _8	20	-
-prometheus_rrdlabels_sanitize_name	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	____rk____H____h___8	20	-
-nrpc_sanitize_name	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	\\)e3 rk#= Hdde4 h '8	20	-
-rrdset_strncpyz_name	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/)e3_rk#__Hdde4_h__8	20	-
-netdata_fix_chart_name	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	-	/)e3_rk#__Hdde4_h__8_y	22	-
-netdata_fix_chart_id	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	-	/)e3_rk#__Hdde4_h__8_y	22	-
-rrdvar_fix_name	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	-	/)e3_rk#__Hdde4_h__8_y	22	1
-rrd_string_sanitize	\\)\xe3\x15rk#=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	-	/)e3 rk#= Hdde4 h '8 y	22	-
+text_sanitize:identity:0:2	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	\\)_\x15rk\x23=\x19\x98H__\x15\x19h\x1e\x8e"8	20	20
+text_sanitize:identity:1:2	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	\\)e3\x15rk\x23=\x19\x98Hdde4\x15\x19h\x1e	20	17
+text_sanitize:rrd:0:0	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/)_ rk\x23= H__ h '8 y	19	19
+text_sanitize:rrd:1:1	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/)e3 rk\x23= Hdde4 h '8	20	17
+text_sanitize:chart:0:0	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/)_ rk\x23_ H__ h _8 y	19	19
+text_sanitize:chart:1:0	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/)e3 rk\x23_ Hdde4 h _8	20	17
+rrdlabels_sanitize_name	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/___rk___H___h__8_y	19	-
+rrdlabels_sanitize_value	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/)e3 rk_: Hdde4 h _8	20	-
+prometheus_rrdlabels_sanitize_name	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	____rk____H____h___8	20	-
+nrpc_sanitize_name	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	\\)e3 rk\x23= Hdde4 h '8	20	-
+rrdset_strncpyz_name	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	21	/)e3_rk\x23__Hdde4_h__8	20	-
+netdata_fix_chart_name	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	-	/)e3_rk\x23__Hdde4_h__8_y	22	-
+netdata_fix_chart_id	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	-	/)e3_rk\x23__Hdde4_h__8_y	22	-
+rrdvar_fix_name	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	-	/)e3_rk\x23__Hdde4_h__8_y	22	1
+rrd_string_sanitize	\\)\xe3\x15rk\x23=\x19\x98H\xdd\xe4\x15\x19h\x1e\x8e"8\x01y\xb3	-	/)e3 rk\x23= Hdde4 h '8 y	22	-
 text_sanitize:identity:0:1	_\xfa\x1a*\xd7\\\xf8\x9edj&7\x0f\xc62\xe2\x0c	8	__\x1a*_\\_	7	7
 text_sanitize:identity:1:0	_\xfa\x1a*\xd7\\\xf8\x9edj&7\x0f\xc62\xe2\x0c	8	_fa\x1a*d7	7	5
 text_sanitize:rrd:0:2	_\xfa\x1a*\xd7\\\xf8\x9edj&7\x0f\xc62\xe2\x0c	8	__ *_/_	7	7
@@ -24653,21 +24653,21 @@ netdata_fix_chart_name	\x13\\\x1a4\xb5\x0d\xde\\{\xe8	-	/_4_de/{e8	10	-
 netdata_fix_chart_id	\x13\\\x1a4\xb5\x0d\xde\\{\xe8	-	/_4_de/{e8	10	-
 rrdvar_fix_name	\x13\\\x1a4\xb5\x0d\xde\\{\xe8	-	/_4_de/{e8	10	1
 rrd_string_sanitize	\x13\\\x1a4\xb5\x0d\xde\\{\xe8	-	/ 4 de/{e8	10	-
-text_sanitize:identity:0:1	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	45	\\+\x15 D\x99\x03_!\x0d\x11\x10N*'h#\xa2+	19	19
-text_sanitize:identity:1:1	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	45	\\+\x15 D\x99\x03f0!\x0d\x11\x10N*'h#\xa2+	20	19
-text_sanitize:rrd:0:2	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	45	/+ D _! N*'h# +	15	15
-text_sanitize:rrd:1:2	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	45	/+ D f0! N*'h# +	16	15
-text_sanitize:chart:0:2	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	45	/_ D _! N__h# _	15	15
-text_sanitize:chart:1:1	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	45	/_ D f0! N__h# _	16	15
-rrdlabels_sanitize_name	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	45	/__D____N__h___	15	-
-rrdlabels_sanitize_value	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	45	/+ D f0_ N__h_ +	16	-
-prometheus_rrdlabels_sanitize_name	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	45	____D_______N__h___	19	-
-nrpc_sanitize_name	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	45	\\+ D f0! N*'h# +	16	-
-rrdset_strncpyz_name	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	45	/__D_f0!_N__h#__	16	-
-netdata_fix_chart_name	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	-	/__D_f0!_N__h#__	16	-
-netdata_fix_chart_id	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	-	/__D_f0!_N__h#__	16	-
-rrdvar_fix_name	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	-	/__D_f0!_N__h#__	16	1
-rrd_string_sanitize	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h#\xa2+	-	/+ D f0! N*'h# +	16	-
+text_sanitize:identity:0:1	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	45	\\+\x15 D\x99\x03_!\x0d\x11\x10N*'h\x23\xa2+	19	19
+text_sanitize:identity:1:1	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	45	\\+\x15 D\x99\x03f0!\x0d\x11\x10N*'h\x23\xa2+	20	19
+text_sanitize:rrd:0:2	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	45	/+ D _! N*'h\x23 +	15	15
+text_sanitize:rrd:1:2	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	45	/+ D f0! N*'h\x23 +	16	15
+text_sanitize:chart:0:2	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	45	/_ D _! N__h\x23 _	15	15
+text_sanitize:chart:1:1	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	45	/_ D f0! N__h\x23 _	16	15
+rrdlabels_sanitize_name	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	45	/__D____N__h___	15	-
+rrdlabels_sanitize_value	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	45	/+ D f0_ N__h_ +	16	-
+prometheus_rrdlabels_sanitize_name	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	45	____D_______N__h___	19	-
+nrpc_sanitize_name	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	45	\\+ D f0! N*'h\x23 +	16	-
+rrdset_strncpyz_name	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	45	/__D_f0!_N__h\x23__	16	-
+netdata_fix_chart_name	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	-	/__D_f0!_N__h\x23__	16	-
+netdata_fix_chart_id	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	-	/__D_f0!_N__h\x23__	16	-
+rrdvar_fix_name	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	-	/__D_f0!_N__h\x23__	16	1
+rrd_string_sanitize	\x1f\\+\x15 D\x99\x03\xf0!\x0d\x11\x10N*'h\x23\xa2+	-	/+ D f0! N*'h\x23 +	16	-
 text_sanitize:identity:0:0	X\\.\xf6u\x07\xe0P\xd7l	47	X\\._u\x07_P_l	10	10
 text_sanitize:identity:1:1	X\\.\xf6u\x07\xe0P\xd7l	47	X\\.f6u\x07e0Pd7l	13	10
 text_sanitize:rrd:0:0	X\\.\xf6u\x07\xe0P\xd7l	47	X/._u _P_l	10	10
@@ -24893,21 +24893,21 @@ netdata_fix_chart_name	\xbd,\x0d\xb7l\x1c\xcbV\x98 \xb8@\xd6\xeew'	-	._l_cbV__d6
 netdata_fix_chart_id	\xbd,\x0d\xb7l\x1c\xcbV\x98 \xb8@\xd6\xeew'	-	._l_cbV__d6eew_	15	-
 rrdvar_fix_name	\xbd,\x0d\xb7l\x1c\xcbV\x98 \xb8@\xd6\xeew'	-	._l_cbV__d6eew_	15	1
 rrd_string_sanitize	\xbd,\x0d\xb7l\x1c\xcbV\x98 \xb8@\xd6\xeew'	-	, l cbV @d6eew'	15	-
-text_sanitize:identity:0:0	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3*Q\x1e#	5	5
-text_sanitize:identity:1:2	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3*Q\x1e#	5	5
-text_sanitize:rrd:0:2	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3*Q #	5	5
-text_sanitize:rrd:1:2	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3*Q #	5	5
-text_sanitize:chart:0:1	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3_Q #	5	5
-text_sanitize:chart:1:2	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3_Q #	5	5
-rrdlabels_sanitize_name	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3_Q__	5	-
-rrdlabels_sanitize_value	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3_Q _	5	-
-prometheus_rrdlabels_sanitize_name	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3_Q__	5	-
-nrpc_sanitize_name	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3*Q #	5	-
-rrdset_strncpyz_name	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3_Q_#	5	-
-netdata_fix_chart_name	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	-	3_Q_#!;_(f1_!bI___	18	-
-netdata_fix_chart_id	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	-	3_Q_#!;_(f1_!bI___	18	-
-rrdvar_fix_name	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	-	3_Q_#!;_(f1_!bI___	18	1
-rrd_string_sanitize	3*Q\x1e#!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	-	3*Q #!; (f1 !bI_@=	18	-
+text_sanitize:identity:0:0	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3*Q\x1e\x23	5	5
+text_sanitize:identity:1:2	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3*Q\x1e\x23	5	5
+text_sanitize:rrd:0:2	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3*Q \x23	5	5
+text_sanitize:rrd:1:2	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3*Q \x23	5	5
+text_sanitize:chart:0:1	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3_Q \x23	5	5
+text_sanitize:chart:1:2	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3_Q \x23	5	5
+rrdlabels_sanitize_name	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3_Q__	5	-
+rrdlabels_sanitize_value	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3_Q _	5	-
+prometheus_rrdlabels_sanitize_name	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3_Q__	5	-
+nrpc_sanitize_name	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3*Q \x23	5	-
+rrdset_strncpyz_name	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	6	3_Q_\x23	5	-
+netdata_fix_chart_name	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	-	3_Q_\x23!;_(f1_!bI___	18	-
+netdata_fix_chart_id	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	-	3_Q_\x23!;_(f1_!bI___	18	-
+rrdvar_fix_name	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	-	3_Q_\x23!;_(f1_!bI___	18	1
+rrd_string_sanitize	3*Q\x1e\x23!;\x11\x1a(\xf1\x1f\x15\x90\xbd\x17!bI_@=	-	3*Q \x23!; (f1 !bI_@=	18	-
 text_sanitize:identity:0:2	8~\xd8	22	8~_	3	3
 text_sanitize:identity:1:1	8~\xd8	22	8~d8	4	3
 text_sanitize:rrd:0:0	8~\xd8	22	8~_	3	3
@@ -24998,21 +24998,21 @@ netdata_fix_chart_name	5lz\x11C)	-	5lz_C)	6	-
 netdata_fix_chart_id	5lz\x11C)	-	5lz_C)	6	-
 rrdvar_fix_name	5lz\x11C)	-	5lz_C)	6	1
 rrd_string_sanitize	5lz\x11C)	-	5lz C)	6	-
-text_sanitize:identity:0:1	;#\x85*q	41	;#\x85*q	5	5
-text_sanitize:identity:1:1	;#\x85*q	41	;#\x85*q	5	5
-text_sanitize:rrd:0:0	;#\x85*q	41	;# *q	5	5
-text_sanitize:rrd:1:0	;#\x85*q	41	;# *q	5	5
-text_sanitize:chart:0:2	;#\x85*q	41	;# _q	5	5
-text_sanitize:chart:1:0	;#\x85*q	41	;# _q	5	5
-rrdlabels_sanitize_name	;#\x85*q	41	____q	5	-
-rrdlabels_sanitize_value	;#\x85*q	41	:_ _q	5	-
-prometheus_rrdlabels_sanitize_name	;#\x85*q	41	____q	5	-
-nrpc_sanitize_name	;#\x85*q	41	;# *q	5	-
-rrdset_strncpyz_name	;#\x85*q	41	;#__q	5	-
-netdata_fix_chart_name	;#\x85*q	-	;#__q	5	-
-netdata_fix_chart_id	;#\x85*q	-	;#__q	5	-
-rrdvar_fix_name	;#\x85*q	-	;#__q	5	1
-rrd_string_sanitize	;#\x85*q	-	;# *q	5	-
+text_sanitize:identity:0:1	;\x23\x85*q	41	;\x23\x85*q	5	5
+text_sanitize:identity:1:1	;\x23\x85*q	41	;\x23\x85*q	5	5
+text_sanitize:rrd:0:0	;\x23\x85*q	41	;\x23 *q	5	5
+text_sanitize:rrd:1:0	;\x23\x85*q	41	;\x23 *q	5	5
+text_sanitize:chart:0:2	;\x23\x85*q	41	;\x23 _q	5	5
+text_sanitize:chart:1:0	;\x23\x85*q	41	;\x23 _q	5	5
+rrdlabels_sanitize_name	;\x23\x85*q	41	____q	5	-
+rrdlabels_sanitize_value	;\x23\x85*q	41	:_ _q	5	-
+prometheus_rrdlabels_sanitize_name	;\x23\x85*q	41	____q	5	-
+nrpc_sanitize_name	;\x23\x85*q	41	;\x23 *q	5	-
+rrdset_strncpyz_name	;\x23\x85*q	41	;\x23__q	5	-
+netdata_fix_chart_name	;\x23\x85*q	-	;\x23__q	5	-
+netdata_fix_chart_id	;\x23\x85*q	-	;\x23__q	5	-
+rrdvar_fix_name	;\x23\x85*q	-	;\x23__q	5	1
+rrd_string_sanitize	;\x23\x85*q	-	;\x23 *q	5	-
 text_sanitize:identity:0:2	6l-\xfbq	19	6l-_q	5	5
 text_sanitize:identity:1:0	6l-\xfbq	19	6l-fbq	6	5
 text_sanitize:rrd:0:0	6l-\xfbq	19	6l-_q	5	5
@@ -25508,21 +25508,21 @@ netdata_fix_chart_name	4\x8fQ\\\x1e(\xde'dh	-	4_Q/_(de_d	10	-
 netdata_fix_chart_id	4\x8fQ\\\x1e(\xde'dh	-	4_Q/_(de_d	10	-
 rrdvar_fix_name	4\x8fQ\\\x1e(\xde'dh	-	4_Q/_(de_d	10	1
 rrd_string_sanitize	4\x8fQ\\\x1e(\xde'dh	-	4 Q/ (de'dh	11	-
-text_sanitize:identity:0:1	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	48	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	11	11
-text_sanitize:identity:1:1	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	48	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	11	11
-text_sanitize:rrd:0:0	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	48	H ' t#Z	7	7
-text_sanitize:rrd:1:0	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	48	H ' t#Z	7	7
-text_sanitize:chart:0:1	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	48	H _ t#Z	7	7
-text_sanitize:chart:1:0	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	48	H _ t#Z	7	7
-rrdlabels_sanitize_name	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	48	H___t_Z	7	-
-rrdlabels_sanitize_value	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	48	H _ t_Z	7	-
-prometheus_rrdlabels_sanitize_name	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	48	H_____t_Z__	11	-
-nrpc_sanitize_name	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	48	H ' t#Z	7	-
-rrdset_strncpyz_name	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	48	H___t#Z	7	-
-netdata_fix_chart_name	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	-	H___t#Z	7	-
-netdata_fix_chart_id	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	-	H___t#Z	7	-
-rrdvar_fix_name	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	-	H___t#Z	7	1
-rrd_string_sanitize	H\x17'\x13\x0f\x9ct#Z\x0a\x8c	-	H ' t#Z	7	-
+text_sanitize:identity:0:1	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	48	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	11	11
+text_sanitize:identity:1:1	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	48	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	11	11
+text_sanitize:rrd:0:0	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	48	H ' t\x23Z	7	7
+text_sanitize:rrd:1:0	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	48	H ' t\x23Z	7	7
+text_sanitize:chart:0:1	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	48	H _ t\x23Z	7	7
+text_sanitize:chart:1:0	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	48	H _ t\x23Z	7	7
+rrdlabels_sanitize_name	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	48	H___t_Z	7	-
+rrdlabels_sanitize_value	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	48	H _ t_Z	7	-
+prometheus_rrdlabels_sanitize_name	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	48	H_____t_Z__	11	-
+nrpc_sanitize_name	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	48	H ' t\x23Z	7	-
+rrdset_strncpyz_name	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	48	H___t\x23Z	7	-
+netdata_fix_chart_name	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	-	H___t\x23Z	7	-
+netdata_fix_chart_id	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	-	H___t\x23Z	7	-
+rrdvar_fix_name	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	-	H___t\x23Z	7	1
+rrd_string_sanitize	H\x17'\x13\x0f\x9ct\x23Z\x0a\x8c	-	H ' t\x23Z	7	-
 text_sanitize:identity:0:2	?\xdeQ\x1eE!	15	?_Q\x1eE!	6	6
 text_sanitize:identity:1:2	?\xdeQ\x1eE!	15	?deQ\x1eE!	7	6
 text_sanitize:rrd:0:1	?\xdeQ\x1eE!	15	?_Q E!	6	6
@@ -26198,21 +26198,21 @@ netdata_fix_chart_name	'$X\x8bW\\P	-	__X_W/P	7	-
 netdata_fix_chart_id	'$X\x8bW\\P	-	__X_W/P	7	-
 rrdvar_fix_name	'$X\x8bW\\P	-	__X_W/P	7	1
 rrd_string_sanitize	'$X\x8bW\\P	-	'$X W/P	7	-
-text_sanitize:identity:0:1	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	27	V\x09 ,\\\xb4#L'_X__"_J_	17	17
-text_sanitize:identity:1:1	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	27	V\x09 ,\\\xb4#L'fcXebeb"c4Jca	22	17
-text_sanitize:rrd:0:2	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	27	V ,/ #L'_X__'_J_	16	16
-text_sanitize:rrd:1:2	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	27	V ,/ #L'fcXebeb'c4Jca	21	16
-text_sanitize:chart:0:0	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	27	V ./ #L__X____J_	16	16
-text_sanitize:chart:1:1	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	27	V ./ #L_fcXebeb_c4Jca	21	16
-rrdlabels_sanitize_name	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	27	V_./__L__X____J_	16	-
-rrdlabels_sanitize_value	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	27	V ./ _L_fcXebeb_c4Jca	21	-
-prometheus_rrdlabels_sanitize_name	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	27	V______L__X____J_	17	-
-nrpc_sanitize_name	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	27	V ,\\ #L'fcXebeb'c4Jca	21	-
-rrdset_strncpyz_name	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	27	V_./_#L_fcXebeb_c4Jca	21	-
-netdata_fix_chart_name	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	-	V_./_#L_fcXebeb_J	17	-
-netdata_fix_chart_id	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	-	V_./_#L_fcXebeb_J	17	-
-rrdvar_fix_name	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	-	V_./_#L_fcXebeb_J	17	1
-rrd_string_sanitize	V\x09 ,\\\xb4#L'\xfcX\xeb\xeb"\xc4J\xca	-	V ,/ #L'fcXebeb'c4Jca	21	-
+text_sanitize:identity:0:1	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	27	V\x09 ,\\\xb4\x23L'_X__"_J_	17	17
+text_sanitize:identity:1:1	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	27	V\x09 ,\\\xb4\x23L'fcXebeb"c4Jca	22	17
+text_sanitize:rrd:0:2	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	27	V ,/ \x23L'_X__'_J_	16	16
+text_sanitize:rrd:1:2	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	27	V ,/ \x23L'fcXebeb'c4Jca	21	16
+text_sanitize:chart:0:0	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	27	V ./ \x23L__X____J_	16	16
+text_sanitize:chart:1:1	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	27	V ./ \x23L_fcXebeb_c4Jca	21	16
+rrdlabels_sanitize_name	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	27	V_./__L__X____J_	16	-
+rrdlabels_sanitize_value	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	27	V ./ _L_fcXebeb_c4Jca	21	-
+prometheus_rrdlabels_sanitize_name	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	27	V______L__X____J_	17	-
+nrpc_sanitize_name	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	27	V ,\\ \x23L'fcXebeb'c4Jca	21	-
+rrdset_strncpyz_name	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	27	V_./_\x23L_fcXebeb_c4Jca	21	-
+netdata_fix_chart_name	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	-	V_./_\x23L_fcXebeb_J	17	-
+netdata_fix_chart_id	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	-	V_./_\x23L_fcXebeb_J	17	-
+rrdvar_fix_name	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	-	V_./_\x23L_fcXebeb_J	17	1
+rrd_string_sanitize	V\x09 ,\\\xb4\x23L'\xfcX\xeb\xeb"\xc4J\xca	-	V ,/ \x23L'fcXebeb'c4Jca	21	-
 text_sanitize:identity:0:1	\xcf\xffE')@OT\x1b ::C'S\xe6 c|\xb9_	38	__E')@OT\x1b ::C'S_ c|\xb9_	21	21
 text_sanitize:identity:1:2	\xcf\xffE')@OT\x1b ::C'S\xe6 c|\xb9_	38	cfffE')@OT\x1b ::C'Se6 c|\xb9_	24	21
 text_sanitize:rrd:0:1	\xcf\xffE')@OT\x1b ::C'S\xe6 c|\xb9_	38	__E')@OT ::C'S_ c| _	20	20
@@ -26513,21 +26513,21 @@ netdata_fix_chart_name	\x0f	-		0	-
 netdata_fix_chart_id	\x0f	-		0	-
 rrdvar_fix_name	\x0f	-		0	1
 rrd_string_sanitize	\x0f	-		0	-
-text_sanitize:identity:0:2	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	17	_A!\x1c#(7Q!,Pm\x092\x11-	16	16
-text_sanitize:identity:1:0	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	17	_A!\x1c#(7Q!,Pm\x092\x11-	16	16
-text_sanitize:rrd:0:1	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	17	_A! #(7Q!,Pm 2 -	16	16
-text_sanitize:rrd:1:1	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	17	_A! #(7Q!,Pm 2 -	16	16
-text_sanitize:chart:0:2	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	17	_A! #(7Q!.Pm 2 -	16	16
-text_sanitize:chart:1:1	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	17	_A! #(7Q!.Pm 2 -	16	16
-rrdlabels_sanitize_name	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	17	_A____7Q_.Pm_2_-	16	-
-rrdlabels_sanitize_value	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	17	_A_ _(7Q_.Pm 2 -	16	-
-prometheus_rrdlabels_sanitize_name	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	17	_A____7Q__Pm_2__	16	-
-nrpc_sanitize_name	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	17	_A! #(7Q!,Pm 2 -	16	-
-rrdset_strncpyz_name	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	17	_A!_#(7Q!.Pm_2_-	16	-
-netdata_fix_chart_name	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	-	_A!_#(7Q!.Pm_2_-	16	-
-netdata_fix_chart_id	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	-	_A!_#(7Q!.Pm_2_-	16	-
-rrdvar_fix_name	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	-	_A!_#(7Q!.Pm_2_-	16	1
-rrd_string_sanitize	\x0b_A!\x1c#(7Q!,Pm\x092\x11-	-	_A! #(7Q!,Pm 2 -	16	-
+text_sanitize:identity:0:2	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	17	_A!\x1c\x23(7Q!,Pm\x092\x11-	16	16
+text_sanitize:identity:1:0	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	17	_A!\x1c\x23(7Q!,Pm\x092\x11-	16	16
+text_sanitize:rrd:0:1	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	17	_A! \x23(7Q!,Pm 2 -	16	16
+text_sanitize:rrd:1:1	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	17	_A! \x23(7Q!,Pm 2 -	16	16
+text_sanitize:chart:0:2	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	17	_A! \x23(7Q!.Pm 2 -	16	16
+text_sanitize:chart:1:1	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	17	_A! \x23(7Q!.Pm 2 -	16	16
+rrdlabels_sanitize_name	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	17	_A____7Q_.Pm_2_-	16	-
+rrdlabels_sanitize_value	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	17	_A_ _(7Q_.Pm 2 -	16	-
+prometheus_rrdlabels_sanitize_name	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	17	_A____7Q__Pm_2__	16	-
+nrpc_sanitize_name	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	17	_A! \x23(7Q!,Pm 2 -	16	-
+rrdset_strncpyz_name	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	17	_A!_\x23(7Q!.Pm_2_-	16	-
+netdata_fix_chart_name	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	-	_A!_\x23(7Q!.Pm_2_-	16	-
+netdata_fix_chart_id	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	-	_A!_\x23(7Q!.Pm_2_-	16	-
+rrdvar_fix_name	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	-	_A!_\x23(7Q!.Pm_2_-	16	1
+rrd_string_sanitize	\x0b_A!\x1c\x23(7Q!,Pm\x092\x11-	-	_A! \x23(7Q!,Pm 2 -	16	-
 text_sanitize:identity:0:2	\xe1	7	-	1	1
 text_sanitize:identity:1:1	\xe1	7	e1	2	1
 text_sanitize:rrd:0:1	\xe1	7	[none]	6	6
@@ -27143,21 +27143,21 @@ netdata_fix_chart_name	\x13pu\x18\xa5\x0f'x\x85\x1e"\xd6W\xa0\x1f?\x0e\\\x01*h	-
 netdata_fix_chart_id	\x13pu\x18\xa5\x0f'x\x85\x1e"\xd6W\xa0\x1f?\x0e\\\x01*h	-	pu__x__d6W___/__h	17	-
 rrdvar_fix_name	\x13pu\x18\xa5\x0f'x\x85\x1e"\xd6W\xa0\x1f?\x0e\\\x01*h	-	pu__x__d6W___/__h	17	1
 rrd_string_sanitize	\x13pu\x18\xa5\x0f'x\x85\x1e"\xd6W\xa0\x1f?\x0e\\\x01*h	-	pu 'x 'd6W ? / *h	17	-
-text_sanitize:identity:0:0	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	31	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	23	23
-text_sanitize:identity:1:2	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	31	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	23	23
-text_sanitize:rrd:0:2	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	31	: ) s kLh m0a!vK#/>!>	21	21
-text_sanitize:rrd:1:1	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	31	: ) s kLh m0a!vK#/>!>	21	21
-text_sanitize:chart:0:2	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	31	: ) s kLh m0a!vK#/>!>	21	21
-text_sanitize:chart:1:0	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	31	: ) s kLh m0a!vK#/>!>	21	21
-rrdlabels_sanitize_name	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	31	____s_kLh_m0a_vK_/___	21	-
-rrdlabels_sanitize_value	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	31	: ) s kLh m0a_vK_/___	21	-
-prometheus_rrdlabels_sanitize_name	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	31	:___s_kLh_m0a_vK_______	23	-
-nrpc_sanitize_name	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	31	: ) s kLh m0a!vK#\\>!>	21	-
-rrdset_strncpyz_name	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	31	:_)_s_kLh_m0a!vK#/>!>	21	-
-netdata_fix_chart_name	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	-	:_)_s_kLh_m0a!vK#/>!>	21	-
-netdata_fix_chart_id	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	-	:_)_s_kLh_m0a!vK#/>!>	21	-
-rrdvar_fix_name	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	-	:_)_s_kLh_m0a!vK#/>!>	21	1
-rrd_string_sanitize	:\x03)\xa2s\x09kLh\xb7m0a!vK#\\>!>\x11\x08	-	: ) s kLh m0a!vK#/>!>	21	-
+text_sanitize:identity:0:0	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	31	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	23	23
+text_sanitize:identity:1:2	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	31	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	23	23
+text_sanitize:rrd:0:2	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	31	: ) s kLh m0a!vK\x23/>!>	21	21
+text_sanitize:rrd:1:1	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	31	: ) s kLh m0a!vK\x23/>!>	21	21
+text_sanitize:chart:0:2	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	31	: ) s kLh m0a!vK\x23/>!>	21	21
+text_sanitize:chart:1:0	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	31	: ) s kLh m0a!vK\x23/>!>	21	21
+rrdlabels_sanitize_name	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	31	____s_kLh_m0a_vK_/___	21	-
+rrdlabels_sanitize_value	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	31	: ) s kLh m0a_vK_/___	21	-
+prometheus_rrdlabels_sanitize_name	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	31	:___s_kLh_m0a_vK_______	23	-
+nrpc_sanitize_name	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	31	: ) s kLh m0a!vK\x23\\>!>	21	-
+rrdset_strncpyz_name	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	31	:_)_s_kLh_m0a!vK\x23/>!>	21	-
+netdata_fix_chart_name	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	-	:_)_s_kLh_m0a!vK\x23/>!>	21	-
+netdata_fix_chart_id	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	-	:_)_s_kLh_m0a!vK\x23/>!>	21	-
+rrdvar_fix_name	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	-	:_)_s_kLh_m0a!vK\x23/>!>	21	1
+rrd_string_sanitize	:\x03)\xa2s\x09kLh\xb7m0a!vK\x23\\>!>\x11\x08	-	: ) s kLh m0a!vK\x23/>!>	21	-
 text_sanitize:identity:0:2	\x0d\x969\x11\xefm6W1	19	\x969\x11_m6W1	8	8
 text_sanitize:identity:1:0	\x0d\x969\x11\xefm6W1	19	\x969\x11efm6W1	9	8
 text_sanitize:rrd:0:0	\x0d\x969\x11\xefm6W1	19	9 _m6W1	7	7
@@ -27368,21 +27368,21 @@ netdata_fix_chart_name	\x0a( \xb6\xa1	-	(	1	-
 netdata_fix_chart_id	\x0a( \xb6\xa1	-	(	1	-
 rrdvar_fix_name	\x0a( \xb6\xa1	-	(	1	1
 rrd_string_sanitize	\x0a( \xb6\xa1	-	(	1	-
-text_sanitize:identity:0:1	\x11\xe9"oBK\xb1@INH\\i#! +)d@	26	_"oBK\xb1@INH\\i#! +)d@	19	19
-text_sanitize:identity:1:0	\x11\xe9"oBK\xb1@INH\\i#! +)d@	26	e9"oBK\xb1@INH\\i#! +)d@	20	19
-text_sanitize:rrd:0:2	\x11\xe9"oBK\xb1@INH\\i#! +)d@	26	_'oBK @INH/i#! +)d@	19	19
-text_sanitize:rrd:1:0	\x11\xe9"oBK\xb1@INH\\i#! +)d@	26	e9'oBK @INH/i#! +)d@	20	19
-text_sanitize:chart:0:0	\x11\xe9"oBK\xb1@INH\\i#! +)d@	26	__oBK _INH/i#! _)d_	19	19
-text_sanitize:chart:1:1	\x11\xe9"oBK\xb1@INH\\i#! +)d@	26	e9_oBK _INH/i#! _)d_	20	19
-rrdlabels_sanitize_name	\x11\xe9"oBK\xb1@INH\\i#! +)d@	26	__oBK__INH/i_____d_	19	-
-rrdlabels_sanitize_value	\x11\xe9"oBK\xb1@INH\\i#! +)d@	26	e9_oBK @INH/i__ +)d@	20	-
-prometheus_rrdlabels_sanitize_name	\x11\xe9"oBK\xb1@INH\\i#! +)d@	26	__oBK__INH_i_____d_	19	-
-nrpc_sanitize_name	\x11\xe9"oBK\xb1@INH\\i#! +)d@	26	e9'oBK @INH\\i#! +)d@	20	-
-rrdset_strncpyz_name	\x11\xe9"oBK\xb1@INH\\i#! +)d@	26	e9_oBK__INH/i#!__)d_	20	-
-netdata_fix_chart_name	\x11\xe9"oBK\xb1@INH\\i#! +)d@	-	e9_oBK__INH/i#!__)d_	20	-
-netdata_fix_chart_id	\x11\xe9"oBK\xb1@INH\\i#! +)d@	-	e9_oBK__INH/i#!__)d_	20	-
-rrdvar_fix_name	\x11\xe9"oBK\xb1@INH\\i#! +)d@	-	e9_oBK__INH/i#!__)d_	20	1
-rrd_string_sanitize	\x11\xe9"oBK\xb1@INH\\i#! +)d@	-	e9'oBK @INH/i#! +)d@	20	-
+text_sanitize:identity:0:1	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	26	_"oBK\xb1@INH\\i\x23! +)d@	19	19
+text_sanitize:identity:1:0	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	26	e9"oBK\xb1@INH\\i\x23! +)d@	20	19
+text_sanitize:rrd:0:2	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	26	_'oBK @INH/i\x23! +)d@	19	19
+text_sanitize:rrd:1:0	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	26	e9'oBK @INH/i\x23! +)d@	20	19
+text_sanitize:chart:0:0	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	26	__oBK _INH/i\x23! _)d_	19	19
+text_sanitize:chart:1:1	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	26	e9_oBK _INH/i\x23! _)d_	20	19
+rrdlabels_sanitize_name	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	26	__oBK__INH/i_____d_	19	-
+rrdlabels_sanitize_value	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	26	e9_oBK @INH/i__ +)d@	20	-
+prometheus_rrdlabels_sanitize_name	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	26	__oBK__INH_i_____d_	19	-
+nrpc_sanitize_name	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	26	e9'oBK @INH\\i\x23! +)d@	20	-
+rrdset_strncpyz_name	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	26	e9_oBK__INH/i\x23!__)d_	20	-
+netdata_fix_chart_name	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	-	e9_oBK__INH/i\x23!__)d_	20	-
+netdata_fix_chart_id	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	-	e9_oBK__INH/i\x23!__)d_	20	-
+rrdvar_fix_name	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	-	e9_oBK__INH/i\x23!__)d_	20	1
+rrd_string_sanitize	\x11\xe9"oBK\xb1@INH\\i\x23! +)d@	-	e9'oBK @INH/i\x23! +)d@	20	-
 text_sanitize:identity:0:2	R+,zG6=Kn\xc6\x0c\xe9\xa0\xd8	31	R+,zG6=Kn_\x0c__	13	13
 text_sanitize:identity:1:1	R+,zG6=Kn\xc6\x0c\xe9\xa0\xd8	31	R+,zG6=Knc6\x0ce9a0d8	18	13
 text_sanitize:rrd:0:1	R+,zG6=Kn\xc6\x0c\xe9\xa0\xd8	31	R+,zG6=Kn_ __	13	13
@@ -27848,21 +27848,21 @@ netdata_fix_chart_name	]\\\xe8\x1f\x0e.\x98z=\xf9z!\xa9\xc90	-	]/e8_._z_f9z!_0	1
 netdata_fix_chart_id	]\\\xe8\x1f\x0e.\x98z=\xf9z!\xa9\xc90	-	]/e8_._z_f9z!_0	15	-
 rrdvar_fix_name	]\\\xe8\x1f\x0e.\x98z=\xf9z!\xa9\xc90	-	]/e8_._z_f9z!_0	15	1
 rrd_string_sanitize	]\\\xe8\x1f\x0e.\x98z=\xf9z!\xa9\xc90	-	]/e8 . z=f9z! c90	17	-
-text_sanitize:identity:0:1	\xd7T_#\x9dO(\x14/	2	[	1	1
-text_sanitize:identity:1:0	\xd7T_#\x9dO(\x14/	2	T	1	2
-text_sanitize:rrd:0:0	\xd7T_#\x9dO(\x14/	2		0	0
-text_sanitize:rrd:1:0	\xd7T_#\x9dO(\x14/	2	T	1	2
-text_sanitize:chart:0:0	\xd7T_#\x9dO(\x14/	2		0	0
-text_sanitize:chart:1:0	\xd7T_#\x9dO(\x14/	2	T	1	2
-rrdlabels_sanitize_name	\xd7T_#\x9dO(\x14/	2		0	-
-rrdlabels_sanitize_value	\xd7T_#\x9dO(\x14/	2	T	1	-
-prometheus_rrdlabels_sanitize_name	\xd7T_#\x9dO(\x14/	2		0	-
-nrpc_sanitize_name	\xd7T_#\x9dO(\x14/	2	T	1	-
-rrdset_strncpyz_name	\xd7T_#\x9dO(\x14/	2	T	1	-
-netdata_fix_chart_name	\xd7T_#\x9dO(\x14/	-	d7T_#_O(	8	-
-netdata_fix_chart_id	\xd7T_#\x9dO(\x14/	-	d7T_#_O(	8	-
-rrdvar_fix_name	\xd7T_#\x9dO(\x14/	-	d7T_#_O(	8	1
-rrd_string_sanitize	\xd7T_#\x9dO(\x14/	-	d7T_# O( /	10	-
+text_sanitize:identity:0:1	\xd7T_\x23\x9dO(\x14/	2	[	1	1
+text_sanitize:identity:1:0	\xd7T_\x23\x9dO(\x14/	2	T	1	2
+text_sanitize:rrd:0:0	\xd7T_\x23\x9dO(\x14/	2		0	0
+text_sanitize:rrd:1:0	\xd7T_\x23\x9dO(\x14/	2	T	1	2
+text_sanitize:chart:0:0	\xd7T_\x23\x9dO(\x14/	2		0	0
+text_sanitize:chart:1:0	\xd7T_\x23\x9dO(\x14/	2	T	1	2
+rrdlabels_sanitize_name	\xd7T_\x23\x9dO(\x14/	2		0	-
+rrdlabels_sanitize_value	\xd7T_\x23\x9dO(\x14/	2	T	1	-
+prometheus_rrdlabels_sanitize_name	\xd7T_\x23\x9dO(\x14/	2		0	-
+nrpc_sanitize_name	\xd7T_\x23\x9dO(\x14/	2	T	1	-
+rrdset_strncpyz_name	\xd7T_\x23\x9dO(\x14/	2	T	1	-
+netdata_fix_chart_name	\xd7T_\x23\x9dO(\x14/	-	d7T_\x23_O(	8	-
+netdata_fix_chart_id	\xd7T_\x23\x9dO(\x14/	-	d7T_\x23_O(	8	-
+rrdvar_fix_name	\xd7T_\x23\x9dO(\x14/	-	d7T_\x23_O(	8	1
+rrd_string_sanitize	\xd7T_\x23\x9dO(\x14/	-	d7T_\x23 O( /	10	-
 text_sanitize:identity:0:1	\xcbU\x91,	47	_U\x91,	4	4
 text_sanitize:identity:1:2	\xcbU\x91,	47	cbU\x91,	5	4
 text_sanitize:rrd:0:2	\xcbU\x91,	47	_U ,	4	4
@@ -27893,21 +27893,21 @@ netdata_fix_chart_name	\x18\x0ed\x0c\xa4\x81	-	d	1	-
 netdata_fix_chart_id	\x18\x0ed\x0c\xa4\x81	-	d	1	-
 rrdvar_fix_name	\x18\x0ed\x0c\xa4\x81	-	d	1	1
 rrd_string_sanitize	\x18\x0ed\x0c\xa4\x81	-	d	1	-
-text_sanitize:identity:0:2	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	16	>b\x8a2?\x1a \x9f^\\x@\x01m#	15	15
-text_sanitize:identity:1:2	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	16	>b\x8a2?\x1a \x9f^\\x@\x01m#	15	15
-text_sanitize:rrd:0:1	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	16	>b 2? ^/x@ m#:)	15	15
-text_sanitize:rrd:1:0	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	16	>b 2? ^/x@ m#:)	15	15
-text_sanitize:chart:0:2	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	16	>b 2_ _/x_ m#:)	15	15
-text_sanitize:chart:1:1	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	16	>b 2_ _/x_ m#:)	15	15
-rrdlabels_sanitize_name	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	16	_b_2___/x__m___	15	-
-rrdlabels_sanitize_value	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	16	_b 2_ _/x@ m_:)	15	-
-prometheus_rrdlabels_sanitize_name	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	16	_b_2______x__m_	15	-
-nrpc_sanitize_name	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	16	>b 2? ^\\x@ m#:)	15	-
-rrdset_strncpyz_name	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	16	>b_2___/x__m#:)	15	-
-netdata_fix_chart_name	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	-	>b_2___/x__m#:)_e8b6_>	22	-
-netdata_fix_chart_id	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	-	>b_2___/x__m#:)_e8b6_>	22	-
-rrdvar_fix_name	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	-	>b_2___/x__m#:)_e8b6_>	22	1
-rrd_string_sanitize	>b\x8a2?\x1a \x9f^\\x@\x01m#:)\x09\xe8\xb6`>	-	>b 2? ^/x@ m#:) e8b6`>	22	-
+text_sanitize:identity:0:2	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	16	>b\x8a2?\x1a \x9f^\\x@\x01m\x23	15	15
+text_sanitize:identity:1:2	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	16	>b\x8a2?\x1a \x9f^\\x@\x01m\x23	15	15
+text_sanitize:rrd:0:1	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	16	>b 2? ^/x@ m\x23:)	15	15
+text_sanitize:rrd:1:0	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	16	>b 2? ^/x@ m\x23:)	15	15
+text_sanitize:chart:0:2	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	16	>b 2_ _/x_ m\x23:)	15	15
+text_sanitize:chart:1:1	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	16	>b 2_ _/x_ m\x23:)	15	15
+rrdlabels_sanitize_name	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	16	_b_2___/x__m___	15	-
+rrdlabels_sanitize_value	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	16	_b 2_ _/x@ m_:)	15	-
+prometheus_rrdlabels_sanitize_name	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	16	_b_2______x__m_	15	-
+nrpc_sanitize_name	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	16	>b 2? ^\\x@ m\x23:)	15	-
+rrdset_strncpyz_name	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	16	>b_2___/x__m\x23:)	15	-
+netdata_fix_chart_name	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	-	>b_2___/x__m\x23:)_e8b6_>	22	-
+netdata_fix_chart_id	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	-	>b_2___/x__m\x23:)_e8b6_>	22	-
+rrdvar_fix_name	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	-	>b_2___/x__m\x23:)_e8b6_>	22	1
+rrd_string_sanitize	>b\x8a2?\x1a \x9f^\\x@\x01m\x23:)\x09\xe8\xb6`>	-	>b 2? ^/x@ m\x23:) e8b6`>	22	-
 text_sanitize:identity:0:2	\x15\x0f\x18\x85\x04J)	7	\x85\x04J)	4	4
 text_sanitize:identity:1:0	\x15\x0f\x18\x85\x04J)	7	\x85\x04J)	4	4
 text_sanitize:rrd:0:0	\x15\x0f\x18\x85\x04J)	7	J)	2	2
@@ -28028,21 +28028,21 @@ netdata_fix_chart_name	\xd1u\x8f\xbb\x0bN\xde\x14&GV\x88=G	-	d1u_Nde__GV__G	14	-
 netdata_fix_chart_id	\xd1u\x8f\xbb\x0bN\xde\x14&GV\x88=G	-	d1u_Nde__GV__G	14	-
 rrdvar_fix_name	\xd1u\x8f\xbb\x0bN\xde\x14&GV\x88=G	-	d1u_Nde__GV__G	14	1
 rrd_string_sanitize	\xd1u\x8f\xbb\x0bN\xde\x14&GV\x88=G	-	d1u Nde &GV =G	14	-
-text_sanitize:identity:0:0	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	\x96_y#@E=	7	7
-text_sanitize:identity:1:0	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	\x96ffy#@E	7	6
-text_sanitize:rrd:0:2	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	_y#@E=	6	6
-text_sanitize:rrd:1:2	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	ffy#@E=	7	6
-text_sanitize:chart:0:2	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	_y#_E_	6	6
-text_sanitize:chart:1:1	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	ffy#_E_	7	6
-rrdlabels_sanitize_name	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	_y__E_	6	-
-rrdlabels_sanitize_value	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	ffy_@E:	7	-
-prometheus_rrdlabels_sanitize_name	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	__y__E_	7	-
-nrpc_sanitize_name	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	ffy#@E=	7	-
-rrdset_strncpyz_name	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	ffy#_E_	7	-
-netdata_fix_chart_name	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	-	ffy#_E___!_3__NQ:rd5	20	-
-netdata_fix_chart_id	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	-	ffy#_E___!_3__NQ:rd5	20	-
-rrdvar_fix_name	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	-	ffy#_E___!_3__NQ:rd5	20	1
-rrd_string_sanitize	\x96\xffy#@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	-	ffy#@E= _! 3% NQ:rd5	20	-
+text_sanitize:identity:0:0	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	\x96_y\x23@E=	7	7
+text_sanitize:identity:1:0	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	\x96ffy\x23@E	7	6
+text_sanitize:rrd:0:2	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	_y\x23@E=	6	6
+text_sanitize:rrd:1:2	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	ffy\x23@E=	7	6
+text_sanitize:chart:0:2	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	_y\x23_E_	6	6
+text_sanitize:chart:1:1	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	ffy\x23_E_	7	6
+rrdlabels_sanitize_name	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	_y__E_	6	-
+rrdlabels_sanitize_value	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	ffy_@E:	7	-
+prometheus_rrdlabels_sanitize_name	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	__y__E_	7	-
+nrpc_sanitize_name	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	ffy\x23@E=	7	-
+rrdset_strncpyz_name	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	8	ffy\x23_E_	7	-
+netdata_fix_chart_name	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	-	ffy\x23_E___!_3__NQ:rd5	20	-
+netdata_fix_chart_id	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	-	ffy\x23_E___!_3__NQ:rd5	20	-
+rrdvar_fix_name	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	-	ffy\x23_E___!_3__NQ:rd5	20	1
+rrd_string_sanitize	\x96\xffy\x23@E=\x0a\xac_!\x093%\x0fNQ:r\xd5\x13	-	ffy\x23@E= _! 3% NQ:rd5	20	-
 text_sanitize:identity:0:1	L%/\xc8Da\xf2n\x8c\xf6>\x1d\x14\x96(1;(P\x9f_^	4	L%/	3	3
 text_sanitize:identity:1:0	L%/\xc8Da\xf2n\x8c\xf6>\x1d\x14\x96(1;(P\x9f_^	4	L%/	3	3
 text_sanitize:rrd:0:0	L%/\xc8Da\xf2n\x8c\xf6>\x1d\x14\x96(1;(P\x9f_^	4	L%/	3	3
@@ -28193,21 +28193,21 @@ netdata_fix_chart_name	(%U\x15	-	(_U	3	-
 netdata_fix_chart_id	(%U\x15	-	(_U	3	-
 rrdvar_fix_name	(%U\x15	-	(_U	3	1
 rrd_string_sanitize	(%U\x15	-	(%U	3	-
-text_sanitize:identity:0:1	#@\x92\xd0_4):}\x15\xc8\xaf)h	45	#@\x92__4):}\x15_)h	13	13
-text_sanitize:identity:1:0	#@\x92\xd0_4):}\x15\xc8\xaf)h	45	#@\x92d0_4):}\x15\xc8\xaf)h	15	13
-text_sanitize:rrd:0:1	#@\x92\xd0_4):}\x15\xc8\xaf)h	45	#@ __4):} _)h	13	13
-text_sanitize:rrd:1:1	#@\x92\xd0_4):}\x15\xc8\xaf)h	45	#@ d0_4):} \xc8\xaf)h	15	13
-text_sanitize:chart:0:1	#@\x92\xd0_4):}\x15\xc8\xaf)h	45	#_ __4):} _)h	13	13
-text_sanitize:chart:1:0	#@\x92\xd0_4):}\x15\xc8\xaf)h	45	#_ d0_4):} \xc8\xaf)h	15	13
-rrdlabels_sanitize_name	#@\x92\xd0_4):}\x15\xc8\xaf)h	45	_____4______h	13	-
-rrdlabels_sanitize_value	#@\x92\xd0_4):}\x15\xc8\xaf)h	45	_@ d0_4):_ \xc8\xaf)h	15	-
-prometheus_rrdlabels_sanitize_name	#@\x92\xd0_4):}\x15\xc8\xaf)h	45	_____4_:____h	13	-
-nrpc_sanitize_name	#@\x92\xd0_4):}\x15\xc8\xaf)h	45	#@ d0_4):} \xc8\xaf)h	15	-
-rrdset_strncpyz_name	#@\x92\xd0_4):}\x15\xc8\xaf)h	45	#__d0_4):}_\xc8\xaf)h	15	-
-netdata_fix_chart_name	#@\x92\xd0_4):}\x15\xc8\xaf)h	-	#__d0_4):}_\xc8\xaf)	14	-
-netdata_fix_chart_id	#@\x92\xd0_4):}\x15\xc8\xaf)h	-	#__d0_4):}_\xc8\xaf)	14	-
-rrdvar_fix_name	#@\x92\xd0_4):}\x15\xc8\xaf)h	-	#__d0_4):}_\xc8\xaf)	14	1
-rrd_string_sanitize	#@\x92\xd0_4):}\x15\xc8\xaf)h	-	#@ d0_4):} \xc8\xaf)h	15	-
+text_sanitize:identity:0:1	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	45	\x23@\x92__4):}\x15_)h	13	13
+text_sanitize:identity:1:0	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	45	\x23@\x92d0_4):}\x15\xc8\xaf)h	15	13
+text_sanitize:rrd:0:1	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	45	\x23@ __4):} _)h	13	13
+text_sanitize:rrd:1:1	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	45	\x23@ d0_4):} \xc8\xaf)h	15	13
+text_sanitize:chart:0:1	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	45	\x23_ __4):} _)h	13	13
+text_sanitize:chart:1:0	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	45	\x23_ d0_4):} \xc8\xaf)h	15	13
+rrdlabels_sanitize_name	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	45	_____4______h	13	-
+rrdlabels_sanitize_value	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	45	_@ d0_4):_ \xc8\xaf)h	15	-
+prometheus_rrdlabels_sanitize_name	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	45	_____4_:____h	13	-
+nrpc_sanitize_name	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	45	\x23@ d0_4):} \xc8\xaf)h	15	-
+rrdset_strncpyz_name	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	45	\x23__d0_4):}_\xc8\xaf)h	15	-
+netdata_fix_chart_name	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	-	\x23__d0_4):}_\xc8\xaf)	14	-
+netdata_fix_chart_id	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	-	\x23__d0_4):}_\xc8\xaf)	14	-
+rrdvar_fix_name	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	-	\x23__d0_4):}_\xc8\xaf)	14	1
+rrd_string_sanitize	\x23@\x92\xd0_4):}\x15\xc8\xaf)h	-	\x23@ d0_4):} \xc8\xaf)h	15	-
 text_sanitize:identity:0:2	n(9_n:\x17\x08\x1f2\\$R]	27	n(9_n:\x17\x08\x1f2\\$R]	14	14
 text_sanitize:identity:1:2	n(9_n:\x17\x08\x1f2\\$R]	27	n(9_n:\x17\x08\x1f2\\$R]	14	14
 text_sanitize:rrd:0:2	n(9_n:\x17\x08\x1f2\\$R]	27	n(9_n: 2/$R]	12	12
@@ -28298,21 +28298,21 @@ netdata_fix_chart_name	\xb6*\x09	-		0	-
 netdata_fix_chart_id	\xb6*\x09	-		0	-
 rrdvar_fix_name	\xb6*\x09	-		0	1
 rrd_string_sanitize	\xb6*\x09	-	*	1	-
-text_sanitize:identity:0:0	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P#\xa4*_^k_n\x12\x1fK__V\xb2	16	16
-text_sanitize:identity:1:1	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P#\xa4*c4^kd4n\x12\x1fKc2c7V\xb2	20	16
-text_sanitize:rrd:0:2	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P# *_^k_n K__V	14	14
-text_sanitize:rrd:1:2	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P# *c4^kd4n Kc2c7V	18	14
-text_sanitize:chart:0:1	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P# ___k_n K__V	14	14
-text_sanitize:chart:1:1	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P# _c4_kd4n Kc2c7V	18	14
-rrdlabels_sanitize_name	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P_____k_n_K__V	14	-
-rrdlabels_sanitize_value	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P_ _c4_kd4n Kc2c7V	18	-
-prometheus_rrdlabels_sanitize_name	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P_____k_n__K__V_	16	-
-nrpc_sanitize_name	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P# *c4^kd4n Kc2c7V	18	-
-rrdset_strncpyz_name	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P#__c4_kd4n_Kc2c7V	18	-
-netdata_fix_chart_name	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	-	P#__c4_kd4n_Kc2V	16	-
-netdata_fix_chart_id	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	-	P#__c4_kd4n_Kc2V	16	-
-rrdvar_fix_name	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	-	P#__c4_kd4n_Kc2V	16	1
-rrd_string_sanitize	P#\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	-	P# *c4^kd4n Kc2c7V	18	-
+text_sanitize:identity:0:0	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P\x23\xa4*_^k_n\x12\x1fK__V\xb2	16	16
+text_sanitize:identity:1:1	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P\x23\xa4*c4^kd4n\x12\x1fKc2c7V\xb2	20	16
+text_sanitize:rrd:0:2	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P\x23 *_^k_n K__V	14	14
+text_sanitize:rrd:1:2	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P\x23 *c4^kd4n Kc2c7V	18	14
+text_sanitize:chart:0:1	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P\x23 ___k_n K__V	14	14
+text_sanitize:chart:1:1	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P\x23 _c4_kd4n Kc2c7V	18	14
+rrdlabels_sanitize_name	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P_____k_n_K__V	14	-
+rrdlabels_sanitize_value	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P_ _c4_kd4n Kc2c7V	18	-
+prometheus_rrdlabels_sanitize_name	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P_____k_n__K__V_	16	-
+nrpc_sanitize_name	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P\x23 *c4^kd4n Kc2c7V	18	-
+rrdset_strncpyz_name	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	31	P\x23__c4_kd4n_Kc2c7V	18	-
+netdata_fix_chart_name	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	-	P\x23__c4_kd4n_Kc2V	16	-
+netdata_fix_chart_id	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	-	P\x23__c4_kd4n_Kc2V	16	-
+rrdvar_fix_name	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	-	P\x23__c4_kd4n_Kc2V	16	1
+rrd_string_sanitize	P\x23\xa4*\xc4^k\xd4n\x12\x1fK\xc2\xc7V\xb2	-	P\x23 *c4^kd4n Kc2c7V	18	-
 text_sanitize:identity:0:1	\xfa\x17\xdc4\xadV\xd8\x17)Nv8	9	_\x17_4\xadV_\x17	8	8
 text_sanitize:identity:1:0	\xfa\x17\xdc4\xadV\xd8\x17)Nv8	9	fa\x17dc4\xadV	8	6
 text_sanitize:rrd:0:1	\xfa\x17\xdc4\xadV\xd8\x17)Nv8	9	_ _4 V_	7	7
@@ -28373,21 +28373,21 @@ netdata_fix_chart_name	.)]Z\xdb+:_	-	.)]Zdb_:	8	-
 netdata_fix_chart_id	.)]Z\xdb+:_	-	.)]Zdb_:	8	-
 rrdvar_fix_name	.)]Z\xdb+:_	-	.)]Zdb_:	8	1
 rrd_string_sanitize	.)]Z\xdb+:_	-	.)]Zdb+:_	9	-
-text_sanitize:identity:0:1	u\xdb\x1f)OB4#\x19	14	u_\x1f)OB4#\x19	9	9
-text_sanitize:identity:1:2	u\xdb\x1f)OB4#\x19	14	udb\x1f)OB4#\x19	10	9
-text_sanitize:rrd:0:2	u\xdb\x1f)OB4#\x19	14	u_ )OB4#	8	8
-text_sanitize:rrd:1:0	u\xdb\x1f)OB4#\x19	14	udb )OB4#	9	8
-text_sanitize:chart:0:1	u\xdb\x1f)OB4#\x19	14	u_ )OB4#	8	8
-text_sanitize:chart:1:0	u\xdb\x1f)OB4#\x19	14	udb )OB4#	9	8
-rrdlabels_sanitize_name	u\xdb\x1f)OB4#\x19	14	u___OB4_	8	-
-rrdlabels_sanitize_value	u\xdb\x1f)OB4#\x19	14	udb )OB4_	9	-
-prometheus_rrdlabels_sanitize_name	u\xdb\x1f)OB4#\x19	14	u___OB4__	9	-
-nrpc_sanitize_name	u\xdb\x1f)OB4#\x19	14	udb )OB4#	9	-
-rrdset_strncpyz_name	u\xdb\x1f)OB4#\x19	14	udb_)OB4#	9	-
-netdata_fix_chart_name	u\xdb\x1f)OB4#\x19	-	udb_)OB4#	9	-
-netdata_fix_chart_id	u\xdb\x1f)OB4#\x19	-	udb_)OB4#	9	-
-rrdvar_fix_name	u\xdb\x1f)OB4#\x19	-	udb_)OB4#	9	1
-rrd_string_sanitize	u\xdb\x1f)OB4#\x19	-	udb )OB4#	9	-
+text_sanitize:identity:0:1	u\xdb\x1f)OB4\x23\x19	14	u_\x1f)OB4\x23\x19	9	9
+text_sanitize:identity:1:2	u\xdb\x1f)OB4\x23\x19	14	udb\x1f)OB4\x23\x19	10	9
+text_sanitize:rrd:0:2	u\xdb\x1f)OB4\x23\x19	14	u_ )OB4\x23	8	8
+text_sanitize:rrd:1:0	u\xdb\x1f)OB4\x23\x19	14	udb )OB4\x23	9	8
+text_sanitize:chart:0:1	u\xdb\x1f)OB4\x23\x19	14	u_ )OB4\x23	8	8
+text_sanitize:chart:1:0	u\xdb\x1f)OB4\x23\x19	14	udb )OB4\x23	9	8
+rrdlabels_sanitize_name	u\xdb\x1f)OB4\x23\x19	14	u___OB4_	8	-
+rrdlabels_sanitize_value	u\xdb\x1f)OB4\x23\x19	14	udb )OB4_	9	-
+prometheus_rrdlabels_sanitize_name	u\xdb\x1f)OB4\x23\x19	14	u___OB4__	9	-
+nrpc_sanitize_name	u\xdb\x1f)OB4\x23\x19	14	udb )OB4\x23	9	-
+rrdset_strncpyz_name	u\xdb\x1f)OB4\x23\x19	14	udb_)OB4\x23	9	-
+netdata_fix_chart_name	u\xdb\x1f)OB4\x23\x19	-	udb_)OB4\x23	9	-
+netdata_fix_chart_id	u\xdb\x1f)OB4\x23\x19	-	udb_)OB4\x23	9	-
+rrdvar_fix_name	u\xdb\x1f)OB4\x23\x19	-	udb_)OB4\x23	9	1
+rrd_string_sanitize	u\xdb\x1f)OB4\x23\x19	-	udb )OB4\x23	9	-
 text_sanitize:identity:0:2	`* ;y	18	`* ;y	5	5
 text_sanitize:identity:1:0	`* ;y	18	`* ;y	5	5
 text_sanitize:rrd:0:2	`* ;y	18	`* ;y	5	5
@@ -28493,21 +28493,21 @@ netdata_fix_chart_name	G]\x0d\xd0J|7\x9f?\xbbc8D	-	G]_d0J_7___c8	13	-
 netdata_fix_chart_id	G]\x0d\xd0J|7\x9f?\xbbc8D	-	G]_d0J_7___c8	13	-
 rrdvar_fix_name	G]\x0d\xd0J|7\x9f?\xbbc8D	-	G]_d0J_7___c8	13	1
 rrd_string_sanitize	G]\x0d\xd0J|7\x9f?\xbbc8D	-	G] d0J|7 ? c8D	14	-
-text_sanitize:identity:0:0	\xdd.P\x05@g\x0d#"*	15	_.P\x05@g\x0d#"*	10	10
-text_sanitize:identity:1:0	\xdd.P\x05@g\x0d#"*	15	dd.P\x05@g\x0d#"*	11	10
-text_sanitize:rrd:0:2	\xdd.P\x05@g\x0d#"*	15	_.P @g #'*	10	10
-text_sanitize:rrd:1:1	\xdd.P\x05@g\x0d#"*	15	dd.P @g #'*	11	10
-text_sanitize:chart:0:2	\xdd.P\x05@g\x0d#"*	15	_.P _g #__	10	10
-text_sanitize:chart:1:0	\xdd.P\x05@g\x0d#"*	15	dd.P _g #__	11	10
-rrdlabels_sanitize_name	\xdd.P\x05@g\x0d#"*	15	_.P__g____	10	-
-rrdlabels_sanitize_value	\xdd.P\x05@g\x0d#"*	15	dd.P @g ___	11	-
-prometheus_rrdlabels_sanitize_name	\xdd.P\x05@g\x0d#"*	15	__P__g____	10	-
-nrpc_sanitize_name	\xdd.P\x05@g\x0d#"*	15	dd.P @g #'*	11	-
-rrdset_strncpyz_name	\xdd.P\x05@g\x0d#"*	15	dd.P__g_#__	11	-
-netdata_fix_chart_name	\xdd.P\x05@g\x0d#"*	-	dd.P__g_#_	10	-
-netdata_fix_chart_id	\xdd.P\x05@g\x0d#"*	-	dd.P__g_#_	10	-
-rrdvar_fix_name	\xdd.P\x05@g\x0d#"*	-	dd.P__g_#_	10	1
-rrd_string_sanitize	\xdd.P\x05@g\x0d#"*	-	dd.P @g #'*	11	-
+text_sanitize:identity:0:0	\xdd.P\x05@g\x0d\x23"*	15	_.P\x05@g\x0d\x23"*	10	10
+text_sanitize:identity:1:0	\xdd.P\x05@g\x0d\x23"*	15	dd.P\x05@g\x0d\x23"*	11	10
+text_sanitize:rrd:0:2	\xdd.P\x05@g\x0d\x23"*	15	_.P @g \x23'*	10	10
+text_sanitize:rrd:1:1	\xdd.P\x05@g\x0d\x23"*	15	dd.P @g \x23'*	11	10
+text_sanitize:chart:0:2	\xdd.P\x05@g\x0d\x23"*	15	_.P _g \x23__	10	10
+text_sanitize:chart:1:0	\xdd.P\x05@g\x0d\x23"*	15	dd.P _g \x23__	11	10
+rrdlabels_sanitize_name	\xdd.P\x05@g\x0d\x23"*	15	_.P__g____	10	-
+rrdlabels_sanitize_value	\xdd.P\x05@g\x0d\x23"*	15	dd.P @g ___	11	-
+prometheus_rrdlabels_sanitize_name	\xdd.P\x05@g\x0d\x23"*	15	__P__g____	10	-
+nrpc_sanitize_name	\xdd.P\x05@g\x0d\x23"*	15	dd.P @g \x23'*	11	-
+rrdset_strncpyz_name	\xdd.P\x05@g\x0d\x23"*	15	dd.P__g_\x23__	11	-
+netdata_fix_chart_name	\xdd.P\x05@g\x0d\x23"*	-	dd.P__g_\x23_	10	-
+netdata_fix_chart_id	\xdd.P\x05@g\x0d\x23"*	-	dd.P__g_\x23_	10	-
+rrdvar_fix_name	\xdd.P\x05@g\x0d\x23"*	-	dd.P__g_\x23_	10	1
+rrd_string_sanitize	\xdd.P\x05@g\x0d\x23"*	-	dd.P @g \x23'*	11	-
 text_sanitize:identity:0:2	!5\xde!N4\x08e@\xd8X@\x95\x93^\x1f	31	!5_!N4\x08e@_X@\x95\x93^\x1f	16	16
 text_sanitize:identity:1:2	!5\xde!N4\x08e@\xd8X@\x95\x93^\x1f	31	!5de!N4\x08e@d8X@\x95\x93^\x1f	18	16
 text_sanitize:rrd:0:2	!5\xde!N4\x08e@\xd8X@\x95\x93^\x1f	31	!5_!N4 e@_X@ ^	14	14
@@ -28658,21 +28658,21 @@ netdata_fix_chart_name	\x16B\x07\x8e,\xb0\xd8n\xe6!\xf1Y\x1a\xf5	-	B_._d8ne6!f1Y
 netdata_fix_chart_id	\x16B\x07\x8e,\xb0\xd8n\xe6!\xf1Y\x1a\xf5	-	B_._d8ne6!f1Y	13	-
 rrdvar_fix_name	\x16B\x07\x8e,\xb0\xd8n\xe6!\xf1Y\x1a\xf5	-	B_._d8ne6!f1Y	13	1
 rrd_string_sanitize	\x16B\x07\x8e,\xb0\xd8n\xe6!\xf1Y\x1a\xf5	-	B , d8ne6!f1Y f5	16	-
-text_sanitize:identity:0:1	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	!\x9e#__A\x1ek\x8b\x96D\x13\x0e\x0e_';g(	19	19
-text_sanitize:identity:1:0	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	!\x9e#e9e7A\x1ek\x8b\x96D\x13\x0e\x0efe';g(	22	19
-text_sanitize:rrd:0:0	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	! #__A k D _';g(	16	16
-text_sanitize:rrd:1:1	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	! #e9e7A k D fe';g(	19	16
-text_sanitize:chart:0:1	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	! #__A k D __;g(	16	16
-text_sanitize:chart:1:1	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	! #e9e7A k D fe_;g(	19	16
-rrdlabels_sanitize_name	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	_____A_k_D____g_	16	-
-rrdlabels_sanitize_value	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	_ _e9e7A k D fe_:g(	19	-
-prometheus_rrdlabels_sanitize_name	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	_____A_k__D______g_	19	-
-nrpc_sanitize_name	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	! #e9e7A k D fe';g(	19	-
-rrdset_strncpyz_name	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	__#e9e7A_k_D_fe_;g(	19	-
-netdata_fix_chart_name	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	-	__#e9e7A_k_D_fe_;g(	19	-
-netdata_fix_chart_id	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	-	__#e9e7A_k_D_fe_;g(	19	-
-rrdvar_fix_name	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	-	__#e9e7A_k_D_fe_;g(	19	1
-rrd_string_sanitize	!\x9e#\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	-	! #e9e7A k D fe';g(	19	-
+text_sanitize:identity:0:1	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	!\x9e\x23__A\x1ek\x8b\x96D\x13\x0e\x0e_';g(	19	19
+text_sanitize:identity:1:0	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	!\x9e\x23e9e7A\x1ek\x8b\x96D\x13\x0e\x0efe';g(	22	19
+text_sanitize:rrd:0:0	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	! \x23__A k D _';g(	16	16
+text_sanitize:rrd:1:1	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	! \x23e9e7A k D fe';g(	19	16
+text_sanitize:chart:0:1	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	! \x23__A k D __;g(	16	16
+text_sanitize:chart:1:1	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	! \x23e9e7A k D fe_;g(	19	16
+rrdlabels_sanitize_name	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	_____A_k_D____g_	16	-
+rrdlabels_sanitize_value	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	_ _e9e7A k D fe_:g(	19	-
+prometheus_rrdlabels_sanitize_name	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	_____A_k__D______g_	19	-
+nrpc_sanitize_name	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	! \x23e9e7A k D fe';g(	19	-
+rrdset_strncpyz_name	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	35	__\x23e9e7A_k_D_fe_;g(	19	-
+netdata_fix_chart_name	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	-	__\x23e9e7A_k_D_fe_;g(	19	-
+netdata_fix_chart_id	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	-	__\x23e9e7A_k_D_fe_;g(	19	-
+rrdvar_fix_name	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	-	__\x23e9e7A_k_D_fe_;g(	19	1
+rrd_string_sanitize	!\x9e\x23\xe9\xe7A\x1ek\x8b\x96D\x13\x0e\x0e\xfe';g(	-	! \x23e9e7A k D fe';g(	19	-
 text_sanitize:identity:0:1	\x0ca\x02j+G-\\3\x09R l0\x95Z@=\xccO! A	8	a\x02j+G-\\	7	7
 text_sanitize:identity:1:0	\x0ca\x02j+G-\\3\x09R l0\x95Z@=\xccO! A	8	a\x02j+G-\\	7	7
 text_sanitize:rrd:0:1	\x0ca\x02j+G-\\3\x09R l0\x95Z@=\xccO! A	8	a j+G-/	7	7
@@ -28793,21 +28793,21 @@ netdata_fix_chart_name	,a	-	.a	2	-
 netdata_fix_chart_id	,a	-	.a	2	-
 rrdvar_fix_name	,a	-	.a	2	1
 rrd_string_sanitize	,a	-	,a	2	-
-text_sanitize:identity:0:1	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	24	'i\x082!\x03\x0dt%>\x1bO_#V\x18	16	16
-text_sanitize:identity:1:0	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	24	'i\x082!\x03\x0dt%>\x1bO_#V\x18	16	16
-text_sanitize:rrd:0:1	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	24	'i 2! t%> O_#V	14	14
-text_sanitize:rrd:1:2	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	24	'i 2! t%> O_#V	14	14
-text_sanitize:chart:0:2	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	24	_i 2! t_> O_#V	14	14
-text_sanitize:chart:1:2	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	24	_i 2! t_> O_#V	14	14
-rrdlabels_sanitize_name	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	24	_i_2__t___O__V	14	-
-rrdlabels_sanitize_value	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	24	_i 2_ t__ O__V	14	-
-prometheus_rrdlabels_sanitize_name	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	24	_i_2___t___O__V_	16	-
-nrpc_sanitize_name	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	24	'i 2! t%> O_#V	14	-
-rrdset_strncpyz_name	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	24	_i_2!_t_>_O_#V	14	-
-netdata_fix_chart_name	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	-	_i_2!_t_>_O_#V	14	-
-netdata_fix_chart_id	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	-	_i_2!_t_>_O_#V	14	-
-rrdvar_fix_name	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	-	_i_2!_t_>_O_#V	14	1
-rrd_string_sanitize	 'i\x082!\x03\x0dt%>\x1bO_#V\x18	-	'i 2! t%> O_#V	14	-
+text_sanitize:identity:0:1	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	24	'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	16	16
+text_sanitize:identity:1:0	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	24	'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	16	16
+text_sanitize:rrd:0:1	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	24	'i 2! t%> O_\x23V	14	14
+text_sanitize:rrd:1:2	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	24	'i 2! t%> O_\x23V	14	14
+text_sanitize:chart:0:2	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	24	_i 2! t_> O_\x23V	14	14
+text_sanitize:chart:1:2	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	24	_i 2! t_> O_\x23V	14	14
+rrdlabels_sanitize_name	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	24	_i_2__t___O__V	14	-
+rrdlabels_sanitize_value	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	24	_i 2_ t__ O__V	14	-
+prometheus_rrdlabels_sanitize_name	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	24	_i_2___t___O__V_	16	-
+nrpc_sanitize_name	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	24	'i 2! t%> O_\x23V	14	-
+rrdset_strncpyz_name	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	24	_i_2!_t_>_O_\x23V	14	-
+netdata_fix_chart_name	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	-	_i_2!_t_>_O_\x23V	14	-
+netdata_fix_chart_id	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	-	_i_2!_t_>_O_\x23V	14	-
+rrdvar_fix_name	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	-	_i_2!_t_>_O_\x23V	14	1
+rrd_string_sanitize	 'i\x082!\x03\x0dt%>\x1bO_\x23V\x18	-	'i 2! t%> O_\x23V	14	-
 text_sanitize:identity:0:2	\xf6)~:\xb6 @F\x1b\x11\x80\x17G4xil\x12K6	5	_)~:	4	4
 text_sanitize:identity:1:0	\xf6)~:\xb6 @F\x1b\x11\x80\x17G4xil\x12K6	5	f6)~	4	3
 text_sanitize:rrd:0:1	\xf6)~:\xb6 @F\x1b\x11\x80\x17G4xil\x12K6	5	_)~:	4	4
@@ -28973,21 +28973,21 @@ netdata_fix_chart_name	nO\xbf ,\x10	-	nO_.	4	-
 netdata_fix_chart_id	nO\xbf ,\x10	-	nO_.	4	-
 rrdvar_fix_name	nO\xbf ,\x10	-	nO_.	4	1
 rrd_string_sanitize	nO\xbf ,\x10	-	nO ,	4	-
-text_sanitize:identity:0:2	":Q&\x1b9#	18	":Q&\x1b9#	7	7
-text_sanitize:identity:1:0	":Q&\x1b9#	18	":Q&\x1b9#	7	7
-text_sanitize:rrd:0:2	":Q&\x1b9#	18	':Q& 9#	7	7
-text_sanitize:rrd:1:1	":Q&\x1b9#	18	':Q& 9#	7	7
-text_sanitize:chart:0:0	":Q&\x1b9#	18	_:Q_ 9#	7	7
-text_sanitize:chart:1:0	":Q&\x1b9#	18	_:Q_ 9#	7	7
-rrdlabels_sanitize_name	":Q&\x1b9#	18	__Q__9_	7	-
-rrdlabels_sanitize_value	":Q&\x1b9#	18	_:Q_ 9_	7	-
-prometheus_rrdlabels_sanitize_name	":Q&\x1b9#	18	_:Q__9_	7	-
-nrpc_sanitize_name	":Q&\x1b9#	18	':Q& 9#	7	-
-rrdset_strncpyz_name	":Q&\x1b9#	18	_:Q__9#	7	-
-netdata_fix_chart_name	":Q&\x1b9#	-	_:Q__9#	7	-
-netdata_fix_chart_id	":Q&\x1b9#	-	_:Q__9#	7	-
-rrdvar_fix_name	":Q&\x1b9#	-	_:Q__9#	7	1
-rrd_string_sanitize	":Q&\x1b9#	-	':Q& 9#	7	-
+text_sanitize:identity:0:2	":Q&\x1b9\x23	18	":Q&\x1b9\x23	7	7
+text_sanitize:identity:1:0	":Q&\x1b9\x23	18	":Q&\x1b9\x23	7	7
+text_sanitize:rrd:0:2	":Q&\x1b9\x23	18	':Q& 9\x23	7	7
+text_sanitize:rrd:1:1	":Q&\x1b9\x23	18	':Q& 9\x23	7	7
+text_sanitize:chart:0:0	":Q&\x1b9\x23	18	_:Q_ 9\x23	7	7
+text_sanitize:chart:1:0	":Q&\x1b9\x23	18	_:Q_ 9\x23	7	7
+rrdlabels_sanitize_name	":Q&\x1b9\x23	18	__Q__9_	7	-
+rrdlabels_sanitize_value	":Q&\x1b9\x23	18	_:Q_ 9_	7	-
+prometheus_rrdlabels_sanitize_name	":Q&\x1b9\x23	18	_:Q__9_	7	-
+nrpc_sanitize_name	":Q&\x1b9\x23	18	':Q& 9\x23	7	-
+rrdset_strncpyz_name	":Q&\x1b9\x23	18	_:Q__9\x23	7	-
+netdata_fix_chart_name	":Q&\x1b9\x23	-	_:Q__9\x23	7	-
+netdata_fix_chart_id	":Q&\x1b9\x23	-	_:Q__9\x23	7	-
+rrdvar_fix_name	":Q&\x1b9\x23	-	_:Q__9\x23	7	1
+rrd_string_sanitize	":Q&\x1b9\x23	-	':Q& 9\x23	7	-
 text_sanitize:identity:0:2	\xf5I\x0c'\xd3;\xd5\x0eqZg\xe3\x02\xad:\\\x1e\x104;\x11	48	_I\x0c'_;_\x0eqZg_\x02\xad:\\\x1e\x104;\x11	21	21
 text_sanitize:identity:1:2	\xf5I\x0c'\xd3;\xd5\x0eqZg\xe3\x02\xad:\\\x1e\x104;\x11	48	f5I\x0c'd3;d5\x0eqZge3\x02\xad:\\\x1e\x104;\x11	25	21
 text_sanitize:rrd:0:2	\xf5I\x0c'\xd3;\xd5\x0eqZg\xe3\x02\xad:\\\x1e\x104;\x11	48	_I '_;_ qZg_ :/ 4;	18	18
@@ -29363,21 +29363,21 @@ netdata_fix_chart_name	\x082\xbe=@\x9fF\x07\x0f\xe2\x09\xfcd\xc5n!\x1c	-	2____F_
 netdata_fix_chart_id	\x082\xbe=@\x9fF\x07\x0f\xe2\x09\xfcd\xc5n!\x1c	-	2____F_e2_fcdc5n!	17	-
 rrdvar_fix_name	\x082\xbe=@\x9fF\x07\x0f\xe2\x09\xfcd\xc5n!\x1c	-	2____F_e2_fcdc5n!	17	1
 rrd_string_sanitize	\x082\xbe=@\x9fF\x07\x0f\xe2\x09\xfcd\xc5n!\x1c	-	2 =@ F e2 fcdc5n!	17	-
-text_sanitize:identity:0:1	"\x06\\\xfd!N/*#>f\xe3\x19	3	"\x06	2	2
-text_sanitize:identity:1:1	"\x06\\\xfd!N/*#>f\xe3\x19	3	"\x06	2	2
-text_sanitize:rrd:0:0	"\x06\\\xfd!N/*#>f\xe3\x19	3	'	1	1
-text_sanitize:rrd:1:0	"\x06\\\xfd!N/*#>f\xe3\x19	3	'	1	1
-text_sanitize:chart:0:0	"\x06\\\xfd!N/*#>f\xe3\x19	3		0	0
-text_sanitize:chart:1:1	"\x06\\\xfd!N/*#>f\xe3\x19	3	[n	2	2
-rrdlabels_sanitize_name	"\x06\\\xfd!N/*#>f\xe3\x19	3		0	-
-rrdlabels_sanitize_value	"\x06\\\xfd!N/*#>f\xe3\x19	3	[n	2	-
-prometheus_rrdlabels_sanitize_name	"\x06\\\xfd!N/*#>f\xe3\x19	3		0	-
-nrpc_sanitize_name	"\x06\\\xfd!N/*#>f\xe3\x19	3	'	1	-
-rrdset_strncpyz_name	"\x06\\\xfd!N/*#>f\xe3\x19	3		0	-
-netdata_fix_chart_name	"\x06\\\xfd!N/*#>f\xe3\x19	-	__/fd!N/_#>f	12	-
-netdata_fix_chart_id	"\x06\\\xfd!N/*#>f\xe3\x19	-	__/fd!N/_#>f	12	-
-rrdvar_fix_name	"\x06\\\xfd!N/*#>f\xe3\x19	-	__/fd!N/_#>f	12	1
-rrd_string_sanitize	"\x06\\\xfd!N/*#>f\xe3\x19	-	' /fd!N/*#>fe3	14	-
+text_sanitize:identity:0:1	"\x06\\\xfd!N/*\x23>f\xe3\x19	3	"\x06	2	2
+text_sanitize:identity:1:1	"\x06\\\xfd!N/*\x23>f\xe3\x19	3	"\x06	2	2
+text_sanitize:rrd:0:0	"\x06\\\xfd!N/*\x23>f\xe3\x19	3	'	1	1
+text_sanitize:rrd:1:0	"\x06\\\xfd!N/*\x23>f\xe3\x19	3	'	1	1
+text_sanitize:chart:0:0	"\x06\\\xfd!N/*\x23>f\xe3\x19	3		0	0
+text_sanitize:chart:1:1	"\x06\\\xfd!N/*\x23>f\xe3\x19	3	[n	2	2
+rrdlabels_sanitize_name	"\x06\\\xfd!N/*\x23>f\xe3\x19	3		0	-
+rrdlabels_sanitize_value	"\x06\\\xfd!N/*\x23>f\xe3\x19	3	[n	2	-
+prometheus_rrdlabels_sanitize_name	"\x06\\\xfd!N/*\x23>f\xe3\x19	3		0	-
+nrpc_sanitize_name	"\x06\\\xfd!N/*\x23>f\xe3\x19	3	'	1	-
+rrdset_strncpyz_name	"\x06\\\xfd!N/*\x23>f\xe3\x19	3		0	-
+netdata_fix_chart_name	"\x06\\\xfd!N/*\x23>f\xe3\x19	-	__/fd!N/_\x23>f	12	-
+netdata_fix_chart_id	"\x06\\\xfd!N/*\x23>f\xe3\x19	-	__/fd!N/_\x23>f	12	-
+rrdvar_fix_name	"\x06\\\xfd!N/*\x23>f\xe3\x19	-	__/fd!N/_\x23>f	12	1
+rrd_string_sanitize	"\x06\\\xfd!N/*\x23>f\xe3\x19	-	' /fd!N/*\x23>fe3	14	-
 text_sanitize:identity:0:0	\x1a\x8e	15	\x8e	1	1
 text_sanitize:identity:1:1	\x1a\x8e	15	\x8e	1	1
 text_sanitize:rrd:0:0	\x1a\x8e	15		0	0
@@ -29918,21 +29918,21 @@ netdata_fix_chart_name	\x19\xb7\x04/\x8b(\xb41^\xdcd\x0a\x179\xd3\x0aF\x84$=\\\x
 netdata_fix_chart_id	\x19\xb7\x04/\x8b(\xb41^\xdcd\x0a\x179\xd3\x0aF\x84$=\\\x0a	-	/_(_1_dcd_9d3_F___/	19	-
 rrdvar_fix_name	\x19\xb7\x04/\x8b(\xb41^\xdcd\x0a\x179\xd3\x0aF\x84$=\\\x0a	-	/_(_1_dcd_9d3_F___/	19	1
 rrd_string_sanitize	\x19\xb7\x04/\x8b(\xb41^\xdcd\x0a\x179\xd3\x0aF\x84$=\\\x0a	-	/ ( 1^dcd 9d3 F $=/	19	-
-text_sanitize:identity:0:0	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	21	*5@\\\x04\xb5MG_)+_(\x83#:_\x0a	18	18
-text_sanitize:identity:1:1	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	21	*5@\\\x04\xb5MGda)+_(\x83#:de\x0a	20	18
-text_sanitize:rrd:0:0	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	21	*5@/ MG_)+_( #:_	16	16
-text_sanitize:rrd:1:0	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	21	*5@/ MGda)+_( #:de	18	16
-text_sanitize:chart:0:0	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	21	_5_/ MG_)__( #:_	16	16
-text_sanitize:chart:1:1	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	21	_5_/ MGda)__( #:de	18	16
-rrdlabels_sanitize_name	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	21	_5_/_MG_________	16	-
-rrdlabels_sanitize_value	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	21	_5@/ MGda)+_( _:de	18	-
-prometheus_rrdlabels_sanitize_name	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	21	_5____MG_______:__	18	-
-nrpc_sanitize_name	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	21	*5@\\ MGda)+_( #:de	18	-
-rrdset_strncpyz_name	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	21	_5_/_MGda)__(_#:de	18	-
-netdata_fix_chart_name	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	-	_5_/_MGda)__(_#:de	18	-
-netdata_fix_chart_id	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	-	_5_/_MGda)__(_#:de	18	-
-rrdvar_fix_name	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	-	_5_/_MGda)__(_#:de	18	1
-rrd_string_sanitize	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83#:\xde\x0a	-	*5@/ MGda)+_( #:de	18	-
+text_sanitize:identity:0:0	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	21	*5@\\\x04\xb5MG_)+_(\x83\x23:_\x0a	18	18
+text_sanitize:identity:1:1	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	21	*5@\\\x04\xb5MGda)+_(\x83\x23:de\x0a	20	18
+text_sanitize:rrd:0:0	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	21	*5@/ MG_)+_( \x23:_	16	16
+text_sanitize:rrd:1:0	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	21	*5@/ MGda)+_( \x23:de	18	16
+text_sanitize:chart:0:0	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	21	_5_/ MG_)__( \x23:_	16	16
+text_sanitize:chart:1:1	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	21	_5_/ MGda)__( \x23:de	18	16
+rrdlabels_sanitize_name	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	21	_5_/_MG_________	16	-
+rrdlabels_sanitize_value	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	21	_5@/ MGda)+_( _:de	18	-
+prometheus_rrdlabels_sanitize_name	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	21	_5____MG_______:__	18	-
+nrpc_sanitize_name	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	21	*5@\\ MGda)+_( \x23:de	18	-
+rrdset_strncpyz_name	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	21	_5_/_MGda)__(_\x23:de	18	-
+netdata_fix_chart_name	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	-	_5_/_MGda)__(_\x23:de	18	-
+netdata_fix_chart_id	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	-	_5_/_MGda)__(_\x23:de	18	-
+rrdvar_fix_name	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	-	_5_/_MGda)__(_\x23:de	18	1
+rrd_string_sanitize	\x03\x1a*5@\\\x04\xb5MG\xda)+_(\x83\x23:\xde\x0a	-	*5@/ MGda)+_( \x23:de	18	-
 text_sanitize:identity:0:1	\xb9!\xf3\xb5\x10\xec[	40	\xb9!_\x10_[	6	6
 text_sanitize:identity:1:1	\xb9!\xf3\xb5\x10\xec[	40	\xb9!f3b5\x10ec[	10	6
 text_sanitize:rrd:0:0	\xb9!\xf3\xb5\x10\xec[	40	!_ _[	5	5
@@ -29963,21 +29963,21 @@ netdata_fix_chart_name	-\x1dq%)\x9d\x81\xd4\x1b\x96_,\x0bn\xeb)|*\x1d	-	-_q_)_d4
 netdata_fix_chart_id	-\x1dq%)\x9d\x81\xd4\x1b\x96_,\x0bn\xeb)|*\x1d	-	-_q_)_d4__._neb)__	18	-
 rrdvar_fix_name	-\x1dq%)\x9d\x81\xd4\x1b\x96_,\x0bn\xeb)|*\x1d	-	-_q_)_d4__._neb)__	18	1
 rrd_string_sanitize	-\x1dq%)\x9d\x81\xd4\x1b\x96_,\x0bn\xeb)|*\x1d	-	- q%) d4 _, neb)|*	18	-
-text_sanitize:identity:0:1	ft\xf3K:ca\x1d#OF\x14	21	ft_K:ca\x1d#OF\x14	12	12
-text_sanitize:identity:1:1	ft\xf3K:ca\x1d#OF\x14	21	ftf3K:ca\x1d#OF\x14	13	12
-text_sanitize:rrd:0:1	ft\xf3K:ca\x1d#OF\x14	21	ft_K:ca #OF	11	11
-text_sanitize:rrd:1:0	ft\xf3K:ca\x1d#OF\x14	21	ftf3K:ca #OF	12	11
-text_sanitize:chart:0:0	ft\xf3K:ca\x1d#OF\x14	21	ft_K:ca #OF	11	11
-text_sanitize:chart:1:1	ft\xf3K:ca\x1d#OF\x14	21	ftf3K:ca #OF	12	11
-rrdlabels_sanitize_name	ft\xf3K:ca\x1d#OF\x14	21	ft_K_ca__OF	11	-
-rrdlabels_sanitize_value	ft\xf3K:ca\x1d#OF\x14	21	ftf3K:ca _OF	12	-
-prometheus_rrdlabels_sanitize_name	ft\xf3K:ca\x1d#OF\x14	21	ft_K:ca__OF_	12	-
-nrpc_sanitize_name	ft\xf3K:ca\x1d#OF\x14	21	ftf3K:ca #OF	12	-
-rrdset_strncpyz_name	ft\xf3K:ca\x1d#OF\x14	21	ftf3K:ca_#OF	12	-
-netdata_fix_chart_name	ft\xf3K:ca\x1d#OF\x14	-	ftf3K:ca_#OF	12	-
-netdata_fix_chart_id	ft\xf3K:ca\x1d#OF\x14	-	ftf3K:ca_#OF	12	-
-rrdvar_fix_name	ft\xf3K:ca\x1d#OF\x14	-	ftf3K:ca_#OF	12	1
-rrd_string_sanitize	ft\xf3K:ca\x1d#OF\x14	-	ftf3K:ca #OF	12	-
+text_sanitize:identity:0:1	ft\xf3K:ca\x1d\x23OF\x14	21	ft_K:ca\x1d\x23OF\x14	12	12
+text_sanitize:identity:1:1	ft\xf3K:ca\x1d\x23OF\x14	21	ftf3K:ca\x1d\x23OF\x14	13	12
+text_sanitize:rrd:0:1	ft\xf3K:ca\x1d\x23OF\x14	21	ft_K:ca \x23OF	11	11
+text_sanitize:rrd:1:0	ft\xf3K:ca\x1d\x23OF\x14	21	ftf3K:ca \x23OF	12	11
+text_sanitize:chart:0:0	ft\xf3K:ca\x1d\x23OF\x14	21	ft_K:ca \x23OF	11	11
+text_sanitize:chart:1:1	ft\xf3K:ca\x1d\x23OF\x14	21	ftf3K:ca \x23OF	12	11
+rrdlabels_sanitize_name	ft\xf3K:ca\x1d\x23OF\x14	21	ft_K_ca__OF	11	-
+rrdlabels_sanitize_value	ft\xf3K:ca\x1d\x23OF\x14	21	ftf3K:ca _OF	12	-
+prometheus_rrdlabels_sanitize_name	ft\xf3K:ca\x1d\x23OF\x14	21	ft_K:ca__OF_	12	-
+nrpc_sanitize_name	ft\xf3K:ca\x1d\x23OF\x14	21	ftf3K:ca \x23OF	12	-
+rrdset_strncpyz_name	ft\xf3K:ca\x1d\x23OF\x14	21	ftf3K:ca_\x23OF	12	-
+netdata_fix_chart_name	ft\xf3K:ca\x1d\x23OF\x14	-	ftf3K:ca_\x23OF	12	-
+netdata_fix_chart_id	ft\xf3K:ca\x1d\x23OF\x14	-	ftf3K:ca_\x23OF	12	-
+rrdvar_fix_name	ft\xf3K:ca\x1d\x23OF\x14	-	ftf3K:ca_\x23OF	12	1
+rrd_string_sanitize	ft\xf3K:ca\x1d\x23OF\x14	-	ftf3K:ca \x23OF	12	-
 text_sanitize:identity:0:1	\x0b2\xdb\xed	2	2	1	1
 text_sanitize:identity:1:1	\x0b2\xdb\xed	2	2	1	1
 text_sanitize:rrd:0:1	\x0b2\xdb\xed	2	2	1	1
@@ -30098,21 +30098,21 @@ netdata_fix_chart_name	^\x0a\xe8z@\x0d\x0c!q\\=z"7\x1c_	-	__e8z__!q/_z_7__	16	-
 netdata_fix_chart_id	^\x0a\xe8z@\x0d\x0c!q\\=z"7\x1c_	-	__e8z__!q/_z_7__	16	-
 rrdvar_fix_name	^\x0a\xe8z@\x0d\x0c!q\\=z"7\x1c_	-	__e8z__!q/_z_7__	16	1
 rrd_string_sanitize	^\x0a\xe8z@\x0d\x0c!q\\=z"7\x1c_	-	^ e8z@ !q/=z'7 _	16	-
-text_sanitize:identity:0:0	%\xc3\xd0#\x9a'	36	%__#\x9a'	6	6
-text_sanitize:identity:1:1	%\xc3\xd0#\x9a'	36	%c3d0#\x9a'	8	6
-text_sanitize:rrd:0:2	%\xc3\xd0#\x9a'	36	%__# '	6	6
-text_sanitize:rrd:1:2	%\xc3\xd0#\x9a'	36	%c3d0# '	8	6
-text_sanitize:chart:0:1	%\xc3\xd0#\x9a'	36	___# _	6	6
-text_sanitize:chart:1:2	%\xc3\xd0#\x9a'	36	_c3d0# _	8	6
-rrdlabels_sanitize_name	%\xc3\xd0#\x9a'	36	______	6	-
-rrdlabels_sanitize_value	%\xc3\xd0#\x9a'	36	_c3d0_ _	8	-
-prometheus_rrdlabels_sanitize_name	%\xc3\xd0#\x9a'	36		0	-
-nrpc_sanitize_name	%\xc3\xd0#\x9a'	36	%c3d0# '	8	-
-rrdset_strncpyz_name	%\xc3\xd0#\x9a'	36	_c3d0#__	8	-
-netdata_fix_chart_name	%\xc3\xd0#\x9a'	-	_c3d0#	6	-
-netdata_fix_chart_id	%\xc3\xd0#\x9a'	-	_c3d0#	6	-
-rrdvar_fix_name	%\xc3\xd0#\x9a'	-	_c3d0#	6	1
-rrd_string_sanitize	%\xc3\xd0#\x9a'	-	%c3d0# '	8	-
+text_sanitize:identity:0:0	%\xc3\xd0\x23\x9a'	36	%__\x23\x9a'	6	6
+text_sanitize:identity:1:1	%\xc3\xd0\x23\x9a'	36	%c3d0\x23\x9a'	8	6
+text_sanitize:rrd:0:2	%\xc3\xd0\x23\x9a'	36	%__\x23 '	6	6
+text_sanitize:rrd:1:2	%\xc3\xd0\x23\x9a'	36	%c3d0\x23 '	8	6
+text_sanitize:chart:0:1	%\xc3\xd0\x23\x9a'	36	___\x23 _	6	6
+text_sanitize:chart:1:2	%\xc3\xd0\x23\x9a'	36	_c3d0\x23 _	8	6
+rrdlabels_sanitize_name	%\xc3\xd0\x23\x9a'	36	______	6	-
+rrdlabels_sanitize_value	%\xc3\xd0\x23\x9a'	36	_c3d0_ _	8	-
+prometheus_rrdlabels_sanitize_name	%\xc3\xd0\x23\x9a'	36		0	-
+nrpc_sanitize_name	%\xc3\xd0\x23\x9a'	36	%c3d0\x23 '	8	-
+rrdset_strncpyz_name	%\xc3\xd0\x23\x9a'	36	_c3d0\x23__	8	-
+netdata_fix_chart_name	%\xc3\xd0\x23\x9a'	-	_c3d0\x23	6	-
+netdata_fix_chart_id	%\xc3\xd0\x23\x9a'	-	_c3d0\x23	6	-
+rrdvar_fix_name	%\xc3\xd0\x23\x9a'	-	_c3d0\x23	6	1
+rrd_string_sanitize	%\xc3\xd0\x23\x9a'	-	%c3d0\x23 '	8	-
 text_sanitize:identity:0:0	\x1a\x10"QL\x02{\x04\x19\x90(0\\\xd6v\x13fhv\xb7*	28	"QL\x02{\x04\x19\x90(0\\_v\x13fhv\xb7*	19	19
 text_sanitize:identity:1:0	\x1a\x10"QL\x02{\x04\x19\x90(0\\\xd6v\x13fhv\xb7*	28	"QL\x02{\x04\x19\x90(0\\d6v\x13fhv\xb7*	20	19
 text_sanitize:rrd:0:0	\x1a\x10"QL\x02{\x04\x19\x90(0\\\xd6v\x13fhv\xb7*	28	'QL { (0/_v fhv *	17	17
@@ -30173,21 +30173,21 @@ netdata_fix_chart_name	TY	-	TY	2	-
 netdata_fix_chart_id	TY	-	TY	2	-
 rrdvar_fix_name	TY	-	TY	2	0
 rrd_string_sanitize	TY	-	TY	2	-
-text_sanitize:identity:0:1	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	18	18
-text_sanitize:identity:1:1	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	18	18
-text_sanitize:rrd:0:0	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL Z# C +R _6 4B	17	17
-text_sanitize:rrd:1:2	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL Z# C +R _6 4B	17	17
-text_sanitize:chart:0:1	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL Z# C _R _6 4B	17	17
-text_sanitize:chart:1:2	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL Z# C _R _6 4B	17	17
-rrdlabels_sanitize_name	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	19	_iL_Z__C__R__6_4B	17	-
-rrdlabels_sanitize_value	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL Z_ C +R _6 4B	17	-
-prometheus_rrdlabels_sanitize_name	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	19	_iL_Z___C__R__6_4B	18	-
-nrpc_sanitize_name	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL Z# C +R _6 4B	17	-
-rrdset_strncpyz_name	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL_Z#_C__R__6_4B	17	-
-netdata_fix_chart_name	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	-	(iL_Z#_C__R__6_4B	17	-
-netdata_fix_chart_id	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	-	(iL_Z#_C__R__6_4B	17	-
-rrdvar_fix_name	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	-	(iL_Z#_C__R__6_4B	17	1
-rrd_string_sanitize	(iL\x13Z#\x81\x8eC\xaa+R\x0c_6\xa34B	-	(iL Z# C +R _6 4B	17	-
+text_sanitize:identity:0:1	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	18	18
+text_sanitize:identity:1:1	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	18	18
+text_sanitize:rrd:0:0	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL Z\x23 C +R _6 4B	17	17
+text_sanitize:rrd:1:2	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL Z\x23 C +R _6 4B	17	17
+text_sanitize:chart:0:1	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL Z\x23 C _R _6 4B	17	17
+text_sanitize:chart:1:2	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL Z\x23 C _R _6 4B	17	17
+rrdlabels_sanitize_name	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	19	_iL_Z__C__R__6_4B	17	-
+rrdlabels_sanitize_value	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL Z_ C +R _6 4B	17	-
+prometheus_rrdlabels_sanitize_name	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	19	_iL_Z___C__R__6_4B	18	-
+nrpc_sanitize_name	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL Z\x23 C +R _6 4B	17	-
+rrdset_strncpyz_name	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	19	(iL_Z\x23_C__R__6_4B	17	-
+netdata_fix_chart_name	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	-	(iL_Z\x23_C__R__6_4B	17	-
+netdata_fix_chart_id	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	-	(iL_Z\x23_C__R__6_4B	17	-
+rrdvar_fix_name	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	-	(iL_Z\x23_C__R__6_4B	17	1
+rrd_string_sanitize	(iL\x13Z\x23\x81\x8eC\xaa+R\x0c_6\xa34B	-	(iL Z\x23 C +R _6 4B	17	-
 text_sanitize:identity:0:1	\xd7\x19\x03\x07\x07t\x1bL"(\x1aq	36	_\x19\x03\x07\x07t\x1bL"(\x1aq	12	12
 text_sanitize:identity:1:0	\xd7\x19\x03\x07\x07t\x1bL"(\x1aq	36	d7\x19\x03\x07\x07t\x1bL"(\x1aq	13	12
 text_sanitize:rrd:0:0	\xd7\x19\x03\x07\x07t\x1bL"(\x1aq	36	_ t L'( q	9	9
@@ -30953,21 +30953,21 @@ netdata_fix_chart_name	'\xecD\x8d"\x11\xd9f@;'/I	-	_ecD___d9f_;_	13	-
 netdata_fix_chart_id	'\xecD\x8d"\x11\xd9f@;'/I	-	_ecD___d9f_;_	13	-
 rrdvar_fix_name	'\xecD\x8d"\x11\xd9f@;'/I	-	_ecD___d9f_;_	13	1
 rrd_string_sanitize	'\xecD\x8d"\x11\xd9f@;'/I	-	'ecD ' d9f@;'/I	15	-
-text_sanitize:identity:0:2	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	15	)\x18\x97Z(h\xb6'-)\xa2)@<	14	14
-text_sanitize:identity:1:2	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	15	)\x18\x97Z(h\xb6'-)\xa2)@<	14	14
-text_sanitize:rrd:0:2	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	15	) Z(h '-) )@<=	14	14
-text_sanitize:rrd:1:0	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	15	) Z(h '-) )@<=	14	14
-text_sanitize:chart:0:2	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	15	) Z(h _-) )_<_	14	14
-text_sanitize:chart:1:1	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	15	) Z(h _-) )_<_	14	14
-rrdlabels_sanitize_name	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	15	__Z_h__-______	14	-
-rrdlabels_sanitize_value	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	15	) Z(h _-) )@_:	14	-
-prometheus_rrdlabels_sanitize_name	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	15	___Z_h________	14	-
-nrpc_sanitize_name	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	15	) Z(h '-) )@<=	14	-
-rrdset_strncpyz_name	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	15	)_Z(h__-)_)_<_	14	-
-netdata_fix_chart_name	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	-	)_Z(h__-)_)_<_:#	16	-
-netdata_fix_chart_id	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	-	)_Z(h__-)_)_<_:#	16	-
-rrdvar_fix_name	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	-	)_Z(h__-)_)_<_:#	16	1
-rrd_string_sanitize	)\x18\x97Z(h\xb6'-)\xa2)@<=:#	-	) Z(h '-) )@<=:#	16	-
+text_sanitize:identity:0:2	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	15	)\x18\x97Z(h\xb6'-)\xa2)@<	14	14
+text_sanitize:identity:1:2	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	15	)\x18\x97Z(h\xb6'-)\xa2)@<	14	14
+text_sanitize:rrd:0:2	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	15	) Z(h '-) )@<=	14	14
+text_sanitize:rrd:1:0	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	15	) Z(h '-) )@<=	14	14
+text_sanitize:chart:0:2	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	15	) Z(h _-) )_<_	14	14
+text_sanitize:chart:1:1	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	15	) Z(h _-) )_<_	14	14
+rrdlabels_sanitize_name	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	15	__Z_h__-______	14	-
+rrdlabels_sanitize_value	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	15	) Z(h _-) )@_:	14	-
+prometheus_rrdlabels_sanitize_name	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	15	___Z_h________	14	-
+nrpc_sanitize_name	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	15	) Z(h '-) )@<=	14	-
+rrdset_strncpyz_name	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	15	)_Z(h__-)_)_<_	14	-
+netdata_fix_chart_name	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	-	)_Z(h__-)_)_<_:\x23	16	-
+netdata_fix_chart_id	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	-	)_Z(h__-)_)_<_:\x23	16	-
+rrdvar_fix_name	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	-	)_Z(h__-)_)_<_:\x23	16	1
+rrd_string_sanitize	)\x18\x97Z(h\xb6'-)\xa2)@<=:\x23	-	) Z(h '-) )@<=:\x23	16	-
 text_sanitize:identity:0:2		23	-	1	1
 text_sanitize:identity:1:2		23	-	1	1
 text_sanitize:rrd:0:2		23	-	1	1
@@ -31508,21 +31508,21 @@ netdata_fix_chart_name	@N%E	-	_N_E	4	-
 netdata_fix_chart_id	@N%E	-	_N_E	4	-
 rrdvar_fix_name	@N%E	-	_N_E	4	1
 rrd_string_sanitize	@N%E	-	@N%E	4	-
-text_sanitize:identity:0:2	_*JY6#8?:\x1f.\xd8H\xb5	26	_*JY6#8?:\x1f._H\xb5	14	14
-text_sanitize:identity:1:0	_*JY6#8?:\x1f.\xd8H\xb5	26	_*JY6#8?:\x1f.d8H\xb5	15	14
-text_sanitize:rrd:0:1	_*JY6#8?:\x1f.\xd8H\xb5	26	_*JY6#8?: ._H	13	13
-text_sanitize:rrd:1:2	_*JY6#8?:\x1f.\xd8H\xb5	26	_*JY6#8?: .d8H	14	13
-text_sanitize:chart:0:2	_*JY6#8?:\x1f.\xd8H\xb5	26	__JY6#8_: ._H	13	13
-text_sanitize:chart:1:0	_*JY6#8?:\x1f.\xd8H\xb5	26	__JY6#8_: .d8H	14	13
-rrdlabels_sanitize_name	_*JY6#8?:\x1f.\xd8H\xb5	26	__JY6_8___._H	13	-
-rrdlabels_sanitize_value	_*JY6#8?:\x1f.\xd8H\xb5	26	__JY6_8_: .d8H	14	-
-prometheus_rrdlabels_sanitize_name	_*JY6#8?:\x1f.\xd8H\xb5	26	__JY6_8_:___H_	14	-
-nrpc_sanitize_name	_*JY6#8?:\x1f.\xd8H\xb5	26	_*JY6#8?: .d8H	14	-
-rrdset_strncpyz_name	_*JY6#8?:\x1f.\xd8H\xb5	26	__JY6#8_:_.d8H	14	-
-netdata_fix_chart_name	_*JY6#8?:\x1f.\xd8H\xb5	-	__JY6#8_:_.d8H	14	-
-netdata_fix_chart_id	_*JY6#8?:\x1f.\xd8H\xb5	-	__JY6#8_:_.d8H	14	-
-rrdvar_fix_name	_*JY6#8?:\x1f.\xd8H\xb5	-	__JY6#8_:_.d8H	14	1
-rrd_string_sanitize	_*JY6#8?:\x1f.\xd8H\xb5	-	_*JY6#8?: .d8H	14	-
+text_sanitize:identity:0:2	_*JY6\x238?:\x1f.\xd8H\xb5	26	_*JY6\x238?:\x1f._H\xb5	14	14
+text_sanitize:identity:1:0	_*JY6\x238?:\x1f.\xd8H\xb5	26	_*JY6\x238?:\x1f.d8H\xb5	15	14
+text_sanitize:rrd:0:1	_*JY6\x238?:\x1f.\xd8H\xb5	26	_*JY6\x238?: ._H	13	13
+text_sanitize:rrd:1:2	_*JY6\x238?:\x1f.\xd8H\xb5	26	_*JY6\x238?: .d8H	14	13
+text_sanitize:chart:0:2	_*JY6\x238?:\x1f.\xd8H\xb5	26	__JY6\x238_: ._H	13	13
+text_sanitize:chart:1:0	_*JY6\x238?:\x1f.\xd8H\xb5	26	__JY6\x238_: .d8H	14	13
+rrdlabels_sanitize_name	_*JY6\x238?:\x1f.\xd8H\xb5	26	__JY6_8___._H	13	-
+rrdlabels_sanitize_value	_*JY6\x238?:\x1f.\xd8H\xb5	26	__JY6_8_: .d8H	14	-
+prometheus_rrdlabels_sanitize_name	_*JY6\x238?:\x1f.\xd8H\xb5	26	__JY6_8_:___H_	14	-
+nrpc_sanitize_name	_*JY6\x238?:\x1f.\xd8H\xb5	26	_*JY6\x238?: .d8H	14	-
+rrdset_strncpyz_name	_*JY6\x238?:\x1f.\xd8H\xb5	26	__JY6\x238_:_.d8H	14	-
+netdata_fix_chart_name	_*JY6\x238?:\x1f.\xd8H\xb5	-	__JY6\x238_:_.d8H	14	-
+netdata_fix_chart_id	_*JY6\x238?:\x1f.\xd8H\xb5	-	__JY6\x238_:_.d8H	14	-
+rrdvar_fix_name	_*JY6\x238?:\x1f.\xd8H\xb5	-	__JY6\x238_:_.d8H	14	1
+rrd_string_sanitize	_*JY6\x238?:\x1f.\xd8H\xb5	-	_*JY6\x238?: .d8H	14	-
 text_sanitize:identity:0:1	\xea'	1		0	0
 text_sanitize:identity:1:0	\xea'	1		0	0
 text_sanitize:rrd:0:2	\xea'	1		0	0
@@ -31808,21 +31808,21 @@ netdata_fix_chart_name	\x1d\xaf\x04A\xee	-	Aee	3	-
 netdata_fix_chart_id	\x1d\xaf\x04A\xee	-	Aee	3	-
 rrdvar_fix_name	\x1d\xaf\x04A\xee	-	Aee	3	1
 rrd_string_sanitize	\x1d\xaf\x04A\xee	-	Aee	3	-
-text_sanitize:identity:0:2	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	\xb86[}#I _,_0__\x1d	14	14
-text_sanitize:identity:1:2	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	\xb86[}#I f1,\xc3\x920\x1d	14	14
-text_sanitize:rrd:0:0	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[}#I _,_0__ l	14	14
-text_sanitize:rrd:1:2	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[}#I f1,\xc3\x920e7	14	11
-text_sanitize:chart:0:2	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[}#I _._0__ l	14	14
-text_sanitize:chart:1:0	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[}#I f1.\xc3\x920e7	14	11
-rrdlabels_sanitize_name	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[__I__._0___l	14	-
-rrdlabels_sanitize_value	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[__I f1.\xc3\x920e7	14	-
-prometheus_rrdlabels_sanitize_name	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	_6___I____0___	14	-
-nrpc_sanitize_name	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[}#I f1,\xc3\x920e7	14	-
-rrdset_strncpyz_name	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[}#I_f1.\xc3\x920e7	14	-
-netdata_fix_chart_name	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	-	6[}#I_f1.\xc3\x920e7c5_l4__	21	-
-netdata_fix_chart_id	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	-	6[}#I_f1.\xc3\x920e7c5_l4__	21	-
-rrdvar_fix_name	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	-	6[}#I_f1.\xc3\x920e7c5_l4__	21	1
-rrd_string_sanitize	\xb86[}#I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	-	6[}#I f1,\xc3\x920e7c5 l4_' i	23	-
+text_sanitize:identity:0:2	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	\xb86[}\x23I _,_0__\x1d	14	14
+text_sanitize:identity:1:2	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	\xb86[}\x23I f1,\xc3\x920\x1d	14	14
+text_sanitize:rrd:0:0	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[}\x23I _,_0__ l	14	14
+text_sanitize:rrd:1:2	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[}\x23I f1,\xc3\x920e7	14	11
+text_sanitize:chart:0:2	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[}\x23I _._0__ l	14	14
+text_sanitize:chart:1:0	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[}\x23I f1.\xc3\x920e7	14	11
+rrdlabels_sanitize_name	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[__I__._0___l	14	-
+rrdlabels_sanitize_value	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[__I f1.\xc3\x920e7	14	-
+prometheus_rrdlabels_sanitize_name	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	_6___I____0___	14	-
+nrpc_sanitize_name	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[}\x23I f1,\xc3\x920e7	14	-
+rrdset_strncpyz_name	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	15	6[}\x23I_f1.\xc3\x920e7	14	-
+netdata_fix_chart_name	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	-	6[}\x23I_f1.\xc3\x920e7c5_l4__	21	-
+netdata_fix_chart_id	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	-	6[}\x23I_f1.\xc3\x920e7c5_l4__	21	-
+rrdvar_fix_name	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	-	6[}\x23I_f1.\xc3\x920e7c5_l4__	21	1
+rrd_string_sanitize	\xb86[}\x23I \xf1,\xc3\x920\xe7\xc5\x1dl4_'\x0fi	-	6[}\x23I f1,\xc3\x920e7c5 l4_' i	23	-
 text_sanitize:identity:0:0	9_*\x1f:;\xd7_+_\x08\xe1w\x11\x03\x03\x14	39	9_*\x1f:;__+_\x08_w\x11\x03\x03\x14	17	17
 text_sanitize:identity:1:2	9_*\x1f:;\xd7_+_\x08\xe1w\x11\x03\x03\x14	39	9_*\x1f:;d7_+_\x08e1w\x11\x03\x03\x14	19	17
 text_sanitize:rrd:0:1	9_*\x1f:;\xd7_+_\x08\xe1w\x11\x03\x03\x14	39	9_* :;__+_ _w	13	13
@@ -31883,36 +31883,36 @@ netdata_fix_chart_name	\xb51\x8d\x157	-	1_7	3	-
 netdata_fix_chart_id	\xb51\x8d\x157	-	1_7	3	-
 rrdvar_fix_name	\xb51\x8d\x157	-	1_7	3	1
 rrd_string_sanitize	\xb51\x8d\x157	-	1 7	3	-
-text_sanitize:identity:0:0	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	5	_F0,	4	4
-text_sanitize:identity:1:2	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	5	dbF0	4	3
-text_sanitize:rrd:0:1	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	5	_F0,	4	4
-text_sanitize:rrd:1:2	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	5	dbF0	4	3
-text_sanitize:chart:0:2	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	5	_F0.	4	4
-text_sanitize:chart:1:0	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	5	dbF0	4	3
-rrdlabels_sanitize_name	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	5	_F0.	4	-
-rrdlabels_sanitize_value	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	5	dbF0	4	-
-prometheus_rrdlabels_sanitize_name	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	5	_F0_	4	-
-nrpc_sanitize_name	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	5	dbF0	4	-
-rrdset_strncpyz_name	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	5	dbF0	4	-
-netdata_fix_chart_name	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	-	dbF0._:Kh#Id1___	16	-
-netdata_fix_chart_id	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	-	dbF0._:Kh#Id1___	16	-
-rrdvar_fix_name	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	-	dbF0._:Kh#Id1___	16	1
-rrd_string_sanitize	\x1f\xdbF0,\x0e:Kh#I\xd1 =*\x1b	-	dbF0, :Kh#Id1 =*	16	-
-text_sanitize:identity:0:0	\x86\xb2(\x0d!\x1b}#(\xde	21	\x86\xb2(\x0d!\x1b}#(_	10	10
-text_sanitize:identity:1:2	\x86\xb2(\x0d!\x1b}#(\xde	21	\x86\xb2(\x0d!\x1b}#(de	11	10
-text_sanitize:rrd:0:0	\x86\xb2(\x0d!\x1b}#(\xde	21	( ! }#(_	8	8
-text_sanitize:rrd:1:1	\x86\xb2(\x0d!\x1b}#(\xde	21	( ! }#(de	9	8
-text_sanitize:chart:0:2	\x86\xb2(\x0d!\x1b}#(\xde	21	( ! }#(_	8	8
-text_sanitize:chart:1:0	\x86\xb2(\x0d!\x1b}#(\xde	21	( ! }#(de	9	8
-rrdlabels_sanitize_name	\x86\xb2(\x0d!\x1b}#(\xde	21	________	8	-
-rrdlabels_sanitize_value	\x86\xb2(\x0d!\x1b}#(\xde	21	( _ __(de	9	-
-prometheus_rrdlabels_sanitize_name	\x86\xb2(\x0d!\x1b}#(\xde	21		0	-
-nrpc_sanitize_name	\x86\xb2(\x0d!\x1b}#(\xde	21	( ! }#(de	9	-
-rrdset_strncpyz_name	\x86\xb2(\x0d!\x1b}#(\xde	21	(_!_}#(de	9	-
-netdata_fix_chart_name	\x86\xb2(\x0d!\x1b}#(\xde	-	(_!_}#(de	9	-
-netdata_fix_chart_id	\x86\xb2(\x0d!\x1b}#(\xde	-	(_!_}#(de	9	-
-rrdvar_fix_name	\x86\xb2(\x0d!\x1b}#(\xde	-	(_!_}#(de	9	1
-rrd_string_sanitize	\x86\xb2(\x0d!\x1b}#(\xde	-	( ! }#(de	9	-
+text_sanitize:identity:0:0	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	5	_F0,	4	4
+text_sanitize:identity:1:2	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	5	dbF0	4	3
+text_sanitize:rrd:0:1	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	5	_F0,	4	4
+text_sanitize:rrd:1:2	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	5	dbF0	4	3
+text_sanitize:chart:0:2	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	5	_F0.	4	4
+text_sanitize:chart:1:0	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	5	dbF0	4	3
+rrdlabels_sanitize_name	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	5	_F0.	4	-
+rrdlabels_sanitize_value	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	5	dbF0	4	-
+prometheus_rrdlabels_sanitize_name	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	5	_F0_	4	-
+nrpc_sanitize_name	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	5	dbF0	4	-
+rrdset_strncpyz_name	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	5	dbF0	4	-
+netdata_fix_chart_name	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	-	dbF0._:Kh\x23Id1___	16	-
+netdata_fix_chart_id	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	-	dbF0._:Kh\x23Id1___	16	-
+rrdvar_fix_name	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	-	dbF0._:Kh\x23Id1___	16	1
+rrd_string_sanitize	\x1f\xdbF0,\x0e:Kh\x23I\xd1 =*\x1b	-	dbF0, :Kh\x23Id1 =*	16	-
+text_sanitize:identity:0:0	\x86\xb2(\x0d!\x1b}\x23(\xde	21	\x86\xb2(\x0d!\x1b}\x23(_	10	10
+text_sanitize:identity:1:2	\x86\xb2(\x0d!\x1b}\x23(\xde	21	\x86\xb2(\x0d!\x1b}\x23(de	11	10
+text_sanitize:rrd:0:0	\x86\xb2(\x0d!\x1b}\x23(\xde	21	( ! }\x23(_	8	8
+text_sanitize:rrd:1:1	\x86\xb2(\x0d!\x1b}\x23(\xde	21	( ! }\x23(de	9	8
+text_sanitize:chart:0:2	\x86\xb2(\x0d!\x1b}\x23(\xde	21	( ! }\x23(_	8	8
+text_sanitize:chart:1:0	\x86\xb2(\x0d!\x1b}\x23(\xde	21	( ! }\x23(de	9	8
+rrdlabels_sanitize_name	\x86\xb2(\x0d!\x1b}\x23(\xde	21	________	8	-
+rrdlabels_sanitize_value	\x86\xb2(\x0d!\x1b}\x23(\xde	21	( _ __(de	9	-
+prometheus_rrdlabels_sanitize_name	\x86\xb2(\x0d!\x1b}\x23(\xde	21		0	-
+nrpc_sanitize_name	\x86\xb2(\x0d!\x1b}\x23(\xde	21	( ! }\x23(de	9	-
+rrdset_strncpyz_name	\x86\xb2(\x0d!\x1b}\x23(\xde	21	(_!_}\x23(de	9	-
+netdata_fix_chart_name	\x86\xb2(\x0d!\x1b}\x23(\xde	-	(_!_}\x23(de	9	-
+netdata_fix_chart_id	\x86\xb2(\x0d!\x1b}\x23(\xde	-	(_!_}\x23(de	9	-
+rrdvar_fix_name	\x86\xb2(\x0d!\x1b}\x23(\xde	-	(_!_}\x23(de	9	1
+rrd_string_sanitize	\x86\xb2(\x0d!\x1b}\x23(\xde	-	( ! }\x23(de	9	-
 text_sanitize:identity:0:2	\x8a3\xff@ \x11\xe3\xc16_\xf2\xeey	23	\x8a3_@ \x11__6___y	13	13
 text_sanitize:identity:1:2	\x8a3\xff@ \x11\xe3\xc16_\xf2\xeey	23	\x8a3ff@ \x11e3c16_f2eey	18	13
 text_sanitize:rrd:0:2	\x8a3\xff@ \x11\xe3\xc16_\xf2\xeey	23	3_@ __6___y	11	11
@@ -32918,21 +32918,21 @@ netdata_fix_chart_name	\x1b\xc8\x0b\xf2!	-	c8_f2	5	-
 netdata_fix_chart_id	\x1b\xc8\x0b\xf2!	-	c8_f2	5	-
 rrdvar_fix_name	\x1b\xc8\x0b\xf2!	-	c8_f2	5	1
 rrd_string_sanitize	\x1b\xc8\x0b\xf2!	-	c8 f2!	6	-
-text_sanitize:identity:0:1	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	\xab\\DL#\x06_63\x1bE-:"_\x0bSHn_	20	20
-text_sanitize:identity:1:0	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	\xab\\DL#\x06c863\x1bE-:"_\x0bSHnf6	22	20
-text_sanitize:rrd:0:0	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL# _63 E-:'_ SHn_	19	19
-text_sanitize:rrd:1:0	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL# c863 E-:'_ SHnf6	21	19
-text_sanitize:chart:0:2	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL# _63 E-:__ SHn_	19	19
-text_sanitize:chart:1:0	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL# c863 E-:__ SHnf6	21	19
-rrdlabels_sanitize_name	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL___63_E-____SHn_	19	-
-rrdlabels_sanitize_value	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL_ c863 E-:__ SHnf6	21	-
-prometheus_rrdlabels_sanitize_name	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	__DL___63_E_:___SHn_	20	-
-nrpc_sanitize_name	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	\\DL# c863 E-:'_ SHnf6	21	-
-rrdset_strncpyz_name	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL#_c863_E-:___SHnf6	21	-
-netdata_fix_chart_name	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	-	/DL#_c863_E-:___SHn	19	-
-netdata_fix_chart_id	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	-	/DL#_c863_E-:___SHn	19	-
-rrdvar_fix_name	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	-	/DL#_c863_E-:___SHn	19	1
-rrd_string_sanitize	\xab\\DL#\x06\xc863\x1bE-:"_\x0bSHn\xf6	-	/DL# c863 E-:'_ SHnf6	21	-
+text_sanitize:identity:0:1	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	\xab\\DL\x23\x06_63\x1bE-:"_\x0bSHn_	20	20
+text_sanitize:identity:1:0	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	\xab\\DL\x23\x06c863\x1bE-:"_\x0bSHnf6	22	20
+text_sanitize:rrd:0:0	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL\x23 _63 E-:'_ SHn_	19	19
+text_sanitize:rrd:1:0	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL\x23 c863 E-:'_ SHnf6	21	19
+text_sanitize:chart:0:2	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL\x23 _63 E-:__ SHn_	19	19
+text_sanitize:chart:1:0	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL\x23 c863 E-:__ SHnf6	21	19
+rrdlabels_sanitize_name	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL___63_E-____SHn_	19	-
+rrdlabels_sanitize_value	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL_ c863 E-:__ SHnf6	21	-
+prometheus_rrdlabels_sanitize_name	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	__DL___63_E_:___SHn_	20	-
+nrpc_sanitize_name	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	\\DL\x23 c863 E-:'_ SHnf6	21	-
+rrdset_strncpyz_name	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	25	/DL\x23_c863_E-:___SHnf6	21	-
+netdata_fix_chart_name	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	-	/DL\x23_c863_E-:___SHn	19	-
+netdata_fix_chart_id	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	-	/DL\x23_c863_E-:___SHn	19	-
+rrdvar_fix_name	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	-	/DL\x23_c863_E-:___SHn	19	1
+rrd_string_sanitize	\xab\\DL\x23\x06\xc863\x1bE-:"_\x0bSHn\xf6	-	/DL\x23 c863 E-:'_ SHnf6	21	-
 text_sanitize:identity:0:1	_\x07=Y\xf5?a\x86\x1f\x0b,c\x0eAW:\xa8\x10\x1a	42	_\x07=Y_?a\x86\x1f\x0b,c\x0eAW:\xa8\x10\x1a	19	19
 text_sanitize:identity:1:2	_\x07=Y\xf5?a\x86\x1f\x0b,c\x0eAW:\xa8\x10\x1a	42	_\x07=Yf5?a\x86\x1f\x0b,c\x0eAW:\xa8\x10\x1a	20	19
 text_sanitize:rrd:0:2	_\x07=Y\xf5?a\x86\x1f\x0b,c\x0eAW:\xa8\x10\x1a	42	_ =Y_?a ,c AW:	14	14
@@ -33728,21 +33728,21 @@ netdata_fix_chart_name	\x03)*@*.\xe8.*:\xac\x06"n@!&\x12=1	-	)___.e8._:__n_!___1
 netdata_fix_chart_id	\x03)*@*.\xe8.*:\xac\x06"n@!&\x12=1	-	)___.e8._:__n_!___1	19	-
 rrdvar_fix_name	\x03)*@*.\xe8.*:\xac\x06"n@!&\x12=1	-	)___.e8._:__n_!___1	19	1
 rrd_string_sanitize	\x03)*@*.\xe8.*:\xac\x06"n@!&\x12=1	-	)*@*.e8.*: 'n@!& =1	19	-
-text_sanitize:identity:0:2	;J2NW:j#	47	;J2NW:j#	8	8
-text_sanitize:identity:1:1	;J2NW:j#	47	;J2NW:j#	8	8
-text_sanitize:rrd:0:0	;J2NW:j#	47	;J2NW:j#	8	8
-text_sanitize:rrd:1:2	;J2NW:j#	47	;J2NW:j#	8	8
-text_sanitize:chart:0:1	;J2NW:j#	47	;J2NW:j#	8	8
-text_sanitize:chart:1:1	;J2NW:j#	47	;J2NW:j#	8	8
-rrdlabels_sanitize_name	;J2NW:j#	47	_J2NW_j_	8	-
-rrdlabels_sanitize_value	;J2NW:j#	47	:J2NW:j_	8	-
-prometheus_rrdlabels_sanitize_name	;J2NW:j#	47	_J2NW:j_	8	-
-nrpc_sanitize_name	;J2NW:j#	47	;J2NW:j#	8	-
-rrdset_strncpyz_name	;J2NW:j#	47	;J2NW:j#	8	-
-netdata_fix_chart_name	;J2NW:j#	-	;J2NW:j#	8	-
-netdata_fix_chart_id	;J2NW:j#	-	;J2NW:j#	8	-
-rrdvar_fix_name	;J2NW:j#	-	;J2NW:j#	8	0
-rrd_string_sanitize	;J2NW:j#	-	;J2NW:j#	8	-
+text_sanitize:identity:0:2	;J2NW:j\x23	47	;J2NW:j\x23	8	8
+text_sanitize:identity:1:1	;J2NW:j\x23	47	;J2NW:j\x23	8	8
+text_sanitize:rrd:0:0	;J2NW:j\x23	47	;J2NW:j\x23	8	8
+text_sanitize:rrd:1:2	;J2NW:j\x23	47	;J2NW:j\x23	8	8
+text_sanitize:chart:0:1	;J2NW:j\x23	47	;J2NW:j\x23	8	8
+text_sanitize:chart:1:1	;J2NW:j\x23	47	;J2NW:j\x23	8	8
+rrdlabels_sanitize_name	;J2NW:j\x23	47	_J2NW_j_	8	-
+rrdlabels_sanitize_value	;J2NW:j\x23	47	:J2NW:j_	8	-
+prometheus_rrdlabels_sanitize_name	;J2NW:j\x23	47	_J2NW:j_	8	-
+nrpc_sanitize_name	;J2NW:j\x23	47	;J2NW:j\x23	8	-
+rrdset_strncpyz_name	;J2NW:j\x23	47	;J2NW:j\x23	8	-
+netdata_fix_chart_name	;J2NW:j\x23	-	;J2NW:j\x23	8	-
+netdata_fix_chart_id	;J2NW:j\x23	-	;J2NW:j\x23	8	-
+rrdvar_fix_name	;J2NW:j\x23	-	;J2NW:j\x23	8	0
+rrd_string_sanitize	;J2NW:j\x23	-	;J2NW:j\x23	8	-
 text_sanitize:identity:0:1	\x0b\xfa'p\x1c__\x03Re\xf0Md\xb5	14	_'p\x1c__\x03Re_Md\xb5	13	13
 text_sanitize:identity:1:0	\x0b\xfa'p\x1c__\x03Re\xf0Md\xb5	14	fa'p\x1c__\x03Ref0M	13	11
 text_sanitize:rrd:0:2	\x0b\xfa'p\x1c__\x03Re\xf0Md\xb5	14	_'p __ Re_Md	12	12
@@ -34253,36 +34253,36 @@ netdata_fix_chart_name	\x03\xcah\x1f\x01_*\x11a\xed{\\\xc6zK0T\x02	-	cah____aed{
 netdata_fix_chart_id	\x03\xcah\x1f\x01_*\x11a\xed{\\\xc6zK0T\x02	-	cah____aed{/c6zK0T	18	-
 rrdvar_fix_name	\x03\xcah\x1f\x01_*\x11a\xed{\\\xc6zK0T\x02	-	cah____aed{/c6zK0T	18	1
 rrd_string_sanitize	\x03\xcah\x1f\x01_*\x11a\xed{\\\xc6zK0T\x02	-	cah _* aed{/c6zK0T	18	-
-text_sanitize:identity:0:0	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	19	Ch'|_"_\x1bmn\x12\x99Vu#(\x0a\xa8	18	18
-text_sanitize:identity:1:2	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	19	Ch'|_"c3\x1bmn\x12\x99Vu#(\x0a	18	17
-text_sanitize:rrd:0:2	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	19	Ch'|_'_ mn Vu#( *[	18	18
-text_sanitize:rrd:1:1	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	19	Ch'|_'c3 mn Vu#( *	18	17
-text_sanitize:chart:0:0	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	19	Ch_____ mn Vu#( _[	18	18
-text_sanitize:chart:1:2	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	19	Ch____c3 mn Vu#( _	18	17
-rrdlabels_sanitize_name	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	19	Ch______mn_Vu____[	18	-
-rrdlabels_sanitize_value	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	19	Ch____c3 mn Vu_( _	18	-
-prometheus_rrdlabels_sanitize_name	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	19	Ch______mn__Vu____	18	-
-nrpc_sanitize_name	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	19	Ch'|_'c3 mn Vu#( *	18	-
-rrdset_strncpyz_name	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	19	Ch____c3_mn_Vu#(__	18	-
-netdata_fix_chart_name	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	-	Ch____c3_mn_Vu#(__[a_	21	-
-netdata_fix_chart_id	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	-	Ch____c3_mn_Vu#(__[a_	21	-
-rrdvar_fix_name	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	-	Ch____c3_mn_Vu#(__[a_	21	1
-rrd_string_sanitize	Ch'|_"\xc3\x1bmn\x12\x99Vu#(\x0a\xa8*[a*	-	Ch'|_'c3 mn Vu#( *[a*	21	-
-text_sanitize:identity:0:0	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	23	23
-text_sanitize:identity:1:2	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	23	23
-text_sanitize:rrd:0:1	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM (;S #@B ; 9	18	18
-text_sanitize:rrd:1:1	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM (;S #@B ; 9	18	18
-text_sanitize:chart:0:0	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM (;S #_B ; 9	18	18
-text_sanitize:chart:1:1	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM (;S #_B ; 9	18	18
-rrdlabels_sanitize_name	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM___S___B___9	18	-
-rrdlabels_sanitize_value	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM (:S _@B : 9	18	-
-prometheus_rrdlabels_sanitize_name	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	_hHRhkM___S___B_____9__	23	-
-nrpc_sanitize_name	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM (;S #@B ; 9	18	-
-rrdset_strncpyz_name	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM_(;S_#_B_;_9	18	-
-netdata_fix_chart_name	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	-	hHRhkM_(;S_#_B_;_9	18	-
-netdata_fix_chart_id	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	-	hHRhkM_(;S_#_B_;_9	18	-
-rrdvar_fix_name	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	-	hHRhkM_(;S_#_B_;_9	18	1
-rrd_string_sanitize	\xb1hHRhkM\x1d(;S\x1f#@B\xa9;\x1b\x0d\x9a9\x9f\x0d	-	hHRhkM (;S #@B ; 9	18	-
+text_sanitize:identity:0:0	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	19	Ch'|_"_\x1bmn\x12\x99Vu\x23(\x0a\xa8	18	18
+text_sanitize:identity:1:2	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	19	Ch'|_"c3\x1bmn\x12\x99Vu\x23(\x0a	18	17
+text_sanitize:rrd:0:2	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	19	Ch'|_'_ mn Vu\x23( *[	18	18
+text_sanitize:rrd:1:1	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	19	Ch'|_'c3 mn Vu\x23( *	18	17
+text_sanitize:chart:0:0	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	19	Ch_____ mn Vu\x23( _[	18	18
+text_sanitize:chart:1:2	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	19	Ch____c3 mn Vu\x23( _	18	17
+rrdlabels_sanitize_name	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	19	Ch______mn_Vu____[	18	-
+rrdlabels_sanitize_value	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	19	Ch____c3 mn Vu_( _	18	-
+prometheus_rrdlabels_sanitize_name	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	19	Ch______mn__Vu____	18	-
+nrpc_sanitize_name	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	19	Ch'|_'c3 mn Vu\x23( *	18	-
+rrdset_strncpyz_name	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	19	Ch____c3_mn_Vu\x23(__	18	-
+netdata_fix_chart_name	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	-	Ch____c3_mn_Vu\x23(__[a_	21	-
+netdata_fix_chart_id	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	-	Ch____c3_mn_Vu\x23(__[a_	21	-
+rrdvar_fix_name	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	-	Ch____c3_mn_Vu\x23(__[a_	21	1
+rrd_string_sanitize	Ch'|_"\xc3\x1bmn\x12\x99Vu\x23(\x0a\xa8*[a*	-	Ch'|_'c3 mn Vu\x23( *[a*	21	-
+text_sanitize:identity:0:0	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	23	23
+text_sanitize:identity:1:2	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	23	23
+text_sanitize:rrd:0:1	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM (;S \x23@B ; 9	18	18
+text_sanitize:rrd:1:1	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM (;S \x23@B ; 9	18	18
+text_sanitize:chart:0:0	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM (;S \x23_B ; 9	18	18
+text_sanitize:chart:1:1	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM (;S \x23_B ; 9	18	18
+rrdlabels_sanitize_name	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM___S___B___9	18	-
+rrdlabels_sanitize_value	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM (:S _@B : 9	18	-
+prometheus_rrdlabels_sanitize_name	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	_hHRhkM___S___B_____9__	23	-
+nrpc_sanitize_name	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM (;S \x23@B ; 9	18	-
+rrdset_strncpyz_name	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	40	hHRhkM_(;S_\x23_B_;_9	18	-
+netdata_fix_chart_name	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	-	hHRhkM_(;S_\x23_B_;_9	18	-
+netdata_fix_chart_id	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	-	hHRhkM_(;S_\x23_B_;_9	18	-
+rrdvar_fix_name	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	-	hHRhkM_(;S_\x23_B_;_9	18	1
+rrd_string_sanitize	\xb1hHRhkM\x1d(;S\x1f\x23@B\xa9;\x1b\x0d\x9a9\x9f\x0d	-	hHRhkM (;S \x23@B ; 9	18	-
 text_sanitize:identity:0:2	;\x1cP!x;\x03_\x1b\x94\x17Ww4	42	;\x1cP!x;\x03_\x1b\x94\x17Ww4	14	14
 text_sanitize:identity:1:0	;\x1cP!x;\x03_\x1b\x94\x17Ww4	42	;\x1cP!x;\x03_\x1b\x94\x17Ww4	14	14
 text_sanitize:rrd:0:2	;\x1cP!x;\x03_\x1b\x94\x17Ww4	42	; P!x; _ Ww4	12	12
@@ -34673,21 +34673,21 @@ netdata_fix_chart_name	Z@\x06\xc2(\xce8`+v;\x0f\\-	-	Z__c2(ce8__v;	13	-
 netdata_fix_chart_id	Z@\x06\xc2(\xce8`+v;\x0f\\-	-	Z__c2(ce8__v;	13	-
 rrdvar_fix_name	Z@\x06\xc2(\xce8`+v;\x0f\\-	-	Z__c2(ce8__v;	13	1
 rrd_string_sanitize	Z@\x06\xc2(\xce8`+v;\x0f\\-	-	Z@ c2(ce8`+v; /-	16	-
-text_sanitize:identity:0:0	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	21	C_J\xa1\x18S\xa5O'92__._#_;{	19	19
-text_sanitize:identity:1:1	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	21	Cf1J\xa1\x18S\xa5O'92cef4.dc#	20	16
-text_sanitize:rrd:0:0	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	21	C_J S O'92__._#_;{	18	18
-text_sanitize:rrd:1:2	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	21	Cf1J S O'92cef4.dc#;	20	17
-text_sanitize:chart:0:1	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	21	C_J S O_92__._#_;{	18	18
-text_sanitize:chart:1:1	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	21	Cf1J S O_92cef4.dc#;	20	17
-rrdlabels_sanitize_name	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	21	C_J_S_O_92__._____	18	-
-rrdlabels_sanitize_value	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	21	Cf1J S O_92cef4.dc_:	20	-
-prometheus_rrdlabels_sanitize_name	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	21	C_J__S_O_92________	19	-
-nrpc_sanitize_name	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	21	Cf1J S O'92cef4.dc#;	20	-
-rrdset_strncpyz_name	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	21	Cf1J_S_O_92cef4.dc#;	20	-
-netdata_fix_chart_name	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	-	Cf1J_S_O_92cef4.dc#	19	-
-netdata_fix_chart_id	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	-	Cf1J_S_O_92cef4.dc#	19	-
-rrdvar_fix_name	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	-	Cf1J_S_O_92cef4.dc#	19	1
-rrd_string_sanitize	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc#\xc3;{	-	Cf1J S O'92cef4.dc#c3;{	23	-
+text_sanitize:identity:0:0	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	21	C_J\xa1\x18S\xa5O'92__._\x23_;{	19	19
+text_sanitize:identity:1:1	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	21	Cf1J\xa1\x18S\xa5O'92cef4.dc\x23	20	16
+text_sanitize:rrd:0:0	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	21	C_J S O'92__._\x23_;{	18	18
+text_sanitize:rrd:1:2	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	21	Cf1J S O'92cef4.dc\x23;	20	17
+text_sanitize:chart:0:1	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	21	C_J S O_92__._\x23_;{	18	18
+text_sanitize:chart:1:1	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	21	Cf1J S O_92cef4.dc\x23;	20	17
+rrdlabels_sanitize_name	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	21	C_J_S_O_92__._____	18	-
+rrdlabels_sanitize_value	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	21	Cf1J S O_92cef4.dc_:	20	-
+prometheus_rrdlabels_sanitize_name	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	21	C_J__S_O_92________	19	-
+nrpc_sanitize_name	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	21	Cf1J S O'92cef4.dc\x23;	20	-
+rrdset_strncpyz_name	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	21	Cf1J_S_O_92cef4.dc\x23;	20	-
+netdata_fix_chart_name	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	-	Cf1J_S_O_92cef4.dc\x23	19	-
+netdata_fix_chart_id	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	-	Cf1J_S_O_92cef4.dc\x23	19	-
+rrdvar_fix_name	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	-	Cf1J_S_O_92cef4.dc\x23	19	1
+rrd_string_sanitize	C\xf1J\xa1\x18S\xa5O'92\xce\xf4.\xdc\x23\xc3;{	-	Cf1J S O'92cef4.dc\x23c3;{	23	-
 text_sanitize:identity:0:2	' mM:\x8a'd\xa3\x1d\x86\x09'2	19	' mM:\x8a'd\xa3\x1d\x86\x09'2	14	14
 text_sanitize:identity:1:2	' mM:\x8a'd\xa3\x1d\x86\x09'2	19	' mM:\x8a'd\xa3\x1d\x86\x09'2	14	14
 text_sanitize:rrd:0:0	' mM:\x8a'd\xa3\x1d\x86\x09'2	19	' mM: 'd '2	11	11
@@ -35678,21 +35678,21 @@ netdata_fix_chart_name	\x89\xebx",\x12RT\xf1\x97\x0cR	-	ebx_._RTf197	12	-
 netdata_fix_chart_id	\x89\xebx",\x12RT\xf1\x97\x0cR	-	ebx_._RTf197	12	-
 rrdvar_fix_name	\x89\xebx",\x12RT\xf1\x97\x0cR	-	ebx_._RTf197	12	1
 rrd_string_sanitize	\x89\xebx",\x12RT\xf1\x97\x0cR	-	ebx', RTf197 R	14	-
-text_sanitize:identity:0:0	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	=\x04_#_E_(:\x81GY\x19\x0e	14	14
-text_sanitize:identity:1:1	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	=\x04f2#ddE_(:\x81GY	14	12
-text_sanitize:rrd:0:1	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	= _#_E_(: GY ]	14	14
-text_sanitize:rrd:1:2	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	= f2#ddE_(: GY	14	12
-text_sanitize:chart:0:2	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	_ _#_E_(: GY ]	14	14
-text_sanitize:chart:1:0	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	_ f2#ddE_(: GY	14	12
-rrdlabels_sanitize_name	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	_____E____GY_]	14	-
-rrdlabels_sanitize_value	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	: f2_ddE_(: GY	14	-
-prometheus_rrdlabels_sanitize_name	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	_____E__:_GY__	14	-
-nrpc_sanitize_name	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	= f2#ddE_(: GY	14	-
-rrdset_strncpyz_name	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	__f2#ddE_(:_GY	14	-
-netdata_fix_chart_name	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	-	__f2#ddE_(:_GY_]..f0u	21	-
-netdata_fix_chart_id	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	-	__f2#ddE_(:_GY_]..f0u	21	-
-rrdvar_fix_name	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	-	__f2#ddE_(:_GY_]..f0u	21	1
-rrd_string_sanitize	=\x04\xf2#\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	-	= f2#ddE_(: GY ].,f0u0	22	-
+text_sanitize:identity:0:0	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	=\x04_\x23_E_(:\x81GY\x19\x0e	14	14
+text_sanitize:identity:1:1	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	=\x04f2\x23ddE_(:\x81GY	14	12
+text_sanitize:rrd:0:1	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	= _\x23_E_(: GY ]	14	14
+text_sanitize:rrd:1:2	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	= f2\x23ddE_(: GY	14	12
+text_sanitize:chart:0:2	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	_ _\x23_E_(: GY ]	14	14
+text_sanitize:chart:1:0	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	_ f2\x23ddE_(: GY	14	12
+rrdlabels_sanitize_name	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	_____E____GY_]	14	-
+rrdlabels_sanitize_value	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	: f2_ddE_(: GY	14	-
+prometheus_rrdlabels_sanitize_name	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	_____E__:_GY__	14	-
+nrpc_sanitize_name	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	= f2\x23ddE_(: GY	14	-
+rrdset_strncpyz_name	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	15	__f2\x23ddE_(:_GY	14	-
+netdata_fix_chart_name	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	-	__f2\x23ddE_(:_GY_]..f0u	21	-
+netdata_fix_chart_id	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	-	__f2\x23ddE_(:_GY_]..f0u	21	-
+rrdvar_fix_name	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	-	__f2\x23ddE_(:_GY_]..f0u	21	1
+rrd_string_sanitize	=\x04\xf2\x23\xddE_(:\x81GY\x19\x0e\x08].,\xf0u0	-	= f2\x23ddE_(: GY ].,f0u0	22	-
 text_sanitize:identity:0:2	:\x17	39	:\x17	2	2
 text_sanitize:identity:1:0	:\x17	39	:\x17	2	2
 text_sanitize:rrd:0:1	:\x17	39	:	1	1
@@ -35843,21 +35843,21 @@ netdata_fix_chart_name	!\x10;)6Ig*`hc \xd8\x18\x05ky\x1b	-	__;)6Ig__hc_d8_ky	17	
 netdata_fix_chart_id	!\x10;)6Ig*`hc \xd8\x18\x05ky\x1b	-	__;)6Ig__hc_d8_ky	17	-
 rrdvar_fix_name	!\x10;)6Ig*`hc \xd8\x18\x05ky\x1b	-	__;)6Ig__hc_d8_ky	17	1
 rrd_string_sanitize	!\x10;)6Ig*`hc \xd8\x18\x05ky\x1b	-	! ;)6Ig*`hc d8 ky	17	-
-text_sanitize:identity:0:0	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	\xbb\x0b\xba\x05#_\x11Y\x09(?	11	11
-text_sanitize:identity:1:0	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	\xbb\x0b\xba\x05#fd\x11Y\x09(	11	10
-text_sanitize:rrd:0:1	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	#_ Y (?'T f	11	11
-text_sanitize:rrd:1:0	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	#fd Y (?'T	10	9
-text_sanitize:chart:0:1	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	#_ Y (__T f	11	11
-text_sanitize:chart:1:1	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	#fd Y (__T	10	9
-rrdlabels_sanitize_name	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	___Y____T_f	11	-
-rrdlabels_sanitize_value	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	_fd Y (__T	10	-
-prometheus_rrdlabels_sanitize_name	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	_______Y___	11	-
-nrpc_sanitize_name	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	#fd Y (?'T	10	-
-rrdset_strncpyz_name	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	#fd_Y_(__T	10	-
-netdata_fix_chart_name	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	-	#fd_Y_(__T_f__	14	-
-netdata_fix_chart_id	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	-	#fd_Y_(__T_f__	14	-
-rrdvar_fix_name	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	-	#fd_Y_(__T_f__	14	1
-rrd_string_sanitize	\xbb\x0b\xba\x05#\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	-	#fd Y (?'T f *	14	-
+text_sanitize:identity:0:0	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	\xbb\x0b\xba\x05\x23_\x11Y\x09(?	11	11
+text_sanitize:identity:1:0	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	\xbb\x0b\xba\x05\x23fd\x11Y\x09(	11	10
+text_sanitize:rrd:0:1	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	\x23_ Y (?'T f	11	11
+text_sanitize:rrd:1:0	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	\x23fd Y (?'T	10	9
+text_sanitize:chart:0:1	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	\x23_ Y (__T f	11	11
+text_sanitize:chart:1:1	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	\x23fd Y (__T	10	9
+rrdlabels_sanitize_name	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	___Y____T_f	11	-
+rrdlabels_sanitize_value	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	_fd Y (__T	10	-
+prometheus_rrdlabels_sanitize_name	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	_______Y___	11	-
+nrpc_sanitize_name	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	\x23fd Y (?'T	10	-
+rrdset_strncpyz_name	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	12	\x23fd_Y_(__T	10	-
+netdata_fix_chart_name	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	-	\x23fd_Y_(__T_f__	14	-
+netdata_fix_chart_id	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	-	\x23fd_Y_(__T_f__	14	-
+rrdvar_fix_name	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	-	\x23fd_Y_(__T_f__	14	1
+rrd_string_sanitize	\xbb\x0b\xba\x05\x23\xfd\x11Y\x09(?"T\x08f\x19\x86\xad*	-	\x23fd Y (?'T f *	14	-
 text_sanitize:identity:0:0	L\x05*IU?\x142\\\xad*\x9b	48	L\x05*IU?\x142\\\xad*\x9b	12	12
 text_sanitize:identity:1:1	L\x05*IU?\x142\\\xad*\x9b	48	L\x05*IU?\x142\\\xad*\x9b	12	12
 text_sanitize:rrd:0:2	L\x05*IU?\x142\\\xad*\x9b	48	L *IU? 2/ *	11	11
@@ -36143,21 +36143,21 @@ netdata_fix_chart_name	\x04\x97(\x1dZ\xe6):\xb6 }\x18\xbf\x09\xb2(\\=; \x1c\x04\
 netdata_fix_chart_id	\x04\x97(\x1dZ\xe6):\xb6 }\x18\xbf\x09\xb2(\\=; \x1c\x04\xe6	-	(_Ze6):_}_(/_;_e6	17	-
 rrdvar_fix_name	\x04\x97(\x1dZ\xe6):\xb6 }\x18\xbf\x09\xb2(\\=; \x1c\x04\xe6	-	(_Ze6):_}_(/_;_e6	17	1
 rrd_string_sanitize	\x04\x97(\x1dZ\xe6):\xb6 }\x18\xbf\x09\xb2(\\=; \x1c\x04\xe6	-	( Ze6): } (/=; e6	17	-
-text_sanitize:identity:0:0	)>#!"= N\x05^:@\xb7"\\ 	7	)>#!"=	6	6
-text_sanitize:identity:1:1	)>#!"= N\x05^:@\xb7"\\ 	7	)>#!"=	6	6
-text_sanitize:rrd:0:1	)>#!"= N\x05^:@\xb7"\\ 	7	)>#!'=	6	6
-text_sanitize:rrd:1:0	)>#!"= N\x05^:@\xb7"\\ 	7	)>#!'=	6	6
-text_sanitize:chart:0:2	)>#!"= N\x05^:@\xb7"\\ 	7	)>#!__	6	6
-text_sanitize:chart:1:0	)>#!"= N\x05^:@\xb7"\\ 	7	)>#!__	6	6
-rrdlabels_sanitize_name	)>#!"= N\x05^:@\xb7"\\ 	7		0	-
-rrdlabels_sanitize_value	)>#!"= N\x05^:@\xb7"\\ 	7	)____:	6	-
-prometheus_rrdlabels_sanitize_name	)>#!"= N\x05^:@\xb7"\\ 	7		0	-
-nrpc_sanitize_name	)>#!"= N\x05^:@\xb7"\\ 	7	)>#!'=	6	-
-rrdset_strncpyz_name	)>#!"= N\x05^:@\xb7"\\ 	7	)>#!__	6	-
-netdata_fix_chart_name	)>#!"= N\x05^:@\xb7"\\ 	-	)>#!___N__:___/	15	-
-netdata_fix_chart_id	)>#!"= N\x05^:@\xb7"\\ 	-	)>#!___N__:___/	15	-
-rrdvar_fix_name	)>#!"= N\x05^:@\xb7"\\ 	-	)>#!___N__:___/	15	1
-rrd_string_sanitize	)>#!"= N\x05^:@\xb7"\\ 	-	)>#!'= N ^:@ '/	15	-
+text_sanitize:identity:0:0	)>\x23!"= N\x05^:@\xb7"\\ 	7	)>\x23!"=	6	6
+text_sanitize:identity:1:1	)>\x23!"= N\x05^:@\xb7"\\ 	7	)>\x23!"=	6	6
+text_sanitize:rrd:0:1	)>\x23!"= N\x05^:@\xb7"\\ 	7	)>\x23!'=	6	6
+text_sanitize:rrd:1:0	)>\x23!"= N\x05^:@\xb7"\\ 	7	)>\x23!'=	6	6
+text_sanitize:chart:0:2	)>\x23!"= N\x05^:@\xb7"\\ 	7	)>\x23!__	6	6
+text_sanitize:chart:1:0	)>\x23!"= N\x05^:@\xb7"\\ 	7	)>\x23!__	6	6
+rrdlabels_sanitize_name	)>\x23!"= N\x05^:@\xb7"\\ 	7		0	-
+rrdlabels_sanitize_value	)>\x23!"= N\x05^:@\xb7"\\ 	7	)____:	6	-
+prometheus_rrdlabels_sanitize_name	)>\x23!"= N\x05^:@\xb7"\\ 	7		0	-
+nrpc_sanitize_name	)>\x23!"= N\x05^:@\xb7"\\ 	7	)>\x23!'=	6	-
+rrdset_strncpyz_name	)>\x23!"= N\x05^:@\xb7"\\ 	7	)>\x23!__	6	-
+netdata_fix_chart_name	)>\x23!"= N\x05^:@\xb7"\\ 	-	)>\x23!___N__:___/	15	-
+netdata_fix_chart_id	)>\x23!"= N\x05^:@\xb7"\\ 	-	)>\x23!___N__:___/	15	-
+rrdvar_fix_name	)>\x23!"= N\x05^:@\xb7"\\ 	-	)>\x23!___N__:___/	15	1
+rrd_string_sanitize	)>\x23!"= N\x05^:@\xb7"\\ 	-	)>\x23!'= N ^:@ '/	15	-
 text_sanitize:identity:0:0	f\\\x95\x1e\x8c,("*U\xb8	20	f\\\x95\x1e\x8c,("*U\xb8	11	11
 text_sanitize:identity:1:1	f\\\x95\x1e\x8c,("*U\xb8	20	f\\\x95\x1e\x8c,("*U\xb8	11	11
 text_sanitize:rrd:0:1	f\\\x95\x1e\x8c,("*U\xb8	20	f/ ,('*U	8	8
@@ -36383,21 +36383,21 @@ netdata_fix_chart_name	06\x0a)a a\x11\xf7\x19\x81\xaco\\	-	06_)a_a_f7_o/	13	-
 netdata_fix_chart_id	06\x0a)a a\x11\xf7\x19\x81\xaco\\	-	06_)a_a_f7_o/	13	-
 rrdvar_fix_name	06\x0a)a a\x11\xf7\x19\x81\xaco\\	-	06_)a_a_f7_o/	13	1
 rrd_string_sanitize	06\x0a)a a\x11\xf7\x19\x81\xaco\\	-	06 )a a f7 o/	13	-
-text_sanitize:identity:0:1	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,_\x1c@\x11	23	23
-text_sanitize:identity:1:0	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,d0\x1c@\x11	24	23
-text_sanitize:rrd:0:0	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:/#af o: @ 1 Q j&,_ @	22	22
-text_sanitize:rrd:1:2	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:/#af o: @ 1 Q j&,d0 @	23	22
-text_sanitize:chart:0:1	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:/#af o: _ 1 Q j_._ _	22	22
-text_sanitize:chart:1:0	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:/#af o: _ 1 Q j_.d0 _	23	22
-rrdlabels_sanitize_name	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X_/_af_o____1_Q_j_.___	22	-
-rrdlabels_sanitize_value	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:/_af o: @ 1 Q j_.d0 @	23	-
-prometheus_rrdlabels_sanitize_name	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:__af_o:___1_Q_j______	23	-
-nrpc_sanitize_name	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:\\#af o: @ 1 Q j&,d0 @	23	-
-rrdset_strncpyz_name	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:/#af_o:___1_Q_j_.d0__	23	-
-netdata_fix_chart_name	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	-	X:/#af_o:___1_Q_j_.d0__	23	-
-netdata_fix_chart_id	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	-	X:/#af_o:___1_Q_j_.d0__	23	-
-rrdvar_fix_name	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	-	X:/#af_o:___1_Q_j_.d0__	23	1
-rrd_string_sanitize	X:\\#af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	-	X:/#af o: @ 1 Q j&,d0 @	23	-
+text_sanitize:identity:0:1	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,_\x1c@\x11	23	23
+text_sanitize:identity:1:0	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,d0\x1c@\x11	24	23
+text_sanitize:rrd:0:0	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:/\x23af o: @ 1 Q j&,_ @	22	22
+text_sanitize:rrd:1:2	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:/\x23af o: @ 1 Q j&,d0 @	23	22
+text_sanitize:chart:0:1	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:/\x23af o: _ 1 Q j_._ _	22	22
+text_sanitize:chart:1:0	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:/\x23af o: _ 1 Q j_.d0 _	23	22
+rrdlabels_sanitize_name	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X_/_af_o____1_Q_j_.___	22	-
+rrdlabels_sanitize_value	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:/_af o: @ 1 Q j_.d0 @	23	-
+prometheus_rrdlabels_sanitize_name	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:__af_o:___1_Q_j______	23	-
+nrpc_sanitize_name	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:\\\x23af o: @ 1 Q j&,d0 @	23	-
+rrdset_strncpyz_name	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	25	X:/\x23af_o:___1_Q_j_.d0__	23	-
+netdata_fix_chart_name	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	-	X:/\x23af_o:___1_Q_j_.d0__	23	-
+netdata_fix_chart_id	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	-	X:/\x23af_o:___1_Q_j_.d0__	23	-
+rrdvar_fix_name	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	-	X:/\x23af_o:___1_Q_j_.d0__	23	1
+rrd_string_sanitize	X:\\\x23af\x1eo:\x1b@\xae1\x1eQ\xbcj&,\xd0\x1c@\x11	-	X:/\x23af o: @ 1 Q j&,d0 @	23	-
 text_sanitize:identity:0:0		1		0	0
 text_sanitize:identity:1:0		1		0	0
 text_sanitize:rrd:0:2		1		0	0
@@ -36518,21 +36518,21 @@ netdata_fix_chart_name	'(\x1b\xe6	-	_(	2	-
 netdata_fix_chart_id	'(\x1b\xe6	-	_(	2	-
 rrdvar_fix_name	'(\x1b\xe6	-	_(	2	1
 rrd_string_sanitize	'(\x1b\xe6	-	'( e6	5	-
-text_sanitize:identity:0:2	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	15	_\x03\x19g_K_<_\x11o_(_	14	14
-text_sanitize:identity:1:0	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	15	fd\x03\x19gc5Kff<f1\x11	14	10
-text_sanitize:rrd:0:2	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	15	_ g_K_<_ o_(_S	14	14
-text_sanitize:rrd:1:2	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	15	fd gc5Kff<f1 o	14	10
-text_sanitize:chart:0:1	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	15	_ g_K_<_ o_(_S	14	14
-text_sanitize:chart:1:1	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	15	fd gc5Kff<f1 o	14	10
-rrdlabels_sanitize_name	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	15	__g_K____o___S	14	-
-rrdlabels_sanitize_value	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	15	fd gc5Kff_f1 o	14	-
-prometheus_rrdlabels_sanitize_name	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	15	___g_K____o___	14	-
-nrpc_sanitize_name	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	15	fd gc5Kff<f1 o	14	-
-rrdset_strncpyz_name	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	15	fd_gc5Kff<f1_o	14	-
-netdata_fix_chart_name	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	-	fd_gc5Kff<f1_o\xcb\xb7(_S_#_/	23	-
-netdata_fix_chart_id	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	-	fd_gc5Kff<f1_o\xcb\xb7(_S_#_/	23	-
-rrdvar_fix_name	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	-	fd_gc5Kff<f1_o\xcb\xb7(_S_#_/	23	1
-rrd_string_sanitize	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba#\x04\\=(_	-	fd gc5Kff<f1 o\xcb\xb7(_S # /=(_	26	-
+text_sanitize:identity:0:2	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	15	_\x03\x19g_K_<_\x11o_(_	14	14
+text_sanitize:identity:1:0	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	15	fd\x03\x19gc5Kff<f1\x11	14	10
+text_sanitize:rrd:0:2	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	15	_ g_K_<_ o_(_S	14	14
+text_sanitize:rrd:1:2	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	15	fd gc5Kff<f1 o	14	10
+text_sanitize:chart:0:1	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	15	_ g_K_<_ o_(_S	14	14
+text_sanitize:chart:1:1	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	15	fd gc5Kff<f1 o	14	10
+rrdlabels_sanitize_name	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	15	__g_K____o___S	14	-
+rrdlabels_sanitize_value	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	15	fd gc5Kff_f1 o	14	-
+prometheus_rrdlabels_sanitize_name	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	15	___g_K____o___	14	-
+nrpc_sanitize_name	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	15	fd gc5Kff<f1 o	14	-
+rrdset_strncpyz_name	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	15	fd_gc5Kff<f1_o	14	-
+netdata_fix_chart_name	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	-	fd_gc5Kff<f1_o\xcb\xb7(_S_\x23_/	23	-
+netdata_fix_chart_id	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	-	fd_gc5Kff<f1_o\xcb\xb7(_S_\x23_/	23	-
+rrdvar_fix_name	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	-	fd_gc5Kff<f1_o\xcb\xb7(_S_\x23_/	23	1
+rrd_string_sanitize	\xfd\x03\x19g\xc5K\xff<\xf1\x11o\xcb\xb7(_S\xba\x23\x04\\=(_	-	fd gc5Kff<f1 o\xcb\xb7(_S \x23 /=(_	26	-
 text_sanitize:identity:0:0	/\xa8p\x17K\x89{\xe2>\x86\x01=\xfb\x1a$\x99=,:_7	44	/\xa8p\x17K\x89{_>\x86\x01=_\x1a$\x99=,:_7	21	21
 text_sanitize:identity:1:1	/\xa8p\x17K\x89{\xe2>\x86\x01=\xfb\x1a$\x99=,:_7	44	/\xa8p\x17K\x89{e2>\x86\x01=fb\x1a$\x99=,:_7	23	21
 text_sanitize:rrd:0:0	/\xa8p\x17K\x89{\xe2>\x86\x01=\xfb\x1a$\x99=,:_7	44	/ p K {_> =_ $ =,:_7	20	20
@@ -36578,21 +36578,21 @@ netdata_fix_chart_name	P'(S'\x04z\x0d\xc5d9\x19\xd6KJC	-	P_(S__z_c5d9_d6K	16	-
 netdata_fix_chart_id	P'(S'\x04z\x0d\xc5d9\x19\xd6KJC	-	P_(S__z_c5d9_d6K	16	-
 rrdvar_fix_name	P'(S'\x04z\x0d\xc5d9\x19\xd6KJC	-	P_(S__z_c5d9_d6K	16	1
 rrd_string_sanitize	P'(S'\x04z\x0d\xc5d9\x19\xd6KJC	-	P'(S' z c5d9 d6KJC	18	-
-text_sanitize:identity:0:1	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	1		0	0
-text_sanitize:identity:1:2	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	1		0	0
-text_sanitize:rrd:0:2	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	1		0	0
-text_sanitize:rrd:1:2	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	1		0	0
-text_sanitize:chart:0:2	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	1		0	0
-text_sanitize:chart:1:0	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	1		0	0
-rrdlabels_sanitize_name	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	1		0	-
-rrdlabels_sanitize_value	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	1		0	-
-prometheus_rrdlabels_sanitize_name	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	1		0	-
-nrpc_sanitize_name	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	1		0	-
-rrdset_strncpyz_name	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	1		0	-
-netdata_fix_chart_name	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	-	h_e0;__OY_I_#~c___/	19	-
-netdata_fix_chart_id	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	-	h_e0;__OY_I_#~c___/	19	-
-rrdvar_fix_name	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	-	h_e0;__OY_I_#~c___/	19	1
-rrd_string_sanitize	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8#~c\x8a'\x0b/	-	h e0; =OY I #~c ' /	19	-
+text_sanitize:identity:0:1	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	1		0	0
+text_sanitize:identity:1:2	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	1		0	0
+text_sanitize:rrd:0:2	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	1		0	0
+text_sanitize:rrd:1:2	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	1		0	0
+text_sanitize:chart:0:2	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	1		0	0
+text_sanitize:chart:1:0	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	1		0	0
+rrdlabels_sanitize_name	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	1		0	-
+rrdlabels_sanitize_value	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	1		0	-
+prometheus_rrdlabels_sanitize_name	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	1		0	-
+nrpc_sanitize_name	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	1		0	-
+rrdset_strncpyz_name	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	1		0	-
+netdata_fix_chart_name	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	-	h_e0;__OY_I_\x23~c___/	19	-
+netdata_fix_chart_id	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	-	h_e0;__OY_I_\x23~c___/	19	-
+rrdvar_fix_name	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	-	h_e0;__OY_I_\x23~c___/	19	1
+rrd_string_sanitize	h\xbd\xe0;\xac\x99=OY\xa4\xb4I\xa8\x23~c\x8a'\x0b/	-	h e0; =OY I \x23~c ' /	19	-
 text_sanitize:identity:0:0	\x12Z\x102%R[\x115K\xd2\xf9$-\x18 ZvJ4\x03\x0b	17	Z\x102%R[\x115K__$-\x18 Z	16	16
 text_sanitize:identity:1:0	\x12Z\x102%R[\x115K\xd2\xf9$-\x18 ZvJ4\x03\x0b	17	Z\x102%R[\x115Kd2f9$-\x18	16	14
 text_sanitize:rrd:0:2	\x12Z\x102%R[\x115K\xd2\xf9$-\x18 ZvJ4\x03\x0b	17	Z 2%R[ 5K__$- Zv	16	16
@@ -36848,21 +36848,21 @@ netdata_fix_chart_name	y\x8b:\xea;\x0a\x97\x90\x1f\xbf\xdb\xfe(\x1b\xf7(\x14o\\*
 netdata_fix_chart_id	y\x8b:\xea;\x0a\x97\x90\x1f\xbf\xdb\xfe(\x1b\xf7(\x14o\\*\xbdg\x19	-	y_:ea;_dbfe(_f7(_o/__g	22	-
 rrdvar_fix_name	y\x8b:\xea;\x0a\x97\x90\x1f\xbf\xdb\xfe(\x1b\xf7(\x14o\\*\xbdg\x19	-	y_:ea;_dbfe(_f7(_o/__g	22	1
 rrd_string_sanitize	y\x8b:\xea;\x0a\x97\x90\x1f\xbf\xdb\xfe(\x1b\xf7(\x14o\\*\xbdg\x19	-	y :ea; dbfe( f7( o/* g	22	-
-text_sanitize:identity:0:0	6#"Vq4'\x1f\xa2	5	6#"V	4	4
-text_sanitize:identity:1:2	6#"Vq4'\x1f\xa2	5	6#"V	4	4
-text_sanitize:rrd:0:0	6#"Vq4'\x1f\xa2	5	6#'V	4	4
-text_sanitize:rrd:1:1	6#"Vq4'\x1f\xa2	5	6#'V	4	4
-text_sanitize:chart:0:0	6#"Vq4'\x1f\xa2	5	6#_V	4	4
-text_sanitize:chart:1:1	6#"Vq4'\x1f\xa2	5	6#_V	4	4
-rrdlabels_sanitize_name	6#"Vq4'\x1f\xa2	5	6__V	4	-
-rrdlabels_sanitize_value	6#"Vq4'\x1f\xa2	5	6__V	4	-
-prometheus_rrdlabels_sanitize_name	6#"Vq4'\x1f\xa2	5	6__V	4	-
-nrpc_sanitize_name	6#"Vq4'\x1f\xa2	5	6#'V	4	-
-rrdset_strncpyz_name	6#"Vq4'\x1f\xa2	5	6#_V	4	-
-netdata_fix_chart_name	6#"Vq4'\x1f\xa2	-	6#_Vq4_	7	-
-netdata_fix_chart_id	6#"Vq4'\x1f\xa2	-	6#_Vq4_	7	-
-rrdvar_fix_name	6#"Vq4'\x1f\xa2	-	6#_Vq4_	7	1
-rrd_string_sanitize	6#"Vq4'\x1f\xa2	-	6#'Vq4'	7	-
+text_sanitize:identity:0:0	6\x23"Vq4'\x1f\xa2	5	6\x23"V	4	4
+text_sanitize:identity:1:2	6\x23"Vq4'\x1f\xa2	5	6\x23"V	4	4
+text_sanitize:rrd:0:0	6\x23"Vq4'\x1f\xa2	5	6\x23'V	4	4
+text_sanitize:rrd:1:1	6\x23"Vq4'\x1f\xa2	5	6\x23'V	4	4
+text_sanitize:chart:0:0	6\x23"Vq4'\x1f\xa2	5	6\x23_V	4	4
+text_sanitize:chart:1:1	6\x23"Vq4'\x1f\xa2	5	6\x23_V	4	4
+rrdlabels_sanitize_name	6\x23"Vq4'\x1f\xa2	5	6__V	4	-
+rrdlabels_sanitize_value	6\x23"Vq4'\x1f\xa2	5	6__V	4	-
+prometheus_rrdlabels_sanitize_name	6\x23"Vq4'\x1f\xa2	5	6__V	4	-
+nrpc_sanitize_name	6\x23"Vq4'\x1f\xa2	5	6\x23'V	4	-
+rrdset_strncpyz_name	6\x23"Vq4'\x1f\xa2	5	6\x23_V	4	-
+netdata_fix_chart_name	6\x23"Vq4'\x1f\xa2	-	6\x23_Vq4_	7	-
+netdata_fix_chart_id	6\x23"Vq4'\x1f\xa2	-	6\x23_Vq4_	7	-
+rrdvar_fix_name	6\x23"Vq4'\x1f\xa2	-	6\x23_Vq4_	7	1
+rrd_string_sanitize	6\x23"Vq4'\x1f\xa2	-	6\x23'Vq4'	7	-
 text_sanitize:identity:0:0	t:6	24	t:6	3	3
 text_sanitize:identity:1:2	t:6	24	t:6	3	3
 text_sanitize:rrd:0:1	t:6	24	t:6	3	3
@@ -36983,21 +36983,21 @@ netdata_fix_chart_name	|	-		0	-
 netdata_fix_chart_id	|	-		0	-
 rrdvar_fix_name	|	-		0	1
 rrd_string_sanitize	|	-	|	1	-
-text_sanitize:identity:0:2	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	9	#._\x120{;\\	8	8
-text_sanitize:identity:1:2	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	9	#.f7\x120{;	8	7
-text_sanitize:rrd:0:1	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	9	#._ 0{;/	8	8
-text_sanitize:rrd:1:2	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	9	#.f7 0{;	8	7
-text_sanitize:chart:0:0	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	9	#._ 0{;/	8	8
-text_sanitize:chart:1:2	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	9	#.f7 0{;	8	7
-rrdlabels_sanitize_name	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	9	_.__0__/	8	-
-rrdlabels_sanitize_value	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	9	_.f7 0_:	8	-
-prometheus_rrdlabels_sanitize_name	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	9	____0___	8	-
-nrpc_sanitize_name	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	9	#.f7 0{;	8	-
-rrdset_strncpyz_name	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	9	#.f7_0{;	8	-
-netdata_fix_chart_name	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	-	#.f7_0{;/v/.U_;	15	-
-netdata_fix_chart_id	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	-	#.f7_0{;/v/.U_;	15	-
-rrdvar_fix_name	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	-	#.f7_0{;/v/.U_;	15	1
-rrd_string_sanitize	\x13#.\xf7\x120{;\\v\\,U\x04\x94;	-	#.f7 0{;/v/,U ;	15	-
+text_sanitize:identity:0:2	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	9	\x23._\x120{;\\	8	8
+text_sanitize:identity:1:2	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	9	\x23.f7\x120{;	8	7
+text_sanitize:rrd:0:1	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	9	\x23._ 0{;/	8	8
+text_sanitize:rrd:1:2	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	9	\x23.f7 0{;	8	7
+text_sanitize:chart:0:0	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	9	\x23._ 0{;/	8	8
+text_sanitize:chart:1:2	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	9	\x23.f7 0{;	8	7
+rrdlabels_sanitize_name	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	9	_.__0__/	8	-
+rrdlabels_sanitize_value	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	9	_.f7 0_:	8	-
+prometheus_rrdlabels_sanitize_name	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	9	____0___	8	-
+nrpc_sanitize_name	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	9	\x23.f7 0{;	8	-
+rrdset_strncpyz_name	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	9	\x23.f7_0{;	8	-
+netdata_fix_chart_name	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	-	\x23.f7_0{;/v/.U_;	15	-
+netdata_fix_chart_id	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	-	\x23.f7_0{;/v/.U_;	15	-
+rrdvar_fix_name	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	-	\x23.f7_0{;/v/.U_;	15	1
+rrd_string_sanitize	\x13\x23.\xf7\x120{;\\v\\,U\x04\x94;	-	\x23.f7 0{;/v/,U ;	15	-
 text_sanitize:identity:0:0	z)r\x95p4`4	24	z)r\x95p4`4	8	8
 text_sanitize:identity:1:0	z)r\x95p4`4	24	z)r\x95p4`4	8	8
 text_sanitize:rrd:0:2	z)r\x95p4`4	24	z)r p4`4	8	8
