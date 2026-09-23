@@ -571,3 +571,133 @@ mod tests {
         }
     }
 }
+
+/// `strtoull(s, &end, 10)` in the "C" locale: leading `isspace()`, an optional sign (a `-` negates modulo 2^64),
+/// then decimal digits. Returns `(value, consumed, erange)`; on overflow the value is `u64::MAX` and `erange` is
+/// set, as glibc sets `errno = ERANGE`. With no digits nothing is consumed.
+pub fn strtoull10(s: &[u8]) -> (u64, usize, bool) {
+    let mut i = skip_spaces(s, 0);
+    let negative = match at(s, i) {
+        b'-' => {
+            i += 1;
+            true
+        }
+        b'+' => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    if !is_digit(at(s, i)) {
+        return (0, 0, false);
+    }
+    let mut value: u64 = 0;
+    let mut overflow = false;
+    while is_digit(at(s, i)) {
+        let digit = u64::from(at(s, i) - b'0');
+        match value.checked_mul(10).and_then(|v| v.checked_add(digit)) {
+            Some(v) if !overflow => value = v,
+            _ => overflow = true,
+        }
+        i += 1;
+    }
+    if overflow {
+        return (u64::MAX, i, true);
+    }
+    (
+        if negative {
+            value.wrapping_neg()
+        } else {
+            value
+        },
+        i,
+        false,
+    )
+}
+
+/// `uuid_parse_flexi()`: 32 hex digits with either no hyphens or exactly four anywhere between byte pairs;
+/// parsing stops after 16 bytes, so trailing text is ignored. `None` where C returns an error (and leaves the
+/// destination untouched).
+pub fn uuid_parse_flexi(s: &[u8]) -> Option<[u8; 16]> {
+    let s = c::c_str(s);
+    if s.is_empty() {
+        return None;
+    }
+    let mut uuid = [0u8; 16];
+    let (mut i, mut hyphens, mut hex_chars, mut byte) = (0usize, 0usize, 0usize, 0usize);
+    while at(s, i) != 0 && byte < 16 {
+        if at(s, i) == b'-' {
+            i += 1;
+            hyphens += 1;
+            if hyphens > 4 {
+                return None;
+            }
+        }
+        let high = hex_value(at(s, i))?;
+        i += 1;
+        hex_chars += 1;
+        let low = hex_value(at(s, i))?;
+        i += 1;
+        hex_chars += 1;
+        uuid[byte] = (high << 4) | low;
+        byte += 1;
+    }
+    if byte < 16 || hex_chars != 32 || (hyphens != 0 && hyphens != 4) {
+        return None;
+    }
+    Some(uuid)
+}
+
+#[cfg(test)]
+mod uuid_and_strtoull_tests {
+    use super::*;
+
+    #[test]
+    fn strtoull10_matches_glibc() {
+        type Case = (&'static [u8], (u64, usize, bool));
+        let cases: [Case; 7] = [
+            (b"123\r\n", (123, 3, false)),
+            (b"  +7x", (7, 4, false)),
+            (b"-1", (u64::MAX, 2, false)),
+            (b"18446744073709551615", (u64::MAX, 20, false)),
+            (b"18446744073709551616", (u64::MAX, 20, true)),
+            (b"99999999999999999999999 ", (u64::MAX, 23, true)),
+            (b"x1", (0, 0, false)),
+        ];
+        for (input, want) in cases {
+            assert_eq!(
+                strtoull10(input),
+                want,
+                "{:?}",
+                String::from_utf8_lossy(input)
+            );
+        }
+    }
+
+    #[test]
+    fn uuid_parse_flexi_matches_c() {
+        let want = [
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
+            0xde, 0xf0,
+        ];
+        let cases: [(&[u8], Option<[u8; 16]>); 9] = [
+            (b"12345678-9abc-def0-1234-56789abcdef0", Some(want)),
+            (b"123456789ABCDEF0123456789abcdef0", Some(want)),
+            (b"123456789abcdef0123456789abcdef0trailing", Some(want)),
+            (b"12-345678-9abcdef0123456789abc-def-0", None), // hyphen splits a byte pair
+            (b"1234-5678-9abc-def0-1234-56789abcdef0", None), // five hyphens
+            (b"12345678-9abcdef0123456789abcdef0", None),    // one hyphen
+            (b"12345678-9abc-def0-1234-56789abcde", None),   // short
+            (b"", None),
+            (b"g2345678-9abc-def0-1234-56789abcdef0", None),
+        ];
+        for (input, want) in cases {
+            assert_eq!(
+                uuid_parse_flexi(input),
+                want,
+                "{:?}",
+                String::from_utf8_lossy(input)
+            );
+        }
+    }
+}

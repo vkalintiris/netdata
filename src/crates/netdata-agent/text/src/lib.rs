@@ -20,7 +20,7 @@
 //! - [`json`]: the `buffer_json_*()` streaming JSON writer.
 //! - [`datetime`]: RFC 3339 timestamps (UTC).
 
-mod c;
+pub mod c;
 
 pub mod datetime;
 pub mod duration;

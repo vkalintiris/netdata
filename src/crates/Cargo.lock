@@ -2925,6 +2925,13 @@ name = "netdata-agent-text"
 version = "0.1.3"
 
 [[package]]
+name = "netdata-agent-web"
+version = "0.1.3"
+dependencies = [
+ "netdata-agent-text",
+]
+
+[[package]]
 name = "netdata-plugin-charts-derive"
 version = "0.1.3"
 dependencies = [

@@ -1,0 +1,12 @@
+[package]
+name = "netdata-agent-web"
+description = "HTTP/1.1 protocol core of the netdata agent web server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+netdata-agent-text = { workspace = true }

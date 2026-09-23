@@ -63,6 +63,7 @@ members = [
     # Rust agent (the netdata daemon)
     "netdata-agent/evloop",
     "netdata-agent/text",
+    "netdata-agent/web",
 ]
 
 [workspace.package]
@@ -89,6 +90,7 @@ bridge = { path = "netdata-plugin/bridge" }
 netdata-plugin-charts-derive = { path = "netdata-plugin/charts-derive" }
 netdata-plugin-rt = { path = "netdata-plugin/rt" }
 netdata-plugin-types = { path = "netdata-plugin/types" }
+netdata-agent-text = { path = "netdata-agent/text" }
 opentelemetry = "0.31.0"
 opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "logs"] }
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio", "logs"] }

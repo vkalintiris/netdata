@@ -1,4 +1,4 @@
-//! C runtime semantics the ported code depends on.
+//! C runtime semantics the ported code depends on, shared with the other agent crates that port C string code.
 //!
 //! The Agent never calls `setlocale()`, so every `<ctype.h>` and `strcasecmp()`
 //! call in the C sources runs in the "C" locale: ASCII-only classification and
@@ -9,7 +9,7 @@
 /// The C string view of `s`: everything before the first NUL byte.
 ///
 /// Inputs are byte slices; the C functions they mirror stop at the terminator.
-pub(crate) fn c_str(s: &[u8]) -> &[u8] {
+pub fn c_str(s: &[u8]) -> &[u8] {
     match s.iter().position(|&b| b == 0) {
         Some(n) => &s[..n],
         None => s,
@@ -18,37 +18,37 @@ pub(crate) fn c_str(s: &[u8]) -> &[u8] {
 
 /// `s[i]`, or the terminating NUL past the end (C reads the terminator).
 #[inline]
-pub(crate) fn at(s: &[u8], i: usize) -> u8 {
+pub fn at(s: &[u8], i: usize) -> u8 {
     s.get(i).copied().unwrap_or(0)
 }
 
 /// `isspace()` in the C locale.
 #[inline]
-pub(crate) fn is_space(c: u8) -> bool {
+pub fn is_space(c: u8) -> bool {
     matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
 }
 
 /// `isalpha()` in the C locale.
 #[inline]
-pub(crate) fn is_alpha(c: u8) -> bool {
+pub fn is_alpha(c: u8) -> bool {
     c.is_ascii_alphabetic()
 }
 
 /// `iscntrl()` in the C locale.
 #[inline]
-pub(crate) fn is_cntrl(c: u8) -> bool {
+pub fn is_cntrl(c: u8) -> bool {
     c < 0x20 || c == 0x7f
 }
 
 /// `isprint()` in the C locale.
 #[inline]
-pub(crate) fn is_print(c: u8) -> bool {
+pub fn is_print(c: u8) -> bool {
     (0x20..0x7f).contains(&c)
 }
 
 /// Index of the first byte of `s` at or after `i` that is not `isspace()`.
 #[inline]
-pub(crate) fn skip_spaces(s: &[u8], mut i: usize) -> usize {
+pub fn skip_spaces(s: &[u8], mut i: usize) -> usize {
     while is_space(at(s, i)) {
         i += 1;
     }
@@ -57,12 +57,12 @@ pub(crate) fn skip_spaces(s: &[u8], mut i: usize) -> usize {
 
 /// `strcasecmp(a, b) == 0` in the C locale.
 #[inline]
-pub(crate) fn eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
+pub fn eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
 /// `strcasestr()` in the C locale: offset of the first match of a non-empty needle.
-pub(crate) fn find_ignore_case(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+pub fn find_ignore_case(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.len() > haystack.len() {
         return None;
     }
@@ -71,7 +71,7 @@ pub(crate) fn find_ignore_case(haystack: &[u8], needle: &[u8]) -> Option<usize> 
 }
 
 /// `strstr()`: offset of the first match of a non-empty needle.
-pub(crate) fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+pub fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.len() > haystack.len() {
         return None;
     }
