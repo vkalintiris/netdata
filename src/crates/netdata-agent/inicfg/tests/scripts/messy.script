@@ -1,0 +1,28 @@
+# a messy file: duplicates, stray lines, reformatting, invalid values, ranges
+load	messy.conf	0	\N
+load	does-not-exist.conf	0	\N
+get	global	hostname	myhost
+get_number	global	update every	1
+get	global	duplicate	\N
+get_boolean	global	flag on	1
+get_boolean	global	flag off	0
+get_boolean_ondemand	global	ondemand auto	1
+get_boolean_ondemand	global	ondemand2	1
+get	global	empty value	default
+get_number	db	update every	1
+get_number_range	db	storage tiers	3	1	5
+get_duration_seconds	db	cleanup obsolete charts after	3600
+get_duration_seconds	db	bad duration	7
+get_duration_days_to_seconds	db	dbengine tier 0 retention time	1209600
+get_size_mb	db	dbengine page cache size	32
+get_number	db	octal	0
+get_duration_ms	web	timeout	60000
+get_size_bytes	web	max request size	1048576
+get_size_bytes	web	bad size	4096
+get_double	ml	maximum num samples to train	3ff8000000000000
+get		in empty section	0
+get	plugin:proc	/proc/stat	yes
+get	spaced	k	\N
+get	long	after	\N
+generate	0	1
+generate	1	0

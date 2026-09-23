@@ -1,0 +1,13 @@
+# values already read are replaced only with overwrite_used; single-section reloads
+set	global	hostname	from-cli
+get	global	hostname	default
+load	overwrite.conf	0	\N
+get	global	hostname	default
+get	global	other	default
+load	overwrite.conf	1	\N
+get	global	hostname	default
+load	overwrite2.conf	1	host labels
+get	global	hostname	default
+get	host labels	a	\N
+get	host labels	c	\N
+generate	0	1

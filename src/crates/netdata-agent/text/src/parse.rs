@@ -615,6 +615,64 @@ pub fn strtoull10(s: &[u8]) -> (u64, usize, bool) {
     )
 }
 
+/// `strtoll(s, NULL, 0)` in the "C" locale: leading `isspace()`, an optional sign, then `0x`/`0X` hex (only when a
+/// hex digit follows), a leading `0` octal, or decimal. Out-of-range values clamp to `i64::MAX`/`i64::MIN` (glibc
+/// sets `ERANGE`). Returns `(value, consumed)`; with no digits nothing is consumed.
+pub fn strtoll0(s: &[u8]) -> (i64, usize) {
+    let mut i = skip_spaces(s, 0);
+    let negative = match at(s, i) {
+        b'-' => {
+            i += 1;
+            true
+        }
+        b'+' => {
+            i += 1;
+            false
+        }
+        _ => false,
+    };
+    let (base, start) = if at(s, i) == b'0'
+        && matches!(at(s, i + 1), b'x' | b'X')
+        && at(s, i + 2).is_ascii_hexdigit()
+    {
+        (16u32, i + 2)
+    } else if at(s, i) == b'0' {
+        (8, i)
+    } else {
+        (10, i)
+    };
+    let digit = |c: u8| char::from(c).to_digit(base);
+    if digit(at(s, start)).is_none() {
+        return (0, 0);
+    }
+    let limit: u64 = if negative {
+        1u64 << 63
+    } else {
+        i64::MAX as u64
+    };
+    let mut magnitude: u64 = 0;
+    let mut overflow = false;
+    let mut j = start;
+    while let Some(d) = digit(at(s, j)) {
+        match magnitude
+            .checked_mul(u64::from(base))
+            .and_then(|m| m.checked_add(u64::from(d)))
+        {
+            Some(m) if m <= limit && !overflow => magnitude = m,
+            _ => overflow = true,
+        }
+        j += 1;
+    }
+    let value = if overflow {
+        if negative { i64::MIN } else { i64::MAX }
+    } else if negative {
+        (magnitude as i64).wrapping_neg()
+    } else {
+        magnitude as i64
+    };
+    (value, j)
+}
+
 /// `uuid_parse_flexi()`: 32 hex digits with either no hyphens or exactly four anywhere between byte pairs;
 /// parsing stops after 16 bytes, so trailing text is ignored. `None` where C returns an error (and leaves the
 /// destination untouched).
@@ -667,6 +725,31 @@ mod uuid_and_strtoull_tests {
         for (input, want) in cases {
             assert_eq!(
                 strtoull10(input),
+                want,
+                "{:?}",
+                String::from_utf8_lossy(input)
+            );
+        }
+    }
+
+    #[test]
+    fn strtoll0_matches_glibc() {
+        type Case = (&'static [u8], (i64, usize));
+        let cases: [Case; 10] = [
+            (b"42", (42, 2)),
+            (b"  -17x", (-17, 5)),
+            (b"0x1F", (31, 4)),
+            (b"0xg", (0, 1)),
+            (b"010", (8, 3)),
+            (b"09", (0, 1)),
+            (b"9223372036854775807", (i64::MAX, 19)),
+            (b"9223372036854775808", (i64::MAX, 19)),
+            (b"-9223372036854775808", (i64::MIN, 20)),
+            (b"abc", (0, 0)),
+        ];
+        for (input, want) in cases {
+            assert_eq!(
+                strtoll0(input),
                 want,
                 "{:?}",
                 String::from_utf8_lossy(input)

@@ -1,0 +1,21 @@
+# moves inside a section, across sections, and the head-scan quirk
+load	migrate.conf	0	\N
+move	global	update every	db	update every
+move	global	memory mode	db	db
+move	global	page cache size	db	dbengine page cache size
+move	global	history	global	retention
+move	global	tail	global	tail renamed
+move	global	bind to	web	bind to
+move	global	missing	db	whatever
+move	nope	x	db	y
+move	web	x	web	bind to
+move	head	already	head	already2
+move	head	other	head	other2
+move	db	first	head	first
+move_everywhere	second	second renamed
+move_everywhere	nothing	nothing2
+get_number	db	update every	1
+get_size_mb	db	dbengine page cache size	32
+get	db	db	dbengine
+get_duration_seconds	global	retention	3600
+generate	0	1

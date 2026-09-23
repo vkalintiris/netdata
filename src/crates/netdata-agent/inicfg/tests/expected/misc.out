@@ -1,0 +1,56 @@
+set_number	db	n	-5 -> -5
+set_boolean	db	b	1 -> 1
+set_double	db	d	400921fb54442d18 -> 400921fb54442d18
+set_duration_seconds	db	s	90 -> 90
+set_duration_ms	db	ms	1500 -> 1500
+set_size_bytes	db	bytes	1536 -> 1536
+set_size_mb	db	mb	2048 -> 2048
+get_number	db	n	0 -> -5
+get_double	db	d	0000000000000000 -> 400921f9f01b866e
+get_double	db	neg	bff0000000000000 -> bff0000000000000
+get_duration_seconds	db	s	0 -> 90
+set_default_raw_value	web	fresh	v1 -> ok
+set_default_raw_value	web	fresh	v2 -> ok
+load	misc.conf	0	\N -> 1
+set_default_raw_value	web	loaded	v3 -> ok
+get	web	loaded	\N -> from-file
+destroy_option	web	fresh -> ok
+destroy_option	web	loaded -> ok
+destroy_option	web	nope -> ok
+destroy_option	nope	x -> ok
+get	gone	k	v -> v
+destroy_section	gone -> ok
+destroy_section	web -> ok
+destroy_section	missing -> ok
+exists	gone	k -> 0
+generate	0	1 -> 
+# netdata configuration
+#
+# You can download the latest version of this file, using:
+#
+#  wget -O /etc/netdata/netdata.conf http://localhost:19999/netdata.conf
+# or
+#  curl -o /etc/netdata/netdata.conf http://localhost:19999/netdata.conf
+#
+# You can uncomment and change any of the options below.
+# The value shown in the commented settings, is the default value.
+#
+
+# global netdata configuration
+
+[db]
+	# n = -5
+	# b = yes
+	# d = 3.14159
+	# s = 1m30s
+	# ms = 1s500ms
+	# bytes = 1.5KiB
+	# mb = 2GiB
+	# neg = -1.00000
+
+[host labels]
+	# name = value
+
+[web]
+	loaded = from-file
+<<<END

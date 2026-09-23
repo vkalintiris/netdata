@@ -1,0 +1,27 @@
+# setters, raw defaults, removals, doubles and sizes
+set_number	db	n	-5
+set_boolean	db	b	1
+set_double	db	d	400921fb54442d18
+set_duration_seconds	db	s	90
+set_duration_ms	db	ms	1500
+set_size_bytes	db	bytes	1536
+set_size_mb	db	mb	2048
+get_number	db	n	0
+get_double	db	d	0000000000000000
+get_double	db	neg	bff0000000000000
+get_duration_seconds	db	s	0
+set_default_raw_value	web	fresh	v1
+set_default_raw_value	web	fresh	v2
+load	misc.conf	0	\N
+set_default_raw_value	web	loaded	v3
+get	web	loaded	\N
+destroy_option	web	fresh
+destroy_option	web	loaded
+destroy_option	web	nope
+destroy_option	nope	x
+get	gone	k	v
+destroy_section	gone
+destroy_section	web
+destroy_section	missing
+exists	gone	k
+generate	0	1

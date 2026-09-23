@@ -14,53 +14,17 @@
 
 set -euo pipefail
 
-RED=$'\033[0;31m'
-YELLOW=$'\033[1;33m'
-GRAY=$'\033[0;90m'
-NC=$'\033[0m'
-
-run() {
-    printf >&2 "%s%s >%s " "${GRAY}" "$(pwd)" "${NC}"
-    printf >&2 "%s" "${YELLOW}"
-    printf >&2 "%q " "$@"
-    printf >&2 "%s\n" "${NC}"
-    if ! "$@"; then
-        local exit_code=$?
-        printf >&2 "%s[ERROR]%s command failed with exit code %s: %s\n" "${RED}" "${NC}" "${exit_code}" "$*"
-        return "${exit_code}"
-    fi
-}
-
-die() {
-    printf >&2 "%s[ERROR]%s %s\n" "${RED}" "${NC}" "$*"
-    exit 1
-}
+# shellcheck source=../../../c-oracle/lib.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/../../../c-oracle/lib.sh"
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CRATE_DIR=$(cd -- "${SCRIPT_DIR}/../.." && pwd)
 [[ -f "${CRATE_DIR}/Cargo.toml" && -d "${CRATE_DIR}/tests/vectors" ]] || die "unexpected crate layout at ${CRATE_DIR}"
 
-: "${NETDATA_SRC:?set NETDATA_SRC to a netdata source tree}"
-SRC=$(realpath -e -- "${NETDATA_SRC}") || die "NETDATA_SRC does not exist: ${NETDATA_SRC}"
-BUILD=$(realpath -e -- "${NETDATA_BUILD:-${SRC}/build}") || die "no build directory"
-[[ -f "${SRC}/src/libnetdata/libnetdata.h" ]] || die "not a netdata source tree: ${SRC}"
-[[ -f "${BUILD}/liblibnetdata.a" && -f "${BUILD}/config.h" ]] || die "not a netdata build directory: ${BUILD}"
+c_oracle_env
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/netdata-agent-text-oracle.XXXXXX")
 trap 'rm -rf -- "${WORK}"' EXIT
-
-CFLAGS=(
-    -D_GNU_SOURCE -O2 -g -DNDEBUG -std=gnu11 -flto=auto -fexceptions -fno-omit-frame-pointer
-    -I/usr/include/uuid -I/usr/include/json-c
-    -I"${BUILD}" -I"${BUILD}/sqlite-output" -I"${BUILD}/libbacktrace-install/include"
-    -I"${SRC}/src" -I"${SRC}/src/libnetdata/netipc/include"
-    -I"${SRC}/src/libnetdata/libjudy/vendored" -I"${SRC}/src/libnetdata/libjudy/vendored/JudyCommon"
-)
-LIBS=(
-    "${BUILD}/liblibnetdata.a" "${BUILD}/libnetipc.a" "${BUILD}/libbacktrace-install/lib/libbacktrace.a"
-    "${BUILD}/libjudy.a" -lm -lrt -lsystemd -lpthread -ljson-c -lyaml -lz -llz4 -lxxhash -lzstd
-    -lbrotlidec -lbrotlienc -lbrotlicommon -luuid -luv -ldl -lssl -lcrypto -lcurl
-)
 
 run cc "${CFLAGS[@]}" "${SCRIPT_DIR}/gen-vectors.c" -o "${WORK}/gen-vectors" "${LIBS[@]}"
 run "${WORK}/gen-vectors" "${CRATE_DIR}/tests/vectors"

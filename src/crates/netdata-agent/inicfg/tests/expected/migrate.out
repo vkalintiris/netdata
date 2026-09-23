@@ -1,0 +1,80 @@
+load	migrate.conf	0	\N -> 1
+move	global	update every	db	update every -> 1
+move	global	memory mode	db	db -> 1
+move	global	page cache size	db	dbengine page cache size -> 1
+move	global	history	global	retention -> 1
+move	global	tail	global	tail renamed -> 1
+move	global	bind to	web	bind to -> 1
+move	global	missing	db	whatever -> 0
+move	nope	x	db	y -> 0
+move	web	x	web	bind to -> 0
+move	head	already	head	already2 -> 1
+move	head	other	head	other2 -> 1
+move	db	first	head	first -> 1
+move_everywhere	second	second renamed -> 1
+move_everywhere	nothing	nothing2 -> 0
+get_number	db	update every	1 -> 5
+get_size_mb	db	dbengine page cache size	32 -> 64
+get	db	db	dbengine -> dbengine
+get_duration_seconds	global	retention	3600 -> 3996
+generate	0	1 -> 
+# netdata configuration
+#
+# You can download the latest version of this file, using:
+#
+#  wget -O /etc/netdata/netdata.conf http://localhost:19999/netdata.conf
+# or
+#  curl -o /etc/netdata/netdata.conf http://localhost:19999/netdata.conf
+#
+# You can uncomment and change any of the options below.
+# The value shown in the commented settings, is the default value.
+#
+
+# global netdata configuration
+
+[global]
+	#| >>> [global].tail renamed <<<
+	#| found in the config file, but is not used
+	#| migrated from: [global].tail
+	tail renamed = t
+
+	#| >>> [global].retention <<<
+	#| migrated from: [global].history = 3996
+	#| datatype: duration (seconds), default value: 1h
+	retention = 1h6m36s
+
+[db]
+	#| >>> [db].db <<<
+	#| migrated from: [global].memory mode
+	#| datatype: text, default value: dbengine
+	db = dbengine
+
+	#| >>> [db].update every <<<
+	#| migrated from: [global].update every
+	#| datatype: number (integer), default value: 1
+	update every = 5
+
+	#| >>> [db].dbengine page cache size <<<
+	#| migrated from: [global].page cache size = 64
+	#| datatype: size (MiB), default value: 32MiB
+	dbengine page cache size = 64MiB
+
+	#| >>> [db].second renamed <<<
+	#| found in the config file, but is not used
+	#| migrated from: [db].second
+	second renamed = 2
+
+[host labels]
+	# name = value
+
+# section 'web' is not used.
+[web]
+	bind to = 127.0.0.1
+	x = y
+
+# section 'head' is not used.
+[head]
+	other2 = 2
+	already2 = 1
+	first = 1
+<<<END

@@ -1,0 +1,38 @@
+set	global	hostname	from-cli -> from-cli
+get	global	hostname	default -> from-cli
+load	overwrite.conf	0	\N -> 1
+get	global	hostname	default -> from-cli
+get	global	other	default -> file-other
+load	overwrite.conf	1	\N -> 1
+get	global	hostname	default -> from-file
+load	overwrite2.conf	1	host labels -> 1
+get	global	hostname	default -> from-file
+get	host labels	a	\N -> (null)
+get	host labels	c	\N -> 3
+generate	0	1 -> 
+# netdata configuration
+#
+# You can download the latest version of this file, using:
+#
+#  wget -O /etc/netdata/netdata.conf http://localhost:19999/netdata.conf
+# or
+#  curl -o /etc/netdata/netdata.conf http://localhost:19999/netdata.conf
+#
+# You can uncomment and change any of the options below.
+# The value shown in the commented settings, is the default value.
+#
+
+# global netdata configuration
+
+[global]
+	#| >>> [global].hostname <<<
+	#| datatype: text, default value: default
+	hostname = from-file
+
+	#| >>> [global].other <<<
+	#| datatype: text, default value: default
+	other = file-other
+
+[host labels]
+	c = 3
+<<<END

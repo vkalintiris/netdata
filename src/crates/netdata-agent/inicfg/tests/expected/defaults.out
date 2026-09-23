@@ -1,0 +1,87 @@
+get	global	hostname	myhost -> myhost
+get	global	missing no default	\N -> (null)
+get_boolean	global	flag on	1 -> 1
+get_boolean	global	flag off	0 -> 0
+get_boolean_ondemand	global	ondemand auto	2 -> 2
+get_number	db	update every	1 -> 1
+get_number_range	db	storage tiers	3	1	5 -> 3
+get_double	ml	maximum num samples to train	3ff8000000000000 -> 3ff8000000000000
+get_double	ml	tiny	3fb999999999999a -> 3fb999999999999a
+get_double	ml	huge	54b249ad2594c37d -> 54b249ad2594c37d
+get_duration_seconds	db	cleanup obsolete charts after	3600 -> 3600
+get_duration_ms	web	timeout	60000 -> 60000
+get_duration_days_to_seconds	db	dbengine tier 0 retention time	1209600 -> 1209600
+get_size_bytes	web	max request size	1048576 -> 1048576
+get_size_mb	db	dbengine page cache size	32 -> 32
+get_filename	logs	daemon	/var/log/netdata/daemon.log -> /var/log/netdata/daemon.log
+get_path	directories	cache	/var/cache/netdata -> /var/cache/netdata
+get	plugin:proc	/proc/stat	yes -> yes
+get	unknown section	x	1 -> 1
+get	statsd	enabled	yes -> yes
+get	plugins	proc	yes -> yes
+get	registry	enabled	no -> no
+exists	global	hostname -> 1
+exists	global	nope -> 0
+generate	0	1 -> 
+# netdata configuration
+#
+# You can download the latest version of this file, using:
+#
+#  wget -O /etc/netdata/netdata.conf http://localhost:19999/netdata.conf
+# or
+#  curl -o /etc/netdata/netdata.conf http://localhost:19999/netdata.conf
+#
+# You can uncomment and change any of the options below.
+# The value shown in the commented settings, is the default value.
+#
+
+# global netdata configuration
+
+[global]
+	# hostname = myhost
+	# flag on = yes
+	# flag off = no
+	# ondemand auto = auto
+
+[db]
+	# update every = 1
+	# storage tiers = 3
+	# cleanup obsolete charts after = 1h
+	# dbengine tier 0 retention time = 14d
+	# dbengine page cache size = 32MiB
+
+[directories]
+	# cache = /var/cache/netdata
+
+[logs]
+	# daemon = /var/log/netdata/daemon.log
+
+[host labels]
+	# name = value
+
+[ml]
+	# maximum num samples to train = 1.50000
+	# tiny = 0.10000
+	# huge = 1.0000000000000000159e+100
+
+[web]
+	# timeout = 1m
+	# max request size = 1024KiB
+
+[unknown section]
+	# x = 1
+
+[registry]
+	# enabled = no
+
+[plugins]
+	# proc = yes
+
+[statsd]
+	# enabled = yes
+
+[plugin:proc]
+	# /proc/stat = yes
+<<<END
+generate	1	0 -> 
+<<<END

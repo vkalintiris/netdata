@@ -1,0 +1,5 @@
+# stream.conf helpers and their side effects on generation
+load	stream.conf	0	\N
+stream_needs_dbengine
+stream_has_api
+generate	0	0

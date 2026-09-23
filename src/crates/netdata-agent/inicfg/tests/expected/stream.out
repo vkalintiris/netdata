@@ -1,0 +1,29 @@
+load	stream.conf	0	\N -> 1
+stream_needs_dbengine -> 1
+stream_has_api -> 1
+generate	0	0 -> 
+
+# section 'stream' is not used.
+[stream]
+	enabled = no
+	destination = 
+
+[11111111-2222-3333-4444-555555555555]
+	enabled = yes
+
+	#| >>> [11111111-2222-3333-4444-555555555555].type <<<
+	#| found in the config file, but is not used
+	type = api
+
+	db = dbengine
+
+# section '66666666-7777-8888-9999-aaaaaaaaaaaa' is not used.
+[66666666-7777-8888-9999-aaaaaaaaaaaa]
+	enabled = no
+	db = ram
+
+# section 'not-a-uuid' is not used.
+[not-a-uuid]
+	enabled = yes
+	db = dbengine
+<<<END

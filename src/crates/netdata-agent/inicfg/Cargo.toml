@@ -1,0 +1,12 @@
+[package]
+name = "netdata-agent-inicfg"
+description = "The netdata.conf engine of the netdata agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+netdata-agent-text = { workspace = true }
