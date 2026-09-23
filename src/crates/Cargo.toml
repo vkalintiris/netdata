@@ -65,6 +65,7 @@ members = [
     "netdata-agent/evloop",
     "netdata-agent/inicfg",
     "netdata-agent/pluginsd-proto",
+    "netdata-agent/storage",
     "netdata-agent/text",
     "netdata-agent/web",
 ]

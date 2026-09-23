@@ -1,0 +1,11 @@
+[package]
+name = "netdata-agent-storage"
+description = "Storage engines of the netdata agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
