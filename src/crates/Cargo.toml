@@ -62,6 +62,7 @@ members = [
 
     # Rust agent (the netdata daemon)
     "netdata-agent/evloop",
+    "netdata-agent/text",
 ]
 
 [workspace.package]
