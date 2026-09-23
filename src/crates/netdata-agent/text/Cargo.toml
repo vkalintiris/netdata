@@ -1,0 +1,20 @@
+[package]
+name = "netdata-agent-text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Byte-exact ports of the Netdata Agent text primitives: number printing and parsing, durations, sizes, simple patterns, sanitizers and the JSON writer"
+publish = false
+
+[lib]
+name = "netdata_agent_text"
+
+# Cargo rejects `workspace = true` next to crate-local lints, so the
+# workspace table (clippy::collapsible_if = allow) is repeated here.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+collapsible_if = "allow"
+
+[dependencies]
