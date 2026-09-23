@@ -52,6 +52,9 @@ func TestCLIPrintOptions(t *testing.T) {
 		"help":             {"-h"},
 		"invalid-option":   {"-x"},
 		"missing-argument": {"-p"},
+		// Arguments are bytes: a non-UTF-8 operand is ignored, a non-UTF-8 option byte is named as glibc does.
+		"non-utf8-operand": {"\xff", "-v"},
+		"non-utf8-option":  {"-\xff"},
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {

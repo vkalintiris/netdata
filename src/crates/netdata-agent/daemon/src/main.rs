@@ -51,21 +51,27 @@ fn log(level: LogLevel, message: &str) {
     );
 }
 
-fn run(argv: Vec<String>) -> i32 {
-    let prog = argv
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "netdata".to_string());
+/// Writes to stdout or stderr, ignoring failures (a full or closed stream must not kill the daemon).
+fn out(stream: &mut dyn Write, bytes: &[u8]) {
+    let _ = stream.write_all(bytes);
+    let _ = stream.flush();
+}
+
+fn run(argv: Vec<Vec<u8>>) -> i32 {
+    let prog = argv.first().cloned().unwrap_or_else(|| b"netdata".to_vec());
     let mut conf = Conf::default();
     let mut config_loaded = false;
     let mut dont_fork = false;
     let mut pidfile: Option<String> = None;
     let mut logger = |level: LogLevel, message: &str| log(level, message);
+    let text = |v: &[u8]| String::from_utf8_lossy(v).into_owned();
+    let help = cli::help_text(build::CONFIG_DIR);
 
     let (opts, _operands) = cli::getopt(&prog, &argv[1.min(argv.len())..]);
     for opt in opts {
         match opt {
-            Opt::WithArg('c', file) => {
+            Opt::WithArg(b'c', file) => {
+                let file = text(&file);
                 if !conf.netdata_conf_load(Some(&file), true, &mut logger) {
                     log(
                         LogLevel::Error,
@@ -76,42 +82,49 @@ fn run(argv: Vec<String>) -> i32 {
                 conf.cloud_conf_load(true, &mut logger);
                 config_loaded = true;
             }
-            Opt::Flag('D') => dont_fork = true,
-            Opt::Flag('d') => dont_fork = false,
-            Opt::Flag('h') => {
-                print!("{}", cli::help_text(build::CONFIG_DIR));
+            Opt::Flag(b'D') => dont_fork = true,
+            Opt::Flag(b'd') => dont_fork = false,
+            Opt::Flag(b'h') => {
+                out(&mut std::io::stdout(), help.as_bytes());
                 return 0;
             }
-            Opt::WithArg('i', v) => {
-                conf.netdata.set(SECTION_WEB, "bind to", &v);
+            Opt::WithArg(b'i', v) => {
+                conf.netdata.set(SECTION_WEB, "bind to", &text(&v));
             }
-            Opt::WithArg('P', v) => pidfile = Some(v),
-            Opt::WithArg('p', v) => {
-                conf.netdata.set(SECTION_GLOBAL, "default port", &v);
+            Opt::WithArg(b'P', v) => pidfile = Some(text(&v)),
+            Opt::WithArg(b'p', v) => {
+                conf.netdata.set(SECTION_GLOBAL, "default port", &text(&v));
             }
-            Opt::WithArg('s', v) => {
-                conf.netdata.set(SECTION_GLOBAL, "host access prefix", &v);
+            Opt::WithArg(b's', v) => {
+                conf.netdata
+                    .set(SECTION_GLOBAL, "host access prefix", &text(&v));
             }
-            Opt::WithArg('t', v) => {
-                conf.netdata.set(SECTION_GLOBAL, "update every", &v);
+            Opt::WithArg(b't', v) => {
+                conf.netdata.set(SECTION_GLOBAL, "update every", &text(&v));
             }
-            Opt::WithArg('u', v) => {
-                conf.netdata.set(SECTION_GLOBAL, "run as user", &v);
+            Opt::WithArg(b'u', v) => {
+                conf.netdata.set(SECTION_GLOBAL, "run as user", &text(&v));
             }
-            Opt::Flag('v') | Opt::Flag('V') => {
-                println!("netdata {}", build::NETDATA_VERSION);
+            Opt::Flag(b'v') | Opt::Flag(b'V') => {
+                out(
+                    &mut std::io::stdout(),
+                    format!("netdata {}\n", build::NETDATA_VERSION).as_bytes(),
+                );
                 return 0;
             }
-            Opt::WithArg('W', v) => {
+            Opt::WithArg(b'W', v) => {
                 // The -W sub-options are ported with the subsystems they drive.
-                eprintln!("Unknown -W parameter '{v}'");
-                eprint!("{}", cli::help_text(build::CONFIG_DIR));
+                let mut message = b"Unknown -W parameter '".to_vec();
+                message.extend_from_slice(&v);
+                message.extend_from_slice(b"'\n");
+                message.extend_from_slice(help.as_bytes());
+                out(&mut std::io::stderr(), &message);
                 return 1;
             }
-            Opt::Invalid(message) => {
-                eprint!("{message}");
-                eprintln!("Unknown parameter '?'");
-                eprint!("{}", cli::help_text(build::CONFIG_DIR));
+            Opt::Invalid(mut message) => {
+                message.extend_from_slice(b"Unknown parameter '?'\n");
+                message.extend_from_slice(help.as_bytes());
+                out(&mut std::io::stderr(), &message);
                 return 1;
             }
             other => unreachable!("getopt returned {other:?} for a known option"),
@@ -146,9 +159,30 @@ fn run(argv: Vec<String>) -> i32 {
 
     let machine_guid = guid::machine_guid_get(&conf.dirs.varlib, &mut logger);
 
-    // Every thread started from here on inherits these signals blocked; the main thread waits for them.
+    // signals_block_all_except_deadly(): every thread started from here on inherits the mask. The main thread waits
+    // for the signals C handles; any other signal stays pending forever, so it is ignored.
+    let mut blocked = SigSet::all();
+    for deadly in [
+        Signal::SIGBUS,
+        Signal::SIGSEGV,
+        Signal::SIGFPE,
+        Signal::SIGILL,
+        Signal::SIGABRT,
+        Signal::SIGSYS,
+        Signal::SIGXCPU,
+        Signal::SIGXFSZ,
+    ] {
+        blocked.remove(deadly);
+    }
+    if blocked.thread_block().is_err() {
+        log(
+            LogLevel::Error,
+            "SIGNALS: cannot apply the default mask for signals",
+        );
+    }
     let mut handled = SigSet::empty();
     for signal in [
+        Signal::SIGPIPE,
         Signal::SIGINT,
         Signal::SIGQUIT,
         Signal::SIGTERM,
@@ -157,12 +191,17 @@ fn run(argv: Vec<String>) -> i32 {
     ] {
         handled.add(signal);
     }
-    if handled.thread_block().is_err() {
-        log(LogLevel::Error, "Cannot block the handled signals.");
-        return 1;
-    }
 
     conf.section_global_hostname();
+
+    // cd into the user config dir, so plugins can use relative paths to their config files.
+    if std::env::set_current_dir(&conf.dirs.user_config).is_err() {
+        log(
+            LogLevel::Error,
+            &format!("Cannot cd to '{}'", conf.dirs.user_config),
+        );
+        return 1;
+    }
 
     let listeners = listen::setup(&mut conf.netdata, &mut logger);
     conf.flush_log(&mut logger);
@@ -173,6 +212,8 @@ fn run(argv: Vec<String>) -> i32 {
         );
         return 1;
     }
+
+    system::set_nofile_limit(&mut logger);
 
     if !dont_fork {
         // Daemonizing needs the audited sys crate (decisions D12); until then the daemon stays in the foreground.
@@ -261,19 +302,34 @@ fn run(argv: Vec<String>) -> i32 {
         hosts: Arc::clone(&hosts),
     });
     let sockets: Vec<std::net::TcpListener> = listeners.into_iter().map(|l| l.socket).collect();
+    // Every worker polls every listener through its own duplicate; running out of descriptors here is an error,
+    // not a panic.
+    let mut worker_sockets = Vec::with_capacity(WEB_SERVER_THREADS);
+    for _ in 0..WEB_SERVER_THREADS {
+        match sockets
+            .iter()
+            .map(std::net::TcpListener::try_clone)
+            .collect::<std::io::Result<Vec<_>>>()
+        {
+            Ok(set) => worker_sockets.push(set),
+            Err(err) => {
+                log(
+                    LogLevel::Error,
+                    &format!("Cannot start the web server threads: {err}"),
+                );
+                return 1;
+            }
+        }
+    }
     let pool = match Pool::spawn(
         WEB_SERVER_THREADS,
         |i| format!("WEB[{}]", i + 1),
-        |_| {
+        |i| {
             server::WebWorker::new(
-                sockets
-                    .iter()
-                    .map(|s| s.try_clone().expect("dup listener"))
-                    .collect(),
+                std::mem::take(&mut worker_sockets[i]),
                 Arc::clone(&shared),
                 Arc::clone(&receivers),
             )
-            .expect("web worker")
         },
     ) {
         Ok(pool) => pool,
@@ -290,7 +346,7 @@ fn run(argv: Vec<String>) -> i32 {
     loop {
         match handled.wait() {
             Ok(Signal::SIGINT | Signal::SIGQUIT | Signal::SIGTERM) => break,
-            // Log reopening and health reloads come with logging and health.
+            // SIGPIPE is ignored; log reopening (HUP) and health reloads (USR2) come with logging and health.
             Ok(_) => continue,
             Err(_) => continue,
         }
@@ -306,5 +362,6 @@ fn run(argv: Vec<String>) -> i32 {
 }
 
 fn main() -> ExitCode {
-    ExitCode::from(run(std::env::args().collect()) as u8)
+    use std::os::unix::ffi::OsStringExt;
+    ExitCode::from(run(std::env::args_os().map(OsStringExt::into_vec).collect()) as u8)
 }

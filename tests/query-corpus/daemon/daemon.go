@@ -352,6 +352,9 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	return d, nil
 }
 
+// PID is the daemon's process ID, 0 once it has exited.
+func (d *Daemon) PID() int { return d.processPID }
+
 func (d *Daemon) launch() error {
 	confPath := filepath.Join(d.Opts.RunDir, "etc", "netdata.conf")
 	cmd := exec.Command(d.Opts.Binary, "-D", "-c", confPath)

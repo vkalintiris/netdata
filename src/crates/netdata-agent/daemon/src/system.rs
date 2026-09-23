@@ -1,6 +1,8 @@
 //! Host resources the daemon sizes itself by: `os_get_system_cpus_uncached()` (`src/libnetdata/os/get_system_cpus.c`),
 //! the total RAM of `os_system_memory()`, and the page size.
 
+use netdata_agent_inicfg::LogLevel;
+use nix::sys::resource::{Resource, getrlimit, setrlimit};
 use nix::unistd::{SysconfVar, sysconf};
 
 #[derive(Debug, Clone, Copy)]
@@ -46,5 +48,33 @@ impl Resources {
     /// (both come with the port of `libuv_initialize()`): six per CPU, 16..=128.
     pub fn libuv_worker_threads(&self) -> i64 {
         (self.cpus * 6).clamp(16, 128)
+    }
+}
+
+/// `set_nofile_limit()`: the soft limit of open files raised to the hard one.
+pub fn set_nofile_limit(log: &mut impl FnMut(LogLevel, &str)) {
+    let Ok((soft, hard)) = getrlimit(Resource::RLIMIT_NOFILE) else {
+        log(LogLevel::Error, "getrlimit(RLIMIT_NOFILE) failed");
+        return;
+    };
+    log(
+        LogLevel::Info,
+        &format!("resources control: allowed file descriptors: soft = {soft}, max = {hard}"),
+    );
+    if setrlimit(Resource::RLIMIT_NOFILE, hard, hard).is_err() {
+        log(
+            LogLevel::Error,
+            &format!("setrlimit(RLIMIT_NOFILE, {{ {hard}, {hard} }}) failed"),
+        );
+    }
+    match getrlimit(Resource::RLIMIT_NOFILE) {
+        Ok((soft, _)) if soft < 1024 => log(
+            LogLevel::Error,
+            &format!(
+                "Number of open file descriptors allowed for this process is too low (RLIMIT_NOFILE={soft})"
+            ),
+        ),
+        Ok(_) => {}
+        Err(_) => log(LogLevel::Error, "getrlimit(RLIMIT_NOFILE) failed"),
     }
 }

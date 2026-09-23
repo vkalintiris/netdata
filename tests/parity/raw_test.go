@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -224,6 +225,26 @@ func TestNoReadWhileWriting(t *testing.T) {
 		conn.Close()
 		if written >= 16<<20 {
 			t.Errorf("%s accepted %d bytes of junk while writing a response; want backpressure", side.Role, written)
+		}
+	}
+}
+
+// TestIgnoredSignals sends signals C neither handles nor lets kill it (it blocks everything but the deadly ones):
+// both daemons must keep serving.
+func TestIgnoredSignals(t *testing.T) {
+	p := StartPair(t, daemon.Options{}, parentIdentity)
+	for _, side := range p.Each() {
+		for _, sig := range []syscall.Signal{syscall.SIGUSR1, syscall.SIGALRM, syscall.SIGPIPE} {
+			if err := syscall.Kill(side.Daemon.PID(), sig); err != nil {
+				t.Fatalf("%s: kill %v: %v", side.Role, sig, err)
+			}
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+	for _, side := range p.Each() {
+		b, err := rawExchange(side.Daemon.Addr, []byte("GET /api/v1/info HTTP/1.1\r\n\r\n"), 2*time.Second)
+		if err != nil || !bytes.HasPrefix(b, []byte("HTTP/1.1 200 OK")) {
+			t.Errorf("%s stopped serving after ignored signals: %v %q", side.Role, err, truncateBytes(b))
 		}
 	}
 }

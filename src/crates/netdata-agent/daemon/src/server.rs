@@ -146,21 +146,21 @@ pub struct WebWorker {
 }
 
 impl WebWorker {
+    /// `listeners` must be non-blocking; they become this worker's own.
     pub fn new(
         listeners: Vec<std::net::TcpListener>,
         shared: Arc<Shared>,
         receivers: Arc<Receivers>,
-    ) -> io::Result<Self> {
-        let listeners = listeners
-            .into_iter()
-            .map(|l| l.try_clone().map(mio::net::TcpListener::from_std))
-            .collect::<io::Result<Vec<_>>>()?;
-        Ok(WebWorker {
-            listeners,
+    ) -> Self {
+        WebWorker {
+            listeners: listeners
+                .into_iter()
+                .map(mio::net::TcpListener::from_std)
+                .collect(),
             clients: Vec::new(),
             shared,
             receivers,
-        })
+        }
     }
 
     fn client_token(&self, slot: usize) -> Token {

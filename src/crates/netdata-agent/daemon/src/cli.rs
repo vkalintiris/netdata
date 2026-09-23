@@ -83,57 +83,64 @@ pub fn help_text(config_dir: &str) -> String {
     out
 }
 
-/// One `getopt()` result.
+/// One `getopt()` result. Arguments are bytes: the kernel passes no encoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Opt {
-    Flag(char),
-    WithArg(char, String),
+    Flag(u8),
+    WithArg(u8, Vec<u8>),
     /// `getopt()` returned `'?'`; the message glibc printed to stderr is included.
-    Invalid(String),
+    Invalid(Vec<u8>),
 }
 
-fn takes_argument(c: char) -> Option<bool> {
-    OPTIONS.iter().find(|o| o.0 == c).map(|o| o.2.is_some())
+fn takes_argument(c: u8) -> Option<bool> {
+    OPTIONS
+        .iter()
+        .find(|o| u32::from(c) == o.0 as u32)
+        .map(|o| o.2.is_some())
 }
 
 /// GNU `getopt()` over `args` (without the program name): options may follow operands (argv is permuted), `--`
 /// ends option parsing, clustered flags are split, and an option's argument is the rest of its word or the next
-/// word. Operands are returned separately; the C daemon ignores them. `prog` prefixes glibc's messages.
-pub fn getopt(prog: &str, args: &[String]) -> (Vec<Opt>, Vec<String>) {
+/// word. Operands are returned separately; the C daemon ignores them. `prog` prefixes glibc's messages, which name
+/// the offending byte as glibc does.
+pub fn getopt(prog: &[u8], args: &[Vec<u8>]) -> (Vec<Opt>, Vec<Vec<u8>>) {
     let mut opts = Vec::new();
     let mut operands = Vec::new();
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
         i += 1;
-        if arg == "--" {
+        if arg.as_slice() == b"--" {
             operands.extend(args[i..].iter().cloned());
             break;
         }
-        if !arg.starts_with('-') || arg.len() == 1 {
+        if !arg.starts_with(b"-") || arg.len() == 1 {
             operands.push(arg.clone());
             continue;
         }
-        let chars: Vec<char> = arg.chars().skip(1).collect();
+        let bytes = &arg[1..];
         let mut k = 0;
-        while k < chars.len() {
-            let c = chars[k];
+        while k < bytes.len() {
+            let c = bytes[k];
             k += 1;
+            let message = |what: &str| {
+                let mut m = prog.to_vec();
+                m.extend_from_slice(format!(": {what} -- '").as_bytes());
+                m.push(c);
+                m.extend_from_slice(b"'\n");
+                m
+            };
             match takes_argument(c) {
-                None => {
-                    opts.push(Opt::Invalid(format!("{prog}: invalid option -- '{c}'\n")));
-                }
+                None => opts.push(Opt::Invalid(message("invalid option"))),
                 Some(false) => opts.push(Opt::Flag(c)),
                 Some(true) => {
-                    if k < chars.len() {
-                        opts.push(Opt::WithArg(c, chars[k..].iter().collect()));
+                    if k < bytes.len() {
+                        opts.push(Opt::WithArg(c, bytes[k..].to_vec()));
                     } else if i < args.len() {
                         opts.push(Opt::WithArg(c, args[i].clone()));
                         i += 1;
                     } else {
-                        opts.push(Opt::Invalid(format!(
-                            "{prog}: option requires an argument -- '{c}'\n"
-                        )));
+                        opts.push(Opt::Invalid(message("option requires an argument")));
                     }
                     break;
                 }
@@ -158,40 +165,47 @@ mod tests {
 
     #[test]
     fn getopt_follows_gnu_rules() {
-        let args: Vec<String> = [
-            "-Dc",
-            "/x.conf",
-            "operand",
-            "-p19998",
-            "-xP",
-            "-W",
-            "buildinfo",
-            "--",
-            "-D",
-            "-t",
+        let args: Vec<Vec<u8>> = [
+            &b"-Dc"[..],
+            b"/x.conf",
+            b"operand",
+            b"-p19998",
+            b"-xP",
+            b"-W",
+            b"buildinfo",
+            b"--",
+            b"-D",
+            b"-t",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(|s| s.to_vec())
         .collect();
-        let (opts, operands) = getopt("netdata", &args);
+        let (opts, operands) = getopt(b"netdata", &args);
         assert_eq!(
             opts,
             vec![
-                Opt::Flag('D'),
-                Opt::WithArg('c', "/x.conf".into()),
-                Opt::WithArg('p', "19998".into()),
-                Opt::Invalid("netdata: invalid option -- 'x'\n".into()),
-                Opt::WithArg('P', "-W".into()),
+                Opt::Flag(b'D'),
+                Opt::WithArg(b'c', b"/x.conf".to_vec()),
+                Opt::WithArg(b'p', b"19998".to_vec()),
+                Opt::Invalid(b"netdata: invalid option -- 'x'\n".to_vec()),
+                Opt::WithArg(b'P', b"-W".to_vec()),
                 // "buildinfo" is an operand once -P took "-W" as its argument.
             ]
         );
-        assert_eq!(operands, vec!["operand", "buildinfo", "-D", "-t"]);
-        let (opts, _) = getopt("netdata", &["-t".to_string()]);
+        assert_eq!(operands, [&b"operand"[..], b"buildinfo", b"-D", b"-t"]);
+        let (opts, _) = getopt(b"netdata", &[b"-t".to_vec()]);
         assert_eq!(
             opts,
             vec![Opt::Invalid(
-                "netdata: option requires an argument -- 't'\n".into()
+                b"netdata: option requires an argument -- 't'\n".to_vec()
             )]
+        );
+        // Not UTF-8: glibc names the single byte.
+        let (opts, operands) = getopt(b"netdata", &[vec![0xff], vec![b'-', 0xc3, 0xa9]]);
+        assert_eq!(operands, [vec![0xff]]);
+        assert_eq!(
+            opts[0],
+            Opt::Invalid(b"netdata: invalid option -- '\xc3'\n".to_vec())
         );
     }
 }
