@@ -101,10 +101,7 @@ func compareRaw(t *testing.T, p *Pair, cases map[string][]byte) {
 // TestStaticAndRouting covers URL routing (API versions and commands, dashboard version prefixes, host switching)
 // and static files, with both daemons serving the oracle's web directory.
 func TestStaticAndRouting(t *testing.T) {
-	webDir := filepath.Join(filepath.Dir(os.Getenv("PARITY_ORACLE")), "..", "share", "netdata", "web")
-	if _, err := os.Stat(filepath.Join(webDir, "index.html")); err != nil {
-		t.Fatalf("parity: the oracle's web directory: %v", err)
-	}
+	webDir := oracleWebDir(t)
 	p := StartPair(t, daemon.Options{WebDir: webDir}, parentIdentity)
 	get := func(path string) []byte { return []byte("GET " + path + " HTTP/1.1\r\n\r\n") }
 	paths := []string{
@@ -127,4 +124,104 @@ func truncateBytes(b []byte) string {
 		return s[:600] + "..."
 	}
 	return strings.ToValidUTF8(s, "?")
+}
+
+// oracleWebDir is the web directory of the oracle's install, which both daemons serve in the static-file checks.
+func oracleWebDir(t *testing.T) string {
+	t.Helper()
+	webDir := filepath.Join(filepath.Dir(os.Getenv("PARITY_ORACLE")), "..", "share", "netdata", "web")
+	if _, err := os.Stat(filepath.Join(webDir, "index.html")); err != nil {
+		t.Fatalf("parity: the oracle's web directory: %v", err)
+	}
+	return webDir
+}
+
+// largestFile is the web path of the biggest file under dir.
+func largestFile(t *testing.T, dir string) string {
+	t.Helper()
+	var best string
+	var size int64
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		info, err := d.Info()
+		if err == nil && info.Size() > size {
+			best, size = path, info.Size()
+		}
+		return err
+	})
+	if err != nil || best == "" {
+		t.Fatalf("parity: no file under %s: %v", dir, err)
+	}
+	rel, _ := filepath.Rel(dir, best)
+	return "/" + filepath.ToSlash(rel)
+}
+
+// TestRequestDuringLargeResponse sends a second request while the response to the first (the largest static file)
+// is still being written: both daemons must answer both, in order.
+func TestRequestDuringLargeResponse(t *testing.T) {
+	webDir := oracleWebDir(t)
+	big := largestFile(t, webDir)
+	p := StartPair(t, daemon.Options{WebDir: webDir}, parentIdentity)
+	var got [2][]byte
+	for i, side := range p.Each() {
+		conn, err := net.Dial("tcp", side.Daemon.Addr)
+		if err != nil {
+			t.Fatalf("%s: %v", side.Role, err)
+		}
+		if _, err := conn.Write([]byte("GET " + big + " HTTP/1.1\r\nConnection: keep-alive\r\n\r\n")); err != nil {
+			t.Fatalf("%s: %v", side.Role, err)
+		}
+		time.Sleep(200 * time.Millisecond)
+		if _, err := conn.Write([]byte("GET /nonexistent.js HTTP/1.1\r\n\r\n")); err != nil {
+			t.Fatalf("%s: %v", side.Role, err)
+		}
+		var out bytes.Buffer
+		buf := make([]byte, 1<<20)
+		for {
+			_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			n, err := conn.Read(buf)
+			out.Write(buf[:n])
+			if err != nil {
+				break
+			}
+		}
+		conn.Close()
+		got[i] = maskRaw(out.Bytes())
+	}
+	for i, side := range []string{"oracle", "candidate"} {
+		if !bytes.HasSuffix(got[i], []byte("File does not exist, or is not accessible: nonexistent.js")) {
+			t.Errorf("%s: the second request was not answered", side)
+		}
+	}
+	if !bytes.Equal(got[0], got[1]) {
+		t.Errorf("responses differ (lengths %d and %d)\noracle tail:    %q\ncandidate tail: %q", len(got[0]), len(got[1]),
+			truncateBytes(got[0][max(0, len(got[0])-400):]), truncateBytes(got[1][max(0, len(got[1])-400):]))
+	}
+}
+
+// TestNoReadWhileWriting sends junk behind a request whose response the client does not read: the server must stop
+// reading (C polls only for writing while it sends), so the client's writes block after the socket buffers fill.
+func TestNoReadWhileWriting(t *testing.T) {
+	webDir := oracleWebDir(t)
+	big := largestFile(t, webDir)
+	p := StartPair(t, daemon.Options{WebDir: webDir}, parentIdentity)
+	const junk = 64 << 20
+	for _, side := range p.Each() {
+		conn, err := net.Dial("tcp", side.Daemon.Addr)
+		if err != nil {
+			t.Fatalf("%s: %v", side.Role, err)
+		}
+		if _, err := conn.Write([]byte("GET " + big + " HTTP/1.1\r\nConnection: keep-alive\r\n\r\n")); err != nil {
+			t.Fatalf("%s: %v", side.Role, err)
+		}
+		time.Sleep(200 * time.Millisecond)
+		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		written, _ := conn.Write(make([]byte, junk))
+		conn.Close()
+		if written >= 16<<20 {
+			t.Errorf("%s accepted %d bytes of junk while writing a response; want backpressure", side.Role, written)
+		}
+	}
 }

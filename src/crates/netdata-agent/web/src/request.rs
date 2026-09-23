@@ -121,7 +121,8 @@ pub struct Headers {
     /// `WEB_CLIENT_CHUNKED_TRANSFER`.
     pub chunked: bool,
     pub transaction: Option<[u8; 16]>,
-    /// Every `X-Netdata-Auth`/`Authorization: Bearer` token, in order; C authenticates each as it is parsed.
+    /// Every `X-Netdata-Auth`/`Authorization: Bearer` token of the last header pass, in order; C authenticates each
+    /// as it is parsed.
     pub bearer_tokens: Vec<Vec<u8>>,
     pub mcp_session_id: Option<[u8; 16]>,
     pub cloud_account_id: Option<[u8; 16]>,
@@ -245,7 +246,9 @@ impl Request {
         }
         let url_end = s;
 
-        // A complete request ends with an empty line; headers are parsed along the way, on every attempt.
+        // A complete request ends with an empty line; headers are parsed along the way, on every attempt. C's
+        // callbacks set state, so each pass starts over; only the tokens are collected, and only for this pass.
+        self.headers.bearer_tokens.clear();
         while at(text, s) != 0 {
             loop {
                 let c = at(text, s);
@@ -710,6 +713,16 @@ mod tests {
             last = req.validate(&buf, &TCP, &SETTINGS);
         }
         assert_eq!(last, Validation::TooManyReadRetries);
+    }
+
+    #[test]
+    fn tokens_do_not_accumulate_across_parse_attempts() {
+        // A colon-less line keeps the request incomplete; every attempt re-parses the same headers.
+        let mut chunks: Vec<&[u8]> = vec![b"GET / HTTP/1.1\r\nAuthorization: Bearer a\r\nFoo\r\n\r\n"];
+        chunks.extend(std::iter::repeat_n(&b"\r\n\r\n"[..], 5));
+        let (req, results) = feed(&chunks);
+        assert!(results.iter().all(|r| *r == Validation::Incomplete));
+        assert_eq!(req.headers.bearer_tokens, vec![b"a".to_vec()]);
     }
 
     #[test]

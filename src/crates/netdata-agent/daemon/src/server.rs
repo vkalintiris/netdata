@@ -84,10 +84,51 @@ pub fn now() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
+/// The capacity of a web client's receive buffer (`w->response.data`), which decides how much each `recv()` asks
+/// for. It grows by `buffer_increase()`'s rule and survives across the requests of a connection, including the
+/// growth for response bodies. C also recycles clients between connections, so its first reads on a new
+/// connection depend on history; a fresh client is modelled here.
+#[derive(Debug, Clone, Copy)]
+struct RecvBuffer {
+    size: usize,
+}
+
+impl RecvBuffer {
+    /// `NETDATA_WEB_RESPONSE_INITIAL_SIZE`.
+    const INITIAL: usize = 8192;
+    /// `NETDATA_WEB_REQUEST_INITIAL_SIZE`: the free space asked for before each read.
+    const READ_ROOM: usize = 8192;
+
+    /// `buffer_need_bytes()`: grow when `len + needed` reaches the size.
+    fn need(&mut self, len: usize, needed: usize) {
+        if len + needed < self.size {
+            return;
+        }
+        let required = needed + 1;
+        let remaining = self.size - len;
+        if remaining >= required {
+            return;
+        }
+        let optimal = if self.size > 5 * 1024 * 1024 {
+            self.size / 2
+        } else {
+            self.size
+        };
+        self.size += (required - remaining).max(1024).max(optimal);
+    }
+
+    /// `web_client_receive()`: room for a request chunk, then `recv(left - 1)`.
+    fn recv_len(&mut self, len: usize) -> usize {
+        self.need(len, Self::READ_ROOM);
+        self.size - len - 1
+    }
+}
+
 struct Client {
     stream: mio::net::TcpStream,
     /// `w->user_auth.client_ip` as `accept_socket()` formats it.
     client_ip: String,
+    recv: RecvBuffer,
     received: Vec<u8>,
     request: Request,
     output: Vec<u8>,
@@ -144,9 +185,15 @@ impl WebWorker {
                     {
                         continue;
                     }
+                    // web_client_create_on_fd()
+                    let _ = stream.set_nodelay(true);
+                    let _ = socket2::SockRef::from(&stream).set_keepalive(true);
                     self.clients[slot] = Some(Client {
                         stream,
                         client_ip: client_ip(&peer),
+                        recv: RecvBuffer {
+                            size: RecvBuffer::INITIAL,
+                        },
                         received: Vec::new(),
                         request: Request::default(),
                         output: Vec::new(),
@@ -190,23 +237,26 @@ impl WebWorker {
             return;
         };
 
-        if event.is_readable() {
-            let mut buf = [0u8; 8192];
+        // One request at a time, as C: reading stops at the first complete request and resumes only after its
+        // response is written, so later bytes wait in the kernel (backpressure) and are reported again when
+        // reading is re-armed.
+        if client.output.is_empty() && event.is_readable() {
             loop {
-                match client.stream.read(&mut buf) {
+                let start = client.received.len();
+                let want = client.recv.recv_len(start);
+                client.received.resize(start + want, 0);
+                match client.stream.read(&mut client.received[start..]) {
                     Ok(0) => {
                         self.close(cx, slot);
                         return;
                     }
                     Ok(n) => {
-                        client.received.extend_from_slice(&buf[..n]);
-                        if !client.output.is_empty() {
-                            continue;
-                        }
+                        client.received.truncate(start + n);
                         match respond(client, &shared, &receivers) {
                             Some(Outcome::Reply(bytes)) => {
                                 client.output = bytes;
                                 client.written = 0;
+                                break;
                             }
                             Some(Outcome::Stream(pre)) => {
                                 self.take_over(cx, slot, pre);
@@ -215,8 +265,13 @@ impl WebWorker {
                             None => {}
                         }
                     }
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        client.received.truncate(start);
+                        break;
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                        client.received.truncate(start);
+                    }
                     Err(_) => {
                         self.close(cx, slot);
                         return;
@@ -240,11 +295,10 @@ impl WebWorker {
             }
         }
         if client.written < client.output.len() {
-            let _ = cx.registry().reregister(
-                &mut client.stream,
-                token,
-                Interest::READABLE | Interest::WRITABLE,
-            );
+            // While sending, C polls for writing only.
+            let _ = cx
+                .registry()
+                .reregister(&mut client.stream, token, Interest::WRITABLE);
             return;
         }
         if !client.output.is_empty() {
@@ -385,6 +439,8 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
     out.extend_from_slice(&body);
 
     client.close_after_write = !built.keepalive;
+    // The body was built in the receive buffer, which keeps its size for the next request.
+    client.recv.need(0, reply.body.len() + 1);
     // Ready for the next request on this connection.
     client.request = Request::default();
     client.received.clear();
