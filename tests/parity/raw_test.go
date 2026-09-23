@@ -248,3 +248,48 @@ func TestIgnoredSignals(t *testing.T) {
 		}
 	}
 }
+
+// TestStaticEdgeFiles serves a scratch web directory: an empty file requested with gzip (C sends the gzip and chunked
+// header lines and closes without a chunk) and a file dated in the year 10000 (C's Date header is empty). Neither
+// the Date nor the Expires value of these responses is masked when it is empty.
+func TestStaticEdgeFiles(t *testing.T) {
+	// tmpfs keeps 64-bit timestamps; ext4 wraps a year-10000 mtime.
+	web := t.TempDir()
+	if shm, err := os.MkdirTemp("/dev/shm", "parity-web-"); err == nil {
+		web = shm
+		t.Cleanup(func() { _ = os.RemoveAll(shm) })
+	}
+	for name, content := range map[string]string{"index.html": "<html></html>", "empty.txt": "", "future.txt": "x"} {
+		if err := os.WriteFile(filepath.Join(web, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// utimensat() directly: os.Chtimes goes through int64 nanoseconds, which overflow in the year 10000.
+	const future = 253402300800
+	futureOK := false
+	ts := []syscall.Timespec{{Sec: future}, {Sec: future}}
+	if syscall.UtimesNano(filepath.Join(web, "future.txt"), ts) == nil {
+		var st syscall.Stat_t
+		futureOK = syscall.Stat(filepath.Join(web, "future.txt"), &st) == nil && st.Mtim.Sec == future
+	}
+	p := StartPair(t, daemon.Options{WebDir: web}, parentIdentity)
+	cases := map[string][]byte{
+		"empty-gzip":  []byte("GET /empty.txt HTTP/1.1\r\nAccept-Encoding: gzip\r\nConnection: keep-alive\r\n\r\n"),
+		"empty-plain": []byte("GET /empty.txt HTTP/1.1\r\n\r\n"),
+	}
+	if futureOK {
+		cases["year-10000"] = []byte("GET /future.txt HTTP/1.1\r\n\r\n")
+	} else {
+		t.Log("the filesystem cannot store a year-10000 mtime; that case is skipped")
+	}
+	compareRaw(t, p, cases)
+	if futureOK {
+		// The mask hides Date values; check the empty one directly.
+		for _, side := range p.Each() {
+			b, err := rawExchange(side.Daemon.Addr, cases["year-10000"], time.Second)
+			if err != nil || !bytes.Contains(b, []byte("\r\nDate: \r\n")) {
+				t.Errorf("%s: want an empty Date header: %v %q", side.Role, err, truncateBytes(b))
+			}
+		}
+	}
+}

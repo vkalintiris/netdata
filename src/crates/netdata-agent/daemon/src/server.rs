@@ -408,8 +408,15 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
     let transaction = h
         .transaction
         .unwrap_or_else(|| *uuid::Uuid::new_v4().as_bytes());
-    let (body, gzip, chunked) = if h.gzip && !reply.body.is_empty() {
-        (gzip_chunked(&reply.body, shared.gzip_level), true, true)
+    // Accept-Encoding: gzip turns compression on while the headers are parsed, so the gzip and chunked header lines
+    // go out even for an empty body; C then closes the connection without sending any chunk.
+    let (body, gzip, chunked) = if h.gzip {
+        if reply.body.is_empty() {
+            client.close_after_write = true;
+            (Vec::new(), true, true)
+        } else {
+            (gzip_chunked(&reply.body, shared.gzip_level), true, true)
+        }
     } else {
         (reply.body.clone(), false, false)
     };
@@ -440,7 +447,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
     let mut out = built.bytes;
     out.extend_from_slice(&body);
 
-    client.close_after_write = !built.keepalive;
+    client.close_after_write |= !built.keepalive;
     // The body was built in the receive buffer, which keeps its size for the next request.
     client.recv.need(0, reply.body.len() + 1);
     // Ready for the next request on this connection.
