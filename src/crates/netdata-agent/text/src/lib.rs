@@ -25,6 +25,7 @@ pub mod c;
 pub mod datetime;
 pub mod duration;
 pub mod json;
+pub mod line_splitter;
 pub mod parse;
 pub mod print;
 pub mod sanitize;

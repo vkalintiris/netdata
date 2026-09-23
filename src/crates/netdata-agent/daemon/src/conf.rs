@@ -10,7 +10,12 @@ use netdata_agent_inicfg::{
     SECTION_STATSD, SECTION_WEB,
 };
 
+use netdata_agent_text::line_splitter::{Separators, quoted_strings_splitter};
+
 use crate::build;
+
+/// `PLUGINSD_MAX_DIRECTORIES`.
+const PLUGINSD_MAX_DIRECTORIES: usize = 20;
 
 /// `RRD_STORAGE_TIERS`.
 const STORAGE_TIERS: usize = 5;
@@ -28,7 +33,8 @@ pub struct Dirs {
     pub cache: String,
     pub varlib: String,
     pub cloud: String,
-    pub plugins: String,
+    /// `plugin_directories[]`; the first one is `netdata_configured_primary_plugins_dir`.
+    pub plugins: Vec<String>,
 }
 
 impl Default for Dirs {
@@ -42,7 +48,7 @@ impl Default for Dirs {
             cache: build::CACHE_DIR.to_string(),
             varlib: build::VARLIB_DIR.to_string(),
             cloud: format!("{}/cloud.d", build::VARLIB_DIR),
-            plugins: String::new(),
+            plugins: vec![build::PLUGINS_DIR.to_string()],
         }
     }
 }
@@ -587,14 +593,19 @@ impl Conf {
         d.varlib = path(c, "lib", &d.varlib.clone());
         // get_varlib_subdir_from_config()
         d.cloud = path(c, "cloud.d", &format!("{}/cloud.d", d.varlib));
-        // pluginsd_initialize_plugin_directories(): the list is split by the plugins.d quoted-string splitter when
-        // plugins are ported; the first entry is the stock directory.
+        // pluginsd_initialize_plugin_directories()
         let default = format!(
             "\"{}\" \"{}/custom-plugins.d\"",
             build::PLUGINS_DIR,
             build::CONFIG_DIR
         );
-        d.plugins = text(c.get_path_list(SECTION_DIRECTORIES, "plugins", Some(&default)));
+        let list = c
+            .get_path_list(SECTION_DIRECTORIES, "plugins", Some(&default))
+            .unwrap_or_default();
+        d.plugins = quoted_strings_splitter(&list, PLUGINSD_MAX_DIRECTORIES, Separators::Config)
+            .iter()
+            .map(|w| String::from_utf8_lossy(w).into_owned())
+            .collect();
     }
 
     /// `netdata_conf_section_global_run_as_user()`.

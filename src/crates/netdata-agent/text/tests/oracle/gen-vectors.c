@@ -1296,6 +1296,66 @@ static void gen_json(const char *dir) {
 
 // ------------------------------------------------------------------------------------------------
 
+
+// ------------------------------------------------------------------------------------------------
+// quoted_strings_splitter() (line_splitter.h) with every separator map
+
+static void split_line(FILE *f, const char *map_name, bool *map, const char *input, size_t max_words) {
+    char buf[1024];
+    size_t len = strlen(input);
+    memcpy(buf, input, len + 1);
+    char *words[PLUGINSD_MAX_WORDS + 1] = { 0 };
+    size_t n = quoted_strings_splitter(buf, words, max_words, map);
+    char joined[2048];
+    size_t j = 0;
+    for(size_t i = 0; i < n; i++) {
+        if(i) joined[j++] = 0x1f;
+        size_t wl = strlen(words[i]);
+        memcpy(&joined[j], words[i], wl);
+        j += wl;
+    }
+    esc_str(f, map_name); tab(f);
+    esc(f, input, len); tab(f);
+    fprintf(f, "%zu", max_words); tab(f);
+    fprintf(f, "%zu", n); tab(f);
+    esc(f, joined, j); eol(f);
+}
+
+static void gen_splitter(const char *dir) {
+    FILE *f = out_open(dir, "splitter.tsv", "map | input | max words | count | words joined by 0x1f");
+    struct { const char *name; bool *map; } maps[] = {
+        { "whitespace", isspace_map_whitespace },
+        { "pluginsd", isspace_map_pluginsd },
+        { "config", isspace_map_config },
+        { "group_by_label", isspace_map_group_by_label },
+        { "dyncfg_id", isspace_dyncfg_id_map },
+    };
+    const char *fixed[] = {
+        "", " ", "a", "a b", "  a  b  ", "a=b", "SET x = 5", "'ab'cd", "ab'cd", "'unterminated\n", "''", "\"\"",
+        "\"a\\\"b\"", "a\\ b", "a\\", "\\", "'a b' \"c d\" e", "x,y|z:w", "'a,b'|c", "\"it's\"", "'say \"hi\"'",
+        "CHART type.id name 'title with spaces' units family ctx line 1000 1 '' plugin module\n",
+        "BEGIN2 slot:1 chart 1 1700000000 #\n", "a b c d e f g h i j k l m n o p q r s t u v w x y z 1 2 3 4 5 6\n",
+        "\t\v\f\r\n", "a\x01b", "'x'y'z'", "a\"b\"c",
+    };
+    for(size_t m = 0; m < sizeof(maps) / sizeof(maps[0]); m++) {
+        for(size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++) {
+            split_line(f, maps[m].name, maps[m].map, fixed[i], PLUGINSD_MAX_WORDS);
+            split_line(f, maps[m].name, maps[m].map, fixed[i], 2);
+            split_line(f, maps[m].name, maps[m].map, fixed[i], 1);
+        }
+        static const char alphabet[] = "ab= ,|:\t\n\r\v\f'\"\\x";
+        for(int k = 0; k < 4000; k++) {
+            char buf[64];
+            size_t n = rnd_below(40);
+            for(size_t c = 0; c < n; c++)
+                buf[c] = alphabet[rnd_below(sizeof(alphabet) - 1)];
+            buf[n] = '\0';
+            split_line(f, maps[m].name, maps[m].map, buf, k % 7 == 0 ? 3 : PLUGINSD_MAX_WORDS);
+        }
+    }
+    fclose(f);
+}
+
 int main(int argc, char **argv) {
     if(argc != 2) {
         fprintf(stderr, "usage: %s <output directory>\n", argv[0]);
@@ -1313,6 +1373,7 @@ int main(int argc, char **argv) {
     gen_sanitizers(dir);
     gen_json_escape(dir);
     gen_json(dir);
+    gen_splitter(dir);
 
     buffer_free(wb);
     return 0;
