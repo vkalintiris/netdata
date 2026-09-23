@@ -446,3 +446,22 @@ fn c_parser_fixed_width_conversions() {
         );
     }
 }
+
+/// Units are C strings: they end at a NUL byte (outputs from the C tree).
+#[test]
+fn c_units_end_at_nul() {
+    assert_eq!(
+        (
+            duration_parse(b"5", "s\0x", "s"),
+            duration_to_string(5, "s\0x", false),
+            size_parse(b"5", "B\0x"),
+            size_to_string(5, "KiB\0x", true),
+        ),
+        (
+            Some(5),
+            Some("5s".to_string()),
+            Some(5),
+            Some("5KiB".to_string())
+        )
+    );
+}

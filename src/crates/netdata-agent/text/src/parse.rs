@@ -169,8 +169,9 @@ fn decimal_digits_as_double(s: &[u8]) -> (f64, usize) {
 ///
 /// Quirks kept from C: `nan`, `null` and `inf` are recognized only as the
 /// first non-space bytes (`null` consumes 3 bytes); a lone sign or `.` is
-/// consumed; spaces are skipped after the sign, the dot and the exponent
-/// marker, but those skipped spaces are not counted in `consumed`.
+/// consumed. Spaces after the sign, the dot or the exponent marker are
+/// skipped but not counted, so the parse resumes inside the number and later
+/// parts are dropped: `"- 1.5"` is -1 (2 bytes), `"1. 5e3"` is 1.5 (3 bytes).
 pub fn str2ndd(s: &[u8]) -> (f64, usize) {
     let mut i = skip_spaces(s, 0);
     let mut sign = 1.0f64;
@@ -440,6 +441,40 @@ fn hex_mantissa_value(s: &[u8], exp2: i64) -> f64 {
     hex_to_double(mantissa, exp, sticky)
 }
 
+/// Value of the decimal mantissa `s` (digits and at most one dot) times
+/// `10^exp10`, correctly rounded.
+///
+/// std's parser is correctly rounded like glibc's, but it caps the exponent it
+/// reads, so the digits are first normalized to `d.ddd` with the (saturated)
+/// decimal exponent of the leading significant digit.
+fn decimal_mantissa_value(s: &[u8], exp10: i64) -> f64 {
+    let point = s.iter().position(|&b| b == b'.').unwrap_or(s.len());
+    let digits: Vec<u8> = s.iter().copied().filter(|&b| b != b'.').collect();
+    let Some(first) = digits.iter().position(|&d| d != b'0') else {
+        return 0.0;
+    };
+    let last = digits.iter().rposition(|&d| d != b'0').unwrap_or(first);
+
+    // the leading significant digit weighs 10^exponent
+    let exponent = (point as i64 - 1 - first as i64).saturating_add(exp10);
+    if exponent > 400 {
+        return f64::INFINITY;
+    }
+    if exponent < -400 {
+        return 0.0;
+    }
+
+    let mut text = Vec::with_capacity(last - first + 24);
+    text.push(digits[first]);
+    text.push(b'.');
+    text.extend_from_slice(&digits[first + 1..=last]);
+    text.extend_from_slice(format!("e{exponent}").as_bytes());
+    std::str::from_utf8(&text)
+        .ok()
+        .and_then(|t| t.parse().ok())
+        .unwrap_or(0.0)
+}
+
 /// glibc `strtod()` in the "C" locale: skips `isspace()`, accepts decimal and
 /// hexadecimal floats, `inf`/`infinity` and `nan`/`nan(n-char-sequence)`
 /// (case-insensitive), and returns the correctly rounded value with the
@@ -503,12 +538,8 @@ pub fn strtod(s: &[u8]) -> (f64, usize) {
     if !any {
         return (0.0, 0);
     }
-    let (end_exp, _) = scan_exponent(s, end, b'e');
-    // The prefix is valid decimal float syntax; std's parser is correctly
-    // rounded like glibc's.
-    let text = std::str::from_utf8(&s[i..end_exp]).unwrap_or("0");
-    let value = text.parse::<f64>().unwrap_or(0.0);
-    (signed(value), end_exp)
+    let (end_exp, exp10) = scan_exponent(s, end, b'e');
+    (signed(decimal_mantissa_value(&s[i..end], exp10)), end_exp)
 }
 
 #[cfg(test)]

@@ -125,9 +125,10 @@ pub struct JsonWriter {
     buf: Vec<u8>,
     key_quote: Vec<u8>,
     value_quote: Vec<u8>,
-    depth: i32,
-    /// The level of the root object (the `depth` given at initialization).
-    root: i32,
+    /// `wb->json.depth`, an `int8_t` in C.
+    depth: i8,
+    /// The level of the root object.
+    root: i8,
     options: JsonOptions,
     stack: [Node; JSON_MAX_DEPTH],
 }
@@ -140,10 +141,10 @@ impl JsonWriter {
 
     /// `buffer_json_initialize()` on an empty buffer.
     ///
-    /// `depth` is the nesting level of the root object: writers started at
-    /// `parent.depth() + 2` without an anonymous object produce members that
-    /// are pasted raw into a parent document (see [`JsonWriter::raw`]); such
-    /// writers are not finalized.
+    /// `depth` is the nesting level of the root object, truncated like the C
+    /// `int8_t` (256 behaves as 0): writers started at `parent.depth() + 2`
+    /// without an anonymous object produce members that are pasted raw into a
+    /// parent document (see [`JsonWriter::raw`]); such writers are not finalized.
     pub fn with_quotes(
         key_quote: &[u8],
         value_quote: &[u8],
@@ -159,8 +160,9 @@ impl JsonWriter {
             buf: Vec::new(),
             key_quote: quote(key_quote),
             value_quote: quote(value_quote),
-            depth: depth.saturating_sub(1),
-            root: depth,
+            // C stores `(int8_t)(depth - 1)`, so 256 behaves as 0
+            depth: depth.wrapping_sub(1) as i8,
+            root: 0,
             options,
             stack: [Node {
                 kind: NodeType::Empty,
@@ -168,6 +170,7 @@ impl JsonWriter {
             }; JSON_MAX_DEPTH],
         };
         writer.push(NodeType::Object);
+        writer.root = writer.depth;
         if add_anonymous_object {
             writer.buf.push(b'{');
         } else {
@@ -188,12 +191,16 @@ impl JsonWriter {
 
     /// The current nesting level (`wb->json.depth`).
     pub fn depth(&self) -> i32 {
-        self.depth
+        i32::from(self.depth)
     }
 
-    /// Appends bytes verbatim (`buffer_strcat()` / `buffer_fast_strcat()`).
+    /// `buffer_fast_strcat()`: appends the bytes verbatim, or nothing when the
+    /// first byte is NUL.
     pub fn raw(&mut self, bytes: impl AsRef<[u8]>) {
         let bytes = bytes.as_ref();
+        if bytes.first().is_none_or(|&b| b == 0) {
+            return;
+        }
         self.buf.extend_from_slice(bytes);
     }
 
@@ -204,7 +211,7 @@ impl JsonWriter {
 
     /// `_buffer_json_depth_push()`; C calls `fatal()` past the maximum depth.
     fn push(&mut self, kind: NodeType) {
-        let next = self.depth + 1;
+        let next = i32::from(self.depth) + 1;
         if next < 0 || next as usize >= JSON_MAX_DEPTH {
             panic!(
                 "BUFFER JSON: invalid nesting depth {} (next {}, max {})",
@@ -213,7 +220,7 @@ impl JsonWriter {
                 JSON_MAX_DEPTH - 1
             );
         }
-        self.depth = next;
+        self.depth = next as i8;
         self.stack[next as usize] = Node { kind, count: 0 };
     }
 
@@ -245,7 +252,7 @@ impl JsonWriter {
             return;
         }
         self.buf.push(b'\n');
-        self.spaces(self.depth + 1);
+        self.spaces(i32::from(self.depth) + 1);
     }
 
     /// `buffer_print_json_key()`.
@@ -310,10 +317,10 @@ impl JsonWriter {
         );
         if !self.options.contains(JsonOptions::MINIFY) {
             self.buf.push(b'\n');
-            self.spaces(self.depth);
+            self.spaces(i32::from(self.depth));
         }
         self.buf.push(b'}');
-        self.depth -= 1;
+        self.depth = self.depth.wrapping_sub(1);
     }
 
     /// `buffer_json_member_add_array()`; `None` writes a bare `[`.
@@ -339,10 +346,10 @@ impl JsonWriter {
         );
         if self.options.contains(JsonOptions::NEWLINE_ON_ARRAY_ITEMS) {
             self.buf.push(b'\n');
-            self.spaces(self.depth);
+            self.spaces(i32::from(self.depth));
         }
         self.buf.push(b']');
-        self.depth -= 1;
+        self.depth = self.depth.wrapping_sub(1);
     }
 
     /// `buffer_json_add_array_item_array()`: nested arrays go on their own
@@ -351,7 +358,7 @@ impl JsonWriter {
         if !self.options.contains(JsonOptions::MINIFY) && self.top().kind == NodeType::Array {
             self.comma();
             self.buf.push(b'\n');
-            self.spaces(self.depth + 1);
+            self.spaces(i32::from(self.depth) + 1);
         } else {
             self.comma_newline_spacing();
         }
@@ -380,7 +387,7 @@ impl JsonWriter {
                     if self.depth == self.root
                         && self.options.contains(JsonOptions::NON_ANONYMOUS) =>
                 {
-                    self.depth -= 1;
+                    self.depth = self.depth.wrapping_sub(1);
                 }
                 NodeType::Object => self.object_close(),
                 NodeType::Array => self.array_close(),

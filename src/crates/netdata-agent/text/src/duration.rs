@@ -81,8 +81,10 @@ pub const DURATION_UNITS: &[DurationUnit] = &[
     unit("years", false, NSEC_PER_YEAR),
 ];
 
-/// `duration_find_unit()`: index of the first case-insensitive match.
+/// `duration_find_unit()`: index of the first case-insensitive match (the
+/// unit is a C string: it ends at a NUL byte).
 fn find_unit(unit: &[u8]) -> Option<usize> {
+    let unit = c::c_str(unit);
     let unit = if unit.is_empty() {
         b"ns".as_slice()
     } else {
@@ -107,7 +109,9 @@ pub(crate) fn round_to_u64(value: f64) -> Option<u64> {
     (0.0..LIMIT).contains(&value).then_some(value as u64)
 }
 
-/// `duration_round_to_resolution()`: rounds half away from zero.
+/// `duration_round_to_resolution()`: `(value ± (resolution - 1) / 2) / resolution`,
+/// the nearest multiple, with exact halves of an even resolution rounded toward
+/// zero (`(15, 10)` is 1, `(-15, 10)` is -1, `(5, 10)` is 0).
 ///
 /// The C code overflows (undefined behaviour) when `value` is within
 /// `resolution / 2` of the `i64` limits; this port wraps there.

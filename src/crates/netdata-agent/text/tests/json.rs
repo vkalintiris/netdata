@@ -190,3 +190,28 @@ fn nested_writer_pastes_into_parent() {
         "{\n    \"ctx\":{\n        \"dimensions\":{\n            \"a\":1\n        }\n    }\n}\n"
     );
 }
+
+/// C truncates the initial depth to `int8_t` and `buffer_fast_strcat()`
+/// ignores text starting with NUL (outputs from the C tree).
+#[test]
+fn c_depth_truncation_and_raw() {
+    let mut wrapped = JsonWriter::with_quotes(b"\"", b"\"", 256, true, JsonOptions::MINIFY);
+    wrapped.member_add_string("k", "v");
+    let mut nested = JsonWriter::with_quotes(b"\"", b"\"", 257, false, JsonOptions::DEFAULT);
+    nested.member_add_string("k", "v");
+    nested.raw(b"\0ignored");
+    assert_eq!(
+        (
+            text(wrapped.as_bytes()),
+            wrapped.depth(),
+            text(nested.as_bytes()),
+            nested.depth()
+        ),
+        (
+            "{\"k\":\"v\"".to_string(),
+            0,
+            "\n        \"k\":\"v\"".to_string(),
+            1
+        )
+    );
+}

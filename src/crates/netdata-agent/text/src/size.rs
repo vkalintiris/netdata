@@ -70,8 +70,9 @@ pub const ENTRIES_UNITS: &[ScaleUnit] = &[
 ];
 
 /// `size_find_unit()` / `entries_find_unit()`: exact match, the first table
-/// entry for an empty unit.
+/// entry for an empty unit (the unit is a C string: it ends at a NUL byte).
 fn find_unit(table: &'static [ScaleUnit], name: &[u8]) -> Option<&'static ScaleUnit> {
+    let name = c::c_str(name);
     let name = if name.is_empty() {
         table[0].name.as_bytes()
     } else {

@@ -356,3 +356,85 @@ fn str2ndd_quirks() {
         assert_eq!((v.to_bits(), n), (bits, used), "{input:?}");
     }
 }
+
+/// Inputs too long for the vector files (up to 800 KB): exponents that std's
+/// parser caps, cancelled by as many digits. Expected values were produced by
+/// glibc `strtod()` and `size_parse(..., "B")` from the C tree.
+#[test]
+fn c_strtod_long_inputs() {
+    let build = |parts: &[(&str, usize)]| -> Vec<u8> {
+        parts
+            .iter()
+            .flat_map(|&(text, repeat)| text.repeat(repeat).into_bytes())
+            .collect()
+    };
+    // (input, f64 bits, bytes used, size_parse(B))
+    let cases: Vec<(Vec<u8>, u64, usize, Option<u64>)> = vec![
+        (
+            build(&[("1", 1), ("0", 655360), ("e-655360", 1)]),
+            0x3ff0000000000000,
+            655369,
+            Some(1),
+        ),
+        (
+            build(&[("0.", 1), ("0", 655359), ("1e655360", 1)]),
+            0x3ff0000000000000,
+            655369,
+            Some(1),
+        ),
+        (
+            build(&[("0.", 1), ("0", 700000), ("15e700001", 1)]),
+            0x3ff8000000000000,
+            700011,
+            Some(2),
+        ),
+        (
+            build(&[
+                ("123", 1),
+                ("7", 800000),
+                (".", 1),
+                ("9", 5),
+                ("e-800002", 1),
+            ]),
+            0x3ff3cdf012345679,
+            800017,
+            Some(1),
+        ),
+        (
+            build(&[("0.", 1), ("0", 5), ("9", 400000), ("e-400000", 1)]),
+            0,
+            400015,
+            Some(0),
+        ),
+        (build(&[("1e-99999999999999999999", 1)]), 0, 23, Some(0)),
+        (
+            build(&[("0.", 1), ("0", 330), ("24703282292062328e0", 1)]),
+            0,
+            351,
+            Some(0),
+        ),
+        (
+            build(&[("0.", 1), ("0", 330), ("24703282292062327e0", 1)]),
+            0,
+            351,
+            Some(0),
+        ),
+        (
+            build(&[("1.7976931348623157e308", 1)]),
+            0x7fefffffffffffff,
+            22,
+            None,
+        ),
+        (build(&[("0", 400), ("1e-400", 1)]), 0, 406, Some(0)),
+    ];
+    for (input, bits, used, size) in cases {
+        let (v, n) = strtod(&input);
+        let parsed = netdata_agent_text::size::size_parse(&input, "B");
+        assert_eq!(
+            (v.to_bits(), n, parsed),
+            (bits, used, size),
+            "input of {} bytes",
+            input.len()
+        );
+    }
+}
