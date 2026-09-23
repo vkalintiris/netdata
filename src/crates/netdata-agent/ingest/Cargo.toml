@@ -1,6 +1,6 @@
 [package]
-name = "netdata-agent-streaming"
-description = "Streaming receiver and sender of the netdata agent"
+name = "netdata-agent-ingest"
+description = "Protocol handlers that apply plugins.d and streaming keywords to the netdata agent's data model"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,10 +9,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-mio = { workspace = true }
-netdata-agent-evloop = { workspace = true }
 netdata-agent-inicfg = { workspace = true }
-netdata-agent-ingest = { workspace = true }
 netdata-agent-pluginsd-proto = { workspace = true }
 netdata-agent-rrd = { workspace = true }
+netdata-agent-storage = { workspace = true }
 netdata-agent-text = { workspace = true }

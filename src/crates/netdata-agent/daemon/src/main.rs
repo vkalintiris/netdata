@@ -248,6 +248,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             history_entries: 0,
             health_enabled: true,
             system_info: Default::default(),
+            replication_enabled: false,
+            replication_period: 0,
+            replication_step: 0,
         },
     );
     let hosts = Arc::new(Hosts::new(localhost));
@@ -284,7 +287,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             page_size: system.page_size,
         },
         stream_pool.handle(),
-        Box::new(log),
+        log,
     ));
     let shared = Arc::new(server::Shared {
         settings: Settings {

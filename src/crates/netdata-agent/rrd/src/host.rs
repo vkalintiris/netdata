@@ -26,6 +26,25 @@ pub struct HostInfo {
     pub history_entries: i64,
     pub health_enabled: bool,
     pub system_info: SystemInfo,
+    /// `RRDHOST_OPTION_REPLICATION` and `host->stream.replication.{period,step}`.
+    pub replication_enabled: bool,
+    pub replication_period: i64,
+    pub replication_step: i64,
+}
+
+impl HostInfo {
+    /// `rrdhost_set_replication_parameters()`: a ring cannot serve more than it holds, so for every mode but
+    /// dbengine the period is capped at `history × update every`.
+    pub fn set_replication(&mut self, enabled: bool, period: i64, step: i64) {
+        self.replication_enabled = enabled;
+        self.replication_step = step;
+        let cap = self.history_entries * i64::from(self.update_every);
+        self.replication_period = if self.db_mode != DbMode::Dbengine && period > cap {
+            cap
+        } else {
+            period
+        };
+    }
 }
 
 /// The receiver attached to a host (`host->receiver`): what admission needs to judge a second connection.
@@ -276,6 +295,9 @@ mod tests {
             history_entries: 4096,
             health_enabled: false,
             system_info: SystemInfo::default(),
+            replication_enabled: true,
+            replication_period: 86400,
+            replication_step: 3600,
         }
     }
 

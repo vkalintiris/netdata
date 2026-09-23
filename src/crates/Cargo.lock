@@ -2938,6 +2938,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "netdata-agent-ingest"
+version = "0.1.3"
+dependencies = [
+ "netdata-agent-inicfg",
+ "netdata-agent-pluginsd-proto",
+ "netdata-agent-rrd",
+ "netdata-agent-storage",
+ "netdata-agent-text",
+]
+
+[[package]]
 name = "netdata-agent-inicfg"
 version = "0.1.3"
 dependencies = [
@@ -2970,7 +2981,9 @@ version = "0.1.3"
 dependencies = [
  "mio",
  "netdata-agent-evloop",
+ "netdata-agent-ingest",
  "netdata-agent-inicfg",
+ "netdata-agent-pluginsd-proto",
  "netdata-agent-rrd",
  "netdata-agent-text",
 ]

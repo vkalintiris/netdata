@@ -168,6 +168,25 @@ pub struct ChartCollection {
     pub last_updated: (i64, i64),
 }
 
+/// What the protocol parser keeps on a chart across connections (`st->pluginsd`, `st->replay`,
+/// `st->replication_empty_response_count`).
+#[derive(Debug, Default)]
+pub struct ReceiverState {
+    /// `dims_with_slots`: DIMENSION came with `SLOT:`; otherwise lookups cycle through `prd` by position.
+    pub dims_with_slots: bool,
+    /// `prd_array`: the dimension cache, by slot or by position.
+    pub prd: Vec<Option<Arc<Dim>>>,
+    /// `pos`: the next positional cache entry.
+    pub pos: usize,
+    /// `set`: a SET2/RSET happened since the positional cache was rewound.
+    pub set: bool,
+    /// The last replication request (`st->replay`).
+    pub replay_after: i64,
+    pub replay_before: i64,
+    pub replay_start_streaming: bool,
+    pub replication_empty_response_count: u32,
+}
+
 /// `RRDSET`.
 #[derive(Debug)]
 pub struct Chart {
@@ -181,6 +200,7 @@ pub struct Chart {
     meta: RwLock<ChartMeta>,
     collection: Mutex<ChartCollection>,
     dims: RwLock<DimIndex>,
+    receiver: Mutex<ReceiverState>,
 }
 
 #[derive(Debug, Default)]
@@ -227,6 +247,38 @@ impl Chart {
 
     pub fn update_collection<T>(&self, update: impl FnOnce(&mut ChartCollection) -> T) -> T {
         update(&mut lock(&self.collection))
+    }
+
+    /// The parser's state on this chart.
+    pub fn receiver(&self) -> MutexGuard<'_, ReceiverState> {
+        lock(&self.receiver)
+    }
+
+    pub fn dim_count(&self) -> usize {
+        self.dims
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ordered
+            .len()
+    }
+
+    /// `rrdset_first_entry_s_of_tier(st, 0)` and `rrdset_last_entry_s_of_tier(st, 0)`: the oldest and newest time any
+    /// dimension's ring holds (0 when none).
+    pub fn tier0_retention(&self) -> (i64, i64) {
+        let mut first = 0;
+        let mut last = 0;
+        for dim in self.dims() {
+            if let Some(ring) = dim.ring() {
+                let (f, l) = (ring.oldest_time_s(), ring.latest_time_s());
+                if f != 0 && (first == 0 || f < first) {
+                    first = f;
+                }
+                if l > last {
+                    last = l;
+                }
+            }
+        }
+        (first, last)
     }
 
     pub fn update_every(&self) -> i32 {
@@ -599,6 +651,7 @@ impl Charts {
                     }),
                     collection: Mutex::new(ChartCollection::default()),
                     dims: RwLock::new(DimIndex::default()),
+                    receiver: Mutex::new(ReceiverState::default()),
                 });
                 let position = index.ordered.len();
                 index.by_id.insert(full_id.clone(), position);

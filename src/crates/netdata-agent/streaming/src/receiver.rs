@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::{Context, Event, Interest, PoolHandle, TimerId, Token, Worker};
+use netdata_agent_ingest::{self as ingest, Parser};
 use netdata_agent_inicfg::LogLevel;
+use netdata_agent_pluginsd_proto::LineReader;
 use netdata_agent_rrd::host::{Host, HostInfo, Hosts, ReceiverSlot};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 
@@ -33,7 +35,14 @@ pub fn now_monotonic_ut() -> u64 {
 }
 
 /// Where the receiver writes its daemon log lines.
-pub type Logger = Box<dyn Fn(LogLevel, &str) + Send + Sync>;
+pub type Logger = fn(LogLevel, &str);
+
+/// `now_realtime_sec()`.
+fn now_realtime_s() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
 
 /// Values admission takes from the rest of the daemon.
 #[derive(Debug, Clone)]
@@ -74,6 +83,17 @@ pub struct Attached {
     slot: Arc<ReceiverSlot>,
     stream: mio::net::TcpStream,
     thread: usize,
+    parser: ingest::Config,
+    log: Logger,
+}
+
+/// A connection on its stream thread.
+struct Child {
+    attached: Attached,
+    reader: LineReader,
+    parser: Parser,
+    /// Bytes for the child that did not fit in the socket yet.
+    pending_out: Vec<u8>,
 }
 
 /// The receiving side of this agent.
@@ -242,24 +262,35 @@ impl Receivers {
             |v: &Option<String>, default: &str| v.clone().unwrap_or_else(|| default.to_string());
         let host = self.hosts.find_or_create(
             &guid,
-            || HostInfo {
-                hostname: text(&request.hostname, ""),
-                registry_hostname: text(&request.registry_hostname, ""),
-                os: text(&request.os, "unknown"),
-                timezone: text(&request.timezone, "unknown"),
-                abbrev_timezone: text(&request.abbrev_timezone, "UTC"),
-                utc_offset: request.utc_offset,
-                program_name: text(&request.program_name, "unknown"),
-                program_version: text(&request.program_version, "unknown"),
-                update_every,
-                db_mode: mode,
-                history_entries: align_entries_to_pagesize(
-                    mode,
-                    config.history,
-                    self.defaults.page_size,
-                ),
-                health_enabled,
-                system_info: request.system_info.clone(),
+            || {
+                let mut info = HostInfo {
+                    hostname: text(&request.hostname, ""),
+                    registry_hostname: text(&request.registry_hostname, ""),
+                    os: text(&request.os, "unknown"),
+                    timezone: text(&request.timezone, "unknown"),
+                    abbrev_timezone: text(&request.abbrev_timezone, "UTC"),
+                    utc_offset: request.utc_offset,
+                    program_name: text(&request.program_name, "unknown"),
+                    program_version: text(&request.program_version, "unknown"),
+                    update_every,
+                    db_mode: mode,
+                    history_entries: align_entries_to_pagesize(
+                        mode,
+                        config.history,
+                        self.defaults.page_size,
+                    ),
+                    health_enabled,
+                    system_info: request.system_info.clone(),
+                    replication_enabled: false,
+                    replication_period: 0,
+                    replication_step: 0,
+                };
+                info.set_replication(
+                    config.replication.enabled,
+                    config.replication.period,
+                    config.replication.step,
+                );
+                info
             },
             |host| {
                 host.update_info(|info| {
@@ -329,6 +360,13 @@ impl Receivers {
             slot,
             stream: mio::net::TcpStream::from_std(stream),
             thread,
+            parser: ingest::Config {
+                capabilities,
+                update_every: self.defaults.update_every,
+                page_size: self.defaults.page_size,
+                now: now_realtime_s,
+            },
+            log: self.log,
         };
         if let Err(attached) = self.pool.send(thread, attached) {
             attached.host.clear_receiver(&attached.slot);
@@ -349,9 +387,10 @@ fn stop_and_wait(host: &Host, slot: &Arc<ReceiverSlot>) -> bool {
     !host.receiver().is_some_and(|r| Arc::ptr_eq(&r, slot))
 }
 
-/// A stream thread: owns the connections of the children assigned to it.
+/// A stream thread: owns the connections of the children assigned to it, and parses what they send inline
+/// (decisions D8).
 pub struct StreamWorker {
-    children: Vec<Option<Attached>>,
+    children: Vec<Option<Child>>,
     load: Arc<Mutex<Vec<usize>>>,
     tick: Option<TimerId>,
 }
@@ -367,26 +406,54 @@ impl StreamWorker {
 
     fn disconnect(&mut self, cx: &mut Context<'_>, index: usize) {
         if let Some(mut child) = self.children[index].take() {
-            let _ = cx.registry().deregister(&mut child.stream);
-            child.host.clear_receiver(&child.slot);
-            self.load.lock().unwrap_or_else(PoisonError::into_inner)[child.thread] -= 1;
+            let attached = &mut child.attached;
+            let _ = cx.registry().deregister(&mut attached.stream);
+            attached.host.clear_receiver(&attached.slot);
+            self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
         }
     }
 
-    /// Reads what arrived. The keyword parser is the next step of slice 1; until then the bytes only count as
-    /// traffic.
-    fn receive(&mut self, cx: &mut Context<'_>, index: usize) {
+    /// Writes what the parser produced; a full socket keeps the rest for the next writable event.
+    fn flush(&mut self, cx: &mut Context<'_>, index: usize) {
         let Some(child) = self.children[index].as_mut() else {
             return;
         };
+        let out = child.parser.take_output();
+        child.pending_out.extend_from_slice(&out);
+        while !child.pending_out.is_empty() {
+            match child.attached.stream.write(&child.pending_out) {
+                Ok(n) => {
+                    child.pending_out.drain(..n);
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => return self.disconnect(cx, index),
+            }
+        }
+    }
+
+    /// Reads what arrived and feeds every complete line to the parser; a refused line ends the connection.
+    fn receive(&mut self, cx: &mut Context<'_>, index: usize) {
         let mut buf = [0u8; 16384];
         loop {
-            match child.stream.read(&mut buf) {
+            let Some(child) = self.children[index].as_mut() else {
+                return;
+            };
+            match child.attached.stream.read(&mut buf) {
                 Ok(0) => return self.disconnect(cx, index),
-                Ok(_) => child
-                    .slot
-                    .last_traffic_ut
-                    .store(now_monotonic_ut(), Ordering::Relaxed),
+                Ok(n) => {
+                    child
+                        .attached
+                        .slot
+                        .last_traffic_ut
+                        .store(now_monotonic_ut(), Ordering::Relaxed);
+                    for line in child.reader.push(&buf[..n]) {
+                        if !child.parser.feed(&line) {
+                            return self.disconnect(cx, index);
+                        }
+                    }
+                    self.flush(cx, index);
+                }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => return self.disconnect(cx, index),
@@ -405,12 +472,18 @@ impl Worker for StreamWorker {
 
     fn event(&mut self, cx: &mut Context<'_>, event: &Event) {
         let index = event.token().0;
-        if index < self.children.len() {
+        if index >= self.children.len() {
+            return;
+        }
+        if event.is_readable() || event.is_read_closed() {
             self.receive(cx, index);
+        }
+        if event.is_writable() {
+            self.flush(cx, index);
         }
     }
 
-    fn message(&mut self, cx: &mut Context<'_>, mut child: Attached) {
+    fn message(&mut self, cx: &mut Context<'_>, mut attached: Attached) {
         let index = self
             .children
             .iter()
@@ -421,14 +494,25 @@ impl Worker for StreamWorker {
             });
         if cx
             .registry()
-            .register(&mut child.stream, Token(index), Interest::READABLE)
+            .register(
+                &mut attached.stream,
+                Token(index),
+                Interest::READABLE | Interest::WRITABLE,
+            )
             .is_err()
         {
-            child.host.clear_receiver(&child.slot);
-            self.load.lock().unwrap_or_else(PoisonError::into_inner)[child.thread] -= 1;
+            attached.host.clear_receiver(&attached.slot);
+            self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
             return;
         }
-        self.children[index] = Some(child);
+        let log = attached.log;
+        let parser = Parser::new(Arc::clone(&attached.host), attached.parser, Box::new(log));
+        self.children[index] = Some(Child {
+            attached,
+            reader: LineReader::default(),
+            parser,
+            pending_out: Vec::new(),
+        });
         // Bytes may have arrived before the registration.
         self.receive(cx, index);
     }
@@ -437,7 +521,7 @@ impl Worker for StreamWorker {
         for index in 0..self.children.len() {
             if self.children[index]
                 .as_ref()
-                .is_some_and(|c| c.slot.stop_requested.load(Ordering::Acquire))
+                .is_some_and(|c| c.attached.slot.stop_requested.load(Ordering::Acquire))
             {
                 self.disconnect(cx, index);
             }

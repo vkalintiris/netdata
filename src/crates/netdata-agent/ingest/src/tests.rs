@@ -1,0 +1,195 @@
+use std::sync::{Arc, Mutex};
+
+use netdata_agent_rrd::host::{Host, HostInfo};
+use netdata_agent_rrd::mode::DbMode;
+
+use super::*;
+
+/// The fixed wall clock of these tests.
+const NOW: i64 = 1_700_000_000;
+
+fn host() -> Arc<Host> {
+    let mut info = HostInfo {
+        hostname: "child".into(),
+        registry_hostname: "child".into(),
+        os: "linux".into(),
+        timezone: "UTC".into(),
+        abbrev_timezone: "UTC".into(),
+        utc_offset: 0,
+        program_name: "p".into(),
+        program_version: "1".into(),
+        update_every: 1,
+        db_mode: DbMode::Ram,
+        history_entries: 4096,
+        health_enabled: false,
+        system_info: Default::default(),
+        replication_enabled: false,
+        replication_period: 0,
+        replication_step: 0,
+    };
+    info.set_replication(true, 86400, 3600);
+    Arc::new(Host::new("guid", false, info))
+}
+
+fn parser(host: &Arc<Host>) -> (Parser, Arc<Mutex<Vec<String>>>) {
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&logs);
+    let parser = Parser::new(
+        Arc::clone(host),
+        Config {
+            capabilities: 0,
+            update_every: 1,
+            page_size: 4096,
+            now: || NOW,
+        },
+        Box::new(move |_, m| sink.lock().unwrap().push(m.to_string())),
+    );
+    (parser, logs)
+}
+
+fn feed_all(p: &mut Parser, lines: &[&str]) -> Vec<bool> {
+    lines
+        .iter()
+        .map(|l| p.feed(format!("{l}\n").as_bytes()))
+        .collect()
+}
+
+const DEFINE: [&str; 5] = [
+    "CHART 'test.c1' '' 'title' 'units' 'family' 'ctx.c1' line 1000 1 '' fixture-pusher corpus",
+    "DIMENSION 'd1' '' absolute 1 1 ''",
+    "DIMENSION 'd2' 'second' absolute 1 1 ''",
+    "CLABEL 'k' 'v' 2",
+    "CLABEL_COMMIT",
+];
+
+#[test]
+fn a_chart_is_defined_and_collected_with_v2() {
+    let h = host();
+    let (mut p, _) = parser(&h);
+    assert!(feed_all(&mut p, &DEFINE).iter().all(|&ok| ok));
+    let chart = h.charts().find("test.c1").unwrap();
+    let meta = chart.meta();
+    assert_eq!(
+        (
+            meta.context.as_str(),
+            meta.family.as_str(),
+            meta.plugin.as_str()
+        ),
+        ("ctx.c1", "family", "fixture-pusher")
+    );
+    assert_eq!(meta.labels.get(b"k"), Some(&b"v"[..]));
+    assert_eq!(chart.dim("d2").unwrap().meta().name, "second");
+    let t = NOW - 10;
+    let lines = [
+        format!("BEGIN2 'test.c1' 1 {t} #"),
+        "SET2 'd1' 5 5 A".to_string(),
+        "SET2 'd2' 0 NAN E".to_string(),
+        "END2".to_string(),
+    ];
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
+    let d1 = chart.dim("d1").unwrap();
+    let ring = d1.ring().unwrap();
+    assert_eq!(ring.latest_time_s(), t);
+    let mut q = ring.query(t, t);
+    let point = q.next_metric();
+    assert_eq!((point.sum, point.anomaly_count), (5.0, 0));
+    let d2 = chart.dim("d2").unwrap();
+    let mut q = d2.ring().unwrap().query(t, t);
+    assert!(q.next_metric().is_gap());
+    assert_eq!(chart.collection().last_updated, (t, 0));
+    assert_eq!(p.data_collections_count, 1);
+}
+
+#[test]
+fn chart_definition_end_asks_for_replication() {
+    let h = host();
+    let (mut p, _) = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    // The child has the last 100 seconds; this host has nothing, so it asks from now - 3600 (step) onwards.
+    let first = NOW - 100;
+    assert!(p.feed(format!("CHART_DEFINITION_END {first} {NOW} {NOW}\n").as_bytes()));
+    let out = String::from_utf8(p.take_output()).unwrap();
+    assert_eq!(
+        out,
+        format!("REPLAY_CHART \"test.c1\" \"true\" {first} {NOW}\n")
+    );
+    // A second one in the same round asks nothing.
+    assert!(p.feed(format!("CHART_DEFINITION_END {first} {NOW} {NOW}\n").as_bytes()));
+    assert!(p.take_output().is_empty());
+}
+
+#[test]
+fn replication_rows_are_stored_and_rend_finishes() {
+    let h = host();
+    let (mut p, _) = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    let (s, e) = (NOW - 20, NOW - 19);
+    let lines = [
+        "RBEGIN 'test.c1'".to_string(),
+        format!("RBEGIN 'test.c1' {s} {e} {NOW}"),
+        "RSET 'd1' 7 A".to_string(),
+        "RSET 'd2' '' ''".to_string(),
+        format!("REND 1 {} {} true {} {} 0x{:x}", NOW - 100, NOW, s, e, NOW),
+    ];
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
+    let chart = h.charts().find("test.c1").unwrap();
+    let d1 = chart.dim("d1").unwrap();
+    let mut q = d1.ring().unwrap().query(e, e);
+    assert_eq!(q.next_metric().sum, 7.0);
+    // An empty RSET value is "NAN", which str2ndd reads as 0.0: stored as a number, as in C.
+    let d2 = chart.dim("d2").unwrap();
+    let mut q = d2.ring().unwrap().query(e, e);
+    assert_eq!(q.next_metric().sum, 0.0);
+    let flags = chart.meta().flags;
+    assert_ne!(flags & flags::RECEIVER_REPLICATION_FINISHED, 0);
+    assert_eq!(flags & flags::RECEIVER_REPLICATION_IN_PROGRESS, 0);
+}
+
+#[test]
+fn errors_disconnect() {
+    let cases: [&[&str]; 6] = [
+        &["NOT_A_KEYWORD"],
+        &["HOST_DEFINE a b"],
+        &["SET2 'd1' 1 1 A"],
+        &["CHART 'test.c1' '' t u f c line 1 1", "CLABEL_COMMIT"],
+        &["CHART 'nodot' '' t u f c line 1 1"],
+        &[
+            "CHART 'test.c1' '' t u f c line 1 1",
+            "BEGIN2 'test.c1' 1 10 #",
+            "SET2 'missing' 1 1 A",
+        ],
+    ];
+    for lines in cases {
+        let h = host();
+        let (mut p, logs) = parser(&h);
+        let results = feed_all(&mut p, lines);
+        assert_eq!(results.last(), Some(&false), "{lines:?}");
+        assert!(
+            logs.lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .contains("parser_action("),
+            "{lines:?}"
+        );
+    }
+    // Blank lines and deferred JSON bodies never reach the keyword table.
+    let h = host();
+    let (mut p, _) = parser(&h);
+    assert!(
+        feed_all(
+            &mut p,
+            &[
+                "",
+                "JSON STREAM_PATH",
+                "{\"x\": 1}",
+                "NOT_A_KEYWORD",
+                "JSON_PAYLOAD_END"
+            ]
+        )
+        .iter()
+        .all(|&ok| ok)
+    );
+}

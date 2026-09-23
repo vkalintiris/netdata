@@ -63,6 +63,7 @@ members = [
     # Rust agent (the netdata daemon)
     "netdata-agent/daemon",
     "netdata-agent/evloop",
+    "netdata-agent/ingest",
     "netdata-agent/inicfg",
     "netdata-agent/pluginsd-proto",
     "netdata-agent/rrd",
@@ -103,6 +104,7 @@ netdata-agent-web = { path = "netdata-agent/web" }
 netdata-agent-pluginsd-proto = { path = "netdata-agent/pluginsd-proto" }
 netdata-agent-streaming = { path = "netdata-agent/streaming" }
 netdata-agent-rrd = { path = "netdata-agent/rrd" }
+netdata-agent-ingest = { path = "netdata-agent/ingest" }
 netdata-agent-storage = { path = "netdata-agent/storage" }
 opentelemetry = "0.31.0"
 opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "logs"] }
