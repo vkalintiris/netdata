@@ -59,6 +59,9 @@ members = [
 
     # Plugin IPC library
     "netipc",
+
+    # Rust agent (the netdata daemon)
+    "netdata-agent/evloop",
 ]
 
 [workspace.package]
@@ -126,6 +129,7 @@ notify = "8.2"
 
 walkdir = "2.4"
 crossbeam-channel = "0.5"
+mio = { version = "1", features = ["os-poll", "net"] }
 regex = "1.10"
 moka = { version = "0.12", features = ["future"] }
 serde_json = "1.0"

@@ -1,0 +1,13 @@
+[package]
+name = "netdata-agent-evloop"
+description = "Pools of event-loop threads for the netdata agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+crossbeam-channel = { workspace = true }
+mio = { workspace = true }
