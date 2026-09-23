@@ -2,4 +2,6 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ram;
 pub mod storage_number;
+pub mod storage_point;
