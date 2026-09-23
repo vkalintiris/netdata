@@ -111,11 +111,15 @@ pub fn json_escape_quoted(dst: &mut Vec<u8>, text: &[u8]) {
 
 /// A JSON document being written (`BUFFER` with its `json` state).
 ///
+/// Keys and values are bytes (`&str`, `&[u8]`, ...), written like C strings:
+/// escaping stops at a NUL byte.
+///
 /// # Panics
 ///
 /// Opening more than [`JSON_MAX_DEPTH`] levels panics (C calls `fatal()`), and
 /// so does writing after closing more levels than were opened (undefined
-/// behaviour in C).
+/// behaviour in C). Debug builds also check that a close matches the open
+/// container, like C with `NETDATA_INTERNAL_CHECKS`.
 #[derive(Debug, Clone)]
 pub struct JsonWriter {
     buf: Vec<u8>,
@@ -188,7 +192,8 @@ impl JsonWriter {
     }
 
     /// Appends bytes verbatim (`buffer_strcat()` / `buffer_fast_strcat()`).
-    pub fn raw(&mut self, bytes: &[u8]) {
+    pub fn raw(&mut self, bytes: impl AsRef<[u8]>) {
+        let bytes = bytes.as_ref();
         self.buf.extend_from_slice(bytes);
     }
 
@@ -287,7 +292,8 @@ impl JsonWriter {
     // objects and arrays
 
     /// `buffer_json_member_add_object()`.
-    pub fn member_add_object(&mut self, key: &[u8]) {
+    pub fn member_add_object(&mut self, key: impl AsRef<[u8]>) {
+        let key = key.as_ref();
         self.comma_newline_spacing();
         self.key(key);
         self.buf.extend_from_slice(b":{");
@@ -390,36 +396,43 @@ impl JsonWriter {
     // members
 
     /// `buffer_json_member_add_string()` with a non-NULL value.
-    pub fn member_add_string(&mut self, key: &[u8], value: &[u8]) {
+    pub fn member_add_string(&mut self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
+        let key = key.as_ref();
+        let value = value.as_ref();
         self.member_with(key, |w| w.string_value(Some(value)));
     }
 
     /// `buffer_json_member_add_string(wb, key, NULL)`.
-    pub fn member_add_null(&mut self, key: &[u8]) {
+    pub fn member_add_null(&mut self, key: impl AsRef<[u8]>) {
+        let key = key.as_ref();
         self.member_with(key, |w| w.string_value(None));
     }
 
     /// `buffer_json_member_add_string()`: `None` is `null`.
-    pub fn member_add_string_opt(&mut self, key: &[u8], value: Option<&[u8]>) {
+    pub fn member_add_string_opt(&mut self, key: impl AsRef<[u8]>, value: Option<&[u8]>) {
+        let key = key.as_ref();
         self.member_with(key, |w| w.string_value(value));
     }
 
     /// `buffer_json_member_add_string_or_omit()`: nothing for `None` or empty.
-    pub fn member_add_string_or_omit(&mut self, key: &[u8], value: Option<&[u8]>) {
+    pub fn member_add_string_or_omit(&mut self, key: impl AsRef<[u8]>, value: Option<&[u8]>) {
+        let key = key.as_ref();
         if let Some(value) = value.filter(|v| !c::c_str(v).is_empty()) {
             self.member_add_string(key, value);
         }
     }
 
     /// `buffer_json_member_add_string_or_empty()`: `None` becomes `""`.
-    pub fn member_add_string_or_empty(&mut self, key: &[u8], value: Option<&[u8]>) {
+    pub fn member_add_string_or_empty(&mut self, key: impl AsRef<[u8]>, value: Option<&[u8]>) {
+        let key = key.as_ref();
         self.member_add_string(key, value.unwrap_or_default());
     }
 
     /// `buffer_json_member_add_quoted_string()`: `None` and `null` are
     /// `null`; otherwise surrounding quotes are dropped and only `"` and `\`
     /// are escaped.
-    pub fn member_add_quoted_string(&mut self, key: &[u8], value: Option<&[u8]>) {
+    pub fn member_add_quoted_string(&mut self, key: impl AsRef<[u8]>, value: Option<&[u8]>) {
+        let key = key.as_ref();
         self.member_with(key, |w| match value {
             Some(value) if c::c_str(value) != b"null" => {
                 w.buf.extend_from_slice(&w.value_quote);
@@ -431,17 +444,20 @@ impl JsonWriter {
     }
 
     /// `buffer_json_member_add_uuid()`: lowercase with dashes, `null` for the nil UUID.
-    pub fn member_add_uuid(&mut self, key: &[u8], uuid: &[u8; 16]) {
+    pub fn member_add_uuid(&mut self, key: impl AsRef<[u8]>, uuid: &[u8; 16]) {
+        let key = key.as_ref();
         self.member_with(key, |w| w.uuid_value(Some(uuid), print_uuid_lower));
     }
 
     /// `buffer_json_member_add_uuid_ptr()`: `null` for `None` or the nil UUID.
-    pub fn member_add_uuid_ptr(&mut self, key: &[u8], uuid: Option<&[u8; 16]>) {
+    pub fn member_add_uuid_ptr(&mut self, key: impl AsRef<[u8]>, uuid: Option<&[u8; 16]>) {
+        let key = key.as_ref();
         self.member_with(key, |w| w.uuid_value(uuid, print_uuid_lower));
     }
 
     /// `buffer_json_member_add_uuid_compact()`: 32 lowercase hex digits, `null` for the nil UUID.
-    pub fn member_add_uuid_compact(&mut self, key: &[u8], uuid: &[u8; 16]) {
+    pub fn member_add_uuid_compact(&mut self, key: impl AsRef<[u8]>, uuid: &[u8; 16]) {
+        let key = key.as_ref();
         self.member_with(key, |w| w.uuid_value(Some(uuid), print_uuid_lower_compact));
     }
 
@@ -457,7 +473,8 @@ impl JsonWriter {
     }
 
     /// `buffer_json_member_add_boolean()`.
-    pub fn member_add_boolean(&mut self, key: &[u8], value: bool) {
+    pub fn member_add_boolean(&mut self, key: impl AsRef<[u8]>, value: bool) {
+        let key = key.as_ref();
         self.member_with(key, |w| {
             w.buf
                 .extend_from_slice(if value { b"true" } else { b"false" })
@@ -465,29 +482,39 @@ impl JsonWriter {
     }
 
     /// `buffer_json_member_add_uint64()`.
-    pub fn member_add_uint64(&mut self, key: &[u8], value: u64) {
+    pub fn member_add_uint64(&mut self, key: impl AsRef<[u8]>, value: u64) {
+        let key = key.as_ref();
         self.member_with(key, |w| print_uint64(&mut w.buf, value));
     }
 
     /// `buffer_json_member_add_int64()`.
-    pub fn member_add_int64(&mut self, key: &[u8], value: i64) {
+    pub fn member_add_int64(&mut self, key: impl AsRef<[u8]>, value: i64) {
+        let key = key.as_ref();
         self.member_with(key, |w| print_int64(&mut w.buf, value));
     }
 
     /// `buffer_json_member_add_double()`: `null` for NaN and infinities.
-    pub fn member_add_double(&mut self, key: &[u8], value: f64) {
+    pub fn member_add_double(&mut self, key: impl AsRef<[u8]>, value: f64) {
+        let key = key.as_ref();
         self.member_with(key, |w| print_netdata_double_or_null(&mut w.buf, value));
     }
 
     /// `buffer_json_member_add_time_t()`.
-    pub fn member_add_time_t(&mut self, key: &[u8], value: i64) {
+    pub fn member_add_time_t(&mut self, key: impl AsRef<[u8]>, value: i64) {
+        let key = key.as_ref();
         self.member_add_int64(key, value);
     }
 
     /// `buffer_json_member_add_time_t_formatted()`: with `rfc3339`, 0 is
     /// `null` and absolute times (above [`API_RELATIVE_TIME_MAX`]) are UTC
     /// RFC 3339 strings; everything else is the plain number.
-    pub fn member_add_time_t_formatted(&mut self, key: &[u8], value: i64, rfc3339: bool) {
+    pub fn member_add_time_t_formatted(
+        &mut self,
+        key: impl AsRef<[u8]>,
+        value: i64,
+        rfc3339: bool,
+    ) {
+        let key = key.as_ref();
         if rfc3339 && value == 0 {
             self.member_add_null(key);
         } else if rfc3339 && value > API_RELATIVE_TIME_MAX {
@@ -498,14 +525,16 @@ impl JsonWriter {
     }
 
     /// `buffer_json_member_add_datetime_rfc3339(wb, key, datetime_ut, true)`.
-    pub fn member_add_datetime_rfc3339_utc(&mut self, key: &[u8], datetime_ut: u64) {
+    pub fn member_add_datetime_rfc3339_utc(&mut self, key: impl AsRef<[u8]>, datetime_ut: u64) {
+        let key = key.as_ref();
         let text = rfc3339_datetime_utc(datetime_ut, 2);
         debug_assert!(text.len() < RFC3339_MAX_LENGTH);
         self.member_add_string(key, text.as_bytes());
     }
 
     /// `buffer_json_member_add_duration_ut()`: e.g. `1h30m`, `off` for 0.
-    pub fn member_add_duration_ut(&mut self, key: &[u8], duration_ut: i64) {
+    pub fn member_add_duration_ut(&mut self, key: impl AsRef<[u8]>, duration_ut: i64) {
+        let key = key.as_ref();
         let text = duration_to_string(duration_ut, "us", true).unwrap_or_default();
         self.member_add_string(key, text.as_bytes());
     }
@@ -514,7 +543,8 @@ impl JsonWriter {
     // array items
 
     /// `buffer_json_add_array_item_string()` with a non-NULL value.
-    pub fn add_array_item_string(&mut self, value: &[u8]) {
+    pub fn add_array_item_string(&mut self, value: impl AsRef<[u8]>) {
+        let value = value.as_ref();
         self.item_with(|w| w.string_value(Some(value)));
     }
 

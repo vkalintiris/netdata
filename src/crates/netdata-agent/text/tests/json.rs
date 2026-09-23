@@ -151,10 +151,10 @@ fn c_buffer_unittest_json() {
     empty.finalize();
 
     let mut members = JsonWriter::new(JsonOptions::DEFAULT);
-    members.member_add_string(b"hello", b"world");
-    members.member_add_string(b"alpha", b"this: \" is a double quote");
-    members.member_add_object(b"object1");
-    members.member_add_string(b"hello", b"world");
+    members.member_add_string("hello", "world");
+    members.member_add_string("alpha", "this: \" is a double quote");
+    members.member_add_object("object1");
+    members.member_add_string("hello", "world");
     members.finalize();
 
     assert_eq!(
