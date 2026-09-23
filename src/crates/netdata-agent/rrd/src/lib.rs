@@ -5,6 +5,7 @@
 
 pub mod chart;
 pub mod collection;
+pub mod contexts;
 pub mod host;
 pub mod labels;
 pub mod mode;

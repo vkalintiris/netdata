@@ -10,6 +10,7 @@ mod conf;
 mod guid;
 mod listen;
 mod router;
+mod rrdcontext;
 mod server;
 mod static_file;
 mod system;
@@ -347,6 +348,16 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             return 1;
         }
     };
+    let contexts_worker = match rrdcontext::Worker::spawn(Arc::clone(&hosts)) {
+        Ok(worker) => worker,
+        Err(err) => {
+            log(
+                LogLevel::Error,
+                &format!("Cannot start the RRDCONTEXT thread: {err}"),
+            );
+            return 1;
+        }
+    };
     log(LogLevel::Info, "NETDATA STARTUP: completed");
 
     loop {
@@ -361,6 +372,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     log(LogLevel::Info, "shutting down");
     let _ = pool.stop();
     let _ = stream_pool.stop();
+    contexts_worker.stop();
     if let Some(pidfile) = &pidfile {
         let _ = std::fs::remove_file(pidfile);
     }

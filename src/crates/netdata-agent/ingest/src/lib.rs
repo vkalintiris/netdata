@@ -18,6 +18,7 @@ use netdata_agent_pluginsd_proto::{
 };
 use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, Dim, dim_flags, flags};
 use netdata_agent_rrd::collection;
+use netdata_agent_rrd::contexts;
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::labels::{self, Labels};
 use netdata_agent_storage::storage_number::{SN_EMPTY_SLOT, SN_FLAG_NOT_ANOMALOUS, SN_FLAG_RESET};
@@ -554,23 +555,29 @@ impl Parser {
             history_entries: info.history_entries,
             page_size: self.config.page_size,
         });
-        chart.update_meta(|m| match options.filter(|o| !o.is_empty()) {
+        match options.filter(|o| !o.is_empty()) {
             Some(o) => {
                 let has = |what: &[u8]| o.windows(what.len()).any(|x| x == what);
-                for (word, flag) in [
-                    (&b"obsolete"[..], flags::OBSOLETE),
-                    (b"hidden", flags::HIDDEN),
-                    (b"store_first", flags::STORE_FIRST),
-                ] {
-                    if has(word) {
-                        m.flags |= flag;
-                    } else {
-                        m.flags &= !flag;
-                    }
+                if has(b"obsolete") {
+                    chart.is_obsolete();
+                } else {
+                    chart.isnot_obsolete();
                 }
+                chart.update_meta(|m| {
+                    for (word, flag) in [
+                        (&b"hidden"[..], flags::HIDDEN),
+                        (b"store_first", flags::STORE_FIRST),
+                    ] {
+                        if has(word) {
+                            m.flags |= flag;
+                        } else {
+                            m.flags &= !flag;
+                        }
+                    }
+                });
             }
-            None => m.flags &= !flags::STORE_FIRST,
-        });
+            None => chart.update_meta(|m| m.flags &= !flags::STORE_FIRST),
+        }
         self.set_scope(&chart);
         self.chart_to_slot(&chart, slot);
         Ok(())
@@ -601,40 +608,36 @@ impl Parser {
             .map_or(Algorithm::Absolute, Algorithm::from_name);
         let name = name.map(text);
         let (dim, _) = chart.dim_add(&text(id), name.as_deref(), multiplier, divisor, algorithm);
+        let options = options.filter(|o| !o.is_empty());
+        let has = |what: &[u8]| options.is_some_and(|o| o.windows(what.len()).any(|x| x == what));
+        if has(b"obsolete") {
+            chart.dim_is_obsolete(&dim);
+        } else {
+            chart.dim_isnot_obsolete(&dim);
+        }
         dim.update_meta(|m| {
             m.flags &= !dim_flags::DONT_DETECT_RESETS_OR_OVERFLOWS;
-            let mut hidden = false;
-            match options.filter(|o| !o.is_empty()) {
-                Some(o) => {
-                    let has = |what: &[u8]| o.windows(what.len()).any(|x| x == what);
-                    if has(b"obsolete") {
-                        m.flags |= dim_flags::OBSOLETE;
-                    } else {
-                        m.flags &= !dim_flags::OBSOLETE;
-                    }
-                    hidden = has(b"hidden");
-                    if has(b"noreset") || has(b"nooverflow") {
-                        m.flags |= dim_flags::DONT_DETECT_RESETS_OR_OVERFLOWS;
-                    }
-                    if has(b"type=float") {
-                        if m.flags & dim_flags::FLOAT == 0 {
-                            dim.update_collection(|c| {
-                                c.collected_value = 0;
-                                c.collected_value_float = 0.0;
-                            });
-                        }
-                        m.flags |= dim_flags::FLOAT;
-                    } else if has(b"type=int") {
-                        if m.flags & dim_flags::FLOAT != 0 {
-                            dim.update_collection(|c| {
-                                c.collected_value = 0;
-                                c.collected_value_float = 0.0;
-                            });
-                        }
-                        m.flags &= !dim_flags::FLOAT;
-                    }
+            // Without options every word is absent: shown, resets detected, the value type kept.
+            let hidden = has(b"hidden");
+            if has(b"noreset") || has(b"nooverflow") {
+                m.flags |= dim_flags::DONT_DETECT_RESETS_OR_OVERFLOWS;
+            }
+            if has(b"type=float") {
+                if m.flags & dim_flags::FLOAT == 0 {
+                    dim.update_collection(|c| {
+                        c.collected_value = 0;
+                        c.collected_value_float = 0.0;
+                    });
                 }
-                None => m.flags &= !dim_flags::OBSOLETE,
+                m.flags |= dim_flags::FLOAT;
+            } else if has(b"type=int") {
+                if m.flags & dim_flags::FLOAT != 0 {
+                    dim.update_collection(|c| {
+                        c.collected_value = 0;
+                        c.collected_value_float = 0.0;
+                    });
+                }
+                m.flags &= !dim_flags::FLOAT;
             }
             if hidden {
                 m.flags |= dim_flags::HIDDEN;
@@ -1124,7 +1127,7 @@ impl Parser {
             return refuse();
         };
         self.set_scope(&chart);
-        chart.update_meta(|m| m.flags &= !flags::OBSOLETE);
+        chart.isnot_obsolete();
         let update_every = str2ull_encoded(ue) as i64;
         let end_time = str2ull_encoded(end) as i64;
         let _wall_clock = if wall.first() == Some(&b'#') {
@@ -1167,10 +1170,8 @@ impl Parser {
             return refuse();
         };
         chart.receiver().set = true;
-        let is_float = dim.update_meta(|m| {
-            m.flags &= !dim_flags::OBSOLETE;
-            m.flags & dim_flags::FLOAT != 0
-        });
+        chart.dim_isnot_obsolete(&dim);
+        let is_float = dim.meta().flags & dim_flags::FLOAT != 0;
         let sender_sent_float = is_float && self.config.capabilities & CAP_FLOAT_BASELINE != 0;
         let (collected, collected_d) = if sender_sent_float {
             (0, str2ndd_encoded(collected_s).0)
@@ -1193,9 +1194,7 @@ impl Parser {
             sn_flags = SN_EMPTY_SLOT;
         }
         let end_time = self.v2.end_time;
-        if let Some(ring) = dim.ring() {
-            ring.store(end_time as u64 * 1_000_000, value, sn_flags);
-        }
+        dim.store_metric(end_time as u64 * 1_000_000, value, sn_flags);
         dim.update_collection(|c| {
             c.last_collected_time = (end_time, 0);
             if sender_sent_float || is_float {
@@ -1228,6 +1227,7 @@ impl Parser {
             dim.update_meta(|m| m.flags &= !dim_flags::UPDATED);
         }
         self.v2 = V2::default();
+        contexts::collected_rrdset(&chart);
         Ok(())
     }
 
@@ -1439,9 +1439,7 @@ impl Parser {
             sn_flags = SN_EMPTY_SLOT;
         }
         let end = self.replay.end_time;
-        if let Some(ring) = dim.ring() {
-            ring.store(end as u64 * 1_000_000, value, sn_flags);
-        }
+        dim.store_metric(end as u64 * 1_000_000, value, sn_flags);
         dim.update_collection(|c| {
             c.last_collected_time = (end, 0);
             c.counter += 1;
@@ -1621,6 +1619,7 @@ impl Parser {
             return Ok(());
         }
         self.clear_scope();
+        contexts::updated_retention_rrdset(&chart);
         self.replicate_chart_request(
             &chart,
             first_entry_child,

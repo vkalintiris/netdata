@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use netdata_agent_nrpc::Registry;
 
 use crate::chart::Charts;
+use crate::contexts::{self, Contexts};
 use crate::labels::Labels;
 use crate::mode::DbMode;
 use crate::system_info::SystemInfo;
@@ -101,6 +102,8 @@ pub struct Host {
     /// `RRDHOST_FLAG_ORPHAN`: a child whose receiver has gone.
     orphan: AtomicBool,
     charts: Charts,
+    /// `host->rrdctx`.
+    contexts: Arc<Contexts>,
     /// `host->rrdlabels`.
     labels: RwLock<Labels>,
     /// The claim id a child reported (`CLAIMED_ID`), zero when unclaimed.
@@ -118,6 +121,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Host {
     pub fn new(machine_guid: &str, is_localhost: bool, info: HostInfo) -> Self {
+        let contexts = Arc::new(Contexts::default());
         Host {
             machine_guid: machine_guid.to_string(),
             is_localhost,
@@ -125,12 +129,17 @@ impl Host {
             info: RwLock::new(info),
             receiver: Mutex::new(None),
             orphan: AtomicBool::new(false),
-            charts: Charts::default(),
+            charts: Charts::new(Arc::clone(&contexts)),
+            contexts,
             labels: RwLock::new(Labels::default()),
             claim_id_of_origin: RwLock::new([0; 16]),
             variables: Mutex::new(HashMap::new()),
             functions: Registry::default(),
         }
+    }
+
+    pub fn contexts(&self) -> &Contexts {
+        &self.contexts
     }
 
     pub fn functions(&self) -> &Registry {
@@ -220,6 +229,11 @@ impl Host {
         *receiver = Some(slot);
         self.orphan
             .store(false, std::sync::atomic::Ordering::Release);
+        drop(receiver);
+        // rrdcontext_host_child_connected(): every chart and dimension reports collection again.
+        for chart in self.charts.all() {
+            contexts::rrdset_not_collected(&chart);
+        }
         true
     }
 
@@ -248,6 +262,8 @@ impl Host {
             *receiver = None;
             self.orphan
                 .store(true, std::sync::atomic::Ordering::Release);
+            drop(receiver);
+            self.contexts.child_disconnected();
         }
     }
 }

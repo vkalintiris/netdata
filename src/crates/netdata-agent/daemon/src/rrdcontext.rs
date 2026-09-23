@@ -1,0 +1,55 @@
+//! The `RRDCONTEXT` thread, ported from `rrdcontext_main()` (`src/database/contexts/rrdcontext-worker.c`): once a
+//! second, every host's contexts are post-processed.
+
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::thread::JoinHandle;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use netdata_agent_rrd::host::Hosts;
+
+/// `RRDCONTEXT_WORKER_THREAD_HEARTBEAT_USEC`.
+const HEARTBEAT: Duration = Duration::from_secs(1);
+
+pub struct Worker {
+    stop: Arc<(Mutex<bool>, Condvar)>,
+    thread: JoinHandle<()>,
+}
+
+impl Worker {
+    pub fn spawn(hosts: Arc<Hosts>) -> std::io::Result<Self> {
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let signal = Arc::clone(&stop);
+        let thread = std::thread::Builder::new()
+            .name("RRDCONTEXT".into())
+            .spawn(move || {
+                let (stopped, wake) = &*signal;
+                let mut stopped = stopped.lock().unwrap_or_else(PoisonError::into_inner);
+                loop {
+                    // heartbeat_next(): the next tick on the wall-clock grid of the period.
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default();
+                    let wait = HEARTBEAT
+                        - Duration::from_nanos((now.as_nanos() % HEARTBEAT.as_nanos()) as u64);
+                    stopped = wake
+                        .wait_timeout(stopped, wait)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
+                    if *stopped {
+                        return;
+                    }
+                    for host in hosts.all() {
+                        host.contexts().worker_cycle();
+                    }
+                }
+            })?;
+        Ok(Worker { stop, thread })
+    }
+
+    pub fn stop(self) {
+        let (stopped, wake) = &*self.stop;
+        *stopped.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        wake.notify_all();
+        let _ = self.thread.join();
+    }
+}

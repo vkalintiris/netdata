@@ -6,11 +6,12 @@
 //! are held only for short, bounded steps.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, Weak};
 
 use netdata_agent_storage::ram::{ALLOC_MIN_ENTRIES, RamMetric, Seed};
 use netdata_agent_text::sanitize::{rrd_string_sanitize, rrdset_strncpyz_name};
 
+use crate::contexts::{self, ChartLink, Contexts, DimLink};
 use crate::labels::{FLAG_DONT_DELETE, Labels, SRC_AUTO};
 use crate::mode::{DbMode, align_entries_to_pagesize};
 
@@ -192,8 +193,15 @@ pub struct ReceiverState {
 /// `RRDSET`.
 #[derive(Debug)]
 pub struct Chart {
+    me: Weak<Chart>,
     /// `type.id`.
     id: String,
+    /// `st->chart_uuid`.
+    uuid: [u8; 16],
+    /// The host's contexts (`st->rrdhost->rrdctx`).
+    host_contexts: Arc<Contexts>,
+    /// `st->rrdcontexts`.
+    link: ChartLink,
     type_: String,
     id_part: String,
     mode: DbMode,
@@ -216,6 +224,80 @@ struct DimIndex {
 impl Chart {
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    pub fn uuid(&self) -> &[u8; 16] {
+        &self.uuid
+    }
+
+    pub(crate) fn weak(&self) -> Weak<Chart> {
+        self.me.clone()
+    }
+
+    /// The chart's context and instance.
+    pub fn contexts(&self) -> &ChartLink {
+        &self.link
+    }
+
+    pub(crate) fn host_contexts(&self) -> &Contexts {
+        &self.host_contexts
+    }
+
+    /// `rrdset_metadata_updated()`: the metadata version moves with the stream sender; contexts follow now.
+    pub fn metadata_updated(&self) {
+        contexts::updated_rrdset(self);
+    }
+
+    /// `rrdset_is_obsolete___safe_from_collector_thread()`, without the sender's parts.
+    pub fn is_obsolete(&self) {
+        let was = self.update_meta(|m| {
+            let was = m.flags;
+            m.flags |= flags::OBSOLETE;
+            was
+        });
+        if was & flags::OBSOLETE == 0 {
+            self.metadata_updated();
+            contexts::updated_rrdset_flags(self);
+        }
+    }
+
+    /// `rrdset_isnot_obsolete___safe_from_collector_thread()`.
+    pub fn isnot_obsolete(&self) {
+        let was = self.update_meta(|m| {
+            let was = m.flags;
+            m.flags &= !flags::OBSOLETE;
+            was
+        });
+        if was & flags::OBSOLETE != 0 {
+            self.metadata_updated();
+            contexts::updated_rrdset_flags(self);
+        }
+    }
+
+    /// `rrddim_is_obsolete___safe_from_collector_thread()`.
+    pub fn dim_is_obsolete(&self, dim: &Dim) {
+        let was = dim.update_meta(|m| {
+            let was = m.flags;
+            m.flags |= dim_flags::OBSOLETE;
+            was
+        });
+        if was & dim_flags::OBSOLETE == 0 {
+            contexts::updated_rrddim_flags(dim);
+            self.metadata_updated();
+        }
+    }
+
+    /// `rrddim_isnot_obsolete___safe_from_collector_thread()`.
+    pub fn dim_isnot_obsolete(&self, dim: &Dim) {
+        let was = dim.update_meta(|m| {
+            let was = m.flags;
+            m.flags &= !dim_flags::OBSOLETE;
+            was
+        });
+        if was & dim_flags::OBSOLETE != 0 {
+            contexts::updated_rrddim_flags(dim);
+            self.metadata_updated();
+        }
     }
 
     pub fn type_(&self) -> &str {
@@ -345,27 +427,46 @@ impl Chart {
         if let Some(&i) = index.by_id.get(id) {
             let dim = Arc::clone(&index.ordered[i]);
             drop(index);
-            let changed = dim.update_meta(|m| {
-                m.flags &= !dim_flags::OBSOLETE;
-                let mut changed = false;
-                if let Some(name) = name.filter(|n| !n.is_empty() && *n != m.name) {
-                    m.name = rrd_string(name);
-                    changed = true;
-                }
-                for (field, value) in [(&mut m.multiplier, multiplier), (&mut m.divisor, divisor)] {
-                    if *field != value {
-                        *field = value;
-                        changed = true;
-                    }
-                }
-                if m.algorithm != algorithm {
+            self.dim_isnot_obsolete(&dim);
+            // rrddim_conflict_callback(): rename, algorithm, multiplier, divisor, each reported as it changes.
+            let (renamed, algorithm_changed, multiplier_changed, divisor_changed) = dim
+                .update_meta(|m| {
+                    let renamed = match name.filter(|n| !n.is_empty() && *n != m.name) {
+                        Some(name) => {
+                            m.name = rrd_string(name);
+                            true
+                        }
+                        None => false,
+                    };
+                    let algorithm_changed = m.algorithm != algorithm;
                     m.algorithm = algorithm;
-                    changed = true;
+                    let multiplier_changed = m.multiplier != multiplier;
+                    m.multiplier = multiplier;
+                    let divisor_changed = m.divisor != divisor;
+                    m.divisor = divisor;
+                    (
+                        renamed,
+                        algorithm_changed,
+                        multiplier_changed,
+                        divisor_changed,
+                    )
+                });
+            if renamed {
+                self.dim_metadata_updated(&dim);
+            }
+            if algorithm_changed {
+                self.dim_metadata_updated(&dim);
+                contexts::updated_rrddim_algorithm(&dim);
+            }
+            for changed in [multiplier_changed, divisor_changed] {
+                if changed {
+                    self.dim_metadata_updated(&dim);
+                    contexts::updated_rrddim_flags(&dim);
                 }
-                changed
-            });
-            if changed {
+            }
+            if renamed || algorithm_changed || multiplier_changed || divisor_changed {
                 self.update_meta(|m| m.flags |= flags::SYNC_CLOCK | flags::HOMOGENEOUS_CHECK);
+                self.dim_metadata_updated(&dim);
             }
             return (dim, false);
         }
@@ -390,7 +491,9 @@ impl Chart {
             }
             DbMode::Dbengine => None,
         };
-        let dim = Arc::new(Dim {
+        let dim = Arc::new_cyclic(|me| Dim {
+            me: me.clone(),
+            link: DimLink::default(),
             id: id.to_string(),
             uuid: *uuid::Uuid::new_v4().as_bytes(),
             meta: RwLock::new(DimMeta {
@@ -424,7 +527,14 @@ impl Chart {
                 m.flags |= flags::HETEROGENEOUS;
             }
         });
+        self.dim_metadata_updated(&dim);
         (dim, true)
+    }
+
+    /// `rrddim_metadata_updated()`.
+    fn dim_metadata_updated(&self, dim: &Dim) {
+        contexts::updated_rrddim(self, dim);
+        self.metadata_updated();
     }
 }
 
@@ -466,8 +576,11 @@ pub struct DimCollection {
 /// `RRDDIM`.
 #[derive(Debug)]
 pub struct Dim {
+    me: Weak<Dim>,
     id: String,
     uuid: [u8; 16],
+    /// `rd->rrdcontexts`.
+    link: DimLink,
     meta: RwLock<DimMeta>,
     collection: Mutex<DimCollection>,
     /// Tier 0 of a ram/alloc/none chart; dbengine storage comes with slice 2.
@@ -505,12 +618,41 @@ impl Dim {
     pub fn ring(&self) -> Option<&RamMetric> {
         self.ring.as_ref()
     }
+
+    pub(crate) fn weak(&self) -> Weak<Dim> {
+        self.me.clone()
+    }
+
+    /// The dimension's metric.
+    pub fn contexts(&self) -> &DimLink {
+        &self.link
+    }
+
+    /// `rrddim_first_entry_s()`: the oldest point of any tier (one tier until dbengine, D15).
+    pub fn first_entry_s(&self) -> i64 {
+        self.ring.as_ref().map_or(0, RamMetric::oldest_time_s)
+    }
+
+    /// `rrddim_last_entry_s()`.
+    pub fn last_entry_s(&self) -> i64 {
+        self.ring.as_ref().map_or(0, RamMetric::latest_time_s)
+    }
+
+    /// `rrddim_store_metric()` at tier 0; the first store after a (re)link marks the metric collected.
+    pub fn store_metric(&self, point_end_time_ut: u64, value: f64, flags: u32) {
+        if let Some(ring) = &self.ring {
+            ring.store(point_end_time_ut, value, flags);
+        }
+        contexts::collected_rrddim(self);
+    }
 }
 
 /// A host's charts: by id, by name, and in creation order (`rrdset_root_index`, `rrdset_root_index_name`).
 #[derive(Debug, Default)]
 pub struct Charts {
     inner: RwLock<ChartIndex>,
+    /// The host's contexts, which every chart reports to.
+    contexts: Arc<Contexts>,
 }
 
 #[derive(Debug, Default)]
@@ -551,6 +693,13 @@ impl ChartIndex {
 }
 
 impl Charts {
+    pub fn new(contexts: Arc<Contexts>) -> Self {
+        Charts {
+            inner: RwLock::default(),
+            contexts,
+        }
+    }
+
     pub fn find(&self, id: &str) -> Option<Arc<Chart>> {
         let index = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         index.by_id.get(id).map(|&i| Arc::clone(&index.ordered[i]))
@@ -576,13 +725,20 @@ impl Charts {
     /// named. Returns the chart and whether it is new.
     pub fn create(&self, spec: &ChartSpec<'_>) -> (Arc<Chart>, bool) {
         let full_id = bounded(format!("{}.{}", spec.type_, spec.id), ID_LENGTH_MAX);
+        if let Some(existing) = self.find(&full_id) {
+            existing.isnot_obsolete();
+        }
         let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        let (chart, is_new) = match index.by_id.get(&full_id) {
+        // rrdset_conflict_callback() reports whether anything changed; the react step then runs.
+        let (chart, is_new, changed) = match index.by_id.get(&full_id) {
             Some(&i) => {
                 let chart = Arc::clone(&index.ordered[i]);
-                chart.update_meta(|m| {
-                    m.flags &= !flags::OBSOLETE;
-                    m.priority = spec.priority;
+                let mut changed = chart.update_meta(|m| {
+                    let mut changed = false;
+                    if m.priority != spec.priority {
+                        m.priority = spec.priority;
+                        changed = true;
+                    }
                     for (field, value) in [
                         (&mut m.plugin, Some(spec.plugin)),
                         (&mut m.module, spec.module),
@@ -595,9 +751,13 @@ impl Charts {
                         if let Some(value) = value.filter(|v| !v.is_empty() && *v != field.as_str())
                         {
                             *field = rrd_string(value);
+                            changed = true;
                         }
                     }
-                    m.chart_type = spec.chart_type;
+                    if m.chart_type != spec.chart_type {
+                        m.chart_type = spec.chart_type;
+                        changed = true;
+                    }
                     let (plugin, module) = (m.plugin.clone(), m.module.clone());
                     m.labels.add(
                         b"_collect_plugin",
@@ -610,11 +770,13 @@ impl Charts {
                         SRC_AUTO | FLAG_DONT_DELETE,
                     );
                     m.flags |= flags::SYNC_CLOCK;
+                    changed
                 });
                 if chart.update_every() != spec.update_every {
                     chart.set_update_every(i64::from(spec.update_every));
+                    changed = true;
                 }
-                (chart, false)
+                (chart, false, changed)
             }
             None => {
                 let mut labels = Labels::default();
@@ -636,8 +798,12 @@ impl Charts {
                     align_entries_to_pagesize(spec.mode, spec.history_entries, spec.page_size)
                         as usize
                 };
-                let chart = Arc::new(Chart {
+                let chart = Arc::new_cyclic(|me| Chart {
+                    me: me.clone(),
                     id: full_id.clone(),
+                    uuid: *uuid::Uuid::new_v4().as_bytes(),
+                    host_contexts: Arc::clone(&self.contexts),
+                    link: ChartLink::default(),
                     type_: spec.type_.to_string(),
                     id_part: spec.id.to_string(),
                     mode: spec.mode,
@@ -670,10 +836,15 @@ impl Charts {
                 let position = index.ordered.len();
                 index.by_id.insert(full_id.clone(), position);
                 index.ordered.push(Arc::clone(&chart));
-                (chart, true)
+                (chart, true, false)
             }
         };
+        drop(index);
+        if is_new || changed {
+            chart.metadata_updated();
+        }
         // Naming, under the index lock as C's name index is.
+        let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         let current = chart.meta().name;
         let requested = spec.name.filter(|n| !n.is_empty()).unwrap_or(spec.id);
         let new_name = match &current {
@@ -694,6 +865,13 @@ impl Charts {
                 m.name = Some(new_name);
                 m.flags |= flags::METADATA_UPDATE;
             });
+            drop(index);
+            // rrdset_reset_name() reports a rename itself; rrdset_create() then reports the name update.
+            if current.is_some() {
+                chart.metadata_updated();
+                contexts::updated_rrdset_name(&chart);
+            }
+            chart.metadata_updated();
         }
         (chart, is_new)
     }

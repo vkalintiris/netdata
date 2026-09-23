@@ -3,6 +3,7 @@
 //! module; the C unit tests of `src/daemon/unit_test.c` are the ground truth.
 
 use crate::chart::{Algorithm, Chart, ChartCollection, DimCollection, dim_flags, flags};
+use crate::contexts;
 use crate::mode::DbMode;
 
 use netdata_agent_storage::storage_number::{SN_DEFAULT_FLAGS, SN_FLAG_RESET};
@@ -147,7 +148,7 @@ pub fn timed_done(
     let entries = chart.entries() as i64;
     let max_update_gap_iterations = entries.max(60);
     let max_update_gap_ut = max_update_gap_iterations * update_every_ut;
-    chart.update_meta(|m| m.flags &= !flags::OBSOLETE);
+    chart.isnot_obsolete();
     let mut store_this_entry = true;
     let mut first_entry = false;
 
@@ -230,7 +231,7 @@ pub fn timed_done(
             last_collected_total += last_collected_as_double(d, is_float);
             collected_total += collected_as_double(d, is_float);
         });
-        dim.update_meta(|m| m.flags &= !dim_flags::OBSOLETE);
+        chart.dim_isnot_obsolete(dim);
     }
     for (i, dim) in dims.iter().enumerate() {
         let m = dim.meta();
@@ -364,9 +365,7 @@ pub fn timed_done(
                     (f64::NAN, 0)
                 }
             });
-            if let Some(ring) = dim.ring() {
-                ring.store(next_store_ut as u64, value, sn_flags);
-            }
+            dim.store_metric(next_store_ut as u64, value, sn_flags);
         }
         chart.update_collection(|c| {
             c.counter += 1;
@@ -414,6 +413,7 @@ pub fn timed_done(
         });
         dim.update_meta(|m| m.flags &= !dim_flags::UPDATED);
     }
+    contexts::collected_rrdset(chart);
 }
 
 /// `rrddim_timed_set_by_pointer()`: a collected value for the next `timed_done`.
