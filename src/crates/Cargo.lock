@@ -2943,6 +2943,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "netdata-agent-pluginsd-proto"
+version = "0.1.3"
+dependencies = [
+ "netdata-agent-text",
+]
+
+[[package]]
 name = "netdata-agent-text"
 version = "0.1.3"
 

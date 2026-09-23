@@ -64,6 +64,7 @@ members = [
     "netdata-agent/daemon",
     "netdata-agent/evloop",
     "netdata-agent/inicfg",
+    "netdata-agent/pluginsd-proto",
     "netdata-agent/text",
     "netdata-agent/web",
 ]
@@ -96,6 +97,7 @@ netdata-agent-text = { path = "netdata-agent/text" }
 netdata-agent-inicfg = { path = "netdata-agent/inicfg" }
 netdata-agent-evloop = { path = "netdata-agent/evloop" }
 netdata-agent-web = { path = "netdata-agent/web" }
+netdata-agent-pluginsd-proto = { path = "netdata-agent/pluginsd-proto" }
 opentelemetry = "0.31.0"
 opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic", "logs"] }
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio", "logs"] }
