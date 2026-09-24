@@ -52,6 +52,8 @@ pub struct Defaults {
     pub update_every: i32,
     /// `sysconf(_SC_PAGESIZE)`.
     pub page_size: i64,
+    /// `gap_when_lost_iterations_above`: `[db] gap when lost iterations above` + 2.
+    pub gap_when_lost_iterations_above: i64,
 }
 
 /// What the web worker does with a `STREAM` request after `pre_admit()`.
@@ -404,8 +406,7 @@ impl Receivers {
                 update_every: self.defaults.update_every,
                 page_size: self.defaults.page_size,
                 now: collection::now_realtime_timeval,
-                // `[db] gap when lost iterations above` (default 1) + 2; the option is read with the [db] section.
-                gap_when_lost_iterations_above: 3,
+                gap_when_lost_iterations_above: self.defaults.gap_when_lost_iterations_above,
             },
             log: self.log,
         };

@@ -28,7 +28,7 @@ use std::sync::Arc;
 use netdata_agent_evloop::Pool;
 use netdata_agent_inicfg::{LogLevel, SECTION_GLOBAL, SECTION_WEB};
 use netdata_agent_rrd::host::{Host, HostInfo, Hosts};
-use netdata_agent_rrd::mode::DbMode;
+use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 use netdata_agent_streaming::conf::{LoadDefaults, StreamConf};
 use netdata_agent_streaming::receiver::{self, Receivers, StreamWorker};
 use netdata_agent_web::request::Settings;
@@ -210,6 +210,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
 
     conf.section_global_hostname(&mut logger);
+    let db = conf::section_db(&mut conf.netdata, system.page_size, &mut logger);
 
     // get_system_timezone(), after the hostname and before the listeners and become_daemon(), as in C. No thread has
     // started yet, so setenv() is sound.
@@ -271,9 +272,13 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             utc_offset: tz.utc_offset,
             program_name: "netdata".to_string(),
             program_version: build::NETDATA_VERSION.to_string(),
-            update_every: 1,
-            db_mode: DbMode::Dbengine,
-            history_entries: 0,
+            update_every: db.update_every,
+            db_mode: db.mode,
+            history_entries: align_entries_to_pagesize(
+                db.mode,
+                db.history_entries,
+                system.page_size,
+            ),
             health_enabled: true,
             system_info: Default::default(),
             replication_enabled: false,
@@ -309,10 +314,17 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         stream_load,
         receiver::Defaults {
             // No dbengine yet: C falls back to alloc when dbengine is unavailable.
-            db_mode: DbMode::Alloc.name().to_string(),
-            history: 3600,
+            db_mode: if db.mode == DbMode::Dbengine {
+                DbMode::Alloc
+            } else {
+                db.mode
+            }
+            .name()
+            .to_string(),
+            history: db.history_entries,
             health_enabled: true,
-            update_every: 1,
+            update_every: db.update_every,
+            gap_when_lost_iterations_above: db.gap_when_lost_iterations_above,
             page_size: system.page_size,
         },
         stream_pool.handle(),

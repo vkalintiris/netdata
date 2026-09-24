@@ -29,8 +29,6 @@ func init() {
 	pending("D3 [global] startup reads", "global", "pthread stack size", "cpu cores", "libuv worker threads", "profile",
 		"glibc malloc arena max for plugins", "glibc malloc arena max for netdata", "crash reports")
 	pending("host labels", "global", "is ephemeral node", "has unstable connection")
-	pending("D3 [db] reads", "db", "db", "update every", "memory deduplication (ksm)", "cleanup orphan hosts after",
-		"cleanup ephemeral hosts after", "cleanup obsolete charts after", "gap when lost iterations above")
 	pending("dbengine (D4)", "db", "storage tiers", "dbengine tier 0 retention time", "dbengine tier 1 retention time",
 		"dbengine tier 2 retention time", "dbengine page type", "dbengine page cache size", "dbengine extent cache size",
 		"dbengine enable journal integrity check", "dbengine use all ram for caches", "dbengine out of memory protection",

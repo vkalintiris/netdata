@@ -5,9 +5,9 @@
 use std::path::Path;
 
 use netdata_agent_inicfg::{
-    Config, LogLevel, SECTION_CLOUD, SECTION_DB, SECTION_DIRECTORIES, SECTION_ENV_VARS,
-    SECTION_GLOBAL, SECTION_HEALTH, SECTION_LOGS, SECTION_PLUGINS, SECTION_PULSE, SECTION_REGISTRY,
-    SECTION_STATSD, SECTION_WEB,
+    BOOLEAN_AUTO, Config, LogLevel, SECTION_CLOUD, SECTION_DB, SECTION_DIRECTORIES,
+    SECTION_ENV_VARS, SECTION_GLOBAL, SECTION_HEALTH, SECTION_LOGS, SECTION_PLUGINS, SECTION_PULSE,
+    SECTION_REGISTRY, SECTION_STATSD, SECTION_WEB,
 };
 
 use netdata_agent_text::line_splitter::{Separators, quoted_strings_splitter};
@@ -18,6 +18,7 @@ use netdata_agent_text::simple_pattern::{
 use netdata_agent_text::sanitize::rrdlabels_sanitize_value;
 
 use netdata_agent_query::grouping::Windows;
+use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 
 use crate::acl::{AclPattern, WebAcl};
 use crate::build;
@@ -673,6 +674,118 @@ impl Conf {
     }
 }
 
+/// `netdata_conf_section_db()` (`src/daemon/config/netdata-conf-db.c`) up to the dbengine options. KSM and the
+/// orphan, ephemeral and obsolete cleanups are not ported: their options are read so that they print as in C.
+pub fn section_db(
+    c: &mut Config,
+    page_size: i64,
+    log: &mut impl FnMut(LogLevel, &str),
+) -> DbSection {
+    // nd_profile.update_every: 1 for every profile but iot, which profile detection does not set yet.
+    let mut update_every = c.get_duration_seconds(SECTION_DB, "update every", 1) as i32;
+    if update_every < UPDATE_EVERY_MIN {
+        log(
+            LogLevel::Warning,
+            &format!(
+                "Data collection frequency in netdata.conf ([db].update every), changed from \
+                 {update_every} to {UPDATE_EVERY_MIN}"
+            ),
+        );
+        update_every = UPDATE_EVERY_MIN;
+        c.set_duration_seconds(SECTION_DB, "update every", i64::from(update_every));
+    }
+    if update_every > UPDATE_EVERY_MAX {
+        // C names the minimum in this message too.
+        log(
+            LogLevel::Warning,
+            &format!(
+                "Data collection frequency in netdata.conf ([db].update every), changed from \
+                 {update_every} to {UPDATE_EVERY_MIN}"
+            ),
+        );
+        update_every = UPDATE_EVERY_MAX;
+        c.set_duration_seconds(SECTION_DB, "update every", i64::from(update_every));
+    }
+
+    let name = text(c.get(SECTION_DB, "db", Some(DbMode::Dbengine.name())));
+    let mode = DbMode::from_name(&name);
+    if name != mode.name() {
+        log(
+            LogLevel::Error,
+            &format!(
+                "Invalid memory mode '{name}' given. Using '{}'",
+                mode.name()
+            ),
+        );
+        c.set(SECTION_DB, "db", mode.name());
+    }
+
+    let mut history_entries = DEFAULT_HISTORY_ENTRIES;
+    if mode != DbMode::Dbengine && mode != DbMode::None {
+        history_entries = i64::from(c.get_duration_seconds(
+            SECTION_DB,
+            "retention",
+            align_entries_to_pagesize(mode, DEFAULT_HISTORY_ENTRIES, page_size),
+        ) as i32);
+        let aligned = align_entries_to_pagesize(mode, history_entries, page_size);
+        if aligned != history_entries {
+            c.set_duration_seconds(SECTION_DB, "retention", aligned);
+            history_entries = aligned;
+        }
+    }
+
+    c.get_boolean_ondemand(SECTION_DB, "memory deduplication (ksm)", BOOLEAN_AUTO);
+
+    let mut orphan = c.get_duration_seconds(SECTION_DB, "cleanup orphan hosts after", 3600);
+    if orphan < 10 {
+        orphan = 10;
+        c.set_duration_seconds(SECTION_DB, "cleanup orphan hosts after", orphan);
+    }
+    let ephemeral = c.get_duration_seconds(SECTION_DB, "cleanup ephemeral hosts after", 0);
+    if ephemeral != 0 && ephemeral < orphan {
+        c.set_duration_seconds(SECTION_DB, "cleanup ephemeral hosts after", orphan);
+    }
+    if c.get_duration_seconds(SECTION_DB, "cleanup obsolete charts after", 3600) < 10 {
+        log(
+            LogLevel::Info,
+            "The \"cleanup obsolete charts after\" option was set to 10 seconds.",
+        );
+        c.set_duration_seconds(SECTION_DB, "cleanup obsolete charts after", 10);
+    }
+
+    let mut gap = c.get_number(SECTION_DB, "gap when lost iterations above", 1) as i32;
+    if gap < 1 {
+        gap = 1;
+        c.set_number(SECTION_DB, "gap when lost iterations above", 1);
+    }
+
+    DbSection {
+        update_every,
+        mode,
+        history_entries,
+        gap_when_lost_iterations_above: i64::from(gap) + 2,
+    }
+}
+
+/// `UPDATE_EVERY_MIN` and `UPDATE_EVERY_MAX`.
+const UPDATE_EVERY_MIN: i32 = 1;
+const UPDATE_EVERY_MAX: i32 = 3600;
+/// `RRD_DEFAULT_HISTORY_ENTRIES`.
+const DEFAULT_HISTORY_ENTRIES: i64 = 3600;
+
+/// What `[db]` sets for the rest of the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DbSection {
+    /// `nd_profile.update_every`.
+    pub update_every: i32,
+    /// `default_rrd_memory_mode`.
+    pub mode: DbMode,
+    /// `default_rrd_history_entries`: `[db] retention` for ram and alloc, else the compiled default.
+    pub history_entries: i64,
+    /// `gap_when_lost_iterations_above`: the option plus the 2 C adds after reading it.
+    pub gap_when_lost_iterations_above: i64,
+}
+
 /// `verify_netdata_host_prefix(true)` (`src/libnetdata/paths/paths.c`): a directory, without `%`, holding procfs and
 /// sysfs mounts; otherwise it is ignored (empty).
 fn verify_netdata_host_prefix(prefix: String, log: &mut impl FnMut(LogLevel, &str)) -> String {
@@ -992,6 +1105,111 @@ fn make_dns_decision(
                 );
             }
             pattern.is_potential_name()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loaded(db_section: &str) -> Config {
+        let path = std::env::temp_dir().join(format!(
+            "nd-conf-db-{}-{}.conf",
+            std::process::id(),
+            db_section.len()
+        ));
+        std::fs::write(&path, format!("[db]\n{db_section}")).unwrap();
+        let mut c = Config::default();
+        assert!(c.load(&path, false, None));
+        std::fs::remove_file(&path).unwrap();
+        c
+    }
+
+    struct DbCase {
+        file: &'static str,
+        want: DbSection,
+        /// `[db]` values after the reads, write-backs included.
+        values: &'static [(&'static str, &'static str)],
+    }
+
+    #[test]
+    fn section_db_reads_and_writes_back_like_c() {
+        let dbengine = DbSection {
+            update_every: 1,
+            mode: DbMode::Dbengine,
+            history_entries: 3600,
+            gap_when_lost_iterations_above: 3,
+        };
+        let cases = std::collections::BTreeMap::from([
+            (
+                "defaults",
+                DbCase {
+                    file: "",
+                    want: dbengine,
+                    values: &[
+                        ("update every", "1s"),
+                        ("db", "dbengine"),
+                        ("gap when lost iterations above", "1"),
+                    ],
+                },
+            ),
+            (
+                "clamped",
+                DbCase {
+                    file: "update every = 0\ngap when lost iterations above = 0\ncleanup orphan hosts after = 5\n\
+                           cleanup ephemeral hosts after = 7\ncleanup obsolete charts after = 2\n",
+                    want: dbengine,
+                    values: &[
+                        ("update every", "1s"),
+                        ("gap when lost iterations above", "1"),
+                        ("cleanup orphan hosts after", "10s"),
+                        ("cleanup ephemeral hosts after", "10s"),
+                        ("cleanup obsolete charts after", "10s"),
+                    ],
+                },
+            ),
+            (
+                "ram rounds retention to pages",
+                DbCase {
+                    file: "db = ram\nretention = 3601\nupdate every = 2h\n",
+                    want: DbSection {
+                        update_every: 3600,
+                        mode: DbMode::Ram,
+                        history_entries: 4096,
+                        gap_when_lost_iterations_above: 3,
+                    },
+                    values: &[
+                        ("db", "ram"),
+                        ("retention", "1h8m16s"),
+                        ("update every", "1h"),
+                    ],
+                },
+            ),
+            (
+                "invalid mode",
+                DbCase {
+                    file: "db = nosuch\n",
+                    want: DbSection {
+                        mode: DbMode::Ram,
+                        history_entries: 4096,
+                        ..dbengine
+                    },
+                    values: &[("db", "ram"), ("retention", "1h8m16s")],
+                },
+            ),
+        ]);
+        for (name, case) in cases {
+            let mut c = loaded(case.file);
+            let mut logs = Vec::new();
+            let got = section_db(&mut c, 4096, &mut |_, m: &str| logs.push(m.to_string()));
+            assert_eq!(got, case.want, "{name}: {logs:?}");
+            for (key, value) in case.values {
+                let v = c
+                    .get(SECTION_DB, key, None)
+                    .map(|v| String::from_utf8_lossy(&v).into_owned());
+                assert_eq!(v.as_deref(), Some(*value), "{name}: [db] {key}");
+            }
         }
     }
 }
