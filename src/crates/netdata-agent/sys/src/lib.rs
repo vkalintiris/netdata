@@ -6,6 +6,9 @@
 //!   pointers except a stack `sched_param`.
 //! - `localtime_r()` (decision D22.3) fills a stack `struct tm`; it reads `TZ`, which only `setenv()` changes, and that
 //!   refuses once a second thread exists. Its `tm_zone` string is copied out immediately.
+//! - `pthread_attr_init/getstacksize/destroy()` (decision D28) work on a stack attribute object, initialised before
+//!   use and destroyed once.
+//! - `mallopt()` (decision D28, glibc only) passes two integers; glibc serialises it against its own allocator.
 
 use std::io;
 
@@ -62,6 +65,38 @@ pub fn setenv(key: &str, value: &str) -> io::Result<()> {
     // SAFETY: no other thread exists that could read the environment concurrently.
     unsafe { std::env::set_var(key, value) };
     Ok(())
+}
+
+/// `PTHREAD_STACK_MIN`.
+pub const PTHREAD_STACK_MIN: usize = libc::PTHREAD_STACK_MIN;
+
+/// `netdata_threads_init()`: the stack size of a thread created with default attributes.
+pub fn default_thread_stack_size() -> io::Result<usize> {
+    let mut attr = std::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
+    // SAFETY: pthread_attr_init() initialises the object it is given.
+    let r = unsafe { libc::pthread_attr_init(attr.as_mut_ptr()) };
+    if r != 0 {
+        return Err(io::Error::from_raw_os_error(r));
+    }
+    let mut size: libc::size_t = 0;
+    // SAFETY: the attribute object was initialised above and `size` is a live out location.
+    let r = unsafe { libc::pthread_attr_getstacksize(attr.as_ptr(), &mut size) };
+    // SAFETY: the attribute object was initialised above and is destroyed only here.
+    unsafe { libc::pthread_attr_destroy(attr.as_mut_ptr()) };
+    if r != 0 {
+        return Err(io::Error::from_raw_os_error(r));
+    }
+    Ok(size)
+}
+
+/// `mallopt(M_ARENA_MAX)` and `mallopt(M_TRIM_THRESHOLD)`, as `netdata_conf_glibc_malloc_initialize()` sets them.
+#[cfg(target_env = "gnu")]
+pub fn mallopt_arenas(arenas: i32, trim_threshold: i32) {
+    // SAFETY: integer arguments only; glibc locks its own state.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, arenas);
+        libc::mallopt(libc::M_TRIM_THRESHOLD, trim_threshold);
+    }
 }
 
 /// `gethostid()`.

@@ -34,10 +34,6 @@ const KEEPALIVE_IDLE_MAX_SECONDS: u64 = 3600;
 pub struct LoadDefaults {
     /// `netdata_conf_cpus()`, for `replication_threads_default()`.
     pub conf_cpus: i64,
-    /// `os_get_system_cpus_uncached()` and the total RAM, for the profile detection that
-    /// `replication_threads_default()` triggers once this file is loaded (`nd_profile_detect_and_configure()`).
-    pub system_cpus: i64,
-    pub ram_total_bytes: Option<u64>,
     /// `libuv_worker_threads`, for `replication_prefetch_default()`.
     pub libuv_worker_threads: i64,
     /// `netdata_ssl_validate_certificate`.
@@ -223,12 +219,15 @@ impl StreamConf {
     }
 
     /// `stream_conf_load()`: `netdata` is `netdata_config`, which holds the `[db]` replication options.
+    /// `is_parent_profile` is `netdata_conf_is_parent()`: the node profile, detected on its first call from whether
+    /// stream.conf enables an API key and whether `[stream] enabled` is set.
     pub fn load(
         &mut self,
         netdata: &mut Config,
         user_dir: &str,
         stock_dir: &str,
         defaults: LoadDefaults,
+        is_parent_profile: impl FnOnce(&mut Config, bool, bool) -> bool,
         log: &mut impl FnMut(LogLevel, &str),
     ) {
         self.load_file(user_dir, stock_dir, log);
@@ -242,11 +241,10 @@ impl StreamConf {
         r.enabled = netdata.get_boolean(SECTION_DB, "enable replication", r.enabled);
         r.period = netdata.get_duration_seconds(SECTION_DB, "replication period", r.period);
         r.step = netdata.get_duration_seconds(SECTION_DB, "replication step", r.step);
-        // replication_threads_default(): the parent profile needs more than one CPU, 1 GiB of RAM and an enabled
-        // API key here.
-        let parent_profile = !(defaults.system_cpus <= 1
-            || defaults.ram_total_bytes.is_some_and(|ram| ram < 1 << 30))
-            && self.config.stream_conf_has_api_enabled();
+        // replication_threads_default() asks for the profile, which C detects here: `[global] profile` is created
+        // between the replication step and the thread count.
+        let has_api_enabled = self.config.stream_conf_has_api_enabled();
+        let parent_profile = is_parent_profile(netdata, has_api_enabled, self.send.enabled);
         let threads_default = if parent_profile {
             (defaults.conf_cpus / 3).max(4)
         } else {

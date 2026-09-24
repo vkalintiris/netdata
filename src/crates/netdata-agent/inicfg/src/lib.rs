@@ -328,7 +328,8 @@ impl Config {
         std::mem::take(&mut self.log)
     }
 
-    fn log(&mut self, level: LogLevel, message: String) {
+    /// Queues a line for `take_log()`, in order with the configuration engine's own lines.
+    pub fn log(&mut self, level: LogLevel, message: String) {
         self.log.push(LogLine { level, message });
     }
 

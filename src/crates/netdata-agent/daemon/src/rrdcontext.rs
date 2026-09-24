@@ -16,11 +16,12 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn spawn(hosts: Arc<Hosts>) -> std::io::Result<Self> {
+    pub fn spawn(hosts: Arc<Hosts>, stack_size: usize) -> std::io::Result<Self> {
         let stop = Arc::new((Mutex::new(false), Condvar::new()));
         let signal = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name("RRDCONTEXT".into())
+            .stack_size(stack_size)
             .spawn(move || {
                 let (stopped, wake) = &*signal;
                 let mut stopped = stopped.lock().unwrap_or_else(PoisonError::into_inner);

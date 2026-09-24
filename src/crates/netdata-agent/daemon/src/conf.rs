@@ -22,6 +22,7 @@ use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 
 use crate::acl::{AclPattern, WebAcl};
 use crate::build;
+use crate::system::{self, Resources};
 
 /// `PLUGINSD_MAX_DIRECTORIES`.
 const PLUGINSD_MAX_DIRECTORIES: usize = 20;
@@ -71,6 +72,8 @@ pub struct Conf {
     pub user: String,
     pub hostname: String,
     pub host_prefix: String,
+    /// What `libuv_initialize()` sized, at the end of `netdata_conf_load()`.
+    pub threads: Threads,
     // FUNCTION_RUN_ONCE guards.
     loaded: bool,
     compat_done: bool,
@@ -101,6 +104,7 @@ impl Conf {
         &mut self,
         filename: Option<&str>,
         overwrite_used: bool,
+        system: &Resources,
         log: &mut impl FnMut(LogLevel, &str),
     ) -> bool {
         if self.loaded {
@@ -145,8 +149,7 @@ impl Conf {
         self.backwards_compatibility();
         self.section_directories();
         self.section_global_run_as_user();
-        // libuv_initialize() reads [global] pthread stack size, cpu cores and libuv worker threads here; ported
-        // with the thread-sizing work (agent/progress.md).
+        self.threads = libuv_initialize(&mut self.netdata, system, Path::new("/"), log);
         ret
     }
 
@@ -764,6 +767,96 @@ pub fn section_db(
         mode,
         history_entries,
         gap_when_lost_iterations_above: i64::from(gap) + 2,
+    }
+}
+
+/// `MIN_LIBUV_WORKER_THREADS` and `MAX_LIBUV_WORKER_THREADS`.
+#[cfg(target_pointer_width = "64")]
+const LIBUV_WORKER_THREADS: (i64, i64) = (16, 1024);
+#[cfg(not(target_pointer_width = "64"))]
+const LIBUV_WORKER_THREADS: (i64, i64) = (8, 128);
+
+/// What `libuv_initialize()` sizes the daemon's threads by.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Threads {
+    /// The stack of every thread the daemon starts: `[global] pthread stack size` when valid, else the libc default.
+    pub thread_stack_size: usize,
+    /// `netdata_conf_cpus()`.
+    pub cpus: i64,
+    /// `libuv_worker_threads`.
+    pub libuv_worker_threads: i64,
+}
+
+/// `libuv_initialize()` (`src/daemon/config/netdata-conf-global.c`): the thread stack size, `netdata_conf_cpus()` and
+/// the libuv worker count, each exported where C exports it. `root` is `/` outside tests (the cgroup cpusets).
+pub fn libuv_initialize(
+    c: &mut Config,
+    system: &Resources,
+    root: &Path,
+    log: &mut impl FnMut(LogLevel, &str),
+) -> Threads {
+    // netdata_conf_stack_size(): the libc default, at least 1 MiB (musl gives 128 KiB).
+    let libc_stack = netdata_agent_sys::default_thread_stack_size().unwrap_or(8 << 20);
+    let stack_size = c.get_size_bytes(
+        SECTION_GLOBAL,
+        "pthread stack size",
+        (libc_stack as u64).max(1 << 20),
+    );
+    // netdata_threads_set_stack_size(): anything not above PTHREAD_STACK_MIN leaves the default.
+    let thread_stack_size = if stack_size > netdata_agent_sys::PTHREAD_STACK_MIN as u64 {
+        stack_size as usize
+    } else {
+        log(
+            LogLevel::Warning,
+            &format!("Invalid pthread stacksize {stack_size}"),
+        );
+        libc_stack
+    };
+
+    // netdata_conf_cpus(): the cgroup cpuset, else every CPU.
+    let cpuset = |rel: &str| {
+        std::fs::read(root.join(rel))
+            .map(|text| system::cpuset_cpus(&text))
+            .unwrap_or(0)
+    };
+    let mut cpus = cpuset("sys/fs/cgroup/cpuset.cpus");
+    if cpus == 0 {
+        cpus = cpuset("sys/fs/cgroup/cpuset/cpuset.cpus");
+    }
+    if cpus == 0 {
+        cpus = system.system_cpus;
+    }
+    let cpus = c.get_number(SECTION_GLOBAL, "cpu cores", cpus).max(1);
+    export("NETDATA_CONF_CPUS", &cpus.to_string(), log);
+
+    // Six per CPU, as many as a twentieth of the RAM (or a tenth of what is available) can hold stacks for.
+    let (min, max) = LIBUV_WORKER_THREADS;
+    let mut threads = cpus * 6;
+    let mem = system.memory;
+    if mem.total > 0 {
+        let for_threads = (mem.total / 20).min(mem.available / 10);
+        let allowed = (for_threads.div_ceil(stack_size.max(1)) as i64).max(min);
+        threads = threads.min(allowed);
+    }
+    let threads = c.get_number_range(
+        SECTION_GLOBAL,
+        "libuv worker threads",
+        threads.clamp(min, max),
+        min,
+        max,
+    );
+    export("UV_THREADPOOL_SIZE", &threads.to_string(), log);
+    Threads {
+        thread_stack_size,
+        cpus,
+        libuv_worker_threads: threads,
+    }
+}
+
+/// `setenv()` for the plugins; the daemon is still single-threaded when it runs.
+fn export(key: &str, value: &str, log: &mut impl FnMut(LogLevel, &str)) {
+    if let Err(err) = netdata_agent_sys::setenv(key, value) {
+        log(LogLevel::Error, &format!("cannot export {key}: {err}"));
     }
 }
 

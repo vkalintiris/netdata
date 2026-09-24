@@ -198,11 +198,13 @@ impl fmt::Display for PoolPanicked {
 impl std::error::Error for PoolPanicked {}
 
 impl<M: Send + 'static> Pool<M> {
-    /// Starts `threads` threads named by `name(index)`, each running the worker `make(index)` returns.
+    /// Starts `threads` threads named by `name(index)`, each with a stack of `stack_size` bytes and running the worker
+    /// `make(index)` returns.
     ///
     /// Workers are created on the calling thread, so a worker can be given handles of other pools.
     pub fn spawn<W>(
         threads: usize,
+        stack_size: usize,
         name: impl Fn(usize) -> String,
         mut make: impl FnMut(usize) -> W,
     ) -> io::Result<Self>
@@ -226,6 +228,7 @@ impl<M: Send + 'static> Pool<M> {
         for (index, (poll, rx, worker)) in loops.into_iter().enumerate() {
             let spawned = std::thread::Builder::new()
                 .name(name(index))
+                .stack_size(stack_size)
                 .spawn(move || run_loop(index, poll, rx, worker));
             match spawned {
                 Ok(join) => joins.push(join),
@@ -348,6 +351,9 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::sync::Mutex;
+
+    /// std's default thread stack.
+    const TEST_STACK: usize = 2 << 20;
     use std::time::Duration;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,6 +412,7 @@ mod tests {
         let log = Arc::new(Mutex::new(Vec::new()));
         let pool = Pool::spawn(
             threads,
+            TEST_STACK,
             |i| format!("TEST[{i}]"),
             |_| Recorder {
                 log: Arc::clone(&log),
@@ -552,6 +559,7 @@ mod tests {
         let accepted = Arc::new(Mutex::new(Vec::new()));
         let pool: Pool<()> = Pool::spawn(
             4,
+            TEST_STACK,
             |i| format!("WEB[{i}]"),
             |_| Echo {
                 listener: mio::net::TcpListener::from_std(listener.try_clone().unwrap()),
@@ -591,7 +599,8 @@ mod tests {
 
     #[test]
     fn a_panicking_thread_is_reported_by_stop() {
-        let pool: Pool<()> = Pool::spawn(2, |i| format!("P[{i}]"), |_| Panicker).unwrap();
+        let pool: Pool<()> =
+            Pool::spawn(2, TEST_STACK, |i| format!("P[{i}]"), |_| Panicker).unwrap();
         pool.handle().send(1, ()).unwrap();
         std::thread::sleep(Duration::from_millis(50));
         let err = pool.stop().unwrap_err();

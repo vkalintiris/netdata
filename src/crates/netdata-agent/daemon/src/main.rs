@@ -12,6 +12,7 @@ mod daemon;
 mod data;
 mod guid;
 mod listen;
+mod profile;
 mod router;
 mod rrdcontext;
 mod server;
@@ -72,6 +73,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let mut dont_fork = false;
     let mut pidfile: Option<String> = None;
     let mut logger = |level: LogLevel, message: &str| log(level, message);
+    // What C reads lazily at the first libuv_initialize(), inside the first netdata_conf_load().
+    let system = system::Resources::probe(&mut logger);
     let text = |v: &[u8]| String::from_utf8_lossy(v).into_owned();
     let help = cli::help_text(build::CONFIG_DIR);
 
@@ -80,7 +83,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         match opt {
             Opt::WithArg(b'c', file) => {
                 let file = text(&file);
-                if !conf.netdata_conf_load(Some(&file), true, &mut logger) {
+                if !conf.netdata_conf_load(Some(&file), true, &system, &mut logger) {
                     log(
                         LogLevel::Error,
                         &format!("Cannot load configuration file {file}."),
@@ -140,7 +143,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
 
     if !config_loaded {
-        conf.netdata_conf_load(None, false, &mut logger);
+        conf.netdata_conf_load(None, false, &system, &mut logger);
         conf.cloud_conf_load(false, &mut logger);
     }
     conf.section_directories();
@@ -148,18 +151,24 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
 
     // C loads stream.conf from the profile detection inside netdata_conf_section_global(), before the machine GUID;
     // the exact place among the other reads is part of the config-order work.
-    let system = system::Resources::probe();
     let mut stream_conf = StreamConf::default();
     stream_conf.load(
         &mut conf.netdata,
         &conf.dirs.user_config,
         &conf.dirs.stock_config,
         LoadDefaults {
-            conf_cpus: system.cpus,
-            system_cpus: system.cpus,
-            ram_total_bytes: system.ram_total_bytes,
-            libuv_worker_threads: system.libuv_worker_threads(),
+            conf_cpus: conf.threads.cpus,
+            libuv_worker_threads: conf.threads.libuv_worker_threads,
             ssl_validate_certificate: true,
+        },
+        |netdata, is_parent, is_child| {
+            profile::detect(
+                netdata,
+                system.system_cpus,
+                system.memory.total,
+                is_parent,
+                is_child,
+            ) == profile::Profile::Parent
         },
         &mut logger,
     );
@@ -210,6 +219,16 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
 
     conf.section_global_hostname(&mut logger);
+    // nd_profile_setup(): the profile once more (it re-reads [global] profile), its malloc settings, then [db].
+    let profile = profile::detect(
+        &mut conf.netdata,
+        system.system_cpus,
+        system.memory.total,
+        stream_conf.is_parent,
+        stream_conf.send.enabled,
+    );
+    profile::setup_malloc(&mut conf.netdata, profile, system.system_cpus);
+    conf.flush_log(&mut logger);
     let db = conf::section_db(&mut conf.netdata, system.page_size, &mut logger);
 
     // get_system_timezone(), after the hostname and before the listeners and become_daemon(), as in C. No thread has
@@ -288,12 +307,13 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     );
     let hosts = Arc::new(Hosts::new(localhost));
     // stream_thread_get_unsafe(): one thread per core but one, 4..=2048. C starts them on first use.
-    let stream_threads = (system.cpus - 1).clamp(4, 2048) as usize;
+    let stream_threads = (conf.threads.cpus - 1).clamp(4, 2048) as usize;
     let stream_load: Arc<std::sync::Mutex<Vec<usize>>> = Arc::default();
     let stream_pool = {
         let load = Arc::clone(&stream_load);
         match Pool::spawn(
             stream_threads,
+            conf.threads.thread_stack_size,
             |i| format!("STREAM[{i}]"),
             move |_| StreamWorker::new(Arc::clone(&load)),
         ) {
@@ -335,7 +355,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let web = conf.section_web(&mut logger);
     let web_server_threads = conf::web_query_threads(
         &mut conf.netdata,
-        system.cpus as usize,
+        conf.threads.cpus as usize,
         is_parent,
         &mut logger,
     );
@@ -391,6 +411,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
     let pool = match Pool::spawn(
         web_server_threads,
+        conf.threads.thread_stack_size,
         |i| format!("WEB[{}]", i + 1),
         |i| {
             server::WebWorker::new(
@@ -409,16 +430,17 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             return 1;
         }
     };
-    let contexts_worker = match rrdcontext::Worker::spawn(Arc::clone(&hosts)) {
-        Ok(worker) => worker,
-        Err(err) => {
-            log(
-                LogLevel::Error,
-                &format!("Cannot start the RRDCONTEXT thread: {err}"),
-            );
-            return 1;
-        }
-    };
+    let contexts_worker =
+        match rrdcontext::Worker::spawn(Arc::clone(&hosts), conf.threads.thread_stack_size) {
+            Ok(worker) => worker,
+            Err(err) => {
+                log(
+                    LogLevel::Error,
+                    &format!("Cannot start the RRDCONTEXT thread: {err}"),
+                );
+                return 1;
+            }
+        };
     log(LogLevel::Info, "NETDATA STARTUP: completed");
 
     loop {
