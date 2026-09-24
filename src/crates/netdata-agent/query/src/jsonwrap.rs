@@ -8,18 +8,10 @@ use netdata_agent_rrd::chart::ID_LENGTH_MAX;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 
 use crate::format::exposed;
+use crate::keys::Keys;
 use crate::rrdr::Rrdr;
 use crate::tables::{options, options_to_json_array};
-use crate::target::QueryTarget;
-
-/// `JSKEY()`: the short key, or the long one with `long-json-keys`.
-pub fn jskey(options: u64, short: &'static str, long: &'static str) -> &'static str {
-    if options & options::LONG_JSON_KEYS != 0 {
-        long
-    } else {
-        short
-    }
-}
+use crate::target::{QueryMetric, QueryTarget};
 
 /// The `"a:b"` keys C dedups by, cut like `snprintfz(buf, RRD_ID_LENGTH_MAX * 2 + 1, ...)`.
 fn pair_key(a: &str, b: &str, max: usize) -> Vec<u8> {
@@ -211,46 +203,49 @@ fn view_latest_values(w: &mut JsonWriter, r: &Rrdr, options: u64) -> usize {
     i
 }
 
+/// `jsonwrap_query_metric_plan()`: the metric's plans and tiers.
+pub fn query_metric_plan(w: &mut JsonWriter, qm: &QueryMetric, options: u64) {
+    let rfc3339 = options & options::RFC3339 != 0;
+    let k = Keys::new(options);
+    w.member_add_array(Some(b"plans"));
+    if let Some((after, before)) = qm.plan {
+        w.add_array_item_object();
+        w.member_add_uint64(k.tier(), 0);
+        w.member_add_time_t_formatted(k.after(), after, rfc3339);
+        w.member_add_time_t_formatted(k.before(), before, rfc3339);
+        w.object_close();
+    }
+    w.array_close();
+    w.member_add_array(Some(b"tiers"));
+    w.add_array_item_object();
+    w.member_add_uint64(k.tier(), 0);
+    w.member_add_time_t_formatted(k.first_entry(), qm.tier0.first_time_s, rfc3339);
+    w.member_add_time_t_formatted(k.last_entry(), qm.tier0.last_time_s, rfc3339);
+    // Tier weights are only computed with two tiers or more.
+    w.member_add_int64(k.weight(), 0);
+    w.object_close();
+    w.array_close();
+}
+
 /// `jsonwrap_query_plan()`: each metric's plans and tiers.
 fn query_plan(w: &mut JsonWriter, qt: &QueryTarget, options: u64) {
-    let rfc3339 = options & options::RFC3339 != 0;
     w.member_add_object(b"query_plan");
     for qm in &qt.query {
         w.member_add_object(qt.dimensions[qm.dimension].rm.id());
-        w.member_add_array(Some(b"plans"));
-        if let Some((after, before)) = qm.plan {
-            w.add_array_item_object();
-            w.member_add_uint64(jskey(options, "tr", "tier"), 0);
-            w.member_add_time_t_formatted(jskey(options, "af", "after"), after, rfc3339);
-            w.member_add_time_t_formatted(jskey(options, "bf", "before"), before, rfc3339);
-            w.object_close();
-        }
-        w.array_close();
-        w.member_add_array(Some(b"tiers"));
-        w.add_array_item_object();
-        w.member_add_uint64(jskey(options, "tr", "tier"), 0);
-        w.member_add_time_t_formatted(
-            jskey(options, "fe", "first_entry"),
-            qm.tier0.first_time_s,
-            rfc3339,
-        );
-        w.member_add_time_t_formatted(
-            jskey(options, "le", "last_entry"),
-            qm.tier0.last_time_s,
-            rfc3339,
-        );
-        // Tier weights are only computed with two tiers or more.
-        w.member_add_int64(jskey(options, "wg", "weight"), 0);
-        w.object_close();
-        w.array_close();
+        query_metric_plan(w, qm, options);
         w.object_close();
     }
     w.object_close();
 }
 
-/// `buffer_json_query_timings()`: milliseconds from whole microseconds.
-pub fn query_timings(w: &mut JsonWriter, key: &str, received: Instant, qt: &QueryTarget) {
-    let finished = Instant::now();
+/// `buffer_json_query_timings()`: milliseconds from whole microseconds, up to `finished`.
+pub fn query_timings(
+    w: &mut JsonWriter,
+    key: &str,
+    received: Instant,
+    finished: Instant,
+    qt: &QueryTarget,
+) {
     let executed = qt.executed.unwrap_or(finished);
     let ms =
         |to: Instant, from: Instant| to.saturating_duration_since(from).as_micros() as f64 / 1000.0;
@@ -332,6 +327,6 @@ pub fn begin_v1(r: &Rrdr, qt: &QueryTarget, options: u64) -> JsonWriter {
 pub fn end_v1(w: &mut JsonWriter, r: &Rrdr, qt: &QueryTarget, received: Instant) {
     w.member_add_double("min", r.view.min);
     w.member_add_double("max", r.view.max);
-    query_timings(w, "timings", received, qt);
+    query_timings(w, "timings", received, Instant::now(), qt);
     w.finalize();
 }

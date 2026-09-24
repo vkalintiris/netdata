@@ -3,7 +3,7 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: ACL and bearer checks (with the `[web]` section), `/mcp` and `/sse`, `/netdata.conf` (it needs
-//! the config reads in C's order), and the API commands other than `info`, `context`, `contexts` and v1 `data`.
+//! the config reads in C's order), and the API commands other than `info`, `context`, `contexts` and `data`.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,10 +19,10 @@ use crate::api;
 use netdata_agent_nrpc::access;
 
 use crate::acl;
+use crate::data;
 use crate::server::{self, Reply, Shared};
 use crate::static_file;
 use crate::v1_contexts;
-use crate::v1_data;
 
 /// `FILENAME_MAX`: the path and filename copies are truncated to it.
 pub const FILENAME_MAX: usize = 4096;
@@ -77,17 +77,32 @@ const API_V1: &[Command] = &[
         acl: acl::bits::METRICS,
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
-        callback: v1_data::data,
+        callback: data::v1,
     },
 ];
-const API_V2: &[Command] = &[];
-const API_V3: &[Command] = &[Command {
-    name: "context",
+const API_V2: &[Command] = &[Command {
+    name: "data",
     acl: acl::bits::METRICS,
     access: access::ANONYMOUS_DATA,
     allow_subpaths: false,
-    callback: |_, host, query| v1_contexts::context(host, query),
+    callback: |route, _, query| data::v23(route, query, 2),
 }];
+const API_V3: &[Command] = &[
+    Command {
+        name: "data",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| data::v23(route, query, 3),
+    },
+    Command {
+        name: "context",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |_, host, query| v1_contexts::context(host, query),
+    },
+];
 
 /// The per-request routing state (`WEB_CLIENT_FLAG_PATH_*`).
 pub struct Route<'a> {

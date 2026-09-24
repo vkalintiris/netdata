@@ -85,6 +85,7 @@ pub fn v2_target(h: &Arc<Host>, query: &str) -> (QueryTarget, Window) {
         parse_v2(query.as_bytes(), 2, 1),
         Source::V2 {
             hosts: vec![Arc::clone(h)],
+            nodes_hard_hash: 1,
         },
         T0 + 7,
     );

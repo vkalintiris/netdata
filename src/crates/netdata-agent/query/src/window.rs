@@ -230,6 +230,8 @@ mod tests {
             preprocessed: std::time::Instant::now(),
             executed: None,
             query_points: netdata_agent_storage::storage_point::StoragePoint::UNSET,
+            group_by_label_keys: Default::default(),
+            versions: Default::default(),
         }
     }
 

@@ -80,6 +80,8 @@ pub struct Rrdr {
     pub dqp: Vec<StoragePoint>,
     pub dgbs: Vec<usize>,
     pub dl: Option<Vec<GroupLabels>>,
+    /// Every label key of the groups' members, first seen first (`r->label_keys`, with `group-by-labels`).
+    pub label_keys: Option<Vec<Vec<u8>>>,
     pub gbc: Vec<u32>,
     pub arc: Vec<u32>,
     pub vh: Vec<f64>,
@@ -125,6 +127,7 @@ impl Rrdr {
             dqp: Vec::new(),
             dgbs: Vec::new(),
             dl: None,
+            label_keys: None,
             gbc: Vec::new(),
             arc: Vec::new(),
             vh: Vec::new(),

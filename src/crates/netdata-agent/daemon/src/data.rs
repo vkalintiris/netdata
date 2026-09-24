@@ -1,16 +1,18 @@
-//! `/api/v1/data`, ported from `api_v1_data()` in `src/web/api/v1/api_v1_data.c`, with the timeout checkpoint of
-//! `src/web/server/web_client.c`. Spec §2.3, §2.10-2.12.
+//! `/api/v1/data`, `/api/v2/data` and `/api/v3/data`, ported from `api_v1_data()` in
+//! `src/web/api/v1/api_v1_data.c` and `api_v23_data_internal()` in `src/web/api/v2/api_v2_data.c`, with the timeout
+//! checkpoint of `src/web/server/web_client.c`. Spec §2.3-2.4, §2.10-2.12.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use netdata_agent_query::STORAGE_TIERS;
 use netdata_agent_query::execute::Control;
+use netdata_agent_query::jsonwrap_v2::Agent;
 use netdata_agent_query::output::data_query_execute;
-use netdata_agent_query::request::{is_valid_sp, parse_v1};
+use netdata_agent_query::request::{DataRequest, is_valid_sp, parse_v1, parse_v2};
 use netdata_agent_query::tables::Format;
-use netdata_agent_query::target::{Source, chart_is_queryable, create};
-use netdata_agent_query::window::calculate;
+use netdata_agent_query::target::{QueryTarget, Source, chart_is_queryable, create};
+use netdata_agent_query::window::{Window, calculate};
 use netdata_agent_rrd::chart::Chart;
 use netdata_agent_rrd::host::Host;
 use netdata_agent_web::status;
@@ -29,7 +31,7 @@ fn find_chart(host: &Host, chart: &[u8]) -> Option<Arc<Chart>> {
 }
 
 /// `api_v1_data()`.
-pub fn data(route: &Route<'_>, host: &Arc<Host>, query: &[u8]) -> Reply {
+pub fn v1(route: &Route<'_>, host: &Arc<Host>, query: &[u8]) -> Reply {
     let params = parse_v1(query, STORAGE_TIERS);
     let req = params.request;
     if !is_valid_sp(params.chart.as_deref()) && !is_valid_sp(req.contexts.as_deref()) {
@@ -40,53 +42,85 @@ pub fn data(route: &Route<'_>, host: &Arc<Host>, query: &[u8]) -> Reply {
         _ => None,
     };
     // `st->last_updated`, echoed as the datasource signature.
-    let chart_last_updated = chart
+    let signature = chart
         .as_ref()
         .map_or(0, |st| st.collection().last_updated.0);
-    let google = req.google.clone();
-    let format = req.format;
-    let timeout_ms = req.timeout_ms;
+    let request = req.clone();
     let now_s = server::now();
-    let mut qt = create(req, Source::V1 { host, chart }, now_s);
+    // v1 sets no `received_ut`: the query target's clock starts at its creation.
+    let received = Instant::now();
+    let qt = create(req, Source::V1 { host, chart }, now_s);
     let window = if qt.query.is_empty() {
         None
     } else {
         calculate(&qt, now_s)
     };
-    let Some(mut window) = window else {
+    let Some(window) = window else {
         return Reply::text(status::NOT_FOUND, "No metrics where matched to query.");
     };
+    execute(route, &request, qt, window, received, signature)
+}
 
+/// `api_v23_data_internal()`: every host, whatever host the URL routed to.
+pub fn v23(route: &Route<'_>, query: &[u8], version: u8) -> Reply {
+    let received = Instant::now();
+    let req = parse_v2(query, version, STORAGE_TIERS);
+    let request = req.clone();
+    let now_s = server::now();
+    let hosts = &route.shared.hosts;
+    let qt = create(
+        req,
+        Source::V2 {
+            hosts: hosts.all(),
+            nodes_hard_hash: u64::from(hosts.version()),
+        },
+        now_s,
+    );
+    let Some(window) = calculate(&qt, now_s) else {
+        return Reply::text(
+            status::INTERNAL_SERVER_ERROR,
+            "Failed to prepare the query.",
+        );
+    };
+    execute(route, &request, qt, window, received, now_s)
+}
+
+/// What both handlers do once the query target is ready: the timeout checkpoint, the file name header, the Google
+/// datasource or JSONP framing around `data_query_execute()`, and cacheability. `signature` is the datasource's
+/// `sig` (v1: the chart's last update, v2/v3: now).
+fn execute(
+    route: &Route<'_>,
+    req: &DataRequest,
+    mut qt: QueryTarget,
+    mut window: Window,
+    received: Instant,
+    signature: i64,
+) -> Reply {
     // web_client_timeout_checkpoint_and_check(): `timeout_ms * 1000ULL` never fires for a negative timeout.
-    if let Ok(timeout_ms) = u64::try_from(timeout_ms)
+    if let Ok(timeout_ms) = u64::try_from(req.timeout_ms)
         && timeout_ms != 0
         && route.received.elapsed() >= Duration::from_millis(timeout_ms)
     {
         return Reply::text(status::GATEWAY_TIMEOUT, "Query timeout exceeded");
     }
 
+    let google = &req.google;
     let mut headers = Vec::new();
     if let Some(name) = google.out_file_name.as_deref().filter(|n| !n.is_empty()) {
         headers.extend_from_slice(b"Content-Disposition: attachment; filename=\"");
         headers.extend_from_slice(name);
         headers.extend_from_slice(b"\"\r\n");
     }
-    let mut body = Vec::new();
-    let handler: &[u8] = match format {
+    let handler: &[u8] = match req.format {
         Format::Datasource => google
             .response_handler
             .as_deref()
             .unwrap_or(b"google.visualization.Query.setResponse"),
         _ => google.response_handler.as_deref().unwrap_or(b"callback"),
     };
-    let jsonp = |body: &mut Vec<u8>, parts: &[&[u8]]| {
-        for part in parts {
-            body.extend_from_slice(part);
-        }
-    };
-    match format {
-        Format::Datasource => jsonp(
-            &mut body,
+    let mut body = Vec::new();
+    match req.format {
+        Format::Datasource => body.extend_from_slice(
             &[
                 handler,
                 b"({version:'",
@@ -94,39 +128,44 @@ pub fn data(route: &Route<'_>, host: &Arc<Host>, query: &[u8]) -> Reply {
                 b"',reqId:'",
                 &google.req_id,
                 b"',status:'ok',sig:'",
-                chart_last_updated.to_string().as_bytes(),
+                signature.to_string().as_bytes(),
                 b"',table:",
-            ],
+            ]
+            .concat(),
         ),
-        Format::Jsonp => jsonp(&mut body, &[handler, b"("]),
+        Format::Jsonp => body.extend_from_slice(&[handler, b"("].concat()),
         _ => {}
     }
 
+    let localhost = route.shared.hosts.localhost();
+    let hostname = localhost.hostname();
+    let agent = Agent {
+        machine_guid: localhost.machine_guid(),
+        node_id: localhost.node_id(),
+        hostname: &hostname,
+    };
     let control = Control {
-        received: route.received,
+        received,
         interrupted: route.interrupted,
     };
-    let response = data_query_execute(&mut qt, &mut window, &control);
+    let response = data_query_execute(&mut qt, &mut window, &control, &agent);
     body.extend_from_slice(&response.body);
 
-    match format {
+    match req.format {
         Format::Datasource => {
             if google.timestamp < response.latest_timestamp.unwrap_or(0) {
                 body.extend_from_slice(b"});");
             } else {
                 // The client already has the latest data.
-                body.clear();
-                jsonp(
-                    &mut body,
-                    &[
-                        handler,
-                        b"({version:'",
-                        &google.version,
-                        b"',reqId:'",
-                        &google.req_id,
-                        b"',status:'error',errors:[{reason:'not_modified',message:'Data not modified'}]});",
-                    ],
-                );
+                body = [
+                    handler,
+                    b"({version:'",
+                    &google.version,
+                    b"',reqId:'",
+                    &google.req_id,
+                    b"',status:'error',errors:[{reason:'not_modified',message:'Data not modified'}]});",
+                ]
+                .concat();
             }
         }
         Format::Jsonp => body.extend_from_slice(b");"),

@@ -1193,6 +1193,8 @@ pub struct Contexts {
     get_retention: AtomicBool,
     /// The RAM engine's metric index the unlinked metrics of this host look into.
     ram_index: Arc<RamIndex>,
+    /// `dictionary_version(host->rrdctx.contexts)`: one per insert, delete and conflict that updated a context.
+    version: AtomicU32,
 }
 
 impl Contexts {
@@ -1248,6 +1250,7 @@ impl Contexts {
                 });
                 rc.flags.set_updated(flags::REASON_NEW_OBJECT);
                 index.insert(id, Arc::clone(&rc));
+                self.version.fetch_add(1, Ordering::Relaxed);
                 drop(index);
                 rc.trigger_updates();
                 rc
@@ -1277,11 +1280,17 @@ impl Contexts {
                     rc.flags.is_updated()
                 };
                 if updated {
+                    self.version.fetch_add(1, Ordering::Relaxed);
                     rc.trigger_updates();
                 }
                 rc
             }
         }
+    }
+
+    /// `dictionary_version(host->rrdctx.contexts)`.
+    pub fn version(&self) -> u32 {
+        self.version.load(Ordering::Relaxed)
     }
 
     /// `rrdcontext_host_child_disconnected()`: the worker recomputes every retention on its next cycle.

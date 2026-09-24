@@ -162,6 +162,7 @@ pub fn cardinality_limit(r: Rrdr, limit: u64) -> Rrdr {
         dqp: vec![StoragePoint::default(); per_column(!r.dqp.is_empty())],
         dgbs: Vec::new(),
         dl: r.dl.as_ref().map(|_| vec![GroupLabels::new(); limit]),
+        label_keys: r.label_keys.clone(),
         gbc: if r.gbc.is_empty() {
             Vec::new()
         } else {

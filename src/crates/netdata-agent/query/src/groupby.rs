@@ -232,14 +232,11 @@ fn add_group_labels(
 pub struct Grouped {
     pub passes: Vec<Rrdr>,
     pub r_tmp: Rrdr,
-    /// Each pass's label keys after the merge (`qt->group_by[g].label_keys`).
-    pub label_keys: [Vec<Vec<u8>>; MAX_PASSES],
-    /// Every label key of the final pass's groups, first seen first (`r->label_keys`).
-    pub all_label_keys: Vec<Vec<u8>>,
 }
 
-/// `rrd2rrdr_group_by_initialize()` for a v2 query: normalises `qt.request.group_by`, maps every metric to a group
-/// of every pass and creates the passes' results. `None` when there is nothing to group.
+/// `rrd2rrdr_group_by_initialize()` for a v2 query: normalises `qt.request.group_by` and its label keys
+/// (`qt.group_by_label_keys`), maps every metric to a group of every pass and creates the passes' results. `None`
+/// when there is nothing to group.
 pub fn initialize(qt: &mut QueryTarget, window: &Window) -> Option<Grouped> {
     let window_options = window.options;
     let mut label_keys: [Vec<Vec<u8>>; MAX_PASSES] = Default::default();
@@ -323,7 +320,6 @@ pub fn initialize(qt: &mut QueryTarget, window: &Window) -> Option<Grouped> {
     let percentage_units = has_percentage_units(qt, window_options);
 
     let mut passes: Vec<Rrdr> = Vec::new();
-    let mut all_label_keys = Vec::new();
     for (g, keys) in label_keys.iter().enumerate() {
         let gb = qt.request.group_by[g].group_by;
         let aggregation = qt.request.group_by[g].aggregation;
@@ -340,6 +336,7 @@ pub fn initialize(qt: &mut QueryTarget, window: &Window) -> Option<Grouped> {
             HiddenMode::Normal
         };
         let with_labels = final_grouping && window_options & options::GROUP_BY_LABELS != 0;
+        let mut pass_label_keys = Vec::new();
         let mut entries: Vec<Entry> = Vec::new();
         let mut groups: HashMap<Vec<u8>, usize> = HashMap::new();
         let mut hidden_dimensions = 0;
@@ -393,7 +390,11 @@ pub fn initialize(qt: &mut QueryTarget, window: &Window) -> Option<Grouped> {
                 entry.priority = priority;
             }
             if let Some(dl) = entry.dl.as_mut() {
-                add_group_labels(dl, &mut all_label_keys, &qt.instances[instance].ri.labels());
+                add_group_labels(
+                    dl,
+                    &mut pass_label_keys,
+                    &qt.instances[instance].ri.labels(),
+                );
             }
             let qm = &mut qt.query[d];
             if g > 0 {
@@ -427,6 +428,7 @@ pub fn initialize(qt: &mut QueryTarget, window: &Window) -> Option<Grouped> {
             }
             if with_labels {
                 r.dl = Some(vec![GroupLabels::new(); r.columns]);
+                r.label_keys = Some(std::mem::take(&mut pass_label_keys));
             }
             r.du = vec![String::new(); r.columns];
             if r.n > 0 {
@@ -475,11 +477,10 @@ pub fn initialize(qt: &mut QueryTarget, window: &Window) -> Option<Grouped> {
     if passes.is_empty() {
         return None;
     }
+    qt.group_by_label_keys = label_keys;
     Some(Grouped {
         passes,
         r_tmp: Rrdr::new(window, 1),
-        label_keys,
-        all_label_keys,
     })
 }
 

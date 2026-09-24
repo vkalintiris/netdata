@@ -9,6 +9,7 @@ mod build;
 mod cli;
 mod conf;
 mod daemon;
+mod data;
 mod guid;
 mod listen;
 mod router;
@@ -17,7 +18,6 @@ mod server;
 mod static_file;
 mod system;
 mod v1_contexts;
-mod v1_data;
 
 use std::io::Write;
 use std::process::ExitCode;

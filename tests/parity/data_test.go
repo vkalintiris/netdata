@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,10 +20,28 @@ import (
 var (
 	timingsRe       = regexp.MustCompile(`"?(prep|query|output|total|cloud)_ms"?:[-+0-9.e]+`)
 	contentLengthRe = regexp.MustCompile(`(?m)^Content-Length: [0-9]+`)
+	// v2 wrappers: the answering agent's clock, and the context dictionary's version, which counts worker-timed
+	// update events (spec §11).
+	v2ClockRe = regexp.MustCompile(`"(now|contexts_hard_hash)":("[^"]*"|[0-9]+)`)
+	// The detailed tree prints now as a collected metric's last entry.
+	lastEntryRe = regexp.MustCompile(`"(le|last_entry)":(\d+)`)
 )
+
+// maskNowEntries replaces last entries within [from, to] (the seconds the request was in flight) with NOW.
+func maskNowEntries(b []byte, from, to int64) []byte {
+	return lastEntryRe.ReplaceAllFunc(b, func(m []byte) []byte {
+		sub := lastEntryRe.FindSubmatch(m)
+		v, err := strconv.ParseInt(string(sub[2]), 10, 64)
+		if err == nil && v >= from && v <= to {
+			return []byte(`"` + string(sub[1]) + `":"NOW"`)
+		}
+		return m
+	})
+}
 
 func maskTimings(b []byte) []byte {
 	b = contentLengthRe.ReplaceAll(b, []byte("Content-Length: <masked>"))
+	b = v2ClockRe.ReplaceAll(b, []byte(`"$1":"<masked>"`))
 	return timingsRe.ReplaceAllFunc(b, func(m []byte) []byte {
 		name, _, _ := bytes.Cut(m, []byte(":"))
 		// A fresh slice: appending to name would write over the source after the match.
@@ -166,16 +185,60 @@ func TestDataAPI(t *testing.T) {
 		cases["group-"+g] = chart + "&points=7&group=" + g
 		cases["group-two-"+g] = "/api/v1/data?chart=q.two&" + win + "&points=4&group=" + g
 	}
+	// v2/v3 walk every host: scope them to the child, the parent's own charts differ by design.
+	v3 := "/api/v3/data?scope_nodes=" + childHost.Hostname + "&scope_contexts=q.ctx&" + win
+	for name, extra := range map[string]string{
+		"default":            "&points=6",
+		"natural":            "",
+		"v2":                 "&points=6&__v2",
+		"group-instance":     "&points=4&group_by=instance",
+		"group-label":        "&points=4&group_by=label&group_by_label=k",
+		"group-selected-sum": "&points=4&group_by=selected&aggregation=sum",
+		"group-node-max":     "&points=4&group_by=node&aggregation=max",
+		"group-context-min":  "&points=4&group_by=context&aggregation=min",
+		"group-units":        "&points=4&group_by=units&aggregation=extremes",
+		"two-pass":           "&points=4&group_by[0]=dimension&group_by[1]=node&aggregation[1]=max",
+		"two-pass-label":     "&points=4&group_by[0]=instance&group_by[1]=label&group_by_label[1]=k&aggregation[1]=sum",
+		"pct-of-instance":    "&points=4&group_by=percentage-of-instance",
+		"aggregation-pct":    "&points=4&group_by=instance&aggregation=percentage&dimensions=a",
+		"raw":                "&points=4&options=raw",
+		"raw-pct":            "&points=4&options=raw&group_by=instance&aggregation=percentage&dimensions=a",
+		"debug":              "&points=4&options=debug&tier=0&time_group_options=5&timeout=1000",
+		"minimal":            "&points=4&options=minimal-stats",
+		"details":            "&points=4&options=details",
+		"details-all":        "&points=4&options=details,all-dimensions&dimensions=a",
+		"long-keys":          "&points=4&options=long-json-keys,rfc3339,null2zero",
+		"nonzero":            "&points=4&options=nonzero&dimensions=z|b",
+		"percentage":         "&points=4&options=percentage",
+		"limit":              "&points=4&limit=2",
+		"limit-summaries":    "&points=4&cardinality_limit=2&options=cardinality-limit-all",
+		"group-by-labels":    "&points=4&options=group-by-labels&group_by=dimension",
+		"time-group-sum":     "&points=4&time_group=sum",
+		"anomaly-bit":        "&points=4&options=anomaly-bit",
+		"mcp-info":           "&points=2&options=mcp-info",
+		"csv":                "&points=4&format=csv",
+		"datatable":          "&points=4&format=datatable",
+		"no-match":           "&points=4&contexts=nothing",
+		"labels-filter":      "&points=4&labels=k:v2",
+		"instances-filter":   "&points=4&instances=q.two",
+	} {
+		path := v3 + extra
+		if strings.HasSuffix(extra, "&__v2") {
+			path = strings.Replace(strings.TrimSuffix(path, "&__v2"), "/api/v3/", "/api/v2/", 1)
+		}
+		cases["v3-"+name] = path
+	}
 	host := "/host/" + childHost.Hostname
 	for name, path := range cases {
 		t.Run(name, func(t *testing.T) {
 			var got [2][]byte
 			for i, side := range p.Each() {
+				from := time.Now().Unix()
 				b, err := rawExchange(side.Daemon.Addr, []byte("GET "+host+path+" HTTP/1.1\r\n\r\n"), 2*time.Second)
 				if err != nil {
 					t.Fatalf("%s: %v", side.Role, err)
 				}
-				got[i] = maskTimings(maskRaw(b))
+				got[i] = maskNowEntries(maskTimings(maskRaw(b)), from, time.Now().Unix())
 			}
 			if !bytes.Equal(got[0], got[1]) {
 				t.Errorf("responses differ\n%s", firstDifference(got[0], got[1]))

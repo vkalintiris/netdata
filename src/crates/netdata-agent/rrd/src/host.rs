@@ -273,6 +273,8 @@ impl Host {
 pub struct Hosts {
     localhost: Arc<Host>,
     inner: RwLock<Index>,
+    /// `dictionary_version(rrdhost_root_index)`: one per insert (and delete).
+    version: std::sync::atomic::AtomicU32,
 }
 
 #[derive(Debug, Default)]
@@ -292,7 +294,13 @@ impl Hosts {
         Hosts {
             localhost,
             inner: RwLock::new(index),
+            version: std::sync::atomic::AtomicU32::new(1),
         }
+    }
+
+    /// `dictionary_version(rrdhost_root_index)`.
+    pub fn version(&self) -> u32 {
+        self.version.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn localhost(&self) -> &Arc<Host> {
@@ -365,6 +373,8 @@ impl Hosts {
         let host = Arc::new(Host::new(guid, false, create()));
         index.ordered.push(Arc::clone(&host));
         index.by_guid.insert(guid.to_string(), Arc::clone(&host));
+        self.version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         host
     }
 }

@@ -5,9 +5,10 @@ use netdata_agent_text::json::JsonWriter;
 use netdata_agent_web::content_type::ContentType;
 use netdata_agent_web::status;
 
-use crate::execute::{Control, run_v1};
+use crate::execute::{Control, run_v1, run_v2};
 use crate::format::{rrdr2csv, rrdr2json, rrdr2json_v2, rrdr2ssv};
 use crate::jsonwrap::{begin_v1, end_v1};
+use crate::jsonwrap_v2::{Agent, begin_v2, end_v2};
 use crate::rrdr::{Rrdr, result_flags};
 use crate::tables::{Format, options};
 use crate::target::QueryTarget;
@@ -41,21 +42,33 @@ fn wrapped_array(w: &mut JsonWriter, render: impl FnOnce(&mut Vec<u8>)) {
     w.array_close();
 }
 
-/// `data_query_execute()` for a v1 query: executes `qt` and renders the result. `window.options` loses NONZERO
-/// when no executed metric is nonzero, before rendering.
+/// `data_query_execute()`: executes `qt` (v1 columns, or v2 groups) and renders the result; wrapped formats use
+/// the wrapper of the query's version, and `agent` is the answering agent the v2 wrapper describes.
+/// `window.options` loses NONZERO when nothing executed is nonzero, before rendering.
 pub fn data_query_execute(
     qt: &mut QueryTarget,
     window: &mut Window,
     control: &Control,
+    agent: &Agent<'_>,
 ) -> DataResponse {
-    let mut r = run_v1(qt, window, control);
-    // A cancelled query leaves the response's initial content type.
+    let v2 = qt.request.version >= 2;
+    let r = if v2 {
+        run_v2(qt, window, control)
+    } else {
+        Some(run_v1(qt, window, control))
+    };
+    // A cancelled or failed query leaves the response's initial content type.
     let mut response = DataResponse {
         code: status::OK,
         content_type: ContentType::TextPlain,
         body: Vec::new(),
         cacheable: None,
         latest_timestamp: None,
+    };
+    let Some(mut r) = r else {
+        response.code = status::INTERNAL_SERVER_ERROR;
+        response.body = b"Cannot generate output with these parameters on this chart.".to_vec();
+        return response;
     };
     if r.view.flags & result_flags::CANCEL != 0 {
         response.code = status::CLIENT_CLOSED_REQUEST;
@@ -69,16 +82,24 @@ pub fn data_query_execute(
     if r.rows > 0 {
         response.latest_timestamp = Some(r.view.before);
     }
+    let window: &Window = window;
     let format = qt.request.format;
     let options = window.options;
     let wrap = options & options::JSON_WRAP != 0;
     let received = control.received;
     let wrapped =
         |r: &mut Rrdr, qt: &QueryTarget, render: &mut dyn FnMut(&mut JsonWriter, &mut Rrdr)| {
-            let mut w = begin_v1(r, qt, options);
-            render(&mut w, r);
-            end_v1(&mut w, r, qt, received);
-            w.into_bytes()
+            if v2 {
+                let (mut w, contexts) = begin_v2(qt, window);
+                render(&mut w, r);
+                end_v2(&mut w, r, qt, window, contexts, received, agent);
+                w.into_bytes()
+            } else {
+                let mut w = begin_v1(r, qt, options);
+                render(&mut w, r);
+                end_v1(&mut w, r, qt, received);
+                w.into_bytes()
+            }
         };
     let ssv = |separator: &'static str| {
         move |r: &mut Rrdr, out: &mut Vec<u8>| rrdr2ssv(r, out, options, "", separator, "")
@@ -214,7 +235,7 @@ pub fn data_query_execute(
             (content_type, body)
         }
         Format::Json2 => {
-            let body = wrapped(&mut r, qt, &mut |w, r| rrdr2json_v2(r, w, options));
+            let body = wrapped(&mut r, qt, &mut |w, r| rrdr2json_v2(r, w, qt, options));
             (ContentType::ApplicationJson, body)
         }
     };
@@ -237,7 +258,12 @@ mod tests {
             received: Instant::now(),
             interrupted: &|| false,
         };
-        data_query_execute(&mut qt, &mut window, &control)
+        let agent = Agent {
+            machine_guid: "guid-0",
+            node_id: [0; 16],
+            hostname: "parent",
+        };
+        data_query_execute(&mut qt, &mut window, &control, &agent)
     }
 
     #[test]

@@ -638,6 +638,45 @@ fn query_metric(
     Some(query_points)
 }
 
+/// `rrd2rrdr()`'s node timing: when the loop moves to another node, the previous one gets the time since it
+/// started; the last node never does.
+struct NodeTimer {
+    last: Instant,
+    node: Option<usize>,
+    node_started: Instant,
+}
+
+impl NodeTimer {
+    fn new() -> Self {
+        let now = Instant::now();
+        NodeTimer {
+            last: now,
+            node: None,
+            node_started: now,
+        }
+    }
+
+    /// At the top of every metric, executed or not.
+    fn enter(&mut self, qt: &mut QueryTarget, d: usize) {
+        let (_, _, _, qn) = links(qt, d);
+        if self.node != Some(qn) {
+            if let Some(previous) = self.node {
+                qt.nodes[previous].duration_ut = self
+                    .last
+                    .saturating_duration_since(self.node_started)
+                    .as_micros() as u64;
+            }
+            self.node = Some(qn);
+            self.node_started = self.last;
+        }
+    }
+
+    /// After a metric executed.
+    fn executed(&mut self) {
+        self.last = Instant::now();
+    }
+}
+
 /// The counters and statuses of a queried metric.
 fn count_queried(qt: &mut QueryTarget, d: usize) {
     let (qd, qi, qc, qn) = links(qt, d);
@@ -668,10 +707,13 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
     r.view.flags |= time_flags(window);
     let mut grouping = new_grouping(qt, window);
     let (mut used, mut nonzero) = (0, 0);
+    let mut timer = NodeTimer::new();
     for d in 0..qt.query.len() {
+        timer.enter(qt, d);
         if query_metric(qt, d, window, &mut grouping, &mut r, d).is_none() {
             continue;
         }
+        timer.executed();
         count_queried(qt, d);
         if qt.query[d].status & metric_status::NONZERO != 0 {
             nonzero += 1;
@@ -702,11 +744,14 @@ pub fn run_v2(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> O
     }
     let mut grouping = new_grouping(qt, window);
     let (mut used, mut nonzero) = (0, 0);
+    let mut timer = NodeTimer::new();
     for d in 0..qt.query.len() {
+        timer.enter(qt, d);
         let Some(query_points) = query_metric(qt, d, window, &mut grouping, &mut grouped.r_tmp, 0)
         else {
             continue;
         };
+        timer.executed();
         let r_tmp = &grouped.r_tmp;
         // The execution sets NONZERO on the column; v2 copies it back to the metric.
         qt.query[d].status = r_tmp.od[0];

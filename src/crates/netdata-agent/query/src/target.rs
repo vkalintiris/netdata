@@ -55,6 +55,8 @@ pub struct QueryNode {
     pub instances: Counts,
     /// The positive points of its queried metrics, merged (v2).
     pub query_points: StoragePoint,
+    /// How long its metrics took to execute (`qn->duration_ut`); never set for the last node queried.
+    pub duration_ut: u64,
 }
 
 #[derive(Debug)]
@@ -167,6 +169,19 @@ pub struct QueryTarget {
     pub executed: Option<Instant>,
     /// The positive points of every queried metric, merged (`qt->query_points`, v2).
     pub query_points: StoragePoint,
+    /// Each group-by pass's label keys after the passes were merged (`qt->group_by[g].label_keys`).
+    pub group_by_label_keys: [Vec<Vec<u8>>; 2],
+    /// `qt->versions` (v2).
+    pub versions: Versions,
+}
+
+/// `struct query_versions` plus the host index's version: the dictionary versions summed over the hosts in scope.
+/// Health and the hub queue are not ported, so their terms are 0 (as in C for an unclaimed agent with health off).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Versions {
+    pub nodes_hard_hash: u64,
+    pub contexts_hard_hash: u64,
+    pub contexts_soft_hash: u64,
 }
 
 /// What selects the metrics: v1's routed host (and chart), or every host for v2/v3.
@@ -176,8 +191,10 @@ pub enum Source<'a> {
         host: &'a Arc<Host>,
         chart: Option<Arc<Chart>>,
     },
+    /// `nodes_hard_hash` is the host index's version (`dictionary_version(rrdhost_root_index)`).
     V2 {
         hosts: Vec<Arc<Host>>,
+        nodes_hard_hash: u64,
     },
 }
 
@@ -584,6 +601,7 @@ impl Walk<'_> {
             metrics: Counts::default(),
             instances: Counts::default(),
             query_points: StoragePoint::default(),
+            duration_ut: 0,
         });
         let before = self.qt.contexts.len();
         if let Some(ri) = chart_instance {
@@ -715,6 +733,8 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
             preprocessed: Instant::now(),
             executed: None,
             query_points: StoragePoint::UNSET,
+            group_by_label_keys: Default::default(),
+            versions: Versions::default(),
         },
     };
     let (kind_host, kind_chart) = match source {
@@ -738,15 +758,20 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
             walk.node(host, true, instance.as_ref());
             (Some(host.hostname()), chart_name)
         }
-        Source::V2 { hosts } => {
+        Source::V2 {
+            hosts,
+            nodes_hard_hash,
+        } => {
             let scope_nodes = pattern(&req.scope_nodes);
             let nodes = pattern(&req.nodes);
+            walk.qt.versions.nodes_hard_hash = nodes_hard_hash;
             for host in &hosts {
                 if let Some(sp) = &scope_nodes
                     && !host_matches(sp, host)
                 {
                     continue;
                 }
+                walk.qt.versions.contexts_hard_hash += u64::from(host.contexts().version());
                 let queryable = nodes.as_ref().is_none_or(|sp| host_matches(sp, host));
                 walk.node(host, queryable, None);
             }
@@ -843,6 +868,7 @@ mod tests {
             parse_v2(query.as_bytes(), 2, 1),
             Source::V2 {
                 hosts: vec![Arc::clone(h)],
+                nodes_hard_hash: 1,
             },
             T + 1,
         )

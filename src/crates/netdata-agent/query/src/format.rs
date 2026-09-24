@@ -6,10 +6,11 @@ use netdata_agent_text::datetime::rfc3339_datetime_utc;
 use netdata_agent_text::json::{JsonWriter, json_escape};
 use netdata_agent_text::print::{print_date, print_jsdate, print_netdata_double_or_null};
 
-use crate::jsonwrap::jskey;
+use crate::groupby::{aggregatable, has_aggregation_percentage};
+use crate::keys::Keys;
 use crate::rrdr::{Rrdr, value_flags};
 use crate::tables::{Format, options};
-use crate::target::metric_status;
+use crate::target::{QueryTarget, metric_status};
 
 /// `rrdr_dimension_should_be_exposed()`.
 pub fn exposed(od: u32, options: u64) -> bool {
@@ -447,9 +448,13 @@ c) the point annotations, a combined bitmap of 1+2+4, where:\n     \
 4 = partial data, at least one of the sources aggregated had gaps at that time\n\
 Summarized data across the entire time-frame is provided at the 'view' section.";
 
-/// `rrdr2json_v2()` for a result without group-by counts (a v1 query): `labels`, the point schema and one
-/// `[time, [value, anomaly rate, annotations]...]` row per point.
-pub fn rrdr2json_v2(r: &Rrdr, w: &mut JsonWriter, options: u64) {
+/// `rrdr2json_v2()`: `labels`, the point schema and one `[time, [value, anomaly rate, annotations]...]` row per
+/// point; raw results with group-by counts add each point's count, and its hidden value when the final
+/// aggregation is percentage.
+pub fn rrdr2json_v2(r: &Rrdr, w: &mut JsonWriter, qt: &QueryTarget, options: u64) {
+    // A result without group-by (v1) has no counts to send.
+    let send_count = aggregatable(options) && !r.gbc.is_empty();
+    let send_hidden = send_count && !r.vh.is_empty() && has_aggregation_percentage(qt);
     w.member_add_object(b"result");
     if options & options::MCP_INFO != 0 {
         w.member_add_string("info", MCP_QUERY_INFO_RESULT_SECTION);
@@ -464,10 +469,19 @@ pub fn rrdr2json_v2(r: &Rrdr, w: &mut JsonWriter, options: u64) {
         }
     }
     w.array_close();
-    w.member_add_object(jskey(options, "point", "point_schema"));
+    let k = Keys::new(options);
+    w.member_add_object(k.point_schema());
     w.member_add_uint64("value", 0);
-    w.member_add_uint64(jskey(options, "arp", "anomaly_rate_percent"), 1);
-    w.member_add_uint64(jskey(options, "pa", "point_annotations_bitmap"), 2);
+    w.member_add_uint64(k.anomaly_rate(), 1);
+    w.member_add_uint64(k.point_annotations(), 2);
+    let mut next = 3;
+    if send_count {
+        w.member_add_uint64("count", next);
+        next += 1;
+    }
+    if send_hidden {
+        w.member_add_uint64("hidden", next);
+    }
     w.object_close();
     w.member_add_array(Some(b"data"));
     if exposed_count != 0 {
@@ -496,6 +510,12 @@ pub fn rrdr2json_v2(r: &Rrdr, w: &mut JsonWriter, options: u64) {
                 }
                 w.add_array_item_double(r.ar[base + c]);
                 w.add_array_item_uint64(u64::from(o));
+                if send_count {
+                    w.add_array_item_uint64(u64::from(r.gbc[base + c]));
+                }
+                if send_hidden {
+                    w.add_array_item_double(r.vh[base + c]);
+                }
                 w.array_close();
             }
             w.array_close();
@@ -669,8 +689,9 @@ mod tests {
     #[test]
     fn json2_rows_carry_value_anomaly_rate_and_annotations() {
         let r = rrdr();
+        let (qt, _) = crate::testing::v1_target(&crate::testing::host(), "points=3");
         let mut w = JsonWriter::new(netdata_agent_text::json::JsonOptions::MINIFY);
-        rrdr2json_v2(&r, &mut w, options::REVERSED);
+        rrdr2json_v2(&r, &mut w, &qt, options::REVERSED);
         w.finalize();
         assert_eq!(
             String::from_utf8(w.into_bytes()).unwrap(),
