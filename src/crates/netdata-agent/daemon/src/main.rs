@@ -206,7 +206,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     }
 
-    conf.section_global_hostname();
+    conf.section_global_hostname(&mut logger);
 
     // cd into the user config dir, so plugins can use relative paths to their config files.
     if std::env::set_current_dir(&conf.dirs.user_config).is_err() {

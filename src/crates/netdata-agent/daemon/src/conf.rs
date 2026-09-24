@@ -15,6 +15,8 @@ use netdata_agent_text::simple_pattern::{
     Separators as SimpleSeparators, SimplePattern, SimplePatternMode,
 };
 
+use netdata_agent_text::sanitize::rrdlabels_sanitize_value;
+
 use crate::acl::{AclPattern, WebAcl};
 use crate::build;
 
@@ -655,16 +657,91 @@ impl Conf {
     }
 
     /// `nd_runtime_paths_load_hostname_from_inicfg()`: `[global] host access prefix`, then `hostname`.
-    pub fn section_global_hostname(&mut self) {
-        self.host_prefix = text(
+    pub fn section_global_hostname(&mut self, log: &mut impl FnMut(LogLevel, &str)) {
+        let prefix = text(
             self.netdata
                 .get(SECTION_GLOBAL, "host access prefix", Some("")),
         );
-        let system = nix::unistd::gethostname()
-            .map(|h| h.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        self.host_prefix = verify_netdata_host_prefix(prefix, log);
+        let system = os_hostname(&self.host_prefix);
+        if system.is_empty() {
+            log(LogLevel::Error, "Cannot get machine hostname.");
+        }
         self.hostname = text(self.netdata.get(SECTION_GLOBAL, "hostname", Some(&system)));
     }
+}
+
+/// `verify_netdata_host_prefix(true)` (`src/libnetdata/paths/paths.c`): a directory, without `%`, holding procfs and
+/// sysfs mounts; otherwise it is ignored (empty).
+fn verify_netdata_host_prefix(prefix: String, log: &mut impl FnMut(LogLevel, &str)) -> String {
+    use nix::sys::statfs::{PROC_SUPER_MAGIC, SYSFS_MAGIC, statfs};
+    if prefix.is_empty() {
+        return prefix;
+    }
+    let check = || -> Result<(), (String, &str)> {
+        if prefix.contains('%') {
+            return Err((prefix.clone(), "contains '%'"));
+        }
+        match std::fs::metadata(&prefix) {
+            Err(_) => return Err((prefix.clone(), "failed to stat()")),
+            Ok(m) if !m.is_dir() => return Err((prefix.clone(), "is not a directory")),
+            Ok(_) => {}
+        }
+        for (dir, magic, not) in [
+            ("proc", PROC_SUPER_MAGIC, "type is not procfs"),
+            ("sys", SYSFS_MAGIC, "type is not sysfs"),
+        ] {
+            let path = format!("{prefix}/{dir}");
+            match statfs(path.as_str()) {
+                Err(_) => return Err((path, "failed to statfs()")),
+                Ok(st) if st.filesystem_type() != magic => return Err((path, not)),
+                Ok(_) => {}
+            }
+        }
+        Ok(())
+    };
+    match check() {
+        Ok(()) => {
+            log(
+                LogLevel::Info,
+                &format!("Using host prefix directory '{prefix}'"),
+            );
+            prefix
+        }
+        Err((path, reason)) => {
+            log(
+                LogLevel::Error,
+                &format!("Ignoring host prefix '{prefix}': path '{path}' {reason}"),
+            );
+            String::new()
+        }
+    }
+}
+
+/// `HOST_NAME_MAX * 4 + 1`: the hostname buffer.
+const HOSTNAME_BUFFER: usize = 64 * 4 + 1;
+
+/// `os_hostname()`: `<prefix>/etc/hostname`, else `gethostname()`, else `host<hostid>`; trimmed and sanitized as a
+/// label value. The reference build has no iconv, so no conversion to UTF-8 happens.
+fn os_hostname(prefix: &str) -> String {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    if !prefix.is_empty()
+        && let Ok(f) = std::fs::File::open(format!("{prefix}/etc/hostname"))
+    {
+        let _ = f.take(HOSTNAME_BUFFER as u64 - 1).read_to_end(&mut buf);
+        if let Some(nul) = buf.iter().position(|&b| b == 0) {
+            buf.truncate(nul);
+        }
+    }
+    if buf.is_empty() {
+        buf = match nix::unistd::gethostname() {
+            Ok(h) => h.as_encoded_bytes().to_vec(),
+            Err(_) => format!("host{}", netdata_agent_sys::gethostid()).into_bytes(),
+        };
+    }
+    let trimmed = buf.trim_ascii();
+    text(Some(rrdlabels_sanitize_value(trimmed, HOSTNAME_BUFFER)))
 }
 
 /// What `netdata_conf_section_web()` configures.

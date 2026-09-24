@@ -2,7 +2,7 @@
 //! safe function whose preconditions it checks itself.
 //!
 //! - `fork()` and `setenv()` are sound only while the process has one thread; both refuse otherwise.
-//! - The scheduling calls (`nice`, `getpriority`, `sched_*`) pass plain integers and read nothing back through
+//! - `gethostid()` and the scheduling calls (`nice`, `getpriority`, `sched_*`) pass plain integers and read nothing back through
 //!   pointers except a stack `sched_param`.
 
 use std::io;
@@ -60,6 +60,14 @@ pub fn setenv(key: &str, value: &str) -> io::Result<()> {
     // SAFETY: no other thread exists that could read the environment concurrently.
     unsafe { std::env::set_var(key, value) };
     Ok(())
+}
+
+/// `gethostid()`.
+// `c_long` is 32-bit on the armv7l and i386 targets, where the conversion is not a no-op.
+#[allow(clippy::useless_conversion)]
+pub fn gethostid() -> i64 {
+    // SAFETY: no arguments, no memory is shared.
+    i64::from(unsafe { libc::gethostid() })
 }
 
 /// `nice(inc)`: the new nice value.
