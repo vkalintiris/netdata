@@ -1,0 +1,13 @@
+[package]
+name = "netdata-agent-sys"
+description = "The audited system calls of the netdata agent that no safe crate wraps"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+libc = { workspace = true }
+nix = { workspace = true, features = ["process"] }

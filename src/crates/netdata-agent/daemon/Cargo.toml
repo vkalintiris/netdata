@@ -13,6 +13,7 @@ name = "netdata"
 path = "src/main.rs"
 
 [dependencies]
+netdata-agent-sys = { workspace = true }
 netdata-agent-nrpc = { workspace = true }
 dns-lookup = { workspace = true }
 flate2 = { workspace = true }

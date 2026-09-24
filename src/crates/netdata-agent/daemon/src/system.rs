@@ -78,3 +78,80 @@ pub fn set_nofile_limit(log: &mut impl FnMut(LogLevel, &str)) {
         Err(_) => log(LogLevel::Error, "getrlimit(RLIMIT_NOFILE) failed"),
     }
 }
+
+/// `os_run_dir()` (`src/libnetdata/os/run_dir.c`): `$NETDATA_RUN_DIR` when usable, else `/run/netdata`,
+/// `/var/run/netdata` or `/tmp/netdata`, created when missing; cached, and exported as `NETDATA_RUN_DIR` once found
+/// for writing.
+pub fn run_dir(rw: bool) -> Option<String> {
+    static CACHED: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CACHED.get_or_init(|| detect_run_dir(rw)).clone()
+}
+
+fn is_dir_accessible(dir: &str, rw: bool) -> bool {
+    use nix::unistd::{AccessFlags, access};
+    std::fs::metadata(dir).is_ok_and(|m| m.is_dir())
+        && access(
+            dir,
+            if rw {
+                AccessFlags::W_OK
+            } else {
+                AccessFlags::R_OK
+            },
+        )
+        .is_ok()
+}
+
+/// `netdata_dir_in_parent()`.
+fn netdata_dir_in_parent(parent: &str, rw: bool) -> Option<String> {
+    use std::os::unix::fs::DirBuilderExt;
+    let path = format!("{parent}/netdata");
+    if is_dir_accessible(&path, rw) {
+        return Some(path);
+    }
+    if !is_dir_accessible(parent, rw) {
+        return None;
+    }
+    match std::fs::DirBuilder::new().mode(0o755).create(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return None,
+    }
+    is_dir_accessible(&path, rw).then_some(path)
+}
+
+fn detect_run_dir(rw: bool) -> Option<String> {
+    use std::os::unix::fs::DirBuilderExt;
+    if let Ok(dir) = std::env::var("NETDATA_RUN_DIR")
+        && !dir.is_empty()
+        && is_dir_accessible(&dir, rw)
+    {
+        return Some(dir);
+    }
+    let path =
+        match netdata_dir_in_parent("/run", rw).or_else(|| netdata_dir_in_parent("/var/run", rw)) {
+            Some(path) => path,
+            None => {
+                if !is_dir_accessible("/tmp", rw) && rw {
+                    match std::fs::DirBuilder::new().mode(0o1777).create("/tmp") {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                        Err(_) => return None,
+                    }
+                }
+                let path = "/tmp/netdata".to_string();
+                if rw {
+                    match std::fs::DirBuilder::new().mode(0o755).create(&path) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                        Err(_) => return None,
+                    }
+                }
+                path
+            }
+        };
+    if rw {
+        // Still single-threaded at the "run dir" startup step; the plugins inherit it.
+        let _ = netdata_agent_sys::setenv("NETDATA_RUN_DIR", &path);
+    }
+    Some(path)
+}

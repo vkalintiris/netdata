@@ -2936,6 +2936,7 @@ dependencies = [
  "netdata-agent-nrpc",
  "netdata-agent-rrd",
  "netdata-agent-streaming",
+ "netdata-agent-sys",
  "netdata-agent-text",
  "netdata-agent-web",
  "nix",
@@ -3009,6 +3010,14 @@ dependencies = [
  "netdata-agent-pluginsd-proto",
  "netdata-agent-rrd",
  "netdata-agent-text",
+]
+
+[[package]]
+name = "netdata-agent-sys"
+version = "0.1.3"
+dependencies = [
+ "libc",
+ "nix",
 ]
 
 [[package]]

@@ -8,6 +8,7 @@ mod api;
 mod build;
 mod cli;
 mod conf;
+mod daemon;
 mod guid;
 mod listen;
 mod router;
@@ -196,6 +197,15 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         handled.add(signal);
     }
 
+    // The "run dir" startup step.
+    match system::run_dir(true) {
+        Some(dir) => log(LogLevel::Info, &format!("Netdata run directory is '{dir}'")),
+        None => {
+            log(LogLevel::Error, "Cannot get/create a run directory.");
+            return 1;
+        }
+    }
+
     conf.section_global_hostname();
 
     // cd into the user config dir, so plugins can use relative paths to their config files.
@@ -219,21 +229,23 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
 
     system::set_nofile_limit(&mut logger);
 
-    if !dont_fork {
-        // Daemonizing needs the audited sys crate (decisions D12); until then the daemon stays in the foreground.
-        log(
-            LogLevel::Info,
-            "running in the foreground (daemonizing is not supported yet)",
-        );
-    }
-    if let Some(pidfile) = &pidfile {
-        if let Err(err) = std::fs::write(pidfile, format!("{}\n", std::process::id())) {
-            log(
-                LogLevel::Error,
-                &format!("Cannot write pidfile '{pidfile}': {err}"),
-            );
+    // become_daemon(): after the listeners (privileged ports) and before any thread starts.
+    match daemon::become_daemon(
+        dont_fork,
+        &conf.user,
+        pidfile.as_deref(),
+        &mut conf.netdata,
+        &conf.dirs,
+        &mut logger,
+    ) {
+        Ok(daemon::Outcome::Continue) => {}
+        Ok(daemon::Outcome::ExitParent) => return 0,
+        Err(err) => {
+            log(LogLevel::Error, &err);
+            return 1;
         }
     }
+    conf.flush_log(&mut logger);
 
     let localhost = Host::new(
         &machine_guid,
