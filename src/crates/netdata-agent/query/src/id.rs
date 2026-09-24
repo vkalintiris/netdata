@@ -123,9 +123,12 @@ mod tests {
         assert!(
             generate(&r, IdKind::DataV2).starts_with("data_v2://scope_nodes:n1/scope_contexts:*/")
         );
+        // A v2 id with every scope unset already passes C's 254 bytes: it is cut mid-word.
+        let id = generate(&r, IdKind::DataV2);
+        assert_eq!(id.len(), 254, "{id}");
         assert!(
-            generate(&r, IdKind::DataV2)
-                .ends_with("options:jsonwrap,selected-tier,jw-anomaly-rates,virtual-points/tier:0")
+            id.ends_with("options:jsonwrap,selected-tier,jw-anomaly-rates,virtual-poi"),
+            "{id}"
         );
     }
 }
