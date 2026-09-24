@@ -20,7 +20,16 @@ import (
 // rawExchange sends request as-is and returns every byte the server sends back until it closes the connection
 // or stays silent for timeout (a request C never completes shows up as "<timeout>").
 func rawExchange(addr string, request []byte, timeout time.Duration) ([]byte, error) {
-	conn, err := net.Dial("tcp", addr)
+	return rawExchangeFrom("", addr, request, timeout)
+}
+
+// rawExchangeFrom is rawExchange from a given local IP (empty: any).
+func rawExchangeFrom(localIP, addr string, request []byte, timeout time.Duration) ([]byte, error) {
+	var dialer net.Dialer
+	if localIP != "" {
+		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(localIP)}
+	}
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return nil, err
 	}

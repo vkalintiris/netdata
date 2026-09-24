@@ -15,7 +15,10 @@ use netdata_agent_web::request::Request;
 use netdata_agent_web::status;
 
 use crate::api;
-use crate::server::{Reply, Shared};
+use netdata_agent_nrpc::access;
+
+use crate::acl;
+use crate::server::{self, Reply, Shared};
 use crate::static_file;
 use crate::v1_contexts;
 
@@ -25,31 +28,63 @@ pub const FILENAME_MAX: usize = 4096;
 /// A host the request is routed to (`RRDHOST *`).
 pub type Host = Arc<netdata_agent_rrd::host::Host>;
 
-/// An API command: its name, whether it accepts a sub-path, and its handler (`struct web_api_command`).
-type Command = (&'static str, bool, fn(&Route<'_>, &Host, &[u8]) -> Reply);
+/// An API command (`struct web_api_command`).
+struct Command {
+    name: &'static str,
+    /// `HTTP_ACL` bits the client must hold.
+    acl: u32,
+    /// `HTTP_ACCESS` bits the user must hold.
+    access: u32,
+    allow_subpaths: bool,
+    callback: fn(&Route<'_>, &Host, &[u8]) -> Reply,
+}
+
+/// What an unauthenticated client may do (`web_client_ensure_proper_authorization()` without bearer protection);
+/// bearer tokens and Cloud users come with their subsystems.
+const ANONYMOUS_ACCESS: u32 = access::ANONYMOUS_DATA;
 
 const API_V1: &[Command] = &[
-    ("info", false, |route, _, _| Reply {
-        code: status::OK,
-        content_type: ContentType::ApplicationJson,
-        body: api::info_json(&route.shared.info, &route.shared.hosts),
-        ..Reply::default()
-    }),
-    ("context", false, |_, host, query| {
-        v1_contexts::context(host, query)
-    }),
-    ("contexts", false, |_, host, query| {
-        v1_contexts::contexts(host, query)
-    }),
+    Command {
+        name: "info",
+        acl: acl::bits::NODES,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, _| Reply {
+            code: status::OK,
+            content_type: ContentType::ApplicationJson,
+            body: api::info_json(&route.shared.info, &route.shared.hosts),
+            ..Reply::default()
+        },
+    },
+    Command {
+        name: "context",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |_, host, query| v1_contexts::context(host, query),
+    },
+    Command {
+        name: "contexts",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |_, host, query| v1_contexts::contexts(host, query),
+    },
 ];
 const API_V2: &[Command] = &[];
-const API_V3: &[Command] = &[("context", false, |_, host, query| {
-    v1_contexts::context(host, query)
-})];
+const API_V3: &[Command] = &[Command {
+    name: "context",
+    acl: acl::bits::METRICS,
+    access: access::ANONYMOUS_DATA,
+    allow_subpaths: false,
+    callback: |_, host, query| v1_contexts::context(host, query),
+}];
 
 /// The per-request routing state (`WEB_CLIENT_FLAG_PATH_*`).
 pub struct Route<'a> {
     pub shared: &'a Shared,
+    /// `w->acl`.
+    pub acl: u32,
     pub url_as_received: &'a [u8],
     pub query: &'a [u8],
     /// `WEB_CLIENT_FLAG_PATH_IS_V0` .. `_V3`.
@@ -59,7 +94,7 @@ pub struct Route<'a> {
 }
 
 /// The GET/POST/PUT/DELETE branch of `web_client_process_request_from_web_server()`.
-pub fn process_request(req: &Request, shared: &Shared) -> Reply {
+pub fn process_request(req: &Request, acl: u32, shared: &Shared) -> Reply {
     let path = &req.path[..req.path.len().min(FILENAME_MAX)];
     let end = path.iter().position(|&c| c == b'?').unwrap_or(path.len());
     // The first byte is never inspected for a dot, as in C.
@@ -69,6 +104,7 @@ pub fn process_request(req: &Request, shared: &Shared) -> Reply {
         .find(|&c| c == b'/' || c == b'.');
     let mut route = Route {
         shared,
+        acl,
         url_as_received: &req.url_as_received,
         query: &req.query,
         version: None,
@@ -166,21 +202,29 @@ impl<'a> Route<'a> {
         }
         let slash = endpoint.iter().position(|&c| c == b'/');
         let name = &endpoint[..slash.unwrap_or(endpoint.len())];
-        let Some(&(name, allow_subpaths, handler)) =
-            table.iter().find(|(n, _, _)| n.as_bytes() == name)
-        else {
+        let Some(command) = table.iter().find(|c| c.name.as_bytes() == name) else {
             let mut reply = Reply::text(status::NOT_FOUND, "Unsupported API command: ");
             netdata_agent_text::print::html_escape(&mut reply.body, endpoint);
             return reply;
         };
-        if !allow_subpaths && slash.is_some() {
+        if !command.allow_subpaths && slash.is_some() {
             return Reply::text(
                 status::BAD_REQUEST,
-                &format!("API command '{name}' does not support subpaths."),
+                &format!("API command '{}' does not support subpaths.", command.name),
+            );
+        }
+        if !acl::can(self.acl, command.acl) && command.acl & acl::bits::NOCHECK == 0 {
+            return server::permission_denied_acl();
+        }
+        if ANONYMOUS_ACCESS & command.access != command.access {
+            // web_client_permission_denied() for a client that is not signed in.
+            return Reply::text(
+                status::PRECOND_FAIL,
+                "You need to be authorized to access this resource",
             );
         }
         let query = self.query.strip_prefix(b"?").unwrap_or(self.query);
-        handler(self, host, query)
+        (command.callback)(self, host, query)
     }
 }
 
@@ -201,6 +245,9 @@ mod tests {
                 machine_guid: "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e".into(),
             },
             web_dir: "/nonexistent-web-dir".into(),
+            x_frame_options: None,
+            acl: test_acl(),
+            log: |_, _| {},
             hosts: Arc::new(netdata_agent_rrd::host::Hosts::new(
                 netdata_agent_rrd::host::Host::new(
                     "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",
@@ -228,11 +275,39 @@ mod tests {
         }
     }
 
+    /// Lists that let every client use everything.
+    fn test_acl() -> acl::WebAcl {
+        use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatternMode};
+        let any = || acl::AclPattern {
+            pattern: SimplePattern::new(
+                b"*",
+                Separators::Whitespace,
+                SimplePatternMode::Exact,
+                true,
+            ),
+            dns: false,
+        };
+        acl::WebAcl {
+            connections: any(),
+            dashboard: any(),
+            mcp: any(),
+            badges: any(),
+            registry: any(),
+            streaming: any(),
+            netdataconf: any(),
+            management: any(),
+        }
+    }
+
     fn route(shared: &Shared, path: &[u8]) -> Reply {
         let mut req = Request::default();
         req.path = path.to_vec();
         req.url_as_received = path.to_vec();
-        process_request(&req, shared)
+        process_request(
+            &req,
+            acl::bits::TRANSPORTS | acl::bits::ALL_LISTENER_FEATURES,
+            shared,
+        )
     }
 
     #[test]

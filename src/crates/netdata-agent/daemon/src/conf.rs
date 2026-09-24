@@ -11,7 +11,11 @@ use netdata_agent_inicfg::{
 };
 
 use netdata_agent_text::line_splitter::{Separators, quoted_strings_splitter};
+use netdata_agent_text::simple_pattern::{
+    Separators as SimpleSeparators, SimplePattern, SimplePatternMode,
+};
 
+use crate::acl::{AclPattern, WebAcl};
 use crate::build;
 
 /// `PLUGINSD_MAX_DIRECTORIES`.
@@ -660,5 +664,220 @@ impl Conf {
             .map(|h| h.to_string_lossy().into_owned())
             .unwrap_or_default();
         self.hostname = text(self.netdata.get(SECTION_GLOBAL, "hostname", Some(&system)));
+    }
+}
+
+/// What `netdata_conf_section_web()` configures.
+pub struct WebConf {
+    pub respect_do_not_track: bool,
+    pub x_frame_options: Option<String>,
+    pub acl: WebAcl,
+    pub gzip: bool,
+    pub gzip_level: u32,
+}
+
+/// The zlib strategies `[web] gzip compression strategy` accepts.
+const GZIP_STRATEGIES: [&str; 5] = ["default", "filtered", "huffman only", "rle", "fixed"];
+
+/// `netdata_conf_web_query_threads()`: two per CPU on a parent (at most 256 CPUs), at least 6, unless configured.
+pub fn web_query_threads(
+    c: &mut Config,
+    cpus: usize,
+    is_parent: bool,
+    log: &mut impl FnMut(LogLevel, &str),
+) -> usize {
+    let cpus = cpus.min(256);
+    let threads = (cpus * if is_parent { 2 } else { 1 }).max(6);
+    let threads = c.get_number(SECTION_WEB, "web server threads", threads as i64);
+    if threads < 1 {
+        log(
+            LogLevel::Error,
+            "[web].web server threads in netdata.conf needs to be at least 1. Overwriting it.",
+        );
+        c.set_number(SECTION_WEB, "web server threads", 1);
+        return 1;
+    }
+    threads as usize
+}
+
+impl Conf {
+    /// `netdata_conf_section_web()`.
+    pub fn section_web(&mut self, log: &mut impl FnMut(LogLevel, &str)) -> WebConf {
+        let c = &mut self.netdata;
+        // Read in C's order (they are listed in /netdata.conf), applied later: the idle and first-request timeouts come
+        // with the web worker timers, the streaming rate with the receiver's admission pacing.
+        let _disconnect_idle_after_s =
+            c.get_duration_seconds(SECTION_WEB, "disconnect idle clients after", 60);
+        let _first_request_timeout_s =
+            c.get_duration_seconds(SECTION_WEB, "timeout for first request", 60);
+        let _streaming_rate_s =
+            c.get_duration_seconds(SECTION_WEB, "accept a streaming request every", 0);
+        let respect_do_not_track = c.get_boolean(SECTION_WEB, "respect do not track policy", false);
+        let x_frame_options = Some(text(c.get(
+            SECTION_WEB,
+            "x-frame-options response header",
+            Some(""),
+        )))
+        .filter(|x| !x.is_empty());
+        let mut acl_pattern = |c: &mut Config,
+                               section: &str,
+                               name: &str,
+                               default: &str,
+                               dns_name: &str,
+                               dns_default: &str| {
+            let pattern = SimplePattern::new(
+                &c.get(section, name, Some(default)).unwrap_or_default(),
+                SimpleSeparators::Whitespace,
+                SimplePatternMode::Exact,
+                true,
+            );
+            let dns = make_dns_decision(c, section, dns_name, dns_default, &pattern, log);
+            AclPattern { pattern, dns }
+        };
+        let connections = acl_pattern(
+            c,
+            SECTION_WEB,
+            "allow connections from",
+            "localhost *",
+            "allow connections by dns",
+            "heuristic",
+        );
+        let dashboard_default =
+            text(c.get(SECTION_WEB, "allow dashboard from", Some("localhost *")));
+        let dashboard = acl_pattern(
+            c,
+            SECTION_WEB,
+            "allow dashboard from",
+            &dashboard_default,
+            "allow dashboard by dns",
+            "heuristic",
+        );
+        let mcp = acl_pattern(
+            c,
+            SECTION_WEB,
+            "allow mcp from",
+            &dashboard_default,
+            "allow mcp by dns",
+            "heuristic",
+        );
+        let badges = acl_pattern(
+            c,
+            SECTION_WEB,
+            "allow badges from",
+            "*",
+            "allow badges by dns",
+            "heuristic",
+        );
+        let registry = acl_pattern(
+            c,
+            SECTION_REGISTRY,
+            "allow from",
+            "*",
+            "allow by dns",
+            "heuristic",
+        );
+        let streaming = acl_pattern(
+            c,
+            SECTION_WEB,
+            "allow streaming from",
+            "*",
+            "allow streaming by dns",
+            "heuristic",
+        );
+        // Not heuristic: the wildcards could match names, but the intent is IP addresses.
+        let netdataconf = acl_pattern(
+            c,
+            SECTION_WEB,
+            "allow netdata.conf from",
+            "localhost fd* 10.* 192.168.* 172.16.* 172.17.* 172.18.* 172.19.* 172.20.* 172.21.* 172.22.* 172.23.* \
+             172.24.* 172.25.* 172.26.* 172.27.* 172.28.* 172.29.* 172.30.* 172.31.* UNKNOWN",
+            "allow netdata.conf by dns",
+            "no",
+        );
+        let management = acl_pattern(
+            c,
+            SECTION_WEB,
+            "allow management from",
+            "localhost",
+            "allow management by dns",
+            "heuristic",
+        );
+        let gzip = c.get_boolean(SECTION_WEB, "enable gzip compression", true);
+        let strategy = text(c.get(SECTION_WEB, "gzip compression strategy", Some("default")));
+        // flate2 has no strategy setting: the strategy changes only the compressed bytes, not what clients decode.
+        match GZIP_STRATEGIES.iter().find(|name| **name == strategy) {
+            Some(_) => {}
+            None => {
+                log(
+                    LogLevel::Error,
+                    &format!(
+                        "Invalid compression strategy '{strategy}'. Valid strategies are 'default', 'filtered', 'huffman only', 'rle' and 'fixed'. Proceeding with 'default'."
+                    ),
+                );
+            }
+        }
+        let level = c.get_number(SECTION_WEB, "gzip compression level", 3) as i32;
+        let gzip_level = if level < 1 {
+            log(
+                LogLevel::Error,
+                &format!(
+                    "Invalid compression level {level}. Valid levels are 1 (fastest) to 9 (best ratio). Proceeding with level 1 (fastest compression)."
+                ),
+            );
+            1
+        } else if level > 9 {
+            log(
+                LogLevel::Error,
+                &format!(
+                    "Invalid compression level {level}. Valid levels are 1 (fastest) to 9 (best ratio). Proceeding with level 9 (best compression)."
+                ),
+            );
+            9
+        } else {
+            level as u32
+        };
+        WebConf {
+            respect_do_not_track,
+            x_frame_options,
+            acl: WebAcl {
+                connections,
+                dashboard,
+                mcp,
+                badges,
+                registry,
+                streaming,
+                netdataconf,
+                management,
+            },
+            gzip,
+            gzip_level,
+        }
+    }
+}
+
+/// `make_dns_decision()`: `yes`, `no`, else whether the pattern may match names (with an error for other values).
+fn make_dns_decision(
+    c: &mut Config,
+    section: &str,
+    name: &str,
+    default: &str,
+    pattern: &SimplePattern,
+    log: &mut impl FnMut(LogLevel, &str),
+) -> bool {
+    let value = text(c.get(section, name, Some(default)));
+    match value.as_str() {
+        "yes" => true,
+        "no" => false,
+        other => {
+            if other != "heuristic" {
+                log(
+                    LogLevel::Error,
+                    &format!(
+                        "Invalid configuration option '{other}' for '{section}'/'{name}'. Valid options are 'yes', 'no' and 'heuristic'. Proceeding with 'heuristic'"
+                    ),
+                );
+            }
+            pattern.is_potential_name()
+        }
     }
 }

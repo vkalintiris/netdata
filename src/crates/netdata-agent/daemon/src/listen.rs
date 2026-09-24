@@ -8,6 +8,8 @@ use netdata_agent_inicfg::{Config, LogLevel, SECTION_WEB};
 /// One opened listener.
 pub struct Listener {
     pub socket: std::net::TcpListener,
+    /// The features its definition allows (`fds_acl_flags`).
+    pub acl: u32,
 }
 
 /// Default backlog of the web listeners (`LISTEN_SOCKETS.backlog` initial value).
@@ -34,7 +36,7 @@ fn create(addr: SocketAddr, backlog: i32) -> std::io::Result<std::net::TcpListen
 }
 
 /// `bind_to_this()` for TCP definitions: `[tcp:]ip|*|any|all|[ipv6][%iface][:port][=acl|acl...]`. Unix sockets,
-/// UDP, interface scopes and the per-listener ACL flags come with the ACL work.
+/// UDP and interface scopes are not ported yet.
 fn bind_to_this(
     definition: &str,
     default_port: u16,
@@ -45,9 +47,12 @@ fn bind_to_this(
 ) {
     let mut spec = definition.strip_prefix("tcp:").unwrap_or(definition);
     // The ACL part is everything after '='.
+    let mut acl_list = None;
     if let Some(eq) = spec.find('=') {
+        acl_list = Some(&spec[eq + 1..]);
         spec = &spec[..eq];
     }
+    let acl = crate::acl::listener_acl(definition, acl_list);
     let (ip, port) = if let Some(rest) = spec.strip_prefix('[') {
         let (ip, after) = rest.split_once(']').unwrap_or((rest, ""));
         (ip, after.strip_prefix(':').unwrap_or(""))
@@ -97,7 +102,7 @@ fn bind_to_this(
     for addr in addrs {
         let rip = addr.ip().to_string();
         match create(addr, backlog) {
-            Ok(socket) => out.push(Listener { socket }),
+            Ok(socket) => out.push(Listener { socket, acl }),
             Err(_) => {
                 log(
                     LogLevel::Error,

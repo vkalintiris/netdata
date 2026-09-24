@@ -65,6 +65,8 @@ type Options struct {
 	// WebDir, when set, is the [directories] web path, so two daemons built
 	// with different install prefixes serve the same static files.
 	WebDir string
+	// WebExtra is appended to the [web] section verbatim (one "key = value" per line).
+	WebExtra string
 }
 
 // Identity is a fixed daemon identity. StreamKey and MachineGUID must be UUIDs.
@@ -109,7 +111,7 @@ const netdataConfTemplate = `[global]
 %[7]s
 [web]
     bind to = 127.0.0.1:%[3]d
-
+%[8]s
 [db]
     db = dbengine
     update every = 1
@@ -330,7 +332,7 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	if o.WebDir != "" {
 		extraDirs = fmt.Sprintf("    web = %s\n", o.WebDir)
 	}
-	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs)
+	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs, o.WebExtra)
 	confPath := filepath.Join(o.RunDir, "etc", "netdata.conf")
 	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {
 		return nil, fmt.Errorf("daemon: write netdata.conf: %w", err)

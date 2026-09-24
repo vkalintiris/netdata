@@ -10,8 +10,9 @@ use netdata_agent_web::status;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 
+use crate::acl;
 use crate::router::{FILENAME_MAX, Route};
-use crate::server::Reply;
+use crate::server::{self, Reply};
 
 const REDIRECT_BODY: &str = "<!DOCTYPE html><html><body onload=\"window.location.href = window.location.origin + window.location.pathname + '/' + window.location.search + window.location.hash\">Redirecting. In case your browser does not support redirection, please click <a onclick=\"window.location.href = window.location.origin + window.location.pathname + '/' + window.location.search + window.location.hash\">here</a>.</body></html>";
 
@@ -142,6 +143,9 @@ fn read_regular(path: &str, meta: &Metadata) -> io::Result<(Vec<u8>, i64)> {
 
 /// `web_server_static_file()`.
 pub fn serve(route: &mut Route<'_>, filename: &[u8]) -> Reply {
+    if !acl::can(route.acl, acl::bits::DASHBOARD) {
+        return server::permission_denied_acl();
+    }
     let start = filename
         .iter()
         .position(|&c| c != b'/')

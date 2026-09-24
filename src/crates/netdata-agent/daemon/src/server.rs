@@ -17,6 +17,9 @@ use netdata_agent_text::print::html_escape;
 use netdata_agent_rrd::host::Hosts;
 use netdata_agent_streaming::receiver::{PreAdmission, Receivers};
 
+use netdata_agent_inicfg::LogLevel;
+
+use crate::acl::{self, WebAcl};
 use crate::{api, router};
 
 /// What every worker needs to answer requests.
@@ -24,6 +27,11 @@ pub struct Shared {
     pub settings: Settings,
     pub version: &'static str,
     pub gzip_level: u32,
+    /// `[web] x-frame-options response header`.
+    pub x_frame_options: Option<String>,
+    /// The `[web]` access lists.
+    pub acl: WebAcl,
+    pub log: acl::Logger,
     pub info: api::Info,
     /// `netdata_configured_web_dir`.
     pub web_dir: String,
@@ -130,6 +138,8 @@ struct Client {
     stream: mio::net::TcpStream,
     /// `w->user_auth.client_ip` as `accept_socket()` formats it.
     client_ip: String,
+    /// `w->acl`.
+    acl: u32,
     recv: RecvBuffer,
     received: Vec<u8>,
     request: Request,
@@ -140,23 +150,27 @@ struct Client {
 
 pub struct WebWorker {
     listeners: Vec<mio::net::TcpListener>,
+    /// Each listener's ACL (`fds_acl_flags`).
+    listener_acls: Vec<u32>,
     clients: Vec<Option<Client>>,
     shared: Arc<Shared>,
     receivers: Arc<Receivers>,
 }
 
 impl WebWorker {
-    /// `listeners` must be non-blocking; they become this worker's own.
+    /// `listeners` (with their ACLs) must be non-blocking; they become this worker's own.
     pub fn new(
-        listeners: Vec<std::net::TcpListener>,
+        listeners: Vec<(std::net::TcpListener, u32)>,
         shared: Arc<Shared>,
         receivers: Arc<Receivers>,
     ) -> Self {
+        let (listeners, listener_acls): (Vec<_>, Vec<_>) = listeners.into_iter().unzip();
         WebWorker {
             listeners: listeners
                 .into_iter()
                 .map(mio::net::TcpListener::from_std)
                 .collect(),
+            listener_acls,
             clients: Vec::new(),
             shared,
             receivers,
@@ -171,6 +185,33 @@ impl WebWorker {
         loop {
             match self.listeners[index].accept() {
                 Ok((mut stream, peer)) => {
+                    // accept_socket(): the connection list, then web_client_update_acl_matches().
+                    let mut identity = acl::Client {
+                        ip: client_ip(&peer),
+                        peer: peer.ip(),
+                        host: String::new(),
+                    };
+                    let log = self.shared.log;
+                    if !acl::connection_allowed(
+                        &mut identity,
+                        &self.shared.acl.connections,
+                        "connection",
+                        log,
+                    ) {
+                        log(
+                            LogLevel::Warning,
+                            &format!(
+                                "Permission denied for client '{}', port '{}'",
+                                identity.ip,
+                                peer.port()
+                            ),
+                        );
+                        continue;
+                    }
+                    let client_acl =
+                        self.shared
+                            .acl
+                            .matches(&mut identity, self.listener_acls[index], log);
                     let slot = self
                         .clients
                         .iter()
@@ -192,7 +233,8 @@ impl WebWorker {
                     let _ = socket2::SockRef::from(&stream).set_keepalive(true);
                     self.clients[slot] = Some(Client {
                         stream,
-                        client_ip: client_ip(&peer),
+                        client_ip: identity.ip,
+                        acl: client_acl,
                         recv: RecvBuffer {
                             size: RecvBuffer::INITIAL,
                         },
@@ -366,8 +408,14 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
                 ),
             )
         }
+        Validation::Ok
+            if client.request.mode == Some(Mode::Stream)
+                && !acl::can(client.acl, acl::bits::STREAMING) =>
+        {
+            permission_denied_acl()
+        }
         Validation::Ok if client.request.mode == Some(Mode::Stream) => {
-            // stream_receiver_accept_connection(); the `[web] allow streaming from` ACL comes with the ACLs.
+            // stream_receiver_accept_connection()
             let pre = receivers.pre_admit(
                 &client.request.query,
                 client.request.headers.user_agent.as_deref(),
@@ -383,7 +431,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
                 other => Outcome::Stream(other),
             });
         }
-        Validation::Ok => dispatch(&client.request, shared),
+        Validation::Ok => dispatch(&client.request, client.acl, shared),
         Validation::Redirect => Reply {
             code: status::HTTPS_UPGRADE,
             content_type: ContentType::TextHtml,
@@ -431,7 +479,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         version: shared.version,
         path_is_mcp: client.request.path_is_mcp,
         is_options,
-        x_frame_options: None,
+        x_frame_options: shared.x_frame_options.as_deref(),
         has_cookies: false,
         respect_do_not_track: shared.settings.respect_do_not_track,
         tracking_required: false,
@@ -470,11 +518,34 @@ fn gzip_chunked(body: &[u8], level: u32) -> Vec<u8> {
     out
 }
 
-fn dispatch(req: &Request, shared: &Shared) -> Reply {
-    if req.mode == Some(Mode::Options) {
-        return Reply::text(status::OK, "OK");
+/// `web_client_permission_denied_acl()`.
+pub fn permission_denied_acl() -> Reply {
+    Reply::text(
+        status::UNAVAILABLE_FOR_LEGAL_REASONS,
+        "You need to be authorized to access this resource",
+    )
+}
+
+/// The request-mode switch of `web_client_process_request_from_web_server()`, after the STREAM case.
+fn dispatch(req: &Request, client_acl: u32, shared: &Shared) -> Reply {
+    match req.mode {
+        Some(Mode::Options) if acl::can_access_web(client_acl, req.path_is_mcp) => {
+            Reply::text(status::OK, "OK")
+        }
+        // The WebSocket handshake is not ported: past its ACL it is served as the GET it arrived as.
+        Some(Mode::Websocket)
+            if acl::can(client_acl, acl::bits::DASHBOARD)
+                || acl::can(client_acl, acl::bits::MCP) =>
+        {
+            router::process_request(req, client_acl, shared)
+        }
+        Some(Mode::Get | Mode::Post | Mode::Put | Mode::Delete)
+            if acl::can_access_web(client_acl, req.path_is_mcp) =>
+        {
+            router::process_request(req, client_acl, shared)
+        }
+        _ => permission_denied_acl(),
     }
-    router::process_request(req, shared)
 }
 
 impl Worker for WebWorker {

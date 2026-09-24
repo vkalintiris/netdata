@@ -1050,6 +1050,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dns-lookup"
+version = "4.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6120e7e5dcd1c90098e349def389e2797377cdbe6b465ad8fdd115c0c99d5cf2"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "socket2",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2916,10 +2928,12 @@ dependencies = [
 name = "netdata-agent-daemon"
 version = "0.1.3"
 dependencies = [
+ "dns-lookup",
  "flate2",
  "mio",
  "netdata-agent-evloop",
  "netdata-agent-inicfg",
+ "netdata-agent-nrpc",
  "netdata-agent-rrd",
  "netdata-agent-streaming",
  "netdata-agent-text",

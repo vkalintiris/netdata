@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+mod acl;
 mod api;
 mod build;
 mod cli;
@@ -31,9 +32,6 @@ use nix::sys::signal::{SigSet, Signal};
 
 use crate::cli::Opt;
 use crate::conf::Conf;
-
-/// Web workers until `[web] web server threads` is ported.
-const WEB_SERVER_THREADS: usize = 6;
 
 /// A daemon log line in the logfmt layout of `nd_log` (time, program, source, level, message).
 fn log(level: LogLevel, message: &str) {
@@ -280,6 +278,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             }
         }
     };
+    let is_parent = stream_conf.is_parent;
     let receivers = Arc::new(Receivers::new(
         stream_conf,
         Arc::clone(&hosts),
@@ -295,13 +294,26 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         stream_pool.handle(),
         log,
     ));
+    // netdata_conf_section_web() runs just before C starts its static threads, the web server among them, which
+    // then reads its thread count.
+    let web = conf.section_web(&mut logger);
+    let web_server_threads = conf::web_query_threads(
+        &mut conf.netdata,
+        system.cpus as usize,
+        is_parent,
+        &mut logger,
+    );
+    conf.flush_log(&mut logger);
     let shared = Arc::new(server::Shared {
         settings: Settings {
-            gzip: true,
-            respect_do_not_track: false,
+            gzip: web.gzip,
+            respect_do_not_track: web.respect_do_not_track,
         },
         version: build::NETDATA_VERSION,
-        gzip_level: 3,
+        gzip_level: web.gzip_level,
+        x_frame_options: web.x_frame_options,
+        acl: web.acl,
+        log,
         info: api::Info {
             version: build::NETDATA_VERSION,
             machine_guid,
@@ -309,14 +321,15 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         web_dir: conf.dirs.web.clone(),
         hosts: Arc::clone(&hosts),
     });
-    let sockets: Vec<std::net::TcpListener> = listeners.into_iter().map(|l| l.socket).collect();
+    let sockets: Vec<(std::net::TcpListener, u32)> =
+        listeners.into_iter().map(|l| (l.socket, l.acl)).collect();
     // Every worker polls every listener through its own duplicate; running out of descriptors here is an error,
     // not a panic.
-    let mut worker_sockets = Vec::with_capacity(WEB_SERVER_THREADS);
-    for _ in 0..WEB_SERVER_THREADS {
+    let mut worker_sockets = Vec::with_capacity(web_server_threads);
+    for _ in 0..web_server_threads {
         match sockets
             .iter()
-            .map(std::net::TcpListener::try_clone)
+            .map(|(socket, acl)| socket.try_clone().map(|s| (s, *acl)))
             .collect::<std::io::Result<Vec<_>>>()
         {
             Ok(set) => worker_sockets.push(set),
@@ -330,7 +343,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     }
     let pool = match Pool::spawn(
-        WEB_SERVER_THREADS,
+        web_server_threads,
         |i| format!("WEB[{}]", i + 1),
         |i| {
             server::WebWorker::new(
