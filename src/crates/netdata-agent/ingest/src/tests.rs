@@ -212,7 +212,10 @@ fn v1_collection_times_keep_their_microseconds() {
     // without its microseconds lags the last collection, which rrdset_timed_next() then treats as a database in the
     // future and snaps onto whole seconds. Kept off the grid, the point stored between the 0 and 100 steps blends.
     for (i, value) in [0, 0, 0, 100, 100, 100].into_iter().enumerate() {
-        CLOCK_UT.store((NOW - 20) * 1_000_000 + 300_000 + i as i64 * 1_250_000, Relaxed);
+        CLOCK_UT.store(
+            (NOW - 20) * 1_000_000 + 300_000 + i as i64 * 1_250_000,
+            Relaxed,
+        );
         let lines = [
             "BEGIN 'test.c1' 1250000".to_string(),
             format!("SET 'd1' = {value}"),
