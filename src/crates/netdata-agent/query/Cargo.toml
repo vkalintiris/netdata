@@ -1,0 +1,12 @@
+[package]
+name = "netdata-agent-query"
+description = "The data query engine of the netdata agent (/api/v1/data, /api/v2/data, /api/v3/data)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+netdata-agent-text = { workspace = true }

@@ -67,6 +67,7 @@ members = [
     "netdata-agent/inicfg",
     "netdata-agent/nrpc",
     "netdata-agent/pluginsd-proto",
+    "netdata-agent/query",
     "netdata-agent/rrd",
     "netdata-agent/storage",
     "netdata-agent/streaming",
@@ -108,6 +109,7 @@ netdata-agent-streaming = { path = "netdata-agent/streaming" }
 netdata-agent-rrd = { path = "netdata-agent/rrd" }
 netdata-agent-ingest = { path = "netdata-agent/ingest" }
 netdata-agent-nrpc = { path = "netdata-agent/nrpc" }
+netdata-agent-query = { path = "netdata-agent/query" }
 netdata-agent-storage = { path = "netdata-agent/storage" }
 netdata-agent-sys = { path = "netdata-agent/sys" }
 opentelemetry = "0.31.0"
