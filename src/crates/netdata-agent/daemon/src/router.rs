@@ -191,7 +191,7 @@ impl<'a> Route<'a> {
             other => return Reply::html(status::NOT_FOUND, "Unsupported API version: ", other),
         };
         let mut reply = self.api_command(host, rest.unwrap_or(b""), table);
-        reply.no_cacheable = true;
+        reply.no_cacheable = !reply.cacheable;
         reply
     }
 

@@ -48,6 +48,9 @@ pub struct Reply {
     pub content_type: ContentType,
     pub body: Vec<u8>,
     pub no_cacheable: bool,
+    /// An API handler opted into caching (`buffer_cacheable()`): the API default is no-cache, applied before the
+    /// handler runs (`web_client_api_request_vX()`), so only a handler can turn it off.
+    pub cacheable: bool,
     /// `response.data->date` and `->expires`; 0 lets the header builder derive them.
     pub date: i64,
     pub expires: i64,
@@ -62,6 +65,7 @@ impl Default for Reply {
             content_type: ContentType::TextPlain,
             body: Vec::new(),
             no_cacheable: false,
+            cacheable: false,
             date: 0,
             expires: 0,
             headers: Vec::new(),
