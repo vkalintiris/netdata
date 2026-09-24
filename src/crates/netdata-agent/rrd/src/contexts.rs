@@ -337,10 +337,10 @@ impl PpQueue {
 pub struct Hub {
     pub version: u64,
     pub id: Option<String>,
-    pub title: Option<String>,
+    pub title: Option<Vec<u8>>,
     pub chart_type: Option<String>,
     pub units: Option<String>,
-    pub family: Option<String>,
+    pub family: Option<Vec<u8>>,
     pub priority: u64,
     pub first_time_s: u64,
     pub last_time_s: u64,
@@ -351,9 +351,10 @@ pub struct Hub {
 #[derive(Debug, Clone)]
 pub struct ContextState {
     pub version: u64,
-    pub title: String,
+    /// Bytes: merging two titles can split a multi-byte character, as in C.
+    pub title: Vec<u8>,
     pub units: String,
-    pub family: String,
+    pub family: Vec<u8>,
     pub priority: u32,
     pub chart_type: ChartType,
     pub first_time_s: i64,
@@ -372,6 +373,8 @@ pub struct Context {
     queue: Weak<PpQueue>,
     /// The host's cached retention (`host->retention`).
     host_retention: Weak<Mutex<(i64, i64)>>,
+    /// The RAM engine's metric index.
+    ram_index: Weak<RamIndex>,
 }
 
 impl Context {
@@ -420,9 +423,9 @@ impl Context {
             (&mut state.title, new.title),
             (&mut state.family, new.family),
         ] {
-            if field != value {
+            if field.as_slice() != value {
                 *field = if use_new {
-                    value.to_string()
+                    value.to_vec()
                 } else {
                     string_2way_merge(field, value)
                 };
@@ -447,23 +450,22 @@ impl Context {
 /// The metadata `rrdcontext_merge_with()` merges into a context.
 struct Incoming<'a> {
     archived: bool,
-    title: &'a str,
-    family: &'a str,
+    title: &'a [u8],
+    family: &'a [u8],
     units: &'a str,
     chart_type: ChartType,
     priority: u32,
 }
 
-/// `string_2way_merge()`: the common prefix, `[x]`, the common suffix of what remains.
-pub fn string_2way_merge(a: &str, b: &str) -> String {
-    const X: &str = "[x]";
+/// `string_2way_merge()`: the common prefix, `[x]`, the common suffix of what remains; on bytes.
+pub fn string_2way_merge(a: &[u8], b: &[u8]) -> Vec<u8> {
+    const X: &[u8] = b"[x]";
     if a == b || a == X {
-        return a.to_string();
+        return a.to_vec();
     }
     if b == X {
-        return b.to_string();
+        return b.to_vec();
     }
-    let (a, b) = (a.as_bytes(), b.as_bytes());
     let prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
     let mut out = a[..prefix].to_vec();
     if prefix < a.len() || prefix < b.len() {
@@ -474,10 +476,30 @@ pub fn string_2way_merge(a: &str, b: &str) -> String {
             .zip(rb.iter().rev())
             .take_while(|(x, y)| x == y)
             .count();
-        out.extend_from_slice(X.as_bytes());
+        out.extend_from_slice(X);
         out.extend_from_slice(&ra[ra.len() - suffix..]);
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
+}
+
+/// The RAM engine's metric index (`rrddim_Judy_array` in `src/database/ram/rrddim_mem.c`): the rings of live ram and
+/// alloc dimensions by UUID. C's index is process-wide; dimension UUIDs are random, so a host-wide one finds the same.
+#[derive(Debug, Default)]
+pub struct RamIndex {
+    rings: Mutex<HashMap<[u8; 16], Weak<Dim>>>,
+}
+
+impl RamIndex {
+    /// A dimension with a ring registers when it is created.
+    pub(crate) fn register(&self, dim: &Dim) {
+        lock(&self.rings).insert(*dim.uuid(), dim.weak());
+    }
+
+    /// `rrddim_metric_retention_by_id()`: the oldest and newest time of the live ring with this UUID.
+    fn retention_by_id(&self, uuid: &[u8; 16]) -> Option<(i64, i64)> {
+        let dim = lock(&self.rings).get(uuid).and_then(Weak::upgrade)?;
+        Some((dim.first_entry_s(), dim.last_entry_s()))
+    }
 }
 
 // ---- instances ----
@@ -655,8 +677,8 @@ impl Metric {
         }
     }
 
-    /// `rrdmetric_update_retention()`: a live dimension's rings, else the storage engine by UUID; ram and alloc rings
-    /// die with their dimension, so an unlinked metric has none until dbengine brings lookups by UUID.
+    /// `rrdmetric_update_retention()`: a live dimension's rings, else the storage engine by UUID
+    /// (`get_metric_retention_by_id()`, tier 0 only until dbengine).
     fn update_retention(&self) {
         let (mut first, mut last) = match self.dim() {
             Some(dim) => {
@@ -664,8 +686,19 @@ impl Metric {
                 (dim.first_entry_s(), dim.last_entry_s())
             }
             None => {
-                self.flags.set(flags::NO_TIER0_RETENTION);
-                (0, 0)
+                let uuid = lock(&self.state).uuid;
+                let found = self
+                    .instance()
+                    .and_then(|ri| ri.context())
+                    .and_then(|rc| rc.ram_index.upgrade())
+                    .and_then(|index| index.retention_by_id(&uuid));
+                let (first, last) = found.unwrap_or((0, 0));
+                if first != 0 || last != 0 {
+                    self.flags.clear(flags::NO_TIER0_RETENTION);
+                } else {
+                    self.flags.set(flags::NO_TIER0_RETENTION);
+                }
+                (if first > 0 { first } else { 0 }, last.max(0))
             }
         };
         if first > last {
@@ -908,9 +941,9 @@ pub fn updated_rrdset(chart: &Chart) {
     let meta = chart.meta();
     let (priority, stored_priority) = chart_priority(chart);
     let rc = contexts.upsert_context(&meta.context, |state_new| {
-        state_new.title = meta.title.clone();
+        state_new.title = meta.title.clone().into_bytes();
         state_new.units = meta.units.clone();
-        state_new.family = meta.family.clone();
+        state_new.family = meta.family.clone().into_bytes();
         state_new.priority = priority;
         state_new.chart_type = meta.chart_type;
     });
@@ -1146,9 +1179,15 @@ pub struct Contexts {
     retention: Arc<Mutex<(i64, i64)>>,
     /// `RRDHOST_FLAG_RRDCONTEXT_GET_RETENTION`: a child disconnected.
     get_retention: AtomicBool,
+    /// The RAM engine's metric index the unlinked metrics of this host look into.
+    ram_index: Arc<RamIndex>,
 }
 
 impl Contexts {
+    pub(crate) fn ram_index(&self) -> &RamIndex {
+        &self.ram_index
+    }
+
     pub fn all(&self) -> Vec<Arc<Context>> {
         lock(&self.index).ordered.clone()
     }
@@ -1171,9 +1210,9 @@ impl Contexts {
     fn upsert_context(&self, id: &str, fill: impl FnOnce(&mut ContextState)) -> Arc<Context> {
         let mut new = ContextState {
             version: 0,
-            title: String::new(),
+            title: Vec::new(),
             units: String::new(),
-            family: String::new(),
+            family: Vec::new(),
             priority: 0,
             chart_type: ChartType::Line,
             first_time_s: 0,
@@ -1193,6 +1232,7 @@ impl Contexts {
                     pp: Mutex::new(PpState::default()),
                     queue: Arc::downgrade(&self.queue),
                     host_retention: Arc::downgrade(&self.retention),
+                    ram_index: Arc::downgrade(&self.ram_index),
                 });
                 rc.flags.set_updated(flags::REASON_NEW_OBJECT);
                 index.insert(id, Arc::clone(&rc));
@@ -1312,9 +1352,9 @@ fn cloud_version_changed(rc: &Context, state: &ContextState) -> bool {
         state.last_time_s
     };
     let changed = hub.id.as_deref() != Some(rc.id.as_str())
-        || hub.title.as_deref() != Some(state.title.as_str())
+        || hub.title.as_deref() != Some(state.title.as_slice())
         || hub.units.as_deref() != Some(state.units.as_str())
-        || hub.family.as_deref() != Some(state.family.as_str())
+        || hub.family.as_deref() != Some(state.family.as_slice())
         || hub.chart_type.as_deref() != Some(state.chart_type.name())
         || u64::from(state.priority) != hub.priority
         || state.first_time_s as u64 != hub.first_time_s
@@ -1457,8 +1497,8 @@ fn post_process_updates(rc: &Context, force: bool, reason: u32) {
                 &mut state,
                 &Incoming {
                     archived: ri.flags.is_archived(),
-                    title: &ri_state.title,
-                    family: &ri_state.family,
+                    title: ri_state.title.as_bytes(),
+                    family: ri_state.family.as_bytes(),
                     units: &ri_state.units,
                     chart_type: ri_state.chart_type,
                     priority: ri_state.priority,

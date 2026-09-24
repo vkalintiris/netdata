@@ -695,6 +695,7 @@ impl Parser {
             || self.clabel_changed;
         if changed {
             chart.update_meta(|m| m.flags |= flags::METADATA_UPDATE);
+            chart.metadata_updated();
         }
         self.clabel_count = 0;
         self.clabel_changed = false;

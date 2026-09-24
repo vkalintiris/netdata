@@ -278,3 +278,28 @@ fn functions_are_registered_on_the_host() {
     assert!(!p.feed(b"FUNCTION GLOBAL \"x\" 10\n"));
     assert!(logs.lock().unwrap()[0].contains("without providing the required data (global = 'yes', name = 'x', timeout = '10', priority = '(unset)', version = '(unset)', help = '(unset)')"));
 }
+
+#[test]
+fn a_label_change_resyncs_the_instance_hidden_flag() {
+    let h = host();
+    let (mut p, _) = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    let ri = || {
+        h.charts()
+            .find("test.c1")
+            .unwrap()
+            .contexts()
+            .instance()
+            .unwrap()
+    };
+    // Re-sent as hidden with nothing else changed: no metadata update reaches the instance yet.
+    assert!(p.feed(b"CHART 'test.c1' '' 'title' 'units' 'family' 'ctx.c1' line 1000 1 'hidden' fixture-pusher corpus\n"));
+    assert!(!ri().flags.check(netdata_agent_rrd::contexts::flags::HIDDEN));
+    // A changed label commits a metadata update, which syncs it.
+    assert!(
+        feed_all(&mut p, &["CLABEL 'k' 'v2' 2", "CLABEL_COMMIT"])
+            .iter()
+            .all(|&ok| ok)
+    );
+    assert!(ri().flags.check(netdata_agent_rrd::contexts::flags::HIDDEN));
+}

@@ -111,7 +111,7 @@ fn contexts_merge_collected_instances() {
     let rc = contexts.get("ctx").unwrap();
     let state = rc.state();
     // Each CHART merged its title in; the collected instances merged again on post-processing.
-    assert_eq!(state.title, "abc[x]def");
+    assert_eq!(state.title, b"abc[x]def");
     assert_eq!(
         state.priority, 300,
         "the lowest priority of the collected instances"
@@ -122,16 +122,18 @@ fn contexts_merge_collected_instances() {
 
 #[test]
 fn string_2way_merge_matches_c() {
-    let cases = [
-        ("abc", "abc", "abc"),
-        ("abcXYZdef", "abcQdef", "abc[x]def"),
-        ("abc", "abcd", "abc[x]"),
-        ("xyz", "abc", "[x]"),
-        ("[x]", "abc", "[x]"),
-        ("abc", "[x]", "[x]"),
+    let cases: [(&[u8], &[u8], &[u8]); 7] = [
+        (b"abc", b"abc", b"abc"),
+        (b"abcXYZdef", b"abcQdef", b"abc[x]def"),
+        (b"abc", b"abcd", b"abc[x]"),
+        (b"xyz", b"abc", b"[x]"),
+        (b"[x]", b"abc", b"[x]"),
+        (b"abc", b"[x]", b"[x]"),
+        // A shared lead byte of a multi-byte character stays, split, as in C.
+        ("a\u{e9}".as_bytes(), "a\u{e8}".as_bytes(), b"a\xc3[x]"),
     ];
     for (a, b, expected) in cases {
-        assert_eq!(string_2way_merge(a, b), expected, "{a} + {b}");
+        assert_eq!(string_2way_merge(a, b), expected, "{a:?} + {b:?}");
     }
 }
 
@@ -196,7 +198,7 @@ fn obsolete_charts_and_dimensions_are_archived() {
 }
 
 #[test]
-fn a_chart_moving_to_another_context_leaves_the_old_instance_deleted() {
+fn a_chart_moving_to_another_context_leaves_the_old_instance_archived() {
     let (contexts, charts) = setup();
     let (chart, _) = charts.create(&spec("a", "old", "T", 1000));
     chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
@@ -209,6 +211,18 @@ fn a_chart_moving_to_another_context_leaves_the_old_instance_deleted() {
     let new = contexts.get("new").unwrap().instance("t.a").unwrap();
     assert!(Arc::ptr_eq(&new, &chart.contexts().instance().unwrap()));
     assert!(new.metric("d").unwrap().dim().is_some());
+    // On the next tick the old metric finds the live ring by UUID (the RAM engine's index): the old instance and
+    // context stay, archived, with that retention.
+    contexts.process_queued();
+    let dim = chart.dim("d").unwrap();
+    let rm = old.metric("d").unwrap();
+    assert_eq!(
+        (rm.state().first_time_s, rm.state().last_time_s),
+        (dim.first_entry_s(), dim.last_entry_s())
+    );
+    for f in [&old.flags, &contexts.get("old").unwrap().flags] {
+        assert!(f.is_archived() && !f.is_deleted(), "{:#x}", f.get());
+    }
 }
 
 #[test]

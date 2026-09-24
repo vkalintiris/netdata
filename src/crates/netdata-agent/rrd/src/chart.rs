@@ -511,7 +511,8 @@ impl Chart {
             }),
             ring,
         });
-        let heterogeneous = index.ordered.iter().any(|td| {
+        // C compares with the first other dimension only (the loop breaks after it).
+        let heterogeneous = index.ordered.first().is_some_and(|td| {
             let t = td.meta();
             t.algorithm != algorithm
                 || i64::from(t.multiplier).abs() != i64::from(multiplier).abs()
@@ -527,6 +528,9 @@ impl Chart {
                 m.flags |= flags::HETEROGENEOUS;
             }
         });
+        if dim.ring.is_some() {
+            self.host_contexts().ram_index().register(&dim);
+        }
         self.dim_metadata_updated(&dim);
         (dim, true)
     }
@@ -955,5 +959,19 @@ mod tests {
         );
         chart.set_update_every(2);
         assert_eq!((ring.latest_time_s(), ring.update_every_s()), (0, 2));
+    }
+
+    #[test]
+    fn heterogeneity_compares_with_the_first_dimension() {
+        let charts = Charts::default();
+        let (chart, _) = charts.create(&spec("t", "h", None));
+        chart.dim_add("a", None, 1, 1, Algorithm::Absolute);
+        chart.dim_add("b", None, 1, 1, Algorithm::Absolute);
+        chart.dim_add("b", None, 5, 1, Algorithm::Absolute);
+        // `c` matches `a`, the first dimension; C does not look further.
+        chart.dim_add("c", None, 1, 1, Algorithm::Absolute);
+        assert_eq!(chart.meta().flags & flags::HETEROGENEOUS, 0);
+        chart.dim_add("d", None, 7, 1, Algorithm::Absolute);
+        assert_ne!(chart.meta().flags & flags::HETEROGENEOUS, 0);
     }
 }
