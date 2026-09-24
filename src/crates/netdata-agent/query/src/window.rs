@@ -224,6 +224,11 @@ mod tests {
             dimensions: Vec::new(),
             query: Vec::new(),
             db,
+            id: String::new(),
+            chart_scoped: false,
+            chart_label_key: None,
+            preprocessed: std::time::Instant::now(),
+            executed: None,
         }
     }
 

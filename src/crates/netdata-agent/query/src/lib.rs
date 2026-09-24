@@ -5,10 +5,15 @@
 #![forbid(unsafe_code)]
 
 pub mod execute;
+pub mod format;
 pub mod grouping;
 pub mod id;
+pub mod jsonwrap;
+pub mod output;
 pub mod request;
 pub mod rrdr;
 pub mod tables;
 pub mod target;
+#[cfg(test)]
+mod testing;
 pub mod window;

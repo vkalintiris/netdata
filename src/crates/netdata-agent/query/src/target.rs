@@ -5,6 +5,7 @@
 //! planner.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use netdata_agent_rrd::chart::{Dim, dim_flags, flags as chart_flags};
 use netdata_agent_rrd::contexts::{Context, Instance, Metric, flags};
@@ -15,6 +16,7 @@ use netdata_agent_text::print::print_uuid_lower;
 use netdata_agent_text::simple_pattern::{SimplePattern, SimplePatternResult};
 use netdata_agent_text::time_window::relative_window_to_absolute_query;
 
+use crate::id::{self, IdKind};
 use crate::request::DataRequest;
 use crate::tables::{Aggregation, group_by, options};
 
@@ -98,6 +100,8 @@ pub struct QueryMetric {
     pub tier0: TierSnapshot,
     /// What the execution read, merged (`qm->query_points`).
     pub query_points: StoragePoint,
+    /// The tier-0 plan's `(after, before)` (`qm->plan.array[0]`); none for the LATEST fast path or a failed plan.
+    pub plan: Option<(i64, i64)>,
 }
 
 /// `qt->db`.
@@ -136,6 +140,15 @@ pub struct QueryTarget {
     pub dimensions: Vec<QueryDimension>,
     pub query: Vec<QueryMetric>,
     pub db: Db,
+    /// `qt->id` (spec §3.9).
+    pub id: String,
+    /// v1 `chart=` named the chart (`qt->request.st`).
+    pub chart_scoped: bool,
+    /// `qt->instances.chart_label_key_pattern`.
+    pub chart_label_key: Option<SimplePattern>,
+    /// When the target was built and when its metrics were executed (`qt->timings`).
+    pub preprocessed: Instant,
+    pub executed: Option<Instant>,
 }
 
 /// What selects the metrics: v1's routed host (and chart), or every host for v2/v3.
@@ -203,7 +216,6 @@ struct Walk<'a> {
     dimensions: Option<SimplePattern>,
     scope_labels: Option<PatternArray>,
     labels: Option<PatternArray>,
-    chart_label_key: Option<SimplePattern>,
     alerts: bool,
     needs_all_dimensions: bool,
     qt: QueryTarget,
@@ -332,7 +344,9 @@ impl Walk<'_> {
                 last_time_s: last,
                 update_every_s: ue,
             },
-            query_points: StoragePoint::UNSET,
+            // C zeroes the metric; only execution sets its points.
+            query_points: StoragePoint::default(),
+            plan: None,
         });
         true
     }
@@ -421,6 +435,7 @@ impl Walk<'_> {
     fn labels_match(&self, ri: &Instance, scope: bool) -> bool {
         let labels = ri.labels();
         let key_ok = self
+            .qt
             .chart_label_key
             .as_ref()
             .is_none_or(|k| labels.match_simple_pattern_parsed(k, 0).is_positive());
@@ -659,7 +674,6 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
         dimensions: pattern(&req.dimensions),
         scope_labels: label_array(&req.scope_labels),
         labels: label_array(&req.labels),
-        chart_label_key: pattern(&req.chart_label_key),
         alerts: pattern(&req.alerts).is_some(),
         needs_all_dimensions,
         qt: QueryTarget {
@@ -672,13 +686,24 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
             dimensions: Vec::new(),
             query: Vec::new(),
             db: Db::default(),
+            id: String::new(),
+            chart_scoped: false,
+            chart_label_key: pattern(&req.chart_label_key),
+            preprocessed: Instant::now(),
+            executed: None,
         },
     };
-    match source {
+    let (kind_host, kind_chart) = match source {
         Source::V1 {
             host,
             chart_instance,
-        } => walk.node(host, true, chart_instance.as_ref()),
+        } => {
+            walk.node(host, true, chart_instance.as_ref());
+            (
+                Some(host.hostname()),
+                chart_instance.map(|ri| ri.state().name),
+            )
+        }
         Source::V2 { hosts } => {
             let scope_nodes = pattern(&req.scope_nodes);
             let nodes = pattern(&req.nodes);
@@ -691,9 +716,24 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
                 let queryable = nodes.as_ref().is_none_or(|sp| host_matches(sp, host));
                 walk.node(host, queryable, None);
             }
+            (None, None)
         }
-    }
-    walk.qt
+    };
+    let kind = match (&kind_host, &kind_chart) {
+        (Some(hostname), Some(chart_name)) => IdKind::Chart {
+            hostname,
+            chart_name,
+        },
+        (Some(hostname), None) => IdKind::Context {
+            hostname: Some(hostname),
+        },
+        (None, _) => IdKind::DataV2,
+    };
+    let mut qt = walk.qt;
+    qt.id = id::generate(&qt.request, kind);
+    qt.chart_scoped = kind_chart.is_some();
+    qt.preprocessed = Instant::now();
+    qt
 }
 
 /// Whether a v1 `chart=` names a chart the data API accepts: obsolete charts only while replicating.

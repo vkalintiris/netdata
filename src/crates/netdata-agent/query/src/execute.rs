@@ -93,6 +93,10 @@ struct Ops {
     point_mode: PointMode,
     view_update_every: i64,
     query_granularity: i64,
+    plan_switch_time_offset: i64,
+    current_plan_expire_time: i64,
+    result_plan_expire_time: i64,
+    result_plan_expire_time_overflow: bool,
     group_point: StoragePoint,
     query_point: StoragePoint,
     group_value_flags: u32,
@@ -106,17 +110,47 @@ impl Ops {
         if window.options & options::ANOMALY_BIT != 0 {
             point_mode = PointMode::Hold;
         }
+        let view_update_every = window.view_update_every();
         Ops {
             fetch,
             point_mode,
-            view_update_every: window.view_update_every(),
+            view_update_every,
             query_granularity: window.query_granularity,
+            plan_switch_time_offset: if point_mode == PointMode::Total {
+                view_update_every
+            } else {
+                0
+            },
+            current_plan_expire_time: 0,
+            result_plan_expire_time: 0,
+            result_plan_expire_time_overflow: false,
             group_point: StoragePoint::UNSET,
             query_point: StoragePoint::UNSET,
             group_value_flags: value_flags::NOTHING,
             group_points_non_zero: 0,
             db_points_read: 0,
         }
+    }
+
+    /// `query_planer_set_expire_time()`.
+    fn set_expire_time(&mut self, expire_time: i64) {
+        self.current_plan_expire_time = expire_time;
+        match expire_time.checked_add(self.plan_switch_time_offset) {
+            Some(t) => {
+                self.result_plan_expire_time = t;
+                self.result_plan_expire_time_overflow = false;
+            }
+            None => {
+                self.result_plan_expire_time = i64::MAX;
+                self.result_plan_expire_time_overflow = true;
+            }
+        }
+    }
+
+    /// `query_planer_next_plan()` with a single plan: nothing to switch to, the plan runs to the window's end.
+    fn next_plan(&mut self, window: &Window) -> bool {
+        self.set_expire_time(window.before);
+        false
     }
 
     /// `query_project_point()`.
@@ -204,11 +238,10 @@ fn prepare(qt: &mut QueryTarget, d: usize, window: &Window) -> Option<Prepared> 
     if first > window.before || last < window.after {
         return None;
     }
+    let (after, before) = (first.max(window.after), last.min(window.before));
+    qt.query[d].plan = Some((after, before));
     qt.db.tier0_queries += 1;
-    Some(Prepared::Plan {
-        after: first.max(window.after),
-        before: last.min(window.before),
-    })
+    Some(Prepared::Plan { after, before })
 }
 
 /// `rrd2rrdr_query_execute_latest_fast_path()`.
@@ -281,6 +314,11 @@ fn execute_plan(
     let mut finished_counter = 0;
 
     while points_added < points_wanted && finished_counter <= 10 {
+        if now_end >= ops.result_plan_expire_time && !ops.result_plan_expire_time_overflow {
+            ops.next_plan(window);
+            read_since_plan_switch = 0;
+        }
+
         // Interpolation can consume a tier-0 point before the row that owns its metadata.
         if new.added
             && new.tier == 0
@@ -318,6 +356,10 @@ fn execute_plan(
             ops.db_points_read += 1;
             if opts & options::ABSOLUTE != 0 {
                 sp.make_positive();
+            }
+            // The point crosses the plan's end: with one plan the switch only moves the expiry.
+            if sp.end_time_s >= ops.current_plan_expire_time {
+                ops.next_plan(window);
             }
             new.sp = sp;
             new.tier = 0;
@@ -573,6 +615,7 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
             }
             Prepared::Plan { after, before } => {
                 let mut ops = Ops::new(qt, window);
+                ops.set_expire_time(before);
                 let dim = qm.tier0.dim.clone();
                 let Some(ring) = dim.ring() else {
                     unreachable!("prepare() checked the ring")
@@ -607,6 +650,7 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
     if used != 0 && window.options & options::NONZERO != 0 && nonzero == 0 {
         window.options &= !options::NONZERO;
     }
+    qt.executed = Some(Instant::now());
     r
 }
 
@@ -614,80 +658,15 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
 mod tests {
     use std::sync::Arc;
 
-    use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
-    use netdata_agent_rrd::host::{Host, HostInfo};
-    use netdata_agent_rrd::mode::DbMode;
+    use netdata_agent_rrd::chart::Algorithm;
+    use netdata_agent_rrd::host::Host;
     use netdata_agent_storage::storage_number::{SN_FLAG_NOT_ANOMALOUS, pack, unpack};
 
     use super::*;
-    use crate::request::parse_v1;
-    use crate::target::{Source, create};
-    use crate::window::calculate;
-
-    const T0: i64 = 1_700_000_000;
-    const E: f64 = f64::NAN;
-
-    /// The spec's worked example (§5.9): one ram dimension with `10, E, 20, 30, E, 40` at `T0+1..=T0+6`.
-    fn host() -> Arc<Host> {
-        let info = HostInfo {
-            hostname: "child".into(),
-            registry_hostname: "child".into(),
-            os: "linux".into(),
-            timezone: "UTC".into(),
-            abbrev_timezone: "UTC".into(),
-            utc_offset: 0,
-            program_name: "p".into(),
-            program_version: "1".into(),
-            update_every: 1,
-            db_mode: DbMode::Ram,
-            history_entries: 3600,
-            health_enabled: false,
-            system_info: Default::default(),
-            replication_enabled: false,
-            replication_period: 0,
-            replication_step: 0,
-        };
-        let h = Arc::new(Host::new("guid-1", false, info));
-        let (chart, _) = h.charts().create(&ChartSpec {
-            type_: "t",
-            id: "a",
-            name: None,
-            family: Some("f"),
-            context: Some("ctx.a"),
-            title: "T",
-            units: "u",
-            plugin: "p",
-            module: None,
-            priority: 1000,
-            update_every: 1,
-            chart_type: ChartType::Line,
-            mode: DbMode::Ram,
-            history_entries: 3600,
-            page_size: 4096,
-        });
-        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
-        for (i, v) in [10.0, E, 20.0, 30.0, E, 40.0].into_iter().enumerate() {
-            dim.store_metric(
-                (T0 + 1 + i as i64) as u64 * 1_000_000,
-                v,
-                SN_FLAG_NOT_ANOMALOUS,
-            );
-        }
-        h.contexts().process_queued();
-        h
-    }
+    use crate::testing::{T0, host, v1_target};
 
     fn run(h: &Arc<Host>, query: &str) -> (QueryTarget, Window, Rrdr) {
-        let p = parse_v1(format!("context=ctx.a&{query}").as_bytes(), 1);
-        let mut qt = create(
-            p.request,
-            Source::V1 {
-                host: h,
-                chart_instance: None,
-            },
-            T0 + 7,
-        );
-        let mut window = calculate(&qt, T0 + 7).expect("window");
+        let (mut qt, mut window) = v1_target(h, query);
         let control = Control {
             received: Instant::now(),
             interrupted: &|| false,

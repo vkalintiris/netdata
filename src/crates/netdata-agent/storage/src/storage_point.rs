@@ -1,7 +1,8 @@
 //! `STORAGE_POINT`, ported from `src/libnetdata/storage-point.h`: what every storage engine query returns.
 
-/// One point of a storage engine query, possibly aggregating several stored samples.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// One point of a storage engine query, possibly aggregating several stored samples. `Default` is all zeroes, like
+/// a `memset()` struct holding one (unset: its count is 0).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct StoragePoint {
     /// The minimum among the aggregated samples.
     pub min: f64,

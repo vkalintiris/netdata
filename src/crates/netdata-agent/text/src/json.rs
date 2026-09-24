@@ -189,6 +189,16 @@ impl JsonWriter {
         self.buf
     }
 
+    /// The buffer, for renderers that append their own bytes between members (the data formatters).
+    pub fn buffer_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.buf
+    }
+
+    /// `wb->json.value_quote`.
+    pub fn value_quote(&self) -> &[u8] {
+        &self.value_quote
+    }
+
     /// The current nesting level (`wb->json.depth`).
     pub fn depth(&self) -> i32 {
         i32::from(self.depth)
@@ -401,6 +411,12 @@ impl JsonWriter {
 
     // --------------------------------------------------------------------------------------------
     // members
+
+    /// `buffer_json_member_add_key_only()`: separator, key and colon, counted as a member; the caller writes the
+    /// value.
+    pub fn member_add_key_only(&mut self, key: impl AsRef<[u8]>) {
+        self.member_with(key.as_ref(), |_| {});
+    }
 
     /// `buffer_json_member_add_string()` with a non-NULL value.
     pub fn member_add_string(&mut self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
