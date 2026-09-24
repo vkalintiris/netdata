@@ -3,8 +3,9 @@
 
 use std::io::{self, Read, Write};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use netdata_agent_evloop::{Context, Event, Interest, Token, Worker};
+use netdata_agent_evloop::{Context, Event, Interest, TimerId, Token, Worker};
 use netdata_agent_web::content_type::ContentType;
 use netdata_agent_web::request::{
     self, Connection, Mode, Request, Settings, Transport, Validation,
@@ -32,6 +33,9 @@ pub struct Shared {
     /// The `[web]` access lists.
     pub acl: WebAcl,
     pub log: acl::Logger,
+    /// `[web] timeout for first request` and `disconnect idle clients after`, in seconds (0 disables).
+    pub first_request_timeout_s: u64,
+    pub idle_timeout_s: u64,
     pub info: api::Info,
     /// `netdata_configured_web_dir`.
     pub web_dir: String,
@@ -140,12 +144,25 @@ struct Client {
     client_ip: String,
     /// `w->acl`.
     acl: u32,
+    /// The `POLLINFO` activity the timeout checks read.
+    activity: Activity,
     recv: RecvBuffer,
     received: Vec<u8>,
     request: Request,
     output: Vec<u8>,
     written: usize,
     close_after_write: bool,
+}
+
+/// `POLLINFO`: when the connection came and last moved data.
+struct Activity {
+    connected: Instant,
+    last_received: Option<Instant>,
+    last_sent: Option<Instant>,
+    recv_count: u64,
+    send_count: u64,
+    /// `POLLINFO_FLAG_FIRST_REQUEST_RECEIVED`.
+    first_request_received: bool,
 }
 
 pub struct WebWorker {
@@ -175,6 +192,11 @@ impl WebWorker {
             shared,
             receivers,
         }
+    }
+
+    /// `checks_every = idle / 3 + 1`, and a pass runs once more than that many seconds have passed.
+    fn checks_every(&self) -> Duration {
+        Duration::from_secs(self.shared.idle_timeout_s / 3 + 2)
     }
 
     fn client_token(&self, slot: usize) -> Token {
@@ -235,6 +257,14 @@ impl WebWorker {
                         stream,
                         client_ip: identity.ip,
                         acl: client_acl,
+                        activity: Activity {
+                            connected: Instant::now(),
+                            last_received: None,
+                            last_sent: None,
+                            recv_count: 0,
+                            send_count: 0,
+                            first_request_received: false,
+                        },
                         recv: RecvBuffer {
                             size: RecvBuffer::INITIAL,
                         },
@@ -296,7 +326,13 @@ impl WebWorker {
                     }
                     Ok(n) => {
                         client.received.truncate(start + n);
-                        match respond(client, &shared, &receivers) {
+                        client.activity.recv_count += 1;
+                        client.activity.last_received = Some(Instant::now());
+                        let outcome = respond(client, &shared, &receivers);
+                        if outcome.is_some() {
+                            client.activity.first_request_received = true;
+                        }
+                        match outcome {
                             Some(Outcome::Reply(bytes)) => {
                                 client.output = bytes;
                                 client.written = 0;
@@ -329,7 +365,11 @@ impl WebWorker {
         };
         while client.written < client.output.len() {
             match client.stream.write(&client.output[client.written..]) {
-                Ok(n) => client.written += n,
+                Ok(n) => {
+                    client.written += n;
+                    client.activity.send_count += 1;
+                    client.activity.last_sent = Some(Instant::now());
+                }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => {
@@ -556,7 +596,39 @@ impl Worker for WebWorker {
             cx.registry()
                 .register(listener, Token(i), Interest::READABLE)?;
         }
+        cx.add_timer(Instant::now() + self.checks_every());
         Ok(())
+    }
+
+    /// The cleanup pass of `poll_events()`: a client that has not completed its first request (and was sent
+    /// nothing) within the first-request timeout, or has moved no data for the idle timeout, is closed.
+    fn timer(&mut self, cx: &mut Context<'_>, _timer: TimerId) {
+        let now = Instant::now();
+        let (first, idle) = (
+            self.shared.first_request_timeout_s,
+            self.shared.idle_timeout_s,
+        );
+        let expired: Vec<usize> = self
+            .clients
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, client)| {
+                let a = &client.as_ref()?.activity;
+                let secs = |t: Instant| now.saturating_duration_since(t).as_secs();
+                let never_asked = !a.first_request_received
+                    && a.send_count == 0
+                    && first > 0
+                    && secs(a.connected) >= first;
+                let last = a.last_received.max(a.last_sent);
+                let idle_expired =
+                    a.recv_count > 0 && idle > 0 && last.is_some_and(|t| secs(t) >= idle);
+                (never_asked || idle_expired).then_some(slot)
+            })
+            .collect();
+        for slot in expired {
+            self.close(cx, slot);
+        }
+        cx.add_timer(now + self.checks_every());
     }
 
     fn event(&mut self, cx: &mut Context<'_>, event: &Event) {

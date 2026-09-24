@@ -669,6 +669,9 @@ impl Conf {
 
 /// What `netdata_conf_section_web()` configures.
 pub struct WebConf {
+    pub disconnect_idle_after_s: i64,
+    pub first_request_timeout_s: i64,
+    pub streaming_rate_s: i64,
     pub respect_do_not_track: bool,
     pub x_frame_options: Option<String>,
     pub acl: WebAcl,
@@ -704,13 +707,11 @@ impl Conf {
     /// `netdata_conf_section_web()`.
     pub fn section_web(&mut self, log: &mut impl FnMut(LogLevel, &str)) -> WebConf {
         let c = &mut self.netdata;
-        // Read in C's order (they are listed in /netdata.conf), applied later: the idle and first-request timeouts come
-        // with the web worker timers, the streaming rate with the receiver's admission pacing.
-        let _disconnect_idle_after_s =
+        let disconnect_idle_after_s =
             c.get_duration_seconds(SECTION_WEB, "disconnect idle clients after", 60);
-        let _first_request_timeout_s =
+        let first_request_timeout_s =
             c.get_duration_seconds(SECTION_WEB, "timeout for first request", 60);
-        let _streaming_rate_s =
+        let streaming_rate_s =
             c.get_duration_seconds(SECTION_WEB, "accept a streaming request every", 0);
         let respect_do_not_track = c.get_boolean(SECTION_WEB, "respect do not track policy", false);
         let x_frame_options = Some(text(c.get(
@@ -837,6 +838,9 @@ impl Conf {
             level as u32
         };
         WebConf {
+            disconnect_idle_after_s,
+            first_request_timeout_s,
+            streaming_rate_s,
             respect_do_not_track,
             x_frame_options,
             acl: WebAcl {

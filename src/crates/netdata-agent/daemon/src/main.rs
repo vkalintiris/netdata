@@ -304,6 +304,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         &mut logger,
     );
     conf.flush_log(&mut logger);
+    receivers.set_streaming_rate(web.streaming_rate_s);
     let shared = Arc::new(server::Shared {
         settings: Settings {
             gzip: web.gzip,
@@ -314,6 +315,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         x_frame_options: web.x_frame_options,
         acl: web.acl,
         log,
+        // C keeps these as int seconds; a negative value disables the check as 0 does.
+        first_request_timeout_s: web.first_request_timeout_s.max(0) as u64,
+        idle_timeout_s: web.disconnect_idle_after_s.max(0) as u64,
         info: api::Info {
             version: build::NETDATA_VERSION,
             machine_guid,

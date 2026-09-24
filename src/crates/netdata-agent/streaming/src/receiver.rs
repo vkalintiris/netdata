@@ -7,7 +7,7 @@
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -105,6 +105,10 @@ pub struct Receivers {
     /// Children per stream thread (`nodes_count`).
     load: Arc<Mutex<Vec<usize>>>,
     log: Logger,
+    /// `[web] accept a streaming request every` (seconds, 0 for no limit).
+    streaming_rate_s: AtomicI64,
+    /// The wall-clock second of the last accepted request under the rate limit (`last_stream_accepted_t`).
+    last_accepted_s: Mutex<i64>,
 }
 
 /// One blocking `send()` bounded by `timeout` (`nd_sock_send_timeout()`): true when everything went out.
@@ -136,7 +140,37 @@ impl Receivers {
             pool,
             load,
             log,
+            streaming_rate_s: AtomicI64::new(0),
+            last_accepted_s: Mutex::new(0),
         }
+    }
+
+    /// Sets `[web] accept a streaming request every`, which is read after the receivers exist.
+    pub fn set_streaming_rate(&self, seconds: i64) {
+        self.streaming_rate_s.store(seconds, Ordering::Relaxed);
+    }
+
+    /// The `web_client_streaming_rate_t` step: at most one request per period is accepted.
+    fn rate_limited(&self) -> Option<i64> {
+        let rate = self.streaming_rate_s.load(Ordering::Relaxed);
+        if rate <= 0 {
+            return None;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        let mut last = self
+            .last_accepted_s
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *last == 0 {
+            *last = now;
+        }
+        if now - *last < rate {
+            return Some(rate - (now - *last));
+        }
+        *last = now;
+        None
     }
 
     /// The part of `stream_receiver_accept_connection()` before the connection is taken over.
@@ -172,8 +206,16 @@ impl Receivers {
         if guid == self.hosts.localhost().machine_guid() {
             return PreAdmission::Refuse(handshake::ERROR_SAME_LOCALHOST);
         }
-        // Virtual nodes (step 14) and the streaming rate limit of `[web]` (step 15) come with vnodes and the [web]
-        // section.
+        // Virtual nodes (step 14) come with vnodes.
+        if let Some(wait_s) = self.rate_limited() {
+            (self.log)(
+                LogLevel::Notice,
+                &format!(
+                    "rejecting streaming connection; rate limit, will accept new connection in {wait_s} secs"
+                ),
+            );
+            return PreAdmission::Reply(handshake::ERROR_BUSY_TRY_LATER, 503);
+        }
         let existing = self.hosts.find_by_guid(&guid);
         let mut age_s = 0;
         let mut stale = None;

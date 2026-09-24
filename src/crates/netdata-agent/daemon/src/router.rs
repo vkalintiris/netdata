@@ -248,6 +248,8 @@ mod tests {
             x_frame_options: None,
             acl: test_acl(),
             log: |_, _| {},
+            first_request_timeout_s: 60,
+            idle_timeout_s: 60,
             hosts: Arc::new(netdata_agent_rrd::host::Hosts::new(
                 netdata_agent_rrd::host::Host::new(
                     "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",
