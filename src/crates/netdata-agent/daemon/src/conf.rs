@@ -770,6 +770,153 @@ pub fn section_db(
     }
 }
 
+impl Conf {
+    /// `set_environment_for_plugins_and_scripts()` (`src/daemon/environment.c`): what plugins and scripts inherit.
+    /// Every required directory is entered (the last `chdir` wins until the caller moves on), and the writable ones
+    /// are created when missing. The error is C's `fatal()` text.
+    pub fn environment_for_plugins(
+        &mut self,
+        update_every: i32,
+        log: &mut impl FnMut(LogLevel, &str),
+    ) -> Result<(), String> {
+        export("NETDATA_UPDATE_EVERY", &update_every.to_string(), log);
+        export("NETDATA_VERSION", build::NETDATA_VERSION, log);
+        export("NETDATA_HOSTNAME", &self.hostname, log);
+        export("NETDATA_HOST_PREFIX", &self.host_prefix, log);
+        let d = &self.dirs;
+        let primary_plugins = d.plugins.first().cloned().unwrap_or_default();
+        for (env, dir, create) in [
+            ("NETDATA_CONFIG_DIR", &d.user_config, None),
+            ("NETDATA_USER_CONFIG_DIR", &d.user_config, None),
+            ("NETDATA_STOCK_CONFIG_DIR", &d.stock_config, None),
+            ("NETDATA_STOCK_DATA_DIR", &d.stock_data, None),
+            ("NETDATA_PLUGINS_DIR", &primary_plugins, None),
+            ("NETDATA_WEB_DIR", &d.web, None),
+            ("NETDATA_CACHE_DIR", &d.cache, Some(0o775)),
+            ("NETDATA_LIB_DIR", &d.varlib, Some(0o775)),
+            ("NETDATA_LOG_DIR", &d.log, Some(0o775)),
+            ("CLAIMING_DIR", &d.cloud, Some(0o770)),
+        ] {
+            verify_required_directory(env, dir, create)?;
+            export(env, dir, log);
+        }
+        let user_dirs = d
+            .plugins
+            .iter()
+            .skip(1)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
+        export("NETDATA_USER_PLUGINS_DIRS", &user_dirs, log);
+        // A NULL default: the key is never created, only marked used when the user wrote it.
+        let port = self.netdata.get(SECTION_WEB, "default port", None);
+        let port = port.map_or_else(|| "19999".to_string(), |p| text(Some(p)));
+        export("NETDATA_LISTEN_PORT", &port, log);
+        let path = format!(
+            "{}:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
+            std::env::var("PATH").unwrap_or_else(|_| "/bin:/usr/bin".to_string())
+        );
+        let path = text(
+            self.netdata
+                .get_path_list(SECTION_ENV_VARS, "PATH", Some(&path)),
+        );
+        export("PATH", &path, log);
+        let python = std::env::var("PYTHONPATH").unwrap_or_default();
+        let python = text(self.netdata.get_path_list(
+            SECTION_ENV_VARS,
+            "PYTHONPATH",
+            Some(&python),
+        ));
+        export("PYTHONPATH", &python, log);
+        export("PYTHONUNBUFFERED", "1", log);
+        export("LC_ALL", "C", log);
+        Ok(())
+    }
+
+    /// The "home" startup step: `[directories] home`, the running user's home unless the key is set, exported as
+    /// `HOME` (root's would be inherited otherwise).
+    pub fn section_home(&mut self, log: &mut impl FnMut(LogLevel, &str)) {
+        let pw_dir = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .ok()
+            .flatten()
+            .map(|u| u.dir.to_string_lossy().into_owned());
+        let default = match pw_dir {
+            Some(dir) if !self.netdata.exists(SECTION_DIRECTORIES, "home") => dir,
+            _ => build::VARLIB_DIR.to_string(),
+        };
+        let home = text(
+            self.netdata
+                .get_path(SECTION_DIRECTORIES, "home", Some(&default)),
+        );
+        export("HOME", &home, log);
+    }
+}
+
+/// `verify_required_directory()`: enter it, or create it when allowed; otherwise explain which part is wrong.
+fn verify_required_directory(env: &str, dir: &str, create: Option<u32>) -> Result<(), String> {
+    use std::os::unix::fs::DirBuilderExt;
+    if !dir.starts_with('/') {
+        return Err(format!(
+            "Invalid directory path (must be an absolute path): '{dir}' ({env})"
+        ));
+    }
+    if std::env::set_current_dir(dir).is_ok() {
+        return Ok(());
+    }
+    if let Some(mode) = create
+        && std::fs::DirBuilder::new().mode(mode).create(dir).is_ok()
+    {
+        return Ok(());
+    }
+    let required = format!("Required directory: '{dir}' ({env})");
+    for (at, _) in dir.match_indices('/').skip(1) {
+        let component = &dir[..at];
+        match std::fs::metadata(component) {
+            Err(_) => {
+                return Err(format!(
+                    "{required} - Missing or inaccessible component: '{component}'"
+                ));
+            }
+            Ok(m) if !m.is_dir() => {
+                return Err(format!(
+                    "{required} - Component '{component}' exists but is not a directory."
+                ));
+            }
+            Ok(_) => {}
+        }
+    }
+    match std::fs::metadata(dir) {
+        Err(_) => return Err(format!("{required} - Missing or inaccessible: '{dir}'")),
+        Ok(m) if !m.is_dir() => {
+            return Err(format!(
+                "{required} - '{dir}' exists but is not a directory."
+            ));
+        }
+        Ok(_) => {}
+    }
+    use nix::unistd::{AccessFlags, access};
+    if access(dir, AccessFlags::R_OK | AccessFlags::X_OK).is_err() {
+        return Err(format!(
+            "{required} - Insufficient permissions for: '{dir}'"
+        ));
+    }
+    Err(format!("{required} - Failed"))
+}
+
+/// `web_server_threading_selection()`: `[web] mode`; anything but `none` is the static-threaded server.
+pub fn web_server_enabled(c: &mut Config) -> bool {
+    text(c.get(SECTION_WEB, "mode", Some("static-threaded"))) != "none"
+}
+
+/// `web server max sockets`, as the web server thread reads it: a quarter of the open-files limit by default, split
+/// evenly between the workers (each C worker reports its share when accept() runs out of descriptors).
+pub fn web_server_max_sockets_per_worker(c: &mut Config, workers: usize) -> usize {
+    use nix::sys::resource::{Resource, getrlimit};
+    let soft = getrlimit(Resource::RLIMIT_NOFILE).map_or(0, |(soft, _)| soft);
+    let max = c.get_number(SECTION_WEB, "web server max sockets", (soft / 4) as i64);
+    (max.max(0) as usize) / workers.max(1)
+}
+
 /// `MIN_LIBUV_WORKER_THREADS` and `MAX_LIBUV_WORKER_THREADS`.
 #[cfg(target_pointer_width = "64")]
 const LIBUV_WORKER_THREADS: (i64, i64) = (16, 1024);
@@ -1217,6 +1364,42 @@ mod tests {
         assert!(c.load(&path, false, None));
         std::fs::remove_file(&path).unwrap();
         c
+    }
+
+    #[test]
+    fn required_directories_are_entered_created_or_explained() {
+        let root = std::env::temp_dir().join(format!("nd-reqdir-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let dir = |rel: &str| root.join(rel).to_string_lossy().into_owned();
+        std::fs::write(root.join("file"), "").unwrap();
+        let created = dir("cache");
+        assert_eq!(
+            verify_required_directory("E", &created, Some(0o775)),
+            Ok(())
+        );
+        assert!(root.join("cache").is_dir());
+        assert_eq!(
+            verify_required_directory("E", "relative", None),
+            Err("Invalid directory path (must be an absolute path): 'relative' (E)".to_string())
+        );
+        let missing = dir("none/deeper");
+        assert_eq!(
+            verify_required_directory("E", &missing, Some(0o775)),
+            Err(format!(
+                "Required directory: '{missing}' (E) - Missing or inaccessible component: '{}'",
+                dir("none")
+            ))
+        );
+        let file = dir("file");
+        assert_eq!(
+            verify_required_directory("E", &file, None),
+            Err(format!(
+                "Required directory: '{file}' (E) - '{file}' exists but is not a directory."
+            ))
+        );
+        std::env::set_current_dir(cwd).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     struct DbCase {

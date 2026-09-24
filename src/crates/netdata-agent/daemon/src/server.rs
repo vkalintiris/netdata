@@ -200,6 +200,8 @@ pub struct WebWorker {
     /// Each listener's ACL (`fds_acl_flags`).
     listener_acls: Vec<u32>,
     clients: Vec<Option<Client>>,
+    /// This worker's share of `[web] web server max sockets`; C only reports it when accept() runs out of descriptors.
+    max_sockets: usize,
     shared: Arc<Shared>,
     receivers: Arc<Receivers>,
 }
@@ -208,6 +210,7 @@ impl WebWorker {
     /// `listeners` (with their ACLs) must be non-blocking; they become this worker's own.
     pub fn new(
         listeners: Vec<(std::net::TcpListener, u32)>,
+        max_sockets: usize,
         shared: Arc<Shared>,
         receivers: Arc<Receivers>,
     ) -> Self {
@@ -219,6 +222,7 @@ impl WebWorker {
                 .collect(),
             listener_acls,
             clients: Vec::new(),
+            max_sockets,
             shared,
             receivers,
         }
@@ -305,9 +309,23 @@ impl WebWorker {
                         close_after_write: false,
                     });
                 }
+                // Another worker won the race.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                // Another worker won the race, or the peer went away.
-                Err(_) => break,
+                Err(e) => {
+                    // poll_events(): the listeners count as used sockets too.
+                    let message = if e.raw_os_error() == Some(nix::errno::Errno::EMFILE as i32) {
+                        let used = self.listeners.len() + self.clients.iter().flatten().count();
+                        format!(
+                            "POLLFD: LISTENER: too many open files - used by this thread {used}, max for this \
+                             thread {}",
+                            self.max_sockets
+                        )
+                    } else {
+                        "POLLFD: LISTENER: accept() failed.".to_string()
+                    };
+                    (self.shared.log)(LogLevel::Error, &message);
+                    break;
+                }
             }
         }
     }

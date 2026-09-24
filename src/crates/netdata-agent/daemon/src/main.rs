@@ -231,12 +231,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     conf.flush_log(&mut logger);
     let db = conf::section_db(&mut conf.netdata, system.page_size, &mut logger);
 
-    // get_system_timezone(), after the hostname and before the listeners and become_daemon(), as in C. No thread has
-    // started yet, so setenv() is sound.
-    if let Err(err) = conf::set_timezone_env(&mut conf.netdata) {
-        log(LogLevel::Error, &format!("TIMEZONE: cannot set TZ: {err}"));
+    // set_environment_for_plugins_and_scripts(): an unusable required directory is C's fatal().
+    if let Err(err) = conf.environment_for_plugins(db.update_every, &mut logger) {
+        log(LogLevel::Error, &err);
+        return 1;
     }
-    let tz = timezone::system_timezone(&mut conf.netdata, std::path::Path::new("/"), server::now());
 
     // cd into the user config dir, so plugins can use relative paths to their config files.
     if std::env::set_current_dir(&conf.dirs.user_config).is_err() {
@@ -247,11 +246,23 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         return 1;
     }
 
+    // get_system_timezone() at the "analytics" step. No thread has started yet, so setenv() is sound.
+    if let Err(err) = conf::set_timezone_env(&mut conf.netdata) {
+        log(LogLevel::Error, &format!("TIMEZONE: cannot set TZ: {err}"));
+    }
+    let tz = timezone::system_timezone(&mut conf.netdata, std::path::Path::new("/"), server::now());
+
     // nd_web_api_init(): the time-grouping limits, read before the listen sockets as in C.
     let grouping_windows = conf::grouping_windows(&mut conf.netdata);
-    let listeners = listen::setup(&mut conf.netdata, &mut logger);
+    // web_server_threading_selection(): with `[web] mode = none` there is no web server at all.
+    let web_enabled = conf::web_server_enabled(&mut conf.netdata);
+    let listeners = if web_enabled {
+        listen::setup(&mut conf.netdata, &mut logger)
+    } else {
+        Vec::new()
+    };
     conf.flush_log(&mut logger);
-    if listeners.is_empty() {
+    if web_enabled && listeners.is_empty() {
         log(
             LogLevel::Error,
             "Cannot setup listen port(s). Is Netdata already running?",
@@ -278,6 +289,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     }
     conf.flush_log(&mut logger);
+    // The "home" step: after the user switch, while there is still one thread.
+    conf.section_home(&mut logger);
 
     let localhost = Host::new(
         &machine_guid,
@@ -353,12 +366,19 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     // netdata_conf_section_web() runs just before C starts its static threads, the web server among them, which
     // then reads its thread count.
     let web = conf.section_web(&mut logger);
-    let web_server_threads = conf::web_query_threads(
-        &mut conf.netdata,
-        conf.threads.cpus as usize,
-        is_parent,
-        &mut logger,
-    );
+    // The web server thread reads its sizing only when it runs.
+    let (web_server_threads, max_sockets) = if web_enabled {
+        let threads = conf::web_query_threads(
+            &mut conf.netdata,
+            conf.threads.cpus as usize,
+            is_parent,
+            &mut logger,
+        );
+        let max_sockets = conf::web_server_max_sockets_per_worker(&mut conf.netdata, threads);
+        (threads, max_sockets)
+    } else {
+        (0, 0)
+    };
     conf.flush_log(&mut logger);
     receivers.set_streaming_rate(web.streaming_rate_s);
     let release_channel =
@@ -409,26 +429,31 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             }
         }
     }
-    let pool = match Pool::spawn(
-        web_server_threads,
-        conf.threads.thread_stack_size,
-        |i| format!("WEB[{}]", i + 1),
-        |i| {
-            server::WebWorker::new(
-                std::mem::take(&mut worker_sockets[i]),
-                Arc::clone(&shared),
-                Arc::clone(&receivers),
-            )
-        },
-    ) {
-        Ok(pool) => pool,
-        Err(err) => {
-            log(
-                LogLevel::Error,
-                &format!("Cannot start the web server threads: {err}"),
-            );
-            return 1;
+    let pool = if web_enabled {
+        match Pool::spawn(
+            web_server_threads,
+            conf.threads.thread_stack_size,
+            |i| format!("WEB[{}]", i + 1),
+            |i| {
+                server::WebWorker::new(
+                    std::mem::take(&mut worker_sockets[i]),
+                    max_sockets,
+                    Arc::clone(&shared),
+                    Arc::clone(&receivers),
+                )
+            },
+        ) {
+            Ok(pool) => Some(pool),
+            Err(err) => {
+                log(
+                    LogLevel::Error,
+                    &format!("Cannot start the web server threads: {err}"),
+                );
+                return 1;
+            }
         }
+    } else {
+        None
     };
     let contexts_worker =
         match rrdcontext::Worker::spawn(Arc::clone(&hosts), conf.threads.thread_stack_size) {
@@ -453,7 +478,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
 
     log(LogLevel::Info, "shutting down");
-    let _ = pool.stop();
+    if let Some(pool) = pool {
+        let _ = pool.stop();
+    }
     let _ = stream_pool.stop();
     contexts_worker.stop();
     if let Some(pidfile) = &pidfile {

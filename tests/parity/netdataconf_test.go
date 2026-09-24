@@ -36,11 +36,9 @@ func init() {
 		"dbengine tier 0 retention size", "dbengine tier 1 retention size", "dbengine tier 2 retention size")
 	pending("contexts engine (extreme cardinality)", "db", "extreme cardinality protection",
 		"extreme cardinality keep instances", "extreme cardinality min ephemerality")
-	pending("D3 [directories] reads", "directories", "home")
 	pending("registry", "directories", "registry")
 	pending("logging (B5)", "logs", "facility", "logs flood protection period", "logs to trigger flood protection",
 		"level", "debug", "daemon", "collector", "access", "health", "debug flags")
-	pending("D3 environment", "environment variables", "PATH", "PYTHONPATH")
 	pending("cloud/ACLK", "cloud", "conversation log", "scope", "query threads", "proxy")
 	pending("ml", "ml", "enabled", "training window", "min training window", "max training vectors",
 		"max samples to smooth", "train every", "number of models per dimension", "delete models older than",
@@ -54,7 +52,6 @@ func init() {
 		"use summary for notifications", "default repeat warning", "default repeat critical",
 		"in memory max health log entries", "health log retention", "script to execute on alarm", "enabled alarms",
 		"run at least every", "postpone alarms during hibernation for", "notification execution timeout")
-	pending("D3 [web] reads", "web", "mode", "web server max sockets")
 	pending("web TLS", "web", "ssl key", "ssl certificate", "tls version", "tls ciphers",
 		"ssl skip certificate verification")
 	pending("bearer tokens", "web", "bearer token protection")
