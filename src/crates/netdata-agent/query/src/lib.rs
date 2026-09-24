@@ -4,5 +4,6 @@
 
 #![forbid(unsafe_code)]
 
+pub mod id;
 pub mod request;
 pub mod tables;
