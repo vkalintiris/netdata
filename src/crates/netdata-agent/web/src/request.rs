@@ -718,7 +718,8 @@ mod tests {
     #[test]
     fn tokens_do_not_accumulate_across_parse_attempts() {
         // A colon-less line keeps the request incomplete; every attempt re-parses the same headers.
-        let mut chunks: Vec<&[u8]> = vec![b"GET / HTTP/1.1\r\nAuthorization: Bearer a\r\nFoo\r\n\r\n"];
+        let mut chunks: Vec<&[u8]> =
+            vec![b"GET / HTTP/1.1\r\nAuthorization: Bearer a\r\nFoo\r\n\r\n"];
         chunks.extend(std::iter::repeat_n(&b"\r\n\r\n"[..], 5));
         let (req, results) = feed(&chunks);
         assert!(results.iter().all(|r| *r == Validation::Incomplete));

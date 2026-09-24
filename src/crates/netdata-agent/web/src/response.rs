@@ -79,7 +79,11 @@ pub fn rfc7231_date(t: i64) -> String {
         secs % 60
     );
     // strftime() into RFC7231_MAX_LENGTH (30) bytes fails when the text and its NUL do not fit: C sends it empty.
-    if text.len() >= 30 { String::new() } else { text }
+    if text.len() >= 30 {
+        String::new()
+    } else {
+        text
+    }
 }
 
 /// `web_client_build_http_header()`; `now` is the wall clock in seconds.
@@ -193,7 +197,10 @@ mod tests {
     #[test]
     fn dates_that_do_not_fit_are_empty() {
         assert_eq!(rfc7231_date(0), "Thu, 01 Jan 1970 00:00:00 GMT");
-        assert_eq!(rfc7231_date(253_402_300_799), "Fri, 31 Dec 9999 23:59:59 GMT");
+        assert_eq!(
+            rfc7231_date(253_402_300_799),
+            "Fri, 31 Dec 9999 23:59:59 GMT"
+        );
         assert_eq!(rfc7231_date(253_402_300_800), "");
     }
 
