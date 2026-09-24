@@ -21,7 +21,7 @@ func streamRequest(query string) []byte {
 // every refusal decided before the host exists, the parent's own GUID, and a second connection for a GUID that is
 // still connected. Compression is not requested: the Rust receiver offers none until its decompressors land (D14).
 func TestStreamHandshake(t *testing.T) {
-	p := StartPair(t, daemon.Options{StreamMemoryMode: "ram"}, parentIdentity)
+	p := StartPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity)
 	key := parentIdentity.StreamKey
 	guid := func(n int) string { return fmt.Sprintf("5a1e0000-0000-4000-8000-%012d", 100+n) }
 	query := func(n int, extra string) string {

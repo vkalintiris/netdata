@@ -47,7 +47,7 @@ func labelsOnly(t *testing.T, b []byte) any {
 // TestContextsAPI streams charts from a fake child into both daemons (ram mode) and compares /api/v1/contexts,
 // /api/v1/context and /api/v3/context for that child while it is connected and after it disconnects.
 func TestContextsAPI(t *testing.T) {
-	p := StartPair(t, daemon.Options{StreamMemoryMode: "ram"}, parentIdentity)
+	p := StartPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity)
 	var conns []*stream.Conn
 	for _, side := range p.Each() {
 		conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, childHost, stream.CapsLive)

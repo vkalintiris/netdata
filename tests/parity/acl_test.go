@@ -63,7 +63,7 @@ func TestWebACL(t *testing.T) {
 	}
 	for name, cfg := range configs {
 		t.Run(name, func(t *testing.T) {
-			p := StartPair(t, daemon.Options{WebDir: webDir, WebExtra: cfg.extra, StreamMemoryMode: "ram"}, parentIdentity)
+			p := StartPair(t, daemon.Options{WebDir: webDir, WebExtra: cfg.extra, StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity)
 			for cname, request := range cfg.cases {
 				t.Run(cname, func(t *testing.T) {
 					var got [2][]byte

@@ -38,7 +38,7 @@ func infoHosts(t *testing.T, base string) map[string]any {
 // TestIngestHostsListed streams one chart from a fake child into both daemons (ram mode) and compares the host
 // members of /api/v1/info while the child is connected and after it disconnects.
 func TestIngestHostsListed(t *testing.T) {
-	p := StartPair(t, daemon.Options{StreamMemoryMode: "ram"}, parentIdentity)
+	p := StartPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity)
 	var conns []*stream.Conn
 	for _, side := range p.Each() {
 		conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, childHost, stream.CapsLive)

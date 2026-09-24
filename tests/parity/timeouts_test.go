@@ -44,7 +44,7 @@ func TestWebTimeouts(t *testing.T) {
 	extra := "    timeout for first request = 2\n" +
 		"    disconnect idle clients after = 3\n" +
 		"    accept a streaming request every = 60\n"
-	p := StartPair(t, daemon.Options{WebExtra: extra, StreamMemoryMode: "ram"}, parentIdentity)
+	p := StartPair(t, daemon.Options{WebExtra: extra, StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity)
 	keepalive := []byte("GET /api/v1/info HTTP/1.1\r\nConnection: keep-alive\r\n\r\n")
 	for _, side := range p.Each() {
 		t.Run(string(side.Role)+"/first-request", func(t *testing.T) {
