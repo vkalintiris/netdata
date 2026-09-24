@@ -179,6 +179,13 @@ func TestDataAPI(t *testing.T) {
 		"past-the-data":    fmt.Sprintf("/api/v1/data?chart=q.a&after=%d&before=%d", base+500, base+600),
 		"cancelled":        chart + "&timeout=-1",
 		"cancelled-jsonp":  chart + "&timeout=-1&format=jsonp",
+		"unknown-keywords": chart + "&points=3&format=nope&group=nope&options=nope,jsonwrap&unknown=1",
+		"tier-too-high":    chart + "&points=3&tier=5&options=jsonwrap",
+		"points-huge":      chart + "&points=100000",
+		"points-negative":  chart + "&points=-1&options=jsonwrap",
+		"after-gt-before":  fmt.Sprintf("/api/v1/data?chart=q.a&after=%d&before=%d&points=3&options=jsonwrap", base+60, base),
+		"overflow":         "/api/v1/data?chart=q.a&after=-9223372036854775808&before=9223372036854775807",
+		"dims-negative":    chart + "&points=3&dims=!a|*&options=jsonwrap",
 	}
 	for _, g := range []string{"min", "max", "sum", "median", "stddev", "cv", "ses", "des", "incremental_sum",
 		"percentile", "trimmed-mean", "extremes", "average", "trimmed-median10"} {
@@ -221,6 +228,11 @@ func TestDataAPI(t *testing.T) {
 		"no-match":           "&points=4&contexts=nothing",
 		"labels-filter":      "&points=4&labels=k:v2",
 		"instances-filter":   "&points=4&instances=q.two",
+		"unknown-keywords":   "&points=3&format=nope&time_group=nope&aggregation=nope&options=nope&unknown=1",
+		"tier-too-high":      "&points=3&tier=5&options=debug",
+		"points-huge":        "&points=100000&format=csv",
+		"labels-negative":    "&points=3&labels=!k:v1",
+		"overflow-window":    "&after=-9223372036854775808&before=9223372036854775807",
 	} {
 		path := v3 + extra
 		if strings.HasSuffix(extra, "&__v2") {
