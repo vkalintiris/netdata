@@ -10,7 +10,7 @@ use netdata_agent_storage::storage_point::StoragePoint;
 
 use crate::finalize::{cardinality_limit, percentage_of_total};
 use crate::groupby::{AddMode, add_metric, finalize, initialize};
-use crate::grouping::Grouping;
+use crate::grouping::{Grouping, Windows};
 use crate::rrdr::{Rrdr, result_flags, value_flags};
 use crate::tables::{TimeGrouping, options};
 use crate::target::{QueryMetric, QueryTarget, metric_status, status};
@@ -556,11 +556,14 @@ fn execute_plan(
     ops.query_point
 }
 
-/// Stops a query between metrics: the client went away (`interrupt_callback`) or `timeout` ran out.
+/// What a run needs from its caller: what stops it between metrics (the client went away, `timeout` ran out) and
+/// the configured time-grouping limits.
 pub struct Control<'a> {
     /// When the request arrived (`qt->timings.received_ut`).
     pub received: Instant,
     pub interrupted: &'a dyn Fn() -> bool,
+    /// The configured SES/DES window limits.
+    pub windows: Windows,
 }
 
 impl Control<'_> {
@@ -580,7 +583,7 @@ fn links(qt: &QueryTarget, d: usize) -> (usize, usize, usize, usize) {
 }
 
 /// `r->time_grouping.create()` for the window.
-fn new_grouping(qt: &QueryTarget, window: &Window) -> Grouping {
+fn new_grouping(qt: &QueryTarget, window: &Window, windows: Windows) -> Grouping {
     Grouping::new(
         qt.request.time_group,
         qt.request.time_group_options.as_deref(),
@@ -588,6 +591,7 @@ fn new_grouping(qt: &QueryTarget, window: &Window) -> Grouping {
         window.points,
         window.resampling_group,
         window.resampling_divisor,
+        windows,
     )
 }
 
@@ -705,7 +709,7 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
         r.dn[d] = rm.state().name;
     }
     r.view.flags |= time_flags(window);
-    let mut grouping = new_grouping(qt, window);
+    let mut grouping = new_grouping(qt, window, control.windows);
     let (mut used, mut nonzero) = (0, 0);
     let mut timer = NodeTimer::new();
     for d in 0..qt.query.len() {
@@ -742,7 +746,7 @@ pub fn run_v2(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> O
     if let Some(last) = grouped.passes.last_mut() {
         last.view.flags |= flags;
     }
-    let mut grouping = new_grouping(qt, window);
+    let mut grouping = new_grouping(qt, window, control.windows);
     let (mut used, mut nonzero) = (0, 0);
     let mut timer = NodeTimer::new();
     for d in 0..qt.query.len() {
@@ -814,6 +818,7 @@ mod tests {
         let control = Control {
             received: Instant::now(),
             interrupted: &|| false,
+            windows: Windows::default(),
         };
         let r = run_v1(&mut qt, &mut window, &control);
         (qt, window, r)
@@ -1012,6 +1017,7 @@ mod tests {
         let control = Control {
             received: Instant::now(),
             interrupted: &|| false,
+            windows: Windows::default(),
         };
         let r = run_v2(&mut qt, &mut window, &control).unwrap();
         let thirty = unpack(pack(30.0, 0));

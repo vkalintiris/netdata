@@ -257,6 +257,7 @@ mod tests {
         let control = Control {
             received: Instant::now(),
             interrupted: &|| false,
+            windows: crate::grouping::Windows::default(),
         };
         let agent = Agent {
             machine_guid: "guid-0",

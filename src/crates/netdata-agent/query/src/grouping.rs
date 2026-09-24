@@ -6,8 +6,19 @@ use netdata_agent_text::parse::str2ndd;
 use crate::rrdr::value_flags::EMPTY as VALUE_EMPTY;
 use crate::tables::TimeGrouping;
 
-/// `[web] ses max tg_des_window` and `des max tg_des_window`.
-pub const DEFAULT_MAX_WINDOW: i64 = 15;
+/// The largest SES and DES windows (`tg_ses_max_window_size`, `tg_des_max_window_size`), from `[web] ses max
+/// tg_des_window` and `des max tg_des_window` (both 15 unless configured above 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Windows {
+    pub ses: i64,
+    pub des: i64,
+}
+
+impl Default for Windows {
+    fn default() -> Self {
+        Windows { ses: 15, des: 15 }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CountifOp {
@@ -221,6 +232,7 @@ impl Grouping {
         points_wanted: u64,
         resampling_group: i64,
         resampling_divisor: f64,
+        windows: Windows,
     ) -> Self {
         use TimeGrouping as G;
         // `tg_ses_window()` / `tg_des_window()`, in doubles as C compares them.
@@ -269,12 +281,12 @@ impl Grouping {
                 s: 0.0,
             },
             G::Ses => State::Ses {
-                alpha: 2.0 / (window(DEFAULT_MAX_WINDOW) + 1.0),
+                alpha: 2.0 / (window(windows.ses) + 1.0),
                 level: 0.0,
                 count: 0,
             },
             G::Des => {
-                let a = 2.0 / (window(DEFAULT_MAX_WINDOW) + 1.0);
+                let a = 2.0 / (window(windows.des) + 1.0);
                 State::Des {
                     alpha: a,
                     beta: a,
@@ -691,7 +703,7 @@ mod tests {
     use super::*;
 
     fn run(method: TimeGrouping, options: Option<&[u8]>, values: &[f64]) -> (f64, u32) {
-        let mut g = Grouping::new(method, options, 1, 10, 1, 1.0);
+        let mut g = Grouping::new(method, options, 1, 10, 1, 1.0, Windows::default());
         for &v in values {
             g.add(v);
         }
@@ -703,7 +715,7 @@ mod tests {
     fn des_restarts_its_level_at_the_second_value() {
         // Window 3 (view group 3): alpha = beta = 0.5. After 1: level = trend = 1. After 2: trend = 1, level = 2,
         // then level = 0.5*2 + 0.5*(2+1) = 2.5, trend = 0.75. After 4: level = 0.5*4 + 0.5*(2.5+0.75) = 3.625.
-        let mut g = Grouping::new(TimeGrouping::Des, None, 3, 1, 1, 1.0);
+        let mut g = Grouping::new(TimeGrouping::Des, None, 3, 1, 1, 1.0, Windows::default());
         for v in [1.0, 2.0, 4.0] {
             g.add(v);
         }
@@ -750,7 +762,15 @@ mod tests {
 
     #[test]
     fn incremental_sum_carries_first_across_rows() {
-        let mut g = Grouping::new(TimeGrouping::IncrementalSum, None, 1, 10, 1, 1.0);
+        let mut g = Grouping::new(
+            TimeGrouping::IncrementalSum,
+            None,
+            1,
+            10,
+            1,
+            1.0,
+            Windows::default(),
+        );
         let mut f = 0;
         g.add(10.0);
         g.add(15.0);
@@ -775,7 +795,7 @@ mod tests {
 
     #[test]
     fn ses_levels_run_across_rows() {
-        let mut g = Grouping::new(TimeGrouping::Ses, None, 1, 3, 1, 1.0);
+        let mut g = Grouping::new(TimeGrouping::Ses, None, 1, 3, 1, 1.0, Windows::default());
         let mut f = 0;
         g.add(4.0);
         let first = g.flush(&mut f);

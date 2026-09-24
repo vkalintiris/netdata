@@ -17,6 +17,8 @@ use netdata_agent_text::simple_pattern::{
 
 use netdata_agent_text::sanitize::rrdlabels_sanitize_value;
 
+use netdata_agent_query::grouping::Windows;
+
 use crate::acl::{AclPattern, WebAcl};
 use crate::build;
 
@@ -758,6 +760,24 @@ pub struct WebConf {
 
 /// The zlib strategies `[web] gzip compression strategy` accepts.
 const GZIP_STRATEGIES: [&str; 5] = ["default", "filtered", "huffman only", "rle", "fixed"];
+
+/// `tg_ses_init()` and `tg_des_init()` (at web API init): `[web] ses max tg_des_window` and `des max tg_des_window`;
+/// a value up to 1 is written back as the default and ignored.
+pub fn grouping_windows(c: &mut Config) -> Windows {
+    let mut windows = Windows::default();
+    for (key, max) in [
+        ("ses max tg_des_window", &mut windows.ses),
+        ("des max tg_des_window", &mut windows.des),
+    ] {
+        let value = c.get_number(SECTION_WEB, key, *max);
+        if value <= 1 {
+            c.set_number(SECTION_WEB, key, *max);
+        } else {
+            *max = value;
+        }
+    }
+    windows
+}
 
 /// The `TZ` part of `get_system_timezone()` (`src/daemon/analytics.c`): without a `TZ` in the environment,
 /// `[environment variables] TZ` (default `:/etc/localtime`, which spares libc a `stat()` per conversion). Local-time

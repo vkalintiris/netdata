@@ -322,6 +322,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     );
     conf.flush_log(&mut logger);
     receivers.set_streaming_rate(web.streaming_rate_s);
+    // nd_web_api_init(): the time-grouping limits.
+    let grouping_windows = conf::grouping_windows(&mut conf.netdata);
     let shared = Arc::new(server::Shared {
         settings: Settings {
             gzip: web.gzip,
@@ -341,6 +343,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         },
         web_dir: conf.dirs.web.clone(),
         hosts: Arc::clone(&hosts),
+        grouping_windows,
     });
     let sockets: Vec<(std::net::TcpListener, u32)> =
         listeners.into_iter().map(|l| (l.socket, l.acl)).collect();

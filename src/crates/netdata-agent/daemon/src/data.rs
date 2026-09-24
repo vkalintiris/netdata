@@ -147,6 +147,7 @@ fn execute(
     let control = Control {
         received,
         interrupted: route.interrupted,
+        windows: route.shared.grouping_windows,
     };
     let response = data_query_execute(&mut qt, &mut window, &control, &agent);
     body.extend_from_slice(&response.body);

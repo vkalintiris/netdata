@@ -40,6 +40,8 @@ pub struct Shared {
     /// `netdata_configured_web_dir`.
     pub web_dir: String,
     pub hosts: Arc<Hosts>,
+    /// The time-grouping SES/DES window limits.
+    pub grouping_windows: netdata_agent_query::grouping::Windows,
 }
 
 /// A handler's answer (`w->response`).

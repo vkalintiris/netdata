@@ -278,3 +278,38 @@ func firstDifference(a, b []byte) string {
 	}
 	return fmt.Sprintf("%s at byte %d\noracle:    %s\ncandidate: %s", where, i, cut(ba), cut(bb))
 }
+
+// TestDataGroupingWindows configures `[web] ses max tg_des_window` and `des max tg_des_window` (one of them at 1,
+// which keeps the default) and compares the ses/des answers.
+func TestDataGroupingWindows(t *testing.T) {
+	p := StartPair(t, daemon.Options{
+		StreamMemoryMode: "ram",
+		StorageTiers:     1,
+		WebExtra:         "    ses max tg_des_window = 3\n    des max tg_des_window = 1\n",
+	}, parentIdentity)
+	base := time.Now().Unix()/60*60 - 120
+	for _, side := range p.Each() {
+		conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, childHost, stream.CapsLive)
+		if err != nil {
+			t.Fatalf("%s: %v", side.Role, err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		streamDataFixture(t, conn, base)
+	}
+	time.Sleep(2500 * time.Millisecond)
+	host := "/host/" + childHost.Hostname
+	for _, q := range []string{"group=ses&points=60", "group=des&points=60", "group=ses&points=7", "group=ema&points=1"} {
+		path := fmt.Sprintf("%s/api/v1/data?chart=q.a&after=%d&before=%d&%s", host, base, base+60, q)
+		var got [2][]byte
+		for i, side := range p.Each() {
+			b, err := rawExchange(side.Daemon.Addr, []byte("GET "+path+" HTTP/1.1\r\n\r\n"), 2*time.Second)
+			if err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			got[i] = maskTimings(maskRaw(b))
+		}
+		if !bytes.Equal(got[0], got[1]) {
+			t.Errorf("%s: responses differ\n%s", q, firstDifference(got[0], got[1]))
+		}
+	}
+}
