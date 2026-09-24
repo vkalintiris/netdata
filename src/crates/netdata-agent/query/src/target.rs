@@ -656,18 +656,21 @@ fn bounded(mut s: String) -> String {
     s
 }
 
-/// `scope_nodes` and `nodes` match a host by hostname, machine GUID, then its lowercase node id.
+/// `query_scope_foreach_host()`: `scope_nodes` and `nodes` match a host by hostname, machine GUID, then its
+/// lowercase node id; the first match that is not NOT decides.
 fn host_matches(sp: &SimplePattern, host: &Host) -> bool {
-    if sp.matches(host.hostname().as_bytes()) || sp.matches(host.machine_guid().as_bytes()) {
-        return true;
+    let m = |s: &[u8]| sp.matches_extract(s, 0).0;
+    let mut r = m(host.hostname().as_bytes());
+    if r == SimplePatternResult::NotMatched {
+        r = m(host.machine_guid().as_bytes());
     }
     let id = host.node_id();
-    if id == [0; 16] {
-        return false;
+    if r == SimplePatternResult::NotMatched && id != [0; 16] {
+        let mut s = Vec::new();
+        print_uuid_lower(&mut s, &id);
+        r = m(&s);
     }
-    let mut s = Vec::new();
-    print_uuid_lower(&mut s, &id);
-    sp.matches(&s)
+    r == SimplePatternResult::MatchedPositive
 }
 
 /// `query_target_create()` up to the window calculation. `now_s` is the wall clock (`now_realtime_sec()`).
@@ -958,6 +961,15 @@ mod tests {
         assert!(v2(&h, "scope_contexts=nope").nodes.is_empty());
         // `nodes` promotes to the scope: a non-matching host is skipped.
         assert!(v2(&h, "nodes=other").nodes.is_empty());
+        // The first identifier the pattern matches decides, even negatively; later identifiers are not tried.
+        for query in [
+            "nodes=!child,*",
+            "scope_nodes=!child,*",
+            "nodes=!guid-1,guid-*",
+        ] {
+            assert!(v2(&h, query).nodes.is_empty(), "{query}");
+        }
+        assert_eq!(v2(&h, "nodes=!other,*").nodes.len(), 1);
         // `instances` is not promoted: a non-matching instance stays, with its dimensions excluded.
         let qt = v2(&h, "instances=nope");
         assert!(qt.query.is_empty());
