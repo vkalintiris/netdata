@@ -49,15 +49,16 @@ func TestWebTimeouts(t *testing.T) {
 	for _, side := range p.Each() {
 		t.Run(string(side.Role)+"/first-request", func(t *testing.T) {
 			// C's first cleanup pass can come several passes late; seen up to ~9s.
+			// Activity is compared in whole seconds, so a timeout of N can fire from just over N-1 seconds.
 			d := closedWithin(t, side.Daemon.Addr, nil, 16*time.Second)
-			if d < 2*time.Second || d > 15*time.Second {
-				t.Errorf("closed after %v, want 2s..15s (0 = never)", d)
+			if d < 1*time.Second || d > 15*time.Second {
+				t.Errorf("closed after %v, want 1s..15s (0 = never)", d)
 			}
 		})
 		t.Run(string(side.Role)+"/idle", func(t *testing.T) {
 			d := closedWithin(t, side.Daemon.Addr, keepalive, 14*time.Second)
-			if d < 3*time.Second || d > 10*time.Second {
-				t.Errorf("closed after %v, want 3s..10s (0 = never)", d)
+			if d < 2*time.Second || d > 10*time.Second {
+				t.Errorf("closed after %v, want 2s..10s (0 = never)", d)
 			}
 		})
 	}
