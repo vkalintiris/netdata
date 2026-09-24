@@ -58,6 +58,11 @@ const (
 )
 
 func TestLayer4ThreeTierJoin(t *testing.T) {
+	skipIfNotApplicable(t,
+		contractScope{"L4/three-tier-join-grid", ""},
+		contractScope{"L4/three-tier-condition-groupings", ""},
+		contractScope{"CASE-037/rate-volume-across-three-tier-cadence-query", ""},
+	)
 	completeSetup := trackInfrastructureSetup(
 		t, infrastructureFailures, "layer4d-shared-fixture/setup")
 

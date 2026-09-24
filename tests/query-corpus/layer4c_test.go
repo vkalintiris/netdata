@@ -247,6 +247,16 @@ func perTierRetention(t *testing.T, doc map[string]any) []daemon.Retention {
 }
 
 func TestLayer4PlanSwitching(t *testing.T) {
+	skipIfNotApplicable(t,
+		contractScope{"L4/plan-switching", ""},
+		contractScope{"CASE-026/totals-survive-a-plan-switch", ""},
+		contractScope{"CASE-026/partial-evidence-survives-a-plan-switch", ""},
+		contractScope{"CASE-031/rate-volume-across-an-automatic-seam", ""},
+		contractScope{"CASE-036/absolute-across-plan-seam", ""},
+		contractScope{"CASE-038/higher-tier-only-rate-volume", ""},
+		contractScope{"CASE-038/higher-tier-only-rate-partial-evidence", ""},
+		contractScope{"CASE-033/anomaly-rate-counts-samples-in-the-row", "plan-seam-source"},
+	)
 	completeSetup := trackInfrastructureSetup(
 		t, infrastructureFailures, "layer4c-shared-fixture/setup")
 

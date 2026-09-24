@@ -141,7 +141,7 @@ func TestCase039SparseActiveMetricAtHotEdge(t *testing.T) {
 				t.Logf("latest %s changed the requested timestamp grid", label)
 				latestOK = false
 			}
-			if !assertTierPresence(t, latestDoc, []bool{false, false, false}) {
+			if !assertTierPresence(t, latestDoc, noTierReads()) {
 				t.Logf("latest %s did not use the collector-cache fast path", label)
 				latestOK = false
 			}
@@ -205,7 +205,7 @@ func TestCase039SparseActiveMetricAtHotEdge(t *testing.T) {
 		t.Logf("latest inclusive interval boundary changed the requested timestamp grid")
 		latestOK = false
 	}
-	if !assertTierPresence(t, equalDoc, []bool{false, false, false}) {
+	if !assertTierPresence(t, equalDoc, noTierReads()) {
 		t.Logf("latest inclusive interval boundary did not use the collector-cache fast path")
 		latestOK = false
 	}
@@ -223,7 +223,7 @@ func TestCase039SparseActiveMetricAtHotEdge(t *testing.T) {
 		t.Logf("latest expired interval did not return the canonical empty result")
 		latestOK = false
 	}
-	if !assertTierPresence(t, expiredDoc, []bool{false, false, false}) {
+	if !assertTierPresence(t, expiredDoc, noTierReads()) {
 		t.Logf("latest expired interval unexpectedly read storage tiers")
 		latestOK = false
 	}

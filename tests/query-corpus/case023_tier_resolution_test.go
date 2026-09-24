@@ -35,9 +35,20 @@ func c023ResolutionBase() int64 {
 //   - counter: one real restart inside the third tier-2 window;
 //   - nonbinary: 20 zero, 20 five, and 20 ten samples per tier-1 record.
 func c023ResolutionFixture() fixture.Chart {
+	return c023ResolutionChart("fixture.c023resolution", c023ResolutionPushWindows*3600)
+}
+
+// c023UpsamplingFixture is the first tier-2 window of the resolution fixture
+// alone (availability all-one, the counter rising), small enough for a ram
+// ring.
+func c023UpsamplingFixture() fixture.Chart {
+	return c023ResolutionChart("fixture.c023upsampling", 3600)
+}
+
+func c023ResolutionChart(id string, samples int) fixture.Chart {
 	ch := fixture.Chart{
-		ID: "fixture.c023resolution", Title: "fleet grouping tier resolution",
-		Units: "units", Family: "fixture", Context: "fixture.c023resolution",
+		ID: id, Title: "fleet grouping tier resolution",
+		Units: "units", Family: "fixture", Context: id,
 		UpdateEvery: c023ResolutionUE,
 		// settleAndVerify compares the storage_number round trip before the
 		// matrix; decimal reciprocal noise is below 1e-12.
@@ -50,7 +61,6 @@ func c023ResolutionFixture() fixture.Chart {
 	}
 
 	base := c023ResolutionBase()
-	samples := c023ResolutionPushWindows * 3600
 	for i := 1; i <= samples; i++ {
 		ts := base + int64(i*c023ResolutionUE)
 		window := (i - 1) / 3600
@@ -774,6 +784,7 @@ func c023PreviousDrops(
 }
 
 type c023ResolutionQuerySpec struct {
+	host      string
 	context   string
 	tier      int
 	after     int64
@@ -794,7 +805,7 @@ func c023ResolutionQuery(
 	params.Set("options", "jsonwrap|unaligned")
 	params.Set("time_group_options", spec.options)
 	params.Set("scope_dimensions", spec.dimension)
-	doc, err := td.DataV3("c023-resolution", params)
+	doc, err := td.DataV3(spec.host, params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -820,11 +831,10 @@ func testCase023TierResolutionMatrix(t *testing.T) {
 	const sourceContract = "CASE-023/tier-resolution-source"
 	contracts := map[string]bool{
 		sourceContract: true,
-		"CASE-023/tier-resolution-percentage-of-time":     true,
-		"CASE-023/tier-resolution-percentage-of-samples":  true,
-		"CASE-023/tier-resolution-number-of-times":        true,
-		"CASE-023/tier-resolution-number-of-flaps":        true,
-		"CASE-023/tier-resolution-slow-metric-upsampling": true,
+		"CASE-023/tier-resolution-percentage-of-time":    true,
+		"CASE-023/tier-resolution-percentage-of-samples": true,
+		"CASE-023/tier-resolution-number-of-times":       true,
+		"CASE-023/tier-resolution-number-of-flaps":       true,
 	}
 	for contract := range contracts {
 		registerContract(t, contract)
@@ -843,7 +853,7 @@ func testCase023TierResolutionMatrix(t *testing.T) {
 	run := func(contract string, tier, points int, group, options, dimension string, want []expectedColumnPoint) {
 		t.Helper()
 		doc, cols := c023ResolutionQuery(t, c023ResolutionQuerySpec{
-			context: ch.Context, tier: tier, after: after, before: before, points: points,
+			host: "c023-resolution", context: ch.Context, tier: tier, after: after, before: before, points: points,
 			group: group, options: options, dimension: dimension,
 		})
 		label := "tier " + strconv.Itoa(tier) + ", points " + strconv.Itoa(points) +
@@ -905,12 +915,33 @@ func testCase023TierResolutionMatrix(t *testing.T) {
 		}
 	}
 
-	// A short forced-tier0 window makes the 10-second source records feed
-	// 5-second result rows. This is the slow-metric upsampling shape that the
-	// long matrix above cannot reach: every covered row must stay numeric,
-	// while event groupings must not invent transitions or counter drops.
-	upsampleAfter := after
-	upsampleBefore := after + 120
+	for _, contract := range []string{
+		sourceContract,
+		"CASE-023/tier-resolution-percentage-of-time",
+		"CASE-023/tier-resolution-percentage-of-samples",
+		"CASE-023/tier-resolution-number-of-times",
+		"CASE-023/tier-resolution-number-of-flaps",
+	} {
+		assertContract(t, contract, contracts[contract])
+	}
+}
+
+// TestCase023SlowMetricUpsampling: a short forced-tier0 window makes the
+// 10-second source records feed 5-second result rows. This is the slow-metric
+// upsampling shape that the long matrix cannot reach: every covered row must
+// stay numeric, while event groupings must not invent transitions or counter
+// drops.
+func TestCase023SlowMetricUpsampling(t *testing.T) {
+	const contract = "CASE-023/tier-resolution-slow-metric-upsampling"
+	registerContract(t, contract)
+
+	ch := c023UpsamplingFixture()
+	pushLiveBurst(t, "c023-upsampling", guid(322), ch)
+	settleAndVerify(t, "c023-upsampling", ch)
+
+	held := true
+	upsampleAfter := c023ResolutionBase()
+	upsampleBefore := upsampleAfter + 120
 	const upsamplePoints = 24
 	upsampleWant := func(value float64) []expectedColumnPoint {
 		want := make([]expectedColumnPoint, upsamplePoints)
@@ -928,39 +959,28 @@ func testCase023TierResolutionMatrix(t *testing.T) {
 		{"number-of-flaps", "==1", "availability", 0},
 		{"number-of-times", "<previous", "counter", 0},
 	} {
-		const contract = "CASE-023/tier-resolution-slow-metric-upsampling"
 		doc, cols := c023ResolutionQuery(t, c023ResolutionQuerySpec{
-			context: ch.Context, tier: 0, after: upsampleAfter, before: upsampleBefore,
+			host: "c023-upsampling", context: ch.Context, tier: 0, after: upsampleAfter, before: upsampleBefore,
 			points: upsamplePoints,
 			group:  tc.group, options: tc.options, dimension: tc.dimension,
 		})
 		label := "tier 0 upsampling, " + tc.group + "(" + tc.options + "), " + tc.dimension
 		if !assertSelectedTier(t, doc, 0) {
 			t.Logf("%s: selected-tier proof failed", label)
-			contracts[contract] = false
+			held = false
 		}
 		if !assertExactView(t, doc, upsampleAfter, upsampleBefore, 5) {
 			t.Logf("%s: view grid is wrong", label)
-			contracts[contract] = false
+			held = false
 		}
 		if !assertOnlyColumn(t, cols, tc.dimension) {
 			t.Logf("%s: result contains the wrong columns", label)
-			contracts[contract] = false
+			held = false
 		}
 		if !assertExactColumn(t, cols, tc.dimension, upsampleWant(tc.value), 0) {
 			t.Logf("%s: exact covered-row oracle failed", label)
-			contracts[contract] = false
+			held = false
 		}
 	}
-
-	for _, contract := range []string{
-		sourceContract,
-		"CASE-023/tier-resolution-percentage-of-time",
-		"CASE-023/tier-resolution-percentage-of-samples",
-		"CASE-023/tier-resolution-number-of-times",
-		"CASE-023/tier-resolution-number-of-flaps",
-		"CASE-023/tier-resolution-slow-metric-upsampling",
-	} {
-		assertContract(t, contract, contracts[contract])
-	}
+	assertContract(t, contract, held)
 }

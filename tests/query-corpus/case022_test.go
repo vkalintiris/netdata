@@ -186,7 +186,7 @@ func TestCase022TimeGroupLatest(t *testing.T) {
 			"after": strconv.FormatInt(fastAfter, 10), "before": strconv.FormatInt(fastBefore, 10),
 			"points": "1", "options": "unaligned",
 		})
-		ok := assertTierPresence(t, resp, []bool{false, false, false})
+		ok := assertTierPresence(t, resp, noTierReads())
 		ok = queryTimestampGridExact(t, resp, queryExpectedVirtualGrid(t, fastAfter, fastBefore, 1, false)) && ok
 		cols, columnsOK := decode(t, resp, "plain", "big", "neg")
 		ok = columnsOK && ok
@@ -203,7 +203,7 @@ func TestCase022TimeGroupLatest(t *testing.T) {
 			"after": strconv.FormatInt(fastAfter, 10), "before": strconv.FormatInt(fastBefore, 10),
 			"points": "1", "options": "absolute|unaligned",
 		})
-		ok := assertTierPresence(t, resp, []bool{false, false, false})
+		ok := assertTierPresence(t, resp, noTierReads())
 		cols, columnsOK := decode(t, resp, "plain", "big", "neg")
 		ok = columnsOK && ok
 		ok = assertExactColumn(t, cols, "plain", []expectedColumnPoint{wantNumberAt(fastBefore, 10)}, 0) && ok
@@ -218,7 +218,7 @@ func TestCase022TimeGroupLatest(t *testing.T) {
 		resp := get(t, map[string]string{
 			"after": strconv.FormatInt(fixture.T0, 10), "before": "0", "points": "1",
 		})
-		ok := assertTierPresence(t, resp, []bool{false, false, false})
+		ok := assertTierPresence(t, resp, noTierReads())
 		ok = queryTimestampGridExact(t, resp, queryExpectedGrid{
 			after: fixture.T0, before: fixture.T0 + 12, updateEvery: 13, rows: 1,
 		}) && ok

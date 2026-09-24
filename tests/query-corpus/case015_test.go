@@ -24,6 +24,15 @@ import (
 
 const case015Points = 30000
 
+// case015LivePoints fits the live fixture in a ram ring (3600 rounded up to whole pages), since settleAndVerify reads
+// every point back; the burst stays large enough to be queued when the connection closes.
+func case015LivePoints() int {
+	if activeProfile.StreamMemoryMode != "" {
+		return 3000
+	}
+	return case015Points
+}
+
 func case015Verify(t *testing.T, hostname string, ch fixture.Chart) {
 	t.Helper()
 	settleAndVerify(t, hostname, ch)
@@ -32,7 +41,7 @@ func case015Verify(t *testing.T, hostname string, ch fixture.Chart) {
 func TestCase015LiveDisconnectDiscard(t *testing.T) {
 	trackContract(t, "CASE-015/live-disconnect-discard")
 
-	ch := fixture.FullPalette("fixture.c015live", "fixture.c015live", fixture.T0, case015Points)
+	ch := fixture.FullPalette("fixture.c015live", "fixture.c015live", fixture.T0, case015LivePoints())
 
 	conn, err := stream.Connect(td.Addr, td.StreamKey,
 		stream.HostInfo{Hostname: "c015-live", MachineGUID: guid(15)}, stream.CapsLive)

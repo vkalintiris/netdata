@@ -231,9 +231,11 @@ func TestOffGridTimestamps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ret.FirstEntry != ch.FirstT() || ret.LastEntry != ch.LastT() {
+	// A ram ring reports the interval before its first sample; both ends stay off the grid.
+	wantFirst := td.ExpectedFirstEntry(ch.FirstT(), ch.LastT(), ue)
+	if ret.FirstEntry != wantFirst || ret.LastEntry != ch.LastT() {
 		t.Errorf("retention [%d,%d], want the pushed off-grid [%d,%d] — storage must not re-time samples",
-			ret.FirstEntry, ret.LastEntry, ch.FirstT(), ch.LastT())
+			ret.FirstEntry, ret.LastEntry, wantFirst, ch.LastT())
 	}
 
 	snap := int64(ue - fixture.T0%ue) // +10 for T0%30=20

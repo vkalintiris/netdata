@@ -68,9 +68,7 @@ func pushDedicatedChart(
 	return closeConn
 }
 
-func pushStorageBackendFixture(
-	t *testing.T, dd *daemon.Daemon, machineGUID string, expectedFirst int64,
-) func() error {
+func pushStorageBackendFixture(t *testing.T, dd *daemon.Daemon, machineGUID string) func() error {
 	t.Helper()
 
 	ch := fixture.Series(storageBackendContext, storageBackendContext, fixture.T0, 6, 1,
@@ -87,7 +85,7 @@ func pushStorageBackendFixture(
 
 	closeConn := pushDedicatedChart(t, dd, storageBackendHost, machineGUID, ch)
 	if _, err := dd.WaitRetention(
-		storageBackendHost, storageBackendContext, expectedFirst, ch.LastT(), 15*time.Second); err != nil {
+		storageBackendHost, storageBackendContext, ch.FirstT(), ch.LastT(), 15*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	return closeConn
@@ -191,12 +189,7 @@ func TestStorageBackendGapState(t *testing.T) {
 			dd := startDedicatedStorageDaemon(t, daemon.Options{
 				StorageTiers: 1, DBEnginePageType: tc.pageType, StreamMemoryMode: tc.memory,
 			})
-			expectedFirst := int64(fixture.T0 + 1)
-			if tc.memory == "ram" || tc.memory == "alloc" {
-				// The legacy ring reports the interval preceding its first stored sample.
-				expectedFirst = fixture.T0
-			}
-			closeFixture := pushStorageBackendFixture(t, dd, guid(tc.guidIdx), expectedFirst)
+			closeFixture := pushStorageBackendFixture(t, dd, guid(tc.guidIdx))
 			if tc.restart {
 				if err := closeFixture(); err != nil {
 					t.Fatal(err)

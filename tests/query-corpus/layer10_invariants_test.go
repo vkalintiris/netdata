@@ -264,6 +264,7 @@ func l10Fixture(t *testing.T) {
 }
 
 func TestL10QueryResultGuards(t *testing.T) {
+	pinCorpusProfile(t, "dbengine") // the per_tier mock carries three tiers
 	spec := l10QuerySpec{
 		requestedGroup: "number-of-times",
 		canonicalGroup: "number-of-times",
@@ -838,6 +839,9 @@ func TestLayer10NoHolesInsideData(t *testing.T) {
 			{tier: 1, points: (before - after) / 300, what: "tier 1, 300s buckets"},
 			{tier: 1, points: (before - after) / 600, what: "tier 1, 600s buckets"},
 		} {
+			if probe.tier >= activeProfile.StorageTiers {
+				continue
+			}
 			result := l10Query(t, l10QuerySpec{
 				requestedGroup: group,
 				tier:           probe.tier,
@@ -961,7 +965,7 @@ func TestLayer10OrderStatisticsStayInRange(t *testing.T) {
 		}
 		group := r.Canonical[c]
 
-		for _, tier := range []int{0, 1} {
+		for _, tier := range activeProfile.filterTiers([]int{0, 1}) {
 			result := l10Query(t, l10QuerySpec{
 				requestedGroup: group,
 				tier:           tier,
@@ -1022,7 +1026,7 @@ func TestLayer10DimensionsAreIndependent(t *testing.T) {
 	for _, c := range r.Order {
 		group := r.Canonical[c]
 
-		for _, tier := range []int{0, 1} {
+		for _, tier := range activeProfile.filterTiers([]int{0, 1}) {
 			togetherResult := l10Query(t, l10QuerySpec{
 				requestedGroup: group,
 				tier:           tier,
@@ -1194,7 +1198,7 @@ func TestLayer10TotalsAreExactAcrossZoom(t *testing.T) {
 		}
 		group := r.Canonical[c]
 
-		for _, tier := range []int{0, 1} {
+		for _, tier := range activeProfile.filterTiers([]int{0, 1}) {
 			for _, points := range []int64{20, 60, 300, 1200} {
 				result := l10Query(t, l10QuerySpec{
 					requestedGroup: group,
@@ -1552,7 +1556,7 @@ func TestLayer10BucketsAreOrderedAndUnique(t *testing.T) {
 	ok := true
 	for _, c := range r.Order {
 		group := r.Canonical[c]
-		for _, tier := range []int{0, 1} {
+		for _, tier := range activeProfile.filterTiers([]int{0, 1}) {
 			for _, points := range []int64{7, 60, 300} {
 				result := l10Query(t, l10QuerySpec{
 					requestedGroup: group,
@@ -1741,7 +1745,7 @@ func TestLayer10TotalsAreExactOverGapsAndOffGrid(t *testing.T) {
 			}
 			group := r.Canonical[c]
 
-			for _, tier := range []int{0, 1} {
+			for _, tier := range activeProfile.filterTiers([]int{0, 1}) {
 				for _, points := range []int64{20, 60, 300, 1200} {
 					result := l10Query(t, l10QuerySpec{
 						host:               "l10gap",
@@ -1821,7 +1825,7 @@ func TestLayer10AnomalyBitAnswersAboutRates(t *testing.T) {
 		}
 		group := r.Canonical[c]
 
-		for _, tier := range []int{0, 1} {
+		for _, tier := range activeProfile.filterTiers([]int{0, 1}) {
 			for _, points := range []int64{20, 300, 1200} {
 				result := l10Query(t, l10QuerySpec{
 					host:               "l10gap",

@@ -159,6 +159,7 @@ func trackContractComponent(t *testing.T, name, component string) {
 	if err := validateContractComponent(name, component); err != nil {
 		t.Fatal(err)
 	}
+	skipNotApplicable(t, name, component)
 
 	t.Cleanup(func() {
 		contractResults.record(name, component, !t.Failed(), t.Skipped())
@@ -179,6 +180,7 @@ func registerContractComponent(t *testing.T, name, component string) {
 	if err := validateContractComponent(name, component); err != nil {
 		t.Fatal(err)
 	}
+	skipNotApplicable(t, name, component)
 
 	contractResults.register(name, component)
 }
@@ -199,6 +201,7 @@ func assertContract(t *testing.T, name string, held bool) {
 	if err := validateContractComponent(name, defaultContractComponent); err != nil {
 		t.Fatal(err)
 	}
+	skipNotApplicable(t, name, defaultContractComponent)
 
 	contractResults.record(name, defaultContractComponent, held, false)
 	if held {
@@ -214,17 +217,43 @@ type contractRunSummary struct {
 	evaluated  int
 	broken     []string
 	incomplete []string
+	// profile names the corpus profile when it has not-applicable scopes; notApplicable lists them as report lines
+	// and wholeNA counts the contracts with no applicable scope, which leave the applicable total.
+	profile       string
+	notApplicable []string
+	wholeNA       int
 }
 
 func (l *contractLedger) summarize(cases map[string]ManifestCase) contractRunSummary {
+	return l.summarizeProfile(cases, corpusProfile{})
+}
+
+// summarizeProfile leaves the profile's not-applicable scopes out of evaluation and completeness, whatever ran.
+func (l *contractLedger) summarizeProfile(cases map[string]ManifestCase, p corpusProfile) contractRunSummary {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	var summary contractRunSummary
+	if len(p.notApplicable) > 0 {
+		summary.profile = p.Name
+	}
+	notApplicable := func(scope, reason string) {
+		summary.notApplicable = append(summary.notApplicable,
+			fmt.Sprintf("%s  n/a (profile %s: %s)", scope, p.Name, reason))
+	}
 	for name, mc := range cases {
+		if reason, ok := p.notApplicable[contractScope{name, ""}]; ok {
+			summary.wholeNA++
+			notApplicable(name, reason)
+			continue
+		}
 		complete := true
 		broken := false
 		for _, component := range requiredContractComponents(mc) {
+			if reason, ok := p.notApplicable[contractScope{name, component}]; ok {
+				notApplicable(name+"/"+component, reason)
+				continue
+			}
 			observation, ok := l.results[name][component]
 			if !ok || !observation.evaluated {
 				complete = false
@@ -248,34 +277,53 @@ func (l *contractLedger) summarize(cases map[string]ManifestCase) contractRunSum
 
 	sort.Strings(summary.broken)
 	sort.Strings(summary.incomplete)
+	sort.Strings(summary.notApplicable)
 	return summary
 }
 
 // contractSummary is printed once, after every test has run. complete is true
-// only when every manifest contract and each of its required scopes ran.
+// only when every applicable manifest contract and each of its applicable
+// required scopes ran.
 func contractSummary(includeIncompleteDetails bool) (report string, complete bool) {
-	summary := contractResults.summarize(manifest)
+	summary := contractResults.summarizeProfile(manifest, activeProfile)
 	return formatContractSummary(summary, len(manifest), includeIncompleteDetails)
 }
 
 func formatContractSummary(summary contractRunSummary, total int, includeIncompleteDetails bool) (report string, complete bool) {
 	complete = len(summary.incomplete) == 0
 
+	// With a profile that has not-applicable scopes, every count is of the applicable contracts.
+	contracts := "contracts"
+	if summary.wholeNA > 0 {
+		total -= summary.wholeNA
+		contracts = "applicable contracts"
+	}
+
 	var b strings.Builder
+	if len(summary.notApplicable) > 0 {
+		fmt.Fprintf(&b, "query contract corpus: profile %s: %d contract(s) and %d component scope(s) not applicable\n",
+			summary.profile, summary.wholeNA, len(summary.notApplicable)-summary.wholeNA)
+		if includeIncompleteDetails {
+			for _, line := range summary.notApplicable {
+				fmt.Fprintf(&b, "  N/A      %s\n", line)
+			}
+		}
+	}
+
 	if complete && len(summary.broken) == 0 {
-		fmt.Fprintf(&b, "query contract corpus: all %d contracts hold\n", total)
+		fmt.Fprintf(&b, "query contract corpus: all %d %s hold\n", total, contracts)
 		return b.String(), true
 	}
 
 	if !complete {
-		fmt.Fprintf(&b, "\nquery contract corpus: %d of %d contracts fully evaluated; %d required scope(s) did not run\n",
-			summary.evaluated, total, len(summary.incomplete))
+		fmt.Fprintf(&b, "\nquery contract corpus: %d of %d %s fully evaluated; %d required scope(s) did not run\n",
+			summary.evaluated, total, contracts, len(summary.incomplete))
 	}
 
 	if len(summary.broken) > 0 {
 		if complete {
-			fmt.Fprintf(&b, "\nquery contract corpus: %d of %d contracts BROKEN\n",
-				len(summary.broken), total)
+			fmt.Fprintf(&b, "\nquery contract corpus: %d of %d %s BROKEN\n",
+				len(summary.broken), total, contracts)
 		} else {
 			fmt.Fprintf(&b, "query contract corpus: %d contract(s) reported BROKEN\n",
 				len(summary.broken))

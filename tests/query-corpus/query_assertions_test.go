@@ -10,8 +10,6 @@ import (
 	"github.com/netdata/netdata/tests/query-corpus/canon"
 )
 
-const queryCorpusStorageTiers = 3
-
 // expectedColumnPoint is the exact fixture-derived shape of one json2
 // dimension point. A nil Value means the row must be null and carry EMPTY.
 type expectedColumnPoint struct {
@@ -767,12 +765,12 @@ func assertSelectedTier(t *testing.T, doc map[string]any, selected int) bool {
 	t.Helper()
 
 	points, valid := strictTierPoints(t, doc)
-	if len(points) != queryCorpusStorageTiers {
+	if len(points) != activeProfile.StorageTiers {
 		t.Logf("db.per_tier has tiers %v, want exactly tiers 0..%d",
-			points, queryCorpusStorageTiers-1)
+			points, activeProfile.StorageTiers-1)
 		valid = false
 	}
-	for tier := 0; tier < queryCorpusStorageTiers; tier++ {
+	for tier := 0; tier < activeProfile.StorageTiers; tier++ {
 		if _, has := points[tier]; !has {
 			t.Logf("db.per_tier is missing configured tier %d", tier)
 			valid = false
@@ -797,6 +795,7 @@ func assertSelectedTier(t *testing.T, doc map[string]any, selected int) bool {
 }
 
 func TestQueryAssertionGuardsDetectMutations(t *testing.T) {
+	pinCorpusProfile(t, "dbengine") // the mocks carry three tiers
 	number := 7.0
 	want := []expectedColumnPoint{
 		wantNumberAt(10, number),

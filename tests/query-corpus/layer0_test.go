@@ -40,6 +40,13 @@ func TestMain(m *testing.M) {
 	if !flag.Parsed() {
 		flag.Parse()
 	}
+	profile, err := resolveCorpusProfile(os.Getenv("QUERY_CORPUS_PROFILE"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	activeProfile = profile
+	sliceTiers = activeProfile.filterTiers(sliceTiers)
 	if !daemonRunRequired(
 		flag.Lookup("test.run").Value.String(),
 		flag.Lookup("test.list").Value.String()) {
@@ -73,11 +80,13 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	td, err = daemon.Start(daemon.Options{Binary: paths.Binary, RunDir: runDir})
+	td, err = daemon.Start(daemon.Options{Binary: paths.Binary, RunDir: runDir,
+		StreamMemoryMode: activeProfile.StreamMemoryMode, StorageTiers: activeProfile.StorageTiers})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	fmt.Fprintf(os.Stderr, "query contract corpus: profile %s\n", activeProfile.Name)
 
 	code := m.Run()
 	if err := td.Stop(); err != nil {

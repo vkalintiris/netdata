@@ -54,6 +54,7 @@ func c016PhaseWithinBudget(start, now time.Time, budget time.Duration) bool {
 }
 
 func TestCase016FreshHostForgottenOnRestart(t *testing.T) {
+	skipIfNotApplicable(t, contractScope{"CASE-016/fresh-host-forgotten-on-restart", ""})
 	aged := fixture.Series("fixture.c016aged", "fixture.c016aged", fixture.T0, 60, 1, modVal, notAnom)
 	pushLiveBurst(t, "c016-aged", guid(40), aged)
 	settleAndVerify(t, "c016-aged", aged)

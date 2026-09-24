@@ -254,7 +254,7 @@ func TestCase034APITimestampGridIsImmutable(t *testing.T) {
 						fixtureHost.host, aligned)
 					ok = false
 				}
-				if !aligned && !assertTierPresence(t, doc, []bool{false, false, false}) {
+				if !aligned && !assertTierPresence(t, doc, noTierReads()) {
 					t.Logf("%s aligned=%v did not use the collector-cache fast path",
 						fixtureHost.host, aligned)
 					ok = false
@@ -309,7 +309,7 @@ func TestCase034APITimestampGridIsImmutable(t *testing.T) {
 				t.Logf("%s changed the relative request's resolved timestamp grid", fixtureHost.host)
 				ok = false
 			}
-			if !assertTierPresence(t, relativeDoc, []bool{false, false, false}) {
+			if !assertTierPresence(t, relativeDoc, noTierReads()) {
 				t.Logf("%s relative query did not use the collector-cache fast path", fixtureHost.host)
 				ok = false
 			}

@@ -622,6 +622,7 @@ func c035TransitionWindow(base int64, tc c035Case, grouping int64) (after, befor
 }
 
 func TestCase035CompletedRollupKeepsOriginalCadence(t *testing.T) {
+	skipIfNotApplicable(t, contractScope{"CASE-035/completed-rollup-keeps-original-cadence", ""})
 	const contract = "CASE-035/completed-rollup-keeps-original-cadence"
 	for _, item := range c035Cases {
 		item := item
@@ -763,6 +764,10 @@ func TestCase035Tier0PageBoundaryKeepsEverySample(t *testing.T) {
 }
 
 func TestCase023AvailabilityAcrossIntervalChange(t *testing.T) {
+	skipIfNotApplicable(t,
+		contractScope{"CASE-023/cadence-change-availability-tier0", ""},
+		contractScope{"CASE-023/cadence-change-availability-higher-tiers", ""},
+	)
 	for _, item := range c035Cases {
 		item := item
 		t.Run(item.name, func(t *testing.T) {

@@ -481,6 +481,10 @@ func TestLayer2SNvsOriginal(t *testing.T) {
 		"L2/tier0-storage-number-quantization",
 		"L2/tier-rollup-original-values",
 	} {
+		// A not-applicable reservation would skip the whole test; its subtest skips alone instead.
+		if _, na := activeProfile.notApplicableReason(contract, defaultContractComponent); na {
+			continue
+		}
 		registerContract(t, contract)
 	}
 

@@ -670,25 +670,64 @@ func jsonInt64(value any) (int64, bool) {
 	return int64(number), true
 }
 
+// ringEntries is the size of a child's ring in a ram or alloc stream memory mode (0: not a ring). The template leaves
+// [db] history at its default, 3600; ram rounds it up to whole pages (align_entries_to_pagesize, src/database/rrd.c)
+// and alloc keeps it.
+func ringEntries(mode string) int64 {
+	const history, sizeofStorageNumber = 3600, 4
+	switch mode {
+	case "ram":
+		page := int64(os.Getpagesize())
+		size := (history*sizeofStorageNumber + page - 1) / page * page
+		return size / sizeofStorageNumber
+	case "alloc":
+		return history
+	}
+	return 0
+}
+
+// ExpectedFirstEntry is db.first_entry for a contiguous series whose first and last samples are at first and last,
+// ue apart: dbengine reports the first sample, a ring the start of its oldest stored interval
+// (rrddim_query_oldest_time_s, src/database/ram/rrddim_mem.c).
+func (d *Daemon) ExpectedFirstEntry(first, last, ue int64) int64 {
+	n := ringEntries(streamMemoryMode(d.Opts))
+	if n == 0 {
+		return first
+	}
+	return max(first-ue, last-n*ue)
+}
+
 // WaitRetention polls the context on host until the daemon reports exactly
-// the expected retention window — the corpus settle barrier. It returns the
-// last observed retention on timeout.
+// the expected retention window — the corpus settle barrier. first and last
+// are the fixture's first and last samples; a ring's first entry is derived
+// from them with the context's db.update_every. It returns the last observed
+// retention on timeout.
 func (d *Daemon) WaitRetention(host, context string, first, last int64, timeout time.Duration) (Retention, error) {
 	deadline := time.Now().Add(timeout)
 	var seen Retention
+	want := first
+	ring := ringEntries(streamMemoryMode(d.Opts)) > 0
 	for {
 		doc, err := d.DataV3(host, DataParams(context, first-1, last, last-first+1))
 		if err == nil {
 			if ret, ok := QueryRetention(doc); ok {
 				seen = ret
-				if ret.FirstEntry == first && ret.LastEntry == last {
+				ready := true
+				if ring {
+					db, _ := doc["db"].(map[string]any)
+					ue, ok := jsonInt64(db["update_every"])
+					if ready = ok && ue > 0; ready {
+						want = d.ExpectedFirstEntry(first, last, ue)
+					}
+				}
+				if ready && ret.FirstEntry == want && ret.LastEntry == last {
 					return ret, nil
 				}
 			}
 		}
 		if time.Now().After(deadline) {
 			return seen, fmt.Errorf("daemon: retention not settled on %s/%s after %s: have [%d,%d] want [%d,%d]",
-				host, context, timeout, seen.FirstEntry, seen.LastEntry, first, last)
+				host, context, timeout, seen.FirstEntry, seen.LastEntry, want, last)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

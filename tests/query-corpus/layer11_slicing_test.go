@@ -669,7 +669,7 @@ func TestLayer11TotalsMatchWhatWasPushed(t *testing.T) {
 		for _, ue := range sliceUEs {
 			sliceFixture(t, shape, ue)
 
-			for _, tier := range []int{0, 1} {
+			for _, tier := range sliceTiers {
 				for _, pointsPer := range slicePoints {
 					a := sliceAxes{Shape: shape, UE: ue, Tier: tier, PointsPer: pointsPer}
 

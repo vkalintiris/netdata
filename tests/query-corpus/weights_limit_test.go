@@ -59,6 +59,7 @@ func weightsAssertLimit(t *testing.T, doc map[string]any, limit, total, returned
 }
 
 func TestWeightsLimitAliases(t *testing.T) {
+	skipIfNotApplicable(t, contractScope{"W/limit-aliases", ""})
 	weightsSettle(t, "weights-h", guid(160), weightsFixture())
 	for name, aliases := range map[string]url.Values{
 		"limit": {"limit": {"2"}}, "cardinality": {"cardinality_limit": {"2"}},
@@ -87,6 +88,7 @@ func TestWeightsLimitAliases(t *testing.T) {
 }
 
 func TestWeightsLimitBoundaries(t *testing.T) {
+	skipIfNotApplicable(t, contractScope{"W/limit-boundaries", ""})
 	weightsSettle(t, "weights-h", guid(160), weightsFixture())
 	for name, extra := range map[string]url.Values{
 		"absent": {}, "zero": {"limit": {"0"}}, "empty": {"limit": {""}},
@@ -154,6 +156,7 @@ func TestWeightsLimitBoundaries(t *testing.T) {
 }
 
 func TestWeightsLimitInvalid(t *testing.T) {
+	skipIfNotApplicable(t, contractScope{"W/limit-invalid", ""})
 	weightsSettle(t, "weights-h", guid(160), weightsFixture())
 	for _, endpoint := range []string{"api/v1/weights", "api/v1/metric_correlations", "api/v2/weights", "api/v3/weights"} {
 		for _, alias := range []string{"limit", "cardinality_limit"} {
@@ -190,6 +193,7 @@ func TestWeightsLimitInvalid(t *testing.T) {
 }
 
 func TestWeightsLimitScoresAndSummaries(t *testing.T) {
+	skipIfNotApplicable(t, contractScope{"W/limit-ranking", ""}, contractScope{"W/limit-summaries", ""})
 	weightsSettle(t, "weights-h", guid(160), weightsFixture())
 	for _, method := range []string{"value", "volume", "ks2", "anomaly-rate"} {
 		for _, options := range []string{"raw", "null2zero", "raw|anomaly-bit", "null2zero|anomaly-bit"} {
@@ -272,6 +276,7 @@ func TestWeightsLimitScoresAndSummaries(t *testing.T) {
 }
 
 func TestWeightsLimitLegacy(t *testing.T) {
+	skipIfNotApplicable(t, contractScope{"W/limit-legacy", ""})
 	weightsSettle(t, "weights-h", guid(160), weightsFixture())
 	for _, endpoint := range []string{"api/v1/weights", "api/v1/metric_correlations"} {
 		for _, alias := range []string{"limit", "cardinality_limit"} {
@@ -308,6 +313,7 @@ func TestWeightsLimitLegacy(t *testing.T) {
 }
 
 func TestWeightsLimitGrouped(t *testing.T) {
+	skipIfNotApplicable(t, contractScope{"W/limit-grouped", ""})
 	weightsSettle(t, "weights-h", guid(160), weightsFixture())
 	for _, aggregation := range []string{"min", "average", "max", "sum", "percentage", "extremes"} {
 		t.Run(aggregation, func(t *testing.T) {
@@ -388,6 +394,7 @@ func weightsLimitExport(t *testing.T, name, endpoint string, params url.Values, 
 }
 
 func TestWeightsLimitCompleteGroups(t *testing.T) {
+	skipIfNotApplicable(t, contractScope{"W/limit-complete-groups", ""})
 	charts := []fixture.Chart{
 		weightsLimitChart("fixture.limita", "fixture.limit", []int{1, 100}, true),
 		weightsLimitChart("fixture.limitb", "fixture.limit", []int{60, 60}, true),
@@ -612,6 +619,7 @@ func TestWeightsLimitNodeTies(t *testing.T) {
 }
 
 func TestWeightsLimitMCP(t *testing.T) {
+	skipIfNotApplicable(t, contractScope{"W/limit-mcp", ""})
 	values := make([]int, 55)
 	for i := range values {
 		values[i] = i + 1

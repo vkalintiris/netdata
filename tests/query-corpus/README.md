@@ -69,6 +69,10 @@ layers; each layer declares which entries it consumes:
 
 ## Rules
 
+- **Storage profiles.** `QUERY_CORPUS_PROFILE` selects how the shared daemon
+  stores child data: `dbengine` (default, three tiers) or `ram` (one tier).
+  `profile.go` lists, per profile, the scopes that structurally cannot hold
+  under it, each with a reason; never known-broken contracts.
 - **One green/red verdict represents one semantic invariant.** A manifest
   contract may exercise several inputs that all prove the same claim, but it
   must not combine independently actionable claims such as numeric values and

@@ -820,6 +820,10 @@ func TestWeightsValueMultiNode(t *testing.T) {
 }
 
 func TestWeightsPerMetricAnomalyRate(t *testing.T) {
+	skipIfNotApplicable(t,
+		contractScope{"W/anomaly-rate-per-metric-values", ""},
+		contractScope{"W/anomaly-rate-per-metric-nonzero-default", ""},
+	)
 	weightsSettle(t, "weights-h", guid(160), weightsFixture())
 
 	t.Run("values", func(t *testing.T) {
@@ -899,6 +903,7 @@ func TestWeightsMultiDimAnomalyRate(t *testing.T) {
 }
 
 func TestWeightsVolume(t *testing.T) {
+	skipIfNotApplicable(t, contractScope{"W/volume-equal-baseline-skip", ""}, contractScope{"W/volume-formula", ""})
 	weightsSettle(t, "weights-h", guid(160), weightsFixture())
 
 	doc, err := td.HostJSON("weights-h", "api/v1/weights", weightsV1Params("volume", wContext, "raw", true))
@@ -936,6 +941,7 @@ func TestWeightsVolume(t *testing.T) {
 }
 
 func TestWeightsKS2(t *testing.T) {
+	skipIfNotApplicable(t, contractScope{"W/ks2-raw-endpoints", ""}, contractScope{"W/ks2-spread-normalization", ""})
 	weightsSettle(t, "weights-ks2", guid(163), weightsKS2Fixture())
 
 	want := map[string]float64{"flat2": 0, "jump": 1}

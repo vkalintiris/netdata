@@ -165,6 +165,20 @@ optional `fixed_by` fields are mirrored as a row in `MANIFEST.md`.
   names in `ManifestCase.Components` and register each with
   `trackContractComponent`. One component passing never substitutes for
   another component that did not run.
+- **Storage profiles** (`profile.go`, selected by `QUERY_CORPUS_PROFILE`):
+  - `dbengine` (default): three tiers; every contract applies.
+  - `ram`: ram children, one tier; the reference profile for a slice-1 agent
+    that serves the data APIs.
+  - A profile's not-applicable table MUST hold only scopes that structurally
+    cannot hold under it (no tier 1, no restart persistence, a flushed ring,
+    an endpoint outside the profile's scope), each with its reason. It MUST
+    NOT hold known-broken contracts.
+  - The registration helpers skip a not-applicable scope before recording
+    it; the summary lists it as `N/A` and leaves it out of completeness.
+  - A test that restarts the shared daemon, boots dedicated daemons or builds
+    large fixtures before its first registration MUST start with
+    `skipIfNotApplicable(t, <its scopes>)`.
+  - `TestCorpusProfilesAreValid` checks the table against the manifest.
 
 **A broken contract fails. Always.** On master, on a feature branch,
 whether or not the break is already known.
@@ -200,6 +214,11 @@ its test as the regression guard and records `FixedBy: "#PR"`.
   not inspect binary build metadata.
 - Full suite: `cd tests/query-corpus && go test ./... -count=1`. Expect
   several minutes; duration is hardware and case-selection dependent.
+- Ram profile: `QUERY_CORPUS_PROFILE=ram go test -count=1 .` boots the
+  shared daemon with ram children and one tier. Pair it with
+  `QUERY_CORPUS_NETDATA` and `QUERY_CORPUS_SRC` to run another agent build.
+  Its verdicts are compared with a ram run of the reference build, not with
+  the dbengine broken list.
 - One test: `go test -count=1 -run 'TestName' .`. Some tests consume a
   shared palette authored by an earlier layer; include that fixture-producing
   test in the filter or run the full suite when a test reports that its

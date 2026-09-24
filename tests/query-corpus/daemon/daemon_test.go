@@ -110,6 +110,35 @@ func TestQueryRetentionRejectsMalformedNumbers(t *testing.T) {
 	}
 }
 
+func TestExpectedFirstEntryFollowsTheMemoryMode(t *testing.T) {
+	ram := ringEntries("ram")
+	// The fewest whole pages holding 3600 4-byte storage numbers.
+	if page := int64(os.Getpagesize()); ram*4%page != 0 || ram < 3600 || ram*4-page >= 3600*4 {
+		t.Fatalf("ringEntries(ram) = %d, want 3600 rounded up to whole %d-byte pages", ram, page)
+	}
+	cases := map[string]struct {
+		mode              string
+		first, last, ue   int64
+		wantFirstReported int64
+	}{
+		"dbengine":           {"", 1000, 1990, 10, 1000},
+		"ram":                {"ram", 1000, 1990, 10, 990},
+		"alloc":              {"alloc", 1000, 1990, 10, 990},
+		"ram wrapped":        {"ram", 1000, 1000 + 9999*10, 10, 1000 + 9999*10 - ram*10},
+		"alloc wrapped":      {"alloc", 0, 4999, 1, 4999 - 3600},
+		"alloc exactly full": {"alloc", 1, 3600, 1, 0},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := &Daemon{Opts: Options{StreamMemoryMode: tc.mode}}
+			if got := d.ExpectedFirstEntry(tc.first, tc.last, tc.ue); got != tc.wantFirstReported {
+				t.Fatalf("ExpectedFirstEntry(%d, %d, %d) = %d, want %d",
+					tc.first, tc.last, tc.ue, got, tc.wantFirstReported)
+			}
+		})
+	}
+}
+
 func TestInfoHasDaemonIdentity(t *testing.T) {
 	valid := func() map[string]any {
 		return map[string]any{
