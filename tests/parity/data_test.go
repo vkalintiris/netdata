@@ -45,7 +45,7 @@ func maskTimings(b []byte) []byte {
 	return timingsRe.ReplaceAllFunc(b, func(m []byte) []byte {
 		name, _, _ := bytes.Cut(m, []byte(":"))
 		// A fresh slice: appending to name would write over the source after the match.
-		return append(append([]byte{}, name...), ":<masked>"...)
+		return append(append([]byte{}, name...), `:"<masked>"`...)
 	})
 }
 

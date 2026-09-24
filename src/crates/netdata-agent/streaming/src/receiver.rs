@@ -20,6 +20,7 @@ use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 
 use crate::caps;
 use crate::conf::{ReceiverDefaults, StreamConf};
+use crate::decompress::Decompressor;
 use crate::handshake::{self, StreamRequest};
 
 /// A receiver older than this without traffic is stale and may be replaced (`stream_receiver_accept_connection()`).
@@ -90,6 +91,8 @@ pub struct Attached {
 /// A connection on its stream thread.
 struct Child {
     attached: Attached,
+    /// The negotiated compression's decompressor; `None` for an uncompressed stream.
+    decompressor: Option<Decompressor>,
     reader: LineReader,
     parser: Parser,
     /// Bytes for the child that did not fit in the socket yet.
@@ -491,7 +494,23 @@ impl StreamWorker {
                         .slot
                         .last_traffic_ut
                         .store(now_monotonic_ut(), Ordering::Relaxed);
-                    for line in child.reader.push(&buf[..n]) {
+                    let plain;
+                    let received = match child.decompressor.as_mut() {
+                        None => &buf[..n],
+                        Some(decompressor) => {
+                            let mut out = Vec::new();
+                            if let Err(failure) = decompressor.push(&buf[..n], &mut out) {
+                                (child.attached.log)(
+                                    LogLevel::Error,
+                                    &format!("STREAM RCV: {failure}"),
+                                );
+                                return self.disconnect(cx, index);
+                            }
+                            plain = out;
+                            &plain[..]
+                        }
+                    };
+                    for line in child.reader.push(received) {
                         if !child.parser.feed(&line) {
                             return self.disconnect(cx, index);
                         }
@@ -551,8 +570,10 @@ impl Worker for StreamWorker {
         }
         let log = attached.log;
         let parser = Parser::new(Arc::clone(&attached.host), attached.parser, Box::new(log));
+        let decompressor = Decompressor::for_capabilities(attached.parser.capabilities);
         self.children[index] = Some(Child {
             attached,
+            decompressor,
             reader: LineReader::default(),
             parser,
             pending_out: Vec::new(),

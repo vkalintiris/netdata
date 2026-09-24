@@ -311,6 +311,7 @@ zstd = "0.13"
 fsst-rs = "0.5"
 futures-util = { version = "0.3", features = ["sink"] }
 flate2 = "1"
+brotli-decompressor = "5"
 reqwest = { version = "0.13.2", default-features = false }
 
 

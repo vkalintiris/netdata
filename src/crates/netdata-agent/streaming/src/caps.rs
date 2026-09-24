@@ -37,9 +37,8 @@ pub const ALWAYS_DISABLED: u32 = DATA_WITH_ML;
 /// The compressions the C production build offers (`STREAM_CAP_COMPRESSIONS_AVAILABLE` with lz4, zstd, brotli).
 pub const COMPRESSIONS: u32 = LZ4 | ZSTD | BROTLI | GZIP;
 
-/// Compressions this agent can decompress. None yet: until the decompressors land (decisions D14) the receiver
-/// never offers one, so children send uncompressed.
-pub const COMPRESSIONS_AVAILABLE: u32 = 0;
+/// Compressions this agent can decompress (`decompress.rs`, decisions D14 and D23): all the C build offers.
+pub const COMPRESSIONS_AVAILABLE: u32 = COMPRESSIONS;
 
 const STREAM_OLD_VERSION_CLAIM: u32 = 3;
 const STREAM_OLD_VERSION_CLABELS: u32 = 4;

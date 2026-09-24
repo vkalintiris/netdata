@@ -67,6 +67,17 @@ type Options struct {
 	WebDir string
 	// WebExtra is appended to the [web] section verbatim (one "key = value" per line).
 	WebExtra string
+	// StreamExtra is appended to stream.conf verbatim (e.g. per-child [<machine guid>] sections of a parent).
+	StreamExtra string
+	// StreamTo, when set, makes the daemon a streaming child of that destination.
+	StreamTo *StreamTo
+}
+
+// StreamTo is a child's [stream] section.
+type StreamTo struct {
+	Destination string // host:port
+	APIKey      string
+	Compression bool // enable compression (the parent picks the algorithm)
 }
 
 // Identity is a fixed daemon identity. StreamKey and MachineGUID must be UUIDs.
@@ -256,6 +267,12 @@ func Start(o Options) (*Daemon, error) {
 		return nil, err
 	}
 	streamConf := fmt.Sprintf(streamConfTemplate, streamKey, streamMemoryMode(o))
+	if o.StreamTo != nil {
+		streamConf = strings.Replace(streamConf, "[stream]\n    enabled = no\n", fmt.Sprintf(
+			"[stream]\n    enabled = yes\n    destination = %s\n    api key = %s\n    enable compression = %s\n",
+			o.StreamTo.Destination, o.StreamTo.APIKey, yesNo(o.StreamTo.Compression)), 1)
+	}
+	streamConf += o.StreamExtra
 	if err := os.WriteFile(filepath.Join(o.RunDir, "etc", "stream.conf"), []byte(streamConf), 0o644); err != nil {
 		return nil, fmt.Errorf("daemon: write stream.conf: %w", err)
 	}
@@ -675,4 +692,11 @@ func (d *Daemon) WaitRetention(host, context string, first, last int64, timeout 
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }
