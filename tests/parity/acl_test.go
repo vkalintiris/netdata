@@ -50,8 +50,9 @@ func TestWebACL(t *testing.T) {
 				"[registry]\n" +
 				"    allow from = localhost\n",
 			cases: map[string][]byte{
-				"static":  get("/"),
-				"options": []byte("OPTIONS / HTTP/1.1\r\n\r\n"),
+				"static":       get("/"),
+				"options":      []byte("OPTIONS / HTTP/1.1\r\n\r\n"),
+				"netdata.conf": get("/netdata.conf"),
 			},
 		},
 		"connections-denied": {
