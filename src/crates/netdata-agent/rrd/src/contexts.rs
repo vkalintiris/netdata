@@ -655,6 +655,18 @@ impl Metric {
         lock(&self.dim).as_ref().and_then(Weak::upgrade)
     }
 
+    /// The dimension whose storage holds this metric: the linked one, else the RAM engine's by UUID
+    /// (`metric_get_by_id()`), as the query target admits it.
+    pub fn storage_dim(&self) -> Option<Arc<Dim>> {
+        if let Some(dim) = self.dim() {
+            return Some(dim);
+        }
+        let uuid = lock(&self.state).uuid;
+        let index = self.instance()?.context()?.ram_index.upgrade()?;
+        let rings = lock(&index.rings);
+        rings.get(&uuid).and_then(Weak::upgrade)
+    }
+
     fn is_linked_to(&self, dim: &Dim) -> bool {
         self.dim()
             .is_some_and(|d| std::ptr::eq(Arc::as_ptr(&d), dim))
