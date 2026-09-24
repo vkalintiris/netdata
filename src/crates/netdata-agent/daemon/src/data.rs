@@ -21,7 +21,7 @@ use crate::router::Route;
 use crate::server::{self, Reply};
 
 /// `rrdset_find_and_acquire(host, id, false)`, then by name: an obsolete chart only while it replicates.
-fn find_chart(host: &Host, chart: &[u8]) -> Option<Arc<Chart>> {
+pub fn find_chart(host: &Host, chart: &[u8]) -> Option<Arc<Chart>> {
     let chart = std::str::from_utf8(chart).ok()?;
     let queryable = |st: &Arc<Chart>| chart_is_queryable(st.meta().flags);
     host.charts()

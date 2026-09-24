@@ -18,6 +18,7 @@ mod server;
 mod static_file;
 mod system;
 mod timezone;
+mod v1_charts;
 mod v1_contexts;
 
 use std::io::Write;
@@ -326,6 +327,21 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     receivers.set_streaming_rate(web.streaming_rate_s);
     // nd_web_api_init(): the time-grouping limits.
     let grouping_windows = conf::grouping_windows(&mut conf.netdata);
+    // charts2json() reads these at its first call; the values do not change.
+    let charts_info = v1_charts::ChartsInfo {
+        release_channel: v1_charts::release_channel(&conf.dirs.user_config, build::NETDATA_VERSION),
+        custom_info: String::from_utf8_lossy(
+            &conf
+                .netdata
+                .get(
+                    netdata_agent_inicfg::SECTION_WEB,
+                    "custom dashboard_info.js",
+                    Some(""),
+                )
+                .unwrap_or_default(),
+        )
+        .into_owned(),
+    };
     let shared = Arc::new(server::Shared {
         settings: Settings {
             gzip: web.gzip,
@@ -346,6 +362,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         web_dir: conf.dirs.web.clone(),
         hosts: Arc::clone(&hosts),
         grouping_windows,
+        charts_info,
     });
     let sockets: Vec<(std::net::TcpListener, u32)> =
         listeners.into_iter().map(|l| (l.socket, l.acl)).collect();

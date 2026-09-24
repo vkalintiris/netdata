@@ -3,7 +3,8 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: ACL and bearer checks (with the `[web]` section), `/mcp` and `/sse`, `/netdata.conf` (it needs
-//! the config reads in C's order), and the API commands other than `info`, `context`, `contexts` and `data`.
+//! the config reads in C's order), and the API commands other than `info`, `chart`, `charts`, `context`, `contexts`
+//! and `data`.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,6 +23,7 @@ use crate::acl;
 use crate::data;
 use crate::server::{self, Reply, Shared};
 use crate::static_file;
+use crate::v1_charts;
 use crate::v1_contexts;
 
 /// `FILENAME_MAX`: the path and filename copies are truncated to it.
@@ -56,6 +58,22 @@ const API_V1: &[Command] = &[
             content_type: ContentType::ApplicationJson,
             body: api::info_json(&route.shared.info, &route.shared.hosts),
             ..Reply::default()
+        },
+    },
+    Command {
+        name: "chart",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |_, host, query| v1_charts::chart(host, query),
+    },
+    Command {
+        name: "charts",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, host, _| {
+            v1_charts::charts(host, &route.shared.hosts, &route.shared.charts_info)
         },
     },
     Command {
@@ -287,6 +305,7 @@ mod tests {
             first_request_timeout_s: 60,
             idle_timeout_s: 60,
             grouping_windows: Default::default(),
+            charts_info: Default::default(),
             hosts: Arc::new(netdata_agent_rrd::host::Hosts::new(
                 netdata_agent_rrd::host::Host::new(
                     "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",

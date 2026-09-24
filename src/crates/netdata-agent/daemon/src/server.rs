@@ -42,6 +42,8 @@ pub struct Shared {
     pub hosts: Arc<Hosts>,
     /// The time-grouping SES/DES window limits.
     pub grouping_windows: netdata_agent_query::grouping::Windows,
+    /// What `/api/v1/charts` reports besides the charts.
+    pub charts_info: crate::v1_charts::ChartsInfo,
 }
 
 /// A handler's answer (`w->response`).
