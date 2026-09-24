@@ -46,8 +46,8 @@ pub struct Config {
     pub update_every: i32,
     /// `sysconf(_SC_PAGESIZE)`, for ring sizes.
     pub page_size: i64,
-    /// The wall clock in seconds (`now_realtime_sec()`), replaceable in tests.
-    pub now: fn() -> i64,
+    /// The wall clock as (seconds, microseconds) (`now_realtime_timeval()`), replaceable in tests.
+    pub now: fn() -> (i64, i64),
     /// `gap_when_lost_iterations_above`: `[db] gap when lost iterations above` + 2.
     pub gap_when_lost_iterations_above: i64,
 }
@@ -1036,9 +1036,14 @@ impl Parser {
 
     // ---- v1 data ----
 
-    /// The wall clock as (seconds, microseconds): `now_realtime_timeval()` at second resolution of `config.now`.
+    /// `now_realtime_timeval()`: v1 collection interpolates by the microseconds too.
     fn now_tv(&self) -> (i64, i64) {
-        ((self.config.now)(), 0)
+        (self.config.now)()
+    }
+
+    /// `now_realtime_sec()`.
+    fn now_s(&self) -> i64 {
+        (self.config.now)().0
     }
 
     /// `pluginsd_begin()`: the duration since the previous collection, trusted as streaming does.
@@ -1243,7 +1248,7 @@ impl Parser {
         let last_entry = number(w.get(2));
         let wall = match w.get(3).filter(|v| !v.is_empty()) {
             Some(v) => str2ul(v) as i64,
-            None => (self.config.now)(),
+            None => self.now_s(),
         };
         let was_in_progress = chart.update_meta(|m| {
             let old = m.flags;
@@ -1268,7 +1273,7 @@ impl Parser {
         prev_after: i64,
         prev_before: i64,
     ) {
-        let now = (self.config.now)();
+        let now = self.now_s();
         let info = self.host.info();
         if child_last > child_wall {
             child_last = child_wall;
@@ -1358,7 +1363,7 @@ impl Parser {
                 tolerance = update_every + 1;
             }
             if wall <= 0 {
-                wall = (self.config.now)();
+                wall = self.now_s();
                 tolerance = update_every + 5;
             }
             if start != 0
@@ -1536,7 +1541,7 @@ impl Parser {
         let last_requested = number(6);
         let child_world_time = match w.get(7).filter(|v| !v.is_empty()) {
             Some(v) => str2ull_encoded(v) as i64,
-            None => (self.config.now)(),
+            None => self.now_s(),
         };
         let chart = self.require_scope("REND", "RBEGIN")?;
         self.data_collections_count += 1;
@@ -1580,7 +1585,7 @@ impl Parser {
             self.clear_scope();
             return Ok(());
         }
-        let (_, local_last) = retention_for_collected_chart(&chart, (self.config.now)());
+        let (_, local_last) = retention_for_collected_chart(&chart, self.now_s());
         let caught_up = local_last >= last_entry_child;
         let suspicious = (first_requested != 0 || last_requested != 0) && caught_up;
         let stuck = {

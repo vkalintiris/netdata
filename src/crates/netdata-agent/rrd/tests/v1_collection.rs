@@ -4,19 +4,12 @@
 mod v1_cases;
 
 use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType, Charts};
-use netdata_agent_rrd::collection::{set_value, timed_done};
+use netdata_agent_rrd::collection::{now_realtime_timeval, set_value, timed_done};
 use netdata_agent_rrd::mode::DbMode;
 use netdata_agent_storage::storage_number::{SN_DEFAULT_FLAGS, pack, unpack};
 
 /// `[db] gap when lost iterations above` after `netdata_conf_section_db()`: 1 + 2.
 const GAP_WHEN_LOST_ITERATIONS_ABOVE: i64 = 3;
-
-fn now() -> (i64, i64) {
-    let d = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap();
-    (d.as_secs() as i64, i64::from(d.subsec_micros()))
-}
 
 /// `roundndd(v * 10000000.0)`: the C comparison.
 fn same(a: f64, b: f64) -> bool {
@@ -56,7 +49,7 @@ fn c_unit_tests() {
             if c > 0 {
                 st.update_collection(|x| x.usec_since_last_update = microseconds);
             }
-            let t = now();
+            let t = now_realtime_timeval();
             set_value(&rd, t, value);
             if let Some(rd2) = &rd2 {
                 set_value(rd2, t, case.feed2[c]);

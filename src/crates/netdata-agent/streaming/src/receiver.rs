@@ -15,6 +15,7 @@ use netdata_agent_evloop::{Context, Event, Interest, PoolHandle, TimerId, Token,
 use netdata_agent_ingest::{self as ingest, Parser};
 use netdata_agent_inicfg::LogLevel;
 use netdata_agent_pluginsd_proto::LineReader;
+use netdata_agent_rrd::collection;
 use netdata_agent_rrd::host::{Host, HostInfo, Hosts, ReceiverSlot};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 
@@ -37,13 +38,6 @@ pub fn now_monotonic_ut() -> u64 {
 
 /// Where the receiver writes its daemon log lines.
 pub type Logger = fn(LogLevel, &str);
-
-/// `now_realtime_sec()`.
-fn now_realtime_s() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
 
 /// Values admission takes from the rest of the daemon.
 #[derive(Debug, Clone)]
@@ -409,7 +403,7 @@ impl Receivers {
                 capabilities,
                 update_every: self.defaults.update_every,
                 page_size: self.defaults.page_size,
-                now: now_realtime_s,
+                now: collection::now_realtime_timeval,
                 // `[db] gap when lost iterations above` (default 1) + 2; the option is read with the [db] section.
                 gap_when_lost_iterations_above: 3,
             },

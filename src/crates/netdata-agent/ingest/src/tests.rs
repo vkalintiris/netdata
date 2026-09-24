@@ -40,7 +40,7 @@ fn parser(host: &Arc<Host>) -> (Parser, Arc<Mutex<Vec<String>>>) {
             capabilities: 0,
             update_every: 1,
             page_size: 4096,
-            now: || NOW,
+            now: || (NOW, 0),
             gap_when_lost_iterations_above: 3,
         },
         Box::new(move |_, m| sink.lock().unwrap().push(m.to_string())),
@@ -193,6 +193,42 @@ fn errors_disconnect() {
         .iter()
         .all(|&ok| ok)
     );
+}
+
+/// The wall clock of `v1_collection_times_keep_their_microseconds`, in microseconds, advanced by the test.
+static CLOCK_UT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+#[test]
+fn v1_collection_times_keep_their_microseconds() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let h = host();
+    let (mut p, _) = parser(&h);
+    p.config.now = || {
+        let ut = CLOCK_UT.load(Relaxed);
+        (ut / 1_000_000, ut % 1_000_000)
+    };
+    feed_all(&mut p, &DEFINE[..2]);
+    // Collections 1.25 s apart, timed by their trusted durations, with the clock at each collection's time. A clock
+    // without its microseconds lags the last collection, which rrdset_timed_next() then treats as a database in the
+    // future and snaps onto whole seconds. Kept off the grid, the point stored between the 0 and 100 steps blends.
+    for (i, value) in [0, 0, 0, 100, 100, 100].into_iter().enumerate() {
+        CLOCK_UT.store((NOW - 20) * 1_000_000 + 300_000 + i as i64 * 1_250_000, Relaxed);
+        let lines = [
+            "BEGIN 'test.c1' 1250000".to_string(),
+            format!("SET 'd1' = {value}"),
+            "END".to_string(),
+        ];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
+    }
+    let d1 = h.charts().find("test.c1").unwrap().dim("d1").unwrap();
+    let ring = d1.ring().unwrap();
+    let mut q = ring.query(ring.oldest_time_s(), ring.latest_time_s());
+    let mut stored = Vec::new();
+    while !q.is_finished() {
+        stored.push(q.next_metric().sum);
+    }
+    assert!(stored.iter().any(|&v| v > 0.0 && v < 99.0), "{stored:?}");
 }
 
 #[test]

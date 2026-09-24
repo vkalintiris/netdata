@@ -14,6 +14,14 @@ fn as_ut(t: (i64, i64)) -> i64 {
     t.0 * USEC_PER_SEC + t.1
 }
 
+/// `now_realtime_timeval()`: the wall clock as (seconds, microseconds), the collection time of every function here.
+pub fn now_realtime_timeval() -> (i64, i64) {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    (d.as_secs() as i64, i64::from(d.subsec_micros()))
+}
+
 /// `last_collected_time_align()`.
 fn last_collected_time_align(c: &mut ChartCollection, update_every: i64, store_first: bool) {
     c.last_collected.0 -= c.last_collected.0 % update_every;
