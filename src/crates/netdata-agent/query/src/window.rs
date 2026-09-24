@@ -116,14 +116,13 @@ pub fn calculate(qt: &QueryTarget, wall_s: i64) -> Option<Window> {
     if duration < 0 {
         return None;
     }
+    // C also moves `after` here; the final `after` is recomputed from `before` below, so only the duration counts.
     if rs > duration {
-        aw = bw - rs;
         duration = rs;
     }
     if rs > qg && duration % rs != 0 {
         let delta = duration % rs;
         if delta > rs / 10 {
-            aw -= rs - delta;
             duration += rs - delta;
         }
     }
