@@ -9,6 +9,7 @@ use netdata_agent_storage::storage_number::SN_FLAG_RESET;
 use netdata_agent_storage::storage_point::StoragePoint;
 
 use crate::finalize::{cardinality_limit, percentage_of_total};
+use crate::groupby::{AddMode, add_metric, finalize, initialize};
 use crate::grouping::Grouping;
 use crate::rrdr::{Rrdr, result_flags, value_flags};
 use crate::tables::{TimeGrouping, options};
@@ -304,7 +305,7 @@ fn execute_plan(
 ) -> StoragePoint {
     let opts = window.options;
     let use_anomaly_bit_as_value = opts & options::ANOMALY_BIT != 0;
-    let points_wanted = r.rows;
+    let points_wanted = r.n;
     let vue = ops.view_update_every;
     let mut points_added = 0;
     let (mut min, mut max) = (r.view.min, r.view.max);
@@ -570,6 +571,91 @@ impl Control<'_> {
     }
 }
 
+/// The indexes of a metric's dimension, instance, context and node.
+fn links(qt: &QueryTarget, d: usize) -> (usize, usize, usize, usize) {
+    let qd = qt.query[d].dimension;
+    let qi = qt.dimensions[qd].instance;
+    let qc = qt.instances[qi].context;
+    (qd, qi, qc, qt.contexts[qc].node)
+}
+
+/// `r->time_grouping.create()` for the window.
+fn new_grouping(qt: &QueryTarget, window: &Window) -> Grouping {
+    Grouping::new(
+        qt.request.time_group,
+        qt.request.time_group_options.as_deref(),
+        window.group,
+        window.points,
+        window.resampling_group,
+        window.resampling_divisor,
+    )
+}
+
+/// One metric of the `rrd2rrdr()` loop up to its execution: column `col` of `r` takes the metric's status, the
+/// grouping is reset, and the metric is executed there (its merged points kept); a failed plan is counted and
+/// gives `None`.
+fn query_metric(
+    qt: &mut QueryTarget,
+    d: usize,
+    window: &Window,
+    grouping: &mut Grouping,
+    r: &mut Rrdr,
+    col: usize,
+) -> Option<StoragePoint> {
+    let prepared = prepare(qt, d, window);
+    r.od[col] = qt.query[d].status;
+    grouping.reset();
+    let (qd, qi, qc, qn) = links(qt, d);
+    let Some(prepared) = prepared else {
+        qt.instances[qi].metrics.failed += 1;
+        qt.contexts[qc].metrics.failed += 1;
+        qt.nodes[qn].metrics.failed += 1;
+        qt.dimensions[qd].status |= status::FAILED;
+        qt.query[d].status |= metric_status::FAILED;
+        return None;
+    };
+    let qm = &qt.query[d];
+    let query_points = match prepared {
+        Prepared::Latest { value, time_s } => execute_latest(r, col, qm, window, value, time_s),
+        Prepared::Plan { after, before } => {
+            let mut ops = Ops::new(qt, window);
+            ops.set_expire_time(before);
+            let dim = qm.tier0.dim.clone();
+            let Some(ring) = dim.ring() else {
+                unreachable!("prepare() checked the ring")
+            };
+            let mut handle = ring.query(
+                after,
+                before + qm.tier0.update_every_s * POINTS_TO_EXPAND_QUERY,
+            );
+            let query_points = execute_plan(r, col, grouping, qm, window, &mut ops, &mut handle);
+            qt.db.tier0_points += ops.db_points_read;
+            query_points
+        }
+    };
+    qt.query[d].query_points = query_points;
+    r.od[col] |= metric_status::QUERIED;
+    Some(query_points)
+}
+
+/// The counters and statuses of a queried metric.
+fn count_queried(qt: &mut QueryTarget, d: usize) {
+    let (qd, qi, qc, qn) = links(qt, d);
+    qt.instances[qi].metrics.queried += 1;
+    qt.contexts[qc].metrics.queried += 1;
+    qt.nodes[qn].metrics.queried += 1;
+    qt.dimensions[qd].status |= status::QUERIED;
+    qt.query[d].status |= metric_status::QUERIED;
+}
+
+fn time_flags(window: &Window) -> u32 {
+    if window.relative {
+        result_flags::RELATIVE
+    } else {
+        result_flags::ABSOLUTE
+    }
+}
+
 /// `rrd2rrdr()` for a v1 query: one column per admitted metric, in `qt.query` order. Clears NONZERO from
 /// `window.options` when no executed metric is nonzero.
 pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> Rrdr {
@@ -579,67 +665,15 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
         r.di[d] = rm.id().to_string();
         r.dn[d] = rm.state().name;
     }
-    r.view.flags |= if window.relative {
-        result_flags::RELATIVE
-    } else {
-        result_flags::ABSOLUTE
-    };
-    let mut grouping = Grouping::new(
-        qt.request.time_group,
-        qt.request.time_group_options.as_deref(),
-        window.group,
-        window.points,
-        window.resampling_group,
-        window.resampling_divisor,
-    );
+    r.view.flags |= time_flags(window);
+    let mut grouping = new_grouping(qt, window);
     let (mut used, mut nonzero) = (0, 0);
     for d in 0..qt.query.len() {
-        let prepared = prepare(qt, d, window);
-        r.od[d] = qt.query[d].status;
-        grouping.reset();
-        let qd = qt.query[d].dimension;
-        let qi = qt.dimensions[qd].instance;
-        let qc = qt.instances[qi].context;
-        let qn = qt.contexts[qc].node;
-        let Some(prepared) = prepared else {
-            qt.instances[qi].metrics.failed += 1;
-            qt.contexts[qc].metrics.failed += 1;
-            qt.nodes[qn].metrics.failed += 1;
-            qt.dimensions[qd].status |= status::FAILED;
-            qt.query[d].status |= metric_status::FAILED;
+        if query_metric(qt, d, window, &mut grouping, &mut r, d).is_none() {
             continue;
-        };
-        let qm = &qt.query[d];
-        let query_points = match prepared {
-            Prepared::Latest { value, time_s } => {
-                execute_latest(&mut r, d, qm, window, value, time_s)
-            }
-            Prepared::Plan { after, before } => {
-                let mut ops = Ops::new(qt, window);
-                ops.set_expire_time(before);
-                let dim = qm.tier0.dim.clone();
-                let Some(ring) = dim.ring() else {
-                    unreachable!("prepare() checked the ring")
-                };
-                let mut handle = ring.query(
-                    after,
-                    before + qm.tier0.update_every_s * POINTS_TO_EXPAND_QUERY,
-                );
-                let query_points =
-                    execute_plan(&mut r, d, &mut grouping, qm, window, &mut ops, &mut handle);
-                qt.db.tier0_points += ops.db_points_read;
-                query_points
-            }
-        };
-        r.od[d] |= metric_status::QUERIED;
-        qt.instances[qi].metrics.queried += 1;
-        qt.contexts[qc].metrics.queried += 1;
-        qt.nodes[qn].metrics.queried += 1;
-        qt.dimensions[qd].status |= status::QUERIED;
-        let qm = &mut qt.query[d];
-        qm.query_points = query_points;
-        qm.status |= metric_status::QUERIED;
-        if qm.status & metric_status::NONZERO != 0 {
+        }
+        count_queried(qt, d);
+        if qt.query[d].status & metric_status::NONZERO != 0 {
             nonzero += 1;
         }
         used += 1;
@@ -657,6 +691,68 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
     r
 }
 
+/// `rrd2rrdr()` for a v2 query: each metric executes into a one-column result and joins its group of the first
+/// pass; finalize runs the later passes. `None` when there is nothing to group (C answers 500). A cancel is kept
+/// only by a one-pass query, as in C.
+pub fn run_v2(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> Option<Rrdr> {
+    let mut grouped = initialize(qt, window)?;
+    let flags = time_flags(window);
+    if let Some(last) = grouped.passes.last_mut() {
+        last.view.flags |= flags;
+    }
+    let mut grouping = new_grouping(qt, window);
+    let (mut used, mut nonzero) = (0, 0);
+    for d in 0..qt.query.len() {
+        let Some(query_points) = query_metric(qt, d, window, &mut grouping, &mut grouped.r_tmp, 0)
+        else {
+            continue;
+        };
+        let r_tmp = &grouped.r_tmp;
+        // The execution sets NONZERO on the column; v2 copies it back to the metric.
+        qt.query[d].status = r_tmp.od[0];
+        let r = &mut grouped.passes[0];
+        r.view.min = r_tmp.view.min;
+        r.view.max = r_tmp.view.max;
+        r.view.after = r_tmp.view.after;
+        r.view.before = r_tmp.view.before;
+        r.rows = r_tmp.rows;
+        let aggregation = qt.request.group_by[0].aggregation;
+        add_metric(
+            r,
+            qt.query[d].grouped_as.first_slot,
+            r_tmp,
+            0,
+            aggregation,
+            &query_points,
+            AddMode::default(),
+        );
+        count_queried(qt, d);
+        // Aggregated across metrics from here: positive.
+        let (_, qi, qc, qn) = links(qt, d);
+        qt.query[d].query_points.make_positive();
+        let points = qt.query[d].query_points;
+        qt.instances[qi].query_points.merge_to(&points);
+        qt.contexts[qc].query_points.merge_to(&points);
+        qt.nodes[qn].query_points.merge_to(&points);
+        qt.query_points.merge_to(&points);
+        if qt.query[d].status & metric_status::NONZERO != 0 {
+            nonzero += 1;
+        }
+        used += 1;
+        if control.cancel(qt.request.timeout_ms) {
+            grouped.passes[0].view.flags |= result_flags::CANCEL;
+            break;
+        }
+    }
+    let r = finalize(qt, window, grouped);
+    let r = cardinality_limit(r, qt.request.cardinality_limit);
+    if used != 0 && window.options & options::NONZERO != 0 && nonzero == 0 {
+        window.options &= !options::NONZERO;
+    }
+    qt.executed = Some(Instant::now());
+    Some(r)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -666,7 +762,7 @@ mod tests {
     use netdata_agent_storage::storage_number::{SN_FLAG_NOT_ANOMALOUS, pack, unpack};
 
     use super::*;
-    use crate::testing::{T0, host, v1_target};
+    use crate::testing::{T0, host, v1_target, v2_target};
 
     fn run(h: &Arc<Host>, query: &str) -> (QueryTarget, Window, Rrdr) {
         let (mut qt, mut window) = v1_target(h, query);
@@ -859,5 +955,52 @@ mod tests {
         let h = host();
         let (_, _, r) = run(&h, &format!("after={T0}&before={}&timeout=-1", T0 + 6));
         assert_eq!(r.view.flags & result_flags::CANCEL, result_flags::CANCEL);
+    }
+
+    #[test]
+    fn v2_groups_the_metric_and_averages_its_rows() {
+        let h = host();
+        let (mut qt, mut window) = v2_target(
+            &h,
+            &format!("scope_contexts=ctx.a&after={T0}&before={}&points=6", T0 + 6),
+        );
+        let control = Control {
+            received: Instant::now(),
+            interrupted: &|| false,
+        };
+        let r = run_v2(&mut qt, &mut window, &control).unwrap();
+        let thirty = unpack(pack(30.0, 0));
+        assert_eq!(
+            (r.columns, r.di.as_slice(), r.dgbc.as_slice()),
+            (1, &["d".to_string()][..], &[1][..])
+        );
+        let shown: Vec<Option<f64>> = (0..r.rows)
+            .map(|i| (r.o[i] & value_flags::EMPTY == 0).then_some(r.v[i]))
+            .collect();
+        // The window ends within two update intervals of now: the empty row at T0+5 trims the live edge; the view
+        // statistics still cover every row (C's quirk).
+        assert_eq!(shown, [Some(10.0), None, Some(20.0), Some(thirty)]);
+        assert_eq!(
+            (r.n, r.trimming.expected_after, r.trimming.trimmed_after),
+            (6, T0 + 4, T0 + 5)
+        );
+        assert_eq!(r.gbc, [1, 0, 1, 1, 0, 1]);
+        assert_eq!(
+            r.od[0] & (metric_status::QUERIED | metric_status::GROUPED | metric_status::NONZERO),
+            metric_status::QUERIED | metric_status::GROUPED | metric_status::NONZERO
+        );
+        assert_eq!(
+            (r.dview[0].count, r.dview[0].min, r.dview[0].max),
+            (4, 10.0, 40.0)
+        );
+        assert_eq!(qt.query_points.count, 4);
+        assert_eq!(
+            (
+                qt.instances[0].query_points.count,
+                qt.nodes[0].query_points.count
+            ),
+            (4, 4)
+        );
+        assert_eq!(qt.contexts[0].instances.queried, 1);
     }
 }

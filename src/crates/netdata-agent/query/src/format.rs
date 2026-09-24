@@ -516,6 +516,7 @@ mod tests {
         let e = value_flags::EMPTY;
         let queried = metric_status::QUERIED;
         Rrdr {
+            n: 3,
             rows: 3,
             columns: 2,
             t: vec![100, 101, 102],
@@ -539,6 +540,7 @@ mod tests {
             db_points_read: 6,
             cardinality_folded: 0,
             cardinality_cut: 0.0,
+            ..Rrdr::new(&crate::window::Window::default(), 0)
         }
     }
 

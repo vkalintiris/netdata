@@ -8,7 +8,7 @@ use crate::tables::{TimeGrouping, options};
 use crate::target::QueryTarget;
 
 /// `qt->window` after the calculation.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Window {
     pub after: i64,
     pub before: i64,
@@ -229,6 +229,7 @@ mod tests {
             chart_label_key: None,
             preprocessed: std::time::Instant::now(),
             executed: None,
+            query_points: netdata_agent_storage::storage_point::StoragePoint::UNSET,
         }
     }
 

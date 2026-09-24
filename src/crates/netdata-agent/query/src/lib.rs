@@ -10,6 +10,7 @@ pub const STORAGE_TIERS: u64 = 1;
 pub mod execute;
 pub mod finalize;
 pub mod format;
+pub mod groupby;
 pub mod grouping;
 pub mod id;
 pub mod jsonwrap;

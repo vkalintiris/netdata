@@ -53,6 +53,8 @@ pub struct QueryNode {
     pub node_id: Option<String>,
     pub metrics: Counts,
     pub instances: Counts,
+    /// The positive points of its queried metrics, merged (v2).
+    pub query_points: StoragePoint,
 }
 
 #[derive(Debug)]
@@ -61,6 +63,7 @@ pub struct QueryContext {
     pub rc: Arc<Context>,
     pub metrics: Counts,
     pub instances: Counts,
+    pub query_points: StoragePoint,
 }
 
 #[derive(Debug)]
@@ -71,6 +74,7 @@ pub struct QueryInstance {
     pub id_fqdn: String,
     pub name_fqdn: String,
     pub metrics: Counts,
+    pub query_points: StoragePoint,
 }
 
 #[derive(Debug)]
@@ -102,6 +106,18 @@ pub struct QueryMetric {
     pub query_points: StoragePoint,
     /// The tier-0 plan's `(after, before)` (`qm->plan.array[0]`); none for the LATEST fast path or a failed plan.
     pub plan: Option<(i64, i64)>,
+    /// The v2 group it joined (`qm->grouped_as`).
+    pub grouped_as: GroupedAs,
+}
+
+/// `qm->grouped_as`: the slot in the first group-by pass and in the latest one, and that group's identity.
+#[derive(Debug, Default, Clone)]
+pub struct GroupedAs {
+    pub first_slot: usize,
+    pub slot: usize,
+    pub id: String,
+    pub name: String,
+    pub units: String,
 }
 
 /// `qt->db`.
@@ -149,6 +165,8 @@ pub struct QueryTarget {
     /// When the target was built and when its metrics were executed (`qt->timings`).
     pub preprocessed: Instant,
     pub executed: Option<Instant>,
+    /// The positive points of every queried metric, merged (`qt->query_points`, v2).
+    pub query_points: StoragePoint,
 }
 
 /// What selects the metrics: v1's routed host (and chart), or every host for v2/v3.
@@ -348,6 +366,7 @@ impl Walk<'_> {
             // C zeroes the metric; only execution sets its points.
             query_points: StoragePoint::default(),
             plan: None,
+            grouped_as: GroupedAs::default(),
         });
         true
     }
@@ -496,6 +515,7 @@ impl Walk<'_> {
             id_fqdn,
             name_fqdn,
             metrics: Counts::default(),
+            query_points: StoragePoint::default(),
         });
         let (kept, admitted) = self.dimensions(instance, ri, queryable);
         if kept == 0 {
@@ -533,6 +553,7 @@ impl Walk<'_> {
             rc: Arc::clone(rc),
             metrics: Counts::default(),
             instances: Counts::default(),
+            query_points: StoragePoint::default(),
         });
         let before = self.qt.instances.len();
         match chart_instance {
@@ -562,6 +583,7 @@ impl Walk<'_> {
             node_id,
             metrics: Counts::default(),
             instances: Counts::default(),
+            query_points: StoragePoint::default(),
         });
         let before = self.qt.contexts.len();
         if let Some(ri) = chart_instance {
@@ -692,6 +714,7 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
             chart_label_key: pattern(&req.chart_label_key),
             preprocessed: Instant::now(),
             executed: None,
+            query_points: StoragePoint::UNSET,
         },
     };
     let (kind_host, kind_chart) = match source {

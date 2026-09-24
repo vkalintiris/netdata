@@ -7,7 +7,7 @@ use netdata_agent_rrd::host::{Host, HostInfo};
 use netdata_agent_rrd::mode::DbMode;
 use netdata_agent_storage::storage_number::SN_FLAG_NOT_ANOMALOUS;
 
-use crate::request::parse_v1;
+use crate::request::{parse_v1, parse_v2};
 use crate::target::{QueryTarget, Source, create};
 use crate::window::{Window, calculate};
 
@@ -72,6 +72,19 @@ pub fn v1_target(h: &Arc<Host>, query: &str) -> (QueryTarget, Window) {
         Source::V1 {
             host: h,
             chart: None,
+        },
+        T0 + 7,
+    );
+    let window = calculate(&qt, T0 + 7).expect("window");
+    (qt, window)
+}
+
+/// A v2 query over every host (here `h`), built at `T0 + 7`, with its window.
+pub fn v2_target(h: &Arc<Host>, query: &str) -> (QueryTarget, Window) {
+    let qt = create(
+        parse_v2(query.as_bytes(), 2, 1),
+        Source::V2 {
+            hosts: vec![Arc::clone(h)],
         },
         T0 + 7,
     );

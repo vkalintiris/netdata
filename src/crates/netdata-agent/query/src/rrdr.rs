@@ -1,6 +1,8 @@
 //! The query result (`RRDR`, `src/web/api/queries/rrdr.h`, `rrdr.c`): one row per point, one column per metric (v1)
 //! or per group (v2). Spec §4.2.
 
+use netdata_agent_storage::storage_point::StoragePoint;
+
 use crate::window::Window;
 
 /// `RRDR_VALUE_FLAGS`: a cell's flags (`r->o`).
@@ -30,9 +32,21 @@ pub struct View {
     pub flags: u32,
 }
 
+/// `r->partial_data_trimming`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Trimming {
+    pub max_update_every: i64,
+    pub expected_after: i64,
+    pub trimmed_after: i64,
+}
+
+/// A group's member labels (`r->dl[d]`): keys, each with its values, in first-seen order.
+pub type GroupLabels = Vec<(Vec<u8>, Vec<Vec<u8>>)>;
+
 #[derive(Debug, Clone)]
 pub struct Rrdr {
-    /// Rows (`r->n`, and `r->rows` once the timestamps are set).
+    /// Rows allocated (`r->n`) and rows shown (`r->rows`, fewer after v2 live-edge trimming).
+    pub n: usize,
     pub rows: usize,
     /// Columns (`r->d`).
     pub columns: usize,
@@ -56,6 +70,21 @@ pub struct Rrdr {
     /// What the cardinality limit folded (`r->cardinality`): how many columns, and the largest folded contribution.
     pub cardinality_folded: usize,
     pub cardinality_cut: f64,
+    /// The v2 group-by arrays, empty where C has NULL: per column units, priority, view statistics, metrics
+    /// grouped, merged query points, slot in the next pass and member labels; per cell contributions, anomaly
+    /// contributors, hidden values and hidden contributions.
+    pub du: Vec<String>,
+    pub dp: Vec<usize>,
+    pub dview: Vec<StoragePoint>,
+    pub dgbc: Vec<u32>,
+    pub dqp: Vec<StoragePoint>,
+    pub dgbs: Vec<usize>,
+    pub dl: Option<Vec<GroupLabels>>,
+    pub gbc: Vec<u32>,
+    pub arc: Vec<u32>,
+    pub vh: Vec<f64>,
+    pub hgbc: Vec<u32>,
+    pub trimming: Trimming,
 }
 
 impl Rrdr {
@@ -65,6 +94,7 @@ impl Rrdr {
         let rows = usize::try_from(window.points).unwrap_or(usize::MAX);
         let cells = rows * columns;
         Rrdr {
+            n: rows,
             rows,
             columns,
             t: (0..window.points).map(|i| window.row_time(i)).collect(),
@@ -88,6 +118,18 @@ impl Rrdr {
             db_points_read: 0,
             cardinality_folded: 0,
             cardinality_cut: 0.0,
+            du: Vec::new(),
+            dp: Vec::new(),
+            dview: Vec::new(),
+            dgbc: Vec::new(),
+            dqp: Vec::new(),
+            dgbs: Vec::new(),
+            dl: None,
+            gbc: Vec::new(),
+            arc: Vec::new(),
+            vh: Vec::new(),
+            hgbc: Vec::new(),
+            trimming: Trimming::default(),
         }
     }
 
