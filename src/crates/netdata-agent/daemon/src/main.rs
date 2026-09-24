@@ -17,6 +17,7 @@ mod server;
 mod static_file;
 mod system;
 mod v1_contexts;
+mod v1_data;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -246,6 +247,10 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     }
     conf.flush_log(&mut logger);
+    // Still one thread: setenv() is sound only now.
+    if let Err(err) = conf::set_timezone_env(&mut conf.netdata) {
+        log(LogLevel::Error, &format!("TIMEZONE: cannot set TZ: {err}"));
+    }
 
     let localhost = Host::new(
         &machine_guid,

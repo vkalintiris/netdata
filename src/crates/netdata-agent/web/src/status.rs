@@ -9,8 +9,11 @@ pub const NOT_FOUND: u16 = 404;
 pub const PRECOND_FAIL: u16 = 412;
 pub const URI_TOO_LONG: u16 = 414;
 pub const UNAVAILABLE_FOR_LEGAL_REASONS: u16 = 451;
+/// `HTTP_RESP_CLIENT_CLOSED_REQUEST`.
+pub const CLIENT_CLOSED_REQUEST: u16 = 499;
 pub const INTERNAL_SERVER_ERROR: u16 = 500;
 pub const SERVICE_UNAVAILABLE: u16 = 503;
+pub const GATEWAY_TIMEOUT: u16 = 504;
 /// `HTTP_RESP_HTTPS_UPGRADE`: written on the status line as-is, then replaced by 301 internally.
 pub const HTTPS_UPGRADE: u16 = 399;
 

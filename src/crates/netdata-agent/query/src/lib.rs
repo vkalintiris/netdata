@@ -4,7 +4,11 @@
 
 #![forbid(unsafe_code)]
 
+/// `nd_profile.storage_tiers`: one tier (ram) until dbengine brings more (decision D15).
+pub const STORAGE_TIERS: u64 = 1;
+
 pub mod execute;
+pub mod finalize;
 pub mod format;
 pub mod grouping;
 pub mod id;

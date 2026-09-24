@@ -537,6 +537,8 @@ mod tests {
             queries_count: 2,
             result_points_generated: 6,
             db_points_read: 6,
+            cardinality_folded: 0,
+            cardinality_cut: 0.0,
         }
     }
 

@@ -426,6 +426,8 @@ enum Outcome {
 
 /// Validates what was received and, when the request is complete, produces the whole response.
 fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Option<Outcome> {
+    // web_client_timeout_checkpoint_init() at every pass over what was received.
+    let received = Instant::now();
     let conn = Connection {
         transport: Transport::Tcp,
         tls_configured: false,
@@ -475,7 +477,12 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
                 other => Outcome::Stream(other),
             });
         }
-        Validation::Ok => dispatch(&client.request, client.acl, shared),
+        Validation::Ok => {
+            let stream = &client.stream;
+            dispatch(&client.request, client.acl, shared, received, &|| {
+                is_socket_closed(stream)
+            })
+        }
         Validation::Redirect => Reply {
             code: status::HTTPS_UPGRADE,
             content_type: ContentType::TextHtml,
@@ -570,8 +577,23 @@ pub fn permission_denied_acl() -> Reply {
     )
 }
 
+/// `is_socket_closed()`: a peek that finds the end of the stream or an error other than "no data yet".
+fn is_socket_closed(stream: &mio::net::TcpStream) -> bool {
+    match stream.peek(&mut [0u8; 1]) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => e.kind() != io::ErrorKind::WouldBlock,
+    }
+}
+
 /// The request-mode switch of `web_client_process_request_from_web_server()`, after the STREAM case.
-fn dispatch(req: &Request, client_acl: u32, shared: &Shared) -> Reply {
+fn dispatch(
+    req: &Request,
+    client_acl: u32,
+    shared: &Shared,
+    received: Instant,
+    interrupted: &dyn Fn() -> bool,
+) -> Reply {
     match req.mode {
         Some(Mode::Options) if acl::can_access_web(client_acl, req.path_is_mcp) => {
             Reply::text(status::OK, "OK")
@@ -581,12 +603,12 @@ fn dispatch(req: &Request, client_acl: u32, shared: &Shared) -> Reply {
             if acl::can(client_acl, acl::bits::DASHBOARD)
                 || acl::can(client_acl, acl::bits::MCP) =>
         {
-            router::process_request(req, client_acl, shared)
+            router::process_request(req, client_acl, shared, received, interrupted)
         }
         Some(Mode::Get | Mode::Post | Mode::Put | Mode::Delete)
             if acl::can_access_web(client_acl, req.path_is_mcp) =>
         {
-            router::process_request(req, client_acl, shared)
+            router::process_request(req, client_acl, shared, received, interrupted)
         }
         _ => permission_denied_acl(),
     }

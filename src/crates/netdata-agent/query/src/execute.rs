@@ -8,6 +8,7 @@ use netdata_agent_storage::ram::RamQuery;
 use netdata_agent_storage::storage_number::SN_FLAG_RESET;
 use netdata_agent_storage::storage_point::StoragePoint;
 
+use crate::finalize::{cardinality_limit, percentage_of_total};
 use crate::grouping::Grouping;
 use crate::rrdr::{Rrdr, result_flags, value_flags};
 use crate::tables::{TimeGrouping, options};
@@ -647,6 +648,8 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
             break;
         }
     }
+    percentage_of_total(&mut r, window.options);
+    let r = cardinality_limit(r, qt.request.cardinality_limit);
     if used != 0 && window.options & options::NONZERO != 0 && nonzero == 0 {
         window.options &= !options::NONZERO;
     }

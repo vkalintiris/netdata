@@ -7,8 +7,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use netdata_agent_rrd::chart::{Dim, dim_flags, flags as chart_flags};
-use netdata_agent_rrd::contexts::{Context, Instance, Metric, flags};
+use netdata_agent_rrd::chart::{Chart, Dim, dim_flags, flags as chart_flags};
+use netdata_agent_rrd::contexts::{self, Context, Instance, Metric, flags};
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::labels::Labels;
 use netdata_agent_storage::storage_point::StoragePoint;
@@ -17,7 +17,7 @@ use netdata_agent_text::simple_pattern::{SimplePattern, SimplePatternResult};
 use netdata_agent_text::time_window::relative_window_to_absolute_query;
 
 use crate::id::{self, IdKind};
-use crate::request::DataRequest;
+use crate::request::{DataRequest, is_valid_sp};
 use crate::tables::{Aggregation, group_by, options};
 
 /// `QUERY_STATUS_*`.
@@ -153,9 +153,10 @@ pub struct QueryTarget {
 
 /// What selects the metrics: v1's routed host (and chart), or every host for v2/v3.
 pub enum Source<'a> {
+    /// `chart` is the chart `chart=` found (`qtr->st`).
     V1 {
         host: &'a Arc<Host>,
-        chart_instance: Option<Arc<Instance>>,
+        chart: Option<Arc<Chart>>,
     },
     V2 {
         hosts: Vec<Arc<Host>>,
@@ -694,15 +695,25 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
         },
     };
     let (kind_host, kind_chart) = match source {
-        Source::V1 {
-            host,
-            chart_instance,
-        } => {
-            walk.node(host, true, chart_instance.as_ref());
-            (
-                Some(host.hostname()),
-                chart_instance.map(|ri| ri.state().name),
-            )
+        Source::V1 { host, chart } => {
+            let chart_name = chart
+                .as_ref()
+                .map(|st| st.meta().name.unwrap_or_else(|| st.id().to_string()));
+            let mut instance = chart.as_ref().and_then(|st| st.contexts().instance());
+            if let Some(st) = &chart
+                && instance.is_none()
+            {
+                // Not linked to its context yet: link it now, else fall back to a context query on its name.
+                contexts::updated_rrdset(st);
+                instance = st.contexts().instance();
+                if instance.is_none() && !is_valid_sp(req.instances.as_deref()) {
+                    walk.instances = chart_name
+                        .as_deref()
+                        .and_then(|n| SimplePattern::from_web(n.as_bytes()));
+                }
+            }
+            walk.node(host, true, instance.as_ref());
+            (Some(host.hostname()), chart_name)
         }
         Source::V2 { hosts } => {
             let scope_nodes = pattern(&req.scope_nodes);

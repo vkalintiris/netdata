@@ -125,7 +125,7 @@ fn full_chart_labels(w: &mut JsonWriter, qt: &QueryTarget) {
 fn chart_ids(w: &mut JsonWriter, r: &Rrdr, qt: &QueryTarget, options: u64) -> usize {
     w.member_add_array(Some(b"chart_ids"));
     let mut i = 0;
-    for (c, qm) in qt.query.iter().enumerate() {
+    for (c, qm) in qt.query.iter().enumerate().take(r.columns) {
         if !exposed(r.od[c], options) {
             continue;
         }
@@ -149,7 +149,7 @@ fn chart_labels(w: &mut JsonWriter, r: &Rrdr, qt: &QueryTarget, options: u64) ->
     for key in words {
         w.member_add_array(Some(key));
         i = 0;
-        for (c, qm) in qt.query.iter().enumerate() {
+        for (c, qm) in qt.query.iter().enumerate().take(r.columns) {
             if !exposed(r.od[c], options) {
                 continue;
             }
@@ -169,7 +169,7 @@ fn chart_labels(w: &mut JsonWriter, r: &Rrdr, qt: &QueryTarget, options: u64) ->
 fn latest_values(w: &mut JsonWriter, r: &Rrdr, qt: &QueryTarget, options: u64) -> usize {
     w.member_add_array(Some(b"latest_values"));
     let mut i = 0;
-    for (c, qm) in qt.query.iter().enumerate() {
+    for (c, qm) in qt.query.iter().enumerate().take(r.columns) {
         if !exposed(r.od[c], options) {
             continue;
         }

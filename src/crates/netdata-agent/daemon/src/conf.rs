@@ -759,6 +759,19 @@ pub struct WebConf {
 /// The zlib strategies `[web] gzip compression strategy` accepts.
 const GZIP_STRATEGIES: [&str; 5] = ["default", "filtered", "huffman only", "rle", "fixed"];
 
+/// The `TZ` part of `get_system_timezone()` (`src/daemon/analytics.c`): without a `TZ` in the environment,
+/// `[environment variables] TZ` (default `:/etc/localtime`, which spares libc a `stat()` per conversion). Local-time
+/// renderings (csv dates, datatable dates) read it.
+pub fn set_timezone_env(netdata: &mut Config) -> std::io::Result<()> {
+    if std::env::var_os("TZ").is_some_and(|tz| !tz.is_empty()) {
+        return Ok(());
+    }
+    let tz = netdata
+        .get(SECTION_ENV_VARS, "TZ", Some(":/etc/localtime"))
+        .unwrap_or_default();
+    netdata_agent_sys::setenv("TZ", &String::from_utf8_lossy(&tz))
+}
+
 /// `netdata_conf_web_query_threads()`: two per CPU on a parent (at most 256 CPUs), at least 6, unless configured.
 pub fn web_query_threads(
     c: &mut Config,

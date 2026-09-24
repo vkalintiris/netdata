@@ -3,6 +3,7 @@
 
 use netdata_agent_text::json::JsonWriter;
 use netdata_agent_web::content_type::ContentType;
+use netdata_agent_web::status;
 
 use crate::execute::{Control, run_v1};
 use crate::format::{rrdr2csv, rrdr2json, rrdr2json_v2, rrdr2ssv};
@@ -23,9 +24,6 @@ pub struct DataResponse {
     /// `*latest_timestamp`: the result's `before` when it has rows.
     pub latest_timestamp: Option<i64>,
 }
-
-/// `HTTP_RESP_CLIENT_CLOSED_REQUEST`.
-const CLIENT_CLOSED_REQUEST: u16 = 499;
 
 /// A wrapped result whose value the writer quotes: `buffer_json_member_add_string_open/close()` around raw text.
 fn wrapped_string(w: &mut JsonWriter, render: impl FnOnce(&mut Vec<u8>)) {
@@ -51,15 +49,16 @@ pub fn data_query_execute(
     control: &Control,
 ) -> DataResponse {
     let mut r = run_v1(qt, window, control);
+    // A cancelled query leaves the response's initial content type.
     let mut response = DataResponse {
-        code: 200,
-        content_type: ContentType::ApplicationJson,
+        code: status::OK,
+        content_type: ContentType::TextPlain,
         body: Vec::new(),
         cacheable: None,
         latest_timestamp: None,
     };
     if r.view.flags & result_flags::CANCEL != 0 {
-        response.code = CLIENT_CLOSED_REQUEST;
+        response.code = status::CLIENT_CLOSED_REQUEST;
         return response;
     }
     if r.view.flags & result_flags::RELATIVE != 0 {
@@ -192,7 +191,8 @@ pub fn data_query_execute(
         }
         Format::Datasource | Format::Datatable | Format::Jsonp | Format::Json => {
             let datatable = matches!(format, Format::Datasource | Format::Datatable);
-            let content_type = if matches!(format, Format::Datasource | Format::Jsonp) {
+            // The wrapper's buffer_json_initialize() makes any wrapped response JSON.
+            let content_type = if !wrap && matches!(format, Format::Datasource | Format::Jsonp) {
                 ContentType::ApplicationXJavascript
             } else {
                 ContentType::ApplicationJson
@@ -341,5 +341,6 @@ mod tests {
     fn a_cancelled_query_answers_499_without_a_body() {
         let r = respond(&format!("after={T0}&before={}&timeout=-1", T0 + 6));
         assert_eq!((r.code, r.body.len(), r.cacheable), (499, 0, None));
+        assert_eq!(r.content_type, ContentType::TextPlain);
     }
 }

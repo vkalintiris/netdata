@@ -2934,6 +2934,7 @@ dependencies = [
  "netdata-agent-evloop",
  "netdata-agent-inicfg",
  "netdata-agent-nrpc",
+ "netdata-agent-query",
  "netdata-agent-rrd",
  "netdata-agent-streaming",
  "netdata-agent-sys",

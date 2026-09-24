@@ -71,7 +71,7 @@ pub fn v1_target(h: &Arc<Host>, query: &str) -> (QueryTarget, Window) {
         p.request,
         Source::V1 {
             host: h,
-            chart_instance: None,
+            chart: None,
         },
         T0 + 7,
     );

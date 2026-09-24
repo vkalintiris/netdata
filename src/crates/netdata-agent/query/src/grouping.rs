@@ -223,13 +223,14 @@ impl Grouping {
         resampling_divisor: f64,
     ) -> Self {
         use TimeGrouping as G;
+        // `tg_ses_window()` / `tg_des_window()`, in doubles as C compares them.
         let window = |max: i64| {
             let w = if view_group == 1 {
-                points_wanted as i64
+                points_wanted as f64
             } else {
-                view_group
+                view_group as f64
             };
-            w.min(max)
+            if w > max as f64 { max as f64 } else { w }
         };
         let state = match method {
             G::Average => State::Average { sum: 0.0, count: 0 },
@@ -268,12 +269,12 @@ impl Grouping {
                 s: 0.0,
             },
             G::Ses => State::Ses {
-                alpha: 2.0 / (window(DEFAULT_MAX_WINDOW) as f64 + 1.0),
+                alpha: 2.0 / (window(DEFAULT_MAX_WINDOW) + 1.0),
                 level: 0.0,
                 count: 0,
             },
             G::Des => {
-                let a = 2.0 / (window(DEFAULT_MAX_WINDOW) as f64 + 1.0);
+                let a = 2.0 / (window(DEFAULT_MAX_WINDOW) + 1.0);
                 State::Des {
                     alpha: a,
                     beta: a,
@@ -467,7 +468,9 @@ impl Grouping {
                     *trend = v;
                 } else {
                     if *count == 1 {
+                        // The second value restarts the level from itself.
                         *trend = v - *trend;
+                        *level = v;
                     }
                     let last = *level;
                     *level = *alpha * v + (1.0 - *alpha) * (*level + *trend);
@@ -694,6 +697,18 @@ mod tests {
         }
         let mut flags = 0;
         (g.flush(&mut flags), flags)
+    }
+
+    #[test]
+    fn des_restarts_its_level_at_the_second_value() {
+        // Window 3 (view group 3): alpha = beta = 0.5. After 1: level = trend = 1. After 2: trend = 1, level = 2,
+        // then level = 0.5*2 + 0.5*(2+1) = 2.5, trend = 0.75. After 4: level = 0.5*4 + 0.5*(2.5+0.75) = 3.625.
+        let mut g = Grouping::new(TimeGrouping::Des, None, 3, 1, 1, 1.0);
+        for v in [1.0, 2.0, 4.0] {
+            g.add(v);
+        }
+        let mut flags = 0;
+        assert_eq!(g.flush(&mut flags), 3.625);
     }
 
     #[test]

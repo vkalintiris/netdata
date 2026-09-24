@@ -3,9 +3,10 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: ACL and bearer checks (with the `[web]` section), `/mcp` and `/sse`, `/netdata.conf` (it needs
-//! the config reads in C's order), and the API commands other than `info`, `context` and `contexts`.
+//! the config reads in C's order), and the API commands other than `info`, `context`, `contexts` and v1 `data`.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use netdata_agent_text::c::strsep_skip;
 use netdata_agent_text::parse::uuid_parse_flexi;
@@ -21,6 +22,7 @@ use crate::acl;
 use crate::server::{self, Reply, Shared};
 use crate::static_file;
 use crate::v1_contexts;
+use crate::v1_data;
 
 /// `FILENAME_MAX`: the path and filename copies are truncated to it.
 pub const FILENAME_MAX: usize = 4096;
@@ -70,6 +72,13 @@ const API_V1: &[Command] = &[
         allow_subpaths: false,
         callback: |_, host, query| v1_contexts::contexts(host, query),
     },
+    Command {
+        name: "data",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: v1_data::data,
+    },
 ];
 const API_V2: &[Command] = &[];
 const API_V3: &[Command] = &[Command {
@@ -85,6 +94,10 @@ pub struct Route<'a> {
     pub shared: &'a Shared,
     /// `w->acl`.
     pub acl: u32,
+    /// When the complete request was received (`w->timings.tv_in`).
+    pub received: Instant,
+    /// Whether the client went away (`web_client_interrupt_callback()`).
+    pub interrupted: &'a dyn Fn() -> bool,
     pub url_as_received: &'a [u8],
     pub query: &'a [u8],
     /// `WEB_CLIENT_FLAG_PATH_IS_V0` .. `_V3`.
@@ -94,7 +107,13 @@ pub struct Route<'a> {
 }
 
 /// The GET/POST/PUT/DELETE branch of `web_client_process_request_from_web_server()`.
-pub fn process_request(req: &Request, acl: u32, shared: &Shared) -> Reply {
+pub fn process_request(
+    req: &Request,
+    acl: u32,
+    shared: &Shared,
+    received: Instant,
+    interrupted: &dyn Fn() -> bool,
+) -> Reply {
     let path = &req.path[..req.path.len().min(FILENAME_MAX)];
     let end = path.iter().position(|&c| c == b'?').unwrap_or(path.len());
     // The first byte is never inspected for a dot, as in C.
@@ -105,6 +124,8 @@ pub fn process_request(req: &Request, acl: u32, shared: &Shared) -> Reply {
     let mut route = Route {
         shared,
         acl,
+        received,
+        interrupted,
         url_as_received: &req.url_as_received,
         query: &req.query,
         version: None,
@@ -309,6 +330,8 @@ mod tests {
             &req,
             acl::bits::TRANSPORTS | acl::bits::ALL_LISTENER_FEATURES,
             shared,
+            Instant::now(),
+            &|| false,
         )
     }
 

@@ -53,6 +53,9 @@ pub struct Rrdr {
     pub queries_count: usize,
     pub result_points_generated: usize,
     pub db_points_read: usize,
+    /// What the cardinality limit folded (`r->cardinality`): how many columns, and the largest folded contribution.
+    pub cardinality_folded: usize,
+    pub cardinality_cut: f64,
 }
 
 impl Rrdr {
@@ -83,6 +86,8 @@ impl Rrdr {
             queries_count: 0,
             result_points_generated: 0,
             db_points_read: 0,
+            cardinality_folded: 0,
+            cardinality_cut: 0.0,
         }
     }
 
