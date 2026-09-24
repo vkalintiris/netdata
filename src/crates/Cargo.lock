@@ -2990,6 +2990,7 @@ name = "netdata-agent-query"
 version = "0.1.3"
 dependencies = [
  "netdata-agent-rrd",
+ "netdata-agent-storage",
  "netdata-agent-text",
 ]
 

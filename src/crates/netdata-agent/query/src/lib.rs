@@ -4,9 +4,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod execute;
 pub mod grouping;
 pub mod id;
 pub mod request;
+pub mod rrdr;
 pub mod tables;
 pub mod target;
 pub mod window;

@@ -10,6 +10,7 @@ use netdata_agent_rrd::chart::{Dim, dim_flags, flags as chart_flags};
 use netdata_agent_rrd::contexts::{Context, Instance, Metric, flags};
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::labels::Labels;
+use netdata_agent_storage::storage_point::StoragePoint;
 use netdata_agent_text::print::print_uuid_lower;
 use netdata_agent_text::simple_pattern::{SimplePattern, SimplePatternResult};
 use netdata_agent_text::time_window::relative_window_to_absolute_query;
@@ -25,11 +26,14 @@ pub mod status {
     pub const FAILED: u32 = 8;
 }
 
-/// `RRDR_DIMENSION_*` on a query metric.
+/// `RRDR_DIMENSION_*`: a query metric's status, which becomes its result column's flags (`r->od`).
 pub mod metric_status {
-    pub const SELECTED: u32 = 1 << 0;
-    pub const HIDDEN: u32 = 1 << 1;
-    pub const NONZERO: u32 = 1 << 2;
+    pub const HIDDEN: u32 = 1 << 0;
+    pub const NONZERO: u32 = 1 << 1;
+    pub const SELECTED: u32 = 1 << 2;
+    pub const QUERIED: u32 = 1 << 3;
+    pub const FAILED: u32 = 1 << 4;
+    pub const GROUPED: u32 = 1 << 5;
 }
 
 /// The counters a node, context or instance keeps (`QUERY_METRICS_COUNTS`, `QUERY_INSTANCES_COUNTS`).
@@ -92,6 +96,8 @@ pub struct QueryMetric {
     pub status: u32,
     pub values_stored_as_rates: bool,
     pub tier0: TierSnapshot,
+    /// What the execution read, merged (`qm->query_points`).
+    pub query_points: StoragePoint,
 }
 
 /// `qt->db`.
@@ -104,6 +110,9 @@ pub struct Db {
     pub tier0_update_every: i64,
     pub tier0_first: i64,
     pub tier0_last: i64,
+    /// Plans initialised and points read on tier 0 (`qt->db.tiers[0].queries`, `.points`).
+    pub tier0_queries: usize,
+    pub tier0_points: usize,
 }
 
 /// The selection window (`qt->window` before `query_target_calculate_window()`).
@@ -323,6 +332,7 @@ impl Walk<'_> {
                 last_time_s: last,
                 update_every_s: ue,
             },
+            query_points: StoragePoint::UNSET,
         });
         true
     }

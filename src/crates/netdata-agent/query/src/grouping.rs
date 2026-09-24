@@ -3,10 +3,8 @@
 
 use netdata_agent_text::parse::str2ndd;
 
+use crate::rrdr::value_flags::EMPTY as VALUE_EMPTY;
 use crate::tables::TimeGrouping;
-
-/// What a row's flush may report (`RRDR_VALUE_EMPTY`).
-pub const VALUE_EMPTY: u32 = 1 << 0;
 
 /// `[web] ses max tg_des_window` and `des max tg_des_window`.
 pub const DEFAULT_MAX_WINDOW: i64 = 15;
