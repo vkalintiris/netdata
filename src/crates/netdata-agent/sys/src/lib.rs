@@ -205,7 +205,10 @@ mod tests {
     fn localtime_breaks_down_the_epoch() {
         let tm = localtime(0).unwrap();
         // Within a day of the epoch in any zone.
-        assert!(matches!((tm.year, tm.month0), (1970, 0) | (1969, 11)), "{tm:?}");
+        assert!(
+            matches!((tm.year, tm.month0), (1970, 0) | (1969, 11)),
+            "{tm:?}"
+        );
         assert!((0..24).contains(&tm.hour) && (0..60).contains(&tm.min) && tm.sec == 0);
     }
 }

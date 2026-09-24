@@ -214,7 +214,15 @@ fn c_digit(v: i32) -> u8 {
 }
 
 /// `buffer_jsdate()`: `Date(Y,M,D,h,m,s)` with a four-digit year; every other field drops a leading zero.
-pub fn print_jsdate(dst: &mut Vec<u8>, year: i32, month: i32, day: i32, hours: i32, minutes: i32, seconds: i32) {
+pub fn print_jsdate(
+    dst: &mut Vec<u8>,
+    year: i32,
+    month: i32,
+    day: i32,
+    hours: i32,
+    minutes: i32,
+    seconds: i32,
+) {
     dst.extend_from_slice(b"Date(");
     dst.extend_from_slice(&[
         c_digit(year / 1000),
@@ -233,14 +241,28 @@ pub fn print_jsdate(dst: &mut Vec<u8>, year: i32, month: i32, day: i32, hours: i
 }
 
 /// `buffer_date()`: `YYYY-MM-DD HH:MM:SS`.
-pub fn print_date(dst: &mut Vec<u8>, year: i32, month: i32, day: i32, hours: i32, minutes: i32, seconds: i32) {
+pub fn print_date(
+    dst: &mut Vec<u8>,
+    year: i32,
+    month: i32,
+    day: i32,
+    hours: i32,
+    minutes: i32,
+    seconds: i32,
+) {
     dst.extend_from_slice(&[
         c_digit(year / 1000),
         c_digit(year % 1000 / 100),
         c_digit(year % 100 / 10),
         c_digit(year % 10),
     ]);
-    for (sep, v) in [(b'-', month), (b'-', day), (b' ', hours), (b':', minutes), (b':', seconds)] {
+    for (sep, v) in [
+        (b'-', month),
+        (b'-', day),
+        (b' ', hours),
+        (b':', minutes),
+        (b':', seconds),
+    ] {
         dst.extend_from_slice(&[sep, c_digit(v / 10), c_digit(v % 10)]);
     }
 }
