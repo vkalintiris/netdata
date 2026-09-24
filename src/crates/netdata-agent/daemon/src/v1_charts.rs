@@ -39,13 +39,6 @@ pub fn release_channel(user_config_dir: &str, version: &str) -> &'static str {
     }
 }
 
-/// What `/api/v1/charts` reports besides the charts: the release channel and `[web] custom dashboard_info.js`.
-#[derive(Debug, Clone, Default)]
-pub struct ChartsInfo {
-    pub release_channel: &'static str,
-    pub custom_info: String,
-}
-
 /// `rrdset_is_available_for_viewers()`.
 fn available_for_viewers(st: &Chart) -> bool {
     let flags = st.meta().flags;
@@ -118,18 +111,18 @@ fn chart_json(w: &mut JsonWriter, st: &Chart) -> usize {
 }
 
 /// `charts2json()`. `rrd_memory_bytes` counts this implementation's chart and ring memory, not C's structures.
-pub fn charts(host: &Host, hosts: &Hosts, info: &ChartsInfo) -> Reply {
+pub fn charts(host: &Host, hosts: &Hosts, release_channel: &str, custom_info: &str) -> Reply {
     let hi = host.info();
     let mut w = JsonWriter::new(JsonOptions::DEFAULT);
     w.member_add_string("hostname", host.hostname());
     w.member_add_string("version", &hi.program_version);
-    w.member_add_string("release_channel", info.release_channel);
+    w.member_add_string("release_channel", release_channel);
     w.member_add_string("os", &hi.os);
     w.member_add_string("timezone", &hi.timezone);
     w.member_add_int64("update_every", i64::from(hi.update_every));
     w.member_add_int64("history", hi.history_entries);
     w.member_add_string("memory_mode", hi.db_mode.name());
-    w.member_add_string("custom_info", &info.custom_info);
+    w.member_add_string("custom_info", custom_info);
     let (mut count, mut dimensions, mut memory) = (0i64, 0i64, 0i64);
     w.member_add_object(b"charts");
     for st in host.charts().all() {

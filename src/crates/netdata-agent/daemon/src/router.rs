@@ -2,9 +2,8 @@
 //! `web_client_switch_host()` and `web_client_api_request()` in `src/web/server/web_client.c`, and
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
-//! Not ported yet: ACL and bearer checks (with the `[web]` section), `/mcp` and `/sse`, `/netdata.conf` (it needs
-//! the config reads in C's order), and the API commands other than `info`, `chart`, `charts`, `context`, `contexts`
-//! and `data`.
+//! Not ported yet: bearer checks, `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`,
+//! `context`, `contexts` and `data`. `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -73,7 +72,12 @@ const API_V1: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |route, host, _| {
-            v1_charts::charts(host, &route.shared.hosts, &route.shared.charts_info)
+            v1_charts::charts(
+                host,
+                &route.shared.hosts,
+                route.shared.release_channel,
+                route.shared.custom_dashboard_info(),
+            )
         },
     },
     Command {
@@ -180,6 +184,7 @@ impl<'a> Route<'a> {
             b"v2" => 2,
             b"v1" => 1,
             b"v0" => 0,
+            b"netdata.conf" => return self.netdata_conf(),
             _ => return static_file::serve(self, filename),
         };
         if self.version.is_some() {
@@ -190,6 +195,19 @@ impl<'a> Route<'a> {
         }
         self.version = Some(version);
         self.process_url(host, rest)
+    }
+
+    /// `netdata.conf`: the configuration as the daemon reads it (`inicfg_generate()`).
+    fn netdata_conf(&self) -> Reply {
+        if !acl::can(self.acl, acl::bits::NETDATACONF) {
+            return server::permission_denied_acl();
+        }
+        Reply {
+            code: status::OK,
+            content_type: ContentType::TextPlain,
+            body: self.shared.conf().generate(false, true),
+            ..Reply::default()
+        }
     }
 
     /// `web_client_switch_host()` for the web server's routes.
@@ -244,9 +262,7 @@ impl<'a> Route<'a> {
             b"v1" => API_V1,
             other => return Reply::html(status::NOT_FOUND, "Unsupported API version: ", other),
         };
-        let mut reply = self.api_command(host, rest.unwrap_or(b""), table);
-        reply.no_cacheable = !reply.cacheable;
-        reply
+        self.api_command(host, rest.unwrap_or(b""), table)
     }
 
     /// `web_client_api_request_vX()`.
@@ -305,7 +321,9 @@ mod tests {
             first_request_timeout_s: 60,
             idle_timeout_s: 60,
             grouping_windows: Default::default(),
-            charts_info: Default::default(),
+            release_channel: "nightly",
+            netdata_conf: Default::default(),
+            custom_dashboard_info: Default::default(),
             hosts: Arc::new(netdata_agent_rrd::host::Hosts::new(
                 netdata_agent_rrd::host::Host::new(
                     "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",

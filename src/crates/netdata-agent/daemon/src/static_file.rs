@@ -187,6 +187,7 @@ pub fn serve(route: &mut Route<'_>, filename: &[u8]) -> Reply {
             body,
             date: mtime,
             expires: crate::server::now() + 86400,
+            no_cacheable: false,
             ..Reply::default()
         },
         Err(err)

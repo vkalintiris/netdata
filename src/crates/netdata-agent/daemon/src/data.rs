@@ -177,8 +177,8 @@ fn execute(
         code: response.code,
         content_type: response.content_type,
         body,
-        // The handler's last word: absolute windows are cacheable (the router still forces no-cache off 200).
-        cacheable: !qt.window.relative,
+        // Absolute windows are cacheable; the header builder still forces no-cache off 200.
+        no_cacheable: qt.window.relative,
         headers,
         ..Reply::default()
     }

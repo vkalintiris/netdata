@@ -211,6 +211,13 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
 
     conf.section_global_hostname(&mut logger);
 
+    // get_system_timezone(), after the hostname and before the listeners and become_daemon(), as in C. No thread has
+    // started yet, so setenv() is sound.
+    if let Err(err) = conf::set_timezone_env(&mut conf.netdata) {
+        log(LogLevel::Error, &format!("TIMEZONE: cannot set TZ: {err}"));
+    }
+    let tz = timezone::system_timezone(&mut conf.netdata, std::path::Path::new("/"), server::now());
+
     // cd into the user config dir, so plugins can use relative paths to their config files.
     if std::env::set_current_dir(&conf.dirs.user_config).is_err() {
         log(
@@ -220,6 +227,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         return 1;
     }
 
+    // nd_web_api_init(): the time-grouping limits, read before the listen sockets as in C.
+    let grouping_windows = conf::grouping_windows(&mut conf.netdata);
     let listeners = listen::setup(&mut conf.netdata, &mut logger);
     conf.flush_log(&mut logger);
     if listeners.is_empty() {
@@ -249,11 +258,6 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     }
     conf.flush_log(&mut logger);
-    // Still one thread: setenv() is sound only now.
-    if let Err(err) = conf::set_timezone_env(&mut conf.netdata) {
-        log(LogLevel::Error, &format!("TIMEZONE: cannot set TZ: {err}"));
-    }
-    let tz = timezone::system_timezone(&mut conf.netdata, std::path::Path::new("/"), server::now());
 
     let localhost = Host::new(
         &machine_guid,
@@ -325,23 +329,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     );
     conf.flush_log(&mut logger);
     receivers.set_streaming_rate(web.streaming_rate_s);
-    // nd_web_api_init(): the time-grouping limits.
-    let grouping_windows = conf::grouping_windows(&mut conf.netdata);
-    // charts2json() reads these at its first call; the values do not change.
-    let charts_info = v1_charts::ChartsInfo {
-        release_channel: v1_charts::release_channel(&conf.dirs.user_config, build::NETDATA_VERSION),
-        custom_info: String::from_utf8_lossy(
-            &conf
-                .netdata
-                .get(
-                    netdata_agent_inicfg::SECTION_WEB,
-                    "custom dashboard_info.js",
-                    Some(""),
-                )
-                .unwrap_or_default(),
-        )
-        .into_owned(),
-    };
+    let release_channel =
+        v1_charts::release_channel(&conf.dirs.user_config, build::NETDATA_VERSION);
     let shared = Arc::new(server::Shared {
         settings: Settings {
             gzip: web.gzip,
@@ -362,7 +351,10 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         web_dir: conf.dirs.web.clone(),
         hosts: Arc::clone(&hosts),
         grouping_windows,
-        charts_info,
+        release_channel,
+        // Every startup read is done: from here on netdata.conf is read and dumped under its lock.
+        netdata_conf: std::sync::Mutex::new(std::mem::take(&mut conf.netdata)),
+        custom_dashboard_info: Default::default(),
     });
     let sockets: Vec<(std::net::TcpListener, u32)> =
         listeners.into_iter().map(|l| (l.socket, l.acl)).collect();

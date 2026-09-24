@@ -2,7 +2,7 @@
 //! `static-threaded` web server does (`src/web/server/static/static-threaded.c`, `web_client.c`).
 
 use std::io::{self, Read, Write};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::{Context, Event, Interest, TimerId, Token, Worker};
@@ -18,7 +18,7 @@ use netdata_agent_text::print::html_escape;
 use netdata_agent_rrd::host::Hosts;
 use netdata_agent_streaming::receiver::{PreAdmission, Receivers};
 
-use netdata_agent_inicfg::LogLevel;
+use netdata_agent_inicfg::{Config, LogLevel, SECTION_WEB};
 
 use crate::acl::{self, WebAcl};
 use crate::{api, router};
@@ -42,8 +42,32 @@ pub struct Shared {
     pub hosts: Arc<Hosts>,
     /// The time-grouping SES/DES window limits.
     pub grouping_windows: netdata_agent_query::grouping::Windows,
-    /// What `/api/v1/charts` reports besides the charts.
-    pub charts_info: crate::v1_charts::ChartsInfo,
+    /// `get_release_channel()`, reported by `/api/v1/charts`.
+    pub release_channel: &'static str,
+    /// netdata.conf after startup (`netdata_config` and its lock): `/netdata.conf` and the reads C makes lazily.
+    pub netdata_conf: Mutex<Config>,
+    /// `[web] custom dashboard_info.js`, read at its first use.
+    pub custom_dashboard_info: OnceLock<String>,
+}
+
+impl Shared {
+    /// netdata.conf under its lock; a panic while it was held does not make it unreadable.
+    pub fn conf(&self) -> MutexGuard<'_, Config> {
+        self.netdata_conf
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `[web] custom dashboard_info.js`: `charts2json()` reads it at its first call, so a fresh dump lacks it.
+    pub fn custom_dashboard_info(&self) -> &str {
+        self.custom_dashboard_info.get_or_init(|| {
+            let value = self
+                .conf()
+                .get(SECTION_WEB, "custom dashboard_info.js", Some(""))
+                .unwrap_or_default();
+            String::from_utf8_lossy(&value).into_owned()
+        })
+    }
 }
 
 /// A handler's answer (`w->response`).
@@ -51,10 +75,9 @@ pub struct Reply {
     pub code: u16,
     pub content_type: ContentType,
     pub body: Vec<u8>,
+    /// `WB_CONTENT_NO_CACHEABLE`: every response buffer starts no-cache (`buffer_create()`, `buffer_reset()`); static
+    /// files and absolute data queries opt out (`buffer_cacheable()`).
     pub no_cacheable: bool,
-    /// An API handler opted into caching (`buffer_cacheable()`): the API default is no-cache, applied before the
-    /// handler runs (`web_client_api_request_vX()`), so only a handler can turn it off.
-    pub cacheable: bool,
     /// `response.data->date` and `->expires`; 0 lets the header builder derive them.
     pub date: i64,
     pub expires: i64,
@@ -68,8 +91,7 @@ impl Default for Reply {
             code: status::OK,
             content_type: ContentType::TextPlain,
             body: Vec::new(),
-            no_cacheable: false,
-            cacheable: false,
+            no_cacheable: true,
             date: 0,
             expires: 0,
             headers: Vec::new(),
