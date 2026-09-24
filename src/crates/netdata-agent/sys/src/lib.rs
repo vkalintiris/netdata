@@ -5,7 +5,7 @@
 //! - `gethostid()` and the scheduling calls (`nice`, `getpriority`, `sched_*`) pass plain integers and read nothing back through
 //!   pointers except a stack `sched_param`.
 //! - `localtime_r()` (decision D22.3) fills a stack `struct tm`; it reads `TZ`, which only `setenv()` changes, and that
-//!   refuses once a second thread exists.
+//!   refuses once a second thread exists. Its `tm_zone` string is copied out immediately.
 
 use std::io;
 
@@ -141,7 +141,7 @@ pub fn sched_get_priority_max(policy: i32) -> i32 {
 
 /// A broken-down local time (`struct tm`): the calendar year, the month counted from 0, and the other fields as C
 /// has them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalTime {
     pub year: i32,
     pub month0: i32,
@@ -149,6 +149,9 @@ pub struct LocalTime {
     pub hour: i32,
     pub min: i32,
     pub sec: i32,
+    /// Seconds east of UTC (`tm_gmtoff`) and the zone abbreviation (`tm_zone`, what `strftime("%Z")` prints).
+    pub gmtoff: i64,
+    pub zone: String,
 }
 
 /// `localtime_r()` in the process time zone (`TZ`); `None` when it fails.
@@ -161,6 +164,15 @@ pub fn localtime(t: i64) -> Option<LocalTime> {
     if r.is_null() {
         return None;
     }
+    let zone = if tm.tm_zone.is_null() {
+        String::new()
+    } else {
+        // SAFETY: a non-NULL `tm_zone` from `localtime_r` points to a NUL-terminated abbreviation in libc's time zone
+        // data, which only `tzset()` replaces; it is copied out at once.
+        unsafe { std::ffi::CStr::from_ptr(tm.tm_zone) }
+            .to_string_lossy()
+            .into_owned()
+    };
     Some(LocalTime {
         year: tm.tm_year + 1900,
         month0: tm.tm_mon,
@@ -168,6 +180,10 @@ pub fn localtime(t: i64) -> Option<LocalTime> {
         hour: tm.tm_hour,
         min: tm.tm_min,
         sec: tm.tm_sec,
+        // `c_long`: 32 bits on some targets.
+        #[allow(clippy::useless_conversion)]
+        gmtoff: i64::from(tm.tm_gmtoff),
+        zone,
     })
 }
 

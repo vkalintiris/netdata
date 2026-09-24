@@ -17,6 +17,7 @@ mod rrdcontext;
 mod server;
 mod static_file;
 mod system;
+mod timezone;
 mod v1_contexts;
 
 use std::io::Write;
@@ -251,6 +252,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     if let Err(err) = conf::set_timezone_env(&mut conf.netdata) {
         log(LogLevel::Error, &format!("TIMEZONE: cannot set TZ: {err}"));
     }
+    let tz = timezone::system_timezone(&mut conf.netdata, std::path::Path::new("/"), server::now());
 
     let localhost = Host::new(
         &machine_guid,
@@ -259,9 +261,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             hostname: conf.hostname.clone(),
             registry_hostname: conf.hostname.clone(),
             os: "linux".to_string(),
-            timezone: "unknown".to_string(),
-            abbrev_timezone: "UTC".to_string(),
-            utc_offset: 0,
+            timezone: tz.name,
+            abbrev_timezone: tz.abbrev,
+            utc_offset: tz.utc_offset,
             program_name: "netdata".to_string(),
             program_version: build::NETDATA_VERSION.to_string(),
             update_every: 1,
