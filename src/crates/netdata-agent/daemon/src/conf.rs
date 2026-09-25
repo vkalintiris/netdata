@@ -1088,6 +1088,26 @@ pub struct Threads {
     pub cpus: u64,
     /// `libuv_worker_threads`.
     pub libuv_worker_threads: i64,
+    /// `default_stacksize`: `[global] pthread stack size`.
+    pub pthread_stack_size: u64,
+}
+
+/// `netdata_threads_set_stack_size()`: C sets an attribute no thread create uses (the size never reaches a thread);
+/// what remains is its record.
+pub fn threads_set_stack_size(stack_size: u64) {
+    if stack_size > netdata_agent_sys::PTHREAD_STACK_MIN as u64 {
+        nd_log!(
+            Source::Daemon,
+            Priority::Debug,
+            "Set threads stack size to {stack_size} bytes"
+        );
+    } else {
+        nd_log!(
+            Source::Daemon,
+            Priority::Warning,
+            "Invalid pthread stacksize {stack_size}"
+        );
+    }
 }
 
 /// `libuv_initialize()` (`src/daemon/config/netdata-conf-global.c`): the thread stack size, `netdata_conf_cpus()` and
@@ -1100,15 +1120,8 @@ pub fn libuv_initialize(c: &mut Config, system: &Resources, root: &Path) -> Thre
         "pthread stack size",
         (libc_stack as u64).max(1 << 20),
     );
-    // netdata_threads_set_stack_size(): it only warns and sets an attribute no thread create uses; the value still
-    // divides the libuv worker cap below.
-    if stack_size <= netdata_agent_sys::PTHREAD_STACK_MIN as u64 {
-        nd_log!(
-            Source::Daemon,
-            Priority::Warning,
-            "Invalid pthread stacksize {stack_size}"
-        );
-    }
+    // the value still divides the libuv worker cap below
+    threads_set_stack_size(stack_size);
     let thread_stack_size = uv_thread_stack_size(system.page_size.max(1) as u64);
 
     // netdata_conf_cpus(): the cgroup cpuset, else every CPU.
@@ -1150,6 +1163,7 @@ pub fn libuv_initialize(c: &mut Config, system: &Resources, root: &Path) -> Thre
         thread_stack_size,
         cpus,
         libuv_worker_threads: threads,
+        pthread_stack_size: stack_size,
     }
 }
 

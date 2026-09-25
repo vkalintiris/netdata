@@ -220,6 +220,8 @@ pub struct WebWorker {
     listeners: Vec<mio::net::TcpListener>,
     /// Each listener's ACL (`fds_acl_flags`).
     listener_acls: Vec<u32>,
+    /// Each listener's name (`fds_names`).
+    listener_names: Arc<[String]>,
     clients: Vec<Option<Client>>,
     /// This worker's share of `[web] web server max sockets`; C only reports it when accept() runs out of descriptors.
     max_sockets: usize,
@@ -242,6 +244,7 @@ impl WebWorker {
     /// `listeners` (with their ACLs) must be non-blocking; they become this worker's own.
     pub fn new(
         listeners: Vec<(std::net::TcpListener, u32)>,
+        listener_names: Arc<[String]>,
         max_sockets: usize,
         shared: Arc<Shared>,
         receivers: Arc<Receivers>,
@@ -253,6 +256,7 @@ impl WebWorker {
                 .map(mio::net::TcpListener::from_std)
                 .collect(),
             listener_acls,
+            listener_names,
             clients: Vec::new(),
             max_sockets,
             shared,
@@ -843,6 +847,13 @@ impl Worker for WebWorker {
         for (i, listener) in self.listeners.iter_mut().enumerate() {
             cx.registry()
                 .register(listener, Token(i), Interest::READABLE)?;
+            // poll_events()
+            nd_log!(
+                Source::Daemon,
+                Priority::Debug,
+                "POLLFD: LISTENER: listening on '{}'",
+                self.listener_names.get(i).map_or("UNKNOWN", String::as_str)
+            );
         }
         cx.add_timer(Instant::now() + self.checks_every());
         Ok(())

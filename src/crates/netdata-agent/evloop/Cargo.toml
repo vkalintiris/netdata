@@ -10,4 +10,5 @@ workspace = true
 
 [dependencies]
 crossbeam-channel = { workspace = true }
+netdata-agent-log = { workspace = true }
 mio = { workspace = true }

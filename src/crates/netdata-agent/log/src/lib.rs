@@ -177,6 +177,26 @@ pub fn forked() {
     TID.with(|tid| tid.set(0));
 }
 
+/// `nd_thread_starting_point()`'s record, from the new thread once its name is set.
+pub fn thread_created() {
+    nd_log!(
+        Source::Daemon,
+        Priority::Debug,
+        "thread created with task id {}",
+        tid()
+    );
+}
+
+/// `nd_thread_exit()`'s record, from the thread as it ends.
+pub fn thread_finished() {
+    nd_log!(
+        Source::Daemon,
+        Priority::Debug,
+        "thread with task id {} finished",
+        tid()
+    );
+}
+
 /// `now_realtime_usec()`.
 fn now_realtime_usec() -> u64 {
     std::time::SystemTime::now()

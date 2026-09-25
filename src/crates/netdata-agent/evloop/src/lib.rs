@@ -14,7 +14,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 use std::fmt;
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -154,17 +154,31 @@ enum Envelope<M> {
 struct Mailbox<M> {
     tx: Sender<Envelope<M>>,
     waker: Waker,
+    /// The poller and queue of a thread that starts on its first message ([`Pool::spawn_lazy`]).
+    idle: Mutex<Option<(Poll, Receiver<Envelope<M>>)>>,
+}
+
+/// Starts thread `index` of a lazy pool on its poller and queue.
+type Starter<M> =
+    dyn Fn(usize, Poll, Receiver<Envelope<M>>) -> io::Result<JoinHandle<()>> + Send + Sync;
+
+/// What a lazy pool needs to start its threads, and the threads it started.
+struct Lazy<M> {
+    start: Box<Starter<M>>,
+    started: Mutex<Vec<JoinHandle<()>>>,
 }
 
 /// Sends messages to the threads of a running pool. Cheap to clone and usable from any thread.
 pub struct PoolHandle<M> {
     mailboxes: Arc<[Mailbox<M>]>,
+    lazy: Option<Arc<Lazy<M>>>,
 }
 
 impl<M> Clone for PoolHandle<M> {
     fn clone(&self) -> Self {
         Self {
             mailboxes: Arc::clone(&self.mailboxes),
+            lazy: self.lazy.clone(),
         }
     }
 }
@@ -181,6 +195,24 @@ impl<M: Send + 'static> PoolHandle<M> {
         let Some(mailbox) = self.mailboxes.get(index) else {
             return Err(msg);
         };
+        if let Some(lazy) = &self.lazy {
+            let idle = mailbox
+                .idle
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some((poll, rx)) = idle {
+                match (lazy.start)(index, poll, rx) {
+                    Ok(join) => lazy
+                        .started
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(join),
+                    // nd_thread_create(): the queue went with the failed thread, so the send below fails too
+                    Err(err) => netdata_agent_log::netdata_log_error!("{err}"),
+                }
+            }
+        }
         mailbox.tx.send(Envelope::Msg(msg)).map_err(|e| match e.0 {
             Envelope::Msg(msg) => msg,
             Envelope::Stop => unreachable!("only Msg envelopes are sent here"),
@@ -229,11 +261,16 @@ impl<M: Send + 'static> Pool<M> {
             let poll = Poll::new()?;
             let waker = Waker::new(poll.registry(), WAKER_TOKEN)?;
             let (tx, rx) = crossbeam_channel::unbounded();
-            mailboxes.push(Mailbox { tx, waker });
+            mailboxes.push(Mailbox {
+                tx,
+                waker,
+                idle: Mutex::new(None),
+            });
             loops.push((poll, rx, make(index)));
         }
         let handle = PoolHandle {
             mailboxes: mailboxes.into(),
+            lazy: None,
         };
 
         let mut joins = Vec::with_capacity(threads);
@@ -261,6 +298,49 @@ impl<M: Send + 'static> Pool<M> {
         })
     }
 
+    /// Like [`Pool::spawn`], but each thread starts on its first message, as C starts its stream threads when a
+    /// node is first assigned to them; `make` then runs on the new thread.
+    pub fn spawn_lazy<W>(
+        threads: usize,
+        stack_size: usize,
+        name: impl Fn(usize) -> String + Send + Sync + 'static,
+        make: impl Fn(usize) -> W + Send + Sync + 'static,
+    ) -> io::Result<Self>
+    where
+        W: Worker<Msg = M>,
+    {
+        let mut mailboxes = Vec::with_capacity(threads);
+        for _ in 0..threads {
+            let poll = Poll::new()?;
+            let waker = Waker::new(poll.registry(), WAKER_TOKEN)?;
+            let (tx, rx) = crossbeam_channel::unbounded();
+            mailboxes.push(Mailbox {
+                tx,
+                waker,
+                idle: Mutex::new(Some((poll, rx))),
+            });
+        }
+        let make = Arc::new(make);
+        let start: Box<Starter<M>> = Box::new(move |index, poll, rx| {
+            let make = Arc::clone(&make);
+            std::thread::Builder::new()
+                .name(name(index))
+                .stack_size(stack_size)
+                .spawn(move || run_loop(index, poll, rx, make(index)))
+                .map_err(|err| thread_create_failed(&name(index), &err))
+        });
+        Ok(Pool {
+            handle: PoolHandle {
+                mailboxes: mailboxes.into(),
+                lazy: Some(Arc::new(Lazy {
+                    start,
+                    started: Mutex::new(Vec::new()),
+                })),
+            },
+            threads: Vec::new(),
+        })
+    }
+
     /// A handle for sending messages to this pool's threads.
     pub fn handle(&self) -> PoolHandle<M> {
         self.handle.clone()
@@ -273,8 +353,12 @@ impl<M: Send + 'static> Pool<M> {
                 let _ = mailbox.waker.wake();
             }
         }
+        let mut threads = self.threads;
+        if let Some(lazy) = &self.handle.lazy {
+            threads.append(&mut lazy.started.lock().unwrap_or_else(PoisonError::into_inner));
+        }
         let mut result = Ok(());
-        for join in self.threads {
+        for join in threads {
             let name = join.thread().name().unwrap_or("unnamed").to_string();
             if join.join().is_err() && result.is_ok() {
                 result = Err(PoolPanicked(name));
@@ -284,11 +368,18 @@ impl<M: Send + 'static> Pool<M> {
     }
 }
 
-fn run_loop<W: Worker>(
+/// `nd_thread_starting_point()` / `nd_thread_exit()` around the loop: C's records of every thread.
+fn run_loop<W: Worker>(index: usize, poll: Poll, rx: Receiver<Envelope<W::Msg>>, mut worker: W) {
+    netdata_agent_log::thread_created();
+    run_worker(index, poll, rx, &mut worker);
+    netdata_agent_log::thread_finished();
+}
+
+fn run_worker<W: Worker>(
     index: usize,
     mut poll: Poll,
     rx: Receiver<Envelope<W::Msg>>,
-    mut worker: W,
+    worker: &mut W,
 ) {
     let mut timers = Timers::default();
     let mut events = Events::with_capacity(EVENTS_CAPACITY);
@@ -445,6 +536,41 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// A lazy pool starts a thread only when it gets its first message; the others never run their workers.
+    #[test]
+    fn a_lazy_pool_starts_threads_on_their_first_message() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let theirs = Arc::clone(&log);
+        let pool = Pool::spawn_lazy(
+            2,
+            TEST_STACK,
+            |i| format!("lazy-{i}"),
+            move |_| Recorder {
+                log: Arc::clone(&theirs),
+                timers: Vec::new(),
+            },
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(log.lock().unwrap().is_empty());
+        pool.handle().send(1, 7).unwrap();
+        pool.handle().send(1, 8).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while log.lock().unwrap().len() < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        pool.stop().unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            [
+                Seen::Start(1),
+                Seen::Msg(1, 7),
+                Seen::Msg(1, 8),
+                Seen::Stop(1)
+            ]
+        );
     }
 
     #[test]

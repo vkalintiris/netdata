@@ -11,6 +11,8 @@ pub struct Listener {
     pub socket: std::net::TcpListener,
     /// The features its definition allows (`fds_acl_flags`).
     pub acl: u32,
+    /// `strdup_client_description()`: `tcp:<ip>:<port>`, the IPv6 address in brackets.
+    pub name: String,
 }
 
 /// Default backlog of the web listeners (`LISTEN_SOCKETS.backlog` initial value).
@@ -151,7 +153,15 @@ fn bind_to_this(
     for addr in addrs {
         let rip = addr.ip().to_string();
         match create(addr, backlog) {
-            Ok(socket) => out.push(Listener { socket, acl }),
+            Ok(socket) => out.push(Listener {
+                socket,
+                acl,
+                name: if addr.is_ipv6() {
+                    format!("tcp:[{rip}]:{}", addr.port())
+                } else {
+                    format!("tcp:{rip}:{}", addr.port())
+                },
+            }),
             Err(_) => {
                 nd_log!(
                     Source::Daemon,

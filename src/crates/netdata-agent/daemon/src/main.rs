@@ -307,6 +307,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
 
     startup.step("dyncfg");
     startup.step("threads after fork");
+    // netdata_conf_reset_stack_size()
+    conf::threads_set_stack_size(conf.threads.pthread_stack_size);
     startup.step("registry");
     startup.step("system info");
     startup.step("RRD structures");
@@ -347,12 +349,13 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         },
     );
     let hosts = Arc::new(Hosts::new(localhost));
-    // stream_thread_get_unsafe(): one thread per core but one, 4..=2048. C starts them on first use.
+    // stream_thread_get_unsafe(): one thread per core but one, 4..=2048, each started when a node is first assigned
+    // to it.
     let stream_threads = (conf.threads.cpus - 1).clamp(4, 2048) as usize;
     let stream_load: Arc<std::sync::Mutex<Vec<usize>>> = Arc::default();
     let stream_pool = {
         let load = Arc::clone(&stream_load);
-        match Pool::spawn(
+        match Pool::spawn_lazy(
             stream_threads,
             conf.threads.thread_stack_size,
             |i| format!("STREAM[{i}]"),
@@ -435,6 +438,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         netdata_conf: std::sync::Mutex::new(std::mem::take(&mut conf.netdata)),
         custom_dashboard_info: Default::default(),
     });
+    let listener_names: Arc<[String]> = listeners.iter().map(|l| l.name.clone()).collect();
     let sockets: Vec<(std::net::TcpListener, u32)> =
         listeners.into_iter().map(|l| (l.socket, l.acl)).collect();
     // Every worker polls every listener through its own duplicate; running out of descriptors here is an error,
@@ -465,6 +469,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             |i| {
                 server::WebWorker::new(
                     std::mem::take(&mut worker_sockets[i]),
+                    Arc::clone(&listener_names),
                     max_sockets,
                     Arc::clone(&shared),
                     Arc::clone(&receivers),
@@ -565,6 +570,21 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         // cancel_main_threads(): no static thread of C's table runs in the Rust agent
         shutdown::CANCEL_MAIN_THREADS => {
             nd_log!(Source::Daemon, Priority::Info, "All threads finished.")
+        }
+        // rrd_finalize_collection_for_all_hosts()
+        shutdown::STOP_COLLECTION => {
+            for host in hosts.all() {
+                let hostname = host.hostname();
+                let _frame = netdata_agent_log::push(vec![(
+                    netdata_agent_log::Field::NidlNode,
+                    netdata_agent_log::Value::txt(hostname.as_str()),
+                )]);
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Debug,
+                    "RRD: 'host:{hostname}' stopping data collection..."
+                );
+            }
         }
         shutdown::REMOVE_PID_FILE => {
             if let Some(pidfile) = pidfile.as_deref().filter(|p| !p.is_empty())

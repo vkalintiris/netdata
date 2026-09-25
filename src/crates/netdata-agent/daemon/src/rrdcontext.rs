@@ -23,6 +23,7 @@ impl Worker {
             .name("RRDCONTEXT".into())
             .stack_size(stack_size)
             .spawn(move || {
+                netdata_agent_log::thread_created();
                 let (stopped, wake) = &*signal;
                 let mut stopped = stopped.lock().unwrap_or_else(PoisonError::into_inner);
                 loop {
@@ -37,12 +38,14 @@ impl Worker {
                         .unwrap_or_else(PoisonError::into_inner)
                         .0;
                     if *stopped {
-                        return;
+                        break;
                     }
                     for host in hosts.all() {
                         host.contexts().worker_cycle();
                     }
                 }
+                drop(stopped);
+                netdata_agent_log::thread_finished();
             })
             .map_err(|err| netdata_agent_evloop::thread_create_failed("RRDCONTEXT", &err))?;
         Ok(Worker { stop, thread })

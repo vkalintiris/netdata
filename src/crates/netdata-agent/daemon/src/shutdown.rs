@@ -44,6 +44,7 @@ pub const STOP_WEB_SERVERS: usize = 3;
 pub const STOP_STREAMING: usize = 5;
 pub const STOP_CONTEXT: usize = 8;
 pub const CANCEL_MAIN_THREADS: usize = 13;
+pub const STOP_COLLECTION: usize = 14;
 pub const REMOVE_PID_FILE: usize = 20;
 
 /// systemd allows 150 s; the watcher gives up at 135 s since the shutdown started.
@@ -80,7 +81,11 @@ impl Watcher {
         let theirs = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
             .name("EXIT_WATCHER".into())
-            .spawn(move || watch(&theirs))?;
+            .spawn(move || {
+                netdata_agent_log::thread_created();
+                watch(&theirs);
+                netdata_agent_log::thread_finished();
+            })?;
         Ok(Watcher { shared, thread })
     }
 

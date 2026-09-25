@@ -69,6 +69,8 @@ type Options struct {
 	WebExtra string
 	// GlobalExtra is appended to the [global] section verbatim (one "key = value" per line).
 	GlobalExtra string
+	// LogsExtra, when set, is written as a [logs] section at the end of netdata.conf (one "key = value" per line).
+	LogsExtra string
 	// StreamExtra is appended to stream.conf verbatim (e.g. per-child [<machine guid>] sections of a parent).
 	StreamExtra string
 	// StreamTo, when set, makes the daemon a streaming child of that destination.
@@ -353,6 +355,9 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	}
 	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs, o.WebExtra,
 		o.GlobalExtra)
+	if o.LogsExtra != "" {
+		conf += "\n[logs]\n" + o.LogsExtra
+	}
 	confPath := filepath.Join(o.RunDir, "etc", "netdata.conf")
 	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {
 		return nil, fmt.Errorf("daemon: write netdata.conf: %w", err)
