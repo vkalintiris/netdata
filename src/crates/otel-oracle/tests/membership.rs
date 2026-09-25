@@ -10,7 +10,9 @@ use std::time::{Duration, SystemTime};
 
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span};
-use otel_oracle::membership::{self, Membership, MembershipError, RowKey, UnitKind};
+use otel_oracle::membership::{
+    self, Membership, MembershipError, RowKey, SealedCache, UnitKind, WalInfo,
+};
 use otel_oracle::model::spans_of_request;
 
 const BASE_NS: u64 = 1_790_000_000_000_000_000;
@@ -125,9 +127,20 @@ fn kinds_and_rows(membership: &Membership) -> Vec<(UnitKind, Vec<RowKey>)> {
 fn a_wal_splits_into_chunks_and_a_tail_holding_the_rebuilt_rows() {
     let store = tempfile::tempdir().unwrap();
     let (a, b, c) = (request(1, 1, 4), request(2, 11, 4), request(3, 21, 3));
-    write_wal(store.path(), &[&a, &b, &c], 0);
+    let wal = write_wal(store.path(), &[&a, &b, &c], 0);
 
     let read = membership::read_store(store.path(), 5).unwrap();
+
+    assert_eq!(
+        read.wals,
+        vec![WalInfo {
+            bytes: fs::metadata(&wal).unwrap().len(),
+            path: wal,
+            frames: 3,
+            entries: 11,
+            frame_times: Some((1, 3)),
+        }]
+    );
 
     assert_eq!(
         kinds_and_rows(&read),
@@ -158,6 +171,53 @@ fn a_sealed_file_hides_the_wal_it_was_sealed_from() {
     let read = membership::read_store(store.path(), 2).unwrap();
 
     assert_eq!(kinds_and_rows(&read), vec![(UnitKind::Sealed, rows)]);
+    assert!(read.wals.is_empty());
+}
+
+/// A sealed file is read once while its length stays the same, read again
+/// when it changes, and forgotten once it is gone.
+#[test]
+fn sealed_files_are_read_once_per_length() {
+    let store = tempfile::tempdir().unwrap();
+    let (a, b) = (request(1, 1, 3), request(2, 11, 3));
+    let wal = write_wal(store.path(), &[&a, &b], 0);
+    let rows = keys(&[&a, &b]);
+    let sealed = write_sealed(store.path(), &wal, &rows);
+    let unreadable = |path: &Path| {
+        let bytes = fs::metadata(path).unwrap().len();
+        fs::write(path, vec![0; bytes as usize]).unwrap();
+    };
+    let mut cache = SealedCache::default();
+    let mut read = || membership::read_store_with(store.path(), 2, &mut cache);
+
+    let first = read().unwrap();
+    assert_eq!(
+        kinds_and_rows(&first),
+        vec![(UnitKind::Sealed, rows.clone())]
+    );
+
+    unreadable(&sealed);
+    assert_eq!(read().unwrap(), first);
+    assert!(membership::read_store(store.path(), 2).is_err());
+
+    write_sealed(store.path(), &wal, &rows[..2]);
+    assert_eq!(
+        kinds_and_rows(&read().unwrap()),
+        vec![(UnitKind::Sealed, rows[..2].to_vec())]
+    );
+
+    fs::remove_file(&sealed).unwrap();
+    let unsealed = read().unwrap();
+    assert!(
+        unsealed
+            .units
+            .iter()
+            .all(|unit| unit.kind != UnitKind::Sealed)
+    );
+
+    write_sealed(store.path(), &wal, &rows[..2]);
+    unreadable(&sealed);
+    assert!(matches!(read(), Err(MembershipError::Sealed(path, _)) if path == sealed));
 }
 
 #[test]
@@ -185,6 +245,10 @@ fn a_wal_left_by_an_older_agent_instance_is_set_aside() {
 
     let read = membership::read_store(store.path(), 100).unwrap();
 
+    assert_eq!(
+        read.wals.iter().map(|wal| &wal.path).collect::<Vec<_>>(),
+        vec![&newest]
+    );
     let second = u32::try_from(BASE_NS / 1_000_000_000).unwrap();
     assert_eq!(
         read.stale_wals,

@@ -18,6 +18,7 @@
 //! what the agent has synced; the two agree once writes have settled, which
 //! the caller ensures (a read error here means "not settled yet").
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -224,15 +225,39 @@ pub fn read_sealed(path: &Path) -> Result<Unit, MembershipError> {
     })
 }
 
+/// What the runner watches of a WAL between two reads of the store: frames
+/// added, a length that moved, or a first frame old enough that the agent is
+/// about to seal the WAL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalInfo {
+    pub path: PathBuf,
+    /// Its length when read.
+    pub bytes: u64,
+    pub frames: usize,
+    pub entries: u64,
+    /// Ingestion times of its first and last frames, unix nanoseconds; `None`
+    /// without frames.
+    pub frame_times: Option<(u64, u64)>,
+}
+
 /// Reads a WAL to its end and splits its rows into chunks and a tail.
-pub fn read_wal(path: &Path, min_entries: u32) -> Result<Vec<Unit>, MembershipError> {
+pub fn read_wal(path: &Path, min_entries: u32) -> Result<(WalInfo, Vec<Unit>), MembershipError> {
     let stem = stem_of(path)?;
     let unsettled = |error: String| MembershipError::NotSettled(path.to_path_buf(), error);
+    let bytes = fs::metadata(path)
+        .map_err(|e| unsettled(e.to_string()))?
+        .len();
     let mut reader = wal::Reader::open(path).map_err(|e| unsettled(e.to_string()))?;
 
     let mut frames: Vec<Vec<RowKey>> = Vec::new();
     let mut entry_counts = Vec::new();
+    let mut frame_times: Option<(u64, u64)> = None;
     while let Some(frame) = reader.next_frame().map_err(|e| unsettled(e.to_string()))? {
+        let at = frame.timestamp_ns.0;
+        frame_times = Some(match frame_times {
+            Some((first, _)) => (first, at),
+            None => (at, at),
+        });
         let request =
             ng_flatten::decode_trace_frame(frame.data).map_err(|e| unsettled(e.to_string()))?;
         let mut rows = Vec::new();
@@ -260,6 +285,13 @@ pub fn read_wal(path: &Path, min_entries: u32) -> Result<Vec<Unit>, MembershipEr
         frames.push(rows);
     }
 
+    let info = WalInfo {
+        path: path.to_path_buf(),
+        bytes,
+        frames: frames.len(),
+        entries: entry_counts.iter().map(|count| u64::from(*count)).sum(),
+        frame_times,
+    };
     let (chunks, tail) = fold_chunks(&entry_counts, min_entries);
     let unit = |kind: UnitKind, range: Range<usize>| {
         let rows: Vec<RowKey> = frames[range].iter().flatten().copied().collect();
@@ -278,7 +310,7 @@ pub fn read_wal(path: &Path, min_entries: u32) -> Result<Vec<Unit>, MembershipEr
     if let Some(range) = tail {
         units.push(unit(UnitKind::Tail(range.start), range));
     }
-    Ok(units)
+    Ok((info, units))
 }
 
 /// A WAL without a sealed file from an older agent instance than the newest
@@ -296,7 +328,7 @@ pub struct StaleWal {
 impl StaleWal {
     fn read(path: PathBuf, min_entries: u32) -> StaleWal {
         match read_wal(&path, min_entries) {
-            Ok(units) => {
+            Ok((_, units)) => {
                 let rows: Vec<RowKey> = units.into_iter().flat_map(|unit| unit.rows).collect();
                 StaleWal {
                     seconds: seconds_of(&rows),
@@ -325,7 +357,17 @@ impl StaleWal {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Membership {
     pub units: Vec<Unit>,
+    /// The WALs read as units, in the order read.
+    pub wals: Vec<WalInfo>,
     pub stale_wals: Vec<StaleWal>,
+}
+
+/// Sealed files already read, by path and length. A sealed file does not
+/// change, so a run reads each once however often it reads the store; a file
+/// no longer listed is dropped.
+#[derive(Debug, Clone, Default)]
+pub struct SealedCache {
+    units: BTreeMap<PathBuf, (u64, Unit)>,
 }
 
 fn files(dir: &Path, extension: &str) -> Vec<PathBuf> {
@@ -343,13 +385,34 @@ fn files(dir: &Path, extension: &str) -> Vec<PathBuf> {
 }
 
 pub fn read_store(store: &Path, min_entries: u32) -> Result<Membership, MembershipError> {
+    read_store_with(store, min_entries, &mut SealedCache::default())
+}
+
+/// [`read_store`], taking sealed files from `cache` when their length is the
+/// one read before.
+pub fn read_store_with(
+    store: &Path,
+    min_entries: u32,
+    cache: &mut SealedCache,
+) -> Result<Membership, MembershipError> {
     let sealed_paths = files(&store.join("index/default"), "sfst");
     let wal_paths = files(&store.join("wal/default"), "wal");
 
+    cache.units.retain(|path, _| sealed_paths.contains(path));
     let mut out = Membership::default();
     let mut sealed_keys = Vec::new();
     for path in &sealed_paths {
-        let unit = read_sealed(path)?;
+        let bytes = fs::metadata(path)
+            .map_err(|e| MembershipError::Sealed(path.clone(), e.to_string()))?
+            .len();
+        let unit = match cache.units.get(path) {
+            Some((cached, unit)) if *cached == bytes => unit.clone(),
+            _ => {
+                let unit = read_sealed(path)?;
+                cache.units.insert(path.clone(), (bytes, unit.clone()));
+                unit
+            }
+        };
         sealed_keys.push(unit.stem.clone());
         out.units.push(unit);
     }
@@ -372,7 +435,9 @@ pub fn read_store(store: &Path, min_entries: u32) -> Result<Membership, Membersh
             out.stale_wals.push(StaleWal::read(path, min_entries));
             continue;
         }
-        out.units.extend(read_wal(&path, min_entries)?);
+        let (info, units) = read_wal(&path, min_entries)?;
+        out.wals.push(info);
+        out.units.extend(units);
     }
     Ok(out)
 }
