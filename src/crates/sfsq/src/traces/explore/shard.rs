@@ -1,10 +1,10 @@
 //! One source's contribution, from its index statistics.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use super::super::duration_hist::DurationHistogram;
-use super::query::{ExploreQuery, HIDDEN_FIELDS, STATUS_FIELD};
+use super::query::{ExploreQuery, ExploreSelection, HIDDEN_FIELDS, STATUS_FIELD};
 use super::rows::{RowsSpec, SourceRows, source_rows};
 
 /// A readable source's numbers for the request.
@@ -25,6 +25,12 @@ pub(super) struct ExploreShard {
     pub durations: Vec<DurationHistogram>,
     /// Scope-row counts per value of each faceted field.
     pub facets: Vec<sfst::FacetResult>,
+    /// With a selection: its rows in the window, its counts per value of
+    /// the same fields, and, per faceted field the scope or the selection
+    /// names, the `(scope, selection)` rows without that field's chips.
+    pub selection_matched: u64,
+    pub selection_facets: Vec<sfst::FacetResult>,
+    pub facet_totals: BTreeMap<String, (u64, u64)>,
     /// Faceted fields that are high-cardinality here.
     pub facet_high: BTreeSet<String>,
     /// Scope rows that can make the rows page.
@@ -98,9 +104,39 @@ pub(super) fn rows_of(
 ) -> Result<SourceRows, sfst::Error> {
     let reader = open_source(bytes, derived)?;
     let scope = compile_scope(&reader, query)?;
+    let both = compile_both(&reader, query, &scope)?;
+    let rows_filter = both.as_ref().unwrap_or(&scope);
     let window = query.grid.range_ns();
-    let matched = reader.matched_count(&scope, window.clone())?;
-    source_rows(&reader, &scope, window, matched, spec, stop, source)
+    let matched = reader.matched_count(rows_filter, window.clone())?;
+    source_rows(&reader, rows_filter, window, matched, spec, stop, source)
+}
+
+/// The selection's terms compiled against one file.
+fn compile_selection(
+    reader: &sfst::IndexReader<'_>,
+    selection: &ExploreSelection,
+) -> Result<sfst::BitmapFilter, sfst::Error> {
+    let mut filter = reader.compile_filter(&selection.filter, None)?;
+    if let Some(range) = selection.duration {
+        filter = filter.conjoin(&reader.compile_duration(range)?);
+    }
+    if let Some(time) = &selection.time_ns {
+        filter = filter.conjoin(&reader.compile_time_range(time.clone())?);
+    }
+    Ok(filter)
+}
+
+/// The scope and the selection together, when there is a selection: the
+/// rows a page lists.
+fn compile_both(
+    reader: &sfst::IndexReader<'_>,
+    query: &ExploreQuery,
+    scope: &sfst::BitmapFilter,
+) -> Result<Option<sfst::BitmapFilter>, sfst::Error> {
+    match &query.selection {
+        Some(selection) => Ok(Some(scope.conjoin(&compile_selection(reader, selection)?))),
+        None => Ok(None),
+    }
 }
 
 /// Evaluate one source. Any error drops the whole source (its numbers are
@@ -123,6 +159,7 @@ pub(super) fn evaluate(
     let grid = query.grid;
     let window = grid.range_ns();
     let scope = compile_scope(&reader, query)?;
+    let both = compile_both(&reader, query, &scope)?;
     let errors_only =
         reader.compile_filter(&sfst::Filter::new().select(STATUS_FIELD, "ERROR"), None)?;
 
@@ -131,6 +168,9 @@ pub(super) fn evaluate(
         errors: reader.matched_count(&scope.conjoin(&errors_only), window.clone())?,
         ..ExploreShard::default()
     };
+    if let Some(both) = &both {
+        shard.selection_matched = reader.matched_count(both, window.clone())?;
+    }
     let percentiles = query
         .sections
         .histogram
@@ -183,13 +223,37 @@ pub(super) fn evaluate(
                 .for_each(&mut consider),
         }
         shard.facets = reader.facets(&eligible, &scope, window.clone())?;
+        if let (Some(both), Some(selection)) = (&both, &query.selection) {
+            shard.selection_facets = reader.facets(&eligible, both, window.clone())?;
+            let mut named: BTreeSet<&str> = BTreeSet::new();
+            for (field, _) in query.scope.filter.iter().chain(selection.filter.iter()) {
+                named.insert(field);
+            }
+            for field in named {
+                let faceted = spec
+                    .fields
+                    .as_ref()
+                    .is_none_or(|fields| fields.iter().any(|f| f == field));
+                if faceted && !HIDDEN_FIELDS.contains(&field) {
+                    let totals = (
+                        reader.count_without(&scope, field, window.clone())?,
+                        reader.count_without(both, field, window.clone())?,
+                    );
+                    shard.facet_totals.insert(field.to_string(), totals);
+                }
+            }
+        }
     }
     if let Some(spec) = &query.sections.rows {
+        let (rows_filter, rows_matched) = match &both {
+            Some(both) => (both, shard.selection_matched),
+            None => (&scope, shard.matched),
+        };
         shard.rows = Some(source_rows(
             &reader,
-            &scope,
+            rows_filter,
             window,
-            shard.matched,
+            rows_matched,
             spec,
             stop,
             source,

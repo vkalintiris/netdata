@@ -436,6 +436,7 @@ fn explore_query(grid: &Grid, scope: &Scope, stack: &str) -> ExploreQuery {
                 .map(|id| sfst::TraceId::from(*id))
                 .collect(),
         },
+        selection: None,
         sections: Sections {
             histogram: Some(HistogramSpec {
                 stack: stack.to_string(),

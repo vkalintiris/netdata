@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use common::*;
 use sfsq::Source;
 use sfsq::traces::explore::{
-    ExploreData, ExploreOptions, ExploreQuery, ExploreScope, FacetSpec, HistogramData,
-    HistogramSpec, RowDirection, RowOrder, RowsSpec, Sections, StackBucket, Totals, ValuesQuery,
-    explore, field_values,
+    ExploreData, ExploreOptions, ExploreQuery, ExploreScope, ExploreSelection, FacetSpec,
+    HistogramData, HistogramSpec, RowDirection, RowOrder, RowsSpec, Sections, StackBucket, Totals,
+    ValuesQuery, explore, field_values,
 };
 use sfsq::traces::{
     PartialReason, QueryStatus, ReasonCount, SourceId, TraceFailed, TraceSfstCandidate,
@@ -38,6 +38,7 @@ fn query(stack: &str, chips: &[(&str, &str)]) -> ExploreQuery {
             text: None,
             trace_ids: Vec::new(),
         },
+        selection: None,
         sections: Sections {
             histogram: Some(HistogramSpec {
                 stack: stack.to_string(),
@@ -809,6 +810,21 @@ fn explore_parallel_equals_sequential() {
             }),
         ),
         (
+            "selection",
+            Box::new(|| {
+                let mut query = every_section("status_code", newest(None, RowDirection::Older), 3);
+                query.selection = Some(ExploreSelection {
+                    filter: sfst::Filter::new(),
+                    duration: Some(sfst::DurationRange {
+                        min_ns: Some(0),
+                        max_ns: None,
+                    }),
+                    time_ns: None,
+                });
+                query
+            }),
+        ),
+        (
             "trace ids",
             Box::new(|| {
                 let mut query = every_section("status_code", newest(None, RowDirection::Older), 3);
@@ -1108,4 +1124,207 @@ fn groups_are_partial_when_a_live_pass_fails() {
     assert_eq!(groups.self_ns_total, 0);
     let spans: u64 = groups.rows.iter().map(|row| row.numbers.spans).sum();
     assert_eq!(spans, 4, "the second request's trace, every span");
+}
+
+fn selection(filter: sfst::Filter) -> Option<ExploreSelection> {
+    Some(ExploreSelection {
+        filter,
+        duration: None,
+        time_ns: None,
+    })
+}
+
+fn every_span_with_rows() -> ExploreQuery {
+    let mut q = query("status_code", &[]);
+    q.sections.facets = Some(FacetSpec { fields: None });
+    q.sections.rows = Some(RowsSpec {
+        order: newest(None, RowDirection::Older),
+        limit: 10,
+        columns: Vec::new(),
+    });
+    q
+}
+
+/// QRY-07: a selection leaves the histogram the scope's, lists only its own
+/// rows, and gives every facet its comparison out of the scope and
+/// selection rows.
+#[test]
+fn a_selection_leaves_the_histogram_and_narrows_the_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
+    let source = || vec![sealed_source(dir.path(), &wal, "a")];
+
+    let plain = run(source(), every_span_with_rows());
+    let mut q = every_span_with_rows();
+    q.selection = selection(sfst::Filter::new().select("status_code", "ERROR"));
+    let data = run(source(), q);
+
+    assert!(data.status.is_complete(), "{:?}", data.status);
+    assert_eq!(data.histogram, plain.histogram);
+    let rows = data.rows.unwrap();
+    assert_eq!(rows.matched, 1);
+    assert_eq!(rows.items.len(), 1);
+    assert_eq!(rows.items[0].status.as_deref(), Some("ERROR"));
+    let facets = data.facets.unwrap();
+    assert_eq!(
+        facets.comparison,
+        Some(sfsq::traces::explore::ComparisonTotals {
+            scope: 4,
+            selection: 1
+        })
+    );
+    assert!(facets.fields.iter().all(|facet| facet.comparison.is_some()));
+    assert!(plain.facets.unwrap().comparison.is_none());
+}
+
+/// A selection whose time range lies outside the window selects nothing: no
+/// rank, no rows, and nothing partial.
+#[test]
+fn a_selection_time_range_outside_the_window_selects_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
+    let mut q = every_span_with_rows();
+    q.selection = Some(ExploreSelection {
+        filter: sfst::Filter::new(),
+        duration: None,
+        time_ns: Some(20 * S as i64..30 * S as i64),
+    });
+    let data = run(vec![sealed_source(dir.path(), &wal, "a")], q);
+
+    assert!(data.status.is_complete(), "{:?}", data.status);
+    let facets = data.facets.unwrap();
+    assert_eq!(facets.comparison.map(|c| c.selection), Some(0));
+    for facet in &facets.fields {
+        let comparison = facet.comparison.as_ref().unwrap();
+        assert!(comparison.rank.is_none() && comparison.best.is_none());
+    }
+    let rows = data.rows.unwrap();
+    assert_eq!((rows.matched, rows.items.len()), (0, 0));
+}
+
+/// A page selected again without a source whose row fields fail keeps the
+/// selection: the broken file's rows fall in the selected second, and the
+/// page chosen again lists only the other file's rows of that second.
+#[test]
+fn a_reselected_page_keeps_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut spans = Vec::new();
+    for i in 0..8u8 {
+        spans.push(SpanSpec {
+            trace: [0x30 + i; 16],
+            ..sp(i + 1, 0, u64::from(i + 1) * S / 2, "op")
+        });
+    }
+    let good = write_wal(dir.path(), vec![req(&spans)], "good");
+    let broken_wal = write_wal(
+        dir.path(),
+        vec![req(&distinct_ids(0x61, 1_100, "b"))],
+        "broken",
+    );
+    let broken = dir.path().join("broken.sfst");
+    ng_index::build_sfst_traces_file(&broken_wal, &broken, &ng_index::Metrics::new()).unwrap();
+    corrupt_chunk(&broken, *b"HF\0\0");
+
+    let second = S as i64..2 * S as i64;
+    let mut q = every_span_with_rows();
+    q.sections.facets = None;
+    q.sections.histogram = None;
+    q.sections.rows.as_mut().unwrap().columns = vec!["attributes.id".to_string()];
+    q.selection = Some(ExploreSelection {
+        filter: sfst::Filter::new(),
+        duration: None,
+        time_ns: Some(second.clone()),
+    });
+    let data = run(
+        vec![
+            sealed_source(dir.path(), &good, "good"),
+            sealed_source_at(&broken, "broken"),
+        ],
+        q,
+    );
+    let rows = data.rows.unwrap();
+    assert!(!rows.status.is_complete(), "the broken file is named");
+    let starts: Vec<i64> = rows.items.iter().map(|row| row.key.start_ns).collect();
+    assert_eq!(starts, [3 * S as i64 / 2, S as i64]);
+}
+
+/// Chips on `_err_origin` in the selection make the facets name a live
+/// WAL whose live pass failed.
+#[test]
+fn a_selection_on_err_origin_names_a_failed_live_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(
+        dir.path(),
+        vec![req(&request(0x11, 0x10)), req(&request(0x12, 0x20))],
+        "live",
+    );
+    let whole = whole_range(&wal);
+    let frames = wal::scan_frame_boundaries(&wal, whole).unwrap();
+    let tail = TraceSource::Tail(sfsq::traces::TraceWalTail {
+        source_id: SourceId::new("live#tail".to_string()),
+        path: wal.clone(),
+        coverage: WalCoverage {
+            wal_id: wal.display().to_string().into(),
+            range: wal::FrameRange::new(frames[0].end_offset, whole.end()),
+        },
+    });
+    let mut q = query("status_code", &[]);
+    q.sections.histogram = None;
+    q.sections.facets = Some(FacetSpec {
+        fields: Some(vec!["name".to_string()]),
+    });
+    q.selection = selection(sfst::Filter::new().select(sfst::ERR_ORIGIN_FIELD, "true"));
+    let data = run(vec![tail], q);
+    assert_eq!(
+        data.facets.unwrap().status,
+        partial(&[(PartialReason::LivePassFailed, 1, 1)])
+    );
+}
+
+/// A selection without a term, or with inverted or negative bounds, is a
+/// request error.
+#[test]
+fn a_malformed_selection_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
+    let bad = [
+        ExploreSelection {
+            filter: sfst::Filter::new(),
+            duration: None,
+            time_ns: None,
+        },
+        ExploreSelection {
+            filter: sfst::Filter::new(),
+            duration: Some(sfst::DurationRange {
+                min_ns: Some(5),
+                max_ns: Some(4),
+            }),
+            time_ns: None,
+        },
+        ExploreSelection {
+            filter: sfst::Filter::new(),
+            duration: Some(sfst::DurationRange {
+                min_ns: Some(-1),
+                max_ns: None,
+            }),
+            time_ns: None,
+        },
+        ExploreSelection {
+            filter: sfst::Filter::new(),
+            duration: None,
+            time_ns: Some(5..5),
+        },
+    ];
+    for selection in bad {
+        let mut q = every_span_with_rows();
+        q.selection = Some(selection);
+        let answer = explore(
+            vec![sealed_source(dir.path(), &wal, "a")],
+            q,
+            ExploreOptions::default(),
+            CancellationToken::new(),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        assert!(answer.is_err());
+    }
 }

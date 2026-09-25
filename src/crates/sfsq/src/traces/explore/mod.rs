@@ -10,6 +10,7 @@
 //! downloaded (`remote_unavailable`). A source's numbers are never partly
 //! mixed in.
 
+mod compare;
 mod groups;
 mod live;
 mod query;
@@ -20,10 +21,11 @@ mod source;
 mod values;
 
 pub use crate::merge::MAX_FACET_VALUES;
+pub use compare::{ComparisonTotals, FieldComparison, MIN_SUPPORT, ShareDiff, ValueComparison};
 pub use groups::GROUPS_CAP;
 pub use query::{
     DEFAULT_POPULATION, DEFAULT_STACK_FIELD, ExploreQuery, ExploreRequestError, ExploreScope,
-    FacetSpec, HIDDEN_FIELDS, HistogramSpec, Sections, TRACE_IDS_MAX,
+    ExploreSelection, FacetSpec, HIDDEN_FIELDS, HistogramSpec, Sections, TRACE_IDS_MAX,
 };
 pub use rows::{
     MoreRows, NOT_ROW_COLUMN_PREFIXES, ROW_COLUMNS_MAX, ROW_VALUE_COLUMNS, ROWS_PAGE_MAX,
@@ -185,6 +187,9 @@ pub struct FacetsData {
     pub fields: Vec<FacetData>,
     /// Requested fields that could not be faceted, and why.
     pub unavailable: Vec<(String, PartialReason)>,
+    /// With a selection: the scope and selection rows the comparison is out
+    /// of; fields then come ranked first, values eligible first.
+    pub comparison: Option<ComparisonTotals>,
 }
 
 /// One field's values, in lexicographic order, and what the value cap left
@@ -195,12 +200,15 @@ pub struct FacetData {
     pub values: Vec<FacetValue>,
     pub omitted_values: u64,
     pub omitted_rows: u64,
+    pub comparison: Option<FieldComparison>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FacetValue {
     pub value: String,
+    /// Scope rows.
     pub count: u64,
+    pub comparison: Option<ValueComparison>,
 }
 
 /// Scope rows: a newest-first page, or the slowest K.
@@ -210,7 +218,8 @@ pub struct RowsData {
     pub status: QueryStatus,
     /// The order asked for.
     pub order: RowOrder,
-    /// Scope rows in the window; every page reports the same number.
+    /// Scope rows in the window (selection rows under a selection); every
+    /// page reports the same number.
     pub matched: u64,
     /// For a newest page: whether rows exist beyond it on each side; `None`
     /// for the slowest order.

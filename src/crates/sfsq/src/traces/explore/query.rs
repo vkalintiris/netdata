@@ -9,7 +9,18 @@ use super::super::window::WindowError;
 pub struct ExploreQuery {
     pub grid: sfst::Grid,
     pub scope: ExploreScope,
+    /// A part of the scope to compare with the rest; rows follow it.
+    pub selection: Option<ExploreSelection>,
     pub sections: Sections,
+}
+
+/// The selection: chips, a duration range and a start-time range, all ANDed
+/// with the scope. The histogram stays the scope's; facets compare the
+/// selection with the rest of the scope; rows list the selection.
+pub struct ExploreSelection {
+    pub filter: sfst::Filter,
+    pub duration: Option<sfst::DurationRange>,
+    pub time_ns: Option<std::ops::Range<i64>>,
 }
 
 /// The spans the page is about: field chips in storage names, exact values,
@@ -97,6 +108,9 @@ impl ExploreQuery {
                 "the all-zero trace id is not queryable".to_string(),
             ));
         }
+        if let Some(selection) = &self.selection {
+            selection.validate()?;
+        }
         if let Some(histogram) = &self.sections.histogram
             && histogram.stack.is_empty()
         {
@@ -129,6 +143,35 @@ impl ExploreQuery {
                     )));
                 }
             }
+        }
+        Ok(())
+    }
+}
+
+impl ExploreSelection {
+    fn validate(&self) -> Result<(), ExploreRequestError> {
+        let invalid = |message: &str| Err(ExploreRequestError::Invalid(message.to_string()));
+        if self.filter.iter().next().is_none() && self.duration.is_none() && self.time_ns.is_none()
+        {
+            return invalid("a selection needs at least one term");
+        }
+        if let Some(range) = self.duration {
+            if range.min_ns.is_none() && range.max_ns.is_none() {
+                return invalid("a selection's duration needs a bound");
+            }
+            if range.min_ns.is_some_and(|min| min < 0) || range.max_ns.is_some_and(|max| max < 0) {
+                return invalid("a selection's duration bounds cannot be negative");
+            }
+            if let (Some(min), Some(max)) = (range.min_ns, range.max_ns)
+                && min > max
+            {
+                return invalid("a selection's duration minimum exceeds its maximum");
+            }
+        }
+        if let Some(time) = &self.time_ns
+            && time.start >= time.end
+        {
+            return invalid("a selection's time range must start before it ends");
         }
         Ok(())
     }

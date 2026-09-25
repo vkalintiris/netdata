@@ -714,6 +714,7 @@ pub(crate) fn to_explore_query(
             text: params.text.as_deref().map(sfst::text::LiteralText::new),
             trace_ids: params.trace_ids.clone(),
         },
+        selection: None,
         sections: Sections {
             histogram: params.histogram.as_ref().map(|h| HistogramSpec {
                 stack: h.stack.clone(),

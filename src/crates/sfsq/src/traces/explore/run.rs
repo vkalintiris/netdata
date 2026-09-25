@@ -8,6 +8,7 @@ use std::sync::atomic::AtomicUsize;
 use tokio_util::sync::CancellationToken;
 
 use super::super::duration_hist::DurationHistogram;
+use super::compare::{self, ComparisonTotals, FieldComparison, ShareDiff};
 use super::groups::{GROUPS_CAP, GroupAcc, Join, cap_groups, evaluate_groups, merge_groups};
 use super::live::live_pass;
 use super::query::{ExploreQuery, ExploreRequestError, HIDDEN_FIELDS};
@@ -33,6 +34,11 @@ struct Lane<'q> {
     durations: Vec<DurationHistogram>,
     facets: Vec<Vec<sfst::FacetResult>>,
     facet_high: BTreeSet<String>,
+    /// With a selection: its rows, its facet counts, and per named field the
+    /// `(scope, selection)` rows without that field's chips.
+    selection_matched: u64,
+    selection_facets: Vec<Vec<sfst::FacetResult>>,
+    facet_totals: BTreeMap<String, (u64, u64)>,
     field_tables: Vec<sfst::FieldTable>,
     page: Option<PageFold<'q>>,
     /// With rows asked for, every evaluated source stays open: to read the
@@ -59,6 +65,9 @@ impl<'q> Lane<'q> {
             durations: vec![DurationHistogram::new(); buckets],
             facets: Vec::new(),
             facet_high: BTreeSet::new(),
+            selection_matched: 0,
+            selection_facets: Vec::new(),
+            facet_totals: BTreeMap::new(),
             field_tables: Vec::new(),
             page: query.sections.rows.as_ref().map(PageFold::new),
             opened: Vec::new(),
@@ -92,6 +101,9 @@ impl<'q> Lane<'q> {
         }
         self.facets.push(shard.facets);
         self.facet_high.extend(shard.facet_high);
+        self.selection_matched += shard.selection_matched;
+        self.selection_facets.push(shard.selection_facets);
+        add_totals(&mut self.facet_totals, shard.facet_totals);
         if shard.stack_high {
             self.stack_high += 1;
             for (sum, n) in self.other.iter_mut().zip(&shard.other) {
@@ -118,6 +130,9 @@ impl<'q> Lane<'q> {
         }
         self.facets.extend(other.facets);
         self.facet_high.extend(other.facet_high);
+        self.selection_matched += other.selection_matched;
+        self.selection_facets.extend(other.selection_facets);
+        add_totals(&mut self.facet_totals, other.facet_totals);
         self.field_tables.extend(other.field_tables);
         if let (Some(page), Some(theirs)) = (self.page.as_mut(), other.page) {
             page.merge(theirs);
@@ -126,6 +141,14 @@ impl<'q> Lane<'q> {
         self.add_traces(other.traces);
         self.unset.extend(other.unset);
         self.evaluated.extend(other.evaluated);
+    }
+}
+
+fn add_totals(into: &mut BTreeMap<String, (u64, u64)>, from: BTreeMap<String, (u64, u64)>) {
+    for (field, (scope, selection)) in from {
+        let sum = into.entry(field).or_default();
+        sum.0 += scope;
+        sum.1 += selection;
     }
 }
 
@@ -203,6 +226,9 @@ pub fn explore(
         durations,
         facets,
         facet_high,
+        selection_matched,
+        selection_facets,
+        facet_totals,
         field_tables,
         page,
         opened: opened_lanes,
@@ -278,7 +304,11 @@ pub fn explore(
     let mut live_failed = StatusBuilder::new();
     live_failed.add_n(PartialReason::LivePassFailed, live.failed);
     live_failed.of(PartialReason::LivePassFailed, live.wals);
-    let origin_scope = query.scope.filter.has_field(ERR_ORIGIN_FIELD);
+    let origin_scope = query.scope.filter.has_field(ERR_ORIGIN_FIELD)
+        || query
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.filter.has_field(ERR_ORIGIN_FIELD));
     let mut live_named = false;
 
     let histogram = query.sections.histogram.as_ref().map(|spec| {
@@ -373,15 +403,28 @@ pub fn explore(
             }
             let mut values = Vec::with_capacity(facet.values.len());
             for (value, count) in facet.values {
-                values.push(FacetValue { value, count });
+                values.push(FacetValue {
+                    value,
+                    count,
+                    comparison: None,
+                });
             }
             out.push(FacetData {
                 field: facet.field,
                 values,
                 omitted_values: facet.omitted_values,
                 omitted_rows: facet.omitted_rows,
+                comparison: None,
             });
         }
+        let comparison = query.selection.as_ref().map(|_| {
+            let totals = ComparisonTotals {
+                scope: matched,
+                selection: selection_matched,
+            };
+            compare_facets(&mut out, &selection_facets, &facet_totals, totals);
+            totals
+        });
         status.merge(own.clone());
         let mut section = shared.clone();
         section.merge(own);
@@ -397,6 +440,7 @@ pub fn explore(
             status: section.finish(),
             fields: out,
             unavailable,
+            comparison,
         }
     });
 
@@ -437,7 +481,11 @@ pub fn explore(
         RowsData {
             status: section.finish(),
             order: spec.order,
-            matched,
+            matched: if query.selection.is_some() {
+                selection_matched
+            } else {
+                matched
+            },
             more,
             columns: spec.columns.clone(),
             items,
@@ -572,4 +620,89 @@ fn read_fields(
         }
     }
     Ok(fields)
+}
+
+/// Adds the selection's comparison to every facet and orders them as the
+/// comparison ranks them: ranked fields first, eligible values first.
+/// `selection_facets` are the sources' uncapped selection counts; a field
+/// without totals has no own chips, so its totals are the section's.
+fn compare_facets(
+    facets: &mut Vec<FacetData>,
+    selection_facets: &[Vec<sfst::FacetResult>],
+    facet_totals: &BTreeMap<String, (u64, u64)>,
+    section: ComparisonTotals,
+) {
+    let mut selection: BTreeMap<&str, BTreeMap<&str, u64>> = BTreeMap::new();
+    for source in selection_facets {
+        for facet in source {
+            let counts = selection.entry(facet.field.as_str()).or_default();
+            for (value, count) in &facet.values {
+                *counts.entry(value.as_str()).or_default() += u64::from(*count);
+            }
+        }
+    }
+
+    let mut bests = Vec::with_capacity(facets.len());
+    for facet in facets.iter_mut() {
+        let totals = match facet_totals.get(&facet.field) {
+            Some(&(scope, selection)) => ComparisonTotals { scope, selection },
+            None => section,
+        };
+        let counts = selection.get(facet.field.as_str());
+        let mut rows = Vec::with_capacity(facet.values.len());
+        for value in &facet.values {
+            let c = counts
+                .and_then(|counts| counts.get(value.value.as_str()))
+                .copied()
+                .unwrap_or(0);
+            rows.push((value.value.as_str(), value.count, c));
+        }
+        let (compared, best) = compare::compare_values(totals, &rows);
+        for (value, comparison) in facet.values.iter_mut().zip(compared) {
+            value.comparison = Some(comparison);
+        }
+        facet.values.sort_by(|a, b| {
+            let rank = |v: &FacetValue| v.comparison.as_ref().and_then(|c| c.rank);
+            match (rank(a), rank(b)) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)),
+            }
+        });
+        facet.comparison = Some(FieldComparison {
+            totals,
+            rank: None,
+            best,
+        });
+        bests.push(best);
+    }
+
+    let names: Vec<(&str, Option<ShareDiff>)> = facets
+        .iter()
+        .zip(&bests)
+        .map(|(facet, best)| (facet.field.as_str(), *best))
+        .collect();
+    let ranks = compare::rank_fields(&names);
+    for (facet, rank) in facets.iter_mut().zip(ranks) {
+        if let Some(comparison) = facet.comparison.as_mut() {
+            comparison.rank = rank;
+        }
+    }
+    let mut order: Vec<(Option<u32>, usize)> = Vec::with_capacity(facets.len());
+    for (index, facet) in facets.iter().enumerate() {
+        order.push((facet.comparison.as_ref().and_then(|c| c.rank), index));
+    }
+    order.sort_by(|a, b| match (a.0, b.0) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.1.cmp(&b.1),
+    });
+    let mut taken: Vec<Option<FacetData>> = facets.drain(..).map(Some).collect();
+    for (_, index) in order {
+        if let Some(facet) = taken[index].take() {
+            facets.push(facet);
+        }
+    }
 }
