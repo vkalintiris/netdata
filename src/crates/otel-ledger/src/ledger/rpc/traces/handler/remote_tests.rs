@@ -356,7 +356,7 @@ async fn progress_counts_the_downloads_beside_the_sources() {
 }
 
 /// The windowed aggregate modes over the corpus window.
-fn aggregate_bodies() -> [serde_json::Value; 4] {
+fn aggregate_bodies() -> [serde_json::Value; 2] {
     let window = |mode: &str, extra: serde_json::Value| {
         let mut params = json!({"after": T_S, "before": T_S + 100});
         params
@@ -371,8 +371,6 @@ fn aggregate_bodies() -> [serde_json::Value; 4] {
             "values",
             json!({"field": "resource.attributes.service.name"}),
         ),
-        window("attributes", json!({})),
-        window("attribute_values", json!({"key": "resource.service.name"})),
     ]
 }
 
@@ -435,17 +433,13 @@ async fn a_lost_file_outside_the_window_does_not_make_an_answer_partial() {
     let (h, remote, [_, two]) = evicted_setup(64 * MIB).await;
     remote.lose(&two);
 
-    for mode in ["overview", "attributes"] {
-        let body = json!({ mode: {"after": T_S + 5, "before": T_S + 25} });
+    for body in [
+        json!({"overview": {"after": T_S + 5, "before": T_S + 25}}),
+        json!({"values": {"after": T_S + 5, "before": T_S + 25, "field": "name"}}),
+    ] {
         let v = call(&h, body.clone()).await.unwrap();
         assert_eq!(v["status"], json!({"complete": true}), "{body}");
     }
-    let body = json!({"attribute_values": {"after": T_S + 5, "before": T_S + 25, "key": "resource.service.name"}});
-    let v = call(&h, body).await.unwrap();
-    assert_eq!(v["status"], json!({"complete": true}));
-    let body = json!({"values": {"after": T_S + 5, "before": T_S + 25, "field": "name"}});
-    let v = call(&h, body).await.unwrap();
-    assert_eq!(v["status"], json!({"complete": true}));
 }
 
 #[tokio::test]

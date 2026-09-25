@@ -10,10 +10,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use sfsq_cli::traces::{
-    SearchArgs, AttributeValuesArgs, AttributesArgs, TraceArgs, run_search, run_attribute_values, run_attributes,
-    run_trace,
-};
+use sfsq_cli::traces::{SearchArgs, TraceArgs, run_search, run_trace};
 use sfsq_cli::{Args, init_tracing, is_broken_pipe, run};
 
 /// Inspect OpenTelemetry logs stored in Netdata WAL/SFST files.
@@ -36,11 +33,6 @@ enum Cmd {
     /// Reconstruct one trace across sealed SFSTs and traces WALs
     /// (cross-source trace-by-id over `sfsq::traces`).
     Trace(TraceArgs),
-    /// Enumerate attribute and builtin-field keys across sealed SFSTs
-    /// and traces WALs (`sfsq::traces` key enumeration).
-    Attributes(AttributesArgs),
-    /// Enumerate one key's values across sealed SFSTs and traces WALs.
-    AttributeValues(AttributeValuesArgs),
     /// Search for traces across sealed SFSTs and traces WALs
     /// (`sfsq::traces` search: exact summaries, most-recent-first).
     Search(SearchArgs),
@@ -53,8 +45,6 @@ fn main() -> ExitCode {
     let mut out = stdout.lock();
     let subcommand = match &cli.cmd {
         Some(Cmd::Trace(args)) => Some(run_trace(args, &mut out)),
-        Some(Cmd::Attributes(args)) => Some(run_attributes(args, &mut out)),
-        Some(Cmd::AttributeValues(args)) => Some(run_attribute_values(args, &mut out)),
         Some(Cmd::Search(args)) => Some(run_search(args, &mut out)),
         None => None,
     };

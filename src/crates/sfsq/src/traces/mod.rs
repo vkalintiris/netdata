@@ -1,6 +1,5 @@
-//! Multi-source trace-query subsystem: cross-source trace-by-id,
-//! attribute / attribute-value enumeration, search, the trace-level
-//! overview, and the span explorer ([`explore`]).
+//! Multi-source trace-query subsystem: cross-source trace-by-id, search,
+//! the trace-level overview, and the span explorer ([`explore`]).
 //!
 //! Same philosophy as [`logs`](crate::logs): neutral, transport-free —
 //! plain Rust data in and out, no wire concerns; each consumer (the CLI,
@@ -36,7 +35,6 @@ mod rollup;
 mod search;
 mod sources;
 mod status;
-mod attributes;
 mod vocab;
 mod wal_scan;
 mod window;
@@ -63,10 +61,6 @@ pub use sources::{
     TraceWalTail, WalCoverage, validate_sources,
 };
 pub use status::{PartialReason, QueryStatus, ReasonCount, StatusBuilder};
-pub use attributes::{
-    AttributeNamesData, AttributeNamesQuery, AttributeRequestError, AttributeValue, AttributeValuesData, AttributeValuesQuery,
-    attribute_names, attribute_values,
-};
-pub use vocab::{AttributeKey, AttributeOwner, BuiltinField, storage_to_attribute};
+pub use vocab::{AttributeOwner, BuiltinField};
 pub use wal_scan::{TraceScanError, TraceWalScan};
 pub use window::{TimeWindow, WindowError};

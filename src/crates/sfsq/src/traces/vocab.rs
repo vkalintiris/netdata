@@ -134,48 +134,6 @@ impl BuiltinField {
     }
 }
 
-/// One key: a data-derived attribute (bare, prefix-stripped) or a
-/// member of the fixed builtin-field set. Meaningful only as part of a
-/// `(AttributeOwner, AttributeKey)` pair — `Attribute("name")` under
-/// [`AttributeOwner::Span`] and [`BuiltinField::Name`] are different keys.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum AttributeKey {
-    Attribute(String),
-    Builtin(BuiltinField),
-}
-
-/// Internal facets that must never surface as keys: the raw-int shadow
-/// entries of the label-carrying `kind` / `status_code` fields.
-const INTERNAL_FIELDS: [&str; 2] = ["_kind", "_status_code"];
-
-/// Map one storage field name to its key, or `None` when the field is
-/// not part of the key vocabulary: the internal facets above,
-/// `trace_state` (17A), and anything unrecognized (a foreign field in a
-/// file this engine was pointed at is not vocabulary).
-pub fn storage_to_attribute(storage: &str) -> Option<(AttributeOwner, AttributeKey)> {
-    if INTERNAL_FIELDS.contains(&storage) || storage == "trace_state" {
-        return None;
-    }
-    for builtin in BuiltinField::ALL {
-        if builtin.dictionary_field() == Some(storage) {
-            return Some((AttributeOwner::Builtin, AttributeKey::Builtin(builtin)));
-        }
-    }
-    for scope in [
-        AttributeOwner::Resource,
-        AttributeOwner::Span,
-        AttributeOwner::Instrumentation,
-        AttributeOwner::Event,
-        AttributeOwner::Link,
-    ] {
-        let prefix = scope.attribute_prefix().expect("attribute scopes");
-        if let Some(bare) = storage.strip_prefix(prefix) {
-            return Some((scope, AttributeKey::Attribute(bare.to_string())));
-        }
-    }
-    None
-}
-
 /// The resource `service.name` attribute's full storage field — the one
 /// composite spelling several folds need (`summarize`, the trace
 /// aggregates). Built from the vocabulary, never hand-written.
@@ -201,61 +159,30 @@ pub(crate) fn span_field<'a>(span: &'a sfst::TraceSpan, field: &str) -> Option<&
 mod tests {
     use super::*;
 
-    /// The complete storage→(scope, key) table from the 4b SOW, pinned:
-    /// every dictionary field maps exactly as recorded, and the mapping
-    /// round-trips back to the storage name.
+    /// The storage spelling of every attribute owner and dictionary-backed
+    /// builtin, pinned.
     #[test]
-    fn storage_table_is_pinned_and_round_trips() {
-        let attr = |scope: AttributeOwner, k: &str| Some((scope, AttributeKey::Attribute(k.to_string())));
-        let intr = |i: BuiltinField| Some((AttributeOwner::Builtin, AttributeKey::Builtin(i)));
-        let table: [(&str, Option<(AttributeOwner, AttributeKey)>); 15] = [
-            ("resource.attributes.host", attr(AttributeOwner::Resource, "host")),
-            ("attributes.http.method", attr(AttributeOwner::Span, "http.method")),
-            ("scope.attributes.lib", attr(AttributeOwner::Instrumentation, "lib")),
-            ("events.attributes.msg", attr(AttributeOwner::Event, "msg")),
-            ("links.attributes.rel", attr(AttributeOwner::Link, "rel")),
-            ("name", intr(BuiltinField::Name)),
-            ("kind", intr(BuiltinField::Kind)),
-            ("status_code", intr(BuiltinField::Status)),
-            ("status_message", intr(BuiltinField::StatusMessage)),
-            ("scope.name", intr(BuiltinField::InstrumentationName)),
-            ("scope.version", intr(BuiltinField::InstrumentationVersion)),
-            ("events.name", intr(BuiltinField::EventName)),
-            // Excluded from the vocabulary:
-            ("_kind", None),
-            ("_status_code", None),
-            ("trace_state", None),
-        ];
-        for (storage, want) in table {
-            let got = storage_to_attribute(storage);
-            assert_eq!(got, want, "mapping of {storage:?}");
-            // Round trip: the key resolves back to the same storage name.
-            if let Some((scope, key)) = got {
-                let back = match (&key, scope.attribute_prefix()) {
-                    (AttributeKey::Attribute(bare), Some(prefix)) => format!("{prefix}{bare}"),
-                    (AttributeKey::Builtin(i), None) => {
-                        i.dictionary_field().expect("mapped builtin").to_string()
-                    }
-                    other => panic!("inconsistent pair {other:?}"),
-                };
-                assert_eq!(back, storage, "round trip of {storage:?}");
-            }
+    fn storage_spellings_are_pinned() {
+        for (owner, prefix) in [
+            (AttributeOwner::Resource, "resource.attributes."),
+            (AttributeOwner::Span, "attributes."),
+            (AttributeOwner::Instrumentation, "scope.attributes."),
+            (AttributeOwner::Event, "events.attributes."),
+            (AttributeOwner::Link, "links.attributes."),
+        ] {
+            assert_eq!(owner.attribute_prefix(), Some(prefix), "{owner:?}");
         }
-    }
-
-    /// A span attribute literally named like a builtin's storage field
-    /// stays a SPAN attribute (typed keys cannot collide — the 17A
-    /// collision argument dissolved for exactly this reason).
-    #[test]
-    fn attribute_named_like_a_builtin_does_not_collide() {
-        assert_eq!(
-            storage_to_attribute("attributes.trace_state"),
-            Some((AttributeOwner::Span, AttributeKey::Attribute("trace_state".to_string())))
-        );
-        assert_eq!(
-            storage_to_attribute("attributes.name"),
-            Some((AttributeOwner::Span, AttributeKey::Attribute("name".to_string())))
-        );
+        for (builtin, storage) in [
+            (BuiltinField::Name, "name"),
+            (BuiltinField::Kind, "kind"),
+            (BuiltinField::Status, "status_code"),
+            (BuiltinField::StatusMessage, "status_message"),
+            (BuiltinField::InstrumentationName, "scope.name"),
+            (BuiltinField::InstrumentationVersion, "scope.version"),
+            (BuiltinField::EventName, "events.name"),
+        ] {
+            assert_eq!(builtin.dictionary_field(), Some(storage), "{builtin:?}");
+        }
     }
 
     /// The virtual/dictionary split is total and matches the pinned

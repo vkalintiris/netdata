@@ -125,14 +125,6 @@ fn each_selector_selects_its_mode() {
         TracesMode::Trace(_)
     ));
     assert!(matches!(
-        req(json!({"attributes": {}})).mode,
-        TracesMode::Attributes(_)
-    ));
-    assert!(matches!(
-        req(json!({"attribute_values": {"key": "kind"}})).mode,
-        TracesMode::AttributeValues(_)
-    ));
-    assert!(matches!(
         req(json!({"overview": {}})).mode,
         TracesMode::Overview(_)
     ));
@@ -331,17 +323,6 @@ fn windowed_mode_objects_carry_their_own_window() {
         panic!("overview mode expected");
     };
     assert_eq!((p.after, p.before), (1, 2));
-    let TracesMode::Attributes(p) = req(json!({"attributes": {"after": 3, "before": 4}})).mode
-    else {
-        panic!("attributes mode expected");
-    };
-    assert_eq!((p.after, p.before), (3, 4));
-    let TracesMode::AttributeValues(p) =
-        req(json!({"attribute_values": {"key": "kind", "after": 5, "before": 6}})).mode
-    else {
-        panic!("attribute_values mode expected");
-    };
-    assert_eq!((p.after, p.before), (5, 6));
 
     // Omitted windows keep the 0 = "unspecified" sentinel — the
     // adapter's resolve_window defaults are untouched.
@@ -395,8 +376,8 @@ fn info_response_shape_is_pinned() {
             "has_history": true,
             "v": 3,
             "accepted_params": [
-                "info", "explore", "values", "trace", "attributes", "attribute_values", "overview",
-                "search", "tenant", "after", "before", "last", "anchor", "selections",
+                "info", "explore", "values", "trace", "overview", "search", "tenant", "after",
+                "before", "last", "anchor", "selections",
                 "min_trace_duration_ns", "max_trace_duration_ns", "overview_facets"
             ],
             "required_params": [],

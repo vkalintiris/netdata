@@ -60,8 +60,6 @@ async fn info_returns_the_descriptor() {
             "explore",
             "values",
             "trace",
-            "attributes",
-            "attribute_values",
             "overview",
             "search",
             "tenant",
@@ -119,8 +117,6 @@ async fn every_mode_is_implemented_an_empty_agent_answers_them_all() {
         json!({"overview": {}}),
         json!({"explore": {}}),
         json!({"values": {"field": "name"}}),
-        json!({"attributes": {}}),
-        json!({"attribute_values": {"key": "name"}}),
     ] {
         call(body.clone()).await.unwrap_or_else(|e| panic!("{body}: {e}"));
     }
@@ -832,105 +828,6 @@ async fn late_arrivals_above_the_key_shorten_pages_but_never_duplicate() {
     );
 }
 
-// ── The enumeration modes ───────────────────────────────────────────
-
-#[tokio::test]
-async fn attributes_lists_keys_in_the_selection_grammar() {
-    let h = handler_with_search_corpus().await;
-    let mut body = window_body();
-    merge(&mut body, json!({}));
-    let body = as_mode("attributes", body);
-    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
-    assert_eq!(v["status"], json!({"complete": true}));
-    assert_eq!(v["truncated"], false);
-    let keys: Vec<&str> = v["keys"].as_array().unwrap().iter().map(|k| k.as_str().unwrap()).collect();
-    assert!(keys.contains(&"resource.service.name"), "{keys:?}");
-    assert!(keys.contains(&"name"), "builtin word: {keys:?}");
-    // The round-trip contract (every returned key feeds straight back
-    // as a selection or a values request) is pinned in the adapter
-    // tests; here we spot-check it end to end through the Function.
-    let mut body = window_body();
-    merge(&mut body, json!({"key": keys[0]}));
-    let body = as_mode("attribute_values", body);
-    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
-    assert_eq!(v["key"], keys[0]);
-}
-
-#[tokio::test]
-async fn attributes_owner_filter_and_truncation_are_exact() {
-    let h = handler_with_search_corpus().await;
-    let mut body = window_body();
-    merge(&mut body, json!({"owner": "resource"}));
-    let body = as_mode("attributes", body);
-    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
-    let keys = v["keys"].as_array().unwrap();
-    assert!(!keys.is_empty());
-    assert!(
-        keys.iter().all(|k| k.as_str().unwrap().starts_with("resource.")),
-        "{keys:?}"
-    );
-
-    let mut body = window_body();
-    merge(&mut body, json!({"max_keys": 1}));
-    let body = as_mode("attributes", body);
-    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
-    assert_eq!(v["keys"].as_array().unwrap().len(), 1);
-    assert_eq!(v["truncated"], true);
-}
-
-#[tokio::test]
-async fn attribute_values_returns_storage_labels_with_kinds() {
-    let h = handler_with_search_corpus().await;
-    let mut body = window_body();
-    merge(&mut body, json!({"key": "resource.service.name"}));
-    let body = as_mode("attribute_values", body);
-    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
-    assert_eq!(v["key"], "resource.service.name");
-    assert_eq!(v["truncated"], false);
-    let values: Vec<&str> = v["values"].as_array().unwrap().iter().map(|x| x["value"].as_str().unwrap()).collect();
-    assert!(values.contains(&"svc-a") && values.contains(&"svc-b"), "{values:?}");
-    assert!(
-        v["values"].as_array().unwrap().iter().all(|x| x["kind"] == "str"),
-        "service names carry their schema kind: {}",
-        v["values"]
-    );
-
-    // Builtin `name`: the corpus's span names.
-    let mut body = window_body();
-    merge(&mut body, json!({"key": "name"}));
-    let body = as_mode("attribute_values", body);
-    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
-    let values: Vec<&str> = v["values"].as_array().unwrap().iter().map(|x| x["value"].as_str().unwrap()).collect();
-    assert!(values.contains(&"span-1"), "{values:?}");
-
-    // Truncation flag exact.
-    let mut body = window_body();
-    merge(&mut body, json!({"key": "resource.service.name", "max_values": 1}));
-    let body = as_mode("attribute_values", body);
-    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
-    assert_eq!(v["values"].as_array().unwrap().len(), 1);
-    assert_eq!(v["truncated"], true);
-}
-
-#[tokio::test]
-async fn enumeration_invalid_requests_are_clean_client_errors() {
-    let h = handler_with_search_corpus().await;
-    // Shape errors (null selectors, missing `key`) are wire-test
-    // territory now; these are the handler's semantic rejections.
-    for (body, needle) in [
-        (json!({"attributes": {"owner": "bogus"}}), "unknown owner"),
-        (json!({"attributes": {"max_keys": 0}}), "zero key/value limit"),
-        (json!({"attribute_values": {"key": "bogus"}}), "unknown selection key"),
-        // A virtual builtin has no value dictionary — the engine's own
-        // message surfaces.
-        (json!({"attribute_values": {"key": "duration"}}), "virtual"),
-    ] {
-        let err = call_on(&h, body.clone()).await.expect_err("must be a client error");
-        let msg = err.to_string();
-        assert!(msg.contains(needle), "for {body}: {msg}");
-    }
-}
-
 // ── The overview mode ───────────────────────────────────────────────
 
 #[tokio::test]
@@ -1169,8 +1066,6 @@ async fn every_mode_sets_its_progress_total_and_completes_it() {
         (windowed("overview", json!({})), (2, 2)),
         (windowed("explore", json!({})), (2, 2)),
         (windowed("values", json!({"field": "name"})), (2, 2)),
-        (windowed("attributes", json!({})), (2, 2)),
-        (windowed("attribute_values", json!({"key": "name"})), (2, 2)),
     ] {
         assert_eq!(progress_of(&h, body.clone()).await, expected, "{body}");
     }
@@ -1619,11 +1514,11 @@ async fn tenant_scoping_isolates_and_defaults() {
     // TenantId::resolve_query sites): trace, overview, and one
     // enumeration path each see tenant-a's data only when scoped.
     let mut values_body = window_body();
-    merge(&mut values_body, json!({"key": "resource.service.name"}));
+    merge(&mut values_body, json!({"field": "resource.attributes.service.name"}));
     for mut wrapped in [
         json!({"trace": {"id": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"}}),
         as_mode("overview", window_body()),
-        as_mode("attribute_values", values_body),
+        as_mode("values", values_body),
     ] {
         let unscoped = serde_json::to_value(call_on(&h, wrapped.clone()).await.unwrap()).unwrap();
         wrapped["tenant"] = json!("tenant-a");
@@ -1743,15 +1638,6 @@ async fn every_response_shape_declares_its_mode() {
                 as_mode("values", inner)
             },
             "values",
-        ),
-        (as_mode("attributes", window_body()), "attributes"),
-        (
-            {
-                let mut inner = window_body();
-                merge(&mut inner, json!({"key": "kind"}));
-                as_mode("attribute_values", inner)
-            },
-            "attribute_values",
         ),
         (json!({"trace": {"id": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"}}), "trace"),
     ] {

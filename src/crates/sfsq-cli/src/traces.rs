@@ -21,10 +21,9 @@ use anyhow::{Context, Result, bail};
 use tokio_util::sync::CancellationToken;
 
 use sfsq::traces::{
-    CompareOp, Condition, Predicate, PredicateTarget, PredicateValue, QueryStatus, SearchQuery,
-    SearchSources, SourceId, AttributeKey, AttributeNamesQuery, AttributeOwner, AttributeValuesQuery, TimeWindow,
-    BuiltinField, TraceQuery, TraceSfstCandidate, TraceSource, TraceWalTail, WalCoverage,
-    search, attribute_names, attribute_values, trace_by_id,
+    AttributeOwner, BuiltinField, CompareOp, Condition, Predicate, PredicateTarget, PredicateValue,
+    QueryStatus, SearchQuery, SearchSources, SourceId, TimeWindow, TraceQuery, TraceSfstCandidate,
+    TraceSource, TraceWalTail, WalCoverage, search, trace_by_id,
 };
 
 /// Reconstruct one trace across sealed SFSTs and traces WALs.
@@ -216,36 +215,10 @@ pub fn run_trace(args: &TraceArgs, out: &mut dyn std::io::Write) -> Result<()> {
     Ok(())
 }
 
-// ── Key enumeration (phase 4b) ─────────────────────────────────────────
+// ── Shared words ───────────────────────────────────────────────────────
 
-/// An [`AttributeOwner`] as a CLI word (this tool's rendering, not a
-/// wire contract). `Any` is deliberately absent: it exists for
-/// predicates (`--where .key=...`), not enumeration.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum OwnerArg {
-    Resource,
-    Span,
-    Instrumentation,
-    Event,
-    Link,
-    Builtin,
-}
-
-impl From<OwnerArg> for AttributeOwner {
-    fn from(s: OwnerArg) -> AttributeOwner {
-        match s {
-            OwnerArg::Resource => AttributeOwner::Resource,
-            OwnerArg::Span => AttributeOwner::Span,
-            OwnerArg::Instrumentation => AttributeOwner::Instrumentation,
-            OwnerArg::Event => AttributeOwner::Event,
-            OwnerArg::Link => AttributeOwner::Link,
-            OwnerArg::Builtin => AttributeOwner::Builtin,
-        }
-    }
-}
-
-/// The CLI spelling of each builtin field (kebab-case), used by
-/// `--key` under `--owner builtin` and by the output rendering.
+/// The CLI spelling of each builtin field (kebab-case), used by `--where`
+/// targets.
 const BUILTIN_WORDS: [(&str, BuiltinField); 17] = [
     ("name", BuiltinField::Name),
     ("kind", BuiltinField::Kind),
@@ -266,52 +239,6 @@ const BUILTIN_WORDS: [(&str, BuiltinField); 17] = [
     ("trace-duration", BuiltinField::TraceDuration),
 ];
 
-fn owner_word(owner: AttributeOwner) -> &'static str {
-    match owner {
-        AttributeOwner::Resource => "resource",
-        AttributeOwner::Span => "span",
-        AttributeOwner::Instrumentation => "instrumentation",
-        AttributeOwner::Event => "event",
-        AttributeOwner::Link => "link",
-        AttributeOwner::Builtin => "builtin",
-        // Never enumerated (the engine rejects it); rendered only if a
-        // future path prints a predicate target through this table.
-        AttributeOwner::Any => "any",
-    }
-}
-
-fn key_word(key: &AttributeKey) -> String {
-    match key {
-        AttributeKey::Attribute(a) => a.clone(),
-        AttributeKey::Builtin(i) => BUILTIN_WORDS
-            .iter()
-            .find(|(_, v)| v == i)
-            .map(|(w, _)| (*w).to_string())
-            .expect("every builtin field has a CLI word"),
-    }
-}
-
-/// Parse `--key` against the owner: attribute owners take the bare key
-/// verbatim; the Builtin owner takes one of the kebab-case words.
-fn parse_key(owner: AttributeOwner, key: &str) -> Result<AttributeKey> {
-    if owner != AttributeOwner::Builtin {
-        // Same always-a-typo class as the `--where` guards: an empty
-        // key enumerates nothing, silently.
-        if key.is_empty() {
-            bail!("--key must not be empty");
-        }
-        return Ok(AttributeKey::Attribute(key.to_string()));
-    }
-    BUILTIN_WORDS
-        .iter()
-        .find(|(w, _)| *w == key)
-        .map(|(_, i)| AttributeKey::Builtin(*i))
-        .ok_or_else(|| {
-            let words: Vec<&str> = BUILTIN_WORDS.iter().map(|(w, _)| *w).collect();
-            anyhow::anyhow!("unknown builtin field {key:?}; one of: {}", words.join(", "))
-        })
-}
-
 /// Both-or-neither `--start-ns`/`--end-ns` into an engine window.
 fn parse_window(start_ns: Option<i64>, end_ns: Option<i64>) -> Result<Option<TimeWindow>> {
     match (start_ns, end_ns) {
@@ -326,136 +253,6 @@ fn status_word(status: &QueryStatus) -> String {
         QueryStatus::Complete => "complete".to_string(),
         QueryStatus::Partial(reasons) => format!("PARTIAL {reasons:?}"),
     }
-}
-
-/// Enumerate attribute and builtin-field keys across sealed SFSTs and traces WALs.
-#[derive(Debug, clap::Args)]
-pub struct AttributesArgs {
-    /// A sealed traces SFST file. Repeatable.
-    #[arg(long = "sfst")]
-    pub sfsts: Vec<PathBuf>,
-
-    /// A flattened traces WAL file, scanned whole as a tail. Repeatable.
-    #[arg(long = "wal")]
-    pub wals: Vec<PathBuf>,
-
-    /// Enumerate only one owner.
-    #[arg(long, value_enum)]
-    pub owner: Option<OwnerArg>,
-
-    /// Cap the key list (exact truncation flag); 0 is rejected.
-    #[arg(long)]
-    pub max_keys: Option<usize>,
-
-    /// Window start, nanoseconds since the epoch (half-open; file-granular
-    /// pruning). Requires --end-ns.
-    #[arg(long, allow_hyphen_values = true)]
-    pub start_ns: Option<i64>,
-
-    /// Window end, nanoseconds since the epoch (exclusive). Requires
-    /// --start-ns.
-    #[arg(long, allow_hyphen_values = true)]
-    pub end_ns: Option<i64>,
-}
-
-pub fn run_attributes(args: &AttributesArgs, out: &mut dyn std::io::Write) -> Result<()> {
-    let sources = build_sources(&args.sfsts, &args.wals)?;
-    let mut query = AttributeNamesQuery::new();
-    if let Some(owner) = args.owner {
-        query = query.owner(owner.into());
-    }
-    if let Some(max) = args.max_keys {
-        query = query.max_keys(max);
-    }
-    if let Some(window) = parse_window(args.start_ns, args.end_ns)? {
-        query = query.window(window);
-    }
-    let data = attribute_names(
-        sources,
-        query,
-        CancellationToken::new(),
-        Arc::new(AtomicUsize::new(0)),
-    )?;
-    for (owner, key) in &data.keys {
-        writeln!(out, "{} {}", owner_word(*owner), key_word(key))?;
-    }
-    writeln!(
-        out,
-        "{} key(s), truncated {}, status {}",
-        data.keys.len(),
-        data.truncated,
-        status_word(&data.status),
-    )?;
-    Ok(())
-}
-
-/// Enumerate one key's values across sealed SFSTs and traces WALs.
-#[derive(Debug, clap::Args)]
-pub struct AttributeValuesArgs {
-    /// A sealed traces SFST file. Repeatable.
-    #[arg(long = "sfst")]
-    pub sfsts: Vec<PathBuf>,
-
-    /// A flattened traces WAL file, scanned whole as a tail. Repeatable.
-    #[arg(long = "wal")]
-    pub wals: Vec<PathBuf>,
-
-    /// The key's owner.
-    #[arg(long, value_enum)]
-    pub owner: OwnerArg,
-
-    /// The key: the bare attribute name, or (under --owner builtin)
-    /// a builtin-field word such as `status` or `event-name`.
-    #[arg(long)]
-    pub key: String,
-
-    /// Cap the value list (exact truncation flag); 0 is rejected.
-    #[arg(long)]
-    pub max_values: Option<usize>,
-
-    /// Window start, nanoseconds since the epoch (half-open; file-granular
-    /// pruning). Requires --end-ns.
-    #[arg(long, allow_hyphen_values = true)]
-    pub start_ns: Option<i64>,
-
-    /// Window end, nanoseconds since the epoch (exclusive). Requires
-    /// --start-ns.
-    #[arg(long, allow_hyphen_values = true)]
-    pub end_ns: Option<i64>,
-}
-
-pub fn run_attribute_values(args: &AttributeValuesArgs, out: &mut dyn std::io::Write) -> Result<()> {
-    let owner: AttributeOwner = args.owner.into();
-    let key = parse_key(owner, &args.key)?;
-    let sources = build_sources(&args.sfsts, &args.wals)?;
-    let mut query = AttributeValuesQuery::new(owner, key);
-    if let Some(max) = args.max_values {
-        query = query.max_values(max);
-    }
-    if let Some(window) = parse_window(args.start_ns, args.end_ns)? {
-        query = query.window(window);
-    }
-    let data = attribute_values(
-        sources,
-        query,
-        CancellationToken::new(),
-        Arc::new(AtomicUsize::new(0)),
-    )?;
-    for v in &data.values {
-        let kind = v
-            .kind
-            .map(|k| format!("{k:?}"))
-            .unwrap_or_else(|| "none".to_string());
-        writeln!(out, "{} kind={kind}", v.value)?;
-    }
-    writeln!(
-        out,
-        "{} value(s), truncated {}, status {}",
-        data.values.len(),
-        data.truncated,
-        status_word(&data.status),
-    )?;
-    Ok(())
 }
 
 // ── Search (phase 4c) ──────────────────────────────────────────────────
@@ -820,9 +617,8 @@ mod tests {
     }
 
     /// The CLI word table must stay in lockstep with the engine's
-    /// builtin-field set: a variant without a word would make `key_word`
-    /// PANIC while rendering `attributes` output (the parse side already
-    /// fails gracefully). Walks the engine's `ALL`, so adding a builtin
+    /// builtin-field set: a variant without a word could not be named in a
+    /// `--where` target. Walks the engine's `ALL`, so adding a builtin
     /// engine-side breaks this test until the CLI learns it.
     #[test]
     fn every_builtin_has_a_cli_word() {
