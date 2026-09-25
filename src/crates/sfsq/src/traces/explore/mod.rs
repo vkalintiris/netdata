@@ -11,6 +11,7 @@
 //! mixed in.
 
 mod query;
+mod rows;
 mod run;
 mod shard;
 mod source;
@@ -18,6 +19,10 @@ mod source;
 pub use query::{
     DEFAULT_POPULATION, DEFAULT_STACK_FIELD, ExploreQuery, ExploreRequestError, ExploreScope,
     FacetSpec, HIDDEN_FIELDS, HistogramSpec, Sections,
+};
+pub use rows::{
+    MoreRows, NOT_ROW_COLUMN_PREFIXES, ROW_COLUMNS_MAX, ROWS_PAGE_MAX, RowDirection, RowKey,
+    RowOrder, RowsSpec, TOP_K_MAX, is_row_column,
 };
 pub use run::explore;
 
@@ -35,6 +40,7 @@ pub struct ExploreData {
     pub sources: u64,
     pub histogram: Option<HistogramData>,
     pub facets: Option<FacetsData>,
+    pub rows: Option<RowsData>,
 }
 
 impl ExploreData {
@@ -46,6 +52,7 @@ impl ExploreData {
             sources: 0,
             histogram: None,
             facets: None,
+            rows: None,
         }
     }
 }
@@ -112,6 +119,35 @@ pub struct FacetData {
 pub struct FacetValue {
     pub value: String,
     pub count: u64,
+}
+
+/// Scope rows: a newest-first page, or the slowest K.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowsData {
+    /// The source reasons plus this section's own.
+    pub status: QueryStatus,
+    /// Scope rows in the window; every page reports the same number.
+    pub matched: u64,
+    /// For a newest page: whether rows exist beyond it on each side; `None`
+    /// for the slowest order.
+    pub more: Option<MoreRows>,
+    /// The requested columns, in request order.
+    pub columns: Vec<String>,
+    pub items: Vec<Row>,
+}
+
+/// One span row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    /// Its content key; `encode` gives the page cursor.
+    pub key: RowKey,
+    pub duration_ns: i64,
+    pub service: Option<String>,
+    pub name: Option<String>,
+    pub role: Option<String>,
+    pub status: Option<String>,
+    /// Parallel to [`RowsData::columns`]: every value, sorted.
+    pub columns: Vec<Vec<String>>,
 }
 
 /// Duration percentiles from the fixed histogram

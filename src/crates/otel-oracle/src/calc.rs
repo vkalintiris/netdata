@@ -309,6 +309,128 @@ pub fn bucket_durations(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec
     buckets
 }
 
+/// A row's content key: start, trace id, span id; an unset id is all zeros.
+/// Newest order is this key descending, ids compared as bytes.
+pub type RowKey = (i64, [u8; 16], [u8; 8]);
+
+pub fn row_key(span: &OracleSpan) -> RowKey {
+    (
+        span.start_ns,
+        span.trace_id.unwrap_or([0; 16]),
+        span.span_id.unwrap_or([0; 8]),
+    )
+}
+
+/// Which way a newest page walks from its anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Walk {
+    Older,
+    Newer,
+}
+
+/// A page of the newest-first list, and whether rows exist past it on each
+/// side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page<'a> {
+    pub rows: Vec<&'a OracleSpan>,
+    pub has_older: bool,
+    pub has_newer: bool,
+}
+
+/// Scope rows in the window, newest first.
+fn newest_first<'a>(spans: &'a [OracleSpan], grid: &Grid, scope: &Scope) -> Vec<&'a OracleSpan> {
+    let mut rows = Vec::new();
+    for span in spans {
+        if scope.matches(span) && grid.bucket_of(span.start_ns).is_some() {
+            rows.push(span);
+        }
+    }
+    rows.sort_by_key(|span| std::cmp::Reverse(row_key(span)));
+    rows
+}
+
+/// `limit`, grown over the rows whose key equals the last one taken: rows with
+/// one key are never split between pages.
+fn page_len(rows: &[&OracleSpan], limit: usize) -> usize {
+    let mut n = limit.min(rows.len());
+    while n > 0 && n < rows.len() && row_key(rows[n]) == row_key(rows[n - 1]) {
+        n += 1;
+    }
+    n
+}
+
+/// One page of the newest-first list: the first page when `anchor` is `None`
+/// (walking older); otherwise the `limit` rows just past the anchor in `walk`'s
+/// direction. The page itself is always newest first.
+pub fn newest_page<'a>(
+    spans: &'a [OracleSpan],
+    grid: &Grid,
+    scope: &Scope,
+    limit: usize,
+    anchor: Option<RowKey>,
+    walk: Walk,
+) -> Page<'a> {
+    let rows = newest_first(spans, grid, scope);
+    let mut side = Vec::new();
+    let mut other = 0;
+    for span in rows {
+        let key = row_key(span);
+        let on_side = match (anchor, walk) {
+            (None, _) => true,
+            (Some(anchor), Walk::Older) => key < anchor,
+            (Some(anchor), Walk::Newer) => key > anchor,
+        };
+        if on_side {
+            side.push(span);
+        } else {
+            other += 1;
+        }
+    }
+    match walk {
+        Walk::Older => {
+            let n = page_len(&side, limit);
+            Page {
+                has_older: n < side.len(),
+                has_newer: other > 0,
+                rows: side[..n].to_vec(),
+            }
+        }
+        Walk::Newer => {
+            side.reverse();
+            let n = page_len(&side, limit);
+            let mut rows = side[..n].to_vec();
+            rows.reverse();
+            Page {
+                rows,
+                has_older: other > 0,
+                has_newer: n < side.len(),
+            }
+        }
+    }
+}
+
+/// The `k` slowest scope rows: duration descending, then start descending,
+/// then trace id and span id ascending.
+pub fn slowest<'a>(
+    spans: &'a [OracleSpan],
+    grid: &Grid,
+    scope: &Scope,
+    k: usize,
+) -> Vec<&'a OracleSpan> {
+    let mut rows = newest_first(spans, grid, scope);
+    rows.sort_by_key(|span| {
+        let (start, trace, span_id) = row_key(span);
+        (
+            std::cmp::Reverse(span.duration_ns),
+            std::cmp::Reverse(start),
+            trace,
+            span_id,
+        )
+    });
+    rows.truncate(k);
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

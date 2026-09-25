@@ -3,7 +3,8 @@
 use std::collections::BTreeSet;
 
 use super::super::duration_hist::DurationHistogram;
-use super::query::{ExploreQuery, HIDDEN_FIELDS};
+use super::query::{ExploreQuery, HIDDEN_FIELDS, STATUS_FIELD};
+use super::rows::{SourceRows, source_rows};
 
 /// A readable source's numbers for the request.
 #[derive(Default)]
@@ -25,6 +26,8 @@ pub(super) struct ExploreShard {
     pub facets: Vec<sfst::FacetResult>,
     /// Faceted fields that are high-cardinality here.
     pub facet_high: BTreeSet<String>,
+    /// Scope rows that can make the rows page.
+    pub rows: Option<SourceRows>,
 }
 
 /// How a readable source was evaluated.
@@ -32,12 +35,17 @@ pub(super) enum Evaluated {
     /// Written before the explorer's per-span entries: left out and reported,
     /// because counting it would silently report zero for it.
     Legacy,
-    Shard(ExploreShard),
+    Shard(Box<ExploreShard>),
 }
 
 /// Evaluate one source. Any error drops the whole source (its numbers are
-/// never partly mixed in); the caller reports it.
-pub(super) fn evaluate(bytes: &[u8], query: &ExploreQuery) -> Result<Evaluated, sfst::Error> {
+/// never partly mixed in); the caller reports it. `source` is stamped on the
+/// source's row candidates.
+pub(super) fn evaluate(
+    bytes: &[u8],
+    query: &ExploreQuery,
+    source: usize,
+) -> Result<Evaluated, sfst::Error> {
     let reader = sfst::IndexReader::open(bytes)?;
     if reader.summary().record_count > 0
         && reader.field_table().get(ng_flatten::ROLE_FIELD).is_none()
@@ -94,7 +102,10 @@ pub(super) fn evaluate(bytes: &[u8], query: &ExploreQuery) -> Result<Evaluated, 
         }
         shard.facets = reader.facets(&eligible, &scope, window.clone())?;
     }
-    Ok(Evaluated::Shard(shard))
+    if let Some(spec) = &query.sections.rows {
+        shard.rows = Some(source_rows(&reader, &scope, window, spec, source)?);
+    }
+    Ok(Evaluated::Shard(Box::new(shard)))
 }
 
 /// Scope-row durations per grid bucket: the scope's positions in the window
@@ -127,6 +138,3 @@ fn bucket_durations(
     }
     Ok(out)
 }
-
-/// The span status field and its error value.
-const STATUS_FIELD: &str = "status_code";

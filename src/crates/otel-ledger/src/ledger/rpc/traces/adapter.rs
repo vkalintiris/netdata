@@ -839,6 +839,7 @@ pub(crate) fn to_explore_query(
             facets: params.facets.as_ref().map(|f| FacetSpec {
                 fields: f.fields.clone(),
             }),
+            rows: params.rows.clone(),
         },
     };
     (query, aligned_after, aligned_before)
@@ -853,8 +854,8 @@ pub(crate) fn to_explore_response(
 ) -> super::wire::ExploreResponse {
     use super::wire::{
         BucketWire, ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire,
-        ExploreResponse, GridWire, HistogramWire, PercentileMethodWire, PercentilesWire,
-        TotalsWire, UnavailableFacetWire, WindowWire,
+        ExploreResponse, GridWire, HistogramWire, PercentileMethodWire, PercentilesWire, RowWire,
+        RowsWire, TotalsWire, UnavailableFacetWire, WindowWire,
     };
     let percentiles = |p: Option<sfsq::traces::explore::Percentiles>| {
         p.map(|p| PercentilesWire {
@@ -921,6 +922,41 @@ pub(crate) fn to_explore_response(
             unavailable,
         }
     });
+    let rows = data.rows.map(|r| {
+        let mut items = Vec::with_capacity(r.items.len());
+        for row in r.items {
+            let mut columns = std::collections::BTreeMap::new();
+            for (name, values) in r.columns.iter().zip(row.columns) {
+                if !values.is_empty() {
+                    columns.insert(name.clone(), values.join(", "));
+                }
+            }
+            items.push(RowWire {
+                cursor: row.key.encode(),
+                start_ns: row.key.start_ns.to_string(),
+                duration_ns: row.duration_ns,
+                trace_id: row.key.trace_id.to_string(),
+                span_id: row.key.span_id.to_string(),
+                service: row.service,
+                name: row.name,
+                role: row.role,
+                status: row.status,
+                columns,
+            });
+        }
+        RowsWire {
+            status: StatusWire::from(&r.status),
+            order: if r.more.is_some() {
+                "newest"
+            } else {
+                "slowest"
+            },
+            matched: r.matched,
+            has_older: r.more.map(|m| m.older),
+            has_newer: r.more.map(|m| m.newer),
+            items,
+        }
+    });
     ExploreResponse {
         status: 200,
         response_type: "traces",
@@ -939,6 +975,7 @@ pub(crate) fn to_explore_response(
             status,
             histogram,
             facets,
+            rows,
         },
     }
 }

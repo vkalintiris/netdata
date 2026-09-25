@@ -9,12 +9,15 @@ use tokio_util::sync::CancellationToken;
 
 use super::super::duration_hist::DurationHistogram;
 use super::query::{ExploreQuery, ExploreRequestError};
+use super::rows::{self, MoreRows, RowFields, RowsSpec, SourceRows};
 use super::shard::{Evaluated, evaluate};
 use super::source::{Prepared, prepare};
 use super::{
-    ExploreData, FacetData, FacetValue, FacetsData, HistogramData, Percentiles, StackBucket, Totals,
+    ExploreData, FacetData, FacetValue, FacetsData, HistogramData, Percentiles, Row, RowsData,
+    StackBucket, Totals,
 };
 use crate::merge::{MergedFacet, merge_facets, merge_timelines};
+use crate::source::Mapped;
 use crate::traces::{PartialReason, StatusBuilder, TimeWindow, TraceSource, validate_sources};
 
 /// Answer an explorer request over `sources`.
@@ -47,6 +50,10 @@ pub fn explore(
     let mut durations = vec![DurationHistogram::new(); buckets];
     let mut facets = Vec::new();
     let mut facet_high = BTreeSet::new();
+    let mut page_rows = Vec::new();
+    // Sources holding row candidates, kept open to read the page's fields; a
+    // candidate's `source` indexes this list.
+    let mut opened: Vec<(&TraceSource, Mapped)> = Vec::new();
 
     for source in &sources {
         if cancel.is_cancelled() {
@@ -65,7 +72,7 @@ pub fn explore(
             }
             Prepared::Open(mapped) => {
                 candidates += 1;
-                match evaluate(mapped.bytes(), &query) {
+                match evaluate(mapped.bytes(), &query, opened.len()) {
                     Ok(Evaluated::Legacy) => legacy += 1,
                     Ok(Evaluated::Shard(shard)) => {
                         matched += shard.matched;
@@ -83,6 +90,12 @@ pub fn explore(
                             for (sum, n) in other.iter_mut().zip(&shard.other) {
                                 *sum += n;
                             }
+                        }
+                        if let Some(rows) = shard.rows {
+                            if !rows.candidates.is_empty() {
+                                opened.push((source, mapped));
+                            }
+                            page_rows.push(rows);
                         }
                     }
                     Err(e) => {
@@ -220,10 +233,79 @@ pub fn explore(
         }
     });
 
+    let rows = query.sections.rows.map(|spec| {
+        let (items, more, own) = rows_section(&spec, page_rows, &opened, candidates);
+        status.merge(own.clone());
+        let mut section = shared.clone();
+        section.merge(own);
+        RowsData {
+            status: section.finish(),
+            matched,
+            more,
+            columns: spec.columns,
+            items,
+        }
+    });
+
     Ok(ExploreData {
         status: status.finish(),
         sources: candidates,
         histogram,
         facets,
+        rows,
     })
+}
+
+/// The page from every source's candidates, with its fields read from the
+/// sources holding it, and this section's own reasons: a source whose fields
+/// cannot be read is left out of the page and counted as failed.
+fn rows_section(
+    spec: &RowsSpec,
+    per_source: Vec<SourceRows>,
+    opened: &[(&TraceSource, Mapped)],
+    candidates: u64,
+) -> (Vec<Row>, Option<MoreRows>, StatusBuilder) {
+    let (page, more) = rows::select_page(spec, per_source);
+    let mut by_source: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (index, candidate) in page.iter().enumerate() {
+        by_source.entry(candidate.source).or_default().push(index);
+    }
+    let mut fields: Vec<Option<RowFields>> = vec![None; page.len()];
+    let mut own = StatusBuilder::new();
+    for (source, indexes) in by_source {
+        let (trace_source, mapped) = &opened[source];
+        let mut positions = Vec::with_capacity(indexes.len());
+        for &index in &indexes {
+            positions.push(page[index].position);
+        }
+        match rows::materialize(mapped.bytes(), &positions, &spec.columns) {
+            Ok(values) => {
+                for (index, value) in indexes.into_iter().zip(values) {
+                    fields[index] = Some(value);
+                }
+            }
+            Err(e) => {
+                own.add(PartialReason::SourceFailure);
+                own.of(PartialReason::SourceFailure, candidates);
+                tracing::warn!(
+                    "sfsq traces: source {} failed to read row fields: {e}",
+                    trace_source.source_id()
+                );
+            }
+        }
+    }
+    let mut items = Vec::with_capacity(page.len());
+    for (candidate, fields) in page.into_iter().zip(fields) {
+        let Some(fields) = fields else { continue };
+        items.push(Row {
+            key: candidate.key,
+            duration_ns: candidate.duration_ns,
+            service: fields.service,
+            name: fields.name,
+            role: fields.role,
+            status: fields.status,
+            columns: fields.columns,
+        });
+    }
+    (items, more, own)
 }

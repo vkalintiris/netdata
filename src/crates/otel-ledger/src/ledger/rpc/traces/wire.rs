@@ -1116,6 +1116,8 @@ pub struct InfoResponse {
     sections: Vec<&'static str>,
     /// What the explorer opens with.
     defaults: InfoDefaults,
+    /// The largest values an `explore` request may ask for.
+    limits: InfoLimits,
     /// The fixed duration bands, fastest first, with inclusive bounds.
     duration_bands: Vec<DurationBandWire>,
     /// The partial reasons an `explore` answer may carry.
@@ -1128,6 +1130,14 @@ pub struct InfoDefaults {
     filter: std::collections::BTreeMap<&'static str, Vec<&'static str>>,
     stack: &'static str,
     window_s: i64,
+    rows_limit: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InfoLimits {
+    rows_page_max: usize,
+    top_k_max: usize,
+    row_columns_max: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -1168,11 +1178,17 @@ impl Default for InfoResponse {
             accepted_params: ACCEPTED_PARAMS.to_vec(),
             required_params: vec![],
             help: "Query and visualize OpenTelemetry traces.",
-            sections: vec!["histogram", "facets"],
+            sections: vec!["histogram", "facets", "rows"],
             defaults: InfoDefaults {
                 filter: std::collections::BTreeMap::from([(role_field, roles.to_vec())]),
                 stack: sfsq::traces::explore::DEFAULT_STACK_FIELD,
                 window_s: explore::DEFAULT_WINDOW_S,
+                rows_limit: explore::ROWS_DEFAULT_LIMIT,
+            },
+            limits: InfoLimits {
+                rows_page_max: sfsq::traces::explore::ROWS_PAGE_MAX,
+                top_k_max: sfsq::traces::explore::TOP_K_MAX,
+                row_columns_max: sfsq::traces::explore::ROW_COLUMNS_MAX,
             },
             duration_bands: duration_bands(),
             partial_reasons: vec![
@@ -1312,8 +1328,8 @@ impl From<PartialReason> for PartialReasonWire {
 mod explore;
 pub use explore::{
     BucketWire, ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire,
-    ExploreParams, ExploreResponse, GridWire, HistogramWire, PercentileMethodWire,
-    PercentilesWire, TotalsWire, UnavailableFacetWire, WindowWire,
+    ExploreParams, ExploreResponse, GridWire, HistogramWire, PercentileMethodWire, PercentilesWire,
+    RowWire, RowsWire, TotalsWire, UnavailableFacetWire, WindowWire,
 };
 
 #[cfg(test)]

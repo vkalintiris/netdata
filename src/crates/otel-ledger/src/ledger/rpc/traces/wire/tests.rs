@@ -401,12 +401,14 @@ fn info_response_shape_is_pinned() {
             ],
             "required_params": [],
             "help": "Query and visualize OpenTelemetry traces.",
-            "sections": ["histogram", "facets"],
+            "sections": ["histogram", "facets", "rows"],
             "defaults": {
                 "filter": {"_role": ["root", "inbound"]},
                 "stack": "status_code",
-                "window_s": 900
+                "window_s": 900,
+                "rows_limit": 100
             },
+            "limits": {"rows_page_max": 1000, "top_k_max": 1000, "row_columns_max": 32},
             "duration_bands": [
                 {"label": "<1ms", "min_ns": 0, "max_ns": 999_999},
                 {"label": "1-10ms", "min_ns": 1_000_000, "max_ns": 9_999_999},
@@ -761,6 +763,21 @@ fn explore_rejects_bad_requests() {
             "all-zero trace id",
         ),
         (json!({"explore": {"sections": {"groups": {}}}}), "not available yet"),
+        (json!({"explore": {"sections": {"rows": {"order": "oldest"}}}}), "unknown variant"),
+        (json!({"explore": {"sections": {"rows": {"direction": "up"}}}}), "unknown variant"),
+        (json!({"explore": {"sections": {"rows": {"limit": 0}}}}), "must be 1 to 1000"),
+        (json!({"explore": {"sections": {"rows": {"limit": 1001}}}}), "must be 1 to 1000"),
+        (json!({"explore": {"sections": {"rows": {"anchor": "12:ab"}}}}), "not a cursor"),
+        (
+            json!({"explore": {"sections": {"rows": {"order": "slowest", "direction": "older"}}}}),
+            "only to the newest order",
+        ),
+        (json!({"explore": {"sections": {"rows": {"columns": [""]}}}}), "empty column"),
+        (
+            json!({"explore": {"sections": {"rows": {"columns": ["events.name"]}}}}),
+            "not a span column",
+        ),
+        (json!({"explore": {"sections": {"rows": {"bogus": 1}}}}), "unknown field"),
         (json!({"explore": {}, "trace": {"id": "00"}}), "conflicting mode selectors"),
         (json!({"explore": []}), "expected an object"),
     ] {
@@ -784,3 +801,42 @@ fn explore_takes_text_and_trace_ids() {
     );
 }
 
+#[test]
+fn explore_takes_rows() {
+    use sfsq::traces::explore::{RowDirection, RowKey, RowOrder, RowsSpec};
+    assert_eq!(explore(json!({})).rows, None, "rows only when asked for");
+    assert_eq!(
+        explore(json!({"sections": {"rows": {}}})).rows,
+        Some(RowsSpec {
+            order: RowOrder::Newest {
+                anchor: None,
+                direction: RowDirection::Older
+            },
+            limit: 100,
+            columns: Vec::new(),
+        })
+    );
+    let anchor = "1758791650123456789:4bf92f3577b34da6a3ce929d0e0e4736:00f067aa0ba902b7";
+    let p = explore(json!({"sections": {"rows": {
+        "anchor": anchor, "direction": "newer", "limit": 50, "columns": ["attributes.http.route"]
+    }}}));
+    assert_eq!(
+        p.rows,
+        Some(RowsSpec {
+            order: RowOrder::Newest {
+                anchor: RowKey::decode(anchor),
+                direction: RowDirection::Newer
+            },
+            limit: 50,
+            columns: vec!["attributes.http.route".to_string()],
+        })
+    );
+    assert_eq!(
+        explore(json!({"sections": {"rows": {"order": "slowest", "limit": 10}}})).rows,
+        Some(RowsSpec {
+            order: RowOrder::Slowest,
+            limit: 10,
+            columns: Vec::new(),
+        })
+    );
+}

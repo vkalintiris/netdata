@@ -16,6 +16,9 @@ pub const TRACE_IDS_MAX: usize = 100;
 /// Length of the default window, seconds.
 pub const DEFAULT_WINDOW_S: i64 = 900;
 
+/// Rows per page (or K) when the rows section names no limit.
+pub const ROWS_DEFAULT_LIMIT: usize = 100;
+
 /// The explorer's parameters, validated.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "RawExploreParams")]
@@ -30,6 +33,7 @@ pub struct ExploreParams {
     pub trace_ids: Vec<sfst::TraceId>,
     pub histogram: Option<HistogramRequest>,
     pub facets: Option<FacetsRequest>,
+    pub rows: Option<sfsq::traces::explore::RowsSpec>,
 }
 
 /// A window in whole seconds: both bounds relative to now (`≤ 0`) or both
@@ -127,6 +131,92 @@ fn section<T: serde::de::DeserializeOwned>(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRows {
+    #[serde(default)]
+    order: Option<RawRowOrder>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    anchor: Option<String>,
+    #[serde(default)]
+    direction: Option<RawRowDirection>,
+    #[serde(default)]
+    columns: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum RawRowOrder {
+    Newest,
+    Slowest,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum RawRowDirection {
+    Older,
+    Newer,
+}
+
+impl TryFrom<RawRows> for sfsq::traces::explore::RowsSpec {
+    type Error = String;
+
+    fn try_from(raw: RawRows) -> Result<Self, String> {
+        use sfsq::traces::explore::{
+            ROW_COLUMNS_MAX, ROWS_PAGE_MAX, RowDirection, RowKey, RowOrder, TOP_K_MAX,
+            is_row_column,
+        };
+        let limit = raw.limit.unwrap_or(ROWS_DEFAULT_LIMIT);
+        let (order, max) = match raw.order.unwrap_or(RawRowOrder::Newest) {
+            RawRowOrder::Newest => {
+                let anchor = match raw.anchor {
+                    None => None,
+                    Some(cursor) => {
+                        let key = RowKey::decode(&cursor);
+                        Some(
+                            key.ok_or_else(|| format!("rows `anchor` {cursor:?} is not a cursor"))?,
+                        )
+                    }
+                };
+                let direction = match raw.direction.unwrap_or(RawRowDirection::Older) {
+                    RawRowDirection::Older => RowDirection::Older,
+                    RawRowDirection::Newer => RowDirection::Newer,
+                };
+                (RowOrder::Newest { anchor, direction }, ROWS_PAGE_MAX)
+            }
+            RawRowOrder::Slowest => {
+                if raw.anchor.is_some() || raw.direction.is_some() {
+                    return Err(
+                        "rows `anchor` and `direction` apply only to the newest order".into(),
+                    );
+                }
+                (RowOrder::Slowest, TOP_K_MAX)
+            }
+        };
+        if limit == 0 || limit > max {
+            return Err(format!("rows `limit` must be 1 to {max}"));
+        }
+        if raw.columns.len() > ROW_COLUMNS_MAX {
+            return Err(format!("rows take at most {ROW_COLUMNS_MAX} columns"));
+        }
+        if raw.columns.iter().any(|c| c.is_empty()) {
+            return Err("rows name an empty column".into());
+        }
+        if let Some(c) = raw.columns.iter().find(|c| !is_row_column(c)) {
+            return Err(format!(
+                "`{c}` is an events or links field, not a span column"
+            ));
+        }
+        Ok(sfsq::traces::explore::RowsSpec {
+            order,
+            limit,
+            columns: raw.columns,
+        })
+    }
+}
+
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawHistogram {
@@ -186,20 +276,17 @@ impl TryFrom<RawExploreParams> for ExploreParams {
             }
         }
 
-        let (histogram, facets) = match raw.sections {
+        let (histogram, facets, rows) = match raw.sections {
             None => (
                 Some(HistogramRequest {
                     stack: sfsq::traces::explore::DEFAULT_STACK_FIELD.to_string(),
                     percentiles: true,
                 }),
                 Some(FacetsRequest { fields: None }),
+                None,
             ),
             Some(sections) => {
-                for (name, value) in [
-                    ("groups", &sections.groups),
-                    ("rows", &sections.rows),
-                    ("fields", &sections.fields),
-                ] {
+                for (name, value) in [("groups", &sections.groups), ("fields", &sections.fields)] {
                     if value.is_some() {
                         return Err(format!("section `{name}` is not available yet"));
                     }
@@ -235,7 +322,11 @@ impl TryFrom<RawExploreParams> for ExploreParams {
                         Some(FacetsRequest { fields })
                     }
                 };
-                (histogram, facets)
+                let rows = match section::<RawRows>("rows", sections.rows)? {
+                    None => None,
+                    Some(raw) => Some(raw.try_into()?),
+                };
+                (histogram, facets, rows)
             }
         };
 
@@ -246,6 +337,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
             trace_ids,
             histogram,
             facets,
+            rows,
         })
     }
 }
@@ -271,6 +363,8 @@ pub struct ExploreDataWire {
     pub histogram: Option<HistogramWire>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub facets: Option<ExploreFacetsWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<RowsWire>,
 }
 
 /// The window actually answered: the request's, aligned outward to whole
@@ -367,4 +461,38 @@ pub struct ExploreFacetValueWire {
 pub struct UnavailableFacetWire {
     pub field: String,
     pub reason: super::PartialReasonWire,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RowsWire {
+    pub status: StatusWire,
+    /// `"newest"` or `"slowest"`.
+    pub order: &'static str,
+    /// Scope rows in the window; the same on every page.
+    pub matched: u64,
+    /// Newest order only: whether rows exist beyond the page on each side.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_older: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_newer: Option<bool>,
+    /// Newest first (or slowest first).
+    pub items: Vec<RowWire>,
+}
+
+/// One span row. Absent fields are `null`; `columns` holds only the asked
+/// columns the row has, multi-valued ones joined with `", "`.
+#[derive(Debug, Serialize)]
+pub struct RowWire {
+    /// The row's content key, the `anchor` for the next page either way.
+    pub cursor: String,
+    /// Unix nanoseconds, as a decimal string.
+    pub start_ns: String,
+    pub duration_ns: i64,
+    pub trace_id: String,
+    pub span_id: String,
+    pub service: Option<String>,
+    pub name: Option<String>,
+    pub role: Option<String>,
+    pub status: Option<String>,
+    pub columns: BTreeMap<String, String>,
 }

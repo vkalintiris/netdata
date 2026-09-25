@@ -643,6 +643,7 @@ fn explore_histogram_carries_its_own_status() {
             percentiles: false,
         }),
         facets: None,
+        rows: None,
     };
     let grid = sfst::Grid::new(1_000_000_000, 1_000_000_000, 1);
     let v = serde_json::to_value(to_explore_response(data, grid, 1, 2)).unwrap();

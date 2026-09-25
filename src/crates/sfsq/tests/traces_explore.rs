@@ -43,6 +43,7 @@ fn query(stack: &str, chips: &[(&str, &str)]) -> ExploreQuery {
                 percentiles: false,
             }),
             facets: None,
+            rows: None,
         },
     }
 }
@@ -141,6 +142,7 @@ fn entry_spans_are_counted_by_status() {
             sources: 1,
             histogram: Some(one_request_histogram(1)),
             facets: None,
+            rows: None,
         }
     );
 

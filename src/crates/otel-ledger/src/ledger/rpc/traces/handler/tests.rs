@@ -1926,3 +1926,90 @@ async fn explore_answers_facets_with_their_own_status() {
     );
 }
 
+
+fn root_row(trace_byte: u8, second: u64, service: &str, status: Option<&str>) -> serde_json::Value {
+    let start_ns = (second * 1_000_000_000 + 1_000).to_string();
+    let trace_id = format!("{trace_byte:02x}").repeat(16);
+    let span_id = "01".repeat(8);
+    json!({
+        "cursor": format!("{start_ns}:{trace_id}:{span_id}"),
+        "start_ns": start_ns,
+        "duration_ns": 500,
+        "trace_id": trace_id,
+        "span_id": span_id,
+        "service": service,
+        "name": "span-1",
+        "role": "root",
+        "status": status,
+        "columns": {}
+    })
+}
+
+#[tokio::test]
+async fn explore_pages_rows_newest_first_by_cursor() {
+    let (h, _) = explore_corpus().await;
+    let page = |anchor: Option<&str>| {
+        let mut rows = json!({"limit": 2, "columns": ["attributes.nope"]});
+        if let Some(anchor) = anchor {
+            rows["anchor"] = json!(anchor);
+        }
+        json!({"explore": {
+            "after": 1, "before": 10, "filter": {"_role": ["root"]},
+            "sections": {"rows": rows}
+        }})
+    };
+    let v = serde_json::to_value(call_on(&h, page(None)).await.unwrap()).unwrap();
+    assert!(
+        v["data"].get("histogram").is_none(),
+        "only the asked sections"
+    );
+    assert_eq!(
+        v["data"]["rows"],
+        json!({
+            "status": {"complete": true},
+            "order": "newest",
+            "matched": 4,
+            "has_older": true,
+            "has_newer": false,
+            "items": [root_row(0x44, 4, "svc", None), root_row(0x33, 3, "svc", None)]
+        })
+    );
+
+    let cursor = v["data"]["rows"]["items"][1]["cursor"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let v = serde_json::to_value(call_on(&h, page(Some(&cursor))).await.unwrap()).unwrap();
+    let rows = &v["data"]["rows"];
+    assert_eq!(
+        (&rows["has_older"], &rows["has_newer"]),
+        (&json!(false), &json!(true))
+    );
+    assert_eq!(
+        rows["items"],
+        json!([
+            root_row(0x22, 2, "svc", None),
+            root_row(0x11, 1, "checkout", Some("ERROR"))
+        ])
+    );
+}
+
+#[tokio::test]
+async fn explore_lists_the_slowest_rows() {
+    let (h, _) = explore_corpus().await;
+    let body = json!({"explore": {
+        "after": 1, "before": 10, "filter": {"_role": ["root"]},
+        "sections": {"rows": {"order": "slowest", "limit": 1}}
+    }});
+    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
+    assert_eq!(
+        v["data"]["rows"],
+        json!({
+            "status": {"complete": true},
+            "order": "slowest",
+            "matched": 4,
+            "items": [root_row(0x44, 4, "svc", None)]
+        }),
+        "equal durations: the latest start first"
+    );
+}

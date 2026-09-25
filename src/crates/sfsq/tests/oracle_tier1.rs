@@ -14,7 +14,8 @@ use otel_oracle::corpus::{self, MeshParams};
 use otel_oracle::model::{self, OracleSpan};
 use sfsq::Source;
 use sfsq::traces::explore::{
-    self, ExploreQuery, ExploreScope, FacetSpec, HIDDEN_FIELDS, HistogramSpec, Sections,
+    self, ExploreQuery, ExploreScope, FacetSpec, HIDDEN_FIELDS, HistogramSpec, RowDirection,
+    RowKey, RowOrder, RowsData, RowsSpec, Sections,
 };
 use sfsq::traces::{SourceId, TraceSfstCandidate, TraceSource, TraceWalScan, WalCoverage};
 
@@ -48,6 +49,13 @@ struct Stored {
 /// The first two thirds of the export requests seal into a file; the rest stay
 /// in a WAL that is read both as a chunk image and as a tail.
 fn store(traces: usize, seed: u64) -> Stored {
+    store_resending(traces, seed, None)
+}
+
+/// [`store`], with every `resend_every`-th export request sent twice in a row,
+/// as an exporter retrying after a lost acknowledgement would: its rows are
+/// stored twice with identical content.
+fn store_resending(traces: usize, seed: u64, resend_every: Option<usize>) -> Stored {
     let dir = tempfile::tempdir().unwrap();
     let spans = corpus::generate(&MeshParams {
         traces,
@@ -55,7 +63,13 @@ fn store(traces: usize, seed: u64) -> Stored {
         trace_spacing_ns: TRACE_SPACING_NS,
         seed,
     });
-    let requests = corpus::build_requests(&spans, 50);
+    let mut requests = Vec::new();
+    for (i, request) in corpus::build_requests(&spans, 50).into_iter().enumerate() {
+        if resend_every.is_some_and(|every| i % every == 0) {
+            requests.push(request.clone());
+        }
+        requests.push(request);
+    }
     let cut = requests.len() * 2 / 3;
 
     let mut oracle = Vec::new();
@@ -333,6 +347,7 @@ fn explore_query(grid: &Grid, scope: &Scope, stack: &str) -> ExploreQuery {
                 percentiles: true,
             }),
             facets: None,
+            rows: None,
         },
     }
 }
@@ -573,6 +588,254 @@ fn explore_text_and_trace_id_scopes_match_the_calculator() {
                 });
             }
             assert_eq!(got, want, "{case}");
+        }
+    }
+}
+
+/// Columns every rows comparison reads: a plain value, an array's values and a
+/// field no row has.
+const ROW_COLUMNS: [&str; 3] = [
+    "attributes.http.route",
+    "attributes.app.tags[]",
+    "attributes.nope",
+];
+
+fn rows_query(grid: &Grid, scope: &Scope, order: RowOrder, limit: usize) -> ExploreQuery {
+    let mut query = explore_query(grid, scope, model::STATUS_FIELD);
+    query.sections.histogram = None;
+    query.sections.rows = Some(RowsSpec {
+        order,
+        limit,
+        columns: ROW_COLUMNS.iter().map(|c| c.to_string()).collect(),
+    });
+    query
+}
+
+fn run_rows(stored: &Stored, live: Live, query: ExploreQuery) -> RowsData {
+    let data = explore::explore(
+        explore_sources(stored, live),
+        query,
+        tokio_util::sync::CancellationToken::new(),
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )
+    .unwrap();
+    assert!(data.status.is_complete(), "{:?}", data.status);
+    data.rows.expect("rows section")
+}
+
+fn oracle_key(key: &RowKey) -> calc::RowKey {
+    (
+        key.start_ns,
+        *key.trace_id.as_bytes(),
+        *key.span_id.as_bytes(),
+    )
+}
+
+fn engine_key(key: calc::RowKey) -> RowKey {
+    RowKey {
+        start_ns: key.0,
+        trace_id: sfst::TraceId::from(key.1),
+        span_id: sfst::SpanId::from(key.2),
+    }
+}
+
+/// Every row of the page equals the calculator's row: key, duration, the
+/// shown fields and the asked columns.
+fn assert_rows_match(got: &RowsData, want: &[&OracleSpan], case: &str) {
+    assert_eq!(got.items.len(), want.len(), "{case}");
+    for (row, span) in got.items.iter().zip(want) {
+        assert_eq!(oracle_key(&row.key), calc::row_key(span), "{case}");
+        assert_eq!(row.duration_ns, span.duration_ns, "{case}");
+        let first = |field: &str| {
+            span.fields
+                .get(field)
+                .and_then(|values| values.iter().next().cloned())
+        };
+        assert_eq!(row.service, first(model::SERVICE_FIELD), "{case}");
+        assert_eq!(row.name, first("name"), "{case}");
+        assert_eq!(row.role, first(model::ROLE_FIELD), "{case}");
+        assert_eq!(row.status, first(model::STATUS_FIELD), "{case}");
+        let mut columns = Vec::new();
+        for column in ROW_COLUMNS {
+            let values: Vec<String> = match span.fields.get(column) {
+                Some(values) => values.iter().cloned().collect(),
+                None => Vec::new(),
+            };
+            columns.push(values);
+        }
+        assert_eq!(row.columns, columns, "{case}");
+    }
+}
+
+/// ORC-ROWS: walking the newest-first list older from the top, and newer from
+/// the oldest row, visits every scope row once in key order; every page, its
+/// has_older/has_newer and each row's fields equal the calculator's, and a
+/// group of resent rows is never split across pages.
+#[test]
+fn explore_rows_pages_match_the_calculator() {
+    const LIMIT: usize = 25;
+    let stored = store_resending(60, 91, Some(3));
+    let grid = stored.grid;
+    let scopes = [
+        ("F0 every span", Scope::default()),
+        ("F1 entry spans", Scope::entry_spans()),
+    ];
+    for live in [Live::Tail, Live::Split(120)] {
+        for (name, scope) in &scopes {
+            let totals = calc::totals(&stored.oracle, &grid, scope);
+            let mut all = calc::newest_page(
+                &stored.oracle,
+                &grid,
+                scope,
+                usize::MAX,
+                None,
+                calc::Walk::Older,
+            )
+            .rows;
+            assert_eq!(all.len() as u64, totals.spans);
+
+            let mut anchor = None;
+            let mut walked = Vec::new();
+            let mut grown = 0;
+            loop {
+                let case = format!("{live:?} {name} older from {anchor:?}");
+                let order = RowOrder::Newest {
+                    anchor,
+                    direction: RowDirection::Older,
+                };
+                let got = run_rows(&stored, live, rows_query(&grid, scope, order, LIMIT));
+                let want = calc::newest_page(
+                    &stored.oracle,
+                    &grid,
+                    scope,
+                    LIMIT,
+                    anchor.as_ref().map(oracle_key),
+                    calc::Walk::Older,
+                );
+                assert_rows_match(&got, &want.rows, &case);
+                let more = got.more.expect("a newest page says what lies beyond");
+                assert_eq!(
+                    (more.older, more.newer),
+                    (want.has_older, want.has_newer),
+                    "{case}"
+                );
+                assert_eq!(got.matched, totals.spans, "{case}");
+                if got.items.len() > LIMIT {
+                    grown += 1;
+                }
+                walked.extend(got.items.iter().map(|row| oracle_key(&row.key)));
+                match got.items.last() {
+                    Some(last) if more.older => anchor = Some(last.key),
+                    _ => break,
+                }
+            }
+            let expected: Vec<calc::RowKey> = all.iter().map(|span| calc::row_key(span)).collect();
+            assert_eq!(walked, expected, "{live:?} {name}: the older walk");
+            assert!(
+                grown > 0,
+                "{live:?} {name}: some page ends inside a resent group"
+            );
+
+            let oldest = calc::row_key(all.pop().expect("the scope has rows"));
+            let mut anchor = engine_key(oldest);
+            let mut pages = Vec::new();
+            loop {
+                let case = format!("{live:?} {name} newer from {anchor:?}");
+                let order = RowOrder::Newest {
+                    anchor: Some(anchor),
+                    direction: RowDirection::Newer,
+                };
+                let got = run_rows(&stored, live, rows_query(&grid, scope, order, LIMIT));
+                let want = calc::newest_page(
+                    &stored.oracle,
+                    &grid,
+                    scope,
+                    LIMIT,
+                    Some(oracle_key(&anchor)),
+                    calc::Walk::Newer,
+                );
+                assert_rows_match(&got, &want.rows, &case);
+                let more = got.more.expect("a newest page says what lies beyond");
+                assert_eq!(
+                    (more.older, more.newer),
+                    (want.has_older, want.has_newer),
+                    "{case}"
+                );
+                let keys: Vec<calc::RowKey> =
+                    got.items.iter().map(|row| oracle_key(&row.key)).collect();
+                pages.push(keys);
+                match got.items.first() {
+                    Some(first) if more.newer => anchor = first.key,
+                    _ => break,
+                }
+            }
+            let mut walked = Vec::new();
+            for page in pages.into_iter().rev() {
+                walked.extend(page);
+            }
+            let expected: Vec<calc::RowKey> = all
+                .iter()
+                .map(|span| calc::row_key(span))
+                .filter(|key| *key > oldest)
+                .collect();
+            assert_eq!(walked, expected, "{live:?} {name}: the newer walk");
+        }
+    }
+
+    // The live WAL served differently on each page, as when its tail is cut into
+    // chunks between two requests: the cursor is content, so the walk is unchanged.
+    let servings = [Live::Tail, Live::Split(120), Live::Chunk];
+    let scope = Scope::default();
+    let mut anchor = None;
+    let mut walked = Vec::new();
+    for page in 0.. {
+        let order = RowOrder::Newest {
+            anchor,
+            direction: RowDirection::Older,
+        };
+        let serving = servings[page % servings.len()];
+        let got = run_rows(&stored, serving, rows_query(&grid, &scope, order, LIMIT));
+        walked.extend(got.items.iter().map(|row| oracle_key(&row.key)));
+        match (got.items.last(), got.more) {
+            (Some(last), Some(more)) if more.older => anchor = Some(last.key),
+            _ => break,
+        }
+    }
+    let all = calc::newest_page(
+        &stored.oracle,
+        &grid,
+        &scope,
+        usize::MAX,
+        None,
+        calc::Walk::Older,
+    );
+    let expected: Vec<calc::RowKey> = all.rows.iter().map(|span| calc::row_key(span)).collect();
+    assert_eq!(walked, expected, "a walk across changing servings");
+}
+
+/// ORC-TOPK: the slowest K rows, ties broken by start then ids, equal the
+/// calculator's for K smaller and larger than the scope.
+#[test]
+fn explore_slowest_rows_match_the_calculator() {
+    let stored = store_resending(60, 92, Some(4));
+    let grid = stored.grid;
+    for live in [Live::Tail, Live::Split(60)] {
+        for (name, scope) in [
+            ("F0 every span", Scope::default()),
+            ("F1 entry spans", Scope::entry_spans()),
+        ] {
+            for k in [1, 7, 1000] {
+                let case = format!("{live:?} {name} k {k}");
+                let got = run_rows(
+                    &stored,
+                    live,
+                    rows_query(&grid, &scope, RowOrder::Slowest, k),
+                );
+                assert_eq!(got.more, None, "{case}");
+                let want = calc::slowest(&stored.oracle, &grid, &scope, k);
+                assert!(!want.is_empty(), "{case}");
+                assert_rows_match(&got, &want, &case);
+            }
         }
     }
 }

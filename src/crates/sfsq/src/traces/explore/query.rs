@@ -27,6 +27,7 @@ pub struct ExploreScope {
 pub struct Sections {
     pub histogram: Option<HistogramSpec>,
     pub facets: Option<FacetSpec>,
+    pub rows: Option<super::rows::RowsSpec>,
 }
 
 /// The time histogram: rows per bucket, stacked by the values of one field,
@@ -48,7 +49,12 @@ pub struct FacetSpec {
 pub const HIDDEN_FIELDS: [&str; 2] = ["_kind", "_status_code"];
 
 /// Field the histogram is stacked by unless the request says otherwise.
-pub const DEFAULT_STACK_FIELD: &str = "status_code";
+pub const DEFAULT_STACK_FIELD: &str = STATUS_FIELD;
+
+/// Storage names of the fields every row shows.
+pub(super) const SERVICE_FIELD: &str = "resource.attributes.service.name";
+pub(super) const NAME_FIELD: &str = "name";
+pub(super) const STATUS_FIELD: &str = "status_code";
 
 /// The scope the explorer opens with: spans where a request enters a service.
 pub const DEFAULT_POPULATION: (&str, [&str; 2]) = (ng_flatten::ROLE_FIELD, ["root", "inbound"]);
@@ -84,6 +90,25 @@ impl ExploreQuery {
             return Err(ExploreRequestError::Invalid(
                 "the histogram's stack field is empty".to_string(),
             ));
+        }
+        if let Some(rows) = &self.sections.rows {
+            let max = match rows.order {
+                super::rows::RowOrder::Newest { .. } => super::rows::ROWS_PAGE_MAX,
+                super::rows::RowOrder::Slowest => super::rows::TOP_K_MAX,
+            };
+            if rows.limit == 0 || rows.limit > max {
+                return Err(ExploreRequestError::Invalid(format!(
+                    "rows need a limit of 1 to {max}"
+                )));
+            }
+            if rows.columns.len() > super::rows::ROW_COLUMNS_MAX
+                || !rows.columns.iter().all(|c| super::rows::is_row_column(c))
+            {
+                return Err(ExploreRequestError::Invalid(format!(
+                    "rows take at most {} named span columns",
+                    super::rows::ROW_COLUMNS_MAX
+                )));
+            }
         }
         Ok(())
     }
