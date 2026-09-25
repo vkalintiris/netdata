@@ -1927,6 +1927,62 @@ impl<'a> IndexReader<'a> {
         Ok(results)
     }
 
+    /// The value of `field` of every row in `rows` (positions `[lo, hi)`),
+    /// for grouping rows by a field. A row with several values takes the
+    /// lowest; a field this file lacks gives every row none. Low, Mid and
+    /// derived fields only: a high-cardinality field errors with
+    /// [`crate::Error::HighCardFacet`].
+    pub fn row_values(
+        &self,
+        field: &str,
+        rows: std::ops::Range<u32>,
+    ) -> Result<RowValues, crate::Error> {
+        let total = self.summary.record_count;
+        let lo = rows.start.min(total);
+        let hi = rows.end.clamp(lo, total);
+        let mut out = RowValues {
+            values: Vec::new(),
+            first: lo,
+            of_row: vec![None; (hi - lo) as usize],
+        };
+        let Some(location) = self.locate_field(field) else {
+            return Ok(out);
+        };
+        let prefix_len = field.len() + 1;
+        let range = PosSet::range(lo, hi, total);
+        let mut add = |kv_bytes: &[u8], bv: &BitmapValue| {
+            let mut set = PosSet::from_value(bv);
+            set.and_assign(&range);
+            let index = out.values.len() as u32;
+            let mut used = false;
+            for position in set.iter() {
+                let slot = &mut out.of_row[(position - lo) as usize];
+                if slot.is_none() {
+                    *slot = Some(index);
+                    used = true;
+                }
+            }
+            if used {
+                out.values
+                    .push(String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned());
+            }
+        };
+        match location {
+            FieldLocation::Low | FieldLocation::Derived => {
+                for (kv_bytes, bv) in self.low_pairs(&location, field) {
+                    add(&kv_bytes, bv);
+                }
+            }
+            FieldLocation::Mid(idx) => self
+                .mid_field(idx)?
+                .for_each(|kv_bytes, bv| add(kv_bytes, bv)),
+            FieldLocation::High(_) => {
+                return Err(crate::Error::HighCardFacet(field.to_string()));
+            }
+        }
+        Ok(out)
+    }
+
     /// Per-value `(value, count)` pairs for `field`, counting each value's
     /// set positions in `[lo, hi)` directly on the on-disk bitmap (no
     /// per-value intersection). Used when no other field constrains the
@@ -1971,6 +2027,30 @@ impl<'a> IndexReader<'a> {
         }
 
         Ok(results)
+    }
+}
+
+/// One field's value per row over a range of positions
+/// ([`IndexReader::row_values`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowValues {
+    /// The field's values that occur in the range, in value order.
+    pub values: Vec<String>,
+    first: u32,
+    of_row: Vec<Option<u32>>,
+}
+
+impl RowValues {
+    /// The index into [`values`](Self::values) of the row at `position`;
+    /// `None` when the row has no value or lies outside the range.
+    pub fn value_at(&self, position: u32) -> Option<u32> {
+        let offset = position.checked_sub(self.first)? as usize;
+        self.of_row.get(offset).copied().flatten()
+    }
+
+    /// The value at `index` of [`values`](Self::values).
+    pub fn value(&self, index: u32) -> &str {
+        &self.values[index as usize]
     }
 }
 

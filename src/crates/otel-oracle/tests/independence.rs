@@ -10,7 +10,7 @@ const FORBIDDEN_CRATES: [&str; 4] = ["sfsq", "otel-ledger", "ng-index", "file-li
 /// The query side of `sfst`, the engine's own grouping and ingest code, and
 /// the crate paths of the judged crates, matched as whole words: `_role` or
 /// `_duration_band` inside the calculator's own names do not count.
-const FORBIDDEN_IDENTIFIERS: [&str; 29] = [
+const FORBIDDEN_IDENTIFIERS: [&str; 30] = [
     "sfsq::",
     "otel_ledger::",
     "ng_index::",
@@ -38,6 +38,7 @@ const FORBIDDEN_IDENTIFIERS: [&str; 29] = [
     "DEFAULT_CARDINALITY_THRESHOLD",
     "FieldTier",
     "TRACE_PINNED_FIELDS",
+    "row_values",
     "span_family",
     "derive_span_family",
 ];

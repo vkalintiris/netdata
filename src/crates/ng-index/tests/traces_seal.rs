@@ -1303,6 +1303,23 @@ fn an_overlaid_chunk_image_reads_like_the_sealed_file() {
         sealed.child_durations().unwrap()
     );
 
+    let rows = sealed.summary().record_count;
+    let origins = |reader: &IndexReader<'_>| {
+        let values = reader.row_values(sfst::ERR_ORIGIN_FIELD, 0..rows).unwrap();
+        let mut out = Vec::new();
+        for position in 0..rows {
+            out.push(
+                values
+                    .value_at(position)
+                    .map(|index| values.value(index).to_string()),
+            );
+        }
+        out
+    };
+    assert_eq!(origins(&overlaid), origins(&sealed));
+    assert!(origins(&sealed).iter().any(Option::is_some));
+    assert!(origins(&plain).iter().all(Option::is_none));
+
     let all: Vec<u32> = (0..sealed.summary().record_count).collect();
     assert_eq!(
         overlaid.materialize_rows(&all).unwrap(),
@@ -1401,4 +1418,93 @@ fn an_overlaid_chunk_image_reads_like_the_sealed_file() {
     let calm = attach(values(vec![], rows)).unwrap();
     assert_eq!(table(&calm), table(&plain));
     assert_eq!(calm.child_durations().unwrap().0, vec![0; rows]);
+}
+
+/// `row_values` gives each row of a range its value of a field: Low (the
+/// service), Mid (the pinned `name` with 150 values), the lowest value of a
+/// multi-valued field, none for an absent field or a row outside the range;
+/// a High field is refused.
+#[test]
+fn row_values_give_each_row_its_value() {
+    const ROWS: u64 = 1_100;
+    let mut spans = Vec::new();
+    for i in 0..ROWS {
+        let mut s = span(
+            [1; 16],
+            (i + 1).to_be_bytes(),
+            [0; 8],
+            DERIVED_BASE + i * 1_000,
+            DERIVED_BASE + i * 1_000 + 10,
+            &format!("op-{:03}", i % 150),
+        );
+        s.attributes.push(kv("request.id", &format!("r{i:05}")));
+        let tags: &[&str] = match i {
+            0 => &["b", "a"],
+            1 => &["c"],
+            _ => &[],
+        };
+        if !tags.is_empty() {
+            let values = tags
+                .iter()
+                .map(|tag| AnyValue {
+                    value: Some(Av::StringValue(tag.to_string())),
+                })
+                .collect();
+            s.attributes
+                .push(kv_any("tags", Av::ArrayValue(ArrayValue { values })));
+        }
+        spans.push(s);
+    }
+    let bytes = seal(vec![req(spans)]);
+    let reader = IndexReader::open(&bytes).unwrap();
+    let rows = reader.summary().record_count;
+    assert_eq!(u64::from(rows), ROWS);
+    let tier = |field: &str| reader.field_table().get(field).map(|entry| entry.tier);
+    assert_eq!(
+        tier("resource.attributes.service.name"),
+        Some(sfst::FieldTier::Low)
+    );
+    assert_eq!(tier("name"), Some(sfst::FieldTier::Mid));
+    assert_eq!(tier("attributes.request.id"), Some(sfst::FieldTier::High));
+
+    let at = |values: &sfst::RowValues, position: u32| {
+        values
+            .value_at(position)
+            .map(|index| values.value(index).to_string())
+    };
+    let service = reader
+        .row_values("resource.attributes.service.name", 0..rows)
+        .unwrap();
+    assert_eq!(service.values, vec!["svc".to_string()]);
+    for position in 0..rows {
+        assert_eq!(at(&service, position).as_deref(), Some("svc"));
+    }
+
+    let names = reader.row_values("name", 0..rows).unwrap();
+    assert_eq!(names.values.len(), 150);
+    for position in 0..rows {
+        let want = format!("op-{:03}", position % 150);
+        assert_eq!(at(&names, position), Some(want), "row {position}");
+    }
+
+    let window = reader.row_values("name", 10..20).unwrap();
+    assert_eq!(window.values.len(), 10);
+    assert_eq!(at(&window, 9), None);
+    assert_eq!(at(&window, 10).as_deref(), Some("op-010"));
+    assert_eq!(at(&window, 19).as_deref(), Some("op-019"));
+    assert_eq!(at(&window, 20), None);
+
+    let tags = reader.row_values("attributes.tags[]", 0..rows).unwrap();
+    assert_eq!(at(&tags, 0).as_deref(), Some("a"), "the lowest of b, a");
+    assert_eq!(at(&tags, 1).as_deref(), Some("c"));
+    assert_eq!(at(&tags, 2), None);
+
+    let absent = reader.row_values("attributes.nope", 0..rows).unwrap();
+    assert!(absent.values.is_empty());
+    assert_eq!(at(&absent, 0), None);
+
+    assert!(matches!(
+        reader.row_values("attributes.request.id", 0..rows),
+        Err(sfst::Error::HighCardFacet(_))
+    ));
 }
