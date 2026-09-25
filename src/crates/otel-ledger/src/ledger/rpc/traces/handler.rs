@@ -611,7 +611,13 @@ impl OtelTracesHandler {
 
         match tokio::task::spawn_blocking(move || {
             let _pins = pins;
-            sfsq::traces::explore::explore(sources, query, cancel, done)
+            sfsq::traces::explore::explore(
+                sources,
+                query,
+                sfsq::traces::explore::ExploreOptions::default(),
+                cancel,
+                done,
+            )
         })
         .await
         {
@@ -650,7 +656,13 @@ impl OtelTracesHandler {
 
         match tokio::task::spawn_blocking(move || {
             let _pins = pins;
-            sfsq::traces::explore::field_values(sources, query, cancel, done)
+            sfsq::traces::explore::field_values(
+                sources,
+                query,
+                sfsq::traces::explore::ExploreOptions::default(),
+                cancel,
+                done,
+            )
         })
         .await
         {

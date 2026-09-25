@@ -114,7 +114,7 @@ pub struct RowsSpec {
 pub(super) struct Candidate {
     pub key: RowKey,
     pub duration_ns: i64,
-    /// The opened source holding the row (an index the caller assigns).
+    /// The source holding the row: its index in the request's sources.
     pub source: usize,
     pub position: u32,
 }
@@ -130,7 +130,15 @@ impl Candidate {
                 c.key.span_id,
             )
         };
-        rank(self).cmp(&rank(other))
+        rank(self)
+            .cmp(&rank(other))
+            .then_with(|| self.origin_cmp(other))
+    }
+
+    /// Equal keys are ordered by where the rows live, so the page does not
+    /// depend on the order the sources were evaluated in.
+    fn origin_cmp(&self, other: &Candidate) -> Ordering {
+        (self.source, self.position).cmp(&(other.source, other.position))
     }
 }
 
@@ -182,8 +190,8 @@ fn page_cmp(order: &RowOrder, a: &Candidate, b: &Candidate) -> Ordering {
         RowOrder::Newest {
             direction: RowDirection::Newer,
             ..
-        } => a.key.cmp(&b.key),
-        RowOrder::Newest { .. } => b.key.cmp(&a.key),
+        } => a.key.cmp(&b.key).then_with(|| a.origin_cmp(b)),
+        RowOrder::Newest { .. } => b.key.cmp(&a.key).then_with(|| a.origin_cmp(b)),
         RowOrder::Slowest => a.slowest_cmp(b),
     }
 }
@@ -392,6 +400,11 @@ impl<'a> PageFold<'a> {
         self.rows.candidates.extend(rows.candidates);
         self.rows.beyond += rows.beyond + keep_page(self.spec, &mut self.rows.candidates);
         self.rows.behind += rows.behind;
+    }
+
+    /// Fold in a fold built over other sources.
+    pub fn merge(&mut self, other: PageFold<'_>) {
+        self.add(other.rows);
     }
 
     /// For a full newest page, the start of its last row (see [`source_rows`]).
@@ -626,5 +639,46 @@ mod tests {
             "900 first; then 500 by start descending, then trace id ascending"
         );
         assert_eq!(more, None);
+    }
+
+    #[test]
+    fn equal_keys_are_ordered_by_source_then_position_in_every_order() {
+        let tied = key(10, 1, 1);
+        let per_source = || {
+            vec![
+                candidates(2, &[(tied, 500)]),
+                candidates(1, &[(key(99, 9, 9), 1), (tied, 500)]),
+                candidates(1, &[(tied, 500)]),
+            ]
+        };
+        let origins = |page: &[Candidate]| {
+            page.iter()
+                .filter(|c| c.key == tied)
+                .map(|c| (c.source, c.position))
+                .collect::<Vec<_>>()
+        };
+        let slowest = RowsSpec {
+            order: RowOrder::Slowest,
+            limit: 3,
+            columns: Vec::new(),
+        };
+        for spec in [
+            newest(3, None, RowDirection::Older),
+            newest(3, Some(key(0, 0, 0)), RowDirection::Newer),
+            slowest,
+        ] {
+            let (page, _) = fold(&spec, per_source());
+            let mut want = vec![(1, 0), (1, 1), (2, 0)];
+            if matches!(
+                spec.order,
+                RowOrder::Newest {
+                    direction: RowDirection::Newer,
+                    ..
+                }
+            ) {
+                want.reverse();
+            }
+            assert_eq!(origins(&page), want, "{:?}", spec.order);
+        }
     }
 }

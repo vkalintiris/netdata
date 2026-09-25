@@ -9,8 +9,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use common::*;
 use sfsq::Source;
 use sfsq::traces::explore::{
-    ExploreData, ExploreQuery, ExploreScope, FacetSpec, HistogramData, HistogramSpec, RowDirection,
-    RowOrder, RowsSpec, Sections, StackBucket, Totals, ValuesQuery, explore, field_values,
+    ExploreData, ExploreOptions, ExploreQuery, ExploreScope, FacetSpec, HistogramData,
+    HistogramSpec, RowDirection, RowOrder, RowsSpec, Sections, StackBucket, Totals, ValuesQuery,
+    explore, field_values,
 };
 use sfsq::traces::{
     PartialReason, QueryStatus, ReasonCount, SourceId, TraceFailed, TraceSfstCandidate,
@@ -57,6 +58,7 @@ fn run(sources: Vec<TraceSource>, query: ExploreQuery) -> ExploreData {
     explore(
         sources,
         query,
+        ExploreOptions::default(),
         CancellationToken::new(),
         Arc::new(AtomicUsize::new(0)),
     )
@@ -169,11 +171,9 @@ fn entry_spans_are_counted_by_status() {
     assert!(histogram.buckets.iter().all(|b| b.unset == 0));
 }
 
-#[test]
-fn a_garbage_source_is_a_counted_failure() {
-    let dir = tempfile::tempdir().unwrap();
-    let wal = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
-    let garbage = TraceSource::Sfst(TraceSfstCandidate {
+/// Four bytes posing as an in-memory chunk over the first seconds.
+fn garbage_source() -> TraceSource {
+    TraceSource::Sfst(TraceSfstCandidate {
         source_id: SourceId::new("garbage".to_string()),
         summary: sfst::Summary {
             min_timestamp_s: 0,
@@ -186,9 +186,15 @@ fn a_garbage_source_is_a_counted_failure() {
             wal_id: "garbage.wal".into(),
             range: wal::FrameRange::new(wal::HEADER_SIZE as u64, wal::HEADER_SIZE as u64 + 4),
         }),
-    });
+    })
+}
+
+#[test]
+fn a_garbage_source_is_a_counted_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
     let data = run(
-        vec![sealed_source(dir.path(), &wal, "a"), garbage],
+        vec![sealed_source(dir.path(), &wal, "a"), garbage_source()],
         entry_spans("status_code"),
     );
     let status = partial(&[(PartialReason::SourceFailure, 1, 2)]);
@@ -362,6 +368,7 @@ fn rows_fields_and_values_count_unreadable_sources_too() {
             prefix: String::new(),
             limit: 100,
         },
+        ExploreOptions::default(),
         CancellationToken::new(),
         Arc::new(AtomicUsize::new(0)),
     )
@@ -386,6 +393,7 @@ fn a_cancelled_values_request_answers_nothing() {
             prefix: String::new(),
             limit: 100,
         },
+        ExploreOptions::default(),
         cancel,
         Arc::clone(&progress),
     )
@@ -405,6 +413,7 @@ fn a_cancelled_request_evaluates_nothing() {
     let data = explore(
         vec![sealed_source(dir.path(), &wal, "a")],
         entry_spans("status_code"),
+        ExploreOptions::default(),
         cancel,
         Arc::clone(&progress),
     )
@@ -425,6 +434,7 @@ fn progress_ticks_once_per_source() {
             unavailable_source("remote-old", 100, 200),
         ],
         entry_spans("status_code"),
+        ExploreOptions::default(),
         CancellationToken::new(),
         Arc::clone(&progress),
     )
@@ -625,4 +635,187 @@ fn a_facet_over_the_value_cap_says_what_it_left_out() {
     assert_eq!(reason.count, 1);
     assert!(reason.detail.contains("attributes.id"));
     assert_eq!(facets.status, data.status);
+}
+
+/// About twenty sources of every kind: sealed files (the first two hold rows
+/// with the same keys but different operation names, so ties across sources
+/// are visible), chunk images, tails, a file with a high-cardinality field, a
+/// file whose high-cardinality chunk is corrupt, and garbage, legacy,
+/// unavailable, missing and failed sources.
+fn mixed_sources(dir: &std::path::Path) -> Vec<TraceSource> {
+    let mut sources = Vec::new();
+    for i in 0..8u8 {
+        let mut spans = request(if i < 2 { 0x11 } else { 0x20 + i }, 0x10);
+        if i == 1 {
+            for span in &mut spans {
+                span.name = "collide";
+            }
+        }
+        let name = format!("sealed{i}");
+        let wal = write_wal(dir, vec![req(&spans)], &name);
+        sources.push(sealed_source(dir, &wal, &name));
+    }
+    for i in 0..5u8 {
+        let name = format!("chunk{i}");
+        let wal = write_wal(dir, vec![req(&request(0x40 + i, 0x10))], &name);
+        sources.push(memory_source(&wal, &name));
+    }
+    for i in 0..3u8 {
+        let name = format!("tail{i}");
+        let wal = write_wal(dir, vec![req(&request(0x50 + i, 0x10))], &name);
+        sources.push(tail_source(&wal, &name));
+    }
+    let wide = write_wal(dir, vec![req(&distinct_ids(0x60, 1_100, "a"))], "wide");
+    sources.push(sealed_source(dir, &wide, "wide"));
+    let broken_wal = write_wal(dir, vec![req(&distinct_ids(0x61, 1_100, "b"))], "broken");
+    let broken = dir.join("broken.sfst");
+    ng_index::build_sfst_traces_file(&broken_wal, &broken, &ng_index::Metrics::new()).unwrap();
+    corrupt_chunk(&broken, *b"HF\0\0");
+    sources.push(sealed_source_at(&broken, "broken"));
+    sources.push(garbage_source());
+    sources.push(legacy_sfst_source(dir, "legacy"));
+    sources.push(unavailable_source("remote", 0, 5));
+    sources.push(missing_source(dir, "gone", 0, 5));
+    sources.push(TraceSource::Failed(TraceFailed {
+        source_id: SourceId::new("failed".to_string()),
+        error: "boom".to_string(),
+    }));
+    sources
+}
+
+fn newest(anchor: Option<sfsq::traces::explore::RowKey>, direction: RowDirection) -> RowOrder {
+    RowOrder::Newest { anchor, direction }
+}
+
+/// Every section, with percentiles and an `attributes.id` column on the rows.
+fn every_section(stack: &str, order: RowOrder, limit: usize) -> ExploreQuery {
+    let mut query = entry_spans(stack);
+    query.sections.histogram = Some(HistogramSpec {
+        stack: stack.to_string(),
+        percentiles: true,
+    });
+    query.sections.facets = Some(FacetSpec { fields: None });
+    query.sections.fields = true;
+    query.sections.rows = Some(RowsSpec {
+        order,
+        limit,
+        columns: vec!["attributes.id".to_string()],
+    });
+    query
+}
+
+#[test]
+fn explore_parallel_equals_sequential() {
+    let dir = tempfile::tempdir().unwrap();
+    let sources = mixed_sources(dir.path());
+    let answer = |query: ExploreQuery, workers: usize| {
+        let progress = Arc::new(AtomicUsize::new(0));
+        let data = explore(
+            sources.clone(),
+            query,
+            ExploreOptions { workers },
+            CancellationToken::new(),
+            Arc::clone(&progress),
+        )
+        .unwrap();
+        assert_eq!(progress.load(Ordering::Relaxed), sources.len());
+        data
+    };
+
+    let first = answer(
+        every_section("status_code", newest(None, RowDirection::Older), 3),
+        1,
+    );
+    assert!(!first.status.is_complete());
+    let page = &first.rows.as_ref().expect("rows").items;
+    let (head, last) = (page[0].key, page[page.len() - 1].key);
+
+    let cases: Vec<(&str, Box<dyn Fn() -> ExploreQuery>)> = vec![
+        (
+            "newest",
+            Box::new(|| every_section("status_code", newest(None, RowDirection::Older), 3)),
+        ),
+        (
+            "older page",
+            Box::new(move || {
+                every_section("status_code", newest(Some(last), RowDirection::Older), 3)
+            }),
+        ),
+        (
+            "newer page",
+            Box::new(move || {
+                every_section("status_code", newest(Some(head), RowDirection::Newer), 3)
+            }),
+        ),
+        (
+            "slowest",
+            Box::new(|| every_section("status_code", RowOrder::Slowest, 5)),
+        ),
+        (
+            "high-cardinality stack",
+            Box::new(|| every_section("attributes.id", newest(None, RowDirection::Older), 3)),
+        ),
+        (
+            "text",
+            Box::new(|| {
+                let mut query = every_section("status_code", RowOrder::Slowest, 5);
+                query.scope.text = Some(sfst::text::LiteralText::new("a00"));
+                query
+            }),
+        ),
+        (
+            "trace ids",
+            Box::new(|| {
+                let mut query = every_section("status_code", newest(None, RowDirection::Older), 3);
+                query.scope.trace_ids = vec![
+                    sfst::TraceId::from([0x11; 16]),
+                    sfst::TraceId::from([0x60; 16]),
+                ];
+                query
+            }),
+        ),
+    ];
+    for (name, query) in &cases {
+        let sequential = answer(query(), 1);
+        for workers in [2, 4, 7] {
+            assert_eq!(
+                answer(query(), workers),
+                sequential,
+                "{name}, {workers} workers"
+            );
+        }
+        for _ in 0..10 {
+            assert_eq!(answer(query(), 4), sequential, "{name}, 4 workers again");
+        }
+    }
+
+    let values = |field: &str, prefix: &str, workers: usize| {
+        field_values(
+            sources.clone(),
+            ValuesQuery {
+                window: 0..10 * S as i64,
+                field: field.to_string(),
+                prefix: prefix.to_string(),
+                limit: 3,
+            },
+            ExploreOptions { workers },
+            CancellationToken::new(),
+            Arc::new(AtomicUsize::new(0)),
+        )
+        .unwrap()
+    };
+    for (field, prefix) in [
+        ("attributes.id", ""),
+        ("attributes.id", "b0"),
+        ("name", "o"),
+    ] {
+        let sequential = values(field, prefix, 1);
+        for workers in [2, 4, 7] {
+            assert_eq!(
+                values(field, prefix, workers),
+                sequential,
+                "{field} {prefix}"
+            );
+        }
+    }
 }

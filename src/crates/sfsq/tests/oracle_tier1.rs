@@ -449,6 +449,7 @@ fn explore_histogram_and_totals_match_the_calculator() {
                 let data = explore::explore(
                     explore_sources(&stored, live),
                     explore_query(&grid, scope, stack),
+                    explore::ExploreOptions::default(),
                     tokio_util::sync::CancellationToken::new(),
                     std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 )
@@ -566,6 +567,7 @@ fn explore_facets_match_the_calculator() {
             let data = explore::explore(
                 explore_sources(&stored, live),
                 query,
+                explore::ExploreOptions::default(),
                 tokio_util::sync::CancellationToken::new(),
                 std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             )
@@ -596,6 +598,7 @@ fn explore_facets_match_the_calculator() {
     let data = explore::explore(
         explore_sources(&stored, Live::Tail),
         query,
+        explore::ExploreOptions::default(),
         tokio_util::sync::CancellationToken::new(),
         std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     )
@@ -635,6 +638,7 @@ fn explore_text_and_trace_id_scopes_match_the_calculator() {
             let data = explore::explore(
                 explore_sources(&stored, live),
                 explore_query(&grid, scope, model::STATUS_FIELD),
+                explore::ExploreOptions::default(),
                 tokio_util::sync::CancellationToken::new(),
                 std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             )
@@ -690,6 +694,7 @@ fn run_rows(stored: &Stored, live: Live, query: ExploreQuery) -> RowsData {
     let data = explore::explore(
         explore_sources(stored, live),
         query,
+        explore::ExploreOptions::default(),
         tokio_util::sync::CancellationToken::new(),
         std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     )
@@ -947,6 +952,7 @@ fn explore_field_list_matches_the_calculator() {
         let data = explore::explore(
             explore_sources(&stored, live),
             query,
+            explore::ExploreOptions::default(),
             tokio_util::sync::CancellationToken::new(),
             std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         )
@@ -981,6 +987,7 @@ fn run_values(stored: &Stored, live: Live, query: explore::ValuesQuery) -> explo
     let data = explore::field_values(
         explore_sources(stored, live),
         query,
+        explore::ExploreOptions::default(),
         tokio_util::sync::CancellationToken::new(),
         std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     )
@@ -1276,6 +1283,7 @@ fn explore_rows_leave_out_a_file_whose_fields_fail() {
     let data = explore::explore(
         sources,
         query,
+        explore::ExploreOptions::default(),
         tokio_util::sync::CancellationToken::new(),
         std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     )

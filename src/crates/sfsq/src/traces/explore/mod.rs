@@ -26,6 +26,7 @@ pub use rows::{
     RowDirection, RowKey, RowOrder, RowsSpec, TOP_K_MAX, is_row_column,
 };
 pub use run::explore;
+pub use source::ExploreOptions;
 pub use values::{VALUES_LIMIT_MAX, ValuesData, ValuesQuery, field_values};
 
 /// The fixed duration bands the explorer stacks and selects by: one definition,

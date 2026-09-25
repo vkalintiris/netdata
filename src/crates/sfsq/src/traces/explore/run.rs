@@ -3,15 +3,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 
 use tokio_util::sync::CancellationToken;
 
 use super::super::duration_hist::DurationHistogram;
 use super::query::{ExploreQuery, ExploreRequestError, HIDDEN_FIELDS};
 use super::rows::{self, MoreRows, PageFold, ROW_VALUE_COLUMNS, RowFields};
-use super::shard::{self, Evaluated, evaluate};
-use super::source::{Prepared, SourceTally, prepare};
+use super::shard::{self, Evaluated, ExploreShard, evaluate};
+use super::source::{ExploreOptions, SourceTally, evaluate_sources};
 use super::{
     ExploreData, FacetData, FacetValue, FacetsData, FieldInfo, FieldsData, HistogramData,
     Percentiles, Row, RowsData, StackBucket, Totals,
@@ -20,15 +20,97 @@ use crate::merge::{MergedFacet, merge_facets, merge_field_tables, merge_timeline
 use crate::source::Mapped;
 use crate::traces::{PartialReason, StatusBuilder, TimeWindow, TraceSource, validate_sources};
 
+/// What one worker has folded from the sources it evaluated.
+struct Lane<'q> {
+    matched: u64,
+    errors: u64,
+    stack_high: u64,
+    timelines: Vec<sfst::Timeline>,
+    other: Vec<u64>,
+    durations: Vec<DurationHistogram>,
+    facets: Vec<Vec<sfst::FacetResult>>,
+    facet_high: BTreeSet<String>,
+    field_tables: Vec<sfst::FieldTable>,
+    page: Option<PageFold<'q>>,
+    /// With rows asked for, every evaluated source stays open: to read the
+    /// page's fields, and to select the page again without a source whose
+    /// fields fail. By index in the request's sources.
+    opened: Vec<(usize, Mapped)>,
+}
+
+impl<'q> Lane<'q> {
+    fn new(query: &'q ExploreQuery) -> Self {
+        let buckets = query.grid.num_buckets;
+        Lane {
+            matched: 0,
+            errors: 0,
+            stack_high: 0,
+            timelines: Vec::new(),
+            other: vec![0; buckets],
+            durations: vec![DurationHistogram::new(); buckets],
+            facets: Vec::new(),
+            facet_high: BTreeSet::new(),
+            field_tables: Vec::new(),
+            page: query.sections.rows.as_ref().map(PageFold::new),
+            opened: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, shard: ExploreShard, source: usize, mapped: Mapped) {
+        self.matched += shard.matched;
+        self.errors += shard.errors;
+        if let Some(timeline) = shard.timeline {
+            self.timelines.push(timeline);
+        }
+        for (sum, histogram) in self.durations.iter_mut().zip(&shard.durations) {
+            sum.merge(histogram);
+        }
+        self.facets.push(shard.facets);
+        self.facet_high.extend(shard.facet_high);
+        if shard.stack_high {
+            self.stack_high += 1;
+            for (sum, n) in self.other.iter_mut().zip(&shard.other) {
+                *sum += n;
+            }
+        }
+        self.field_tables.extend(shard.field_table);
+        if let (Some(rows), Some(page)) = (shard.rows, self.page.as_mut()) {
+            self.opened.push((source, mapped));
+            page.add(rows);
+        }
+    }
+
+    fn merge(&mut self, other: Lane<'q>) {
+        self.matched += other.matched;
+        self.errors += other.errors;
+        self.stack_high += other.stack_high;
+        self.timelines.extend(other.timelines);
+        for (sum, n) in self.other.iter_mut().zip(&other.other) {
+            *sum += n;
+        }
+        for (sum, histogram) in self.durations.iter_mut().zip(&other.durations) {
+            sum.merge(histogram);
+        }
+        self.facets.extend(other.facets);
+        self.facet_high.extend(other.facet_high);
+        self.field_tables.extend(other.field_tables);
+        if let (Some(page), Some(theirs)) = (self.page.as_mut(), other.page) {
+            page.merge(theirs);
+        }
+        self.opened.extend(other.opened);
+    }
+}
+
 /// Answer an explorer request over `sources`.
 ///
-/// Pure sync: reads and decompresses files and builds the live tail's image;
-/// run it off any async runtime thread. `progress` ticks once per source.
-/// Cancellation is all-or-empty: a cancelled call returns no sections and
-/// the `cancelled` reason.
+/// Pure sync: reads and decompresses files and builds the live tail's image,
+/// over up to `options.workers` threads; run it off any async runtime thread.
+/// `progress` ticks once per source. Cancellation is all-or-empty: a
+/// cancelled call returns no sections and the `cancelled` reason.
 pub fn explore(
     sources: Vec<TraceSource>,
     query: ExploreQuery,
+    options: ExploreOptions,
     cancel: CancellationToken,
     progress: Arc<AtomicUsize>,
 ) -> Result<ExploreData, ExploreRequestError> {
@@ -38,79 +120,52 @@ pub fn explore(
     let window = TimeWindow::new(window_ns.start, window_ns.end)?;
     let buckets = query.grid.num_buckets;
 
-    let mut tally = SourceTally::default();
-    let mut stack_high = 0u64;
-    let mut matched = 0u64;
-    let mut errors = 0u64;
-    let mut timelines = Vec::new();
-    let mut other = vec![0u64; buckets];
-    let mut durations = vec![DurationHistogram::new(); buckets];
-    let mut facets = Vec::new();
-    let mut facet_high = BTreeSet::new();
-    let mut page = query.sections.rows.as_ref().map(PageFold::new);
-    let mut field_tables = Vec::new();
-    // With rows asked for, every evaluated source stays open: to read the page's
-    // fields, and to select the page again without a source whose fields fail.
-    // A candidate's `source` indexes this list.
-    let mut opened: Vec<(&TraceSource, Mapped)> = Vec::new();
-
-    for source in &sources {
-        if cancel.is_cancelled() {
-            return Ok(ExploreData::cancelled());
-        }
-        match prepare(source, &window) {
-            Prepared::Outside => {}
-            Prepared::Unavailable => {
-                tally.candidates += 1;
-                tally.unavailable += 1;
-            }
-            Prepared::Failed(error) => {
-                tally.candidates += 1;
-                tally.failed += 1;
-                tracing::warn!("sfsq traces: source {} failed: {error}", source.source_id());
-            }
-            Prepared::Open(mapped) => {
-                tally.candidates += 1;
-                let stop = page.as_ref().and_then(PageFold::stop);
-                match evaluate(mapped.bytes(), &query, opened.len(), stop) {
-                    Ok(Evaluated::Legacy) => tally.legacy += 1,
-                    Ok(Evaluated::Shard(shard)) => {
-                        matched += shard.matched;
-                        errors += shard.errors;
-                        if let Some(timeline) = shard.timeline {
-                            timelines.push(timeline);
-                        }
-                        for (sum, histogram) in durations.iter_mut().zip(&shard.durations) {
-                            sum.merge(histogram);
-                        }
-                        facets.push(shard.facets);
-                        facet_high.extend(shard.facet_high);
-                        if shard.stack_high {
-                            stack_high += 1;
-                            for (sum, n) in other.iter_mut().zip(&shard.other) {
-                                *sum += n;
-                            }
-                        }
-                        field_tables.extend(shard.field_table);
-                        if let (Some(rows), Some(page)) = (shard.rows, page.as_mut()) {
-                            opened.push((source, mapped));
-                            page.add(rows);
-                        }
-                    }
-                    Err(e) => {
-                        tally.failed += 1;
-                        tracing::warn!(
-                            "sfsq traces: source {} failed to evaluate: {e}",
-                            source.source_id()
-                        );
-                    }
+    let Some(lanes) = evaluate_sources(
+        &sources,
+        &window,
+        options.workers,
+        &cancel,
+        &progress,
+        || Lane::new(&query),
+        |lane, tally, index, mapped| {
+            let stop = lane.page.as_ref().and_then(PageFold::stop);
+            match evaluate(mapped.bytes(), &query, index, stop) {
+                Ok(Evaluated::Legacy) => tally.legacy += 1,
+                Ok(Evaluated::Shard(shard)) => lane.add(*shard, index, mapped),
+                Err(e) => {
+                    tally.failed += 1;
+                    tracing::warn!(
+                        "sfsq traces: source {} failed to evaluate: {e}",
+                        sources[index].source_id()
+                    );
                 }
             }
-        }
-        progress.fetch_add(1, Ordering::Relaxed);
-    }
-    if cancel.is_cancelled() {
+        },
+    ) else {
         return Ok(ExploreData::cancelled());
+    };
+    let mut tally = SourceTally::default();
+    let mut folded = Lane::new(&query);
+    for (lane_tally, lane) in lanes {
+        tally.add(&lane_tally);
+        folded.merge(lane);
+    }
+    let Lane {
+        matched,
+        errors,
+        stack_high,
+        timelines,
+        other,
+        durations,
+        facets,
+        facet_high,
+        field_tables,
+        page,
+        opened: opened_lanes,
+    } = folded;
+    let mut opened: Vec<Option<Mapped>> = vec![None; sources.len()];
+    for (index, mapped) in opened_lanes {
+        opened[index] = Some(mapped);
     }
 
     // Reasons about sources hold for every section; each section adds its own.
@@ -227,7 +282,7 @@ pub fn explore(
 
     let rows = page.map(|page| {
         let spec = page.spec();
-        let (items, more, own) = rows_section(page, &opened, &query, candidates);
+        let (items, more, own) = rows_section(page, &sources, &opened, &query, candidates);
         status.merge(own.clone());
         let mut section = shared.clone();
         section.merge(own);
@@ -271,7 +326,8 @@ pub fn explore(
 /// source's rows still count in the other sections and in `matched`.
 fn rows_section(
     fold: PageFold<'_>,
-    opened: &[(&TraceSource, Mapped)],
+    sources: &[TraceSource],
+    opened: &[Option<Mapped>],
     query: &ExploreQuery,
     candidates: u64,
 ) -> (Vec<Row>, Option<MoreRows>, StatusBuilder) {
@@ -307,18 +363,21 @@ fn rows_section(
             }
             Err(failure) => failure,
         };
-        fail(&mut own, opened[source].0, &error);
+        fail(&mut own, &sources[source], &error);
         excluded.insert(source);
         fold = PageFold::new(spec);
-        for (slot, (trace_source, mapped)) in opened.iter().enumerate() {
-            if excluded.contains(&slot) {
+        for (index, mapped) in opened.iter().enumerate() {
+            let Some(mapped) = mapped else {
+                continue;
+            };
+            if excluded.contains(&index) {
                 continue;
             }
-            match shard::rows_of(mapped.bytes(), query, spec, slot, fold.stop()) {
+            match shard::rows_of(mapped.bytes(), query, spec, index, fold.stop()) {
                 Ok(rows) => fold.add(rows),
                 Err(e) => {
-                    fail(&mut own, trace_source, &e);
-                    excluded.insert(slot);
+                    fail(&mut own, &sources[index], &e);
+                    excluded.insert(index);
                 }
             }
         }
@@ -329,7 +388,7 @@ fn rows_section(
 /// first source that fails, with its error.
 fn read_fields(
     page: &[rows::Candidate],
-    opened: &[(&TraceSource, Mapped)],
+    opened: &[Option<Mapped>],
     columns: &[String],
 ) -> Result<Vec<RowFields>, (usize, sfst::Error)> {
     let mut by_source: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -342,8 +401,11 @@ fn read_fields(
         for &index in &indexes {
             positions.push(page[index].position);
         }
-        let values = rows::materialize(opened[source].1.bytes(), &positions, columns)
-            .map_err(|e| (source, e))?;
+        let mapped = opened[source]
+            .as_ref()
+            .expect("a page row's source stays open");
+        let values =
+            rows::materialize(mapped.bytes(), &positions, columns).map_err(|e| (source, e))?;
         for (index, value) in indexes.into_iter().zip(values) {
             fields[index] = value;
         }

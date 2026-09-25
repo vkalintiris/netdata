@@ -10,13 +10,13 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 
 use tokio_util::sync::CancellationToken;
 
 use super::query::ExploreRequestError;
 use super::shard::is_legacy;
-use super::source::{Prepared, SourceTally, prepare};
+use super::source::{ExploreOptions, SourceTally, evaluate_sources};
 use crate::traces::{
     PartialReason, QueryStatus, StatusBuilder, TimeWindow, TraceSource, validate_sources,
 };
@@ -59,11 +59,13 @@ impl ValuesData {
 
 /// Suggest values of `query.field` over `sources`.
 ///
-/// Pure sync, like [`explore`](super::explore). Cancellation is all-or-empty:
-/// a partial union would depend on the order the sources were read.
+/// Pure sync, like [`explore`](super::explore), over up to `options.workers`
+/// threads. Cancellation is all-or-empty: a partial union would depend on the
+/// order the sources were read.
 pub fn field_values(
     sources: Vec<TraceSource>,
     query: ValuesQuery,
+    options: ExploreOptions,
     cancel: CancellationToken,
     progress: Arc<AtomicUsize>,
 ) -> Result<ValuesData, ExploreRequestError> {
@@ -75,49 +77,42 @@ pub fn field_values(
     }
     let window = TimeWindow::new(query.window.start, query.window.end)?;
 
-    let mut tally = SourceTally::default();
     // The smallest `limit + 1` values: one more than returned tells whether
     // the answer is truncated.
-    let mut kept = BTreeSet::new();
-    for source in &sources {
-        if cancel.is_cancelled() {
-            return Ok(ValuesData::cancelled());
-        }
-        match prepare(source, &window) {
-            Prepared::Outside => {}
-            Prepared::Unavailable => {
-                tally.candidates += 1;
-                tally.unavailable += 1;
-            }
-            Prepared::Failed(error) => {
-                tally.candidates += 1;
-                tally.failed += 1;
-                tracing::warn!("sfsq traces: source {} failed: {error}", source.source_id());
-            }
-            Prepared::Open(mapped) => {
-                tally.candidates += 1;
-                match source_values(mapped.bytes(), &query, query.limit + 1) {
-                    Ok(None) => tally.legacy += 1,
-                    Ok(Some(values)) => {
-                        for value in values {
-                            keep(&mut kept, value, query.limit + 1);
-                        }
-                    }
-                    Err(e) => {
-                        tally.failed += 1;
-                        tracing::warn!(
-                            "sfsq traces: source {} failed to list {}: {e}",
-                            source.source_id(),
-                            query.field
-                        );
-                    }
+    let cap = query.limit + 1;
+    let Some(lanes) = evaluate_sources(
+        &sources,
+        &window,
+        options.workers,
+        &cancel,
+        &progress,
+        BTreeSet::new,
+        |kept, tally, index, mapped| match source_values(mapped.bytes(), &query, cap) {
+            Ok(None) => tally.legacy += 1,
+            Ok(Some(values)) => {
+                for value in values {
+                    keep(kept, value, cap);
                 }
             }
-        }
-        progress.fetch_add(1, Ordering::Relaxed);
-    }
-    if cancel.is_cancelled() {
+            Err(e) => {
+                tally.failed += 1;
+                tracing::warn!(
+                    "sfsq traces: source {} failed to list {}: {e}",
+                    sources[index].source_id(),
+                    query.field
+                );
+            }
+        },
+    ) else {
         return Ok(ValuesData::cancelled());
+    };
+    let mut tally = SourceTally::default();
+    let mut kept = BTreeSet::new();
+    for (lane_tally, lane_kept) in lanes {
+        tally.add(&lane_tally);
+        for value in lane_kept {
+            keep(&mut kept, value, cap);
+        }
     }
 
     let truncated = kept.len() > query.limit;
