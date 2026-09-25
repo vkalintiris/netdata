@@ -203,6 +203,45 @@ impl<'a> RowIndex<'a> {
         }
         self.row_entries.push(tokens.to_vec());
     }
+
+    /// Adds the interned `slot` to rows already added (insertion-order
+    /// positions): its bitmap and each row's entry list, so the token is an
+    /// ordinary one everywhere (filters, facets, timelines, materialized
+    /// rows). For values known only once every row is in, such as the traces
+    /// seal's error origins; call it before the build. A row past the last,
+    /// or one that already carries the slot, is [`crate::Error::WriterMisuse`]
+    /// and leaves the index unchanged.
+    pub fn append_token(
+        &mut self,
+        slot: KvSlot,
+        rows: impl IntoIterator<Item = u32>,
+    ) -> Result<(), crate::Error> {
+        let rows: Vec<u32> = rows.into_iter().collect();
+        let count = self.row_entries.len();
+        let mut seen = RoaringBitmap::new();
+        for &pos in &rows {
+            if pos as usize >= count {
+                return Err(crate::Error::WriterMisuse(format!(
+                    "append_token: row {pos} is past the {count} rows"
+                )));
+            }
+            let carried = self
+                .kv_bitmaps
+                .get(slot.idx())
+                .is_some_and(|bitmap| bitmap.contains(pos));
+            if carried || !seen.insert(pos) {
+                return Err(crate::Error::WriterMisuse(format!(
+                    "append_token: row {pos} already carries the token"
+                )));
+            }
+        }
+        self.ensure_bitmap(slot);
+        for pos in rows {
+            self.kv_bitmaps[slot.idx()].insert(pos);
+            self.row_entries[pos as usize].push(slot);
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -331,5 +370,70 @@ fn build_sparse_histogram(timestamps: &[i64], time_order: &TimeOrder) -> Histogr
     Histogram {
         timestamps: hist_ts,
         counts: hist_counts,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bumpalo::Bump;
+
+    use crate::{Error, Filter, IndexReader, IndexWriter, RowIndex};
+
+    /// Rows inserted newest first (insertion position `i` is chronological
+    /// position `4 - i`), then `_err_origin=true` added to insertion rows 0
+    /// and 3.
+    #[test]
+    fn append_token_updates_bitmap_and_rows() {
+        let arena = Bump::new();
+        let mut rows = RowIndex::new(&arena, 100);
+        for i in 0..5i64 {
+            let name = rows.intern(None, &format!("name=op-{i}"));
+            rows.row(1_000 - 100 * i, &[name]);
+        }
+        let token = rows.intern(None, "_err_origin=true");
+        rows.append_token(token, [0, 3]).unwrap();
+
+        assert!(matches!(
+            rows.append_token(token, [5]),
+            Err(Error::WriterMisuse(_))
+        ));
+        assert!(matches!(
+            rows.append_token(token, [1, 3]),
+            Err(Error::WriterMisuse(_))
+        ));
+        assert!(matches!(
+            rows.append_token(token, [2, 2]),
+            Err(Error::WriterMisuse(_))
+        ));
+
+        let (buf, _, _) =
+            IndexWriter::write_into(&rows, std::io::Cursor::new(Vec::new()), Vec::new()).unwrap();
+        let bytes = buf.into_inner();
+        let reader = IndexReader::open(&bytes).unwrap();
+
+        let filter = reader
+            .compile_filter(&Filter::new().select("_err_origin", "true"), None)
+            .unwrap();
+        let by_bitmap = reader.matched_positions(&filter, 0..10_000).unwrap();
+        assert_eq!(by_bitmap, [1, 4]);
+
+        let materialized = reader.materialize_rows(&[0, 1, 2, 3, 4]).unwrap();
+        let mut by_rows = Vec::new();
+        for (position, row) in materialized.iter().enumerate() {
+            let tokens = row
+                .fields
+                .iter()
+                .filter(|(field, value)| field == "_err_origin" && value == "true")
+                .count();
+            if tokens > 0 {
+                by_rows.push(position as u32);
+            }
+            assert!(
+                tokens <= 1,
+                "row {position} carries the token {tokens} times"
+            );
+            assert_eq!(row.fields.len(), 1 + tokens, "row {position}");
+        }
+        assert_eq!(by_rows, by_bitmap);
     }
 }
