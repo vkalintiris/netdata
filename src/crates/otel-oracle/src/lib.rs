@@ -18,7 +18,9 @@
 //! the store, and only its id, time and duration columns); [`matching`] pairs
 //! the two and says which windows can be judged. [`wire`] reads the explorer's
 //! JSON answers into the calculator's own copies of their shapes, and
-//! [`report`] writes the findings with per-run aliases for every stored value.
+//! [`report`] writes the findings with per-run aliases for every stored value;
+//! [`tier2`] plans the live agent's requests for a judged window and judges
+//! its answers.
 
 pub mod calc;
 pub mod capture;
@@ -28,4 +30,5 @@ pub mod matching;
 pub mod membership;
 pub mod model;
 pub mod report;
+pub mod tier2;
 pub mod wire;
