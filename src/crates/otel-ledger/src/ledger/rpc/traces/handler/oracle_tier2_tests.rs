@@ -131,11 +131,11 @@ async fn lab() -> Lab {
     }
 }
 
-/// The explorer's error-origin tokens: stored by the seal in sealed files,
-/// derived by the live pass over each live WAL.
-fn explorer_origins(matched: &mut matching::Matched, units: &[membership::Unit]) {
+/// The explorer's error-origin tokens and self time: stored by the seal in
+/// sealed files, derived by the live pass over each live WAL.
+fn explorer_view(matched: &mut matching::Matched, units: &[membership::Unit]) {
     let scopes = membership::derivation_scopes(units);
-    otel_oracle::calc::add_origins(&mut matched.spans, &|unit| scopes.get(unit).copied());
+    otel_oracle::calc::add_derived(&mut matched.spans, &|unit| scopes.get(unit).copied());
 }
 
 fn handler(lab: &Lab) -> OtelTracesHandler {
@@ -156,7 +156,7 @@ async fn tier2_through_the_handler_finds_nothing() {
     assert!(expected.doubtful.is_empty() && expected.synthesized == 0);
 
     let mut matched = matching::match_rows(expected, &store.units);
-    explorer_origins(&mut matched, &store.units);
+    explorer_view(&mut matched, &store.units);
     assert!(matched.lost.is_empty(), "{:?}", matched.lost.len());
     assert!(
         matched.unmatched.is_empty(),
@@ -275,7 +275,7 @@ async fn a_dropped_capture_record_leaves_exactly_its_spans_unmatched() {
     let expected = matching::expected_rows(&lab.records[1..], &IngestWindow::LAB);
 
     let mut matched = matching::match_rows(expected, &store.units);
-    explorer_origins(&mut matched, &store.units);
+    explorer_view(&mut matched, &store.units);
 
     let mut unmatched: Vec<RowKey> = matched.unmatched.iter().map(|(_, key)| *key).collect();
     unmatched.sort();

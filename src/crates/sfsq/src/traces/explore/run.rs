@@ -318,10 +318,10 @@ pub fn explore(
         status.merge(own.clone());
         let mut section = shared.clone();
         section.merge(own);
-        if origin_scope {
-            section.merge(live_failed.clone());
-            live_named = true;
-        }
+        // Every row carries self time, so a failed pass touches the section
+        // whatever its scope.
+        section.merge(live_failed.clone());
+        live_named = true;
         RowsData {
             status: section.finish(),
             order: spec.order,
@@ -392,6 +392,7 @@ fn rows_section(
                     items.push(Row {
                         key: candidate.key,
                         duration_ns: candidate.duration_ns,
+                        self_duration_ns: fields.self_duration_ns,
                         service: fields.service,
                         name: fields.name,
                         role: fields.role,

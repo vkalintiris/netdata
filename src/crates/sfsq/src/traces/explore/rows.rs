@@ -23,7 +23,7 @@ pub const ROW_COLUMNS_MAX: usize = 32;
 pub const NOT_ROW_COLUMN_PREFIXES: [&str; 2] = ["events.", "links."];
 
 /// Values every row carries besides its fields.
-pub const ROW_VALUE_COLUMNS: [&str; 3] = ["duration", "trace_id", "span_id"];
+pub const ROW_VALUE_COLUMNS: [&str; 4] = ["duration", "self_duration", "trace_id", "span_id"];
 
 /// Whether `field` may be asked for as a row column.
 pub fn is_row_column(field: &str) -> bool {
@@ -457,6 +457,9 @@ impl<'a> PageFold<'a> {
 /// The fields a row shows besides its key and duration.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct RowFields {
+    /// The duration less the time its children cover; `None` when its source
+    /// has no child time (a live WAL whose live pass failed).
+    pub self_duration_ns: Option<i64>,
     pub service: Option<String>,
     pub name: Option<String>,
     pub role: Option<String>,
@@ -490,10 +493,35 @@ pub(super) fn materialize(
     for field in reader.materialize_fields(&fields, positions)? {
         values.push(field.into_iter());
     }
+    let times = if reader.has_child_durations() {
+        Some((reader.durations()?, reader.child_durations()?))
+    } else {
+        None
+    };
     let mut out = Vec::with_capacity(positions.len());
-    for _ in positions {
+    for &position in positions {
+        let self_duration_ns = match &times {
+            Some((durations, children)) => {
+                let index = position as usize;
+                let (Some(&duration), Some(&child)) =
+                    (durations.0.get(index), children.0.get(index))
+                else {
+                    return Err(sfst::Error::CorruptIndex(format!(
+                        "no duration for row {position}"
+                    )));
+                };
+                if !(0..=duration).contains(&child) {
+                    return Err(sfst::Error::CorruptIndex(format!(
+                        "row {position}: child time {child} outside its duration {duration}"
+                    )));
+                }
+                Some(duration - child)
+            }
+            None => None,
+        };
         let mut take = |field: usize| values[field].next().unwrap_or_default();
         let mut row = RowFields {
+            self_duration_ns,
             service: take(0).into_iter().next(),
             name: take(1).into_iter().next(),
             role: take(2).into_iter().next(),

@@ -843,6 +843,7 @@ pub(crate) fn to_explore_response(
                 cursor: row.key.encode(),
                 start_ns: row.key.start_ns.to_string(),
                 duration_ns: row.duration_ns,
+                self_duration_ns: row.self_duration_ns,
                 trace_id: row.key.trace_id.to_string(),
                 span_id: row.key.span_id.to_string(),
                 service: row.service,

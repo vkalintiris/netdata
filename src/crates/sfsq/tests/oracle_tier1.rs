@@ -140,8 +140,8 @@ fn store_requests(requests: &[ExportTraceServiceRequest], cut: usize) -> Stored 
     // The sealed file stores the seal's error-origin tokens; the live chunk
     // does not, and the live pass derives them over the whole live WAL.
     let mut files = oracle.clone();
-    calc::add_stored_origins(&mut files, &|unit| unit == SEALED);
-    calc::add_origins(&mut oracle, &|unit| Some(unit));
+    calc::add_stored_derived(&mut files, &|unit| unit == SEALED);
+    calc::add_derived(&mut oracle, &|unit| Some(unit));
     let last_start_s = oracle.iter().map(|s| s.start_ns).max().unwrap() / 1_000_000_000;
     let grid = Grid::for_window(T0_S as u32, last_start_s as u32 + 1);
 
@@ -722,10 +722,25 @@ fn engine_key(key: calc::RowKey) -> RowKey {
     }
 }
 
-/// Every row of the page equals the calculator's row: key, duration, the
-/// shown fields and the asked columns.
+/// Every row of the page equals the calculator's row: key, duration, self
+/// time, the shown fields and the asked columns. Copies of a resent row share
+/// its key but not always its self time (their children may sit in other
+/// files), and neither side orders them, so self times compare per key.
 fn assert_rows_match(got: &RowsData, want: &[&OracleSpan], case: &str) {
     assert_eq!(got.items.len(), want.len(), "{case}");
+    let mut got_self: BTreeMap<calc::RowKey, Vec<Option<i64>>> = BTreeMap::new();
+    for row in &got.items {
+        let copies = got_self.entry(oracle_key(&row.key)).or_default();
+        copies.push(row.self_duration_ns);
+        copies.sort_unstable();
+    }
+    let mut want_self: BTreeMap<calc::RowKey, Vec<Option<i64>>> = BTreeMap::new();
+    for span in want {
+        let copies = want_self.entry(calc::row_key(span)).or_default();
+        copies.push(span.self_ns);
+        copies.sort_unstable();
+    }
+    assert_eq!(got_self, want_self, "{case}");
     for (row, span) in got.items.iter().zip(want) {
         assert_eq!(oracle_key(&row.key), calc::row_key(span), "{case}");
         assert_eq!(row.duration_ns, span.duration_ns, "{case}");
@@ -1609,10 +1624,43 @@ fn origin_answers(sources: Vec<TraceSource>, grid: &Grid) -> (OriginAnswers, Vec
     ((facet, buckets, ids), statuses)
 }
 
+/// A row's (trace, span) id bytes and its self time.
+type SelfTime = ((u8, u8), Option<i64>);
+
+/// Every row's ids and self time, with the rows section's status.
+fn self_times(sources: Vec<TraceSource>, grid: &Grid) -> (Vec<SelfTime>, QueryStatus) {
+    let order = RowOrder::Newest {
+        anchor: None,
+        direction: RowDirection::Older,
+    };
+    let data = explore::explore(
+        sources,
+        rows_query(grid, &Scope::default(), order, 50),
+        explore::ExploreOptions::default(),
+        tokio_util::sync::CancellationToken::new(),
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )
+    .unwrap();
+    let rows = data.rows.expect("rows section");
+    let mut out: Vec<SelfTime> = rows
+        .items
+        .iter()
+        .map(|row| {
+            let ids = (
+                row.key.trace_id.as_bytes()[0],
+                row.key.span_id.as_bytes()[0],
+            );
+            (ids, row.self_duration_ns)
+        })
+        .collect();
+    out.sort_unstable();
+    (out, rows.status)
+}
+
 /// ORC-LIVE: however the live WAL is served (all tail, one image, one chunk
 /// and a tail, two chunks and a tail), the explorer answers about error
-/// origins exactly as it does once the WAL is sealed, and as the calculator
-/// does over the WAL as a whole.
+/// origins and self time exactly as it does once the WAL is sealed, and as
+/// the calculator does over the WAL as a whole.
 #[test]
 fn live_split_equals_sealed() {
     let stored = family_store();
@@ -1645,18 +1693,41 @@ fn live_split_equals_sealed() {
     );
     assert_eq!(sealed.1, histogram);
 
+    let sealed_sources = vec![
+        common::sealed_source_at(&stored._dir.path().join("sealed.sfst"), "sealed"),
+        common::sealed_source_at(&sealed_live, "live"),
+    ];
+    let (sealed_self, status) = self_times(sealed_sources, &grid);
+    assert!(status.is_complete(), "{status:?}");
+    let mut want: Vec<SelfTime> = stored
+        .oracle
+        .iter()
+        .map(|span| {
+            let ids = (span.trace_id.unwrap()[0], span.span_id.unwrap()[0]);
+            (ids, span.self_ns)
+        })
+        .collect();
+    want.sort_unstable();
+    assert_eq!(sealed_self, want);
+    // R's children P and D cover 800 of its 1,000 ms, in different frames.
+    assert!(sealed_self.contains(&((1, 11), Some(200_000_000))));
+
     for live in [Live::Tail, Live::Chunk, Live::Split(5), Live::Split(3)] {
         let (answers, statuses) = origin_answers(explore_sources(&stored, live), &grid);
         let complete = statuses.iter().all(QueryStatus::is_complete);
         assert!(complete, "{live:?}: {statuses:?}");
         assert_eq!(answers, sealed, "{live:?}");
+        let (live_self, status) = self_times(explore_sources(&stored, live), &grid);
+        assert!(status.is_complete(), "{live:?}: {status:?}");
+        assert_eq!(live_self, sealed_self, "{live:?}");
     }
 }
 
 /// ORC-LIVE: a live WAL whose captured ranges leave a gap (a chunk missing)
-/// cannot be derived: its rows carry no error origin, and every section that
-/// counts origins says so, out of the live WALs captured, as does each request
-/// (once, however many of its sections name it).
+/// cannot be derived: its rows carry no error origin and no self time, and
+/// every section that counts origins says so, as does the rows section
+/// whatever its scope (every row carries self time), out of the live WALs
+/// captured, and each request (once, however many of its sections name it).
 #[test]
 fn a_live_wal_with_a_gap_fails_its_live_pass() {
     let stored = family_store();
@@ -1664,7 +1735,7 @@ fn a_live_wal_with_a_gap_fails_its_live_pass() {
     let mut sources = explore_sources(&stored, Live::Split(3));
     assert_eq!(sources.len(), 4, "the sealed file, two chunks and a tail");
     sources.remove(2);
-    let ((facet, _, ids), statuses) = origin_answers(sources, &grid);
+    let ((facet, _, ids), statuses) = origin_answers(sources.clone(), &grid);
     assert!(ids.is_empty(), "{ids:?}");
     assert!(!facet.contains_key("true"), "{facet:?}");
     for status in &statuses {
@@ -1672,5 +1743,15 @@ fn a_live_wal_with_a_gap_fails_its_live_pass() {
             .count(PartialReason::LivePassFailed)
             .map(|count| (count.count, count.of));
         assert_eq!(failed, Some((1, Some(1))), "{statuses:?}");
+    }
+
+    let (rows, status) = self_times(sources, &grid);
+    let failed = status
+        .count(PartialReason::LivePassFailed)
+        .map(|count| (count.count, count.of));
+    assert_eq!(failed, Some((1, Some(1))), "{status:?}");
+    assert!(rows.contains(&((9, 90), Some(5_000_000))), "{rows:?}");
+    for (ids, self_ns) in &rows {
+        assert!(ids.0 == 9 || self_ns.is_none(), "{rows:?}");
     }
 }

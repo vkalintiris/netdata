@@ -151,6 +151,9 @@ pub struct Row {
     /// Its content key; `encode` gives the page cursor.
     pub key: RowKey,
     pub duration_ns: i64,
+    /// The duration less the time its direct children cover (in its file, or
+    /// over its live WAL); `None` when a live WAL's live pass failed.
+    pub self_duration_ns: Option<i64>,
     pub service: Option<String>,
     pub name: Option<String>,
     pub role: Option<String>,

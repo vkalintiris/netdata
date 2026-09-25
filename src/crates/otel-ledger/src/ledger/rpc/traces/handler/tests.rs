@@ -1779,6 +1779,8 @@ async fn explore_answers_facets_with_their_own_status() {
 }
 
 
+/// A root span of the explore corpus: it has no children, so its self time
+/// is its duration.
 fn root_row(trace_byte: u8, second: u64, service: &str, status: Option<&str>) -> serde_json::Value {
     let start_ns = (second * 1_000_000_000 + 1_000).to_string();
     let trace_id = format!("{trace_byte:02x}").repeat(16);
@@ -1787,6 +1789,7 @@ fn root_row(trace_byte: u8, second: u64, service: &str, status: Option<&str>) ->
         "cursor": format!("{start_ns}:{trace_id}:{span_id}"),
         "start_ns": start_ns,
         "duration_ns": 500,
+        "self_duration_ns": 500,
         "trace_id": trace_id,
         "span_id": span_id,
         "service": service,
@@ -1875,7 +1878,7 @@ async fn explore_lists_the_window_fields() {
     assert_eq!(fields["status"], json!({"complete": true}));
     assert_eq!(
         fields["columns"],
-        json!(["duration", "trace_id", "span_id"])
+        json!(["duration", "self_duration", "trace_id", "span_id"])
     );
     let low = |name: &str, text: bool| {
         json!({"name": name, "tier": "low", "chip": true, "facet": true, "stack": true,

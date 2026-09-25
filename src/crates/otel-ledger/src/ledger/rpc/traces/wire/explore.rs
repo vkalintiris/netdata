@@ -511,6 +511,9 @@ pub struct RowWire {
     /// Unix nanoseconds, as a decimal string.
     pub start_ns: String,
     pub duration_ns: i64,
+    /// The duration less the time its direct children cover; `null` when
+    /// the row's live WAL could not be derived (`live_pass_failed`).
+    pub self_duration_ns: Option<i64>,
     pub trace_id: String,
     pub span_id: String,
     pub service: Option<String>,

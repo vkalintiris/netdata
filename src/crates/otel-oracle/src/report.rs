@@ -266,6 +266,7 @@ mod tests {
             duration_ns: 0,
             fields,
             unit: 0,
+            self_ns: None,
         }
     }
 

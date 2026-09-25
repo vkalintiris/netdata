@@ -740,8 +740,51 @@ fn judge_rows(
         .iter()
         .flat_map(|span| row_subjects(span))
         .collect();
-    let got: Vec<Subject> = got.items.iter().flat_map(wire_row_subjects).collect();
-    judge.list(check, &scenario.name, at, &want, &got);
+    let got_subjects: Vec<Subject> = got.items.iter().flat_map(wire_row_subjects).collect();
+    judge.list(check, &scenario.name, at.clone(), &want, &got_subjects);
+
+    // Copies of a resent row share its key but not always its self time
+    // (their children may sit in other files), and neither side orders them:
+    // self times compare per key, a row whose key does not parse as its own.
+    type Key = Option<calc::RowKey>;
+    let mut want_self: BTreeMap<Key, Vec<Option<i64>>> = BTreeMap::new();
+    for span in &want_rows {
+        want_self
+            .entry(Some(calc::row_key(span)))
+            .or_default()
+            .push(span.self_ns);
+    }
+    let mut got_self: BTreeMap<Key, Vec<Option<i64>>> = BTreeMap::new();
+    for row in &got.items {
+        let key = match (
+            row.start_ns(),
+            parse_hex::<16>(&row.trace_id),
+            parse_hex::<8>(&row.span_id),
+        ) {
+            (Some(start_ns), Some(trace), Some(span)) => Some((start_ns, trace, span)),
+            _ => None,
+        };
+        got_self.entry(key).or_default().push(row.self_duration_ns);
+    }
+    let flatten = |by_key: BTreeMap<Key, Vec<Option<i64>>>| {
+        let mut out = Vec::new();
+        for (_, mut copies) in by_key {
+            copies.sort_unstable();
+            for copy in copies {
+                out.push(copy.map_or(Subject::Missing, Subject::Ns));
+            }
+        }
+        out
+    };
+    let mut at_self = at;
+    at_self.push(name("self time by key"));
+    judge.list(
+        check,
+        &scenario.name,
+        at_self,
+        &flatten(want_self),
+        &flatten(got_self),
+    );
 }
 
 fn tier_name(tier: Tier) -> &'static str {
@@ -1097,6 +1140,7 @@ mod tests {
             "cursor": format!("cursor {}", span.start_ns),
             "start_ns": span.start_ns.to_string(),
             "duration_ns": span.duration_ns,
+            "self_duration_ns": span.self_ns,
             "trace_id": hex(&span.trace_id.unwrap_or_default()),
             "span_id": hex(&span.span_id.unwrap_or_default()),
             "service": first_value(span, SERVICE_FIELD),
@@ -1226,7 +1270,7 @@ mod tests {
                 })
                 .collect();
             data["fields"] = json!({"status": {"complete": true}, "items": items,
-                "columns": ["duration", "trace_id", "span_id"]});
+                "columns": ["duration", "self_duration", "trace_id", "span_id"]});
         }
         data["status"] = status(&all_reasons);
         json!({"status": 200, "type": "traces", "data": data})
@@ -1418,6 +1462,70 @@ mod tests {
             (findings[0].check, findings[0].scenario.as_str()),
             ("ORC-HIST", "F0 every span")
         );
+    }
+
+    #[test]
+    fn row_self_times_compare_per_key() {
+        let (mut spans, after, before) = corpus_spans();
+        // The slowest span with children, copied alone into a third unit: two
+        // rows with one key and different self times.
+        let values = calc::derived(&spans);
+        let mut parent: Option<&OracleSpan> = None;
+        for (span, value) in spans.iter().zip(&values) {
+            if value.child_ns > 0 && parent.is_none_or(|p| span.duration_ns > p.duration_ns) {
+                parent = Some(span);
+            }
+        }
+        let mut copy = parent.unwrap().clone();
+        copy.unit = 2;
+        spans.push(copy);
+        calc::add_derived(&mut spans, &|unit| Some(unit));
+        let plan = plan(after, before, &spans, 3);
+        let answers = answers(&plan, &spans);
+        assert_eq!(judge(&plan, &spans, &answers).0, vec![]);
+
+        fn items_of(answer: &mut Value) -> Option<&mut Vec<Value>> {
+            answer
+                .get_mut("data")?
+                .get_mut("rows")?
+                .get_mut("items")?
+                .as_array_mut()
+        }
+        let same_row = |a: &Value, b: &Value| {
+            ["start_ns", "trace_id", "span_id"]
+                .iter()
+                .all(|key| a[key] == b[key])
+        };
+        let mut swapped = answers.clone();
+        let mut pairs = 0;
+        for answer in swapped.values_mut() {
+            let Some(items) = items_of(answer) else {
+                continue;
+            };
+            for i in 1..items.len() {
+                let copies = same_row(&items[i - 1], &items[i])
+                    && items[i - 1]["self_duration_ns"] != items[i]["self_duration_ns"];
+                if copies {
+                    items.swap(i - 1, i);
+                    pairs += 1;
+                }
+            }
+        }
+        assert!(pairs > 0, "some page holds both copies");
+        assert_eq!(judge(&plan, &spans, &swapped).0, vec![]);
+
+        let mut wrong = answers;
+        let row = wrong
+            .values_mut()
+            .find_map(|answer| {
+                let items = items_of(answer)?;
+                items.iter_mut().find(|item| item["self_duration_ns"].is_i64())
+            })
+            .unwrap();
+        row["self_duration_ns"] = json!(row["self_duration_ns"].as_i64().unwrap() + 1);
+        let (findings, _) = judge(&plan, &spans, &wrong);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].at.contains(&name("self time by key")));
     }
 
     #[test]

@@ -215,6 +215,10 @@ pub struct OracleSpan {
     /// Which stored unit the row landed in (a sealed file, or the live WAL);
     /// set by whoever knows the membership.
     pub unit: usize,
+    /// The duration less the time its direct children cover, as the
+    /// explorer shows it; set with the error-origin tokens
+    /// ([`crate::calc::add_derived`]), `None` before or outside every scope.
+    pub self_ns: Option<i64>,
 }
 
 impl OracleSpan {
@@ -323,6 +327,7 @@ fn span_row(span: &Span, context: &[Pair], strings: &mut Strings, unit: usize) -
         duration_ns,
         fields: Fields::from_pairs(fields),
         unit,
+        self_ns: None,
     }
 }
 

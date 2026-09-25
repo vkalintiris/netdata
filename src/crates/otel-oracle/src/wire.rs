@@ -175,6 +175,9 @@ pub struct Row {
     pub cursor: String,
     pub start_ns: String,
     pub duration_ns: i64,
+    /// `None` when the row's live WAL could not be derived.
+    #[serde(default)]
+    pub self_duration_ns: Option<i64>,
     /// Lowercase hex; an unset id is all zeros.
     pub trace_id: String,
     pub span_id: String,
@@ -274,6 +277,7 @@ mod tests {
                         "cursor": "c1",
                         "start_ns": "1790352012345678901",
                         "duration_ns": 5,
+                        "self_duration_ns": 3,
                         "trace_id": "00000000000000000000000000000001",
                         "span_id": "0000000000000002",
                         "service": "api",
@@ -286,7 +290,7 @@ mod tests {
                 "fields": {
                     "status": {"complete": true},
                     "items": [{"name": "_role", "tier": "low", "chip": true, "facet": true, "stack": true, "text": false, "column": true}],
-                    "columns": ["duration", "trace_id", "span_id"]
+                    "columns": ["duration", "self_duration", "trace_id", "span_id"]
                 }
             }
         })
@@ -333,6 +337,7 @@ mod tests {
         let row = &data.rows.as_ref().unwrap().items[0];
         assert_eq!(row.start_ns(), Some(1_790_352_012_345_678_901));
         assert_eq!(row.name, None);
+        assert_eq!(row.self_duration_ns, Some(3));
         assert_eq!(
             ns(&data.window.grid.start_ns),
             Some(1_790_352_000_000_000_000)

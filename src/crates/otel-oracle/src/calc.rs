@@ -816,23 +816,27 @@ pub fn derived_in(spans: &[OracleSpan], scope: &dyn Fn(usize) -> Option<usize>) 
     out
 }
 
-/// Adds the seal's `_err_origin=true` token to the error-origin rows of the
-/// units `sealed` accepts: what the files store (sealed files do; WAL chunk
-/// images and the tail do not).
-pub fn add_stored_origins(spans: &mut [OracleSpan], sealed: &dyn Fn(usize) -> bool) {
-    add_origins(spans, &|unit| sealed(unit).then_some(unit));
+/// [`add_derived`] for the units `sealed` accepts, each alone: what the
+/// files store (sealed files do; WAL chunk images and the tail do not).
+pub fn add_stored_derived(spans: &mut [OracleSpan], sealed: &dyn Fn(usize) -> bool) {
+    add_derived(spans, &|unit| sealed(unit).then_some(unit));
 }
 
-/// Adds the `_err_origin=true` token to the error-origin rows the explorer
-/// shows it on, derived within `scope(unit)` (see [`derived_in`]); units
-/// without a scope get none. The explorer's view: every sealed file alone,
-/// and every live WAL as a whole (its images carry the live pass's values).
-pub fn add_origins(spans: &mut [OracleSpan], scope: &dyn Fn(usize) -> Option<usize>) {
+/// Adds the `_err_origin=true` token to the error-origin rows and sets every
+/// row's self time, derived within `scope(unit)` (see [`derived_in`]); rows
+/// of units without a scope get neither. The explorer's view: every sealed
+/// file alone, and every live WAL as a whole (its images carry the live
+/// pass's values).
+pub fn add_derived(spans: &mut [OracleSpan], scope: &dyn Fn(usize) -> Option<usize>) {
     let values = derived_in(spans, scope);
     for (span, value) in spans.iter_mut().zip(values) {
+        if scope(span.unit).is_none() {
+            continue;
+        }
         if value.error_origin {
             span.fields.insert(ERR_ORIGIN_FIELD, "true");
         }
+        span.self_ns = Some(span.duration_ns - value.child_ns);
     }
 }
 
@@ -850,6 +854,7 @@ mod tests {
             duration_ns: 0,
             fields: fields.iter().copied().collect(),
             unit: 0,
+            self_ns: None,
         }
     }
 
@@ -874,6 +879,7 @@ mod tests {
             duration_ns,
             fields: status.iter().copied().collect(),
             unit,
+            self_ns: None,
         }
     }
 
@@ -1010,21 +1016,35 @@ mod tests {
         ];
         assert_eq!(got, want);
 
-        let mut tokened = spans.clone();
-        add_origins(&mut tokened, &scope);
-        let origins: Vec<bool> = tokened
-            .iter()
-            .map(|span| span.fields.get(ERR_ORIGIN_FIELD).is_some())
-            .collect();
-        assert_eq!(origins, [false, true, true, false, true, false]);
+        let tokens = |spans: &[OracleSpan]| -> Vec<(bool, Option<i64>)> {
+            spans
+                .iter()
+                .map(|span| (span.fields.get(ERR_ORIGIN_FIELD).is_some(), span.self_ns))
+                .collect()
+        };
+        let mut explorer = spans.clone();
+        add_derived(&mut explorer, &scope);
+        let want = [
+            (false, Some(50)),
+            (true, Some(50)),
+            (true, Some(10)),
+            (false, None),
+            (true, Some(50)),
+            (false, None),
+        ];
+        assert_eq!(tokens(&explorer), want);
 
         let mut stored = spans;
-        add_stored_origins(&mut stored, &|unit| unit == 2);
-        let origins: Vec<bool> = stored
-            .iter()
-            .map(|span| span.fields.get(ERR_ORIGIN_FIELD).is_some())
-            .collect();
-        assert_eq!(origins, [false, false, true, false, false, false]);
+        add_stored_derived(&mut stored, &|unit| unit == 2);
+        let want = [
+            (false, None),
+            (false, None),
+            (true, Some(10)),
+            (false, None),
+            (false, None),
+            (false, None),
+        ];
+        assert_eq!(tokens(&stored), want);
     }
 
     #[test]

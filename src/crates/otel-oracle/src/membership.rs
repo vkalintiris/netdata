@@ -651,6 +651,7 @@ mod tests {
             duration_ns: 3,
             fields: Default::default(),
             unit: 0,
+            self_ns: None,
         };
         assert_eq!(
             RowKey::of(&span),

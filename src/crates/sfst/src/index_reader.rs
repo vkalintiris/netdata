@@ -311,6 +311,16 @@ impl<'a> IndexReader<'a> {
         stores_column || self.stored_fields().contains(crate::ERR_ORIGIN_FIELD)
     }
 
+    /// Whether [`child_durations`](Self::child_durations) has a column to
+    /// return: stored by the seal or attached as derived values.
+    pub fn has_child_durations(&self) -> bool {
+        self.overlay.is_some()
+            || self
+                .columns_table()
+                .get(crate::ChildDurations::NAME)
+                .is_some()
+    }
+
     /// Attaches values a query derived over the live WAL this chunk image
     /// belongs to, so the reader answers as the sealed file of the same frames
     /// would: `_err_origin=true` is an ordinary Low field with one value
