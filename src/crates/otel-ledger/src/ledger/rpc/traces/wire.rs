@@ -1112,10 +1112,52 @@ pub struct InfoResponse {
     accepted_params: Vec<&'static str>,
     required_params: Vec<&'static str>,
     help: &'static str,
+    /// The explorer sections an `explore` request may ask for.
+    sections: Vec<&'static str>,
+    /// What the explorer opens with.
+    defaults: InfoDefaults,
+    /// The fixed duration bands, fastest first, with inclusive bounds.
+    duration_bands: Vec<DurationBandWire>,
+    /// The partial reasons an `explore` answer may carry.
+    partial_reasons: Vec<PartialReasonWire>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InfoDefaults {
+    /// The default scope chips (entry spans).
+    filter: std::collections::BTreeMap<&'static str, Vec<&'static str>>,
+    stack: &'static str,
+    window_s: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DurationBandWire {
+    label: &'static str,
+    min_ns: i64,
+    /// `None` for the last, open-ended band.
+    max_ns: Option<i64>,
+}
+
+fn duration_bands() -> Vec<DurationBandWire> {
+    let mut bands = Vec::with_capacity(sfsq::traces::explore::DURATION_BAND_COUNT);
+    let mut min_ns = 0;
+    for (index, label) in sfsq::traces::explore::DURATION_BAND_LABELS.into_iter().enumerate() {
+        let next = sfsq::traces::explore::DURATION_BAND_EDGES_NS.get(index).copied();
+        bands.push(DurationBandWire {
+            label,
+            min_ns,
+            max_ns: next.map(|edge| edge - 1),
+        });
+        if let Some(edge) = next {
+            min_ns = edge;
+        }
+    }
+    bands
 }
 
 impl Default for InfoResponse {
     fn default() -> Self {
+        let (role_field, roles) = sfsq::traces::explore::DEFAULT_POPULATION;
         Self {
             mode: "info",
             version: 1,
@@ -1126,6 +1168,24 @@ impl Default for InfoResponse {
             accepted_params: ACCEPTED_PARAMS.to_vec(),
             required_params: vec![],
             help: "Query and visualize OpenTelemetry traces.",
+            sections: vec!["histogram"],
+            defaults: InfoDefaults {
+                filter: std::collections::BTreeMap::from([(role_field, roles.to_vec())]),
+                stack: sfsq::traces::explore::DEFAULT_STACK_FIELD,
+                window_s: explore::DEFAULT_WINDOW_S,
+            },
+            duration_bands: duration_bands(),
+            partial_reasons: vec![
+                PartialReasonWire::SourceFailure,
+                PartialReasonWire::RemoteUnavailable,
+                PartialReasonWire::Cancelled,
+                PartialReasonWire::LegacyFile,
+                PartialReasonWire::StackFieldHighCard,
+                PartialReasonWire::FacetHighCard,
+                PartialReasonWire::FacetValueCap,
+                PartialReasonWire::GroupsCap,
+                PartialReasonWire::LivePassFailed,
+            ],
         }
     }
 }

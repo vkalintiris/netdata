@@ -400,6 +400,25 @@ fn info_response_shape_is_pinned() {
             ],
             "required_params": [],
             "help": "Query and visualize OpenTelemetry traces.",
+            "sections": ["histogram"],
+            "defaults": {
+                "filter": {"_role": ["root", "inbound"]},
+                "stack": "status_code",
+                "window_s": 900
+            },
+            "duration_bands": [
+                {"label": "<1ms", "min_ns": 0, "max_ns": 999_999},
+                {"label": "1-10ms", "min_ns": 1_000_000, "max_ns": 9_999_999},
+                {"label": "10-100ms", "min_ns": 10_000_000, "max_ns": 99_999_999},
+                {"label": "100ms-1s", "min_ns": 100_000_000, "max_ns": 999_999_999},
+                {"label": "1-10s", "min_ns": 1_000_000_000, "max_ns": 9_999_999_999_i64},
+                {"label": ">10s", "min_ns": 10_000_000_000_i64, "max_ns": null}
+            ],
+            "partial_reasons": [
+                "source_failure", "remote_unavailable", "cancelled", "legacy_file",
+                "stack_field_high_card", "facet_high_card", "facet_value_cap", "groups_cap",
+                "live_pass_failed"
+            ],
         })
     );
 }

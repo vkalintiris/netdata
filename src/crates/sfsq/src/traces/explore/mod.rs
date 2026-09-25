@@ -21,6 +21,10 @@ pub use query::{
 };
 pub use run::explore;
 
+/// The fixed duration bands the explorer stacks and selects by: one definition,
+/// written at flatten time.
+pub use ng_flatten::{DURATION_BAND_COUNT, DURATION_BAND_EDGES_NS, DURATION_BAND_LABELS};
+
 use super::{PartialReason, QueryStatus, StatusBuilder};
 
 /// One explorer answer.
