@@ -176,7 +176,7 @@ async fn tier2_through_the_handler_finds_nothing() {
     assert!(check.judged(), "{check:?}");
     let spans = matching::window_spans(&matched, &check);
     let mut plan = tier2::plan(lab.after, lab.before, &spans, check.units.len() as u64);
-    assert_eq!(plan.scenarios.len(), 5);
+    assert_eq!(plan.scenarios.len(), 9, "five scopes and four selections");
 
     let adapter = HandlerAdapter::new(handler(&lab));
     let mut answers = BTreeMap::new();
@@ -215,7 +215,7 @@ async fn tier2_through_the_handler_finds_nothing() {
                 .is_some_and(|items| !items.is_empty())
         })
         .count();
-    assert_eq!(pages(" older"), 5);
+    assert_eq!(pages(" older"), 9);
     assert!(older_with_rows > 0);
     assert_eq!(pages(" older newer"), older_with_rows);
     assert_eq!(answers.len(), plan.requests.len());
@@ -238,6 +238,7 @@ async fn tier2_through_the_handler_finds_nothing() {
         "ORC-FIELDS",
         "ORC-VALUES",
         "ORC-STATUS",
+        "ORC-CMP",
     ] {
         let count = checks.get(check).copied().unwrap_or_default();
         assert!(

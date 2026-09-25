@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
-use crate::calc::{self, Grid, Scope, Tier, fixed_histogram};
+use crate::calc::{self, Grid, Scope, Selection, Tier, fixed_histogram};
 use crate::model::{DURATION_BAND_FIELD, OracleSpan, ROLE_FIELD, SERVICE_FIELD, STATUS_FIELD};
 use crate::report::{CheckCount, Finding, Locator, Subject};
 use crate::wire;
@@ -33,6 +33,8 @@ pub struct Scenario {
     /// Readable: no stored value appears in it.
     pub name: String,
     pub scope: Scope,
+    /// A W3 selection: facets are compared under it and rows follow it.
+    pub selection: Option<Selection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,22 +157,34 @@ fn scenarios(spans: &[OracleSpan], grid: &Grid) -> Vec<Scenario> {
         Scenario {
             name: "F0 every span".to_string(),
             scope: Scope::default(),
+            selection: None,
         },
         Scenario {
             name: "F1 entry spans".to_string(),
             scope: Scope::entry_spans(),
+            selection: None,
         },
     ];
     if let Some(service) = most_frequent(&entry, SERVICE_FIELD) {
         out.push(Scenario {
             name: "F2 entry spans of the busiest service".to_string(),
             scope: Scope::entry_spans().with(SERVICE_FIELD, &[service]),
+            selection: None,
         });
     }
     if let Some(name) = most_frequent(&entry, "name") {
         out.push(Scenario {
             name: "F4 the busiest operation's name as text".to_string(),
             scope: Scope::default().with_text(name),
+            selection: None,
+        });
+    }
+    let entry_scope = Scope::entry_spans();
+    for (label, selection) in selections(spans, grid, &entry_scope) {
+        out.push(Scenario {
+            name: format!("F1 entry spans × {label}"),
+            scope: entry_scope.clone(),
+            selection: Some(selection),
         });
     }
     let traces = scope_traces(spans, grid);
@@ -178,13 +192,101 @@ fn scenarios(spans: &[OracleSpan], grid: &Grid) -> Vec<Scenario> {
         out.push(Scenario {
             name: format!("F5 {} trace ids", traces.len()),
             scope: Scope::default().with_trace_ids(&traces),
+            selection: None,
         });
     }
     out
 }
 
-fn explore_body(after_s: u32, before_s: u32, scope: &Scope, sections: Value) -> Value {
+/// The W3 selections judged: errors, the slow bands, the middle third of the
+/// window, and durations at least the scope's p95.
+fn selections(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec<(&'static str, Selection)> {
+    let mut out = vec![
+        (
+            "E1 errors",
+            Selection {
+                terms: Scope::default().with(STATUS_FIELD, &["ERROR"]),
+                ..Selection::default()
+            },
+        ),
+        (
+            "E2 slow bands",
+            Selection {
+                terms: Scope::default().with(DURATION_BAND_FIELD, &["100ms-1s", "1-10s"]),
+                ..Selection::default()
+            },
+        ),
+    ];
+    let start = i64::from(grid.after_s) * 1_000_000_000;
+    let third = (i64::from(grid.before_s) - i64::from(grid.after_s)) * 1_000_000_000 / 3;
+    out.push((
+        "E3 middle third",
+        Selection {
+            time_ns: Some((start + third, start + 2 * third)),
+            ..Selection::default()
+        },
+    ));
+    let mut durations: Vec<i64> = Vec::new();
+    for span in spans {
+        if in_window(span, grid) && scope.matches(span) {
+            durations.push(span.duration_ns);
+        }
+    }
+    durations.sort_unstable();
+    if !durations.is_empty() {
+        let p95 = durations[(durations.len() * 95).div_ceil(100) - 1];
+        out.push((
+            "E4 at least the p95",
+            Selection {
+                duration: Some((Some(p95), None)),
+                ..Selection::default()
+            },
+        ));
+    }
+    out
+}
+
+fn chips_json(scope: &Scope) -> Value {
+    let filter: BTreeMap<&String, Vec<&String>> = scope
+        .terms
+        .iter()
+        .map(|(field, values)| (field, values.iter().collect()))
+        .collect();
+    json!(filter)
+}
+
+fn selection_json(selection: &Selection) -> Value {
+    let mut out = json!({});
+    if !selection.terms.terms.is_empty() {
+        out["filter"] = chips_json(&selection.terms);
+    }
+    if let Some((min, max)) = selection.duration {
+        let mut duration = json!({});
+        if let Some(min) = min {
+            duration["min_ns"] = json!(min);
+        }
+        if let Some(max) = max {
+            duration["max_ns"] = json!(max);
+        }
+        out["duration"] = duration;
+    }
+    if let Some((after, before)) = selection.time_ns {
+        out["time"] = json!({"after_ns": after.to_string(), "before_ns": before.to_string()});
+    }
+    out
+}
+
+fn explore_body(
+    after_s: u32,
+    before_s: u32,
+    scope: &Scope,
+    selection: Option<&Selection>,
+    sections: Value,
+) -> Value {
     let mut explore = json!({"after": after_s, "before": before_s, "sections": sections});
+    if let Some(selection) = selection {
+        explore["selection"] = selection_json(selection);
+    }
     if !scope.terms.is_empty() {
         let filter: BTreeMap<&String, Vec<&String>> = scope
             .terms
@@ -273,7 +375,13 @@ pub fn plan(after_s: u32, before_s: u32, spans: &[OracleSpan], candidates: u64) 
         for (label, ask, sections) in asks {
             requests.push(Request {
                 id: format!("{}:{label}", scenario.name),
-                body: explore_body(after_s, before_s, &scenario.scope, sections),
+                body: explore_body(
+                    after_s,
+                    before_s,
+                    &scenario.scope,
+                    scenario.selection.as_ref(),
+                    sections,
+                ),
                 ask,
             });
         }
@@ -655,6 +763,166 @@ fn judge_groups(
         &scenario.name,
         "groups",
         &calc::groups_reasons(&want),
+        &got.status,
+    );
+}
+
+/// The spans a scenario's selection keeps, when it has one: what its rows
+/// list.
+fn selected_spans(scenario: &Scenario, spans: &[OracleSpan]) -> Option<Vec<OracleSpan>> {
+    let selection = scenario.selection.as_ref()?;
+    let mut out = Vec::new();
+    for span in spans {
+        if selection.matches(span) {
+            out.push(span.clone());
+        }
+    }
+    Some(out)
+}
+
+fn fraction_subject(fraction: Option<calc::Fraction>) -> Subject {
+    fraction.map_or(Subject::Missing, |(num, den)| {
+        Subject::Name(format!("{:?}", num as f64 / den as f64))
+    })
+}
+
+fn float_subject(value: Option<f64>) -> Subject {
+    value.map_or(Subject::Missing, |value| {
+        Subject::Name(format!("{value:?}"))
+    })
+}
+
+/// Takes the wanted difference where the agent's is one unit in the last
+/// place away: serde_json without `float_roundtrip` can parse the agent's
+/// shortest decimal one ULP off, which is the reader's error, not the agent's.
+fn snap_differences(want: &[Subject], got: &mut [Subject]) {
+    for (want, got) in want.iter().zip(got.iter_mut()) {
+        if let (Subject::Name(w), Subject::Name(g)) = (want, &*got)
+            && let (Ok(w), Ok(g)) = (w.parse::<f64>(), g.parse::<f64>())
+            && w.signum() == g.signum()
+            && w.to_bits().abs_diff(g.to_bits()) <= 1
+        {
+            *got = want.clone();
+        }
+    }
+}
+
+fn rank_subject(rank: Option<u32>) -> Subject {
+    rank.map_or(Subject::Missing, |rank| Subject::Count(u64::from(rank)))
+}
+
+/// ORC-CMP: under a selection, the totals, then every compared field in the
+/// answer's order with its totals, rank and best difference, and every value
+/// with its scope, selection and baseline rows, eligibility, rank and
+/// difference (differences as the nearest double of the exact fraction).
+fn judge_comparison(
+    judge: &mut Judge,
+    scenario: &Scenario,
+    selection: &Selection,
+    spans: &[OracleSpan],
+    grid: &Grid,
+    got: &wire::Facets,
+) {
+    let facets = calc::facets(spans, grid, &scenario.scope, None);
+    let requested: Vec<String> = facets.fields.iter().map(|f| f.field.clone()).collect();
+    let want = calc::comparison(spans, grid, &scenario.scope, selection, &requested);
+    let totals = |scope: u64, selection: u64, min: u64| {
+        vec![
+            Subject::Count(scope),
+            Subject::Count(selection),
+            Subject::Count(min),
+        ]
+    };
+    let got_totals = got.comparison.as_ref().map_or(vec![Subject::Missing], |c| {
+        totals(c.scope, c.selection, c.min_support)
+    });
+    judge.list(
+        "ORC-CMP",
+        &scenario.name,
+        vec![name("facets"), name("comparison")],
+        &totals(want.scope, want.selection, calc::MIN_SELECTION_ROWS),
+        &got_totals,
+    );
+
+    let mut want_lines = Vec::new();
+    for field in &want.fields {
+        want_lines.extend([
+            Subject::Name(field.field.clone()),
+            Subject::Count(field.scope),
+            Subject::Count(field.selection),
+            rank_subject(field.rank),
+            fraction_subject(field.best),
+        ]);
+        for value in &field.values {
+            want_lines.extend([
+                Subject::Value {
+                    field: field.field.clone(),
+                    value: value.value.clone(),
+                },
+                Subject::Count(value.count),
+                Subject::Count(value.selection),
+                Subject::Count(value.baseline),
+                Subject::Flag(value.eligible),
+                rank_subject(value.rank),
+                fraction_subject(value.diff),
+            ]);
+        }
+    }
+    let mut got_lines = Vec::new();
+    for field in &got.fields {
+        let (scope, selection) = field
+            .totals
+            .as_ref()
+            .map_or((Subject::Missing, Subject::Missing), |t| {
+                (Subject::Count(t.scope), Subject::Count(t.selection))
+            });
+        got_lines.extend([
+            Subject::Name(field.field.clone()),
+            scope,
+            selection,
+            rank_subject(field.rank),
+            float_subject(field.best_diff),
+        ]);
+        for value in &field.values {
+            got_lines.extend([
+                Subject::Value {
+                    field: field.field.clone(),
+                    value: value.value.clone(),
+                },
+                Subject::Count(value.count),
+                value.selection.map_or(Subject::Missing, Subject::Count),
+                value.baseline.map_or(Subject::Missing, Subject::Count),
+                value.eligible.map_or(Subject::Missing, Subject::Flag),
+                rank_subject(value.rank),
+                float_subject(value.diff),
+            ]);
+        }
+    }
+    snap_differences(&want_lines, &mut got_lines);
+    judge.list(
+        "ORC-CMP",
+        &scenario.name,
+        vec![name("facets"), name("fields")],
+        &want_lines,
+        &got_lines,
+    );
+    let names = |list: Vec<&String>| {
+        list.into_iter()
+            .map(|f| Subject::Name(f.clone()))
+            .collect::<Vec<_>>()
+    };
+    judge.list(
+        "ORC-CMP",
+        &scenario.name,
+        vec![name("facets"), name("unavailable")],
+        &names(facets.unavailable.iter().collect()),
+        &names(got.unavailable.iter().map(|u| &u.field).collect()),
+    );
+    reasons(
+        judge,
+        &scenario.name,
+        "facets",
+        &calc::facet_reasons(&facets),
         &got.status,
     );
 }
@@ -1089,6 +1357,7 @@ pub fn add_pages(plan: &mut Plan, answers: &BTreeMap<String, Value>) -> usize {
                 plan.after_s,
                 plan.before_s,
                 &plan.scenarios[*scenario].scope,
+                plan.scenarios[*scenario].selection.as_ref(),
                 json!({ "rows": rows }),
             ),
         });
@@ -1196,13 +1465,20 @@ pub fn judge(
                     );
                 }
                 if let Some(got) = data.facets.as_ref().filter(|_| *facets) {
-                    judge_facets(&mut judge, scenario, spans, &grid, got);
+                    match &scenario.selection {
+                        Some(selection) => {
+                            judge_comparison(&mut judge, scenario, selection, spans, &grid, got)
+                        }
+                        None => judge_facets(&mut judge, scenario, spans, &grid, got),
+                    }
                 }
                 if let Some(got) = data.groups.as_ref().filter(|_| *groups) {
                     judge_groups(&mut judge, scenario, spans, &grid, got);
                 }
                 if let (Some(ask), Some(got)) = (rows, &data.rows) {
-                    judge_rows(&mut judge, scenario, spans, &grid, ask, got);
+                    let selected = selected_spans(scenario, spans);
+                    let rows_of = selected.as_deref().unwrap_or(spans);
+                    judge_rows(&mut judge, scenario, rows_of, &grid, ask, got);
                 }
                 if let Some(got) = data.fields.as_ref().filter(|_| *fields) {
                     judge_fields(&mut judge, scenario, spans, got);
@@ -1349,7 +1625,50 @@ mod tests {
                 "percentiles": {"approximate": true, "max_relative_error": fixed_histogram::MAX_RELATIVE_ERROR}});
             all_reasons.extend(reasons);
         }
-        if *facets {
+        if let (true, Some(selection)) = (*facets, &scenario.selection) {
+            let plain = calc::facets(spans, &grid, scope, None);
+            let requested: Vec<String> = plain.fields.iter().map(|f| f.field.clone()).collect();
+            let want = calc::comparison(spans, &grid, scope, selection, &requested);
+            let as_f64 = |fraction: Option<calc::Fraction>| {
+                fraction.map(|(num, den)| num as f64 / den as f64)
+            };
+            let fields: Vec<Value> = want
+                .fields
+                .iter()
+                .map(|f| {
+                    let values: Vec<Value> = f
+                        .values
+                        .iter()
+                        .map(|v| {
+                            let mut value = json!({"value": v.value, "count": v.count,
+                                "selection": v.selection, "baseline": v.baseline, "eligible": v.eligible});
+                            if let Some(rank) = v.rank {
+                                value["rank"] = json!(rank);
+                            }
+                            if let Some(diff) = as_f64(v.diff) {
+                                value["diff"] = json!(diff);
+                            }
+                            value
+                        })
+                        .collect();
+                    let mut field = json!({"field": f.field, "values": values,
+                        "omitted_values": f.omitted_values, "omitted_rows": f.omitted_rows,
+                        "totals": {"scope": f.scope, "selection": f.selection}});
+                    if let Some(rank) = f.rank {
+                        field["rank"] = json!(rank);
+                    }
+                    if let Some(best) = as_f64(f.best) {
+                        field["best_diff"] = json!(best);
+                    }
+                    field
+                })
+                .collect();
+            let reasons = calc::facet_reasons(&plain);
+            data["facets"] = json!({"status": status(&reasons), "fields": fields, "unavailable": [],
+                "comparison": {"scope": want.scope, "selection": want.selection,
+                    "min_support": calc::MIN_SELECTION_ROWS}});
+            all_reasons.extend(reasons);
+        } else if *facets {
             let want = calc::facets(spans, &grid, scope, None);
             let fields: Vec<Value> = want
                 .fields
@@ -1394,6 +1713,8 @@ mod tests {
             all_reasons.extend(reasons);
         }
         if let Some(ask) = rows {
+            let selected = selected_spans(scenario, spans);
+            let spans = selected.as_deref().unwrap_or(spans);
             let matched = calc::totals(spans, &grid, scope).spans;
             let newest = |limit: usize, anchor: Option<calc::RowKey>, walk: calc::Walk| {
                 let page = calc::newest_page(spans, &grid, scope, limit, anchor, walk);
@@ -1538,7 +1859,28 @@ mod tests {
                 "F4 the busiest operation's name as text",
             ]
         );
-        assert!(names[4].starts_with("F5 "), "{names:?}");
+        assert_eq!(
+            names[4..8],
+            [
+                "F1 entry spans × E1 errors",
+                "F1 entry spans × E2 slow bands",
+                "F1 entry spans × E3 middle third",
+                "F1 entry spans × E4 at least the p95",
+            ]
+        );
+        assert!(names[8].starts_with("F5 "), "{names:?}");
+        let selections: Vec<&Value> = plan
+            .requests
+            .iter()
+            .filter_map(|r| r.body["explore"].get("selection"))
+            .collect();
+        assert!(
+            selections
+                .iter()
+                .any(|s| s["filter"]["status_code"] == json!(["ERROR"]))
+        );
+        assert!(selections.iter().any(|s| s["time"]["after_ns"].is_string()));
+        assert!(selections.iter().any(|s| s["duration"]["min_ns"].is_i64()));
         assert!(
             plan.requests
                 .iter()
@@ -1575,6 +1917,7 @@ mod tests {
             "ORC-PCT",
             "ORC-TOTALS",
             "ORC-FACET",
+            "ORC-CMP",
             "ORC-GROUPS",
             "ORC-ROWS",
             "ORC-TOPK",
@@ -1703,6 +2046,50 @@ mod tests {
 
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert_eq!(findings[0].check, "ORC-GROUPS");
+    }
+
+    #[test]
+    fn one_wrong_comparison_rank_is_exactly_one_finding() {
+        let (spans, after, before) = corpus_spans();
+        let plan = plan(after, before, &spans, 2);
+        let mut answers = answers(&plan, &spans);
+        let (id, index) = plan
+            .requests
+            .iter()
+            .filter(|r| r.body["explore"].get("selection").is_some())
+            .find_map(|r| {
+                let fields = answers[&r.id]["data"]["facets"]["fields"].as_array()?;
+                let index = fields.iter().position(|f| f["rank"].is_u64())?;
+                Some((r.id.clone(), index))
+            })
+            .expect("a ranked field under some selection");
+        let field = &mut answers.get_mut(&id).unwrap()["data"]["facets"]["fields"][index];
+        field["rank"] = json!(field["rank"].as_u64().unwrap() + 7);
+
+        let (findings, _) = judge(&plan, &spans, &answers);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].check, "ORC-CMP");
+    }
+
+    #[test]
+    fn a_difference_read_one_ulp_off_is_not_a_finding() {
+        let want = -0.0235f64;
+        let name = |x: f64| Subject::Name(format!("{x:?}"));
+        let mut got = [
+            name(f64::from_bits(want.to_bits() + 1)),
+            name(f64::from_bits(want.to_bits() + 2)),
+            name(-want),
+        ];
+        snap_differences(&[name(want), name(want), name(want)], &mut got);
+        assert_eq!(
+            got,
+            [
+                name(want),
+                name(f64::from_bits(want.to_bits() + 2)),
+                name(-want)
+            ]
+        );
     }
 
     #[test]

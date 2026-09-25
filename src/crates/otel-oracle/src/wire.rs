@@ -168,25 +168,57 @@ pub struct PercentileMethod {
     pub max_relative_error: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Facets {
     pub status: Status,
     pub fields: Vec<Facet>,
     pub unavailable: Vec<Unavailable>,
+    /// Under a selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<Comparison>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Comparison {
+    pub scope: u64,
+    pub selection: u64,
+    pub min_support: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComparisonTotals {
+    pub scope: u64,
+    pub selection: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Facet {
     pub field: String,
     pub values: Vec<FacetValue>,
     pub omitted_values: u64,
     pub omitted_rows: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rank: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_diff: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totals: Option<ComparisonTotals>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FacetValue {
     pub value: String,
     pub count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eligible: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rank: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
