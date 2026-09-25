@@ -35,6 +35,23 @@ pub fn read_summary(data: &[u8]) -> Result<Summary, Error> {
     ChunkReader::open(data)?.summary()
 }
 
+/// Whether a file's trace-id bloom rules `trace_id` out, read from its table
+/// of contents and bloom chunk alone, before anything else is decoded. A
+/// missing or unreadable bloom rules nothing out: a full open then reports
+/// a broken file.
+pub fn bloom_rules_out(data: &[u8], trace_id: crate::TraceId) -> bool {
+    let Ok(chunks) = ChunkReader::open(data) else {
+        return false;
+    };
+    if !chunks.has_trace_id_bloom() {
+        return false;
+    }
+    match chunks.trace_id_bloom() {
+        Ok(bloom) => !bloom.might_contain(trace_id),
+        Err(_) => false,
+    }
+}
+
 /// Read ONLY the [`Summary`] of a sealed SFST on disk, cheaply: the file
 /// is memory-mapped and just the header + TOC + `SUMR` pages fault in —
 /// never the whole file (`Advice::Random` suppresses readahead). The

@@ -84,7 +84,7 @@ pub use query::{
     Bucket, FacetResult, Filter, Grid, Matcher, MaterializedRow, Timeline, Timestamps,
     compile_pattern, compile_query,
 };
-pub use reader::{read_summary, read_summary_path};
+pub use reader::{bloom_rules_out, read_summary, read_summary_path};
 pub use registry::{File, Registry, RetentionPolicy};
 pub use row_index::RowIndex;
 pub use span_extras::{EventIndex, EventRef, EventRows, LinkIndex, LinkRef, LinkRows};
