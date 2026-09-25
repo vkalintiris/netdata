@@ -630,4 +630,109 @@ mod tests {
         assert_eq!(exact_percentiles(&durations), Some([50, 95, 99]));
         assert_eq!(percentiles(&[]), None);
     }
+
+    fn span_at(start_s: i64, trace: u8, span: u8, duration_ns: i64) -> OracleSpan {
+        OracleSpan {
+            trace_id: Some([trace; 16]),
+            span_id: Some([span; 8]),
+            duration_ns,
+            ..row(start_s, &[])
+        }
+    }
+
+    fn keys(rows: &[&OracleSpan]) -> Vec<RowKey> {
+        rows.iter().map(|span| row_key(span)).collect()
+    }
+
+    #[test]
+    fn newest_pages_walk_by_key_and_never_split_a_key() {
+        let grid = Grid::for_window(0, 60);
+        // Newest first: a (30 s), b (20 s, trace 2), c and its resend d (20 s,
+        // trace 1), e (10 s).
+        let spans = [
+            span_at(20, 1, 1, 0),
+            span_at(30, 1, 1, 0),
+            span_at(10, 1, 1, 0),
+            span_at(20, 2, 1, 0),
+            span_at(20, 1, 1, 0),
+        ];
+        let (a, b, c, e) = (
+            row_key(&spans[1]),
+            row_key(&spans[3]),
+            row_key(&spans[0]),
+            row_key(&spans[2]),
+        );
+        let all = Scope::default();
+        let page = |limit, anchor, walk| {
+            let page = newest_page(&spans, &grid, &all, limit, anchor, walk);
+            (keys(&page.rows), page.has_older, page.has_newer)
+        };
+        assert_eq!(page(2, None, Walk::Older), (vec![a, b], true, false));
+        assert_eq!(page(1, Some(b), Walk::Older), (vec![c, c], true, true));
+        assert_eq!(page(3, Some(b), Walk::Older), (vec![c, c, e], false, true));
+        assert_eq!(page(1, Some(e), Walk::Newer), (vec![c, c], true, true));
+        assert_eq!(page(3, Some(c), Walk::Newer), (vec![a, b], true, false));
+        assert_eq!(page(5, Some(a), Walk::Newer), (vec![], true, false));
+    }
+
+    #[test]
+    fn slowest_orders_by_duration_then_later_start_then_ids() {
+        let grid = Grid::for_window(0, 60);
+        let spans = [
+            span_at(10, 2, 1, 5),
+            span_at(20, 9, 1, 5),
+            span_at(10, 1, 1, 5),
+            span_at(1, 1, 1, 9),
+        ];
+        let top = slowest(&spans, &grid, &Scope::default(), 3);
+        assert_eq!(
+            keys(&top),
+            [row_key(&spans[3]), row_key(&spans[1]), row_key(&spans[2])]
+        );
+    }
+
+    #[test]
+    fn field_tiers_follow_distinct_values_per_unit() {
+        for (distinct, tier) in [
+            (1, Tier::Low),
+            (99, Tier::Low),
+            (100, Tier::Mid),
+            (999, Tier::Mid),
+            (1000, Tier::High),
+        ] {
+            assert_eq!(tier_of(distinct), tier, "{distinct}");
+        }
+        let mut spans = Vec::new();
+        for i in 0..150 {
+            let value = i.to_string();
+            spans.push(row(1, &[("x", &value), ("_kind", "2")]));
+        }
+        for value in ["a", "b", "c"] {
+            let mut span = row(1, &[("x", value), ("y", value)]);
+            span.unit = 1;
+            spans.push(span);
+        }
+        assert_eq!(
+            field_list(&spans),
+            BTreeMap::from([("x".to_string(), Tier::Mid), ("y".to_string(), Tier::Low)]),
+            "x is mid in unit 0 and low in unit 1; `_kind` is never listed"
+        );
+    }
+
+    #[test]
+    fn field_values_keep_the_window_rows_values_with_the_prefix() {
+        let grid = Grid::for_window(60, 120);
+        let spans = [
+            row(70, &[("route", "/api/cart")]),
+            row(80, &[("route", "/api/checkout")]),
+            row(90, &[("route", "/health")]),
+            row(10, &[("route", "/api/old")]),
+        ];
+        assert_eq!(
+            field_values(&spans, &grid, "route", "/api/c"),
+            BTreeSet::from(["/api/cart".to_string(), "/api/checkout".to_string()])
+        );
+        assert_eq!(field_values(&spans, &grid, "route", "").len(), 3);
+        assert!(field_values(&spans, &grid, "nope", "").is_empty());
+    }
 }
