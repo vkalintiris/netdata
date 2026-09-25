@@ -9,4 +9,13 @@ publish = false
 workspace = true
 
 [dependencies]
+bytes = { workspace = true }
+clap = { workspace = true }
 opentelemetry-proto = { workspace = true }
+prost = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true, features = ["gzip"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-stream = { workspace = true, features = ["net"] }

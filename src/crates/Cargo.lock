@@ -3606,7 +3606,14 @@ dependencies = [
 name = "otel-oracle"
 version = "0.1.3"
 dependencies = [
+ "bytes",
+ "clap",
  "opentelemetry-proto",
+ "prost",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]

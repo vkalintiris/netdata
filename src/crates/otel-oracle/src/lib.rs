@@ -11,8 +11,10 @@
 //!
 //! [`corpus`] generates the deterministic multi-service traces both sides are
 //! fed; [`model`] rebuilds the stored rows from them; [`calc`] computes the
-//! numbers.
+//! numbers. On live data the spans come from [`capture`], written by the
+//! `otel-tee` binary in front of the lab agent.
 
 pub mod calc;
+pub mod capture;
 pub mod corpus;
 pub mod model;
