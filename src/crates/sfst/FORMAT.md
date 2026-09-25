@@ -135,8 +135,9 @@ The optional `TBLM` chunk is the **per-file trace-id bloom**: a serialized
 count for validation. It answers "is trace X definitely NOT in this file?" so a
 cross-file trace-by-id skips a file with one small chunk read, never touching
 `TIDX`/`TRCE` (the single-file `trace_by_id` uses it as the same pre-check).
-False negatives are impossible; false positives (~5% build-time target,
-≈6.25 bits per distinct id) merely fall through to the exact `TIDX` lookup.
+False negatives are impossible; false positives (0.8% build-time target, ≤ 1%
+measured, ≈10 bits per distinct id) merely fall through to the exact `TIDX`
+lookup.
 The payload is self-describing — the filter's bit length, hash count, and
 seeded hasher state all serialize with it — so readers never depend on the
 build-time constants; the build uses a fixed seed, making identical inputs

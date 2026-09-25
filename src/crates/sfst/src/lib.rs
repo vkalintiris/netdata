@@ -182,7 +182,7 @@ const CHUNK_LINKS: chunk_file::ChunkId = *b"LNKB";
 const CHUNK_TRACE_ROLLUP: chunk_file::ChunkId = *b"TRSU";
 // Optional per-file trace-id bloom (cold region, after TIDX): a serialized
 // fastbloom filter over the file's distinct set trace ids — "definitely not in
-// this file" for cross-file trace-by-id, at a 5% build-time FP target. Same
+// this file" for cross-file trace-by-id, at a 0.8% build-time FP target. Same
 // additive TOC-indexed contract as TIDX (see `trace_bloom`).
 const CHUNK_TRACE_BLOOM: chunk_file::ChunkId = *b"TBLM";
 

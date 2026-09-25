@@ -6,8 +6,8 @@
 //! cross-file trace-by-id (the query engine's fan-out) would otherwise open
 //! every candidate file's index. The bloom is the industry-standard answer
 //! (Tempo's only auxiliary index is exactly this): one small chunk read gives
-//! "definitely absent" for ~95% of non-member files at the configured 5%
-//! false-positive rate. False positives cost only a wasted `TIDX` lookup;
+//! "definitely absent" for ~99% of non-member files at the configured 0.8%
+//! false-positive target (≤ 1% measured). False positives cost only a wasted `TIDX` lookup;
 //! false negatives cannot happen.
 //!
 //! The filter itself is [`fastbloom::BloomFilter`] — an audited, widely-used
@@ -15,14 +15,14 @@
 //! workspace `Cargo.toml` pin note) — serialized verbatim inside the chunk via
 //! serde, so the on-disk payload is self-describing (bit length, hash count,
 //! and seeded hasher state all travel with it). Build-time policy lives here:
-//! 5% target FP over the file's DISTINCT non-unset trace ids, one filter per
+//! 0.8% target FP over the file's DISTINCT non-unset trace ids, one filter per
 //! file, and a constant seed so identical inputs seal to identical bytes.
 //!
 //! Same additive TOC-indexed contract as `TIDX`/`EVNB`/`LNKB`: optional,
 //! detected via the TOC, no format version bump; absent when the file has no
 //! set trace ids.
 //!
-//! Build-time sizing is ~6.25 bits per distinct id (≈0.8 MB per million
+//! Build-time sizing is ~10 bits per distinct id (≈1.25 MB per million
 //! distinct traces): bounded in practice by the producer's file-rotation
 //! limits, not here — bounding distinct-id cardinality is the seal's
 //! responsibility (see the production-cutover ingest caps).
@@ -32,8 +32,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, TraceId, TraceIdIndex, TraceIds};
 
-/// Build-time false-positive target over the distinct ids (≈6.25 bits/id).
-const FALSE_POSITIVE_RATE: f64 = 0.05;
+/// Build-time false-positive target over the distinct ids (≈10 bits/id,
+/// 7 hashes). fastbloom's blocked layout lands a little above its target, so
+/// 0.8% keeps the measured rate at or under 1%.
+const FALSE_POSITIVE_RATE: f64 = 0.008;
 
 /// Constant hashing seed: identical inputs seal to byte-identical chunks
 /// (reproducible files), and the seed state serializes with the filter so
@@ -84,7 +86,7 @@ impl TraceIdBloom {
     }
 
     /// Whether the file MIGHT contain `id`. `false` is definitive (no false
-    /// negatives); `true` is probabilistic (~5% of absent ids). The unset
+    /// negatives); `true` is probabilistic (≤ 1% of absent ids). The unset
     /// (all-zero) id forms no trace and is never contained.
     pub fn might_contain(&self, id: TraceId) -> bool {
         !id.is_unset() && self.filter.contains(id.as_bytes())
@@ -133,10 +135,10 @@ impl TraceIdBloom {
                 "trace_id bloom filter has an empty bit vector".into(),
             ));
         }
-        // The optimal hash count at our 5% target is 4 for normal filters —
+        // The optimal hash count at our 0.8% target is 7 for normal filters —
         // but fastbloom floors the filter at 64 bits, which inflates the
-        // optimal k for tiny files (a legitimate 1-distinct-id filter at 5%
-        // computes k = 44). The cap must therefore stay >= 44; do NOT tighten
+        // optimal k for tiny files (a legitimate 1-distinct-id filter computes
+        // k = 44 whatever the target). The cap must therefore stay >= 44; do NOT tighten
         // it toward the "normal" optimum or freshly-rolled low-volume files
         // become unreadable.
         //
@@ -204,9 +206,10 @@ mod tests {
     }
 
     #[test]
-    fn false_positive_rate_near_target() {
-        // 10k distinct member ids; probe 100k absent ids. Expect ~5%,
-        // asserted loosely (< 2x target) to stay robust across crate versions.
+    fn false_positive_rate_at_most_one_percent() {
+        // 10k distinct member ids; probe 100k absent ids. The 0.8% target
+        // measures 0.75-0.84% on lab-size filters; the bounds are the contract
+        // (at most 1%) and a floor that catches a mis-sized filter.
         let members: Vec<TraceId> = (0..10_000u32)
             .map(|i| {
                 let mut a = [0u8; 16];
@@ -229,11 +232,20 @@ mod tests {
             }
         }
         let rate = hits as f64 / PROBES as f64;
-        assert!(
-            rate < 0.10,
-            "measured FP rate {rate} exceeds 2x the 5% target"
-        );
-        assert!(rate > 0.005, "suspiciously low FP rate {rate} — wrong n?");
+        assert!(rate < 0.01, "measured FP rate {rate} exceeds 1%");
+        assert!(rate > 0.002, "suspiciously low FP rate {rate} — wrong n?");
+        bloom.validate(members.len()).unwrap();
+    }
+
+    #[test]
+    fn a_one_id_filter_passes_validation() {
+        // The 64-bit floor gives a one-id filter far more hashes than the
+        // normal optimum; validate must still accept it.
+        let one = [TraceId::from([7u8; 16])];
+        let (col, idx) = indexed(&one);
+        let bloom = TraceIdBloom::build(&idx, &col).unwrap();
+        assert!(bloom.might_contain(one[0]));
+        bloom.validate(1).unwrap();
     }
 
     #[test]
