@@ -1747,6 +1747,46 @@ async fn explore_counts_a_refused_wal() {
 }
 
 #[tokio::test]
+async fn explore_answers_a_selection() {
+    let (h, _) = explore_corpus().await;
+    let body = json!({"explore": {
+        "after": 1, "before": 10, "filter": {"_role": ["root"]},
+        "selection": {"filter": {"status_code": ["ERROR"]}},
+        "sections": {
+            "facets": {"fields": ["resource.attributes.service.name"]},
+            "rows": {"limit": 5}
+        }
+    }});
+    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
+    // One root of four is an error: checkout's. Neither service has the five
+    // selection rows a rank needs, so the values keep the count order.
+    assert_eq!(
+        v["data"]["facets"],
+        json!({
+            "status": {"complete": true},
+            "comparison": {"scope": 4, "selection": 1, "min_support": 5},
+            "fields": [{
+                "field": "resource.attributes.service.name",
+                "totals": {"scope": 4, "selection": 1},
+                "omitted_values": 0,
+                "omitted_rows": 0,
+                "values": [
+                    {"value": "svc", "count": 3, "selection": 0, "baseline": 3,
+                     "eligible": false, "diff": -1.0},
+                    {"value": "checkout", "count": 1, "selection": 1, "baseline": 0,
+                     "eligible": false, "diff": 1.0}
+                ]
+            }],
+            "unavailable": []
+        })
+    );
+    let rows = &v["data"]["rows"];
+    assert_eq!(rows["matched"], 1);
+    assert_eq!(rows["items"].as_array().unwrap().len(), 1);
+    assert_eq!(rows["items"][0]["service"], "checkout");
+}
+
+#[tokio::test]
 async fn explore_answers_groups() {
     let (h, _) = explore_corpus().await;
     let body = json!({"explore": {

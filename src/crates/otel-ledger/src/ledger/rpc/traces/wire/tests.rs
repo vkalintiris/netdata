@@ -392,7 +392,8 @@ fn info_response_shape_is_pinned() {
             },
             "limits": {
                 "rows_page_max": 1000, "top_k_max": 1000, "row_columns_max": 32, "values_max": 1000,
-                "trace_ids_max": 100, "facet_values_max": 1000, "groups_max": 500
+                "trace_ids_max": 100, "facet_values_max": 1000, "groups_max": 500,
+                "min_support": 5
             },
             "percentiles": {"approximate": true, "max_relative_error": 0.0078125, "label": "≈"},
             "approximations": {"origin_and_self_time": "per stored file", "label": "≈"},
@@ -741,7 +742,7 @@ fn explore_rejects_bad_requests() {
         (json!({"explore": {"sections": {"facets": {"fields": []}}}}), "lists no fields"),
         (json!({"explore": {"sections": {"facets": {"fields": [""]}}}}), "names an empty field"),
         (json!({"explore": {"sections": {"facets": {"bogus": 1}}}}), "unknown field"),
-        (json!({"explore": {"selection": {}}}), "not available yet"),
+        (json!({"explore": {"selection": {}}}), "needs a filter, a duration or a time"),
         (json!({"explore": {"text": "  "}}), "`text` is empty"),
         (json!({"explore": {"trace_ids": []}}), "needs 1 to 100 ids"),
         (json!({"explore": {"trace_ids": ["abc"]}}), "trace id"),
@@ -776,6 +777,92 @@ fn explore_rejects_bad_requests() {
         (json!({"explore": []}), "expected an object"),
     ] {
         let err = req_err(body.clone());
+        assert!(err.contains(needle), "for {body}: {err}");
+    }
+}
+
+/// QRY-07: a selection takes chips, an inclusive duration range and a
+/// start-time range in decimal nanoseconds, alone or together; malformed
+/// parts are request errors.
+#[test]
+fn selection_shapes() {
+    use super::explore::SelectionRequest;
+    let selection = |v: serde_json::Value| explore(json!({ "selection": v })).selection;
+
+    assert_eq!(explore(json!({})).selection, None);
+    assert_eq!(
+        selection(json!({"filter": {"status_code": ["ERROR"]}})),
+        Some(SelectionRequest {
+            filter: [("status_code".to_string(), vec!["ERROR".to_string()])].into(),
+            duration: None,
+            time_ns: None,
+        })
+    );
+    assert_eq!(
+        selection(json!({"duration": {"min_ns": 500_000_000}})).and_then(|s| s.duration),
+        Some(sfst::DurationRange {
+            min_ns: Some(500_000_000),
+            max_ns: None,
+        })
+    );
+    assert_eq!(
+        selection(json!({
+            "filter": {"_duration_band": ["1-10s"]},
+            "duration": {"max_ns": 10},
+            "time": {"after_ns": "1758791340000000000", "before_ns": "1758791580000000000"}
+        })),
+        Some(SelectionRequest {
+            filter: [("_duration_band".to_string(), vec!["1-10s".to_string()])].into(),
+            duration: Some(sfst::DurationRange {
+                min_ns: None,
+                max_ns: Some(10),
+            }),
+            time_ns: Some(1_758_791_340_000_000_000..1_758_791_580_000_000_000),
+        })
+    );
+
+    for (body, needle) in [
+        (json!({"selection": null}), "omit it instead"),
+        (
+            json!({"selection": {"filter": {"x": []}}}),
+            "lists no values",
+        ),
+        (
+            json!({"selection": {"filter": {"": ["a"]}}}),
+            "field name is empty",
+        ),
+        (
+            json!({"selection": {"duration": {}}}),
+            "needs `min_ns` or `max_ns`",
+        ),
+        (json!({"selection": {"duration": null}}), "omit it instead"),
+        (
+            json!({"selection": {"duration": {"min_ns": -1}}}),
+            "cannot be negative",
+        ),
+        (
+            json!({"selection": {"duration": {"min_ns": 5, "max_ns": 4}}}),
+            "above `max_ns`",
+        ),
+        (
+            json!({"selection": {"duration": {"min": 5}}}),
+            "unknown field",
+        ),
+        (
+            json!({"selection": {"time": {"after_ns": "12a", "before_ns": "13"}}}),
+            "not a decimal",
+        ),
+        (
+            json!({"selection": {"time": {"after_ns": "12"}}}),
+            "missing field",
+        ),
+        (
+            json!({"selection": {"time": {"after_ns": "13", "before_ns": "13"}}}),
+            "below `before_ns`",
+        ),
+        (json!({"selection": {"bogus": 1}}), "unknown field"),
+    ] {
+        let err = req_err(json!({ "explore": body }));
         assert!(err.contains(needle), "for {body}: {err}");
     }
 }

@@ -995,6 +995,8 @@ pub struct InfoLimits {
     facet_values_max: usize,
     /// Groups listed; the rest fold into `other`.
     groups_max: usize,
+    /// Selection rows a facet value needs to be ranked.
+    min_support: u64,
 }
 
 /// Error origins and self time are derived within each stored file (a live
@@ -1070,6 +1072,7 @@ impl Default for InfoResponse {
                 trace_ids_max: sfsq::traces::explore::TRACE_IDS_MAX,
                 facet_values_max: sfsq::traces::explore::MAX_FACET_VALUES,
                 groups_max: sfsq::traces::explore::GROUPS_CAP,
+                min_support: sfsq::traces::explore::MIN_SUPPORT,
             },
             percentiles: InfoPercentiles {
                 approximate: true,
@@ -1216,10 +1219,11 @@ impl From<PartialReason> for PartialReasonWire {
 mod explore;
 mod values;
 pub use explore::{
-    BucketWire, ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire,
-    ExploreParams, ExploreResponse, FieldWire, FieldsWire, GridWire, GroupNumbersWire, GroupWire,
-    GroupsWire, HistogramWire, OtherGroupsWire, PercentileMethodWire, PercentilesWire, RowWire,
-    RowsWire, TotalsWire, UnavailableFacetWire, WindowWire,
+    BucketWire, ComparisonTotalsWire, ComparisonWire, ExploreDataWire, ExploreFacetValueWire,
+    ExploreFacetWire, ExploreFacetsWire, ExploreParams, ExploreResponse, FieldWire, FieldsWire,
+    GridWire, GroupNumbersWire, GroupWire, GroupsWire, HistogramWire, OtherGroupsWire,
+    PercentileMethodWire, PercentilesWire, RowWire, RowsWire, TotalsWire, UnavailableFacetWire,
+    WindowWire,
 };
 pub use values::{VALUES_DEFAULT_LIMIT, ValuesParams, ValuesResponse};
 

@@ -30,6 +30,8 @@ pub struct ExploreParams {
     pub text: Option<String>,
     /// Keep only these traces' spans (1 to [`TRACE_IDS_MAX`]).
     pub trace_ids: Vec<sfst::TraceId>,
+    /// A part of the scope to compare with the rest; rows follow it.
+    pub selection: Option<SelectionRequest>,
     pub histogram: Option<HistogramRequest>,
     pub facets: Option<FacetsRequest>,
     pub rows: Option<sfsq::traces::explore::RowsSpec>,
@@ -86,6 +88,117 @@ impl RequestWindow {
 pub struct FacetsRequest {
     /// `None`: every field low or mid cardinality in every file.
     pub fields: Option<Vec<String>>,
+}
+
+/// The selection, validated: chips, an inclusive duration range and a
+/// start-time range (unix nanoseconds, `[after, before)`), all ANDed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectionRequest {
+    pub filter: BTreeMap<String, Vec<String>>,
+    pub duration: Option<sfst::DurationRange>,
+    pub time_ns: Option<std::ops::Range<i64>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSelection {
+    #[serde(default)]
+    filter: BTreeMap<String, Vec<String>>,
+    #[serde(default, deserialize_with = "super::present")]
+    duration: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "super::present")]
+    time: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDuration {
+    #[serde(default)]
+    min_ns: Option<i64>,
+    #[serde(default)]
+    max_ns: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTime {
+    after_ns: String,
+    before_ns: String,
+}
+
+fn check_filter(filter: &BTreeMap<String, Vec<String>>, what: &str) -> Result<(), String> {
+    for (field, values) in filter {
+        if field.is_empty() {
+            return Err(format!("a {what} field name is empty"));
+        }
+        if values.is_empty() {
+            return Err(format!("the {what} on `{field}` lists no values"));
+        }
+    }
+    Ok(())
+}
+
+fn parse_selection(value: serde_json::Value) -> Result<SelectionRequest, String> {
+    if value.is_null() {
+        return Err("`selection` is null; omit it instead".into());
+    }
+    let raw: RawSelection =
+        serde_json::from_value(value).map_err(|e| format!("`selection`: {e}"))?;
+    check_filter(&raw.filter, "selection filter")?;
+    let duration = match raw.duration {
+        None => None,
+        Some(serde_json::Value::Null) => {
+            return Err("the selection's `duration` is null; omit it instead".into());
+        }
+        Some(value) => {
+            let raw: RawDuration = serde_json::from_value(value)
+                .map_err(|e| format!("the selection's `duration`: {e}"))?;
+            if raw.min_ns.is_none() && raw.max_ns.is_none() {
+                return Err("the selection's `duration` needs `min_ns` or `max_ns`".into());
+            }
+            if raw.min_ns.is_some_and(|min| min < 0) || raw.max_ns.is_some_and(|max| max < 0) {
+                return Err("the selection's `duration` bounds cannot be negative".into());
+            }
+            if let (Some(min), Some(max)) = (raw.min_ns, raw.max_ns)
+                && min > max
+            {
+                return Err("the selection's `duration` has `min_ns` above `max_ns`".into());
+            }
+            Some(sfst::DurationRange {
+                min_ns: raw.min_ns,
+                max_ns: raw.max_ns,
+            })
+        }
+    };
+    let time_ns = match raw.time {
+        None => None,
+        Some(serde_json::Value::Null) => {
+            return Err("the selection's `time` is null; omit it instead".into());
+        }
+        Some(value) => {
+            let raw: RawTime = serde_json::from_value(value)
+                .map_err(|e| format!("the selection's `time`: {e}"))?;
+            let parse = |text: &str, name: &str| {
+                text.parse::<i64>().map_err(|_| {
+                    format!("the selection's `time.{name}` is not a decimal nanosecond timestamp")
+                })
+            };
+            let after = parse(&raw.after_ns, "after_ns")?;
+            let before = parse(&raw.before_ns, "before_ns")?;
+            if after >= before {
+                return Err("the selection's `time` must have `after_ns` below `before_ns`".into());
+            }
+            Some(after..before)
+        }
+    };
+    if raw.filter.is_empty() && duration.is_none() && time_ns.is_none() {
+        return Err("`selection` needs a filter, a duration or a time".into());
+    }
+    Ok(SelectionRequest {
+        filter: raw.filter,
+        duration,
+        time_ns,
+    })
 }
 
 /// The histogram section: rows per bucket stacked by one field, with the
@@ -269,9 +382,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
     type Error = String;
 
     fn try_from(raw: RawExploreParams) -> Result<Self, String> {
-        if raw.selection.is_some() {
-            return Err("`selection` is not available yet".into());
-        }
+        let selection = raw.selection.map(parse_selection).transpose()?;
         let text = match raw.text {
             Some(text) if text.trim().is_empty() => {
                 return Err("`text` is empty; omit it instead".into());
@@ -295,14 +406,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
 
         let window = RequestWindow::parse(raw.after, raw.before)?;
 
-        for (field, values) in &raw.filter {
-            if field.is_empty() {
-                return Err("a filter field name is empty".into());
-            }
-            if values.is_empty() {
-                return Err(format!("the filter on `{field}` lists no values"));
-            }
-        }
+        check_filter(&raw.filter, "filter")?;
 
         let (histogram, facets, groups, rows, fields) = match raw.sections {
             None => (
@@ -362,6 +466,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
             filter: raw.filter,
             text,
             trace_ids,
+            selection,
             histogram,
             facets,
             rows,
@@ -516,6 +621,24 @@ pub struct ExploreFacetsWire {
     pub fields: Vec<ExploreFacetWire>,
     /// Requested fields that could not be faceted, and why.
     pub unavailable: Vec<UnavailableFacetWire>,
+    /// With a selection: the scope and selection rows, and the fewest
+    /// selection rows a value needs to be ranked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<ComparisonWire>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ComparisonWire {
+    pub scope: u64,
+    pub selection: u64,
+    pub min_support: u64,
+}
+
+/// Rows a field's comparison is out of: without the field's own chips.
+#[derive(Debug, Serialize)]
+pub struct ComparisonTotalsWire {
+    pub scope: u64,
+    pub selection: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -525,12 +648,34 @@ pub struct ExploreFacetWire {
     /// Values beyond the per-facet cap, and the rows they held.
     pub omitted_values: u64,
     pub omitted_rows: u64,
+    /// With a selection: the field's rank by its best difference (when a
+    /// value is eligible), that difference, and its totals.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub best_diff: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub totals: Option<ComparisonTotalsWire>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ExploreFacetValueWire {
     pub value: String,
+    /// Scope rows.
     pub count: u64,
+    /// With a selection: its rows, the rest of the scope's, whether the value
+    /// has enough selection rows to rank, its rank and its share difference
+    /// (absent when the selection holds no row of the field).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eligible: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]

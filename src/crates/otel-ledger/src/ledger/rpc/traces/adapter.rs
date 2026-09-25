@@ -694,19 +694,30 @@ pub(crate) fn to_explore_query(
     params: &super::wire::ExploreParams,
     now_s: u32,
 ) -> (sfsq::traces::explore::ExploreQuery, u32, u32) {
-    use sfsq::traces::explore::{ExploreQuery, ExploreScope, FacetSpec, HistogramSpec, Sections};
+    use sfsq::traces::explore::{
+        ExploreQuery, ExploreScope, ExploreSelection, FacetSpec, HistogramSpec, Sections,
+    };
 
     let (after, before) = params.window.resolve(now_s);
     // A relative window reaching before the epoch clamps to 0; keep at
     // least one second so the grid holds a bucket.
     let (grid, aligned_after, aligned_before) =
         super::super::grid::grid_for_window_s(after, before.max(after.saturating_add(1)));
-    let mut filter = sfst::Filter::new();
-    for (field, values) in &params.filter {
-        for value in values {
-            filter = filter.select(field.clone(), value.clone());
+    let filter_of = |chips: &std::collections::BTreeMap<String, Vec<String>>| {
+        let mut filter = sfst::Filter::new();
+        for (field, values) in chips {
+            for value in values {
+                filter = filter.select(field.clone(), value.clone());
+            }
         }
-    }
+        filter
+    };
+    let filter = filter_of(&params.filter);
+    let selection = params.selection.as_ref().map(|selection| ExploreSelection {
+        filter: filter_of(&selection.filter),
+        duration: selection.duration,
+        time_ns: selection.time_ns.clone(),
+    });
     let query = ExploreQuery {
         grid,
         scope: ExploreScope {
@@ -714,7 +725,7 @@ pub(crate) fn to_explore_query(
             text: params.text.as_deref().map(sfst::text::LiteralText::new),
             trace_ids: params.trace_ids.clone(),
         },
-        selection: None,
+        selection,
         sections: Sections {
             histogram: params.histogram.as_ref().map(|h| HistogramSpec {
                 stack: h.stack.clone(),
@@ -772,10 +783,11 @@ pub(crate) fn to_explore_response(
     before: u32,
 ) -> super::wire::ExploreResponse {
     use super::wire::{
-        BucketWire, ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire,
-        ExploreResponse, FieldWire, FieldsWire, GridWire, GroupNumbersWire, GroupWire, GroupsWire,
-        HistogramWire, OtherGroupsWire, PercentileMethodWire, PercentilesWire, RowWire, RowsWire,
-        TotalsWire, UnavailableFacetWire, WindowWire,
+        BucketWire, ComparisonTotalsWire, ComparisonWire, ExploreDataWire, ExploreFacetValueWire,
+        ExploreFacetWire, ExploreFacetsWire, ExploreResponse, FieldWire, FieldsWire, GridWire,
+        GroupNumbersWire, GroupWire, GroupsWire, HistogramWire, OtherGroupsWire,
+        PercentileMethodWire, PercentilesWire, RowWire, RowsWire, TotalsWire, UnavailableFacetWire,
+        WindowWire,
     };
     let numbers = |n: sfsq::traces::explore::GroupNumbers| GroupNumbersWire {
         spans: n.spans,
@@ -824,16 +836,29 @@ pub(crate) fn to_explore_response(
         for facet in f.fields {
             let mut values = Vec::with_capacity(facet.values.len());
             for v in facet.values {
+                let compared = v.comparison;
                 values.push(ExploreFacetValueWire {
                     value: v.value,
                     count: v.count,
+                    selection: compared.as_ref().map(|c| c.selection),
+                    baseline: compared.as_ref().map(|c| c.baseline),
+                    eligible: compared.as_ref().map(|c| c.eligible),
+                    rank: compared.as_ref().and_then(|c| c.rank),
+                    diff: compared.as_ref().and_then(|c| c.diff).map(|d| d.to_f64()),
                 });
             }
+            let compared = facet.comparison;
             fields.push(ExploreFacetWire {
                 field: facet.field,
                 values,
                 omitted_values: facet.omitted_values,
                 omitted_rows: facet.omitted_rows,
+                rank: compared.as_ref().and_then(|c| c.rank),
+                best_diff: compared.as_ref().and_then(|c| c.best).map(|d| d.to_f64()),
+                totals: compared.as_ref().map(|c| ComparisonTotalsWire {
+                    scope: c.totals.scope,
+                    selection: c.totals.selection,
+                }),
             });
         }
         let mut unavailable = Vec::with_capacity(f.unavailable.len());
@@ -847,6 +872,11 @@ pub(crate) fn to_explore_response(
             status: StatusWire::from(&f.status),
             fields,
             unavailable,
+            comparison: f.comparison.map(|c| ComparisonWire {
+                scope: c.scope,
+                selection: c.selection,
+                min_support: sfsq::traces::explore::MIN_SUPPORT,
+            }),
         }
     });
     let rows = data.rows.map(|r| {
