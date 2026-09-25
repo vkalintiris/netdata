@@ -644,6 +644,11 @@ impl OtelTracesHandler {
             .await
             .map_err(capture_error)?;
         let sources = sets.pop().unwrap_or_default();
+        if params.groups {
+            // Groups read every source a second time, ticking once more each.
+            let (_, total) = ctx.progress.load();
+            ctx.progress.set_total(total + sources.len());
+        }
         let done = ctx.progress.done_counter();
         let cancel = ctx.cancellation.clone();
 

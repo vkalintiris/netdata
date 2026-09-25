@@ -382,7 +382,7 @@ fn info_response_shape_is_pinned() {
             ],
             "required_params": [],
             "help": "Query and visualize OpenTelemetry traces.",
-            "sections": ["histogram", "facets", "rows", "fields"],
+            "sections": ["histogram", "facets", "groups", "rows", "fields"],
             "defaults": {
                 "filter": {"_role": ["root", "inbound"]},
                 "stack": "status_code",
@@ -392,9 +392,10 @@ fn info_response_shape_is_pinned() {
             },
             "limits": {
                 "rows_page_max": 1000, "top_k_max": 1000, "row_columns_max": 32, "values_max": 1000,
-                "trace_ids_max": 100, "facet_values_max": 1000
+                "trace_ids_max": 100, "facet_values_max": 1000, "groups_max": 500
             },
             "percentiles": {"approximate": true, "max_relative_error": 0.0078125, "label": "≈"},
+            "approximations": {"origin_and_self_time": "per stored file", "label": "≈"},
             "duration_bands": [
                 {"label": "<1ms", "min_ns": 0, "max_ns": 999_999},
                 {"label": "1-10ms", "min_ns": 1_000_000, "max_ns": 9_999_999},
@@ -695,9 +696,12 @@ fn explore_defaults_to_the_last_fifteen_minutes_stacked_by_status() {
         Some(FacetsRequest { fields: None }),
         "omitted sections mean every section"
     );
+    assert!(explore(json!({})).groups);
     let p = explore(json!({"sections": {}}));
     assert!(p.histogram.is_none(), "an empty section list asks for nothing");
     assert!(p.facets.is_none());
+    assert!(!p.groups);
+    assert!(explore(json!({"sections": {"groups": {}}})).groups);
     let p = explore(json!({"sections": {"facets": {"fields": ["_role", "name"]}}}));
     assert_eq!(
         p.facets,
@@ -745,7 +749,8 @@ fn explore_rejects_bad_requests() {
             json!({"explore": {"trace_ids": ["00000000000000000000000000000000"]}}),
             "all-zero trace id",
         ),
-        (json!({"explore": {"sections": {"groups": {}}}}), "not available yet"),
+        (json!({"explore": {"sections": {"groups": null}}}), "omit it instead"),
+        (json!({"explore": {"sections": {"groups": {"cap": 3}}}}), "unknown field"),
         (json!({"explore": {"sections": {"fields": {"bogus": 1}}}}), "unknown field"),
         (json!({"explore": {"sections": {"fields": null}}}), "omit it instead"),
         (json!({"explore": {"sections": {"rows": {"order": "oldest"}}}}), "unknown variant"),

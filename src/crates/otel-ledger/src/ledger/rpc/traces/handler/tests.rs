@@ -1064,7 +1064,7 @@ async fn every_mode_sets_its_progress_total_and_completes_it() {
         (windowed("search", json!({})), (2, 2)),
         (functions_body(2), (4, 4)),
         (windowed("overview", json!({})), (2, 2)),
-        (windowed("explore", json!({})), (2, 2)),
+        (windowed("explore", json!({})), (4, 4)),
         (windowed("values", json!({"field": "name"})), (2, 2)),
     ] {
         assert_eq!(progress_of(&h, body.clone()).await, expected, "{body}");
@@ -1743,6 +1743,44 @@ async fn explore_counts_a_refused_wal() {
         v["data"]["histogram"]["totals"],
         json!({"count": 1, "errors": 1}),
         "the sealed file still answers"
+    );
+}
+
+#[tokio::test]
+async fn explore_answers_groups() {
+    let (h, _) = explore_corpus().await;
+    let body = json!({"explore": {
+        "after": 1, "before": 10, "filter": {"_role": ["root"]},
+        "sections": {"groups": {}}
+    }});
+    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
+    assert!(v["data"].get("histogram").is_none(), "only the asked sections");
+    let window = &v["data"]["window"];
+    let window_s = window["before"].as_u64().unwrap() - window["after"].as_u64().unwrap();
+    // Every span lasts 500 ns (p95 502, the midpoint of [500, 504)); the
+    // children start after their root ends, so self time is the duration.
+    let group = |service: &str, operation: &str, spans: u64, errors: u64| {
+        json!({
+            "service": service, "operation": operation, "spans": spans, "errors": errors,
+            "errors_originated": errors, "p95_ns": 502, "self_ns": (spans * 500).to_string()
+        })
+    };
+    assert_eq!(
+        v["data"]["groups"],
+        json!({
+            "status": {"complete": true},
+            "window_s": window_s,
+            "self_ns_total": "6000",
+            "rows": [
+                group("svc", "span-1", 3, 0),
+                group("svc", "span-2", 3, 0),
+                group("svc", "span-3", 3, 0),
+                group("checkout", "span-1", 1, 1),
+                group("checkout", "span-2", 1, 0),
+                group("checkout", "span-3", 1, 0),
+            ],
+            "other": null
+        })
     );
 }
 

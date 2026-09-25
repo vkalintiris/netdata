@@ -966,6 +966,8 @@ pub struct InfoResponse {
     limits: InfoLimits,
     /// How duration percentiles are computed.
     percentiles: InfoPercentiles,
+    /// Numbers the explorer derives per stored file, not per whole trace.
+    approximations: InfoApproximations,
     /// The fixed duration bands, fastest first, with inclusive bounds.
     duration_bands: Vec<DurationBandWire>,
     /// The partial reasons an `explore` answer may carry.
@@ -991,6 +993,18 @@ pub struct InfoLimits {
     trace_ids_max: usize,
     /// Values one facet lists; the rest are counted as omitted.
     facet_values_max: usize,
+    /// Groups listed; the rest fold into `other`.
+    groups_max: usize,
+}
+
+/// Error origins and self time are derived within each stored file (a live
+/// WAL counts as one): a parent whose child landed in another file can be
+/// counted as an origin, or its self time overstated. They are shown with
+/// `label`; the trace drawer derives them over the whole trace, exactly.
+#[derive(Debug, Serialize)]
+pub struct InfoApproximations {
+    origin_and_self_time: &'static str,
+    label: &'static str,
 }
 
 /// Percentiles come from a fixed log-linear histogram: each value is within
@@ -1040,7 +1054,7 @@ impl Default for InfoResponse {
             accepted_params: ACCEPTED_PARAMS.to_vec(),
             required_params: vec![],
             help: "Query and visualize OpenTelemetry traces.",
-            sections: vec!["histogram", "facets", "rows", "fields"],
+            sections: vec!["histogram", "facets", "groups", "rows", "fields"],
             defaults: InfoDefaults {
                 filter: std::collections::BTreeMap::from([(role_field, roles.to_vec())]),
                 stack: sfsq::traces::explore::DEFAULT_STACK_FIELD,
@@ -1055,10 +1069,15 @@ impl Default for InfoResponse {
                 values_max: sfsq::traces::explore::VALUES_LIMIT_MAX,
                 trace_ids_max: sfsq::traces::explore::TRACE_IDS_MAX,
                 facet_values_max: sfsq::traces::explore::MAX_FACET_VALUES,
+                groups_max: sfsq::traces::explore::GROUPS_CAP,
             },
             percentiles: InfoPercentiles {
                 approximate: true,
                 max_relative_error: sfsq::traces::duration_hist::MAX_RELATIVE_ERROR,
+                label: "≈",
+            },
+            approximations: InfoApproximations {
+                origin_and_self_time: "per stored file",
                 label: "≈",
             },
             duration_bands: duration_bands(),
@@ -1198,9 +1217,9 @@ mod explore;
 mod values;
 pub use explore::{
     BucketWire, ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire,
-    ExploreParams, ExploreResponse, FieldWire, FieldsWire, GridWire, HistogramWire,
-    PercentileMethodWire, PercentilesWire, RowWire, RowsWire, TotalsWire, UnavailableFacetWire,
-    WindowWire,
+    ExploreParams, ExploreResponse, FieldWire, FieldsWire, GridWire, GroupNumbersWire, GroupWire,
+    GroupsWire, HistogramWire, OtherGroupsWire, PercentileMethodWire, PercentilesWire, RowWire,
+    RowsWire, TotalsWire, UnavailableFacetWire, WindowWire,
 };
 pub use values::{VALUES_DEFAULT_LIMIT, ValuesParams, ValuesResponse};
 

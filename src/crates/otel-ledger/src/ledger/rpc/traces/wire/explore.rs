@@ -33,6 +33,9 @@ pub struct ExploreParams {
     pub histogram: Option<HistogramRequest>,
     pub facets: Option<FacetsRequest>,
     pub rows: Option<sfsq::traces::explore::RowsSpec>,
+    /// Whether to group every span of the scope's traces by service and
+    /// operation.
+    pub groups: bool,
     /// Whether to list the window's fields.
     pub fields: bool,
 }
@@ -154,6 +157,11 @@ fn section<T: serde::de::DeserializeOwned>(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawFields {}
+
+/// The groups section takes no parameters.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawGroups {}
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -296,20 +304,18 @@ impl TryFrom<RawExploreParams> for ExploreParams {
             }
         }
 
-        let (histogram, facets, rows, fields) = match raw.sections {
+        let (histogram, facets, groups, rows, fields) = match raw.sections {
             None => (
                 Some(HistogramRequest {
                     stack: sfsq::traces::explore::DEFAULT_STACK_FIELD.to_string(),
                     percentiles: true,
                 }),
                 Some(FacetsRequest { fields: None }),
+                true,
                 Some(RawRows::default().try_into()?),
                 true,
             ),
             Some(sections) => {
-                if sections.groups.is_some() {
-                    return Err("section `groups` is not available yet".into());
-                }
                 let histogram = match section::<RawHistogram>("histogram", sections.histogram)? {
                     None => None,
                     Some(spec) => {
@@ -345,8 +351,9 @@ impl TryFrom<RawExploreParams> for ExploreParams {
                     None => None,
                     Some(raw) => Some(raw.try_into()?),
                 };
+                let groups = section::<RawGroups>("groups", sections.groups)?.is_some();
                 let fields = section::<RawFields>("fields", sections.fields)?.is_some();
-                (histogram, facets, rows, fields)
+                (histogram, facets, groups, rows, fields)
             }
         };
 
@@ -358,6 +365,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
             histogram,
             facets,
             rows,
+            groups,
             fields,
         })
     }
@@ -385,9 +393,54 @@ pub struct ExploreDataWire {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub facets: Option<ExploreFacetsWire>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub groups: Option<GroupsWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rows: Option<RowsWire>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fields: Option<FieldsWire>,
+}
+
+/// Every span in the window of the traces with a span in scope, by service
+/// and operation; the UI derives rates, error shares and self-time shares.
+#[derive(Debug, Serialize)]
+pub struct GroupsWire {
+    pub status: StatusWire,
+    pub window_s: u64,
+    /// Self time over every group, `other` included, in nanoseconds as a
+    /// decimal string.
+    pub self_ns_total: String,
+    /// The groups with the most spans, at most `groups_max` (info).
+    pub rows: Vec<GroupWire>,
+    /// The rest folded together; `null` when nothing was folded.
+    pub other: Option<OtherGroupsWire>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupWire {
+    /// `null` for spans without a service or an operation.
+    pub service: Option<String>,
+    pub operation: Option<String>,
+    #[serde(flatten)]
+    pub numbers: GroupNumbersWire,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OtherGroupsWire {
+    /// How many groups were folded.
+    pub groups: u64,
+    #[serde(flatten)]
+    pub numbers: GroupNumbersWire,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupNumbersWire {
+    pub spans: u64,
+    pub errors: u64,
+    pub errors_originated: u64,
+    /// Approximate (the fixed duration histogram); `null` without spans.
+    pub p95_ns: Option<i64>,
+    /// Summed self time in nanoseconds, as a decimal string.
+    pub self_ns: String,
 }
 
 /// The window actually answered: the request's, aligned outward to whole

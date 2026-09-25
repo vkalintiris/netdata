@@ -722,7 +722,7 @@ pub(crate) fn to_explore_query(
             facets: params.facets.as_ref().map(|f| FacetSpec {
                 fields: f.fields.clone(),
             }),
-            groups: false,
+            groups: params.groups,
             rows: params.rows.clone(),
             fields: params.fields,
         },
@@ -772,8 +772,16 @@ pub(crate) fn to_explore_response(
 ) -> super::wire::ExploreResponse {
     use super::wire::{
         BucketWire, ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire,
-        ExploreResponse, FieldWire, FieldsWire, GridWire, HistogramWire, PercentileMethodWire,
-        PercentilesWire, RowWire, RowsWire, TotalsWire, UnavailableFacetWire, WindowWire,
+        ExploreResponse, FieldWire, FieldsWire, GridWire, GroupNumbersWire, GroupWire, GroupsWire,
+        HistogramWire, OtherGroupsWire, PercentileMethodWire, PercentilesWire, RowWire, RowsWire,
+        TotalsWire, UnavailableFacetWire, WindowWire,
+    };
+    let numbers = |n: sfsq::traces::explore::GroupNumbers| GroupNumbersWire {
+        spans: n.spans,
+        errors: n.errors,
+        errors_originated: n.errors_originated,
+        p95_ns: n.p95_ns,
+        self_ns: n.self_ns.to_string(),
     };
     let percentiles = |p: Option<sfsq::traces::explore::Percentiles>| {
         p.map(|p| PercentilesWire {
@@ -898,6 +906,26 @@ pub(crate) fn to_explore_response(
             columns: f.columns,
         }
     });
+    let groups = data.groups.map(|g| {
+        let mut rows = Vec::with_capacity(g.rows.len());
+        for row in g.rows {
+            rows.push(GroupWire {
+                service: row.key.service,
+                operation: row.key.operation,
+                numbers: numbers(row.numbers),
+            });
+        }
+        GroupsWire {
+            status: StatusWire::from(&g.status),
+            window_s: g.window_s,
+            self_ns_total: g.self_ns_total.to_string(),
+            rows,
+            other: g.other.map(|other| OtherGroupsWire {
+                groups: other.groups,
+                numbers: numbers(other.numbers),
+            }),
+        }
+    });
     ExploreResponse {
         status: 200,
         response_type: "traces",
@@ -916,6 +944,7 @@ pub(crate) fn to_explore_response(
             status,
             histogram,
             facets,
+            groups,
             rows,
             fields,
         },
