@@ -725,6 +725,77 @@ pub fn slowest<'a>(
     rows
 }
 
+/// A row's values derived within its unit (one file, D25): whether it
+/// originates an error, and the time its children cover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Derived {
+    /// ERROR, and no child is ERROR.
+    pub error_origin: bool,
+    /// The union of the children's intervals clipped to the row's own; the
+    /// row's self time is its duration minus this.
+    pub child_ns: i64,
+}
+
+/// Every row's derived values, index-parallel to `spans`. A row's children
+/// are the rows of the same unit and set trace id whose set parent id is its
+/// set span id; a row whose parent id is its own span id is nobody's child
+/// (not even of its resent copy), and only direct children count.
+pub fn derived(spans: &[OracleSpan]) -> Vec<Derived> {
+    let mut children: BTreeMap<(usize, [u8; 16], [u8; 8]), Vec<usize>> = BTreeMap::new();
+    for (index, span) in spans.iter().enumerate() {
+        if let (Some(trace), Some(id), Some(parent)) =
+            (span.trace_id, span.span_id, span.parent_span_id)
+            && parent != id
+        {
+            children
+                .entry((span.unit, trace, parent))
+                .or_default()
+                .push(index);
+        }
+    }
+
+    let mut out = Vec::with_capacity(spans.len());
+    for span in spans {
+        let own_end = span.start_ns.saturating_add(span.duration_ns);
+        let mut child_error = false;
+        let mut intervals: Vec<(i64, i64)> = Vec::new();
+        if let (Some(trace), Some(id)) = (span.trace_id, span.span_id)
+            && let Some(list) = children.get(&(span.unit, trace, id))
+        {
+            for &index in list {
+                let child = &spans[index];
+                child_error |= child.is_error();
+                let start = child.start_ns.max(span.start_ns);
+                let end = child
+                    .start_ns
+                    .saturating_add(child.duration_ns)
+                    .min(own_end);
+                if start < end {
+                    intervals.push((start, end));
+                }
+            }
+        }
+        intervals.sort();
+        let mut child_ns: i64 = 0;
+        let mut reached: Option<i64> = None;
+        for (start, end) in intervals {
+            let from = match reached {
+                Some(reached) => start.max(reached),
+                None => start,
+            };
+            if end > from {
+                child_ns = child_ns.saturating_add(end - from);
+            }
+            reached = Some(reached.map_or(end, |reached| reached.max(end)));
+        }
+        out.push(Derived {
+            error_origin: span.is_error() && !child_error,
+            child_ns,
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,6 +810,131 @@ mod tests {
             duration_ns: 0,
             fields: fields.iter().copied().collect(),
             unit: 0,
+        }
+    }
+
+    /// A row of `unit` with ids as repeated bytes (0 = unset).
+    fn linked(
+        unit: usize,
+        (trace, span, parent): (u8, u8, u8),
+        start_ns: i64,
+        duration_ns: i64,
+        error: bool,
+    ) -> OracleSpan {
+        let status: &[(&str, &str)] = if error {
+            &[(STATUS_FIELD, "ERROR")]
+        } else {
+            &[]
+        };
+        OracleSpan {
+            trace_id: (trace != 0).then_some([trace; 16]),
+            span_id: (span != 0).then_some([span; 8]),
+            parent_span_id: (parent != 0).then_some([parent; 8]),
+            start_ns,
+            duration_ns,
+            fields: status.iter().copied().collect(),
+            unit,
+        }
+    }
+
+    #[test]
+    fn derived_rules() {
+        const E: bool = true;
+        const OK: bool = false;
+        let near_max = i64::MAX - 10;
+        // A name, the rows, and each row's (error origin, child time).
+        type Case = (&'static str, Vec<OracleSpan>, Vec<(bool, i64)>);
+        let cases: Vec<Case> = vec![
+            (
+                "an ERROR chain marks only its leaf",
+                vec![
+                    linked(0, (1, 1, 0), 0, 100, E),
+                    linked(0, (1, 2, 1), 10, 50, E),
+                    linked(0, (1, 3, 2), 20, 10, E),
+                ],
+                vec![(false, 50), (false, 10), (true, 0)],
+            ),
+            (
+                "ERROR over OK over ERROR: two origins",
+                vec![
+                    linked(0, (1, 1, 0), 0, 100, E),
+                    linked(0, (1, 2, 1), 10, 50, OK),
+                    linked(0, (1, 3, 2), 20, 10, E),
+                ],
+                vec![(true, 50), (false, 10), (true, 0)],
+            ),
+            (
+                "unset ids link nothing",
+                vec![
+                    linked(0, (0, 1, 0), 0, 100, E),
+                    linked(0, (0, 2, 1), 10, 10, E),
+                    linked(0, (1, 0, 0), 0, 100, E),
+                ],
+                vec![(true, 0), (true, 0), (true, 0)],
+            ),
+            (
+                "a self-parent row and its resent copy are nobody's children",
+                vec![
+                    linked(0, (1, 1, 1), 0, 100, E),
+                    linked(0, (1, 1, 1), 0, 100, E),
+                ],
+                vec![(true, 0), (true, 0)],
+            ),
+            (
+                "every copy of a resent parent gets the child; duplicates count once",
+                vec![
+                    linked(0, (1, 1, 0), 0, 100, E),
+                    linked(0, (1, 1, 0), 0, 100, E),
+                    linked(0, (1, 2, 1), 10, 30, E),
+                    linked(0, (1, 2, 1), 10, 30, E),
+                ],
+                vec![(false, 30), (false, 30), (true, 0), (true, 0)],
+            ),
+            (
+                "overlaps count once and children are clipped",
+                vec![
+                    linked(0, (1, 1, 0), 100, 100, OK),
+                    linked(0, (1, 2, 1), 50, 100, OK),
+                    linked(0, (1, 3, 1), 120, 40, OK),
+                    linked(0, (1, 4, 1), 180, 100, OK),
+                    linked(0, (1, 5, 1), 170, 0, OK),
+                ],
+                vec![(false, 80), (false, 0), (false, 0), (false, 0), (false, 0)],
+            ),
+            (
+                "ends past i64::MAX saturate",
+                vec![
+                    linked(0, (1, 1, 0), near_max, 100, OK),
+                    linked(0, (1, 2, 1), near_max + 5, 100, OK),
+                ],
+                vec![(false, 5), (false, 0)],
+            ),
+            (
+                "a cycle counts direct children only",
+                vec![
+                    linked(0, (1, 1, 2), 0, 100, E),
+                    linked(0, (1, 2, 1), 10, 50, E),
+                ],
+                vec![(false, 50), (false, 50)],
+            ),
+            (
+                "a child in another file or trace does not count",
+                vec![
+                    linked(0, (1, 1, 0), 0, 100, E),
+                    linked(1, (1, 2, 1), 10, 50, E),
+                    linked(0, (2, 3, 1), 10, 50, E),
+                    linked(1, (1, 4, 0), 0, 100, E),
+                    linked(0, (1, 5, 4), 10, 50, E),
+                ],
+                vec![(true, 0), (true, 0), (true, 0), (true, 0), (true, 0)],
+            ),
+        ];
+        for (name, spans, expected) in cases {
+            let got: Vec<(bool, i64)> = derived(&spans)
+                .into_iter()
+                .map(|d| (d.error_origin, d.child_ns))
+                .collect();
+            assert_eq!(got, expected, "{name}");
         }
     }
 
