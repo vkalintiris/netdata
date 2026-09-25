@@ -980,10 +980,9 @@ pub(crate) fn to_explore_response(
         }
         RowsWire {
             status: StatusWire::from(&r.status),
-            order: if r.more.is_some() {
-                "newest"
-            } else {
-                "slowest"
+            order: match r.order {
+                sfsq::traces::explore::RowOrder::Newest { .. } => "newest",
+                sfsq::traces::explore::RowOrder::Slowest => "slowest",
             },
             matched: r.matched,
             has_older: r.more.map(|m| m.older),

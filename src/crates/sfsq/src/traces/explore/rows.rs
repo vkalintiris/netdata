@@ -2,8 +2,9 @@
 //!
 //! A row's key is its content (start, trace id, span id), not its position in a
 //! file, so a page walk stays exact when rows move from the live tail into a
-//! chunk image or a WAL seals between pages. Rows with an identical key (a resent
-//! span) are never split across pages.
+//! chunk image or a WAL seals between pages. Rows with an identical key are
+//! never split across pages: a resent span, or spans without ids that start
+//! together, so such a group can make a page longer than its limit.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
@@ -86,8 +87,8 @@ pub enum RowDirection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowOrder {
-    /// Newest first, a page at a time; the newest page when `anchor` is `None`
-    /// and `direction` is `Older`.
+    /// Newest first, a page at a time from `anchor`. Without an anchor, `Older`
+    /// gives the newest page and `Newer` the oldest.
     Newest {
         anchor: Option<RowKey>,
         direction: RowDirection,
@@ -224,15 +225,6 @@ pub(super) fn source_rows(
     let trace_ids = reader.trace_ids()?;
     let span_ids = reader.span_ids()?;
     let durations = reader.durations()?;
-    let rows = reader.summary().record_count as usize;
-    if trace_ids.len() < rows || span_ids.len() < rows || durations.0.len() < rows {
-        return Err(sfst::Error::CorruptIndex(format!(
-            "{rows} rows but {} trace ids, {} span ids, {} durations",
-            trace_ids.len(),
-            span_ids.len(),
-            durations.0.len()
-        )));
-    }
     let candidate = |position: u32| -> Result<Candidate, sfst::Error> {
         let index = position as usize;
         let start_ns = timestamps

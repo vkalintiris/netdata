@@ -782,6 +782,10 @@ fn explore_rejects_bad_requests() {
             json!({"explore": {"sections": {"rows": {"columns": ["events.name"]}}}}),
             "not a span column",
         ),
+        (
+            json!({"explore": {"sections": {"rows": {"columns": ["name", "name"]}}}}),
+            "`name` twice",
+        ),
         (json!({"explore": {"sections": {"rows": {"bogus": 1}}}}), "unknown field"),
         (json!({"explore": {}, "trace": {"id": "00"}}), "conflicting mode selectors"),
         (json!({"explore": []}), "expected an object"),

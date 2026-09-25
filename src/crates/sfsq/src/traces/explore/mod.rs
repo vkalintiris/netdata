@@ -130,6 +130,8 @@ pub struct FacetValue {
 pub struct RowsData {
     /// The source reasons plus this section's own.
     pub status: QueryStatus,
+    /// The order asked for.
+    pub order: RowOrder,
     /// Scope rows in the window; every page reports the same number.
     pub matched: u64,
     /// For a newest page: whether rows exist beyond it on each side; `None`

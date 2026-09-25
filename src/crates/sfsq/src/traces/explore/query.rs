@@ -111,6 +111,13 @@ impl ExploreQuery {
                     super::rows::ROW_COLUMNS_MAX
                 )));
             }
+            for (i, column) in rows.columns.iter().enumerate() {
+                if rows.columns[..i].contains(column) {
+                    return Err(ExploreRequestError::Invalid(format!(
+                        "rows name the column `{column}` twice"
+                    )));
+                }
+            }
         }
         Ok(())
     }

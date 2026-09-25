@@ -232,6 +232,7 @@ pub fn explore(
         section.merge(own);
         RowsData {
             status: section.finish(),
+            order: spec.order,
             matched,
             more,
             columns: spec.columns,

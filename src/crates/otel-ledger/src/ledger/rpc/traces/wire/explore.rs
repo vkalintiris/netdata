@@ -165,6 +165,8 @@ struct RawRows {
     limit: Option<usize>,
     #[serde(default)]
     anchor: Option<String>,
+    /// `older` (the default) or `newer`; `newer` without an anchor is the
+    /// oldest page.
     #[serde(default)]
     direction: Option<RawRowDirection>,
     #[serde(default)]
@@ -228,6 +230,11 @@ impl TryFrom<RawRows> for sfsq::traces::explore::RowsSpec {
         }
         if raw.columns.iter().any(|c| c.is_empty()) {
             return Err("rows name an empty column".into());
+        }
+        for (i, column) in raw.columns.iter().enumerate() {
+            if raw.columns[..i].contains(column) {
+                return Err(format!("rows name the column `{column}` twice"));
+            }
         }
         if let Some(c) = raw.columns.iter().find(|c| !is_row_column(c)) {
             return Err(format!(
