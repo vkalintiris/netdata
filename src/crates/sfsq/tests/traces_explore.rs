@@ -10,8 +10,8 @@ use common::*;
 use sfsq::Source;
 use sfsq::traces::explore::{
     ExploreData, ExploreOptions, ExploreQuery, ExploreScope, ExploreSelection, FacetSpec,
-    HistogramData, HistogramSpec, RowDirection, RowOrder, RowsSpec, Sections, StackBucket, Totals,
-    ValuesQuery, explore, field_values,
+    GroupsDelta, HistogramData, HistogramSpec, RowDirection, RowOrder, RowsSpec, Sections,
+    StackBucket, Totals, ValuesQuery, explore, field_values,
 };
 use sfsq::traces::{
     PartialReason, QueryStatus, ReasonCount, SourceId, TraceFailed, TraceSfstCandidate,
@@ -825,6 +825,14 @@ fn explore_parallel_equals_sequential() {
             }),
         ),
         (
+            "selection across files",
+            Box::new(|| {
+                let mut query = every_section("status_code", newest(None, RowDirection::Older), 3);
+                query.selection = selection(sfst::Filter::new().select("name", "collide"));
+                query
+            }),
+        ),
+        (
             "trace ids",
             Box::new(|| {
                 let mut query = every_section("status_code", newest(None, RowDirection::Older), 3);
@@ -959,19 +967,18 @@ fn svc(operation: &str, spans: u64, errors: u64, origins: u64, self_ns: u128) ->
     )
 }
 
-/// QRY-46: one trace whose spans sit in two sealed files, a chunk image and
-/// a tail is counted once, every span of it, whatever its role; a trace with
-/// no span in scope is not.
-#[test]
-fn trace_join_across_files() {
-    let dir = tempfile::tempdir().unwrap();
+/// Trace 1 over two sealed files, a chunk image and a tail: its `checkout`
+/// root (an error with no erroring child) in `a`, three `op` spans in the
+/// others. Trace 2: two `op` spans, in `b` and in the tail. Every span lasts
+/// 50 ns and no child overlaps its parent, so each has 50 ns of self time.
+fn split_traces(dir: &std::path::Path) -> Vec<TraceSource> {
     let a = write_wal(
-        dir.path(),
+        dir,
         vec![req(&[group_span(1, 1, 0, 1, "checkout", 2, true)])],
         "a",
     );
     let b = write_wal(
-        dir.path(),
+        dir,
         vec![req(&[
             group_span(1, 2, 1, 2, "op", 2, false),
             group_span(2, 9, 0, 2, "op", 2, false),
@@ -979,24 +986,33 @@ fn trace_join_across_files() {
         "b",
     );
     let c = write_wal(
-        dir.path(),
+        dir,
         vec![req(&[group_span(1, 3, 2, 2, "op", 3, false)])],
         "c",
     );
     let d = write_wal(
-        dir.path(),
+        dir,
         vec![req(&[
             group_span(1, 4, 2, 3, "op", 1, false),
             group_span(2, 8, 9, 3, "op", 1, false),
         ])],
         "d",
     );
-    let sources = vec![
-        sealed_source(dir.path(), &a, "a"),
-        sealed_source(dir.path(), &b, "b"),
+    vec![
+        sealed_source(dir, &a, "a"),
+        sealed_source(dir, &b, "b"),
         memory_source(&c, "c"),
         tail_source(&d, "d"),
-    ];
+    ]
+}
+
+/// QRY-46: one trace whose spans sit in two sealed files, a chunk image and
+/// a tail is counted once, every span of it, whatever its role; a trace with
+/// no span in scope is not.
+#[test]
+fn trace_join_across_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let sources = split_traces(dir.path());
     let progress = Arc::new(AtomicUsize::new(0));
     let data = explore(
         sources,
@@ -1017,10 +1033,85 @@ fn trace_join_across_files() {
     );
     assert_eq!(groups.self_ns_total, 200);
     assert!(groups.other.is_none());
+    assert!(groups.delta.is_none() && groups.rows.iter().all(|row| row.delta.is_none()));
     assert_eq!(
         progress.load(Ordering::Relaxed),
         8,
         "two passes over four sources"
+    );
+}
+
+/// `(service, operation, selection side, baseline side)` per group, each
+/// side as `(spans, errors originated, self ns)`.
+fn group_sides(data: &ExploreData) -> Vec<(Option<String>, Option<String>, SideLine, SideLine)> {
+    let groups = data.groups.as_ref().expect("groups section");
+    let side = |side: &sfsq::traces::explore::SideNumbers| {
+        (side.spans, side.errors_originated, side.self_ns)
+    };
+    let mut out = Vec::new();
+    for row in &groups.rows {
+        let delta = row.delta.expect("sides under a selection");
+        assert_eq!(
+            delta.selection.spans + delta.baseline.spans,
+            row.numbers.spans
+        );
+        out.push((
+            row.key.service.clone(),
+            row.key.operation.clone(),
+            side(&delta.selection),
+            side(&delta.baseline),
+        ));
+    }
+    out
+}
+
+type SideLine = (u64, u64, u128);
+
+/// QRY-20: a trace is on the selection side when any of its scope rows is a
+/// selection row, and all its window rows follow it into every group, in
+/// whichever file they sit; the other scope traces make the baseline.
+#[test]
+fn delta_sides_follow_the_trace_across_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut q = groups_query(&[]);
+    q.selection = selection(sfst::Filter::new().select("name", "checkout"));
+    let data = run(split_traces(dir.path()), q);
+
+    let groups = data.groups.as_ref().unwrap();
+    assert!(groups.status.is_complete(), "{:?}", groups.status);
+    let svc = |name: &str| (Some("svc".to_string()), Some(name.to_string()));
+    let line = |(service, operation): (Option<String>, Option<String>), selection, baseline| {
+        (service, operation, selection, baseline)
+    };
+    assert_eq!(
+        group_sides(&data),
+        vec![
+            line(svc("op"), (3, 0, 150), (2, 0, 100)),
+            line(svc("checkout"), (1, 1, 50), (0, 0, 0)),
+        ]
+    );
+    assert_eq!(
+        groups.delta,
+        Some(GroupsDelta {
+            selection_traces: 1,
+            baseline_traces: 1,
+            selection_self_ns_total: 200,
+            baseline_self_ns_total: 100,
+        })
+    );
+
+    let mut nothing = groups_query(&[]);
+    nothing.selection = selection(sfst::Filter::new().select("name", "absent"));
+    let data = run(split_traces(dir.path()), nothing);
+    assert_eq!(
+        data.groups.unwrap().delta,
+        Some(GroupsDelta {
+            selection_traces: 0,
+            baseline_traces: 2,
+            selection_self_ns_total: 0,
+            baseline_self_ns_total: 300,
+        }),
+        "a selection without rows leaves every trace on the baseline"
     );
 }
 
@@ -1055,6 +1146,48 @@ fn groups_count_every_span_of_the_scope_traces() {
     assert_eq!(
         group_numbers(&data),
         vec![svc("checkout", 2, 0, 0, 100), svc("op", 1, 1, 1, 50)]
+    );
+}
+
+/// QRY-20 with D41: a scope row without a trace id is its own trace, on the
+/// selection side when it is a selection row.
+#[test]
+fn delta_counts_an_unset_trace_row_as_its_own_trace() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(
+        dir.path(),
+        vec![req(&[
+            group_span(1, 1, 0, 1, "checkout", 2, false),
+            group_span(1, 2, 1, 2, "op", 3, true),
+            group_span(0, 4, 0, 3, "checkout", 2, false),
+            group_span(0, 5, 0, 3, "op", 2, false),
+            group_span(2, 6, 0, 4, "op", 2, false),
+        ])],
+        "a",
+    );
+    let mut q = groups_query(&[]);
+    q.selection = selection(sfst::Filter::new().select("name", "checkout"));
+    let data = run(vec![sealed_source(dir.path(), &wal, "a")], q);
+
+    let svc = |name: &str| (Some("svc".to_string()), Some(name.to_string()));
+    let line = |(service, operation): (Option<String>, Option<String>), selection, baseline| {
+        (service, operation, selection, baseline)
+    };
+    assert_eq!(
+        group_sides(&data),
+        vec![
+            line(svc("op"), (1, 1, 50), (2, 0, 100)),
+            line(svc("checkout"), (2, 0, 100), (0, 0, 0)),
+        ]
+    );
+    assert_eq!(
+        data.groups.unwrap().delta,
+        Some(GroupsDelta {
+            selection_traces: 2,
+            baseline_traces: 2,
+            selection_self_ns_total: 150,
+            baseline_self_ns_total: 100,
+        })
     );
 }
 

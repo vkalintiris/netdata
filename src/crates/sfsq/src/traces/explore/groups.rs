@@ -1,9 +1,11 @@
 //! The Groups section: every span in the window of the traces with a span
 //! in scope (the trace join's second pass), grouped by service and
 //! operation. Pass 1 collects the scope's trace ids over every source;
-//! pass 2 walks each source's window rows and keeps those of the set.
+//! pass 2 walks each source's window rows and keeps those of the set. Under
+//! a selection each id carries whether a selection row is among its scope
+//! rows, and pass 2 splits every group by it (the Δ).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -11,18 +13,33 @@ use super::super::duration_hist::DurationHistogram;
 use super::query::{NAME_FIELD, SERVICE_FIELD, STATUS_FIELD};
 use super::rows::self_time;
 use super::shard::open_source;
-use super::{GroupKey, GroupNumbers, GroupRow, OtherGroups};
+use super::{GroupKey, GroupNumbers, GroupRow, GroupSides, OtherGroups, SideNumbers};
 
 /// Groups shown before the rest fold into one `other` row.
 pub const GROUPS_CAP: usize = 500;
 
+/// The scope's trace ids, each `true` when a selection row is among its
+/// scope rows (always `false` without a selection).
+pub(super) type ScopeTraces = HashMap<sfst::TraceId, bool>;
+
+/// Adds `id`, keeping it on the selection side once any row put it there.
+pub(super) fn add_trace(traces: &mut ScopeTraces, id: sfst::TraceId, selected: bool) {
+    *traces.entry(id).or_insert(false) |= selected;
+}
+
+/// One source's scope rows with an unset trace id, ascending: each counts
+/// as its own trace (D41). `selection` holds those that are selection rows.
+#[derive(Debug, Clone, Default)]
+pub(super) struct UnsetRows {
+    pub scope: Vec<u32>,
+    pub selection: Vec<u32>,
+}
+
 /// What pass 1 found, as one source's pass 2 needs it.
 pub(super) struct Join<'a> {
     /// The scope's trace ids over every source.
-    pub traces: &'a HashSet<sfst::TraceId>,
-    /// This source's scope rows with an unset trace id, ascending: each
-    /// counts as itself (D41).
-    pub unset: &'a [u32],
+    pub traces: &'a ScopeTraces,
+    pub unset: &'a UnsetRows,
 }
 
 /// One group's running numbers.
@@ -33,6 +50,22 @@ pub(super) struct GroupAcc {
     origins: u64,
     self_ns: u128,
     durations: DurationHistogram,
+    sides: GroupSides,
+}
+
+impl SideNumbers {
+    fn merge(&mut self, other: &SideNumbers) {
+        self.spans += other.spans;
+        self.errors_originated += other.errors_originated;
+        self.self_ns += other.self_ns;
+    }
+}
+
+impl GroupSides {
+    fn merge(&mut self, other: &GroupSides) {
+        self.selection.merge(&other.selection);
+        self.baseline.merge(&other.baseline);
+    }
 }
 
 impl GroupAcc {
@@ -42,6 +75,7 @@ impl GroupAcc {
         self.origins += other.origins;
         self.self_ns += other.self_ns;
         self.durations.merge(&other.durations);
+        self.sides.merge(&other.sides);
     }
 
     fn numbers(&self) -> GroupNumbers {
@@ -81,16 +115,19 @@ pub(super) fn evaluate_groups(
         return Ok(out);
     }
     let trace_ids = reader.trace_ids()?;
+    // Each kept row with its trace's side.
     let mut kept = Vec::new();
     for position in lo..hi {
         let id = trace_ids.get(position as usize);
-        let keep = if id.is_unset() {
-            join.unset.binary_search(&position).is_ok()
+        let side = if !id.is_unset() {
+            join.traces.get(&id).copied()
+        } else if join.unset.scope.binary_search(&position).is_ok() {
+            Some(join.unset.selection.binary_search(&position).is_ok())
         } else {
-            join.traces.contains(&id)
+            None
         };
-        if keep {
-            kept.push(position);
+        if let Some(selected) = side {
+            kept.push((position, selected));
         }
     }
     if kept.is_empty() {
@@ -117,21 +154,32 @@ pub(super) fn evaluate_groups(
     };
 
     let mut by_index: HashMap<(Option<u32>, Option<u32>), GroupAcc> = HashMap::new();
-    for position in kept {
+    for (position, selected) in kept {
         let offset = (position - lo) as usize;
         let key = (services.value_at(position), operations.value_at(position));
         let acc = by_index.entry(key).or_default();
+        let origin = u64::from(origins[offset]);
         acc.spans += 1;
         acc.errors += u64::from(errors[offset]);
-        acc.origins += u64::from(origins[offset]);
+        acc.origins += origin;
         let duration =
             durations.0.get(position as usize).copied().ok_or_else(|| {
                 sfst::Error::CorruptIndex(format!("no duration for row {position}"))
             })?;
         acc.durations.record(duration);
-        if let Some(children) = children {
-            acc.self_ns += self_time(durations, children, position)? as u128;
-        }
+        let self_ns = match children {
+            Some(children) => self_time(durations, children, position)? as u128,
+            None => 0,
+        };
+        acc.self_ns += self_ns;
+        let side = if selected {
+            &mut acc.sides.selection
+        } else {
+            &mut acc.sides.baseline
+        };
+        side.spans += 1;
+        side.errors_originated += origin;
+        side.self_ns += self_ns;
     }
     for ((service, operation), acc) in by_index {
         let key = GroupKey {
@@ -152,11 +200,13 @@ pub(super) struct Capped {
     pub total: u64,
     /// Self time over every group, `other` included.
     pub self_ns_total: u128,
+    /// Every group's sides added up, `other` included.
+    pub sides_total: GroupSides,
 }
 
 /// Ranks groups by span count (then by key, `None` after any value) and
-/// keeps the first `cap`.
-pub(super) fn cap_groups(groups: HashMap<GroupKey, GroupAcc>, cap: usize) -> Capped {
+/// keeps the first `cap`. With `sides`, rows and `other` carry them.
+pub(super) fn cap_groups(groups: HashMap<GroupKey, GroupAcc>, cap: usize, sides: bool) -> Capped {
     let mut ranked: Vec<(GroupKey, GroupAcc)> = groups.into_iter().collect();
     ranked.sort_by(|(a_key, a), (b_key, b)| b.spans.cmp(&a.spans).then_with(|| a_key.cmp(b_key)));
     let total = ranked.len() as u64;
@@ -166,14 +216,17 @@ pub(super) fn cap_groups(groups: HashMap<GroupKey, GroupAcc>, cap: usize) -> Cap
         folded: 0,
         total,
         self_ns_total: 0,
+        sides_total: GroupSides::default(),
     };
     let mut rest = GroupAcc::default();
     for (index, (key, acc)) in ranked.into_iter().enumerate() {
         capped.self_ns_total += acc.self_ns;
+        capped.sides_total.merge(&acc.sides);
         if index < cap {
             capped.rows.push(GroupRow {
                 key,
                 numbers: acc.numbers(),
+                delta: sides.then_some(acc.sides),
             });
         } else {
             rest.merge(&acc);
@@ -184,6 +237,7 @@ pub(super) fn cap_groups(groups: HashMap<GroupKey, GroupAcc>, cap: usize) -> Cap
         capped.other = Some(OtherGroups {
             groups: capped.folded,
             numbers: rest.numbers(),
+            delta: sides.then_some(rest.sides),
         });
     }
     capped
@@ -200,13 +254,24 @@ mod tests {
         }
     }
 
+    /// A group whose first `spans / 2` spans, with their origins and self
+    /// time, are on the selection side.
     fn acc(spans: u64, self_ns: u128, duration_ns: i64) -> GroupAcc {
+        let side = |spans: u64, self_ns: u128| SideNumbers {
+            spans,
+            errors_originated: spans / 4,
+            self_ns,
+        };
         let mut acc = GroupAcc {
             spans,
             errors: spans / 2,
             origins: spans / 4,
             self_ns,
             durations: DurationHistogram::new(),
+            sides: GroupSides {
+                selection: side(spans / 2, self_ns / 2),
+                baseline: side(spans - spans / 2, self_ns - self_ns / 2),
+            },
         };
         for _ in 0..spans {
             acc.durations.record(duration_ns);
@@ -224,7 +289,7 @@ mod tests {
             (key(Some("c"), Some("z")), acc(4, 50, 5_000_000)),
             (key(Some("d"), Some("z")), acc(2, 25, 9_000_000)),
         ]);
-        let capped = cap_groups(groups, 3);
+        let capped = cap_groups(groups, 3, true);
 
         let ranked: Vec<GroupKey> = capped.rows.iter().map(|row| row.key.clone()).collect();
         assert_eq!(
@@ -256,14 +321,46 @@ mod tests {
             }
         }
         assert_eq!(other.numbers.p95_ns, histogram.percentile(95));
+
+        let side = |spans, errors_originated, self_ns| SideNumbers {
+            spans,
+            errors_originated,
+            self_ns,
+        };
+        assert_eq!(
+            capped.rows[0].delta,
+            Some(GroupSides {
+                selection: side(5, 1, 100),
+                baseline: side(5, 1, 100),
+            })
+        );
+        assert_eq!(
+            other.delta,
+            Some(GroupSides {
+                selection: side(5 + 2 + 1, 1, 150 + 25 + 12),
+                baseline: side(5 + 2 + 1, 1, 150 + 25 + 13),
+            }),
+            "sides fold with their groups"
+        );
+        assert_eq!(
+            capped.sides_total,
+            GroupSides {
+                selection: side(23, 4, 50 + 100 + 150 + 200 + 25 + 12),
+                baseline: side(23, 4, 50 + 100 + 150 + 200 + 25 + 13),
+            }
+        );
     }
 
     #[test]
     fn groups_under_the_cap_fold_nothing() {
         let groups = HashMap::from([(key(Some("a"), Some("x")), acc(3, 7, 1_000))]);
-        let capped = cap_groups(groups, GROUPS_CAP);
+        let capped = cap_groups(groups, GROUPS_CAP, false);
         assert_eq!(capped.rows.len(), 1);
         assert!(capped.other.is_none());
+        assert!(
+            capped.rows[0].delta.is_none(),
+            "no sides without a selection"
+        );
         assert_eq!(
             (capped.folded, capped.total, capped.self_ns_total),
             (0, 1, 7)

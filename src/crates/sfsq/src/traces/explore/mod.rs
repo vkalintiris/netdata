@@ -84,12 +84,44 @@ pub struct GroupsData {
     pub rows: Vec<GroupRow>,
     /// The rest folded together; `None` when nothing was folded.
     pub other: Option<OtherGroups>,
+    /// With a selection: the scope's traces on each side of it; every row
+    /// and `other` then carry their sides.
+    pub delta: Option<GroupsDelta>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupRow {
     pub key: GroupKey,
     pub numbers: GroupNumbers,
+    /// With a selection.
+    pub delta: Option<GroupSides>,
+}
+
+/// The scope's traces split by a selection (QRY-20): a trace is on the
+/// selection side when any of its scope rows is a selection row, on the
+/// baseline side otherwise; a scope row without a trace id is its own trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupsDelta {
+    pub selection_traces: u64,
+    pub baseline_traces: u64,
+    /// Self time over every group, `other` included, per side.
+    pub selection_self_ns_total: u128,
+    pub baseline_self_ns_total: u128,
+}
+
+/// A group's rows split by the side of their trace; the two add up to the
+/// group's own numbers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GroupSides {
+    pub selection: SideNumbers,
+    pub baseline: SideNumbers,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SideNumbers {
+    pub spans: u64,
+    pub errors_originated: u64,
+    pub self_ns: u128,
 }
 
 /// A group: the rows' service and operation, `None` for rows without one.
@@ -139,6 +171,8 @@ pub struct OtherGroups {
     /// How many groups were folded.
     pub groups: u64,
     pub numbers: GroupNumbers,
+    /// With a selection.
+    pub delta: Option<GroupSides>,
 }
 
 /// Scope rows per bucket, stacked by one field.

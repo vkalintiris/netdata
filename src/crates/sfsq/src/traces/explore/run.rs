@@ -1,7 +1,7 @@
 //! Orchestration: prepare every source once, evaluate the readable ones,
 //! count the rest, and assemble the sections.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -9,7 +9,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::super::duration_hist::DurationHistogram;
 use super::compare::{self, ComparisonTotals, FieldComparison, ShareDiff};
-use super::groups::{GROUPS_CAP, GroupAcc, Join, cap_groups, evaluate_groups, merge_groups};
+use super::groups::{
+    GROUPS_CAP, GroupAcc, Join, ScopeTraces, UnsetRows, add_trace, cap_groups, evaluate_groups,
+    merge_groups,
+};
 use super::live::live_pass;
 use super::query::{ExploreQuery, ExploreRequestError, HIDDEN_FIELDS};
 use super::rows::{self, MoreRows, PageFold, ROW_VALUE_COLUMNS, RowFields};
@@ -17,7 +20,7 @@ use super::shard::{self, Evaluated, ExploreShard, evaluate};
 use super::source::{ExploreOptions, SourceTally, evaluate_prepared, is_sealed, prepare_all};
 use super::{
     ExploreData, FacetData, FacetValue, FacetsData, FieldInfo, FieldsData, GroupKey, GroupsData,
-    HistogramData, Percentiles, Row, RowsData, StackBucket, Totals,
+    GroupsDelta, HistogramData, Percentiles, Row, RowsData, StackBucket, Totals,
 };
 use crate::merge::{MergedFacet, merge_facets, merge_field_tables, merge_timelines};
 use crate::source::Mapped;
@@ -48,8 +51,8 @@ struct Lane<'q> {
     /// With Groups asked for: the scope's trace ids, each source's scope rows
     /// with an unset trace id, and the sources evaluated (pass 2 reads the
     /// same ones).
-    traces: HashSet<sfst::TraceId>,
-    unset: Vec<(usize, Vec<u32>)>,
+    traces: ScopeTraces,
+    unset: Vec<(usize, UnsetRows)>,
     evaluated: Vec<usize>,
 }
 
@@ -71,25 +74,26 @@ impl<'q> Lane<'q> {
             field_tables: Vec::new(),
             page: query.sections.rows.as_ref().map(PageFold::new),
             opened: Vec::new(),
-            traces: HashSet::new(),
+            traces: ScopeTraces::new(),
             unset: Vec::new(),
             evaluated: Vec::new(),
         }
     }
 
-    fn add_traces(&mut self, mut traces: HashSet<sfst::TraceId>) {
+    fn add_traces(&mut self, mut traces: ScopeTraces) {
         if traces.len() > self.traces.len() {
             std::mem::swap(&mut self.traces, &mut traces);
         }
-        self.traces.extend(traces);
+        for (id, selected) in traces {
+            add_trace(&mut self.traces, id, selected);
+        }
     }
 
     fn add(&mut self, mut shard: ExploreShard, source: usize, mapped: Mapped) {
         self.evaluated.push(source);
         self.add_traces(std::mem::take(&mut shard.scope_traces));
-        if !shard.unset_scope.is_empty() {
-            self.unset
-                .push((source, std::mem::take(&mut shard.unset_scope)));
+        if !shard.unset.scope.is_empty() {
+            self.unset.push((source, std::mem::take(&mut shard.unset)));
         }
         self.matched += shard.matched;
         self.errors += shard.errors;
@@ -244,9 +248,9 @@ pub fn explore(
     // The trace join's second pass: the window rows of every scope trace, in
     // the sources the first pass evaluated.
     let groups_pass = if query.sections.groups {
-        let mut unset_by_source: Vec<Vec<u32>> = vec![Vec::new(); sources.len()];
-        for (index, positions) in unset {
-            unset_by_source[index] = positions;
+        let mut unset_by_source: Vec<UnsetRows> = vec![UnsetRows::default(); sources.len()];
+        for (index, rows) in unset {
+            unset_by_source[index] = rows;
         }
         let mut joined = vec![false; sources.len()];
         for index in evaluated {
@@ -262,7 +266,7 @@ pub fn explore(
             GroupsLane::default,
             |lane, _, index, mapped| {
                 let unset = &unset_by_source[index];
-                if !joined[index] || (traces.is_empty() && unset.is_empty()) {
+                if !joined[index] || (traces.is_empty() && unset.scope.is_empty()) {
                     return;
                 }
                 let join = Join {
@@ -289,7 +293,20 @@ pub fn explore(
             merge_groups(&mut folded.groups, lane.groups);
             folded.failed += lane.failed;
         }
-        Some(folded)
+        // The scope's traces per side: `(selection, baseline)`.
+        let sides = query.selection.as_ref().map(|_| {
+            let mut selection = 0;
+            for &selected in traces.values() {
+                selection += u64::from(selected);
+            }
+            let mut baseline = traces.len() as u64 - selection;
+            for rows in &unset_by_source {
+                selection += rows.selection.len() as u64;
+                baseline += (rows.scope.len() - rows.selection.len()) as u64;
+            }
+            (selection, baseline)
+        });
+        Some((folded, sides))
     } else {
         None
     };
@@ -444,11 +461,11 @@ pub fn explore(
         }
     });
 
-    let groups = groups_pass.map(|pass| {
+    let groups = groups_pass.map(|(pass, sides)| {
         let mut own = StatusBuilder::new();
         own.add_n(PartialReason::SourceFailure, pass.failed);
         own.of(PartialReason::SourceFailure, candidates);
-        let capped = cap_groups(pass.groups, GROUPS_CAP);
+        let capped = cap_groups(pass.groups, GROUPS_CAP, sides.is_some());
         own.add_n(PartialReason::GroupsCap, capped.folded);
         own.of(PartialReason::GroupsCap, capped.total);
         status.merge(own.clone());
@@ -464,6 +481,12 @@ pub fn explore(
             self_ns_total: capped.self_ns_total,
             rows: capped.rows,
             other: capped.other,
+            delta: sides.map(|(selection_traces, baseline_traces)| GroupsDelta {
+                selection_traces,
+                baseline_traces,
+                selection_self_ns_total: capped.sides_total.selection.self_ns,
+                baseline_self_ns_total: capped.sides_total.baseline.self_ns,
+            }),
         }
     });
 

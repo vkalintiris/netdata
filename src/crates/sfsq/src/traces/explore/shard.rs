@@ -1,9 +1,10 @@
 //! One source's contribution, from its index statistics.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::super::duration_hist::DurationHistogram;
+use super::groups::{ScopeTraces, UnsetRows, add_trace};
 use super::query::{ExploreQuery, ExploreSelection, HIDDEN_FIELDS, STATUS_FIELD};
 use super::rows::{RowsSpec, SourceRows, source_rows};
 
@@ -38,9 +39,9 @@ pub(super) struct ExploreShard {
     /// This source's fields, for the field list.
     pub field_table: Option<sfst::FieldTable>,
     /// With Groups asked for: the trace ids of the scope rows in the window,
-    /// and the scope rows whose trace id is unset (ascending).
-    pub scope_traces: HashSet<sfst::TraceId>,
-    pub unset_scope: Vec<u32>,
+    /// flagged by the selection, and the scope rows whose trace id is unset.
+    pub scope_traces: ScopeTraces,
+    pub unset: UnsetRows,
 }
 
 /// How a readable source was evaluated.
@@ -196,12 +197,25 @@ pub(super) fn evaluate(
     }
     if query.sections.groups {
         let trace_ids = reader.trace_ids()?;
+        // Selection rows are scope rows: walk both ascending lists together.
+        let selected = match &both {
+            Some(both) => reader.matched_positions(both, window.clone())?,
+            None => Vec::new(),
+        };
+        let mut next = 0;
         for &position in &positions {
+            while next < selected.len() && selected[next] < position {
+                next += 1;
+            }
+            let in_selection = next < selected.len() && selected[next] == position;
             let id = trace_ids.get(position as usize);
             if id.is_unset() {
-                shard.unset_scope.push(position);
+                shard.unset.scope.push(position);
+                if in_selection {
+                    shard.unset.selection.push(position);
+                }
             } else {
-                shard.scope_traces.insert(id);
+                add_trace(&mut shard.scope_traces, id, in_selection);
             }
         }
     }
