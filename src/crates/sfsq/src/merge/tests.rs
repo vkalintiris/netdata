@@ -220,3 +220,20 @@ fn merge_facets_reports_what_the_cap_leaves_out() {
         "the three single-row values went"
     );
 }
+
+#[test]
+fn merge_field_tables_takes_the_highest_tier_in_any_order() {
+    let table = |tier| -> sfst::FieldTable {
+        vec![sfst::FieldEntry {
+            name: "route".into(),
+            cardinality: 7,
+            tier,
+        }]
+        .into()
+    };
+    let low = table(sfst::FieldTier::Low);
+    let mid = table(sfst::FieldTier::Mid);
+    for files in [[low.clone(), mid.clone()], [mid, low]] {
+        assert_eq!(merge_field_tables(&files)[0].tier, sfst::FieldTier::Mid);
+    }
+}

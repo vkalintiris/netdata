@@ -21,6 +21,9 @@ pub const ROW_COLUMNS_MAX: usize = 32;
 /// describe many events or links at once, never the span row itself.
 pub const NOT_ROW_COLUMN_PREFIXES: [&str; 2] = ["events.", "links."];
 
+/// Values every row carries besides its fields.
+pub const ROW_VALUE_COLUMNS: [&str; 3] = ["duration", "trace_id", "span_id"];
+
 /// Whether `field` may be asked for as a row column.
 pub fn is_row_column(field: &str) -> bool {
     !field.is_empty()

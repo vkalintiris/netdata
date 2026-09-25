@@ -162,10 +162,10 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
 }
 
 /// Merge per-file field tables into one, keyed by name and sorted by
-/// name. Keeps **every** field across **all** tiers; a field's tier is
-/// bumped to [`sfst::FieldTier::High`] if it's high-card in *any* input,
-/// and its `cardinality` is the max across inputs (the concept is
-/// per-file, not global, so the max is a conservative estimate).
+/// name. Keeps **every** field across **all** tiers; a field's tier is the
+/// highest across inputs (so [`sfst::FieldTier::High`] if it's high-card in
+/// *any* input), and its `cardinality` is the max across inputs (the concept
+/// is per-file, not global, so the max is a conservative estimate).
 ///
 /// The merge is associative and drops nothing, so it is safe to apply at
 /// every level of a fan-out: a child merges its own files' tables, the
@@ -179,9 +179,10 @@ pub fn merge_timelines(per_file: Vec<sfst::Timeline>) -> Option<sfst::Timeline> 
 pub fn merge_field_tables(per_file: &[sfst::FieldTable]) -> sfst::FieldTable {
     use std::collections::BTreeMap;
 
-    // name → (max cardinality across files, tier). The tier is bumped to
-    // `High` if the field is high-card in *any* file so the marker
-    // survives nested merges and the root-level high-card drop.
+    // name → (max cardinality across files, highest tier). A field high-card
+    // in *any* file stays `High`, so the marker survives nested merges and the
+    // root-level high-card drop; the highest tier keeps the merge independent
+    // of file order.
     let mut by_name: BTreeMap<String, (u32, sfst::FieldTier)> = BTreeMap::new();
 
     for field_table in per_file {
@@ -190,9 +191,7 @@ pub fn merge_field_tables(per_file: &[sfst::FieldTable]) -> sfst::FieldTable {
                 .entry(field.name.clone())
                 .and_modify(|(cardinality, tier)| {
                     *cardinality = (*cardinality).max(field.cardinality);
-                    if field.is_high_card() {
-                        *tier = sfst::FieldTier::High;
-                    }
+                    *tier = (*tier).max(field.tier);
                 })
                 .or_insert((field.cardinality, field.tier));
         }

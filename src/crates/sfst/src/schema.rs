@@ -105,8 +105,8 @@ pub struct FieldEntry {
 /// Cardinality tier for a field. The cardinality threshold `T` and
 /// its 10× cutoff (set by the producer; default
 /// [`DEFAULT_CARDINALITY_THRESHOLD`]) define the boundaries: `< T` is
-/// low, `[T, 10·T)` is mid, `≥ 10·T` is high.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// low, `[T, 10·T)` is mid, `≥ 10·T` is high. Ordered low to high.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum FieldTier {
     Low,
     Mid,

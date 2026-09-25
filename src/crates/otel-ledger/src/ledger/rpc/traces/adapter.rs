@@ -840,6 +840,7 @@ pub(crate) fn to_explore_query(
                 fields: f.fields.clone(),
             }),
             rows: params.rows.clone(),
+            fields: params.fields,
         },
     };
     (query, aligned_after, aligned_before)
@@ -854,8 +855,8 @@ pub(crate) fn to_explore_response(
 ) -> super::wire::ExploreResponse {
     use super::wire::{
         BucketWire, ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire,
-        ExploreResponse, GridWire, HistogramWire, PercentileMethodWire, PercentilesWire, RowWire,
-        RowsWire, TotalsWire, UnavailableFacetWire, WindowWire,
+        ExploreResponse, FieldWire, FieldsWire, GridWire, HistogramWire, PercentileMethodWire,
+        PercentilesWire, RowWire, RowsWire, TotalsWire, UnavailableFacetWire, WindowWire,
     };
     let percentiles = |p: Option<sfsq::traces::explore::Percentiles>| {
         p.map(|p| PercentilesWire {
@@ -957,6 +958,29 @@ pub(crate) fn to_explore_response(
             items,
         }
     });
+    let fields = data.fields.map(|f| {
+        let mut items = Vec::with_capacity(f.items.len());
+        for field in f.items {
+            items.push(FieldWire {
+                tier: match field.tier {
+                    sfst::FieldTier::Low => "low",
+                    sfst::FieldTier::Mid => "mid",
+                    sfst::FieldTier::High => "high",
+                },
+                name: field.name,
+                chip: field.chip,
+                facet: field.facet,
+                stack: field.stack,
+                text: field.text,
+                column: field.column,
+            });
+        }
+        FieldsWire {
+            status: StatusWire::from(&f.status),
+            items,
+            columns: f.columns,
+        }
+    });
     ExploreResponse {
         status: 200,
         response_type: "traces",
@@ -976,6 +1000,7 @@ pub(crate) fn to_explore_response(
             histogram,
             facets,
             rows,
+            fields,
         },
     }
 }

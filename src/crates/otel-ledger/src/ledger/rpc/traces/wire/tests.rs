@@ -401,7 +401,7 @@ fn info_response_shape_is_pinned() {
             ],
             "required_params": [],
             "help": "Query and visualize OpenTelemetry traces.",
-            "sections": ["histogram", "facets", "rows"],
+            "sections": ["histogram", "facets", "rows", "fields"],
             "defaults": {
                 "filter": {"_role": ["root", "inbound"]},
                 "stack": "status_code",
@@ -763,6 +763,8 @@ fn explore_rejects_bad_requests() {
             "all-zero trace id",
         ),
         (json!({"explore": {"sections": {"groups": {}}}}), "not available yet"),
+        (json!({"explore": {"sections": {"fields": {"bogus": 1}}}}), "unknown field"),
+        (json!({"explore": {"sections": {"fields": null}}}), "omit it instead"),
         (json!({"explore": {"sections": {"rows": {"order": "oldest"}}}}), "unknown variant"),
         (json!({"explore": {"sections": {"rows": {"direction": "up"}}}}), "unknown variant"),
         (json!({"explore": {"sections": {"rows": {"limit": 0}}}}), "must be 1 to 1000"),
@@ -804,7 +806,16 @@ fn explore_takes_text_and_trace_ids() {
 #[test]
 fn explore_takes_rows() {
     use sfsq::traces::explore::{RowDirection, RowKey, RowOrder, RowsSpec};
-    assert_eq!(explore(json!({})).rows, None, "rows only when asked for");
+    assert_eq!(
+        explore(json!({"sections": {}})).rows,
+        None,
+        "rows only when asked for"
+    );
+    assert_eq!(
+        explore(json!({})).rows,
+        explore(json!({"sections": {"rows": {}}})).rows,
+        "omitted sections mean every section"
+    );
     assert_eq!(
         explore(json!({"sections": {"rows": {}}})).rows,
         Some(RowsSpec {
@@ -839,4 +850,14 @@ fn explore_takes_rows() {
             columns: Vec::new(),
         })
     );
+}
+
+#[test]
+fn explore_lists_fields_when_asked_or_by_default() {
+    assert!(
+        explore(json!({})).fields,
+        "omitted sections mean every section"
+    );
+    assert!(!explore(json!({"sections": {}})).fields);
+    assert!(explore(json!({"sections": {"fields": {}}})).fields);
 }

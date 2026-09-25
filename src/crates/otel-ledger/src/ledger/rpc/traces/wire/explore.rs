@@ -34,6 +34,8 @@ pub struct ExploreParams {
     pub histogram: Option<HistogramRequest>,
     pub facets: Option<FacetsRequest>,
     pub rows: Option<sfsq::traces::explore::RowsSpec>,
+    /// Whether to list the window's fields.
+    pub fields: bool,
 }
 
 /// A window in whole seconds: both bounds relative to now (`≤ 0`) or both
@@ -131,7 +133,12 @@ fn section<T: serde::de::DeserializeOwned>(
     }
 }
 
+/// The fields section takes no parameters.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFields {}
+
+#[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawRows {
     #[serde(default)]
@@ -276,20 +283,19 @@ impl TryFrom<RawExploreParams> for ExploreParams {
             }
         }
 
-        let (histogram, facets, rows) = match raw.sections {
+        let (histogram, facets, rows, fields) = match raw.sections {
             None => (
                 Some(HistogramRequest {
                     stack: sfsq::traces::explore::DEFAULT_STACK_FIELD.to_string(),
                     percentiles: true,
                 }),
                 Some(FacetsRequest { fields: None }),
-                None,
+                Some(RawRows::default().try_into()?),
+                true,
             ),
             Some(sections) => {
-                for (name, value) in [("groups", &sections.groups), ("fields", &sections.fields)] {
-                    if value.is_some() {
-                        return Err(format!("section `{name}` is not available yet"));
-                    }
+                if sections.groups.is_some() {
+                    return Err("section `groups` is not available yet".into());
                 }
                 let histogram = match section::<RawHistogram>("histogram", sections.histogram)? {
                     None => None,
@@ -326,7 +332,8 @@ impl TryFrom<RawExploreParams> for ExploreParams {
                     None => None,
                     Some(raw) => Some(raw.try_into()?),
                 };
-                (histogram, facets, rows)
+                let fields = section::<RawFields>("fields", sections.fields)?.is_some();
+                (histogram, facets, rows, fields)
             }
         };
 
@@ -338,6 +345,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
             histogram,
             facets,
             rows,
+            fields,
         })
     }
 }
@@ -365,6 +373,8 @@ pub struct ExploreDataWire {
     pub facets: Option<ExploreFacetsWire>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows: Option<RowsWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<FieldsWire>,
 }
 
 /// The window actually answered: the request's, aligned outward to whole
@@ -495,4 +505,27 @@ pub struct RowWire {
     pub role: Option<String>,
     pub status: Option<String>,
     pub columns: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FieldsWire {
+    pub status: StatusWire,
+    /// By name.
+    pub items: Vec<FieldWire>,
+    /// Values every row carries besides its fields.
+    pub columns: Vec<&'static str>,
+}
+
+/// One field: its highest tier across the window's files and what it
+/// supports.
+#[derive(Debug, Serialize)]
+pub struct FieldWire {
+    pub name: String,
+    /// `"low"`, `"mid"` or `"high"`.
+    pub tier: &'static str,
+    pub chip: bool,
+    pub facet: bool,
+    pub stack: bool,
+    pub text: bool,
+    pub column: bool,
 }

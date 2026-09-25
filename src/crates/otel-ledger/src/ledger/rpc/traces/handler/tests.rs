@@ -2013,3 +2013,32 @@ async fn explore_lists_the_slowest_rows() {
         "equal durations: the latest start first"
     );
 }
+
+#[tokio::test]
+async fn explore_lists_the_window_fields() {
+    let (h, _) = explore_corpus().await;
+    let body = json!({"explore": {"after": 1, "before": 10, "sections": {"fields": {}}}});
+    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
+    let fields = &v["data"]["fields"];
+    assert_eq!(fields["status"], json!({"complete": true}));
+    assert_eq!(
+        fields["columns"],
+        json!(["duration", "trace_id", "span_id"])
+    );
+    let low = |name: &str, text: bool| {
+        json!({"name": name, "tier": "low", "chip": true, "facet": true, "stack": true,
+               "text": text, "column": true})
+    };
+    assert_eq!(
+        fields["items"],
+        json!([
+            low("_duration_band", false),
+            low("_role", false),
+            low("name", true),
+            low("resource.attributes.service.name", true),
+            low("status_code", true),
+            low("status_message", true)
+        ]),
+        "every stored field by name, without `_status_code`"
+    );
+}

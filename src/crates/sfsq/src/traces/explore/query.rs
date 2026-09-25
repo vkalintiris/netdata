@@ -28,6 +28,8 @@ pub struct Sections {
     pub histogram: Option<HistogramSpec>,
     pub facets: Option<FacetSpec>,
     pub rows: Option<super::rows::RowsSpec>,
+    /// The field list: every field of the window's files and what it supports.
+    pub fields: bool,
 }
 
 /// The time histogram: rows per bucket, stacked by the values of one field,

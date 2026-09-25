@@ -28,6 +28,8 @@ pub(super) struct ExploreShard {
     pub facet_high: BTreeSet<String>,
     /// Scope rows that can make the rows page.
     pub rows: Option<SourceRows>,
+    /// This source's fields, for the field list.
+    pub field_table: Option<sfst::FieldTable>,
 }
 
 /// How a readable source was evaluated.
@@ -104,6 +106,9 @@ pub(super) fn evaluate(
     }
     if let Some(spec) = &query.sections.rows {
         shard.rows = Some(source_rows(&reader, &scope, window, spec, source)?);
+    }
+    if query.sections.fields {
+        shard.field_table = Some(reader.field_table().clone());
     }
     Ok(Evaluated::Shard(Box::new(shard)))
 }

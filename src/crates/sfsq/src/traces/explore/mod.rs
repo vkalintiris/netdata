@@ -21,8 +21,8 @@ pub use query::{
     FacetSpec, HIDDEN_FIELDS, HistogramSpec, Sections,
 };
 pub use rows::{
-    MoreRows, NOT_ROW_COLUMN_PREFIXES, ROW_COLUMNS_MAX, ROWS_PAGE_MAX, RowDirection, RowKey,
-    RowOrder, RowsSpec, TOP_K_MAX, is_row_column,
+    MoreRows, NOT_ROW_COLUMN_PREFIXES, ROW_COLUMNS_MAX, ROW_VALUE_COLUMNS, ROWS_PAGE_MAX,
+    RowDirection, RowKey, RowOrder, RowsSpec, TOP_K_MAX, is_row_column,
 };
 pub use run::explore;
 
@@ -41,6 +41,7 @@ pub struct ExploreData {
     pub histogram: Option<HistogramData>,
     pub facets: Option<FacetsData>,
     pub rows: Option<RowsData>,
+    pub fields: Option<FieldsData>,
 }
 
 impl ExploreData {
@@ -53,6 +54,7 @@ impl ExploreData {
             histogram: None,
             facets: None,
             rows: None,
+            fields: None,
         }
     }
 }
@@ -148,6 +150,49 @@ pub struct Row {
     pub status: Option<String>,
     /// Parallel to [`RowsData::columns`]: every value, sorted.
     pub columns: Vec<Vec<String>>,
+}
+
+/// Every field of the window's readable files, and what the explorer can do
+/// with each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldsData {
+    /// The source reasons.
+    pub status: QueryStatus,
+    /// By name, without [`HIDDEN_FIELDS`].
+    pub items: Vec<FieldInfo>,
+    /// Values every row carries besides its fields ([`ROW_VALUE_COLUMNS`]).
+    pub columns: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldInfo {
+    pub name: String,
+    /// The highest tier across files.
+    pub tier: sfst::FieldTier,
+    /// A scope chip may name it (every field).
+    pub chip: bool,
+    /// Facet values and stacking need it low or mid cardinality in every file.
+    pub facet: bool,
+    pub stack: bool,
+    /// Text search looks at its values: not a plugin-added `_` field.
+    pub text: bool,
+    /// A rows column may show it: not an events or links field.
+    pub column: bool,
+}
+
+impl FieldInfo {
+    fn of(entry: sfst::FieldEntry) -> Self {
+        let low_or_mid = !entry.is_high_card();
+        FieldInfo {
+            chip: true,
+            facet: low_or_mid,
+            stack: low_or_mid,
+            text: !entry.name.starts_with('_'),
+            column: rows::is_row_column(&entry.name),
+            tier: entry.tier,
+            name: entry.name,
+        }
+    }
 }
 
 /// Duration percentiles from the fixed histogram

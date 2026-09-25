@@ -44,6 +44,7 @@ fn query(stack: &str, chips: &[(&str, &str)]) -> ExploreQuery {
             }),
             facets: None,
             rows: None,
+            fields: false,
         },
     }
 }
@@ -143,6 +144,7 @@ fn entry_spans_are_counted_by_status() {
             histogram: Some(one_request_histogram(1)),
             facets: None,
             rows: None,
+            fields: None,
         }
     );
 

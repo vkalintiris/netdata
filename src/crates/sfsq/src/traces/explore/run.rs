@@ -8,15 +8,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 
 use super::super::duration_hist::DurationHistogram;
-use super::query::{ExploreQuery, ExploreRequestError};
-use super::rows::{self, MoreRows, RowFields, RowsSpec, SourceRows};
+use super::query::{ExploreQuery, ExploreRequestError, HIDDEN_FIELDS};
+use super::rows::{self, MoreRows, ROW_VALUE_COLUMNS, RowFields, RowsSpec, SourceRows};
 use super::shard::{Evaluated, evaluate};
 use super::source::{Prepared, prepare};
 use super::{
-    ExploreData, FacetData, FacetValue, FacetsData, HistogramData, Percentiles, Row, RowsData,
-    StackBucket, Totals,
+    ExploreData, FacetData, FacetValue, FacetsData, FieldInfo, FieldsData, HistogramData,
+    Percentiles, Row, RowsData, StackBucket, Totals,
 };
-use crate::merge::{MergedFacet, merge_facets, merge_timelines};
+use crate::merge::{MergedFacet, merge_facets, merge_field_tables, merge_timelines};
 use crate::source::Mapped;
 use crate::traces::{PartialReason, StatusBuilder, TimeWindow, TraceSource, validate_sources};
 
@@ -51,6 +51,7 @@ pub fn explore(
     let mut facets = Vec::new();
     let mut facet_high = BTreeSet::new();
     let mut page_rows = Vec::new();
+    let mut field_tables = Vec::new();
     // Sources holding row candidates, kept open to read the page's fields; a
     // candidate's `source` indexes this list.
     let mut opened: Vec<(&TraceSource, Mapped)> = Vec::new();
@@ -91,6 +92,7 @@ pub fn explore(
                                 *sum += n;
                             }
                         }
+                        field_tables.extend(shard.field_table);
                         if let Some(rows) = shard.rows {
                             if !rows.candidates.is_empty() {
                                 opened.push((source, mapped));
@@ -247,12 +249,27 @@ pub fn explore(
         }
     });
 
+    let fields = query.sections.fields.then(|| {
+        let mut items = Vec::new();
+        for entry in merge_field_tables(&field_tables).iter() {
+            if !HIDDEN_FIELDS.contains(&entry.name.as_str()) {
+                items.push(FieldInfo::of(entry.clone()));
+            }
+        }
+        FieldsData {
+            status: shared.clone().finish(),
+            items,
+            columns: ROW_VALUE_COLUMNS.to_vec(),
+        }
+    });
+
     Ok(ExploreData {
         status: status.finish(),
         sources: candidates,
         histogram,
         facets,
         rows,
+        fields,
     })
 }
 

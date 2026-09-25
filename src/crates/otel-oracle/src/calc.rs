@@ -309,6 +309,55 @@ pub fn bucket_durations(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec
     buckets
 }
 
+/// A field's cardinality tier in one stored unit, from its distinct values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Tier {
+    Low,
+    Mid,
+    High,
+}
+
+/// Distinct values from which a field is mid; ten times as many make it high.
+const TIER_THRESHOLD: usize = 100;
+
+/// Fields the explorer never lists: the raw enum numbers behind `kind` and
+/// `status_code`.
+const UNLISTED_FIELDS: [&str; 2] = ["_kind", "_status_code"];
+
+pub fn tier_of(distinct: usize) -> Tier {
+    if distinct < TIER_THRESHOLD {
+        Tier::Low
+    } else if distinct < 10 * TIER_THRESHOLD {
+        Tier::Mid
+    } else {
+        Tier::High
+    }
+}
+
+/// Every listed field of the rows, with its highest tier across the stored
+/// units (each unit classifies its fields alone).
+pub fn field_list(spans: &[OracleSpan]) -> BTreeMap<String, Tier> {
+    let mut distinct: BTreeMap<(usize, &str), BTreeSet<&str>> = BTreeMap::new();
+    for span in spans {
+        for (field, values) in &span.fields {
+            let set = distinct.entry((span.unit, field.as_str())).or_default();
+            for value in values {
+                set.insert(value.as_str());
+            }
+        }
+    }
+    let mut out: BTreeMap<String, Tier> = BTreeMap::new();
+    for ((_, field), values) in distinct {
+        if UNLISTED_FIELDS.contains(&field) {
+            continue;
+        }
+        let tier = tier_of(values.len());
+        let entry = out.entry(field.to_string()).or_insert(tier);
+        *entry = (*entry).max(tier);
+    }
+    out
+}
+
 /// A row's content key: start, trace id, span id; an unset id is all zeros.
 /// Newest order is this key descending, ids compared as bytes.
 pub type RowKey = (i64, [u8; 16], [u8; 8]);

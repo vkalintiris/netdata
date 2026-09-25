@@ -363,6 +363,7 @@ fn explore_query(grid: &Grid, scope: &Scope, stack: &str) -> ExploreQuery {
             }),
             facets: None,
             rows: None,
+            fields: false,
         },
     }
 }
@@ -851,6 +852,50 @@ fn explore_slowest_rows_match_the_calculator() {
                 assert!(!want.is_empty(), "{case}");
                 assert_rows_match(&got, &want, &case);
             }
+        }
+    }
+}
+
+/// ORC-FIELDS: the field list names exactly the calculator's fields; with the
+/// live WAL read as one unit, each field's tier (and so what it supports)
+/// equals the calculator's too.
+#[test]
+fn explore_field_list_matches_the_calculator() {
+    let stored = store(2400, 101);
+    let grid = stored.grid;
+    let want = calc::field_list(&stored.oracle);
+    let tiers: BTreeSet<calc::Tier> = want.values().copied().collect();
+    assert!(
+        tiers.contains(&calc::Tier::Mid) && tiers.contains(&calc::Tier::High),
+        "the corpus reaches every tier: {tiers:?}"
+    );
+    for live in [Live::Tail, Live::Chunk, Live::Split(100)] {
+        let mut query = explore_query(&grid, &Scope::default(), model::STATUS_FIELD);
+        query.sections.histogram = None;
+        query.sections.fields = true;
+        let data = explore::explore(
+            explore_sources(&stored, live),
+            query,
+            tokio_util::sync::CancellationToken::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        )
+        .unwrap();
+        let fields = data.fields.expect("fields section");
+        assert!(fields.status.is_complete(), "{live:?}");
+        let names: Vec<&str> = fields.items.iter().map(|f| f.name.as_str()).collect();
+        let want_names: Vec<&str> = want.keys().map(String::as_str).collect();
+        assert_eq!(names, want_names, "{live:?}");
+        if matches!(live, Live::Split(_)) {
+            continue;
+        }
+        for field in &fields.items {
+            let tier = match field.tier {
+                sfst::FieldTier::Low => calc::Tier::Low,
+                sfst::FieldTier::Mid => calc::Tier::Mid,
+                sfst::FieldTier::High => calc::Tier::High,
+            };
+            assert_eq!(tier, want[&field.name], "{live:?} {}", field.name);
+            assert_eq!(field.facet, tier != calc::Tier::High, "{}", field.name);
         }
     }
 }
