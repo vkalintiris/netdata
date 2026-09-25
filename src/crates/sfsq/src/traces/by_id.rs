@@ -223,6 +223,9 @@ pub fn trace_by_id(
         if cancel.is_cancelled() {
             return Ok(cancelled_empty(status));
         }
+        if bloom_excludes(mapped.bytes(), query.trace_id) {
+            continue;
+        }
         match sfst::IndexReader::open(mapped.bytes()) {
             Ok(reader) => readers.push((reader, source)),
             Err(e) => {
@@ -329,6 +332,23 @@ pub fn trace_by_id(
         field_kinds,
         family,
     })
+}
+
+/// Whether a file's trace-id bloom rules `trace_id` out, read from its table
+/// of contents and bloom chunk alone, before anything else is decoded. A
+/// missing or unreadable bloom rules nothing out: the full open reports a
+/// broken file, and the session falls back to exact lookups.
+fn bloom_excludes(bytes: &[u8], trace_id: sfst::TraceId) -> bool {
+    let Ok(chunks) = sfst::ChunkReader::open(bytes) else {
+        return false;
+    };
+    if !chunks.has_trace_id_bloom() {
+        return false;
+    }
+    match chunks.trace_id_bloom() {
+        Ok(bloom) => !bloom.might_contain(trace_id),
+        Err(_) => false,
+    }
 }
 
 /// The seal's derivation over one assembled trace. A span is an error when

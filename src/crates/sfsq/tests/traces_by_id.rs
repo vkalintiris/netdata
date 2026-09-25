@@ -659,3 +659,35 @@ fn err_origin_is_never_a_span_field() {
             .all(|(field, _)| field != sfst::ERR_ORIGIN_FIELD)
     );
 }
+
+/// QRY-28: a file whose trace-id bloom rules the id out is skipped before
+/// anything else of it is decoded. Nineteen files hold other traces and a
+/// corrupt primary chunk that a full open would report; only the file holding
+/// the trace is opened, so the answer is complete.
+#[test]
+fn a_bloom_miss_opens_nothing_else_of_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut sources = Vec::new();
+    for i in 0..20u8 {
+        let trace = if i == 7 { TRACE } else { [i + 1; 16] };
+        let spans: Vec<SpanSpec> = [sp(1, 0, 1_000, "root"), sp(2, 1, 2_000, "child")]
+            .into_iter()
+            .map(|span| SpanSpec { trace, ..span })
+            .collect();
+        let name = format!("f{i}");
+        let wal = write_wal(dir.path(), vec![req(&spans)], &name);
+        let path = dir.path().join(format!("{name}.sfst"));
+        ng_index::build_sfst_traces_file(&wal, &path, &ng_index::Metrics::new()).unwrap();
+        if i != 7 {
+            common::corrupt_chunk(&path, *b"PRIM");
+        }
+        sources.push(common::sealed_source_at(&path, &name));
+    }
+    let data = run(sources);
+    assert_eq!(
+        data.status,
+        sfsq::traces::QueryStatus::Complete,
+        "no skipped file was opened"
+    );
+    assert_eq!(data.trace.spans.len(), 2);
+}
