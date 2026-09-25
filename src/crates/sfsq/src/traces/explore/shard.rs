@@ -1,5 +1,6 @@
 //! One source's contribution, from its index statistics.
 
+use super::super::duration_hist::DurationHistogram;
 use super::query::ExploreQuery;
 
 /// A readable source's numbers for the request.
@@ -16,6 +17,8 @@ pub(super) struct ExploreShard {
     /// stack field is high-cardinality here.
     pub other: Vec<u64>,
     pub stack_high: bool,
+    /// Per bucket: scope-row durations (only when percentiles are asked for).
+    pub durations: Vec<DurationHistogram>,
 }
 
 /// How a readable source was evaluated.
@@ -56,8 +59,42 @@ pub(super) fn evaluate(bytes: &[u8], query: &ExploreQuery) -> Result<Evaluated, 
             }
             Err(e) => return Err(e),
         }
+        if histogram.percentiles {
+            shard.durations = bucket_durations(&reader, &scope, grid)?;
+        }
     }
     Ok(Evaluated::Shard(shard))
+}
+
+/// Scope-row durations per grid bucket: the scope's positions in the window
+/// walked against each bucket's position range (both ascending).
+fn bucket_durations(
+    reader: &sfst::IndexReader<'_>,
+    scope: &sfst::BitmapFilter,
+    grid: sfst::Grid,
+) -> Result<Vec<DurationHistogram>, sfst::Error> {
+    let positions = reader.matched_positions(scope, grid.range_ns())?;
+    let ranges = reader.load_timestamps()?.bucket_ranges(grid);
+    let durations = reader.durations()?;
+    let mut out = vec![DurationHistogram::new(); ranges.len()];
+    let mut next = 0;
+    for (bucket, (lo, hi)) in ranges.into_iter().enumerate() {
+        while next < positions.len() && positions[next] < lo {
+            next += 1;
+        }
+        while next < positions.len() && positions[next] < hi {
+            let duration = durations
+                .0
+                .get(positions[next] as usize)
+                .copied()
+                .ok_or_else(|| {
+                    sfst::Error::CorruptIndex(format!("no duration for row {}", positions[next]))
+                })?;
+            out[bucket].record(duration);
+            next += 1;
+        }
+    }
+    Ok(out)
 }
 
 /// The span status field and its error value.

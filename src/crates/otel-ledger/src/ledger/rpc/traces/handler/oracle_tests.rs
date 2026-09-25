@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::ledger::rpc::traces::fixtures::{install_sealed, install_wal, make_registries};
 use bridge::function::ProgressState;
-use otel_oracle::calc::{self, Grid, Scope};
+use otel_oracle::calc::{self, Grid, Scope, fixed_histogram};
 use otel_oracle::corpus::{self, MeshParams};
 use otel_oracle::model;
 use serde_json::json;
@@ -103,12 +103,36 @@ async fn explore_histogram_and_totals_match_the_calculator() {
                 "{body}"
             );
 
+            let pct = |values: Option<[i64; 3]>| match values {
+                Some([p50, p95, p99]) => json!({"p50_ns": p50, "p95_ns": p95, "p99_ns": p99}),
+                None => json!({}),
+            };
+            let per_bucket = calc::bucket_durations(&oracle, &grid, &scope);
+            let mut window_durations = Vec::new();
+            for (bucket, durations) in histogram["buckets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(&per_bucket)
+            {
+                let mut got = json!({});
+                for field in ["p50_ns", "p95_ns", "p99_ns"] {
+                    if let Some(value) = bucket.get(field) {
+                        got[field] = value.clone();
+                    }
+                }
+                assert_eq!(got, pct(fixed_histogram::percentiles(durations)), "{body}");
+                window_durations.extend_from_slice(durations);
+            }
+
             let totals = calc::totals(&oracle, &grid, &scope);
-            assert_eq!(
-                histogram["totals"],
-                json!({"count": totals.spans, "errors": totals.errors}),
-                "{body}"
-            );
+            let mut want = json!({"count": totals.spans, "errors": totals.errors});
+            if let Some([p50, p95, p99]) = fixed_histogram::percentiles(&window_durations) {
+                want["p50_ns"] = json!(p50);
+                want["p95_ns"] = json!(p95);
+                want["p99_ns"] = json!(p99);
+            }
+            assert_eq!(histogram["totals"], want, "{body}");
         }
     }
 }

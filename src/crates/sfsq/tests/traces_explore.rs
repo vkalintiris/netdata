@@ -36,6 +36,7 @@ fn query(stack: &str, chips: &[(&str, &str)]) -> ExploreQuery {
         sections: Sections {
             histogram: Some(HistogramSpec {
                 stack: stack.to_string(),
+                percentiles: false,
             }),
         },
     }
@@ -82,6 +83,7 @@ fn bucket(counts: &[u64], unset: u64) -> StackBucket {
         counts: counts.to_vec(),
         unset,
         other: 0,
+        percentiles: None,
     }
 }
 
@@ -97,7 +99,9 @@ fn one_request_histogram(times: u64) -> HistogramData {
         totals: Totals {
             count: 2 * times,
             errors: times,
+            percentiles: None,
         },
+        percentiles: false,
     }
 }
 
@@ -147,7 +151,8 @@ fn entry_spans_are_counted_by_status() {
         histogram.totals,
         Totals {
             count: 4,
-            errors: 1
+            errors: 1,
+            percentiles: None
         }
     );
     assert!(histogram.buckets.iter().all(|b| b.unset == 0));

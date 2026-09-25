@@ -47,10 +47,12 @@ impl RequestWindow {
     }
 }
 
-/// The histogram section: rows per bucket stacked by one field.
+/// The histogram section: rows per bucket stacked by one field, with the
+/// duration percentiles per bucket and for the window unless turned off.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistogramRequest {
     pub stack: String,
+    pub percentiles: bool,
 }
 
 #[derive(Deserialize)]
@@ -135,6 +137,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
         let histogram = match raw.sections {
             None => Some(HistogramRequest {
                 stack: sfsq::traces::explore::DEFAULT_STACK_FIELD.to_string(),
+                percentiles: true,
             }),
             Some(sections) => {
                 for (name, value) in [
@@ -158,16 +161,17 @@ impl TryFrom<RawExploreParams> for ExploreParams {
                         }
                         let spec = RawHistogram::deserialize(&value)
                             .map_err(|e| format!("section `histogram`: {e}"))?;
-                        if spec.percentiles == Some(true) {
-                            return Err("histogram percentiles are not available yet".into());
-                        }
+
                         let stack = spec.stack.unwrap_or_else(|| {
                             sfsq::traces::explore::DEFAULT_STACK_FIELD.to_string()
                         });
                         if stack.trim().is_empty() {
                             return Err("the histogram's `stack` field is empty".into());
                         }
-                        Some(HistogramRequest { stack })
+                        Some(HistogramRequest {
+                            stack,
+                            percentiles: spec.percentiles.unwrap_or(true),
+                        })
                     }
                 }
             }
@@ -227,6 +231,9 @@ pub struct HistogramWire {
     pub dimensions: Vec<String>,
     pub buckets: Vec<BucketWire>,
     pub totals: TotalsWire,
+    /// Present when percentiles were asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percentiles: Option<PercentileMethodWire>,
 }
 
 /// `counts` per value, `unset` for rows without the stack field, `other`
@@ -236,10 +243,31 @@ pub struct BucketWire {
     pub counts: Vec<u64>,
     pub unset: u64,
     pub other: u64,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub percentiles: Option<PercentilesWire>,
+}
+
+/// Duration percentiles, nanoseconds; approximate (see
+/// [`HistogramWire::percentiles`]).
+#[derive(Debug, Serialize)]
+pub struct PercentilesWire {
+    pub p50_ns: i64,
+    pub p95_ns: i64,
+    pub p99_ns: i64,
+}
+
+/// How the percentiles were computed: from a fixed histogram, each value
+/// within `max_relative_error` of the true one.
+#[derive(Debug, Serialize)]
+pub struct PercentileMethodWire {
+    pub approximate: bool,
+    pub max_relative_error: f64,
 }
 
 #[derive(Debug, Serialize)]
 pub struct TotalsWire {
     pub count: u64,
     pub errors: u64,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub percentiles: Option<PercentilesWire>,
 }

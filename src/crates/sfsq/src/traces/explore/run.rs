@@ -6,10 +6,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio_util::sync::CancellationToken;
 
+use super::super::duration_hist::DurationHistogram;
 use super::query::{ExploreQuery, ExploreRequestError};
 use super::shard::{Evaluated, evaluate};
 use super::source::{Prepared, prepare};
-use super::{ExploreData, HistogramData, StackBucket, Totals};
+use super::{ExploreData, HistogramData, Percentiles, StackBucket, Totals};
 use crate::logs::merge::merge_timelines;
 use crate::traces::{PartialReason, StatusBuilder, TimeWindow, TraceSource, validate_sources};
 
@@ -40,6 +41,7 @@ pub fn explore(
     let mut errors = 0u64;
     let mut timelines = Vec::new();
     let mut other = vec![0u64; buckets];
+    let mut durations = vec![DurationHistogram::new(); buckets];
 
     for source in &sources {
         if cancel.is_cancelled() {
@@ -65,6 +67,9 @@ pub fn explore(
                         errors += shard.errors;
                         if let Some(timeline) = shard.timeline {
                             timelines.push(timeline);
+                        }
+                        for (sum, histogram) in durations.iter_mut().zip(&shard.durations) {
+                            sum.merge(histogram);
                         }
                         if shard.stack_high {
                             stack_high += 1;
@@ -108,16 +113,26 @@ pub fn explore(
             Some(timeline) => (timeline.dimensions, timeline.buckets),
             None => (Vec::new(), Vec::new()),
         };
+        let percentiles = |histogram: &DurationHistogram| {
+            if spec.percentiles {
+                Percentiles::of(histogram)
+            } else {
+                None
+            }
+        };
         let mut out = Vec::with_capacity(buckets);
-        for (index, other) in other.into_iter().enumerate() {
+        let mut window_durations = DurationHistogram::new();
+        for (index, (other, bucket_durations)) in other.into_iter().zip(&durations).enumerate() {
             let (counts, unset) = match stacked.get(index) {
                 Some(bucket) => (bucket.counts.clone(), bucket.unset),
                 None => (vec![0; dimensions.len()], 0),
             };
+            window_durations.merge(bucket_durations);
             out.push(StackBucket {
                 counts,
                 unset,
                 other,
+                percentiles: percentiles(bucket_durations),
             });
         }
         HistogramData {
@@ -127,7 +142,9 @@ pub fn explore(
             totals: Totals {
                 count: matched,
                 errors,
+                percentiles: percentiles(&window_durations),
             },
+            percentiles: spec.percentiles,
         }
     });
 

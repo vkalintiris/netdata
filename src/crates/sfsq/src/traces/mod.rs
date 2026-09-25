@@ -26,6 +26,7 @@
 //!   which deliberately never deduplicate.
 
 mod by_id;
+pub mod duration_hist;
 pub mod explore;
 mod gate;
 mod overview;

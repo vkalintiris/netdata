@@ -57,6 +57,8 @@ pub struct HistogramData {
     pub dimensions: Vec<String>,
     pub buckets: Vec<StackBucket>,
     pub totals: Totals,
+    /// Whether percentiles were computed (asked for).
+    pub percentiles: bool,
 }
 
 /// One bucket: `counts` per value, `unset` for rows without the field, and
@@ -67,6 +69,8 @@ pub struct StackBucket {
     pub counts: Vec<u64>,
     pub unset: u64,
     pub other: u64,
+    /// When asked for; `None` for a bucket without rows.
+    pub percentiles: Option<Percentiles>,
 }
 
 /// Scope rows in the whole window, and how many are errors.
@@ -74,4 +78,26 @@ pub struct StackBucket {
 pub struct Totals {
     pub count: u64,
     pub errors: u64,
+    /// When asked for; `None` for a window without rows.
+    pub percentiles: Option<Percentiles>,
+}
+
+/// Duration percentiles from the fixed histogram
+/// ([`duration_hist`](super::duration_hist)): approximate, within its
+/// maximum relative error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Percentiles {
+    pub p50_ns: i64,
+    pub p95_ns: i64,
+    pub p99_ns: i64,
+}
+
+impl Percentiles {
+    fn of(histogram: &super::duration_hist::DurationHistogram) -> Option<Self> {
+        Some(Percentiles {
+            p50_ns: histogram.percentile(50)?,
+            p95_ns: histogram.percentile(95)?,
+            p99_ns: histogram.percentile(99)?,
+        })
+    }
 }

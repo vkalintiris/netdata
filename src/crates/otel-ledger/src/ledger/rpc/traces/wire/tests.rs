@@ -678,7 +678,13 @@ fn explore_defaults_to_the_last_fifteen_minutes_stacked_by_status() {
     let p = explore(json!({}));
     assert_eq!((p.window.after, p.window.before), (-900, 0));
     assert!(p.filter.is_empty());
-    assert_eq!(p.histogram.map(|h| h.stack), Some("status_code".to_string()));
+    assert_eq!(
+        p.histogram,
+        Some(HistogramRequest {
+            stack: "status_code".to_string(),
+            percentiles: true
+        })
+    );
 
     let p = explore(json!({"before": 1_700_000_900}));
     assert_eq!((p.window.after, p.window.before), (1_700_000_000, 1_700_000_900));
@@ -686,11 +692,17 @@ fn explore_defaults_to_the_last_fifteen_minutes_stacked_by_status() {
     let p = explore(json!({
         "after": -3600,
         "filter": {"_role": ["root", "inbound"]},
-        "sections": {"histogram": {"stack": "_duration_band"}}
+        "sections": {"histogram": {"stack": "_duration_band", "percentiles": false}}
     }));
     assert_eq!((p.window.after, p.window.before), (-3600, 0));
     assert_eq!(p.filter["_role"], ["root", "inbound"]);
-    assert_eq!(p.histogram.map(|h| h.stack), Some("_duration_band".to_string()));
+    assert_eq!(
+        p.histogram,
+        Some(HistogramRequest {
+            stack: "_duration_band".to_string(),
+            percentiles: false
+        })
+    );
 
     let p = explore(json!({"sections": {}}));
     assert!(p.histogram.is_none(), "an empty section list asks for nothing");
@@ -722,10 +734,6 @@ fn explore_rejects_bad_requests() {
         (json!({"explore": {"trace_ids": []}}), "not available yet"),
         (json!({"explore": {"selection": {}}}), "not available yet"),
         (json!({"explore": {"sections": {"groups": {}}}}), "not available yet"),
-        (
-            json!({"explore": {"sections": {"histogram": {"percentiles": true}}}}),
-            "not available yet",
-        ),
         (json!({"explore": {}, "trace": {"id": "00"}}), "conflicting mode selectors"),
         (json!({"explore": []}), "expected an object"),
     ] {

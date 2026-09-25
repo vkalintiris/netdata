@@ -1311,8 +1311,8 @@ impl From<PartialReason> for PartialReasonWire {
 
 mod explore;
 pub use explore::{
-    BucketWire, ExploreDataWire, ExploreParams, ExploreResponse, GridWire, HistogramWire,
-    TotalsWire, WindowWire,
+    BucketWire, ExploreDataWire, ExploreParams, ExploreResponse, GridWire, HistogramRequest,
+    HistogramWire, PercentileMethodWire, PercentilesWire, TotalsWire, WindowWire,
 };
 
 #[cfg(test)]

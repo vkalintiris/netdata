@@ -152,6 +152,101 @@ pub fn totals(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Totals {
     out
 }
 
+/// The explorer's duration percentiles, from its documented fixed histogram:
+/// zero and negative durations in bucket 0, one bucket per nanosecond below
+/// 128, then 64 equal sub-buckets per power of two; a bucket reports its
+/// midpoint (exact when one nanosecond wide); percentiles by nearest rank
+/// (rank = ceil(q·n/100)).
+pub mod fixed_histogram {
+    use std::collections::BTreeMap;
+
+    /// Largest relative error of a reported value, by definition.
+    pub const MAX_RELATIVE_ERROR: f64 = 1.0 / 128.0;
+
+    pub fn bucket(duration_ns: i64) -> u16 {
+        if duration_ns <= 0 {
+            return 0;
+        }
+        if duration_ns < 128 {
+            return duration_ns as u16;
+        }
+        let mut exponent = 0u32;
+        let mut rest = duration_ns;
+        while rest > 1 {
+            rest >>= 1;
+            exponent += 1;
+        }
+        let top_seven_bits = (duration_ns >> (exponent - 6)) as u16;
+        (exponent as u16 - 5) * 64 + (top_seven_bits - 64)
+    }
+
+    pub fn value(bucket: u16) -> i64 {
+        if bucket < 128 {
+            return i64::from(bucket);
+        }
+        let exponent = u32::from(bucket / 64) + 5;
+        let width = 1u128 << (exponent - 6);
+        let low = (64 + u128::from(bucket % 64)) * width;
+        let mid = if width == 1 { low } else { low + width / 2 };
+        i64::try_from(mid).unwrap_or(i64::MAX)
+    }
+
+    /// p50, p95 and p99 of `durations`, or `None` when there are none.
+    pub fn percentiles(durations: &[i64]) -> Option<[i64; 3]> {
+        if durations.is_empty() {
+            return None;
+        }
+        let mut counts: BTreeMap<u16, u64> = BTreeMap::new();
+        for d in durations {
+            *counts.entry(bucket(*d)).or_default() += 1;
+        }
+        let n = durations.len() as u64;
+        let mut out = [0i64; 3];
+        for (slot, q) in [50u64, 95, 99].into_iter().enumerate() {
+            let rank = (q * n).div_ceil(100).max(1);
+            let mut seen = 0;
+            for (bucket, count) in &counts {
+                seen += count;
+                if seen >= rank {
+                    out[slot] = value(*bucket);
+                    break;
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// The exact nearest-rank p50, p95 and p99, for checking the bound.
+    pub fn exact_percentiles(durations: &[i64]) -> Option<[i64; 3]> {
+        if durations.is_empty() {
+            return None;
+        }
+        let mut sorted: Vec<i64> = durations.iter().map(|d| (*d).max(0)).collect();
+        sorted.sort_unstable();
+        let n = sorted.len() as u64;
+        let mut out = [0i64; 3];
+        for (slot, q) in [50u64, 95, 99].into_iter().enumerate() {
+            let rank = (q * n).div_ceil(100).max(1);
+            out[slot] = sorted[(rank - 1) as usize];
+        }
+        Some(out)
+    }
+}
+
+/// Scope-row durations per bucket.
+pub fn bucket_durations(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec<Vec<i64>> {
+    let mut buckets = vec![Vec::new(); grid.buckets()];
+    for span in spans {
+        if !scope.matches(span) {
+            continue;
+        }
+        if let Some(index) = grid.bucket_of(span.start_ns) {
+            buckets[index].push(span.duration_ns);
+        }
+    }
+    buckets
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +350,27 @@ mod tests {
         );
         let by_band = histogram(&spans, &grid, &Scope::default(), DURATION_BAND_FIELD);
         assert_eq!(by_band.iter().map(|b| b.unset).sum::<u64>(), 4);
+    }
+
+    #[test]
+    fn fixed_histogram_follows_its_definition() {
+        use fixed_histogram::{bucket, exact_percentiles, percentiles, value};
+        let cases: [(i64, u16, i64); 7] = [
+            (0, 0, 0),
+            (127, 127, 127),
+            (128, 128, 129),
+            (256, 192, 258),
+            (1_000_000, 954, 1_003_520),
+            (10_000_000_000, 1_802, 9_999_220_736),
+            (i64::MAX, 3_711, 9_187_343_239_835_811_840),
+        ];
+        for (duration, index, reported) in cases {
+            assert_eq!(bucket(duration), index, "{duration}");
+            assert_eq!(value(index), reported, "{duration}");
+        }
+        let durations: Vec<i64> = (1..=100).collect();
+        assert_eq!(percentiles(&durations), Some([50, 95, 99]));
+        assert_eq!(exact_percentiles(&durations), Some([50, 95, 99]));
+        assert_eq!(percentiles(&[]), None);
     }
 }

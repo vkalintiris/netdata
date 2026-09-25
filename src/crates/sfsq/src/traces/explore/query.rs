@@ -24,9 +24,11 @@ pub struct Sections {
     pub histogram: Option<HistogramSpec>,
 }
 
-/// The time histogram: rows per bucket, stacked by the values of one field.
+/// The time histogram: rows per bucket, stacked by the values of one field,
+/// and optionally each bucket's and the window's p50/p95/p99 durations.
 pub struct HistogramSpec {
     pub stack: String,
+    pub percentiles: bool,
 }
 
 /// Field the histogram is stacked by unless the request says otherwise.

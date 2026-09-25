@@ -830,6 +830,7 @@ pub(crate) fn to_explore_query(
         sections: Sections {
             histogram: params.histogram.as_ref().map(|h| HistogramSpec {
                 stack: h.stack.clone(),
+                percentiles: h.percentiles,
             }),
         },
     };
@@ -844,8 +845,15 @@ pub(crate) fn to_explore_response(
     before: u32,
 ) -> super::wire::ExploreResponse {
     use super::wire::{
-        BucketWire, ExploreDataWire, ExploreResponse, GridWire, HistogramWire, TotalsWire,
-        WindowWire,
+        BucketWire, ExploreDataWire, ExploreResponse, GridWire, HistogramWire, PercentileMethodWire,
+        PercentilesWire, TotalsWire, WindowWire,
+    };
+    let percentiles = |p: Option<sfsq::traces::explore::Percentiles>| {
+        p.map(|p| PercentilesWire {
+            p50_ns: p.p50_ns,
+            p95_ns: p.p95_ns,
+            p99_ns: p.p99_ns,
+        })
     };
 
     let status = StatusWire::from(&data.status);
@@ -856,6 +864,7 @@ pub(crate) fn to_explore_response(
                 counts: b.counts,
                 unset: b.unset,
                 other: b.other,
+                percentiles: percentiles(b.percentiles),
             });
         }
         HistogramWire {
@@ -866,7 +875,12 @@ pub(crate) fn to_explore_response(
             totals: TotalsWire {
                 count: h.totals.count,
                 errors: h.totals.errors,
+                percentiles: percentiles(h.totals.percentiles),
             },
+            percentiles: h.percentiles.then_some(PercentileMethodWire {
+                approximate: true,
+                max_relative_error: sfsq::traces::duration_hist::MAX_RELATIVE_ERROR,
+            }),
         }
     });
     ExploreResponse {

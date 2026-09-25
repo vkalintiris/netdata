@@ -1809,7 +1809,29 @@ async fn explore_corpus() -> (OtelTracesHandler, std::path::PathBuf) {
 }
 
 fn entry_spans_body() -> serde_json::Value {
-    json!({"explore": {"after": 1, "before": 10, "filter": {"_role": ["root", "inbound"]}}})
+    json!({"explore": {
+        "after": 1, "before": 10, "filter": {"_role": ["root", "inbound"]},
+        "sections": {"histogram": {"stack": "status_code", "percentiles": false}}
+    }})
+}
+
+#[tokio::test]
+async fn explore_percentiles_are_on_by_default_and_marked_approximate() {
+    let (h, _) = explore_corpus().await;
+    let body = json!({"explore": {"after": 1, "before": 10, "filter": {"_role": ["root"]}}});
+    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
+    let histogram = &v["data"]["histogram"];
+    assert_eq!(
+        histogram["percentiles"],
+        json!({"approximate": true, "max_relative_error": 0.0078125})
+    );
+    // Every root lasts 500 ns: its bucket reports 502 (the midpoint of [500, 504)).
+    let one = json!({"p50_ns": 502, "p95_ns": 502, "p99_ns": 502});
+    for field in ["p50_ns", "p95_ns", "p99_ns"] {
+        assert_eq!(histogram["buckets"][0][field], one[field]);
+        assert_eq!(histogram["totals"][field], one[field]);
+        assert!(histogram["buckets"][5].get(field).is_none(), "an empty bucket has none");
+    }
 }
 
 #[tokio::test]

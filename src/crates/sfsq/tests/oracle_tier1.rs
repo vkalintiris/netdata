@@ -9,7 +9,7 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use otel_oracle::calc::{self, Grid, Scope};
+use otel_oracle::calc::{self, Grid, Scope, fixed_histogram};
 use otel_oracle::corpus::{self, MeshParams};
 use otel_oracle::model::{self, OracleSpan};
 use sfsq::Source;
@@ -320,6 +320,7 @@ fn explore_query(grid: &Grid, scope: &Scope, stack: &str) -> ExploreQuery {
         sections: Sections {
             histogram: Some(HistogramSpec {
                 stack: stack.to_string(),
+                percentiles: true,
             }),
         },
     }
@@ -375,6 +376,32 @@ fn explore_histogram_and_totals_match_the_calculator() {
                     "{case}"
                 );
 
+                // ORC-PCT: the fixed histogram's percentiles, per bucket and for the window,
+                // equal the calculator's own, and each is within the documented bound of
+                // the exact nearest-rank value.
+                let per_bucket = calc::bucket_durations(&stored.oracle, &grid, scope);
+                let mut window_durations = Vec::new();
+                for (bucket, durations) in histogram.buckets.iter().zip(&per_bucket) {
+                    let got = bucket.percentiles.map(|p| [p.p50_ns, p.p95_ns, p.p99_ns]);
+                    assert_eq!(got, fixed_histogram::percentiles(durations), "{case}");
+                    within_bound(got, fixed_histogram::exact_percentiles(durations), &case);
+                    window_durations.extend_from_slice(durations);
+                }
+                let window = histogram
+                    .totals
+                    .percentiles
+                    .map(|p| [p.p50_ns, p.p95_ns, p.p99_ns]);
+                assert_eq!(
+                    window,
+                    fixed_histogram::percentiles(&window_durations),
+                    "{case}"
+                );
+                within_bound(
+                    window,
+                    fixed_histogram::exact_percentiles(&window_durations),
+                    &case,
+                );
+
                 let totals = calc::totals(&stored.oracle, &grid, scope);
                 assert_eq!(
                     (histogram.totals.count, histogram.totals.errors),
@@ -382,6 +409,24 @@ fn explore_histogram_and_totals_match_the_calculator() {
                     "{case}"
                 );
             }
+        }
+    }
+}
+
+fn within_bound(approximate: Option<[i64; 3]>, exact: Option<[i64; 3]>, case: &str) {
+    assert_eq!(approximate.is_some(), exact.is_some(), "{case}");
+    let (Some(approximate), Some(exact)) = (approximate, exact) else {
+        return;
+    };
+    for (a, e) in approximate.into_iter().zip(exact) {
+        if e == 0 {
+            assert_eq!(a, 0, "{case}");
+        } else {
+            let error = (a - e).abs() as f64 / e as f64;
+            assert!(
+                error <= fixed_histogram::MAX_RELATIVE_ERROR,
+                "{case}: {a} vs {e}"
+            );
         }
     }
 }
