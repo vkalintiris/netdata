@@ -72,6 +72,9 @@ pub enum ExploreRequestError {
     Invalid(String),
 }
 
+/// Most trace ids one scope may name.
+pub const TRACE_IDS_MAX: usize = 100;
+
 impl ExploreQuery {
     /// Checks the wire also makes; repeated here so the engine never runs a
     /// request it cannot answer.
@@ -80,6 +83,11 @@ impl ExploreQuery {
             return Err(ExploreRequestError::Invalid(
                 "the grid needs a positive bucket width and at least one bucket".to_string(),
             ));
+        }
+        if self.scope.trace_ids.len() > TRACE_IDS_MAX {
+            return Err(ExploreRequestError::Invalid(format!(
+                "a scope names at most {TRACE_IDS_MAX} trace ids"
+            )));
         }
         if self.scope.trace_ids.iter().any(|id| id.is_unset()) {
             return Err(ExploreRequestError::Invalid(

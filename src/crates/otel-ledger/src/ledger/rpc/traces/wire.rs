@@ -955,6 +955,8 @@ pub struct InfoResponse {
     defaults: InfoDefaults,
     /// The largest values an `explore` request may ask for.
     limits: InfoLimits,
+    /// How duration percentiles are computed.
+    percentiles: InfoPercentiles,
     /// The fixed duration bands, fastest first, with inclusive bounds.
     duration_bands: Vec<DurationBandWire>,
     /// The partial reasons an `explore` answer may carry.
@@ -977,6 +979,18 @@ pub struct InfoLimits {
     top_k_max: usize,
     row_columns_max: usize,
     values_max: usize,
+    trace_ids_max: usize,
+    /// Values one facet lists; the rest are counted as omitted.
+    facet_values_max: usize,
+}
+
+/// Percentiles come from a fixed log-linear histogram: each value is within
+/// `max_relative_error` of the exact one, and is shown with `label`.
+#[derive(Debug, Serialize)]
+pub struct InfoPercentiles {
+    approximate: bool,
+    max_relative_error: f64,
+    label: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -1030,6 +1044,13 @@ impl Default for InfoResponse {
                 top_k_max: sfsq::traces::explore::TOP_K_MAX,
                 row_columns_max: sfsq::traces::explore::ROW_COLUMNS_MAX,
                 values_max: sfsq::traces::explore::VALUES_LIMIT_MAX,
+                trace_ids_max: sfsq::traces::explore::TRACE_IDS_MAX,
+                facet_values_max: sfsq::traces::explore::MAX_FACET_VALUES,
+            },
+            percentiles: InfoPercentiles {
+                approximate: true,
+                max_relative_error: sfsq::traces::duration_hist::MAX_RELATIVE_ERROR,
+                label: "≈",
             },
             duration_bands: duration_bands(),
             partial_reasons: vec![

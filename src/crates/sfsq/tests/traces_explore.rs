@@ -819,3 +819,22 @@ fn explore_parallel_equals_sequential() {
         }
     }
 }
+
+#[test]
+fn a_scope_names_at_most_the_trace_id_limit() {
+    let mut query = entry_spans("status_code");
+    query.scope.trace_ids = (0..=sfsq::traces::explore::TRACE_IDS_MAX)
+        .map(|i| sfst::TraceId::from([(i % 250) as u8 + 1; 16]))
+        .collect();
+    let refused = explore(
+        Vec::new(),
+        query,
+        ExploreOptions::default(),
+        CancellationToken::new(),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    assert!(matches!(
+        refused,
+        Err(sfsq::traces::explore::ExploreRequestError::Invalid(_))
+    ));
+}

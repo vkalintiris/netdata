@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::StatusWire;
 
-/// Most trace ids one request may name.
-pub const TRACE_IDS_MAX: usize = 100;
+use sfsq::traces::explore::TRACE_IDS_MAX;
 
 /// Length of the default window, seconds.
 pub const DEFAULT_WINDOW_S: i64 = 900;

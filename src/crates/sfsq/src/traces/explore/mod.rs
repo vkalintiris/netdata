@@ -17,9 +17,10 @@ mod shard;
 mod source;
 mod values;
 
+pub use crate::merge::MAX_FACET_VALUES;
 pub use query::{
     DEFAULT_POPULATION, DEFAULT_STACK_FIELD, ExploreQuery, ExploreRequestError, ExploreScope,
-    FacetSpec, HIDDEN_FIELDS, HistogramSpec, Sections,
+    FacetSpec, HIDDEN_FIELDS, HistogramSpec, Sections, TRACE_IDS_MAX,
 };
 pub use rows::{
     MoreRows, NOT_ROW_COLUMN_PREFIXES, ROW_COLUMNS_MAX, ROW_VALUE_COLUMNS, ROWS_PAGE_MAX,

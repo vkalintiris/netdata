@@ -391,8 +391,10 @@ fn info_response_shape_is_pinned() {
                 "values_limit": 100
             },
             "limits": {
-                "rows_page_max": 1000, "top_k_max": 1000, "row_columns_max": 32, "values_max": 1000
+                "rows_page_max": 1000, "top_k_max": 1000, "row_columns_max": 32, "values_max": 1000,
+                "trace_ids_max": 100, "facet_values_max": 1000
             },
+            "percentiles": {"approximate": true, "max_relative_error": 0.0078125, "label": "≈"},
             "duration_bands": [
                 {"label": "<1ms", "min_ns": 0, "max_ns": 999_999},
                 {"label": "1-10ms", "min_ns": 1_000_000, "max_ns": 9_999_999},
@@ -408,6 +410,25 @@ fn info_response_shape_is_pinned() {
             ],
         })
     );
+}
+
+#[test]
+fn info_bands_follow_the_flattener() {
+    let v = serde_json::to_value(InfoResponse::default()).unwrap();
+    let bands = v["duration_bands"].as_array().unwrap();
+    let labels: Vec<&str> = bands.iter().map(|b| b["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, sfsq::traces::explore::DURATION_BAND_LABELS);
+    let edges: Vec<i64> = bands[1..]
+        .iter()
+        .map(|b| b["min_ns"].as_i64().unwrap())
+        .collect();
+    assert_eq!(edges, sfsq::traces::explore::DURATION_BAND_EDGES_NS);
+    for (band, next) in bands.iter().zip(&bands[1..]) {
+        assert_eq!(
+            band["max_ns"].as_i64().unwrap() + 1,
+            next["min_ns"].as_i64().unwrap()
+        );
+    }
 }
 
 #[test]
