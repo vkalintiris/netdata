@@ -243,7 +243,8 @@ pub struct Facet {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FacetValue {
-    pub value: String,
+    /// `null`: the rows without the field.
+    pub value: Option<String>,
     pub count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection: Option<u64>,

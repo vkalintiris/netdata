@@ -67,6 +67,10 @@ pub const HIDDEN_FIELDS: [&str; 2] = ["_kind", "_status_code"];
 /// Field the histogram is stacked by unless the request says otherwise.
 pub const DEFAULT_STACK_FIELD: &str = STATUS_FIELD;
 
+/// Facets that list an "unset" value for the rows without the field
+/// (backend-D13): a span's status is left out when it is UNSET.
+pub const UNSET_FACET_FIELDS: [&str; 1] = [STATUS_FIELD];
+
 /// Storage names of the fields every row shows.
 pub(super) const SERVICE_FIELD: &str = "resource.attributes.service.name";
 pub(super) const NAME_FIELD: &str = "name";

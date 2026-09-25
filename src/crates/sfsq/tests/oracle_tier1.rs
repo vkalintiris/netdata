@@ -572,6 +572,7 @@ fn explore_facets_match_the_calculator() {
         .collect();
     fields.retain(|field| !field.starts_with("events.") && !field.starts_with("links."));
     let scopes = [
+        ("every span", Scope::default()),
         ("entry spans", Scope::entry_spans()),
         (
             "checkout entry spans",
@@ -580,6 +581,7 @@ fn explore_facets_match_the_calculator() {
     ];
     for live in [Live::Tail, Live::Split(100)] {
         for (scope_name, scope) in &scopes {
+            let want = calc::facets(&stored.oracle, &grid, scope, Some(&fields));
             let mut query = explore_query(&grid, scope, model::STATUS_FIELD);
             query.sections.histogram = None;
             query.sections.facets = Some(FacetSpec {
@@ -598,17 +600,24 @@ fn explore_facets_match_the_calculator() {
             let facets = data.facets.expect("facets section");
             assert!(facets.unavailable.is_empty(), "{case}");
             assert_eq!(facets.fields.len(), fields.len(), "{case}");
-            for facet in &facets.fields {
-                let got: BTreeMap<String, u64> = facet
+            for (facet, want) in facets.fields.iter().zip(&want.fields) {
+                assert_eq!(facet.field, want.field, "{case}");
+                let got: Vec<(Option<String>, u64)> = facet
                     .values
                     .iter()
                     .map(|v| (v.value.clone(), v.count))
                     .collect();
-                assert_eq!(
-                    got,
-                    calc::facet_counts(&stored.oracle, &grid, scope, &facet.field),
-                    "{case} field {}",
-                    facet.field
+                assert_eq!(got, want.values, "{case} field {}", facet.field);
+            }
+            let status = want
+                .fields
+                .iter()
+                .find(|facet| facet.field == model::STATUS_FIELD)
+                .expect("the status facet is requested");
+            if scope.terms.is_empty() {
+                assert!(
+                    status.values.iter().any(|(value, _)| value.is_none()),
+                    "{case}: every span includes some without a status"
                 );
             }
         }
@@ -1632,7 +1641,11 @@ fn family_store_cut(cut: usize) -> Stored {
 
 /// What the explorer answers about error origins: the `_err_origin` facet,
 /// the histogram stacked by it, and the ids of the rows it scopes to.
-type OriginAnswers = (BTreeMap<String, u64>, Vec<calc::Bucket>, Vec<(u8, u8)>);
+type OriginAnswers = (
+    BTreeMap<Option<String>, u64>,
+    Vec<calc::Bucket>,
+    Vec<(u8, u8)>,
+);
 
 /// With the statuses of both requests and of each of their sections.
 fn origin_answers(sources: Vec<TraceSource>, grid: &Grid) -> (OriginAnswers, Vec<QueryStatus>) {
@@ -1654,7 +1667,7 @@ fn origin_answers(sources: Vec<TraceSource>, grid: &Grid) -> (OriginAnswers, Vec
     let facets = data.facets.expect("facets section");
     let histogram = data.histogram.expect("histogram section");
     let mut statuses = vec![data.status, facets.status, histogram.status.clone()];
-    let facet: BTreeMap<String, u64> = facets
+    let facet: BTreeMap<Option<String>, u64> = facets
         .fields
         .into_iter()
         .flat_map(|facet| facet.values)
@@ -1738,12 +1751,15 @@ fn live_split_equals_sealed() {
         "{statuses:?}"
     );
     assert_eq!(sealed.2, FAMILY_ORIGINS);
-    let facet = calc::facet_counts(
+    let facet: BTreeMap<Option<String>, u64> = calc::facet_counts(
         &stored.oracle,
         &grid,
         &Scope::default(),
         model::ERR_ORIGIN_FIELD,
-    );
+    )
+    .into_iter()
+    .map(|(value, count)| (Some(value), count))
+    .collect();
     assert_eq!(sealed.0, facet);
     let histogram = calc::histogram(
         &stored.oracle,
@@ -1811,7 +1827,7 @@ fn a_live_wal_with_a_gap_fails_its_live_pass() {
     sources.remove(2);
     let ((facet, _, ids), statuses) = origin_answers(sources.clone(), &grid);
     assert!(ids.is_empty(), "{ids:?}");
-    assert!(!facet.contains_key("true"), "{facet:?}");
+    assert!(!facet.contains_key(&Some("true".to_string())), "{facet:?}");
     for status in &statuses {
         let failed = status
             .count(PartialReason::LivePassFailed)
@@ -2096,6 +2112,7 @@ fn explore_delta_matches_the_calculator() {
         ),
     ];
     let mut straddling = 0;
+    let mut split = 0;
     for live in [Live::Tail, Live::Chunk, Live::Split(100), Live::Chunked] {
         for (scope_name, scope) in &scopes {
             for (selection_name, engine, oracle) in selections(&grid, &stored.oracle, scope) {
@@ -2104,7 +2121,9 @@ fn explore_delta_matches_the_calculator() {
                     run_groups(explore_sources(&stored, live), &grid, scope, Some(engine));
                 let want = calc::groups(&stored.oracle, &grid, scope, Some(&oracle));
                 let delta = want.delta.as_ref().expect("a delta under a selection");
-                assert!(delta.baseline_traces > 0, "{case}: the baseline has traces");
+                if delta.selection_traces > 0 && delta.baseline_traces > 0 {
+                    split += 1;
+                }
                 assert_eq!(got, want, "{case}");
                 assert!(status.is_complete(), "{case}: {status:?}");
                 if matches!(live, Live::Tail) {
@@ -2126,6 +2145,7 @@ fn explore_delta_matches_the_calculator() {
         straddling > 0,
         "some selection trace has rows in both units"
     );
+    assert!(split > 0, "some case has traces on both sides");
 }
 
 /// The engine's compared facets in the calculator's shape.
@@ -2244,6 +2264,22 @@ fn selections(
         },
         calc::Selection {
             duration: Some((Some(p95), None)),
+            ..calc::Selection::default()
+        },
+    ));
+    out.push((
+        "E5 errors or unset",
+        ExploreSelection {
+            filter: sfst::Filter::new()
+                .select(model::STATUS_FIELD, "ERROR")
+                .select_absent(model::STATUS_FIELD),
+            duration: None,
+            time_ns: None,
+        },
+        calc::Selection {
+            terms: Scope::default()
+                .with(model::STATUS_FIELD, &["ERROR"])
+                .with_absent(model::STATUS_FIELD),
             ..calc::Selection::default()
         },
     ));

@@ -337,22 +337,55 @@ pub fn facet_counts(
     counts
 }
 
+/// Fields whose facet lists the rows without the field as a value (`None`),
+/// after the others and outside the value cap (the calculator's own copy of
+/// the documented rule, backend-D13).
+pub const UNSET_VALUE_FIELDS: [&str; 1] = [STATUS_FIELD];
+
+/// Rows in the window without any value of `field`, under the scope without
+/// its own terms on `field`.
+pub fn unset_count(spans: &[OracleSpan], grid: &Grid, scope: &Scope, field: &str) -> u64 {
+    let mut others = scope.clone();
+    others.terms.remove(field);
+    let mut count = 0;
+    for span in spans {
+        if others.matches(span)
+            && grid.bucket_of(span.start_ns).is_some()
+            && span.fields.get(field).is_none()
+        {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Orders values in byte order with the unset value (`None`) last.
+fn unset_last(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => a.cmp(b),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
 /// Values a facet lists at most; the rest are reported as omitted.
 pub const FACET_VALUE_CAP: usize = 1_000;
 
-/// A facet as the explorer returns it: values in byte order, and what the cap
-/// left out.
+/// A facet as the explorer returns it: values in byte order (then the unset
+/// value, `None`, on [`UNSET_VALUE_FIELDS`]), and what the cap left out.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facet {
     pub field: String,
-    pub values: Vec<(String, u64)>,
+    pub values: Vec<(Option<String>, u64)>,
     pub omitted_values: u64,
     pub omitted_rows: u64,
 }
 
 /// Keeps the [`FACET_VALUE_CAP`] values with the most rows (ties go to the
-/// value first in byte order) and lists them in byte order.
-pub fn capped(field: &str, counts: BTreeMap<String, u64>) -> Facet {
+/// value first in byte order) and lists them in byte order, then `unset` rows
+/// (when any) as the `None` value.
+pub fn capped(field: &str, counts: BTreeMap<String, u64>, unset: u64) -> Facet {
     let mut values: Vec<(String, u64)> = counts.into_iter().collect();
     let mut omitted_values = 0;
     let mut omitted_rows = 0;
@@ -364,9 +397,16 @@ pub fn capped(field: &str, counts: BTreeMap<String, u64>) -> Facet {
         }
         values.sort_by(|a, b| a.0.cmp(&b.0));
     }
+    let mut listed: Vec<(Option<String>, u64)> = Vec::with_capacity(values.len() + 1);
+    for (value, count) in values {
+        listed.push((Some(value), count));
+    }
+    if unset > 0 {
+        listed.push((None, unset));
+    }
     Facet {
         field: field.to_string(),
-        values,
+        values: listed,
         omitted_values,
         omitted_rows,
     }
@@ -401,7 +441,12 @@ pub fn facets(
             out.unavailable.push(field);
         } else {
             let counts = facet_counts(spans, grid, scope, &field);
-            out.fields.push(capped(&field, counts));
+            let unset = if UNSET_VALUE_FIELDS.contains(&field.as_str()) {
+                unset_count(spans, grid, scope, &field)
+            } else {
+                0
+            };
+            out.fields.push(capped(&field, counts, unset));
         }
     }
     out
@@ -470,7 +515,8 @@ fn fraction_cmp(a: Fraction, b: Fraction) -> std::cmp::Ordering {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValueComparison {
-    pub value: String,
+    /// `None`: the unset value.
+    pub value: Option<String>,
     /// Scope rows.
     pub count: u64,
     pub selection: u64,
@@ -507,6 +553,8 @@ pub struct Comparison {
 /// ranks when `c ≥ MIN_SELECTION_ROWS`. Fields rank by their best eligible
 /// difference, then name; the answer lists ranked fields first (the rest in
 /// request order) and eligible values first (the rest by rows, then value).
+/// The unset value of [`UNSET_VALUE_FIELDS`] compares like any value and
+/// sorts after the named ones on a tie.
 pub fn comparison(
     spans: &[OracleSpan],
     grid: &Grid,
@@ -534,6 +582,8 @@ pub fn comparison(
         field_scope.terms.remove(field);
         let field_selection = selection.without(field);
         let (mut total_s, mut total_c) = (0u64, 0u64);
+        let (mut unset_s, mut unset_c) = (0u64, 0u64);
+        let lists_unset = UNSET_VALUE_FIELDS.contains(&field.as_str());
         let mut s_counts: BTreeMap<String, u64> = BTreeMap::new();
         let mut c_counts: BTreeMap<String, u64> = BTreeMap::new();
         for span in spans {
@@ -543,20 +593,30 @@ pub fn comparison(
             let selected = field_selection.matches(span);
             total_s += 1;
             total_c += u64::from(selected);
-            if let Some(values) = span.fields.get(field) {
-                for value in values {
-                    *s_counts.entry(value.to_string()).or_default() += 1;
-                    if selected {
-                        *c_counts.entry(value.to_string()).or_default() += 1;
+            match span.fields.get(field) {
+                Some(values) => {
+                    for value in values {
+                        *s_counts.entry(value.to_string()).or_default() += 1;
+                        if selected {
+                            *c_counts.entry(value.to_string()).or_default() += 1;
+                        }
                     }
                 }
+                None if lists_unset => {
+                    unset_s += 1;
+                    unset_c += u64::from(selected);
+                }
+                None => {}
             }
         }
-        let facet = capped(field, s_counts);
+        let facet = capped(field, s_counts, unset_s);
         let (c_total, base) = (i128::from(total_c), i128::from(total_s - total_c));
         let mut values = Vec::with_capacity(facet.values.len());
         for (value, s) in facet.values {
-            let c = c_counts.get(&value).copied().unwrap_or(0);
+            let c = match &value {
+                Some(value) => c_counts.get(value).copied().unwrap_or(0),
+                None => unset_c,
+            };
             let b = s - c;
             let diff = (total_c > 0).then(|| {
                 if base == 0 {
@@ -581,7 +641,7 @@ pub fn comparison(
         let mut eligible: Vec<usize> = (0..values.len()).filter(|&i| values[i].eligible).collect();
         eligible.sort_by(|&x, &y| {
             fraction_cmp(values[y].diff.unwrap(), values[x].diff.unwrap())
-                .then_with(|| values[x].value.cmp(&values[y].value))
+                .then_with(|| unset_last(&values[x].value, &values[y].value))
         });
         let best = eligible.first().and_then(|&i| values[i].diff);
         for (rank, &index) in eligible.iter().enumerate() {
@@ -591,7 +651,10 @@ pub fn comparison(
             (Some(a), Some(b)) => a.cmp(&b),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => y.count.cmp(&x.count).then_with(|| x.value.cmp(&y.value)),
+            (None, None) => y
+                .count
+                .cmp(&x.count)
+                .then_with(|| unset_last(&x.value, &y.value)),
         });
         out.fields.push(FieldComparison {
             field: field.clone(),
@@ -1510,7 +1573,7 @@ mod tests {
             .iter()
             .map(|v| {
                 (
-                    v.value.as_str(),
+                    v.value.as_deref().expect("service has no unset value"),
                     v.count,
                     v.selection,
                     v.baseline,
@@ -1553,6 +1616,95 @@ mod tests {
         assert_eq!(
             comparison(&spans, &grid, &Scope::default(), &later, &[]).selection,
             2
+        );
+    }
+
+    /// The status facet lists the rows without a status as the unset value,
+    /// last; under a selection it compares, ranks and can lead like any value.
+    #[test]
+    fn unset_facet_rules() {
+        let grid = Grid {
+            after_s: 0,
+            before_s: 10,
+            width_s: 1,
+        };
+        let span = |status: Option<&str>, duration_ns: i64| {
+            let mut pairs = vec![("name", "op")];
+            if let Some(status) = status {
+                pairs.push((STATUS_FIELD, status));
+            }
+            OracleSpan {
+                trace_id: None,
+                span_id: None,
+                parent_span_id: None,
+                start_ns: 1_000_000_000,
+                duration_ns,
+                fields: pairs.into_iter().collect(),
+                unit: 0,
+                self_ns: None,
+            }
+        };
+        let mut spans = vec![span(Some("ERROR"), 100), span(Some("ERROR"), 10)];
+        spans.push(span(Some("ERROR"), 10));
+        spans.extend([span(Some("OK"), 10), span(Some("OK"), 10)]);
+        spans.extend((0..5).map(|_| span(None, 100)));
+        let status = [STATUS_FIELD.to_string()];
+
+        let plain = facets(&spans, &grid, &Scope::default(), Some(&status));
+        assert_eq!(
+            plain.fields[0].values,
+            [
+                (Some("ERROR".to_string()), 3),
+                (Some("OK".to_string()), 2),
+                (None, 5)
+            ]
+        );
+        let names = facets(
+            &spans,
+            &grid,
+            &Scope::default(),
+            Some(&["name".to_string()]),
+        );
+        assert_eq!(names.fields[0].values, [(Some("op".to_string()), 10)]);
+
+        // Selection: at least 100 ns — one error and the five unset rows.
+        let slow = Selection {
+            duration: Some((Some(100), None)),
+            ..Selection::default()
+        };
+        let compared = comparison(&spans, &grid, &Scope::default(), &slow, &status);
+        let field = &compared.fields[0];
+        assert_eq!((field.scope, field.selection, field.rank), (10, 6, Some(1)));
+        assert_eq!(field.best, Some((5, 6)));
+        type Line<'a> = (
+            Option<&'a str>,
+            u64,
+            u64,
+            bool,
+            Option<u32>,
+            Option<Fraction>,
+        );
+        let lines: Vec<Line<'_>> = field
+            .values
+            .iter()
+            .map(|v| {
+                (
+                    v.value.as_deref(),
+                    v.count,
+                    v.selection,
+                    v.eligible,
+                    v.rank,
+                    v.diff,
+                )
+            })
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                (None, 5, 5, true, Some(1), Some((5, 6))),
+                (Some("ERROR"), 3, 1, false, None, Some((-1, 3))),
+                (Some("OK"), 2, 0, false, None, Some((-1, 2))),
+            ]
         );
     }
 
@@ -2087,28 +2239,40 @@ mod tests {
         counts.insert("v0500".to_string(), 7);
         counts.insert("zz".to_string(), 3);
 
-        let facet = capped("f", counts);
+        let facet = capped("f", counts, 9);
 
-        assert_eq!(facet.values.len(), FACET_VALUE_CAP);
+        let named = |value: &str| Some(value.to_string());
+        assert_eq!(
+            facet.values.len(),
+            FACET_VALUE_CAP + 1,
+            "the unset value is not capped"
+        );
         assert_eq!((facet.omitted_values, facet.omitted_rows), (3, 3));
-        assert_eq!(facet.values.first(), Some(&("v0000".to_string(), 1)));
-        assert_eq!(facet.values.last(), Some(&("zz".to_string(), 3)));
-        assert!(facet.values.contains(&("v0500".to_string(), 7)));
-        assert!(!facet.values.iter().any(|(value, _)| value == "v1001"));
-        assert!(facet.values.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert_eq!(facet.values.first(), Some(&(named("v0000"), 1)));
+        assert_eq!(facet.values[FACET_VALUE_CAP - 1], (named("zz"), 3));
+        assert_eq!(facet.values.last(), Some(&(None, 9)), "unset last");
+        assert!(facet.values.contains(&(named("v0500"), 7)));
+        assert!(!facet.values.contains(&(named("v1001"), 1)));
+        assert!(
+            facet.values[..FACET_VALUE_CAP]
+                .windows(2)
+                .all(|pair| pair[0].0 < pair[1].0)
+        );
 
         let few = capped(
             "f",
             BTreeMap::from([("b".to_string(), 1), ("a".to_string(), 2)]),
+            0,
         );
         assert_eq!(
             few,
             Facet {
                 field: "f".to_string(),
-                values: vec![("a".to_string(), 2), ("b".to_string(), 1)],
+                values: vec![(named("a"), 2), (named("b"), 1)],
                 omitted_values: 0,
                 omitted_rows: 0,
-            }
+            },
+            "no unset rows, no unset value"
         );
     }
 
@@ -2128,8 +2292,8 @@ mod tests {
         assert_eq!(
             asked.fields,
             vec![
-                capped("absent", BTreeMap::new()),
-                capped(ROLE_FIELD, BTreeMap::from([("root".to_string(), 1_002)])),
+                capped("absent", BTreeMap::new(), 0),
+                capped(ROLE_FIELD, BTreeMap::from([("root".to_string(), 1_002)]), 0),
             ]
         );
         assert_eq!(

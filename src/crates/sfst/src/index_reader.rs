@@ -1351,6 +1351,22 @@ impl<'a> IndexReader<'a> {
         Ok(set.len())
     }
 
+    /// Of [`count_without`](Self::count_without)'s rows, those with no value
+    /// of `field` (all of them in a file without the field): its facet's
+    /// "unset" count.
+    pub fn count_absent(
+        &self,
+        filter: &BitmapFilter,
+        field: &str,
+        window_ns: std::ops::Range<i64>,
+    ) -> Result<u64, crate::Error> {
+        let (lo, hi) = self.range_positions(window_ns)?;
+        let mut set = filter.without(field);
+        set.and_assign(&PosSet::range(lo, hi, self.summary.record_count));
+        set.and_assign(&self.field_values_or(field, &[Matcher::Absent])?);
+        Ok(set.len())
+    }
+
     fn global_filter(&self, set: PosSet) -> BitmapFilter {
         BitmapFilter {
             universe: self.summary.record_count,

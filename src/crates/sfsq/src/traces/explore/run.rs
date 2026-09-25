@@ -42,6 +42,8 @@ struct Lane<'q> {
     selection_matched: u64,
     selection_facets: Vec<Vec<sfst::FacetResult>>,
     facet_totals: BTreeMap<String, (u64, u64)>,
+    /// Per field listing an unset value: its `(scope, selection)` rows.
+    facet_unset: BTreeMap<String, (u64, u64)>,
     field_tables: Vec<sfst::FieldTable>,
     page: Option<PageFold<'q>>,
     /// With rows asked for, every evaluated source stays open: to read the
@@ -71,6 +73,7 @@ impl<'q> Lane<'q> {
             selection_matched: 0,
             selection_facets: Vec::new(),
             facet_totals: BTreeMap::new(),
+            facet_unset: BTreeMap::new(),
             field_tables: Vec::new(),
             page: query.sections.rows.as_ref().map(PageFold::new),
             opened: Vec::new(),
@@ -108,6 +111,7 @@ impl<'q> Lane<'q> {
         self.selection_matched += shard.selection_matched;
         self.selection_facets.push(shard.selection_facets);
         add_totals(&mut self.facet_totals, shard.facet_totals);
+        add_totals(&mut self.facet_unset, shard.facet_unset);
         if shard.stack_high {
             self.stack_high += 1;
             for (sum, n) in self.other.iter_mut().zip(&shard.other) {
@@ -137,6 +141,7 @@ impl<'q> Lane<'q> {
         self.selection_matched += other.selection_matched;
         self.selection_facets.extend(other.selection_facets);
         add_totals(&mut self.facet_totals, other.facet_totals);
+        add_totals(&mut self.facet_unset, other.facet_unset);
         self.field_tables.extend(other.field_tables);
         if let (Some(page), Some(theirs)) = (self.page.as_mut(), other.page) {
             page.merge(theirs);
@@ -233,6 +238,7 @@ pub fn explore(
         selection_matched,
         selection_facets,
         facet_totals,
+        facet_unset,
         field_tables,
         page,
         opened: opened_lanes,
@@ -421,7 +427,16 @@ pub fn explore(
             let mut values = Vec::with_capacity(facet.values.len());
             for (value, count) in facet.values {
                 values.push(FacetValue {
-                    value,
+                    value: Some(value),
+                    count,
+                    comparison: None,
+                });
+            }
+            if let Some(&(count, _)) = facet_unset.get(&facet.field)
+                && count > 0
+            {
+                values.push(FacetValue {
+                    value: None,
                     count,
                     comparison: None,
                 });
@@ -439,7 +454,13 @@ pub fn explore(
                 scope: matched,
                 selection: selection_matched,
             };
-            compare_facets(&mut out, &selection_facets, &facet_totals, totals);
+            compare_facets(
+                &mut out,
+                &selection_facets,
+                &facet_totals,
+                &facet_unset,
+                totals,
+            );
             totals
         });
         status.merge(own.clone());
@@ -653,6 +674,7 @@ fn compare_facets(
     facets: &mut Vec<FacetData>,
     selection_facets: &[Vec<sfst::FacetResult>],
     facet_totals: &BTreeMap<String, (u64, u64)>,
+    facet_unset: &BTreeMap<String, (u64, u64)>,
     section: ComparisonTotals,
 ) {
     let mut selection: BTreeMap<&str, BTreeMap<&str, u64>> = BTreeMap::new();
@@ -674,11 +696,16 @@ fn compare_facets(
         let counts = selection.get(facet.field.as_str());
         let mut rows = Vec::with_capacity(facet.values.len());
         for value in &facet.values {
-            let c = counts
-                .and_then(|counts| counts.get(value.value.as_str()))
-                .copied()
-                .unwrap_or(0);
-            rows.push((value.value.as_str(), value.count, c));
+            let c = match &value.value {
+                Some(named) => counts
+                    .and_then(|counts| counts.get(named.as_str()))
+                    .copied()
+                    .unwrap_or(0),
+                None => facet_unset
+                    .get(&facet.field)
+                    .map_or(0, |&(_, selection)| selection),
+            };
+            rows.push((value.value.as_deref(), value.count, c));
         }
         let (compared, best) = compare::compare_values(totals, &rows);
         for (value, comparison) in facet.values.iter_mut().zip(compared) {
@@ -690,7 +717,10 @@ fn compare_facets(
                 (Some(x), Some(y)) => x.cmp(&y),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)),
+                (None, None) => b
+                    .count
+                    .cmp(&a.count)
+                    .then_with(|| compare::value_order(a.value.as_deref(), b.value.as_deref())),
             }
         });
         facet.comparison = Some(FieldComparison {

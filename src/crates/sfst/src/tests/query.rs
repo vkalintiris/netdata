@@ -1237,6 +1237,28 @@ fn absent_on_a_field_the_file_lacks_matches_every_row() {
     );
 }
 
+/// The unset count of a field: the filter's rows once that field's own
+/// chips are dropped, without a value of the field.
+#[test]
+fn count_absent_drops_the_fields_own_chips() {
+    let data = build_sparse_tiers();
+    let reader = IndexReader::open(&data).unwrap();
+    // level=error {1,3} AND host absent {2,3,5} = {3}.
+    let filter = bf(
+        &reader,
+        Filter::new().select("level", "error").select_absent("host"),
+    );
+    let absent = |field: &str| reader.count_absent(&filter, field, FULL_WINDOW).unwrap();
+    assert_eq!(
+        absent("level"),
+        2,
+        "host absent {{2,3,5}} without level: {{2,5}}"
+    );
+    assert_eq!(absent("trace"), 1, "row 3 has no trace");
+    assert_eq!(absent("host"), 1, "level=error {{1,3}}: row 3 lacks a host");
+    assert_eq!(absent("nope"), 1, "a field the file lacks: every row");
+}
+
 #[test]
 fn absent_counts_a_multivalued_row_as_present() {
     let data = build_multivalued_fixture();

@@ -708,7 +708,9 @@ pub struct ExploreFacetWire {
 
 #[derive(Debug, Serialize)]
 pub struct ExploreFacetValueWire {
-    pub value: String,
+    /// `null`: the rows without the field (`status_code` only), listed after
+    /// the values.
+    pub value: Option<String>,
     /// Scope rows.
     pub count: u64,
     /// With a selection: its rows, the rest of the scope's, whether the value

@@ -26,6 +26,7 @@ pub use groups::GROUPS_CAP;
 pub use query::{
     DEFAULT_POPULATION, DEFAULT_STACK_FIELD, ExploreQuery, ExploreRequestError, ExploreScope,
     ExploreSelection, FacetSpec, HIDDEN_FIELDS, HistogramSpec, Sections, TRACE_IDS_MAX,
+    UNSET_FACET_FIELDS,
 };
 pub use rows::{
     MoreRows, NOT_ROW_COLUMN_PREFIXES, ROW_COLUMNS_MAX, ROW_VALUE_COLUMNS, ROWS_PAGE_MAX,
@@ -239,7 +240,9 @@ pub struct FacetData {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FacetValue {
-    pub value: String,
+    /// `None`: the rows without the field (on [`UNSET_FACET_FIELDS`] only),
+    /// listed after the values.
+    pub value: Option<String>,
     /// Scope rows.
     pub count: u64,
     pub comparison: Option<ValueComparison>,

@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use super::super::duration_hist::DurationHistogram;
 use super::groups::{ScopeTraces, UnsetRows, add_trace};
-use super::query::{ExploreQuery, ExploreSelection, HIDDEN_FIELDS, STATUS_FIELD};
+use super::query::{
+    ExploreQuery, ExploreSelection, HIDDEN_FIELDS, STATUS_FIELD, UNSET_FACET_FIELDS,
+};
 use super::rows::{RowsSpec, SourceRows, source_rows};
 
 /// A readable source's numbers for the request.
@@ -32,6 +34,10 @@ pub(super) struct ExploreShard {
     pub selection_matched: u64,
     pub selection_facets: Vec<sfst::FacetResult>,
     pub facet_totals: BTreeMap<String, (u64, u64)>,
+    /// Per faceted field of [`UNSET_FACET_FIELDS`] low or mid cardinality
+    /// here: its `(scope, selection)` rows without a value, the field's own
+    /// chips dropped.
+    pub facet_unset: BTreeMap<String, (u64, u64)>,
     /// Faceted fields that are high-cardinality here.
     pub facet_high: BTreeSet<String>,
     /// Scope rows that can make the rows page.
@@ -237,6 +243,23 @@ pub(super) fn evaluate(
                 .for_each(&mut consider),
         }
         shard.facets = reader.facets(&eligible, &scope, window.clone())?;
+        // A file without the field counts every row as unset.
+        for field in UNSET_FACET_FIELDS {
+            let faceted = spec
+                .fields
+                .as_ref()
+                .is_none_or(|fields| fields.iter().any(|f| f == field));
+            if faceted && !shard.facet_high.contains(field) {
+                let selection = match &both {
+                    Some(both) => reader.count_absent(both, field, window.clone())?,
+                    None => 0,
+                };
+                let scope = reader.count_absent(&scope, field, window.clone())?;
+                shard
+                    .facet_unset
+                    .insert(field.to_string(), (scope, selection));
+            }
+        }
         if let (Some(both), Some(selection)) = (&both, &query.selection) {
             shard.selection_facets = reader.facets(&eligible, both, window.clone())?;
             let mut named: BTreeSet<&str> = BTreeSet::new();

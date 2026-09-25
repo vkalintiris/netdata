@@ -495,7 +495,7 @@ fn facets_query(chips: &[(&str, &str)], fields: Option<&[&str]>) -> ExploreQuery
     q
 }
 
-fn facet_values(data: &ExploreData, field: &str) -> Vec<(String, u64)> {
+fn facet_values(data: &ExploreData, field: &str) -> Vec<(Option<String>, u64)> {
     let facets = data.facets.as_ref().expect("facets section");
     let facet = facets
         .fields
@@ -509,8 +509,12 @@ fn facet_values(data: &ExploreData, field: &str) -> Vec<(String, u64)> {
         .collect()
 }
 
-fn pairs(items: &[(&str, u64)]) -> Vec<(String, u64)> {
-    items.iter().map(|(v, c)| (v.to_string(), *c)).collect()
+/// Named facet values with their counts.
+fn pairs(items: &[(&str, u64)]) -> Vec<(Option<String>, u64)> {
+    items
+        .iter()
+        .map(|(v, c)| (Some(v.to_string()), *c))
+        .collect()
 }
 
 #[test]
@@ -554,6 +558,58 @@ fn facets_count_scope_rows_and_ignore_the_fields_own_chips() {
             .collect::<Vec<_>>(),
         ["_role", "status_code", "kind", "absent.field"],
         "requested fields keep the request order"
+    );
+}
+
+/// The status facet lists the rows without a status as the unset value,
+/// last: a file without the field counts every row; the values and the
+/// unset value add up to the scope; other facets list no unset value.
+#[test]
+fn the_status_facet_counts_unset_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
+    let b = write_wal(dir.path(), vec![req(&request(0x22, 0x20))], "b");
+    let c = write_wal(
+        dir.path(),
+        vec![req(&[sp(1, 0, S, "x"), sp(2, 1, S, "y")])],
+        "c",
+    );
+    let mut q = facets_query(&[], Some(&["status_code", "kind"]));
+    q.sections.histogram = Some(HistogramSpec {
+        stack: "status_code".to_string(),
+        percentiles: false,
+    });
+    let data = run(
+        vec![
+            sealed_source(dir.path(), &a, "a"),
+            sealed_source(dir.path(), &b, "b"),
+            memory_source(&c, "c"),
+        ],
+        q,
+    );
+    assert!(data.status.is_complete(), "{:?}", data.status);
+    let mut statuses = pairs(&[("ERROR", 2), ("OK", 2)]);
+    statuses.push((None, 6));
+    assert_eq!(facet_values(&data, "status_code"), statuses);
+    let listed: u64 = statuses.iter().map(|(_, count)| count).sum();
+    assert_eq!(listed, data.histogram.as_ref().unwrap().totals.count);
+    assert!(
+        facet_values(&data, "kind")
+            .iter()
+            .all(|(value, _)| value.is_some()),
+        "only the status facet lists an unset value"
+    );
+
+    let errors = run(
+        vec![sealed_source(dir.path(), &a, "a")],
+        facets_query(&[("status_code", "ERROR")], Some(&["status_code"])),
+    );
+    let mut own_chip_dropped = pairs(&[("ERROR", 1), ("OK", 1)]);
+    own_chip_dropped.push((None, 2));
+    assert_eq!(
+        facet_values(&errors, "status_code"),
+        own_chip_dropped,
+        "the status chip does not narrow its own facet, unset included"
     );
 }
 

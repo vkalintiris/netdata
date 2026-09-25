@@ -1767,6 +1767,21 @@ async fn explore_scopes_rows_without_a_status() {
     }
 }
 
+/// The status facet lists the roots without a status as `null`, last.
+#[tokio::test]
+async fn explore_lists_the_unset_status() {
+    let (h, _) = explore_corpus().await;
+    let body = json!({"explore": {
+        "after": 1, "before": 10, "filter": {"_role": ["root"]},
+        "sections": {"facets": {"fields": ["status_code"]}}
+    }});
+    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
+    assert_eq!(
+        v["data"]["facets"]["fields"][0]["values"],
+        json!([{"value": "ERROR", "count": 1}, {"value": null, "count": 3}])
+    );
+}
+
 #[tokio::test]
 async fn explore_answers_a_selection() {
     let (h, _) = explore_corpus().await;
