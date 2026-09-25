@@ -1,0 +1,15 @@
+[package]
+name = "netdata-agent-log"
+description = "The netdata agent logger (nd_log): sources, priorities, fields, frames, logfmt/json/journal outputs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+netdata-agent-sys = { workspace = true }
+netdata-agent-text = { workspace = true }
+nix = { workspace = true, features = ["fs", "socket", "uio", "time", "process", "user"] }
+uuid = { workspace = true, features = ["v4"] }
