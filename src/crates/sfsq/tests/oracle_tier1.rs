@@ -1718,6 +1718,16 @@ fn live_split_equals_sealed() {
     assert_eq!(sealed_self, want);
     // R's children P and D cover 800 of its 1,000 ms, in different frames.
     assert!(sealed_self.contains(&((1, 11), Some(200_000_000))));
+    let sealed_sources = vec![
+        common::sealed_source_at(&stored._dir.path().join("sealed.sfst"), "sealed"),
+        common::sealed_source_at(&sealed_live, "live"),
+    ];
+    let (sealed_groups, status) = run_groups(sealed_sources, &grid, &Scope::entry_spans());
+    assert!(status.is_complete(), "{status:?}");
+    assert_eq!(
+        sealed_groups,
+        calc::groups(&stored.oracle, &grid, &Scope::entry_spans())
+    );
 
     for live in [Live::Tail, Live::Chunk, Live::Split(5), Live::Split(3)] {
         let (answers, statuses) = origin_answers(explore_sources(&stored, live), &grid);
@@ -1727,6 +1737,10 @@ fn live_split_equals_sealed() {
         let (live_self, status) = self_times(explore_sources(&stored, live), &grid);
         assert!(status.is_complete(), "{live:?}: {status:?}");
         assert_eq!(live_self, sealed_self, "{live:?}");
+        let entry = Scope::entry_spans();
+        let (groups, status) = run_groups(explore_sources(&stored, live), &grid, &entry);
+        assert!(status.is_complete(), "{live:?}: {status:?}");
+        assert_eq!(groups, sealed_groups, "{live:?}");
     }
 }
 
@@ -1808,5 +1822,143 @@ fn trace_by_id_derives_over_the_assembled_trace() {
             got.insert(span.span_id.as_bytes()[0], (origin, self_ns));
         }
         assert_eq!(got, want, "{live:?}");
+    }
+}
+
+/// The engine's Groups section in the calculator's shape.
+fn calc_groups(data: &explore::GroupsData) -> calc::Groups {
+    let numbers = |n: &explore::GroupNumbers| calc::GroupNumbers {
+        spans: n.spans,
+        errors: n.errors,
+        errors_originated: n.errors_originated,
+        p95_ns: n.p95_ns,
+        self_ns: n.self_ns,
+    };
+    let mut out = calc::Groups {
+        self_ns_total: data.self_ns_total,
+        total: data.rows.len() as u64,
+        ..calc::Groups::default()
+    };
+    for row in &data.rows {
+        let key = calc::GroupKey {
+            service: row.key.service.clone(),
+            operation: row.key.operation.clone(),
+        };
+        out.rows.push((key, numbers(&row.numbers)));
+    }
+    if let Some(other) = &data.other {
+        out.other = Some((other.groups, numbers(&other.numbers)));
+        out.total += other.groups;
+    }
+    out
+}
+
+/// The Groups section of `sources` for `scope`, with its status.
+fn run_groups(
+    sources: Vec<TraceSource>,
+    grid: &Grid,
+    scope: &Scope,
+) -> (calc::Groups, QueryStatus) {
+    let mut query = explore_query(grid, scope, model::STATUS_FIELD);
+    query.sections.histogram = None;
+    query.sections.groups = true;
+    let data = explore::explore(
+        sources,
+        query,
+        explore::ExploreOptions::default(),
+        tokio_util::sync::CancellationToken::new(),
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )
+    .unwrap();
+    let groups = data.groups.expect("groups section");
+    (calc_groups(&groups), groups.status)
+}
+
+/// ORC-GROUPS (D23, D24, D41): for every way of serving the live WAL and
+/// every scope, the Groups section equals the calculator's: every window row
+/// of the scope's traces across both units (resent copies counted as
+/// stored), grouped, ranked and summed exactly, p95 from the same fixed
+/// histogram; error origins and self time as the explorer derives them.
+#[test]
+fn explore_groups_match_the_calculator() {
+    let stored = store_resending(300, 71, Some(7));
+    let grid = stored.grid;
+    let entry = Scope::entry_spans();
+    let entry_traces = calc::scope_traces(&stored.oracle, &grid, &entry);
+    let mut units_of: BTreeMap<[u8; 16], BTreeSet<usize>> = BTreeMap::new();
+    for span in &stored.oracle {
+        if let Some(trace) = span.trace_id {
+            units_of.entry(trace).or_default().insert(span.unit);
+        }
+    }
+    let straddling = entry_traces
+        .iter()
+        .filter(|trace| units_of[*trace].len() == 2)
+        .count();
+    assert!(straddling > 0, "some scope trace has rows in both units");
+
+    let mut ids: Vec<[u8; 16]> = units_of.keys().copied().collect();
+    ids.sort();
+    let chosen = [ids[3], ids[ids.len() / 2], ids[ids.len() - 2]];
+    let scopes = [
+        ("F0 every span", Scope::default()),
+        ("F1 entry spans", Scope::entry_spans()),
+        (
+            "F2 checkout entry spans",
+            Scope::entry_spans().with(model::SERVICE_FIELD, &["checkout"]),
+        ),
+        ("F4 text", Scope::entry_spans().with_text("PLACEORDER")),
+        ("F5 trace ids", Scope::default().with_trace_ids(&chosen)),
+    ];
+    for live in [Live::Tail, Live::Chunk, Live::Split(100), Live::Chunked] {
+        for (name, scope) in &scopes {
+            let case = format!("{live:?} {name}");
+            let (got, status) = run_groups(explore_sources(&stored, live), &grid, scope);
+            let want = calc::groups(&stored.oracle, &grid, scope);
+            assert!(!want.rows.is_empty(), "{case}: the scenario selects rows");
+            assert_eq!(got, want, "{case}");
+            assert!(status.is_complete(), "{case}: {status:?}");
+        }
+    }
+}
+
+/// ORC-GROUPS and ORC-STATUS past the cap: 520 operations list the 500 with
+/// the most rows (ties by name) and fold 20 into `other`, which the section
+/// names as `groups_cap`, 20 of 520.
+#[test]
+fn explore_groups_cap_matches_the_calculator() {
+    let mut spans = Vec::new();
+    for i in 0..520u64 {
+        for copy in 0..(1 + i % 3) {
+            let mut trace_id = vec![0u8; 16];
+            trace_id[8..].copy_from_slice(&(i * 4 + copy + 1).to_be_bytes());
+            let start = T0_S * 1_000_000_000 + (i * 4 + copy) * 10_000_000;
+            spans.push(Span {
+                trace_id,
+                span_id: (i * 4 + copy + 1).to_be_bytes().to_vec(),
+                name: format!("op{i:03}"),
+                kind: 2,
+                start_time_unix_nano: start,
+                end_time_unix_nano: start + 1_000_000 + i,
+                ..Default::default()
+            });
+        }
+    }
+    let requests: Vec<ExportTraceServiceRequest> = spans
+        .chunks(100)
+        .map(|batch| frame_of(batch.to_vec()))
+        .collect();
+    let stored = store_requests(&requests, requests.len() / 2);
+    let grid = stored.grid;
+    for live in [Live::Tail, Live::Split(100)] {
+        let (got, status) = run_groups(explore_sources(&stored, live), &grid, &Scope::default());
+        let want = calc::groups(&stored.oracle, &grid, &Scope::default());
+        assert_eq!(want.rows.len(), 500);
+        assert_eq!(want.other.as_ref().map(|(folded, _)| *folded), Some(20));
+        assert_eq!(got, want, "{live:?}");
+        let reasons: Vec<calc::Reason> = stated(&status, PartialReason::GroupsCap, "groups_cap")
+            .into_iter()
+            .collect();
+        assert_eq!(reasons, calc::groups_reasons(&want), "{live:?}");
     }
 }

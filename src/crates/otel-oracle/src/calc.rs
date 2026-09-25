@@ -840,6 +840,150 @@ pub fn add_derived(spans: &mut [OracleSpan], scope: &dyn Fn(usize) -> Option<usi
     }
 }
 
+/// Groups listed before the rest fold into `other` (the calculator's own
+/// copy of the documented cap, D34).
+pub const GROUP_ROWS_CAP: usize = 500;
+
+/// A group: the first value, in byte order, of the rows' service and
+/// operation; `None` for rows without one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GroupKey {
+    pub service: Option<String>,
+    pub operation: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupNumbers {
+    pub spans: u64,
+    pub errors: u64,
+    pub errors_originated: u64,
+    pub p95_ns: Option<i64>,
+    /// Summed self time of the rows that have one.
+    pub self_ns: u128,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Groups {
+    /// The groups with the most rows, at most [`GROUP_ROWS_CAP`].
+    pub rows: Vec<(GroupKey, GroupNumbers)>,
+    /// `(groups folded, their numbers)`, when any were.
+    pub other: Option<(u64, GroupNumbers)>,
+    /// Self time over every group.
+    pub self_ns_total: u128,
+    /// Every group, listed or folded.
+    pub total: u64,
+}
+
+/// The trace ids of the scope's rows in the window (D23).
+pub fn scope_traces(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> BTreeSet<[u8; 16]> {
+    let mut out = BTreeSet::new();
+    for span in spans {
+        if let Some(trace) = span.trace_id
+            && grid.bucket_of(span.start_ns).is_some()
+            && scope.matches(span)
+        {
+            out.insert(trace);
+        }
+    }
+    out
+}
+
+/// The Groups table (D23, D41): every window row of a scope trace, whatever
+/// its own fields, and every window scope row without a trace id, grouped by
+/// service and operation; ranked by rows (then key, a missing value after
+/// every value) and capped.
+pub fn groups(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Groups {
+    let traces = scope_traces(spans, grid, scope);
+    let mut by_key: BTreeMap<GroupKey, (GroupNumbers, Vec<i64>)> = BTreeMap::new();
+    for span in spans {
+        if grid.bucket_of(span.start_ns).is_none() {
+            continue;
+        }
+        let joined = match span.trace_id {
+            Some(trace) => traces.contains(&trace),
+            None => scope.matches(span),
+        };
+        if !joined {
+            continue;
+        }
+        let first = |field: &str| {
+            span.fields
+                .get(field)
+                .and_then(|values| values.iter().min().map(str::to_string))
+        };
+        let key = GroupKey {
+            service: first(SERVICE_FIELD),
+            operation: first("name"),
+        };
+        let (numbers, durations) = by_key.entry(key).or_default();
+        numbers.spans += 1;
+        numbers.errors += u64::from(span.is_error());
+        numbers.errors_originated += u64::from(span.has(ERR_ORIGIN_FIELD, "true"));
+        if let Some(self_ns) = span.self_ns {
+            numbers.self_ns += u128::try_from(self_ns).unwrap_or(0);
+        }
+        durations.push(span.duration_ns);
+    }
+
+    let mut ranked: Vec<(GroupKey, GroupNumbers, Vec<i64>)> = Vec::new();
+    for (key, (numbers, durations)) in by_key {
+        ranked.push((key, numbers, durations));
+    }
+    let missing_last = |key: &GroupKey| {
+        (
+            key.service.is_none(),
+            key.service.clone(),
+            key.operation.is_none(),
+            key.operation.clone(),
+        )
+    };
+    ranked.sort_by(|a, b| {
+        b.1.spans
+            .cmp(&a.1.spans)
+            .then_with(|| missing_last(&a.0).cmp(&missing_last(&b.0)))
+    });
+
+    let mut out = Groups {
+        total: ranked.len() as u64,
+        ..Groups::default()
+    };
+    let mut folded = 0u64;
+    let mut rest = GroupNumbers::default();
+    let mut rest_durations = Vec::new();
+    for (index, (key, mut numbers, durations)) in ranked.into_iter().enumerate() {
+        out.self_ns_total += numbers.self_ns;
+        if index < GROUP_ROWS_CAP {
+            numbers.p95_ns = fixed_histogram::percentiles(&durations).map(|p| p[1]);
+            out.rows.push((key, numbers));
+        } else {
+            folded += 1;
+            rest.spans += numbers.spans;
+            rest.errors += numbers.errors;
+            rest.errors_originated += numbers.errors_originated;
+            rest.self_ns += numbers.self_ns;
+            rest_durations.extend(durations);
+        }
+    }
+    if folded > 0 {
+        rest.p95_ns = fixed_histogram::percentiles(&rest_durations).map(|p| p[1]);
+        out.other = Some((folded, rest));
+    }
+    out
+}
+
+/// The Groups section's own partial reason: groups folded into `other`.
+pub fn groups_reasons(groups: &Groups) -> Vec<Reason> {
+    match &groups.other {
+        Some((folded, _)) => vec![Reason {
+            reason: "groups_cap",
+            count: *folded,
+            of: Some(groups.total),
+            detail: BTreeSet::new(),
+        }],
+        None => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -982,6 +1126,117 @@ mod tests {
                 .collect();
             assert_eq!(got, expected, "{name}");
         }
+    }
+
+    #[test]
+    fn groups_rules() {
+        let grid = Grid {
+            after_s: 0,
+            before_s: 10,
+            width_s: 1,
+        };
+        // (unit, trace, span id, second, service(s), name, entry, error, self)
+        type Case<'a> = (
+            usize,
+            u8,
+            u8,
+            i64,
+            &'a [&'a str],
+            &'a str,
+            bool,
+            bool,
+            Option<i64>,
+        );
+        let make = |(unit, trace, id, second, services, name, entry, error, self_ns): Case<'_>| {
+            let mut fields: Vec<(&str, &str)> = services
+                .iter()
+                .map(|service| (SERVICE_FIELD, *service))
+                .collect();
+            fields.push(("name", name));
+            fields.push((ROLE_FIELD, if entry { "root" } else { "outbound" }));
+            if error {
+                fields.push((STATUS_FIELD, "ERROR"));
+                fields.push((ERR_ORIGIN_FIELD, "true"));
+            }
+            OracleSpan {
+                trace_id: (trace != 0).then_some([trace; 16]),
+                span_id: Some([id; 8]),
+                parent_span_id: None,
+                start_ns: second * 1_000_000_000,
+                duration_ns: 100,
+                fields: fields.into_iter().collect(),
+                unit,
+                self_ns,
+            }
+        };
+        let spans: Vec<OracleSpan> = [
+            (0, 1, 1, 1, &["api"][..], "GET", true, false, Some(40)),
+            (1, 1, 2, 2, &["db"][..], "SELECT", false, true, Some(100)),
+            (1, 1, 3, 12, &["db"][..], "SELECT", false, false, Some(100)),
+            (
+                0,
+                2,
+                4,
+                3,
+                &["zeta", "db"][..],
+                "SELECT",
+                false,
+                false,
+                None,
+            ),
+            (0, 0, 5, 4, &["api"][..], "GET", true, false, Some(60)),
+            (0, 0, 6, 4, &["api"][..], "POST", false, false, Some(60)),
+            (0, 3, 7, 5, &[][..], "GET", true, false, Some(10)),
+        ]
+        .into_iter()
+        .map(make)
+        .collect();
+        let scope = Scope::default().with(ROLE_FIELD, &["root"]);
+
+        assert_eq!(
+            scope_traces(&spans, &grid, &scope),
+            BTreeSet::from([[1; 16], [3; 16]])
+        );
+        let got = groups(&spans, &grid, &scope);
+        let key = |service: Option<&str>, operation: &str| GroupKey {
+            service: service.map(str::to_string),
+            operation: Some(operation.to_string()),
+        };
+        let numbers = |spans, errors, self_ns| GroupNumbers {
+            spans,
+            errors,
+            errors_originated: errors,
+            p95_ns: Some(100),
+            self_ns,
+        };
+        assert_eq!(
+            got.rows,
+            vec![
+                (key(Some("api"), "GET"), numbers(2, 0, 100)),
+                (key(Some("db"), "SELECT"), numbers(1, 1, 100)),
+                (key(None, "GET"), numbers(1, 0, 10)),
+            ],
+            "a trace across units, its outbound child, a scope row without a trace id; \
+             a row past the window, another trace and an unset-id row outside the scope left out"
+        );
+        assert_eq!((got.total, got.self_ns_total), (3, 210));
+        assert!(got.other.is_none());
+        assert!(groups_reasons(&got).is_empty());
+
+        let wide = Scope::default();
+        let all = groups(&spans, &grid, &wide);
+        let multi = all
+            .rows
+            .iter()
+            .find(|(key, _)| {
+                key.service.as_deref() == Some("db") && key.operation.as_deref() == Some("SELECT")
+            })
+            .unwrap();
+        assert_eq!(
+            multi.1.spans, 2,
+            "the multi-valued service takes its lowest value"
+        );
+        assert_eq!(multi.1.self_ns, 100, "a row without self time adds none");
     }
 
     #[test]

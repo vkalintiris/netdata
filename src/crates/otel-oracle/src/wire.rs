@@ -63,9 +63,46 @@ pub struct Explore {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facets: Option<Facets>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Groups>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rows: Option<Rows>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fields: Option<Fields>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Groups {
+    pub status: Status,
+    pub window_s: u64,
+    /// Nanoseconds, as a decimal string.
+    pub self_ns_total: String,
+    pub rows: Vec<Group>,
+    pub other: Option<OtherGroups>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Group {
+    pub service: Option<String>,
+    pub operation: Option<String>,
+    #[serde(flatten)]
+    pub numbers: GroupNumbers,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OtherGroups {
+    pub groups: u64,
+    #[serde(flatten)]
+    pub numbers: GroupNumbers,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupNumbers {
+    pub spans: u64,
+    pub errors: u64,
+    pub errors_originated: u64,
+    pub p95_ns: Option<i64>,
+    /// Nanoseconds, as a decimal string.
+    pub self_ns: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

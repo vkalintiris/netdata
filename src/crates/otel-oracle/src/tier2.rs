@@ -54,6 +54,7 @@ pub enum Ask {
         scenario: usize,
         stack: Option<String>,
         facets: bool,
+        groups: bool,
         rows: Option<RowsAsk>,
         fields: bool,
     },
@@ -215,6 +216,7 @@ pub fn plan(after_s: u32, before_s: u32, spans: &[OracleSpan], candidates: u64) 
         let mut first = json!({
             "histogram": {"stack": STATUS_FIELD, "percentiles": true},
             "facets": {},
+            "groups": {},
             "rows": {"order": "newest", "limit": ROWS_LIMIT},
         });
         if everything {
@@ -226,6 +228,7 @@ pub fn plan(after_s: u32, before_s: u32, spans: &[OracleSpan], candidates: u64) 
                 scenario: index,
                 stack: Some(STATUS_FIELD.to_string()),
                 facets: true,
+                groups: true,
                 rows: Some(RowsAsk::Newest(ROWS_LIMIT)),
                 fields: everything,
             },
@@ -238,6 +241,7 @@ pub fn plan(after_s: u32, before_s: u32, spans: &[OracleSpan], candidates: u64) 
                     scenario: index,
                     stack: Some(stack.to_string()),
                     facets: false,
+                    groups: false,
                     rows: None,
                     fields: false,
                 },
@@ -259,6 +263,7 @@ pub fn plan(after_s: u32, before_s: u32, spans: &[OracleSpan], candidates: u64) 
                     scenario: index,
                     stack: None,
                     facets: false,
+                    groups: false,
                     rows: Some(RowsAsk::Slowest(k)),
                     fields: false,
                 },
@@ -538,6 +543,118 @@ fn judge_histogram(
         &scenario.name,
         "histogram",
         &calc::histogram_reasons(spans, stack, candidates),
+        &got.status,
+    );
+}
+
+/// ORC-GROUPS: every group's key and numbers in order, `other`, the self-time
+/// total, and the section's own reasons.
+fn judge_groups(
+    judge: &mut Judge,
+    scenario: &Scenario,
+    spans: &[OracleSpan],
+    grid: &Grid,
+    got: &wire::Groups,
+) {
+    let want = calc::groups(spans, grid, &scenario.scope);
+    let key = |service: &Option<String>, operation: &Option<String>| {
+        let part = |field: &str, value: &Option<String>| {
+            value
+                .as_ref()
+                .map_or(Subject::Missing, |value| Subject::Value {
+                    field: field.to_string(),
+                    value: value.clone(),
+                })
+        };
+        [part(SERVICE_FIELD, service), part("name", operation)]
+    };
+    let numbers = |spans: u64, errors: u64, origins: u64, p95: Option<i64>, self_ns: String| {
+        [
+            Subject::Count(spans),
+            Subject::Count(errors),
+            Subject::Count(origins),
+            p95.map_or(Subject::Missing, Subject::Ns),
+            Subject::Name(self_ns),
+        ]
+    };
+    let mut want_rows = Vec::new();
+    for (k, n) in &want.rows {
+        want_rows.extend(key(&k.service, &k.operation));
+        want_rows.extend(numbers(
+            n.spans,
+            n.errors,
+            n.errors_originated,
+            n.p95_ns,
+            n.self_ns.to_string(),
+        ));
+    }
+    let mut got_rows = Vec::new();
+    for row in &got.rows {
+        let n = &row.numbers;
+        got_rows.extend(key(&row.service, &row.operation));
+        got_rows.extend(numbers(
+            n.spans,
+            n.errors,
+            n.errors_originated,
+            n.p95_ns,
+            n.self_ns.clone(),
+        ));
+    }
+    judge.list(
+        "ORC-GROUPS",
+        &scenario.name,
+        vec![name("groups"), name("rows")],
+        &want_rows,
+        &got_rows,
+    );
+    let other = |folded: Option<(u64, [Subject; 5])>| match folded {
+        Some((groups, numbers)) => {
+            let mut out = vec![Subject::Count(groups)];
+            out.extend(numbers);
+            out
+        }
+        None => vec![Subject::Missing],
+    };
+    let want_other = want.other.as_ref().map(|(groups, n)| {
+        let numbers = numbers(
+            n.spans,
+            n.errors,
+            n.errors_originated,
+            n.p95_ns,
+            n.self_ns.to_string(),
+        );
+        (*groups, numbers)
+    });
+    let got_other = got.other.as_ref().map(|o| {
+        let n = &o.numbers;
+        let numbers = numbers(
+            n.spans,
+            n.errors,
+            n.errors_originated,
+            n.p95_ns,
+            n.self_ns.clone(),
+        );
+        (o.groups, numbers)
+    });
+    judge.list(
+        "ORC-GROUPS",
+        &scenario.name,
+        vec![name("groups"), name("other")],
+        &other(want_other),
+        &other(got_other),
+    );
+    judge.compare(
+        "ORC-GROUPS",
+        &scenario.name,
+        vec![name("groups"), name("self total")],
+        Subject::Name(want.self_ns_total.to_string()),
+        Subject::Name(got.self_ns_total.clone()),
+    );
+    reasons(
+        judge,
+        &scenario.name,
+        "groups",
+        &calc::groups_reasons(&want),
         &got.status,
     );
 }
@@ -960,6 +1077,7 @@ pub fn add_pages(plan: &mut Plan, answers: &BTreeMap<String, Value>) -> usize {
                 scenario: *scenario,
                 stack: None,
                 facets: false,
+                groups: false,
                 rows: Some(RowsAsk::Page {
                     limit,
                     anchor: (start_ns, trace_id, span_id),
@@ -1016,6 +1134,7 @@ pub fn judge(
                 scenario,
                 stack,
                 facets,
+                groups,
                 rows,
                 fields,
             } => {
@@ -1062,6 +1181,7 @@ pub fn judge(
                     data.histogram.is_some(),
                 );
                 present(&mut judge, "facets", *facets, data.facets.is_some());
+                present(&mut judge, "groups", *groups, data.groups.is_some());
                 present(&mut judge, "rows", rows.is_some(), data.rows.is_some());
                 present(&mut judge, "fields", *fields, data.fields.is_some());
                 if let (Some(stack), Some(got)) = (stack, &data.histogram) {
@@ -1077,6 +1197,9 @@ pub fn judge(
                 }
                 if let Some(got) = data.facets.as_ref().filter(|_| *facets) {
                     judge_facets(&mut judge, scenario, spans, &grid, got);
+                }
+                if let Some(got) = data.groups.as_ref().filter(|_| *groups) {
+                    judge_groups(&mut judge, scenario, spans, &grid, got);
                 }
                 if let (Some(ask), Some(got)) = (rows, &data.rows) {
                     judge_rows(&mut judge, scenario, spans, &grid, ask, got);
@@ -1154,7 +1277,7 @@ mod tests {
     /// What the agent would answer if it agreed with the calculator.
     fn answer(plan: &Plan, spans: &[OracleSpan], request: &Request) -> Value {
         let grid = Grid::for_window(plan.after_s, plan.before_s);
-        let (scenario, stack, facets, rows, fields) = match &request.ask {
+        let (scenario, stack, facets, groups, rows, fields) = match &request.ask {
             Ask::Values { field, prefix } => {
                 let after_ns = i64::from(plan.after_s) * 1_000_000_000;
                 let before_ns = i64::from(plan.before_s) * 1_000_000_000;
@@ -1175,9 +1298,17 @@ mod tests {
                 scenario,
                 stack,
                 facets,
+                groups,
                 rows,
                 fields,
-            } => (&plan.scenarios[*scenario], stack, facets, rows, fields),
+            } => (
+                &plan.scenarios[*scenario],
+                stack,
+                facets,
+                groups,
+                rows,
+                fields,
+            ),
         };
         let scope = &scenario.scope;
         let mut all_reasons = Vec::new();
@@ -1235,6 +1366,31 @@ mod tests {
             let reasons = calc::facet_reasons(&want);
             data["facets"] =
                 json!({"status": status(&reasons), "fields": fields, "unavailable": unavailable});
+            all_reasons.extend(reasons);
+        }
+        if *groups {
+            let want = calc::groups(spans, &grid, scope);
+            let numbers = |n: &calc::GroupNumbers| {
+                json!({"spans": n.spans, "errors": n.errors,
+                    "errors_originated": n.errors_originated, "p95_ns": n.p95_ns,
+                    "self_ns": n.self_ns.to_string()})
+            };
+            let mut rows = Vec::new();
+            for (key, n) in &want.rows {
+                let mut row = numbers(n);
+                row["service"] = json!(key.service);
+                row["operation"] = json!(key.operation);
+                rows.push(row);
+            }
+            let other = want.other.as_ref().map(|(groups, n)| {
+                let mut other = numbers(n);
+                other["groups"] = json!(groups);
+                other
+            });
+            let reasons = calc::groups_reasons(&want);
+            data["groups"] = json!({"status": status(&reasons),
+                "window_s": u64::from(grid.before_s - grid.after_s),
+                "self_ns_total": want.self_ns_total.to_string(), "rows": rows, "other": other});
             all_reasons.extend(reasons);
         }
         if let Some(ask) = rows {
@@ -1419,6 +1575,7 @@ mod tests {
             "ORC-PCT",
             "ORC-TOTALS",
             "ORC-FACET",
+            "ORC-GROUPS",
             "ORC-ROWS",
             "ORC-TOPK",
             "ORC-FIELDS",
@@ -1528,6 +1685,24 @@ mod tests {
         let (findings, _) = judge(&plan, &spans, &wrong);
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert!(findings[0].at.contains(&name("self time by key")));
+    }
+
+    #[test]
+    fn one_wrong_group_number_is_exactly_one_finding() {
+        let (spans, after, before) = corpus_spans();
+        let plan = plan(after, before, &spans, 2);
+        let mut answers = answers(&plan, &spans);
+        let id = plan.requests[0].id.clone();
+        let rows = answers.get_mut(&id).unwrap()["data"]["groups"]["rows"]
+            .as_array_mut()
+            .unwrap();
+        assert!(!rows.is_empty());
+        rows[0]["errors_originated"] = json!(rows[0]["errors_originated"].as_u64().unwrap() + 1);
+
+        let (findings, _) = judge(&plan, &spans, &answers);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].check, "ORC-GROUPS");
     }
 
     #[test]
