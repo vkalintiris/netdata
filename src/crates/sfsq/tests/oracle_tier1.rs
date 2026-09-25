@@ -751,12 +751,23 @@ fn explore_rows_pages_match_the_calculator() {
     const LIMIT: usize = 25;
     let stored = store_resending(60, 91, Some(3));
     let grid = stored.grid;
+    let mut ids: Vec<[u8; 16]> = stored.oracle.iter().filter_map(|s| s.trace_id).collect();
+    ids.sort();
+    ids.dedup();
+    let chosen = [ids[1], ids[ids.len() / 2]];
+    // The last flag: the scope is large enough for some page to end inside a
+    // resent group.
     let scopes = [
-        ("F0 every span", Scope::default()),
-        ("F1 entry spans", Scope::entry_spans()),
+        ("F0 every span", Scope::default(), true),
+        ("F1 entry spans", Scope::entry_spans(), true),
+        (
+            "F5 trace ids",
+            Scope::default().with_trace_ids(&chosen),
+            false,
+        ),
     ];
     for live in [Live::Tail, Live::Chunked] {
-        for (name, scope) in &scopes {
+        for (name, scope, splits_groups) in &scopes {
             let totals = calc::totals(&stored.oracle, &grid, scope);
             let mut all = calc::newest_page(
                 &stored.oracle,
@@ -806,8 +817,9 @@ fn explore_rows_pages_match_the_calculator() {
             }
             let expected: Vec<calc::RowKey> = all.iter().map(|span| calc::row_key(span)).collect();
             assert_eq!(walked, expected, "{live:?} {name}: the older walk");
-            assert!(
+            assert_eq!(
                 grown > 0,
+                *splits_groups,
                 "{live:?} {name}: some page ends inside a resent group"
             );
 
