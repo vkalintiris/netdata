@@ -1,5 +1,5 @@
 //! Trace-level aggregates WITHOUT assembly: the neutral per-trace
-//! shape the cross-source folds (overview, slowest, root facets)
+//! shape the cross-source folds (overview, root facets)
 //! consume from BOTH source kinds:
 //!
 //! - **Sealed files / chunks** carry the `TRSU` rollup chunk
@@ -149,7 +149,7 @@ pub fn tail_trace_aggregates(scan: &TraceWalScan) -> Vec<TraceAggregate> {
 /// The envelope-and-counts view of a sealed file's `TRSU` rows — the
 /// grid path. `root` is always `None` here (UNRESOLVED, not honest-absent):
 /// resolving roots needs the root-field dictionaries decoded, and the
-/// overview grid discards roots anyway. Root-consuming callers (slowest,
+/// overview grid discards roots anyway. Root-consuming callers (the root
 /// facets) use [`sealed_trace_aggregates`].
 ///
 /// Precondition: `rollup` comes from `IndexReader::trace_rollup()` (the

@@ -1,6 +1,6 @@
 //! The optional per-file trace rollup (`TRSU` chunk): one row per
 //! distinct set (non-UNSET) trace id in the file — the trace-level
-//! aggregate the traces overview/slowest/facet queries fold WITHOUT
+//! aggregate the traces overview and facet queries fold WITHOUT
 //! assembling traces.
 //!
 //! Semantics (pinned):

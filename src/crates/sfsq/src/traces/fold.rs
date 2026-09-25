@@ -1,6 +1,6 @@
 //! The shared cross-source trace-aggregate merge — ONE implementation
 //! of the source loop and cross-source fold consumed by every trace-level
-//! aggregate mode (overview, slowest, and the root facets), so
+//! aggregate mode (overview and the root facets), so
 //! the engine-op contract can never drift between them.
 //!
 //! Owned here, once:
@@ -68,7 +68,7 @@ use sfst::{ScanWork, TracePlan};
 
 /// How a caller parameterizes the shared fold.
 pub(crate) struct SourceFoldSpec {
-    /// The op name for log lines (`"overview"`, `"slowest"`, …).
+    /// The op name for log lines (`"overview"`, …).
     pub op: &'static str,
     /// The caller's visited budget (rollup rows + tail spans).
     pub visited_ceiling: u64,

@@ -1,6 +1,6 @@
 //! Multi-source trace-query subsystem: cross-source trace-by-id,
-//! attribute / attribute-value enumeration, search, and the
-//! trace-level aggregates (overview, slowest).
+//! attribute / attribute-value enumeration, search, the trace-level
+//! overview, and the span explorer ([`explore`]).
 //!
 //! Same philosophy as [`logs`](crate::logs): neutral, transport-free —
 //! plain Rust data in and out, no wire concerns; each consumer (the CLI,
@@ -33,7 +33,6 @@ mod overview;
 mod predicate;
 mod fold;
 mod rollup;
-mod slowest;
 mod search;
 mod sources;
 mod status;
@@ -50,10 +49,6 @@ pub use overview::{
 pub use rollup::{
     TraceAggregate, TraceRootInfo, sealed_trace_aggregates, sealed_trace_envelopes,
     tail_trace_aggregates,
-};
-pub use slowest::{
-    DEFAULT_SLOWEST_LIMIT, SLOWEST_LIMIT_MAX, SlowTrace, SlowestData, SlowestQuery,
-    SlowestRequestError, slowest,
 };
 pub use predicate::{
     CompareOp, Condition, Predicate, PredicateError, PredicateTarget, PredicateValue,

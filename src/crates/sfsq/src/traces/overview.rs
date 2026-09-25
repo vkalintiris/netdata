@@ -429,7 +429,7 @@ impl FacetCounts {
 fn reduce(counts: std::collections::HashMap<String, u64>, unattributed: u64) -> FacetList {
     let mut entries: Vec<(String, u64)> = counts.into_iter().collect();
     let rank = |a: &(String, u64), b: &(String, u64)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0));
-    // Select-then-sort, like the slowest top-K: O(n + K log K).
+    // Select-then-sort: O(n + K log K).
     let mut other = 0u64;
     if entries.len() > FACET_TOP_K {
         entries.select_nth_unstable_by(FACET_TOP_K - 1, rank);

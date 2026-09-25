@@ -8,8 +8,8 @@
 //!
 //! The query handler is [`OtelTracesHandler`] (`rpc/traces/`), the
 //! `otel-traces` Function: `info` capability discovery plus the
-//! `trace`/`search`/`attributes`/`attribute_values`/`overview`/`slowest`
-//! data modes. It shares the logs pipeline's
+//! `explore`/`values`/`trace`/`search`/`attributes`/`attribute_values`/
+//! `overview` data modes. It shares the logs pipeline's
 //! chunk cache (seqs are process-global, so `(seq, index)` keys never
 //! collide across signals) but installs its OWN GET shim: the traces
 //! wire is strict (one mode object, no top-level window), so only the

@@ -663,7 +663,6 @@
                       "cancelled",
                       "overview_ceiling",
                       "rollup_absent",
-                      "slowest_ceiling",
                       "remote_unavailable",
                       "legacy_file",
                       "stack_field_high_card",

@@ -367,7 +367,10 @@ fn aggregate_bodies() -> [serde_json::Value; 4] {
     };
     [
         window("overview", json!({"facets": true})),
-        window("slowest", json!({})),
+        window(
+            "values",
+            json!({"field": "resource.attributes.service.name"}),
+        ),
         window("attributes", json!({})),
         window("attribute_values", json!({"key": "resource.service.name"})),
     ]
@@ -393,15 +396,36 @@ async fn every_aggregate_mode_reports_a_failed_download() {
 
     for body in aggregate_bodies() {
         let v = call(&h, body.clone()).await.unwrap();
+        let reason = &v["status"]["partial"][0];
         assert_eq!(
-            v["status"],
-            json!({"partial": [{"reason": "remote_unavailable", "count": 1}]}),
-            "{body}"
+            (&reason["reason"], &reason["count"]),
+            (&json!("remote_unavailable"), &json!(1)),
+            "{body}: {v}"
         );
     }
     // What the downloaded file holds is still served.
     let v = call(&h, aggregate_bodies()[1].clone()).await.unwrap();
-    assert_eq!(traces_of(&v), ["0b", "0a"]);
+    assert!(!v["values"].as_array().unwrap().is_empty(), "{v}");
+}
+
+#[tokio::test]
+async fn explore_counts_a_lost_remote_file() {
+    let (h, remote, [_, two]) = evicted_setup(64 * MIB).await;
+    remote.lose(&two);
+    let body = json!({"explore": {
+        "after": T_S, "before": T_S + 100,
+        "sections": {"histogram": {}, "rows": {"limit": 100}}
+    }});
+    let v = call(&h, body).await.unwrap();
+    let partial = json!({"partial": [{"reason": "remote_unavailable", "count": 1, "of": 2}]});
+    assert_eq!(v["data"]["status"], partial);
+    assert_eq!(v["data"]["rows"]["status"], partial);
+    let rows = v["data"]["rows"]["items"].as_array().unwrap();
+    assert!(!rows.is_empty(), "the downloaded file still answers");
+    assert_eq!(
+        v["data"]["rows"]["matched"],
+        v["data"]["histogram"]["totals"]["count"]
+    );
 }
 
 #[tokio::test]
@@ -411,12 +435,15 @@ async fn a_lost_file_outside_the_window_does_not_make_an_answer_partial() {
     let (h, remote, [_, two]) = evicted_setup(64 * MIB).await;
     remote.lose(&two);
 
-    for mode in ["overview", "slowest", "attributes"] {
+    for mode in ["overview", "attributes"] {
         let body = json!({ mode: {"after": T_S + 5, "before": T_S + 25} });
         let v = call(&h, body.clone()).await.unwrap();
         assert_eq!(v["status"], json!({"complete": true}), "{body}");
     }
     let body = json!({"attribute_values": {"after": T_S + 5, "before": T_S + 25, "key": "resource.service.name"}});
+    let v = call(&h, body).await.unwrap();
+    assert_eq!(v["status"], json!({"complete": true}));
+    let body = json!({"values": {"after": T_S + 5, "before": T_S + 25, "field": "name"}});
     let v = call(&h, body).await.unwrap();
     assert_eq!(v["status"], json!({"complete": true}));
 }
