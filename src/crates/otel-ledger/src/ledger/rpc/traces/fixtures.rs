@@ -24,6 +24,41 @@ pub(crate) fn make_registries() -> Arc<RwLock<TenantRegistries>> {
     )))
 }
 
+/// Registries rooted at one store directory, laid out like the agent's traces
+/// store (`<root>/{wal,index,catalog}/<tenant>`), so readers of the store's
+/// files find them where the agent puts them.
+pub(crate) fn make_registries_at(root: &std::path::Path) -> Arc<RwLock<TenantRegistries>> {
+    Arc::new(RwLock::new(TenantRegistries::new(
+        root.join("wal"),
+        root.join("index"),
+        root.join("catalog"),
+    )))
+}
+
+/// Calls the Function the way the live bridge does: JSON bytes in, the
+/// transport status and the answer's bytes out.
+pub(crate) async fn call_through_bridge(
+    adapter: &impl bridge::function::RawFunctionHandler,
+    payload: Option<&[u8]>,
+) -> (u32, Vec<u8>) {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let ctx = Arc::new(bridge::function::FunctionContext {
+        function_call: Box::new(netdata_plugin_protocol::FunctionCall {
+            transaction: "tx-raw".into(),
+            timeout: 10,
+            name: "otel-traces".into(),
+            args: vec![],
+            access: None,
+            source: None,
+            payload: payload.map(|b| b.to_vec()),
+        }),
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        outbound_tx: tx,
+    });
+    let res = adapter.handle_raw(ctx).await;
+    (res.status, res.payload)
+}
+
 pub(crate) fn summary(record_count: u32, min_s: u32, max_s: u32) -> sfst::Summary {
     sfst::Summary {
         min_timestamp_s: min_s,

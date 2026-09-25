@@ -3559,6 +3559,7 @@ dependencies = [
  "otel-catalog",
  "otel-logs-identity",
  "otel-oracle",
+ "prost",
  "serde",
  "serde_json",
  "sfsq",

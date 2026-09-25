@@ -756,4 +756,4 @@ mod tests;
 mod remote_tests;
 
 #[cfg(test)]
-mod oracle_tests;
+mod oracle_tier2_tests;

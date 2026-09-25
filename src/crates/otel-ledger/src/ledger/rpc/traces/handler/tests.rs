@@ -1545,24 +1545,10 @@ async fn tenant_scoping_isolates_and_defaults() {
 // `HandlerAdapter::handle_raw` — the same path the live bridge runs.
 
 async fn raw_call(payload: Option<&[u8]>) -> (u32, String) {
-    use bridge::function::{FunctionContext, HandlerAdapter, RawFunctionHandler};
-    let adapter = HandlerAdapter::new(make_handler());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = Arc::new(FunctionContext {
-        function_call: Box::new(netdata_plugin_protocol::FunctionCall {
-            transaction: "tx-raw".into(),
-            timeout: 10,
-            name: "otel-traces".into(),
-            args: vec![],
-            access: None,
-            source: None,
-            payload: payload.map(|b| b.to_vec()),
-        }),
-        cancellation_token: CancellationToken::new(),
-        outbound_tx: tx,
-    });
-    let res = adapter.handle_raw(ctx).await;
-    (res.status, String::from_utf8_lossy(&res.payload).into_owned())
+    let adapter = bridge::function::HandlerAdapter::new(make_handler());
+    let (status, payload) =
+        crate::ledger::rpc::traces::fixtures::call_through_bridge(&adapter, payload).await;
+    (status, String::from_utf8_lossy(&payload).into_owned())
 }
 
 #[tokio::test]
