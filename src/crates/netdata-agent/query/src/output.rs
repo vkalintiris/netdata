@@ -256,7 +256,7 @@ mod tests {
         let (mut qt, mut window) = v1_target(&h, query);
         let control = Control {
             received: Instant::now(),
-            interrupted: &|| false,
+            interrupted: &|_| false,
             windows: crate::grouping::Windows::default(),
         };
         let agent = Agent {

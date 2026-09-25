@@ -2,7 +2,8 @@
 //! (`daemon-shutdown-watcher.c`): the main thread runs C's 22 steps, doing the Rust agent's work in the matching ones,
 //! and the `EXIT_WATCHER` thread logs each step as it starts and finishes.
 
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -49,6 +50,28 @@ pub const REMOVE_PID_FILE: usize = 20;
 
 /// systemd allows 150 s; the watcher gives up at 135 s since the shutdown started.
 const TIMEOUT_S: u64 = 135;
+
+/// How long C's service waits give the threads of each step (`service_wait_exit()` in steps 4, 6 and 9).
+pub const WEB_SERVERS_WAIT: Duration = Duration::from_secs(3);
+pub const STREAMING_WAIT: Duration = Duration::from_secs(20);
+pub const CONTEXT_WAIT: Duration = Duration::from_secs(5);
+
+/// `exit_initiated`: set when the exit sequence starts.
+static EXITING: AtomicBool = AtomicBool::new(false);
+
+/// The `-P` pidfile, which step 21 removes on every exit, a fatal one included.
+static PIDFILE: OnceLock<String> = OnceLock::new();
+
+/// `exit_initiated_get()`.
+pub fn exiting() -> bool {
+    EXITING.load(Ordering::Acquire)
+}
+
+pub fn set_pidfile(path: &str) {
+    if !path.is_empty() {
+        let _ = PIDFILE.set(path.to_string());
+    }
+}
 
 #[derive(Default)]
 struct State {
@@ -139,10 +162,19 @@ fn watch(shared: &Shared) {
     );
 }
 
-/// `netdata_cleanup_and_exit()` after `netdata_exit_gracefully()`: the shutdown record, then every step under the
-/// watcher, with `work(step)` doing what the Rust agent has for that step. `reason` is the exit reason's name; a
-/// normal one is logged as a notice, anything else as critical.
+/// `netdata_cleanup_and_exit()`: the shutdown record, then every step under the watcher. `work(step)` does what the
+/// caller has for a step (its threads); the steps every exit shares (`cancel_main_threads()`, the pidfile) are done
+/// here. `reason` is the exit reason's name; a normal one is logged as a notice, anything else as critical. A second
+/// exit, such as a fatal on another thread while exiting, ends the process at once.
 pub fn cleanup_and_exit(reason: &str, normal: bool, mut work: impl FnMut(usize)) {
+    if EXITING.swap(true, Ordering::AcqRel) {
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "EXIT: Recursion detected. Exiting immediately."
+        );
+        std::process::exit(1);
+    }
     netdata_agent_log::limits_unlimited();
     {
         // netdata_log_exit_reason()
@@ -165,6 +197,19 @@ pub fn cleanup_and_exit(reason: &str, normal: bool, mut work: impl FnMut(usize))
     }
     for step in 0..STEPS.len() {
         work(step);
+        match step {
+            // cancel_main_threads(): no static thread of C's table runs in the Rust agent
+            CANCEL_MAIN_THREADS => netdata_log_info!("All threads finished."),
+            REMOVE_PID_FILE => {
+                if let Some(pidfile) = PIDFILE.get()
+                    && let Err(err) = std::fs::remove_file(pidfile)
+                {
+                    nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_log::errno_of(&err);
+                        "EXIT: cannot unlink pidfile '{pidfile}'.");
+                }
+            }
+            _ => {}
+        }
         if let Some(w) = &watcher {
             w.update(|s| s.done[step] = true);
         }

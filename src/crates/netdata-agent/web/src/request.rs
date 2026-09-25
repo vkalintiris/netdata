@@ -42,7 +42,8 @@ pub enum Validation {
     Ok,
     Incomplete,
     NotSupported,
-    TooManyReadRetries,
+    /// The attempts counted before the counters were reset, which C's record prints.
+    TooManyReadRetries(usize),
     UriTooLong,
     Redirect,
 }
@@ -159,11 +160,6 @@ fn truncated(v: &[u8], max: usize) -> Vec<u8> {
 }
 
 impl Request {
-    /// `w->header_parse_tries`: the passes over an incomplete request so far.
-    pub fn header_parse_tries(&self) -> usize {
-        self.header_parse_tries
-    }
-
     fn reset_parse_counters(&mut self) {
         self.header_parse_tries = 0;
         self.header_parse_last_size = 0;
@@ -219,9 +215,10 @@ impl Request {
             }
             if !url::is_request_complete(buf, from, length, &mut self.payload, &mut self.expected) {
                 if self.header_parse_tries > MAX_HEADER_FETCH_TRIES {
+                    let tries = self.header_parse_tries;
                     self.reset_parse_counters();
                     self.wait_receive = false;
-                    return Validation::TooManyReadRetries;
+                    return Validation::TooManyReadRetries(tries);
                 }
                 return Validation::Incomplete;
             }
@@ -717,7 +714,7 @@ mod tests {
             buf.push(b'x');
             last = req.validate(&buf, &TCP, &SETTINGS);
         }
-        assert_eq!(last, Validation::TooManyReadRetries);
+        assert_eq!(last, Validation::TooManyReadRetries(MAX_HEADER_FETCH_TRIES + 1));
     }
 
     #[test]

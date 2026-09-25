@@ -135,7 +135,7 @@ pub struct Route<'a> {
     /// When the complete request was received (`w->timings.tv_in`).
     pub received: Instant,
     /// Whether the client went away (`web_client_interrupt_callback()`).
-    pub interrupted: &'a dyn Fn() -> bool,
+    pub interrupted: &'a dyn Fn(&mut i32) -> bool,
     /// The request as its log frames and records see it.
     pub ctx: &'a RequestContext,
     pub url_as_received: &'a [u8],
@@ -153,7 +153,7 @@ pub fn process_request(
     shared: &Shared,
     received: Instant,
     ctx: &RequestContext,
-    interrupted: &dyn Fn() -> bool,
+    interrupted: &dyn Fn(&mut i32) -> bool,
 ) -> Reply {
     let path = &req.path[..req.path.len().min(FILENAME_MAX)];
     let end = path.iter().position(|&c| c == b'?').unwrap_or(path.len());
@@ -394,7 +394,7 @@ mod tests {
             shared,
             Instant::now(),
             &crate::access_log::RequestContext::default(),
-            &|| false,
+            &|_| false,
         )
     }
 

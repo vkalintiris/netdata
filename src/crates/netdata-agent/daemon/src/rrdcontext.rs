@@ -51,10 +51,17 @@ impl Worker {
         Ok(Worker { stop, thread })
     }
 
-    pub fn stop(self) {
+    /// Stops the thread, waiting at most `limit` as C's service wait does.
+    pub fn stop_within(self, limit: Duration) {
         let (stopped, wake) = &*self.stop;
         *stopped.lock().unwrap_or_else(PoisonError::into_inner) = true;
         wake.notify_all();
-        let _ = self.thread.join();
+        let deadline = std::time::Instant::now() + limit;
+        while std::time::Instant::now() < deadline && !self.thread.is_finished() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if self.thread.is_finished() {
+            let _ = self.thread.join();
+        }
     }
 }

@@ -44,11 +44,12 @@ impl Slot {
                 id: 0,
                 use_count: use_count + 1,
             },
+            // web_client_create() counts 1 and the cache adds this use: a struct serves 100 connections
             None => {
                 cache.next_id += 1;
                 Slot {
                     id: cache.next_id,
-                    use_count: 1,
+                    use_count: 2,
                 }
             }
         }

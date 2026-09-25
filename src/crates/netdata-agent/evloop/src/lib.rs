@@ -348,6 +348,12 @@ impl<M: Send + 'static> Pool<M> {
 
     /// Asks every thread to run its worker's `stop` and exit, and waits for all of them.
     pub fn stop(self) -> Result<(), PoolPanicked> {
+        self.stop_within(None)
+    }
+
+    /// Like [`Pool::stop`], waiting at most `limit` (C's service waits): threads still running then are left to the
+    /// exiting process.
+    pub fn stop_within(self, limit: Option<std::time::Duration>) -> Result<(), PoolPanicked> {
         for mailbox in self.handle.mailboxes.iter() {
             if mailbox.tx.send(Envelope::Stop).is_ok() {
                 let _ = mailbox.waker.wake();
@@ -356,6 +362,13 @@ impl<M: Send + 'static> Pool<M> {
         let mut threads = self.threads;
         if let Some(lazy) = &self.handle.lazy {
             threads.append(&mut lazy.started.lock().unwrap_or_else(PoisonError::into_inner));
+        }
+        if let Some(limit) = limit {
+            let deadline = Instant::now() + limit;
+            while Instant::now() < deadline && !threads.iter().all(JoinHandle::is_finished) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            threads.retain(JoinHandle::is_finished);
         }
         let mut result = Ok(());
         for join in threads {

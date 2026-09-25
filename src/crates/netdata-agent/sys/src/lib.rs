@@ -9,6 +9,7 @@
 //! - `pthread_attr_init/getstacksize/destroy()` (decision D28) work on a stack attribute object, initialised before
 //!   use and destroyed once.
 //! - `mallopt()` (decision D28, glibc only) passes two integers; glibc serialises it against its own allocator.
+//! - `setsockopt(TCP_DEFER_ACCEPT)` (decision D47) passes a stack `int` with its size on a borrowed descriptor.
 
 use std::io;
 
@@ -220,6 +221,29 @@ pub fn localtime(t: i64) -> Option<LocalTime> {
         gmtoff: i64::from(tm.tm_gmtoff),
         zone,
     })
+}
+
+/// `sock_set_tcp_defer_accept()`: the kernel hands a listener's connection over only once data arrives, or after
+/// `seconds`.
+pub fn set_tcp_defer_accept(fd: std::os::fd::BorrowedFd<'_>, seconds: i32) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let value: libc::c_int = seconds;
+    // SAFETY: the option value is a live stack `int` whose size is passed with it, and the borrowed descriptor stays
+    // open for the call.
+    let r = unsafe {
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            libc::IPPROTO_TCP,
+            libc::TCP_DEFER_ACCEPT,
+            (&raw const value).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 #[cfg(test)]

@@ -171,8 +171,6 @@ impl RecvBuffer {
 
 struct Client {
     stream: mio::net::TcpStream,
-    /// `w->user_auth.client_ip` as `accept_socket()` formats it.
-    client_ip: String,
     /// `w->acl`.
     acl: u32,
     /// The `POLLINFO` activity the timeout checks read.
@@ -301,6 +299,10 @@ impl WebWorker {
                             "POLLFD: LISTENER: accept() failed.");
                         continue;
                     }
+                    // poll_process_new_tcp_connection(): a client that is already gone is closed without a trace
+                    if is_socket_closed(&stream, &mut 0) {
+                        continue;
+                    }
                     let client_acl = self
                         .shared
                         .acl
@@ -331,7 +333,6 @@ impl WebWorker {
                     let _ = socket2::SockRef::from(&stream).set_keepalive(true);
                     self.clients[slot] = Some(Client {
                         stream,
-                        client_ip: identity.ip,
                         acl: client_acl,
                         activity: Activity {
                             connected: Instant::now(),
@@ -439,6 +440,28 @@ impl WebWorker {
         // poll_process_error(): a hangup or a half-close (EPOLLRDHUP, even with the request in the same read) closes
         // the client before anything it sent is served.
         if event.is_read_closed() || event.is_error() {
+            let flag = |set: bool, name: &'static str| if set { name } else { "" };
+            let hangup = event.is_read_closed() || event.is_write_closed();
+            // C polls for writing only while a response is pending
+            let sending = !client.output.is_empty();
+            {
+                let _frame = client.log.hangup_frame();
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Debug,
+                    "POLLFD: LISTENER: received {} {} {} on socket {} client '{}' port '{}' expecting {} {}, having {} {}",
+                    flag(event.is_error(), "ERROR"),
+                    flag(hangup, "HUP"),
+                    "",
+                    std::os::fd::AsRawFd::as_raw_fd(&client.stream),
+                    client.log.accept_ip,
+                    client.log.port,
+                    flag(!sending, "READ"),
+                    flag(sending, "WRITE"),
+                    flag(event.is_readable(), "READ"),
+                    flag(event.is_writable(), "WRITE")
+                );
+            }
             self.close(cx, slot, true);
             return;
         }
@@ -467,13 +490,17 @@ impl WebWorker {
                             client.activity.first_request_received = true;
                         }
                         match outcome {
-                            Some(Outcome::Reply(bytes)) => {
+                            Some(Outcome::Reply(bytes, sent)) => {
                                 client.output = bytes;
-                                client.written = 0;
+                                client.written = sent;
                                 break;
                             }
                             Some(Outcome::Stream(pre, ctx)) => {
                                 self.take_over(cx, slot, pre, *ctx);
+                                return;
+                            }
+                            Some(Outcome::Dead) => {
+                                self.close(cx, slot, false);
                                 return;
                             }
                             None => {}
@@ -553,11 +580,14 @@ fn client_ip(peer: &std::net::SocketAddr) -> String {
 
 /// What a complete request turned into.
 enum Outcome {
-    /// Bytes to send (a whole HTTP response, or a raw streaming refusal that closes the connection).
-    Reply(Vec<u8>),
+    /// Bytes to send (a whole HTTP response, or a raw streaming refusal that closes the connection), and how many of
+    /// them already went out.
+    Reply(Vec<u8>, usize),
     /// A `STREAM` request past the checks made on the web connection: the connection is taken over, under the
     /// request's frame.
     Stream(PreAdmission, Box<RequestContext>),
+    /// The client went away while its response header was being sent (`WEB_CLIENT_IS_DEAD`).
+    Dead,
 }
 
 /// Validates what was received and, when the request is complete, produces the whole response.
@@ -654,14 +684,15 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
             client.close_after_write = true;
             client.request = Request::default();
             client.received.clear();
-            return Some(Outcome::Reply(body));
+            return Some(Outcome::Reply(body, 0));
         }
         Validation::Ok if client.request.mode == Some(Mode::Stream) => {
-            // stream_receiver_accept_connection()
+            // stream_receiver_accept_connection(): rpt->remote_ip is w->user_auth.client_ip, which a previous
+            // keep-alive request has wiped
             let pre = receivers.pre_admit(
                 &client.request.query,
                 client.request.headers.user_agent.as_deref(),
-                &client.client_ip,
+                &client.log.ip,
                 &client.log.port,
             );
             let (code, len) = match &pre {
@@ -674,17 +705,21 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
             return Some(match pre {
                 PreAdmission::Reply(bytes, _code) => {
                     client.close_after_write = true;
-                    Outcome::Reply(bytes.as_bytes().to_vec())
+                    Outcome::Reply(bytes.as_bytes().to_vec(), 0)
                 }
                 other => Outcome::Stream(other, Box::new(ctx)),
             });
         }
         Validation::Ok => {
             let stream = &client.stream;
-            let (reply, allowed) =
-                dispatch(&client.request, client.acl, shared, received, &ctx, &|| {
-                    is_socket_closed(stream)
-                });
+            let (reply, allowed) = dispatch(
+                &client.request,
+                client.acl,
+                shared,
+                received,
+                &ctx,
+                &|errno| is_socket_closed(stream, errno),
+            );
             ready = allowed;
             reply
         }
@@ -698,12 +733,11 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
             client.request.url_as_received = b"too long request URI".to_vec();
             Reply::text(status::URI_TOO_LONG, "Request URI is too long.\r\n")
         }
-        Validation::TooManyReadRetries => {
+        Validation::TooManyReadRetries(tries) => {
             nd_log!(
                 Source::Daemon,
                 Priority::Info,
-                "Disabling slow client after {} attempts to read the request ({} bytes received)",
-                client.request.header_parse_tries(),
+                "Disabling slow client after {tries} attempts to read the request ({} bytes received)",
                 client.received.len()
             );
             Reply::text(status::BAD_REQUEST, "Too many retries to read request.\r\n")
@@ -757,6 +791,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
     };
     let built = response::build(&head, now());
     let mut out = built.bytes;
+    let header_len = out.len();
     out.extend_from_slice(&body);
     // What the access log reports: compressed bytes under gzip (without the chunk framing), else the body length.
     client.pending = Some(completed(client, built.code, compressed, reply.body.len()));
@@ -767,7 +802,34 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
     // Ready for the next request on this connection.
     client.request = Request::default();
     client.received.clear();
-    Some(Outcome::Reply(out))
+    // web_client_send_http_header(): the header goes out now, still inside the request's frame
+    match send_header(&mut client.stream, &out[..header_len]) {
+        Some(sent) => Some(Outcome::Reply(out, sent)),
+        None => Some(Outcome::Dead),
+    }
+}
+
+/// `web_client_send_http_header()`'s send: how much of the header went out, or `None` (after C's two records) when
+/// the client is gone. A full socket sends nothing now; the rest goes out with the body.
+fn send_header(stream: &mut mio::net::TcpStream, header: &[u8]) -> Option<usize> {
+    loop {
+        match stream.write(header) {
+            Ok(n) => return Some(n),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Some(0),
+            Err(e) => {
+                nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_log::errno_of(&e);
+                    "Cannot send HTTP headers to web client.");
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "HTTP headers failed to be sent (I sent {} bytes but the system sent -1 bytes). Closing web client.",
+                    header.len()
+                );
+                return None;
+            }
+        }
+    }
 }
 
 fn lossy(bytes: &[u8]) -> String {
@@ -797,24 +859,29 @@ pub fn permission_denied_acl() -> Reply {
     )
 }
 
-/// `is_socket_closed()`: a peek that finds the end of the stream or an error other than "no data yet".
-fn is_socket_closed(stream: &mio::net::TcpStream) -> bool {
+/// `is_socket_closed()`: a peek that finds the end of the stream or an error other than "no data yet"; a failed peek
+/// leaves its errno, as `recv()` does.
+fn is_socket_closed(stream: &mio::net::TcpStream, errno: &mut i32) -> bool {
     match stream.peek(&mut [0u8; 1]) {
         Ok(0) => true,
         Ok(_) => false,
-        Err(e) => e.kind() != io::ErrorKind::WouldBlock,
+        Err(e) => {
+            *errno = netdata_agent_log::errno_of(&e);
+            e.kind() != io::ErrorKind::WouldBlock
+        }
     }
 }
 
-/// The request-mode switch of `web_client_process_request_from_web_server()`, after the STREAM case. False with the
-/// reply when the ACL denied the mode (C's `default:` case, which never marks the response ready).
+/// The request-mode switch of `web_client_process_request_from_web_server()`, after the STREAM case. False when the
+/// response is never marked ready: C returns early for a denied WebSocket and in its `default:` case, while the
+/// other denials break out of the switch to the checkpoint.
 fn dispatch(
     req: &Request,
     client_acl: u32,
     shared: &Shared,
     received: Instant,
     ctx: &RequestContext,
-    interrupted: &dyn Fn() -> bool,
+    interrupted: &dyn Fn(&mut i32) -> bool,
 ) -> (Reply, bool) {
     match req.mode {
         Some(Mode::Options) if acl::can_access_web(client_acl, req.path_is_mcp) => {
@@ -835,6 +902,9 @@ fn dispatch(
             let reply =
                 router::process_request(req, client_acl, shared, received, ctx, interrupted);
             (reply, true)
+        }
+        Some(Mode::Options | Mode::Get | Mode::Post | Mode::Put | Mode::Delete) => {
+            (permission_denied_acl(), true)
         }
         _ => (permission_denied_acl(), false),
     }
@@ -867,7 +937,7 @@ impl Worker for WebWorker {
             self.shared.first_request_timeout_s,
             self.shared.idle_timeout_s,
         );
-        let expired: Vec<usize> = self
+        let expired: Vec<(usize, bool)> = self
             .clients
             .iter()
             .enumerate()
@@ -881,10 +951,31 @@ impl Worker for WebWorker {
                 let last = a.last_received.max(a.last_sent);
                 let idle_expired =
                     a.recv_count > 0 && idle > 0 && last.is_some_and(|t| secs(t) >= idle);
-                (never_asked || idle_expired).then_some(slot)
+                (never_asked || idle_expired).then_some((slot, never_asked))
             })
             .collect();
-        for slot in expired {
+        for (slot, never_asked) in expired {
+            if let Some(client) = &self.clients[slot] {
+                // C prints the poller's loop index left at the number of listening sockets, and a trailing space
+                let (listeners, fd) = (
+                    self.listeners.len(),
+                    std::os::fd::AsRawFd::as_raw_fd(&client.stream),
+                );
+                let (ip, port) = (&client.log.accept_ip, &client.log.port);
+                if never_asked {
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Debug,
+                        "POLLFD: LISTENER: client slot {listeners} (fd {fd}) from {ip} port {port} has not completed its first request in {first} seconds - closing it. "
+                    );
+                } else {
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Debug,
+                        "POLLFD: LISTENER: client slot {listeners} (fd {fd}) from {ip} port {port} is idle for more than {idle} seconds - closing it. "
+                    );
+                }
+            }
             self.close(cx, slot, false);
         }
         cx.add_timer(now + self.checks_every());

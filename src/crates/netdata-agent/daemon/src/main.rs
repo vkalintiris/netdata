@@ -297,7 +297,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         &mut conf.netdata,
         &conf.dirs,
     ) {
-        daemon::Outcome::Continue => {}
+        daemon::Outcome::Continue => {
+            if let Some(pidfile) = &pidfile {
+                shutdown::set_pidfile(pidfile);
+            }
+        }
         daemon::Outcome::ExitParent => return 0,
     }
     startup.step("plugins spawn server");
@@ -516,6 +520,12 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             Ok(Signal::SIGINT) => ("SIGINT", "signal-interrupt"),
             Ok(Signal::SIGQUIT) => ("SIGQUIT", "signal-quit"),
             Ok(Signal::SIGTERM) => ("SIGTERM", "signal-terminate"),
+            // an exit started on another thread (a fatal): C's handler ignores the reload signals
+            Ok(signal @ (Signal::SIGHUP | Signal::SIGUSR2)) if shutdown::exiting() => {
+                nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
+                    "SIGNAL: Received {}. Ignoring it, as we are exiting...", signal.as_str());
+                continue;
+            }
             Ok(Signal::SIGHUP) => {
                 netdata_agent_log::limits_unlimited();
                 nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
@@ -554,22 +564,18 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     shutdown::cleanup_and_exit(reason, true, |step| match step {
         shutdown::STOP_WEB_SERVERS => {
             if let Some(pool) = pool.take() {
-                let _ = pool.stop();
+                let _ = pool.stop_within(Some(shutdown::WEB_SERVERS_WAIT));
             }
         }
         shutdown::STOP_STREAMING => {
             if let Some(pool) = stream_pool.take() {
-                let _ = pool.stop();
+                let _ = pool.stop_within(Some(shutdown::STREAMING_WAIT));
             }
         }
         shutdown::STOP_CONTEXT => {
             if let Some(worker) = contexts_worker.take() {
-                worker.stop();
+                worker.stop_within(shutdown::CONTEXT_WAIT);
             }
-        }
-        // cancel_main_threads(): no static thread of C's table runs in the Rust agent
-        shutdown::CANCEL_MAIN_THREADS => {
-            nd_log!(Source::Daemon, Priority::Info, "All threads finished.")
         }
         // rrd_finalize_collection_for_all_hosts()
         shutdown::STOP_COLLECTION => {
@@ -584,14 +590,6 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                     Priority::Debug,
                     "RRD: 'host:{hostname}' stopping data collection..."
                 );
-            }
-        }
-        shutdown::REMOVE_PID_FILE => {
-            if let Some(pidfile) = pidfile.as_deref().filter(|p| !p.is_empty())
-                && let Err(err) = std::fs::remove_file(pidfile)
-            {
-                nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_log::errno_of(&err);
-                    "EXIT: cannot unlink pidfile '{pidfile}'.");
             }
         }
         _ => {}

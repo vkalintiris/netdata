@@ -562,7 +562,8 @@ fn execute_plan(
 pub struct Control<'a> {
     /// When the request arrived (`qt->timings.received_ut`).
     pub received: Instant,
-    pub interrupted: &'a dyn Fn() -> bool,
+    /// `web_client_interrupt_callback()`: it leaves the errno of its socket peek behind, as C's `recv()` does.
+    pub interrupted: &'a dyn Fn(&mut i32) -> bool,
     /// The configured SES/DES window limits.
     pub windows: Windows,
 }
@@ -570,15 +571,13 @@ pub struct Control<'a> {
 impl Control<'_> {
     /// The two checks `rrd2rrdr()` makes after each queried metric; both can log in the same iteration. `errno` is
     /// what C's errno holds between iterations: the interrupt callback's peek leaves EAGAIN while the client is
-    /// connected, and every record written clears it.
+    /// connected (ECONNRESET after a reset), and every record written clears it.
     fn cancel(&self, timeout_ms: i32, errno: &mut i32) -> bool {
         let mut cancel = false;
-        if (self.interrupted)() {
+        if (self.interrupted)(errno) {
             nd_log!(Source::Access, Priority::Notice, errno = *errno; "QUERY INTERRUPTED");
             *errno = 0;
             cancel = true;
-        } else {
-            *errno = nix::libc::EAGAIN;
         }
         let elapsed_ms = self.received.elapsed().as_micros() as f64 / 1000.0;
         if timeout_ms != 0 && elapsed_ms > f64::from(timeout_ms) {
@@ -838,7 +837,7 @@ mod tests {
         let (mut qt, mut window) = v1_target(h, query);
         let control = Control {
             received: Instant::now(),
-            interrupted: &|| false,
+            interrupted: &|_| false,
             windows: Windows::default(),
         };
         let r = run_v1(&mut qt, &mut window, &control);
@@ -1037,7 +1036,7 @@ mod tests {
         );
         let control = Control {
             received: Instant::now(),
-            interrupted: &|| false,
+            interrupted: &|_| false,
             windows: Windows::default(),
         };
         let r = run_v2(&mut qt, &mut window, &control).unwrap();

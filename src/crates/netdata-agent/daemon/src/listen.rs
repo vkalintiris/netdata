@@ -78,6 +78,10 @@ fn create(addr: SocketAddr, backlog: i32) -> std::io::Result<std::net::TcpListen
             format!("{family} socket on ip '{ip}' port {port}, socktype {socktype}{comma} failed to set non-blocking mode."),
         )
     })?;
+    // TCP_DEFER_ACCEPT of 5 seconds, its failure ignored as in C: a client that connects and sends nothing is never
+    // accepted
+    use std::os::fd::AsFd;
+    let _ = netdata_agent_sys::set_tcp_defer_accept(socket.as_fd(), 5);
     nd_log!(
         Source::Daemon,
         Priority::Debug,
