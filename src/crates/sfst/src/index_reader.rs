@@ -1311,6 +1311,46 @@ impl<'a> IndexReader<'a> {
         Ok(self.global_filter(set))
     }
 
+    /// A filter holding only a duration term: the rows whose duration lies
+    /// in `range`. One pass over the (memoized) duration column.
+    pub fn compile_duration(&self, range: DurationRange) -> Result<BitmapFilter, crate::Error> {
+        let durations = self.durations()?;
+        let mut positions = Vec::new();
+        for (position, &duration) in durations.0.iter().enumerate() {
+            if range.contains(duration) {
+                positions.push(position as u32);
+            }
+        }
+        let set = PosSet::from_sorted(positions, self.summary.record_count);
+        Ok(self.global_filter(set))
+    }
+
+    /// A filter holding only a time term: the rows starting in `range_ns`
+    /// (`[start, end)`), with the same bounds as every windowed statistic.
+    pub fn compile_time_range(
+        &self,
+        range_ns: std::ops::Range<i64>,
+    ) -> Result<BitmapFilter, crate::Error> {
+        let (lo, hi) = self.range_positions(range_ns)?;
+        let set = PosSet::range(lo, hi, self.summary.record_count);
+        Ok(self.global_filter(set))
+    }
+
+    /// The rows of `filter` in `window_ns` once `field`'s own selections
+    /// are dropped from it, from every filter conjoined into it too; the
+    /// global terms stay.
+    pub fn count_without(
+        &self,
+        filter: &BitmapFilter,
+        field: &str,
+        window_ns: std::ops::Range<i64>,
+    ) -> Result<u64, crate::Error> {
+        let (lo, hi) = self.range_positions(window_ns)?;
+        let mut set = filter.without(field);
+        set.and_assign(&PosSet::range(lo, hi, self.summary.record_count));
+        Ok(set.len())
+    }
+
     fn global_filter(&self, set: PosSet) -> BitmapFilter {
         BitmapFilter {
             universe: self.summary.record_count,
@@ -2027,6 +2067,20 @@ impl<'a> IndexReader<'a> {
         }
 
         Ok(results)
+    }
+}
+
+/// Inclusive duration bounds in nanoseconds; an absent bound is open.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DurationRange {
+    pub min_ns: Option<i64>,
+    pub max_ns: Option<i64>,
+}
+
+impl DurationRange {
+    pub fn contains(&self, duration_ns: i64) -> bool {
+        self.min_ns.is_none_or(|min| duration_ns >= min)
+            && self.max_ns.is_none_or(|max| duration_ns <= max)
     }
 }
 

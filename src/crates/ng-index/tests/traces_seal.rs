@@ -1508,3 +1508,118 @@ fn row_values_give_each_row_its_value() {
         Err(sfst::Error::HighCardFacet(_))
     ));
 }
+
+/// Ten spans one second apart from `DERIVED_BASE`, the i-th lasting
+/// (i + 1) × 100 ms, named "a" when i is even and "b" otherwise.
+fn ten_spans() -> Vec<u8> {
+    let mut spans = Vec::new();
+    for i in 0..10u64 {
+        let start = DERIVED_BASE + i * 1_000_000_000;
+        spans.push(span(
+            [7; 16],
+            (i + 1).to_be_bytes(),
+            [0; 8],
+            start,
+            start + (i + 1) * 100_000_000,
+            if i % 2 == 0 { "a" } else { "b" },
+        ));
+    }
+    seal(vec![req(spans)])
+}
+
+const EVERYTHING: std::ops::Range<i64> = 0..i64::MAX;
+
+/// QRY-04: a duration term, inclusive at both edges and open on either side,
+/// narrows every statistic it is conjoined into; a field's facet keeps it.
+#[test]
+fn duration_term_scopes_every_statistic() {
+    let bytes = ten_spans();
+    let reader = IndexReader::open(&bytes).unwrap();
+    let ms = |n: i64| n * 1_000_000;
+    let range = |min_ns, max_ns| sfst::DurationRange { min_ns, max_ns };
+
+    let middle = reader
+        .compile_duration(range(Some(ms(300)), Some(ms(500))))
+        .unwrap();
+    assert_eq!(
+        reader.matched_positions(&middle, EVERYTHING).unwrap(),
+        [2, 3, 4]
+    );
+    assert_eq!(reader.matched_count(&middle, EVERYTHING).unwrap(), 3);
+    for (bounds, want) in [
+        (range(Some(ms(800)), None), 3),
+        (range(None, Some(ms(150))), 1),
+        (range(None, None), 10),
+        (range(Some(ms(600)), Some(ms(599))), 0),
+    ] {
+        let term = reader.compile_duration(bounds).unwrap();
+        assert_eq!(
+            reader.matched_count(&term, EVERYTHING).unwrap(),
+            want,
+            "{bounds:?}"
+        );
+    }
+
+    let chip = reader
+        .compile_filter(&sfst::Filter::new().select("name", "a"), None)
+        .unwrap();
+    let scoped = chip.conjoin(&middle);
+    assert_eq!(
+        reader.matched_positions(&scoped, EVERYTHING).unwrap(),
+        [2, 4]
+    );
+    let facets = reader.facets(&["name"], &scoped, EVERYTHING).unwrap();
+    let counts: Vec<(String, u32)> = facets[0].values.clone();
+    assert_eq!(counts, [("a".to_string(), 2), ("b".to_string(), 1)]);
+    let grid = sfst::Grid::new(DERIVED_BASE as i64, 1_000_000_000, 10);
+    let timeline = reader.timeline("name", &middle, grid).unwrap();
+    let per_bucket: Vec<u64> = timeline
+        .buckets
+        .iter()
+        .map(|bucket| bucket.counts.iter().sum::<u64>() + bucket.unset)
+        .collect();
+    assert_eq!(per_bucket, [0, 0, 1, 1, 1, 0, 0, 0, 0, 0]);
+}
+
+/// A time term keeps the rows starting in `[start, end)`.
+#[test]
+fn time_range_term_clips_by_start() {
+    let bytes = ten_spans();
+    let reader = IndexReader::open(&bytes).unwrap();
+    let second = |n: u64| (DERIVED_BASE + n * 1_000_000_000) as i64;
+    let term = reader.compile_time_range(second(3)..second(6)).unwrap();
+    assert_eq!(
+        reader.matched_positions(&term, EVERYTHING).unwrap(),
+        [3, 4, 5]
+    );
+    let outside = reader.compile_time_range(second(20)..second(30)).unwrap();
+    assert_eq!(reader.matched_count(&outside, EVERYTHING).unwrap(), 0);
+}
+
+/// Counting without a field drops that field's chips from both operands of a
+/// conjunction and keeps the global terms.
+#[test]
+fn count_without_drops_a_fields_chips_from_both_operands() {
+    let bytes = ten_spans();
+    let reader = IndexReader::open(&bytes).unwrap();
+    let chip = |value| {
+        reader
+            .compile_filter(&sfst::Filter::new().select("name", value), None)
+            .unwrap()
+    };
+    let long = reader
+        .compile_duration(sfst::DurationRange {
+            min_ns: Some(300_000_000),
+            max_ns: None,
+        })
+        .unwrap();
+    let scope = chip("a");
+    let both = scope.conjoin(&chip("b").conjoin(&long));
+    assert_eq!(reader.matched_count(&both, EVERYTHING).unwrap(), 0);
+    assert_eq!(reader.count_without(&both, "name", EVERYTHING).unwrap(), 8);
+    assert_eq!(
+        reader.count_without(&scope, "name", EVERYTHING).unwrap(),
+        10
+    );
+    assert_eq!(reader.count_without(&both, "other", EVERYTHING).unwrap(), 0);
+}
