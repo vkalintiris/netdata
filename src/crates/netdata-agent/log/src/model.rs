@@ -48,12 +48,9 @@ impl Source {
             .unwrap_or(default)
     }
 
-    /// `nd_log_validate_source()` for a numeric id: out of range is the daemon source.
-    pub(crate) fn from_id(id: u64) -> Source {
-        Source::ALL
-            .get(id as usize)
-            .copied()
-            .unwrap_or(Source::Daemon)
+    /// A numeric source id, `None` when out of range.
+    pub(crate) fn from_id(id: u64) -> Option<Source> {
+        Source::ALL.get(id as usize).copied()
     }
 }
 

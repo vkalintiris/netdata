@@ -50,9 +50,6 @@ pub struct Built {
 }
 
 const WEEKDAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
 
 /// `rfc7231_datetime()`: `strftime("%a, %d %b %Y %H:%M:%S GMT")` of `gmtime_r()`.
 pub fn rfc7231_date(t: i64) -> String {
@@ -72,7 +69,7 @@ pub fn rfc7231_date(t: i64) -> String {
         "{}, {:02} {} {} {:02}:{:02}:{:02} GMT",
         WEEKDAYS[days.rem_euclid(7) as usize],
         day,
-        MONTHS[(month - 1) as usize],
+        netdata_agent_text::datetime::MONTHS[(month - 1) as usize],
         year,
         secs / 3600,
         secs / 60 % 60,

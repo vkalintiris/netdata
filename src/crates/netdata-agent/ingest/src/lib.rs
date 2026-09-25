@@ -1557,7 +1557,7 @@ impl Parser {
                 let hostname = self.host.hostname();
                 nd_log!(
                     Source::Daemon,
-                    Priority::Info,
+                    Priority::Warning,
                     "PLUGINSD REPLAY ERROR: 'host:{hostname}/chart:{}' got a REND with enable_streaming = true, but there was no replication in progress for this chart.",
                     chart.id()
                 );
@@ -1580,9 +1580,15 @@ impl Parser {
         };
         if stuck {
             let hostname = self.host.hostname();
+            // info when the parent's data is also recent (under 5 minutes old), else warning
+            let recent = local_last > 0 && self.now_s() - local_last < 300;
             nd_log!(
                 Source::Daemon,
-                Priority::Info,
+                if recent {
+                    Priority::Info
+                } else {
+                    Priority::Warning
+                },
                 "PLUGINSD REPLAY: 'host:{hostname}/chart:{}' detected stuck replication loop. Parent last entry: {local_last}, Child last entry: {last_entry_child}, Gap: 0 seconds, Empty responses: {}. Forcing replication to finish.",
                 chart.id(),
                 chart.receiver().replication_empty_response_count

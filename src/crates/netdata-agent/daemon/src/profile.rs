@@ -46,8 +46,7 @@ fn prefer(bits: u32, preferred: u32) -> u32 {
 }
 
 /// `nd_profile_detect_and_configure()`: the default from the CPUs, the RAM (0 when unknown) and stream.conf, then
-/// `[global] profile`, normalised to one system profile (written back when that changed its text). Its log lines are
-/// queued on `c`.
+/// `[global] profile`, normalised to one system profile (written back when that changed its text).
 pub fn detect(
     c: &mut Config,
     system_cpus: i64,
@@ -74,11 +73,8 @@ pub fn detect(
             None => nd_log!(
                 Source::Daemon,
                 Priority::Err,
-                "{}",
-                format!(
-                    "Cannot understand netdata.conf [global].profile = {}",
-                    String::from_utf8_lossy(&word)
-                )
+                "Cannot understand netdata.conf [global].profile = {}",
+                String::from_utf8_lossy(&word)
             ),
         }
     }
@@ -95,8 +91,7 @@ pub fn detect(
         nd_log!(
             Source::Daemon,
             Priority::Warning,
-            "{}",
-            format!("The netdata.conf setting [global].profile has been overwritten to '{text}'")
+            "The netdata.conf setting [global].profile has been overwritten to '{text}'"
         );
     }
     match bits & SYSTEM {
@@ -141,8 +136,7 @@ fn arena_option(c: &mut Config, name: &str, default: i64, system_cpus: i64) -> i
     nd_log!(
         Source::Daemon,
         Priority::Notice,
-        "{}",
-        format!("malloc arenas can be from 1 to {system_cpus}. Setting it to {arenas}")
+        "malloc arenas can be from 1 to {system_cpus}. Setting it to {arenas}"
     );
     arenas
 }

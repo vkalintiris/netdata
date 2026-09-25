@@ -140,20 +140,19 @@ impl ErrorLimit {
         }
     }
 
-    /// The part of `netdata_logger_with_limit()` after the priority check: true when this call logs.
-    pub(crate) fn admit(&self) -> bool {
+    /// The part of `netdata_logger_with_limit()` after the priority check: the boot-time second when this call logs.
+    pub(crate) fn admit(&self) -> Option<i64> {
         if self.sleep_ut != 0 {
             std::thread::sleep(std::time::Duration::from_micros(self.sleep_ut));
         }
         let now = (clock_usec(ClockId::CLOCK_BOOTTIME) / 1_000_000) as i64;
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.0 += 1;
-        now - state.1 >= self.log_every
+        (now - state.1 >= self.log_every).then_some(now)
     }
 
-    /// Called after an admitted call has logged.
-    pub(crate) fn logged(&self) {
-        let now = (clock_usec(ClockId::CLOCK_BOOTTIME) / 1_000_000) as i64;
+    /// After an admitted call logged: C stores the time taken before logging and resets the count.
+    pub(crate) fn logged(&self, now: i64) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         *state = (0, now);
     }

@@ -137,6 +137,7 @@ macro_rules! nd_log_limit {
 /// `fatal(...)`: logs at alert with the fatal `MESSAGE_ID`, then exits with 1. Never returns.
 #[macro_export]
 macro_rules! fatal {
+    (errno = $errno:expr; $($arg:tt)+) => { $crate::fatal($errno, &$crate::here!(), ::core::format_args!($($arg)+)) };
     ($($arg:tt)+) => { $crate::fatal(0, &$crate::here!(), ::core::format_args!($($arg)+)) };
 }
 
@@ -202,18 +203,22 @@ fn captured(
     errno: i32,
     message: Option<fmt::Arguments<'_>>,
 ) -> bool {
-    CAPTURE.with(|c| match c.borrow_mut().as_mut() {
-        Some(records) => {
-            records.push(Captured {
-                source,
-                priority,
-                errno,
-                message: message.map(|m| m.to_string()),
-            });
-            true
+    if CAPTURE.with(|c| c.borrow().is_none()) {
+        return false;
+    }
+    // formatted before the sink is borrowed: a Display that logs must not find it borrowed
+    let record = Captured {
+        source,
+        priority,
+        errno,
+        message: message.map(|m| m.to_string()),
+    };
+    CAPTURE.with(|c| {
+        if let Some(records) = c.borrow_mut().as_mut() {
+            records.push(record);
         }
-        None => false,
-    })
+    });
+    true
 }
 
 /// `netdata_logger()`: filtered by the source's minimum priority (except debug); daemon and collector records count
@@ -244,12 +249,12 @@ pub fn logger_with_limit(
     if captured(source, priority, errno, Some(message)) || output::filtered(source, priority) {
         return;
     }
-    if !limit.admit() {
+    let Some(now) = limit.admit() else {
         return;
-    }
+    };
     let flood = matches!(source, Source::Daemon | Source::Collector);
     log_record(source, priority, flood, errno, location, Some(message));
-    limit.logged();
+    limit.logged(now);
 }
 
 /// `nd_logger()`.
@@ -295,7 +300,8 @@ fn log_record(
                 // a frame can re-route the record to another source
                 let routed = match slot {
                     Slot::Txt(name) => Source::parse(name, source),
-                    Slot::U64(id) => Source::from_id(id),
+                    // C re-routes only to a valid source
+                    Slot::U64(id) => Source::from_id(id).unwrap_or(source),
                     _ => source,
                 };
                 if routed != source {
@@ -413,7 +419,7 @@ pub fn fatal(errno: i32, location: &Location, message: fmt::Arguments<'_>) -> ! 
     static THREADS_IN_FATAL: AtomicUsize = AtomicUsize::new(0);
     let function = (location.function)();
     if IN_FATAL.with(|f| f.replace(true)) {
-        output::write_stderr(
+        output::write_stderr_raw(
             format!(
                 "\nRECURSIVE FATAL STATEMENTS, latest from {function}() of {}@{}, EXITING NOW! \
                  23e93dfccbf64e11aac858b9410d8a82\n",
@@ -424,7 +430,7 @@ pub fn fatal(errno: i32, location: &Location, message: fmt::Arguments<'_>) -> ! 
         std::process::exit(1);
     }
     if THREADS_IN_FATAL.fetch_add(1, Ordering::SeqCst) + 1 > 1 {
-        output::write_stderr(
+        output::write_stderr_raw(
             format!(
                 "\nCONCURRENT FATAL from {function}() of {}@{}, deferring to the first fatal and exiting.\n",
                 location.line, location.file

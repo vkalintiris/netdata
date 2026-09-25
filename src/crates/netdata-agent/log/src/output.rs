@@ -294,6 +294,12 @@ pub(crate) fn write_stderr(bytes: &[u8]) -> bool {
     write_fd(&Fd::Stderr, Lock::Stderr, bytes)
 }
 
+/// A single raw `write()` to fd 2 without the stderr lock: the fatal paths cannot wait for a writer that may never
+/// finish.
+pub(crate) fn write_stderr_raw(bytes: &[u8]) {
+    let _ = nix::unistd::write(std_fd(2), bytes);
+}
+
 // ------------------------------------------------------------------------------------------------------------------
 // journal
 
@@ -329,8 +335,8 @@ fn journal_find_and_open() -> Option<(UnixDatagram, String)> {
 }
 
 /// `nd_log_journal_direct_set_env()`: plugins inherit the socket when the collector source logs to the journal.
-fn journal_set_env(filename: &str) {
-    if read(&G.sources)[Source::Collector as usize].method == Method::Journal {
+fn journal_set_env(collector_journal: bool, filename: &str) {
+    if collector_journal {
         // Refused once threads run (a reopen); the value is the one exported at startup.
         let _ = netdata_agent_sys::setenv("NETDATA_SYSTEMD_JOURNAL_PATH", filename);
     }
@@ -338,8 +344,10 @@ fn journal_set_env(filename: &str) {
 
 /// `nd_log_journal_direct_init()`.
 pub(crate) fn journal_direct_init(path: Option<&str>) -> bool {
+    // read before the journal lock: `select()` takes the sources lock first
+    let collector_journal = read(&G.sources)[Source::Collector as usize].method == Method::Journal;
     if let Some(journal) = read(&G.journal).as_ref() {
-        journal_set_env(&journal.filename);
+        journal_set_env(collector_journal, &journal.filename);
         return true;
     }
     let found = match path.filter(|p| is_unix_socket(p)) {
@@ -349,7 +357,7 @@ pub(crate) fn journal_direct_init(path: Option<&str>) -> bool {
     let Some((socket, filename)) = found else {
         return false;
     };
-    journal_set_env(&filename);
+    journal_set_env(collector_journal, &filename);
     *write(&G.journal) = Some(Journal { socket, filename });
     true
 }
@@ -364,6 +372,18 @@ pub(crate) fn journal_send(bytes: &[u8]) -> bool {
         Ok(_) => true,
         Err(err) if err.raw_os_error() == Some(nix::libc::EMSGSIZE) => {
             journal_send_with_memfd(&journal.socket, bytes)
+        }
+        // The socket's peer was re-created. C then logs through libsystemd, which sends each datagram to the
+        // default socket's path on an unconnected socket, and so recovers.
+        Err(err)
+            if matches!(
+                err.raw_os_error(),
+                Some(nix::libc::ECONNREFUSED | nix::libc::ENOTCONN)
+            ) =>
+        {
+            UnixDatagram::unbound()
+                .and_then(|s| s.send_to(bytes, "/run/systemd/journal/socket"))
+                .is_ok()
         }
         Err(_) => false,
     }
@@ -429,10 +449,6 @@ pub(crate) fn syslog_init() {
     }
 }
 
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
 /// `syslog(priority, "%s", line)` as glibc and musl send it to `/dev/log`: `<PRI>Mmm dd hh:mm:ss ident[pid]: line`.
 pub(crate) fn syslog_send(priority: Priority, line: &[u8], ident: &str) {
     let mut guard = lock(&G.syslog);
@@ -445,7 +461,10 @@ pub(crate) fn syslog_send(priority: Priority, line: &[u8], ident: &str) {
     let stamp = netdata_agent_sys::localtime(now).map_or_else(String::new, |tm| {
         format!(
             "{} {:>2} {:02}:{:02}:{:02}",
-            MONTHS.get(tm.month0 as usize).copied().unwrap_or("Jan"),
+            netdata_agent_text::datetime::MONTHS
+                .get(tm.month0 as usize)
+                .copied()
+                .unwrap_or("Jan"),
             tm.mday,
             tm.hour,
             tm.min,

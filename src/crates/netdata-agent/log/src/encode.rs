@@ -80,12 +80,15 @@ impl<'a> Record<'a> {
     }
 }
 
-/// `timestamp_usec_annotator()`: local RFC 3339 with milliseconds; `None` for 0 or a time `localtime_r()` rejects.
+/// `timestamp_usec_annotator()`: local RFC 3339 with milliseconds; `None` for 0.
 fn timestamp(usec: u64) -> Option<String> {
     if usec == 0 {
         return None;
     }
-    let tm = netdata_agent_sys::localtime((usec / 1_000_000) as i64)?;
+    // a time localtime_r() rejects leaves C's buffer empty, which logfmt prints as ""
+    let Some(tm) = netdata_agent_sys::localtime((usec / 1_000_000) as i64) else {
+        return Some(String::new());
+    };
     let civil = CivilTime {
         year: i64::from(tm.year),
         month: i64::from(tm.month0) + 1,

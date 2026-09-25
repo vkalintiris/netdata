@@ -220,10 +220,11 @@ pub fn set_nofile_limit() {
         Priority::Info,
         "resources control: allowed file descriptors: soft = {soft}, max = {hard}"
     );
-    if setrlimit(Resource::RLIMIT_NOFILE, hard, hard).is_err() {
+    if let Err(e) = setrlimit(Resource::RLIMIT_NOFILE, hard, hard) {
         nd_log!(
             Source::Daemon,
             Priority::Err,
+            errno = e as i32;
             "setrlimit(RLIMIT_NOFILE, {{ {hard}, {hard} }}) failed"
         );
     }

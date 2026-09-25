@@ -151,6 +151,16 @@ impl Section {
     }
 }
 
+/// The errno a caller's "cannot load" line carries after [`Config::load`] failed: ENOENT for a missing file; any
+/// other failure was logged by the load itself, which clears errno as every C log call does.
+pub fn load_errno(err: &std::io::Error) -> i32 {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        errno_of(err)
+    } else {
+        0
+    }
+}
+
 /// A reformat callback: returns the reformatted value when it differs.
 type Reformat = fn(&[u8]) -> Option<Vec<u8>>;
 
@@ -532,11 +542,10 @@ impl Config {
     }
 
     fn invalid(&mut self, kind: &str, section: &str, name: &str, value: &[u8]) {
-        let message = format!(
+        netdata_log_error!(
             "config option '[{section}].{name} = {}' is configured with an invalid {kind}",
             lossy(value)
         );
-        netdata_log_error!("{message}");
     }
 
     /// `inicfg_get_duration_seconds()`: the absolute value; invalid text is replaced by the default.
@@ -677,10 +686,9 @@ impl Config {
         let rc = strtoll0(v).0;
         let clamped = rc.clamp(min, max);
         if rc != clamped {
-            let message = format!(
+            netdata_log_error!(
                 "CONFIG: out of range [{section}].{name} = {rc}. Acceptable values: {min} to {max} inclusive. Setting it to {clamped}"
             );
-            netdata_log_error!("{message}");
             self.set_number(section, name, clamped);
         }
         clamped
@@ -904,10 +912,9 @@ impl Config {
     /// `inicfg_section_option_destroy_non_loaded()`.
     pub fn section_option_destroy_non_loaded(&mut self, section: &str, name: &str) {
         let Some(s) = self.section_index(section.as_bytes()) else {
-            let message = format!(
+            netdata_log_error!(
                 "Could not destroy section option '{section} -> {name}'. The section not found."
             );
-            netdata_log_error!("{message}");
             return;
         };
         match self.sections[s].find(name.as_bytes()) {
@@ -916,10 +923,9 @@ impl Config {
                 self.sections[s].options.remove(o);
             }
             None => {
-                let message = format!(
+                netdata_log_error!(
                     "Could not destroy section option '{section} -> {name}'. The option not found."
                 );
-                netdata_log_error!("{message}");
             }
         }
     }
@@ -964,9 +970,10 @@ impl Config {
         })
     }
 
-    /// `inicfg_load()` from a file. Fails with the open error when the file cannot be opened (C logs unless it is
-    /// missing; callers log the errno C leaves behind). A read error ends the file where it happened, as `fgets()`
-    /// does: a directory opens and loads nothing.
+    /// `inicfg_load()` from a file. Fails with the open error when the file cannot be opened; C logs it here unless
+    /// the file is missing, and its callers' own lines then carry the errno only for a missing file (see
+    /// [`load_errno`]). A read error ends the file where it happened, as `fgets()` does: a directory opens and loads
+    /// nothing.
     pub fn load(
         &mut self,
         path: &Path,
@@ -984,11 +991,8 @@ impl Config {
             }
             Err(err) => {
                 if err.kind() != std::io::ErrorKind::NotFound {
-                    let message = format!(
-                        "CONFIG: cannot open file '{}'. Using internal defaults.",
-                        path.to_string_lossy()
-                    );
-                    nd_log!(Source::Daemon, Priority::Info, errno = errno_of(&err); "{message}");
+                    nd_log!(Source::Daemon, Priority::Info, errno = errno_of(&err);
+                        "CONFIG: cannot open file '{}'. Using internal defaults.", path.to_string_lossy());
                 }
                 Err(err)
             }
@@ -1053,11 +1057,10 @@ impl Config {
                                 }
                                 _ => &name[..],
                             };
-                            let message = format!(
+                            netdata_log_error!(
                                 "Section ({}) does not specify a valid connector",
                                 lossy(shown)
                             );
-                            netdata_log_error!("{message}");
                             section = None;
                             continue;
                         };
@@ -1070,9 +1073,10 @@ impl Config {
                         working_connector_section = None;
                         let working_instance = &instance[..instance.len().min(CONFIG_MAX_NAME)];
                         if self.section_index(working_instance).is_some() {
-                            let message =
-                                format!("Instance ({}) already exists", lossy(working_instance));
-                            netdata_log_error!("{message}");
+                            netdata_log_error!(
+                                "Instance ({}) already exists",
+                                lossy(working_instance)
+                            );
                             section = None;
                             continue;
                         }
@@ -1088,30 +1092,28 @@ impl Config {
                 continue;
             }
             let Some(sect) = section else {
-                let message = format!(
+                netdata_log_error!(
                     "CONFIG: ignoring line {line} ('{}') of file '{filename}', it is outside all sections.",
                     lossy(s)
                 );
-                netdata_log_error!("{message}");
                 continue;
             };
             if overwrite_used && only_section.is_some_and(|only| only != self.sections[sect].name) {
                 continue;
             }
             let Some(eq) = s.iter().position(|&c| c == b'=') else {
-                let message = format!(
+                netdata_log_error!(
                     "CONFIG: ignoring line {line} ('{}') of file '{filename}', there is no = in it.",
                     lossy(s)
                 );
-                netdata_log_error!("{message}");
                 continue;
             };
             let name = trim(&s[..eq]);
             let value = trim(&s[eq + 1..]).unwrap_or(b"");
             let Some(name) = name.filter(|n| n[0] != b'#') else {
-                let message =
-                    format!("CONFIG: ignoring line {line} of file '{filename}', name is empty.");
-                netdata_log_error!("{message}");
+                netdata_log_error!(
+                    "CONFIG: ignoring line {line} of file '{filename}', name is empty."
+                );
                 continue;
             };
             let options = &mut self.sections[sect].options;

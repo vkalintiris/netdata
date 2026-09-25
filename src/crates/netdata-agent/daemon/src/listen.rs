@@ -18,21 +18,69 @@ const DEFAULT_BACKLOG: i64 = 4096;
 const DEFAULT_PORT: i64 = 19999;
 const DEFAULT_BIND_TO: &str = "*";
 
+/// `create_listen_socket4()` / `create_listen_socket6()`: each failed step logs C's line with its errno.
 fn create(addr: SocketAddr, backlog: i32) -> std::io::Result<std::net::TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
-    let domain = if addr.is_ipv6() {
-        Domain::IPV6
+    let (family, domain) = if addr.is_ipv6() {
+        ("IPv6", Domain::IPV6)
     } else {
-        Domain::IPV4
+        ("IPv4", Domain::IPV4)
     };
-    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
-    socket.set_reuse_address(true)?;
+    let (ip, port) = (addr.ip(), addr.port());
+    // SOCK_STREAM
+    let socktype = 1;
+    let failed = |err: std::io::Error, what: String| {
+        nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_log::errno_of(&err); "LISTENER: {what}");
+        err
+    };
+    let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP)).map_err(|e| {
+        let comma = if addr.is_ipv6() { "," } else { "" };
+        failed(
+            e,
+            format!(
+                "{family} socket() on ip '{ip}' port {port}, socktype {socktype}{comma} failed."
+            ),
+        )
+    })?;
+    socket.set_reuse_address(true).map_err(|e| {
+        let verb = if addr.is_ipv6() { "set" } else { "enable" };
+        failed(
+            e,
+            format!("{family} socket on ip '{ip}' port {port}, socktype {socktype} failed to {verb} reuse address."),
+        )
+    })?;
     if addr.is_ipv6() {
-        socket.set_only_v6(true)?;
+        socket.set_only_v6(true).map_err(|e| {
+            failed(
+                e,
+                format!("Cannot set IPV6_V6ONLY on ip '{ip}' port {port}, socktype {socktype}."),
+            )
+        })?;
     }
-    socket.bind(&addr.into())?;
-    socket.listen(backlog)?;
-    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into()).map_err(|e| {
+        failed(
+            e,
+            format!("{family} bind() on ip '{ip}' port {port}, socktype {socktype} failed."),
+        )
+    })?;
+    socket.listen(backlog).map_err(|e| {
+        failed(
+            e,
+            format!("{family} listen() on ip '{ip}' port {port}, socktype {socktype} failed."),
+        )
+    })?;
+    socket.set_nonblocking(true).map_err(|e| {
+        let comma = if addr.is_ipv6() { "," } else { "" };
+        failed(
+            e,
+            format!("{family} socket on ip '{ip}' port {port}, socktype {socktype}{comma} failed to set non-blocking mode."),
+        )
+    })?;
+    nd_log!(
+        Source::Daemon,
+        Priority::Debug,
+        "LISTENER: Listening on {family} ip '{ip}' port {port}, socktype {socktype}"
+    );
     Ok(socket.into())
 }
 

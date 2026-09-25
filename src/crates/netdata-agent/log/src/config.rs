@@ -4,6 +4,7 @@
 use std::sync::RwLock;
 use std::sync::atomic::Ordering;
 
+use netdata_agent_text::c::strsep_skip;
 use netdata_agent_text::duration::duration_parse_seconds;
 use netdata_agent_text::parse::{str2u, uuid_parse_flexi};
 use netdata_agent_text::print::print_uuid_lower_compact;
@@ -36,91 +37,85 @@ fn log_errors(errors: OpenErrors) {
     }
 }
 
-/// `strsep_skip_consecutive_separators()`: the next token that is not empty, or `""` at the end.
-fn strsep_skip<'a>(rest: &mut Option<&'a str>, separator: char) -> &'a str {
-    let mut token = "";
-    while token.is_empty() {
-        let Some(text) = *rest else {
-            break;
-        };
-        match text.find(separator) {
-            Some(at) => {
-                token = &text[..at];
-                *rest = Some(&text[at + 1..]);
-            }
-            None => {
-                token = text;
-                *rest = None;
-            }
-        }
-    }
-    token
-}
-
-/// `nd_log_set_user_settings()` on one source: `[option[,option...]@]output`, split at the last `@`. Returns the
-/// environment the collector source exports for plugins.
-fn apply_user_settings(
-    source: Source,
-    e: &mut SourceState,
-    limits: &mut Limits,
-    setting: &str,
-    errors: &mut OpenErrors,
-) -> Env {
+/// A `[option[,option...]@]output` value split as C splits it: the options before the last `@`, each as its name
+/// and the non-empty text after its first `=`, and the output.
+fn split_setting(setting: &str) -> (Vec<(&str, Option<&str>)>, &str) {
     let (options, output) = match setting.rfind('@') {
         Some(at) => (Some(&setting[..at]), &setting[at + 1..]),
         None => (None, setting),
     };
-    let mut rest = options;
+    // the separators are ASCII, so every part stays UTF-8
+    fn text(b: &[u8]) -> &str {
+        std::str::from_utf8(b).unwrap_or_default()
+    }
+    let mut items = Vec::new();
+    let mut rest = options.map(str::as_bytes);
     while rest.is_some() {
-        let item = strsep_skip(&mut rest, ',');
+        let item = strsep_skip(&mut rest, b",");
         if item.is_empty() {
             continue;
         }
         let mut value = Some(item);
-        let name = strsep_skip(&mut value, '=');
+        let name = strsep_skip(&mut value, b"=");
         if name.is_empty() {
             continue;
         }
-        let value = value.filter(|v| !v.is_empty());
-        match (name, value) {
-            ("logfmt", _) => e.format = Format::Logfmt,
-            ("json", _) => e.format = Format::Json,
-            ("journal", _) => e.format = Format::Journal,
-            ("level", Some(value)) => e.min_priority = Priority::parse(value),
-            ("protection", Some("off" | "none")) => limits.replace(Limits::unlimited()),
-            ("protection", Some(value)) => {
-                let mut l = Limits::default_limits();
-                match value.split_once('/') {
-                    Some((logs, period)) => {
-                        l.logs_per_period = str2u(logs.as_bytes());
-                        l.logs_per_period_backup = l.logs_per_period;
-                        l.throttle_period = match duration_parse_seconds(period.as_bytes()) {
-                            Some(seconds) => seconds as u32,
-                            None => {
-                                errors.push((format!("Error while parsing period '{period}'"), 0));
-                                DEFAULT_THROTTLE_PERIOD
-                            }
-                        };
-                    }
-                    None => {
-                        l.logs_per_period = str2u(value.as_bytes());
-                        l.logs_per_period_backup = l.logs_per_period;
-                        l.throttle_period = DEFAULT_THROTTLE_PERIOD;
-                    }
+        items.push((text(name), value.map(text).filter(|v| !v.is_empty())));
+    }
+    (items, output)
+}
+
+/// One option of a source's value; the error C logs for it, if any.
+fn apply_option(
+    source: Source,
+    e: &mut SourceState,
+    limits: &mut Limits,
+    setting: &str,
+    name: &str,
+    value: Option<&str>,
+) -> Option<String> {
+    match (name, value) {
+        ("logfmt", _) => e.format = Format::Logfmt,
+        ("json", _) => e.format = Format::Json,
+        ("journal", _) => e.format = Format::Journal,
+        ("level", Some(value)) => e.min_priority = Priority::parse(value),
+        ("protection", Some("off" | "none")) => limits.replace(Limits::unlimited()),
+        ("protection", Some(value)) => {
+            let mut l = Limits::default_limits();
+            let mut error = None;
+            match value.split_once('/') {
+                Some((logs, period)) => {
+                    l.logs_per_period = str2u(logs.as_bytes());
+                    l.throttle_period = match duration_parse_seconds(period.as_bytes()) {
+                        Some(seconds) => seconds as u32,
+                        None => {
+                            error = Some(format!("Error while parsing period '{period}'"));
+                            DEFAULT_THROTTLE_PERIOD
+                        }
+                    };
                 }
-                limits.replace(l);
+                None => {
+                    l.logs_per_period = str2u(value.as_bytes());
+                    l.throttle_period = DEFAULT_THROTTLE_PERIOD;
+                }
             }
-            _ => errors.push((
-                format!(
-                    "Error while parsing configuration of log source '{}'. In config '{setting}', '{name}' is not \
-                     understood.",
-                    source.name()
-                ),
-                0,
-            )),
+            l.logs_per_period_backup = l.logs_per_period;
+            limits.replace(l);
+            return error;
+        }
+        _ => {
+            return Some(format!(
+                "Error while parsing configuration of log source '{}'. In config '{setting}', '{name}' is not \
+                 understood.",
+                source.name()
+            ));
         }
     }
+    None
+}
 
+/// The output of a source's value; returns the environment the collector source exports for plugins.
+fn apply_output(source: Source, e: &mut SourceState, output: &str) -> Env {
     let (method, filename) = match output {
         "" | "none" | "off" => (Method::Disabled, Some("/dev/null")),
         "journal" => (Method::Journal, None),
@@ -154,23 +149,35 @@ fn apply_user_settings(
     env
 }
 
-/// `nd_log_set_user_settings()`.
+/// `nd_log_set_user_settings()`: the options in order, each error logged when its option is reached (so under the
+/// options before it, as in C), then the output.
 pub fn set_user_settings(source: Source, setting: &str) {
-    let mut errors = OpenErrors::new();
+    let (items, output) = split_setting(setting);
+    for (name, value) in items {
+        let error = {
+            let mut sources = write(&G.sources);
+            let mut limits = lock(&G.limits[source as usize]);
+            let error = apply_option(
+                source,
+                &mut sources[source as usize],
+                &mut limits,
+                setting,
+                name,
+                value,
+            );
+            sync_priorities(&sources);
+            error
+        };
+        if let Some(error) = error {
+            log_errors(vec![(error, 0)]);
+        }
+    }
     let env = {
         let mut sources = write(&G.sources);
-        let mut limits = lock(&G.limits[source as usize]);
-        let env = apply_user_settings(
-            source,
-            &mut sources[source as usize],
-            &mut limits,
-            setting,
-            &mut errors,
-        );
+        let env = apply_output(source, &mut sources[source as usize], output);
         sync_priorities(&sources);
         env
     };
-    log_errors(errors);
     export(env);
 }
 
@@ -238,23 +245,22 @@ pub fn limits_unlimited() {
 
 /// `nd_log_open()`.
 fn open_source(source: Source) {
-    let mut settings_errors = OpenErrors::new();
+    // a source nothing configured takes its compiled default file name as its value
+    let default = {
+        let sources = crate::output::read(&G.sources);
+        let e = &sources[source as usize];
+        (e.method == Method::Default).then(|| e.filename.clone().unwrap_or_default())
+    };
+    if let Some(setting) = default {
+        set_user_settings(source, &setting);
+    }
     let mut open_errors = OpenErrors::new();
-    let mut env = Env::new();
     let after = {
         let mut sources = write(&G.sources);
-        let e = &mut sources[source as usize];
-        if e.method == Method::Default {
-            let setting = e.filename.clone().unwrap_or_default();
-            let mut limits = lock(&G.limits[source as usize]);
-            env = apply_user_settings(source, e, &mut limits, &setting, &mut settings_errors);
-        }
-        let after = open_resolved(e, &mut open_errors);
+        let after = open_resolved(&mut sources[source as usize], &mut open_errors);
         sync_priorities(&sources);
         after
     };
-    log_errors(settings_errors);
-    export(env);
     match after {
         AfterOpen::Nothing => {}
         AfterOpen::Syslog => syslog_init(),
@@ -343,7 +349,13 @@ mod tests {
     fn apply(source: Source, e: &mut SourceState, setting: &str) -> (Limits, OpenErrors, Env) {
         let mut limits = Limits::default_limits();
         let mut errors = OpenErrors::new();
-        let env = apply_user_settings(source, e, &mut limits, setting, &mut errors);
+        let (items, output) = split_setting(setting);
+        for (name, value) in items {
+            if let Some(error) = apply_option(source, e, &mut limits, setting, name, value) {
+                errors.push((error, 0));
+            }
+        }
+        let env = apply_output(source, e, output);
         (limits, errors, env)
     }
 

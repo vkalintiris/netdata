@@ -2,7 +2,7 @@
 //! in `src/libnetdata/runtime-paths/runtime-paths.c`. Each function mirrors the C function of the same name and is
 //! called from the same point of the startup sequence, because `/netdata.conf` lists options in first-read order.
 
-use netdata_agent_log::{Priority, Source, errno_of, nd_log};
+use netdata_agent_log::{Priority, Source, nd_log};
 use std::path::Path;
 
 use netdata_agent_inicfg::{
@@ -104,7 +104,7 @@ impl Conf {
             Some(filename) => {
                 let loaded = self.netdata.load(Path::new(filename), overwrite_used, None);
                 if let Err(err) = &loaded {
-                    nd_log!(Source::Daemon, Priority::Err, errno = errno_of(err);
+                    nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_inicfg::load_errno(err);
                         "CONFIG: cannot load config file '{filename}'.");
                 }
                 loaded.is_ok()
@@ -113,12 +113,12 @@ impl Conf {
                 let user = format!("{}/{}", self.dirs.user_config, build::CONFIG_FILENAME);
                 let mut loaded = self.netdata.load(Path::new(&user), overwrite_used, None);
                 if let Err(err) = &loaded {
-                    nd_log!(Source::Daemon, Priority::Info, errno = errno_of(err);
+                    nd_log!(Source::Daemon, Priority::Info, errno = netdata_agent_inicfg::load_errno(err);
                         "CONFIG: cannot load user config '{user}'. Will try the stock version.");
                     let stock = format!("{}/{}", self.dirs.stock_config, build::CONFIG_FILENAME);
                     loaded = self.netdata.load(Path::new(&stock), overwrite_used, None);
                     if let Err(err) = &loaded {
-                        nd_log!(Source::Daemon, Priority::Info, errno = errno_of(err);
+                        nd_log!(Source::Daemon, Priority::Info, errno = netdata_agent_inicfg::load_errno(err);
                             "CONFIG: cannot load stock config '{stock}'. Running with internal defaults.");
                     }
                 }
@@ -697,7 +697,7 @@ impl Conf {
         let filename = format!("{}/cloud.conf", self.dirs.cloud);
         if let Err(err) = self.cloud.load(Path::new(&filename), true, None) {
             if !silent {
-                nd_log!(Source::Daemon, Priority::Err, errno = errno_of(&err);
+                nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_inicfg::load_errno(&err);
                     "CLAIM: cannot load cloud config '{filename}'. Running with internal defaults.");
             }
         }

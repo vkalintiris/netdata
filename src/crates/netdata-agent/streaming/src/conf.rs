@@ -4,8 +4,8 @@
 
 use std::path::Path;
 
-use netdata_agent_inicfg::Config;
-use netdata_agent_log::{Priority, Source, errno_of, nd_log};
+use netdata_agent_inicfg::{Config, load_errno};
+use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_text::duration::duration_parse;
 use netdata_agent_text::parse::str2ndd;
 use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatternMode};
@@ -165,11 +165,11 @@ impl StreamConf {
     fn load_file(&mut self, user_dir: &str, stock_dir: &str) {
         let user = format!("{user_dir}/stream.conf");
         if let Err(err) = self.config.load(Path::new(&user), false, None) {
-            nd_log!(Source::Daemon, Priority::Info, errno = errno_of(&err);
+            nd_log!(Source::Daemon, Priority::Notice, errno = load_errno(&err);
                 "CONFIG: cannot load user config '{user}'. Will try stock config.");
             let stock = format!("{stock_dir}/stream.conf");
             if let Err(err) = self.config.load(Path::new(&stock), false, None) {
-                nd_log!(Source::Daemon, Priority::Info, errno = errno_of(&err);
+                nd_log!(Source::Daemon, Priority::Notice, errno = load_errno(&err);
                     "CONFIG: cannot load stock config '{stock}'. Running with internal defaults.");
             }
         }
@@ -295,7 +295,7 @@ impl StreamConf {
         if !s.ssl_validate_certificate {
             nd_log!(
                 Source::Daemon,
-                Priority::Info,
+                Priority::Notice,
                 "SSL: streaming senders will skip SSL certificates verification."
             );
         }

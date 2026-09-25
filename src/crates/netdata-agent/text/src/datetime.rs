@@ -7,6 +7,11 @@
 /// `RFC3339_MAX_LENGTH`: the buffer size every caller uses.
 pub const RFC3339_MAX_LENGTH: usize = 36;
 
+/// The C locale's abbreviated month names (`%b`).
+pub const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
 /// The broken-down time `rfc3339_datetime_ut()` prints (`struct tm` with the calendar year and the month counted
 /// from 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -31,10 +31,11 @@ fn fix_directory_file_permissions(dir: &str, uid: Uid, gid: Gid, recursive: bool
         };
         let path = format!("{dir}/{}", entry.file_name().to_string_lossy());
         if kind.is_file() || recursive {
-            if nix::unistd::chown(path.as_str(), Some(uid), Some(gid)).is_err() {
+            if let Err(e) = nix::unistd::chown(path.as_str(), Some(uid), Some(gid)) {
                 nd_log!(
                     Source::Daemon,
                     Priority::Err,
+                    errno = e as i32;
                     "Cannot chown {} '{path}' to {uid}:{gid}",
                     if kind.is_dir() { "directory" } else { "file" }
                 );
@@ -51,10 +52,11 @@ fn change_dir_ownership(dir: &str, uid: Uid, gid: Gid, recursive: bool) {
     if dir.is_empty() {
         return;
     }
-    if nix::unistd::chown(dir, Some(uid), Some(gid)).is_err() {
+    if let Err(e) = nix::unistd::chown(dir, Some(uid), Some(gid)) {
         nd_log!(
             Source::Daemon,
             Priority::Err,
+            errno = e as i32;
             "Cannot chown directory '{dir}' to {uid}:{gid}"
         );
     }
@@ -91,10 +93,11 @@ fn become_user(
     let (uid, gid) = (pw.uid, pw.gid);
     prepare_required_directories(dirs, uid, gid);
     if let Some(pidfile) = pidfile.filter(|p| !p.is_empty()) {
-        if nix::unistd::chown(pidfile, Some(uid), Some(gid)).is_err() {
+        if let Err(e) = nix::unistd::chown(pidfile, Some(uid), Some(gid)) {
             nd_log!(
                 Source::Daemon,
                 Priority::Err,
+                errno = e as i32;
                 "Cannot chown '{pidfile}' to {uid}:{gid}"
             );
         }
@@ -312,10 +315,11 @@ const SCHEDULERS: [(&str, i32, i32, u8); 8] = [
 /// `process_nice_level()`: `[global] process nice level`.
 fn process_nice_level(c: &mut Config) {
     let level = c.get_number(SECTION_GLOBAL, "process nice level", 0) as i32;
-    if sys::nice(level).is_err() {
+    if let Err(e) = sys::nice(level) {
         nd_log!(
             Source::Daemon,
             Priority::Err,
+            errno = netdata_agent_log::errno_of(&e);
             "Cannot set netdata CPU nice level to {level}."
         );
     }
@@ -477,10 +481,11 @@ pub fn become_daemon(
             .open(path)
         {
             Ok(mut f) => {
-                if f.set_len(0).is_err() {
+                if let Err(e) = f.set_len(0) {
                     nd_log!(
                         Source::Daemon,
                         Priority::Err,
+                        errno = netdata_agent_log::errno_of(&e);
                         "Cannot truncate pidfile '{path}'."
                     );
                 }

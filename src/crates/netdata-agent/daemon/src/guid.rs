@@ -68,28 +68,44 @@ fn blacklisted(guid: &str) -> bool {
 /// not blacklisted; returned in canonical lowercase.
 fn read_from_file(filename: &Path, log_errors: bool) -> Option<String> {
     let name = filename.display();
-    let fail = |message: String| {
+    // the errno of the failed call, as the C record carries it
+    let fail = |errno: i32, message: String| {
         if log_errors {
-            nd_log!(Source::Daemon, Priority::Err, "{message}");
+            nd_log!(Source::Daemon, Priority::Err, errno = errno; "{message}");
         }
         None
     };
-    if !fs::metadata(filename).is_ok_and(|m| m.is_file()) {
-        return fail(format!(
-            "MACHINE_GUID: cannot open GUID file '{name}' for reading"
-        ));
+    let errno = |e: &io::Error| netdata_agent_log::errno_of(e);
+    match fs::metadata(filename) {
+        Ok(m) if m.is_file() => {}
+        found => {
+            return fail(
+                found.err().map_or(0, |e| errno(&e)),
+                format!("MACHINE_GUID: cannot open GUID file '{name}' for reading"),
+            );
+        }
     }
-    let Ok(mut file) = File::options()
+    let mut file = match File::options()
         .read(true)
         .custom_flags((OFlag::O_NONBLOCK | OFlag::O_CLOEXEC).bits())
         .open(filename)
-    else {
-        return fail(format!(
-            "MACHINE_GUID: cannot open GUID file '{name}' for reading"
-        ));
+    {
+        Ok(file) => file,
+        Err(e) => {
+            return fail(
+                errno(&e),
+                format!("MACHINE_GUID: cannot open GUID file '{name}' for reading"),
+            );
+        }
     };
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        return fail(format!("MACHINE_GUID: cannot stat the GUID file '{name}'"));
+    match file.metadata() {
+        Ok(m) if m.is_file() => {}
+        found => {
+            return fail(
+                found.err().map_or(0, |e| errno(&e)),
+                format!("MACHINE_GUID: cannot stat the GUID file '{name}'"),
+            );
+        }
     }
     let mut text = [0u8; 36];
     let read = loop {
@@ -99,17 +115,20 @@ fn read_from_file(filename: &Path, log_errors: bool) -> Option<String> {
         }
     };
     if !matches!(read, Ok(36)) {
-        return fail(format!("MACHINE_GUID: cannot read GUID file '{name}'"));
+        let e = read.err().map_or(0, |e| errno(&e));
+        return fail(e, format!("MACHINE_GUID: cannot read GUID file '{name}'"));
     }
     let Some(uuid) = uuid_parse_flexi(&text) else {
-        return fail(format!(
-            "MACHINE_GUID: cannot parse GUID from file '{name}'"
-        ));
+        return fail(
+            0,
+            format!("MACHINE_GUID: cannot parse GUID from file '{name}'"),
+        );
     };
     if uuid == [0; 16] {
-        return fail(format!(
-            "MACHINE_GUID: GUID read from file '{name}' is zero"
-        ));
+        return fail(
+            0,
+            format!("MACHINE_GUID: GUID read from file '{name}' is zero"),
+        );
     }
     let guid = canonical(&uuid);
     if blacklisted(&guid) {
