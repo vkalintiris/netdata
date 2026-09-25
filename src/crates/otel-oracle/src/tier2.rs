@@ -1519,7 +1519,9 @@ mod tests {
             .values_mut()
             .find_map(|answer| {
                 let items = items_of(answer)?;
-                items.iter_mut().find(|item| item["self_duration_ns"].is_i64())
+                items
+                    .iter_mut()
+                    .find(|item| item["self_duration_ns"].is_i64())
             })
             .unwrap();
         row["self_duration_ns"] = json!(row["self_duration_ns"].as_i64().unwrap() + 1);

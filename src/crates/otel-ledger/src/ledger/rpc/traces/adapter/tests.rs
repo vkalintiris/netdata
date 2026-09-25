@@ -107,11 +107,17 @@ fn trace_result_shape_is_pinned() {
     assert_eq!(s0["links"][0]["trace_id"], "ab".repeat(16));
     assert_eq!(s0["links"][0]["span_id"], "cd".repeat(8));
 
-    assert_eq!((&s0["self_duration_ns"], &s0["error_origin"]), (&json!(400), &json!(false)));
+    assert_eq!(
+        (&s0["self_duration_ns"], &s0["error_origin"]),
+        (&json!(400), &json!(false))
+    );
 
     let s1 = &v["spans"][1];
     assert_eq!(s1["parent_span_id"], "0101010101010101");
-    assert_eq!((&s1["self_duration_ns"], &s1["error_origin"]), (&json!(500), &json!(true)));
+    assert_eq!(
+        (&s1["self_duration_ns"], &s1["error_origin"]),
+        (&json!(500), &json!(true))
+    );
 
     assert_eq!(
         v["field_kinds"],

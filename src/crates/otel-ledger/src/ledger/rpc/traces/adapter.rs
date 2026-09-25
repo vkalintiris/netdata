@@ -108,9 +108,7 @@ pub(crate) fn to_trace_result(
         trace_id: trace_id.to_string(),
         coverage,
         status: StatusWire::from(&data.status),
-        items: TraceItems {
-            returned,
-        },
+        items: TraceItems { returned },
         summary_root,
         roots: t.roots,
         children: t.children,
