@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use super::super::duration_hist::DurationHistogram;
 use super::query::{ExploreQuery, ExploreRequestError, HIDDEN_FIELDS};
 use super::rows::{self, MoreRows, PageFold, ROW_VALUE_COLUMNS, RowFields};
-use super::shard::{Evaluated, evaluate};
+use super::shard::{self, Evaluated, evaluate};
 use super::source::{Prepared, SourceTally, prepare};
 use super::{
     ExploreData, FacetData, FacetValue, FacetsData, FieldInfo, FieldsData, HistogramData,
@@ -49,8 +49,9 @@ pub fn explore(
     let mut facet_high = BTreeSet::new();
     let mut page = query.sections.rows.as_ref().map(PageFold::new);
     let mut field_tables = Vec::new();
-    // Sources holding row candidates, kept open to read the page's fields; a
-    // candidate's `source` indexes this list.
+    // With rows asked for, every evaluated source stays open: to read the page's
+    // fields, and to select the page again without a source whose fields fail.
+    // A candidate's `source` indexes this list.
     let mut opened: Vec<(&TraceSource, Mapped)> = Vec::new();
 
     for source in &sources {
@@ -92,9 +93,7 @@ pub fn explore(
                         }
                         field_tables.extend(shard.field_table);
                         if let (Some(rows), Some(page)) = (shard.rows, page.as_mut()) {
-                            if !rows.candidates.is_empty() {
-                                opened.push((source, mapped));
-                            }
+                            opened.push((source, mapped));
                             page.add(rows);
                         }
                     }
@@ -119,7 +118,7 @@ pub fn explore(
     let candidates = tally.candidates;
     let mut status = shared.clone();
 
-    let histogram = query.sections.histogram.map(|spec| {
+    let histogram = query.sections.histogram.as_ref().map(|spec| {
         let mut own = StatusBuilder::new();
         own.add_n(PartialReason::StackFieldHighCard, stack_high);
         own.of(PartialReason::StackFieldHighCard, candidates);
@@ -155,7 +154,7 @@ pub fn explore(
         }
         HistogramData {
             status: section.finish(),
-            stack: spec.stack,
+            stack: spec.stack.clone(),
             dimensions,
             buckets: out,
             totals: Totals {
@@ -167,7 +166,7 @@ pub fn explore(
         }
     });
 
-    let facets = query.sections.facets.map(|spec| {
+    let facets = query.sections.facets.as_ref().map(|spec| {
         let mut own = StatusBuilder::new();
         let mut merged: BTreeMap<String, MergedFacet> = merge_facets(facets)
             .into_iter()
@@ -175,16 +174,16 @@ pub fn explore(
             .collect();
         let mut fields = Vec::new();
         let mut unavailable = Vec::new();
-        match spec.fields {
+        match &spec.fields {
             Some(requested) => {
                 for field in requested {
-                    if facet_high.contains(&field) {
+                    if facet_high.contains(field) {
                         own.add(PartialReason::FacetHighCard);
                         own.detail(PartialReason::FacetHighCard, field.clone());
-                        unavailable.push((field, PartialReason::FacetHighCard));
+                        unavailable.push((field.clone(), PartialReason::FacetHighCard));
                     } else {
-                        let facet = merged.remove(&field).unwrap_or(MergedFacet {
-                            field,
+                        let facet = merged.remove(field).unwrap_or(MergedFacet {
+                            field: field.clone(),
                             values: Vec::new(),
                             omitted_values: 0,
                             omitted_rows: 0,
@@ -228,7 +227,7 @@ pub fn explore(
 
     let rows = page.map(|page| {
         let spec = page.spec();
-        let (items, more, own) = rows_section(page, &opened, candidates);
+        let (items, more, own) = rows_section(page, &opened, &query, candidates);
         status.merge(own.clone());
         let mut section = shared.clone();
         section.merge(own);
@@ -266,56 +265,88 @@ pub fn explore(
     })
 }
 
-/// The page from every source's candidates, with its fields read from the
-/// sources holding it, and this section's own reasons: a source whose fields
-/// cannot be read is left out of the page and counted as failed.
+/// The page with its rows' fields, and this section's own reasons. A source
+/// whose fields cannot be read is counted as failed and the page is selected
+/// again without it, so the page stays contiguous and its cursor valid; the
+/// source's rows still count in the other sections and in `matched`.
 fn rows_section(
     fold: PageFold<'_>,
     opened: &[(&TraceSource, Mapped)],
+    query: &ExploreQuery,
     candidates: u64,
 ) -> (Vec<Row>, Option<MoreRows>, StatusBuilder) {
     let spec = fold.spec();
-    let (page, more) = fold.finish();
+    let mut own = StatusBuilder::new();
+    let fail = |own: &mut StatusBuilder, source: &TraceSource, error: &sfst::Error| {
+        own.add(PartialReason::SourceFailure);
+        own.of(PartialReason::SourceFailure, candidates);
+        tracing::warn!(
+            "sfsq traces: source {} failed to read rows: {error}",
+            source.source_id()
+        );
+    };
+    let mut excluded = BTreeSet::new();
+    let mut fold = fold;
+    loop {
+        let (page, more) = fold.finish();
+        let (source, error) = match read_fields(&page, opened, &spec.columns) {
+            Ok(fields) => {
+                let mut items = Vec::with_capacity(page.len());
+                for (candidate, fields) in page.into_iter().zip(fields) {
+                    items.push(Row {
+                        key: candidate.key,
+                        duration_ns: candidate.duration_ns,
+                        service: fields.service,
+                        name: fields.name,
+                        role: fields.role,
+                        status: fields.status,
+                        columns: fields.columns,
+                    });
+                }
+                return (items, more, own);
+            }
+            Err(failure) => failure,
+        };
+        fail(&mut own, opened[source].0, &error);
+        excluded.insert(source);
+        fold = PageFold::new(spec);
+        for (slot, (trace_source, mapped)) in opened.iter().enumerate() {
+            if excluded.contains(&slot) {
+                continue;
+            }
+            match shard::rows_of(mapped.bytes(), query, spec, slot, fold.stop()) {
+                Ok(rows) => fold.add(rows),
+                Err(e) => {
+                    fail(&mut own, trace_source, &e);
+                    excluded.insert(slot);
+                }
+            }
+        }
+    }
+}
+
+/// The fields of the page's rows, in page order, each source read once; the
+/// first source that fails, with its error.
+fn read_fields(
+    page: &[rows::Candidate],
+    opened: &[(&TraceSource, Mapped)],
+    columns: &[String],
+) -> Result<Vec<RowFields>, (usize, sfst::Error)> {
     let mut by_source: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (index, candidate) in page.iter().enumerate() {
         by_source.entry(candidate.source).or_default().push(index);
     }
-    let mut fields: Vec<Option<RowFields>> = vec![None; page.len()];
-    let mut own = StatusBuilder::new();
+    let mut fields: Vec<RowFields> = vec![RowFields::default(); page.len()];
     for (source, indexes) in by_source {
-        let (trace_source, mapped) = &opened[source];
         let mut positions = Vec::with_capacity(indexes.len());
         for &index in &indexes {
             positions.push(page[index].position);
         }
-        match rows::materialize(mapped.bytes(), &positions, &spec.columns) {
-            Ok(values) => {
-                for (index, value) in indexes.into_iter().zip(values) {
-                    fields[index] = Some(value);
-                }
-            }
-            Err(e) => {
-                own.add(PartialReason::SourceFailure);
-                own.of(PartialReason::SourceFailure, candidates);
-                tracing::warn!(
-                    "sfsq traces: source {} failed to read row fields: {e}",
-                    trace_source.source_id()
-                );
-            }
+        let values = rows::materialize(opened[source].1.bytes(), &positions, columns)
+            .map_err(|e| (source, e))?;
+        for (index, value) in indexes.into_iter().zip(values) {
+            fields[index] = value;
         }
     }
-    let mut items = Vec::with_capacity(page.len());
-    for (candidate, fields) in page.into_iter().zip(fields) {
-        let Some(fields) = fields else { continue };
-        items.push(Row {
-            key: candidate.key,
-            duration_ns: candidate.duration_ns,
-            service: fields.service,
-            name: fields.name,
-            role: fields.role,
-            status: fields.status,
-            columns: fields.columns,
-        });
-    }
-    (items, more, own)
+    Ok(fields)
 }

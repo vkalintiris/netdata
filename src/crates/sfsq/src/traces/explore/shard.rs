@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use super::super::duration_hist::DurationHistogram;
 use super::query::{ExploreQuery, HIDDEN_FIELDS, STATUS_FIELD};
-use super::rows::{SourceRows, source_rows};
+use super::rows::{RowsSpec, SourceRows, source_rows};
 
 /// A readable source's numbers for the request.
 #[derive(Default)]
@@ -46,6 +46,37 @@ pub(super) fn is_legacy(reader: &sfst::IndexReader<'_>) -> bool {
     reader.summary().record_count > 0 && !reader.field_table().contains(ng_flatten::ROLE_FIELD)
 }
 
+/// The scope's rows in one source: the chips, then the text and the trace ids.
+fn compile_scope(
+    reader: &sfst::IndexReader<'_>,
+    query: &ExploreQuery,
+) -> Result<sfst::BitmapFilter, sfst::Error> {
+    let mut scope = reader.compile_filter(&query.scope.filter, None)?;
+    if let Some(text) = &query.scope.text {
+        scope = scope.conjoin(&reader.compile_text(text)?);
+    }
+    if !query.scope.trace_ids.is_empty() {
+        scope = scope.conjoin(&reader.compile_trace_ids(&query.scope.trace_ids)?);
+    }
+    Ok(scope)
+}
+
+/// One evaluated source's rows candidates alone: for a page selected again
+/// after another source failed to read its rows' fields.
+pub(super) fn rows_of(
+    bytes: &[u8],
+    query: &ExploreQuery,
+    spec: &RowsSpec,
+    source: usize,
+    stop: Option<i64>,
+) -> Result<SourceRows, sfst::Error> {
+    let reader = sfst::IndexReader::open(bytes)?;
+    let scope = compile_scope(&reader, query)?;
+    let window = query.grid.range_ns();
+    let matched = reader.matched_count(&scope, window.clone())?;
+    source_rows(&reader, &scope, window, matched, spec, stop, source)
+}
+
 /// Evaluate one source. Any error drops the whole source (its numbers are
 /// never partly mixed in); the caller reports it. `source` is stamped on the
 /// source's row candidates; `stop` is the rows page's so far (see
@@ -63,13 +94,7 @@ pub(super) fn evaluate(
 
     let grid = query.grid;
     let window = grid.range_ns();
-    let mut scope = reader.compile_filter(&query.scope.filter, None)?;
-    if let Some(text) = &query.scope.text {
-        scope = scope.conjoin(&reader.compile_text(text)?);
-    }
-    if !query.scope.trace_ids.is_empty() {
-        scope = scope.conjoin(&reader.compile_trace_ids(&query.scope.trace_ids)?);
-    }
+    let scope = compile_scope(&reader, query)?;
     let errors_only =
         reader.compile_filter(&sfst::Filter::new().select(STATUS_FIELD, "ERROR"), None)?;
 

@@ -1219,3 +1219,71 @@ fn explore_rows_anchor_edges_match_the_calculator() {
         }
     }
 }
+
+/// QRY-31 for rows: a file whose rows' fields cannot be read (its one
+/// high-cardinality column is corrupt; everything the selection reads is
+/// intact) is counted as failed and the page is selected again from the other
+/// units, so it stays contiguous with a cursor to continue from.
+#[test]
+fn explore_rows_leave_out_a_file_whose_fields_fail() {
+    let stored = store(2400, 96);
+    let high: Vec<String> = sfst::IndexReader::open(&stored.sealed)
+        .unwrap()
+        .field_table()
+        .iter()
+        .filter(|entry| entry.is_high_card())
+        .map(|entry| entry.name.clone())
+        .collect();
+    assert_eq!(
+        high,
+        ["attributes.request.id"],
+        "the corrupted chunk is this column"
+    );
+    let path = stored._dir.path().join("sealed-corrupt.sfst");
+    std::fs::write(&path, &stored.sealed).unwrap();
+    common::corrupt_chunk(&path, [b'H', b'F', 0, 0]);
+    let sources = vec![
+        common::sealed_source_at(&path, "sealed"),
+        common::tail_source(&stored.live_wal, "live"),
+    ];
+
+    // The oldest page lies in the sealed file.
+    let scope = Scope::default();
+    let order = RowOrder::Newest {
+        anchor: None,
+        direction: RowDirection::Newer,
+    };
+    let mut query = rows_query(&stored.grid, &scope, order, 5);
+    query.sections.rows.as_mut().unwrap().columns = vec!["attributes.request.id".to_string()];
+    let data = explore::explore(
+        sources,
+        query,
+        tokio_util::sync::CancellationToken::new(),
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )
+    .unwrap();
+    let rows = data.rows.expect("rows section");
+    let failed = rows
+        .status
+        .count(sfsq::traces::PartialReason::SourceFailure)
+        .map(|r| (r.count, r.of));
+    assert_eq!(failed, Some((1, Some(2))));
+    assert!(data.histogram.is_none());
+
+    let live: Vec<OracleSpan> = stored
+        .oracle
+        .iter()
+        .filter(|s| s.unit == LIVE)
+        .cloned()
+        .collect();
+    let want = calc::newest_page(&live, &stored.grid, &scope, 5, None, calc::Walk::Newer);
+    let keys: Vec<calc::RowKey> = rows.items.iter().map(|row| oracle_key(&row.key)).collect();
+    let want_keys: Vec<calc::RowKey> = want.rows.iter().map(|span| calc::row_key(span)).collect();
+    assert_eq!(keys, want_keys, "the page comes from the live unit alone");
+    let more = rows.more.expect("newest");
+    assert_eq!((more.older, more.newer), (want.has_older, want.has_newer));
+    assert!(
+        !rows.items.is_empty() && more.newer,
+        "a cursor to continue from"
+    );
+}
