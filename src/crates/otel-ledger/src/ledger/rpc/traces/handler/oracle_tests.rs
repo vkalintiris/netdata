@@ -95,6 +95,7 @@ async fn explore_histogram_and_totals_match_the_calculator() {
                 got.push(calc::Bucket {
                     counts,
                     unset: bucket["unset"].as_u64().unwrap(),
+                    other: bucket["other"].as_u64().unwrap(),
                 });
             }
             assert_eq!(

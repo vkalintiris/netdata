@@ -133,22 +133,26 @@ impl Scope {
     }
 }
 
-/// One bucket of a stacked histogram: rows per value of the stack field, and
-/// rows without that field.
+/// One bucket of a stacked histogram: rows per value of the stack field, rows
+/// without that field, and rows of units where the field is high (counted
+/// without a value).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Bucket {
     pub counts: BTreeMap<String, u64>,
     pub unset: u64,
+    pub other: u64,
 }
 
 /// Rows in scope per bucket, stacked by `stack_field`; a row with several
-/// values counts once under each.
+/// values counts once under each; a row of a unit where the field is high
+/// counts once as `other`.
 pub fn histogram(
     spans: &[OracleSpan],
     grid: &Grid,
     scope: &Scope,
     stack_field: &str,
 ) -> Vec<Bucket> {
+    let high = high_units(spans, stack_field);
     let mut buckets = vec![Bucket::default(); grid.buckets()];
     for span in spans {
         if !scope.matches(span) {
@@ -158,6 +162,10 @@ pub fn histogram(
             continue;
         };
         let bucket = &mut buckets[index];
+        if high.contains(&span.unit) {
+            bucket.other += 1;
+            continue;
+        }
         match span.fields.get(stack_field) {
             Some(values) => {
                 for value in values {
@@ -269,6 +277,23 @@ pub mod fixed_histogram {
         }
         Some(out)
     }
+
+    /// Whether approximate percentiles honour the documented bound: each
+    /// within [`MAX_RELATIVE_ERROR`] of the exact one, and exactly 0 where the
+    /// exact one is 0; both absent or both present.
+    pub fn within_bound(approximate: Option<[i64; 3]>, exact: Option<[i64; 3]>) -> bool {
+        match (approximate, exact) {
+            (None, None) => true,
+            (Some(approximate), Some(exact)) => approximate.into_iter().zip(exact).all(|(a, e)| {
+                if e == 0 {
+                    a == 0
+                } else {
+                    (a - e).abs() as f64 / e as f64 <= MAX_RELATIVE_ERROR
+                }
+            }),
+            _ => false,
+        }
+    }
 }
 
 /// Rows in the window per value of `field`, counted under the scope without
@@ -293,6 +318,130 @@ pub fn facet_counts(
         }
     }
     counts
+}
+
+/// Values a facet lists at most; the rest are reported as omitted.
+pub const FACET_VALUE_CAP: usize = 1_000;
+
+/// A facet as the explorer returns it: values in byte order, and what the cap
+/// left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Facet {
+    pub field: String,
+    pub values: Vec<(String, u64)>,
+    pub omitted_values: u64,
+    pub omitted_rows: u64,
+}
+
+/// Keeps the [`FACET_VALUE_CAP`] values with the most rows (ties go to the
+/// value first in byte order) and lists them in byte order.
+pub fn capped(field: &str, counts: BTreeMap<String, u64>) -> Facet {
+    let mut values: Vec<(String, u64)> = counts.into_iter().collect();
+    let mut omitted_values = 0;
+    let mut omitted_rows = 0;
+    if values.len() > FACET_VALUE_CAP {
+        values.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        for (_, count) in values.drain(FACET_VALUE_CAP..) {
+            omitted_values += 1;
+            omitted_rows += count;
+        }
+        values.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+    Facet {
+        field: field.to_string(),
+        values,
+        omitted_values,
+        omitted_rows,
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Facets {
+    pub fields: Vec<Facet>,
+    /// Requested fields left out because they are high in some unit.
+    pub unavailable: Vec<String>,
+}
+
+/// ORC-FACET over the rows of the units a window overlaps: the requested
+/// fields in request order (one that is high in any unit is unavailable
+/// instead; one without rows is empty), or by default every listed field of
+/// those units that is not high in any of them, in name order.
+pub fn facets(
+    spans: &[OracleSpan],
+    grid: &Grid,
+    scope: &Scope,
+    requested: Option<&[String]>,
+) -> Facets {
+    let tiers = field_list(spans);
+    let high = |field: &str| tiers.get(field) == Some(&Tier::High);
+    let mut out = Facets::default();
+    let chosen: Vec<String> = match requested {
+        Some(fields) => fields.to_vec(),
+        None => tiers.keys().filter(|field| !high(field)).cloned().collect(),
+    };
+    for field in chosen {
+        if high(&field) {
+            out.unavailable.push(field);
+        } else {
+            let counts = facet_counts(spans, grid, scope, &field);
+            out.fields.push(capped(&field, counts));
+        }
+    }
+    out
+}
+
+/// A partial reason the explorer should report: its name, count, the
+/// number it is out of, and the fields it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reason {
+    pub reason: &'static str,
+    pub count: u64,
+    pub of: Option<u64>,
+    pub detail: BTreeSet<String>,
+}
+
+/// The histogram's own partial reason: the stack field is high in some of the
+/// window's `candidates` units.
+pub fn histogram_reasons(spans: &[OracleSpan], stack_field: &str, candidates: u64) -> Vec<Reason> {
+    let high = high_units(spans, stack_field);
+    if high.is_empty() {
+        return Vec::new();
+    }
+    vec![Reason {
+        reason: "stack_field_high_card",
+        count: high.len() as u64,
+        of: Some(candidates),
+        detail: BTreeSet::from([stack_field.to_string()]),
+    }]
+}
+
+/// The facets section's own partial reasons: unavailable fields, then capped
+/// ones.
+pub fn facet_reasons(facets: &Facets) -> Vec<Reason> {
+    let mut out = Vec::new();
+    if !facets.unavailable.is_empty() {
+        out.push(Reason {
+            reason: "facet_high_card",
+            count: facets.unavailable.len() as u64,
+            of: None,
+            detail: facets.unavailable.iter().cloned().collect(),
+        });
+    }
+    let capped: BTreeSet<String> = facets
+        .fields
+        .iter()
+        .filter(|facet| facet.omitted_values > 0)
+        .map(|facet| facet.field.clone())
+        .collect();
+    if !capped.is_empty() {
+        out.push(Reason {
+            reason: "facet_value_cap",
+            count: capped.len() as u64,
+            of: None,
+            detail: capped,
+        });
+    }
+    out
 }
 
 /// Scope-row durations per bucket.
@@ -334,6 +483,49 @@ pub fn tier_of(distinct: usize) -> Tier {
     }
 }
 
+/// The units in which `field` is high.
+pub fn high_units(spans: &[OracleSpan], field: &str) -> BTreeSet<usize> {
+    let mut distinct: BTreeMap<usize, BTreeSet<&str>> = BTreeMap::new();
+    for span in spans {
+        if let Some(values) = span.fields.get(field) {
+            let set = distinct.entry(span.unit).or_default();
+            for value in values {
+                set.insert(value.as_str());
+            }
+        }
+    }
+    let mut out = BTreeSet::new();
+    for (unit, values) in distinct {
+        if tier_of(values.len()) == Tier::High {
+            out.insert(unit);
+        }
+    }
+    out
+}
+
+/// What the explorer lets a listed field do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldFlags {
+    pub chip: bool,
+    pub facet: bool,
+    pub stack: bool,
+    pub text: bool,
+    pub column: bool,
+}
+
+/// Any field makes a chip; a high one neither a facet nor a stack; a field
+/// the plugin adds (leading `_`) is not searched as text; event and link
+/// fields are not columns.
+pub fn field_flags(field: &str, tier: Tier) -> FieldFlags {
+    FieldFlags {
+        chip: true,
+        facet: tier != Tier::High,
+        stack: tier != Tier::High,
+        text: !field.starts_with('_'),
+        column: !(field.starts_with("events.") || field.starts_with("links.")),
+    }
+}
+
 /// Every listed field of the rows, with its highest tier across the stored
 /// units (each unit classifies its fields alone).
 pub fn field_list(spans: &[OracleSpan]) -> BTreeMap<String, Tier> {
@@ -371,6 +563,23 @@ pub fn field_values(
         if grid.bucket_of(span.start_ns).is_none() {
             continue;
         }
+        if let Some(values) = span.fields.get(field) {
+            for value in values {
+                if value.starts_with(prefix) {
+                    out.insert(value.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The distinct values of `field` starting with `prefix` on every row given
+/// (the rows of the units a window overlaps): the most the explorer may
+/// suggest.
+pub fn unit_values(spans: &[OracleSpan], field: &str, prefix: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for span in spans {
         if let Some(values) = span.fields.get(field) {
             for value in values {
                 if value.starts_with(prefix) {
@@ -589,6 +798,7 @@ mod tests {
         let bucket = |pairs: &[(&str, u64)], unset| Bucket {
             counts: pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             unset,
+            other: 0,
         };
         assert_eq!(
             got,
@@ -734,5 +944,224 @@ mod tests {
         );
         assert_eq!(field_values(&spans, &grid, "route", "").len(), 3);
         assert!(field_values(&spans, &grid, "nope", "").is_empty());
+    }
+
+    fn in_unit(unit: usize, mut span: OracleSpan) -> OracleSpan {
+        span.unit = unit;
+        span
+    }
+
+    /// Unit 1 holds 1,000 distinct values of `http.route`: high there only.
+    fn two_units() -> Vec<OracleSpan> {
+        let mut spans = vec![
+            in_unit(0, row(100, &[(ROLE_FIELD, "root"), ("http.route", "/a")])),
+            in_unit(0, row(101, &[(ROLE_FIELD, "root")])),
+        ];
+        for i in 0..1_000 {
+            let route = format!("/r{i:04}");
+            spans.push(in_unit(
+                1,
+                row(120, &[(ROLE_FIELD, "root"), ("http.route", &route)]),
+            ));
+        }
+        spans
+    }
+
+    #[test]
+    fn a_stack_field_high_in_one_unit_counts_that_units_rows_as_other() {
+        let grid = Grid::for_window(90, 150);
+        let buckets = histogram(&two_units(), &grid, &Scope::default(), "http.route");
+
+        let mut want = vec![Bucket::default(); grid.buckets()];
+        want[grid.bucket_of(100 * 1_000_000_000).unwrap()]
+            .counts
+            .insert("/a".to_string(), 1);
+        want[grid.bucket_of(101 * 1_000_000_000).unwrap()].unset += 1;
+        want[grid.bucket_of(120 * 1_000_000_000).unwrap()].other = 1_000;
+        assert_eq!(buckets, want);
+        assert_eq!(
+            histogram_reasons(&two_units(), "http.route", 3),
+            vec![Reason {
+                reason: "stack_field_high_card",
+                count: 1,
+                of: Some(3),
+                detail: BTreeSet::from(["http.route".to_string()]),
+            }]
+        );
+        assert_eq!(histogram_reasons(&two_units(), ROLE_FIELD, 3), vec![]);
+    }
+
+    #[test]
+    fn the_cap_keeps_the_values_with_most_rows_ties_first_in_byte_order() {
+        let mut counts = BTreeMap::new();
+        for i in 0..FACET_VALUE_CAP + 2 {
+            counts.insert(format!("v{i:04}"), 1);
+        }
+        counts.insert("v0500".to_string(), 7);
+        counts.insert("zz".to_string(), 3);
+
+        let facet = capped("f", counts);
+
+        assert_eq!(facet.values.len(), FACET_VALUE_CAP);
+        assert_eq!((facet.omitted_values, facet.omitted_rows), (3, 3));
+        assert_eq!(facet.values.first(), Some(&("v0000".to_string(), 1)));
+        assert_eq!(facet.values.last(), Some(&("zz".to_string(), 3)));
+        assert!(facet.values.contains(&("v0500".to_string(), 7)));
+        assert!(!facet.values.iter().any(|(value, _)| value == "v1001"));
+        assert!(facet.values.windows(2).all(|pair| pair[0].0 < pair[1].0));
+
+        let few = capped(
+            "f",
+            BTreeMap::from([("b".to_string(), 1), ("a".to_string(), 2)]),
+        );
+        assert_eq!(
+            few,
+            Facet {
+                field: "f".to_string(),
+                values: vec![("a".to_string(), 2), ("b".to_string(), 1)],
+                omitted_values: 0,
+                omitted_rows: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn facets_leave_out_high_fields_and_name_what_they_leave_out() {
+        let spans = two_units();
+        let grid = Grid::for_window(90, 150);
+        let requested = [
+            "http.route".to_string(),
+            "absent".to_string(),
+            ROLE_FIELD.to_string(),
+        ];
+
+        let asked = facets(&spans, &grid, &Scope::default(), Some(&requested));
+
+        assert_eq!(asked.unavailable, vec!["http.route".to_string()]);
+        assert_eq!(
+            asked.fields,
+            vec![
+                capped("absent", BTreeMap::new()),
+                capped(ROLE_FIELD, BTreeMap::from([("root".to_string(), 1_002)])),
+            ]
+        );
+        assert_eq!(
+            facet_reasons(&asked),
+            vec![Reason {
+                reason: "facet_high_card",
+                count: 1,
+                of: None,
+                detail: BTreeSet::from(["http.route".to_string()]),
+            }]
+        );
+
+        let default = facets(&spans, &grid, &Scope::default(), None);
+        assert_eq!(default.unavailable, Vec::<String>::new());
+        let names: Vec<&str> = default.fields.iter().map(|f| f.field.as_str()).collect();
+        assert_eq!(names, vec![ROLE_FIELD]);
+    }
+
+    #[test]
+    fn a_capped_facet_is_named() {
+        let mut spans = Vec::new();
+        for i in 0..(FACET_VALUE_CAP + 1) {
+            let name = format!("op{i:04}");
+            spans.push(in_unit(i % 2, row(100, &[("name", &name)])));
+        }
+        let grid = Grid::for_window(90, 150);
+
+        let got = facets(&spans, &grid, &Scope::default(), None);
+
+        assert_eq!(
+            (got.fields[0].values.len(), got.fields[0].omitted_values),
+            (FACET_VALUE_CAP, 1)
+        );
+        assert_eq!(
+            facet_reasons(&got),
+            vec![Reason {
+                reason: "facet_value_cap",
+                count: 1,
+                of: None,
+                detail: BTreeSet::from(["name".to_string()]),
+            }]
+        );
+    }
+
+    #[test]
+    fn field_flags_follow_the_tier_and_the_name() {
+        let cases = [
+            ("http.route", Tier::Mid, (true, true, true, true, true)),
+            ("http.route", Tier::High, (true, false, false, true, true)),
+            ("_role", Tier::Low, (true, true, true, false, true)),
+            ("events.name", Tier::Low, (true, true, true, true, false)),
+            (
+                "links.attributes.x",
+                Tier::Low,
+                (true, true, true, true, false),
+            ),
+        ];
+        for (field, tier, (chip, facet, stack, text, column)) in cases {
+            assert_eq!(
+                field_flags(field, tier),
+                FieldFlags {
+                    chip,
+                    facet,
+                    stack,
+                    text,
+                    column
+                },
+                "{field} {tier:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unit_values_bound_the_window_values_from_above() {
+        let spans = vec![
+            row(100, &[("name", "get a")]),
+            row(200, &[("name", "get b")]),
+            row(100, &[("name", "put")]),
+        ];
+        let grid = Grid::for_window(90, 150);
+
+        assert_eq!(
+            field_values(&spans, &grid, "name", "get"),
+            BTreeSet::from(["get a".to_string()])
+        );
+        assert_eq!(
+            unit_values(&spans, "name", "get"),
+            BTreeSet::from(["get a".to_string(), "get b".to_string()])
+        );
+    }
+
+    #[test]
+    fn the_percentile_bound_holds_within_one_part_in_128() {
+        use fixed_histogram::within_bound;
+        let cases = [
+            ("equal", Some([100, 200, 300]), Some([100, 200, 300]), true),
+            (
+                "within the bound",
+                Some([1_280, 200, 300]),
+                Some([1_290, 200, 300]),
+                true,
+            ),
+            (
+                "past the bound",
+                Some([1_300, 200, 300]),
+                Some([1_280, 200, 300]),
+                false,
+            ),
+            (
+                "zero must stay zero",
+                Some([1, 200, 300]),
+                Some([0, 200, 300]),
+                false,
+            ),
+            ("both absent", None, None, true),
+            ("one absent", Some([1, 2, 3]), None, false),
+        ];
+        for (name, approximate, exact, holds) in cases {
+            assert_eq!(within_bound(approximate, exact), holds, "{name}");
+        }
     }
 }

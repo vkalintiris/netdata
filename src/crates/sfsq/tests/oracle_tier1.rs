@@ -9,6 +9,9 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+use opentelemetry_proto::tonic::resource::v1::Resource;
+use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span};
 use otel_oracle::calc::{self, Grid, Scope, fixed_histogram};
 use otel_oracle::corpus::{self, MeshParams};
 use otel_oracle::model::{self, OracleSpan};
@@ -17,7 +20,10 @@ use sfsq::traces::explore::{
     self, ExploreQuery, ExploreScope, FacetSpec, HIDDEN_FIELDS, HistogramSpec, RowDirection,
     RowKey, RowOrder, RowsData, RowsSpec, Sections,
 };
-use sfsq::traces::{SourceId, TraceSfstCandidate, TraceSource, TraceWalScan, WalCoverage};
+use sfsq::traces::{
+    PartialReason, QueryStatus, SourceId, TraceSfstCandidate, TraceSource, TraceWalScan,
+    WalCoverage,
+};
 
 const T0_S: u64 = 1_700_000_000;
 const TRACE_SPACING_NS: u64 = 700_000_000;
@@ -69,7 +75,6 @@ fn store_shaped(
     resend_every: Option<usize>,
     clock_ns: Option<u64>,
 ) -> Stored {
-    let dir = tempfile::tempdir().unwrap();
     let spans = corpus::generate(&MeshParams {
         traces,
         start_ns: T0_S * 1_000_000_000,
@@ -107,7 +112,12 @@ fn store_shaped(
         }
     }
     let cut = straddle.map_or(two_thirds, |first| first + 1);
+    store_requests(&requests, cut)
+}
 
+/// The requests before `cut` sealed into a file, the rest in the live WAL.
+fn store_requests(requests: &[ExportTraceServiceRequest], cut: usize) -> Stored {
+    let dir = tempfile::tempdir().unwrap();
     let mut oracle = Vec::new();
     for (i, request) in requests.iter().enumerate() {
         oracle.extend(model::spans_of_request(
@@ -458,22 +468,8 @@ fn explore_histogram_and_totals_match_the_calculator() {
                 assert!(data.status.is_complete(), "{case}: {:?}", data.status);
                 let histogram = data.histogram.expect("histogram section");
 
-                let mut got = Vec::with_capacity(histogram.buckets.len());
-                for bucket in &histogram.buckets {
-                    assert_eq!(bucket.other, 0, "{case}");
-                    let mut counts = BTreeMap::new();
-                    for (value, count) in histogram.dimensions.iter().zip(&bucket.counts) {
-                        if *count > 0 {
-                            counts.insert(value.clone(), *count);
-                        }
-                    }
-                    got.push(calc::Bucket {
-                        counts,
-                        unset: bucket.unset,
-                    });
-                }
                 assert_eq!(
-                    got,
+                    calc_buckets(&histogram),
                     calc::histogram(&stored.oracle, &grid, scope, stack),
                     "{case}"
                 );
@@ -486,7 +482,13 @@ fn explore_histogram_and_totals_match_the_calculator() {
                 for (bucket, durations) in histogram.buckets.iter().zip(&per_bucket) {
                     let got = bucket.percentiles.map(|p| [p.p50_ns, p.p95_ns, p.p99_ns]);
                     assert_eq!(got, fixed_histogram::percentiles(durations), "{case}");
-                    within_bound(got, fixed_histogram::exact_percentiles(durations), &case);
+                    assert!(
+                        fixed_histogram::within_bound(
+                            got,
+                            fixed_histogram::exact_percentiles(durations)
+                        ),
+                        "{case}: {got:?}"
+                    );
                     window_durations.extend_from_slice(durations);
                 }
                 let window = histogram
@@ -498,10 +500,12 @@ fn explore_histogram_and_totals_match_the_calculator() {
                     fixed_histogram::percentiles(&window_durations),
                     "{case}"
                 );
-                within_bound(
-                    window,
-                    fixed_histogram::exact_percentiles(&window_durations),
-                    &case,
+                assert!(
+                    fixed_histogram::within_bound(
+                        window,
+                        fixed_histogram::exact_percentiles(&window_durations)
+                    ),
+                    "{case}: {window:?}"
                 );
 
                 let totals = calc::totals(&stored.oracle, &grid, scope);
@@ -515,22 +519,23 @@ fn explore_histogram_and_totals_match_the_calculator() {
     }
 }
 
-fn within_bound(approximate: Option<[i64; 3]>, exact: Option<[i64; 3]>, case: &str) {
-    assert_eq!(approximate.is_some(), exact.is_some(), "{case}");
-    let (Some(approximate), Some(exact)) = (approximate, exact) else {
-        return;
-    };
-    for (a, e) in approximate.into_iter().zip(exact) {
-        if e == 0 {
-            assert_eq!(a, 0, "{case}");
-        } else {
-            let error = (a - e).abs() as f64 / e as f64;
-            assert!(
-                error <= fixed_histogram::MAX_RELATIVE_ERROR,
-                "{case}: {a} vs {e}"
-            );
+/// The engine's stacked buckets in the calculator's shape.
+fn calc_buckets(histogram: &explore::HistogramData) -> Vec<calc::Bucket> {
+    let mut out = Vec::with_capacity(histogram.buckets.len());
+    for bucket in &histogram.buckets {
+        let mut counts = BTreeMap::new();
+        for (value, count) in histogram.dimensions.iter().zip(&bucket.counts) {
+            if *count > 0 {
+                counts.insert(value.clone(), *count);
+            }
         }
+        out.push(calc::Bucket {
+            counts,
+            unset: bucket.unset,
+            other: bucket.other,
+        });
     }
+    out
 }
 
 /// ORC-FACET through the explorer engine: for every field the calculator
@@ -653,20 +658,7 @@ fn explore_text_and_trace_id_scopes_match_the_calculator() {
                 "{case}"
             );
             let want = calc::histogram(&stored.oracle, &grid, scope, model::STATUS_FIELD);
-            let mut got = Vec::new();
-            for bucket in &histogram.buckets {
-                let mut counts = BTreeMap::new();
-                for (value, count) in histogram.dimensions.iter().zip(&bucket.counts) {
-                    if *count > 0 {
-                        counts.insert(value.clone(), *count);
-                    }
-                }
-                got.push(calc::Bucket {
-                    counts,
-                    unset: bucket.unset,
-                });
-            }
-            assert_eq!(got, want, "{case}");
+            assert_eq!(calc_buckets(&histogram), want, "{case}");
         }
     }
 }
@@ -1312,4 +1304,170 @@ fn explore_rows_leave_out_a_file_whose_fields_fail() {
         !rows.items.is_empty() && more.newer,
         "a cursor to continue from"
     );
+}
+
+const ROUTE_FIELD: &str = "attributes.http.route";
+const ITEM_FIELD: &str = "attributes.item";
+
+/// Spans with a route and an item: the sealed file holds 1,100 distinct routes
+/// (high there) and 600 items, the live WAL 3 routes and 600 other items, so
+/// only the sealed file makes the route high, and only the two units together
+/// take the items past the facet cap.
+fn store_high_card() -> Stored {
+    let span = |i: u64, route: String, item: String| {
+        let mut trace_id = vec![0u8; 16];
+        trace_id[8..].copy_from_slice(&(i / 10 + 1).to_be_bytes());
+        let start = T0_S * 1_000_000_000 + i * 10_000_000;
+        Span {
+            trace_id,
+            span_id: (i + 1).to_be_bytes().to_vec(),
+            name: "work".to_string(),
+            kind: 2,
+            start_time_unix_nano: start,
+            end_time_unix_nano: start + 1_000_000,
+            attributes: vec![
+                common::kv_str("http.route", &route),
+                common::kv_str("item", &item),
+            ],
+            ..Default::default()
+        }
+    };
+    let mut spans = Vec::new();
+    for i in 0..1_100u64 {
+        spans.push(span(i, format!("/r{i:04}"), format!("s{:03}", i % 600)));
+    }
+    for i in 1_100..1_700u64 {
+        spans.push(span(i, format!("/{}", i % 3), format!("l{:03}", i % 600)));
+    }
+    let requests: Vec<ExportTraceServiceRequest> = spans
+        .chunks(50)
+        .map(|batch| ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: Some(Resource {
+                    attributes: vec![common::kv_str("service.name", "svc")],
+                    ..Default::default()
+                }),
+                scope_spans: vec![ScopeSpans {
+                    spans: batch.to_vec(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        })
+        .collect();
+    store_requests(&requests, 1_100 / 50)
+}
+
+/// One of the engine's partial reasons in the calculator's shape.
+fn stated(status: &QueryStatus, reason: PartialReason, name: &'static str) -> Option<calc::Reason> {
+    status.count(reason).map(|count| calc::Reason {
+        reason: name,
+        count: count.count,
+        of: count.of,
+        detail: count.detail.clone(),
+    })
+}
+
+/// ORC-HIST and ORC-STATUS for a stack field that is high in one unit: that
+/// unit's scope rows count as `other` in their buckets, the rest by value, and
+/// the histogram names the field as partial, out of every source it read.
+#[test]
+fn explore_counts_a_stack_field_high_in_one_unit_as_other() {
+    let stored = store_high_card();
+    let grid = stored.grid;
+    for live in [Live::Tail, Live::Chunked] {
+        let sources = explore_sources(&stored, live);
+        let candidates = sources.len() as u64;
+        let data = explore::explore(
+            sources,
+            explore_query(&grid, &Scope::default(), ROUTE_FIELD),
+            explore::ExploreOptions::default(),
+            tokio_util::sync::CancellationToken::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        )
+        .unwrap();
+        let case = format!("{live:?}");
+        let histogram = data.histogram.expect("histogram section");
+
+        let want = calc::histogram(&stored.oracle, &grid, &Scope::default(), ROUTE_FIELD);
+        assert_eq!(calc_buckets(&histogram), want, "{case}");
+        assert_eq!(want.iter().map(|b| b.other).sum::<u64>(), 1_100, "{case}");
+        assert_eq!(
+            stated(
+                &histogram.status,
+                PartialReason::StackFieldHighCard,
+                "stack_field_high_card"
+            ),
+            calc::histogram_reasons(&stored.oracle, ROUTE_FIELD, candidates).pop(),
+            "{case}"
+        );
+        assert_eq!(
+            histogram.status.reasons(),
+            BTreeSet::from([PartialReason::StackFieldHighCard]),
+            "{case}"
+        );
+    }
+}
+
+/// ORC-FACET and ORC-STATUS at the edges: a requested field high in one unit is
+/// left out and named, a field whose values pass the cap only across units
+/// lists the calculator's top values with what it omitted, and both reasons
+/// carry the calculator's counts and fields.
+#[test]
+fn explore_names_high_and_capped_facets() {
+    let stored = store_high_card();
+    let grid = stored.grid;
+    let requested = [
+        ROUTE_FIELD.to_string(),
+        ITEM_FIELD.to_string(),
+        model::ROLE_FIELD.to_string(),
+    ];
+    let want = calc::facets(&stored.oracle, &grid, &Scope::default(), Some(&requested));
+    assert_eq!(want.unavailable, vec![ROUTE_FIELD.to_string()]);
+    assert_eq!(want.fields[0].omitted_values, 200);
+
+    for live in [Live::Tail, Live::Chunked] {
+        let mut query = explore_query(&grid, &Scope::default(), model::STATUS_FIELD);
+        query.sections.histogram = None;
+        query.sections.facets = Some(FacetSpec {
+            fields: Some(requested.to_vec()),
+        });
+        let data = explore::explore(
+            explore_sources(&stored, live),
+            query,
+            explore::ExploreOptions::default(),
+            tokio_util::sync::CancellationToken::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        )
+        .unwrap();
+        let case = format!("{live:?}");
+        let facets = data.facets.expect("facets section");
+
+        let unavailable: Vec<String> = facets.unavailable.iter().map(|(f, _)| f.clone()).collect();
+        assert_eq!(unavailable, want.unavailable, "{case}");
+        let got: Vec<calc::Facet> = facets
+            .fields
+            .iter()
+            .map(|facet| calc::Facet {
+                field: facet.field.clone(),
+                values: facet
+                    .values
+                    .iter()
+                    .map(|v| (v.value.clone(), v.count))
+                    .collect(),
+                omitted_values: facet.omitted_values,
+                omitted_rows: facet.omitted_rows,
+            })
+            .collect();
+        assert_eq!(got, want.fields, "{case}");
+
+        let mut reasons = Vec::new();
+        for (reason, name) in [
+            (PartialReason::FacetHighCard, "facet_high_card"),
+            (PartialReason::FacetValueCap, "facet_value_cap"),
+        ] {
+            reasons.extend(stated(&facets.status, reason, name));
+        }
+        assert_eq!(reasons, calc::facet_reasons(&want), "{case}");
+    }
 }
