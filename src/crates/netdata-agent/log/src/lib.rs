@@ -126,6 +126,9 @@ macro_rules! collector_error {
 /// `nd_log_limit(&erl, source, priority, ...)`: at most once per the limiter's period.
 #[macro_export]
 macro_rules! nd_log_limit {
+    ($limit:expr, $source:expr, $priority:expr, errno = $errno:expr; $($arg:tt)+) => {
+        $crate::logger_with_limit($limit, $source, $priority, $errno, &$crate::here!(), ::core::format_args!($($arg)+))
+    };
     ($limit:expr, $source:expr, $priority:expr, $($arg:tt)+) => {
         $crate::logger_with_limit($limit, $source, $priority, 0, &$crate::here!(), ::core::format_args!($($arg)+))
     };

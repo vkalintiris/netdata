@@ -117,14 +117,7 @@ pub fn setup_malloc(c: &mut Config, profile: Profile, system_cpus: i64) {
         Profile::Standalone => (1, 64 * 1024),
     };
     let arenas = arena_option(c, "glibc malloc arena max for plugins", arenas, system_cpus);
-    if let Err(err) = netdata_agent_sys::setenv("MALLOC_ARENA_MAX", &arenas.to_string()) {
-        nd_log!(
-            Source::Daemon,
-            Priority::Err,
-            "{}",
-            format!("cannot export MALLOC_ARENA_MAX: {err}")
-        );
-    }
+    crate::conf::export("MALLOC_ARENA_MAX", &arenas.to_string());
     // HAVE_C_MALLOPT: glibc only; musl builds have neither the option nor the call.
     #[cfg(target_env = "gnu")]
     {
@@ -137,9 +130,11 @@ pub fn setup_malloc(c: &mut Config, profile: Profile, system_cpus: i64) {
 
 /// One arena option: `1..=system_cpus`, written back with a notice otherwise.
 fn arena_option(c: &mut Config, name: &str, default: i64, system_cpus: i64) -> i64 {
-    let wanted = c.get_number(SECTION_GLOBAL, name, default);
-    if (1..=system_cpus).contains(&wanted) {
-        return wanted;
+    // a size_t in C: a negative value is above the CPU count
+    let wanted = c.get_number(SECTION_GLOBAL, name, default) as u64;
+    let cpus = system_cpus as u64;
+    if (1..=cpus).contains(&wanted) {
+        return wanted as i64;
     }
     let arenas = if wanted < 1 { 1 } else { system_cpus };
     c.set_number(SECTION_GLOBAL, name, arenas);
@@ -155,6 +150,17 @@ fn arena_option(c: &mut Config, name: &str, default: i64, system_cpus: i64) -> i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arena_values_are_a_size_t_as_in_c() {
+        let name = "glibc malloc arena max for plugins";
+        for (value, want) in [("-3", 4), ("0", 1), ("2", 2), ("9", 4)] {
+            let mut c = Config::default();
+            c.set(SECTION_GLOBAL, name, value);
+            let (got, _) = netdata_agent_log::capture(|| arena_option(&mut c, name, 1, 4));
+            assert_eq!(got, want, "{name} = {value}");
+        }
+    }
 
     #[test]
     fn profiles_normalise_like_c() {

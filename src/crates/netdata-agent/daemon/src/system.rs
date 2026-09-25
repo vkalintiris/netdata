@@ -3,6 +3,8 @@
 //! `src/libnetdata/os/system_memory.c`) and the page size.
 
 use netdata_agent_log::{Priority, Source, nd_log};
+use netdata_agent_text::c::find;
+use netdata_agent_text::parse::str2uint64;
 use std::path::Path;
 
 use nix::sys::resource::{Resource, getrlimit, setrlimit};
@@ -64,15 +66,6 @@ pub fn system_cpus(root: &Path) -> i64 {
     }
 }
 
-/// `str2ull()`: the leading decimal digits, 0 without any.
-fn str2ull(s: &[u8]) -> u64 {
-    s.iter()
-        .take_while(|c| c.is_ascii_digit())
-        .fold(0u64, |n, &c| {
-            n.wrapping_mul(10).wrapping_add(u64::from(c - b'0'))
-        })
-}
-
 /// `read_txt_file()` into a 4 KiB buffer: at most 4095 bytes, trailing newline kept.
 fn read_txt(path: &Path) -> Option<Vec<u8>> {
     let mut data = std::fs::read(path).ok()?;
@@ -90,7 +83,7 @@ pub fn cpuset_cpus(text: &[u8]) -> i64 {
         while *s < text.len() && text[*s].is_ascii_digit() {
             *s += 1;
         }
-        str2ull(&text[start..*s])
+        str2uint64(&text[start..*s]).0
     };
     while s < text.len() {
         if text[s].is_ascii_whitespace() {
@@ -152,10 +145,6 @@ pub fn system_memory(root: &Path) -> SystemMemory {
     }
 }
 
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
 /// `os_system_memory_meminfo()`.
 fn meminfo(root: &Path) -> SystemMemory {
     let Some(buf) = read_txt(&root.join("proc/meminfo")) else {
@@ -168,7 +157,7 @@ fn meminfo(root: &Path) -> SystemMemory {
             .iter()
             .position(|c| !c.is_ascii_whitespace())
             .unwrap_or(rest.len());
-        Some(str2ull(&rest[digits..]).wrapping_mul(1024))
+        Some(str2uint64(&rest[digits..]).0.wrapping_mul(1024))
     };
     match (field(b"MemTotal:"), field(b"MemAvailable:")) {
         (Some(total), Some(available)) => SystemMemory { total, available },
@@ -191,7 +180,7 @@ fn cgroup_memory(
     let total = if buf == b"max" {
         u64::MAX
     } else {
-        str2ull(&buf)
+        str2uint64(&buf).0
     };
     if total == 0 {
         return SystemMemory::default();
@@ -199,14 +188,14 @@ fn cgroup_memory(
     let Some(buf) = read_txt(&root.join(usage)) else {
         return SystemMemory::default();
     };
-    let used = str2ull(&buf);
+    let used = str2uint64(&buf).0;
     if used == 0 || used > total {
         return SystemMemory::default();
     }
     let inactive = read_txt(&root.join(stat))
         .and_then(|buf| {
             let at = find(&buf, inactive_key)? + inactive_key.len();
-            Some(str2ull(&buf[at..]))
+            Some(str2uint64(&buf[at..]).0)
         })
         .filter(|&inactive| inactive != 0 && inactive <= used)
         .unwrap_or(0);

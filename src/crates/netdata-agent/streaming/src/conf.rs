@@ -33,8 +33,8 @@ const KEEPALIVE_IDLE_MAX_SECONDS: u64 = 3600;
 /// Values `stream_conf_load()` takes from the rest of the daemon.
 #[derive(Debug, Clone, Copy)]
 pub struct LoadDefaults {
-    /// `netdata_conf_cpus()`, for `replication_threads_default()`.
-    pub conf_cpus: i64,
+    /// `netdata_conf_cpus()` (a `size_t`), for `replication_threads_default()`.
+    pub conf_cpus: u64,
     /// `libuv_worker_threads`, for `replication_prefetch_default()`.
     pub libuv_worker_threads: i64,
     /// `netdata_ssl_validate_certificate`.
@@ -240,7 +240,8 @@ impl StreamConf {
         let has_api_enabled = self.config.stream_conf_has_api_enabled();
         let parent_profile = is_parent_profile(netdata, has_api_enabled, self.send.enabled);
         let threads_default = if parent_profile {
-            (defaults.conf_cpus / 3).max(4)
+            // (int)MAX(cpus / 3, 4)
+            i64::from((defaults.conf_cpus / 3).max(4) as i32)
         } else {
             1
         };

@@ -736,7 +736,7 @@ impl Conf {
 /// `netdata_conf_section_db()` (`src/daemon/config/netdata-conf-db.c`) up to the dbengine options. KSM and the
 /// orphan, ephemeral and obsolete cleanups are not ported: their options are read so that they print as in C.
 pub fn section_db(c: &mut Config, page_size: i64) -> DbSection {
-    // nd_profile.update_every: 1 for every profile but iot, which profile detection does not set yet.
+    // nd_profile.update_every: 1 for every profile, iot included (its "MUST BE 2" note notwithstanding).
     let mut update_every = c.get_duration_seconds(SECTION_DB, "update every", 1) as i32;
     if update_every < UPDATE_EVERY_MIN {
         nd_log!(
@@ -830,7 +830,12 @@ impl Conf {
         export("NETDATA_HOSTNAME", &self.hostname);
         export("NETDATA_HOST_PREFIX", &self.host_prefix);
         let d = &self.dirs;
-        let primary_plugins = d.plugins.first().cloned().unwrap_or_default();
+        // no plugin directory at all is a NULL, which glibc prints as (null) in the fatal message
+        let primary_plugins = d
+            .plugins
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "(null)".to_string());
         for (env, dir, create) in [
             ("NETDATA_CONFIG_DIR", &d.user_config, None),
             ("NETDATA_USER_CONFIG_DIR", &d.user_config, None),
@@ -858,16 +863,21 @@ impl Conf {
         let port = self.netdata.get(SECTION_WEB, "default port", None);
         let port = port.map_or_else(|| "19999".to_string(), |p| text(Some(p)));
         export("NETDATA_LISTEN_PORT", &port);
-        let path = format!(
+        let env = |name: &str| std::env::var_os(name).map(|v| v.to_string_lossy().into_owned());
+        // snprintfz() into 4096 bytes
+        let mut path = format!(
             "{}:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
-            std::env::var("PATH").unwrap_or_else(|_| "/bin:/usr/bin".to_string())
+            env("PATH").unwrap_or_else(|| "/bin:/usr/bin".to_string())
         );
+        while path.len() > 4095 {
+            path.pop();
+        }
         let path = text(
             self.netdata
                 .get_path_list(SECTION_ENV_VARS, "PATH", Some(&path)),
         );
         export("PATH", &path);
-        let python = std::env::var("PYTHONPATH").unwrap_or_default();
+        let python = env("PYTHONPATH").unwrap_or_default();
         let python = text(self.netdata.get_path_list(
             SECTION_ENV_VARS,
             "PYTHONPATH",
@@ -960,7 +970,8 @@ pub fn web_server_max_sockets_per_worker(c: &mut Config, workers: usize) -> usiz
     use nix::sys::resource::{Resource, getrlimit};
     let soft = getrlimit(Resource::RLIMIT_NOFILE).map_or(0, |(soft, _)| soft);
     let max = c.get_number(SECTION_WEB, "web server max sockets", (soft / 4) as i64);
-    (max.max(0) as usize) / workers.max(1)
+    // a size_t in C: a negative value is a huge share
+    (max as u64 as usize) / workers.max(1)
 }
 
 /// `MIN_LIBUV_WORKER_THREADS` and `MAX_LIBUV_WORKER_THREADS`.
@@ -975,8 +986,8 @@ pub struct Threads {
     /// The stack of every thread the daemon starts: libuv's size, which C's `nd_thread_create()` gets through
     /// `uv_thread_create()`. `[global] pthread stack size` never reaches a C thread.
     pub thread_stack_size: usize,
-    /// `netdata_conf_cpus()`.
-    pub cpus: i64,
+    /// `netdata_conf_cpus()`, a `size_t` as in C.
+    pub cpus: u64,
     /// `libuv_worker_threads`.
     pub libuv_worker_threads: i64,
 }
@@ -1015,22 +1026,24 @@ pub fn libuv_initialize(c: &mut Config, system: &Resources, root: &Path) -> Thre
     if cpus == 0 {
         cpus = system.system_cpus;
     }
-    let cpus = c.get_number(SECTION_GLOBAL, "cpu cores", cpus).max(1);
+    // C keeps the count in a size_t: a negative value wraps and only 0 becomes 1
+    let cpus = (c.get_number(SECTION_GLOBAL, "cpu cores", cpus) as u64).max(1);
     export("NETDATA_CONF_CPUS", &cpus.to_string());
 
-    // Six per CPU, as many as a twentieth of the RAM (or a tenth of what is available) can hold stacks for.
+    // Six per CPU, as many as a twentieth of the RAM (or a tenth of what is available) can hold stacks for; C
+    // computes both in int.
     let (min, max) = LIBUV_WORKER_THREADS;
-    let mut threads = cpus * 6;
+    let mut threads = (cpus as i32).wrapping_mul(6);
     let mem = system.memory;
     if mem.total > 0 {
         let for_threads = (mem.total / 20).min(mem.available / 10);
-        let allowed = (for_threads.div_ceil(stack_size.max(1)) as i64).max(min);
+        let allowed = (for_threads.div_ceil(stack_size.max(1)) as i32).max(min as i32);
         threads = threads.min(allowed);
     }
     let threads = c.get_number_range(
         SECTION_GLOBAL,
         "libuv worker threads",
-        threads.clamp(min, max),
+        i64::from(threads).clamp(min, max),
         min,
         max,
     );
@@ -1060,7 +1073,7 @@ fn uv_thread_stack_size(page_size: u64) -> usize {
 }
 
 /// `setenv()` for the plugins; the daemon is still single-threaded when it runs.
-fn export(key: &str, value: &str) {
+pub(crate) fn export(key: &str, value: &str) {
     if let Err(err) = netdata_agent_sys::setenv(key, value) {
         nd_log!(Source::Daemon, Priority::Err, "cannot export {key}: {err}");
     }
@@ -1428,6 +1441,36 @@ mod tests {
             cur - cur % 4096
         };
         assert_eq!(threads.thread_stack_size as u64, expected);
+    }
+
+    #[test]
+    fn cpu_cores_are_a_size_t_as_in_c() {
+        let system = Resources {
+            system_cpus: 4,
+            memory: crate::system::SystemMemory {
+                total: 0,
+                available: 0,
+            },
+            page_size: 4096,
+        };
+        let cases = [
+            ("-1", u64::MAX, 16),
+            ("0", 1, 16),
+            ("4294967297", 4294967297, 16),
+            ("20", 20, 120),
+        ];
+        for (value, cpus, libuv) in cases {
+            let mut c = Config::default();
+            c.set(SECTION_GLOBAL, "cpu cores", value);
+            let (threads, _) = netdata_agent_log::capture(|| {
+                libuv_initialize(&mut c, &system, Path::new("/nonexistent"))
+            });
+            assert_eq!(
+                (threads.cpus, threads.libuv_worker_threads),
+                (cpus, libuv),
+                "cpu cores = {value}"
+            );
+        }
     }
 
     fn loaded(db_section: &str) -> Config {

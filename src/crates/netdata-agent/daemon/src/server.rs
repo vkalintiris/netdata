@@ -1,7 +1,7 @@
 //! The web workers: each pool thread polls every listener, accepts, and serves its clients inline, as the C
 //! `static-threaded` web server does (`src/web/server/static/static-threaded.c`, `web_client.c`).
 
-use netdata_agent_log::{Priority, Source, nd_log};
+use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log, nd_log_limit};
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -259,6 +259,9 @@ impl WebWorker {
                             identity.ip,
                             peer.port()
                         );
+                        // accept_socket() then fails with EPERM, which poll_events() logs
+                        nd_log!(Source::Daemon, Priority::Err, errno = nix::errno::Errno::EPERM as i32;
+                            "POLLFD: LISTENER: accept() failed.");
                         continue;
                     }
                     let client_acl = self
@@ -309,18 +312,17 @@ impl WebWorker {
                 // Another worker won the race.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) => {
-                    // poll_events(): the listeners count as used sockets too.
-                    let message = if e.raw_os_error() == Some(nix::errno::Errno::EMFILE as i32) {
+                    let errno = netdata_agent_log::errno_of(&e);
+                    if errno == nix::errno::Errno::EMFILE as i32 {
+                        // poll_events(): the listeners count as used sockets too; at most one line every 10 s
+                        static EMFILE: ErrorLimit = ErrorLimit::new(10, 1000);
                         let used = self.listeners.len() + self.clients.iter().flatten().count();
-                        format!(
+                        nd_log_limit!(&EMFILE, Source::Daemon, Priority::Err, errno = errno;
                             "POLLFD: LISTENER: too many open files - used by this thread {used}, max for this \
-                             thread {}",
-                            self.max_sockets
-                        )
+                             thread {}", self.max_sockets);
                     } else {
-                        "POLLFD: LISTENER: accept() failed.".to_string()
-                    };
-                    nd_log!(Source::Daemon, Priority::Err, "{}", message);
+                        nd_log!(Source::Daemon, Priority::Err, errno = errno; "POLLFD: LISTENER: accept() failed.");
+                    }
                     break;
                 }
             }

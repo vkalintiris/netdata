@@ -136,8 +136,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     netdata_agent_log::limits_unlimited();
     netdata_agent_log::initialize();
 
-    // C loads stream.conf from the profile detection inside netdata_conf_section_global(), before the machine GUID;
-    // the exact place among the other reads is part of the config-order work.
+    // C loads stream.conf from the profile detection of the "signals" step, after the machine GUID; moving it there
+    // (and the run dir after [db]) comes with the startup steps of the logging port, which fix the log line order.
     let mut stream_conf = StreamConf::default();
     stream_conf.load(
         &mut conf.netdata,
