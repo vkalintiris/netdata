@@ -175,6 +175,22 @@ fn matched_or_within_field() {
 }
 
 #[test]
+fn a_text_filter_matches_values_and_conjoins_with_chips() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    let text = reader
+        .compile_text(&crate::text::LiteralText::new("ERR"))
+        .unwrap();
+    assert_eq!(reader.matched_count(&text, FULL_WINDOW).unwrap(), 3);
+    let api = bf(&reader, Filter::new().select("service", "api"));
+    assert_eq!(reader.matched_count(&api.conjoin(&text), FULL_WINDOW).unwrap(), 1);
+    let none = reader
+        .compile_text(&crate::text::LiteralText::new("level"))
+        .unwrap();
+    assert_eq!(reader.matched_count(&none, FULL_WINDOW).unwrap(), 0, "keys are not searched");
+}
+
+#[test]
 fn conjoined_filters_and_their_scopes() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();

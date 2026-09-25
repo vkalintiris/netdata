@@ -55,6 +55,7 @@ mod index_reader;
 mod index_writer;
 mod kv_interner;
 mod prefix_map;
+pub mod text;
 pub mod query;
 mod reader;
 mod row_index;

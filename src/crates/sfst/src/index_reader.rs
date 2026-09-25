@@ -945,7 +945,7 @@ impl<'a> IndexReader<'a> {
         let query_set = match query {
             Some(src) => {
                 let regex = crate::query::compile_query(src)?;
-                let set = self.query_positions(&regex)?;
+                let set = self.query_positions(&|kv: &[u8]| regex.is_match(kv))?;
                 full.and_assign(&set);
                 Some(set)
             }
@@ -958,6 +958,56 @@ impl<'a> IndexReader<'a> {
             full,
             query: query_set,
         })
+    }
+
+    /// A filter holding only a literal text term: the rows carrying a value
+    /// that contains `text` (see [`crate::text::LiteralText`]), across every
+    /// tier. AND it onto a scope with [`BitmapFilter::conjoin`].
+    pub fn compile_text(&self, text: &crate::text::LiteralText) -> Result<BitmapFilter, crate::Error> {
+        let set = self.query_positions(&|kv: &[u8]| text.matches_kv(kv))?;
+        Ok(self.global_filter(set))
+    }
+
+    /// A filter holding only a trace-id term: the rows of any of `ids`. The
+    /// trace-id bloom is asked first, so a file holding none of them decodes
+    /// neither the trace-id index nor the trace-id column.
+    pub fn compile_trace_ids(&self, ids: &[crate::TraceId]) -> Result<BitmapFilter, crate::Error> {
+        let total = self.summary.record_count;
+        let candidates: Vec<crate::TraceId> = if self.has_trace_id_bloom() {
+            let bloom = self.trace_id_bloom()?;
+            ids.iter().copied().filter(|id| bloom.might_contain(*id)).collect()
+        } else {
+            ids.to_vec()
+        };
+        let mut positions: Vec<u32> = Vec::new();
+        if !candidates.is_empty() {
+            let trace_ids = self.trace_ids()?;
+            if self.has_trace_id_index() {
+                let index = self.trace_id_index()?;
+                for id in candidates {
+                    positions.extend_from_slice(index.positions(id, &trace_ids));
+                }
+            } else {
+                for (position, id) in trace_ids.iter().enumerate() {
+                    if candidates.contains(&id) {
+                        positions.push(position as u32);
+                    }
+                }
+            }
+        }
+        positions.sort_unstable();
+        positions.dedup();
+        let set = PosSet::from_sorted(positions, total);
+        Ok(self.global_filter(set))
+    }
+
+    fn global_filter(&self, set: PosSet) -> BitmapFilter {
+        BitmapFilter {
+            universe: self.summary.record_count,
+            per_field: Vec::new(),
+            full: set.clone(),
+            query: Some(set),
+        }
     }
 
     /// Count logs matching `filter` whose timestamp falls in `window_ns`
@@ -1321,7 +1371,7 @@ impl<'a> IndexReader<'a> {
     /// stream batches (as in [`field_values_or`](Self::field_values_or)).
     /// This is a full distinct-key scan — the inherent cost of field-less
     /// full text without a token index.
-    fn query_positions(&self, query: &regex::bytes::Regex) -> Result<PosSet, crate::Error> {
+    fn query_positions(&self, query: &dyn Fn(&[u8]) -> bool) -> Result<PosSet, crate::Error> {
         let total = self.summary.record_count;
         let mut result = PosSet::empty(total);
 
@@ -1329,7 +1379,7 @@ impl<'a> IndexReader<'a> {
         // query matches the raw `key=value` bytes directly — keys are UTF-8 by
         // construction, so there's no `str::from_utf8` validation to pay.
         self.primary.for_each(|kv_bytes, bv| {
-            if query.is_match(kv_bytes) {
+            if query(kv_bytes) {
                 result.or_assign(&PosSet::from_value(bv));
             }
         });
@@ -1350,7 +1400,7 @@ impl<'a> IndexReader<'a> {
                 FieldTier::Mid => {
                     let chunk = self.sfst.mid_field(ti)?;
                     chunk.for_each(|kv_bytes, bv| {
-                        if query.is_match(kv_bytes) {
+                        if query(kv_bytes) {
                             result.or_assign(&PosSet::from_value(bv));
                         }
                     });
@@ -1359,7 +1409,7 @@ impl<'a> IndexReader<'a> {
                     let hf = self.sfst.high_field(ti)?;
                     let base = self.high_kv_id(ti, 0).0;
                     for (local, key) in hf.keys().enumerate() {
-                        if query.is_match(key) {
+                        if query(key) {
                             targets.insert(KvId(base + local as u32));
                             combined_mask |= hf.masks[local];
                         }
