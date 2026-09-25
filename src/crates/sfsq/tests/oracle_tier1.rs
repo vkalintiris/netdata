@@ -156,7 +156,7 @@ fn oracle_value_counts(spans: &[&OracleSpan], field: &str) -> BTreeMap<String, u
     for span in spans {
         if let Some(values) = span.fields.get(field) {
             for value in values {
-                *counts.entry(value.clone()).or_default() += 1;
+                *counts.entry(value.to_string()).or_default() += 1;
             }
         }
     }
@@ -196,7 +196,7 @@ fn stored_tokens_match_the_calculator() {
             let stored_fields: BTreeSet<&str> = reader.field_table().names().collect();
             let mut oracle_fields = BTreeSet::new();
             for span in &spans {
-                oracle_fields.extend(span.fields.keys().map(String::as_str));
+                oracle_fields.extend(span.fields.keys());
             }
             assert_eq!(stored_fields, oracle_fields, "seed {seed} unit {unit}");
             assert!(stored_fields.contains("events.attributes.exception.type"));
@@ -235,7 +235,7 @@ fn tail_spans_carry_the_calculator_tokens() {
         let mut core = BTreeMap::new();
         for field in CORE_FIELDS {
             if let Some(values) = span.fields.get(field) {
-                core.insert(field.to_string(), values.clone());
+                core.insert(field.to_string(), values.to_set());
             }
         }
         expected.entry(key).or_default().push(core);
@@ -549,7 +549,7 @@ fn explore_facets_match_the_calculator() {
     let mut fields: Vec<String> = stored
         .oracle
         .iter()
-        .flat_map(|span| span.fields.keys().cloned())
+        .flat_map(|span| span.fields.keys().map(str::to_string))
         .filter(|field| !HIDDEN_FIELDS.contains(&field.as_str()))
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -721,7 +721,7 @@ fn assert_rows_match(got: &RowsData, want: &[&OracleSpan], case: &str) {
         let first = |field: &str| {
             span.fields
                 .get(field)
-                .and_then(|values| values.iter().next().cloned())
+                .and_then(|values| values.iter().next().map(str::to_string))
         };
         assert_eq!(row.service, first(model::SERVICE_FIELD), "{case}");
         assert_eq!(row.name, first("name"), "{case}");
@@ -730,7 +730,7 @@ fn assert_rows_match(got: &RowsData, want: &[&OracleSpan], case: &str) {
         let mut columns = Vec::new();
         for column in ROW_COLUMNS {
             let values: Vec<String> = match span.fields.get(column) {
-                Some(values) => values.iter().cloned().collect(),
+                Some(values) => values.iter().map(str::to_string).collect(),
                 None => Vec::new(),
             };
             columns.push(values);

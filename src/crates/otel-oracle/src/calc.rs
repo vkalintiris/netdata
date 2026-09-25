@@ -169,7 +169,7 @@ pub fn histogram(
         match span.fields.get(stack_field) {
             Some(values) => {
                 for value in values {
-                    *bucket.counts.entry(value.clone()).or_default() += 1;
+                    *bucket.counts.entry(value.to_string()).or_default() += 1;
                 }
             }
             None => bucket.unset += 1,
@@ -313,7 +313,7 @@ pub fn facet_counts(
         }
         if let Some(values) = span.fields.get(field) {
             for value in values {
-                *counts.entry(value.clone()).or_default() += 1;
+                *counts.entry(value.to_string()).or_default() += 1;
             }
         }
     }
@@ -490,7 +490,7 @@ pub fn high_units(spans: &[OracleSpan], field: &str) -> BTreeSet<usize> {
         if let Some(values) = span.fields.get(field) {
             let set = distinct.entry(span.unit).or_default();
             for value in values {
-                set.insert(value.as_str());
+                set.insert(value);
             }
         }
     }
@@ -532,9 +532,9 @@ pub fn field_list(spans: &[OracleSpan]) -> BTreeMap<String, Tier> {
     let mut distinct: BTreeMap<(usize, &str), BTreeSet<&str>> = BTreeMap::new();
     for span in spans {
         for (field, values) in &span.fields {
-            let set = distinct.entry((span.unit, field.as_str())).or_default();
+            let set = distinct.entry((span.unit, field)).or_default();
             for value in values {
-                set.insert(value.as_str());
+                set.insert(value);
             }
         }
     }
@@ -566,7 +566,7 @@ pub fn field_values(
         if let Some(values) = span.fields.get(field) {
             for value in values {
                 if value.starts_with(prefix) {
-                    out.insert(value.clone());
+                    out.insert(value.to_string());
                 }
             }
         }
@@ -583,7 +583,7 @@ pub fn unit_values(spans: &[OracleSpan], field: &str, prefix: &str) -> BTreeSet<
         if let Some(values) = span.fields.get(field) {
             for value in values {
                 if value.starts_with(prefix) {
-                    out.insert(value.clone());
+                    out.insert(value.to_string());
                 }
             }
         }
@@ -719,17 +719,13 @@ mod tests {
     use crate::model::{DURATION_BAND_FIELD, ROLE_FIELD, STATUS_FIELD};
 
     fn row(start_s: i64, fields: &[(&str, &str)]) -> OracleSpan {
-        let mut map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for (k, v) in fields {
-            map.entry(k.to_string()).or_default().insert(v.to_string());
-        }
         OracleSpan {
             trace_id: None,
             span_id: None,
             parent_span_id: None,
             start_ns: start_s * 1_000_000_000,
             duration_ns: 0,
-            fields: map,
+            fields: fields.iter().copied().collect(),
             unit: 0,
         }
     }

@@ -193,12 +193,12 @@ pub fn sensitive_values(spans: &[OracleSpan], top_n: usize) -> BTreeSet<String> 
     let mut counts: BTreeMap<&str, BTreeMap<&str, u64>> = BTreeMap::new();
     for span in spans {
         for (field, values) in &span.fields {
-            if field.starts_with('_') || READABLE_FIELDS.contains(&field.as_str()) {
+            if field.starts_with('_') || READABLE_FIELDS.contains(&field) {
                 continue;
             }
-            let per_field = counts.entry(field.as_str()).or_default();
+            let per_field = counts.entry(field).or_default();
             for value in values {
-                *per_field.entry(value.as_str()).or_default() += 1;
+                *per_field.entry(value).or_default() += 1;
             }
         }
     }
@@ -249,18 +249,15 @@ mod tests {
     const SERVICE: &str = "resource.attributes.service.name";
 
     fn span(service: &str, name: &str) -> OracleSpan {
-        let mut fields: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        fields.insert(SERVICE.to_string(), BTreeSet::from([service.to_string()]));
-        fields.insert("name".to_string(), BTreeSet::from([name.to_string()]));
-        fields.insert(
-            "status_code".to_string(),
-            BTreeSet::from(["ERROR".to_string()]),
-        );
-        fields.insert("_role".to_string(), BTreeSet::from(["root".to_string()]));
-        fields.insert(
-            "attributes.retries".to_string(),
-            BTreeSet::from(["1234".to_string()]),
-        );
+        let fields = [
+            (SERVICE, service),
+            ("name", name),
+            ("status_code", "ERROR"),
+            ("_role", "root"),
+            ("attributes.retries", "1234"),
+        ]
+        .into_iter()
+        .collect();
         OracleSpan {
             trace_id: None,
             span_id: None,

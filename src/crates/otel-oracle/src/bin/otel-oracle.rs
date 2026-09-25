@@ -280,8 +280,8 @@ fn stats(args: &Args) -> Result<(), String> {
             widest = widest.max(span.fields.len());
             for (name, set) in &span.fields {
                 values += set.len() as u64;
-                if !names.contains(name.as_str()) {
-                    names.insert(name.clone());
+                if !names.contains(name) {
+                    names.insert(name.to_string());
                 }
             }
         }

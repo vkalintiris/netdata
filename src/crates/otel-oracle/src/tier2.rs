@@ -89,7 +89,6 @@ fn first_value<'a>(span: &'a OracleSpan, field: &str) -> Option<&'a str> {
     span.fields
         .get(field)
         .and_then(|values| values.iter().next())
-        .map(String::as_str)
 }
 
 /// The value of `field` most frequent among `rows` (ties to the first in byte
