@@ -61,6 +61,7 @@ mod reader;
 mod row_index;
 mod schema;
 mod span_extras;
+mod span_family;
 mod trace_rollup;
 mod trace_bloom;
 pub mod trace_combine;
@@ -91,6 +92,7 @@ pub use trace_rollup::{
     TraceRollupRows,
 };
 pub use schema::join_value_kinds;
+pub use span_family::{ERR_ORIGIN_FIELD, SpanFamily, SpanRows, derive_span_family};
 pub use trace_bloom::TraceIdBloom;
 pub use trace_combine::{CombineOutcome, SpanRef, SpanSource};
 pub use trace_index::TraceIdIndex;
