@@ -362,12 +362,13 @@ pub struct Membership {
     pub stale_wals: Vec<StaleWal>,
 }
 
-/// Sealed files already read, by path and length. A sealed file does not
-/// change, so a run reads each once however often it reads the store; a file
-/// no longer listed is dropped.
+/// Sealed files already read, by path and length, with their unit when the
+/// reader's rule kept it. A sealed file does not change, so a run reads each
+/// once however often it reads the store; a file no longer listed is dropped.
+/// A cache serves one rule: a unit the rule set aside is not read again.
 #[derive(Debug, Clone, Default)]
 pub struct SealedCache {
-    units: BTreeMap<PathBuf, (u64, Unit)>,
+    units: BTreeMap<PathBuf, (u64, Option<Unit>)>,
 }
 
 fn files(dir: &Path, extension: &str) -> Vec<PathBuf> {
@@ -397,15 +398,17 @@ pub fn wal_lengths(store: &Path) -> Vec<(PathBuf, u64)> {
 }
 
 pub fn read_store(store: &Path, min_entries: u32) -> Result<Membership, MembershipError> {
-    read_store_with(store, min_entries, &mut SealedCache::default())
+    read_store_with(store, min_entries, &mut SealedCache::default(), &|_| true)
 }
 
 /// [`read_store`], taking sealed files from `cache` when their length is the
-/// one read before.
+/// one read before, and holding only the sealed units `keep` accepts (a sealed
+/// file set aside still hides the WAL it was sealed from).
 pub fn read_store_with(
     store: &Path,
     min_entries: u32,
     cache: &mut SealedCache,
+    keep: &dyn Fn(&Unit) -> bool,
 ) -> Result<Membership, MembershipError> {
     let sealed_paths = files(&store.join("index/default"), "sfst");
     let wal_paths = files(&store.join("wal/default"), "wal");
@@ -417,16 +420,16 @@ pub fn read_store_with(
         let bytes = fs::metadata(path)
             .map_err(|e| MembershipError::Sealed(path.clone(), e.to_string()))?
             .len();
-        let unit = match cache.units.get(path) {
-            Some((cached, unit)) if *cached == bytes => unit.clone(),
-            _ => {
-                let unit = read_sealed(path)?;
-                cache.units.insert(path.clone(), (bytes, unit.clone()));
-                unit
-            }
-        };
-        sealed_keys.push(unit.stem.clone());
-        out.units.push(unit);
+        let fresh = !matches!(cache.units.get(path), Some((cached, _)) if *cached == bytes);
+        if fresh {
+            let unit = read_sealed(path)?;
+            let kept = keep(&unit).then_some(unit);
+            cache.units.insert(path.clone(), (bytes, kept));
+        }
+        sealed_keys.push(stem_of(path)?);
+        if let Some((_, Some(unit))) = cache.units.get(path) {
+            out.units.push(unit.clone());
+        }
     }
 
     let mut live = Vec::new();

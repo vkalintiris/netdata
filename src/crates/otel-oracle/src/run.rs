@@ -11,11 +11,12 @@
 //!    length and store, then each judged window's answers against the
 //!    calculator.
 //!
-//! Only the capture from [`CAPTURE_MARGIN`] before the earliest window and
-//! the sealed files overlapping a window are matched; a wrong assumption
-//! there shows up as unmatched rows, never as a pass.
+//! Only what bears on a window is held: the sealed files a window overlaps,
+//! and from the capture received since [`CAPTURE_MARGIN`] before the earliest
+//! window, the spans starting inside a window or stored in a held unit. A
+//! wrong assumption there shows up as unmatched rows, never as a pass.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io::{self, BufReader};
 use std::path::PathBuf;
@@ -27,7 +28,8 @@ use crate::capture::Reader;
 use crate::freeze::{self, Change, Decision, Probe, Settle, Settled, Snapshot, Window};
 use crate::ingest::IngestWindow;
 use crate::matching::{self, Expected, WindowCheck};
-use crate::membership::{self, Membership, MembershipError, SealedCache, UnitKind};
+use crate::membership::{self, Membership, MembershipError, RowKey, SealedCache, Unit, UnitKind};
+use crate::model::OracleSpan;
 use crate::report::{self, Aliases, CheckCount, Finding, Summary};
 use crate::tier2::{self, Plan, Request};
 
@@ -177,15 +179,36 @@ fn capture_len(config: &Config) -> Result<u64, RunError> {
         .map_err(capture_error)
 }
 
+/// Whether a row starting at `start_ns` is inside one of the windows (as the
+/// agent reads them, on their grids).
+fn in_a_window(windows: &[Window], start_ns: i64) -> bool {
+    windows.iter().any(|w| {
+        let after = i64::from(w.grid.after_s) * NS as i64;
+        let before = i64::from(w.grid.before_s) * NS as i64;
+        start_ns >= after && start_ns < before
+    })
+}
+
 /// The expectations from the capture's records received at `cutoff_ns` or
 /// later, up to `limit` bytes; a record cut short inside the limit is an
-/// error, one past the end without a limit is still being written.
+/// error, one past the end without a limit is still being written. Only the
+/// spans that bear on a window are held: those starting inside one, and
+/// those whose row a held unit stores.
 fn expectations(
     config: &Config,
     limit: Option<u64>,
     cutoff_ns: u64,
+    windows: &[Window],
+    store: &Membership,
     outcome: &mut Outcome,
 ) -> Result<Expected, RunError> {
+    let mut stored = HashSet::new();
+    for unit in &store.units {
+        stored.extend(unit.rows.iter().copied());
+    }
+    let bears = |span: &OracleSpan| {
+        in_a_window(windows, span.start_ns) || stored.contains(&RowKey::of(span))
+    };
     let file = fs::File::open(&config.capture).map_err(capture_error)?;
     let mut reader = Reader::new(BufReader::new(file), limit).map_err(capture_error)?;
     let mut expected = Expected::default();
@@ -194,7 +217,7 @@ fn expectations(
         let index = records as usize;
         records += 1;
         if u64::try_from(record.received_unix_ns).is_ok_and(|at| at >= cutoff_ns) {
-            expected.add(index, &record, &config.ingest);
+            expected.add_where(index, &record, &config.ingest, &bears);
         } else {
             skipped += 1;
         }
@@ -213,15 +236,22 @@ fn expectations(
     Ok(expected)
 }
 
-/// Reads the store, waiting while a WAL is caught mid-write.
+/// Reads the store, holding only the sealed units a window overlaps and
+/// waiting while a WAL is caught mid-write.
 fn read_store(
     lab: &mut impl Lab,
     config: &Config,
     cache: &mut SealedCache,
+    windows: &[Window],
 ) -> Result<Membership, RunError> {
+    let keep = |unit: &Unit| {
+        windows
+            .iter()
+            .any(|w| matching::overlaps(unit.seconds, w.grid.after_s, w.grid.before_s))
+    };
     let mut tries = 0;
     loop {
-        match membership::read_store_with(&config.store, config.chunk_entries, cache) {
+        match membership::read_store_with(&config.store, config.chunk_entries, cache, &keep) {
             Err(MembershipError::NotSettled(..)) if tries < STORE_TRIES => {
                 tries += 1;
                 lab.sleep(STORE_POLL);
@@ -229,16 +259,6 @@ fn read_store(
             read => return read.map_err(RunError::Store),
         }
     }
-}
-
-/// Drops the sealed units no window overlaps.
-fn keep_for(windows: &[Window], store: &mut Membership) {
-    store.units.retain(|unit| {
-        !matches!(unit.kind, UnitKind::Sealed)
-            || windows
-                .iter()
-                .any(|w| matching::overlaps(unit.seconds, w.grid.after_s, w.grid.before_s))
-    });
 }
 
 fn settle(lab: &mut impl Lab, config: &Config) -> Result<(), RunError> {
@@ -303,7 +323,7 @@ fn while_frozen(
         outcome.attempts = attempt;
         settle(lab, config)?;
         let capture_bytes = capture_len(config)?;
-        let store = read_store(lab, config, cache)?;
+        let store = read_store(lab, config, cache, windows)?;
         let before = Snapshot::of(capture_bytes, &store, windows);
 
         let mut asked = Vec::new();
@@ -319,7 +339,7 @@ fn while_frozen(
             }
         }
 
-        let after_store = read_store(lab, config, cache)?;
+        let after_store = read_store(lab, config, cache, windows)?;
         let after = Snapshot::of(capture_len(config)?, &after_store, windows);
         match freeze::decide(&before, &after, attempt) {
             Decision::Proceed => {
@@ -354,10 +374,9 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
     let mut cache = SealedCache::default();
     let mut plans: Vec<Option<Plan>> = vec![None; windows.len()];
     if config.ask {
-        let expected = expectations(config, None, cutoff_ns, &mut outcome)?;
-        let mut store = read_store(lab, config, &mut cache)?;
-        keep_for(&windows, &mut store);
-        let matched = matching::match_rows(&expected, &store.units);
+        let store = read_store(lab, config, &mut cache, &windows)?;
+        let expected = expectations(config, None, cutoff_ns, &windows, &store, &mut outcome)?;
+        let matched = matching::match_rows(expected, &store.units);
         for (plan, w) in plans.iter_mut().zip(&windows) {
             let check = matching::check_window(
                 &store.units,
@@ -378,7 +397,7 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
 
     let waiting_since = lab.monotonic();
     loop {
-        let store = read_store(lab, config, &mut cache)?;
+        let store = read_store(lab, config, &mut cache, &windows)?;
         if !freeze::rotation_due(&store.wals, lab.now_ns(), config.longest_freeze) {
             break;
         }
@@ -400,9 +419,15 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
     };
 
     outcome.capture_bytes = frozen.capture_bytes;
-    let expected = expectations(config, Some(frozen.capture_bytes), cutoff_ns, &mut outcome)?;
-    let mut store = frozen.store;
-    keep_for(&windows, &mut store);
+    let store = frozen.store;
+    let expected = expectations(
+        config,
+        Some(frozen.capture_bytes),
+        cutoff_ns,
+        &windows,
+        &store,
+        &mut outcome,
+    )?;
     for unit in &store.units {
         let kind = match unit.kind {
             UnitKind::Sealed => "sealed",
@@ -411,7 +436,7 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
         };
         *outcome.units.entry(kind).or_default() += 1;
     }
-    let matched = matching::match_rows(&expected, &store.units);
+    let matched = matching::match_rows(expected, &store.units);
     for (w, asked) in windows.iter().zip(frozen.asked) {
         let check = matching::check_window(
             &store.units,

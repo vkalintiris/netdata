@@ -55,14 +55,32 @@ pub struct Expected {
     pub notes: Vec<IngestNote>,
 }
 
-fn claims(record: usize, spans: Vec<OracleSpan>) -> impl Iterator<Item = Claim> {
-    spans.into_iter().map(move |span| Claim { record, span })
+fn claims(record: usize, spans: Vec<OracleSpan>, keep: &dyn Fn(&OracleSpan) -> bool) -> Vec<Claim> {
+    let mut out = Vec::new();
+    for span in spans {
+        if keep(&span) {
+            out.push(Claim { record, span });
+        }
+    }
+    out
 }
 
 impl Expected {
     /// Adds what the capture's record number `index` should have left in the
     /// store (nothing for a logs record).
     pub fn add(&mut self, index: usize, record: &Record, window: &IngestWindow) {
+        self.add_where(index, record, window, &|_| true);
+    }
+
+    /// [`Expected::add`], holding only the spans `keep` accepts; the record's
+    /// notes and counts are kept whole.
+    pub fn add_where(
+        &mut self,
+        index: usize,
+        record: &Record,
+        window: &IngestWindow,
+        keep: &dyn Fn(&OracleSpan) -> bool,
+    ) {
         if record.signal != Signal::Traces {
             return;
         }
@@ -78,7 +96,7 @@ impl Expected {
             None
         };
         match stored {
-            Some(rows) => self.kept.extend(claims(index, rows)),
+            Some(rows) => self.kept.extend(claims(index, rows, keep)),
             None => {
                 if record.acknowledged() {
                     self.notes.push(IngestNote::RejectedCount {
@@ -88,8 +106,8 @@ impl Expected {
                         undecided: replay.undecided.len(),
                     });
                 }
-                self.doubtful.extend(claims(index, replay.kept));
-                self.doubtful.extend(claims(index, replay.undecided));
+                self.doubtful.extend(claims(index, replay.kept, keep));
+                self.doubtful.extend(claims(index, replay.undecided, keep));
             }
         }
     }
@@ -122,22 +140,11 @@ fn same_content(a: &OracleSpan, b: &OracleSpan) -> bool {
     a.fields == b.fields && a.parent_span_id == b.parent_span_id
 }
 
-pub fn match_rows(expected: &Expected, units: &[Unit]) -> Matched {
-    let mut stored: BTreeMap<RowKey, VecDeque<usize>> = BTreeMap::new();
-    for (index, unit) in units.iter().enumerate() {
-        for key in &unit.rows {
-            stored.entry(*key).or_default().push_back(index);
-        }
-    }
-
-    let mut out = Matched {
-        known: vec![true; units.len()],
-        ..Matched::default()
-    };
+/// Keys two claims hold with different contents.
+fn collisions(expected: &Expected) -> BTreeSet<RowKey> {
     let mut content: BTreeMap<RowKey, &OracleSpan> = BTreeMap::new();
-    let mut collided: BTreeSet<RowKey> = BTreeSet::new();
-
-    for (claims, certain) in [(&expected.kept, true), (&expected.doubtful, false)] {
+    let mut collided = BTreeSet::new();
+    for claims in [&expected.kept, &expected.doubtful] {
         for claim in claims {
             let key = RowKey::of(&claim.span);
             match content.get(&key) {
@@ -149,17 +156,40 @@ pub fn match_rows(expected: &Expected, units: &[Unit]) -> Matched {
                     content.insert(key, &claim.span);
                 }
             }
+        }
+    }
+    collided
+}
 
+/// Pairs the claims with the stored rows; the claims' spans move into the
+/// result (hours of live spans do not fit twice).
+pub fn match_rows(expected: Expected, units: &[Unit]) -> Matched {
+    let mut stored: BTreeMap<RowKey, VecDeque<usize>> = BTreeMap::new();
+    for (index, unit) in units.iter().enumerate() {
+        for key in &unit.rows {
+            stored.entry(*key).or_default().push_back(index);
+        }
+    }
+
+    let mut out = Matched {
+        known: vec![true; units.len()],
+        ..Matched::default()
+    };
+    let collided = collisions(&expected);
+
+    for (claims, certain) in [(expected.kept, true), (expected.doubtful, false)] {
+        for claim in claims {
+            let key = RowKey::of(&claim.span);
             match stored.get_mut(&key).and_then(|units| units.pop_front()) {
                 Some(unit) => {
-                    let mut span = claim.span.clone();
-                    span.unit = unit;
-                    out.spans.push(span);
                     if !certain {
                         out.despite_error.push(claim.clone());
                     }
+                    let mut span = claim.span;
+                    span.unit = unit;
+                    out.spans.push(span);
                 }
-                None if certain => out.lost.push(claim.clone()),
+                None if certain => out.lost.push(claim),
                 None => {}
             }
         }
@@ -371,7 +401,7 @@ mod tests {
             unit(UnitKind::Tail(0), keys(&[a])),
         ];
 
-        let matched = match_rows(&expected, &units);
+        let matched = match_rows(expected, &units);
 
         assert_eq!(ids(&matched.spans), vec![(1, 0), (1, 1)]);
         assert!(matched.lost.is_empty() && matched.unmatched.is_empty());
@@ -397,7 +427,7 @@ mod tests {
         );
         let units = [unit(UnitKind::Sealed, keys(&[a, c, d.clone()]))];
 
-        let matched = match_rows(&expected, &units);
+        let matched = match_rows(expected, &units);
 
         assert_eq!(ids(&matched.spans), vec![(1, 0), (3, 0)]);
         assert_eq!(claim_ids(&matched.lost), vec![2]);
@@ -420,7 +450,7 @@ mod tests {
             unit(UnitKind::Chunk(0), keys(&[span(9, 5, "z")])),
         ];
 
-        let matched = match_rows(&expected, &units);
+        let matched = match_rows(expected, &units);
 
         assert_eq!(matched.collisions, vec![key]);
         assert_eq!(matched.known, vec![false, false, false]);
@@ -433,9 +463,9 @@ mod tests {
         let expected = expected_rows(&[record(&[startless], 0, 0)], &OPEN);
         let stored_by_the_agent = keys(&[span(1, 0, "a")]);
 
-        let matched = match_rows(&expected, &[unit(UnitKind::Tail(0), stored_by_the_agent)]);
-
         assert_eq!((expected.synthesized, expected.kept.len()), (1, 0));
+        let matched = match_rows(expected, &[unit(UnitKind::Tail(0), stored_by_the_agent)]);
+
         assert_eq!(matched.unmatched.len(), 1);
     }
 
@@ -493,7 +523,7 @@ mod tests {
             unit(UnitKind::Sealed, keys(&[a, stray])),
             unit(UnitKind::Tail(0), keys(&[b])),
         ];
-        let matched = match_rows(&expected, &units);
+        let matched = match_rows(expected, &units);
         let stale_elsewhere = [StaleWal {
             path: PathBuf::from("old.wal"),
             seconds: Some((NOW_S + 500, NOW_S + 600)),
@@ -536,7 +566,7 @@ mod tests {
         let units = [unit(UnitKind::Sealed, keys(&all))];
         let records = [record(&batches[0], 0, 0), record(&batches[2], 0, 0)];
 
-        let matched = match_rows(&expected_rows(&records, &OPEN), &units);
+        let matched = match_rows(expected_rows(&records, &OPEN), &units);
 
         let unmatched: Vec<RowKey> = matched.unmatched.iter().map(|(_, key)| *key).collect();
         assert_eq!(unmatched, keys(&batches[1]));

@@ -97,7 +97,7 @@ fn sealed_files_are_read_once_per_length() {
         fs::write(path, vec![0; bytes as usize]).unwrap();
     };
     let mut cache = SealedCache::default();
-    let mut read = || membership::read_store_with(store.path(), 2, &mut cache);
+    let mut read = || membership::read_store_with(store.path(), 2, &mut cache, &|_| true);
 
     let first = read().unwrap();
     assert_eq!(
@@ -127,6 +127,26 @@ fn sealed_files_are_read_once_per_length() {
     write_sealed(store.path(), &wal, &rows[..2]);
     unreadable(&sealed);
     assert!(matches!(read(), Err(MembershipError::Sealed(path, _)) if path == sealed));
+}
+
+/// A sealed file the rule sets aside is not held, is not read again, and
+/// still hides the WAL it was sealed from.
+#[test]
+fn a_sealed_file_set_aside_still_hides_its_wal() {
+    let store = tempfile::tempdir().unwrap();
+    let (a, b) = (request(1, 1, 3), request(2, 11, 3));
+    let wal = write_wal(store.path(), &[&a, &b], 0);
+    let sealed = write_sealed(store.path(), &wal, &keys(&[&a, &b]));
+    let mut cache = SealedCache::default();
+    let none = |_: &membership::Unit| false;
+
+    let read = membership::read_store_with(store.path(), 2, &mut cache, &none).unwrap();
+    assert!(read.units.is_empty() && read.wals.is_empty(), "{read:?}");
+
+    let bytes = fs::metadata(&sealed).unwrap().len();
+    fs::write(&sealed, vec![0; bytes as usize]).unwrap();
+    let again = membership::read_store_with(store.path(), 2, &mut cache, &none).unwrap();
+    assert_eq!(again, read);
 }
 
 #[test]
