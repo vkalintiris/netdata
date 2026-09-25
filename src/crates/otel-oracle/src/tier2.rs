@@ -664,18 +664,8 @@ fn judge_groups(
     grid: &Grid,
     got: &wire::Groups,
 ) {
-    let want = calc::groups(spans, grid, &scenario.scope);
-    let key = |service: &Option<String>, operation: &Option<String>| {
-        let part = |field: &str, value: &Option<String>| {
-            value
-                .as_ref()
-                .map_or(Subject::Missing, |value| Subject::Value {
-                    field: field.to_string(),
-                    value: value.clone(),
-                })
-        };
-        [part(SERVICE_FIELD, service), part("name", operation)]
-    };
+    let want = calc::groups(spans, grid, &scenario.scope, scenario.selection.as_ref());
+    let key = group_key;
     let numbers = |spans: u64, errors: u64, origins: u64, p95: Option<i64>, self_ns: String| {
         [
             Subject::Count(spans),
@@ -764,6 +754,102 @@ fn judge_groups(
         "groups",
         &calc::groups_reasons(&want),
         &got.status,
+    );
+    judge_delta(judge, scenario, &want, got);
+}
+
+/// A group's key as subjects.
+fn group_key(service: &Option<String>, operation: &Option<String>) -> [Subject; 2] {
+    let part = |field: &str, value: &Option<String>| {
+        value
+            .as_ref()
+            .map_or(Subject::Missing, |value| Subject::Value {
+                field: field.to_string(),
+                value: value.clone(),
+            })
+    };
+    [part(SERVICE_FIELD, service), part("name", operation)]
+}
+
+/// ORC-DELTA (QRY-20): under a selection, the trace counts and self time per
+/// side, and each listed group's and `other`'s sides, exactly.
+fn judge_delta(judge: &mut Judge, scenario: &Scenario, want: &calc::Groups, got: &wire::Groups) {
+    if want.delta.is_none() && got.delta.is_none() {
+        return;
+    }
+    let side = |spans: u64, origins: u64, self_ns: String| {
+        [
+            Subject::Count(spans),
+            Subject::Count(origins),
+            Subject::Name(self_ns),
+        ]
+    };
+    let calc_side = |s: &calc::Side| side(s.spans, s.errors_originated, s.self_ns.to_string());
+    let wire_side = |s: &wire::DeltaSide| side(s.spans, s.errors_originated, s.self_ns.clone());
+
+    let mut want_totals = vec![Subject::Missing];
+    let mut want_rows = Vec::new();
+    let mut want_other = vec![Subject::Missing];
+    if let Some(delta) = &want.delta {
+        want_totals = vec![
+            Subject::Count(delta.selection_traces),
+            Subject::Count(delta.baseline_traces),
+            Subject::Name(delta.selection_self_ns_total.to_string()),
+            Subject::Name(delta.baseline_self_ns_total.to_string()),
+        ];
+        for ((key, _), (selection, baseline)) in want.rows.iter().zip(&delta.rows) {
+            want_rows.extend(group_key(&key.service, &key.operation));
+            want_rows.extend(calc_side(selection));
+            want_rows.extend(calc_side(baseline));
+        }
+        if let (Some((groups, _)), Some((selection, baseline))) = (&want.other, &delta.other) {
+            want_other = vec![Subject::Count(*groups)];
+            want_other.extend(calc_side(selection));
+            want_other.extend(calc_side(baseline));
+        }
+    }
+    let mut got_totals = vec![Subject::Missing];
+    let mut got_rows = Vec::new();
+    let mut got_other = vec![Subject::Missing];
+    if let Some(delta) = &got.delta {
+        got_totals = vec![
+            Subject::Count(delta.selection_traces),
+            Subject::Count(delta.baseline_traces),
+            Subject::Name(delta.selection_self_ns_total.clone()),
+            Subject::Name(delta.baseline_self_ns_total.clone()),
+        ];
+        for row in &delta.rows {
+            got_rows.extend(group_key(&row.service, &row.operation));
+            got_rows.extend(wire_side(&row.selection));
+            got_rows.extend(wire_side(&row.baseline));
+        }
+        if let Some(other) = &delta.other {
+            got_other = vec![Subject::Count(other.groups)];
+            got_other.extend(wire_side(&other.selection));
+            got_other.extend(wire_side(&other.baseline));
+        }
+    }
+    let at = |part: &str| vec![name("groups"), name("delta"), name(part)];
+    judge.list(
+        "ORC-DELTA",
+        &scenario.name,
+        at("totals"),
+        &want_totals,
+        &got_totals,
+    );
+    judge.list(
+        "ORC-DELTA",
+        &scenario.name,
+        at("rows"),
+        &want_rows,
+        &got_rows,
+    );
+    judge.list(
+        "ORC-DELTA",
+        &scenario.name,
+        at("other"),
+        &want_other,
+        &got_other,
     );
 }
 
@@ -1688,7 +1774,7 @@ mod tests {
             all_reasons.extend(reasons);
         }
         if *groups {
-            let want = calc::groups(spans, &grid, scope);
+            let want = calc::groups(spans, &grid, scope, scenario.selection.as_ref());
             let numbers = |n: &calc::GroupNumbers| {
                 json!({"spans": n.spans, "errors": n.errors,
                     "errors_originated": n.errors_originated, "p95_ns": n.p95_ns,
@@ -1710,6 +1796,29 @@ mod tests {
             data["groups"] = json!({"status": status(&reasons),
                 "window_s": u64::from(grid.before_s - grid.after_s),
                 "self_ns_total": want.self_ns_total.to_string(), "rows": rows, "other": other});
+            if let Some(delta) = &want.delta {
+                let side = |s: &calc::Side| {
+                    json!({"spans": s.spans, "errors_originated": s.errors_originated,
+                        "self_ns": s.self_ns.to_string()})
+                };
+                let mut delta_rows = Vec::new();
+                for ((key, _), (selection, baseline)) in want.rows.iter().zip(&delta.rows) {
+                    delta_rows.push(json!({"service": key.service, "operation": key.operation,
+                        "selection": side(selection), "baseline": side(baseline)}));
+                }
+                let other = want.other.as_ref().zip(delta.other.as_ref()).map(
+                    |((groups, _), (selection, baseline))| {
+                        json!({"groups": groups, "selection": side(selection),
+                            "baseline": side(baseline)})
+                    },
+                );
+                data["groups"]["delta"] = json!({
+                    "selection_traces": delta.selection_traces,
+                    "baseline_traces": delta.baseline_traces,
+                    "selection_self_ns_total": delta.selection_self_ns_total.to_string(),
+                    "baseline_self_ns_total": delta.baseline_self_ns_total.to_string(),
+                    "rows": delta_rows, "other": other});
+            }
             all_reasons.extend(reasons);
         }
         if let Some(ask) = rows {
@@ -1919,6 +2028,7 @@ mod tests {
             "ORC-FACET",
             "ORC-CMP",
             "ORC-GROUPS",
+            "ORC-DELTA",
             "ORC-ROWS",
             "ORC-TOPK",
             "ORC-FIELDS",
@@ -2046,6 +2156,27 @@ mod tests {
 
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert_eq!(findings[0].check, "ORC-GROUPS");
+    }
+
+    #[test]
+    fn one_wrong_delta_side_is_exactly_one_finding() {
+        let (spans, after, before) = corpus_spans();
+        let plan = plan(after, before, &spans, 2);
+        let mut answers = answers(&plan, &spans);
+        let id = plan
+            .requests
+            .iter()
+            .find(|r| answers[&r.id]["data"]["groups"]["delta"].is_object())
+            .expect("a delta under some selection")
+            .id
+            .clone();
+        let row = &mut answers.get_mut(&id).unwrap()["data"]["groups"]["delta"]["rows"][0];
+        row["baseline"]["spans"] = json!(row["baseline"]["spans"].as_u64().unwrap() + 1);
+
+        let (findings, _) = judge(&plan, &spans, &answers);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].check, "ORC-DELTA");
     }
 
     #[test]

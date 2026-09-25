@@ -239,6 +239,7 @@ async fn tier2_through_the_handler_finds_nothing() {
         "ORC-VALUES",
         "ORC-STATUS",
         "ORC-CMP",
+        "ORC-DELTA",
     ] {
         let count = checks.get(check).copied().unwrap_or_default();
         assert!(

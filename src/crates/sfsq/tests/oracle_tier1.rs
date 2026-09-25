@@ -1723,11 +1723,11 @@ fn live_split_equals_sealed() {
         common::sealed_source_at(&stored._dir.path().join("sealed.sfst"), "sealed"),
         common::sealed_source_at(&sealed_live, "live"),
     ];
-    let (sealed_groups, status) = run_groups(sealed_sources, &grid, &Scope::entry_spans());
+    let (sealed_groups, status) = run_groups(sealed_sources, &grid, &Scope::entry_spans(), None);
     assert!(status.is_complete(), "{status:?}");
     assert_eq!(
         sealed_groups,
-        calc::groups(&stored.oracle, &grid, &Scope::entry_spans())
+        calc::groups(&stored.oracle, &grid, &Scope::entry_spans(), None)
     );
 
     for live in [Live::Tail, Live::Chunk, Live::Split(5), Live::Split(3)] {
@@ -1739,7 +1739,7 @@ fn live_split_equals_sealed() {
         assert!(status.is_complete(), "{live:?}: {status:?}");
         assert_eq!(live_self, sealed_self, "{live:?}");
         let entry = Scope::entry_spans();
-        let (groups, status) = run_groups(explore_sources(&stored, live), &grid, &entry);
+        let (groups, status) = run_groups(explore_sources(&stored, live), &grid, &entry, None);
         assert!(status.is_complete(), "{live:?}: {status:?}");
         assert_eq!(groups, sealed_groups, "{live:?}");
     }
@@ -1851,18 +1851,44 @@ fn calc_groups(data: &explore::GroupsData) -> calc::Groups {
         out.other = Some((other.groups, numbers(&other.numbers)));
         out.total += other.groups;
     }
+    if let Some(delta) = &data.delta {
+        let side = |s: &explore::SideNumbers| calc::Side {
+            spans: s.spans,
+            errors_originated: s.errors_originated,
+            self_ns: s.self_ns,
+        };
+        let sides = |sides: Option<explore::GroupSides>| {
+            let sides = sides.expect("sides on every group under a selection");
+            (side(&sides.selection), side(&sides.baseline))
+        };
+        let mut rows = Vec::new();
+        for row in &data.rows {
+            rows.push(sides(row.delta));
+        }
+        out.delta = Some(calc::Delta {
+            selection_traces: delta.selection_traces,
+            baseline_traces: delta.baseline_traces,
+            selection_self_ns_total: delta.selection_self_ns_total,
+            baseline_self_ns_total: delta.baseline_self_ns_total,
+            rows,
+            other: data.other.as_ref().map(|other| sides(other.delta)),
+        });
+    }
     out
 }
 
-/// The Groups section of `sources` for `scope`, with its status.
+/// The Groups section of `sources` for `scope` and `selection`, with its
+/// status.
 fn run_groups(
     sources: Vec<TraceSource>,
     grid: &Grid,
     scope: &Scope,
+    selection: Option<ExploreSelection>,
 ) -> (calc::Groups, QueryStatus) {
     let mut query = explore_query(grid, scope, model::STATUS_FIELD);
     query.sections.histogram = None;
     query.sections.groups = true;
+    query.selection = selection;
     let data = explore::explore(
         sources,
         query,
@@ -1914,8 +1940,8 @@ fn explore_groups_match_the_calculator() {
     for live in [Live::Tail, Live::Chunk, Live::Split(100), Live::Chunked] {
         for (name, scope) in &scopes {
             let case = format!("{live:?} {name}");
-            let (got, status) = run_groups(explore_sources(&stored, live), &grid, scope);
-            let want = calc::groups(&stored.oracle, &grid, scope);
+            let (got, status) = run_groups(explore_sources(&stored, live), &grid, scope, None);
+            let want = calc::groups(&stored.oracle, &grid, scope, None);
             assert!(!want.rows.is_empty(), "{case}: the scenario selects rows");
             assert_eq!(got, want, "{case}");
             assert!(status.is_complete(), "{case}: {status:?}");
@@ -1952,8 +1978,13 @@ fn explore_groups_cap_matches_the_calculator() {
     let stored = store_requests(&requests, requests.len() / 2);
     let grid = stored.grid;
     for live in [Live::Tail, Live::Split(100)] {
-        let (got, status) = run_groups(explore_sources(&stored, live), &grid, &Scope::default());
-        let want = calc::groups(&stored.oracle, &grid, &Scope::default());
+        let (got, status) = run_groups(
+            explore_sources(&stored, live),
+            &grid,
+            &Scope::default(),
+            None,
+        );
+        let want = calc::groups(&stored.oracle, &grid, &Scope::default(), None);
         assert_eq!(want.rows.len(), 500);
         assert_eq!(want.other.as_ref().map(|(folded, _)| *folded), Some(20));
         assert_eq!(got, want, "{live:?}");
@@ -1961,7 +1992,88 @@ fn explore_groups_cap_matches_the_calculator() {
             .into_iter()
             .collect();
         assert_eq!(reasons, calc::groups_reasons(&want), "{live:?}");
+
+        // ORC-DELTA past the cap: operations 500 and up last longest; some
+        // of them are listed and some folded, so `other` has both sides.
+        let slow = 1_000_500;
+        let (got, _) = run_groups(
+            explore_sources(&stored, live),
+            &grid,
+            &Scope::default(),
+            Some(ExploreSelection {
+                filter: sfst::Filter::new(),
+                duration: Some(sfst::DurationRange {
+                    min_ns: Some(slow),
+                    max_ns: None,
+                }),
+                time_ns: None,
+            }),
+        );
+        let selection = calc::Selection {
+            duration: Some((Some(slow), None)),
+            ..calc::Selection::default()
+        };
+        let want = calc::groups(&stored.oracle, &grid, &Scope::default(), Some(&selection));
+        let (selected, rest) = want.delta.as_ref().unwrap().other.unwrap();
+        assert!(selected.spans > 0 && rest.spans > 0, "{live:?}");
+        assert_eq!(got, want, "{live:?}");
     }
+}
+
+/// ORC-DELTA (QRY-20, D24): for every way of serving the live WAL, three
+/// scopes and five selections, the Groups Δ equals the calculator's: a trace
+/// is on the side its window scope rows put it, across both units, and every
+/// one of its window rows follows it into its group; trace counts and self
+/// time per side are exact.
+#[test]
+fn explore_delta_matches_the_calculator() {
+    let stored = store_resending(300, 71, Some(7));
+    let grid = stored.grid;
+    let mut units_of: BTreeMap<[u8; 16], BTreeSet<usize>> = BTreeMap::new();
+    for span in &stored.oracle {
+        if let Some(trace) = span.trace_id {
+            units_of.entry(trace).or_default().insert(span.unit);
+        }
+    }
+    let scopes = [
+        ("F0 every span", Scope::default()),
+        ("F1 entry spans", Scope::entry_spans()),
+        (
+            "F2 checkout entry spans",
+            Scope::entry_spans().with(model::SERVICE_FIELD, &["checkout", "frontend"]),
+        ),
+    ];
+    let mut straddling = 0;
+    for live in [Live::Tail, Live::Chunk, Live::Split(100), Live::Chunked] {
+        for (scope_name, scope) in &scopes {
+            for (selection_name, engine, oracle) in selections(&grid, &stored.oracle, scope) {
+                let case = format!("{live:?} {scope_name} {selection_name}");
+                let (got, status) =
+                    run_groups(explore_sources(&stored, live), &grid, scope, Some(engine));
+                let want = calc::groups(&stored.oracle, &grid, scope, Some(&oracle));
+                let delta = want.delta.as_ref().expect("a delta under a selection");
+                assert!(delta.baseline_traces > 0, "{case}: the baseline has traces");
+                assert_eq!(got, want, "{case}");
+                assert!(status.is_complete(), "{case}: {status:?}");
+                if matches!(live, Live::Tail) {
+                    for span in &stored.oracle {
+                        if let Some(trace) = span.trace_id
+                            && grid.bucket_of(span.start_ns).is_some()
+                            && scope.matches(span)
+                            && oracle.matches(span)
+                            && units_of[&trace].len() == 2
+                        {
+                            straddling += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        straddling > 0,
+        "some selection trace has rows in both units"
+    );
 }
 
 /// The engine's compared facets in the calculator's shape.

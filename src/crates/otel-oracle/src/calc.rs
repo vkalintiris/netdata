@@ -1096,6 +1096,48 @@ pub struct Groups {
     pub self_ns_total: u128,
     /// Every group, listed or folded.
     pub total: u64,
+    /// Under a selection.
+    pub delta: Option<Delta>,
+}
+
+/// A group's rows on one side of a selection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Side {
+    pub spans: u64,
+    pub errors_originated: u64,
+    pub self_ns: u128,
+}
+
+impl Side {
+    fn add(&mut self, other: &Side) {
+        self.spans += other.spans;
+        self.errors_originated += other.errors_originated;
+        self.self_ns += other.self_ns;
+    }
+}
+
+/// The Groups Δ (QRY-20, D24): a scope trace is on the selection side when
+/// one of its window scope rows matches the selection, on the baseline side
+/// otherwise; a window scope row without a trace id is its own trace.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Delta {
+    pub selection_traces: u64,
+    pub baseline_traces: u64,
+    pub selection_self_ns_total: u128,
+    pub baseline_self_ns_total: u128,
+    /// `(selection, baseline)` per listed group, parallel to [`Groups::rows`].
+    pub rows: Vec<(Side, Side)>,
+    /// `other`'s sides, when groups were folded.
+    pub other: Option<(Side, Side)>,
+}
+
+/// One group's rows while [`groups`] counts them.
+#[derive(Default)]
+struct GroupTally {
+    numbers: GroupNumbers,
+    durations: Vec<i64>,
+    /// `(selection, baseline)`.
+    sides: (Side, Side),
 }
 
 /// The trace ids of the scope's rows in the window (D23).
@@ -1115,10 +1157,30 @@ pub fn scope_traces(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> BTreeSe
 /// The Groups table (D23, D41): every window row of a scope trace, whatever
 /// its own fields, and every window scope row without a trace id, grouped by
 /// service and operation; ranked by rows (then key, a missing value after
-/// every value) and capped.
-pub fn groups(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Groups {
+/// every value) and capped. Under a selection, each group's rows split by
+/// their trace's side ([`Delta`]).
+pub fn groups(
+    spans: &[OracleSpan],
+    grid: &Grid,
+    scope: &Scope,
+    selection: Option<&Selection>,
+) -> Groups {
     let traces = scope_traces(spans, grid, scope);
-    let mut by_key: BTreeMap<GroupKey, (GroupNumbers, Vec<i64>)> = BTreeMap::new();
+    let mut selected = BTreeSet::new();
+    if let Some(selection) = selection {
+        for span in spans {
+            if let Some(trace) = span.trace_id
+                && grid.bucket_of(span.start_ns).is_some()
+                && scope.matches(span)
+                && selection.matches(span)
+            {
+                selected.insert(trace);
+            }
+        }
+    }
+    // Scope rows without a trace id, each its own trace: (selection, baseline).
+    let mut unset = (0u64, 0u64);
+    let mut by_key: BTreeMap<GroupKey, GroupTally> = BTreeMap::new();
     for span in spans {
         if grid.bucket_of(span.start_ns).is_none() {
             continue;
@@ -1130,6 +1192,17 @@ pub fn groups(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Groups {
         if !joined {
             continue;
         }
+        let on_selection = match span.trace_id {
+            Some(trace) => selected.contains(&trace),
+            None => selection.is_some_and(|selection| selection.matches(span)),
+        };
+        if span.trace_id.is_none() {
+            if on_selection {
+                unset.0 += 1;
+            } else {
+                unset.1 += 1;
+            }
+        }
         let first = |field: &str| {
             span.fields
                 .get(field)
@@ -1139,19 +1212,29 @@ pub fn groups(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Groups {
             service: first(SERVICE_FIELD),
             operation: first("name"),
         };
-        let (numbers, durations) = by_key.entry(key).or_default();
-        numbers.spans += 1;
-        numbers.errors += u64::from(span.is_error());
-        numbers.errors_originated += u64::from(span.has(ERR_ORIGIN_FIELD, "true"));
-        if let Some(self_ns) = span.self_ns {
-            numbers.self_ns += u128::try_from(self_ns).unwrap_or(0);
+        let acc = by_key.entry(key).or_default();
+        let row = Side {
+            spans: 1,
+            errors_originated: u64::from(span.has(ERR_ORIGIN_FIELD, "true")),
+            self_ns: span
+                .self_ns
+                .map_or(0, |self_ns| u128::try_from(self_ns).unwrap_or(0)),
+        };
+        acc.numbers.spans += 1;
+        acc.numbers.errors += u64::from(span.is_error());
+        acc.numbers.errors_originated += row.errors_originated;
+        acc.numbers.self_ns += row.self_ns;
+        acc.durations.push(span.duration_ns);
+        if on_selection {
+            acc.sides.0.add(&row);
+        } else {
+            acc.sides.1.add(&row);
         }
-        durations.push(span.duration_ns);
     }
 
-    let mut ranked: Vec<(GroupKey, GroupNumbers, Vec<i64>)> = Vec::new();
-    for (key, (numbers, durations)) in by_key {
-        ranked.push((key, numbers, durations));
+    let mut ranked: Vec<(GroupKey, GroupTally)> = Vec::new();
+    for (key, acc) in by_key {
+        ranked.push((key, acc));
     }
     let missing_last = |key: &GroupKey| {
         (
@@ -1162,8 +1245,9 @@ pub fn groups(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Groups {
         )
     };
     ranked.sort_by(|a, b| {
-        b.1.spans
-            .cmp(&a.1.spans)
+        b.1.numbers
+            .spans
+            .cmp(&a.1.numbers.spans)
             .then_with(|| missing_last(&a.0).cmp(&missing_last(&b.0)))
     });
 
@@ -1171,14 +1255,28 @@ pub fn groups(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Groups {
         total: ranked.len() as u64,
         ..Groups::default()
     };
+    let mut delta = Delta {
+        selection_traces: selected.len() as u64 + unset.0,
+        baseline_traces: (traces.len() - selected.len()) as u64 + unset.1,
+        ..Delta::default()
+    };
     let mut folded = 0u64;
     let mut rest = GroupNumbers::default();
     let mut rest_durations = Vec::new();
-    for (index, (key, mut numbers, durations)) in ranked.into_iter().enumerate() {
+    let mut rest_sides = (Side::default(), Side::default());
+    for (index, (key, acc)) in ranked.into_iter().enumerate() {
+        let GroupTally {
+            mut numbers,
+            durations,
+            sides,
+        } = acc;
         out.self_ns_total += numbers.self_ns;
+        delta.selection_self_ns_total += sides.0.self_ns;
+        delta.baseline_self_ns_total += sides.1.self_ns;
         if index < GROUP_ROWS_CAP {
             numbers.p95_ns = fixed_histogram::percentiles(&durations).map(|p| p[1]);
             out.rows.push((key, numbers));
+            delta.rows.push(sides);
         } else {
             folded += 1;
             rest.spans += numbers.spans;
@@ -1186,11 +1284,17 @@ pub fn groups(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Groups {
             rest.errors_originated += numbers.errors_originated;
             rest.self_ns += numbers.self_ns;
             rest_durations.extend(durations);
+            rest_sides.0.add(&sides.0);
+            rest_sides.1.add(&sides.1);
         }
     }
     if folded > 0 {
         rest.p95_ns = fixed_histogram::percentiles(&rest_durations).map(|p| p[1]);
         out.other = Some((folded, rest));
+        delta.other = Some(rest_sides);
+    }
+    if selection.is_some() {
+        out.delta = Some(delta);
     }
     out
 }
@@ -1506,7 +1610,7 @@ mod tests {
             scope_traces(&spans, &grid, &scope),
             BTreeSet::from([[1; 16], [3; 16]])
         );
-        let got = groups(&spans, &grid, &scope);
+        let got = groups(&spans, &grid, &scope, None);
         let key = |service: Option<&str>, operation: &str| GroupKey {
             service: service.map(str::to_string),
             operation: Some(operation.to_string()),
@@ -1533,7 +1637,7 @@ mod tests {
         assert!(groups_reasons(&got).is_empty());
 
         let wide = Scope::default();
-        let all = groups(&spans, &grid, &wide);
+        let all = groups(&spans, &grid, &wide, None);
         let multi = all
             .rows
             .iter()
@@ -1546,6 +1650,45 @@ mod tests {
             "the multi-valued service takes its lowest value"
         );
         assert_eq!(multi.1.self_ns, 100, "a row without self time adds none");
+        assert!(got.delta.is_none() && all.delta.is_none());
+
+        // The Δ under a selection of seconds [4, 6): trace 3's entry span and
+        // the unset-id entry span match it; trace 1 stays on the baseline.
+        let side = |spans, errors_originated, self_ns| Side {
+            spans,
+            errors_originated,
+            self_ns,
+        };
+        let seconds = |from: i64, to: i64| Selection {
+            time_ns: Some((from * 1_000_000_000, to * 1_000_000_000)),
+            ..Selection::default()
+        };
+        let split = groups(&spans, &grid, &scope, Some(&seconds(4, 6)));
+        assert_eq!(split.rows, got.rows, "the groups do not change");
+        assert_eq!(
+            split.delta,
+            Some(Delta {
+                selection_traces: 2,
+                baseline_traces: 1,
+                selection_self_ns_total: 70,
+                baseline_self_ns_total: 140,
+                rows: vec![
+                    (side(1, 0, 60), side(1, 0, 40)),
+                    (side(0, 0, 0), side(1, 1, 100)),
+                    (side(1, 0, 10), side(0, 0, 0)),
+                ],
+                other: None,
+            }),
+            "an unset-id scope row takes its own side"
+        );
+        let outside = groups(&spans, &grid, &scope, Some(&seconds(2, 3)));
+        assert_eq!(
+            outside
+                .delta
+                .map(|d| (d.selection_traces, d.baseline_traces)),
+            Some((0, 3)),
+            "a selection row outside the scope selects no trace"
+        );
     }
 
     #[test]

@@ -78,6 +78,42 @@ pub struct Groups {
     pub self_ns_total: String,
     pub rows: Vec<Group>,
     pub other: Option<OtherGroups>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta: Option<GroupsDelta>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupsDelta {
+    pub selection_traces: u64,
+    pub baseline_traces: u64,
+    /// Nanoseconds, as decimal strings.
+    pub selection_self_ns_total: String,
+    pub baseline_self_ns_total: String,
+    pub rows: Vec<DeltaRow>,
+    pub other: Option<DeltaOther>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeltaRow {
+    pub service: Option<String>,
+    pub operation: Option<String>,
+    pub selection: DeltaSide,
+    pub baseline: DeltaSide,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeltaOther {
+    pub groups: u64,
+    pub selection: DeltaSide,
+    pub baseline: DeltaSide,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeltaSide {
+    pub spans: u64,
+    pub errors_originated: u64,
+    /// Nanoseconds, as a decimal string.
+    pub self_ns: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
