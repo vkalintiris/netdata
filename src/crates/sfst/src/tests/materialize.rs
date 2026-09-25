@@ -205,6 +205,42 @@ fn field_values_per_tier_prefix_stripped_by_length() {
     );
 }
 
+/// [`IndexReader::field_values_with_prefix`] in every tier: the sorted values
+/// starting with the prefix, the first `limit` of them, never a value of a
+/// look-alike field (`a.b` next to `a`).
+#[test]
+fn field_values_with_prefix_per_tier() {
+    let (bytes, expected) = prefix_family_fixture();
+    let idx = IndexReader::open(&bytes).unwrap();
+    for field in ["a", "a.b", "m", "m.n", "h", "h.i"] {
+        let mut all: Vec<String> = expected
+            .iter()
+            .filter(|(f, _)| f == field)
+            .map(|(_, v)| v.clone())
+            .collect();
+        all.sort();
+        for prefix in ["", "v00", "v01", "v1", "x"] {
+            for limit in [0, 1, 5, 1000] {
+                let want: Vec<String> = all
+                    .iter()
+                    .filter(|v| v.starts_with(prefix))
+                    .take(limit)
+                    .cloned()
+                    .collect();
+                assert_eq!(
+                    idx.field_values_with_prefix(field, prefix, limit).unwrap(),
+                    want,
+                    "{field} {prefix:?} {limit}"
+                );
+            }
+        }
+    }
+    assert!(matches!(
+        idx.field_values_with_prefix("absent", "", 5),
+        Err(crate::Error::UnknownField(f)) if f == "absent"
+    ));
+}
+
 /// Access-pattern proof for [`IndexReader::field_values`]: with EVERY
 /// stream-batch chunk payload corrupted (crc32 mismatch on access), value
 /// enumeration across all tiers still returns exact results — it reads

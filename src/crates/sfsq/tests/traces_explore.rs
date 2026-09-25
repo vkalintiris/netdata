@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use common::*;
 use sfsq::Source;
 use sfsq::traces::explore::{
-    ExploreData, ExploreQuery, ExploreScope, FacetSpec, HistogramData, HistogramSpec, Sections,
-    StackBucket, Totals, explore,
+    ExploreData, ExploreQuery, ExploreScope, FacetSpec, HistogramData, HistogramSpec, RowDirection,
+    RowOrder, RowsSpec, Sections, StackBucket, Totals, ValuesQuery, explore, field_values,
 };
 use sfsq::traces::{
     PartialReason, QueryStatus, ReasonCount, SourceId, TraceFailed, TraceSfstCandidate,
@@ -310,6 +310,89 @@ fn tail_chunk_and_sealed_file_agree() {
     }
     let events = run(vec![tail_source(&wal, "t")], query("events.name", &[]));
     assert_eq!(events.histogram.unwrap().dimensions, ["exception", "retry"]);
+}
+
+/// Rows, the field list and value suggestions count the same unreadable
+/// sources as the histogram, and answer from the readable one.
+#[test]
+fn rows_fields_and_values_count_unreadable_sources_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
+    let sources = || {
+        vec![
+            sealed_source(dir.path(), &wal, "a"),
+            legacy_sfst_source(dir.path(), "legacy"),
+            unavailable_source("remote", 0, 5),
+            TraceSource::Failed(TraceFailed {
+                source_id: SourceId::new("refused.wal".to_string()),
+                error: "chunk 0 build failed".to_string(),
+            }),
+        ]
+    };
+    let status = partial(&[
+        (PartialReason::SourceFailure, 1, 4),
+        (PartialReason::RemoteUnavailable, 1, 4),
+        (PartialReason::LegacyFile, 1, 4),
+    ]);
+    let mut query = entry_spans("status_code");
+    query.sections.histogram = None;
+    query.sections.fields = true;
+    query.sections.rows = Some(RowsSpec {
+        order: RowOrder::Newest {
+            anchor: None,
+            direction: RowDirection::Older,
+        },
+        limit: 10,
+        columns: Vec::new(),
+    });
+    let data = run(sources(), query);
+    let rows = data.rows.expect("rows");
+    assert_eq!(rows.status, status);
+    assert_eq!(rows.items.len() as u64, rows.matched);
+    assert!(rows.matched > 0);
+    let fields = data.fields.expect("fields");
+    assert_eq!(fields.status, status);
+    assert!(fields.items.iter().any(|f| f.name == "name"));
+
+    let values = field_values(
+        sources(),
+        ValuesQuery {
+            window: 0..10 * S as i64,
+            field: "name".to_string(),
+            prefix: String::new(),
+            limit: 100,
+        },
+        CancellationToken::new(),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .unwrap();
+    assert_eq!(values.status, status);
+    assert!(!values.values.is_empty() && !values.truncated);
+}
+
+/// Value suggestions are all or nothing: a cancelled call answers no values.
+#[test]
+fn a_cancelled_values_request_answers_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let progress = Arc::new(AtomicUsize::new(0));
+    let values = field_values(
+        vec![sealed_source(dir.path(), &wal, "a")],
+        ValuesQuery {
+            window: 0..10 * S as i64,
+            field: "name".to_string(),
+            prefix: String::new(),
+            limit: 100,
+        },
+        cancel,
+        Arc::clone(&progress),
+    )
+    .unwrap();
+    assert_eq!(progress.load(Ordering::Relaxed), 0);
+    assert!(values.values.is_empty() && !values.truncated);
+    assert!(values.status.has(PartialReason::Cancelled));
 }
 
 #[test]

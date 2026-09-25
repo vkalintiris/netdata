@@ -194,6 +194,18 @@ impl<T> PrefixMap<T> {
         }
     }
 
+    /// Call `f` for each value whose key starts with `prefix`, in key-sorted
+    /// order, until `f` returns `false`.
+    pub fn prefix_for_each_while(&self, prefix: &[u8], mut f: impl FnMut(&[u8], &T) -> bool) {
+        let automaton = Prefix(prefix);
+        let mut stream = self.map.search(&automaton).into_stream();
+        while let Some((key, idx)) = stream.next() {
+            if !f(key, &self.values[idx as usize]) {
+                return;
+            }
+        }
+    }
+
     /// Call `f` for each `(key, value)` pair in the map.
     ///
     /// Equivalent to `prefix_for_each(b"", f)` but with clearer intent.

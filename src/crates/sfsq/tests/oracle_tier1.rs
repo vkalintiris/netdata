@@ -941,6 +941,10 @@ fn explore_field_list_matches_the_calculator() {
         .unwrap();
         let fields = data.fields.expect("fields section");
         assert!(fields.status.is_complete(), "{live:?}");
+        assert!(
+            fields.items.iter().any(|f| !f.column),
+            "events and links fields exist"
+        );
         let names: Vec<&str> = fields.items.iter().map(|f| f.name.as_str()).collect();
         let want_names: Vec<&str> = want.keys().map(String::as_str).collect();
         assert_eq!(names, want_names, "{live:?}");
@@ -955,6 +959,8 @@ fn explore_field_list_matches_the_calculator() {
             };
             assert_eq!(tier, want[&field.name], "{live:?} {}", field.name);
             assert_eq!(field.facet, tier != calc::Tier::High, "{}", field.name);
+            let per_event = field.name.starts_with("events.") || field.name.starts_with("links.");
+            assert_eq!(field.column, !per_event, "{}", field.name);
         }
     }
 }

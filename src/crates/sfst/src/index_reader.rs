@@ -557,6 +557,54 @@ impl<'a> IndexReader<'a> {
         Ok(out)
     }
 
+    /// Up to `limit` distinct stored values of one field that start with
+    /// `prefix` (bytes, case-sensitive), in the dictionary's sorted order.
+    /// Reads only the field's own dictionary chunk and stops at `limit`, so a
+    /// high-cardinality field costs a binary search and `limit` keys. A field
+    /// absent from this file is [`Error::UnknownField`], as in
+    /// [`field_values`](Self::field_values).
+    pub fn field_values_with_prefix(
+        &self,
+        field_name: &str,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, crate::Error> {
+        let key_prefix = format!("{field_name}={prefix}");
+        let strip = field_name.len() + 1;
+        let mut out = Vec::new();
+        if limit == 0 {
+            return Ok(out);
+        }
+        let mut take = |kv_bytes: &[u8]| {
+            out.push(String::from_utf8_lossy(&kv_bytes[strip..]).into_owned());
+            out.len() < limit
+        };
+        match self.locate_field(field_name) {
+            None => return Err(crate::Error::UnknownField(field_name.to_string())),
+            Some(FieldLocation::Low) => {
+                self.primary
+                    .prefix_for_each_while(key_prefix.as_bytes(), |kv, _| take(kv));
+            }
+            Some(FieldLocation::Mid(idx)) => {
+                let chunk = self.sfst.mid_field(idx)?;
+                chunk.prefix_for_each_while(key_prefix.as_bytes(), |kv, _| take(kv));
+            }
+            Some(FieldLocation::High(idx)) => {
+                let hf = self.sfst.high_field(idx)?;
+                let start = hf
+                    .binary_search(key_prefix.as_bytes())
+                    .unwrap_or_else(|insert| insert);
+                for i in start..hf.len() {
+                    let key = hf.key(i);
+                    if !key.starts_with(key_prefix.as_bytes()) || !take(key) {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Resolve sorted, deduplicated KvIds to their `key=value` strings,
     /// decoding only the chunks whose fields the ids touch.
     ///

@@ -1,10 +1,12 @@
 //! Value suggestions for the search box: the distinct stored values of one
 //! field that start with a prefix.
 //!
-//! Each file that may hold rows for the window contributes its dictionary for
-//! the field (never its rows), so a file overlapping the window contributes all
-//! its values, those of rows outside the window included. The live tail is read
-//! through its image, like everywhere in the explorer.
+//! Each file that may hold rows for the window contributes from its dictionary
+//! for the field (never its rows), so a file overlapping the window contributes
+//! values of rows outside the window too. A file gives at most the first
+//! `limit + 1` values with the prefix, so memory stays at the limit however
+//! many values a field has. The live tail is read through its image, like
+//! everywhere in the explorer.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -94,7 +96,7 @@ pub fn field_values(
             }
             Prepared::Open(mapped) => {
                 tally.candidates += 1;
-                match source_values(mapped.bytes(), &query) {
+                match source_values(mapped.bytes(), &query, query.limit + 1) {
                     Ok(None) => tally.legacy += 1,
                     Ok(Some(values)) => {
                         for value in values {
@@ -130,8 +132,13 @@ pub fn field_values(
     })
 }
 
-/// One file's values of the field with the prefix; `None` for a legacy file.
-fn source_values(bytes: &[u8], query: &ValuesQuery) -> Result<Option<Vec<String>>, sfst::Error> {
+/// One file's first `cap` values of the field with the prefix, in byte order;
+/// `None` for a legacy file.
+fn source_values(
+    bytes: &[u8],
+    query: &ValuesQuery,
+    cap: usize,
+) -> Result<Option<Vec<String>>, sfst::Error> {
     let reader = sfst::IndexReader::open(bytes)?;
     if is_legacy(&reader) {
         return Ok(None);
@@ -139,13 +146,8 @@ fn source_values(bytes: &[u8], query: &ValuesQuery) -> Result<Option<Vec<String>
     if !reader.field_table().contains(&query.field) {
         return Ok(Some(Vec::new()));
     }
-    let mut out = Vec::new();
-    for value in reader.field_values(&query.field)? {
-        if value.starts_with(&query.prefix) {
-            out.push(value);
-        }
-    }
-    Ok(Some(out))
+    let values = reader.field_values_with_prefix(&query.field, &query.prefix, cap)?;
+    Ok(Some(values))
 }
 
 /// Insert `value` into `kept`, which holds at most `cap` of the smallest values.
