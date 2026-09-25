@@ -136,6 +136,20 @@ fn span_row(span: &Span, context: &BTreeMap<String, BTreeSet<String>>, unit: usi
     for kv in &span.attributes {
         render_kv("attributes", kv, &mut fields);
     }
+    // An event's name (even an empty one) and attributes, and a link's
+    // attributes, are fields of the span's row; event times, link ids and link
+    // trace state are not.
+    for event in &span.events {
+        add(&mut fields, "events.name", event.name.clone());
+        for kv in &event.attributes {
+            render_kv("events.attributes", kv, &mut fields);
+        }
+    }
+    for link in &span.links {
+        for kv in &link.attributes {
+            render_kv("links.attributes", kv, &mut fields);
+        }
+    }
     add(
         &mut fields,
         ROLE_FIELD,

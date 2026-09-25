@@ -130,8 +130,10 @@ fn stored_value_counts(bytes: &[u8], field: &str) -> BTreeMap<String, u64> {
     counts
 }
 
-/// ORC-TOKENS: every unit stores exactly the calculator's rows and, per core
-/// field, the same number of rows per value; `_role` is on every row (FLAT-15).
+/// ORC-TOKENS: every unit stores exactly the calculator's rows and fields and,
+/// per field, the same number of rows per value (the same values for a
+/// high-cardinality field, which has no counts); `_role` is on every row
+/// (FLAT-15). Events and links fields included.
 #[test]
 fn stored_tokens_match_the_calculator() {
     for seed in [11, 12] {
@@ -145,12 +147,25 @@ fn stored_tokens_match_the_calculator() {
                 "seed {seed} unit {unit}"
             );
             assert!(reader.field_table().get(model::ROLE_FIELD).is_some());
-            for field in CORE_FIELDS {
-                assert_eq!(
-                    stored_value_counts(bytes, field),
-                    oracle_value_counts(&spans, field),
-                    "seed {seed} unit {unit} field {field}"
-                );
+            let stored_fields: BTreeSet<&str> = reader.field_table().names().collect();
+            let mut oracle_fields = BTreeSet::new();
+            for span in &spans {
+                oracle_fields.extend(span.fields.keys().map(String::as_str));
+            }
+            assert_eq!(stored_fields, oracle_fields, "seed {seed} unit {unit}");
+            assert!(stored_fields.contains("events.attributes.exception.type"));
+            assert!(stored_fields.contains("links.attributes.link.reason"));
+            for entry in reader.field_table().iter() {
+                let field = entry.name.as_str();
+                let want = oracle_value_counts(&spans, field);
+                let case = format!("seed {seed} unit {unit} field {field}");
+                if entry.is_high_card() {
+                    let got: BTreeSet<String> =
+                        reader.field_values(field).unwrap().into_iter().collect();
+                    assert_eq!(got, want.into_keys().collect(), "{case}");
+                } else {
+                    assert_eq!(stored_value_counts(bytes, field), want, "{case}");
+                }
             }
             let roles: u64 = stored_value_counts(bytes, model::ROLE_FIELD).values().sum();
             assert_eq!(roles as usize, spans.len(), "one role per row");
