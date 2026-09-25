@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use otel_oracle::calc::{self, Grid, Scope};
 use otel_oracle::corpus::{self, MeshParams};
 use otel_oracle::model::{self, OracleSpan};
-use sfsq::traces::TraceWalScan;
+use sfsq::Source;
+use sfsq::traces::explore::{self, ExploreQuery, ExploreScope, HistogramSpec, Sections};
+use sfsq::traces::{SourceId, TraceSfstCandidate, TraceSource, TraceWalScan, WalCoverage};
 
 const T0_S: u64 = 1_700_000_000;
 const TRACE_SPACING_NS: u64 = 700_000_000;
@@ -247,4 +249,139 @@ fn corpus_reaches_every_role_and_band() {
         .collect();
     assert_eq!(roles.len(), 4, "{roles:?}");
     assert_eq!(bands.len(), 6, "{bands:?}");
+}
+
+/// How the live WAL is served to the engine.
+#[derive(Clone, Copy, Debug)]
+enum Live {
+    Tail,
+    Chunk,
+    /// Chunks of at least this many spans, the rest as the tail.
+    Split(u64),
+}
+
+/// The sealed file plus the live WAL served as `live`.
+fn explore_sources(stored: &Stored, live: Live) -> Vec<TraceSource> {
+    let sealed_path = stored._dir.path().join("sealed-copy.sfst");
+    std::fs::write(&sealed_path, &stored.sealed).unwrap();
+    let mut sources = vec![common::sealed_source_at(&sealed_path, "sealed")];
+    let whole = common::whole_range(&stored.live_wal);
+    match live {
+        Live::Tail => sources.push(common::tail_source(&stored.live_wal, "live")),
+        Live::Chunk => sources.push(common::memory_source(&stored.live_wal, "live")),
+        Live::Split(min_entries) => {
+            let header = wal::HEADER_SIZE as u64;
+            let frames = wal::scan_frame_boundaries(&stored.live_wal, whole).unwrap();
+            let chunks = wal::prefix::chunk_boundaries(&frames, header, min_entries);
+            assert!(!chunks.is_empty(), "the split makes at least one chunk");
+            let wal_id: std::sync::Arc<str> = stored.live_wal.display().to_string().into();
+            for chunk in &chunks {
+                let (summary, bytes) =
+                    ng_index::build_sfst_traces_range(&stored.live_wal, chunk.range).unwrap();
+                sources.push(TraceSource::Sfst(TraceSfstCandidate {
+                    source_id: SourceId::new(format!("live#chunk{}", chunk.index)),
+                    summary,
+                    source: Source::Memory(std::sync::Arc::new(bytes)),
+                    coverage: Some(WalCoverage {
+                        wal_id: wal_id.clone(),
+                        range: chunk.range,
+                    }),
+                }));
+            }
+            let tail = wal::prefix::tail_start(&chunks, header);
+            assert!(tail < whole.end(), "the split leaves a tail");
+            sources.push(TraceSource::Tail(sfsq::traces::TraceWalTail {
+                source_id: SourceId::new("live#tail".to_string()),
+                path: stored.live_wal.clone(),
+                coverage: WalCoverage {
+                    wal_id,
+                    range: wal::FrameRange::new(tail, whole.end()),
+                },
+            }));
+        }
+    }
+    sources
+}
+
+fn explore_query(grid: &Grid, scope: &Scope, stack: &str) -> ExploreQuery {
+    let mut filter = sfst::Filter::new();
+    for (field, values) in &scope.terms {
+        for value in values {
+            filter = filter.select(field.clone(), value.clone());
+        }
+    }
+    ExploreQuery {
+        grid: sfst::Grid::new(
+            i64::from(grid.after_s) * 1_000_000_000,
+            i64::from(grid.width_s) * 1_000_000_000,
+            grid.buckets(),
+        ),
+        scope: ExploreScope { filter },
+        sections: Sections {
+            histogram: Some(HistogramSpec {
+                stack: stack.to_string(),
+            }),
+        },
+    }
+}
+
+/// ORC-FILTER (F0, F1), ORC-HIST and ORC-TOTALS through the explorer engine:
+/// for every way of serving the live WAL, every stack field and both scopes,
+/// the stacked buckets and the totals equal the calculator's.
+#[test]
+fn explore_histogram_and_totals_match_the_calculator() {
+    let stored = store(400, 51);
+    let grid = stored.grid;
+    let scopes = [
+        ("F0 every span", Scope::default()),
+        ("F1 entry spans", Scope::entry_spans()),
+    ];
+    let stacks = [
+        model::STATUS_FIELD,
+        model::DURATION_BAND_FIELD,
+        model::SERVICE_FIELD,
+    ];
+    for live in [Live::Tail, Live::Chunk, Live::Split(100)] {
+        for (scope_name, scope) in &scopes {
+            for stack in stacks {
+                let data = explore::explore(
+                    explore_sources(&stored, live),
+                    explore_query(&grid, scope, stack),
+                    tokio_util::sync::CancellationToken::new(),
+                    std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                )
+                .unwrap();
+                let case = format!("{live:?} {scope_name} stack {stack}");
+                assert!(data.status.is_complete(), "{case}: {:?}", data.status);
+                let histogram = data.histogram.expect("histogram section");
+
+                let mut got = Vec::with_capacity(histogram.buckets.len());
+                for bucket in &histogram.buckets {
+                    assert_eq!(bucket.other, 0, "{case}");
+                    let mut counts = BTreeMap::new();
+                    for (value, count) in histogram.dimensions.iter().zip(&bucket.counts) {
+                        if *count > 0 {
+                            counts.insert(value.clone(), *count);
+                        }
+                    }
+                    got.push(calc::Bucket {
+                        counts,
+                        unset: bucket.unset,
+                    });
+                }
+                assert_eq!(
+                    got,
+                    calc::histogram(&stored.oracle, &grid, scope, stack),
+                    "{case}"
+                );
+
+                let totals = calc::totals(&stored.oracle, &grid, scope);
+                assert_eq!(
+                    (histogram.totals.count, histogram.totals.errors),
+                    (totals.spans, totals.errors),
+                    "{case}"
+                );
+            }
+        }
+    }
 }

@@ -1670,6 +1670,31 @@ impl BitmapFilter {
         self.query.is_none() && !self.per_field.iter().any(|(name, _)| name != field)
     }
 
+    /// The AND of two filters compiled against the same file. The field
+    /// lists are concatenated, so [`without`](Self::without) drops a field's
+    /// selections from both operands, and the full-text sets intersect.
+    pub fn conjoin(&self, other: &BitmapFilter) -> BitmapFilter {
+        debug_assert_eq!(self.universe, other.universe, "filters of different files");
+        let mut per_field = self.per_field.clone();
+        per_field.extend(other.per_field.iter().cloned());
+        let mut full = self.full.clone();
+        full.and_assign(&other.full);
+        let query = match (&self.query, &other.query) {
+            (Some(a), Some(b)) => {
+                let mut both = a.clone();
+                both.and_assign(b);
+                Some(both)
+            }
+            (a, b) => a.clone().or_else(|| b.clone()),
+        };
+        BitmapFilter {
+            universe: self.universe,
+            per_field,
+            full,
+            query,
+        }
+    }
+
     /// The filter scope with `field`'s own selection excluded — the AND of
     /// the *other* fields and the query. For a facet on a field
     /// that is itself filtered and has siblings (otherwise it's

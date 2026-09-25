@@ -175,6 +175,27 @@ fn matched_or_within_field() {
 }
 
 #[test]
+fn conjoined_filters_and_their_scopes() {
+    let data = build_query_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    // level ∈ {info, error} AND level = error → the error rows only, even
+    // though one filter alone would OR the two values of the same field.
+    let scope = bf(
+        &reader,
+        Filter::new()
+            .select("level", "info")
+            .select("level", "error"),
+    );
+    let errors = scope.conjoin(&bf(&reader, Filter::new().select("level", "error")));
+    assert_eq!(reader.matched_count(&errors, FULL_WINDOW).unwrap(), 3);
+
+    // Conjoining a full-text query keeps it a global term.
+    let api = bf(&reader, Filter::new().select("service", "api"));
+    let with_query = api.conjoin(&bfq(&reader, Filter::new(), "level=error"));
+    assert_eq!(reader.matched_count(&with_query, FULL_WINDOW).unwrap(), 1);
+}
+
+#[test]
 fn matched_and_across_fields() {
     let data = build_query_fixture();
     let reader = IndexReader::open(&data).unwrap();

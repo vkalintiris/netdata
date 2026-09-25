@@ -1,0 +1,64 @@
+//! One source's contribution, from its index statistics.
+
+use super::query::ExploreQuery;
+
+/// A readable source's numbers for the request.
+#[derive(Default)]
+pub(super) struct ExploreShard {
+    /// Scope rows in the window.
+    pub matched: u64,
+    /// Of which `status_code=ERROR`.
+    pub errors: u64,
+    /// Scope rows per bucket stacked by the stack field; `None` when the
+    /// field is high-cardinality in this source (see `other`).
+    pub timeline: Option<sfst::Timeline>,
+    /// Per bucket: rows of this source counted without a value because the
+    /// stack field is high-cardinality here.
+    pub other: Vec<u64>,
+    pub stack_high: bool,
+}
+
+/// How a readable source was evaluated.
+pub(super) enum Evaluated {
+    /// Written before the explorer's per-span entries: left out and reported,
+    /// because counting it would silently report zero for it.
+    Legacy,
+    Shard(ExploreShard),
+}
+
+/// Evaluate one source. Any error drops the whole source (its numbers are
+/// never partly mixed in); the caller reports it.
+pub(super) fn evaluate(bytes: &[u8], query: &ExploreQuery) -> Result<Evaluated, sfst::Error> {
+    let reader = sfst::IndexReader::open(bytes)?;
+    if reader.summary().record_count > 0
+        && reader.field_table().get(ng_flatten::ROLE_FIELD).is_none()
+    {
+        return Ok(Evaluated::Legacy);
+    }
+
+    let grid = query.grid;
+    let window = grid.range_ns();
+    let scope = reader.compile_filter(&query.scope.filter, None)?;
+    let errors_only =
+        reader.compile_filter(&sfst::Filter::new().select(STATUS_FIELD, "ERROR"), None)?;
+
+    let mut shard = ExploreShard {
+        matched: reader.matched_count(&scope, window.clone())?,
+        errors: reader.matched_count(&scope.conjoin(&errors_only), window)?,
+        ..ExploreShard::default()
+    };
+    if let Some(histogram) = &query.sections.histogram {
+        match reader.timeline(&histogram.stack, &scope, grid) {
+            Ok(timeline) => shard.timeline = Some(timeline),
+            Err(sfst::Error::HighCardFacet(_)) => {
+                shard.other = reader.timeline_totals(&scope, grid)?;
+                shard.stack_high = true;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(Evaluated::Shard(shard))
+}
+
+/// The span status field and its error value.
+const STATUS_FIELD: &str = "status_code";

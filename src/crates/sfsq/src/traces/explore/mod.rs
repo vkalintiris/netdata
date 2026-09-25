@@ -1,0 +1,73 @@
+//! The traces explorer's engine: one request answers the sections of the
+//! explorer page over span rows (one row per stored span), from the same
+//! per-file index statistics the logs engine uses. Wire-neutral: the Function
+//! shape lives in `otel-ledger`.
+//!
+//! Every source that may hold rows for the window is either evaluated whole or
+//! counted in the status: a file that fails to open or evaluate, or a WAL the
+//! capture refused (`source_failure`), a file written before the explorer's
+//! per-span entries (`legacy_file`), a remote file that could not be
+//! downloaded (`remote_unavailable`). A source's numbers are never partly
+//! mixed in.
+
+mod query;
+mod run;
+mod shard;
+mod source;
+
+pub use query::{
+    DEFAULT_POPULATION, DEFAULT_STACK_FIELD, ExploreQuery, ExploreRequestError, ExploreScope,
+    HistogramSpec, Sections,
+};
+pub use run::explore;
+
+use super::{PartialReason, QueryStatus, StatusBuilder};
+
+/// One explorer answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExploreData {
+    pub status: QueryStatus,
+    /// Sources that may hold rows for the window: the "of" in "N of M files".
+    pub sources: u64,
+    pub histogram: Option<HistogramData>,
+}
+
+impl ExploreData {
+    fn cancelled() -> Self {
+        let mut status = StatusBuilder::new();
+        status.add(PartialReason::Cancelled);
+        ExploreData {
+            status: status.finish(),
+            sources: 0,
+            histogram: None,
+        }
+    }
+}
+
+/// Scope rows per bucket, stacked by one field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistogramData {
+    pub stack: String,
+    /// The stack field's values, lexicographic; each bucket's `counts` is
+    /// parallel to it.
+    pub dimensions: Vec<String>,
+    pub buckets: Vec<StackBucket>,
+    pub totals: Totals,
+}
+
+/// One bucket: `counts` per value, `unset` for rows without the field, and
+/// `other` for rows of sources where the field is high-cardinality. Their sum
+/// is the bucket's scope rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackBucket {
+    pub counts: Vec<u64>,
+    pub unset: u64,
+    pub other: u64,
+}
+
+/// Scope rows in the whole window, and how many are errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Totals {
+    pub count: u64,
+    pub errors: u64,
+}
