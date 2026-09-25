@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::{Context, Event, Interest, PoolHandle, TimerId, Token, Worker};
 use netdata_agent_ingest::{self as ingest, Parser};
-use netdata_agent_inicfg::LogLevel;
+use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_pluginsd_proto::LineReader;
 use netdata_agent_rrd::collection;
 use netdata_agent_rrd::host::{Host, HostInfo, Hosts, ReceiverSlot};
@@ -35,9 +35,6 @@ pub fn now_monotonic_ut() -> u64 {
     // Starts at 1 so that no real reading is the "never" value 0.
     EPOCH.get_or_init(Instant::now).elapsed().as_micros() as u64 + 1
 }
-
-/// Where the receiver writes its daemon log lines.
-pub type Logger = fn(LogLevel, &str);
 
 /// Values admission takes from the rest of the daemon.
 #[derive(Debug, Clone)]
@@ -81,7 +78,6 @@ pub struct Attached {
     stream: mio::net::TcpStream,
     thread: usize,
     parser: ingest::Config,
-    log: Logger,
 }
 
 /// A connection on its stream thread.
@@ -103,7 +99,6 @@ pub struct Receivers {
     pool: PoolHandle<Attached>,
     /// Children per stream thread (`nodes_count`).
     load: Arc<Mutex<Vec<usize>>>,
-    log: Logger,
     /// `[web] accept a streaming request every` (seconds, 0 for no limit).
     streaming_rate_s: AtomicI64,
     /// The wall-clock second of the last accepted request under the rate limit (`last_stream_accepted_t`).
@@ -127,7 +122,6 @@ impl Receivers {
         load: Arc<Mutex<Vec<usize>>>,
         defaults: Defaults,
         pool: PoolHandle<Attached>,
-        log: Logger,
     ) -> Self {
         load.lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -138,7 +132,6 @@ impl Receivers {
             defaults,
             pool,
             load,
-            log,
             streaming_rate_s: AtomicI64::new(0),
             last_accepted_s: Mutex::new(0),
         }
@@ -181,16 +174,15 @@ impl Receivers {
     ) -> PreAdmission {
         let mut request = StreamRequest::parse(decoded, self.defaults.update_every, user_agent);
         for (name, value) in &request.unused {
-            (self.log)(
-                LogLevel::Info,
-                &format!(
-                    "STREAM RCV '{}' [from [{client_ip}]]: request has parameter '{name}' = '{value}', which is not used.",
-                    request
-                        .hostname
-                        .as_deref()
-                        .filter(|h| !h.is_empty())
-                        .unwrap_or("-"),
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Info,
+                "STREAM RCV '{}' [from [{client_ip}]]: request has parameter '{name}' = '{value}', which is not used.",
+                request
+                    .hostname
+                    .as_deref()
+                    .filter(|h| !h.is_empty())
+                    .unwrap_or("-")
             );
         }
         let validated = {
@@ -198,7 +190,7 @@ impl Receivers {
             handshake::validate(&mut request, &mut conf, client_ip)
         };
         if let Err(denied) = validated {
-            (self.log)(LogLevel::Info, denied.message());
+            nd_log!(Source::Daemon, Priority::Info, "{}", denied.message());
             return PreAdmission::Reply(handshake::ERROR_NOT_PERMITTED, 401);
         }
         let guid = request.machine_guid.clone().unwrap_or_default();
@@ -207,11 +199,10 @@ impl Receivers {
         }
         // Virtual nodes (step 14) come with vnodes.
         if let Some(wait_s) = self.rate_limited() {
-            (self.log)(
-                LogLevel::Notice,
-                &format!(
-                    "rejecting streaming connection; rate limit, will accept new connection in {wait_s} secs"
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Notice,
+                "rejecting streaming connection; rate limit, will accept new connection in {wait_s} secs"
             );
             return PreAdmission::Reply(handshake::ERROR_BUSY_TRY_LATER, 503);
         }
@@ -236,9 +227,10 @@ impl Receivers {
         }
         if let (Some(_), Some(host)) = (&stale, &existing) {
             if host.hostname() != request.hostname.as_deref().unwrap_or_default() {
-                (self.log)(
-                    LogLevel::Info,
-                    "rejecting streaming connection; machine GUID is connected with a different hostname",
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Info,
+                    "rejecting streaming connection; machine GUID is connected with a different hostname"
                 );
                 return PreAdmission::Reply(handshake::ERROR_NOT_PERMITTED, 401);
             }
@@ -249,16 +241,15 @@ impl Receivers {
             }
         }
         if working || stale.is_some() {
-            (self.log)(
-                LogLevel::Info,
-                &format!(
-                    "rejecting streaming connection; multiple connections for the same host, old connection was last used {age_s} secs ago{}",
-                    if stale.is_some() {
-                        " (signaled old receiver to stop)"
-                    } else {
-                        " (new connection not accepted)"
-                    }
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Info,
+                "rejecting streaming connection; multiple connections for the same host, old connection was last used {age_s} secs ago{}",
+                if stale.is_some() {
+                    " (signaled old receiver to stop)"
+                } else {
+                    " (new connection not accepted)"
+                }
             );
             return PreAdmission::Reply(handshake::ERROR_ALREADY_STREAMING, 409);
         }
@@ -268,7 +259,11 @@ impl Receivers {
     /// `PreAdmission::Refuse`: the connection has been taken over.
     pub fn refuse(&self, stream: TcpStream, message: &str) {
         if !send_timeout(&stream, message.as_bytes(), Duration::from_secs(60)) {
-            (self.log)(LogLevel::Error, "STREAM RCV: failed to reply.");
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "STREAM RCV: failed to reply."
+            );
         }
     }
 
@@ -358,9 +353,10 @@ impl Receivers {
             }),
         ));
         if !host.set_receiver(Arc::clone(&slot)) {
-            (self.log)(
-                LogLevel::Info,
-                "rejecting streaming connection; host is already served by another receiver",
+            nd_log!(
+                Source::Daemon,
+                Priority::Info,
+                "rejecting streaming connection; host is already served by another receiver"
             );
             send_timeout(
                 &stream,
@@ -378,14 +374,19 @@ impl Receivers {
         let prompt = caps::prompt(capabilities);
         let _ = stream.set_read_timeout(Some(Duration::from_secs(600)));
         if !send_timeout(&stream, prompt.as_bytes(), Duration::from_secs(60)) {
-            (self.log)(
-                LogLevel::Error,
-                "STREAM RCV: cannot reply back, dropping connection",
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "STREAM RCV: cannot reply back, dropping connection"
             );
             host.clear_receiver(&slot);
             return;
         }
-        (self.log)(LogLevel::Info, "connected and ready to receive data");
+        nd_log!(
+            Source::Daemon,
+            Priority::Info,
+            "connected and ready to receive data"
+        );
         if stream.set_nonblocking(true).is_err() {
             host.clear_receiver(&slot);
             return;
@@ -408,7 +409,6 @@ impl Receivers {
                 now: collection::now_realtime_timeval,
                 gap_when_lost_iterations_above: self.defaults.gap_when_lost_iterations_above,
             },
-            log: self.log,
         };
         if let Err(attached) = self.pool.send(thread, attached) {
             attached.host.clear_receiver(&attached.slot);
@@ -495,10 +495,7 @@ impl StreamWorker {
                         Some(decompressor) => {
                             let mut out = Vec::new();
                             if let Err(failure) = decompressor.push(&buf[..n], &mut out) {
-                                (child.attached.log)(
-                                    LogLevel::Error,
-                                    &format!("STREAM RCV: {failure}"),
-                                );
+                                nd_log!(Source::Daemon, Priority::Err, "STREAM RCV: {failure}");
                                 return self.disconnect(cx, index);
                             }
                             plain = out;
@@ -563,8 +560,7 @@ impl Worker for StreamWorker {
             self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
             return;
         }
-        let log = attached.log;
-        let parser = Parser::new(Arc::clone(&attached.host), attached.parser, Box::new(log));
+        let parser = Parser::new(Arc::clone(&attached.host), attached.parser);
         let decompressor = Decompressor::for_capabilities(attached.parser.capabilities);
         self.children[index] = Some(Child {
             attached,

@@ -2958,6 +2958,7 @@ dependencies = [
  "mio",
  "netdata-agent-evloop",
  "netdata-agent-inicfg",
+ "netdata-agent-log",
  "netdata-agent-nrpc",
  "netdata-agent-query",
  "netdata-agent-rrd",
@@ -2983,6 +2984,7 @@ name = "netdata-agent-ingest"
 version = "0.1.3"
 dependencies = [
  "netdata-agent-inicfg",
+ "netdata-agent-log",
  "netdata-agent-nrpc",
  "netdata-agent-pluginsd-proto",
  "netdata-agent-rrd",
@@ -2994,6 +2996,7 @@ dependencies = [
 name = "netdata-agent-inicfg"
 version = "0.1.3"
 dependencies = [
+ "netdata-agent-log",
  "netdata-agent-text",
 ]
 
@@ -3057,6 +3060,7 @@ dependencies = [
  "netdata-agent-evloop",
  "netdata-agent-ingest",
  "netdata-agent-inicfg",
+ "netdata-agent-log",
  "netdata-agent-pluginsd-proto",
  "netdata-agent-rrd",
  "netdata-agent-text",

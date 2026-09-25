@@ -37,9 +37,7 @@ func init() {
 	pending("contexts engine (extreme cardinality)", "db", "extreme cardinality protection",
 		"extreme cardinality keep instances", "extreme cardinality min ephemerality")
 	pending("registry", "directories", "registry")
-	pending("logging (B5)", "logs", "facility", "logs flood protection period", "logs to trigger flood protection",
-		"level", "debug", "daemon", "collector", "access", "health", "debug flags")
-	pending("cloud/ACLK", "cloud", "conversation log", "scope", "query threads", "proxy")
+	pending("cloud/ACLK", "cloud", "query threads", "proxy")
 	pending("ml", "ml", "enabled", "training window", "min training window", "max training vectors",
 		"max samples to smooth", "train every", "number of models per dimension", "delete models older than",
 		"num samples to diff", "num samples to lag", "maximum number of k-means iterations",

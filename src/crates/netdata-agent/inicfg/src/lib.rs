@@ -5,12 +5,14 @@
 //! [`Config::generate`] (served as `/netdata.conf`) reproduces the C output byte for byte, including which options
 //! are commented out and the `#|` annotations.
 //!
-//! Names and values are bytes, as in C. Log lines the C code writes while loading or reading options are queued in
-//! [`Config::take_log`] for the caller to emit.
+//! Names and values are bytes, as in C. The engine logs through `netdata-agent-log` where C does, on the daemon
+//! source.
 
 #![forbid(unsafe_code)]
 
 use std::path::Path;
+
+use netdata_agent_log::{Priority, Source, errno_of, nd_log, netdata_log_error};
 
 use netdata_agent_text::c::{c_str, eq_ignore_case, is_space};
 use netdata_agent_text::duration::{duration_parse, duration_parse_seconds, duration_to_string};
@@ -149,23 +151,6 @@ impl Section {
     }
 }
 
-/// Severity of a queued log line (`nd_log` priorities the C code uses here).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogLevel {
-    Error,
-    Warning,
-    Notice,
-    Info,
-    Debug,
-}
-
-/// A log line the C code would have written.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogLine {
-    pub level: LogLevel,
-    pub message: String,
-}
-
 /// A reformat callback: returns the reformatted value when it differs.
 type Reformat = fn(&[u8]) -> Option<Vec<u8>>;
 
@@ -173,7 +158,6 @@ type Reformat = fn(&[u8]) -> Option<Vec<u8>>;
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     sections: Vec<Section>,
-    log: Vec<LogLine>,
     /// `add_connector_instance()`: (connector, instance) section names from exporting.conf, newest first.
     connector_instances: Vec<(Vec<u8>, Vec<u8>)>,
 }
@@ -321,16 +305,6 @@ fn double_text(value: f64) -> Vec<u8> {
 impl Config {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Takes the log lines queued since the last call.
-    pub fn take_log(&mut self) -> Vec<LogLine> {
-        std::mem::take(&mut self.log)
-    }
-
-    /// Queues a line for `take_log()`, in order with the configuration engine's own lines.
-    pub fn log(&mut self, level: LogLevel, message: String) {
-        self.log.push(LogLine { level, message });
     }
 
     fn section_index(&self, name: &[u8]) -> Option<usize> {
@@ -562,7 +536,7 @@ impl Config {
             "config option '[{section}].{name} = {}' is configured with an invalid {kind}",
             lossy(value)
         );
-        self.log(LogLevel::Error, message);
+        netdata_log_error!("{message}");
     }
 
     /// `inicfg_get_duration_seconds()`: the absolute value; invalid text is replaced by the default.
@@ -706,7 +680,7 @@ impl Config {
             let message = format!(
                 "CONFIG: out of range [{section}].{name} = {rc}. Acceptable values: {min} to {max} inclusive. Setting it to {clamped}"
             );
-            self.log(LogLevel::Error, message);
+            netdata_log_error!("{message}");
             self.set_number(section, name, clamped);
         }
         clamped
@@ -915,10 +889,7 @@ impl Config {
     /// `inicfg_section_destroy_non_loaded()`: removes a section none of whose options came from the file.
     pub fn section_destroy_non_loaded(&mut self, section: &str) {
         let Some(s) = self.section_index(section.as_bytes()) else {
-            self.log(
-                LogLevel::Error,
-                format!("Could not destroy section '{section}'. Not found."),
-            );
+            netdata_log_error!("Could not destroy section '{section}'. Not found.");
             return;
         };
         if self.sections[s]
@@ -936,7 +907,7 @@ impl Config {
             let message = format!(
                 "Could not destroy section option '{section} -> {name}'. The section not found."
             );
-            self.log(LogLevel::Error, message);
+            netdata_log_error!("{message}");
             return;
         };
         match self.sections[s].find(name.as_bytes()) {
@@ -948,7 +919,7 @@ impl Config {
                 let message = format!(
                     "Could not destroy section option '{section} -> {name}'. The option not found."
                 );
-                self.log(LogLevel::Error, message);
+                netdata_log_error!("{message}");
             }
         }
     }
@@ -993,9 +964,15 @@ impl Config {
         })
     }
 
-    /// `inicfg_load()` from a file. Returns false when the file cannot be opened (C logs unless it is missing). A read
-    /// error ends the file where it happened, as `fgets()` does: a directory opens and loads nothing.
-    pub fn load(&mut self, path: &Path, overwrite_used: bool, only_section: Option<&str>) -> bool {
+    /// `inicfg_load()` from a file. Fails with the open error when the file cannot be opened (C logs unless it is
+    /// missing; callers log the errno C leaves behind). A read error ends the file where it happened, as `fgets()`
+    /// does: a directory opens and loads nothing.
+    pub fn load(
+        &mut self,
+        path: &Path,
+        overwrite_used: bool,
+        only_section: Option<&str>,
+    ) -> std::io::Result<()> {
         use std::io::Read;
         match std::fs::File::open(path) {
             Ok(mut file) => {
@@ -1003,7 +980,7 @@ impl Config {
                 let _ = file.read_to_end(&mut content);
                 let name = path.to_string_lossy().into_owned();
                 self.load_bytes(&content, &name, overwrite_used, only_section);
-                true
+                Ok(())
             }
             Err(err) => {
                 if err.kind() != std::io::ErrorKind::NotFound {
@@ -1011,9 +988,9 @@ impl Config {
                         "CONFIG: cannot open file '{}'. Using internal defaults.",
                         path.to_string_lossy()
                     );
-                    self.log(LogLevel::Info, message);
+                    nd_log!(Source::Daemon, Priority::Info, errno = errno_of(&err); "{message}");
                 }
-                false
+                Err(err)
             }
         }
     }
@@ -1080,7 +1057,7 @@ impl Config {
                                 "Section ({}) does not specify a valid connector",
                                 lossy(shown)
                             );
-                            self.log(LogLevel::Error, message);
+                            netdata_log_error!("{message}");
                             section = None;
                             continue;
                         };
@@ -1095,7 +1072,7 @@ impl Config {
                         if self.section_index(working_instance).is_some() {
                             let message =
                                 format!("Instance ({}) already exists", lossy(working_instance));
-                            self.log(LogLevel::Error, message);
+                            netdata_log_error!("{message}");
                             section = None;
                             continue;
                         }
@@ -1115,7 +1092,7 @@ impl Config {
                     "CONFIG: ignoring line {line} ('{}') of file '{filename}', it is outside all sections.",
                     lossy(s)
                 );
-                self.log(LogLevel::Error, message);
+                netdata_log_error!("{message}");
                 continue;
             };
             if overwrite_used && only_section.is_some_and(|only| only != self.sections[sect].name) {
@@ -1126,7 +1103,7 @@ impl Config {
                     "CONFIG: ignoring line {line} ('{}') of file '{filename}', there is no = in it.",
                     lossy(s)
                 );
-                self.log(LogLevel::Error, message);
+                netdata_log_error!("{message}");
                 continue;
             };
             let name = trim(&s[..eq]);
@@ -1134,7 +1111,7 @@ impl Config {
             let Some(name) = name.filter(|n| n[0] != b'#') else {
                 let message =
                     format!("CONFIG: ignoring line {line} of file '{filename}', name is empty.");
-                self.log(LogLevel::Error, message);
+                netdata_log_error!("{message}");
                 continue;
             };
             let options = &mut self.sections[sect].options;

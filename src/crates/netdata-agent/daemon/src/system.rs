@@ -2,9 +2,9 @@
 //! `os_read_cpuset_cpus()`, `src/libnetdata/os/get_system_cpus.c`), memory (`os_system_memory()`,
 //! `src/libnetdata/os/system_memory.c`) and the page size.
 
+use netdata_agent_log::{Priority, Source, nd_log};
 use std::path::Path;
 
-use netdata_agent_inicfg::LogLevel;
 use nix::sys::resource::{Resource, getrlimit, setrlimit};
 use nix::unistd::{SysconfVar, sysconf};
 
@@ -18,13 +18,13 @@ pub struct Resources {
 }
 
 impl Resources {
-    pub fn probe(log: &mut impl FnMut(LogLevel, &str)) -> Self {
+    pub fn probe() -> Self {
         let page_size = sysconf(SysconfVar::PAGE_SIZE)
             .ok()
             .flatten()
             .unwrap_or(4096);
         Resources {
-            system_cpus: system_cpus(Path::new("/"), log),
+            system_cpus: system_cpus(Path::new("/")),
             memory: system_memory(Path::new("/")),
             page_size,
         }
@@ -33,7 +33,7 @@ impl Resources {
 
 /// `os_get_system_cpus_uncached()`: the online processors, else the configured ones, when more than one; otherwise
 /// the `cpuN` lines of `<root>/proc/stat`.
-pub fn system_cpus(root: &Path, log: &mut impl FnMut(LogLevel, &str)) -> i64 {
+pub fn system_cpus(root: &Path) -> i64 {
     for var in [SysconfVar::_NPROCESSORS_ONLN, SysconfVar::_NPROCESSORS_CONF] {
         if let Ok(Some(p)) = sysconf(var)
             && p > 1
@@ -54,9 +54,10 @@ pub fn system_cpus(root: &Path, log: &mut impl FnMut(LogLevel, &str)) -> i64 {
     match counted {
         Ok(p) if p >= 1 => p,
         _ => {
-            log(
-                LogLevel::Error,
-                "Cannot detect number of CPU cores. Assuming the system has 1 processors.",
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "Cannot detect number of CPU cores. Assuming the system has 1 processors."
             );
             1
         }
@@ -216,30 +217,39 @@ fn cgroup_memory(
 }
 
 /// `set_nofile_limit()`: the soft limit of open files raised to the hard one.
-pub fn set_nofile_limit(log: &mut impl FnMut(LogLevel, &str)) {
+pub fn set_nofile_limit() {
     let Ok((soft, hard)) = getrlimit(Resource::RLIMIT_NOFILE) else {
-        log(LogLevel::Error, "getrlimit(RLIMIT_NOFILE) failed");
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "getrlimit(RLIMIT_NOFILE) failed"
+        );
         return;
     };
-    log(
-        LogLevel::Info,
-        &format!("resources control: allowed file descriptors: soft = {soft}, max = {hard}"),
+    nd_log!(
+        Source::Daemon,
+        Priority::Info,
+        "resources control: allowed file descriptors: soft = {soft}, max = {hard}"
     );
     if setrlimit(Resource::RLIMIT_NOFILE, hard, hard).is_err() {
-        log(
-            LogLevel::Error,
-            &format!("setrlimit(RLIMIT_NOFILE, {{ {hard}, {hard} }}) failed"),
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "setrlimit(RLIMIT_NOFILE, {{ {hard}, {hard} }}) failed"
         );
     }
     match getrlimit(Resource::RLIMIT_NOFILE) {
-        Ok((soft, _)) if soft < 1024 => log(
-            LogLevel::Error,
-            &format!(
-                "Number of open file descriptors allowed for this process is too low (RLIMIT_NOFILE={soft})"
-            ),
+        Ok((soft, _)) if soft < 1024 => nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "Number of open file descriptors allowed for this process is too low (RLIMIT_NOFILE={soft})"
         ),
         Ok(_) => {}
-        Err(_) => log(LogLevel::Error, "getrlimit(RLIMIT_NOFILE) failed"),
+        Err(_) => nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "getrlimit(RLIMIT_NOFILE) failed"
+        ),
     }
 }
 

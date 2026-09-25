@@ -2,12 +2,13 @@
 //! in `src/libnetdata/runtime-paths/runtime-paths.c`. Each function mirrors the C function of the same name and is
 //! called from the same point of the startup sequence, because `/netdata.conf` lists options in first-read order.
 
+use netdata_agent_log::{Priority, Source, errno_of, nd_log};
 use std::path::Path;
 
 use netdata_agent_inicfg::{
-    BOOLEAN_AUTO, Config, LogLevel, SECTION_CLOUD, SECTION_DB, SECTION_DIRECTORIES,
-    SECTION_ENV_VARS, SECTION_GLOBAL, SECTION_HEALTH, SECTION_LOGS, SECTION_PLUGINS, SECTION_PULSE,
-    SECTION_REGISTRY, SECTION_STATSD, SECTION_WEB,
+    BOOLEAN_AUTO, Config, SECTION_CLOUD, SECTION_DB, SECTION_DIRECTORIES, SECTION_ENV_VARS,
+    SECTION_GLOBAL, SECTION_HEALTH, SECTION_LOGS, SECTION_PLUGINS, SECTION_PULSE, SECTION_REGISTRY,
+    SECTION_STATSD, SECTION_WEB,
 };
 
 use netdata_agent_text::line_splitter::{Separators, quoted_strings_splitter};
@@ -78,6 +79,7 @@ pub struct Conf {
     loaded: bool,
     compat_done: bool,
     directories_done: bool,
+    logs_done: bool,
 }
 
 fn text(v: Option<Vec<u8>>) -> String {
@@ -86,18 +88,6 @@ fn text(v: Option<Vec<u8>>) -> String {
 }
 
 impl Conf {
-    /// Emits the log lines the configuration engines queued.
-    pub fn flush_log(&mut self, log: &mut impl FnMut(LogLevel, &str)) {
-        for line in self
-            .netdata
-            .take_log()
-            .into_iter()
-            .chain(self.cloud.take_log())
-        {
-            log(line.level, &line.message);
-        }
-    }
-
     /// `netdata_conf_load()`: the given file, or the user file then the stock one. Runs once: a second call (a
     /// second `-c`) returns false, and the C daemon exits.
     pub fn netdata_conf_load(
@@ -105,7 +95,6 @@ impl Conf {
         filename: Option<&str>,
         overwrite_used: bool,
         system: &Resources,
-        log: &mut impl FnMut(LogLevel, &str),
     ) -> bool {
         if self.loaded {
             return false;
@@ -113,43 +102,33 @@ impl Conf {
         self.loaded = true;
         let ret = match filename.filter(|f| !f.is_empty()) {
             Some(filename) => {
-                let ret = self.netdata.load(Path::new(filename), overwrite_used, None);
-                if !ret {
-                    log(
-                        LogLevel::Error,
-                        &format!("CONFIG: cannot load config file '{filename}'."),
-                    );
+                let loaded = self.netdata.load(Path::new(filename), overwrite_used, None);
+                if let Err(err) = &loaded {
+                    nd_log!(Source::Daemon, Priority::Err, errno = errno_of(err);
+                        "CONFIG: cannot load config file '{filename}'.");
                 }
-                ret
+                loaded.is_ok()
             }
             None => {
                 let user = format!("{}/{}", self.dirs.user_config, build::CONFIG_FILENAME);
-                let mut ret = self.netdata.load(Path::new(&user), overwrite_used, None);
-                if !ret {
-                    log(
-                        LogLevel::Info,
-                        &format!(
-                            "CONFIG: cannot load user config '{user}'. Will try the stock version."
-                        ),
-                    );
+                let mut loaded = self.netdata.load(Path::new(&user), overwrite_used, None);
+                if let Err(err) = &loaded {
+                    nd_log!(Source::Daemon, Priority::Info, errno = errno_of(err);
+                        "CONFIG: cannot load user config '{user}'. Will try the stock version.");
                     let stock = format!("{}/{}", self.dirs.stock_config, build::CONFIG_FILENAME);
-                    ret = self.netdata.load(Path::new(&stock), overwrite_used, None);
-                    if !ret {
-                        log(
-                            LogLevel::Info,
-                            &format!(
-                                "CONFIG: cannot load stock config '{stock}'. Running with internal defaults."
-                            ),
-                        );
+                    loaded = self.netdata.load(Path::new(&stock), overwrite_used, None);
+                    if let Err(err) = &loaded {
+                        nd_log!(Source::Daemon, Priority::Info, errno = errno_of(err);
+                            "CONFIG: cannot load stock config '{stock}'. Running with internal defaults.");
                     }
                 }
-                ret
+                loaded.is_ok()
             }
         };
         self.backwards_compatibility();
         self.section_directories();
         self.section_global_run_as_user();
-        self.threads = libuv_initialize(&mut self.netdata, system, Path::new("/"), log);
+        self.threads = libuv_initialize(&mut self.netdata, system, Path::new("/"));
         ret
     }
 
@@ -620,6 +599,80 @@ impl Conf {
             .collect();
     }
 
+    /// `netdata_conf_section_logs()`: `[logs]` and the ACLK conversation log in C's order, each applied to the
+    /// logger as it is read. Sources default to the journal when stderr is connected to it, except access and debug.
+    pub fn section_logs(&mut self) {
+        if self.logs_done {
+            return;
+        }
+        self.logs_done = true;
+        self.section_directories();
+        let c = &mut self.netdata;
+        netdata_agent_log::set_facility(&text(c.get(SECTION_LOGS, "facility", Some("daemon"))));
+        let period = c.get_duration_seconds(
+            SECTION_LOGS,
+            "logs flood protection period",
+            i64::from(netdata_agent_log::DEFAULT_THROTTLE_PERIOD),
+        );
+        let logs = c.get_number(
+            SECTION_LOGS,
+            "logs to trigger flood protection",
+            i64::from(netdata_agent_log::DEFAULT_THROTTLE_LOGS),
+        );
+        // C reads it as `long long` and passes it as `unsigned long`
+        netdata_agent_log::set_flood_protection(logs as u64, period);
+        let level = std::env::var_os("NETDATA_LOG_LEVEL")
+            .map_or("info", |v| Priority::parse(&v.to_string_lossy()).name());
+        netdata_agent_log::set_priority_level(&text(c.get(SECTION_LOGS, "level", Some(level))));
+
+        let journal = netdata_agent_log::is_stderr_connected_to_journal();
+        let log_dir = self.dirs.log.clone();
+        let file = |name: &str| format!("{log_dir}/{name}");
+        let or_journal = |name: &str| {
+            if journal {
+                "journal".to_string()
+            } else {
+                file(name)
+            }
+        };
+        let sources = [
+            (Source::Debug, "debug", file("debug.log")),
+            (Source::Daemon, "daemon", or_journal("daemon.log")),
+            (Source::Collector, "collector", or_journal("collector.log")),
+            (Source::Access, "access", file("access.log")),
+            (Source::Health, "health", or_journal("health.log")),
+        ];
+        for (source, name, default) in sources {
+            let setting = text(c.get(SECTION_LOGS, name, Some(&default)));
+            netdata_agent_log::set_user_settings(source, &setting);
+        }
+        if c.get_boolean(SECTION_CLOUD, "conversation log", false) {
+            let setting = text(c.get(
+                SECTION_CLOUD,
+                "conversation log file",
+                Some(&file("aclk.log")),
+            ));
+            netdata_agent_log::set_user_settings(Source::Aclk, &setting);
+        }
+
+        // debug_flags_initialize()
+        let flags = text(c.get(SECTION_LOGS, "debug flags", Some("0x0000000000000000")));
+        export("NETDATA_DEBUG_FLAGS", &flags);
+        // the flags gate debug records, which release builds compile out
+        let debug_flags = netdata_agent_text::parse::strtoul0(flags.as_bytes()).0;
+        if debug_flags != 0 {
+            use nix::sys::resource::{RLIM_INFINITY, Resource, setrlimit};
+            if let Err(errno) = setrlimit(Resource::RLIMIT_CORE, RLIM_INFINITY, RLIM_INFINITY) {
+                nd_log!(Source::Daemon, Priority::Err, errno = errno as i32;
+                    "Cannot request unlimited core dumps for debugging... Proceeding anyway...");
+            }
+            let _ = nix::sys::prctl::set_dumpable(true);
+        }
+
+        // aclk_config_get_query_scope(): the ACLK port reads the scope from here
+        c.get(SECTION_CLOUD, "scope", Some("full"));
+    }
+
     /// `netdata_conf_section_global_run_as_user()`.
     pub fn section_global_run_as_user(&mut self) {
         let uid = nix::unistd::getuid();
@@ -639,16 +692,14 @@ impl Conf {
     }
 
     /// `cloud_conf_load()`: `cloud.d/cloud.conf` over the defaults.
-    pub fn cloud_conf_load(&mut self, silent: bool, log: &mut impl FnMut(LogLevel, &str)) {
+    pub fn cloud_conf_load(&mut self, silent: bool) {
         self.section_directories();
         let filename = format!("{}/cloud.conf", self.dirs.cloud);
-        if !self.cloud.load(Path::new(&filename), true, None) && !silent {
-            log(
-                LogLevel::Error,
-                &format!(
-                    "CLAIM: cannot load cloud config '{filename}'. Running with internal defaults."
-                ),
-            );
+        if let Err(err) = self.cloud.load(Path::new(&filename), true, None) {
+            if !silent {
+                nd_log!(Source::Daemon, Priority::Err, errno = errno_of(&err);
+                    "CLAIM: cannot load cloud config '{filename}'. Running with internal defaults.");
+            }
         }
         let c = &mut self.cloud;
         c.move_option(SECTION_GLOBAL, "cloud base url", SECTION_GLOBAL, "url");
@@ -663,15 +714,20 @@ impl Conf {
     }
 
     /// `nd_runtime_paths_load_hostname_from_inicfg()`: `[global] host access prefix`, then `hostname`.
-    pub fn section_global_hostname(&mut self, log: &mut impl FnMut(LogLevel, &str)) {
+    pub fn section_global_hostname(&mut self) {
         let prefix = text(
             self.netdata
                 .get(SECTION_GLOBAL, "host access prefix", Some("")),
         );
-        self.host_prefix = verify_netdata_host_prefix(prefix, log);
+        self.host_prefix = verify_netdata_host_prefix(prefix);
+        netdata_agent_log::set_host_prefix(&self.host_prefix);
         let system = os_hostname(&self.host_prefix);
         if system.is_empty() {
-            log(LogLevel::Error, "Cannot get machine hostname.");
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "Cannot get machine hostname."
+            );
         }
         self.hostname = text(self.netdata.get(SECTION_GLOBAL, "hostname", Some(&system)));
     }
@@ -679,32 +735,26 @@ impl Conf {
 
 /// `netdata_conf_section_db()` (`src/daemon/config/netdata-conf-db.c`) up to the dbengine options. KSM and the
 /// orphan, ephemeral and obsolete cleanups are not ported: their options are read so that they print as in C.
-pub fn section_db(
-    c: &mut Config,
-    page_size: i64,
-    log: &mut impl FnMut(LogLevel, &str),
-) -> DbSection {
+pub fn section_db(c: &mut Config, page_size: i64) -> DbSection {
     // nd_profile.update_every: 1 for every profile but iot, which profile detection does not set yet.
     let mut update_every = c.get_duration_seconds(SECTION_DB, "update every", 1) as i32;
     if update_every < UPDATE_EVERY_MIN {
-        log(
-            LogLevel::Warning,
-            &format!(
-                "Data collection frequency in netdata.conf ([db].update every), changed from \
+        nd_log!(
+            Source::Daemon,
+            Priority::Warning,
+            "Data collection frequency in netdata.conf ([db].update every), changed from \
                  {update_every} to {UPDATE_EVERY_MIN}"
-            ),
         );
         update_every = UPDATE_EVERY_MIN;
         c.set_duration_seconds(SECTION_DB, "update every", i64::from(update_every));
     }
     if update_every > UPDATE_EVERY_MAX {
         // C names the minimum in this message too.
-        log(
-            LogLevel::Warning,
-            &format!(
-                "Data collection frequency in netdata.conf ([db].update every), changed from \
+        nd_log!(
+            Source::Daemon,
+            Priority::Warning,
+            "Data collection frequency in netdata.conf ([db].update every), changed from \
                  {update_every} to {UPDATE_EVERY_MIN}"
-            ),
         );
         update_every = UPDATE_EVERY_MAX;
         c.set_duration_seconds(SECTION_DB, "update every", i64::from(update_every));
@@ -713,12 +763,11 @@ pub fn section_db(
     let name = text(c.get(SECTION_DB, "db", Some(DbMode::Dbengine.name())));
     let mode = DbMode::from_name(&name);
     if name != mode.name() {
-        log(
-            LogLevel::Error,
-            &format!(
-                "Invalid memory mode '{name}' given. Using '{}'",
-                mode.name()
-            ),
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "Invalid memory mode '{name}' given. Using '{}'",
+            mode.name()
         );
         c.set(SECTION_DB, "db", mode.name());
     }
@@ -749,9 +798,10 @@ pub fn section_db(
         c.set_duration_seconds(SECTION_DB, "cleanup ephemeral hosts after", orphan);
     }
     if c.get_duration_seconds(SECTION_DB, "cleanup obsolete charts after", 3600) < 10 {
-        log(
-            LogLevel::Info,
-            "The \"cleanup obsolete charts after\" option was set to 10 seconds.",
+        nd_log!(
+            Source::Daemon,
+            Priority::Info,
+            "The \"cleanup obsolete charts after\" option was set to 10 seconds."
         );
         c.set_duration_seconds(SECTION_DB, "cleanup obsolete charts after", 10);
     }
@@ -774,15 +824,11 @@ impl Conf {
     /// `set_environment_for_plugins_and_scripts()` (`src/daemon/environment.c`): what plugins and scripts inherit.
     /// Every required directory is entered (the last `chdir` wins until the caller moves on), and the writable ones
     /// are created when missing. The error is C's `fatal()` text.
-    pub fn environment_for_plugins(
-        &mut self,
-        update_every: i32,
-        log: &mut impl FnMut(LogLevel, &str),
-    ) -> Result<(), String> {
-        export("NETDATA_UPDATE_EVERY", &update_every.to_string(), log);
-        export("NETDATA_VERSION", build::NETDATA_VERSION, log);
-        export("NETDATA_HOSTNAME", &self.hostname, log);
-        export("NETDATA_HOST_PREFIX", &self.host_prefix, log);
+    pub fn environment_for_plugins(&mut self, update_every: i32) -> Result<(), String> {
+        export("NETDATA_UPDATE_EVERY", &update_every.to_string());
+        export("NETDATA_VERSION", build::NETDATA_VERSION);
+        export("NETDATA_HOSTNAME", &self.hostname);
+        export("NETDATA_HOST_PREFIX", &self.host_prefix);
         let d = &self.dirs;
         let primary_plugins = d.plugins.first().cloned().unwrap_or_default();
         for (env, dir, create) in [
@@ -798,7 +844,7 @@ impl Conf {
             ("CLAIMING_DIR", &d.cloud, Some(0o770)),
         ] {
             verify_required_directory(env, dir, create)?;
-            export(env, dir, log);
+            export(env, dir);
         }
         let user_dirs = d
             .plugins
@@ -807,11 +853,11 @@ impl Conf {
             .cloned()
             .collect::<Vec<_>>()
             .join(" ");
-        export("NETDATA_USER_PLUGINS_DIRS", &user_dirs, log);
+        export("NETDATA_USER_PLUGINS_DIRS", &user_dirs);
         // A NULL default: the key is never created, only marked used when the user wrote it.
         let port = self.netdata.get(SECTION_WEB, "default port", None);
         let port = port.map_or_else(|| "19999".to_string(), |p| text(Some(p)));
-        export("NETDATA_LISTEN_PORT", &port, log);
+        export("NETDATA_LISTEN_PORT", &port);
         let path = format!(
             "{}:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin",
             std::env::var("PATH").unwrap_or_else(|_| "/bin:/usr/bin".to_string())
@@ -820,22 +866,22 @@ impl Conf {
             self.netdata
                 .get_path_list(SECTION_ENV_VARS, "PATH", Some(&path)),
         );
-        export("PATH", &path, log);
+        export("PATH", &path);
         let python = std::env::var("PYTHONPATH").unwrap_or_default();
         let python = text(self.netdata.get_path_list(
             SECTION_ENV_VARS,
             "PYTHONPATH",
             Some(&python),
         ));
-        export("PYTHONPATH", &python, log);
-        export("PYTHONUNBUFFERED", "1", log);
-        export("LC_ALL", "C", log);
+        export("PYTHONPATH", &python);
+        export("PYTHONUNBUFFERED", "1");
+        export("LC_ALL", "C");
         Ok(())
     }
 
     /// The "home" startup step: `[directories] home`, the running user's home unless the key is set, exported as
     /// `HOME` (root's would be inherited otherwise).
-    pub fn section_home(&mut self, log: &mut impl FnMut(LogLevel, &str)) {
+    pub fn section_home(&mut self) {
         let pw_dir = nix::unistd::User::from_uid(nix::unistd::getuid())
             .ok()
             .flatten()
@@ -848,7 +894,7 @@ impl Conf {
             self.netdata
                 .get_path(SECTION_DIRECTORIES, "home", Some(&default)),
         );
-        export("HOME", &home, log);
+        export("HOME", &home);
     }
 }
 
@@ -936,12 +982,7 @@ pub struct Threads {
 
 /// `libuv_initialize()` (`src/daemon/config/netdata-conf-global.c`): the thread stack size, `netdata_conf_cpus()` and
 /// the libuv worker count, each exported where C exports it. `root` is `/` outside tests (the cgroup cpusets).
-pub fn libuv_initialize(
-    c: &mut Config,
-    system: &Resources,
-    root: &Path,
-    log: &mut impl FnMut(LogLevel, &str),
-) -> Threads {
+pub fn libuv_initialize(c: &mut Config, system: &Resources, root: &Path) -> Threads {
     // netdata_conf_stack_size(): the libc default, at least 1 MiB (musl gives 128 KiB).
     let libc_stack = netdata_agent_sys::default_thread_stack_size().unwrap_or(8 << 20);
     let stack_size = c.get_size_bytes(
@@ -953,9 +994,10 @@ pub fn libuv_initialize(
     let thread_stack_size = if stack_size > netdata_agent_sys::PTHREAD_STACK_MIN as u64 {
         stack_size as usize
     } else {
-        log(
-            LogLevel::Warning,
-            &format!("Invalid pthread stacksize {stack_size}"),
+        nd_log!(
+            Source::Daemon,
+            Priority::Warning,
+            "Invalid pthread stacksize {stack_size}"
         );
         libc_stack
     };
@@ -974,7 +1016,7 @@ pub fn libuv_initialize(
         cpus = system.system_cpus;
     }
     let cpus = c.get_number(SECTION_GLOBAL, "cpu cores", cpus).max(1);
-    export("NETDATA_CONF_CPUS", &cpus.to_string(), log);
+    export("NETDATA_CONF_CPUS", &cpus.to_string());
 
     // Six per CPU, as many as a twentieth of the RAM (or a tenth of what is available) can hold stacks for.
     let (min, max) = LIBUV_WORKER_THREADS;
@@ -992,7 +1034,7 @@ pub fn libuv_initialize(
         min,
         max,
     );
-    export("UV_THREADPOOL_SIZE", &threads.to_string(), log);
+    export("UV_THREADPOOL_SIZE", &threads.to_string());
     Threads {
         thread_stack_size,
         cpus,
@@ -1001,9 +1043,9 @@ pub fn libuv_initialize(
 }
 
 /// `setenv()` for the plugins; the daemon is still single-threaded when it runs.
-fn export(key: &str, value: &str, log: &mut impl FnMut(LogLevel, &str)) {
+fn export(key: &str, value: &str) {
     if let Err(err) = netdata_agent_sys::setenv(key, value) {
-        log(LogLevel::Error, &format!("cannot export {key}: {err}"));
+        nd_log!(Source::Daemon, Priority::Err, "cannot export {key}: {err}");
     }
 }
 
@@ -1028,7 +1070,7 @@ pub struct DbSection {
 
 /// `verify_netdata_host_prefix(true)` (`src/libnetdata/paths/paths.c`): a directory, without `%`, holding procfs and
 /// sysfs mounts; otherwise it is ignored (empty).
-fn verify_netdata_host_prefix(prefix: String, log: &mut impl FnMut(LogLevel, &str)) -> String {
+fn verify_netdata_host_prefix(prefix: String) -> String {
     use nix::sys::statfs::{PROC_SUPER_MAGIC, SYSFS_MAGIC, statfs};
     if prefix.is_empty() {
         return prefix;
@@ -1057,16 +1099,18 @@ fn verify_netdata_host_prefix(prefix: String, log: &mut impl FnMut(LogLevel, &st
     };
     match check() {
         Ok(()) => {
-            log(
-                LogLevel::Info,
-                &format!("Using host prefix directory '{prefix}'"),
+            nd_log!(
+                Source::Daemon,
+                Priority::Info,
+                "Using host prefix directory '{prefix}'"
             );
             prefix
         }
         Err((path, reason)) => {
-            log(
-                LogLevel::Error,
-                &format!("Ignoring host prefix '{prefix}': path '{path}' {reason}"),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "Ignoring host prefix '{prefix}': path '{path}' {reason}"
             );
             String::new()
         }
@@ -1146,19 +1190,15 @@ pub fn set_timezone_env(netdata: &mut Config) -> std::io::Result<()> {
 }
 
 /// `netdata_conf_web_query_threads()`: two per CPU on a parent (at most 256 CPUs), at least 6, unless configured.
-pub fn web_query_threads(
-    c: &mut Config,
-    cpus: usize,
-    is_parent: bool,
-    log: &mut impl FnMut(LogLevel, &str),
-) -> usize {
+pub fn web_query_threads(c: &mut Config, cpus: usize, is_parent: bool) -> usize {
     let cpus = cpus.min(256);
     let threads = (cpus * if is_parent { 2 } else { 1 }).max(6);
     let threads = c.get_number(SECTION_WEB, "web server threads", threads as i64);
     if threads < 1 {
-        log(
-            LogLevel::Error,
-            "[web].web server threads in netdata.conf needs to be at least 1. Overwriting it.",
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "[web].web server threads in netdata.conf needs to be at least 1. Overwriting it."
         );
         c.set_number(SECTION_WEB, "web server threads", 1);
         return 1;
@@ -1168,7 +1208,7 @@ pub fn web_query_threads(
 
 impl Conf {
     /// `netdata_conf_section_web()`.
-    pub fn section_web(&mut self, log: &mut impl FnMut(LogLevel, &str)) -> WebConf {
+    pub fn section_web(&mut self) -> WebConf {
         let c = &mut self.netdata;
         let disconnect_idle_after_s =
             c.get_duration_seconds(SECTION_WEB, "disconnect idle clients after", 60);
@@ -1183,19 +1223,19 @@ impl Conf {
             Some(""),
         )))
         .filter(|x| !x.is_empty());
-        let mut acl_pattern = |c: &mut Config,
-                               section: &str,
-                               name: &str,
-                               default: &str,
-                               dns_name: &str,
-                               dns_default: &str| {
+        let acl_pattern = |c: &mut Config,
+                           section: &str,
+                           name: &str,
+                           default: &str,
+                           dns_name: &str,
+                           dns_default: &str| {
             let pattern = SimplePattern::new(
                 &c.get(section, name, Some(default)).unwrap_or_default(),
                 SimpleSeparators::Whitespace,
                 SimplePatternMode::Exact,
                 true,
             );
-            let dns = make_dns_decision(c, section, dns_name, dns_default, &pattern, log);
+            let dns = make_dns_decision(c, section, dns_name, dns_default, &pattern);
             AclPattern { pattern, dns }
         };
         let connections = acl_pattern(
@@ -1272,29 +1312,26 @@ impl Conf {
         match GZIP_STRATEGIES.iter().find(|name| **name == strategy) {
             Some(_) => {}
             None => {
-                log(
-                    LogLevel::Error,
-                    &format!(
-                        "Invalid compression strategy '{strategy}'. Valid strategies are 'default', 'filtered', 'huffman only', 'rle' and 'fixed'. Proceeding with 'default'."
-                    ),
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "Invalid compression strategy '{strategy}'. Valid strategies are 'default', 'filtered', 'huffman only', 'rle' and 'fixed'. Proceeding with 'default'."
                 );
             }
         }
         let level = c.get_number(SECTION_WEB, "gzip compression level", 3) as i32;
         let gzip_level = if level < 1 {
-            log(
-                LogLevel::Error,
-                &format!(
-                    "Invalid compression level {level}. Valid levels are 1 (fastest) to 9 (best ratio). Proceeding with level 1 (fastest compression)."
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "Invalid compression level {level}. Valid levels are 1 (fastest) to 9 (best ratio). Proceeding with level 1 (fastest compression)."
             );
             1
         } else if level > 9 {
-            log(
-                LogLevel::Error,
-                &format!(
-                    "Invalid compression level {level}. Valid levels are 1 (fastest) to 9 (best ratio). Proceeding with level 9 (best compression)."
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "Invalid compression level {level}. Valid levels are 1 (fastest) to 9 (best ratio). Proceeding with level 9 (best compression)."
             );
             9
         } else {
@@ -1329,7 +1366,6 @@ fn make_dns_decision(
     name: &str,
     default: &str,
     pattern: &SimplePattern,
-    log: &mut impl FnMut(LogLevel, &str),
 ) -> bool {
     let value = text(c.get(section, name, Some(default)));
     match value.as_str() {
@@ -1337,11 +1373,10 @@ fn make_dns_decision(
         "no" => false,
         other => {
             if other != "heuristic" {
-                log(
-                    LogLevel::Error,
-                    &format!(
-                        "Invalid configuration option '{other}' for '{section}'/'{name}'. Valid options are 'yes', 'no' and 'heuristic'. Proceeding with 'heuristic'"
-                    ),
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "Invalid configuration option '{other}' for '{section}'/'{name}'. Valid options are 'yes', 'no' and 'heuristic'. Proceeding with 'heuristic'"
                 );
             }
             pattern.is_potential_name()
@@ -1361,7 +1396,7 @@ mod tests {
         ));
         std::fs::write(&path, format!("[db]\n{db_section}")).unwrap();
         let mut c = Config::default();
-        assert!(c.load(&path, false, None));
+        assert!(c.load(&path, false, None).is_ok());
         std::fs::remove_file(&path).unwrap();
         c
     }
@@ -1477,8 +1512,7 @@ mod tests {
         ]);
         for (name, case) in cases {
             let mut c = loaded(case.file);
-            let mut logs = Vec::new();
-            let got = section_db(&mut c, 4096, &mut |_, m: &str| logs.push(m.to_string()));
+            let (got, logs) = netdata_agent_log::capture(|| section_db(&mut c, 4096));
             assert_eq!(got, case.want, "{name}: {logs:?}");
             for (key, value) in case.values {
                 let v = c

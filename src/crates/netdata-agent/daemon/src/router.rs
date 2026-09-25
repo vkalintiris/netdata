@@ -317,7 +317,6 @@ mod tests {
             web_dir: "/nonexistent-web-dir".into(),
             x_frame_options: None,
             acl: test_acl(),
-            log: |_, _| {},
             first_request_timeout_s: 60,
             idle_timeout_s: 60,
             grouping_windows: Default::default(),

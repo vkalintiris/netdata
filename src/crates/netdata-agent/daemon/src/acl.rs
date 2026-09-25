@@ -2,9 +2,9 @@
 //! `bind_to_this()` (`src/libnetdata/socket/listen-sockets.c`), `connection_allowed()` (`socket.c`) and
 //! `web_client_update_acl_matches()` (`src/web/server/web_server.c`).
 
+use netdata_agent_log::{Priority, Source, nd_log};
 use std::net::IpAddr;
 
-use netdata_agent_inicfg::LogLevel;
 use netdata_agent_text::simple_pattern::SimplePattern;
 
 /// `HTTP_ACL`.
@@ -111,22 +111,19 @@ pub struct Client {
     pub host: String,
 }
 
-pub type Logger = fn(LogLevel, &str);
-
 /// `connection_allowed()`: the numeric address matches, or (when DNS is allowed) the validated reverse name does.
-pub fn connection_allowed(client: &mut Client, acl: &AclPattern, name: &str, log: Logger) -> bool {
+pub fn connection_allowed(client: &mut Client, acl: &AclPattern, name: &str) -> bool {
     if acl.pattern.matches(client.ip.as_bytes()) {
         return true;
     }
     if client.host.is_empty() && acl.dns {
         match dns_lookup::lookup_addr(&client.peer) {
             Err(err) => {
-                log(
-                    LogLevel::Error,
-                    &format!(
-                        "Incoming {name} on '{}' does not match a numeric pattern, and host could not be resolved (err={err})",
-                        client.ip
-                    ),
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "Incoming {name} on '{}' does not match a numeric pattern, and host could not be resolved (err={err})",
+                    client.ip
                 );
                 client.host = "UNKNOWN".to_string();
                 return false;
@@ -135,24 +132,24 @@ pub fn connection_allowed(client: &mut Client, acl: &AclPattern, name: &str, log
         }
         match dns_lookup::lookup_host(&client.host) {
             Err(_) => {
-                log(
-                    LogLevel::Error,
-                    &format!(
-                        "LISTENER: cannot validate hostname '{}' from '{}' by resolving it",
-                        client.host, client.ip
-                    ),
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "LISTENER: cannot validate hostname '{}' from '{}' by resolving it",
+                    client.host,
+                    client.ip
                 );
                 client.host = "UNKNOWN".to_string();
                 return false;
             }
             Ok(mut addresses) => {
                 if !addresses.any(|a| a.to_string() == client.ip) {
-                    log(
-                        LogLevel::Error,
-                        &format!(
-                            "LISTENER: Cannot validate '{}' as ip of '{}', not listed in DNS",
-                            client.ip, client.host
-                        ),
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Err,
+                        "LISTENER: Cannot validate '{}' as ip of '{}', not listed in DNS",
+                        client.ip,
+                        client.host
                     );
                     client.host = "UNKNOWN".to_string();
                 }
@@ -165,7 +162,7 @@ pub fn connection_allowed(client: &mut Client, acl: &AclPattern, name: &str, log
 impl WebAcl {
     /// `web_client_update_acl_matches()`: the transports, the features whose lists the client matches, limited to
     /// what its listener allows.
-    pub fn matches(&self, client: &mut Client, listener_acl: u32, log: Logger) -> u32 {
+    pub fn matches(&self, client: &mut Client, listener_acl: u32) -> u32 {
         let mut acl = bits::TRANSPORTS;
         if listener_acl & bits::TRANSPORTS_WITHOUT_CLIENT_IP_VALIDATION == 0 {
             for (pattern, name, feature) in [
@@ -177,7 +174,7 @@ impl WebAcl {
                 (&self.mcp, "mcp", bits::MCP),
                 (&self.netdataconf, "netdata.conf", bits::NETDATACONF),
             ] {
-                if connection_allowed(client, pattern, name, log) {
+                if connection_allowed(client, pattern, name) {
                     acl |= feature;
                 }
             }

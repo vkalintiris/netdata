@@ -20,12 +20,12 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub use config::{
-    chown_log_files, init_invocation_id, initialize, invocation_id, limits_reset, limits_unlimited,
-    reopen_log_files, set_facility, set_flood_protection, set_host_prefix, set_priority_level,
-    set_user_settings,
+    chown_log_files, chown_open_file, init_invocation_id, initialize, invocation_id, limits_reset,
+    limits_unlimited, reopen_log_files, set_facility, set_flood_protection, set_host_prefix,
+    set_priority_level, set_user_settings,
 };
 pub use frame::{FrameGuard, Lazy, Value, push};
-pub use limit::ErrorLimit;
+pub use limit::{DEFAULT_THROTTLE_LOGS, DEFAULT_THROTTLE_PERIOD, ErrorLimit};
 pub use model::{Field, Priority, Source, msgid};
 pub use output::{is_stderr_connected_to_journal, set_default_log_dir};
 

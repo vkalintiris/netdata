@@ -1,9 +1,10 @@
 //! The `[web]` listen sockets, ported from `src/libnetdata/socket/listen-sockets.c` (`listen_sockets_setup()`,
 //! `bind_to_this()`).
 
+use netdata_agent_log::{Priority, Source, nd_log};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 
-use netdata_agent_inicfg::{Config, LogLevel, SECTION_WEB};
+use netdata_agent_inicfg::{Config, SECTION_WEB};
 
 /// One opened listener.
 pub struct Listener {
@@ -43,7 +44,6 @@ fn bind_to_this(
     backlog: i32,
     out: &mut Vec<Listener>,
     failed: &mut usize,
-    log: &mut impl FnMut(LogLevel, &str),
 ) {
     let mut spec = definition.strip_prefix("tcp:").unwrap_or(definition);
     // The ACL part is everything after '='.
@@ -91,9 +91,10 @@ fn bind_to_this(
         match resolved {
             Ok(addrs) => addrs,
             Err(err) => {
-                log(
-                    LogLevel::Error,
-                    &format!("LISTENER: getaddrinfo('{ip}', '{port}'): {err}\n"),
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "LISTENER: getaddrinfo('{ip}', '{port}'): {err}\n"
                 );
                 return;
             }
@@ -104,9 +105,11 @@ fn bind_to_this(
         match create(addr, backlog) {
             Ok(socket) => out.push(Listener { socket, acl }),
             Err(_) => {
-                log(
-                    LogLevel::Error,
-                    &format!("LISTENER: Cannot bind to ip '{rip}', port {}", addr.port()),
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "LISTENER: Cannot bind to ip '{rip}', port {}",
+                    addr.port()
                 );
                 *failed += 1;
             }
@@ -115,13 +118,14 @@ fn bind_to_this(
 }
 
 /// `listen_sockets_setup()` for the `[web]` section.
-pub fn setup(config: &mut Config, log: &mut impl FnMut(LogLevel, &str)) -> Vec<Listener> {
+pub fn setup(config: &mut Config) -> Vec<Listener> {
     let backlog = config.get_number(SECTION_WEB, "listen backlog", DEFAULT_BACKLOG) as i32;
     let mut port = config.get_number(SECTION_WEB, "default port", DEFAULT_PORT);
     if !(1..=65535).contains(&port) {
-        log(
-            LogLevel::Error,
-            &format!("LISTENER: Invalid listen port {port} given. Defaulting to {DEFAULT_PORT}."),
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "LISTENER: Invalid listen port {port} given. Defaulting to {DEFAULT_PORT}."
         );
         port = config.set_number(SECTION_WEB, "default port", DEFAULT_PORT);
     }
@@ -141,7 +145,6 @@ pub fn setup(config: &mut Config, log: &mut impl FnMut(LogLevel, &str)) -> Vec<L
             backlog,
             &mut listeners,
             &mut failed,
-            log,
         );
     }
     listeners

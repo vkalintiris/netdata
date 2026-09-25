@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use netdata_agent_inicfg::LogLevel;
+use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_nrpc as nrpc;
 use netdata_agent_pluginsd_proto::{
     CHART_SLOT_MAX, DIMENSION_SLOT_MAX, Deferred, DeferredBody, Keyword, MAX_DEFERRED_SIZE,
@@ -33,9 +33,6 @@ pub const CAP_ML_MODELS: u32 = 1 << 26;
 
 /// `PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT`: seconds.
 const FUNCTIONS_TIMEOUT_DEFAULT: i32 = 10;
-
-/// Where the parser writes daemon log lines.
-pub type Logger = Box<dyn FnMut(LogLevel, &str) + Send>;
 
 /// The fixed inputs of a parser.
 #[derive(Debug, Clone, Copy)]
@@ -99,24 +96,24 @@ fn parse_sn_flags(flags: &[u8]) -> u32 {
 }
 
 /// `stream_parse_enable_streaming()`.
-fn parse_enable_streaming(v: Option<&[u8]>, log: &mut Logger) -> bool {
+fn parse_enable_streaming(v: Option<&[u8]>) -> bool {
     match v {
         None | Some(b"") => {
-            log(
-                LogLevel::Error,
-                "REPLAY: malformed start_streaming boolean value empty",
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "REPLAY: malformed start_streaming boolean value empty"
             );
             false
         }
         Some(b"false") => false,
         Some(b"true") => true,
         Some(other) => {
-            log(
-                LogLevel::Error,
-                &format!(
-                    "REPLAY: malformed start_streaming boolean value '{}'",
-                    text(other)
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "REPLAY: malformed start_streaming boolean value '{}'",
+                text(other)
             );
             false
         }
@@ -127,7 +124,6 @@ fn parse_enable_streaming(v: Option<&[u8]>, log: &mut Logger) -> bool {
 pub struct Parser {
     host: Arc<Host>,
     config: Config,
-    log: Logger,
     line: usize,
     scope: Option<Arc<Chart>>,
     clabel_count: usize,
@@ -148,11 +144,10 @@ pub struct Parser {
 }
 
 impl Parser {
-    pub fn new(host: Arc<Host>, config: Config, log: Logger) -> Self {
+    pub fn new(host: Arc<Host>, config: Config) -> Self {
         Parser {
             host,
             config,
-            log,
             line: 0,
             scope: None,
             clabel_count: 0,
@@ -190,11 +185,10 @@ impl Parser {
                 }
                 // Only JSON bodies are kept, and a receiver's plugin has no file name.
                 Deferred::TooBig(size) => {
-                    (self.log)(
-                        LogLevel::Error,
-                        &format!(
-                            "PLUGINSD: deferred response is too big ({size} bytes, limit {MAX_DEFERRED_SIZE} bytes) while waiting for keyword 'JSON_PAYLOAD_END' from plugin '' (transaction 'none'). Stopping this plugin."
-                        ),
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Err,
+                        "PLUGINSD: deferred response is too big ({size} bytes, limit {MAX_DEFERRED_SIZE} bytes) while waiting for keyword 'JSON_PAYLOAD_END' from plugin '' (transaction 'none'). Stopping this plugin."
                     );
                     false
                 }
@@ -214,16 +208,15 @@ impl Parser {
             Ok(()) => true,
             Err(Refused(why)) => {
                 if let Some(why) = why {
-                    (self.log)(LogLevel::Error, &why);
+                    nd_log!(Source::Daemon, Priority::Err, "{}", why);
                 }
                 let line_no = self.line;
                 let shown = text(&words.reconstruct());
-                (self.log)(
-                    LogLevel::Error,
-                    &format!(
-                        "PLUGINSD: parser_action('{}') failed on line {line_no}: {{ {shown} }} (quotes added to show parsing)",
-                        text(first)
-                    ),
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "PLUGINSD: parser_action('{}') failed on line {line_no}: {{ {shown} }} (quotes added to show parsing)",
+                    text(first)
                 );
                 false
             }
@@ -299,11 +292,10 @@ impl Parser {
         match &self.scope {
             Some(chart) => Ok(Arc::clone(chart)),
             None => {
-                (self.log)(
-                    LogLevel::Error,
-                    &format!(
-                        "PLUGINSD: command {keyword} requires a chart defined via command {parent}, but is not set."
-                    ),
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "PLUGINSD: command {keyword} requires a chart defined via command {parent}, but is not set."
                 );
                 Err(Refused(None))
             }
@@ -314,20 +306,20 @@ impl Parser {
     fn find_chart(&mut self, id: Option<&[u8]>, keyword: &str) -> Option<Arc<Chart>> {
         let hostname = self.host.hostname();
         let Some(id) = id.filter(|i| !i.is_empty()) else {
-            (self.log)(
-                LogLevel::Error,
-                &format!("PLUGINSD: 'host:{hostname}' got a {keyword} without a chart id."),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: 'host:{hostname}' got a {keyword} without a chart id."
             );
             return None;
         };
         let chart = self.host.charts().find(&text(id));
         if chart.is_none() {
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD: 'host:{hostname}/chart:{}' got a {keyword} but chart does not exist.",
-                    text(id)
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: 'host:{hostname}/chart:{}' got a {keyword} but chart does not exist.",
+                text(id)
             );
         }
         chart
@@ -408,12 +400,11 @@ impl Parser {
     ) -> Option<Arc<Dim>> {
         let hostname = self.host.hostname();
         let Some(id) = id.filter(|i| !i.is_empty()) else {
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD: 'host:{hostname}/chart:{}' got a {keyword}, without a dimension.",
-                    chart.id()
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: 'host:{hostname}/chart:{}' got a {keyword}, without a dimension.",
+                chart.id()
             );
             return None;
         };
@@ -421,12 +412,11 @@ impl Parser {
         let mut state = chart.receiver();
         if state.prd.is_empty() {
             drop(state);
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD: 'host:{hostname}/chart:{}' got a {keyword}, but the chart has no dimensions.",
-                    chart.id()
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: 'host:{hostname}/chart:{}' got a {keyword}, but the chart has no dimensions.",
+                chart.id()
             );
             return None;
         }
@@ -435,13 +425,12 @@ impl Parser {
             let s = slot.unwrap_or(0);
             if s < 1 || s as usize > size {
                 drop(state);
-                (self.log)(
-                    LogLevel::Error,
-                    &format!(
-                        "PLUGINSD: 'host:{hostname}/chart:{}' got a {keyword} with slot {}, but slots in the range [1 - {size}] are expected.",
-                        chart.id(),
-                        slot.map_or(-1, |s| s as i64)
-                    ),
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "PLUGINSD: 'host:{hostname}/chart:{}' got a {keyword} with slot {}, but slots in the range [1 - {size}] are expected.",
+                    chart.id(),
+                    slot.map_or(-1, |s| s as i64)
                 );
                 return None;
             }
@@ -461,12 +450,11 @@ impl Parser {
         };
         drop(state);
         let Some(dim) = chart.dim(&id) else {
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD: 'host:{hostname}/chart:{}/dim:{id}' got a {keyword} but dimension does not exist.",
-                    chart.id()
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: 'host:{hostname}/chart:{}/dim:{id}' got a {keyword} but dimension does not exist.",
+                chart.id()
             );
             return None;
         };
@@ -652,9 +640,10 @@ impl Parser {
     /// `pluginsd_clabel()`.
     fn clabel(&mut self, w: &Words) -> Rc {
         let (Some(name), Some(value), Some(source)) = (w.get(1), w.get(2), w.get(3)) else {
-            (self.log)(
-                LogLevel::Error,
-                "Ignoring malformed or empty CHART LABEL command.",
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "Ignoring malformed or empty CHART LABEL command."
             );
             return refuse();
         };
@@ -673,7 +662,7 @@ impl Parser {
         match changed {
             Ok(true) => self.clabel_changed = true,
             Ok(false) => {}
-            Err(message) => (self.log)(LogLevel::Error, &message),
+            Err(message) => nd_log!(Source::Daemon, Priority::Err, "{}", message),
         }
         Ok(())
     }
@@ -683,11 +672,10 @@ impl Parser {
         let chart = self.require_scope("CLABEL_COMMIT", "BEGIN")?;
         if self.clabel_count == 0 {
             let hostname = self.host.hostname();
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD: 'host:{hostname}' got CLABEL_COMMIT, without a CHART or BEGIN. Ignoring it."
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: 'host:{hostname}' got CLABEL_COMMIT, without a CHART or BEGIN. Ignoring it."
             );
             return refuse();
         }
@@ -730,12 +718,11 @@ impl Parser {
             .as_ref()
             .map_or_else(|| "UNSET".to_string(), |c| c.id().to_string());
         let Some(value) = value.filter(|v| !v.is_empty()) else {
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD: 'host:{hostname}/chart:{chart_id}' cannot set {} VARIABLE '{name}' to an empty value",
-                    if global { "HOST" } else { "CHART" }
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: 'host:{hostname}/chart:{chart_id}' cannot set {} VARIABLE '{name}' to an empty value",
+                if global { "HOST" } else { "CHART" }
             );
             return Ok(());
         };
@@ -756,7 +743,7 @@ impl Parser {
                     text(&value[used..])
                 )
             };
-            (self.log)(LogLevel::Error, &message);
+            nd_log!(Source::Daemon, Priority::Err, "{}", message);
         }
         match (global, &chart) {
             (false, Some(chart)) => chart.set_variable(&name, v),
@@ -825,23 +812,21 @@ impl Parser {
     /// `stream_receiver_pluginsd_claimed_id()`.
     fn claimed_id(&mut self, w: &Words) -> Rc {
         let (Some(guid), Some(claim)) = (w.get(1), w.get(2)) else {
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD: command CLAIMED_ID came malformed, machine_guid '{}', claim_id '{}'",
-                    w.get(1).map_or_else(|| "[unset]".to_string(), text),
-                    w.get(2).map_or_else(|| "[unset]".to_string(), text)
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: command CLAIMED_ID came malformed, machine_guid '{}', claim_id '{}'",
+                w.get(1).map_or_else(|| "[unset]".to_string(), text),
+                w.get(2).map_or_else(|| "[unset]".to_string(), text)
             );
             return refuse();
         };
         if uuid_parse_flexi(guid).is_none() {
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD: parameter machine guid to CLAIMED_ID command is not valid UUID. Received: '{}'.",
-                    text(guid)
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: parameter machine guid to CLAIMED_ID command is not valid UUID. Received: '{}'.",
+                text(guid)
             );
             return refuse();
         }
@@ -851,25 +836,23 @@ impl Parser {
             match uuid_parse_flexi(claim) {
                 Some(u) => u,
                 None => {
-                    (self.log)(
-                        LogLevel::Error,
-                        &format!(
-                            "PLUGINSD: parameter claim id to CLAIMED_ID command is not valid UUID. Received: '{}'.",
-                            text(claim)
-                        ),
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Err,
+                        "PLUGINSD: parameter claim id to CLAIMED_ID command is not valid UUID. Received: '{}'.",
+                        text(claim)
                     );
                     return refuse();
                 }
             }
         };
         if guid != self.host.machine_guid().as_bytes() {
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD: received claim id for host '{}' but it came over the connection of '{}'",
-                    text(guid),
-                    self.host.machine_guid()
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: received claim id for host '{}' but it came over the connection of '{}'",
+                text(guid),
+                self.host.machine_guid()
             );
             return Ok(());
         }
@@ -893,28 +876,26 @@ impl Parser {
         let hostname = self.host.hostname();
         let (Some(name), Some(timeout_s), Some(help)) = (name, timeout_s, help) else {
             let shown = |v: Option<&[u8]>| v.map_or_else(|| "(unset)".to_string(), text);
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD: 'host:{hostname}' got a FUNCTION, without providing the required data (global = '{}', name = '{}', timeout = '{}', priority = '{}', version = '{}', help = '{}'). Ignoring it.",
-                    if global { "yes" } else { "no" },
-                    shown(name),
-                    shown(timeout_s),
-                    shown(priority),
-                    shown(version),
-                    shown(help)
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: 'host:{hostname}' got a FUNCTION, without providing the required data (global = '{}', name = '{}', timeout = '{}', priority = '{}', version = '{}', help = '{}'). Ignoring it.",
+                if global { "yes" } else { "no" },
+                shown(name),
+                shown(timeout_s),
+                shown(priority),
+                shown(version),
+                shown(help)
             );
             return refuse();
         };
         if !global && let Some(chart) = &self.scope {
-            (self.log)(
-                LogLevel::Notice,
-                &format!(
-                    "PLUGINSD: 'host:{hostname}' got a FUNCTION '{}' within chart '{}' scope - chart-scoped functions are no longer supported, registering it host-wide",
-                    text(name),
-                    chart.id()
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Notice,
+                "PLUGINSD: 'host:{hostname}' got a FUNCTION '{}' within chart '{}' scope - chart-scoped functions are no longer supported, registering it host-wide",
+                text(name),
+                chart.id()
             );
         }
         let positive_or =
@@ -939,7 +920,7 @@ impl Parser {
             },
         );
         if let Err(warning) = registered {
-            (self.log)(LogLevel::Warning, &warning);
+            nd_log!(Source::Daemon, Priority::Warning, "{}", warning);
         }
         self.data_collections_count += 1;
         Ok(())
@@ -954,11 +935,10 @@ impl Parser {
         };
         let hostname = self.host.hostname();
         let Some(name) = w.get(i).filter(|n| !n.is_empty()) else {
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD: 'host:{hostname}' got a FUNCTION_DEL without a name. Ignoring it."
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: 'host:{hostname}' got a FUNCTION_DEL without a name. Ignoring it."
             );
             return refuse();
         };
@@ -966,14 +946,13 @@ impl Parser {
             nrpc::Unregistered::Removed => {}
             not_removed => {
                 if let nrpc::Unregistered::Refused(warning) = not_removed {
-                    (self.log)(LogLevel::Warning, &warning);
+                    nd_log!(Source::Daemon, Priority::Warning, "{}", warning);
                 }
-                (self.log)(
-                    LogLevel::Debug,
-                    &format!(
-                        "PLUGINSD: 'host:{hostname}' FUNCTION_DEL '{}' - function not found or ownership mismatch",
-                        text(name)
-                    ),
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Debug,
+                    "PLUGINSD: 'host:{hostname}' FUNCTION_DEL '{}' - function not found or ownership mismatch",
+                    text(name)
                 );
             }
         }
@@ -983,12 +962,11 @@ impl Parser {
 
     /// `pluginsd_call_acquire()`: this parent never calls a child's functions yet, so no transaction is known.
     fn call_not_found(&mut self, keyword: &str, transaction: Option<&[u8]>) {
-        (self.log)(
-            LogLevel::Error,
-            &format!(
-                "got a {keyword} for transaction '{}', but the transaction is not found.",
-                transaction.map_or_else(|| "(unset)".to_string(), text)
-            ),
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "got a {keyword} for transaction '{}', but the transaction is not found.",
+            transaction.map_or_else(|| "(unset)".to_string(), text)
         );
     }
 
@@ -999,15 +977,14 @@ impl Parser {
         let fields = [w.get(1), w.get(2), w.get(3), w.get(4)];
         if fields.iter().any(|f| f.is_none_or(<[u8]>::is_empty)) {
             let shown = |v: Option<&[u8]>| v.map_or_else(|| "(unset)".to_string(), text);
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "got a FUNCTION_RESULT_BEGIN without providing the required data (key = '{}', status = '{}', format = '{}', expires = '{}').",
-                    shown(fields[0]),
-                    shown(fields[1]),
-                    shown(fields[2]),
-                    shown(fields[3])
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "got a FUNCTION_RESULT_BEGIN without providing the required data (key = '{}', status = '{}', format = '{}', expires = '{}').",
+                shown(fields[0]),
+                shown(fields[1]),
+                shown(fields[2]),
+                shown(fields[3])
             );
         }
         self.call_not_found("FUNCTION_RESULT_BEGIN", transaction);
@@ -1025,9 +1002,11 @@ impl Parser {
         let keyword = w.get(1).unwrap_or(b"");
         // STREAM_PATH and ML_MODEL payloads come with paths and ML.
         if keyword != b"STREAM_PATH" && keyword != b"ML_MODEL" {
-            (self.log)(
-                LogLevel::Error,
-                &format!("PLUGINSD: invalid JSON payload keyword '{}'", text(keyword)),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: invalid JSON payload keyword '{}'",
+                text(keyword)
             );
         }
         self.deferred = Some(DeferredBody::new("JSON_PAYLOAD_END"));
@@ -1394,17 +1373,16 @@ impl Parser {
                 return Ok(());
             }
             let hostname = self.host.hostname();
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD REPLAY ERROR: 'host:{hostname}/chart:{}' got a RBEGIN from {start} to {end}, but timestamps are invalid (now is {wall} [{}], tolerance {tolerance}). Ignoring RSET",
-                    chart.id(),
-                    if child_now_s.is_some() && wall > 0 {
-                        "child wall clock"
-                    } else {
-                        "parent wall clock"
-                    }
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD REPLAY ERROR: 'host:{hostname}/chart:{}' got a RBEGIN from {start} to {end}, but timestamps are invalid (now is {wall} [{}], tolerance {tolerance}). Ignoring RSET",
+                chart.id(),
+                if child_now_s.is_some() && wall > 0 {
+                    "child wall clock"
+                } else {
+                    "parent wall clock"
+                }
             );
         }
         self.replay = Replay::default();
@@ -1421,12 +1399,11 @@ impl Parser {
         let chart = self.require_scope("RSET", "RBEGIN")?;
         if !self.replay.rset_enabled {
             let hostname = self.host.hostname();
-            (self.log)(
-                LogLevel::Error,
-                &format!(
-                    "PLUGINSD REPLAY ERROR: 'host:{hostname}/chart:{}' got a RSET but it is disabled by RBEGIN errors",
-                    chart.id()
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD REPLAY ERROR: 'host:{hostname}/chart:{}' got a RSET but it is disabled by RBEGIN errors",
+                chart.id()
             );
             return Ok(());
         }
@@ -1526,7 +1503,11 @@ impl Parser {
     /// `pluginsd_replay_end()`.
     fn replay_end(&mut self, w: &Words) -> Rc {
         if w.len() < 7 {
-            (self.log)(LogLevel::Error, "REPLAY: malformed REND command");
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "REPLAY: malformed REND command"
+            );
             if let Some(chart) = &self.scope {
                 chart.receiver().replication_empty_response_count = 0;
             }
@@ -1536,7 +1517,7 @@ impl Parser {
         let update_every_child = number(1);
         let first_entry_child = number(2);
         let last_entry_child = number(3);
-        let start_streaming = parse_enable_streaming(w.get(4), &mut self.log);
+        let start_streaming = parse_enable_streaming(w.get(4));
         let first_requested = number(5);
         let last_requested = number(6);
         let child_world_time = match w.get(7).filter(|v| !v.is_empty()) {
@@ -1574,12 +1555,11 @@ impl Parser {
             });
             if was_finished {
                 let hostname = self.host.hostname();
-                (self.log)(
-                    LogLevel::Info,
-                    &format!(
-                        "PLUGINSD REPLAY ERROR: 'host:{hostname}/chart:{}' got a REND with enable_streaming = true, but there was no replication in progress for this chart.",
-                        chart.id()
-                    ),
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Info,
+                    "PLUGINSD REPLAY ERROR: 'host:{hostname}/chart:{}' got a REND with enable_streaming = true, but there was no replication in progress for this chart.",
+                    chart.id()
                 );
             }
             self.clear_scope();
@@ -1600,13 +1580,12 @@ impl Parser {
         };
         if stuck {
             let hostname = self.host.hostname();
-            (self.log)(
-                LogLevel::Info,
-                &format!(
-                    "PLUGINSD REPLAY: 'host:{hostname}/chart:{}' detected stuck replication loop. Parent last entry: {local_last}, Child last entry: {last_entry_child}, Gap: 0 seconds, Empty responses: {}. Forcing replication to finish.",
-                    chart.id(),
-                    chart.receiver().replication_empty_response_count
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Info,
+                "PLUGINSD REPLAY: 'host:{hostname}/chart:{}' detected stuck replication loop. Parent last entry: {local_last}, Child last entry: {last_entry_child}, Gap: 0 seconds, Empty responses: {}. Forcing replication to finish.",
+                chart.id(),
+                chart.receiver().replication_empty_response_count
             );
             chart.receiver().replication_empty_response_count = 0;
             chart.update_meta(|m| {

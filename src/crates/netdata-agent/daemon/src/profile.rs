@@ -1,7 +1,8 @@
 //! The node profile (`src/daemon/config/netdata-conf-profile.c`): standalone, parent, child or IoT, detected from the
 //! hardware and stream.conf unless `[global] profile` names one, and the malloc settings it implies.
 
-use netdata_agent_inicfg::{Config, LogLevel, SECTION_GLOBAL};
+use netdata_agent_inicfg::{Config, SECTION_GLOBAL};
+use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_text::line_splitter::{Separators, quoted_strings_splitter};
 
 /// The system profiles (`ND_PROFILE`), as bits in the order of their names table.
@@ -70,12 +71,14 @@ pub fn detect(
     for word in quoted_strings_splitter(&text, 100, Separators::Whitespace) {
         match NAMES.iter().find(|(name, _)| name.as_bytes() == word) {
             Some((_, bit)) => bits |= bit,
-            None => c.log(
-                LogLevel::Error,
+            None => nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "{}",
                 format!(
                     "Cannot understand netdata.conf [global].profile = {}",
                     String::from_utf8_lossy(&word)
-                ),
+                )
             ),
         }
     }
@@ -89,9 +92,11 @@ pub fn detect(
     if bits != started {
         let text = to_text(bits);
         c.set(SECTION_GLOBAL, "profile", &text);
-        c.log(
-            LogLevel::Warning,
-            format!("The netdata.conf setting [global].profile has been overwritten to '{text}'"),
+        nd_log!(
+            Source::Daemon,
+            Priority::Warning,
+            "{}",
+            format!("The netdata.conf setting [global].profile has been overwritten to '{text}'")
         );
     }
     match bits & SYSTEM {
@@ -113,9 +118,11 @@ pub fn setup_malloc(c: &mut Config, profile: Profile, system_cpus: i64) {
     };
     let arenas = arena_option(c, "glibc malloc arena max for plugins", arenas, system_cpus);
     if let Err(err) = netdata_agent_sys::setenv("MALLOC_ARENA_MAX", &arenas.to_string()) {
-        c.log(
-            LogLevel::Error,
-            format!("cannot export MALLOC_ARENA_MAX: {err}"),
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "{}",
+            format!("cannot export MALLOC_ARENA_MAX: {err}")
         );
     }
     // HAVE_C_MALLOPT: glibc only; musl builds have neither the option nor the call.
@@ -136,9 +143,11 @@ fn arena_option(c: &mut Config, name: &str, default: i64, system_cpus: i64) -> i
     }
     let arenas = if wanted < 1 { 1 } else { system_cpus };
     c.set_number(SECTION_GLOBAL, name, arenas);
-    c.log(
-        LogLevel::Notice,
-        format!("malloc arenas can be from 1 to {system_cpus}. Setting it to {arenas}"),
+    nd_log!(
+        Source::Daemon,
+        Priority::Notice,
+        "{}",
+        format!("malloc arenas can be from 1 to {system_cpus}. Setting it to {arenas}")
     );
     arenas
 }

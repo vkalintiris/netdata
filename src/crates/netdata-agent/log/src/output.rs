@@ -624,7 +624,29 @@ pub(crate) fn stdin_init() {
     }
 }
 
-/// `nd_log_chown_log_files()`: every open log descriptor that is a regular file and not already owned.
+/// `chown_open_file()`: a regular file open on `fd` that another account owns goes to `uid:gid`.
+pub(crate) fn chown_fd(fd: BorrowedFd<'_>, uid: u32, gid: u32, errors: &mut OpenErrors) {
+    let number = fd.as_raw_fd();
+    let meta = match nix::sys::stat::fstat(fd) {
+        Ok(meta) => meta,
+        Err(errno) => {
+            errors.push((format!("Cannot fstat() fd {number}"), errno as i32));
+            return;
+        }
+    };
+    let regular = meta.st_mode & nix::libc::S_IFMT == nix::libc::S_IFREG;
+    if (meta.st_uid != uid || meta.st_gid != gid) && regular {
+        if let Err(errno) = nix::unistd::fchown(
+            fd,
+            Some(nix::unistd::Uid::from_raw(uid)),
+            Some(nix::unistd::Gid::from_raw(gid)),
+        ) {
+            errors.push((format!("Cannot fchown() fd {number}."), errno as i32));
+        }
+    }
+}
+
+/// `nd_log_chown_log_files()`: every open log descriptor.
 pub(crate) fn chown_log_files(uid: u32, gid: u32) -> OpenErrors {
     let fds: Vec<Fd> = read(&G.sources)
         .iter()
@@ -633,25 +655,8 @@ pub(crate) fn chown_log_files(uid: u32, gid: u32) -> OpenErrors {
         .collect();
     let mut errors = OpenErrors::new();
     for fd in &fds {
-        let Some(borrowed) = borrowed(fd) else {
-            continue;
-        };
-        let meta = match nix::sys::stat::fstat(borrowed) {
-            Ok(meta) => meta,
-            Err(errno) => {
-                errors.push((format!("Cannot fstat() fd {}", fd.number()), errno as i32));
-                continue;
-            }
-        };
-        let regular = meta.st_mode & nix::libc::S_IFMT == nix::libc::S_IFREG;
-        if (meta.st_uid != uid || meta.st_gid != gid) && regular {
-            if let Err(errno) = nix::unistd::fchown(
-                borrowed,
-                Some(nix::unistd::Uid::from_raw(uid)),
-                Some(nix::unistd::Gid::from_raw(gid)),
-            ) {
-                errors.push((format!("Cannot fchown() fd {}.", fd.number()), errno as i32));
-            }
+        if let Some(borrowed) = borrowed(fd) {
+            chown_fd(borrowed, uid, gid, &mut errors);
         }
     }
     errors

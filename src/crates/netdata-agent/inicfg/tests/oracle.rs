@@ -36,7 +36,9 @@ fn run(script: &str, fixtures: &Path) -> String {
         write!(out, "{} -> ", f.join("\t")).unwrap();
         let result = match g(0) {
             "load" => {
-                let loaded = cfg.load(&fixtures.join(g(1)), g(2) == "1", opt(g(3)));
+                let loaded = cfg
+                    .load(&fixtures.join(g(1)), g(2) == "1", opt(g(3)))
+                    .is_ok();
                 u8::from(loaded).to_string()
             }
             "get" => text(cfg.get(g(1), g(2), opt(g(3)))),

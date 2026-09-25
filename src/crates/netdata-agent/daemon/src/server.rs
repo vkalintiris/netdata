@@ -1,6 +1,7 @@
 //! The web workers: each pool thread polls every listener, accepts, and serves its clients inline, as the C
 //! `static-threaded` web server does (`src/web/server/static/static-threaded.c`, `web_client.c`).
 
+use netdata_agent_log::{Priority, Source, nd_log};
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -18,7 +19,7 @@ use netdata_agent_text::print::html_escape;
 use netdata_agent_rrd::host::Hosts;
 use netdata_agent_streaming::receiver::{PreAdmission, Receivers};
 
-use netdata_agent_inicfg::{Config, LogLevel, SECTION_WEB};
+use netdata_agent_inicfg::{Config, SECTION_WEB};
 
 use crate::acl::{self, WebAcl};
 use crate::{api, router};
@@ -32,7 +33,6 @@ pub struct Shared {
     pub x_frame_options: Option<String>,
     /// The `[web]` access lists.
     pub acl: WebAcl,
-    pub log: acl::Logger,
     /// `[web] timeout for first request` and `disconnect idle clients after`, in seconds (0 disables).
     pub first_request_timeout_s: u64,
     pub idle_timeout_s: u64,
@@ -247,27 +247,24 @@ impl WebWorker {
                         peer: peer.ip(),
                         host: String::new(),
                     };
-                    let log = self.shared.log;
                     if !acl::connection_allowed(
                         &mut identity,
                         &self.shared.acl.connections,
                         "connection",
-                        log,
                     ) {
-                        log(
-                            LogLevel::Warning,
-                            &format!(
-                                "Permission denied for client '{}', port '{}'",
-                                identity.ip,
-                                peer.port()
-                            ),
+                        nd_log!(
+                            Source::Daemon,
+                            Priority::Warning,
+                            "Permission denied for client '{}', port '{}'",
+                            identity.ip,
+                            peer.port()
                         );
                         continue;
                     }
-                    let client_acl =
-                        self.shared
-                            .acl
-                            .matches(&mut identity, self.listener_acls[index], log);
+                    let client_acl = self
+                        .shared
+                        .acl
+                        .matches(&mut identity, self.listener_acls[index]);
                     let slot = self
                         .clients
                         .iter()
@@ -323,7 +320,7 @@ impl WebWorker {
                     } else {
                         "POLLFD: LISTENER: accept() failed.".to_string()
                     };
-                    (self.shared.log)(LogLevel::Error, &message);
+                    nd_log!(Source::Daemon, Priority::Err, "{}", message);
                     break;
                 }
             }

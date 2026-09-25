@@ -4,7 +4,8 @@
 
 use std::path::Path;
 
-use netdata_agent_inicfg::{Config, LogLevel};
+use netdata_agent_inicfg::Config;
+use netdata_agent_log::{Priority, Source, errno_of, nd_log};
 use netdata_agent_text::duration::duration_parse;
 use netdata_agent_text::parse::str2ndd;
 use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatternMode};
@@ -161,21 +162,15 @@ fn text(v: Option<Vec<u8>>) -> String {
 
 impl StreamConf {
     /// `stream_conf_load_internal()`: the user file, else the stock one, then the renames.
-    fn load_file(&mut self, user_dir: &str, stock_dir: &str, log: &mut impl FnMut(LogLevel, &str)) {
+    fn load_file(&mut self, user_dir: &str, stock_dir: &str) {
         let user = format!("{user_dir}/stream.conf");
-        if !self.config.load(Path::new(&user), false, None) {
-            log(
-                LogLevel::Info,
-                &format!("CONFIG: cannot load user config '{user}'. Will try stock config."),
-            );
+        if let Err(err) = self.config.load(Path::new(&user), false, None) {
+            nd_log!(Source::Daemon, Priority::Info, errno = errno_of(&err);
+                "CONFIG: cannot load user config '{user}'. Will try stock config.");
             let stock = format!("{stock_dir}/stream.conf");
-            if !self.config.load(Path::new(&stock), false, None) {
-                log(
-                    LogLevel::Info,
-                    &format!(
-                        "CONFIG: cannot load stock config '{stock}'. Running with internal defaults."
-                    ),
-                );
+            if let Err(err) = self.config.load(Path::new(&stock), false, None) {
+                nd_log!(Source::Daemon, Priority::Info, errno = errno_of(&err);
+                    "CONFIG: cannot load stock config '{stock}'. Running with internal defaults.");
             }
         }
         let c = &mut self.config;
@@ -228,9 +223,8 @@ impl StreamConf {
         stock_dir: &str,
         defaults: LoadDefaults,
         is_parent_profile: impl FnOnce(&mut Config, bool, bool) -> bool,
-        log: &mut impl FnMut(LogLevel, &str),
     ) {
-        self.load_file(user_dir, stock_dir, log);
+        self.load_file(user_dir, stock_dir);
         let c = &mut self.config;
         let s = &mut self.send;
         s.enabled = c.get_boolean(SECTION_STREAM, "enabled", s.enabled);
@@ -298,9 +292,10 @@ impl StreamConf {
             !defaults.ssl_validate_certificate,
         );
         if !s.ssl_validate_certificate {
-            log(
-                LogLevel::Info,
-                "SSL: streaming senders will skip SSL certificates verification.",
+            nd_log!(
+                Source::Daemon,
+                Priority::Info,
+                "SSL: streaming senders will skip SSL certificates verification."
             );
         }
         // string_strdupz() turns empty strings into NULL.
@@ -309,13 +304,12 @@ impl StreamConf {
         s.ssl_ca_file = non_empty(c.get_filename(SECTION_STREAM, "CAfile", None));
         if s.enabled && (s.destination.is_empty() || s.api_key.is_empty()) {
             let state = |v: &str| if v.is_empty() { "missing" } else { "present" };
-            log(
-                LogLevel::Error,
-                &format!(
-                    "STREAM [send]: cannot enable sending thread - missing required fields (destination: {}, api key: {})",
-                    state(&s.destination),
-                    state(&s.api_key),
-                ),
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "STREAM [send]: cannot enable sending thread - missing required fields (destination: {}, api key: {})",
+                state(&s.destination),
+                state(&s.api_key)
             );
             s.enabled = false;
         }

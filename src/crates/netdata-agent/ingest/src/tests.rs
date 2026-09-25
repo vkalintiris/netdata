@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use netdata_agent_rrd::host::{Host, HostInfo};
 use netdata_agent_rrd::mode::DbMode;
@@ -31,10 +31,8 @@ fn host() -> Arc<Host> {
     Arc::new(Host::new("guid", false, info))
 }
 
-fn parser(host: &Arc<Host>) -> (Parser, Arc<Mutex<Vec<String>>>) {
-    let logs = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&logs);
-    let parser = Parser::new(
+fn parser(host: &Arc<Host>) -> Parser {
+    Parser::new(
         Arc::clone(host),
         Config {
             capabilities: 0,
@@ -43,9 +41,16 @@ fn parser(host: &Arc<Host>) -> (Parser, Arc<Mutex<Vec<String>>>) {
             now: || (NOW, 0),
             gap_when_lost_iterations_above: 3,
         },
-        Box::new(move |_, m| sink.lock().unwrap().push(m.to_string())),
-    );
-    (parser, logs)
+    )
+}
+
+/// Feeds the lines and returns the messages the parser logged meanwhile.
+fn feed_logged(p: &mut Parser, lines: &[&str]) -> (Vec<bool>, Vec<String>) {
+    let (results, records) = netdata_agent_log::capture(|| feed_all(p, lines));
+    (
+        results,
+        records.into_iter().filter_map(|r| r.message).collect(),
+    )
 }
 
 fn feed_all(p: &mut Parser, lines: &[&str]) -> Vec<bool> {
@@ -66,7 +71,7 @@ const DEFINE: [&str; 5] = [
 #[test]
 fn a_chart_is_defined_and_collected_with_v2() {
     let h = host();
-    let (mut p, _) = parser(&h);
+    let mut p = parser(&h);
     assert!(feed_all(&mut p, &DEFINE).iter().all(|&ok| ok));
     let chart = h.charts().find("test.c1").unwrap();
     let meta = chart.meta();
@@ -105,7 +110,7 @@ fn a_chart_is_defined_and_collected_with_v2() {
 #[test]
 fn chart_definition_end_asks_for_replication() {
     let h = host();
-    let (mut p, _) = parser(&h);
+    let mut p = parser(&h);
     feed_all(&mut p, &DEFINE);
     // The child has the last 100 seconds; this host has nothing, so it asks from now - 3600 (step) onwards.
     let first = NOW - 100;
@@ -123,7 +128,7 @@ fn chart_definition_end_asks_for_replication() {
 #[test]
 fn replication_rows_are_stored_and_rend_finishes() {
     let h = host();
-    let (mut p, _) = parser(&h);
+    let mut p = parser(&h);
     feed_all(&mut p, &DEFINE);
     let (s, e) = (NOW - 20, NOW - 19);
     let lines = [
@@ -164,21 +169,14 @@ fn errors_disconnect() {
     ];
     for lines in cases {
         let h = host();
-        let (mut p, logs) = parser(&h);
-        let results = feed_all(&mut p, lines);
+        let mut p = parser(&h);
+        let (results, logs) = feed_logged(&mut p, lines);
         assert_eq!(results.last(), Some(&false), "{lines:?}");
-        assert!(
-            logs.lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .contains("parser_action("),
-            "{lines:?}"
-        );
+        assert!(logs.last().unwrap().contains("parser_action("), "{lines:?}");
     }
     // Blank lines and deferred JSON bodies never reach the keyword table.
     let h = host();
-    let (mut p, _) = parser(&h);
+    let mut p = parser(&h);
     assert!(
         feed_all(
             &mut p,
@@ -202,7 +200,7 @@ static CLOCK_UT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::ne
 fn v1_collection_times_keep_their_microseconds() {
     use std::sync::atomic::Ordering::Relaxed;
     let h = host();
-    let (mut p, _) = parser(&h);
+    let mut p = parser(&h);
     p.config.now = || {
         let ut = CLOCK_UT.load(Relaxed);
         (ut / 1_000_000, ut % 1_000_000)
@@ -237,7 +235,7 @@ fn v1_collection_times_keep_their_microseconds() {
 #[test]
 fn v1_collections_are_stored_on_the_grid() {
     let h = host();
-    let (mut p, _) = parser(&h);
+    let mut p = parser(&h);
     feed_all(&mut p, &DEFINE[..2]);
     // Five collections one second apart, timed by the child (END sec usec); the first only starts the clock.
     for i in 0..5 {
@@ -263,7 +261,7 @@ fn v1_collections_are_stored_on_the_grid() {
 #[test]
 fn functions_are_registered_on_the_host() {
     let h = host();
-    let (mut p, logs) = parser(&h);
+    let mut p = parser(&h);
     let lines = [
         "FUNCTION GLOBAL \"processes\" 10 \"Running processes\" \"top\" \"0x13\" 5",
         "FUNCTION GLOBAL \"config\" 120 \"Dynamic configuration\" \"config\" 0x8 1000",
@@ -276,7 +274,8 @@ fn functions_are_registered_on_the_host() {
         "FUNCTION_RESULT_END",
         "DYNCFG_ENABLE anything",
     ];
-    assert!(feed_all(&mut p, &lines).iter().all(|&ok| ok));
+    let (results, logs) = feed_logged(&mut p, &lines);
+    assert!(results.iter().all(|&ok| ok));
     let names: Vec<_> = h
         .functions()
         .all()
@@ -302,7 +301,6 @@ fn functions_are_registered_on_the_host() {
     );
     // FUNCTION x3, FUNCTION_DEL x2 and the finished result.
     assert_eq!(p.data_collections_count, 6);
-    let logs = logs.lock().unwrap();
     assert!(
         logs.iter()
             .any(|l| l.contains("refusing to unregister dyncfg method 'config'"))
@@ -313,15 +311,16 @@ fn functions_are_registered_on_the_host() {
     );
 
     // The name, timeout and help are required.
-    let (mut p, logs) = parser(&h);
-    assert!(!p.feed(b"FUNCTION GLOBAL \"x\" 10\n"));
-    assert!(logs.lock().unwrap()[0].contains("without providing the required data (global = 'yes', name = 'x', timeout = '10', priority = '(unset)', version = '(unset)', help = '(unset)')"));
+    let mut p = parser(&h);
+    let (results, logs) = feed_logged(&mut p, &["FUNCTION GLOBAL \"x\" 10"]);
+    assert_eq!(results, [false]);
+    assert!(logs[0].contains("without providing the required data (global = 'yes', name = 'x', timeout = '10', priority = '(unset)', version = '(unset)', help = '(unset)')"));
 }
 
 #[test]
 fn a_label_change_resyncs_the_instance_hidden_flag() {
     let h = host();
-    let (mut p, _) = parser(&h);
+    let mut p = parser(&h);
     feed_all(&mut p, &DEFINE);
     let ri = || {
         h.charts()

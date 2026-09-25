@@ -284,9 +284,16 @@ pub fn reopen_log_files(log: bool) {
     }
 }
 
-/// `nd_log_chown_log_files()`, after the user switch.
+/// `nd_log_chown_log_files()`, before the user switch.
 pub fn chown_log_files(uid: u32, gid: u32) {
     log_errors(crate::output::chown_log_files(uid, gid));
+}
+
+/// `chown_open_file()`: a regular file open on `fd` goes to `uid:gid`; failures are logged.
+pub fn chown_open_file(fd: impl std::os::fd::AsFd, uid: u32, gid: u32) {
+    let mut errors = OpenErrors::new();
+    crate::output::chown_fd(fd.as_fd(), uid, gid, &mut errors);
+    log_errors(errors);
 }
 
 /// `netdata_configured_host_prefix` as the journal socket search sees it.
