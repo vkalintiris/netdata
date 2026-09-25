@@ -77,6 +77,9 @@ enum Mode {
     },
     /// Check only that the store holds what the capture says was sent.
     Ingest,
+    /// Count what the capture holds (records, spans, fields per span); prints
+    /// counts only.
+    Stats,
 }
 
 struct Agent {
@@ -247,8 +250,75 @@ fn clean(outcome: &Outcome) -> bool {
             .all(|w| w.check.judged() && w.findings.is_empty())
 }
 
+/// Streams the capture and prints its shape: no stored value is printed.
+fn stats(args: &Args) -> Result<(), String> {
+    let path = required(&args.capture, "capture")?;
+    let file = std::fs::File::open(&path).map_err(|e| format!("capture: {e}"))?;
+    let mut reader = otel_oracle::capture::Reader::new(std::io::BufReader::new(file), None)
+        .map_err(|e| format!("capture: {e}"))?;
+    let mut records: BTreeMap<(&str, bool), u64> = BTreeMap::new();
+    let (mut spans, mut fields, mut values, mut widest) = (0u64, 0u64, 0u64, 0usize);
+    let mut names = std::collections::BTreeSet::new();
+    let mut received: Option<(i64, i64)> = None;
+    while let Some(record) = reader.next_record().map_err(|e| format!("capture: {e}"))? {
+        let at = record.received_unix_ns;
+        received = Some(received.map_or((at, at), |(first, last)| (first.min(at), last.max(at))));
+        let signal = match record.signal {
+            otel_oracle::capture::Signal::Traces => "traces",
+            otel_oracle::capture::Signal::Logs => "logs",
+        };
+        *records.entry((signal, record.acknowledged())).or_default() += 1;
+        if signal != "traces" || !record.acknowledged() {
+            continue;
+        }
+        let Ok(request) = record.traces() else {
+            continue;
+        };
+        for span in otel_oracle::model::spans_of_request(&request, 0) {
+            spans += 1;
+            fields += span.fields.len() as u64;
+            widest = widest.max(span.fields.len());
+            for (name, set) in &span.fields {
+                values += set.len() as u64;
+                if !names.contains(name.as_str()) {
+                    names.insert(name.clone());
+                }
+            }
+        }
+    }
+    for ((signal, ok), count) in &records {
+        let answer = if *ok { "ok" } else { "not ok" };
+        println!("records {signal} {answer}: {count}");
+    }
+    let minutes = received.map_or(0.0, |(first, last)| (last - first) as f64 / 60e9);
+    println!("minutes: {minutes:.1}");
+    println!("spans in ok traces records: {spans}");
+    if spans > 0 && minutes > 0.0 {
+        println!("spans per minute: {:.0}", spans as f64 / minutes);
+        println!(
+            "fields per span: {:.1} (widest {widest})",
+            fields as f64 / spans as f64
+        );
+        println!("values per span: {:.1}", values as f64 / spans as f64);
+    }
+    println!("distinct field names: {}", names.len());
+    if let Some(cut) = reader.cut() {
+        println!("a last record being written: {cut} bytes");
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args = Args::parse();
+    if matches!(args.mode, Mode::Stats) {
+        return match stats(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(why) => {
+                eprintln!("otel-oracle: {why}");
+                ExitCode::from(2)
+            }
+        };
+    }
     match live(&args) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(1),
@@ -318,7 +388,7 @@ fn live(args: &Args) -> Result<bool, String> {
             };
             (Some(agent), true)
         }
-        Mode::Ingest => (None, false),
+        Mode::Ingest | Mode::Stats => (None, false),
     };
     let config = Config {
         capture,
