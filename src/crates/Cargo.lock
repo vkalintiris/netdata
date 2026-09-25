@@ -3606,14 +3606,19 @@ dependencies = [
 name = "otel-oracle"
 version = "0.1.3"
 dependencies = [
+ "bumpalo",
  "bytes",
  "clap",
+ "file-registry",
+ "ng-flatten",
  "opentelemetry-proto",
  "prost",
+ "sfst",
  "tempfile",
  "tokio",
  "tokio-stream",
  "tonic",
+ "wal",
 ]
 
 [[package]]
