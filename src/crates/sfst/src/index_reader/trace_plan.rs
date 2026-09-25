@@ -793,7 +793,7 @@ impl IndexReader<'_> {
                 Ok((Part::Ready(matched), presence.map(Part::Ready)))
             }
             FieldLocation::Mid(idx) => {
-                let chunk = self.sfst.mid_field(idx)?;
+                let chunk = self.mid_field(idx)?;
                 let mut matched = PosSet::empty(total);
                 let mut presence = want_presence.then(|| PosSet::empty(total));
                 chunk.for_each(|kv_bytes, bv| {
@@ -807,7 +807,7 @@ impl IndexReader<'_> {
                 Ok((Part::Ready(matched), presence.map(Part::Ready)))
             }
             FieldLocation::High(idx) => {
-                let hf = self.sfst.high_field(idx)?;
+                let hf = self.high_field(idx)?;
                 let base = self.high_kv_id(idx, 0).0;
                 let mut targets = KvIdSet::new(base, hf.len() as u32);
                 let mut mask: u8 = 0;
@@ -899,7 +899,7 @@ impl IndexReader<'_> {
                 });
             }
             Some(FieldLocation::Mid(idx)) => {
-                let chunk = self.sfst.mid_field(idx)?;
+                let chunk = self.mid_field(idx)?;
                 let mut off = 0u32;
                 chunk.for_each(|kv_bytes, _| {
                     if hits(kv_bytes) {
@@ -909,7 +909,7 @@ impl IndexReader<'_> {
                 });
             }
             Some(FieldLocation::High(idx)) => {
-                let hf = self.sfst.high_field(idx)?;
+                let hf = self.high_field(idx)?;
                 for (local, key) in hf.keys().enumerate() {
                     if hits(key) {
                         out.insert(start + local as u32);
