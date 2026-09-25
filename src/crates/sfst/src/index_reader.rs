@@ -1143,7 +1143,7 @@ impl<'a> IndexReader<'a> {
             if self.has_trace_id_index() {
                 let index = self.trace_id_index()?;
                 for id in candidates {
-                    positions.extend_from_slice(index.positions(id, &trace_ids));
+                    positions.extend_from_slice(index.positions(id, trace_ids));
                 }
             } else {
                 for (position, id) in trace_ids.iter().enumerate() {
