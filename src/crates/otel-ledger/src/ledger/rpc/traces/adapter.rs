@@ -876,7 +876,7 @@ pub(crate) fn to_explore_response(
             });
         }
         HistogramWire {
-            status: status.clone(),
+            status: StatusWire::from(&h.status),
             stack: h.stack,
             dimensions: h.dimensions,
             buckets,

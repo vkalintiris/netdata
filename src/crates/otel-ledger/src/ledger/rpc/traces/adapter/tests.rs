@@ -620,3 +620,35 @@ fn explore_chips_become_the_scope_filter() {
         Some("status_code".to_string())
     );
 }
+
+#[test]
+fn explore_histogram_carries_its_own_status() {
+    use sfsq::traces::StatusBuilder;
+    use sfsq::traces::explore::{ExploreData, HistogramData, Totals};
+    let mut facet_only = StatusBuilder::new();
+    facet_only.add(sfsq::traces::PartialReason::FacetHighCard);
+    let data = ExploreData {
+        status: facet_only.finish(),
+        sources: 1,
+        histogram: Some(HistogramData {
+            status: QueryStatus::Complete,
+            stack: "status_code".to_string(),
+            dimensions: Vec::new(),
+            buckets: Vec::new(),
+            totals: Totals {
+                count: 0,
+                errors: 0,
+                percentiles: None,
+            },
+            percentiles: false,
+        }),
+        facets: None,
+    };
+    let grid = sfst::Grid::new(1_000_000_000, 1_000_000_000, 1);
+    let v = serde_json::to_value(to_explore_response(data, grid, 1, 2)).unwrap();
+    assert_eq!(
+        v["data"]["status"],
+        json!({"partial": [{"reason": "facet_high_card", "count": 1}]})
+    );
+    assert_eq!(v["data"]["histogram"]["status"], json!({"complete": true}));
+}
