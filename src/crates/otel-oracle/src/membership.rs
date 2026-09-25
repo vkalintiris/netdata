@@ -281,14 +281,51 @@ pub fn read_wal(path: &Path, min_entries: u32) -> Result<Vec<Unit>, MembershipEr
     Ok(units)
 }
 
+/// A WAL without a sealed file from an older agent instance than the newest
+/// WAL: the engine skips it until it is sealed, so windows that overlap it
+/// cannot be judged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleWal {
+    pub path: PathBuf,
+    /// Start seconds of its oldest and newest rows; `None` when it has none,
+    /// or cannot be read (then it overlaps every window).
+    pub seconds: Option<(u32, u32)>,
+    pub readable: bool,
+}
+
+impl StaleWal {
+    fn read(path: PathBuf, min_entries: u32) -> StaleWal {
+        match read_wal(&path, min_entries) {
+            Ok(units) => {
+                let rows: Vec<RowKey> = units.into_iter().flat_map(|unit| unit.rows).collect();
+                StaleWal {
+                    seconds: seconds_of(&rows),
+                    path,
+                    readable: true,
+                }
+            }
+            Err(_) => StaleWal {
+                path,
+                seconds: None,
+                readable: false,
+            },
+        }
+    }
+
+    /// Whether it may hold rows of the window `[after_s, before_s)`.
+    pub fn overlaps(&self, after_s: u32, before_s: u32) -> bool {
+        !self.readable
+            || self
+                .seconds
+                .is_some_and(|(min, max)| max >= after_s && min < before_s)
+    }
+}
+
 /// Every unit of a traces store directory (`<run>/lib/otel/traces`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Membership {
     pub units: Vec<Unit>,
-    /// WALs without a sealed file from an older agent instance than the newest
-    /// WAL: the engine skips them until they are sealed, so windows that
-    /// overlap them cannot be judged.
-    pub stale_wals: Vec<PathBuf>,
+    pub stale_wals: Vec<StaleWal>,
 }
 
 fn files(dir: &Path, extension: &str) -> Vec<PathBuf> {
@@ -332,7 +369,7 @@ pub fn read_store(store: &Path, min_entries: u32) -> Result<Membership, Membersh
         .map(|(_, stem, _)| stem.instance.clone());
     for (_, stem, path) in live {
         if newest_instance.as_deref() != Some(stem.instance.as_str()) {
-            out.stale_wals.push(path);
+            out.stale_wals.push(StaleWal::read(path, min_entries));
             continue;
         }
         out.units.extend(read_wal(&path, min_entries)?);

@@ -185,7 +185,17 @@ fn a_wal_left_by_an_older_agent_instance_is_set_aside() {
 
     let read = membership::read_store(store.path(), 100).unwrap();
 
-    assert_eq!(read.stale_wals, vec![older]);
+    let second = u32::try_from(BASE_NS / 1_000_000_000).unwrap();
+    assert_eq!(
+        read.stale_wals,
+        vec![membership::StaleWal {
+            path: older,
+            seconds: Some((second + 1, second + 2)),
+            readable: true,
+        }]
+    );
+    assert!(read.stale_wals[0].overlaps(second + 2, second + 3));
+    assert!(!read.stale_wals[0].overlaps(second + 3, second + 4));
     assert_eq!(
         kinds_and_rows(&read),
         vec![(UnitKind::Tail(0), keys(&[&a]))]

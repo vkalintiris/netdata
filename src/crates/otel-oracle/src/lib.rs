@@ -15,11 +15,13 @@
 //! `otel-tee` binary in front of the lab agent, [`ingest`] replays which of
 //! them the agent's ingestion window kept, and [`membership`] reads which rows
 //! the agent's store holds and in which unit (the only module allowed to read
-//! the store, and only its id, time and duration columns).
+//! the store, and only its id, time and duration columns); [`matching`] pairs
+//! the two and says which windows can be judged.
 
 pub mod calc;
 pub mod capture;
 pub mod corpus;
 pub mod ingest;
+pub mod matching;
 pub mod membership;
 pub mod model;
