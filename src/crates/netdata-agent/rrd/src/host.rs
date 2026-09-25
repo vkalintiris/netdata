@@ -191,6 +191,8 @@ pub struct Host {
     variables: Mutex<HashMap<String, f64>>,
     /// The functions registered for this host (`rrdhost_nrpc_owner()`).
     functions: Registry,
+    /// `host->stream.rcv.status.replication.percent`, as `f64` bits: kept across reconnections.
+    replication_percent: AtomicU64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -215,20 +217,31 @@ impl Host {
             claim_id_of_origin: RwLock::new([0; 16]),
             variables: Mutex::new(HashMap::new()),
             functions: Registry::default(),
+            replication_percent: AtomicU64::new(100f64.to_bits()),
         }
+    }
+
+    /// `host->stream.rcv.status.replication.percent`: 100 from creation, then the receiver's replication progress.
+    pub fn replication_percent(&self) -> f64 {
+        f64::from_bits(
+            self.replication_percent
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    pub fn set_replication_percent(&self, percent: f64) {
+        self.replication_percent
+            .store(percent.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn contexts(&self) -> &Contexts {
         &self.contexts
     }
 
-    /// The records of `rrdhost_create()` for a new host: an invalid machine GUID, the sender's parents, the function
+    /// The records of `rrdhost_create()` for a new host: the sender's parents, an invalid machine GUID, the function
     /// registry (`nrpc_registry_init()`, which prints the host's address), then `Host ... initialized`.
     fn log_created(&self) {
         let info = self.info();
-        if uuid_parse_flexi(self.machine_guid.as_bytes()).is_none() {
-            netdata_log_error!("Host machine GUID {} is not valid", self.machine_guid);
-        }
         if let Some(send) = &info.stream_send {
             for (n, parent) in send.parents().enumerate() {
                 nd_log!(
@@ -239,6 +252,9 @@ impl Host {
                     n + 1
                 );
             }
+        }
+        if uuid_parse_flexi(self.machine_guid.as_bytes()).is_none() {
+            netdata_log_error!("Host machine GUID {} is not valid", self.machine_guid);
         }
         nd_log!(
             Source::Daemon,

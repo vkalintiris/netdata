@@ -356,7 +356,8 @@ impl StreamConf {
         let key_db = text(c.get(key, "db", Some(&defaults.db_mode)));
         let db_mode = text(c.get(guid, "db", Some(&key_db)));
         let key_history = c.get_number(key, "retention", defaults.history);
-        let history = c.get_number(guid, "retention", key_history).max(5) as i32 as i64;
+        // (int) before the minimum, as C
+        let history = i64::from(c.get_number(guid, "retention", key_history) as i32).max(5);
         let key_health =
             c.get_boolean_ondemand(key, "health enabled", i32::from(defaults.health_enabled));
         let health_enabled = c.get_boolean_ondemand(guid, "health enabled", key_health);

@@ -101,7 +101,7 @@ fn timestamp(usec: u64) -> Option<String> {
 }
 
 /// `strerror_r()`'s text for an errno, which is what `std::io::Error` prints before its ` (os error N)`.
-pub(crate) fn strerror(errno: i32) -> String {
+pub fn strerror(errno: i32) -> String {
     let text = std::io::Error::from_raw_os_error(errno).to_string();
     let suffix = format!(" (os error {errno})");
     text.strip_suffix(&suffix).unwrap_or(&text).to_string()

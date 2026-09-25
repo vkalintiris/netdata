@@ -29,6 +29,7 @@ pub enum Reason {
     ReadFailed,
     WriteFailed,
     ClosedByRemote,
+    SocketError,
 }
 
 impl Reason {
@@ -47,6 +48,7 @@ impl Reason {
             Reason::ReadFailed => "DISCONNECTED SOCKET READ FAILED",
             Reason::WriteFailed => "DISCONNECTED SOCKET WRITE FAILED",
             Reason::ClosedByRemote => "DISCONNECTED SOCKET CLOSED BY REMOTE END",
+            Reason::SocketError => "DISCONNECT SOCKET ERROR",
         }
     }
 
@@ -62,6 +64,7 @@ impl Reason {
             Reason::DecompressionFailed => 415,
             Reason::SignaledToStop | Reason::ClosedByRemote => 499,
             Reason::ReadFailed | Reason::WriteFailed => 502,
+            Reason::SocketError => 500,
         }
     }
 }
@@ -210,8 +213,17 @@ pub fn disconnected(
         c.connected_s,
         c.idle_s,
         c.replication_percent,
-        iface.filter(|i| !i.is_empty()).unwrap_or("-")
+        iface.filter(|i| !i.is_empty()).map_or("-", |i| cut(i, 63))
     );
+}
+
+/// The label copied into C's 64-byte buffer.
+fn cut(s: &str, max: usize) -> &str {
+    let mut end = s.len().min(max);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 fn dash(s: &str) -> &str {
@@ -235,6 +247,66 @@ mod tests {
             key: Some("11111111-2222-3333-4444-555555555555".into()),
             machine_guid: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into()),
         }
+    }
+
+    /// `stream_receiver_remove_internal()`'s record: the host's name in the frame, the peer's in the text, C's
+    /// dashes and the interface cut to C's 64-byte buffer.
+    #[test]
+    fn the_disconnect_record_is_c_s() {
+        let child: Arc<[(Field, Value)]> = Arc::from(vec![]);
+        let counters = Counters {
+            thread: 2,
+            msgs: 604,
+            bytes_in: 37139,
+            bytes_out: 3126,
+            connected_s: 36,
+            idle_s: 0,
+            replication_percent: 37.4,
+        };
+        let long = "i".repeat(70);
+        let ((), records) = netdata_agent_log::capture(|| {
+            disconnected(
+                &child,
+                &peer(),
+                "host",
+                Some("lo"),
+                Reason::ClosedByRemote,
+                &counters,
+            );
+            let anonymous = Peer::default();
+            disconnected(
+                &child,
+                &anonymous,
+                "host",
+                Some(&long),
+                Reason::SocketError,
+                &counters,
+            );
+        });
+        let texts: Vec<_> = records
+            .iter()
+            .map(|r| (r.priority, r.message.clone().unwrap()))
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                (
+                    Priority::Err,
+                    "STREAM RCV[2] 'child' [from [localhost]:50390]: receiver disconnected: reason=\"DISCONNECTED \
+                     SOCKET CLOSED BY REMOTE END\" msgs=604 bytes_in=37139 bytes_out=3126 connected=36s idle=0s \
+                     repl=37% iface=lo"
+                        .to_string()
+                ),
+                (
+                    Priority::Err,
+                    format!(
+                        "STREAM RCV[2] '-' [from [-]:-]: receiver disconnected: reason=\"DISCONNECT SOCKET ERROR\" \
+                         msgs=604 bytes_in=37139 bytes_out=3126 connected=36s idle=0s repl=37% iface={}",
+                        "i".repeat(63)
+                    )
+                ),
+            ]
+        );
     }
 
     #[test]

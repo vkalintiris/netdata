@@ -111,31 +111,6 @@ fn parse_sn_flags(flags: &[u8]) -> u32 {
     out
 }
 
-/// `stream_parse_enable_streaming()`.
-fn parse_enable_streaming(v: Option<&[u8]>) -> bool {
-    match v {
-        None | Some(b"") => {
-            nd_log!(
-                Source::Daemon,
-                Priority::Err,
-                "REPLAY: malformed start_streaming boolean value empty"
-            );
-            false
-        }
-        Some(b"false") => false,
-        Some(b"true") => true,
-        Some(other) => {
-            nd_log!(
-                Source::Daemon,
-                Priority::Err,
-                "REPLAY: malformed start_streaming boolean value '{}'",
-                text(other)
-            );
-            false
-        }
-    }
-}
-
 /// The receiver side of one connection.
 pub struct Parser {
     host: Arc<Host>,
@@ -146,6 +121,8 @@ pub struct Parser {
     clabel_changed: bool,
     v2: V2,
     replay: Replay,
+    /// `rpt->replication.first_time_s`: the oldest `after` this connection requested.
+    replication_first_s: i64,
     /// `host->stream.rcv.pluginsd_chart_slots`.
     chart_slots: Vec<Option<Arc<Chart>>>,
     /// `parser->user.data_collections_count`.
@@ -170,6 +147,7 @@ impl Parser {
             clabel_changed: false,
             v2: V2::default(),
             replay: Replay::default(),
+            replication_first_s: 0,
             chart_slots: Vec::new(),
             data_collections_count: 0,
             deferred: None,
@@ -1390,6 +1368,10 @@ impl Parser {
             state.replay_after = after;
             state.replay_before = before;
         }
+        // send_replay_chart_cmd()
+        if self.replication_first_s == 0 || after < self.replication_first_s {
+            self.replication_first_s = after;
+        }
         self.out.extend_from_slice(
             format!(
                 "REPLAY_CHART \"{}\" \"{}\" {after} {before}\n",
@@ -1398,6 +1380,33 @@ impl Parser {
             )
             .as_bytes(),
         );
+    }
+
+    /// `stream_parse_enable_streaming()`.
+    fn parse_enable_streaming(&self, v: Option<&[u8]>) -> bool {
+        match v {
+            None | Some(b"") => {
+                plog!(
+                    self,
+                    Source::Daemon,
+                    Priority::Err,
+                    "REPLAY: malformed start_streaming boolean value empty"
+                );
+                false
+            }
+            Some(b"false") => false,
+            Some(b"true") => true,
+            Some(other) => {
+                plog!(
+                    self,
+                    Source::Daemon,
+                    Priority::Err,
+                    "REPLAY: malformed start_streaming boolean value '{}'",
+                    text(other)
+                );
+                false
+            }
+        }
     }
 
     /// `pluginsd_replay_begin()`.
@@ -1611,10 +1620,7 @@ impl Parser {
         let update_every_child = number(1);
         let first_entry_child = number(2);
         let last_entry_child = number(3);
-        let start_streaming = {
-            let _frame = self.log_frame();
-            parse_enable_streaming(w.get(4))
-        };
+        let start_streaming = self.parse_enable_streaming(w.get(4));
         let first_requested = number(5);
         let last_requested = number(6);
         let child_world_time = match w.get(7).filter(|v| !v.is_empty()) {
@@ -1625,6 +1631,16 @@ impl Parser {
         self.data_collections_count += 1;
         if self.replay.rset_enabled {
             chart.receiver().replication_empty_response_count = 0;
+        }
+        // the replication completion of the disconnect record
+        if self.replay.rset_enabled && self.host.receiver().is_some() {
+            let (started, current) = (self.replication_first_s, self.replay.end_time);
+            if started != 0 && current > started {
+                let now = self.now_s();
+                self.host.set_replication_percent(
+                    (current - started) as f64 * 100.0 / (now - started) as f64,
+                );
+            }
         }
         self.replay = Replay::default();
         chart.update_collection(|c| {

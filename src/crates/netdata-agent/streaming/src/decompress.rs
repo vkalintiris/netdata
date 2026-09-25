@@ -169,8 +169,30 @@ enum Engine {
     Brotli(Box<BrotliState<StandardAlloc, StandardAlloc, StandardAlloc>>),
 }
 
-/// Why the connection ends; the text is C's log message.
-pub type Failure = &'static str;
+/// Why the connection ends; it displays as C's log message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failure {
+    Multiplexed,
+    /// The compressed size a message announced.
+    TooBig(usize),
+    NoBytes,
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Failure::Multiplexed => {
+                f.write_str("multiplexed uncompressed data in compressed stream!")
+            }
+            Failure::TooBig(size) => write!(
+                f,
+                "received a compressed message of {size} bytes, which is bigger than the max compressed message size \
+                 supported of {MAX_MSG_SIZE}. Ignoring message."
+            ),
+            Failure::NoBytes => f.write_str("no bytes to decompress."),
+        }
+    }
+}
 
 /// A connection's decompressor: frames the received bytes into messages and decompresses them in order.
 pub struct Decompressor {
@@ -236,12 +258,10 @@ impl Decompressor {
             let Some(size) =
                 decode_signature([header[0], header[1], header[2], header[3]]).filter(|&s| s != 0)
             else {
-                break Err("multiplexed uncompressed data in compressed stream!");
+                break Err(Failure::Multiplexed);
             };
             if size > MAX_MSG_SIZE {
-                break Err(
-                    "received a compressed message bigger than the max compressed message size supported",
-                );
+                break Err(Failure::TooBig(size));
             }
             let body = start + SIGNATURE_SIZE;
             if body + size > self.pending.len() {
@@ -249,7 +269,7 @@ impl Decompressor {
             }
             let message = self.pending[body..body + size].to_vec();
             match self.decompress(&message) {
-                Ok(0) | Err(_) => break Err("no bytes to decompress."),
+                Ok(0) | Err(_) => break Err(Failure::NoBytes),
                 Ok(n) => out.extend_from_slice(&self.output[..n]),
             }
             start = body + size;
@@ -457,25 +477,34 @@ mod tests {
     }
 
     #[test]
+    fn a_too_big_message_is_logged_with_c_s_sizes() {
+        assert_eq!(
+            Failure::TooBig(MAX_MSG_SIZE + 1).to_string(),
+            format!(
+                "received a compressed message of {} bytes, which is bigger than the max compressed message size \
+                 supported of {MAX_MSG_SIZE}. Ignoring message.",
+                MAX_MSG_SIZE + 1
+            )
+        );
+    }
+
+    #[test]
     fn broken_streams_end_the_connection() {
         assert_eq!(
             run(caps::ZSTD, b"BEGIN2 'x' 1 2 #\n", 64),
-            Err("multiplexed uncompressed data in compressed stream!")
+            Err(Failure::Multiplexed)
         );
         assert_eq!(
             run(caps::GZIP, &frame(b"not gzip"), 64),
-            Err("no bytes to decompress.")
+            Err(Failure::NoBytes)
         );
         assert_eq!(
             run(caps::BROTLI, &frame(&[0xff; 32]), 64),
-            Err("no bytes to decompress.")
+            Err(Failure::NoBytes)
         );
         // A 2 MiB zstd bomb in a small frame is refused.
         let bomb = zstd::bulk::compress(&vec![0u8; 2 << 20], 1).unwrap();
-        assert_eq!(
-            run(caps::ZSTD, &frame(&bomb), 64),
-            Err("no bytes to decompress.")
-        );
+        assert_eq!(run(caps::ZSTD, &frame(&bomb), 64), Err(Failure::NoBytes));
         assert!(Decompressor::for_capabilities(caps::V2).is_none());
     }
 }

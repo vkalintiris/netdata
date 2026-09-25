@@ -20,10 +20,27 @@ use netdata_agent_rrd::host::{Host, HostInfo, Hosts, ReceiverSlot, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 
 use crate::caps;
-use crate::conf::{ReceiverDefaults, StreamConf};
+use crate::conf::{Keepalive, ReceiverDefaults, StreamConf};
 use crate::decompress::Decompressor;
 use crate::handshake::{self, StreamRequest};
 use crate::records::{self, Counters, Peer, Reason};
+
+/// `CONNECTION_PROBE_INTERVAL_SECONDS` and `CONNECTION_PROBE_COUNT` of the receiver's TCP keepalive.
+const KEEPALIVE_PROBE_INTERVAL_S: u32 = 10;
+const KEEPALIVE_PROBES: u32 = 3;
+
+/// `stream_receiver_automatic_keepalive_idle()`: half the update every, 30..=3600 s. C prefers the host's smallest
+/// chart update every, which Rust does not track; the handshake's is its fallback and gives the same value for
+/// every update every below a minute.
+fn automatic_keepalive_idle(update_every: i64) -> u32 {
+    let update_every = u64::try_from(update_every).unwrap_or(0);
+    let idle = if update_every > 0 {
+        update_every.div_ceil(2)
+    } else {
+        30
+    };
+    idle.clamp(30, 3600) as u32
+}
 
 /// A receiver older than this without traffic is stale and may be replaced (`stream_receiver_accept_connection()`).
 const STALE_RECEIVER_S: u64 = 30;
@@ -93,6 +110,9 @@ pub struct Attached {
     parser: ingest::Config,
     peer: Peer,
     accepted_s: i64,
+    /// For the text of socket errors: the receiver's TCP keepalive policy and `rpt->handshake_update_every`.
+    keepalive: Keepalive,
+    handshake_update_every: i64,
 }
 
 /// A connection on its stream thread.
@@ -108,6 +128,8 @@ struct Child {
     frame: Arc<[(netdata_agent_log::Field, netdata_agent_log::Value)]>,
     bytes_in: u64,
     bytes_out: u64,
+    /// Successful writes (`stats->sends`).
+    sends: u64,
     /// The last read or write, for the disconnect record's `idle=`.
     last_io: Instant,
 }
@@ -508,7 +530,16 @@ impl Receivers {
             },
             peer,
             accepted_s,
+            keepalive: config.keepalive,
+            handshake_update_every: i64::from(request.update_every),
         };
+        // stream_receiver_add_to_queue()
+        nd_log!(
+            Source::Daemon,
+            Priority::Debug,
+            "STREAM RCV[{thread}] '{}': moving host to receiver queue...",
+            attached.host.hostname()
+        );
         if let Err(attached) = self.pool.send(thread, attached) {
             attached.host.clear_receiver(&attached.slot);
             self.load.lock().unwrap_or_else(PoisonError::into_inner)[thread] -= 1;
@@ -571,11 +602,9 @@ impl StreamWorker {
                 msgs: child.parser.data_collections_count,
                 bytes_in: child.bytes_in,
                 bytes_out: child.bytes_out,
-                connected_s: now_s() - attached.accepted_s,
+                connected_s: (now_s() - attached.accepted_s).max(0),
                 idle_s: child.last_io.elapsed().as_secs() as i64,
-                // host->stream.rcv.status.replication.percent: 100 from host creation; replication progress is
-                // not tracked yet
-                replication_percent: 100.0,
+                replication_percent: attached.host.replication_percent(),
             };
             let labels = attached.host.labels();
             let iface = labels
@@ -606,74 +635,124 @@ impl StreamWorker {
         )
     }
 
-    /// Writes what the parser produced; a full socket keeps the rest for the next writable event.
-    fn flush(&mut self, cx: &mut Context<'_>, index: usize) {
+    /// `stream_receiver_send_data()`: writes what the parser produced; a full socket keeps the rest for the next
+    /// writable event. False when the connection failed: from the poller (`remove`) it is disconnected here; after a
+    /// read (`stream_receiver_dequeue_senders()`) the caller ends it, as a read failure, as C does.
+    fn flush(&mut self, cx: &mut Context<'_>, index: usize, remove: bool) -> bool {
         let Some(child) = self.children[index].as_mut() else {
-            return;
+            return false;
         };
         let out = child.parser.take_output();
         child.pending_out.extend_from_slice(&out);
         while !child.pending_out.is_empty() {
-            match child.attached.stream.write(&child.pending_out) {
+            let failure = match child.attached.stream.write(&child.pending_out) {
                 Ok(n) if n > 0 => {
                     child.pending_out.drain(..n);
                     child.bytes_out += n as u64;
+                    child.sends += 1;
                     child.last_io = Instant::now();
+                    continue;
                 }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                result => {
-                    let closed = match &result {
-                        Ok(_) => true,
-                        Err(e) => matches!(
-                            e.kind(),
-                            io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
-                        ),
-                    };
-                    let reason = if closed {
-                        Reason::ClosedByRemote
-                    } else {
-                        Reason::WriteFailed
-                    };
-                    let rc = if result.is_ok() { 0 } else { -1 };
-                    let _frame = records::child_event(&child.frame);
-                    nd_log!(
-                        Source::Daemon,
-                        Priority::Err,
-                        "{}{} ({rc}, on fd {}) - closing receiver connection - we have sent {} bytes in {} operations.",
-                        Self::prefix(child),
-                        reason.text(),
-                        std::os::fd::AsRawFd::as_raw_fd(&child.attached.stream),
-                        child.bytes_out,
-                        0
-                    );
-                    return self.disconnect(cx, index, reason);
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return true,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                // only a zero write or a reset is the remote end closing; EPIPE is a write failure
+                Ok(_) => (Reason::ClosedByRemote, 0, 0),
+                Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
+                    (Reason::ClosedByRemote, -1, netdata_agent_log::errno_of(&e))
                 }
+                Err(e) => (Reason::WriteFailed, -1, netdata_agent_log::errno_of(&e)),
+            };
+            let (reason, rc, errno) = failure;
+            let _parser = (!remove).then(|| child.parser.log_frame());
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                errno = errno;
+                "{}{} ({rc}, on fd {}) - closing receiver connection - we have sent {} bytes in {} operations.",
+                Self::prefix(child),
+                reason.text(),
+                std::os::fd::AsRawFd::as_raw_fd(&child.attached.stream),
+                child.bytes_out,
+                child.sends
+            );
+            if remove {
+                self.disconnect(cx, index, reason);
             }
+            return false;
+        }
+        true
+    }
+
+    /// `stream_receiver_log_poll_error()`: the socket's pending error and the keepalive policy.
+    fn log_poll_error(child: &Child, reason: Reason) {
+        let k = &child.attached.keepalive;
+        let keepalive = if !k.enabled {
+            "disabled".to_string()
+        } else {
+            let idle_s = if k.automatic {
+                automatic_keepalive_idle(child.attached.handshake_update_every)
+            } else {
+                k.idle_s
+            };
+            format!(
+                "enabled policy={} idle={idle_s}s interval={KEEPALIVE_PROBE_INTERVAL_S}s probes={KEEPALIVE_PROBES}",
+                if k.automatic {
+                    "automatic"
+                } else {
+                    "configured"
+                }
+            )
+        };
+        let prefix = Self::prefix(child);
+        match child.attached.stream.take_error() {
+            Err(err) => {
+                let errno = netdata_agent_log::errno_of(&err);
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    errno = errno;
+                    "{prefix}{} - closing connection; SO_ERROR is unavailable: {} (errno={errno}); TCP keepalive: {keepalive}",
+                    reason.text(),
+                    netdata_agent_log::strerror(errno)
+                );
+            }
+            Ok(Some(err)) => {
+                let errno = netdata_agent_log::errno_of(&err);
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    errno = errno;
+                    "{prefix}{} - closing connection; SO_ERROR={errno} ({}); TCP keepalive: {keepalive}",
+                    reason.text(),
+                    netdata_agent_log::strerror(errno)
+                );
+            }
+            Ok(None) => nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "{prefix}{} - closing connection; SO_ERROR=0 (no pending socket error); TCP keepalive: {keepalive}",
+                reason.text()
+            ),
         }
     }
 
-    /// Reads what arrived and feeds every complete line to the parser; a refused line ends the connection.
+    /// `stream_receiver_receive_data()`: reads what arrived and feeds every complete line to the parser; a refused
+    /// line ends the connection. The caller has pushed the child's frame.
     fn receive(&mut self, cx: &mut Context<'_>, index: usize) {
         let mut buf = [0u8; 16384];
         loop {
             let Some(child) = self.children[index].as_mut() else {
                 return;
             };
-            // C checks the stop flag before reading, so the shutdown that woke the socket is not a remote close
-            if child.attached.slot.stop_requested.load(Ordering::Acquire) {
-                let _frame = records::child_event(&child.frame);
-                return self.disconnect(cx, index, Reason::SignaledToStop);
-            }
-            let _frame = records::child_event(&child.frame);
             let read = child.attached.stream.read(&mut buf);
             // C's parser frame of stream_receiver_receive_data() covers every record after the read; the parser's
             // fields are taken when a record is due, as C's callbacks read them
-            let failed = |child: &Child, reason: Reason| {
+            let failed = |child: &Child, reason: Reason, errno: i32| {
                 let _parser = child.parser.log_frame();
                 nd_log!(
                     Source::Daemon,
                     Priority::Err,
+                    errno = errno;
                     "{}{} (fd {}) - closing receiver connection.",
                     Self::prefix(child),
                     reason.text(),
@@ -683,7 +762,7 @@ impl StreamWorker {
             };
             match read {
                 Ok(0) => {
-                    let reason = failed(child, Reason::ClosedByRemote);
+                    let reason = failed(child, Reason::ClosedByRemote, 0);
                     let _parser = child.parser.log_frame();
                     return self.disconnect(cx, index, reason);
                 }
@@ -723,8 +802,15 @@ impl StreamWorker {
                             return self.disconnect(cx, index, Reason::ParseError);
                         }
                     }
-                    let _parser = child.parser.log_frame();
-                    self.flush(cx, index);
+                    // stream_receiver_dequeue_senders(): a failed write here ends the connection as a read failure
+                    if !self.flush(cx, index, false) {
+                        let Some(child) = self.children[index].as_ref() else {
+                            return;
+                        };
+                        let reason = failed(child, Reason::ReadFailed, 0);
+                        let _parser = child.parser.log_frame();
+                        return self.disconnect(cx, index, reason);
+                    }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -734,7 +820,7 @@ impl StreamWorker {
                     } else {
                         Reason::ReadFailed
                     };
-                    let reason = failed(child, reason);
+                    let reason = failed(child, reason, netdata_agent_log::errno_of(&e));
                     let _parser = child.parser.log_frame();
                     return self.disconnect(cx, index, reason);
                 }
@@ -751,16 +837,43 @@ impl Worker for StreamWorker {
         Ok(())
     }
 
+    /// `stream_receive_process_poll_events()`: under the child's frame, the stop flag, then socket errors (or a
+    /// hangup with nothing left to read), then sending, then receiving.
     fn event(&mut self, cx: &mut Context<'_>, event: &Event) {
         let index = event.token().0;
-        if index >= self.children.len() {
+        let Some(child) = self.children.get(index).and_then(Option::as_ref) else {
+            return;
+        };
+        let _frame = records::child_event(&child.frame);
+        // the shutdown that woke the socket is not a remote close
+        if child.attached.slot.stop_requested.load(Ordering::Acquire) {
+            return self.disconnect(cx, index, Reason::SignaledToStop);
+        }
+        let hangup = event.is_read_closed();
+        if event.is_error() || (hangup && !event.is_readable()) {
+            let reason = if hangup {
+                Reason::ClosedByRemote
+            } else {
+                Reason::SocketError
+            };
+            if event.is_error() {
+                Self::log_poll_error(child, reason);
+            } else {
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "{}{} - closing connection",
+                    Self::prefix(child),
+                    reason.text()
+                );
+            }
+            return self.disconnect(cx, index, reason);
+        }
+        if event.is_writable() && !self.flush(cx, index, true) {
             return;
         }
-        if event.is_readable() || event.is_read_closed() {
+        if event.is_readable() || hangup {
             self.receive(cx, index);
-        }
-        if event.is_writable() {
-            self.flush(cx, index);
         }
     }
 
@@ -820,9 +933,12 @@ impl Worker for StreamWorker {
             frame,
             bytes_in: 0,
             bytes_out: 0,
+            sends: 0,
             last_io: Instant::now(),
         });
         // Bytes may have arrived before the registration.
+        let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
+        let _frame = frame.as_ref().map(records::child_event);
         self.receive(cx, index);
     }
 
