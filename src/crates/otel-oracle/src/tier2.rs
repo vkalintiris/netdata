@@ -6,8 +6,9 @@
 //! a value); a list that differs gives one finding at its first difference, so
 //! one wrong number never shows up as several.
 //!
-//! Row pages past the first (walking by the agent's cursor) are asked and
-//! judged by the runner, which holds the answers in order.
+//! Row pages past the first depend on the first page's answer: the runner
+//! adds them with [`add_pages`] once it has the answers, asks them, and
+//! judges them with the rest.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,7 +37,14 @@ pub struct Scenario {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowsAsk {
+    /// The first newest page.
     Newest(usize),
+    /// A newest page past `anchor`, the key of a row the agent returned.
+    Page {
+        limit: usize,
+        anchor: calc::RowKey,
+        walk: calc::Walk,
+    },
     Slowest(usize),
 }
 
@@ -674,23 +682,32 @@ fn judge_rows(
     ask: &RowsAsk,
     got: &wire::Rows,
 ) {
-    let (label, check, want_rows, has_older) = match ask {
-        RowsAsk::Newest(limit) => {
-            let page = calc::newest_page(
-                spans,
-                grid,
-                &scenario.scope,
-                *limit,
-                None,
-                calc::Walk::Older,
-            );
-            ("newest", "ORC-ROWS", page.rows, Some(page.has_older))
-        }
+    let newest = |limit: usize, anchor: Option<calc::RowKey>, walk: calc::Walk| {
+        let page = calc::newest_page(spans, grid, &scenario.scope, limit, anchor, walk);
+        (page.rows, Some((page.has_older, page.has_newer)))
+    };
+    let (label, check, (want_rows, flags)) = match ask {
+        RowsAsk::Newest(limit) => (
+            "newest",
+            "ORC-ROWS",
+            newest(*limit, None, calc::Walk::Older),
+        ),
+        RowsAsk::Page {
+            limit,
+            anchor,
+            walk,
+        } => (
+            match walk {
+                calc::Walk::Older => "newest older",
+                calc::Walk::Newer => "newest newer",
+            },
+            "ORC-ROWS",
+            newest(*limit, Some(*anchor), *walk),
+        ),
         RowsAsk::Slowest(k) => (
             "slowest",
             "ORC-TOPK",
-            calc::slowest(spans, grid, &scenario.scope, *k),
-            None,
+            (calc::slowest(spans, grid, &scenario.scope, *k), None),
         ),
     };
     let at = vec![name("rows"), name(label)];
@@ -704,16 +721,21 @@ fn judge_rows(
         Subject::Count(matched),
         Subject::Count(got.matched),
     );
-    if let Some(has_older) = has_older {
-        let mut at_older = at.clone();
-        at_older.push(name("has older"));
-        judge.compare(
-            check,
-            &scenario.name,
-            at_older,
-            Subject::Flag(has_older),
-            Subject::Flag(got.has_older.unwrap_or(false)),
-        );
+    if let Some((has_older, has_newer)) = flags {
+        for (flag, want, got) in [
+            ("has older", has_older, got.has_older),
+            ("has newer", has_newer, got.has_newer),
+        ] {
+            let mut at_flag = at.clone();
+            at_flag.push(name(flag));
+            judge.compare(
+                check,
+                &scenario.name,
+                at_flag,
+                Subject::Flag(want),
+                Subject::Flag(got.unwrap_or(false)),
+            );
+        }
     }
     let want: Vec<Subject> = want_rows
         .iter()
@@ -828,6 +850,94 @@ fn judge_values(
 
 /// Compares every answer with the calculator; `answers` maps request ids to
 /// the agent's JSON. Returns the findings and what each check compared.
+/// Adds to `plan` the row pages that follow the answers so far, as the
+/// explorer walks them: older than a first page's last row, then newer than
+/// that older page's first row. The agent's cursor goes back as it came; the
+/// calculator anchors on the row's own key. Returns how many were added: the
+/// runner asks them and calls again until none are.
+pub fn add_pages(plan: &mut Plan, answers: &BTreeMap<String, Value>) -> usize {
+    let mut added = Vec::new();
+    for request in &plan.requests {
+        let Ask::Explore {
+            scenario,
+            rows: Some(rows),
+            ..
+        } = &request.ask
+        else {
+            continue;
+        };
+        let (limit, walk) = match rows {
+            RowsAsk::Newest(limit) => (*limit, calc::Walk::Older),
+            RowsAsk::Page {
+                limit,
+                walk: calc::Walk::Older,
+                ..
+            } => (*limit, calc::Walk::Newer),
+            _ => continue,
+        };
+        let direction = match walk {
+            calc::Walk::Older => "older",
+            calc::Walk::Newer => "newer",
+        };
+        let id = format!("{} {direction}", request.id);
+        if plan.requests.iter().any(|r| r.id == id) {
+            continue;
+        }
+        let Some(answer) = answers.get(&request.id) else {
+            continue;
+        };
+        let Ok(got) = serde_json::from_value::<wire::ExploreAnswer>(answer.clone()) else {
+            continue;
+        };
+        let Some(got) = got.data.rows else {
+            continue;
+        };
+        let row = match walk {
+            calc::Walk::Older => got.items.last(),
+            calc::Walk::Newer => got.items.first(),
+        };
+        let Some(row) = row else {
+            continue;
+        };
+        let (Some(start_ns), Some(trace_id), Some(span_id)) = (
+            row.start_ns(),
+            parse_hex::<16>(&row.trace_id),
+            parse_hex::<8>(&row.span_id),
+        ) else {
+            continue;
+        };
+        let rows = json!({
+            "order": "newest",
+            "limit": limit,
+            "anchor": row.cursor,
+            "direction": direction,
+        });
+        added.push(Request {
+            id,
+            ask: Ask::Explore {
+                scenario: *scenario,
+                stack: None,
+                facets: false,
+                rows: Some(RowsAsk::Page {
+                    limit,
+                    anchor: (start_ns, trace_id, span_id),
+                    walk,
+                }),
+                fields: false,
+            },
+            body: explore_body(
+                plan.after_s,
+                plan.before_s,
+                &plan.scenarios[*scenario].scope,
+                json!({ "rows": rows }),
+            ),
+        });
+    }
+    let count = added.len();
+    plan.requests.extend(added);
+    count
+}
+
 pub fn judge(
     plan: &Plan,
     spans: &[OracleSpan],
@@ -985,7 +1095,7 @@ mod tests {
 
     fn row(span: &OracleSpan) -> Value {
         json!({
-            "cursor": "opaque",
+            "cursor": format!("cursor {}", span.start_ns),
             "start_ns": span.start_ns.to_string(),
             "duration_ns": span.duration_ns,
             "trace_id": hex(&span.trace_id.unwrap_or_default()),
@@ -1086,18 +1196,24 @@ mod tests {
         }
         if let Some(ask) = rows {
             let matched = calc::totals(spans, &grid, scope).spans;
-            let (order, items, has_older) = match ask {
-                RowsAsk::Newest(limit) => {
-                    let page =
-                        calc::newest_page(spans, &grid, scope, *limit, None, calc::Walk::Older);
-                    ("newest", page.rows, Some(page.has_older))
-                }
+            let newest = |limit: usize, anchor: Option<calc::RowKey>, walk: calc::Walk| {
+                let page = calc::newest_page(spans, &grid, scope, limit, anchor, walk);
+                ("newest", page.rows, Some((page.has_older, page.has_newer)))
+            };
+            let (order, items, flags) = match ask {
+                RowsAsk::Newest(limit) => newest(*limit, None, calc::Walk::Older),
+                RowsAsk::Page {
+                    limit,
+                    anchor,
+                    walk,
+                } => newest(*limit, Some(*anchor), *walk),
                 RowsAsk::Slowest(k) => ("slowest", calc::slowest(spans, &grid, scope, *k), None),
             };
             let mut r = json!({"status": {"complete": true}, "order": order, "matched": matched,
                 "items": items.iter().map(|s| row(s)).collect::<Vec<_>>()});
-            if let Some(has_older) = has_older {
+            if let Some((has_older, has_newer)) = flags {
                 r["has_older"] = json!(has_older);
+                r["has_newer"] = json!(has_newer);
             }
             data["rows"] = r;
         }
@@ -1122,6 +1238,90 @@ mod tests {
             .iter()
             .map(|request| (request.id.clone(), answer(plan, spans, request)))
             .collect()
+    }
+
+    /// The plan's answers, then its pages' (older, then newer).
+    fn walk(plan: &mut Plan, spans: &[OracleSpan]) -> BTreeMap<String, Value> {
+        let mut asked = answers(plan, spans);
+        for _ in 0..2 {
+            add_pages(plan, &asked);
+            asked = answers(plan, spans);
+        }
+        asked
+    }
+
+    fn key_of(row: &Value) -> calc::RowKey {
+        (
+            row["start_ns"].as_str().unwrap().parse().unwrap(),
+            parse_hex(row["trace_id"].as_str().unwrap()).unwrap(),
+            parse_hex(row["span_id"].as_str().unwrap()).unwrap(),
+        )
+    }
+
+    fn page_of<'a>(plan: &'a Plan, id: &str) -> (&'a Request, calc::RowKey, calc::Walk) {
+        let request = plan.requests.iter().find(|r| r.id == id).unwrap();
+        let Ask::Explore {
+            rows: Some(RowsAsk::Page { anchor, walk, .. }),
+            ..
+        } = &request.ask
+        else {
+            panic!("{id} is not a page");
+        };
+        (request, *anchor, *walk)
+    }
+
+    #[test]
+    fn pages_follow_the_first_by_the_agents_cursor_and_are_judged() {
+        let (spans, after, before) = corpus_spans();
+        let mut plan = plan(after, before, &spans, 2);
+        let first_id = "F0 every span:status";
+        let first = answers(&plan, &spans)[first_id]["data"]["rows"]["items"].clone();
+        let first = first.as_array().unwrap();
+        assert_eq!(first.len(), ROWS_LIMIT);
+
+        let asked = walk(&mut plan, &spans);
+
+        let older_id = format!("{first_id} older");
+        let (older, anchor, walk) = page_of(&plan, &older_id);
+        let last = &first[ROWS_LIMIT - 1];
+        assert_eq!((anchor, walk), (key_of(last), calc::Walk::Older));
+        assert_eq!(
+            older.body["explore"]["sections"],
+            json!({"rows": {"order": "newest", "limit": ROWS_LIMIT, "anchor": last["cursor"],
+                "direction": "older"}})
+        );
+        let older_first = &asked[&older_id]["data"]["rows"]["items"][0];
+        let newer_id = format!("{older_id} newer");
+        let (newer, anchor, walk) = page_of(&plan, &newer_id);
+        assert_eq!((anchor, walk), (key_of(older_first), calc::Walk::Newer));
+        assert_eq!(
+            newer.body["explore"]["sections"]["rows"]["anchor"],
+            older_first["cursor"]
+        );
+        assert_eq!(asked[&newer_id]["data"]["rows"]["items"], json!(first));
+        assert_eq!(add_pages(&mut plan, &asked), 0);
+
+        assert_eq!(judge(&plan, &spans, &asked).0, vec![]);
+
+        let mut wrong = asked.clone();
+        let items = wrong.get_mut(&older_id).unwrap()["data"]["rows"]["items"]
+            .as_array_mut()
+            .unwrap();
+        items.remove(1);
+        let (findings, _) = judge(&plan, &spans, &wrong);
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(
+            (findings[0].check, &findings[0].at[..2]),
+            ("ORC-ROWS", &[name("rows"), name("newest older")][..])
+        );
+
+        let mut wrong = asked.clone();
+        let rows = &mut wrong.get_mut(&older_id).unwrap()["data"]["rows"];
+        assert_eq!(rows["has_newer"], json!(true));
+        rows["has_newer"] = json!(false);
+        let (findings, _) = judge(&plan, &spans, &wrong);
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].at.last(), Some(&name("has newer")));
     }
 
     #[test]

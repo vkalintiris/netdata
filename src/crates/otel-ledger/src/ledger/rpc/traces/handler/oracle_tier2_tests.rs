@@ -2,8 +2,9 @@
 //! sealed files and a live WAL read as chunks and a tail), a capture of the
 //! requests the agent was sent (with a resend and a span outside the ingestion
 //! window), the reference calculator's membership and matching over the store's
-//! files, and every tier-2 request sent through the Function's byte path and
-//! judged against the calculator.
+//! files, and every tier-2 request (row pages walked by the agent's cursors
+//! included) sent through the Function's byte path and judged against the
+//! calculator.
 
 use std::collections::BTreeMap;
 
@@ -169,24 +170,50 @@ async fn tier2_through_the_handler_finds_nothing() {
     );
     assert!(check.judged(), "{check:?}");
     let spans = matching::window_spans(&matched, &check);
-    let plan = tier2::plan(lab.after, lab.before, &spans, check.units.len() as u64);
+    let mut plan = tier2::plan(lab.after, lab.before, &spans, check.units.len() as u64);
     assert_eq!(plan.scenarios.len(), 5);
 
     let adapter = HandlerAdapter::new(handler(&lab));
     let mut answers = BTreeMap::new();
-    for request in &plan.requests {
-        let body = serde_json::to_vec(&request.body).unwrap();
-        let (status, payload) = call_through_bridge(&adapter, Some(&body)).await;
-        assert_eq!(
-            status,
-            200,
-            "{}: {}",
-            request.id,
-            String::from_utf8_lossy(&payload)
-        );
-        let answer: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-        answers.insert(request.id.clone(), answer);
+    for _ in 0..3 {
+        for request in &plan.requests {
+            if answers.contains_key(&request.id) {
+                continue;
+            }
+            let body = serde_json::to_vec(&request.body).unwrap();
+            let (status, payload) = call_through_bridge(&adapter, Some(&body)).await;
+            assert_eq!(
+                status,
+                200,
+                "{}: {}",
+                request.id,
+                String::from_utf8_lossy(&payload)
+            );
+            let answer: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+            answers.insert(request.id.clone(), answer);
+        }
+        tier2::add_pages(&mut plan, &answers);
     }
+    let pages = |suffix: &str| {
+        plan.requests
+            .iter()
+            .filter(|r| r.id.ends_with(suffix))
+            .count()
+    };
+    let older_with_rows = plan
+        .requests
+        .iter()
+        .filter(|r| r.id.ends_with(" older"))
+        .filter(|r| {
+            answers[&r.id]["data"]["rows"]["items"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        })
+        .count();
+    assert_eq!(pages(" older"), 5);
+    assert!(older_with_rows > 0);
+    assert_eq!(pages(" older newer"), older_with_rows);
+    assert_eq!(answers.len(), plan.requests.len());
 
     let (findings, checks) = tier2::judge(&plan, &spans, &answers);
     assert!(
