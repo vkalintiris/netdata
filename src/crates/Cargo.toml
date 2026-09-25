@@ -35,6 +35,9 @@ members = [
     # Stress test tools
     "otel-streams",
 
+    # Reference calculator for the traces explorer (dev-only, never shipped)
+    "otel-oracle",
+
     # IPC / RPC
     "ferryboat",
 
