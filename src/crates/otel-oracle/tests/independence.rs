@@ -10,7 +10,7 @@ const FORBIDDEN_CRATES: [&str; 4] = ["sfsq", "otel-ledger", "ng-index", "file-li
 /// The query side of `sfst`, the engine's own grouping and ingest code, and
 /// the crate paths of the judged crates, matched as whole words: `_role` or
 /// `_duration_band` inside the calculator's own names do not count.
-const FORBIDDEN_IDENTIFIERS: [&str; 34] = [
+const FORBIDDEN_IDENTIFIERS: [&str; 35] = [
     "sfsq::",
     "otel_ledger::",
     "ng_index::",
@@ -43,6 +43,7 @@ const FORBIDDEN_IDENTIFIERS: [&str; 34] = [
     "compile_duration",
     "compile_time_range",
     "count_without",
+    "MIN_SUPPORT",
     "span_family",
     "derive_span_family",
 ];

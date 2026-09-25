@@ -17,8 +17,8 @@ use otel_oracle::corpus::{self, MeshParams};
 use otel_oracle::model::{self, OracleSpan};
 use sfsq::Source;
 use sfsq::traces::explore::{
-    self, ExploreQuery, ExploreScope, FacetSpec, HIDDEN_FIELDS, HistogramSpec, RowDirection,
-    RowKey, RowOrder, RowsData, RowsSpec, Sections,
+    self, ExploreQuery, ExploreScope, ExploreSelection, FacetSpec, HIDDEN_FIELDS, HistogramSpec,
+    RowDirection, RowKey, RowOrder, RowsData, RowsSpec, Sections,
 };
 use sfsq::traces::{
     PartialReason, QueryStatus, SourceId, TraceSfstCandidate, TraceSource, TraceWalScan,
@@ -1962,4 +1962,231 @@ fn explore_groups_cap_matches_the_calculator() {
             .collect();
         assert_eq!(reasons, calc::groups_reasons(&want), "{live:?}");
     }
+}
+
+/// The engine's compared facets in the calculator's shape.
+fn engine_comparison(facets: &explore::FacetsData) -> calc::Comparison {
+    let totals = facets.comparison.expect("a comparison under a selection");
+    let fraction = |diff: explore::ShareDiff| calc::reduced(diff.num, diff.den);
+    let mut out = calc::Comparison {
+        scope: totals.scope,
+        selection: totals.selection,
+        fields: Vec::new(),
+    };
+    for facet in &facets.fields {
+        let compared = facet.comparison.as_ref().expect("every field compared");
+        let mut values = Vec::new();
+        for value in &facet.values {
+            let c = value.comparison.as_ref().expect("every value compared");
+            values.push(calc::ValueComparison {
+                value: value.value.clone(),
+                count: value.count,
+                selection: c.selection,
+                baseline: c.baseline,
+                eligible: c.eligible,
+                rank: c.rank,
+                diff: c.diff.map(fraction),
+            });
+        }
+        out.fields.push(calc::FieldComparison {
+            field: facet.field.clone(),
+            scope: compared.totals.scope,
+            selection: compared.totals.selection,
+            rank: compared.rank,
+            best: compared.best.map(fraction),
+            values,
+            omitted_values: facet.omitted_values,
+            omitted_rows: facet.omitted_rows,
+        });
+    }
+    out
+}
+
+/// The same selection for the engine and the calculator.
+fn selections(
+    grid: &Grid,
+    oracle: &[OracleSpan],
+    scope: &Scope,
+) -> Vec<(&'static str, ExploreSelection, calc::Selection)> {
+    let third = (i64::from(grid.before_s) - i64::from(grid.after_s)) * 1_000_000_000 / 3;
+    let start = i64::from(grid.after_s) * 1_000_000_000;
+    let middle = (start + third, start + 2 * third);
+    let mut durations: Vec<i64> = oracle
+        .iter()
+        .filter(|span| scope.matches(span) && grid.bucket_of(span.start_ns).is_some())
+        .map(|span| span.duration_ns)
+        .collect();
+    durations.sort_unstable();
+    let p95 = durations[(durations.len() * 95).div_ceil(100) - 1];
+    let chips = |pairs: &[(&str, &[&str])]| {
+        let mut filter = sfst::Filter::new();
+        let mut terms = Scope::default();
+        for (field, values) in pairs {
+            for value in *values {
+                filter = filter.select(*field, *value);
+            }
+            terms = terms.with(field, values);
+        }
+        (filter, terms)
+    };
+    let mut out = Vec::new();
+    let (filter, terms) = chips(&[(model::STATUS_FIELD, &["ERROR"])]);
+    out.push((
+        "E1 errors",
+        ExploreSelection {
+            filter,
+            duration: None,
+            time_ns: None,
+        },
+        calc::Selection {
+            terms,
+            ..calc::Selection::default()
+        },
+    ));
+    let (filter, terms) = chips(&[(model::DURATION_BAND_FIELD, &["100ms-1s", "1-10s"])]);
+    out.push((
+        "E2 slow bands",
+        ExploreSelection {
+            filter,
+            duration: None,
+            time_ns: None,
+        },
+        calc::Selection {
+            terms,
+            ..calc::Selection::default()
+        },
+    ));
+    out.push((
+        "E3 middle third",
+        ExploreSelection {
+            filter: sfst::Filter::new(),
+            duration: None,
+            time_ns: Some(middle.0..middle.1),
+        },
+        calc::Selection {
+            time_ns: Some(middle),
+            ..calc::Selection::default()
+        },
+    ));
+    out.push((
+        "E4 at least the p95",
+        ExploreSelection {
+            filter: sfst::Filter::new(),
+            duration: Some(sfst::DurationRange {
+                min_ns: Some(p95),
+                max_ns: None,
+            }),
+            time_ns: None,
+        },
+        calc::Selection {
+            duration: Some((Some(p95), None)),
+            ..calc::Selection::default()
+        },
+    ));
+    let (filter, terms) = chips(&[(model::STATUS_FIELD, &["ERROR"])]);
+    out.push((
+        "E1+E3",
+        ExploreSelection {
+            filter,
+            duration: None,
+            time_ns: Some(middle.0..middle.1),
+        },
+        calc::Selection {
+            terms,
+            time_ns: Some(middle),
+            ..calc::Selection::default()
+        },
+    ));
+    out
+}
+
+/// ORC-CMP (QRY-07, QRY-15, QRY-04): for every way of serving the live WAL,
+/// four scopes and five selections, the compared facets equal the
+/// calculator's exactly — totals, per-value selection and baseline rows,
+/// eligibility, exact differences, ranks and the order they give — and the
+/// rows follow the selection.
+#[test]
+fn explore_comparison_matches_the_calculator() {
+    let stored = store(400, 61);
+    let grid = stored.grid;
+    let requested: Vec<String> = [
+        model::SERVICE_FIELD,
+        "name",
+        model::STATUS_FIELD,
+        model::DURATION_BAND_FIELD,
+        model::ROLE_FIELD,
+    ]
+    .iter()
+    .map(|field| field.to_string())
+    .collect();
+    let scopes = [
+        ("F0 every span", Scope::default()),
+        ("F1 entry spans", Scope::entry_spans()),
+        (
+            "F2 checkout entry spans",
+            Scope::entry_spans().with(model::SERVICE_FIELD, &["checkout", "frontend"]),
+        ),
+        ("F4 text", Scope::default().with_text("redis")),
+    ];
+    let (mut eligible, mut below) = (0, 0);
+    for live in [Live::Tail, Live::Chunk, Live::Split(100), Live::Chunked] {
+        for (scope_name, scope) in &scopes {
+            for (selection_name, engine, oracle) in selections(&grid, &stored.oracle, scope) {
+                let case = format!("{live:?} {scope_name} {selection_name}");
+                let mut query = explore_query(&grid, scope, model::STATUS_FIELD);
+                query.sections.histogram = None;
+                query.sections.facets = Some(FacetSpec {
+                    fields: Some(requested.clone()),
+                });
+                query.sections.rows = Some(RowsSpec {
+                    order: RowOrder::Newest {
+                        anchor: None,
+                        direction: RowDirection::Older,
+                    },
+                    limit: 20,
+                    columns: Vec::new(),
+                });
+                query.selection = Some(engine);
+                let data = explore::explore(
+                    explore_sources(&stored, live),
+                    query,
+                    explore::ExploreOptions::default(),
+                    tokio_util::sync::CancellationToken::new(),
+                    std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                )
+                .unwrap();
+                assert!(data.status.is_complete(), "{case}: {:?}", data.status);
+                let want = calc::comparison(&stored.oracle, &grid, scope, &oracle, &requested);
+                assert_eq!(engine_comparison(&data.facets.unwrap()), want, "{case}");
+                for field in &want.fields {
+                    for value in &field.values {
+                        if value.eligible {
+                            eligible += 1;
+                        } else if value.selection > 0 {
+                            below += 1;
+                        }
+                    }
+                }
+
+                let selected: Vec<OracleSpan> = stored
+                    .oracle
+                    .iter()
+                    .filter(|span| oracle.matches(span))
+                    .cloned()
+                    .collect();
+                let page = calc::newest_page(&selected, &grid, scope, 20, None, calc::Walk::Older);
+                let rows = data.rows.unwrap();
+                assert_eq!(rows.matched, want.selection, "{case}");
+                let keys: Vec<calc::RowKey> =
+                    rows.items.iter().map(|row| oracle_key(&row.key)).collect();
+                let want_keys: Vec<calc::RowKey> =
+                    page.rows.iter().map(|span| calc::row_key(span)).collect();
+                assert_eq!(keys, want_keys, "{case}");
+            }
+        }
+    }
+    assert!(
+        eligible > 0 && below > 0,
+        "values on both sides of the minimum support"
+    );
 }

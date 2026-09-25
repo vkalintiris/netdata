@@ -392,6 +392,230 @@ pub fn facets(
     out
 }
 
+/// Selection rows a facet value needs before its difference is ranked (the
+/// calculator's own copy of the documented minimum, D34).
+pub const MIN_SELECTION_ROWS: u64 = 5;
+
+/// The W3 selection: chips, an inclusive duration range and a start range
+/// `[after, before)` in nanoseconds, all ANDed with the scope.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Selection {
+    /// Chips only (its text and trace ids stay empty).
+    pub terms: Scope,
+    pub duration: Option<(Option<i64>, Option<i64>)>,
+    pub time_ns: Option<(i64, i64)>,
+}
+
+impl Selection {
+    pub fn matches(&self, span: &OracleSpan) -> bool {
+        if !self.terms.matches(span) {
+            return false;
+        }
+        if let Some((min, max)) = self.duration
+            && (min.is_some_and(|min| span.duration_ns < min)
+                || max.is_some_and(|max| span.duration_ns > max))
+        {
+            return false;
+        }
+        if let Some((after, before)) = self.time_ns
+            && (span.start_ns < after || span.start_ns >= before)
+        {
+            return false;
+        }
+        true
+    }
+
+    fn without(&self, field: &str) -> Selection {
+        let mut out = self.clone();
+        out.terms.terms.remove(field);
+        out
+    }
+}
+
+/// A share difference `num / den` with `den > 0`, in lowest terms.
+pub type Fraction = (i128, i128);
+
+fn gcd(a: i128, b: i128) -> i128 {
+    let (mut a, mut b) = (a.abs(), b.abs());
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// `num / den` in lowest terms (`den > 0`).
+pub fn reduced(num: i128, den: i128) -> Fraction {
+    let g = gcd(num, den).max(1);
+    (num / g, den / g)
+}
+
+fn fraction_cmp(a: Fraction, b: Fraction) -> std::cmp::Ordering {
+    (a.0 * b.1).cmp(&(b.0 * a.1))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueComparison {
+    pub value: String,
+    /// Scope rows.
+    pub count: u64,
+    pub selection: u64,
+    pub baseline: u64,
+    pub eligible: bool,
+    pub rank: Option<u32>,
+    pub diff: Option<Fraction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldComparison {
+    pub field: String,
+    /// Scope and selection rows without the field's own chips.
+    pub scope: u64,
+    pub selection: u64,
+    pub rank: Option<u32>,
+    pub best: Option<Fraction>,
+    pub values: Vec<ValueComparison>,
+    pub omitted_values: u64,
+    pub omitted_rows: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comparison {
+    pub scope: u64,
+    pub selection: u64,
+    pub fields: Vec<FieldComparison>,
+}
+
+/// ORC-CMP (QRY-15): the facets of `requested` under a selection. For a
+/// field, its own chips leave both the scope and the selection; `S` scope
+/// and `C` selection rows give `B = S − C` baseline rows; a value's
+/// difference is `c/C − b/B` (`c/C` when `B = 0`, none when `C = 0`); a value
+/// ranks when `c ≥ MIN_SELECTION_ROWS`. Fields rank by their best eligible
+/// difference, then name; the answer lists ranked fields first (the rest in
+/// request order) and eligible values first (the rest by rows, then value).
+pub fn comparison(
+    spans: &[OracleSpan],
+    grid: &Grid,
+    scope: &Scope,
+    selection: &Selection,
+    requested: &[String],
+) -> Comparison {
+    let in_window = |span: &OracleSpan| grid.bucket_of(span.start_ns).is_some();
+    let mut out = Comparison {
+        scope: 0,
+        selection: 0,
+        fields: Vec::new(),
+    };
+    for span in spans {
+        if in_window(span) && scope.matches(span) {
+            out.scope += 1;
+            if selection.matches(span) {
+                out.selection += 1;
+            }
+        }
+    }
+
+    for field in requested {
+        let mut field_scope = scope.clone();
+        field_scope.terms.remove(field);
+        let field_selection = selection.without(field);
+        let (mut total_s, mut total_c) = (0u64, 0u64);
+        let mut s_counts: BTreeMap<String, u64> = BTreeMap::new();
+        let mut c_counts: BTreeMap<String, u64> = BTreeMap::new();
+        for span in spans {
+            if !in_window(span) || !field_scope.matches(span) {
+                continue;
+            }
+            let selected = field_selection.matches(span);
+            total_s += 1;
+            total_c += u64::from(selected);
+            if let Some(values) = span.fields.get(field) {
+                for value in values {
+                    *s_counts.entry(value.to_string()).or_default() += 1;
+                    if selected {
+                        *c_counts.entry(value.to_string()).or_default() += 1;
+                    }
+                }
+            }
+        }
+        let facet = capped(field, s_counts);
+        let (c_total, base) = (i128::from(total_c), i128::from(total_s - total_c));
+        let mut values = Vec::with_capacity(facet.values.len());
+        for (value, s) in facet.values {
+            let c = c_counts.get(&value).copied().unwrap_or(0);
+            let b = s - c;
+            let diff = (total_c > 0).then(|| {
+                if base == 0 {
+                    reduced(i128::from(c), c_total)
+                } else {
+                    reduced(
+                        i128::from(c) * base - i128::from(b) * c_total,
+                        c_total * base,
+                    )
+                }
+            });
+            values.push(ValueComparison {
+                value,
+                count: s,
+                selection: c,
+                baseline: b,
+                eligible: total_c > 0 && c >= MIN_SELECTION_ROWS,
+                rank: None,
+                diff,
+            });
+        }
+        let mut eligible: Vec<usize> = (0..values.len()).filter(|&i| values[i].eligible).collect();
+        eligible.sort_by(|&x, &y| {
+            fraction_cmp(values[y].diff.unwrap(), values[x].diff.unwrap())
+                .then_with(|| values[x].value.cmp(&values[y].value))
+        });
+        let best = eligible.first().and_then(|&i| values[i].diff);
+        for (rank, &index) in eligible.iter().enumerate() {
+            values[index].rank = Some(rank as u32 + 1);
+        }
+        values.sort_by(|x, y| match (x.rank, y.rank) {
+            (Some(a), Some(b)) => a.cmp(&b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => y.count.cmp(&x.count).then_with(|| x.value.cmp(&y.value)),
+        });
+        out.fields.push(FieldComparison {
+            field: field.clone(),
+            scope: total_s,
+            selection: total_c,
+            rank: None,
+            best,
+            values,
+            omitted_values: facet.omitted_values,
+            omitted_rows: facet.omitted_rows,
+        });
+    }
+
+    let mut ranked: Vec<usize> = (0..out.fields.len())
+        .filter(|&i| out.fields[i].best.is_some())
+        .collect();
+    ranked.sort_by(|&x, &y| {
+        fraction_cmp(out.fields[y].best.unwrap(), out.fields[x].best.unwrap())
+            .then_with(|| out.fields[x].field.cmp(&out.fields[y].field))
+    });
+    for (rank, &index) in ranked.iter().enumerate() {
+        out.fields[index].rank = Some(rank as u32 + 1);
+    }
+    let mut fields = std::mem::take(&mut out.fields);
+    let mut order: Vec<usize> = ranked;
+    for (index, field) in fields.iter().enumerate() {
+        if field.rank.is_none() {
+            order.push(index);
+        }
+    }
+    let mut slots: Vec<Option<FieldComparison>> = fields.drain(..).map(Some).collect();
+    for index in order {
+        if let Some(field) = slots[index].take() {
+            out.fields.push(field);
+        }
+    }
+    out
+}
+
 /// A partial reason the explorer should report: its name, count, the
 /// number it is out of, and the fields it names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1126,6 +1350,91 @@ mod tests {
                 .collect();
             assert_eq!(got, expected, "{name}");
         }
+    }
+
+    #[test]
+    fn comparison_rules() {
+        let grid = Grid {
+            after_s: 0,
+            before_s: 10,
+            width_s: 1,
+        };
+        let mut spans = Vec::new();
+        for i in 0..10i64 {
+            let service = if i < 6 { "a" } else { "b" };
+            let mut fields = vec![(SERVICE_FIELD, service)];
+            if i < 5 {
+                fields.push((STATUS_FIELD, "ERROR"));
+            }
+            let mut span = row(i, &fields);
+            span.duration_ns = i * 10;
+            spans.push(span);
+        }
+        let selection = Selection {
+            terms: Scope::default().with(STATUS_FIELD, &["ERROR"]),
+            ..Selection::default()
+        };
+        let requested = [STATUS_FIELD.to_string(), SERVICE_FIELD.to_string()];
+        let got = comparison(&spans, &grid, &Scope::default(), &selection, &requested);
+
+        assert_eq!((got.scope, got.selection), (10, 5));
+        let service = &got.fields[0];
+        assert_eq!(service.field, SERVICE_FIELD, "the best field ranks first");
+        assert_eq!(
+            (service.scope, service.selection, service.rank),
+            (10, 5, Some(1))
+        );
+        assert_eq!(service.best, Some((4, 5)));
+        type Line<'a> = (&'a str, u64, u64, u64, bool, Option<u32>, Option<Fraction>);
+        let values: Vec<Line<'_>> = service
+            .values
+            .iter()
+            .map(|v| {
+                (
+                    v.value.as_str(),
+                    v.count,
+                    v.selection,
+                    v.baseline,
+                    v.eligible,
+                    v.rank,
+                    v.diff,
+                )
+            })
+            .collect();
+        assert_eq!(
+            values,
+            [
+                ("a", 6, 5, 1, true, Some(1), Some((4, 5))),
+                ("b", 4, 0, 4, false, None, Some((-4, 5))),
+            ]
+        );
+        let status = &got.fields[1];
+        assert_eq!(
+            (status.scope, status.selection, status.rank, status.best),
+            (10, 10, Some(2), Some((1, 2))),
+            "the selection's own field: its chips leave both sides, the baseline is empty"
+        );
+
+        let long = Selection {
+            duration: Some((Some(70), None)),
+            ..Selection::default()
+        };
+        let few = comparison(&spans, &grid, &Scope::default(), &long, &requested[1..]);
+        assert_eq!(few.selection, 3);
+        assert!(
+            few.fields[0].values.iter().all(|v| !v.eligible),
+            "under five rows"
+        );
+        assert_eq!(few.fields[0].rank, None);
+
+        let later = Selection {
+            time_ns: Some((8_000_000_000, 20_000_000_000)),
+            ..Selection::default()
+        };
+        assert_eq!(
+            comparison(&spans, &grid, &Scope::default(), &later, &[]).selection,
+            2
+        );
     }
 
     #[test]
