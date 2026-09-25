@@ -1945,3 +1945,57 @@ async fn values_suggest_stored_values_by_prefix() {
         (&json!([]), &json!({"complete": true}))
     );
 }
+
+// ── Admission ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn admission_limit_one_serializes() {
+    let h = OtelTracesHandler::with_admission(
+        make_registries(),
+        Arc::new(ChunkCache::new(64 * 1024 * 1024)),
+        4,
+        None,
+        1,
+    );
+    let wait = std::time::Duration::from_millis(200);
+    let done = std::time::Duration::from_secs(10);
+
+    // With the only turn taken a request waits, and runs once it is free.
+    let held = Arc::clone(&h.admission).acquire_owned().await.unwrap();
+    let waiting = call_on(&h, as_mode("explore", window_body()));
+    tokio::pin!(waiting);
+    assert!(tokio::time::timeout(wait, &mut waiting).await.is_err());
+    drop(held);
+    let resp = tokio::time::timeout(done, waiting).await.unwrap().unwrap();
+    let v = serde_json::to_value(&resp).unwrap();
+    assert_eq!(v["data"]["status"], json!({"complete": true}));
+
+    // A request cancelled while it waits answers at once, cancelled, having
+    // read nothing.
+    let held = Arc::clone(&h.admission).acquire_owned().await.unwrap();
+    let progress = ProgressState::new();
+    let cancel = CancellationToken::new();
+    let ctx = FunctionCallContext::new("tx-test".to_string(), progress.clone(), cancel.clone());
+    let req: OtelTracesRequest = serde_json::from_value(as_mode(
+        "values",
+        merge_into(window_body(), json!({"field": "name"})),
+    ))
+    .unwrap();
+    let cancelled = h.on_call(ctx, req);
+    tokio::pin!(cancelled);
+    assert!(tokio::time::timeout(wait, &mut cancelled).await.is_err());
+    cancel.cancel();
+    let resp = tokio::time::timeout(done, cancelled)
+        .await
+        .unwrap()
+        .unwrap();
+    let v = serde_json::to_value(&resp).unwrap();
+    assert_eq!(v["status"]["partial"][0]["reason"], "cancelled", "{v}");
+    assert_eq!(progress.load().0, 0);
+    drop(held);
+}
+
+fn merge_into(mut base: serde_json::Value, extra: serde_json::Value) -> serde_json::Value {
+    merge(&mut base, extra);
+    base
+}

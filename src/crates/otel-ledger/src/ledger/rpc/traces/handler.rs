@@ -22,7 +22,7 @@ use bridge::function::{FunctionCallContext, FunctionHandler};
 use file_registry::TenantId;
 use netdata_plugin_protocol::FunctionDeclaration;
 use netdata_plugin_types::HttpAccess;
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 
 use file_lifecycle::chunk::ChunkCache;
 use file_lifecycle::registry::TenantRegistries;
@@ -94,9 +94,15 @@ struct AggregateRequest {
     predicate: Option<Predicate>,
 }
 
+/// Explorer, value and trace requests evaluated at once; the rest wait for a
+/// turn, so a burst of refreshes cannot take every core and all the memory.
+const ADMITTED_REQUESTS: usize = 2;
+
 pub(crate) struct OtelTracesHandler {
     /// Live source resolution (registries snapshot + WAL chunk builds).
     supplier: TracesSourceSupplier,
+    /// Turns for the requests [`ADMITTED_REQUESTS`] bounds.
+    admission: Arc<Semaphore>,
 }
 
 impl OtelTracesHandler {
@@ -108,8 +114,37 @@ impl OtelTracesHandler {
         min_entries: u64,
         remote: Option<RemoteRead>,
     ) -> Self {
+        Self::with_admission(
+            registries,
+            chunk_cache,
+            min_entries,
+            remote,
+            ADMITTED_REQUESTS,
+        )
+    }
+
+    fn with_admission(
+        registries: Arc<RwLock<TenantRegistries>>,
+        chunk_cache: Arc<ChunkCache>,
+        min_entries: u64,
+        remote: Option<RemoteRead>,
+        admitted: usize,
+    ) -> Self {
         Self {
             supplier: TracesSourceSupplier::new(registries, chunk_cache, min_entries, remote),
+            admission: Arc::new(Semaphore::new(admitted)),
+        }
+    }
+
+    /// Wait for a turn, or until the request is cancelled: then `None`, and
+    /// the request goes on to its usual cancelled answer (the capture and the
+    /// engine see the same token). The caller moves the permit into its
+    /// blocking task, so the turn lasts as long as the work, even when the
+    /// caller stops waiting for it.
+    async fn admit(&self, ctx: &FunctionCallContext) -> Option<OwnedSemaphorePermit> {
+        tokio::select! {
+            permit = Arc::clone(&self.admission).acquire_owned() => permit.ok(),
+            () = ctx.cancellation.cancelled() => None,
         }
     }
 
@@ -174,6 +209,7 @@ impl OtelTracesHandler {
         };
 
         let tenant = TenantId::resolve_query(tenant);
+        let permit = self.admit(ctx).await;
         // A cancelled capture returns NO copies; the empty default flows
         // into the engine, which polls the same token up front and
         // reports the Cancelled partial — one consistent cancel path.
@@ -196,6 +232,7 @@ impl OtelTracesHandler {
         // right side. A panicked task is a handler failure.
         let data = match tokio::task::spawn_blocking(move || {
             let _pins = pins;
+            let _permit = permit;
             trace_by_id(sources, query, cancel, done)
         })
         .await
@@ -600,6 +637,7 @@ impl OtelTracesHandler {
         let (query, after, before) = to_explore_query(params, unix_now_s());
         let grid = query.grid;
         let tenant = TenantId::resolve_query(tenant);
+        let permit = self.admit(ctx).await;
         let Capture { mut sets, pins } = self
             .supplier
             .capture(&tenant, after..before, 1, &ctx.cancellation, &ctx.progress)
@@ -611,6 +649,7 @@ impl OtelTracesHandler {
 
         match tokio::task::spawn_blocking(move || {
             let _pins = pins;
+            let _permit = permit;
             sfsq::traces::explore::explore(
                 sources,
                 query,
@@ -644,6 +683,7 @@ impl OtelTracesHandler {
     ) -> netdata_plugin_error::Result<OtelTracesResponse> {
         let (query, after, before) = to_values_query(params, unix_now_s());
         let tenant = TenantId::resolve_query(tenant);
+        let permit = self.admit(ctx).await;
         let Capture { mut sets, pins } = self
             .supplier
             .capture(&tenant, after..before, 1, &ctx.cancellation, &ctx.progress)
@@ -656,6 +696,7 @@ impl OtelTracesHandler {
 
         match tokio::task::spawn_blocking(move || {
             let _pins = pins;
+            let _permit = permit;
             sfsq::traces::explore::field_values(
                 sources,
                 query,
