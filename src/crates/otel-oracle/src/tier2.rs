@@ -195,11 +195,16 @@ fn scenarios(spans: &[OracleSpan], grid: &Grid) -> Vec<Scenario> {
             selection: None,
         });
     }
+    out.push(Scenario {
+        name: "F6 entry spans with an unset status".to_string(),
+        scope: Scope::entry_spans().with_absent(STATUS_FIELD),
+        selection: None,
+    });
     out
 }
 
 /// The W3 selections judged: errors, the slow bands, the middle third of the
-/// window, and durations at least the scope's p95.
+/// window, durations at least the scope's p95, and errors or an unset status.
 fn selections(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec<(&'static str, Selection)> {
     let mut out = vec![
         (
@@ -243,16 +248,29 @@ fn selections(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec<(&'static
             },
         ));
     }
+    out.push((
+        "E5 errors or unset",
+        Selection {
+            terms: Scope::default()
+                .with(STATUS_FIELD, &["ERROR"])
+                .with_absent(STATUS_FIELD),
+            ..Selection::default()
+        },
+    ));
     out
 }
 
+/// A scope's chips as the wire's filter: `null` for the rows without a field.
 fn chips_json(scope: &Scope) -> Value {
-    let filter: BTreeMap<&String, Vec<&String>> = scope
-        .terms
-        .iter()
-        .map(|(field, values)| (field, values.iter().collect()))
-        .collect();
-    json!(filter)
+    let mut filter = serde_json::Map::new();
+    for (field, wanted) in &scope.terms {
+        let mut values: Vec<Value> = wanted.values.iter().map(|v| json!(v)).collect();
+        if wanted.absent {
+            values.push(Value::Null);
+        }
+        filter.insert(field.clone(), Value::Array(values));
+    }
+    Value::Object(filter)
 }
 
 fn selection_json(selection: &Selection) -> Value {
@@ -288,12 +306,7 @@ fn explore_body(
         explore["selection"] = selection_json(selection);
     }
     if !scope.terms.is_empty() {
-        let filter: BTreeMap<&String, Vec<&String>> = scope
-            .terms
-            .iter()
-            .map(|(field, values)| (field, values.iter().collect()))
-            .collect();
-        explore["filter"] = json!(filter);
+        explore["filter"] = chips_json(scope);
     }
     if let Some(text) = &scope.text {
         explore["text"] = json!(text);
@@ -1969,15 +1982,17 @@ mod tests {
             ]
         );
         assert_eq!(
-            names[4..8],
+            names[4..9],
             [
                 "F1 entry spans × E1 errors",
                 "F1 entry spans × E2 slow bands",
                 "F1 entry spans × E3 middle third",
                 "F1 entry spans × E4 at least the p95",
+                "F1 entry spans × E5 errors or unset",
             ]
         );
-        assert!(names[8].starts_with("F5 "), "{names:?}");
+        assert!(names[9].starts_with("F5 "), "{names:?}");
+        assert_eq!(names[10..], ["F6 entry spans with an unset status"]);
         let selections: Vec<&Value> = plan
             .requests
             .iter()
@@ -1987,6 +2002,16 @@ mod tests {
             selections
                 .iter()
                 .any(|s| s["filter"]["status_code"] == json!(["ERROR"]))
+        );
+        assert!(
+            selections
+                .iter()
+                .any(|s| s["filter"]["status_code"] == json!(["ERROR", null]))
+        );
+        assert!(
+            plan.requests
+                .iter()
+                .any(|r| r.body["explore"]["filter"]["status_code"] == json!([null]))
         );
         assert!(selections.iter().any(|s| s["time"]["after_ns"].is_string()));
         assert!(selections.iter().any(|s| s["duration"]["min_ns"].is_i64()));

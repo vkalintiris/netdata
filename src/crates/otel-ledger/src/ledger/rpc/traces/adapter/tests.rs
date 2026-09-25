@@ -549,40 +549,33 @@ fn explore_window_grid() {
     }
 }
 
+/// Chips become the scope filter value for value; a `null` value becomes the
+/// absent term, OR'd with the field's other values.
 #[test]
 fn explore_chips_become_the_scope_filter() {
     let (query, _, _) = to_explore_query(
-        &explore_params(json!({"filter": {
-            "_role": ["root", "inbound"],
-            "resource.attributes.service.name": ["checkout"]
-        }})),
+        &explore_params(json!({
+            "filter": {
+                "_role": ["root", "inbound"],
+                "resource.attributes.service.name": ["checkout"],
+                "status_code": ["ERROR", null]
+            },
+            "selection": {"filter": {"name": [null]}}
+        })),
         1_700_000_000,
     );
-    let chips: Vec<(String, Vec<String>)> = query
-        .scope
-        .filter
-        .iter()
-        .map(|(field, matchers)| {
-            let values = matchers
-                .iter()
-                .map(|m| match m {
-                    sfst::Matcher::Exact(v) => v.clone(),
-                    sfst::Matcher::Pattern(p) => panic!("chips are exact, got pattern {p}"),
-                    sfst::Matcher::Absent => panic!("no absent chip was sent"),
-                })
-                .collect();
-            (field.clone(), values)
-        })
-        .collect();
     assert_eq!(
-        chips,
-        [
-            ("_role".to_string(), vec!["root".to_string(), "inbound".to_string()]),
-            (
-                "resource.attributes.service.name".to_string(),
-                vec!["checkout".to_string()]
-            ),
-        ]
+        query.scope.filter,
+        sfst::Filter::new()
+            .select("_role", "root")
+            .select("_role", "inbound")
+            .select("resource.attributes.service.name", "checkout")
+            .select("status_code", "ERROR")
+            .select_absent("status_code")
+    );
+    assert_eq!(
+        query.selection.map(|selection| selection.filter),
+        Some(sfst::Filter::new().select_absent("name"))
     );
     assert_eq!(
         query.sections.histogram.map(|h| h.stack),

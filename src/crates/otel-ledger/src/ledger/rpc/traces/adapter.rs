@@ -703,11 +703,14 @@ pub(crate) fn to_explore_query(
     // least one second so the grid holds a bucket.
     let (grid, aligned_after, aligned_before) =
         super::super::grid::grid_for_window_s(after, before.max(after.saturating_add(1)));
-    let filter_of = |chips: &std::collections::BTreeMap<String, Vec<String>>| {
+    let filter_of = |chips: &super::wire::Chips| {
         let mut filter = sfst::Filter::new();
         for (field, values) in chips {
             for value in values {
-                filter = filter.select(field.clone(), value.clone());
+                filter = match value {
+                    Some(value) => filter.select(field.clone(), value.clone()),
+                    None => filter.select_absent(field.clone()),
+                };
             }
         }
         filter

@@ -18,14 +18,18 @@ pub const DEFAULT_WINDOW_S: i64 = 900;
 /// Rows per page (or K) when the rows section names no limit.
 pub const ROWS_DEFAULT_LIMIT: usize = 100;
 
+/// Chips: field → values, OR within a field and AND across fields. A `null`
+/// value stands for the rows without the field.
+pub type Chips = BTreeMap<String, Vec<Option<String>>>;
+
 /// The explorer's parameters, validated.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "RawExploreParams")]
 pub struct ExploreParams {
     pub window: RequestWindow,
-    /// Scope chips in storage field names: OR within a field, AND across
-    /// fields. The engine applies no default scope; the UI sends it.
-    pub filter: BTreeMap<String, Vec<String>>,
+    /// Scope chips in storage field names. The engine applies no default
+    /// scope; the UI sends it.
+    pub filter: Chips,
     /// A literal searched in every value.
     pub text: Option<String>,
     /// Keep only these traces' spans (1 to [`TRACE_IDS_MAX`]).
@@ -94,7 +98,7 @@ pub struct FacetsRequest {
 /// start-time range (unix nanoseconds, `[after, before)`), all ANDed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionRequest {
-    pub filter: BTreeMap<String, Vec<String>>,
+    pub filter: Chips,
     pub duration: Option<sfst::DurationRange>,
     pub time_ns: Option<std::ops::Range<i64>>,
 }
@@ -103,7 +107,7 @@ pub struct SelectionRequest {
 #[serde(deny_unknown_fields)]
 struct RawSelection {
     #[serde(default)]
-    filter: BTreeMap<String, Vec<String>>,
+    filter: Chips,
     #[serde(default, deserialize_with = "super::present")]
     duration: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "super::present")]
@@ -126,7 +130,7 @@ struct RawTime {
     before_ns: String,
 }
 
-fn check_filter(filter: &BTreeMap<String, Vec<String>>, what: &str) -> Result<(), String> {
+fn check_filter(filter: &Chips, what: &str) -> Result<(), String> {
     for (field, values) in filter {
         if field.is_empty() {
             return Err(format!("a {what} field name is empty"));
@@ -217,7 +221,7 @@ struct RawExploreParams {
     #[serde(default)]
     before: Option<i64>,
     #[serde(default)]
-    filter: BTreeMap<String, Vec<String>>,
+    filter: Chips,
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]

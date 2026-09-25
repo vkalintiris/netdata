@@ -1219,11 +1219,11 @@ impl From<PartialReason> for PartialReasonWire {
 mod explore;
 mod values;
 pub use explore::{
-    BucketWire, ComparisonTotalsWire, ComparisonWire, DeltaOtherWire, DeltaRowWire, DeltaSideWire,
-    ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire, ExploreParams,
-    ExploreResponse, FieldWire, FieldsWire, GridWire, GroupNumbersWire, GroupWire, GroupsDeltaWire,
-    GroupsWire, HistogramWire, OtherGroupsWire, PercentileMethodWire, PercentilesWire, RowWire,
-    RowsWire, TotalsWire, UnavailableFacetWire, WindowWire,
+    BucketWire, Chips, ComparisonTotalsWire, ComparisonWire, DeltaOtherWire, DeltaRowWire,
+    DeltaSideWire, ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire,
+    ExploreParams, ExploreResponse, FieldWire, FieldsWire, GridWire, GroupNumbersWire, GroupWire,
+    GroupsDeltaWire, GroupsWire, HistogramWire, OtherGroupsWire, PercentileMethodWire,
+    PercentilesWire, RowWire, RowsWire, TotalsWire, UnavailableFacetWire, WindowWire,
 };
 pub use values::{VALUES_DEFAULT_LIMIT, ValuesParams, ValuesResponse};
 

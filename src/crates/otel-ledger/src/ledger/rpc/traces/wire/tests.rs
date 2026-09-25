@@ -683,7 +683,10 @@ fn explore_defaults_to_the_last_fifteen_minutes_stacked_by_status() {
         "sections": {"histogram": {"stack": "_duration_band", "percentiles": false}}
     }));
     assert_eq!((p.window.after, p.window.before), (-3600, 0));
-    assert_eq!(p.filter["_role"], ["root", "inbound"]);
+    assert_eq!(
+        p.filter["_role"],
+        [Some("root".to_string()), Some("inbound".to_string())]
+    );
     assert_eq!(
         p.histogram,
         Some(HistogramRequest {
@@ -735,6 +738,8 @@ fn explore_rejects_bad_requests() {
         (json!({"explore": {"sections": {"histogram": {"bogus": 1}}}}), "unknown field"),
         (json!({"explore": {"filter": {"_role": []}}}), "lists no values"),
         (json!({"explore": {"filter": {"": ["x"]}}}), "field name is empty"),
+        (json!({"explore": {"filter": {"_role": null}}}), "invalid type"),
+        (json!({"explore": {"filter": {"_role": [1]}}}), "invalid type"),
         (json!({"explore": {"after": -900, "before": 1_700_000_000}}), "both be relative"),
         (json!({"explore": {"after": 0, "before": -60}}), "must be before"),
         (json!({"explore": {"after": 7_000, "before": 6_000}}), "must be before"),
@@ -791,12 +796,17 @@ fn selection_shapes() {
 
     assert_eq!(explore(json!({})).selection, None);
     assert_eq!(
-        selection(json!({"filter": {"status_code": ["ERROR"]}})),
+        selection(json!({"filter": {"status_code": ["ERROR", null]}})),
         Some(SelectionRequest {
-            filter: [("status_code".to_string(), vec!["ERROR".to_string()])].into(),
+            filter: [(
+                "status_code".to_string(),
+                vec![Some("ERROR".to_string()), None],
+            )]
+            .into(),
             duration: None,
             time_ns: None,
-        })
+        }),
+        "`null` stands for the rows without the field"
     );
     assert_eq!(
         selection(json!({"duration": {"min_ns": 500_000_000}})).and_then(|s| s.duration),
@@ -812,7 +822,11 @@ fn selection_shapes() {
             "time": {"after_ns": "1758791340000000000", "before_ns": "1758791580000000000"}
         })),
         Some(SelectionRequest {
-            filter: [("_duration_band".to_string(), vec!["1-10s".to_string()])].into(),
+            filter: [(
+                "_duration_band".to_string(),
+                vec![Some("1-10s".to_string())]
+            )]
+            .into(),
             duration: Some(sfst::DurationRange {
                 min_ns: None,
                 max_ns: Some(10),

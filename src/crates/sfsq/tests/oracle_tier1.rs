@@ -416,9 +416,12 @@ fn explore_sources(stored: &Stored, live: Live) -> Vec<TraceSource> {
 
 fn explore_query(grid: &Grid, scope: &Scope, stack: &str) -> ExploreQuery {
     let mut filter = sfst::Filter::new();
-    for (field, values) in &scope.terms {
-        for value in values {
+    for (field, wanted) in &scope.terms {
+        for value in &wanted.values {
             filter = filter.select(field.clone(), value.clone());
+        }
+        if wanted.absent {
+            filter = filter.select_absent(field.clone());
         }
     }
     ExploreQuery {
@@ -641,7 +644,6 @@ fn explore_facets_match_the_calculator() {
 #[test]
 fn explore_text_and_trace_id_scopes_match_the_calculator() {
     let stored = store(400, 81);
-    let grid = stored.grid;
     let mut ids: Vec<[u8; 16]> = stored.oracle.iter().filter_map(|s| s.trace_id).collect();
     ids.sort();
     ids.dedup();
@@ -653,26 +655,76 @@ fn explore_text_and_trace_id_scopes_match_the_calculator() {
     ];
     for live in [Live::Tail, Live::Split(100)] {
         for (name, scope) in &scopes {
-            let data = explore::explore(
-                explore_sources(&stored, live),
-                explore_query(&grid, scope, model::STATUS_FIELD),
-                explore::ExploreOptions::default(),
-                tokio_util::sync::CancellationToken::new(),
-                std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            )
-            .unwrap();
-            let case = format!("{live:?} {name}");
-            let histogram = data.histogram.expect("histogram");
-            let totals = calc::totals(&stored.oracle, &grid, scope);
-            assert!(totals.spans > 0, "{case}: the scenario selects rows");
-            assert_eq!(
-                (histogram.totals.count, histogram.totals.errors),
-                (totals.spans, totals.errors),
-                "{case}"
-            );
-            let want = calc::histogram(&stored.oracle, &grid, scope, model::STATUS_FIELD);
-            assert_eq!(calc_buckets(&histogram), want, "{case}");
+            assert_histogram_matches(&stored, live, scope, &format!("{live:?} {name}"));
         }
+    }
+}
+
+/// The status-stacked histogram and totals of `scope` equal the calculator's,
+/// and the scope selects rows.
+fn assert_histogram_matches(stored: &Stored, live: Live, scope: &Scope, case: &str) {
+    let grid = stored.grid;
+    let data = explore::explore(
+        explore_sources(stored, live),
+        explore_query(&grid, scope, model::STATUS_FIELD),
+        explore::ExploreOptions::default(),
+        tokio_util::sync::CancellationToken::new(),
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )
+    .unwrap();
+    assert!(data.status.is_complete(), "{case}: {:?}", data.status);
+    let histogram = data.histogram.expect("histogram");
+    let totals = calc::totals(&stored.oracle, &grid, scope);
+    assert!(totals.spans > 0, "{case}: the scenario selects rows");
+    assert_eq!(
+        (histogram.totals.count, histogram.totals.errors),
+        (totals.spans, totals.errors),
+        "{case}"
+    );
+    let want = calc::histogram(&stored.oracle, &grid, scope, model::STATUS_FIELD);
+    assert_eq!(calc_buckets(&histogram), want, "{case}");
+}
+
+/// ORC-FILTER with absent chips (W-1): rows without a status, errors or
+/// unset, spans without a multi-valued field, a field no row has, and a
+/// high-cardinality field OR'd with a value (high in the sealed unit only);
+/// the histogram and totals equal the calculator's however the live WAL is
+/// served.
+#[test]
+fn explore_absent_chips_match_the_calculator() {
+    let stored = store(400, 81);
+    let scopes = [
+        (
+            "entry spans, unset status",
+            Scope::entry_spans().with_absent(model::STATUS_FIELD),
+        ),
+        (
+            "entry spans, errors or unset",
+            Scope::entry_spans()
+                .with(model::STATUS_FIELD, &["ERROR"])
+                .with_absent(model::STATUS_FIELD),
+        ),
+        (
+            "spans without tags",
+            Scope::default().with_absent("attributes.app.tags[]"),
+        ),
+        (
+            "a field no row has",
+            Scope::default().with_absent("attributes.nope"),
+        ),
+    ];
+    for live in [Live::Tail, Live::Split(100)] {
+        for (name, scope) in &scopes {
+            assert_histogram_matches(&stored, live, scope, &format!("{live:?} {name}"));
+        }
+    }
+
+    let high = store_high_card();
+    let route = Scope::default()
+        .with(ROUTE_FIELD, &["/r0007", "/1"])
+        .with_absent(ROUTE_FIELD);
+    for live in [Live::Tail, Live::Chunked] {
+        assert_histogram_matches(&high, live, &route, &format!("{live:?} high route"));
     }
 }
 

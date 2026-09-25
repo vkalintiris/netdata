@@ -63,11 +63,19 @@ impl Grid {
     }
 }
 
+/// One field's chips: its values, and whether a row without the field
+/// matches too.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Wanted {
+    pub values: BTreeSet<String>,
+    pub absent: bool,
+}
+
 /// Field chips: a row matches when, for every field, it has at least one of
-/// the listed values.
+/// the listed values, or has no value of the field where that is wanted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scope {
-    pub terms: BTreeMap<String, BTreeSet<String>>,
+    pub terms: BTreeMap<String, Wanted>,
     /// A literal that must appear, case-insensitively, in some value of a field
     /// not starting with `_`.
     pub text: Option<String>,
@@ -82,10 +90,16 @@ impl Scope {
     }
 
     pub fn with(mut self, field: &str, values: &[&str]) -> Self {
-        let set = self.terms.entry(field.to_string()).or_default();
+        let wanted = self.terms.entry(field.to_string()).or_default();
         for v in values {
-            set.insert(v.to_string());
+            wanted.values.insert(v.to_string());
         }
+        self
+    }
+
+    /// Adds the rows without any value of `field`.
+    pub fn with_absent(mut self, field: &str) -> Self {
+        self.terms.entry(field.to_string()).or_default().absent = true;
         self
     }
 
@@ -124,10 +138,11 @@ impl Scope {
             }
         }
         for (field, wanted) in &self.terms {
-            let Some(values) = span.fields.get(field) else {
-                return false;
+            let matched = match span.fields.get(field) {
+                Some(values) => !values.is_disjoint(&wanted.values),
+                None => wanted.absent,
             };
-            if values.is_disjoint(wanted) {
+            if !matched {
                 return false;
             }
         }
@@ -1538,6 +1553,55 @@ mod tests {
         assert_eq!(
             comparison(&spans, &grid, &Scope::default(), &later, &[]).selection,
             2
+        );
+    }
+
+    #[test]
+    fn absent_terms_match_rows_without_the_field() {
+        let span = |pairs: &[(&str, &str)]| OracleSpan {
+            trace_id: None,
+            span_id: None,
+            parent_span_id: None,
+            start_ns: 0,
+            duration_ns: 1,
+            fields: pairs.iter().copied().collect(),
+            unit: 0,
+            self_ns: None,
+        };
+        let error = span(&[(STATUS_FIELD, "ERROR"), ("name", "a")]);
+        let ok = span(&[(STATUS_FIELD, "OK"), ("name", "a")]);
+        let unset = span(&[("name", "a")]);
+        let matched = |scope: &Scope| {
+            [&error, &ok, &unset]
+                .iter()
+                .map(|span| scope.matches(span))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            matched(&Scope::default().with_absent(STATUS_FIELD)),
+            [false, false, true]
+        );
+        assert_eq!(
+            matched(
+                &Scope::default()
+                    .with(STATUS_FIELD, &["ERROR"])
+                    .with_absent(STATUS_FIELD)
+            ),
+            [true, false, true],
+            "OR within the field"
+        );
+        assert_eq!(
+            matched(
+                &Scope::default()
+                    .with_absent(STATUS_FIELD)
+                    .with("name", &["b"])
+            ),
+            [false, false, false],
+            "AND across fields"
+        );
+        assert_eq!(
+            matched(&Scope::default().with_absent("nope")),
+            [true, true, true]
         );
     }
 

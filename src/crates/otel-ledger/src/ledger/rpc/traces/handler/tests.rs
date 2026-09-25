@@ -1746,6 +1746,27 @@ async fn explore_counts_a_refused_wal() {
     );
 }
 
+/// A `null` chip keeps the rows without the field: of the four roots, the
+/// three svc roots have no status.
+#[tokio::test]
+async fn explore_scopes_rows_without_a_status() {
+    let (h, _) = explore_corpus().await;
+    let count = |statuses: serde_json::Value| {
+        json!({"explore": {
+            "after": 1, "before": 10,
+            "filter": {"_role": ["root"], "status_code": statuses},
+            "sections": {"histogram": {"stack": "status_code"}}
+        }})
+    };
+    for (statuses, want) in [(json!([null]), 3), (json!(["ERROR", null]), 4)] {
+        let v = serde_json::to_value(call_on(&h, count(statuses.clone())).await.unwrap()).unwrap();
+        assert_eq!(
+            v["data"]["histogram"]["totals"]["count"], want,
+            "{statuses}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn explore_answers_a_selection() {
     let (h, _) = explore_corpus().await;
