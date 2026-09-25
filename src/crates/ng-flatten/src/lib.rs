@@ -344,6 +344,127 @@ mod tests {
         assert_eq!(dur(250, 100), 0, "skew (end < start) → 0");
     }
 
+    /// The resolved entries of the single span of a one-span request.
+    fn single_span_leaves(span: Span) -> Vec<Leaf> {
+        let (flat, _) = flatten_trace_request(trace_req(span, None, None));
+        flat.tree
+            .resolve(&flat.resources[0].scopes[0].spans[0].entries)
+    }
+
+    #[test]
+    fn role_is_root_without_parent_else_follows_kind() {
+        let own_id = vec![0x22; 8];
+        let cases: [(&str, Vec<u8>, i32, &str); 12] = [
+            ("no parent, server", vec![], 2, "root"),
+            ("no parent, client", vec![], 3, "root"),
+            ("all-zero parent", vec![0; 8], 2, "root"),
+            ("wrong-length parent", vec![0x33; 3], 2, "root"),
+            ("server", vec![0x33; 8], 2, "inbound"),
+            ("consumer", vec![0x33; 8], 5, "inbound"),
+            ("client", vec![0x33; 8], 3, "outbound"),
+            ("producer", vec![0x33; 8], 4, "outbound"),
+            ("internal", vec![0x33; 8], 1, "internal"),
+            ("unspecified kind", vec![0x33; 8], 0, "internal"),
+            ("unknown kind", vec![0x33; 8], 99, "internal"),
+            ("own id as parent", own_id.clone(), 2, "inbound"),
+        ];
+        for (case, parent_span_id, kind, want) in cases {
+            let leaves = single_span_leaves(Span {
+                span_id: own_id.clone(),
+                parent_span_id,
+                kind,
+                attributes: vec![kv(ROLE_FIELD, Av::StringValue("spoofed".into()))],
+                ..Default::default()
+            });
+            assert_eq!(
+                at(&leaves, "attributes._role"),
+                [&Value::Str("spoofed".into())],
+                "{case}: a span attribute of the same name stays under attributes."
+            );
+            assert_eq!(
+                at(&leaves, ROLE_FIELD),
+                [&Value::Str(want.into())],
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn duration_band_includes_its_lower_edge() {
+        let cases: [(u64, u64, &str); 13] = [
+            (100, 100 + 999_999, "<1ms"),
+            (100, 100 + 1_000_000, "1-10ms"),
+            (100, 100 + 9_999_999, "1-10ms"),
+            (100, 100 + 10_000_000, "10-100ms"),
+            (100, 100 + 99_999_999, "10-100ms"),
+            (100, 100 + 100_000_000, "100ms-1s"),
+            (100, 100 + 999_999_999, "100ms-1s"),
+            (100, 100 + 1_000_000_000, "1-10s"),
+            (100, 100 + 9_999_999_999, "1-10s"),
+            (100, 100 + 10_000_000_000, ">10s"),
+            (100, 0, "<1ms"),
+            (250, 100, "<1ms"),
+            (1, u64::MAX, ">10s"),
+        ];
+        for (start, end, want) in cases {
+            let leaves = single_span_leaves(Span {
+                start_time_unix_nano: start,
+                end_time_unix_nano: end,
+                ..Default::default()
+            });
+            assert_eq!(
+                at(&leaves, DURATION_BAND_FIELD),
+                [&Value::Str(want.into())],
+                "start {start}, end {end}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_span_of_a_request_gets_one_role_and_one_band() {
+        let span = |parent: Vec<u8>, kind| Span {
+            span_id: vec![0x44; 8],
+            parent_span_id: parent,
+            kind,
+            start_time_unix_nano: 1_000,
+            end_time_unix_nano: 3_000_000,
+            ..Default::default()
+        };
+        let req = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: vec![
+                        span(vec![], 2),
+                        span(vec![0x55; 8], 3),
+                        span(vec![0x55; 8], 1),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let (flat, _) = flatten_trace_request(req);
+        let mut roles = Vec::new();
+        for sr in &flat.resources[0].scopes[0].spans {
+            let leaves = flat.tree.resolve(&sr.entries);
+            let role = at(&leaves, ROLE_FIELD);
+            assert_eq!(role.len(), 1);
+            roles.push(role[0].clone());
+            assert_eq!(
+                at(&leaves, DURATION_BAND_FIELD),
+                [&Value::Str("1-10ms".into())]
+            );
+        }
+        assert_eq!(
+            roles,
+            [
+                Value::Str("root".into()),
+                Value::Str("outbound".into()),
+                Value::Str("internal".into())
+            ]
+        );
+    }
+
     #[test]
     fn normalize_trace_request_ids_and_timestamps() {
         let mut req = trace_req(
@@ -484,7 +605,14 @@ mod tests {
         assert_eq!((frame.records, frame.rejected), (1, 0));
         assert_eq!(frame.ts_range, Some((1_000, 1_000)));
         let decoded = decode_trace_frame(&frame.data).unwrap();
-        assert_eq!(decoded.resources[0].scopes[0].spans[0].ts, 1_000);
+        let span = &decoded.resources[0].scopes[0].spans[0];
+        assert_eq!(span.ts, 1_000);
+        let leaves = decoded.tree.resolve(&span.entries);
+        assert_eq!(at(&leaves, ROLE_FIELD), [&Value::Str("root".into())]);
+        assert_eq!(
+            at(&leaves, DURATION_BAND_FIELD),
+            [&Value::Str("<1ms".into())]
+        );
 
         // Zero spans → nothing prepared, nothing to write.
         let frame =

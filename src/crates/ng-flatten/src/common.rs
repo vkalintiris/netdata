@@ -562,7 +562,7 @@ impl Flattener {
     }
 
     /// Emit a top-level scalar record field (a leaf directly under the root).
-    fn scalar(&mut self, name: &str, value: Value, out: &mut Vec<Entry>) {
+    pub(crate) fn scalar(&mut self, name: &str, value: Value, out: &mut Vec<Entry>) {
         self.emit(ROOT, StepRef::Field(name), value, out);
     }
 

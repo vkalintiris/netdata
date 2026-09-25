@@ -42,7 +42,10 @@ pub struct SpanScopeGroup {
 /// `Span` field: scalar facets (`name`, `kind`, `status_code`, `trace_state`,
 /// `status_message`) and `attributes.*` live in [`entries`](Self::entries);
 /// events and links are structured lists ([`EventRecord`] / [`LinkRecord`])
-/// whose searchable parts double as entries at seal time.
+/// whose searchable parts double as entries at seal time. The entries also hold
+/// two derived values, [`ROLE_FIELD`] and [`DURATION_BAND_FIELD`]; a leading `_`
+/// marks a top-level entry that is not an OTLP field verbatim (these, and the
+/// raw enum ints `_kind` / `_status_code`).
 ///
 /// Per-row columns (NOT FST facets): `ts` = the resolved `start_time_unix_nano`
 /// (the row-ordering key; callers MUST normalize first, see
@@ -120,6 +123,84 @@ fn span_duration(span: &Span) -> i64 {
     i64::try_from(span.end_time_unix_nano - span.start_time_unix_nano).unwrap_or(i64::MAX)
 }
 
+/// Storage key of the span-role entry every span carries (see [`SpanRole`]).
+pub const ROLE_FIELD: &str = "_role";
+
+/// Storage key of the duration-band entry every span carries (see
+/// [`duration_band`]).
+pub const DURATION_BAND_FIELD: &str = "_duration_band";
+
+/// Where a span sits in its request. Written at flatten time because it depends
+/// only on the span itself, so live WAL rows and sealed rows always agree, and
+/// "spans where a request enters a service" (`root` + `inbound`) becomes one
+/// bitmap union instead of a parent-column scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanRole {
+    /// No parent: the first span of the request as far as this agent knows.
+    Root,
+    /// A SERVER or CONSUMER span with a parent: the request enters a service.
+    Inbound,
+    /// A CLIENT or PRODUCER span with a parent: the service calls out.
+    Outbound,
+    /// Any other span with a parent (INTERNAL, UNSPECIFIED, unknown kinds).
+    Internal,
+}
+
+impl SpanRole {
+    pub const ALL: [SpanRole; 4] = [
+        SpanRole::Root,
+        SpanRole::Inbound,
+        SpanRole::Outbound,
+        SpanRole::Internal,
+    ];
+
+    /// The role of a span. A parent that is set but never received (an
+    /// orphan) still makes the span a non-root: the role describes the span,
+    /// not what the store happens to hold.
+    pub fn of(parent_span_id: &SpanId, kind: i32) -> Self {
+        if parent_span_id.is_unset() {
+            return SpanRole::Root;
+        }
+        match kind {
+            2 | 5 => SpanRole::Inbound,
+            3 | 4 => SpanRole::Outbound,
+            _ => SpanRole::Internal,
+        }
+    }
+
+    /// The stored value.
+    pub fn label(self) -> &'static str {
+        match self {
+            SpanRole::Root => "root",
+            SpanRole::Inbound => "inbound",
+            SpanRole::Outbound => "outbound",
+            SpanRole::Internal => "internal",
+        }
+    }
+}
+
+/// Number of fixed duration bands.
+pub const DURATION_BAND_COUNT: usize = 6;
+
+/// Stored values of the duration bands, fastest first.
+pub const DURATION_BAND_LABELS: [&str; DURATION_BAND_COUNT] =
+    ["<1ms", "1-10ms", "10-100ms", "100ms-1s", "1-10s", ">10s"];
+
+/// Lower edges of bands 1.. in nanoseconds; a band includes its lower edge.
+pub const DURATION_BAND_EDGES_NS: [i64; DURATION_BAND_COUNT - 1] = [
+    1_000_000,      // 1ms
+    10_000_000,     // 10ms
+    100_000_000,    // 100ms
+    1_000_000_000,  // 1s
+    10_000_000_000, // 10s
+];
+
+/// Index into [`DURATION_BAND_LABELS`] of a span duration (the clamped
+/// `SpanRecord::duration`).
+pub fn duration_band(duration_ns: i64) -> usize {
+    DURATION_BAND_EDGES_NS.partition_point(|&edge| duration_ns >= edge)
+}
+
 /// Flatten a decoded **traces** request INTO a shared [`Flattener`] (span analog of
 /// [`crate::logs::flatten_log_into`]). Resource is flattened once per `ResourceSpans`,
 /// scope once per `ScopeSpans`, reusing the signal-neutral
@@ -158,7 +239,19 @@ pub fn flatten_trace_into(
                     let dropped_attributes_count = sp.dropped_attributes_count;
                     let dropped_events_count = sp.dropped_events_count;
                     let dropped_links_count = sp.dropped_links_count;
-                    let flat = flattener.flatten_span(sp);
+                    let role = SpanRole::of(&parent_span_id, sp.kind);
+                    let band = DURATION_BAND_LABELS[duration_band(duration)];
+                    let mut flat = flattener.flatten_span(sp);
+                    flattener.scalar(
+                        ROLE_FIELD,
+                        Value::Str(role.label().to_string()),
+                        &mut flat.entries,
+                    );
+                    flattener.scalar(
+                        DURATION_BAND_FIELD,
+                        Value::Str(band.to_string()),
+                        &mut flat.entries,
+                    );
                     SpanRecord {
                         ts,
                         duration,

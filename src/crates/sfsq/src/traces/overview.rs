@@ -78,22 +78,11 @@ use super::sources::{SourceSetError, TraceSource, validate_sources};
 use super::status::{PartialReason, QueryStatus, StatusBuilder};
 use super::window::{TimeWindow, WindowError};
 
-/// Number of log-scale duration bins (fixed).
-pub const DURATION_BIN_COUNT: usize = 6;
+/// Number of log-scale duration bins (fixed): the per-span duration bands.
+pub const DURATION_BIN_COUNT: usize = ng_flatten::DURATION_BAND_COUNT;
 
 /// The bins' wire labels, index-parallel to a cell row.
-pub const DURATION_BIN_LABELS: [&str; DURATION_BIN_COUNT] =
-    ["<1ms", "1-10ms", "10-100ms", "100ms-1s", "1-10s", ">10s"];
-
-/// Bin lower edges in nanoseconds (bin 0 is everything below the first
-/// edge; the last bin is everything at/above the last edge).
-const DURATION_BIN_EDGES_NS: [i64; DURATION_BIN_COUNT - 1] = [
-    1_000_000,      // 1ms
-    10_000_000,     // 10ms
-    100_000_000,    // 100ms
-    1_000_000_000,  // 1s
-    10_000_000_000, // 10s
-];
+pub const DURATION_BIN_LABELS: [&str; DURATION_BIN_COUNT] = ng_flatten::DURATION_BAND_LABELS;
 
 /// The default visited budget (rollup rows + tail spans examined).
 const VISITED_ROWS_CEILING: u64 = 4_000_000;
@@ -104,7 +93,7 @@ pub const FACET_TOP_K: usize = 10;
 
 /// Which duration bin an envelope duration falls in.
 fn duration_bin(duration_ns: i64) -> usize {
-    DURATION_BIN_EDGES_NS.partition_point(|&edge| duration_ns >= edge)
+    ng_flatten::duration_band(duration_ns)
 }
 
 /// One time bucket's envelope-duration percentiles, nanoseconds.
