@@ -196,7 +196,9 @@ fn explore_body(after_s: u32, before_s: u32, scope: &Scope, sections: Value) -> 
 }
 
 /// The requests for the window `[after_s, before_s)` over the rows of the
-/// units it overlaps.
+/// units that the window overlaps once aligned to its grid (the agent answers
+/// explore requests over the aligned window, and echoes it; value suggestions
+/// keep the window as sent).
 pub fn plan(after_s: u32, before_s: u32, spans: &[OracleSpan], candidates: u64) -> Plan {
     let grid = Grid::for_window(after_s, before_s);
     let scenarios = scenarios(spans, &grid);
@@ -878,8 +880,8 @@ pub fn judge(
                 let scenario = &plan.scenarios[*scenario];
                 let data = &got.data;
                 let window = [
-                    Subject::Count(u64::from(plan.after_s)),
-                    Subject::Count(u64::from(plan.before_s)),
+                    Subject::Count(u64::from(grid.after_s)),
+                    Subject::Count(u64::from(grid.before_s)),
                     Subject::Ns(i64::from(grid.after_s) * 1_000_000_000),
                     Subject::Ns(i64::from(grid.width_s) * 1_000_000_000),
                     Subject::Count(grid.buckets() as u64),
@@ -1029,7 +1031,7 @@ mod tests {
         let mut data = json!({
             "mode": "explore",
             "version": 1,
-            "window": {"after": plan.after_s, "before": plan.before_s, "grid": {
+            "window": {"after": grid.after_s, "before": grid.before_s, "grid": {
                 "start_ns": (i64::from(grid.after_s) * 1_000_000_000).to_string(),
                 "bucket_ns": i64::from(grid.width_s) * 1_000_000_000,
                 "buckets": grid.buckets(),
@@ -1256,5 +1258,18 @@ mod tests {
         let (findings, _) = judge(&plan, &spans, &answers);
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert_eq!(findings[0].check, "ORC-VALUES");
+    }
+
+    #[test]
+    fn an_explore_window_comes_back_aligned_to_its_grid() {
+        let (spans, after, _) = corpus_spans();
+        let (unaligned, before) = (after + 1, after + 900);
+        let grid = Grid::for_window(unaligned, before);
+        assert_ne!(grid.after_s, unaligned);
+        let plan = plan(unaligned, before, &spans, 2);
+
+        let (findings, _) = judge(&plan, &spans, &answers(&plan, &spans));
+
+        assert_eq!(findings, vec![]);
     }
 }

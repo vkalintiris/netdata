@@ -210,6 +210,8 @@ fn start_second(span: &OracleSpan) -> i64 {
     span.start_ns.div_euclid(1_000_000_000)
 }
 
+/// Checks the window `[after_s, before_s)`; for explore answers pass the
+/// window aligned to its grid, which is what the agent reads.
 pub fn check_window(
     units: &[Unit],
     matched: &Matched,
