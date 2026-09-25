@@ -20,7 +20,8 @@
 //! JSON answers into the calculator's own copies of their shapes, and
 //! [`report`] writes the findings with per-run aliases for every stored value;
 //! [`tier2`] plans the live agent's requests for a judged window and judges
-//! its answers; [`freeze`] decides when the lab is still enough to ask.
+//! its answers; [`freeze`] decides when the lab is still enough to ask, and
+//! [`run`] carries a whole run out against an injected lab.
 
 pub mod calc;
 pub mod capture;
@@ -31,5 +32,6 @@ pub mod matching;
 pub mod membership;
 pub mod model;
 pub mod report;
+pub mod run;
 pub mod tier2;
 pub mod wire;

@@ -384,6 +384,18 @@ fn files(dir: &Path, extension: &str) -> Vec<PathBuf> {
     out
 }
 
+/// Every WAL of a traces store directory with its length (one removed while
+/// listing is left out): what the runner polls while writes settle.
+pub fn wal_lengths(store: &Path) -> Vec<(PathBuf, u64)> {
+    let mut out = Vec::new();
+    for path in files(&store.join("wal/default"), "wal") {
+        if let Ok(meta) = fs::metadata(&path) {
+            out.push((path, meta.len()));
+        }
+    }
+    out
+}
+
 pub fn read_store(store: &Path, min_entries: u32) -> Result<Membership, MembershipError> {
     read_store_with(store, min_entries, &mut SealedCache::default())
 }

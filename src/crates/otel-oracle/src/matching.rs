@@ -59,18 +59,18 @@ fn claims(record: usize, spans: Vec<OracleSpan>) -> impl Iterator<Item = Claim> 
     spans.into_iter().map(move |span| Claim { record, span })
 }
 
-/// The rows the capture's traces records should have left in the store.
-pub fn expected_rows(records: &[Record], window: &IngestWindow) -> Expected {
-    let mut out = Expected::default();
-    for (index, record) in records.iter().enumerate() {
+impl Expected {
+    /// Adds what the capture's record number `index` should have left in the
+    /// store (nothing for a logs record).
+    pub fn add(&mut self, index: usize, record: &Record, window: &IngestWindow) {
         if record.signal != Signal::Traces {
-            continue;
+            return;
         }
         let Ok(replay) = replay_record(record, window) else {
-            out.notes.push(IngestNote::Undecodable { record: index });
-            continue;
+            self.notes.push(IngestNote::Undecodable { record: index });
+            return;
         };
-        out.synthesized += replay.synthesized;
+        self.synthesized += replay.synthesized;
 
         let stored = if record.acknowledged() {
             replay.stored(record.rejected)
@@ -78,20 +78,28 @@ pub fn expected_rows(records: &[Record], window: &IngestWindow) -> Expected {
             None
         };
         match stored {
-            Some(rows) => out.kept.extend(claims(index, rows)),
+            Some(rows) => self.kept.extend(claims(index, rows)),
             None => {
                 if record.acknowledged() {
-                    out.notes.push(IngestNote::RejectedCount {
+                    self.notes.push(IngestNote::RejectedCount {
                         record: index,
                         reported: record.rejected,
                         certain: replay.rejected,
                         undecided: replay.undecided.len(),
                     });
                 }
-                out.doubtful.extend(claims(index, replay.kept));
-                out.doubtful.extend(claims(index, replay.undecided));
+                self.doubtful.extend(claims(index, replay.kept));
+                self.doubtful.extend(claims(index, replay.undecided));
             }
         }
+    }
+}
+
+/// The rows the capture's traces records should have left in the store.
+pub fn expected_rows(records: &[Record], window: &IngestWindow) -> Expected {
+    let mut out = Expected::default();
+    for (index, record) in records.iter().enumerate() {
+        out.add(index, record, window);
     }
     out
 }

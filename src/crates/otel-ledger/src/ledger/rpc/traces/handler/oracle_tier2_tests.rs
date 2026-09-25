@@ -1,4 +1,5 @@
-//! Tier 2 end to end, offline: a corpus stored the way the agent stores it (two
+//! Tier 2 end to end, offline, twice: once step by step, and once by the
+//! runner against a lab whose agent is the handler. Step by step: a corpus stored the way the agent stores it (two
 //! sealed files and a live WAL read as chunks and a tail), a capture of the
 //! requests the agent was sent (with a resend and a span outside the ingestion
 //! window), the reference calculator's membership and matching over the store's
@@ -17,12 +18,14 @@ use file_registry::TenantId;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use otel_oracle::calc::Grid;
-use otel_oracle::capture::{Record, Signal};
+use otel_oracle::capture::{self, Record, Signal};
 use otel_oracle::corpus::{self, MeshParams};
+use otel_oracle::freeze::Change;
 use otel_oracle::ingest::IngestWindow;
 use otel_oracle::matching;
 use otel_oracle::membership::{self, RowKey, UnitKind};
 use otel_oracle::model;
+use otel_oracle::run;
 use otel_oracle::tier2;
 use prost::Message;
 use tokio_util::sync::CancellationToken;
@@ -334,4 +337,232 @@ async fn membership_units_are_the_handlers_sources() {
         .collect();
     units.sort();
     assert_eq!(units, sources);
+}
+
+/// A corpus of 50 minutes received as it happens (each request a second after
+/// its last span ends), the capture written to a file, and the store split
+/// into two sealed files and a WAL.
+struct Paced {
+    _dir: tempfile::TempDir,
+    root: std::path::PathBuf,
+    capture: std::path::PathBuf,
+    registries: Arc<RwLock<TenantRegistries>>,
+    now_ns: u64,
+}
+
+async fn paced() -> Paced {
+    let generated = corpus::generate(&MeshParams {
+        traces: 300,
+        start_ns: T0_S * 1_000_000_000,
+        trace_spacing_ns: 10_000_000_000,
+        seed: 62,
+    });
+    let requests = corpus::build_requests(&generated, 40);
+    let third = requests.len() / 3;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let capture = root.join("capture.otee");
+    let mut out = Vec::new();
+    capture::write_header(&mut out).unwrap();
+    let mut stored = Vec::new();
+    let mut received_ns = 0;
+    for request in &requests {
+        let mut end_ns = 0;
+        for rs in &request.resource_spans {
+            for ss in &rs.scope_spans {
+                for span in &ss.spans {
+                    end_ns = end_ns.max(span_end(span));
+                }
+            }
+        }
+        received_ns = (end_ns + 1_000_000_000).max(received_ns);
+        let bounds = ng_flatten::TimeBounds {
+            min_ns: received_ns - 24 * HOUR_NS,
+            max_ns: received_ns + 10 * MINUTE_NS,
+        };
+        let mut kept = request.clone();
+        let normalized = ng_flatten::normalize_trace_request(&mut kept, received_ns, Some(bounds));
+        let record = Record {
+            received_unix_ns: i64::try_from(received_ns).unwrap(),
+            signal: Signal::Traces,
+            grpc_code: 0,
+            rejected: i64::try_from(normalized.rejected).unwrap(),
+            request: request.encode_to_vec(),
+        };
+        capture::write_record(&mut out, &record).unwrap();
+        stored.push(kept);
+    }
+    std::fs::write(&capture, out).unwrap();
+
+    let registries = make_registries_at(&root);
+    install_sealed(&registries, "default", 1, stored[..third].to_vec()).await;
+    install_sealed(&registries, "default", 2, stored[third..2 * third].to_vec()).await;
+    install_wal(&registries, "default", 3, stored[2 * third..].to_vec()).await;
+    Paced {
+        _dir: dir,
+        root,
+        capture,
+        registries,
+        now_ns: received_ns + 30_000_000_000,
+    }
+}
+
+/// The lab with the handler as its agent. The first request also appends a
+/// record to the capture, so the first attempt's snapshots differ.
+struct Through {
+    adapter: HandlerAdapter<OtelTracesHandler>,
+    runtime: tokio::runtime::Handle,
+    capture: std::path::PathBuf,
+    now_ns: u64,
+    clock: std::time::Duration,
+    frozen: bool,
+    freezes: u32,
+    asks: u32,
+}
+
+impl run::Lab for Through {
+    fn now_ns(&self) -> u64 {
+        self.now_ns
+    }
+
+    fn monotonic(&self) -> std::time::Duration {
+        self.clock
+    }
+
+    fn sleep(&mut self, duration: std::time::Duration) {
+        self.clock += duration;
+    }
+
+    fn set_frozen(&mut self, frozen: bool) -> std::io::Result<()> {
+        assert_ne!(self.frozen, frozen);
+        self.frozen = frozen;
+        self.freezes += u32::from(frozen);
+        Ok(())
+    }
+
+    fn ask(
+        &mut self,
+        _plan: &tier2::Plan,
+        request: &tier2::Request,
+    ) -> Result<serde_json::Value, run::AskError> {
+        assert!(self.frozen);
+        self.asks += 1;
+        if self.asks == 1 {
+            let mut file = std::fs::File::options()
+                .append(true)
+                .open(&self.capture)
+                .unwrap();
+            let record = Record {
+                received_unix_ns: 0,
+                signal: Signal::Logs,
+                grpc_code: 0,
+                rejected: 0,
+                request: Vec::new(),
+            };
+            capture::write_record(&mut file, &record).unwrap();
+        }
+        let body = serde_json::to_vec(&request.body).unwrap();
+        let (status, payload) = self
+            .runtime
+            .block_on(call_through_bridge(&self.adapter, Some(&body)));
+        if status != 200 {
+            return Err(run::AskError::Failed(format!(
+                "HTTP {status}: {}",
+                String::from_utf8_lossy(&payload)
+            )));
+        }
+        serde_json::from_slice(&payload).map_err(|e| run::AskError::Failed(e.to_string()))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_runner_judges_both_windows_through_the_handler_after_one_retry() {
+    let paced = paced().await;
+    let config = run::Config {
+        capture: paced.capture.clone(),
+        store: paced.root.clone(),
+        chunk_entries: CHUNK_ENTRIES,
+        ingest: IngestWindow::LAB,
+        longest_freeze: std::time::Duration::from_secs(150),
+        ask: true,
+    };
+    let mut through = Through {
+        adapter: HandlerAdapter::new(OtelTracesHandler::new(
+            paced.registries.clone(),
+            Arc::new(ChunkCache::new(64 * 1024 * 1024)),
+            u64::from(CHUNK_ENTRIES),
+            None,
+        )),
+        runtime: tokio::runtime::Handle::current(),
+        capture: paced.capture.clone(),
+        now_ns: paced.now_ns,
+        clock: std::time::Duration::ZERO,
+        frozen: false,
+        freezes: 0,
+        asks: 0,
+    };
+
+    let (through, outcome) = tokio::task::spawn_blocking(move || {
+        let outcome = run::run(&mut through, &config);
+        (through, outcome)
+    })
+    .await
+    .unwrap();
+    let outcome = outcome.unwrap();
+
+    assert_eq!((through.frozen, through.freezes), (false, 1));
+    assert_eq!(outcome.attempts, 2);
+    assert!(
+        matches!(&outcome.retries[..], [changes] if matches!(changes[..], [Change::Capture { .. }])),
+        "{:?}",
+        outcome.retries
+    );
+    assert!(outcome.gave_up.is_none() && outcome.failed.is_empty());
+    assert_eq!(outcome.notes, 0);
+    let names: Vec<&str> = outcome.windows.iter().map(|w| w.window.name).collect();
+    assert_eq!(names, ["W15", "W-sealed"]);
+    for window in &outcome.windows {
+        assert!(
+            window.check.judged(),
+            "{}: {:?}",
+            window.window.name,
+            window.check
+        );
+        assert!(window.spans > 0);
+        assert!(
+            window.findings.is_empty(),
+            "{}: {:#?}",
+            window.window.name,
+            &window.findings[..window.findings.len().min(5)]
+        );
+        for check in [
+            "ORC-INGEST",
+            "ORC-HIST",
+            "ORC-FACET",
+            "ORC-ROWS",
+            "ORC-TOPK",
+            "ORC-VALUES",
+        ] {
+            let count = window.checks.get(check).copied().unwrap_or_default();
+            assert!(
+                count.compared > 0 && count.differing == 0,
+                "{} {check}: {count:?}",
+                window.window.name
+            );
+        }
+        let plan = window.plan.as_ref().unwrap();
+        assert!(plan.requests.iter().any(|r| r.id.ends_with(" older newer")));
+    }
+    assert_eq!(outcome.units.get("sealed"), Some(&2));
+
+    let commits = BTreeMap::from([("oracle".to_string(), "0123abcd".to_string())]);
+    let report = run::report(&outcome, commits, 10).unwrap();
+    assert!(
+        report.markdown.contains("## Findings (0)"),
+        "{}",
+        report.markdown
+    );
+    assert!(report.markdown.contains("## Attempt 1 retried"));
+    assert_eq!(report.summary["checks"]["ORC-ROWS"]["differing"], 0);
 }
