@@ -573,6 +573,11 @@ pub fn search(
                 status.add(PartialReason::RemoteUnavailable);
                 degraded_assembly = true;
             }
+            TraceSource::Failed(f) => {
+                tracing::warn!("sfsq traces: source {} failed: {}", f.source_id, f.error);
+                status.add(PartialReason::SourceFailure);
+                degraded_assembly = true;
+            }
         }
         progress.fetch_add(1, Ordering::Relaxed);
     }

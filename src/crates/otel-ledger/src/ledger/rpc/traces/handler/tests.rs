@@ -179,6 +179,46 @@ async fn a_sealed_traces_fixture_serves_as_a_local_sealed_file() {
 }
 
 #[tokio::test]
+async fn a_refused_wal_makes_a_trace_lookup_partial() {
+    let registries = make_registries();
+    install_sealed(
+        &registries,
+        "default",
+        1,
+        vec![otlp_req(0x11, 3, 1_000_000_000)],
+    )
+    .await;
+    let path = install_wal(
+        &registries,
+        "default",
+        2,
+        vec![otlp_req(0x22, 3, 2_000_000_000)],
+    )
+    .await;
+    let len = std::fs::metadata(&path).unwrap().len();
+    let garbage = vec![0xFFu8; (len - wal::HEADER_SIZE as u64) as usize];
+    {
+        use std::io::{Seek, Write};
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.seek(std::io::SeekFrom::Start(wal::HEADER_SIZE as u64)).unwrap();
+        f.write_all(&garbage).unwrap();
+    }
+
+    let h = make_handler_over(registries);
+    let v = serde_json::to_value(
+        call_on(&h, json!({"trace": {"id": FIXTURE_TRACE_ID}}))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        v["status"],
+        json!({"partial": [{"reason": "source_failure", "count": 1}]})
+    );
+    assert_eq!(v["items"]["returned"], 3, "the sealed file still answers");
+}
+
+#[tokio::test]
 async fn trace_coverage_declares_the_full_range_for_absent_bounds() {
     let h = handler_with_fixture_wal().await;
     let resp = call_on(&h, json!({"trace": {"id": FIXTURE_TRACE_ID}}))

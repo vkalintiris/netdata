@@ -194,6 +194,10 @@ pub fn trace_by_id(
             // No summary pruning here (the bloom prunes a by-id probe),
             // so any unavailable source may hold the trace's spans.
             TraceSource::Unavailable(_) => status.add(PartialReason::RemoteUnavailable),
+            TraceSource::Failed(f) => {
+                tracing::warn!("sfsq traces: source {} failed: {}", f.source_id, f.error);
+                status.add(PartialReason::SourceFailure);
+            }
         }
         progress.fetch_add(1, Ordering::Relaxed);
     }

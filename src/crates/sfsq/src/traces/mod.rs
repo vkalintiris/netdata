@@ -14,8 +14,10 @@
 //!   reported through the query-level [`QueryStatus`] (a
 //!   [`SourceFailure`](PartialReason::SourceFailure) reason), and one
 //!   whose bytes could not be obtained at all ([`TraceSource::Unavailable`])
-//!   as [`RemoteUnavailable`](PartialReason::RemoteUnavailable); neither
-//!   is silently skipped: a trace is an exact object, and "some spans
+//!   as [`RemoteUnavailable`](PartialReason::RemoteUnavailable); a source
+//!   the caller could not make queryable ([`TraceSource::Failed`], e.g. a
+//!   WAL whose chunks failed to build) is a `SourceFailure` too. None is
+//!   silently skipped: a trace is an exact object, and "some spans
 //!   were quietly missing" is corruption from the consumer's point of view.
 //! - **Validated source identity.** Every source carries a
 //!   caller-supplied opaque [`SourceId`]; WAL-derived sources also carry
@@ -60,8 +62,8 @@ pub use search::{
     SearchSources, TraceSummary, search,
 };
 pub use sources::{
-    SourceId, SourceSetError, TraceSfstCandidate, TraceSource, TraceUnavailable, TraceWalTail,
-    WalCoverage, validate_sources,
+    SourceId, SourceSetError, TraceFailed, TraceSfstCandidate, TraceSource, TraceUnavailable,
+    TraceWalTail, WalCoverage, validate_sources,
 };
 pub use status::{PartialReason, QueryStatus, ReasonCount, StatusBuilder};
 pub use attributes::{

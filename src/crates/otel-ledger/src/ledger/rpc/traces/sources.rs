@@ -15,13 +15,11 @@
 //! brief registry read lock (one `valid_up_to` per WAL — the whole
 //! query sees one consistent durable prefix), chunk SFSTs built OFF the
 //! lock through the shared singleflight [`ChunkCache`] (traces seal:
-//! [`ng_index::build_sfst_traces_range`]), and the logs failure policy:
-//! a WAL whose chunks won't build/parse is refused WHOLE for this
-//! snapshot (its data returns via the sealed SFST after rotation, or on
-//! a later query — build errors aren't cached). Refusal is logged; the
-//! engine's per-source `SourceFailure` accounting starts at the sources
-//! it is given, so a refused WAL is a logged gap, exactly as it is for
-//! logs.
+//! [`ng_index::build_sfst_traces_range`]). A WAL whose frames won't scan or
+//! whose chunks won't build/parse is refused WHOLE for this snapshot (its
+//! data returns via the sealed SFST after rotation, or on a later query —
+//! build errors aren't cached) and becomes a [`TraceSource::Failed`], which
+//! every operation reports as `source_failure`: never a silent gap.
 //!
 //! Source identity per `sfsq::traces::sources` docs, derived from the
 //! file's full `FileId` and never from its directory: a sealed file is
@@ -52,7 +50,8 @@ use file_lifecycle::registry::{TenantRegistries, WalDesc};
 use file_lifecycle::remote_read::RemoteRead;
 use file_registry::{FileId, TenantId};
 use sfsq::traces::{
-    SourceId, TraceSfstCandidate, TraceSource, TraceUnavailable, TraceWalTail, WalCoverage,
+    SourceId, TraceFailed, TraceSfstCandidate, TraceSource, TraceUnavailable, TraceWalTail,
+    WalCoverage,
 };
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -66,7 +65,6 @@ const WAL_EXT: &str = "wal";
 /// One WAL resolved to buildable parts: everything needed to
 /// materialize its sources any number of times without re-scanning.
 struct ResolvedWal {
-    id: FileId,
     path: PathBuf,
     chunks: Vec<ResolvedChunk>,
     /// The trailing un-chunked byte range, when non-empty.
@@ -257,16 +255,15 @@ impl TracesSourceSupplier {
         }
 
         // Every WAL any range selected resolves ONCE, keyed by its full
-        // `FileId`; a refused one is absent for every copy alike (one
-        // snapshot, one verdict).
-        let mut resolved: HashMap<FileId, ResolvedWal> = HashMap::new();
+        // `FileId`; a refused one is a failed source for every copy alike
+        // (one snapshot, one verdict).
+        let mut resolved: HashMap<FileId, Result<ResolvedWal, String>> = HashMap::new();
         for wal in snapshots.iter().flat_map(|(_, wals)| wals) {
             if resolved.contains_key(&wal.id) {
                 continue;
             }
-            if let Some(r) = self.resolve_wal(wal, cancel).await {
-                resolved.insert(wal.id, r);
-            }
+            let outcome = self.resolve_wal(wal, cancel).await;
+            resolved.insert(wal.id, outcome);
         }
         if cancel.is_cancelled() {
             return Ok(cancelled());
@@ -361,16 +358,19 @@ impl TracesSourceSupplier {
         Ok(Capture { sets, pins })
     }
 
-    /// Resolve one active WAL into chunk images + the tail range, or
-    /// `None` to refuse the whole WAL (logs failure policy — see the
-    /// module docs). Polls `cancel` between chunk builds; a cancelled
-    /// call returns `None` (indistinguishable from refusal on purpose —
-    /// the capture's result is discarded either way).
-    async fn resolve_wal(&self, wal: &WalDesc, cancel: &CancellationToken) -> Option<ResolvedWal> {
+    /// Resolve one active WAL into chunk images + the tail range, or the
+    /// reason to refuse the whole WAL (see the module docs). Polls `cancel`
+    /// between chunk builds; a cancelled call returns an error too — the
+    /// capture's result is discarded either way.
+    async fn resolve_wal(
+        &self,
+        wal: &WalDesc,
+        cancel: &CancellationToken,
+    ) -> Result<ResolvedWal, String> {
         // Poll before the boundary scan too — it is a blocking file read
         // a cancelled call shouldn't pay for.
         if cancel.is_cancelled() {
-            return None;
+            return Err("cancelled".to_string());
         }
         let header = wal::HEADER_SIZE as u64;
         let scan_path = wal.path.clone();
@@ -381,29 +381,20 @@ impl TracesSourceSupplier {
         .await
         {
             Ok(Ok(frames)) => frames,
-            Ok(Err(e)) => {
-                tracing::warn!(seq = wal.id.seq, "traces WAL boundary scan failed: {e}");
-                return None;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    seq = wal.id.seq,
-                    "traces WAL boundary scan task failed: {e}"
-                );
-                return None;
-            }
+            Ok(Err(e)) => return Err(format!("WAL boundary scan failed: {e}")),
+            Err(e) => return Err(format!("WAL boundary scan task failed: {e}")),
         };
         // The boundary scan is itself a blocking phase — poll on the way
         // out of it, then again before each chunk build.
         if cancel.is_cancelled() {
-            return None;
+            return Err("cancelled".to_string());
         }
 
         let boundaries = chunk_boundaries(&frames, header, self.min_entries);
         let mut chunks = Vec::with_capacity(boundaries.len());
         for chunk in &boundaries {
             if cancel.is_cancelled() {
-                return None;
+                return Err("cancelled".to_string());
             }
             let seq = wal.id.seq;
             let path = wal.path.clone();
@@ -441,30 +432,17 @@ impl TracesSourceSupplier {
                         bytes,
                     }),
                     Err(e) => {
-                        tracing::warn!(
-                            seq,
-                            index = chunk.index,
-                            "traces chunk parse failed; refusing this WAL: {e}"
-                        );
-                        return None;
+                        return Err(format!("chunk {} parse failed: {e}", chunk.index));
                     }
                 },
-                Err(e) => {
-                    tracing::warn!(
-                        seq,
-                        index = chunk.index,
-                        "traces chunk build failed; refusing this WAL: {e}"
-                    );
-                    return None;
-                }
+                Err(e) => return Err(format!("chunk {} build failed: {e}", chunk.index)),
             }
         }
 
         let tail_begin = tail_start(&boundaries, header);
         let tail = (tail_begin < wal.valid_up_to)
             .then(|| wal::FrameRange::new(tail_begin, wal.valid_up_to));
-        Some(ResolvedWal {
-            id: wal.id,
+        Ok(ResolvedWal {
             path: wal.path.clone(),
             chunks,
             tail,
@@ -473,11 +451,11 @@ impl TracesSourceSupplier {
 }
 
 /// One range's local sources: its sealed files, then each resolved WAL's
-/// chunks and tail (a refused WAL contributes nothing).
+/// chunks and tail; a refused WAL is one failed source.
 fn local_sources(
     sealed: &[file_registry::SelectedFile],
     wal_descs: &[WalDesc],
-    resolved: &HashMap<FileId, ResolvedWal>,
+    resolved: &HashMap<FileId, Result<ResolvedWal, String>>,
 ) -> Vec<TraceSource> {
     let mut sources: Vec<TraceSource> = Vec::new();
     for f in sealed {
@@ -488,8 +466,19 @@ fn local_sources(
             coverage: None,
         }));
     }
-    for w in wal_descs.iter().filter_map(|d| resolved.get(&d.id)) {
-        let wal_id: Arc<str> = w.id.to_filename(WAL_EXT).into();
+    for d in wal_descs {
+        let wal_id: Arc<str> = d.id.to_filename(WAL_EXT).into();
+        let w = match resolved.get(&d.id) {
+            Some(Ok(w)) => w,
+            Some(Err(error)) => {
+                sources.push(TraceSource::Failed(TraceFailed {
+                    source_id: SourceId::new(wal_id.to_string()),
+                    error: error.clone(),
+                }));
+                continue;
+            }
+            None => continue,
+        };
         for c in &w.chunks {
             sources.push(TraceSource::Sfst(TraceSfstCandidate {
                 source_id: SourceId::new(format!("{wal_id}#chunk{:06}", c.index)),

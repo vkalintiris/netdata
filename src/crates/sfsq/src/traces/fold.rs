@@ -404,6 +404,10 @@ pub(crate) fn merge_trace_sources(
             // The callers' captures are already window-pruned, so an
             // unavailable source here is in range: its traces are missing.
             TraceSource::Unavailable(_) => status.add(PartialReason::RemoteUnavailable),
+            TraceSource::Failed(f) => {
+                tracing::warn!("sfsq traces: source {} failed: {}", f.source_id, f.error);
+                status.add(PartialReason::SourceFailure);
+            }
         }
         progress.fetch_add(1, Ordering::Relaxed);
     }

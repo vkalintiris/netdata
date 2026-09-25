@@ -238,10 +238,11 @@ async fn wal_below_min_entries_is_all_tail() {
 }
 
 #[tokio::test]
-async fn corrupt_wal_is_refused_whole_but_sealed_files_still_serve() {
+async fn corrupt_wal_is_refused_whole_and_reported_as_a_failed_source() {
     // Corrupt everything past the WAL header: the scan/build fails and
     // the WHOLE WAL is refused for this capture, while the sealed file
-    // keeps serving (the logs failure policy).
+    // keeps serving; the refused WAL is a failed source, never a silent
+    // gap.
     let supplier = make_supplier_with_min_entries(4);
     install_sfst(&supplier.registries, "default", 3, 1000, 1005).await;
     let path = install_wal(
@@ -272,8 +273,9 @@ async fn corrupt_wal_is_refused_whole_but_sealed_files_still_serve() {
         .unwrap()
         .sets;
     let sources = sets.pop().unwrap();
-    assert_eq!(sources.len(), 1, "only the sealed file survives");
+    assert_eq!(source_ids(&sources), [sfst_id(3), wal_id(4)]);
     assert!(matches!(&sources[0], TraceSource::Sfst(c) if c.coverage.is_none()));
+    assert!(matches!(&sources[1], TraceSource::Failed(f) if !f.error.is_empty()));
 }
 
 #[tokio::test]
@@ -395,7 +397,7 @@ async fn source_ids_do_not_depend_on_the_directory() {
                 .filter_map(|s| match s {
                     TraceSource::Sfst(c) => c.coverage.as_ref().map(|c| Arc::clone(&c.wal_id)),
                     TraceSource::Tail(t) => Some(Arc::clone(&t.coverage.wal_id)),
-                    TraceSource::Unavailable(_) => None,
+                    TraceSource::Unavailable(_) | TraceSource::Failed(_) => None,
                 })
                 .collect()
         })

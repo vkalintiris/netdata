@@ -113,15 +113,30 @@ pub struct TraceUnavailable {
     pub summary: sfst::Summary,
 }
 
+/// A source that holds data for the query but could not be made
+/// queryable — an active WAL whose frames could not be scanned or whose
+/// chunks failed to build. It was selected because it overlaps the query,
+/// so every operation that visits it reports
+/// [`SourceFailure`](super::PartialReason::SourceFailure): its spans are
+/// absent from the result.
+#[derive(Clone)]
+pub struct TraceFailed {
+    pub source_id: SourceId,
+    /// What went wrong, for the log line.
+    pub error: String,
+}
+
 /// A source of trace data: an SFST (sealed file or in-memory chunk)
-/// evaluated through the indexed reader, a WAL tail row scan, or a
-/// source whose bytes could not be obtained. Cloning is cheap — sources
-/// are descriptors (paths, ids, coverage), never data.
+/// evaluated through the indexed reader, a WAL tail row scan, a source
+/// whose bytes could not be obtained, or one that failed before the query
+/// could read it. Cloning is cheap — sources are descriptors (paths, ids,
+/// coverage), never data.
 #[derive(Clone)]
 pub enum TraceSource {
     Sfst(TraceSfstCandidate),
     Tail(TraceWalTail),
     Unavailable(TraceUnavailable),
+    Failed(TraceFailed),
 }
 
 impl TraceSource {
@@ -130,6 +145,7 @@ impl TraceSource {
             TraceSource::Sfst(c) => &c.source_id,
             TraceSource::Tail(t) => &t.source_id,
             TraceSource::Unavailable(u) => &u.source_id,
+            TraceSource::Failed(f) => &f.source_id,
         }
     }
 
@@ -137,7 +153,7 @@ impl TraceSource {
         match self {
             TraceSource::Sfst(c) => c.coverage.as_ref(),
             TraceSource::Tail(t) => Some(&t.coverage),
-            TraceSource::Unavailable(_) => None,
+            TraceSource::Unavailable(_) | TraceSource::Failed(_) => None,
         }
     }
 }

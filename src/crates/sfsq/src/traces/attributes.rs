@@ -300,6 +300,10 @@ pub fn attribute_names(
                     status.add(PartialReason::RemoteUnavailable);
                 }
             }
+            TraceSource::Failed(f) => {
+                tracing::warn!("sfsq traces: source {} failed: {}", f.source_id, f.error);
+                status.add(PartialReason::SourceFailure);
+            }
         }
         progress.fetch_add(1, Ordering::Relaxed);
     }
@@ -431,6 +435,10 @@ pub fn attribute_values(
                 if !pruned(query.window, &u.summary) {
                     status.add(PartialReason::RemoteUnavailable);
                 }
+            }
+            TraceSource::Failed(f) => {
+                tracing::warn!("sfsq traces: source {} failed: {}", f.source_id, f.error);
+                status.add(PartialReason::SourceFailure);
             }
         }
         progress.fetch_add(1, Ordering::Relaxed);
