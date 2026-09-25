@@ -1648,8 +1648,9 @@ impl<'a> IndexReader<'a> {
 
     /// Position set matching `field` against `matchers` (OR within field).
     /// Exact matchers resolve by direct lookup; pattern matchers compile
-    /// full-value-anchored and test the field's distinct values. Returns
-    /// the empty set if the field is absent from this file.
+    /// full-value-anchored and test the field's distinct values; an absent
+    /// matcher adds the rows with no value of the field. A field missing
+    /// from this file matches nothing, or every row under an absent matcher.
     ///
     /// All-exact selections (every query without a regex) take the same
     /// lookups they always have; patterns add an enumeration pass over the
@@ -1659,8 +1660,10 @@ impl<'a> IndexReader<'a> {
     /// not "matches nothing" — validate patterns at the request boundary.
     fn field_values_or(&self, field: &str, matchers: &[Matcher]) -> Result<PosSet, crate::Error> {
         let total = self.summary.record_count;
+        let absent = matchers.contains(&Matcher::Absent);
         let location = match self.locate_field(field) {
             Some(loc) => loc,
+            None if absent => return Ok(PosSet::full(total)),
             None => return Ok(PosSet::empty(total)),
         };
 
@@ -1672,6 +1675,7 @@ impl<'a> IndexReader<'a> {
             match matcher {
                 Matcher::Exact(value) => exacts.push(value),
                 Matcher::Pattern(src) => patterns.push(crate::query::compile_pattern(src)?),
+                Matcher::Absent => {}
             }
         }
 
@@ -1684,7 +1688,9 @@ impl<'a> IndexReader<'a> {
             patterns.iter().any(|regex| regex.is_match(value))
         };
 
-        match location {
+        // The matched rows, and under an absent matcher the rows holding
+        // any value of the field.
+        let (mut result, present) = match location {
             FieldLocation::Low => {
                 let mut result = PosSet::empty(total);
                 for value in &exacts {
@@ -1693,27 +1699,33 @@ impl<'a> IndexReader<'a> {
                         result.or_assign(&PosSet::from_value(bv));
                     }
                 }
-                if !patterns.is_empty() {
+                let mut present = PosSet::empty(total);
+                if !patterns.is_empty() || absent {
                     let prefix = format!("{field}=");
                     self.primary
                         .prefix_for_each(prefix.as_bytes(), |kv_bytes, bv| {
                             if value_matches(kv_bytes) {
                                 result.or_assign(&PosSet::from_value(bv));
                             }
+                            if absent {
+                                present.or_assign(&PosSet::from_value(bv));
+                            }
                         });
                 }
-                Ok(result)
+                (result, present)
             }
             FieldLocation::Derived => {
                 let mut result = PosSet::empty(total);
+                let mut present = PosSet::empty(total);
                 for (kv_bytes, bv) in self.low_pairs(&location, field) {
                     let value = &kv_bytes[prefix_len..];
                     let exact = exacts.iter().any(|e| e.as_bytes() == value);
                     if exact || value_matches(&kv_bytes) {
                         result.or_assign(&PosSet::from_value(bv));
                     }
+                    present.or_assign(&PosSet::from_value(bv));
                 }
-                Ok(result)
+                (result, present)
             }
             FieldLocation::Mid(idx) => {
                 let chunk = self.mid_field(idx)?;
@@ -1724,25 +1736,65 @@ impl<'a> IndexReader<'a> {
                         result.or_assign(&PosSet::from_value(bv));
                     }
                 }
-                if !patterns.is_empty() {
+                let mut present = PosSet::empty(total);
+                if !patterns.is_empty() || absent {
                     chunk.for_each(|kv_bytes, bv| {
                         if value_matches(kv_bytes) {
                             result.or_assign(&PosSet::from_value(bv));
                         }
+                        if absent {
+                            present.or_assign(&PosSet::from_value(bv));
+                        }
                     });
                 }
-                Ok(result)
+                (result, present)
             }
             FieldLocation::High(idx) => {
                 // High-card values are addressed by KvId; the set is built by
                 // scanning the SB batches indicated by the union of the matched
                 // values' batch masks. Matched positions are ascending (batch
                 // start increases, position within increases), so they feed
-                // `from_sorted`.
+                // `from_sorted`. Presence is every value of the field, probed
+                // in the same pass.
                 let (targets, mask) = self.high_targets(field, idx, &exacts, &patterns)?;
-                self.scan_high_positions(&targets, mask, total)
+                if !absent {
+                    return self.scan_high_positions(&targets, mask, total);
+                }
+                let (every, every_mask) = self.high_field_targets(idx)?;
+                let mut rows_visited = 0u64;
+                let mut sets = self
+                    .scan_high_multi(
+                        &[(&targets, mask), (&every, every_mask)],
+                        total,
+                        u64::MAX,
+                        &mut rows_visited,
+                    )?
+                    .expect("an unbounded scan cannot run out of budget");
+                let present = sets.pop().expect("two terms in → two sets out");
+                let result = sets.pop().expect("two terms in → two sets out");
+                (result, present)
             }
+        };
+        if absent {
+            let mut missing = PosSet::full(total);
+            missing.and_not_assign(&present);
+            result.or_assign(&missing);
         }
+        Ok(result)
+    }
+
+    /// Every value of high-card field `idx` as scan targets, with the union
+    /// of their batch masks.
+    fn high_field_targets(&self, idx: u16) -> Result<(KvIdSet, u8), crate::Error> {
+        let hf = self.high_field(idx)?;
+        let base = self.high_kv_id(idx, 0).0;
+        let mut targets = KvIdSet::new(base, hf.len() as u32);
+        let mut mask: u8 = 0;
+        for local in 0..hf.len() {
+            targets.insert(KvId(base + local as u32));
+            mask |= hf.masks[local];
+        }
+        Ok((targets, mask))
     }
 
     /// Positions of logs carrying any `key=value` pair whose **whole string**

@@ -1026,37 +1026,54 @@ fn bitmap_value(positions: &[u32], universe: u32) -> BitmapValue {
 /// - `host`  (Mid):  web1 @ {0,1}, web2 @ {2,3}, db1 @ {4,5}.
 /// - `trace` (High): aaa @ {0,1}, bbb @ {2,3}, ccc @ {4,5} (via stream batch).
 fn build_tiered_fixture() -> Vec<u8> {
+    build_tiers(
+        &[("error", &[1, 3, 5]), ("info", &[0, 2, 4])],
+        &[("db1", &[4, 5]), ("web1", &[0, 1]), ("web2", &[2, 3])],
+        &[("aaa", &[0, 1]), ("bbb", &[2, 3]), ("ccc", &[4, 5])],
+    )
+}
+
+/// One field's values in lexicographic order, each with its rows.
+type TierValues<'a> = &'a [(&'a str, &'a [u32])];
+
+/// A 6-log SFST (the [`build_tiered_fixture`] time base) with `level` low-card,
+/// `host` mid-card and `trace` high-card in one stream batch. KvIds follow tier
+/// order then value order; each row's stream entry lists its KvIds ascending.
+fn build_tiers(level: TierValues<'_>, host: TierValues<'_>, trace: TierValues<'_>) -> Vec<u8> {
     const N: u32 = 6;
 
-    let primary_entries = vec![
-        ("level=error", bitmap_value(&[1, 3, 5], N)),
-        ("level=info", bitmap_value(&[0, 2, 4], N)),
-    ];
+    let mut rows: Vec<Vec<KvId>> = vec![Vec::new(); N as usize];
+    let mut next = 0u32;
+    for tier in [level, host, trace] {
+        for (_, positions) in tier {
+            for &position in *positions {
+                rows[position as usize].push(KvId(next));
+            }
+            next += 1;
+        }
+    }
+    let keys = |field: &str, values: TierValues<'_>| -> Vec<String> {
+        values
+            .iter()
+            .map(|(value, _)| format!("{field}={value}"))
+            .collect()
+    };
+    let level_keys = keys("level", level);
+    let host_keys = keys("host", host);
+    let trace_keys = keys("trace", trace);
+    let entries = |keys: &[String], values: TierValues<'_>| -> Vec<(String, BitmapValue)> {
+        keys.iter()
+            .zip(values)
+            .map(|(key, (_, positions))| (key.clone(), bitmap_value(positions, N)))
+            .collect()
+    };
+    let primary_entries = entries(&level_keys, level);
+    let mid_host_entries = entries(&host_keys, host);
+    let trace_refs: Vec<&str> = trace_keys.iter().map(String::as_str).collect();
+    let high_trace = HighField::for_write(&trace_refs, vec![0b1; trace.len()]);
 
-    // Mid chunk: the `host` field's values + bitmaps (FST, lexicographic).
-    let mid_host_entries = vec![
-        ("host=db1", bitmap_value(&[4, 5], N)),
-        ("host=web1", bitmap_value(&[0, 1], N)),
-        ("host=web2", bitmap_value(&[2, 3], N)),
-    ];
-
-    // High chunk: `trace` values, all in the single stream batch (bit 0).
-    let high_trace = HighField::for_write(
-        &["trace=aaa", "trace=bbb", "trace=ccc"],
-        vec![0b1, 0b1, 0b1],
-    );
-
-    // KvIds in tier order: low {error=0, info=1}, mid {db1=2, web1=3,
-    // web2=4}, high {aaa=5, bbb=6, ccc=7}; `high_kv_id` = mid_end + local.
-    let stream_entries: Vec<Vec<KvId>> = vec![
-        vec![KvId(1), KvId(3), KvId(5)], // 0: info, web1, aaa
-        vec![KvId(0), KvId(3), KvId(5)], // 1: error, web1, aaa
-        vec![KvId(1), KvId(4), KvId(6)], // 2: info, web2, bbb
-        vec![KvId(0), KvId(4), KvId(6)], // 3: error, web2, bbb
-        vec![KvId(1), KvId(2), KvId(7)], // 4: info, db1, ccc
-        vec![KvId(0), KvId(2), KvId(7)], // 5: error, db1, ccc
-    ];
-
+    let low_end = level.len() as u32;
+    let mid_end = low_end + host.len() as u32;
     let summary = Summary {
         min_timestamp_s: 1_700_000_000,
         max_timestamp_s: 1_700_000_005,
@@ -1069,25 +1086,25 @@ fn build_tiered_fixture() -> Vec<u8> {
             counts: vec![6],
         },
         id_ranges: IdRanges {
-            low_end: KvId(2),
-            mid_end: KvId(5),
-            high_end: KvId(8),
+            low_end: KvId(low_end),
+            mid_end: KvId(mid_end),
+            high_end: KvId(mid_end + trace.len() as u32),
         },
         tree: SchemaTree::flat(
             &vec![
                 FieldEntry {
                     name: "level".into(),
-                    cardinality: 2,
+                    cardinality: level.len() as u32,
                     tier: FieldTier::Low,
                 },
                 FieldEntry {
                     name: "host".into(),
-                    cardinality: 3,
+                    cardinality: host.len() as u32,
                     tier: FieldTier::Mid,
                 },
                 FieldEntry {
                     name: "trace".into(),
-                    cardinality: 3,
+                    cardinality: trace.len() as u32,
                     tier: FieldTier::High,
                 },
             ]
@@ -1118,9 +1135,117 @@ fn build_tiered_fixture() -> Vec<u8> {
     writer.add_mid_field(mid_host_entries).unwrap();
     writer.add_high_field(&high_trace).unwrap();
     writer
-        .add_stream_batch(&StreamBatch::for_write(&stream_entries))
+        .add_stream_batch(&StreamBatch::for_write(&rows))
         .unwrap();
     writer.finish().unwrap().into_inner()
+}
+
+/// The positions `filter` matches in the whole window.
+fn positions_of(reader: &IndexReader<'_>, filter: Filter) -> Vec<u32> {
+    reader
+        .matched_positions(&bf(reader, filter), FULL_WINDOW)
+        .unwrap()
+}
+
+/// [`build_tiers`] with a row or more missing from each field: `level`
+/// lacks 2 and 5, `host` lacks 2, 3 and 5, `trace` lacks 2 and 3.
+fn build_sparse_tiers() -> Vec<u8> {
+    build_tiers(
+        &[("error", &[1, 3]), ("info", &[0, 4])],
+        &[("db1", &[4]), ("web1", &[0, 1])],
+        &[("aaa", &[0, 1]), ("ccc", &[4, 5])],
+    )
+}
+
+#[test]
+fn absent_matches_rows_without_the_field_on_every_tier() {
+    let data = build_sparse_tiers();
+    let reader = IndexReader::open(&data).unwrap();
+    let absent = |field: &str| positions_of(&reader, Filter::new().select_absent(field));
+    assert_eq!(absent("level"), [2, 5], "low");
+    assert_eq!(absent("host"), [2, 3, 5], "mid");
+    assert_eq!(absent("trace"), [2, 3], "high");
+
+    let every = build_tiered_fixture();
+    let full = IndexReader::open(&every).unwrap();
+    for field in ["level", "host", "trace"] {
+        assert!(
+            positions_of(&full, Filter::new().select_absent(field)).is_empty(),
+            "{field}: every row has a value"
+        );
+    }
+}
+
+#[test]
+fn absent_ors_with_values_and_ands_across_fields() {
+    let data = build_sparse_tiers();
+    let reader = IndexReader::open(&data).unwrap();
+    assert_eq!(
+        positions_of(
+            &reader,
+            Filter::new()
+                .select("level", "error")
+                .select_absent("level")
+        ),
+        [1, 2, 3, 5]
+    );
+    assert_eq!(
+        positions_of(
+            &reader,
+            Filter::new().select("trace", "aaa").select_absent("trace")
+        ),
+        [0, 1, 2, 3],
+        "a high-card value and presence in one pass"
+    );
+    assert_eq!(
+        positions_of(
+            &reader,
+            Filter::new()
+                .select_pattern("host", "web.*")
+                .select_absent("host")
+        ),
+        [0, 1, 2, 3, 5]
+    );
+    assert_eq!(
+        positions_of(
+            &reader,
+            Filter::new()
+                .select("level", "error")
+                .select_absent("level")
+                .select_absent("host")
+                .select("trace", "ccc")
+        ),
+        [5]
+    );
+}
+
+#[test]
+fn absent_on_a_field_the_file_lacks_matches_every_row() {
+    let data = build_sparse_tiers();
+    let reader = IndexReader::open(&data).unwrap();
+    assert_eq!(
+        positions_of(&reader, Filter::new().select_absent("nope")),
+        [0, 1, 2, 3, 4, 5]
+    );
+    assert!(positions_of(&reader, Filter::new().select("nope", "x")).is_empty());
+    assert_eq!(
+        positions_of(
+            &reader,
+            Filter::new().select("nope", "x").select_absent("nope")
+        ),
+        [0, 1, 2, 3, 4, 5]
+    );
+}
+
+#[test]
+fn absent_counts_a_multivalued_row_as_present() {
+    let data = build_multivalued_fixture();
+    let reader = IndexReader::open(&data).unwrap();
+    let window = FILE_MIN_NS..(FILE_MIN_NS + 3 * 1_000_000_000);
+    let absent = reader
+        .matched_positions(&bf(&reader, Filter::new().select_absent("lang")), window)
+        .unwrap();
+    assert_eq!(absent, [2], "log 0 carries two values, log 1 one");
 }
 
 #[test]

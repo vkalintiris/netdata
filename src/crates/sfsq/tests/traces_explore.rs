@@ -613,6 +613,46 @@ fn distinct_ids(trace: u8, n: u32, prefix: &str) -> Vec<SpanSpec> {
     spans
 }
 
+/// An absent chip keeps the rows without the field: none of a file where
+/// every row has it (high-cardinality there), all of a file without it, and
+/// ORs with the field's values.
+#[test]
+fn an_absent_chip_keeps_rows_without_the_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let wide = write_wal(
+        dir.path(),
+        vec![req(&distinct_ids(0x60, 1_100, "a"))],
+        "wide",
+    );
+    let plain = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "plain");
+    let sources = || {
+        vec![
+            sealed_source(dir.path(), &wide, "wide"),
+            sealed_source(dir.path(), &plain, "plain"),
+        ]
+    };
+    let count = |filter: sfst::Filter| {
+        let mut q = query("status_code", &[]);
+        q.scope.filter = filter;
+        let data = run(sources(), q);
+        assert!(data.status.is_complete(), "{:?}", data.status);
+        data.histogram.unwrap().totals.count
+    };
+    assert_eq!(count(sfst::Filter::new().select_absent("attributes.id")), 4);
+    assert_eq!(
+        count(
+            sfst::Filter::new()
+                .select("attributes.id", "a00007")
+                .select_absent("attributes.id")
+        ),
+        5
+    );
+    assert_eq!(
+        count(sfst::Filter::new().select("attributes.id", "a00007")),
+        1
+    );
+}
+
 #[test]
 fn a_high_cardinality_facet_is_named_and_left_out() {
     let dir = tempfile::tempdir().unwrap();

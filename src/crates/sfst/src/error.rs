@@ -111,6 +111,11 @@ pub enum Error {
     #[error("invalid filter pattern: {0}")]
     InvalidPattern(String),
 
+    /// A [`Matcher::Absent`](crate::Matcher) term where it cannot be
+    /// resolved (the logs WAL scan matches value tokens, not rows).
+    #[error("the absent term is not supported here: {0}")]
+    AbsentUnsupported(String),
+
     /// [`IndexReader::timeline`](crate::IndexReader::timeline) was called
     /// with a non-positive bucket width.
     #[error("invalid bucket width: {0} (must be > 0)")]

@@ -383,6 +383,10 @@ impl WalScan {
     /// field's distinct values. An absent field yields the empty set
     /// (so its conjunct matches nothing).
     fn field_matches(&self, field: &str, matchers: &[Matcher]) -> Result<TokenSet, sfst::Error> {
+        // Tokens are values, so rows without one cannot be named here.
+        if matchers.contains(&Matcher::Absent) {
+            return Err(sfst::Error::AbsentUnsupported(field.to_string()));
+        }
         let mut set = TokenSet::new(self.pairs.len());
 
         // Absent field → empty set, before any pattern compiles — the
@@ -413,6 +417,7 @@ impl WalScan {
                     }
                 }
                 Matcher::Pattern(src) => patterns.push(sfst::compile_pattern(src)?),
+                Matcher::Absent => {}
             }
         }
 

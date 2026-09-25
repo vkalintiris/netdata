@@ -568,6 +568,7 @@ fn explore_chips_become_the_scope_filter() {
                 .map(|m| match m {
                     sfst::Matcher::Exact(v) => v.clone(),
                     sfst::Matcher::Pattern(p) => panic!("chips are exact, got pattern {p}"),
+                    sfst::Matcher::Absent => panic!("no absent chip was sent"),
                 })
                 .collect();
             (field.clone(), values)

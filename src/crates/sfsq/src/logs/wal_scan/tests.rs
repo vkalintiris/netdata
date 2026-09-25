@@ -180,6 +180,29 @@ fn invalid_pattern_degrades_to_fields_only() {
     assert!(shard.fields.get("a").is_some(), "field table still present");
 }
 
+/// Logs never send the absent term; the row scan refuses it (on a field it
+/// has or not) the way it refuses a bad pattern, rather than matching nothing.
+#[test]
+fn an_absent_term_degrades_to_fields_only() {
+    let scan = scan_from(&[(1, &["a=x"]), (2, &["b=y"])]);
+    for field in ["a", "missing"] {
+        let f = Filter::new().select_absent(field);
+        let shard = run(
+            &scan,
+            query(wide_grid())
+                .filter(f)
+                .facet_fields(vec!["a".into()])
+                .build(),
+        );
+        assert_eq!(shard.matched, 0, "{field}");
+        assert!(shard.facets.is_empty(), "{field}");
+        assert!(
+            shard.fields.get("a").is_some(),
+            "{field}: field table still present"
+        );
+    }
+}
+
 #[test]
 fn facet_excludes_its_own_selection() {
     let scan = scan_from(&[

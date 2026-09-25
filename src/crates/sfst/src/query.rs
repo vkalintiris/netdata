@@ -34,12 +34,16 @@ use std::ops::Range;
 /// engine wraps it as `^(?:…)$`, so `err` matches `"err"` but not `"error"`
 /// — a substring search is the explicit `.*err.*`). The source is stored
 /// uncompiled so `Filter` stays plain, comparable, wire-neutral data.
+/// [`Absent`](Self::Absent) matches the rows that carry no value of the field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Matcher {
     /// Match this exact value.
     Exact(String),
     /// Match values matching this regex source (anchored at resolution).
     Pattern(String),
+    /// Match rows without any value of the field (every row of a file
+    /// that lacks the field). Index files only: the logs WAL scan refuses it.
+    Absent,
 }
 
 /// Compile a [`Matcher::Pattern`] source full-value-anchored as `^(?:src)$`.
@@ -117,6 +121,16 @@ impl Filter {
             .entry(field.into())
             .or_default()
             .push(Matcher::Pattern(pattern.into()));
+        self
+    }
+
+    /// Allow the rows without any value of `field`, OR'd with the field's
+    /// other matchers — see [`Matcher::Absent`].
+    pub fn select_absent(mut self, field: impl Into<String>) -> Self {
+        self.selections
+            .entry(field.into())
+            .or_default()
+            .push(Matcher::Absent);
         self
     }
 
