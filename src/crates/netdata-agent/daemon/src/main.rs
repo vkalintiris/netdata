@@ -338,7 +338,6 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             }
         }
     };
-    let is_parent = stream_conf.is_parent;
     let receivers = Arc::new(Receivers::new(
         stream_conf,
         Arc::clone(&hosts),
@@ -366,8 +365,12 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let web = conf.section_web();
     // The web server thread reads its sizing only when it runs.
     let (web_server_threads, max_sockets) = if web_enabled {
-        let threads =
-            conf::web_query_threads(&mut conf.netdata, conf.threads.cpus as usize, is_parent);
+        // netdata_conf_is_parent(): the node profile, not whether stream.conf enables an API key
+        let threads = conf::web_query_threads(
+            &mut conf.netdata,
+            conf.threads.cpus as usize,
+            profile == profile::Profile::Parent,
+        );
         let max_sockets = conf::web_server_max_sockets_per_worker(&mut conf.netdata, threads);
         (threads, max_sockets)
     } else {

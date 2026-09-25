@@ -145,7 +145,16 @@ func normalizeConf(body []byte, d *daemon.Daemon) string {
 // and order, with the same annotations; keys only the oracle reads must be listed in confPending. The candidate must
 // be built with the oracle's compile-time paths (RECIPES.md "Building the candidate for parity checks").
 func TestNetdataConf(t *testing.T) {
-	p := StartPair(t, daemon.Options{}, parentIdentity)
+	compareNetdataConf(t, daemon.Options{})
+}
+
+// TestNetdataConfStandaloneProfile: the node profile, not an enabled stream API key, doubles the web server threads.
+func TestNetdataConfStandaloneProfile(t *testing.T) {
+	compareNetdataConf(t, daemon.Options{GlobalExtra: "    profile = standalone\n"})
+}
+
+func compareNetdataConf(t *testing.T, opts daemon.Options) {
+	p := StartPair(t, opts, parentIdentity)
 	var dumps [2]confDump
 	var heads [2][]byte
 	for i, side := range p.Each() {

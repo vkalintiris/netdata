@@ -972,7 +972,8 @@ const LIBUV_WORKER_THREADS: (i64, i64) = (8, 128);
 /// What `libuv_initialize()` sizes the daemon's threads by.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Threads {
-    /// The stack of every thread the daemon starts: `[global] pthread stack size` when valid, else the libc default.
+    /// The stack of every thread the daemon starts: libuv's size, which C's `nd_thread_create()` gets through
+    /// `uv_thread_create()`. `[global] pthread stack size` never reaches a C thread.
     pub thread_stack_size: usize,
     /// `netdata_conf_cpus()`.
     pub cpus: i64,
@@ -990,17 +991,16 @@ pub fn libuv_initialize(c: &mut Config, system: &Resources, root: &Path) -> Thre
         "pthread stack size",
         (libc_stack as u64).max(1 << 20),
     );
-    // netdata_threads_set_stack_size(): anything not above PTHREAD_STACK_MIN leaves the default.
-    let thread_stack_size = if stack_size > netdata_agent_sys::PTHREAD_STACK_MIN as u64 {
-        stack_size as usize
-    } else {
+    // netdata_threads_set_stack_size(): it only warns and sets an attribute no thread create uses; the value still
+    // divides the libuv worker cap below.
+    if stack_size <= netdata_agent_sys::PTHREAD_STACK_MIN as u64 {
         nd_log!(
             Source::Daemon,
             Priority::Warning,
             "Invalid pthread stacksize {stack_size}"
         );
-        libc_stack
-    };
+    }
+    let thread_stack_size = uv_thread_stack_size(system.page_size.max(1) as u64);
 
     // netdata_conf_cpus(): the cgroup cpuset, else every CPU.
     let cpuset = |rel: &str| {
@@ -1040,6 +1040,23 @@ pub fn libuv_initialize(c: &mut Config, system: &Resources, root: &Path) -> Thre
         cpus,
         libuv_worker_threads: threads,
     }
+}
+
+/// `uv__thread_stack_size()` on Linux: `RLIMIT_STACK` rounded down to the page size when it is finite and at least
+/// `PTHREAD_STACK_MIN` (8 KiB at the least), else 2 MiB. Measured on libuv 1.50, the library the C build links:
+/// 8 MiB and 20 KiB limits give those sizes, 12 KiB and unlimited give 2 MiB.
+fn uv_thread_stack_size(page_size: u64) -> usize {
+    use nix::sys::resource::{RLIM_INFINITY, Resource, getrlimit};
+    const DEFAULT: u64 = 2 << 20;
+    let min = (netdata_agent_sys::PTHREAD_STACK_MIN as u64).max(8192);
+    let size = match getrlimit(Resource::RLIMIT_STACK) {
+        Ok((cur, _)) if cur != RLIM_INFINITY => {
+            let cur = cur - cur % page_size;
+            if cur >= min { cur } else { DEFAULT }
+        }
+        _ => DEFAULT,
+    };
+    size as usize
 }
 
 /// `setenv()` for the plugins; the daemon is still single-threaded when it runs.
@@ -1387,6 +1404,31 @@ fn make_dns_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thread_stacks_follow_libuv_not_the_stack_size_key() {
+        use nix::sys::resource::{RLIM_INFINITY, Resource, getrlimit};
+        let mut c = Config::default();
+        c.set(SECTION_GLOBAL, "pthread stack size", "64KiB");
+        let system = Resources {
+            system_cpus: 4,
+            memory: crate::system::SystemMemory {
+                total: 0,
+                available: 0,
+            },
+            page_size: 4096,
+        };
+        let (threads, _) = netdata_agent_log::capture(|| {
+            libuv_initialize(&mut c, &system, Path::new("/nonexistent"))
+        });
+        let (cur, _) = getrlimit(Resource::RLIMIT_STACK).unwrap();
+        let expected = if cur == RLIM_INFINITY || cur < 16384 {
+            2 << 20
+        } else {
+            cur - cur % 4096
+        };
+        assert_eq!(threads.thread_stack_size as u64, expected);
+    }
 
     fn loaded(db_section: &str) -> Config {
         let path = std::env::temp_dir().join(format!(
