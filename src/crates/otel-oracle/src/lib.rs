@@ -10,6 +10,9 @@
 //!   list, ordered maps, full sorts, exact integer arithmetic.
 //!
 //! [`corpus`] generates the deterministic multi-service traces both sides are
-//! fed.
+//! fed; [`model`] rebuilds the stored rows from them; [`calc`] computes the
+//! numbers.
 
+pub mod calc;
 pub mod corpus;
+pub mod model;
