@@ -457,12 +457,12 @@ pub fn become_daemon(
     if !dont_fork {
         match sys::fork().map_err(|e| format!("cannot fork: {e}"))? {
             Forked::Parent { .. } => return Ok(Outcome::ExitParent),
-            Forked::Child => {}
+            Forked::Child => netdata_agent_log::forked(),
         }
         nix::unistd::setsid().map_err(|_| "Cannot become session leader.".to_string())?;
         match sys::fork().map_err(|e| format!("cannot fork for a second time: {e}"))? {
             Forked::Parent { .. } => return Ok(Outcome::ExitParent),
-            Forked::Child => {}
+            Forked::Child => netdata_agent_log::forked(),
         }
     }
     let mut pid_file = None;

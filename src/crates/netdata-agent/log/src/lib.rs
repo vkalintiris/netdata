@@ -167,6 +167,11 @@ fn tid() -> u64 {
     })
 }
 
+/// `gettid_uncached()` after a `fork()`: the child's thread inherited the parent's cached id.
+pub fn forked() {
+    TID.with(|tid| tid.set(0));
+}
+
 /// `now_realtime_usec()`.
 fn now_realtime_usec() -> u64 {
     std::time::SystemTime::now()
