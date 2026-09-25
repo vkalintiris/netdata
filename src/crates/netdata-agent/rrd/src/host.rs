@@ -57,6 +57,8 @@ pub struct ReceiverSlot {
     pub last_traffic_ut: AtomicU64,
     /// `rpt->exit.shutdown`.
     pub stop_requested: AtomicBool,
+    /// `rpt->remote_ip` and `rpt->remote_port`, for the records about this receiver.
+    pub remote: (String, String),
     /// Shuts the connection down so its stream thread notices at once.
     shutdown: Box<dyn Fn() + Send + Sync>,
 }
@@ -71,10 +73,15 @@ impl std::fmt::Debug for ReceiverSlot {
 }
 
 impl ReceiverSlot {
-    pub fn new(now_ut: u64, shutdown: Box<dyn Fn() + Send + Sync>) -> Self {
+    pub fn new(
+        now_ut: u64,
+        remote: (String, String),
+        shutdown: Box<dyn Fn() + Send + Sync>,
+    ) -> Self {
         ReceiverSlot {
             last_traffic_ut: AtomicU64::new(now_ut),
             stop_requested: AtomicBool::new(false),
+            remote,
             shutdown,
         }
     }
@@ -424,8 +431,8 @@ mod tests {
                 .as_deref(),
             Some("guid-b")
         );
-        let first = Arc::new(ReceiverSlot::new(1, Box::new(|| {})));
-        let second = Arc::new(ReceiverSlot::new(2, Box::new(|| {})));
+        let first = Arc::new(ReceiverSlot::new(1, Default::default(), Box::new(|| {})));
+        let second = Arc::new(ReceiverSlot::new(2, Default::default(), Box::new(|| {})));
         assert!(a.set_receiver(Arc::clone(&first)));
         assert!(!a.set_receiver(Arc::clone(&second)));
         a.clear_receiver(&second);

@@ -50,7 +50,7 @@ pub struct StreamRequest {
     pub program_name: Option<String>,
     pub program_version: Option<String>,
     /// Parameters nobody uses, in order (C logs each at NOTICE).
-    pub unused: Vec<(String, String)>,
+    pub unused: Vec<(Option<String>, String, String)>,
 }
 
 /// `stream_receiver_parse_hops()`: base 0, the whole string, 1..=32767.
@@ -139,7 +139,9 @@ impl StreamRequest {
                         }
                     };
                     if !r.system_info.set_by_name(renamed, &value) {
-                        r.unused.push((renamed.to_string(), value));
+                        // C logs it while parsing, with the hostname known so far
+                        r.unused
+                            .push((r.hostname.clone(), renamed.to_string(), value));
                     }
                 }
             }
@@ -284,12 +286,20 @@ mod tests {
         assert_eq!(r.system_info.host_os_name.as_deref(), Some("Linux"));
         // Repeats fall through to the system-info names; "==x" is the pair ("x", nothing); "tags" keeps everything
         // after its first '='.
+        // each with the hostname parsed before it, as C logs them while parsing
         let unused: Vec<_> = r
             .unused
             .iter()
-            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .map(|(h, n, v)| (h.as_deref(), n.as_str(), v.as_str()))
             .collect();
-        assert_eq!(unused, [("key", "other"), ("ver", "1"), ("tags", "a=b")]);
+        assert_eq!(
+            unused,
+            [
+                (None, "key", "other"),
+                (Some("child"), "ver", "1"),
+                (Some("child"), "tags", "a=b")
+            ]
+        );
         assert_eq!(
             (r.program_name.as_deref(), r.program_version.as_deref()),
             (Some("query-corpus-pusher"), Some("1.0"))

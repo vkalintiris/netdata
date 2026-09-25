@@ -24,7 +24,7 @@ pub use config::{
     limits_unlimited, reopen_log_files, set_facility, set_flood_protection, set_host_prefix,
     set_priority_level, set_user_settings,
 };
-pub use frame::{FrameGuard, Lazy, Value, push};
+pub use frame::{FrameGuard, Lazy, Value, push, push_shared};
 pub use limit::{DEFAULT_THROTTLE_LOGS, DEFAULT_THROTTLE_PERIOD, ErrorLimit};
 pub use model::{Field, Priority, Source, msgid};
 pub use output::{is_stderr_connected_to_journal, set_default_log_dir};

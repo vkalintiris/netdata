@@ -394,7 +394,9 @@ impl WebWorker {
         {
             let _frame = ctx.outer_frame();
             match pre {
-                PreAdmission::Refuse(message) => self.receivers.refuse(stream, message),
+                PreAdmission::Refuse(message, refusal) => {
+                    self.receivers.refuse(stream, message, &refusal)
+                }
                 PreAdmission::Proceed(pending) => self.receivers.admit(*pending, stream),
                 PreAdmission::Reply(..) => unreachable!("replies stay on the web connection"),
             }
@@ -632,6 +634,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
                 &client.request.query,
                 client.request.headers.user_agent.as_deref(),
                 &client.client_ip,
+                &client.log.port,
             );
             let (code, len) = match &pre {
                 PreAdmission::Reply(bytes, code) => (*code, bytes.len()),

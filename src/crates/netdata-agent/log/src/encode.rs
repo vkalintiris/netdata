@@ -403,11 +403,11 @@ mod tests {
 
     #[test]
     fn lazy_values_print_only_when_they_have_text() {
-        let yes: Lazy = std::rc::Rc::new(|out: &mut Vec<u8>| {
+        let yes: Lazy = std::sync::Arc::new(|out: &mut Vec<u8>| {
             out.extend_from_slice(b"V1 V2 ");
             true
         });
-        let no: Lazy = std::rc::Rc::new(|_: &mut Vec<u8>| false);
+        let no: Lazy = std::sync::Arc::new(|_: &mut Vec<u8>| false);
         let mut r = Record::new();
         set(&mut r, Field::NidlNode, Slot::Txt("test-host"));
         set(&mut r, Field::NidlInstance, Slot::Lazy(&no));

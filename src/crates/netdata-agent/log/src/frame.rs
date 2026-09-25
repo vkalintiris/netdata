@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::model::Field;
 
@@ -10,8 +11,9 @@ use crate::model::Field;
 const STACK_MAX: usize = 50;
 
 /// A lazily formatted value (`NDFT_CALLBACK`): it appends its text and returns false when it has none. It runs while
-/// a record is being written, so it must not log or push frames.
-pub type Lazy = Rc<dyn Fn(&mut Vec<u8>) -> bool>;
+/// a record is being written, so it must not log or push frames. Shareable, so a frame can outlive a thread's stack
+/// in the connection it describes.
+pub type Lazy = Arc<dyn Fn(&mut Vec<u8>) -> bool + Send + Sync>;
 
 /// A field value in a frame (`struct log_stack_entry`).
 #[derive(Clone)]
@@ -34,8 +36,8 @@ impl Value {
         Value::Txt(text.into())
     }
 
-    pub fn lazy(f: impl Fn(&mut Vec<u8>) -> bool + 'static) -> Value {
-        Value::Lazy(Rc::new(f))
+    pub fn lazy(f: impl Fn(&mut Vec<u8>) -> bool + Send + Sync + 'static) -> Value {
+        Value::Lazy(Arc::new(f))
     }
 
     /// `nd_logger_merge_log_stack_to_thread_fields()`: empty texts and zero UUIDs leave the field unset.
@@ -62,8 +64,23 @@ impl std::fmt::Debug for Value {
     }
 }
 
+/// A frame's entries, owned by the stack or shared with whoever built them.
+enum Entries {
+    Owned(Vec<(Field, Value)>),
+    Shared(Arc<[(Field, Value)]>),
+}
+
+impl Entries {
+    fn as_slice(&self) -> &[(Field, Value)] {
+        match self {
+            Entries::Owned(v) => v,
+            Entries::Shared(v) => v,
+        }
+    }
+}
+
 struct Stack {
-    frames: Vec<(u64, Vec<(Field, Value)>)>,
+    frames: Vec<(u64, Entries)>,
     next_id: u64,
 }
 
@@ -87,6 +104,15 @@ pub struct FrameGuard {
 
 /// Pushes a frame of fields onto this thread's stack until the guard is dropped.
 pub fn push(fields: Vec<(Field, Value)>) -> FrameGuard {
+    push_entries(Entries::Owned(fields))
+}
+
+/// Pushes a frame that stays shared: built once (per connection, for instance) and pushed without copying.
+pub fn push_shared(fields: Arc<[(Field, Value)]>) -> FrameGuard {
+    push_entries(Entries::Shared(fields))
+}
+
+fn push_entries(fields: Entries) -> FrameGuard {
     let id = STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
         if stack.frames.len() >= STACK_MAX {
@@ -125,7 +151,7 @@ pub(crate) fn with_fields<R>(f: impl FnOnce(&[Option<&Value>; crate::model::FIEL
         let stack = stack.borrow();
         let mut slots: [Option<&Value>; crate::model::FIELDS] = [None; crate::model::FIELDS];
         for (_, frame) in &stack.frames {
-            for (field, value) in frame {
+            for (field, value) in frame.as_slice() {
                 if value.applies() {
                     slots[*field as usize] = Some(value);
                 }

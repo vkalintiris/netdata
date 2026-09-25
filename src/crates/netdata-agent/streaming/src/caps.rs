@@ -188,6 +188,47 @@ pub fn prompt(caps: u32) -> String {
     }
 }
 
+/// `capability_names[]`, in table order (not bit order).
+const NAMES: [(u32, &str); 25] = [
+    (V1, "V1"),
+    (V2, "V2"),
+    (VN, "VN"),
+    (VCAPS, "VCAPS"),
+    (HLABELS, "HLABELS"),
+    (CLAIM, "CLAIM"),
+    (CLABELS, "CLABELS"),
+    (LZ4, "LZ4"),
+    (FUNCTIONS, "FUNCTIONS"),
+    (FUNCTION_DEL, "FUNCDEL"),
+    (REPLICATION, "REPLICATION"),
+    (BINARY, "BINARY"),
+    (INTERPOLATED, "INTERPOLATED"),
+    (IEEE754, "IEEE754"),
+    (DATA_WITH_ML, "ML"),
+    (ML_MODELS, "MLMODELS"),
+    (DYNCFG, "DYNCFG"),
+    (SLOTS, "SLOTS"),
+    (ZSTD, "ZSTD"),
+    (GZIP, "GZIP"),
+    (BROTLI, "BROTLI"),
+    (PROGRESS, "PROGRESS"),
+    (NODE_ID, "NODEID"),
+    (PATHS, "PATHS"),
+    (FLOAT_BASELINE, "FLOATBASELINE"),
+];
+
+/// `stream_capabilities_to_string()`: every name set in `caps`, each followed by a space.
+pub fn to_string(caps: u32) -> String {
+    let mut out = String::new();
+    for (cap, name) in NAMES {
+        if caps & cap != 0 {
+            out.push_str(name);
+            out.push(' ');
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
