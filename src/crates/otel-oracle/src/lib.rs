@@ -16,7 +16,8 @@
 //! them the agent's ingestion window kept, and [`membership`] reads which rows
 //! the agent's store holds and in which unit (the only module allowed to read
 //! the store, and only its id, time and duration columns); [`matching`] pairs
-//! the two and says which windows can be judged.
+//! the two and says which windows can be judged. [`wire`] reads the explorer's
+//! JSON answers into the calculator's own copies of their shapes.
 
 pub mod calc;
 pub mod capture;
@@ -25,3 +26,4 @@ pub mod ingest;
 pub mod matching;
 pub mod membership;
 pub mod model;
+pub mod wire;
