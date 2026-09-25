@@ -8,17 +8,33 @@ publish = false
 [lints]
 workspace = true
 
+# The network side (the otel-tee relay) is opt-in, so crates that only use the
+# calculator do not build a gRPC server. Build or test it with
+# `--features live`.
+[features]
+live = ["dep:bytes", "dep:clap", "dep:tokio", "dep:tonic"]
+
+[[bin]]
+name = "otel-tee"
+path = "src/bin/otel-tee.rs"
+required-features = ["live"]
+
+[[test]]
+name = "tee"
+path = "tests/tee.rs"
+required-features = ["live"]
+
 [dependencies]
-bytes = { workspace = true }
-clap = { workspace = true }
+bytes = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 ng-flatten = { workspace = true }
 opentelemetry-proto = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sfst = { workspace = true, features = ["test-util"] }
-tokio = { workspace = true }
-tonic = { workspace = true, features = ["gzip"] }
+tokio = { workspace = true, optional = true }
+tonic = { workspace = true, features = ["gzip"], optional = true }
 wal = { workspace = true }
 
 [dev-dependencies]
