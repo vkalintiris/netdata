@@ -649,18 +649,35 @@
           "properties": {
             "partial": {
               "type": "array",
+              "minItems": 1,
               "items": {
-                "type": "string",
-                "enum": [
-                  "size_cap",
-                  "source_failure",
-                  "work_ceiling",
-                  "cancelled",
-                  "overview_ceiling",
-                  "rollup_absent",
-                  "slowest_ceiling",
-                  "remote_unavailable"
-                ]
+                "type": "object",
+                "required": ["reason", "count"],
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "size_cap",
+                      "source_failure",
+                      "work_ceiling",
+                      "cancelled",
+                      "overview_ceiling",
+                      "rollup_absent",
+                      "slowest_ceiling",
+                      "remote_unavailable",
+                      "legacy_file",
+                      "stack_field_high_card",
+                      "facet_high_card",
+                      "facet_value_cap",
+                      "groups_cap",
+                      "live_pass_failed"
+                    ]
+                  },
+                  "count": { "type": "integer", "minimum": 1 },
+                  "of": { "type": "integer", "minimum": 1 },
+                  "detail": { "type": "array", "items": { "type": "string" } }
+                },
+                "additionalProperties": false
               }
             }
           },

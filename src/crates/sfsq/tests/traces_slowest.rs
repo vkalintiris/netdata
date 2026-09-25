@@ -426,11 +426,11 @@ fn unavailable_sources_are_reported_while_the_rest_rank() {
         .collect();
     assert_eq!(got, expected, "the healthy source still ranks");
     assert_eq!(
-        data.status,
-        QueryStatus::Partial(BTreeSet::from([
+        data.status.reasons(),
+        BTreeSet::from([
             PartialReason::SourceFailure,
             PartialReason::RemoteUnavailable,
-        ]))
+        ])
     );
     assert_eq!(progress.load(Ordering::Relaxed), 3, "one tick per source");
 
@@ -440,7 +440,7 @@ fn unavailable_sources_are_reported_while_the_rest_rank() {
     );
     assert!(only.traces.is_empty());
     assert_eq!(
-        only.status,
-        QueryStatus::Partial(BTreeSet::from([PartialReason::RemoteUnavailable]))
+        only.status.reasons(),
+        BTreeSet::from([PartialReason::RemoteUnavailable])
     );
 }

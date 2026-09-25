@@ -1539,11 +1539,11 @@ fn unavailable_sources_are_reported_and_degrade_every_summary() {
     assert_eq!(ids(&data), vec![hex(6), hex(4), hex(2), hex(1), hex(3)]);
     assert!(data.traces.iter().all(|t| !t.exact));
     assert_eq!(
-        data.status,
-        QueryStatus::Partial(BTreeSet::from([
+        data.status.reasons(),
+        BTreeSet::from([
             PartialReason::SourceFailure,
             PartialReason::RemoteUnavailable,
-        ]))
+        ])
     );
     assert_eq!(
         progress.load(Ordering::Relaxed),
@@ -1557,8 +1557,8 @@ fn unavailable_sources_are_reported_and_degrade_every_summary() {
     );
     assert!(only.traces.is_empty());
     assert_eq!(
-        only.status,
-        QueryStatus::Partial(BTreeSet::from([PartialReason::RemoteUnavailable]))
+        only.status.reasons(),
+        BTreeSet::from([PartialReason::RemoteUnavailable])
     );
 }
 
@@ -1583,8 +1583,8 @@ fn an_unavailable_source_in_the_completion_slack_makes_every_summary_inexact() {
     assert!(!data.traces.is_empty());
     assert!(data.traces.iter().all(|t| !t.exact));
     assert_eq!(
-        data.status,
-        QueryStatus::Partial(BTreeSet::from([PartialReason::RemoteUnavailable]))
+        data.status.reasons(),
+        BTreeSet::from([PartialReason::RemoteUnavailable])
     );
 }
 
@@ -1628,7 +1628,7 @@ fn an_unavailable_source_makes_trace_level_candidates_indeterminate() {
     );
     assert!(degraded.traces.is_empty());
     assert_eq!(
-        degraded.status,
-        QueryStatus::Partial(BTreeSet::from([PartialReason::RemoteUnavailable]))
+        degraded.status.reasons(),
+        BTreeSet::from([PartialReason::RemoteUnavailable])
     );
 }

@@ -143,7 +143,7 @@ async fn evicted_files_answer_exactly_as_local_files() {
 async fn a_failed_download_is_reported_and_leaves_search_inexact() {
     let (h, remote, [_, two]) = evicted_setup(64 * MIB).await;
     remote.lose(&two);
-    let partial = json!({"partial": ["remote_unavailable"]});
+    let partial = json!({"partial": [{"reason": "remote_unavailable", "count": 1}]});
 
     // B lives in the file that downloads: served, but the lookup cannot
     // know whether the lost file held more of it.
@@ -188,7 +188,7 @@ async fn a_storage_error_costs_only_its_own_file() {
     let h = handler(registries, &remote);
 
     let v = call(&h, search_body(20)).await.unwrap();
-    assert_eq!(v["status"], json!({"partial": ["remote_unavailable"]}));
+    assert_eq!(v["status"], json!({"partial": [{"reason": "remote_unavailable", "count": 1}]}));
     assert_eq!(traces_of(&v), ["0e", "0c"]);
     assert_eq!(remote.cache.file_count(), 1, "file 2 was downloaded");
 }
@@ -197,7 +197,7 @@ async fn a_storage_error_costs_only_its_own_file() {
 async fn an_unreadable_catalog_is_reported() {
     let (h, _remote, [one, _]) = evicted_setup(64 * MIB).await;
     std::fs::write(&one.catalog, b"not a catalog").unwrap();
-    let partial = json!({"partial": ["remote_unavailable"]});
+    let partial = json!({"partial": [{"reason": "remote_unavailable", "count": 1}]});
 
     let v = call(&h, trace_body(0x0A)).await.unwrap();
     assert_eq!(v["status"], partial);
@@ -235,7 +235,11 @@ async fn an_unwritable_cache_directory_degrades_each_download() {
 
     let v = call(&h, trace_body(0x0B)).await.unwrap();
 
-    assert_eq!(v["status"], json!({"partial": ["remote_unavailable"]}));
+    // Both files fail to download, and the count says so.
+    assert_eq!(
+        v["status"],
+        json!({"partial": [{"reason": "remote_unavailable", "count": 2}]})
+    );
     assert_eq!(v["items"]["returned"], 0);
 }
 
@@ -391,7 +395,7 @@ async fn every_aggregate_mode_reports_a_failed_download() {
         let v = call(&h, body.clone()).await.unwrap();
         assert_eq!(
             v["status"],
-            json!({"partial": ["remote_unavailable"]}),
+            json!({"partial": [{"reason": "remote_unavailable", "count": 1}]}),
             "{body}"
         );
     }
@@ -445,7 +449,7 @@ async fn an_unreadable_catalog_in_the_completion_slack_spares_the_aggregate() {
     let v = call(&h, functions_body(20)).await.unwrap();
     assert_eq!(
         v["data"]["status"],
-        json!({"partial": ["remote_unavailable"]})
+        json!({"partial": [{"reason": "remote_unavailable", "count": 1}]})
     );
     assert_eq!(v["data"]["overview"]["status"], json!({"complete": true}));
     assert_eq!(v["data"]["overview"]["totals"]["traces"], 4);

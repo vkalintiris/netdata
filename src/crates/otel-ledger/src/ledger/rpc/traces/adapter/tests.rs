@@ -490,7 +490,7 @@ fn partial_full_page_ends_the_walk_with_the_status_saying_why() {
     assert!(r.anchor.is_none());
     assert_eq!(
         serde_json::to_value(&r.status).unwrap(),
-        json!({"partial": ["work_ceiling"]})
+        json!({"partial": [{"reason": "work_ceiling", "count": 1}]})
     );
 }
 
@@ -511,7 +511,7 @@ fn remote_unavailable_full_page_ends_the_walk() {
     assert!(r.anchor.is_none());
     assert_eq!(
         serde_json::to_value(&r.status).unwrap(),
-        json!({"partial": ["remote_unavailable"]})
+        json!({"partial": [{"reason": "remote_unavailable", "count": 1}]})
     );
 }
 
@@ -527,7 +527,7 @@ fn work_ceiling_partial_reaches_the_wire() {
     let r = to_search_result(data, 20, None, WIN, WIN_COVERAGE);
     assert_eq!(
         serde_json::to_value(&r.status).unwrap(),
-        json!({"partial": ["work_ceiling"]})
+        json!({"partial": [{"reason": "work_ceiling", "count": 1}]})
     );
 }
 

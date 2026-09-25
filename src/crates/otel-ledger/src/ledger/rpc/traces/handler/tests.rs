@@ -247,7 +247,7 @@ async fn bounded_trace_fetch_prunes_non_overlapping_sealed_files() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(full["status"], json!({"partial": ["source_failure"]}));
+    assert_eq!(full["status"], json!({"partial": [{"reason": "source_failure", "count": 1}]}));
 }
 
 #[tokio::test]
@@ -343,7 +343,7 @@ async fn span_cap_returns_the_earliest_spans_and_a_size_cap_partial() {
     .await
     .unwrap();
     let v = serde_json::to_value(&resp).unwrap();
-    assert_eq!(v["status"], json!({"partial": ["size_cap"]}));
+    assert_eq!(v["status"], json!({"partial": [{"reason": "size_cap", "count": 1}]}));
     assert_eq!(v["items"]["returned"], 2);
     // Pin WHICH spans: the globally earliest two (fixture starts ascend
     // with the span id), so a latest-two regression fails here, not only
@@ -494,7 +494,7 @@ async fn search_completion_captures_slack_files_and_skips_beyond_slack() {
     install_sfst(&registries, "default", 2, T_S + 1_800, T_S + 1_900).await;
     let h = make_handler_over(registries);
     let v = serde_json::to_value(call_on(&h, as_mode("search", window_body())).await.unwrap()).unwrap();
-    assert_eq!(v["status"], json!({"partial": ["source_failure"]}));
+    assert_eq!(v["status"], json!({"partial": [{"reason": "source_failure", "count": 1}]}));
 
     let registries = make_registries();
     install_wal(
@@ -1450,7 +1450,7 @@ async fn the_aggregate_captures_the_aligned_window_and_carries_its_own_status() 
     let h = make_handler_over(registries);
     let v = serde_json::to_value(call_on(&h, functions_body(20)).await.unwrap()).unwrap();
     // The page probed the slack file and says so...
-    assert_eq!(v["data"]["status"], json!({"partial": ["source_failure"]}));
+    assert_eq!(v["data"]["status"], json!({"partial": [{"reason": "source_failure", "count": 1}]}));
     // ...the aggregate never saw it: its capture is the grid's window,
     // so its status is its own and its numbers are the standalone
     // overview mode's for the same window.

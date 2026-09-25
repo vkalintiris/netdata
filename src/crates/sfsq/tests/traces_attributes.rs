@@ -687,11 +687,11 @@ fn unavailable_sources_are_reported_and_the_rest_served() {
             unavailable_source("remote", 0, 10),
         ]
     };
-    let both = QueryStatus::Partial(BTreeSet::from([
+    let both = BTreeSet::from([
         PartialReason::SourceFailure,
         PartialReason::RemoteUnavailable,
-    ]));
-    let only_remote = QueryStatus::Partial(BTreeSet::from([PartialReason::RemoteUnavailable]));
+    ]);
+    let only_remote = BTreeSet::from([PartialReason::RemoteUnavailable]);
     let k = || AttributeValuesQuery::new(AttributeOwner::Span, AttributeKey::Attribute("k".into()));
 
     let progress = Arc::new(AtomicUsize::new(0));
@@ -703,7 +703,7 @@ fn unavailable_sources_are_reported_and_the_rest_served() {
     )
     .unwrap();
     assert_eq!(owner_attrs(&keys, AttributeOwner::Span), ["k"]);
-    assert_eq!(keys.status, both);
+    assert_eq!(keys.status.reasons(), both);
     assert_eq!(progress.load(Ordering::Relaxed), 3, "one tick per source");
 
     let progress = Arc::new(AtomicUsize::new(0));
@@ -715,17 +715,17 @@ fn unavailable_sources_are_reported_and_the_rest_served() {
     )
     .unwrap();
     assert_eq!(value_strings(&vals), ["v"]);
-    assert_eq!(vals.status, both);
+    assert_eq!(vals.status.reasons(), both);
     assert_eq!(progress.load(Ordering::Relaxed), 3, "one tick per source");
 
     let alone = || vec![unavailable_source("remote", 0, 10)];
     assert_eq!(
-        names(alone(), AttributeNamesQuery::new()).status,
+        names(alone(), AttributeNamesQuery::new()).status.reasons(),
         only_remote
     );
     let vals = values(alone(), k());
     assert!(vals.values.is_empty());
-    assert_eq!(vals.status, only_remote);
+    assert_eq!(vals.status.reasons(), only_remote);
 }
 
 /// The window prunes an unavailable source by its summary, like a
@@ -738,15 +738,15 @@ fn window_prunes_unavailable_sources_by_their_summary() {
     let k = || AttributeValuesQuery::new(AttributeOwner::Span, AttributeKey::Attribute("k".into()));
     let inside = TimeWindow::new(90 * NS, 120 * NS).unwrap();
     let outside = TimeWindow::new(0, 10 * NS).unwrap();
-    let only_remote = QueryStatus::Partial(BTreeSet::from([PartialReason::RemoteUnavailable]));
+    let only_remote = BTreeSet::from([PartialReason::RemoteUnavailable]);
 
-    assert_eq!(values(remote(), k().window(inside)).status, only_remote);
+    assert_eq!(values(remote(), k().window(inside)).status.reasons(), only_remote);
     assert_eq!(
         values(remote(), k().window(outside)).status,
         QueryStatus::Complete
     );
     assert_eq!(
-        names(remote(), AttributeNamesQuery::new().window(inside)).status,
+        names(remote(), AttributeNamesQuery::new().window(inside)).status.reasons(),
         only_remote
     );
     assert_eq!(

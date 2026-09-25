@@ -1124,7 +1124,7 @@ impl Default for InfoResponse {
 // ── Status ──────────────────────────────────────────────────────────
 
 /// Wire form of the engine's [`QueryStatus`]: `{"complete": true}` or
-/// `{"partial": ["size_cap", ...]}`.
+/// `{"partial": [{"reason": "source_failure", "count": 2, "of": 14}, ...]}`.
 /// Untagged — the distinct field names select the variant.
 /// Every data-mode response carries one beside its data; defined (and
 /// pinned by round-trip tests) here so the data modes share one
@@ -1133,7 +1133,20 @@ impl Default for InfoResponse {
 #[serde(untagged)]
 pub enum StatusWire {
     Complete { complete: CompleteTrue },
-    Partial { partial: Vec<PartialReasonWire> },
+    Partial { partial: Vec<ReasonWire> },
+}
+
+/// One partial reason on the wire: how often it happened, out of how many
+/// where that applies, and the names it applies to (e.g. fields left out).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReasonWire {
+    pub reason: PartialReasonWire,
+    pub count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detail: Vec<String>,
 }
 
 /// The `complete` field's value — the JSON literal `true`, as a type.
@@ -1167,10 +1180,19 @@ impl From<&QueryStatus> for StatusWire {
             QueryStatus::Complete => StatusWire::Complete {
                 complete: CompleteTrue,
             },
-            QueryStatus::Partial(reasons) => StatusWire::Partial {
-                // BTreeSet iteration keeps the wire rendering deterministic.
-                partial: reasons.iter().map(|&r| r.into()).collect(),
-            },
+            QueryStatus::Partial(reasons) => {
+                // BTreeMap iteration keeps the wire rendering deterministic.
+                let mut partial = Vec::with_capacity(reasons.len());
+                for (&reason, counted) in reasons {
+                    partial.push(ReasonWire {
+                        reason: reason.into(),
+                        count: counted.count,
+                        of: counted.of,
+                        detail: counted.detail.iter().cloned().collect(),
+                    });
+                }
+                StatusWire::Partial { partial }
+            }
         }
     }
 }
@@ -1189,6 +1211,12 @@ pub enum PartialReasonWire {
     RollupAbsent,
     SlowestCeiling,
     RemoteUnavailable,
+    LegacyFile,
+    StackFieldHighCard,
+    FacetHighCard,
+    FacetValueCap,
+    GroupsCap,
+    LivePassFailed,
 }
 
 impl From<PartialReason> for PartialReasonWire {
@@ -1202,6 +1230,12 @@ impl From<PartialReason> for PartialReasonWire {
             PartialReason::RollupAbsent => PartialReasonWire::RollupAbsent,
             PartialReason::SlowestCeiling => PartialReasonWire::SlowestCeiling,
             PartialReason::RemoteUnavailable => PartialReasonWire::RemoteUnavailable,
+            PartialReason::LegacyFile => PartialReasonWire::LegacyFile,
+            PartialReason::StackFieldHighCard => PartialReasonWire::StackFieldHighCard,
+            PartialReason::FacetHighCard => PartialReasonWire::FacetHighCard,
+            PartialReason::FacetValueCap => PartialReasonWire::FacetValueCap,
+            PartialReason::GroupsCap => PartialReasonWire::GroupsCap,
+            PartialReason::LivePassFailed => PartialReasonWire::LivePassFailed,
         }
     }
 }

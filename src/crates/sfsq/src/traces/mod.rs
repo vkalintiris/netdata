@@ -63,7 +63,7 @@ pub use sources::{
     SourceId, SourceSetError, TraceSfstCandidate, TraceSource, TraceUnavailable, TraceWalTail,
     WalCoverage, validate_sources,
 };
-pub use status::{PartialReason, QueryStatus, StatusBuilder};
+pub use status::{PartialReason, QueryStatus, ReasonCount, StatusBuilder};
 pub use attributes::{
     AttributeNamesData, AttributeNamesQuery, AttributeRequestError, AttributeValue, AttributeValuesData, AttributeValuesQuery,
     attribute_names, attribute_values,

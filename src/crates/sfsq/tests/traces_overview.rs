@@ -1066,11 +1066,11 @@ fn unavailable_sources_are_reported_while_the_rest_count() {
     );
     assert_eq!(data.total_traces, 3);
     assert_eq!(
-        data.status,
-        QueryStatus::Partial(BTreeSet::from([
+        data.status.reasons(),
+        BTreeSet::from([
             PartialReason::SourceFailure,
             PartialReason::RemoteUnavailable,
-        ]))
+        ])
     );
     assert_eq!(progress.load(Ordering::Relaxed), 3, "one tick per source");
 
@@ -1080,7 +1080,7 @@ fn unavailable_sources_are_reported_while_the_rest_count() {
     );
     assert_eq!(only.total_traces, 0);
     assert_eq!(
-        only.status,
-        QueryStatus::Partial(BTreeSet::from([PartialReason::RemoteUnavailable]))
+        only.status.reasons(),
+        BTreeSet::from([PartialReason::RemoteUnavailable])
     );
 }

@@ -21,7 +21,7 @@ use common::{
 };
 use sfsq::Source;
 use sfsq::traces::{
-    PartialReason, QueryStatus, SourceId, TraceQuery, TraceSfstCandidate, TraceSource, WalCoverage,
+    PartialReason, SourceId, TraceQuery, TraceSfstCandidate, TraceSource, WalCoverage,
     trace_by_id,
 };
 
@@ -589,18 +589,18 @@ fn unavailable_sources_are_reported_with_their_own_reason() {
     .unwrap();
     assert_eq!(span_names(&data), ["good"]);
     assert_eq!(
-        data.status,
-        QueryStatus::Partial(BTreeSet::from([
+        data.status.reasons(),
+        BTreeSet::from([
             PartialReason::SourceFailure,
             PartialReason::RemoteUnavailable,
-        ]))
+        ])
     );
     assert_eq!(progress.load(Ordering::Relaxed), 3, "one tick per source");
 
     let only = run(vec![unavailable_source("remote", 0, 10)]);
     assert!(only.trace.spans.is_empty());
     assert_eq!(
-        only.status,
-        QueryStatus::Partial(BTreeSet::from([PartialReason::RemoteUnavailable]))
+        only.status.reasons(),
+        BTreeSet::from([PartialReason::RemoteUnavailable])
     );
 }
