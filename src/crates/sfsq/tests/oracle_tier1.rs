@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::resource::v1::Resource;
-use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span};
+use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span, Status};
 use otel_oracle::calc::{self, Grid, Scope, fixed_histogram};
 use otel_oracle::corpus::{self, MeshParams};
 use otel_oracle::model::{self, OracleSpan};
@@ -48,7 +48,11 @@ struct Stored {
     sealed: Vec<u8>,
     live_wal: PathBuf,
     live_chunk: Vec<u8>,
+    /// What the explorer shows: `_err_origin` on the origins of the sealed
+    /// file and, through the live pass, of the live WAL as a whole.
     oracle: Vec<OracleSpan>,
+    /// What the files store: `_err_origin` on the sealed file's origins only.
+    files: Vec<OracleSpan>,
     grid: Grid,
 }
 
@@ -134,8 +138,10 @@ fn store_requests(requests: &[ExportTraceServiceRequest], cut: usize) -> Stored 
         ng_index::build_sfst_traces_range(&live_wal, common::whole_range(&live_wal)).unwrap();
 
     // The sealed file stores the seal's error-origin tokens; the live chunk
-    // does not.
-    calc::add_stored_origins(&mut oracle, &|unit| unit == SEALED);
+    // does not, and the live pass derives them over the whole live WAL.
+    let mut files = oracle.clone();
+    calc::add_stored_origins(&mut files, &|unit| unit == SEALED);
+    calc::add_origins(&mut oracle, &|unit| Some(unit));
     let last_start_s = oracle.iter().map(|s| s.start_ns).max().unwrap() / 1_000_000_000;
     let grid = Grid::for_window(T0_S as u32, last_start_s as u32 + 1);
 
@@ -145,12 +151,14 @@ fn store_requests(requests: &[ExportTraceServiceRequest], cut: usize) -> Stored 
         live_wal,
         live_chunk,
         oracle,
+        files,
         grid,
     }
 }
 
+/// A unit's spans as its file stores them.
 fn unit_spans(stored: &Stored, unit: usize) -> Vec<&OracleSpan> {
-    stored.oracle.iter().filter(|s| s.unit == unit).collect()
+    stored.files.iter().filter(|s| s.unit == unit).collect()
 }
 
 /// value → rows carrying it, per field, as the calculator sees a unit.
@@ -1472,5 +1480,197 @@ fn explore_names_high_and_capped_facets() {
             reasons.extend(stated(&facets.status, reason, name));
         }
         assert_eq!(reasons, calc::facet_reasons(&want), "{case}");
+    }
+}
+
+/// A span of trace `trace` with id `id` under `parent`, starting `start_ms`
+/// after T0 and lasting `duration_ms`, with status ERROR when `error`.
+fn family_span(
+    trace: u8,
+    id: u8,
+    parent: Option<u8>,
+    (start_ms, duration_ms): (u64, u64),
+    error: bool,
+) -> Span {
+    let start = T0_S * 1_000_000_000 + start_ms * 1_000_000;
+    Span {
+        trace_id: vec![trace; 16],
+        span_id: vec![id; 8],
+        parent_span_id: parent.map_or_else(Vec::new, |parent| vec![parent; 8]),
+        name: format!("op{id}"),
+        kind: 2,
+        start_time_unix_nano: start,
+        end_time_unix_nano: start + duration_ms * 1_000_000,
+        status: error.then(|| Status {
+            code: 2,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// One export request (one WAL frame) holding `spans` of one service.
+fn frame_of(spans: Vec<Span>) -> ExportTraceServiceRequest {
+    ExportTraceServiceRequest {
+        resource_spans: vec![ResourceSpans {
+            resource: Some(Resource {
+                attributes: vec![common::kv_str("service.name", "svc")],
+                ..Default::default()
+            }),
+            scope_spans: vec![ScopeSpans {
+                spans,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    }
+}
+
+/// The ids of the error origins in [`family_store`]: C, the ERROR child Y of
+/// an OK root, and the lone ERROR root Z.
+const FAMILY_ORIGINS: [(u8, u8); 3] = [(1, 13), (2, 22), (3, 31)];
+
+/// A filler span sealed, then a live WAL of four frames (3, 2, 2 and 1 spans)
+/// whose families cross frames: frame 0 holds root R and its ERROR child P,
+/// frame 1 P's ERROR child C, frame 2 R's OK child D, so an image of one
+/// frame alone would take P for an origin and miss the time D covers.
+fn family_store() -> Stored {
+    let requests = vec![
+        frame_of(vec![family_span(9, 90, None, (0, 5), false)]),
+        frame_of(vec![
+            family_span(1, 11, None, (10, 1_000), true),
+            family_span(1, 12, Some(11), (20, 500), true),
+            family_span(2, 21, None, (30, 400), false),
+        ]),
+        frame_of(vec![
+            family_span(1, 13, Some(12), (40, 100), true),
+            family_span(2, 22, Some(21), (50, 100), true),
+        ]),
+        frame_of(vec![
+            family_span(1, 14, Some(11), (600, 300), false),
+            family_span(3, 31, None, (700, 50), true),
+        ]),
+        frame_of(vec![family_span(4, 41, None, (800, 10), false)]),
+    ];
+    store_requests(&requests, 1)
+}
+
+/// What the explorer answers about error origins: the `_err_origin` facet,
+/// the histogram stacked by it, and the ids of the rows it scopes to.
+type OriginAnswers = (BTreeMap<String, u64>, Vec<calc::Bucket>, Vec<(u8, u8)>);
+
+/// With the statuses of both requests and of each of their sections.
+fn origin_answers(sources: Vec<TraceSource>, grid: &Grid) -> (OriginAnswers, Vec<QueryStatus>) {
+    let run = |sources: Vec<TraceSource>, query: ExploreQuery| {
+        explore::explore(
+            sources,
+            query,
+            explore::ExploreOptions::default(),
+            tokio_util::sync::CancellationToken::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        )
+        .unwrap()
+    };
+    let mut query = explore_query(grid, &Scope::default(), model::ERR_ORIGIN_FIELD);
+    query.sections.facets = Some(FacetSpec {
+        fields: Some(vec![model::ERR_ORIGIN_FIELD.to_string()]),
+    });
+    let data = run(sources.clone(), query);
+    let facets = data.facets.expect("facets section");
+    let histogram = data.histogram.expect("histogram section");
+    let mut statuses = vec![data.status, facets.status, histogram.status.clone()];
+    let facet: BTreeMap<String, u64> = facets
+        .fields
+        .into_iter()
+        .flat_map(|facet| facet.values)
+        .map(|value| (value.value, value.count))
+        .collect();
+    let buckets = calc_buckets(&histogram);
+
+    let origins = Scope::default().with(model::ERR_ORIGIN_FIELD, &["true"]);
+    let order = RowOrder::Newest {
+        anchor: None,
+        direction: RowDirection::Older,
+    };
+    let data = run(sources, rows_query(grid, &origins, order, 50));
+    let rows = data.rows.expect("rows section");
+    statuses.extend([data.status, rows.status.clone()]);
+    let mut ids: Vec<(u8, u8)> = rows
+        .items
+        .iter()
+        .map(|row| {
+            (
+                row.key.trace_id.as_bytes()[0],
+                row.key.span_id.as_bytes()[0],
+            )
+        })
+        .collect();
+    ids.sort_unstable();
+    ((facet, buckets, ids), statuses)
+}
+
+/// ORC-LIVE: however the live WAL is served (all tail, one image, one chunk
+/// and a tail, two chunks and a tail), the explorer answers about error
+/// origins exactly as it does once the WAL is sealed, and as the calculator
+/// does over the WAL as a whole.
+#[test]
+fn live_split_equals_sealed() {
+    let stored = family_store();
+    let grid = stored.grid;
+    let sealed_live = stored._dir.path().join("live.sfst");
+    ng_index::build_sfst_traces_file(&stored.live_wal, &sealed_live, &ng_index::Metrics::new())
+        .unwrap();
+    let sealed_sources = vec![
+        common::sealed_source_at(&stored._dir.path().join("sealed.sfst"), "sealed"),
+        common::sealed_source_at(&sealed_live, "live"),
+    ];
+    let (sealed, statuses) = origin_answers(sealed_sources, &grid);
+    assert!(
+        statuses.iter().all(QueryStatus::is_complete),
+        "{statuses:?}"
+    );
+    assert_eq!(sealed.2, FAMILY_ORIGINS);
+    let facet = calc::facet_counts(
+        &stored.oracle,
+        &grid,
+        &Scope::default(),
+        model::ERR_ORIGIN_FIELD,
+    );
+    assert_eq!(sealed.0, facet);
+    let histogram = calc::histogram(
+        &stored.oracle,
+        &grid,
+        &Scope::default(),
+        model::ERR_ORIGIN_FIELD,
+    );
+    assert_eq!(sealed.1, histogram);
+
+    for live in [Live::Tail, Live::Chunk, Live::Split(5), Live::Split(3)] {
+        let (answers, statuses) = origin_answers(explore_sources(&stored, live), &grid);
+        let complete = statuses.iter().all(QueryStatus::is_complete);
+        assert!(complete, "{live:?}: {statuses:?}");
+        assert_eq!(answers, sealed, "{live:?}");
+    }
+}
+
+/// ORC-LIVE: a live WAL whose captured ranges leave a gap (a chunk missing)
+/// cannot be derived: its rows carry no error origin, and every section that
+/// counts origins says so, out of the live WALs captured, as does each request
+/// (once, however many of its sections name it).
+#[test]
+fn a_live_wal_with_a_gap_fails_its_live_pass() {
+    let stored = family_store();
+    let grid = stored.grid;
+    let mut sources = explore_sources(&stored, Live::Split(3));
+    assert_eq!(sources.len(), 4, "the sealed file, two chunks and a tail");
+    sources.remove(2);
+    let ((facet, _, ids), statuses) = origin_answers(sources, &grid);
+    assert!(ids.is_empty(), "{ids:?}");
+    assert!(!facet.contains_key("true"), "{facet:?}");
+    for status in &statuses {
+        let failed = status
+            .count(PartialReason::LivePassFailed)
+            .map(|count| (count.count, count.of));
+        assert_eq!(failed, Some((1, Some(1))), "{statuses:?}");
     }
 }

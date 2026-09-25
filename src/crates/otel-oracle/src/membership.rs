@@ -147,6 +147,19 @@ impl Unit {
     }
 }
 
+/// Per unit, the unit that names its derivation scope: the rows the
+/// explorer derives error origins and child time over together. A sealed
+/// file is its own scope; every chunk and the tail of one live WAL share one
+/// (the live pass reads the WAL as a whole).
+pub fn derivation_scopes(units: &[Unit]) -> Vec<usize> {
+    let mut first: BTreeMap<&Path, usize> = BTreeMap::new();
+    let mut scopes = Vec::with_capacity(units.len());
+    for (index, unit) in units.iter().enumerate() {
+        scopes.push(*first.entry(unit.path.as_path()).or_insert(index));
+    }
+    scopes
+}
+
 fn seconds_of(rows: &[RowKey]) -> Option<(u32, u32)> {
     let min = rows.iter().map(|row| row.start_ns).min()?;
     let max = rows.iter().map(|row| row.start_ns).max()?;
@@ -535,6 +548,32 @@ mod tests {
 
     const MACHINE: &str = "baf93e178ba34a37bdf778e397883163";
     const INSTANCE: &str = "d5439cb5a64e4ceb89c297cbcd8ee6f2";
+
+    #[test]
+    fn a_live_wal_is_one_derivation_scope() {
+        let unit = |path: &str, kind: UnitKind| Unit {
+            path: PathBuf::from(path),
+            stem: Stem {
+                machine: MACHINE.to_string(),
+                instance: INSTANCE.to_string(),
+                pipeline: 1,
+                seq: 0,
+                part_key: 0,
+            },
+            kind,
+            seconds: None,
+            rows: Vec::new(),
+        };
+        let units = [
+            unit("a.sfst", UnitKind::Sealed),
+            unit("b.wal", UnitKind::Chunk(0)),
+            unit("c.sfst", UnitKind::Sealed),
+            unit("b.wal", UnitKind::Chunk(1)),
+            unit("b.wal", UnitKind::Tail(4)),
+            unit("d.wal", UnitKind::Tail(0)),
+        ];
+        assert_eq!(derivation_scopes(&units), [0, 1, 2, 1, 1, 5]);
+    }
 
     // A list holding one frame range is what these cases mean.
     #[allow(clippy::single_range_in_vec_init)]

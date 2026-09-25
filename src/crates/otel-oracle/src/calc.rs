@@ -738,19 +738,30 @@ pub struct Derived {
     pub child_ns: i64,
 }
 
-/// Every row's derived values, index-parallel to `spans`. A row's children
-/// are the rows of the same unit and set trace id whose set parent id is its
-/// set span id; a row whose parent id is its own span id is nobody's child
-/// (not even of its resent copy), and only direct children count.
+/// Every row's derived values, index-parallel to `spans`, within its unit
+/// (one file). A row's children are the rows of the same unit and set trace
+/// id whose set parent id is its set span id; a row whose parent id is its own
+/// span id is nobody's child (not even of its resent copy), and only direct
+/// children count.
 pub fn derived(spans: &[OracleSpan]) -> Vec<Derived> {
+    derived_in(spans, &|unit| Some(unit))
+}
+
+/// [`derived`] within scopes: `scope(unit)` names the rows derived together
+/// (one sealed file; every chunk and the tail of one live WAL). Rows of a unit
+/// without a scope derive nothing and are nobody's children.
+pub fn derived_in(spans: &[OracleSpan], scope: &dyn Fn(usize) -> Option<usize>) -> Vec<Derived> {
     let mut children: BTreeMap<(usize, [u8; 16], [u8; 8]), Vec<usize>> = BTreeMap::new();
     for (index, span) in spans.iter().enumerate() {
-        if let (Some(trace), Some(id), Some(parent)) =
-            (span.trace_id, span.span_id, span.parent_span_id)
-            && parent != id
+        if let (Some(scope), Some(trace), Some(id), Some(parent)) = (
+            scope(span.unit),
+            span.trace_id,
+            span.span_id,
+            span.parent_span_id,
+        ) && parent != id
         {
             children
-                .entry((span.unit, trace, parent))
+                .entry((scope, trace, parent))
                 .or_default()
                 .push(index);
         }
@@ -761,8 +772,15 @@ pub fn derived(spans: &[OracleSpan]) -> Vec<Derived> {
         let own_end = span.start_ns.saturating_add(span.duration_ns);
         let mut child_error = false;
         let mut intervals: Vec<(i64, i64)> = Vec::new();
+        let Some(own_scope) = scope(span.unit) else {
+            out.push(Derived {
+                error_origin: false,
+                child_ns: 0,
+            });
+            continue;
+        };
         if let (Some(trace), Some(id)) = (span.trace_id, span.span_id)
-            && let Some(list) = children.get(&(span.unit, trace, id))
+            && let Some(list) = children.get(&(own_scope, trace, id))
         {
             for &index in list {
                 let child = &spans[index];
@@ -799,12 +817,20 @@ pub fn derived(spans: &[OracleSpan]) -> Vec<Derived> {
 }
 
 /// Adds the seal's `_err_origin=true` token to the error-origin rows of the
-/// units `sealed` accepts: sealed files store it; WAL chunk images and the
-/// tail do not.
+/// units `sealed` accepts: what the files store (sealed files do; WAL chunk
+/// images and the tail do not).
 pub fn add_stored_origins(spans: &mut [OracleSpan], sealed: &dyn Fn(usize) -> bool) {
-    let values = derived(spans);
+    add_origins(spans, &|unit| sealed(unit).then_some(unit));
+}
+
+/// Adds the `_err_origin=true` token to the error-origin rows the explorer
+/// shows it on, derived within `scope(unit)` (see [`derived_in`]); units
+/// without a scope get none. The explorer's view: every sealed file alone,
+/// and every live WAL as a whole (its images carry the live pass's values).
+pub fn add_origins(spans: &mut [OracleSpan], scope: &dyn Fn(usize) -> Option<usize>) {
+    let values = derived_in(spans, scope);
     for (span, value) in spans.iter_mut().zip(values) {
-        if value.error_origin && sealed(span.unit) {
+        if value.error_origin {
             span.fields.insert(ERR_ORIGIN_FIELD, "true");
         }
     }
@@ -950,6 +976,55 @@ mod tests {
                 .collect();
             assert_eq!(got, expected, "{name}");
         }
+    }
+
+    #[test]
+    fn derived_in_scopes() {
+        const E: bool = true;
+        // Units 0 and 1 are one live WAL's chunk and tail; unit 2 is a file;
+        // unit 3 has no scope.
+        let scope = |unit: usize| match unit {
+            0 | 1 => Some(0),
+            2 => Some(2),
+            _ => None,
+        };
+        let spans = vec![
+            linked(0, (1, 1, 0), 0, 100, E),
+            linked(1, (1, 2, 1), 10, 50, E),
+            linked(2, (1, 3, 2), 20, 10, E),
+            linked(3, (1, 4, 0), 0, 100, E),
+            linked(0, (1, 5, 4), 10, 50, E),
+            linked(3, (1, 6, 4), 10, 50, E),
+        ];
+        let got: Vec<(bool, i64)> = derived_in(&spans, &scope)
+            .into_iter()
+            .map(|d| (d.error_origin, d.child_ns))
+            .collect();
+        let want = vec![
+            (false, 50),
+            (true, 0),
+            (true, 0),
+            (false, 0),
+            (true, 0),
+            (false, 0),
+        ];
+        assert_eq!(got, want);
+
+        let mut tokened = spans.clone();
+        add_origins(&mut tokened, &scope);
+        let origins: Vec<bool> = tokened
+            .iter()
+            .map(|span| span.fields.get(ERR_ORIGIN_FIELD).is_some())
+            .collect();
+        assert_eq!(origins, [false, true, true, false, true, false]);
+
+        let mut stored = spans;
+        add_stored_origins(&mut stored, &|unit| unit == 2);
+        let origins: Vec<bool> = stored
+            .iter()
+            .map(|span| span.fields.get(ERR_ORIGIN_FIELD).is_some())
+            .collect();
+        assert_eq!(origins, [false, false, true, false, false, false]);
     }
 
     #[test]

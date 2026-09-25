@@ -477,10 +477,11 @@ const SHOWN_FIELDS: [&str; 4] = [
 /// source, in `positions` order.
 pub(super) fn materialize(
     bytes: &[u8],
+    derived: Option<&std::sync::Arc<sfst::DerivedValues>>,
     positions: &[u32],
     columns: &[String],
 ) -> Result<Vec<RowFields>, sfst::Error> {
-    let reader = sfst::IndexReader::open(bytes)?;
+    let reader = super::shard::open_source(bytes, derived)?;
     let mut fields: Vec<&str> = SHOWN_FIELDS.to_vec();
     for column in columns {
         fields.push(column);

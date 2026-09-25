@@ -8,10 +8,11 @@ use std::sync::atomic::AtomicUsize;
 use tokio_util::sync::CancellationToken;
 
 use super::super::duration_hist::DurationHistogram;
+use super::live::live_pass;
 use super::query::{ExploreQuery, ExploreRequestError, HIDDEN_FIELDS};
 use super::rows::{self, MoreRows, PageFold, ROW_VALUE_COLUMNS, RowFields};
 use super::shard::{self, Evaluated, ExploreShard, evaluate};
-use super::source::{ExploreOptions, SourceTally, evaluate_sources, is_sealed};
+use super::source::{ExploreOptions, SourceTally, evaluate_prepared, is_sealed, prepare_all};
 use super::{
     ExploreData, FacetData, FacetValue, FacetsData, FieldInfo, FieldsData, HistogramData,
     Percentiles, Row, RowsData, StackBucket, Totals,
@@ -19,6 +20,7 @@ use super::{
 use crate::merge::{MergedFacet, merge_facets, merge_field_tables, merge_timelines};
 use crate::source::Mapped;
 use crate::traces::{PartialReason, StatusBuilder, TimeWindow, TraceSource, validate_sources};
+use sfst::ERR_ORIGIN_FIELD;
 
 /// What one worker has folded from the sources it evaluated.
 struct Lane<'q> {
@@ -105,8 +107,11 @@ impl<'q> Lane<'q> {
 ///
 /// Pure sync: reads and decompresses files and builds the live tail's image,
 /// over up to `options.workers` threads; run it off any async runtime thread.
-/// `progress` ticks once per source. Cancellation is all-or-empty: a
-/// cancelled call returns no sections and the `cancelled` reason.
+/// Every source is prepared first; the live pass then derives error origins
+/// and child time over each live WAL, which its images carry into the
+/// evaluation. `progress` ticks once per source. Cancellation is
+/// all-or-empty: a cancelled call returns no sections and the `cancelled`
+/// reason.
 pub fn explore(
     sources: Vec<TraceSource>,
     query: ExploreQuery,
@@ -120,9 +125,13 @@ pub fn explore(
     let window = TimeWindow::new(window_ns.start, window_ns.end)?;
     let buckets = query.grid.num_buckets;
 
-    let Some(lanes) = evaluate_sources(
+    let Some(prepared) = prepare_all(&sources, &window, options.workers, &cancel) else {
+        return Ok(ExploreData::cancelled());
+    };
+    let live = live_pass(&sources, &prepared);
+    let Some(lanes) = evaluate_prepared(
         &sources,
-        &window,
+        &prepared,
         options.workers,
         &cancel,
         &progress,
@@ -130,7 +139,8 @@ pub fn explore(
         |lane, tally, index, mapped| {
             let stop = lane.page.as_ref().and_then(PageFold::stop);
             let sealed = is_sealed(&sources[index]);
-            match evaluate(mapped.bytes(), &query, index, stop, sealed) {
+            let derived = live.derived[index].as_ref();
+            match evaluate(mapped.bytes(), derived, &query, index, stop, sealed) {
                 Ok(Evaluated::Legacy) => tally.legacy += 1,
                 Ok(Evaluated::Shard(shard)) => lane.add(*shard, index, mapped),
                 Err(e) => {
@@ -173,6 +183,14 @@ pub fn explore(
     let shared = tally.status();
     let candidates = tally.candidates;
     let mut status = shared.clone();
+    // A live WAL whose pass failed leaves its rows without error origins and
+    // child time: every section whose numbers depend on them says so, and the
+    // request once.
+    let mut live_failed = StatusBuilder::new();
+    live_failed.add_n(PartialReason::LivePassFailed, live.failed);
+    live_failed.of(PartialReason::LivePassFailed, live.wals);
+    let origin_scope = query.scope.filter.has_field(ERR_ORIGIN_FIELD);
+    let mut live_named = false;
 
     let histogram = query.sections.histogram.as_ref().map(|spec| {
         let mut own = StatusBuilder::new();
@@ -182,6 +200,10 @@ pub fn explore(
         status.merge(own.clone());
         let mut section = shared.clone();
         section.merge(own);
+        if origin_scope || spec.stack == ERR_ORIGIN_FIELD {
+            section.merge(live_failed.clone());
+            live_named = true;
+        }
         let (dimensions, stacked) = match merge_timelines(timelines) {
             Some(timeline) => (timeline.dimensions, timeline.buckets),
             None => (Vec::new(), Vec::new()),
@@ -274,6 +296,14 @@ pub fn explore(
         status.merge(own.clone());
         let mut section = shared.clone();
         section.merge(own);
+        let lists_origin = spec
+            .fields
+            .as_ref()
+            .is_none_or(|fields| fields.iter().any(|field| field == ERR_ORIGIN_FIELD));
+        if origin_scope || lists_origin {
+            section.merge(live_failed.clone());
+            live_named = true;
+        }
         FacetsData {
             status: section.finish(),
             fields: out,
@@ -283,10 +313,15 @@ pub fn explore(
 
     let rows = page.map(|page| {
         let spec = page.spec();
-        let (items, more, own) = rows_section(page, &sources, &opened, &query, candidates);
+        let (items, more, own) =
+            rows_section(page, &sources, &opened, &live.derived, &query, candidates);
         status.merge(own.clone());
         let mut section = shared.clone();
         section.merge(own);
+        if origin_scope {
+            section.merge(live_failed.clone());
+            live_named = true;
+        }
         RowsData {
             status: section.finish(),
             order: spec.order,
@@ -311,6 +346,9 @@ pub fn explore(
         }
     });
 
+    if live_named {
+        status.merge(live_failed);
+    }
     Ok(ExploreData {
         status: status.finish(),
         sources: candidates,
@@ -329,6 +367,7 @@ fn rows_section(
     fold: PageFold<'_>,
     sources: &[TraceSource],
     opened: &[Option<Mapped>],
+    derived: &[Option<Arc<sfst::DerivedValues>>],
     query: &ExploreQuery,
     candidates: u64,
 ) -> (Vec<Row>, Option<MoreRows>, StatusBuilder) {
@@ -346,7 +385,7 @@ fn rows_section(
     let mut fold = fold;
     loop {
         let (page, more) = fold.finish();
-        let (source, error) = match read_fields(&page, opened, &spec.columns) {
+        let (source, error) = match read_fields(&page, opened, derived, &spec.columns) {
             Ok(fields) => {
                 let mut items = Vec::with_capacity(page.len());
                 for (candidate, fields) in page.into_iter().zip(fields) {
@@ -374,7 +413,8 @@ fn rows_section(
             if excluded.contains(&index) {
                 continue;
             }
-            match shard::rows_of(mapped.bytes(), query, spec, index, fold.stop()) {
+            let values = derived[index].as_ref();
+            match shard::rows_of(mapped.bytes(), values, query, spec, index, fold.stop()) {
                 Ok(rows) => fold.add(rows),
                 Err(e) => {
                     fail(&mut own, &sources[index], &e);
@@ -390,6 +430,7 @@ fn rows_section(
 fn read_fields(
     page: &[rows::Candidate],
     opened: &[Option<Mapped>],
+    derived: &[Option<Arc<sfst::DerivedValues>>],
     columns: &[String],
 ) -> Result<Vec<RowFields>, (usize, sfst::Error)> {
     let mut by_source: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -405,8 +446,13 @@ fn read_fields(
         let mapped = opened[source]
             .as_ref()
             .expect("a page row's source stays open");
-        let values =
-            rows::materialize(mapped.bytes(), &positions, columns).map_err(|e| (source, e))?;
+        let values = rows::materialize(
+            mapped.bytes(),
+            derived[source].as_ref(),
+            &positions,
+            columns,
+        )
+        .map_err(|e| (source, e))?;
         for (index, value) in indexes.into_iter().zip(values) {
             fields[index] = value;
         }

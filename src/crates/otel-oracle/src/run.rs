@@ -276,10 +276,12 @@ fn settle(lab: &mut impl Lab, config: &Config) -> Result<(), RunError> {
     }
 }
 
-/// Gives the matched rows of sealed files the seal's error-origin token.
-fn stored_origins(matched: &mut matching::Matched, store: &Membership) {
-    let sealed = |unit: usize| matches!(store.units[unit].kind, UnitKind::Sealed);
-    crate::calc::add_stored_origins(&mut matched.spans, &sealed);
+/// Gives the matched rows the error-origin token as the explorer shows it:
+/// stored by the seal in sealed files, derived by the live pass over each
+/// live WAL.
+fn explorer_origins(matched: &mut matching::Matched, store: &Membership) {
+    let scopes = crate::membership::derivation_scopes(&store.units);
+    crate::calc::add_origins(&mut matched.spans, &|unit| scopes.get(unit).copied());
 }
 
 /// Asks `plan`'s requests, then the row pages their answers lead to.
@@ -383,7 +385,7 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
         let store = read_store(lab, config, &mut cache, &windows)?;
         let expected = expectations(config, None, cutoff_ns, &windows, &store, &mut outcome)?;
         let mut matched = matching::match_rows(expected, &store.units);
-        stored_origins(&mut matched, &store);
+        explorer_origins(&mut matched, &store);
         for (plan, w) in plans.iter_mut().zip(&windows) {
             let check = matching::check_window(&store, &matched, w.grid.after_s, w.grid.before_s);
             let spans = matching::window_spans(&matched, &check);
@@ -438,7 +440,7 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
         *outcome.units.entry(kind).or_default() += 1;
     }
     let mut matched = matching::match_rows(expected, &store.units);
-    stored_origins(&mut matched, &store);
+    explorer_origins(&mut matched, &store);
     for (w, asked) in windows.iter().zip(frozen.asked) {
         let check = matching::check_window(&store, &matched, w.grid.after_s, w.grid.before_s);
         let spans = matching::window_spans(&matched, &check);

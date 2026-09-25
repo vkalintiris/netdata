@@ -10,6 +10,7 @@
 //! downloaded (`remote_unavailable`). A source's numbers are never partly
 //! mixed in.
 
+mod live;
 mod query;
 mod rows;
 mod run;

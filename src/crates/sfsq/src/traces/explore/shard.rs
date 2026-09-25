@@ -1,6 +1,7 @@
 //! One source's contribution, from its index statistics.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use super::super::duration_hist::DurationHistogram;
 use super::query::{ExploreQuery, HIDDEN_FIELDS, STATUS_FIELD};
@@ -69,16 +70,29 @@ fn compile_scope(
     Ok(scope)
 }
 
+/// Opens a source, attaching the live pass's values to a live WAL's image.
+pub(super) fn open_source<'a>(
+    bytes: &'a [u8],
+    derived: Option<&Arc<sfst::DerivedValues>>,
+) -> Result<sfst::IndexReader<'a>, sfst::Error> {
+    let reader = sfst::IndexReader::open(bytes)?;
+    match derived {
+        Some(values) => reader.with_derived(values.clone()),
+        None => Ok(reader),
+    }
+}
+
 /// One evaluated source's rows candidates alone: for a page selected again
 /// after another source failed to read its rows' fields.
 pub(super) fn rows_of(
     bytes: &[u8],
+    derived: Option<&Arc<sfst::DerivedValues>>,
     query: &ExploreQuery,
     spec: &RowsSpec,
     source: usize,
     stop: Option<i64>,
 ) -> Result<SourceRows, sfst::Error> {
-    let reader = sfst::IndexReader::open(bytes)?;
+    let reader = open_source(bytes, derived)?;
     let scope = compile_scope(&reader, query)?;
     let window = query.grid.range_ns();
     let matched = reader.matched_count(&scope, window.clone())?;
@@ -91,12 +105,13 @@ pub(super) fn rows_of(
 /// [`source_rows`]).
 pub(super) fn evaluate(
     bytes: &[u8],
+    derived: Option<&Arc<sfst::DerivedValues>>,
     query: &ExploreQuery,
     source: usize,
     stop: Option<i64>,
     sealed: bool,
 ) -> Result<Evaluated, sfst::Error> {
-    let reader = sfst::IndexReader::open(bytes)?;
+    let reader = open_source(bytes, derived)?;
     if is_legacy(&reader, sealed) {
         return Ok(Evaluated::Legacy);
     }

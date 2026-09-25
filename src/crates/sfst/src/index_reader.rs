@@ -300,6 +300,17 @@ impl<'a> IndexReader<'a> {
         })
     }
 
+    /// Whether the file stores the values the traces seal derives (the
+    /// `_err_origin` token or the `child_duration` column): such a file
+    /// refuses [derived values](Self::with_derived).
+    pub fn stores_derived(&self) -> bool {
+        let stores_column = self
+            .columns_table()
+            .get(crate::ChildDurations::NAME)
+            .is_some();
+        stores_column || self.stored_fields().contains(crate::ERR_ORIGIN_FIELD)
+    }
+
     /// Attaches values a query derived over the live WAL this chunk image
     /// belongs to, so the reader answers as the sealed file of the same frames
     /// would: `_err_origin=true` is an ordinary Low field with one value
@@ -309,14 +320,10 @@ impl<'a> IndexReader<'a> {
     /// [stored table](Self::stored_fields). A file that already stores
     /// either value refuses an overlay ([`crate::Error::DerivedConflict`]).
     pub fn with_derived(mut self, values: Arc<DerivedValues>) -> Result<Self, crate::Error> {
-        let stored = self.stored_fields();
-        let stores_column = self
-            .columns_table()
-            .get(crate::ChildDurations::NAME)
-            .is_some();
-        if stored.contains(crate::ERR_ORIGIN_FIELD) || stores_column {
+        if self.stores_derived() {
             return Err(crate::Error::DerivedConflict);
         }
+        let stored = self.stored_fields();
         let total = self.summary.record_count;
         if values.child_duration.len() != total as usize {
             return Err(crate::Error::ColumnLengthMismatch {

@@ -149,7 +149,7 @@ impl TraceSource {
         }
     }
 
-    fn coverage(&self) -> Option<&WalCoverage> {
+    pub(crate) fn coverage(&self) -> Option<&WalCoverage> {
         match self {
             TraceSource::Sfst(c) => c.coverage.as_ref(),
             TraceSource::Tail(t) => Some(&t.coverage),
