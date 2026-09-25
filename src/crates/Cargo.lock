@@ -3614,6 +3614,7 @@ dependencies = [
  "ng-flatten",
  "opentelemetry-proto",
  "prost",
+ "reqwest",
  "serde",
  "serde_json",
  "sfst",
