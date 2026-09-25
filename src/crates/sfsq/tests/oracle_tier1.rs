@@ -54,8 +54,21 @@ fn store(traces: usize, seed: u64) -> Stored {
 
 /// [`store`], with every `resend_every`-th export request sent twice in a row,
 /// as an exporter retrying after a lost acknowledgement would: its rows are
-/// stored twice with identical content.
+/// stored twice with identical content. The cut then falls between the two
+/// copies of one resent request, so one identical group spans both units.
 fn store_resending(traces: usize, seed: u64, resend_every: Option<usize>) -> Stored {
+    store_shaped(traces, seed, resend_every, None)
+}
+
+/// [`store_resending`], with span start times truncated to multiples of
+/// `clock_ns` (durations kept), as a coarse exporter clock would: many spans
+/// then share a start with distinct ids.
+fn store_shaped(
+    traces: usize,
+    seed: u64,
+    resend_every: Option<usize>,
+    clock_ns: Option<u64>,
+) -> Stored {
     let dir = tempfile::tempdir().unwrap();
     let spans = corpus::generate(&MeshParams {
         traces,
@@ -64,13 +77,36 @@ fn store_resending(traces: usize, seed: u64, resend_every: Option<usize>) -> Sto
         seed,
     });
     let mut requests = Vec::new();
-    for (i, request) in corpus::build_requests(&spans, 50).into_iter().enumerate() {
+    let mut resent = Vec::new();
+    for (i, mut request) in corpus::build_requests(&spans, 50).into_iter().enumerate() {
+        if let Some(clock) = clock_ns {
+            for resource in &mut request.resource_spans {
+                for scope in &mut resource.scope_spans {
+                    for span in &mut scope.spans {
+                        let shift = span.start_time_unix_nano % clock;
+                        span.start_time_unix_nano -= shift;
+                        span.end_time_unix_nano = span.end_time_unix_nano.saturating_sub(shift);
+                    }
+                }
+            }
+        }
         if resend_every.is_some_and(|every| i % every == 0) {
+            resent.push(requests.len());
             requests.push(request.clone());
         }
         requests.push(request);
     }
-    let cut = requests.len() * 2 / 3;
+    // The resent pair nearest two thirds that leaves the live unit two frames.
+    let two_thirds = requests.len() * 2 / 3;
+    let mut straddle: Option<usize> = None;
+    for &first in &resent {
+        let closer =
+            straddle.is_none_or(|best| first.abs_diff(two_thirds) < best.abs_diff(two_thirds));
+        if first + 3 <= requests.len() && closer {
+            straddle = Some(first);
+        }
+    }
+    let cut = straddle.map_or(two_thirds, |first| first + 1);
 
     let mut oracle = Vec::new();
     for (i, request) in requests.iter().enumerate() {
@@ -289,6 +325,9 @@ enum Live {
     Chunk,
     /// Chunks of at least this many spans, the rest as the tail.
     Split(u64),
+    /// Chunks and a tail, whatever the corpus: the chunk size is the first
+    /// frames' spans, the largest such size that still leaves a tail.
+    Chunked,
 }
 
 /// The sealed file plus the live WAL served as `live`.
@@ -300,9 +339,29 @@ fn explore_sources(stored: &Stored, live: Live) -> Vec<TraceSource> {
     match live {
         Live::Tail => sources.push(common::tail_source(&stored.live_wal, "live")),
         Live::Chunk => sources.push(common::memory_source(&stored.live_wal, "live")),
-        Live::Split(min_entries) => {
+        Live::Split(_) | Live::Chunked => {
             let header = wal::HEADER_SIZE as u64;
             let frames = wal::scan_frame_boundaries(&stored.live_wal, whole).unwrap();
+            let min_entries = match live {
+                Live::Split(min_entries) => min_entries,
+                _ => {
+                    let mut sizes = Vec::new();
+                    let mut sum = 0;
+                    for frame in &frames {
+                        sum += u64::from(frame.entry_count);
+                        sizes.push(sum);
+                    }
+                    let leaves_a_tail = |size: u64| {
+                        let chunks = wal::prefix::chunk_boundaries(&frames, header, size);
+                        !chunks.is_empty() && wal::prefix::tail_start(&chunks, header) < whole.end()
+                    };
+                    sizes
+                        .into_iter()
+                        .rev()
+                        .find(|&size| leaves_a_tail(size))
+                        .expect("the live WAL holds at least two frames")
+                }
+            };
             let chunks = wal::prefix::chunk_boundaries(&frames, header, min_entries);
             assert!(!chunks.is_empty(), "the split makes at least one chunk");
             let wal_id: std::sync::Arc<str> = stored.live_wal.display().to_string().into();
@@ -696,7 +755,7 @@ fn explore_rows_pages_match_the_calculator() {
         ("F0 every span", Scope::default()),
         ("F1 entry spans", Scope::entry_spans()),
     ];
-    for live in [Live::Tail, Live::Split(120)] {
+    for live in [Live::Tail, Live::Chunked] {
         for (name, scope) in &scopes {
             let totals = calc::totals(&stored.oracle, &grid, scope);
             let mut all = calc::newest_page(
@@ -800,7 +859,7 @@ fn explore_rows_pages_match_the_calculator() {
 
     // The live WAL served differently on each page, as when its tail is cut into
     // chunks between two requests: the cursor is content, so the walk is unchanged.
-    let servings = [Live::Tail, Live::Split(120), Live::Chunk];
+    let servings = [Live::Tail, Live::Chunked, Live::Chunk];
     let scope = Scope::default();
     let mut anchor = None;
     let mut walked = Vec::new();
@@ -835,7 +894,7 @@ fn explore_rows_pages_match_the_calculator() {
 fn explore_slowest_rows_match_the_calculator() {
     let stored = store_resending(60, 92, Some(4));
     let grid = stored.grid;
-    for live in [Live::Tail, Live::Split(60)] {
+    for live in [Live::Tail, Live::Chunked] {
         for (name, scope) in [
             ("F0 every span", Scope::default()),
             ("F1 entry spans", Scope::entry_spans()),
@@ -973,4 +1032,190 @@ fn explore_values_match_the_calculator() {
         got.is_superset(&within),
         "a narrower window keeps its rows' values"
     );
+}
+
+/// The keys of a walk through every newest page, older from the top, with the
+/// pages' boundaries.
+fn walk_older(
+    stored: &Stored,
+    live: Live,
+    scope: &Scope,
+    limit: usize,
+) -> (Vec<calc::RowKey>, Vec<usize>) {
+    let mut anchor = None;
+    let mut walked = Vec::new();
+    let mut ends = Vec::new();
+    loop {
+        let order = RowOrder::Newest {
+            anchor,
+            direction: RowDirection::Older,
+        };
+        let got = run_rows(stored, live, rows_query(&stored.grid, scope, order, limit));
+        let want = calc::newest_page(
+            &stored.oracle,
+            &stored.grid,
+            scope,
+            limit,
+            anchor.as_ref().map(oracle_key),
+            calc::Walk::Older,
+        );
+        assert_rows_match(&got, &want.rows, &format!("{live:?} from {anchor:?}"));
+        walked.extend(got.items.iter().map(|row| oracle_key(&row.key)));
+        ends.push(walked.len());
+        match (got.items.last(), got.more) {
+            (Some(last), Some(more)) if more.older => anchor = Some(last.key),
+            _ => break,
+        }
+    }
+    (walked, ends)
+}
+
+/// ORC-ROWS with a coarse exporter clock: many spans share a start with
+/// distinct ids, so pages end inside start groups; the walk still visits every
+/// row once in key order.
+#[test]
+fn explore_rows_walk_through_shared_starts() {
+    let stored = store_shaped(60, 93, None, Some(10_000_000));
+    let scope = Scope::default();
+    let all: Vec<calc::RowKey> = calc::newest_page(
+        &stored.oracle,
+        &stored.grid,
+        &scope,
+        usize::MAX,
+        None,
+        calc::Walk::Older,
+    )
+    .rows
+    .iter()
+    .map(|span| calc::row_key(span))
+    .collect();
+    for live in [Live::Tail, Live::Chunked] {
+        let (walked, ends) = walk_older(&stored, live, &scope, 7);
+        assert_eq!(walked, all, "{live:?}");
+        let inside_a_group = ends
+            .iter()
+            .filter(|&&end| end < walked.len())
+            .filter(|&&end| walked[end - 1].0 == walked[end].0 && walked[end - 1] != walked[end])
+            .count();
+        assert!(
+            inside_a_group > 0,
+            "{live:?}: some page ends inside a start group"
+        );
+    }
+}
+
+/// ORC-ROWS: a resent request's copies landed in different units; a one-row
+/// page reaching that key holds both copies, whichever unit serves each.
+#[test]
+fn explore_rows_keep_a_group_split_across_units_together() {
+    let stored = store_resending(60, 94, Some(5));
+    let scope = Scope::default();
+    let all = calc::newest_page(
+        &stored.oracle,
+        &stored.grid,
+        &scope,
+        usize::MAX,
+        None,
+        calc::Walk::Older,
+    )
+    .rows;
+    let split = (1..all.len())
+        .find(|&i| {
+            calc::row_key(all[i]) == calc::row_key(all[i - 1]) && all[i].unit != all[i - 1].unit
+        })
+        .expect("the cut splits a resent request between the units");
+    let group = calc::row_key(all[split]);
+    let first = (0..all.len())
+        .find(|&i| calc::row_key(all[i]) == group)
+        .unwrap();
+    assert!(first > 0, "a newer row gives the anchor");
+    let anchor = engine_key(calc::row_key(all[first - 1]));
+    for live in [Live::Tail, Live::Chunk, Live::Chunked] {
+        let order = RowOrder::Newest {
+            anchor: Some(anchor),
+            direction: RowDirection::Older,
+        };
+        let got = run_rows(&stored, live, rows_query(&stored.grid, &scope, order, 1));
+        let keys: Vec<calc::RowKey> = got.items.iter().map(|row| oracle_key(&row.key)).collect();
+        assert_eq!(keys, [group, group], "{live:?}");
+        assert_eq!(
+            got.more,
+            Some(explore::MoreRows {
+                older: true,
+                newer: true
+            }),
+            "{live:?}"
+        );
+    }
+}
+
+/// ORC-ROWS at the edges: Newer without an anchor (the oldest page), an anchor
+/// that is no stored row, and anchors before and after the window.
+#[test]
+fn explore_rows_anchor_edges_match_the_calculator() {
+    let stored = store_resending(60, 95, Some(4));
+    let grid = stored.grid;
+    let scope = Scope::entry_spans();
+    let all = calc::newest_page(
+        &stored.oracle,
+        &grid,
+        &scope,
+        usize::MAX,
+        None,
+        calc::Walk::Older,
+    )
+    .rows;
+    let middle = calc::row_key(all[all.len() / 2]);
+    let window_start = i64::from(grid.after_s) * 1_000_000_000;
+    let window_end = i64::from(grid.before_s) * 1_000_000_000;
+    let cases: [(&str, Option<calc::RowKey>, calc::Walk); 6] = [
+        ("oldest page", None, calc::Walk::Newer),
+        (
+            "between rows, older",
+            Some((middle.0, [0xff; 16], [0xff; 8])),
+            calc::Walk::Older,
+        ),
+        (
+            "between rows, newer",
+            Some((middle.0, [0; 16], [0; 8])),
+            calc::Walk::Newer,
+        ),
+        (
+            "before the window, older",
+            Some((window_start - 1, [0; 16], [0; 8])),
+            calc::Walk::Older,
+        ),
+        (
+            "before the window, newer",
+            Some((window_start - 1, [0; 16], [0; 8])),
+            calc::Walk::Newer,
+        ),
+        (
+            "after the window, older",
+            Some((window_end, [0; 16], [0; 8])),
+            calc::Walk::Older,
+        ),
+    ];
+    for live in [Live::Tail, Live::Chunked] {
+        for (name, anchor, walk) in cases {
+            let case = format!("{live:?} {name}");
+            let direction = match walk {
+                calc::Walk::Older => RowDirection::Older,
+                calc::Walk::Newer => RowDirection::Newer,
+            };
+            let order = RowOrder::Newest {
+                anchor: anchor.map(engine_key),
+                direction,
+            };
+            let got = run_rows(&stored, live, rows_query(&grid, &scope, order, 5));
+            let want = calc::newest_page(&stored.oracle, &grid, &scope, 5, anchor, walk);
+            assert_rows_match(&got, &want.rows, &case);
+            let more = got.more.expect("newest");
+            assert_eq!(
+                (more.older, more.newer),
+                (want.has_older, want.has_newer),
+                "{case}"
+            );
+        }
+    }
 }

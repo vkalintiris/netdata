@@ -209,19 +209,51 @@ fn keep_page(spec: &RowsSpec, candidates: &mut Vec<Candidate>) -> u64 {
 }
 
 /// One source's scope rows in `window`, cut to those that can make the page.
-/// `source` is stamped on every candidate.
+///
+/// `matched` is the source's scope rows in the window. For a newest page,
+/// `stop` is the start of the last row of the page built so far from other
+/// sources once it is full: a row starting past it in the walk cannot make the
+/// page. `source` is stamped on every candidate.
 pub(super) fn source_rows(
     reader: &sfst::IndexReader<'_>,
     scope: &sfst::BitmapFilter,
     window: std::ops::Range<i64>,
+    matched: u64,
     spec: &RowsSpec,
+    stop: Option<i64>,
     source: usize,
 ) -> Result<SourceRows, sfst::Error> {
-    let positions = reader.matched_positions(scope, window)?;
-    if positions.is_empty() {
-        return Ok(SourceRows::default());
+    let mut out = SourceRows::default();
+    if matched == 0 {
+        return Ok(out);
     }
     let timestamps = reader.load_timestamps()?;
+    if let (RowOrder::Newest { direction, .. }, Some(stop)) = (spec.order, stop) {
+        // The walk's first row in the window, matched or not, bounds every row
+        // after it: when it is already past `stop`, the whole source is.
+        let (lo, hi) = timestamps.window(window.clone());
+        let first = match direction {
+            RowDirection::Older => hi.checked_sub(1).filter(|&p| p >= lo),
+            RowDirection::Newer => (lo < hi).then_some(lo),
+        };
+        if first
+            .and_then(|p| timestamps.at(p))
+            .is_some_and(|start| walked_past(direction, start, stop))
+        {
+            out.beyond = matched;
+            return Ok(out);
+        }
+    }
+
+    let positions = reader.matched_positions(scope, window)?;
+    let Some(&last) = positions.last() else {
+        return Ok(out);
+    };
+    if timestamps.at(last).is_none() {
+        return Err(sfst::Error::CorruptIndex(format!(
+            "no timestamp for row {last}"
+        )));
+    }
     let trace_ids = reader.trace_ids()?;
     let span_ids = reader.span_ids()?;
     let durations = reader.durations()?;
@@ -242,36 +274,51 @@ pub(super) fn source_rows(
         })
     };
 
-    let mut out = SourceRows::default();
     match spec.order {
         RowOrder::Newest { anchor, direction } => {
-            // Rows are stored by start time, so walking positions from the page's
-            // end visits keys in page order up to ties in start time. Once the page
-            // is full, the rest of the boundary row's start group is still taken
-            // (the sort below settles its order); every later row is worse.
-            let n = positions.len();
-            let mut boundary: Option<i64> = None;
+            // Rows are stored by start time. Rows starting beyond the anchor's
+            // start are all on its other side; the anchor's own start is walked,
+            // since its rows fall on either side by their ids.
+            let starts_at = |p: u32, bound: i64, older: bool| {
+                timestamps
+                    .at(p)
+                    .is_some_and(|t| if older { t <= bound } else { t < bound })
+            };
+            let walk = match (anchor, direction) {
+                (None, _) => &positions[..],
+                (Some(anchor), RowDirection::Older) => {
+                    let split = positions.partition_point(|&p| starts_at(p, anchor.start_ns, true));
+                    out.behind += (positions.len() - split) as u64;
+                    &positions[..split]
+                }
+                (Some(anchor), RowDirection::Newer) => {
+                    let split =
+                        positions.partition_point(|&p| starts_at(p, anchor.start_ns, false));
+                    out.behind += split as u64;
+                    &positions[split..]
+                }
+            };
+            // Walking from the page's end visits keys in page order up to ties
+            // in start time. Once the page is full, the rest of its last row's
+            // start group is still taken (the sort settles its order); every
+            // later row is worse.
+            let n = walk.len();
+            let mut stop = stop;
             let mut previous: Option<i64> = None;
             for step in 0..n {
                 let position = match direction {
-                    RowDirection::Older => positions[n - 1 - step],
-                    RowDirection::Newer => positions[step],
+                    RowDirection::Older => walk[n - 1 - step],
+                    RowDirection::Newer => walk[step],
                 };
                 let row = candidate(position)?;
                 let start = row.key.start_ns;
-                if let Some(previous) = previous {
-                    let in_order = match direction {
-                        RowDirection::Older => start <= previous,
-                        RowDirection::Newer => start >= previous,
-                    };
-                    if !in_order {
-                        return Err(sfst::Error::CorruptIndex(format!(
-                            "row {position} is out of start-time order"
-                        )));
-                    }
+                if previous.is_some_and(|previous| walked_past(direction, previous, start)) {
+                    return Err(sfst::Error::CorruptIndex(format!(
+                        "row {position} is out of start-time order"
+                    )));
                 }
                 previous = Some(start);
-                if boundary.is_some_and(|b| b != start) {
+                if stop.is_some_and(|stop| walked_past(direction, start, stop)) {
                     out.beyond += (n - step) as u64;
                     break;
                 }
@@ -286,7 +333,7 @@ pub(super) fn source_rows(
                 }
                 out.candidates.push(row);
                 if out.candidates.len() == spec.limit {
-                    boundary = Some(start);
+                    stop = Some(start);
                 }
             }
             out.beyond += keep_page(spec, &mut out.candidates);
@@ -314,46 +361,83 @@ pub(super) fn source_rows(
     Ok(out)
 }
 
-/// The page from every source's candidates, newest (or slowest) first, and
-/// for a newest page whether rows exist beyond it on each side.
-pub(super) fn select_page(
-    spec: &RowsSpec,
-    per_source: Vec<SourceRows>,
-) -> (Vec<Candidate>, Option<MoreRows>) {
-    let mut candidates = Vec::new();
-    let mut beyond = 0;
-    let mut behind = 0;
-    for rows in per_source {
-        candidates.extend(rows.candidates);
-        beyond += rows.beyond;
-        behind += rows.behind;
+/// Whether `start` lies strictly further along a newest walk than `bound`.
+fn walked_past(direction: RowDirection, start: i64, bound: i64) -> bool {
+    match direction {
+        RowDirection::Older => start < bound,
+        RowDirection::Newer => start > bound,
     }
-    beyond += keep_page(spec, &mut candidates);
-    match spec.order {
-        RowOrder::Newest {
-            direction: RowDirection::Older,
-            ..
-        } => (
-            candidates,
-            Some(MoreRows {
-                older: beyond > 0,
-                newer: behind > 0,
-            }),
-        ),
-        RowOrder::Newest {
-            direction: RowDirection::Newer,
-            ..
-        } => {
-            candidates.reverse();
-            (
+}
+
+/// The page built up one source at a time: it never holds more than the page
+/// and the group of rows sharing its last key, whatever the number of sources.
+pub(super) struct PageFold<'a> {
+    spec: &'a RowsSpec,
+    rows: SourceRows,
+}
+
+impl<'a> PageFold<'a> {
+    pub fn new(spec: &'a RowsSpec) -> Self {
+        PageFold {
+            spec,
+            rows: SourceRows::default(),
+        }
+    }
+
+    pub fn spec(&self) -> &'a RowsSpec {
+        self.spec
+    }
+
+    pub fn add(&mut self, rows: SourceRows) {
+        self.rows.candidates.extend(rows.candidates);
+        self.rows.beyond += rows.beyond + keep_page(self.spec, &mut self.rows.candidates);
+        self.rows.behind += rows.behind;
+    }
+
+    /// For a full newest page, the start of its last row (see [`source_rows`]).
+    pub fn stop(&self) -> Option<i64> {
+        match self.spec.order {
+            RowOrder::Newest { .. } if self.rows.candidates.len() >= self.spec.limit => {
+                self.rows.candidates.last().map(|c| c.key.start_ns)
+            }
+            _ => None,
+        }
+    }
+
+    /// The page, newest (or slowest) first, and for a newest page whether rows
+    /// exist beyond it on each side.
+    pub fn finish(self) -> (Vec<Candidate>, Option<MoreRows>) {
+        let SourceRows {
+            mut candidates,
+            beyond,
+            behind,
+        } = self.rows;
+        match self.spec.order {
+            RowOrder::Newest {
+                direction: RowDirection::Older,
+                ..
+            } => (
                 candidates,
                 Some(MoreRows {
-                    older: behind > 0,
-                    newer: beyond > 0,
+                    older: beyond > 0,
+                    newer: behind > 0,
                 }),
-            )
+            ),
+            RowOrder::Newest {
+                direction: RowDirection::Newer,
+                ..
+            } => {
+                candidates.reverse();
+                (
+                    candidates,
+                    Some(MoreRows {
+                        older: behind > 0,
+                        newer: beyond > 0,
+                    }),
+                )
+            }
+            RowOrder::Slowest => (candidates, None),
         }
-        RowOrder::Slowest => (candidates, None),
     }
 }
 
@@ -445,6 +529,14 @@ mod tests {
         }
     }
 
+    fn fold(spec: &RowsSpec, per_source: Vec<SourceRows>) -> (Vec<Candidate>, Option<MoreRows>) {
+        let mut page = PageFold::new(spec);
+        for rows in per_source {
+            page.add(rows);
+        }
+        page.finish()
+    }
+
     fn keys(page: &[Candidate]) -> Vec<RowKey> {
         page.iter().map(|c| c.key).collect()
     }
@@ -482,7 +574,7 @@ mod tests {
             candidates(0, &[(key(60, 1, 1), 0), (resent, 0)]),
             candidates(1, &[(resent, 0), (key(40, 1, 1), 0)]),
         ];
-        let (page, more) = select_page(&spec, per_source);
+        let (page, more) = fold(&spec, per_source);
         assert_eq!(keys(&page), [key(60, 1, 1), resent, resent]);
         assert_eq!(
             more,
@@ -502,7 +594,7 @@ mod tests {
             &[(key(30, 1, 1), 0), (key(40, 1, 1), 0), (key(50, 1, 1), 0)],
         );
         rows.behind = 1;
-        let (page, more) = select_page(&spec, vec![rows]);
+        let (page, more) = fold(&spec, vec![rows]);
         assert_eq!(keys(&page), [key(40, 1, 1), key(30, 1, 1)]);
         assert_eq!(
             more,
@@ -527,7 +619,7 @@ mod tests {
                 &[(key(20, 9, 9), 500), (key(5, 1, 1), 900), (key(1, 1, 1), 1)],
             ),
         ];
-        let (page, more) = select_page(&spec, per_source);
+        let (page, more) = fold(&spec, per_source);
         assert_eq!(
             keys(&page),
             [key(5, 1, 1), key(20, 9, 9), key(10, 1, 2)],

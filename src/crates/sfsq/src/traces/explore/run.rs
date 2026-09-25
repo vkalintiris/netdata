@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::super::duration_hist::DurationHistogram;
 use super::query::{ExploreQuery, ExploreRequestError, HIDDEN_FIELDS};
-use super::rows::{self, MoreRows, ROW_VALUE_COLUMNS, RowFields, RowsSpec, SourceRows};
+use super::rows::{self, MoreRows, PageFold, ROW_VALUE_COLUMNS, RowFields};
 use super::shard::{Evaluated, evaluate};
 use super::source::{Prepared, SourceTally, prepare};
 use super::{
@@ -47,7 +47,7 @@ pub fn explore(
     let mut durations = vec![DurationHistogram::new(); buckets];
     let mut facets = Vec::new();
     let mut facet_high = BTreeSet::new();
-    let mut page_rows = Vec::new();
+    let mut page = query.sections.rows.as_ref().map(PageFold::new);
     let mut field_tables = Vec::new();
     // Sources holding row candidates, kept open to read the page's fields; a
     // candidate's `source` indexes this list.
@@ -70,7 +70,8 @@ pub fn explore(
             }
             Prepared::Open(mapped) => {
                 tally.candidates += 1;
-                match evaluate(mapped.bytes(), &query, opened.len()) {
+                let stop = page.as_ref().and_then(PageFold::stop);
+                match evaluate(mapped.bytes(), &query, opened.len(), stop) {
                     Ok(Evaluated::Legacy) => tally.legacy += 1,
                     Ok(Evaluated::Shard(shard)) => {
                         matched += shard.matched;
@@ -90,11 +91,11 @@ pub fn explore(
                             }
                         }
                         field_tables.extend(shard.field_table);
-                        if let Some(rows) = shard.rows {
+                        if let (Some(rows), Some(page)) = (shard.rows, page.as_mut()) {
                             if !rows.candidates.is_empty() {
                                 opened.push((source, mapped));
                             }
-                            page_rows.push(rows);
+                            page.add(rows);
                         }
                     }
                     Err(e) => {
@@ -225,8 +226,9 @@ pub fn explore(
         }
     });
 
-    let rows = query.sections.rows.map(|spec| {
-        let (items, more, own) = rows_section(&spec, page_rows, &opened, candidates);
+    let rows = page.map(|page| {
+        let spec = page.spec();
+        let (items, more, own) = rows_section(page, &opened, candidates);
         status.merge(own.clone());
         let mut section = shared.clone();
         section.merge(own);
@@ -235,7 +237,7 @@ pub fn explore(
             order: spec.order,
             matched,
             more,
-            columns: spec.columns,
+            columns: spec.columns.clone(),
             items,
         }
     });
@@ -268,12 +270,12 @@ pub fn explore(
 /// sources holding it, and this section's own reasons: a source whose fields
 /// cannot be read is left out of the page and counted as failed.
 fn rows_section(
-    spec: &RowsSpec,
-    per_source: Vec<SourceRows>,
+    fold: PageFold<'_>,
     opened: &[(&TraceSource, Mapped)],
     candidates: u64,
 ) -> (Vec<Row>, Option<MoreRows>, StatusBuilder) {
-    let (page, more) = rows::select_page(spec, per_source);
+    let spec = fold.spec();
+    let (page, more) = fold.finish();
     let mut by_source: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (index, candidate) in page.iter().enumerate() {
         by_source.entry(candidate.source).or_default().push(index);

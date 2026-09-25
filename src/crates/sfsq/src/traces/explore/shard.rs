@@ -48,11 +48,13 @@ pub(super) fn is_legacy(reader: &sfst::IndexReader<'_>) -> bool {
 
 /// Evaluate one source. Any error drops the whole source (its numbers are
 /// never partly mixed in); the caller reports it. `source` is stamped on the
-/// source's row candidates.
+/// source's row candidates; `stop` is the rows page's so far (see
+/// [`source_rows`]).
 pub(super) fn evaluate(
     bytes: &[u8],
     query: &ExploreQuery,
     source: usize,
+    stop: Option<i64>,
 ) -> Result<Evaluated, sfst::Error> {
     let reader = sfst::IndexReader::open(bytes)?;
     if is_legacy(&reader) {
@@ -109,7 +111,15 @@ pub(super) fn evaluate(
         shard.facets = reader.facets(&eligible, &scope, window.clone())?;
     }
     if let Some(spec) = &query.sections.rows {
-        shard.rows = Some(source_rows(&reader, &scope, window, spec, source)?);
+        shard.rows = Some(source_rows(
+            &reader,
+            &scope,
+            window,
+            shard.matched,
+            spec,
+            stop,
+            source,
+        )?);
     }
     if query.sections.fields {
         shard.field_table = Some(reader.field_table().clone());
