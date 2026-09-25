@@ -256,6 +256,7 @@ otel-logs-identity = { path = "otel-logs-identity" }
 wal = { path = "wal" }
 ng-flatten = { path = "ng-flatten" }
 ng-index = { path = "ng-index" }
+otel-oracle = { path = "otel-oracle" }
 
 # reqwest-rustls-tls is load-bearing: without a TLS backend, reqwest rejects
 # every https:// URL in-process (S3/STS never reachable). Guarded by

@@ -4894,6 +4894,7 @@ dependencies = [
  "ng-flatten",
  "ng-index",
  "opentelemetry-proto",
+ "otel-oracle",
  "regex",
  "serde",
  "sfst",

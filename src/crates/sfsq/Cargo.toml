@@ -40,5 +40,7 @@ sfst = { workspace = true, features = ["test-util"] }
 chunk-file = { workspace = true }
 treight = { workspace = true }
 opentelemetry-proto = { workspace = true }
+# The reference calculator the tier-1 comparison suite judges the engine against.
+otel-oracle = { workspace = true }
 tempfile = { workspace = true }
 uuid = { workspace = true }
