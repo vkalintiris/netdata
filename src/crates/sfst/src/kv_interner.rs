@@ -49,6 +49,8 @@ use bumpalo::Bump;
 use hashbrown::hash_map::Entry;
 use twox_hash::XxHash64;
 
+use crate::schema::{FieldTier, field_tier};
+
 /// A unique ID assigned by the build-side interner to each distinct
 /// `key=value` string. Used as the index into the per-value bitmap array and
 /// as the elements in the per-log entries.
@@ -120,6 +122,8 @@ pub struct KeyValueInterner<'a> {
     field_slots: HashMap<&'a str, Vec<KvSlot>>,
     /// Fields with fewer unique values than this go into the primary FST.
     cardinality_threshold: u32,
+    /// Fields the producer pinned: never High, whatever their cardinality.
+    pinned: Vec<String>,
 }
 
 impl<'a> KeyValueInterner<'a> {
@@ -131,7 +135,24 @@ impl<'a> KeyValueInterner<'a> {
             strings: Vec::new(),
             field_slots: HashMap::new(),
             cardinality_threshold,
+            pinned: Vec::new(),
         }
+    }
+
+    /// Pins `fields`: they take the Low or Mid tier, never High.
+    pub fn pin_fields(&mut self, fields: &[&str]) {
+        for field in fields {
+            if !self.pinned.iter().any(|pinned| pinned == field) {
+                self.pinned.push(field.to_string());
+            }
+        }
+    }
+
+    /// The tier `field` takes with `cardinality` distinct values.
+    pub fn tier_of(&self, field: &str, cardinality: usize) -> FieldTier {
+        let pinned = self.pinned.iter().any(|pinned| pinned == field);
+        let cardinality = u32::try_from(cardinality).unwrap_or(u32::MAX);
+        field_tier(cardinality, self.cardinality_threshold, pinned)
     }
 
     /// Compute xxhash64 of `s` and intern it.
@@ -215,21 +236,16 @@ impl<'a> KeyValueInterner<'a> {
         self.strings[slot.idx()]
     }
 
-    /// Low-cardinality fields (< threshold), sorted by field name.
-    pub fn low_fields(&self) -> Vec<(&str, &[KvSlot])> {
-        self.fields_in_range(0, self.cardinality_threshold as usize)
-    }
-
-    /// Mid-cardinality fields ([threshold, 10*threshold)), sorted by field name.
-    pub fn mid_fields(&self) -> Vec<(&str, &[KvSlot])> {
-        let t = self.cardinality_threshold as usize;
-        self.fields_in_range(t, t * 10)
-    }
-
-    /// High-cardinality fields (>= 10*threshold), sorted by field name.
-    pub fn high_fields(&self) -> Vec<(&str, &[KvSlot])> {
-        let t = self.cardinality_threshold as usize;
-        self.fields_in_range(t * 10, usize::MAX)
+    /// The fields of `tier`, sorted by field name.
+    pub fn fields_of_tier(&self, tier: FieldTier) -> Vec<(&str, &[KvSlot])> {
+        let mut result: Vec<(&str, &[KvSlot])> = Vec::new();
+        for (&field, ids) in &self.field_slots {
+            if self.tier_of(field, ids.len()) == tier {
+                result.push((field, ids.as_slice()));
+            }
+        }
+        result.sort_unstable_by_key(|(field, _)| *field);
+        result
     }
 
     /// Assign tier-aligned positions to all key=value IDs.
@@ -264,23 +280,11 @@ impl<'a> KeyValueInterner<'a> {
             order
         };
 
-        let low = collect_tier(&self.low_fields());
-        let mid = collect_tier(&self.mid_fields());
-        let high = collect_tier(&self.high_fields());
+        let low = collect_tier(&self.fields_of_tier(FieldTier::Low));
+        let mid = collect_tier(&self.fields_of_tier(FieldTier::Mid));
+        let high = collect_tier(&self.fields_of_tier(FieldTier::High));
 
         [low, mid, high]
-    }
-
-    /// Collect fields whose value count is in [lo, hi), sorted by name.
-    fn fields_in_range(&self, lo: usize, hi: usize) -> Vec<(&str, &[KvSlot])> {
-        let mut result: Vec<(&str, &[KvSlot])> = self
-            .field_slots
-            .iter()
-            .filter(|(_, ids)| ids.len() >= lo && ids.len() < hi)
-            .map(|(&field, ids)| (field, ids.as_slice()))
-            .collect();
-        result.sort_unstable_by_key(|(field, _)| *field);
-        result
     }
 }
 

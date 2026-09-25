@@ -488,22 +488,12 @@ impl ScanSink {
                 .push(t as u32);
         }
 
-        let threshold = sfst::DEFAULT_CARDINALITY_THRESHOLD as usize;
-        let tier_of = |cardinality: usize| -> FieldTier {
-            if cardinality < threshold {
-                FieldTier::Low
-            } else if cardinality < threshold * 10 {
-                FieldTier::Mid
-            } else {
-                FieldTier::High
-            }
-        };
-
         // Table order matches the indexer's: low → mid → high, each tier
         // sorted by field name.
         let mut by_tier: [Vec<FieldEntry>; 3] = Default::default();
         for (name, tokens) in &field_tokens {
-            let tier = tier_of(tokens.len());
+            let cardinality = u32::try_from(tokens.len()).unwrap_or(u32::MAX);
+            let tier = sfst::field_tier(cardinality, sfst::DEFAULT_CARDINALITY_THRESHOLD, false);
             by_tier[match tier {
                 FieldTier::Low => 0,
                 FieldTier::Mid => 1,

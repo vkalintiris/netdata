@@ -15,8 +15,8 @@ use roaring::RoaringBitmap;
 
 use crate::kv_interner::{KeyValueInterner, KvSlot};
 use crate::{
-    DroppedAttributeCounts, Durations, Flags, Histogram, ObservedTimestamps, ParentSpanIds,
-    SpanIds, TraceIds,
+    DroppedAttributeCounts, Durations, FieldTier, Flags, Histogram, ObservedTimestamps,
+    ParentSpanIds, SpanIds, TraceIds,
 };
 
 /// The output of Phase 1: everything the frame loop extracts from the WAL.
@@ -136,19 +136,16 @@ impl<'a> RowIndex<'a> {
         &self.kv_bitmaps[slot.idx()]
     }
 
-    /// Low-cardinality fields (< threshold), sorted by field name.
-    pub(crate) fn low_fields(&self) -> Vec<(&str, &[KvSlot])> {
-        self.kv_interner.low_fields()
+    /// Pins `fields`: they are never High tier in the built file, whatever
+    /// their cardinality. A producer that pins nothing classifies by
+    /// cardinality alone.
+    pub fn pin_fields(&mut self, fields: &[&str]) {
+        self.kv_interner.pin_fields(fields);
     }
 
-    /// Mid-cardinality fields ([threshold, 10*threshold)), sorted by field name.
-    pub(crate) fn mid_fields(&self) -> Vec<(&str, &[KvSlot])> {
-        self.kv_interner.mid_fields()
-    }
-
-    /// High-cardinality fields (>= 10*threshold), sorted by field name.
-    pub(crate) fn high_fields(&self) -> Vec<(&str, &[KvSlot])> {
-        self.kv_interner.high_fields()
+    /// The fields of `tier`, sorted by field name.
+    pub(crate) fn fields_of_tier(&self, tier: FieldTier) -> Vec<(&str, &[KvSlot])> {
+        self.kv_interner.fields_of_tier(tier)
     }
 
     /// Tier-aligned assignment of key=value IDs.

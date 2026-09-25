@@ -102,10 +102,12 @@ pub struct FieldEntry {
     pub tier: FieldTier,
 }
 
-/// Cardinality tier for a field. The cardinality threshold `T` and
-/// its 10× cutoff (set by the producer; default
-/// [`DEFAULT_CARDINALITY_THRESHOLD`]) define the boundaries: `< T` is
-/// low, `[T, 10·T)` is mid, `≥ 10·T` is high. Ordered low to high.
+/// Cardinality tier for a field, as [`field_tier`] assigns it: the
+/// cardinality threshold `T` and its 10× cutoff (set by the producer;
+/// default [`DEFAULT_CARDINALITY_THRESHOLD`]) define the boundaries — `< T`
+/// is low, `[T, 10·T)` is mid, `≥ 10·T` is high — and a field the producer
+/// pins is never high. Readers take the tier from the recorded field table.
+/// Ordered low to high.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum FieldTier {
     Low,
@@ -118,6 +120,20 @@ pub enum FieldTier {
 /// the WAL row scan in `sfsq` — classifies with the same boundaries
 /// unless explicitly overridden.
 pub const DEFAULT_CARDINALITY_THRESHOLD: u32 = 100;
+
+/// The tier of a field with `cardinality` distinct values under `threshold`.
+/// Pinning only removes the High option: a pinned field with fewer than
+/// `threshold` values stays Low, and one with many values goes Mid (bitmaps
+/// per value) instead of High.
+pub fn field_tier(cardinality: u32, threshold: u32, pinned: bool) -> FieldTier {
+    if cardinality < threshold {
+        FieldTier::Low
+    } else if pinned || cardinality < threshold.saturating_mul(10) {
+        FieldTier::Mid
+    } else {
+        FieldTier::High
+    }
+}
 
 impl FieldEntry {
     /// High-cardinality — rejected by `facets`/`timeline`, so not

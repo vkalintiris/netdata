@@ -6,13 +6,14 @@
 
 /// Hard ceiling on the number of values a merged facet may carry.
 ///
-/// Per-file facets are bounded by the mid-card tier threshold (<1000
-/// distinct values), but the cross-file union is not: the value count
-/// grows with `window × files × per-file cardinality`, and a
-/// near-unique-per-log field (e.g. journald's `__SEQNUM` in small,
-/// fast-rotated files) can union into many thousands of options — a
-/// response-size liability and useless as a facet. When the union
-/// exceeds the cap, the top values by count survive.
+/// The field tiers bound neither a per-file facet nor the cross-file
+/// union: a field the producer pins (the traces core fields) stays Mid
+/// with any number of values in a file, and the union grows with
+/// `window × files × per-file cardinality` — a near-unique-per-log field
+/// (e.g. journald's `__SEQNUM` in small, fast-rotated files) can union
+/// into many thousands of options, a response-size liability and useless
+/// as a facet. When the union exceeds the cap, the top values by count
+/// survive.
 pub const MAX_FACET_VALUES: usize = 1000;
 
 /// One field's facet merged across files: values in lexicographic order with

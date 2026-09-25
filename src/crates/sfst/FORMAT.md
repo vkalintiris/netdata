@@ -545,6 +545,15 @@ to its `key=value` requires checking which range it falls in and
 looking up the corresponding entry in `PRIM`, an `MF{i}` chunk, or an
 `HF{i}` chunk.
 
+A field's tier is the producer's rule (`sfst::field_tier`): with the
+cardinality threshold `T` (default 100), a field with fewer than `T`
+distinct values in the file is Low, fewer than `10·T` Mid, otherwise
+High — except that a producer may pin fields, which are then never High
+(a pinned field with `10·T` or more values is Mid: one bitmap per value).
+The logs seal pins nothing; the traces seal pins its core fields.
+Readers MUST take a field's tier from the recorded field table and
+`id_ranges`, never recompute it from the cardinality.
+
 Tier assignment is stable for a given input: fields are sorted by
 name within each tier, and entries within each per-field structure
 follow the underlying serialized order. Two indexers given the same

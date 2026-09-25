@@ -118,7 +118,7 @@ pub use schema::{
     DroppedAttributeCounts, Durations, FieldEntry, FieldTable, FieldTier, Flags, HighField,
     Histogram, IdRanges, KvId, LeafStats, Metadata, NodeId, ObservedTimestamps, ParentSpanIds,
     SchemaEdge, SchemaNode, SchemaTree, SpanId, SpanIds, Step, StreamBatch, Summary, TraceId,
-    TraceIds, ValueKind,
+    TraceIds, ValueKind, field_tier,
 };
 // Writer-input-only vocabulary stays crate-internal (the build owns the writer).
 pub(crate) use schema::{ALL_COLUMNS, ColumnSpec};

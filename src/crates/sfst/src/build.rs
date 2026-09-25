@@ -130,7 +130,7 @@ fn build_primary_fst<W: Write + Seek>(
     let t = Instant::now();
     let mut entries: Vec<(&str, BitmapValue)> = Vec::new();
 
-    let low = row_index.low_fields();
+    let low = row_index.fields_of_tier(FieldTier::Low);
     for (_, kv_slots) in &low {
         entries.reserve(kv_slots.len());
 
@@ -160,7 +160,7 @@ fn build_mid_card_chunks<W: Write + Seek>(
 
     let mut entries: Vec<(&str, BitmapValue)> = Vec::new();
 
-    let mid = row_index.mid_fields();
+    let mid = row_index.fields_of_tier(FieldTier::Mid);
     for (i, &(_, kv_slots)) in mid.iter().enumerate() {
         entries.clear();
 
@@ -201,7 +201,7 @@ fn build_high_card_chunks<W: Write + Seek>(
 
     let mut paired: Vec<(&str, u8)> = Vec::new();
 
-    let high = row_index.high_fields();
+    let high = row_index.fields_of_tier(FieldTier::High);
     for (i, &(_, slots)) in high.iter().enumerate() {
         paired.clear();
         for &slot in slots {
@@ -328,30 +328,17 @@ pub(crate) fn build_into<W: Write + Seek>(
     let (kv_to_file, id_ranges) = build_id_translation(row_index);
 
     // Field table, ordered low → mid → high (each tier sorted by name).
-    let fields: crate::FieldTable = row_index
-        .low_fields()
-        .iter()
-        .map(|(name, ids)| FieldEntry {
-            name: name.to_string(),
-            cardinality: ids.len() as u32,
-            tier: FieldTier::Low,
-        })
-        .chain(row_index.mid_fields().iter().map(|(name, ids)| FieldEntry {
-            name: name.to_string(),
-            cardinality: ids.len() as u32,
-            tier: FieldTier::Mid,
-        }))
-        .chain(
-            row_index
-                .high_fields()
-                .iter()
-                .map(|(name, ids)| FieldEntry {
-                    name: name.to_string(),
-                    cardinality: ids.len() as u32,
-                    tier: FieldTier::High,
-                }),
-        )
-        .collect();
+    let mut entries = Vec::new();
+    for tier in [FieldTier::Low, FieldTier::Mid, FieldTier::High] {
+        for (name, ids) in row_index.fields_of_tier(tier) {
+            entries.push(FieldEntry {
+                name: name.to_string(),
+                cardinality: ids.len() as u32,
+                tier,
+            });
+        }
+    }
+    let fields = crate::FieldTable::from(entries);
 
     // Compute histogram once; reused by both the summary (for min/max
     // derivation) and the heavy metadata.
@@ -439,9 +426,9 @@ pub(crate) fn build_into<W: Write + Seek>(
             .trace_rollup
             .as_ref()
             .is_some_and(|r| r.is_meaningful()),
-        mid_fields: u16::try_from(row_index.mid_fields().len())
+        mid_fields: u16::try_from(row_index.fields_of_tier(FieldTier::Mid).len())
             .expect("mid-card field count exceeds u16::MAX"),
-        high_fields: u16::try_from(row_index.high_fields().len())
+        high_fields: u16::try_from(row_index.fields_of_tier(FieldTier::High).len())
             .expect("high-card field count exceeds u16::MAX"),
         stream_batches: crate::num_stream_batches(total_rows),
     };

@@ -427,3 +427,29 @@ fn inconsistent_arenas_fail_the_offset_rebuild() {
     decoded.row_lens[0] = u32::MAX;
     assert!(!decoded.rebuild_offsets(), "overflow is corruption");
 }
+
+#[test]
+fn field_tier_rule() {
+    use crate::{FieldTier, field_tier};
+    let cases = [
+        (99, false, FieldTier::Low),
+        (100, false, FieldTier::Mid),
+        (999, false, FieldTier::Mid),
+        (1_000, false, FieldTier::High),
+        (1_000, true, FieldTier::Mid),
+        (u32::MAX, true, FieldTier::Mid),
+        (5, true, FieldTier::Low),
+    ];
+    for (cardinality, pinned, expected) in cases {
+        assert_eq!(
+            field_tier(cardinality, 100, pinned),
+            expected,
+            "{cardinality} values, pinned {pinned}"
+        );
+    }
+    // The 10x cutoff saturates rather than wrapping for a huge threshold.
+    assert_eq!(
+        field_tier(u32::MAX - 1, u32::MAX / 2, false),
+        FieldTier::Mid
+    );
+}

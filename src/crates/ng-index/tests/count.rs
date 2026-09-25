@@ -139,6 +139,27 @@ fn flattened_wal_builds_and_roundtrips_an_sfst() {
     assert_eq!(reader.total_logs(), 10);
 }
 
+/// The logs seal pins nothing: a field with 1,500 values in one file is High,
+/// as it was before producers could pin fields.
+#[test]
+fn logs_seal_keeps_the_high_tier() {
+    let flat = tempfile::tempdir().unwrap();
+    write_flattened_wal(flat.path(), &[1_500]);
+    let out_dir = tempfile::tempdir().unwrap();
+    let out = out_dir.path().join("logs.sfst");
+    build_sfst(flat.path(), &out, &Metrics::new()).unwrap();
+
+    let bytes = std::fs::read(&out).unwrap();
+    let reader = IndexReader::open(&bytes).unwrap();
+    let tiers: Vec<(&str, u32, sfst::FieldTier)> = reader
+        .field_table()
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry.cardinality, entry.tier))
+        .filter(|(_, cardinality, _)| *cardinality > 1)
+        .collect();
+    assert_eq!(tiers, [("attributes.k", 1_500, sfst::FieldTier::High)]);
+}
+
 /// `n` records in reverse-chronological insertion order: record `i` gets the
 /// `(n - i)`-th timestamp, so insertion order is the opposite of chronological
 /// order — the build-time reorder must permute the columns to match. Each record
