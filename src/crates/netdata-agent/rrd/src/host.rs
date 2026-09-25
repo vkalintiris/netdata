@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
+use netdata_agent_log::{Priority, REDACTED, Source, nd_log, netdata_log_error};
 use netdata_agent_nrpc::Registry;
+use netdata_agent_text::parse::uuid_parse_flexi;
 
 use crate::chart::Charts;
 use crate::contexts::{self, Contexts};
@@ -34,6 +36,76 @@ pub struct HostInfo {
     pub replication_enabled: bool,
     pub replication_period: i64,
     pub replication_step: i64,
+    /// `host->stream.snd`: where the host streams to, when its sender structures were set up.
+    pub stream_send: Option<StreamSend>,
+    /// `host->cache_dir`: localhost only.
+    pub cache_dir: Option<String>,
+}
+
+/// `host->stream.snd.destination` and `api_key`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamSend {
+    /// As configured: parents separated by whitespace or commas, each optionally with `:SSL`.
+    pub destination: String,
+    pub api_key: String,
+}
+
+impl StreamSend {
+    /// `stream_sender_structures_init()`: a sender only with streaming on, a destination and an API key (an empty
+    /// setting is NULL in C).
+    pub fn new(enabled: bool, destination: &str, api_key: &str) -> Option<StreamSend> {
+        (enabled && !destination.is_empty() && !api_key.is_empty()).then(|| StreamSend {
+            destination: destination.to_string(),
+            api_key: api_key.to_string(),
+        })
+    }
+
+    /// The parents as `stream_parent_add_one_unsafe()` records them from `foreach_entry_in_connection_string()`:
+    /// the first `:SSL` cuts an entry short.
+    fn parents(&self) -> impl Iterator<Item = &str> {
+        self.destination
+            .split(|c: char| c == ',' || (c.is_ascii() && netdata_agent_text::c::is_space(c as u8)))
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| entry.find(":SSL").map_or(entry, |at| &entry[..at]))
+    }
+}
+
+/// `rrdhost_init_hostname()`: an empty name is `localhost`.
+fn init_hostname(hostname: &str) -> String {
+    if hostname.is_empty() {
+        "localhost".to_string()
+    } else {
+        hostname.to_string()
+    }
+}
+
+/// The record `rrdhost_create()` writes. The health thread copies the alarm defaults into the host only later, so
+/// they print empty; C prints a child's unset cache directory with a raw `%s`.
+fn initialized_record(guid: &str, info: &HostInfo) -> String {
+    let (streaming, to, key) = match &info.stream_send {
+        Some(send) => ("enabled", send.destination.as_str(), REDACTED),
+        None => ("disabled", "", ""),
+    };
+    format!(
+        "Host '{}' (at registry as '{}') with guid '{guid}' initialized, os '{}', timezone '{}', program_name '{}', \
+         program_version '{}', update every {}, memory mode {}, history entries {}, streaming {streaming} (to '{to}' \
+         with api key '{key}'), health {}, cache_dir '{}', alarms default handler '', alarms default recipient ''",
+        info.hostname,
+        info.registry_hostname,
+        info.os,
+        info.timezone,
+        info.program_name,
+        info.program_version,
+        info.update_every,
+        info.db_mode.name(),
+        info.history_entries,
+        if info.health_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        info.cache_dir.as_deref().unwrap_or("(null)"),
+    )
 }
 
 impl HostInfo {
@@ -127,7 +199,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Host {
-    pub fn new(machine_guid: &str, is_localhost: bool, info: HostInfo) -> Self {
+    pub fn new(machine_guid: &str, is_localhost: bool, mut info: HostInfo) -> Self {
+        info.hostname = init_hostname(&info.hostname);
         let contexts = Arc::new(Contexts::default());
         Host {
             machine_guid: machine_guid.to_string(),
@@ -147,6 +220,125 @@ impl Host {
 
     pub fn contexts(&self) -> &Contexts {
         &self.contexts
+    }
+
+    /// The records of `rrdhost_create()` for a new host: an invalid machine GUID, the sender's parents, the function
+    /// registry (`nrpc_registry_init()`, which prints the host's address), then `Host ... initialized`.
+    fn log_created(&self) {
+        let info = self.info();
+        if uuid_parse_flexi(self.machine_guid.as_bytes()).is_none() {
+            netdata_log_error!("Host machine GUID {} is not valid", self.machine_guid);
+        }
+        if let Some(send) = &info.stream_send {
+            for (n, parent) in send.parents().enumerate() {
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Debug,
+                    "STREAM PARENTS '{}': added streaming destination No {}: '{parent}'",
+                    info.hostname,
+                    n + 1
+                );
+            }
+        }
+        nd_log!(
+            Source::Daemon,
+            Priority::Debug,
+            "NRPC: function registry 0x{:016X} created for host '{}'",
+            std::ptr::from_ref(self) as usize,
+            info.hostname
+        );
+        nd_log!(
+            Source::Daemon,
+            Priority::Info,
+            "{}",
+            initialized_record(&self.machine_guid, &info)
+        );
+    }
+
+    /// `rrdhost_update()` for a child that connects again: what it reports about itself replaces the stored values,
+    /// and what needs a restart (update every, memory mode, history) is only warned about. `update_every` and
+    /// `history` are the configured values before `rrdhost_create()` normalizes them, as C compares them.
+    pub fn update(&self, wanted: &HostInfo, update_every: i64, history: i64) {
+        let mut records = Vec::new();
+        {
+            let mut info = self.info.write().unwrap_or_else(PoisonError::into_inner);
+            info.health_enabled = wanted.health_enabled;
+            info.system_info = wanted.system_info.clone();
+            info.os.clone_from(&wanted.os);
+            info.timezone.clone_from(&wanted.timezone);
+            info.abbrev_timezone.clone_from(&wanted.abbrev_timezone);
+            info.utc_offset = wanted.utc_offset;
+            info.registry_hostname = if wanted.registry_hostname.is_empty() {
+                wanted.hostname.clone()
+            } else {
+                wanted.registry_hostname.clone()
+            };
+            if info.hostname != wanted.hostname {
+                records.push((
+                    Priority::Warning,
+                    format!(
+                        "Host '{}' has been renamed to '{}'. If this is not intentional it may mean multiple hosts \
+                         are using the same machine_guid.",
+                        info.hostname, wanted.hostname
+                    ),
+                ));
+                info.hostname = init_hostname(&wanted.hostname);
+            }
+            if info.program_name != wanted.program_name {
+                records.push((
+                    Priority::Notice,
+                    format!(
+                        "Host '{}' switched program name from '{}' to '{}'",
+                        info.hostname, info.program_name, wanted.program_name
+                    ),
+                ));
+                info.program_name.clone_from(&wanted.program_name);
+            }
+            if info.program_version != wanted.program_version {
+                records.push((
+                    Priority::Notice,
+                    format!(
+                        "Host '{}' switched program version from '{}' to '{}'",
+                        info.hostname, info.program_version, wanted.program_version
+                    ),
+                ));
+                info.program_version.clone_from(&wanted.program_version);
+            }
+            if i64::from(info.update_every) != update_every {
+                records.push((
+                    Priority::Warning,
+                    format!(
+                        "Host '{}' has an update frequency of {} seconds, but the wanted one is {update_every} \
+                         seconds. Restart netdata here to apply the new settings.",
+                        info.hostname, info.update_every
+                    ),
+                ));
+            }
+            if info.db_mode != wanted.db_mode {
+                records.push((
+                    Priority::Warning,
+                    format!(
+                        "Host '{}' has memory mode '{}', but the wanted one is '{}'. Restart netdata here to apply \
+                         the new settings.",
+                        info.hostname,
+                        info.db_mode.name(),
+                        wanted.db_mode.name()
+                    ),
+                ));
+            } else if info.db_mode != DbMode::Dbengine && info.history_entries < history {
+                records.push((
+                    Priority::Warning,
+                    format!(
+                        "Host '{}' has history of {} entries, but the wanted one is {history} entries. Restart \
+                         netdata here to apply the new settings.",
+                        info.hostname, info.history_entries
+                    ),
+                ));
+            }
+        }
+        for (priority, text) in records {
+            nd_log!(Source::Daemon, priority, "{text}");
+        }
     }
 
     pub fn functions(&self) -> &Registry {
@@ -298,6 +490,7 @@ impl Hosts {
             ordered: vec![Arc::clone(&localhost)],
             by_guid: HashMap::from([(localhost.machine_guid.clone(), Arc::clone(&localhost))]),
         };
+        localhost.log_created();
         Hosts {
             localhost,
             inner: RwLock::new(index),
@@ -362,8 +555,8 @@ impl Hosts {
     }
 
     /// The find half of `rrdhost_find_or_create()`: an existing host is updated by `update`; otherwise `create` makes
-    /// the new one, appended after the others. The whole step holds the index lock, as `rrd_wrlock()` does in C, so
-    /// two connections for one GUID cannot both create it.
+    /// the new one, appended after the others, and its records follow once the index is unlocked. The whole step
+    /// holds the index lock, as `rrd_wrlock()` does in C, so two connections for one GUID cannot both create it.
     pub fn find_or_create(
         &self,
         guid: &str,
@@ -382,6 +575,8 @@ impl Hosts {
         index.by_guid.insert(guid.to_string(), Arc::clone(&host));
         self.version
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        drop(index);
+        host.log_created();
         host
     }
 }
@@ -408,6 +603,8 @@ mod tests {
             replication_enabled: true,
             replication_period: 86400,
             replication_step: 3600,
+            stream_send: None,
+            cache_dir: None,
         }
     }
 
@@ -439,5 +636,149 @@ mod tests {
         assert!(a.receiver().is_some());
         a.clear_receiver(&first);
         assert!(a.receiver().is_none());
+    }
+
+    fn texts(records: &[netdata_agent_log::Captured]) -> Vec<(Priority, String)> {
+        records
+            .iter()
+            .map(|r| (r.priority, r.message.clone().unwrap_or_default()))
+            .collect()
+    }
+
+    /// B8's child on a ram parent with health off, and a localhost that streams (brief-host-records §1.6).
+    #[test]
+    fn a_new_host_logs_its_records_as_c() {
+        let guid = "09d5302f-8bdc-4fae-b017-d305d7666a42";
+        let mut local = info("parent");
+        local.program_version = "v2.11.0-458-g1e97a0fc9e".into();
+        local.timezone = "Etc/UTC".into();
+        local.health_enabled = false;
+        local.stream_send = StreamSend::new(true, "127.0.0.1:29181:SSL, other:19999", "a-key");
+        local.cache_dir = Some("/var/cache/netdata".into());
+        let (hosts, records) = netdata_agent_log::capture(|| {
+            Hosts::new(Host::new(
+                "5a1e0000-0000-4000-8000-000000000000",
+                true,
+                local,
+            ))
+        });
+        let address = format!("0x{:016X}", Arc::as_ptr(hosts.localhost()) as usize);
+        assert_eq!(
+            texts(&records),
+            [
+                (
+                    Priority::Debug,
+                    "STREAM PARENTS 'parent': added streaming destination No 1: '127.0.0.1:29181'".to_string()
+                ),
+                (
+                    Priority::Debug,
+                    "STREAM PARENTS 'parent': added streaming destination No 2: 'other:19999'".to_string()
+                ),
+                (
+                    Priority::Debug,
+                    format!("NRPC: function registry {address} created for host 'parent'")
+                ),
+                (
+                    Priority::Info,
+                    "Host 'parent' (at registry as 'parent') with guid '5a1e0000-0000-4000-8000-000000000000' \
+                     initialized, os 'linux', \
+                     timezone 'Etc/UTC', program_name 'netdata', program_version 'v2.11.0-458-g1e97a0fc9e', update \
+                     every 1, memory mode ram, history entries 4096, streaming enabled (to '127.0.0.1:29181:SSL, \
+                     other:19999' with api key '[REDACTED]'), health disabled, cache_dir '/var/cache/netdata', \
+                     alarms default handler '', alarms default recipient ''"
+                        .to_string()
+                ),
+            ]
+        );
+        let mut child = info("b8-child");
+        child.timezone = "Etc/UTC".into();
+        child.program_version = "v2.11.0-458-g1e97a0fc9e".into();
+        let (host, records) = netdata_agent_log::capture(|| {
+            hosts.find_or_create(guid, || child, |_| panic!("new host"))
+        });
+        assert_eq!(
+            texts(&records)[1..],
+            [(
+                Priority::Info,
+                "Host 'b8-child' (at registry as 'b8-child') with guid '09d5302f-8bdc-4fae-b017-d305d7666a42' \
+                 initialized, os 'linux', timezone 'Etc/UTC', program_name 'netdata', program_version \
+                 'v2.11.0-458-g1e97a0fc9e', update every 1, memory mode ram, history entries 4096, streaming \
+                 disabled (to '' with api key ''), health disabled, cache_dir '(null)', alarms default handler '', \
+                 alarms default recipient ''"
+                    .to_string()
+            )]
+        );
+        // a malformed GUID is only reported, and an empty hostname is localhost
+        let (_, records) = netdata_agent_log::capture(|| {
+            hosts.find_or_create("not-a-guid", || info(""), |_| panic!("new host"))
+        });
+        let texts = texts(&records);
+        assert_eq!(
+            texts[0],
+            (
+                Priority::Err,
+                "Host machine GUID not-a-guid is not valid".to_string()
+            )
+        );
+        assert!(
+            texts[2]
+                .1
+                .starts_with("Host 'localhost' (at registry as '') with guid 'not-a-guid'")
+        );
+        drop(host);
+    }
+
+    /// `rrdhost_update()`: each record of C's table, in C's order, against the values before the update.
+    #[test]
+    fn an_update_logs_what_changed_as_c() {
+        let hosts = Hosts::new(Host::new("local-guid", true, info("parent")));
+        let host = hosts.find_or_create("guid-a", || info("a"), |_| panic!("new host"));
+        let mut wanted = info("renamed");
+        wanted.program_name = "other".into();
+        wanted.program_version = "v1".into();
+        let ((), records) = netdata_agent_log::capture(|| host.update(&wanted, 2, 8192));
+        assert_eq!(
+            texts(&records),
+            [
+                (
+                    Priority::Warning,
+                    "Host 'a' has been renamed to 'renamed'. If this is not intentional it may mean multiple hosts \
+                     are using the same machine_guid."
+                        .to_string()
+                ),
+                (
+                    Priority::Notice,
+                    "Host 'renamed' switched program name from 'netdata' to 'other'".to_string()
+                ),
+                (
+                    Priority::Notice,
+                    "Host 'renamed' switched program version from 'v0' to 'v1'".to_string()
+                ),
+                (
+                    Priority::Warning,
+                    "Host 'renamed' has an update frequency of 1 seconds, but the wanted one is 2 seconds. Restart \
+                     netdata here to apply the new settings."
+                        .to_string()
+                ),
+                (
+                    Priority::Warning,
+                    "Host 'renamed' has history of 4096 entries, but the wanted one is 8192 entries. Restart netdata \
+                     here to apply the new settings."
+                        .to_string()
+                ),
+            ]
+        );
+        assert_eq!(host.info().registry_hostname, "renamed");
+        wanted.db_mode = DbMode::Alloc;
+        let ((), records) = netdata_agent_log::capture(|| host.update(&wanted, 1, 8192));
+        assert_eq!(
+            texts(&records),
+            [(
+                Priority::Warning,
+                "Host 'renamed' has memory mode 'ram', but the wanted one is 'alloc'. Restart netdata here to apply \
+                 the new settings."
+                    .to_string()
+            )]
+        );
     }
 }

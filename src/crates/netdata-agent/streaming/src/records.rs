@@ -6,13 +6,10 @@
 use std::sync::Arc;
 
 use netdata_agent_log::{
-    Field, FrameGuard, Priority, Source, Value, msgid, nd_log, push, push_shared,
+    Field, FrameGuard, Priority, REDACTED, Source, Value, msgid, nd_log, push, push_shared,
 };
 
 use crate::caps;
-
-/// The stream API key's replacement in log records (D34).
-pub const MASK: &str = "[REDACTED]";
 
 /// `STREAM_HANDSHAKE`: the reasons the receiver logs, with `stream_handshake_error_to_string()` and
 /// `stream_handshake_error_to_response_code()`.
@@ -104,7 +101,7 @@ impl Peer {
             (Field::MessageId, Value::Uuid(msgid::STREAMING_FROM_CHILD)),
         ]);
         let key = match self.key.as_deref() {
-            Some(key) if !key.is_empty() => MASK,
+            Some(key) if !key.is_empty() => REDACTED,
             _ => "",
         };
         nd_log!(

@@ -352,6 +352,8 @@ mod tests {
                         replication_enabled: false,
                         replication_period: 0,
                         replication_step: 0,
+                        stream_send: None,
+                        cache_dir: None,
                     },
                 ),
             )),

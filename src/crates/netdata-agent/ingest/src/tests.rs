@@ -26,6 +26,8 @@ fn host() -> Arc<Host> {
         replication_enabled: false,
         replication_period: 0,
         replication_step: 0,
+        stream_send: None,
+        cache_dir: None,
     };
     info.set_replication(true, 86400, 3600);
     Arc::new(Host::new("guid", false, info))
@@ -190,6 +192,26 @@ fn errors_disconnect() {
         )
         .iter()
         .all(|&ok| ok)
+    );
+}
+
+/// PLUGINSD_DISABLE_PLUGIN(): the keyword's reason is a collector info record, then the daemon's parser_action error.
+#[test]
+fn a_refused_keyword_logs_its_reason_as_c() {
+    let h = host();
+    let mut p = parser(&h);
+    let (_, records) =
+        netdata_agent_log::capture(|| feed_all(&mut p, &["CHART 'nodot' '' t u f c line 1 1"]));
+    let records: Vec<_> = records
+        .into_iter()
+        .map(|r| (r.source, r.priority, r.message.unwrap_or_default()))
+        .collect();
+    assert!(
+        matches!(&records[..], [
+            (Source::Collector, Priority::Info, reason),
+            (Source::Daemon, Priority::Err, action),
+        ] if reason.starts_with("PLUGINSD: keyword CHART: ") && action.starts_with("PLUGINSD: parser_action(")),
+        "{records:?}"
     );
 }
 

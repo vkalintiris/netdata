@@ -7,12 +7,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use netdata_agent_log::{Field, FrameGuard, Priority, Source, Value, nd_log, push};
+use netdata_agent_log::{Field, FrameGuard, Priority, REDACTED, Source, Value, nd_log, push};
 use netdata_agent_nrpc::access;
 use netdata_agent_web::request::Mode;
-
-/// The stream API key's replacement in logged URLs (D34).
-const MASK: &[u8] = b"[REDACTED]";
 
 /// The part of C's `web_clients_cache` that shows in `conn=`: fresh structs get the next id, reused ones are zeroed
 /// and log 0. Global across the web threads, as in C.
@@ -148,7 +145,7 @@ pub fn logged_url(url: &[u8], mode: Option<Mode>) -> Vec<u8> {
             Some(value) if decoded == b"key" && !value.is_empty() => {
                 out.extend_from_slice(name);
                 out.push(b'=');
-                out.extend_from_slice(MASK);
+                out.extend_from_slice(REDACTED.as_bytes());
             }
             _ => out.extend_from_slice(segment),
         }

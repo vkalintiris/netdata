@@ -46,10 +46,6 @@ func init() {
 		"dimension anomaly rate suppression window", "dimension anomaly rate suppression threshold",
 		"enable statistics charts", "hosts to skip from training", "charts to skip from training",
 		"stream anomaly detection charts")
-	pending("health", "health", "enabled", "silencers file", "enable stock health configuration",
-		"use summary for notifications", "default repeat warning", "default repeat critical",
-		"in memory max health log entries", "health log retention", "script to execute on alarm", "enabled alarms",
-		"run at least every", "postpone alarms during hibernation for", "notification execution timeout")
 	pending("web TLS", "web", "ssl key", "ssl certificate", "tls version", "tls ciphers",
 		"ssl skip certificate verification")
 	pending("bearer tokens", "web", "bearer token protection")

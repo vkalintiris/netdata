@@ -16,14 +16,14 @@ use netdata_agent_ingest::{self as ingest, Parser};
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_pluginsd_proto::LineReader;
 use netdata_agent_rrd::collection;
-use netdata_agent_rrd::host::{Host, HostInfo, Hosts, ReceiverSlot};
+use netdata_agent_rrd::host::{Host, HostInfo, Hosts, ReceiverSlot, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 
 use crate::caps;
 use crate::conf::{ReceiverDefaults, StreamConf};
 use crate::decompress::Decompressor;
 use crate::handshake::{self, StreamRequest};
-use crate::records::{self, Counters, MASK, Peer, Reason};
+use crate::records::{self, Counters, Peer, Reason};
 
 /// A receiver older than this without traffic is stale and may be replaced (`stream_receiver_accept_connection()`).
 const STALE_RECEIVER_S: u64 = 30;
@@ -135,7 +135,7 @@ fn now_s() -> i64 {
 /// The log text of a parameter value: the key is masked (D34).
 fn logged_value<'a>(name: &str, value: &'a str) -> &'a str {
     if name == "key" && !value.is_empty() {
-        MASK
+        netdata_agent_log::REDACTED
     } else {
         value
     }
@@ -379,55 +379,54 @@ impl Receivers {
         } else {
             config.update_every as i32
         };
-        let health_enabled = config.health_enabled != 0;
+        // rrdhost_create() and rrdhost_update(): no health without a database
+        let health_enabled = config.health_enabled != 0 && mode != DbMode::None;
         let text =
             |v: &Option<String>, default: &str| v.clone().unwrap_or_else(|| default.to_string());
+        // set_host_properties() and rrdhost_init_timezone(): an empty value is a missing one
+        let non_empty = |v: &Option<String>, default: &str| {
+            v.as_deref()
+                .filter(|v| !v.is_empty())
+                .unwrap_or(default)
+                .to_string()
+        };
+        let mut wanted = HostInfo {
+            hostname: text(&request.hostname, ""),
+            registry_hostname: text(&request.registry_hostname, ""),
+            os: text(&request.os, "unknown"),
+            timezone: non_empty(&request.timezone, "unknown"),
+            abbrev_timezone: non_empty(&request.abbrev_timezone, "UTC"),
+            utc_offset: request.utc_offset,
+            program_name: non_empty(&request.program_name, "unknown"),
+            program_version: non_empty(&request.program_version, "unknown"),
+            update_every,
+            db_mode: mode,
+            history_entries: align_entries_to_pagesize(
+                mode,
+                config.history,
+                self.defaults.page_size,
+            ),
+            health_enabled,
+            system_info: request.system_info.clone(),
+            replication_enabled: false,
+            replication_period: 0,
+            replication_step: 0,
+            stream_send: StreamSend::new(
+                config.send_enabled,
+                &config.send_parents,
+                &config.send_api_key,
+            ),
+            cache_dir: None,
+        };
+        wanted.set_replication(
+            config.replication.enabled,
+            config.replication.period,
+            config.replication.step,
+        );
         let host = self.hosts.find_or_create(
             &guid,
-            || {
-                let mut info = HostInfo {
-                    hostname: text(&request.hostname, ""),
-                    registry_hostname: text(&request.registry_hostname, ""),
-                    os: text(&request.os, "unknown"),
-                    timezone: text(&request.timezone, "unknown"),
-                    abbrev_timezone: text(&request.abbrev_timezone, "UTC"),
-                    utc_offset: request.utc_offset,
-                    program_name: text(&request.program_name, "unknown"),
-                    program_version: text(&request.program_version, "unknown"),
-                    update_every,
-                    db_mode: mode,
-                    history_entries: align_entries_to_pagesize(
-                        mode,
-                        config.history,
-                        self.defaults.page_size,
-                    ),
-                    health_enabled,
-                    system_info: request.system_info.clone(),
-                    replication_enabled: false,
-                    replication_period: 0,
-                    replication_step: 0,
-                };
-                info.set_replication(
-                    config.replication.enabled,
-                    config.replication.period,
-                    config.replication.step,
-                );
-                info
-            },
-            |host| {
-                host.update_info(|info| {
-                    info.system_info = request.system_info.clone();
-                    info.os = text(&request.os, "unknown");
-                    info.timezone = text(&request.timezone, "unknown");
-                    info.abbrev_timezone = text(&request.abbrev_timezone, "UTC");
-                    info.utc_offset = request.utc_offset;
-                    info.registry_hostname = text(&request.registry_hostname, "");
-                    info.hostname = text(&request.hostname, "");
-                    info.program_name = text(&request.program_name, "unknown");
-                    info.program_version = text(&request.program_version, "unknown");
-                    info.health_enabled = health_enabled;
-                });
-            },
+            || wanted.clone(),
+            |host| host.update(&wanted, config.update_every, config.history),
         );
         let shutdown_handle = stream.try_clone().ok();
         let slot = Arc::new(ReceiverSlot::new(
@@ -451,6 +450,19 @@ impl Receivers {
                 Duration::from_secs(5),
             );
             return;
+        }
+        // rrdhost_set_receiver(); health itself is not ported, the delay is only logged
+        if config.health_enabled != 0 && config.health_delay > 0 {
+            nd_log!(
+                Source::Daemon,
+                Priority::Debug,
+                "STREAM RCV '{}' [from [{}]:{}]: Postponing health checks for {} seconds, because it was just \
+                 connected.",
+                host.hostname(),
+                peer.ip,
+                peer.port,
+                config.health_delay
+            );
         }
         let capabilities = caps::select_compression(
             request.capabilities,

@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use netdata_agent_evloop::Pool;
 use netdata_agent_inicfg::{SECTION_GLOBAL, SECTION_WEB};
-use netdata_agent_rrd::host::{Host, HostInfo, Hosts};
+use netdata_agent_rrd::host::{Host, HostInfo, Hosts, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 use netdata_agent_streaming::conf::{LoadDefaults, StreamConf};
 use netdata_agent_streaming::receiver::{self, Receivers, StreamWorker};
@@ -251,6 +251,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         );
     }
     let tz = timezone::system_timezone(&mut conf.netdata, std::path::Path::new("/"), server::now());
+    conf.health_silencers_filename();
 
     // nd_web_api_init(): the time-grouping limits, read before the listen sockets as in C.
     let grouping_windows = conf::grouping_windows(&mut conf.netdata);
@@ -290,6 +291,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     // The "home" step: after the user switch, while there is still one thread.
     conf.section_home();
 
+    let health_enabled = conf.health_load_config_defaults();
     let localhost = Host::new(
         &machine_guid,
         true,
@@ -309,11 +311,18 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 db.history_entries,
                 system.page_size,
             ),
-            health_enabled: true,
+            // no health without a database
+            health_enabled: health_enabled && db.mode != DbMode::None,
             system_info: Default::default(),
             replication_enabled: false,
             replication_period: 0,
             replication_step: 0,
+            stream_send: StreamSend::new(
+                stream_conf.send.enabled,
+                &stream_conf.send.destination,
+                &stream_conf.send.api_key,
+            ),
+            cache_dir: Some(conf.dirs.cache.clone()),
         },
     );
     let hosts = Arc::new(Hosts::new(localhost));
@@ -353,7 +362,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             .name()
             .to_string(),
             history: db.history_entries,
-            health_enabled: true,
+            health_enabled,
             update_every: db.update_every,
             gap_when_lost_iterations_above: db.gap_when_lost_iterations_above,
             page_size: system.page_size,

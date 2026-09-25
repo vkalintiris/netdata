@@ -829,13 +829,8 @@ impl Conf {
         export("NETDATA_VERSION", build::NETDATA_VERSION);
         export("NETDATA_HOSTNAME", &self.hostname);
         export("NETDATA_HOST_PREFIX", &self.host_prefix);
+        let primary_plugins = self.primary_plugins_dir();
         let d = &self.dirs;
-        // no plugin directory at all is a NULL, which glibc prints as (null) in the fatal message
-        let primary_plugins = d
-            .plugins
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "(null)".to_string());
         for (env, dir, create) in [
             ("NETDATA_CONFIG_DIR", &d.user_config, None),
             ("NETDATA_USER_CONFIG_DIR", &d.user_config, None),
@@ -906,7 +901,91 @@ impl Conf {
         );
         export("HOME", &home);
     }
+
+    /// `netdata_configured_primary_plugins_dir`: no plugin directory at all is a NULL, which glibc prints as
+    /// `(null)`.
+    fn primary_plugins_dir(&self) -> String {
+        self.dirs
+            .plugins
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "(null)".to_string())
+    }
+
+    /// `health_set_silencers_filename()`, the "silencers" step, which creates `[health]`. Health is not ported, so
+    /// the file is not read yet.
+    pub fn health_silencers_filename(&mut self) {
+        let default = format!("{}/health.silencers.json", self.dirs.varlib);
+        self.netdata
+            .get_filename(SECTION_HEALTH, "silencers file", Some(&default));
+    }
+
+    /// `health_load_config_defaults()`, in `rrd_init()` before localhost is created: every `[health]` default with
+    /// C's corrections and records. Health is not ported; only `enabled` has a reader yet.
+    pub fn health_load_config_defaults(&mut self) -> bool {
+        let alarm_notify = format!("{}/alarm-notify.sh", self.primary_plugins_dir());
+        let c = &mut self.netdata;
+        let h = SECTION_HEALTH;
+        let enabled = c.get_boolean(h, "enabled", true);
+        c.get_boolean(h, "enable stock health configuration", true);
+        c.get_boolean(h, "use summary for notifications", true);
+        c.get_duration_seconds(h, "default repeat warning", 0);
+        c.get_duration_seconds(h, "default repeat critical", 0);
+        // unsigned int and uint32_t in C
+        let entries = c.get_number(
+            h,
+            "in memory max health log entries",
+            i64::from(HEALTH_LOG_ENTRIES_DEFAULT),
+        ) as u32;
+        let mut retention = c.get_duration_seconds(
+            h,
+            "health log retention",
+            netdata_agent_streaming::conf::HEALTH_LOG_RETENTION_DEFAULT,
+        ) as u32;
+        c.get_filename(h, "script to execute on alarm", Some(&alarm_notify));
+        c.get(h, "enabled alarms", Some("*"));
+        c.get_duration_seconds(h, "run at least every", 10);
+        c.get_duration_seconds(h, "postpone alarms during hibernation for", 60);
+        c.get_duration_seconds(h, "notification execution timeout", 120);
+        let bound = if entries < HEALTH_LOG_ENTRIES_MIN {
+            Some(("minimum", HEALTH_LOG_ENTRIES_MIN))
+        } else if entries > HEALTH_LOG_ENTRIES_MAX {
+            Some(("maximum", HEALTH_LOG_ENTRIES_MAX))
+        } else {
+            None
+        };
+        if let Some((which, bound)) = bound {
+            nd_log!(
+                Source::Daemon,
+                Priority::Warning,
+                "Health configuration has invalid max log entries {entries}, using {which} of {bound}"
+            );
+            c.set_number(h, "in memory max health log entries", i64::from(bound));
+        }
+        if retention < HEALTH_LOG_MINIMUM_HISTORY {
+            nd_log!(
+                Source::Daemon,
+                Priority::Warning,
+                "Health configuration has invalid health log retention {retention}. Using minimum {HEALTH_LOG_MINIMUM_HISTORY}"
+            );
+            retention = HEALTH_LOG_MINIMUM_HISTORY;
+            c.set_duration_seconds(h, "health log retention", i64::from(retention));
+        }
+        nd_log!(
+            Source::Daemon,
+            Priority::Debug,
+            "Health log history is set to {retention} seconds ({} days)",
+            retention / 86400
+        );
+        enabled
+    }
 }
+
+/// `health_internals.h` and `health.h` (the retention default is streaming's).
+const HEALTH_LOG_ENTRIES_DEFAULT: u32 = 1000;
+const HEALTH_LOG_ENTRIES_MIN: u32 = 10;
+const HEALTH_LOG_ENTRIES_MAX: u32 = 100_000;
+const HEALTH_LOG_MINIMUM_HISTORY: u32 = 86400;
 
 /// `verify_required_directory()`: enter it, or create it when allowed; otherwise explain which part is wrong.
 fn verify_required_directory(env: &str, dir: &str, create: Option<u32>) -> Result<(), String> {

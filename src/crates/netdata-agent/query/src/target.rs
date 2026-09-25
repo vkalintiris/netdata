@@ -831,6 +831,8 @@ mod tests {
             replication_enabled: false,
             replication_period: 0,
             replication_step: 0,
+            stream_send: None,
+            cache_dir: None,
         };
         let h = Arc::new(Host::new("guid-1", false, info));
         let (chart, _) = h.charts().create(&ChartSpec {

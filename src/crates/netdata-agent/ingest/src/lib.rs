@@ -10,7 +10,9 @@
 
 use std::sync::Arc;
 
-use netdata_agent_log::{Field, FrameGuard, Priority, Source, Value, nd_log, push};
+use netdata_agent_log::{
+    ErrorLimit, Field, FrameGuard, Priority, Source, Value, nd_log, nd_log_limit, push,
+};
 
 thread_local! {
     /// The line being parsed, for the log records written while it is (C's parser `request` callback reads the
@@ -235,7 +237,10 @@ impl Parser {
             Ok(()) => true,
             Err(Refused(why)) => {
                 if let Some(why) = why {
-                    plog!(self, Source::Daemon, Priority::Err, "{}", why);
+                    // PLUGINSD_DISABLE_PLUGIN(): one limiter shared by every keyword and parser
+                    static DISABLED: ErrorLimit = ErrorLimit::new(1, 0);
+                    let _frame = self.log_frame();
+                    nd_log_limit!(&DISABLED, Source::Collector, Priority::Info, "{why}");
                 }
                 let line_no = self.line;
                 let shown = text(&words.reconstruct());
@@ -1478,14 +1483,21 @@ impl Parser {
         let flags_s = w.get(base + 2);
         let chart = self.require_scope("RSET", "RBEGIN")?;
         if !self.replay.rset_enabled {
+            thread_local! {
+                // nd_log_limit_static_thread_var(): once a second per thread
+                static DISABLED: ErrorLimit = const { ErrorLimit::new(1, 0) };
+            }
             let hostname = self.host.hostname();
-            plog!(
-                self,
-                Source::Daemon,
-                Priority::Err,
-                "PLUGINSD REPLAY ERROR: 'host:{hostname}/chart:{}' got a RSET but it is disabled by RBEGIN errors",
-                chart.id()
-            );
+            let _frame = self.log_frame();
+            DISABLED.with(|limit| {
+                nd_log_limit!(
+                    limit,
+                    Source::Collector,
+                    Priority::Err,
+                    "PLUGINSD REPLAY ERROR: 'host:{hostname}/chart:{}' got a RSET but it is disabled by RBEGIN errors",
+                    chart.id()
+                );
+            });
             return Ok(());
         }
         let Some(dim) = self.acquire_dim(&chart, dimension, slot, "RSET") else {

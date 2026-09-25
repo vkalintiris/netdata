@@ -9,6 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+netdata-agent-log = { workspace = true }
 netdata-agent-nrpc = { workspace = true }
 netdata-agent-storage = { workspace = true }
 netdata-agent-text = { workspace = true }
