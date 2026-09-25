@@ -327,19 +327,19 @@ pub struct SearchData {
 }
 
 /// Phase-1 state of one window SFST file: the compiled plan plus the
-/// owned columns that map positions to candidates, and the descending
+/// columns that map positions to candidates, and the descending
 /// band cursor of rank-bounded extraction. `band_bottom` is the lowest
 /// position already emitted (every matched position in
 /// `[band_bottom, hi)` has been emitted); `lo` means exhausted.
-struct FileDiscovery {
+struct FileDiscovery<'r> {
     compiled: sfst::CompiledTracePlan,
-    trace_ids: sfst::TraceIds,
-    timestamps: sfst::Timestamps,
+    trace_ids: &'r sfst::TraceIds,
+    timestamps: &'r sfst::Timestamps,
     lo: u32,
     band_bottom: u32,
 }
 
-impl FileDiscovery {
+impl FileDiscovery<'_> {
     fn exhausted(&self) -> bool {
         self.band_bottom <= self.lo
     }
@@ -1054,14 +1054,14 @@ pub fn search(
 /// the latter sets `truncated` so the engine records the file's rank
 /// bound as a standing threat instead of claiming completeness over
 /// data it could not afford to scan.
-fn discovery_state(
-    reader: &sfst::IndexReader<'_>,
+fn discovery_state<'r>(
+    reader: &'r sfst::IndexReader<'_>,
     plan: &sfst::TracePlan,
     window: Option<TimeWindow>,
     ceiling: u64,
     work: &mut ScanWork,
     truncated: &mut bool,
-) -> Result<Option<FileDiscovery>, sfst::Error> {
+) -> Result<Option<FileDiscovery<'r>>, sfst::Error> {
     let total = reader.summary().record_count;
     let timestamps = reader.load_timestamps()?;
     let (lo, hi) = match window {

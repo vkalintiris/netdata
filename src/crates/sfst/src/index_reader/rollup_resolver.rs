@@ -58,7 +58,7 @@ pub enum RollupRefOutcome<'s> {
 }
 
 /// One target field's decoded state, built on first use.
-enum FieldState {
+enum FieldState<'r> {
     /// Low/mid tier: `values[ref - start]` is the value half, or `None`
     /// for an entry without the `key=value` shape (corrupt).
     Table {
@@ -71,7 +71,7 @@ enum FieldState {
     High {
         start: u32,
         cardinality: u32,
-        chunk: HighField,
+        chunk: &'r HighField,
         memo: HashMap<u32, Option<String>>,
     },
     /// The field is absent from this file's table, or its chunk failed
@@ -84,7 +84,7 @@ enum FieldState {
 /// (`name`, the resource `service.name` spelling).
 pub struct RollupRootResolver<'r, 'a> {
     reader: &'r IndexReader<'a>,
-    fields: HashMap<String, FieldState>,
+    fields: HashMap<String, FieldState<'r>>,
 }
 
 impl<'r, 'a> RollupRootResolver<'r, 'a> {
@@ -166,7 +166,7 @@ fn value_half(key: &str, field_name: &str) -> Option<String> {
 /// Mirrors `resolve_kv_strings`' per-field walk: KvIds are assigned in
 /// field-table order, so a running cardinality sum yields each field's
 /// `[start, start + cardinality)` range.
-fn decode_field(reader: &IndexReader<'_>, field_name: &str) -> FieldState {
+fn decode_field<'r>(reader: &'r IndexReader<'_>, field_name: &str) -> FieldState<'r> {
     let mut start = 0u32;
     for (field, ti) in field_table_tiered(reader.field_table()) {
         if field.name != field_name {
@@ -180,7 +180,7 @@ fn decode_field(reader: &IndexReader<'_>, field_name: &str) -> FieldState {
                 .into_iter()
                 .map(|(key, _)| String::from_utf8_lossy(&key).into_owned())
                 .collect(),
-            FieldTier::Mid => match reader.sfst.mid_field(ti) {
+            FieldTier::Mid => match reader.mid_field(ti) {
                 Ok(fst) => {
                     let mut keys = Vec::new();
                     fst.for_each(|key, _| {
@@ -195,7 +195,7 @@ fn decode_field(reader: &IndexReader<'_>, field_name: &str) -> FieldState {
                     return FieldState::Unresolvable;
                 }
             },
-            FieldTier::High => match reader.sfst.high_field(ti) {
+            FieldTier::High => match reader.high_field(ti) {
                 Ok(chunk) => {
                     return FieldState::High {
                         start,

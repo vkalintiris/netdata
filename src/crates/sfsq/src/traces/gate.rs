@@ -126,27 +126,27 @@ pub(crate) struct GateStats {
 }
 
 /// Per-file bloom state, resolved once per file.
-enum BloomState {
+enum BloomState<'r> {
     Unprobed,
     /// No TBLM chunk: might-contain for every candidate (absence is a
     /// version fact — mirrors the session's `BloomGate::Pass`).
     PassAll,
-    Ready(sfst::TraceIdBloom),
+    Ready(&'r sfst::TraceIdBloom),
 }
 
 /// Per-file rollup state, resolved once per file.
-enum RollupState {
+enum RollupState<'r> {
     Undecoded,
     /// No TRSU chunk (pre-rollup file): blocks pruning for every
     /// candidate the file might contain.
     Uncovered,
-    Ready(Box<sfst::TraceRollup>),
+    Ready(&'r sfst::TraceRollup),
 }
 
 struct GateFile<'r, 'a> {
     reader: &'r sfst::IndexReader<'a>,
-    bloom: BloomState,
-    rollup: RollupState,
+    bloom: BloomState<'r>,
+    rollup: RollupState<'r>,
     resolver: Option<sfst::RollupRootResolver<'r, 'a>>,
     /// Proven corrupt: out of the evidence set (the caller also removes
     /// it from the truth by marking the source failed).
@@ -434,7 +434,7 @@ impl<'r, 'a, 'e> TraceGate<'r, 'a, 'e> {
             } else {
                 self.stats.rollup_decodes += 1;
                 match reader.trace_rollup() {
-                    Ok(rollup) => RollupState::Ready(Box::new(rollup)),
+                    Ok(rollup) => RollupState::Ready(rollup),
                     Err(e) => {
                         tracing::warn!(
                             "sfsq traces gate: trace rollup failed to decode: {e}"

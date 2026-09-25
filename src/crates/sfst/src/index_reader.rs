@@ -8,6 +8,7 @@
 //! 3. Load secondary chunks on demand (mid-card FST or high-card blob).
 //! 4. Load per-stream log entries for attribute resolution.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 
 use crate::PrefixMap;
@@ -34,11 +35,70 @@ use crate::{
 /// Holds the mmap'd data, the deserialized summary, and the primary
 /// FST (both eagerly loaded on open since every query needs them).
 /// [`Metadata`] is cached on the underlying chunk reader and
-/// surfaced via [`metadata`](Self::metadata).
+/// surfaced via [`metadata`](Self::metadata). Every other chunk is
+/// decoded on first use and kept for the reader's lifetime, so the
+/// sections of one query (matches, facets, timeline, rows) share one
+/// decompression per chunk.
 pub struct IndexReader<'a> {
     sfst: ChunkReader<'a>,
     summary: Summary,
     primary: PrefixMap<BitmapValue>,
+    decoded: Decoded,
+}
+
+/// The chunks a reader has decoded, each at most once. A failed decode
+/// leaves its cell empty: the error is returned and a later call retries.
+struct Decoded {
+    timestamps: OnceCell<Timestamps>,
+    observed_timestamps: OnceCell<crate::ObservedTimestamps>,
+    trace_ids: OnceCell<crate::TraceIds>,
+    span_ids: OnceCell<crate::SpanIds>,
+    parent_span_ids: OnceCell<crate::ParentSpanIds>,
+    durations: OnceCell<crate::Durations>,
+    flags: OnceCell<crate::Flags>,
+    dropped_attribute_counts: OnceCell<crate::DroppedAttributeCounts>,
+    trace_id_index: OnceCell<crate::TraceIdIndex>,
+    trace_id_bloom: OnceCell<crate::TraceIdBloom>,
+    event_index: OnceCell<crate::EventIndex>,
+    link_index: OnceCell<crate::LinkIndex>,
+    trace_rollup: OnceCell<crate::TraceRollup>,
+    mid_fields: Box<[OnceCell<PrefixMap<BitmapValue>>]>,
+    high_fields: Box<[OnceCell<crate::HighField>]>,
+    stream_batches: Box<[OnceCell<crate::StreamBatch>]>,
+}
+
+impl Decoded {
+    fn new(num_mid: u16, num_high: u16, num_batches: u8) -> Self {
+        Self {
+            timestamps: OnceCell::new(),
+            observed_timestamps: OnceCell::new(),
+            trace_ids: OnceCell::new(),
+            span_ids: OnceCell::new(),
+            parent_span_ids: OnceCell::new(),
+            durations: OnceCell::new(),
+            flags: OnceCell::new(),
+            dropped_attribute_counts: OnceCell::new(),
+            trace_id_index: OnceCell::new(),
+            trace_id_bloom: OnceCell::new(),
+            event_index: OnceCell::new(),
+            link_index: OnceCell::new(),
+            trace_rollup: OnceCell::new(),
+            mid_fields: (0..num_mid).map(|_| OnceCell::new()).collect(),
+            high_fields: (0..num_high).map(|_| OnceCell::new()).collect(),
+            stream_batches: (0..num_batches).map(|_| OnceCell::new()).collect(),
+        }
+    }
+}
+
+fn memo<T>(
+    cell: &OnceCell<T>,
+    decode: impl FnOnce() -> Result<T, crate::Error>,
+) -> Result<&T, crate::Error> {
+    if let Some(value) = cell.get() {
+        return Ok(value);
+    }
+    let value = decode()?;
+    Ok(cell.get_or_init(|| value))
 }
 
 /// One materialized span of a trace reconstructed by [`IndexReader::trace_by_id`]:
@@ -197,11 +257,50 @@ impl<'a> IndexReader<'a> {
         sfst.metadata()?;
         sfst.fields()?;
         let primary = sfst.primary()?;
+        let decoded = Decoded::new(
+            sfst.num_mid()?,
+            sfst.num_high()?,
+            crate::num_stream_batches(summary.record_count),
+        );
         Ok(Self {
             sfst,
             summary,
             primary,
+            decoded,
         })
+    }
+
+    /// How many times each chunk of the file has been decompressed.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn decode_counts(&self) -> std::collections::BTreeMap<chunk_file::ChunkId, u32> {
+        self.sfst.decode_counts()
+    }
+
+    fn mid_field(&self, index: u16) -> Result<&PrefixMap<BitmapValue>, crate::Error> {
+        let cell = self
+            .decoded
+            .mid_fields
+            .get(index as usize)
+            .ok_or(crate::Error::ChunkNotFound(index))?;
+        memo(cell, || self.sfst.mid_field(index))
+    }
+
+    fn high_field(&self, index: u16) -> Result<&crate::HighField, crate::Error> {
+        let cell = self
+            .decoded
+            .high_fields
+            .get(index as usize)
+            .ok_or(crate::Error::ChunkNotFound(index))?;
+        memo(cell, || self.sfst.high_field(index))
+    }
+
+    fn stream_batch(&self, index: u8) -> Result<&crate::StreamBatch, crate::Error> {
+        let cell = self
+            .decoded
+            .stream_batches
+            .get(index as usize)
+            .ok_or(crate::Error::ChunkNotFound(index as u16))?;
+        memo(cell, || self.sfst.stream_batch(index))
     }
 
     /// The cheap summary fields (timestamps, record count, opaque
@@ -286,8 +385,10 @@ impl<'a> IndexReader<'a> {
     /// Load the per-log nanosecond [`Timestamps`], chronologically ordered
     /// and parallel-indexed to the concatenation of the stream-batch
     /// chunks (see [`load_all_stream_entries`](Self::load_all_stream_entries)).
-    pub fn load_timestamps(&self) -> Result<Timestamps, crate::Error> {
-        Ok(Timestamps::new(self.sfst.timestamps()?))
+    pub fn load_timestamps(&self) -> Result<&Timestamps, crate::Error> {
+        memo(&self.decoded.timestamps, || {
+            Ok(Timestamps::new(self.sfst.timestamps()?))
+        })
     }
 
     // ── Stream-batch chunks ─────────────────────────────────────────
@@ -303,8 +404,8 @@ impl<'a> IndexReader<'a> {
     /// Returns the attribute lists for the logs in that batch, in
     /// chronological order. Concatenating batches in order yields the
     /// full chronological log stream.
-    pub fn load_stream_batch(&self, batch_index: u8) -> Result<crate::StreamBatch, crate::Error> {
-        self.sfst.stream_batch(batch_index)
+    pub fn load_stream_batch(&self, batch_index: u8) -> Result<&crate::StreamBatch, crate::Error> {
+        self.stream_batch(batch_index)
     }
 
     /// Load and concatenate every stream-batch chunk into per-row `KvId`
@@ -315,7 +416,7 @@ impl<'a> IndexReader<'a> {
         let n = self.num_stream_batches();
         let mut out = Vec::with_capacity(self.summary.record_count as usize);
         for i in 0..n {
-            let batch = self.sfst.stream_batch(i)?;
+            let batch = self.stream_batch(i)?;
             for r in 0..batch.num_rows() {
                 out.push(batch.row(r).collect());
             }
@@ -342,38 +443,44 @@ impl<'a> IndexReader<'a> {
     }
 
     /// The per-row observed-timestamps column (`OBTS`).
-    pub fn observed_timestamps(&self) -> Result<crate::ObservedTimestamps, crate::Error> {
-        self.sfst.observed_timestamps()
+    pub fn observed_timestamps(&self) -> Result<&crate::ObservedTimestamps, crate::Error> {
+        memo(&self.decoded.observed_timestamps, || {
+            self.sfst.observed_timestamps()
+        })
     }
 
     /// The per-row trace-ids column (`TRCE`).
-    pub fn trace_ids(&self) -> Result<crate::TraceIds, crate::Error> {
-        self.sfst.trace_ids()
+    pub fn trace_ids(&self) -> Result<&crate::TraceIds, crate::Error> {
+        memo(&self.decoded.trace_ids, || self.sfst.trace_ids())
     }
 
     /// The per-row span-ids column (`SPAN`).
-    pub fn span_ids(&self) -> Result<crate::SpanIds, crate::Error> {
-        self.sfst.span_ids()
+    pub fn span_ids(&self) -> Result<&crate::SpanIds, crate::Error> {
+        memo(&self.decoded.span_ids, || self.sfst.span_ids())
     }
 
     /// The per-row flags column (`FLAG`).
-    pub fn flags(&self) -> Result<crate::Flags, crate::Error> {
-        self.sfst.flags()
+    pub fn flags(&self) -> Result<&crate::Flags, crate::Error> {
+        memo(&self.decoded.flags, || self.sfst.flags())
     }
 
     /// The per-row dropped-attributes-count column (`DRAC`).
-    pub fn dropped_attribute_counts(&self) -> Result<crate::DroppedAttributeCounts, crate::Error> {
-        self.sfst.dropped_attribute_counts()
+    pub fn dropped_attribute_counts(&self) -> Result<&crate::DroppedAttributeCounts, crate::Error> {
+        memo(&self.decoded.dropped_attribute_counts, || {
+            self.sfst.dropped_attribute_counts()
+        })
     }
 
     /// The per-row parent-span-ids column (`PSPN`, traces signal).
-    pub fn parent_span_ids(&self) -> Result<crate::ParentSpanIds, crate::Error> {
-        self.sfst.parent_span_ids()
+    pub fn parent_span_ids(&self) -> Result<&crate::ParentSpanIds, crate::Error> {
+        memo(&self.decoded.parent_span_ids, || {
+            self.sfst.parent_span_ids()
+        })
     }
 
     /// The per-row span-duration column (`DURN`, traces signal).
-    pub fn durations(&self) -> Result<crate::Durations, crate::Error> {
-        self.sfst.durations()
+    pub fn durations(&self) -> Result<&crate::Durations, crate::Error> {
+        memo(&self.decoded.durations, || self.sfst.durations())
     }
 
     /// Whether the file carries the optional per-file trace rollup (`TRSU`).
@@ -382,8 +489,8 @@ impl<'a> IndexReader<'a> {
     }
 
     /// Decode and validate the per-file trace rollup (`TRSU`).
-    pub fn trace_rollup(&self) -> Result<crate::TraceRollup, crate::Error> {
-        self.sfst.trace_rollup()
+    pub fn trace_rollup(&self) -> Result<&crate::TraceRollup, crate::Error> {
+        memo(&self.decoded.trace_rollup, || self.sfst.trace_rollup())
     }
 
     /// Whether the file carries the optional `trace_id` index (`TIDX`).
@@ -399,8 +506,8 @@ impl<'a> IndexReader<'a> {
     /// The trace-id bloom. Gate on [`has_trace_id_bloom`](Self::has_trace_id_bloom).
     /// `might_contain == false` is definitive; cross-file callers use this to
     /// skip the file without touching `TIDX`/`TRCE`.
-    pub fn trace_id_bloom(&self) -> Result<crate::TraceIdBloom, crate::Error> {
-        self.sfst.trace_id_bloom()
+    pub fn trace_id_bloom(&self) -> Result<&crate::TraceIdBloom, crate::Error> {
+        memo(&self.decoded.trace_id_bloom, || self.sfst.trace_id_bloom())
     }
 
     /// Whether the file carries the optional span event structure (`EVNB`).
@@ -414,19 +521,19 @@ impl<'a> IndexReader<'a> {
     }
 
     /// The span event structure. Gate on [`has_event_index`](Self::has_event_index).
-    pub fn event_index(&self) -> Result<crate::EventIndex, crate::Error> {
-        self.sfst.event_index()
+    pub fn event_index(&self) -> Result<&crate::EventIndex, crate::Error> {
+        memo(&self.decoded.event_index, || self.sfst.event_index())
     }
 
     /// The span link structure. Gate on [`has_link_index`](Self::has_link_index).
-    pub fn link_index(&self) -> Result<crate::LinkIndex, crate::Error> {
-        self.sfst.link_index()
+    pub fn link_index(&self) -> Result<&crate::LinkIndex, crate::Error> {
+        memo(&self.decoded.link_index, || self.sfst.link_index())
     }
 
     /// The `trace_id` index. Positions it yields index the chronological
     /// [`trace_ids`](Self::trace_ids) column.
-    pub fn trace_id_index(&self) -> Result<crate::TraceIdIndex, crate::Error> {
-        self.sfst.trace_id_index()
+    pub fn trace_id_index(&self) -> Result<&crate::TraceIdIndex, crate::Error> {
+        memo(&self.decoded.trace_id_index, || self.sfst.trace_id_index())
     }
 
     // ── KvId resolution ───────────────────────────────────────────
@@ -481,7 +588,7 @@ impl<'a> IndexReader<'a> {
             match field.tier {
                 FieldTier::Low => continue,
                 FieldTier::Mid => {
-                    let fst = self.sfst.mid_field(ti)?;
+                    let fst = self.mid_field(ti)?;
                     fst.for_each(|key, _| {
                         if kv_id < table.len() {
                             table[kv_id] = String::from_utf8_lossy(key).into_owned();
@@ -490,7 +597,7 @@ impl<'a> IndexReader<'a> {
                     });
                 }
                 FieldTier::High => {
-                    let hf = self.sfst.high_field(ti)?;
+                    let hf = self.high_field(ti)?;
                     for key in hf.keys() {
                         if kv_id < table.len() {
                             table[kv_id] = String::from_utf8_lossy(key).into_owned();
@@ -541,13 +648,13 @@ impl<'a> IndexReader<'a> {
             }
             // Every key in a mid/high chunk belongs to this one field.
             Some(FieldLocation::Mid(idx)) => {
-                let chunk = self.sfst.mid_field(idx)?;
+                let chunk = self.mid_field(idx)?;
                 chunk.for_each(|kv_bytes, _| {
                     out.push(String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned());
                 });
             }
             Some(FieldLocation::High(idx)) => {
-                let hf = self.sfst.high_field(idx)?;
+                let hf = self.high_field(idx)?;
                 out.extend(
                     hf.keys()
                         .map(|k| String::from_utf8_lossy(&k[prefix_len..]).into_owned()),
@@ -586,11 +693,11 @@ impl<'a> IndexReader<'a> {
                     .prefix_for_each_while(key_prefix.as_bytes(), |kv, _| take(kv));
             }
             Some(FieldLocation::Mid(idx)) => {
-                let chunk = self.sfst.mid_field(idx)?;
+                let chunk = self.mid_field(idx)?;
                 chunk.prefix_for_each_while(key_prefix.as_bytes(), |kv, _| take(kv));
             }
             Some(FieldLocation::High(idx)) => {
-                let hf = self.sfst.high_field(idx)?;
+                let hf = self.high_field(idx)?;
                 let start = hf
                     .binary_search(key_prefix.as_bytes())
                     .unwrap_or_else(|insert| insert);
@@ -656,7 +763,7 @@ impl<'a> IndexReader<'a> {
                     }
                 }
                 FieldTier::Mid => {
-                    let fst = self.sfst.mid_field(ti)?;
+                    let fst = self.mid_field(ti)?;
                     let mut w = 0usize;
                     let mut off = 0u32;
                     fst.for_each(|key, _| {
@@ -668,7 +775,7 @@ impl<'a> IndexReader<'a> {
                     });
                 }
                 FieldTier::High => {
-                    let hf = self.sfst.high_field(ti)?;
+                    let hf = self.high_field(ti)?;
                     for &id in wanted {
                         let off = (id - start) as usize;
                         if off < hf.len() {
@@ -709,12 +816,12 @@ impl<'a> IndexReader<'a> {
         // Decode only the batches the requested positions fall in (a page is
         // a handful of rows, usually in one or two batches), and read each
         // row's KvIds straight from the fixed-width batch.
-        let mut batches: Vec<Option<crate::StreamBatch>> =
+        let mut batches: Vec<Option<&crate::StreamBatch>> =
             (0..self.num_stream_batches()).map(|_| None).collect();
         for &pos in positions {
             let b = (pos / batch_size) as usize;
             if pos < total && batches.get(b).is_some_and(Option::is_none) {
-                batches[b] = Some(self.sfst.stream_batch(b as u8)?);
+                batches[b] = Some(self.stream_batch(b as u8)?);
             }
         }
 
@@ -891,7 +998,7 @@ impl<'a> IndexReader<'a> {
                 }
                 Some(FieldLocation::Mid(idx)) => {
                     // Every key in a mid chunk belongs to this one field.
-                    let chunk = self.sfst.mid_field(idx)?;
+                    let chunk = self.mid_field(idx)?;
                     chunk.for_each(|kv_bytes, bv| {
                         let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
                         for p in PosSet::from_value(bv).iter() {
@@ -902,7 +1009,7 @@ impl<'a> IndexReader<'a> {
                     });
                 }
                 Some(FieldLocation::High(idx)) => {
-                    let hf = self.sfst.high_field(idx)?;
+                    let hf = self.high_field(idx)?;
                     highs.push(HighScan {
                         out_idx: fp,
                         base: self.high_kv_id(idx, 0).0,
@@ -920,7 +1027,7 @@ impl<'a> IndexReader<'a> {
         if !highs.is_empty() {
             let total = self.summary.record_count;
             let batch_size = crate::stream_batch_size(total);
-            let mut loaded: Vec<Option<crate::StreamBatch>> =
+            let mut loaded: Vec<Option<&crate::StreamBatch>> =
                 (0..self.num_stream_batches()).map(|_| None).collect();
 
             for (i, &p) in positions.iter().enumerate() {
@@ -929,7 +1036,7 @@ impl<'a> IndexReader<'a> {
                 }
                 let b = (p / batch_size) as usize;
                 if loaded[b].is_none() {
-                    loaded[b] = Some(self.sfst.stream_batch(b as u8)?);
+                    loaded[b] = Some(self.stream_batch(b as u8)?);
                 }
                 let batch = loaded[b].as_ref().unwrap();
                 let local = (p % batch_size) as usize;
@@ -1228,7 +1335,7 @@ impl<'a> IndexReader<'a> {
                 }
             }
             Some(FieldLocation::Mid(idx)) => {
-                let chunk = self.sfst.mid_field(idx)?;
+                let chunk = self.mid_field(idx)?;
                 chunk.for_each(|kv_bytes, bv| {
                     dimensions.push(String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned());
                     dim_counts.push(bucket_counts(bv, fast, filter_set, &bucket_ranges));
@@ -1382,7 +1489,7 @@ impl<'a> IndexReader<'a> {
                 Ok(result)
             }
             FieldLocation::Mid(idx) => {
-                let chunk = self.sfst.mid_field(idx)?;
+                let chunk = self.mid_field(idx)?;
                 let mut result = PosSet::empty(total);
                 for value in &exacts {
                     let kv = format!("{field}={value}");
@@ -1449,7 +1556,7 @@ impl<'a> IndexReader<'a> {
             match field.tier {
                 FieldTier::Low => {}
                 FieldTier::Mid => {
-                    let chunk = self.sfst.mid_field(ti)?;
+                    let chunk = self.mid_field(ti)?;
                     chunk.for_each(|kv_bytes, bv| {
                         if query(kv_bytes) {
                             result.or_assign(&PosSet::from_value(bv));
@@ -1457,7 +1564,7 @@ impl<'a> IndexReader<'a> {
                     });
                 }
                 FieldTier::High => {
-                    let hf = self.sfst.high_field(ti)?;
+                    let hf = self.high_field(ti)?;
                     let base = self.high_kv_id(ti, 0).0;
                     for (local, key) in hf.keys().enumerate() {
                         if query(key) {
@@ -1489,7 +1596,7 @@ impl<'a> IndexReader<'a> {
         patterns: &[regex::bytes::Regex],
     ) -> Result<(KvIdSet, u8), crate::Error> {
         let prefix_len = field.len() + 1;
-        let hf = self.sfst.high_field(idx)?;
+        let hf = self.high_field(idx)?;
         // Matched KvIds for this field fall in the contiguous range
         // [base, base + cardinality); `base` is fixed for the field, so
         // resolve it once rather than per matched value.
@@ -1564,7 +1671,7 @@ impl<'a> IndexReader<'a> {
                 continue;
             }
             let batch_start = u32::from(b) * batch_size;
-            let batch = self.sfst.stream_batch(b)?;
+            let batch = self.stream_batch(b)?;
             for i in 0..batch.num_rows() {
                 *rows_visited += 1;
                 if *rows_visited > ceiling {
@@ -1614,7 +1721,7 @@ impl<'a> IndexReader<'a> {
                 }
             }
             FieldLocation::Mid(idx) => {
-                let chunk = self.sfst.mid_field(idx)?;
+                let chunk = self.mid_field(idx)?;
                 chunk.for_each(|kv_bytes, bv| {
                     let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
                     let mut set = PosSet::from_value(bv);
@@ -1662,7 +1769,7 @@ impl<'a> IndexReader<'a> {
                 }
             }
             FieldLocation::Mid(idx) => {
-                let chunk = self.sfst.mid_field(idx)?;
+                let chunk = self.mid_field(idx)?;
                 chunk.for_each(|kv_bytes, bv| {
                     let count = bv.desc.range_cardinality(&bv.data, lo..hi) as u32;
                     if count > 0 {

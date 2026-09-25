@@ -151,7 +151,7 @@ fn corrupt_root_ref_escalates_instead_of_rendering_a_wrong_root() {
     // span-name field's range — as a SERVICE ref it stays inside the
     // kv table (chunk validation cannot catch it) but outside the
     // service field: the class a bare string-table lookup mis-renders.
-    let mut rollup = reader.trace_rollup().unwrap();
+    let mut rollup = reader.trace_rollup().unwrap().clone();
     rollup.root_service_refs[0] = rollup.root_name_refs[0];
     let err = sealed_trace_aggregates(&rollup, &reader).unwrap_err();
     assert!(matches!(err, sfst::Error::CorruptIndex(_)), "{err}");

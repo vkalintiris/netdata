@@ -5,14 +5,17 @@
 //! One session per open file serves MANY trace-id lookups while decoding
 //! each shared structure exactly once (the phase-4 guardrails):
 //!
-//! - the TBLM bloom is decoded once and tested per id (a corrupt bloom
-//!   degrades to the exact lookup with ONE demoted warning per session,
-//!   not one per lookup);
+//! - the TBLM bloom is tested per id (a corrupt bloom degrades to the
+//!   exact lookup with ONE demoted warning per session, not one per
+//!   lookup);
 //! - TIDX and the per-row columns (TRCE/SPAN/PSPN/DURN/FLAG/DRAC +
-//!   timestamps) decode once, on the first non-miss lookup — a
-//!   definite bloom miss never touches them;
-//! - stream batches and EVNB/LNKB decode lazily, once;
+//!   timestamps) are fetched on the first non-miss lookup — a definite
+//!   bloom miss never touches them;
+//! - stream batches and EVNB/LNKB are fetched lazily;
 //! - KvId→string resolutions accumulate in a per-session cache.
+//!
+//! Every chunk comes from the reader's decode memo, so each is
+//! decompressed once per reader, however many sessions and lookups use it.
 //!
 //! The session implements [`SpanSource`], so the shared combiner
 //! ([`crate::trace_combine::combine`]) drives it: cheap [`SpanRef`]s up
@@ -27,42 +30,42 @@ use crate::trace_combine::{SpanRef, SpanSource};
 use crate::TraceId;
 
 /// The bloom gate, resolved once per session.
-enum BloomGate {
+enum BloomGate<'r> {
     /// No bloom chunk, or it failed to decode (warned once): every id
     /// falls through to the exact lookup.
     Pass,
-    Filter(crate::TraceIdBloom),
+    Filter(&'r crate::TraceIdBloom),
 }
 
-/// The columns a trace lookup reads — decoded together, once, on the
-/// first non-miss lookup.
-struct Columns {
-    index: crate::TraceIdIndex,
-    trace_ids: crate::TraceIds,
-    span_ids: crate::SpanIds,
-    parents: crate::ParentSpanIds,
-    durations: crate::Durations,
-    flags: crate::Flags,
-    dropped: crate::DroppedAttributeCounts,
-    timestamps: crate::Timestamps,
+/// The columns a trace lookup reads — fetched together on the first
+/// non-miss lookup.
+#[derive(Clone, Copy)]
+struct Columns<'r> {
+    index: &'r crate::TraceIdIndex,
+    trace_ids: &'r crate::TraceIds,
+    span_ids: &'r crate::SpanIds,
+    parents: &'r crate::ParentSpanIds,
+    durations: &'r crate::Durations,
+    flags: &'r crate::Flags,
+    dropped: &'r crate::DroppedAttributeCounts,
+    timestamps: &'r crate::Timestamps,
 }
 
-/// The optional event/link structures — decoded together, once, on the
-/// first materialization (absent chunks mean the file's spans carry no
+/// The optional event/link structures — fetched together on the first
+/// materialization (absent chunks mean the file's spans carry no
 /// events/links — a correct empty, not a failure).
-struct Extras {
-    events: Option<crate::EventIndex>,
-    links: Option<crate::LinkIndex>,
+#[derive(Clone, Copy)]
+struct Extras<'r> {
+    events: Option<&'r crate::EventIndex>,
+    links: Option<&'r crate::LinkIndex>,
 }
 
 /// See the module docs. Open one per file; look up many ids.
 pub struct TraceFileSession<'r, 'a> {
     reader: &'r IndexReader<'a>,
-    bloom: BloomGate,
-    columns: Option<Columns>,
-    extras: Option<Extras>,
-    /// Stream-batch cache, sized on first materialization.
-    batches: Vec<Option<crate::StreamBatch>>,
+    bloom: BloomGate<'r>,
+    columns: Option<Columns<'r>>,
+    extras: Option<Extras<'r>>,
     /// KvId → `key=value` string, accumulated across materializations.
     strings: HashMap<u32, String>,
     /// Row position → raw `_kind` int, filled per looked-up trace from
@@ -96,7 +99,6 @@ impl<'r, 'a> TraceFileSession<'r, 'a> {
             bloom,
             columns: None,
             extras: None,
-            batches: Vec::new(),
             strings: HashMap::new(),
             kinds: HashMap::new(),
         }
@@ -111,7 +113,7 @@ impl<'r, 'a> TraceFileSession<'r, 'a> {
         }
     }
 
-    fn columns(&mut self) -> Result<&Columns, crate::Error> {
+    fn columns(&mut self) -> Result<Columns<'r>, crate::Error> {
         if self.columns.is_none() {
             let reader = self.reader;
             self.columns = Some(Columns {
@@ -125,10 +127,10 @@ impl<'r, 'a> TraceFileSession<'r, 'a> {
                 timestamps: reader.load_timestamps()?,
             });
         }
-        Ok(self.columns.as_ref().expect("just populated"))
+        Ok(self.columns.expect("just populated"))
     }
 
-    fn extras(&mut self) -> Result<&Extras, crate::Error> {
+    fn extras(&mut self) -> Result<Extras<'r>, crate::Error> {
         if self.extras.is_none() {
             let reader = self.reader;
             self.extras = Some(Extras {
@@ -144,30 +146,24 @@ impl<'r, 'a> TraceFileSession<'r, 'a> {
                 },
             });
         }
-        Ok(self.extras.as_ref().expect("just populated"))
+        Ok(self.extras.expect("just populated"))
     }
 
     /// The decoded stream batch containing `pos`.
-    fn batch(&mut self, pos: u32) -> Result<&crate::StreamBatch, crate::Error> {
+    fn batch(&self, pos: u32) -> Result<&'r crate::StreamBatch, crate::Error> {
         let total = self.reader.summary().record_count;
         if pos >= total {
             return Err(crate::Error::CorruptIndex(format!(
                 "trace session: position {pos} >= record_count {total}"
             )));
         }
-        if self.batches.is_empty() {
-            self.batches = (0..self.reader.num_stream_batches()).map(|_| None).collect();
-        }
-        let b = (pos / crate::stream_batch_size(total)) as usize;
-        if self.batches.get(b).is_none() {
+        let b = pos / crate::stream_batch_size(total);
+        if b >= u32::from(self.reader.num_stream_batches()) {
             return Err(crate::Error::CorruptIndex(format!(
                 "trace session: position {pos} maps to missing stream batch {b}"
             )));
         }
-        if self.batches[b].is_none() {
-            self.batches[b] = Some(self.reader.sfst.stream_batch(b as u8)?);
-        }
-        Ok(self.batches[b].as_ref().expect("just populated"))
+        self.reader.stream_batch(b as u8)
     }
 
     /// Resolve `ids` through the per-session cache, fetching only the
@@ -195,7 +191,7 @@ impl SpanSource for TraceFileSession<'_, '_> {
             return Ok(Vec::new());
         }
         let cols = self.columns()?;
-        let positions: Vec<u32> = cols.index.positions(trace_id, &cols.trace_ids).to_vec();
+        let positions: Vec<u32> = cols.index.positions(trace_id, cols.trace_ids).to_vec();
         if positions.is_empty() {
             return Ok(Vec::new());
         }
@@ -288,7 +284,7 @@ impl SpanSource for TraceFileSession<'_, '_> {
             })
             .collect();
 
-        let extras = self.extras.as_ref().expect("populated above by extras()");
+        let extras = self.extras.expect("populated above by extras()");
         let events: Vec<TraceEvent> = match &extras.events {
             Some(ev) => ev
                 .events_for_row(pos)

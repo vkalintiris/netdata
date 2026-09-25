@@ -20,7 +20,7 @@
 
 use std::hint::black_box;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use sfst::{ChunkReader, Filter, Grid, IndexReader};
 
 fn corpus() -> Option<Vec<u8>> {
@@ -140,16 +140,23 @@ fn bench_decode(c: &mut Criterion) {
     g.finish();
 
     // ── Query-level ─────────────────────────────────────────────────
+    // Each iteration gets a fresh reader: the reader keeps what it decoded,
+    // so reusing one would time only the second and later queries.
+    let fresh = || IndexReader::open(&data).unwrap();
     let mut q = c.benchmark_group("query");
     q.sample_size(20);
 
     if let Some((field, value)) = sample_low_card_pair(&idx) {
         let filter = Filter::new().select(&field, &value);
         q.bench_function("filter_count", |b| {
-            b.iter(|| {
-                let bf = idx.compile_filter(black_box(&filter), None).unwrap();
-                idx.matched_count(&bf, span_ns.clone()).unwrap()
-            })
+            b.iter_batched(
+                fresh,
+                |idx| {
+                    let bf = idx.compile_filter(black_box(&filter), None).unwrap();
+                    idx.matched_count(&bf, span_ns.clone()).unwrap()
+                },
+                BatchSize::SmallInput,
+            )
         });
 
         let empty = idx.compile_filter(&Filter::new(), None).unwrap();
@@ -161,17 +168,29 @@ fn bench_decode(c: &mut Criterion) {
             .map(|f| f.name.clone())
             .collect();
         q.bench_function("facets_3_fields", |b| {
-            b.iter(|| idx.facets(&facet_fields, &empty, span_ns.clone()).unwrap())
+            b.iter_batched(
+                fresh,
+                |idx| idx.facets(&facet_fields, &empty, span_ns.clone()).unwrap(),
+                BatchSize::SmallInput,
+            )
         });
 
         let grid = Grid::new(span_ns.start, (span_ns.end - span_ns.start) / 60, 60);
         q.bench_function("timeline_60_buckets", |b| {
-            b.iter(|| idx.timeline(&field, &empty, grid).unwrap())
+            b.iter_batched(
+                fresh,
+                |idx| idx.timeline(&field, &empty, grid).unwrap(),
+                BatchSize::SmallInput,
+            )
         });
 
         let page: Vec<u32> = (0..100.min(idx.total_logs())).collect();
         q.bench_function("materialize_100_rows", |b| {
-            b.iter(|| idx.materialize_rows(black_box(&page)).unwrap())
+            b.iter_batched(
+                fresh,
+                |idx| idx.materialize_rows(black_box(&page)).unwrap(),
+                BatchSize::SmallInput,
+            )
         });
     } else {
         eprintln!("no low-card field in corpus; skipping query benches");

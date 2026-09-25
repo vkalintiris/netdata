@@ -80,6 +80,14 @@ pub struct ChunkReader<'a> {
     /// the tree; the tier machinery and legacy consumers read this derived
     /// view. Same lazy-decode rationale as `metadata`.
     fields: OnceCell<FieldTable>,
+    /// `SUMR.record_count`, cached by [`summary`](Self::summary): every per-row
+    /// column and index is validated against it, and re-decoding SUMR for each
+    /// of them would decompress the summary once per column.
+    record_count: OnceCell<usize>,
+    /// Chunk decompressions by chunk id, for tests asserting that a query
+    /// decodes each chunk at most once.
+    #[cfg(any(test, feature = "test-util"))]
+    decodes: std::cell::RefCell<std::collections::BTreeMap<chunk_file::ChunkId, u32>>,
 }
 
 // The accessor surface is intentionally wider than what the lib alone calls:
@@ -100,14 +108,35 @@ impl<'a> ChunkReader<'a> {
             container,
             metadata: OnceCell::new(),
             fields: OnceCell::new(),
+            record_count: OnceCell::new(),
+            #[cfg(any(test, feature = "test-util"))]
+            decodes: Default::default(),
         })
+    }
+
+    /// Every chunk decompression goes through here, so the test-only counter
+    /// sees each one.
+    fn decode<T: DeserializeOwned>(&self, id: chunk_file::ChunkId, raw: &[u8]) -> Result<T, Error> {
+        #[cfg(any(test, feature = "test-util"))]
+        {
+            *self.decodes.borrow_mut().entry(id).or_insert(0) += 1;
+        }
+        unpack(raw)
+    }
+
+    /// How many times each chunk has been decompressed through this reader.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn decode_counts(&self) -> std::collections::BTreeMap<chunk_file::ChunkId, u32> {
+        self.decodes.borrow().clone()
     }
 
     // ── SUMR ─────────────────────────────────────────────────────────
 
     /// Decompress and deserialize the summary chunk.
     pub fn summary(&self) -> Result<Summary, Error> {
-        unpack(self.summary_raw()?)
+        let summary: Summary = self.decode(CHUNK_SUMMARY, self.summary_raw()?)?;
+        let _ = self.record_count.set(summary.record_count as usize);
+        Ok(summary)
     }
 
     /// Raw compressed bytes of the summary chunk.
@@ -128,7 +157,7 @@ impl<'a> ChunkReader<'a> {
         if let Some(m) = self.metadata.get() {
             return Ok(m);
         }
-        let decoded = unpack::<Metadata>(self.metadata_raw()?)?;
+        let decoded: Metadata = self.decode(CHUNK_META, self.metadata_raw()?)?;
         // Validate the decoded schema tree at the trust boundary: a malformed
         // tree (bad root, out-of-range or non-decreasing parent) must surface
         // as CorruptIndex so the query layer skips the file, not panic/hang the
@@ -216,7 +245,7 @@ impl<'a> ChunkReader<'a> {
 
     /// Decompress and deserialize the primary FST.
     pub(crate) fn primary(&self) -> Result<PrefixMap<BitmapValue>, Error> {
-        unpack(self.primary_raw()?)
+        self.decode(CHUNK_PRIMARY, self.primary_raw()?)
     }
 
     /// Raw compressed bytes of the primary chunk.
@@ -228,7 +257,7 @@ impl<'a> ChunkReader<'a> {
 
     /// Decompress and deserialize a mid-card field FST by index.
     pub(crate) fn mid_field(&self, index: u16) -> Result<PrefixMap<BitmapValue>, Error> {
-        unpack(self.mid_field_raw(index)?)
+        self.decode(mid_field_id(index), self.mid_field_raw(index)?)
     }
 
     /// Raw compressed bytes of a mid-card field chunk (crc32-verified).
@@ -249,7 +278,7 @@ impl<'a> ChunkReader<'a> {
     /// bits to decide which [`stream_batch`](Self::stream_batch)
     /// chunks to decompress when materialising matching log positions.
     pub(crate) fn high_field(&self, index: u16) -> Result<HighField, Error> {
-        let mut high: HighField = unpack(self.high_field_raw(index)?)?;
+        let mut high: HighField = self.decode(high_field_id(index), self.high_field_raw(index)?)?;
         // `offsets` is `#[serde(skip)]`, so it deserializes empty — derive it
         // from the decoded `key_lens` before the chunk is used. A length
         // mismatch is corruption the CRC cannot catch alone.
@@ -278,7 +307,7 @@ impl<'a> ChunkReader<'a> {
     /// the timestamp of the log whose attribute list lives at global
     /// position `i` in the concatenated stream.
     pub fn timestamps(&self) -> Result<Vec<i64>, Error> {
-        unpack(self.timestamps_raw()?)
+        self.decode(CHUNK_TIMS, self.timestamps_raw()?)
     }
 
     /// Raw compressed bytes of the timestamps chunk.
@@ -323,6 +352,9 @@ impl<'a> ChunkReader<'a> {
     /// The file's row count (`SUMR.record_count`), used to check that each per-row
     /// column has exactly one value per row.
     fn record_count(&self) -> Result<usize, Error> {
+        if let Some(count) = self.record_count.get() {
+            return Ok(*count);
+        }
         Ok(self.summary()?.record_count as usize)
     }
 
@@ -343,7 +375,7 @@ impl<'a> ChunkReader<'a> {
     /// disagrees with the record count.
     pub fn observed_timestamps(&self) -> Result<ObservedTimestamps, Error> {
         self.require_column(ObservedTimestamps::NAME, ObservedTimestamps::COLUMN_TYPE)?;
-        let col = ObservedTimestamps(unpack(self.chunk_raw_by_id(CHUNK_OBSERVED_TS)?)?);
+        let col = ObservedTimestamps(self.decode_chunk(CHUNK_OBSERVED_TS)?);
         self.check_rows(ObservedTimestamps::NAME, col.len())?;
         Ok(col)
     }
@@ -351,7 +383,7 @@ impl<'a> ChunkReader<'a> {
     /// Decode the per-row trace-ids column (`TRCE`), a fixed-stride 16-byte arena.
     pub fn trace_ids(&self) -> Result<TraceIds, Error> {
         self.require_column(TraceIds::NAME, TraceIds::COLUMN_TYPE)?;
-        let col: TraceIds = unpack(self.chunk_raw_by_id(CHUNK_TRACE_IDS)?)?;
+        let col: TraceIds = self.decode_chunk(CHUNK_TRACE_IDS)?;
         if !col.well_formed() {
             return Err(Error::ColumnMismatch(
                 "trace_id arena is not a whole number of ids".into(),
@@ -364,7 +396,7 @@ impl<'a> ChunkReader<'a> {
     /// Decode the per-row span-ids column (`SPAN`), a fixed-stride 8-byte arena.
     pub fn span_ids(&self) -> Result<SpanIds, Error> {
         self.require_column(SpanIds::NAME, SpanIds::COLUMN_TYPE)?;
-        let col: SpanIds = unpack(self.chunk_raw_by_id(CHUNK_SPAN_IDS)?)?;
+        let col: SpanIds = self.decode_chunk(CHUNK_SPAN_IDS)?;
         if !col.well_formed() {
             return Err(Error::ColumnMismatch(
                 "span_id arena is not a whole number of ids".into(),
@@ -377,7 +409,7 @@ impl<'a> ChunkReader<'a> {
     /// Decode the per-row flags column (`FLAG`).
     pub fn flags(&self) -> Result<Flags, Error> {
         self.require_column(Flags::NAME, Flags::COLUMN_TYPE)?;
-        let col = Flags(unpack(self.chunk_raw_by_id(CHUNK_FLAGS)?)?);
+        let col = Flags(self.decode_chunk(CHUNK_FLAGS)?);
         self.check_rows(Flags::NAME, col.len())?;
         Ok(col)
     }
@@ -388,7 +420,7 @@ impl<'a> ChunkReader<'a> {
             DroppedAttributeCounts::NAME,
             DroppedAttributeCounts::COLUMN_TYPE,
         )?;
-        let col = DroppedAttributeCounts(unpack(self.chunk_raw_by_id(CHUNK_DROPPED_ATTRS)?)?);
+        let col = DroppedAttributeCounts(self.decode_chunk(CHUNK_DROPPED_ATTRS)?);
         self.check_rows(DroppedAttributeCounts::NAME, col.len())?;
         Ok(col)
     }
@@ -396,7 +428,7 @@ impl<'a> ChunkReader<'a> {
     /// Decode the per-row parent-span-ids column (`PSPN`), a fixed-stride 8-byte arena.
     pub fn parent_span_ids(&self) -> Result<ParentSpanIds, Error> {
         self.require_column(ParentSpanIds::NAME, ParentSpanIds::COLUMN_TYPE)?;
-        let col: ParentSpanIds = unpack(self.chunk_raw_by_id(CHUNK_PARENT_SPAN_IDS)?)?;
+        let col: ParentSpanIds = self.decode_chunk(CHUNK_PARENT_SPAN_IDS)?;
         if !col.well_formed() {
             return Err(Error::ColumnMismatch(
                 "parent_span_id arena is not a whole number of ids".into(),
@@ -409,7 +441,7 @@ impl<'a> ChunkReader<'a> {
     /// Decode the per-row span-duration column (`DURN`).
     pub fn durations(&self) -> Result<Durations, Error> {
         self.require_column(Durations::NAME, Durations::COLUMN_TYPE)?;
-        let col = Durations(unpack(self.chunk_raw_by_id(CHUNK_DURATION)?)?);
+        let col = Durations(self.decode_chunk(CHUNK_DURATION)?);
         self.check_rows(Durations::NAME, col.len())?;
         Ok(col)
     }
@@ -437,7 +469,7 @@ impl<'a> ChunkReader<'a> {
         // must be present — the writer guarantees TIDX ⟹ trace_id at seal; this
         // is the symmetric read-side guard for a file produced out-of-band.
         self.require_column(TraceIds::NAME, TraceIds::COLUMN_TYPE)?;
-        let index: TraceIdIndex = unpack(self.chunk_raw_by_id(CHUNK_TRACE_INDEX)?)?;
+        let index: TraceIdIndex = self.decode_chunk(CHUNK_TRACE_INDEX)?;
         index.validate(self.record_count()?)?;
         Ok(index)
     }
@@ -467,7 +499,7 @@ impl<'a> ChunkReader<'a> {
         // bloom miss answer "trace absent" where the exact path would have
         // surfaced the corruption.
         self.require_column(TraceIds::NAME, TraceIds::COLUMN_TYPE)?;
-        let bloom: crate::TraceIdBloom = unpack(self.chunk_raw_by_id(crate::CHUNK_TRACE_BLOOM)?)?;
+        let bloom: crate::TraceIdBloom = self.decode_chunk(crate::CHUNK_TRACE_BLOOM)?;
         bloom.validate(self.record_count()?)?;
         Ok(bloom)
     }
@@ -489,7 +521,7 @@ impl<'a> ChunkReader<'a> {
     /// validation (skeleton consistency + token refs in range); callers gate on
     /// [`has_event_index`](Self::has_event_index).
     pub fn event_index(&self) -> Result<crate::EventIndex, Error> {
-        let index: crate::EventIndex = unpack(self.chunk_raw_by_id(crate::CHUNK_EVENTS)?)?;
+        let index: crate::EventIndex = self.decode_chunk(crate::CHUNK_EVENTS)?;
         let kv_total = self.metadata()?.id_ranges.high_end.0;
         index.validate(self.record_count()?, kv_total)?;
         Ok(index)
@@ -511,8 +543,7 @@ impl<'a> ChunkReader<'a> {
         // trace-level gate prove "trace absent" where assembly would have
         // surfaced the corruption.
         self.require_column(TraceIds::NAME, TraceIds::COLUMN_TYPE)?;
-        let rollup: crate::TraceRollup =
-            unpack(self.chunk_raw_by_id(crate::CHUNK_TRACE_ROLLUP)?)?;
+        let rollup: crate::TraceRollup = self.decode_chunk(crate::CHUNK_TRACE_ROLLUP)?;
         // Structural validation lives on the type (unit-tested there):
         // index-parallelism, ref ranges, flags, strictly increasing ids.
         rollup.validate(self.metadata()?.id_ranges.high_end.0)?;
@@ -522,7 +553,7 @@ impl<'a> ChunkReader<'a> {
     /// Decode and validate the span link structure (`LNKB`). See
     /// [`event_index`](Self::event_index).
     pub fn link_index(&self) -> Result<crate::LinkIndex, Error> {
-        let index: crate::LinkIndex = unpack(self.chunk_raw_by_id(crate::CHUNK_LINKS)?)?;
+        let index: crate::LinkIndex = self.decode_chunk(crate::CHUNK_LINKS)?;
         let kv_total = self.metadata()?.id_ranges.high_end.0;
         index.validate(self.record_count()?, kv_total)?;
         Ok(index)
@@ -538,7 +569,8 @@ impl<'a> ChunkReader<'a> {
     /// chronological order; concatenating all batches in order yields the
     /// full chronological log stream.
     pub fn stream_batch(&self, index: u8) -> Result<StreamBatch, Error> {
-        let mut batch: StreamBatch = unpack(self.stream_batch_raw(index)?)?;
+        let raw = self.stream_batch_raw(index)?;
+        let mut batch: StreamBatch = self.decode(stream_batch_id(index), raw)?;
         // `row_offsets` is `#[serde(skip)]`, so it deserializes empty —
         // derive it from the decoded `row_lens` before the batch is used.
         // A length mismatch is corruption the CRC cannot catch alone.
@@ -573,6 +605,10 @@ impl<'a> ChunkReader<'a> {
     /// single chokepoint where every access gets crc32 verification.
     fn chunk_raw_by_id(&self, id: chunk_file::ChunkId) -> Result<&'a [u8], Error> {
         self.container.chunk(id).map_err(Error::from)
+    }
+
+    fn decode_chunk<T: DeserializeOwned>(&self, id: chunk_file::ChunkId) -> Result<T, Error> {
+        self.decode(id, self.chunk_raw_by_id(id)?)
     }
 }
 
