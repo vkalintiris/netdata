@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+mod access_log;
 mod acl;
 mod api;
 mod build;

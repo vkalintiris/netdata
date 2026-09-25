@@ -2,6 +2,7 @@
 //! (`src/web/api/queries/query-plan.c`), the execute loop (`query-execute.c`) and the per-metric driver
 //! (`rrd2rrdr()`, `query.c`). Spec §4.3, §5.
 
+use netdata_agent_log::{Priority, Source, nd_log};
 use std::time::Instant;
 
 use netdata_agent_storage::ram::RamQuery;
@@ -567,10 +568,26 @@ pub struct Control<'a> {
 }
 
 impl Control<'_> {
-    fn cancel(&self, timeout_ms: i32) -> bool {
-        (self.interrupted)()
-            || (timeout_ms != 0
-                && self.received.elapsed().as_secs_f64() * 1000.0 > f64::from(timeout_ms))
+    /// The two checks `rrd2rrdr()` makes after each queried metric; both can log in the same iteration. `errno` is
+    /// what C's errno holds between iterations: the interrupt callback's peek leaves EAGAIN while the client is
+    /// connected, and every record written clears it.
+    fn cancel(&self, timeout_ms: i32, errno: &mut i32) -> bool {
+        let mut cancel = false;
+        if (self.interrupted)() {
+            nd_log!(Source::Access, Priority::Notice, errno = *errno; "QUERY INTERRUPTED");
+            *errno = 0;
+            cancel = true;
+        } else {
+            *errno = nix::libc::EAGAIN;
+        }
+        let elapsed_ms = self.received.elapsed().as_micros() as f64 / 1000.0;
+        if timeout_ms != 0 && elapsed_ms > f64::from(timeout_ms) {
+            nd_log!(Source::Access, Priority::Warning, errno = *errno;
+                "QUERY CANCELED RUNTIME EXCEEDED {elapsed_ms:.2} ms (LIMIT {timeout_ms} ms)");
+            *errno = 0;
+            cancel = true;
+        }
+        cancel
     }
 }
 
@@ -712,6 +729,8 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
     let mut grouping = new_grouping(qt, window, control.windows);
     let (mut used, mut nonzero) = (0, 0);
     let mut timer = NodeTimer::new();
+    // C's errno as the loop leaves it
+    let mut errno = 0;
     for d in 0..qt.query.len() {
         timer.enter(qt, d);
         if query_metric(qt, d, window, &mut grouping, &mut r, d).is_none() {
@@ -723,7 +742,7 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
             nonzero += 1;
         }
         used += 1;
-        if control.cancel(qt.request.timeout_ms) {
+        if control.cancel(qt.request.timeout_ms, &mut errno) {
             r.view.flags |= result_flags::CANCEL;
             break;
         }
@@ -749,6 +768,8 @@ pub fn run_v2(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> O
     let mut grouping = new_grouping(qt, window, control.windows);
     let (mut used, mut nonzero) = (0, 0);
     let mut timer = NodeTimer::new();
+    // C's errno as the loop leaves it
+    let mut errno = 0;
     for d in 0..qt.query.len() {
         timer.enter(qt, d);
         let Some(query_points) = query_metric(qt, d, window, &mut grouping, &mut grouped.r_tmp, 0)
@@ -788,7 +809,7 @@ pub fn run_v2(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> O
             nonzero += 1;
         }
         used += 1;
-        if control.cancel(qt.request.timeout_ms) {
+        if control.cancel(qt.request.timeout_ms, &mut errno) {
             grouped.passes[0].view.flags |= result_flags::CANCEL;
             break;
         }

@@ -1,6 +1,7 @@
 //! Static files of the dashboard, ported from `find_filename_to_serve()`, `web_server_static_file()` and
 //! `append_slash_to_url_and_redirect()` in `src/web/server/web_client.c`.
 
+use netdata_agent_log::{Priority, Source, nd_log};
 use std::fs::{self, File, Metadata};
 use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -136,8 +137,16 @@ fn read_regular(path: &str, meta: &Metadata) -> io::Result<(Vec<u8>, i64)> {
     }
     let size = meta.len() as usize;
     let mut data = vec![0; size];
-    // read_exact retries EINTR; a short file (truncated while reading) is EIO in C, UnexpectedEof here: both 404.
-    file.read_exact(&mut data)?;
+    // read_exact retries EINTR; a short file (truncated while reading) is EIO in C.
+    if let Err(err) = file.read_exact(&mut data) {
+        let errno = if err.kind() == io::ErrorKind::UnexpectedEof {
+            Errno::EIO as i32
+        } else {
+            netdata_agent_log::errno_of(&err)
+        };
+        nd_log!(Source::Daemon, Priority::Err, errno = errno; "Web server failed to read file '{path}'");
+        return Err(io::Error::from_raw_os_error(errno));
+    }
     Ok((data, meta.mtime()))
 }
 
@@ -196,6 +205,8 @@ pub fn serve(route: &mut Route<'_>, filename: &[u8]) -> Reply {
                 Some(Errno::EBUSY | Errno::EAGAIN)
             ) =>
         {
+            nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_log::errno_of(&err);
+                "{}: File '{path}' is busy, sending 307 Moved Temporarily to force retry.", route.ctx.conn);
             let mut reply = Reply::html(
                 status::REDIR_TEMP,
                 "File is currently busy, please try again later: ",
@@ -204,7 +215,11 @@ pub fn serve(route: &mut Route<'_>, filename: &[u8]) -> Reply {
             reply.headers = [b"Location: /", filename, b"\r\n"].concat();
             reply
         }
-        Err(_) => Reply::html(status::NOT_FOUND, "Cannot open file: ", filename),
+        Err(err) => {
+            nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_log::errno_of(&err);
+                "{}: Cannot open file '{path}'.", route.ctx.conn);
+            Reply::html(status::NOT_FOUND, "Cannot open file: ", filename)
+        }
     }
 }
 

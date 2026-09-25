@@ -15,6 +15,7 @@ use netdata_agent_web::content_type::ContentType;
 use netdata_agent_web::request::Request;
 use netdata_agent_web::status;
 
+use crate::access_log::RequestContext;
 use crate::api;
 use netdata_agent_nrpc::access;
 
@@ -135,6 +136,8 @@ pub struct Route<'a> {
     pub received: Instant,
     /// Whether the client went away (`web_client_interrupt_callback()`).
     pub interrupted: &'a dyn Fn() -> bool,
+    /// The request as its log frames and records see it.
+    pub ctx: &'a RequestContext,
     pub url_as_received: &'a [u8],
     pub query: &'a [u8],
     /// `WEB_CLIENT_FLAG_PATH_IS_V0` .. `_V3`.
@@ -149,6 +152,7 @@ pub fn process_request(
     acl: u32,
     shared: &Shared,
     received: Instant,
+    ctx: &RequestContext,
     interrupted: &dyn Fn() -> bool,
 ) -> Reply {
     let path = &req.path[..req.path.len().min(FILENAME_MAX)];
@@ -163,6 +167,7 @@ pub fn process_request(
         acl,
         received,
         interrupted,
+        ctx,
         url_as_received: &req.url_as_received,
         query: &req.query,
         version: None,
@@ -253,8 +258,9 @@ impl<'a> Route<'a> {
             })
     }
 
-    /// `web_client_api_request()`: `/api/<version>/<command>`.
+    /// `web_client_api_request()`: `/api/<version>/<command>`, under its own frame.
     fn api_request(&self, host: &Host, mut rest: Option<&[u8]>) -> Reply {
+        let _frame = self.ctx.api_frame();
         let table = match strsep_skip(&mut rest, b"/") {
             b"" => return Reply::text(status::BAD_REQUEST, "Which API version?"),
             b"v3" => API_V3,
@@ -267,6 +273,8 @@ impl<'a> Route<'a> {
 
     /// `web_client_api_request_vX()`.
     fn api_command(&self, host: &Host, endpoint: &[u8], table: &[Command]) -> Reply {
+        // web_client_ensure_proper_authorization(): no bearer protection, so anonymous data access
+        self.ctx.auth.authorize_anonymous();
         if endpoint.is_empty() {
             return Reply::text(status::BAD_REQUEST, "Which API command?");
         }
@@ -383,6 +391,7 @@ mod tests {
             acl::bits::TRANSPORTS | acl::bits::ALL_LISTENER_FEATURES,
             shared,
             Instant::now(),
+            &crate::access_log::RequestContext::default(),
             &|| false,
         )
     }

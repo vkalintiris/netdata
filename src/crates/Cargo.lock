@@ -3028,11 +3028,13 @@ dependencies = [
 name = "netdata-agent-query"
 version = "0.1.3"
 dependencies = [
+ "netdata-agent-log",
  "netdata-agent-rrd",
  "netdata-agent-storage",
  "netdata-agent-sys",
  "netdata-agent-text",
  "netdata-agent-web",
+ "nix",
 ]
 
 [[package]]

@@ -21,6 +21,7 @@ use netdata_agent_streaming::receiver::{PreAdmission, Receivers};
 
 use netdata_agent_inicfg::{Config, SECTION_WEB};
 
+use crate::access_log::{Auth, ClientLog, Completed, RequestContext, logged_url};
 use crate::acl::{self, WebAcl};
 use crate::{api, router};
 
@@ -182,6 +183,26 @@ struct Client {
     output: Vec<u8>,
     written: usize,
     close_after_write: bool,
+    /// The access log's view of the connection.
+    log: ClientLog,
+    /// `w->user_auth`'s role and access for the current request, shared with its log frames.
+    auth: Arc<Auth>,
+    /// `w->transaction`: zero until a pass of the request gives it one.
+    transaction: [u8; 16],
+    /// The response waiting for its completed-request record.
+    pending: Option<Completed>,
+}
+
+impl Client {
+    /// `web_client_request_done()` after a keep-alive response went out: its record, then the reset.
+    fn request_done(&mut self) {
+        if let Some(done) = self.pending.take() {
+            done.log(&self.log);
+        }
+        self.log.request_done();
+        self.auth = Arc::default();
+        self.transaction = [0; 16];
+    }
 }
 
 /// `POLLINFO`: when the connection came and last moved data.
@@ -268,6 +289,11 @@ impl WebWorker {
                         .shared
                         .acl
                         .matches(&mut identity, self.listener_acls[index]);
+                    let log = ClientLog::new(
+                        identity.ip.clone(),
+                        peer.port().to_string(),
+                        std::mem::take(&mut identity.host),
+                    );
                     let slot = self
                         .clients
                         .iter()
@@ -307,7 +333,14 @@ impl WebWorker {
                         output: Vec::new(),
                         written: 0,
                         close_after_write: false,
+                        log,
+                        auth: Arc::default(),
+                        transaction: [0; 16],
+                        pending: None,
                     });
+                    if let Some(client) = &self.clients[slot] {
+                        client.log.connection("CONNECTED");
+                    }
                 }
                 // Another worker won the race.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -329,24 +362,46 @@ impl WebWorker {
         }
     }
 
-    fn close(&mut self, cx: &mut Context<'_>, slot: usize) {
+    /// `web_server_del_callback()`: DISCONNECTED, then the pending request's record, then the client goes back to
+    /// the cache. After a hangup C's poller pushes its copies of the IP and port around it.
+    fn close(&mut self, cx: &mut Context<'_>, slot: usize, hangup: bool) {
         if let Some(mut client) = self.clients[slot].take() {
             let _ = cx.registry().deregister(&mut client.stream);
+            let _frame = hangup.then(|| client.log.hangup_frame());
+            client.log.connection("DISCONNECTED");
+            if let Some(done) = client.pending.take() {
+                done.log(&client.log);
+            }
         }
     }
 
     /// `stream_receiver_takeover_web_connection()`: the socket leaves this worker for the streaming code; whatever
     /// arrived after the request is dropped, as C flushes it.
-    fn take_over(&mut self, cx: &mut Context<'_>, slot: usize, pre: PreAdmission) {
+    /// A STREAM request past the web checks: the socket goes to the receiver, still inside the request's frame as
+    /// in C, then the web client is deleted like any other.
+    fn take_over(
+        &mut self,
+        cx: &mut Context<'_>,
+        slot: usize,
+        pre: PreAdmission,
+        ctx: RequestContext,
+    ) {
         let Some(mut client) = self.clients[slot].take() else {
             return;
         };
         let _ = cx.registry().deregister(&mut client.stream);
         let stream = std::net::TcpStream::from(client.stream);
-        match pre {
-            PreAdmission::Refuse(message) => self.receivers.refuse(stream, message),
-            PreAdmission::Proceed(pending) => self.receivers.admit(*pending, stream),
-            PreAdmission::Reply(..) => unreachable!("replies stay on the web connection"),
+        {
+            let _frame = ctx.outer_frame();
+            match pre {
+                PreAdmission::Refuse(message) => self.receivers.refuse(stream, message),
+                PreAdmission::Proceed(pending) => self.receivers.admit(*pending, stream),
+                PreAdmission::Reply(..) => unreachable!("replies stay on the web connection"),
+            }
+        }
+        client.log.connection("DISCONNECTED");
+        if let Some(done) = client.pending.take() {
+            done.log(&client.log);
         }
     }
 
@@ -357,6 +412,12 @@ impl WebWorker {
         let Some(client) = self.clients[slot].as_mut() else {
             return;
         };
+        // poll_process_error(): a hangup or a half-close (EPOLLRDHUP, even with the request in the same read) closes
+        // the client before anything it sent is served.
+        if event.is_read_closed() || event.is_error() {
+            self.close(cx, slot, true);
+            return;
+        }
 
         // One request at a time, as C: reading stops at the first complete request and resumes only after its
         // response is written, so later bytes wait in the kernel (backpressure) and are reported again when
@@ -368,7 +429,7 @@ impl WebWorker {
                 client.received.resize(start + want, 0);
                 match client.stream.read(&mut client.received[start..]) {
                     Ok(0) => {
-                        self.close(cx, slot);
+                        self.close(cx, slot, true);
                         return;
                     }
                     Ok(n) => {
@@ -385,8 +446,8 @@ impl WebWorker {
                                 client.written = 0;
                                 break;
                             }
-                            Some(Outcome::Stream(pre)) => {
-                                self.take_over(cx, slot, pre);
+                            Some(Outcome::Stream(pre, ctx)) => {
+                                self.take_over(cx, slot, pre, *ctx);
                                 return;
                             }
                             None => {}
@@ -400,7 +461,7 @@ impl WebWorker {
                         client.received.truncate(start);
                     }
                     Err(_) => {
-                        self.close(cx, slot);
+                        self.close(cx, slot, true);
                         return;
                     }
                 }
@@ -420,7 +481,7 @@ impl WebWorker {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => {
-                    self.close(cx, slot);
+                    self.close(cx, slot, false);
                     return;
                 }
             }
@@ -436,9 +497,10 @@ impl WebWorker {
             client.output.clear();
             client.written = 0;
             if client.close_after_write {
-                self.close(cx, slot);
+                self.close(cx, slot, false);
                 return;
             }
+            client.request_done();
             let _ = cx
                 .registry()
                 .reregister(&mut client.stream, token, Interest::READABLE);
@@ -463,14 +525,24 @@ fn client_ip(peer: &std::net::SocketAddr) -> String {
 enum Outcome {
     /// Bytes to send (a whole HTTP response, or a raw streaming refusal that closes the connection).
     Reply(Vec<u8>),
-    /// A `STREAM` request past the checks made on the web connection: the connection is taken over.
-    Stream(PreAdmission),
+    /// A `STREAM` request past the checks made on the web connection: the connection is taken over, under the
+    /// request's frame.
+    Stream(PreAdmission, Box<RequestContext>),
 }
 
 /// Validates what was received and, when the request is complete, produces the whole response.
 fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Option<Outcome> {
-    // web_client_timeout_checkpoint_init() at every pass over what was received.
+    // web_client_process_request_from_web_server(): every pass restarts the request's clock (tv_in) and gives the
+    // request a transaction id if it has none yet.
     let received = Instant::now();
+    if client.transaction == [0; 16] {
+        client.transaction = *uuid::Uuid::new_v4().as_bytes();
+    }
+    // The outer frame copies the mode before this pass; a partial STREAM or WEBSOCKET pass is reset to GET.
+    let previous_mode = match client.request.mode {
+        Some(Mode::Stream | Mode::Websocket) => None,
+        mode => mode,
+    };
     let conn = Connection {
         transport: Transport::Tcp,
         tls_configured: false,
@@ -482,6 +554,46 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
     let validation = client
         .request
         .validate(&client.received, &conn, &shared.settings);
+    // X-Transaction-Id replaces the random id when it parses.
+    if let Some(transaction) = client.request.headers.transaction {
+        client.transaction = transaction;
+    }
+    client.log.forwarded_host = client
+        .request
+        .headers
+        .forwarded_host
+        .clone()
+        .unwrap_or_default();
+    client.log.forwarded_for = client.request.headers.forwarded_for.clone();
+    let mode = client.request.mode;
+    let ctx = RequestContext {
+        conn: client.log.slot.id,
+        ip: client.log.ip.clone(),
+        port: client.log.port.clone(),
+        host: client.log.host.clone(),
+        forwarded_host: lossy(&client.log.forwarded_host),
+        forwarded_for: lossy(&client.log.forwarded_for),
+        mode,
+        previous_mode,
+        url: lossy(&logged_url(&client.request.url_as_received, mode)),
+        transaction: client.transaction,
+        auth: Arc::clone(&client.auth),
+    };
+    let _frame = ctx.outer_frame();
+    let completed = |client: &Client, code: u16, sent: usize, size: usize| Completed {
+        url: logged_url(&client.request.url_as_received, mode),
+        mode,
+        code,
+        sent: sent as u64,
+        size: size as u64,
+        tv_in: received,
+        transaction: client.transaction,
+        forwarded_for: client.log.forwarded_for.clone(),
+        auth: Arc::clone(&client.auth),
+    };
+
+    // tv_ready: set once the response is ready, except for an incomplete request, a STREAM and a mode the ACL denies.
+    let mut ready = true;
     let reply = match validation {
         Validation::Incomplete => {
             if client.received.len() <= request::MAX_REQUEST_SIZE {
@@ -501,7 +613,18 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
             if client.request.mode == Some(Mode::Stream)
                 && !acl::can(client.acl, acl::bits::STREAMING) =>
         {
-            permission_denied_acl()
+            // C sends the 451 body without an HTTP header and closes.
+            let body = permission_denied_acl().body;
+            client.pending = Some(completed(
+                client,
+                status::UNAVAILABLE_FOR_LEGAL_REASONS,
+                body.len(),
+                body.len(),
+            ));
+            client.close_after_write = true;
+            client.request = Request::default();
+            client.received.clear();
+            return Some(Outcome::Reply(body));
         }
         Validation::Ok if client.request.mode == Some(Mode::Stream) => {
             // stream_receiver_accept_connection()
@@ -510,6 +633,11 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
                 client.request.headers.user_agent.as_deref(),
                 &client.client_ip,
             );
+            let (code, len) = match &pre {
+                PreAdmission::Reply(bytes, code) => (*code, bytes.len()),
+                _ => (status::OK, 0),
+            };
+            client.pending = Some(completed(client, code, len, len));
             client.request = Request::default();
             client.received.clear();
             return Some(match pre {
@@ -517,14 +645,17 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
                     client.close_after_write = true;
                     Outcome::Reply(bytes.as_bytes().to_vec())
                 }
-                other => Outcome::Stream(other),
+                other => Outcome::Stream(other, Box::new(ctx)),
             });
         }
         Validation::Ok => {
             let stream = &client.stream;
-            dispatch(&client.request, client.acl, shared, received, &|| {
-                is_socket_closed(stream)
-            })
+            let (reply, allowed) =
+                dispatch(&client.request, client.acl, shared, received, &ctx, &|| {
+                    is_socket_closed(stream)
+                });
+            ready = allowed;
+            reply
         }
         Validation::Redirect => Reply {
             code: status::HTTPS_UPGRADE,
@@ -537,6 +668,13 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
             Reply::text(status::URI_TOO_LONG, "Request URI is too long.\r\n")
         }
         Validation::TooManyReadRetries => {
+            nd_log!(
+                Source::Daemon,
+                Priority::Info,
+                "Disabling slow client after {} attempts to read the request ({} bytes received)",
+                client.request.header_parse_tries(),
+                client.received.len()
+            );
             Reply::text(status::BAD_REQUEST, "Too many retries to read request.\r\n")
         }
         Validation::NotSupported => Reply::text(
@@ -544,23 +682,24 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
             "HTTP method requested is not supported...\r\n",
         ),
     };
+    if ready {
+        client.log.tv_ready = Some(Instant::now());
+    }
 
     let h = &client.request.headers;
     let is_options = client.request.mode == Some(Mode::Options);
-    let transaction = h
-        .transaction
-        .unwrap_or_else(|| *uuid::Uuid::new_v4().as_bytes());
     // Accept-Encoding: gzip turns compression on while the headers are parsed, so the gzip and chunked header lines
     // go out even for an empty body; C then closes the connection without sending any chunk.
-    let (body, gzip, chunked) = if h.gzip {
+    let (body, gzip, chunked, compressed) = if h.gzip {
         if reply.body.is_empty() {
             client.close_after_write = true;
-            (Vec::new(), true, true)
+            (Vec::new(), true, true, 0)
         } else {
-            (gzip_chunked(&reply.body, shared.gzip_level), true, true)
+            let (framed, compressed) = gzip_chunked(&reply.body, shared.gzip_level);
+            (framed, true, true, compressed)
         }
     } else {
-        (reply.body.clone(), false, false)
+        (reply.body.clone(), false, false, reply.body.len())
     };
     let head = Head {
         code: reply.code,
@@ -583,11 +722,13 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         content_length: body.len(),
         server_host: h.server_host.as_deref(),
         url_as_received: &client.request.url_as_received,
-        transaction,
+        transaction: client.transaction,
     };
     let built = response::build(&head, now());
     let mut out = built.bytes;
     out.extend_from_slice(&body);
+    // What the access log reports: compressed bytes under gzip (without the chunk framing), else the body length.
+    client.pending = Some(completed(client, built.code, compressed, reply.body.len()));
 
     client.close_after_write |= !built.keepalive;
     // The body was built in the receive buffer, which keeps its size for the next request.
@@ -598,10 +739,15 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
     Some(Outcome::Reply(out))
 }
 
+fn lossy(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 const REDIRECT_BODY: &str = "<!DOCTYPE html><!-- SPDX-License-Identifier: GPL-3.0-or-later --><html><body onload=\"window.location.href ='https://'+ window.location.hostname + ':' + window.location.port + window.location.pathname + window.location.search\">Redirecting to safety connection, case your browser does not support redirection, please click <a onclick=\"window.location.href ='https://'+ window.location.hostname + ':'  + window.location.port + window.location.pathname + window.location.search\">here</a>.</body></html>";
 
-/// The body as one gzip member in chunked framing (C streams zlib output in chunks; clients see the same content).
-fn gzip_chunked(body: &[u8], level: u32) -> Vec<u8> {
+/// The body as one gzip member in chunked framing (C streams zlib output in chunks; clients see the same content),
+/// and the compressed length without the framing.
+fn gzip_chunked(body: &[u8], level: u32) -> (Vec<u8>, usize) {
     use flate2::write::GzEncoder;
     let mut encoder = GzEncoder::new(Vec::new(), flate2::Compression::new(level));
     let _ = encoder.write_all(body);
@@ -609,7 +755,7 @@ fn gzip_chunked(body: &[u8], level: u32) -> Vec<u8> {
     let mut out = format!("{:X}\r\n", compressed.len()).into_bytes();
     out.extend_from_slice(&compressed);
     out.extend_from_slice(b"\r\n0\r\n\r\n");
-    out
+    (out, compressed.len())
 }
 
 /// `web_client_permission_denied_acl()`.
@@ -629,31 +775,37 @@ fn is_socket_closed(stream: &mio::net::TcpStream) -> bool {
     }
 }
 
-/// The request-mode switch of `web_client_process_request_from_web_server()`, after the STREAM case.
+/// The request-mode switch of `web_client_process_request_from_web_server()`, after the STREAM case. False with the
+/// reply when the ACL denied the mode (C's `default:` case, which never marks the response ready).
 fn dispatch(
     req: &Request,
     client_acl: u32,
     shared: &Shared,
     received: Instant,
+    ctx: &RequestContext,
     interrupted: &dyn Fn() -> bool,
-) -> Reply {
+) -> (Reply, bool) {
     match req.mode {
         Some(Mode::Options) if acl::can_access_web(client_acl, req.path_is_mcp) => {
-            Reply::text(status::OK, "OK")
+            (Reply::text(status::OK, "OK"), true)
         }
         // The WebSocket handshake is not ported: past its ACL it is served as the GET it arrived as.
         Some(Mode::Websocket)
             if acl::can(client_acl, acl::bits::DASHBOARD)
                 || acl::can(client_acl, acl::bits::MCP) =>
         {
-            router::process_request(req, client_acl, shared, received, interrupted)
+            let reply =
+                router::process_request(req, client_acl, shared, received, ctx, interrupted);
+            (reply, true)
         }
         Some(Mode::Get | Mode::Post | Mode::Put | Mode::Delete)
             if acl::can_access_web(client_acl, req.path_is_mcp) =>
         {
-            router::process_request(req, client_acl, shared, received, interrupted)
+            let reply =
+                router::process_request(req, client_acl, shared, received, ctx, interrupted);
+            (reply, true)
         }
-        _ => permission_denied_acl(),
+        _ => (permission_denied_acl(), false),
     }
 }
 
@@ -695,7 +847,7 @@ impl Worker for WebWorker {
             })
             .collect();
         for slot in expired {
-            self.close(cx, slot);
+            self.close(cx, slot, false);
         }
         cx.add_timer(now + self.checks_every());
     }

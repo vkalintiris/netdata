@@ -159,6 +159,11 @@ fn truncated(v: &[u8], max: usize) -> Vec<u8> {
 }
 
 impl Request {
+    /// `w->header_parse_tries`: the passes over an incomplete request so far.
+    pub fn header_parse_tries(&self) -> usize {
+        self.header_parse_tries
+    }
+
     fn reset_parse_counters(&mut self) {
         self.header_parse_tries = 0;
         self.header_parse_last_size = 0;
