@@ -963,7 +963,10 @@ impl<'a> IndexReader<'a> {
     /// A filter holding only a literal text term: the rows carrying a value
     /// that contains `text` (see [`crate::text::LiteralText`]), across every
     /// tier. AND it onto a scope with [`BitmapFilter::conjoin`].
-    pub fn compile_text(&self, text: &crate::text::LiteralText) -> Result<BitmapFilter, crate::Error> {
+    pub fn compile_text(
+        &self,
+        text: &crate::text::LiteralText,
+    ) -> Result<BitmapFilter, crate::Error> {
         let set = self.query_positions(&|kv: &[u8]| text.matches_kv(kv))?;
         Ok(self.global_filter(set))
     }
