@@ -121,6 +121,8 @@ impl<'a> ChunkReader<'a> {
         {
             *self.decodes.borrow_mut().entry(id).or_insert(0) += 1;
         }
+        #[cfg(not(any(test, feature = "test-util")))]
+        let _ = id;
         unpack(raw)
     }
 
