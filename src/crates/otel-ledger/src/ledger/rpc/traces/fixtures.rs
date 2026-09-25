@@ -246,9 +246,10 @@ fn write_traces_wal(
 pub(crate) fn sealed_traces(reqs: Vec<ExportTraceServiceRequest>) -> (sfst::Summary, Vec<u8>) {
     let staging = tempfile::tempdir().unwrap();
     let wal = write_traces_wal(staging.path(), reqs);
-    let len = std::fs::metadata(&wal).unwrap().len();
-    ng_index::build_sfst_traces_range(&wal, wal::FrameRange::new(wal::HEADER_SIZE as u64, len))
-        .unwrap()
+    let out = staging.path().join("sealed.sfst");
+    let (summary, _) =
+        ng_index::build_sfst_traces_file(&wal, &out, &ng_index::Metrics::new()).unwrap();
+    (summary, std::fs::read(&out).unwrap())
 }
 
 /// Install `reqs` sealed as `tenant`'s local SFST of sequence `seq`: the

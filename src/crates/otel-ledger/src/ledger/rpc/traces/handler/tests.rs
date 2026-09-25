@@ -1885,6 +1885,7 @@ async fn explore_lists_the_window_fields() {
         fields["items"],
         json!([
             low("_duration_band", false),
+            low("_err_origin", false),
             low("_role", false),
             low("name", true),
             low("resource.attributes.service.name", true),

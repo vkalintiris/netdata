@@ -276,6 +276,12 @@ fn settle(lab: &mut impl Lab, config: &Config) -> Result<(), RunError> {
     }
 }
 
+/// Gives the matched rows of sealed files the seal's error-origin token.
+fn stored_origins(matched: &mut matching::Matched, store: &Membership) {
+    let sealed = |unit: usize| matches!(store.units[unit].kind, UnitKind::Sealed);
+    crate::calc::add_stored_origins(&mut matched.spans, &sealed);
+}
+
 /// Asks `plan`'s requests, then the row pages their answers lead to.
 fn ask_all(
     lab: &mut impl Lab,
@@ -376,7 +382,8 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
     if config.ask {
         let store = read_store(lab, config, &mut cache, &windows)?;
         let expected = expectations(config, None, cutoff_ns, &windows, &store, &mut outcome)?;
-        let matched = matching::match_rows(expected, &store.units);
+        let mut matched = matching::match_rows(expected, &store.units);
+        stored_origins(&mut matched, &store);
         for (plan, w) in plans.iter_mut().zip(&windows) {
             let check = matching::check_window(
                 &store.units,
@@ -436,7 +443,8 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
         };
         *outcome.units.entry(kind).or_default() += 1;
     }
-    let matched = matching::match_rows(expected, &store.units);
+    let mut matched = matching::match_rows(expected, &store.units);
+    stored_origins(&mut matched, &store);
     for (w, asked) in windows.iter().zip(frozen.asked) {
         let check = matching::check_window(
             &store.units,

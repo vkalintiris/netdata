@@ -12,8 +12,8 @@ use std::path::Path;
 
 use bumpalo::Bump;
 use sfst::{
-    DroppedAttributeCounts, Durations, Flags, ObservedTimestamps, ParentSpanIds, SpanId, SpanIds,
-    TraceId, TraceIds,
+    ChildDurations, DroppedAttributeCounts, Durations, Flags, ObservedTimestamps, ParentSpanIds,
+    SpanId, SpanIds, TraceId, TraceIds,
 };
 use sfst::{IndexWriter, KvSlot, RowIndex};
 
@@ -345,8 +345,10 @@ pub fn build_sfst_range(
 /// The **traces** counterpart of [`build_sfst_range`]: an in-memory SFST over a
 /// frame-aligned `range` of an active flattened-traces WAL — the on-query chunk
 /// build over the durable-unindexed prefix. Same typed tree + span per-row columns
-/// (+ TIDX/TBLM) as [`build_sfst_traces_file`], so the chunks are byte-identical to
-/// a file build over the same frames. The caller cross-checks
+/// (+ TIDX/TBLM) as [`build_sfst_traces_file`] over the same frames, apart from the
+/// values the seal derives over the whole WAL (`_err_origin` tokens and the
+/// `child_duration` column): a chunk image carries neither, and the query's live
+/// pass supplies them over the whole durable prefix. The caller cross-checks
 /// `summary.record_count` against the expected count to detect a truncated prefix
 /// (the check `open_range` defers).
 pub fn build_sfst_traces_range(
@@ -357,10 +359,24 @@ pub fn build_sfst_traces_range(
     let content_meta = reader.header().content_meta.clone();
     let arena = Bump::new();
     let mut row_index = RowIndex::new(&arena, CARDINALITY_THRESHOLD);
-    populate_trace_row_index(&mut reader, &mut row_index, &Metrics::new())?;
+    populate_trace_row_index(
+        &mut reader,
+        &mut row_index,
+        &Metrics::new(),
+        TraceBuild::ChunkImage,
+    )?;
     let cursor = std::io::Cursor::new(Vec::new());
     let (cursor, summary, _metadata) = IndexWriter::write_into(&row_index, cursor, content_meta)?;
     Ok((summary, cursor.into_inner()))
+}
+
+/// Which traces build fills the row index: the seal derives values over the
+/// whole WAL (error origins, child time); a chunk image of part of an active
+/// WAL does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TraceBuild {
+    Seal,
+    ChunkImage,
 }
 
 /// The traces analog of [`populate_row_index`]: decode `FlattenedTraceRequest` frames,
@@ -370,11 +386,14 @@ pub fn build_sfst_traces_range(
 /// is no `observed_ts` (spans have none). Sets `build_trace_id_index` so the seal
 /// builds the `TIDX` index from the chronological `trace_id` column. Span entries
 /// carry ingest-filled hashes (see `ng-ingest::write_trace_request`), so the interner
-/// fast path is safe here.
+/// fast path is safe here. The seal also derives, over every row of the WAL, the
+/// `_err_origin=true` token on error-origin rows and the `child_duration` column
+/// ([`sfst::derive_span_family`]); a chunk image derives neither.
 fn populate_trace_row_index(
     reader: &mut wal::Reader,
     row_index: &mut RowIndex<'_>,
     metrics: &Metrics,
+    build: TraceBuild,
 ) -> Result<SfstStats, Error> {
     check_payload_format(reader, ng_flatten::TRACE_FRAME_PAYLOAD_FORMAT)?;
     row_index.pin_fields(&ng_flatten::TRACE_PINNED_FIELDS);
@@ -396,6 +415,8 @@ fn populate_trace_row_index(
     let mut span_ids = SpanIds::default();
     let mut parent_span_ids = ParentSpanIds::default();
     let mut durations: Vec<i64> = Vec::new();
+    let mut starts: Vec<i64> = Vec::new();
+    let mut errors: Vec<bool> = Vec::new();
     let mut flags: Vec<u32> = Vec::new();
     let mut dropped_attrs: Vec<u32> = Vec::new();
     let mut events = sfst::EventRows::new();
@@ -547,7 +568,7 @@ fn populate_trace_row_index(
                     // (ng-flatten common.rs), so the per-facet nuances
                     // are unreachable from the ingest path.
                     // Honest OTLP spans carry each of these exactly once.
-                    {
+                    let is_error = {
                         let base = resource_tokens.len() + scope_tokens.len();
                         let mut name_slot = None;
                         let mut kind = None;
@@ -585,7 +606,8 @@ fn populate_trace_row_index(
                             service_slot,
                             name_slot,
                         );
-                    }
+                        is_error
+                    };
 
                     // Per-row span columns, one value per row (parallel to the row
                     // just fed) so they stay aligned for the build-time remap. Ids
@@ -594,6 +616,8 @@ fn populate_trace_row_index(
                     span_ids.push(SpanId::from(*span.span_id.as_bytes()));
                     parent_span_ids.push(SpanId::from(*span.parent_span_id.as_bytes()));
                     durations.push(span.duration);
+                    starts.push(span.ts);
+                    errors.push(is_error);
                     flags.push(span.flags);
                     dropped_attrs.push(span.dropped_attributes_count);
                 }
@@ -605,7 +629,42 @@ fn populate_trace_row_index(
         metrics.add_records(records);
     }
 
+    let child_durations = match build {
+        TraceBuild::ChunkImage => None,
+        TraceBuild::Seal => {
+            let _t = metrics.scope("derive");
+            let family = sfst::derive_span_family(&sfst::SpanRows {
+                trace_ids: &trace_ids,
+                span_ids: &span_ids,
+                parent_span_ids: &parent_span_ids,
+                start_ns: &starts,
+                duration_ns: &durations,
+                is_error: &errors,
+            })?;
+            let mut origins = Vec::new();
+            for (position, origin) in family.error_origin.iter().enumerate() {
+                if *origin {
+                    origins.push(position as u32);
+                }
+            }
+            // The token's tree leaf goes in before the tree is built: the field
+            // table is derived from the tree, and readers map token ids to
+            // fields by walking it. No origin, no token and no leaf.
+            if !origins.is_empty() {
+                build_kv(
+                    sfst::ERR_ORIGIN_FIELD,
+                    &ng_flatten::Value::Bool(true),
+                    &mut kv,
+                );
+                let slot = row_index.intern(None, &kv);
+                row_index.append_token(slot, origins)?;
+                flattener.top_level_leaf(sfst::ERR_ORIGIN_FIELD, ng_flatten::Kind::Bool);
+            }
+            Some(ChildDurations(family.child_ns))
+        }
+    };
     row_index.tree = Some(to_sfst_tree(&flattener.into_tree()));
+    row_index.child_durations = child_durations;
     row_index.trace_ids = Some(trace_ids);
     row_index.span_ids = Some(span_ids);
     row_index.parent_span_ids = Some(parent_span_ids);
@@ -629,8 +688,10 @@ fn populate_trace_row_index(
 }
 
 /// Build an SFST index file from a single flattened **traces** WAL file — the traces
-/// analog of [`build_sfst_file`]. Populates the span per-row columns and builds the
-/// `trace_id` index; returns the [`sfst::Summary`] + written file size.
+/// analog of [`build_sfst_file`] and the traces seal. Populates the span per-row
+/// columns, derives the error-origin tokens and the `child_duration` column over
+/// every row of the WAL, and builds the `trace_id` index; returns the
+/// [`sfst::Summary`] + written file size.
 pub fn build_sfst_traces_file(
     wal_path: &Path,
     out_path: &Path,
@@ -640,7 +701,7 @@ pub fn build_sfst_traces_file(
     let content_meta = reader.header().content_meta.clone();
     let arena = Bump::new();
     let mut row_index = RowIndex::new(&arena, CARDINALITY_THRESHOLD);
-    populate_trace_row_index(&mut reader, &mut row_index, metrics)?;
+    populate_trace_row_index(&mut reader, &mut row_index, metrics, TraceBuild::Seal)?;
     let _t = metrics.scope("build");
     let (summary, _metadata) = IndexWriter::write_file(&row_index, out_path, content_meta)?;
     let size = std::fs::metadata(out_path)?.len();

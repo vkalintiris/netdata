@@ -130,6 +130,13 @@ is built from (a child in another file does not count). Only files built by
 the traces seal carry it; WAL chunk images and logs files never do, so a
 reader checks the manifest for `child_duration` before asking.
 
+**Traces-derived tokens.** The traces seal adds the token `_err_origin=true`
+(a Bool leaf at the top of the tree) to every row that is ERROR with no ERROR
+child in the file (same scope and linking rules as `CHLD`, see
+`sfst::derive_span_family`). The field is absent when the file has no such
+row, and chunk images never carry it. It is a stored per-file value, not an
+attribute of the span: trace-by-id does not return it as a span field.
+
 The optional `TIDX` chunk is the **`trace_id` index**: a 256-entry first-byte
 fanout (`fanout[256]`, cumulative count of indexed positions whose `trace_id`
 first byte is `≤ b`) plus a `sort_perm` of row positions sorted by their 16-byte

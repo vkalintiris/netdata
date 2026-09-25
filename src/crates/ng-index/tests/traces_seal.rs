@@ -989,3 +989,266 @@ fn all_unset_trace_ids_seal_without_a_rollup_chunk() {
     assert!(!reader.has_trace_rollup());
     assert!(reader.trace_rollup().is_err(), "no chunk to read");
 }
+
+const DERIVED_TRACE: [u8; 16] = [0x5A; 16];
+const DERIVED_BASE: u64 = 1_700_000_000_000_000_000;
+
+/// A span of the derivation fixtures: ids as repeated bytes (parent 0 =
+/// root), times relative to `DERIVED_BASE`, ERROR when `error`.
+fn family_span(id: u8, parent: u8, start: u64, end: u64, error: bool) -> Span {
+    let mut s = span(
+        DERIVED_TRACE,
+        [id; 8],
+        [parent; 8],
+        DERIVED_BASE + start,
+        DERIVED_BASE + end,
+        &format!("op-{id}"),
+    );
+    if error {
+        s.status = Some(opentelemetry_proto::tonic::trace::v1::Status {
+            code: 2,
+            message: String::new(),
+        });
+    }
+    s
+}
+
+/// A propagated chain (1 → 2 → 3, all ERROR), a handled error (ERROR 4 with
+/// OK children 5, 8, 9 and a zero-length 10), a lone ERROR 6 and an OK 7.
+fn family() -> Vec<Span> {
+    vec![
+        family_span(1, 0, 0, 100, true),
+        family_span(2, 1, 10, 60, true),
+        family_span(3, 2, 20, 30, true),
+        family_span(4, 0, 200, 300, true),
+        family_span(5, 4, 210, 250, false),
+        family_span(8, 4, 240, 280, false),
+        family_span(9, 4, 290, 350, false),
+        family_span(10, 4, 260, 260, false),
+        family_span(6, 0, 400, 410, true),
+        family_span(7, 0, 500, 510, false),
+    ]
+}
+
+/// The span-id bytes of the rows carrying `_err_origin=true`, and every
+/// row's child duration by span-id byte.
+fn derived_by_span(bytes: &[u8]) -> (Vec<u8>, HashMap<u8, i64>) {
+    let reader = IndexReader::open(bytes).unwrap();
+    let span_ids = reader.span_ids().unwrap();
+    let filter = reader
+        .compile_filter(
+            &sfst::Filter::new().select(sfst::ERR_ORIGIN_FIELD, "true"),
+            None,
+        )
+        .unwrap();
+    let mut origins = Vec::new();
+    for position in reader.matched_positions(&filter, 0..i64::MAX).unwrap() {
+        origins.push(span_ids.get(position as usize).as_bytes()[0]);
+    }
+    origins.sort();
+    let children = reader.child_durations().unwrap();
+    let mut child = HashMap::new();
+    for (position, value) in children.0.iter().enumerate() {
+        child.insert(span_ids.get(position).as_bytes()[0], *value);
+    }
+    (origins, child)
+}
+
+#[test]
+fn seal_marks_error_origins() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal_path = write_wal(dir.path(), vec![req(family())]);
+    let out = dir.path().join("traces.sfst");
+    build_sfst_traces_file(&wal_path, &out, &Metrics::new()).unwrap();
+    let sealed = std::fs::read(&out).unwrap();
+    let reader = IndexReader::open(&sealed).unwrap();
+
+    let entry = reader.field_table().get(sfst::ERR_ORIGIN_FIELD).unwrap();
+    assert_eq!((entry.cardinality, entry.tier), (1, sfst::FieldTier::Low));
+    assert!(
+        reader
+            .tree()
+            .derive_scalar_kinds()
+            .contains(&(sfst::ERR_ORIGIN_FIELD.to_string(), sfst::ValueKind::Bool))
+    );
+    let filter = reader.compile_filter(&sfst::Filter::new(), None).unwrap();
+    let facets = reader
+        .facets(&[sfst::ERR_ORIGIN_FIELD], &filter, 0..i64::MAX)
+        .unwrap();
+    assert_eq!(facets[0].values, [("true".to_string(), 3)]);
+    assert_eq!(derived_by_span(&sealed).0, [3, 4, 6]);
+
+    // Every row materializes the same fields as the chunk image (which has
+    // no token) apart from the token itself: the token's tree leaf keeps the
+    // id-to-field mapping of every other field intact.
+    let file_len = std::fs::metadata(&wal_path).unwrap().len();
+    let (_, image) = ng_index::build_sfst_traces_range(
+        &wal_path,
+        wal::FrameRange::new(wal::HEADER_SIZE as u64, file_len),
+    )
+    .unwrap();
+    let image = IndexReader::open(&image).unwrap();
+    let all: Vec<u32> = (0..10).collect();
+    let sealed_rows = reader.materialize_rows(&all).unwrap();
+    let image_rows = image.materialize_rows(&all).unwrap();
+    for (sealed_row, image_row) in sealed_rows.iter().zip(&image_rows) {
+        let mut fields = sealed_row.fields.clone();
+        fields.retain(|(field, _)| field != sfst::ERR_ORIGIN_FIELD);
+        assert_eq!(fields, image_row.fields);
+    }
+}
+
+#[test]
+fn seal_without_errors_has_no_err_origin_field() {
+    let spans = vec![
+        family_span(1, 0, 0, 100, false),
+        family_span(2, 1, 10, 60, false),
+    ];
+    let bytes = seal(vec![req(spans)]);
+    let reader = IndexReader::open(&bytes).unwrap();
+
+    assert!(reader.field_table().get(sfst::ERR_ORIGIN_FIELD).is_none());
+    assert!(reader.field_table().get("_role").is_some());
+    assert_eq!(reader.child_durations().unwrap().0, [50, 0]);
+}
+
+#[test]
+fn seal_writes_child_durations() {
+    let bytes = seal(vec![req(family())]);
+    let (_, child) = derived_by_span(&bytes);
+
+    let expected = HashMap::from([
+        (1, 50),
+        (2, 10),
+        (3, 0),
+        (4, 80),
+        (5, 0),
+        (8, 0),
+        (9, 0),
+        (10, 0),
+        (6, 0),
+        (7, 0),
+    ]);
+    assert_eq!(child, expected);
+    let reader = IndexReader::open(&bytes).unwrap();
+    let durations = reader.durations().unwrap();
+    let children = reader.child_durations().unwrap();
+    for (child, duration) in children.0.iter().zip(&durations.0) {
+        assert!((0..=*duration).contains(child), "{child} of {duration}");
+    }
+}
+
+#[test]
+fn derived_values_do_not_depend_on_frame_order() {
+    let spans = family();
+    let parents_first = seal(vec![req(spans[..4].to_vec()), req(spans[4..].to_vec())]);
+    let mut children_first = vec![req(spans[4..].to_vec())];
+    children_first.push(req(spans[..4].to_vec()));
+    let children_first = seal(children_first);
+
+    assert_eq!(
+        derived_by_span(&parents_first),
+        derived_by_span(&children_first)
+    );
+}
+
+#[test]
+fn chunk_images_carry_no_derived_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal_path = write_wal(dir.path(), vec![req(family())]);
+    let file_len = std::fs::metadata(&wal_path).unwrap().len();
+    let (_, image) = ng_index::build_sfst_traces_range(
+        &wal_path,
+        wal::FrameRange::new(wal::HEADER_SIZE as u64, file_len),
+    )
+    .unwrap();
+    let out = dir.path().join("traces.sfst");
+    build_sfst_traces_file(&wal_path, &out, &Metrics::new()).unwrap();
+    let sealed = std::fs::read(&out).unwrap();
+
+    let image = IndexReader::open(&image).unwrap();
+    let sealed = IndexReader::open(&sealed).unwrap();
+    assert!(image.field_table().get(sfst::ERR_ORIGIN_FIELD).is_none());
+    assert!(
+        !image
+            .columns_table()
+            .names()
+            .any(|name| name == "child_duration")
+    );
+    assert!(
+        sealed
+            .columns_table()
+            .names()
+            .any(|name| name == "child_duration")
+    );
+    let entries = |reader: &IndexReader<'_>| {
+        let mut out = Vec::new();
+        for entry in reader.field_table().iter() {
+            if entry.name != sfst::ERR_ORIGIN_FIELD {
+                out.push((entry.name.clone(), entry.cardinality, entry.tier));
+            }
+        }
+        out
+    };
+    assert_eq!(entries(&image), entries(&sealed));
+}
+
+/// A parent and its only child in two different WALs: each file derives its
+/// values alone, so the parent keeps its whole duration as self time and is
+/// an origin there, and the child is an origin in its own file.
+#[test]
+fn straddling_parent_keeps_in_file_values() {
+    let first = seal(vec![req(vec![family_span(1, 0, 0, 100, true)])]);
+    let second = seal(vec![req(vec![family_span(2, 1, 10, 60, true)])]);
+
+    assert_eq!(derived_by_span(&first), (vec![1], HashMap::from([(1, 0)])));
+    assert_eq!(derived_by_span(&second), (vec![2], HashMap::from([(2, 0)])));
+}
+
+/// Writes a lab-size traces WAL (50,000 spans: 5,000 traces of ten, one in
+/// twenty ERROR) under `$SEAL_PERF_DIR`, for timing the seal with
+/// `ng-index-traces seal` under `/usr/bin/time -v`. Run it on its own:
+/// `SEAL_PERF_DIR=<dir> cargo test --release -p ng-index --test traces_seal
+/// -- --ignored write_a_lab_size_wal`.
+#[test]
+#[ignore]
+fn write_a_lab_size_wal() {
+    let dir = std::path::PathBuf::from(std::env::var("SEAL_PERF_DIR").unwrap());
+    let mut requests = Vec::new();
+    for t in 0..5_000u32 {
+        let mut trace = [0u8; 16];
+        trace[..4].copy_from_slice(&t.to_be_bytes());
+        trace[15] = 1;
+        let start = DERIVED_BASE + u64::from(t) * 10_000_000;
+        let mut spans = Vec::new();
+        for s in 0..10u8 {
+            let mut id = [0u8; 8];
+            id[..4].copy_from_slice(&t.to_be_bytes());
+            id[7] = s + 1;
+            let mut parent = [0u8; 8];
+            if s > 0 {
+                parent = id;
+                parent[7] = s;
+            }
+            let begin = start + u64::from(s) * 100_000;
+            let mut span = span(
+                trace,
+                id,
+                parent,
+                begin,
+                begin + 5_000_000,
+                &format!("op-{s}"),
+            );
+            if (t + u32::from(s)) % 20 == 0 {
+                span.status = Some(opentelemetry_proto::tonic::trace::v1::Status {
+                    code: 2,
+                    message: String::new(),
+                });
+            }
+            spans.push(span);
+        }
+        requests.push(req(spans));
+    }
+    let path = write_wal(&dir, requests);
+    println!("{}", path.display());
+}

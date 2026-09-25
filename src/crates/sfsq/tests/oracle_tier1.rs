@@ -133,6 +133,9 @@ fn store_requests(requests: &[ExportTraceServiceRequest], cut: usize) -> Stored 
     let (_, live_chunk) =
         ng_index::build_sfst_traces_range(&live_wal, common::whole_range(&live_wal)).unwrap();
 
+    // The sealed file stores the seal's error-origin tokens; the live chunk
+    // does not.
+    calc::add_stored_origins(&mut oracle, &|unit| unit == SEALED);
     let last_start_s = oracle.iter().map(|s| s.start_ns).max().unwrap() / 1_000_000_000;
     let grid = Grid::for_window(T0_S as u32, last_start_s as u32 + 1);
 

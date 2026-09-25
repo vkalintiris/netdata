@@ -29,6 +29,9 @@ pub const ROLE_FIELD: &str = "_role";
 pub const DURATION_BAND_FIELD: &str = "_duration_band";
 pub const STATUS_FIELD: &str = "status_code";
 pub const SERVICE_FIELD: &str = "resource.attributes.service.name";
+/// The token the traces seal adds to a sealed file's error-origin rows (the
+/// calculator's own copy of the documented name).
+pub const ERR_ORIGIN_FIELD: &str = "_err_origin";
 
 /// Band labels, fastest first, and the lower edges (ns) of bands 1.., each
 /// edge inclusive: <1ms, 1-10ms, 10-100ms, 100ms-1s, 1-10s, >10s.
@@ -72,6 +75,16 @@ impl Fields {
 
     pub fn contains_key(&self, name: &str) -> bool {
         !self.values_of(name).is_empty()
+    }
+
+    /// Adds one `(name, value)` pair; nothing when it is already there.
+    pub fn insert(&mut self, name: &str, value: &str) {
+        let at = self
+            .0
+            .binary_search_by(|(n, v)| (&**n, &**v).cmp(&(name, value)));
+        if let Err(at) = at {
+            self.0.insert(at, (Arc::from(name), Arc::from(value)));
+        }
     }
 
     /// Each field name with its values, names in order.

@@ -3,7 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::model::{DURATION_BAND_FIELD, OracleSpan, ROLE_FIELD, SERVICE_FIELD, STATUS_FIELD};
+use crate::model::{
+    DURATION_BAND_FIELD, ERR_ORIGIN_FIELD, OracleSpan, ROLE_FIELD, SERVICE_FIELD, STATUS_FIELD,
+};
 
 /// Bucket widths the explorer may use, seconds.
 const BUCKET_WIDTHS_S: [u32; 25] = [
@@ -794,6 +796,18 @@ pub fn derived(spans: &[OracleSpan]) -> Vec<Derived> {
         });
     }
     out
+}
+
+/// Adds the seal's `_err_origin=true` token to the error-origin rows of the
+/// units `sealed` accepts: sealed files store it; WAL chunk images and the
+/// tail do not.
+pub fn add_stored_origins(spans: &mut [OracleSpan], sealed: &dyn Fn(usize) -> bool) {
+    let values = derived(spans);
+    for (span, value) in spans.iter_mut().zip(values) {
+        if value.error_origin && sealed(span.unit) {
+            span.fields.insert(ERR_ORIGIN_FIELD, "true");
+        }
+    }
 }
 
 #[cfg(test)]

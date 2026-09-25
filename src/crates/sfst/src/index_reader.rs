@@ -132,7 +132,9 @@ pub struct TraceSpan {
     /// Zero when the file carries no `LNKB` chunk (same rule).
     pub dropped_links_count: u32,
     /// Row facets, `events.`/`links.`-prefixed tokens excluded when the file
-    /// carries the corresponding structure (they appear structured instead).
+    /// carries the corresponding structure (they appear structured instead),
+    /// and the seal's `_err_origin` token always excluded (a per-file value,
+    /// not the span's own).
     pub fields: Vec<(String, String)>,
     pub events: Vec<TraceEvent>,
     pub links: Vec<TraceLink>,

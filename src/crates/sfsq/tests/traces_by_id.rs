@@ -604,3 +604,58 @@ fn unavailable_sources_are_reported_with_their_own_reason() {
         BTreeSet::from([PartialReason::RemoteUnavailable])
     );
 }
+
+/// The seal's per-file `_err_origin` token is not a span field: an ERROR
+/// chain split across a sealed file, a chunk and a tail reads the same as
+/// the chain sealed as one file (which does store the token), and no span
+/// field or field kind carries its name.
+#[test]
+fn err_origin_is_never_a_span_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut chain = vec![
+        sp(1, 0, 100, "root"),
+        sp(2, 1, 110, "child"),
+        sp(3, 2, 120, "leaf"),
+        sp(4, 1, 130, "handled"),
+    ];
+    for span in &mut chain {
+        span.status = Some((2, ""));
+    }
+    chain[3].status = Some((1, ""));
+
+    let whole_wal = write_wal(dir.path(), vec![req(&chain)], "whole");
+    let sealed_path = dir.path().join("check.sfst");
+    ng_index::build_sfst_traces_file(&whole_wal, &sealed_path, &ng_index::Metrics::new()).unwrap();
+    let sealed = std::fs::read(&sealed_path).unwrap();
+    let reader = sfst::IndexReader::open(&sealed).unwrap();
+    assert!(reader.field_table().get(sfst::ERR_ORIGIN_FIELD).is_some());
+
+    let oracle = run(vec![sealed_source(dir.path(), &whole_wal, "oracle")]);
+    let wal_a = write_wal(dir.path(), vec![req(&chain[0..2])], "a");
+    let wal_b = write_wal(dir.path(), vec![req(&chain[2..3])], "b");
+    let wal_c = write_wal(dir.path(), vec![req(&chain[3..4])], "c");
+    let split = run(vec![
+        sealed_source(dir.path(), &wal_a, "sealed-a"),
+        memory_source(&wal_b, "chunk-b"),
+        tail_source(&wal_c, "tail-c"),
+    ]);
+
+    assert_eq!(fingerprint(&split), fingerprint(&oracle));
+    assert_eq!(oracle.trace.spans.len(), 4);
+    for span in &oracle.trace.spans {
+        assert!(
+            span.fields
+                .iter()
+                .all(|(field, _)| field != sfst::ERR_ORIGIN_FIELD),
+            "{:?}",
+            span.fields
+        );
+    }
+    assert!(
+        oracle
+            .field_kinds
+            .fields
+            .iter()
+            .all(|(field, _)| field != sfst::ERR_ORIGIN_FIELD)
+    );
+}

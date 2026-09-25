@@ -566,6 +566,13 @@ impl Flattener {
         self.emit(ROOT, StepRef::Field(name), value, out);
     }
 
+    /// Get-or-create a leaf directly under the root for a field whose tokens
+    /// a producer adds outside flattening (the traces seal's derived tokens),
+    /// so the tree, and the field table derived from it, list the field.
+    pub fn top_level_leaf(&mut self, name: &str, kind: Kind) -> NodeId {
+        self.child(ROOT, StepRef::Field(name), kind)
+    }
+
     /// Flatten a span's own fields — the queryable scalar facets (`name`, `kind`,
     /// `status_code`, `trace_state`, `status_message`), `attributes.*`, and the
     /// structured `events[]` / `links[]` lists. Identifier/timing fields

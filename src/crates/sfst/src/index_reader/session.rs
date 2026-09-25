@@ -268,7 +268,9 @@ impl SpanSource for TraceFileSession<'_, '_> {
 
         // Row facets: the `events.`/`links.` tokens exist for search; in
         // the reconstructed span they appear structured instead, so drop
-        // the flat duplicates (only when the structure is present).
+        // the flat duplicates (only when the structure is present). The
+        // seal's per-file `_err_origin` token is not a span field either:
+        // a sealed copy and a live copy of one span must compare equal.
         let fields: Vec<(String, String)> = row_ids
             .iter()
             .map(|kv| {
@@ -280,7 +282,8 @@ impl SpanSource for TraceFileSession<'_, '_> {
             })
             .filter(|(k, _)| {
                 !((has_events && k.starts_with("events."))
-                    || (has_links && k.starts_with("links.")))
+                    || (has_links && k.starts_with("links."))
+                    || k == crate::ERR_ORIGIN_FIELD)
             })
             .collect();
 
