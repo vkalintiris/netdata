@@ -180,8 +180,19 @@ fn stem_of(path: &Path) -> Result<Stem, MembershipError> {
         .ok_or_else(|| MembershipError::Name(path.to_path_buf()))
 }
 
+/// The manifest name of the column the traces seal writes since it derives
+/// error origins and child time (the calculator's own copy).
+const CHILD_DURATION_COLUMN: &str = "child_duration";
+
 /// Reads a sealed file's rows.
 pub fn read_sealed(path: &Path) -> Result<Unit, MembershipError> {
+    read_sealed_file(path).map(|(unit, _)| unit)
+}
+
+/// Reads a sealed file's rows, and whether it is legacy: rows but no
+/// `child_duration` column (sealed before the seal derived values), which the
+/// explorer leaves out.
+fn read_sealed_file(path: &Path) -> Result<(Unit, bool), MembershipError> {
     let stem = stem_of(path)?;
     let fail = |error: String| MembershipError::Sealed(path.to_path_buf(), error);
     let data = fs::read(path).map_err(|e| fail(e.to_string()))?;
@@ -194,6 +205,11 @@ pub fn read_sealed(path: &Path) -> Result<Unit, MembershipError> {
     let trace_ids = reader.trace_ids().map_err(|e| fail(e.to_string()))?;
     let span_ids = reader.span_ids().map_err(|e| fail(e.to_string()))?;
     let durations = reader.durations().map_err(|e| fail(e.to_string()))?.0;
+    let derived = reader
+        .columns_table()
+        .map_err(|e| fail(e.to_string()))?
+        .get(CHILD_DURATION_COLUMN)
+        .is_some();
 
     let trace_ids: Vec<[u8; 16]> = trace_ids.iter().map(|id| *id.as_bytes()).collect();
     let span_ids: Vec<[u8; 8]> = span_ids.iter().map(|id| *id.as_bytes()).collect();
@@ -216,13 +232,15 @@ pub fn read_sealed(path: &Path) -> Result<Unit, MembershipError> {
             duration_ns: durations[i],
         });
     }
-    Ok(Unit {
+    let legacy = count > 0 && !derived;
+    let unit = Unit {
         path: path.to_path_buf(),
         stem,
         kind: UnitKind::Sealed,
         seconds: seconds_of(&rows),
         rows,
-    })
+    };
+    Ok((unit, legacy))
 }
 
 /// What the runner watches of a WAL between two reads of the store: frames
@@ -353,6 +371,23 @@ impl StaleWal {
     }
 }
 
+/// A sealed file the explorer leaves out as legacy (no `child_duration`
+/// column): windows that overlap it cannot be judged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyFile {
+    pub path: PathBuf,
+    /// Start seconds of its oldest and newest rows.
+    pub seconds: Option<(u32, u32)>,
+}
+
+impl LegacyFile {
+    /// Whether it may hold rows of the window `[after_s, before_s)`.
+    pub fn overlaps(&self, after_s: u32, before_s: u32) -> bool {
+        self.seconds
+            .is_some_and(|(min, max)| max >= after_s && min < before_s)
+    }
+}
+
 /// Every unit of a traces store directory (`<run>/lib/otel/traces`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Membership {
@@ -360,6 +395,31 @@ pub struct Membership {
     /// The WALs read as units, in the order read.
     pub wals: Vec<WalInfo>,
     pub stale_wals: Vec<StaleWal>,
+    pub legacy_files: Vec<LegacyFile>,
+}
+
+impl Membership {
+    /// Whether a source the explorer does not count (a stale WAL or a legacy
+    /// file) may hold rows of the window `[after_s, before_s)`.
+    pub fn sets_aside(&self, after_s: u32, before_s: u32) -> bool {
+        self.stale_wals
+            .iter()
+            .any(|wal| wal.overlaps(after_s, before_s))
+            || self
+                .legacy_files
+                .iter()
+                .any(|file| file.overlaps(after_s, before_s))
+    }
+}
+
+/// A sealed file as the cache keeps it.
+#[derive(Debug, Clone)]
+enum Cached {
+    Held(Unit),
+    /// Not a unit the reader's rule keeps.
+    SetAside,
+    /// Left out by the explorer: its start seconds.
+    Legacy(Option<(u32, u32)>),
 }
 
 /// Sealed files already read, by path and length, with their unit when the
@@ -368,7 +428,7 @@ pub struct Membership {
 /// A cache serves one rule: a unit the rule set aside is not read again.
 #[derive(Debug, Clone, Default)]
 pub struct SealedCache {
-    units: BTreeMap<PathBuf, (u64, Option<Unit>)>,
+    units: BTreeMap<PathBuf, (u64, Cached)>,
 }
 
 fn files(dir: &Path, extension: &str) -> Vec<PathBuf> {
@@ -403,7 +463,8 @@ pub fn read_store(store: &Path, min_entries: u32) -> Result<Membership, Membersh
 
 /// [`read_store`], taking sealed files from `cache` when their length is the
 /// one read before, and holding only the sealed units `keep` accepts (a sealed
-/// file set aside still hides the WAL it was sealed from).
+/// file set aside still hides the WAL it was sealed from). Legacy sealed
+/// files are listed apart, never as units.
 pub fn read_store_with(
     store: &Path,
     min_entries: u32,
@@ -422,13 +483,24 @@ pub fn read_store_with(
             .len();
         let fresh = !matches!(cache.units.get(path), Some((cached, _)) if *cached == bytes);
         if fresh {
-            let unit = read_sealed(path)?;
-            let kept = keep(&unit).then_some(unit);
-            cache.units.insert(path.clone(), (bytes, kept));
+            let (unit, legacy) = read_sealed_file(path)?;
+            let cached = if legacy {
+                Cached::Legacy(unit.seconds)
+            } else if keep(&unit) {
+                Cached::Held(unit)
+            } else {
+                Cached::SetAside
+            };
+            cache.units.insert(path.clone(), (bytes, cached));
         }
         sealed_keys.push(stem_of(path)?);
-        if let Some((_, Some(unit))) = cache.units.get(path) {
-            out.units.push(unit.clone());
+        match cache.units.get(path) {
+            Some((_, Cached::Held(unit))) => out.units.push(unit.clone()),
+            Some((_, Cached::Legacy(seconds))) => out.legacy_files.push(LegacyFile {
+                path: path.clone(),
+                seconds: *seconds,
+            }),
+            _ => {}
         }
     }
 

@@ -469,6 +469,7 @@ mod tests {
             ],
             wals: vec![wal(Some(u64::from(FREEZE_S - 300) * 1_000_000_000))],
             stale_wals: Vec::new(),
+            legacy_files: Vec::new(),
         }
     }
 

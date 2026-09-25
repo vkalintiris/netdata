@@ -55,7 +55,8 @@ const STORE_PATHS: [(&str, &str); 3] = [
 const MEMBERSHIP: &str = "membership.rs";
 
 /// Reader methods membership must not call: everything beyond ids, times and
-/// durations.
+/// durations. The column manifest may be read for which columns exist (the
+/// explorer's legacy rule), never the seal's derived values.
 const MEMBERSHIP_DENIED: [&str; 13] = [
     ".metadata(",
     ".fields(",
@@ -66,7 +67,7 @@ const MEMBERSHIP_DENIED: [&str; 13] = [
     ".trace_rollup(",
     ".event_index(",
     ".link_index(",
-    ".columns_table(",
+    ".child_durations(",
     ".decode_counts(",
     ".open_range(",
     ".header(",

@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use common::{BASE_NS, request, write_sealed, write_wal};
+use common::{BASE_NS, request, write_sealed, write_sealed_as, write_wal};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use otel_oracle::membership::{
     self, Membership, MembershipError, RowKey, SealedCache, UnitKind, WalInfo,
@@ -127,6 +127,31 @@ fn sealed_files_are_read_once_per_length() {
     write_sealed(store.path(), &wal, &rows[..2]);
     unreadable(&sealed);
     assert!(matches!(read(), Err(MembershipError::Sealed(path, _)) if path == sealed));
+}
+
+/// A sealed file without the `child_duration` column was sealed before the
+/// seal derived values: it is listed as a legacy file, not a unit, still hides
+/// the WAL it was sealed from, and sets aside the windows it overlaps.
+#[test]
+fn a_sealed_file_without_derived_values_is_listed_as_legacy() {
+    let store = tempfile::tempdir().unwrap();
+    let (a, b) = (request(1, 1, 3), request(2, 11, 3));
+    let wal = write_wal(store.path(), &[&a, &b], 0);
+    let sealed = write_sealed_as(store.path(), &wal, &keys(&[&a, &b]), false);
+
+    let read = membership::read_store(store.path(), 2).unwrap();
+
+    assert!(read.units.is_empty() && read.wals.is_empty(), "{read:?}");
+    let first = u32::try_from(BASE_NS / 1_000_000_000).unwrap();
+    assert_eq!(
+        read.legacy_files,
+        vec![membership::LegacyFile {
+            path: sealed,
+            seconds: Some((first + 1, first + 13)),
+        }]
+    );
+    assert!(read.sets_aside(first + 13, first + 20));
+    assert!(!read.sets_aside(first + 14, first + 20));
 }
 
 /// A sealed file the rule sets aside is not held, is not read again, and

@@ -385,13 +385,7 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
         let mut matched = matching::match_rows(expected, &store.units);
         stored_origins(&mut matched, &store);
         for (plan, w) in plans.iter_mut().zip(&windows) {
-            let check = matching::check_window(
-                &store.units,
-                &matched,
-                &store.stale_wals,
-                w.grid.after_s,
-                w.grid.before_s,
-            );
+            let check = matching::check_window(&store, &matched, w.grid.after_s, w.grid.before_s);
             let spans = matching::window_spans(&matched, &check);
             *plan = Some(tier2::plan(
                 w.after_s,
@@ -446,13 +440,7 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
     let mut matched = matching::match_rows(expected, &store.units);
     stored_origins(&mut matched, &store);
     for (w, asked) in windows.iter().zip(frozen.asked) {
-        let check = matching::check_window(
-            &store.units,
-            &matched,
-            &store.stale_wals,
-            w.grid.after_s,
-            w.grid.before_s,
-        );
+        let check = matching::check_window(&store, &matched, w.grid.after_s, w.grid.before_s);
         let spans = matching::window_spans(&matched, &check);
         let mut result = WindowOutcome {
             window: *w,
@@ -542,7 +530,7 @@ pub fn report(
             ("lost", check.lost as u64),
             ("unmatched", check.unmatched as u64),
             ("units not fully known", check.unknown.len() as u64),
-            ("set-aside WAL overlaps", u64::from(check.stale)),
+            ("set-aside source overlaps", u64::from(check.stale)),
         ] {
             counts.insert(format!("{name} {label}"), value);
         }

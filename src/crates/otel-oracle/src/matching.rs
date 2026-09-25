@@ -14,7 +14,8 @@
 //!   are not fully known.
 //!
 //! A window can be judged when nothing was lost or left unmatched inside it,
-//! every unit it overlaps is fully known, and no set-aside WAL overlaps it.
+//! every unit it overlaps is fully known, and no source the explorer leaves
+//! out (a set-aside WAL, a legacy sealed file) overlaps it.
 //! The calculator's input for a judged window is every row of the units it
 //! overlaps.
 
@@ -22,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::capture::{Record, Signal};
 use crate::ingest::{IngestWindow, replay_record};
-use crate::membership::{RowKey, StaleWal, Unit};
+use crate::membership::{Membership, RowKey, Unit};
 use crate::model::OracleSpan;
 
 /// A span the capture expects in the store, and the record that carried it.
@@ -227,7 +228,8 @@ pub struct WindowCheck {
     pub unmatched: usize,
     /// Overlapping units that are not fully known.
     pub unknown: Vec<usize>,
-    /// Whether a set-aside WAL may hold rows of the window.
+    /// Whether a source the explorer does not count (a set-aside WAL or a
+    /// legacy file) may hold rows of the window.
     pub stale: bool,
 }
 
@@ -251,12 +253,12 @@ fn start_second(span: &OracleSpan) -> i64 {
 /// Checks the window `[after_s, before_s)`; for explore answers pass the
 /// window aligned to its grid, which is what the agent reads.
 pub fn check_window(
-    units: &[Unit],
+    store: &Membership,
     matched: &Matched,
-    stale: &[StaleWal],
     after_s: u32,
     before_s: u32,
 ) -> WindowCheck {
+    let units = &store.units;
     let overlapping: Vec<usize> = (0..units.len())
         .filter(|&index| overlaps(units[index].seconds, after_s, before_s))
         .collect();
@@ -278,7 +280,7 @@ pub fn check_window(
             .copied()
             .filter(|&unit| !matched.known[unit])
             .collect(),
-        stale: stale.iter().any(|wal| wal.overlaps(after_s, before_s)),
+        stale: store.sets_aside(after_s, before_s),
         units: overlapping,
     }
 }
@@ -305,7 +307,7 @@ mod tests {
     use prost::Message;
 
     use super::*;
-    use crate::membership::{Stem, UnitKind};
+    use crate::membership::{LegacyFile, StaleWal, Stem, UnitKind};
     use crate::model::spans_of_request;
 
     const NOW: u64 = 1_790_000_000_000_000_000;
@@ -524,13 +526,21 @@ mod tests {
             unit(UnitKind::Tail(0), keys(&[b])),
         ];
         let matched = match_rows(expected, &units);
-        let stale_elsewhere = [StaleWal {
-            path: PathBuf::from("old.wal"),
-            seconds: Some((NOW_S + 500, NOW_S + 600)),
-            readable: true,
-        }];
+        let store = Membership {
+            units: units.to_vec(),
+            stale_wals: vec![StaleWal {
+                path: PathBuf::from("old.wal"),
+                seconds: Some((NOW_S + 500, NOW_S + 600)),
+                readable: true,
+            }],
+            legacy_files: vec![LegacyFile {
+                path: PathBuf::from("old.sfst"),
+                seconds: Some((NOW_S + 700, NOW_S + 800)),
+            }],
+            ..Membership::default()
+        };
 
-        let early = check_window(&units, &matched, &stale_elsewhere, NOW_S, NOW_S + 10);
+        let early = check_window(&store, &matched, NOW_S, NOW_S + 10);
         assert_eq!(
             early,
             WindowCheck {
@@ -543,16 +553,21 @@ mod tests {
         );
         assert!(!early.ingest_ok());
 
-        let late = check_window(&units, &matched, &stale_elsewhere, NOW_S + 100, NOW_S + 102);
+        let late = check_window(&store, &matched, NOW_S + 100, NOW_S + 102);
         assert_eq!((late.units.clone(), late.lost), (vec![1], 1));
         assert!(!late.judged());
 
-        let clean = check_window(&units, &matched, &stale_elsewhere, NOW_S + 100, NOW_S + 101);
+        let clean = check_window(&store, &matched, NOW_S + 100, NOW_S + 101);
         assert!(clean.judged());
         assert_eq!(ids(&window_spans(&matched, &clean)), vec![(2, 1)]);
 
-        let with_stale = check_window(&units, &matched, &stale_elsewhere, NOW_S + 100, NOW_S + 501);
+        let with_stale = check_window(&store, &matched, NOW_S + 100, NOW_S + 501);
         assert!(with_stale.stale && !with_stale.judged());
+
+        let with_legacy = check_window(&store, &matched, NOW_S + 650, NOW_S + 701);
+        assert!(with_legacy.stale && !with_legacy.judged());
+        let between = check_window(&store, &matched, NOW_S + 650, NOW_S + 700);
+        assert!(!between.stale);
     }
 
     #[test]

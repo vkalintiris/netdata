@@ -81,6 +81,12 @@ pub fn write_wal(store: &Path, requests: &[&ExportTraceServiceRequest], extra: u
 
 /// Writes a sealed file holding `rows` under the stem of `wal`.
 pub fn write_sealed(store: &Path, wal: &Path, rows: &[RowKey]) -> PathBuf {
+    write_sealed_as(store, wal, rows, true)
+}
+
+/// [`write_sealed`], with the seal's `child_duration` column only when
+/// `derived` (a file sealed before the seal derived values has none).
+pub fn write_sealed_as(store: &Path, wal: &Path, rows: &[RowKey], derived: bool) -> PathBuf {
     let dir = store.join("index/default");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join(wal.with_extension("sfst").file_name().unwrap());
@@ -100,6 +106,9 @@ pub fn write_sealed(store: &Path, wal: &Path, rows: &[RowKey]) -> PathBuf {
     index.trace_ids = Some(trace_ids);
     index.span_ids = Some(span_ids);
     index.durations = Some(sfst::Durations(durations));
+    if derived {
+        index.child_durations = Some(sfst::ChildDurations(vec![0; rows.len()]));
+    }
     sfst::IndexWriter::write_file(&index, &path, Vec::new()).unwrap();
     path
 }

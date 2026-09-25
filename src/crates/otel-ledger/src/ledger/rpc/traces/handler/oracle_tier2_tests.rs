@@ -172,13 +172,7 @@ async fn tier2_through_the_handler_finds_nothing() {
     assert_eq!(kinds(|k| matches!(k, UnitKind::Tail(_))), 1);
 
     let grid = Grid::for_window(lab.after, lab.before);
-    let check = matching::check_window(
-        &store.units,
-        &matched,
-        &store.stale_wals,
-        grid.after_s,
-        grid.before_s,
-    );
+    let check = matching::check_window(&store, &matched, grid.after_s, grid.before_s);
     assert!(check.judged(), "{check:?}");
     let spans = matching::window_spans(&matched, &check);
     let mut plan = tier2::plan(lab.after, lab.before, &spans, check.units.len() as u64);
@@ -294,13 +288,7 @@ async fn a_dropped_capture_record_leaves_exactly_its_spans_unmatched() {
     assert!(matched.lost.is_empty());
 
     let grid = Grid::for_window(lab.after, lab.before);
-    let check = matching::check_window(
-        &store.units,
-        &matched,
-        &store.stale_wals,
-        grid.after_s,
-        grid.before_s,
-    );
+    let check = matching::check_window(&store, &matched, grid.after_s, grid.before_s);
     assert_eq!(check.unmatched, dropped.len());
     assert!(!check.ingest_ok() && !check.judged());
 }
