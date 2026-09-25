@@ -1,6 +1,6 @@
 //! One source's contribution, from its index statistics.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use super::super::duration_hist::DurationHistogram;
@@ -31,6 +31,10 @@ pub(super) struct ExploreShard {
     pub rows: Option<SourceRows>,
     /// This source's fields, for the field list.
     pub field_table: Option<sfst::FieldTable>,
+    /// With Groups asked for: the trace ids of the scope rows in the window,
+    /// and the scope rows whose trace id is unset (ascending).
+    pub scope_traces: HashSet<sfst::TraceId>,
+    pub unset_scope: Vec<u32>,
 }
 
 /// How a readable source was evaluated.
@@ -127,6 +131,16 @@ pub(super) fn evaluate(
         errors: reader.matched_count(&scope.conjoin(&errors_only), window.clone())?,
         ..ExploreShard::default()
     };
+    let percentiles = query
+        .sections
+        .histogram
+        .as_ref()
+        .is_some_and(|histogram| histogram.percentiles);
+    let positions = if percentiles || query.sections.groups {
+        reader.matched_positions(&scope, window.clone())?
+    } else {
+        Vec::new()
+    };
     if let Some(histogram) = &query.sections.histogram {
         match reader.timeline(&histogram.stack, &scope, grid) {
             Ok(timeline) => shard.timeline = Some(timeline),
@@ -137,7 +151,18 @@ pub(super) fn evaluate(
             Err(e) => return Err(e),
         }
         if histogram.percentiles {
-            shard.durations = bucket_durations(&reader, &scope, grid)?;
+            shard.durations = bucket_durations(&reader, &positions, grid)?;
+        }
+    }
+    if query.sections.groups {
+        let trace_ids = reader.trace_ids()?;
+        for &position in &positions {
+            let id = trace_ids.get(position as usize);
+            if id.is_unset() {
+                shard.unset_scope.push(position);
+            } else {
+                shard.scope_traces.insert(id);
+            }
         }
     }
     if let Some(spec) = &query.sections.facets {
@@ -180,10 +205,9 @@ pub(super) fn evaluate(
 /// walked against each bucket's position range (both ascending).
 fn bucket_durations(
     reader: &sfst::IndexReader<'_>,
-    scope: &sfst::BitmapFilter,
+    positions: &[u32],
     grid: sfst::Grid,
 ) -> Result<Vec<DurationHistogram>, sfst::Error> {
-    let positions = reader.matched_positions(scope, grid.range_ns())?;
     let ranges = reader.load_timestamps()?.bucket_ranges(grid);
     let durations = reader.durations()?;
     let mut out = vec![DurationHistogram::new(); ranges.len()];

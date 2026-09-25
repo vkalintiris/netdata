@@ -611,6 +611,7 @@ fn explore_histogram_carries_its_own_status() {
             percentiles: false,
         }),
         facets: None,
+        groups: None,
         rows: None,
         fields: None,
     };

@@ -10,6 +10,7 @@
 //! downloaded (`remote_unavailable`). A source's numbers are never partly
 //! mixed in.
 
+mod groups;
 mod live;
 mod query;
 mod rows;
@@ -19,6 +20,7 @@ mod source;
 mod values;
 
 pub use crate::merge::MAX_FACET_VALUES;
+pub use groups::GROUPS_CAP;
 pub use query::{
     DEFAULT_POPULATION, DEFAULT_STACK_FIELD, ExploreQuery, ExploreRequestError, ExploreScope,
     FacetSpec, HIDDEN_FIELDS, HistogramSpec, Sections, TRACE_IDS_MAX,
@@ -45,6 +47,7 @@ pub struct ExploreData {
     pub sources: u64,
     pub histogram: Option<HistogramData>,
     pub facets: Option<FacetsData>,
+    pub groups: Option<GroupsData>,
     pub rows: Option<RowsData>,
     pub fields: Option<FieldsData>,
 }
@@ -58,10 +61,82 @@ impl ExploreData {
             sources: 0,
             histogram: None,
             facets: None,
+            groups: None,
             rows: None,
             fields: None,
         }
     }
+}
+
+/// Every span in the window of the traces with a span in scope, by service
+/// and operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupsData {
+    /// The source reasons plus this section's own.
+    pub status: QueryStatus,
+    /// The window's length, for rates.
+    pub window_s: u64,
+    /// Self time over every group, `other` included.
+    pub self_ns_total: u128,
+    /// The groups with the most spans, at most [`GROUPS_CAP`].
+    pub rows: Vec<GroupRow>,
+    /// The rest folded together; `None` when nothing was folded.
+    pub other: Option<OtherGroups>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupRow {
+    pub key: GroupKey,
+    pub numbers: GroupNumbers,
+}
+
+/// A group: the rows' service and operation, `None` for rows without one.
+/// Ordered by value with `None` after every value.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GroupKey {
+    pub service: Option<String>,
+    pub operation: Option<String>,
+}
+
+impl Ord for GroupKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        fn part(a: &Option<String>, b: &Option<String>) -> std::cmp::Ordering {
+            match (a, b) {
+                (Some(a), Some(b)) => a.cmp(b),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        }
+        part(&self.service, &other.service).then_with(|| part(&self.operation, &other.operation))
+    }
+}
+
+impl PartialOrd for GroupKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupNumbers {
+    pub spans: u64,
+    /// Of which `status_code=ERROR`.
+    pub errors: u64,
+    /// Of which carry `_err_origin=true`.
+    pub errors_originated: u64,
+    /// `None` without spans.
+    pub p95_ns: Option<i64>,
+    /// Summed self time; rows without child time add nothing.
+    pub self_ns: u128,
+}
+
+/// The groups past [`GROUPS_CAP`], folded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OtherGroups {
+    /// How many groups were folded.
+    pub groups: u64,
+    pub numbers: GroupNumbers,
 }
 
 /// Scope rows per bucket, stacked by one field.

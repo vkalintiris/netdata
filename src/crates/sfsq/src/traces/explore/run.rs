@@ -1,21 +1,22 @@
 //! Orchestration: prepare every source once, evaluate the readable ones,
 //! count the rest, and assemble the sections.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
 use tokio_util::sync::CancellationToken;
 
 use super::super::duration_hist::DurationHistogram;
+use super::groups::{GROUPS_CAP, GroupAcc, Join, cap_groups, evaluate_groups, merge_groups};
 use super::live::live_pass;
 use super::query::{ExploreQuery, ExploreRequestError, HIDDEN_FIELDS};
 use super::rows::{self, MoreRows, PageFold, ROW_VALUE_COLUMNS, RowFields};
 use super::shard::{self, Evaluated, ExploreShard, evaluate};
 use super::source::{ExploreOptions, SourceTally, evaluate_prepared, is_sealed, prepare_all};
 use super::{
-    ExploreData, FacetData, FacetValue, FacetsData, FieldInfo, FieldsData, HistogramData,
-    Percentiles, Row, RowsData, StackBucket, Totals,
+    ExploreData, FacetData, FacetValue, FacetsData, FieldInfo, FieldsData, GroupKey, GroupsData,
+    HistogramData, Percentiles, Row, RowsData, StackBucket, Totals,
 };
 use crate::merge::{MergedFacet, merge_facets, merge_field_tables, merge_timelines};
 use crate::source::Mapped;
@@ -38,6 +39,12 @@ struct Lane<'q> {
     /// page's fields, and to select the page again without a source whose
     /// fields fail. By index in the request's sources.
     opened: Vec<(usize, Mapped)>,
+    /// With Groups asked for: the scope's trace ids, each source's scope rows
+    /// with an unset trace id, and the sources evaluated (pass 2 reads the
+    /// same ones).
+    traces: HashSet<sfst::TraceId>,
+    unset: Vec<(usize, Vec<u32>)>,
+    evaluated: Vec<usize>,
 }
 
 impl<'q> Lane<'q> {
@@ -55,10 +62,26 @@ impl<'q> Lane<'q> {
             field_tables: Vec::new(),
             page: query.sections.rows.as_ref().map(PageFold::new),
             opened: Vec::new(),
+            traces: HashSet::new(),
+            unset: Vec::new(),
+            evaluated: Vec::new(),
         }
     }
 
-    fn add(&mut self, shard: ExploreShard, source: usize, mapped: Mapped) {
+    fn add_traces(&mut self, mut traces: HashSet<sfst::TraceId>) {
+        if traces.len() > self.traces.len() {
+            std::mem::swap(&mut self.traces, &mut traces);
+        }
+        self.traces.extend(traces);
+    }
+
+    fn add(&mut self, mut shard: ExploreShard, source: usize, mapped: Mapped) {
+        self.evaluated.push(source);
+        self.add_traces(std::mem::take(&mut shard.scope_traces));
+        if !shard.unset_scope.is_empty() {
+            self.unset
+                .push((source, std::mem::take(&mut shard.unset_scope)));
+        }
         self.matched += shard.matched;
         self.errors += shard.errors;
         if let Some(timeline) = shard.timeline {
@@ -100,7 +123,17 @@ impl<'q> Lane<'q> {
             page.merge(theirs);
         }
         self.opened.extend(other.opened);
+        self.add_traces(other.traces);
+        self.unset.extend(other.unset);
+        self.evaluated.extend(other.evaluated);
     }
+}
+
+/// What one worker has folded in the Groups pass.
+#[derive(Default)]
+struct GroupsLane {
+    groups: HashMap<GroupKey, GroupAcc>,
+    failed: u64,
 }
 
 /// Answer an explorer request over `sources`.
@@ -173,11 +206,67 @@ pub fn explore(
         field_tables,
         page,
         opened: opened_lanes,
+        traces,
+        unset,
+        evaluated,
     } = folded;
     let mut opened: Vec<Option<Mapped>> = vec![None; sources.len()];
     for (index, mapped) in opened_lanes {
         opened[index] = Some(mapped);
     }
+
+    // The trace join's second pass: the window rows of every scope trace, in
+    // the sources the first pass evaluated.
+    let groups_pass = if query.sections.groups {
+        let mut unset_by_source: Vec<Vec<u32>> = vec![Vec::new(); sources.len()];
+        for (index, positions) in unset {
+            unset_by_source[index] = positions;
+        }
+        let mut joined = vec![false; sources.len()];
+        for index in evaluated {
+            joined[index] = true;
+        }
+        let window = query.grid.range_ns();
+        let Some(lanes) = evaluate_prepared(
+            &sources,
+            &prepared,
+            options.workers,
+            &cancel,
+            &progress,
+            GroupsLane::default,
+            |lane, _, index, mapped| {
+                let unset = &unset_by_source[index];
+                if !joined[index] || (traces.is_empty() && unset.is_empty()) {
+                    return;
+                }
+                let join = Join {
+                    traces: &traces,
+                    unset,
+                };
+                let derived = live.derived[index].as_ref();
+                match evaluate_groups(mapped.bytes(), derived, window.clone(), &join) {
+                    Ok(found) => merge_groups(&mut lane.groups, found),
+                    Err(e) => {
+                        lane.failed += 1;
+                        tracing::warn!(
+                            "sfsq traces: source {} failed to read its groups: {e}",
+                            sources[index].source_id()
+                        );
+                    }
+                }
+            },
+        ) else {
+            return Ok(ExploreData::cancelled());
+        };
+        let mut folded = GroupsLane::default();
+        for (_, lane) in lanes {
+            merge_groups(&mut folded.groups, lane.groups);
+            folded.failed += lane.failed;
+        }
+        Some(folded)
+    } else {
+        None
+    };
 
     // Reasons about sources hold for every section; each section adds its own.
     let shared = tally.status();
@@ -311,6 +400,29 @@ pub fn explore(
         }
     });
 
+    let groups = groups_pass.map(|pass| {
+        let mut own = StatusBuilder::new();
+        own.add_n(PartialReason::SourceFailure, pass.failed);
+        own.of(PartialReason::SourceFailure, candidates);
+        let capped = cap_groups(pass.groups, GROUPS_CAP);
+        own.add_n(PartialReason::GroupsCap, capped.folded);
+        own.of(PartialReason::GroupsCap, capped.total);
+        status.merge(own.clone());
+        let mut section = shared.clone();
+        section.merge(own);
+        // Error origins and self time are sums over the rows that have them.
+        section.merge(live_failed.clone());
+        live_named = true;
+        let width_ns = u64::try_from(query.grid.bucket_width_ns).unwrap_or(0);
+        GroupsData {
+            status: section.finish(),
+            window_s: width_ns * query.grid.num_buckets as u64 / 1_000_000_000,
+            self_ns_total: capped.self_ns_total,
+            rows: capped.rows,
+            other: capped.other,
+        }
+    });
+
     let rows = page.map(|page| {
         let spec = page.spec();
         let (items, more, own) =
@@ -354,6 +466,7 @@ pub fn explore(
         sources: candidates,
         histogram,
         facets,
+        groups,
         rows,
         fields,
     })

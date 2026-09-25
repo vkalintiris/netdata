@@ -468,6 +468,27 @@ pub(super) struct RowFields {
     pub columns: Vec<Vec<String>>,
 }
 
+/// A row's self time: its duration less the time its children cover. A
+/// child time outside `[0, duration]` is a corrupt source.
+pub(super) fn self_time(
+    durations: &sfst::Durations,
+    children: &sfst::ChildDurations,
+    position: u32,
+) -> Result<i64, sfst::Error> {
+    let index = position as usize;
+    let (Some(&duration), Some(&child)) = (durations.0.get(index), children.0.get(index)) else {
+        return Err(sfst::Error::CorruptIndex(format!(
+            "no duration for row {position}"
+        )));
+    };
+    if !(0..=duration).contains(&child) {
+        return Err(sfst::Error::CorruptIndex(format!(
+            "row {position}: child time {child} outside its duration {duration}"
+        )));
+    }
+    Ok(duration - child)
+}
+
 /// Fields every row shows, in [`RowFields`] order.
 const SHOWN_FIELDS: [&str; 4] = [
     SERVICE_FIELD,
@@ -501,22 +522,7 @@ pub(super) fn materialize(
     let mut out = Vec::with_capacity(positions.len());
     for &position in positions {
         let self_duration_ns = match &times {
-            Some((durations, children)) => {
-                let index = position as usize;
-                let (Some(&duration), Some(&child)) =
-                    (durations.0.get(index), children.0.get(index))
-                else {
-                    return Err(sfst::Error::CorruptIndex(format!(
-                        "no duration for row {position}"
-                    )));
-                };
-                if !(0..=duration).contains(&child) {
-                    return Err(sfst::Error::CorruptIndex(format!(
-                        "row {position}: child time {child} outside its duration {duration}"
-                    )));
-                }
-                Some(duration - child)
-            }
+            Some((durations, children)) => Some(self_time(durations, children, position)?),
             None => None,
         };
         let mut take = |field: usize| values[field].next().unwrap_or_default();

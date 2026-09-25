@@ -44,6 +44,7 @@ fn query(stack: &str, chips: &[(&str, &str)]) -> ExploreQuery {
                 percentiles: false,
             }),
             facets: None,
+            groups: false,
             rows: None,
             fields: false,
         },
@@ -145,6 +146,7 @@ fn entry_spans_are_counted_by_status() {
             sources: 1,
             histogram: Some(one_request_histogram(1)),
             facets: None,
+            groups: None,
             rows: None,
             fields: None,
         }
@@ -736,6 +738,7 @@ fn every_section(stack: &str, order: RowOrder, limit: usize) -> ExploreQuery {
         percentiles: true,
     });
     query.sections.facets = Some(FacetSpec { fields: None });
+    query.sections.groups = true;
     query.sections.fields = true;
     query.sections.rows = Some(RowsSpec {
         order,
@@ -759,7 +762,8 @@ fn explore_parallel_equals_sequential() {
             Arc::clone(&progress),
         )
         .unwrap();
-        assert_eq!(progress.load(Ordering::Relaxed), sources.len());
+        let passes = if data.groups.is_some() { 2 } else { 1 };
+        assert_eq!(progress.load(Ordering::Relaxed), passes * sources.len());
         data
     };
 
@@ -878,4 +882,230 @@ fn a_scope_names_at_most_the_trace_id_limit() {
         refused,
         Err(sfsq::traces::explore::ExploreRequestError::Invalid(_))
     ));
+}
+/// A span of `trace` named `name`, of `kind`, starting at `second`, ERROR
+/// when `error`.
+fn group_span(
+    trace: u8,
+    id: u8,
+    parent: u8,
+    second: u64,
+    name: &'static str,
+    kind: i32,
+    error: bool,
+) -> SpanSpec {
+    SpanSpec {
+        trace: [trace; 16],
+        kind,
+        status: error.then_some((2, "boom")),
+        ..sp(id, parent, second * S, name)
+    }
+}
+
+/// `(service, operation, spans, errors, errors originated, self ns)` per
+/// group, in the section's order.
+fn group_numbers(data: &ExploreData) -> Vec<GroupLine> {
+    let groups = data.groups.as_ref().expect("groups section");
+    let mut out = Vec::new();
+    for row in &groups.rows {
+        assert!(row.numbers.p95_ns.is_some());
+        out.push((
+            row.key.service.clone(),
+            row.key.operation.clone(),
+            row.numbers.spans,
+            row.numbers.errors,
+            row.numbers.errors_originated,
+            row.numbers.self_ns,
+        ));
+    }
+    out
+}
+
+fn groups_query(chips: &[(&str, &str)]) -> ExploreQuery {
+    let mut q = query("status_code", chips);
+    q.sections.histogram = None;
+    q.sections.groups = true;
+    q
+}
+
+type GroupLine = (Option<String>, Option<String>, u64, u64, u64, u128);
+
+/// A group of service `svc`: its operation, spans, errors, errors
+/// originated and self time.
+fn svc(operation: &str, spans: u64, errors: u64, origins: u64, self_ns: u128) -> GroupLine {
+    (
+        Some("svc".to_string()),
+        Some(operation.to_string()),
+        spans,
+        errors,
+        origins,
+        self_ns,
+    )
+}
+
+/// QRY-46: one trace whose spans sit in two sealed files, a chunk image and
+/// a tail is counted once, every span of it, whatever its role; a trace with
+/// no span in scope is not.
+#[test]
+fn trace_join_across_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = write_wal(
+        dir.path(),
+        vec![req(&[group_span(1, 1, 0, 1, "checkout", 2, true)])],
+        "a",
+    );
+    let b = write_wal(
+        dir.path(),
+        vec![req(&[
+            group_span(1, 2, 1, 2, "op", 2, false),
+            group_span(2, 9, 0, 2, "op", 2, false),
+        ])],
+        "b",
+    );
+    let c = write_wal(
+        dir.path(),
+        vec![req(&[group_span(1, 3, 2, 2, "op", 3, false)])],
+        "c",
+    );
+    let d = write_wal(
+        dir.path(),
+        vec![req(&[
+            group_span(1, 4, 2, 3, "op", 1, false),
+            group_span(2, 8, 9, 3, "op", 1, false),
+        ])],
+        "d",
+    );
+    let sources = vec![
+        sealed_source(dir.path(), &a, "a"),
+        sealed_source(dir.path(), &b, "b"),
+        memory_source(&c, "c"),
+        tail_source(&d, "d"),
+    ];
+    let progress = Arc::new(AtomicUsize::new(0));
+    let data = explore(
+        sources,
+        groups_query(&[("name", "checkout")]),
+        ExploreOptions::default(),
+        CancellationToken::new(),
+        Arc::clone(&progress),
+    )
+    .unwrap();
+
+    assert!(data.status.is_complete(), "{:?}", data.status);
+    let groups = data.groups.as_ref().unwrap();
+    assert!(groups.status.is_complete(), "{:?}", groups.status);
+    assert_eq!(groups.window_s, 10);
+    assert_eq!(
+        group_numbers(&data),
+        vec![svc("op", 3, 0, 0, 150), svc("checkout", 1, 1, 1, 50)]
+    );
+    assert_eq!(groups.self_ns_total, 200);
+    assert!(groups.other.is_none());
+    assert_eq!(
+        progress.load(Ordering::Relaxed),
+        8,
+        "two passes over four sources"
+    );
+}
+
+/// D41: a window row of a scope trace counts whatever its role; a row past
+/// the window does not; a scope row without a trace id counts as itself and
+/// one outside the scope does not. A file the first pass set aside (legacy)
+/// is not read again.
+#[test]
+fn groups_count_every_span_of_the_scope_traces() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(
+        dir.path(),
+        vec![req(&[
+            group_span(1, 1, 0, 1, "checkout", 2, false),
+            group_span(1, 2, 1, 2, "op", 3, true),
+            group_span(1, 3, 1, 12, "late", 1, false),
+            group_span(0, 4, 0, 3, "checkout", 2, false),
+            group_span(0, 5, 0, 3, "op", 2, false),
+            group_span(2, 6, 0, 4, "op", 2, false),
+        ])],
+        "a",
+    );
+    let data = run(
+        vec![
+            sealed_source(dir.path(), &wal, "a"),
+            legacy_sfst_source(dir.path(), "old"),
+        ],
+        groups_query(&[("name", "checkout")]),
+    );
+    let groups = data.groups.as_ref().unwrap();
+    assert_eq!(groups.status, partial(&[(PartialReason::LegacyFile, 1, 2)]));
+    assert_eq!(
+        group_numbers(&data),
+        vec![svc("checkout", 2, 0, 0, 100), svc("op", 1, 1, 1, 50)]
+    );
+}
+
+/// A source whose second pass fails is named on the Groups section only:
+/// the sections of the first pass still count it.
+#[test]
+fn groups_name_a_source_that_fails_the_second_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "good");
+    let bad = write_wal(dir.path(), vec![req(&request(0x12, 0x10))], "bad");
+    let bad_path = dir.path().join("bad.sfst");
+    ng_index::build_sfst_traces_file(&bad, &bad_path, &ng_index::Metrics::new()).unwrap();
+    corrupt_chunk(&bad_path, *b"CHLD");
+    let mut q = entry_spans("status_code");
+    q.sections.groups = true;
+    let data = run(
+        vec![
+            sealed_source(dir.path(), &good, "good"),
+            sealed_source_at(&bad_path, "bad"),
+        ],
+        q,
+    );
+    let histogram = data.histogram.as_ref().unwrap();
+    assert!(histogram.status.is_complete(), "{:?}", histogram.status);
+    assert_eq!(histogram.totals.count, 4, "both files in the first pass");
+    let groups = data.groups.as_ref().unwrap();
+    assert_eq!(
+        groups.status,
+        partial(&[(PartialReason::SourceFailure, 1, 2)])
+    );
+    assert_eq!(data.status, groups.status);
+    let spans: u64 = groups.rows.iter().map(|row| row.numbers.spans).sum();
+    assert_eq!(spans, 4, "the good file's trace, every span");
+}
+
+/// A live WAL whose live pass fails leaves its rows without origins and
+/// self time: the Groups section says so, and the request once.
+#[test]
+fn groups_are_partial_when_a_live_pass_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(
+        dir.path(),
+        vec![req(&request(0x11, 0x10)), req(&request(0x12, 0x20))],
+        "live",
+    );
+    let whole = whole_range(&wal);
+    let frames = wal::scan_frame_boundaries(&wal, whole).unwrap();
+    assert_eq!(frames.len(), 2);
+    let second = frames[0].end_offset;
+    let tail = TraceSource::Tail(sfsq::traces::TraceWalTail {
+        source_id: SourceId::new("live#tail".to_string()),
+        path: wal.clone(),
+        coverage: WalCoverage {
+            wal_id: wal.display().to_string().into(),
+            range: wal::FrameRange::new(second, whole.end()),
+        },
+    });
+    let mut q = entry_spans("status_code");
+    q.sections.groups = true;
+    let data = run(vec![tail], q);
+    let groups = data.groups.as_ref().unwrap();
+    assert_eq!(
+        groups.status,
+        partial(&[(PartialReason::LivePassFailed, 1, 1)])
+    );
+    assert_eq!(data.status, groups.status);
+    assert_eq!(groups.self_ns_total, 0);
+    let spans: u64 = groups.rows.iter().map(|row| row.numbers.spans).sum();
+    assert_eq!(spans, 4, "the second request's trace, every span");
 }

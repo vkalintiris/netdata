@@ -27,6 +27,9 @@ pub struct ExploreScope {
 pub struct Sections {
     pub histogram: Option<HistogramSpec>,
     pub facets: Option<FacetSpec>,
+    /// Every span in the window of the traces with a span in scope, by
+    /// service and operation (a second pass over the sources).
+    pub groups: bool,
     pub rows: Option<super::rows::RowsSpec>,
     /// The field list: every field of the window's files and what it supports.
     pub fields: bool,

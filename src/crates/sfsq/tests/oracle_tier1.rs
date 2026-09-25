@@ -442,6 +442,7 @@ fn explore_query(grid: &Grid, scope: &Scope, stack: &str) -> ExploreQuery {
                 percentiles: true,
             }),
             facets: None,
+            groups: false,
             rows: None,
             fields: false,
         },

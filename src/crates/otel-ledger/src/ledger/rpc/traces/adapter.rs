@@ -722,6 +722,7 @@ pub(crate) fn to_explore_query(
             facets: params.facets.as_ref().map(|f| FacetSpec {
                 fields: f.fields.clone(),
             }),
+            groups: false,
             rows: params.rows.clone(),
             fields: params.fields,
         },
