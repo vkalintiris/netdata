@@ -59,9 +59,15 @@ pub struct Record {
 }
 
 impl Record {
+    /// Whether the agent answered OK. An acknowledged request may still have
+    /// rejected spans outside the ingestion window; the rest were stored.
+    pub fn acknowledged(&self) -> bool {
+        self.grpc_code == 0
+    }
+
     /// Whether the agent stored all of it: acknowledged with nothing rejected.
     pub fn accepted(&self) -> bool {
-        self.grpc_code == 0 && self.rejected == 0
+        self.acknowledged() && self.rejected == 0
     }
 
     pub fn traces(&self) -> Result<ExportTraceServiceRequest, prost::DecodeError> {
@@ -156,6 +162,7 @@ mod tests {
         }
         assert_eq!(read_all(&mut out.as_slice()).unwrap(), records);
         assert!(records[0].accepted() && !records[1].accepted());
+        assert!(records[0].acknowledged() && !records[1].acknowledged());
 
         for cut in [out.len() - 1, MAGIC.len() + 2] {
             assert!(read_all(&mut &out[..cut]).is_err(), "cut at {cut}");
