@@ -518,6 +518,50 @@ pub struct GroupsWire {
     pub rows: Vec<GroupWire>,
     /// The rest folded together; `null` when nothing was folded.
     pub other: Option<OtherGroupsWire>,
+    /// Only under a selection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta: Option<GroupsDeltaWire>,
+}
+
+/// The groups split by a selection (QRY-20): a scope trace is on the
+/// selection side when any of its scope rows is a selection row, on the
+/// baseline side otherwise; a scope row without a trace id is its own trace.
+#[derive(Debug, Serialize)]
+pub struct GroupsDeltaWire {
+    pub selection_traces: u64,
+    pub baseline_traces: u64,
+    /// Self time over every group, `other` included, per side, in
+    /// nanoseconds as decimal strings.
+    pub selection_self_ns_total: String,
+    pub baseline_self_ns_total: String,
+    /// Parallel to `groups.rows`.
+    pub rows: Vec<DeltaRowWire>,
+    /// Parallel to `groups.other`.
+    pub other: Option<DeltaOtherWire>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeltaRowWire {
+    pub service: Option<String>,
+    pub operation: Option<String>,
+    pub selection: DeltaSideWire,
+    pub baseline: DeltaSideWire,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeltaOtherWire {
+    pub groups: u64,
+    pub selection: DeltaSideWire,
+    pub baseline: DeltaSideWire,
+}
+
+/// A group's rows on one side; the two sides add up to the group.
+#[derive(Debug, Serialize)]
+pub struct DeltaSideWire {
+    pub spans: u64,
+    pub errors_originated: u64,
+    /// In nanoseconds, as a decimal string.
+    pub self_ns: String,
 }
 
 #[derive(Debug, Serialize)]

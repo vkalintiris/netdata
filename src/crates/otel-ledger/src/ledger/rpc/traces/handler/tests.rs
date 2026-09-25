@@ -1820,6 +1820,48 @@ async fn explore_answers_groups() {
                 group("checkout", "span-3", 1, 0),
             ],
             "other": null
+        }),
+        "no delta without a selection"
+    );
+}
+
+/// QRY-20: under a selection each group splits by its traces' side; the
+/// sides add up to the group, and the totals count traces, not spans.
+#[tokio::test]
+async fn explore_answers_groups_under_a_selection() {
+    let (h, _) = explore_corpus().await;
+    let body = json!({"explore": {
+        "after": 1, "before": 10, "filter": {"_role": ["root"]},
+        "selection": {"filter": {"status_code": ["ERROR"]}},
+        "sections": {"groups": {}}
+    }});
+    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
+    // Checkout's trace has the one error root; the three svc traces make the
+    // baseline. Every span has 500 ns of self time.
+    let side = |spans: u64, origins: u64| {
+        let self_ns = (spans * 500).to_string();
+        json!({"spans": spans, "errors_originated": origins, "self_ns": self_ns})
+    };
+    let row = |service: &str, operation: &str, selection, baseline| {
+        json!({"service": service, "operation": operation,
+               "selection": selection, "baseline": baseline})
+    };
+    assert_eq!(
+        v["data"]["groups"]["delta"],
+        json!({
+            "selection_traces": 1,
+            "baseline_traces": 3,
+            "selection_self_ns_total": "1500",
+            "baseline_self_ns_total": "4500",
+            "rows": [
+                row("svc", "span-1", side(0, 0), side(3, 0)),
+                row("svc", "span-2", side(0, 0), side(3, 0)),
+                row("svc", "span-3", side(0, 0), side(3, 0)),
+                row("checkout", "span-1", side(1, 1), side(0, 0)),
+                row("checkout", "span-2", side(1, 0), side(0, 0)),
+                row("checkout", "span-3", side(1, 0), side(0, 0)),
+            ],
+            "other": null
         })
     );
 }

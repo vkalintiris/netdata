@@ -783,11 +783,11 @@ pub(crate) fn to_explore_response(
     before: u32,
 ) -> super::wire::ExploreResponse {
     use super::wire::{
-        BucketWire, ComparisonTotalsWire, ComparisonWire, ExploreDataWire, ExploreFacetValueWire,
-        ExploreFacetWire, ExploreFacetsWire, ExploreResponse, FieldWire, FieldsWire, GridWire,
-        GroupNumbersWire, GroupWire, GroupsWire, HistogramWire, OtherGroupsWire,
-        PercentileMethodWire, PercentilesWire, RowWire, RowsWire, TotalsWire, UnavailableFacetWire,
-        WindowWire,
+        BucketWire, ComparisonTotalsWire, ComparisonWire, DeltaOtherWire, DeltaRowWire,
+        DeltaSideWire, ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire,
+        ExploreResponse, FieldWire, FieldsWire, GridWire, GroupNumbersWire, GroupWire,
+        GroupsDeltaWire, GroupsWire, HistogramWire, OtherGroupsWire, PercentileMethodWire,
+        PercentilesWire, RowWire, RowsWire, TotalsWire, UnavailableFacetWire, WindowWire,
     };
     let numbers = |n: sfsq::traces::explore::GroupNumbers| GroupNumbersWire {
         spans: n.spans,
@@ -937,15 +937,36 @@ pub(crate) fn to_explore_response(
             columns: f.columns,
         }
     });
+    let side = |n: sfsq::traces::explore::SideNumbers| DeltaSideWire {
+        spans: n.spans,
+        errors_originated: n.errors_originated,
+        self_ns: n.self_ns.to_string(),
+    };
     let groups = data.groups.map(|g| {
         let mut rows = Vec::with_capacity(g.rows.len());
+        let mut delta_rows = Vec::new();
         for row in g.rows {
+            if let Some(sides) = row.delta {
+                delta_rows.push(DeltaRowWire {
+                    service: row.key.service.clone(),
+                    operation: row.key.operation.clone(),
+                    selection: side(sides.selection),
+                    baseline: side(sides.baseline),
+                });
+            }
             rows.push(GroupWire {
                 service: row.key.service,
                 operation: row.key.operation,
                 numbers: numbers(row.numbers),
             });
         }
+        let delta_other = g.other.as_ref().and_then(|other| {
+            other.delta.map(|sides| DeltaOtherWire {
+                groups: other.groups,
+                selection: side(sides.selection),
+                baseline: side(sides.baseline),
+            })
+        });
         GroupsWire {
             status: StatusWire::from(&g.status),
             window_s: g.window_s,
@@ -954,6 +975,14 @@ pub(crate) fn to_explore_response(
             other: g.other.map(|other| OtherGroupsWire {
                 groups: other.groups,
                 numbers: numbers(other.numbers),
+            }),
+            delta: g.delta.map(|delta| GroupsDeltaWire {
+                selection_traces: delta.selection_traces,
+                baseline_traces: delta.baseline_traces,
+                selection_self_ns_total: delta.selection_self_ns_total.to_string(),
+                baseline_self_ns_total: delta.baseline_self_ns_total.to_string(),
+                rows: delta_rows,
+                other: delta_other,
             }),
         }
     });
