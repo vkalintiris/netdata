@@ -25,7 +25,7 @@ use sfsq::traces::{PartialReason, QueryStatus};
 
 /// Request param names accepted by this function, advertised to the UI
 /// in [`InfoResponse::accepted_params`]. The list's rule: it carries
-/// exactly the TOP-LEVEL keys — the seven mode selectors, `tenant`,
+/// exactly the TOP-LEVEL keys — the mode selectors, `tenant`,
 /// and the fields the implicit view reads, both the standard Functions
 /// ones and its own `min_trace_duration_ns` filter. A client that
 /// builds its payload out of this list sends nothing else, so a field
@@ -44,6 +44,7 @@ use sfsq::traces::{PartialReason, QueryStatus};
 pub const ACCEPTED_PARAMS: &[&str] = &[
     "info",
     "explore",
+    "values",
     "trace",
     "attributes",
     "attribute_values",
@@ -61,7 +62,7 @@ pub const ACCEPTED_PARAMS: &[&str] = &[
     "overview_facets",
 ];
 
-/// The raw top-level shape: the seven mode selectors and supported
+/// The raw top-level shape: the mode selectors and supported
 /// Functions fields captured presence-preserving (see [`present`]),
 /// plus `tenant`. Deserialized
 /// only through [`OtelTracesRequest`]'s manual `Deserialize` (which
@@ -79,6 +80,9 @@ struct RawOtelTracesRequest {
     /// The traces explorer: histogram and totals over span rows.
     #[serde(default, deserialize_with = "present")]
     explore: Option<serde_json::Value>,
+    /// Value suggestions for one field.
+    #[serde(default, deserialize_with = "present")]
+    values: Option<serde_json::Value>,
     /// The single-trace mode (dumb span list by trace id).
     #[serde(default, deserialize_with = "present")]
     trace: Option<serde_json::Value>,
@@ -150,6 +154,7 @@ pub enum TracesMode {
     Functions(FunctionsParams),
     Info,
     Explore(Box<ExploreParams>),
+    Values(ValuesParams),
     Trace(TraceParams),
     Attributes(AttributesParams),
     AttributeValues(AttributeValuesParams),
@@ -198,6 +203,7 @@ impl TryFrom<RawOtelTracesRequest> for OtelTracesRequest {
         let present: Vec<&'static str> = [
             ("info", raw.info.is_some()),
             ("explore", raw.explore.is_some()),
+            ("values", raw.values.is_some()),
             ("trace", raw.trace.is_some()),
             ("attributes", raw.attributes.is_some()),
             ("attribute_values", raw.attribute_values.is_some()),
@@ -266,6 +272,8 @@ impl TryFrom<RawOtelTracesRequest> for OtelTracesRequest {
             TracesMode::Info
         } else if let Some(v) = &raw.explore {
             TracesMode::Explore(Box::new(typed("explore", v)?))
+        } else if let Some(v) = &raw.values {
+            TracesMode::Values(typed("values", v)?)
         } else if let Some(v) = &raw.trace {
             TracesMode::Trace(typed("trace", v)?)
         } else if let Some(v) = &raw.attributes {
@@ -589,6 +597,7 @@ pub enum OtelTracesResponse {
     Functions(Box<FunctionsTracesResponse>),
     Info(InfoResponse),
     Explore(Box<ExploreResponse>),
+    Values(ValuesResponse),
     Trace(Box<TraceResult>),
     Search(Box<SearchResult>),
     Attributes(AttributesResult),
@@ -1131,6 +1140,7 @@ pub struct InfoDefaults {
     stack: &'static str,
     window_s: i64,
     rows_limit: usize,
+    values_limit: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -1138,6 +1148,7 @@ pub struct InfoLimits {
     rows_page_max: usize,
     top_k_max: usize,
     row_columns_max: usize,
+    values_max: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -1184,11 +1195,13 @@ impl Default for InfoResponse {
                 stack: sfsq::traces::explore::DEFAULT_STACK_FIELD,
                 window_s: explore::DEFAULT_WINDOW_S,
                 rows_limit: explore::ROWS_DEFAULT_LIMIT,
+                values_limit: VALUES_DEFAULT_LIMIT,
             },
             limits: InfoLimits {
                 rows_page_max: sfsq::traces::explore::ROWS_PAGE_MAX,
                 top_k_max: sfsq::traces::explore::TOP_K_MAX,
                 row_columns_max: sfsq::traces::explore::ROW_COLUMNS_MAX,
+                values_max: sfsq::traces::explore::VALUES_LIMIT_MAX,
             },
             duration_bands: duration_bands(),
             partial_reasons: vec![
@@ -1326,12 +1339,14 @@ impl From<PartialReason> for PartialReasonWire {
 }
 
 mod explore;
+mod values;
 pub use explore::{
     BucketWire, ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire,
     ExploreParams, ExploreResponse, FieldWire, FieldsWire, GridWire, HistogramWire,
     PercentileMethodWire, PercentilesWire, RowWire, RowsWire, TotalsWire, UnavailableFacetWire,
     WindowWire,
 };
+pub use values::{VALUES_DEFAULT_LIMIT, ValuesParams, ValuesResponse};
 
 #[cfg(test)]
 mod tests;

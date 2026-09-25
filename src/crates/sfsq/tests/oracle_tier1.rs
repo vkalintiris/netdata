@@ -899,3 +899,78 @@ fn explore_field_list_matches_the_calculator() {
         }
     }
 }
+
+fn run_values(stored: &Stored, live: Live, query: explore::ValuesQuery) -> explore::ValuesData {
+    let data = explore::field_values(
+        explore_sources(stored, live),
+        query,
+        tokio_util::sync::CancellationToken::new(),
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )
+    .unwrap();
+    assert!(data.status.is_complete(), "{:?}", data.status);
+    data
+}
+
+/// ORC-VALUES: over the whole window the suggestions are the calculator's
+/// values with the prefix, the first `limit` in byte order with `truncated`
+/// exact; over a narrower window they include every value of its rows (a file
+/// is read whole, so values of its rows outside the window may come too).
+#[test]
+fn explore_values_match_the_calculator() {
+    let stored = store(2400, 111);
+    let grid = stored.grid;
+    let window_ns = |grid: &Grid| {
+        i64::from(grid.after_s) * 1_000_000_000..i64::from(grid.before_s) * 1_000_000_000
+    };
+    let cases = [
+        ("name", "", 1000),
+        ("name", "GET", 1000),
+        (model::SERVICE_FIELD, "c", 2),
+        ("attributes.request.id", "", 10),
+        ("attributes.request.id", "a1", 1000),
+        ("events.attributes.exception.type", "", 1000),
+        ("attributes.nope", "", 5),
+    ];
+    for live in [Live::Tail, Live::Split(100)] {
+        for (field, prefix, limit) in cases {
+            let case = format!("{live:?} {field} {prefix:?} {limit}");
+            let got = run_values(
+                &stored,
+                live,
+                explore::ValuesQuery {
+                    window: window_ns(&grid),
+                    field: field.to_string(),
+                    prefix: prefix.to_string(),
+                    limit,
+                },
+            );
+            let all = calc::field_values(&stored.oracle, &grid, field, prefix);
+            let want: Vec<String> = all.iter().take(limit).cloned().collect();
+            assert_eq!(got.values, want, "{case}");
+            assert_eq!(got.truncated, all.len() > limit, "{case}");
+        }
+    }
+
+    let narrow = Grid::for_window(
+        grid.after_s + (grid.before_s - grid.after_s) / 3,
+        grid.after_s + (grid.before_s - grid.after_s) / 2,
+    );
+    let got = run_values(
+        &stored,
+        Live::Tail,
+        explore::ValuesQuery {
+            window: window_ns(&narrow),
+            field: "attributes.request.id".to_string(),
+            prefix: "a".to_string(),
+            limit: 1000,
+        },
+    );
+    let within = calc::field_values(&stored.oracle, &narrow, "attributes.request.id", "a");
+    assert!(!within.is_empty() && !got.truncated);
+    let got: BTreeSet<String> = got.values.into_iter().collect();
+    assert!(
+        got.is_superset(&within),
+        "a narrower window keeps its rows' values"
+    );
+}

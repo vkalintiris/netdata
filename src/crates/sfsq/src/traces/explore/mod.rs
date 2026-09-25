@@ -15,6 +15,7 @@ mod rows;
 mod run;
 mod shard;
 mod source;
+mod values;
 
 pub use query::{
     DEFAULT_POPULATION, DEFAULT_STACK_FIELD, ExploreQuery, ExploreRequestError, ExploreScope,
@@ -25,6 +26,7 @@ pub use rows::{
     RowDirection, RowKey, RowOrder, RowsSpec, TOP_K_MAX, is_row_column,
 };
 pub use run::explore;
+pub use values::{VALUES_LIMIT_MAX, ValuesData, ValuesQuery, field_values};
 
 /// The fixed duration bands the explorer stacks and selects by: one definition,
 /// written at flatten time.

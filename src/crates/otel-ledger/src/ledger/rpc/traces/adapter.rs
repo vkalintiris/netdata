@@ -846,6 +846,39 @@ pub(crate) fn to_explore_query(
     (query, aligned_after, aligned_before)
 }
 
+/// The engine request for a value-suggestion call received at `now_s`, plus the
+/// window in unix seconds (the range files are captured for).
+pub(crate) fn to_values_query(
+    params: &super::wire::ValuesParams,
+    now_s: u32,
+) -> (sfsq::traces::explore::ValuesQuery, u32, u32) {
+    let (after, before) = params.window.resolve(now_s);
+    // A relative window reaching before the epoch clamps to 0; keep at least
+    // one second.
+    let before = before.max(after.saturating_add(1));
+    let query = sfsq::traces::explore::ValuesQuery {
+        window: i64::from(after) * 1_000_000_000..i64::from(before) * 1_000_000_000,
+        field: params.field.clone(),
+        prefix: params.prefix.clone(),
+        limit: params.limit,
+    };
+    (query, after, before)
+}
+
+pub(crate) fn to_values_response(
+    data: sfsq::traces::explore::ValuesData,
+    field: String,
+) -> super::wire::ValuesResponse {
+    super::wire::ValuesResponse {
+        mode: "values",
+        version: 1,
+        field,
+        values: data.values,
+        truncated: data.truncated,
+        status: StatusWire::from(&data.status),
+    }
+}
+
 /// The explorer's engine answer on the wire.
 pub(crate) fn to_explore_response(
     data: sfsq::traces::explore::ExploreData,

@@ -358,6 +358,30 @@ pub fn field_list(spans: &[OracleSpan]) -> BTreeMap<String, Tier> {
     out
 }
 
+/// The distinct values of `field` starting with `prefix` on the rows in the
+/// window, in byte order.
+pub fn field_values(
+    spans: &[OracleSpan],
+    grid: &Grid,
+    field: &str,
+    prefix: &str,
+) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for span in spans {
+        if grid.bucket_of(span.start_ns).is_none() {
+            continue;
+        }
+        if let Some(values) = span.fields.get(field) {
+            for value in values {
+                if value.starts_with(prefix) {
+                    out.insert(value.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// A row's content key: start, trace id, span id; an unset id is all zeros.
 /// Newest order is this key descending, ids compared as bytes.
 pub type RowKey = (i64, [u8; 16], [u8; 8]);

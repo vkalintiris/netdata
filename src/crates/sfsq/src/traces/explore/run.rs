@@ -11,7 +11,7 @@ use super::super::duration_hist::DurationHistogram;
 use super::query::{ExploreQuery, ExploreRequestError, HIDDEN_FIELDS};
 use super::rows::{self, MoreRows, ROW_VALUE_COLUMNS, RowFields, RowsSpec, SourceRows};
 use super::shard::{Evaluated, evaluate};
-use super::source::{Prepared, prepare};
+use super::source::{Prepared, SourceTally, prepare};
 use super::{
     ExploreData, FacetData, FacetValue, FacetsData, FieldInfo, FieldsData, HistogramData,
     Percentiles, Row, RowsData, StackBucket, Totals,
@@ -38,10 +38,7 @@ pub fn explore(
     let window = TimeWindow::new(window_ns.start, window_ns.end)?;
     let buckets = query.grid.num_buckets;
 
-    let mut candidates = 0u64;
-    let mut failed = 0u64;
-    let mut legacy = 0u64;
-    let mut unavailable = 0u64;
+    let mut tally = SourceTally::default();
     let mut stack_high = 0u64;
     let mut matched = 0u64;
     let mut errors = 0u64;
@@ -63,18 +60,18 @@ pub fn explore(
         match prepare(source, &window) {
             Prepared::Outside => {}
             Prepared::Unavailable => {
-                candidates += 1;
-                unavailable += 1;
+                tally.candidates += 1;
+                tally.unavailable += 1;
             }
             Prepared::Failed(error) => {
-                candidates += 1;
-                failed += 1;
+                tally.candidates += 1;
+                tally.failed += 1;
                 tracing::warn!("sfsq traces: source {} failed: {error}", source.source_id());
             }
             Prepared::Open(mapped) => {
-                candidates += 1;
+                tally.candidates += 1;
                 match evaluate(mapped.bytes(), &query, opened.len()) {
-                    Ok(Evaluated::Legacy) => legacy += 1,
+                    Ok(Evaluated::Legacy) => tally.legacy += 1,
                     Ok(Evaluated::Shard(shard)) => {
                         matched += shard.matched;
                         errors += shard.errors;
@@ -101,7 +98,7 @@ pub fn explore(
                         }
                     }
                     Err(e) => {
-                        failed += 1;
+                        tally.failed += 1;
                         tracing::warn!(
                             "sfsq traces: source {} failed to evaluate: {e}",
                             source.source_id()
@@ -117,15 +114,8 @@ pub fn explore(
     }
 
     // Reasons about sources hold for every section; each section adds its own.
-    let mut shared = StatusBuilder::new();
-    for (reason, count) in [
-        (PartialReason::SourceFailure, failed),
-        (PartialReason::RemoteUnavailable, unavailable),
-        (PartialReason::LegacyFile, legacy),
-    ] {
-        shared.add_n(reason, count);
-        shared.of(reason, candidates);
-    }
+    let shared = tally.status();
+    let candidates = tally.candidates;
     let mut status = shared.clone();
 
     let histogram = query.sections.histogram.map(|spec| {

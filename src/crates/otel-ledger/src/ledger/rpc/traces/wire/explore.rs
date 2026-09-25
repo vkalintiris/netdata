@@ -47,6 +47,24 @@ pub struct RequestWindow {
 }
 
 impl RequestWindow {
+    /// The window of a request's `after` and `before`: `before` defaults to
+    /// now (0), `after` to [`DEFAULT_WINDOW_S`] before `before`.
+    pub fn parse(after: Option<i64>, before: Option<i64>) -> Result<Self, String> {
+        let before = before.unwrap_or(0);
+        let after = after.unwrap_or(before - DEFAULT_WINDOW_S);
+        if (after <= 0) != (before <= 0) {
+            return Err(
+                "`after` and `before` must both be relative (≤ 0) or both absolute (> 0)".into(),
+            );
+        }
+        if after >= before {
+            return Err(format!(
+                "`after` ({after}) must be before `before` ({before})"
+            ));
+        }
+        Ok(RequestWindow { after, before })
+    }
+
     /// Absolute unix seconds for a request received at `now_s`.
     pub fn resolve(&self, now_s: u32) -> (u32, u32) {
         let absolute = |s: i64| {
@@ -261,18 +279,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
             }
         }
 
-        let before = raw.before.unwrap_or(0);
-        let after = raw.after.unwrap_or(before - DEFAULT_WINDOW_S);
-        if (after <= 0) != (before <= 0) {
-            return Err(
-                "`after` and `before` must both be relative (≤ 0) or both absolute (> 0)".into(),
-            );
-        }
-        if after >= before {
-            return Err(format!(
-                "`after` ({after}) must be before `before` ({before})"
-            ));
-        }
+        let window = RequestWindow::parse(raw.after, raw.before)?;
 
         for (field, values) in &raw.filter {
             if field.is_empty() {
@@ -338,7 +345,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
         };
 
         Ok(ExploreParams {
-            window: RequestWindow { after, before },
+            window,
             filter: raw.filter,
             text,
             trace_ids,

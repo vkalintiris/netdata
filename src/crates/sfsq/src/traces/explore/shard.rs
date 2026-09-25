@@ -40,6 +40,12 @@ pub(super) enum Evaluated {
     Shard(Box<ExploreShard>),
 }
 
+/// Whether a file was written before the explorer's per-span entries: it holds
+/// rows but no `_role`.
+pub(super) fn is_legacy(reader: &sfst::IndexReader<'_>) -> bool {
+    reader.summary().record_count > 0 && !reader.field_table().contains(ng_flatten::ROLE_FIELD)
+}
+
 /// Evaluate one source. Any error drops the whole source (its numbers are
 /// never partly mixed in); the caller reports it. `source` is stamped on the
 /// source's row candidates.
@@ -49,9 +55,7 @@ pub(super) fn evaluate(
     source: usize,
 ) -> Result<Evaluated, sfst::Error> {
     let reader = sfst::IndexReader::open(bytes)?;
-    if reader.summary().record_count > 0
-        && reader.field_table().get(ng_flatten::ROLE_FIELD).is_none()
-    {
+    if is_legacy(&reader) {
         return Ok(Evaluated::Legacy);
     }
 

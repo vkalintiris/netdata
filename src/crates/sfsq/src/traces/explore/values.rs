@@ -1,0 +1,174 @@
+//! Value suggestions for the search box: the distinct stored values of one
+//! field that start with a prefix.
+//!
+//! Each file that may hold rows for the window contributes its dictionary for
+//! the field (never its rows), so a file overlapping the window contributes all
+//! its values, those of rows outside the window included. The live tail is read
+//! through its image, like everywhere in the explorer.
+
+use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use tokio_util::sync::CancellationToken;
+
+use super::query::ExploreRequestError;
+use super::shard::is_legacy;
+use super::source::{Prepared, SourceTally, prepare};
+use crate::traces::{
+    PartialReason, QueryStatus, StatusBuilder, TimeWindow, TraceSource, validate_sources,
+};
+
+/// Most values one request may ask for.
+pub const VALUES_LIMIT_MAX: usize = 1000;
+
+/// A value-suggestion request.
+pub struct ValuesQuery {
+    /// Unix nanoseconds, `[start, end)`.
+    pub window: std::ops::Range<i64>,
+    /// A storage field name.
+    pub field: String,
+    /// Keep the values starting with these bytes (case-sensitive); empty
+    /// keeps every value.
+    pub prefix: String,
+    /// 1 to [`VALUES_LIMIT_MAX`].
+    pub limit: usize,
+}
+
+/// The first values in byte order, and whether more matched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValuesData {
+    pub status: QueryStatus,
+    pub values: Vec<String>,
+    pub truncated: bool,
+}
+
+impl ValuesData {
+    fn cancelled() -> Self {
+        let mut status = StatusBuilder::new();
+        status.add(PartialReason::Cancelled);
+        ValuesData {
+            status: status.finish(),
+            values: Vec::new(),
+            truncated: false,
+        }
+    }
+}
+
+/// Suggest values of `query.field` over `sources`.
+///
+/// Pure sync, like [`explore`](super::explore). Cancellation is all-or-empty:
+/// a partial union would depend on the order the sources were read.
+pub fn field_values(
+    sources: Vec<TraceSource>,
+    query: ValuesQuery,
+    cancel: CancellationToken,
+    progress: Arc<AtomicUsize>,
+) -> Result<ValuesData, ExploreRequestError> {
+    validate_sources(&sources)?;
+    if query.field.is_empty() || query.limit == 0 || query.limit > VALUES_LIMIT_MAX {
+        return Err(ExploreRequestError::Invalid(format!(
+            "values need a field and a limit of 1 to {VALUES_LIMIT_MAX}"
+        )));
+    }
+    let window = TimeWindow::new(query.window.start, query.window.end)?;
+
+    let mut tally = SourceTally::default();
+    // The smallest `limit + 1` values: one more than returned tells whether
+    // the answer is truncated.
+    let mut kept = BTreeSet::new();
+    for source in &sources {
+        if cancel.is_cancelled() {
+            return Ok(ValuesData::cancelled());
+        }
+        match prepare(source, &window) {
+            Prepared::Outside => {}
+            Prepared::Unavailable => {
+                tally.candidates += 1;
+                tally.unavailable += 1;
+            }
+            Prepared::Failed(error) => {
+                tally.candidates += 1;
+                tally.failed += 1;
+                tracing::warn!("sfsq traces: source {} failed: {error}", source.source_id());
+            }
+            Prepared::Open(mapped) => {
+                tally.candidates += 1;
+                match source_values(mapped.bytes(), &query) {
+                    Ok(None) => tally.legacy += 1,
+                    Ok(Some(values)) => {
+                        for value in values {
+                            keep(&mut kept, value, query.limit + 1);
+                        }
+                    }
+                    Err(e) => {
+                        tally.failed += 1;
+                        tracing::warn!(
+                            "sfsq traces: source {} failed to list {}: {e}",
+                            source.source_id(),
+                            query.field
+                        );
+                    }
+                }
+            }
+        }
+        progress.fetch_add(1, Ordering::Relaxed);
+    }
+    if cancel.is_cancelled() {
+        return Ok(ValuesData::cancelled());
+    }
+
+    let truncated = kept.len() > query.limit;
+    let mut values = Vec::with_capacity(kept.len());
+    for value in kept.into_iter().take(query.limit) {
+        values.push(value);
+    }
+    Ok(ValuesData {
+        status: tally.status().finish(),
+        values,
+        truncated,
+    })
+}
+
+/// One file's values of the field with the prefix; `None` for a legacy file.
+fn source_values(bytes: &[u8], query: &ValuesQuery) -> Result<Option<Vec<String>>, sfst::Error> {
+    let reader = sfst::IndexReader::open(bytes)?;
+    if is_legacy(&reader) {
+        return Ok(None);
+    }
+    if !reader.field_table().contains(&query.field) {
+        return Ok(Some(Vec::new()));
+    }
+    let mut out = Vec::new();
+    for value in reader.field_values(&query.field)? {
+        if value.starts_with(&query.prefix) {
+            out.push(value);
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Insert `value` into `kept`, which holds at most `cap` of the smallest values.
+fn keep(kept: &mut BTreeSet<String>, value: String, cap: usize) {
+    if kept.len() == cap && kept.last().is_some_and(|last| value >= *last) {
+        return;
+    }
+    kept.insert(value);
+    if kept.len() > cap {
+        kept.pop_last();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keep_holds_the_smallest_values() {
+        let mut kept = BTreeSet::new();
+        for value in ["d", "b", "e", "a", "b", "c"] {
+            keep(&mut kept, value.to_string(), 3);
+        }
+        assert_eq!(kept.into_iter().collect::<Vec<_>>(), ["a", "b", "c"]);
+    }
+}

@@ -395,7 +395,7 @@ fn info_response_shape_is_pinned() {
             "has_history": true,
             "v": 3,
             "accepted_params": [
-                "info", "explore", "trace", "attributes", "attribute_values", "overview",
+                "info", "explore", "values", "trace", "attributes", "attribute_values", "overview",
                 "slowest", "search", "tenant", "after", "before", "last", "anchor", "selections",
                 "min_trace_duration_ns", "max_trace_duration_ns", "overview_facets"
             ],
@@ -406,9 +406,12 @@ fn info_response_shape_is_pinned() {
                 "filter": {"_role": ["root", "inbound"]},
                 "stack": "status_code",
                 "window_s": 900,
-                "rows_limit": 100
+                "rows_limit": 100,
+                "values_limit": 100
             },
-            "limits": {"rows_page_max": 1000, "top_k_max": 1000, "row_columns_max": 32},
+            "limits": {
+                "rows_page_max": 1000, "top_k_max": 1000, "row_columns_max": 32, "values_max": 1000
+            },
             "duration_bands": [
                 {"label": "<1ms", "min_ns": 0, "max_ns": 999_999},
                 {"label": "1-10ms", "min_ns": 1_000_000, "max_ns": 9_999_999},
@@ -860,4 +863,58 @@ fn explore_lists_fields_when_asked_or_by_default() {
     );
     assert!(!explore(json!({"sections": {}})).fields);
     assert!(explore(json!({"sections": {"fields": {}}})).fields);
+}
+
+fn values(body: serde_json::Value) -> ValuesParams {
+    match req(json!({ "values": body })).mode {
+        TracesMode::Values(p) => p,
+        other => panic!("expected values, got {other:?}"),
+    }
+}
+
+#[test]
+fn values_parse_with_defaults_and_refuse_bad_requests() {
+    assert_eq!(
+        values(json!({"field": "name"})),
+        ValuesParams {
+            window: explore(json!({})).window,
+            field: "name".to_string(),
+            prefix: String::new(),
+            limit: 100,
+        }
+    );
+    let p = values(json!({
+        "after": 5_000, "before": 6_000, "field": "name", "prefix": "GET", "limit": 1000
+    }));
+    assert_eq!(
+        (p.window.resolve(10_000), p.prefix.as_str(), p.limit),
+        ((5_000, 6_000), "GET", 1000)
+    );
+    for (body, needle) in [
+        (json!({"values": {}}), "missing field `field`"),
+        (json!({"values": {"field": ""}}), "`field` is empty"),
+        (
+            json!({"values": {"field": "name", "limit": 0}}),
+            "must be 1 to 1000",
+        ),
+        (
+            json!({"values": {"field": "name", "limit": 1001}}),
+            "must be 1 to 1000",
+        ),
+        (
+            json!({"values": {"field": "name", "after": 0, "before": -60}}),
+            "must be before",
+        ),
+        (
+            json!({"values": {"field": "name", "bogus": 1}}),
+            "unknown field",
+        ),
+        (
+            json!({"values": {"field": "name"}, "explore": {}}),
+            "conflicting mode selectors",
+        ),
+    ] {
+        let err = req_err(body.clone());
+        assert!(err.contains(needle), "for {body}: {err}");
+    }
 }

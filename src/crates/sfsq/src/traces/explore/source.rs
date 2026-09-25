@@ -4,8 +4,36 @@
 use std::sync::Arc;
 
 use super::super::sources::TraceSource;
+use super::super::status::{PartialReason, StatusBuilder};
 use super::super::window::TimeWindow;
 use crate::source::{Mapped, map_source};
+
+/// Sources that may hold rows for the window, and how many of them could not
+/// be counted in, by reason.
+#[derive(Debug, Default)]
+pub(super) struct SourceTally {
+    pub candidates: u64,
+    pub failed: u64,
+    pub unavailable: u64,
+    pub legacy: u64,
+}
+
+impl SourceTally {
+    /// The reasons that hold for every section: each count out of the
+    /// candidates.
+    pub fn status(&self) -> StatusBuilder {
+        let mut status = StatusBuilder::new();
+        for (reason, count) in [
+            (PartialReason::SourceFailure, self.failed),
+            (PartialReason::RemoteUnavailable, self.unavailable),
+            (PartialReason::LegacyFile, self.legacy),
+        ] {
+            status.add_n(reason, count);
+            status.of(reason, self.candidates);
+        }
+        status
+    }
+}
 
 /// What one captured source contributes to a request.
 pub(super) enum Prepared {

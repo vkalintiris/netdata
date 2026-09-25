@@ -56,9 +56,24 @@ async fn info_returns_the_descriptor() {
     assert_eq!(
         v["accepted_params"],
         json!([
-            "info", "explore", "trace", "attributes", "attribute_values", "overview",
-            "slowest", "search", "tenant", "after", "before", "last", "anchor", "selections",
-            "min_trace_duration_ns", "max_trace_duration_ns", "overview_facets"
+            "info",
+            "explore",
+            "values",
+            "trace",
+            "attributes",
+            "attribute_values",
+            "overview",
+            "slowest",
+            "search",
+            "tenant",
+            "after",
+            "before",
+            "last",
+            "anchor",
+            "selections",
+            "min_trace_duration_ns",
+            "max_trace_duration_ns",
+            "overview_facets"
         ])
     );
     assert_eq!(v["required_params"], json!([]));
@@ -2040,5 +2055,42 @@ async fn explore_lists_the_window_fields() {
             low("status_message", true)
         ]),
         "every stored field by name, without `_status_code`"
+    );
+}
+
+#[tokio::test]
+async fn values_suggest_stored_values_by_prefix() {
+    let (h, _) = explore_corpus().await;
+    let call = |body: serde_json::Value| {
+        let h = &h;
+        async move { serde_json::to_value(call_on(h, body).await.unwrap()).unwrap() }
+    };
+    let v = call(json!({"values": {"after": 1, "before": 10, "field": "name", "prefix": "span-"}}))
+        .await;
+    assert_eq!(
+        v,
+        json!({
+            "mode": "values",
+            "version": 1,
+            "field": "name",
+            "values": ["span-1", "span-2", "span-3"],
+            "truncated": false,
+            "status": {"complete": true}
+        })
+    );
+    let v = call(json!({"values": {"after": 1, "before": 10, "field": "name", "limit": 2}})).await;
+    assert_eq!(
+        (&v["values"], &v["truncated"]),
+        (&json!(["span-1", "span-2"]), &json!(true))
+    );
+    let v = call(json!({"values": {
+        "after": 1, "before": 10, "field": "resource.attributes.service.name", "prefix": "c"
+    }}))
+    .await;
+    assert_eq!(v["values"], json!(["checkout"]), "the sealed file's value");
+    let v = call(json!({"values": {"after": 1, "before": 10, "field": "nope"}})).await;
+    assert_eq!(
+        (&v["values"], &v["status"]),
+        (&json!([]), &json!({"complete": true}))
     );
 }

@@ -40,18 +40,17 @@ use sfsq::traces::{
 
 use super::adapter::{
     ResolvedWindow, build_predicate, builtin_word, completion_capture_range, heatmap_predicate,
-    parse_cursor,
-    parse_enumeration_key, parse_owner_word, parse_trace_id, resolve_window,
-    to_attribute_values_result, to_explore_query, to_explore_response,
-    to_attributes_result, to_overview_result, to_overview_section, to_search_result,
-    to_slowest_result, to_trace_result, validate_trace_bounds,
+    parse_cursor, parse_enumeration_key, parse_owner_word, parse_trace_id, resolve_window,
+    to_attribute_values_result, to_attributes_result, to_explore_query, to_explore_response,
+    to_overview_result, to_overview_section, to_search_result, to_slowest_result, to_trace_result,
+    to_values_query, to_values_response, validate_trace_bounds,
 };
 use super::sources::{Capture, CaptureError, TracesSourceSupplier};
 use super::wire::{
     AttributeValuesParams, AttributesParams, CoverageWire, ExploreParams, FunctionsParams,
     FunctionsTracesResponse, InfoResponse, OVERVIEW_SCOPE_SELECTION, OVERVIEW_SCOPE_WINDOW,
     OtelTracesRequest, OtelTracesResponse, OverviewParams, SearchParams, SearchResult,
-    SlowestParams, TraceParams, TracesMode,
+    SlowestParams, TraceParams, TracesMode, ValuesParams,
 };
 use file_lifecycle::remote_read::RemoteRead;
 
@@ -756,6 +755,41 @@ impl OtelTracesHandler {
         }
     }
 
+    /// Value suggestions: one capture over the window, the engine off the
+    /// async runtime.
+    async fn values(
+        &self,
+        ctx: &FunctionCallContext,
+        params: &ValuesParams,
+        tenant: Option<&str>,
+    ) -> netdata_plugin_error::Result<OtelTracesResponse> {
+        let (query, after, before) = to_values_query(params, unix_now_s());
+        let tenant = TenantId::resolve_query(tenant);
+        let Capture { mut sets, pins } = self
+            .supplier
+            .capture(&tenant, after..before, 1, &ctx.cancellation, &ctx.progress)
+            .await
+            .map_err(capture_error)?;
+        let sources = sets.pop().unwrap_or_default();
+        let done = ctx.progress.done_counter();
+        let cancel = ctx.cancellation.clone();
+        let field = params.field.clone();
+
+        match tokio::task::spawn_blocking(move || {
+            let _pins = pins;
+            sfsq::traces::explore::field_values(sources, query, cancel, done)
+        })
+        .await
+        {
+            Ok(Ok(data)) => Ok(OtelTracesResponse::Values(to_values_response(data, field))),
+            Ok(Err(sfsq::traces::explore::ExploreRequestError::SourceSet(e))) => Err(handler_err(
+                format!("otel-traces internal error: captured source set is inconsistent: {e}"),
+            )),
+            Ok(Err(e)) => Err(handler_err(format!("invalid otel-traces request: {e}"))),
+            Err(e) => Err(handler_err(format!("otel-traces values task failed: {e}"))),
+        }
+    }
+
     /// The `slowest` mode: the window's duration-ranked top-K traces —
     /// the UI's explicit "Slowest" sort. Row numbers are stored-row
     /// sums; pre-rollup files are excluded under `rollup_absent`;
@@ -833,6 +867,7 @@ impl FunctionHandler for OtelTracesHandler {
             TracesMode::Functions(params) => self.functions(&ctx, params, tenant).await,
             TracesMode::Info => Ok(OtelTracesResponse::Info(InfoResponse::default())),
             TracesMode::Explore(params) => self.explore(&ctx, params, tenant).await,
+            TracesMode::Values(params) => self.values(&ctx, params, tenant).await,
             TracesMode::Trace(params) => self.trace(&ctx, params, tenant).await,
             TracesMode::Search(params) => self.search(&ctx, params, tenant).await,
             TracesMode::Attributes(params) => self.attributes(&ctx, params, tenant).await,
