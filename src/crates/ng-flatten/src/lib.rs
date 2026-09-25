@@ -272,6 +272,47 @@ mod tests {
     }
 
     #[test]
+    fn trace_pinned_fields_are_flattened_paths() {
+        let span = Span {
+            trace_id: vec![0x11; 16],
+            span_id: vec![0x22; 8],
+            name: "op".into(),
+            kind: 2, // SERVER
+            status: Some(Status {
+                code: 2, // ERROR
+                message: String::new(),
+            }),
+            start_time_unix_nano: 1_000,
+            end_time_unix_nano: 1_500,
+            ..Default::default()
+        };
+        let req = trace_req(
+            span,
+            Some(Resource {
+                attributes: vec![kv("service.name", Av::StringValue("api".into()))],
+                ..Default::default()
+            }),
+            None,
+        );
+        let (flat, _) = flatten_trace_request(req);
+        let rg = &flat.resources[0];
+
+        let mut paths: Vec<String> = Vec::new();
+        for leaf in flat.tree.resolve(&rg.resource) {
+            paths.push(leaf.path);
+        }
+        for leaf in flat.tree.resolve(&rg.scopes[0].spans[0].entries) {
+            paths.push(leaf.path);
+        }
+        for field in TRACE_PINNED_FIELDS {
+            assert!(
+                paths.iter().any(|path| path == field),
+                "{field} in {paths:?}"
+            );
+        }
+    }
+
+    #[test]
     fn flatten_trace_request_carries_columns_and_groups() {
         let span = Span {
             trace_id: vec![0x11; 16],

@@ -377,6 +377,7 @@ fn populate_trace_row_index(
     metrics: &Metrics,
 ) -> Result<SfstStats, Error> {
     check_payload_format(reader, ng_flatten::TRACE_FRAME_PAYLOAD_FORMAT)?;
+    row_index.pin_fields(&ng_flatten::TRACE_PINNED_FIELDS);
     let mut stats = SfstStats::default();
     let mut kv = String::new();
     let mut flattener = ng_flatten::Flattener::new();

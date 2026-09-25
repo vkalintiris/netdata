@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::model::OracleSpan;
+use crate::model::{DURATION_BAND_FIELD, OracleSpan, ROLE_FIELD, SERVICE_FIELD, STATUS_FIELD};
 
 /// Bucket widths the explorer may use, seconds.
 const BUCKET_WIDTHS_S: [u32; 25] = [
@@ -473,10 +473,22 @@ const TIER_THRESHOLD: usize = 100;
 /// `status_code`.
 const UNLISTED_FIELDS: [&str; 2] = ["_kind", "_status_code"];
 
-pub fn tier_of(distinct: usize) -> Tier {
+/// The traces core fields the plugin pins: never high, whatever their
+/// values (the calculator's own copy of the documented list).
+const PINNED_FIELDS: [&str; 6] = [
+    SERVICE_FIELD,
+    "name",
+    STATUS_FIELD,
+    "kind",
+    ROLE_FIELD,
+    DURATION_BAND_FIELD,
+];
+
+/// The tier of `field` with `distinct` values in one unit.
+pub fn tier_of(field: &str, distinct: usize) -> Tier {
     if distinct < TIER_THRESHOLD {
         Tier::Low
-    } else if distinct < 10 * TIER_THRESHOLD {
+    } else if distinct < 10 * TIER_THRESHOLD || PINNED_FIELDS.contains(&field) {
         Tier::Mid
     } else {
         Tier::High
@@ -496,7 +508,7 @@ pub fn high_units(spans: &[OracleSpan], field: &str) -> BTreeSet<usize> {
     }
     let mut out = BTreeSet::new();
     for (unit, values) in distinct {
-        if tier_of(values.len()) == Tier::High {
+        if tier_of(field, values.len()) == Tier::High {
             out.insert(unit);
         }
     }
@@ -543,7 +555,7 @@ pub fn field_list(spans: &[OracleSpan]) -> BTreeMap<String, Tier> {
         if UNLISTED_FIELDS.contains(&field) {
             continue;
         }
-        let tier = tier_of(values.len());
+        let tier = tier_of(field, values.len());
         let entry = out.entry(field.to_string()).or_insert(tier);
         *entry = (*entry).max(tier);
     }
@@ -899,14 +911,17 @@ mod tests {
 
     #[test]
     fn field_tiers_follow_distinct_values_per_unit() {
-        for (distinct, tier) in [
-            (1, Tier::Low),
-            (99, Tier::Low),
-            (100, Tier::Mid),
-            (999, Tier::Mid),
-            (1000, Tier::High),
+        for (field, distinct, tier) in [
+            ("x", 1, Tier::Low),
+            ("x", 99, Tier::Low),
+            ("x", 100, Tier::Mid),
+            ("x", 999, Tier::Mid),
+            ("x", 1000, Tier::High),
+            ("name", 1000, Tier::Mid),
+            ("name", 50, Tier::Low),
+            ("_kind", 1000, Tier::High),
         ] {
-            assert_eq!(tier_of(distinct), tier, "{distinct}");
+            assert_eq!(tier_of(field, distinct), tier, "{field} {distinct}");
         }
         let mut spans = Vec::new();
         for i in 0..150 {

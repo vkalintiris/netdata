@@ -84,6 +84,14 @@ fn count_spans(req: &ExportTraceServiceRequest) -> usize {
 /// oracle below.
 fn seal(reqs: Vec<ExportTraceServiceRequest>) -> Vec<u8> {
     let dir = tempfile::tempdir().unwrap();
+    let wal_path = write_wal(dir.path(), reqs);
+    let out = dir.path().join("traces.sfst");
+    build_sfst_traces_file(&wal_path, &out, &Metrics::new()).unwrap();
+    std::fs::read(&out).unwrap()
+}
+
+/// Ingest the requests into a traces WAL in `dir` and return its path.
+fn write_wal(dir: &std::path::Path, reqs: Vec<ExportTraceServiceRequest>) -> std::path::PathBuf {
     let seq = Arc::new(wal::SeqAllocator::ephemeral(0));
     let config = wal::Config {
         rotation: wal::RotationConfig {
@@ -95,7 +103,7 @@ fn seal(reqs: Vec<ExportTraceServiceRequest>) -> Vec<u8> {
         compression_enabled: true,
     };
     let mut writer = wal::Writer::new(
-        dir.path(),
+        dir,
         config,
         seq,
         wal::FileStamp { pipeline_id: 1, payload_format: /* traces pipeline */
@@ -137,15 +145,66 @@ fn seal(reqs: Vec<ExportTraceServiceRequest>) -> Vec<u8> {
     }
     writer.shutdown_all().unwrap();
 
-    let wal_path = std::fs::read_dir(dir.path())
+    std::fs::read_dir(dir)
         .unwrap()
         .filter_map(Result::ok)
         .map(|e| e.path())
         .find(|p| p.extension().is_some_and(|x| x == "wal"))
-        .expect("a wal file was written");
+        .expect("a wal file was written")
+}
+
+/// The seal and the chunk image come from the same populate function, so they
+/// pin the same fields: 1,500 distinct span names keep `name` Mid (its facets
+/// and charts work) in both, while an unpinned field that many values is High.
+#[test]
+fn chunk_image_and_seal_pin_the_same_fields() {
+    let spans = (0..1_500u32)
+        .map(|i| {
+            let mut trace = [0u8; 16];
+            trace[..4].copy_from_slice(&i.to_be_bytes());
+            trace[15] = 1;
+            let mut id = [0u8; 8];
+            id[..4].copy_from_slice(&i.to_be_bytes());
+            id[7] = 1;
+            let start = 1_700_000_000_000_000_000 + u64::from(i) * 1_000_000;
+            let mut span = span(trace, id, [0; 8], start, start + 1_000, &format!("op-{i}"));
+            span.attributes = vec![kv("request.id", &format!("r-{i}"))];
+            span
+        })
+        .collect();
+    let dir = tempfile::tempdir().unwrap();
+    let wal_path = write_wal(dir.path(), vec![req(spans)]);
     let out = dir.path().join("traces.sfst");
     build_sfst_traces_file(&wal_path, &out, &Metrics::new()).unwrap();
-    std::fs::read(&out).unwrap()
+    let sealed = std::fs::read(&out).unwrap();
+    let file_len = std::fs::metadata(&wal_path).unwrap().len();
+    let (_, image) = ng_index::build_sfst_traces_range(
+        &wal_path,
+        wal::FrameRange::new(wal::HEADER_SIZE as u64, file_len),
+    )
+    .unwrap();
+
+    let table = |bytes: &[u8]| {
+        let reader = IndexReader::open(bytes).unwrap();
+        let mut out = Vec::new();
+        for entry in reader.field_table().iter() {
+            out.push((entry.name.clone(), entry.cardinality, entry.tier));
+        }
+        out
+    };
+    let sealed_table = table(&sealed);
+    assert_eq!(sealed_table, table(&image));
+    let tier = |name: &str| {
+        sealed_table
+            .iter()
+            .find(|(field, _, _)| field == name)
+            .map(|(_, cardinality, tier)| (*cardinality, *tier))
+    };
+    assert_eq!(tier("name"), Some((1_500, sfst::FieldTier::Mid)));
+    assert_eq!(
+        tier("attributes.request.id"),
+        Some((1_500, sfst::FieldTier::High))
+    );
 }
 
 #[test]

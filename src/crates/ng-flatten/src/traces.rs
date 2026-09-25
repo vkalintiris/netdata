@@ -130,6 +130,18 @@ pub const ROLE_FIELD: &str = "_role";
 /// [`duration_band`]).
 pub const DURATION_BAND_FIELD: &str = "_duration_band";
 
+/// The traces core fields: the seal and the WAL chunk images pin them, so they
+/// are never High tier and their facets, charts and filters work at any
+/// cardinality. The raw enum numbers (`_kind`, `_status_code`) are not pinned.
+pub const TRACE_PINNED_FIELDS: [&str; 6] = [
+    "resource.attributes.service.name",
+    "name",
+    "status_code",
+    "kind",
+    ROLE_FIELD,
+    DURATION_BAND_FIELD,
+];
+
 /// Where a span sits in its request. Written at flatten time because it depends
 /// only on the span itself, so live WAL rows and sealed rows always agree, and
 /// "spans where a request enters a service" (`root` + `inbound`) becomes one
