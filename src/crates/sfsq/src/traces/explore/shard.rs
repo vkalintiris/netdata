@@ -1,7 +1,9 @@
 //! One source's contribution, from its index statistics.
 
+use std::collections::BTreeSet;
+
 use super::super::duration_hist::DurationHistogram;
-use super::query::ExploreQuery;
+use super::query::{ExploreQuery, HIDDEN_FIELDS};
 
 /// A readable source's numbers for the request.
 #[derive(Default)]
@@ -19,6 +21,10 @@ pub(super) struct ExploreShard {
     pub stack_high: bool,
     /// Per bucket: scope-row durations (only when percentiles are asked for).
     pub durations: Vec<DurationHistogram>,
+    /// Scope-row counts per value of each faceted field.
+    pub facets: Vec<sfst::FacetResult>,
+    /// Faceted fields that are high-cardinality here.
+    pub facet_high: BTreeSet<String>,
 }
 
 /// How a readable source was evaluated.
@@ -47,7 +53,7 @@ pub(super) fn evaluate(bytes: &[u8], query: &ExploreQuery) -> Result<Evaluated, 
 
     let mut shard = ExploreShard {
         matched: reader.matched_count(&scope, window.clone())?,
-        errors: reader.matched_count(&scope.conjoin(&errors_only), window)?,
+        errors: reader.matched_count(&scope.conjoin(&errors_only), window.clone())?,
         ..ExploreShard::default()
     };
     if let Some(histogram) = &query.sections.histogram {
@@ -62,6 +68,25 @@ pub(super) fn evaluate(bytes: &[u8], query: &ExploreQuery) -> Result<Evaluated, 
         if histogram.percentiles {
             shard.durations = bucket_durations(&reader, &scope, grid)?;
         }
+    }
+    if let Some(spec) = &query.sections.facets {
+        let table = reader.field_table();
+        let mut eligible = Vec::new();
+        let mut consider = |name: &str| match table.get(name) {
+            Some(entry) if entry.is_high_card() => {
+                shard.facet_high.insert(name.to_string());
+            }
+            Some(_) => eligible.push(name.to_string()),
+            None => {}
+        };
+        match &spec.fields {
+            Some(fields) => fields.iter().for_each(|f| consider(f)),
+            None => table
+                .names()
+                .filter(|name| !HIDDEN_FIELDS.contains(name))
+                .for_each(&mut consider),
+        }
+        shard.facets = reader.facets(&eligible, &scope, window.clone())?;
     }
     Ok(Evaluated::Shard(shard))
 }

@@ -1,7 +1,7 @@
-//! Cross-file merge helpers.
+//! Cross-file merge helpers, shared by the logs and traces engines.
 //!
-//! The multi-file engine queries each candidate SFST independently and
-//! then folds the per-file results together. These are the pure folds —
+//! The multi-file engines query each candidate SFST independently and
+//! then fold the per-file results together. These are the pure folds —
 //! no I/O, no wire shaping — operating entirely on `sfst` types.
 
 /// Hard ceiling on the number of values a merged facet may carry.
@@ -15,19 +15,24 @@
 /// exceeds the cap, the top values by count survive.
 pub const MAX_FACET_VALUES: usize = 1000;
 
-/// Merge per-file [`sfst::FacetResult`] sets into a single combined set.
-/// Union by field name; per field, sum counts across files for each
-/// value. Output values are emitted in lexicographic order by value
-/// string, matching the FST iteration-order contract documented on
-/// [`sfst::FacetResult`]. Unions exceeding [`MAX_FACET_VALUES`] keep the
-/// top values by count (ties broken lexicographically-first), then
-/// restore lexicographic order.
-pub fn merge_facet_results(per_file: Vec<Vec<sfst::FacetResult>>) -> Vec<sfst::FacetResult> {
+/// One field's facet merged across files: values in lexicographic order with
+/// their row counts, and what the [`MAX_FACET_VALUES`] cap left out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedFacet {
+    pub field: String,
+    pub values: Vec<(String, u64)>,
+    /// Values beyond the cap, and the rows they held.
+    pub omitted_values: u64,
+    pub omitted_rows: u64,
+}
+
+/// Merge per-file [`sfst::FacetResult`] sets: union by field name, per field
+/// sum the counts of each value. Unions exceeding [`MAX_FACET_VALUES`] keep
+/// the top values by count (ties: lexicographically first) and report the
+/// rest as omitted; values come out in lexicographic order.
+pub fn merge_facets(per_file: Vec<Vec<sfst::FacetResult>>) -> Vec<MergedFacet> {
     use std::collections::BTreeMap;
 
-    // Accumulate in `u64` so summing across many files can't wrap
-    // `u32::MAX` mid-merge. Output is saturating-cast back to `u32` to
-    // match `sfst::FacetResult::values`'s on-the-wire type.
     let mut by_field: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
     for file_facets in per_file {
         for f in file_facets {
@@ -37,25 +42,44 @@ pub fn merge_facet_results(per_file: Vec<Vec<sfst::FacetResult>>) -> Vec<sfst::F
             }
         }
     }
-    by_field
+    let mut out = Vec::with_capacity(by_field.len());
+    for (field, values) in by_field {
+        // BTreeMap iteration yields lexicographic order.
+        let mut values: Vec<(String, u64)> = values.into_iter().collect();
+        let mut omitted_values = 0;
+        let mut omitted_rows = 0;
+        if values.len() > MAX_FACET_VALUES {
+            // Stable sort: equal counts keep their lexicographic order, so
+            // the cutoff is deterministic.
+            values.sort_by_key(|v| std::cmp::Reverse(v.1));
+            for (_, count) in values.drain(MAX_FACET_VALUES..) {
+                omitted_values += 1;
+                omitted_rows += count;
+            }
+            values.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+        out.push(MergedFacet {
+            field,
+            values,
+            omitted_values,
+            omitted_rows,
+        });
+    }
+    out
+}
+
+/// [`merge_facets`] in the logs wire's shape: counts saturate to `u32` and
+/// the omitted counts are not reported.
+pub fn merge_facet_results(per_file: Vec<Vec<sfst::FacetResult>>) -> Vec<sfst::FacetResult> {
+    merge_facets(per_file)
         .into_iter()
-        .map(|(field, values)| {
-            // BTreeMap iteration yields lexicographic order.
-            let mut values: Vec<(String, u64)> = values.into_iter().collect();
-            if values.len() > MAX_FACET_VALUES {
-                // Stable sort: equal counts keep their lexicographic
-                // order, so the cutoff is deterministic.
-                values.sort_by(|a, b| b.1.cmp(&a.1));
-                values.truncate(MAX_FACET_VALUES);
-                values.sort_by(|a, b| a.0.cmp(&b.0));
-            }
-            sfst::FacetResult {
-                field,
-                values: values
-                    .into_iter()
-                    .map(|(v, c)| (v, c.min(u32::MAX as u64) as u32))
-                    .collect(),
-            }
+        .map(|merged| sfst::FacetResult {
+            field: merged.field,
+            values: merged
+                .values
+                .into_iter()
+                .map(|(v, c)| (v, c.min(u32::MAX as u64) as u32))
+                .collect(),
         })
         .collect()
 }

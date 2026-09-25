@@ -22,6 +22,7 @@ pub struct ExploreScope {
 /// Which parts of the page to compute.
 pub struct Sections {
     pub histogram: Option<HistogramSpec>,
+    pub facets: Option<FacetSpec>,
 }
 
 /// The time histogram: rows per bucket, stacked by the values of one field,
@@ -30,6 +31,17 @@ pub struct HistogramSpec {
     pub stack: String,
     pub percentiles: bool,
 }
+
+/// Values with their scope-row counts, per field; a field's own chips do not
+/// narrow its own counts.
+pub struct FacetSpec {
+    /// `None`: every field that is low or mid cardinality in every source.
+    pub fields: Option<Vec<String>>,
+}
+
+/// Fields never offered as facets: the raw enum ints behind `kind` and
+/// `status_code`.
+pub const HIDDEN_FIELDS: [&str; 2] = ["_kind", "_status_code"];
 
 /// Field the histogram is stacked by unless the request says otherwise.
 pub const DEFAULT_STACK_FIELD: &str = "status_code";

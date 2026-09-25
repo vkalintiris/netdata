@@ -1893,3 +1893,36 @@ async fn explore_counts_a_refused_wal() {
         "the sealed file still answers"
     );
 }
+
+#[tokio::test]
+async fn explore_answers_facets_with_their_own_status() {
+    let (h, _) = explore_corpus().await;
+    let body = json!({"explore": {
+        "after": 1, "before": 10, "filter": {"_role": ["root"]},
+        "sections": {"facets": {"fields": ["_role", "resource.attributes.service.name"]}}
+    }});
+    let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
+    assert!(v["data"].get("histogram").is_none(), "only the asked sections");
+    assert_eq!(
+        v["data"]["facets"],
+        json!({
+            "status": {"complete": true},
+            "fields": [
+                {
+                    "field": "_role",
+                    "values": [{"value": "internal", "count": 8}, {"value": "root", "count": 4}],
+                    "omitted_values": 0,
+                    "omitted_rows": 0
+                },
+                {
+                    "field": "resource.attributes.service.name",
+                    "values": [{"value": "checkout", "count": 1}, {"value": "svc", "count": 3}],
+                    "omitted_values": 0,
+                    "omitted_rows": 0
+                }
+            ],
+            "unavailable": []
+        })
+    );
+}
+

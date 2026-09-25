@@ -39,7 +39,6 @@
 mod aggregate;
 mod cursor;
 mod engine;
-pub(crate) mod merge;
 mod mmap;
 mod page;
 mod query;

@@ -811,7 +811,7 @@ pub(crate) fn to_explore_query(
     params: &super::wire::ExploreParams,
     now_s: u32,
 ) -> (sfsq::traces::explore::ExploreQuery, u32, u32) {
-    use sfsq::traces::explore::{ExploreQuery, ExploreScope, HistogramSpec, Sections};
+    use sfsq::traces::explore::{ExploreQuery, ExploreScope, FacetSpec, HistogramSpec, Sections};
 
     let (after, before) = params.window.resolve(now_s);
     // A relative window reaching before the epoch clamps to 0; keep at
@@ -832,6 +832,9 @@ pub(crate) fn to_explore_query(
                 stack: h.stack.clone(),
                 percentiles: h.percentiles,
             }),
+            facets: params.facets.as_ref().map(|f| FacetSpec {
+                fields: f.fields.clone(),
+            }),
         },
     };
     (query, aligned_after, aligned_before)
@@ -845,8 +848,9 @@ pub(crate) fn to_explore_response(
     before: u32,
 ) -> super::wire::ExploreResponse {
     use super::wire::{
-        BucketWire, ExploreDataWire, ExploreResponse, GridWire, HistogramWire, PercentileMethodWire,
-        PercentilesWire, TotalsWire, WindowWire,
+        BucketWire, ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire,
+        ExploreResponse, GridWire, HistogramWire, PercentileMethodWire, PercentilesWire,
+        TotalsWire, UnavailableFacetWire, WindowWire,
     };
     let percentiles = |p: Option<sfsq::traces::explore::Percentiles>| {
         p.map(|p| PercentilesWire {
@@ -883,6 +887,36 @@ pub(crate) fn to_explore_response(
             }),
         }
     });
+    let facets = data.facets.map(|f| {
+        let mut fields = Vec::with_capacity(f.fields.len());
+        for facet in f.fields {
+            let mut values = Vec::with_capacity(facet.values.len());
+            for v in facet.values {
+                values.push(ExploreFacetValueWire {
+                    value: v.value,
+                    count: v.count,
+                });
+            }
+            fields.push(ExploreFacetWire {
+                field: facet.field,
+                values,
+                omitted_values: facet.omitted_values,
+                omitted_rows: facet.omitted_rows,
+            });
+        }
+        let mut unavailable = Vec::with_capacity(f.unavailable.len());
+        for (field, reason) in f.unavailable {
+            unavailable.push(UnavailableFacetWire {
+                field,
+                reason: reason.into(),
+            });
+        }
+        ExploreFacetsWire {
+            status: StatusWire::from(&f.status),
+            fields,
+            unavailable,
+        }
+    });
     ExploreResponse {
         status: 200,
         response_type: "traces",
@@ -900,6 +934,7 @@ pub(crate) fn to_explore_response(
             },
             status,
             histogram,
+            facets,
         },
     }
 }

@@ -11,7 +11,7 @@
 //! every file in one place.
 
 use super::engine::SfstCandidate;
-use super::merge::{merge_facet_results, merge_field_tables, merge_timelines};
+use crate::merge::{merge_facet_results, merge_field_tables, merge_timelines};
 use super::mmap;
 use super::query::LogsQuery;
 

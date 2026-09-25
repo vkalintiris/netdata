@@ -18,6 +18,8 @@
 pub mod logs;
 pub mod traces;
 
+pub(crate) mod merge;
+
 mod source;
 
 pub use source::Source;

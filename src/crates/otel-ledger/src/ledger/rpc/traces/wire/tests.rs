@@ -1,3 +1,4 @@
+use super::explore::{FacetsRequest, HistogramRequest};
 use super::*;
 use serde_json::json;
 use sfsq::traces::StatusBuilder;
@@ -400,7 +401,7 @@ fn info_response_shape_is_pinned() {
             ],
             "required_params": [],
             "help": "Query and visualize OpenTelemetry traces.",
-            "sections": ["histogram"],
+            "sections": ["histogram", "facets"],
             "defaults": {
                 "filter": {"_role": ["root", "inbound"]},
                 "stack": "status_code",
@@ -704,8 +705,25 @@ fn explore_defaults_to_the_last_fifteen_minutes_stacked_by_status() {
         })
     );
 
+    assert_eq!(
+        explore(json!({})).facets,
+        Some(FacetsRequest { fields: None }),
+        "omitted sections mean every section"
+    );
     let p = explore(json!({"sections": {}}));
     assert!(p.histogram.is_none(), "an empty section list asks for nothing");
+    assert!(p.facets.is_none());
+    let p = explore(json!({"sections": {"facets": {"fields": ["_role", "name"]}}}));
+    assert_eq!(
+        p.facets,
+        Some(FacetsRequest {
+            fields: Some(vec!["_role".to_string(), "name".to_string()])
+        })
+    );
+    assert_eq!(
+        explore(json!({"sections": {"facets": {}}})).facets,
+        Some(FacetsRequest { fields: None })
+    );
 }
 
 #[test]
@@ -732,6 +750,10 @@ fn explore_rejects_bad_requests() {
         (json!({"explore": {"after": 7_000, "before": 6_000}}), "must be before"),
         (json!({"explore": {"text": "x"}}), "not available yet"),
         (json!({"explore": {"trace_ids": []}}), "not available yet"),
+        (json!({"explore": {"sections": {"facets": null}}}), "omit it instead"),
+        (json!({"explore": {"sections": {"facets": {"fields": []}}}}), "lists no fields"),
+        (json!({"explore": {"sections": {"facets": {"fields": [""]}}}}), "names an empty field"),
+        (json!({"explore": {"sections": {"facets": {"bogus": 1}}}}), "unknown field"),
         (json!({"explore": {"selection": {}}}), "not available yet"),
         (json!({"explore": {"sections": {"groups": {}}}}), "not available yet"),
         (json!({"explore": {}, "trace": {"id": "00"}}), "conflicting mode selectors"),

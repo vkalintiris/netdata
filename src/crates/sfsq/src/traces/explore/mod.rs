@@ -17,7 +17,7 @@ mod source;
 
 pub use query::{
     DEFAULT_POPULATION, DEFAULT_STACK_FIELD, ExploreQuery, ExploreRequestError, ExploreScope,
-    HistogramSpec, Sections,
+    FacetSpec, HIDDEN_FIELDS, HistogramSpec, Sections,
 };
 pub use run::explore;
 
@@ -34,6 +34,7 @@ pub struct ExploreData {
     /// Sources that may hold rows for the window: the "of" in "N of M files".
     pub sources: u64,
     pub histogram: Option<HistogramData>,
+    pub facets: Option<FacetsData>,
 }
 
 impl ExploreData {
@@ -44,6 +45,7 @@ impl ExploreData {
             status: status.finish(),
             sources: 0,
             histogram: None,
+            facets: None,
         }
     }
 }
@@ -51,6 +53,8 @@ impl ExploreData {
 /// Scope rows per bucket, stacked by one field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistogramData {
+    /// The source reasons plus this section's own.
+    pub status: QueryStatus,
     pub stack: String,
     /// The stack field's values, lexicographic; each bucket's `counts` is
     /// parallel to it.
@@ -80,6 +84,34 @@ pub struct Totals {
     pub errors: u64,
     /// When asked for; `None` for a window without rows.
     pub percentiles: Option<Percentiles>,
+}
+
+/// Values with their scope-row counts for each faceted field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FacetsData {
+    /// The source reasons plus this section's own.
+    pub status: QueryStatus,
+    /// Requested fields in request order, or every eligible field in name
+    /// order.
+    pub fields: Vec<FacetData>,
+    /// Requested fields that could not be faceted, and why.
+    pub unavailable: Vec<(String, PartialReason)>,
+}
+
+/// One field's values, in lexicographic order, and what the value cap left
+/// out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FacetData {
+    pub field: String,
+    pub values: Vec<FacetValue>,
+    pub omitted_values: u64,
+    pub omitted_rows: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FacetValue {
+    pub value: String,
+    pub count: u64,
 }
 
 /// Duration percentiles from the fixed histogram

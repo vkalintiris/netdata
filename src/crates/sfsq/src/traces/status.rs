@@ -139,7 +139,7 @@ impl QueryStatus {
 /// Accumulates partial reasons during a query; the empty accumulation IS
 /// the `Complete` status, so the "non-empty reasons" invariant holds by
 /// construction rather than by discipline at every return site.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct StatusBuilder {
     reasons: BTreeMap<PartialReason, ReasonCount>,
 }

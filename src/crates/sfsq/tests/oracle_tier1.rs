@@ -13,7 +13,9 @@ use otel_oracle::calc::{self, Grid, Scope, fixed_histogram};
 use otel_oracle::corpus::{self, MeshParams};
 use otel_oracle::model::{self, OracleSpan};
 use sfsq::Source;
-use sfsq::traces::explore::{self, ExploreQuery, ExploreScope, HistogramSpec, Sections};
+use sfsq::traces::explore::{
+    self, ExploreQuery, ExploreScope, FacetSpec, HIDDEN_FIELDS, HistogramSpec, Sections,
+};
 use sfsq::traces::{SourceId, TraceSfstCandidate, TraceSource, TraceWalScan, WalCoverage};
 
 const T0_S: u64 = 1_700_000_000;
@@ -322,6 +324,7 @@ fn explore_query(grid: &Grid, scope: &Scope, stack: &str) -> ExploreQuery {
                 stack: stack.to_string(),
                 percentiles: true,
             }),
+            facets: None,
         },
     }
 }
@@ -428,5 +431,88 @@ fn within_bound(approximate: Option<[i64; 3]>, exact: Option<[i64; 3]>, case: &s
                 "{case}: {a} vs {e}"
             );
         }
+    }
+}
+
+/// ORC-FACET through the explorer engine: for every field the calculator
+/// knows (events and links excepted, which it does not model yet), the facet
+/// counts under a scope, each field's own chips excluded, equal the
+/// calculator's; the default facet set holds no hidden field.
+#[test]
+fn explore_facets_match_the_calculator() {
+    let stored = store(400, 71);
+    let grid = stored.grid;
+    let mut fields: Vec<String> = stored
+        .oracle
+        .iter()
+        .flat_map(|span| span.fields.keys().cloned())
+        .filter(|field| !HIDDEN_FIELDS.contains(&field.as_str()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    fields.retain(|field| !field.starts_with("events.") && !field.starts_with("links."));
+    let scopes = [
+        ("entry spans", Scope::entry_spans()),
+        (
+            "checkout entry spans",
+            Scope::entry_spans().with(model::SERVICE_FIELD, &["checkout", "frontend"]),
+        ),
+    ];
+    for live in [Live::Tail, Live::Split(100)] {
+        for (scope_name, scope) in &scopes {
+            let mut query = explore_query(&grid, scope, model::STATUS_FIELD);
+            query.sections.histogram = None;
+            query.sections.facets = Some(FacetSpec {
+                fields: Some(fields.clone()),
+            });
+            let data = explore::explore(
+                explore_sources(&stored, live),
+                query,
+                tokio_util::sync::CancellationToken::new(),
+                std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            )
+            .unwrap();
+            let case = format!("{live:?} {scope_name}");
+            assert!(data.status.is_complete(), "{case}: {:?}", data.status);
+            let facets = data.facets.expect("facets section");
+            assert!(facets.unavailable.is_empty(), "{case}");
+            assert_eq!(facets.fields.len(), fields.len(), "{case}");
+            for facet in &facets.fields {
+                let got: BTreeMap<String, u64> = facet
+                    .values
+                    .iter()
+                    .map(|v| (v.value.clone(), v.count))
+                    .collect();
+                assert_eq!(
+                    got,
+                    calc::facet_counts(&stored.oracle, &grid, scope, &facet.field),
+                    "{case} field {}",
+                    facet.field
+                );
+            }
+        }
+    }
+
+    let mut query = explore_query(&grid, &Scope::entry_spans(), model::STATUS_FIELD);
+    query.sections.facets = Some(FacetSpec { fields: None });
+    let data = explore::explore(
+        explore_sources(&stored, Live::Tail),
+        query,
+        tokio_util::sync::CancellationToken::new(),
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )
+    .unwrap();
+    let default: BTreeSet<String> = data
+        .facets
+        .unwrap()
+        .fields
+        .into_iter()
+        .map(|f| f.field)
+        .collect();
+    for field in &fields {
+        assert!(default.contains(field), "default facets miss {field}");
+    }
+    for hidden in HIDDEN_FIELDS {
+        assert!(!default.contains(hidden));
     }
 }

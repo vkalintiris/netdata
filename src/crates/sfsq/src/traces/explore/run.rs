@@ -1,6 +1,7 @@
 //! Orchestration: prepare every source once, evaluate the readable ones,
 //! count the rest, and assemble the sections.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -10,8 +11,10 @@ use super::super::duration_hist::DurationHistogram;
 use super::query::{ExploreQuery, ExploreRequestError};
 use super::shard::{Evaluated, evaluate};
 use super::source::{Prepared, prepare};
-use super::{ExploreData, HistogramData, Percentiles, StackBucket, Totals};
-use crate::logs::merge::merge_timelines;
+use super::{
+    ExploreData, FacetData, FacetValue, FacetsData, HistogramData, Percentiles, StackBucket, Totals,
+};
+use crate::merge::{MergedFacet, merge_facets, merge_timelines};
 use crate::traces::{PartialReason, StatusBuilder, TimeWindow, TraceSource, validate_sources};
 
 /// Answer an explorer request over `sources`.
@@ -42,6 +45,8 @@ pub fn explore(
     let mut timelines = Vec::new();
     let mut other = vec![0u64; buckets];
     let mut durations = vec![DurationHistogram::new(); buckets];
+    let mut facets = Vec::new();
+    let mut facet_high = BTreeSet::new();
 
     for source in &sources {
         if cancel.is_cancelled() {
@@ -71,6 +76,8 @@ pub fn explore(
                         for (sum, histogram) in durations.iter_mut().zip(&shard.durations) {
                             sum.merge(histogram);
                         }
+                        facets.push(shard.facets);
+                        facet_high.extend(shard.facet_high);
                         if shard.stack_high {
                             stack_high += 1;
                             for (sum, n) in other.iter_mut().zip(&shard.other) {
@@ -94,21 +101,26 @@ pub fn explore(
         return Ok(ExploreData::cancelled());
     }
 
-    let mut status = StatusBuilder::new();
+    // Reasons about sources hold for every section; each section adds its own.
+    let mut shared = StatusBuilder::new();
     for (reason, count) in [
         (PartialReason::SourceFailure, failed),
         (PartialReason::RemoteUnavailable, unavailable),
         (PartialReason::LegacyFile, legacy),
-        (PartialReason::StackFieldHighCard, stack_high),
     ] {
-        status.add_n(reason, count);
-        status.of(reason, candidates);
+        shared.add_n(reason, count);
+        shared.of(reason, candidates);
     }
+    let mut status = shared.clone();
 
     let histogram = query.sections.histogram.map(|spec| {
-        if stack_high > 0 {
-            status.detail(PartialReason::StackFieldHighCard, spec.stack.clone());
-        }
+        let mut own = StatusBuilder::new();
+        own.add_n(PartialReason::StackFieldHighCard, stack_high);
+        own.of(PartialReason::StackFieldHighCard, candidates);
+        own.detail(PartialReason::StackFieldHighCard, spec.stack.clone());
+        status.merge(own.clone());
+        let mut section = shared.clone();
+        section.merge(own);
         let (dimensions, stacked) = match merge_timelines(timelines) {
             Some(timeline) => (timeline.dimensions, timeline.buckets),
             None => (Vec::new(), Vec::new()),
@@ -136,6 +148,7 @@ pub fn explore(
             });
         }
         HistogramData {
+            status: section.finish(),
             stack: spec.stack,
             dimensions,
             buckets: out,
@@ -148,9 +161,69 @@ pub fn explore(
         }
     });
 
+    let facets = query.sections.facets.map(|spec| {
+        let mut own = StatusBuilder::new();
+        let mut merged: BTreeMap<String, MergedFacet> = merge_facets(facets)
+            .into_iter()
+            .map(|facet| (facet.field.clone(), facet))
+            .collect();
+        let mut fields = Vec::new();
+        let mut unavailable = Vec::new();
+        match spec.fields {
+            Some(requested) => {
+                for field in requested {
+                    if facet_high.contains(&field) {
+                        own.add(PartialReason::FacetHighCard);
+                        own.detail(PartialReason::FacetHighCard, field.clone());
+                        unavailable.push((field, PartialReason::FacetHighCard));
+                    } else {
+                        let facet = merged.remove(&field).unwrap_or(MergedFacet {
+                            field,
+                            values: Vec::new(),
+                            omitted_values: 0,
+                            omitted_rows: 0,
+                        });
+                        fields.push(facet);
+                    }
+                }
+            }
+            None => fields.extend(
+                merged
+                    .into_values()
+                    .filter(|facet| !facet_high.contains(&facet.field)),
+            ),
+        }
+        let mut out = Vec::with_capacity(fields.len());
+        for facet in fields {
+            if facet.omitted_values > 0 {
+                own.add(PartialReason::FacetValueCap);
+                own.detail(PartialReason::FacetValueCap, facet.field.clone());
+            }
+            let mut values = Vec::with_capacity(facet.values.len());
+            for (value, count) in facet.values {
+                values.push(FacetValue { value, count });
+            }
+            out.push(FacetData {
+                field: facet.field,
+                values,
+                omitted_values: facet.omitted_values,
+                omitted_rows: facet.omitted_rows,
+            });
+        }
+        status.merge(own.clone());
+        let mut section = shared.clone();
+        section.merge(own);
+        FacetsData {
+            status: section.finish(),
+            fields: out,
+            unavailable,
+        }
+    });
+
     Ok(ExploreData {
         status: status.finish(),
         sources: candidates,
         histogram,
+        facets,
     })
 }

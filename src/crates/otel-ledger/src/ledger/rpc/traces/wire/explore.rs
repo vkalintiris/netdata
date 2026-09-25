@@ -22,6 +22,7 @@ pub struct ExploreParams {
     /// fields. The engine applies no default scope; the UI sends it.
     pub filter: BTreeMap<String, Vec<String>>,
     pub histogram: Option<HistogramRequest>,
+    pub facets: Option<FacetsRequest>,
 }
 
 /// A window in whole seconds: both bounds relative to now (`≤ 0`) or both
@@ -45,6 +46,13 @@ impl RequestWindow {
         };
         (absolute(self.after), absolute(self.before))
     }
+}
+
+/// The facets section: values with their scope-row counts per field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FacetsRequest {
+    /// `None`: every field low or mid cardinality in every file.
+    pub fields: Option<Vec<String>>,
 }
 
 /// The histogram section: rows per bucket stacked by one field, with the
@@ -87,6 +95,29 @@ struct RawSections {
     rows: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "super::present")]
     fields: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFacets {
+    #[serde(default)]
+    fields: Option<Vec<String>>,
+}
+
+/// A section's parameters: absent, or an object of the section's shape;
+/// `null` and other JSON values are refused.
+fn section<T: serde::de::DeserializeOwned>(
+    name: &str,
+    value: Option<serde_json::Value>,
+) -> Result<Option<T>, String> {
+    match value {
+        None => Ok(None),
+        Some(serde_json::Value::Null) => Err(format!("section `{name}` is null; omit it instead")),
+        Some(value) if !value.is_object() => Err(format!("section `{name}` must be an object")),
+        Some(value) => T::deserialize(&value)
+            .map(Some)
+            .map_err(|e| format!("section `{name}`: {e}")),
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -134,14 +165,16 @@ impl TryFrom<RawExploreParams> for ExploreParams {
             }
         }
 
-        let histogram = match raw.sections {
-            None => Some(HistogramRequest {
-                stack: sfsq::traces::explore::DEFAULT_STACK_FIELD.to_string(),
-                percentiles: true,
-            }),
+        let (histogram, facets) = match raw.sections {
+            None => (
+                Some(HistogramRequest {
+                    stack: sfsq::traces::explore::DEFAULT_STACK_FIELD.to_string(),
+                    percentiles: true,
+                }),
+                Some(FacetsRequest { fields: None }),
+            ),
             Some(sections) => {
                 for (name, value) in [
-                    ("facets", &sections.facets),
                     ("groups", &sections.groups),
                     ("rows", &sections.rows),
                     ("fields", &sections.fields),
@@ -150,18 +183,9 @@ impl TryFrom<RawExploreParams> for ExploreParams {
                         return Err(format!("section `{name}` is not available yet"));
                     }
                 }
-                match sections.histogram {
+                let histogram = match section::<RawHistogram>("histogram", sections.histogram)? {
                     None => None,
-                    Some(serde_json::Value::Null) => {
-                        return Err("section `histogram` is null; omit it instead".into());
-                    }
-                    Some(value) => {
-                        if !value.is_object() {
-                            return Err("section `histogram` must be an object".into());
-                        }
-                        let spec = RawHistogram::deserialize(&value)
-                            .map_err(|e| format!("section `histogram`: {e}"))?;
-
+                    Some(spec) => {
                         let stack = spec.stack.unwrap_or_else(|| {
                             sfsq::traces::explore::DEFAULT_STACK_FIELD.to_string()
                         });
@@ -173,7 +197,24 @@ impl TryFrom<RawExploreParams> for ExploreParams {
                             percentiles: spec.percentiles.unwrap_or(true),
                         })
                     }
-                }
+                };
+                let facets = match section::<RawFacets>("facets", sections.facets)? {
+                    None => None,
+                    Some(RawFacets { fields }) => {
+                        if let Some(fields) = &fields {
+                            if fields.is_empty() {
+                                return Err("section `facets` lists no fields; omit `fields` \
+                                            for every field"
+                                    .into());
+                            }
+                            if fields.iter().any(|f| f.is_empty()) {
+                                return Err("section `facets` names an empty field".into());
+                            }
+                        }
+                        Some(FacetsRequest { fields })
+                    }
+                };
+                (histogram, facets)
             }
         };
 
@@ -181,6 +222,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
             window: RequestWindow { after, before },
             filter: raw.filter,
             histogram,
+            facets,
         })
     }
 }
@@ -204,6 +246,8 @@ pub struct ExploreDataWire {
     pub status: StatusWire,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub histogram: Option<HistogramWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facets: Option<ExploreFacetsWire>,
 }
 
 /// The window actually answered: the request's, aligned outward to whole
@@ -270,4 +314,34 @@ pub struct TotalsWire {
     pub errors: u64,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub percentiles: Option<PercentilesWire>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExploreFacetsWire {
+    pub status: StatusWire,
+    /// Requested fields in request order, or every eligible field by name.
+    pub fields: Vec<ExploreFacetWire>,
+    /// Requested fields that could not be faceted, and why.
+    pub unavailable: Vec<UnavailableFacetWire>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExploreFacetWire {
+    pub field: String,
+    pub values: Vec<ExploreFacetValueWire>,
+    /// Values beyond the per-facet cap, and the rows they held.
+    pub omitted_values: u64,
+    pub omitted_rows: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExploreFacetValueWire {
+    pub value: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnavailableFacetWire {
+    pub field: String,
+    pub reason: super::PartialReasonWire,
 }

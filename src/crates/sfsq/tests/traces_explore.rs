@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use common::*;
 use sfsq::Source;
 use sfsq::traces::explore::{
-    ExploreData, ExploreQuery, ExploreScope, HistogramData, HistogramSpec, Sections, StackBucket,
-    Totals, explore,
+    ExploreData, ExploreQuery, ExploreScope, FacetSpec, HistogramData, HistogramSpec, Sections,
+    StackBucket, Totals, explore,
 };
 use sfsq::traces::{
     PartialReason, QueryStatus, ReasonCount, SourceId, TraceFailed, TraceSfstCandidate,
@@ -38,6 +38,7 @@ fn query(stack: &str, chips: &[(&str, &str)]) -> ExploreQuery {
                 stack: stack.to_string(),
                 percentiles: false,
             }),
+            facets: None,
         },
     }
 }
@@ -93,6 +94,7 @@ fn one_request_histogram(times: u64) -> HistogramData {
     buckets[1] = bucket(&[times, 0], 0);
     buckets[2] = bucket(&[0, times], 0);
     HistogramData {
+        status: QueryStatus::Complete,
         stack: "status_code".to_string(),
         dimensions: vec!["ERROR".to_string(), "OK".to_string()],
         buckets,
@@ -134,6 +136,7 @@ fn entry_spans_are_counted_by_status() {
             status: QueryStatus::Complete,
             sources: 1,
             histogram: Some(one_request_histogram(1)),
+            facets: None,
         }
     );
 
@@ -180,11 +183,15 @@ fn a_garbage_source_is_a_counted_failure() {
         vec![sealed_source(dir.path(), &wal, "a"), garbage],
         entry_spans("status_code"),
     );
+    let status = partial(&[(PartialReason::SourceFailure, 1, 2)]);
+    assert_eq!(data.status, status);
     assert_eq!(
-        data.status,
-        partial(&[(PartialReason::SourceFailure, 1, 2)])
+        data.histogram,
+        Some(HistogramData {
+            status,
+            ..one_request_histogram(1)
+        })
     );
-    assert_eq!(data.histogram, Some(one_request_histogram(1)));
 }
 
 #[test]
@@ -204,19 +211,23 @@ fn legacy_unavailable_and_failed_sources_are_named_with_counts() {
         ],
         entry_spans("status_code"),
     );
-    assert_eq!(
-        data.status,
-        partial(&[
-            (PartialReason::SourceFailure, 1, 4),
-            (PartialReason::RemoteUnavailable, 1, 4),
-            (PartialReason::LegacyFile, 1, 4),
-        ])
-    );
+    let status = partial(&[
+        (PartialReason::SourceFailure, 1, 4),
+        (PartialReason::RemoteUnavailable, 1, 4),
+        (PartialReason::LegacyFile, 1, 4),
+    ]);
+    assert_eq!(data.status, status);
     assert_eq!(
         data.sources, 4,
         "the remote file outside the window is not a candidate"
     );
-    assert_eq!(data.histogram, Some(one_request_histogram(1)));
+    assert_eq!(
+        data.histogram,
+        Some(HistogramData {
+            status,
+            ..one_request_histogram(1)
+        })
+    );
 }
 
 #[test]
@@ -328,4 +339,199 @@ fn progress_ticks_once_per_source() {
     )
     .unwrap();
     assert_eq!(progress.load(Ordering::Relaxed), 2);
+}
+
+fn facets_query(chips: &[(&str, &str)], fields: Option<&[&str]>) -> ExploreQuery {
+    let mut q = query("status_code", chips);
+    q.sections.histogram = None;
+    q.sections.facets = Some(FacetSpec {
+        fields: fields.map(|f| f.iter().map(|s| s.to_string()).collect()),
+    });
+    q
+}
+
+fn facet_values(data: &ExploreData, field: &str) -> Vec<(String, u64)> {
+    let facets = data.facets.as_ref().expect("facets section");
+    let facet = facets
+        .fields
+        .iter()
+        .find(|f| f.field == field)
+        .unwrap_or_else(|| panic!("no facet {field}"));
+    facet
+        .values
+        .iter()
+        .map(|v| (v.value.clone(), v.count))
+        .collect()
+}
+
+fn pairs(items: &[(&str, u64)]) -> Vec<(String, u64)> {
+    items.iter().map(|(v, c)| (v.to_string(), *c)).collect()
+}
+
+#[test]
+fn facets_count_scope_rows_and_ignore_the_fields_own_chips() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
+    let b = write_wal(dir.path(), vec![req(&request(0x22, 0x20))], "b");
+    let data = run(
+        vec![
+            sealed_source(dir.path(), &a, "a"),
+            sealed_source(dir.path(), &b, "b"),
+        ],
+        facets_query(
+            &[("_role", "root"), ("_role", "inbound")],
+            Some(&["_role", "status_code", "kind", "absent.field"]),
+        ),
+    );
+    assert_eq!(data.status, QueryStatus::Complete);
+    assert_eq!(
+        facet_values(&data, "_role"),
+        pairs(&[
+            ("inbound", 2),
+            ("internal", 2),
+            ("outbound", 2),
+            ("root", 2)
+        ]),
+        "the role facet is not narrowed by the role chip"
+    );
+    assert_eq!(
+        facet_values(&data, "status_code"),
+        pairs(&[("ERROR", 2), ("OK", 2)])
+    );
+    assert_eq!(facet_values(&data, "kind"), pairs(&[("SERVER", 4)]));
+    assert_eq!(facet_values(&data, "absent.field"), pairs(&[]));
+    let facets = data.facets.unwrap();
+    assert_eq!(
+        facets
+            .fields
+            .iter()
+            .map(|f| f.field.as_str())
+            .collect::<Vec<_>>(),
+        ["_role", "status_code", "kind", "absent.field"],
+        "requested fields keep the request order"
+    );
+}
+
+#[test]
+fn default_facets_are_every_visible_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
+    let data = run(
+        vec![sealed_source(dir.path(), &a, "a")],
+        facets_query(&[], None),
+    );
+    let fields: Vec<String> = data
+        .facets
+        .unwrap()
+        .fields
+        .into_iter()
+        .map(|f| f.field)
+        .collect();
+    for hidden in ["_kind", "_status_code"] {
+        assert!(!fields.iter().any(|f| f == hidden), "{hidden} is hidden");
+    }
+    for visible in [
+        "_duration_band",
+        "_role",
+        "kind",
+        "name",
+        "resource.attributes.service.name",
+        "status_code",
+    ] {
+        assert!(
+            fields.iter().any(|f| f == visible),
+            "{visible} missing from {fields:?}"
+        );
+    }
+}
+
+/// `n` spans of one trace, each with a distinct `attributes.id`.
+fn distinct_ids(trace: u8, n: u32, prefix: &str) -> Vec<SpanSpec> {
+    let mut spans = Vec::new();
+    for i in 0..n {
+        spans.push(SpanSpec {
+            trace: [trace; 16],
+            id: [
+                (i % 250) as u8 + 1,
+                (i / 250) as u8 + 1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                trace,
+            ],
+            attrs: vec![kv_str("id", &format!("{prefix}{i:05}"))],
+            ..sp(1, 0, S + u64::from(i), "op")
+        });
+    }
+    spans
+}
+
+#[test]
+fn a_high_cardinality_facet_is_named_and_left_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let wide = write_wal(
+        dir.path(),
+        vec![req(&distinct_ids(0x31, 1_100, "w"))],
+        "wide",
+    );
+    let sources = || vec![sealed_source(dir.path(), &wide, "wide")];
+
+    let asked = run(
+        sources(),
+        facets_query(&[], Some(&["attributes.id", "name"])),
+    );
+    let facets = asked.facets.as_ref().unwrap();
+    assert_eq!(
+        facets.unavailable,
+        [("attributes.id".to_string(), PartialReason::FacetHighCard)]
+    );
+    assert_eq!(
+        facets
+            .fields
+            .iter()
+            .map(|f| f.field.as_str())
+            .collect::<Vec<_>>(),
+        ["name"]
+    );
+    let reason = asked.status.count(PartialReason::FacetHighCard).unwrap();
+    assert_eq!(reason.count, 1);
+    assert!(reason.detail.contains("attributes.id"));
+
+    let default = run(sources(), facets_query(&[], None));
+    assert!(
+        default.status.is_complete(),
+        "a default facet set leaves high fields out by definition"
+    );
+    assert!(
+        !default
+            .facets
+            .unwrap()
+            .fields
+            .iter()
+            .any(|f| f.field == "attributes.id")
+    );
+}
+
+#[test]
+fn a_facet_over_the_value_cap_says_what_it_left_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = write_wal(dir.path(), vec![req(&distinct_ids(0x41, 600, "a"))], "a");
+    let b = write_wal(dir.path(), vec![req(&distinct_ids(0x42, 600, "b"))], "b");
+    let data = run(
+        vec![
+            sealed_source(dir.path(), &a, "a"),
+            sealed_source(dir.path(), &b, "b"),
+        ],
+        facets_query(&[], Some(&["attributes.id"])),
+    );
+    let facets = data.facets.as_ref().unwrap();
+    let facet = &facets.fields[0];
+    assert_eq!(facet.values.len(), 1_000);
+    assert_eq!((facet.omitted_values, facet.omitted_rows), (200, 200));
+    let reason = data.status.count(PartialReason::FacetValueCap).unwrap();
+    assert_eq!(reason.count, 1);
+    assert!(reason.detail.contains("attributes.id"));
+    assert_eq!(facets.status, data.status);
 }

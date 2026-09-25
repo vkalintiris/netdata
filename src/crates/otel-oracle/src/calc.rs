@@ -233,6 +233,30 @@ pub mod fixed_histogram {
     }
 }
 
+/// Rows in the window per value of `field`, counted under the scope without
+/// its own terms on `field`; a row with several values counts once under each.
+pub fn facet_counts(
+    spans: &[OracleSpan],
+    grid: &Grid,
+    scope: &Scope,
+    field: &str,
+) -> BTreeMap<String, u64> {
+    let mut others = scope.clone();
+    others.terms.remove(field);
+    let mut counts = BTreeMap::new();
+    for span in spans {
+        if !others.matches(span) || grid.bucket_of(span.start_ns).is_none() {
+            continue;
+        }
+        if let Some(values) = span.fields.get(field) {
+            for value in values {
+                *counts.entry(value.clone()).or_default() += 1;
+            }
+        }
+    }
+    counts
+}
+
 /// Scope-row durations per bucket.
 pub fn bucket_durations(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec<Vec<i64>> {
     let mut buckets = vec![Vec::new(); grid.buckets()];

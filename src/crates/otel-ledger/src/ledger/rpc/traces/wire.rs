@@ -1168,7 +1168,7 @@ impl Default for InfoResponse {
             accepted_params: ACCEPTED_PARAMS.to_vec(),
             required_params: vec![],
             help: "Query and visualize OpenTelemetry traces.",
-            sections: vec!["histogram"],
+            sections: vec!["histogram", "facets"],
             defaults: InfoDefaults {
                 filter: std::collections::BTreeMap::from([(role_field, roles.to_vec())]),
                 stack: sfsq::traces::explore::DEFAULT_STACK_FIELD,
@@ -1311,8 +1311,9 @@ impl From<PartialReason> for PartialReasonWire {
 
 mod explore;
 pub use explore::{
-    BucketWire, ExploreDataWire, ExploreParams, ExploreResponse, GridWire, HistogramRequest,
-    HistogramWire, PercentileMethodWire, PercentilesWire, TotalsWire, WindowWire,
+    BucketWire, ExploreDataWire, ExploreFacetValueWire, ExploreFacetWire, ExploreFacetsWire,
+    ExploreParams, ExploreResponse, GridWire, HistogramWire, PercentileMethodWire,
+    PercentilesWire, TotalsWire, UnavailableFacetWire, WindowWire,
 };
 
 #[cfg(test)]

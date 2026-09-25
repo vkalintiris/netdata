@@ -1,5 +1,6 @@
 use super::*;
-use crate::logs::cursor::NS_PER_S;
+
+const NS_PER_S: i64 = 1_000_000_000;
 
 /// Terse `sfst::Bucket` constructor for the timeline tests.
 fn bucket(counts: Vec<u64>, unset: u64) -> sfst::Bucket {
@@ -199,4 +200,23 @@ fn merge_facet_results_caps_values_at_hard_limit() {
     assert!(!f.values.iter().any(|(v, _)| v == "v1000"));
     // Output remains lexicographically ordered.
     assert!(f.values.windows(2).all(|w| w[0].0 < w[1].0));
+}
+
+#[test]
+fn merge_facets_reports_what_the_cap_leaves_out() {
+    let values: Vec<(String, u32)> = (0..MAX_FACET_VALUES as u32 + 3)
+        .map(|i| (format!("v{i:05}"), if i < 3 { 1 } else { 2 }))
+        .collect();
+    let merged = merge_facets(vec![vec![sfst::FacetResult {
+        field: "f".to_string(),
+        values,
+    }]]);
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].values.len(), MAX_FACET_VALUES);
+    assert_eq!((merged[0].omitted_values, merged[0].omitted_rows), (3, 3));
+    assert!(merged[0].values.windows(2).all(|w| w[0].0 < w[1].0));
+    assert!(
+        merged[0].values.iter().all(|(_, c)| *c == 2),
+        "the three single-row values went"
+    );
 }
