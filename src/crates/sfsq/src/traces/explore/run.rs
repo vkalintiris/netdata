@@ -11,7 +11,7 @@ use super::super::duration_hist::DurationHistogram;
 use super::query::{ExploreQuery, ExploreRequestError, HIDDEN_FIELDS};
 use super::rows::{self, MoreRows, PageFold, ROW_VALUE_COLUMNS, RowFields};
 use super::shard::{self, Evaluated, ExploreShard, evaluate};
-use super::source::{ExploreOptions, SourceTally, evaluate_sources};
+use super::source::{ExploreOptions, SourceTally, evaluate_sources, is_sealed};
 use super::{
     ExploreData, FacetData, FacetValue, FacetsData, FieldInfo, FieldsData, HistogramData,
     Percentiles, Row, RowsData, StackBucket, Totals,
@@ -129,7 +129,8 @@ pub fn explore(
         || Lane::new(&query),
         |lane, tally, index, mapped| {
             let stop = lane.page.as_ref().and_then(PageFold::stop);
-            match evaluate(mapped.bytes(), &query, index, stop) {
+            let sealed = is_sealed(&sources[index]);
+            match evaluate(mapped.bytes(), &query, index, stop, sealed) {
                 Ok(Evaluated::Legacy) => tally.legacy += 1,
                 Ok(Evaluated::Shard(shard)) => lane.add(*shard, index, mapped),
                 Err(e) => {

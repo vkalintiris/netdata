@@ -244,6 +244,47 @@ fn legacy_unavailable_and_failed_sources_are_named_with_counts() {
     );
 }
 
+/// A file sealed after the explorer's entries but before the seal derived
+/// values (`_role`, no `child_duration`) is named `legacy_file`: its error
+/// origins and self time were never written. The same bytes as a chunk image
+/// of a live WAL are read, and so is a sealed file whose rows have no error
+/// (no `_err_origin` field, but the column).
+#[test]
+fn a_sealed_file_without_derived_values_is_legacy_and_a_chunk_image_is_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
+    let (_, image) = ng_index::build_sfst_traces_range(&wal, whole_range(&wal)).unwrap();
+    let intermediate = dir.path().join("intermediate.sfst");
+    std::fs::write(&intermediate, image).unwrap();
+    let mut no_errors = request(0x22, 0x20);
+    for span in &mut no_errors {
+        span.status = None;
+    }
+    let calm = write_wal(dir.path(), vec![req(&no_errors)], "calm");
+
+    let data = run(
+        vec![
+            sealed_source_at(&intermediate, "intermediate"),
+            memory_source(&wal, "chunk"),
+            sealed_source(dir.path(), &calm, "calm"),
+        ],
+        entry_spans("status_code"),
+    );
+
+    let status = partial(&[(PartialReason::LegacyFile, 1, 3)]);
+    assert_eq!(data.status, status);
+    let histogram = data.histogram.unwrap();
+    let counted: u64 = histogram
+        .buckets
+        .iter()
+        .map(|bucket| bucket.counts.iter().sum::<u64>() + bucket.unset)
+        .sum();
+    assert_eq!(
+        counted, 4,
+        "two entry spans from the chunk, two from the calm file"
+    );
+}
+
 #[test]
 fn a_chip_on_a_field_absent_from_a_file_matches_nothing_there() {
     let dir = tempfile::tempdir().unwrap();

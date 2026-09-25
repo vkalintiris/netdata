@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::query::ExploreRequestError;
 use super::shard::is_legacy;
-use super::source::{ExploreOptions, SourceTally, evaluate_sources};
+use super::source::{ExploreOptions, SourceTally, evaluate_sources, is_sealed};
 use crate::traces::{
     PartialReason, QueryStatus, StatusBuilder, TimeWindow, TraceSource, validate_sources,
 };
@@ -87,7 +87,12 @@ pub fn field_values(
         &cancel,
         &progress,
         BTreeSet::new,
-        |kept, tally, index, mapped| match source_values(mapped.bytes(), &query, cap) {
+        |kept, tally, index, mapped| match source_values(
+            mapped.bytes(),
+            &query,
+            cap,
+            is_sealed(&sources[index]),
+        ) {
             Ok(None) => tally.legacy += 1,
             Ok(Some(values)) => {
                 for value in values {
@@ -133,9 +138,10 @@ fn source_values(
     bytes: &[u8],
     query: &ValuesQuery,
     cap: usize,
+    sealed: bool,
 ) -> Result<Option<Vec<String>>, sfst::Error> {
     let reader = sfst::IndexReader::open(bytes)?;
-    if is_legacy(&reader) {
+    if is_legacy(&reader, sealed) {
         return Ok(None);
     }
     if !reader.field_table().contains(&query.field) {

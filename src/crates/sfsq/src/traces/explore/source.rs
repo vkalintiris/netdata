@@ -95,6 +95,11 @@ pub(super) fn prepare(source: &TraceSource, window: &TimeWindow) -> Prepared {
     }
 }
 
+/// Whether `source` is a sealed file (not a chunk image or tail of a live WAL).
+pub(super) fn is_sealed(source: &TraceSource) -> bool {
+    matches!(source, TraceSource::Sfst(candidate) if candidate.coverage.is_none())
+}
+
 /// How a request spreads its sources over threads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExploreOptions {

@@ -40,10 +40,18 @@ pub(super) enum Evaluated {
     Shard(Box<ExploreShard>),
 }
 
-/// Whether a file was written before the explorer's per-span entries: it holds
-/// rows but no `_role`.
-pub(super) fn is_legacy(reader: &sfst::IndexReader<'_>) -> bool {
-    reader.summary().record_count > 0 && !reader.field_table().contains(ng_flatten::ROLE_FIELD)
+/// Whether a file was written before the explorer's per-span entries or the
+/// seal's derived values: it holds rows but no `_role`, or it is a sealed file
+/// without the `child_duration` column (its error origins and self time were
+/// never derived). Chunk images of a live WAL never carry that column.
+pub(super) fn is_legacy(reader: &sfst::IndexReader<'_>, sealed: bool) -> bool {
+    let pre_explorer = !reader.field_table().contains(ng_flatten::ROLE_FIELD);
+    let pre_derived = sealed
+        && reader
+            .columns_table()
+            .get(sfst::ChildDurations::NAME)
+            .is_none();
+    reader.summary().record_count > 0 && (pre_explorer || pre_derived)
 }
 
 /// The scope's rows in one source: the chips, then the text and the trace ids.
@@ -86,9 +94,10 @@ pub(super) fn evaluate(
     query: &ExploreQuery,
     source: usize,
     stop: Option<i64>,
+    sealed: bool,
 ) -> Result<Evaluated, sfst::Error> {
     let reader = sfst::IndexReader::open(bytes)?;
-    if is_legacy(&reader) {
+    if is_legacy(&reader, sealed) {
         return Ok(Evaluated::Legacy);
     }
 
