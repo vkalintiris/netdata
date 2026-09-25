@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use netdata_agent_inicfg::{Config, SECTION_GLOBAL};
+use netdata_agent_log::{netdata_log_error, netdata_log_info};
 use netdata_agent_sys::localtime;
 
 /// The time zone triplet the host reports.
@@ -219,15 +220,22 @@ pub fn system_timezone(c: &mut Config, root: &Path, now_s: i64) -> SystemTimezon
     let mut name = std::env::var("TZ")
         .ok()
         .filter(|tz| !tz.is_empty() && !tz.starts_with(':'));
-    if name.is_some() {
+    if let Some(tz) = &name {
         tzdb = true;
+        netdata_log_info!("TIMEZONE: using TZ variable '{tz}'");
     }
     if name.is_none() {
         name = detect_name(root);
         tzdb = name.is_some();
+        if let Some(detected) = &name {
+            netdata_log_info!("TIMEZONE: detected '{detected}'");
+        }
     }
     if name.is_none() {
         name = localtime(now_s).map(|tm| tm.zone).filter(|z| !z.is_empty());
+        if let Some(zone) = &name {
+            netdata_log_info!("TIMEZONE: using strftime(): '{zone}'");
+        }
     }
     let name = name.unwrap_or_else(|| "unknown".to_string());
     let mut user_configured = c.exists(SECTION_GLOBAL, "timezone");
@@ -235,6 +243,7 @@ pub fn system_timezone(c: &mut Config, root: &Path, now_s: i64) -> SystemTimezon
         if is_safe_tzdb_path(&name) {
             name
         } else {
+            netdata_log_error!("TIMEZONE: detected unsafe tzdb timezone '{name}', ignoring");
             "unknown".to_string()
         }
     } else {

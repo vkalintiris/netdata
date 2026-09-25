@@ -53,6 +53,18 @@ pub trait Worker: Send + 'static {
     fn stop(&mut self, _cx: &mut Context<'_>) {}
 }
 
+/// `nd_thread_create()`'s record of a thread that could not start, as the error's text: libuv reports the negated
+/// errno.
+pub fn thread_create_failed(name: &str, err: &io::Error) -> io::Error {
+    io::Error::new(
+        err.kind(),
+        format!(
+            "failed to create new thread for {name}. uv_thread_create() failed with code {}",
+            -err.raw_os_error().unwrap_or(0)
+        ),
+    )
+}
+
 /// Identifies an armed timer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TimerId(u64);
@@ -239,7 +251,7 @@ impl<M: Send + 'static> Pool<M> {
                         threads: joins,
                     };
                     let _ = partial.stop();
-                    return Err(err);
+                    return Err(thread_create_failed(&name(index), &err));
                 }
             }
         }

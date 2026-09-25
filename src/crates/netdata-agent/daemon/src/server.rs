@@ -225,6 +225,17 @@ pub struct WebWorker {
     max_sockets: usize,
     shared: Arc<Shared>,
     receivers: Arc<Receivers>,
+    stats: Stats,
+}
+
+/// The counters of C's `worker_private`, one per poller callback, logged when the thread stops.
+#[derive(Debug, Default)]
+struct Stats {
+    connected: usize,
+    disconnected: usize,
+    max_concurrent: usize,
+    receptions: usize,
+    sends: usize,
 }
 
 impl WebWorker {
@@ -246,6 +257,7 @@ impl WebWorker {
             max_sockets,
             shared,
             receivers,
+            stats: Stats::default(),
         }
     }
 
@@ -339,6 +351,10 @@ impl WebWorker {
                         pending: None,
                     });
                     if let Some(client) = &self.clients[slot] {
+                        // web_server_add_callback()
+                        let s = &mut self.stats;
+                        s.connected += 1;
+                        s.max_concurrent = s.max_concurrent.max(s.connected - s.disconnected);
                         client.log.connection("CONNECTED");
                     }
                 }
@@ -366,6 +382,7 @@ impl WebWorker {
     /// the cache. After a hangup C's poller pushes its copies of the IP and port around it.
     fn close(&mut self, cx: &mut Context<'_>, slot: usize, hangup: bool) {
         if let Some(mut client) = self.clients[slot].take() {
+            self.stats.disconnected += 1;
             let _ = cx.registry().deregister(&mut client.stream);
             let _frame = hangup.then(|| client.log.hangup_frame());
             client.log.connection("DISCONNECTED");
@@ -401,6 +418,7 @@ impl WebWorker {
                 PreAdmission::Reply(..) => unreachable!("replies stay on the web connection"),
             }
         }
+        self.stats.disconnected += 1;
         client.log.connection("DISCONNECTED");
         if let Some(done) = client.pending.take() {
             done.log(&client.log);
@@ -425,6 +443,8 @@ impl WebWorker {
         // response is written, so later bytes wait in the kernel (backpressure) and are reported again when
         // reading is re-armed.
         if client.output.is_empty() && event.is_readable() {
+            // web_server_rcv_callback()
+            self.stats.receptions += 1;
             loop {
                 let start = client.received.len();
                 let want = client.recv.recv_len(start);
@@ -473,6 +493,10 @@ impl WebWorker {
         let Some(client) = self.clients[slot].as_mut() else {
             return;
         };
+        // web_server_snd_callback(): C's poller reports the socket writable once the response is queued
+        if client.written < client.output.len() {
+            self.stats.sends += 1;
+        }
         while client.written < client.output.len() {
             match client.stream.write(&client.output[client.written..]) {
                 Ok(n) => {
@@ -865,4 +889,36 @@ impl Worker for WebWorker {
     }
 
     fn message(&mut self, _cx: &mut Context<'_>, _msg: ()) {}
+
+    /// The end of `poll_events()` (every client closed), then the thread's cleanup; the first thread is also C's web
+    /// server main thread, which closes the listening sockets.
+    fn stop(&mut self, cx: &mut Context<'_>) {
+        for slot in 0..self.clients.len() {
+            self.close(cx, slot, false);
+        }
+        let s = &self.stats;
+        nd_log!(
+            Source::Daemon,
+            Priority::Info,
+            "stopped after {} connects, {} disconnects (max concurrent {}), {} receptions and {} sends",
+            s.connected,
+            s.disconnected,
+            s.max_concurrent,
+            s.receptions,
+            s.sends
+        );
+        if cx.index() == 0 {
+            nd_log!(
+                Source::Daemon,
+                Priority::Info,
+                "closing all web server sockets..."
+            );
+            self.listeners.clear();
+            nd_log!(
+                Source::Daemon,
+                Priority::Info,
+                "all static web threads stopped."
+            );
+        }
+    }
 }

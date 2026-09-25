@@ -17,13 +17,15 @@ mod profile;
 mod router;
 mod rrdcontext;
 mod server;
+mod shutdown;
+mod startup;
 mod static_file;
 mod system;
 mod timezone;
 mod v1_charts;
 mod v1_contexts;
 
-use netdata_agent_log::{Priority, Source, nd_log};
+use netdata_agent_log::{Priority, Source, fatal, nd_log};
 use std::io::Write;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -47,6 +49,7 @@ fn out(stream: &mut dyn Write, bytes: &[u8]) {
 }
 
 fn run(argv: Vec<Vec<u8>>) -> i32 {
+    let mut startup = startup::Startup::new();
     // C's constructor-time invocation id, then `program_name`; until nd_log_initialize() records go to stderr.
     netdata_agent_log::init_invocation_id();
     netdata_agent_log::set_program_name("netdata");
@@ -137,8 +140,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     netdata_agent_log::limits_unlimited();
     netdata_agent_log::initialize();
 
-    // C loads stream.conf from the profile detection of the "signals" step, after the machine GUID; moving it there
-    // (and the run dir after [db]) comes with the startup steps of the logging port, which fix the log line order.
+    let machine_guid = guid::machine_guid_get(&conf.dirs.varlib);
+
+    startup.step("signals");
+    // The status-file refresh of this step line detects the node profile, which loads stream.conf first; the load
+    // detects the profile too (for its replication defaults), so C parses [global] profile twice here.
     let mut stream_conf = StreamConf::default();
     stream_conf.load(
         &mut conf.netdata,
@@ -159,8 +165,13 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             ) == profile::Profile::Parent
         },
     );
-
-    let machine_guid = guid::machine_guid_get(&conf.dirs.varlib);
+    profile::detect(
+        &mut conf.netdata,
+        system.system_cpus,
+        system.memory.total,
+        stream_conf.is_parent,
+        stream_conf.send.enabled,
+    );
 
     // signals_block_all_except_deadly(): every thread started from here on inherits the mask. The main thread waits
     // for the signals C handles; any other signal stays pending forever, so it is ignored.
@@ -196,7 +207,20 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         handled.add(signal);
     }
 
-    // The "run dir" startup step.
+    // netdata_conf_section_global(): the hostname, nd_profile_setup() (the profile detected once more, then its
+    // malloc settings) and [db]. registry_init() follows in C (D42).
+    conf.section_global_hostname();
+    let profile = profile::detect(
+        &mut conf.netdata,
+        system.system_cpus,
+        system.memory.total,
+        stream_conf.is_parent,
+        stream_conf.send.enabled,
+    );
+    profile::setup_malloc(&mut conf.netdata, profile, system.system_cpus);
+    let db = conf::section_db(&mut conf.netdata, system.page_size);
+
+    startup.step("run dir");
     match system::run_dir(true) {
         Some(dir) => nd_log!(
             Source::Daemon,
@@ -213,66 +237,58 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     }
 
-    conf.section_global_hostname();
-    // nd_profile_setup(): the profile once more (it re-reads [global] profile), its malloc settings, then [db].
-    let profile = profile::detect(
-        &mut conf.netdata,
-        system.system_cpus,
-        system.memory.total,
-        stream_conf.is_parent,
-        stream_conf.send.enabled,
-    );
-    profile::setup_malloc(&mut conf.netdata, profile, system.system_cpus);
-    let db = conf::section_db(&mut conf.netdata, system.page_size);
-
+    startup.step("crash reports");
+    startup.step("temp spawn server");
+    startup.step("ssl");
+    startup.step("environment for plugins");
     // set_environment_for_plugins_and_scripts(): an unusable required directory is C's fatal().
-    if let Err(err) = conf.environment_for_plugins(db.update_every) {
-        nd_log!(Source::Daemon, Priority::Err, "{}", err);
-        return 1;
+    if let Err((errno, message)) = conf.environment_for_plugins(db.update_every) {
+        fatal!(errno = errno; "{message}");
     }
 
+    startup.step("cd to user config dir");
     // cd into the user config dir, so plugins can use relative paths to their config files.
-    if std::env::set_current_dir(&conf.dirs.user_config).is_err() {
-        nd_log!(
-            Source::Daemon,
-            Priority::Err,
-            "Cannot cd to '{}'",
-            conf.dirs.user_config
-        );
-        return 1;
+    if let Err(err) = std::env::set_current_dir(&conf.dirs.user_config) {
+        fatal!(errno = netdata_agent_log::errno_of(&err); "Cannot cd to '{}'", conf.dirs.user_config);
     }
 
-    // get_system_timezone() at the "analytics" step. No thread has started yet, so setenv() is sound.
-    if let Err(err) = conf::set_timezone_env(&mut conf.netdata) {
-        nd_log!(
-            Source::Daemon,
-            Priority::Err,
-            "TIMEZONE: cannot set TZ: {err}"
-        );
-    }
+    startup.step("analytics");
+    // get_system_timezone(). No thread has started yet, so setenv() cannot fail for lack of exclusivity; C does not
+    // check it either.
+    let _ = conf::set_timezone_env(&mut conf.netdata);
     let tz = timezone::system_timezone(&mut conf.netdata, std::path::Path::new("/"), server::now());
+
+    startup.step("pulse");
+    startup.step("replication");
+    startup.step("inflight functions");
+    startup.step("silencers");
     conf.health_silencers_filename();
 
+    startup.step("static threads");
+    startup.step("web server api");
     // nd_web_api_init(): the time-grouping limits, read before the listen sockets as in C.
     let grouping_windows = conf::grouping_windows(&mut conf.netdata);
     // web_server_threading_selection(): with `[web] mode = none` there is no web server at all.
     let web_enabled = conf::web_server_enabled(&mut conf.netdata);
+
+    startup.step("web server sockets");
     let listeners = if web_enabled {
         listen::setup(&mut conf.netdata)
     } else {
         Vec::new()
     };
     if web_enabled && listeners.is_empty() {
-        nd_log!(
-            Source::Daemon,
-            Priority::Err,
-            "Cannot setup listen port(s). Is Netdata already running?"
-        );
-        return 1;
+        // web_server_listen_sockets_setup() clears errno first: the bind failure is on the listener's own record
+        fatal!("Cannot setup listen port(s). Is Netdata already running?");
     }
 
+    startup.step("sqlite");
+    startup.step("ML");
+    startup.step("resource limits");
     system::set_nofile_limit();
 
+    startup.step("stop temporary spawn server");
+    startup.step("become daemon");
     // become_daemon(): after the listeners (privileged ports) and before any thread starts.
     match daemon::become_daemon(
         dont_fork,
@@ -281,16 +297,21 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         &mut conf.netdata,
         &conf.dirs,
     ) {
-        Ok(daemon::Outcome::Continue) => {}
-        Ok(daemon::Outcome::ExitParent) => return 0,
-        Err(err) => {
-            nd_log!(Source::Daemon, Priority::Err, "{}", err);
-            return 1;
-        }
+        daemon::Outcome::Continue => {}
+        daemon::Outcome::ExitParent => return 0,
     }
-    // The "home" step: after the user switch, while there is still one thread.
+    startup.step("plugins spawn server");
+    startup.step("home");
+    // After the user switch, while there is still one thread.
     conf.section_home();
 
+    startup.step("dyncfg");
+    startup.step("threads after fork");
+    startup.step("registry");
+    startup.step("system info");
+    startup.step("RRD structures");
+    startup.step("commands liveness support");
+    // rrd_init(): the health defaults, then localhost.
     let health_enabled = conf.health_load_config_defaults();
     let localhost = Host::new(
         &machine_guid,
@@ -338,12 +359,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             move |_| StreamWorker::new(Arc::clone(&load)),
         ) {
             Ok(pool) => pool,
+            // D37: C carries on without the thread; a pool cannot, so the daemon exits after C's record
             Err(err) => {
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Err,
-                    "Cannot start the stream threads: {err}"
-                );
+                nd_log!(Source::Daemon, Priority::Err, "{err}");
                 return 1;
             }
         }
@@ -369,8 +387,12 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         },
         stream_pool.handle(),
     ));
-    // The "static threads" step: flood protection back on, then netdata_conf_section_web() just before C starts its
-    // static threads, the web server among them, which then reads its thread count.
+    startup.step("localhost labels");
+    startup.step("saved bearer tokens");
+    startup.step("claiming info");
+    startup.step("static threads");
+    // Flood protection back on, then netdata_conf_section_web() just before C starts its static threads, the web
+    // server among them, which then reads its thread count.
     netdata_agent_log::limits_reset();
     let web = conf.section_web();
     // The web server thread reads its sizing only when it runs.
@@ -451,11 +473,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         ) {
             Ok(pool) => Some(pool),
             Err(err) => {
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Err,
-                    "Cannot start the web server threads: {err}"
-                );
+                nd_log!(Source::Daemon, Priority::Err, "{err}");
                 return 1;
             }
         }
@@ -466,45 +484,98 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         match rrdcontext::Worker::spawn(Arc::clone(&hosts), conf.threads.thread_stack_size) {
             Ok(worker) => worker,
             Err(err) => {
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Err,
-                    "Cannot start the RRDCONTEXT thread: {err}"
-                );
+                nd_log!(Source::Daemon, Priority::Err, "{err}");
                 return 1;
             }
         };
-    nd_log!(Source::Daemon, Priority::Info, "NETDATA STARTUP: completed");
+    startup.step("commands full API");
+    startup.step("agent start timings");
+    startup.completed();
+    // The ANALYTICS thread is not ported: nothing is sent either way.
+    startup.step(if startup::analytics_enabled(&conf.dirs.user_config) {
+        "anonymous analytics"
+    } else {
+        "anonymous analytics (disabled)"
+    });
+    startup.step("mrg cleanup");
+    startup.step("done");
+    // netdata_exit_fatal(): a fatal() from here on runs the exit sequence, as an abnormal exit
+    netdata_agent_log::register_fatal_final_callback(|| {
+        shutdown::cleanup_and_exit("fatal", false, |_| {})
+    });
 
-    loop {
-        match handled.wait() {
-            Ok(Signal::SIGINT | Signal::SIGQUIT | Signal::SIGTERM) => break,
+    // process_triggered_signals(). C's handler interrupts its poll(), so the SIGNAL records carry EINTR.
+    const EINTR: i32 = nix::errno::Errno::EINTR as i32;
+    let reason = loop {
+        let (name, reason) = match handled.wait() {
+            Ok(Signal::SIGINT) => ("SIGINT", "signal-interrupt"),
+            Ok(Signal::SIGQUIT) => ("SIGQUIT", "signal-quit"),
+            Ok(Signal::SIGTERM) => ("SIGTERM", "signal-terminate"),
             Ok(Signal::SIGHUP) => {
-                // process_triggered_signals(): the reopen runs without flood protection
+                netdata_agent_log::limits_unlimited();
+                nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
+                    "SIGNAL: Received SIGHUP. Reopening all log files...");
+                netdata_agent_log::reopen_log_files(true);
+                netdata_agent_log::limits_reset();
+                continue;
+            }
+            Ok(Signal::SIGUSR2) => {
+                // health is not ported: only C's records of the reload
+                netdata_agent_log::limits_unlimited();
+                nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
+                    "SIGNAL: Received SIGUSR2. Reloading HEALTH configuration...");
+                netdata_agent_log::limits_reset();
                 netdata_agent_log::limits_unlimited();
                 nd_log!(
                     Source::Daemon,
                     Priority::Info,
-                    "SIGNAL: Received SIGHUP. Reopening all log files..."
+                    "COMMAND: Reloading HEALTH configuration."
                 );
-                netdata_agent_log::reopen_log_files(true);
                 netdata_agent_log::limits_reset();
+                continue;
             }
-            // SIGPIPE is ignored; health reloads (USR2) come with health.
-            Ok(_) => continue,
-            Err(_) => continue,
-        }
-    }
+            // SIGPIPE is ignored.
+            Ok(_) | Err(_) => continue,
+        };
+        netdata_agent_log::limits_unlimited();
+        nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
+            "SIGNAL: Received {name}. Cleaning up to exit...");
+        break reason;
+    };
 
-    nd_log!(Source::Daemon, Priority::Info, "shutting down");
-    if let Some(pool) = pool {
-        let _ = pool.stop();
-    }
-    let _ = stream_pool.stop();
-    contexts_worker.stop();
-    if let Some(pidfile) = &pidfile {
-        let _ = std::fs::remove_file(pidfile);
-    }
+    let mut pool = pool;
+    let mut stream_pool = Some(stream_pool);
+    let mut contexts_worker = Some(contexts_worker);
+    shutdown::cleanup_and_exit(reason, true, |step| match step {
+        shutdown::STOP_WEB_SERVERS => {
+            if let Some(pool) = pool.take() {
+                let _ = pool.stop();
+            }
+        }
+        shutdown::STOP_STREAMING => {
+            if let Some(pool) = stream_pool.take() {
+                let _ = pool.stop();
+            }
+        }
+        shutdown::STOP_CONTEXT => {
+            if let Some(worker) = contexts_worker.take() {
+                worker.stop();
+            }
+        }
+        // cancel_main_threads(): no static thread of C's table runs in the Rust agent
+        shutdown::CANCEL_MAIN_THREADS => {
+            nd_log!(Source::Daemon, Priority::Info, "All threads finished.")
+        }
+        shutdown::REMOVE_PID_FILE => {
+            if let Some(pidfile) = pidfile.as_deref().filter(|p| !p.is_empty())
+                && let Err(err) = std::fs::remove_file(pidfile)
+            {
+                nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_log::errno_of(&err);
+                    "EXIT: cannot unlink pidfile '{pidfile}'.");
+            }
+        }
+        _ => {}
+    });
     0
 }
 

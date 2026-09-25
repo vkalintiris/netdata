@@ -823,8 +823,8 @@ pub fn section_db(c: &mut Config, page_size: i64) -> DbSection {
 impl Conf {
     /// `set_environment_for_plugins_and_scripts()` (`src/daemon/environment.c`): what plugins and scripts inherit.
     /// Every required directory is entered (the last `chdir` wins until the caller moves on), and the writable ones
-    /// are created when missing. The error is C's `fatal()` text.
-    pub fn environment_for_plugins(&mut self, update_every: i32) -> Result<(), String> {
+    /// are created when missing. The error is C's `fatal()` errno and text.
+    pub fn environment_for_plugins(&mut self, update_every: i32) -> Result<(), (i32, String)> {
         export("NETDATA_UPDATE_EVERY", &update_every.to_string());
         export("NETDATA_VERSION", build::NETDATA_VERSION);
         export("NETDATA_HOSTNAME", &self.hostname);
@@ -987,55 +987,74 @@ const HEALTH_LOG_ENTRIES_MIN: u32 = 10;
 const HEALTH_LOG_ENTRIES_MAX: u32 = 100_000;
 const HEALTH_LOG_MINIMUM_HISTORY: u32 = 86400;
 
-/// `verify_required_directory()`: enter it, or create it when allowed; otherwise explain which part is wrong.
-fn verify_required_directory(env: &str, dir: &str, create: Option<u32>) -> Result<(), String> {
+/// `verify_required_directory()`: enter it, or create it when allowed; otherwise C's `fatal()` errno and text of the
+/// part that is wrong. C clears errno only at entry and before each component's `stat()`, so the failed `chdir()` or
+/// `mkdir()` of a one-component path is still the errno of the later records.
+fn verify_required_directory(
+    env: &str,
+    dir: &str,
+    create: Option<u32>,
+) -> Result<(), (i32, String)> {
     use std::os::unix::fs::DirBuilderExt;
     if !dir.starts_with('/') {
-        return Err(format!(
-            "Invalid directory path (must be an absolute path): '{dir}' ({env})"
+        return Err((
+            0,
+            format!("Invalid directory path (must be an absolute path): '{dir}' ({env})"),
         ));
     }
-    if std::env::set_current_dir(dir).is_ok() {
-        return Ok(());
-    }
-    if let Some(mode) = create
-        && std::fs::DirBuilder::new().mode(mode).create(dir).is_ok()
-    {
-        return Ok(());
+    let mut errno = match std::env::set_current_dir(dir) {
+        Ok(()) => return Ok(()),
+        Err(err) => netdata_agent_log::errno_of(&err),
+    };
+    if let Some(mode) = create {
+        match std::fs::DirBuilder::new().mode(mode).create(dir) {
+            Ok(()) => return Ok(()),
+            Err(err) => errno = netdata_agent_log::errno_of(&err),
+        }
     }
     let required = format!("Required directory: '{dir}' ({env})");
     for (at, _) in dir.match_indices('/').skip(1) {
         let component = &dir[..at];
+        errno = 0;
         match std::fs::metadata(component) {
-            Err(_) => {
-                return Err(format!(
-                    "{required} - Missing or inaccessible component: '{component}'"
+            Err(err) => {
+                return Err((
+                    netdata_agent_log::errno_of(&err),
+                    format!("{required} - Missing or inaccessible component: '{component}'"),
                 ));
             }
             Ok(m) if !m.is_dir() => {
-                return Err(format!(
-                    "{required} - Component '{component}' exists but is not a directory."
+                return Err((
+                    errno,
+                    format!("{required} - Component '{component}' exists but is not a directory."),
                 ));
             }
             Ok(_) => {}
         }
     }
     match std::fs::metadata(dir) {
-        Err(_) => return Err(format!("{required} - Missing or inaccessible: '{dir}'")),
+        Err(err) => {
+            return Err((
+                netdata_agent_log::errno_of(&err),
+                format!("{required} - Missing or inaccessible: '{dir}'"),
+            ));
+        }
         Ok(m) if !m.is_dir() => {
-            return Err(format!(
-                "{required} - '{dir}' exists but is not a directory."
+            return Err((
+                errno,
+                format!("{required} - '{dir}' exists but is not a directory."),
             ));
         }
         Ok(_) => {}
     }
     use nix::unistd::{AccessFlags, access};
-    if access(dir, AccessFlags::R_OK | AccessFlags::X_OK).is_err() {
-        return Err(format!(
-            "{required} - Insufficient permissions for: '{dir}'"
+    if let Err(err) = access(dir, AccessFlags::R_OK | AccessFlags::X_OK) {
+        return Err((
+            err as i32,
+            format!("{required} - Insufficient permissions for: '{dir}'"),
         ));
     }
-    Err(format!("{required} - Failed"))
+    Err((errno, format!("{required} - Failed")))
 }
 
 /// `web_server_threading_selection()`: `[web] mode`; anything but `none` is the static-threaded server.
@@ -1580,21 +1599,31 @@ mod tests {
         assert!(root.join("cache").is_dir());
         assert_eq!(
             verify_required_directory("E", "relative", None),
-            Err("Invalid directory path (must be an absolute path): 'relative' (E)".to_string())
+            Err((
+                0,
+                "Invalid directory path (must be an absolute path): 'relative' (E)".to_string()
+            ))
         );
         let missing = dir("none/deeper");
         assert_eq!(
             verify_required_directory("E", &missing, Some(0o775)),
-            Err(format!(
-                "Required directory: '{missing}' (E) - Missing or inaccessible component: '{}'",
-                dir("none")
+            Err((
+                nix::errno::Errno::ENOENT as i32,
+                format!(
+                    "Required directory: '{missing}' (E) - Missing or inaccessible component: '{}'",
+                    dir("none")
+                )
             ))
         );
+        // the component checks cleared the errno of the failed chdir()
         let file = dir("file");
         assert_eq!(
             verify_required_directory("E", &file, None),
-            Err(format!(
-                "Required directory: '{file}' (E) - '{file}' exists but is not a directory."
+            Err((
+                0,
+                format!(
+                    "Required directory: '{file}' (E) - '{file}' exists but is not a directory."
+                )
             ))
         );
         std::env::set_current_dir(cwd).unwrap();

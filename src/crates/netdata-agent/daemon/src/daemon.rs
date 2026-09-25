@@ -3,7 +3,7 @@
 //!
 //! Not yet: the analytics report of the OOM score.
 
-use netdata_agent_log::{Priority, Source, chown_open_file, nd_log};
+use netdata_agent_log::{Priority, Source, chown_open_file, fatal, nd_log};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -450,23 +450,30 @@ pub enum Outcome {
 }
 
 /// `become_daemon()`: unless `dont_fork`, fork twice around `setsid()`; then the pidfile, umask 0007, the OOM score,
-/// the scheduling policy, and the switch to `user` (or the directory ownership for the current account).
+/// the scheduling policy, and the switch to `user` (or the directory ownership for the current account). A failed
+/// fork or `setsid()` is C's `fatal()`.
 pub fn become_daemon(
     dont_fork: bool,
     user: &str,
     pidfile: Option<&str>,
     c: &mut Config,
     dirs: &Dirs,
-) -> Result<Outcome, String> {
+) -> Outcome {
     if !dont_fork {
-        match sys::fork().map_err(|e| format!("cannot fork: {e}"))? {
-            Forked::Parent { .. } => return Ok(Outcome::ExitParent),
-            Forked::Child => netdata_agent_log::forked(),
+        match sys::fork() {
+            Ok(Forked::Parent { .. }) => return Outcome::ExitParent,
+            Ok(Forked::Child) => netdata_agent_log::forked(),
+            Err(err) => fatal!(errno = netdata_agent_log::errno_of(&err); "cannot fork"),
         }
-        nix::unistd::setsid().map_err(|_| "Cannot become session leader.".to_string())?;
-        match sys::fork().map_err(|e| format!("cannot fork for a second time: {e}"))? {
-            Forked::Parent { .. } => return Ok(Outcome::ExitParent),
-            Forked::Child => netdata_agent_log::forked(),
+        if let Err(errno) = nix::unistd::setsid() {
+            fatal!(errno = errno as i32; "Cannot become session leader.");
+        }
+        match sys::fork() {
+            Ok(Forked::Parent { .. }) => return Outcome::ExitParent,
+            Ok(Forked::Child) => netdata_agent_log::forked(),
+            Err(err) => {
+                fatal!(errno = netdata_agent_log::errno_of(&err); "cannot fork for a second time")
+            }
         }
     }
     let mut pid_file = None;
@@ -528,7 +535,7 @@ pub fn become_daemon(
         prepare_required_directories(dirs, nix::unistd::getuid(), nix::unistd::getgid());
     }
     drop(pid_file);
-    Ok(Outcome::Continue)
+    Outcome::Continue
 }
 
 #[cfg(test)]

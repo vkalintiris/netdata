@@ -43,7 +43,8 @@ impl Worker {
                         host.contexts().worker_cycle();
                     }
                 }
-            })?;
+            })
+            .map_err(|err| netdata_agent_evloop::thread_create_failed("RRDCONTEXT", &err))?;
         Ok(Worker { stop, thread })
     }
 
