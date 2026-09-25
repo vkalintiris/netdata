@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use super::StatusWire;
 
+/// Most trace ids one request may name.
+pub const TRACE_IDS_MAX: usize = 100;
+
 /// Length of the default window, seconds.
 pub const DEFAULT_WINDOW_S: i64 = 900;
 
@@ -21,6 +24,10 @@ pub struct ExploreParams {
     /// Scope chips in storage field names: OR within a field, AND across
     /// fields. The engine applies no default scope; the UI sends it.
     pub filter: BTreeMap<String, Vec<String>>,
+    /// A literal searched in every value.
+    pub text: Option<String>,
+    /// Keep only these traces' spans (1 to [`TRACE_IDS_MAX`]).
+    pub trace_ids: Vec<sfst::TraceId>,
     pub histogram: Option<HistogramRequest>,
     pub facets: Option<FacetsRequest>,
 }
@@ -72,10 +79,10 @@ struct RawExploreParams {
     before: Option<i64>,
     #[serde(default)]
     filter: BTreeMap<String, Vec<String>>,
-    #[serde(default, deserialize_with = "super::present")]
-    text: Option<serde_json::Value>,
-    #[serde(default, deserialize_with = "super::present")]
-    trace_ids: Option<serde_json::Value>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    trace_ids: Option<Vec<String>>,
     #[serde(default, deserialize_with = "super::present")]
     selection: Option<serde_json::Value>,
     #[serde(default)]
@@ -133,13 +140,27 @@ impl TryFrom<RawExploreParams> for ExploreParams {
     type Error = String;
 
     fn try_from(raw: RawExploreParams) -> Result<Self, String> {
-        for (name, value) in [
-            ("text", &raw.text),
-            ("trace_ids", &raw.trace_ids),
-            ("selection", &raw.selection),
-        ] {
-            if value.is_some() {
-                return Err(format!("`{name}` is not available yet"));
+        if raw.selection.is_some() {
+            return Err("`selection` is not available yet".into());
+        }
+        let text = match raw.text {
+            Some(text) if text.trim().is_empty() => {
+                return Err("`text` is empty; omit it instead".into());
+            }
+            Some(text) => Some(text.trim().to_string()),
+            None => None,
+        };
+        let mut trace_ids = Vec::new();
+        if let Some(ids) = raw.trace_ids {
+            if ids.is_empty() || ids.len() > TRACE_IDS_MAX {
+                return Err(format!("`trace_ids` needs 1 to {TRACE_IDS_MAX} ids"));
+            }
+            for id in ids {
+                let parsed = super::super::adapter::parse_trace_id(&id)?;
+                if parsed.is_unset() {
+                    return Err("the all-zero trace id is not queryable".into());
+                }
+                trace_ids.push(parsed);
             }
         }
 
@@ -221,6 +242,8 @@ impl TryFrom<RawExploreParams> for ExploreParams {
         Ok(ExploreParams {
             window: RequestWindow { after, before },
             filter: raw.filter,
+            text,
+            trace_ids,
             histogram,
             facets,
         })

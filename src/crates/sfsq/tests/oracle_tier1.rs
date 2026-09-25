@@ -318,7 +318,15 @@ fn explore_query(grid: &Grid, scope: &Scope, stack: &str) -> ExploreQuery {
             i64::from(grid.width_s) * 1_000_000_000,
             grid.buckets(),
         ),
-        scope: ExploreScope { filter },
+        scope: ExploreScope {
+            filter,
+            text: scope.text.as_deref().map(sfst::text::LiteralText::new),
+            trace_ids: scope
+                .trace_ids
+                .iter()
+                .map(|id| sfst::TraceId::from(*id))
+                .collect(),
+        },
         sections: Sections {
             histogram: Some(HistogramSpec {
                 stack: stack.to_string(),
@@ -514,5 +522,57 @@ fn explore_facets_match_the_calculator() {
     }
     for hidden in HIDDEN_FIELDS {
         assert!(!default.contains(hidden));
+    }
+}
+
+/// ORC-FILTER F4 (literal text) and F5 (trace ids) through the explorer
+/// engine: the stacked histogram and totals equal the calculator's.
+#[test]
+fn explore_text_and_trace_id_scopes_match_the_calculator() {
+    let stored = store(400, 81);
+    let grid = stored.grid;
+    let mut ids: Vec<[u8; 16]> = stored.oracle.iter().filter_map(|s| s.trace_id).collect();
+    ids.sort();
+    ids.dedup();
+    let chosen = [ids[3], ids[ids.len() / 2], ids[ids.len() - 2]];
+    let scopes = [
+        ("F4 text", Scope::entry_spans().with_text("PLACEORDER")),
+        ("F4 text, every span", Scope::default().with_text("redis")),
+        ("F5 trace ids", Scope::default().with_trace_ids(&chosen)),
+    ];
+    for live in [Live::Tail, Live::Split(100)] {
+        for (name, scope) in &scopes {
+            let data = explore::explore(
+                explore_sources(&stored, live),
+                explore_query(&grid, scope, model::STATUS_FIELD),
+                tokio_util::sync::CancellationToken::new(),
+                std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            )
+            .unwrap();
+            let case = format!("{live:?} {name}");
+            let histogram = data.histogram.expect("histogram");
+            let totals = calc::totals(&stored.oracle, &grid, scope);
+            assert!(totals.spans > 0, "{case}: the scenario selects rows");
+            assert_eq!(
+                (histogram.totals.count, histogram.totals.errors),
+                (totals.spans, totals.errors),
+                "{case}"
+            );
+            let want = calc::histogram(&stored.oracle, &grid, scope, model::STATUS_FIELD);
+            let mut got = Vec::new();
+            for bucket in &histogram.buckets {
+                let mut counts = BTreeMap::new();
+                for (value, count) in histogram.dimensions.iter().zip(&bucket.counts) {
+                    if *count > 0 {
+                        counts.insert(value.clone(), *count);
+                    }
+                }
+                got.push(calc::Bucket {
+                    counts,
+                    unset: bucket.unset,
+                });
+            }
+            assert_eq!(got, want, "{case}");
+        }
     }
 }

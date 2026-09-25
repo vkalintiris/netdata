@@ -748,13 +748,18 @@ fn explore_rejects_bad_requests() {
         (json!({"explore": {"after": -900, "before": 1_700_000_000}}), "both be relative"),
         (json!({"explore": {"after": 0, "before": -60}}), "must be before"),
         (json!({"explore": {"after": 7_000, "before": 6_000}}), "must be before"),
-        (json!({"explore": {"text": "x"}}), "not available yet"),
-        (json!({"explore": {"trace_ids": []}}), "not available yet"),
         (json!({"explore": {"sections": {"facets": null}}}), "omit it instead"),
         (json!({"explore": {"sections": {"facets": {"fields": []}}}}), "lists no fields"),
         (json!({"explore": {"sections": {"facets": {"fields": [""]}}}}), "names an empty field"),
         (json!({"explore": {"sections": {"facets": {"bogus": 1}}}}), "unknown field"),
         (json!({"explore": {"selection": {}}}), "not available yet"),
+        (json!({"explore": {"text": "  "}}), "`text` is empty"),
+        (json!({"explore": {"trace_ids": []}}), "needs 1 to 100 ids"),
+        (json!({"explore": {"trace_ids": ["abc"]}}), "trace id"),
+        (
+            json!({"explore": {"trace_ids": ["00000000000000000000000000000000"]}}),
+            "all-zero trace id",
+        ),
         (json!({"explore": {"sections": {"groups": {}}}}), "not available yet"),
         (json!({"explore": {}, "trace": {"id": "00"}}), "conflicting mode selectors"),
         (json!({"explore": []}), "expected an object"),
@@ -763,3 +768,19 @@ fn explore_rejects_bad_requests() {
         assert!(err.contains(needle), "for {body}: {err}");
     }
 }
+
+#[test]
+fn explore_takes_text_and_trace_ids() {
+    let p = explore(json!({
+        "text": "  order 84 ",
+        "trace_ids": ["4BF92F3577B34DA6A3CE929D0E0E4736"]
+    }));
+    assert_eq!(p.text.as_deref(), Some("order 84"));
+    assert_eq!(p.trace_ids.len(), 1);
+    assert_eq!(
+        p.trace_ids[0].as_bytes()[0],
+        0x4b,
+        "hex is read case-insensitively"
+    );
+}
+

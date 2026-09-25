@@ -66,6 +66,11 @@ impl Grid {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scope {
     pub terms: BTreeMap<String, BTreeSet<String>>,
+    /// A literal that must appear, case-insensitively, in some value of a field
+    /// not starting with `_`.
+    pub text: Option<String>,
+    /// When non-empty, only these traces.
+    pub trace_ids: BTreeSet<[u8; 16]>,
 }
 
 impl Scope {
@@ -82,7 +87,40 @@ impl Scope {
         self
     }
 
+    pub fn with_text(mut self, text: &str) -> Self {
+        self.text = Some(text.to_lowercase());
+        self
+    }
+
+    pub fn with_trace_ids(mut self, ids: &[[u8; 16]]) -> Self {
+        self.trace_ids.extend(ids.iter().copied());
+        self
+    }
+
     pub fn matches(&self, span: &OracleSpan) -> bool {
+        if !self.trace_ids.is_empty()
+            && !span.trace_id.is_some_and(|id| self.trace_ids.contains(&id))
+        {
+            return false;
+        }
+        if let Some(text) = &self.text {
+            let mut found = false;
+            for (field, values) in &span.fields {
+                if field.starts_with('_') {
+                    continue;
+                }
+                if values
+                    .iter()
+                    .any(|v| v.to_lowercase().contains(text.as_str()))
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return false;
+            }
+        }
         for (field, wanted) in &self.terms {
             let Some(values) = span.fields.get(field) else {
                 return false;

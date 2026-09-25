@@ -32,7 +32,11 @@ fn query(stack: &str, chips: &[(&str, &str)]) -> ExploreQuery {
     }
     ExploreQuery {
         grid: grid(),
-        scope: ExploreScope { filter },
+        scope: ExploreScope {
+            filter,
+            text: None,
+            trace_ids: Vec::new(),
+        },
         sections: Sections {
             histogram: Some(HistogramSpec {
                 stack: stack.to_string(),

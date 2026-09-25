@@ -17,6 +17,10 @@ pub struct ExploreQuery {
 /// the UI sends the entry-spans chip ([`DEFAULT_POPULATION`]).
 pub struct ExploreScope {
     pub filter: sfst::Filter,
+    /// A literal searched in every value (never keys or plugin fields).
+    pub text: Option<sfst::text::LiteralText>,
+    /// Keep only these traces' spans; empty means no trace-id term.
+    pub trace_ids: Vec<sfst::TraceId>,
 }
 
 /// Which parts of the page to compute.
@@ -67,6 +71,11 @@ impl ExploreQuery {
         if self.grid.bucket_width_ns <= 0 || self.grid.num_buckets == 0 {
             return Err(ExploreRequestError::Invalid(
                 "the grid needs a positive bucket width and at least one bucket".to_string(),
+            ));
+        }
+        if self.scope.trace_ids.iter().any(|id| id.is_unset()) {
+            return Err(ExploreRequestError::Invalid(
+                "the all-zero trace id is not queryable".to_string(),
             ));
         }
         if let Some(histogram) = &self.sections.histogram

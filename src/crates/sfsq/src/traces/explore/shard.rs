@@ -47,7 +47,13 @@ pub(super) fn evaluate(bytes: &[u8], query: &ExploreQuery) -> Result<Evaluated, 
 
     let grid = query.grid;
     let window = grid.range_ns();
-    let scope = reader.compile_filter(&query.scope.filter, None)?;
+    let mut scope = reader.compile_filter(&query.scope.filter, None)?;
+    if let Some(text) = &query.scope.text {
+        scope = scope.conjoin(&reader.compile_text(text)?);
+    }
+    if !query.scope.trace_ids.is_empty() {
+        scope = scope.conjoin(&reader.compile_trace_ids(&query.scope.trace_ids)?);
+    }
     let errors_only =
         reader.compile_filter(&sfst::Filter::new().select(STATUS_FIELD, "ERROR"), None)?;
 

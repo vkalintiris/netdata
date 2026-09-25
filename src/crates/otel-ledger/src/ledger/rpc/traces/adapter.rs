@@ -826,7 +826,11 @@ pub(crate) fn to_explore_query(
     }
     let query = ExploreQuery {
         grid,
-        scope: ExploreScope { filter },
+        scope: ExploreScope {
+            filter,
+            text: params.text.as_deref().map(sfst::text::LiteralText::new),
+            trace_ids: params.trace_ids.clone(),
+        },
         sections: Sections {
             histogram: params.histogram.as_ref().map(|h| HistogramSpec {
                 stack: h.stack.clone(),
