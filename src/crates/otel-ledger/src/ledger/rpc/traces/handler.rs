@@ -42,13 +42,13 @@ use super::adapter::{
     ResolvedWindow, build_predicate, builtin_word, completion_capture_range, heatmap_predicate,
     parse_cursor,
     parse_enumeration_key, parse_owner_word, parse_trace_id, resolve_window,
-    to_attribute_values_result,
+    to_attribute_values_result, to_explore_query, to_explore_response,
     to_attributes_result, to_overview_result, to_overview_section, to_search_result,
     to_slowest_result, to_trace_result, validate_trace_bounds,
 };
 use super::sources::{Capture, CaptureError, TracesSourceSupplier};
 use super::wire::{
-    AttributeValuesParams, AttributesParams, CoverageWire, FunctionsParams,
+    AttributeValuesParams, AttributesParams, CoverageWire, ExploreParams, FunctionsParams,
     FunctionsTracesResponse, InfoResponse, OVERVIEW_SCOPE_SELECTION, OVERVIEW_SCOPE_WINDOW,
     OtelTracesRequest, OtelTracesResponse, OverviewParams, SearchParams, SearchResult,
     SlowestParams, TraceParams, TracesMode,
@@ -717,6 +717,45 @@ impl OtelTracesHandler {
         }
     }
 
+    /// The traces explorer: one capture over the aligned window, the
+    /// engine off the async runtime, the answer in the Functions envelope.
+    async fn explore(
+        &self,
+        ctx: &FunctionCallContext,
+        params: &ExploreParams,
+        tenant: Option<&str>,
+    ) -> netdata_plugin_error::Result<OtelTracesResponse> {
+        let (query, after, before) = to_explore_query(params, unix_now_s());
+        let grid = query.grid;
+        let tenant = TenantId::resolve_query(tenant);
+        let Capture { mut sets, pins } = self
+            .supplier
+            .capture(&tenant, after..before, 1, &ctx.cancellation, &ctx.progress)
+            .await
+            .map_err(capture_error)?;
+        let sources = sets.pop().unwrap_or_default();
+        let done = ctx.progress.done_counter();
+        let cancel = ctx.cancellation.clone();
+
+        match tokio::task::spawn_blocking(move || {
+            let _pins = pins;
+            sfsq::traces::explore::explore(sources, query, cancel, done)
+        })
+        .await
+        {
+            Ok(Ok(data)) => Ok(OtelTracesResponse::Explore(Box::new(to_explore_response(
+                data, grid, after, before,
+            )))),
+            Ok(Err(sfsq::traces::explore::ExploreRequestError::SourceSet(e))) => {
+                Err(handler_err(format!(
+                    "otel-traces internal error: captured source set is inconsistent: {e}"
+                )))
+            }
+            Ok(Err(e)) => Err(handler_err(format!("invalid otel-traces request: {e}"))),
+            Err(e) => Err(handler_err(format!("otel-traces explore task failed: {e}"))),
+        }
+    }
+
     /// The `slowest` mode: the window's duration-ranked top-K traces —
     /// the UI's explicit "Slowest" sort. Row numbers are stored-row
     /// sums; pre-rollup files are excluded under `rollup_absent`;
@@ -793,6 +832,7 @@ impl FunctionHandler for OtelTracesHandler {
         match &req.mode {
             TracesMode::Functions(params) => self.functions(&ctx, params, tenant).await,
             TracesMode::Info => Ok(OtelTracesResponse::Info(InfoResponse::default())),
+            TracesMode::Explore(params) => self.explore(&ctx, params, tenant).await,
             TracesMode::Trace(params) => self.trace(&ctx, params, tenant).await,
             TracesMode::Search(params) => self.search(&ctx, params, tenant).await,
             TracesMode::Attributes(params) => self.attributes(&ctx, params, tenant).await,
@@ -819,3 +859,6 @@ mod tests;
 
 #[cfg(test)]
 mod remote_tests;
+
+#[cfg(test)]
+mod oracle_tests;

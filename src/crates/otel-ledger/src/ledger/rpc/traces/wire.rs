@@ -43,6 +43,7 @@ use sfsq::traces::{PartialReason, QueryStatus};
 /// on the param structs.
 pub const ACCEPTED_PARAMS: &[&str] = &[
     "info",
+    "explore",
     "trace",
     "attributes",
     "attribute_values",
@@ -75,6 +76,9 @@ struct RawOtelTracesRequest {
     /// synthesizes exactly this for the `info` URL token.
     #[serde(default, deserialize_with = "present")]
     info: Option<serde_json::Value>,
+    /// The traces explorer: histogram and totals over span rows.
+    #[serde(default, deserialize_with = "present")]
+    explore: Option<serde_json::Value>,
     /// The single-trace mode (dumb span list by trace id).
     #[serde(default, deserialize_with = "present")]
     trace: Option<serde_json::Value>,
@@ -145,6 +149,7 @@ pub struct OtelTracesRequest {
 pub enum TracesMode {
     Functions(FunctionsParams),
     Info,
+    Explore(Box<ExploreParams>),
     Trace(TraceParams),
     Attributes(AttributesParams),
     AttributeValues(AttributeValuesParams),
@@ -192,6 +197,7 @@ impl TryFrom<RawOtelTracesRequest> for OtelTracesRequest {
         // Declaration order pins the conflict message's name order.
         let present: Vec<&'static str> = [
             ("info", raw.info.is_some()),
+            ("explore", raw.explore.is_some()),
             ("trace", raw.trace.is_some()),
             ("attributes", raw.attributes.is_some()),
             ("attribute_values", raw.attribute_values.is_some()),
@@ -258,6 +264,8 @@ impl TryFrom<RawOtelTracesRequest> for OtelTracesRequest {
         } else if let Some(v) = &raw.info {
             typed::<InfoParams>("info", v)?;
             TracesMode::Info
+        } else if let Some(v) = &raw.explore {
+            TracesMode::Explore(Box::new(typed("explore", v)?))
         } else if let Some(v) = &raw.trace {
             TracesMode::Trace(typed("trace", v)?)
         } else if let Some(v) = &raw.attributes {
@@ -580,6 +588,7 @@ pub struct TraceParams {
 pub enum OtelTracesResponse {
     Functions(Box<FunctionsTracesResponse>),
     Info(InfoResponse),
+    Explore(Box<ExploreResponse>),
     Trace(Box<TraceResult>),
     Search(Box<SearchResult>),
     Attributes(AttributesResult),
@@ -1239,6 +1248,12 @@ impl From<PartialReason> for PartialReasonWire {
         }
     }
 }
+
+mod explore;
+pub use explore::{
+    BucketWire, ExploreDataWire, ExploreParams, ExploreResponse, GridWire, HistogramWire,
+    TotalsWire, WindowWire,
+};
 
 #[cfg(test)]
 mod tests;

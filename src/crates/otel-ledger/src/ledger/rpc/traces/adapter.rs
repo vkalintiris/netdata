@@ -804,5 +804,91 @@ fn kind_word(k: sfst::ValueKind) -> &'static str {
     }
 }
 
+/// The engine request for an explorer call received at `now_s`, plus the
+/// window aligned outward to whole buckets (the range files are captured
+/// for).
+pub(crate) fn to_explore_query(
+    params: &super::wire::ExploreParams,
+    now_s: u32,
+) -> (sfsq::traces::explore::ExploreQuery, u32, u32) {
+    use sfsq::traces::explore::{ExploreQuery, ExploreScope, HistogramSpec, Sections};
+
+    let (after, before) = params.window.resolve(now_s);
+    // A relative window reaching before the epoch clamps to 0; keep at
+    // least one second so the grid holds a bucket.
+    let (grid, aligned_after, aligned_before) =
+        super::super::grid::grid_for_window_s(after, before.max(after.saturating_add(1)));
+    let mut filter = sfst::Filter::new();
+    for (field, values) in &params.filter {
+        for value in values {
+            filter = filter.select(field.clone(), value.clone());
+        }
+    }
+    let query = ExploreQuery {
+        grid,
+        scope: ExploreScope { filter },
+        sections: Sections {
+            histogram: params.histogram.as_ref().map(|h| HistogramSpec {
+                stack: h.stack.clone(),
+            }),
+        },
+    };
+    (query, aligned_after, aligned_before)
+}
+
+/// The explorer's engine answer on the wire.
+pub(crate) fn to_explore_response(
+    data: sfsq::traces::explore::ExploreData,
+    grid: sfst::Grid,
+    after: u32,
+    before: u32,
+) -> super::wire::ExploreResponse {
+    use super::wire::{
+        BucketWire, ExploreDataWire, ExploreResponse, GridWire, HistogramWire, TotalsWire,
+        WindowWire,
+    };
+
+    let status = StatusWire::from(&data.status);
+    let histogram = data.histogram.map(|h| {
+        let mut buckets = Vec::with_capacity(h.buckets.len());
+        for b in h.buckets {
+            buckets.push(BucketWire {
+                counts: b.counts,
+                unset: b.unset,
+                other: b.other,
+            });
+        }
+        HistogramWire {
+            status: status.clone(),
+            stack: h.stack,
+            dimensions: h.dimensions,
+            buckets,
+            totals: TotalsWire {
+                count: h.totals.count,
+                errors: h.totals.errors,
+            },
+        }
+    });
+    ExploreResponse {
+        status: 200,
+        response_type: "traces",
+        data: ExploreDataWire {
+            mode: "explore",
+            version: 1,
+            window: WindowWire {
+                after,
+                before,
+                grid: GridWire {
+                    start_ns: grid.bucket_start_ns.to_string(),
+                    bucket_ns: grid.bucket_width_ns,
+                    buckets: grid.num_buckets,
+                },
+            },
+            status,
+            histogram,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests;

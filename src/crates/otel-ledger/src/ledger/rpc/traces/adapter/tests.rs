@@ -549,3 +549,74 @@ fn empty_trace_maps_to_complete_zero_span_result() {
     assert_eq!(v["summary_root"], serde_json::Value::Null);
     assert_eq!(v["spans"], json!([]));
 }
+
+// ── Explore ─────────────────────────────────────────────────────────
+
+fn explore_params(v: serde_json::Value) -> crate::ledger::rpc::traces::wire::ExploreParams {
+    serde_json::from_value(v).unwrap()
+}
+
+#[test]
+fn explore_window_grid() {
+    // An hour boundary, so every width below aligns exactly.
+    const NOW: u32 = 1_699_999_200;
+    const S: i64 = 1_000_000_000;
+    for (body, width_s, buckets, after) in [
+        (json!({}), 15, 60, NOW - 900),
+        (json!({"after": -3600}), 60, 60, NOW - 3600),
+        (json!({"after": -86_400}), 900, 96, NOW - 86_400),
+        (json!({"after": 7, "before": 893}), 10, 90, 0),
+    ] {
+        let (query, aligned_after, aligned_before) =
+            to_explore_query(&explore_params(body.clone()), NOW);
+        assert_eq!(query.grid.bucket_width_ns, width_s * S, "{body}");
+        assert_eq!(query.grid.num_buckets, buckets, "{body}");
+        assert_eq!(query.grid.bucket_start_ns, i64::from(after) * S, "{body}");
+        assert_eq!(aligned_after, after, "{body}");
+        assert_eq!(
+            i64::from(aligned_before),
+            i64::from(after) + width_s * buckets as i64,
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn explore_chips_become_the_scope_filter() {
+    let (query, _, _) = to_explore_query(
+        &explore_params(json!({"filter": {
+            "_role": ["root", "inbound"],
+            "resource.attributes.service.name": ["checkout"]
+        }})),
+        1_700_000_000,
+    );
+    let chips: Vec<(String, Vec<String>)> = query
+        .scope
+        .filter
+        .iter()
+        .map(|(field, matchers)| {
+            let values = matchers
+                .iter()
+                .map(|m| match m {
+                    sfst::Matcher::Exact(v) => v.clone(),
+                    sfst::Matcher::Pattern(p) => panic!("chips are exact, got pattern {p}"),
+                })
+                .collect();
+            (field.clone(), values)
+        })
+        .collect();
+    assert_eq!(
+        chips,
+        [
+            ("_role".to_string(), vec!["root".to_string(), "inbound".to_string()]),
+            (
+                "resource.attributes.service.name".to_string(),
+                vec!["checkout".to_string()]
+            ),
+        ]
+    );
+    assert_eq!(
+        query.sections.histogram.map(|h| h.stack),
+        Some("status_code".to_string())
+    );
+}

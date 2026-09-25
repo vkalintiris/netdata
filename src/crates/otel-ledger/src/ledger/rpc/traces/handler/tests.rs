@@ -56,7 +56,7 @@ async fn info_returns_the_descriptor() {
     assert_eq!(
         v["accepted_params"],
         json!([
-            "info", "trace", "attributes", "attribute_values", "overview",
+            "info", "explore", "trace", "attributes", "attribute_values", "overview",
             "slowest", "search", "tenant", "after", "before", "last", "anchor", "selections",
             "min_trace_duration_ns", "max_trace_duration_ns", "overview_facets"
         ])
@@ -1778,4 +1778,96 @@ async fn every_response_shape_declares_its_mode() {
         let v = serde_json::to_value(call_on(&h, body.clone()).await.unwrap()).unwrap();
         assert_eq!(v["mode"], mode, "for {body}");
     }
+}
+
+// ── Explore ─────────────────────────────────────────────────────────
+
+/// A sealed file with one failing request at 1 s, and an active WAL with
+/// requests at 2, 3 and 4 s (at min_entries 4: one chunk and a tail).
+async fn explore_corpus() -> (OtelTracesHandler, std::path::PathBuf) {
+    use crate::ledger::rpc::traces::fixtures::otlp_req_err;
+    let registries = make_registries();
+    install_sealed(
+        &registries,
+        "default",
+        1,
+        vec![otlp_req_err(0x11, 3, 1_000_000_000, "checkout")],
+    )
+    .await;
+    let wal = install_wal(
+        &registries,
+        "default",
+        2,
+        vec![
+            otlp_req(0x22, 3, 2_000_000_000),
+            otlp_req(0x33, 3, 3_000_000_000),
+            otlp_req(0x44, 3, 4_000_000_000),
+        ],
+    )
+    .await;
+    (make_handler_over(registries), wal)
+}
+
+fn entry_spans_body() -> serde_json::Value {
+    json!({"explore": {"after": 1, "before": 10, "filter": {"_role": ["root", "inbound"]}}})
+}
+
+#[tokio::test]
+async fn explore_answers_the_histogram_in_the_functions_envelope() {
+    let (h, _) = explore_corpus().await;
+    let v = serde_json::to_value(call_on(&h, entry_spans_body()).await.unwrap()).unwrap();
+    let unset_only = json!({"counts": [0], "unset": 1, "other": 0});
+    let empty = json!({"counts": [0], "unset": 0, "other": 0});
+    assert_eq!(
+        v,
+        json!({
+            "status": 200,
+            "type": "traces",
+            "data": {
+                "mode": "explore",
+                "version": 1,
+                "window": {
+                    "after": 1,
+                    "before": 10,
+                    "grid": {"start_ns": "1000000000", "bucket_ns": 1_000_000_000, "buckets": 9}
+                },
+                "status": {"complete": true},
+                "histogram": {
+                    "status": {"complete": true},
+                    "stack": "status_code",
+                    "dimensions": ["ERROR"],
+                    "buckets": [
+                        {"counts": [1], "unset": 0, "other": 0},
+                        unset_only, unset_only, unset_only,
+                        empty, empty, empty, empty, empty
+                    ],
+                    "totals": {"count": 4, "errors": 1}
+                }
+            }
+        })
+    );
+    // One capture: the sealed file, the WAL's chunk and its tail.
+    assert_eq!(progress_of(&h, entry_spans_body()).await, (3, 3));
+}
+
+#[tokio::test]
+async fn explore_counts_a_refused_wal() {
+    let (h, wal) = explore_corpus().await;
+    let len = std::fs::metadata(&wal).unwrap().len();
+    let garbage = vec![0xFFu8; (len - wal::HEADER_SIZE as u64) as usize];
+    {
+        use std::io::{Seek, Write};
+        let mut f = std::fs::OpenOptions::new().write(true).open(&wal).unwrap();
+        f.seek(std::io::SeekFrom::Start(wal::HEADER_SIZE as u64)).unwrap();
+        f.write_all(&garbage).unwrap();
+    }
+    let v = serde_json::to_value(call_on(&h, entry_spans_body()).await.unwrap()).unwrap();
+    let partial = json!({"partial": [{"reason": "source_failure", "count": 1, "of": 2}]});
+    assert_eq!(v["data"]["status"], partial);
+    assert_eq!(v["data"]["histogram"]["status"], partial);
+    assert_eq!(
+        v["data"]["histogram"]["totals"],
+        json!({"count": 1, "errors": 1}),
+        "the sealed file still answers"
+    );
 }

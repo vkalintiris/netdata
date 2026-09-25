@@ -394,7 +394,7 @@ fn info_response_shape_is_pinned() {
             "has_history": true,
             "v": 3,
             "accepted_params": [
-                "info", "trace", "attributes", "attribute_values", "overview",
+                "info", "explore", "trace", "attributes", "attribute_values", "overview",
                 "slowest", "search", "tenant", "after", "before", "last", "anchor", "selections",
                 "min_trace_duration_ns", "max_trace_duration_ns", "overview_facets"
             ],
@@ -643,4 +643,74 @@ fn complete_false_is_unrepresentable() {
     // `{"complete": false}` means nothing — it must fail to
     // deserialize rather than masquerade as a status.
     assert!(serde_json::from_value::<StatusWire>(json!({"complete": false})).is_err());
+}
+
+// ── Explore ─────────────────────────────────────────────────────────
+
+fn explore(v: serde_json::Value) -> ExploreParams {
+    let TracesMode::Explore(p) = req(json!({ "explore": v })).mode else {
+        panic!("explore mode expected");
+    };
+    *p
+}
+
+#[test]
+fn explore_defaults_to_the_last_fifteen_minutes_stacked_by_status() {
+    let p = explore(json!({}));
+    assert_eq!((p.window.after, p.window.before), (-900, 0));
+    assert!(p.filter.is_empty());
+    assert_eq!(p.histogram.map(|h| h.stack), Some("status_code".to_string()));
+
+    let p = explore(json!({"before": 1_700_000_900}));
+    assert_eq!((p.window.after, p.window.before), (1_700_000_000, 1_700_000_900));
+
+    let p = explore(json!({
+        "after": -3600,
+        "filter": {"_role": ["root", "inbound"]},
+        "sections": {"histogram": {"stack": "_duration_band"}}
+    }));
+    assert_eq!((p.window.after, p.window.before), (-3600, 0));
+    assert_eq!(p.filter["_role"], ["root", "inbound"]);
+    assert_eq!(p.histogram.map(|h| h.stack), Some("_duration_band".to_string()));
+
+    let p = explore(json!({"sections": {}}));
+    assert!(p.histogram.is_none(), "an empty section list asks for nothing");
+}
+
+#[test]
+fn explore_windows_resolve_against_now() {
+    let relative = explore(json!({"after": -900, "before": -60})).window;
+    assert_eq!(relative.resolve(10_000), (9_100, 9_940));
+    let absolute = explore(json!({"after": 5_000, "before": 6_000})).window;
+    assert_eq!(absolute.resolve(10_000), (5_000, 6_000));
+}
+
+#[test]
+fn explore_rejects_bad_requests() {
+    for (body, needle) in [
+        (json!({"explore": {"bogus": 1}}), "unknown field"),
+        (json!({"explore": {"sections": {"bogus": {}}}}), "unknown field"),
+        (json!({"explore": {"sections": {"histogram": null}}}), "omit it instead"),
+        (json!({"explore": {"sections": {"histogram": []}}}), "must be an object"),
+        (json!({"explore": {"sections": {"histogram": {"stack": " "}}}}), "`stack` field is empty"),
+        (json!({"explore": {"sections": {"histogram": {"bogus": 1}}}}), "unknown field"),
+        (json!({"explore": {"filter": {"_role": []}}}), "lists no values"),
+        (json!({"explore": {"filter": {"": ["x"]}}}), "field name is empty"),
+        (json!({"explore": {"after": -900, "before": 1_700_000_000}}), "both be relative"),
+        (json!({"explore": {"after": 0, "before": -60}}), "must be before"),
+        (json!({"explore": {"after": 7_000, "before": 6_000}}), "must be before"),
+        (json!({"explore": {"text": "x"}}), "not available yet"),
+        (json!({"explore": {"trace_ids": []}}), "not available yet"),
+        (json!({"explore": {"selection": {}}}), "not available yet"),
+        (json!({"explore": {"sections": {"groups": {}}}}), "not available yet"),
+        (
+            json!({"explore": {"sections": {"histogram": {"percentiles": true}}}}),
+            "not available yet",
+        ),
+        (json!({"explore": {}, "trace": {"id": "00"}}), "conflicting mode selectors"),
+        (json!({"explore": []}), "expected an object"),
+    ] {
+        let err = req_err(body.clone());
+        assert!(err.contains(needle), "for {body}: {err}");
+    }
 }

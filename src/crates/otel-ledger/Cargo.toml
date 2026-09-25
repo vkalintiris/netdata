@@ -54,3 +54,5 @@ treight = { workspace = true }
 # flattened into trace frames) to cover the chunk/tail resolution path.
 ng-flatten = { workspace = true }
 opentelemetry-proto = { workspace = true }
+# The reference calculator the explorer's Function answers are compared with.
+otel-oracle = { workspace = true }
