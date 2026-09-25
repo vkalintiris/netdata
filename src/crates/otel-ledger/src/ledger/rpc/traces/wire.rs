@@ -893,6 +893,15 @@ pub struct SpanWire {
     pub parent_span_id: Option<String>,
     pub start_ns: i64,
     pub duration_ns: i64,
+    /// The duration less the time its direct children cover, over the
+    /// assembled trace (all its spans, across files). Absent on a search
+    /// result's matched spans, which have no assembled trace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_duration_ns: Option<i64>,
+    /// ERROR, and none of its direct children in the trace is ERROR; absent
+    /// like `self_duration_ns`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_origin: Option<bool>,
     pub kind: i32,
     pub flags: u32,
     pub dropped_attributes_count: u32,

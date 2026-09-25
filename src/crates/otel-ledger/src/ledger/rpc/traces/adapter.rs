@@ -93,6 +93,15 @@ pub(crate) fn to_trace_result(
 ) -> TraceResult {
     let t = data.trace;
     let summary_root = t.summary_root();
+    let family = data.family;
+    let returned = t.spans.len();
+    let mut spans = Vec::with_capacity(returned);
+    for (index, span) in t.spans.into_iter().enumerate() {
+        let mut wire = span_wire(span);
+        wire.self_duration_ns = Some(wire.duration_ns - family.child_ns[index]);
+        wire.error_origin = Some(family.error_origin[index]);
+        spans.push(wire);
+    }
     TraceResult {
         mode: "trace",
         version: 1,
@@ -100,12 +109,12 @@ pub(crate) fn to_trace_result(
         coverage,
         status: StatusWire::from(&data.status),
         items: TraceItems {
-            returned: t.spans.len(),
+            returned,
         },
         summary_root,
         roots: t.roots,
         children: t.children,
-        spans: t.spans.into_iter().map(span_wire).collect(),
+        spans,
         field_kinds: field_kinds_wire(data.field_kinds),
     }
 }
@@ -118,6 +127,8 @@ fn span_wire(s: sfst::TraceSpan) -> SpanWire {
         parent_span_id: (!s.parent_span_id.is_unset()).then(|| s.parent_span_id.to_string()),
         start_ns: s.start_ns,
         duration_ns: s.duration_ns,
+        self_duration_ns: None,
+        error_origin: None,
         kind: s.kind,
         flags: s.flags,
         dropped_attributes_count: s.dropped_attributes_count,

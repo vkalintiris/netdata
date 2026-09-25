@@ -24,6 +24,10 @@
 //! never inferring from rendered strings): kinds merge — via the
 //! [`sfst::join_value_kinds`] lattice — from exactly the sources that
 //! contributed retained canonical spans.
+//!
+//! Every returned span also gets its error origin and child time, derived
+//! over the assembled trace (all its spans, across files) with the seal's
+//! own function, so a live span reads like a sealed one.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -37,6 +41,9 @@ use super::sources::{SourceSetError, TraceSource, validate_sources};
 use super::status::{PartialReason, QueryStatus, StatusBuilder};
 use super::wal_scan::TraceWalScan;
 use crate::source::map_source;
+
+/// The field whose first value says whether a span is an error.
+const STATUS_FIELD: &str = "status_code";
 
 /// The library default span cap ([`TraceQuery::new`] applies it): far
 /// above any honest trace, low enough that a runaway merge stays bounded.
@@ -118,6 +125,10 @@ pub struct TraceData {
     /// the [`sfst::join_value_kinds`] lattice — from exactly the sources
     /// that contributed retained spans.
     pub field_kinds: FieldKinds,
+    /// Index-parallel to `trace.spans`: each span's error origin and the
+    /// time its children cover, over the returned spans (a size-capped
+    /// trace derives over the kept ones).
+    pub family: sfst::SpanFamily,
 }
 
 /// Run a cross-source trace-by-id. See the module docs for the status
@@ -154,6 +165,7 @@ pub fn trace_by_id(
             },
             status: status.finish(),
             field_kinds: FieldKinds::default(),
+            family: span_family(sfst::TraceId::default(), &[]),
         }
     };
     // Pre-heads cancellation returns EMPTY + Cancelled — polled up front
@@ -310,9 +322,46 @@ pub fn trace_by_id(
         link_attributes: project(&link_attr_names, "links.attributes."),
     };
 
+    let family = span_family(query.trace_id, &outcome.trace.spans);
     Ok(TraceData {
         trace: outcome.trace,
         status: status.finish(),
         field_kinds,
+        family,
     })
+}
+
+/// The seal's derivation over one assembled trace. A span is an error when
+/// its first `status_code` is `ERROR`, as the seal reads it.
+fn span_family(trace_id: sfst::TraceId, spans: &[sfst::TraceSpan]) -> sfst::SpanFamily {
+    let mut trace_ids = sfst::TraceIds::with_capacity(spans.len());
+    let mut span_ids = sfst::SpanIds::with_capacity(spans.len());
+    let mut parent_span_ids = sfst::ParentSpanIds::with_capacity(spans.len());
+    let mut start_ns = Vec::with_capacity(spans.len());
+    let mut duration_ns = Vec::with_capacity(spans.len());
+    let mut is_error = Vec::with_capacity(spans.len());
+    for span in spans {
+        trace_ids.push(trace_id);
+        span_ids.push(span.span_id);
+        parent_span_ids.push(span.parent_span_id);
+        start_ns.push(span.start_ns);
+        duration_ns.push(span.duration_ns);
+        let mut status = None;
+        for (field, value) in &span.fields {
+            if field == STATUS_FIELD {
+                status = Some(value.as_str());
+                break;
+            }
+        }
+        is_error.push(status == Some("ERROR"));
+    }
+    sfst::derive_span_family(&sfst::SpanRows {
+        trace_ids: &trace_ids,
+        span_ids: &span_ids,
+        parent_span_ids: &parent_span_ids,
+        start_ns: &start_ns,
+        duration_ns: &duration_ns,
+        is_error: &is_error,
+    })
+    .expect("the rows are built index-parallel")
 }

@@ -79,6 +79,10 @@ fn trace_result_shape_is_pinned() {
             event_attributes: vec![("k".into(), sfst::ValueKind::Str)],
             link_attributes: vec![],
         },
+        family: sfst::SpanFamily {
+            error_origin: vec![false, true],
+            child_ns: vec![100, 0],
+        },
     };
     let v = serde_json::to_value(to_trace_result(&trace_id, data, CoverageWire { after: 0, before: u32::MAX })).unwrap();
 
@@ -103,8 +107,11 @@ fn trace_result_shape_is_pinned() {
     assert_eq!(s0["links"][0]["trace_id"], "ab".repeat(16));
     assert_eq!(s0["links"][0]["span_id"], "cd".repeat(8));
 
+    assert_eq!((&s0["self_duration_ns"], &s0["error_origin"]), (&json!(400), &json!(false)));
+
     let s1 = &v["spans"][1];
     assert_eq!(s1["parent_span_id"], "0101010101010101");
+    assert_eq!((&s1["self_duration_ns"], &s1["error_origin"]), (&json!(500), &json!(true)));
 
     assert_eq!(
         v["field_kinds"],
@@ -493,6 +500,10 @@ fn empty_trace_maps_to_complete_zero_span_result() {
         },
         status: QueryStatus::Complete,
         field_kinds: FieldKinds::default(),
+        family: sfst::SpanFamily {
+            error_origin: vec![],
+            child_ns: vec![],
+        },
     };
     let v = serde_json::to_value(to_trace_result(&trace_id, data, CoverageWire { after: 0, before: u32::MAX })).unwrap();
     assert_eq!(v["status"], json!({"complete": true}));

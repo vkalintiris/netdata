@@ -1550,6 +1550,12 @@ const FAMILY_ORIGINS: [(u8, u8); 3] = [(1, 13), (2, 22), (3, 31)];
 /// frame 1 P's ERROR child C, frame 2 R's OK child D, so an image of one
 /// frame alone would take P for an origin and miss the time D covers.
 fn family_store() -> Stored {
+    family_store_cut(1)
+}
+
+/// [`family_store`] with the first `cut` export requests sealed (the filler,
+/// then the live frames in order).
+fn family_store_cut(cut: usize) -> Stored {
     let requests = vec![
         frame_of(vec![family_span(9, 90, None, (0, 5), false)]),
         frame_of(vec![
@@ -1567,7 +1573,7 @@ fn family_store() -> Stored {
         ]),
         frame_of(vec![family_span(4, 41, None, (800, 10), false)]),
     ];
-    store_requests(&requests, 1)
+    store_requests(&requests, cut)
 }
 
 /// What the explorer answers about error origins: the `_err_origin` facet,
@@ -1753,5 +1759,53 @@ fn a_live_wal_with_a_gap_fails_its_live_pass() {
     assert!(rows.contains(&((9, 90), Some(5_000_000))), "{rows:?}");
     for (ids, self_ns) in &rows {
         assert!(ids.0 == 9 || self_ns.is_none(), "{rows:?}");
+    }
+}
+
+/// ORC-TRACE (origin and self time, D26): a trace split across a sealed file
+/// and the live WAL gets each span's error origin and self time over the
+/// whole assembled trace, as the calculator derives them over all its spans,
+/// however the live WAL is served. The sealed file alone stores P as an
+/// origin (its ERROR child C is in the live WAL); the trace does not.
+#[test]
+fn trace_by_id_derives_over_the_assembled_trace() {
+    let stored = family_store_cut(2);
+    let trace: Vec<OracleSpan> = stored
+        .oracle
+        .iter()
+        .filter(|span| span.trace_id == Some([1; 16]))
+        .cloned()
+        .collect();
+    let values = calc::derived_in(&trace, &|_| Some(0));
+    let mut want = BTreeMap::new();
+    for (span, value) in trace.iter().zip(values) {
+        let child_ns = value.child_ns;
+        let self_ns = span.duration_ns - child_ns;
+        want.insert(span.span_id.unwrap()[0], (value.error_origin, self_ns));
+    }
+    assert_eq!(want[&12], (false, 400_000_000), "P, in the sealed file");
+    assert_eq!(want[&13], (true, 100_000_000), "C, in the live WAL");
+    let p = stored
+        .files
+        .iter()
+        .find(|span| span.span_id == Some([12; 8]));
+    assert!(p.unwrap().has(model::ERR_ORIGIN_FIELD, "true"));
+
+    for live in [Live::Tail, Live::Chunk, Live::Split(2)] {
+        let data = sfsq::traces::trace_by_id(
+            explore_sources(&stored, live),
+            sfsq::traces::TraceQuery::new(sfst::TraceId::from([1; 16])),
+            tokio_util::sync::CancellationToken::new(),
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        )
+        .unwrap();
+        assert!(data.status.is_complete(), "{live:?}");
+        let mut got = BTreeMap::new();
+        for (index, span) in data.trace.spans.iter().enumerate() {
+            let origin = data.family.error_origin[index];
+            let self_ns = span.duration_ns - data.family.child_ns[index];
+            got.insert(span.span_id.as_bytes()[0], (origin, self_ns));
+        }
+        assert_eq!(got, want, "{live:?}");
     }
 }
