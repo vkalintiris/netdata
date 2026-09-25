@@ -29,9 +29,9 @@ use crate::kv_interner::KvSlot;
 use crate::row_index::{RowIndex, TimeOrder};
 use crate::writer::{ChunkCounts, ChunkWriter, ColumnsPresent};
 use crate::{
-    BitmapValue, ColumnEntry, ColumnsTable, DroppedAttributeCounts, Durations, Error, FieldEntry,
-    FieldTier, Flags, IdRanges, KvId, Metadata, ObservedTimestamps, ParentSpanIds, SpanIds,
-    TraceIdIndex, TraceIds,
+    BitmapValue, ChildDurations, ColumnEntry, ColumnsTable, DroppedAttributeCounts, Durations,
+    Error, FieldEntry, FieldTier, Flags, IdRanges, KvId, Metadata, ObservedTimestamps,
+    ParentSpanIds, SpanIds, TraceIdIndex, TraceIds,
 };
 
 /// Build tier-aligned key=value ID translation table.
@@ -369,6 +369,7 @@ pub(crate) fn build_into<W: Write + Seek>(
         // fills them. Presence is driven straight off the `RowIndex` `Option`s.
         parent_span_id: row_index.parent_span_ids.is_some(),
         duration: row_index.durations.is_some(),
+        child_duration: row_index.child_durations.is_some(),
     };
     // The manifest is the same presence set rendered in canonical column order —
     // one `ALL_COLUMNS`-driven source (`ColumnsPresent::present`), so it always
@@ -492,6 +493,10 @@ pub(crate) fn build_into<W: Write + Seek>(
     if let Some(c) = &row_index.durations {
         check_column_len(Durations::NAME, c.len(), n)?;
         w.durations(&c.reordered(by_time()))?;
+    }
+    if let Some(c) = &row_index.child_durations {
+        check_column_len(ChildDurations::NAME, c.len(), n)?;
+        w.child_durations(&c.reordered(by_time()))?;
     }
 
     // Optional `trace_id` index (TIDX), after the per-row columns (the writer's

@@ -55,6 +55,7 @@ struct Decoded {
     span_ids: OnceCell<crate::SpanIds>,
     parent_span_ids: OnceCell<crate::ParentSpanIds>,
     durations: OnceCell<crate::Durations>,
+    child_durations: OnceCell<crate::ChildDurations>,
     flags: OnceCell<crate::Flags>,
     dropped_attribute_counts: OnceCell<crate::DroppedAttributeCounts>,
     trace_id_index: OnceCell<crate::TraceIdIndex>,
@@ -76,6 +77,7 @@ impl Decoded {
             span_ids: OnceCell::new(),
             parent_span_ids: OnceCell::new(),
             durations: OnceCell::new(),
+            child_durations: OnceCell::new(),
             flags: OnceCell::new(),
             dropped_attribute_counts: OnceCell::new(),
             trace_id_index: OnceCell::new(),
@@ -481,6 +483,14 @@ impl<'a> IndexReader<'a> {
     /// The per-row span-duration column (`DURN`, traces signal).
     pub fn durations(&self) -> Result<&crate::Durations, crate::Error> {
         memo(&self.decoded.durations, || self.sfst.durations())
+    }
+
+    /// The per-row child-duration column (`CHLD`, sealed traces files only):
+    /// check `columns_table()` for `child_duration` first.
+    pub fn child_durations(&self) -> Result<&crate::ChildDurations, crate::Error> {
+        memo(&self.decoded.child_durations, || {
+            self.sfst.child_durations()
+        })
     }
 
     /// Whether the file carries the optional per-file trace rollup (`TRSU`).

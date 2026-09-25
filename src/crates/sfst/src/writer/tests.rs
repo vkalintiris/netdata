@@ -4,10 +4,10 @@ use treight::Bitmap;
 
 use crate::writer::{ChunkCounts, ChunkWriter, ColumnsPresent, write_summary_only};
 use crate::{
-    ALL_COLUMNS, BitmapValue, ColumnEntry, ColumnType, ColumnsTable, DroppedAttributeCounts,
-    Durations, Error, FieldEntry, FieldTier, Flags, HighField, Histogram, IdRanges, KvId, Metadata,
-    ObservedTimestamps, ParentSpanIds, SchemaTree, SpanId, SpanIds, StreamBatch, Summary, TraceId,
-    TraceIdIndex, TraceIds,
+    ALL_COLUMNS, BitmapValue, ChildDurations, ColumnEntry, ColumnType, ColumnsTable,
+    DroppedAttributeCounts, Durations, Error, FieldEntry, FieldTier, Flags, HighField, Histogram,
+    IdRanges, KvId, Metadata, ObservedTimestamps, ParentSpanIds, SchemaTree, SpanId, SpanIds,
+    StreamBatch, Summary, TraceId, TraceIdIndex, TraceIds,
 };
 
 fn counts(mid: u16, high: u16, batches: u8) -> ChunkCounts {
@@ -275,6 +275,7 @@ type SampleColumns = (
     DroppedAttributeCounts,
     ParentSpanIds,
     Durations,
+    ChildDurations,
 );
 
 fn sample_columns(n: usize) -> SampleColumns {
@@ -290,7 +291,10 @@ fn sample_columns(n: usize) -> SampleColumns {
     let flags = Flags((0..n as u32).map(|i| i | 0x100).collect());
     let drac = DroppedAttributeCounts((0..n as u32).collect());
     let durations = Durations((0..n as i64).map(|i| 1000 + i).collect());
-    (observed, trace, span, flags, drac, parent, durations)
+    let children = ChildDurations((0..n as i64).map(|i| 10 * i).collect());
+    (
+        observed, trace, span, flags, drac, parent, durations, children,
+    )
 }
 
 fn present_all() -> ColumnsPresent {
@@ -302,6 +306,7 @@ fn present_all() -> ColumnsPresent {
         dropped_attributes_count: true,
         parent_span_id: true,
         duration: true,
+        child_duration: true,
     }
 }
 
@@ -336,6 +341,10 @@ fn columns_table() -> ColumnsTable {
             name: Durations::NAME.into(),
             ty: Durations::COLUMN_TYPE,
         },
+        ColumnEntry {
+            name: ChildDurations::NAME.into(),
+            ty: ChildDurations::COLUMN_TYPE,
+        },
     ])
 }
 
@@ -355,8 +364,8 @@ fn col_counts(columns: ColumnsPresent) -> ChunkCounts {
 
 #[test]
 fn all_per_row_columns_round_trip() {
-    // All seven columns, written in the cold region after PRIM, round-trip.
-    let (observed, trace, span, flags, drac, parent, durations) = sample_columns(3);
+    // All eight columns, written in the cold region after PRIM, round-trip.
+    let (observed, trace, span, flags, drac, parent, durations, children) = sample_columns(3);
     let mut w = writer(col_counts(present_all()));
     w.summary(&summary()).unwrap();
     w.metadata(&metadata_with_columns(Vec::new(), columns_table()))
@@ -370,6 +379,7 @@ fn all_per_row_columns_round_trip() {
     w.dropped_attribute_counts(&drac).unwrap();
     w.parent_span_ids(&parent).unwrap();
     w.durations(&durations).unwrap();
+    w.child_durations(&children).unwrap();
     w.add_stream_batch(&batch()).unwrap();
     let buf = w.finish().unwrap().into_inner();
 
@@ -385,6 +395,7 @@ fn all_per_row_columns_round_trip() {
             "dropped_attributes_count",
             "parent_span_id",
             "duration",
+            "child_duration",
         ],
     );
     assert_eq!(reader.observed_timestamps().unwrap(), observed);
@@ -394,12 +405,13 @@ fn all_per_row_columns_round_trip() {
     assert_eq!(reader.dropped_attribute_counts().unwrap(), drac);
     assert_eq!(reader.parent_span_ids().unwrap(), parent);
     assert_eq!(reader.durations().unwrap(), durations);
+    assert_eq!(reader.child_durations().unwrap(), children);
 }
 
 #[test]
 fn per_row_columns_are_independently_optional() {
     // A file with ONLY trace_id — no rule that the columns appear together.
-    let (_o, trace, _s, _f, _d, _p, _dur) = sample_columns(3);
+    let (_o, trace, _s, _f, _d, _p, _dur, _c) = sample_columns(3);
     let present = ColumnsPresent {
         trace_id: true,
         ..Default::default()
@@ -445,7 +457,7 @@ fn no_per_row_columns_is_the_default() {
 
 #[test]
 fn per_row_columns_misuse_is_rejected() {
-    let (observed, _t, span, _f, _d, _p, _dur) = sample_columns(3);
+    let (observed, _t, span, _f, _d, _p, _dur, _c) = sample_columns(3);
     // Declare two columns (observed + trace).
     let present = ColumnsPresent {
         observed_ts: true,
@@ -816,5 +828,52 @@ fn trace_id_bloom_without_index_is_rejected() {
     assert!(matches!(
         ChunkWriter::new(Cursor::new(Vec::new()), bad),
         Err(Error::WriterMisuse(_)),
+    ));
+}
+
+/// The child-duration column through the index build: listed last in the
+/// manifest (ordinal 7), returned in chronological order, absent when the
+/// producer leaves it `None`, and refused at the wrong length.
+#[test]
+fn child_duration_column_round_trips() {
+    let build = |children: Option<Vec<i64>>| {
+        let arena = bumpalo::Bump::new();
+        let mut rows = crate::RowIndex::new(&arena, 100);
+        for ts in [30, 20, 10] {
+            let token = rows.intern(None, "name=x");
+            rows.row(ts, &[token]);
+        }
+        rows.durations = Some(Durations(vec![300, 200, 100]));
+        rows.child_durations = children.map(ChildDurations);
+        crate::IndexWriter::write_into(&rows, Cursor::new(Vec::new()), Vec::new())
+            .map(|(buf, _, _)| buf.into_inner())
+    };
+
+    let bytes = build(Some(vec![30, 20, 10])).unwrap();
+    let reader = crate::IndexReader::open(&bytes).unwrap();
+    let table = reader.columns_table();
+    assert_eq!(
+        table.names().collect::<Vec<_>>(),
+        [Durations::NAME, ChildDurations::NAME]
+    );
+    assert_eq!(table.get(ChildDurations::NAME), Some(ColumnType::I64));
+    assert_eq!(reader.child_durations().unwrap().0, [10, 20, 30]);
+    assert_eq!(reader.durations().unwrap().0, [100, 200, 300]);
+
+    let bytes = build(None).unwrap();
+    let reader = crate::IndexReader::open(&bytes).unwrap();
+    assert_eq!(
+        reader.columns_table().names().collect::<Vec<_>>(),
+        [Durations::NAME]
+    );
+    assert!(reader.child_durations().is_err());
+
+    assert!(matches!(
+        build(Some(vec![1, 2])),
+        Err(Error::ColumnLengthMismatch {
+            column: "child_duration",
+            got: 2,
+            expected: 3,
+        })
     ));
 }

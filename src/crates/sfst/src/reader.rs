@@ -15,12 +15,13 @@ use chunk_file::container::{self, Container};
 use serde::de::DeserializeOwned;
 
 use crate::{
-    BitmapValue, CHUNK_DROPPED_ATTRS, CHUNK_DURATION, CHUNK_FLAGS, CHUNK_META, CHUNK_OBSERVED_TS,
-    CHUNK_PARENT_SPAN_IDS, CHUNK_PRIMARY, CHUNK_SPAN_IDS, CHUNK_SUMMARY, CHUNK_TIMS,
-    CHUNK_TRACE_IDS, CHUNK_TRACE_INDEX, ColumnType, ColumnsTable, DroppedAttributeCounts,
-    Durations, Error, FieldTable, FieldTier, Flags, HighField, MAGIC, MAX_STREAM_BATCHES, Metadata,
-    ObservedTimestamps, ParentSpanIds, SchemaTree, SpanIds, StreamBatch, Summary, TraceIdIndex,
-    TraceIds, VERSION, high_field_id, mid_field_id, num_stream_batches, stream_batch_id,
+    BitmapValue, CHUNK_CHILD_DURATION, CHUNK_DROPPED_ATTRS, CHUNK_DURATION, CHUNK_FLAGS,
+    CHUNK_META, CHUNK_OBSERVED_TS, CHUNK_PARENT_SPAN_IDS, CHUNK_PRIMARY, CHUNK_SPAN_IDS,
+    CHUNK_SUMMARY, CHUNK_TIMS, CHUNK_TRACE_IDS, CHUNK_TRACE_INDEX, ChildDurations, ColumnType,
+    ColumnsTable, DroppedAttributeCounts, Durations, Error, FieldTable, FieldTier, Flags,
+    HighField, MAGIC, MAX_STREAM_BATCHES, Metadata, ObservedTimestamps, ParentSpanIds, SchemaTree,
+    SpanIds, StreamBatch, Summary, TraceIdIndex, TraceIds, VERSION, high_field_id, mid_field_id,
+    num_stream_batches, stream_batch_id,
 };
 
 /// Read just the [`Summary`] of an SFST from its bytes.
@@ -445,6 +446,14 @@ impl<'a> ChunkReader<'a> {
         self.require_column(Durations::NAME, Durations::COLUMN_TYPE)?;
         let col = Durations(self.decode_chunk(CHUNK_DURATION)?);
         self.check_rows(Durations::NAME, col.len())?;
+        Ok(col)
+    }
+
+    /// Decode the per-row child-duration column (`CHLD`).
+    pub fn child_durations(&self) -> Result<ChildDurations, Error> {
+        self.require_column(ChildDurations::NAME, ChildDurations::COLUMN_TYPE)?;
+        let col = ChildDurations(self.decode_chunk(CHUNK_CHILD_DURATION)?);
+        self.check_rows(ChildDurations::NAME, col.len())?;
         Ok(col)
     }
 

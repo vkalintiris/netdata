@@ -13,13 +13,14 @@ use chunk_file::container::StreamingWriter;
 use serde::Serialize;
 
 use crate::{
-    ALL_COLUMNS, BitmapValue, CHUNK_DROPPED_ATTRS, CHUNK_DURATION, CHUNK_EVENTS, CHUNK_FLAGS,
-    CHUNK_LINKS, CHUNK_META, CHUNK_OBSERVED_TS, CHUNK_PARENT_SPAN_IDS, CHUNK_PRIMARY,
-    CHUNK_SPAN_IDS, CHUNK_SUMMARY, CHUNK_TIMS, CHUNK_TRACE_BLOOM, CHUNK_TRACE_IDS,
-    CHUNK_TRACE_INDEX, CHUNK_TRACE_ROLLUP, ColumnSpec, ColumnsTable, DroppedAttributeCounts, Durations, Error, Flags,
-    HighField, MAGIC, MAX_STREAM_BATCHES, Metadata, ObservedTimestamps, ParentSpanIds, SpanIds,
-    StreamBatch, Summary, TraceIdIndex, TraceIds, VERSION, ZSTD_LEVEL_DEFAULT, ZSTD_LEVEL_FST,
-    high_field_id, mid_field_id, stream_batch_id,
+    ALL_COLUMNS, BitmapValue, CHUNK_CHILD_DURATION, CHUNK_DROPPED_ATTRS, CHUNK_DURATION,
+    CHUNK_EVENTS, CHUNK_FLAGS, CHUNK_LINKS, CHUNK_META, CHUNK_OBSERVED_TS, CHUNK_PARENT_SPAN_IDS,
+    CHUNK_PRIMARY, CHUNK_SPAN_IDS, CHUNK_SUMMARY, CHUNK_TIMS, CHUNK_TRACE_BLOOM, CHUNK_TRACE_IDS,
+    CHUNK_TRACE_INDEX, CHUNK_TRACE_ROLLUP, ChildDurations, ColumnSpec, ColumnsTable,
+    DroppedAttributeCounts, Durations, Error, Flags, HighField, MAGIC, MAX_STREAM_BATCHES,
+    Metadata, ObservedTimestamps, ParentSpanIds, SpanIds, StreamBatch, Summary, TraceIdIndex,
+    TraceIds, VERSION, ZSTD_LEVEL_DEFAULT, ZSTD_LEVEL_FST, high_field_id, mid_field_id,
+    stream_batch_id,
 };
 
 /// Serialize a value with bincode, then compress with zstd.
@@ -65,6 +66,8 @@ pub struct ColumnsPresent {
     pub parent_span_id: bool,
     /// Span `duration` (traces signal) — see [`Durations`].
     pub duration: bool,
+    /// Time covered by children (traces seal) — see [`ChildDurations`].
+    pub child_duration: bool,
 }
 
 impl ColumnsPresent {
@@ -81,6 +84,7 @@ impl ColumnsPresent {
             4 => self.dropped_attributes_count,
             5 => self.parent_span_id,
             6 => self.duration,
+            7 => self.child_duration,
             _ => false,
         }
     }
@@ -204,7 +208,7 @@ pub struct ChunkWriter<W: Write + Seek> {
     stage: Stage,
     /// Bitmask of per-row columns already written (one bit per column ordinal),
     /// used to reject duplicates and to detect when the column phase is complete.
-    /// A `u8` caps the format at 8 per-row columns (7 used today, ordinals 0–6);
+    /// A `u8` caps the format at 8 per-row columns (all used, ordinals 0–7);
     /// a ninth needs a wider mask here.
     cols_written: u8,
     mids: u16,
@@ -500,6 +504,17 @@ impl<W: Write + Seek> ChunkWriter<W> {
     pub fn durations(&mut self, durations: &Durations) -> Result<(), Error> {
         let packed = pack(&durations.0, ZSTD_LEVEL_DEFAULT)?;
         self.write_column(6, self.counts.columns.duration, CHUNK_DURATION, &packed)
+    }
+
+    /// Write the per-row child-duration column (`CHLD`).
+    pub fn child_durations(&mut self, child_durations: &ChildDurations) -> Result<(), Error> {
+        let packed = pack(&child_durations.0, ZSTD_LEVEL_DEFAULT)?;
+        self.write_column(
+            7,
+            self.counts.columns.child_duration,
+            CHUNK_CHILD_DURATION,
+            &packed,
+        )
     }
 
     /// Write the optional `trace_id` index chunk (`TIDX`), in the cold region

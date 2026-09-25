@@ -15,8 +15,8 @@ use roaring::RoaringBitmap;
 
 use crate::kv_interner::{KeyValueInterner, KvSlot};
 use crate::{
-    DroppedAttributeCounts, Durations, FieldTier, Flags, Histogram, ObservedTimestamps,
-    ParentSpanIds, SpanIds, TraceIds,
+    ChildDurations, DroppedAttributeCounts, Durations, FieldTier, Flags, Histogram,
+    ObservedTimestamps, ParentSpanIds, SpanIds, TraceIds,
 };
 
 /// The output of Phase 1: everything the frame loop extracts from the WAL.
@@ -51,6 +51,9 @@ pub struct RowIndex<'a> {
     pub parent_span_ids: Option<ParentSpanIds>,
     /// Span `duration` column (traces signal; logs leave it `None`).
     pub durations: Option<Durations>,
+    /// Time covered by each span's children (the traces seal; chunk images and
+    /// logs leave it `None`).
+    pub child_durations: Option<ChildDurations>,
     /// Producer signal: build the `trace_id` index (`TIDX`) at seal. The index is
     /// built in Phase 2 from the chronological `trace_ids` column, so this MUST
     /// only be set together with `trace_ids`. The logs path leaves it `false` (its
@@ -98,6 +101,7 @@ impl<'a> RowIndex<'a> {
             dropped_attribute_counts: None,
             parent_span_ids: None,
             durations: None,
+            child_durations: None,
             build_trace_id_index: false,
             build_trace_id_bloom: false,
             events: None,

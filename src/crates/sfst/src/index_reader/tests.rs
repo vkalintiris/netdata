@@ -49,6 +49,7 @@ fn trace_file_with_bloom(
         dropped_attributes_count: true,
         parent_span_id: true,
         duration: true,
+        child_duration: false,
     };
     let counts = ChunkCounts {
         columns,

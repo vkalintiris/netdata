@@ -116,11 +116,11 @@ pub fn scan_max_sequence_recursive(base: &std::path::Path) -> std::io::Result<u6
     file_registry::scan_max_sequence_recursive(base, registry::SFST_EXT)
 }
 pub use schema::{
-    BitmapValue, ColumnEntry, ColumnType, ColumnsTable, DEFAULT_CARDINALITY_THRESHOLD,
-    DroppedAttributeCounts, Durations, FieldEntry, FieldTable, FieldTier, Flags, HighField,
-    Histogram, IdRanges, KvId, LeafStats, Metadata, NodeId, ObservedTimestamps, ParentSpanIds,
-    SchemaEdge, SchemaNode, SchemaTree, SpanId, SpanIds, Step, StreamBatch, Summary, TraceId,
-    TraceIds, ValueKind, field_tier,
+    BitmapValue, ChildDurations, ColumnEntry, ColumnType, ColumnsTable,
+    DEFAULT_CARDINALITY_THRESHOLD, DroppedAttributeCounts, Durations, FieldEntry, FieldTable,
+    FieldTier, Flags, HighField, Histogram, IdRanges, KvId, LeafStats, Metadata, NodeId,
+    ObservedTimestamps, ParentSpanIds, SchemaEdge, SchemaNode, SchemaTree, SpanId, SpanIds, Step,
+    StreamBatch, Summary, TraceId, TraceIds, ValueKind, field_tier,
 };
 // Writer-input-only vocabulary stays crate-internal (the build owns the writer).
 pub(crate) use schema::{ALL_COLUMNS, ColumnSpec};
@@ -163,6 +163,8 @@ const CHUNK_DROPPED_ATTRS: chunk_file::ChunkId = *b"DRAC";
 // columns above; logs files carry neither.
 const CHUNK_PARENT_SPAN_IDS: chunk_file::ChunkId = *b"PSPN";
 const CHUNK_DURATION: chunk_file::ChunkId = *b"DURN";
+// The time a span's children cover within the file (traces seal only).
+const CHUNK_CHILD_DURATION: chunk_file::ChunkId = *b"CHLD";
 // Optional `trace_id` index (cold region, after the per-row columns): a
 // first-byte fanout + a position permutation sorted by `trace_id`, for O(log)
 // trace-by-id lookup over the chronological `TRCE` column (see `trace_index`).

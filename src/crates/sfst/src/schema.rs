@@ -1045,6 +1045,14 @@ scalar_column!(
     /// enforce non-negativity. Traces-only; logs never write it.
     Durations, i64, "duration", ColumnType::I64
 );
+scalar_column!(
+    /// Per-row time covered by the span's direct children within the file,
+    /// in nanoseconds (`CHLD` chunk): the union of the children's intervals
+    /// clipped to the span's own, so `0 ≤ child_duration ≤ duration` and the
+    /// span's self time is `duration − child_duration`. Written by the
+    /// traces seal only; chunk images and logs never carry it.
+    ChildDurations, i64, "child_duration", ColumnType::I64
+);
 
 /// One per-row column's static descriptor: its manifest [`name`](Self::name),
 /// on-disk [`ColumnType`], and writer `ordinal` (the bit position the
@@ -1073,8 +1081,8 @@ pub struct ColumnSpec {
 /// signal-agnostic: each file carries whatever subset its producer fills.
 /// `observed_ts` is logs-only; `trace_id`/`span_id`/`flags`/
 /// `dropped_attributes_count` are written by both signals; `parent_span_id` /
-/// `duration` are traces-only.
-pub static ALL_COLUMNS: [ColumnSpec; 7] = [
+/// `duration` / `child_duration` are traces-only.
+pub static ALL_COLUMNS: [ColumnSpec; 8] = [
     ColumnSpec {
         name: ObservedTimestamps::NAME,
         column_type: ObservedTimestamps::COLUMN_TYPE,
@@ -1109,6 +1117,11 @@ pub static ALL_COLUMNS: [ColumnSpec; 7] = [
         name: Durations::NAME,
         column_type: Durations::COLUMN_TYPE,
         ordinal: 6,
+    },
+    ColumnSpec {
+        name: ChildDurations::NAME,
+        column_type: ChildDurations::COLUMN_TYPE,
+        ordinal: 7,
     },
 ];
 

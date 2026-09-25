@@ -100,6 +100,7 @@ within its tier in the trailing bytes.
     "DRAC"      Vec<u32>  (per-row dropped_attributes_count)  No (per-row column)
     "PSPN"      8-byte arena (per-row parent_span_id)         No (per-row column)
     "DURN"      Vec<i64>  (per-row span duration, ns)         No (per-row column)
+    "CHLD"      Vec<i64>  (per-row covered child time, ns)    No (per-row column)
     "TIDX"      TraceIdIndex  (trace_id fanout + sort permutation)  No (optional)
     "TBLM"      TraceIdBloom  (per-file trace-id bloom filter)  No (optional)
     "EVNB"      EventIndex  (per-row span event structure)    No (optional)
@@ -109,15 +110,25 @@ within its tier in the trailing bytes.
     "HF{hi}{lo}" HighField  (high-card field, columnar SoA)   No (one per high field)
     "SB0{N}"    StreamBatch  (stream-batch N, fixed-width arena)  Yes (at least 1)
 
-The per-row column chunks (`OBTS`/`TRCE`/`SPAN`/`FLAG`/`DRAC`/`PSPN`/`DURN`) are
+The per-row column chunks (`OBTS`/`TRCE`/`SPAN`/`FLAG`/`DRAC`/`PSPN`/`DURN`/`CHLD`) are
 **independently optional** — a file carries any subset, or none — and live in
 the **cold region after `PRIM`**, so a query decodes a column only on demand.
 `PSPN` (parent span id, 8-byte arena like `SPAN`; all-zero = root) and `DURN`
 (span duration in ns) are the **traces** signal's columns; logs files carry
-neither, traces files carry neither `OBTS` (no observed time).
+neither, traces files carry neither `OBTS` (no observed time). `CHLD` is
+traces-only too, and written by the traces seal alone (see below).
 A column is present iff the `META` `ColumnsTable` lists it; readers consult the
 manifest (not the chunk table) for presence + type. Each holds exactly one
 value per row, in the same chronological order as `TIMS` and the stream batches.
+
+The `CHLD` column (`child_duration`) holds, per row, the time the span's
+direct children cover within the file: the union of the children's
+`[start, start + duration)` intervals clipped to the span's own, so
+`0 ≤ child_duration ≤ duration` and the span's self time is
+`duration − child_duration`. Its scope is every row of the one WAL the file
+is built from (a child in another file does not count). Only files built by
+the traces seal carry it; WAL chunk images and logs files never do, so a
+reader checks the manifest for `child_duration` before asking.
 
 The optional `TIDX` chunk is the **`trace_id` index**: a 256-entry first-byte
 fanout (`fanout[256]`, cumulative count of indexed positions whose `trace_id`
@@ -360,7 +371,7 @@ Heavy query-time metadata:
     pub struct ColumnEntry {
         pub name: String,        // "observed_ts" | "trace_id" | "span_id" | "flags"
                                  //   | "dropped_attributes_count" | "parent_span_id"
-                                 //   | "duration"
+                                 //   | "duration" | "child_duration"
         pub ty:   ColumnType,    // I64 | U32 | FixedBytes(n)
     }
 
