@@ -72,9 +72,9 @@ pub mod registry;
 
 pub use error::Error;
 pub use index_reader::{
-    BitmapFilter, CompiledTracePlan, GroupCondition, IdColumnKind, IndexReader, NumberCmp,
-    PlanMatcher, PlanTerm, RollupRefOutcome, RollupRootResolver, ScanWork, Trace, TraceEvent,
-    TraceFileSession, TraceLink, TracePlan, TraceSpan, numeric_token_matches,
+    BitmapFilter, CompiledTracePlan, DerivedValues, GroupCondition, IdColumnKind, IndexReader,
+    NumberCmp, PlanMatcher, PlanTerm, RollupRefOutcome, RollupRootResolver, ScanWork, Trace,
+    TraceEvent, TraceFileSession, TraceLink, TracePlan, TraceSpan, numeric_token_matches,
 };
 pub use index_writer::IndexWriter;
 pub use kv_interner::KvSlot;

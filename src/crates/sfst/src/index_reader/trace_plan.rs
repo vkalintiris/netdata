@@ -777,19 +777,17 @@ impl IndexReader<'_> {
         };
 
         match location {
-            FieldLocation::Low => {
-                let prefix = format!("{field}=");
+            FieldLocation::Low | FieldLocation::Derived => {
                 let mut matched = PosSet::empty(total);
                 let mut presence = want_presence.then(|| PosSet::empty(total));
-                self.primary
-                    .prefix_for_each(prefix.as_bytes(), |kv_bytes, bv| {
-                        if value_matches(kv_bytes) {
-                            matched.or_assign(&PosSet::from_value(bv));
-                        }
-                        if let Some(p) = presence.as_mut() {
-                            p.or_assign(&PosSet::from_value(bv));
-                        }
-                    });
+                for (kv_bytes, bv) in self.low_pairs(&location, field) {
+                    if value_matches(&kv_bytes) {
+                        matched.or_assign(&PosSet::from_value(bv));
+                    }
+                    if let Some(p) = presence.as_mut() {
+                        p.or_assign(&PosSet::from_value(bv));
+                    }
+                }
                 Ok((Part::Ready(matched), presence.map(Part::Ready)))
             }
             FieldLocation::Mid(idx) => {
@@ -873,7 +871,7 @@ impl IndexReader<'_> {
     ) -> Result<std::collections::HashSet<u32>, crate::Error> {
         let mut start = 0u32;
         let mut present = false;
-        for entry in self.field_table().iter() {
+        for entry in self.stored_fields().iter() {
             if entry.name == field {
                 present = true;
                 break;
@@ -887,7 +885,8 @@ impl IndexReader<'_> {
         let prefix_len = field.len() + 1;
         let hits = |kv: &[u8]| matcher_hits(kv, prefix_len, matcher, compiled_patterns);
         match self.locate_field(field) {
-            None => {}
+            // The overlaid token has no KvId.
+            None | Some(FieldLocation::Derived) => {}
             Some(FieldLocation::Low) => {
                 let prefix = format!("{field}=");
                 let mut off = 0u32;

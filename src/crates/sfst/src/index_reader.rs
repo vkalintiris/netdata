@@ -10,6 +10,7 @@
 
 use std::cell::OnceCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::PrefixMap;
 use crate::reader::ChunkReader;
@@ -44,7 +45,31 @@ pub struct IndexReader<'a> {
     summary: Summary,
     primary: PrefixMap<BitmapValue>,
     decoded: Decoded,
+    overlay: Option<Box<Overlay>>,
 }
+
+/// Values a query derives over a live WAL for one of its chunk images (the
+/// seal stores the same values in a sealed file): the error-origin rows and
+/// the child-duration column, in the image's chronological positions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedValues {
+    /// Positions of the error-origin rows, strictly ascending.
+    pub err_origin: Vec<u32>,
+    pub child_duration: crate::ChildDurations,
+}
+
+/// Derived values as [`IndexReader::with_derived`] attached them.
+struct Overlay {
+    values: Arc<DerivedValues>,
+    /// The stored field table with `_err_origin` in its place among the Low
+    /// fields when a row carries it.
+    fields: crate::FieldTable,
+    /// `_err_origin=true`'s positions; `None` without an origin row.
+    origin: Option<BitmapValue>,
+}
+
+/// The overlaid token, as the seal stores it.
+const DERIVED_ORIGIN_KEY: &str = "_err_origin=true";
 
 /// The chunks a reader has decoded, each at most once. A failed decode
 /// leaves its cell empty: the error is returned and a later call retries.
@@ -271,7 +296,75 @@ impl<'a> IndexReader<'a> {
             summary,
             primary,
             decoded,
+            overlay: None,
         })
+    }
+
+    /// Attaches values a query derived over the live WAL this chunk image
+    /// belongs to, so the reader answers as the sealed file of the same frames
+    /// would: `_err_origin=true` is an ordinary Low field with one value
+    /// (filters, facets, timelines, value lists, materialized rows) and
+    /// [`child_durations`](Self::child_durations) returns the attached column.
+    /// The token has no KvId, so KvId walks keep the
+    /// [stored table](Self::stored_fields). A file that already stores
+    /// either value refuses an overlay ([`crate::Error::DerivedConflict`]).
+    pub fn with_derived(mut self, values: Arc<DerivedValues>) -> Result<Self, crate::Error> {
+        let stored = self.stored_fields();
+        let stores_column = self
+            .columns_table()
+            .get(crate::ChildDurations::NAME)
+            .is_some();
+        if stored.contains(crate::ERR_ORIGIN_FIELD) || stores_column {
+            return Err(crate::Error::DerivedConflict);
+        }
+        let total = self.summary.record_count;
+        if values.child_duration.len() != total as usize {
+            return Err(crate::Error::ColumnLengthMismatch {
+                column: crate::ChildDurations::NAME,
+                got: values.child_duration.len(),
+                expected: total as usize,
+            });
+        }
+        let mut previous: Option<u32> = None;
+        for &pos in &values.err_origin {
+            if pos >= total || previous.is_some_and(|before| pos <= before) {
+                return Err(crate::Error::CorruptIndex(format!(
+                    "derived error origin {pos}: not ascending, or past the {total} rows"
+                )));
+            }
+            previous = Some(pos);
+        }
+
+        let mut fields: Vec<FieldEntry> = stored.iter().cloned().collect();
+        let origin = if values.err_origin.is_empty() {
+            None
+        } else {
+            let at = fields
+                .iter()
+                .position(|f| f.tier != FieldTier::Low || f.name.as_str() > crate::ERR_ORIGIN_FIELD)
+                .unwrap_or(fields.len());
+            fields.insert(
+                at,
+                FieldEntry {
+                    name: crate::ERR_ORIGIN_FIELD.to_string(),
+                    cardinality: 1,
+                    tier: FieldTier::Low,
+                },
+            );
+            let mut data = Vec::new();
+            let desc = treight::Bitmap::from_sorted_iter(
+                values.err_origin.iter().copied(),
+                total,
+                &mut data,
+            );
+            Some(BitmapValue { desc, data })
+        };
+        self.overlay = Some(Box::new(Overlay {
+            values,
+            fields: crate::FieldTable::from(fields),
+            origin,
+        }));
+        Ok(self)
     }
 
     /// How many times each chunk of the file has been decompressed.
@@ -344,10 +437,21 @@ impl<'a> IndexReader<'a> {
 
     // ── Field table ─────────────────────────────────────────────────
 
-    /// The field table — the flat view derived from the schema tree
-    /// (`metadata().tree`), cached on the underlying chunk reader (forced
-    /// at [`open`](Self::open)).
+    /// The fields a query sees: the [stored table](Self::stored_fields),
+    /// plus `_err_origin` when [derived values](Self::with_derived) carry an
+    /// origin row.
     pub fn field_table(&self) -> &crate::FieldTable {
+        match &self.overlay {
+            Some(overlay) => &overlay.fields,
+            None => self.stored_fields(),
+        }
+    }
+
+    /// The field table the file stores — the flat view derived from the
+    /// schema tree (`metadata().tree`), cached on the underlying chunk reader
+    /// (forced at [`open`](Self::open)). KvIds are assigned by it, so every
+    /// KvId walk reads this table, never the overlaid one.
+    pub fn stored_fields(&self) -> &crate::FieldTable {
         self.sfst
             .fields()
             .expect("field table derived + cached at IndexReader::open")
@@ -487,9 +591,14 @@ impl<'a> IndexReader<'a> {
         memo(&self.decoded.durations, || self.sfst.durations())
     }
 
-    /// The per-row child-duration column (`CHLD`, sealed traces files only):
-    /// check `columns_table()` for `child_duration` first.
+    /// The per-row child-duration column: the stored `CHLD` of a sealed traces
+    /// file, or the [attached](Self::with_derived) one of a chunk image.
+    /// Without either it is an error: check `columns_table()` for
+    /// `child_duration` (or attach derived values) first.
     pub fn child_durations(&self) -> Result<&crate::ChildDurations, crate::Error> {
+        if let Some(overlay) = &self.overlay {
+            return Ok(&overlay.values.child_duration);
+        }
         memo(&self.decoded.child_durations, || {
             self.sfst.child_durations()
         })
@@ -652,9 +761,8 @@ impl<'a> IndexReader<'a> {
         let mut out = Vec::new();
         match self.locate_field(field_name) {
             None => return Err(crate::Error::UnknownField(field_name.to_string())),
-            Some(FieldLocation::Low) => {
-                let prefix = format!("{field_name}=");
-                for (kv_bytes, _) in self.primary.prefix_pairs(prefix.as_bytes()) {
+            Some(location @ (FieldLocation::Low | FieldLocation::Derived)) => {
+                for (kv_bytes, _) in self.low_pairs(&location, field_name) {
                     out.push(String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned());
                 }
             }
@@ -704,6 +812,13 @@ impl<'a> IndexReader<'a> {
                 self.primary
                     .prefix_for_each_while(key_prefix.as_bytes(), |kv, _| take(kv));
             }
+            Some(location @ FieldLocation::Derived) => {
+                for (kv, _) in self.low_pairs(&location, field_name) {
+                    if kv.starts_with(key_prefix.as_bytes()) && !take(&kv) {
+                        break;
+                    }
+                }
+            }
             Some(FieldLocation::Mid(idx)) => {
                 let chunk = self.mid_field(idx)?;
                 chunk.prefix_for_each_while(key_prefix.as_bytes(), |kv, _| take(kv));
@@ -743,7 +858,7 @@ impl<'a> IndexReader<'a> {
         let mut out = HashMap::with_capacity(ids.len());
         let mut next = 0usize; // cursor into `ids`
         let mut start = 0u32; // current field's first KvId
-        for (field, ti) in field_table_tiered(self.field_table()) {
+        for (field, ti) in field_table_tiered(self.stored_fields()) {
             if next >= ids.len() {
                 break;
             }
@@ -881,7 +996,7 @@ impl<'a> IndexReader<'a> {
             let timestamp_ns = timestamps.at(pos).ok_or_else(|| {
                 crate::Error::CorruptIndex(format!("materialize: position {pos} has no timestamp"))
             })?;
-            let fields = batch
+            let mut fields: Vec<(String, String)> = batch
                 .row(local)
                 .map(|kv| {
                     let s = strings.get(&kv.0).map(String::as_str).unwrap_or("");
@@ -891,6 +1006,15 @@ impl<'a> IndexReader<'a> {
                     }
                 })
                 .collect();
+            // The seal appends its token last to a row's entries; an overlay
+            // shows it in the same place.
+            let overlaid = self
+                .overlay
+                .as_ref()
+                .is_some_and(|overlay| overlay.values.err_origin.binary_search(&pos).is_ok());
+            if overlaid {
+                fields.push((crate::ERR_ORIGIN_FIELD.to_string(), "true".to_string()));
+            }
             rows.push(crate::MaterializedRow {
                 timestamp_ns,
                 fields,
@@ -997,9 +1121,8 @@ impl<'a> IndexReader<'a> {
             match self.locate_field(field) {
                 // Absent → out[fp] stays all-empty.
                 None => {}
-                Some(FieldLocation::Low) => {
-                    let prefix = format!("{field}=");
-                    for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
+                Some(location @ (FieldLocation::Low | FieldLocation::Derived)) => {
+                    for (kv_bytes, bv) in self.low_pairs(&location, field) {
                         let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
                         for p in PosSet::from_value(bv).iter() {
                             if let Some(&i) = slot.get(&p) {
@@ -1339,8 +1462,8 @@ impl<'a> IndexReader<'a> {
         let mut has_field = PosSet::empty(self.summary.record_count);
         match self.locate_field(field) {
             None => {}
-            Some(FieldLocation::Low) => {
-                for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
+            Some(location @ (FieldLocation::Low | FieldLocation::Derived)) => {
+                for (kv_bytes, bv) in self.low_pairs(&location, field) {
                     dimensions.push(String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned());
                     dim_counts.push(bucket_counts(bv, fast, filter_set, &bucket_ranges));
                     has_field.or_assign(&PosSet::from_value(bv));
@@ -1414,13 +1537,37 @@ impl<'a> IndexReader<'a> {
     /// Locate a field by name and return its tier + tier-relative chunk
     /// index. Returns `None` if the field is absent from this file.
     fn locate_field(&self, field_name: &str) -> Option<FieldLocation> {
-        field_table_tiered(self.field_table())
+        if field_name == crate::ERR_ORIGIN_FIELD && self.derived_origin().is_some() {
+            return Some(FieldLocation::Derived);
+        }
+        field_table_tiered(self.stored_fields())
             .find(|(field, _)| field.name == field_name)
             .map(|(field, ti)| match field.tier {
                 FieldTier::Low => FieldLocation::Low,
                 FieldTier::Mid => FieldLocation::Mid(ti),
                 FieldTier::High => FieldLocation::High(ti),
             })
+    }
+
+    /// The overlaid `_err_origin=true` positions, if any.
+    fn derived_origin(&self) -> Option<&BitmapValue> {
+        self.overlay
+            .as_ref()
+            .and_then(|overlay| overlay.origin.as_ref())
+    }
+
+    /// The `(key=value, bitmap)` pairs of a field whose values carry bitmaps
+    /// in the primary FST ([`FieldLocation::Low`]) or in the overlay
+    /// ([`FieldLocation::Derived`]).
+    fn low_pairs(&self, location: &FieldLocation, field: &str) -> Vec<(Vec<u8>, &BitmapValue)> {
+        match location {
+            FieldLocation::Derived => self
+                .derived_origin()
+                .map(|origin| (DERIVED_ORIGIN_KEY.as_bytes().to_vec(), origin))
+                .into_iter()
+                .collect(),
+            _ => self.primary.prefix_pairs(format!("{field}=").as_bytes()),
+        }
     }
 
     /// Compute the on-disk `KvId` for the `local`-th value of high-card
@@ -1430,7 +1577,7 @@ impl<'a> IndexReader<'a> {
         let id_ranges = &self.metadata().id_ranges;
         let mut kv = id_ranges.mid_end.0;
         let mut current = 0u16;
-        for field in self.field_table().iter() {
+        for field in self.stored_fields().iter() {
             if let FieldTier::High = field.tier {
                 if current == high_idx {
                     return KvId(kv + local as u32);
@@ -1500,6 +1647,17 @@ impl<'a> IndexReader<'a> {
                 }
                 Ok(result)
             }
+            FieldLocation::Derived => {
+                let mut result = PosSet::empty(total);
+                for (kv_bytes, bv) in self.low_pairs(&location, field) {
+                    let value = &kv_bytes[prefix_len..];
+                    let exact = exacts.iter().any(|e| e.as_bytes() == value);
+                    if exact || value_matches(&kv_bytes) {
+                        result.or_assign(&PosSet::from_value(bv));
+                    }
+                }
+                Ok(result)
+            }
             FieldLocation::Mid(idx) => {
                 let chunk = self.mid_field(idx)?;
                 let mut result = PosSet::empty(total);
@@ -1564,7 +1722,7 @@ impl<'a> IndexReader<'a> {
             id_ranges.high_end.0 - id_ranges.mid_end.0,
         );
         let mut combined_mask: u8 = 0;
-        for (field, ti) in field_table_tiered(self.field_table()) {
+        for (field, ti) in field_table_tiered(self.stored_fields()) {
             match field.tier {
                 FieldTier::Low => {}
                 FieldTier::Mid => {
@@ -1721,8 +1879,8 @@ impl<'a> IndexReader<'a> {
         let mut results = Vec::new();
 
         match location {
-            FieldLocation::Low => {
-                for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
+            FieldLocation::Low | FieldLocation::Derived => {
+                for (kv_bytes, bv) in self.low_pairs(&location, field) {
                     let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
                     let mut set = PosSet::from_value(bv);
                     set.and_assign(scope);
@@ -1771,8 +1929,8 @@ impl<'a> IndexReader<'a> {
         let mut results = Vec::new();
 
         match location {
-            FieldLocation::Low => {
-                for (kv_bytes, bv) in self.primary.prefix_pairs(prefix.as_bytes()) {
+            FieldLocation::Low | FieldLocation::Derived => {
+                for (kv_bytes, bv) in self.low_pairs(&location, field) {
                     let count = bv.desc.range_cardinality(&bv.data, lo..hi) as u32;
                     if count > 0 {
                         let value = String::from_utf8_lossy(&kv_bytes[prefix_len..]).into_owned();
@@ -1840,6 +1998,8 @@ enum FieldLocation {
     Low,
     Mid(u16),
     High(u16),
+    /// The overlaid `_err_origin` of a chunk image (one value, no KvId).
+    Derived,
 }
 
 /// A [`Filter`] compiled against one file: each filter

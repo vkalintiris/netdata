@@ -1252,3 +1252,153 @@ fn write_a_lab_size_wal() {
     let path = write_wal(&dir, requests);
     println!("{}", path.display());
 }
+
+/// A chunk image with the values the seal stored attached reads like the
+/// sealed file of the same frames (field table, facets, chips, timeline,
+/// value lists, materialized rows and fields, child durations); every other
+/// field reads as it did without the overlay; a sealed file refuses one, and
+/// malformed values are refused.
+#[test]
+fn an_overlaid_chunk_image_reads_like_the_sealed_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal_path = write_wal(dir.path(), vec![req(family())]);
+    let out = dir.path().join("traces.sfst");
+    build_sfst_traces_file(&wal_path, &out, &Metrics::new()).unwrap();
+    let sealed_bytes = std::fs::read(&out).unwrap();
+    let file_len = std::fs::metadata(&wal_path).unwrap().len();
+    let (_, image_bytes) = ng_index::build_sfst_traces_range(
+        &wal_path,
+        wal::FrameRange::new(wal::HEADER_SIZE as u64, file_len),
+    )
+    .unwrap();
+    let sealed = IndexReader::open(&sealed_bytes).unwrap();
+    let plain = IndexReader::open(&image_bytes).unwrap();
+
+    let origin_chip = sfst::Filter::new().select(sfst::ERR_ORIGIN_FIELD, "true");
+    let err_origin = sealed
+        .matched_positions(
+            &sealed.compile_filter(&origin_chip, None).unwrap(),
+            0..i64::MAX,
+        )
+        .unwrap();
+    let derived = Arc::new(sfst::DerivedValues {
+        err_origin: err_origin.clone(),
+        child_duration: sealed.child_durations().unwrap().clone(),
+    });
+    let overlaid = IndexReader::open(&image_bytes)
+        .unwrap()
+        .with_derived(derived.clone())
+        .unwrap();
+
+    let table = |reader: &IndexReader<'_>| {
+        let mut out = Vec::new();
+        for entry in reader.field_table().iter() {
+            out.push((entry.name.clone(), entry.cardinality, entry.tier));
+        }
+        out
+    };
+    assert_eq!(table(&overlaid), table(&sealed));
+    assert_eq!(
+        overlaid.child_durations().unwrap(),
+        sealed.child_durations().unwrap()
+    );
+
+    let all: Vec<u32> = (0..sealed.summary().record_count).collect();
+    assert_eq!(
+        overlaid.materialize_rows(&all).unwrap(),
+        sealed.materialize_rows(&all).unwrap()
+    );
+    let names: Vec<String> = table(&sealed)
+        .into_iter()
+        .map(|(name, _, _)| name)
+        .collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    assert_eq!(
+        overlaid.materialize_fields(&names, &all).unwrap(),
+        sealed.materialize_fields(&names, &all).unwrap()
+    );
+    let everything = sfst::Filter::new();
+    let (over_all, sealed_all) = (
+        overlaid.compile_filter(&everything, None).unwrap(),
+        sealed.compile_filter(&everything, None).unwrap(),
+    );
+    assert_eq!(
+        overlaid.facets(&names, &over_all, 0..i64::MAX).unwrap(),
+        sealed.facets(&names, &sealed_all, 0..i64::MAX).unwrap()
+    );
+    let grid = sfst::Grid::new(DERIVED_BASE as i64, 100, 6);
+    assert_eq!(
+        overlaid
+            .timeline(sfst::ERR_ORIGIN_FIELD, &over_all, grid)
+            .unwrap(),
+        sealed
+            .timeline(sfst::ERR_ORIGIN_FIELD, &sealed_all, grid)
+            .unwrap()
+    );
+    let chip = overlaid.compile_filter(&origin_chip, None).unwrap();
+    assert_eq!(
+        overlaid.matched_positions(&chip, 0..i64::MAX).unwrap(),
+        err_origin
+    );
+    let pattern = sfst::Filter::new().select_pattern(sfst::ERR_ORIGIN_FIELD, "t.*");
+    let chip = overlaid.compile_filter(&pattern, None).unwrap();
+    assert_eq!(
+        overlaid.matched_positions(&chip, 0..i64::MAX).unwrap(),
+        err_origin
+    );
+    assert_eq!(
+        overlaid.field_values(sfst::ERR_ORIGIN_FIELD).unwrap(),
+        ["true"]
+    );
+    assert_eq!(
+        overlaid
+            .field_values_with_prefix(sfst::ERR_ORIGIN_FIELD, "t", 10)
+            .unwrap(),
+        ["true"]
+    );
+
+    // Every other field reads as it did: the token has no KvId, so the
+    // stored ids still map to their own fields.
+    let plain_rows = plain.materialize_rows(&all).unwrap();
+    let over_rows = overlaid.materialize_rows(&all).unwrap();
+    for (plain_row, over_row) in plain_rows.iter().zip(&over_rows) {
+        let mut fields = over_row.fields.clone();
+        fields.retain(|(field, _)| field != sfst::ERR_ORIGIN_FIELD);
+        assert_eq!(fields, plain_row.fields);
+    }
+
+    assert!(matches!(
+        IndexReader::open(&sealed_bytes)
+            .unwrap()
+            .with_derived(derived.clone()),
+        Err(sfst::Error::DerivedConflict)
+    ));
+    let rows = all.len();
+    let values = |err_origin: Vec<u32>, rows: usize| {
+        Arc::new(sfst::DerivedValues {
+            err_origin,
+            child_duration: sfst::ChildDurations(vec![0; rows]),
+        })
+    };
+    let attach = |values| {
+        IndexReader::open(&image_bytes)
+            .unwrap()
+            .with_derived(values)
+    };
+    assert!(matches!(
+        attach(values(vec![], rows - 1)),
+        Err(sfst::Error::ColumnLengthMismatch { .. })
+    ));
+    for bad in [vec![3, 1], vec![2, 2], vec![rows as u32]] {
+        assert!(
+            matches!(
+                attach(values(bad.clone(), rows)),
+                Err(sfst::Error::CorruptIndex(_))
+            ),
+            "{bad:?}"
+        );
+    }
+    let calm = attach(values(vec![], rows)).unwrap();
+    assert_eq!(table(&calm), table(&plain));
+    assert_eq!(calm.child_durations().unwrap().0, vec![0; rows]);
+}

@@ -131,6 +131,12 @@ pub enum Error {
     /// file rather than serving corrupted rows.
     #[error("corrupt index: {0}")]
     CorruptIndex(String),
+
+    /// Derived values were attached to a file that already stores them (a
+    /// sealed file's `_err_origin` token or `child_duration` column): two
+    /// sources for the same values are refused.
+    #[error("the file already stores the derived values")]
+    DerivedConflict,
 }
 
 /// Map the shared container helper's errors onto SFST's own error

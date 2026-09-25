@@ -168,7 +168,7 @@ fn value_half(key: &str, field_name: &str) -> Option<String> {
 /// `[start, start + cardinality)` range.
 fn decode_field<'r>(reader: &'r IndexReader<'_>, field_name: &str) -> FieldState<'r> {
     let mut start = 0u32;
-    for (field, ti) in field_table_tiered(reader.field_table()) {
+    for (field, ti) in field_table_tiered(reader.stored_fields()) {
         if field.name != field_name {
             start += field.cardinality;
             continue;
