@@ -517,7 +517,7 @@ pub struct TraceParams {
 #[serde(untagged)]
 pub enum OtelTracesResponse {
     Functions(Box<FunctionsTracesResponse>),
-    Info(InfoResponse),
+    Info(Box<InfoResponse>),
     Explore(Box<ExploreResponse>),
     Values(ValuesResponse),
     Trace(Box<TraceResult>),

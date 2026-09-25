@@ -437,7 +437,7 @@ fn info_bands_follow_the_flattener() {
 fn response_envelope_is_untagged() {
     // The Info variant serializes as the bare descriptor object, no
     // enum tag wrapper; the mode field self-describes instead.
-    let v = serde_json::to_value(OtelTracesResponse::Info(InfoResponse::default())).unwrap();
+    let v = serde_json::to_value(OtelTracesResponse::Info(Box::default())).unwrap();
     assert!(v.get("version").is_some());
     assert!(v.get("Info").is_none());
     assert_eq!(v.get("mode").and_then(|m| m.as_str()), Some("info"));

@@ -41,7 +41,7 @@ use super::adapter::{
 };
 use super::sources::{Capture, CaptureError, TracesSourceSupplier};
 use super::wire::{
-    CoverageWire, ExploreParams, FunctionsParams, FunctionsTracesResponse, InfoResponse,
+    CoverageWire, ExploreParams, FunctionsParams, FunctionsTracesResponse,
     OVERVIEW_SCOPE_SELECTION, OVERVIEW_SCOPE_WINDOW, OtelTracesRequest, OtelTracesResponse,
     OverviewParams, SearchParams, SearchResult, TraceParams, TracesMode, ValuesParams,
 };
@@ -735,7 +735,7 @@ impl FunctionHandler for OtelTracesHandler {
         let tenant = req.tenant.as_deref();
         match &req.mode {
             TracesMode::Functions(params) => self.functions(&ctx, params, tenant).await,
-            TracesMode::Info => Ok(OtelTracesResponse::Info(InfoResponse::default())),
+            TracesMode::Info => Ok(OtelTracesResponse::Info(Box::default())),
             TracesMode::Explore(params) => self.explore(&ctx, params, tenant).await,
             TracesMode::Values(params) => self.values(&ctx, params, tenant).await,
             TracesMode::Trace(params) => self.trace(&ctx, params, tenant).await,
