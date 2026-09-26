@@ -36,7 +36,6 @@ var cOnlyRecords = []struct {
 	{regexp.MustCompile(`msg="(Creating archived hosts|Created \d+ archived hosts)`), "SQLite (archived hosts)"},
 	{regexp.MustCompile(`msg="ACLK[: ]`), "ACLK"},
 	{regexp.MustCompile(`msg="METADATA: `), "SQLite metadata sync"},
-	{regexp.MustCompile(`msg="RRDLABEL: Cannot reload the configuration file`), "localhost host labels"},
 	{regexp.MustCompile(`msg="CLAIM: `), "claiming"},
 	{regexp.MustCompile(`msg="(Initializing command server for liveness CHECK|Initializing full command server\.|Shutting down command server\.|Shutting down command event loop\.|Shutting down command loop complete\.|Command server has stopped\.)"`), "netdatacli command server (D36)"},
 	{regexp.MustCompile(`msg="SERVICE CONTROL: waiting for the following|msg="SERVICE: Signal to stop : `), "service registry of C's static threads (D44)"},

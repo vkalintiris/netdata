@@ -8,10 +8,12 @@ mod acl;
 mod api;
 mod build;
 mod cli;
+mod cloud_proxy;
 mod conf;
 mod daemon;
 mod data;
 mod guid;
+mod host_labels;
 mod listen;
 mod profile;
 mod router;
@@ -402,6 +404,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         stream_pool.handle(),
     ));
     startup.step("localhost labels");
+    host_labels::reload(&mut conf, &hosts);
     startup.step("saved bearer tokens");
     startup.step("claiming info");
     startup.step("static threads");

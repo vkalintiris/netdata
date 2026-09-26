@@ -30,6 +30,39 @@ pub const FLAG_INTERNAL: u32 = FLAG_OLD | FLAG_NEW | FLAG_DONT_DELETE;
 pub const MAX_NAME_LENGTH: usize = 200;
 pub const MAX_VALUE_LENGTH: usize = 800;
 
+/// `get_quoted_string_up_to()`: at most `size` input bytes (quotes included) up to an unquoted `upto1` or `upto2`,
+/// quotes removed; returns the text and what follows the stop byte.
+fn quoted_string_up_to(s: &[u8], size: usize, upto1: u8, upto2: u8) -> (Vec<u8>, &[u8]) {
+    let s = netdata_agent_text::c::c_str(s);
+    let mut out = Vec::new();
+    let mut quote = 0u8;
+    let mut i = 0;
+    let mut len = 0;
+    while i < s.len() && len < size {
+        len += 1;
+        let c = s[i];
+        if quote == 0 && (c == b'\'' || c == b'"') {
+            quote = c;
+            i += 1;
+        } else if quote != 0 && c == quote {
+            quote = 0;
+            i += 1;
+        } else if quote != 0 && c == b'\\' && i + 1 < s.len() {
+            out.push(s[i + 1]);
+            i += 2;
+        } else if quote == 0 && (c == upto1 || c == upto2) {
+            break;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    if i < s.len() {
+        i += 1;
+    }
+    (out, &s[i..])
+}
+
 /// What `rrdlabels_match_simple_pattern_parsed()` returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelsMatch {
@@ -135,6 +168,23 @@ impl Labels {
         let _ = self.add_changed(name, value, source);
     }
 
+    /// `rrdlabels_add_pair()`: `name=value` or `name:value`, either part optionally quoted (`'` or `"`, with `\`
+    /// escaping the next byte inside quotes).
+    pub fn add_pair(&mut self, pair: &[u8], source: u32) {
+        let (name, rest) = quoted_string_up_to(pair, MAX_NAME_LENGTH, b'=', b':');
+        let (value, _) = quoted_string_up_to(rest, MAX_VALUE_LENGTH, 0, 0);
+        self.add(&name, &value, source);
+    }
+
+    /// `rrdlabels_mark_source_as_old()`: labels from `source` survive the next `remove_all_unmarked()`.
+    pub fn mark_source_as_old(&mut self, source: u32) {
+        for label in &mut self.labels {
+            if label.flags & source != 0 {
+                label.flags |= FLAG_OLD;
+            }
+        }
+    }
+
     /// `rrdlabels_unmark_all()`.
     pub fn unmark_all(&mut self) {
         for label in &mut self.labels {
@@ -232,6 +282,80 @@ impl Labels {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// C's `rrdlabels_unittest_add_pairs()`.
+    #[test]
+    fn pairs_as_c_splits_them() {
+        let cases: [(&str, &str, &str); 30] = [
+            ("tag=value", "tag", "value"),
+            ("tag:value", "tag", "value"),
+            ("   tag   = \t value \r\n", "tag", "value"),
+            ("   t   a   g   = value", "t_a_g", "value"),
+            ("tag=:value", "tag", ":value"),
+            ("tag::value", "tag", ":value"),
+            ("   tag   =   :value ", "tag", ":value"),
+            ("   tag   :   :value ", "tag", ":value"),
+            ("tag:5", "tag", "5"),
+            ("tag:55", "tag", "55"),
+            ("tag:aa", "tag", "aa"),
+            ("tag:a", "tag", "a"),
+            ("tag", "tag", "[none]"),
+            ("tag:", "tag", "[none]"),
+            ("tag:\"\"", "tag", "[none]"),
+            ("tag:''", "tag", "[none]"),
+            ("tag:\r\n", "tag", "[none]"),
+            ("tag\r\n", "tag", "[none]"),
+            ("tag: country:Ελλάδα", "tag", "country:Ελλάδα"),
+            ("\"tag\": \"country:Ελλάδα\"", "tag", "country:Ελλάδα"),
+            ("\"tag\": country:\"Ελλάδα\"", "tag", "country:Ελλάδα"),
+            (
+                "\"tag=1\": country:\"Gre\\\"ece\"",
+                "tag_1",
+                "country:Gre_ece",
+            ),
+            (
+                "\"tag=1\" = country:\"Gre\\\"ece\"",
+                "tag_1",
+                "country:Gre_ece",
+            ),
+            ("\t'LABE=L'\t=\t\"World\" peace", "LABE_L", "World peace"),
+            (
+                "\t'LA\\'B:EL'\t=\tcountry:\"World\":\"Europe\":\"Greece\"",
+                "LA_B_EL",
+                "country:World:Europe:Greece",
+            ),
+            (
+                "\t'LA\\'B:EL'\t=\tcountry\\\"World\"\\\"Europe\"\\\"Greece\"",
+                "LA_B_EL",
+                "country/World/Europe/Greece",
+            ),
+            ("NAME=\"VALUE\"", "NAME", "VALUE"),
+            ("\"NAME\" : \"VALUE\"", "NAME", "VALUE"),
+            ("NAME: \"VALUE\"", "NAME", "VALUE"),
+            ("a=b", "a", "b"),
+        ];
+        for (pair, name, value) in cases {
+            let mut labels = Labels::default();
+            labels.add_pair(pair.as_bytes(), SRC_CONFIG);
+            let got: Vec<(&[u8], &[u8])> = labels
+                .iter()
+                .map(|l| (l.name.as_slice(), l.value.as_slice()))
+                .collect();
+            assert_eq!(got, [(name.as_bytes(), value.as_bytes())], "{pair:?}");
+        }
+    }
+
+    #[test]
+    fn a_source_marked_old_survives_the_prune() {
+        let mut labels = Labels::default();
+        labels.add(b"k8s", b"1", SRC_AUTO | SRC_K8S);
+        labels.add(b"conf", b"1", SRC_CONFIG);
+        labels.unmark_all();
+        labels.mark_source_as_old(SRC_K8S);
+        labels.remove_all_unmarked();
+        let names: Vec<_> = labels.iter().map(|l| l.name.as_slice()).collect();
+        assert_eq!(names, [&b"k8s"[..]]);
+    }
 
     #[test]
     fn a_clabel_cycle_replaces_the_set() {

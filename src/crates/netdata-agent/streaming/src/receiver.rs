@@ -104,7 +104,7 @@ pub struct Pending {
 #[derive(Debug)]
 pub struct Attached {
     host: Arc<Host>,
-    localhost: Arc<Host>,
+    hosts: Arc<Hosts>,
     slot: Arc<ReceiverSlot>,
     stream: mio::net::TcpStream,
     thread: usize,
@@ -512,6 +512,7 @@ impl Receivers {
             return;
         }
         peer.status(&connected_msg(&host), Reason::Never, Priority::Info);
+        self.hosts.update_is_parent_label();
         if stream.set_nonblocking(true).is_err() {
             host.clear_receiver(&slot);
             return;
@@ -524,7 +525,7 @@ impl Receivers {
         };
         let attached = Attached {
             host,
-            localhost: Arc::clone(self.hosts.localhost()),
+            hosts: Arc::clone(&self.hosts),
             slot,
             stream: mio::net::TcpStream::from_std(stream),
             thread,
@@ -626,6 +627,7 @@ impl StreamWorker {
                 &counters,
             );
             attached.host.clear_receiver(&attached.slot);
+            attached.hosts.update_is_parent_label();
             self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
         }
     }
@@ -908,7 +910,7 @@ impl Worker for StreamWorker {
         }
         let parser = Parser::new(
             Arc::clone(&attached.host),
-            Arc::clone(&attached.localhost),
+            Arc::clone(attached.hosts.localhost()),
             attached.parser,
         );
         let decompressor = Decompressor::for_capabilities(attached.parser.capabilities);

@@ -568,6 +568,8 @@ pub struct Hosts {
     inner: RwLock<Index>,
     /// `dictionary_version(rrdhost_root_index)`: one per insert (and delete).
     version: std::sync::atomic::AtomicU32,
+    /// `is_parent_label_cached_state` under its commit lock: whether localhost's `_is_parent` says a child is connected.
+    is_parent: Mutex<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -589,6 +591,32 @@ impl Hosts {
             localhost,
             inner: RwLock::new(index),
             version: std::sync::atomic::AtomicU32::new(1),
+            is_parent: Mutex::new(false),
+        }
+    }
+
+    /// `stream_receivers_currently_connected()`: hosts with a receiver attached.
+    pub fn receivers_connected(&self) -> usize {
+        self.all().iter().filter(|h| h.receiver().is_some()).count()
+    }
+
+    /// `rrdhost_update_is_parent_label()` without the write: the `_is_parent` value to store when it changed since the
+    /// last one stored, or always when `force`d (a labels reload).
+    pub fn is_parent_label(&self, force: bool) -> Option<&'static [u8]> {
+        let mut cached = lock(&self.is_parent);
+        let desired = self.receivers_connected() > 0;
+        if !force && *cached == desired {
+            return None;
+        }
+        *cached = desired;
+        Some(if desired { b"true" } else { b"false" })
+    }
+
+    /// `rrdhost_set_is_parent_label()`: after a receiver attached or detached.
+    pub fn update_is_parent_label(&self) {
+        if let Some(value) = self.is_parent_label(false) {
+            self.localhost
+                .update_labels(|labels| labels.add(b"_is_parent", value, crate::labels::SRC_AUTO));
         }
     }
 

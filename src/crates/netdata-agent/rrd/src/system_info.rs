@@ -132,6 +132,59 @@ impl SystemInfo {
         true
     }
 
+    /// `rrdhost_system_info_to_rrdlabels()`: the `_*` labels of the fields that are set, in C's order.
+    pub fn to_labels(&self, labels: &mut crate::labels::Labels) {
+        let fields: [(&str, &Option<String>); 32] = [
+            ("_cloud_provider_type", &self.cloud_provider_type),
+            ("_cloud_instance_type", &self.cloud_instance_type),
+            ("_cloud_instance_region", &self.cloud_instance_region),
+            (
+                "_os_name",
+                if self.host_os_label_name.is_some() {
+                    &self.host_os_label_name
+                } else {
+                    &self.host_os_name
+                },
+            ),
+            ("_os_version", &self.host_os_version),
+            ("_os_marketing_version", &self.host_os_label_version),
+            ("_os_release", &self.host_os_label_release),
+            ("_os_codename", &self.host_os_label_codename),
+            ("_os_edition", &self.host_os_label_edition),
+            ("_os_build", &self.host_os_label_build),
+            ("_kernel_version", &self.kernel_version),
+            ("_system_cores", &self.host_cores),
+            ("_system_cpu_freq", &self.host_cpu_freq),
+            ("_system_cpu_model", &self.host_cpu_model),
+            ("_system_ram_total", &self.host_ram_total),
+            ("_system_disk_space", &self.host_disk_space),
+            ("_architecture", &self.architecture),
+            ("_virtualization", &self.virtualization),
+            ("_container", &self.container),
+            ("_container_detection", &self.container_detection),
+            ("_virt_detection", &self.virt_detection),
+            ("_is_k8s_node", &self.is_k8s_node),
+            ("_install_type", &self.install_type),
+            ("_prebuilt_arch", &self.prebuilt_arch),
+            ("_prebuilt_dist", &self.prebuilt_dist),
+            ("_net_default_iface", &self.network_default_iface),
+            ("_net_default_iface_ip", &self.network_default_iface_ip),
+            (
+                "_net_default_iface_detection",
+                &self.network_default_iface_detection,
+            ),
+            ("_hw_product_id", &self.hw_product_id),
+            ("_hw_product_name", &self.hw_product_name),
+            ("_hw_sys_vendor", &self.hw_sys_vendor),
+            ("_hw_product_type", &self.hw_product_type),
+        ];
+        for (name, value) in fields {
+            if let Some(value) = value {
+                labels.add(name.as_bytes(), value.as_bytes(), crate::labels::SRC_AUTO);
+            }
+        }
+    }
+
     /// The parsing half of `rrdhost_system_info_detect()`: `system-info.sh`'s `NAME=value` lines, read as C's
     /// `fgets()` of 1022 bytes returns them, stored as `set_by_name()` stores them. Returns the pairs it accepted,
     /// which C exports to the environment; the lines it skips are logged as C logs them.
