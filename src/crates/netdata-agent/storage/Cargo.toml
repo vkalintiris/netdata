@@ -10,6 +10,8 @@ workspace = true
 
 [dependencies]
 crc32fast = { workspace = true }
+lz4_flex = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

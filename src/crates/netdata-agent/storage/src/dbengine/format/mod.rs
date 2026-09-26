@@ -4,6 +4,7 @@
 
 pub mod crc;
 pub mod descriptor;
+pub mod extent;
 pub mod page;
 pub mod superblock;
 
