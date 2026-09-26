@@ -83,6 +83,9 @@ type Options struct {
 	// BindTo, when set, is the [web] bind to value, with {port} replaced by Port and {run} by RunDir. It must keep
 	// a listener on 127.0.0.1:{port}, which the readiness probe uses. Empty is 127.0.0.1:{port}.
 	BindTo string
+	// PipeName, when set, is the daemon's NETDATA_PIPENAME with {run} replaced by RunDir. Empty is
+	// {run}/netdata.pipe, so daemons never share the default command pipe.
+	PipeName string
 }
 
 // StreamTo is a child's [stream] section.
@@ -106,6 +109,7 @@ type Daemon struct {
 	Addr      string // host:port for streaming connections
 	Hostname  string
 	StreamKey string
+	PipeName  string // the command pipe (NETDATA_PIPENAME) netdatacli reaches the daemon on
 
 	LaunchStartedAt time.Time
 	process         daemonProcess
@@ -404,6 +408,11 @@ func (d *Daemon) PID() int { return d.processPID }
 func (d *Daemon) launch() error {
 	confPath := filepath.Join(d.Opts.RunDir, "etc", "netdata.conf")
 	cmd := exec.Command(d.Opts.Binary, "-D", "-c", confPath)
+	d.PipeName = filepath.Join(d.Opts.RunDir, "netdata.pipe")
+	if d.Opts.PipeName != "" {
+		d.PipeName = strings.ReplaceAll(d.Opts.PipeName, "{run}", d.Opts.RunDir)
+	}
+	cmd.Env = append(os.Environ(), "NETDATA_PIPENAME="+d.PipeName)
 	stdout, err := os.Create(filepath.Join(d.Opts.RunDir, "log", "stdout.log"))
 	if err != nil {
 		return fmt.Errorf("daemon: stdout log: %w", err)
@@ -550,6 +559,28 @@ func (d *Daemon) Stop() error {
 			killErr,
 			fmt.Errorf("daemon: process PID %d did not deliver reap result within %s after SIGKILL",
 				d.processPID, killWait))
+	}
+}
+
+// WaitExit waits for a daemon that exits by itself (a shutdown command, a fatal error) and returns its exit status.
+func (d *Daemon) WaitExit(timeout time.Duration) (int, error) {
+	if d.process == nil {
+		return 0, errors.New("daemon: not running")
+	}
+	select {
+	case werr := <-d.waitCh:
+		d.process = nil
+		d.processPID = 0
+		if werr == nil {
+			return 0, nil
+		}
+		var exitErr *exec.ExitError
+		if errors.As(werr, &exitErr) {
+			return exitErr.ExitCode(), nil
+		}
+		return -1, werr
+	case <-time.After(timeout):
+		return -1, fmt.Errorf("daemon: PID %d still running after %s", d.processPID, timeout)
 	}
 }
 
