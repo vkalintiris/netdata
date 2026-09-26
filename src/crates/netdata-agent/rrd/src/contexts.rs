@@ -1338,7 +1338,7 @@ pub struct Contexts {
 }
 
 impl Contexts {
-    pub(crate) fn ram_index(&self) -> &RamIndex {
+    pub(crate) fn ram_index(&self) -> &Arc<RamIndex> {
         &self.ram_index
     }
 
@@ -1362,7 +1362,7 @@ impl Contexts {
     }
 
     /// `get_metric_retention_by_id()` on this host.
-    fn metric_retention(&self, uuid: &[u8; 16]) -> (i64, i64, bool) {
+    pub(crate) fn metric_retention(&self, uuid: &[u8; 16]) -> (i64, i64, bool) {
         metric_retention(Some(&self.storage), Some(&self.ram_index), uuid)
     }
 
@@ -1412,11 +1412,10 @@ impl Contexts {
         }
     }
 
-    /// `rrdcontext_garbage_collect_single_host()`: metrics, instances and contexts that may be deleted are removed.
-    /// The deleted contexts are returned for their SQL rows when `from_sql` (a dbengine host,
-    /// `rrdcontext_delete_from_sql_unsafe()`).
-    pub fn garbage_collect(&self, from_sql: bool) -> Vec<String> {
-        let mut deleted = Vec::new();
+    /// `rrdcontext_garbage_collect_single_host()`: metrics, instances and contexts that may be deleted are removed;
+    /// each deleted context's id and hub version go to `delete_from_sql` first (`rrdcontext_delete_from_sql_unsafe()`,
+    /// which does nothing for a host that is not dbengine).
+    pub fn garbage_collect(&self, mut delete_from_sql: impl FnMut(&str, u64)) {
         for rc in self.all() {
             for ri in rc.instances() {
                 lock(&ri.metrics).retain(|rm| !rm.should_be_deleted());
@@ -1425,13 +1424,12 @@ impl Contexts {
                 }
             }
             if context_should_be_deleted(&rc) {
-                if from_sql {
-                    deleted.push(rc.id.clone());
-                }
+                // rrdcontext_delete_from_sql_unsafe()
+                let version = lock(&rc.state).hub.version;
+                delete_from_sql(&rc.id, version);
                 self.remove_context(&rc);
             }
         }
-        deleted
     }
 
     pub fn all(&self) -> Vec<Arc<Context>> {
@@ -1900,7 +1898,7 @@ fn post_process_updates(rc: &Context, force: bool, reason: u32) {
 }
 
 mod load;
-pub use load::{LoadReport, Loader, SqlChart, SqlContext, SqlDim};
+pub use load::{LoadReport, Loader, SqlChange, SqlChart, SqlContext, SqlDim};
 
 #[cfg(test)]
 mod tests;

@@ -202,3 +202,29 @@ func TestArchivedHosts(t *testing.T) {
 		})
 	}
 }
+
+// TestArchivedHostsDbengine (check `sqlite.archived-hosts`) starts both daemons in dbengine mode on copies of a
+// C-written cache whose child C stored in dbengine: the child is an archived dbengine host whose contexts load from
+// the metadata databases with retention from the engine's registry, as C shows them; the whole daemon log (the
+// engine's start, the context loads' records) and the context cleanup rows are C's.
+func TestArchivedHostsDbengine(t *testing.T) {
+	seed := seedFromOracle(t, parentIdentity, "dbengine")
+	opts := daemon.Options{StorageTiers: 1, StreamMemoryMode: "dbengine", SeedCache: seed,
+		LogsExtra: "    level = debug\n"}
+	p := StartPair(t, opts, parentIdentity)
+	compareArchived(t, p, childHost.Hostname)
+	for _, side := range p.Each() {
+		if err := side.Daemon.Stop(); err != nil {
+			t.Fatalf("stop %s: %v", side.Role, err)
+		}
+	}
+	compareLogFiles(t, p, "daemon.log")
+	var cleanup [2]string
+	for i, side := range p.Each() {
+		cleanup[i] = dumpDB(t, filepath.Join(side.Daemon.Opts.RunDir, "cache", "netdata-meta.db"),
+			"--table", "ctx_metadata_cleanup", "--mask", "ctx_metadata_cleanup.date_created")
+	}
+	if cleanup[0] != cleanup[1] {
+		t.Errorf("ctx_metadata_cleanup:\noracle:\n%s\ncandidate:\n%s", cleanup[0], cleanup[1])
+	}
+}

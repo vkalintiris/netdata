@@ -13,6 +13,7 @@ use crate::chart::{self, Charts};
 use crate::contexts::{self, Contexts};
 use crate::labels::Labels;
 use crate::mode::DbMode;
+use crate::storage::StorageLayout;
 use crate::stream_path::PathEntry;
 use crate::system_info::SystemInfo;
 
@@ -286,6 +287,23 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Host {
+    /// `rrdhost_create()` of a host whose storage has its tiers from `storage` (the engine's, when it runs).
+    pub fn with_storage(
+        machine_guid: &str,
+        is_localhost: bool,
+        info: HostInfo,
+        storage: &StorageLayout,
+    ) -> Self {
+        let mode = info.db_mode;
+        let host = Host::new(machine_guid, is_localhost, info);
+        let tiers = storage.tiers_for(mode, host.contexts.ram_index());
+        if !tiers.is_empty() {
+            host.contexts.set_tiers(tiers);
+        }
+        host
+    }
+
+    /// A host without the dbengine: its contexts take retention from the RAM index.
     pub fn new(machine_guid: &str, is_localhost: bool, mut info: HostInfo) -> Self {
         info.hostname = init_hostname(&info.hostname);
         let contexts = Arc::new(Contexts::default());
@@ -779,6 +797,8 @@ pub struct Hosts {
     version: std::sync::atomic::AtomicU32,
     /// `is_parent_label_cached_state` under its commit lock: whether localhost's `_is_parent` says a child is connected.
     is_parent: Mutex<bool>,
+    /// The storage every host it creates gets.
+    storage: Arc<StorageLayout>,
 }
 
 #[derive(Debug, Default)]
@@ -789,7 +809,13 @@ struct Index {
 }
 
 impl Hosts {
+    /// The index of hosts without the dbengine.
     pub fn new(localhost: Host) -> Self {
+        Hosts::with_storage(localhost, Arc::default())
+    }
+
+    /// The index of hosts with this storage; `localhost` was created with it.
+    pub fn with_storage(localhost: Host, storage: Arc<StorageLayout>) -> Self {
         let localhost = Arc::new(localhost);
         let index = Index {
             ordered: vec![Arc::clone(&localhost)],
@@ -802,7 +828,12 @@ impl Hosts {
             inner: RwLock::new(index),
             version: std::sync::atomic::AtomicU32::new(1),
             is_parent: Mutex::new(false),
+            storage,
         }
+    }
+
+    pub fn storage(&self) -> &Arc<StorageLayout> {
+        &self.storage
     }
 
     /// `stream_receivers_currently_connected()`: hosts with a receiver attached.
@@ -917,7 +948,7 @@ impl Hosts {
         if let Some(host) = index.by_guid.get(guid) {
             return Arc::clone(host);
         }
-        let host = Arc::new(Host::new(guid, false, info));
+        let host = Arc::new(Host::with_storage(guid, false, info, &self.storage));
         host.archived.store(true, Ordering::Release);
         host.pending_context_load.store(true, Ordering::Release);
         host.orphan.store(true, Ordering::Release);
@@ -975,7 +1006,7 @@ impl Hosts {
             }
             return host;
         }
-        let host = Arc::new(Host::new(guid, false, create()));
+        let host = Arc::new(Host::with_storage(guid, false, create(), &self.storage));
         host.created_connected();
         index.ordered.push(Arc::clone(&host));
         index.by_guid.insert(guid.to_string(), Arc::clone(&host));
@@ -1012,6 +1043,79 @@ mod tests {
             stream_send: None,
             cache_dir: None,
         }
+    }
+
+    /// An engine of `tiers` empty tiers over temporary directories, and its registry.
+    fn engine(tiers: usize) -> (Vec<tempfile::TempDir>, Arc<StorageLayout>) {
+        use netdata_agent_storage::dbengine::engine::cache::{ExtentCache, MainCache};
+        use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
+        use netdata_agent_storage::dbengine::engine::mrg::Mrg;
+        use netdata_agent_storage::dbengine::engine::query::{Dbengine, TierData};
+        let mrg = Mrg::new();
+        let dirs: Vec<_> = (0..tiers).map(|_| tempfile::tempdir().unwrap()).collect();
+        let tiers = dirs
+            .iter()
+            .enumerate()
+            .map(|(tier, dir)| {
+                let cfg = TierConfig {
+                    tier,
+                    path: dir.path().to_path_buf(),
+                    direct_io: false,
+                    max_disk_space: 0,
+                    journal_check: false,
+                };
+                TierData::new(load(cfg, &mrg, 1_800_000_000).unwrap())
+            })
+            .collect();
+        let engine = Dbengine {
+            mrg,
+            tiers,
+            main: MainCache::new(1 << 20),
+            extents: ExtentCache::new(1 << 20),
+            pool: None,
+            update_every_s: 1,
+        };
+        (dirs, Arc::new(StorageLayout::new(Some(Arc::new(engine)))))
+    }
+
+    /// `rrdhost_create()`'s tiers: every tier from the engine for a dbengine host, tier 0 from the RAM index for the
+    /// other modes, the RAM index alone without the engine; hosts the index creates get the same.
+    #[test]
+    fn hosts_take_their_tiers_from_the_storage() {
+        const A: [u8; 16] = [0xaa; 16];
+        let (_dirs, storage) = engine(2);
+        let mrg = &storage.dbengine().unwrap().mrg;
+        drop(mrg.add_and_acquire(&A, 0, 150, 300, 1));
+        drop(mrg.add_and_acquire(&A, 1, 100, 200, 60));
+        let dbengine = HostInfo {
+            db_mode: DbMode::Dbengine,
+            ..info("d")
+        };
+        let retention = |host: &Host| host.contexts().metric_retention(&A);
+        let host = Host::with_storage("guid-d", false, dbengine.clone(), &storage);
+        assert_eq!(retention(&host), (100, 300, true));
+        let alloc = Host::with_storage("guid-a", false, info("a"), &storage);
+        assert_eq!(
+            retention(&alloc),
+            (100, 200, false),
+            "tier 0 is the RAM index"
+        );
+        let plain =
+            Host::with_storage("guid-p", false, dbengine.clone(), &StorageLayout::default());
+        assert_eq!(retention(&plain), (i64::MAX, 0, false));
+        assert_eq!(
+            (
+                storage.storage_tiers(),
+                StorageLayout::default().storage_tiers()
+            ),
+            (2, 1)
+        );
+        let hosts = Hosts::with_storage(
+            Host::with_storage("guid-l", true, info("l"), &storage),
+            Arc::clone(&storage),
+        );
+        let archived = hosts.add_archived("guid-x", dbengine, |_| {});
+        assert_eq!(retention(&archived), (100, 300, true));
     }
 
     /// `stream_receiver_replication_reset()` on attach and on detach, each on its own.

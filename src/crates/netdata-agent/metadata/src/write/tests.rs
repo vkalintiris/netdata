@@ -343,3 +343,38 @@ fn failures_log_cs_records() {
     assert!(!stored);
     assert_eq!(messages(records), ["Failed to store dimension, rc = 19"]);
 }
+
+/// C's context cleanup rows: one per (host, context), a second schedule refreshing its date; the items met during a
+/// shutdown are skipped.
+#[test]
+fn context_cleanups_upsert_per_host_and_context() {
+    let (_dir, meta) = db();
+    let items = [
+        (HOST, "ctx.a".to_string()),
+        (HOST, "ctx.b".to_string()),
+        (OTHER, "ctx.a".to_string()),
+    ];
+    meta.schedule_host_ctx_cleanup(&items, || false);
+    meta.lock()
+        .execute_batch("UPDATE ctx_metadata_cleanup SET date_created = 1")
+        .unwrap();
+    meta.schedule_host_ctx_cleanup(&items[..1], || false);
+    let dated = |meta: &MetaDb| {
+        rows(
+            meta,
+            "SELECT hex(host_id) || ' ' || context || ' ' || (date_created > 1) FROM ctx_metadata_cleanup ORDER BY id",
+        )
+    };
+    let h = "AA".repeat(16);
+    let o = "BB".repeat(16);
+    assert_eq!(
+        dated(&meta),
+        [
+            format!("{h} ctx.a 1"),
+            format!("{h} ctx.b 0"),
+            format!("{o} ctx.a 0")
+        ]
+    );
+    meta.schedule_host_ctx_cleanup(&[(OTHER, "ctx.z".to_string())], || true);
+    assert_eq!(dated(&meta).len(), 3, "skipped at shutdown");
+}

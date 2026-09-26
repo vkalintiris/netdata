@@ -246,3 +246,36 @@ fn concurrent_releases_remove_the_metric() {
         assert_eq!(mrg.entries(), 0);
     }
 }
+
+/// C's retention lookup: a held metric's times, nothing for an unknown one; a lookup never keeps a metric without
+/// retention alive, but a prepopulated one stays.
+#[test]
+fn retention_lookups_release_as_c() {
+    let mrg = Mrg::new();
+    mrg.add_and_acquire(&A, 1, 100, 200, 10).0.release();
+    assert_eq!(
+        mrg.retention_by_uuid(&A, 1),
+        Some(Retention {
+            first_time_s: 100,
+            last_time_s: 200,
+            update_every_s: 10
+        })
+    );
+    assert_eq!(mrg.retention_by_uuid(&A, 0), None);
+    assert_eq!(mrg.retention_by_uuid(&B, 1), None);
+    // a metric without retention stays while held, and its last holder's release removes it
+    let held = mrg.add_and_acquire(&B, 1, 0, 0, 0).0;
+    assert_eq!(
+        mrg.retention_by_uuid(&B, 1).map(|r| r.first_time_s),
+        Some(0)
+    );
+    drop(held);
+    assert_eq!(mrg.retention_by_uuid(&B, 1), None);
+    // a prepopulated metric stays until the cleanup
+    mrg.prepopulate(&B, 2);
+    assert_eq!(
+        mrg.retention_by_uuid(&B, 2).map(|r| r.first_time_s),
+        Some(0)
+    );
+    assert!(mrg.get_and_acquire(&B, 2).is_some());
+}

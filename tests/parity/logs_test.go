@@ -31,7 +31,6 @@ var cOnlyRecords = []struct {
 	{regexp.MustCompile(`msg="MCP[: ]`), "MCP"},
 	{regexp.MustCompile(`msg="(JSON-RPC protocol|Echo protocol|MCP WebSocket adapter|WebSocket server subsystem) initialized`), "WebSocket"},
 	{regexp.MustCompile(`msg="Flushing DBENGINE|msg="DBENGINE: flushing`), "C's pulse charts write into dbengine (S3/S6)"},
-	{regexp.MustCompile(`msg="RRDCONTEXT: metadata for node `), "dbengine (milestone D4)"},
 	{regexp.MustCompile(`msg="ACLK[: ]`), "ACLK"},
 	{regexp.MustCompile(`msg="SQL: (suppressing SQLite teardown|skipping )`), "SQLite teardown"},
 	{regexp.MustCompile(`msg="CLAIM: `), "claiming"},
@@ -136,8 +135,8 @@ func threadOf(line string) string {
 }
 
 // normalizeLog masks a record. The main thread's and the shutdown watcher's records carry a stale errno in C, which
-// the check ignores (D36), as do the command server's own lifecycle records (D57.2) and the registry's pre-population
-// record (D63.1); the command server's read and libuv error records keep theirs. The harness picks each daemon's port.
+// the check ignores (D36), as do the command server's own lifecycle records (D57.2), the registry's pre-population
+// record (D63.1) and the context loads' record (D64); the command server's read and libuv error records keep theirs. The harness picks each daemon's port.
 func normalizeLog(line, runDir, port string) string {
 	line = strings.ReplaceAll(line, runDir, "<RUN>")
 	if port != "" {
@@ -146,6 +145,7 @@ func normalizeLog(line, runDir, port string) string {
 	}
 	th := threadOf(line)
 	if th == "" || th == "EXIT_WATCHER" || strings.Contains(line, `msg="MRG: Loaded `) ||
+		strings.Contains(line, `msg="RRDCONTEXT: metadata for node `) ||
 		(th == "DAEMON_COMMAND" && !strings.Contains(line, `msg="pipe_read_cb: `) && !strings.Contains(line, `msg="uv_`)) {
 		line = errnoRe.ReplaceAllString(line, "")
 	}

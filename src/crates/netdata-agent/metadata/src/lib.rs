@@ -13,3 +13,6 @@ pub mod read;
 pub mod recover;
 pub mod schema;
 pub mod write;
+
+/// A database handle, as the readers take it.
+pub use rusqlite::Connection;

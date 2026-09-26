@@ -395,6 +395,12 @@ impl Mrg {
         Some(self.handle(metric))
     }
 
+    /// `rrdeng_metric_retention_by_uuid()`: the metric's times on `tier`, `None` when the tier does not hold it. The
+    /// lookup releases what it acquired, so a metric without retention that nobody else holds goes, as in C.
+    pub fn retention_by_uuid(&self, uuid: &[u8; 16], tier: usize) -> Option<Retention> {
+        self.get_and_acquire(uuid, tier).map(|h| h.retention())
+    }
+
     /// The number of metrics held (`mrg_get_statistics().entries`).
     pub fn entries(&self) -> usize {
         self.0

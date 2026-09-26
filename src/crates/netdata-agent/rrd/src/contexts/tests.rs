@@ -368,7 +368,16 @@ fn a_load_counts_as_c_and_keeps_what_has_retention() {
     loader.dim(&sql_dim(11, "d", "t.one", "ctx.a"));
     loader.dim(&sql_dim(12, "e", "t.nochart", "ctx.a"));
     loader.dim(&sql_dim(13, "z", "t.one", "ctx.a"));
-    let (report, records) = netdata_agent_log::capture(|| loader.finish("node", || false));
+    let mut changes = Vec::new();
+    let (report, records) = netdata_agent_log::capture(|| {
+        loader.finish(
+            "node",
+            || false,
+            |change| changes.push(format!("{change:?}")),
+        )
+    });
+    // the context left without instances; nothing is left for the garbage collection
+    assert_eq!(changes, [r#"Cleanup("ctx.b")"#]);
     assert_eq!(
         report,
         LoadReport {
@@ -380,8 +389,6 @@ fn a_load_counts_as_c_and_keeps_what_has_retention() {
             metrics: 1,
             metrics_ignored: 1,
             metrics_zero_retention: 1,
-            cleanup: vec!["ctx.b".into()],
-            deleted_from_sql: vec![],
         }
     );
     let record = records
@@ -434,7 +441,7 @@ fn charts_created_again_reuse_the_loaded_uuids() {
     let mut loader = contexts.loader().unwrap();
     loader.chart(&sql_chart(7, "t.a", "ctx.a"));
     loader.dim(&sql_dim(9, "d", "t.a", "ctx.a"));
-    loader.finish("node", || false);
+    loader.finish("node", || false, |_| {});
     let (chart, _) = charts.create(&spec("a", "ctx.a", "Title", 1000));
     assert_eq!(*chart.uuid(), [7; 16]);
     let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);

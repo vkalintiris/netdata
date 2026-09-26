@@ -14,6 +14,7 @@ mod command_server;
 mod commands;
 mod conf;
 mod contexts_v2;
+mod ctxload;
 mod daemon;
 mod data;
 mod dbengine;
@@ -43,12 +44,13 @@ use netdata_agent_metadata::read::{EventKind, NodeId};
 use netdata_agent_log::{Priority, Source, fatal, nd_log};
 use std::io::Write;
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use netdata_agent_evloop::Pool;
 use netdata_agent_inicfg::{SECTION_GLOBAL, SECTION_LOGS, SECTION_WEB};
 use netdata_agent_rrd::host::{Host, HostInfo, Hosts, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
+use netdata_agent_rrd::storage::StorageLayout;
 use netdata_agent_streaming::conf::{LoadDefaults, StreamConf};
 use netdata_agent_streaming::receiver::{self, Receivers, StreamWorker};
 use netdata_agent_web::request::Settings;
@@ -450,7 +452,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             "Skipping SQLITE metadata initialization since memory mode is not dbengine"
         );
     }
-    let context_db = ContextDb::open(&cache_dir, &sqlite);
+    let context_db = ContextDb::open(&cache_dir, &sqlite).map(Arc::new);
     if context_db.is_none() {
         nd_log!(
             Source::Daemon,
@@ -483,7 +485,13 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         ),
     };
     let health_enabled = conf.health_load_config_defaults();
-    let localhost = Host::new(
+    // nd_profile.storage_tiers and multidb_ctx: every host's tiers
+    let storage = Arc::new(StorageLayout::new(
+        dbengine
+            .as_ref()
+            .map(|dbengine| Arc::clone(dbengine.engine())),
+    ));
+    let localhost = Host::with_storage(
         &machine_guid,
         true,
         HostInfo {
@@ -515,6 +523,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             ),
             cache_dir: Some(conf.dirs.cache.clone()),
         },
+        &storage,
     );
     // sql_load_node_id() in rrdhost_create(), before the host's record
     let host_id = netdata_agent_text::parse::uuid_parse_flexi(machine_guid.as_bytes());
@@ -525,29 +534,45 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             NodeId::Absent => {}
         }
     }
-    let hosts = Arc::new(Hosts::new(localhost));
+    let hosts = Arc::new(Hosts::with_storage(localhost, storage));
     // store_host_info_and_metadata() at the end of rrdhost_create(localhost)
     match &meta {
         Some(meta) => meta_store::store_host_info_and_metadata(meta, hosts.localhost()),
         None => meta_store::store_localhost_without_database(hosts.localhost()),
     }
+    // rrdhost_load_rrdcontext_data(localhost), on this thread with the shared databases
+    if let Some(meta) = &meta {
+        let queue = metasync.queue();
+        let cleanup = |host_id, context| queue.ctx_host_cleanup(host_id, context);
+        ctxload::load_host_contexts(
+            hosts.localhost(),
+            &ctxload::Sources {
+                meta,
+                context_db: context_db.as_ref(),
+                meta_thread: None,
+                context_thread: None,
+                cleanup: &cleanup,
+            },
+        );
+    }
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
         meta.detect_machine_guid_change(host_id);
     }
     if let Some(meta) = &meta {
-        metasync.set_writer(Arc::clone(meta), Arc::clone(&hosts), db.datafiles_present);
+        metasync.set_writer(
+            Arc::clone(meta),
+            context_db.as_ref().map_or_else(Weak::new, Arc::downgrade),
+            Arc::clone(&hosts),
+            db.datafiles_present,
+        );
     }
-    // aclk_synchronization_init(): archived hosts take the default mode after C's fallback, as children do
+    // aclk_synchronization_init(): archived hosts take the default mode
     match &meta {
         Some(meta) => archived::load(
             meta,
             &hosts,
             &archived::Defaults {
-                db_mode: if db.mode == DbMode::Dbengine {
-                    DbMode::Alloc
-                } else {
-                    db.mode
-                },
+                db_mode: db.mode,
                 page_size: system.page_size,
                 free_ephemeral_time_s: db.free_ephemeral_time_s,
             },
@@ -812,7 +837,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
         // sqlite_close_databases(): an abnormal exit leaves them open
         shutdown::CLOSE_SQL_DATABASES if normal => {
-            if let Some(context_db) = context_db.take() {
+            if let Some(context_db) = context_db.take().and_then(Arc::into_inner) {
                 context_db.close();
             }
             if let Some(meta) = meta.take().and_then(Arc::into_inner) {

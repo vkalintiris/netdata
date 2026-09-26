@@ -10,5 +10,6 @@ pub mod host;
 pub mod labels;
 pub mod mode;
 pub mod status;
+pub mod storage;
 pub mod stream_path;
 pub mod system_info;

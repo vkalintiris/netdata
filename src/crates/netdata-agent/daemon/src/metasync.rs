@@ -1,19 +1,20 @@
 //! The METASYNC thread of `src/database/sqlite/sqlite_metadata.c` (`metadata_event_loop()`): its lifecycle records;
 //! the metadata writer, whose store job it hands to the `UV_WORKER` pool 6 s after it starts and then about every 6 s
-//! (a 1 s timer, and 5 s after each job ends), with a final store at shutdown (D61); the claim id of an unclaimed
-//! start; and the context load of the archived hosts, also on the pool (`ctx_hosts_load()`), one `CTXLOAD` thread per
-//! host while slots last (D59.5). The contexts loader itself is wired with dbengine (S2), so the load of an alloc or
-//! ram host only clears its flag, as in C.
+//! (a 1 s timer, and 5 s after each job ends), with a final store at shutdown (D61); the context cleanups and the
+//! freed dimensions' rows that job writes first; the claim id of an unclaimed start; and the context load of the
+//! archived hosts, also on the pool (`ctx_hosts_load()`), one `CTXLOAD` thread per host while slots last (D59.5),
+//! reading a dbengine host's contexts from SQL (D64).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::{Priority, Source, nd_log, netdata_log_info};
-use netdata_agent_metadata::open::MetaDb;
+use netdata_agent_metadata::open::{ContextDb, MetaDb};
+use netdata_agent_metadata::read;
 use netdata_agent_rrd::host::{Host, Hosts};
 use netdata_agent_text::duration::duration_to_string;
 
@@ -49,21 +50,37 @@ struct Shared {
     next_vacuum_run: AtomicI64,
 }
 
-/// The writer's database and hosts, once localhost exists.
+/// The writer's databases and hosts, once localhost exists.
 #[derive(Clone)]
 struct Writer {
     meta: Arc<MetaDb>,
+    /// The shared context database, which the context loads read and delete in.
+    context_db: Weak<ContextDb>,
     hosts: Arc<Hosts>,
-    /// `dbengine_datafiles_present`: freed dimensions keep their rows, which may describe dbengine data.
+    /// `dbengine_datafiles_present`: without the dbengine, freed dimensions keep their rows, which may describe
+    /// dbengine data.
     datafiles_present: bool,
 }
 
-/// `do_pending_uuid_deletion()`: the rows of the dimensions freed since the last job. This agent has no dbengine yet
-/// (`dbengine_enabled` is false), so a row goes unless dbengine datafiles were found at start.
+/// `dimension_can_be_deleted()` or, without the dbengine, whether no datafiles were found at start: a freed
+/// dimension's row goes when no tier holds retention for it.
+fn dimension_can_be_deleted(writer: &Writer, uuid: &[u8; 16]) -> bool {
+    match writer.hosts.storage().dbengine() {
+        None => !writer.datafiles_present,
+        Some(engine) => (0..engine.tiers.len()).all(|tier| {
+            engine
+                .mrg
+                .retention_by_uuid(uuid, tier)
+                .is_none_or(|r| r.first_time_s <= 0)
+        }),
+    }
+}
+
+/// `do_pending_uuid_deletion()`: the rows of the dimensions freed since the last job.
 fn delete_pending_dimensions(writer: &Writer, shared: &Shared, pending: Vec<[u8; 16]>) {
     let started = now_ut();
     for uuid in &pending {
-        if !shared.shutdown.load(Ordering::Acquire) && !writer.datafiles_present {
+        if !shared.shutdown.load(Ordering::Acquire) && dimension_can_be_deleted(writer, uuid) {
             writer.meta.delete_dimension(uuid);
         }
     }
@@ -76,11 +93,37 @@ fn delete_pending_dimensions(writer: &Writer, shared: &Shared, pending: Vec<[u8;
     );
 }
 
-/// `start_metadata_hosts()`, on a pool thread: the hosts' pending metadata, then the database's upkeep, and the next
-/// store no sooner than 5 s from now. `run_maintenace()` (the service thread's host cleanup) is not ported yet.
-fn store_job(writer: &Writer, shared: &Shared, pending_deletions: Option<Vec<[u8; 16]>>) {
+/// `store_ctx_cleanup_list()`: the context cleanups queued since the last job; each skipped once a shutdown began.
+fn store_ctx_cleanup(writer: &Writer, shared: &Shared, pending: Vec<([u8; 16], String)>) {
+    let started = now_ut();
+    writer
+        .meta
+        .schedule_host_ctx_cleanup(&pending, || shared.shutdown.load(Ordering::Acquire));
+    nd_log!(
+        Source::Daemon,
+        Priority::Debug,
+        "Stored {} host context cleanup items in {:.2} ms",
+        pending.len(),
+        now_ut().saturating_sub(started) as f64 / 1000.0
+    );
+}
+
+/// What a store job takes over from the loop (`worker->pending_*`).
+#[derive(Default)]
+struct Pending {
+    ctx_cleanup: Option<Vec<([u8; 16], String)>>,
+    deletions: Option<Vec<[u8; 16]>>,
+}
+
+/// `start_metadata_hosts()`, on a pool thread: the context cleanups, the freed dimensions, the hosts' pending
+/// metadata, then the database's upkeep, and the next store no sooner than 5 s from now. `run_maintenace()` (the
+/// service thread's host cleanup) is not ported yet.
+fn store_job(writer: &Writer, shared: &Shared, pending: Pending) {
+    if let Some(cleanup) = pending.ctx_cleanup {
+        store_ctx_cleanup(writer, shared, cleanup);
+    }
     // before the store: a dimension freed and created again keeps the row the store writes
-    if let Some(pending) = pending_deletions {
+    if let Some(pending) = pending.deletions {
         delete_pending_dimensions(writer, shared, pending);
     }
     let started = now_ut();
@@ -121,6 +164,8 @@ enum Cmd {
     StoreDone,
     /// `METADATA_DEL_DIMENSION`: a freed dimension's row, deleted by the next job.
     DelDimension([u8; 16]),
+    /// `METADATA_ADD_CTX_CLEANUP`: a host's context for the metadata cleanup, stored by the next job.
+    AddCtxCleanup([u8; 16], String),
     Shutdown,
 }
 
@@ -137,6 +182,11 @@ impl MetaQueue {
     /// `metaqueue_delete_dimension_uuid()`: a freed dimension's row goes at the next job (a failed queue drops it).
     pub fn delete_dimension(&self, uuid: [u8; 16]) {
         let _ = self.0.send(Cmd::DelDimension(uuid));
+    }
+
+    /// `metadata_queue_ctx_host_cleanup()`: stored by the next job (a failed queue drops it).
+    pub fn ctx_host_cleanup(&self, host_id: [u8; 16], context: String) {
+        let _ = self.0.send(Cmd::AddCtxCleanup(host_id, context));
     }
 }
 
@@ -180,8 +230,9 @@ impl MetaSync {
                 });
                 let _ = done_tx.send(());
                 let mut writer: Option<Writer> = None;
-                // pending_uuid_deletion: handed to the next job; dropped at shutdown, as C frees the list
-                let mut pending_deletions: Option<Vec<[u8; 16]>> = None;
+                // pending_ctx_cleanup_list, pending_uuid_deletion: handed to the next job; dropped at shutdown, as C
+                // frees them
+                let mut pending = Pending::default();
                 let (mut store_metadata, mut running) = (false, false);
                 let mut next_tick = Instant::now() + TIMER_PERIOD;
                 loop {
@@ -200,8 +251,13 @@ impl MetaSync {
                     }
                     match cmd {
                         Some(Cmd::LoadHostContexts(hosts, vnodes)) => {
-                            let _ = pool
-                                .queue(move || ctx_hosts_load(&hosts, cpus, stack_size, &vnodes));
+                            let load = Arc::new(CtxLoad {
+                                writer: writer.clone(),
+                                queue: MetaQueue(job_tx.clone()),
+                                shared: Arc::clone(&shared),
+                                vnodes,
+                            });
+                            let _ = pool.queue(move || ctx_hosts_load(&hosts, cpus, stack_size, &load));
                         }
                         Some(Cmd::StoreClaimId(meta, id)) => {
                             crate::meta_store::store_claim_id(meta.as_deref(), &id);
@@ -209,7 +265,13 @@ impl MetaSync {
                         Some(Cmd::Writer(w)) => writer = Some(w),
                         Some(Cmd::StoreDone) => running = false,
                         Some(Cmd::DelDimension(uuid)) => {
-                            pending_deletions.get_or_insert_with(Vec::new).push(uuid);
+                            pending.deletions.get_or_insert_with(Vec::new).push(uuid);
+                        }
+                        Some(Cmd::AddCtxCleanup(host_id, context)) => {
+                            pending
+                                .ctx_cleanup
+                                .get_or_insert_with(Vec::new)
+                                .push((host_id, context));
                         }
                         Some(Cmd::Shutdown) => {
                             shared.shutdown.store(true, Ordering::Release);
@@ -222,10 +284,10 @@ impl MetaSync {
                         store_metadata = false;
                         running = true;
                         let (w, shared, tx) = (w.clone(), Arc::clone(&shared), job_tx.clone());
-                        let pending = pending_deletions.take();
+                        let taken = std::mem::take(&mut pending);
                         if pool
                             .queue(move || {
-                                store_job(&w, &shared, pending);
+                                store_job(&w, &shared, taken);
                                 // the exit closes the database once METASYNC has seen this job end
                                 drop(w);
                                 let _ = tx.send(Cmd::StoreDone);
@@ -266,10 +328,17 @@ impl MetaSync {
             .is_ok()
     }
 
-    /// The metadata writer's database and hosts, once localhost exists; without them the writer stays off.
-    pub fn set_writer(&self, meta: Arc<MetaDb>, hosts: Arc<Hosts>, datafiles_present: bool) {
+    /// The metadata writer's databases and hosts, once localhost exists; without them the writer stays off.
+    pub fn set_writer(
+        &self,
+        meta: Arc<MetaDb>,
+        context_db: Weak<ContextDb>,
+        hosts: Arc<Hosts>,
+        datafiles_present: bool,
+    ) {
         let _ = self.tx.send(Cmd::Writer(Writer {
             meta,
+            context_db,
             hosts,
             datafiles_present,
         }));
@@ -304,10 +373,39 @@ impl MetaSync {
     }
 }
 
-/// `restore_host_context()`: the host's contexts (from SQL for dbengine hosts, with S2), then the host no longer
-/// waits for them.
-fn restore_host_context(host: &Host, vnodes: &mpsc::Sender<()>) {
+/// What a context load needs: the writer's databases (none without a metadata database), METASYNC's queue for the
+/// cleanups it asks for, its shutdown flag, and where vnodes report.
+struct CtxLoad {
+    writer: Option<Writer>,
+    queue: MetaQueue,
+    shared: Arc<Shared>,
+    vnodes: mpsc::Sender<()>,
+}
+
+/// `restore_host_context()`: nothing once the exit started; else the host's contexts, read on read-only handles of
+/// its own when they open (the shared ones otherwise), then the host no longer waits for them.
+fn restore_host_context(host: &Host, load: &CtxLoad) {
+    if crate::shutdown::exiting() {
+        return;
+    }
     let started = now_ut();
+    if let Some(w) = &load.writer {
+        let cache_dir = w.meta.cache_dir();
+        let meta_thread = read::read_only(&MetaDb::path(cache_dir));
+        let context_thread = read::read_only(&ContextDb::path(cache_dir));
+        let context_db = w.context_db.upgrade();
+        let cleanup = |host_id, context| load.queue.ctx_host_cleanup(host_id, context);
+        crate::ctxload::load_host_contexts(
+            host,
+            &crate::ctxload::Sources {
+                meta: &w.meta,
+                context_db: context_db.as_ref(),
+                meta_thread: meta_thread.as_ref(),
+                context_thread: context_thread.as_ref(),
+                cleanup: &cleanup,
+            },
+        );
+    }
     nd_log!(
         Source::Daemon,
         Priority::Debug,
@@ -317,13 +415,13 @@ fn restore_host_context(host: &Host, vnodes: &mpsc::Sender<()>) {
     );
     host.clear_pending_context_load();
     if is_vnode(host) {
-        let _ = vnodes.send(());
+        let _ = load.vnodes.send(());
     }
 }
 
 /// `ctx_hosts_load()`, on a pool thread: the pending vnodes first, then the other pending hosts, most recently
 /// connected first; each on a free `CTXLOAD` slot (one per CPU, when there is more than one), or here when none is.
-fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, vnodes: &mpsc::Sender<()>) {
+fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, load: &Arc<CtxLoad>) {
     let started = now_ut();
     let max_threads = cpus.max(1);
     nd_log!(
@@ -348,7 +446,11 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, vnodes: &mpsc::
         .map(|_| None)
         .collect();
     let (mut delegated, mut direct) = (0, 0);
+    let shutting_down = || load.shared.shutdown.load(Ordering::Acquire);
     for host in &order {
+        if shutting_down() {
+            break;
+        }
         nd_log!(
             Source::Daemon,
             Priority::Debug,
@@ -364,13 +466,13 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, vnodes: &mpsc::
             if let Some(thread) = slot.take() {
                 let _ = thread.join();
             }
-            let (host, vnodes) = (Arc::clone(host), vnodes.clone());
+            let (host, load) = (Arc::clone(host), Arc::clone(load));
             let thread = std::thread::Builder::new()
                 .name("CTXLOAD".into())
                 .stack_size(stack_size)
                 .spawn(move || {
                     netdata_agent_log::thread_created();
-                    restore_host_context(&host, &vnodes);
+                    restore_host_context(&host, &load);
                     netdata_agent_log::thread_finished();
                 })
                 .ok()?;
@@ -381,7 +483,7 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, vnodes: &mpsc::
             Some(()) => delegated += 1,
             None => {
                 direct += 1;
-                restore_host_context(host, vnodes);
+                restore_host_context(host, load);
             }
         }
     }
@@ -449,12 +551,31 @@ mod tests {
         hosts
     }
 
+    fn shared() -> Arc<Shared> {
+        Arc::new(Shared {
+            check_after: AtomicI64::new(0),
+            shutdown: AtomicBool::new(false),
+            next_vacuum_run: AtomicI64::new(0),
+        })
+    }
+
+    /// A context load without a metadata database, whose vnodes report on `vnodes`.
+    fn ctx_load(vnodes: mpsc::Sender<()>) -> Arc<CtxLoad> {
+        Arc::new(CtxLoad {
+            writer: None,
+            queue: MetaQueue(mpsc::channel().0),
+            shared: shared(),
+            vnodes,
+        })
+    }
+
     #[test]
     fn vnodes_load_first_then_the_most_recently_connected() {
         let hosts = hosts();
         let (tx, rx) = mpsc::channel();
+        let load = ctx_load(tx);
         let (_, records) =
-            netdata_agent_log::capture(|| ctx_hosts_load(&hosts, 1, 256 * 1024, &tx));
+            netdata_agent_log::capture(|| ctx_hosts_load(&hosts, 1, 256 * 1024, &load));
         let messages: Vec<String> = records.into_iter().filter_map(|r| r.message).collect();
         let loading: Vec<&str> = messages
             .iter()
@@ -472,8 +593,9 @@ mod tests {
     fn hosts_load_on_ctxload_threads_while_slots_last() {
         let hosts = hosts();
         let (tx, rx) = mpsc::channel();
+        let load = ctx_load(tx);
         let (_, records) =
-            netdata_agent_log::capture(|| ctx_hosts_load(&hosts, 2, 256 * 1024, &tx));
+            netdata_agent_log::capture(|| ctx_hosts_load(&hosts, 2, 256 * 1024, &load));
         let summary = records
             .into_iter()
             .filter_map(|r| r.message)
@@ -489,47 +611,92 @@ mod tests {
         assert_eq!(rx.try_iter().count(), 1);
     }
 
-    /// Freed dimensions' rows go at the next job, unless dbengine datafiles were found at start or a shutdown began;
-    /// C's record counts them either way.
-    #[test]
-    fn pending_dimensions_are_deleted_as_c() {
-        let dir = tempfile::tempdir().unwrap();
+    fn meta_with_dimensions(dir: &std::path::Path) -> Arc<MetaDb> {
         let meta = Arc::new(
             MetaDb::open(
-                dir.path(),
+                dir,
                 &netdata_agent_metadata::open::SqliteSettings::default(),
             )
             .unwrap(),
         );
-        let count = |meta: &MetaDb| -> i64 {
-            meta.lock()
-                .query_row("SELECT count(*) FROM dimension", [], |r| r.get(0))
-                .unwrap()
-        };
         meta.lock()
             .execute_batch(
                 "INSERT INTO dimension (dim_id, chart_id, id, name) VALUES \
                  (x'01010101010101010101010101010101', x'02', 'a', 'a'), \
-                 (x'03030303030303030303030303030303', x'02', 'b', 'b')",
+                 (x'03030303030303030303030303030303', x'02', 'b', 'b'), \
+                 (x'04040404040404040404040404040404', x'02', 'c', 'c')",
             )
             .unwrap();
-        let shared = Shared {
-            check_after: AtomicI64::new(0),
-            shutdown: AtomicBool::new(false),
-            next_vacuum_run: AtomicI64::new(0),
-        };
+        meta
+    }
+
+    fn dimensions(meta: &MetaDb) -> i64 {
+        meta.lock()
+            .query_row("SELECT count(*) FROM dimension", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Hosts over an engine of two empty tiers in these directories.
+    fn hosts_with_engine(dirs: &[tempfile::TempDir]) -> Arc<Hosts> {
+        use netdata_agent_rrd::storage::StorageLayout;
+        use netdata_agent_storage::dbengine::engine::cache::{ExtentCache, MainCache};
+        use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
+        use netdata_agent_storage::dbengine::engine::mrg::Mrg;
+        use netdata_agent_storage::dbengine::engine::query::{Dbengine, TierData};
+        let mrg = Mrg::new();
+        let tiers = dirs
+            .iter()
+            .enumerate()
+            .map(|(tier, dir)| {
+                let cfg = TierConfig {
+                    tier,
+                    path: dir.path().to_path_buf(),
+                    direct_io: false,
+                    max_disk_space: 0,
+                    journal_check: false,
+                };
+                TierData::new(load(cfg, &mrg, 1_800_000_000).unwrap())
+            })
+            .collect();
+        let engine = Arc::new(Dbengine {
+            mrg,
+            tiers,
+            main: MainCache::new(1 << 20),
+            extents: ExtentCache::new(1 << 20),
+            pool: None,
+            update_every_s: 1,
+        });
+        Arc::new(Hosts::with_storage(
+            Host::new(
+                "5a1e0000-0000-4000-8000-0000000000a0",
+                true,
+                info("l", "linux"),
+            ),
+            Arc::new(StorageLayout::new(Some(engine))),
+        ))
+    }
+
+    /// Freed dimensions' rows go at the next job: without the dbengine unless datafiles were found at start, with it
+    /// unless a tier holds a first time for them (`dimension_can_be_deleted()`); none once a shutdown began. C's
+    /// record counts them either way.
+    #[test]
+    fn pending_dimensions_are_deleted_as_c() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = meta_with_dimensions(dir.path());
+        let shared = shared();
         let mut writer = Writer {
             meta: Arc::clone(&meta),
+            context_db: Weak::new(),
             hosts: hosts(),
             datafiles_present: true,
         };
         delete_pending_dimensions(&writer, &shared, vec![[1; 16]]);
-        assert_eq!(count(&meta), 2, "dbengine data on disk keeps the rows");
+        assert_eq!(dimensions(&meta), 3, "dbengine data on disk keeps the rows");
         writer.datafiles_present = false;
         let ((), records) = netdata_agent_log::capture(|| {
             delete_pending_dimensions(&writer, &shared, vec![[1; 16], [9; 16]])
         });
-        assert_eq!(count(&meta), 1);
+        assert_eq!(dimensions(&meta), 2);
         let message = records
             .into_iter()
             .filter_map(|r| r.message)
@@ -540,5 +707,78 @@ mod tests {
                 && message.ends_with(" ms"),
             "{message}"
         );
+        // with the dbengine: a first time on tier 1 keeps the row, a zero first time or no entry does not
+        let dirs: Vec<_> = (0..2).map(|_| tempfile::tempdir().unwrap()).collect();
+        writer.hosts = hosts_with_engine(&dirs);
+        writer.datafiles_present = true;
+        let mrg = &writer.hosts.storage().dbengine().unwrap().mrg;
+        let _kept = mrg.add_and_acquire(&[3; 16], 1, 100, 200, 1).0;
+        let _zero = mrg.add_and_acquire(&[4; 16], 0, 0, 0, 0).0;
+        delete_pending_dimensions(&writer, &shared, vec![[3; 16], [4; 16]]);
+        assert_eq!(dimensions(&meta), 1);
+        let left: Vec<u8> = meta
+            .lock()
+            .query_row("SELECT dim_id FROM dimension", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, [3; 16]);
+        shared.shutdown.store(true, Ordering::Release);
+        writer.hosts = hosts();
+        writer.datafiles_present = false;
+        delete_pending_dimensions(&writer, &shared, vec![[3; 16]]);
+        assert_eq!(dimensions(&meta), 1, "nothing goes during a shutdown");
+    }
+
+    /// A job stores the context cleanups before it deletes the freed dimensions, each list with C's record; the items
+    /// met during a shutdown are not stored, and no list gives no record.
+    #[test]
+    fn a_job_stores_cleanups_before_deletions() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = meta_with_dimensions(dir.path());
+        let shared = shared();
+        let writer = Writer {
+            meta: Arc::clone(&meta),
+            context_db: Weak::new(),
+            hosts: hosts(),
+            datafiles_present: false,
+        };
+        let cleanups = |meta: &MetaDb| -> i64 {
+            meta.lock()
+                .query_row("SELECT count(*) FROM ctx_metadata_cleanup", [], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        let debug = |records: Vec<netdata_agent_log::Captured>| -> Vec<String> {
+            records
+                .into_iter()
+                .filter_map(|r| r.message)
+                .filter(|m| m.starts_with("Stored ") || m.starts_with("Processed "))
+                .map(|m| m.split(" in ").next().unwrap().to_string())
+                .collect()
+        };
+        let ((), records) = netdata_agent_log::capture(|| {
+            store_job(
+                &writer,
+                &shared,
+                Pending {
+                    ctx_cleanup: Some(vec![([0xaa; 16], "ctx.a".into())]),
+                    deletions: Some(vec![[1; 16]]),
+                },
+            )
+        });
+        assert_eq!(
+            debug(records),
+            [
+                "Stored 1 host context cleanup items",
+                "Processed 1 dimension delete items"
+            ]
+        );
+        assert_eq!((cleanups(&meta), dimensions(&meta)), (1, 2));
+        let ((), records) =
+            netdata_agent_log::capture(|| store_job(&writer, &shared, Pending::default()));
+        assert_eq!(debug(records), Vec::<String>::new());
+        shared.shutdown.store(true, Ordering::Release);
+        store_ctx_cleanup(&writer, &shared, vec![([0xbb; 16], "ctx.b".into())]);
+        assert_eq!(cleanups(&meta), 1, "skipped during a shutdown");
     }
 }

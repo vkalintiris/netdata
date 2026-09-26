@@ -6,3 +6,6 @@
 
 pub mod engine;
 pub mod format;
+
+/// `RRD_STORAGE_TIERS`: the most tiers a host has.
+pub const RRD_STORAGE_TIERS: usize = 5;

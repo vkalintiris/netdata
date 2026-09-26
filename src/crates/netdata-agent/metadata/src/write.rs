@@ -49,6 +49,10 @@ const SQL_STORE_DIMENSION: &str = "INSERT INTO dimension (dim_id, chart_id, id, 
 
 const DELETE_DIMENSION_UUID: &str = "DELETE FROM dimension WHERE dim_id = @uuid";
 
+const SCHEDULE_HOST_CTX_CLEANUP: &str = "INSERT INTO ctx_metadata_cleanup (host_id, context, date_created) \
+                                         VALUES (@host_id, @context, UNIXEPOCH()) ON CONFLICT DO UPDATE SET \
+                                         date_created = excluded.date_created";
+
 // The double space before DO is C's.
 const SQL_SET_HOST_LABEL: &str = "INSERT INTO host_label (host_id, source_type, label_key, label_value, \
      date_created) VALUES (@host_id, @source_type, @label_key, @label_value, UNIXEPOCH()) ON CONFLICT (host_id, \
@@ -490,6 +494,41 @@ impl MetaDb {
         drop(scan);
         let _ = conn::db_execute(&conn, "COMMIT TRANSACTION", &markers);
         result
+    }
+
+    /// `store_ctx_cleanup_list()`'s writes: `sql_schedule_host_ctx_cleanup()` of each (host, context), on one
+    /// statement prepared at the first item written; an item met once `shutting_down` holds is skipped.
+    pub fn schedule_host_ctx_cleanup(
+        &self,
+        items: &[([u8; 16], String)],
+        shutting_down: impl Fn() -> bool,
+    ) {
+        let c = self.lock();
+        let mut stmt: Option<Statement<'_>> = None;
+        for (host_id, context) in items {
+            if shutting_down() {
+                continue;
+            }
+            if stmt.is_none() {
+                match c.prepare(SCHEDULE_HOST_CTX_CLEANUP) {
+                    Ok(prepared) => stmt = Some(prepared),
+                    Err(err) => {
+                        prepare_failed(&err, "sql_schedule_host_ctx_cleanup");
+                        continue;
+                    }
+                }
+            }
+            let Some(stmt) = stmt.as_mut() else {
+                continue;
+            };
+            if let Err(err) = conn::retry(|| stmt.execute(rusqlite::params![&host_id[..], context]))
+            {
+                netdata_log_error!(
+                    "Failed to host context check data, rc = {}",
+                    conn::result_code(&err)
+                );
+            }
+        }
     }
 
     /// `delete_dimension_uuid()`.

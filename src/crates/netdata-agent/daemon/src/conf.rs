@@ -21,6 +21,7 @@ use netdata_agent_text::sanitize::rrdlabels_sanitize_value;
 
 use netdata_agent_query::grouping::Windows;
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
+use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::dbengine::format::descriptor::{
     PAGE_TYPE_ARRAY_32BIT, PAGE_TYPE_GORILLA_32BIT,
 };
@@ -34,8 +35,6 @@ use crate::system::{self, Resources};
 /// `PLUGINSD_MAX_DIRECTORIES`.
 const PLUGINSD_MAX_DIRECTORIES: usize = 20;
 
-/// `RRD_STORAGE_TIERS`.
-const STORAGE_TIERS: usize = 5;
 /// `DEFAULT_CLOUD_BASE_URL`.
 const DEFAULT_CLOUD_BASE_URL: &str = "https://app.netdata.cloud";
 
@@ -465,7 +464,7 @@ impl Conf {
             // the three legacy tier 0 disk spaces
             legacy |= c.move_option(so, no, sn, nn) && i >= moves.len() - 3;
         }
-        for tier in 0..STORAGE_TIERS {
+        for tier in 0..RRD_STORAGE_TIERS {
             c.move_option(
                 SECTION_DB,
                 &format!("dbengine tier {tier} retention days"),
@@ -1065,25 +1064,25 @@ pub fn dbengine_init(
         storage_tiers = 1;
         c.set_number(SECTION_DB, "storage tiers", 1);
     }
-    if storage_tiers > STORAGE_TIERS as u64 {
+    if storage_tiers > RRD_STORAGE_TIERS as u64 {
         nd_log!(
             Source::Daemon,
             Priority::Warning,
-            "Up to {STORAGE_TIERS} storage tier are supported. Assuming {STORAGE_TIERS}."
+            "Up to {RRD_STORAGE_TIERS} storage tier are supported. Assuming {RRD_STORAGE_TIERS}."
         );
-        storage_tiers = STORAGE_TIERS as u64;
-        c.set_number(SECTION_DB, "storage tiers", STORAGE_TIERS as i64);
+        storage_tiers = RRD_STORAGE_TIERS as u64;
+        c.set_number(SECTION_DB, "storage tiers", RRD_STORAGE_TIERS as i64);
     }
     let storage_tiers = storage_tiers as usize;
 
     let new_dbengine_defaults = !legacy_multihost_db_space
-        && (1..STORAGE_TIERS).all(|t| {
+        && (1..RRD_STORAGE_TIERS).all(|t| {
             !c.exists(
                 SECTION_DB,
                 &format!("dbengine tier {t} update every iterations"),
             )
         })
-        && (1..STORAGE_TIERS)
+        && (1..RRD_STORAGE_TIERS)
             .all(|t| !c.exists(SECTION_DB, &format!("dbengine tier {t} retention size")));
 
     let bf = text(c.get(SECTION_DB, "dbengine tier backfill", Some("new")));
@@ -1139,7 +1138,7 @@ pub fn dbengine_init(
     }
 
     const DAYS: u32 = 86400;
-    const RETENTION_S: [u32; STORAGE_TIERS] =
+    const RETENTION_S: [u32; RRD_STORAGE_TIERS] =
         [14 * DAYS, 90 * DAYS, 730 * DAYS, 730 * DAYS, 730 * DAYS];
     let tiers = (0..storage_tiers)
         .map(|tier| {
@@ -1625,7 +1624,7 @@ pub fn dbengine_datafiles_present(cache_dir: &str) -> bool {
             .trim_start()
             .starts_with(|c: char| c.is_ascii_digit())
     };
-    (0..STORAGE_TIERS).any(|tier| {
+    (0..RRD_STORAGE_TIERS).any(|tier| {
         std::fs::read_dir(tier_dir(cache_dir, tier)).is_ok_and(|entries| {
             entries
                 .flatten()

@@ -73,8 +73,15 @@ pub struct LoadReport {
     pub metrics: usize,
     pub metrics_ignored: usize,
     pub metrics_zero_retention: usize,
-    pub cleanup: Vec<String>,
-    pub deleted_from_sql: Vec<String>,
+}
+
+/// What a load asks of the metadata databases, in C's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlChange<'a> {
+    /// `metadata_queue_ctx_host_cleanup()` of a loaded context left without instances.
+    Cleanup(&'a str),
+    /// `rrdcontext_delete_from_sql_unsafe()` of a context the garbage collection removed, with its hub version.
+    Delete(&'a str, u64),
 }
 
 /// A load in progress; see [`Contexts::loader`].
@@ -324,10 +331,15 @@ impl Loader<'_> {
     }
 
     /// The rest of `rrdhost_load_rrdcontext_data()`: every loaded object's updates triggered, instances without
-    /// metrics and contexts without instances removed (the contexts for the metadata writer to clean up), the
-    /// others post-processed once, then the garbage collection and C's record. `exiting` stops the pass between
-    /// contexts, as C's exit check does.
-    pub fn finish(self, hostname: &str, exiting: impl Fn() -> bool) -> LoadReport {
+    /// metrics and contexts without instances removed (each such context a `SqlChange::Cleanup`), the others
+    /// post-processed once, then the garbage collection (each context it removes a `SqlChange::Delete`), and C's
+    /// record. `exiting` stops the pass between contexts, as C's exit check does.
+    pub fn finish(
+        self,
+        hostname: &str,
+        exiting: impl Fn() -> bool,
+        mut sql: impl FnMut(SqlChange<'_>),
+    ) -> LoadReport {
         let contexts = self.contexts;
         let mut report = LoadReport {
             instances_ignored: self.instances_ignored,
@@ -356,8 +368,8 @@ impl Loader<'_> {
                 }
             }
             if kept == 0 {
+                sql(SqlChange::Cleanup(rc.id()));
                 // rrdcontext_delete_after_loading()
-                report.cleanup.push(rc.id().to_string());
                 contexts.remove_context(&rc);
                 report.contexts_deleted += 1;
             } else {
@@ -371,7 +383,7 @@ impl Loader<'_> {
                 report.contexts += 1;
             }
         }
-        report.deleted_from_sql = contexts.garbage_collect(true);
+        contexts.garbage_collect(|id, version| sql(SqlChange::Delete(id, version)));
         let priority = if report.metrics_ignored != 0 || report.instances_ignored != 0 {
             Priority::Warning
         } else {

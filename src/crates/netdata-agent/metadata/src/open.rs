@@ -266,8 +266,13 @@ pub struct ContextDb {
 
 impl ContextDb {
     /// `sql_init_context_database()`: `None` after a failure; it has no markers and no busy timeout.
+    /// `context-meta.db` in the cache directory.
+    pub fn path(cache_dir: &Path) -> PathBuf {
+        cache_dir.join("context-meta.db")
+    }
+
     pub fn open(cache_dir: &Path, settings: &SqliteSettings) -> Option<ContextDb> {
-        let path = cache_dir.join("context-meta.db");
+        let path = ContextDb::path(cache_dir);
         let c = match open_rw(&path) {
             Ok(c) => c,
             Err(err) => {
@@ -293,6 +298,36 @@ impl ContextDb {
 
     pub fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `ctx_delete_context()`: the host's row of the context, `prepared` run once the statement is prepared (C
+    /// queues the context's cleanup there); true when deleted.
+    pub fn delete_context(&self, host_id: &[u8; 16], id: &str, prepared: impl FnOnce()) -> bool {
+        let c = self.lock();
+        let mut stmt =
+            match c.prepare("DELETE FROM context WHERE host_id = @host_id AND id = @context") {
+                Ok(stmt) => stmt,
+                Err(err) => {
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Err,
+                        "Failed to prepare statement, rc={} in ctx_delete_context",
+                        conn::result_code(&err)
+                    );
+                    return false;
+                }
+            };
+        prepared();
+        match conn::retry(|| stmt.execute(rusqlite::params![&host_id[..], id])) {
+            Ok(_) => true,
+            Err(err) => {
+                netdata_log_error!(
+                    "Failed to delete context {id}, rc = {}",
+                    conn::result_code(&err)
+                );
+                false
+            }
+        }
     }
 
     pub fn close(self) {
@@ -505,5 +540,35 @@ mod tests {
                 .collect()
         };
         assert_eq!(left, ["aclk_queue", "aclk_queue_keep"]);
+    }
+
+    /// `ctx_delete_context()`: the host's row goes, the callback runs once the statement is prepared.
+    #[test]
+    fn contexts_are_deleted_per_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = SqliteSettings::default();
+        let meta = MetaDb::open(dir.path(), &settings).unwrap();
+        let ctx = ContextDb::open(dir.path(), &settings).unwrap();
+        assert_eq!(
+            ContextDb::path(dir.path()),
+            dir.path().join("context-meta.db")
+        );
+        let insert = "INSERT INTO context (host_id, id, version, title, chart_type, unit, priority, first_time_t, \
+                      last_time_t, deleted) VALUES (?1, ?2, 1, 't', 'line', 'u', 1, 1, 2, 0)";
+        for host in [[1u8; 16], [2u8; 16]] {
+            ctx.lock()
+                .execute(insert, rusqlite::params![&host[..], "ctx.a"])
+                .unwrap();
+        }
+        let mut called = false;
+        assert!(ctx.delete_context(&[1; 16], "ctx.a", || called = true));
+        assert!(called);
+        let left: i64 = ctx
+            .lock()
+            .query_row("SELECT count(*) FROM context", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 1);
+        ctx.close();
+        meta.close();
     }
 }
