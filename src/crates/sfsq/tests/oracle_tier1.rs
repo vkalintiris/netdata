@@ -2060,6 +2060,70 @@ fn trace_by_id_derives_over_the_assembled_trace() {
     }
 }
 
+/// QRY-38: the live WAL served as a tail, as one chunk image, or as chunks and
+/// a tail answers every section, a newest page and the slowest rows exactly as
+/// the same WAL sealed into a file, beside the same sealed file (seeded
+/// corpora).
+#[test]
+fn live_layouts_answer_like_the_sealed_wal() {
+    for seed in [7, 8] {
+        let stored = store(300, seed);
+        let grid = stored.grid;
+        let dir = stored._dir.path();
+        let sealed_file = dir.join("sealed-again.sfst");
+        std::fs::write(&sealed_file, &stored.sealed).unwrap();
+        let sealed_live = dir.join("live-sealed.sfst");
+        ng_index::build_sfst_traces_file(&stored.live_wal, &sealed_live, &ng_index::Metrics::new())
+            .unwrap();
+        let sealed_sources = vec![
+            common::sealed_source_at(&sealed_file, "sealed"),
+            common::sealed_source_at(&sealed_live, "live"),
+        ];
+        let orders = [
+            RowOrder::Newest {
+                anchor: None,
+                direction: RowDirection::Older,
+            },
+            RowOrder::Slowest,
+        ];
+        for order in orders {
+            let query = || {
+                let mut query = explore_query(&grid, &Scope::default(), model::STATUS_FIELD);
+                query.sections.facets = Some(FacetSpec { fields: None });
+                query.sections.groups = true;
+                query.sections.fields = true;
+                query.sections.rows = Some(RowsSpec {
+                    order,
+                    limit: 25,
+                    columns: ROW_COLUMNS.iter().map(|c| c.to_string()).collect(),
+                });
+                query
+            };
+            let answer = |sources: Vec<TraceSource>| {
+                explore::explore(
+                    sources,
+                    query(),
+                    explore::ExploreOptions::default(),
+                    tokio_util::sync::CancellationToken::new(),
+                    std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                )
+                .unwrap()
+            };
+            let want = answer(sealed_sources.clone());
+            assert!(want.status.is_complete(), "{:?}", want.status);
+            for live in [Live::Tail, Live::Chunk, Live::Chunked] {
+                let got = answer(explore_sources(&stored, live));
+                let case = format!("seed {seed} {order:?} {live:?}");
+                assert_eq!(got.histogram, want.histogram, "{case}");
+                assert_eq!(got.facets, want.facets, "{case}");
+                assert_eq!(got.groups, want.groups, "{case}");
+                assert_eq!(got.rows, want.rows, "{case}");
+                assert_eq!(got.fields, want.fields, "{case}");
+            }
+        }
+    }
+}
+
 /// The engine's Groups section in the calculator's shape.
 fn calc_groups(data: &explore::GroupsData) -> calc::Groups {
     let numbers = |n: &explore::GroupNumbers| calc::GroupNumbers {
