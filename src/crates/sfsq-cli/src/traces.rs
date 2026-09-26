@@ -1,17 +1,10 @@
-//! `sfsq-cli trace` / `attributes` / `attribute-values` — the traces
-//! query engine from the terminal, without a running agent: the
-//! dev/real-use front door of `sfsq::traces` (phases 4a/4b). Point any
-//! subcommand at a mix of sealed SFSTs and traces WALs; `trace` merges
-//! one trace through the shared combiner, `attributes` /
-//! `attribute-values` enumerate the key vocabulary off the dictionaries.
+//! `sfsq-cli trace` — the traces query engine from the terminal, without a
+//! running agent: point it at a mix of sealed SFSTs and traces WALs and it
+//! merges one trace through the shared combiner.
 //!
 //! WAL inputs are served as tail scans over the file's full frame range —
 //! right for shut-down or recovered WALs (the dev case); an actively
 //! written WAL should be queried through a live agent instead.
-//!
-//! The owner/builtin spellings here (`--owner span`, `--key status`)
-//! are this DEV TOOL's rendering of the engine's typed vocabulary — not
-//! a wire contract; wire adapters define their own.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,9 +14,8 @@ use anyhow::{Context, Result, bail};
 use tokio_util::sync::CancellationToken;
 
 use sfsq::traces::{
-    AttributeOwner, BuiltinField, CompareOp, Condition, Predicate, PredicateTarget, PredicateValue,
-    QueryStatus, SearchQuery, SearchSources, SourceId, TimeWindow, TraceQuery, TraceSfstCandidate,
-    TraceSource, TraceWalTail, WalCoverage, search, trace_by_id,
+    QueryStatus, SourceId, TraceQuery, TraceSfstCandidate, TraceSource, TraceWalTail, WalCoverage,
+    trace_by_id,
 };
 
 /// Reconstruct one trace across sealed SFSTs and traces WALs.
@@ -215,298 +207,10 @@ pub fn run_trace(args: &TraceArgs, out: &mut dyn std::io::Write) -> Result<()> {
     Ok(())
 }
 
-// ── Shared words ───────────────────────────────────────────────────────
-
-/// The CLI spelling of each builtin field (kebab-case), used by `--where`
-/// targets.
-const BUILTIN_WORDS: [(&str, BuiltinField); 17] = [
-    ("name", BuiltinField::Name),
-    ("kind", BuiltinField::Kind),
-    ("status", BuiltinField::Status),
-    ("status-message", BuiltinField::StatusMessage),
-    ("instrumentation-name", BuiltinField::InstrumentationName),
-    ("instrumentation-version", BuiltinField::InstrumentationVersion),
-    ("event-name", BuiltinField::EventName),
-    ("duration", BuiltinField::Duration),
-    ("span-id", BuiltinField::SpanId),
-    ("parent-span-id", BuiltinField::ParentSpanId),
-    ("trace-id", BuiltinField::TraceId),
-    ("link-span-id", BuiltinField::LinkSpanId),
-    ("link-trace-id", BuiltinField::LinkTraceId),
-    ("event-time-since-start", BuiltinField::EventTimeSinceStart),
-    ("root-name", BuiltinField::RootName),
-    ("root-service-name", BuiltinField::RootServiceName),
-    ("trace-duration", BuiltinField::TraceDuration),
-];
-
-/// Both-or-neither `--start-ns`/`--end-ns` into an engine window.
-fn parse_window(start_ns: Option<i64>, end_ns: Option<i64>) -> Result<Option<TimeWindow>> {
-    match (start_ns, end_ns) {
-        (None, None) => Ok(None),
-        (Some(s), Some(e)) => Ok(Some(TimeWindow::new(s, e)?)),
-        _ => bail!("--start-ns and --end-ns must be given together"),
-    }
-}
-
-fn status_word(status: &QueryStatus) -> String {
-    match status {
-        QueryStatus::Complete => "complete".to_string(),
-        QueryStatus::Partial(reasons) => format!("PARTIAL {reasons:?}"),
-    }
-}
-
-// ── Search (phase 4c) ──────────────────────────────────────────────────
-
-/// Search for traces across sealed SFSTs and traces WALs.
-#[derive(Debug, clap::Args)]
-pub struct SearchArgs {
-    /// A sealed traces SFST file. Repeatable.
-    #[arg(long = "sfst")]
-    pub sfsts: Vec<PathBuf>,
-
-    /// A flattened traces WAL file, scanned whole as a tail. Repeatable.
-    #[arg(long = "wal")]
-    pub wals: Vec<PathBuf>,
-
-    /// A filter condition, repeatable (conditions AND). TARGET is
-    /// `OWNER.KEY` (resource/span/instrumentation/event/link), `.KEY`
-    /// (any owner: resource ∪ span), or a builtin-field word (`name`,
-    /// `status`, `kind`, …). OPS: `=`, `!=` (text), `=~`, `!~`
-    /// (anchored regex), `>`, `<`, `>=`, `<=` (numeric). This is the
-    /// dev tool's rendering of the engine's typed predicate, not a wire
-    /// grammar; values are engine storage labels.
-    #[arg(long = "where")]
-    pub conditions: Vec<String>,
-
-    /// Minimum span duration, inclusive nanoseconds.
-    #[arg(long)]
-    pub min_duration_ns: Option<i64>,
-
-    /// Maximum span duration, inclusive nanoseconds.
-    #[arg(long)]
-    pub max_duration_ns: Option<i64>,
-
-    /// Result limit (top-K most recent traces; default 20, 0 rejected).
-    #[arg(long)]
-    pub limit: Option<usize>,
-
-    /// Matched spans attached per trace (default 3, max 128, 0 = none).
-    #[arg(long)]
-    pub spans_per_trace: Option<usize>,
-
-    /// Window start, nanoseconds since the epoch (half-open; span-START
-    /// semantics). Requires --end-ns.
-    #[arg(long, allow_hyphen_values = true)]
-    pub start_ns: Option<i64>,
-
-    /// Window end, nanoseconds since the epoch (exclusive). Requires
-    /// --start-ns.
-    #[arg(long, allow_hyphen_values = true)]
-    pub end_ns: Option<i64>,
-}
-
-/// Parse one `--where` condition: `TARGET <op> VALUE` (multi-char ops
-/// checked first so `=~` never parses as `=` with a `~value`, `>=`
-/// never as `>` with `=value`). Ordering ops take numeric values;
-/// `=`/`!=`/`=~`/`!~` take text.
-fn parse_condition(spec: &str) -> Result<Condition> {
-    const OPS: [(&str, CompareOp); 8] = [
-        ("=~", CompareOp::Regex),
-        ("!~", CompareOp::NotRegex),
-        ("!=", CompareOp::NotEq),
-        (">=", CompareOp::Gte),
-        ("<=", CompareOp::Lte),
-        (">", CompareOp::Gt),
-        ("<", CompareOp::Lt),
-        ("=", CompareOp::Eq),
-    ];
-    let (target_word, op, value) = OPS
-        .iter()
-        .filter_map(|(sym, op)| {
-            spec.find(sym)
-                .map(|at| (at, sym.len(), *op))
-        })
-        .min_by_key(|&(at, len, _)| (at, std::cmp::Reverse(len)))
-        .map(|(at, len, op)| (&spec[..at], op, &spec[at + len..]))
-        .ok_or_else(|| anyhow::anyhow!("--where must be TARGET<op>VALUE, got {spec:?}"))?;
-    // An empty value is a structurally valid predicate that matches no
-    // well-formed dictionary entry — in this dev tool it is always a
-    // typo, so fail loudly instead of returning a silent empty result.
-    if value.is_empty() {
-        bail!("--where {spec:?} has an empty value");
-    }
-    let target = parse_target(target_word.trim())?;
-    let value = if matches!(
-        op,
-        CompareOp::Gt | CompareOp::Lt | CompareOp::Gte | CompareOp::Lte
-    ) {
-        if let Ok(n) = value.parse::<i64>() {
-            PredicateValue::Integer(n)
-        } else if let Ok(f) = value.parse::<f64>() {
-            PredicateValue::Float(f)
-        } else {
-            bail!("--where {spec:?}: ordering comparisons take a numeric value");
-        }
-    } else {
-        PredicateValue::Text(value.to_string())
-    };
-    Ok(Condition {
-        target,
-        op,
-        values: vec![value],
-    })
-}
-
-/// A `--where` target: `OWNER.KEY` for the attribute owners, a bare
-/// builtin-field word otherwise.
-fn parse_target(word: &str) -> Result<PredicateTarget> {
-    // An empty key after the owner strip (a bare `.` or a trailing
-    // `owner.`) is a structurally valid predicate that matches no
-    // dictionary entry — positive or negated (the pinned rule is
-    // presence ∩ complement, so absence never satisfies `!=` either).
-    // The same always-a-typo class as an empty value: fail loudly
-    // instead of returning a silent empty result.
-    let non_empty = |key: &str| -> Result<String> {
-        if key.is_empty() {
-            bail!("--where target {word:?} has an empty attribute key");
-        }
-        Ok(key.to_string())
-    };
-    // `.KEY` = the any-owner attribute (resource ∪ span disjunction).
-    if let Some(key) = word.strip_prefix('.') {
-        return Ok(PredicateTarget::Attribute(AttributeOwner::Any, non_empty(key)?));
-    }
-    for (owner_name, owner) in [
-        ("resource", AttributeOwner::Resource),
-        ("span", AttributeOwner::Span),
-        ("instrumentation", AttributeOwner::Instrumentation),
-        ("event", AttributeOwner::Event),
-        ("link", AttributeOwner::Link),
-    ] {
-        if let Some(key) = word.strip_prefix(owner_name).and_then(|r| r.strip_prefix('.')) {
-            return Ok(PredicateTarget::Attribute(owner, non_empty(key)?));
-        }
-    }
-    BUILTIN_WORDS
-        .iter()
-        .find(|(w, _)| *w == word)
-        .map(|(_, i)| PredicateTarget::Builtin(*i))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "unknown --where target {word:?}: use OWNER.KEY \
-                 (resource/span/instrumentation/event/link) or a builtin-field word"
-            )
-        })
-}
-
-pub fn run_search(args: &SearchArgs, out: &mut dyn std::io::Write) -> Result<()> {
-    let mut conditions: Vec<Condition> = args
-        .conditions
-        .iter()
-        .map(|spec| parse_condition(spec))
-        .collect::<Result<_>>()?;
-    if let Some(min) = args.min_duration_ns {
-        conditions.push(Condition {
-            target: PredicateTarget::Builtin(BuiltinField::Duration),
-            op: CompareOp::Gte,
-            values: vec![PredicateValue::Integer(min)],
-        });
-    }
-    if let Some(max) = args.max_duration_ns {
-        conditions.push(Condition {
-            target: PredicateTarget::Builtin(BuiltinField::Duration),
-            op: CompareOp::Lte,
-            values: vec![PredicateValue::Integer(max)],
-        });
-    }
-
-    let mut query = SearchQuery::new(Predicate { conditions });
-    if let Some(window) = parse_window(args.start_ns, args.end_ns)? {
-        query = query.window(window);
-    }
-    if let Some(limit) = args.limit {
-        query = query.limit(limit);
-    }
-    if let Some(spans_per_trace) = args.spans_per_trace {
-        query = query.spans_per_trace(spans_per_trace);
-    }
-
-    // The dev shape: one flat set of paths serves both roles (window =
-    // completion — trivially a subset). Built ONCE — TraceSource clones
-    // cheaply, and build_sources now scans every WAL's frame boundaries.
-    let window = build_sources(&args.sfsts, &args.wals)?;
-    let sources = SearchSources {
-        completion: window.clone(),
-        window,
-    };
-    let data = search(
-        sources,
-        query,
-        CancellationToken::new(),
-        Arc::new(AtomicUsize::new(0)),
-    )?;
-
-    for t in &data.traces {
-        writeln!(
-            out,
-            "{} {} / {} start={} dur={}ns spans={} errors={} matched={}{}",
-            t.trace_id,
-            t.root_service.as_deref().unwrap_or("<no service>"),
-            t.root_name.as_deref().unwrap_or("<unnamed>"),
-            t.start_ns,
-            t.duration_ns,
-            t.span_count,
-            t.error_count,
-            t.matched_count,
-            if t.exact { "" } else { " [inexact]" },
-        )?;
-        for span in &t.matched_spans {
-            let name = span
-                .fields
-                .iter()
-                .find(|(k, _)| k == "name")
-                .map(|(_, v)| v.as_str())
-                .unwrap_or("<unnamed>");
-            writeln!(
-                out,
-                "  {} start={} dur={}ns",
-                name, span.start_ns, span.duration_ns
-            )?;
-        }
-    }
-    writeln!(
-        out,
-        "{} trace(s), status {}",
-        data.traces.len(),
-        status_word(&data.status),
-    )?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The empty-key guard fires on every owner spelling, and
-    /// dot-prefixed keys stay spellable (`..foo` = Any-owner key `.foo`).
-    #[test]
-    fn where_targets_reject_empty_keys_but_keep_dotted_ones() {
-        for bad in [".", "span.", "resource.", "event."] {
-            let err = parse_target(bad).expect_err(bad);
-            assert!(err.to_string().contains("empty attribute key"), "{bad}: {err}");
-        }
-        assert!(matches!(
-            parse_target("..foo"),
-            Ok(PredicateTarget::Attribute(AttributeOwner::Any, k)) if k == ".foo"
-        ));
-        assert!(matches!(
-            parse_target("span.http.method"),
-            Ok(PredicateTarget::Attribute(AttributeOwner::Span, k)) if k == "http.method"
-        ));
-    }
-
-    /// Content corruption is per-source: a WAL with a garbage header is
-    /// skipped with a warning, and the remaining sources still build.
     #[test]
     fn corrupt_wal_is_skipped_per_source() {
         let dir = tempfile::tempdir().unwrap();
@@ -614,25 +318,5 @@ mod tests {
         f.set_len(wal::HEADER_SIZE as u64).unwrap();
         let empty = range_of(&path);
         assert_eq!((empty.start(), empty.end()), (wal::HEADER_SIZE as u64, wal::HEADER_SIZE as u64));
-    }
-
-    /// The CLI word table must stay in lockstep with the engine's
-    /// builtin-field set: a variant without a word could not be named in a
-    /// `--where` target. Walks the engine's `ALL`, so adding a builtin
-    /// engine-side breaks this test until the CLI learns it.
-    #[test]
-    fn every_builtin_has_a_cli_word() {
-        for builtin in BuiltinField::ALL {
-            assert!(
-                BUILTIN_WORDS.iter().any(|(_, v)| *v == builtin),
-                "builtin field {builtin:?} has no CLI word in BUILTIN_WORDS"
-            );
-        }
-        // And the table holds nothing stale: same size, distinct words.
-        assert_eq!(BUILTIN_WORDS.len(), BuiltinField::ALL.len());
-        let mut words: Vec<&str> = BUILTIN_WORDS.iter().map(|(w, _)| *w).collect();
-        words.sort_unstable();
-        words.dedup();
-        assert_eq!(words.len(), BUILTIN_WORDS.len(), "duplicate CLI words");
     }
 }

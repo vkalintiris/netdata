@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use sfsq_cli::traces::{SearchArgs, TraceArgs, run_search, run_trace};
+use sfsq_cli::traces::{TraceArgs, run_trace};
 use sfsq_cli::{Args, init_tracing, is_broken_pipe, run};
 
 /// Inspect OpenTelemetry logs stored in Netdata WAL/SFST files.
@@ -33,9 +33,6 @@ enum Cmd {
     /// Reconstruct one trace across sealed SFSTs and traces WALs
     /// (cross-source trace-by-id over `sfsq::traces`).
     Trace(TraceArgs),
-    /// Search for traces across sealed SFSTs and traces WALs
-    /// (`sfsq::traces` search: exact summaries, most-recent-first).
-    Search(SearchArgs),
 }
 
 fn main() -> ExitCode {
@@ -45,7 +42,6 @@ fn main() -> ExitCode {
     let mut out = stdout.lock();
     let subcommand = match &cli.cmd {
         Some(Cmd::Trace(args)) => Some(run_trace(args, &mut out)),
-        Some(Cmd::Search(args)) => Some(run_search(args, &mut out)),
         None => None,
     };
     if let Some(result) = subcommand {

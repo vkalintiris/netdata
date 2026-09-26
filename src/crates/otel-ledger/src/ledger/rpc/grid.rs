@@ -3,7 +3,7 @@
 //! bucket geometry; each wire adapter canonicalizes here — picking a
 //! "nice" bucket width and snapping the window outward — before handing
 //! the engine an exact [`sfst::Grid`]. Consumed by BOTH the logs
-//! histogram and the traces overview; a change here changes every otel
+//! histogram and the traces explorer; a change here changes every otel
 //! Function's grid.
 
 /// Aim for at least this many time buckets across the window when

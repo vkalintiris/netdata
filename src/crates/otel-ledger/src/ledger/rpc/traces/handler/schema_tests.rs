@@ -187,6 +187,19 @@ async fn the_schema_rejects_what_the_wire_never_sends() {
         a["status"] = json!({"complete": false})
     });
     edit("another mode", &|a| a["mode"] = json!("overview"));
+    edit("a span without self time", &|a| {
+        a["spans"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("self_duration_ns");
+    });
+    let mut search = answers
+        .values()
+        .find(|a| a["data"]["mode"] == "explore")
+        .unwrap()
+        .clone();
+    search["data"]["mode"] = json!("search");
+    cases.push(("a retired search answer", search));
     for (name, answer) in cases {
         assert!(schemas.validate(&answer, response).is_err(), "{name}");
     }

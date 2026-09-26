@@ -766,6 +766,8 @@
         "span_id",
         "start_ns",
         "duration_ns",
+        "self_duration_ns",
+        "error_origin",
         "kind",
         "flags",
         "dropped_attributes_count",
@@ -799,173 +801,6 @@
           "type": "array",
           "items": { "$ref": "#/definitions/traces_link" }
         }
-      },
-      "additionalProperties": true
-    },
-    "traces_search_item": {
-      "type": "object",
-      "required": [
-        "trace_id",
-        "start_ns",
-        "newest_matched_start_ns",
-        "duration_ns",
-        "span_count",
-        "error_count",
-        "matched_count",
-        "exact",
-        "matched_spans"
-      ],
-      "properties": {
-        "trace_id": { "type": "string" },
-        "root_service": { "type": "string" },
-        "root_name": { "type": "string" },
-        "start_ns": { "type": "integer" },
-        "newest_matched_start_ns": { "type": "integer" },
-        "duration_ns": { "type": "integer" },
-        "span_count": { "type": "integer", "minimum": 0 },
-        "error_count": { "type": "integer", "minimum": 0 },
-        "matched_count": { "type": "integer", "minimum": 0 },
-        "exact": { "type": "boolean" },
-        "matched_spans": {
-          "type": "array",
-          "items": { "$ref": "#/definitions/traces_span" }
-        }
-      },
-      "additionalProperties": true
-    },
-    "traces_search_data": {
-      "type": "object",
-      "required": [
-        "mode",
-        "version",
-        "status",
-        "completion_coverage",
-        "items",
-        "traces",
-        "field_kinds"
-      ],
-      "properties": {
-        "mode": { "const": "search" },
-        "version": { "type": "integer", "minimum": 1 },
-        "status": { "$ref": "#/definitions/traces_status" },
-        "completion_coverage": { "$ref": "#/definitions/traces_coverage" },
-        "items": {
-          "type": "object",
-          "required": ["returned", "max_to_return"],
-          "properties": {
-            "returned": { "type": "integer", "minimum": 0 },
-            "max_to_return": { "type": "integer", "minimum": 0 }
-          },
-          "additionalProperties": true
-        },
-        "traces": {
-          "type": "array",
-          "items": { "$ref": "#/definitions/traces_search_item" }
-        },
-        "field_kinds": { "$ref": "#/definitions/traces_field_kinds" },
-        "anchor": {
-          "type": "object",
-          "required": ["next"],
-          "properties": {
-            "next": { "type": "string" }
-          },
-          "additionalProperties": true
-        },
-        "overview": { "$ref": "#/definitions/traces_overview" }
-      },
-      "additionalProperties": true
-    },
-    "traces_facet_value": {
-      "type": "object",
-      "required": ["value", "traces"],
-      "properties": {
-        "value": { "type": "string" },
-        "traces": { "type": "integer", "minimum": 0 }
-      },
-      "additionalProperties": true
-    },
-    "traces_facet_list": {
-      "type": "object",
-      "required": ["top", "other", "unattributed"],
-      "properties": {
-        "top": {
-          "type": "array",
-          "items": { "$ref": "#/definitions/traces_facet_value" }
-        },
-        "other": { "type": "integer", "minimum": 0 },
-        "unattributed": { "type": "integer", "minimum": 0 }
-      },
-      "additionalProperties": true
-    },
-    "traces_percentile_series": {
-      "type": "array",
-      "items": { "type": ["integer", "null"], "minimum": 0 }
-    },
-    "traces_overview": {
-      "type": "object",
-      "required": ["version", "unit", "status", "coverage", "scope", "grid", "totals"],
-      "properties": {
-        "version": { "type": "integer", "minimum": 1 },
-        "unit": { "type": "string" },
-        "status": { "$ref": "#/definitions/traces_status" },
-        "coverage": { "$ref": "#/definitions/traces_coverage" },
-        "scope": { "type": "string", "enum": ["window", "selection"] },
-        "grid": {
-          "type": "object",
-          "required": [
-            "bucket_start_s",
-            "bucket_width_s",
-            "duration_bins",
-            "cells",
-            "error_cells",
-            "duration_percentiles_ns"
-          ],
-          "properties": {
-            "bucket_start_s": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
-            "bucket_width_s": { "type": "integer", "minimum": 1 },
-            "duration_bins": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
-            "cells": {
-              "type": "array",
-              "items": {
-                "type": "array",
-                "items": { "type": "integer", "minimum": 0 }
-              }
-            },
-            "error_cells": {
-              "type": "array",
-              "items": {
-                "type": "array",
-                "items": { "type": "integer", "minimum": 0 }
-              }
-            },
-            "duration_percentiles_ns": {
-              "type": "object",
-              "required": ["p50", "p95", "p99"],
-              "properties": {
-                "p50": { "$ref": "#/definitions/traces_percentile_series" },
-                "p95": { "$ref": "#/definitions/traces_percentile_series" },
-                "p99": { "$ref": "#/definitions/traces_percentile_series" }
-              },
-              "additionalProperties": true
-            }
-          },
-          "additionalProperties": true
-        },
-        "totals": {
-          "type": "object",
-          "required": ["traces", "spans", "errors"],
-          "properties": {
-            "traces": { "type": "integer", "minimum": 0 },
-            "spans": { "type": "integer", "minimum": 0 },
-            "errors": { "type": "integer", "minimum": 0 }
-          },
-          "additionalProperties": true
-        },
-        "top_root_services": { "$ref": "#/definitions/traces_facet_list" },
-        "top_root_operations": { "$ref": "#/definitions/traces_facet_list" }
       },
       "additionalProperties": true
     },
@@ -1449,12 +1284,7 @@
       "properties": {
         "status": { "type": "integer" },
         "type": { "const": "traces" },
-        "data": {
-          "oneOf": [
-            { "$ref": "#/definitions/traces_search_data" },
-            { "$ref": "#/definitions/traces_explore_data" }
-          ]
-        },
+        "data": { "$ref": "#/definitions/traces_explore_data" },
         "has_history": { "type": "boolean" },
         "accepted_params": { "$ref": "#/definitions/accepted_params" },
         "required_params": { "$ref": "#/definitions/required_params" },

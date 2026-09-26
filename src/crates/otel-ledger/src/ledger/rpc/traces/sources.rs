@@ -3,8 +3,8 @@
 //! every one of the `otel-traces` Function's data modes.
 //!
 //! With remote storage enabled, files that local retention evicted are read
-//! back: the remote planner selects the catalog entries each range needs
-//! (catalogs read off the registry lock), the union is downloaded once
+//! back: the remote planner selects the catalog entries the range needs
+//! (catalogs read off the registry lock), they are downloaded once
 //! through the shared download cache, and each entry becomes a sealed source
 //! at its cache path — or, when it could not be obtained, an unavailable
 //! source the engine reports as `remote_unavailable`. So is every catalog
@@ -28,8 +28,8 @@
 //! with [`WalCoverage`] over the WAL's id so the engine's overlap
 //! validation sees every WAL-derived byte range. One file therefore has
 //! one name wherever its bytes are served from — the engine's duplicate
-//! check sees a double inclusion, and its id-ordered reading (ceiling
-//! truncation, fold tie-breaks) does not change with location. The
+//! check sees a double inclusion, and its id-ordered reading does not
+//! change with location. The
 //! zero-padded chunk index keeps that order numeric.
 //!
 //! The supplier takes its window verbatim: canonicalizing the wire
@@ -78,12 +78,11 @@ struct ResolvedChunk {
     bytes: Arc<Vec<u8>>,
 }
 
-/// One capture: a source vector per requested copy, and the download-cache
-/// pins that keep captured remote files in place. The pins MUST live until
-/// the engine has read the sources — move them into the blocking closure
-/// that runs it.
+/// One capture: its sources, and the download-cache pins that keep captured
+/// remote files in place. The pins MUST live until the engine has read the
+/// sources — move them into the blocking closure that runs it.
 pub(crate) struct Capture {
-    pub(crate) sets: Vec<Vec<TraceSource>>,
+    pub(crate) sources: Vec<TraceSource>,
     pub(crate) pins: Vec<file_cache::CachedFile>,
 }
 
@@ -125,115 +124,48 @@ impl TracesSourceSupplier {
     }
 
     /// Capture one consistent snapshot of `tenant`'s sources overlapping
-    /// `time_range` (unix seconds; window pruning is file-granular) and
-    /// materialize `copies` structurally identical source vectors from
-    /// it. Search passes its COMPLETION range (the match window widened
-    /// by the slack) and hands identical copies to both roles — the
-    /// engine narrows the window role itself, and window ⊆ completion
-    /// holds by identity; two captures could observe different
-    /// `valid_up_to` and trip the engine's membership check. Chunk
-    /// bytes are `Arc`-shared across copies.
+    /// `time_range` (unix seconds; window pruning is file-granular): the
+    /// local snapshot and, with remote storage, which catalogs to read come
+    /// from ONE registry read lock, so the query sees one `valid_up_to` per
+    /// WAL.
     ///
-    /// The chunk-building phase can be the slow one, so it polls `cancel`
-    /// between builds (the logs handler's discipline); a cancelled call
-    /// returns no copies — the caller is about to discard the result anyway.
+    /// Remote files are planned first, so a query whose remote footprint
+    /// exceeds the download cache fails ([`CaptureError::TooLarge`]) before
+    /// any WAL work or download. The chunk-building phase can be the slow
+    /// one, so it polls `cancel` between builds (the logs handler's
+    /// discipline); a cancelled call returns no sources — the caller is
+    /// about to discard the result anyway.
     ///
-    /// Sets the call's progress total (see
-    /// [`capture_ranges`](Self::capture_ranges)).
+    /// Sets `progress`'s total before the downloads: one unit per source
+    /// (the engine ticks once per source) plus one per planned download — an
+    /// upper bound, as a cached file downloads nothing.
     pub(crate) async fn capture(
         &self,
         tenant: &TenantId,
         time_range: std::ops::Range<u32>,
-        copies: usize,
-        cancel: &CancellationToken,
-        progress: &ProgressState,
-    ) -> Result<Capture, CaptureError> {
-        self.capture_ranges(tenant, &vec![time_range; copies], cancel, progress)
-            .await
-    }
-
-    /// [`capture`](Self::capture) with a range PER copy: one snapshot,
-    /// one source vector per entry in `ranges`, each pruned by its own
-    /// range through the registry's own predicate.
-    ///
-    /// Per-range pruning exists because a merged trace envelope is a
-    /// function of WHICH FILES were captured (the engine's
-    /// file-granularity caveat: spans living only in files outside the
-    /// range merge a truncated envelope). So a pass whose window is
-    /// narrower than another's — the Functions view's window aggregate
-    /// beside its page — must be handed its OWN file set, or it returns
-    /// different numbers than the standalone mode does for the same
-    /// window: a widened envelope can change a trace's duration bin,
-    /// drop it from the grid, or grow the span/error totals.
-    ///
-    /// Every range is answered under ONE read lock, so all copies still
-    /// observe one `valid_up_to` — the single-snapshot guarantee a
-    /// second `capture` call would break — and each WAL resolves ONCE,
-    /// its chunk bytes `Arc`-shared by every copy that selected it.
-    ///
-    /// Remote files are planned first, so a query whose remote footprint
-    /// exceeds the download cache fails ([`CaptureError::TooLarge`]) before
-    /// any WAL work or download; the union of every range's remote files is
-    /// then downloaded once. A cancelled call returns no copies.
-    ///
-    /// Sets `progress`'s total before the downloads: the sources of the
-    /// DISTINCT ranges (a mode walks each with one engine pass that ticks
-    /// once per source; search's window role shares the completion range and
-    /// does not tick) plus one unit per planned download — an upper bound, as
-    /// a cached file downloads nothing. One case undercounts: when the
-    /// Functions view's aggregate range happens to equal its completion
-    /// range, two passes tick over the one counted range, so `done` can
-    /// exceed the total.
-    pub(crate) async fn capture_ranges(
-        &self,
-        tenant: &TenantId,
-        ranges: &[std::ops::Range<u32>],
         cancel: &CancellationToken,
         progress: &ProgressState,
     ) -> Result<Capture, CaptureError> {
         let cancelled = || Capture {
-            sets: Vec::new(),
+            sources: Vec::new(),
             pins: Vec::new(),
         };
-        if ranges.is_empty() {
-            return Ok(cancelled());
-        }
-        // Distinct ranges only: copies over one range share its answer
-        // (search's two roles always do), so the registry is scanned
-        // once per range, not once per copy.
-        let mut distinct: Vec<file_registry::Query> = Vec::new();
-        let mut per_copy: Vec<usize> = Vec::with_capacity(ranges.len());
-        for range in ranges {
-            let at = match distinct.iter().position(|d| &d.time_range == range) {
-                Some(at) => at,
-                None => {
-                    distinct.push(file_registry::Query {
-                        time_range: range.clone(),
-                        partition_keys: Vec::new(),
-                    });
-                    distinct.len() - 1
-                }
-            };
-            per_copy.push(at);
-        }
-        // Under ONE read lock, in memory only: every range's local snapshot
-        // and, with remote storage, which catalogs to read and what each
-        // range already serves locally.
-        let (snapshots, remote_input) = {
+        let query = file_registry::Query {
+            time_range,
+            partition_keys: Vec::new(),
+        };
+        let ((sealed, wal_descs), remote_input) = {
             let guard = self.registries.read().await;
-            let snapshots: Vec<(Vec<file_registry::SelectedFile>, Vec<WalDesc>)> = distinct
-                .iter()
-                .map(|q| guard.query_snapshot(tenant, q))
-                .collect();
+            let snapshot = guard.query_snapshot(tenant, &query);
             let remote_input = self
                 .remote
                 .is_some()
-                .then(|| guard.remote_plan_input(tenant, &distinct));
-            (snapshots, remote_input)
+                .then(|| guard.remote_plan_input(tenant, std::slice::from_ref(&query)));
+            (snapshot, remote_input)
         };
 
         let RemotePlan {
-            mut per_range,
+            per_range,
             union,
             unreadable,
         } = match (&self.remote, remote_input) {
@@ -249,19 +181,13 @@ impl TracesSourceSupplier {
             }
             _ => RemotePlan::default(),
         };
-        per_range.resize_with(distinct.len(), Vec::new);
+        let remote_entries = per_range.into_iter().next().unwrap_or_default();
         if cancel.is_cancelled() {
             return Ok(cancelled());
         }
 
-        // Every WAL any range selected resolves ONCE, keyed by its full
-        // `FileId`; a refused one is a failed source for every copy alike
-        // (one snapshot, one verdict).
         let mut resolved: HashMap<FileId, Result<ResolvedWal, String>> = HashMap::new();
-        for wal in snapshots.iter().flat_map(|(_, wals)| wals) {
-            if resolved.contains_key(&wal.id) {
-                continue;
-            }
+        for wal in &wal_descs {
             let outcome = self.resolve_wal(wal, cancel).await;
             resolved.insert(wal.id, outcome);
         }
@@ -269,28 +195,14 @@ impl TracesSourceSupplier {
             return Ok(cancelled());
         }
 
-        let mut distinct_sources: Vec<Vec<TraceSource>> = snapshots
-            .iter()
-            .map(|(sealed, wal_descs)| local_sources(sealed, wal_descs, &resolved))
-            .collect();
-        // The unreadable catalogs each range overlaps: their entries are
+        let mut sources = local_sources(&sealed, &wal_descs, &resolved);
+        // The unreadable catalogs the range overlaps: their entries are
         // unknown, so each is one unavailable source over its span.
-        let unreadable_per_range: Vec<Vec<&CatalogFile>> = distinct
+        let catalogs: Vec<&CatalogFile> = unreadable
             .iter()
-            .map(|q| {
-                unreadable
-                    .iter()
-                    .filter(|c| q.overlaps(c.min_timestamp_s, c.max_timestamp_s))
-                    .collect()
-            })
+            .filter(|c| query.overlaps(c.min_timestamp_s, c.max_timestamp_s))
             .collect();
-        let sources_total: usize = distinct_sources
-            .iter()
-            .zip(&per_range)
-            .zip(&unreadable_per_range)
-            .map(|((local, remote), catalogs)| local.len() + remote.len() + catalogs.len())
-            .sum();
-        progress.set_total(sources_total + union.len());
+        progress.set_total(sources.len() + remote_entries.len() + catalogs.len() + union.len());
 
         let (downloaded, pins) = match &self.remote {
             Some(remote) if !union.is_empty() => {
@@ -319,43 +231,33 @@ impl TracesSourceSupplier {
         // one file has one name wherever its bytes come from.
         let downloaded: HashMap<FileId, &file_registry::SelectedFile> =
             downloaded.iter().map(|f| (f.id, f)).collect();
-        for ((sources, remote), catalogs) in distinct_sources
-            .iter_mut()
-            .zip(&per_range)
-            .zip(&unreadable_per_range)
-        {
-            for entry in remote {
-                let source_id = SourceId::new(entry.id.to_filename(SFST_EXT));
-                sources.push(match downloaded.get(&entry.id) {
-                    Some(file) => TraceSource::Sfst(TraceSfstCandidate {
-                        source_id,
-                        summary: file.summary.clone(),
-                        source: sfsq::Source::File(file.path.clone()),
-                        coverage: None,
-                    }),
-                    None => TraceSource::Unavailable(TraceUnavailable {
-                        source_id,
-                        summary: entry.summary(),
-                    }),
-                });
-            }
-            for catalog in catalogs {
-                sources.push(TraceSource::Unavailable(TraceUnavailable {
-                    source_id: SourceId::new(catalog_source_id(catalog)),
-                    summary: sfst::Summary {
-                        min_timestamp_s: catalog.min_timestamp_s,
-                        max_timestamp_s: catalog.max_timestamp_s,
-                        record_count: 0,
-                        content_meta: Vec::new(),
-                    },
-                }));
-            }
+        for entry in remote_entries {
+            let source_id = SourceId::new(entry.id.to_filename(SFST_EXT));
+            sources.push(match downloaded.get(&entry.id) {
+                Some(file) => TraceSource::Sfst(TraceSfstCandidate {
+                    source_id,
+                    summary: file.summary.clone(),
+                    source: sfsq::Source::File(file.path.clone()),
+                    coverage: None,
+                }),
+                None => TraceSource::Unavailable(TraceUnavailable {
+                    source_id,
+                    summary: entry.summary(),
+                }),
+            });
         }
-        let sets = per_copy
-            .into_iter()
-            .map(|at| distinct_sources[at].clone())
-            .collect();
-        Ok(Capture { sets, pins })
+        for catalog in catalogs {
+            sources.push(TraceSource::Unavailable(TraceUnavailable {
+                source_id: SourceId::new(catalog_source_id(catalog)),
+                summary: sfst::Summary {
+                    min_timestamp_s: catalog.min_timestamp_s,
+                    max_timestamp_s: catalog.max_timestamp_s,
+                    record_count: 0,
+                    content_meta: Vec::new(),
+                },
+            }));
+        }
+        Ok(Capture { sources, pins })
     }
 
     /// Resolve one active WAL into chunk images + the tail range, or the
@@ -450,7 +352,7 @@ impl TracesSourceSupplier {
     }
 }
 
-/// One range's local sources: its sealed files, then each resolved WAL's
+/// The range's local sources: its sealed files, then each resolved WAL's
 /// chunks and tail; a refused WAL is one failed source.
 fn local_sources(
     sealed: &[file_registry::SelectedFile],

@@ -372,13 +372,13 @@ async fn handler_sources(lab: &Lab, after_s: u32, before_s: u32) -> Vec<(String,
         .capture(
             &TenantId::from("default"),
             after_s..before_s,
-            1,
             &CancellationToken::new(),
             &ProgressState::new(),
         )
         .await
         .unwrap();
-    let mut sources: Vec<(String, Option<u32>)> = capture.sets[0]
+    let mut sources: Vec<(String, Option<u32>)> = capture
+        .sources
         .iter()
         .map(|source| match source {
             sfsq::traces::TraceSource::Sfst(candidate) => (

@@ -99,8 +99,7 @@ pub(crate) fn otlp_req(trace_byte: u8, span_count: u8, base_ns: u64) -> ExportTr
     otlp_req_svc(trace_byte, span_count, base_ns, "svc")
 }
 
-/// Like [`otlp_req`], with an explicit `service.name` resource attribute
-/// — the search filter tests select on it.
+/// Like [`otlp_req`], with an explicit `service.name` resource attribute.
 pub(crate) fn otlp_req_svc(
     trace_byte: u8,
     span_count: u8,
@@ -138,8 +137,7 @@ pub(crate) fn otlp_req_svc(
     }
 }
 
-/// Like [`otlp_req_svc`], with span 1 carrying an OTLP ERROR status —
-/// for the overview's error-totals coverage.
+/// Like [`otlp_req_svc`], with span 1 carrying an OTLP ERROR status.
 pub(crate) fn otlp_req_err(
     trace_byte: u8,
     span_count: u8,
@@ -151,31 +149,6 @@ pub(crate) fn otlp_req_err(
         code: 2, // STATUS_CODE_ERROR
         message: "boom".into(),
     });
-    req
-}
-
-/// One trace whose spans start at the EXACT given times (ns) — for
-/// tests where a trace's envelope start differs materially from its
-/// newest span (the search rank key). Span 1 is the root.
-pub(crate) fn otlp_req_at(
-    trace_byte: u8,
-    span_starts_ns: &[u64],
-    service: &str,
-) -> ExportTraceServiceRequest {
-    // The fixture id space is u8 (span ids are vec![i; 8] with i: u8):
-    // 256+ starts would wrap the count to 0 and the zip below would
-    // silently build no spans.
-    assert!(
-        span_starts_ns.len() <= u8::MAX as usize,
-        "{} spans would wrap the fixture's u8 count",
-        span_starts_ns.len()
-    );
-    let mut req = otlp_req_svc(trace_byte, span_starts_ns.len() as u8, 0, service);
-    let spans = &mut req.resource_spans[0].scope_spans[0].spans;
-    for (span, &start) in spans.iter_mut().zip(span_starts_ns) {
-        span.start_time_unix_nano = start;
-        span.end_time_unix_nano = start + 500;
-    }
     req
 }
 

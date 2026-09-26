@@ -16,87 +16,38 @@ fn req_err(v: serde_json::Value) -> String {
 }
 
 #[test]
-fn a_request_without_a_mode_selector_selects_the_functions_search_view() {
-    let TracesMode::Functions(p) = req(json!({})).mode else {
-        panic!("Functions mode expected");
-    };
-    assert_eq!((p.after, p.before, p.last), (0, 0, 20));
-    assert_eq!(p.anchor, None);
-    assert!(p.selections.is_empty());
-
-    let r = req(json!({"tenant": "t1"}));
-    assert!(matches!(r.mode, TracesMode::Functions(_)));
-    assert_eq!(r.tenant.as_deref(), Some("t1"));
-
-    let TracesMode::Functions(p) = req(json!({
-        "after": -3600,
-        "before": -60,
-        "last": 7,
-        "anchor": "cursor",
-        "selections": {"root_name": ["GET /api"]},
-        "timeout": 120000
-    }))
-    .mode
-    else {
-        panic!("Functions mode expected");
-    };
-    assert_eq!((p.after, p.before, p.last), (-3600, -60, 7));
-    assert_eq!(p.anchor.as_deref(), Some("cursor"));
-    assert_eq!(p.selections["root_name"], ["GET /api"]);
-
-    let search = p.search_params(10_000).unwrap();
-    assert_eq!((search.after, search.before), (6_340, 9_940));
+fn a_request_without_a_mode_selector_is_a_client_error() {
+    for body in [json!({}), json!({"tenant": "t1"})] {
+        let err = req_err(body.clone());
+        assert!(
+            err.contains("no mode selector: name exactly one of info, explore, values, trace"),
+            "for {body}: {err}"
+        );
+    }
 }
 
+/// The retired modes and the old Functions view's top-level fields are
+/// plain unknown keys now, with or without a mode beside them.
 #[test]
-fn the_functions_view_forwards_the_minimum_trace_duration() {
-    let TracesMode::Functions(p) = req(json!({"min_trace_duration_ns": 250_000_000})).mode else {
-        panic!("Functions mode expected");
-    };
-    assert_eq!(
-        p.search_params(10_000).unwrap().min_trace_duration_ns,
-        Some(250_000_000)
-    );
-
-    // Omitted stays unset — existing callers keep their behaviour.
-    let TracesMode::Functions(p) = req(json!({})).mode else {
-        panic!("Functions mode expected");
-    };
-    assert_eq!(p.search_params(10_000).unwrap().min_trace_duration_ns, None);
-}
-
-#[test]
-fn the_functions_view_forwards_the_maximum_trace_duration() {
-    let TracesMode::Functions(p) = req(json!({"max_trace_duration_ns": 250_000_000})).mode else {
-        panic!("Functions mode expected");
-    };
-    assert_eq!(
-        p.search_params(10_000).unwrap().max_trace_duration_ns,
-        Some(250_000_000)
-    );
-
-    // Omitted stays unset — existing callers keep their behaviour.
-    let TracesMode::Functions(p) = req(json!({})).mode else {
-        panic!("Functions mode expected");
-    };
-    assert_eq!(p.search_params(10_000).unwrap().max_trace_duration_ns, None);
-}
-
-#[test]
-fn overview_facets_rides_with_the_functions_parameters() {
-    // The aggregate's facet opt-in is a Functions parameter: it selects
-    // the Functions view like the others, and it cannot ride with a
-    // mode selector (the response key is not a request field — the
-    // `overview` selector still means the legacy mode).
-    assert!(matches!(
-        req(json!({"after": -900, "overview_facets": true})).mode,
-        TracesMode::Functions(_)
-    ));
-    let err = req_err(json!({"overview": {}, "overview_facets": true}));
-    assert!(
-        err.contains("cannot mix a mode selector with Functions parameters"),
-        "{err}"
-    );
+fn retired_modes_and_functions_fields_are_unknown_keys() {
+    for key in [
+        "overview",
+        "search",
+        "after",
+        "before",
+        "last",
+        "anchor",
+        "selections",
+        "timeout",
+        "min_trace_duration_ns",
+        "max_trace_duration_ns",
+        "overview_facets",
+    ] {
+        for body in [json!({key: {}}), json!({"explore": {}, key: 1})] {
+            let err = req_err(body.clone());
+            assert!(err.contains("unknown field"), "for {body}: {err}");
+        }
+    }
 }
 
 #[test]
@@ -125,20 +76,12 @@ fn each_selector_selects_its_mode() {
         TracesMode::Trace(_)
     ));
     assert!(matches!(
-        req(json!({"overview": {}})).mode,
-        TracesMode::Overview(_)
-    ));
-    assert!(matches!(
         req(json!({"explore": {}})).mode,
         TracesMode::Explore(_)
     ));
     assert!(matches!(
         req(json!({"values": {"field": "name"}})).mode,
         TracesMode::Values(_)
-    ));
-    assert!(matches!(
-        req(json!({"search": {}})).mode,
-        TracesMode::Search(_)
     ));
     assert!(matches!(req(json!({"info": {}})).mode, TracesMode::Info));
 }
@@ -150,9 +93,8 @@ fn a_present_but_null_selector_selects_then_rejects() {
     // deserializer keeps the selection so the error names the selector.
     for (body, needle) in [
         (json!({"trace": null}), "invalid trace selector"),
-        (json!({"overview": null}), "invalid overview selector"),
         (json!({"explore": null}), "invalid explore selector"),
-        (json!({"search": null}), "invalid search selector"),
+        (json!({"values": null}), "invalid values selector"),
     ] {
         let err = req_err(body.clone());
         assert!(err.contains(needle), "for {body}: {err}");
@@ -164,9 +106,9 @@ fn selectors_are_object_only_arrays_reject() {
     // serde-derived structs also accept positional JSON arrays via the
     // seq visitor; the object gate closes that hole at both levels.
     for (body, needle) in [
-        (json!({"overview": []}), "invalid overview selector"),
+        (json!({"explore": []}), "invalid explore selector"),
         (json!({"trace": ["00ff", 7]}), "invalid trace selector"),
-        (json!({"search": []}), "invalid search selector"),
+        (json!({"values": []}), "invalid values selector"),
     ] {
         let err = req_err(body.clone());
         assert!(
@@ -185,25 +127,10 @@ fn the_top_level_must_be_a_json_object() {
 }
 
 #[test]
-fn unknown_and_retired_top_level_keys_are_client_errors() {
-    for body in [json!({"search": {}, "bogus": 1}), json!({"bogus": 1})] {
+fn unknown_top_level_keys_are_client_errors() {
+    for body in [json!({"explore": {}, "bogus": 1}), json!({"bogus": 1})] {
         let err = req_err(body.clone());
         assert!(err.contains("unknown field"), "for {body}: {err}");
-    }
-
-    for body in [
-        json!({"search": {}, "after": 1, "before": 2}),
-        json!({"search": {}, "last": 5}),
-        json!({"search": {}, "timeout": 30}),
-        json!({"search": {}, "min_trace_duration_ns": 1}),
-        json!({"search": {}, "max_trace_duration_ns": 1}),
-        json!({"trace": {"id": "00"}, "anchor": "x"}),
-    ] {
-        let err = req_err(body.clone());
-        assert!(
-            err.contains("cannot mix a mode selector with Functions parameters"),
-            "for {body}: {err}"
-        );
     }
 }
 
@@ -237,14 +164,14 @@ fn trace_params_reject_malformed_and_parse_bounds() {
 
 #[test]
 fn conflicting_selectors_are_a_client_error() {
-    let err = req_err(json!({"trace": {}, "overview": {}}));
+    let err = req_err(json!({"trace": {}, "explore": {}}));
     assert!(
-        err.contains("conflicting mode selectors: trace, overview"),
+        err.contains("conflicting mode selectors: explore, trace"),
         "{err}"
     );
-    let err = req_err(json!({"overview": {}, "search": {}}));
+    let err = req_err(json!({"values": {}, "explore": {}}));
     assert!(
-        err.contains("conflicting mode selectors: overview, search"),
+        err.contains("conflicting mode selectors: explore, values"),
         "{err}"
     );
     // info is a PEER selector — no precedence.
@@ -260,9 +187,9 @@ fn a_conflict_is_reported_before_a_malformed_selector() {
     // ALL present selectors are counted before any is decoded — a
     // conflicting body reports the conflict even when one selector is
     // also malformed.
-    let err = req_err(json!({"trace": null, "overview": {}}));
+    let err = req_err(json!({"trace": null, "explore": {}}));
     assert!(
-        err.contains("conflicting mode selectors: trace, overview"),
+        err.contains("conflicting mode selectors: explore, trace"),
         "{err}"
     );
 }
@@ -280,82 +207,15 @@ fn duplicate_keys_are_rejected_not_last_value_wins() {
     assert!(err.to_string().contains("duplicate field"), "{err}");
 
     let err = serde_json::from_slice::<OtelTracesRequest>(
-        br#"{"search": {}, "tenant": "a", "tenant": "b"}"#,
+        br#"{"explore": {}, "tenant": "a", "tenant": "b"}"#,
     )
     .expect_err("duplicate tenant must be rejected");
     assert!(err.to_string().contains("duplicate field"), "{err}");
 }
 
 #[test]
-fn search_params_defaults_and_strictness() {
-    let TracesMode::Search(p) = req(json!({"search": {}})).mode else {
-        panic!("search mode expected");
-    };
-    assert_eq!(p.after, 0);
-    assert_eq!(p.before, 0);
-    assert_eq!(p.limit, sfsq::traces::DEFAULT_SEARCH_LIMIT);
-    assert_eq!(p.spans_per_trace, None);
-    assert!(p.selections.is_empty());
-    assert_eq!(p.anchor, None);
-
-    let TracesMode::Search(p) = req(json!({"search": {
-        "after": 10, "before": 20, "limit": 1,
-        "selections": {"kind": ["SERVER"]}
-    }}))
-    .mode
-    else {
-        panic!("search mode expected");
-    };
-    assert_eq!((p.after, p.before), (10, 20));
-    assert_eq!(p.limit, 1);
-    assert_eq!(p.selections["kind"], vec!["SERVER"]);
-
-    let err = req_err(json!({"search": {"last": 5}}));
-    assert!(
-        err.contains("invalid search selector") && err.contains("unknown field"),
-        "the old `last` name is retired: {err}"
-    );
-}
-
-#[test]
-fn windowed_mode_objects_carry_their_own_window() {
-    let TracesMode::Overview(p) = req(json!({"overview": {"after": 1, "before": 2}})).mode else {
-        panic!("overview mode expected");
-    };
-    assert_eq!((p.after, p.before), (1, 2));
-
-    // Omitted windows keep the 0 = "unspecified" sentinel — the
-    // adapter's resolve_window defaults are untouched.
-    let TracesMode::Overview(p) = req(json!({"overview": {}})).mode else {
-        panic!("overview mode expected");
-    };
-    assert_eq!((p.after, p.before), (0, 0));
-}
-
-/// The standalone grid takes the page's `selections` grammar and
-/// nothing else of the page's filters: the duration bounds are unknown
-/// fields here (the grid never applies them).
-#[test]
-fn overview_params_take_selections_but_no_duration_bounds() {
-    let TracesMode::Overview(p) =
-        req(json!({"overview": {"selections": {"name": ["GET", "POST"]}}})).mode
-    else {
-        panic!("overview mode expected");
-    };
-    assert_eq!(p.selections["name"], vec!["GET", "POST"]);
-    let TracesMode::Overview(p) = req(json!({"overview": {}})).mode else {
-        panic!("overview mode expected");
-    };
-    assert!(p.selections.is_empty());
-    for field in ["min_trace_duration_ns", "max_trace_duration_ns", "min_duration_ns"] {
-        let msg = req_err(json!({"overview": {field: 1}}));
-        assert!(msg.contains("unknown field"), "{field}: {msg}");
-    }
-}
-
-#[test]
 fn tenant_rides_beside_any_mode() {
-    let r = req(json!({"search": {}, "tenant": "t1"}));
+    let r = req(json!({"explore": {}, "tenant": "t1"}));
     assert_eq!(r.tenant.as_deref(), Some("t1"));
     let r = req(json!({"info": {}}));
     assert_eq!(r.tenant, None);
@@ -375,11 +235,7 @@ fn info_response_shape_is_pinned() {
             "type": "traces",
             "has_history": true,
             "v": 3,
-            "accepted_params": [
-                "info", "explore", "values", "trace", "overview", "search", "tenant", "after",
-                "before", "last", "anchor", "selections",
-                "min_trace_duration_ns", "max_trace_duration_ns", "overview_facets"
-            ],
+            "accepted_params": ["info", "explore", "values", "trace", "tenant"],
             "required_params": [],
             "help": "Query and visualize OpenTelemetry traces.",
             "sections": ["histogram", "facets", "groups", "rows", "fields"],
@@ -441,31 +297,6 @@ fn response_envelope_is_untagged() {
     assert!(v.get("version").is_some());
     assert!(v.get("Info").is_none());
     assert_eq!(v.get("mode").and_then(|m| m.as_str()), Some("info"));
-}
-
-#[test]
-fn overview_facets_knob_parses_and_junk_is_rejected() {
-    let facets = |v: serde_json::Value| -> Option<bool> {
-        let TracesMode::Overview(p) = req(v).mode else {
-            panic!("overview mode expected");
-        };
-        p.facets
-    };
-    assert_eq!(facets(json!({"overview": {}})), None);
-    assert_eq!(facets(json!({"overview": {"facets": true}})), Some(true));
-    assert_eq!(facets(json!({"overview": {"facets": false}})), Some(false));
-    assert_eq!(
-        facets(json!({"overview": {"facets": null}})),
-        None,
-        "null means off, not an error (Option<bool> semantics)"
-    );
-    for body in [
-        json!({"overview": {"facets": "yes"}}),
-        json!({"overview": {"bogus": 1}}),
-    ] {
-        let err = req_err(body.clone());
-        assert!(err.contains("invalid overview selector"), "for {body}: {err}");
-    }
 }
 
 #[test]
