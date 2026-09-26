@@ -2,6 +2,7 @@
 //! ARRAY_TIER1 records (tiers above 0) and GORILLA_32BIT (tier 0 default). Brief `knowledge/brief-dbengine-s0.md` §3
 //! in the status repository.
 
+pub mod gorilla;
 pub mod tier1;
 
 use crate::storage_number::{SN_USER_FLAGS, is_anomalous, unpack};

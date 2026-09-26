@@ -135,3 +135,211 @@ fn raw_pages_as_c() {
         assert_eq!(points(&used, wanted.len()), *wanted, "{name}");
     }
 }
+
+use netdata_agent_storage::dbengine::format::page::gorilla;
+
+fn u32_hex(v: &Value) -> u32 {
+    u32::from_str_radix(v.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
+}
+
+fn read_all(mut r: gorilla::Reader<'_>) -> Vec<Value> {
+    std::iter::from_fn(|| r.read())
+        .map(|n| Value::String(format!("0x{n:08x}")))
+        .collect()
+}
+
+/// A gorilla cursor from slot 0 over `slots` points; a failed read is an empty point.
+fn gorilla_points(buffers: &[gorilla::Buffer], slots: usize, wanted: usize) -> Vec<Value> {
+    let mut r = gorilla::Reader::new(buffers);
+    (0..wanted)
+        .map(|i| match (i < slots).then(|| r.read()).flatten() {
+            Some(n) => tuple(true, &page::array32_point(n)),
+            None => tuple(false, &StoragePoint::empty(0, 0)),
+        })
+        .collect()
+}
+
+fn buffers_json(w: &gorilla::Writer) -> Vec<Value> {
+    let last = w.buffers().len() - 1;
+    w.buffers()
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            serde_json::json!({
+                "next": if i == last { "zero" } else { "nonzero" },
+                "entries": b.entries,
+                "nbits": b.nbits,
+                "hex_next_masked": to_hex(&b.to_bytes(0)),
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn gorilla_writer_as_c() {
+    let v = vectors("gorilla-writer.json");
+    let cases = v["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 26);
+    for c in cases {
+        let name = c["name"].as_str().unwrap();
+        let mut w = gorilla::Writer::default();
+        let mut failures = Vec::new();
+        for (index, n) in c["input_u32"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(u32_hex)
+            .enumerate()
+        {
+            let before = w.buffers().last().unwrap().nbits;
+            if !w.write(n) {
+                let last = w.buffers().last().unwrap();
+                failures.push(serde_json::json!({
+                    "index": index,
+                    "full_buffer": w.buffers().len() - 1,
+                    "nbits_before": before,
+                    "nbits_after": last.nbits,
+                    "partial_bits": last.nbits - before,
+                    "entries": last.entries,
+                }));
+                w.add_buffer();
+                assert!(w.write(n), "{name}");
+            }
+        }
+        assert_eq!(Value::Array(failures), c["write_failures"], "{name}");
+        assert_eq!(
+            w.buffers().len() as u64,
+            c["num_buffers"].as_u64().unwrap(),
+            "{name}"
+        );
+        assert_eq!(
+            u64::from(w.entries()),
+            c["writer_entries"].as_u64().unwrap(),
+            "{name}"
+        );
+        let bytes = w.serialize();
+        assert_eq!(
+            bytes.len() as u64,
+            c["byte_length"].as_u64().unwrap(),
+            "{name}"
+        );
+        assert_eq!(Value::Array(buffers_json(&w)), c["buffers"], "{name}");
+        assert_eq!(
+            Value::Array(read_all(w.reader())),
+            c["decoded_live"],
+            "{name}"
+        );
+        let disk = gorilla::from_disk(&bytes);
+        assert_eq!(Value::Bool(disk.is_some()), c["disk_patch_ok"], "{name}");
+        if let Some(disk) = disk {
+            assert_eq!(
+                u64::from(disk.entries),
+                c["disk_patch_entries"].as_u64().unwrap(),
+                "{name}"
+            );
+            assert_eq!(
+                Value::Array(read_all(gorilla::Reader::new(&disk.buffers))),
+                c["decoded_disk"],
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn gorilla_pages_as_c() {
+    let v = vectors("gorilla-page.json");
+    let cases = v["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 10);
+    for c in cases {
+        let name = c["name"].as_str().unwrap();
+        let mut w = gorilla::Writer::default();
+        let mut grew = Vec::new();
+        let values = c["input_values"].as_array().unwrap();
+        let flags = c["input_flags"].as_array().unwrap();
+        let mut packed = Vec::new();
+        for (i, (v, f)) in values.iter().zip(flags).enumerate() {
+            let n = pack(bits(v), f.as_u64().unwrap() as u32);
+            packed.push(Value::String(format!("0x{n:08x}")));
+            if w.append(n) {
+                grew.push(i);
+            }
+        }
+        let count = values.len();
+        assert_eq!(Value::Array(packed), c["packed_u32"], "{name}");
+        assert_eq!(
+            serde_json::json!(grew),
+            c["append_returned_buffer_size_at"],
+            "{name}"
+        );
+        assert_eq!(
+            count as u64,
+            c["pgd_slots_used"].as_u64().unwrap(),
+            "{name}"
+        );
+        if count > 0 {
+            assert_eq!(
+                w.buffers().len() as u64,
+                c["num_buffers"].as_u64().unwrap(),
+                "{name}"
+            );
+            assert_eq!(Value::Array(buffers_json(&w)), c["buffers"], "{name}");
+            assert_eq!(
+                (w.buffers().len() * gorilla::BUFFER_SIZE) as u64,
+                c["disk_footprint"].as_u64().unwrap(),
+                "{name}"
+            );
+        }
+        let live = c["collector_points_from_0"].as_array().unwrap();
+        assert_eq!(
+            gorilla_points(w.buffers(), count, live.len()),
+            *live,
+            "{name}"
+        );
+        let from_disk = &c["from_disk"];
+        if from_disk.is_object() {
+            let disk = gorilla::from_disk(&w.serialize()).unwrap();
+            assert_eq!(
+                u64::from(disk.slots),
+                from_disk["pgd_slots_used"].as_u64().unwrap(),
+                "{name}"
+            );
+            let wanted = from_disk["points_from_0"].as_array().unwrap();
+            assert_eq!(
+                gorilla_points(&disk.buffers, disk.slots.into(), wanted.len()),
+                *wanted,
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn gorilla_disk_loads_as_c() {
+    let v = vectors("gorilla-disk-load.json");
+    let cases = v["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 24);
+    for c in cases {
+        let name = c["name"].as_str().unwrap();
+        let mut bytes = hex(c["input_hex"].as_str().unwrap());
+        bytes.truncate(c["size"].as_u64().unwrap() as usize);
+        let disk = gorilla::from_disk(&bytes);
+        let result = &c["result"];
+        if result == "PGD_EMPTY" {
+            assert!(disk.is_none(), "{name}");
+            continue;
+        }
+        let disk = disk.unwrap_or_else(|| panic!("{name}: not loaded"));
+        assert_eq!(
+            u64::from(disk.slots),
+            result["pgd_slots_used"].as_u64().unwrap(),
+            "{name}"
+        );
+        let wanted = result["points_from_0"].as_array().unwrap();
+        assert_eq!(
+            gorilla_points(&disk.buffers, disk.slots.into(), wanted.len()),
+            *wanted,
+            "{name}"
+        );
+    }
+}
