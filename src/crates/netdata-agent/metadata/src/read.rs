@@ -4,7 +4,8 @@
 
 use std::path::Path;
 
-use netdata_agent_log::{Priority, Source, nd_log, netdata_log_error};
+use netdata_agent_log::{Priority, Source, nd_log, netdata_log_error, netdata_log_info};
+use netdata_agent_text::duration::duration_to_string;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, Row};
 
@@ -59,19 +60,19 @@ fn prepare_failed(err: &rusqlite::Error, function: &str) {
 
 /// Runs `sql` with `params` bound, calling `f` for each row. While the database is busy the query runs again, as
 /// `sqlite3_step_monitored()` retries, but only before a row came out: rusqlite restarts a statement whose step
-/// failed, where C would continue it.
+/// failed, where C would continue it. False when the statement could not be prepared.
 fn for_each_row(
     c: &Connection,
     sql: &str,
     params: impl rusqlite::Params + Copy,
     function: &str,
     mut f: impl FnMut(&Row<'_>),
-) {
+) -> bool {
     let mut stmt = match c.prepare(sql) {
         Ok(stmt) => stmt,
         Err(err) => {
             prepare_failed(&err, function);
-            return;
+            return false;
         }
     };
     let mut delivered = false;
@@ -97,7 +98,7 @@ fn for_each_row(
                 attempt += 1;
                 std::thread::sleep(conn::RETRY_DELAY);
             }
-            _ => return,
+            _ => return true,
         }
     }
 }
@@ -399,43 +400,56 @@ impl MetaDb {
         }
         Some(guids)
     }
+}
 
-    /// The UUID of every stored dimension, as `populate_metrics_from_database()` reads them (on a read-only handle
-    /// of its own, falling back to the shared one); the count of valid ones.
-    pub fn dimension_uuids(&self, mut f: impl FnMut(&[u8; 16])) -> usize {
-        let path = MetaDb::path(self.cache_dir());
-        let own = Connection::open_with_flags(
-            &path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .ok();
-        if let Some(c) = &own {
-            let _ = c.busy_timeout(std::time::Duration::ZERO);
-            let _ = conn::db_execute(c, "PRAGMA cache_size=10000", &Markers::default());
-        }
-        let shared;
-        let c: &Connection = match &own {
-            Some(c) => c,
-            None => {
-                shared = self.lock();
-                &shared
-            }
-        };
-        let mut count = 0;
-        for_each_row(
-            c,
-            "SELECT dim_id FROM dimension",
-            [],
-            "populate_metrics_from_database",
-            |row| {
-                if let Some(id) = uuid(row, 0) {
-                    f(&id);
-                    count += 1;
-                }
-            },
-        );
-        count
+/// `populate_metrics_from_database()`: every stored dimension's UUID, read on a read-only handle of its own (falling
+/// back to the shared one, when there is one), with C's record of the count and the time the rows took; the count
+/// of valid ones. A statement that cannot be prepared returns 0 without the record, as C.
+pub fn populate_metrics(
+    cache_dir: &Path,
+    shared: Option<&MetaDb>,
+    mut f: impl FnMut(&[u8; 16]),
+) -> usize {
+    const FUNCTION: &str = "populate_metrics_from_database";
+    let own = Connection::open_with_flags(
+        MetaDb::path(cache_dir),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok();
+    if let Some(c) = &own {
+        let _ = c.busy_timeout(std::time::Duration::ZERO);
+        let _ = conn::db_execute(c, "PRAGMA cache_size=10000", &Markers::default());
     }
+    let guard;
+    let c: &Connection = match (&own, shared) {
+        (Some(c), _) => c,
+        (None, Some(shared)) => {
+            guard = shared.lock();
+            &guard
+        }
+        // C prepares on its NULL shared handle
+        (None, None) => {
+            netdata_log_error!("Failed to prepare statement, rc=21 in {FUNCTION}");
+            return 0;
+        }
+    };
+    let started = std::time::Instant::now();
+    let mut count = 0;
+    let prepared = for_each_row(c, "SELECT dim_id FROM dimension", [], FUNCTION, |row| {
+        if let Some(id) = uuid(row, 0) {
+            f(&id);
+            count += 1;
+        }
+    });
+    drop(own);
+    if prepared {
+        let us = i64::try_from(started.elapsed().as_micros()).unwrap_or(i64::MAX);
+        netdata_log_info!(
+            "MRG: Loaded {count} metrics from database in {}",
+            duration_to_string(us, "us", true).unwrap_or_default()
+        );
+    }
+    count
 }
 
 /// A row of `CTX_GET_CHART_LIST`.
@@ -617,6 +631,49 @@ mod tests {
     const A: [u8; 16] = [0xaa; 16];
     const B: [u8; 16] = [0xbb; 16];
     const C: [u8; 16] = [0xcc; 16];
+
+    /// Each valid stored UUID comes back, with C's record; without any database, C's prepare failure and no record.
+    #[test]
+    fn metrics_populate_with_cs_records() {
+        let (dir, meta) = db();
+        {
+            let c = meta.lock();
+            c.execute_batch("DELETE FROM dimension").unwrap();
+            for id in [&A[..], &B[..], b"short"] {
+                c.execute(
+                    "INSERT INTO dimension (dim_id, chart_id, id, name) VALUES (?1, ?2, 'd', 'd')",
+                    rusqlite::params![id, &C[..]],
+                )
+                .unwrap();
+            }
+        }
+        let mut seen = Vec::new();
+        let (count, records) = netdata_agent_log::capture(|| {
+            populate_metrics(dir.path(), Some(&meta), |id| seen.push(*id))
+        });
+        seen.sort();
+        assert_eq!((count, seen), (2, vec![A, B]));
+        let messages: Vec<String> = records.into_iter().filter_map(|r| r.message).collect();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(
+            messages[0].starts_with("MRG: Loaded 2 metrics from database in "),
+            "{messages:?}"
+        );
+        let empty = tempfile::tempdir().unwrap();
+        let (count, records) =
+            netdata_agent_log::capture(|| populate_metrics(empty.path(), None, |_| {}));
+        let messages: Vec<String> = records.into_iter().filter_map(|r| r.message).collect();
+        assert_eq!(
+            (count, messages),
+            (
+                0,
+                vec![
+                    "Failed to prepare statement, rc=21 in populate_metrics_from_database"
+                        .to_string()
+                ]
+            )
+        );
+    }
 
     #[test]
     fn archived_hosts_read_as_c_reads_them() {

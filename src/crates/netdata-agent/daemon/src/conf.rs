@@ -21,6 +21,11 @@ use netdata_agent_text::sanitize::rrdlabels_sanitize_value;
 
 use netdata_agent_query::grouping::Windows;
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
+use netdata_agent_storage::dbengine::format::descriptor::{
+    PAGE_TYPE_ARRAY_32BIT, PAGE_TYPE_GORILLA_32BIT,
+};
+use netdata_agent_text::size::{size_parse, size_to_string};
+use std::os::unix::fs::DirBuilderExt;
 
 use crate::acl::{AclPattern, WebAcl};
 use crate::build;
@@ -76,6 +81,8 @@ pub struct Conf {
     pub host_prefix: String,
     /// What `libuv_initialize()` sized, at the end of `netdata_conf_load()`.
     pub threads: Threads,
+    /// `legacy_multihost_db_space`: the backwards compatibility moved a legacy tier 0 disk space option.
+    pub legacy_multihost_db_space: bool,
     // FUNCTION_RUN_ONCE guards.
     loaded: bool,
     compat_done: bool,
@@ -453,8 +460,10 @@ impl Conf {
                 "dbengine tier 0 retention size",
             ),
         ];
-        for &(so, no, sn, nn) in moves {
-            c.move_option(so, no, sn, nn);
+        let mut legacy = false;
+        for (i, &(so, no, sn, nn)) in moves.iter().enumerate() {
+            // the three legacy tier 0 disk spaces
+            legacy |= c.move_option(so, no, sn, nn) && i >= moves.len() - 3;
         }
         for tier in 0..STORAGE_TIERS {
             c.move_option(
@@ -469,13 +478,13 @@ impl Conf {
                 format!("dbengine tier {tier} multihost disk space MB")
             };
             let new = format!("dbengine tier {tier} retention size");
-            c.move_option(SECTION_DB, &old, SECTION_DB, &new);
-            c.move_option(
+            legacy |= c.move_option(SECTION_DB, &old, SECTION_DB, &new) && tier == 0;
+            legacy |= c.move_option(
                 SECTION_DB,
                 &format!("dbengine tier {tier} disk space MB"),
                 SECTION_DB,
                 &new,
-            );
+            ) && tier == 0;
         }
         let tail: &[(&str, &str, &str, &str)] = &[
             (SECTION_LOGS, "error", SECTION_LOGS, "daemon"),
@@ -568,6 +577,7 @@ impl Conf {
         for &(so, no, sn, nn) in tail {
             c.move_option(so, no, sn, nn);
         }
+        self.legacy_multihost_db_space = legacy;
     }
 
     /// `netdata_conf_section_directories()`: the runtime paths, then the plugin directories list.
@@ -784,9 +794,10 @@ impl Conf {
     }
 }
 
-/// `netdata_conf_section_db()` (`src/daemon/config/netdata-conf-db.c`) up to the dbengine options. KSM and the
-/// orphan, ephemeral and obsolete cleanups are not ported: their options are read so that they print as in C.
-pub fn section_db(c: &mut Config, page_size: i64) -> DbSection {
+/// `netdata_conf_section_db()` (`src/daemon/config/netdata-conf-db.c`), with the dbengine datafiles detection over the
+/// cache directory and `netdata_conf_dbengine_pre_logs()`. KSM and the orphan, ephemeral and obsolete cleanups are not
+/// ported: their options are read so that they print as in C.
+pub fn section_db(c: &mut Config, page_size: i64, cache_dir: &str) -> DbSection {
     // nd_profile.update_every: 1 for every profile, iot included (its "MUST BE 2" note notwithstanding).
     let mut update_every = c.get_duration_seconds(SECTION_DB, "update every", 1) as i32;
     if update_every < UPDATE_EVERY_MIN {
@@ -822,6 +833,8 @@ pub fn section_db(c: &mut Config, page_size: i64) -> DbSection {
         );
         c.set(SECTION_DB, "db", mode.name());
     }
+
+    let datafiles_present = dbengine_datafiles_present(cache_dir);
 
     let mut history_entries = DEFAULT_HISTORY_ENTRIES;
     if mode != DbMode::Dbengine && mode != DbMode::None {
@@ -864,12 +877,323 @@ pub fn section_db(c: &mut Config, page_size: i64) -> DbSection {
         c.set_number(SECTION_DB, "gap when lost iterations above", 1);
     }
 
+    // netdata_conf_dbengine_pre_logs()
+    let page_type = text(c.get(SECTION_DB, "dbengine page type", Some("gorilla")));
+    let page_type = match page_type.as_str() {
+        "gorilla" => PAGE_TYPE_GORILLA_32BIT,
+        "raw" => PAGE_TYPE_ARRAY_32BIT,
+        _ => {
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "Invalid dbengine page type ''{page_type}' given. Defaulting to 'raw'."
+            );
+            PAGE_TYPE_ARRAY_32BIT
+        }
+    };
+    // (int) casts of the sizes, as C's globals are ints
+    let mut page_cache_mb = c.get_size_mb(
+        SECTION_DB,
+        "dbengine page cache size",
+        DEFAULT_PAGE_CACHE_MB,
+    ) as i32;
+    let mut extent_cache_mb = c.get_size_mb(SECTION_DB, "dbengine extent cache size", 0) as i32;
+    let journal_check = c.get_boolean(SECTION_DB, "dbengine enable journal integrity check", false);
+    if extent_cache_mb < 0 {
+        extent_cache_mb = 0;
+        c.set_size_mb(SECTION_DB, "dbengine extent cache size", 0);
+    }
+    if page_cache_mb < MIN_PAGE_CACHE_MB {
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "Invalid page cache size {page_cache_mb} given. Defaulting to {MIN_PAGE_CACHE_MB}."
+        );
+        page_cache_mb = MIN_PAGE_CACHE_MB;
+        c.set_size_mb(
+            SECTION_DB,
+            "dbengine page cache size",
+            MIN_PAGE_CACHE_MB as u64,
+        );
+    }
+
     DbSection {
         update_every,
         mode,
         history_entries,
         gap_when_lost_iterations_above: i64::from(gap) + 2,
         free_ephemeral_time_s: ephemeral,
+        datafiles_present,
+        page_type,
+        page_cache_mb,
+        extent_cache_mb,
+        journal_check,
+    }
+}
+
+/// `dbengine tier backfill` (`RRD_BACKFILL`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backfill {
+    New,
+    Full,
+    None,
+}
+
+/// A configured tier as `netdata_conf_dbengine_init()` prepares it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TierSettings {
+    /// Its directory; `None` when it could not be created (the tier is skipped, its keys unread).
+    pub path: Option<String>,
+    /// `dbengine tier N retention size` in MiB (C's int).
+    pub disk_space_mb: i32,
+    /// `dbengine tier N retention time` in seconds.
+    pub retention_s: i64,
+}
+
+/// What `netdata_conf_dbengine_init()` reads, before it starts the tiers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DbengineConf {
+    pub use_all_ram_for_caches: bool,
+    /// `dbengine_out_of_memory_protection` in bytes, 0 when the system memory is unknown.
+    pub out_of_memory_protection: u64,
+    pub direct_io: bool,
+    pub journal_v2_unmount_time_s: i64,
+    pub pages_per_extent: u32,
+    pub backfill: Backfill,
+    /// `storage_tiers_grouping_iterations` of the configured tiers (tier 0's is the update every).
+    pub grouping_iterations: Vec<u64>,
+    /// One per configured tier (`nd_profile.storage_tiers` as read).
+    pub tiers: Vec<TierSettings>,
+}
+
+/// `"%s/dbengine"` or `"%s/dbengine-tier%zu"` over the cache directory, formatted as C does (a trailing slash stays
+/// doubled).
+pub fn tier_dir(cache_dir: &str, tier: usize) -> String {
+    if tier == 0 {
+        format!("{cache_dir}/dbengine")
+    } else {
+        format!("{cache_dir}/dbengine-tier{tier}")
+    }
+}
+
+/// `netdata_conf_dbengine_init()` up to the tiers' start: C's keys in C's order, with its checks, write-backs and
+/// records, and each tier's directory created (mode 0775) before its keys are read. `memory` is what
+/// `os_system_memory(true)` reports at this point.
+pub fn dbengine_init(
+    c: &mut Config,
+    hostname: &str,
+    cache_dir: &str,
+    parent_profile: bool,
+    update_every: i32,
+    legacy_multihost_db_space: bool,
+    memory: system::SystemMemory,
+) -> DbengineConf {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let mut oom = 0;
+    if memory.total > 0 && memory.total > memory.available {
+        let keep_free = (memory.total / 10).min(5 * GIB);
+        oom = size_to_string(keep_free, "B", false)
+            .and_then(|t| size_parse(t.as_bytes(), "B"))
+            .unwrap_or(0);
+    }
+    let mut use_all_ram_for_caches = false;
+    if oom != 0 {
+        use_all_ram_for_caches =
+            c.get_boolean(SECTION_DB, "dbengine use all ram for caches", false);
+        oom = c.get_size_bytes(SECTION_DB, "dbengine out of memory protection", oom);
+        let size = |v: u64| size_to_string(v, "B", false).unwrap_or_default();
+        nd_log!(
+            Source::Daemon,
+            Priority::Notice,
+            "DBENGINE memory protection enabled. Netdata will limit DBENGINE memory usage to help keep at least {} of \
+             system RAM available when possible and reduce OOM risk. System memory total: {}, currently available: {}, \
+             use all RAM for caches: {}",
+            size(oom),
+            size(memory.total),
+            size(memory.available),
+            if use_all_ram_for_caches {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+    } else {
+        nd_log!(
+            Source::Daemon,
+            Priority::Warning,
+            "DBENGINE memory protection is disabled because Netdata could not detect system memory size. \
+             \"use all RAM for caches\" is also disabled."
+        );
+    }
+
+    let direct_io = c.get_boolean(SECTION_DB, "dbengine use direct io", true);
+    let journal_v2_unmount_time_s = c.get_duration_seconds(
+        SECTION_DB,
+        "dbengine journal v2 unmount time",
+        if parent_profile { 600 } else { 120 },
+    );
+
+    let read = c.get_number(
+        SECTION_DB,
+        "dbengine pages per extent",
+        i64::from(PAGES_PER_EXTENT),
+    ) as u32;
+    let pages_per_extent = if read > 0 && read <= PAGES_PER_EXTENT {
+        read
+    } else {
+        nd_log!(
+            Source::Daemon,
+            Priority::Warning,
+            "Invalid dbengine pages per extent {read} given. Using {PAGES_PER_EXTENT}."
+        );
+        c.set_number(
+            SECTION_DB,
+            "dbengine pages per extent",
+            i64::from(PAGES_PER_EXTENT),
+        );
+        PAGES_PER_EXTENT
+    };
+
+    // nd_profile.storage_tiers is a size_t: a negative value is above the maximum
+    let mut storage_tiers = c.get_number(SECTION_DB, "storage tiers", 3) as u64;
+    if storage_tiers < 1 {
+        nd_log!(
+            Source::Daemon,
+            Priority::Warning,
+            "At least 1 storage tier is required. Assuming 1."
+        );
+        storage_tiers = 1;
+        c.set_number(SECTION_DB, "storage tiers", 1);
+    }
+    if storage_tiers > STORAGE_TIERS as u64 {
+        nd_log!(
+            Source::Daemon,
+            Priority::Warning,
+            "Up to {STORAGE_TIERS} storage tier are supported. Assuming {STORAGE_TIERS}."
+        );
+        storage_tiers = STORAGE_TIERS as u64;
+        c.set_number(SECTION_DB, "storage tiers", STORAGE_TIERS as i64);
+    }
+    let storage_tiers = storage_tiers as usize;
+
+    let new_dbengine_defaults = !legacy_multihost_db_space
+        && (1..STORAGE_TIERS).all(|t| {
+            !c.exists(
+                SECTION_DB,
+                &format!("dbengine tier {t} update every iterations"),
+            )
+        })
+        && (1..STORAGE_TIERS)
+            .all(|t| !c.exists(SECTION_DB, &format!("dbengine tier {t} retention size")));
+
+    let bf = text(c.get(SECTION_DB, "dbengine tier backfill", Some("new")));
+    let backfill = match bf.as_str() {
+        "new" => Backfill::New,
+        "full" => Backfill::Full,
+        "none" => Backfill::None,
+        _ => {
+            nd_log!(
+                Source::Daemon,
+                Priority::Warning,
+                "DBENGINE: unknown backfill value '{bf}', assuming 'new'"
+            );
+            c.set(SECTION_DB, "dbengine tier backfill", "new");
+            Backfill::New
+        }
+    };
+
+    let mut grouping_iterations = vec![update_every as u64];
+    for tier in 1..storage_tiers {
+        let key = format!("dbengine tier {tier} update every iterations");
+        let mut iterations = c.get_number(SECTION_DB, &key, 60) as u64;
+        if iterations < 2 {
+            iterations = 2;
+            c.set_number(SECTION_DB, &key, 2);
+            nd_log!(
+                Source::Daemon,
+                Priority::Warning,
+                "DBENGINE on '{hostname}': 'dbegnine tier {tier} update every iterations' cannot be less than 2. \
+                 Assuming 2."
+            );
+        }
+        grouping_iterations.push(iterations);
+    }
+
+    let mut tier0_mb = c.get_size_mb(
+        SECTION_DB,
+        "dbengine tier 0 retention size",
+        DEFAULT_TIER_DISK_SPACE_MB,
+    ) as i32;
+    if tier0_mb != 0 && tier0_mb < MIN_DISK_SPACE_MB {
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "Invalid disk space {tier0_mb} for tier 0 given. Defaulting to {MIN_DISK_SPACE_MB}."
+        );
+        tier0_mb = MIN_DISK_SPACE_MB;
+        c.set_size_mb(
+            SECTION_DB,
+            "dbengine tier 0 retention size",
+            MIN_DISK_SPACE_MB as u64,
+        );
+    }
+
+    const DAYS: u32 = 86400;
+    const RETENTION_S: [u32; STORAGE_TIERS] =
+        [14 * DAYS, 90 * DAYS, 730 * DAYS, 730 * DAYS, 730 * DAYS];
+    let tiers = (0..storage_tiers)
+        .map(|tier| {
+            let path = tier_dir(cache_dir, tier);
+            if let Err(err) = std::fs::DirBuilder::new().mode(0o775).create(&path) {
+                if err.kind() != std::io::ErrorKind::AlreadyExists {
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Crit,
+                        "DBENGINE on '{hostname}': cannot create directory '{path}'"
+                    );
+                    return TierSettings {
+                        path: None,
+                        disk_space_mb: 0,
+                        retention_s: 0,
+                    };
+                }
+            }
+            let default_mb = if tier == 0 {
+                tier0_mb
+            } else {
+                DEFAULT_TIER_DISK_SPACE_MB as i32
+            };
+            let disk_space_mb = c.get_size_mb(
+                SECTION_DB,
+                &format!("dbengine tier {tier} retention size"),
+                default_mb as u64,
+            ) as i32;
+            let retention_s = c.get_duration_days_to_seconds(
+                SECTION_DB,
+                &format!("dbengine tier {tier} retention time"),
+                if new_dbengine_defaults {
+                    RETENTION_S[tier]
+                } else {
+                    0
+                },
+            );
+            TierSettings {
+                path: Some(path),
+                disk_space_mb,
+                retention_s,
+            }
+        })
+        .collect();
+
+    DbengineConf {
+        use_all_ram_for_caches,
+        out_of_memory_protection: oom,
+        direct_io,
+        journal_v2_unmount_time_s,
+        pages_per_extent,
+        backfill,
+        grouping_iterations,
+        tiers,
     }
 }
 
@@ -1249,6 +1573,14 @@ const UPDATE_EVERY_MIN: i32 = 1;
 const UPDATE_EVERY_MAX: i32 = 3600;
 /// `RRD_DEFAULT_HISTORY_ENTRIES`.
 const DEFAULT_HISTORY_ENTRIES: i64 = 3600;
+/// `default_rrdeng_page_cache_mb` and `RRDENG_MIN_PAGE_CACHE_SIZE_MB`.
+const DEFAULT_PAGE_CACHE_MB: u64 = 32;
+const MIN_PAGE_CACHE_MB: i32 = 8;
+/// `DEFAULT_PAGES_PER_EXTENT`.
+const PAGES_PER_EXTENT: u32 = 109;
+/// `RRDENG_DEFAULT_TIER_DISK_SPACE_MB` and `RRDENG_MIN_DISK_SPACE_MB`.
+const DEFAULT_TIER_DISK_SPACE_MB: u64 = 1024;
+const MIN_DISK_SPACE_MB: i32 = 25;
 
 /// What `[db]` sets for the rest of the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1263,13 +1595,21 @@ pub struct DbSection {
     pub gap_when_lost_iterations_above: i64,
     /// `rrdhost_free_ephemeral_time_s`: `[db] cleanup ephemeral hosts after`, 0 for never.
     pub free_ephemeral_time_s: i64,
+    /// `dbengine_datafiles_present`.
+    pub datafiles_present: bool,
+    /// `tier_page_type[0]`: `[db] dbengine page type`.
+    pub page_type: u8,
+    /// `default_rrdeng_page_cache_mb` and `default_rrdeng_extent_cache_mb`.
+    pub page_cache_mb: i32,
+    pub extent_cache_mb: i32,
+    /// `db_engine_journal_check`.
+    pub journal_check: bool,
 }
 
 /// `dbengine_datafiles_present`, as `netdata_conf_section_db()` detects it whatever the memory mode: a datafile in any
 /// of the `RRD_STORAGE_TIERS` tier directories of the cache (a name `sscanf()` reads as `datafile-%1u-%10u`). The
 /// metadata writer then keeps the rows of freed dimensions, which may still describe that data.
-pub fn dbengine_datafiles_present(cache_dir: &Path) -> bool {
-    const RRD_STORAGE_TIERS: usize = 5;
+pub fn dbengine_datafiles_present(cache_dir: &str) -> bool {
     // sscanf(): both numbers must convert (after optional white space); what follows them is not checked
     let is_datafile = |name: &str| {
         let Some(rest) = name.strip_prefix("datafile-") else {
@@ -1285,13 +1625,8 @@ pub fn dbengine_datafiles_present(cache_dir: &Path) -> bool {
             .trim_start()
             .starts_with(|c: char| c.is_ascii_digit())
     };
-    (0..RRD_STORAGE_TIERS).any(|tier| {
-        let dir = if tier == 0 {
-            cache_dir.join("dbengine")
-        } else {
-            cache_dir.join(format!("dbengine-tier{tier}"))
-        };
-        std::fs::read_dir(dir).is_ok_and(|entries| {
+    (0..STORAGE_TIERS).any(|tier| {
+        std::fs::read_dir(tier_dir(cache_dir, tier)).is_ok_and(|entries| {
             entries
                 .flatten()
                 .any(|e| e.file_name().to_str().is_some_and(is_datafile))
@@ -1675,15 +2010,11 @@ mod tests {
     }
 
     fn loaded(db_section: &str) -> Config {
-        let path = std::env::temp_dir().join(format!(
-            "nd-conf-db-{}-{}.conf",
-            std::process::id(),
-            db_section.len()
-        ));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("netdata.conf");
         std::fs::write(&path, format!("[db]\n{db_section}")).unwrap();
         let mut c = Config::default();
         assert!(c.load(&path, false, None).is_ok());
-        std::fs::remove_file(&path).unwrap();
         c
     }
 
@@ -1748,6 +2079,11 @@ mod tests {
             history_entries: 3600,
             gap_when_lost_iterations_above: 3,
             free_ephemeral_time_s: 0,
+            datafiles_present: false,
+            page_type: PAGE_TYPE_GORILLA_32BIT,
+            page_cache_mb: 32,
+            extent_cache_mb: 0,
+            journal_check: false,
         };
         let cases = std::collections::BTreeMap::from([
             (
@@ -1788,8 +2124,7 @@ mod tests {
                         update_every: 3600,
                         mode: DbMode::Ram,
                         history_entries: 4096,
-                        gap_when_lost_iterations_above: 3,
-                        free_ephemeral_time_s: 0,
+                        ..dbengine
                     },
                     values: &[
                         ("db", "ram"),
@@ -1810,10 +2145,59 @@ mod tests {
                     values: &[("db", "ram"), ("retention", "1h8m16s")],
                 },
             ),
+            (
+                "engine defaults",
+                DbCase {
+                    file: "",
+                    want: dbengine,
+                    values: &[
+                        ("dbengine page type", "gorilla"),
+                        ("dbengine page cache size", "32MiB"),
+                        ("dbengine enable journal integrity check", "no"),
+                    ],
+                },
+            ),
+            (
+                "raw pages, journal check",
+                DbCase {
+                    file: "dbengine page type = raw\ndbengine enable journal integrity check = yes\n",
+                    want: DbSection {
+                        page_type: PAGE_TYPE_ARRAY_32BIT,
+                        journal_check: true,
+                        ..dbengine
+                    },
+                    values: &[("dbengine page type", "raw")],
+                },
+            ),
+            (
+                "bogus page type, small page cache",
+                DbCase {
+                    file: "dbengine page type = bogus\ndbengine page cache size = 4\n",
+                    want: DbSection {
+                        page_type: PAGE_TYPE_ARRAY_32BIT,
+                        page_cache_mb: 8,
+                        ..dbengine
+                    },
+                    // the page type is not written back
+                    values: &[
+                        ("dbengine page type", "bogus"),
+                        ("dbengine page cache size", "8MiB"),
+                    ],
+                },
+            ),
+            (
+                "extent cache beyond an int",
+                DbCase {
+                    file: "dbengine extent cache size = 3PiB\n",
+                    want: dbengine,
+                    values: &[("dbengine extent cache size", "off")],
+                },
+            ),
         ]);
         for (name, case) in cases {
             let mut c = loaded(case.file);
-            let (got, logs) = netdata_agent_log::capture(|| section_db(&mut c, 4096));
+            let (got, logs) =
+                netdata_agent_log::capture(|| section_db(&mut c, 4096, "/nonexistent-cache"));
             assert_eq!(got, case.want, "{name}: {logs:?}");
             for (key, value) in case.values {
                 let v = c
@@ -1824,12 +2208,220 @@ mod tests {
         }
     }
 
+    /// `netdata_conf_dbengine_init()`'s keys: clamps with their write-backs and records, profile defaults, the new
+    /// defaults' retention times, and the tiers' directories.
+    #[test]
+    fn dbengine_init_reads_as_c() {
+        struct Case {
+            file: &'static str,
+            parent: bool,
+            legacy: bool,
+            tiers: usize,
+            pages_per_extent: u32,
+            backfill: Backfill,
+            grouping: &'static [u64],
+            retention_s: &'static [i64],
+            disk_space_mb: &'static [i32],
+            values: &'static [(&'static str, &'static str)],
+            records: &'static [&'static str],
+        }
+        const D: i64 = 86400;
+        let defaults = Case {
+            file: "",
+            parent: false,
+            legacy: false,
+            tiers: 3,
+            pages_per_extent: 109,
+            backfill: Backfill::New,
+            grouping: &[1, 60, 60],
+            retention_s: &[14 * D, 90 * D, 730 * D],
+            disk_space_mb: &[1024, 1024, 1024],
+            values: &[
+                ("dbengine journal v2 unmount time", "2m"),
+                ("storage tiers", "3"),
+            ],
+            records: &[],
+        };
+        let cases = std::collections::BTreeMap::from([
+            ("defaults", Case { ..defaults }),
+            (
+                "parent unmount time",
+                Case {
+                    parent: true,
+                    values: &[("dbengine journal v2 unmount time", "10m")],
+                    ..defaults
+                },
+            ),
+            (
+                "one tier at least",
+                Case {
+                    file: "storage tiers = 0\n",
+                    tiers: 1,
+                    grouping: &[1],
+                    retention_s: &[14 * D],
+                    disk_space_mb: &[1024],
+                    values: &[("storage tiers", "1")],
+                    records: &["At least 1 storage tier is required. Assuming 1."],
+                    ..defaults
+                },
+            ),
+            (
+                "negative tiers are too many",
+                Case {
+                    file: "storage tiers = -1\n",
+                    tiers: 5,
+                    grouping: &[1, 60, 60, 60, 60],
+                    retention_s: &[14 * D, 90 * D, 730 * D, 730 * D, 730 * D],
+                    disk_space_mb: &[1024; 5],
+                    values: &[("storage tiers", "5")],
+                    records: &["Up to 5 storage tier are supported. Assuming 5."],
+                    ..defaults
+                },
+            ),
+            (
+                "clamps and write-backs",
+                Case {
+                    file: "dbengine pages per extent = 110\ndbengine tier backfill = bogus\n\
+                           dbengine tier 1 update every iterations = 1\ndbengine tier 0 retention size = 10MiB\n",
+                    grouping: &[1, 2, 60],
+                    disk_space_mb: &[25, 1024, 1024],
+                    // an iterations key present turns the new retention defaults off
+                    retention_s: &[0, 0, 0],
+                    values: &[
+                        ("dbengine pages per extent", "109"),
+                        ("dbengine tier backfill", "new"),
+                        ("dbengine tier 1 update every iterations", "2"),
+                        ("dbengine tier 0 retention size", "25MiB"),
+                    ],
+                    records: &[
+                        "Invalid dbengine pages per extent 110 given. Using 109.",
+                        "DBENGINE: unknown backfill value 'bogus', assuming 'new'",
+                        "DBENGINE on 'h': 'dbegnine tier 1 update every iterations' cannot be less than 2. Assuming 2.",
+                        "Invalid disk space 10 for tier 0 given. Defaulting to 25.",
+                    ],
+                    ..defaults
+                },
+            ),
+            (
+                "legacy disk space",
+                Case {
+                    legacy: true,
+                    retention_s: &[0, 0, 0],
+                    ..defaults
+                },
+            ),
+            (
+                "full backfill",
+                Case {
+                    file: "dbengine tier backfill = full\n",
+                    backfill: Backfill::Full,
+                    ..defaults
+                },
+            ),
+        ]);
+        let memory = system::SystemMemory {
+            total: 16 << 30,
+            available: 8 << 30,
+        };
+        for (name, case) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let cache = dir.path().to_str().unwrap();
+            let mut c = loaded(case.file);
+            let (got, records) = netdata_agent_log::capture(|| {
+                dbengine_init(&mut c, "h", cache, case.parent, 1, case.legacy, memory)
+            });
+            let records: Vec<String> = records.into_iter().filter_map(|r| r.message).collect();
+            assert!(
+                records[0].starts_with("DBENGINE memory protection enabled. "),
+                "{name}: {records:?}"
+            );
+            assert_eq!(&records[1..], case.records, "{name}");
+            let want_tiers: Vec<TierSettings> = (0..case.tiers)
+                .map(|t| TierSettings {
+                    path: Some(tier_dir(cache, t)),
+                    disk_space_mb: case.disk_space_mb[t],
+                    retention_s: case.retention_s[t],
+                })
+                .collect();
+            assert_eq!(
+                (
+                    got.pages_per_extent,
+                    got.backfill,
+                    got.grouping_iterations.as_slice(),
+                    got.tiers
+                ),
+                (
+                    case.pages_per_extent,
+                    case.backfill,
+                    case.grouping,
+                    want_tiers
+                ),
+                "{name}"
+            );
+            assert!(
+                (0..case.tiers).all(|t| Path::new(&tier_dir(cache, t)).is_dir()),
+                "{name}"
+            );
+            for (key, value) in case.values {
+                let v = c
+                    .get(SECTION_DB, key, None)
+                    .map(|v| String::from_utf8_lossy(&v).into_owned());
+                assert_eq!(v.as_deref(), Some(*value), "{name}: [db] {key}");
+            }
+        }
+    }
+
+    /// A tier whose directory cannot be created is skipped with C's record, its keys unread (an existing file is
+    /// EEXIST, which C takes as success); unknown memory turns the protection off with C's warning and reads neither
+    /// of its keys.
+    #[test]
+    fn dbengine_init_skips_tiers_without_their_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = format!("{}/missing", dir.path().display());
+        let mut c = loaded("storage tiers = 2\n");
+        let (got, records) = netdata_agent_log::capture(|| {
+            dbengine_init(
+                &mut c,
+                "h",
+                &cache,
+                false,
+                1,
+                false,
+                system::SystemMemory::default(),
+            )
+        });
+        let records: Vec<String> = records.into_iter().filter_map(|r| r.message).collect();
+        assert_eq!(
+            records,
+            [
+                "DBENGINE memory protection is disabled because Netdata could not detect system memory size. \
+                 \"use all RAM for caches\" is also disabled."
+                    .to_string(),
+                format!("DBENGINE on 'h': cannot create directory '{cache}/dbengine'"),
+                format!("DBENGINE on 'h': cannot create directory '{cache}/dbengine-tier1'"),
+            ]
+        );
+        assert_eq!(
+            got.tiers.iter().map(|t| t.path.clone()).collect::<Vec<_>>(),
+            [None, None]
+        );
+        for key in [
+            "dbengine tier 0 retention time",
+            "dbengine tier 1 retention size",
+            "dbengine out of memory protection",
+            "dbengine use all ram for caches",
+        ] {
+            assert!(!c.exists(SECTION_DB, key), "{key}");
+        }
+    }
+
     /// A datafile name in any tier directory counts, as C's `sscanf()` reads it; journals, other names and missing
     /// directories do not.
     #[test]
     fn dbengine_datafiles_are_detected_as_c() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!dbengine_datafiles_present(dir.path()));
+        let cache = dir.path().to_str().unwrap();
+        assert!(!dbengine_datafiles_present(cache));
         std::fs::create_dir(dir.path().join("dbengine")).unwrap();
         for name in [
             "journalfile-1-0000000001.njf",
@@ -1839,13 +2431,17 @@ mod tests {
         ] {
             std::fs::write(dir.path().join("dbengine").join(name), b"").unwrap();
         }
-        assert!(!dbengine_datafiles_present(dir.path()));
+        assert!(!dbengine_datafiles_present(cache));
         std::fs::create_dir(dir.path().join("dbengine-tier4")).unwrap();
         std::fs::write(
             dir.path().join("dbengine-tier4/datafile-4-0000000007.ndf"),
             b"",
         )
         .unwrap();
-        assert!(dbengine_datafiles_present(dir.path()));
+        assert!(dbengine_datafiles_present(cache));
+        // C's "%s/dbengine": a trailing slash stays doubled, and the directory still opens
+        assert!(dbengine_datafiles_present(&format!("{cache}/")));
+        assert_eq!(tier_dir("/c/", 0), "/c//dbengine");
+        assert_eq!(tier_dir("/c", 2), "/c/dbengine-tier2");
     }
 }

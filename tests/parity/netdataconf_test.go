@@ -27,12 +27,6 @@ func pending(reason, section string, keys ...string) {
 
 func init() {
 	pending("daemon status file", "global", "crash reports")
-	pending("dbengine (D4)", "db", "storage tiers", "dbengine tier 0 retention time", "dbengine tier 1 retention time",
-		"dbengine tier 2 retention time", "dbengine page type", "dbengine page cache size", "dbengine extent cache size",
-		"dbengine enable journal integrity check", "dbengine use all ram for caches", "dbengine out of memory protection",
-		"dbengine use direct io", "dbengine journal v2 unmount time", "dbengine pages per extent",
-		"dbengine tier backfill", "dbengine tier 1 update every iterations", "dbengine tier 2 update every iterations",
-		"dbengine tier 0 retention size", "dbengine tier 1 retention size", "dbengine tier 2 retention size")
 	pending("contexts engine (extreme cardinality)", "db", "extreme cardinality protection",
 		"extreme cardinality keep instances", "extreme cardinality min ephemerality")
 	pending("registry", "directories", "registry")

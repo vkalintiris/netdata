@@ -163,7 +163,11 @@ fn the_readers_list_cs_metrics_and_hosts() {
             .map(|h| h.hostname.unwrap())
             .collect();
         assert_eq!(archived, ["b6child"], "{run}");
-        assert_eq!(meta.dimension_uuids(|_| {}), uuids, "{run}");
+        assert_eq!(
+            netdata_agent_metadata::read::populate_metrics(dir.path(), Some(&meta), |_| {}),
+            uuids,
+            "{run}"
+        );
         meta.close();
     }
 }

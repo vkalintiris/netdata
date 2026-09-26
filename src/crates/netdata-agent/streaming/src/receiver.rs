@@ -475,7 +475,7 @@ impl Receivers {
             };
             conf.receiver_config(&key, &guid, &defaults)
         };
-        // No dbengine yet: a child asking for it gets the default, as C does when dbengine is disabled.
+        // A child asking for dbengine gets the default until the dbengine write path (D62.2).
         let mut mode = DbMode::from_name(&config.db_mode);
         if mode == DbMode::Dbengine {
             mode = DbMode::from_name(&self.defaults.db_mode);

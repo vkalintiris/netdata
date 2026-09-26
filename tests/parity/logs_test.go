@@ -30,7 +30,7 @@ var cOnlyRecords = []struct {
 	{regexp.MustCompile(`msg="Netdata Agent version '.*' is starting\.\.\.`), "daemon status file (startup event)"},
 	{regexp.MustCompile(`msg="MCP[: ]`), "MCP"},
 	{regexp.MustCompile(`msg="(JSON-RPC protocol|Echo protocol|MCP WebSocket adapter|WebSocket server subsystem) initialized`), "WebSocket"},
-	{regexp.MustCompile(`msg="DBENGINE|msg="Flushing DBENGINE|thread=DBEV `), "dbengine (milestone D4)"},
+	{regexp.MustCompile(`msg="Flushing DBENGINE|msg="DBENGINE: flushing`), "C's pulse charts write into dbengine (S3/S6)"},
 	{regexp.MustCompile(`msg="RRDCONTEXT: metadata for node `), "dbengine (milestone D4)"},
 	{regexp.MustCompile(`msg="ACLK[: ]`), "ACLK"},
 	{regexp.MustCompile(`msg="SQL: (suppressing SQLite teardown|skipping )`), "SQLite teardown"},
@@ -49,16 +49,17 @@ var portedRecords = regexp.MustCompile(`msg="ACLK: (proxy is|using |proxy is exp
 // timedRecords depend on when a run stops rather than on what it did: the metadata writer's periodic job (from 6 s
 // after METASYNC starts) and the per-host lines of its final store, whose hosts are the ones changed since the last
 // job (C's localhost has pulse charts, D48.6). Both sides drop them; a check whose state is fixed compares them (D61.6).
-var timedRecords = regexp.MustCompile(`msg="Checking all hosts completed in |msg="METADATA: Progress of metadata storage: +[0-9.]+% completed"`)
+// The dbengine population's progress lines race its workers, so they drop too.
+var timedRecords = regexp.MustCompile(`msg="Checking all hosts completed in |msg="METADATA: Progress of metadata storage: +[0-9.]+% completed"|msg="DBENGINE: tier \d+: MRG population completed: `)
 
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
 var cOnlyThreads = map[string]string{
-	"DBEV": "dbengine", "ACLKSYNC": "ACLK", "SDBUSWATCHER": "systemd bus watcher",
+	"ACLKSYNC": "ACLK", "SDBUSWATCHER": "systemd bus watcher",
 	"PULSE": "pulse charts", "PLUGINSD": "plugins.d",
 	"SERVICE": "service thread", "HEALTH": "health", "ANALYTICS": "analytics",
-	"DBENGINIT": "dbengine (milestone D4)", "EXPORTING": "exporting engine", "STATSD_FLUSH": "statsd",
-	"ACLK_MAIN": "ACLK", "BACKFILL": "dbengine tier backfill", "EXTENT_PGC": "dbengine", "MAIN_PGC": "dbengine",
-	"OPEN_PGC": "dbengine", "REPLAY": "replication sender threads", "rrdeng-exit": "dbengine",
+	"EXPORTING": "exporting engine", "STATSD_FLUSH": "statsd",
+	"ACLK_MAIN": "ACLK", "BACKFILL": "dbengine tier backfill", "EXTENT_PGC": "dbengine evictors (S6)",
+	"MAIN_PGC": "dbengine evictors (S6)", "OPEN_PGC": "dbengine evictors (S6)", "REPLAY": "replication sender threads",
 }
 
 // logMasks hide what differs between any two runs of the same binary: clocks, ids, ports, descriptors, timings.
@@ -75,7 +76,8 @@ var logMasks = []struct {
 	{regexp.MustCompile(` src_port=\d+`), " src_port=P"},
 	{regexp.MustCompile(`\]:\d+`), "]:P"},
 	{regexp.MustCompile(` ([a-z_]+_ut)=\d+`), " ${1}=U"},
-	{regexp.MustCompile(`thread=(WEB|STREAM|UV_WORKER)\[\d+\]`), "thread=${1}[n]"},
+	// DBENGINIT: whichever tier thread takes the spawn lock first logs the registry's pre-population (D63.2)
+	{regexp.MustCompile(`thread=(WEB|STREAM|UV_WORKER|DBENGINIT)\[\d+\]`), "thread=${1}[n]"},
 	{regexp.MustCompile(`STREAM RCV\[\d+\]`), "STREAM RCV[n]"},
 	{regexp.MustCompile(`in +\d+ ms, `), "in N ms, "},
 	{regexp.MustCompile(`connected=\d+s idle=\d+s`), "connected=Ns idle=Ns"},
@@ -89,6 +91,9 @@ var logMasks = []struct {
 	{regexp.MustCompile(`(Progress of metadata storage: +[0-9.]+% completed) in [^"]*"`), "${1} in D\""},
 	{regexp.MustCompile(`\(fd \d+\)|on fd \d+`), "fd N"},
 	{regexp.MustCompile(`stopped after \d+ connects, \d+ disconnects \(max concurrent \d+\), \d+ receptions and \d+ sends`), "stopped after C"},
+	{regexp.MustCompile(`(MRG: Loaded \d+ metrics from database in) [^"]*"`), "${1} D\""},
+	{regexp.MustCompile(`currently available: [^,]*,`), "currently available: M,"},
+	{regexp.MustCompile(`(populated, size: [^,]*, metrics: [^,]*), [0-9.]+ ms"`), "${1}, N ms\""},
 }
 
 var (
@@ -131,8 +136,8 @@ func threadOf(line string) string {
 }
 
 // normalizeLog masks a record. The main thread's and the shutdown watcher's records carry a stale errno in C, which
-// the check ignores (D36), as do the command server's own lifecycle records (D57.2); its read and libuv error records
-// keep theirs. The harness picks each daemon's port.
+// the check ignores (D36), as do the command server's own lifecycle records (D57.2) and the registry's pre-population
+// record (D63.1); the command server's read and libuv error records keep theirs. The harness picks each daemon's port.
 func normalizeLog(line, runDir, port string) string {
 	line = strings.ReplaceAll(line, runDir, "<RUN>")
 	if port != "" {
@@ -140,7 +145,7 @@ func normalizeLog(line, runDir, port string) string {
 		line = strings.ReplaceAll(line, ":"+port, ":<PORT>")
 	}
 	th := threadOf(line)
-	if th == "" || th == "EXIT_WATCHER" ||
+	if th == "" || th == "EXIT_WATCHER" || strings.Contains(line, `msg="MRG: Loaded `) ||
 		(th == "DAEMON_COMMAND" && !strings.Contains(line, `msg="pipe_read_cb: `) && !strings.Contains(line, `msg="uv_`)) {
 		line = errnoRe.ReplaceAllString(line, "")
 	}
@@ -324,17 +329,23 @@ func diffMultisets(a, b []string) string {
 // and access logs hold the same records once the values that differ between runs are masked. The main thread and the
 // shutdown watcher match record by record; worker threads (the access log's included) match as multisets.
 func TestLogParity(t *testing.T) {
-	compareLogs(t, "")
+	compareLogs(t, "", 1)
 }
 
 // TestLogParityDebug is TestLogParity with `[logs] level = debug`, which adds the connection records and the
 // debug records of startup, hosts and streaming.
 func TestLogParityDebug(t *testing.T) {
-	compareLogs(t, "    level = debug\n")
+	compareLogs(t, "    level = debug\n", 1)
 }
 
-func compareLogs(t *testing.T, logs string) {
-	p := StartPair(t, daemon.Options{WebDir: oracleWebDir(t), LogsExtra: logs, StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity)
+// TestLogParityTiers is TestLogParityDebug with three dbengine tiers: their start threads in parallel (the registry's
+// pre-population on whichever takes the lock first), each tier made ready, quiesced and stopped on its own thread.
+func TestLogParityTiers(t *testing.T) {
+	compareLogs(t, "    level = debug\n", 3)
+}
+
+func compareLogs(t *testing.T, logs string, tiers int) {
+	p := StartPair(t, daemon.Options{WebDir: oracleWebDir(t), LogsExtra: logs, StreamMemoryMode: "ram", StorageTiers: tiers}, parentIdentity)
 	for _, side := range p.Each() {
 		logWorkload(t, side.Daemon)
 	}

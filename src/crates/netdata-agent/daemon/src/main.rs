@@ -16,6 +16,7 @@ mod conf;
 mod contexts_v2;
 mod daemon;
 mod data;
+mod dbengine;
 mod guid;
 mod host_labels;
 mod listen;
@@ -216,7 +217,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                     stream_conf.is_parent,
                     stream_conf.send.enabled,
                 );
-                conf::section_db(&mut conf.netdata, system.page_size);
+                conf::section_db(&mut conf.netdata, system.page_size, &conf.dirs.cache);
                 let w: Vec<String> = words.iter().map(|w| text(w)).collect();
                 let (target, rest) = match get2 {
                     true if w[0] == "cloud" => (&mut conf.cloud, &w[1..]),
@@ -325,7 +326,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         stream_conf.send.enabled,
     );
     profile::setup_malloc(&mut conf.netdata, profile, system.system_cpus);
-    let db = conf::section_db(&mut conf.netdata, system.page_size);
+    let db = conf::section_db(&mut conf.netdata, system.page_size, &conf.dirs.cache);
 
     startup.step("run dir");
     match system::run_dir(true) {
@@ -457,6 +458,18 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             "Failed to initialize context metadata database"
         );
     }
+    // the dbengine, when the configured mode or an enabled stream.conf receiver section stores in it
+    let mut stream_conf = stream_conf;
+    let dbengine = (db.mode == DbMode::Dbengine || stream_conf.config.stream_conf_needs_dbengine())
+        .then(|| {
+            dbengine::start(
+                &mut conf,
+                &db,
+                profile == profile::Profile::Parent,
+                &uv_pool,
+                meta.clone(),
+            )
+        });
     // metadata_sync_init()
     let metasync = match metasync::MetaSync::start(
         &uv_pool,
@@ -522,11 +535,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         meta.detect_machine_guid_change(host_id);
     }
     if let Some(meta) = &meta {
-        metasync.set_writer(
-            Arc::clone(meta),
-            Arc::clone(&hosts),
-            conf::dbengine_datafiles_present(&cache_dir),
-        );
+        metasync.set_writer(Arc::clone(meta), Arc::clone(&hosts), db.datafiles_present);
     }
     // aclk_synchronization_init(): archived hosts take the default mode after C's fallback, as children do
     match &meta {
@@ -571,7 +580,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         Arc::clone(&hosts),
         stream_load,
         receiver::Defaults {
-            // No dbengine yet: C falls back to alloc when dbengine is unavailable.
+            // children stay in alloc memory until the dbengine write path (D62.2)
             db_mode: if db.mode == DbMode::Dbengine {
                 DbMode::Alloc
             } else {
@@ -608,8 +617,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             meta.agent_event_median(EventKind::ShutdownTime),
         ),
         None => {
-            no_database("get_agent_event_time_median");
-            no_database("get_agent_event_time_median");
+            meta_store::no_database("get_agent_event_time_median");
+            meta_store::no_database("get_agent_event_time_median");
             (0, 0)
         }
     };
@@ -707,7 +716,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             build::NETDATA_VERSION,
             elapsed_us as i64,
         ),
-        None => no_database("add_agent_event"),
+        None => meta_store::no_database("add_agent_event"),
     }
     startup.completed(elapsed_us, medians.0);
     if let Some(meta) = &meta {
@@ -721,6 +730,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         "anonymous analytics (disabled)"
     });
     startup.step("mrg cleanup");
+    if let Some(dbengine) = &dbengine {
+        dbengine.prepopulate_cleanup();
+    }
     startup.step("done");
     let mut pool = pool;
     let mut stream_pool = Some(stream_pool);
@@ -728,9 +740,16 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let mut meta = meta;
     let mut context_db = context_db;
     let mut metasync = Some(metasync);
+    let mut dbengine = dbengine;
     let mut shutdown_started_ut = 0;
     shutdown::set_work(Box::new(move |step, normal| match step {
-        0 => shutdown_started_ut = startup::now_ut(),
+        // rrdeng_quiesce_all() as the watcher starts, unless the exit is abnormal
+        0 => {
+            shutdown_started_ut = startup::now_ut();
+            if let (Some(dbengine), true) = (&dbengine, normal) {
+                dbengine.quiesce();
+            }
+        }
         shutdown::STOP_WEB_SERVERS => {
             if let Some(pool) = pool.take() {
                 let _ = pool.stop_within(Some(shutdown::WEB_SERVERS_WAIT));
@@ -761,6 +780,16 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 );
             }
         }
+        shutdown::STOP_DBENGINE_TIERS => {
+            if let Some(dbengine) = dbengine.take() {
+                if normal {
+                    dbengine.exit();
+                } else {
+                    // an abnormal exit never joins the engine's threads, as C
+                    std::mem::forget(dbengine);
+                }
+            }
+        }
         shutdown::STOP_METASYNC_THREADS => {
             if let Some(metasync) = metasync.take() {
                 if normal {
@@ -778,7 +807,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 Some(meta) => {
                     meta.add_agent_event(EventKind::ShutdownTime, build::NETDATA_VERSION, took)
                 }
-                None => no_database("add_agent_event"),
+                None => meta_store::no_database("add_agent_event"),
             }
         }
         // sqlite_close_databases(): an abnormal exit leaves them open
@@ -837,16 +866,6 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
 
     shutdown::exit_gracefully(reason);
     0
-}
-
-/// `PREPARE_STATEMENT()`'s record for a statement on `db_meta` when the database could not be opened (C's handle is
-/// NULL, and SQLite answers SQLITE_MISUSE).
-fn no_database(function: &str) {
-    nd_log!(
-        Source::Daemon,
-        Priority::Err,
-        "Failed to prepare statement, rc=21 in {function}"
-    );
 }
 
 /// `stream_conf_load()`, which also detects the node profile for its replication defaults.

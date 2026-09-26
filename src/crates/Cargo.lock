@@ -2997,6 +2997,7 @@ dependencies = [
  "netdata-agent-nrpc",
  "netdata-agent-query",
  "netdata-agent-rrd",
+ "netdata-agent-storage",
  "netdata-agent-streaming",
  "netdata-agent-sys",
  "netdata-agent-text",

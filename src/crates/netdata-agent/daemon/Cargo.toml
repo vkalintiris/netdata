@@ -26,6 +26,7 @@ netdata-agent-metadata = { workspace = true }
 netdata-agent-ingest = { workspace = true }
 netdata-agent-query = { workspace = true }
 netdata-agent-rrd = { workspace = true }
+netdata-agent-storage = { workspace = true }
 netdata-agent-streaming = { workspace = true }
 netdata-agent-text = { workspace = true }
 netdata-agent-web = { workspace = true }

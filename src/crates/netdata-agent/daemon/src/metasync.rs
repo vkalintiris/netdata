@@ -33,7 +33,7 @@ const TIMER_PERIOD: Duration = Duration::from_secs(1);
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(15);
 const SHUTDOWN_POLL: Duration = Duration::from_millis(100);
 
-fn now_realtime_s() -> i64 {
+pub(crate) fn now_realtime_s() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
