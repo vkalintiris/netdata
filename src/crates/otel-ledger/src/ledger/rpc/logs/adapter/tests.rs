@@ -176,7 +176,10 @@ fn empty_logs_data_shapes_a_full_zero_count_envelope() {
     let v = serde_json::to_value(&r).unwrap();
     let mut column_keys: Vec<&str> = v["columns"].as_object().unwrap().keys().map(String::as_str).collect();
     column_keys.sort_unstable();
-    assert_eq!(column_keys, vec!["cursor", "severity", "timestamp"]);
+    assert_eq!(
+        column_keys,
+        vec!["cursor", "severity", "span_id", "timestamp", "trace_id"]
+    );
     assert!(v["facets"].as_array().unwrap().is_empty());
     assert!(v["data"].as_array().unwrap().is_empty());
     assert_eq!(v["items"]["matched"], 0);
@@ -293,14 +296,26 @@ fn build_row_cells_layout_join_severity_and_missing() {
         ],
     };
     let fields = vec!["tags".to_string(), "absent".to_string()];
-    let cells = build_row_cells(&cursor, &row, &fields);
-    // [timestamp_µs, severity, cursor, tags, absent]
-    assert_eq!(cells.len(), 5);
-    assert_eq!(cells[0], serde_json::json!(5)); // 5_000 ns / 1_000
-    assert_eq!(cells[1], serde_json::json!("ERROR")); // last severity_text
-    assert_eq!(cells[2], serde_json::json!(cursor.encode()));
-    assert_eq!(cells[3], serde_json::json!("a, b")); // multi-value join
-    assert_eq!(cells[4], serde_json::Value::Null); // absent field
+    let row = sfsq::logs::LogRow {
+        cursor,
+        row,
+        trace_id: sfst::TraceId::from_hex("4bf92f3577b34da6a3ce929d0e0e4736"),
+        span_id: None,
+    };
+    let cells = build_row_cells(&row, &fields);
+    // [timestamp_µs, severity, cursor, tags, absent, trace_id, span_id]
+    assert_eq!(
+        cells,
+        [
+            serde_json::json!(5),       // 5_000 ns / 1_000
+            serde_json::json!("ERROR"), // last severity_text
+            serde_json::json!(cursor.encode()),
+            serde_json::json!("a, b"), // multi-value join
+            serde_json::Value::Null,   // absent field
+            serde_json::json!("4bf92f3577b34da6a3ce929d0e0e4736"),
+            serde_json::Value::Null, // no span id
+        ]
+    );
 }
 
 #[test]
@@ -404,7 +419,57 @@ fn build_row_cells_single_value_is_bare_and_no_severity_is_null() {
         timestamp_ns: 0,
         fields: vec![("host".into(), "api-1".into())],
     };
-    let cells = build_row_cells(&cursor, &row, &["host".to_string()]);
+    let row = sfsq::logs::LogRow {
+        cursor,
+        row,
+        trace_id: None,
+        span_id: None,
+    };
+    let cells = build_row_cells(&row, &["host".to_string()]);
     assert_eq!(cells[1], serde_json::Value::Null); // no severity_text
     assert_eq!(cells[3], serde_json::json!("api-1")); // single value, not joined
+}
+
+/// `trace_ids`/`span_ids` accept exact-width hex (either case) and refuse
+/// the rest while parsing, so the call is a request error.
+#[test]
+fn trace_ids_validate() {
+    let parse =
+        |body: &str| serde_json::from_str::<OtelLogsRequest>(body).map_err(|e| e.to_string());
+    let ok = parse(
+        r#"{"trace_ids": ["4BF92F3577B34DA6A3CE929D0E0E4736"], "span_ids": ["00f067aa0ba902b7"]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        ok.trace_ids.map(|ids| ids.0),
+        Some(vec![
+            sfst::TraceId::from_hex("4bf92f3577b34da6a3ce929d0e0e4736").unwrap()
+        ])
+    );
+    assert_eq!(ok.span_ids.map(|ids| ids.0.len()), Some(1));
+
+    let too_many: Vec<String> = (0..101).map(|i| format!("{:032x}", i + 1)).collect();
+    let too_many = serde_json::json!({ "trace_ids": too_many }).to_string();
+    for (body, needle) in [
+        (r#"{"trace_ids": []}"#, "lists no ids"),
+        (r#"{"trace_ids": ["abc"]}"#, "32 hex characters"),
+        (
+            r#"{"trace_ids": ["4bf92f3577b34da6a3ce929d0e0e473z"]}"#,
+            "32 hex characters",
+        ),
+        (
+            r#"{"trace_ids": ["00000000000000000000000000000000"]}"#,
+            "all-zero trace id",
+        ),
+        (r#"{"span_ids": ["00f067aa0ba902b"]}"#, "16 hex characters"),
+        (r#"{"span_ids": ["0000000000000000"]}"#, "all-zero span id"),
+        (
+            r#"{"trace_ids": "4bf92f3577b34da6a3ce929d0e0e4736"}"#,
+            "invalid type",
+        ),
+        (too_many.as_str(), "at most 100"),
+    ] {
+        let error = parse(body).unwrap_err();
+        assert!(error.contains(needle), "{body}: {error}");
+    }
 }

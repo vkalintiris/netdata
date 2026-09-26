@@ -46,6 +46,16 @@ fn bitmap_with(positions: &[u32], universe: u32) -> BitmapValue {
 ///
 /// Timestamps span 6 seconds starting at `min_s`.
 fn write_test_sfst(path: &std::path::Path, min_s: u32) {
+    write_logs_sfst(path, min_s, None);
+}
+
+/// [`write_test_sfst`]'s six logs, with trace and span id columns when `ids`
+/// is given (one pair per row).
+fn write_logs_sfst(
+    path: &std::path::Path,
+    min_s: u32,
+    ids: Option<(Vec<sfst::TraceId>, Vec<sfst::SpanId>)>,
+) {
     let primary_entries: Vec<(&str, BitmapValue)> = vec![
         ("service=api", bitmap_with(&[0, 1, 2], 6)),
         ("service=worker", bitmap_with(&[3, 4, 5], 6)),
@@ -80,7 +90,19 @@ fn write_test_sfst(path: &std::path::Path, min_s: u32) {
             ]
             .into(),
         ),
-        columns: sfst::ColumnsTable::default(),
+        columns: match ids {
+            Some(_) => sfst::ColumnsTable(vec![
+                sfst::ColumnEntry {
+                    name: sfst::TraceIds::NAME.into(),
+                    ty: sfst::TraceIds::COLUMN_TYPE,
+                },
+                sfst::ColumnEntry {
+                    name: sfst::SpanIds::NAME.into(),
+                    ty: sfst::SpanIds::COLUMN_TYPE,
+                },
+            ]),
+            None => sfst::ColumnsTable::default(),
+        },
     };
     let timestamps: Vec<i64> = (0..6)
         .map(|i| (min_s as i64) * 1_000_000_000 + i * 1_000_000_000)
@@ -97,7 +119,11 @@ fn write_test_sfst(path: &std::path::Path, min_s: u32) {
     ];
 
     let counts = sfst::ChunkCounts {
-        columns: sfst::ColumnsPresent::default(),
+        columns: sfst::ColumnsPresent {
+            trace_id: ids.is_some(),
+            span_id: ids.is_some(),
+            ..sfst::ColumnsPresent::default()
+        },
         trace_id_index: false,
         trace_id_bloom: false,
         event_index: false,
@@ -112,6 +138,18 @@ fn write_test_sfst(path: &std::path::Path, min_s: u32) {
     writer.metadata(&metadata).unwrap();
     writer.timestamps(&timestamps).unwrap();
     writer.primary(primary_entries).unwrap();
+    if let Some((traces, spans)) = &ids {
+        let mut trace_ids = sfst::TraceIds::with_capacity(traces.len());
+        for id in traces {
+            trace_ids.push(*id);
+        }
+        let mut span_ids = sfst::SpanIds::with_capacity(spans.len());
+        for id in spans {
+            span_ids.push(*id);
+        }
+        writer.trace_ids(&trace_ids).unwrap();
+        writer.span_ids(&span_ids).unwrap();
+    }
     writer
         .add_stream_batch(&sfst::StreamBatch::for_write(&stream_entries))
         .unwrap();
@@ -474,13 +512,100 @@ async fn info_request_returns_capability_descriptor() {
     let resp = h.on_call(make_ctx("t1"), req).await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
     assert_eq!(v["status"], 200);
-    assert!(
-        v["accepted_params"]
-            .as_array()
-            .unwrap()
-            .contains(&Value::String("after".into()))
-    );
+    for param in ["after", "trace_ids", "span_ids"] {
+        assert!(
+            v["accepted_params"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String(param.into())),
+            "{param}"
+        );
+    }
     assert!(v.get("facets").is_none());
+}
+
+/// `trace_ids` and `span_ids` keep only their records, from files that store
+/// ids (a file without id columns contributes none), each row carrying its
+/// ids; they need an explicit window.
+#[tokio::test]
+async fn trace_filter_returns_only_the_traces_logs() {
+    let trace = |b: u8| sfst::TraceId::from([b; 16]);
+    let span = |b: u8| sfst::SpanId::from([b; 8]);
+    let mut tr = make_tenant_registries();
+    install_sfst(&mut tr, "default", 1, 1_000);
+    let reg = tr.get_or_create(&TenantId::from("default"));
+    let id = FileId::new(test_identity(), 0, 2, 7);
+    let path = reg.sfst.file_path(id);
+    let unset_trace = sfst::TraceId::UNSET;
+    write_logs_sfst(
+        &path,
+        1_000,
+        Some((
+            vec![
+                trace(1),
+                trace(2),
+                trace(1),
+                unset_trace,
+                trace(1),
+                unset_trace,
+            ],
+            vec![
+                span(1),
+                span(2),
+                span(3),
+                span(4),
+                span(1),
+                sfst::SpanId::UNSET,
+            ],
+        )),
+    );
+    let size = ByteSize(std::fs::metadata(&path).unwrap().len());
+    let summary =
+        crate::test_helpers::summary_for(&ServiceStream::new("ns", "svc"), 6, 1_000, 1_005);
+    reg.sfst.track(id, size, summary);
+    let h = make_handler(tr);
+
+    let ask = |body: String| {
+        let req: OtelLogsRequest = serde_json::from_str(&body).unwrap();
+        let h = &h;
+        async move { h.on_call(make_ctx("t"), req).await }
+    };
+    let t1 = trace(1).to_string();
+    let answer = ask(format!(
+        r#"{{"after": 1000, "before": 1010, "trace_ids": ["{t1}"]}}"#
+    ))
+    .await
+    .unwrap();
+    let v = serde_json::to_value(answer).unwrap();
+    assert_eq!(v["items"]["matched"], 3, "{v}");
+    let trace_column = v["columns"]["trace_id"]["index"].as_u64().unwrap() as usize;
+    let span_column = v["columns"]["span_id"]["index"].as_u64().unwrap() as usize;
+    let rows = v["data"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    let mut spans = std::collections::BTreeSet::new();
+    for row in rows {
+        assert_eq!(row[trace_column], serde_json::json!(t1));
+        spans.insert(row[span_column].as_str().unwrap().to_string());
+    }
+    assert_eq!(
+        spans,
+        [span(1).to_string(), span(3).to_string()]
+            .into_iter()
+            .collect()
+    );
+
+    let both = ask(format!(
+        r#"{{"after": 1000, "before": 1010, "trace_ids": ["{t1}"], "span_ids": ["{}"]}}"#,
+        span(1)
+    ))
+    .await
+    .unwrap();
+    assert_eq!(serde_json::to_value(both).unwrap()["items"]["matched"], 2);
+
+    assert!(
+        ask(format!(r#"{{"trace_ids": ["{t1}"]}}"#)).await.is_err(),
+        "a trace filter needs its window"
+    );
 }
 
 #[tokio::test]

@@ -48,7 +48,12 @@ pub const ACCEPTED_PARAMS: &[&str] = &[
     "histogram",
     "slice",
     "tenant",
+    "trace_ids",
+    "span_ids",
 ];
+
+/// Ids a `trace_ids` or `span_ids` list may hold.
+pub const IDS_MAX: usize = 100;
 
 /// Request payload. The field set follows the netdata function wire
 /// contract (mirrors the legacy `JournalRequest`), so the agent's
@@ -112,10 +117,95 @@ pub struct OtelLogsRequest {
     /// disabled), never an implicit all-tenant union.
     #[serde(default)]
     pub tenant: Option<String>,
+    /// Keep only the records of these traces (W3C hex, 1 to [`IDS_MAX`]).
+    /// Needs an explicit window (`after` < `before`).
+    #[serde(default)]
+    pub trace_ids: Option<TraceIdsParam>,
+    /// Keep only the records of these spans (W3C hex, 1 to [`IDS_MAX`]).
+    #[serde(default)]
+    pub span_ids: Option<SpanIdsParam>,
 }
 
 fn default_last() -> usize {
     200
+}
+
+/// A validated `trace_ids` list: every entry 32 hex characters and not all zeros.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<String>", into = "Vec<String>")]
+pub struct TraceIdsParam(pub Vec<sfst::TraceId>);
+
+/// A validated `span_ids` list: every entry 16 hex characters and not all zeros.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<String>", into = "Vec<String>")]
+pub struct SpanIdsParam(pub Vec<sfst::SpanId>);
+
+fn parse_ids<T>(
+    values: &[String],
+    what: &str,
+    digits: usize,
+    parse: impl Fn(&str) -> Option<T>,
+    unset: impl Fn(&T) -> bool,
+) -> Result<Vec<T>, String> {
+    if values.is_empty() {
+        return Err(format!("`{what}_ids` lists no ids; omit it instead"));
+    }
+    if values.len() > IDS_MAX {
+        return Err(format!(
+            "`{what}_ids` lists {} ids; at most {IDS_MAX}",
+            values.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(values.len());
+    for value in values {
+        let id = parse(value)
+            .ok_or_else(|| format!("a {what} id must be {digits} hex characters, got {value:?}"))?;
+        if unset(&id) {
+            return Err(format!("the all-zero {what} id names no {what}"));
+        }
+        out.push(id);
+    }
+    Ok(out)
+}
+
+impl TryFrom<Vec<String>> for TraceIdsParam {
+    type Error = String;
+    fn try_from(values: Vec<String>) -> Result<Self, String> {
+        parse_ids(
+            &values,
+            "trace",
+            32,
+            sfst::TraceId::from_hex,
+            sfst::TraceId::is_unset,
+        )
+        .map(Self)
+    }
+}
+
+impl From<TraceIdsParam> for Vec<String> {
+    fn from(ids: TraceIdsParam) -> Self {
+        ids.0.iter().map(|id| id.to_string()).collect()
+    }
+}
+
+impl TryFrom<Vec<String>> for SpanIdsParam {
+    type Error = String;
+    fn try_from(values: Vec<String>) -> Result<Self, String> {
+        parse_ids(
+            &values,
+            "span",
+            16,
+            sfst::SpanId::from_hex,
+            sfst::SpanId::is_unset,
+        )
+        .map(Self)
+    }
+}
+
+impl From<SpanIdsParam> for Vec<String> {
+    fn from(ids: SpanIdsParam) -> Self {
+        ids.0.iter().map(|id| id.to_string()).collect()
+    }
 }
 
 /// The two anchor forms the UI sends. A JSON string is an opaque row

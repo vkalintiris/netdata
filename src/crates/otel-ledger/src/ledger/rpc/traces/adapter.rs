@@ -102,6 +102,7 @@ pub(crate) fn to_trace_result(
         wire.error_origin = Some(family.error_origin[index]);
         spans.push(wire);
     }
+    let log_streams = log_streams(&spans);
     TraceResult {
         mode: "trace",
         version: 1,
@@ -114,7 +115,28 @@ pub(crate) fn to_trace_result(
         children: t.children,
         spans,
         field_kinds: field_kinds_wire(data.field_kinds),
+        log_streams,
     }
+}
+
+/// The logs stream key of each service the spans name: the logs ingest keys
+/// a stream by its resource's `service.namespace` and `service.name`.
+fn log_streams(spans: &[SpanWire]) -> Vec<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    for span in spans {
+        let value = |key: &str| {
+            span.fields
+                .iter()
+                .find(|(field, _)| field == key)
+                .map_or("", |(_, value)| value.as_str())
+        };
+        let stream = otel_logs_identity::ServiceStream::new(
+            value("resource.attributes.service.namespace"),
+            value("resource.attributes.service.name"),
+        );
+        keys.insert(format!("{:016x}", otel_logs_identity::part_key(&stream)));
+    }
+    keys.into_iter().collect()
 }
 
 fn span_wire(s: sfst::TraceSpan) -> SpanWire {

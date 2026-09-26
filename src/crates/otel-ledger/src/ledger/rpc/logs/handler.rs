@@ -319,6 +319,11 @@ impl FunctionHandler for OtelLogsHandler {
         // before `into_query`, so the engine never row-filters on the
         // synthetic `__streams` facet; they drive file pruning instead.
         let partition_keys = req.take_partition_keys();
+        req.check_id_window().map_err(|message| {
+            netdata_plugin_error::NetdataPluginError::FunctionHandler {
+                message: format!("invalid query: {message}"),
+            }
+        })?;
         // A malformed free-text `query` regex is a clean request error.
         let query = req.into_query().map_err(|e| {
             netdata_plugin_error::NetdataPluginError::FunctionHandler {

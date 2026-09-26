@@ -871,6 +871,9 @@ pub struct TraceResult {
     pub children: Vec<Vec<usize>>,
     pub spans: Vec<SpanWire>,
     pub field_kinds: FieldKindsWire,
+    /// The `otel-logs` stream keys of the trace's services (the ids its
+    /// `__streams` selector uses), sorted: where the trace's logs live.
+    pub log_streams: Vec<String>,
 }
 
 /// Result accounting. `returned` counts the spans in this response —

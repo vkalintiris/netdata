@@ -187,6 +187,13 @@ async fn a_sealed_traces_fixture_serves_as_a_local_sealed_file() {
     .unwrap();
     assert_eq!(v["status"], json!({"complete": true}));
     assert_eq!(v["items"]["returned"], 3);
+    // The logs ingest keys this service's stream by (namespace, name).
+    let stream = otel_logs_identity::ServiceStream::new("", "svc");
+    assert_eq!(
+        v["log_streams"],
+        json!([format!("{:016x}", stream.ns_hash())]),
+        "the trace names where its logs live"
+    );
 }
 
 #[tokio::test]

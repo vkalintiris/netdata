@@ -115,7 +115,23 @@ impl OtelLogsRequest {
             sfst::compile_query(&self.query)?;
             builder = builder.query(self.query);
         }
+        if let Some(ids) = self.trace_ids {
+            builder = builder.trace_ids(ids.0);
+        }
+        if let Some(ids) = self.span_ids {
+            builder = builder.span_ids(ids.0);
+        }
         Ok(builder.build())
+    }
+
+    /// A trace- or span-filtered request names its window: the silent
+    /// last-15-minutes fallback would miss the records it asks for.
+    pub fn check_id_window(&self) -> Result<(), String> {
+        let ids = self.trace_ids.is_some() || self.span_ids.is_some();
+        if ids && (self.after == 0 || self.after >= self.before) {
+            return Err("`trace_ids` and `span_ids` need a window with `after` < `before`".into());
+        }
+        Ok(())
     }
 
     /// Remove the reserved stream-selector key ([`STREAM_SELECTION_PARAM`])
@@ -449,8 +465,9 @@ fn available_histograms_from_fields(fields: &sfst::FieldTable) -> Vec<AvailableH
 /// everything else is `"none"`. Each data row is a positional array
 /// aligned to the column `index`; absent attributes are `null`.
 /// Build the log table's column schema: the three fixed columns
-/// (`timestamp`, `severity`, hidden `cursor`) plus one per field. Each is a
-/// UI-specific metadata blob; a field present in `facetable` gets
+/// (`timestamp`, `severity`, hidden `cursor`), one per field, then the hidden
+/// record ids (`trace_id`, `span_id`) after them, so no earlier index moves.
+/// Each is a UI-specific metadata blob; a field present in `facetable` gets
 /// `filter: "facet"`, the rest `"none"`.
 fn build_columns(fields: &[String], facetable: &BTreeSet<&str>) -> serde_json::Value {
     use serde_json::json;
@@ -488,8 +505,18 @@ fn build_columns(fields: &[String], facetable: &BTreeSet<&str>) -> serde_json::V
                     "visible": false, "sortable": false, "filter": filter }),
         );
     }
+    for (offset, id) in ID_COLUMNS.iter().enumerate() {
+        columns.insert(
+            (*id).into(),
+            json!({ "index": 3 + fields.len() + offset, "id": id, "name": id, "type": "string",
+                    "visible": false, "sortable": false, "filter": "none" }),
+        );
+    }
     serde_json::Value::Object(columns)
 }
+
+/// The record-id columns, after the fields.
+const ID_COLUMNS: [&str; 2] = ["trace_id", "span_id"];
 
 /// Group a materialized row's `(key, value)` pairs by field name,
 /// preserving stream order and skipping exact-duplicate values — a
@@ -507,7 +534,7 @@ fn group_row_fields(row: &sfst::MaterializedRow) -> HashMap<&str, Vec<&str>> {
 }
 
 /// Build one row's positional cells — `[timestamp_µs, severity, cursor,
-/// field_0, …]`, aligned to [`build_columns`]'s schema.
+/// field_0, …, trace_id, span_id]`, aligned to [`build_columns`]'s schema.
 ///
 /// A generic field cell joins the field's values with `", "` (the wire is
 /// one string per column; filters/search run on the index, never on
@@ -515,11 +542,8 @@ fn group_row_fields(row: &sfst::MaterializedRow) -> HashMap<&str, Vec<&str>> {
 /// value: the indexer interns the projected top-level LogRecord severity
 /// after all attributes, so this picks the real severity even when an
 /// attribute is also named `severity_text`.
-fn build_row_cells(
-    cursor: &Cursor,
-    row: &sfst::MaterializedRow,
-    fields: &[String],
-) -> Vec<serde_json::Value> {
+fn build_row_cells(log: &sfsq::logs::LogRow, fields: &[String]) -> Vec<serde_json::Value> {
+    let (cursor, row) = (&log.cursor, &log.row);
     use serde_json::{Value, json};
 
     let lookup = group_row_fields(row);
@@ -532,11 +556,13 @@ fn build_row_cells(
         Some(v) => json!(v),
         None => Value::Null,
     };
-    let mut cells: Vec<Value> = Vec::with_capacity(3 + fields.len());
+    let mut cells: Vec<Value> = Vec::with_capacity(3 + fields.len() + ID_COLUMNS.len());
     cells.push(json!(cursor.timestamp_ns / 1_000)); // ns → µs (JS-safe)
     cells.push(severity);
     cells.push(json!(cursor.encode()));
     cells.extend(fields.iter().map(|f| cell(f)));
+    cells.push(log.trace_id.map_or(Value::Null, |id| json!(id.to_string())));
+    cells.push(log.span_id.map_or(Value::Null, |id| json!(id.to_string())));
     cells
 }
 
@@ -550,7 +576,7 @@ fn build_table(
     let columns = build_columns(fields, facetable);
     let data = rows
         .iter()
-        .map(|row| serde_json::Value::Array(build_row_cells(&row.cursor, &row.row, fields)))
+        .map(|row| serde_json::Value::Array(build_row_cells(row, fields)))
         .collect();
     (columns, serde_json::Value::Array(data))
 }
