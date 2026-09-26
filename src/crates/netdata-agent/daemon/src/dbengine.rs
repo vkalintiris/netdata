@@ -17,15 +17,16 @@ use crate::conf::{self, Conf, DbSection};
 use crate::metasync::now_realtime_s;
 use crate::system;
 
-/// `rrd_init()`'s engine start: its record, the keys, then the tiers. C's fallbacks after it (one tier, alloc mode)
-/// cannot run in a dbengine build, where the start either brings a tier up or is fatal, so they are not ported.
+/// `rrd_init()`'s engine start: its record, the keys, then the tiers; and the tiers' grouping iterations
+/// (`storage_tiers_grouping_iterations`). C's fallbacks after it (one tier, alloc mode) cannot run in a dbengine
+/// build, where the start either brings a tier up or is fatal, so they are not ported.
 pub fn start(
     conf: &mut Conf,
     db: &DbSection,
     parent_profile: bool,
     pool: &WorkPool,
     meta: Option<Arc<MetaDb>>,
-) -> Runtime {
+) -> (Runtime, Vec<u64>) {
     nd_log!(
         Source::Daemon,
         Priority::Debug,
@@ -69,7 +70,7 @@ pub fn start(
     });
     let nofile_limit = nix::sys::resource::getrlimit(nix::sys::resource::Resource::RLIMIT_NOFILE)
         .map_or(0, |(soft, _)| soft);
-    Runtime::start(
+    let runtime = Runtime::start(
         InitConfig {
             host: conf.hostname.clone(),
             cache_dir: conf.dirs.cache.clone(),
@@ -84,5 +85,6 @@ pub fn start(
         pool,
         prepopulate,
         now_realtime_s,
-    )
+    );
+    (runtime, settings.grouping_iterations)
 }

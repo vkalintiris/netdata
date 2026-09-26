@@ -1,6 +1,7 @@
 //! The data handlers' parameter parsing, ported from `api_v1_data()` (`src/web/api/v1/api_v1_data.c`) and
 //! `api_v23_data_internal()` (`src/web/api/v2/api_v2_data.c`). Spec §2.2-2.5.
 
+use netdata_agent_storage::query::Priority;
 use netdata_agent_text::c::strsep_skip;
 use netdata_agent_text::parse::{str2i, str2l, str2u, str2ul, strtoul0};
 
@@ -62,6 +63,22 @@ fn fix_google_param(v: &mut [u8]) {
     }
 }
 
+/// What of `nd_profile` a query reads: the tiers in use and the agent's update every.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Profile {
+    pub storage_tiers: u64,
+    pub update_every: i64,
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Profile {
+            storage_tiers: 1,
+            update_every: 1,
+        }
+    }
+}
+
 /// What both data handlers pass to the query target (`QUERY_TARGET_REQUEST`) and the formatters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataRequest {
@@ -93,10 +110,13 @@ pub struct DataRequest {
     pub group_by: [GroupByPass; 2],
     pub cardinality_limit: u64,
     pub google: Google,
+    pub profile: Profile,
+    /// `STORAGE_PRIORITY_NORMAL` for both handlers.
+    pub priority: Priority,
 }
 
 impl DataRequest {
-    fn new(version: u8) -> Self {
+    fn new(version: u8, profile: &Profile) -> Self {
         DataRequest {
             version,
             scope_nodes: None,
@@ -124,6 +144,8 @@ impl DataRequest {
             group_by: [GroupByPass::default(), GroupByPass::default()],
             cardinality_limit: 0,
             google: Google::default(),
+            profile: *profile,
+            priority: Priority::Normal,
         }
     }
 
@@ -227,8 +249,9 @@ pub fn is_valid_sp(v: Option<&[u8]>) -> bool {
 }
 
 /// The loop and the numeric conversions of `api_v1_data()` (steps 1, 4 and 5 of spec §2.3).
-pub fn parse_v1(query: &[u8], storage_tiers: u64) -> V1Params {
-    let mut req = DataRequest::new(1);
+pub fn parse_v1(query: &[u8], profile: &Profile) -> V1Params {
+    let storage_tiers = profile.storage_tiers;
+    let mut req = DataRequest::new(1, profile);
     req.after = -600;
     let mut chart = None;
     let mut dims: Option<Vec<u8>> = None;
@@ -292,8 +315,9 @@ pub fn parse_v1(query: &[u8], storage_tiers: u64) -> V1Params {
 }
 
 /// The loop and the post-processing of `api_v23_data_internal()` (steps 1-7 of spec §2.4).
-pub fn parse_v2(query: &[u8], version: u8, storage_tiers: u64) -> DataRequest {
-    let mut req = DataRequest::new(version);
+pub fn parse_v2(query: &[u8], version: u8, profile: &Profile) -> DataRequest {
+    let storage_tiers = profile.storage_tiers;
+    let mut req = DataRequest::new(version, profile);
     req.after = -600;
     req.format = Format::Json2;
     req.options = options::VIRTUAL_POINTS | options::JSON_WRAP | options::RETURN_JWAR;
@@ -401,7 +425,7 @@ mod tests {
             b"chart=system.cpu&dims=user&dimension=system&after=-60&points=-5&a==b&x=&group=max\
               &format=csv&options=abs|reversed&options=nonzero&tqx=reqId:7;sig:0x10;out:html&callback=f(1)\
               &limit=3&tier=2",
-            1,
+            &Profile::default(),
         );
         let r = &p.request;
         assert_eq!(p.chart.as_deref(), Some(&b"system.cpu"[..]));
@@ -425,7 +449,14 @@ mod tests {
 
     #[test]
     fn v1_defaults() {
-        let r = parse_v1(b"", 3).request;
+        let r = parse_v1(
+            b"",
+            &Profile {
+                storage_tiers: 3,
+                update_every: 1,
+            },
+        )
+        .request;
         assert_eq!((r.after, r.before, r.points), (-600, 0, 0));
         assert_eq!(
             (r.format, r.time_group, r.options),
@@ -440,7 +471,7 @@ mod tests {
             b"scope_nodes=a&group_by=node&group_by=instance&group_by=label&group_by_label=k\
               &aggregation[1]=sum&points=-5&options=debug,minify&cardinality_limit=0&limit=9",
             3,
-            1,
+            &Profile::default(),
         );
         assert_eq!(r.version, 3);
         assert_eq!(r.group_by[0].group_by, group_by::NODE | group_by::LABEL);
@@ -459,7 +490,7 @@ mod tests {
         assert_eq!(r.options & options::MINIFY, 0, "debug clears minify");
         assert_ne!(r.options & options::DEBUG, 0);
         assert_eq!(r.cardinality_limit, 0);
-        let d = parse_v2(b"", 2, 1);
+        let d = parse_v2(b"", 2, &Profile::default());
         assert_eq!(d.group_by[0].group_by, group_by::DIMENSION);
         assert_eq!(d.format, Format::Json2);
         assert_eq!(

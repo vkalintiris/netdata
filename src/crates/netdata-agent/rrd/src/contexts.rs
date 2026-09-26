@@ -773,9 +773,14 @@ impl Metric {
         lock(&self.dim).as_ref().and_then(Weak::upgrade)
     }
 
+    /// The metric's UUID.
+    pub fn uuid(&self) -> [u8; 16] {
+        lock(&self.state).uuid
+    }
+
     /// The dimension whose storage holds this metric: the linked one, else the RAM engine's by UUID
-    /// (`metric_get_by_id()`), as the query target admits it.
-    pub fn storage_dim(&self) -> Option<Arc<Dim>> {
+    /// (`rrddim_metric_get_by_id()`), as the query target admits it on a ram tier.
+    pub(crate) fn storage_dim(&self) -> Option<Arc<Dim>> {
         if let Some(dim) = self.dim() {
             return Some(dim);
         }

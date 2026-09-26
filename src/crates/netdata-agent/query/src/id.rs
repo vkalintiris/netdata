@@ -90,11 +90,11 @@ pub fn generate(req: &DataRequest, kind: IdKind) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::request::{parse_v1, parse_v2};
+    use crate::request::{Profile, parse_v1, parse_v2};
 
     #[test]
     fn ids_match_c() {
-        let p = parse_v1(b"chart=system.cpu", 1);
+        let p = parse_v1(b"chart=system.cpu", &Profile::default());
         assert_eq!(
             generate(
                 &p.request,
@@ -107,7 +107,7 @@ mod tests {
         );
         let p = parse_v1(
             b"context=a.b&dims=x&points=-1&options=abs&gtime=5&group=countif&group_options=>0",
-            1,
+            &Profile::default(),
         );
         assert_eq!(
             generate(
@@ -119,7 +119,7 @@ mod tests {
             "context://hosts:h/contexts:a.b/instances:*/dimensions:|x/after:-600/before:0/points:18446744073709551615\
              /group:countif>0/options:absolute/resampling:5"
         );
-        let r = parse_v2(b"scope_nodes=n1&tier=0", 2, 1);
+        let r = parse_v2(b"scope_nodes=n1&tier=0", 2, &Profile::default());
         assert!(
             generate(&r, IdKind::DataV2).starts_with("data_v2://scope_nodes:n1/scope_contexts:*/")
         );

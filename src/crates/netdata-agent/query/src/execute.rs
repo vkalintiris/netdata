@@ -1,11 +1,11 @@
-//! Reading each admitted metric into result rows, one storage tier: the plan and the LATEST fast path
-//! (`src/web/api/queries/query-plan.c`), the execute loop (`query-execute.c`) and the per-metric driver
-//! (`rrd2rrdr()`, `query.c`). Spec §4.3, §5.
+//! Reading each admitted metric into result rows: the plan on one tier (a valid selected tier, else tier 0 until
+//! the best-tier planner, D62.4) and the LATEST fast path (`src/web/api/queries/query-plan.c`), the execute loop
+//! (`query-execute.c`) and the per-metric driver (`rrd2rrdr()`, `query.c`). Spec §4.3, §5.
 
 use netdata_agent_log::{Priority, Source, nd_log};
 use std::time::Instant;
 
-use netdata_agent_storage::ram::RamQuery;
+use netdata_agent_storage::query::StorageQuery;
 use netdata_agent_storage::storage_number::SN_FLAG_RESET;
 use netdata_agent_storage::storage_point::StoragePoint;
 
@@ -86,8 +86,12 @@ fn total_projection(point: &QueryPoint, row_start: i64, row_end: i64) -> f64 {
 enum Prepared {
     /// Serve the collector's last stored value (`query_latest_fast_path()`).
     Latest { value: f64, time_s: i64 },
-    /// Read tier 0 over `[after, before]` (`qm->plan.array[0]`).
-    Plan { after: i64, before: i64 },
+    /// Read `tier` over `[after, before]` (`qm->plan.array[0]`).
+    Plan {
+        tier: usize,
+        after: i64,
+        before: i64,
+    },
 }
 
 /// `QUERY_ENGINE_OPS`: one metric's execution state.
@@ -105,6 +109,8 @@ struct Ops {
     group_value_flags: u32,
     group_points_non_zero: usize,
     db_points_read: usize,
+    /// `ops->tier`: the plan's tier.
+    tier: usize,
 }
 
 impl Ops {
@@ -132,6 +138,7 @@ impl Ops {
             group_value_flags: value_flags::NOTHING,
             group_points_non_zero: 0,
             db_points_read: 0,
+            tier: 0,
         }
     }
 
@@ -205,15 +212,15 @@ impl Ops {
 }
 
 /// `query_metric_is_valid_tier()`.
-fn tier_is_valid(qm: &QueryMetric) -> bool {
-    let t = &qm.tier0;
-    t.dim.ring().is_some() && t.first_time_s != 0 && t.last_time_s != 0 && t.update_every_s != 0
+fn tier_is_valid(qm: &QueryMetric, tier: usize) -> bool {
+    let t = &qm.tiers[tier];
+    t.handle.is_some() && t.first_time_s != 0 && t.last_time_s != 0 && t.update_every_s != 0
 }
 
 /// `rrd2rrdr_query_ops_prep()`: the LATEST fast path, else the plan (`query_plan()`); `None` fails the metric.
 fn prepare(qt: &mut QueryTarget, d: usize, window: &Window) -> Option<Prepared> {
     let qm = &qt.query[d];
-    let (db_last, db_ue) = (qm.tier0.last_time_s, qm.tier0.update_every_s);
+    let (db_last, db_ue) = (qm.tiers[0].last_time_s, qm.tiers[0].update_every_s);
     if qt.request.time_group == TimeGrouping::Latest
         && window.points == 1
         && qt.request.resampling_time <= 0
@@ -233,18 +240,35 @@ fn prepare(qt: &mut QueryTarget, d: usize, window: &Window) -> Option<Prepared> 
             });
         }
     }
-    // Below two tiers the best tier is 0, and a selected tier resolves to it too: tier 0 must be valid either way.
-    if !tier_is_valid(qm) {
+    // a valid selected tier, else tier 0 where C picks the best tier for the timeframe (D62.4, until S4b)
+    let selected = qt.request.tier as usize;
+    let tier = if window.options & options::SELECTED_TIER != 0
+        && qt.request.tier < qt.request.profile.storage_tiers
+        && tier_is_valid(qm, selected)
+    {
+        selected
+    } else {
+        0
+    };
+    if !tier_is_valid(qm, tier) {
         return None;
     }
-    let (first, last) = (qm.tier0.first_time_s, qm.tier0.last_time_s);
+    let (first, last) = (qm.tiers[tier].first_time_s, qm.tiers[tier].last_time_s);
     if first > window.before || last < window.after {
         return None;
     }
     let (after, before) = (first.max(window.after), last.min(window.before));
-    qt.query[d].plan = Some((after, before));
-    qt.db.tier0_queries += 1;
-    Some(Prepared::Plan { after, before })
+    // query_plan_points_coverage_weight()'s entry check (QP:19-31): an empty plan fails before it counts
+    if after == 0 || before == 0 || after > before {
+        return None;
+    }
+    qt.query[d].plan = Some((tier, after, before));
+    qt.db.tiers[tier].queries += 1;
+    Some(Prepared::Plan {
+        tier,
+        after,
+        before,
+    })
 }
 
 /// `rrd2rrdr_query_execute_latest_fast_path()`.
@@ -285,7 +309,7 @@ fn execute_latest(
         min: value,
         max: value,
         sum: value,
-        start_time_s: time_s - qm.tier0.update_every_s,
+        start_time_s: time_s - qm.tiers[0].update_every_s,
         end_time_s: time_s,
         count: 1,
         anomaly_count: 0,
@@ -302,8 +326,9 @@ fn execute_plan(
     qm: &QueryMetric,
     window: &Window,
     ops: &mut Ops,
-    handle: &mut RamQuery<'_>,
+    handle: &mut StorageQuery<'_>,
 ) -> StoragePoint {
+    let tier = ops.tier;
     let opts = window.options;
     let use_anomaly_bit_as_value = opts & options::ANOMALY_BIT != 0;
     let points_wanted = r.n;
@@ -365,7 +390,7 @@ fn execute_plan(
                 ops.next_plan(window);
             }
             new.sp = sp;
-            new.tier = 0;
+            new.tier = tier;
             new.added = false;
             new.value = if !sp.is_unset() && !sp.is_gap() {
                 if use_anomaly_bit_as_value {
@@ -398,7 +423,7 @@ fn execute_plan(
 
             // A zero-duration point from the engine is widened to one update interval.
             if read_since_plan_switch > 1 && new.sp.start_time_s == new.sp.end_time_s {
-                new.sp.start_time_s = new.sp.end_time_s - qm.tier0.update_every_s;
+                new.sp.start_time_s = new.sp.end_time_s - qm.tiers[tier].update_every_s;
             }
             // The engine did not advance.
             if read_since_plan_switch > 1 && new.sp.end_time_s <= last1.sp.end_time_s {
@@ -503,7 +528,7 @@ fn execute_plan(
                 || (!new.added && ops.point_mode == PointMode::Total))
         {
             let settle =
-                ops.point_mode == PointMode::Total || new.sp.end_time_s >= qm.tier0.last_time_s;
+                ops.point_mode == PointMode::Total || new.sp.end_time_s >= qm.tiers[0].last_time_s;
             let mut carried = new.value;
             if ops.point_mode == PointMode::Total && new.sp.end_time_s < now_end {
                 carried = if new_point_total_remaining.is_finite() {
@@ -637,19 +662,33 @@ fn query_metric(
     let qm = &qt.query[d];
     let query_points = match prepared {
         Prepared::Latest { value, time_s } => execute_latest(r, col, qm, window, value, time_s),
-        Prepared::Plan { after, before } => {
+        Prepared::Plan {
+            tier,
+            after,
+            before,
+        } => {
             let mut ops = Ops::new(qt, window);
             ops.set_expire_time(before);
-            let dim = qm.tier0.dim.clone();
-            let Some(ring) = dim.ring() else {
-                unreachable!("prepare() checked the ring")
+            // query_planer_initialize_plans(): tiers above 0 also read points before the plan
+            let ue = qm.tiers[tier].update_every_s;
+            let expand_after = if tier == 0 {
+                0
+            } else {
+                ue * POINTS_TO_EXPAND_QUERY
             };
-            let mut handle = ring.query(
-                after,
-                before + qm.tier0.update_every_s * POINTS_TO_EXPAND_QUERY,
+            let handle = qm.tiers[tier]
+                .handle
+                .clone()
+                .expect("prepare() checked the tier");
+            let mut query = handle.query(
+                after - expand_after,
+                before + ue * POINTS_TO_EXPAND_QUERY,
+                qt.request.priority,
+                qt.start_s,
             );
-            let query_points = execute_plan(r, col, grouping, qm, window, &mut ops, &mut handle);
-            qt.db.tier0_points += ops.db_points_read;
+            ops.tier = tier;
+            let query_points = execute_plan(r, col, grouping, qm, window, &mut ops, &mut query);
+            qt.db.tiers[tier].points += ops.db_points_read;
             query_points
         }
     };
@@ -879,7 +918,7 @@ mod tests {
             r.od[0],
             selected | metric_status::NONZERO | metric_status::QUERIED
         );
-        assert_eq!((qt.db.tier0_queries, qt.db.tier0_points), (1, 7));
+        assert_eq!((qt.db.tiers[0].queries, qt.db.tiers[0].points), (1, 7));
         assert_eq!(
             (r.queries_count, r.result_points_generated, r.db_points_read),
             (1, 7, 7)
@@ -920,7 +959,7 @@ mod tests {
             rows(&r),
             vec![(10.0, 0), ((20.0 + thirty) / 2.0, 0), (40.0, 0)]
         );
-        assert_eq!(qt.db.tier0_points, 6);
+        assert_eq!(qt.db.tiers[0].points, 6);
 
         let (qt, window, r) = run(&h, &format!("after={T0}&before={}&points=2", T0 + 6));
         assert_eq!(
@@ -928,7 +967,7 @@ mod tests {
             (T0 + 2, T0 + 7, 3)
         );
         assert_eq!(rows(&r), vec![((20.0 + thirty) / 2.0, 0), (40.0, 0)]);
-        assert_eq!(qt.db.tier0_points, 6);
+        assert_eq!(qt.db.tiers[0].points, 6);
     }
 
     #[test]
@@ -945,7 +984,11 @@ mod tests {
         );
         assert_eq!((r.view.min, r.view.max), (-41.5, -41.5));
         assert_eq!(
-            (qt.db.tier0_queries, qt.db.tier0_points, r.db_points_read),
+            (
+                qt.db.tiers[0].queries,
+                qt.db.tiers[0].points,
+                r.db_points_read
+            ),
             (0, 0, 0)
         );
         assert_eq!(
@@ -966,11 +1009,11 @@ mod tests {
 
         // Without a finite cached value, and with anomaly-bit, the storage path answers.
         let (qt, _, r) = run(&h, &format!("{q}&options=anomaly-bit"));
-        assert_eq!(qt.db.tier0_queries, 1);
+        assert_eq!(qt.db.tiers[0].queries, 1);
         assert_eq!(rows(&r), vec![(0.0, 0)], "no stored sample is anomalous");
         dim.update_collection(|c| c.last_stored_value = f64::NAN);
         let (qt, _, r) = run(&h, &q);
-        assert_eq!(qt.db.tier0_queries, 1);
+        assert_eq!(qt.db.tiers[0].queries, 1);
         assert_eq!(rows(&r), vec![(40.0, 0)]);
     }
 
@@ -1006,7 +1049,7 @@ mod tests {
         assert_eq!(
             (
                 qt.instances[0].metrics.queried,
-                qt.db.tier0_queries,
+                qt.db.tiers[0].queries,
                 r.queries_count
             ),
             (1, 1, 1)
@@ -1073,5 +1116,125 @@ mod tests {
             (4, 4)
         );
         assert_eq!(qt.contexts[0].instances.queried, 1);
+    }
+
+    /// C's planner vector "explicit selected tier disables gap filling" (QP:1061-1074), shifted to `T0`: tier 1
+    /// holds the metric from 100 to 200 of a 50..250 window, so the plan reads tier 1 there only; without `tier=` the
+    /// plan is tier 0's (D62.4); a selected tier that does not hold the metric falls back to tier 0 too.
+    #[test]
+    fn a_selected_tier_plans_on_that_tier() {
+        use crate::testing::{dbengine_host, v1_tiers_target};
+        let retention = [
+            (T0 + 180, T0 + 260),
+            (T0 + 100, T0 + 200),
+            (T0 + 50, T0 + 150),
+        ];
+        let (_dirs, h) = dbengine_host(retention);
+        let now = T0 + 1000;
+        let window = format!("after={}&before={}&points=1", T0 + 50, T0 + 250);
+        let plan = |query: &str| {
+            let (mut qt, mut window) = v1_tiers_target(&h, query, now);
+            let control = Control {
+                received: Instant::now(),
+                interrupted: &|_| false,
+                windows: Windows::default(),
+            };
+            let bounds = (window.after, window.before);
+            run_v1(&mut qt, &mut window, &control);
+            let queries: Vec<usize> = qt.db.tiers[..3].iter().map(|t| t.queries).collect();
+            (qt.query[0].plan, queries, bounds)
+        };
+        let (got, queries, (after, before)) = plan(&format!("{window}&tier=1"));
+        assert_eq!(
+            (got, queries),
+            (
+                Some((1, after.max(T0 + 100), before.min(T0 + 200))),
+                vec![0, 1, 0]
+            )
+        );
+        let (got, queries, (after, before)) = plan(&window);
+        assert_eq!(
+            (got, queries),
+            (
+                Some((0, after.max(T0 + 180), before.min(T0 + 260))),
+                vec![1, 0, 0]
+            )
+        );
+        let (_dirs, h) = dbengine_host([(T0 + 180, T0 + 260), (T0 + 100, T0 + 200), (0, 0)]);
+        let (mut qt, mut w) = v1_tiers_target(&h, &format!("{window}&tier=2"), now);
+        let control = Control {
+            received: Instant::now(),
+            interrupted: &|_| false,
+            windows: Windows::default(),
+        };
+        run_v1(&mut qt, &mut w, &control);
+        assert_eq!(qt.query[0].plan.map(|p| p.0), Some(0));
+    }
+
+    /// Admission over the tiers (QT:258-384): a metric only tier 2 holds in the window is admitted with the common
+    /// retention; every tier's statistics count it; each tier's update every is its grouping of the chart's.
+    #[test]
+    fn admission_takes_the_common_retention_of_the_tiers() {
+        use crate::testing::{dbengine_host, v1_tiers_target};
+        let (_dirs, h) = dbengine_host([(0, 0), (0, 0), (T0 + 50, T0 + 150)]);
+        let (qt, _) = v1_tiers_target(
+            &h,
+            &format!("after={}&before={}&points=1", T0 + 100, T0 + 120),
+            T0 + 1000,
+        );
+        assert_eq!(qt.query.len(), 1);
+        let tiers: Vec<(bool, i64, i64, i64)> = qt.query[0].tiers[..3]
+            .iter()
+            .map(|t| {
+                (
+                    t.handle.is_some(),
+                    t.first_time_s,
+                    t.last_time_s,
+                    t.update_every_s,
+                )
+            })
+            .collect();
+        assert_eq!(
+            tiers,
+            [
+                (false, 0, 0, 0),
+                (false, 0, 0, 0),
+                (true, T0 + 50, T0 + 150, 60)
+            ]
+        );
+        assert_eq!(
+            (
+                qt.db.first_time_s,
+                qt.db.last_time_s,
+                qt.db.tiers[2].update_every
+            ),
+            (T0 + 50, T0 + 150, 60)
+        );
+        // outside every tier's retention: not admitted, still counted in the tiers' statistics
+        let (qt, _) = v1_tiers_target(
+            &h,
+            &format!("after={}&before={}&points=1", T0 + 400, T0 + 500),
+            T0 + 1000,
+        );
+        assert!(qt.query.is_empty());
+        assert_eq!(
+            (qt.db.tiers[2].first_time_s, qt.db.tiers[2].last_time_s),
+            (T0 + 50, T0 + 150)
+        );
+    }
+
+    /// Natural points on a selected tier above 0 step by that tier's update every (query-window.c:153-159).
+    #[test]
+    fn natural_points_on_a_selected_tier_use_its_update_every() {
+        use crate::testing::{dbengine_host, v1_tiers_target};
+        let (_dirs, h) = dbengine_host([(T0 + 100, T0 + 900), (T0 + 100, T0 + 900), (0, 0)]);
+        let (_, window) = v1_tiers_target(&h, "after=-300&before=0&tier=1", T0 + 900);
+        assert_eq!(window.group, 1);
+        assert_eq!(window.points, 10, "300 s of 30 s points");
+        let (_, window) = v1_tiers_target(&h, "after=-300&before=0", T0 + 900);
+        assert_eq!(
+            window.points, 29,
+            "tier 0's 10 s points, as C's window counts them"
+        );
     }
 }

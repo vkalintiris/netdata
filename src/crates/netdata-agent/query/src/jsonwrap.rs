@@ -203,27 +203,29 @@ fn view_latest_values(w: &mut JsonWriter, r: &Rrdr, options: u64) -> usize {
     i
 }
 
-/// `jsonwrap_query_metric_plan()`: the metric's plans and tiers.
-pub fn query_metric_plan(w: &mut JsonWriter, qm: &QueryMetric, options: u64) {
+/// `jsonwrap_query_metric_plan()`: the metric's plans and its retention on each tier in use.
+pub fn query_metric_plan(w: &mut JsonWriter, qm: &QueryMetric, storage_tiers: usize, options: u64) {
     let rfc3339 = options & options::RFC3339 != 0;
     let k = Keys::new(options);
     w.member_add_array(Some(b"plans"));
-    if let Some((after, before)) = qm.plan {
+    if let Some((tier, after, before)) = qm.plan {
         w.add_array_item_object();
-        w.member_add_uint64(k.tier(), 0);
+        w.member_add_uint64(k.tier(), tier as u64);
         w.member_add_time_t_formatted(k.after(), after, rfc3339);
         w.member_add_time_t_formatted(k.before(), before, rfc3339);
         w.object_close();
     }
     w.array_close();
     w.member_add_array(Some(b"tiers"));
-    w.add_array_item_object();
-    w.member_add_uint64(k.tier(), 0);
-    w.member_add_time_t_formatted(k.first_entry(), qm.tier0.first_time_s, rfc3339);
-    w.member_add_time_t_formatted(k.last_entry(), qm.tier0.last_time_s, rfc3339);
-    // Tier weights are only computed with two tiers or more.
-    w.member_add_int64(k.weight(), 0);
-    w.object_close();
+    for (t, tier) in qm.tiers.iter().enumerate().take(storage_tiers) {
+        w.add_array_item_object();
+        w.member_add_uint64(k.tier(), t as u64);
+        w.member_add_time_t_formatted(k.first_entry(), tier.first_time_s, rfc3339);
+        w.member_add_time_t_formatted(k.last_entry(), tier.last_time_s, rfc3339);
+        // the weights come from the best-tier planner, which a selected tier or tier 0 skips (D62.4)
+        w.member_add_int64(k.weight(), 0);
+        w.object_close();
+    }
     w.array_close();
 }
 
@@ -232,7 +234,7 @@ fn query_plan(w: &mut JsonWriter, qt: &QueryTarget, options: u64) {
     w.member_add_object(b"query_plan");
     for qm in &qt.query {
         w.member_add_object(qt.dimensions[qm.dimension].rm.id());
-        query_metric_plan(w, qm, options);
+        query_metric_plan(w, qm, qt.request.profile.storage_tiers as usize, options);
         w.object_close();
     }
     w.object_close();
@@ -315,7 +317,14 @@ pub fn begin_v1(r: &Rrdr, qt: &QueryTarget, options: u64) -> JsonWriter {
     w.member_add_uint64("points", rows as u64);
     w.member_add_string("format", qt.request.format.name());
     w.member_add_array(Some(b"db_points_per_tier"));
-    w.add_array_item_uint64(qt.db.tier0_points as u64);
+    for tier in qt
+        .db
+        .tiers
+        .iter()
+        .take(qt.request.profile.storage_tiers as usize)
+    {
+        w.add_array_item_uint64(tier.points as u64);
+    }
     w.array_close();
     if options & options::DEBUG != 0 {
         query_plan(&mut w, qt, options);

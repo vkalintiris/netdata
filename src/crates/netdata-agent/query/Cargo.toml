@@ -16,3 +16,6 @@ netdata-agent-storage = { workspace = true }
 netdata-agent-sys = { workspace = true }
 netdata-agent-text = { workspace = true }
 netdata-agent-web = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

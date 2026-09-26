@@ -486,11 +486,14 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     };
     let health_enabled = conf.health_load_config_defaults();
     // nd_profile.storage_tiers and multidb_ctx: every host's tiers
-    let storage = Arc::new(StorageLayout::new(
-        dbengine
-            .as_ref()
-            .map(|dbengine| Arc::clone(dbengine.engine())),
-    ));
+    let (dbengine, grouping) = match dbengine {
+        Some((runtime, grouping)) => (Some(runtime), grouping),
+        None => (None, vec![1]),
+    };
+    let storage = Arc::new(
+        StorageLayout::new(dbengine.as_ref().map(|dbengine| Arc::clone(dbengine.engine())))
+            .with_profile(grouping, i64::from(db.update_every)),
+    );
     let localhost = Host::with_storage(
         &machine_guid,
         true,

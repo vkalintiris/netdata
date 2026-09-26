@@ -7,10 +7,12 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use netdata_agent_rrd::chart::{Chart, Dim, dim_flags, flags as chart_flags};
+use netdata_agent_rrd::chart::{Chart, dim_flags, flags as chart_flags};
 use netdata_agent_rrd::contexts::{self, Context, Instance, Metric, flags};
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::labels::Labels;
+use netdata_agent_rrd::storage::TierHandle;
+use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::storage_point::StoragePoint;
 use netdata_agent_text::print::print_uuid_lower;
 use netdata_agent_text::simple_pattern::{SimplePattern, SimplePatternResult};
@@ -88,10 +90,10 @@ pub struct QueryDimension {
     pub priority: usize,
 }
 
-/// A tier's retention snapshot at admission (`qm->tiers[t]`).
-#[derive(Debug, Clone)]
+/// A tier's storage and retention at admission (`qm->tiers[t]`): no handle when the tier does not hold the metric.
+#[derive(Debug, Clone, Default)]
 pub struct TierSnapshot {
-    pub dim: Arc<Dim>,
+    pub handle: Option<TierHandle>,
     pub first_time_s: i64,
     pub last_time_s: i64,
     pub update_every_s: i64,
@@ -103,11 +105,12 @@ pub struct QueryMetric {
     pub dimension: usize,
     pub status: u32,
     pub values_stored_as_rates: bool,
-    pub tier0: TierSnapshot,
+    /// Every tier in use; the others stay empty.
+    pub tiers: [TierSnapshot; RRD_STORAGE_TIERS],
     /// What the execution read, merged (`qm->query_points`).
     pub query_points: StoragePoint,
-    /// The tier-0 plan's `(after, before)` (`qm->plan.array[0]`); none for the LATEST fast path or a failed plan.
-    pub plan: Option<(i64, i64)>,
+    /// The plan's `(tier, after, before)` (`qm->plan.array[0]`); none for the LATEST fast path or a failed plan.
+    pub plan: Option<(usize, i64, i64)>,
     /// The v2 group it joined (`qm->grouped_as`).
     pub grouped_as: GroupedAs,
 }
@@ -128,13 +131,19 @@ pub struct Db {
     pub first_time_s: i64,
     pub last_time_s: i64,
     pub minimum_latest_update_every_s: i64,
-    /// Tier 0 (the only tier until dbengine): the smallest update every and the widest retention of every candidate.
-    pub tier0_update_every: i64,
-    pub tier0_first: i64,
-    pub tier0_last: i64,
-    /// Plans initialised and points read on tier 0 (`qt->db.tiers[0].queries`, `.points`).
-    pub tier0_queries: usize,
-    pub tier0_points: usize,
+    /// `qt->db.tiers[]`.
+    pub tiers: [TierStats; RRD_STORAGE_TIERS],
+}
+
+/// `qt->db.tiers[t]`: over every candidate metric, the smallest update every and the widest retention; the plans
+/// initialised and the points read.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TierStats {
+    pub update_every: i64,
+    pub first_time_s: i64,
+    pub last_time_s: i64,
+    pub queries: usize,
+    pub points: usize,
 }
 
 /// The selection window (`qt->window` before `query_target_calculate_window()`).
@@ -333,33 +342,64 @@ impl Walk<'_> {
         )
     }
 
-    /// `query_metric_add()`: tier 0 from the dimension's ring; `false` when the window misses its retention.
+    /// `query_metric_add()`: each tier in use with its storage and retention (the tier's update every is its
+    /// grouping of the chart's); every candidate counts in `db.tiers`; admitted when some tier holds the metric and
+    /// the window meets their common retention. `false` releases the handles.
     fn metric_add(
         &mut self,
+        host: &Host,
         dimension: usize,
         rm: &Metric,
         ri: &Instance,
         metric_status: u32,
     ) -> bool {
-        let ue = i64::from(ri.state().update_every_s);
-        let Some(dim) = rm.storage_dim() else {
-            return false;
-        };
-        let Some(ring) = dim.ring() else {
-            return false;
-        };
-        let (first, last) = (ring.oldest_time_s(), ring.latest_time_s());
+        let ri_ue = i64::from(ri.state().update_every_s);
+        let storage_tiers = self.qt.request.profile.storage_tiers as usize;
+        let mut tiers: [TierSnapshot; RRD_STORAGE_TIERS] = Default::default();
+        let (mut first, mut last, mut ue, mut added) = (0i64, 0i64, 0i64, 0usize);
+        for (t, tier) in tiers.iter_mut().enumerate().take(storage_tiers) {
+            let Some(handle) = host.tier_handle(t, rm) else {
+                continue;
+            };
+            let (f, l) = handle.retention();
+            let tier_ue = host.storage().tier_grouping(t) as i64 * ri_ue;
+            if first == 0 {
+                first = f;
+            } else if f != 0 {
+                first = first.min(f);
+            }
+            last = if last == 0 { l } else { last.max(l) };
+            if ue == 0 {
+                ue = tier_ue;
+            } else if tier_ue != 0 {
+                ue = ue.min(tier_ue);
+            }
+            *tier = TierSnapshot {
+                handle: Some(handle),
+                first_time_s: f,
+                last_time_s: l,
+                update_every_s: tier_ue,
+            };
+            added += 1;
+        }
         let db = &mut self.qt.db;
-        if ue != 0 && (db.tier0_update_every == 0 || ue < db.tier0_update_every) {
-            db.tier0_update_every = ue;
+        for (stats, tier) in db.tiers.iter_mut().zip(&tiers).take(storage_tiers) {
+            if stats.update_every == 0
+                || (tier.update_every_s != 0 && tier.update_every_s < stats.update_every)
+            {
+                stats.update_every = tier.update_every_s;
+            }
+            if stats.first_time_s == 0
+                || (tier.first_time_s != 0 && tier.first_time_s < stats.first_time_s)
+            {
+                stats.first_time_s = tier.first_time_s;
+            }
+            if stats.last_time_s == 0 || tier.last_time_s > stats.last_time_s {
+                stats.last_time_s = tier.last_time_s;
+            }
         }
-        if first != 0 && (db.tier0_first == 0 || first < db.tier0_first) {
-            db.tier0_first = first;
-        }
-        if last > db.tier0_last {
-            db.tier0_last = last;
-        }
-        if !matches_retention(self.window.after, self.window.before, first, last, ue) {
+        if added == 0 || !matches_retention(self.window.after, self.window.before, first, last, ue)
+        {
             return false;
         }
         if db.first_time_s == 0 || first < db.first_time_s {
@@ -374,12 +414,7 @@ impl Walk<'_> {
             dimension,
             status: metric_status,
             values_stored_as_rates,
-            tier0: TierSnapshot {
-                dim,
-                first_time_s: first,
-                last_time_s: last,
-                update_every_s: ue,
-            },
+            tiers,
             // C zeroes the metric; only execution sets its points.
             query_points: StoragePoint::default(),
             plan: None,
@@ -391,6 +426,7 @@ impl Walk<'_> {
     /// The dimensions of one instance (`QT:418-547`); returns (kept, admitted).
     fn dimensions(
         &mut self,
+        host: &Host,
         instance: usize,
         ri: &Arc<Instance>,
         queryable: bool,
@@ -439,7 +475,7 @@ impl Walk<'_> {
                     status: qd_status,
                     priority,
                 });
-                if self.metric_add(d, &rm, ri, qm_status) {
+                if self.metric_add(host, d, &rm, ri, qm_status) {
                     kept += 1;
                     admitted += 1;
                     self.count(instance, |c| c.selected += 1);
@@ -534,7 +570,7 @@ impl Walk<'_> {
             metrics: Counts::default(),
             query_points: StoragePoint::default(),
         });
-        let (kept, admitted) = self.dimensions(instance, ri, queryable);
+        let (kept, admitted) = self.dimensions(&host, instance, ri, queryable);
         if kept == 0 {
             self.qt.instances.pop();
             return;
@@ -870,7 +906,7 @@ mod tests {
 
     fn v2(h: &Arc<Host>, query: &str) -> QueryTarget {
         create(
-            parse_v2(query.as_bytes(), 2, 1),
+            parse_v2(query.as_bytes(), 2, &crate::request::Profile::default()),
             Source::V2 {
                 hosts: vec![Arc::clone(h)],
                 nodes_hard_hash: 1,
@@ -911,7 +947,10 @@ mod tests {
                 ..Counts::default()
             }
         );
-        let ring = qt.query[0].tier0.dim.ring().unwrap();
+        let Some(TierHandle::Ram(dim)) = &qt.query[0].tiers[0].handle else {
+            panic!("a ram tier 0")
+        };
+        let ring = dim.ring().unwrap();
         assert_eq!(
             (qt.db.first_time_s, qt.db.last_time_s),
             (ring.oldest_time_s(), T)

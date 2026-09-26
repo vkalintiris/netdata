@@ -46,7 +46,7 @@ pub fn calculate(qt: &QueryTarget, wall_s: i64) -> Option<Window> {
     let (pr, ar, br) = (req.points, req.after, req.before);
     let rs = req.resampling_time;
     let mut opts = qt.window.options;
-    let ue = if qt.db.minimum_latest_update_every_s != 0 {
+    let mut ue = if qt.db.minimum_latest_update_every_s != 0 {
         qt.db.minimum_latest_update_every_s
     } else {
         1
@@ -100,6 +100,14 @@ pub fn calculate(qt: &QueryTarget, wall_s: i64) -> Option<Window> {
     }
     let (a, b, _) = relative_window_to_absolute_query(aw, bw, wall_s);
     (aw, bw) = (a, b);
+    let tiers = qt.request.profile.storage_tiers;
+    let tier = qt.request.tier;
+    if natural && opts & options::SELECTED_TIER != 0 && tier > 0 && tier < tiers && tiers > 1 {
+        ue = min_update_every_for_tier(qt, tier as usize);
+        if ue <= 0 {
+            ue = qt.db.minimum_latest_update_every_s;
+        }
+    }
     let mut qg = if natural { ue } else { 1 };
     if qg <= 0 {
         qg = 1;
@@ -197,6 +205,20 @@ pub fn calculate(qt: &QueryTarget, wall_s: i64) -> Option<Window> {
     })
 }
 
+/// `query_target_min_update_every_for_tier()`: the smallest update every the admitted metrics have on the tier, else
+/// the agent's.
+fn min_update_every_for_tier(qt: &QueryTarget, tier: usize) -> i64 {
+    if tier >= qt.request.profile.storage_tiers as usize {
+        return qt.request.profile.update_every;
+    }
+    qt.query
+        .iter()
+        .map(|qm| qm.tiers[tier].update_every_s)
+        .filter(|&ue| ue != 0)
+        .min()
+        .unwrap_or(qt.request.profile.update_every)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,7 +228,7 @@ mod tests {
     const T: i64 = 1_700_000_000;
 
     fn qt(query: &str, db: Db) -> QueryTarget {
-        let request = parse_v1(query.as_bytes(), 1).request;
+        let request = parse_v1(query.as_bytes(), &crate::request::Profile::default()).request;
         let (after, before, absolute) =
             relative_window_to_absolute_query(request.after, request.before, T + 1);
         QueryTarget {

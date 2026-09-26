@@ -13,7 +13,8 @@ use crate::chart::{self, Charts};
 use crate::contexts::{self, Contexts};
 use crate::labels::Labels;
 use crate::mode::DbMode;
-use crate::storage::StorageLayout;
+use crate::contexts::Metric;
+use crate::storage::{StorageLayout, TierHandle};
 use crate::stream_path::PathEntry;
 use crate::system_info::SystemInfo;
 
@@ -279,6 +280,8 @@ pub struct Host {
     /// `host->metadata_lifetime_lock`: the metadata writer stores the host under its read side, a netdatacli removal
     /// frees it under its write side; true once freed.
     metadata_lifetime: RwLock<bool>,
+    /// `host->db[]`.
+    storage: Arc<StorageLayout>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -292,15 +295,44 @@ impl Host {
         machine_guid: &str,
         is_localhost: bool,
         info: HostInfo,
-        storage: &StorageLayout,
+        storage: &Arc<StorageLayout>,
     ) -> Self {
         let mode = info.db_mode;
-        let host = Host::new(machine_guid, is_localhost, info);
+        let mut host = Host::new(machine_guid, is_localhost, info);
         let tiers = storage.tiers_for(mode, host.contexts.ram_index());
         if !tiers.is_empty() {
             host.contexts.set_tiers(tiers);
         }
+        host.storage = Arc::clone(storage);
         host
+    }
+
+    /// `host->db[]`: the storage the host's tiers come from.
+    pub fn storage(&self) -> &Arc<StorageLayout> {
+        &self.storage
+    }
+
+    /// `qn->rrdhost->db[tier]` for a metric (`metric_dup()` of the dimension's, else `metric_get_by_id()`): its
+    /// storage on `tier`, `None` past the tiers in use or when the tier does not hold it. Tier 0 of a host that is
+    /// not dbengine is the ram ring of the dimension (or of the RAM index by UUID).
+    pub fn tier_handle(&self, tier: usize, rm: &Metric) -> Option<TierHandle> {
+        if tier >= self.storage.storage_tiers() {
+            return None;
+        }
+        match self.storage.dbengine() {
+            Some(engine) if tier > 0 || self.info().db_mode == DbMode::Dbengine => {
+                let metric = engine.mrg.get_and_acquire(&rm.uuid(), tier)?;
+                Some(TierHandle::Dbengine {
+                    engine: Arc::clone(engine),
+                    metric,
+                })
+            }
+            _ => {
+                let dim = rm.storage_dim()?;
+                dim.ring()?;
+                Some(TierHandle::Ram(dim))
+            }
+        }
     }
 
     /// A host without the dbengine: its contexts take retention from the RAM index.
@@ -332,6 +364,7 @@ impl Host {
             last_connected_s: AtomicI64::new(0),
             meta_flags,
             metadata_lifetime: RwLock::new(false),
+            storage: Arc::default(),
         }
     }
 
@@ -1101,7 +1134,7 @@ mod tests {
             "tier 0 is the RAM index"
         );
         let plain =
-            Host::with_storage("guid-p", false, dbengine.clone(), &StorageLayout::default());
+            Host::with_storage("guid-p", false, dbengine.clone(), &Arc::default());
         assert_eq!(retention(&plain), (i64::MAX, 0, false));
         assert_eq!(
             (

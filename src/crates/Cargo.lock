@@ -3086,6 +3086,7 @@ dependencies = [
  "netdata-agent-text",
  "netdata-agent-web",
  "nix",
+ "tempfile",
 ]
 
 [[package]]

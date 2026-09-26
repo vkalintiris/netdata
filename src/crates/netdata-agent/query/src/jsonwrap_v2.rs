@@ -12,7 +12,6 @@ use netdata_agent_rrd::host::Host;
 use netdata_agent_storage::storage_point::StoragePoint;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 
-use crate::STORAGE_TIERS;
 use crate::finalize::DVIEW_ANOMALY_COUNT_MULTIPLIER;
 use crate::format::exposed;
 use crate::groupby::{MAX_PASSES, aggregatable, has_percentage_units};
@@ -695,7 +694,12 @@ impl Ctx<'_> {
                 }
                 self.points_statistics(w, &qm.query_points);
                 if opts & options::DEBUG != 0 {
-                    crate::jsonwrap::query_metric_plan(w, qm, opts);
+                    crate::jsonwrap::query_metric_plan(
+                        w,
+                        qm,
+                        self.qt.request.profile.storage_tiers as usize,
+                        opts,
+                    );
                 }
             }
             w.object_close();
@@ -1066,7 +1070,7 @@ pub fn end_v2(
     if opts & options::MCP_INFO != 0 {
         w.member_add_string("info", MCP_INFO_DATABASE);
     }
-    w.member_add_uint64("tiers", STORAGE_TIERS);
+    w.member_add_uint64("tiers", qt.request.profile.storage_tiers);
     w.member_add_time_t("update_every", qt.db.minimum_latest_update_every_s);
     w.member_add_time_t_formatted("first_entry", qt.db.first_time_s, rfc3339);
     w.member_add_time_t_formatted("last_entry", qt.db.last_time_s, rfc3339);
@@ -1077,14 +1081,22 @@ pub fn end_v2(
     x.column_statistics(w, r, false);
     w.object_close();
     w.member_add_array(Some(b"per_tier"));
-    w.add_array_item_object();
-    w.member_add_uint64("tier", 0);
-    w.member_add_uint64("queries", qt.db.tier0_queries as u64);
-    w.member_add_uint64("points", qt.db.tier0_points as u64);
-    w.member_add_time_t("update_every", qt.db.tier0_update_every);
-    w.member_add_time_t_formatted("first_entry", qt.db.tier0_first, rfc3339);
-    w.member_add_time_t_formatted("last_entry", qt.db.tier0_last, rfc3339);
-    w.object_close();
+    for (t, tier) in qt
+        .db
+        .tiers
+        .iter()
+        .enumerate()
+        .take(qt.request.profile.storage_tiers as usize)
+    {
+        w.add_array_item_object();
+        w.member_add_uint64("tier", t as u64);
+        w.member_add_uint64("queries", tier.queries as u64);
+        w.member_add_uint64("points", tier.points as u64);
+        w.member_add_time_t("update_every", tier.update_every);
+        w.member_add_time_t_formatted("first_entry", tier.first_time_s, rfc3339);
+        w.member_add_time_t_formatted("last_entry", tier.last_time_s, rfc3339);
+        w.object_close();
+    }
     w.array_close();
     w.object_close();
 

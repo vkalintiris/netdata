@@ -5,7 +5,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use netdata_agent_query::STORAGE_TIERS;
 use netdata_agent_query::execute::Control;
 use netdata_agent_query::jsonwrap_v2::Agent;
 use netdata_agent_query::output::data_query_execute;
@@ -20,6 +19,15 @@ use netdata_agent_web::status;
 use crate::router::Route;
 use crate::server::{self, Reply};
 
+/// `nd_profile` as the data queries read it: the tiers in use and the agent's update every.
+fn profile(route: &Route<'_>) -> netdata_agent_query::request::Profile {
+    let storage = route.shared.hosts.storage();
+    netdata_agent_query::request::Profile {
+        storage_tiers: storage.storage_tiers() as u64,
+        update_every: storage.update_every(),
+    }
+}
+
 /// `rrdset_find_and_acquire(host, id, false)`, then by name: an obsolete chart only while it replicates.
 pub fn find_chart(host: &Host, chart: &[u8]) -> Option<Arc<Chart>> {
     let chart = std::str::from_utf8(chart).ok()?;
@@ -32,7 +40,7 @@ pub fn find_chart(host: &Host, chart: &[u8]) -> Option<Arc<Chart>> {
 
 /// `api_v1_data()`.
 pub fn v1(route: &Route<'_>, host: &Arc<Host>, query: &[u8]) -> Reply {
-    let params = parse_v1(query, STORAGE_TIERS);
+    let params = parse_v1(query, &profile(route));
     let req = params.request;
     if !is_valid_sp(params.chart.as_deref()) && !is_valid_sp(req.contexts.as_deref()) {
         return Reply::text(status::BAD_REQUEST, "No chart or context is given.");
@@ -64,7 +72,7 @@ pub fn v1(route: &Route<'_>, host: &Arc<Host>, query: &[u8]) -> Reply {
 /// `api_v23_data_internal()`: every host, whatever host the URL routed to.
 pub fn v23(route: &Route<'_>, query: &[u8], version: u8) -> Reply {
     let received = Instant::now();
-    let req = parse_v2(query, version, STORAGE_TIERS);
+    let req = parse_v2(query, version, &profile(route));
     let request = req.clone();
     let now_s = server::now();
     let hosts = &route.shared.hosts;
