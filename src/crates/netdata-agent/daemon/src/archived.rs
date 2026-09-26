@@ -45,6 +45,8 @@ pub fn load(meta: &MetaDb, hosts: &Hosts, defaults: &Defaults) {
         "Created {} archived hosts ({children} children and {vnodes} vnodes)",
         children + vnodes
     );
+    // what the ACLKSYNC thread does first, on every start
+    meta.drop_legacy_aclk_tables();
     for host in hosts.all() {
         host.clear_pending_context_load();
     }
