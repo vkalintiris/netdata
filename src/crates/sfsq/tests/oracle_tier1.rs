@@ -175,8 +175,17 @@ fn oracle_value_counts(spans: &[&OracleSpan], field: &str) -> BTreeMap<String, u
 }
 
 fn stored_value_counts(bytes: &[u8], field: &str) -> BTreeMap<String, u64> {
+    stored_value_counts_in(bytes, &sfst::Filter::new(), field)
+}
+
+/// value → rows carrying it among the rows `filter` selects.
+fn stored_value_counts_in(
+    bytes: &[u8],
+    filter: &sfst::Filter,
+    field: &str,
+) -> BTreeMap<String, u64> {
     let reader = sfst::IndexReader::open(bytes).unwrap();
-    let all = reader.compile_filter(&sfst::Filter::new(), None).unwrap();
+    let all = reader.compile_filter(filter, None).unwrap();
     let facets = reader.facets(&[field], &all, i64::MIN..i64::MAX).unwrap();
     let mut counts = BTreeMap::new();
     for facet in facets {
@@ -226,6 +235,50 @@ fn stored_tokens_match_the_calculator() {
             }
             let roles: u64 = stored_value_counts(bytes, model::ROLE_FIELD).values().sum();
             assert_eq!(roles as usize, spans.len(), "one role per row");
+
+            // Per (service.name, name) group, the role and band rows.
+            let owned: Vec<OracleSpan> = spans.iter().map(|span| (*span).clone()).collect();
+            let want = calc::token_counts(&owned).remove(&unit).unwrap_or_default();
+            let mut got = BTreeMap::new();
+            let mut groups = BTreeSet::new();
+            for key in want.keys() {
+                if let Some(group) = &key.group {
+                    groups.insert(group.clone());
+                }
+            }
+            assert!(groups.len() > 5, "seed {seed} unit {unit}: several groups");
+            for group in groups {
+                let mut filter = sfst::Filter::new();
+                for (field, value) in [
+                    (model::SERVICE_FIELD, &group.service),
+                    ("name", &group.operation),
+                ] {
+                    filter = match value {
+                        Some(value) => filter.select(field, value),
+                        None => filter.select_absent(field),
+                    };
+                }
+                for field in [model::ROLE_FIELD, model::DURATION_BAND_FIELD] {
+                    for (value, count) in stored_value_counts_in(bytes, &filter, field) {
+                        let key = calc::TokenKey {
+                            group: Some(group.clone()),
+                            field,
+                            value,
+                        };
+                        got.insert(key, count);
+                    }
+                }
+            }
+            let mut want_groups = BTreeMap::new();
+            for (key, count) in want {
+                if key.group.is_some() {
+                    want_groups.insert(key, count);
+                }
+            }
+            assert_eq!(
+                got, want_groups,
+                "seed {seed} unit {unit}: tokens per group"
+            );
         }
     }
 }

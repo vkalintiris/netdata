@@ -635,19 +635,42 @@ mod tests {
 
     #[test]
     fn bands_include_their_lower_edge() {
-        let cases: [(i64, &str); 8] = [
+        let cases: [(i64, &str); 12] = [
             (0, "<1ms"),
             (999_999, "<1ms"),
             (1_000_000, "1-10ms"),
+            (9_999_999, "1-10ms"),
             (10_000_000, "10-100ms"),
+            (99_999_999, "10-100ms"),
             (100_000_000, "100ms-1s"),
+            (999_999_999, "100ms-1s"),
             (1_000_000_000, "1-10s"),
+            (9_999_999_999, "1-10s"),
             (10_000_000_000, ">10s"),
             (i64::MAX, ">10s"),
         ];
         for (duration, want) in cases {
             assert_eq!(DURATION_BANDS[band(duration)], want, "{duration}");
         }
+    }
+
+    /// Tier 2's duration clamp: an unset end, or one before the start, stores
+    /// 0; a span longer than `i64::MAX` saturates.
+    #[test]
+    fn durations_clamp_to_zero_and_saturate() {
+        let timed = |start: u64, end: u64| {
+            one_span(Span {
+                start_time_unix_nano: start,
+                end_time_unix_nano: end,
+                ..Default::default()
+            })
+            .duration_ns
+        };
+        assert_eq!(timed(1_000, 1_500), 500);
+        assert_eq!(timed(1_000, 0), 0);
+        assert_eq!(timed(1_000, 999), 0);
+        assert_eq!(timed(1_000, 1_000), 0);
+        assert_eq!(timed(0, u64::MAX), i64::MAX);
     }
 
     #[test]

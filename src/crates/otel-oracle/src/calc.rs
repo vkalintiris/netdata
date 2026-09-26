@@ -1154,6 +1154,20 @@ pub struct GroupKey {
     pub operation: Option<String>,
 }
 
+impl GroupKey {
+    pub fn of(span: &OracleSpan) -> GroupKey {
+        let first = |field: &str| {
+            span.fields
+                .get(field)
+                .and_then(|values| values.iter().min().map(str::to_string))
+        };
+        GroupKey {
+            service: first(SERVICE_FIELD),
+            operation: first("name"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GroupNumbers {
     pub spans: u64,
@@ -1281,16 +1295,7 @@ pub fn groups(
                 unset.1 += 1;
             }
         }
-        let first = |field: &str| {
-            span.fields
-                .get(field)
-                .and_then(|values| values.iter().min().map(str::to_string))
-        };
-        let key = GroupKey {
-            service: first(SERVICE_FIELD),
-            operation: first("name"),
-        };
-        let acc = by_key.entry(key).or_default();
+        let acc = by_key.entry(GroupKey::of(span)).or_default();
         let row = Side {
             spans: 1,
             errors_originated: u64::from(span.has(ERR_ORIGIN_FIELD, "true")),
@@ -1390,6 +1395,41 @@ pub fn groups_reasons(groups: &Groups) -> Vec<Reason> {
     }
 }
 
+/// One ORC-TOKENS count: rows of a unit carrying `field=value`, over the whole
+/// unit (`group` is `None`) or over one group's rows.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TokenKey {
+    pub group: Option<GroupKey>,
+    pub field: &'static str,
+    pub value: String,
+}
+
+/// ORC-TOKENS: per stored unit, how many rows carry each `_role` and each
+/// `_duration_band` value, overall and per group.
+pub fn token_counts(spans: &[OracleSpan]) -> BTreeMap<usize, BTreeMap<TokenKey, u64>> {
+    let mut out: BTreeMap<usize, BTreeMap<TokenKey, u64>> = BTreeMap::new();
+    for span in spans {
+        let unit = out.entry(span.unit).or_default();
+        let group = GroupKey::of(span);
+        for field in [ROLE_FIELD, DURATION_BAND_FIELD] {
+            let Some(values) = span.fields.get(field) else {
+                continue;
+            };
+            for value in values {
+                for scope in [None, Some(group.clone())] {
+                    let key = TokenKey {
+                        group: scope,
+                        field,
+                        value: value.to_string(),
+                    };
+                    *unit.entry(key).or_default() += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1431,6 +1471,101 @@ mod tests {
             unit,
             self_ns: None,
         }
+    }
+
+    /// ORC-TOKENS on a hand-cut two-unit corpus: a group's rows and the unit's
+    /// rows, counted per `_role` and `_duration_band` value.
+    #[test]
+    fn token_counts_per_unit_and_group() {
+        let at = |unit: usize, fields: &[(&str, &str)]| OracleSpan {
+            unit,
+            ..row(0, fields)
+        };
+        let spans = vec![
+            at(
+                0,
+                &[
+                    (SERVICE_FIELD, "api"),
+                    ("name", "GET"),
+                    (ROLE_FIELD, "root"),
+                    (DURATION_BAND_FIELD, "<1ms"),
+                ],
+            ),
+            at(
+                0,
+                &[
+                    (SERVICE_FIELD, "api"),
+                    ("name", "GET"),
+                    (ROLE_FIELD, "outbound"),
+                    (DURATION_BAND_FIELD, "<1ms"),
+                ],
+            ),
+            at(
+                0,
+                &[
+                    (SERVICE_FIELD, "db"),
+                    ("name", "SELECT"),
+                    (ROLE_FIELD, "inbound"),
+                    (DURATION_BAND_FIELD, "1-10ms"),
+                ],
+            ),
+            at(
+                1,
+                &[
+                    ("name", "GET"),
+                    (ROLE_FIELD, "root"),
+                    (DURATION_BAND_FIELD, ">10s"),
+                ],
+            ),
+        ];
+        let group = |service: Option<&str>, operation: &str| {
+            Some(GroupKey {
+                service: service.map(str::to_string),
+                operation: Some(operation.to_string()),
+            })
+        };
+        let key = |group: Option<GroupKey>, field: &'static str, value: &str| TokenKey {
+            group,
+            field,
+            value: value.to_string(),
+        };
+        let api = group(Some("api"), "GET");
+        let db = group(Some("db"), "SELECT");
+        let bare = group(None, "GET");
+
+        let want: BTreeMap<usize, BTreeMap<TokenKey, u64>> = [
+            (
+                0,
+                [
+                    (key(None, ROLE_FIELD, "root"), 1),
+                    (key(None, ROLE_FIELD, "outbound"), 1),
+                    (key(None, ROLE_FIELD, "inbound"), 1),
+                    (key(None, DURATION_BAND_FIELD, "<1ms"), 2),
+                    (key(None, DURATION_BAND_FIELD, "1-10ms"), 1),
+                    (key(api.clone(), ROLE_FIELD, "root"), 1),
+                    (key(api.clone(), ROLE_FIELD, "outbound"), 1),
+                    (key(api, DURATION_BAND_FIELD, "<1ms"), 2),
+                    (key(db.clone(), ROLE_FIELD, "inbound"), 1),
+                    (key(db, DURATION_BAND_FIELD, "1-10ms"), 1),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            (
+                1,
+                [
+                    (key(None, ROLE_FIELD, "root"), 1),
+                    (key(None, DURATION_BAND_FIELD, ">10s"), 1),
+                    (key(bare.clone(), ROLE_FIELD, "root"), 1),
+                    (key(bare, DURATION_BAND_FIELD, ">10s"), 1),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(token_counts(&spans), want);
     }
 
     #[test]
