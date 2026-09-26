@@ -229,3 +229,18 @@ fn replay_reads_and_expands_the_registry() {
         })
     );
 }
+
+/// Two holders releasing at once: the last one out removes a metric without retention.
+#[test]
+fn concurrent_releases_remove_the_metric() {
+    let mrg = Mrg::new();
+    for _ in 0..200 {
+        let (h1, _) = mrg.add_and_acquire(&A, 0, 0, 0, 0);
+        let h2 = h1.dup();
+        let t = std::thread::spawn(move || drop(h2));
+        drop(h1);
+        t.join().unwrap();
+        assert!(mrg.get_and_acquire(&A, 0).is_none());
+        assert_eq!(mrg.entries(), 0);
+    }
+}

@@ -293,3 +293,58 @@ fn queries_read_the_generated_values() {
     }
     assert!(minutes >= 59, "{minutes}");
 }
+
+/// runR's tier 0 at its next start: the last file (4, 12 KiB) is reused while its newest page is at most a day old,
+/// and indexed with a new pair 5 after (C: `extents 1, metrics 94, pages 94`).
+#[test]
+fn runr_last_file_follows_the_one_day_rule() {
+    use netdata_agent_storage::dbengine::format::journal_v1;
+    use netdata_agent_storage::dbengine::format::journal_v2::{Retention, open_cache_pages};
+    let Some(fx) = fixtures() else {
+        return;
+    };
+    let njf =
+        std::fs::File::open(fx.join("runR/cache/dbengine/journalfile-1-0000000004.njf")).unwrap();
+    let size = njf.metadata().unwrap().len();
+    let replay = journal_v1::replay(&njf, size).unwrap();
+    let newest = open_cache_pages(&replay, 0, &mut Retention::default()).last_time_s;
+    assert!(newest > 0);
+    for (now, indexed) in [(newest + 86_400, false), (newest + 86_401, true)] {
+        let work = tempfile::tempdir().unwrap();
+        let dir = work.path().join("dbengine");
+        copy_dir(&fx.join("runR/cache/dbengine"), &dir);
+        let cfg = TierConfig {
+            tier: 0,
+            path: dir.clone(),
+            direct_io: false,
+            max_disk_space: 25 * 1024 * 1024,
+            journal_check: false,
+        };
+        let (loaded, records) = netdata_agent_log::capture(|| load(cfg, &Mrg::new(), now));
+        let loaded = loaded.unwrap();
+        let messages: Vec<String> = records
+            .into_iter()
+            .filter(|r| r.priority != Priority::Debug)
+            .filter_map(|r| r.message)
+            .collect();
+        if indexed {
+            assert!(
+                messages.contains(&"DBENGINE: tier 0: indexing journalfile-1-0000000004.njfv2: extents 1, metrics 94, pages 94".to_string()),
+                "{messages:?}"
+            );
+            assert!(messages.contains(
+                &"DBENGINE: tier 0: created datafile-1-0000000005 (.ndf, .njf).".to_string()
+            ));
+            assert_eq!(loaded.last_fileno, 5);
+        } else {
+            assert!(
+                !messages
+                    .iter()
+                    .any(|m| m.contains("indexing") || m.contains("created")),
+                "{messages:?}"
+            );
+            assert_eq!(loaded.last_fileno, 4);
+            assert!(!loaded.open_pages.is_empty());
+        }
+    }
+}

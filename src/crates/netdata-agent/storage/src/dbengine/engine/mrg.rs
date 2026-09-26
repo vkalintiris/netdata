@@ -340,14 +340,21 @@ impl Mrg {
         }
     }
 
-    /// `metric_release()`: the last holder of a metric without retention removes it.
+    /// `metric_release()`: the last holder of a metric without retention removes it. The holder's reference goes
+    /// under the partition lock, so of two holders releasing at once the second sees itself last.
     fn release(&self, metric: Arc<Metric>) -> bool {
-        let mut partition = self.partition(&metric.uuid);
         let key = (metric.uuid, metric.tier);
-        let alone = partition
+        let mut partition = self.partition(&metric.uuid);
+        let Some(held) = partition
             .get(&key)
-            .is_some_and(|held| Arc::ptr_eq(held, &metric) && Arc::strong_count(&metric) == 2);
-        if alone && !metric.has_retention() {
+            .filter(|held| Arc::ptr_eq(held, &metric))
+        else {
+            return false;
+        };
+        let held = Arc::clone(held);
+        drop(metric);
+        // the map's reference and `held`
+        if Arc::strong_count(&held) == 2 && !held.has_retention() {
             partition.remove(&key);
             return true;
         }

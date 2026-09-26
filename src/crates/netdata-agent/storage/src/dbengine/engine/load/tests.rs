@@ -254,3 +254,123 @@ fn names_scan_as_sscanf() {
         Some((1, 9999999999u64 as u32))
     );
 }
+
+/// A directory that cannot be listed fails the tier as C's scandir() does: nothing is deleted or created.
+#[test]
+fn an_unlistable_directory_fails_the_scan() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let tier = dir.path().join("dbengine");
+    std::fs::create_dir(&tier).unwrap();
+    pair(&tier, 1, 1, vec![page(A, NOW - 100, 10)]);
+    std::fs::set_permissions(&tier, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let listable = std::fs::read_dir(&tier).is_ok();
+    let (loaded, records) = netdata_agent_log::capture(|| load(cfg(&tier), &Mrg::new(), NOW));
+    std::fs::set_permissions(&tier, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if listable {
+        // running as root: nothing to check
+        return;
+    }
+    assert!(loaded.is_err());
+    let messages = messages(records);
+    assert_eq!(
+        messages,
+        [
+            format!(
+                "DBENGINE: uv_fs_scandir({}): permission denied",
+                tier.display()
+            ),
+            format!("DBENGINE: failed to scan path \"{}\".", tier.display()),
+        ]
+    );
+    assert_eq!(
+        names(&tier),
+        ["datafile-1-0000000001.ndf", "journalfile-1-0000000001.njf"]
+    );
+}
+
+/// A v2 file whose end is at the epoch is rebuilt from its journal (C aborts on it, D29); with the integrity check
+/// on, a valid v2 logs C's verification records.
+#[test]
+fn v2_end_times_and_integrity_checks() {
+    let dir = tempfile::tempdir().unwrap();
+    pair(
+        dir.path(),
+        1,
+        1,
+        vec![page(A, NOW - 100, 10), page(B, NOW - 100, 10)],
+    );
+    pair(dir.path(), 2, 1, vec![]);
+    drop(load(cfg(dir.path()), &Mrg::new(), NOW).unwrap());
+    let v2 = dir.path().join("journalfile-1-0000000001.njfv2");
+
+    let mut config = cfg(dir.path());
+    config.journal_check = true;
+    let (_, records) = netdata_agent_log::capture(|| load(config, &Mrg::new(), NOW));
+    let messages = messages(records);
+    assert!(
+        messages.contains(&"DBENGINE: checking 2 metrics that exist in the journal".to_string()),
+        "{messages:?}"
+    );
+    assert!(
+        messages.contains(
+            &"DBENGINE: verification succeeded -- total entries 2, verified 2 (2 total pages)"
+                .to_string()
+        ),
+        "{messages:?}"
+    );
+
+    let mut bytes = std::fs::read(&v2).unwrap();
+    let mut h = journal_v2::Header::decode(bytes[..HEADER_SIZE].try_into().unwrap());
+    h.end_time_ut = 0;
+    let encoded = h.encode();
+    bytes[..HEADER_SIZE].copy_from_slice(&encoded);
+    let len = bytes.len();
+    bytes[len - 4..].copy_from_slice(&crate::dbengine::format::crc::crc_bytes(
+        crate::dbengine::format::crc::crc32(&encoded),
+    ));
+    std::fs::write(&v2, bytes).unwrap();
+    let (tier, records) = load_logged(dir.path(), &Mrg::new(), NOW);
+    assert!(
+        records.contains(&format!(
+            "File \"{}\" is invalid and it will be rebuilt",
+            v2.display()
+        )),
+        "{records:?}"
+    );
+    assert!(
+        records
+            .iter()
+            .any(|r| r.contains("indexing journalfile-1-0000000001.njfv2"))
+    );
+    assert!(tier.unwrap().files[0].v2.is_some());
+}
+
+/// The last pair with a bad data file: C loads its journal anyway, and a tier-0 journal more than a day old makes it
+/// create a new pair; a recent one does not.
+#[test]
+fn a_doomed_last_pair_rotates_as_c() {
+    // no pair survives: C starts over at pair 1, whatever the journal says
+    for age in [100, OLD_DATA_S + 100] {
+        let dir = tempfile::tempdir().unwrap();
+        pair(dir.path(), 1, 1, vec![page(A, NOW - age, 10)]);
+        let data = dir.path().join("datafile-1-0000000001.ndf");
+        let mut bytes = std::fs::read(&data).unwrap();
+        bytes[0] ^= 0xff;
+        std::fs::write(&data, bytes).unwrap();
+        let tier = load_logged(dir.path(), &Mrg::new(), NOW).0.unwrap();
+        assert_eq!((tier.files.len(), tier.last_fileno), (1, 1));
+    }
+    // with a surviving pair before it, the flag decides
+    for (age, want_last) in [(100, 2), (OLD_DATA_S + 100, 3)] {
+        let dir = tempfile::tempdir().unwrap();
+        pair(dir.path(), 1, 1, vec![page(B, NOW - age - 50, 10)]);
+        pair(dir.path(), 2, 1, vec![page(A, NOW - age, 10)]);
+        let data = dir.path().join("datafile-1-0000000002.ndf");
+        let mut bytes = std::fs::read(&data).unwrap();
+        bytes[0] ^= 0xff;
+        std::fs::write(&data, bytes).unwrap();
+        let (tier, _) = load_logged(dir.path(), &Mrg::new(), NOW);
+        assert_eq!(tier.unwrap().last_fileno, want_last, "age {age}");
+    }
+}

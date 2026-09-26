@@ -123,7 +123,7 @@ fn c_readers_accept_every_file() {
                 assert_eq!(superblock::check_datafile(&ndf), Ok(()), "{name}");
                 assert_eq!(superblock::check_journal(&njf), Ok(()), "{name}");
                 let replay = journal_v1::replay(&njf[..], njf.len() as u64).unwrap();
-                assert!(!replay.read_error, "{name}");
+                assert!(replay.read_error.is_none(), "{name}");
                 for e in &replay.events {
                     let Event::StoreData { data, .. } = e else {
                         panic!("{name}: {e:?}");

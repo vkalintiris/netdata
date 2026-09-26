@@ -67,8 +67,8 @@ pub struct Replay {
     pub events: Vec<Event>,
     /// The largest transaction id seen, at least 1 (`max_trans_id`).
     pub max_id: u64,
-    /// Set when a read failed; the replay stops there (C logs and keeps what it replayed).
-    pub read_error: bool,
+    /// Where a read failed and its errno; the replay stops there (C logs and keeps what it replayed).
+    pub read_error: Option<(u64, i32)>,
 }
 
 /// A STORE_DATA transaction in its 4096-byte block.
@@ -165,15 +165,15 @@ pub fn replay<R: ReadAt + ?Sized>(r: &R, file_size: u64) -> io::Result<Replay> {
     let mut out = Replay {
         events: Vec::new(),
         max_id: 1,
-        read_error: false,
+        read_error: None,
     };
     let mut pos = BLOCK_SIZE as u64;
     let mut buf = Vec::new();
     while pos < size {
         let n = (size - pos).min(CHUNK) as usize;
         buf.resize(n, 0);
-        if r.read_exact_at(&mut buf, pos).is_err() {
-            out.read_error = true;
+        if let Err(err) = r.read_exact_at(&mut buf, pos) {
+            out.read_error = Some((pos, err.raw_os_error().unwrap_or(libc::EIO)));
             break;
         }
         let mut i = 0usize;

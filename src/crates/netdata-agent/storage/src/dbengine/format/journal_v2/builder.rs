@@ -621,7 +621,7 @@ mod tests {
         let replay = Replay {
             events: Vec::new(),
             max_id: 1,
-            read_error: false,
+            read_error: None,
         };
         assert_eq!(from_v1(&replay, 4096, 0, &mut Retention::default()), None);
     }
@@ -653,7 +653,7 @@ mod tests {
         Replay {
             events,
             max_id: 1,
-            read_error: false,
+            read_error: None,
         }
     }
 

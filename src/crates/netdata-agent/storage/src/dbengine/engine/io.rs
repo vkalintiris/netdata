@@ -79,11 +79,8 @@ pub fn unlink(path: &Path) -> bool {
         Ok(()) => true,
         Err(err) => {
             let errno = err.raw_os_error().unwrap_or(0);
-            netdata_log_error!(
-                "DBENGINE: uv_fs_unlink(\"{}\"): {}",
-                path.display(),
-                uv_strerror(errno)
-            );
+            nd_log!(Source::Daemon, Priority::Err, errno = errno;
+                "DBENGINE: uv_fs_unlink(\"{}\"): {}", path.display(), uv_strerror(errno));
             false
         }
     }

@@ -13,7 +13,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use netdata_agent_log::{Priority, Source, nd_log, netdata_log_error, netdata_log_info};
+use netdata_agent_log::{
+    ErrorLimit, Priority, Source, nd_log, nd_log_limit, netdata_log_error, netdata_log_info,
+};
 use netdata_agent_text::size::size_to_string;
 
 use super::io::{
@@ -143,21 +145,21 @@ struct Scan {
 /// C's lax name match (only tier digit 1; the same number once), journals by their exact names, the rest reported;
 /// then journals without a data file are deleted, when there is a data file at all.
 fn scan(cfg: &TierConfig) -> io::Result<Scan> {
-    let entries = match std::fs::read_dir(&cfg.path) {
-        Ok(entries) => entries,
+    // scandir() lists the whole directory or fails: a partial listing would delete journals and pairs it missed
+    let listed: io::Result<Vec<String>> = std::fs::read_dir(&cfg.path).and_then(|entries| {
+        entries
+            .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect()
+    });
+    let mut names = match listed {
+        Ok(names) => names,
         Err(err) => {
-            netdata_log_error!(
-                "DBENGINE: uv_fs_scandir({}): {}",
-                cfg.path.display(),
-                netdata_agent_log::uv_strerror(err.raw_os_error().unwrap_or(0))
-            );
+            let errno = err.raw_os_error().unwrap_or(libc::EIO);
+            nd_log!(Source::Daemon, Priority::Err, errno = errno;
+                "DBENGINE: uv_fs_scandir({}): {}", cfg.path.display(), netdata_agent_log::uv_strerror(errno));
             return Err(err);
         }
     };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
     names.sort();
     netdata_log_info!(
         "DBENGINE: tier {}: found {} files in path {}",
@@ -345,12 +347,24 @@ fn journal_v2_load(cfg: &TierConfig, fileno: u32) -> Option<V2File> {
         Ok(Verdict::NoMetrics) => None,
         Ok(Verdict::Ok) => {
             let mut hb = [0u8; HEADER_SIZE];
-            let metrics = match ReadAt::read_exact_at(&file, &mut hb, 0) {
-                Ok(()) => journal_v2::Header::decode(&hb).metric_count,
-                Err(_) => 0,
+            let header = match ReadAt::read_exact_at(&file, &mut hb, 0) {
+                Ok(()) => journal_v2::Header::decode(&hb),
+                Err(_) => return reject("needs to be rebuilt"),
             };
+            let metrics = header.metric_count;
             if cfg.journal_check {
                 log_checking_metrics(&file);
+                if let Ok(Ok(total_pages)) = journal_v2::validate_metric_list(&file, &header) {
+                    netdata_log_info!(
+                        "DBENGINE: verification succeeded -- total entries {metrics}, verified {metrics} \
+                         ({total_pages} total pages)"
+                    );
+                }
+            }
+            // C indexes the file by its end and aborts on an end at or before the epoch (njfv2idx_add()); such a
+            // file is rebuilt from its journal instead (D29)
+            if (header.end_time_ut / 1_000_000) as i64 <= 0 {
+                return reject("is invalid and it will be rebuilt");
             }
             nd_log!(
                 Source::Daemon,
@@ -534,9 +548,15 @@ fn journal_load(
     let replay = journal_v1::replay(&file, size).unwrap_or(Replay {
         events: Vec::new(),
         max_id: 1,
-        read_error: true,
+        read_error: None,
     });
     log_replay(&replay);
+    if let Some((pos, errno)) = replay.read_error {
+        netdata_log_error!(
+            "DBENGINE: uv_fs_read: pos={pos}, {}",
+            netdata_agent_log::uv_strerror(errno)
+        );
+    }
     let open = open_cache_pages(&replay, now_s + 1, &mut mrg.tier(cfg.tier));
     *transaction_id = (*transaction_id).max(replay.max_id + 1);
     nd_log!(
@@ -567,17 +587,80 @@ fn journal_load(
     })
 }
 
+/// Whether C, which loads the journal of the last pair even when its data file is invalid (D29: this port does not),
+/// would rotate: its data file's position is then 0, so only a tier-0 journal whose newest page is more than a day
+/// old gets indexed and a new pair created. Computed without records or effects on the registry.
+fn doomed_last_pair_rotates(cfg: &TierConfig, fileno: u32, now_s: i64) -> bool {
+    if cfg.tier != 0 {
+        return false;
+    }
+    let Ok(file) = File::open(cfg.file(FileKind::Journal, fileno)) else {
+        return false;
+    };
+    let Ok(size) = file.metadata().map(|m| m.len()) else {
+        return false;
+    };
+    let mut sb = [0u8; BLOCK_SIZE];
+    if size < BLOCK_SIZE as u64
+        || ReadAt::read_exact_at(&file, &mut sb, 0).is_err()
+        || superblock::check_journal(&sb).is_err()
+    {
+        return false;
+    }
+    let Ok(replay) = journal_v1::replay(&file, align_floor(size)) else {
+        return false;
+    };
+    let open = open_cache_pages(&replay, now_s + 1, &mut journal_v2::Retention::default());
+    open.last_time_s > 0 && now_s - open.last_time_s > OLD_DATA_S
+}
+
+/// `nd_log_limit_static_global_var(dbengine_erl, 10, 0)` of each creation failure.
+static DATAFILE_CREATE: ErrorLimit = ErrorLimit::new(10, 0);
+static JOURNAL_CREATE: ErrorLimit = ErrorLimit::new(10, 0);
+
 /// `create_data_file()` or `journalfile_create()`: the file created with its superblock (a data file's `tier` byte
-/// is 1); its size.
+/// is 1), the write retried up to 9 times 300 ms apart unless the error cannot pass; C's record on a failure.
 fn create_file(
     path: &Path,
     direct: bool,
     superblock: &[u8; BLOCK_SIZE],
-    what: &str,
+    journal: bool,
 ) -> Option<IoFile> {
     let file = open_for_io(path, true, direct).ok()?;
-    if write_block(&file, superblock, 0).is_err() {
-        netdata_log_error!("DBENGINE: Failed to create {what} {}", path.display());
+    let mut written: io::Result<()> = Err(io::ErrorKind::Other.into());
+    for _ in 0..9 {
+        written = write_block(&file, superblock, 0);
+        match &written {
+            Ok(()) => break,
+            Err(err)
+                if matches!(
+                    err.raw_os_error(),
+                    Some(libc::ENOSPC | libc::EBADF | libc::EACCES | libc::EROFS | libc::EINVAL)
+                ) =>
+            {
+                break;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(300)),
+        }
+    }
+    if written.is_err() {
+        if journal {
+            nd_log_limit!(
+                &JOURNAL_CREATE,
+                Source::Daemon,
+                Priority::Err,
+                "DBENGINE: Failed to create journlfile \"{}\"",
+                path.display()
+            );
+        } else {
+            nd_log_limit!(
+                &DATAFILE_CREATE,
+                Source::Daemon,
+                Priority::Err,
+                "DBENGINE: Failed to create datafile {}",
+                path.display()
+            );
+        }
         let _ = std::fs::remove_file(path);
         return None;
     }
@@ -598,7 +681,7 @@ fn create_new_pair(cfg: &TierConfig, tier: &mut Tier) -> bool {
         &data_path,
         cfg.direct_io,
         &superblock::encode_datafile(),
-        "datafile",
+        false,
     ) else {
         return false;
     };
@@ -607,7 +690,7 @@ fn create_new_pair(cfg: &TierConfig, tier: &mut Tier) -> bool {
         &journal_path,
         cfg.direct_io,
         &superblock::encode_journal(),
-        "journal file",
+        true,
     )
     .is_none()
     {
@@ -687,7 +770,10 @@ pub fn load(cfg: TierConfig, mrg: &Mrg, now_s: i64) -> io::Result<Tier> {
                     },
                 );
             }
-            _ => {
+            (data, _) => {
+                if data.is_none() && fileno == tier.last_fileno {
+                    create |= doomed_last_pair_rotates(&cfg, fileno, now_s);
+                }
                 netdata_log_error!("DBENGINE: deleting invalid data and journal file pair.");
                 let journal = cfg.file(FileKind::Journal, fileno);
                 if unlink(&journal) {
