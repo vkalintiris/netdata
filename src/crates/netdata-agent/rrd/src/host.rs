@@ -137,6 +137,13 @@ pub fn set_netdata_start_time(seconds: i64) {
     NETDATA_START_TIME.store(seconds, Ordering::Relaxed);
 }
 
+/// `now_realtime_sec()`.
+fn now_realtime_s() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
 /// `get_agent_event_time_median()` of the start and shutdown events, in microseconds: cached from the agent event log
 /// at startup, 0 without events.
 static AGENT_EVENT_MEDIANS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
@@ -247,6 +254,12 @@ pub struct Host {
     min_update_every_applied: AtomicU32,
     /// `host->stream.rcv.status.replication.counter_out`: replication requests sent since the child connected.
     replication_requests: AtomicU32,
+    /// `RRDHOST_FLAG_ARCHIVED`: loaded from the metadata database, not connected since this start.
+    archived: AtomicBool,
+    /// `RRDHOST_FLAG_PENDING_CONTEXT_LOAD`: its contexts are still loading; a child connecting now is refused.
+    pending_context_load: AtomicBool,
+    /// `host->stream.snd.status.last_connected`, in wall-clock seconds.
+    last_connected_s: AtomicI64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -277,6 +290,9 @@ impl Host {
             min_update_every: AtomicU32::new(u32::MAX),
             min_update_every_applied: AtomicU32::new(u32::MAX),
             replication_requests: AtomicU32::new(0),
+            archived: AtomicBool::new(false),
+            pending_context_load: AtomicBool::new(false),
+            last_connected_s: AtomicI64::new(0),
         }
     }
 
@@ -335,6 +351,11 @@ impl Host {
     /// The records of `rrdhost_create()` for a new host: the sender's parents, an invalid machine GUID, the function
     /// registry (`nrpc_registry_init()`, which prints the host's address), then `Host ... initialized`.
     fn log_created(&self) {
+        self.log_created_with(true);
+    }
+
+    /// The records of `rrdhost_create()`; an archived host gets no function registry, so no NRPC record.
+    fn log_created_with(&self, registry: bool) {
         let info = self.info();
         if let Some(send) = &info.stream_send {
             for (n, parent) in send.parents().enumerate() {
@@ -350,18 +371,56 @@ impl Host {
         if uuid_parse_flexi(self.machine_guid.as_bytes()).is_none() {
             netdata_log_error!("Host machine GUID {} is not valid", self.machine_guid);
         }
-        nd_log!(
-            Source::Daemon,
-            Priority::Debug,
-            "NRPC: function registry 0x{:016X} created for host '{}'",
-            std::ptr::from_ref(self) as usize,
-            info.hostname
-        );
+        if registry {
+            self.log_registry_created(&info.hostname);
+        }
         nd_log!(
             Source::Daemon,
             Priority::Info,
             "{}",
             initialized_record(&self.machine_guid, &info)
+        );
+    }
+
+    fn log_registry_created(&self, hostname: &str) {
+        nd_log!(
+            Source::Daemon,
+            Priority::Debug,
+            "NRPC: function registry 0x{:016X} created for host '{hostname}'",
+            std::ptr::from_ref(self) as usize
+        );
+    }
+
+    /// `RRDHOST_FLAG_ARCHIVED`.
+    pub fn is_archived(&self) -> bool {
+        self.archived.load(Ordering::Acquire)
+    }
+
+    /// `RRDHOST_FLAG_PENDING_CONTEXT_LOAD`.
+    pub fn is_pending_context_load(&self) -> bool {
+        self.pending_context_load.load(Ordering::Acquire)
+    }
+
+    pub fn clear_pending_context_load(&self) {
+        self.pending_context_load.store(false, Ordering::Release);
+    }
+
+    /// `host->stream.snd.status.last_connected`.
+    pub fn last_connected_s(&self) -> i64 {
+        self.last_connected_s.load(Ordering::Relaxed)
+    }
+
+    pub fn set_last_connected_s(&self, seconds: i64) {
+        self.last_connected_s.store(seconds, Ordering::Relaxed);
+    }
+
+    /// The last record of `rrdhost_cleanup_data_collection_and_health()`, which runs as a host is freed.
+    fn log_archive_mode(&self) {
+        nd_log!(
+            Source::Daemon,
+            Priority::Debug,
+            "RRD: 'host:{}' is now in archive mode...",
+            self.hostname()
         );
     }
 
@@ -448,6 +507,17 @@ impl Host {
         }
         for (priority, text) in records {
             nd_log!(Source::Daemon, priority, "{text}");
+        }
+        self.set_last_connected_s(now_realtime_s());
+        // the host connected again: it gets its function registry back
+        if self.archived.swap(false, Ordering::AcqRel) {
+            let hostname = self.hostname();
+            self.log_registry_created(&hostname);
+            nd_log!(
+                Source::Daemon,
+                Priority::Debug,
+                "Host {hostname} is not in archived mode anymore"
+            );
         }
     }
 
@@ -766,23 +836,80 @@ impl Hosts {
         index.ordered.retain(|h| !Arc::ptr_eq(h, &host));
         self.version
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        drop(index);
+        host.log_archive_mode();
         Some(host)
+    }
+
+    /// `rrdhost_find_or_create(archived = true)` for a host of the metadata database: appended as archived, orphan
+    /// and pending its contexts, with no function registry. `before_record` runs before the host's record (its node
+    /// id). An existing host is returned as it is.
+    pub fn add_archived(
+        &self,
+        guid: &str,
+        info: HostInfo,
+        before_record: impl FnOnce(&Host),
+    ) -> Arc<Host> {
+        let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some(host) = index.by_guid.get(guid) {
+            return Arc::clone(host);
+        }
+        let host = Arc::new(Host::new(guid, false, info));
+        host.archived.store(true, Ordering::Release);
+        host.pending_context_load.store(true, Ordering::Release);
+        host.orphan.store(true, Ordering::Release);
+        before_record(&host);
+        index.ordered.push(Arc::clone(&host));
+        index.by_guid.insert(guid.to_string(), Arc::clone(&host));
+        self.version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        drop(index);
+        host.log_created_with(false);
+        host
     }
 
     /// The find half of `rrdhost_find_or_create()`: an existing host is updated by `update`; otherwise `create` makes
     /// the new one, appended after the others, and its records follow once the index is unlocked. The whole step
     /// holds the index lock, as `rrd_wrlock()` does in C, so two connections for one GUID cannot both create it.
+    ///
+    /// An archived host still loading its contexts is returned untouched (the receiver refuses it); one of another
+    /// memory mode is discarded and created again.
     pub fn find_or_create(
         &self,
         guid: &str,
+        mode: DbMode,
         create: impl FnOnce() -> HostInfo,
         update: impl FnOnce(&Host),
     ) -> Arc<Host> {
         let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        if let Some(host) = index.by_guid.get(guid) {
-            let host = Arc::clone(host);
+        let found = index.by_guid.get(guid).cloned();
+        let found = match found {
+            Some(host) if host.is_archived() && host.info().db_mode != mode => {
+                if host.is_pending_context_load() {
+                    return host;
+                }
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Info,
+                    "Archived host '{}' has memory mode '{}', but the wanted one is '{}'. Discarding archived state.",
+                    host.hostname(),
+                    host.info().db_mode.name(),
+                    mode.name()
+                );
+                index.by_guid.remove(guid);
+                index.ordered.retain(|h| !Arc::ptr_eq(h, &host));
+                self.version
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                host.log_archive_mode();
+                None
+            }
+            found => found,
+        };
+        if let Some(host) = found {
             drop(index);
-            update(&host);
+            if !host.is_pending_context_load() {
+                update(&host);
+            }
             return host;
         }
         let host = Arc::new(Host::new(guid, false, create()));
@@ -877,10 +1004,11 @@ mod tests {
     #[test]
     fn index_keeps_creation_order_and_single_receivers() {
         let hosts = Hosts::new(Host::new("local-guid", true, info("parent")));
-        let a = hosts.find_or_create("guid-a", || info("a"), |_| panic!("new host"));
-        hosts.find_or_create("guid-b", || info("b"), |_| panic!("new host"));
+        let a = hosts.find_or_create("guid-a", DbMode::Ram, || info("a"), |_| panic!("new host"));
+        hosts.find_or_create("guid-b", DbMode::Ram, || info("b"), |_| panic!("new host"));
         let again = hosts.find_or_create(
             "guid-a",
+            DbMode::Ram,
             || panic!("exists"),
             |h| h.update_info(|i| i.hostname = "a2".into()),
         );
@@ -970,7 +1098,7 @@ mod tests {
         child.timezone = "Etc/UTC".into();
         child.program_version = "v2.11.0-458-g1e97a0fc9e".into();
         let (host, records) = netdata_agent_log::capture(|| {
-            hosts.find_or_create(guid, || child, |_| panic!("new host"))
+            hosts.find_or_create(guid, DbMode::Ram, || child, |_| panic!("new host"))
         });
         assert_eq!(
             texts(&records)[1..],
@@ -986,7 +1114,12 @@ mod tests {
         );
         // a malformed GUID is only reported, and an empty hostname is localhost
         let (_, records) = netdata_agent_log::capture(|| {
-            hosts.find_or_create("not-a-guid", || info(""), |_| panic!("new host"))
+            hosts.find_or_create(
+                "not-a-guid",
+                DbMode::Ram,
+                || info(""),
+                |_| panic!("new host"),
+            )
         });
         let texts = texts(&records);
         assert_eq!(
@@ -1008,7 +1141,8 @@ mod tests {
     #[test]
     fn an_update_logs_what_changed_as_c() {
         let hosts = Hosts::new(Host::new("local-guid", true, info("parent")));
-        let host = hosts.find_or_create("guid-a", || info("a"), |_| panic!("new host"));
+        let host =
+            hosts.find_or_create("guid-a", DbMode::Ram, || info("a"), |_| panic!("new host"));
         let mut wanted = info("renamed");
         wanted.program_name = "other".into();
         wanted.program_version = "v1".into();
@@ -1056,5 +1190,89 @@ mod tests {
                     .to_string()
             )]
         );
+    }
+
+    #[test]
+    fn archived_hosts_wait_for_their_contexts_then_follow_cs_branches() {
+        let messages = |records: Vec<netdata_agent_log::Captured>| -> Vec<String> {
+            records
+                .into_iter()
+                .filter_map(|r| r.message)
+                .filter(|m| !m.starts_with("Host 'child' (at registry"))
+                .map(|m| {
+                    if m.starts_with("NRPC: function registry") {
+                        "NRPC".to_string()
+                    } else {
+                        m
+                    }
+                })
+                .collect()
+        };
+        let hosts = Hosts::new(Host::new("local-guid", true, info("parent")));
+        let alloc = HostInfo {
+            db_mode: DbMode::Alloc,
+            ..info("child")
+        };
+        let (host, records) = netdata_agent_log::capture(|| {
+            hosts.add_archived(
+                "5a1e0000-0000-4000-8000-0000000000c1",
+                alloc.clone(),
+                |_| {},
+            )
+        });
+        assert!(host.is_archived() && host.is_pending_context_load() && host.is_orphan());
+        // no function registry for an archived host
+        assert_eq!(messages(records), Vec::<String>::new());
+        // while its contexts load, the host comes back as it is
+        let same = hosts.find_or_create(
+            "5a1e0000-0000-4000-8000-0000000000c1",
+            DbMode::Ram,
+            || panic!("created"),
+            |_| panic!("updated"),
+        );
+        assert!(Arc::ptr_eq(&same, &host));
+        host.clear_pending_context_load();
+        // the same memory mode: updated and no longer archived
+        let (again, records) = netdata_agent_log::capture(|| {
+            hosts.find_or_create(
+                "5a1e0000-0000-4000-8000-0000000000c1",
+                DbMode::Alloc,
+                || panic!("created"),
+                |h| h.update(&alloc, 1, 3600),
+            )
+        });
+        assert!(Arc::ptr_eq(&again, &host) && !again.is_archived());
+        assert_eq!(
+            messages(records),
+            ["NRPC", "Host child is not in archived mode anymore"]
+        );
+        // another memory mode: the archived state is discarded and the host created again
+        let archived = hosts.add_archived(
+            "5a1e0000-0000-4000-8000-0000000000c2",
+            HostInfo {
+                db_mode: DbMode::Alloc,
+                ..info("other")
+            },
+            |_| {},
+        );
+        archived.clear_pending_context_load();
+        let (created, records) = netdata_agent_log::capture(|| {
+            hosts.find_or_create(
+                "5a1e0000-0000-4000-8000-0000000000c2",
+                DbMode::Ram,
+                || info("other"),
+                |_| panic!("updated"),
+            )
+        });
+        assert!(!Arc::ptr_eq(&created, &archived) && !created.is_archived());
+        let records = messages(records);
+        assert_eq!(
+            records[..2],
+            [
+                "Archived host 'other' has memory mode 'alloc', but the wanted one is 'ram'. Discarding archived state.",
+                "RRD: 'host:other' is now in archive mode..."
+            ]
+        );
+        assert_eq!(hosts.all().len(), 3);
     }
 }

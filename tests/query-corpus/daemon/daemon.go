@@ -86,6 +86,11 @@ type Options struct {
 	// PipeName, when set, is the daemon's NETDATA_PIPENAME with {run} replaced by RunDir. Empty is
 	// {run}/netdata.pipe, so daemons never share the default command pipe.
 	PipeName string
+	// DBMode is the [db] db value; empty is dbengine.
+	DBMode string
+	// SeedCache, when set, is a directory whose files are copied into the cache directory before the first start
+	// (writable, as the daemon's own would be): a metadata database written by an earlier run.
+	SeedCache string
 }
 
 // StreamTo is a child's [stream] section.
@@ -140,7 +145,7 @@ const netdataConfTemplate = `[global]
     bind to = %[10]s
 %[8]s
 [db]
-    db = dbengine
+    db = %[11]s
     update every = 1
     storage tiers = %[4]d
     replication period = 3650d
@@ -278,6 +283,25 @@ func Start(o Options) (*Daemon, error) {
 		}
 	}
 
+	if o.SeedCache != "" {
+		entries, err := os.ReadDir(o.SeedCache)
+		if err != nil {
+			return nil, fmt.Errorf("daemon: seed cache: %w", err)
+		}
+		for _, e := range entries {
+			if !e.Type().IsRegular() {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(o.SeedCache, e.Name()))
+			if err != nil {
+				return nil, fmt.Errorf("daemon: seed cache: %w", err)
+			}
+			if err := os.WriteFile(filepath.Join(o.RunDir, "cache", e.Name()), b, 0o644); err != nil {
+				return nil, fmt.Errorf("daemon: seed cache: %w", err)
+			}
+		}
+	}
+
 	hostname, streamKey, err := resolveIdentity(o)
 	if err != nil {
 		return nil, err
@@ -373,8 +397,12 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 		bindTo = "127.0.0.1:{port}"
 	}
 	bindTo = strings.NewReplacer("{port}", strconv.Itoa(o.Port), "{run}", o.RunDir).Replace(bindTo)
+	dbMode := o.DBMode
+	if dbMode == "" {
+		dbMode = "dbengine"
+	}
 	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs, o.WebExtra,
-		o.GlobalExtra, bindTo)
+		o.GlobalExtra, bindTo, dbMode)
 	if o.LogsExtra != "" {
 		conf += "\n[logs]\n" + o.LogsExtra
 	}

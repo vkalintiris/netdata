@@ -157,7 +157,7 @@ mod tests {
                 "{{\n    \"version\":1,\n    \"status\":200,\n    \"host_id\":\"{LOCALHOST}\",\n    \"nodes\":2,\n    \"receivers\":1,\n    \"nonce\":X,\n{fields}\n}}\n"
             )
         };
-        let child = hosts.find_or_create(CHILD, || info("parity-cchild-none"), |_| {});
+        let child = hosts.find_or_create(CHILD, DbMode::Ram, || info("parity-cchild-none"), |_| {});
         let slot = attach(&child);
         // the child just attached: nothing post-processed yet
         let initializing = found(&format!(

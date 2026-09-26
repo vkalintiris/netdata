@@ -32,6 +32,8 @@ pub enum Reason {
     SocketError,
     Timeout,
     ReplicationStalled,
+    /// `STREAM_HANDSHAKE_PARENT_IS_INITIALIZING`: the host's contexts are still loading.
+    ParentIsInitializing,
 }
 
 impl Reason {
@@ -53,6 +55,7 @@ impl Reason {
             Reason::SocketError => "DISCONNECT SOCKET ERROR",
             Reason::Timeout => "DISCONNECTED TIMEOUT",
             Reason::ReplicationStalled => "REPLICATION STALLED",
+            Reason::ParentIsInitializing => "REMOTE IS INITIALIZING",
         }
     }
 
@@ -71,6 +74,7 @@ impl Reason {
             Reason::SocketError => 500,
             Reason::Timeout => 504,
             Reason::ReplicationStalled => 507,
+            Reason::ParentIsInitializing => 102,
         }
     }
 }

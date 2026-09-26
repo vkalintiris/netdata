@@ -844,8 +844,9 @@ pub fn section_db(c: &mut Config, page_size: i64) -> DbSection {
         orphan = 10;
         c.set_duration_seconds(SECTION_DB, "cleanup orphan hosts after", orphan);
     }
-    let ephemeral = c.get_duration_seconds(SECTION_DB, "cleanup ephemeral hosts after", 0);
+    let mut ephemeral = c.get_duration_seconds(SECTION_DB, "cleanup ephemeral hosts after", 0);
     if ephemeral != 0 && ephemeral < orphan {
+        ephemeral = orphan;
         c.set_duration_seconds(SECTION_DB, "cleanup ephemeral hosts after", orphan);
     }
     if c.get_duration_seconds(SECTION_DB, "cleanup obsolete charts after", 3600) < 10 {
@@ -868,6 +869,7 @@ pub fn section_db(c: &mut Config, page_size: i64) -> DbSection {
         mode,
         history_entries,
         gap_when_lost_iterations_above: i64::from(gap) + 2,
+        free_ephemeral_time_s: ephemeral,
     }
 }
 
@@ -1259,6 +1261,8 @@ pub struct DbSection {
     pub history_entries: i64,
     /// `gap_when_lost_iterations_above`: the option plus the 2 C adds after reading it.
     pub gap_when_lost_iterations_above: i64,
+    /// `rrdhost_free_ephemeral_time_s`: `[db] cleanup ephemeral hosts after`, 0 for never.
+    pub free_ephemeral_time_s: i64,
 }
 
 /// `verify_netdata_host_prefix(true)` (`src/libnetdata/paths/paths.c`): a directory, without `%`, holding procfs and
@@ -1709,6 +1713,7 @@ mod tests {
             mode: DbMode::Dbengine,
             history_entries: 3600,
             gap_when_lost_iterations_above: 3,
+            free_ephemeral_time_s: 0,
         };
         let cases = std::collections::BTreeMap::from([
             (
@@ -1728,7 +1733,10 @@ mod tests {
                 DbCase {
                     file: "update every = 0\ngap when lost iterations above = 0\ncleanup orphan hosts after = 5\n\
                            cleanup ephemeral hosts after = 7\ncleanup obsolete charts after = 2\n",
-                    want: dbengine,
+                    want: DbSection {
+                        free_ephemeral_time_s: 10,
+                        ..dbengine
+                    },
                     values: &[
                         ("update every", "1s"),
                         ("gap when lost iterations above", "1"),
@@ -1747,6 +1755,7 @@ mod tests {
                         mode: DbMode::Ram,
                         history_entries: 4096,
                         gap_when_lost_iterations_above: 3,
+                        free_ephemeral_time_s: 0,
                     },
                     values: &[
                         ("db", "ram"),

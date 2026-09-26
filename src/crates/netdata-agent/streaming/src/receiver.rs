@@ -531,9 +531,23 @@ impl Receivers {
         );
         let host = self.hosts.find_or_create(
             &guid,
+            mode,
             || wanted.clone(),
             |host| host.update(&wanted, config.update_every, config.history),
         );
+        if host.is_pending_context_load() {
+            peer.status(
+                "rejecting streaming connection; host is initializing, retry later",
+                Reason::ParentIsInitializing,
+                Priority::Notice,
+            );
+            send_timeout(
+                &stream,
+                handshake::ERROR_INITIALIZATION.as_bytes(),
+                Duration::from_secs(5),
+            );
+            return;
+        }
         let capabilities = caps::select_compression(
             request.capabilities,
             config.compression_enabled,

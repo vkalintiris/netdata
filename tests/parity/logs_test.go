@@ -32,7 +32,6 @@ var cOnlyRecords = []struct {
 	{regexp.MustCompile(`msg="(JSON-RPC protocol|Echo protocol|MCP WebSocket adapter|WebSocket server subsystem) initialized`), "WebSocket"},
 	{regexp.MustCompile(`msg="DBENGINE|msg="Flushing DBENGINE|thread=DBEV `), "dbengine (milestone D4)"},
 	{regexp.MustCompile(`msg="RRDCONTEXT: metadata for node `), "dbengine (milestone D4)"},
-	{regexp.MustCompile(`msg="(Creating archived hosts|Created \d+ archived hosts)`), "SQLite (archived hosts)"},
 	{regexp.MustCompile(`msg="ACLK[: ]`), "ACLK"},
 	{regexp.MustCompile(`msg="METADATA: `), "SQLite metadata sync"},
 	{regexp.MustCompile(`msg="(Using \d+ threads for context loading|Contexts for \d+ hosts loaded: )`), "context load (D4 S1, D59.5)"},
@@ -45,8 +44,9 @@ var cOnlyRecords = []struct {
 }
 
 // portedRecords are records the candidate writes too although an entry of cOnlyRecords matches them: the ACLK proxy
-// resolution (D49 point 7) and the metadata database's close (D4 S1), compared despite the ACLK and METADATA entries.
-var portedRecords = regexp.MustCompile(`msg="ACLK: (proxy is|using |proxy is explicitly)|msg="METADATA: Closing sqlite database"`)
+// resolution (D49 point 7), the end of the archived hosts' load and the metadata database's close (D4 S1), compared
+// despite the ACLK and METADATA entries.
+var portedRecords = regexp.MustCompile(`msg="ACLK: (proxy is|using |proxy is explicitly)|msg="ACLK sync initialization completed"|msg="METADATA: Closing sqlite database"`)
 
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
 var cOnlyThreads = map[string]string{

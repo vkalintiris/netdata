@@ -6,6 +6,7 @@
 mod access_log;
 mod acl;
 mod api;
+mod archived;
 mod build;
 mod cli;
 mod cloud_proxy;
@@ -500,6 +501,23 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let hosts = Arc::new(Hosts::new(localhost));
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
         meta.detect_machine_guid_change(host_id);
+    }
+    // aclk_synchronization_init(): archived hosts take the default mode after C's fallback, as children do
+    match &meta {
+        Some(meta) => archived::load(
+            meta,
+            &hosts,
+            &archived::Defaults {
+                db_mode: if db.mode == DbMode::Dbengine {
+                    DbMode::Alloc
+                } else {
+                    db.mode
+                },
+                page_size: system.page_size,
+                free_ephemeral_time_s: db.free_ephemeral_time_s,
+            },
+        ),
+        None => archived::load_without_database(),
     }
     // stream_thread_get_unsafe(): one thread per core but one, 4..=2048, each started when a node is first assigned
     // to it.
