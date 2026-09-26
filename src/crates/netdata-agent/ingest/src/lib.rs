@@ -38,7 +38,7 @@ use netdata_agent_pluginsd_proto::{
 use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, Dim, dim_flags, flags};
 use netdata_agent_rrd::collection;
 use netdata_agent_rrd::contexts;
-use netdata_agent_rrd::host::Host;
+use netdata_agent_rrd::host::{Host, meta_flags};
 use netdata_agent_rrd::labels::{self, Labels};
 use netdata_agent_storage::storage_number::{SN_EMPTY_SLOT, SN_FLAG_NOT_ANOMALOUS, SN_FLAG_RESET};
 use netdata_agent_text::parse::{
@@ -680,7 +680,6 @@ impl Parser {
         dim.update_meta(|m| {
             m.flags &= !dim_flags::DONT_DETECT_RESETS_OR_OVERFLOWS;
             // Without options every word is absent: shown, resets detected, the value type kept.
-            let hidden = has(b"hidden");
             if has(b"noreset") || has(b"nooverflow") {
                 m.flags |= dim_flags::DONT_DETECT_RESETS_OR_OVERFLOWS;
             }
@@ -701,12 +700,8 @@ impl Parser {
                 }
                 m.flags &= !dim_flags::FLOAT;
             }
-            if hidden {
-                m.flags |= dim_flags::HIDDEN;
-            } else {
-                m.flags &= !dim_flags::HIDDEN;
-            }
         });
+        chart.dim_set_hidden(&dim, has(b"hidden"));
         Self::dim_to_slot(&chart, &dim, slot);
         Ok(())
     }
@@ -758,7 +753,7 @@ impl Parser {
         let changed = chart.update_meta(|m| m.labels.remove_all_unmarked_and_changed())
             || self.clabel_changed;
         if changed {
-            chart.update_meta(|m| m.flags |= flags::METADATA_UPDATE);
+            chart.set_metadata_update();
             chart.metadata_updated();
         }
         self.clabel_count = 0;
@@ -884,6 +879,8 @@ impl Parser {
             }
             ephemeral
         });
+        self.host
+            .set_meta_flags(meta_flags::LABELS | meta_flags::UPDATE);
         self.host.set_ephemeral(ephemeral);
         Ok(())
     }

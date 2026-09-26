@@ -9,7 +9,7 @@ use std::path::Path;
 
 use netdata_agent_inicfg::{Config, SECTION_GLOBAL, SECTION_HOST_LABEL};
 use netdata_agent_log::{Priority, Source, nd_log};
-use netdata_agent_rrd::host::Hosts;
+use netdata_agent_rrd::host::{Hosts, meta_flags};
 use netdata_agent_rrd::labels::{self, MAX_VALUE_LENGTH};
 use netdata_agent_text::c::fgets_chunks;
 
@@ -162,6 +162,7 @@ pub fn reload(netdata: &mut Config, cloud: &mut Config, plugins_dir: &str, hosts
         }
         l.remove_all_unmarked();
     });
+    localhost.set_meta_flags(meta_flags::LABELS | meta_flags::UPDATE);
 }
 
 #[cfg(test)]

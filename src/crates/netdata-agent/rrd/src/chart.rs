@@ -6,12 +6,14 @@
 //! are held only for short, bounded steps.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, Weak};
 
 use netdata_agent_storage::ram::{ALLOC_MIN_ENTRIES, RamMetric, Seed};
 use netdata_agent_text::sanitize::{rrd_string_sanitize, rrdset_strncpyz_name};
 
 use crate::contexts::{self, ChartLink, Contexts, DimLink};
+use crate::host::meta_flags;
 use crate::labels::{FLAG_DONT_DELETE, Labels, SRC_AUTO};
 use crate::mode::{DbMode, align_entries_to_pagesize};
 
@@ -65,6 +67,16 @@ impl ChartType {
         }
     }
 
+    /// `RRDSET_TYPE`, the value SQL stores.
+    pub fn id(self) -> i32 {
+        match self {
+            ChartType::Line => 0,
+            ChartType::Area => 1,
+            ChartType::Stacked => 2,
+            ChartType::Heatmap => 3,
+        }
+    }
+
     /// `RRDSET_TYPE` as stored in SQL (`chart.chart_type`): 0 line, 1 area, 2 stacked, 3 heatmap; others are lines,
     /// as `rrdset_type_name()` names them.
     pub fn from_id(id: i32) -> Self {
@@ -104,6 +116,16 @@ impl Algorithm {
             b"percentage-of-absolute-row" => Algorithm::PcentOverRowTotal,
             b"percentage-of-incremental-row" => Algorithm::PcentOverDiffTotal,
             _ => Algorithm::Absolute,
+        }
+    }
+
+    /// `RRD_ALGORITHM`, the value SQL stores (not the declaration order of this enum).
+    pub fn id(self) -> i32 {
+        match self {
+            Algorithm::Absolute => 0,
+            Algorithm::Incremental => 1,
+            Algorithm::PcentOverDiffTotal => 2,
+            Algorithm::PcentOverRowTotal => 3,
         }
     }
 
@@ -229,6 +251,12 @@ pub struct Chart {
     mode: DbMode,
     /// `st->db.entries`.
     entries: usize,
+    /// `st->parts.name`: the name `rrdset_create()` was first called with, as the metadata writer stores it.
+    name_part: Option<String>,
+    /// The host's `RRDHOST_FLAG_METADATA_*`, which this chart's metadata changes raise.
+    host_meta: Arc<AtomicU32>,
+    /// `st->rrdlabels_last_saved_version`.
+    labels_saved_version: AtomicU32,
     meta: RwLock<ChartMeta>,
     collection: Mutex<ChartCollection>,
     dims: RwLock<DimIndex>,
@@ -336,6 +364,76 @@ impl Chart {
 
     pub fn entries(&self) -> usize {
         self.entries
+    }
+
+    pub fn name_part(&self) -> Option<&str> {
+        self.name_part.as_deref()
+    }
+
+    /// `RRDSET_FLAG_METADATA_UPDATE` and the host's `RRDHOST_FLAG_METADATA_UPDATE`: the metadata writer stores the
+    /// chart at its next run.
+    pub fn set_metadata_update(&self) {
+        self.update_meta(|m| m.flags |= flags::METADATA_UPDATE);
+        self.host_meta
+            .fetch_or(meta_flags::UPDATE, Ordering::AcqRel);
+    }
+
+    /// The writer's check and clear of `RRDSET_FLAG_METADATA_UPDATE`: whether it was set.
+    pub fn take_metadata_update(&self) -> bool {
+        self.update_meta(|m| {
+            let was = m.flags & flags::METADATA_UPDATE != 0;
+            m.flags &= !flags::METADATA_UPDATE;
+            was
+        })
+    }
+
+    /// `st->rrdlabels_last_saved_version`: the labels version the writer last stored.
+    pub fn labels_saved_version(&self) -> u32 {
+        self.labels_saved_version.load(Ordering::Acquire)
+    }
+
+    pub fn set_labels_saved_version(&self, version: u32) {
+        self.labels_saved_version.store(version, Ordering::Release);
+    }
+
+    /// `RRDDIM_FLAG_METADATA_UPDATE` and the host's `RRDHOST_FLAG_METADATA_UPDATE`.
+    pub fn set_dim_metadata_update(&self, dim: &Dim) {
+        dim.update_meta(|m| m.flags |= dim_flags::METADATA_UPDATE);
+        self.host_meta
+            .fetch_or(meta_flags::UPDATE, Ordering::AcqRel);
+    }
+
+    /// The writer's step on a dimension (`metadata_scan_host()`): when `RRDDIM_FLAG_METADATA_UPDATE` is set, it is
+    /// cleared, `RRDDIM_FLAG_META_HIDDEN` follows the `hidden` option, and the metadata to store is returned.
+    pub fn take_dim_metadata_update(&self, dim: &Dim) -> Option<DimMeta> {
+        dim.update_meta(|m| {
+            if m.flags & dim_flags::METADATA_UPDATE == 0 {
+                return None;
+            }
+            m.flags &= !dim_flags::METADATA_UPDATE;
+            if m.flags & dim_flags::HIDDEN != 0 {
+                m.flags |= dim_flags::META_HIDDEN;
+            } else {
+                m.flags &= !dim_flags::META_HIDDEN;
+            }
+            Some(m.clone())
+        })
+    }
+
+    /// The DIMENSION `hidden` option (`pluginsd_dimension()`): the option follows, and the metadata is stored again
+    /// when it differs from the stored one (`RRDDIM_FLAG_META_HIDDEN`).
+    pub fn dim_set_hidden(&self, dim: &Dim, hidden: bool) {
+        let update = dim.update_meta(|m| {
+            if hidden {
+                m.flags |= dim_flags::HIDDEN;
+            } else {
+                m.flags &= !dim_flags::HIDDEN;
+            }
+            hidden != (m.flags & dim_flags::META_HIDDEN != 0)
+        });
+        if update {
+            self.set_dim_metadata_update(dim);
+        }
     }
 
     pub fn meta(&self) -> ChartMeta {
@@ -497,6 +595,8 @@ impl Chart {
                 }
             }
             if renamed || algorithm_changed || multiplier_changed || divisor_changed {
+                // rrddim_react_callback(): RRDDIM_REACT_UPDATED
+                self.set_dim_metadata_update(&dim);
                 self.update_meta(|m| m.flags |= flags::SYNC_CLOCK | flags::HOMOGENEOUS_CHECK);
                 self.dim_metadata_updated(&dim);
             }
@@ -540,7 +640,8 @@ impl Chart {
                 algorithm,
                 multiplier,
                 divisor,
-                flags: 0,
+                // rrddim_react_callback(): RRDDIM_REACT_NEW
+                flags: dim_flags::METADATA_UPDATE,
             }),
             collection: Mutex::new(DimCollection {
                 counter: usize::from(meta.flags & flags::STORE_FIRST != 0),
@@ -568,6 +669,8 @@ impl Chart {
         if dim.ring.is_some() {
             self.host_contexts().ram_index().register(&dim);
         }
+        self.host_meta
+            .fetch_or(meta_flags::UPDATE, Ordering::AcqRel);
         self.dim_metadata_updated(&dim);
         (dim, true)
     }
@@ -586,6 +689,10 @@ pub mod dim_flags {
     pub const DONT_DETECT_RESETS_OR_OVERFLOWS: u32 = 1 << 2;
     pub const FLOAT: u32 = 1 << 3;
     pub const UPDATED: u32 = 1 << 4;
+    /// `RRDDIM_FLAG_METADATA_UPDATE`: the metadata writer stores the dimension at its next run.
+    pub const METADATA_UPDATE: u32 = 1 << 5;
+    /// `RRDDIM_FLAG_META_HIDDEN`: the `hidden` option as last stored.
+    pub const META_HIDDEN: u32 = 1 << 6;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -694,6 +801,8 @@ pub struct Charts {
     inner: RwLock<ChartIndex>,
     /// The host's contexts, which every chart reports to.
     contexts: Arc<Contexts>,
+    /// The host's `RRDHOST_FLAG_METADATA_*`.
+    host_meta: Arc<AtomicU32>,
 }
 
 #[derive(Debug, Default)]
@@ -734,10 +843,11 @@ impl ChartIndex {
 }
 
 impl Charts {
-    pub fn new(contexts: Arc<Contexts>) -> Self {
+    pub fn new(contexts: Arc<Contexts>, host_meta: Arc<AtomicU32>) -> Self {
         Charts {
             inner: RwLock::default(),
             contexts,
+            host_meta,
         }
     }
 
@@ -770,19 +880,29 @@ impl Charts {
             existing.isnot_obsolete();
         }
         let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        // rrdset_conflict_callback() reports whether anything changed; the react step then runs.
-        let (chart, is_new, changed) = match index.by_id.get(&full_id) {
+        // rrdset_conflict_callback() reports whether anything changed, and whether the plugin or the module did
+        // (RRDSET_REACT_PLUGIN_UPDATED, RRDSET_REACT_MODULE_UPDATED); the react step then runs.
+        let (chart, is_new, changed, plugin_or_module) = match index.by_id.get(&full_id) {
             Some(&i) => {
                 let chart = Arc::clone(&index.ordered[i]);
-                let mut changed = chart.update_meta(|m| {
+                let (mut changed, plugin_or_module) = chart.update_meta(|m| {
                     let mut changed = false;
                     if m.priority != spec.priority {
                         m.priority = spec.priority;
                         changed = true;
                     }
+                    let mut plugin_or_module = false;
                     for (field, value) in [
                         (&mut m.plugin, Some(spec.plugin)),
                         (&mut m.module, spec.module),
+                    ] {
+                        if let Some(value) = value.filter(|v| !v.is_empty() && *v != field.as_str())
+                        {
+                            *field = rrd_string(value);
+                            plugin_or_module = true;
+                        }
+                    }
+                    for (field, value) in [
                         (&mut m.title, Some(spec.title)),
                         (&mut m.units, Some(spec.units)),
                         (&mut m.family, spec.family),
@@ -811,13 +931,13 @@ impl Charts {
                         SRC_AUTO | FLAG_DONT_DELETE,
                     );
                     m.flags |= flags::SYNC_CLOCK;
-                    changed
+                    (changed || plugin_or_module, plugin_or_module)
                 });
                 if chart.update_every() != spec.update_every {
                     chart.set_update_every(i64::from(spec.update_every));
                     changed = true;
                 }
-                (chart, false, changed)
+                (chart, false, changed, plugin_or_module)
             }
             None => {
                 let mut labels = Labels::default();
@@ -855,6 +975,9 @@ impl Charts {
                     id_part: spec.id.to_string(),
                     mode: spec.mode,
                     entries,
+                    name_part: spec.name.filter(|n| !n.is_empty()).map(str::to_string),
+                    host_meta: Arc::clone(&self.host_meta),
+                    labels_saved_version: AtomicU32::new(0),
                     meta: RwLock::new(ChartMeta {
                         name: None,
                         family: rrd_string(
@@ -883,10 +1006,14 @@ impl Charts {
                 let position = index.ordered.len();
                 index.by_id.insert(full_id.clone(), position);
                 index.ordered.push(Arc::clone(&chart));
-                (chart, true, false)
+                (chart, true, false, false)
             }
         };
         drop(index);
+        // rrdset_react_callback()
+        if is_new || plugin_or_module {
+            chart.set_metadata_update();
+        }
         if is_new || changed {
             chart.metadata_updated();
         }
@@ -908,11 +1035,9 @@ impl Charts {
             }
             let position = index.by_id[&full_id];
             index.by_name.insert(new_name.clone(), position);
-            chart.update_meta(|m| {
-                m.name = Some(new_name);
-                m.flags |= flags::METADATA_UPDATE;
-            });
+            chart.update_meta(|m| m.name = Some(new_name));
             drop(index);
+            chart.set_metadata_update();
             // rrdset_reset_name() reports a rename itself; rrdset_create() then reports the name update.
             if current.is_some() {
                 chart.metadata_updated();
@@ -1016,5 +1141,104 @@ mod tests {
         assert_eq!(chart.meta().flags & flags::HETEROGENEOUS, 0);
         chart.dim_add("d", None, 7, 1, Algorithm::Absolute);
         assert_ne!(chart.meta().flags & flags::HETEROGENEOUS, 0);
+    }
+
+    /// The metadata writer's flags as C raises them: a new chart or dimension, a plugin or module change, a name, a
+    /// dimension's name, algorithm, multiplier or divisor, and its `hidden` option against the stored one; not the
+    /// other conflict fields. Each raises the host's `UPDATE`.
+    #[test]
+    fn metadata_flags_follow_cs_setters() {
+        let host = Arc::new(AtomicU32::new(0));
+        let charts = Charts::new(Arc::default(), Arc::clone(&host));
+        let take_host = || host.swap(0, Ordering::AcqRel) & meta_flags::UPDATE != 0;
+        let (chart, _) = charts.create(&spec("t", "c", Some("named")));
+        assert!(chart.take_metadata_update() && take_host(), "new chart");
+        assert_eq!(chart.name_part(), Some("named"));
+
+        let mut s = spec("t", "c", Some("named"));
+        s.title = "other";
+        s.units = "other";
+        s.priority = 1;
+        s.update_every = 2;
+        s.family = Some("f");
+        s.context = Some("ctx");
+        s.chart_type = ChartType::Area;
+        charts.create(&s);
+        assert!(
+            !chart.take_metadata_update() && !take_host(),
+            "fields that need no store"
+        );
+        s.plugin = "other";
+        charts.create(&s);
+        assert!(chart.take_metadata_update() && take_host(), "plugin");
+        s.module = Some("other");
+        charts.create(&s);
+        assert!(chart.take_metadata_update() && take_host(), "module");
+        s.name = Some("renamed");
+        charts.create(&s);
+        assert!(chart.take_metadata_update() && take_host(), "renamed");
+        assert_eq!(chart.name_part(), Some("named"), "the first name stays");
+        assert_eq!(charts.create(&spec("t", "x", None)).0.name_part(), None);
+        host.store(0, Ordering::Release);
+
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        assert!(take_host(), "new dimension");
+        assert_eq!(
+            chart.take_dim_metadata_update(&dim).map(|m| m.flags),
+            Some(0)
+        );
+        assert_eq!(chart.take_dim_metadata_update(&dim), None);
+        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        assert!(
+            chart.take_dim_metadata_update(&dim).is_none() && !take_host(),
+            "unchanged"
+        );
+        for (name, multiplier, divisor, algorithm) in [
+            (Some("n"), 1, 1, Algorithm::Absolute),
+            (Some("n"), 1, 1, Algorithm::Incremental),
+            (Some("n"), 2, 1, Algorithm::Incremental),
+            (Some("n"), 2, 3, Algorithm::Incremental),
+        ] {
+            chart.dim_add("d", name, multiplier, divisor, algorithm);
+            assert!(chart.take_dim_metadata_update(&dim).is_some() && take_host());
+        }
+
+        chart.dim_set_hidden(&dim, true);
+        let stored = chart.take_dim_metadata_update(&dim).map(|m| m.flags);
+        assert_eq!(stored, Some(dim_flags::HIDDEN | dim_flags::META_HIDDEN));
+        assert!(take_host());
+        chart.dim_set_hidden(&dim, true);
+        assert!(
+            chart.take_dim_metadata_update(&dim).is_none() && !take_host(),
+            "stored hidden"
+        );
+        chart.dim_set_hidden(&dim, false);
+        assert_eq!(
+            chart.take_dim_metadata_update(&dim).map(|m| m.flags),
+            Some(0)
+        );
+        assert!(take_host());
+    }
+
+    #[test]
+    fn sql_ids_are_cs() {
+        let algorithms = [
+            Algorithm::Absolute,
+            Algorithm::Incremental,
+            Algorithm::PcentOverDiffTotal,
+            Algorithm::PcentOverRowTotal,
+        ];
+        for (id, a) in algorithms.into_iter().enumerate() {
+            assert_eq!((a.id(), Algorithm::from_id(a.id())), (id as i32, a));
+        }
+        let types = [
+            ChartType::Line,
+            ChartType::Area,
+            ChartType::Stacked,
+            ChartType::Heatmap,
+        ];
+        for (id, t) in types.into_iter().enumerate() {
+            assert_eq!((t.id(), ChartType::from_id(t.id())), (id as i32, t));
+        }
     }
 }

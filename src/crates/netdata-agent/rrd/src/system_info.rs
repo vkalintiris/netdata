@@ -64,6 +64,67 @@ fn v(field: &Option<String>) -> Option<&[u8]> {
 }
 
 impl SystemInfo {
+    /// `rrdhost_system_info_foreach()`: the keys the metadata writer stores in `host_info`, in C's order, with their
+    /// values (`None` is stored as `unknown`).
+    pub fn stored_keys(&self) -> [(&'static str, Option<&str>); 27] {
+        fn v(field: &Option<String>) -> Option<&str> {
+            field.as_deref()
+        }
+        [
+            ("NETDATA_CONTAINER_OS_NAME", v(&self.container_os_name)),
+            ("NETDATA_CONTAINER_OS_ID", v(&self.container_os_id)),
+            (
+                "NETDATA_CONTAINER_OS_ID_LIKE",
+                v(&self.container_os_id_like),
+            ),
+            (
+                "NETDATA_CONTAINER_OS_VERSION",
+                v(&self.container_os_version),
+            ),
+            (
+                "NETDATA_CONTAINER_OS_VERSION_ID",
+                v(&self.container_os_version_id),
+            ),
+            (
+                "NETDATA_CONTAINER_OS_DETECTION",
+                v(&self.container_os_detection),
+            ),
+            ("NETDATA_HOST_OS_NAME", v(&self.host_os_name)),
+            ("NETDATA_HOST_OS_ID", v(&self.host_os_id)),
+            ("NETDATA_HOST_OS_ID_LIKE", v(&self.host_os_id_like)),
+            ("NETDATA_HOST_OS_VERSION", v(&self.host_os_version)),
+            ("NETDATA_HOST_OS_VERSION_ID", v(&self.host_os_version_id)),
+            ("NETDATA_HOST_OS_DETECTION", v(&self.host_os_detection)),
+            ("NETDATA_SYSTEM_KERNEL_NAME", v(&self.kernel_name)),
+            ("NETDATA_SYSTEM_CPU_LOGICAL_CPU_COUNT", v(&self.host_cores)),
+            ("NETDATA_SYSTEM_CPU_FREQ", v(&self.host_cpu_freq)),
+            ("NETDATA_SYSTEM_TOTAL_RAM", v(&self.host_ram_total)),
+            ("NETDATA_SYSTEM_TOTAL_DISK_SIZE", v(&self.host_disk_space)),
+            ("NETDATA_SYSTEM_KERNEL_VERSION", v(&self.kernel_version)),
+            ("NETDATA_SYSTEM_ARCHITECTURE", v(&self.architecture)),
+            ("NETDATA_SYSTEM_VIRTUALIZATION", v(&self.virtualization)),
+            ("NETDATA_SYSTEM_VIRT_DETECTION", v(&self.virt_detection)),
+            ("NETDATA_SYSTEM_CONTAINER", v(&self.container)),
+            (
+                "NETDATA_SYSTEM_CONTAINER_DETECTION",
+                v(&self.container_detection),
+            ),
+            ("NETDATA_HOST_IS_K8S_NODE", v(&self.is_k8s_node)),
+            (
+                "NETDATA_SYSTEM_DEFAULT_INTERFACE_NAME",
+                v(&self.network_default_iface),
+            ),
+            (
+                "NETDATA_SYSTEM_DEFAULT_INTERFACE_IP",
+                v(&self.network_default_iface_ip),
+            ),
+            (
+                "NETDATA_SYSTEM_DEFAULT_INTERFACE_DETECTION",
+                v(&self.network_default_iface_detection),
+            ),
+        ]
+    }
+
     /// `rrdhost_system_info_set_by_name()`: `false` for a name it does not know (the caller logs it). Some known
     /// names are accepted and ignored; only the OS name is sanitized.
     pub fn set_by_name(&mut self, name: &str, value: &str) -> bool {
@@ -500,5 +561,30 @@ NETDATA_SYSTEM_DEFAULT_INTERFACE_DETECTION=procfs\n\
             si.host_os_name.as_deref(),
             Some(String::from_utf8_lossy(&rrd_string_sanitize(b"Debian \"GNU\"/Linux")).as_ref())
         );
+    }
+
+    #[test]
+    fn stored_keys_in_cs_order() {
+        let info = SystemInfo {
+            container_os_name: Some("none".into()),
+            network_default_iface_detection: Some("procfs".into()),
+            ..SystemInfo::default()
+        };
+        let keys = info.stored_keys();
+        assert_eq!(keys[0], ("NETDATA_CONTAINER_OS_NAME", Some("none")));
+        assert_eq!(keys[1], ("NETDATA_CONTAINER_OS_ID", None));
+        assert_eq!(keys[13].0, "NETDATA_SYSTEM_CPU_LOGICAL_CPU_COUNT");
+        assert_eq!(
+            keys[26],
+            ("NETDATA_SYSTEM_DEFAULT_INTERFACE_DETECTION", Some("procfs"))
+        );
+        // every stored key reads back into the same field
+        let mut back = SystemInfo::default();
+        for (name, value) in info.stored_keys() {
+            if let Some(value) = value {
+                assert!(back.set_by_name(name, value), "{name}");
+            }
+        }
+        assert_eq!(back.stored_keys(), keys);
     }
 }

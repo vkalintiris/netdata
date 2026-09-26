@@ -220,6 +220,19 @@ impl ReceiverSlot {
     }
 }
 
+/// The host flags the metadata writer consumes (`RRDHOST_FLAG_METADATA_*`).
+pub mod meta_flags {
+    /// `RRDHOST_FLAG_METADATA_UPDATE`: something of the host (its info, labels, charts or dimensions) waits to be
+    /// stored.
+    pub const UPDATE: u32 = 1 << 0;
+    /// `RRDHOST_FLAG_METADATA_LABELS`.
+    pub const LABELS: u32 = 1 << 1;
+    /// `RRDHOST_FLAG_METADATA_INFO`: the host row and its system info.
+    pub const INFO: u32 = 1 << 2;
+    /// `RRDHOST_FLAG_METADATA_CLAIMID`.
+    pub const CLAIMID: u32 = 1 << 3;
+}
+
 /// `struct rrdhost`.
 #[derive(Debug)]
 pub struct Host {
@@ -260,6 +273,8 @@ pub struct Host {
     pending_context_load: AtomicBool,
     /// `host->stream.snd.status.last_connected`, in wall-clock seconds.
     last_connected_s: AtomicI64,
+    /// `RRDHOST_FLAG_METADATA_*` (`meta_flags`), shared with the charts, whose changes raise `UPDATE`.
+    meta_flags: Arc<AtomicU32>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -271,6 +286,7 @@ impl Host {
     pub fn new(machine_guid: &str, is_localhost: bool, mut info: HostInfo) -> Self {
         info.hostname = init_hostname(&info.hostname);
         let contexts = Arc::new(Contexts::default());
+        let meta_flags = Arc::new(AtomicU32::new(0));
         Host {
             machine_guid: machine_guid.to_string(),
             is_localhost,
@@ -278,7 +294,7 @@ impl Host {
             info: RwLock::new(info),
             receiver: Mutex::new(None),
             orphan: AtomicBool::new(false),
-            charts: Charts::new(Arc::clone(&contexts)),
+            charts: Charts::new(Arc::clone(&contexts), Arc::clone(&meta_flags)),
             contexts,
             labels: RwLock::new(Labels::default()),
             claim_id_of_origin: RwLock::new([0; 16]),
@@ -293,7 +309,29 @@ impl Host {
             archived: AtomicBool::new(false),
             pending_context_load: AtomicBool::new(false),
             last_connected_s: AtomicI64::new(0),
+            meta_flags,
         }
+    }
+
+    /// What `rrdhost_create()` does for a host that is not archived: it connected now, and its info waits to be
+    /// stored.
+    fn created_connected(&self) {
+        self.set_last_connected_s(now_realtime_s());
+        self.set_meta_flags(meta_flags::INFO | meta_flags::UPDATE);
+    }
+
+    /// `rrdhost_flag_set()` of `meta_flags`.
+    pub fn set_meta_flags(&self, flags: u32) {
+        self.meta_flags.fetch_or(flags, Ordering::AcqRel);
+    }
+
+    /// `rrdhost_flag_check()` then `rrdhost_flag_clear()` of `meta_flags`: whether any of them was set.
+    pub fn take_meta_flags(&self, flags: u32) -> bool {
+        self.meta_flags.fetch_and(!flags, Ordering::AcqRel) & flags != 0
+    }
+
+    pub fn meta_flags(&self) -> u32 {
+        self.meta_flags.load(Ordering::Acquire)
     }
 
     /// `rrdset_observe_receiver_update_every()`: a chart's update every lowers the receiver's minimum.
@@ -433,6 +471,7 @@ impl Host {
             let mut info = self.info.write().unwrap_or_else(PoisonError::into_inner);
             info.health_enabled = wanted.health_enabled;
             info.system_info = wanted.system_info.clone();
+            self.set_meta_flags(meta_flags::INFO | meta_flags::CLAIMID | meta_flags::UPDATE);
             info.os.clone_from(&wanted.os);
             info.timezone.clone_from(&wanted.timezone);
             info.abbrev_timezone.clone_from(&wanted.abbrev_timezone);
@@ -734,6 +773,7 @@ impl Hosts {
             by_guid: HashMap::from([(localhost.machine_guid.clone(), Arc::clone(&localhost))]),
         };
         localhost.log_created();
+        localhost.created_connected();
         Hosts {
             localhost,
             inner: RwLock::new(index),
@@ -913,6 +953,7 @@ impl Hosts {
             return host;
         }
         let host = Arc::new(Host::new(guid, false, create()));
+        host.created_connected();
         index.ordered.push(Arc::clone(&host));
         index.by_guid.insert(guid.to_string(), Arc::clone(&host));
         self.version
@@ -1274,5 +1315,36 @@ mod tests {
             ]
         );
         assert_eq!(hosts.all().len(), 3);
+    }
+
+    /// `RRDHOST_FLAG_METADATA_*` as C raises them: at the creation of a host that connected (not an archived one),
+    /// at a reconnection, and never for `_is_parent`.
+    #[test]
+    fn metadata_flags_follow_cs_setters() {
+        let hosts = Hosts::new(Host::new("local-guid", true, info("parent")));
+        let localhost = hosts.localhost();
+        assert_eq!(
+            localhost.meta_flags(),
+            meta_flags::INFO | meta_flags::UPDATE
+        );
+        assert!(localhost.last_connected_s() > 0);
+        let child =
+            hosts.find_or_create("guid-a", DbMode::Ram, || info("a"), |_| panic!("new host"));
+        assert_eq!(child.meta_flags(), meta_flags::INFO | meta_flags::UPDATE);
+        assert!(child.last_connected_s() > 0);
+        assert!(
+            child.take_meta_flags(meta_flags::INFO) && !child.take_meta_flags(meta_flags::LABELS)
+        );
+        assert_eq!(child.meta_flags(), meta_flags::UPDATE);
+        child.update(&info("a"), 1, 3600);
+        assert_eq!(
+            child.meta_flags(),
+            meta_flags::INFO | meta_flags::CLAIMID | meta_flags::UPDATE
+        );
+        let archived = hosts.add_archived("guid-b", info("b"), |_| {});
+        assert_eq!((archived.meta_flags(), archived.last_connected_s()), (0, 0));
+        localhost.take_meta_flags(u32::MAX);
+        hosts.update_is_parent_label();
+        assert_eq!(localhost.meta_flags(), 0);
     }
 }

@@ -9,7 +9,7 @@ const T: i64 = 1_700_000_000;
 
 fn setup() -> (Arc<Contexts>, Charts) {
     let contexts = Arc::new(Contexts::default());
-    let charts = Charts::new(Arc::clone(&contexts));
+    let charts = Charts::new(Arc::clone(&contexts), Arc::default());
     (contexts, charts)
 }
 
