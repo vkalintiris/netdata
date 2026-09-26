@@ -440,29 +440,19 @@ impl Conf {
                 "update every",
             ),
             ("telemetry", "update every", SECTION_PULSE, "update every"),
-            (
-                SECTION_GLOBAL,
-                "dbengine disk space",
-                SECTION_DB,
-                "dbengine tier 0 retention size",
-            ),
-            (
-                SECTION_GLOBAL,
-                "dbengine multihost disk space",
-                SECTION_DB,
-                "dbengine tier 0 retention size",
-            ),
-            (
-                SECTION_DB,
-                "dbengine disk space MB",
-                SECTION_DB,
-                "dbengine tier 0 retention size",
-            ),
+        ];
+        for &(so, no, sn, nn) in moves {
+            c.move_option(so, no, sn, nn);
+        }
+        // the legacy tier 0 disk spaces, which turn the new dbengine defaults off (`found_old_config`)
+        let legacy_moves: &[(&str, &str)] = &[
+            (SECTION_GLOBAL, "dbengine disk space"),
+            (SECTION_GLOBAL, "dbengine multihost disk space"),
+            (SECTION_DB, "dbengine disk space MB"),
         ];
         let mut legacy = false;
-        for (i, &(so, no, sn, nn)) in moves.iter().enumerate() {
-            // the three legacy tier 0 disk spaces
-            legacy |= c.move_option(so, no, sn, nn) && i >= moves.len() - 3;
+        for &(so, no) in legacy_moves {
+            legacy |= c.move_option(so, no, SECTION_DB, "dbengine tier 0 retention size");
         }
         for tier in 0..RRD_STORAGE_TIERS {
             c.move_option(
@@ -1148,6 +1138,7 @@ pub fn dbengine_init(
                     nd_log!(
                         Source::Daemon,
                         Priority::Crit,
+                        errno = netdata_agent_log::errno_of(&err);
                         "DBENGINE on '{hostname}': cannot create directory '{path}'"
                     );
                     return TierSettings {
@@ -1579,7 +1570,7 @@ const MIN_PAGE_CACHE_MB: i32 = 8;
 const PAGES_PER_EXTENT: u32 = 109;
 /// `RRDENG_DEFAULT_TIER_DISK_SPACE_MB` and `RRDENG_MIN_DISK_SPACE_MB`.
 const DEFAULT_TIER_DISK_SPACE_MB: u64 = 1024;
-const MIN_DISK_SPACE_MB: i32 = 25;
+pub(crate) const MIN_DISK_SPACE_MB: i32 = 25;
 
 /// What `[db]` sets for the rest of the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2204,6 +2195,32 @@ mod tests {
                     .map(|v| String::from_utf8_lossy(&v).into_owned());
                 assert_eq!(v.as_deref(), Some(*value), "{name}: [db] {key}");
             }
+        }
+    }
+
+    /// `legacy_multihost_db_space`: set by a moved legacy tier 0 disk space (the three old names, and tier 0's
+    /// multihost and per-tier MB names), not by other tiers' old names or by other moves.
+    #[test]
+    fn legacy_disk_spaces_are_detected_as_c() {
+        let cases = [
+            ("[global]\ndbengine disk space = 30\n", true),
+            ("[global]\ndbengine multihost disk space = 30\n", true),
+            ("[db]\ndbengine disk space MB = 30\n", true),
+            ("[db]\ndbengine multihost disk space MB = 30\n", true),
+            ("[db]\ndbengine tier 0 disk space MB = 30\n", true),
+            ("[db]\ndbengine tier 1 multihost disk space MB = 30\n", false),
+            ("[db]\ndbengine tier 1 disk space MB = 30\n", false),
+            ("[db]\ndbengine tier 0 retention days = 3\n", false),
+            ("[global]\nport = 19999\n", false),
+        ];
+        for (file, want) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("netdata.conf");
+            std::fs::write(&path, file).unwrap();
+            let mut conf = Conf::default();
+            assert!(conf.netdata.load(&path, false, None).is_ok());
+            conf.backwards_compatibility();
+            assert_eq!(conf.legacy_multihost_db_space, want, "{file}");
         }
     }
 

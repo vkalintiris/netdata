@@ -75,8 +75,9 @@ var logMasks = []struct {
 	{regexp.MustCompile(` src_port=\d+`), " src_port=P"},
 	{regexp.MustCompile(`\]:\d+`), "]:P"},
 	{regexp.MustCompile(` ([a-z_]+_ut)=\d+`), " ${1}=U"},
-	// DBENGINIT: whichever tier thread takes the spawn lock first logs the registry's pre-population (D63.2)
-	{regexp.MustCompile(`thread=(WEB|STREAM|UV_WORKER|DBENGINIT)\[\d+\]`), "thread=${1}[n]"},
+	{regexp.MustCompile(`thread=(WEB|STREAM|UV_WORKER)\[\d+\]`), "thread=${1}[n]"},
+	// whichever tier thread takes the spawn lock first logs the registry's pre-population (D63.2)
+	{regexp.MustCompile(`thread=DBENGINIT\[\d+\] (msg="MRG: Loaded )`), "thread=DBENGINIT[n] ${1}"},
 	{regexp.MustCompile(`STREAM RCV\[\d+\]`), "STREAM RCV[n]"},
 	{regexp.MustCompile(`in +\d+ ms, `), "in N ms, "},
 	{regexp.MustCompile(`connected=\d+s idle=\d+s`), "connected=Ns idle=Ns"},

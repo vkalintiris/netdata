@@ -17,9 +17,6 @@ use crate::conf::{self, Conf, DbSection};
 use crate::metasync::now_realtime_s;
 use crate::system;
 
-/// `RRDENG_MIN_DISK_SPACE_MB`, which `rrdeng_init()` raises a smaller non-zero quota to.
-const MIN_DISK_SPACE_MB: u32 = 25;
-
 /// `rrd_init()`'s engine start: its record, the keys, then the tiers. C's fallbacks after it (one tier, alloc mode)
 /// cannot run in a dbengine build, where the start either brings a tier up or is fatal, so they are not ported.
 pub fn start(
@@ -51,11 +48,9 @@ pub fn start(
             t.path.as_ref().map(|path| {
                 // rrdeng_init() takes the quota as unsigned
                 let mb = t.disk_space_mb as u32;
-                let mb = if mb != 0 && mb < MIN_DISK_SPACE_MB {
-                    MIN_DISK_SPACE_MB
-                } else {
-                    mb
-                };
+                // rrdeng_init() raises a smaller non-zero quota silently
+                let min = conf::MIN_DISK_SPACE_MB as u32;
+                let mb = if mb != 0 && mb < min { min } else { mb };
                 TierConfig {
                     tier,
                     path: PathBuf::from(path),
