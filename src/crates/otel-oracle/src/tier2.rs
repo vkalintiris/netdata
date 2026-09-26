@@ -19,6 +19,10 @@ use crate::model::{DURATION_BAND_FIELD, OracleSpan, ROLE_FIELD, SERVICE_FIELD, S
 use crate::report::{CheckCount, Finding, Locator, Subject};
 use crate::wire;
 
+mod traces;
+
+pub use traces::{TRACE_SPAN_CAP, add_traces, judge_traces, trace_view};
+
 /// Rows asked in a newest page and in each slowest list.
 pub const ROWS_LIMIT: usize = 100;
 /// The larger slowest list, asked for every span only.
@@ -63,6 +67,13 @@ pub enum Ask {
     Values {
         field: String,
         prefix: String,
+    },
+    /// Trace-by-id over the window's grid, judged by [`judge_traces`].
+    Trace {
+        trace_id: [u8; 16],
+        after_s: u32,
+        before_s: u32,
+        span_cap: usize,
     },
 }
 
@@ -1475,6 +1486,7 @@ pub fn add_pages(plan: &mut Plan, answers: &BTreeMap<String, Value>) -> usize {
     count
 }
 
+/// Judges `plan`'s explore and values asks; its trace asks are [`judge_traces`]'s.
 pub fn judge(
     plan: &Plan,
     spans: &[OracleSpan],
@@ -1483,6 +1495,9 @@ pub fn judge(
     let grid = Grid::for_window(plan.after_s, plan.before_s);
     let mut judge = Judge::default();
     for request in &plan.requests {
+        if let Ask::Trace { .. } = request.ask {
+            continue;
+        }
         let at = vec![name(&request.id)];
         let Some(answer) = answers.get(&request.id) else {
             judge.compare(
@@ -1495,6 +1510,7 @@ pub fn judge(
             continue;
         };
         match &request.ask {
+            Ask::Trace { .. } => {}
             Ask::Values { field, prefix } => {
                 match serde_json::from_value::<wire::ValuesAnswer>(answer.clone()) {
                     Ok(got) => judge_values(&mut judge, plan, spans, field, prefix, &got),
@@ -1678,6 +1694,7 @@ mod tests {
                 return json!({"mode": "values", "version": 1, "field": field, "values": values,
                     "truncated": truncated, "status": {"complete": true}});
             }
+            Ask::Trace { .. } => return Value::Null,
             Ask::Explore {
                 scenario,
                 stack,
