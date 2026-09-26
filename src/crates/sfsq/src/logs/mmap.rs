@@ -1,10 +1,8 @@
 //! The logs engine's view of the shared source plumbing
-//! ([`crate::source`]): same `Mapped`/`release_cold_region`, plus the
-//! logs-historical **log-and-degrade** mapping — a source that fails to
-//! map is logged and contributes nothing, and one bad source never sinks
-//! a query. (The traces engine deliberately does NOT share this shape: it
-//! consumes the structured error and reports the failure as an explicit
-//! partial-result reason.)
+//! ([`crate::source`]): same `Mapped`/`release_cold_region`, plus a
+//! mapping that logs its failure and returns `None` — the caller leaves
+//! that source out and counts it, so one bad source never sinks a query.
+//! (The traces engine consumes the structured error instead.)
 
 pub(super) use crate::source::{Mapped, release_cold_region};
 

@@ -15,6 +15,12 @@ use super::cursor::Cursor;
 /// within the query window; the histogram is bucketed on the query's
 /// grid; the page is materialized newest-first.
 pub struct LogsData {
+    /// Sources that may hold rows for the window: the "of" in "N of M".
+    pub sources: u64,
+    /// Of which left out because they could not be read: none of their
+    /// counts or rows are here. A source whose record ids alone could not
+    /// be read keeps its rows, without ids, and is counted too.
+    pub failed_sources: u64,
     /// Filter-matching logs within the window, summed across files. A
     /// bitmap-cardinality count (`u64`, like the histogram buckets);
     /// callers narrow to a UI integer at their wire boundary.
@@ -72,6 +78,8 @@ impl LogsData {
     /// its full grid of zero counts rather than a shapeless blank.
     pub fn empty(histogram_field: impl Into<String>, grid: sfst::Grid) -> Self {
         Self {
+            sources: 0,
+            failed_sources: 0,
             matched: 0,
             facets: Vec::new(),
             histogram_field: histogram_field.into(),

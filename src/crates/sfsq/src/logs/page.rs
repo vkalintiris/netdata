@@ -15,12 +15,12 @@
 //! from children and route `materialize` back to the file's owning node by
 //! `file_seq`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::mmap::Mapped;
 
 use super::cursor::{Cursor, NS_PER_S, Part};
-use super::engine::{LogSource, SfstCandidate, WalTail};
+use super::engine::{SfstCandidate, WalTail};
 use super::filter::has_column;
 use super::mmap;
 use super::query::{Anchor, Direction, LogsQuery};
@@ -241,9 +241,9 @@ fn finalize_page(merged: PageShard, direction: Direction, limit: usize) -> Selec
 /// `file_seq` route to different sources, so both fields are part of the
 /// key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct SourceKey {
-    file_seq: u64,
-    part: Part,
+pub(super) struct SourceKey {
+    pub(super) file_seq: u64,
+    pub(super) part: Part,
 }
 
 /// Identifies one materialized row: its [`SourceKey`] plus the row's
@@ -278,11 +278,15 @@ impl RowKey {
 /// positions per source so each one decompresses once, and reassembles the
 /// rows in the page's newest-first order. Locally the sources are the open
 /// readers; a cross-node fetch would route each cursor to its owning node.
+/// A source whose rows cannot be read loses its rows from the page and goes
+/// into `failures.failed`; one whose ids alone cannot be read keeps its rows
+/// without ids and goes into `failures.ids_unreadable`.
 fn materialize(
     sfst_readers: &[(sfst::IndexReader<'_>, SourceKey)],
     tail_scans: &[(u64, WalScan)],
     selected: &SelectedPage,
-) -> Result<Vec<LogRow>, sfst::Error> {
+    failures: &mut Failures,
+) -> Vec<LogRow> {
     // Route by `SourceKey`: an SFST reader (on-disk or chunk) for
     // `Part::Indexed`, the WAL row scanner (keyed by `file_seq`, one tail
     // per WAL) for `Part::Tail`.
@@ -310,10 +314,26 @@ fn materialize(
                 None => continue,
             }
         } else {
-            match sfst_by_key.get(source) {
-                Some(reader) => (reader.materialize_rows(pos)?, sfst_row_ids(reader, pos)?),
-                None => continue,
-            }
+            let Some(reader) = sfst_by_key.get(source) else {
+                continue;
+            };
+            let rows = match reader.materialize_rows(pos) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    tracing::warn!("sfsq: rows of {source:?} left out: {e}");
+                    failures.failed.insert(*source);
+                    continue;
+                }
+            };
+            let ids = match sfst_row_ids(reader, pos) {
+                Ok(ids) => ids,
+                Err(e) => {
+                    tracing::warn!("sfsq: record ids of {source:?} unreadable: {e}");
+                    failures.ids_unreadable.insert(*source);
+                    vec![(None, None); pos.len()]
+                }
+            };
+            (rows, ids)
         };
         for ((p, row), ids) in pos.iter().zip(rows).zip(ids) {
             let key = RowKey {
@@ -335,7 +355,7 @@ fn materialize(
             });
         }
     }
-    Ok(rows)
+    rows
 }
 
 /// A row's trace and span ids; `None` when unset or not stored.
@@ -375,6 +395,17 @@ pub(super) struct Page {
     pub(super) rows: Vec<LogRow>,
     pub(super) has_newer: bool,
     pub(super) has_older: bool,
+    /// Sources whose page work failed: none of their rows are here.
+    pub(super) failed: HashSet<SourceKey>,
+    /// Sources whose rows are here without their record ids.
+    pub(super) ids_unreadable: HashSet<SourceKey>,
+}
+
+/// The sources the page pass could not read, as it goes.
+#[derive(Default)]
+struct Failures {
+    failed: HashSet<SourceKey>,
+    ids_unreadable: HashSet<SourceKey>,
 }
 
 /// Open the candidate files in time-priority order and materialize one
@@ -386,89 +417,77 @@ pub(super) struct Page {
 /// entirely beyond the page boundary, the rest are skipped — never opened
 /// or decoded.
 ///
-/// `mapped` carries each source's bytes, resolved once per query by
-/// [`run`](super::engine::run) (parallel to `sources`; `None` = tail or
-/// failed map) — the same mappings the stats pass read, so an SFST
-/// unlinked by retention between the passes is still served here.
-/// Files that fail to parse/evaluate are
-/// logged and skipped. Each opened file's cold suffix is released from the
-/// page cache once the page is materialized.
+/// `sfst_candidates` carry each SFST's bytes, resolved once per query by
+/// [`run`](super::engine::run) — the same mappings the stats pass read, so
+/// an SFST unlinked by retention between the passes is still served here.
+/// A source that fails to parse, evaluate or materialize is logged, its rows
+/// are left out, and it is named in [`Page::failed`]. Each opened file's
+/// cold suffix is released from the page cache once the page is
+/// materialized.
 ///
 /// The `anchor` (from a prior page's cursor) is only an exclusive
 /// comparison boundary — it is never itself materialized. So the source it
-/// once came from need not be in `sources`; only the *page rows'* sources
+/// once came from need not be among the sources; only the *page rows'* sources
 /// must be, and they always are, since every page cursor is produced by a
 /// source evaluated in this same call. A stale anchor pointing at a now-
 /// absent source (e.g. a WAL since sealed) is therefore harmless here; the
 /// only cross-request artifact is the documented WAL→SFST cursor seam.
 pub(super) fn paginate(
-    sources: &[LogSource],
-    mapped: &[Option<Mapped>],
+    wal_tails: &[&WalTail],
+    sfst_candidates: Vec<(&SfstCandidate, Mapped)>,
     query: &LogsQuery,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Page {
-    let (wal_tails, sfst_candidates) = partition_sources(sources, mapped);
-
     // limit + 1: one extra candidate past the page so finalize can set the
     // has-more flags.
     let page_bound = Some(query.limit.saturating_add(1));
     let anchor = query.anchor.map(Anchor::to_cursor);
     let mut merged = PageShard::default();
+    let mut failures = Failures::default();
 
     // Seed the merge with the WAL tails *before* the SFSTs: the early-
     // termination below samples `merged.cursors[limit - 1]` as its
     // boundary, which must already include every tail cursor — adding tails
     // later can only push the boundary older, letting `beyond_boundary`
     // wrongly skip an SFST whose rows belong on the page.
-    let tail_scans = scan_tails(&wal_tails, query, anchor, page_bound, &mut merged);
+    let tail_scans = scan_tails(
+        wal_tails,
+        query,
+        anchor,
+        page_bound,
+        &mut merged,
+        &mut failures,
+    );
 
     // SFSTs (on-disk + in-memory chunks): order the pre-resolved
     // mappings into a stable `Vec` the readers can borrow, then open +
     // evaluate + fold them closest-to-anchor first with early termination.
     let mappings = sort_mapped_sfsts(sfst_candidates, query.direction);
-    let (readers, reader_mapping) =
-        open_and_evaluate_sfsts(&mappings, query, anchor, page_bound, &mut merged, cancel);
+    let (readers, reader_mapping) = open_and_evaluate_sfsts(
+        &mappings,
+        query,
+        anchor,
+        page_bound,
+        &mut merged,
+        &mut failures,
+        cancel,
+    );
 
-    let page = build_page(merged, &readers, &tail_scans, query);
+    let page = build_page(merged, &readers, &tail_scans, query, failures);
     release_cold(readers, &reader_mapping, &mappings);
     page
 }
 
-/// Split sources by kind, pairing each SFST with its pre-resolved
-/// mapping (an `Arc` bump). A candidate whose map failed (`None`) is
-/// dropped here — it contributed nothing to the stats pass either.
-/// Order *within* each kind is irrelevant — the
-/// merge re-sorts by cursor; the ordering that matters (tails before
-/// SFSTs) is enforced by [`paginate`]'s call order, not here.
-fn partition_sources<'a>(
-    sources: &'a [LogSource],
-    mapped: &[Option<Mapped>],
-) -> (Vec<&'a WalTail>, Vec<(&'a SfstCandidate, Mapped)>) {
-    debug_assert_eq!(sources.len(), mapped.len());
-    let mut wal_tails = Vec::new();
-    let mut sfst_candidates = Vec::new();
-    for (source, mapping) in sources.iter().zip(mapped) {
-        match source {
-            LogSource::Tail(t) => wal_tails.push(t),
-            LogSource::Sfst(c) => {
-                if let Some(m) = mapping {
-                    sfst_candidates.push((c, m.clone()));
-                }
-            }
-        }
-    }
-    (wal_tails, sfst_candidates)
-}
-
 /// Scan each WAL tail, fold its page shard into `merged`, and keep the
 /// scans for the materialize step. A tail that fails to scan or evaluate
-/// is logged and skipped.
+/// is logged and goes into `failures.failed`.
 fn scan_tails(
     wal_tails: &[&WalTail],
     query: &LogsQuery,
     anchor: Option<Cursor>,
     bound: Option<usize>,
     merged: &mut PageShard,
+    failures: &mut Failures,
 ) -> Vec<(u64, WalScan)> {
     // `materialize` routes tail cursors by `file_seq` alone (`tail_by_seq`),
     // and tail cursors share one `(file_seq, Part::Tail, position)` space —
@@ -477,6 +496,10 @@ fn scan_tails(
     // below is unambiguous.
     let mut tail_scans: Vec<(u64, WalScan)> = Vec::new();
     for &tail in wal_tails {
+        let key = SourceKey {
+            file_seq: tail.file_seq,
+            part: Part::Tail,
+        };
         let scan = match WalScan::scan_flattened_range(&tail.path, tail.range) {
             Ok(scan) => scan,
             Err(e) => {
@@ -486,6 +509,7 @@ fn scan_tails(
                     tail.range.start(),
                     tail.range.end()
                 );
+                failures.failed.insert(key);
                 continue;
             }
         };
@@ -496,6 +520,7 @@ fn scan_tails(
                     "sfsq: tail page candidates failed (file_seq={}): {e}",
                     tail.file_seq
                 );
+                failures.failed.insert(key);
                 continue;
             }
         }
@@ -529,7 +554,8 @@ fn sort_mapped_sfsts<'a>(
 /// file is entirely beyond the page boundary — later files (time-sorted)
 /// can't contribute, so they're never opened. Returns the opened readers
 /// (which borrow `mappings`) and their mapping indices, for materialize and
-/// cold-release. A file that fails to parse/evaluate is logged and skipped.
+/// cold-release. A file that fails to parse/evaluate is logged and goes into
+/// `failures.failed`.
 ///
 /// Polls `cancel` before each source: page work is bounded, so this is
 /// belt-and-suspenders, but it keeps a cancelled query from opening
@@ -540,6 +566,7 @@ fn open_and_evaluate_sfsts<'a>(
     anchor: Option<Cursor>,
     bound: Option<usize>,
     merged: &mut PageShard,
+    failures: &mut Failures,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> (Vec<(sfst::IndexReader<'a>, SourceKey)>, Vec<usize>) {
     let mut readers: Vec<(sfst::IndexReader<'a>, SourceKey)> = Vec::new();
@@ -548,10 +575,15 @@ fn open_and_evaluate_sfsts<'a>(
         if cancel.is_cancelled() {
             break;
         }
+        let key = SourceKey {
+            file_seq: candidate.file_seq,
+            part: candidate.part,
+        };
         let reader = match sfst::IndexReader::open(mapping.bytes()) {
             Ok(reader) => reader,
             Err(e) => {
                 tracing::warn!("sfsq: failed to parse {}: {e}", candidate.source.describe());
+                failures.failed.insert(key);
                 continue;
             }
         };
@@ -569,16 +601,11 @@ fn open_and_evaluate_sfsts<'a>(
                     "sfsq: page candidates failed for {}: {e}",
                     candidate.source.describe()
                 );
+                failures.failed.insert(key);
                 continue;
             }
         }
-        readers.push((
-            reader,
-            SourceKey {
-                file_seq: candidate.file_seq,
-                part: candidate.part,
-            },
-        ));
+        readers.push((reader, key));
         reader_mapping.push(index);
 
         if query.limit > 0 && merged.cursors.len() > query.limit {
@@ -599,26 +626,23 @@ fn open_and_evaluate_sfsts<'a>(
     (readers, reader_mapping)
 }
 
-/// Finalize the merged shard into a page and materialize its rows. A
-/// materialize failure collapses to an empty page rather than reporting
-/// has-more flags with no rows behind them.
+/// Finalize the merged shard into a page and materialize its rows. A source
+/// whose rows cannot be materialized shortens the page by its rows.
 fn build_page(
     merged: PageShard,
     readers: &[(sfst::IndexReader<'_>, SourceKey)],
     tail_scans: &[(u64, WalScan)],
     query: &LogsQuery,
+    mut failures: Failures,
 ) -> Page {
     let selected = finalize_page(merged, query.direction, query.limit);
-    match materialize(readers, tail_scans, &selected) {
-        Ok(rows) => Page {
-            rows,
-            has_newer: selected.has_newer,
-            has_older: selected.has_older,
-        },
-        Err(e) => {
-            tracing::warn!("sfsq: materialize failed: {e}");
-            Page::default()
-        }
+    let rows = materialize(readers, tail_scans, &selected, &mut failures);
+    Page {
+        rows,
+        has_newer: selected.has_newer,
+        has_older: selected.has_older,
+        failed: failures.failed,
+        ids_unreadable: failures.ids_unreadable,
     }
 }
 

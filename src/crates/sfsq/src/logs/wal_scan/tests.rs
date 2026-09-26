@@ -163,8 +163,17 @@ fn invalid_pattern_on_absent_field_is_not_an_error() {
     assert_eq!(timeline.buckets[0].unset, 0);
 }
 
+/// The tail is left out whole and counted: no field table either.
+fn assert_left_out(shard: &crate::logs::LogsShard, context: &str) {
+    assert_eq!(shard.failed_sources, 1, "{context}");
+    assert_eq!(shard.matched, 0, "{context}");
+    assert!(shard.facets.is_empty(), "{context}");
+    assert!(shard.timeline.is_none(), "{context}");
+    assert_eq!(shard.fields, sfst::FieldTable::default(), "{context}");
+}
+
 #[test]
-fn invalid_pattern_degrades_to_fields_only() {
+fn an_invalid_pattern_leaves_the_tail_out() {
     let scan = scan_from(&[(1, &["a=x"])]);
     let f = Filter::new().select_pattern("a", "(unclosed");
     let shard = run(
@@ -174,16 +183,13 @@ fn invalid_pattern_degrades_to_fields_only() {
             .facet_fields(vec!["a".into()])
             .build(),
     );
-    assert_eq!(shard.matched, 0);
-    assert!(shard.facets.is_empty());
-    assert!(shard.timeline.is_none());
-    assert!(shard.fields.get("a").is_some(), "field table still present");
+    assert_left_out(&shard, "pattern");
 }
 
 /// Logs never send the absent term; the row scan refuses it (on a field it
 /// has or not) the way it refuses a bad pattern, rather than matching nothing.
 #[test]
-fn an_absent_term_degrades_to_fields_only() {
+fn an_absent_term_leaves_the_tail_out() {
     let scan = scan_from(&[(1, &["a=x"]), (2, &["b=y"])]);
     for field in ["a", "missing"] {
         let f = Filter::new().select_absent(field);
@@ -194,12 +200,7 @@ fn an_absent_term_degrades_to_fields_only() {
                 .facet_fields(vec!["a".into()])
                 .build(),
         );
-        assert_eq!(shard.matched, 0, "{field}");
-        assert!(shard.facets.is_empty(), "{field}");
-        assert!(
-            shard.fields.get("a").is_some(),
-            "{field}: field table still present"
-        );
+        assert_left_out(&shard, field);
     }
 }
 

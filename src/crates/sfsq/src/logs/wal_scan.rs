@@ -299,29 +299,27 @@ impl WalScan {
 
     /// Evaluate `query` into a [`LogsShard`] — the row-scan counterpart
     /// of [`LogsShard::evaluate`] over an SFST candidate, with the same
-    /// degrade-gracefully shape: an unresolvable filter contributes the
-    /// field table but no counts; a high-cardinality (or invalid-grid)
-    /// histogram contributes no timeline.
+    /// shape: a filter that cannot be resolved or an invalid grid leaves
+    /// the scan out whole ([`LogsShard::failed`], logged); a
+    /// high-cardinality histogram field contributes no timeline.
     ///
     /// [`LogsShard::evaluate`]: super::aggregate::LogsShard::evaluate
     pub fn evaluate(&self, query: &LogsQuery) -> LogsShard {
+        match self.try_evaluate(query) {
+            Ok(shard) => shard,
+            Err(e) => {
+                tracing::warn!("wal_scan: tail left out: {e}");
+                LogsShard::failed()
+            }
+        }
+    }
+
+    fn try_evaluate(&self, query: &LogsQuery) -> Result<LogsShard, sfst::Error> {
         let fields = self.fields.clone();
 
         // Resolve the filter to per-field token sets once (the row-scan
-        // analogue of `IndexReader::compile_filter`). A malformed
-        // pattern degrades exactly like the SFST path: field table only.
-        let compiled = match self.compile(query) {
-            Ok(compiled) => compiled,
-            Err(e) => {
-                tracing::warn!("wal_scan: compile filter failed: {e}");
-                return LogsShard {
-                    matched: 0,
-                    facets: Vec::new(),
-                    timeline: None,
-                    fields,
-                };
-            }
-        };
+        // analogue of `IndexReader::compile_filter`).
+        let compiled = self.compile(query)?;
 
         let grid = query.grid;
         let window = grid.range_ns();
@@ -332,7 +330,7 @@ impl WalScan {
         let facet_fields = eligible_facet_fields(&query.facet_fields, &fields);
         let mut facets = FacetAcc::new(&facet_fields);
 
-        let mut timeline = TimelineAcc::new(&query.histogram_field, grid, &fields, self);
+        let mut timeline = TimelineAcc::new(&query.histogram_field, grid, &fields, self)?;
 
         let mut matched: u64 = 0;
         let mut scratch: Vec<u32> = Vec::new();
@@ -363,12 +361,13 @@ impl WalScan {
             timeline.accumulate(row.ts_ns, &conjuncts, &scratch);
         }
 
-        LogsShard {
+        Ok(LogsShard {
             matched,
             facets: facets.finish(self),
             timeline: timeline.finish(),
             fields,
-        }
+            failed_sources: 0,
+        })
     }
 
     /// Resolve the query's filter and full-text term against the pair
@@ -729,9 +728,8 @@ impl<'q> FacetAcc<'q> {
 /// The histogram accumulator over the row loop — the row-scan analogue
 /// of `IndexReader::timeline`, including its exact-`unset` rule.
 struct TimelineAcc {
-    /// `None` when the field is high-card here or the grid is invalid —
-    /// the cases where the SFST path errors and `evaluate` degrades the
-    /// shard's timeline to `None`.
+    /// `None` when the field is high-card here — where the SFST path
+    /// errors and `evaluate` gives the shard no timeline.
     state: Option<TimelineState>,
 }
 
@@ -751,17 +749,19 @@ struct TimelineState {
 }
 
 impl TimelineAcc {
-    fn new(field: &str, grid: Grid, fields: &FieldTable, scan: &WalScan) -> Self {
-        // Mirror the SFST error paths that `evaluate` turns into a
-        // `None` timeline: an invalid bucket width, or a field that is
-        // high-cardinality in this file.
+    fn new(
+        field: &str,
+        grid: Grid,
+        fields: &FieldTable,
+        scan: &WalScan,
+    ) -> Result<Self, sfst::Error> {
+        // Mirror the SFST timeline: an invalid bucket width is an error, a
+        // field high-cardinality in this file gives no timeline.
         if grid.bucket_width_ns <= 0 {
-            tracing::warn!("wal_scan: timeline failed: invalid bucket width");
-            return Self { state: None };
+            return Err(sfst::Error::InvalidBucketWidth(grid.bucket_width_ns));
         }
         if fields.get(field).is_some_and(|f| f.is_high_card()) {
-            tracing::warn!("wal_scan: timeline failed: high-cardinality field {field}");
-            return Self { state: None };
+            return Ok(Self { state: None });
         }
 
         // Dimensions: the field's distinct values across the whole
@@ -779,7 +779,7 @@ impl TimelineAcc {
             .collect();
         let dim_of: HashMap<u32, usize> = tokens.iter().enumerate().map(|(i, &t)| (t, i)).collect();
 
-        Self {
+        Ok(Self {
             state: Some(TimelineState {
                 grid,
                 dim_counts: vec![vec![0; grid.num_buckets]; dimensions.len()],
@@ -788,7 +788,7 @@ impl TimelineAcc {
                 dimensions,
                 dim_of,
             }),
-        }
+        })
     }
 
     fn accumulate(&mut self, ts_ns: i64, conjuncts: &RowMatch, distinct_tokens: &[u32]) {

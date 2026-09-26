@@ -1148,3 +1148,152 @@ fn duplicate_tail_file_seq_is_skipped_not_double_served() {
     assert_eq!(dup.rows, single.rows, "duplicate tail changed served rows");
     assert_eq!(dup.histogram, single.histogram);
 }
+
+// ---------------------------------------------------------------------------
+// Failed sources: a file that fails in either pass is left out whole and
+// counted; one whose record ids alone cannot be read keeps its rows.
+// ---------------------------------------------------------------------------
+
+/// `bytes` with the first byte of chunk `id` flipped, so its CRC fails.
+fn with_corrupt_chunk(bytes: &[u8], id: [u8; 4]) -> Vec<u8> {
+    let offset = {
+        let container = chunk_file::container::Container::open(bytes, b"SFST", 1).unwrap();
+        let meta = container.chunk_meta(id).expect("chunk present");
+        usize::try_from(meta.offset).unwrap()
+    };
+    let mut out = bytes.to_vec();
+    out[offset] ^= 0xFF;
+    out
+}
+
+fn memory_candidate(bytes: Vec<u8>, file_seq: u64) -> SfstCandidate {
+    SfstCandidate {
+        summary: sfst::read_summary(&bytes).expect("summary"),
+        file_seq,
+        part: sfsq::logs::Part::Indexed(0),
+        source: Source::Memory(Arc::new(bytes)),
+    }
+}
+
+/// The sealed corpus file's bytes and a query over its whole window.
+fn sealed_bytes(corpus: &Corpus, dir: &Path) -> (Vec<u8>, LogsQueryBuilder) {
+    write_flattened_wal(dir, corpus);
+    let whole = ng_index_candidate(dir);
+    let Source::File(path) = &whole.source else {
+        unreachable!("sealed")
+    };
+    let start = whole.summary.min_timestamp_s as i64 * NS as i64;
+    let span_ns =
+        ((whole.summary.max_timestamp_s - whole.summary.min_timestamp_s) as i64 + 1) * NS as i64;
+    let query = LogsQueryBuilder::new(Grid::new(start, span_ns, 1)).limit(1_000);
+    (std::fs::read(path).expect("read sfst"), query)
+}
+
+/// The good file alone, and the good file beside the doctored one.
+fn alone_and_beside(good: &[u8], bad: Vec<u8>, query: &LogsQuery) -> (LogsData, LogsData) {
+    let alone = run_plain(
+        sources(vec![memory_candidate(good.to_vec(), 1)], vec![]),
+        query.clone(),
+    );
+    let beside = run_plain(
+        sources(
+            vec![memory_candidate(good.to_vec(), 1), memory_candidate(bad, 2)],
+            vec![],
+        ),
+        query.clone(),
+    );
+    (alone, beside)
+}
+
+fn assert_left_out(alone: &LogsData, beside: &LogsData) {
+    assert_eq!((alone.sources, alone.failed_sources), (1, 0));
+    assert_eq!((beside.sources, beside.failed_sources), (2, 1));
+    assert!(alone.matched > 0);
+    assert_eq!(beside.matched, alone.matched);
+    assert_eq!(beside.facets, alone.facets);
+    assert_eq!(beside.histogram, alone.histogram);
+    assert_eq!(beside.rows, alone.rows);
+}
+
+/// A file whose facet column is corrupt counts no rows either: its numbers
+/// are never half in.
+#[test]
+fn a_file_failing_one_statistic_is_left_out_whole() {
+    // 150 distinct values make `req` a mid-cardinality field, in its own chunk.
+    let records: Vec<LogRecord> = (0..150u64)
+        .map(|i| LogRecord {
+            time_unix_nano: (BASE_S + i) * NS,
+            attributes: vec![kv("req", s(&format!("r{i:03}")))],
+            ..LogRecord::default()
+        })
+        .collect();
+    let corpus = Corpus {
+        batches: vec![vec![ResourceLogs {
+            resource: Some(Resource {
+                attributes: vec![kv("service.name", s("harness"))],
+                ..Resource::default()
+            }),
+            scope_logs: vec![ScopeLogs {
+                log_records: records,
+                ..ScopeLogs::default()
+            }],
+            ..ResourceLogs::default()
+        }]],
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (good, query) = sealed_bytes(&corpus, dir.path());
+    let reader = IndexReader::open(&good).expect("open");
+    let mut mid = Vec::new();
+    for name in reader.field_table().names() {
+        if reader.field_table().get(name).unwrap().tier == sfst::FieldTier::Mid {
+            mid.push(name.to_string());
+        }
+    }
+    assert_eq!(mid.len(), 1, "one mid-cardinality field");
+
+    // No page: its rows would read the corrupt values too.
+    let query = query.facet_fields(mid).limit(0).build();
+    let (alone, beside) = alone_and_beside(&good, with_corrupt_chunk(&good, *b"MF\0\0"), &query);
+    assert_eq!(alone.facets[0].values.len(), 150);
+    assert_left_out(&alone, &beside);
+}
+
+/// A file whose rows cannot be decoded is left out of the counts too, and the
+/// page keeps the other file's rows.
+#[test]
+fn a_file_whose_rows_cannot_be_read_is_left_out_whole() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (good, query) = sealed_bytes(&gen_corpus(7), dir.path());
+    let query = query.build();
+    let (alone, beside) = alone_and_beside(&good, with_corrupt_chunk(&good, *b"SB00"), &query);
+    assert_left_out(&alone, &beside);
+}
+
+/// A file whose trace ids cannot be read keeps its rows, without ids, and is
+/// counted; a trace term, which needs those ids, leaves it out.
+#[test]
+fn unreadable_record_ids_keep_the_rows() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (good, query) = sealed_bytes(&gen_corpus(7), dir.path());
+    let bad = with_corrupt_chunk(&good, *b"TRCE");
+
+    let (alone, beside) = alone_and_beside(&good, bad.clone(), &query.clone().build());
+    assert_eq!((beside.sources, beside.failed_sources), (2, 1));
+    assert_eq!(beside.matched, 2 * alone.matched);
+    assert_eq!(beside.rows.len(), 2 * alone.rows.len());
+    for row in &beside.rows {
+        if row.cursor.file_seq == 2 {
+            assert_eq!((row.trace_id, row.span_id), (None, None));
+        }
+    }
+    assert!(
+        alone.rows.iter().any(|row| row.trace_id.is_some()),
+        "the good file's rows carry ids"
+    );
+
+    let traced = query
+        .trace_ids(vec![sfst::TraceId::from(TRACE_POOL[0])])
+        .build();
+    let (alone, beside) = alone_and_beside(&good, bad, &traced);
+    assert_left_out(&alone, &beside);
+}

@@ -26,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 use super::aggregate::LogsShard;
 use super::cursor::Part;
 use super::mmap::{self, Mapped};
-use super::page::paginate;
+use super::page::{SourceKey, paginate};
 use super::query::LogsQuery;
 use super::result::LogsData;
 use super::wal_scan::WalScan;
@@ -118,15 +118,20 @@ impl LogSource {
     /// Evaluate this source into a statistics shard (step 1): the indexed
     /// engine for an SFST (sealed file or in-memory chunk), a row scan for
     /// a WAL tail. An SFST reads the bytes `run` mapped once up front
-    /// (`mapped`; `None` means the map failed — already logged — and
-    /// degrades to empty). A per-source failure is logged and degrades to
-    /// an empty shard — the monoid identity under [`LogsShard::merge`] —
-    /// so one bad source never sinks the merged result.
+    /// (`mapped`; `None` means the map failed, already logged). A source
+    /// that fails is logged and becomes [`LogsShard::failed`]: left out
+    /// whole and counted, so one bad source never sinks the merged result.
     pub(super) fn to_shard(&self, query: &LogsQuery, mapped: Option<&Mapped>) -> LogsShard {
         match self {
             LogSource::Sfst(c) => match mapped {
-                Some(m) => LogsShard::evaluate_mapped(c, m, query),
-                None => LogsShard::default(),
+                Some(m) => match LogsShard::evaluate_mapped(m, query) {
+                    Ok(shard) => shard,
+                    Err(e) => {
+                        tracing::warn!("sfsq: {} left out: {e}", c.source.describe());
+                        LogsShard::failed()
+                    }
+                },
+                None => LogsShard::failed(),
             },
             LogSource::Tail(tail) => match WalScan::scan_flattened_range(&tail.path, tail.range) {
                 Ok(scan) => scan.evaluate(query),
@@ -137,8 +142,22 @@ impl LogSource {
                         tail.range.start(),
                         tail.range.end()
                     );
-                    LogsShard::default()
+                    LogsShard::failed()
                 }
+            },
+        }
+    }
+
+    /// Where this source's rows sit in the cursor order.
+    pub(super) fn key(&self) -> SourceKey {
+        match self {
+            LogSource::Sfst(c) => SourceKey {
+                file_seq: c.file_seq,
+                part: c.part,
+            },
+            LogSource::Tail(t) => SourceKey {
+                file_seq: t.file_seq,
+                part: Part::Tail,
             },
         }
     }
@@ -151,10 +170,12 @@ impl LogSource {
 /// [`LogsData`]. The grid's span is the window every count and the
 /// materialized page clip to.
 ///
-/// Per-source errors (corrupt file, missing field, unreadable WAL tail,
-/// etc.) are logged and that source is skipped — others still
-/// contribute. An empty source set (or one where everything fails)
-/// yields an empty `LogsData` aligned to the grid (the monoid identity).
+/// A source that fails (corrupt file, unreadable WAL tail, etc.) in
+/// either step is logged and left out whole — none of its counts or rows —
+/// and counted in [`LogsData::failed_sources`]; the others still
+/// contribute. A source whose record ids alone cannot be read keeps its
+/// rows, without ids, and is counted too. An empty source set (or one where
+/// everything fails) yields an empty `LogsData` aligned to the grid.
 ///
 /// Statistics (matched, facets, histogram, field table) and the row
 /// table both reflect **every** source — sealed SFSTs, in-memory chunks
@@ -212,8 +233,8 @@ pub fn run(
     // unlinked by retention mid-query stays readable and the stats and
     // page passes always see the same source set — `matched` can no
     // longer count rows the page pass fails to re-open. A source that
-    // fails to map (logged in `map_source`) is `None` and contributes
-    // nothing to either pass. Tails are row-scanned, not mapped.
+    // fails to map (logged in `map_source`) is `None` and fails step 1.
+    // Tails are row-scanned, not mapped.
     let mapped: Vec<Option<Mapped>> = sources
         .iter()
         .map(|source| match source {
@@ -222,10 +243,10 @@ pub fn run(
         })
         .collect();
 
-    // Step 1: evaluate every source into a shard (see `LogSource::to_shard`)
-    // and merge them. The merge is a monoid, so source order is irrelevant
-    // and a failed source's empty shard is its identity — which also makes
-    // a cancelled partial merge well-formed.
+    // Step 1: evaluate every source into a shard (see `LogSource::to_shard`).
+    // They merge after step 2, which may still leave a source out. The merge
+    // is a monoid, so source order is irrelevant and a cancelled partial
+    // merge is well-formed.
     let mut shards = Vec::with_capacity(sources.len());
     for (source, mapping) in sources.iter().zip(&mapped) {
         if cancel.is_cancelled() {
@@ -233,6 +254,35 @@ pub fn run(
         }
         shards.push(source.to_shard(&query, mapping.as_ref()));
         progress.fetch_add(1, Ordering::Relaxed);
+    }
+
+    // Step 2: paginate across the sources step 1 read — on-disk SFSTs and
+    // in-memory chunks (`Part::Indexed`), and the WAL tails (`Part::Tail`)
+    // — under the unified cursor order, reading the same mappings.
+    let mut tails = Vec::new();
+    let mut sfsts = Vec::new();
+    for ((source, mapping), shard) in sources.iter().zip(&mapped).zip(&shards) {
+        if shard.failed_sources > 0 {
+            continue;
+        }
+        match (source, mapping) {
+            (LogSource::Tail(tail), _) => tails.push(tail),
+            (LogSource::Sfst(candidate), Some(mapping)) => sfsts.push((candidate, mapping.clone())),
+            // Failed to map: a failed shard, skipped above.
+            (LogSource::Sfst(_), None) => {}
+        }
+    }
+    let page = paginate(&tails, sfsts, &query, &cancel);
+
+    // A source whose rows could not be read is left out of the counts too;
+    // one whose ids alone could not be read keeps its numbers and rows.
+    for (source, shard) in sources.iter().zip(shards.iter_mut()) {
+        let key = source.key();
+        if page.failed.contains(&key) {
+            *shard = LogsShard::failed();
+        } else if page.ids_unreadable.contains(&key) {
+            shard.failed_sources = 1;
+        }
     }
     let stats = LogsShard::merge(shards);
 
@@ -249,12 +299,9 @@ pub fn run(
     let columns: Vec<String> = stats.fields.names().map(str::to_owned).collect();
     let histogram = stats.timeline.unwrap_or_else(|| sfst::Timeline::empty(grid));
 
-    // Step 2: paginate across every source under the unified cursor
-    // order — on-disk SFSTs and in-memory chunks (`Part::Indexed`), and
-    // the WAL tails (`Part::Tail`) — reading the same mappings as step 1.
-    let page = paginate(&sources, &mapped, &query, &cancel);
-
     LogsData {
+        sources: sources.len() as u64,
+        failed_sources: stats.failed_sources,
         matched: stats.matched,
         facets: stats.facets,
         histogram_field: query.histogram_field,
@@ -272,9 +319,9 @@ mod tests {
     use super::*;
     use crate::logs::LogsQueryBuilder;
 
-    /// Sources whose bytes are garbage: each one degrades to an empty
-    /// shard, but `run` still walks it — which is exactly what the
-    /// progress/cancel contract is about (one tick per source visited).
+    /// Sources whose bytes are garbage: each one is left out and counted,
+    /// but `run` still walks it — which is exactly what the progress/cancel
+    /// contract is about (one tick per source visited).
     fn garbage_sources(n: usize) -> Vec<LogSource> {
         (0..n)
             .map(|i| {
@@ -308,6 +355,18 @@ mod tests {
         );
         assert_eq!(progress.load(Ordering::Relaxed), 5);
         assert_eq!(data.matched, 0);
+    }
+
+    #[test]
+    fn unreadable_sources_are_counted() {
+        let data = run(
+            garbage_sources(5),
+            query(),
+            CancellationToken::new(),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        assert_eq!((data.sources, data.failed_sources), (5, 5));
+        assert_eq!(data.columns, Vec::<String>::new());
     }
 
     #[test]

@@ -61,6 +61,7 @@ fn merge_sums_matched_and_drops_facet_high_card_in_any_shard() {
             tier: sfst::FieldTier::Low,
         }]
         .into(),
+        failed_sources: 0,
     };
     let shard_b = LogsShard {
         matched: 2,
@@ -72,6 +73,7 @@ fn merge_sums_matched_and_drops_facet_high_card_in_any_shard() {
             tier: sfst::FieldTier::High,
         }]
         .into(),
+        failed_sources: 0,
     };
 
     let merged = LogsShard::merge(vec![shard_a, shard_b]);
@@ -91,11 +93,10 @@ fn merge_empty_is_identity() {
 }
 
 #[test]
-fn merge_ignores_interspersed_default_shards() {
-    // M-3 relies on this: a failed source degrades to `LogsShard::default()`,
-    // so injecting default shards into the merge must not change the result
-    // (they are the monoid identity). Stronger than `merge_empty_is_identity`,
-    // which only covers the all-empty input.
+fn merge_counts_failed_shards_and_nothing_else() {
+    // A failed source is `LogsShard::failed()`: the merge counts it and its
+    // numbers are the monoid identity. Stronger than
+    // `merge_empty_is_identity`, which only covers the all-empty input.
     let real = || LogsShard {
         matched: 4,
         facets: vec![sfst::FacetResult {
@@ -109,16 +110,18 @@ fn merge_ignores_interspersed_default_shards() {
             tier: sfst::FieldTier::Low,
         }]
         .into(),
+        failed_sources: 0,
     };
 
     let alone = LogsShard::merge(vec![real()]);
-    let with_defaults = LogsShard::merge(vec![LogsShard::default(), real(), LogsShard::default()]);
+    let with_failed = LogsShard::merge(vec![LogsShard::failed(), real(), LogsShard::failed()]);
 
-    assert_eq!(with_defaults.matched, alone.matched);
-    assert_eq!(with_defaults.facets, alone.facets);
-    assert_eq!(with_defaults.timeline, alone.timeline);
+    assert_eq!((alone.failed_sources, with_failed.failed_sources), (0, 2));
+    assert_eq!(with_failed.matched, alone.matched);
+    assert_eq!(with_failed.facets, alone.facets);
+    assert_eq!(with_failed.timeline, alone.timeline);
     assert_eq!(
-        with_defaults.fields.get("level").map(|e| e.cardinality),
+        with_failed.fields.get("level").map(|e| e.cardinality),
         alone.fields.get("level").map(|e| e.cardinality),
     );
 }
