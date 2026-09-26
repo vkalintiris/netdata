@@ -37,6 +37,9 @@ func TestWebACL(t *testing.T) {
 				"contexts": get("/api/v1/contexts"),
 				"unknown":  get("/api/v1/nope"),
 				"stream":   get("/stream?key=x&hostname=y&machine_guid=z"),
+				// the STREAM method itself, which the streaming list denies before any key check
+				"stream-method": []byte("STREAM key=11111111-2222-3333-4444-555555555555&hostname=y&machine_guid=" +
+					"66666666-7777-8888-9999-000000000000 HTTP/1.1\r\n\r\n"),
 				"options":  []byte("OPTIONS / HTTP/1.1\r\n\r\n"),
 				"gzip-off": get("/nonexistent", "Accept-Encoding: gzip"),
 			},
