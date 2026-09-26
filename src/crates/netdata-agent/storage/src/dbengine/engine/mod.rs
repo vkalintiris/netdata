@@ -4,3 +4,7 @@
 pub mod io;
 pub mod load;
 pub mod mrg;
+pub mod v2index;
+
+#[cfg(test)]
+mod testutil;

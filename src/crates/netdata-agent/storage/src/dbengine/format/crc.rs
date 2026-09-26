@@ -6,6 +6,13 @@ pub fn crc32(data: &[u8]) -> u32 {
     crc32fast::hash(data)
 }
 
+/// `crc32(crc, data, len)`: a CRC continued over more bytes.
+pub fn crc32_update(crc: u32, data: &[u8]) -> u32 {
+    let mut h = crc32fast::Hasher::new_with_initial(crc);
+    h.update(data);
+    h.finalize()
+}
+
 /// `crc32set()`: the 4 stored bytes of `crc`.
 pub fn crc_bytes(crc: u32) -> [u8; 4] {
     crc.to_le_bytes()
@@ -26,5 +33,6 @@ mod tests {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
         assert!(crc_matches(&crc_bytes(0xCBF4_3926), crc32(b"123456789")));
         assert!(!crc_matches(&[0, 0, 0], 0));
+        assert_eq!(crc32_update(crc32(b"1234"), b"56789"), crc32(b"123456789"));
     }
 }

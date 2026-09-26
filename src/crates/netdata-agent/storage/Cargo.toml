@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 crc32fast = { workspace = true }
 libc = { workspace = true }
+netdata-agent-evloop = { workspace = true }
 netdata-agent-log = { workspace = true }
 netdata-agent-text = { workspace = true }
 lz4_flex = { workspace = true }

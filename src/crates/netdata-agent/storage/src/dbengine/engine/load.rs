@@ -99,6 +99,10 @@ pub struct Tier {
     pub open_pages: Vec<(u32, Page)>,
     /// `ctx->atomic.transaction_id`: the next transaction's id.
     pub transaction_id: u64,
+    /// `ctx->atomic.first_time_s`: the tier's oldest time, `i64::MAX` until known.
+    pub first_time_s: i64,
+    /// The v2 files that serve, by file number (a file whose population failed is left out).
+    pub indexes: BTreeMap<u32, super::v2index::V2Index>,
 }
 
 /// What a journal's load left (`journalfile_load()`'s effects).
@@ -641,6 +645,8 @@ pub fn load(cfg: TierConfig, mrg: &Mrg, now_s: i64) -> io::Result<Tier> {
         last_fileno: scanned.datafiles.last().copied().unwrap_or(0),
         open_pages: Vec::new(),
         transaction_id: 1,
+        first_time_s: i64::MAX,
+        indexes: BTreeMap::new(),
         config: cfg.clone(),
     };
     let mut create = false;

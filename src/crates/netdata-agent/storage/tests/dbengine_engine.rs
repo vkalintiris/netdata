@@ -4,9 +4,15 @@
 
 use std::path::{Path, PathBuf};
 
+use std::collections::HashMap;
+
+use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::Priority;
 use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
 use netdata_agent_storage::dbengine::engine::mrg::Mrg;
+use netdata_agent_storage::dbengine::engine::v2index::{populate, readiness};
+use netdata_agent_storage::dbengine::format::descriptor::PAGE_TYPE_GORILLA_32BIT;
+use netdata_agent_storage::dbengine::format::inspect::for_each_page;
 
 fn fixtures() -> Option<PathBuf> {
     let dir = std::env::var_os("NETDATA_DBENGINE_FIXTURES").map(PathBuf::from);
@@ -89,4 +95,60 @@ fn a_start_on_run1_decides_as_runr() {
     let built = std::fs::read(work.path().join("dbengine/journalfile-1-0000000003.njfv2")).unwrap();
     let c = std::fs::read(fx.join("runR/cache/dbengine/journalfile-1-0000000003.njfv2")).unwrap();
     assert!(built == c, "the rebuilt v2 differs from C's");
+}
+
+/// A start on runR's files an hour after runR's start: after the population, every metric's retention in the
+/// registry, per tier, is the one its pages on disk span (the first page's start, the last page's end), whether it
+/// came from a v2 index or from the replayed last journal.
+#[test]
+fn population_matches_the_pages_on_disk() {
+    let Some(fx) = fixtures() else {
+        return;
+    };
+    const NOW: i64 = 1_790_351_792 + 3600;
+    let work = tempfile::tempdir().unwrap();
+    let mrg = Mrg::new();
+    let pool = WorkPool::new(4, 256 * 1024);
+    for tier in 0..3 {
+        let name = if tier == 0 {
+            "dbengine".to_string()
+        } else {
+            format!("dbengine-tier{tier}")
+        };
+        let dir = work.path().join(&name);
+        copy_dir(&fx.join("runR/cache").join(&name), &dir);
+        let mut pages: HashMap<[u8; 16], (i64, i64)> = HashMap::new();
+        for_each_page(&dir, |d, _| {
+            let start = (d.start_time_ut / 1_000_000) as i64;
+            let end = if d.page_type == PAGE_TYPE_GORILLA_32BIT {
+                start + i64::from(d.gorilla_delta_s())
+            } else {
+                (d.end_time_ut() / 1_000_000) as i64
+            };
+            let e = pages.entry(d.uuid).or_insert((start, end));
+            e.0 = e.0.min(start);
+            e.1 = e.1.max(end);
+        })
+        .unwrap();
+        let cfg = TierConfig {
+            tier,
+            path: dir,
+            direct_io: false,
+            max_disk_space: 25 * 1024 * 1024,
+            journal_check: false,
+        };
+        let mut loaded = load(cfg, &mrg, NOW).unwrap();
+        populate(&mut loaded, &mrg, &pool, 4, NOW);
+        readiness(&mut loaded, NOW);
+        assert!(!pages.is_empty());
+        for (uuid, &(first, last)) in &pages {
+            let r = mrg.get_and_acquire(uuid, tier).map(|m| m.retention());
+            assert_eq!(
+                r.map(|r| (r.first_time_s, r.last_time_s)),
+                Some((first, last)),
+                "tier {tier} metric {uuid:02x?}"
+            );
+        }
+        assert!(mrg.entries() >= pages.len());
+    }
 }
