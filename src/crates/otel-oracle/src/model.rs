@@ -354,7 +354,7 @@ pub fn band(duration_ns: i64) -> usize {
     index
 }
 
-fn id<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
+pub(crate) fn id<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
     let array: [u8; N] = bytes.try_into().ok()?;
     if array == [0u8; N] { None } else { Some(array) }
 }
