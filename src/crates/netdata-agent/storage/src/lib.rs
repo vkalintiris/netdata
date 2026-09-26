@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod dbengine;
 pub mod ram;
 pub mod storage_number;
 pub mod storage_point;

@@ -3054,6 +3054,9 @@ dependencies = [
 [[package]]
 name = "netdata-agent-storage"
 version = "0.1.3"
+dependencies = [
+ "crc32fast",
+]
 
 [[package]]
 name = "netdata-agent-streaming"
