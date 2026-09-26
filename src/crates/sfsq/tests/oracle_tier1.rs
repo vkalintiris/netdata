@@ -1523,9 +1523,21 @@ fn explore_counts_a_stack_field_high_in_one_unit_as_other() {
     for live in [Live::Tail, Live::Chunked] {
         let sources = explore_sources(&stored, live);
         let candidates = sources.len() as u64;
+        // Every other section asked too: the reason is the histogram's alone.
+        let mut query = explore_query(&grid, &Scope::default(), ROUTE_FIELD);
+        query.sections.facets = Some(FacetSpec {
+            fields: Some(vec![model::STATUS_FIELD.to_string()]),
+        });
+        query.sections.groups = true;
+        query.sections.rows = Some(RowsSpec {
+            order: RowOrder::Slowest,
+            limit: 5,
+            columns: Vec::new(),
+        });
+        query.sections.fields = true;
         let data = explore::explore(
             sources,
-            explore_query(&grid, &Scope::default(), ROUTE_FIELD),
+            query,
             explore::ExploreOptions::default(),
             tokio_util::sync::CancellationToken::new(),
             std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -1551,6 +1563,15 @@ fn explore_counts_a_stack_field_high_in_one_unit_as_other() {
             BTreeSet::from([PartialReason::StackFieldHighCard]),
             "{case}"
         );
+        let others = [
+            ("facets", data.facets.expect("facets").status),
+            ("groups", data.groups.expect("groups").status),
+            ("rows", data.rows.expect("rows").status),
+            ("fields", data.fields.expect("fields").status),
+        ];
+        for (section, status) in others {
+            assert!(status.is_complete(), "{case}: {section} {status:?}");
+        }
     }
 }
 

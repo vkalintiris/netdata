@@ -1753,6 +1753,58 @@ async fn explore_counts_a_refused_wal() {
     );
 }
 
+const SECTIONS: [&str; 5] = ["histogram", "facets", "groups", "rows", "fields"];
+
+/// QRY-01: one request answers every section off one capture of the three
+/// sources (Groups walk them twice), and a rows-only request answers only its
+/// rows off a single walk.
+#[tokio::test]
+async fn explore_sections_one_capture() {
+    let (h, _) = explore_corpus().await;
+    let every = json!({"explore": {"after": 1, "before": 10}});
+    let v = serde_json::to_value(call_on(&h, every.clone()).await.unwrap()).unwrap();
+    for section in SECTIONS {
+        assert!(v["data"].get(section).is_some(), "{section}: {v}");
+    }
+    assert_eq!(progress_of(&h, every).await, (6, 6));
+
+    let rows_only = json!({"explore": {
+        "after": 1, "before": 10,
+        "sections": {"rows": {"order": "newest", "limit": 10}}
+    }});
+    let v = serde_json::to_value(call_on(&h, rows_only.clone()).await.unwrap()).unwrap();
+    for section in SECTIONS {
+        assert_eq!(
+            v["data"].get(section).is_some(),
+            section == "rows",
+            "{section}: {v}"
+        );
+    }
+    assert!(!v["data"]["rows"]["items"].as_array().unwrap().is_empty());
+    assert_eq!(progress_of(&h, rows_only).await, (3, 3));
+}
+
+/// QRY-44: a source that cannot be read is counted in every section.
+#[tokio::test]
+async fn a_refused_wal_marks_every_section() {
+    let (h, wal) = explore_corpus().await;
+    let len = std::fs::metadata(&wal).unwrap().len();
+    {
+        use std::io::{Seek, Write};
+        let mut f = std::fs::OpenOptions::new().write(true).open(&wal).unwrap();
+        f.seek(std::io::SeekFrom::Start(wal::HEADER_SIZE as u64))
+            .unwrap();
+        f.write_all(&vec![0xFFu8; (len - wal::HEADER_SIZE as u64) as usize])
+            .unwrap();
+    }
+    let every = json!({"explore": {"after": 1, "before": 10}});
+    let v = serde_json::to_value(call_on(&h, every).await.unwrap()).unwrap();
+    let partial = json!({"partial": [{"reason": "source_failure", "count": 1, "of": 2}]});
+    for section in SECTIONS {
+        assert_eq!(v["data"][section]["status"], partial, "{section}: {v}");
+    }
+}
+
 /// A `null` chip keeps the rows without the field: of the four roots, the
 /// three svc roots have no status.
 #[tokio::test]
