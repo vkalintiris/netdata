@@ -202,7 +202,7 @@ impl MainCache {
     }
 
     /// Drops the least recently used pages nobody holds while over the budget. A held page moves to the recent end,
-    /// so a pass meets each one once, and a pass steps over at most `EVICT_SKIPS` of them.
+    /// and a pass steps over at most `EVICT_SKIPS` held pages.
     fn evict(&self, inner: &mut MainInner) {
         let mut skipped = 0;
         while inner.bytes > self.budget && skipped < EVICT_SKIPS {

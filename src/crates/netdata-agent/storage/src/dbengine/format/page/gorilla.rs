@@ -364,3 +364,96 @@ impl<'a> Reader<'a> {
         Some(n)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buffer(next: u64, entries: u32, nbits: u32) -> [u8; BUFFER_SIZE] {
+        let mut b = [0u8; BUFFER_SIZE];
+        b[0..8].copy_from_slice(&next.to_le_bytes());
+        b[8..12].copy_from_slice(&entries.to_le_bytes());
+        b[12..16].copy_from_slice(&nbits.to_le_bytes());
+        b
+    }
+
+    fn page(buffers: &[[u8; BUFFER_SIZE]], len: usize) -> Vec<u8> {
+        let mut v: Vec<u8> = buffers.iter().flatten().copied().collect();
+        v.resize(len, 0);
+        v
+    }
+
+    fn entries(bytes: &[u8]) -> Result<u32, EmptyPage> {
+        load(bytes).map(|p| p.entries)
+    }
+
+    /// `InvalidChain` exactly where `gorilla_buffer_patch()` returns false, in its order; `Unfit` only where C reads
+    /// past the page or is handed less than 4 bytes.
+    #[test]
+    fn empty_pages_are_classified_as_c() {
+        use EmptyPage::{InvalidChain, Unfit};
+        let cases: [(&str, Vec<u8>, Result<u32, EmptyPage>); 14] = [
+            (
+                "next on the last buffer",
+                page(&[buffer(1, 5, 10)], 512),
+                Err(InvalidChain),
+            ),
+            (
+                "next on the second of two",
+                page(&[buffer(1, 5, 10), buffer(1, 5, 10)], 1024),
+                Err(InvalidChain),
+            ),
+            (
+                "one whole buffer of 1000 bytes",
+                page(&[buffer(1, 5, 10), buffer(0, 5, 10)], 1000),
+                Err(InvalidChain),
+            ),
+            (
+                "nbits at capacity",
+                page(&[buffer(0, 5, 3968)], 512),
+                Err(InvalidChain),
+            ),
+            (
+                "nbits at capacity later",
+                page(&[buffer(1, 5, 10), buffer(0, 5, 3968)], 1024),
+                Err(InvalidChain),
+            ),
+            (
+                "nbits before next",
+                page(&[buffer(1, 5, 4000)], 512),
+                Err(InvalidChain),
+            ),
+            ("valid, one buffer", page(&[buffer(0, 5, 3967)], 512), Ok(5)),
+            (
+                "valid, two buffers",
+                page(&[buffer(1, 5, 10), buffer(0, 7, 10)], 1024),
+                Ok(12),
+            ),
+            ("under 4 bytes", vec![0; 3], Err(Unfit)),
+            (
+                "next past a short page",
+                page(&[buffer(1, 5, 10)], 100),
+                Err(Unfit),
+            ),
+            (
+                "short page, bits inside",
+                page(&[buffer(0, 5, 10)], 100),
+                Ok(5),
+            ),
+            (
+                "short page, bits past it",
+                page(&[buffer(0, 5, 1000)], 100),
+                Err(Unfit),
+            ),
+            ("header past the page", vec![0; 10], Err(Unfit)),
+            (
+                "short page, nbits at capacity",
+                page(&[buffer(0, 5, 3968)], 100),
+                Err(InvalidChain),
+            ),
+        ];
+        for (name, bytes, want) in cases {
+            assert_eq!(entries(&bytes), want, "{name}");
+        }
+    }
+}

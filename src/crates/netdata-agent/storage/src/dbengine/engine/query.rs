@@ -1045,7 +1045,7 @@ impl Query {
                 pd.page = None;
                 continue;
             }
-            // the query holds the page until it moves on (C releases the list's reference to the handle)
+            // the list's reference goes to the caller, which drops it once the page's points are decoded
             pd.page = None;
             pd.status |= RELEASED | PROCESSED;
             return Some((page, by_time));

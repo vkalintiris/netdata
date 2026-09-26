@@ -253,6 +253,9 @@ impl ValidatedPage {
     /// `validate_page_log()`'s text for a page that failed its validation or was repaired, `None` otherwise. `msg`
     /// says where the page came from ("loaded").
     pub fn record(&self, uuid: &[u8; 16], now_s: i64, msg: &str) -> Option<String> {
+        if self.valid && !self.updated {
+            return None;
+        }
         let head = format!(
             "DBENGINE: metric '{}' {msg} {}page of type {} from {} to {} (now {now_s}), update every {}, page length {}, \
              entries {} (flags: )",
@@ -267,9 +270,6 @@ impl ValidatedPage {
         );
         if !self.valid {
             return Some(head);
-        }
-        if !self.updated {
-            return None;
         }
         let g = &self.given;
         let mut log = format!(
