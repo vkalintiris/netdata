@@ -10,7 +10,7 @@ const FORBIDDEN_CRATES: [&str; 4] = ["sfsq", "otel-ledger", "ng-index", "file-li
 /// The query side of `sfst`, the engine's own grouping and ingest code, and
 /// the crate paths of the judged crates, matched as whole words: `_role` or
 /// `_duration_band` inside the calculator's own names do not count.
-const FORBIDDEN_IDENTIFIERS: [&str; 44] = [
+const FORBIDDEN_IDENTIFIERS: [&str; 50] = [
     "sfsq::",
     "otel_ledger::",
     "ng_index::",
@@ -55,6 +55,12 @@ const FORBIDDEN_IDENTIFIERS: [&str; 44] = [
     "count_absent",
     "facet_unset",
     "value_order",
+    "build_forest",
+    "canonical_bytes",
+    "content_hash",
+    "SpanRef",
+    "SpanSource",
+    "CombineOutcome",
 ];
 
 /// Matched at the start of a word only: families of names.
@@ -219,7 +225,7 @@ fn only_membership_reads_the_store_and_only_ids_times_and_durations() {
 fn the_guard_catches_what_it_is_for() {
     let membership = Path::new("src/membership.rs");
     let model = Path::new("src/model.rs");
-    let cases: [(&str, &Path, &str, bool); 12] = [
+    let cases: [(&str, &Path, &str, bool); 13] = [
         (
             "the engine's reader",
             membership,
@@ -275,6 +281,12 @@ fn the_guard_catches_what_it_is_for() {
             "the engine's band function",
             model,
             "duration_band(ns)",
+            true,
+        ),
+        (
+            "the engine's trace tree",
+            Path::new("src/assembly.rs"),
+            "let (roots, children) = build_forest(&spans);",
             true,
         ),
     ];

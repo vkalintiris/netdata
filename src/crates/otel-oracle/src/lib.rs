@@ -11,7 +11,8 @@
 //!
 //! [`corpus`] generates the deterministic multi-service traces both sides are
 //! fed; [`model`] rebuilds the stored rows from them; [`calc`] computes the
-//! numbers; [`logs`] does both for the records a trace's logs request selects. On live data the spans come from [`capture`], written by the
+//! numbers; [`logs`] does both for the records a trace's logs request selects,
+//! and [`assembly`] for one trace as the drawer asks for it. On live data the spans come from [`capture`], written by the
 //! `otel-tee` binary in front of the lab agent, [`ingest`] replays which of
 //! them the agent's ingestion window kept, and [`membership`] reads which rows
 //! the agent's store holds and in which unit (the only module allowed to read
@@ -23,6 +24,7 @@
 //! its answers; [`freeze`] decides when the lab is still enough to ask, and
 //! [`run`] carries a whole run out against an injected lab.
 
+pub mod assembly;
 pub mod calc;
 pub mod capture;
 pub mod corpus;
