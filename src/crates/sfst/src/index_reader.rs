@@ -1298,8 +1298,10 @@ impl<'a> IndexReader<'a> {
                     positions.extend_from_slice(index.positions(id, trace_ids));
                 }
             } else {
+                let mut wanted = candidates;
+                wanted.sort_unstable();
                 for (position, id) in trace_ids.iter().enumerate() {
-                    if candidates.contains(&id) {
+                    if wanted.binary_search(&id).is_ok() {
                         positions.push(position as u32);
                     }
                 }
@@ -1308,6 +1310,24 @@ impl<'a> IndexReader<'a> {
         positions.sort_unstable();
         positions.dedup();
         let set = PosSet::from_sorted(positions, total);
+        Ok(self.global_filter(set))
+    }
+
+    /// A filter holding only a span-id term: the rows of any of `ids`. One
+    /// pass over the span-id column.
+    pub fn compile_span_ids(&self, ids: &[crate::SpanId]) -> Result<BitmapFilter, crate::Error> {
+        let mut wanted = ids.to_vec();
+        wanted.sort_unstable();
+        wanted.dedup();
+        let mut positions = Vec::new();
+        if !wanted.is_empty() {
+            for (position, id) in self.span_ids()?.iter().enumerate() {
+                if wanted.binary_search(&id).is_ok() {
+                    positions.push(position as u32);
+                }
+            }
+        }
+        let set = PosSet::from_sorted(positions, self.summary.record_count);
         Ok(self.global_filter(set))
     }
 

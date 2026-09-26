@@ -237,6 +237,12 @@ fn parent_cycle_stays_a_forest_and_terminates() {
 /// 128 values) field over 256 rows (one stream batch), every span column,
 /// the trace-id index and the bloom. Rows belong to traces `[1; 16]`..`[8; 16]`.
 fn memo_file() -> Vec<u8> {
+    ids_file(true)
+}
+
+/// [`memo_file`]'s rows, with or without the trace-id index and bloom (a logs
+/// file has neither). Row `i` is span `i + 1` of trace `[i % 8 + 1; 16]`.
+fn ids_file(indexed: bool) -> Vec<u8> {
     let arena = bumpalo::Bump::new();
     let mut ri = crate::RowIndex::new(&arena, 10);
     let mut trace_ids = TraceIds::default();
@@ -266,8 +272,8 @@ fn memo_file() -> Vec<u8> {
     ri.durations = Some(Durations(durations));
     ri.flags = Some(Flags(flags));
     ri.dropped_attribute_counts = Some(DroppedAttributeCounts(dropped));
-    ri.build_trace_id_index = true;
-    ri.build_trace_id_bloom = true;
+    ri.build_trace_id_index = indexed;
+    ri.build_trace_id_bloom = indexed;
     let (buf, _summary, _meta) =
         crate::IndexWriter::write_into(&ri, std::io::Cursor::new(Vec::new()), Vec::new()).unwrap();
     buf.into_inner()
@@ -325,6 +331,67 @@ fn memo_decodes_each_chunk_once() {
             *b"FLAG", *b"DRAC", *b"TIDX", *b"TBLM", *b"MF\0\0", *b"HF\0\0", *b"SB00",
         ])
     );
+}
+
+#[test]
+fn compile_trace_ids_without_tidx_matches_scan() {
+    let ids = [
+        TraceId::from([3; 16]),
+        TraceId::from([1; 16]),
+        TraceId::from([0xEE; 16]),
+    ];
+    let positions = |indexed: bool| {
+        let data = ids_file(indexed);
+        let reader = IndexReader::open(&data).unwrap();
+        assert_eq!(reader.has_trace_id_index(), indexed);
+        let filter = reader.compile_trace_ids(&ids).unwrap();
+        reader.matched_positions(&filter, 0..i64::MAX).unwrap()
+    };
+    let scanned = positions(false);
+    let want: Vec<u32> = (0..256).filter(|i| i % 8 == 0 || i % 8 == 2).collect();
+    assert_eq!(scanned, want);
+    assert_eq!(scanned, positions(true), "the index agrees");
+}
+
+#[test]
+fn compile_span_ids_selects_rows() {
+    let data = ids_file(false);
+    let reader = IndexReader::open(&data).unwrap();
+    let span = |n: u64| SpanId::from(n.to_be_bytes());
+    let filter = reader
+        .compile_span_ids(&[span(200), span(5), span(5), span(999)])
+        .unwrap();
+    assert_eq!(
+        reader.matched_positions(&filter, 0..i64::MAX).unwrap(),
+        [4, 199]
+    );
+    let none = reader.compile_span_ids(&[]).unwrap();
+    assert_eq!(reader.matched_count(&none, 0..i64::MAX).unwrap(), 0);
+}
+
+#[test]
+fn ids_parse_from_their_hex_text() {
+    let trace = "4BF92F3577B34DA6a3ce929d0e0e4736";
+    assert_eq!(
+        TraceId::from_hex(trace).map(|id| id.to_string()),
+        Some(trace.to_lowercase())
+    );
+    assert_eq!(
+        SpanId::from_hex("00f067aa0ba902b7"),
+        Some(SpanId::from([
+            0x00, 0xf0, 0x67, 0xaa, 0x0b, 0xa9, 0x02, 0xb7
+        ]))
+    );
+    for bad in [
+        "00f067aa0ba902b",
+        "00f067aa0ba902b7a",
+        "+0f067aa0ba902b7",
+        "00f067aa0ba902bz",
+        "",
+    ] {
+        assert_eq!(SpanId::from_hex(bad), None, "{bad:?}");
+    }
+    assert_eq!(TraceId::from_hex(&"0".repeat(32)), Some(TraceId::UNSET));
 }
 
 #[test]

@@ -1193,6 +1193,22 @@ macro_rules! id_value {
             pub fn is_unset(&self) -> bool {
                 self.0 == [0u8; $width]
             }
+
+            /// Parse the W3C text form: exactly `2 × $width` hex digits, either
+            /// case; `None` for anything else (signs and whitespace included).
+            pub fn from_hex(text: &str) -> Option<Self> {
+                let digits = text.as_bytes();
+                if digits.len() != 2 * $width {
+                    return None;
+                }
+                let mut bytes = [0u8; $width];
+                for (byte, pair) in bytes.iter_mut().zip(digits.chunks_exact(2)) {
+                    let high = char::from(pair[0]).to_digit(16)?;
+                    let low = char::from(pair[1]).to_digit(16)?;
+                    *byte = (high * 16 + low) as u8;
+                }
+                Some(Self(bytes))
+            }
         }
 
         impl From<[u8; $width]> for $ty {
