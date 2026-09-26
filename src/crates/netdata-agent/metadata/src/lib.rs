@@ -7,3 +7,5 @@
 pub mod conn;
 pub mod functions;
 pub mod library;
+pub mod migrate;
+pub mod schema;
