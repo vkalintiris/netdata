@@ -135,6 +135,15 @@ pub struct CheckCount {
     pub differing: u64,
 }
 
+/// Adds `from`'s counts to `into`'s, check by check.
+pub fn merge_checks(into: &mut BTreeMap<String, CheckCount>, from: &BTreeMap<String, CheckCount>) {
+    for (check, count) in from {
+        let total = into.entry(check.clone()).or_default();
+        total.compared += count.compared;
+        total.differing += count.differing;
+    }
+}
+
 /// The run's shape, for `summary.json` and the head of the report.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Summary {

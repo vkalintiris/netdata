@@ -2,7 +2,8 @@
 //! path, writes that never settle and an agent that refuses the caller stop
 //! the run, a capture that keeps growing is given up on after the last
 //! attempt, a due rotation that never comes stops the run before it freezes,
-//! and an ingestion-only run asks nothing.
+//! an ingestion-only run asks nothing, and a window with trace asks is judged
+//! only when the units they read are.
 
 mod common;
 
@@ -214,4 +215,50 @@ fn an_ingestion_run_asks_nothing_and_judges_every_window() {
         "{}",
         report.markdown
     );
+}
+
+#[test]
+fn a_window_with_trace_asks_is_judged_only_when_their_units_are() {
+    let check = |unknown: Vec<usize>| otel_oracle::matching::WindowCheck {
+        units: vec![0, 1],
+        lost: 0,
+        unmatched: 0,
+        unknown,
+        stale: false,
+    };
+    let trace = Request {
+        id: "trace largest".to_string(),
+        ask: otel_oracle::tier2::Ask::Trace {
+            trace_id: [1; 16],
+            after_s: 0,
+            before_s: 60,
+            span_cap: 65_536,
+        },
+        body: Value::Null,
+    };
+    let outcome = |requests: Vec<Request>| run::WindowOutcome {
+        window: otel_oracle::freeze::Window {
+            name: "W15",
+            after_s: 0,
+            before_s: 60,
+            grid: otel_oracle::calc::Grid::for_window(0, 60),
+        },
+        check: check(Vec::new()),
+        trace_check: check(vec![1]),
+        spans: 0,
+        plan: Some(Plan {
+            after_s: 0,
+            before_s: 60,
+            candidates: 2,
+            scenarios: Vec::new(),
+            requests,
+        }),
+        answers: Default::default(),
+        findings: Vec::new(),
+        checks: Default::default(),
+        sensitive: Default::default(),
+    };
+
+    assert!(outcome(Vec::new()).judged());
+    assert!(!outcome(vec![trace]).judged());
 }

@@ -247,7 +247,7 @@ fn clean(outcome: &Outcome) -> bool {
         && outcome
             .windows
             .iter()
-            .all(|w| w.check.judged() && w.findings.is_empty())
+            .all(|w| w.judged() && w.findings.is_empty())
 }
 
 /// Streams the capture and prints its shape: no stored value is printed.

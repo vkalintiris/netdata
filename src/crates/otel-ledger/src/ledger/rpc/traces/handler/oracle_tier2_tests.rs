@@ -270,6 +270,75 @@ async fn tier2_through_the_handler_finds_nothing() {
     assert_eq!(findings[0].check, "ORC-HIST");
 }
 
+/// Trace asks over the whole lab, asked through the handler: the traces
+/// crossing the sealed files and the live WAL, a resent span and a capped
+/// trace all assemble like the calculator, and one wrong self time is one
+/// finding.
+#[tokio::test]
+async fn trace_asks_through_the_handler_find_nothing() {
+    let lab = lab().await;
+    let store = membership::read_store(&lab.root, CHUNK_ENTRIES).unwrap();
+    let expected = matching::expected_rows(&lab.records, &IngestWindow::LAB);
+    let mut matched = matching::match_rows(expected, &store.units);
+    explorer_view(&mut matched, &store.units);
+    let grid = Grid::for_window(lab.after, lab.before);
+    let units = matching::trace_units(&store, grid.after_s, grid.before_s);
+    let check = matching::check_units(&store, &matched, units, grid.after_s, grid.before_s);
+    assert!(check.judged(), "{check:?}");
+    let rows = matching::window_spans(&matched, &check);
+    let mut plan = tier2::Plan {
+        after_s: lab.after,
+        before_s: lab.before,
+        candidates: check.units.len() as u64,
+        scenarios: Vec::new(),
+        requests: Vec::new(),
+    };
+    let live = |unit: usize| store.units[unit].kind != UnitKind::Sealed;
+    tier2::add_traces(&mut plan, &rows, &live);
+    let ids: Vec<&str> = plan.requests.iter().map(|r| r.id.as_str()).collect();
+    for id in [
+        "trace sealed and live",
+        "trace resent",
+        "trace largest capped",
+    ] {
+        assert!(ids.contains(&id), "{id} not in {ids:?}");
+    }
+
+    let adapter = HandlerAdapter::new(handler(&lab));
+    let mut answers = BTreeMap::new();
+    for request in &plan.requests {
+        let body = serde_json::to_vec(&request.body).unwrap();
+        let (status, payload) = call_through_bridge(&adapter, Some(&body)).await;
+        assert_eq!(
+            status,
+            200,
+            "{}: {}",
+            request.id,
+            String::from_utf8_lossy(&payload)
+        );
+        let answer: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        answers.insert(request.id.clone(), answer);
+    }
+    assert_eq!(
+        answers["trace largest capped"]["status"]["partial"][0]["reason"],
+        "size_cap"
+    );
+
+    let (findings, checks) = tier2::judge_traces(&plan, &rows, &answers);
+    assert!(findings.is_empty(), "{findings:#?}");
+    let count = checks["ORC-TRACE"];
+    assert!(count.compared >= 7 * plan.requests.len() as u64 && count.differing == 0);
+
+    let span = &mut answers.get_mut("trace largest").unwrap()["spans"][1];
+    span["self_duration_ns"] = serde_json::json!(span["self_duration_ns"].as_i64().unwrap() + 1);
+    let (findings, _) = tier2::judge_traces(&plan, &rows, &answers);
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    assert_eq!(
+        (findings[0].check, findings[0].scenario.as_str()),
+        ("ORC-TRACE", "trace largest")
+    );
+}
+
 #[tokio::test]
 async fn a_dropped_capture_record_leaves_exactly_its_spans_unmatched() {
     let lab = lab().await;
@@ -575,10 +644,11 @@ async fn the_runner_judges_both_windows_through_the_handler_after_one_retry() {
     assert_eq!(names, ["W15", "W-sealed"]);
     for window in &outcome.windows {
         assert!(
-            window.check.judged(),
-            "{}: {:?}",
+            window.judged(),
+            "{}: {:?} {:?}",
             window.window.name,
-            window.check
+            window.check,
+            window.trace_check
         );
         assert!(window.spans > 0);
         assert!(
@@ -594,6 +664,7 @@ async fn the_runner_judges_both_windows_through_the_handler_after_one_retry() {
             "ORC-ROWS",
             "ORC-TOPK",
             "ORC-VALUES",
+            "ORC-TRACE",
         ] {
             let count = window.checks.get(check).copied().unwrap_or_default();
             assert!(
@@ -604,6 +675,7 @@ async fn the_runner_judges_both_windows_through_the_handler_after_one_retry() {
         }
         let plan = window.plan.as_ref().unwrap();
         assert!(plan.requests.iter().any(|r| r.id.ends_with(" older newer")));
+        assert!(plan.requests.iter().any(|r| r.id == "trace largest capped"));
     }
     assert_eq!(outcome.units.get("sealed"), Some(&2));
 

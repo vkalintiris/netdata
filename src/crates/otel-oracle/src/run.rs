@@ -127,6 +127,8 @@ fn capture_error(error: io::Error) -> RunError {
 pub struct WindowOutcome {
     pub window: Window,
     pub check: WindowCheck,
+    /// The units a trace request over the window's grid reads, checked alike.
+    pub trace_check: WindowCheck,
     /// Rows the calculator used for it.
     pub spans: usize,
     /// The requests asked (pages included) and their answers.
@@ -137,6 +139,19 @@ pub struct WindowOutcome {
     pub checks: BTreeMap<String, CheckCount>,
     /// Its rows' most frequent values, which the report must not show.
     pub sensitive: BTreeSet<String>,
+}
+
+impl WindowOutcome {
+    /// Whether everything asked of the window could be judged: the window,
+    /// and, when traces were asked, the units their requests read.
+    pub fn judged(&self) -> bool {
+        let traces_asked = self.plan.as_ref().is_some_and(|plan| {
+            plan.requests
+                .iter()
+                .any(|request| matches!(request.ask, tier2::Ask::Trace { .. }))
+        });
+        self.check.judged() && (!traces_asked || self.trace_check.judged())
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -284,6 +299,16 @@ fn explorer_view(matched: &mut matching::Matched, store: &Membership) {
     crate::calc::add_derived(&mut matched.spans, &|unit| scopes.get(unit).copied());
 }
 
+/// What a trace request over the window's grid reads, checked like a window.
+fn trace_check(store: &Membership, matched: &matching::Matched, w: &Window) -> WindowCheck {
+    let units = matching::trace_units(store, w.grid.after_s, w.grid.before_s);
+    matching::check_units(store, matched, units, w.grid.after_s, w.grid.before_s)
+}
+
+fn live(store: &Membership) -> impl Fn(usize) -> bool + '_ {
+    |unit| store.units[unit].kind != UnitKind::Sealed
+}
+
 /// Asks `plan`'s requests, then the row pages their answers lead to.
 fn ask_all(
     lab: &mut impl Lab,
@@ -389,12 +414,11 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
         for (plan, w) in plans.iter_mut().zip(&windows) {
             let check = matching::check_window(&store, &matched, w.grid.after_s, w.grid.before_s);
             let spans = matching::window_spans(&matched, &check);
-            *plan = Some(tier2::plan(
-                w.after_s,
-                w.before_s,
-                &spans,
-                check.units.len() as u64,
-            ));
+            let mut window_plan =
+                tier2::plan(w.after_s, w.before_s, &spans, check.units.len() as u64);
+            let traced = matching::window_spans(&matched, &trace_check(&store, &matched, w));
+            tier2::add_traces(&mut window_plan, &traced, &live(&store));
+            *plan = Some(window_plan);
         }
     }
 
@@ -446,6 +470,7 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
         let spans = matching::window_spans(&matched, &check);
         let mut result = WindowOutcome {
             window: *w,
+            trace_check: trace_check(&store, &matched, w),
             spans: spans.len(),
             sensitive: report::sensitive_values(&spans, SENSITIVE_TOP),
             plan: None,
@@ -461,14 +486,21 @@ pub fn run(lab: &mut impl Lab, config: &Config) -> Result<Outcome, RunError> {
             check,
         };
         if let Some((mut plan, answers)) = asked {
+            let mut judged = Vec::new();
             if result.check.judged() {
                 plan.candidates = result.check.units.len() as u64;
-                let (findings, checks) = tier2::judge(&plan, &spans, &answers);
+                judged.push(tier2::judge(&plan, &spans, &answers));
+                if result.trace_check.judged() {
+                    let traced = matching::window_spans(&matched, &result.trace_check);
+                    judged.push(tier2::judge_traces(&plan, &traced, &answers));
+                }
+            }
+            for (findings, checks) in judged {
                 for mut finding in findings {
                     finding.scenario = format!("{} {}", w.name, finding.scenario);
                     result.findings.push(finding);
                 }
-                result.checks.extend(checks);
+                report::merge_checks(&mut result.checks, &checks);
             }
             result.plan = Some(plan);
             result.answers = answers;
@@ -533,17 +565,19 @@ pub fn report(
             ("unmatched", check.unmatched as u64),
             ("units not fully known", check.unknown.len() as u64),
             ("set-aside source overlaps", u64::from(check.stale)),
+            ("trace judged", u64::from(w.trace_check.judged())),
+            ("trace units", w.trace_check.units.len() as u64),
+            (
+                "trace units not fully known",
+                w.trace_check.unknown.len() as u64,
+            ),
         ] {
             counts.insert(format!("{name} {label}"), value);
         }
         summary
             .windows
             .push((w.window.grid.after_s, w.window.grid.before_s));
-        for (check, count) in &w.checks {
-            let total = summary.checks.entry(check.clone()).or_default();
-            total.compared += count.compared;
-            total.differing += count.differing;
-        }
+        report::merge_checks(&mut summary.checks, &w.checks);
         findings.extend(w.findings.iter().cloned());
         sensitive.extend(w.sensitive.iter().cloned());
     }
