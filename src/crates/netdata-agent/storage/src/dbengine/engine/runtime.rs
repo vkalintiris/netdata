@@ -15,10 +15,9 @@ use netdata_agent_log::{
     thread_finished,
 };
 
-use super::cache::{ExtentCache, MainCache};
 use super::load::{Tier, TierConfig, load};
 use super::mrg::Mrg;
-use super::query::{Dbengine, TierData};
+use super::query::{Dbengine, EngineConfig};
 use super::v2index::{Slots, populate_files, populating_record, readiness};
 
 /// `RRDENG_FD_BUDGET_PER_INSTANCE`.
@@ -47,6 +46,8 @@ pub struct InitConfig {
     /// The caches' budgets in bytes (`cache_budgets()`).
     pub main_cache_bytes: usize,
     pub extent_cache_bytes: usize,
+    /// `rrdeng_pages_per_extent`.
+    pub pages_per_extent: usize,
     /// `nd_profile.update_every`.
     pub update_every_s: u32,
     pub stack_size: usize,
@@ -341,16 +342,20 @@ impl Runtime {
                 );
             };
             readiness(&mut tier, now());
-            tiers.push(TierData::new(tier));
+            tiers.push(tier);
         }
-        let engine = Arc::new(Dbengine {
-            mrg: shared.mrg.clone(),
+        let engine = Dbengine::new(
+            shared.mrg.clone(),
             tiers,
-            main: MainCache::new(cfg.main_cache_bytes),
-            extents: ExtentCache::new(cfg.extent_cache_bytes),
-            pool: Some(pool.clone()),
-            update_every_s: cfg.update_every_s,
-        });
+            EngineConfig {
+                main_cache_bytes: cfg.main_cache_bytes,
+                extent_cache_bytes: cfg.extent_cache_bytes,
+                pages_per_extent: cfg.pages_per_extent,
+                update_every_s: cfg.update_every_s,
+                pool: Some(pool.clone()),
+                now,
+            },
+        );
         let dbev = shared
             .spawn
             .lock()

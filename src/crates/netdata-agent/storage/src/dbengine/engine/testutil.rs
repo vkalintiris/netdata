@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use super::load::TierConfig;
+use super::query::Query;
 use crate::dbengine::format::descriptor::{PAGE_TYPE_ARRAY_32BIT, PageDescriptor};
 use crate::dbengine::format::journal_v1::{StoreData, encode_transaction};
 use crate::dbengine::format::{BLOCK_SIZE, FileKind, file_name, superblock};
@@ -13,11 +14,8 @@ pub const B: [u8; 16] = [0xbb; 16];
 
 pub fn cfg(dir: &Path) -> TierConfig {
     TierConfig {
-        tier: 0,
-        path: dir.to_path_buf(),
-        direct_io: false,
         max_disk_space: 256 * 1024 * 1024,
-        journal_check: false,
+        ..TierConfig::new(0, dir.to_path_buf())
     }
 }
 
@@ -82,4 +80,23 @@ pub fn pair_with_extents(dir: &Path, fileno: u32, extents: &[Vec<(PageDescriptor
     }
     std::fs::write(dir.join(file_name(FileKind::Datafile, 1, fileno)), data).unwrap();
     std::fs::write(dir.join(file_name(FileKind::Journal, 1, fileno)), journal).unwrap();
+}
+
+/// Every point of a query, as (end time, value or NaN); each counts as one point, empty ones too.
+pub fn points(q: &mut Query) -> Vec<(i64, f64)> {
+    let mut out = Vec::new();
+    while !q.is_finished() {
+        let p = q.next_metric();
+        assert_eq!(p.count, 1, "at {}", p.end_time_s);
+        out.push((p.end_time_s, p.sum));
+    }
+    out
+}
+
+pub fn same(got: &[(i64, f64)], want: &[(i64, f64)]) -> bool {
+    got.len() == want.len()
+        && got
+            .iter()
+            .zip(want)
+            .all(|(g, w)| g.0 == w.0 && ((g.1 - w.1).abs() < 1e-9 || g.1.is_nan() && w.1.is_nan()))
 }

@@ -17,6 +17,7 @@ netdata-agent-sys = { workspace = true }
 netdata-agent-text = { workspace = true }
 lz4_flex = { workspace = true }
 serde_json = { workspace = true }
+twox-hash = { workspace = true, features = ["xxhash3_64"] }
 zstd = { workspace = true }
 
 [dev-dependencies]

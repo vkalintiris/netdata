@@ -1,6 +1,6 @@
 use super::*;
-use crate::dbengine::engine::query::{Priority, Query};
-use crate::dbengine::engine::testutil::{A, B, NOW, array_page, cfg, pair_with_extents};
+use crate::dbengine::engine::query::{DEFAULT_PAGES_PER_EXTENT, Priority};
+use crate::dbengine::engine::testutil::{A, B, NOW, array_page, cfg, pair_with_extents, points};
 use crate::storage_number::{SN_DEFAULT_FLAGS, pack};
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
@@ -14,12 +14,19 @@ fn init(dirs: &[Option<&Path>]) -> InitConfig {
         tiers: dirs
             .iter()
             .enumerate()
-            .map(|(t, d)| d.map(|d| TierConfig { tier: t, ..cfg(d) }))
+            .map(|(t, d)| {
+                d.map(|d| TierConfig {
+                    tier: t,
+                    page_type: TierConfig::default_page_type(t),
+                    ..cfg(d)
+                })
+            })
             .collect(),
         cpus: 4,
         nofile_limit: 1 << 20,
         main_cache_bytes: 1 << 24,
         extent_cache_bytes: 1 << 22,
+        pages_per_extent: DEFAULT_PAGES_PER_EXTENT,
         update_every_s: 1,
         stack_size: 256 * 1024,
     }
@@ -35,16 +42,6 @@ fn tier0_with_a(dir: &Path) {
 
 fn messages(records: Vec<netdata_agent_log::Captured>) -> Vec<String> {
     records.into_iter().filter_map(|r| r.message).collect()
-}
-
-/// Every point of a query, as (end time, value or NaN).
-fn points(q: &mut Query) -> Vec<(i64, f64)> {
-    let mut out = Vec::new();
-    while !q.is_finished() {
-        let p = q.next_metric();
-        out.push((p.end_time_s, p.sum));
-    }
-    out
 }
 
 /// Three tiers starting in parallel: the pre-population runs once, before any tier's files are loaded, for every

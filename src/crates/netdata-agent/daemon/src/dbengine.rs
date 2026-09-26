@@ -53,11 +53,16 @@ pub fn start(
                 let min = conf::MIN_DISK_SPACE_MB as u32;
                 let mb = if mb != 0 && mb < min { min } else { mb };
                 TierConfig {
-                    tier,
-                    path: PathBuf::from(path),
                     direct_io: settings.direct_io,
                     max_disk_space: u64::from(mb) * 1024 * 1024,
                     journal_check: db.journal_check,
+                    // `[db] dbengine page type` is tier 0's
+                    page_type: if tier == 0 {
+                        db.page_type
+                    } else {
+                        TierConfig::default_page_type(tier)
+                    },
+                    ..TierConfig::new(tier, PathBuf::from(path))
                 }
             })
         })
@@ -79,6 +84,7 @@ pub fn start(
             nofile_limit,
             main_cache_bytes,
             extent_cache_bytes,
+            pages_per_extent: settings.pages_per_extent as usize,
             update_every_s: db.update_every as u32,
             stack_size: conf.threads.thread_stack_size,
         },

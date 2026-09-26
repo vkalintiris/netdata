@@ -166,10 +166,9 @@ mod tests {
     use netdata_agent_metadata::open::SqliteSettings;
     use netdata_agent_rrd::host::{HostInfo, Hosts};
     use netdata_agent_rrd::storage::StorageLayout;
-    use netdata_agent_storage::dbengine::engine::cache::{ExtentCache, MainCache};
     use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
     use netdata_agent_storage::dbengine::engine::mrg::Mrg;
-    use netdata_agent_storage::dbengine::engine::query::{Dbengine, TierData};
+    use netdata_agent_storage::dbengine::engine::query::{Dbengine, EngineConfig};
     use netdata_agent_storage::dbengine::engine::v2index::{populate, readiness};
     use std::path::Path;
 
@@ -203,31 +202,29 @@ mod tests {
                 let path = dir.join(name);
                 copy_dir(&cache.join(name), &path);
                 let cfg = TierConfig {
-                    tier,
-                    path,
-                    direct_io: false,
                     max_disk_space: 25 * 1024 * 1024,
-                    journal_check: false,
+                    ..TierConfig::new(tier, path)
                 };
                 let mut loaded = load(cfg, &mrg, NOW).unwrap();
                 populate(&mut loaded, &mrg, &pool, 4, NOW);
                 readiness(&mut loaded, NOW);
-                TierData::new(loaded)
+                loaded
             })
             .collect();
-        let engine = Dbengine {
+        let engine = Dbengine::new(
             mrg,
             tiers,
-            main: MainCache::new(1 << 24),
-            extents: ExtentCache::new(1 << 22),
-            pool: None,
-            update_every_s: 1,
-        };
+            EngineConfig {
+                main_cache_bytes: 1 << 24,
+                extent_cache_bytes: 1 << 22,
+                ..EngineConfig::new(|| NOW)
+            },
+        );
         let settings = SqliteSettings::default();
         (
             MetaDb::open(dir, &settings).unwrap(),
             Arc::new(ContextDb::open(dir, &settings).unwrap()),
-            Arc::new(StorageLayout::new(Some(Arc::new(engine)))),
+            Arc::new(StorageLayout::new(Some(engine))),
         )
     }
 

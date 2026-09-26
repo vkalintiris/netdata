@@ -688,33 +688,27 @@ mod tests {
     /// Hosts over an engine of two empty tiers in these directories.
     fn hosts_with_engine(dirs: &[tempfile::TempDir]) -> Arc<Hosts> {
         use netdata_agent_rrd::storage::StorageLayout;
-        use netdata_agent_storage::dbengine::engine::cache::{ExtentCache, MainCache};
         use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
         use netdata_agent_storage::dbengine::engine::mrg::Mrg;
-        use netdata_agent_storage::dbengine::engine::query::{Dbengine, TierData};
+        use netdata_agent_storage::dbengine::engine::query::{Dbengine, EngineConfig};
         let mrg = Mrg::new();
         let tiers = dirs
             .iter()
             .enumerate()
             .map(|(tier, dir)| {
-                let cfg = TierConfig {
-                    tier,
-                    path: dir.path().to_path_buf(),
-                    direct_io: false,
-                    max_disk_space: 0,
-                    journal_check: false,
-                };
-                TierData::new(load(cfg, &mrg, 1_800_000_000).unwrap())
+                let cfg = TierConfig::new(tier, dir.path().to_path_buf());
+                load(cfg, &mrg, 1_800_000_000).unwrap()
             })
             .collect();
-        let engine = Arc::new(Dbengine {
+        let engine = Dbengine::new(
             mrg,
             tiers,
-            main: MainCache::new(1 << 20),
-            extents: ExtentCache::new(1 << 20),
-            pool: None,
-            update_every_s: 1,
-        });
+            EngineConfig {
+                main_cache_bytes: 1 << 20,
+                extent_cache_bytes: 1 << 20,
+                ..EngineConfig::new(|| 1_800_000_000)
+            },
+        );
         Arc::new(Hosts::with_storage(
             Host::new(
                 "5a1e0000-0000-4000-8000-0000000000a0",

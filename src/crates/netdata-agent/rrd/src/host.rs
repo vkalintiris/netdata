@@ -1080,35 +1080,29 @@ mod tests {
 
     /// An engine of `tiers` empty tiers over temporary directories, and its registry.
     fn engine(tiers: usize) -> (Vec<tempfile::TempDir>, Arc<StorageLayout>) {
-        use netdata_agent_storage::dbengine::engine::cache::{ExtentCache, MainCache};
         use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
         use netdata_agent_storage::dbengine::engine::mrg::Mrg;
-        use netdata_agent_storage::dbengine::engine::query::{Dbengine, TierData};
+        use netdata_agent_storage::dbengine::engine::query::{Dbengine, EngineConfig};
         let mrg = Mrg::new();
         let dirs: Vec<_> = (0..tiers).map(|_| tempfile::tempdir().unwrap()).collect();
         let tiers = dirs
             .iter()
             .enumerate()
             .map(|(tier, dir)| {
-                let cfg = TierConfig {
-                    tier,
-                    path: dir.path().to_path_buf(),
-                    direct_io: false,
-                    max_disk_space: 0,
-                    journal_check: false,
-                };
-                TierData::new(load(cfg, &mrg, 1_800_000_000).unwrap())
+                let cfg = TierConfig::new(tier, dir.path().to_path_buf());
+                load(cfg, &mrg, 1_800_000_000).unwrap()
             })
             .collect();
-        let engine = Dbengine {
+        let engine = Dbengine::new(
             mrg,
             tiers,
-            main: MainCache::new(1 << 20),
-            extents: ExtentCache::new(1 << 20),
-            pool: None,
-            update_every_s: 1,
-        };
-        (dirs, Arc::new(StorageLayout::new(Some(Arc::new(engine)))))
+            EngineConfig {
+                main_cache_bytes: 1 << 20,
+                extent_cache_bytes: 1 << 20,
+                ..EngineConfig::new(|| 1_800_000_000)
+            },
+        );
+        (dirs, Arc::new(StorageLayout::new(Some(engine))))
     }
 
     /// `rrdhost_create()`'s tiers: every tier from the engine for a dbengine host, tier 0 from the RAM index for the

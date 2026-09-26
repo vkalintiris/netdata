@@ -8,11 +8,10 @@ use std::collections::HashMap;
 
 use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::Priority;
-use netdata_agent_storage::dbengine::engine::cache::{ExtentCache, MainCache};
 use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
 use netdata_agent_storage::dbengine::engine::mrg::Mrg;
 use netdata_agent_storage::dbengine::engine::query::{
-    Dbengine, Priority as QueryPriority, TierData,
+    Dbengine, EngineConfig, Priority as QueryPriority,
 };
 use netdata_agent_storage::dbengine::engine::v2index::{populate, readiness};
 use netdata_agent_storage::dbengine::format::descriptor::PAGE_TYPE_GORILLA_32BIT;
@@ -58,11 +57,8 @@ fn a_start_on_run1_decides_as_runr() {
         let dir = work.path().join(&name);
         copy_dir(&fx.join("run1/cache").join(&name), &dir);
         let cfg = TierConfig {
-            tier,
-            path: dir.clone(),
-            direct_io: false,
             max_disk_space: 25 * 1024 * 1024,
-            journal_check: false,
+            ..TierConfig::new(tier, dir.clone())
         };
         let (loaded, records) = netdata_agent_log::capture(|| load(cfg, &mrg, RUNR_START));
         loaded.unwrap();
@@ -135,11 +131,8 @@ fn population_matches_the_pages_on_disk() {
         })
         .unwrap();
         let cfg = TierConfig {
-            tier,
-            path: dir,
-            direct_io: false,
             max_disk_space: 25 * 1024 * 1024,
-            journal_check: false,
+            ..TierConfig::new(tier, dir)
         };
         let mut loaded = load(cfg, &mrg, NOW).unwrap();
         populate(&mut loaded, &mrg, &pool, 4, NOW);
@@ -198,25 +191,24 @@ fn queries_read_the_generated_values() {
         let dir = work.path().join(&name);
         copy_dir(&fx.join("runR/cache").join(&name), &dir);
         let cfg = TierConfig {
-            tier,
-            path: dir,
-            direct_io: false,
             max_disk_space: 25 * 1024 * 1024,
-            journal_check: false,
+            ..TierConfig::new(tier, dir)
         };
         let mut loaded = load(cfg, &mrg, NOW).unwrap();
         populate(&mut loaded, &mrg, &pool, 4, NOW);
         readiness(&mut loaded, NOW);
-        tiers.push(TierData::new(loaded));
+        tiers.push(loaded);
     }
-    let engine = std::sync::Arc::new(Dbengine {
+    let engine = Dbengine::new(
         mrg,
         tiers,
-        main: MainCache::new(64 * 1024 * 1024),
-        extents: ExtentCache::new(16 * 1024 * 1024),
-        pool: Some(pool),
-        update_every_s: 1,
-    });
+        EngineConfig {
+            main_cache_bytes: 64 * 1024 * 1024,
+            extent_cache_bytes: 16 * 1024 * 1024,
+            pool: Some(pool),
+            ..EngineConfig::new(|| NOW)
+        },
+    );
     let value = |t: i64, c: f64, d: f64| (t / 10 % 1000) as f64 + c * 0.5 + d * 0.125;
 
     let metric = engine
@@ -354,11 +346,8 @@ fn runr_last_file_follows_the_one_day_rule() {
         let dir = work.path().join("dbengine");
         copy_dir(&fx.join("runR/cache/dbengine"), &dir);
         let cfg = TierConfig {
-            tier: 0,
-            path: dir.clone(),
-            direct_io: false,
             max_disk_space: 25 * 1024 * 1024,
-            journal_check: false,
+            ..TierConfig::new(0, dir.clone())
         };
         let (loaded, records) = netdata_agent_log::capture(|| load(cfg, &Mrg::new(), now));
         let loaded = loaded.unwrap();

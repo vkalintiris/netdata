@@ -134,6 +134,7 @@ impl DiskPage {
     }
 }
 
+#[derive(Debug)]
 enum Filling {
     Array32(Vec<u32>),
     Tier1(Vec<Tier1Record>),
@@ -141,6 +142,7 @@ enum Filling {
 }
 
 /// A page as the collector fills it (`pgd_create()`, `pgd_append_point()`), until it goes into an extent.
+#[derive(Debug)]
 pub struct PageBuilder {
     page_type: u8,
     filling: Filling,
@@ -235,6 +237,14 @@ impl PageBuilder {
     /// `pgd_is_empty()`: no points, or none that exists.
     pub fn is_empty(&self) -> bool {
         self.used == 0 || self.all_values_empty
+    }
+
+    /// `pgd_memory_footprint()` of the data: the gorilla buffers, or the slots an array page allocates.
+    pub fn memory_footprint(&self) -> usize {
+        match &self.filling {
+            Filling::Gorilla(w) => w.buffers().len() * gorilla::BUFFER_SIZE,
+            _ => self.slots * point_size(self.page_type),
+        }
     }
 
     /// `pgd_disk_footprint()`: 0 without points; whole buffers for gorilla, the used slots for arrays.

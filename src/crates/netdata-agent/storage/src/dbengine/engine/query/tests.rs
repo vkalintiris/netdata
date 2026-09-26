@@ -1,6 +1,8 @@
 use super::*;
 use crate::dbengine::engine::load::load;
-use crate::dbengine::engine::testutil::{A, NOW, array_page, cfg, pair, pair_with_extents};
+use crate::dbengine::engine::testutil::{
+    A, NOW, array_page, cfg, pair, pair_with_extents, points, same,
+};
 use crate::dbengine::engine::v2index::{populate, readiness};
 use crate::storage_number::{SN_DEFAULT_FLAGS, pack};
 use std::path::Path;
@@ -17,33 +19,16 @@ fn engine(dir: &Path, pool: Option<WorkPool>) -> Arc<Dbengine> {
     let mut tier = load(cfg(dir), &mrg, NOW).unwrap();
     populate(&mut tier, &mrg, &WorkPool::new(2, 256 * 1024), 2, NOW);
     readiness(&mut tier, NOW);
-    Arc::new(Dbengine {
+    Dbengine::new(
         mrg,
-        tiers: vec![TierData::new(tier)],
-        main: MainCache::new(64 * 1024 * 1024),
-        extents: ExtentCache::new(16 * 1024 * 1024),
-        pool,
-        update_every_s: 1,
-    })
-}
-
-/// Every point of a query, as (end time, value or NaN); each counts as one point, empty ones too.
-fn points(q: &mut Query) -> Vec<(i64, f64)> {
-    let mut out = Vec::new();
-    while !q.is_finished() {
-        let p = q.next_metric();
-        assert_eq!(p.count, 1, "at {}", p.end_time_s);
-        out.push((p.end_time_s, p.sum));
-    }
-    out
-}
-
-fn same(got: &[(i64, f64)], want: &[(i64, f64)]) -> bool {
-    got.len() == want.len()
-        && got
-            .iter()
-            .zip(want)
-            .all(|(g, w)| g.0 == w.0 && ((g.1 - w.1).abs() < 1e-9 || g.1.is_nan() && w.1.is_nan()))
+        vec![(tier)],
+        EngineConfig {
+            main_cache_bytes: 64 * 1024 * 1024,
+            extent_cache_bytes: 16 * 1024 * 1024,
+            pool,
+            ..EngineConfig::new(|| NOW)
+        },
+    )
 }
 
 const T0: i64 = NOW - 1000;

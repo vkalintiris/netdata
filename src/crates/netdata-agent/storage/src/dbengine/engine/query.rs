@@ -8,7 +8,7 @@
 //! waits for at its first point (C queues it for NORMAL priority and blocks at the first lookup).
 
 use std::collections::{BTreeMap, HashMap, btree_map};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 
 use netdata_agent_evloop::work::WorkPool;
@@ -18,7 +18,7 @@ use netdata_agent_log::{
 
 use super::cache::{CachedPage, ExtentCache, MainCache, Search};
 use super::io::IoFile;
-use super::load::Tier;
+use super::load::{Tier, TierConfig};
 use super::mrg::{Handle, Mrg};
 use super::v2index::{PageListError, V2Index};
 use crate::dbengine::format::descriptor::{
@@ -54,7 +54,7 @@ struct OpenPage {
 /// A tier as queries read it.
 #[derive(Debug)]
 pub struct TierData {
-    pub tier: usize,
+    pub config: TierConfig,
     /// The data files, for extent reads.
     datafiles: HashMap<u32, IoFile>,
     /// `njfv2idx`: the serving v2 files by their end, then number.
@@ -66,11 +66,15 @@ pub struct TierData {
     quiesced: AtomicBool,
     /// `ctx->atomic.inflight_queries`: queries holding a preparation, which the tier's shutdown waits for.
     inflight: Arc<AtomicUsize>,
+    /// `ctx->atomic.collectors_running`: the tier's collection handles.
+    collectors_running: AtomicUsize,
+    /// `ctx->atomic.samples`: the intervals of the pages collectors closed.
+    samples: AtomicU64,
 }
 
 impl TierData {
     /// A tier after its startup and population.
-    pub fn new(tier: Tier) -> TierData {
+    fn new(tier: Tier) -> TierData {
         let mut open: HashMap<[u8; 16], BTreeMap<i64, OpenPage>> = HashMap::new();
         for (fileno, p) in tier.open_pages {
             let page = OpenPage {
@@ -93,7 +97,7 @@ impl TierData {
             }
         }
         TierData {
-            tier: tier.config.tier,
+            config: tier.config,
             datafiles: tier.files.into_iter().map(|f| (f.fileno, f.file)).collect(),
             v2: tier
                 .indexes
@@ -104,7 +108,35 @@ impl TierData {
             first_time_s: tier.first_time_s,
             quiesced: AtomicBool::new(false),
             inflight: Arc::default(),
+            collectors_running: AtomicUsize::new(0),
+            samples: AtomicU64::new(0),
         }
+    }
+
+    pub fn tier(&self) -> usize {
+        self.config.tier
+    }
+
+    /// The collection handles open on the tier.
+    pub fn collectors_running(&self) -> usize {
+        self.collectors_running.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn collector_started(&self) {
+        self.collectors_running.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn collector_finished(&self) {
+        self.collectors_running.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// The samples of the pages collectors closed.
+    pub fn samples(&self) -> u64 {
+        self.samples.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn add_samples(&self, samples: u64) {
+        self.samples.fetch_add(samples, Ordering::Relaxed);
     }
 
     /// `RRDENG_OPCODE_CTX_QUIESCE`: queries started from now on read nothing.
@@ -140,7 +172,40 @@ impl Drop for Inflight {
     }
 }
 
-/// The engine's shared state for queries.
+/// `DEFAULT_PAGES_PER_EXTENT`.
+pub const DEFAULT_PAGES_PER_EXTENT: usize = 109;
+
+/// What an engine is built with besides its registry and tiers.
+#[derive(Debug, Clone)]
+pub struct EngineConfig {
+    /// The caches' budgets in bytes (`cache_budgets()`).
+    pub main_cache_bytes: usize,
+    pub extent_cache_bytes: usize,
+    /// `rrdeng_pages_per_extent`.
+    pub pages_per_extent: usize,
+    /// `nd_profile.update_every`.
+    pub update_every_s: u32,
+    /// Where preparations run; without one they run on the caller's thread.
+    pub pool: Option<WorkPool>,
+    /// The wall clock in seconds (`now_realtime_sec()`).
+    pub now: fn() -> i64,
+}
+
+impl EngineConfig {
+    /// C's default pages per extent, 64 MiB and 16 MiB caches, a 1 s update every and no pool.
+    pub fn new(now: fn() -> i64) -> EngineConfig {
+        EngineConfig {
+            main_cache_bytes: 64 << 20,
+            extent_cache_bytes: 16 << 20,
+            pages_per_extent: DEFAULT_PAGES_PER_EXTENT,
+            update_every_s: 1,
+            pool: None,
+            now,
+        }
+    }
+}
+
+/// The engine's shared state.
 #[derive(Debug)]
 pub struct Dbengine {
     pub mrg: Mrg,
@@ -151,6 +216,7 @@ pub struct Dbengine {
     pub pool: Option<WorkPool>,
     /// `nd_profile.update_every`.
     pub update_every_s: u32,
+    now: fn() -> i64,
 }
 
 // `PDC_PAGE_*`.
@@ -384,6 +450,24 @@ struct Prep {
 }
 
 impl Dbengine {
+    /// The engine over its tiers after their startup and population.
+    pub fn new(mrg: Mrg, tiers: Vec<Tier>, cfg: EngineConfig) -> Arc<Dbengine> {
+        Arc::new(Dbengine {
+            mrg,
+            tiers: tiers.into_iter().map(TierData::new).collect(),
+            main: MainCache::new(cfg.main_cache_bytes, cfg.pages_per_extent),
+            extents: ExtentCache::new(cfg.extent_cache_bytes),
+            pool: cfg.pool,
+            update_every_s: cfg.update_every_s,
+            now: cfg.now,
+        })
+    }
+
+    /// The wall clock.
+    pub fn now_s(&self) -> i64 {
+        (self.now)()
+    }
+
     /// `mrg_metric_get_update_every_s()` or the profile's.
     fn metric_dt(&self, metric: &Handle) -> i64 {
         match metric.update_every_s() {
@@ -523,7 +607,7 @@ impl Dbengine {
                             Source::Daemon,
                             LogPriority::Err,
                             "{}",
-                            err.record(index.fileno, data.tier)
+                            err.record(index.fileno, data.tier())
                         );
                     });
                     continue;
@@ -581,7 +665,8 @@ impl Dbengine {
         if start_s >= end_s {
             return;
         }
-        self.main.add(
+        // a page already there keeps its place
+        let _ = self.main.add(
             metric.tier(),
             metric.uuid(),
             CachedPage::new(start_s, end_s, 0, None),
@@ -839,11 +924,14 @@ impl Dbengine {
                             }
                         }
                     };
-                    let page = self.main.add(
-                        tier,
-                        metric.uuid(),
-                        CachedPage::new(vd.start_time_s, vd.end_time_s, vd.update_every_s, data),
-                    );
+                    let page = self
+                        .main
+                        .add(
+                            tier,
+                            metric.uuid(),
+                            CachedPage::new(vd.start_time_s, vd.end_time_s, vd.update_every_s, data),
+                        )
+                        .unwrap_or_else(|c| c.existing);
                     if let Some(pd) = list.get_mut(&start_s) {
                         pd.status |= READY;
                         if page.is_empty() {
@@ -1027,7 +1115,8 @@ impl Query {
                 ue = page.fix_update_every(last_ue);
                 pd.update_every_s = ue;
             }
-            let by_size = page.data.as_ref().map_or(0, DiskPage::slots_used);
+            // after the end: a hot page's collector stores the point first, so a hot page is never short
+            let by_size = page.slots_used();
             let ue64 = i64::from(ue);
             let mut by_time = if ue != 0 {
                 ((end_s - (start_s - ue64)) / ue64) as usize
@@ -1061,7 +1150,7 @@ impl Query {
         let Some((page, entries)) = self.lookup_next() else {
             return false;
         };
-        if page.is_empty() || entries == 0 {
+        if page.is_gap() || entries == 0 {
             return false;
         }
         let (start_s, end_s, ue) = (
@@ -1093,13 +1182,7 @@ impl Query {
             position = entries - 1;
         }
         self.dt_s = ue;
-        let points = match &page.data {
-            Some(data) => {
-                let mut c = data.cursor(position);
-                (position..entries).map(|_| c.next_point()).collect()
-            }
-            None => Vec::new(),
-        };
+        let points = page.points(position, entries);
         self.page = Some(Current {
             entries,
             position,

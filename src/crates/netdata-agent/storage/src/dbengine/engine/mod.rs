@@ -2,6 +2,7 @@
 //! tiers' startup and v2 indexes, the read path and the runtime.
 
 pub mod cache;
+pub mod collect;
 pub mod io;
 pub mod load;
 pub mod mrg;

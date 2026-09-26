@@ -22,7 +22,10 @@ use super::io::{
     IoFile, align_ceiling, align_floor, check_file_properties, open_for_io, unlink, write_block,
 };
 use super::mrg::Mrg;
-use crate::dbengine::format::descriptor::log_validation;
+use crate::dbengine::format::descriptor::{
+    PAGE_TYPE_ARRAY_TIER1, PAGE_TYPE_GORILLA_32BIT, log_validation,
+};
+use crate::dbengine::format::extent::COMPRESSION_ZSTD;
 use crate::dbengine::format::journal_v1::{self, Replay};
 use crate::dbengine::format::journal_v2::{
     self, Builder, HEADER_SIZE, Invalid, Page, ReplayRecord, Verdict, open_cache_pages,
@@ -52,9 +55,36 @@ pub struct TierConfig {
     pub max_disk_space: u64,
     /// `db_engine_journal_check`: v2 files are checked whole at load.
     pub journal_check: bool,
+    /// `ctx->config.page_type`: what the tier's collectors write.
+    pub page_type: u8,
+    /// `ctx->config.global_compress_alg`: how the tier's extents are compressed.
+    pub compression: u8,
 }
 
 impl TierConfig {
+    /// A tier at `path` with C's defaults: no direct I/O, no quota, no journal check, the tier's default page type,
+    /// ZSTD extents.
+    pub fn new(tier: usize, path: PathBuf) -> TierConfig {
+        TierConfig {
+            tier,
+            path,
+            direct_io: false,
+            max_disk_space: 0,
+            journal_check: false,
+            page_type: TierConfig::default_page_type(tier),
+            compression: COMPRESSION_ZSTD,
+        }
+    }
+
+    /// `tier_page_type[]`: gorilla for tier 0 (which `[db] dbengine page type` can change), tier-1 records above.
+    pub fn default_page_type(tier: usize) -> u8 {
+        if tier == 0 {
+            PAGE_TYPE_GORILLA_32BIT
+        } else {
+            PAGE_TYPE_ARRAY_TIER1
+        }
+    }
+
     /// `rrdeng_target_data_file_size()`.
     pub fn target_datafile_size(&self) -> u64 {
         let target = if self.max_disk_space != 0 {

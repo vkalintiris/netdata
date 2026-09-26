@@ -22,6 +22,7 @@ use netdata_agent_text::sanitize::rrdlabels_sanitize_value;
 use netdata_agent_query::grouping::Windows;
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
+use netdata_agent_storage::dbengine::engine::query::DEFAULT_PAGES_PER_EXTENT;
 use netdata_agent_storage::dbengine::format::descriptor::{
     PAGE_TYPE_ARRAY_32BIT, PAGE_TYPE_GORILLA_32BIT,
 };
@@ -1566,8 +1567,7 @@ const DEFAULT_HISTORY_ENTRIES: i64 = 3600;
 /// `default_rrdeng_page_cache_mb` and `RRDENG_MIN_PAGE_CACHE_SIZE_MB`.
 const DEFAULT_PAGE_CACHE_MB: u64 = 32;
 const MIN_PAGE_CACHE_MB: i32 = 8;
-/// `DEFAULT_PAGES_PER_EXTENT`.
-const PAGES_PER_EXTENT: u32 = 109;
+const PAGES_PER_EXTENT: u32 = DEFAULT_PAGES_PER_EXTENT as u32;
 /// `RRDENG_DEFAULT_TIER_DISK_SPACE_MB` and `RRDENG_MIN_DISK_SPACE_MB`.
 const DEFAULT_TIER_DISK_SPACE_MB: u64 = 1024;
 pub(crate) const MIN_DISK_SPACE_MB: i32 = 25;

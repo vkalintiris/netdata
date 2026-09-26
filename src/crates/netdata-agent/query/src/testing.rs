@@ -107,24 +107,17 @@ pub const U: [u8; 16] = [0x11; 16];
 pub fn dbengine_host(retention: [(i64, i64); 3]) -> (Vec<tempfile::TempDir>, Arc<Host>) {
     use netdata_agent_rrd::contexts::{SqlChart, SqlDim};
     use netdata_agent_rrd::storage::StorageLayout;
-    use netdata_agent_storage::dbengine::engine::cache::{ExtentCache, MainCache};
     use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
     use netdata_agent_storage::dbengine::engine::mrg::Mrg;
-    use netdata_agent_storage::dbengine::engine::query::{Dbengine, TierData};
+    use netdata_agent_storage::dbengine::engine::query::{Dbengine, EngineConfig};
     let mrg = Mrg::new();
     let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
     let tiers = dirs
         .iter()
         .enumerate()
         .map(|(tier, dir)| {
-            let cfg = TierConfig {
-                tier,
-                path: dir.path().to_path_buf(),
-                direct_io: false,
-                max_disk_space: 0,
-                journal_check: false,
-            };
-            TierData::new(load(cfg, &mrg, T0 + 1000).unwrap())
+            let cfg = TierConfig::new(tier, dir.path().to_path_buf());
+            load(cfg, &mrg, T0 + 1000).unwrap()
         })
         .collect();
     for (tier, (first, last)) in retention.into_iter().enumerate() {
@@ -132,16 +125,18 @@ pub fn dbengine_host(retention: [(i64, i64); 3]) -> (Vec<tempfile::TempDir>, Arc
             drop(mrg.add_and_acquire(&U, tier, first, last, 10));
         }
     }
-    let engine = Dbengine {
+    let engine = Dbengine::new(
         mrg,
         tiers,
-        main: MainCache::new(1 << 20),
-        extents: ExtentCache::new(1 << 20),
-        pool: None,
-        update_every_s: 10,
-    };
+        EngineConfig {
+            main_cache_bytes: 1 << 20,
+            extent_cache_bytes: 1 << 20,
+            update_every_s: 10,
+            ..EngineConfig::new(|| T0 + 1000)
+        },
+    );
     let storage =
-        Arc::new(StorageLayout::new(Some(Arc::new(engine))).with_profile(vec![10, 3, 2], 10));
+        Arc::new(StorageLayout::new(Some(engine)).with_profile(vec![10, 3, 2], 10));
     let info = HostInfo {
         hostname: "db".into(),
         registry_hostname: "db".into(),

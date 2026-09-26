@@ -3114,6 +3114,7 @@ dependencies = [
  "netdata-agent-text",
  "serde_json",
  "tempfile",
+ "twox-hash",
  "zstd",
 ]
 
