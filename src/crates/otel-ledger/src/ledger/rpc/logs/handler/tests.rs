@@ -1793,3 +1793,239 @@ async fn an_unreadable_catalog_is_skipped() {
         "{traced:#}"
     );
 }
+
+// ── ORC-LOGS under stream pruning (LOGS-05) ─────────────────────────────────
+
+mod oracle_logs {
+    use super::*;
+    use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
+    use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use opentelemetry_proto::tonic::resource::v1::Resource;
+    use otel_oracle::logs::{LogsWanted, Stream, logs_of, logs_of_request};
+
+    const BASE_S: u64 = 1_700_000_000;
+    const STREAMS: [(&str, &str); 3] = [("shop", "front"), ("shop", "orders"), ("", "back")];
+
+    fn text(value: &str) -> Option<AnyValue> {
+        Some(AnyValue {
+            value: Some(any_value::Value::StringValue(value.to_string())),
+        })
+    }
+
+    fn request(stream: usize, records: Vec<LogRecord>) -> ExportLogsServiceRequest {
+        let (namespace, name) = STREAMS[stream];
+        let mut attributes = vec![KeyValue {
+            key: "service.name".into(),
+            value: text(name),
+        }];
+        if !namespace.is_empty() {
+            attributes.push(KeyValue {
+                key: "service.namespace".into(),
+                value: text(namespace),
+            });
+        }
+        ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes,
+                    ..Resource::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    log_records: records,
+                    ..ScopeLogs::default()
+                }],
+                ..ResourceLogs::default()
+            }],
+        }
+    }
+
+    /// A record `offset_ms` after the base, of trace `trace` and span `span`
+    /// (0: none).
+    fn record(offset_ms: u64, trace: u8, span: u8) -> LogRecord {
+        LogRecord {
+            time_unix_nano: BASE_S * 1_000_000_000 + offset_ms * 1_000_000,
+            trace_id: if trace == 0 {
+                Vec::new()
+            } else {
+                vec![trace; 16]
+            },
+            span_id: if span == 0 { Vec::new() } else { vec![span; 8] },
+            severity_text: "INFO".into(),
+            ..LogRecord::default()
+        }
+    }
+
+    /// Seal one stream's records and track the file as its own stream's.
+    fn install_stream(
+        tr: &mut TenantRegistries,
+        seq: u64,
+        stream: usize,
+        request: &ExportLogsServiceRequest,
+    ) {
+        let (namespace, name) = STREAMS[stream];
+        let identity = ServiceStream::new(namespace, name);
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = wal::Writer::new(
+            dir.path(),
+            wal::Config::default(),
+            Arc::new(wal::SeqAllocator::ephemeral(0)),
+            wal::FileStamp {
+                pipeline_id: 0,
+                payload_format: ng_flatten::LOG_FRAME_PAYLOAD_FORMAT,
+            },
+            wal::test_identity(),
+        )
+        .unwrap();
+        let count = request.resource_logs[0].scope_logs[0].log_records.len();
+        let (flattened, _) = ng_flatten::flatten_log_request(request.clone());
+        let bytes = ng_flatten::encode_log_frame(&flattened).unwrap();
+        writer
+            .write_frame(
+                0,
+                &[],
+                &bytes,
+                wal::FrameMeta {
+                    entry_count: count,
+                    ingestion_ns: TimestampNs(BASE_S * 1_000_000_000),
+                    log_ts_range: None,
+                },
+            )
+            .unwrap();
+        writer.shutdown_all().unwrap();
+
+        let id = FileId::new(test_identity(), 0, seq, identity.ns_hash());
+        let reg = tr.get_or_create(&TenantId::from("default"));
+        let path = reg.sfst.file_path(id);
+        ng_index::build_sfst(dir.path(), &path, &ng_index::Metrics::new()).unwrap();
+        let sealed = sfst::read_summary(&std::fs::read(&path).unwrap()).unwrap();
+        let size = ByteSize(std::fs::metadata(&path).unwrap().len());
+        let summary = crate::test_helpers::summary_for(
+            &identity,
+            sealed.record_count,
+            sealed.min_timestamp_s,
+            sealed.max_timestamp_s,
+        );
+        reg.sfst.track(id, size, summary);
+    }
+
+    type Key = (i64, Option<String>, Option<String>, String, String);
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn cell(row: &Value, columns: &Value, name: &str) -> Option<String> {
+        let at = columns.get(name)?["index"].as_u64()? as usize;
+        row[at].as_str().map(str::to_string)
+    }
+
+    #[tokio::test]
+    async fn a_pruned_trace_filter_returns_the_calculator_s_records() {
+        let per_stream = [
+            vec![
+                record(0, 1, 1),
+                record(5, 1, 2),
+                record(9, 2, 7),
+                record(12, 0, 0),
+                record(15, 9, 9),
+            ],
+            vec![
+                record(1, 1, 3),
+                record(5, 1, 3),
+                record(20, 2, 8),
+                record(21, 0, 4),
+            ],
+            vec![
+                record(2, 1, 1),
+                record(30, 3, 5),
+                record(31, 3, 0),
+                record(32, 2, 0),
+            ],
+        ];
+        let mut tr = make_tenant_registries();
+        let mut logs = Vec::new();
+        for (stream, records) in per_stream.iter().enumerate() {
+            let request = request(stream, records.clone());
+            install_stream(&mut tr, stream as u64 + 1, stream, &request);
+            logs.extend(logs_of_request(&request));
+        }
+        let h = make_handler(tr);
+        let stream_of = |at: usize| Stream {
+            namespace: STREAMS[at].0.into(),
+            name: STREAMS[at].1.into(),
+        };
+        let key_of = |at: usize| {
+            format!(
+                "{:016x}",
+                ServiceStream::new(STREAMS[at].0, STREAMS[at].1).ns_hash()
+            )
+        };
+
+        let cases: [(&[u8], &[u8], &[usize]); 6] = [
+            (&[1], &[], &[0]),
+            (&[1], &[], &[0, 1]),
+            (&[1], &[], &[0, 1, 2]),
+            (&[1, 3], &[], &[2]),
+            (&[2], &[], &[1, 2]),
+            (&[1], &[3], &[1, 2]),
+        ];
+        let mut judged = 0;
+        for (traces, spans, streams) in cases {
+            let wanted = LogsWanted {
+                window: (BASE_S as i64 - 10) * 1_000_000_000..(BASE_S as i64 + 100) * 1_000_000_000,
+                trace_ids: traces.iter().map(|b| [*b; 16]).collect(),
+                span_ids: spans.iter().map(|b| [*b; 8]).collect(),
+                streams: Some(streams.iter().map(|at| stream_of(*at)).collect()),
+            };
+            let mut want: Vec<Key> = Vec::new();
+            for log in logs_of(&logs, &wanted) {
+                want.push((
+                    log.ts_ns / 1_000,
+                    log.trace_id.map(|id| hex(&id)),
+                    log.span_id.map(|id| hex(&id)),
+                    log.stream.namespace.clone(),
+                    log.stream.name.clone(),
+                ));
+            }
+            want.sort();
+
+            let mut body = serde_json::json!({
+                "after": BASE_S - 10,
+                "before": BASE_S + 100,
+                "last": 1_000,
+                "trace_ids": traces.iter().map(|b| hex(&[*b; 16])).collect::<Vec<_>>(),
+                "selections": {"__streams": streams.iter().map(|at| key_of(*at)).collect::<Vec<_>>()},
+            });
+            if !spans.is_empty() {
+                body["span_ids"] =
+                    serde_json::json!(spans.iter().map(|b| hex(&[*b; 8])).collect::<Vec<_>>());
+            }
+            let v = ask(&h, body).await;
+            let case = format!("traces {traces:?} spans {spans:?} streams {streams:?}");
+            assert_eq!(
+                v["completeness"],
+                serde_json::json!({"complete": true}),
+                "{case}"
+            );
+            assert_eq!(v["items"]["matched"], want.len(), "{case}");
+            let columns = &v["columns"];
+            let mut got: Vec<Key> = Vec::new();
+            for row in v["data"].as_array().unwrap() {
+                got.push((
+                    row[0].as_i64().unwrap(),
+                    cell(row, columns, "trace_id"),
+                    cell(row, columns, "span_id"),
+                    cell(row, columns, "resource.attributes.service.namespace").unwrap_or_default(),
+                    cell(row, columns, "resource.attributes.service.name").unwrap_or_default(),
+                ));
+            }
+            got.sort();
+            assert_eq!(got, want, "{case}");
+            if !want.is_empty() {
+                judged += 1;
+            }
+        }
+        assert_eq!(judged, 6);
+    }
+}
