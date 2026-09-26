@@ -99,6 +99,15 @@ impl Item {
     }
 }
 
+/// Why an answer's spans are not the ones the rules allow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unsettled {
+    /// The answer serves `got` spans where the rules serve `expected`.
+    Count { got: usize, expected: usize },
+    /// The first span that is no stored copy allowed at its place.
+    At(usize),
+}
+
 /// The trace's spans in order, before the cap, and whether the cap cuts it.
 #[derive(Debug, Clone)]
 pub struct Assembly {
@@ -123,10 +132,13 @@ impl Assembly {
     /// The copies an answer served, when each is one the rules allow at its
     /// place: a copy of the span there, or, inside a run of spans without an
     /// id that tie on start and kind, a copy of an unused span of that run.
-    pub fn settle(&self, got: &TraceView) -> Result<Vec<OracleSpan>, String> {
+    pub fn settle(&self, got: &TraceView) -> Result<Vec<OracleSpan>, Unsettled> {
         let served = self.items.len().min(self.cap);
         if got.spans.len() != served {
-            return Err(format!("{} spans, expected {served}", got.spans.len()));
+            return Err(Unsettled::Count {
+                got: got.spans.len(),
+                expected: served,
+            });
         }
         let mut kept = Vec::with_capacity(served);
         let mut start = 0;
@@ -153,10 +165,7 @@ impl Assembly {
                     }
                 }
                 let Some((offset, copy)) = found else {
-                    return Err(format!(
-                        "span {at} is no stored copy allowed there: {:?}",
-                        got.spans[at]
-                    ));
+                    return Err(Unsettled::At(at));
                 };
                 used[offset] = true;
                 kept.push(copy.clone());
@@ -313,7 +322,15 @@ pub fn trace_diff(want: &Assembly, got: &TraceView) -> Option<String> {
     }
     let kept = match want.settle(got) {
         Ok(kept) => kept,
-        Err(e) => return Some(e),
+        Err(Unsettled::Count { got, expected }) => {
+            return Some(format!("{got} spans, expected {expected}"));
+        }
+        Err(Unsettled::At(at)) => {
+            return Some(format!(
+                "span {at} is no stored copy allowed there: {:?}",
+                got.spans[at]
+            ));
+        }
     };
     let expected = want.view(&kept);
     let checks: [(&str, bool); 5] = [

@@ -252,3 +252,38 @@ fn the_diff_names_each_difference() {
         );
     }
 }
+
+#[test]
+fn settle_names_the_first_span_it_cannot_place() {
+    let rows = vec![
+        row(0, (1, 0), 2, 0, 100),
+        named(row(0, (0, 1), INTERNAL, 50, 10), "a"),
+        named(row(0, (0, 1), INTERNAL, 50, 10), "b"),
+        row(0, (2, 1), CLIENT, 60, 20),
+    ];
+    let assembly = assemble_trace(&rows, TRACE, 100, &|_| true);
+    let good = assembly.view(&assembly.first_choice());
+    assert!(assembly.settle(&good).is_ok());
+
+    let mut late = good.clone();
+    late.spans[3].start_ns += 1;
+    assert_eq!(assembly.settle(&late).unwrap_err(), Unsettled::At(3));
+
+    let mut doubled = good.clone();
+    doubled.spans[2] = doubled.spans[1].clone();
+    assert_eq!(
+        assembly.settle(&doubled).unwrap_err(),
+        Unsettled::At(2),
+        "a tie run serves each of its spans once"
+    );
+
+    let mut short = good.clone();
+    short.spans.pop();
+    assert_eq!(
+        assembly.settle(&short).unwrap_err(),
+        Unsettled::Count {
+            got: 3,
+            expected: 4
+        }
+    );
+}
