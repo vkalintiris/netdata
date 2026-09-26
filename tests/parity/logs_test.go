@@ -135,8 +135,10 @@ func threadOf(line string) string {
 // keep theirs. The harness picks each daemon's port.
 func normalizeLog(line, runDir, port string) string {
 	line = strings.ReplaceAll(line, runDir, "<RUN>")
-	line = strings.ReplaceAll(line, "port "+port+",", "port <PORT>,")
-	line = strings.ReplaceAll(line, ":"+port, ":<PORT>")
+	if port != "" {
+		line = strings.ReplaceAll(line, "port "+port+",", "port <PORT>,")
+		line = strings.ReplaceAll(line, ":"+port, ":<PORT>")
+	}
 	th := threadOf(line)
 	if th == "" || th == "EXIT_WATCHER" ||
 		(th == "DAEMON_COMMAND" && !strings.Contains(line, `msg="pipe_read_cb: `) && !strings.Contains(line, `msg="uv_`)) {

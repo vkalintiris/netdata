@@ -101,8 +101,8 @@ func labelLines(stdout string) string {
 // both daemons, with a C child streaming to them and after it left, and compares what the client prints and its exit
 // status, the raw replies of frames the client cannot send, the commands' records and the socket file.
 func TestCLICommands(t *testing.T) {
-	p := StartPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1, LogsExtra: "    level = debug\n"},
-		parentIdentity)
+	opts := daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1, LogsExtra: "    level = debug\n"}
+	p := StartPair(t, opts, parentIdentity)
 	compare := func(name string, get func(d *daemon.Daemon) string) {
 		t.Helper()
 		oracle, candidate := get(p.Oracle), get(p.Candidate)
@@ -268,6 +268,8 @@ func TestCLICommands(t *testing.T) {
 		known, _ := reachable(d)
 		return fmt.Sprint(known)
 	})
+	// the next store job deletes the removed child's dimensions
+	time.Sleep(7 * time.Second)
 
 	for _, side := range p.Each() {
 		st, err := os.Lstat(side.Daemon.PipeName)
@@ -297,6 +299,15 @@ func TestCLICommands(t *testing.T) {
 	if len(records[0]) == 0 {
 		t.Errorf("no command records")
 	}
+
+	// what the stale-node commands stored (D61.2): each parent restarted on its own cache knows the same hosts
+	restarted := &Pair{
+		Oracle: startOn(t, os.Getenv("PARITY_ORACLE"), Role("restart-oracle"),
+			filepath.Join(p.Oracle.Opts.RunDir, "cache"), opts),
+		Candidate: startOn(t, os.Getenv("PARITY_CANDIDATE"), Role("restart-candidate"),
+			filepath.Join(p.Candidate.Opts.RunDir, "cache"), opts),
+	}
+	compareArchived(t, restarted)
 }
 
 // TestCLILifecycle compares the command server's ways out: `shutdown-agent` (the exit runs on its thread),

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/netdata/netdata/tests/query-corpus/daemon"
+	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
 // metadataDump is the metadata crate's dump tool: PARITY_METADATA_DUMP, else the workspace's debug build.
@@ -58,31 +59,52 @@ func execDB(t *testing.T, db, sql string) {
 // migrationRecords are the migration and open records of the main thread.
 var migrationRecords = regexp.MustCompile(`msg="(SQLite database |[a-z]+ database version is|Database version is|Running database|Database [a-z]+ migration|SQLite error|SQLite failed statement|Database is corrupted)`)
 
+// hwLabels are C's `_hw_*` host labels, which come from its daemon status file (D49.3): C-only for now.
+var hwLabels = regexp.MustCompile(`label_key="_hw_`)
+
+// writerArgs has metadata-dump print the metadata writer's tables as the checks compare them: label and node
+// instance rows sorted (C writes labels in pointer order), chart and dimension ids aliased (random UUIDs, still
+// joinable), the localhost's charts left out (C's pulse charts, D48.6), and the last connection masked (a clock).
+// Without chartRows the chart dimension and label rows are left out too: on a chart table too old to store charts
+// in, C's pulse charts leave dimension and label rows that no chart row ties to the localhost.
+func writerArgs(localhost string, chartRows bool) []string {
+	args := []string{"--skip-host-charts", strings.Trim(strings.TrimPrefix(localhost, "x"), "'"),
+		"--mask", "host.last_connected"}
+	tables := []string{"host", "host_info", "host_label", "node_instance", "chart"}
+	if chartRows {
+		tables = append(tables, "dimension", "chart_label")
+	}
+	for _, table := range tables {
+		args = append(args, "--table", table)
+	}
+	for _, table := range []string{"host_label", "node_instance", "chart_label"} {
+		args = append(args, "--sort", table)
+	}
+	for _, column := range []string{"chart.chart_id", "dimension.dim_id", "dimension.chart_id",
+		"chart_label.chart_id"} {
+		args = append(args, "--alias", column)
+	}
+	return args
+}
+
 // compareFiles stops both daemons and compares their databases: the whole context database but its rows, and the
-// metadata database's header, pragmas, schema and the named tables (without lines naming skipped host ids), then
-// the migration records.
-func compareFiles(t *testing.T, p *Pair, skip []string, tables ...string) {
+// metadata database's header, pragmas, schema and tables as metadata-dump prints them with args (lines matching
+// drop left out on both sides), then the migration records.
+func compareFiles(t *testing.T, p *Pair, drop *regexp.Regexp, args ...string) {
 	t.Helper()
 	for _, side := range p.Each() {
 		if err := side.Daemon.Stop(); err != nil {
 			t.Fatalf("stop %s: %v", side.Role, err)
 		}
 	}
-	args := []string{"--mask", "agent_event_log.value", "--mask", "health_log_detail.global_id",
-		"--mask", "health_log_detail.transition_id"}
-	for _, table := range tables {
-		args = append(args, "--table", table)
-	}
+	args = append([]string{"--mask", "agent_event_log.value", "--mask", "health_log_detail.global_id",
+		"--mask", "health_log_detail.transition_id"}, args...)
 	var got [2]string
 	for i, side := range p.Each() {
 		cache := filepath.Join(side.Daemon.Opts.RunDir, "cache")
 		var kept []string
 		for _, l := range strings.Split(dumpDB(t, filepath.Join(cache, "netdata-meta.db"), args...), "\n") {
-			drop := false
-			for _, s := range skip {
-				drop = drop || strings.Contains(l, s)
-			}
-			if !drop {
+			if drop == nil || !drop.MatchString(l) {
 				kept = append(kept, l)
 			}
 		}
@@ -103,22 +125,83 @@ func hexID(guid string) string {
 	return "x'" + strings.ReplaceAll(guid, "-", "") + "'"
 }
 
+// writerChild streams what the metadata writer stores of a child: a host label, a chart with a chart label and a
+// hidden incremental dimension, and a named stacked chart, with a few points.
+func writerChild(t *testing.T, d *daemon.Daemon) {
+	t.Helper()
+	conn, err := stream.Connect(d.Addr, d.StreamKey, childHost, stream.CapsLive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	conn.Linef(`LABEL "role" = 1 "writer"`)
+	conn.Linef("OVERWRITE labels")
+	conn.Linef("CHART 'w.one' '' 'title' 'units' 'family' 'w.one' line 1000 1 '' fixture-pusher corpus")
+	conn.Linef("CLABEL 'tier' 'gold' 2")
+	conn.Linef("CLABEL_COMMIT")
+	conn.Linef("DIMENSION 'd1' '' absolute 1 1 ''")
+	conn.Linef("DIMENSION 'd2' 'second' incremental 3 7 'hidden'")
+	conn.Linef("CHART 'w.two' 'named' 'title two' 'units' 'family' 'w.ctx' stacked 900 1 '' fixture-pusher")
+	conn.Linef("DIMENSION 'd1' '' percentage-of-absolute-row 1 1 ''")
+	now := time.Now().Unix()
+	for _, chart := range []string{"w.one", "w.two"} {
+		conn.Linef("BEGIN2 '%s' 1 %d #", chart, now-1)
+		conn.Linef("SET2 'd1' 1 1 A")
+		conn.Linef("END2")
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writerRecords are the final store's METASYNC records.
+func writerRecords(t *testing.T, d *daemon.Daemon) string {
+	var out []string
+	for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
+		if strings.Contains(l, `msg="METADATA: Progress of metadata storage`) {
+			out = append(out, normalizeLog(l, d.Opts.RunDir, ""))
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 // TestSQLiteFiles compares the database files both daemons leave behind (check `sqlite.files`): a fresh cache, a
-// C-written one, the same with newer versions than both agents know, and synthetic old versions that the migrations
-// bring up to date (the version 8 per-host health log among them). Until the metadata writer lands (S1b), the host
-// rows of the localhost, which C rewrites at every start, are left out.
+// C-written one, the same with newer versions than both agents know, synthetic old versions that the migrations
+// bring up to date (the version 8 per-host health log among them), and what the metadata writer stores of a child,
+// by its periodic job and by the final store at shutdown (with that store's records).
 func TestSQLiteFiles(t *testing.T) {
 	opts := daemon.Options{DBMode: "alloc", StorageTiers: 1, StreamMemoryMode: "alloc"}
-	localhost := []string{hexID(parentIdentity.MachineGUID)}
+	writer := writerArgs(hexID(parentIdentity.MachineGUID), true)
 	t.Run("fresh", func(t *testing.T) {
-		compareFiles(t, StartPair(t, opts, parentIdentity), localhost, "agent_event_log")
+		compareFiles(t, StartPair(t, opts, parentIdentity), hwLabels,
+			append([]string{"--table", "agent_event_log"}, writer...)...)
 	})
+	for _, name := range []string{"child", "child-final"} {
+		t.Run(name, func(t *testing.T) {
+			p := StartPair(t, opts, parentIdentity)
+			for _, side := range p.Each() {
+				writerChild(t, side.Daemon)
+			}
+			// the periodic job first runs 6 s after METASYNC starts; child-final stops before it
+			wait := 8 * time.Second
+			if name == "child-final" {
+				wait = time.Second
+			}
+			time.Sleep(wait)
+			compareFiles(t, p, hwLabels, writer...)
+			if name == "child-final" {
+				if o, c := writerRecords(t, p.Oracle), writerRecords(t, p.Candidate); o != c {
+					t.Errorf("final store records:\noracle:\n%s\ncandidate:\n%s", o, c)
+				}
+			}
+		})
+	}
 	seed := seedFromOracle(t, parentIdentity, "ram")
 	t.Run("seeded", func(t *testing.T) {
 		o := opts
 		o.SeedCache = seed
-		compareFiles(t, StartPair(t, o, parentIdentity), localhost, "agent_event_log", "host", "node_instance",
-			"host_label", "host_info")
+		compareFiles(t, StartPair(t, o, parentIdentity), hwLabels,
+			append([]string{"--table", "agent_event_log"}, writer...)...)
 	})
 	t.Run("newer-versions", func(t *testing.T) {
 		dir := t.TempDir()
@@ -135,7 +218,8 @@ func TestSQLiteFiles(t *testing.T) {
 		execDB(t, filepath.Join(dir, "context-meta.db"), "PRAGMA user_version=7")
 		o := opts
 		o.SeedCache = dir
-		compareFiles(t, StartPair(t, o, parentIdentity), localhost, "agent_event_log", "host", "node_instance")
+		compareFiles(t, StartPair(t, o, parentIdentity), hwLabels,
+			append([]string{"--table", "agent_event_log"}, writer...)...)
 	})
 	old := map[string]string{
 		"v0": `CREATE TABLE host(host_id BLOB PRIMARY KEY, hostname TEXT NOT NULL, registry_hostname TEXT NOT NULL
@@ -166,8 +250,11 @@ func TestSQLiteFiles(t *testing.T) {
 			execDB(t, filepath.Join(dir, "netdata-meta.db"), sql)
 			o := opts
 			o.SeedCache = dir
-			compareFiles(t, StartPair(t, o, parentIdentity), localhost, "agent_event_log", "host", "node_instance",
-				"health_log", "health_log_detail")
+			// the migrations give old health log rows random transition ids
+			compareFiles(t, StartPair(t, o, parentIdentity), hwLabels, append([]string{"--table",
+				"agent_event_log", "--table", "health_log", "--table", "health_log_detail",
+				"--mask", "health_log.last_transition_id"},
+				writerArgs(hexID(parentIdentity.MachineGUID), false)...)...)
 		})
 	}
 }

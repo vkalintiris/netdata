@@ -100,6 +100,12 @@ var archivedRecords = regexp.MustCompile(`msg="(Creating archived hosts|Created 
 
 func compareArchived(t *testing.T, p *Pair, children ...string) {
 	t.Helper()
+	compareArchivedTimes(t, p, entryTimes, children...)
+}
+
+// compareArchivedTimes is compareArchived with the stream path's times hidden by times.
+func compareArchivedTimes(t *testing.T, p *Pair, times *regexp.Regexp, children ...string) {
+	t.Helper()
 	compare := func(name string, get func(d *daemon.Daemon) string) {
 		t.Helper()
 		if o, c := get(p.Oracle), get(p.Candidate); o != c {
@@ -119,7 +125,7 @@ func compareArchived(t *testing.T, p *Pair, children ...string) {
 			return member(t, d, "/host/"+child+"/api/v1/contexts", "contexts")
 		})
 		addrs := [2]string{p.Oracle.Addr, p.Candidate.Addr}
-		compareStreamPath(t, "archived", addrs, "/api/v3/stream_path?nodes="+child, entryTimes,
+		compareStreamPath(t, "archived", addrs, "/api/v3/stream_path?nodes="+child, times,
 			[2]string{parentIdentity.Hostname, ""})
 	}
 	compare("records", func(d *daemon.Daemon) string {
