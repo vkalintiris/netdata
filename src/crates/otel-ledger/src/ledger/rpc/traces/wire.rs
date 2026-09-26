@@ -898,11 +898,16 @@ pub struct SpanWire {
     pub duration_ns: i64,
     /// The duration less the time its direct children cover, over the
     /// assembled trace (all its spans, across files). Absent on a search
-    /// result's matched spans, which have no assembled trace.
+    /// result's matched spans, which have no assembled trace. Children are
+    /// found by parent id with the seal's rule, which can differ from the
+    /// drawn tree: a child counts under every span carrying its parent id
+    /// (a CLIENT and a SERVER sharing an id), and a span without its own id
+    /// is nobody's child.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub self_duration_ns: Option<i64>,
-    /// ERROR, and none of its direct children in the trace is ERROR; absent
-    /// like `self_duration_ns`.
+    /// ERROR, and none of its direct children in the trace (the same
+    /// children as `self_duration_ns`) is ERROR; absent like
+    /// `self_duration_ns`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_origin: Option<bool>,
     pub kind: i32,
