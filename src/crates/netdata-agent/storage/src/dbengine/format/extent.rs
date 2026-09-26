@@ -61,6 +61,11 @@ pub enum PageSlot<'a> {
 }
 
 impl Extent {
+    /// How many bytes the pages have: the stored payload's, or what decompression produced.
+    pub fn payload_len(&self) -> usize {
+        self.payload.len()
+    }
+
     /// The page of descriptor `i`: pages sit one after the other in descriptor order.
     pub fn page(&self, i: usize) -> PageSlot<'_> {
         let d = &self.descriptors[i];
