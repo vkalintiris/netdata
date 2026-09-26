@@ -60,6 +60,11 @@ impl WorkPool {
         }
     }
 
+    /// The most threads the pool runs.
+    pub fn size(&self) -> usize {
+        self.inner.size
+    }
+
     /// `uv_queue_work()`: runs `job` on a pool thread. Fails only when no thread runs and none can start.
     pub fn queue(&self, job: impl FnOnce() + Send + 'static) -> io::Result<()> {
         let mut state = self.inner.lock();

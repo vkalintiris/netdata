@@ -12,6 +12,7 @@ use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log_limit, uv_strerror}
 use super::cache::Batch;
 use super::io::write_retrying;
 use super::query::Dbengine;
+use super::runtime::Cmd;
 use super::tier::{DataFile, OpenPage, TierData};
 use crate::dbengine::format::BLOCK_SIZE;
 use crate::dbengine::format::descriptor::{PAGE_TYPE_GORILLA_32BIT, PageDescriptor};
@@ -49,6 +50,25 @@ impl Dbengine {
             |tier| self.tiers[tier].extent_started(),
             |batch| self.save(batch),
         )
+    }
+
+    /// `flush_inline()` (the main cache's `max_flushes_inline` is 1): while the dirty pages outgrow the hot ones, up
+    /// to two batches are flushed here, unless the cache is busy (D65.10).
+    pub(crate) fn flush_inline(self: &Arc<Self>) {
+        if self.main.flushing_critical() {
+            self.flush_pages(1, None, false, false);
+        }
+    }
+
+    /// `pgc_flush_dirty_pages()`: every dirty page of the tier.
+    pub fn flush_dirty(self: &Arc<Self>, tier: usize) {
+        self.flush_pages(0, Some(tier), true, true);
+    }
+
+    /// `pgc_flush_all_hot_and_dirty_pages()`: the tier's hot pages turn dirty, then every dirty page is flushed.
+    pub fn flush_all_hot_and_dirty(self: &Arc<Self>, tier: usize) {
+        self.main.all_hot_to_dirty(tier);
+        self.flush_dirty(tier);
     }
 
     /// `main_cache_flush_dirty_page_callback()`: the extent is written on a pool thread, as C's `EXTENT_WRITE` runs
@@ -166,6 +186,10 @@ impl Dbengine {
         let journal_pos = result.as_ref().map_or(0, |&at| at);
         flush_to_open(td, &df, pos, size_bytes, journal_pos, &written, result.is_ok());
         td.extent_finished();
+        // `after_extent_write()`: a rotation may have left a file to index
+        if let Some(events) = self.events.get() {
+            let _ = events.send(Cmd::ExtentWritten(batch.tier));
+        }
     }
 
     /// `get_datafile_to_write_extent()` under the engine's reserve lock, the position taken inside it (D65.3): the

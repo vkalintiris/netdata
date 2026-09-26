@@ -441,10 +441,20 @@ impl MainCache {
     /// `page_set_dirty()` of a hot page: it leaves the hot queue for the end of its tier's dirty queue.
     pub fn hot_to_dirty(&self, tier: usize, page: &CachedPage) {
         let mut inner = self.lock();
-        let Some((uuid, page)) = inner.hot[tier]
-            .pages
-            .remove(&page.seq.load(Ordering::Relaxed))
-        else {
+        self.move_to_dirty(&mut inner, tier, page.seq.load(Ordering::Relaxed));
+    }
+
+    /// `all_hot_pages_to_dirty()`: every hot page of the tier turns dirty, in the order they turned hot.
+    pub fn all_hot_to_dirty(&self, tier: usize) {
+        let mut inner = self.lock();
+        let seqs: Vec<u64> = inner.hot[tier].pages.keys().copied().collect();
+        for seq in seqs {
+            self.move_to_dirty(&mut inner, tier, seq);
+        }
+    }
+
+    fn move_to_dirty(&self, inner: &mut MainInner, tier: usize, seq: u64) {
+        let Some((uuid, page)) = inner.hot[tier].pages.remove(&seq) else {
             return;
         };
         let size = page.size();
@@ -454,9 +464,25 @@ impl MainCache {
         page.seq.store(seq, Ordering::Relaxed);
         inner.dirty[tier].pages.insert(seq, (uuid, page));
         inner.dirty_bytes += size;
-        if inner.dirty[tier].pages.len().is_multiple_of(self.pages_per_extent) {
+        if inner.dirty[tier]
+            .pages
+            .len()
+            .is_multiple_of(self.pages_per_extent)
+        {
             inner.dirty_version += 1;
         }
+    }
+
+    /// `flushing_critical()`: the dirty pages take more than the hot ones ever did.
+    pub fn flushing_critical(&self) -> bool {
+        let inner = self.lock();
+        inner.dirty_bytes > inner.hot_max_bytes
+    }
+
+    /// `pgc_hot_and_dirty_entries()`: the pages not yet on disk.
+    pub fn hot_and_dirty_entries(&self) -> usize {
+        let s = self.stats();
+        s.hot_entries + s.dirty_entries + s.flushing_entries
     }
 
     /// `pgc_page_to_clean_evict_or_release()` of a hot page without data: it leaves the cache unless someone else

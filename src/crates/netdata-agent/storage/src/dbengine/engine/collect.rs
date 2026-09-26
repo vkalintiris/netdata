@@ -226,7 +226,7 @@ impl CollectHandle {
         let ue_s = (self.update_every_ut / USEC_PER_SEC) as u32;
         let mut page = CachedPage::collected((t_ut / USEC_PER_SEC) as i64, ue_s, builder);
         let added = loop {
-            match self.engine.main.add(tier, self.metric.uuid(), page) {
+            match self.engine.add_page(tier, self.metric.uuid(), page) {
                 Ok(added) => break added,
                 Err(conflict) => {
                     let existing = conflict.existing;
@@ -293,6 +293,8 @@ impl CollectHandle {
                 self.engine.tiers[tier].add_samples(((end_s - start_s) / ue) as u64);
             }
             self.engine.main.hot_to_dirty(tier, &page);
+            // `flush_on_page_hot_release()`
+            self.engine.flush_inline();
         }
         // C's `mrg_metric_set_hot_latest_time_s(0)` here changes nothing
         self.retention_recorded = false;

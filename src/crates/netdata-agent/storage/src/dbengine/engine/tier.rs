@@ -500,6 +500,10 @@ impl TierData {
         self.needs_indexing.store(true, Ordering::Release);
     }
 
+    pub(crate) fn clear_needs_indexing(&self) {
+        self.needs_indexing.store(false, Ordering::Release);
+    }
+
     /// The extents being written.
     pub fn extents_in_flight(&self) -> usize {
         self.extents_in_flight.load(Ordering::Acquire)

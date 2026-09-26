@@ -9,14 +9,15 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::{
     ErrorLimit, Priority as LogPriority, Source, nd_log_limit, netdata_log_error,
 };
 
-use super::cache::{CachedPage, ExtentCache, MainCache, Search};
+use super::cache::{CachedPage, Conflict, ExtentCache, MainCache, Search};
+use super::runtime::Cmd;
 use super::load::Tier;
 use super::mrg::{Handle, Mrg};
 use super::tier::{OpenPage, TierData};
@@ -106,6 +107,8 @@ pub struct Dbengine {
     now: fn() -> i64,
     /// `get_datafile_to_write_extent()`'s mutex: one extent at a time finds its place.
     pub(crate) reserve: Mutex<()>,
+    /// The `DBEV` thread of a running engine, which hears of written extents.
+    pub(crate) events: OnceLock<mpsc::Sender<Cmd>>,
 }
 
 // `PDC_PAGE_*`.
@@ -350,12 +353,26 @@ impl Dbengine {
             update_every_s: cfg.update_every_s,
             now: cfg.now,
             reserve: Mutex::new(()),
+            events: OnceLock::new(),
         })
     }
 
     /// The wall clock.
     pub fn now_s(&self) -> i64 {
         (self.now)()
+    }
+
+    /// `pgc_page_add_and_acquire()` with its `flush_on_page_add()`: the dirty pages are flushed inline when they
+    /// outgrow the hot ones, whether the page was added or not.
+    pub(crate) fn add_page(
+        self: &Arc<Self>,
+        tier: usize,
+        uuid: &[u8; 16],
+        page: CachedPage,
+    ) -> Result<Arc<CachedPage>, Conflict> {
+        let added = self.main.add(tier, uuid, page);
+        self.flush_inline();
+        added
     }
 
     /// `mrg_metric_get_update_every_s()` or the profile's.
@@ -542,7 +559,7 @@ impl Dbengine {
     }
 
     /// `pgc_inject_gap()`: an empty page for the time between `start_s` and `end_s` inside the metric's retention.
-    fn inject_gap(&self, metric: &Handle, start_s: i64, end_s: i64) {
+    fn inject_gap(self: &Arc<Self>, metric: &Handle, start_s: i64, end_s: i64) {
         let r = metric.retention();
         if in_range(start_s, end_s, r.first_time_s, r.last_time_s) != Range::In {
             return;
@@ -552,7 +569,7 @@ impl Dbengine {
             return;
         }
         // a page already there keeps its place
-        let _ = self.main.add(
+        let _ = self.add_page(
             metric.tier(),
             metric.uuid(),
             CachedPage::new(start_s, end_s, 0, None),
@@ -563,7 +580,7 @@ impl Dbengine {
     /// looked up once more in the main cache; with `populate`, the time no page covers cached as gaps. The gaps met,
     /// the pages to use, and the pages to load from disk.
     fn time_gaps(
-        &self,
+        self: &Arc<Self>,
         metric: &Handle,
         prep: &mut Prep,
         start_s: i64,
@@ -631,7 +648,7 @@ impl Dbengine {
 
     /// `get_page_list()`: the main cache, then the open pages, then the v2 files, stopping at the first pass whose
     /// pages cover the window without gaps; the last pass caches the gaps. The pages to load from disk.
-    fn page_list(&self, metric: &Handle, start_s: i64, end_s: i64) -> (Prep, usize) {
+    fn page_list(self: &Arc<Self>, metric: &Handle, start_s: i64, end_s: i64) -> (Prep, usize) {
         let mut prep = Prep::default();
         let mut cache_gaps = 0;
         let found = self.pages_from_cache(
@@ -701,7 +718,7 @@ impl Dbengine {
     /// `epdl_find_extent_and_populate_pages()` for one extent: its requested pages validated, decoded and cached
     /// (invalid ones as empty pages); pages it did not give are failed.
     fn load_extent(
-        &self,
+        self: &Arc<Self>,
         metric: &Handle,
         list: &mut BTreeMap<i64, Pd>,
         keys: &[i64],
@@ -813,8 +830,7 @@ impl Dbengine {
                         }
                     };
                     let page = self
-                        .main
-                        .add(
+                        .add_page(
                             tier,
                             metric.uuid(),
                             CachedPage::new(vd.start_time_s, vd.end_time_s, vd.update_every_s, data),
@@ -853,7 +869,7 @@ impl Dbengine {
     }
 
     /// `rrdeng_prep_query()`: the page list, then the pages to read loaded, extent by extent in file order.
-    fn prepare(&self, metric: &Handle, start_s: i64, end_s: i64) -> Prep {
+    fn prepare(self: &Arc<Self>, metric: &Handle, start_s: i64, end_s: i64) -> Prep {
         let (mut prep, to_load) = self.page_list(metric, start_s, end_s);
         if to_load > 0 {
             let mut by_extent: BTreeMap<(u32, u64, u32), Vec<i64>> = BTreeMap::new();

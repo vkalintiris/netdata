@@ -88,6 +88,7 @@ pub fn start(
             pages_per_extent: settings.pages_per_extent as usize,
             update_every_s: db.update_every as u32,
             stack_size: conf.threads.thread_stack_size,
+            timer_period: std::time::Duration::from_secs(1),
         },
         pool,
         prepopulate,

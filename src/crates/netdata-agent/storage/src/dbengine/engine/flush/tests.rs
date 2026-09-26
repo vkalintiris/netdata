@@ -365,3 +365,27 @@ fn concurrent_flushes_tile_the_file() {
         assert_eq!((u, numbers), (nth(i), packed(&seq_values(10, i))));
     }
 }
+
+/// Dirty pages outgrowing the hot ones flush inline, two batches at most (C's `max_flushes_inline` of 1 with its `>`
+/// test); below that nothing is flushed.
+#[test]
+fn critical_flushes_write_two_batches_inline() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let _m: Vec<Handle> = (0..250)
+        .map(|i| dirty_page(&e, 0, nth(i), T0, &seq_values(10, i)))
+        .collect();
+    assert!(e.main.flushing_critical());
+    e.flush_inline();
+    assert_eq!(e.main.stats().dirty_entries, 32);
+    assert_eq!(file_reports(dir.path())[0]["pages_per_extent"], json!({"109": 2}));
+    // a big hot page raises the peak above the dirty pages left: nothing more
+    let big = crate::dbengine::format::page::PageBuilder::new(
+        crate::dbengine::format::descriptor::PAGE_TYPE_ARRAY_32BIT,
+        1024,
+    )
+    .unwrap();
+    let hot = crate::dbengine::engine::cache::CachedPage::collected(T0, 1, big);
+    drop(e.main.add(0, &nth(999), hot).unwrap());
+    assert!(!e.main.flushing_critical());
+}

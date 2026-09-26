@@ -1,5 +1,6 @@
 use super::*;
 use crate::dbengine::engine::query::{DEFAULT_PAGES_PER_EXTENT, Priority};
+use netdata_agent_evloop::work::WorkPool;
 use crate::dbengine::engine::testutil::{A, B, NOW, array_page, cfg, pair_with_extents, points};
 use crate::storage_number::{SN_DEFAULT_FLAGS, pack};
 use std::path::Path;
@@ -29,6 +30,7 @@ fn init(dirs: &[Option<&Path>]) -> InitConfig {
         pages_per_extent: DEFAULT_PAGES_PER_EXTENT,
         update_every_s: 1,
         stack_size: 256 * 1024,
+        timer_period: Duration::from_millis(10),
     }
 }
 
@@ -142,4 +144,181 @@ fn quiesce_stops_queries_and_exit_waits_for_them() {
     assert!(!exiting.is_finished(), "a query is in flight");
     drop(held);
     exiting.join().unwrap();
+}
+
+/// A running engine over one tier of array pages with 524,288-byte data files, its timer at 10 ms.
+fn running(dir: &Path, pool: &WorkPool) -> Runtime {
+    let mut cfg = init(&[Some(dir)]);
+    cfg.tiers = vec![Some(crate::dbengine::engine::testutil::write_cfg(0, dir))];
+    Runtime::start(cfg, pool, Box::new(|_| {}), || NOW)
+}
+
+/// Waits up to 10 s for `done`.
+fn eventually(mut done: impl FnMut() -> bool) -> bool {
+    let until = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < until {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    false
+}
+
+/// `DBEV`'s decisions: flushers up to one per CPU; one index queued at a time and one running, none while shutting
+/// down.
+#[test]
+fn dbev_schedules_as_c() {
+    let mut s = Sched {
+        cpus: 2,
+        tiers: vec![TierSched::default(); 2],
+        ..Sched::default()
+    };
+    assert_eq!([s.flush_main(), s.flush_main(), s.flush_main()], [true, true, false]);
+    s.flush_done();
+    assert!(s.flush_main());
+
+    assert!(!s.check_and_schedule(0, false));
+    assert!(s.check_and_schedule(0, true));
+    assert!(!s.check_and_schedule(0, true), "already queued");
+    assert!(s.journal_index(0, false));
+    assert!(s.check_and_schedule(0, true), "queued again while running");
+    assert!(!s.journal_index(0, false), "one runs at a time");
+    s.index_done(0);
+    assert!(s.check_and_schedule(0, true));
+    assert!(!s.journal_index(0, true), "a quiesced tier");
+    assert!(!s.tiers[1].pending_index && !s.tiers[1].indexing);
+}
+
+/// The timer's flushers write whole batches only.
+#[test]
+fn the_timer_flushes_whole_batches() {
+    use crate::dbengine::engine::testutil::{dirty_page, file_reports, nth, seq_values};
+    let dir = tempfile::tempdir().unwrap();
+    let rt = running(dir.path(), &WorkPool::new(4, 256 * 1024));
+    let e = Arc::clone(rt.engine());
+    let mut m: Vec<_> = (0..108)
+        .map(|i| dirty_page(&e, 0, nth(i), T0, &seq_values(10, i)))
+        .collect();
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(e.main.stats().dirty_entries, 108);
+    m.push(dirty_page(&e, 0, nth(108), T0, &seq_values(10, 108)));
+    assert!(eventually(|| e.main.stats().dirty_entries == 0));
+    assert!(eventually(|| e.tiers[0].extents_in_flight() == 0));
+    assert_eq!(file_reports(dir.path())[0]["pages_per_extent"], serde_json::json!({"109": 1}));
+    rt.exit();
+}
+
+/// A rotation leaves the old file to index: `DBEV` indexes it on its own; a quiesced tier indexes nothing more.
+#[test]
+fn rotations_get_indexed() {
+    use crate::dbengine::engine::testutil::{dirty_page, nth, seq_values};
+    let dir = tempfile::tempdir().unwrap();
+    let rt = running(dir.path(), &WorkPool::new(4, 256 * 1024));
+    let e = Arc::clone(rt.engine());
+    let v2 = |n: u32| dir.path().join(format!("journalfile-1-{n:010}.njfv2"));
+    let fill = |from: usize| {
+        (from..from + 64)
+            .map(|i| {
+                let m = dirty_page(&e, 0, nth(i), T0, &seq_values(1024, i));
+                e.flush_dirty(0);
+                m
+            })
+            .collect::<Vec<_>>()
+    };
+    let _m = fill(0);
+    assert!(eventually(|| e.tiers[0].file(1).is_some_and(|df| df.v2_available())));
+    assert!(v2(1).exists());
+    rt.quiesce();
+    assert!(eventually(|| e.tiers[0].quiesced()));
+    let _m2 = fill(64);
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!v2(2).exists());
+    rt.exit();
+}
+
+/// `flush_everything()`: nothing to flush says nothing; a dirty-only flush without waiting says so; a waiting one
+/// reports its progress and completion; the collector wait says it waits.
+#[test]
+fn flush_everything_reports_as_c() {
+    use crate::dbengine::engine::collect::{Alignment, CollectHandle};
+    use crate::dbengine::engine::testutil::{dirty_page, nth, seq_values};
+    let dir = tempfile::tempdir().unwrap();
+    let rt = running(dir.path(), &WorkPool::new(4, 256 * 1024));
+    let e = Arc::clone(rt.engine());
+    let (_, records) = netdata_agent_log::capture(|| rt.flush_everything(true, true, false));
+    assert_eq!(messages(records), Vec::<String>::new());
+
+    let _m = dirty_page(&e, 0, nth(0), T0, &seq_values(10, 0));
+    let (_, records) = netdata_agent_log::capture(|| rt.flush_everything(false, false, true));
+    assert_eq!(messages(records), ["Flushing DBENGINE only dirty pages..."]);
+    assert!(eventually(|| e.main.stats().dirty_entries == 0));
+
+    let (metric, _) = e.mrg.add_and_acquire(&nth(1), 0, 0, 0, 0);
+    let mut h = CollectHandle::init(&e, &metric, 1, Alignment::new("g", "c", 0));
+    h.store_next(T0 as u64 * 1_000_000, 1.0, 1.0, 1.0, 1, 0, SN_DEFAULT_FLAGS);
+    let (_, records) = netdata_agent_log::capture(|| rt.flush_everything(true, true, false));
+    let records = messages(records);
+    assert_eq!(records[0], "Flushing DBENGINE hot & dirty pages...");
+    // the capture skips the rate limit: the collector still runs through the 50 checks
+    let waits = records[1..]
+        .iter()
+        .take_while(|r| *r == "waiting for 1 collectors to finish")
+        .count();
+    assert_eq!(waits, 50);
+    assert!(records[51].starts_with("DBENGINE: flushing at "), "{records:?}");
+    assert_eq!(records.last().unwrap(), "DBENGINE: flushing completed!");
+    drop(h);
+    rt.exit();
+}
+
+/// A tier's exit waits up to a second for its collectors (C's record once), then puts every page on disk.
+#[test]
+fn a_tier_exit_waits_for_collectors_then_flushes() {
+    use crate::dbengine::engine::collect::{Alignment, CollectHandle};
+    let dir = tempfile::tempdir().unwrap();
+    let rt = running(dir.path(), &WorkPool::new(4, 256 * 1024));
+    let e = Arc::clone(rt.engine());
+    let (metric, _) = e.mrg.add_and_acquire(&A, 0, 0, 0, 0);
+    let mut h = CollectHandle::init(&e, &metric, 1, Alignment::new("g", "c", 0));
+    for t in T0..T0 + 10 {
+        h.store_next(t as u64 * 1_000_000, 1.0, 1.0, 1.0, 1, 0, SN_DEFAULT_FLAGS);
+    }
+    let finisher = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(250));
+        h.finalize()
+    });
+    let (_, records) = netdata_agent_log::capture(|| tier_exit(&e, 0, &rt.dbev.tx));
+    assert!(!finisher.join().unwrap());
+    assert_eq!(
+        messages(records)[0],
+        "DBENGINE: waiting for collectors to finish on tier 0..."
+    );
+    assert_eq!(e.main.hot_and_dirty_entries(), 0);
+    let got = points(&mut e.query(&metric, T0, T0 + 9, Priority::Normal));
+    assert_eq!(got.len(), 10);
+    rt.exit();
+}
+
+/// A tier's shutdown waits for its extents in flight too, and says so once, counting the queries.
+#[test]
+fn a_tier_shutdown_waits_for_its_extents() {
+    let dir = tempfile::tempdir().unwrap();
+    let rt = running(dir.path(), &WorkPool::new(4, 256 * 1024));
+    let e = Arc::clone(rt.engine());
+    e.tiers[0].extent_started();
+    let helper = {
+        let e = Arc::clone(&e);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            e.tiers[0].extent_finished();
+        })
+    };
+    let (_, records) = netdata_agent_log::capture(|| ctx_shutdown_wait(&e, 0));
+    helper.join().unwrap();
+    assert_eq!(
+        messages(records),
+        ["DBENGINE: waiting for 0 inflight queries to finish to shutdown tier 0..."]
+    );
+    rt.exit();
 }
