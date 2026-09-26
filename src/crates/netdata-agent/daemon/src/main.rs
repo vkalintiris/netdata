@@ -67,6 +67,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let mut conf = Conf::default();
     let mut config_loaded = false;
     let mut dont_fork = false;
+    let mut close_open_fds = true;
     let mut pidfile: Option<String> = None;
     // What C reads lazily at the first libuv_initialize(), inside the first netdata_conf_load().
     let system = system::Resources::probe();
@@ -119,6 +120,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 );
                 return 0;
             }
+            // an internal option: profilers keep their own descriptors open
+            Opt::WithArg(b'W', v) if v == b"keepopenfds" => close_open_fds = false,
             Opt::WithArg(b'W', v) => {
                 // The -W sub-options are ported with the subsystems they drive.
                 let mut message = b"Unknown -W parameter '".to_vec();
@@ -138,6 +141,10 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     }
 
+    // what the launcher left open (lxc-attach does), as C closes it right after the options
+    if close_open_fds {
+        let _ = netdata_agent_sys::close_inherited_fds();
+    }
     if !config_loaded {
         conf.netdata_conf_load(None, false, &system);
         conf.cloud_conf_load(false);

@@ -417,14 +417,16 @@ fn journal_send_with_memfd(socket: &UnixDatagram, bytes: &[u8]) -> bool {
     .is_ok()
 }
 
-/// `nd_log_collectors_fd()`: the descriptor children write their stderr to, the collectors' log file when collectors
-/// log to a file, else stderr.
-pub fn collectors_fd() -> i32 {
+/// `nd_log_collectors_fd()`: where children write their stderr, the collectors' log file when collectors log to a
+/// file, else stderr. `None` for stderr itself; otherwise a duplicate that stays open while the caller holds it, even
+/// if the log reopens meanwhile.
+pub fn collectors_fd() -> Option<std::os::fd::OwnedFd> {
     let sources = read(&G.sources);
     let e = &sources[Source::Collector as usize];
-    match e.fd.number() {
-        fd if e.method == Method::File && fd != -1 => fd,
-        _ => 2,
+    match &e.fd {
+        Fd::File(file) if e.method == Method::File => file.try_clone().ok().map(Into::into),
+        Fd::Stdout if e.method == Method::File => std_fd(1).try_clone_to_owned().ok(),
+        _ => None,
     }
 }
 

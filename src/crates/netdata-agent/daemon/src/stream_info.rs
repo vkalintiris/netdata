@@ -45,7 +45,7 @@ pub fn reply(hosts: &Hosts, query: &[u8], now: i64) -> Reply {
     w.member_add_uuid("host_id", &localhost_id);
     w.member_add_uint64("nodes", all.len() as u64);
     // stream_receivers_currently_connected()
-    let receivers = all.iter().filter(|h| h.receiver().is_some()).count();
+    let receivers = hosts.receivers_connected();
     w.member_add_uint64("receivers", receivers as u64);
     // os_random32(): v4 UUIDs fix only bytes 6 and 8
     let random = uuid::Uuid::new_v4();
@@ -216,6 +216,15 @@ mod tests {
             "{{\n    \"version\":1,\n    \"status\":200,\n    \"host_id\":\"{LOCALHOST}\",\n    \"nodes\":2,\n    \"receivers\":0,\n    \"nonce\":X,\n    \"db_status\":\"online\",\n    \"db_liveness\":\"stale\",\n    \"ingest_type\":\"archived\",\n    \"ingest_status\":\"offline\",\n    \"first_time_s\":{first},\n    \"last_time_s\":{last}\n}}\n"
         );
         assert_eq!(body(&hosts, &query), (200, offline));
+        // back before its first store: the database is online, nothing is collected yet
+        child.contexts().worker_cycle();
+        attach(&child);
+        let (code, text) = body(&hosts, &query);
+        assert_eq!(code, 200);
+        assert!(
+            text.contains("\"db_status\":\"online\",\n    \"db_liveness\":\"stale\",\n    \"ingest_type\":\"child\",\n    \"ingest_status\":\"replicating\""),
+            "{text}"
+        );
         // localhost without charts keeps C's startup shape (D48 point 6)
         let (code, text) = body(&hosts, &format!("machine_guid={LOCALHOST}"));
         assert_eq!(code, 200);

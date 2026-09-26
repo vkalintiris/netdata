@@ -605,24 +605,26 @@ impl Hosts {
         self.all().iter().filter(|h| h.receiver().is_some()).count()
     }
 
-    /// `rrdhost_update_is_parent_label()` without the write: the `_is_parent` value to store when it changed since the
-    /// last one stored, or always when `force`d (a labels reload).
-    pub fn is_parent_label(&self, force: bool) -> Option<&'static [u8]> {
+    /// The forced half of `rrdhost_update_is_parent_label()` (a labels reload): the `_is_parent` value to store now,
+    /// remembered as the last one stored. The caller writes it under the labels lock it already holds.
+    pub fn is_parent_label(&self) -> &'static [u8] {
         let mut cached = lock(&self.is_parent);
-        let desired = self.receivers_connected() > 0;
-        if !force && *cached == desired {
-            return None;
-        }
-        *cached = desired;
-        Some(if desired { b"true" } else { b"false" })
+        *cached = self.receivers_connected() > 0;
+        if *cached { b"true" } else { b"false" }
     }
 
-    /// `rrdhost_set_is_parent_label()`: after a receiver attached or detached.
+    /// `rrdhost_set_is_parent_label()`: after a receiver attached or detached, the label follows when the answer
+    /// changed; decided and written under one lock, as C's commit lock, so the last writer writes the current state.
     pub fn update_is_parent_label(&self) {
-        if let Some(value) = self.is_parent_label(false) {
-            self.localhost
-                .update_labels(|labels| labels.add(b"_is_parent", value, crate::labels::SRC_AUTO));
+        let mut cached = lock(&self.is_parent);
+        let desired = self.receivers_connected() > 0;
+        if *cached == desired {
+            return;
         }
+        *cached = desired;
+        let value: &[u8] = if desired { b"true" } else { b"false" };
+        self.localhost
+            .update_labels(|labels| labels.add(b"_is_parent", value, crate::labels::SRC_AUTO));
     }
 
     /// `dictionary_version(rrdhost_root_index)`.
@@ -733,6 +735,57 @@ mod tests {
             stream_send: None,
             cache_dir: None,
         }
+    }
+
+    /// `stream_receiver_replication_reset()` on attach and on detach, each on its own.
+    #[test]
+    fn receivers_reset_replication_flags() {
+        use crate::chart::{ChartSpec, ChartType, flags};
+        let host = Host::new("guid-r", false, info("r"));
+        let (chart, _) = host.charts().create(&ChartSpec {
+            type_: "t",
+            id: "c",
+            name: None,
+            family: None,
+            context: None,
+            title: "t",
+            units: "u",
+            plugin: "p",
+            module: None,
+            priority: 1,
+            update_every: 1,
+            chart_type: ChartType::Line,
+            mode: DbMode::Ram,
+            history_entries: 60,
+            page_size: 4096,
+        });
+        let replicating = |c: &crate::chart::Chart| {
+            c.update_meta(|m| {
+                m.flags |= flags::RECEIVER_REPLICATION_IN_PROGRESS;
+                m.flags &= !flags::RECEIVER_REPLICATION_FINISHED;
+            })
+        };
+        let reset = |c: &crate::chart::Chart| {
+            c.flags()
+                & (flags::RECEIVER_REPLICATION_IN_PROGRESS | flags::RECEIVER_REPLICATION_FINISHED)
+                == flags::RECEIVER_REPLICATION_FINISHED
+        };
+        let slot = || {
+            Arc::new(ReceiverSlot::new(
+                0,
+                Default::default(),
+                ReceiverLink::default(),
+                Box::new(|| {}),
+            ))
+        };
+        let first = slot();
+        assert!(host.set_receiver(Arc::clone(&first)));
+        replicating(&chart);
+        host.clear_receiver(&first);
+        assert!(reset(&chart), "detach resets");
+        replicating(&chart);
+        assert!(host.set_receiver(slot()));
+        assert!(reset(&chart), "attach resets");
     }
 
     #[test]

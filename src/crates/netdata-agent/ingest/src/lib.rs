@@ -1094,7 +1094,11 @@ impl Parser {
     /// `pluginsd_json_stream_paths()` → `stream_path_set_from_json()`: a changed path goes back to the child with
     /// this agent's entry (`stream_path_send_to_child()`), inline, before anything the next lines produce.
     fn stream_path_received(&mut self, body: &[u8]) {
-        if stream_path::set_from_json(&self.host, body) {
+        let changed = {
+            let _frame = self.log_frame();
+            stream_path::set_from_json(&self.host, body)
+        };
+        if changed {
             self.send_stream_path(None);
         }
     }

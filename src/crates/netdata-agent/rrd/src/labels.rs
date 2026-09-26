@@ -163,9 +163,11 @@ impl Labels {
         changed
     }
 
-    /// `rrdlabels_add()`.
+    /// `rrdlabels_add()`: a name that sanitizes to nothing is logged and dropped.
     pub fn add(&mut self, name: &[u8], value: &[u8], source: u32) {
-        let _ = self.add_changed(name, value, source);
+        if let Err(record) = self.add_changed(name, value, source) {
+            netdata_agent_log::netdata_log_error!("{record}");
+        }
     }
 
     /// `rrdlabels_add_pair()`: `name=value` or `name:value`, either part optionally quoted (`'` or `"`, with `\`

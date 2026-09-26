@@ -515,6 +515,7 @@ impl Receivers {
         self.hosts.update_is_parent_label();
         if stream.set_nonblocking(true).is_err() {
             host.clear_receiver(&slot);
+            self.hosts.update_is_parent_label();
             return;
         }
         let thread = {
@@ -550,6 +551,7 @@ impl Receivers {
         );
         if let Err(attached) = self.pool.send(thread, attached) {
             attached.host.clear_receiver(&attached.slot);
+            self.hosts.update_is_parent_label();
             self.load.lock().unwrap_or_else(PoisonError::into_inner)[thread] -= 1;
         }
     }
@@ -905,6 +907,7 @@ impl Worker for StreamWorker {
             .is_err()
         {
             attached.host.clear_receiver(&attached.slot);
+            attached.hosts.update_is_parent_label();
             self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
             return;
         }

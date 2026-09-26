@@ -15,8 +15,9 @@ use crate::spawn::Popen;
 fn detect(si: &mut SystemInfo, plugins_dir: &str) {
     // the daemon status file's hardware fields come with its port (D49 point 3)
     let script = format!("{plugins_dir}/system-info.sh");
-    if nix::unistd::access(script.as_str(), nix::unistd::AccessFlags::R_OK).is_err() {
-        netdata_log_error!("SYSTEM INFO: System info script {script} not found or not readable.");
+    if let Err(errno) = nix::unistd::access(script.as_str(), nix::unistd::AccessFlags::R_OK) {
+        nd_log!(Source::Daemon, Priority::Err, errno = errno as i32;
+            "SYSTEM INFO: System info script {script} not found or not readable.");
         return;
     }
     let Ok(mut child) = Popen::run(&script) else {
@@ -75,8 +76,8 @@ fn install_type(si: &mut SystemInfo, user_config_dir: &str) {
 }
 
 /// The startup step `system info`: detection, the install type, then the second detection C runs for its build info
-/// (`set_late_analytics_variables()` → `populate_system_info()`, localhost not existing yet), whose result only
-/// analytics use.
+/// (`set_late_analytics_variables()` → `populate_system_info()`, localhost not existing yet), whose result feeds
+/// `BUILD_INFO` (`application` in `/api/v2/info` and `-W buildinfo`, not ported yet).
 pub fn startup(plugins_dir: &str, user_config_dir: &str) -> SystemInfo {
     let mut si = SystemInfo::default();
     detect(&mut si, plugins_dir);

@@ -68,12 +68,9 @@ fn getenv(name: &[u8]) -> Option<Vec<u8>> {
 /// `rrdhost_load_kubernetes_labels()`: the script's lines (added even when it fails), and whether it ran cleanly.
 fn kubernetes_labels(plugins_dir: &str) -> (Vec<Vec<u8>>, bool) {
     let script = format!("{plugins_dir}/get-kubernetes-labels.sh");
-    if nix::unistd::access(script.as_str(), nix::unistd::AccessFlags::R_OK).is_err() {
-        nd_log!(
-            Source::Daemon,
-            Priority::Err,
-            "Kubernetes pod label fetching script {script} not found."
-        );
+    if let Err(errno) = nix::unistd::access(script.as_str(), nix::unistd::AccessFlags::R_OK) {
+        nd_log!(Source::Daemon, Priority::Err, errno = errno as i32;
+            "Kubernetes pod label fetching script {script} not found.");
         return (Vec::new(), false);
     }
     let Ok(mut child) = Popen::run(&script) else {
@@ -134,7 +131,7 @@ pub fn reload(conf: &mut Conf, hosts: &Hosts) {
     let has_unstable_connection =
         conf.netdata
             .get_boolean(SECTION_GLOBAL, "has unstable connection", false);
-    let is_parent = hosts.is_parent_label(true).unwrap_or(b"false");
+    let is_parent = hosts.is_parent_label();
     let localhost = hosts.localhost();
     let info = localhost.info();
     let bool_text = |b: bool| if b { &b"true"[..] } else { &b"false"[..] };

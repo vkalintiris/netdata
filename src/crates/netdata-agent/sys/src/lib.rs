@@ -10,6 +10,8 @@
 //!   use and destroyed once.
 //! - `mallopt()` (decision D28, glibc only) passes two integers; glibc serialises it against its own allocator.
 //! - `setsockopt(TCP_DEFER_ACCEPT)` (decision D47) passes a stack `int` with its size on a borrowed descriptor.
+//! - `close_range()` and `close()` of inherited descriptors (decision D52) run only while the process has one thread,
+//!   at startup, before the daemon opens a descriptor it keeps.
 
 use std::io;
 
@@ -246,6 +248,28 @@ pub fn set_tcp_defer_accept(fd: std::os::fd::BorrowedFd<'_>, seconds: i32) -> io
     }
 }
 
+/// `os_close_all_non_std_open_fds_except(NULL, 0, 0)`: closes every descriptor above stderr, as C does at startup for
+/// what its launcher left open. `close_range()` first, else each descriptor listed in `/proc/self/fd`. Refused unless
+/// the process is single-threaded: descriptors are closed without their owners knowing, so the caller must not hold
+/// any above 2.
+pub fn close_inherited_fds() -> io::Result<()> {
+    require_single_thread("close_inherited_fds()")?;
+    // SAFETY: plain integer arguments; the single thread owns no descriptor above 2 at this point (precondition).
+    let r = unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) };
+    if r == 0 {
+        return Ok(());
+    }
+    let fds: Vec<i32> = std::fs::read_dir("/proc/self/fd")?
+        .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+        .filter(|&fd| fd > 2)
+        .collect();
+    for fd in fds {
+        // SAFETY: as above; the listing's own descriptor is already closed, so a stale number just fails with EBADF.
+        unsafe { libc::close(fd) };
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +280,7 @@ mod tests {
         assert!(thread_count().unwrap() > 1);
         assert!(fork().is_err());
         assert!(setenv("NETDATA_SYS_TEST", "1").is_err());
+        assert!(close_inherited_fds().is_err());
         assert!(sched_getscheduler().is_ok());
         assert!(getpriority_self().is_ok());
     }
