@@ -335,6 +335,74 @@ pub fn ns(text: &str) -> Option<i64> {
     text.parse().ok()
 }
 
+/// A trace answer (the `trace` mode), bare: no Functions envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraceAnswer {
+    pub mode: String,
+    pub version: u32,
+    pub trace_id: String,
+    pub coverage: Coverage,
+    pub status: Status,
+    pub items: TraceItems,
+    #[serde(default)]
+    pub summary_root: Option<usize>,
+    pub roots: Vec<usize>,
+    pub children: Vec<Vec<usize>>,
+    pub spans: Vec<TraceSpanAnswer>,
+}
+
+/// The seconds the answer searched, `[after, before)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Coverage {
+    pub after: u32,
+    pub before: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraceItems {
+    pub returned: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraceSpanAnswer {
+    pub span_id: String,
+    /// Absent for a span without a parent.
+    #[serde(default)]
+    pub parent_span_id: Option<String>,
+    pub start_ns: i64,
+    pub duration_ns: i64,
+    #[serde(default)]
+    pub self_duration_ns: Option<i64>,
+    #[serde(default)]
+    pub error_origin: Option<bool>,
+    pub kind: i32,
+    pub flags: u32,
+    pub dropped_attributes_count: u32,
+    pub dropped_events_count: u32,
+    pub dropped_links_count: u32,
+    pub fields: Vec<(String, String)>,
+    pub events: Vec<EventAnswer>,
+    pub links: Vec<LinkAnswer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventAnswer {
+    pub time_unix_nano: u64,
+    pub name: String,
+    pub dropped_attributes_count: u32,
+    pub attributes: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkAnswer {
+    pub trace_id: String,
+    pub span_id: String,
+    pub trace_state: String,
+    pub flags: u32,
+    pub dropped_attributes_count: u32,
+    pub attributes: Vec<(String, String)>,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -472,6 +540,62 @@ mod tests {
         assert_eq!(reasons["a_reason_added_later"].count, 2);
         let complete: Status = serde_json::from_value(json!({"complete": true})).unwrap();
         assert!(complete.is_complete() && complete.reasons().is_empty());
+    }
+
+    #[test]
+    fn reads_a_trace_answer() {
+        let v = json!({
+            "mode": "trace",
+            "version": 1,
+            "trace_id": "00000000000000000000000000000007",
+            "coverage": {"after": 100, "before": 200},
+            "status": {"partial": [{"reason": "size_cap", "count": 1}]},
+            "items": {"returned": 2},
+            "summary_root": 0,
+            "roots": [0],
+            "children": [[1], []],
+            "field_kinds": {"fields": []},
+            "log_streams": ["00000000000000a1"],
+            "spans": [
+                {
+                    "span_id": "0000000000000001", "start_ns": 1_790_352_012_345_678_785_i64,
+                    "duration_ns": 10, "self_duration_ns": 4, "error_origin": false, "kind": 2,
+                    "flags": 257, "dropped_attributes_count": 0, "dropped_events_count": 1,
+                    "dropped_links_count": 0, "fields": [["name", "GET"]],
+                    "events": [{"time_unix_nano": 0, "name": "", "dropped_attributes_count": 0,
+                                "attributes": [["db.rows", "3"]]}],
+                    "links": [{"trace_id": "00000000000000000000000000000000",
+                               "span_id": "0000000000000009", "trace_state": "k=v", "flags": 1,
+                               "dropped_attributes_count": 2, "attributes": []}]
+                },
+                {
+                    "span_id": "0000000000000002", "parent_span_id": "0000000000000001",
+                    "start_ns": 1_790_352_012_345_678_790_i64, "duration_ns": 6, "kind": 3, "flags": 0,
+                    "dropped_attributes_count": 0, "dropped_events_count": 0,
+                    "dropped_links_count": 0, "fields": [], "events": [], "links": []
+                }
+            ]
+        });
+        let answer: TraceAnswer = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            answer.coverage,
+            Coverage {
+                after: 100,
+                before: 200
+            }
+        );
+        assert!(answer.status.reasons().contains_key("size_cap"));
+        assert_eq!(answer.spans[0].start_ns, 1_790_352_012_345_678_785);
+        assert_eq!(answer.spans[0].parent_span_id, None);
+        assert_eq!(answer.spans[1].self_duration_ns, None);
+        assert_eq!(
+            answer.spans[0].events[0].attributes,
+            vec![("db.rows".to_string(), "3".to_string())]
+        );
+        assert_eq!(answer.spans[0].links[0].trace_state, "k=v");
+        let back: TraceAnswer =
+            serde_json::from_value(serde_json::to_value(&answer).unwrap()).unwrap();
+        assert_eq!(back, answer);
     }
 
     #[test]
