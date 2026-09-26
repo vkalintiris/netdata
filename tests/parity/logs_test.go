@@ -33,8 +33,7 @@ var cOnlyRecords = []struct {
 	{regexp.MustCompile(`msg="DBENGINE|msg="Flushing DBENGINE|thread=DBEV `), "dbengine (milestone D4)"},
 	{regexp.MustCompile(`msg="RRDCONTEXT: metadata for node `), "dbengine (milestone D4)"},
 	{regexp.MustCompile(`msg="ACLK[: ]`), "ACLK"},
-	{regexp.MustCompile(`msg="METADATA: `), "SQLite metadata sync"},
-	{regexp.MustCompile(`msg="(Using \d+ threads for context loading|Contexts for \d+ hosts loaded: )`), "context load (D4 S1, D59.5)"},
+	{regexp.MustCompile(`msg="METADATA: Progress of metadata storage`), "metadata writer (D59.4, S1b)"},
 	{regexp.MustCompile(`msg="SQL: (suppressing SQLite teardown|skipping )`), "SQLite teardown"},
 	{regexp.MustCompile(`msg="CLAIM: `), "claiming"},
 	{regexp.MustCompile(`msg="SERVICE CONTROL: waiting for the following|msg="SERVICE: Signal to stop : `), "service registry of C's static threads (D44)"},
@@ -50,7 +49,7 @@ var portedRecords = regexp.MustCompile(`msg="ACLK: (proxy is|using |proxy is exp
 
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
 var cOnlyThreads = map[string]string{
-	"DBEV": "dbengine", "METASYNC": "SQLite metadata sync", "ACLKSYNC": "ACLK", "SDBUSWATCHER": "systemd bus watcher",
+	"DBEV": "dbengine", "ACLKSYNC": "ACLK", "SDBUSWATCHER": "systemd bus watcher",
 	"PULSE": "pulse charts", "PLUGINSD": "plugins.d",
 	"SERVICE": "service thread", "HEALTH": "health", "ANALYTICS": "analytics",
 	"DBENGINIT": "dbengine (milestone D4)", "EXPORTING": "exporting engine", "STATSD_FLUSH": "statsd",
@@ -82,6 +81,7 @@ var logMasks = []struct {
 	{regexp.MustCompile(`Shutdown process ended in [^"]*"`), "Shutdown process ended in D\""},
 	{regexp.MustCompile(`0x[0-9A-F]{16}`), "0xPTR"},
 	{regexp.MustCompile(`task id \d+`), "task id N"},
+	{regexp.MustCompile(`(loaded in|handled directly, in) [^"]*"`), "${1} D\""},
 	{regexp.MustCompile(`\(fd \d+\)|on fd \d+`), "fd N"},
 	{regexp.MustCompile(`stopped after \d+ connects, \d+ disconnects \(max concurrent \d+\), \d+ receptions and \d+ sends`), "stopped after C"},
 }
@@ -336,13 +336,17 @@ func compareLogs(t *testing.T, logs string) {
 	compareLogFiles(t, p)
 }
 
-// compareLogFiles compares the logs of a pair whose daemons have exited: the main thread's and the shutdown watcher's
-// records in order, every other thread's as a multiset, without the oracle's records of unported subsystems.
-func compareLogFiles(t *testing.T, p *Pair) {
+// compareLogFiles compares the logs of a pair whose daemons have exited (daemon.log and access.log unless names are
+// given): the main thread's and the shutdown watcher's records in order, every other thread's as a multiset, without
+// the oracle's records of unported subsystems.
+func compareLogFiles(t *testing.T, p *Pair, names ...string) {
 	t.Helper()
+	if len(names) == 0 {
+		names = []string{"daemon.log", "access.log"}
+	}
 	oProbes := probePorts(logLines(t, p.Oracle.Opts.RunDir, "access.log"))
 	cProbes := probePorts(logLines(t, p.Candidate.Opts.RunDir, "access.log"))
-	for _, name := range []string{"daemon.log", "access.log"} {
+	for _, name := range names {
 		o, c := logLines(t, p.Oracle.Opts.RunDir, name), logLines(t, p.Candidate.Opts.RunDir, name)
 		if name == "daemon.log" {
 			// each probe connection is one connect, one disconnect and one reception

@@ -142,7 +142,16 @@ func TestArchivedHosts(t *testing.T) {
 	opts := daemon.Options{DBMode: "alloc", StorageTiers: 1, StreamMemoryMode: "alloc", SeedCache: seed,
 		LogsExtra: "    level = debug\n"}
 	t.Run("seeded", func(t *testing.T) {
-		compareArchived(t, StartPair(t, opts, parentIdentity), childHost.Hostname)
+		p := StartPair(t, opts, parentIdentity)
+		compareArchived(t, p, childHost.Hostname)
+		// the whole daemon log: the context load's pool and CTXLOAD records, METASYNC, the exit (the access log's
+		// sizes differ on endpoints not fully ported)
+		for _, side := range p.Each() {
+			if err := side.Daemon.Stop(); err != nil {
+				t.Fatalf("stop %s: %v", side.Role, err)
+			}
+		}
+		compareLogFiles(t, p, "daemon.log")
 	})
 	t.Run("guid-change", func(t *testing.T) {
 		// a new name too, so that the old localhost's name means only the archived host

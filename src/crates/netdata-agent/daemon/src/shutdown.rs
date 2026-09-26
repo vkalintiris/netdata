@@ -46,6 +46,7 @@ pub const STOP_STREAMING: usize = 5;
 pub const STOP_CONTEXT: usize = 8;
 pub const CANCEL_MAIN_THREADS: usize = 13;
 pub const STOP_COLLECTION: usize = 14;
+pub const STOP_METASYNC_THREADS: usize = 17;
 pub const JOIN_STATIC_THREADS: usize = 18;
 pub const CLOSE_SQL_DATABASES: usize = 19;
 pub const REMOVE_PID_FILE: usize = 20;

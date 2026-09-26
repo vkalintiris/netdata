@@ -1,13 +1,15 @@
 //! `aclk_synchronization_init()` (`src/database/sqlite/sqlite_aclk.c`) without ACLK: the stored children
 //! (`hops > 0`) become archived hosts, with C's records, rules and field defaults (`load_archived_host_from_row()`).
 
-use netdata_agent_log::netdata_log_info;
+use netdata_agent_log::{Priority, Source, nd_log, netdata_log_info};
 use netdata_agent_metadata::open::MetaDb;
 use netdata_agent_metadata::read::{HostRow, NodeId};
 use netdata_agent_rrd::host::{Host, HostInfo, Hosts};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 use netdata_agent_rrd::system_info::SystemInfo;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+
+use crate::metasync::MetaSync;
 
 /// `NETDATA_VIRTUAL_HOST`: the operating system of a virtual node.
 const VIRTUAL_HOST_OS: &str = "Netdata Virtual Host 1.0";
@@ -27,9 +29,9 @@ fn now_s() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
-/// Creates the archived hosts; their contexts load as C's dispatcher loads them, or, until it is ported, the pending
-/// flags clear at once, as C clears them when the load cannot be queued.
-pub fn load(meta: &MetaDb, hosts: &Hosts, defaults: &Defaults) {
+/// Creates the archived hosts, then has METASYNC load their contexts (the flags clear at once when it cannot, as in
+/// C), and waits up to a minute for the vnodes among them.
+pub fn load(meta: &MetaDb, hosts: &Arc<Hosts>, defaults: &Defaults, metasync: Option<&MetaSync>) {
     netdata_log_info!("Creating archived hosts");
     let (mut children, mut vnodes) = (0, 0);
     for row in meta.archived_hosts() {
@@ -45,17 +47,54 @@ pub fn load(meta: &MetaDb, hosts: &Hosts, defaults: &Defaults) {
         "Created {} archived hosts ({children} children and {vnodes} vnodes)",
         children + vnodes
     );
+    let loaded = queue_context_load(hosts, metasync);
     // what the ACLKSYNC thread does first, on every start
     meta.drop_legacy_aclk_tables();
-    for host in hosts.all() {
-        host.clear_pending_context_load();
+    if let Some(loaded) = loaded {
+        wait_for_vnodes(&loaded, vnodes);
     }
     netdata_log_info!("ACLK sync initialization completed");
 }
 
+/// `metadata_queue_load_host_context()`, or, when it fails, `reset_host_context_load_flag()`. The receiver the vnodes
+/// report on when queued.
+fn queue_context_load(
+    hosts: &Arc<Hosts>,
+    metasync: Option<&MetaSync>,
+) -> Option<mpsc::Receiver<()>> {
+    let (tx, rx) = mpsc::channel();
+    if metasync.is_some_and(|m| m.load_host_contexts(hosts, tx)) {
+        return Some(rx);
+    }
+    nd_log!(
+        Source::Daemon,
+        Priority::Warning,
+        "Failed to queue command to load contexts for archived hosts"
+    );
+    for host in hosts.all() {
+        host.clear_pending_context_load();
+    }
+    None
+}
+
+/// The vnodes' context loads, for at most a minute.
+fn wait_for_vnodes(loaded: &mpsc::Receiver<()>, vnodes: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    for _ in 0..vnodes {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if loaded.recv_timeout(left).is_err() {
+            nd_log!(
+                Source::Daemon,
+                Priority::Warning,
+                "Vnodes context load still in progress, continue with agent start"
+            );
+            break;
+        }
+    }
+}
+
 /// `aclk_synchronization_init()` when `netdata-meta.db` could not be opened: C's statement fails on its NULL handle.
-pub fn load_without_database() {
-    use netdata_agent_log::{Priority, Source, nd_log};
+pub fn load_without_database(hosts: &Arc<Hosts>, metasync: Option<&MetaSync>) {
     netdata_log_info!("Creating archived hosts");
     nd_log!(
         Source::Daemon,
@@ -68,6 +107,7 @@ pub fn load_without_database() {
         "SQLite error when preparing statement to load archived hosts: out of memory"
     );
     netdata_log_info!("Created 0 archived hosts (0 children and 0 vnodes)");
+    let _ = queue_context_load(hosts, metasync);
     netdata_log_info!("ACLK sync initialization completed");
 }
 

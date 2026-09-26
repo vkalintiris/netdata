@@ -19,6 +19,7 @@ mod data;
 mod guid;
 mod host_labels;
 mod listen;
+mod metasync;
 mod profile;
 mod router;
 mod rrdcontext;
@@ -455,6 +456,18 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             "Failed to initialize context metadata database"
         );
     }
+    // metadata_sync_init()
+    let metasync = match metasync::MetaSync::start(
+        &uv_pool,
+        conf.threads.cpus as usize,
+        conf.threads.thread_stack_size,
+    ) {
+        Ok(metasync) => metasync,
+        Err(err) => fatal!(
+            "{}",
+            netdata_agent_evloop::thread_create_failed("METASYNC", &err)
+        ),
+    };
     let health_enabled = conf.health_load_config_defaults();
     let localhost = Host::new(
         &machine_guid,
@@ -516,8 +529,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 page_size: system.page_size,
                 free_ephemeral_time_s: db.free_ephemeral_time_s,
             },
+            Some(&metasync),
         ),
-        None => archived::load_without_database(),
+        None => archived::load_without_database(&hosts, Some(&metasync)),
     }
     // stream_thread_get_unsafe(): one thread per core but one, 4..=2048, each started when a node is first assigned
     // to it.
@@ -693,6 +707,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let mut contexts_worker = Some(contexts_worker);
     let mut meta = meta;
     let mut context_db = context_db;
+    let mut metasync = Some(metasync);
     let mut shutdown_started_ut = 0;
     shutdown::set_work(Box::new(move |step, normal| match step {
         0 => shutdown_started_ut = startup::now_ut(),
@@ -724,6 +739,16 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                     Priority::Debug,
                     "RRD: 'host:{hostname}' stopping data collection..."
                 );
+            }
+        }
+        shutdown::STOP_METASYNC_THREADS => {
+            if let Some(metasync) = metasync.take() {
+                if normal {
+                    metasync.shutdown();
+                } else {
+                    // an abnormal exit leaves the thread running until the process ends, as C does
+                    std::mem::forget(metasync);
+                }
             }
         }
         // the shutdown time goes into the agent event log, unless the exit is abnormal
