@@ -216,7 +216,7 @@ fn queries_read_the_generated_values() {
         .get_and_acquire(&uuid_of(&fx, "b6.c0", "d2"), 0)
         .unwrap();
     let (from, to) = (START + 1000, START + 1100);
-    let mut q = engine.query(&metric, from, to, QueryPriority::Normal, NOW);
+    let mut q = engine.query(&metric, from, to, QueryPriority::Normal);
     let mut n = 0;
     while !q.is_finished() {
         let p = q.next_metric();
@@ -242,7 +242,6 @@ fn queries_read_the_generated_values() {
         START + 99_990,
         START + 105_010,
         QueryPriority::Normal,
-        NOW,
     );
     let mut times = Vec::new();
     while !q.is_finished() {
@@ -272,7 +271,6 @@ fn queries_read_the_generated_values() {
                 r.first_time_s,
                 r.last_time_s,
                 QueryPriority::Normal,
-                NOW,
             );
             let mut t = r.first_time_s;
             while !q.is_finished() {
@@ -307,7 +305,6 @@ fn queries_read_the_generated_values() {
         START + 3600,
         START + 7200,
         QueryPriority::Normal,
-        NOW,
     );
     let mut minutes = 0;
     while !q.is_finished() {

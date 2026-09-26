@@ -3,11 +3,13 @@
 
 pub mod cache;
 pub mod collect;
+mod flush;
 pub mod io;
 pub mod load;
 pub mod mrg;
 pub mod query;
 pub mod runtime;
+pub mod tier;
 pub mod v2index;
 
 #[cfg(test)]

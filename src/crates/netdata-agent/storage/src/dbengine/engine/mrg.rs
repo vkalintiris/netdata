@@ -518,7 +518,11 @@ impl Mrg {
 
     /// A tier's view for the v1 replay (`journalfile_restore_extent_metadata()`).
     pub fn tier(&self, tier: usize) -> TierReplay<'_> {
-        TierReplay { mrg: self, tier }
+        TierReplay {
+            mrg: self,
+            tier,
+            samples: 0,
+        }
     }
 }
 
@@ -526,6 +530,14 @@ impl Mrg {
 pub struct TierReplay<'a> {
     mrg: &'a Mrg,
     tier: usize,
+    samples: u64,
+}
+
+impl TierReplay<'_> {
+    /// The samples of the metrics the replay added.
+    pub fn samples(&self) -> u64 {
+        self.samples
+    }
 }
 
 impl UeSource for TierReplay<'_> {
@@ -543,7 +555,12 @@ impl UeSource for TierReplay<'_> {
             vd.end_time_s,
             vd.update_every_s,
         );
-        if !added {
+        if added {
+            if vd.update_every_s != 0 {
+                self.samples +=
+                    ((vd.end_time_s - vd.start_time_s) / i64::from(vd.update_every_s)) as u64;
+            }
+        } else {
             metric.expand_retention(vd.start_time_s, vd.end_time_s, vd.update_every_s);
         }
     }

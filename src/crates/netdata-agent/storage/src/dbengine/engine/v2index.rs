@@ -134,6 +134,8 @@ struct Populated {
     index: Option<V2Index>,
     /// The header's start, a candidate for the tier's first time (`global_first_time_s`).
     first_time_s: i64,
+    /// The samples the file's metrics added to the registry (`journal_samples`), counted when it populated.
+    samples: u64,
 }
 
 /// Reads the metric list in chunks, handing each entry to `f`; the CRC of the whole list.
@@ -188,6 +190,7 @@ fn populate_file(job: Job, mrg: &Mrg, now_s: i64) -> Populated {
         fileno,
         index: None,
         first_time_s,
+        samples: 0,
     };
     let mut hb = [0u8; HEADER_SIZE];
     if ReadAt::read_exact_at(&file, &mut hb, 0).is_err() {
@@ -222,11 +225,12 @@ fn populate_file(job: Job, mrg: &Mrg, now_s: i64) -> Populated {
     let base = (h.start_time_ut / 1_000_000) as i64;
     let now = now_s + 1;
     let mut sparse = Vec::with_capacity(h.metric_count as usize / SPARSE_EVERY + 1);
+    let mut samples = 0;
     let walked = walk_metric_list(&file, &h, |index, m| {
         if (index as usize).is_multiple_of(SPARSE_EVERY) {
             sparse.push((m.uuid, index));
         }
-        mrg.update_retention_by_uuid(
+        samples += mrg.update_retention_by_uuid(
             &m.uuid,
             tier,
             base + i64::from(m.delta_start_s),
@@ -253,6 +257,7 @@ fn populate_file(job: Job, mrg: &Mrg, now_s: i64) -> Populated {
     Populated {
         fileno,
         first_time_s: base,
+        samples,
         index: Some(V2Index {
             fileno,
             file,
@@ -374,6 +379,7 @@ pub fn populate_files(tier: &mut Tier, mrg: &Mrg, pool: &WorkPool, slots: &Arc<S
                     fileno,
                     index: None,
                     first_time_s: 0,
+                    samples: 0,
                 },
             };
             job_completed.fetch_add(1, Ordering::AcqRel);
@@ -417,6 +423,7 @@ pub fn populate_files(tier: &mut Tier, mrg: &Mrg, pool: &WorkPool, slots: &Arc<S
             tier.first_time_s = result.first_time_s;
         }
         if let Some(index) = result.index {
+            tier.samples += result.samples;
             tier.indexes.insert(result.fileno, index);
         }
     }

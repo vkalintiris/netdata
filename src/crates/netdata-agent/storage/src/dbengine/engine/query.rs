@@ -7,9 +7,9 @@
 //! The preparation (the page list and the extent reads) runs as one job on the `UV_WORKER` pool, which the query
 //! waits for at its first point (C queues it for NORMAL priority and blocks at the first lookup).
 
-use std::collections::{BTreeMap, HashMap, btree_map};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, mpsc};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 
 use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::{
@@ -17,10 +17,10 @@ use netdata_agent_log::{
 };
 
 use super::cache::{CachedPage, ExtentCache, MainCache, Search};
-use super::io::IoFile;
-use super::load::{Tier, TierConfig};
+use super::load::Tier;
 use super::mrg::{Handle, Mrg};
-use super::v2index::{PageListError, V2Index};
+use super::tier::{OpenPage, TierData};
+use super::v2index::PageListError;
 use crate::dbengine::format::descriptor::{
     PAGE_TYPE_ARRAY_32BIT, PAGE_TYPE_ARRAY_TIER1, PAGE_TYPE_GORILLA_32BIT, PageDescriptor,
     log_validation, uuid_text, validate_extent_page_descr,
@@ -39,119 +39,6 @@ pub enum Priority {
     BestEffort,
     /// Prepared on the caller's thread.
     Synchronous,
-}
-
-/// A page the open cache holds: a replayed journal's page not indexed yet.
-#[derive(Debug, Clone, Copy)]
-struct OpenPage {
-    end_time_s: i64,
-    update_every_s: u32,
-    fileno: u32,
-    block: u64,
-    bytes: u32,
-}
-
-/// A tier as queries read it.
-#[derive(Debug)]
-pub struct TierData {
-    pub config: TierConfig,
-    /// The data files, for extent reads.
-    datafiles: HashMap<u32, IoFile>,
-    /// `njfv2idx`: the serving v2 files by their end, then number.
-    v2: BTreeMap<(i64, u32), V2Index>,
-    open: HashMap<[u8; 16], BTreeMap<i64, OpenPage>>,
-    /// `ctx->atomic.first_time_s`.
-    pub first_time_s: i64,
-    /// `ctx->quiesce.enabled`: the tier is shutting down, new queries get no preparation.
-    quiesced: AtomicBool,
-    /// `ctx->atomic.inflight_queries`: queries holding a preparation, which the tier's shutdown waits for.
-    inflight: Arc<AtomicUsize>,
-    /// `ctx->atomic.collectors_running`: the tier's collection handles.
-    collectors_running: AtomicUsize,
-    /// `ctx->atomic.samples`: the intervals of the pages collectors closed.
-    samples: AtomicU64,
-}
-
-impl TierData {
-    /// A tier after its startup and population.
-    fn new(tier: Tier) -> TierData {
-        let mut open: HashMap<[u8; 16], BTreeMap<i64, OpenPage>> = HashMap::new();
-        for (fileno, p) in tier.open_pages {
-            let page = OpenPage {
-                end_time_s: p.end_time_s,
-                update_every_s: p.update_every_s,
-                fileno,
-                block: p.block,
-                bytes: p.extent_bytes,
-            };
-            // `pgc_open_add_hot_page()`: a page of another journal at the same start replaces the held one only if
-            // it ends later
-            match open.entry(p.uuid).or_default().entry(p.start_time_s) {
-                btree_map::Entry::Vacant(v) => {
-                    v.insert(page);
-                }
-                btree_map::Entry::Occupied(mut o) if page.end_time_s > o.get().end_time_s => {
-                    o.insert(page);
-                }
-                btree_map::Entry::Occupied(_) => {}
-            }
-        }
-        TierData {
-            config: tier.config,
-            datafiles: tier.files.into_iter().map(|f| (f.fileno, f.file)).collect(),
-            v2: tier
-                .indexes
-                .into_values()
-                .map(|index| ((index.end_time_s(), index.fileno), index))
-                .collect(),
-            open,
-            first_time_s: tier.first_time_s,
-            quiesced: AtomicBool::new(false),
-            inflight: Arc::default(),
-            collectors_running: AtomicUsize::new(0),
-            samples: AtomicU64::new(0),
-        }
-    }
-
-    pub fn tier(&self) -> usize {
-        self.config.tier
-    }
-
-    /// The collection handles open on the tier.
-    pub fn collectors_running(&self) -> usize {
-        self.collectors_running.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn collector_started(&self) {
-        self.collectors_running.fetch_add(1, Ordering::AcqRel);
-    }
-
-    pub(crate) fn collector_finished(&self) {
-        self.collectors_running.fetch_sub(1, Ordering::AcqRel);
-    }
-
-    /// The samples of the pages collectors closed.
-    pub fn samples(&self) -> u64 {
-        self.samples.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn add_samples(&self, samples: u64) {
-        self.samples.fetch_add(samples, Ordering::Relaxed);
-    }
-
-    /// `RRDENG_OPCODE_CTX_QUIESCE`: queries started from now on read nothing.
-    pub fn quiesce(&self) {
-        self.quiesced.store(true, Ordering::Release);
-    }
-
-    pub fn quiesced(&self) -> bool {
-        self.quiesced.load(Ordering::Acquire)
-    }
-
-    /// The queries in flight.
-    pub fn inflight(&self) -> usize {
-        self.inflight.load(Ordering::Acquire)
-    }
 }
 
 /// A query's count in its tier's in-flight queries, held by the query and by its preparation job (C's pdc
@@ -217,6 +104,8 @@ pub struct Dbengine {
     /// `nd_profile.update_every`.
     pub update_every_s: u32,
     now: fn() -> i64,
+    /// `get_datafile_to_write_extent()`'s mutex: one extent at a time finds its place.
+    pub(crate) reserve: Mutex<()>,
 }
 
 // `PDC_PAGE_*`.
@@ -460,6 +349,7 @@ impl Dbengine {
             pool: cfg.pool,
             update_every_s: cfg.update_every_s,
             now: cfg.now,
+            reserve: Mutex::new(()),
         })
     }
 
@@ -489,7 +379,9 @@ impl Dbengine {
     ) -> usize {
         let tier = metric.tier();
         let data = &self.tiers[tier];
-        let open_pages = data.open.get(metric.uuid());
+        // the open cache stays read-locked for the pass (the writers take it alone)
+        let open_list = open.then(|| data.open());
+        let open_pages = open_list.as_ref().and_then(|l| l.pages(metric.uuid()));
         let mut found = 0;
         let mut now_s = start_s;
         let mut dt_s = self.metric_dt(metric);
@@ -545,7 +437,7 @@ impl Dbengine {
                     pd.page = Some(page);
                 }
                 if let Some(p) = open_page {
-                    if data.datafiles.contains_key(&p.fileno) {
+                    if data.has_file(p.fileno) {
                         pd.extent = Some((p.fileno, p.block, p.bytes));
                         pd.status |= DATAFILE_ACQUIRED | DISK_PENDING;
                     } else {
@@ -613,7 +505,7 @@ impl Dbengine {
                     continue;
                 }
             };
-            if !data.datafiles.contains_key(&index.fileno) {
+            if !data.has_file(index.fileno) {
                 continue;
             }
             let base = index.start_time_s();
@@ -802,10 +694,11 @@ impl Dbengine {
             );
             return None;
         }
-        let file = self.tiers[tier].datafiles.get(&fileno)?;
+        let file = self.tiers[tier].file(fileno)?;
         let len = u64::from(bytes).div_ceil(BLOCK_SIZE as u64) * BLOCK_SIZE as u64;
         let mut buf = vec![0u8; len as usize];
-        file.read_exact_at(&mut buf, block * BLOCK_SIZE as u64)
+        file.file
+            .read_exact_at(&mut buf, block * BLOCK_SIZE as u64)
             .ok()?;
         buf.truncate(bytes as usize);
         Some(self.extents.add((tier, fileno, block), buf))
@@ -819,8 +712,9 @@ impl Dbengine {
         list: &mut BTreeMap<i64, Pd>,
         keys: &[i64],
         extent_at: (u32, u64, u32),
-        now_s: i64,
     ) {
+        // `max_acceptable_collected_time()` for each extent (N2)
+        let now_s = self.now_s();
         let (fileno, block, bytes) = extent_at;
         let tier = metric.tier();
         let first_pd = &list[&keys[0]];
@@ -965,7 +859,7 @@ impl Dbengine {
     }
 
     /// `rrdeng_prep_query()`: the page list, then the pages to read loaded, extent by extent in file order.
-    fn prepare(&self, metric: &Handle, start_s: i64, end_s: i64, now_s: i64) -> Prep {
+    fn prepare(&self, metric: &Handle, start_s: i64, end_s: i64) -> Prep {
         let (mut prep, to_load) = self.page_list(metric, start_s, end_s);
         if to_load > 0 {
             let mut by_extent: BTreeMap<(u32, u64, u32), Vec<i64>> = BTreeMap::new();
@@ -977,21 +871,20 @@ impl Dbengine {
                 }
             }
             for (at, keys) in by_extent {
-                self.load_extent(metric, &mut prep.list, &keys, at, now_s);
+                self.load_extent(metric, &mut prep.list, &keys, at);
             }
         }
         prep
     }
 
     /// `rrdeng_load_metric_init()`: a query of `metric` from `start_s` to `end_s`, clamped to its retention; outside
-    /// it the query gives no point. `now_s` is the wall clock page validation uses.
+    /// it the query gives no point. Page validation reads the engine's wall clock as each extent loads.
     pub fn query(
         self: &Arc<Self>,
         metric: &Handle,
         start_s: i64,
         end_s: i64,
         priority: Priority,
-        now_s: i64,
     ) -> Query {
         let r = metric.retention();
         let mut q = Query {
@@ -1020,7 +913,7 @@ impl Dbengine {
         let data = &self.tiers[metric.tier()];
         let inflight = Inflight::new(&data.inflight);
         q._inflight = Some(Arc::clone(&inflight));
-        if data.quiesced.load(Ordering::Acquire) {
+        if data.quiesced() {
             q.prep = Some(Prep {
                 list: BTreeMap::new(),
                 optimal_end_time_s: q.end_time_s,
@@ -1035,16 +928,16 @@ impl Dbengine {
                 if pool
                     .queue(move || {
                         let _inflight = inflight;
-                        let _ = tx.send(engine.prepare(&job_metric, s, e, now_s));
+                        let _ = tx.send(engine.prepare(&job_metric, s, e));
                     })
                     .is_ok()
                 {
                     q.pending = Some(rx);
                 } else {
-                    q.prep = Some(self.prepare(metric, s, e, now_s));
+                    q.prep = Some(self.prepare(metric, s, e));
                 }
             }
-            _ => q.prep = Some(self.prepare(metric, s, e, now_s)),
+            _ => q.prep = Some(self.prepare(metric, s, e)),
         }
         q
     }

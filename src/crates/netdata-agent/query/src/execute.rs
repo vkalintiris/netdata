@@ -684,7 +684,6 @@ fn query_metric(
                 after - expand_after,
                 before + ue * POINTS_TO_EXPAND_QUERY,
                 qt.request.priority,
-                qt.start_s,
             );
             ops.tier = tier;
             let query_points = execute_plan(r, col, grouping, qm, window, &mut ops, &mut query);

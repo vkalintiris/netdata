@@ -55,7 +55,7 @@ fn points_follow_the_pages_with_gaps() {
         (T0, T0 + 29)
     );
 
-    let mut q = e.query(&metric, T0 + 5, T0 + 24, Priority::Normal, NOW);
+    let mut q = e.query(&metric, T0 + 5, T0 + 24, Priority::Normal);
     let mut want: Vec<(i64, f64)> = (5..10).map(|i| (T0 + i, 100.0 + i as f64)).collect();
     // the gap: the next page starts at T0 + 20, points jump there
     want.extend((20..25).map(|i| (T0 + i, 200.0 + (i - 20) as f64)));
@@ -69,7 +69,7 @@ fn points_follow_the_pages_with_gaps() {
     );
 
     // past the last page: the window ends with the retention, so no trailing point
-    let mut q = e.query(&metric, T0 + 27, T0 + 40, Priority::Synchronous, NOW);
+    let mut q = e.query(&metric, T0 + 27, T0 + 40, Priority::Synchronous);
     let got = points(&mut q);
     assert!(
         same(
@@ -79,7 +79,7 @@ fn points_follow_the_pages_with_gaps() {
         "{got:?}"
     );
 
-    let mut q = e.query(&metric, T0 - 100, T0 - 50, Priority::Normal, NOW);
+    let mut q = e.query(&metric, T0 - 100, T0 - 50, Priority::Normal);
     assert_eq!(q.end_time_s, 0, "outside the retention");
     assert!(q.is_finished());
     assert_eq!(points(&mut q), []);
@@ -101,7 +101,7 @@ fn a_corrupt_extent_reads_empty_and_is_cached() {
     let e = engine(dir.path(), None);
     let metric = e.mrg.get_and_acquire(&A, 0).unwrap();
     let (got, records) = netdata_agent_log::capture(|| {
-        points(&mut e.query(&metric, T0, T0 + 9, Priority::Synchronous, NOW))
+        points(&mut e.query(&metric, T0, T0 + 9, Priority::Synchronous))
     });
     // no page to read: one trailing empty point, at the query's end
     assert!(same(&got, &[(T0 + 9, f64::NAN)]), "{got:?}");
@@ -120,7 +120,7 @@ fn a_corrupt_extent_reads_empty_and_is_cached() {
         uuid_text(&A)
     )));
     let (_, records) = netdata_agent_log::capture(|| {
-        points(&mut e.query(&metric, T0, T0 + 9, Priority::Synchronous, NOW))
+        points(&mut e.query(&metric, T0, T0 + 9, Priority::Synchronous))
     });
     assert!(records.is_empty(), "the empty pages are cached");
 }

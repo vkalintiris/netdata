@@ -123,14 +123,14 @@ fn quiesce_stops_queries_and_exit_waits_for_them() {
     );
     let engine = Arc::clone(rt.engine());
     let metric = engine.mrg.get_and_acquire(&A, 0).unwrap();
-    let mut held = engine.query(&metric, T0, T0 + 9, Priority::Normal, NOW);
+    let mut held = engine.query(&metric, T0, T0 + 9, Priority::Normal);
     rt.quiesce();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while !engine.tiers[0].quiesced() {
         assert!(std::time::Instant::now() < deadline, "quiesce");
         std::thread::sleep(Duration::from_millis(1));
     }
-    let got = points(&mut engine.query(&metric, T0, T0 + 9, Priority::Normal, NOW));
+    let got = points(&mut engine.query(&metric, T0, T0 + 9, Priority::Normal));
     assert!(
         got.len() == 1 && got[0].0 == T0 + 9 && got[0].1.is_nan(),
         "{got:?}"

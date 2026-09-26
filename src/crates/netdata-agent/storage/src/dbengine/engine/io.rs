@@ -1,6 +1,6 @@
 //! The engine's file access as `rrdenginelib.c` does it: `open_file_for_io()` with direct I/O first and C's fallback
-//! record, `check_file_properties()`, unlinks with C's failure record, and positioned reads that go through an aligned
-//! buffer when a file is open for direct I/O.
+//! record, `check_file_properties()`, unlinks with C's failure record, positioned reads and writes that go through an
+//! aligned buffer when a file is open for direct I/O, and C's write retries.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -78,12 +78,24 @@ pub fn unlink(path: &Path) -> bool {
     match std::fs::remove_file(path) {
         Ok(()) => true,
         Err(err) => {
-            let errno = err.raw_os_error().unwrap_or(0);
-            nd_log!(Source::Daemon, Priority::Err, errno = errno;
-                "DBENGINE: uv_fs_unlink(\"{}\"): {}", path.display(), uv_strerror(errno));
+            unlink_failed(path, &err);
             false
         }
     }
+}
+
+/// A journal's unlink (`journalfile_destroy_unsafe()`): a file already gone is fine, any other failure recorded.
+pub fn unlink_if_exists(path: &Path) {
+    match std::fs::remove_file(path) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => unlink_failed(path, &err),
+        _ => {}
+    }
+}
+
+fn unlink_failed(path: &Path, err: &io::Error) {
+    let errno = err.raw_os_error().unwrap_or(0);
+    nd_log!(Source::Daemon, Priority::Err, errno = errno;
+        "DBENGINE: uv_fs_unlink(\"{}\"): {}", path.display(), uv_strerror(errno));
 }
 
 /// `ALIGN_BYTES_CEILING()` and `ALIGN_BYTES_FLOOR()` to the 4096-byte block.
@@ -120,14 +132,66 @@ impl ReadAt for IoFile {
     }
 }
 
-/// Writes a whole block at `offset` of a file, through an aligned buffer when it is open for direct I/O.
-pub fn write_block(file: &IoFile, block: &[u8; BLOCK_SIZE], offset: u64) -> io::Result<()> {
-    if !file.direct {
-        return file.file.write_all_at(block, offset);
+/// Writes whole blocks at `offset` of a file, through an aligned buffer when it is open for direct I/O.
+pub fn write_at(file: &IoFile, buf: &[u8], offset: u64) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(errno) = fault::next() {
+        return Err(io::Error::from_raw_os_error(errno));
     }
-    let mut raw = vec![0u8; 2 * BLOCK_SIZE];
+    if !file.direct {
+        return file.file.write_all_at(buf, offset);
+    }
+    let mut raw = vec![0u8; buf.len() + BLOCK_SIZE];
     let skip = raw.as_ptr().align_offset(BLOCK_SIZE);
-    raw[skip..skip + BLOCK_SIZE].copy_from_slice(block);
-    file.file
-        .write_all_at(&raw[skip..skip + BLOCK_SIZE], offset)
+    raw[skip..skip + buf.len()].copy_from_slice(buf);
+    file.file.write_all_at(&raw[skip..skip + buf.len()], offset)
+}
+
+/// C's write loop (`retries = 10; while(ret < 0 && --retries)`): up to 9 attempts, 300 ms apart after each failure a
+/// retry can pass (the last one too); an error no retry passes stops it at once. The last result.
+pub fn write_retrying(file: &IoFile, buf: &[u8], offset: u64) -> io::Result<()> {
+    let mut written = Err(io::ErrorKind::Other.into());
+    for _ in 0..9 {
+        written = write_at(file, buf, offset);
+        match &written {
+            Ok(()) => break,
+            Err(err)
+                if matches!(
+                    err.raw_os_error(),
+                    Some(libc::ENOSPC | libc::EBADF | libc::EACCES | libc::EROFS | libc::EINVAL)
+                ) =>
+            {
+                break;
+            }
+            Err(_) => pause(),
+        }
+    }
+    written
+}
+
+/// The pause between write attempts; tests do not wait.
+fn pause() {
+    #[cfg(not(test))]
+    std::thread::sleep(std::time::Duration::from_millis(300));
+}
+
+/// Scripted write failures for tests, per thread.
+#[cfg(test)]
+pub(crate) mod fault {
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    thread_local! {
+        static SCRIPT: RefCell<VecDeque<Option<i32>>> = const { RefCell::new(VecDeque::new()) };
+    }
+
+    /// The next writes of this thread, in order: `Some(errno)` fails one, `None` lets one through; writes past the
+    /// script pass.
+    pub fn script(steps: impl IntoIterator<Item = Option<i32>>) {
+        SCRIPT.with(|s| *s.borrow_mut() = steps.into_iter().collect());
+    }
+
+    pub(super) fn next() -> Option<i32> {
+        SCRIPT.with(|s| s.borrow_mut().pop_front().flatten())
+    }
 }

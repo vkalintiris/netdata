@@ -19,7 +19,8 @@ use netdata_agent_log::{
 use netdata_agent_text::size::size_to_string;
 
 use super::io::{
-    IoFile, align_ceiling, align_floor, check_file_properties, open_for_io, unlink, write_block,
+    IoFile, align_ceiling, align_floor, check_file_properties, open_for_io, unlink, unlink_if_exists,
+    write_retrying,
 };
 use super::mrg::Mrg;
 use crate::dbengine::format::descriptor::{
@@ -107,13 +108,16 @@ pub struct V2File {
     pub size: u64,
 }
 
-/// A data file pair of the tier (`struct rrdengine_datafile` with its journal).
+/// A data file pair of the tier (`struct rrdengine_datafile` with its journal) as its startup left it.
 #[derive(Debug)]
-pub struct DataFile {
+pub struct Pair {
     pub fileno: u32,
     pub file: IoFile,
     /// `datafile->pos`: the size, rounded up to a block.
     pub pos: u64,
+    /// The v1 journal, open for writes: only for a reused last file and a pair created at this start, the files
+    /// without a v2 index.
+    pub journal: Option<IoFile>,
     /// `journalfile->unsafe.pos`.
     pub journal_pos: u64,
     /// The v2 index when the file has one (loaded, or built at this start).
@@ -125,7 +129,7 @@ pub struct DataFile {
 pub struct Tier {
     pub config: TierConfig,
     /// In file number order.
-    pub files: Vec<DataFile>,
+    pub files: Vec<Pair>,
     /// `ctx->atomic.last_fileno`.
     pub last_fileno: u32,
     /// The open cache: the hot pages of replayed journals not indexed (the last file's, when reused).
@@ -136,11 +140,17 @@ pub struct Tier {
     pub first_time_s: i64,
     /// The v2 files that serve, by file number (a file whose population failed is left out).
     pub indexes: BTreeMap<u32, super::v2index::V2Index>,
+    /// `ctx->atomic.current_disk_space`: the pairs' positions and their v2 files.
+    pub current_disk_space: u64,
+    /// `ctx->atomic.samples`: the intervals of the pages the replays and populations brought.
+    pub samples: u64,
 }
 
 /// What a journal's load left (`journalfile_load()`'s effects).
 struct Journal {
     pos: u64,
+    /// The journal kept open for writes (the reused last file's).
+    journal: Option<IoFile>,
     v2: Option<V2File>,
     /// The replayed journal's open pages, when they stay in the open cache.
     open_pages: Vec<Page>,
@@ -149,6 +159,8 @@ struct Journal {
     /// The replay's first time, which lowers the tier's (`journalfile_restore_extent_metadata()`); 0 when the journal
     /// was not replayed or had no transaction, `i64::MAX` when none of its pages was valid.
     first_time_s: i64,
+    /// The samples of the metrics the replay added to the registry.
+    samples: u64,
 }
 
 /// `sscanf(name, "<prefix>%1u-%10u")`: both numbers convert (after optional white space, digits only within their
@@ -526,20 +538,24 @@ fn journal_load(
     let Ok(file) = open_for_io(&path, false, cfg.direct_io) else {
         return v2.map(|v2| Journal {
             pos: 0,
+            journal: None,
             v2: Some(v2),
             open_pages: Vec::new(),
             create_new_pair: false,
             first_time_s: 0,
+            samples: 0,
         });
     };
     let size = check_file_properties(&file.file, BLOCK_SIZE as u64)?;
     if v2.is_some() {
         return Some(Journal {
             pos: size,
+            journal: None,
             v2,
             open_pages: Vec::new(),
             create_new_pair: false,
             first_time_s: 0,
+            samples: 0,
         });
     }
     let size = align_floor(size);
@@ -579,7 +595,9 @@ fn journal_load(
         max_id: 1,
         read_error: None,
     });
-    let open = open_cache_pages(&replay, now_s + 1, &mut mrg.tier(cfg.tier));
+    let mut registry = mrg.tier(cfg.tier);
+    let open = open_cache_pages(&replay, now_s + 1, &mut registry);
+    let samples = registry.samples();
     log_replay(&open.records, now_s + 1);
     if let Some((pos, errno)) = replay.read_error {
         netdata_log_error!(
@@ -600,10 +618,12 @@ fn journal_load(
     if is_last && datafile_pos <= cfg.target_datafile_size() / 3 && !has_old_data {
         return Some(Journal {
             pos: size,
+            journal: Some(file),
             v2: None,
             open_pages: open.pages,
             create_new_pair: false,
             first_time_s: open.first_time_s,
+            samples,
         });
     }
     let v2 = build_v2(cfg, fileno, size, &open.pages);
@@ -611,10 +631,12 @@ fn journal_load(
     let open_pages = if v2.is_some() { Vec::new() } else { open.pages };
     Some(Journal {
         pos: size,
+        journal: None,
         v2,
         open_pages,
         create_new_pair: is_last,
         first_time_s: open.first_time_s,
+        samples,
     })
 }
 
@@ -650,7 +672,8 @@ static DATAFILE_CREATE: ErrorLimit = ErrorLimit::new(10, 0);
 static JOURNAL_CREATE: ErrorLimit = ErrorLimit::new(10, 0);
 
 /// `create_data_file()` or `journalfile_create()`: the file created with its superblock (a data file's `tier` byte
-/// is 1), the write retried up to 9 times 300 ms apart unless the error cannot pass; C's record on a failure.
+/// is 1), written with C's retries; on a failure the file is removed (a journal's v2 name too, as
+/// `journalfile_destroy_unsafe()`) and C's record written.
 fn create_file(
     path: &Path,
     direct: bool,
@@ -658,49 +681,36 @@ fn create_file(
     journal: bool,
 ) -> Option<IoFile> {
     let file = open_for_io(path, true, direct).ok()?;
-    let mut written: io::Result<()> = Err(io::ErrorKind::Other.into());
-    for _ in 0..9 {
-        written = write_block(&file, superblock, 0);
-        match &written {
-            Ok(()) => break,
-            Err(err)
-                if matches!(
-                    err.raw_os_error(),
-                    Some(libc::ENOSPC | libc::EBADF | libc::EACCES | libc::EROFS | libc::EINVAL)
-                ) =>
-            {
-                break;
-            }
-            Err(_) => std::thread::sleep(std::time::Duration::from_millis(300)),
-        }
+    if write_retrying(&file, superblock, 0).is_ok() {
+        return Some(file);
     }
-    if written.is_err() {
-        if journal {
-            nd_log_limit!(
-                &JOURNAL_CREATE,
-                Source::Daemon,
-                Priority::Err,
-                "DBENGINE: Failed to create journlfile \"{}\"",
-                path.display()
-            );
-        } else {
-            nd_log_limit!(
-                &DATAFILE_CREATE,
-                Source::Daemon,
-                Priority::Err,
-                "DBENGINE: Failed to create datafile {}",
-                path.display()
-            );
-        }
-        let _ = std::fs::remove_file(path);
-        return None;
+    drop(file);
+    if journal {
+        unlink_if_exists(&path.with_extension("njfv2"));
+        unlink_if_exists(path);
+        nd_log_limit!(
+            &JOURNAL_CREATE,
+            Source::Daemon,
+            Priority::Err,
+            "DBENGINE: Failed to create journlfile \"{}\"",
+            path.display()
+        );
+    } else {
+        unlink(path);
+        nd_log_limit!(
+            &DATAFILE_CREATE,
+            Source::Daemon,
+            Priority::Err,
+            "DBENGINE: Failed to create datafile {}",
+            path.display()
+        );
     }
-    Some(file)
+    None
 }
 
-/// `create_new_datafile_pair()`: the next file number's data file and journal, with C's record.
-fn create_new_pair(cfg: &TierConfig, tier: &mut Tier) -> bool {
-    let fileno = tier.last_fileno + 1;
+/// `create_new_datafile_pair()`'s files: the data file and journal of `fileno`, with C's records; `None` leaves
+/// neither.
+pub(crate) fn create_pair_files(cfg: &TierConfig, fileno: u32) -> Option<(IoFile, IoFile)> {
     nd_log!(
         Source::Daemon,
         Priority::Debug,
@@ -708,38 +718,49 @@ fn create_new_pair(cfg: &TierConfig, tier: &mut Tier) -> bool {
         cfg.path.display()
     );
     let data_path = cfg.file(FileKind::Datafile, fileno);
-    let Some(file) = create_file(
+    let file = create_file(
         &data_path,
         cfg.direct_io,
         &superblock::encode_datafile(),
         false,
-    ) else {
-        return false;
-    };
+    )?;
     let journal_path = cfg.file(FileKind::Journal, fileno);
-    if create_file(
+    let Some(journal) = create_file(
         &journal_path,
         cfg.direct_io,
         &superblock::encode_journal(),
         true,
-    )
-    .is_none()
-    {
-        let _ = std::fs::remove_file(&data_path);
-        return false;
-    }
+    ) else {
+        drop(file);
+        unlink(&data_path);
+        return None;
+    };
     netdata_log_info!(
         "DBENGINE: tier {}: created {} (.ndf, .njf).",
         cfg.tier,
         file_name(FileKind::Datafile, 1, fileno).trim_end_matches(".ndf")
     );
-    tier.files.push(DataFile {
+    Some((file, journal))
+}
+
+/// A new pair's `pos` and `unsafe.pos`: its superblocks.
+pub(crate) const NEW_PAIR_SIZE: u64 = 2 * BLOCK_SIZE as u64;
+
+/// `create_new_datafile_pair()` at startup.
+fn create_new_pair(cfg: &TierConfig, tier: &mut Tier) -> bool {
+    let fileno = tier.last_fileno + 1;
+    let Some((file, journal)) = create_pair_files(cfg, fileno) else {
+        return false;
+    };
+    tier.files.push(Pair {
         fileno,
         file,
         pos: BLOCK_SIZE as u64,
+        journal: Some(journal),
         journal_pos: BLOCK_SIZE as u64,
         v2: None,
     });
+    tier.current_disk_space += NEW_PAIR_SIZE;
     tier.last_fileno = fileno;
     true
 }
@@ -761,6 +782,8 @@ pub fn load(cfg: TierConfig, mrg: &Mrg, now_s: i64) -> io::Result<Tier> {
         transaction_id: 1,
         first_time_s: i64::MAX,
         indexes: BTreeMap::new(),
+        current_disk_space: 0,
+        samples: 0,
         config: cfg.clone(),
     };
     let mut create = false;
@@ -771,7 +794,7 @@ pub fn load(cfg: TierConfig, mrg: &Mrg, now_s: i64) -> io::Result<Tier> {
             scanned.datafiles.len()
         );
     }
-    let mut loaded: BTreeMap<u32, DataFile> = BTreeMap::new();
+    let mut loaded: BTreeMap<u32, Pair> = BTreeMap::new();
     for &fileno in &scanned.datafiles {
         let data = load_data_file(&cfg, fileno);
         let journal = data.as_ref().and_then(|&(_, pos)| {
@@ -793,12 +816,16 @@ pub fn load(cfg: TierConfig, mrg: &Mrg, now_s: i64) -> io::Result<Tier> {
                 }
                 tier.open_pages
                     .extend(journal.open_pages.into_iter().map(|p| (fileno, p)));
+                tier.current_disk_space +=
+                    pos + journal.pos + journal.v2.as_ref().map_or(0, |v2| v2.size);
+                tier.samples += journal.samples;
                 loaded.insert(
                     fileno,
-                    DataFile {
+                    Pair {
                         fileno,
                         file,
                         pos,
+                        journal: journal.journal,
                         journal_pos: journal.pos,
                         v2: journal.v2,
                     },
@@ -808,8 +835,11 @@ pub fn load(cfg: TierConfig, mrg: &Mrg, now_s: i64) -> io::Result<Tier> {
                 if data.is_none() && fileno == tier.last_fileno {
                     create |= doomed_last_pair_rotates(&cfg, fileno, now_s);
                 } else if data.is_none() {
-                    // C loads the pair's journal before it deletes the pair: its v2 index, with the records
-                    drop(journal_v2_load(&cfg, fileno));
+                    // C loads the pair's journal before it deletes the pair: its v2 index, with the records, and
+                    // counts the v2 file (which stays on disk, as C unlinks only the v1 journal)
+                    if let Some(v2) = journal_v2_load(&cfg, fileno) {
+                        tier.current_disk_space += v2.size;
+                    }
                 }
                 netdata_log_error!("DBENGINE: deleting invalid data and journal file pair.");
                 let journal = cfg.file(FileKind::Journal, fileno);

@@ -4,11 +4,22 @@
 //! at once, which nothing outside the process sees. C's uv threads write no thread-created records, so these write
 //! none either.
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 type Job = Box<dyn FnOnce() + Send>;
+
+thread_local! {
+    static ON_WORKER: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether the calling thread is a pool thread: work C runs on `UV_WORKER` runs inline there, and is queued from
+/// anywhere else.
+pub fn on_worker() -> bool {
+    ON_WORKER.with(Cell::get)
+}
 
 #[derive(Default)]
 struct State {
@@ -82,6 +93,7 @@ impl Inner {
     }
 
     fn run(&self) {
+        ON_WORKER.with(|w| w.set(true));
         let mut state = self.lock();
         loop {
             if let Some(job) = state.jobs.pop_front() {
@@ -105,6 +117,15 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn pool_threads_know_they_are_workers() {
+        let pool = WorkPool::new(1, 256 * 1024);
+        let (tx, rx) = mpsc::channel();
+        pool.queue(move || tx.send(on_worker()).unwrap()).unwrap();
+        assert!(rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        assert!(!on_worker());
+    }
 
     #[test]
     fn threads_start_as_needed_up_to_the_size_and_carry_c_names() {

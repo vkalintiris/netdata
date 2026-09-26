@@ -156,21 +156,15 @@ impl TierHandle {
         }
     }
 
-    /// `storage_engine_query_init()` of `start_s..=end_s`; `now_s` is the dbengine's clock (D64.8).
-    pub fn query(
-        &self,
-        start_s: i64,
-        end_s: i64,
-        priority: Priority,
-        now_s: i64,
-    ) -> StorageQuery<'_> {
+    /// `storage_engine_query_init()` of `start_s..=end_s`; the dbengine validates pages against its wall clock (N2).
+    pub fn query(&self, start_s: i64, end_s: i64, priority: Priority) -> StorageQuery<'_> {
         match self {
             TierHandle::Ram(dim) => {
                 let ring = dim.ring().expect("a ram tier handle has a ring");
                 StorageQuery::Ram(ring.query(start_s, end_s))
             }
             TierHandle::Dbengine { engine, metric } => {
-                StorageQuery::Dbengine(engine.query(metric, start_s, end_s, priority, now_s))
+                StorageQuery::Dbengine(engine.query(metric, start_s, end_s, priority))
             }
         }
     }

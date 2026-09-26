@@ -367,7 +367,7 @@ fn hot_pages_answer_queries() {
         let e = engine(dir.path(), page_type);
         let mut h = collector(&e, A, 1, 77);
         let query = |h: &CollectHandle, to: i64| {
-            points(&mut e.query(h.metric(), T0, T0 + to, QueryPriority::Normal, NOW))
+            points(&mut e.query(h.metric(), T0, T0 + to, QueryPriority::Normal))
         };
         for i in 0..10 {
             h.store(T0 + i, i as f64);
@@ -396,7 +396,7 @@ fn dirty_and_hot_pages_read_as_one_series() {
         h.store(T0 + i, i as f64);
     }
     let want: Vec<(i64, f64)> = (0..=500).map(|i| (T0 + i, i as f64)).collect();
-    let got = points(&mut e.query(h.metric(), T0, T0 + 500, QueryPriority::Normal, NOW));
+    let got = points(&mut e.query(h.metric(), T0, T0 + 500, QueryPriority::Normal));
     assert!(same(&got, &want));
 }
 
@@ -409,7 +409,7 @@ fn an_empty_hot_page_reads_one_empty_point() {
     for i in 0..3 {
         h.store_empty(T0 + i);
     }
-    let got = points(&mut e.query(h.metric(), T0, T0 + 2, QueryPriority::Normal, NOW));
+    let got = points(&mut e.query(h.metric(), T0, T0 + 2, QueryPriority::Normal));
     assert!(same(&got, &[(T0 + 2, f64::NAN)]), "{got:?}");
 }
 

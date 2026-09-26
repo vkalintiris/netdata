@@ -1,24 +1,27 @@
 //! The main and extent caches (`cache.c` as the engine uses it, D62.5, D65.N3). The main cache indexes pages by tier,
 //! metric and start whatever their state: hot pages (being collected) and dirty ones (closed, waiting for their extent)
-//! sit in per-tier queues outside the LRU and the budget, as C's hot and dirty queues; clean pages (read from disk,
-//! gaps, flushed) are the LRU, the least recently used dropped while over the budget when nobody holds them. The
-//! extent cache holds raw extents by tier, file and block, the oldest dropped first. Evictor threads, autoscaling and
-//! memory pressure wait for S6.
+//! sit in per-tier queues outside the LRU and the budget, as C's hot and dirty queues, and flushing ones (in an extent
+//! being written) in none; clean pages (read from disk, gaps, flushed) are the LRU, the least recently used dropped
+//! while over the budget when nobody holds them, when a clean page is added and after a flush (C's evictor threads,
+//! autoscaling and memory pressure wait for S6). The extent cache holds raw extents by tier, file and block, the oldest
+//! dropped first.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 
 use crate::dbengine::RRD_STORAGE_TIERS;
 use crate::dbengine::format::page::{Cursor, DiskPage, PageBuilder};
 use crate::storage_point::StoragePoint;
 
-/// A page's place in the main cache (`PGC_PAGE_HOT`, `PGC_PAGE_DIRTY`, `PGC_PAGE_CLEAN`).
+/// A page's place in the main cache (`PGC_PAGE_HOT`, `PGC_PAGE_DIRTY`, `PGC_PAGE_CLEAN`, and none of them while
+/// flushing).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageState {
     Hot,
     Dirty,
     Clean,
+    Flushing,
 }
 
 impl PageState {
@@ -26,7 +29,8 @@ impl PageState {
         match v {
             0 => PageState::Hot,
             1 => PageState::Dirty,
-            _ => PageState::Clean,
+            2 => PageState::Clean,
+            _ => PageState::Flushing,
         }
     }
 }
@@ -63,6 +67,8 @@ pub struct CachedPage {
     state: AtomicU8,
     /// The page's key in its hot or dirty queue; changed under the cache's lock.
     seq: AtomicU64,
+    /// `accesses > 0`: a search found the page, or it came clean; a flushed page nobody read is the first evicted.
+    accessed: AtomicBool,
 }
 
 impl CachedPage {
@@ -101,6 +107,7 @@ impl CachedPage {
             size: AtomicUsize::new(size),
             state: AtomicU8::new(state as u8),
             seq: AtomicU64::new(0),
+            accessed: AtomicBool::new(state != PageState::Hot),
         }
     }
 
@@ -166,6 +173,18 @@ impl CachedPage {
             PageData::Disk(d) => decode(d.cursor(position), n),
             PageData::Collected(b) => decode(lock(b).cursor(position), n),
         }
+    }
+
+    /// A flushing page as its extent takes it (`pgd_disk_footprint()`, `pgd_copy_to_extent()`): its type, points and
+    /// bytes; from now on it takes no more points. `None` for a page not collected here.
+    pub(crate) fn extent_data(&self) -> Option<(u8, usize, Vec<u8>)> {
+        let mut builder = self.builder()?;
+        builder.schedule_for_flushing();
+        Some((
+            builder.page_type(),
+            builder.slots_used(),
+            builder.to_extent_bytes(),
+        ))
     }
 
     /// The collector's data; `None` for a page not collected here.
@@ -268,12 +287,18 @@ struct MainInner {
     dirty_bytes: usize,
     /// Bumped whenever a tier's dirty queue reaches a multiple of the pages per extent.
     dirty_version: u64,
+    /// The version the last flush that walked every queue saw.
+    last_version_checked: u64,
+    flushing_entries: usize,
+    flushing_bytes: usize,
 }
 
 impl MainInner {
-    /// Marks a cached clean page as the most recently used one; returns any cached page.
+    /// `page_has_been_accessed()`: marks a cached page as accessed, a clean one as the most recently used; returns
+    /// any cached page.
     fn touch(&mut self, key: PageKey, start: i64) -> Option<Arc<CachedPage>> {
         let entry = self.pages.get_mut(&key)?.get_mut(&start)?;
+        entry.page.accessed.store(true, Ordering::Relaxed);
         if let Some(tick) = entry.tick {
             self.tick += 1;
             self.lru.remove(&tick);
@@ -306,6 +331,15 @@ pub struct CacheStats {
     pub dirty_entries: usize,
     pub dirty_bytes: usize,
     pub dirty_version: u64,
+    pub flushing_entries: usize,
+    pub flushing_bytes: usize,
+}
+
+/// One tier's dirty pages, oldest first, taken by the flusher for one extent.
+#[derive(Debug, Clone)]
+pub struct Batch {
+    pub tier: usize,
+    pub pages: Vec<([u8; 16], Arc<CachedPage>)>,
 }
 
 /// The main cache.
@@ -471,7 +505,122 @@ impl MainCache {
             PageState::Hot => inner.hot_bytes += delta,
             PageState::Dirty => inner.dirty_bytes += delta,
             PageState::Clean => inner.bytes += delta,
+            PageState::Flushing => inner.flushing_bytes += delta,
         }
+    }
+
+    /// `flush_pages()`: batches of pages-per-extent dirty pages from each tier's queue head (fewer only with `all`),
+    /// tiers in order (only `section`'s when given), each counted by `save_init` under the lock and written by `save`
+    /// after it; the pages turn clean after `save`, whatever became of the write. Without `all` it gives up while
+    /// fewer pages wait than an extent takes, or when nothing changed since the last walk that went through; without
+    /// `all` and `wait` also when the cache is busy. `max_flushes` (0 for any) bounds the batches, one more running
+    /// as C's test is `>`. Whether it stopped before the queues ran short.
+    pub fn flush_pages(
+        &self,
+        max_flushes: usize,
+        section: Option<usize>,
+        wait: bool,
+        all: bool,
+        mut save_init: impl FnMut(usize),
+        mut save: impl FnMut(&Batch),
+    ) -> bool {
+        let optimal = self.pages_per_extent;
+        let mut inner = if !all && !wait {
+            match self.inner.try_lock() {
+                Ok(inner) => inner,
+                Err(TryLockError::Poisoned(p)) => p.into_inner(),
+                Err(TryLockError::WouldBlock) => return false,
+            }
+        } else {
+            self.lock()
+        };
+        let version_at_entry = inner.dirty_version;
+        let entries: usize = inner.dirty.iter().map(|q| q.pages.len()).sum();
+        if !all && (entries < optimal || inner.last_version_checked == version_at_entry) {
+            return false;
+        }
+        let max_flushes = if all || max_flushes == 0 {
+            usize::MAX
+        } else {
+            max_flushes
+        };
+        let (mut flushes, mut stopped) = (0, false);
+        // `JudyLFirstThenNext()`: after a batch the same tier again, else the next one
+        let (mut from, mut first) = (section.unwrap_or(0), true);
+        loop {
+            let start = if first { from } else { from + 1 };
+            first = false;
+            let Some(tier) = (start..RRD_STORAGE_TIERS).find(|&t| !inner.dirty[t].pages.is_empty())
+            else {
+                break;
+            };
+            from = tier;
+            if section.is_some_and(|s| s != tier) {
+                break;
+            }
+            if !all && inner.dirty[tier].pages.len() < optimal {
+                continue;
+            }
+            if !all && flushes > max_flushes {
+                stopped = true;
+                break;
+            }
+            let seqs: Vec<u64> = inner.dirty[tier]
+                .pages
+                .keys()
+                .take(optimal)
+                .copied()
+                .collect();
+            let mut pages = Vec::with_capacity(seqs.len());
+            for seq in seqs {
+                if let Some((uuid, page)) = inner.dirty[tier].pages.remove(&seq) {
+                    let size = page.size();
+                    inner.dirty_bytes -= size;
+                    inner.flushing_entries += 1;
+                    inner.flushing_bytes += size;
+                    page.set_state(PageState::Flushing);
+                    pages.push((uuid, page));
+                }
+            }
+            first = true;
+            save_init(tier);
+            drop(inner);
+            let batch = Batch { tier, pages };
+            save(&batch);
+            flushes += 1;
+            inner = self.lock();
+            self.flushed(&mut inner, batch);
+        }
+        if !stopped && version_at_entry > inner.last_version_checked {
+            inner.last_version_checked = version_at_entry;
+        }
+        stopped
+    }
+
+    /// `page_set_clean()` of a flushed batch: pages someone read become the most recently used, the others the least;
+    /// then the budget holds.
+    fn flushed(&self, inner: &mut MainInner, batch: Batch) {
+        for (uuid, page) in batch.pages {
+            let size = page.size();
+            inner.flushing_entries -= 1;
+            inner.flushing_bytes -= size;
+            page.set_state(PageState::Clean);
+            let tick = if page.accessed.load(Ordering::Relaxed) {
+                inner.tick += 1;
+                inner.tick
+            } else {
+                inner.front -= 1;
+                inner.front
+            };
+            let key = (batch.tier, uuid);
+            let start = page.start_time_s;
+            if let Some(e) = inner.pages.get_mut(&key).and_then(|p| p.get_mut(&start)) {
+                e.tick = Some(tick);
+                inner.lru.insert(tick, (key, start));
+                inner.bytes += size;
+            }
+        }
+        self.evict(inner);
     }
 
     /// Drops the least recently used pages nobody holds while over the budget. A held page moves to the recent end,
@@ -516,6 +665,8 @@ impl MainCache {
             dirty_entries: entries(&inner.dirty),
             dirty_bytes: inner.dirty_bytes,
             dirty_version: inner.dirty_version,
+            flushing_entries: inner.flushing_entries,
+            flushing_bytes: inner.flushing_bytes,
         }
     }
 

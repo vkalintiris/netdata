@@ -150,6 +150,8 @@ pub struct PageBuilder {
     used: usize,
     /// `PAGE_OPTION_ALL_VALUES_EMPTY`: cleared by the first value that exists.
     all_values_empty: bool,
+    /// `PGD_STATE_SCHEDULED_FOR_FLUSHING`: the page went into an extent, and takes no more points.
+    scheduled: bool,
 }
 
 impl PageBuilder {
@@ -167,6 +169,7 @@ impl PageBuilder {
             slots,
             used: 0,
             all_values_empty: true,
+            scheduled: false,
         })
     }
 
@@ -175,7 +178,8 @@ impl PageBuilder {
     }
 
     /// `pgd_append_point()`: tier 0 stores `n` packed with `flags`, tier 1 the aggregate. `None` when the page is
-    /// full (C calls `fatal()`); otherwise whether a gorilla buffer was added.
+    /// full (C calls `fatal()`) or went into an extent (C drops the point at exit); otherwise whether a gorilla buffer
+    /// was added.
     pub fn append(
         &mut self,
         n: f64,
@@ -185,7 +189,7 @@ impl PageBuilder {
         anomaly_count: u16,
         flags: u32,
     ) -> Option<bool> {
-        if self.used >= self.slots {
+        if self.used >= self.slots || self.scheduled {
             return None;
         }
         self.used += 1;
@@ -256,6 +260,11 @@ impl PageBuilder {
             Filling::Gorilla(w) => w.buffers().len() * gorilla::BUFFER_SIZE,
             _ => self.used * point_size(self.page_type),
         }
+    }
+
+    /// `pgd_disk_footprint()`'s mark: the page is going into an extent.
+    pub fn schedule_for_flushing(&mut self) {
+        self.scheduled = true;
     }
 
     /// `pgd_copy_to_extent()`: the page's bytes as an extent holds them, `disk_footprint()` long.

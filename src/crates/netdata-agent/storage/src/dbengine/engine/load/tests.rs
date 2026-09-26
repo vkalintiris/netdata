@@ -378,3 +378,42 @@ fn a_doomed_last_pair_rotates_as_c() {
         assert_eq!(tier.unwrap().last_fileno, want_last, "age {age}");
     }
 }
+
+/// The tier's disk space at startup, as C counts it: each kept pair's data position and journal position plus its v2
+/// file, and each pair created.
+#[test]
+fn startup_counts_the_disk_space() {
+    let empty = tempfile::tempdir().unwrap();
+    assert_eq!(load(cfg(empty.path()), &Mrg::new(), NOW).unwrap().current_disk_space, 8192);
+
+    // a reused last pair: 3 blocks of data file, 2 of journal
+    let reused = tempfile::tempdir().unwrap();
+    pair(reused.path(), 1, 2, vec![page(A, NOW - 100, 10)]);
+    let tier = load(cfg(reused.path()), &Mrg::new(), NOW).unwrap();
+    assert_eq!(tier.current_disk_space, 12288 + 8192);
+    assert!(tier.files[0].journal.is_some());
+
+    // a non-last pair is indexed: its v2 file counts too, and its journal is not kept for writes
+    let indexed = tempfile::tempdir().unwrap();
+    pair(indexed.path(), 1, 2, vec![page(A, NOW - 100, 10)]);
+    pair(indexed.path(), 2, 1, vec![page(B, NOW - 50, 10)]);
+    let tier = load(cfg(indexed.path()), &Mrg::new(), NOW).unwrap();
+    let v2 = tier.files[0].v2.as_ref().unwrap().size;
+    assert_eq!(tier.current_disk_space, 12288 + 8192 + v2 + 8192 + 8192);
+    assert!(tier.files[0].journal.is_none() && tier.files[1].journal.is_some());
+
+    // restarted, the v2 file loads: the journal counts at its raw size
+    let tier = load(cfg(indexed.path()), &Mrg::new(), NOW).unwrap();
+    assert_eq!(tier.current_disk_space, 12288 + 8192 + v2 + 8192 + 8192);
+}
+
+/// The samples a replay brings: a metric's first page counts its intervals; a metric already registered, none.
+#[test]
+fn replays_count_the_samples_of_new_metrics() {
+    let dir = tempfile::tempdir().unwrap();
+    pair(dir.path(), 1, 1, vec![page(A, NOW - 100, 10)]);
+    assert_eq!(load(cfg(dir.path()), &Mrg::new(), NOW).unwrap().samples, 9);
+    let mrg = Mrg::new();
+    mrg.prepopulate(&A, 0);
+    assert_eq!(load(cfg(dir.path()), &mrg, NOW).unwrap().samples, 0);
+}
