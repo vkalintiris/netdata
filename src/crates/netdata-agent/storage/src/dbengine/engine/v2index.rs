@@ -270,17 +270,67 @@ thread_local! {
     static WAITING: ErrorLimit = const { ErrorLimit::new(10, 0) };
 }
 
-/// `rrdeng_populate_mrg()` and `populate_mrg_tp_worker()`: the tier's record, then each data file's population as a
-/// job on the pool, at most `cpus` at a time, with C's rate-limited progress records while they run. Files without a
-/// v2 contribute nothing. The indexes land in the tier, and the headers' earliest start lowers its first time.
-pub fn populate(tier: &mut Tier, mrg: &Mrg, pool: &WorkPool, cpus: usize, now_s: i64) {
-    let cpus = cpus.max(1);
-    let t = tier.config.tier;
+/// The MRG-load semaphore: at most one population job per CPU at a time, across every tier (C's `uv_sem`).
+#[derive(Debug)]
+pub struct Slots {
+    free: std::sync::Mutex<usize>,
+    wake: std::sync::Condvar,
+}
+
+impl Slots {
+    pub fn new(n: usize) -> Arc<Slots> {
+        Arc::new(Slots {
+            free: std::sync::Mutex::new(n.max(1)),
+            wake: std::sync::Condvar::new(),
+        })
+    }
+
+    fn acquire(&self) {
+        let mut free = self
+            .free
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *free == 0 {
+            free = self
+                .wake
+                .wait(free)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        *free -= 1;
+    }
+
+    fn release(&self) {
+        *self
+            .free
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        self.wake.notify_one();
+    }
+}
+
+/// `rrdeng_populate_mrg()`'s record, on the tier's init thread.
+pub fn populating_record(tier: &Tier, cpus: usize) {
     netdata_log_info!(
-        "DBENGINE: tier {t}: populating retention to MRG from {} journal files, using a shared pool of {cpus} \
-         threads...",
-        tier.files.len()
+        "DBENGINE: tier {}: populating retention to MRG from {} journal files, using a shared pool of {} threads...",
+        tier.config.tier,
+        tier.files.len(),
+        cpus.max(1)
     );
+}
+
+/// `rrdeng_populate_mrg()` then `populate_mrg_tp_worker()` in one call, with a semaphore of its own: for tests and
+/// tools; the runtime splits them across its threads.
+pub fn populate(tier: &mut Tier, mrg: &Mrg, pool: &WorkPool, cpus: usize, now_s: i64) {
+    populating_record(tier, cpus);
+    populate_files(tier, mrg, pool, &Slots::new(cpus), now_s);
+}
+
+/// `populate_mrg_tp_worker()`, where C runs it on a pool thread: each data file's population as a job on the pool,
+/// each waiting for a slot of the shared semaphore, with C's rate-limited progress records while they run. Files
+/// without a v2 contribute nothing. The indexes land in the tier, and the headers' earliest start lowers its first
+/// time.
+pub fn populate_files(tier: &mut Tier, mrg: &Mrg, pool: &WorkPool, slots: &Arc<Slots>, now_s: i64) {
+    let t = tier.config.tier;
     let total_files = tier.files.len();
     if total_files == 0 {
         nd_log!(
@@ -293,16 +343,9 @@ pub fn populate(tier: &mut Tier, mrg: &Mrg, pool: &WorkPool, cpus: usize, now_s:
     let completed = Arc::new(AtomicUsize::new(0));
     let (tx, rx) = mpsc::channel::<Populated>();
     let crc_check = !tier.config.journal_check;
-    let mut results = Vec::new();
     let mut outstanding = 0usize;
     for df in &tier.files {
-        // the shared semaphore of `cpus` slots
-        if outstanding == cpus {
-            if let Ok(done) = rx.recv() {
-                results.push(done);
-                outstanding -= 1;
-            }
-        }
+        slots.acquire();
         let fileno = df.fileno;
         let path = tier
             .config
@@ -318,7 +361,12 @@ pub fn populate(tier: &mut Tier, mrg: &Mrg, pool: &WorkPool, cpus: usize, now_s:
                 crc_check,
             })
         });
-        let (tx, mrg, job_completed) = (tx.clone(), mrg.clone(), Arc::clone(&completed));
+        let (tx, mrg, job_completed, job_slots) = (
+            tx.clone(),
+            mrg.clone(),
+            Arc::clone(&completed),
+            Arc::clone(slots),
+        );
         let job = move || {
             let done = match file_job {
                 Some(file_job) => populate_file(file_job, &mrg, now_s),
@@ -329,9 +377,11 @@ pub fn populate(tier: &mut Tier, mrg: &Mrg, pool: &WorkPool, cpus: usize, now_s:
                 },
             };
             job_completed.fetch_add(1, Ordering::AcqRel);
+            job_slots.release();
             let _ = tx.send(done);
         };
         if pool.queue(job).is_err() {
+            slots.release();
             continue;
         }
         outstanding += 1;
@@ -347,21 +397,20 @@ pub fn populate(tier: &mut Tier, mrg: &Mrg, pool: &WorkPool, cpus: usize, now_s:
         });
     }
     drop(tx);
-    while outstanding > 0 {
+    let mut results = Vec::with_capacity(outstanding);
+    while results.len() < outstanding {
         let done = completed.load(Ordering::Acquire);
+        let pending = outstanding - results.len();
         WAITING.with(|erl| {
             nd_log_limit!(erl, Source::Daemon, Priority::Info,
-                "DBENGINE: tier {t}: MRG population completed: {:.2}% ({done}/{total_files}), waiting for \
-                 {outstanding} workers",
+                "DBENGINE: tier {t}: MRG population completed: {:.2}% ({done}/{total_files}), waiting for {pending} \
+                 workers",
                 done as f64 * 100.0 / total_files as f64);
         });
-        match rx.recv() {
-            Ok(result) => {
-                results.push(result);
-                outstanding -= 1;
-            }
-            Err(_) => break,
-        }
+        let Ok(result) = rx.recv() else {
+            break;
+        };
+        results.push(result);
     }
     for result in results {
         if result.first_time_s > 0 && result.first_time_s < tier.first_time_s {

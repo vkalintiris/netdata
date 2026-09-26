@@ -83,6 +83,21 @@ pub enum Search {
     Exact,
 }
 
+/// The main and extent caches' budgets in bytes from `[db] dbengine page cache size` and `dbengine extent cache size`
+/// (MiB), as `pgc_and_mrg_initialize()` splits them: 70% and 30% of the page cache, the extent share at least 5 MiB
+/// (taken from the main one), plus the extent cache size.
+pub fn cache_budgets(page_cache_mb: i32, extent_cache_mb: i32) -> (usize, usize) {
+    const MIB: usize = 1024 * 1024;
+    let target = (page_cache_mb as usize).wrapping_mul(MIB);
+    let (mut main, mut extent) = (target / 100 * 70, target / 100 * 30);
+    if extent < 5 * MIB {
+        extent = 5 * MIB;
+        main = target.wrapping_sub(extent);
+    }
+    extent = extent.wrapping_add((extent_cache_mb as usize).wrapping_mul(MIB));
+    (main, extent)
+}
+
 type PageKey = (usize, [u8; 16]);
 
 /// How many held pages one eviction pass steps over before it gives up: the cache then stays over its budget until

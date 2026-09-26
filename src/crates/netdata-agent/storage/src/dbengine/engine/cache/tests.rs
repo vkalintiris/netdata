@@ -40,3 +40,12 @@ fn held_pages_keep_the_cache_over_budget() {
     drop(cache.add(0, &U, gap(-10)));
     assert_eq!(cache.len(), 1);
 }
+
+/// C's split of the page cache size, with the extent share's floor and the extent cache size added.
+#[test]
+fn budgets_split_as_c() {
+    const MIB: usize = 1024 * 1024;
+    assert_eq!(cache_budgets(32, 0), (23_488_080, 10_066_320));
+    assert_eq!(cache_budgets(8, 0), (3 * MIB, 5 * MIB));
+    assert_eq!(cache_budgets(32, 16), (23_488_080, 10_066_320 + 16 * MIB));
+}

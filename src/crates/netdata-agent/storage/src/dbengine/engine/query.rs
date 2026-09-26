@@ -8,6 +8,7 @@
 //! waits for at its first point (C queues it for NORMAL priority and blocks at the first lookup).
 
 use std::collections::{BTreeMap, HashMap, btree_map};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 
 use netdata_agent_evloop::work::WorkPool;
@@ -61,6 +62,10 @@ pub struct TierData {
     open: HashMap<[u8; 16], BTreeMap<i64, OpenPage>>,
     /// `ctx->atomic.first_time_s`.
     pub first_time_s: i64,
+    /// `ctx->quiesce.enabled`: the tier is shutting down, new queries get no preparation.
+    quiesced: AtomicBool,
+    /// `ctx->atomic.inflight_queries`: queries holding a preparation, which the tier's shutdown waits for.
+    inflight: Arc<AtomicUsize>,
 }
 
 impl TierData {
@@ -97,7 +102,41 @@ impl TierData {
                 .collect(),
             open,
             first_time_s: tier.first_time_s,
+            quiesced: AtomicBool::new(false),
+            inflight: Arc::default(),
         }
+    }
+
+    /// `RRDENG_OPCODE_CTX_QUIESCE`: queries started from now on read nothing.
+    pub fn quiesce(&self) {
+        self.quiesced.store(true, Ordering::Release);
+    }
+
+    pub fn quiesced(&self) -> bool {
+        self.quiesced.load(Ordering::Acquire)
+    }
+
+    /// The queries in flight.
+    pub fn inflight(&self) -> usize {
+        self.inflight.load(Ordering::Acquire)
+    }
+}
+
+/// A query's count in its tier's in-flight queries, held by the query and by its preparation job (C's pdc
+/// reference count) and released with the last of them.
+#[derive(Debug)]
+struct Inflight(Arc<AtomicUsize>);
+
+impl Inflight {
+    fn new(count: &Arc<AtomicUsize>) -> Arc<Inflight> {
+        count.fetch_add(1, Ordering::AcqRel);
+        Arc::new(Inflight(Arc::clone(count)))
+    }
+}
+
+impl Drop for Inflight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -877,6 +916,7 @@ impl Dbengine {
             prep: None,
             pending: None,
             page: None,
+            _inflight: None,
         };
         if in_range(start_s, end_s, r.first_time_s, r.last_time_s) != Range::In {
             return q;
@@ -888,6 +928,17 @@ impl Dbengine {
             q.dt_s = i64::from(self.update_every_s);
             metric.set_update_every_s_if_zero(self.update_every_s);
         }
+        // pg_cache_preload()
+        let data = &self.tiers[metric.tier()];
+        let inflight = Inflight::new(&data.inflight);
+        q._inflight = Some(Arc::clone(&inflight));
+        if data.quiesced.load(Ordering::Acquire) {
+            q.prep = Some(Prep {
+                list: BTreeMap::new(),
+                optimal_end_time_s: q.end_time_s,
+            });
+            return q;
+        }
         let (engine, job_metric, s, e) =
             (Arc::clone(self), metric.dup(), q.start_time_s, q.end_time_s);
         match (&self.pool, priority) {
@@ -895,6 +946,7 @@ impl Dbengine {
                 let (tx, rx) = mpsc::channel();
                 if pool
                     .queue(move || {
+                        let _inflight = inflight;
                         let _ = tx.send(engine.prepare(&job_metric, s, e, now_s));
                     })
                     .is_ok()
@@ -932,6 +984,8 @@ pub struct Query {
     prep: Option<Prep>,
     pending: Option<mpsc::Receiver<Prep>>,
     page: Option<Current>,
+    /// Set once the query has a preparation.
+    _inflight: Option<Arc<Inflight>>,
 }
 
 impl Query {

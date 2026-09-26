@@ -116,6 +116,9 @@ struct Journal {
     open_pages: Vec<Page>,
     /// Whether the last file was not reused, so that a new pair follows.
     create_new_pair: bool,
+    /// The replay's first time, which lowers the tier's (`journalfile_restore_extent_metadata()`); 0 when the journal
+    /// was not replayed or had no transaction, `i64::MAX` when none of its pages was valid.
+    first_time_s: i64,
 }
 
 /// `sscanf(name, "<prefix>%1u-%10u")`: both numbers convert (after optional white space, digits only within their
@@ -497,6 +500,7 @@ fn journal_load(
             v2: Some(v2),
             open_pages: Vec::new(),
             create_new_pair: false,
+            first_time_s: 0,
         });
     };
     let size = check_file_properties(&file.file, BLOCK_SIZE as u64)?;
@@ -506,6 +510,7 @@ fn journal_load(
             v2,
             open_pages: Vec::new(),
             create_new_pair: false,
+            first_time_s: 0,
         });
     }
     let size = align_floor(size);
@@ -569,6 +574,7 @@ fn journal_load(
             v2: None,
             open_pages: open.pages,
             create_new_pair: false,
+            first_time_s: open.first_time_s,
         });
     }
     let v2 = build_v2(cfg, fileno, size, &open.pages);
@@ -579,6 +585,7 @@ fn journal_load(
         v2,
         open_pages,
         create_new_pair: is_last,
+        first_time_s: open.first_time_s,
     })
 }
 
@@ -752,6 +759,9 @@ pub fn load(cfg: TierConfig, mrg: &Mrg, now_s: i64) -> io::Result<Tier> {
         match (data, journal) {
             (Some((file, pos)), Some(journal)) => {
                 create |= journal.create_new_pair;
+                if journal.first_time_s > 0 {
+                    tier.first_time_s = tier.first_time_s.min(journal.first_time_s);
+                }
                 tier.open_pages
                     .extend(journal.open_pages.into_iter().map(|p| (fileno, p)));
                 loaded.insert(
