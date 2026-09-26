@@ -107,6 +107,81 @@ pub fn strerror(errno: i32) -> String {
     text.strip_suffix(&suffix).unwrap_or(&text).to_string()
 }
 
+/// `uv_strerror()` of a negated errno: libuv's texts, which C's `uv_*` error records print.
+pub fn uv_strerror(errno: i32) -> String {
+    let text = match nix::errno::Errno::from_raw(errno) {
+        nix::errno::Errno::E2BIG => "argument list too long",
+        nix::errno::Errno::EACCES => "permission denied",
+        nix::errno::Errno::EADDRINUSE => "address already in use",
+        nix::errno::Errno::EADDRNOTAVAIL => "address not available",
+        nix::errno::Errno::EAFNOSUPPORT => "address family not supported",
+        nix::errno::Errno::EAGAIN => "resource temporarily unavailable",
+        nix::errno::Errno::EALREADY => "connection already in progress",
+        nix::errno::Errno::EBADF => "bad file descriptor",
+        nix::errno::Errno::EBUSY => "resource busy or locked",
+        nix::errno::Errno::ECANCELED => "operation canceled",
+        nix::errno::Errno::ECONNABORTED => "software caused connection abort",
+        nix::errno::Errno::ECONNREFUSED => "connection refused",
+        nix::errno::Errno::ECONNRESET => "connection reset by peer",
+        nix::errno::Errno::EDESTADDRREQ => "destination address required",
+        nix::errno::Errno::EEXIST => "file already exists",
+        nix::errno::Errno::EFAULT => "bad address in system call argument",
+        nix::errno::Errno::EFBIG => "file too large",
+        nix::errno::Errno::EHOSTUNREACH => "host is unreachable",
+        nix::errno::Errno::EINTR => "interrupted system call",
+        nix::errno::Errno::EINVAL => "invalid argument",
+        nix::errno::Errno::EIO => "i/o error",
+        nix::errno::Errno::EISCONN => "socket is already connected",
+        nix::errno::Errno::EISDIR => "illegal operation on a directory",
+        nix::errno::Errno::ELOOP => "too many symbolic links encountered",
+        nix::errno::Errno::EMFILE => "too many open files",
+        nix::errno::Errno::EMSGSIZE => "message too long",
+        nix::errno::Errno::ENAMETOOLONG => "name too long",
+        nix::errno::Errno::ENETDOWN => "network is down",
+        nix::errno::Errno::ENETUNREACH => "network is unreachable",
+        nix::errno::Errno::ENFILE => "file table overflow",
+        nix::errno::Errno::ENOBUFS => "no buffer space available",
+        nix::errno::Errno::ENODEV => "no such device",
+        nix::errno::Errno::ENOENT => "no such file or directory",
+        nix::errno::Errno::ENOMEM => "not enough memory",
+        nix::errno::Errno::ENONET => "machine is not on the network",
+        nix::errno::Errno::ENOPROTOOPT => "protocol not available",
+        nix::errno::Errno::ENOSPC => "no space left on device",
+        nix::errno::Errno::ENOSYS => "function not implemented",
+        nix::errno::Errno::ENOTCONN => "socket is not connected",
+        nix::errno::Errno::ENOTDIR => "not a directory",
+        nix::errno::Errno::ENOTEMPTY => "directory not empty",
+        nix::errno::Errno::ENOTSOCK => "socket operation on non-socket",
+        nix::errno::Errno::EOPNOTSUPP => "operation not supported on socket",
+        nix::errno::Errno::EOVERFLOW => "value too large for defined data type",
+        nix::errno::Errno::EPERM => "operation not permitted",
+        nix::errno::Errno::EPIPE => "broken pipe",
+        nix::errno::Errno::EPROTO => "protocol error",
+        nix::errno::Errno::EPROTONOSUPPORT => "protocol not supported",
+        nix::errno::Errno::EPROTOTYPE => "protocol wrong type for socket",
+        nix::errno::Errno::ERANGE => "result too large",
+        nix::errno::Errno::EROFS => "read-only file system",
+        nix::errno::Errno::ESHUTDOWN => "cannot send after transport endpoint shutdown",
+        nix::errno::Errno::ESPIPE => "invalid seek",
+        nix::errno::Errno::ESRCH => "no such process",
+        nix::errno::Errno::ETIMEDOUT => "connection timed out",
+        nix::errno::Errno::ETXTBSY => "text file is busy",
+        nix::errno::Errno::EXDEV => "cross-device link not permitted",
+        nix::errno::Errno::ENXIO => "no such device or address",
+        nix::errno::Errno::EMLINK => "too many links",
+        nix::errno::Errno::EHOSTDOWN => "host is down",
+        nix::errno::Errno::EREMOTEIO => "remote I/O error",
+        nix::errno::Errno::ENOTTY => "inappropriate ioctl for device",
+        nix::errno::Errno::EILSEQ => "illegal byte sequence",
+        nix::errno::Errno::ESOCKTNOSUPPORT => "socket type not supported",
+        nix::errno::Errno::ENODATA => "no data available",
+        nix::errno::Errno::EUNATCH => "protocol driver not attached",
+        nix::errno::Errno::ENOEXEC => "exec format error",
+        _ => return format!("Unknown system error {}", -errno),
+    };
+    text.to_string()
+}
+
 fn annotate(annotator: Annotator, slot: &Slot<'_>) -> Option<String> {
     match annotator {
         Annotator::None => None,
@@ -283,6 +358,21 @@ pub(crate) fn journal(record: &Record<'_>, out: &mut Vec<u8>) {
 mod tests {
     use super::*;
     use crate::model::Field;
+
+    #[test]
+    fn errors_read_as_libuv_texts() {
+        use nix::errno::Errno;
+        assert_eq!(uv_strerror(Errno::EACCES as i32), "permission denied");
+        assert_eq!(
+            uv_strerror(Errno::EADDRINUSE as i32),
+            "address already in use"
+        );
+        assert_eq!(
+            uv_strerror(Errno::EOPNOTSUPP as i32),
+            "operation not supported on socket"
+        );
+        assert_eq!(uv_strerror(4095), "Unknown system error -4095");
+    }
 
     fn set<'a>(record: &mut Record<'a>, field: Field, slot: Slot<'a>) {
         record.slots[field as usize] = Some(slot);

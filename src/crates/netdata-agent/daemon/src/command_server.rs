@@ -17,7 +17,9 @@ use std::thread::{JoinHandle, ThreadId};
 use mio::net::{UnixListener, UnixStream};
 use mio::{Events, Interest, Poll, Token, Waker};
 use netdata_agent_evloop::work::WorkPool;
-use netdata_agent_log::{Priority, Source, errno_of, nd_log, netdata_log_error, netdata_log_info};
+use netdata_agent_log::{
+    Priority, Source, errno_of, nd_log, netdata_log_error, netdata_log_info, uv_strerror,
+};
 use nix::errno::Errno;
 use socket2::{Domain, SockAddr, Socket, Type};
 
@@ -47,81 +49,6 @@ pub fn pipename() -> &'static [u8] {
         )
         .into_bytes(),
     })
-}
-
-/// `uv_strerror()` of a negated errno.
-pub fn uv_strerror(errno: i32) -> String {
-    let text = match Errno::from_raw(errno) {
-        Errno::E2BIG => "argument list too long",
-        Errno::EACCES => "permission denied",
-        Errno::EADDRINUSE => "address already in use",
-        Errno::EADDRNOTAVAIL => "address not available",
-        Errno::EAFNOSUPPORT => "address family not supported",
-        Errno::EAGAIN => "resource temporarily unavailable",
-        Errno::EALREADY => "connection already in progress",
-        Errno::EBADF => "bad file descriptor",
-        Errno::EBUSY => "resource busy or locked",
-        Errno::ECANCELED => "operation canceled",
-        Errno::ECONNABORTED => "software caused connection abort",
-        Errno::ECONNREFUSED => "connection refused",
-        Errno::ECONNRESET => "connection reset by peer",
-        Errno::EDESTADDRREQ => "destination address required",
-        Errno::EEXIST => "file already exists",
-        Errno::EFAULT => "bad address in system call argument",
-        Errno::EFBIG => "file too large",
-        Errno::EHOSTUNREACH => "host is unreachable",
-        Errno::EINTR => "interrupted system call",
-        Errno::EINVAL => "invalid argument",
-        Errno::EIO => "i/o error",
-        Errno::EISCONN => "socket is already connected",
-        Errno::EISDIR => "illegal operation on a directory",
-        Errno::ELOOP => "too many symbolic links encountered",
-        Errno::EMFILE => "too many open files",
-        Errno::EMSGSIZE => "message too long",
-        Errno::ENAMETOOLONG => "name too long",
-        Errno::ENETDOWN => "network is down",
-        Errno::ENETUNREACH => "network is unreachable",
-        Errno::ENFILE => "file table overflow",
-        Errno::ENOBUFS => "no buffer space available",
-        Errno::ENODEV => "no such device",
-        Errno::ENOENT => "no such file or directory",
-        Errno::ENOMEM => "not enough memory",
-        Errno::ENONET => "machine is not on the network",
-        Errno::ENOPROTOOPT => "protocol not available",
-        Errno::ENOSPC => "no space left on device",
-        Errno::ENOSYS => "function not implemented",
-        Errno::ENOTCONN => "socket is not connected",
-        Errno::ENOTDIR => "not a directory",
-        Errno::ENOTEMPTY => "directory not empty",
-        Errno::ENOTSOCK => "socket operation on non-socket",
-        Errno::EOPNOTSUPP => "operation not supported on socket",
-        Errno::EOVERFLOW => "value too large for defined data type",
-        Errno::EPERM => "operation not permitted",
-        Errno::EPIPE => "broken pipe",
-        Errno::EPROTO => "protocol error",
-        Errno::EPROTONOSUPPORT => "protocol not supported",
-        Errno::EPROTOTYPE => "protocol wrong type for socket",
-        Errno::ERANGE => "result too large",
-        Errno::EROFS => "read-only file system",
-        Errno::ESHUTDOWN => "cannot send after transport endpoint shutdown",
-        Errno::ESPIPE => "invalid seek",
-        Errno::ESRCH => "no such process",
-        Errno::ETIMEDOUT => "connection timed out",
-        Errno::ETXTBSY => "text file is busy",
-        Errno::EXDEV => "cross-device link not permitted",
-        Errno::ENXIO => "no such device or address",
-        Errno::EMLINK => "too many links",
-        Errno::EHOSTDOWN => "host is down",
-        Errno::EREMOTEIO => "remote I/O error",
-        Errno::ENOTTY => "inappropriate ioctl for device",
-        Errno::EILSEQ => "illegal byte sequence",
-        Errno::ESOCKTNOSUPPORT => "socket type not supported",
-        Errno::ENODATA => "no data available",
-        Errno::EUNATCH => "protocol driver not attached",
-        Errno::ENOEXEC => "exec format error",
-        _ => return format!("Unknown system error {}", -errno),
-    };
-    text.to_string()
 }
 
 /// The running `DAEMON_COMMAND` thread.
@@ -631,19 +558,5 @@ mod tests {
                 "uv_pipe_bind(): name too long".to_string()
             )]
         );
-    }
-
-    #[test]
-    fn errors_read_as_libuv_texts() {
-        assert_eq!(uv_strerror(Errno::EACCES as i32), "permission denied");
-        assert_eq!(
-            uv_strerror(Errno::EADDRINUSE as i32),
-            "address already in use"
-        );
-        assert_eq!(
-            uv_strerror(Errno::EOPNOTSUPP as i32),
-            "operation not supported on socket"
-        );
-        assert_eq!(uv_strerror(4095), "Unknown system error -4095");
     }
 }
