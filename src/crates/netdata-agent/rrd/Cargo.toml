@@ -16,3 +16,5 @@ netdata-agent-text = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+netdata-agent-metadata = { workspace = true }
+tempfile = { workspace = true }
