@@ -272,6 +272,7 @@ mod tests {
             fields,
             unit: 0,
             self_ns: None,
+            detail: Default::default(),
         }
     }
 

@@ -652,6 +652,7 @@ mod tests {
             fields: Default::default(),
             unit: 0,
             self_ns: None,
+            detail: Default::default(),
         };
         assert_eq!(
             RowKey::of(&span),

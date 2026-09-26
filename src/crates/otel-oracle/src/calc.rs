@@ -1445,6 +1445,7 @@ mod tests {
             fields: fields.iter().copied().collect(),
             unit: 0,
             self_ns: None,
+            detail: Default::default(),
         }
     }
 
@@ -1470,6 +1471,7 @@ mod tests {
             fields: status.iter().copied().collect(),
             unit,
             self_ns: None,
+            detail: Default::default(),
         }
     }
 
@@ -1777,6 +1779,7 @@ mod tests {
                 fields: pairs.into_iter().collect(),
                 unit: 0,
                 self_ns: None,
+                detail: Default::default(),
             }
         };
         let mut spans = vec![span(Some("ERROR"), 100), span(Some("ERROR"), 10)];
@@ -1854,6 +1857,7 @@ mod tests {
             fields: pairs.iter().copied().collect(),
             unit: 0,
             self_ns: None,
+            detail: Default::default(),
         };
         let error = span(&[(STATUS_FIELD, "ERROR"), ("name", "a")]);
         let ok = span(&[(STATUS_FIELD, "OK"), ("name", "a")]);
@@ -1931,6 +1935,7 @@ mod tests {
                 fields: fields.into_iter().collect(),
                 unit,
                 self_ns,
+                detail: Default::default(),
             }
         };
         let spans: Vec<OracleSpan> = [

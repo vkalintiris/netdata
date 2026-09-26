@@ -219,6 +219,47 @@ pub struct OracleSpan {
     /// explorer shows it; set with the error-origin tokens
     /// ([`crate::calc::add_derived`]), `None` before or outside every scope.
     pub self_ns: Option<i64>,
+    /// What trace-by-id returns besides the row fields.
+    pub detail: SpanDetail,
+}
+
+/// A span's content beyond its row: the raw kind, flags, dropped counts, and
+/// its events and links with what the row does not keep (event times, link ids
+/// and trace state).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpanDetail {
+    /// The raw OTLP kind, 0 when absent.
+    pub kind: i32,
+    pub flags: u32,
+    pub dropped_attributes_count: u32,
+    pub dropped_events_count: u32,
+    pub dropped_links_count: u32,
+    pub events: Vec<SpanEvent>,
+    pub links: Vec<SpanLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpanEvent {
+    /// As sent; 0 stays 0.
+    pub time_unix_nano: u64,
+    /// As sent; an empty name is kept.
+    pub name: String,
+    pub dropped_attributes_count: u32,
+    /// Rendered like row fields, without the `events.attributes.` prefix, sorted.
+    pub attributes: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpanLink {
+    /// All zero when unset or of the wrong length.
+    pub trace_id: [u8; 16],
+    pub span_id: [u8; 8],
+    /// As sent.
+    pub trace_state: String,
+    pub flags: u32,
+    pub dropped_attributes_count: u32,
+    /// Rendered like row fields, without the `links.attributes.` prefix, sorted.
+    pub attributes: Vec<(String, String)>,
 }
 
 impl OracleSpan {
@@ -304,17 +345,37 @@ fn span_row(span: &Span, context: &[Pair], strings: &mut Strings, unit: usize) -
     }
     // An event's name (even an empty one) and attributes, and a link's
     // attributes, are fields of the span's row; event times, link ids and link
-    // trace state are not.
+    // trace state are only in the span's detail.
+    let mut events = Vec::with_capacity(span.events.len());
     for event in &span.events {
         fields.push(strings.pair("events.name", &event.name));
+        let mut attributes = Vec::new();
         for kv in &event.attributes {
-            render_kv("events.attributes", kv, strings, &mut fields);
+            render_kv("events.attributes", kv, strings, &mut attributes);
         }
+        events.push(SpanEvent {
+            time_unix_nano: event.time_unix_nano,
+            name: event.name.clone(),
+            dropped_attributes_count: event.dropped_attributes_count,
+            attributes: stripped("events.attributes.", &attributes),
+        });
+        fields.extend(attributes);
     }
+    let mut links = Vec::with_capacity(span.links.len());
     for link in &span.links {
+        let mut attributes = Vec::new();
         for kv in &link.attributes {
-            render_kv("links.attributes", kv, strings, &mut fields);
+            render_kv("links.attributes", kv, strings, &mut attributes);
         }
+        links.push(SpanLink {
+            trace_id: id::<16>(&link.trace_id).unwrap_or([0; 16]),
+            span_id: id::<8>(&link.span_id).unwrap_or([0; 8]),
+            trace_state: link.trace_state.clone(),
+            flags: link.flags,
+            dropped_attributes_count: link.dropped_attributes_count,
+            attributes: stripped("links.attributes.", &attributes),
+        });
+        fields.extend(attributes);
     }
     fields.push(strings.pair(ROLE_FIELD, role(parent_span_id.is_some(), span.kind)));
     fields.push(strings.pair(DURATION_BAND_FIELD, DURATION_BANDS[band(duration_ns)]));
@@ -328,7 +389,27 @@ fn span_row(span: &Span, context: &[Pair], strings: &mut Strings, unit: usize) -
         fields: Fields::from_pairs(fields),
         unit,
         self_ns: None,
+        detail: SpanDetail {
+            kind: span.kind,
+            flags: span.flags,
+            dropped_attributes_count: span.dropped_attributes_count,
+            dropped_events_count: span.dropped_events_count,
+            dropped_links_count: span.dropped_links_count,
+            events,
+            links,
+        },
     }
+}
+
+/// The pairs' names without `prefix`, sorted.
+fn stripped(prefix: &str, pairs: &[Pair]) -> Vec<(String, String)> {
+    let mut out = Vec::with_capacity(pairs.len());
+    for (name, value) in pairs {
+        let name = name.strip_prefix(prefix).unwrap_or(name);
+        out.push((name.to_string(), value.to_string()));
+    }
+    out.sort();
+    out
 }
 
 /// `root` without a parent; otherwise by kind.
@@ -432,7 +513,10 @@ mod tests {
     use opentelemetry_proto::tonic::{
         common::v1::{ArrayValue, KeyValueList},
         resource::v1::Resource,
-        trace::v1::{ResourceSpans, ScopeSpans, Status},
+        trace::v1::{
+            ResourceSpans, ScopeSpans, Status,
+            span::{Event, Link},
+        },
     };
 
     fn value(v: any_value::Value) -> Option<AnyValue> {
@@ -652,6 +736,101 @@ mod tests {
         for (duration, want) in cases {
             assert_eq!(DURATION_BANDS[band(duration)], want, "{duration}");
         }
+    }
+
+    /// The span's detail keeps what the row does not: the raw kind, flags,
+    /// dropped counts, event times and names as sent, link ids (zero when of the
+    /// wrong length) and trace state; attributes rendered like row fields
+    /// without their prefix.
+    #[test]
+    fn detail_keeps_what_the_row_does_not() {
+        let text = |s: &str| any_value::Value::StringValue(s.into());
+        let span = one_span(Span {
+            trace_id: vec![1; 16],
+            span_id: vec![2; 8],
+            start_time_unix_nano: 1_000,
+            end_time_unix_nano: 2_000,
+            kind: 42,
+            flags: 257,
+            dropped_attributes_count: 1,
+            dropped_events_count: 2,
+            dropped_links_count: 3,
+            events: vec![
+                Event {
+                    time_unix_nano: 0,
+                    name: String::new(),
+                    dropped_attributes_count: 4,
+                    attributes: vec![
+                        kv(
+                            "db",
+                            any_value::Value::KvlistValue(KeyValueList {
+                                values: vec![kv("rows", any_value::Value::IntValue(3))],
+                            }),
+                        ),
+                        kv(
+                            "tags",
+                            any_value::Value::ArrayValue(ArrayValue {
+                                values: vec![value(text("b")).unwrap(), value(text("a")).unwrap()],
+                            }),
+                        ),
+                    ],
+                },
+                Event {
+                    time_unix_nano: 1_500,
+                    name: "retry".into(),
+                    ..Default::default()
+                },
+            ],
+            links: vec![Link {
+                trace_id: vec![9; 15],
+                span_id: vec![8; 8],
+                trace_state: " k=v ".into(),
+                flags: 1,
+                dropped_attributes_count: 5,
+                attributes: vec![kv("reason", text("follows"))],
+            }],
+            ..Default::default()
+        });
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            span.detail,
+            SpanDetail {
+                kind: 42,
+                flags: 257,
+                dropped_attributes_count: 1,
+                dropped_events_count: 2,
+                dropped_links_count: 3,
+                events: vec![
+                    SpanEvent {
+                        time_unix_nano: 0,
+                        name: String::new(),
+                        dropped_attributes_count: 4,
+                        attributes: pairs(&[("db.rows", "3"), ("tags[]", "a"), ("tags[]", "b")]),
+                    },
+                    SpanEvent {
+                        time_unix_nano: 1_500,
+                        name: "retry".into(),
+                        dropped_attributes_count: 0,
+                        attributes: Vec::new(),
+                    },
+                ],
+                links: vec![SpanLink {
+                    trace_id: [0; 16],
+                    span_id: [8; 8],
+                    trace_state: " k=v ".into(),
+                    flags: 1,
+                    dropped_attributes_count: 5,
+                    attributes: pairs(&[("reason", "follows")]),
+                }],
+            }
+        );
+        assert_eq!(values(&span, "events.name"), vec!["", "retry"]);
+        assert_eq!(values(&span, "events.attributes.db.rows"), vec!["3"]);
+        assert_eq!(values(&span, "links.attributes.reason"), vec!["follows"]);
     }
 
     /// Tier 2's duration clamp: an unset end, or one before the start, stores
