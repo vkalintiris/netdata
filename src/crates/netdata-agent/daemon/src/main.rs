@@ -456,38 +456,19 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         netdata_conf: std::sync::Mutex::new(std::mem::take(&mut conf.netdata)),
         custom_dashboard_info: Default::default(),
     });
-    let listener_names: Arc<[String]> = listeners.iter().map(|l| l.name.clone()).collect();
-    let sockets: Vec<(std::net::TcpListener, u32)> =
-        listeners.into_iter().map(|l| (l.socket, l.acl)).collect();
-    // Every worker polls every listener through its own duplicate; running out of descriptors here is an error,
-    // not a panic.
-    let mut worker_sockets = Vec::with_capacity(web_server_threads);
-    for _ in 0..web_server_threads {
-        match sockets
-            .iter()
-            .map(|(socket, acl)| socket.try_clone().map(|s| (s, *acl)))
-            .collect::<std::io::Result<Vec<_>>>()
-        {
-            Ok(set) => worker_sockets.push(set),
-            Err(err) => {
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Err,
-                    "Cannot start the web server threads: {err}"
-                );
-                return 1;
-            }
-        }
-    }
+    // One descriptor per listener, shared by every web worker.
+    let listeners: Arc<[server::WebListener]> = listeners
+        .into_iter()
+        .map(server::WebListener::new)
+        .collect();
     let pool = if web_enabled {
         match Pool::spawn(
             web_server_threads,
             conf.threads.thread_stack_size,
             |i| format!("WEB[{}]", i + 1),
-            |i| {
+            |_| {
                 server::WebWorker::new(
-                    std::mem::take(&mut worker_sockets[i]),
-                    Arc::clone(&listener_names),
+                    Arc::clone(&listeners),
                     max_sockets,
                     Arc::clone(&shared),
                     Arc::clone(&receivers),
@@ -503,6 +484,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     } else {
         None
     };
+    // The workers hold the listeners from here on; they close when the last one stops.
+    drop(listeners);
     let contexts_worker =
         match rrdcontext::Worker::spawn(Arc::clone(&hosts), conf.threads.thread_stack_size) {
             Ok(worker) => worker,

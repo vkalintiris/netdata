@@ -6,11 +6,12 @@
 //! handed to the least loaded stream thread.
 
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpStream};
+use std::net::Shutdown;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use netdata_agent_evloop::conn::{Conn, Stream};
 use netdata_agent_evloop::{Context, Event, Interest, PoolHandle, TimerId, Token, Worker};
 use netdata_agent_ingest::{self as ingest, Parser};
 use netdata_agent_log::{Priority, Source, nd_log};
@@ -106,7 +107,7 @@ pub struct Attached {
     host: Arc<Host>,
     hosts: Arc<Hosts>,
     slot: Arc<ReceiverSlot>,
-    stream: mio::net::TcpStream,
+    stream: Conn,
     thread: usize,
     parser: ingest::Config,
     peer: Peer,
@@ -165,11 +166,14 @@ fn logged_value<'a>(name: &str, value: &'a str) -> &'a str {
 }
 
 /// One blocking `send()` bounded by `timeout` (`nd_sock_send_timeout()`): true when everything went out.
-fn send_timeout(stream: &TcpStream, bytes: &[u8], timeout: Duration) -> bool {
+fn send_timeout(stream: &Stream, bytes: &[u8], timeout: Duration) -> bool {
     let sent = stream
         .set_nonblocking(false)
         .and_then(|()| stream.set_write_timeout(Some(timeout)))
-        .and_then(|()| (&*stream).write(bytes));
+        .and_then(|()| {
+            let mut s = stream;
+            s.write(bytes)
+        });
     matches!(sent, Ok(n) if n == bytes.len())
 }
 
@@ -357,7 +361,7 @@ impl Receivers {
     }
 
     /// `PreAdmission::Refuse`: the connection has been taken over; the status is logged, then the reply sent.
-    pub fn refuse(&self, stream: TcpStream, message: &str, refusal: &Refusal) {
+    pub fn refuse(&self, stream: Stream, message: &str, refusal: &Refusal) {
         let peer = &refusal.peer;
         peer.status(refusal.msg, refusal.reason, refusal.priority);
         if !send_timeout(&stream, message.as_bytes(), Duration::from_secs(60)) {
@@ -374,7 +378,7 @@ impl Receivers {
 
     /// The rest of `stream_receiver_accept_connection()`: the receiver configuration, the host, the prompt, and the
     /// handover to a stream thread.
-    pub fn admit(&self, pending: Pending, stream: TcpStream) {
+    pub fn admit(&self, pending: Pending, stream: Stream) {
         let Pending {
             request,
             peer,
@@ -528,7 +532,7 @@ impl Receivers {
             host,
             hosts: Arc::clone(&self.hosts),
             slot,
-            stream: mio::net::TcpStream::from_std(stream),
+            stream: Conn::from_std(stream),
             thread,
             parser: ingest::Config {
                 capabilities,

@@ -80,6 +80,9 @@ type Options struct {
 	StreamExtra string
 	// StreamTo, when set, makes the daemon a streaming child of that destination.
 	StreamTo *StreamTo
+	// BindTo, when set, is the [web] bind to value, with {port} replaced by Port and {run} by RunDir. It must keep
+	// a listener on 127.0.0.1:{port}, which the readiness probe uses. Empty is 127.0.0.1:{port}.
+	BindTo string
 }
 
 // StreamTo is a child's [stream] section.
@@ -130,7 +133,7 @@ const netdataConfTemplate = `[global]
     home = %[1]s/lib
 %[7]s
 [web]
-    bind to = 127.0.0.1:%[3]d
+    bind to = %[10]s
 %[8]s
 [db]
     db = dbengine
@@ -361,8 +364,13 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	if o.PluginsDir != "" {
 		extraDirs += fmt.Sprintf("    plugins = %s\n", o.PluginsDir)
 	}
+	bindTo := o.BindTo
+	if bindTo == "" {
+		bindTo = "127.0.0.1:{port}"
+	}
+	bindTo = strings.NewReplacer("{port}", strconv.Itoa(o.Port), "{run}", o.RunDir).Replace(bindTo)
 	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs, o.WebExtra,
-		o.GlobalExtra)
+		o.GlobalExtra, bindTo)
 	if o.LogsExtra != "" {
 		conf += "\n[logs]\n" + o.LogsExtra
 	}

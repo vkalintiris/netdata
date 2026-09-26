@@ -6,6 +6,7 @@ use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use netdata_agent_evloop::conn::{Conn, Stream};
 use netdata_agent_evloop::{Context, Event, Interest, TimerId, Token, Worker};
 use netdata_agent_web::content_type::ContentType;
 use netdata_agent_web::request::{
@@ -169,7 +170,7 @@ impl RecvBuffer {
 }
 
 struct Client {
-    stream: mio::net::TcpStream,
+    stream: Conn,
     /// `w->acl`.
     acl: u32,
     /// The `POLLINFO` activity the timeout checks read.
@@ -213,12 +214,78 @@ struct Activity {
     first_request_received: bool,
 }
 
+/// A listen socket: one descriptor that every web worker registers in its own poller, as C shares its listening
+/// sockets between its web threads (D53.3).
+pub struct WebListener {
+    socket: ListenSocket,
+    /// `fds_acl_flags`.
+    acl: u32,
+    /// `fds_names`.
+    name: String,
+}
+
+enum ListenSocket {
+    Tcp(mio::net::TcpListener),
+    Unix(mio::net::UnixListener),
+    /// Kept open and listed, never polled: C crashes on the first datagram (D53.1).
+    Udp(#[expect(dead_code, reason = "held open, never read")] std::net::UdpSocket),
+}
+
+impl WebListener {
+    /// A listener as `listen::setup()` opened it (non-blocking).
+    pub fn new(l: crate::listen::Listener) -> WebListener {
+        let socket = match l.socket {
+            crate::listen::Socket::Tcp(s) => ListenSocket::Tcp(mio::net::TcpListener::from_std(s)),
+            crate::listen::Socket::Unix(s) => {
+                ListenSocket::Unix(mio::net::UnixListener::from_std(s))
+            }
+            crate::listen::Socket::Udp(s) => ListenSocket::Udp(s),
+        };
+        WebListener {
+            socket,
+            acl: l.acl,
+            name: l.name,
+        }
+    }
+
+    /// The descriptor a worker polls, `None` for one it does not.
+    fn polled_fd(&self) -> Option<std::os::fd::RawFd> {
+        use std::os::fd::AsRawFd;
+        match &self.socket {
+            ListenSocket::Tcp(s) => Some(s.as_raw_fd()),
+            ListenSocket::Unix(s) => Some(s.as_raw_fd()),
+            ListenSocket::Udp(_) => None,
+        }
+    }
+
+    /// `accept_socket()`: the connection and its peer as C names it; a unix peer is `localhost`, port `UNIX`.
+    fn accept(&self) -> io::Result<(Conn, acl::Client, String)> {
+        match &self.socket {
+            ListenSocket::Tcp(l) => l.accept().map(|(stream, peer)| {
+                let client = acl::Client {
+                    ip: client_ip(&peer),
+                    peer: Some(peer.ip()),
+                    host: String::new(),
+                    errno: 0,
+                };
+                (Conn::Tcp(stream), client, peer.port().to_string())
+            }),
+            ListenSocket::Unix(l) => l.accept().map(|(stream, _)| {
+                let client = acl::Client {
+                    ip: "localhost".to_string(),
+                    peer: None,
+                    host: String::new(),
+                    errno: 0,
+                };
+                (Conn::Unix(stream), client, "UNIX".to_string())
+            }),
+            ListenSocket::Udp(_) => Err(io::ErrorKind::WouldBlock.into()),
+        }
+    }
+}
+
 pub struct WebWorker {
-    listeners: Vec<mio::net::TcpListener>,
-    /// Each listener's ACL (`fds_acl_flags`).
-    listener_acls: Vec<u32>,
-    /// Each listener's name (`fds_names`).
-    listener_names: Arc<[String]>,
+    listeners: Arc<[WebListener]>,
     clients: Vec<Option<Client>>,
     /// This worker's share of `[web] web server max sockets`; C only reports it when accept() runs out of descriptors.
     max_sockets: usize,
@@ -238,22 +305,15 @@ struct Stats {
 }
 
 impl WebWorker {
-    /// `listeners` (with their ACLs) must be non-blocking; they become this worker's own.
+    /// Every worker polls every listener in `listeners`.
     pub fn new(
-        listeners: Vec<(std::net::TcpListener, u32)>,
-        listener_names: Arc<[String]>,
+        listeners: Arc<[WebListener]>,
         max_sockets: usize,
         shared: Arc<Shared>,
         receivers: Arc<Receivers>,
     ) -> Self {
-        let (listeners, listener_acls): (Vec<_>, Vec<_>) = listeners.into_iter().unzip();
         WebWorker {
-            listeners: listeners
-                .into_iter()
-                .map(mio::net::TcpListener::from_std)
-                .collect(),
-            listener_acls,
-            listener_names,
+            listeners,
             clients: Vec::new(),
             max_sockets,
             shared,
@@ -274,13 +334,8 @@ impl WebWorker {
     fn accept(&mut self, cx: &mut Context<'_>, index: usize) {
         loop {
             match self.listeners[index].accept() {
-                Ok((mut stream, peer)) => {
+                Ok((mut stream, mut identity, port)) => {
                     // accept_socket(): the connection list, then web_client_update_acl_matches().
-                    let mut identity = acl::Client {
-                        ip: client_ip(&peer),
-                        peer: peer.ip(),
-                        host: String::new(),
-                    };
                     if !acl::connection_allowed(
                         &mut identity,
                         &self.shared.acl.connections,
@@ -291,26 +346,31 @@ impl WebWorker {
                             Priority::Warning,
                             "Permission denied for client '{}', port '{}'",
                             identity.ip,
-                            peer.port()
+                            port
                         );
                         // accept_socket() then fails with EPERM, which poll_events() logs
                         nd_log!(Source::Daemon, Priority::Err, errno = nix::errno::Errno::EPERM as i32;
                             "POLLFD: LISTENER: accept() failed.");
                         continue;
                     }
-                    // poll_process_new_tcp_connection(): a client that is already gone is closed without a trace
-                    if is_socket_closed(&stream, &mut 0) {
+                    // poll_process_new_tcp_connection(): a client that is already gone is closed without a trace; a
+                    // failed peek leaves its errno to the next record (a unix client may not have sent yet)
+                    if is_socket_closed(&stream, &mut identity.errno) {
                         continue;
                     }
                     let client_acl = self
                         .shared
                         .acl
-                        .matches(&mut identity, self.listener_acls[index]);
-                    let log = ClientLog::new(
+                        .matches(&mut identity, self.listeners[index].acl);
+                    let mut log = ClientLog::new(
                         identity.ip.clone(),
-                        peer.port().to_string(),
+                        port,
                         std::mem::take(&mut identity.host),
                     );
+                    if stream.is_unix() {
+                        // web_client_request_done()'s TCP_CORK fails on a unix socket before every request record
+                        log.request_errno = nix::errno::Errno::EOPNOTSUPP as i32;
+                    }
                     let slot = self
                         .clients
                         .iter()
@@ -328,7 +388,9 @@ impl WebWorker {
                         continue;
                     }
                     // web_client_create_on_fd()
-                    let _ = stream.set_nodelay(true);
+                    if let Conn::Tcp(tcp) = &stream {
+                        let _ = tcp.set_nodelay(true);
+                    }
                     let _ = socket2::SockRef::from(&stream).set_keepalive(true);
                     self.clients[slot] = Some(Client {
                         stream,
@@ -359,7 +421,7 @@ impl WebWorker {
                         let s = &mut self.stats;
                         s.connected += 1;
                         s.max_concurrent = s.max_concurrent.max(s.connected - s.disconnected);
-                        client.log.connection("CONNECTED");
+                        client.log.connection("CONNECTED", identity.errno);
                     }
                 }
                 // Another worker won the race.
@@ -389,7 +451,7 @@ impl WebWorker {
             self.stats.disconnected += 1;
             let _ = cx.registry().deregister(&mut client.stream);
             let _frame = hangup.then(|| client.log.hangup_frame());
-            client.log.connection("DISCONNECTED");
+            client.log.connection("DISCONNECTED", 0);
             if let Some(done) = client.pending.take() {
                 done.log(&client.log);
             }
@@ -411,7 +473,7 @@ impl WebWorker {
             return;
         };
         let _ = cx.registry().deregister(&mut client.stream);
-        let stream = std::net::TcpStream::from(client.stream);
+        let stream = Stream::from(client.stream);
         {
             let _frame = ctx.outer_frame();
             match pre {
@@ -423,7 +485,7 @@ impl WebWorker {
             }
         }
         self.stats.disconnected += 1;
-        client.log.connection("DISCONNECTED");
+        client.log.connection("DISCONNECTED", 0);
         if let Some(done) = client.pending.take() {
             done.log(&client.log);
         }
@@ -810,7 +872,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
 
 /// `web_client_send_http_header()`'s send: how much of the header went out, or `None` (after C's two records) when
 /// the client is gone. A full socket sends nothing now; the rest goes out with the body.
-fn send_header(stream: &mut mio::net::TcpStream, header: &[u8]) -> Option<usize> {
+fn send_header(stream: &mut Conn, header: &[u8]) -> Option<usize> {
     loop {
         match stream.write(header) {
             Ok(n) => return Some(n),
@@ -860,8 +922,8 @@ pub fn permission_denied_acl() -> Reply {
 
 /// `is_socket_closed()`: a peek that finds the end of the stream or an error other than "no data yet"; a failed peek
 /// leaves its errno, as `recv()` does.
-fn is_socket_closed(stream: &mio::net::TcpStream, errno: &mut i32) -> bool {
-    match stream.peek(&mut [0u8; 1]) {
+fn is_socket_closed(stream: &Conn, errno: &mut i32) -> bool {
+    match socket2::SockRef::from(stream).peek(&mut [std::mem::MaybeUninit::uninit(); 1]) {
         Ok(0) => true,
         Ok(_) => false,
         Err(e) => {
@@ -913,15 +975,20 @@ impl Worker for WebWorker {
     type Msg = ();
 
     fn start(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
-        for (i, listener) in self.listeners.iter_mut().enumerate() {
-            cx.registry()
-                .register(listener, Token(i), Interest::READABLE)?;
+        for (i, listener) in self.listeners.iter().enumerate() {
+            if let Some(fd) = listener.polled_fd() {
+                cx.registry().register(
+                    &mut mio::unix::SourceFd(&fd),
+                    Token(i),
+                    Interest::READABLE,
+                )?;
+            }
             // poll_events()
             nd_log!(
                 Source::Daemon,
                 Priority::Debug,
                 "POLLFD: LISTENER: listening on '{}'",
-                self.listener_names.get(i).map_or("UNKNOWN", String::as_str)
+                listener.name
             );
         }
         cx.add_timer(Instant::now() + self.checks_every());
@@ -997,6 +1064,12 @@ impl Worker for WebWorker {
         for slot in 0..self.clients.len() {
             self.close(cx, slot, false);
         }
+        // off this worker's poller before the worker lets go of the shared descriptors (D43)
+        for listener in self.listeners.iter() {
+            if let Some(fd) = listener.polled_fd() {
+                let _ = cx.registry().deregister(&mut mio::unix::SourceFd(&fd));
+            }
+        }
         let s = &self.stats;
         nd_log!(
             Source::Daemon,
@@ -1014,7 +1087,7 @@ impl Worker for WebWorker {
                 Priority::Info,
                 "closing all web server sockets..."
             );
-            self.listeners.clear();
+            // the sockets close once the last worker lets go of them
             nd_log!(
                 Source::Daemon,
                 Priority::Info,

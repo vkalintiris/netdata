@@ -39,40 +39,37 @@ pub mod bits {
 
 /// `socket_ssl_acl()` and `read_acl()`: one word of a listener's ACL list; an `^SSL=optional|force` suffix is split
 /// off first.
-fn read_acl(word: &str) -> u32 {
-    let (word, ssl) = match word.split_once('^') {
-        Some((w, s)) => (w, Some(s)),
+fn read_acl(word: &[u8]) -> u32 {
+    let (word, ssl) = match word.iter().position(|&b| b == b'^') {
+        Some(at) => (&word[..at], Some(&word[at + 1..])),
         None => (word, None),
     };
-    let mut acl = match ssl.and_then(|s| s.strip_prefix("SSL=")) {
-        Some("optional") => bits::SSL_OPTIONAL,
-        Some("force") => bits::SSL_FORCE,
+    let mut acl = match ssl.and_then(|s| s.strip_prefix(b"SSL=")) {
+        Some(b"optional") => bits::SSL_OPTIONAL,
+        Some(b"force") => bits::SSL_FORCE,
         _ => 0,
     };
     acl |= match word {
-        "dashboard" => bits::DASHBOARD,
-        "registry" => bits::REGISTRY,
-        "badges" => bits::BADGES,
-        "management" => bits::MANAGEMENT,
-        "streaming" => bits::STREAMING,
-        "netdata.conf" => bits::NETDATACONF,
-        "mcp" => bits::MCP,
+        b"dashboard" => bits::DASHBOARD,
+        b"registry" => bits::REGISTRY,
+        b"badges" => bits::BADGES,
+        b"management" => bits::MANAGEMENT,
+        b"streaming" => bits::STREAMING,
+        b"netdata.conf" => bits::NETDATACONF,
+        b"mcp" => bits::MCP,
         _ => 0,
     };
     acl
 }
 
-/// The ACL `bind_to_this()` gives a TCP listener: `tcp:` adds the API transport (a bare address does not); the words
-/// after `=` (split on `|`) select features, else every feature; SSL defaults when neither optional nor forced.
-pub fn listener_acl(definition: &str, acl_list: Option<&str>) -> u32 {
-    let mut acl = if definition.starts_with("tcp:") {
-        bits::API
-    } else {
-        0
-    };
+/// The ACL `bind_to_this()` gives an IP listener: its transport (`tcp:` the API, `udp:` the UDP API, a bare address
+/// none); the words after `=` (split on `|`) select features, else every feature; SSL defaults when neither optional
+/// nor forced.
+pub fn listener_acl(transport: u32, acl_list: Option<&[u8]>) -> u32 {
+    let mut acl = transport;
     match acl_list {
         Some(list) => {
-            for word in list.split('|') {
+            for word in list.split(|&b| b == b'|') {
                 acl |= read_acl(word);
             }
         }
@@ -83,6 +80,9 @@ pub fn listener_acl(definition: &str, acl_list: Option<&str>) -> u32 {
     }
     acl
 }
+
+/// The fixed ACL of a `unix:` listener.
+pub const UNIX_LISTENER_ACL: u32 = bits::API_UNIX | bits::ALL_LISTENER_FEATURES;
 
 /// An `allow ... from` pattern and its `allow ... by dns` decision.
 pub struct AclPattern {
@@ -104,11 +104,24 @@ pub struct WebAcl {
 
 /// A client as the ACL checks see it (`w->user_auth.client_ip`, `w->client_host`).
 pub struct Client {
-    /// As `accept_socket()` formats it: `localhost` for loopback, IPv4-mapped addresses unwrapped.
+    /// As `accept_socket()` formats it: `localhost` for loopback and unix peers, IPv4-mapped addresses unwrapped.
     pub ip: String,
-    pub peer: IpAddr,
+    /// `None` for a unix peer.
+    pub peer: Option<IpAddr>,
     /// The reverse-resolved name, filled by the first check that needs it (`UNKNOWN` when it cannot be validated).
     pub host: String,
+    /// The errno C's next record carries (a failed peek's); the first record logged takes it.
+    pub errno: i32,
+}
+
+/// `getnameinfo(NI_NAMEREQD)` of a peer: glibc names a unix peer by the node name.
+fn reverse_name(peer: Option<IpAddr>) -> Result<String, String> {
+    match peer {
+        Some(ip) => dns_lookup::lookup_addr(&ip).map_err(|e| crate::listen::gai_text(&e)),
+        None => nix::unistd::gethostname()
+            .map(|name| name.to_string_lossy().into_owned())
+            .map_err(|e| e.to_string()),
+    }
 }
 
 /// `connection_allowed()`: the numeric address matches, or (when DNS is allowed) the validated reverse name does.
@@ -117,11 +130,12 @@ pub fn connection_allowed(client: &mut Client, acl: &AclPattern, name: &str) -> 
         return true;
     }
     if client.host.is_empty() && acl.dns {
-        match dns_lookup::lookup_addr(&client.peer) {
+        match reverse_name(client.peer) {
             Err(err) => {
                 nd_log!(
                     Source::Daemon,
                     Priority::Err,
+                    errno = std::mem::take(&mut client.errno);
                     "Incoming {name} on '{}' does not match a numeric pattern, and host could not be resolved (err={err})",
                     client.ip
                 );
@@ -135,6 +149,7 @@ pub fn connection_allowed(client: &mut Client, acl: &AclPattern, name: &str) -> 
                 nd_log!(
                     Source::Daemon,
                     Priority::Err,
+                    errno = std::mem::take(&mut client.errno);
                     "LISTENER: cannot validate hostname '{}' from '{}' by resolving it",
                     client.host,
                     client.ip
@@ -147,6 +162,7 @@ pub fn connection_allowed(client: &mut Client, acl: &AclPattern, name: &str) -> 
                     nd_log!(
                         Source::Daemon,
                         Priority::Err,
+                        errno = std::mem::take(&mut client.errno);
                         "LISTENER: Cannot validate '{}' as ip of '{}', not listed in DNS",
                         client.ip,
                         client.host
@@ -205,18 +221,24 @@ mod tests {
 
     #[test]
     fn listener_acls_match_c() {
-        assert_eq!(listener_acl("*", None), bits::ALL_LISTENER_FEATURES);
+        assert_eq!(listener_acl(0, None), bits::ALL_LISTENER_FEATURES);
         assert_eq!(
-            listener_acl("tcp:*", None),
+            listener_acl(bits::API, None),
             bits::API | bits::ALL_LISTENER_FEATURES
         );
         assert_eq!(
-            listener_acl("x", Some("dashboard|streaming^SSL=force")),
+            listener_acl(0, Some(b"dashboard|streaming^SSL=force")),
             bits::DASHBOARD | bits::STREAMING | bits::SSL_FORCE
         );
         assert_eq!(
-            listener_acl("x", Some("badges")),
+            listener_acl(0, Some(b"badges")),
             bits::BADGES | bits::SSL_DEFAULT
+        );
+        // an empty list selects nothing but the SSL default
+        assert_eq!(listener_acl(0, Some(b"")), bits::SSL_DEFAULT);
+        assert_eq!(
+            listener_acl(bits::API_UDP, Some(b"mcp^SSL=optional|x")),
+            bits::API_UDP | bits::MCP | bits::SSL_OPTIONAL
         );
     }
 }

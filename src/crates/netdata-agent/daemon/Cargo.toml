@@ -17,7 +17,7 @@ netdata-agent-sys = { workspace = true }
 netdata-agent-nrpc = { workspace = true }
 dns-lookup = { workspace = true }
 flate2 = { workspace = true }
-mio = { workspace = true }
+mio = { workspace = true, features = ["os-ext"] }
 netdata-agent-evloop = { workspace = true }
 netdata-agent-inicfg = { workspace = true }
 netdata-agent-log = { workspace = true }
@@ -27,6 +27,9 @@ netdata-agent-rrd = { workspace = true }
 netdata-agent-streaming = { workspace = true }
 netdata-agent-text = { workspace = true }
 netdata-agent-web = { workspace = true }
-nix = { workspace = true, features = ["signal", "user", "hostname", "fs", "process", "time", "resource"] }
-socket2 = { workspace = true }
+nix = { workspace = true, features = ["signal", "user", "hostname", "fs", "process", "time", "resource", "net"] }
+socket2 = { workspace = true, features = ["all"] }
 uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

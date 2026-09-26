@@ -183,6 +183,8 @@ pub struct ClientLog {
     /// The current request's `X-Forwarded-Host` and `X-Forwarded-For`, until the request is done.
     pub forwarded_host: Vec<u8>,
     pub forwarded_for: Vec<u8>,
+    /// The errno C's request records carry: a unix connection's failed `TCP_CORK`.
+    pub request_errno: i32,
 }
 
 impl ClientLog {
@@ -196,11 +198,13 @@ impl ClientLog {
             tv_ready: None,
             forwarded_host: Vec::new(),
             forwarded_for: Vec::new(),
+            request_errno: 0,
         }
     }
 
-    /// `web_server_log_connection()`: an access record at debug, `[<ip>]:<port> CONNECTED` / `DISCONNECTED`.
-    pub fn connection(&self, what: &str) {
+    /// `web_server_log_connection()`: an access record at debug, `[<ip>]:<port> CONNECTED` / `DISCONNECTED`, with
+    /// the errno an earlier call left.
+    pub fn connection(&self, what: &str, errno: i32) {
         let _frame = push(vec![
             (Field::ConnectionId, Value::U64(self.slot.id)),
             (Field::SrcTransport, Value::txt("http")),
@@ -218,6 +222,7 @@ impl ClientLog {
         nd_log!(
             Source::Access,
             Priority::Debug,
+            errno = errno;
             "[{}]:{} {what}",
             self.ip,
             self.port
@@ -375,7 +380,7 @@ impl Completed {
         netdata_agent_log::logger(
             Source::Access,
             priority,
-            0,
+            client.request_errno,
             &netdata_agent_log::here!(),
             None,
         );
