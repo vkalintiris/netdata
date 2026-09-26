@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use super::*;
 use crate::ledger::rpc::traces::fixtures::{
-    call_through_bridge, install_sealed, install_wal, make_registries_at,
+    call_through_bridge, install_sealed, install_wal_at_span_starts, make_registries_at,
 };
 use bridge::function::{HandlerAdapter, ProgressState};
 use file_registry::TenantId;
@@ -117,7 +117,7 @@ async fn lab() -> Lab {
     install_sealed(&registries, "default", 2, stored[third..2 * third].to_vec()).await;
     let mut live: Vec<ExportTraceServiceRequest> = stored[2 * third..requests.len()].to_vec();
     live.push(stored[requests.len()].clone());
-    install_wal(&registries, "default", 3, live).await;
+    install_wal_at_span_starts(&registries, "default", 3, live).await;
 
     let last_s = u32::try_from(last_ns / 1_000_000_000).unwrap();
     Lab {
@@ -295,25 +295,20 @@ async fn a_dropped_capture_record_leaves_exactly_its_spans_unmatched() {
     assert!(!check.ingest_ok() && !check.judged());
 }
 
-/// The calculator's units are the engine's sources: sealed files and chunks by
-/// name and record count, and one tail.
-#[tokio::test]
-async fn membership_units_are_the_handlers_sources() {
-    let lab = lab().await;
-    let store = membership::read_store(&lab.root, CHUNK_ENTRIES).unwrap();
-    let grid = Grid::for_window(lab.after, lab.before);
-    let capture = handler(&lab)
+/// The handler's sources over `[after_s, before_s)` as (name, record count),
+/// sorted; a tail has no count.
+async fn handler_sources(lab: &Lab, after_s: u32, before_s: u32) -> Vec<(String, Option<u32>)> {
+    let capture = handler(lab)
         .supplier
         .capture(
             &TenantId::from("default"),
-            grid.after_s..grid.before_s,
+            after_s..before_s,
             1,
             &CancellationToken::new(),
             &ProgressState::new(),
         )
         .await
         .unwrap();
-
     let mut sources: Vec<(String, Option<u32>)> = capture.sets[0]
         .iter()
         .map(|source| match source {
@@ -326,16 +321,73 @@ async fn membership_units_are_the_handlers_sources() {
         })
         .collect();
     sources.sort();
-    let mut units: Vec<(String, Option<u32>)> = store
-        .units
+    sources
+}
+
+/// The units `indexes` as [`handler_sources`] names them.
+fn unit_names(store: &membership::Membership, indexes: &[usize]) -> Vec<(String, Option<u32>)> {
+    let mut units: Vec<(String, Option<u32>)> = indexes
         .iter()
-        .map(|unit| match unit.kind {
-            UnitKind::Tail(_) => ("tail".to_string(), None),
-            _ => (unit.name(), Some(unit.rows.len() as u32)),
+        .map(|&index| {
+            let unit = &store.units[index];
+            match unit.kind {
+                UnitKind::Tail(_) => ("tail".to_string(), None),
+                _ => (unit.name(), Some(unit.rows.len() as u32)),
+            }
         })
         .collect();
     units.sort();
-    assert_eq!(units, sources);
+    units
+}
+
+/// The calculator's units are the engine's sources: sealed files and chunks by
+/// name and record count, and one tail.
+#[tokio::test]
+async fn membership_units_are_the_handlers_sources() {
+    let lab = lab().await;
+    let store = membership::read_store(&lab.root, CHUNK_ENTRIES).unwrap();
+    let grid = Grid::for_window(lab.after, lab.before);
+    let every: Vec<usize> = (0..store.units.len()).collect();
+    assert_eq!(
+        unit_names(&store, &every),
+        handler_sources(&lab, grid.after_s, grid.before_s).await
+    );
+}
+
+/// The units a trace request reads are the sources the handler hands the
+/// engine for its bounds, including a whole WAL when only its newest second
+/// is asked.
+#[tokio::test]
+async fn trace_units_are_the_handlers_trace_sources() {
+    let lab = lab().await;
+    let store = membership::read_store(&lab.root, CHUNK_ENTRIES).unwrap();
+    let mut newest = 0;
+    let mut oldest = u32::MAX;
+    for unit in &store.units {
+        let (min, max) = unit.seconds.unwrap();
+        oldest = oldest.min(min);
+        newest = newest.max(max);
+    }
+    let last_second = (newest, newest + 1);
+    let mut overlapping = Vec::new();
+    for (index, unit) in store.units.iter().enumerate() {
+        if matching::overlaps(unit.seconds, last_second.0, last_second.1) {
+            overlapping.push(index);
+        }
+    }
+    assert_ne!(
+        matching::trace_units(&store, last_second.0, last_second.1),
+        overlapping,
+        "a case where the trace request reads more than the explorer"
+    );
+
+    for (after_s, before_s) in [last_second, (oldest, oldest + 1), (oldest, newest + 1)] {
+        assert_eq!(
+            unit_names(&store, &matching::trace_units(&store, after_s, before_s)),
+            handler_sources(&lab, after_s, before_s).await,
+            "[{after_s}, {before_s})"
+        );
+    }
 }
 
 /// A corpus of 50 minutes received as it happens (each request a second after
@@ -397,7 +449,7 @@ async fn paced() -> Paced {
     let registries = make_registries_at(&root);
     install_sealed(&registries, "default", 1, stored[..third].to_vec()).await;
     install_sealed(&registries, "default", 2, stored[third..2 * third].to_vec()).await;
-    install_wal(&registries, "default", 3, stored[2 * third..].to_vec()).await;
+    install_wal_at_span_starts(&registries, "default", 3, stored[2 * third..].to_vec()).await;
     Paced {
         _dir: dir,
         root,

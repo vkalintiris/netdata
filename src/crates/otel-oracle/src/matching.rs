@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::capture::{Record, Signal};
 use crate::ingest::{IngestWindow, replay_record};
-use crate::membership::{Membership, RowKey, Unit};
+use crate::membership::{Membership, RowKey, Unit, UnitKind};
 use crate::model::OracleSpan;
 
 /// A span the capture expects in the store, and the record that carried it.
@@ -138,7 +138,7 @@ pub struct Matched {
 }
 
 fn same_content(a: &OracleSpan, b: &OracleSpan) -> bool {
-    a.fields == b.fields && a.parent_span_id == b.parent_span_id
+    a.fields == b.fields && a.parent_span_id == b.parent_span_id && a.detail == b.detail
 }
 
 /// Keys two claims hold with different contents.
@@ -262,6 +262,48 @@ pub fn check_window(
     let overlapping: Vec<usize> = (0..units.len())
         .filter(|&index| overlaps(units[index].seconds, after_s, before_s))
         .collect();
+    check_units(store, matched, overlapping, after_s, before_s)
+}
+
+/// The units a trace-by-id request over `[after_s, before_s)` reads: every
+/// sealed file that overlaps it, and every chunk and the tail of a WAL whose
+/// whole range overlaps it, since the agent hands the engine whole WALs and
+/// the engine looks for the trace in every source it is handed.
+pub fn trace_units(store: &Membership, after_s: u32, before_s: u32) -> Vec<usize> {
+    let mut wal_seconds: BTreeMap<&std::path::Path, (u32, u32)> = BTreeMap::new();
+    for unit in &store.units {
+        if unit.kind == UnitKind::Sealed {
+            continue;
+        }
+        let Some((min, max)) = unit.seconds else {
+            continue;
+        };
+        let range = wal_seconds.entry(unit.path.as_path()).or_insert((min, max));
+        range.0 = range.0.min(min);
+        range.1 = range.1.max(max);
+    }
+    let mut out = Vec::new();
+    for (index, unit) in store.units.iter().enumerate() {
+        let seconds = match unit.kind {
+            UnitKind::Sealed => unit.seconds,
+            UnitKind::Chunk(_) | UnitKind::Tail(_) => wal_seconds.get(unit.path.as_path()).copied(),
+        };
+        if overlaps(seconds, after_s, before_s) {
+            out.push(index);
+        }
+    }
+    out
+}
+
+/// Checks a request over `[after_s, before_s)` that reads the units `read`.
+pub fn check_units(
+    store: &Membership,
+    matched: &Matched,
+    read: Vec<usize>,
+    after_s: u32,
+    before_s: u32,
+) -> WindowCheck {
+    let overlapping = read;
     let in_window = |second: i64| second >= i64::from(after_s) && second < i64::from(before_s);
 
     WindowCheck {
@@ -307,7 +349,7 @@ mod tests {
     use prost::Message;
 
     use super::*;
-    use crate::membership::{LegacyFile, StaleWal, Stem, UnitKind};
+    use crate::membership::{LegacyFile, StaleWal, Stem};
     use crate::model::spans_of_request;
 
     const NOW: u64 = 1_790_000_000_000_000_000;
@@ -459,6 +501,22 @@ mod tests {
     }
 
     #[test]
+    fn a_key_stored_with_two_details_is_a_collision() {
+        let x = span(1, 0, "x");
+        let mut y = x.clone();
+        y.flags = 1;
+        let expected = expected_rows(
+            &[record(std::slice::from_ref(&x), 0, 0), record(&[y], 0, 0)],
+            &OPEN,
+        );
+        let key = keys(&[x])[0];
+
+        let matched = match_rows(expected, &[unit(UnitKind::Sealed, vec![key])]);
+
+        assert_eq!(matched.collisions, vec![key]);
+    }
+
+    #[test]
     fn a_span_without_a_start_is_counted_and_its_row_left_unmatched() {
         let mut startless = span(1, 0, "a");
         startless.start_time_unix_nano = 0;
@@ -568,6 +626,47 @@ mod tests {
         assert!(with_legacy.stale && !with_legacy.judged());
         let between = check_window(&store, &matched, NOW_S + 650, NOW_S + 700);
         assert!(!between.stale);
+    }
+
+    #[test]
+    fn a_trace_request_reads_every_unit_of_a_wal_it_touches() {
+        let at = |path: &str, kind: UnitKind, seconds: (u32, u32)| Unit {
+            path: PathBuf::from(path),
+            stem: Stem::parse(STEM).unwrap(),
+            kind,
+            seconds: Some(seconds),
+            rows: Vec::new(),
+        };
+        let store = Membership {
+            units: vec![
+                at("sealed.sfst", UnitKind::Sealed, (0, 5)),
+                at("a.wal", UnitKind::Chunk(0), (10, 20)),
+                at("a.wal", UnitKind::Tail(1), (30, 40)),
+                at("b.wal", UnitKind::Chunk(0), (100, 110)),
+            ],
+            ..Membership::default()
+        };
+        let matched = Matched {
+            known: vec![true, false, true, true],
+            ..Matched::default()
+        };
+
+        let cases = [
+            ("the tail alone overlaps", 35, 36, vec![1, 2]),
+            ("inside the gap between chunk and tail", 21, 30, vec![1, 2]),
+            ("a sealed file ending at the start", 5, 6, vec![0]),
+            ("the WAL starts where the window ends", 6, 10, vec![]),
+            ("everything", 0, u32::MAX, vec![0, 1, 2, 3]),
+        ];
+        for (name, after, before, expected) in cases {
+            assert_eq!(trace_units(&store, after, before), expected, "{name}");
+        }
+
+        let window = check_window(&store, &matched, 21, 30);
+        assert!(window.judged(), "the explorer reads no unit there");
+        let trace = check_units(&store, &matched, trace_units(&store, 21, 30), 21, 30);
+        assert_eq!(trace.unknown, vec![1]);
+        assert!(!trace.judged());
     }
 
     #[test]

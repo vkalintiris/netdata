@@ -282,6 +282,41 @@ pub(crate) async fn install_wal(
     seq: u64,
     reqs: Vec<ExportTraceServiceRequest>,
 ) -> std::path::PathBuf {
+    install_wal_over(registries, tenant, seq, reqs, (1, u64::MAX)).await
+}
+
+/// [`install_wal`] registered with the range the ingestor records: the
+/// earliest and latest span start, so windows outside it leave the WAL out.
+pub(crate) async fn install_wal_at_span_starts(
+    registries: &Arc<RwLock<TenantRegistries>>,
+    tenant: &str,
+    seq: u64,
+    reqs: Vec<ExportTraceServiceRequest>,
+) -> std::path::PathBuf {
+    let mut range: Option<(u64, u64)> = None;
+    for span in reqs
+        .iter()
+        .flat_map(|r| r.resource_spans.iter())
+        .flat_map(|rs| rs.scope_spans.iter())
+        .flat_map(|ss| ss.spans.iter())
+    {
+        let start = span.start_time_unix_nano;
+        range = Some(match range {
+            Some((min, max)) => (min.min(start), max.max(start)),
+            None => (start, start),
+        });
+    }
+    let range = range.expect("a WAL with spans");
+    install_wal_over(registries, tenant, seq, reqs, range).await
+}
+
+async fn install_wal_over(
+    registries: &Arc<RwLock<TenantRegistries>>,
+    tenant: &str,
+    seq: u64,
+    reqs: Vec<ExportTraceServiceRequest>,
+    (min_ns, max_ns): (u64, u64),
+) -> std::path::PathBuf {
     let frame_count = reqs.len() as u64;
     let entry_count: u64 = reqs
         .iter()
@@ -312,8 +347,8 @@ pub(crate) async fn install_wal(
             valid_up_to: ByteSize(bytes.len() as u64),
             frame_count,
             entry_count,
-            min_timestamp_ns: TimestampNs(1),
-            max_timestamp_ns: TimestampNs(u64::MAX),
+            min_timestamp_ns: TimestampNs(min_ns),
+            max_timestamp_ns: TimestampNs(max_ns),
         })
         .unwrap();
     path
