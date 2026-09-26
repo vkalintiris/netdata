@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod caps;
 mod keyword;
 
 use netdata_agent_text::c::c_str;

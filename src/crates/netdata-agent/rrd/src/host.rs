@@ -2,7 +2,7 @@
 //! by machine GUID and kept in creation order (localhost first).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use netdata_agent_log::{Priority, REDACTED, Source, nd_log, netdata_log_error};
@@ -13,6 +13,7 @@ use crate::chart::Charts;
 use crate::contexts::{self, Contexts};
 use crate::labels::Labels;
 use crate::mode::DbMode;
+use crate::stream_path::PathEntry;
 use crate::system_info::SystemInfo;
 
 /// What a host is and how it is stored; the mutable part of `struct rrdhost`.
@@ -123,6 +124,30 @@ impl HostInfo {
     }
 }
 
+/// `netdata_start_time`: the wall-clock second the daemon started.
+static NETDATA_START_TIME: AtomicI64 = AtomicI64::new(0);
+
+/// `netdata_start_time`.
+pub fn netdata_start_time() -> i64 {
+    NETDATA_START_TIME.load(Ordering::Relaxed)
+}
+
+/// Sets `netdata_start_time`, once at startup.
+pub fn set_netdata_start_time(seconds: i64) {
+    NETDATA_START_TIME.store(seconds, Ordering::Relaxed);
+}
+
+/// What a receiver's connection negotiated, for what the parent tells the child about itself (the stream path).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReceiverLink {
+    /// `rpt->hops`: the child's `hops=`.
+    pub hops: i16,
+    /// `rpt->connected_since_s`: when the request was accepted.
+    pub connected_since_s: i64,
+    /// `rpt->capabilities`: the negotiated capabilities.
+    pub capabilities: u32,
+}
+
 /// The receiver attached to a host (`host->receiver`): what admission needs to judge a second connection.
 pub struct ReceiverSlot {
     /// `rpt->thread.last_traffic_ut`, monotonic microseconds.
@@ -131,6 +156,7 @@ pub struct ReceiverSlot {
     pub stop_requested: AtomicBool,
     /// `rpt->remote_ip` and `rpt->remote_port`, for the records about this receiver.
     pub remote: (String, String),
+    pub link: ReceiverLink,
     /// Shuts the connection down so its stream thread notices at once.
     shutdown: Box<dyn Fn() + Send + Sync>,
 }
@@ -148,12 +174,14 @@ impl ReceiverSlot {
     pub fn new(
         now_ut: u64,
         remote: (String, String),
+        link: ReceiverLink,
         shutdown: Box<dyn Fn() + Send + Sync>,
     ) -> Self {
         ReceiverSlot {
             last_traffic_ut: AtomicU64::new(now_ut),
             stop_requested: AtomicBool::new(false),
             remote,
+            link,
             shutdown,
         }
     }
@@ -193,6 +221,10 @@ pub struct Host {
     functions: Registry,
     /// `host->stream.rcv.status.replication.percent`, as `f64` bits: kept across reconnections.
     replication_percent: AtomicU64,
+    /// `host->stream.path`: what the child last reported, sorted by hops.
+    stream_path: RwLock<Vec<PathEntry>>,
+    /// `RRDHOST_OPTION_EPHEMERAL_HOST`.
+    ephemeral: AtomicBool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -218,6 +250,8 @@ impl Host {
             variables: Mutex::new(HashMap::new()),
             functions: Registry::default(),
             replication_percent: AtomicU64::new(100f64.to_bits()),
+            stream_path: RwLock::new(Vec::new()),
+            ephemeral: AtomicBool::new(false),
         }
     }
 
@@ -430,6 +464,34 @@ impl Host {
         update(&mut self.info.write().unwrap_or_else(PoisonError::into_inner));
     }
 
+    /// `host->stream.path`.
+    pub fn stream_path(&self) -> Vec<PathEntry> {
+        self.stream_path
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Stores a new stream path; true when it differs from the stored one (C compares a hash of the entries).
+    pub fn replace_stream_path(&self, path: Vec<PathEntry>) -> bool {
+        let mut stored = self
+            .stream_path
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        let changed = *stored != path;
+        *stored = path;
+        changed
+    }
+
+    /// `RRDHOST_OPTION_EPHEMERAL_HOST`.
+    pub fn is_ephemeral(&self) -> bool {
+        self.ephemeral.load(Ordering::Relaxed)
+    }
+
+    pub fn set_ephemeral(&self, ephemeral: bool) {
+        self.ephemeral.store(ephemeral, Ordering::Relaxed);
+    }
+
     /// `host->receiver`.
     pub fn receiver(&self) -> Option<Arc<ReceiverSlot>> {
         lock(&self.receiver).clone()
@@ -477,7 +539,10 @@ impl Host {
             *receiver = None;
             self.orphan
                 .store(true, std::sync::atomic::Ordering::Release);
+            self.contexts.record_first_time_changes(false);
             drop(receiver);
+            // stream_path_child_disconnected()
+            self.replace_stream_path(Vec::new());
             self.contexts.child_disconnected();
         }
     }
@@ -644,8 +709,18 @@ mod tests {
                 .as_deref(),
             Some("guid-b")
         );
-        let first = Arc::new(ReceiverSlot::new(1, Default::default(), Box::new(|| {})));
-        let second = Arc::new(ReceiverSlot::new(2, Default::default(), Box::new(|| {})));
+        let first = Arc::new(ReceiverSlot::new(
+            1,
+            Default::default(),
+            ReceiverLink::default(),
+            Box::new(|| {}),
+        ));
+        let second = Arc::new(ReceiverSlot::new(
+            2,
+            Default::default(),
+            ReceiverLink::default(),
+            Box::new(|| {}),
+        ));
         assert!(a.set_receiver(Arc::clone(&first)));
         assert!(!a.set_receiver(Arc::clone(&second)));
         a.clear_receiver(&second);

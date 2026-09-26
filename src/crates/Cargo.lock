@@ -2991,6 +2991,7 @@ dependencies = [
  "netdata-agent-rrd",
  "netdata-agent-storage",
  "netdata-agent-text",
+ "serde_json",
 ]
 
 [[package]]

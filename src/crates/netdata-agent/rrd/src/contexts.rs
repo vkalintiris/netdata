@@ -372,7 +372,7 @@ pub struct Context {
     pp: Mutex<PpState>,
     queue: Weak<PpQueue>,
     /// The host's cached retention (`host->retention`).
-    host_retention: Weak<Mutex<(i64, i64)>>,
+    host_retention: Weak<Mutex<HostRetention>>,
     /// The RAM engine's metric index.
     ram_index: Weak<RamIndex>,
 }
@@ -1182,13 +1182,33 @@ pub fn collected_rrdset(chart: &Chart) {
 
 // ---- the per-host tree and the worker (rrdcontext-worker.c) ----
 
+/// `host->retention`: first and last time over all contexts.
+#[derive(Debug, Default)]
+struct HostRetention {
+    first_time_s: i64,
+    last_time_s: i64,
+    /// Each new first time while a child's receiver runs, for the stream path messages C sends from
+    /// `rrdhost_update_cached_retention()` (`stream_path_retention_updated()`); `None` while nobody takes them.
+    first_time_changes: Option<Vec<i64>>,
+}
+
+impl HostRetention {
+    /// The end of `rrdhost_update_cached_retention()`: a changed first time owes the child a stream path.
+    fn note_first_time(&mut self, old_first_time_s: i64) {
+        if self.first_time_s != old_first_time_s {
+            if let Some(changes) = &mut self.first_time_changes {
+                changes.push(self.first_time_s);
+            }
+        }
+    }
+}
+
 /// `host->rrdctx`: the host's contexts and their post-processing queue.
 #[derive(Debug, Default)]
 pub struct Contexts {
     index: Mutex<Index<Context>>,
     queue: Arc<PpQueue>,
-    /// `host->retention`: first and last time over all contexts.
-    retention: Arc<Mutex<(i64, i64)>>,
+    retention: Arc<Mutex<HostRetention>>,
     /// `RRDHOST_FLAG_RRDCONTEXT_GET_RETENTION`: a child disconnected.
     get_retention: AtomicBool,
     /// The RAM engine's metric index the unlinked metrics of this host look into.
@@ -1212,7 +1232,22 @@ impl Contexts {
 
     /// `host->retention` (first, last).
     pub fn retention(&self) -> (i64, i64) {
-        *lock(&self.retention)
+        let r = lock(&self.retention);
+        (r.first_time_s, r.last_time_s)
+    }
+
+    /// Starts (a child's receiver runs) or stops recording the first-time changes a stream path is sent for.
+    pub fn record_first_time_changes(&self, record: bool) {
+        lock(&self.retention).first_time_changes = record.then(Vec::new);
+    }
+
+    /// The first times recorded since the last call, oldest first.
+    pub fn take_first_time_changes(&self) -> Vec<i64> {
+        lock(&self.retention)
+            .first_time_changes
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 
     /// Contexts waiting for post-processing.
@@ -1339,7 +1374,11 @@ impl Contexts {
                 last = state.last_time_s;
             }
         }
-        *lock(&self.retention) = (first, last);
+        // rrdhost_update_cached_retention(global)
+        let mut r = lock(&self.retention);
+        let old_first = r.first_time_s;
+        (r.first_time_s, r.last_time_s) = (first, last);
+        r.note_first_time(old_first);
     }
 }
 
@@ -1355,12 +1394,14 @@ fn widen_host_retention(rc: &Context, first: i64, last: i64) {
         return;
     };
     let mut r = lock(&retention);
-    if r.0 == 0 || (first != 0 && first < r.0) {
-        r.0 = first;
+    let old_first = r.first_time_s;
+    if r.first_time_s == 0 || (first != 0 && first < r.first_time_s) {
+        r.first_time_s = first;
     }
-    if r.1 == 0 || last > r.1 {
-        r.1 = last;
+    if r.last_time_s == 0 || last > r.last_time_s {
+        r.last_time_s = last;
     }
+    r.note_first_time(old_first);
 }
 
 /// `check_if_cloud_version_changed_unsafe()`: whether what Netdata Cloud has seen differs.

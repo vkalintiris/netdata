@@ -241,3 +241,34 @@ fn v1_collections_report_through_timed_done() {
     assert!(rc.flags.is_collected(), "{:#x}", rc.flags.get());
     assert_eq!(rc.state().last_time_s, dim.last_entry_s());
 }
+
+/// `rrdhost_update_cached_retention()` owes a stream path for every change of the host's first time, while a
+/// receiver takes them; a global recompute that keeps it owes nothing.
+#[test]
+fn first_time_changes_are_recorded_while_asked() {
+    let (contexts, charts) = setup();
+    let (chart, _) = charts.create(&spec("a", "ctx.a", "Title", 1000));
+    chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    collect(&chart, T);
+    contexts.process_queued();
+    assert!(
+        contexts.take_first_time_changes().is_empty(),
+        "nothing recorded before asked"
+    );
+    let first = contexts.retention().0;
+    contexts.record_first_time_changes(true);
+    // a second chart with an older first time widens the host's
+    let (older, _) = charts.create(&spec("b", "ctx.b", "Title", 1000));
+    older.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    collect(&older, T - 10);
+    contexts.process_queued();
+    let widened = contexts.retention().0;
+    assert!(widened < first, "{widened} < {first}");
+    assert_eq!(contexts.take_first_time_changes(), [widened]);
+    contexts.recalculate_host_retention(flags::REASON_DISCONNECTED_CHILD);
+    assert_eq!(contexts.retention().0, widened);
+    assert!(contexts.take_first_time_changes().is_empty());
+    contexts.record_first_time_changes(false);
+    contexts.recalculate_host_retention(flags::REASON_DISCONNECTED_CHILD);
+    assert!(contexts.take_first_time_changes().is_empty());
+}

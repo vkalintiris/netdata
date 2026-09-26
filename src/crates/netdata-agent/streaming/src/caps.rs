@@ -1,76 +1,13 @@
-//! Stream capabilities, ported from `src/streaming/stream-capabilities.{h,c}` and the receiver side of
-//! `stream_select_receiver_compression_algorithm()` (`src/streaming/stream-compression/compression.c`).
+//! Capability negotiation, ported from `src/streaming/stream-capabilities.c` and the receiver side of
+//! `stream_select_receiver_compression_algorithm()` (`src/streaming/stream-compression/compression.c`). The bits and
+//! their names are shared with `ingest` (`netdata_agent_pluginsd_proto::caps`).
 
+pub use netdata_agent_pluginsd_proto::caps::*;
 use netdata_agent_text::line_splitter::{Separators, quoted_strings_splitter};
-
-pub const V1: u32 = 1 << 3;
-pub const V2: u32 = 1 << 4;
-pub const VN: u32 = 1 << 5;
-pub const VCAPS: u32 = 1 << 6;
-pub const HLABELS: u32 = 1 << 7;
-pub const CLAIM: u32 = 1 << 8;
-pub const CLABELS: u32 = 1 << 9;
-pub const LZ4: u32 = 1 << 10;
-pub const FUNCTIONS: u32 = 1 << 11;
-pub const REPLICATION: u32 = 1 << 12;
-pub const BINARY: u32 = 1 << 13;
-pub const INTERPOLATED: u32 = 1 << 14;
-pub const IEEE754: u32 = 1 << 15;
-pub const DATA_WITH_ML: u32 = 1 << 16;
-pub const SLOTS: u32 = 1 << 18;
-pub const ZSTD: u32 = 1 << 19;
-pub const GZIP: u32 = 1 << 20;
-pub const BROTLI: u32 = 1 << 21;
-pub const PROGRESS: u32 = 1 << 22;
-pub const DYNCFG: u32 = 1 << 23;
-pub const NODE_ID: u32 = 1 << 24;
-pub const PATHS: u32 = 1 << 25;
-pub const ML_MODELS: u32 = 1 << 26;
-pub const FLOAT_BASELINE: u32 = 1 << 27;
-pub const FUNCTION_DEL: u32 = 1 << 28;
-/// `STREAM_CAP_INVALID`: no version seen yet.
-pub const INVALID: u32 = 1 << 30;
-
-/// `STREAM_CAP_ALWAYS_DISABLED`.
-pub const ALWAYS_DISABLED: u32 = DATA_WITH_ML;
-
-/// The compressions the C production build offers (`STREAM_CAP_COMPRESSIONS_AVAILABLE` with lz4, zstd, brotli).
-pub const COMPRESSIONS: u32 = LZ4 | ZSTD | BROTLI | GZIP;
-
-/// Compressions this agent can decompress (`decompress.rs`, decisions D14 and D23): all the C build offers.
-pub const COMPRESSIONS_AVAILABLE: u32 = COMPRESSIONS;
 
 const STREAM_OLD_VERSION_CLAIM: u32 = 3;
 const STREAM_OLD_VERSION_CLABELS: u32 = 4;
 const STREAM_OLD_VERSION_LZ4: u32 = 5;
-
-/// `stream_our_capabilities(NULL, false)`: what a receiver offers. `disabled` is `globally_disabled_capabilities`.
-pub fn ours(disabled: u32) -> u32 {
-    (V1 | V2
-        | VN
-        | VCAPS
-        | HLABELS
-        | CLAIM
-        | CLABELS
-        | FUNCTIONS
-        | FUNCTION_DEL
-        | REPLICATION
-        | BINARY
-        | INTERPOLATED
-        | SLOTS
-        | PROGRESS
-        | COMPRESSIONS_AVAILABLE
-        | DYNCFG
-        | NODE_ID
-        | PATHS
-        | IEEE754
-        | ML_MODELS
-        | FLOAT_BASELINE)
-        & !disabled
-}
-
-/// `globally_disabled_capabilities` after `check_local_streaming_capabilities()` on an IEEE-754 host.
-pub const GLOBALLY_DISABLED: u32 = ALWAYS_DISABLED;
 
 /// `convert_stream_version_to_capabilities(version, NULL, false)`: legacy versions (and negative ones) map to fixed
 /// sets, anything above 5 is the bitmap itself; the result is ANDed with what this receiver offers. The C parameter
@@ -186,47 +123,6 @@ pub fn prompt(caps: u32) -> String {
     } else {
         PROMPT_V1.to_string()
     }
-}
-
-/// `capability_names[]`, in table order (not bit order).
-const NAMES: [(u32, &str); 25] = [
-    (V1, "V1"),
-    (V2, "V2"),
-    (VN, "VN"),
-    (VCAPS, "VCAPS"),
-    (HLABELS, "HLABELS"),
-    (CLAIM, "CLAIM"),
-    (CLABELS, "CLABELS"),
-    (LZ4, "LZ4"),
-    (FUNCTIONS, "FUNCTIONS"),
-    (FUNCTION_DEL, "FUNCDEL"),
-    (REPLICATION, "REPLICATION"),
-    (BINARY, "BINARY"),
-    (INTERPOLATED, "INTERPOLATED"),
-    (IEEE754, "IEEE754"),
-    (DATA_WITH_ML, "ML"),
-    (ML_MODELS, "MLMODELS"),
-    (DYNCFG, "DYNCFG"),
-    (SLOTS, "SLOTS"),
-    (ZSTD, "ZSTD"),
-    (GZIP, "GZIP"),
-    (BROTLI, "BROTLI"),
-    (PROGRESS, "PROGRESS"),
-    (NODE_ID, "NODEID"),
-    (PATHS, "PATHS"),
-    (FLOAT_BASELINE, "FLOATBASELINE"),
-];
-
-/// `stream_capabilities_to_string()`: every name set in `caps`, each followed by a space.
-pub fn to_string(caps: u32) -> String {
-    let mut out = String::new();
-    for (cap, name) in NAMES {
-        if caps & cap != 0 {
-            out.push_str(name);
-            out.push(' ');
-        }
-    }
-    out
 }
 
 #[cfg(test)]

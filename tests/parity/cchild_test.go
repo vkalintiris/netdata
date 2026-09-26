@@ -10,16 +10,43 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/netdata/netdata/tests/query-corpus/daemon"
 )
 
+// teeReplies holds what each parent of the pair sent back to the child over the tee's connections.
+type teeReplies struct {
+	mu    sync.Mutex
+	sides [2]bytes.Buffer // oracle, candidate
+}
+
+type teeReplyWriter struct {
+	r    *teeReplies
+	side int
+}
+
+func (w teeReplyWriter) Write(b []byte) (int, error) {
+	w.r.mu.Lock()
+	defer w.r.mu.Unlock()
+	return w.r.sides[w.side].Write(b)
+}
+
+// get returns a copy of what one side sent so far.
+func (r *teeReplies) get(side int) []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return bytes.Clone(r.sides[side].Bytes())
+}
+
 // startTee accepts streaming connections and relays each to both daemons of the pair: what the child sends goes
-// to both, byte for byte (compressed or not), and only the oracle's answers go back to the child.
-func startTee(t *testing.T, p *Pair) string {
+// to both, byte for byte (compressed or not), and only the oracle's answers go back to the child. What each parent
+// answers is recorded in replies.
+func startTee(t *testing.T, p *Pair, replies *teeReplies) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -32,13 +59,13 @@ func startTee(t *testing.T, p *Pair) string {
 			if err != nil {
 				return
 			}
-			go tee(child, p.Oracle.Addr, p.Candidate.Addr)
+			go tee(child, p.Oracle.Addr, p.Candidate.Addr, replies)
 		}
 	}()
 	return ln.Addr().String()
 }
 
-func tee(child net.Conn, oracle, candidate string) {
+func tee(child net.Conn, oracle, candidate string, replies *teeReplies) {
 	defer child.Close()
 	a, err := net.Dial("tcp", oracle)
 	if err != nil {
@@ -51,10 +78,10 @@ func tee(child net.Conn, oracle, candidate string) {
 	}
 	defer b.Close()
 	go func() {
-		_, _ = io.Copy(child, a)
+		_, _ = io.Copy(child, io.TeeReader(a, teeReplyWriter{replies, 0}))
 		_ = child.Close()
 	}()
-	go func() { _, _ = io.Copy(io.Discard, b) }()
+	go func() { _, _ = io.Copy(teeReplyWriter{replies, 1}, b) }()
 	_, _ = io.Copy(io.MultiWriter(a, b), child)
 }
 
@@ -75,6 +102,32 @@ func v3Retention(body []byte) (int64, int64, int) {
 		return 0, 0, 0
 	}
 	return doc.DB.First, doc.DB.Last, len(doc.View.Dimensions.IDs)
+}
+
+// streamPathBlocks returns the payloads of the JSON STREAM_PATH blocks a parent sent to its child.
+func streamPathBlocks(b []byte) [][]byte {
+	const begin, end = "JSON STREAM_PATH\n", "\nJSON_PAYLOAD_END\n"
+	var out [][]byte
+	for {
+		i := bytes.Index(b, []byte(begin))
+		if i < 0 {
+			return out
+		}
+		b = b[i+len(begin):]
+		j := bytes.Index(b, []byte(end))
+		if j < 0 {
+			return out
+		}
+		out = append(out, b[:j])
+		b = b[j+len(end):]
+	}
+}
+
+// parentSince matches the parent's entry up to its `since`: the second each parent accepted the connection.
+var parentSince = regexp.MustCompile(`("host_id":"` + parentIdentity.MachineGUID + `","node_id":[^,]*,"claim_id":[^,]*,"hops":-?\d+,"since":)\d+`)
+
+func maskParentSince(b []byte) []byte {
+	return parentSince.ReplaceAll(b, []byte("${1}0"))
 }
 
 func httpBody(b []byte) []byte {
@@ -102,6 +155,7 @@ func TestCChild(t *testing.T) {
 	for i, algorithm := range algorithms {
 		t.Run(algorithm, func(t *testing.T) {
 			hostname := "parity-cchild-" + algorithm
+			replies := &teeReplies{}
 			child, err := daemon.Start(daemon.Options{
 				Binary:       os.Getenv("PARITY_ORACLE"),
 				RunDir:       runDir(t, Role("child-"+algorithm)),
@@ -112,7 +166,7 @@ func TestCChild(t *testing.T) {
 					MachineGUID: guid(i),
 				},
 				StreamTo: &daemon.StreamTo{
-					Destination: startTee(t, p),
+					Destination: startTee(t, p, replies),
 					APIKey:      parentIdentity.StreamKey,
 					Compression: true,
 				},
@@ -159,6 +213,31 @@ func TestCChild(t *testing.T) {
 				"v1-context":  "/host/" + hostname + "/api/v1/data?context=netdata.*&options=jsonwrap" + win,
 				"v1-csv":      "/host/" + hostname + "/api/v1/data?context=netdata.*&format=csv&options=seconds&points=4" + win,
 			}
+			// The stream path each parent sends back (knowledge/brief-stream-path.md §10 in the status repository): the
+			// first answers the child's path, the last carries the settled retention start. How many there are
+			// depends on when the RRDCONTEXT thread widens the retention, so the counts are only logged.
+			t.Run("stream-path", func(t *testing.T) {
+				var blocks [2][][]byte
+				for i := range blocks {
+					blocks[i] = streamPathBlocks(replies.get(i))
+				}
+				t.Logf("JSON STREAM_PATH blocks: oracle %d, candidate %d", len(blocks[0]), len(blocks[1]))
+				if len(blocks[0]) == 0 || len(blocks[1]) == 0 {
+					t.Fatalf("a parent sent no stream path")
+				}
+				for _, which := range []struct {
+					name string
+					at   func(b [][]byte) []byte
+				}{
+					{"first", func(b [][]byte) []byte { return b[0] }},
+					{"last", func(b [][]byte) []byte { return b[len(b)-1] }},
+				} {
+					o, c := maskParentSince(which.at(blocks[0])), maskParentSince(which.at(blocks[1]))
+					if !bytes.Equal(o, c) {
+						t.Errorf("%s stream path differs\n%s", which.name, firstDifference(o, c))
+					}
+				}
+			})
 			for name, path := range cases {
 				t.Run(name, func(t *testing.T) {
 					var got [2][]byte

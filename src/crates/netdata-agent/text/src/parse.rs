@@ -618,51 +618,54 @@ mod tests {
 /// then decimal digits. Returns `(value, consumed, erange)`; on overflow the value is `u64::MAX` and `erange` is
 /// set, as glibc sets `errno = ERANGE`. With no digits nothing is consumed.
 pub fn strtoull10(s: &[u8]) -> (u64, usize, bool) {
-    let mut i = skip_spaces(s, 0);
-    let negative = match at(s, i) {
-        b'-' => {
-            i += 1;
-            true
-        }
-        b'+' => {
-            i += 1;
-            false
-        }
-        _ => false,
-    };
-    if !is_digit(at(s, i)) {
-        return (0, 0, false);
+    match scan_base(s, 10) {
+        None => (0, 0, false),
+        Some((_, _, true, used)) => (u64::MAX, used, true),
+        Some((negative, magnitude, false, used)) => (
+            if negative {
+                magnitude.wrapping_neg()
+            } else {
+                magnitude
+            },
+            used,
+            false,
+        ),
     }
-    let mut value: u64 = 0;
-    let mut overflow = false;
-    while is_digit(at(s, i)) {
-        let digit = u64::from(at(s, i) - b'0');
-        match value.checked_mul(10).and_then(|v| v.checked_add(digit)) {
-            Some(v) if !overflow => value = v,
-            _ => overflow = true,
-        }
-        i += 1;
-    }
-    if overflow {
-        return (u64::MAX, i, true);
-    }
-    (
-        if negative {
-            value.wrapping_neg()
-        } else {
-            value
-        },
-        i,
-        false,
-    )
 }
 
-/// The part `strtol()`, `strtoll()` and `strtoul()` share for base 0 or 16 in the "C" locale: leading `isspace()`,
-/// an optional sign, then a `0x`/`0X` prefix (only when a hex digit follows) and hex digits; base 0 otherwise takes
-/// a leading `0` as octal, or decimal. Returns `(negative, magnitude, overflowed u64, consumed)`, or `None` without
-/// digits (nothing is consumed).
+/// `strtoll(s, &end, 10)` in the "C" locale: leading `isspace()`, an optional sign, then decimal digits. Returns
+/// `(value, consumed, erange)`; out-of-range values clamp to `i64::MAX`/`i64::MIN` with `erange` set, as glibc sets
+/// `errno = ERANGE`. With no digits nothing is consumed.
+pub fn strtoll10(s: &[u8]) -> (i64, usize, bool) {
+    let Some((negative, magnitude, overflow, used)) = scan_base(s, 10) else {
+        return (0, 0, false);
+    };
+    let (value, erange) = clamp_signed(negative, magnitude, overflow);
+    (value, used, erange)
+}
+
+/// A signed result of a scan: out-of-range magnitudes clamp to `i64::MAX` or `i64::MIN` (the `bool` is ERANGE).
+fn clamp_signed(negative: bool, magnitude: u64, overflow: bool) -> (i64, bool) {
+    let limit: u64 = if negative {
+        1u64 << 63
+    } else {
+        i64::MAX as u64
+    };
+    if overflow || magnitude > limit {
+        (if negative { i64::MIN } else { i64::MAX }, true)
+    } else if negative {
+        ((magnitude as i64).wrapping_neg(), false)
+    } else {
+        (magnitude as i64, false)
+    }
+}
+
+/// The part `strtol()`, `strtoll()` and `strtoul()` share for base 0, 10 or 16 in the "C" locale: leading
+/// `isspace()`, an optional sign, then digits. Base 10 takes decimal digits only; base 16 and 0 take a `0x`/`0X`
+/// prefix (only when a hex digit follows) and hex digits; base 0 otherwise takes a leading `0` as octal, or decimal.
+/// Returns `(negative, magnitude, overflowed u64, consumed)`, or `None` without digits (nothing is consumed).
 fn scan_base(s: &[u8], base: u32) -> Option<(bool, u64, bool, usize)> {
-    debug_assert!(base == 0 || base == 16);
+    debug_assert!(base == 0 || base == 10 || base == 16);
     let mut i = skip_spaces(s, 0);
     let negative = match at(s, i) {
         b'-' => {
@@ -675,7 +678,9 @@ fn scan_base(s: &[u8], base: u32) -> Option<(bool, u64, bool, usize)> {
         }
         _ => false,
     };
-    let (base, start) = if at(s, i) == b'0'
+    let (base, start) = if base == 10 {
+        (10u32, i)
+    } else if at(s, i) == b'0'
         && matches!(at(s, i + 1), b'x' | b'X')
         && at(s, i + 2).is_ascii_hexdigit()
     {
@@ -711,19 +716,7 @@ pub fn strtoll0(s: &[u8]) -> (i64, usize) {
     let Some((negative, magnitude, overflow, used)) = scan_base(s, 0) else {
         return (0, 0);
     };
-    let limit: u64 = if negative {
-        1u64 << 63
-    } else {
-        i64::MAX as u64
-    };
-    let value = if overflow || magnitude > limit {
-        if negative { i64::MIN } else { i64::MAX }
-    } else if negative {
-        (magnitude as i64).wrapping_neg()
-    } else {
-        magnitude as i64
-    };
-    (value, used)
+    (clamp_signed(negative, magnitude, overflow).0, used)
 }
 
 /// The unsigned result of a scan: a `-` negates modulo 2^64; overflow of either sign is `u64::MAX`.
@@ -800,6 +793,31 @@ mod uuid_and_strtoull_tests {
         for (input, want) in cases {
             assert_eq!(
                 strtoull10(input),
+                want,
+                "{:?}",
+                String::from_utf8_lossy(input)
+            );
+        }
+    }
+
+    /// The spec's strtoll probes (`evidence/2026-09-26-sp1-jsonc-spec.md` §3.1 in the status repository).
+    #[test]
+    fn strtoll10_matches_glibc() {
+        type Case = (&'static [u8], (i64, usize, bool));
+        let cases: [Case; 9] = [
+            (b"010", (10, 3, false)),
+            (b"\t12", (12, 3, false)),
+            (b"0x10", (0, 1, false)),
+            (b"-0", (0, 2, false)),
+            (b"12 ", (12, 2, false)),
+            (b"+-1", (0, 0, false)),
+            (b"9223372036854775808", (i64::MAX, 19, true)),
+            (b"-9223372036854775808", (i64::MIN, 20, false)),
+            (b"-9223372036854775809", (i64::MIN, 20, true)),
+        ];
+        for (input, want) in cases {
+            assert_eq!(
+                strtoll10(input),
                 want,
                 "{:?}",
                 String::from_utf8_lossy(input)

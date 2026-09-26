@@ -16,3 +16,4 @@ netdata-agent-pluginsd-proto = { workspace = true }
 netdata-agent-rrd = { workspace = true }
 netdata-agent-storage = { workspace = true }
 netdata-agent-text = { workspace = true }
+serde_json = { workspace = true }

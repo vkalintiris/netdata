@@ -9,9 +9,13 @@ use super::*;
 const NOW: i64 = 1_700_000_000;
 
 fn host() -> Arc<Host> {
+    named_host("child", "guid", false)
+}
+
+fn named_host(hostname: &str, guid: &str, is_localhost: bool) -> Arc<Host> {
     let mut info = HostInfo {
-        hostname: "child".into(),
-        registry_hostname: "child".into(),
+        hostname: hostname.into(),
+        registry_hostname: hostname.into(),
         os: "linux".into(),
         timezone: "UTC".into(),
         abbrev_timezone: "UTC".into(),
@@ -30,12 +34,13 @@ fn host() -> Arc<Host> {
         cache_dir: None,
     };
     info.set_replication(true, 86400, 3600);
-    Arc::new(Host::new("guid", false, info))
+    Arc::new(Host::new(guid, is_localhost, info))
 }
 
 fn parser(host: &Arc<Host>) -> Parser {
     Parser::new(
         Arc::clone(host),
+        named_host("parent", "5a1e0000-0000-4000-8000-0000000000aa", true),
         Config {
             capabilities: 0,
             update_every: 1,
@@ -362,4 +367,188 @@ fn a_label_change_resyncs_the_instance_hidden_flag() {
             .all(|&ok| ok)
     );
     assert!(ri().flags.check(netdata_agent_rrd::contexts::flags::HIDDEN));
+}
+
+/// The child entry of the C parent's first `JSON STREAM_PATH` reply in the brief's capture (`knowledge/
+/// brief-stream-path.md` §2 in the status repository), as the child sent it.
+const CAPTURED_CHILD_ENTRY: &str = r#"{"version":1,"hostname":"parity-cchild-none","host_id":"5a1e0000-0000-4000-8000-00000000c004","node_id":null,"claim_id":null,"hops":0,"since":1790360427,"first_time_t":1790360431,"start_time":0,"shutdown_time":0,"capabilities":["V1","V2","VN","VCAPS","HLABELS","CLAIM","CLABELS","FUNCTIONS","FUNCDEL","REPLICATION","BINARY","INTERPOLATED","IEEE754","DYNCFG","SLOTS","PROGRESS","NODEID","PATHS","FLOATBASELINE"],"flags":[]}"#;
+
+/// The parent entry of that reply, with its retention start.
+fn captured_parent_entry(first_time_t: i64) -> String {
+    format!(
+        r#"{{"version":1,"hostname":"parity-parent","host_id":"5a1e0000-0000-4000-8000-0000000000aa","node_id":null,"claim_id":null,"hops":1,"since":1790360450,"first_time_t":{first_time_t},"start_time":0,"shutdown_time":0,"capabilities":["V1","V2","VN","VCAPS","HLABELS","CLAIM","CLABELS","LZ4","FUNCTIONS","FUNCDEL","REPLICATION","BINARY","INTERPOLATED","IEEE754","DYNCFG","SLOTS","ZSTD","GZIP","BROTLI","PROGRESS","NODEID","PATHS","FLOATBASELINE"],"flags":[]}}"#
+    )
+}
+
+/// A child host with a receiver that negotiated `capabilities`, and its parser.
+fn stream_path_parser(capabilities: u32) -> (Arc<Host>, Parser) {
+    let h = named_host(
+        "parity-cchild-none",
+        "5a1e0000-0000-4000-8000-00000000c004",
+        false,
+    );
+    let link = netdata_agent_rrd::host::ReceiverLink {
+        hops: 1,
+        connected_since_s: 1_790_360_450,
+        capabilities,
+    };
+    assert!(
+        h.set_receiver(Arc::new(netdata_agent_rrd::host::ReceiverSlot::new(
+            0,
+            Default::default(),
+            link,
+            Box::new(|| {}),
+        )))
+    );
+    let mut p = Parser::new(
+        Arc::clone(&h),
+        named_host(
+            "parity-parent",
+            "5a1e0000-0000-4000-8000-0000000000aa",
+            true,
+        ),
+        Config {
+            capabilities,
+            update_every: 1,
+            page_size: 4096,
+            now: || (NOW, 0),
+            gap_when_lost_iterations_above: 3,
+        },
+    );
+    p.take_output();
+    (h, p)
+}
+
+fn stream_path_block(body: &str) -> Vec<String> {
+    vec![
+        "JSON STREAM_PATH".to_string(),
+        body.to_string(),
+        "JSON_PAYLOAD_END".to_string(),
+    ]
+}
+
+fn feed_strings(p: &mut Parser, lines: &[String]) -> Vec<bool> {
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    feed_all(p, &lines)
+}
+
+/// The C child's negotiated capabilities in the capture (compression off, no ML models).
+const CAPTURED_CAPS: u32 = caps::V1
+    | caps::V2
+    | caps::VN
+    | caps::VCAPS
+    | caps::HLABELS
+    | caps::CLAIM
+    | caps::CLABELS
+    | caps::FUNCTIONS
+    | caps::FUNCTION_DEL
+    | caps::REPLICATION
+    | caps::BINARY
+    | caps::INTERPOLATED
+    | caps::IEEE754
+    | caps::DYNCFG
+    | caps::SLOTS
+    | caps::PROGRESS
+    | caps::NODE_ID
+    | caps::PATHS
+    | caps::FLOAT_BASELINE;
+
+/// The C parent's replies byte for byte: the child's entry verbatim, then the parent's own; a retention change sends
+/// the same with the new retention start.
+#[test]
+fn a_changed_stream_path_goes_back_with_this_agent_appended() {
+    let (h, mut p) = stream_path_parser(CAPTURED_CAPS);
+    let body = format!(r#"{{"version":1,"streaming_path":[{CAPTURED_CHILD_ENTRY}]}}"#);
+    assert_eq!(feed_strings(&mut p, &stream_path_block(&body)), [true; 3]);
+    let reply = |first: i64| {
+        format!(
+            "JSON STREAM_PATH\n{{\"version\":1,\"streaming_path\":[{CAPTURED_CHILD_ENTRY},{}]}}\nJSON_PAYLOAD_END\n",
+            captured_parent_entry(first)
+        )
+    };
+    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(0));
+    assert_eq!(h.stream_path().len(), 1);
+    // the same path again changes nothing and sends nothing
+    feed_strings(&mut p, &stream_path_block(&body));
+    assert!(p.take_output().is_empty());
+    p.retention_updated(1_790_360_431);
+    assert_eq!(
+        String::from_utf8(p.take_output()).unwrap(),
+        reply(1_790_360_431)
+    );
+    // the child's copy of this agent's entry is stored but replaced by the current one when sent
+    let with_parent = format!(
+        r#"{{"version":1,"streaming_path":[{},{CAPTURED_CHILD_ENTRY}]}}"#,
+        captured_parent_entry(5)
+    );
+    feed_strings(&mut p, &stream_path_block(&with_parent));
+    assert_eq!(h.stream_path().len(), 2);
+    assert_eq!(h.stream_path()[0].hops, 0, "sorted by hops");
+    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(0));
+}
+
+/// A child that did not negotiate paths gets nothing back; the path is stored all the same.
+#[test]
+fn no_stream_path_goes_to_a_child_without_paths() {
+    let (h, mut p) = stream_path_parser(CAPTURED_CAPS & !caps::PATHS);
+    let body = format!(r#"{{"version":1,"streaming_path":[{CAPTURED_CHILD_ENTRY}]}}"#);
+    feed_strings(&mut p, &stream_path_block(&body));
+    assert!(p.take_output().is_empty());
+    assert_eq!(h.stream_path().len(), 1);
+    p.retention_updated(1);
+    assert!(p.take_output().is_empty());
+}
+
+/// Text that is not JSON keeps the stored path; JSON without the member clears it (a change); an empty body does
+/// nothing and logs nothing.
+#[test]
+fn stream_path_bodies_that_are_not_paths() {
+    let (h, mut p) = stream_path_parser(CAPTURED_CAPS);
+    let body = format!(r#"{{"version":1,"streaming_path":[{CAPTURED_CHILD_ENTRY}]}}"#);
+    feed_strings(&mut p, &stream_path_block(&body));
+    p.take_output();
+    let (_, logged) = feed_logged(
+        &mut p,
+        &[
+            "JSON STREAM_PATH",
+            "{\"streaming_path\":[",
+            "JSON_PAYLOAD_END",
+        ],
+    );
+    assert_eq!(
+        logged,
+        ["STREAM PATH 'parity-cchild-none': Cannot parse json: {\"streaming_path\":[\n"]
+    );
+    assert!(p.take_output().is_empty());
+    assert_eq!(h.stream_path().len(), 1);
+    let (_, logged) = feed_logged(&mut p, &["JSON STREAM_PATH", "JSON_PAYLOAD_END"]);
+    assert!(logged.is_empty(), "{logged:?}");
+    assert!(p.take_output().is_empty());
+    feed_all(
+        &mut p,
+        &["JSON STREAM_PATH", "{\"other\":1}", "JSON_PAYLOAD_END"],
+    );
+    assert!(h.stream_path().is_empty());
+    assert_eq!(
+        String::from_utf8(p.take_output()).unwrap(),
+        format!(
+            "JSON STREAM_PATH\n{{\"version\":1,\"streaming_path\":[{}]}}\nJSON_PAYLOAD_END\n",
+            captured_parent_entry(0)
+        )
+    );
+    // the receiver going away clears the path (stream_path_child_disconnected())
+    feed_strings(&mut p, &stream_path_block(&body));
+    let slot = h.receiver().unwrap();
+    h.clear_receiver(&slot);
+    assert!(h.stream_path().is_empty());
+}
+
+/// OVERWRITE keeps the ephemeral option in step with the `_is_ephemeral` label; the stream path entry shows it.
+#[test]
+fn overwrite_sets_the_ephemeral_option() {
+    let (h, mut p) = stream_path_parser(CAPTURED_CAPS);
+    feed_all(&mut p, &["LABEL '_is_ephemeral' 1 'yes'", "OVERWRITE"]);
+    assert!(h.is_ephemeral());
+    feed_all(&mut p, &["LABEL '_is_ephemeral' 1 'no'", "OVERWRITE"]);
+    assert!(!h.is_ephemeral());
 }

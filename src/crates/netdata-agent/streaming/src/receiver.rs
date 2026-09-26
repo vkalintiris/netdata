@@ -16,7 +16,7 @@ use netdata_agent_ingest::{self as ingest, Parser};
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_pluginsd_proto::LineReader;
 use netdata_agent_rrd::collection;
-use netdata_agent_rrd::host::{Host, HostInfo, Hosts, ReceiverSlot, StreamSend};
+use netdata_agent_rrd::host::{Host, HostInfo, Hosts, ReceiverLink, ReceiverSlot, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 
 use crate::caps;
@@ -104,6 +104,7 @@ pub struct Pending {
 #[derive(Debug)]
 pub struct Attached {
     host: Arc<Host>,
+    localhost: Arc<Host>,
     slot: Arc<ReceiverSlot>,
     stream: mio::net::TcpStream,
     thread: usize,
@@ -450,10 +451,21 @@ impl Receivers {
             || wanted.clone(),
             |host| host.update(&wanted, config.update_every, config.history),
         );
+        let capabilities = caps::select_compression(
+            request.capabilities,
+            config.compression_enabled,
+            &config.compression_priorities,
+            caps::COMPRESSIONS_AVAILABLE,
+        );
         let shutdown_handle = stream.try_clone().ok();
         let slot = Arc::new(ReceiverSlot::new(
             now_monotonic_ut(),
             (peer.ip.clone(), peer.port.clone()),
+            ReceiverLink {
+                hops: request.hops,
+                connected_since_s: accepted_s,
+                capabilities,
+            },
             Box::new(move || {
                 if let Some(s) = &shutdown_handle {
                     let _ = s.shutdown(Shutdown::Both);
@@ -486,12 +498,6 @@ impl Receivers {
                 config.health_delay
             );
         }
-        let capabilities = caps::select_compression(
-            request.capabilities,
-            config.compression_enabled,
-            &config.compression_priorities,
-            caps::COMPRESSIONS_AVAILABLE,
-        );
         let prompt = caps::prompt(capabilities);
         let _ = stream.set_read_timeout(Some(Duration::from_secs(600)));
         // the negotiated capabilities are logged before the prompt goes out
@@ -518,6 +524,7 @@ impl Receivers {
         };
         let attached = Attached {
             host,
+            localhost: Arc::clone(self.hosts.localhost()),
             slot,
             stream: mio::net::TcpStream::from_std(stream),
             thread,
@@ -899,7 +906,11 @@ impl Worker for StreamWorker {
             self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
             return;
         }
-        let parser = Parser::new(Arc::clone(&attached.host), attached.parser);
+        let parser = Parser::new(
+            Arc::clone(&attached.host),
+            Arc::clone(&attached.localhost),
+            attached.parser,
+        );
         let decompressor = Decompressor::for_capabilities(attached.parser.capabilities);
         let frame = attached.peer.child_frame(attached.parser.capabilities);
         {
@@ -936,6 +947,15 @@ impl Worker for StreamWorker {
             sends: 0,
             last_io: Instant::now(),
         });
+        // the parser exists: the host's retention changes now owe the child a stream path
+        // (stream_path_send_to_child() finds no parser before)
+        if let Some(child) = &self.children[index] {
+            child
+                .attached
+                .host
+                .contexts()
+                .record_first_time_changes(true);
+        }
         // Bytes may have arrived before the registration.
         let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
         let _frame = frame.as_ref().map(records::child_event);
@@ -944,13 +964,25 @@ impl Worker for StreamWorker {
 
     fn timer(&mut self, cx: &mut Context<'_>, _timer: TimerId) {
         for index in 0..self.children.len() {
-            if self.children[index]
-                .as_ref()
-                .is_some_and(|c| c.attached.slot.stop_requested.load(Ordering::Acquire))
-            {
-                let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
-                let _frame = frame.as_ref().map(records::child_event);
+            let Some(child) = self.children[index].as_mut() else {
+                continue;
+            };
+            if child.attached.slot.stop_requested.load(Ordering::Acquire) {
+                let frame = Arc::clone(&child.frame);
+                let _frame = records::child_event(&frame);
                 self.disconnect(cx, index, Reason::SignaledToStop);
+                continue;
+            }
+            // stream_path_retention_updated() from the RRDCONTEXT thread: its messages go out on this tick (D46
+            // point 4), each with the retention start of its change
+            let changes = child.attached.host.contexts().take_first_time_changes();
+            if !changes.is_empty() {
+                for first_time_s in changes {
+                    child.parser.retention_updated(first_time_s);
+                }
+                let frame = Arc::clone(&child.frame);
+                let _frame = records::child_event(&frame);
+                self.flush(cx, index, true);
             }
         }
         self.tick = Some(cx.add_timer(Instant::now() + TICK));

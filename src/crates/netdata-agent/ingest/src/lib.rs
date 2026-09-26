@@ -8,6 +8,9 @@
 
 #![forbid(unsafe_code)]
 
+mod jsonc;
+pub mod stream_path;
+
 use std::sync::Arc;
 
 use netdata_agent_log::{
@@ -30,7 +33,7 @@ macro_rules! plog {
 use netdata_agent_nrpc as nrpc;
 use netdata_agent_pluginsd_proto::{
     CHART_SLOT_MAX, DIMENSION_SLOT_MAX, Deferred, DeferredBody, Keyword, MAX_DEFERRED_SIZE,
-    Repertoire, Words,
+    Repertoire, Words, caps,
 };
 use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, Dim, dim_flags, flags};
 use netdata_agent_rrd::collection;
@@ -42,10 +45,6 @@ use netdata_agent_text::parse::{
     str2i, str2ll, str2ll_encoded, str2ndd_encoded, str2u, str2ul, str2ull_encoded,
     uuid_parse_flexi,
 };
-
-/// `STREAM_CAP_FLOAT_BASELINE` and `STREAM_CAP_ML_MODELS`: the capabilities the handlers consult.
-pub const CAP_FLOAT_BASELINE: u32 = 1 << 27;
-pub const CAP_ML_MODELS: u32 = 1 << 26;
 
 /// `PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT`: seconds.
 const FUNCTIONS_TIMEOUT_DEFAULT: i32 = 10;
@@ -111,9 +110,21 @@ fn parse_sn_flags(flags: &[u8]) -> u32 {
     out
 }
 
+/// What finishing a deferred body does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnDone {
+    Nothing,
+    /// `pluginsd_function_result_end()` counts a data collection.
+    CountCollection,
+    /// `pluginsd_json_stream_paths()`.
+    StreamPath,
+}
+
 /// The receiver side of one connection.
 pub struct Parser {
     host: Arc<Host>,
+    /// `localhost`, whose entry the stream path sent back to the child carries.
+    localhost: Arc<Host>,
     config: Config,
     line: usize,
     scope: Option<Arc<Chart>>,
@@ -128,8 +139,7 @@ pub struct Parser {
     /// `parser->user.data_collections_count`.
     pub data_collections_count: u64,
     deferred: Option<DeferredBody>,
-    /// Whether finishing the deferred body counts as a data collection (a function result).
-    deferred_counts: bool,
+    on_done: OnDone,
     /// `parser->user.new_host_labels`: collected by LABEL until OVERWRITE.
     new_host_labels: Option<Labels>,
     /// Bytes for the child (`send_to_plugin`), drained by the caller.
@@ -137,9 +147,10 @@ pub struct Parser {
 }
 
 impl Parser {
-    pub fn new(host: Arc<Host>, config: Config) -> Self {
+    pub fn new(host: Arc<Host>, localhost: Arc<Host>, config: Config) -> Self {
         Parser {
             host,
+            localhost,
             config,
             line: 0,
             scope: None,
@@ -151,7 +162,7 @@ impl Parser {
             chart_slots: Vec::new(),
             data_collections_count: 0,
             deferred: None,
-            deferred_counts: false,
+            on_done: OnDone::Nothing,
             new_host_labels: None,
             out: Vec::new(),
         }
@@ -168,12 +179,13 @@ impl Parser {
         if let Some(body) = &mut self.deferred {
             return match body.feed(line) {
                 Deferred::Continue => true,
-                // STREAM_PATH and ML_MODEL payloads come with paths and ML.
-                Deferred::Done(_) => {
+                // ML_MODEL payloads come with ML.
+                Deferred::Done(body) => {
                     self.deferred = None;
-                    // `pluginsd_function_result_end()` counts; the JSON actions do not.
-                    if self.deferred_counts {
-                        self.data_collections_count += 1;
+                    match self.on_done {
+                        OnDone::Nothing => {}
+                        OnDone::CountCollection => self.data_collections_count += 1,
+                        OnDone::StreamPath => self.stream_path_received(&body),
                     }
                     true
                 }
@@ -837,7 +849,7 @@ impl Parser {
     fn overwrite(&mut self) -> Rc {
         let new = self.new_host_labels.take();
         let info = self.host.info();
-        self.host.update_labels(|labels| {
+        let ephemeral = self.host.update_labels(|labels| {
             if let Some(new) = &new {
                 labels.migrate_to_these(new);
             }
@@ -856,7 +868,9 @@ impl Parser {
             if !labels.exists(b"_hostname") {
                 labels.add(b"_hostname", info.hostname.as_bytes(), labels::SRC_AUTO);
             }
+            ephemeral
         });
+        self.host.set_ephemeral(ephemeral);
         Ok(())
     }
 
@@ -1050,7 +1064,7 @@ impl Parser {
         }
         self.call_not_found("FUNCTION_RESULT_BEGIN", transaction);
         self.deferred = Some(DeferredBody::discarding("FUNCTION_RESULT_END"));
-        self.deferred_counts = true;
+        self.on_done = OnDone::CountCollection;
     }
 
     /// `pluginsd_function_progress()`: `transaction done all`.
@@ -1061,8 +1075,11 @@ impl Parser {
     /// `pluginsd_json()`: `JSON keyword`, then the payload up to `JSON_PAYLOAD_END`.
     fn json(&mut self, w: &Words) {
         let keyword = w.get(1).unwrap_or(b"");
-        // STREAM_PATH and ML_MODEL payloads come with paths and ML.
-        if keyword != b"STREAM_PATH" && keyword != b"ML_MODEL" {
+        self.on_done = OnDone::Nothing;
+        if keyword == b"STREAM_PATH" {
+            self.on_done = OnDone::StreamPath;
+        } else if keyword != b"ML_MODEL" {
+            // ML_MODEL payloads come with ML
             plog!(
                 self,
                 Source::Daemon,
@@ -1072,7 +1089,28 @@ impl Parser {
             );
         }
         self.deferred = Some(DeferredBody::new("JSON_PAYLOAD_END"));
-        self.deferred_counts = false;
+    }
+
+    /// `pluginsd_json_stream_paths()` → `stream_path_set_from_json()`: a changed path goes back to the child with
+    /// this agent's entry (`stream_path_send_to_child()`), inline, before anything the next lines produce.
+    fn stream_path_received(&mut self, body: &[u8]) {
+        if stream_path::set_from_json(&self.host, body) {
+            self.send_stream_path(None);
+        }
+    }
+
+    /// `stream_path_retention_updated()` for the child of this connection: the host's first time became
+    /// `first_time_s`.
+    pub fn retention_updated(&mut self, first_time_s: i64) {
+        self.send_stream_path(Some(first_time_s));
+    }
+
+    /// `stream_path_send_to_child()`: only to a child that negotiated paths.
+    fn send_stream_path(&mut self, first_time_t: Option<i64>) {
+        if self.config.capabilities & caps::PATHS != 0 {
+            let message = stream_path::message(&self.host, &self.localhost, first_time_t);
+            self.out.extend_from_slice(&message);
+        }
     }
 
     // ---- v1 data ----
@@ -1219,7 +1257,7 @@ impl Parser {
         chart.receiver().set = true;
         chart.dim_isnot_obsolete(&dim);
         let is_float = dim.meta().flags & dim_flags::FLOAT != 0;
-        let sender_sent_float = is_float && self.config.capabilities & CAP_FLOAT_BASELINE != 0;
+        let sender_sent_float = is_float && self.config.capabilities & caps::FLOAT_BASELINE != 0;
         let (collected, collected_d) = if sender_sent_float {
             (0, str2ndd_encoded(collected_s).0)
         } else {
@@ -1556,7 +1594,7 @@ impl Parser {
             return refuse();
         };
         let is_float = dim.meta().flags & dim_flags::FLOAT != 0;
-        let sender_sent_float = is_float && self.config.capabilities & CAP_FLOAT_BASELINE != 0;
+        let sender_sent_float = is_float && self.config.capabilities & caps::FLOAT_BASELINE != 0;
         dim.update_collection(|c| {
             let current =
                 c.last_collected_time.0 as u64 * 1_000_000 + c.last_collected_time.1 as u64;

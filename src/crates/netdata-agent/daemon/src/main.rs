@@ -49,6 +49,9 @@ fn out(stream: &mut dyn Write, bytes: &[u8]) {
 }
 
 fn run(argv: Vec<Vec<u8>>) -> i32 {
+    netdata_agent_rrd::host::set_netdata_start_time(
+        netdata_agent_rrd::collection::now_realtime_timeval().0,
+    );
     let mut startup = startup::Startup::new();
     // C's constructor-time invocation id, then `program_name`; until nd_log_initialize() records go to stderr.
     netdata_agent_log::init_invocation_id();
