@@ -5,7 +5,7 @@
   "required": ["status"],
   "properties": {
     "status": {
-      "type": "integer"
+      "anyOf": [{ "type": "integer" }, { "$ref": "#/definitions/traces_status" }]
     }
   },
   "oneOf": [
@@ -14,6 +14,8 @@
     { "$ref": "#/definitions/topology_response" },
     { "$ref": "#/definitions/flows_response" },
     { "$ref": "#/definitions/traces_response" },
+    { "$ref": "#/definitions/traces_values_response" },
+    { "$ref": "#/definitions/traces_trace_response" },
     { "$ref": "#/definitions/error_response" },
     { "$ref": "#/definitions/not_modified_response" }
   ],
@@ -230,6 +232,8 @@
         { "not": { "required": ["columns"] } },
         { "not": { "required": ["data"] } }
       ],
+      "if": { "required": ["type"], "properties": { "type": { "const": "traces" } } },
+      "then": { "$ref": "#/definitions/traces_info" },
       "additionalProperties": true
     },
     "data_response": {
@@ -633,6 +637,24 @@
       },
       "additionalProperties": true
     },
+    "traces_partial_reason": {
+      "type": "string",
+      "enum": [
+        "size_cap",
+        "source_failure",
+        "work_ceiling",
+        "cancelled",
+        "overview_ceiling",
+        "rollup_absent",
+        "remote_unavailable",
+        "legacy_file",
+        "stack_field_high_card",
+        "facet_high_card",
+        "facet_value_cap",
+        "groups_cap",
+        "live_pass_failed"
+      ]
+    },
     "traces_status": {
       "oneOf": [
         {
@@ -654,24 +676,7 @@
                 "type": "object",
                 "required": ["reason", "count"],
                 "properties": {
-                  "reason": {
-                    "type": "string",
-                    "enum": [
-                      "size_cap",
-                      "source_failure",
-                      "work_ceiling",
-                      "cancelled",
-                      "overview_ceiling",
-                      "rollup_absent",
-                      "remote_unavailable",
-                      "legacy_file",
-                      "stack_field_high_card",
-                      "facet_high_card",
-                      "facet_value_cap",
-                      "groups_cap",
-                      "live_pass_failed"
-                    ]
-                  },
+                  "reason": { "$ref": "#/definitions/traces_partial_reason" },
                   "count": { "type": "integer", "minimum": 1 },
                   "of": { "type": "integer", "minimum": 1 },
                   "detail": { "type": "array", "items": { "type": "string" } }
@@ -775,6 +780,8 @@
         "parent_span_id": { "type": "string" },
         "start_ns": { "type": "integer" },
         "duration_ns": { "type": "integer" },
+        "self_duration_ns": { "type": "integer", "minimum": 0 },
+        "error_origin": { "type": "boolean" },
         "kind": { "type": "integer" },
         "flags": { "type": "integer", "minimum": 0 },
         "dropped_attributes_count": { "type": "integer", "minimum": 0 },
@@ -962,13 +969,492 @@
       },
       "additionalProperties": true
     },
+    "traces_decimal": {
+      "type": "string",
+      "pattern": "^-?[0-9]+$"
+    },
+    "traces_explore_window": {
+      "type": "object",
+      "required": ["after", "before", "grid"],
+      "properties": {
+        "after": { "type": "integer", "minimum": 0 },
+        "before": { "type": "integer", "minimum": 0 },
+        "grid": {
+          "type": "object",
+          "required": ["start_ns", "bucket_ns", "buckets"],
+          "properties": {
+            "start_ns": { "$ref": "#/definitions/traces_decimal" },
+            "bucket_ns": { "type": "integer", "minimum": 1 },
+            "buckets": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "traces_histogram_bucket": {
+      "type": "object",
+      "required": ["counts", "unset", "other"],
+      "properties": {
+        "counts": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "unset": { "type": "integer", "minimum": 0 },
+        "other": { "type": "integer", "minimum": 0 },
+        "p50_ns": { "type": "integer" },
+        "p95_ns": { "type": "integer" },
+        "p99_ns": { "type": "integer" }
+      },
+      "dependencies": {
+        "p50_ns": ["p95_ns", "p99_ns"],
+        "p95_ns": ["p50_ns", "p99_ns"],
+        "p99_ns": ["p50_ns", "p95_ns"]
+      },
+      "additionalProperties": false
+    },
+    "traces_histogram_totals": {
+      "type": "object",
+      "required": ["count", "errors"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 },
+        "p50_ns": { "type": "integer" },
+        "p95_ns": { "type": "integer" },
+        "p99_ns": { "type": "integer" }
+      },
+      "dependencies": {
+        "p50_ns": ["p95_ns", "p99_ns"],
+        "p95_ns": ["p50_ns", "p99_ns"],
+        "p99_ns": ["p50_ns", "p95_ns"]
+      },
+      "additionalProperties": false
+    },
+    "traces_histogram": {
+      "type": "object",
+      "required": ["status", "stack", "dimensions", "buckets", "totals"],
+      "properties": {
+        "status": { "$ref": "#/definitions/traces_status" },
+        "stack": { "type": "string" },
+        "dimensions": { "type": "array", "items": { "type": "string" } },
+        "buckets": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/traces_histogram_bucket" }
+        },
+        "totals": { "$ref": "#/definitions/traces_histogram_totals" },
+        "percentiles": {
+          "type": "object",
+          "required": ["approximate", "max_relative_error"],
+          "properties": {
+            "approximate": { "type": "boolean" },
+            "max_relative_error": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "traces_explore_facet_value": {
+      "type": "object",
+      "required": ["value", "count"],
+      "properties": {
+        "value": { "type": ["string", "null"] },
+        "count": { "type": "integer", "minimum": 0 },
+        "selection": { "type": "integer", "minimum": 0 },
+        "baseline": { "type": "integer", "minimum": 0 },
+        "eligible": { "type": "boolean" },
+        "rank": { "type": "integer", "minimum": 1 },
+        "diff": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "traces_explore_facet": {
+      "type": "object",
+      "required": ["field", "values", "omitted_values", "omitted_rows"],
+      "properties": {
+        "field": { "type": "string" },
+        "values": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/traces_explore_facet_value" }
+        },
+        "omitted_values": { "type": "integer", "minimum": 0 },
+        "omitted_rows": { "type": "integer", "minimum": 0 },
+        "rank": { "type": "integer", "minimum": 1 },
+        "best_diff": { "type": "number" },
+        "totals": {
+          "type": "object",
+          "required": ["scope", "selection"],
+          "properties": {
+            "scope": { "type": "integer", "minimum": 0 },
+            "selection": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "traces_explore_facets": {
+      "type": "object",
+      "required": ["status", "fields", "unavailable"],
+      "properties": {
+        "status": { "$ref": "#/definitions/traces_status" },
+        "fields": { "type": "array", "items": { "$ref": "#/definitions/traces_explore_facet" } },
+        "unavailable": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["field", "reason"],
+            "properties": {
+              "field": { "type": "string" },
+              "reason": { "$ref": "#/definitions/traces_partial_reason" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "comparison": {
+          "type": "object",
+          "required": ["scope", "selection", "min_support"],
+          "properties": {
+            "scope": { "type": "integer", "minimum": 0 },
+            "selection": { "type": "integer", "minimum": 0 },
+            "min_support": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "traces_group": {
+      "type": "object",
+      "required": [
+        "service",
+        "operation",
+        "spans",
+        "errors",
+        "errors_originated",
+        "p95_ns",
+        "self_ns"
+      ],
+      "properties": {
+        "service": { "type": ["string", "null"] },
+        "operation": { "type": ["string", "null"] },
+        "spans": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 },
+        "errors_originated": { "type": "integer", "minimum": 0 },
+        "p95_ns": { "type": ["integer", "null"] },
+        "self_ns": { "$ref": "#/definitions/traces_decimal" }
+      },
+      "additionalProperties": false
+    },
+    "traces_delta_side": {
+      "type": "object",
+      "required": ["spans", "errors_originated", "self_ns"],
+      "properties": {
+        "spans": { "type": "integer", "minimum": 0 },
+        "errors_originated": { "type": "integer", "minimum": 0 },
+        "self_ns": { "$ref": "#/definitions/traces_decimal" }
+      },
+      "additionalProperties": false
+    },
+    "traces_groups_delta": {
+      "type": "object",
+      "required": [
+        "selection_traces",
+        "baseline_traces",
+        "selection_self_ns_total",
+        "baseline_self_ns_total",
+        "rows",
+        "other"
+      ],
+      "properties": {
+        "selection_traces": { "type": "integer", "minimum": 0 },
+        "baseline_traces": { "type": "integer", "minimum": 0 },
+        "selection_self_ns_total": { "$ref": "#/definitions/traces_decimal" },
+        "baseline_self_ns_total": { "$ref": "#/definitions/traces_decimal" },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["service", "operation", "selection", "baseline"],
+            "properties": {
+              "service": { "type": ["string", "null"] },
+              "operation": { "type": ["string", "null"] },
+              "selection": { "$ref": "#/definitions/traces_delta_side" },
+              "baseline": { "$ref": "#/definitions/traces_delta_side" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "other": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["groups", "selection", "baseline"],
+              "properties": {
+                "groups": { "type": "integer", "minimum": 0 },
+                "selection": { "$ref": "#/definitions/traces_delta_side" },
+                "baseline": { "$ref": "#/definitions/traces_delta_side" }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "traces_groups": {
+      "type": "object",
+      "required": ["status", "window_s", "self_ns_total", "rows", "other"],
+      "properties": {
+        "status": { "$ref": "#/definitions/traces_status" },
+        "window_s": { "type": "integer", "minimum": 0 },
+        "self_ns_total": { "$ref": "#/definitions/traces_decimal" },
+        "rows": { "type": "array", "items": { "$ref": "#/definitions/traces_group" } },
+        "other": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["groups", "spans", "errors", "errors_originated", "p95_ns", "self_ns"],
+              "properties": {
+                "groups": { "type": "integer", "minimum": 0 },
+                "spans": { "type": "integer", "minimum": 0 },
+                "errors": { "type": "integer", "minimum": 0 },
+                "errors_originated": { "type": "integer", "minimum": 0 },
+                "p95_ns": { "type": ["integer", "null"] },
+                "self_ns": { "$ref": "#/definitions/traces_decimal" }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "delta": { "$ref": "#/definitions/traces_groups_delta" }
+      },
+      "additionalProperties": false
+    },
+    "traces_row": {
+      "type": "object",
+      "required": [
+        "cursor",
+        "start_ns",
+        "duration_ns",
+        "self_duration_ns",
+        "trace_id",
+        "span_id",
+        "service",
+        "name",
+        "role",
+        "status",
+        "columns"
+      ],
+      "properties": {
+        "cursor": { "type": "string" },
+        "start_ns": { "$ref": "#/definitions/traces_decimal" },
+        "duration_ns": { "type": "integer" },
+        "self_duration_ns": { "type": ["integer", "null"] },
+        "trace_id": { "type": "string" },
+        "span_id": { "type": "string" },
+        "service": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] },
+        "role": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "columns": { "type": "object", "additionalProperties": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "traces_rows": {
+      "type": "object",
+      "required": ["status", "order", "matched", "items"],
+      "properties": {
+        "status": { "$ref": "#/definitions/traces_status" },
+        "order": { "enum": ["newest", "slowest"] },
+        "matched": { "type": "integer", "minimum": 0 },
+        "has_older": { "type": "boolean" },
+        "has_newer": { "type": "boolean" },
+        "items": { "type": "array", "items": { "$ref": "#/definitions/traces_row" } }
+      },
+      "additionalProperties": false
+    },
+    "traces_fields": {
+      "type": "object",
+      "required": ["status", "items", "columns"],
+      "properties": {
+        "status": { "$ref": "#/definitions/traces_status" },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "tier", "chip", "facet", "stack", "text", "column"],
+            "properties": {
+              "name": { "type": "string" },
+              "tier": { "enum": ["low", "mid", "high"] },
+              "chip": { "type": "boolean" },
+              "facet": { "type": "boolean" },
+              "stack": { "type": "boolean" },
+              "text": { "type": "boolean" },
+              "column": { "type": "boolean" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "columns": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "traces_explore_data": {
+      "type": "object",
+      "required": ["mode", "version", "window", "status"],
+      "properties": {
+        "mode": { "const": "explore" },
+        "version": { "type": "integer" },
+        "window": { "$ref": "#/definitions/traces_explore_window" },
+        "status": { "$ref": "#/definitions/traces_status" },
+        "histogram": { "$ref": "#/definitions/traces_histogram" },
+        "facets": { "$ref": "#/definitions/traces_explore_facets" },
+        "groups": { "$ref": "#/definitions/traces_groups" },
+        "rows": { "$ref": "#/definitions/traces_rows" },
+        "fields": { "$ref": "#/definitions/traces_fields" }
+      },
+      "additionalProperties": false
+    },
+    "traces_values_response": {
+      "type": "object",
+      "required": ["mode", "version", "field", "values", "truncated", "status"],
+      "properties": {
+        "mode": { "const": "values" },
+        "version": { "type": "integer" },
+        "field": { "type": "string" },
+        "values": { "type": "array", "items": { "type": "string" } },
+        "truncated": { "type": "boolean" },
+        "status": { "$ref": "#/definitions/traces_status" }
+      },
+      "additionalProperties": false
+    },
+    "traces_trace_response": {
+      "type": "object",
+      "required": [
+        "mode",
+        "version",
+        "trace_id",
+        "coverage",
+        "status",
+        "items",
+        "summary_root",
+        "roots",
+        "children",
+        "spans",
+        "field_kinds",
+        "log_streams"
+      ],
+      "properties": {
+        "mode": { "const": "trace" },
+        "version": { "type": "integer" },
+        "trace_id": { "type": "string" },
+        "coverage": { "$ref": "#/definitions/traces_coverage" },
+        "status": { "$ref": "#/definitions/traces_status" },
+        "items": {
+          "type": "object",
+          "required": ["returned"],
+          "properties": { "returned": { "type": "integer", "minimum": 0 } },
+          "additionalProperties": false
+        },
+        "summary_root": { "type": ["integer", "null"], "minimum": 0 },
+        "roots": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "children": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+        },
+        "spans": { "type": "array", "items": { "$ref": "#/definitions/traces_span" } },
+        "field_kinds": { "$ref": "#/definitions/traces_field_kinds" },
+        "log_streams": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "traces_info": {
+      "type": "object",
+      "required": [
+        "mode",
+        "version",
+        "sections",
+        "defaults",
+        "limits",
+        "percentiles",
+        "approximations",
+        "duration_bands",
+        "partial_reasons"
+      ],
+      "properties": {
+        "mode": { "const": "info" },
+        "version": { "type": "integer" },
+        "sections": {
+          "type": "array",
+          "items": { "enum": ["histogram", "facets", "groups", "rows", "fields"] }
+        },
+        "defaults": {
+          "type": "object",
+          "required": ["filter", "stack", "window_s", "rows_limit", "values_limit"],
+          "properties": {
+            "filter": {
+              "type": "object",
+              "additionalProperties": { "type": "array", "items": { "type": "string" } }
+            },
+            "stack": { "type": "string" },
+            "window_s": { "type": "integer", "minimum": 1 },
+            "rows_limit": { "type": "integer", "minimum": 1 },
+            "values_limit": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "limits": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "percentiles": {
+          "type": "object",
+          "required": ["approximate", "max_relative_error", "label"],
+          "properties": {
+            "approximate": { "type": "boolean" },
+            "max_relative_error": { "type": "number", "minimum": 0 },
+            "label": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "approximations": {
+          "type": "object",
+          "required": ["origin_and_self_time", "label"],
+          "properties": {
+            "origin_and_self_time": { "type": "string" },
+            "label": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "duration_bands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label", "min_ns", "max_ns"],
+            "properties": {
+              "label": { "type": "string" },
+              "min_ns": { "type": "integer", "minimum": 0 },
+              "max_ns": { "type": ["integer", "null"] }
+            },
+            "additionalProperties": false
+          }
+        },
+        "partial_reasons": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/traces_partial_reason" }
+        }
+      },
+      "additionalProperties": true
+    },
     "traces_response": {
       "type": "object",
       "required": ["status", "type", "data"],
       "properties": {
         "status": { "type": "integer" },
         "type": { "const": "traces" },
-        "data": { "$ref": "#/definitions/traces_search_data" },
+        "data": {
+          "oneOf": [
+            { "$ref": "#/definitions/traces_search_data" },
+            { "$ref": "#/definitions/traces_explore_data" }
+          ]
+        },
         "has_history": { "type": "boolean" },
         "accepted_params": { "$ref": "#/definitions/accepted_params" },
         "required_params": { "$ref": "#/definitions/required_params" },

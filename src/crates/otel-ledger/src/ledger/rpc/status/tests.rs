@@ -130,14 +130,10 @@ fn every_partial_reason_is_in_the_published_schema() {
     );
     let schema: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    let published: Vec<&str> = schema["definitions"]["traces_status"]["oneOf"]
+    let published: Vec<&str> = schema["definitions"]["traces_partial_reason"]["enum"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|variant| {
-            variant["properties"]["partial"]["items"]["properties"]["reason"]["enum"].as_array()
-        })
-        .flatten()
         .map(|name| name.as_str().unwrap())
         .collect();
     let mut names = Vec::new();

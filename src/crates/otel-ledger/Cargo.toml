@@ -58,3 +58,5 @@ opentelemetry-proto = { workspace = true }
 otel-oracle = { workspace = true }
 # Encodes the capture records of the tier-2 end-to-end test.
 prost = { workspace = true }
+# Validates real answers against src/plugins.d/FUNCTION_UI_SCHEMA.json.
+boon = { workspace = true }
