@@ -444,9 +444,10 @@ mod tests {
             "STREAM_DECOMPRESS: ZSTD_decompressStream() return error: Unknown frame descriptor"
         );
         let bomb = zstd::bulk::compress(&vec![0u8; 2 << 20], 1).unwrap();
-        assert!(line(caps::ZSTD, &frame(&bomb)).starts_with(&format!(
-            "STREAM_DECOMPRESS: ZSTD_decompressStream() consumed only "
-        )));
+        assert!(
+            line(caps::ZSTD, &frame(&bomb))
+                .starts_with("STREAM_DECOMPRESS: ZSTD_decompressStream() consumed only ")
+        );
         // zlib: "incorrect header check" is Z_DATA_ERROR
         assert_eq!(
             line(caps::GZIP, &frame(b"not gzip")),
