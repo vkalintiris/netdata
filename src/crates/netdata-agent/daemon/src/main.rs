@@ -37,7 +37,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use netdata_agent_evloop::Pool;
-use netdata_agent_inicfg::{SECTION_GLOBAL, SECTION_WEB};
+use netdata_agent_inicfg::{SECTION_GLOBAL, SECTION_LOGS, SECTION_WEB};
 use netdata_agent_rrd::host::{Host, HostInfo, Hosts, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 use netdata_agent_streaming::conf::{LoadDefaults, StreamConf};
@@ -74,8 +74,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let text = |v: &[u8]| String::from_utf8_lossy(v).into_owned();
     let help = cli::help_text(build::CONFIG_DIR);
 
-    let (opts, _operands) = cli::getopt(&prog, &argv[1.min(argv.len())..]);
-    for opt in opts {
+    let args = &argv[1.min(argv.len())..];
+    let mut options = cli::Getopt::new(&prog, args);
+    while let Some(opt) = options.next() {
         match opt {
             Opt::WithArg(b'c', file) => {
                 let file = text(&file);
@@ -120,6 +121,90 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 );
                 return 0;
             }
+            Opt::WithArg(b'W', v) if v == b"simple-pattern" => {
+                let Some(words) = options.take_words(2) else {
+                    out(&mut std::io::stderr(), cli::SIMPLE_PATTERN_USAGE.as_bytes());
+                    return 1;
+                };
+                return cli::simple_pattern_check(&words[0], &words[1], &mut std::io::stdout());
+            }
+            Opt::WithArg(b'W', v) if v.starts_with(b"stacksize=") => {
+                conf.netdata
+                    .set(SECTION_GLOBAL, "pthread stack size", &text(&v[10..]));
+            }
+            // C also sets its in-memory debug flags, for a debug.log the Rust agent does not write
+            Opt::WithArg(b'W', v) if v.starts_with(b"debug_flags=") => {
+                conf.netdata
+                    .set(SECTION_LOGS, "debug flags", &text(&v[12..]));
+            }
+            // a default for the key, which a value netdata.conf sets still overrides
+            Opt::WithArg(b'W', v) if v == b"set" || v == b"set2" => {
+                let set2 = v == b"set2";
+                let Some(words) = options.take_words(if set2 { 4 } else { 3 }) else {
+                    let usage = if set2 {
+                        cli::SET2_USAGE
+                    } else {
+                        cli::SET_USAGE
+                    };
+                    out(&mut std::io::stderr(), usage.as_bytes());
+                    return 1;
+                };
+                let w: Vec<String> = words.iter().map(|w| text(w)).collect();
+                let (target, rest) = match set2 {
+                    true if w[0] == "cloud" => (&mut conf.cloud, &w[1..]),
+                    true => (&mut conf.netdata, &w[1..]),
+                    false => (&mut conf.netdata, &w[..]),
+                };
+                target.set_default_raw_value(&rest[0], &rest[1], &rest[2]);
+            }
+            Opt::WithArg(b'W', v) if v == b"get" || v == b"get2" => {
+                let get2 = v == b"get2";
+                let Some(words) = options.take_words(if get2 { 4 } else { 3 }) else {
+                    let usage = if get2 {
+                        cli::GET2_USAGE
+                    } else {
+                        cli::GET_USAGE
+                    };
+                    out(&mut std::io::stderr(), usage.as_bytes());
+                    return 1;
+                };
+                if !config_loaded {
+                    out(
+                        &mut std::io::stderr(),
+                        b"warning: no configuration file has been loaded. Use -c CONFIG_FILE, before -W get. Using \
+                          default config.\n",
+                    );
+                    conf.netdata_conf_load(None, false, &system);
+                    if get2 {
+                        conf.cloud_conf_load(true);
+                    }
+                }
+                // netdata_conf_section_global(): the directories, the hostname, the profile (which loads
+                // stream.conf) and [db]
+                conf.section_directories();
+                conf.section_global_hostname();
+                let stream_conf = load_stream_conf(&mut conf, &system);
+                profile::detect(
+                    &mut conf.netdata,
+                    system.system_cpus,
+                    system.memory.total,
+                    stream_conf.is_parent,
+                    stream_conf.send.enabled,
+                );
+                conf::section_db(&mut conf.netdata, system.page_size);
+                let w: Vec<String> = words.iter().map(|w| text(w)).collect();
+                let (target, rest) = match get2 {
+                    true if w[0] == "cloud" => (&mut conf.cloud, &w[1..]),
+                    true => (&mut conf.netdata, &w[1..]),
+                    false => (&mut conf.netdata, &w[..]),
+                };
+                let mut value = target
+                    .get(&rest[0], &rest[1], Some(&rest[2]))
+                    .unwrap_or_default();
+                value.push(b'\n');
+                out(&mut std::io::stdout(), &value);
+                return 0;
+            }
             // an internal option: profilers keep their own descriptors open
             Opt::WithArg(b'W', v) if v == b"keepopenfds" => close_open_fds = false,
             Opt::WithArg(b'W', v) => {
@@ -161,26 +246,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     startup.step("signals");
     // The status-file refresh of this step line detects the node profile, which loads stream.conf first; the load
     // detects the profile too (for its replication defaults), so C parses [global] profile twice here.
-    let mut stream_conf = StreamConf::default();
-    stream_conf.load(
-        &mut conf.netdata,
-        &conf.dirs.user_config,
-        &conf.dirs.stock_config,
-        LoadDefaults {
-            conf_cpus: conf.threads.cpus,
-            libuv_worker_threads: conf.threads.libuv_worker_threads,
-            ssl_validate_certificate: true,
-        },
-        |netdata, is_parent, is_child| {
-            profile::detect(
-                netdata,
-                system.system_cpus,
-                system.memory.total,
-                is_parent,
-                is_child,
-            ) == profile::Profile::Parent
-        },
-    );
+    let stream_conf = load_stream_conf(&mut conf, &system);
     profile::detect(
         &mut conf.netdata,
         system.system_cpus,
@@ -592,6 +658,31 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         _ => {}
     });
     0
+}
+
+/// `stream_conf_load()`, which also detects the node profile for its replication defaults.
+fn load_stream_conf(conf: &mut Conf, system: &system::Resources) -> StreamConf {
+    let mut stream_conf = StreamConf::default();
+    stream_conf.load(
+        &mut conf.netdata,
+        &conf.dirs.user_config,
+        &conf.dirs.stock_config,
+        LoadDefaults {
+            conf_cpus: conf.threads.cpus,
+            libuv_worker_threads: conf.threads.libuv_worker_threads,
+            ssl_validate_certificate: true,
+        },
+        |netdata, is_parent, is_child| {
+            profile::detect(
+                netdata,
+                system.system_cpus,
+                system.memory.total,
+                is_parent,
+                is_child,
+            ) == profile::Profile::Parent
+        },
+    );
+    stream_conf
 }
 
 fn main() -> ExitCode {
