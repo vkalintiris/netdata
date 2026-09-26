@@ -44,6 +44,10 @@ var cOnlyRecords = []struct {
 	{regexp.MustCompile(`msg="To use encryption it is necessary to set \\"ssl certificate\\" and \\"ssl key\\" in \[web\] !`), "web TLS"},
 }
 
+// portedACLKRecords are the ACLK records the candidate writes too (the proxy resolution, D49 point 7), compared
+// despite the ACLK entry of cOnlyRecords.
+var portedACLKRecords = regexp.MustCompile(`msg="ACLK: (proxy is|using |proxy is explicitly)`)
+
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
 var cOnlyThreads = map[string]string{
 	"DBEV": "dbengine", "METASYNC": "SQLite metadata sync", "ACLKSYNC": "ACLK", "SDBUSWATCHER": "systemd bus watcher",
@@ -190,7 +194,7 @@ next:
 				continue
 			}
 			for _, c := range cOnlyRecords {
-				if c.re.MatchString(l) {
+				if c.re.MatchString(l) && !portedACLKRecords.MatchString(l) {
 					dropped++
 					continue next
 				}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -115,7 +116,10 @@ func compareIdentity(t *testing.T, p *Pair, stage, path string) {
 // `_is_parent`), with `[host labels]` that expand environment variables; then the same without any plugin scripts,
 // with the records of the failures. Check `api.localhost-identity`.
 func TestLocalhostIdentity(t *testing.T) {
-	labels := "    sp2_label = hello\n    sp2_env = ${SP2_TEST_VAR:-fallback}\n    sp2_unset = ${SP2_UNSET_VAR}\n"
+	// a set variable, one the system-info script exports, and an unset one
+	t.Setenv("SP2_TEST_VAR", "from-env")
+	labels := "    sp2_label = hello\n    sp2_env = ${SP2_TEST_VAR:-fallback}\n    sp2_sys = ${NETDATA_SYSTEM_KERNEL_NAME}\n" +
+		"    sp2_unset = ${SP2_UNSET_VAR}\n"
 	p := StartPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1, HostLabels: labels}, parentIdentity)
 	compareIdentity(t, p, "standalone", "/api/v1/info")
 	var contexts [2]map[string]any
@@ -125,7 +129,7 @@ func TestLocalhostIdentity(t *testing.T) {
 	if !reflect.DeepEqual(contexts[0], contexts[1]) {
 		t.Errorf("contexts host labels differ\noracle:    %v\ncandidate: %v", contexts[0], contexts[1])
 	}
-	if contexts[1]["_is_parent"] != "false" || contexts[1]["sp2_env"] != "fallback" {
+	if contexts[1]["_is_parent"] != "false" || contexts[1]["sp2_env"] != "from-env" || contexts[1]["sp2_sys"] != "Linux" {
 		t.Errorf("candidate labels: %v", contexts[1])
 	}
 	var conns []*stream.Conn
@@ -153,6 +157,10 @@ func TestLocalhostIdentity(t *testing.T) {
 	}
 	if !reflect.DeepEqual(records[0], records[1]) {
 		t.Errorf("identity records differ\noracle:    %q\ncandidate: %q", records[0], records[1])
+	}
+	unset := "RRDLABEL: environment variable 'SP2_UNSET_VAR' is not set and no default provided"
+	if !slices.Contains(records[1], unset) {
+		t.Errorf("candidate records lack %q: %q", unset, records[1])
 	}
 
 	t.Run("no-scripts", func(t *testing.T) {

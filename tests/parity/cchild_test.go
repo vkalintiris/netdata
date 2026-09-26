@@ -11,6 +11,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -130,23 +131,28 @@ func maskParentSince(b []byte) []byte {
 	return parentSince.ReplaceAll(b, []byte("${1}0"))
 }
 
-// streamInfoMasks hide what differs between two parents in a stream_info answer: the random nonce and the
-// retention clock. localhostStatus also hides localhost's status, which stays "initializing" on the candidate until
-// it collects its own charts (decisions D48 point 6).
+// Masks of stream_info answers: the random nonce always; `last_time_s` when it is the clock (an online host) of the
+// request's second range; for localhost, whose status and retention stay "initializing" on the candidate until it
+// collects its own charts (decisions D48 point 6), its status fields and retention.
 var (
-	streamInfoMasks = []*regexp.Regexp{
-		regexp.MustCompile(`("nonce":)\d+`),
-		regexp.MustCompile(`("first_time_s":)\d+`),
-		regexp.MustCompile(`("last_time_s":)\d+`),
-	}
-	localhostStatus = regexp.MustCompile(`("(?:db_status|db_liveness|ingest_status)":)"[a-z]+"`)
+	streamInfoNonce  = regexp.MustCompile(`("nonce":)\d+`)
+	streamInfoLast   = regexp.MustCompile(`("last_time_s":)(\d+)`)
+	streamInfoFirst  = regexp.MustCompile(`("first_time_s":)\d+`)
+	localhostStatus  = regexp.MustCompile(`("(?:db_status|db_liveness|ingest_status)":)"[a-z]+"`)
+	localhostOffline = regexp.MustCompile(`"ingest_status":"initializing"`)
 )
 
-func maskStreamInfo(b []byte, localhost bool) []byte {
-	for _, re := range streamInfoMasks {
-		b = re.ReplaceAll(b, []byte("${1}0"))
-	}
+func maskStreamInfo(b []byte, localhost bool, from, to int64) []byte {
+	b = streamInfoNonce.ReplaceAll(b, []byte("${1}0"))
+	b = streamInfoLast.ReplaceAllFunc(b, func(m []byte) []byte {
+		sub := streamInfoLast.FindSubmatch(m)
+		if v, err := strconv.ParseInt(string(sub[2]), 10, 64); err == nil && v >= from && v <= to {
+			return append(append([]byte{}, sub[1]...), "NOW"...)
+		}
+		return m
+	})
 	if localhost {
+		b = streamInfoFirst.ReplaceAll(b, []byte("${1}0"))
 		b = localhostStatus.ReplaceAll(b, []byte(`${1}"M"`))
 	}
 	return b
@@ -263,7 +269,7 @@ func TestCChild(t *testing.T) {
 			// What a child asks a parent before connecting (/api/v3/stream_info), about this child, localhost, and hosts
 			// the parents do not have.
 			t.Run("stream-info", func(t *testing.T) {
-				for _, q := range []struct {
+				queries := []struct {
 					path      string
 					localhost bool
 				}{
@@ -273,14 +279,42 @@ func TestCChild(t *testing.T) {
 					{"/api/v3/stream_info", false},
 					{"/api/v3/stream_info/x", false},
 					{"/api/v3/stream_info?machine_guid=" + parentIdentity.MachineGUID, true},
-				} {
+				}
+				if i > 0 {
+					// the previous child is detached: archived, offline, its retention frozen
+					queries = append(queries, struct {
+						path      string
+						localhost bool
+					}{"/api/v3/stream_info?machine_guid=" + guid(i-1), false})
+				}
+				for _, q := range queries {
 					var got [2][]byte
 					for s, side := range p.Each() {
-						got[s] = maskStreamInfo(maskTimings(maskRaw(get(side.Daemon.Addr, q.path))), q.localhost)
+						from := time.Now().Unix()
+						b := get(side.Daemon.Addr, q.path)
+						got[s] = maskStreamInfo(maskTimings(maskRaw(b)), q.localhost, from, time.Now().Unix())
 					}
 					if !bytes.Equal(got[0], got[1]) {
 						t.Errorf("%s: responses differ\n%s", q.path, firstDifference(got[0], got[1]))
 					}
+				}
+				// the localhost masks are for a localhost without charts: when it has some, they must go
+				if b := get(p.Candidate.Addr, "/api/v3/stream_info?machine_guid="+parentIdentity.MachineGUID); !localhostOffline.Match(b) {
+					t.Errorf("the candidate's localhost is no longer initializing: drop the D48.6 masks\n%s", httpBody(b))
+				}
+			})
+			// what each parent says about the real C child in /host/<child>/api/v1/info
+			t.Run("child-info", func(t *testing.T) {
+				var text [2]string
+				var labels [2]map[string]any
+				for s, side := range p.Each() {
+					text[s], labels[s] = infoIdentity(t, side.Daemon.Addr, "/host/"+hostname+"/api/v1/info", false)
+				}
+				if text[0] != text[1] {
+					t.Errorf("differs\n%s", firstDifference([]byte(text[0]), []byte(text[1])))
+				}
+				if !reflect.DeepEqual(labels[0], labels[1]) {
+					t.Errorf("host labels differ\noracle:    %v\ncandidate: %v", labels[0], labels[1])
 				}
 			})
 			// /api/v3/stream_path about this child, the stale ones before it and localhost: check

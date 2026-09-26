@@ -32,6 +32,8 @@ func ScrubEnvironment() {
 	for _, name := range []string{
 		"NETDATA_CLAIM_TOKEN", "NETDATA_CLAIM_ROOMS", "NETDATA_CLAIM_URL",
 		"NETDATA_CLAIM_PROXY", "NETDATA_CLAIM_INSECURE",
+		// the ACLK proxy resolution reads them; C and Rust log what they find
+		"http_proxy", "https_proxy",
 	} {
 		os.Unsetenv(name)
 	}
