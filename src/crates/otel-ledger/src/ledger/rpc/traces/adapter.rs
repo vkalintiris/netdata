@@ -225,6 +225,7 @@ pub(crate) fn to_explore_query(
             filter,
             text: params.text.as_deref().map(sfst::text::LiteralText::new),
             trace_ids: params.trace_ids.clone(),
+            duration: params.duration,
         },
         selection,
         sections: Sections {

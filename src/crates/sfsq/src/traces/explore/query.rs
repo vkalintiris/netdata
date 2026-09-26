@@ -32,6 +32,8 @@ pub struct ExploreScope {
     pub text: Option<sfst::text::LiteralText>,
     /// Keep only these traces' spans; empty means no trace-id term.
     pub trace_ids: Vec<sfst::TraceId>,
+    /// Keep only spans whose duration is inside this inclusive range.
+    pub duration: Option<sfst::DurationRange>,
 }
 
 /// Which parts of the page to compute.

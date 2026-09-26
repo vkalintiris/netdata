@@ -84,6 +84,9 @@ fn compile_scope(
     if !query.scope.trace_ids.is_empty() {
         scope = scope.conjoin(&reader.compile_trace_ids(&query.scope.trace_ids)?);
     }
+    if let Some(range) = query.scope.duration {
+        scope = scope.conjoin(&reader.compile_duration(range)?);
+    }
     Ok(scope)
 }
 

@@ -583,6 +583,7 @@ fn explore_query(grid: &Grid, scope: &Scope, stack: &str) -> ExploreQuery {
                 .iter()
                 .map(|id| sfst::TraceId::from(*id))
                 .collect(),
+            duration: None,
         },
         selection: None,
         sections: Sections {

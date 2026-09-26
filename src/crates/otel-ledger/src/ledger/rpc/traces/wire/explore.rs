@@ -34,6 +34,8 @@ pub struct ExploreParams {
     pub text: Option<String>,
     /// Keep only these traces' spans (1 to [`TRACE_IDS_MAX`]).
     pub trace_ids: Vec<sfst::TraceId>,
+    /// Keep only spans whose duration is inside this inclusive range.
+    pub duration: Option<sfst::DurationRange>,
     /// A part of the scope to compare with the rest; rows follow it.
     pub selection: Option<SelectionRequest>,
     pub histogram: Option<HistogramRequest>,
@@ -142,6 +144,34 @@ fn check_filter(filter: &Chips, what: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// An inclusive duration range, `what` naming it in errors.
+fn parse_duration(
+    value: Option<serde_json::Value>,
+    what: &str,
+) -> Result<Option<sfst::DurationRange>, String> {
+    let value = match value {
+        None => return Ok(None),
+        Some(serde_json::Value::Null) => return Err(format!("{what} is null; omit it instead")),
+        Some(value) => value,
+    };
+    let raw: RawDuration = serde_json::from_value(value).map_err(|e| format!("{what}: {e}"))?;
+    if raw.min_ns.is_none() && raw.max_ns.is_none() {
+        return Err(format!("{what} needs `min_ns` or `max_ns`"));
+    }
+    if raw.min_ns.is_some_and(|min| min < 0) || raw.max_ns.is_some_and(|max| max < 0) {
+        return Err(format!("{what} bounds cannot be negative"));
+    }
+    if let (Some(min), Some(max)) = (raw.min_ns, raw.max_ns)
+        && min > max
+    {
+        return Err(format!("{what} has `min_ns` above `max_ns`"));
+    }
+    Ok(Some(sfst::DurationRange {
+        min_ns: raw.min_ns,
+        max_ns: raw.max_ns,
+    }))
+}
+
 fn parse_selection(value: serde_json::Value) -> Result<SelectionRequest, String> {
     if value.is_null() {
         return Err("`selection` is null; omit it instead".into());
@@ -149,31 +179,7 @@ fn parse_selection(value: serde_json::Value) -> Result<SelectionRequest, String>
     let raw: RawSelection =
         serde_json::from_value(value).map_err(|e| format!("`selection`: {e}"))?;
     check_filter(&raw.filter, "selection filter")?;
-    let duration = match raw.duration {
-        None => None,
-        Some(serde_json::Value::Null) => {
-            return Err("the selection's `duration` is null; omit it instead".into());
-        }
-        Some(value) => {
-            let raw: RawDuration = serde_json::from_value(value)
-                .map_err(|e| format!("the selection's `duration`: {e}"))?;
-            if raw.min_ns.is_none() && raw.max_ns.is_none() {
-                return Err("the selection's `duration` needs `min_ns` or `max_ns`".into());
-            }
-            if raw.min_ns.is_some_and(|min| min < 0) || raw.max_ns.is_some_and(|max| max < 0) {
-                return Err("the selection's `duration` bounds cannot be negative".into());
-            }
-            if let (Some(min), Some(max)) = (raw.min_ns, raw.max_ns)
-                && min > max
-            {
-                return Err("the selection's `duration` has `min_ns` above `max_ns`".into());
-            }
-            Some(sfst::DurationRange {
-                min_ns: raw.min_ns,
-                max_ns: raw.max_ns,
-            })
-        }
-    };
+    let duration = parse_duration(raw.duration, "the selection's `duration`")?;
     let time_ns = match raw.time {
         None => None,
         Some(serde_json::Value::Null) => {
@@ -226,6 +232,8 @@ struct RawExploreParams {
     text: Option<String>,
     #[serde(default)]
     trace_ids: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "super::present")]
+    duration: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "super::present")]
     selection: Option<serde_json::Value>,
     #[serde(default)]
@@ -409,6 +417,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
         }
 
         let window = RequestWindow::parse(raw.after, raw.before)?;
+        let duration = parse_duration(raw.duration, "`duration`")?;
 
         check_filter(&raw.filter, "filter")?;
 
@@ -470,6 +479,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
             filter: raw.filter,
             text,
             trace_ids,
+            duration,
             selection,
             histogram,
             facets,

@@ -37,6 +37,7 @@ fn query(stack: &str, chips: &[(&str, &str)]) -> ExploreQuery {
             filter,
             text: None,
             trace_ids: Vec::new(),
+            duration: None,
         },
         selection: None,
         sections: Sections {
