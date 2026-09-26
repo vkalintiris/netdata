@@ -240,8 +240,9 @@ fn memo_file() -> Vec<u8> {
     ids_file(true)
 }
 
-/// [`memo_file`]'s rows, with or without the trace-id index and bloom (a logs
-/// file has neither). Row `i` is span `i + 1` of trace `[i % 8 + 1; 16]`.
+/// [`memo_file`]'s rows, with or without the trace-id index, bloom and child
+/// time (a logs file has none). Row `i` is span `i + 1` of trace
+/// `[i % 8 + 1; 16]`.
 fn ids_file(indexed: bool) -> Vec<u8> {
     let arena = bumpalo::Bump::new();
     let mut ri = crate::RowIndex::new(&arena, 10);
@@ -274,6 +275,9 @@ fn ids_file(indexed: bool) -> Vec<u8> {
     ri.dropped_attribute_counts = Some(DroppedAttributeCounts(dropped));
     ri.build_trace_id_index = indexed;
     ri.build_trace_id_bloom = indexed;
+    if indexed {
+        ri.child_durations = Some(crate::ChildDurations((0..256).map(|i| i % 7).collect()));
+    }
     let (buf, _summary, _meta) =
         crate::IndexWriter::write_into(&ri, std::io::Cursor::new(Vec::new()), Vec::new()).unwrap();
     buf.into_inner()
@@ -309,6 +313,20 @@ fn memo_decodes_each_chunk_once() {
         for compiled in [&filter, &text, &ids] {
             reader.matched_count(compiled, window.clone()).unwrap();
         }
+        reader.child_durations().unwrap();
+        reader.row_values("m", 0..256).unwrap();
+        reader.row_values("l", 10..20).unwrap();
+        reader
+            .compile_duration(crate::DurationRange {
+                min_ns: Some(100),
+                max_ns: None,
+            })
+            .unwrap();
+        reader
+            .compile_span_ids(&[SpanId::from(3u64.to_be_bytes())])
+            .unwrap();
+        reader.count_without(&filter, "m", window.clone()).unwrap();
+        reader.count_absent(&filter, "h", window.clone()).unwrap();
     }
     reader.timeline("m", &filter, grid).unwrap();
     assert!(reader.timeline("h", &filter, grid).is_err());
@@ -328,7 +346,7 @@ fn memo_decodes_each_chunk_once() {
         reader.decode_counts(),
         decoded_once(&[
             *b"SUMR", *b"META", *b"PRIM", *b"TIMS", *b"TRCE", *b"SPAN", *b"PSPN", *b"DURN",
-            *b"FLAG", *b"DRAC", *b"TIDX", *b"TBLM", *b"MF\0\0", *b"HF\0\0", *b"SB00",
+            *b"CHLD", *b"FLAG", *b"DRAC", *b"TIDX", *b"TBLM", *b"MF\0\0", *b"HF\0\0", *b"SB00",
         ])
     );
 }
