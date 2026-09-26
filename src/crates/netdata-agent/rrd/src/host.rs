@@ -10,10 +10,10 @@ use netdata_agent_nrpc::Registry;
 use netdata_agent_text::parse::uuid_parse_flexi;
 
 use crate::chart::{self, Charts};
+use crate::contexts::Metric;
 use crate::contexts::{self, Contexts};
 use crate::labels::Labels;
 use crate::mode::DbMode;
-use crate::contexts::Metric;
 use crate::storage::{StorageLayout, TierHandle};
 use crate::stream_path::PathEntry;
 use crate::system_info::SystemInfo;
@@ -1133,8 +1133,7 @@ mod tests {
             (100, 200, false),
             "tier 0 is the RAM index"
         );
-        let plain =
-            Host::with_storage("guid-p", false, dbengine.clone(), &Arc::default());
+        let plain = Host::with_storage("guid-p", false, dbengine.clone(), &Arc::default());
         assert_eq!(retention(&plain), (i64::MAX, 0, false));
         assert_eq!(
             (

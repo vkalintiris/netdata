@@ -123,7 +123,10 @@ impl TierRetention for MrgTier {
 #[derive(Debug)]
 pub enum TierHandle {
     Ram(Arc<Dim>),
-    Dbengine { engine: Arc<Dbengine>, metric: Handle },
+    Dbengine {
+        engine: Arc<Dbengine>,
+        metric: Handle,
+    },
 }
 
 impl Clone for TierHandle {
@@ -154,7 +157,13 @@ impl TierHandle {
     }
 
     /// `storage_engine_query_init()` of `start_s..=end_s`; `now_s` is the dbengine's clock (D64.8).
-    pub fn query(&self, start_s: i64, end_s: i64, priority: Priority, now_s: i64) -> StorageQuery<'_> {
+    pub fn query(
+        &self,
+        start_s: i64,
+        end_s: i64,
+        priority: Priority,
+        now_s: i64,
+    ) -> StorageQuery<'_> {
         match self {
             TierHandle::Ram(dim) => {
                 let ring = dim.ring().expect("a ram tier handle has a ring");
@@ -166,4 +175,3 @@ impl TierHandle {
         }
     }
 }
-
