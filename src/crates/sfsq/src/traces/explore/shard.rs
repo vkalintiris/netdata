@@ -261,12 +261,16 @@ pub(super) fn evaluate(
             }
         }
         if let (Some(both), Some(selection)) = (&both, &query.selection) {
-            shard.selection_facets = reader.facets(&eligible, both, window.clone())?;
-            let mut named: BTreeSet<&str> = BTreeSet::new();
-            for (field, _) in query.scope.filter.iter().chain(selection.filter.iter()) {
-                named.insert(field);
-            }
-            for field in named {
+            // A field the selection is made of is listed plainly: it needs no
+            // selection counts, and its chips are the selection's own.
+            let compared: Vec<String> = eligible
+                .iter()
+                .filter(|field| !selection.made_of(field))
+                .cloned()
+                .collect();
+            shard.selection_facets = reader.facets(&compared, both, window.clone())?;
+            for (field, _) in query.scope.filter.iter() {
+                let field = field.as_str();
                 let faceted = spec
                     .fields
                     .as_ref()
