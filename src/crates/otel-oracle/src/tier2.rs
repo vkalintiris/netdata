@@ -934,10 +934,11 @@ fn rank_subject(rank: Option<u32>) -> Subject {
     rank.map_or(Subject::Missing, |rank| Subject::Count(u64::from(rank)))
 }
 
-/// ORC-CMP: under a selection, the totals, then every compared field in the
-/// answer's order with its totals, rank and best difference, and every value
-/// with its scope, selection and baseline rows, eligibility, rank and
-/// difference (differences as the nearest double of the exact fraction).
+/// ORC-CMP: under a selection, the totals, then every field in the answer's
+/// order with its in-selection flag, totals, rank and best difference, and
+/// every value with its scope, selection and baseline rows, eligibility, rank
+/// and difference (differences as the nearest double of the exact fraction).
+/// A field the selection is made of has its plain counts and nothing else.
 fn judge_comparison(
     judge: &mut Judge,
     scenario: &Scenario,
@@ -969,23 +970,49 @@ fn judge_comparison(
 
     let mut want_lines = Vec::new();
     for field in &want.fields {
-        want_lines.extend([
-            Subject::Name(field.field.clone()),
-            Subject::Count(field.scope),
-            Subject::Count(field.selection),
-            rank_subject(field.rank),
-            fraction_subject(field.best),
-        ]);
-        for value in &field.values {
-            want_lines.extend([
-                value_subject(&field.field, value.value.as_deref()),
-                Subject::Count(value.count),
-                Subject::Count(value.selection),
-                Subject::Count(value.baseline),
-                Subject::Flag(value.eligible),
-                rank_subject(value.rank),
-                fraction_subject(value.diff),
-            ]);
+        match field {
+            calc::ComparedField::Compared(field) => {
+                want_lines.extend([
+                    Subject::Name(field.field.clone()),
+                    Subject::Flag(false),
+                    Subject::Count(field.scope),
+                    Subject::Count(field.selection),
+                    rank_subject(field.rank),
+                    fraction_subject(field.best),
+                ]);
+                for value in &field.values {
+                    want_lines.extend([
+                        value_subject(&field.field, value.value.as_deref()),
+                        Subject::Count(value.count),
+                        Subject::Count(value.selection),
+                        Subject::Count(value.baseline),
+                        Subject::Flag(value.eligible),
+                        rank_subject(value.rank),
+                        fraction_subject(value.diff),
+                    ]);
+                }
+            }
+            calc::ComparedField::InSelection(facet) => {
+                want_lines.extend([
+                    Subject::Name(facet.field.clone()),
+                    Subject::Flag(true),
+                    Subject::Missing,
+                    Subject::Missing,
+                    Subject::Missing,
+                    Subject::Missing,
+                ]);
+                for (value, count) in &facet.values {
+                    want_lines.extend([
+                        value_subject(&facet.field, value.as_deref()),
+                        Subject::Count(*count),
+                        Subject::Missing,
+                        Subject::Missing,
+                        Subject::Missing,
+                        Subject::Missing,
+                        Subject::Missing,
+                    ]);
+                }
+            }
         }
     }
     let mut got_lines = Vec::new();
@@ -998,6 +1025,7 @@ fn judge_comparison(
             });
         got_lines.extend([
             Subject::Name(field.field.clone()),
+            Subject::Flag(field.in_selection),
             scope,
             selection,
             rank_subject(field.rank),
@@ -1760,32 +1788,41 @@ mod tests {
             let fields: Vec<Value> = want
                 .fields
                 .iter()
-                .map(|f| {
-                    let values: Vec<Value> = f
-                        .values
-                        .iter()
-                        .map(|v| {
-                            let mut value = json!({"value": v.value, "count": v.count,
-                                "selection": v.selection, "baseline": v.baseline, "eligible": v.eligible});
-                            if let Some(rank) = v.rank {
-                                value["rank"] = json!(rank);
-                            }
-                            if let Some(diff) = as_f64(v.diff) {
-                                value["diff"] = json!(diff);
-                            }
-                            value
-                        })
-                        .collect();
-                    let mut field = json!({"field": f.field, "values": values,
-                        "omitted_values": f.omitted_values, "omitted_rows": f.omitted_rows,
-                        "totals": {"scope": f.scope, "selection": f.selection}});
-                    if let Some(rank) = f.rank {
-                        field["rank"] = json!(rank);
+                .map(|f| match f {
+                    calc::ComparedField::InSelection(facet) => json!({"field": facet.field,
+                        "values": facet.values.iter()
+                            .map(|(v, c)| json!({"value": v, "count": c}))
+                            .collect::<Vec<_>>(),
+                        "omitted_values": facet.omitted_values, "omitted_rows": facet.omitted_rows,
+                        "in_selection": true}),
+                    calc::ComparedField::Compared(f) => {
+                        let values: Vec<Value> = f
+                            .values
+                            .iter()
+                            .map(|v| {
+                                let mut value = json!({"value": v.value, "count": v.count,
+                                    "selection": v.selection, "baseline": v.baseline,
+                                    "eligible": v.eligible});
+                                if let Some(rank) = v.rank {
+                                    value["rank"] = json!(rank);
+                                }
+                                if let Some(diff) = as_f64(v.diff) {
+                                    value["diff"] = json!(diff);
+                                }
+                                value
+                            })
+                            .collect();
+                        let mut field = json!({"field": f.field, "values": values,
+                            "omitted_values": f.omitted_values, "omitted_rows": f.omitted_rows,
+                            "totals": {"scope": f.scope, "selection": f.selection}});
+                        if let Some(rank) = f.rank {
+                            field["rank"] = json!(rank);
+                        }
+                        if let Some(best) = as_f64(f.best) {
+                            field["best_diff"] = json!(best);
+                        }
+                        field
                     }
-                    if let Some(best) = as_f64(f.best) {
-                        field["best_diff"] = json!(best);
-                    }
-                    field
                 })
                 .collect();
             let reasons = calc::facet_reasons(&plain);
@@ -2247,6 +2284,31 @@ mod tests {
             .expect("a ranked field under some selection");
         let field = &mut answers.get_mut(&id).unwrap()["data"]["facets"]["fields"][index];
         field["rank"] = json!(field["rank"].as_u64().unwrap() + 7);
+
+        let (findings, _) = judge(&plan, &spans, &answers);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].check, "ORC-CMP");
+    }
+
+    #[test]
+    fn a_selection_field_answered_as_compared_is_exactly_one_finding() {
+        let (spans, after, before) = corpus_spans();
+        let plan = plan(after, before, &spans, 2);
+        let mut answers = answers(&plan, &spans);
+        let (id, index) = plan
+            .requests
+            .iter()
+            .filter(|r| r.body["explore"].get("selection").is_some())
+            .find_map(|r| {
+                let fields = answers[&r.id]["data"]["facets"]["fields"].as_array()?;
+                let index = fields.iter().position(|f| f["in_selection"] == true)?;
+                Some((r.id.clone(), index))
+            })
+            .expect("a field some selection is made of");
+        let field = &mut answers.get_mut(&id).unwrap()["data"]["facets"]["fields"][index];
+        field.as_object_mut().unwrap().remove("in_selection");
+        field["rank"] = json!(1);
 
         let (findings, _) = judge(&plan, &spans, &answers);
 

@@ -881,19 +881,30 @@ async fn explore_answers_a_selection() {
         "after": 1, "before": 10, "filter": {"_role": ["root"]},
         "selection": {"filter": {"status_code": ["ERROR"]}},
         "sections": {
-            "facets": {"fields": ["resource.attributes.service.name"]},
+            "facets": {"fields": ["resource.attributes.service.name", "status_code"]},
             "rows": {"limit": 5}
         }
     }});
     let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
     // One root of four is an error: checkout's. Neither service has the five
-    // selection rows a rank needs, so the values keep the count order.
+    // selection rows a rank needs, so the values keep the count order. Status
+    // is what the selection is made of: plain counts, flagged, before the
+    // unranked fields (none rank here).
     assert_eq!(
         v["data"]["facets"],
         json!({
             "status": {"complete": true},
             "comparison": {"scope": 4, "selection": 1, "min_support": 5},
             "fields": [{
+                "field": "status_code",
+                "in_selection": true,
+                "omitted_values": 0,
+                "omitted_rows": 0,
+                "values": [
+                    {"value": "ERROR", "count": 1},
+                    {"value": null, "count": 3}
+                ]
+            }, {
                 "field": "resource.attributes.service.name",
                 "totals": {"scope": 4, "selection": 1},
                 "omitted_values": 0,

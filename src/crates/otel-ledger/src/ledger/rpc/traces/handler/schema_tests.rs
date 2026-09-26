@@ -140,6 +140,11 @@ async fn responses_validate_against_function_ui_schema() {
     let comparison = answers
         .values()
         .any(|a| a["data"]["facets"]["comparison"].is_object());
+    let in_selection = answers.values().any(|a| {
+        a["data"]["facets"]["fields"]
+            .as_array()
+            .is_some_and(|fields| fields.iter().any(|f| f["in_selection"] == true))
+    });
     let capped = answers
         .values()
         .any(|a| a["status"]["partial"][0]["reason"] == "size_cap");
@@ -155,7 +160,7 @@ async fn responses_validate_against_function_ui_schema() {
             })
         })
     });
-    assert!(delta && comparison && capped && origin && events);
+    assert!(delta && comparison && in_selection && capped && origin && events);
 }
 
 #[tokio::test]
@@ -200,6 +205,21 @@ async fn the_schema_rejects_what_the_wire_never_sends() {
         .clone();
     search["data"]["mode"] = json!("search");
     cases.push(("a retired search answer", search));
+    let mut flagged = answers
+        .values()
+        .find(|a| {
+            a["data"]["facets"]["fields"]
+                .as_array()
+                .is_some_and(|fields| fields.iter().any(|f| f["in_selection"] == true))
+        })
+        .unwrap()
+        .clone();
+    for field in flagged["data"]["facets"]["fields"].as_array_mut().unwrap() {
+        if field["in_selection"] == true {
+            field["rank"] = json!(1);
+        }
+    }
+    cases.push(("a ranked in-selection field", flagged));
     for (name, answer) in cases {
         assert!(schemas.validate(&answer, response).is_err(), "{name}");
     }

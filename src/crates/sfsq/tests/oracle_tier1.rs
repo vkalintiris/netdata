@@ -2378,7 +2378,8 @@ fn explore_delta_matches_the_calculator() {
     assert!(split > 0, "some case has traces on both sides");
 }
 
-/// The engine's compared facets in the calculator's shape.
+/// The engine's compared facets in the calculator's shape; a field the
+/// selection is made of carries no comparison at all.
 fn engine_comparison(facets: &explore::FacetsData) -> calc::Comparison {
     let totals = facets.comparison.expect("a comparison under a selection");
     let fraction = |diff: explore::ShareDiff| calc::reduced(diff.num, diff.den);
@@ -2388,7 +2389,30 @@ fn engine_comparison(facets: &explore::FacetsData) -> calc::Comparison {
         fields: Vec::new(),
     };
     for facet in &facets.fields {
-        let compared = facet.comparison.as_ref().expect("every field compared");
+        if facet.in_selection {
+            assert!(
+                facet.comparison.is_none(),
+                "{} is not compared",
+                facet.field
+            );
+            assert!(facet.values.iter().all(|v| v.comparison.is_none()));
+            out.fields
+                .push(calc::ComparedField::InSelection(calc::Facet {
+                    field: facet.field.clone(),
+                    values: facet
+                        .values
+                        .iter()
+                        .map(|v| (v.value.clone(), v.count))
+                        .collect(),
+                    omitted_values: facet.omitted_values,
+                    omitted_rows: facet.omitted_rows,
+                }));
+            continue;
+        }
+        let compared = facet
+            .comparison
+            .as_ref()
+            .expect("every other field compared");
         let mut values = Vec::new();
         for value in &facet.values {
             let c = value.comparison.as_ref().expect("every value compared");
@@ -2402,16 +2426,17 @@ fn engine_comparison(facets: &explore::FacetsData) -> calc::Comparison {
                 diff: c.diff.map(fraction),
             });
         }
-        out.fields.push(calc::FieldComparison {
-            field: facet.field.clone(),
-            scope: compared.totals.scope,
-            selection: compared.totals.selection,
-            rank: compared.rank,
-            best: compared.best.map(fraction),
-            values,
-            omitted_values: facet.omitted_values,
-            omitted_rows: facet.omitted_rows,
-        });
+        out.fields
+            .push(calc::ComparedField::Compared(calc::FieldComparison {
+                field: facet.field.clone(),
+                scope: compared.totals.scope,
+                selection: compared.totals.selection,
+                rank: compared.rank,
+                best: compared.best.map(fraction),
+                values,
+                omitted_values: facet.omitted_values,
+                omitted_rows: facet.omitted_rows,
+            }));
     }
     out
 }
@@ -2558,7 +2583,7 @@ fn explore_comparison_matches_the_calculator() {
         ),
         ("F4 text", Scope::default().with_text("redis")),
     ];
-    let (mut eligible, mut below) = (0, 0);
+    let (mut eligible, mut below, mut in_selection) = (0, 0, 0);
     for live in [Live::Tail, Live::Chunk, Live::Split(100), Live::Chunked] {
         for (scope_name, scope) in &scopes {
             for (selection_name, engine, oracle) in selections(&grid, &stored.oracle, scope) {
@@ -2589,6 +2614,10 @@ fn explore_comparison_matches_the_calculator() {
                 let want = calc::comparison(&stored.oracle, &grid, scope, &oracle, &requested);
                 assert_eq!(engine_comparison(&data.facets.unwrap()), want, "{case}");
                 for field in &want.fields {
+                    let calc::ComparedField::Compared(field) = field else {
+                        in_selection += 1;
+                        continue;
+                    };
                     for value in &field.values {
                         if value.eligible {
                             eligible += 1;
@@ -2619,6 +2648,7 @@ fn explore_comparison_matches_the_calculator() {
         eligible > 0 && below > 0,
         "values on both sides of the minimum support"
     );
+    assert!(in_selection > 0, "some selection is made of a listed field");
 }
 
 // ── ORC-TRACE: trace-by-id assembles like the calculator ─────────────────

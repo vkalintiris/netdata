@@ -271,7 +271,7 @@ pub(super) fn evaluate(
                     .fields
                     .as_ref()
                     .is_none_or(|fields| fields.iter().any(|f| f == field));
-                if faceted && !HIDDEN_FIELDS.contains(&field) {
+                if faceted && !HIDDEN_FIELDS.contains(&field) && !selection.made_of(field) {
                     let totals = (
                         reader.count_without(&scope, field, window.clone())?,
                         reader.count_without(both, field, window.clone())?,

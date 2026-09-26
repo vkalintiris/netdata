@@ -14,7 +14,7 @@ use super::groups::{
     merge_groups,
 };
 use super::live::live_pass;
-use super::query::{ExploreQuery, ExploreRequestError, HIDDEN_FIELDS};
+use super::query::{ExploreQuery, ExploreRequestError, ExploreSelection, HIDDEN_FIELDS};
 use super::rows::{self, MoreRows, PageFold, ROW_VALUE_COLUMNS, RowFields};
 use super::shard::{self, Evaluated, ExploreShard, evaluate};
 use super::source::{ExploreOptions, SourceTally, evaluate_prepared, is_sealed, prepare_all};
@@ -447,15 +447,17 @@ pub fn explore(
                 omitted_values: facet.omitted_values,
                 omitted_rows: facet.omitted_rows,
                 comparison: None,
+                in_selection: false,
             });
         }
-        let comparison = query.selection.as_ref().map(|_| {
+        let comparison = query.selection.as_ref().map(|selection| {
             let totals = ComparisonTotals {
                 scope: matched,
                 selection: selection_matched,
             };
             compare_facets(
                 &mut out,
+                selection,
                 &selection_facets,
                 &facet_totals,
                 &facet_unset,
@@ -667,20 +669,23 @@ fn read_fields(
 }
 
 /// Adds the selection's comparison to every facet and orders them as the
-/// comparison ranks them: ranked fields first, eligible values first.
-/// `selection_facets` are the sources' uncapped selection counts; a field
-/// without totals has no own chips, so its totals are the section's.
+/// comparison ranks them: ranked fields first, then the fields the selection
+/// is made of (plain counts, flagged, no comparison), then the rest; eligible
+/// values first. `selection_facets` are the sources' uncapped selection
+/// counts; a field without totals has no own chips, so its totals are the
+/// section's.
 fn compare_facets(
     facets: &mut Vec<FacetData>,
+    selection: &ExploreSelection,
     selection_facets: &[Vec<sfst::FacetResult>],
     facet_totals: &BTreeMap<String, (u64, u64)>,
     facet_unset: &BTreeMap<String, (u64, u64)>,
     section: ComparisonTotals,
 ) {
-    let mut selection: BTreeMap<&str, BTreeMap<&str, u64>> = BTreeMap::new();
+    let mut selected: BTreeMap<&str, BTreeMap<&str, u64>> = BTreeMap::new();
     for source in selection_facets {
         for facet in source {
-            let counts = selection.entry(facet.field.as_str()).or_default();
+            let counts = selected.entry(facet.field.as_str()).or_default();
             for (value, count) in &facet.values {
                 *counts.entry(value.as_str()).or_default() += u64::from(*count);
             }
@@ -689,11 +694,16 @@ fn compare_facets(
 
     let mut bests = Vec::with_capacity(facets.len());
     for facet in facets.iter_mut() {
+        if selection.made_of(&facet.field) {
+            facet.in_selection = true;
+            bests.push(None);
+            continue;
+        }
         let totals = match facet_totals.get(&facet.field) {
             Some(&(scope, selection)) => ComparisonTotals { scope, selection },
             None => section,
         };
-        let counts = selection.get(facet.field.as_str());
+        let counts = selected.get(facet.field.as_str());
         let mut rows = Vec::with_capacity(facet.values.len());
         for value in &facet.values {
             let c = match &value.value {
@@ -742,20 +752,109 @@ fn compare_facets(
             comparison.rank = rank;
         }
     }
-    let mut order: Vec<(Option<u32>, usize)> = Vec::with_capacity(facets.len());
+    // Ranked fields by rank, then the fields the selection is made of, then
+    // the unranked rest, each in request order.
+    let mut order: Vec<(u8, u32, usize)> = Vec::with_capacity(facets.len());
     for (index, facet) in facets.iter().enumerate() {
-        order.push((facet.comparison.as_ref().and_then(|c| c.rank), index));
+        let key = match facet.comparison.as_ref().and_then(|c| c.rank) {
+            Some(rank) => (0, rank),
+            None if facet.in_selection => (1, 0),
+            None => (2, 0),
+        };
+        order.push((key.0, key.1, index));
     }
-    order.sort_by(|a, b| match (a.0, b.0) {
-        (Some(x), Some(y)) => x.cmp(&y),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => a.1.cmp(&b.1),
-    });
+    order.sort_unstable();
     let mut taken: Vec<Option<FacetData>> = facets.drain(..).map(Some).collect();
-    for (_, index) in order {
+    for (_, _, index) in order {
         if let Some(facet) = taken[index].take() {
             facets.push(facet);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::query::{SERVICE_FIELD, STATUS_FIELD};
+    use super::*;
+
+    fn facet(field: &str, values: &[(&str, u64)]) -> FacetData {
+        FacetData {
+            field: field.to_string(),
+            values: values
+                .iter()
+                .map(|&(value, count)| FacetValue {
+                    value: Some(value.to_string()),
+                    count,
+                    comparison: None,
+                })
+                .collect(),
+            omitted_values: 0,
+            omitted_rows: 0,
+            comparison: None,
+            in_selection: false,
+        }
+    }
+
+    fn counts(field: &str, values: &[(&str, u32)]) -> sfst::FacetResult {
+        sfst::FacetResult {
+            field: field.to_string(),
+            values: values.iter().map(|&(v, c)| (v.to_string(), c)).collect(),
+        }
+    }
+
+    /// "Errors only": Status would rank first on its own chip; it is listed
+    /// after the ranked service instead, with its plain counts.
+    #[test]
+    fn the_field_a_selection_is_made_of_is_listed_unranked() {
+        let status = [("ERROR", 10), ("OK", 90)];
+        let mut facets = vec![
+            facet(STATUS_FIELD, &status),
+            facet("http.route", &[("/x", 3)]),
+            facet(SERVICE_FIELD, &[("a", 50), ("b", 50)]),
+        ];
+        let selection = ExploreSelection {
+            filter: sfst::Filter::new().select(STATUS_FIELD, "ERROR"),
+            duration: None,
+            time_ns: None,
+        };
+        let selected = vec![vec![
+            counts(STATUS_FIELD, &[("ERROR", 10)]),
+            counts("http.route", &[("/x", 3)]),
+            counts(SERVICE_FIELD, &[("a", 5), ("b", 5)]),
+        ]];
+        let section = ComparisonTotals {
+            scope: 100,
+            selection: 10,
+        };
+        compare_facets(
+            &mut facets,
+            &selection,
+            &selected,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            section,
+        );
+
+        let order: Vec<(&str, Option<u32>, bool)> = facets
+            .iter()
+            .map(|f| {
+                let rank = f.comparison.as_ref().and_then(|c| c.rank);
+                (f.field.as_str(), rank, f.in_selection)
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (SERVICE_FIELD, Some(1), false),
+                (STATUS_FIELD, None, true),
+                ("http.route", None, false),
+            ]
+        );
+        assert_eq!(facets[1], {
+            let mut plain = facet(STATUS_FIELD, &status);
+            plain.in_selection = true;
+            plain
+        });
+        assert!(facets[2].comparison.is_some());
     }
 }

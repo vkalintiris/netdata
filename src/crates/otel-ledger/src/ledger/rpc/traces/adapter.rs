@@ -360,6 +360,7 @@ pub(crate) fn to_explore_response(
                     scope: c.totals.scope,
                     selection: c.totals.selection,
                 }),
+                in_selection: facet.in_selection.then_some(true),
             });
         }
         let mut unavailable = Vec::with_capacity(f.unavailable.len());

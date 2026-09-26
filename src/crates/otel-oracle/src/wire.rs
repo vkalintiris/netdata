@@ -239,6 +239,10 @@ pub struct Facet {
     pub best_diff: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub totals: Option<ComparisonTotals>,
+    /// Under a selection, a field the selection is made of: plain counts,
+    /// no comparison. Absent (false) otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_selection: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

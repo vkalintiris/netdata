@@ -918,9 +918,20 @@
             "selection": { "type": "integer", "minimum": 0 }
           },
           "additionalProperties": false
-        }
+        },
+        "in_selection": { "const": true }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": { "required": ["in_selection"] },
+      "then": {
+        "not": {
+          "anyOf": [
+            { "required": ["rank"] },
+            { "required": ["best_diff"] },
+            { "required": ["totals"] }
+          ]
+        }
+      }
     },
     "traces_explore_facets": {
       "type": "object",

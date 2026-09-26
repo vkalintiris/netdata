@@ -485,6 +485,13 @@ impl Selection {
         true
     }
 
+    /// Whether the selection is made of `field` (D43): its chips name the
+    /// field, or it bounds the duration and the field is the duration band.
+    pub fn made_of(&self, field: &str) -> bool {
+        self.terms.terms.contains_key(field)
+            || (self.duration.is_some() && field == DURATION_BAND_FIELD)
+    }
+
     fn without(&self, field: &str) -> Selection {
         let mut out = self.clone();
         out.terms.terms.remove(field);
@@ -539,20 +546,39 @@ pub struct FieldComparison {
     pub omitted_rows: u64,
 }
 
+/// One field of a comparison: compared, or — when the selection is made of
+/// it (D43) — its plain facet, unranked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComparedField {
+    Compared(FieldComparison),
+    InSelection(Facet),
+}
+
+impl ComparedField {
+    pub fn field(&self) -> &str {
+        match self {
+            ComparedField::Compared(field) => &field.field,
+            ComparedField::InSelection(facet) => &facet.field,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Comparison {
     pub scope: u64,
     pub selection: u64,
-    pub fields: Vec<FieldComparison>,
+    pub fields: Vec<ComparedField>,
 }
 
-/// ORC-CMP (QRY-15): the facets of `requested` under a selection. For a
-/// field, its own chips leave both the scope and the selection; `S` scope
-/// and `C` selection rows give `B = S − C` baseline rows; a value's
-/// difference is `c/C − b/B` (`c/C` when `B = 0`, none when `C = 0`); a value
-/// ranks when `c ≥ MIN_SELECTION_ROWS`. Fields rank by their best eligible
-/// difference, then name; the answer lists ranked fields first (the rest in
-/// request order) and eligible values first (the rest by rows, then value).
+/// ORC-CMP (QRY-15, QRY-48): the facets of `requested` under a selection. A
+/// field the selection is made of ([`Selection::made_of`]) is its plain facet
+/// and is not compared. For any other field, its own chips leave both the
+/// scope and the selection; `S` scope and `C` selection rows give `B = S − C`
+/// baseline rows; a value's difference is `c/C − b/B` (`c/C` when `B = 0`,
+/// none when `C = 0`); a value ranks when `c ≥ MIN_SELECTION_ROWS`. Fields
+/// rank by their best eligible difference, then name; the answer lists ranked
+/// fields first, then the plain fields, then the other unranked ones (each in
+/// request order), and eligible values first (the rest by rows, then value).
 /// The unset value of [`UNSET_VALUE_FIELDS`] compares like any value and
 /// sorts after the named ones on a tie.
 pub fn comparison(
@@ -577,7 +603,22 @@ pub fn comparison(
         }
     }
 
+    let mut plain: Vec<Facet> = Vec::new();
+    let mut compared: Vec<FieldComparison> = Vec::new();
     for field in requested {
+        if selection.made_of(field) {
+            let unset = if UNSET_VALUE_FIELDS.contains(&field.as_str()) {
+                unset_count(spans, grid, scope, field)
+            } else {
+                0
+            };
+            plain.push(capped(
+                field,
+                facet_counts(spans, grid, scope, field),
+                unset,
+            ));
+            continue;
+        }
         let mut field_scope = scope.clone();
         field_scope.terms.remove(field);
         let field_selection = selection.without(field);
@@ -656,7 +697,7 @@ pub fn comparison(
                 .cmp(&x.count)
                 .then_with(|| unset_last(&x.value, &y.value)),
         });
-        out.fields.push(FieldComparison {
+        compared.push(FieldComparison {
             field: field.clone(),
             scope: total_s,
             selection: total_c,
@@ -668,28 +709,27 @@ pub fn comparison(
         });
     }
 
-    let mut ranked: Vec<usize> = (0..out.fields.len())
-        .filter(|&i| out.fields[i].best.is_some())
+    let mut ranked: Vec<usize> = (0..compared.len())
+        .filter(|&i| compared[i].best.is_some())
         .collect();
     ranked.sort_by(|&x, &y| {
-        fraction_cmp(out.fields[y].best.unwrap(), out.fields[x].best.unwrap())
-            .then_with(|| out.fields[x].field.cmp(&out.fields[y].field))
+        fraction_cmp(compared[y].best.unwrap(), compared[x].best.unwrap())
+            .then_with(|| compared[x].field.cmp(&compared[y].field))
     });
     for (rank, &index) in ranked.iter().enumerate() {
-        out.fields[index].rank = Some(rank as u32 + 1);
+        compared[index].rank = Some(rank as u32 + 1);
     }
-    let mut fields = std::mem::take(&mut out.fields);
-    let mut order: Vec<usize> = ranked;
-    for (index, field) in fields.iter().enumerate() {
-        if field.rank.is_none() {
-            order.push(index);
-        }
-    }
-    let mut slots: Vec<Option<FieldComparison>> = fields.drain(..).map(Some).collect();
-    for index in order {
+    let mut slots: Vec<Option<FieldComparison>> = compared.into_iter().map(Some).collect();
+    for index in ranked {
         if let Some(field) = slots[index].take() {
-            out.fields.push(field);
+            out.fields.push(ComparedField::Compared(field));
         }
+    }
+    for facet in plain {
+        out.fields.push(ComparedField::InSelection(facet));
+    }
+    for slot in slots.into_iter().flatten() {
+        out.fields.push(ComparedField::Compared(slot));
     }
     out
 }
@@ -1671,6 +1711,13 @@ mod tests {
         }
     }
 
+    fn compared(field: &ComparedField) -> &FieldComparison {
+        match field {
+            ComparedField::Compared(field) => field,
+            other => panic!("{other:?} is not compared"),
+        }
+    }
+
     #[test]
     fn comparison_rules() {
         let grid = Grid {
@@ -1697,7 +1744,7 @@ mod tests {
         let got = comparison(&spans, &grid, &Scope::default(), &selection, &requested);
 
         assert_eq!((got.scope, got.selection), (10, 5));
-        let service = &got.fields[0];
+        let service = compared(&got.fields[0]);
         assert_eq!(service.field, SERVICE_FIELD, "the best field ranks first");
         assert_eq!(
             (service.scope, service.selection, service.rank),
@@ -1727,11 +1774,15 @@ mod tests {
                 ("b", 4, 0, 4, false, None, Some((-4, 5))),
             ]
         );
-        let status = &got.fields[1];
         assert_eq!(
-            (status.scope, status.selection, status.rank, status.best),
-            (10, 10, Some(2), Some((1, 2))),
-            "the selection's own field: its chips leave both sides, the baseline is empty"
+            got.fields[1],
+            ComparedField::InSelection(Facet {
+                field: STATUS_FIELD.to_string(),
+                values: vec![(Some("ERROR".to_string()), 5), (None, 5)],
+                omitted_values: 0,
+                omitted_rows: 0,
+            }),
+            "the field the selection is made of: plain counts, after the ranked fields"
         );
 
         let long = Selection {
@@ -1741,10 +1792,27 @@ mod tests {
         let few = comparison(&spans, &grid, &Scope::default(), &long, &requested[1..]);
         assert_eq!(few.selection, 3);
         assert!(
-            few.fields[0].values.iter().all(|v| !v.eligible),
+            compared(&few.fields[0]).values.iter().all(|v| !v.eligible),
             "under five rows"
         );
-        assert_eq!(few.fields[0].rank, None);
+        assert_eq!(compared(&few.fields[0]).rank, None);
+        let under_threshold = comparison(
+            &spans,
+            &grid,
+            &Scope::default(),
+            &long,
+            &[STATUS_FIELD.to_string(), DURATION_BAND_FIELD.to_string()],
+        );
+        let kinds: Vec<(&str, bool)> = under_threshold
+            .fields
+            .iter()
+            .map(|f| (f.field(), matches!(f, ComparedField::InSelection(_))))
+            .collect();
+        assert_eq!(
+            kinds,
+            [(DURATION_BAND_FIELD, true), (STATUS_FIELD, false)],
+            "a duration bound makes the band; the status still compares, after it (unranked)"
+        );
 
         let later = Selection {
             time_ns: Some((8_000_000_000, 20_000_000_000)),
@@ -1810,8 +1878,8 @@ mod tests {
             duration: Some((Some(100), None)),
             ..Selection::default()
         };
-        let compared = comparison(&spans, &grid, &Scope::default(), &slow, &status);
-        let field = &compared.fields[0];
+        let answer = comparison(&spans, &grid, &Scope::default(), &slow, &status);
+        let field = compared(&answer.fields[0]);
         assert_eq!((field.scope, field.selection, field.rank), (10, 6, Some(1)));
         assert_eq!(field.best, Some((5, 6)));
         type Line<'a> = (

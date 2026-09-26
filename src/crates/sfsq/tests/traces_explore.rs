@@ -1438,7 +1438,8 @@ fn every_span_with_rows() -> ExploreQuery {
 
 /// QRY-07: a selection leaves the histogram the scope's, lists only its own
 /// rows, and gives every facet its comparison out of the scope and
-/// selection rows.
+/// selection rows — except Status, which the selection is made of: it keeps
+/// its plain facet, unranked, after the ranked fields (D43).
 #[test]
 fn a_selection_leaves_the_histogram_and_narrows_the_rows() {
     let dir = tempfile::tempdir().unwrap();
@@ -1464,8 +1465,36 @@ fn a_selection_leaves_the_histogram_and_narrows_the_rows() {
             selection: 1
         })
     );
-    assert!(facets.fields.iter().all(|facet| facet.comparison.is_some()));
-    assert!(plain.facets.unwrap().comparison.is_none());
+    let plain_facets = plain.facets.unwrap();
+    assert!(plain_facets.comparison.is_none());
+    for facet in &facets.fields {
+        if facet.field == "status_code" {
+            assert!(facet.in_selection && facet.comparison.is_none());
+            let unselected = plain_facets
+                .fields
+                .iter()
+                .find(|f| f.field == "status_code")
+                .unwrap();
+            assert_eq!(facet.values, unselected.values);
+        } else {
+            assert!(
+                !facet.in_selection && facet.comparison.is_some(),
+                "{}",
+                facet.field
+            );
+        }
+    }
+    let ranked = facets
+        .fields
+        .iter()
+        .filter(|f| f.comparison.as_ref().is_some_and(|c| c.rank.is_some()))
+        .count();
+    let status = facets
+        .fields
+        .iter()
+        .position(|f| f.field == "status_code")
+        .unwrap();
+    assert_eq!(status, ranked, "right after the ranked fields");
 }
 
 /// A selection whose time range lies outside the window selects nothing: no

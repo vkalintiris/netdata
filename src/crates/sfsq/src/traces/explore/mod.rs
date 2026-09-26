@@ -223,7 +223,8 @@ pub struct FacetsData {
     /// Requested fields that could not be faceted, and why.
     pub unavailable: Vec<(String, PartialReason)>,
     /// With a selection: the scope and selection rows the comparison is out
-    /// of; fields then come ranked first, values eligible first.
+    /// of; fields then come ranked first, then the fields the selection is
+    /// made of, then the rest; values eligible first.
     pub comparison: Option<ComparisonTotals>,
 }
 
@@ -236,6 +237,10 @@ pub struct FacetData {
     pub omitted_values: u64,
     pub omitted_rows: u64,
     pub comparison: Option<FieldComparison>,
+    /// Under a selection, a field the selection is made of
+    /// ([`ExploreSelection::made_of`]): listed with its plain counts, no
+    /// comparison and no rank, after the ranked fields.
+    pub in_selection: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

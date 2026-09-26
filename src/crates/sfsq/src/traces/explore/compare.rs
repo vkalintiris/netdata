@@ -6,7 +6,9 @@
 //! field's own chips) leave `B = S − C` baseline rows; a value with `s` scope
 //! and `c` selection rows has `b = s − c` baseline rows. Its difference is
 //! `c/C − b/B`, or `c/C` when the baseline is empty. Only values with at
-//! least [`MIN_SUPPORT`] selection rows are eligible for a rank.
+//! least [`MIN_SUPPORT`] selection rows are eligible for a rank. A field the
+//! selection is made of is not compared
+//! ([`ExploreSelection::made_of`](super::query::ExploreSelection::made_of)).
 
 use std::cmp::Ordering;
 
