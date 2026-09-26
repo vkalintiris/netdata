@@ -892,7 +892,11 @@ mod tests {
         let file = &report["files"][0];
         assert_eq!(failed_checks(file), Vec::<String>::new(), "{file:#}");
         assert_eq!(file["tx_ids"], json!([1, 2, "...", 1, 2]));
-        assert_eq!(file["compression"], json!({"0": 2}), "pages this small are stored uncompressed");
+        assert_eq!(
+            file["compression"],
+            json!({"0": 2}),
+            "pages this small are stored uncompressed"
+        );
         assert_eq!(file["pages_per_extent"], json!({"1": 1, "2": 1}));
         assert_eq!(file["v2_header"]["magic"], json!("0x1230317"));
         assert_eq!(file["v2_first_metric"]["uuid"], json!(hex(&[1; 16])));
