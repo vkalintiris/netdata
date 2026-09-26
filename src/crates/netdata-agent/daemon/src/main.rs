@@ -730,42 +730,14 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 return 1;
             }
         };
-    startup.step("commands full API");
-    commands::set_context(commands::Ctx {
-        shared: Arc::clone(&shared),
-        cloud_conf_file: conf.cloud_conf_filename(),
-        plugins_dir: conf.primary_plugins_dir(),
-        cloud: std::sync::Mutex::new(std::mem::take(&mut conf.cloud)),
-        meta: meta.as_ref().map(Arc::downgrade).unwrap_or_default(),
-        metaqueue: metasync.queue(),
-    });
-    command_server::init(&uv_pool, conf.threads.thread_stack_size);
-    startup.step("agent start timings");
-    let elapsed_us = startup.elapsed_us();
-    match &meta {
-        Some(meta) => meta.add_agent_event(
-            EventKind::StartTime,
-            build::NETDATA_VERSION,
-            elapsed_us as i64,
-        ),
-        None => meta_store::no_database("add_agent_event"),
-    }
-    startup.completed(elapsed_us, medians.0);
-    if let Some(meta) = &meta {
-        meta.cleanup_agent_event_log();
-    }
-    commands::set_ready();
-    // The ANALYTICS thread is not ported: nothing is sent either way.
-    startup.step(if startup::analytics_enabled(&conf.dirs.user_config) {
-        "anonymous analytics"
-    } else {
-        "anonymous analytics (disabled)"
-    });
-    startup.step("mrg cleanup");
-    if let Some(dbengine) = &dbengine {
-        dbengine.prepopulate_cleanup();
-    }
-    startup.step("done");
+    // The exit's work is registered before the command server accepts every command, so an exit it starts (a
+    // netdatacli shutdown-agent) stops what runs, as C's globals do. Main keeps its own references for the rest of the
+    // startup and drops them before it waits for signals.
+    let metaqueue = metasync.queue();
+    let meta_main = meta.clone();
+    let engine_main = dbengine
+        .as_ref()
+        .map(|dbengine| Arc::clone(dbengine.engine()));
     let mut pool = pool;
     let mut stream_pool = Some(stream_pool);
     let mut contexts_worker = Some(contexts_worker);
@@ -853,6 +825,43 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
         _ => {}
     }));
+    startup.step("commands full API");
+    commands::set_context(commands::Ctx {
+        shared: Arc::clone(&shared),
+        cloud_conf_file: conf.cloud_conf_filename(),
+        plugins_dir: conf.primary_plugins_dir(),
+        cloud: std::sync::Mutex::new(std::mem::take(&mut conf.cloud)),
+        meta: meta_main.as_ref().map(Arc::downgrade).unwrap_or_default(),
+        metaqueue,
+    });
+    command_server::init(&uv_pool, conf.threads.thread_stack_size);
+    startup.step("agent start timings");
+    let elapsed_us = startup.elapsed_us();
+    match &meta_main {
+        Some(meta) => meta.add_agent_event(
+            EventKind::StartTime,
+            build::NETDATA_VERSION,
+            elapsed_us as i64,
+        ),
+        None => meta_store::no_database("add_agent_event"),
+    }
+    startup.completed(elapsed_us, medians.0);
+    if let Some(meta) = &meta_main {
+        meta.cleanup_agent_event_log();
+    }
+    commands::set_ready();
+    // The ANALYTICS thread is not ported: nothing is sent either way.
+    startup.step(if startup::analytics_enabled(&conf.dirs.user_config) {
+        "anonymous analytics"
+    } else {
+        "anonymous analytics (disabled)"
+    });
+    startup.step("mrg cleanup");
+    if let Some(engine) = engine_main {
+        engine.mrg.prepopulate_cleanup();
+    }
+    drop(meta_main);
+    startup.step("done");
     // netdata_exit_fatal(): a fatal() from here on runs the exit sequence, as an abnormal exit
     netdata_agent_log::register_fatal_final_callback(shutdown::exit_fatal);
 

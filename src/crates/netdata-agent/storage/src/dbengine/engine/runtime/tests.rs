@@ -71,7 +71,7 @@ fn the_first_tier_prepopulates_every_tier_once() {
     assert_eq!(rt.storage_tiers(), 3);
     let first: Vec<i64> = rt.engine().tiers.iter().map(|t| t.first_time_s).collect();
     assert_eq!(first, [T0, NOW, NOW]);
-    let ((), records) = netdata_agent_log::capture(|| rt.prepopulate_cleanup());
+    let ((), records) = netdata_agent_log::capture(|| rt.engine().mrg.prepopulate_cleanup());
     // A in tier 0 was prepopulated before tier 0's load gave it retention: released, not deleted
     assert_eq!(
         messages(records),

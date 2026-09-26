@@ -374,11 +374,6 @@ impl Runtime {
         self.engine.tiers.len()
     }
 
-    /// "mrg cleanup": `mrg_metric_prepopulate_cleanup()`.
-    pub fn prepopulate_cleanup(&self) {
-        self.engine.mrg.prepopulate_cleanup();
-    }
-
     /// `rrdeng_quiesce_all()`: each tier in use stops preparing queries, when `DBEV` gets to it.
     pub fn quiesce(&self) {
         for tier in 0..self.storage_tiers() {
