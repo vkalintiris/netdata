@@ -250,9 +250,12 @@ pub(super) fn evaluate(
                 .as_ref()
                 .is_none_or(|fields| fields.iter().any(|f| f == field));
             if faceted && !shard.facet_high.contains(field) {
-                let selection = match &both {
-                    Some(both) => reader.count_absent(both, field, window.clone())?,
-                    None => 0,
+                // A field the selection is made of needs no selection count.
+                let selection = match (&both, &query.selection) {
+                    (Some(both), Some(selection)) if !selection.made_of(field) => {
+                        reader.count_absent(both, field, window.clone())?
+                    }
+                    _ => 0,
                 };
                 let scope = reader.count_absent(&scope, field, window.clone())?;
                 shard
