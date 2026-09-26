@@ -122,7 +122,7 @@ pub fn decode(bytes: &[u8]) -> Result<Extent, HeaderInvalid> {
             let len = d.page_length as usize;
             len > BLOCK_SIZE
                 && (d.page_type != PAGE_TYPE_GORILLA_32BIT
-                    || (len - BLOCK_SIZE) % GORILLA_BUFFER_SIZE != 0)
+                    || !(len - BLOCK_SIZE).is_multiple_of(GORILLA_BUFFER_SIZE))
         });
         if impossible || uncompressed > MAX_EXTENT_UNCOMPRESSED_SIZE {
             read_error = true;
