@@ -292,8 +292,10 @@ fn log_invalid(invalid: &Invalid) {
 /// `journalfile_v2_load()`: the file's v2 index when it opens, validates (against the journal's size) and has
 /// metrics; C's records otherwise. `None` without a record when there is no v2 file.
 fn journal_v2_load(cfg: &TierConfig, fileno: u32) -> Option<V2File> {
-    let v1_size =
-        std::fs::metadata(cfg.file(FileKind::Journal, fileno)).map_or(0, |m| m.len() as u32);
+    let v1 = std::fs::metadata(cfg.file(FileKind::Journal, fileno));
+    let v1_size = v1.as_ref().map_or(0, |m| m.len() as u32);
+    // a failed stat() of the v1 journal leaves its errno on C's next record
+    let stale_errno = v1.err().and_then(|e| e.raw_os_error()).unwrap_or(0);
     let path = cfg.file(FileKind::JournalV2, fileno);
     let file = match File::open(&path) {
         Ok(file) => file,
@@ -315,15 +317,12 @@ fn journal_v2_load(cfg: &TierConfig, fileno: u32) -> Option<V2File> {
         }
     };
     if size < HEADER_SIZE as u64 {
-        netdata_log_error!("Invalid file \"{}\". Not the expected size", path.display());
+        nd_log!(Source::Daemon, Priority::Err, errno = stale_errno;
+            "Invalid file \"{}\". Not the expected size", path.display());
         return None;
     }
-    nd_log!(
-        Source::Daemon,
-        Priority::Debug,
-        "DBENGINE: checking integrity of \"{}\"",
-        path.display()
-    );
+    nd_log!(Source::Daemon, Priority::Debug, errno = stale_errno;
+        "DBENGINE: checking integrity of \"{}\"", path.display());
     let started = Instant::now();
     let verdict = journal_v2::validate(&file, v1_size, cfg.journal_check);
     let reject = |what: &str| {
@@ -778,6 +777,9 @@ pub fn load(cfg: TierConfig, mrg: &Mrg, now_s: i64) -> io::Result<Tier> {
             (data, _) => {
                 if data.is_none() && fileno == tier.last_fileno {
                     create |= doomed_last_pair_rotates(&cfg, fileno, now_s);
+                } else if data.is_none() {
+                    // C loads the pair's journal before it deletes the pair: its v2 index, with the records
+                    drop(journal_v2_load(&cfg, fileno));
                 }
                 netdata_log_error!("DBENGINE: deleting invalid data and journal file pair.");
                 let journal = cfg.file(FileKind::Journal, fileno);

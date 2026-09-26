@@ -95,7 +95,8 @@ fn the_scan_follows_cs_name_rules() {
     );
 }
 
-/// A pair whose data file has a bad superblock is deleted without its journal being replayed (D29); its v2 stays.
+/// A pair whose data file has a bad superblock is deleted after its v2 index is loaded, as C's journal load does
+/// (the records), without its journal being replayed (D29); its v2 stays.
 #[test]
 fn an_invalid_data_file_deletes_its_pair() {
     let dir = tempfile::tempdir().unwrap();
@@ -112,6 +113,9 @@ fn an_invalid_data_file_deletes_its_pair() {
         records[2..],
         [
             "DBENGINE: file has invalid superblock.".to_string(),
+            format!(
+                "Invalid file \"{path}/journalfile-1-0000000001.njfv2\". Not the expected size"
+            ),
             "DBENGINE: deleting invalid data and journal file pair.".to_string(),
             format!("DBENGINE: deleted journal file \"{path}/journalfile-1-0000000001.njf\"."),
             format!("DBENGINE: deleted data file \"{path}/datafile-1-0000000001.ndf\"."),

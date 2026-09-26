@@ -130,3 +130,106 @@ func compareGet(t *testing.T, p *Pair, path string) {
 		t.Errorf("%s: %s: oracle %s, candidate %s", path, d.Path, d.Oracle, d.Candidate)
 	}
 }
+
+// copyTree copies a directory, files writable.
+func copyTree(t *testing.T, from, to string) {
+	t.Helper()
+	err := filepath.WalkDir(from, func(path string, e os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(from, path)
+		if e.IsDir() {
+			return os.MkdirAll(filepath.Join(to, rel), 0o755)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(to, rel), b, 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDbengineReadFaults (check `dbengine.read`) repeats the start over the runR cache with one file fault each in
+// tier 0's second pair: both agents take C's file decisions with C's records (the whole daemon log), and the archived
+// child's contexts and data read the same afterwards.
+func TestDbengineReadFaults(t *testing.T) {
+	fx := os.Getenv("NETDATA_DBENGINE_FIXTURES")
+	if fx == "" {
+		t.Skip("NETDATA_DBENGINE_FIXTURES unset")
+	}
+	guid, err := os.ReadFile(filepath.Join(fx, "runR", "lib", "registry", "netdata.public.unique.id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := daemon.Identity{Hostname: "b6parent", StreamKey: parentIdentity.StreamKey,
+		MachineGUID: strings.TrimSpace(string(guid))}
+	flip := func(t *testing.T, path string, at int64) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b[at] ^= 0xff
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	faults := map[string]func(t *testing.T, tier0 string){
+		// the metric list fails its CRC: the file is hidden at population
+		"c1-metric-list": func(t *testing.T, tier0 string) {
+			path := filepath.Join(tier0, "journalfile-1-0000000002.njfv2")
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			flip(t, path, int64(b[36])|int64(b[37])<<8|int64(b[38])<<16|int64(b[39])<<24)
+		},
+		// the data file's superblock is invalid: the pair is deleted
+		"c3-datafile-superblock": func(t *testing.T, tier0 string) {
+			flip(t, filepath.Join(tier0, "datafile-1-0000000002.ndf"), 0)
+		},
+		"short-njf": func(t *testing.T, tier0 string) {
+			if err := os.Truncate(filepath.Join(tier0, "journalfile-1-0000000002.njf"), 100); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"missing-njf": func(t *testing.T, tier0 string) {
+			if err := os.Remove(filepath.Join(tier0, "journalfile-1-0000000002.njf")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"orphan-journal": func(t *testing.T, tier0 string) {
+			if err := os.Remove(filepath.Join(tier0, "datafile-1-0000000002.ndf")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		// no v2 index: rebuilt from the v1 journal
+		"missing-v2": func(t *testing.T, tier0 string) {
+			if err := os.Remove(filepath.Join(tier0, "journalfile-1-0000000002.njfv2")); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, fault := range faults {
+		t.Run(name, func(t *testing.T) {
+			seed := t.TempDir()
+			copyTree(t, filepath.Join(fx, "runR", "cache"), seed)
+			fault(t, filepath.Join(seed, "dbengine"))
+			p := StartPair(t, daemon.Options{StorageTiers: 3, TierRetentionMB: [3]int{25, 25, 25}, SeedCache: seed,
+				PulseOff: true, LogsExtra: "    level = debug\n"}, id)
+			compareGet(t, p, "/host/b6child/api/v1/contexts")
+			win := fmt.Sprintf("after=%d&before=%d", fixtureStart, fixtureEnd)
+			compareGet(t, p, "/host/b6child/api/v1/data?chart=b6.c2&"+win+"&points=30&tier=0&options=jsonwrap")
+			compareGet(t, p, "/host/b6child/api/v3/data?contexts=b6.ctx&"+win+"&points=6&tier=1")
+			for _, side := range p.Each() {
+				if err := side.Daemon.Stop(); err != nil {
+					t.Fatalf("stop %s: %v", side.Role, err)
+				}
+			}
+			compareLogFiles(t, p, "daemon.log")
+		})
+	}
+}
