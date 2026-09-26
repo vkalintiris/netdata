@@ -1250,6 +1250,25 @@ impl Contexts {
             .unwrap_or_default()
     }
 
+    /// Whether any context holds a metric (C's `rrdctx` metric, instance and context counts are all above zero), in
+    /// any state.
+    pub fn any_metric(&self) -> bool {
+        self.any_metric_where(|_| true)
+    }
+
+    /// Whether any metric is collected (`collected.metrics_count` above zero).
+    pub fn any_metric_collected(&self) -> bool {
+        self.any_metric_where(|rm| rm.flags.is_collected())
+    }
+
+    fn any_metric_where(&self, wanted: impl Fn(&Metric) -> bool) -> bool {
+        self.all().iter().any(|rc| {
+            rc.instances()
+                .iter()
+                .any(|ri| ri.metrics().iter().any(|rm| wanted(rm)))
+        })
+    }
+
     /// Contexts waiting for post-processing.
     pub fn queued(&self) -> usize {
         self.queue.len()

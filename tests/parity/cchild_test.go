@@ -130,6 +130,28 @@ func maskParentSince(b []byte) []byte {
 	return parentSince.ReplaceAll(b, []byte("${1}0"))
 }
 
+// streamInfoMasks hide what differs between two parents in a stream_info answer: the random nonce and the
+// retention clock. localhostStatus also hides localhost's status, which stays "initializing" on the candidate until
+// it collects its own charts (decisions D48 point 6).
+var (
+	streamInfoMasks = []*regexp.Regexp{
+		regexp.MustCompile(`("nonce":)\d+`),
+		regexp.MustCompile(`("first_time_s":)\d+`),
+		regexp.MustCompile(`("last_time_s":)\d+`),
+	}
+	localhostStatus = regexp.MustCompile(`("(?:db_status|db_liveness|ingest_status)":)"[a-z]+"`)
+)
+
+func maskStreamInfo(b []byte, localhost bool) []byte {
+	for _, re := range streamInfoMasks {
+		b = re.ReplaceAll(b, []byte("${1}0"))
+	}
+	if localhost {
+		b = localhostStatus.ReplaceAll(b, []byte(`${1}"M"`))
+	}
+	return b
+}
+
 func httpBody(b []byte) []byte {
 	if i := bytes.Index(b, []byte("\r\n\r\n")); i >= 0 {
 		return b[i+4:]
@@ -235,6 +257,29 @@ func TestCChild(t *testing.T) {
 					o, c := maskParentSince(which.at(blocks[0])), maskParentSince(which.at(blocks[1]))
 					if !bytes.Equal(o, c) {
 						t.Errorf("%s stream path differs\n%s", which.name, firstDifference(o, c))
+					}
+				}
+			})
+			// What a child asks a parent before connecting (/api/v3/stream_info), about this child, localhost, and hosts
+			// the parents do not have.
+			t.Run("stream-info", func(t *testing.T) {
+				for _, q := range []struct {
+					path      string
+					localhost bool
+				}{
+					{"/api/v3/stream_info?machine_guid=" + guid(i), false},
+					{"/api/v3/stream_info?machine_guid=" + strings.ToUpper(guid(i)), false},
+					{"/api/v3/stream_info?machine_guid=nope&machine_guid=", false},
+					{"/api/v3/stream_info", false},
+					{"/api/v3/stream_info/x", false},
+					{"/api/v3/stream_info?machine_guid=" + parentIdentity.MachineGUID, true},
+				} {
+					var got [2][]byte
+					for s, side := range p.Each() {
+						got[s] = maskStreamInfo(maskTimings(maskRaw(get(side.Daemon.Addr, q.path))), q.localhost)
+					}
+					if !bytes.Equal(got[0], got[1]) {
+						t.Errorf("%s: responses differ\n%s", q.path, firstDifference(got[0], got[1]))
 					}
 				}
 			})

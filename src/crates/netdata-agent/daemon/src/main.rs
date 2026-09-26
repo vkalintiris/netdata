@@ -20,6 +20,7 @@ mod server;
 mod shutdown;
 mod startup;
 mod static_file;
+mod stream_info;
 mod system;
 mod timezone;
 mod v1_charts;

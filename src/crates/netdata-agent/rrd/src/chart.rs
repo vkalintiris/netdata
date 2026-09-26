@@ -327,6 +327,14 @@ impl Chart {
         update(&mut self.meta.write().unwrap_or_else(PoisonError::into_inner))
     }
 
+    /// `rrdset_flag_check()`: the chart's flags, without copying the rest of its metadata.
+    pub fn flags(&self) -> u32 {
+        self.meta
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .flags
+    }
+
     pub fn collection(&self) -> ChartCollection {
         *lock(&self.collection)
     }
