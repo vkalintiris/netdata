@@ -1,15 +1,9 @@
 //! API handlers. `/api/v1/info` is ported from `src/web/api/v1/api_v1_info.c`
-//! (`web_client_api_request_v1_info_fill_buffer()`); its members after `mirrored_hosts_status` follow as the
-//! subsystems that own them are ported.
+//! (`web_client_api_request_v1_info_fill_buffer()`); its members after `host_labels` follow as the subsystems that
+//! own them are ported.
 
 use netdata_agent_rrd::host::{Host, Hosts};
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
-
-/// What `/api/v1/info` says about this agent.
-pub struct Info {
-    pub version: &'static str,
-    pub machine_guid: String,
-}
 
 /// `web_client_api_request_v1_info_mirrored_hosts_status()`.
 fn mirrored_host_status(w: &mut JsonWriter, host: &Host) {
@@ -31,12 +25,14 @@ fn mirrored_host_status(w: &mut JsonWriter, host: &Host) {
     w.object_close();
 }
 
-/// The leading members of `/api/v1/info`: every host in creation order, then the reachable ones before the orphans.
-pub fn info_json(info: &Info, hosts: &Hosts) -> Vec<u8> {
+/// The members of `/api/v1/info` up to `host_labels`, about the routed host: every host in creation order, then the
+/// reachable ones before the orphans, the alert summary, the host's system info and labels.
+pub fn info_json(host: &Host, hosts: &Hosts) -> Vec<u8> {
     let all = hosts.all();
+    let info = host.info();
     let mut w = JsonWriter::new(JsonOptions::DEFAULT);
-    w.member_add_string("version", info.version);
-    w.member_add_string("uid", &info.machine_guid);
+    w.member_add_string("version", &info.program_version);
+    w.member_add_string("uid", host.machine_guid());
     w.member_add_uint64("hosts-available", all.len() as u64);
     w.member_add_array(Some(b"mirrored_hosts"));
     for host in &all {
@@ -52,6 +48,17 @@ pub fn info_json(info: &Info, hosts: &Hosts) -> Vec<u8> {
         mirrored_host_status(&mut w, host);
     }
     w.array_close();
+    // web_client_api_request_v1_info_summary_alarm_statuses(): no alert runs without the health engine
+    w.member_add_object("alarms");
+    for status in ["normal", "warning", "critical"] {
+        w.member_add_uint64(status, 0);
+    }
+    w.object_close();
+    info.system_info.to_json_v1(&mut w);
+    // host_labels2json()
+    w.member_add_object("host_labels");
+    host.labels().to_json_members(&mut w);
+    w.object_close();
     w.finalize();
     w.into_bytes()
 }

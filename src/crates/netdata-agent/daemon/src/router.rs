@@ -54,10 +54,10 @@ const API_V1: &[Command] = &[
         acl: acl::bits::NODES,
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
-        callback: |route, _, _| Reply {
+        callback: |route, host, _| Reply {
             code: status::OK,
             content_type: ContentType::ApplicationJson,
-            body: api::info_json(&route.shared.info, &route.shared.hosts),
+            body: api::info_json(host, &route.shared.hosts),
             ..Reply::default()
         },
     },
@@ -326,10 +326,6 @@ mod tests {
             },
             version: "v0",
             gzip_level: 3,
-            info: api::Info {
-                version: "v0",
-                machine_guid: "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e".into(),
-            },
             web_dir: "/nonexistent-web-dir".into(),
             x_frame_options: None,
             acl: test_acl(),

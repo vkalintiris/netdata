@@ -71,6 +71,11 @@ type Options struct {
 	GlobalExtra string
 	// LogsExtra, when set, is written as a [logs] section at the end of netdata.conf (one "key = value" per line).
 	LogsExtra string
+	// HostLabels, when set, is written as a [host labels] section at the end of netdata.conf (one "key = value"
+	// per line).
+	HostLabels string
+	// PluginsDir, when set, is the [directories] plugins path (e.g. an empty directory: no system-info.sh).
+	PluginsDir string
 	// StreamExtra is appended to stream.conf verbatim (e.g. per-child [<machine guid>] sections of a parent).
 	StreamExtra string
 	// StreamTo, when set, makes the daemon a streaming child of that destination.
@@ -353,10 +358,16 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	if o.WebDir != "" {
 		extraDirs = fmt.Sprintf("    web = %s\n", o.WebDir)
 	}
+	if o.PluginsDir != "" {
+		extraDirs += fmt.Sprintf("    plugins = %s\n", o.PluginsDir)
+	}
 	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs, o.WebExtra,
 		o.GlobalExtra)
 	if o.LogsExtra != "" {
 		conf += "\n[logs]\n" + o.LogsExtra
+	}
+	if o.HostLabels != "" {
+		conf += "\n[host labels]\n" + o.HostLabels
 	}
 	confPath := filepath.Join(o.RunDir, "etc", "netdata.conf")
 	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {

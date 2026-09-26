@@ -3,6 +3,7 @@
 
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_text::c::{c_str, fgets_chunks};
+use netdata_agent_text::json::JsonWriter;
 use netdata_agent_text::sanitize::rrd_string_sanitize;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -55,6 +56,11 @@ pub struct SystemInfo {
     pub hw_product_name: Option<String>,
     pub hw_sys_vendor: Option<String>,
     pub hw_product_type: Option<String>,
+}
+
+/// A field as the JSON writers take it.
+fn v(field: &Option<String>) -> Option<&[u8]> {
+    field.as_deref().map(str::as_bytes)
 }
 
 impl SystemInfo {
@@ -130,6 +136,38 @@ impl SystemInfo {
             _ => return false,
         }
         true
+    }
+
+    /// `rrdhost_system_info_to_json_v1()`: the members of `/api/v1/info`; missing ones print empty, the container,
+    /// Kubernetes and cloud ones are left out.
+    pub fn to_json_v1(&self, w: &mut JsonWriter) {
+        w.member_add_string_or_empty("os_name", v(&self.host_os_name));
+        w.member_add_string_or_empty("os_id", v(&self.host_os_id));
+        w.member_add_string_or_empty("os_id_like", v(&self.host_os_id_like));
+        w.member_add_string_or_empty("os_version", v(&self.host_os_version));
+        w.member_add_string_or_empty("os_version_id", v(&self.host_os_version_id));
+        w.member_add_string_or_empty("os_detection", v(&self.host_os_detection));
+        w.member_add_string_or_empty("cores_total", v(&self.host_cores));
+        w.member_add_string_or_empty("total_disk_space", v(&self.host_disk_space));
+        w.member_add_string_or_empty("cpu_freq", v(&self.host_cpu_freq));
+        w.member_add_string_or_empty("ram_total", v(&self.host_ram_total));
+        w.member_add_string_or_omit("container_os_name", v(&self.container_os_name));
+        w.member_add_string_or_omit("container_os_id", v(&self.container_os_id));
+        w.member_add_string_or_omit("container_os_id_like", v(&self.container_os_id_like));
+        w.member_add_string_or_omit("container_os_version", v(&self.container_os_version));
+        w.member_add_string_or_omit("container_os_version_id", v(&self.container_os_version_id));
+        w.member_add_string_or_omit("container_os_detection", v(&self.container_os_detection));
+        w.member_add_string_or_omit("is_k8s_node", v(&self.is_k8s_node));
+        w.member_add_string_or_empty("kernel_name", v(&self.kernel_name));
+        w.member_add_string_or_empty("kernel_version", v(&self.kernel_version));
+        w.member_add_string_or_empty("architecture", v(&self.architecture));
+        w.member_add_string_or_empty("virtualization", v(&self.virtualization));
+        w.member_add_string_or_empty("virt_detection", v(&self.virt_detection));
+        w.member_add_string_or_empty("container", v(&self.container));
+        w.member_add_string_or_empty("container_detection", v(&self.container_detection));
+        w.member_add_string_or_omit("cloud_provider_type", v(&self.cloud_provider_type));
+        w.member_add_string_or_omit("cloud_instance_type", v(&self.cloud_instance_type));
+        w.member_add_string_or_omit("cloud_instance_region", v(&self.cloud_instance_region));
     }
 
     /// `rrdhost_system_info_to_rrdlabels()`: the `_*` labels of the fields that are set, in C's order.

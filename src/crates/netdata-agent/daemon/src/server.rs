@@ -23,7 +23,7 @@ use netdata_agent_inicfg::{Config, SECTION_WEB};
 
 use crate::access_log::{Auth, ClientLog, Completed, RequestContext, logged_url};
 use crate::acl::{self, WebAcl};
-use crate::{api, router};
+use crate::router;
 
 /// What every worker needs to answer requests.
 pub struct Shared {
@@ -37,7 +37,6 @@ pub struct Shared {
     /// `[web] timeout for first request` and `disconnect idle clients after`, in seconds (0 disables).
     pub first_request_timeout_s: u64,
     pub idle_timeout_s: u64,
-    pub info: api::Info,
     /// `netdata_configured_web_dir`.
     pub web_dir: String,
     pub hosts: Arc<Hosts>,
