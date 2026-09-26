@@ -287,8 +287,10 @@ impl WebListener {
 pub struct WebWorker {
     listeners: Arc<[WebListener]>,
     clients: Vec<Option<Client>>,
-    /// This worker's share of `[web] web server max sockets`; C only reports it when accept() runs out of descriptors.
+    /// This worker's share of `[web] web server max sockets` (0: no limit).
     max_sockets: usize,
+    /// Whether this worker polls its stream listeners (`listen_sockets_active`).
+    listening: bool,
     shared: Arc<Shared>,
     receivers: Arc<Receivers>,
     stats: Stats,
@@ -316,9 +318,46 @@ impl WebWorker {
             listeners,
             clients: Vec::new(),
             max_sockets,
+            listening: true,
             shared,
             receivers,
             stats: Stats::default(),
+        }
+    }
+
+    /// The sockets this worker polls, listeners included (`p.used`).
+    fn used(&self) -> usize {
+        self.listeners.len() + self.clients.iter().flatten().count()
+    }
+
+    /// `poll_events()`'s listener switch, before every wait: a worker holding its share of sockets stops polling
+    /// the stream listeners, and polls them again once below it.
+    fn throttle(&mut self, cx: &mut Context<'_>) {
+        let (used, limit) = (self.used(), self.max_sockets);
+        let flip = if self.listening {
+            limit != 0 && used >= limit
+        } else {
+            limit == 0 || used < limit
+        };
+        if !flip {
+            return;
+        }
+        self.listening = !self.listening;
+        nd_log!(
+            Source::Daemon,
+            Priority::Debug,
+            "{} listening sockets (used TCP sockets {used}, max allowed for this worker {limit})",
+            if self.listening { "ENABLING" } else { "DISABLING" }
+        );
+        for (i, listener) in self.listeners.iter().enumerate() {
+            if let Some(fd) = listener.polled_fd() {
+                let mut source = mio::unix::SourceFd(&fd);
+                let _ = if self.listening {
+                    cx.registry().register(&mut source, Token(i), Interest::READABLE)
+                } else {
+                    cx.registry().deregister(&mut source)
+                };
+            }
         }
     }
 
@@ -333,6 +372,10 @@ impl WebWorker {
 
     fn accept(&mut self, cx: &mut Context<'_>, index: usize) {
         loop {
+            // C accepts one connection per wake-up and re-checks its share before the next
+            if self.max_sockets != 0 && self.used() >= self.max_sockets {
+                break;
+            }
             match self.listeners[index].accept() {
                 Ok((mut stream, mut identity, port)) => {
                     // accept_socket(): the connection list, then web_client_update_acl_matches().
@@ -431,7 +474,7 @@ impl WebWorker {
                     if errno == nix::errno::Errno::EMFILE as i32 {
                         // poll_events(): the listeners count as used sockets too; at most one line every 10 s
                         static EMFILE: ErrorLimit = ErrorLimit::new(10, 1000);
-                        let used = self.listeners.len() + self.clients.iter().flatten().count();
+                        let used = self.used();
                         nd_log_limit!(&EMFILE, Source::Daemon, Priority::Err, errno = errno;
                             "POLLFD: LISTENER: too many open files - used by this thread {used}, max for this \
                              thread {}", self.max_sockets);
@@ -1023,6 +1066,7 @@ impl Worker for WebWorker {
                 listener.name
             );
         }
+        self.throttle(cx);
         cx.add_timer(Instant::now() + self.checks_every());
         Ok(())
     }
@@ -1076,6 +1120,7 @@ impl Worker for WebWorker {
             }
             self.close(cx, slot, false);
         }
+        self.throttle(cx);
         cx.add_timer(now + self.checks_every());
     }
 
@@ -1086,6 +1131,7 @@ impl Worker for WebWorker {
         } else {
             self.serve(cx, token - self.listeners.len(), event);
         }
+        self.throttle(cx);
     }
 
     fn message(&mut self, _cx: &mut Context<'_>, _msg: ()) {}
