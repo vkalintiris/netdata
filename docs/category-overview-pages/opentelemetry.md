@@ -34,14 +34,12 @@ A traces view is not yet available in the dashboards and the traces workflow is 
 Known limits of reading traces back from object storage in this release:
 
 - A query that needs more offloaded data than the download cache holds fails with a message to narrow the time range
-  or raise `remote_storage.read_cache_max_size`. A search also reads up to 24 hours beyond each side of its window to
-  complete the traces it finds.
+  or raise `remote_storage.read_cache_max_size`.
 - A trace opened without a time range covers everything kept, local and offloaded, so it fails once the offloaded
   history exceeds the download cache.
 - A file that cannot be downloaded, or a catalog that cannot be read, makes the answer partial with the reason
-  `remote_unavailable`; one missing file in a search's range marks every trace summary as possibly incomplete and
-  empties searches that filter on the root service, root operation or trace duration. A file that downloads intact
-  but cannot be read is reported as a failed source (`source_failure`).
+  `remote_unavailable` and the number of files it could not read. A file that downloads intact but cannot be read is
+  reported as a failed source (`source_failure`).
 - Files are downloaded one at a time, each within its own time limit. While the remote is down, each file waits out
   its limit in turn (a file that another query is already downloading can cost up to about three limits), so a query
   over many offloaded files can take minutes.
