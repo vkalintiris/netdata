@@ -72,8 +72,8 @@ pub fn tier_dir_name(tier: usize) -> String {
 pub trait ReadAt {
     /// Fills `buf` from `offset`; an error when the source ends first.
     fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()>;
-    /// The source's length in bytes.
-    fn len(&self) -> io::Result<u64>;
+    /// The source's size in bytes.
+    fn size(&self) -> io::Result<u64>;
 }
 
 impl ReadAt for File {
@@ -81,7 +81,7 @@ impl ReadAt for File {
         FileExt::read_exact_at(self, buf, offset)
     }
 
-    fn len(&self) -> io::Result<u64> {
+    fn size(&self) -> io::Result<u64> {
         Ok(self.metadata()?.len())
     }
 }
@@ -97,8 +97,8 @@ impl ReadAt for [u8] {
         Ok(())
     }
 
-    fn len(&self) -> io::Result<u64> {
-        Ok(<[u8]>::len(self) as u64)
+    fn size(&self) -> io::Result<u64> {
+        Ok(self.len() as u64)
     }
 }
 
