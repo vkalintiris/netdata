@@ -6,6 +6,7 @@ pub mod crc;
 pub mod descriptor;
 pub mod extent;
 pub mod journal_v1;
+pub mod journal_v2;
 pub mod page;
 pub mod superblock;
 
