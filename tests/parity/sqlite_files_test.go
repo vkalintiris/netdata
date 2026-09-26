@@ -217,7 +217,8 @@ func TestSQLiteHandBack(t *testing.T) {
 			for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
 				if strings.Contains(l, `msg="RRDCONTEXT: metadata for node `) ||
 					strings.Contains(l, `msg="Created `) {
-					out = append(out, normalizeLog(l, d.Opts.RunDir, ""))
+					// both sides are C, whose errno on these records is a stale leftover (D36)
+					out = append(out, errnoRe.ReplaceAllString(normalizeLog(l, d.Opts.RunDir, ""), ""))
 				}
 			}
 			return strings.Join(out, "\n")
