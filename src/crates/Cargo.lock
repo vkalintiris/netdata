@@ -3109,6 +3109,7 @@ dependencies = [
  "lz4_flex 0.12.2",
  "netdata-agent-evloop",
  "netdata-agent-log",
+ "netdata-agent-sys",
  "netdata-agent-text",
  "serde_json",
  "tempfile",

@@ -19,7 +19,7 @@ use netdata_agent_log::{
 
 use super::load::Tier;
 use super::mrg::Mrg;
-use crate::dbengine::format::crc::{crc_bytes, crc32, crc32_update};
+use crate::dbengine::format::crc::{crc_bytes, crc32_update};
 use crate::dbengine::format::journal_v2::{
     self, EXTENT_SIZE, ExtentEntry, HEADER_SIZE, Header, METRIC_SIZE, MetricEntry,
     PAGE_HEADER_SIZE, PAGE_SIZE, PageEntry, PageHeader, TRAILER_SIZE,
@@ -84,23 +84,47 @@ impl V2Index {
             .map(|i| entries[i]))
     }
 
-    /// A metric's pages, when its page header matches its entry and its list's CRC holds.
-    pub fn pages(&self, metric: &MetricEntry) -> io::Result<Option<Vec<PageEntry>>> {
+    /// A metric's page list, bounds-checked as a query checks it (`get_page_list_from_journal_v2()`: the page header
+    /// inside the file, its entries' list too; no CRC).
+    pub fn pages(&self, metric: &MetricEntry) -> Result<Vec<PageEntry>, PageListError> {
+        let offset = u64::from(metric.page_offset);
+        if offset > self.size.saturating_sub(PAGE_HEADER_SIZE as u64) {
+            return Err(PageListError::Header);
+        }
         let mut hb = [0u8; PAGE_HEADER_SIZE];
-        ReadAt::read_exact_at(&self.file, &mut hb, u64::from(metric.page_offset))?;
-        let ph = PageHeader::decode(&hb);
-        if ph.crc != ph.compute_crc() || ph.uuid != metric.uuid || ph.entries != metric.entries {
-            return Ok(None);
+        ReadAt::read_exact_at(&self.file, &mut hb, offset).map_err(|_| PageListError::Header)?;
+        let entries = PageHeader::decode(&hb).entries;
+        let len = u64::from(entries) * PAGE_SIZE as u64;
+        if len > self.size - offset - PAGE_HEADER_SIZE as u64 {
+            return Err(PageListError::List);
         }
-        let len = metric.entries as usize * PAGE_SIZE;
-        let mut list = vec![0u8; len + TRAILER_SIZE];
-        let at = u64::from(metric.page_offset) + PAGE_HEADER_SIZE as u64;
-        ReadAt::read_exact_at(&self.file, &mut list, at)?;
-        let (entries, trailer) = list.split_at(len);
-        if trailer != crc_bytes(crc32(entries)) {
-            return Ok(None);
+        let mut list = vec![0u8; len as usize];
+        ReadAt::read_exact_at(&self.file, &mut list, offset + PAGE_HEADER_SIZE as u64)
+            .map_err(|_| PageListError::List)?;
+        Ok(journal_v2::pages(&list).collect())
+    }
+}
+
+/// Why a query could not read a metric's page list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageListError {
+    Header,
+    List,
+}
+
+impl PageListError {
+    /// C's record for it.
+    pub fn record(&self, fileno: u32, tier: usize) -> String {
+        match self {
+            PageListError::Header => {
+                format!("DBENGINE: Invalid page list header in journalfile {fileno} of tier {tier}")
+            }
+            PageListError::List => {
+                format!(
+                    "DBENGINE: Page list exceeds journal file size in journalfile {fileno} of tier {tier}"
+                )
+            }
         }
-        Ok(Some(journal_v2::pages(entries).collect()))
     }
 }
 

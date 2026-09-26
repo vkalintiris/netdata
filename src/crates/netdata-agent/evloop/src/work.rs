@@ -30,6 +30,12 @@ pub struct WorkPool {
     inner: Arc<Inner>,
 }
 
+impl std::fmt::Debug for WorkPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkPool").field("size", &self.inner.size).finish()
+    }
+}
+
 impl WorkPool {
     /// A pool of up to `size` threads (at least one), each with a stack of `stack_size` bytes.
     pub fn new(size: usize, stack_size: usize) -> WorkPool {

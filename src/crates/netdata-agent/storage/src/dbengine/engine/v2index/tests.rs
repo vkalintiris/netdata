@@ -70,7 +70,7 @@ fn population_fills_the_registry_and_indexes_files() {
             .find(&uuid(i))
             .unwrap()
             .unwrap_or_else(|| panic!("metric {i}"));
-        let pages = index.pages(&m).unwrap().unwrap();
+        let pages = index.pages(&m).unwrap();
         assert_eq!(pages.len(), 1);
         assert_eq!(
             (

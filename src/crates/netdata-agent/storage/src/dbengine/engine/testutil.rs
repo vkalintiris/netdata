@@ -52,3 +52,34 @@ pub fn pair(dir: &Path, fileno: u32, blocks: usize, pages: Vec<PageDescriptor>) 
     }
     std::fs::write(dir.join(file_name(FileKind::Journal, 1, fileno)), journal).unwrap();
 }
+
+/// An array page of `values` (storage numbers) one second apart, its first point at `start_s`, with its bytes.
+pub fn array_page(uuid: [u8; 16], start_s: i64, values: &[u32]) -> (PageDescriptor, Vec<u8>) {
+    let d = page(uuid, start_s, values.len() as u64);
+    (d, crate::dbengine::format::page::array32_encode(values))
+}
+
+/// A pair whose data file holds real extents, one after the other from block 1, each described by a journal
+/// transaction.
+pub fn pair_with_extents(dir: &Path, fileno: u32, extents: &[Vec<(PageDescriptor, Vec<u8>)>]) {
+    use crate::dbengine::format::extent::{COMPRESSION_NONE, encode};
+    let mut data = superblock::encode_datafile().to_vec();
+    let mut journal = superblock::encode_journal().to_vec();
+    for (i, pages) in extents.iter().enumerate() {
+        let refs: Vec<(PageDescriptor, &[u8])> =
+            pages.iter().map(|(d, b)| (*d, b.as_slice())).collect();
+        let e = encode(&refs, COMPRESSION_NONE);
+        let store = StoreData {
+            extent_offset: data.len() as u64,
+            extent_size: e.size_bytes as u32,
+            descriptors: pages.iter().map(|(d, _)| *d).collect(),
+        };
+        data.extend_from_slice(&e.bytes);
+        journal.extend_from_slice(&encode_transaction(
+            u64::from(fileno) * 1000 + i as u64,
+            &store,
+        ));
+    }
+    std::fs::write(dir.join(file_name(FileKind::Datafile, 1, fileno)), data).unwrap();
+    std::fs::write(dir.join(file_name(FileKind::Journal, 1, fileno)), journal).unwrap();
+}
