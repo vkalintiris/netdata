@@ -48,7 +48,7 @@ struct RawOtelTracesRequest {
     /// Value suggestions for one field.
     #[serde(default, deserialize_with = "present")]
     values: Option<serde_json::Value>,
-    /// The single-trace mode (dumb span list by trace id).
+    /// The trace mode: one trace's spans by trace id, with their tree.
     #[serde(default, deserialize_with = "present")]
     trace: Option<serde_json::Value>,
     /// Tenant whose data the query reads — a scoping selector supplied
@@ -249,9 +249,8 @@ pub struct CoverageWire {
 
 // ── Trace mode response ─────────────────────────────────────────────
 
-/// One assembled trace: the dumb span list plus the parent/child graph
-/// and the typed-field map — everything the UI needs to render a plain
-/// span table (a proper waterfall is deliberately future work).
+/// One assembled trace: its spans plus the parent/child graph and the
+/// typed-field map — everything the drawer's waterfall is drawn from.
 ///
 /// The graph is node-index adjacency over `spans`: walk from `roots`
 /// via `children`; `children` can carry cycle edges (pathological

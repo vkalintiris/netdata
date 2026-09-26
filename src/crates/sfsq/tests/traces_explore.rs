@@ -934,7 +934,8 @@ fn explore_parallel_equals_sequential() {
     let page = &first.rows.as_ref().expect("rows").items;
     let (head, last) = (page[0].key, page[page.len() - 1].key);
 
-    let cases: Vec<(&str, Box<dyn Fn() -> ExploreQuery>)> = vec![
+    type Case<'a> = (&'a str, Box<dyn Fn() -> ExploreQuery>);
+    let cases: Vec<Case> = vec![
         (
             "newest",
             Box::new(|| every_section("status_code", newest(None, RowDirection::Older), 3)),
