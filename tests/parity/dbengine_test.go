@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -231,5 +232,75 @@ func TestDbengineReadFaults(t *testing.T) {
 			}
 			compareLogFiles(t, p, "daemon.log")
 		})
+	}
+}
+
+// TestDbengineHandBack (check `dbengine.handback`): the C agent starts on the runR cache after the Rust agent ran on
+// it, next to the C agent starting after its own run on the same cache: the same file decisions and engine records,
+// the same archived child's contexts and data on every tier.
+func TestDbengineHandBack(t *testing.T) {
+	fx := os.Getenv("NETDATA_DBENGINE_FIXTURES")
+	if fx == "" {
+		t.Skip("NETDATA_DBENGINE_FIXTURES unset")
+	}
+	guid, err := os.ReadFile(filepath.Join(fx, "runR", "lib", "registry", "netdata.public.unique.id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := daemon.Identity{Hostname: "b6parent", StreamKey: parentIdentity.StreamKey,
+		MachineGUID: strings.TrimSpace(string(guid))}
+	opts := func(binary string, role Role, cache string) daemon.Options {
+		return daemon.Options{Binary: binary, RunDir: runDir(t, role), Identity: &id, StorageTiers: 3,
+			TierRetentionMB: [3]int{25, 25, 25}, SeedCache: cache, PulseOff: true, LogsExtra: "    level = debug\n"}
+	}
+	var caches [2]string
+	for i, binary := range []string{os.Getenv("PARITY_ORACLE"), os.Getenv("PARITY_CANDIDATE")} {
+		d, err := daemon.Start(opts(binary, Role(fmt.Sprintf("first%d", i)), filepath.Join(fx, "runR", "cache")))
+		if err != nil {
+			t.Fatalf("first run %d: %v", i, err)
+		}
+		time.Sleep(2 * time.Second)
+		if err := d.Stop(); err != nil {
+			t.Fatalf("first run %d: stop: %v", i, err)
+		}
+		caches[i] = filepath.Join(d.Opts.RunDir, "cache")
+	}
+	p := &Pair{}
+	for i, cache := range caches {
+		d, err := daemon.Start(opts(os.Getenv("PARITY_ORACLE"), Role(fmt.Sprintf("second%d", i)), cache))
+		if err != nil {
+			t.Fatalf("second run %d: %v", i, err)
+		}
+		t.Cleanup(func() { _ = d.Stop() })
+		if i == 0 {
+			p.Oracle = d
+		} else {
+			p.Candidate = d
+		}
+	}
+	compareGet(t, p, "/host/b6child/api/v1/contexts")
+	win := fmt.Sprintf("after=%d&before=%d", fixtureStart, fixtureEnd)
+	for tier := 0; tier < 3; tier++ {
+		compareGet(t, p, fmt.Sprintf("/host/b6child/api/v3/data?contexts=b6.ctx&%s&points=6&tier=%d", win, tier))
+	}
+	for _, side := range p.Each() {
+		if err := side.Daemon.Stop(); err != nil {
+			t.Fatalf("stop %s: %v", side.Role, err)
+		}
+	}
+	// both sides are C: the engine's threads' records as sorted multisets, errno and timings masked
+	engine := func(d *daemon.Daemon) string {
+		var out []string
+		for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
+			switch th, _, _ := strings.Cut(threadOf(l), "["); th {
+			case "DBENGINIT", "DBEV", "CTXLOAD", "rrdeng-exit":
+				out = append(out, errnoRe.ReplaceAllString(normalizeLog(l, d.Opts.RunDir, ""), ""))
+			}
+		}
+		sort.Strings(out)
+		return strings.Join(out, "\n")
+	}
+	if o, c := engine(p.Oracle), engine(p.Candidate); o != c {
+		t.Errorf("engine records differ\n%s", firstDifference([]byte(o), []byte(c)))
 	}
 }
