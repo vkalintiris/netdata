@@ -452,7 +452,10 @@ impl WebWorker {
             let _ = cx.registry().deregister(&mut client.stream);
             let _frame = hangup.then(|| client.log.hangup_frame());
             client.log.connection("DISCONNECTED", 0);
-            if let Some(done) = client.pending.take() {
+            if let Some(mut done) = client.pending.take() {
+                if client.written < client.output.len() {
+                    done.sent_when(client.written);
+                }
                 done.log(&client.log);
             }
         }
@@ -706,6 +709,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         mode,
         code,
         sent: sent as u64,
+        gzip_blocks: Vec::new(),
         size: size as u64,
         tv_in: received,
         transaction: client.transaction,
@@ -816,16 +820,16 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
     let is_options = client.request.mode == Some(Mode::Options);
     // Accept-Encoding: gzip turns compression on while the headers are parsed, so the gzip and chunked header lines
     // go out even for an empty body; C then closes the connection without sending any chunk.
-    let (body, gzip, chunked, compressed) = if h.gzip {
+    let (body, gzip, chunked, blocks) = if h.gzip {
         if reply.body.is_empty() {
             client.close_after_write = true;
-            (Vec::new(), true, true, 0)
+            (Vec::new(), true, true, Vec::new())
         } else {
-            let (framed, compressed) = gzip_chunked(&reply.body, shared.gzip_level);
-            (framed, true, true, compressed)
+            let (framed, blocks) = gzip_chunked(&reply.body, shared.gzip_level);
+            (framed, true, true, blocks)
         }
     } else {
-        (reply.body.clone(), false, false, reply.body.len())
+        (reply.body.clone(), false, false, Vec::new())
     };
     let head = Head {
         code: reply.code,
@@ -854,8 +858,17 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
     let mut out = built.bytes;
     let header_len = out.len();
     out.extend_from_slice(&body);
-    // What the access log reports: compressed bytes under gzip (without the chunk framing), else the body length.
-    client.pending = Some(completed(client, built.code, compressed, reply.body.len()));
+    // What the access log reports: the compressed bytes under gzip (all of them once the response is out), else the
+    // body length.
+    let sent = blocks
+        .last()
+        .map_or(if gzip { 0 } else { reply.body.len() }, |b| b.1 as usize);
+    let mut done = completed(client, built.code, sent, reply.body.len());
+    done.gzip_blocks = blocks
+        .into_iter()
+        .map(|(at, total)| (header_len + at, total))
+        .collect();
+    client.pending = Some(done);
 
     client.close_after_write |= !built.keepalive;
     // The body was built in the receive buffer, which keeps its size for the next request.
@@ -899,17 +912,36 @@ fn lossy(bytes: &[u8]) -> String {
 
 const REDIRECT_BODY: &str = "<!DOCTYPE html><!-- SPDX-License-Identifier: GPL-3.0-or-later --><html><body onload=\"window.location.href ='https://'+ window.location.hostname + ':' + window.location.port + window.location.pathname + window.location.search\">Redirecting to safety connection, case your browser does not support redirection, please click <a onclick=\"window.location.href ='https://'+ window.location.hostname + ':'  + window.location.port + window.location.pathname + window.location.search\">here</a>.</body></html>";
 
-/// The body as one gzip member in chunked framing (C streams zlib output in chunks; clients see the same content),
-/// and the compressed length without the framing.
-fn gzip_chunked(body: &[u8], level: u32) -> (Vec<u8>, usize) {
-    use flate2::write::GzEncoder;
-    let mut encoder = GzEncoder::new(Vec::new(), flate2::Compression::new(level));
-    let _ = encoder.write_all(body);
-    let compressed = encoder.finish().unwrap_or_default();
-    let mut out = format!("{:X}\r\n", compressed.len()).into_bytes();
-    out.extend_from_slice(&compressed);
+/// `NETDATA_WEB_RESPONSE_ZLIB_CHUNK_SIZE`: each zlib output buffer goes out as one chunk.
+const ZLIB_CHUNK: usize = 16384;
+
+/// `web_client_send_deflate()`: the body through zlib as C runs it (the level, a gzip window, `Z_FINISH`) into 16 KiB
+/// buffers, each one chunk, framed as C frames them. Also where each chunk's framing starts and the compressed total
+/// after it: C deflates a chunk only once the previous one is out, and its access record reports what it produced.
+fn gzip_chunked(body: &[u8], level: u32) -> (Vec<u8>, Vec<(usize, u64)>) {
+    use flate2::{Compress, Compression, FlushCompress};
+    let mut z = Compress::new_gzip(Compression::new(level), 15);
+    let (mut out, mut blocks, mut buf) = (Vec::new(), Vec::new(), vec![0u8; ZLIB_CHUNK]);
+    let mut consumed = 0;
+    loop {
+        let start = out.len();
+        if !blocks.is_empty() {
+            out.extend_from_slice(b"\r\n");
+        }
+        let (taken, produced) = (z.total_in(), z.total_out());
+        let _ = z.compress(&body[consumed..], &mut buf, FlushCompress::Finish);
+        consumed += (z.total_in() - taken) as usize;
+        let n = (z.total_out() - produced) as usize;
+        out.extend_from_slice(format!("{n:X}\r\n").as_bytes());
+        out.extend_from_slice(&buf[..n]);
+        blocks.push((start, z.total_out()));
+        // C finishes once the input is taken and a buffer had room left
+        if consumed == body.len() && n < ZLIB_CHUNK {
+            break;
+        }
+    }
     out.extend_from_slice(b"\r\n0\r\n\r\n");
-    (out, compressed.len())
+    (out, blocks)
 }
 
 /// `web_client_permission_denied_acl()`.
@@ -1094,5 +1126,42 @@ impl Worker for WebWorker {
                 "all static web threads stopped."
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gzip_bodies_go_out_in_cs_chunks() {
+        // incompressible enough to need two zlib buffers
+        let mut x = 0x2545_f491_u32;
+        let body: Vec<u8> = (0..40_000)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                x as u8
+            })
+            .collect();
+        let (out, blocks) = gzip_chunked(&body, 3);
+        assert!(blocks.len() >= 3);
+        // the first chunk opens the body, a full buffer; each later one is closed and reopened
+        assert!(out.starts_with(b"4000\r\n"));
+        assert_eq!(blocks[0], (0, ZLIB_CHUNK as u64));
+        assert_eq!(&out[blocks[1].0..blocks[1].0 + 8], b"\r\n4000\r\n");
+        assert!(out.ends_with(b"\r\n0\r\n\r\n"));
+        let mut gz = flate2::read::GzDecoder::new(&out[6..6 + ZLIB_CHUNK]);
+        let mut first = Vec::new();
+        let _ = io::Read::read_to_end(&mut gz, &mut first);
+        assert!(first.len() > 1000 && body.starts_with(&first));
+        // a short body is one chunk
+        let (out, blocks) = gzip_chunked(b"hello", 3);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            out.len(),
+            format!("{:X}\r\n", blocks[0].1).len() + blocks[0].1 as usize + 7
+        );
     }
 }

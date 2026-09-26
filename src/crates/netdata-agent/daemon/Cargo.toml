@@ -16,7 +16,8 @@ path = "src/main.rs"
 netdata-agent-sys = { workspace = true }
 netdata-agent-nrpc = { workspace = true }
 dns-lookup = { workspace = true }
-flate2 = { workspace = true }
+# the C zlib the C agent links: gzip bodies come out byte for byte the same
+flate2 = { workspace = true, features = ["zlib"] }
 mio = { workspace = true, features = ["os-ext"] }
 netdata-agent-evloop = { workspace = true }
 netdata-agent-inicfg = { workspace = true }

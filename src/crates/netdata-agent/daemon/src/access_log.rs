@@ -322,6 +322,8 @@ pub struct Completed {
     pub code: u16,
     /// Compressed bytes when gzip was used, else the body length.
     pub sent: u64,
+    /// Under gzip, where each chunk starts in the connection's output and the compressed total after it.
+    pub gzip_blocks: Vec<(usize, u64)>,
     pub size: u64,
     pub tv_in: Instant,
     pub transaction: [u8; 16],
@@ -336,6 +338,15 @@ fn dt_usec(a: Instant, b: Instant) -> u64 {
 }
 
 impl Completed {
+    /// A gzip response cut short after `written` bytes of the output: C reports the compressed bytes of the chunks it
+    /// had deflated, each once the one before went out.
+    pub fn sent_when(&mut self, written: usize) {
+        if !self.gzip_blocks.is_empty() {
+            let started = self.gzip_blocks.iter().rev().find(|(at, _)| *at <= written);
+            self.sent = started.map_or(0, |b| b.1);
+        }
+    }
+
     /// `web_client_log_completed_request()`: written only when a URL was received, at a priority from the code,
     /// without a message, and outside any request frame.
     pub fn log(&self, client: &ClientLog) {
@@ -390,6 +401,28 @@ impl Completed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cut_gzip_response_reports_the_chunks_deflated() {
+        let mut done = Completed {
+            url: b"/x".to_vec(),
+            mode: None,
+            code: 200,
+            sent: 30_000,
+            gzip_blocks: vec![(300, 16_384), (16_690, 30_000)],
+            size: 100_000,
+            tv_in: Instant::now(),
+            transaction: [0; 16],
+            forwarded_for: Vec::new(),
+            auth: Arc::default(),
+        };
+        done.sent_when(200);
+        assert_eq!(done.sent, 0, "the header was not out: nothing was deflated");
+        done.sent_when(16_000);
+        assert_eq!(done.sent, 16_384);
+        done.sent_when(20_000);
+        assert_eq!(done.sent, 30_000);
+    }
 
     #[test]
     fn the_stream_key_is_masked_in_every_key_parameter() {

@@ -127,6 +127,10 @@ func TestStaticAndRouting(t *testing.T) {
 	for _, path := range paths {
 		cases[strings.ReplaceAll(path, "/", "_")] = get(path)
 	}
+	// gzip bodies go out in one chunk per 16 KiB of zlib output, so a large file takes several
+	for _, path := range []string{"/registry-hello.html", "/index.html", "/netdata-swagger.json", largestFile(t, webDir)} {
+		cases["gzip"+strings.ReplaceAll(path, "/", "_")] = []byte("GET " + path + " HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n")
+	}
 	compareRaw(t, p, cases)
 }
 
