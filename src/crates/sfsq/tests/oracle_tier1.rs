@@ -10,8 +10,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValueList, any_value};
 use opentelemetry_proto::tonic::resource::v1::Resource;
+use opentelemetry_proto::tonic::trace::v1::span::{Event, Link};
 use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span, Status};
+use otel_oracle::assembly::{self, SpanContent, TraceView};
 use otel_oracle::calc::{self, Grid, Scope, fixed_histogram};
 use otel_oracle::corpus::{self, MeshParams};
 use otel_oracle::model::{self, OracleSpan};
@@ -2442,4 +2445,262 @@ fn explore_comparison_matches_the_calculator() {
         eligible > 0 && below > 0,
         "values on both sides of the minimum support"
     );
+}
+
+// ── ORC-TRACE: trace-by-id assembles like the calculator ─────────────────
+
+/// The engine's trace-by-id answer as the calculator compares it. Its fields
+/// are taken as served: only the calculator's side drops the event, link and
+/// error-origin tokens, as the documented answer does.
+fn engine_view(data: &sfsq::traces::TraceData) -> TraceView {
+    let id = |bytes: &[u8; 8]| (*bytes != [0; 8]).then_some(*bytes);
+    let mut view = TraceView {
+        spans: Vec::new(),
+        self_ns: Vec::new(),
+        error_origin: Vec::new(),
+        roots: data.trace.roots.clone(),
+        children: data.trace.children.clone(),
+        summary_root: data.trace.summary_root(),
+        truncated: data.status.count(PartialReason::SizeCap).is_some(),
+    };
+    for (index, span) in data.trace.spans.iter().enumerate() {
+        let mut events = Vec::new();
+        for event in &span.events {
+            let mut attributes = event.attributes.clone();
+            attributes.sort();
+            events.push(model::SpanEvent {
+                time_unix_nano: event.time_unix_nano,
+                name: event.name.clone(),
+                dropped_attributes_count: event.dropped_attributes_count,
+                attributes,
+            });
+        }
+        let mut links = Vec::new();
+        for link in &span.links {
+            let mut attributes = link.attributes.clone();
+            attributes.sort();
+            links.push(model::SpanLink {
+                trace_id: *link.trace_id.as_bytes(),
+                span_id: *link.span_id.as_bytes(),
+                trace_state: link.trace_state.clone(),
+                flags: link.flags,
+                dropped_attributes_count: link.dropped_attributes_count,
+                attributes,
+            });
+        }
+        view.spans.push(SpanContent {
+            span_id: id(span.span_id.as_bytes()),
+            parent_span_id: id(span.parent_span_id.as_bytes()),
+            start_ns: span.start_ns,
+            duration_ns: span.duration_ns,
+            detail: model::SpanDetail {
+                kind: span.kind,
+                flags: span.flags,
+                dropped_attributes_count: span.dropped_attributes_count,
+                dropped_events_count: span.dropped_events_count,
+                dropped_links_count: span.dropped_links_count,
+                events,
+                links,
+            },
+            fields: span.fields.iter().cloned().collect(),
+        });
+        view.self_ns
+            .push(Some(span.duration_ns - data.family.child_ns[index]));
+        view.error_origin
+            .push(Some(data.family.error_origin[index]));
+    }
+    view
+}
+
+fn trace_answer(sources: &[TraceSource], id: [u8; 16], cap: usize) -> sfsq::traces::TraceData {
+    sfsq::traces::trace_by_id(
+        sources.to_vec(),
+        sfsq::traces::TraceQuery::new(sfst::TraceId::from(id)).span_cap(cap),
+        tokio_util::sync::CancellationToken::new(),
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )
+    .unwrap()
+}
+
+/// ORC-TRACE on the mesh corpus with resent requests, one resend straddling
+/// the sealed file and the live WAL: every trace with rows in both units,
+/// with a stored span twice, and every tenth, however the live WAL is served.
+#[test]
+fn trace_by_id_assembles_like_the_calculator() {
+    for seed in [11, 12] {
+        let stored = store_resending(300, seed, Some(4));
+        let mut units: BTreeMap<[u8; 16], BTreeSet<usize>> = BTreeMap::new();
+        let mut copies: BTreeMap<([u8; 16], [u8; 8], i32), BTreeSet<usize>> = BTreeMap::new();
+        let mut twice: BTreeSet<[u8; 16]> = BTreeSet::new();
+        for span in &stored.oracle {
+            let (Some(trace), Some(id)) = (span.trace_id, span.span_id) else {
+                continue;
+            };
+            units.entry(trace).or_default().insert(span.unit);
+            let key = (trace, id, span.detail.kind);
+            if copies.contains_key(&key) {
+                twice.insert(trace);
+            }
+            copies.entry(key).or_default().insert(span.unit);
+        }
+        let mut judged = BTreeSet::new();
+        for (at, (trace, seen)) in units.iter().enumerate() {
+            if seen.len() > 1 || twice.contains(trace) || at % 10 == 0 {
+                judged.insert(*trace);
+            }
+        }
+        let straddling = copies
+            .iter()
+            .filter(|(key, seen)| seen.len() > 1 && judged.contains(&key.0))
+            .count();
+        assert!(
+            straddling > 0,
+            "seed {seed}: a resent span sits in both units"
+        );
+
+        for live in [Live::Tail, Live::Chunk, Live::Chunked] {
+            let sources = explore_sources(&stored, live);
+            for &trace in &judged {
+                let data = trace_answer(&sources, trace, 65_536);
+                let case = format!("seed {seed} {live:?} trace {:02x}", trace[0]);
+                assert!(data.status.is_complete(), "{case}");
+                let want = assembly::assemble_trace(&stored.oracle, trace, 65_536, &|_| true);
+                assert_eq!(
+                    assembly::trace_diff(&want, &engine_view(&data)),
+                    None,
+                    "{case}"
+                );
+            }
+        }
+    }
+}
+
+fn kv_list(
+    key: &str,
+    pairs: Vec<opentelemetry_proto::tonic::common::v1::KeyValue>,
+) -> opentelemetry_proto::tonic::common::v1::KeyValue {
+    opentelemetry_proto::tonic::common::v1::KeyValue {
+        key: key.into(),
+        value: Some(AnyValue {
+            value: Some(any_value::Value::KvlistValue(KeyValueList {
+                values: pairs,
+            })),
+        }),
+    }
+}
+
+/// A span of the edge trace (`0x51`): `id` 0 has no id, `parent` 0 none;
+/// times in ms after T0 + 5 s.
+fn edge_span(
+    id: u8,
+    parent: u8,
+    kind: i32,
+    (start_ms, duration_ms): (u64, u64),
+    name: &str,
+) -> Span {
+    let start = (T0_S + 5) * 1_000_000_000 + start_ms * 1_000_000;
+    Span {
+        trace_id: vec![0x51; 16],
+        span_id: if id == 0 { Vec::new() } else { vec![id; 8] },
+        parent_span_id: if parent == 0 {
+            Vec::new()
+        } else {
+            vec![parent; 8]
+        },
+        name: name.into(),
+        kind,
+        start_time_unix_nano: start,
+        end_time_unix_nano: start + duration_ms * 1_000_000,
+        ..Default::default()
+    }
+}
+
+/// ORC-TRACE on the corner cases: a span whose late copy is sealed and early
+/// copy live; an identical copy in both units; a CLIENT and a SERVER sharing an
+/// id with an ERROR child; spans without an id tied on start; a self parent, an
+/// orphan and a two-span cycle; timed events with nested attributes; links with
+/// ids, trace state, flags and drops, one of the wrong length. Every live
+/// layout, and caps around the trace's size.
+#[test]
+fn trace_by_id_edge_cases_match_the_calculator() {
+    let mut root = edge_span(1, 0, 2, (0, 1_000), "root");
+    root.flags = 257;
+    root.dropped_attributes_count = 2;
+    root.dropped_events_count = 1;
+    root.events = vec![
+        Event {
+            time_unix_nano: 0,
+            name: "boot".into(),
+            attributes: vec![kv_list("db", vec![common::kv_int("rows", 3)])],
+            dropped_attributes_count: 1,
+        },
+        Event {
+            time_unix_nano: (T0_S + 5) * 1_000_000_000 + 10,
+            name: String::new(),
+            ..Default::default()
+        },
+    ];
+    root.links = vec![
+        Link {
+            trace_id: vec![0x61; 16],
+            span_id: vec![0x62; 8],
+            trace_state: "k=v".into(),
+            attributes: vec![common::kv_str("reason", "follows")],
+            dropped_attributes_count: 3,
+            flags: 1,
+        },
+        Link {
+            trace_id: vec![0x63; 15],
+            span_id: vec![0x64; 8],
+            ..Default::default()
+        },
+    ];
+    let mut child = edge_span(6, 5, 3, (150, 100), "charge");
+    child.status = Some(Status {
+        code: 2,
+        ..Default::default()
+    });
+    let requests = vec![
+        frame_of(vec![
+            root,
+            edge_span(2, 1, 3, (300, 100), "late copy"),
+            edge_span(3, 1, 1, (400, 10), "same"),
+        ]),
+        frame_of(vec![
+            edge_span(0, 1, 1, (500, 5), "anonymous a"),
+            edge_span(0, 1, 1, (500, 5), "anonymous b"),
+            edge_span(7, 7, 1, (600, 5), "self parent"),
+            edge_span(8, 99, 1, (610, 5), "orphan"),
+            edge_span(9, 10, 1, (620, 5), "cycle a"),
+            edge_span(10, 9, 1, (630, 5), "cycle b"),
+        ]),
+        frame_of(vec![
+            edge_span(2, 1, 3, (200, 50), "early copy"),
+            edge_span(3, 1, 1, (400, 10), "same"),
+            edge_span(5, 1, 3, (100, 600), "client"),
+            edge_span(5, 1, 2, (120, 400), "server"),
+            child,
+        ]),
+    ];
+    let stored = store_requests(&requests, 1);
+    let trace = [0x51; 16];
+    let size = assembly::assemble_trace(&stored.oracle, trace, usize::MAX, &|_| true)
+        .items
+        .len();
+    assert_eq!(size, 12);
+
+    // Live frames of 6 and 5 spans: chunks of 6 leave the second as the tail.
+    for live in [Live::Tail, Live::Chunk, Live::Split(6), Live::Chunked] {
+        let sources = explore_sources(&stored, live);
+        for cap in [65_536, 1, size - 1, size, size + 1] {
+            let data = trace_answer(&sources, trace, cap);
+            let want = assembly::assemble_trace(&stored.oracle, trace, cap, &|_| true);
+            let case = format!("{live:?} cap {cap}");
+            assert_eq!(
+                assembly::trace_diff(&want, &engine_view(&data)),
+                None,
+                "{case}"
+            );
+        }
+    }
 }
