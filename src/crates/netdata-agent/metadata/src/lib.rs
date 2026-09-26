@@ -4,4 +4,6 @@
 
 #![forbid(unsafe_code)]
 
+pub mod conn;
+pub mod functions;
 pub mod library;

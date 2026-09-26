@@ -12,3 +12,7 @@ workspace = true
 rusqlite = { workspace = true }
 netdata-agent-log = { workspace = true }
 netdata-agent-text = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
