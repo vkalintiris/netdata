@@ -623,7 +623,7 @@ async fn trace_filter_returns_only_the_traces_logs() {
     assert_eq!(serde_json::to_value(both).unwrap()["items"]["matched"], 2);
 
     assert!(
-        ask(format!(r#"{{"trace_ids": ["{t1}"]}}"#)).await.is_err(),
+        serde_json::from_str::<OtelLogsRequest>(&format!(r#"{{"trace_ids": ["{t1}"]}}"#)).is_err(),
         "a trace filter needs its window"
     );
 }

@@ -66,8 +66,10 @@ pub const IDS_MAX: usize = 100;
 ///
 /// Only `info` selects between the two response modes; every other field
 /// is optional and falls back to its `#[serde(default)]` value when the
-/// UI omits it.
+/// UI omits it. A request with `trace_ids` or `span_ids` must name its
+/// window: parsing refuses it otherwise, so the caller gets a 400.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct OtelLogsRequest {
     /// `info: true` requests a capability descriptor; `info: false` (the
     /// default) requests a data query. The UI's POST bodies omit this
@@ -128,6 +130,34 @@ pub struct OtelLogsRequest {
     /// Keep only the records of these spans (W3C hex, 1 to [`IDS_MAX`]).
     #[serde(default)]
     pub span_ids: Option<SpanIdsParam>,
+}
+
+impl<'de> Deserialize<'de> for OtelLogsRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let request = OtelLogsRequest::deserialize(deserializer)?;
+        request
+            .check_id_window()
+            .map_err(serde::de::Error::custom)?;
+        Ok(request)
+    }
+}
+
+impl Serialize for OtelLogsRequest {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        OtelLogsRequest::serialize(self, serializer)
+    }
+}
+
+impl OtelLogsRequest {
+    /// A trace- or span-filtered request names its window: the silent
+    /// last-15-minutes fallback would miss the records it asks for.
+    fn check_id_window(&self) -> Result<(), String> {
+        let ids = self.trace_ids.is_some() || self.span_ids.is_some();
+        if ids && (self.after == 0 || self.after >= self.before) {
+            return Err("`trace_ids` and `span_ids` need a window with `after` < `before`".into());
+        }
+        Ok(())
+    }
 }
 
 fn default_last() -> usize {

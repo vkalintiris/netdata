@@ -125,16 +125,6 @@ impl OtelLogsRequest {
         Ok(builder.build())
     }
 
-    /// A trace- or span-filtered request names its window: the silent
-    /// last-15-minutes fallback would miss the records it asks for.
-    pub fn check_id_window(&self) -> Result<(), String> {
-        let ids = self.trace_ids.is_some() || self.span_ids.is_some();
-        if ids && (self.after == 0 || self.after >= self.before) {
-            return Err("`trace_ids` and `span_ids` need a window with `after` < `before`".into());
-        }
-        Ok(())
-    }
-
     /// Remove the reserved stream-selector key ([`STREAM_SELECTION_PARAM`])
     /// from `selections` and decode each pick — a stream's `ns_hash` as
     /// lowercase hex, the option id the response advertises — into a

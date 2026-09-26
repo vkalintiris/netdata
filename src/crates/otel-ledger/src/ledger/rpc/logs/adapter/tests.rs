@@ -431,13 +431,14 @@ fn build_row_cells_single_value_is_bare_and_no_severity_is_null() {
 }
 
 /// `trace_ids`/`span_ids` accept exact-width hex (either case) and refuse
-/// the rest while parsing, so the call is a request error.
+/// the rest, and a filtered request without its window, while parsing, so
+/// the call is a request error.
 #[test]
 fn trace_ids_validate() {
     let parse =
         |body: &str| serde_json::from_str::<OtelLogsRequest>(body).map_err(|e| e.to_string());
     let ok = parse(
-        r#"{"trace_ids": ["4BF92F3577B34DA6A3CE929D0E0E4736"], "span_ids": ["00f067aa0ba902b7"]}"#,
+        r#"{"after": 10, "before": 20, "trace_ids": ["4BF92F3577B34DA6A3CE929D0E0E4736"], "span_ids": ["00f067aa0ba902b7"]}"#,
     )
     .unwrap();
     assert_eq!(
@@ -468,6 +469,14 @@ fn trace_ids_validate() {
             "invalid type",
         ),
         (too_many.as_str(), "at most 100"),
+        (
+            r#"{"trace_ids": ["4bf92f3577b34da6a3ce929d0e0e4736"]}"#,
+            "need a window",
+        ),
+        (
+            r#"{"after": 10, "before": 10, "span_ids": ["00f067aa0ba902b7"]}"#,
+            "need a window",
+        ),
     ] {
         let error = parse(body).unwrap_err();
         assert!(error.contains(needle), "{body}: {error}");
