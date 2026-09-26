@@ -522,7 +522,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         meta.detect_machine_guid_change(host_id);
     }
     if let Some(meta) = &meta {
-        metasync.set_writer(Arc::clone(meta), Arc::clone(&hosts));
+        metasync.set_writer(
+            Arc::clone(meta),
+            Arc::clone(&hosts),
+            conf::dbengine_datafiles_present(&cache_dir),
+        );
     }
     // aclk_synchronization_init(): archived hosts take the default mode after C's fallback, as children do
     match &meta {
@@ -691,6 +695,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         cloud_conf_file: conf.cloud_conf_filename(),
         plugins_dir: conf.primary_plugins_dir(),
         cloud: std::sync::Mutex::new(std::mem::take(&mut conf.cloud)),
+        meta: meta.as_ref().map(Arc::downgrade).unwrap_or_default(),
+        metaqueue: metasync.queue(),
     });
     command_server::init(&uv_pool, conf.threads.thread_stack_size);
     startup.step("agent start timings");

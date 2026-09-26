@@ -54,11 +54,35 @@ struct Shared {
 struct Writer {
     meta: Arc<MetaDb>,
     hosts: Arc<Hosts>,
+    /// `dbengine_datafiles_present`: freed dimensions keep their rows, which may describe dbengine data.
+    datafiles_present: bool,
+}
+
+/// `do_pending_uuid_deletion()`: the rows of the dimensions freed since the last job. This agent has no dbengine yet
+/// (`dbengine_enabled` is false), so a row goes unless dbengine datafiles were found at start.
+fn delete_pending_dimensions(writer: &Writer, shared: &Shared, pending: Vec<[u8; 16]>) {
+    let started = now_ut();
+    for uuid in &pending {
+        if !shared.shutdown.load(Ordering::Acquire) && !writer.datafiles_present {
+            writer.meta.delete_dimension(uuid);
+        }
+    }
+    nd_log!(
+        Source::Daemon,
+        Priority::Debug,
+        "Processed {} dimension delete items in {:.2} ms",
+        pending.len(),
+        now_ut().saturating_sub(started) as f64 / 1000.0
+    );
 }
 
 /// `start_metadata_hosts()`, on a pool thread: the hosts' pending metadata, then the database's upkeep, and the next
 /// store no sooner than 5 s from now. `run_maintenace()` (the service thread's host cleanup) is not ported yet.
-fn store_job(writer: &Writer, shared: &Shared) {
+fn store_job(writer: &Writer, shared: &Shared, pending_deletions: Option<Vec<[u8; 16]>>) {
+    // before the store: a dimension freed and created again keeps the row the store writes
+    if let Some(pending) = pending_deletions {
+        delete_pending_dimensions(writer, shared, pending);
+    }
     let started = now_ut();
     crate::meta_store::store_hosts_metadata(
         &writer.meta,
@@ -95,7 +119,20 @@ enum Cmd {
     Writer(Writer),
     /// `after_metadata_hosts()`: the store job has finished.
     StoreDone,
+    /// `METADATA_DEL_DIMENSION`: a freed dimension's row, deleted by the next job.
+    DelDimension([u8; 16]),
     Shutdown,
+}
+
+/// A handle on METASYNC's command queue for other threads.
+#[derive(Clone)]
+pub struct MetaQueue(mpsc::Sender<Cmd>);
+
+impl MetaQueue {
+    /// `metaqueue_delete_dimension_uuid()`: a freed dimension's row goes at the next job (a failed queue drops it).
+    pub fn delete_dimension(&self, uuid: [u8; 16]) {
+        let _ = self.0.send(Cmd::DelDimension(uuid));
+    }
 }
 
 /// The running METASYNC thread.
@@ -138,6 +175,8 @@ impl MetaSync {
                 });
                 let _ = done_tx.send(());
                 let mut writer: Option<Writer> = None;
+                // pending_uuid_deletion: handed to the next job; dropped at shutdown, as C frees the list
+                let mut pending_deletions: Option<Vec<[u8; 16]>> = None;
                 let (mut store_metadata, mut running) = (false, false);
                 let mut next_tick = Instant::now() + TIMER_PERIOD;
                 loop {
@@ -164,6 +203,9 @@ impl MetaSync {
                         }
                         Some(Cmd::Writer(w)) => writer = Some(w),
                         Some(Cmd::StoreDone) => running = false,
+                        Some(Cmd::DelDimension(uuid)) => {
+                            pending_deletions.get_or_insert_with(Vec::new).push(uuid);
+                        }
                         Some(Cmd::Shutdown) => {
                             shared.shutdown.store(true, Ordering::Release);
                             break;
@@ -175,9 +217,10 @@ impl MetaSync {
                         store_metadata = false;
                         running = true;
                         let (w, shared, tx) = (w.clone(), Arc::clone(&shared), job_tx.clone());
+                        let pending = pending_deletions.take();
                         if pool
                             .queue(move || {
-                                store_job(&w, &shared);
+                                store_job(&w, &shared, pending);
                                 let _ = tx.send(Cmd::StoreDone);
                             })
                             .is_err()
@@ -217,8 +260,17 @@ impl MetaSync {
     }
 
     /// The metadata writer's database and hosts, once localhost exists; without them the writer stays off.
-    pub fn set_writer(&self, meta: Arc<MetaDb>, hosts: Arc<Hosts>) {
-        let _ = self.tx.send(Cmd::Writer(Writer { meta, hosts }));
+    pub fn set_writer(&self, meta: Arc<MetaDb>, hosts: Arc<Hosts>, datafiles_present: bool) {
+        let _ = self.tx.send(Cmd::Writer(Writer {
+            meta,
+            hosts,
+            datafiles_present,
+        }));
+    }
+
+    /// A handle that queues commands from other threads.
+    pub fn queue(&self) -> MetaQueue {
+        MetaQueue(self.tx.clone())
     }
 
     /// `metaqueue_store_claim_id()`.
@@ -433,5 +485,58 @@ mod tests {
         assert!(summary.contains(" delegated to 2 threads, "), "{summary}");
         assert!(hosts.all().iter().all(|h| !h.is_pending_context_load()));
         assert_eq!(rx.try_iter().count(), 1);
+    }
+
+    /// Freed dimensions' rows go at the next job, unless dbengine datafiles were found at start or a shutdown began;
+    /// C's record counts them either way.
+    #[test]
+    fn pending_dimensions_are_deleted_as_c() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = Arc::new(
+            MetaDb::open(
+                dir.path(),
+                &netdata_agent_metadata::open::SqliteSettings::default(),
+            )
+            .unwrap(),
+        );
+        let count = |meta: &MetaDb| -> i64 {
+            meta.lock()
+                .query_row("SELECT count(*) FROM dimension", [], |r| r.get(0))
+                .unwrap()
+        };
+        meta.lock()
+            .execute_batch(
+                "INSERT INTO dimension (dim_id, chart_id, id, name) VALUES \
+                 (x'01010101010101010101010101010101', x'02', 'a', 'a'), \
+                 (x'03030303030303030303030303030303', x'02', 'b', 'b')",
+            )
+            .unwrap();
+        let shared = Shared {
+            check_after: AtomicI64::new(0),
+            shutdown: AtomicBool::new(false),
+            next_vacuum_run: AtomicI64::new(0),
+        };
+        let mut writer = Writer {
+            meta: Arc::clone(&meta),
+            hosts: hosts(),
+            datafiles_present: true,
+        };
+        delete_pending_dimensions(&writer, &shared, vec![[1; 16]]);
+        assert_eq!(count(&meta), 2, "dbengine data on disk keeps the rows");
+        writer.datafiles_present = false;
+        let ((), records) = netdata_agent_log::capture(|| {
+            delete_pending_dimensions(&writer, &shared, vec![[1; 16], [9; 16]])
+        });
+        assert_eq!(count(&meta), 1);
+        let message = records
+            .into_iter()
+            .filter_map(|r| r.message)
+            .next()
+            .unwrap();
+        assert!(
+            message.starts_with("Processed 2 dimension delete items in ")
+                && message.ends_with(" ms"),
+            "{message}"
+        );
     }
 }

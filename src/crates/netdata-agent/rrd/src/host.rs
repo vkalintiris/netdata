@@ -275,6 +275,9 @@ pub struct Host {
     last_connected_s: AtomicI64,
     /// `RRDHOST_FLAG_METADATA_*` (`meta_flags`), shared with the charts, whose changes raise `UPDATE`.
     meta_flags: Arc<AtomicU32>,
+    /// `host->metadata_lifetime_lock`: the metadata writer stores the host under its read side, a netdatacli removal
+    /// frees it under its write side; true once freed.
+    metadata_lifetime: RwLock<bool>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -310,7 +313,26 @@ impl Host {
             pending_context_load: AtomicBool::new(false),
             last_connected_s: AtomicI64::new(0),
             meta_flags,
+            metadata_lifetime: RwLock::new(false),
         }
+    }
+
+    /// `rw_spinlock_tryread_lock(&host->metadata_lifetime_lock)`: held while the writer stores the host or a command
+    /// marks it; `None` while it is being freed, or once it is.
+    pub fn metadata_try_read(&self) -> Option<std::sync::RwLockReadGuard<'_, bool>> {
+        self.metadata_lifetime
+            .try_read()
+            .ok()
+            .filter(|freed| !**freed)
+    }
+
+    /// `rw_spinlock_trywrite_lock(&host->metadata_lifetime_lock)`: for freeing the host (the guard's value is set to
+    /// true); `None` while the writer stores it.
+    pub fn metadata_try_write(&self) -> Option<std::sync::RwLockWriteGuard<'_, bool>> {
+        self.metadata_lifetime
+            .try_write()
+            .ok()
+            .filter(|freed| !**freed)
     }
 
     /// What `rrdhost_create()` does for a host that is not archived: it connected now, and its info waits to be
@@ -1346,5 +1368,20 @@ mod tests {
         localhost.take_meta_flags(u32::MAX);
         hosts.update_is_parent_label();
         assert_eq!(localhost.meta_flags(), 0);
+    }
+
+    /// The metadata lifetime lock: the writer and a marking command share it, a removal takes it alone and frees the
+    /// host, after which neither side gets it.
+    #[test]
+    fn metadata_lifetime_as_c() {
+        let host = Host::new("guid-a", false, info("a"));
+        let read = host.metadata_try_read().unwrap();
+        assert!(host.metadata_try_read().is_some() && host.metadata_try_write().is_none());
+        drop(read);
+        let mut freed = host.metadata_try_write().unwrap();
+        assert!(host.metadata_try_read().is_none());
+        *freed = true;
+        drop(freed);
+        assert!(host.metadata_try_read().is_none() && host.metadata_try_write().is_none());
     }
 }

@@ -300,20 +300,22 @@ pub fn store_hosts_metadata(
     let mut count = 0;
     for host in &all {
         count += 1;
-        let mut store = false;
         let mut stop = false;
-        if !host.is_archived() && host.meta_flags() & meta_flags::UPDATE != 0 {
+        // a host being freed by netdatacli is skipped (`metadata_lifetime_lock`)
+        let lifetime = (!host.is_archived() && host.meta_flags() & meta_flags::UPDATE != 0)
+            .then(|| host.metadata_try_read())
+            .flatten();
+        if lifetime.is_some() {
             if !final_store && shutdown.load(Ordering::Acquire) {
                 stop = true;
             } else {
                 host.take_meta_flags(meta_flags::UPDATE);
-                store = true;
             }
         }
         if stop {
             break;
         }
-        if store {
+        if lifetime.is_some() {
             store_host_info_and_metadata(meta, host);
             if let Some(id) = host_id(host) {
                 scan_host(meta, host, &id, shutdown, final_store);
@@ -338,6 +340,11 @@ pub fn store_hosts_metadata(
 /// `SQLITE_MISUSE`: what every prepare on C's NULL `db_meta` returns.
 const SQLITE_MISUSE: i32 = 21;
 
+/// `PREPARE_STATEMENT()`'s record for a statement of `function` when `netdata-meta.db` could not be opened.
+pub fn no_database(function: &str) {
+    netdata_log_error!("Failed to prepare statement, rc={SQLITE_MISUSE} in {function}");
+}
+
 /// `store_host_info_and_metadata()` of localhost at its creation when `netdata-meta.db` could not be opened: C runs
 /// it on a NULL handle, and every statement fails to prepare. The writer stays off afterwards (D61.8).
 pub fn store_localhost_without_database(host: &Host) {
@@ -345,15 +352,13 @@ pub fn store_localhost_without_database(host: &Host) {
         return;
     }
     for _ in 0..host.info().system_info.stored_keys().len() {
-        netdata_log_error!(
-            "Failed to prepare statement, rc={SQLITE_MISUSE} in add_host_sysinfo_key_value"
-        );
+        no_database("add_host_sysinfo_key_value");
     }
     netdata_log_error!(
         "METADATA: 'host:{}': Failed to store host updated system information in the database",
         host.hostname()
     );
-    netdata_log_error!("Failed to prepare statement, rc={SQLITE_MISUSE} in store_host_metadata");
+    no_database("store_host_metadata");
     netdata_log_error!(
         "METADATA: 'host:{}': Failed to store host info in the database",
         host.hostname()
@@ -369,9 +374,7 @@ pub fn invalidate_node_instances(meta: Option<&MetaDb>, localhost: &Host) {
     };
     match meta {
         Some(meta) => meta.invalidate_node_instances(&id, None),
-        None => netdata_log_error!(
-            "Failed to prepare statement, rc={SQLITE_MISUSE} in invalidate_node_instances"
-        ),
+        None => no_database("invalidate_node_instances"),
     }
 }
 
@@ -381,9 +384,7 @@ pub fn store_claim_id(meta: Option<&MetaDb>, id: &[u8; 16]) {
         Some(meta) => {
             let _ = meta.store_claim_id(id, None);
         }
-        None => {
-            netdata_log_error!("Failed to prepare statement, rc={SQLITE_MISUSE} in store_claim_id")
-        }
+        None => no_database("store_claim_id"),
     }
 }
 

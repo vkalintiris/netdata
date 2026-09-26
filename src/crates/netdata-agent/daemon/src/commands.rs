@@ -2,14 +2,17 @@
 //! the init gating. The socket and its threads are in `command_server`.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 
 use netdata_agent_inicfg::Config;
 use netdata_agent_log::{netdata_log_error, netdata_log_info};
+use netdata_agent_metadata::open::MetaDb;
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::labels;
+use netdata_agent_rrd::mode::DbMode;
 
-use crate::{build, cloud_proxy, conf, host_labels, server, shutdown};
+use crate::metasync::MetaQueue;
+use crate::{build, cloud_proxy, conf, host_labels, meta_store, server, shutdown};
 
 /// `MAX_COMMAND_LENGTH`: a request keeps at most one byte less.
 pub const MAX_COMMAND_LENGTH: usize = 8192;
@@ -264,6 +267,10 @@ pub struct Ctx {
     pub cloud_conf_file: String,
     /// Where `reload-labels` finds the Kubernetes labels script.
     pub plugins_dir: String,
+    /// `db_meta`, which the stale-node commands read and write; weak, so that the exit can close it.
+    pub meta: Weak<MetaDb>,
+    /// METASYNC's queue, which takes the dimensions of a removed host.
+    pub metaqueue: MetaQueue,
 }
 
 static CTX: OnceLock<Ctx> = OnceLock::new();
@@ -423,11 +430,12 @@ fn reload_labels() -> (Status, Option<Vec<u8>>) {
     (SUCCESS, Some(out))
 }
 
-/// `remove_ephemeral_host()`: an offline child marked ephemeral (its `_is_ephemeral` label too), and with
-/// `unregister` removed. Positive when changed, 0 otherwise; the texts go to `out` (errors only if `report`). SQLite,
-/// the cloud and pulse are not ported: their updates are left out.
+/// `remove_ephemeral_host()`: an offline child marked ephemeral (its `_is_ephemeral` label too, stored at once), and
+/// with `unregister` its node unregistered and the host freed, its dimensions queued for deletion. Positive when
+/// changed, 0 otherwise, negative when busy; the texts go to `out` (errors only if `report`). The cloud and pulse are
+/// not ported: their updates are left out.
 fn remove_ephemeral_host(out: &mut Vec<u8>, host: &Host, report: bool, unregister: bool) -> i32 {
-    let hosts = &CTX.get().expect("the command server is FULL").shared.hosts;
+    let ctx = CTX.get().expect("the command server is FULL");
     let name = |what: &str| {
         format!(
             "Node '{}' (machine guid: {}) {what}",
@@ -442,6 +450,25 @@ fn remove_ephemeral_host(out: &mut Vec<u8>, host: &Host, report: bool, unregiste
         }
         return 0;
     }
+    // the context load still uses the host
+    if unregister && host.is_pending_context_load() {
+        if report {
+            out.extend(name("is busy loading contexts - try again"));
+        }
+        return -1;
+    }
+    // the metadata writer stores the host under the read side of this lock; freeing it takes the write side
+    let (read, mut write) = if unregister {
+        (None, host.metadata_try_write())
+    } else {
+        (host.metadata_try_read(), None)
+    };
+    if read.is_none() && write.is_none() {
+        if report {
+            out.extend(name("is busy - try again"));
+        }
+        return -1;
+    }
     if host.is_online() {
         if report {
             out.extend(name("is online - not changing it"));
@@ -454,9 +481,36 @@ fn remove_ephemeral_host(out: &mut Vec<u8>, host: &Host, report: bool, unregiste
         l.add_changed(b"_is_ephemeral", b"true", labels::SRC_CONFIG)
             .unwrap_or(false)
     });
+    let id = meta_store::host_id(host);
+    let meta = ctx.meta.upgrade();
+    // sql_set_host_label()
+    match (&meta, &id) {
+        (Some(meta), Some(id)) => {
+            let _ = meta.set_host_label(id, "_is_ephemeral", "true");
+        }
+        (None, _) => meta_store::no_database("sql_set_host_label"),
+        (Some(_), None) => {}
+    }
     if unregister {
+        // unregister_node(): ACLKSYNC is not ported, so its statements run here
+        if let (Some(meta), Some(id)) = (&meta, &id) {
+            meta.unregister_node(id);
+        }
+        host.set_node_id([0; 16]);
         out.extend(name("has been unregistered"));
-        hosts.remove(host.machine_guid());
+        // rrdhost_free___consume_metadata_lifetime_writelock(): the freed dimensions of ram, alloc and none charts
+        // leave no data behind
+        if let Some(freed) = write.as_deref_mut() {
+            *freed = true;
+        }
+        ctx.shared.hosts.remove(host.machine_guid());
+        for chart in host.charts().all() {
+            if matches!(chart.mode(), DbMode::Ram | DbMode::Alloc | DbMode::None) {
+                for dim in chart.dims() {
+                    ctx.metaqueue.delete_dimension(*dim.uuid());
+                }
+            }
+        }
         return 1;
     }
     if marked {
@@ -469,9 +523,9 @@ fn remove_ephemeral_host(out: &mut Vec<u8>, host: &Host, report: bool, unregiste
     0
 }
 
-/// `cmd_remove_stale_node_internal()`: a machine GUID or node ID names one host; otherwise every host with that
-/// hostname, or all of them for `ALL_NODES`. C reads those from its `host` table, which holds the hosts of this run
-/// too; without SQLite they are the hosts in memory, in creation order.
+/// `cmd_remove_stale_node_internal()`: a machine GUID or node ID names one host in memory; otherwise every stored host
+/// with that hostname, or all of them for `ALL_NODES`, in the `host` table's order (a stored host no longer in memory
+/// is skipped).
 fn remove_stale_node(args: &[u8], unregister: bool) -> (Status, Option<Vec<u8>>) {
     let Some(ctx) = CTX.get() else {
         return (FAILURE, None);
@@ -494,11 +548,23 @@ fn remove_stale_node(args: &[u8], unregister: bool) -> (Status, Option<Vec<u8>>)
         remove_ephemeral_host(&mut out, &host, true, unregister);
         return (SUCCESS, Some(out));
     }
-    let all = arg == "ALL_NODES";
-    let report = !all;
+    let report = arg != "ALL_NODES";
+    let guids = match &ctx.meta.upgrade() {
+        Some(meta) => meta.hosts_named(&arg),
+        None => {
+            meta_store::no_database("cmd_remove_stale_node_internal");
+            None
+        }
+    };
+    let Some(guids) = guids else {
+        return (
+            SUCCESS,
+            Some(b"Failed to prepare database statement to check for stale nodes".to_vec()),
+        );
+    };
     let (mut changed, mut busy) = (0, 0);
-    for host in hosts.all().iter().filter(|h| all || h.hostname() == arg) {
-        let rc = remove_ephemeral_host(&mut out, host, report, unregister);
+    for host in guids.iter().filter_map(|guid| hosts.find_by_guid(guid)) {
+        let rc = remove_ephemeral_host(&mut out, &host, report, unregister);
         if rc > 0 {
             changed += rc;
             out.push(b'\n');

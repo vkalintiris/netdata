@@ -375,6 +375,31 @@ impl MetaDb {
         );
     }
 
+    /// `SQL_HOSTNAME_TO_REMOVE` of `cmd_remove_stale_node_internal()`: the stored hosts with this hostname, or all
+    /// of them for `ALL_NODES`, in the table's order, as machine GUIDs; `None` when the statement cannot be prepared.
+    /// A row whose `host_id` is not a UUID is skipped.
+    pub fn hosts_named(&self, hostname: &str) -> Option<Vec<String>> {
+        const HOSTNAME_TO_REMOVE: &str =
+            "SELECT host_id FROM host WHERE (hostname = @hostname OR @hostname = 'ALL_NODES')";
+        let c = self.lock();
+        let mut stmt = match c.prepare(HOSTNAME_TO_REMOVE) {
+            Ok(stmt) => stmt,
+            Err(err) => {
+                prepare_failed(&err, "cmd_remove_stale_node_internal");
+                return None;
+            }
+        };
+        let mut guids = Vec::new();
+        if let Ok(mut rows) = stmt.query([hostname]) {
+            while let Ok(Some(row)) = rows.next() {
+                if let Some(id) = uuid(row, 0) {
+                    guids.push(guid(&id));
+                }
+            }
+        }
+        Some(guids)
+    }
+
     /// The UUID of every stored dimension, as `populate_metrics_from_database()` reads them (on a read-only handle
     /// of its own, falling back to the shared one); the count of valid ones.
     pub fn dimension_uuids(&self, mut f: impl FnMut(&[u8; 16])) -> usize {
@@ -818,5 +843,24 @@ mod tests {
                 ("system".to_string(), false, "system.cpu".to_string(), 0)
             ]
         );
+    }
+
+    /// The netdatacli lookup: a hostname's stored hosts, or all of them, in the table's order; a row that is not a
+    /// UUID is skipped.
+    #[test]
+    fn hosts_named_as_c() {
+        let (_dir, meta) = db();
+        meta.lock()
+            .execute_batch(
+                "INSERT INTO host (host_id, hostname) VALUES (x'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'b'), \
+                 (x'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'a'), ('not-a-uuid', 'a')",
+            )
+            .unwrap();
+        assert_eq!(
+            meta.hosts_named("a"),
+            Some(vec!["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string()])
+        );
+        assert_eq!(meta.hosts_named("ALL_NODES").map(|g| g.len()), Some(2));
+        assert_eq!(meta.hosts_named("none"), Some(vec![]));
     }
 }

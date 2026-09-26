@@ -1265,6 +1265,40 @@ pub struct DbSection {
     pub free_ephemeral_time_s: i64,
 }
 
+/// `dbengine_datafiles_present`, as `netdata_conf_section_db()` detects it whatever the memory mode: a datafile in any
+/// of the `RRD_STORAGE_TIERS` tier directories of the cache (a name `sscanf()` reads as `datafile-%1u-%10u`). The
+/// metadata writer then keeps the rows of freed dimensions, which may still describe that data.
+pub fn dbengine_datafiles_present(cache_dir: &Path) -> bool {
+    const RRD_STORAGE_TIERS: usize = 5;
+    // sscanf(): both numbers must convert (after optional white space); what follows them is not checked
+    let is_datafile = |name: &str| {
+        let Some(rest) = name.strip_prefix("datafile-") else {
+            return false;
+        };
+        let rest = rest.trim_start();
+        let mut chars = rest.chars();
+        if !chars.next().is_some_and(|c| c.is_ascii_digit()) || chars.next() != Some('-') {
+            return false;
+        }
+        chars
+            .as_str()
+            .trim_start()
+            .starts_with(|c: char| c.is_ascii_digit())
+    };
+    (0..RRD_STORAGE_TIERS).any(|tier| {
+        let dir = if tier == 0 {
+            cache_dir.join("dbengine")
+        } else {
+            cache_dir.join(format!("dbengine-tier{tier}"))
+        };
+        std::fs::read_dir(dir).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_str().is_some_and(is_datafile))
+        })
+    })
+}
+
 /// `verify_netdata_host_prefix(true)` (`src/libnetdata/paths/paths.c`): a directory, without `%`, holding procfs and
 /// sysfs mounts; otherwise it is ignored (empty).
 fn verify_netdata_host_prefix(prefix: String) -> String {
@@ -1788,5 +1822,30 @@ mod tests {
                 assert_eq!(v.as_deref(), Some(*value), "{name}: [db] {key}");
             }
         }
+    }
+
+    /// A datafile name in any tier directory counts, as C's `sscanf()` reads it; journals, other names and missing
+    /// directories do not.
+    #[test]
+    fn dbengine_datafiles_are_detected_as_c() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!dbengine_datafiles_present(dir.path()));
+        std::fs::create_dir(dir.path().join("dbengine")).unwrap();
+        for name in [
+            "journalfile-1-0000000001.njf",
+            "datafile-x-1.ndf",
+            "datafile-12-1.ndf",
+            "other.ndf",
+        ] {
+            std::fs::write(dir.path().join("dbengine").join(name), b"").unwrap();
+        }
+        assert!(!dbengine_datafiles_present(dir.path()));
+        std::fs::create_dir(dir.path().join("dbengine-tier4")).unwrap();
+        std::fs::write(
+            dir.path().join("dbengine-tier4/datafile-4-0000000007.ndf"),
+            b"",
+        )
+        .unwrap();
+        assert!(dbengine_datafiles_present(dir.path()));
     }
 }
