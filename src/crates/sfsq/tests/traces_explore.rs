@@ -1382,6 +1382,36 @@ fn groups_name_a_source_that_fails_the_second_pass() {
     assert_eq!(spans, 4, "the good file's trace, every span");
 }
 
+/// A source that fails both the Groups pass and the Rows page is one failed
+/// source in the request's status, whichever sections name it.
+#[test]
+fn a_source_failing_groups_and_rows_counts_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "good");
+    let bad = write_wal(dir.path(), vec![req(&request(0x12, 0x10))], "bad");
+    let bad_path = dir.path().join("bad.sfst");
+    ng_index::build_sfst_traces_file(&bad, &bad_path, &ng_index::Metrics::new()).unwrap();
+    corrupt_chunk(&bad_path, *b"CHLD");
+    let mut q = entry_spans("status_code");
+    q.sections.groups = true;
+    q.sections.rows = Some(RowsSpec {
+        order: newest(None, RowDirection::Older),
+        limit: 10,
+        columns: Vec::new(),
+    });
+    let data = run(
+        vec![
+            sealed_source(dir.path(), &good, "good"),
+            sealed_source_at(&bad_path, "bad"),
+        ],
+        q,
+    );
+    let failed = partial(&[(PartialReason::SourceFailure, 1, 2)]);
+    assert_eq!(data.groups.as_ref().unwrap().status, failed);
+    assert_eq!(data.rows.as_ref().unwrap().status, failed);
+    assert_eq!(data.status, failed);
+}
+
 /// A live WAL whose live pass fails leaves its rows without origins and
 /// self time: the Groups section says so, and the request once.
 #[test]

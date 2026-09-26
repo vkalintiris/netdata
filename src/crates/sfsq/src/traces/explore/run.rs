@@ -165,7 +165,7 @@ fn add_totals(into: &mut BTreeMap<String, (u64, u64)>, from: BTreeMap<String, (u
 #[derive(Default)]
 struct GroupsLane {
     groups: HashMap<GroupKey, GroupAcc>,
-    failed: u64,
+    failed: BTreeSet<usize>,
 }
 
 /// Answer an explorer request over `sources`.
@@ -283,7 +283,7 @@ pub fn explore(
                 match evaluate_groups(mapped.bytes(), derived, window.clone(), &join) {
                     Ok(found) => merge_groups(&mut lane.groups, found),
                     Err(e) => {
-                        lane.failed += 1;
+                        lane.failed.insert(index);
                         tracing::warn!(
                             "sfsq traces: source {} failed to read its groups: {e}",
                             sources[index].source_id()
@@ -297,7 +297,7 @@ pub fn explore(
         let mut folded = GroupsLane::default();
         for (_, lane) in lanes {
             merge_groups(&mut folded.groups, lane.groups);
-            folded.failed += lane.failed;
+            folded.failed.extend(lane.failed);
         }
         // The scope's traces per side: `(selection, baseline)`.
         let sides = query.selection.as_ref().map(|_| {
@@ -333,6 +333,9 @@ pub fn explore(
             .as_ref()
             .is_some_and(|selection| selection.filter.has_field(ERR_ORIGIN_FIELD));
     let mut live_named = false;
+    // Sources a later pass (Groups, the Rows page) could not read: the
+    // request counts each once, whichever sections name it.
+    let mut failed_later = BTreeSet::new();
 
     let histogram = query.sections.histogram.as_ref().map(|spec| {
         let mut own = StatusBuilder::new();
@@ -486,14 +489,14 @@ pub fn explore(
 
     let groups = groups_pass.map(|(pass, sides)| {
         let mut own = StatusBuilder::new();
-        own.add_n(PartialReason::SourceFailure, pass.failed);
-        own.of(PartialReason::SourceFailure, candidates);
         let capped = cap_groups(pass.groups, GROUPS_CAP, sides.is_some());
         own.add_n(PartialReason::GroupsCap, capped.folded);
         own.of(PartialReason::GroupsCap, capped.total);
         status.merge(own.clone());
         let mut section = shared.clone();
         section.merge(own);
+        section.merge(source_failures(&pass.failed, candidates));
+        failed_later.extend(pass.failed);
         // Error origins and self time are sums over the rows that have them.
         section.merge(live_failed.clone());
         live_named = true;
@@ -515,11 +518,10 @@ pub fn explore(
 
     let rows = page.map(|page| {
         let spec = page.spec();
-        let (items, more, own) =
-            rows_section(page, &sources, &opened, &live.derived, &query, candidates);
-        status.merge(own.clone());
+        let (items, more, failed) = rows_section(page, &sources, &opened, &live.derived, &query);
         let mut section = shared.clone();
-        section.merge(own);
+        section.merge(source_failures(&failed, candidates));
+        failed_later.extend(failed);
         // Every row carries self time, so a failed pass touches the section
         // whatever its scope.
         section.merge(live_failed.clone());
@@ -552,6 +554,7 @@ pub fn explore(
         }
     });
 
+    status.merge(source_failures(&failed_later, candidates));
     if live_named {
         status.merge(live_failed);
     }
@@ -566,7 +569,15 @@ pub fn explore(
     })
 }
 
-/// The page with its rows' fields, and this section's own reasons. A source
+/// `failed` sources out of `candidates`, as a status.
+fn source_failures(failed: &BTreeSet<usize>, candidates: u64) -> StatusBuilder {
+    let mut status = StatusBuilder::new();
+    status.add_n(PartialReason::SourceFailure, failed.len() as u64);
+    status.of(PartialReason::SourceFailure, candidates);
+    status
+}
+
+/// The page with its rows' fields, and the sources that failed it. A source
 /// whose fields cannot be read is counted as failed and the page is selected
 /// again without it, so the page stays contiguous and its cursor valid; the
 /// source's rows still count in the other sections and in `matched`.
@@ -576,13 +587,9 @@ fn rows_section(
     opened: &[Option<Mapped>],
     derived: &[Option<Arc<sfst::DerivedValues>>],
     query: &ExploreQuery,
-    candidates: u64,
-) -> (Vec<Row>, Option<MoreRows>, StatusBuilder) {
+) -> (Vec<Row>, Option<MoreRows>, BTreeSet<usize>) {
     let spec = fold.spec();
-    let mut own = StatusBuilder::new();
-    let fail = |own: &mut StatusBuilder, source: &TraceSource, error: &sfst::Error| {
-        own.add(PartialReason::SourceFailure);
-        own.of(PartialReason::SourceFailure, candidates);
+    let fail = |source: &TraceSource, error: &sfst::Error| {
         tracing::warn!(
             "sfsq traces: source {} failed to read rows: {error}",
             source.source_id()
@@ -607,11 +614,11 @@ fn rows_section(
                         columns: fields.columns,
                     });
                 }
-                return (items, more, own);
+                return (items, more, excluded);
             }
             Err(failure) => failure,
         };
-        fail(&mut own, &sources[source], &error);
+        fail(&sources[source], &error);
         excluded.insert(source);
         fold = PageFold::new(spec);
         for (index, mapped) in opened.iter().enumerate() {
@@ -625,7 +632,7 @@ fn rows_section(
             match shard::rows_of(mapped.bytes(), values, query, spec, index, fold.stop()) {
                 Ok(rows) => fold.add(rows),
                 Err(e) => {
-                    fail(&mut own, &sources[index], &e);
+                    fail(&sources[index], &e);
                     excluded.insert(index);
                 }
             }
