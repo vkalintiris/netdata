@@ -2,8 +2,19 @@
 
 use std::path::Path;
 
-use super::load::TierConfig;
-use super::query::Query;
+use std::sync::Arc;
+
+use netdata_agent_evloop::work::WorkPool;
+use serde_json::Value;
+
+use super::cache::CachedPage;
+use super::load::{TierConfig, load};
+use super::mrg::{Handle, Mrg};
+use super::query::{Dbengine, EngineConfig, Query};
+use crate::dbengine::format::extent::COMPRESSION_NONE;
+use crate::dbengine::format::inspect::{for_each_page, tier_report};
+use crate::dbengine::format::page::{DiskPage, PageBuilder};
+use crate::storage_number::{SN_DEFAULT_FLAGS, pack};
 use crate::dbengine::format::descriptor::{PAGE_TYPE_ARRAY_32BIT, PageDescriptor};
 use crate::dbengine::format::journal_v1::{StoreData, encode_transaction};
 use crate::dbengine::format::{BLOCK_SIZE, FileKind, file_name, superblock};
@@ -99,4 +110,86 @@ pub fn same(got: &[(i64, f64)], want: &[(i64, f64)]) -> bool {
             .iter()
             .zip(want)
             .all(|(g, w)| g.0 == w.0 && ((g.1 - w.1).abs() < 1e-9 || g.1.is_nan() && w.1.is_nan()))
+}
+
+/// A tier with array pages, uncompressed extents, and a 25 MiB quota: data files of 524,288 bytes.
+pub fn write_cfg(tier: usize, dir: &Path) -> TierConfig {
+    TierConfig {
+        max_disk_space: 25 << 20,
+        page_type: PAGE_TYPE_ARRAY_32BIT,
+        compression: COMPRESSION_NONE,
+        ..TierConfig::new(tier, dir.to_path_buf())
+    }
+}
+
+pub fn write_engine(dirs: &[&Path], main_cache_bytes: usize, pool: Option<WorkPool>) -> Arc<Dbengine> {
+    let mrg = Mrg::new();
+    let tiers = dirs
+        .iter()
+        .enumerate()
+        .map(|(t, d)| load(write_cfg(t, d), &mrg, NOW).unwrap())
+        .collect();
+    Dbengine::new(
+        mrg,
+        tiers,
+        EngineConfig {
+            main_cache_bytes,
+            pool,
+            ..EngineConfig::new(|| NOW)
+        },
+    )
+}
+
+pub fn nth(n: usize) -> [u8; 16] {
+    let mut u = [0u8; 16];
+    u[..8].copy_from_slice(&(n as u64 + 1).to_be_bytes());
+    u
+}
+
+/// A dirty page of `uuid` with these values one second apart from `start`; the metric registered with its retention.
+pub fn dirty_page(e: &Dbengine, tier: usize, uuid: [u8; 16], start: i64, values: &[f64]) -> Handle {
+    let mut builder = PageBuilder::new(PAGE_TYPE_ARRAY_32BIT, values.len()).unwrap();
+    for &v in values {
+        builder.append(v, v, v, 1, 0, SN_DEFAULT_FLAGS);
+    }
+    let end = start + values.len() as i64 - 1;
+    let page = CachedPage::collected(start, 1, builder);
+    page.hot_set_end_time_s(end);
+    let page = e.main.add(tier, &uuid, page).unwrap();
+    e.main.hot_to_dirty(tier, &page);
+    let (metric, _) = e.mrg.add_and_acquire(&uuid, tier, start, end, 1);
+    metric
+}
+
+pub fn seq_values(n: usize, base: usize) -> Vec<f64> {
+    (0..n).map(|i| (base + i) as f64).collect()
+}
+
+/// Every page a tier's files hold, in journal order: metric, start, storage numbers.
+pub fn stored_pages(dir: &Path) -> Vec<([u8; 16], i64, Vec<u32>)> {
+    let mut out = Vec::new();
+    for_each_page(dir, |d, bytes| {
+        let numbers = DiskPage::load(d.page_type, bytes)
+            .ok()
+            .and_then(|p| p.storage_numbers())
+            .unwrap_or_default();
+        out.push((d.uuid, (d.start_time_ut / 1_000_000) as i64, numbers));
+    })
+    .unwrap();
+    out
+}
+
+pub fn packed(values: &[f64]) -> Vec<u32> {
+    values.iter().map(|&v| pack(v, SN_DEFAULT_FLAGS)).collect()
+}
+
+pub fn file_reports(dir: &Path) -> Vec<Value> {
+    tier_report(dir).unwrap()["files"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+pub fn messages(records: Vec<netdata_agent_log::Captured>) -> Vec<String> {
+    records.into_iter().filter_map(|r| r.message).collect()
 }

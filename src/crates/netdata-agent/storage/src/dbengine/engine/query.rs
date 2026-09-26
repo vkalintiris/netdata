@@ -470,13 +470,7 @@ impl Dbengine {
     ) -> usize {
         let data = &self.tiers[metric.tier()];
         let mut found = 0;
-        // JudyLPrev() of the start: the file ending last before it, then every later one
-        let first = data.v2.range(..(start_s, 0)).next_back().map(|(k, _)| *k);
-        let files = match first {
-            Some(k) => data.v2.range(k..),
-            None => data.v2.range(..),
-        };
-        for index in files.map(|(_, v)| v) {
+        for index in data.v2_from(start_s) {
             match in_range(index.start_time_s(), index.end_time_s(), start_s, end_s) {
                 Range::Past => continue,
                 Range::Future => break,

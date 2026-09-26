@@ -397,19 +397,63 @@ fn values_are_what_the_generator_sent() {
     }
 }
 
+/// The streamed writer rebuilds every v2 file of the fixtures byte for byte, written over a longer stale file.
 #[test]
-fn write_in_place_over_a_larger_file_is_the_fresh_image() {
+fn streamed_rebuilds_are_cs_files() {
     let Some(fx) = fixtures() else {
         return;
     };
-    let (njf, v2) = v2_files(&fx).remove(0);
-    let image = fs::read(&v2).unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join(v2.file_name().unwrap());
-    fs::write(&path, vec![0x5A; image.len() + 3 * BLOCK_SIZE]).unwrap();
-    let j = fs::read(&njf).unwrap();
-    let replay = journal_v1::replay(&j[..], j.len() as u64).unwrap();
-    let built = journal_v2::from_v1(&replay, j.len() as u64, 0, &mut Retention::default()).unwrap();
-    journal_v2::write_in_place(&path, &built).unwrap();
-    assert!(fs::read(&path).unwrap() == image);
+    for (njf, v2) in v2_files(&fx) {
+        let image = fs::read(&v2).unwrap();
+        let path = dir.path().join(v2.file_name().unwrap());
+        fs::write(&path, vec![0x5A; image.len() + 3 * BLOCK_SIZE]).unwrap();
+        let j = fs::read(&njf).unwrap();
+        let replay = journal_v1::replay(&j[..], j.len() as u64).unwrap();
+        let v1_size = j.len() as u64 / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
+        let mut builder = journal_v2::Builder::new(v1_size as u32);
+        for page in journal_v2::open_cache_pages(&replay, 0, &mut Retention::default()).pages {
+            builder.page(page);
+        }
+        drop(builder.layout().unwrap().write(&path).unwrap());
+        assert!(fs::read(&path).unwrap() == image, "{}", v2.display());
+    }
+}
+
+/// C's runtime v2 files (the S3 evidence run, local only): the file's journal pages indexed with the collector's
+/// update every, as the runtime indexer takes them from the open cache; the startup rebuild of file 1 differs only in
+/// what `normalize_v2()` equalizes, and file 2's does not differ.
+#[test]
+fn runtime_v2_files_are_cs() {
+    let Some(fx) = fixtures() else {
+        return;
+    };
+    let obs = fx.join("s3/obs");
+    if !obs.exists() {
+        eprintln!("skipped: no S3 evidence under {}", obs.display());
+        return;
+    }
+    for fileno in [1, 2] {
+        let name = |ext: &str| format!("cache/dbengine/journalfile-1-{fileno:010}.{ext}");
+        let njf = fs::read(obs.join("runA").join(name("njf"))).unwrap();
+        let runtime = fs::read(obs.join("runA").join(name("njfv2"))).unwrap();
+        let startup = fs::read(obs.join("runA2").join(name("njfv2"))).unwrap();
+        let replay = journal_v1::replay(&njf[..], njf.len() as u64).unwrap();
+        let mut builder = journal_v2::Builder::new(njf.len() as u32);
+        for page in journal_v2::open_cache_pages(&replay, 0, &mut Retention::default()).pages {
+            builder.page(journal_v2::Page {
+                update_every_s: 1,
+                ..page
+            });
+        }
+        let ours = builder.build().unwrap();
+        assert!(ours == runtime, "file {fileno}: the runtime build");
+        assert!(
+            inspect::normalize_v2(&ours) == inspect::normalize_v2(&startup),
+            "file {fileno}: normalized"
+        );
+        let rebuilt =
+            journal_v2::from_v1(&replay, njf.len() as u64, 0, &mut Retention::default()).unwrap();
+        assert!(rebuilt == startup, "file {fileno}: the startup build");
+    }
 }

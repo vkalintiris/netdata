@@ -4,6 +4,7 @@
 pub mod cache;
 pub mod collect;
 mod flush;
+pub mod index;
 pub mod io;
 pub mod load;
 pub mod mrg;

@@ -20,21 +20,37 @@ fn files_are_full_as_c_says() {
     assert!(data_file(dir.path(), 4096, false).is_full(4096, TARGET));
 }
 
-/// `pgc_open_add_hot_page()`: a page at a start already held replaces it only when it ends later.
+/// `pgc_open_add_hot_page()`: a page at a start already held replaces it only when it ends later; a file's pages
+/// come in the order they joined, without the ones another file's page replaced, and leave together.
 #[test]
 fn open_pages_keep_the_longer_page_at_a_start() {
     const A: [u8; 16] = [0xaa; 16];
-    let page = |end_time_s, fileno| OpenPage {
+    const B: [u8; 16] = [0xbb; 16];
+    let page = |end_time_s, fileno, block| OpenPage {
         end_time_s,
         update_every_s: 1,
         fileno,
-        block: 1,
+        block,
         bytes: 100,
     };
     let mut open = OpenList::default();
-    open.add(A, 10, page(19, 1));
-    open.add(A, 10, page(29, 2));
-    open.add(A, 10, page(24, 3));
+    open.add(A, 10, page(19, 1, 1), (0, 0));
+    open.add(A, 10, page(29, 2, 1), (8192, 0));
+    open.add(A, 10, page(24, 3, 1), (8192, 0));
     assert_eq!(open.pages(&A).unwrap()[&10].fileno, 2);
-    assert!(open.pages(&[0xbb; 16]).is_none());
+    assert!(open.pages(&[0xcc; 16]).is_none());
+    assert!(open.file_pages(1).is_empty());
+    assert!(open.file_pages(3).is_empty());
+
+    open.add(B, 30, page(39, 2, 3), (12288, 0));
+    open.add(B, 20, page(29, 2, 2), (4096, 1));
+    let order: Vec<([u8; 16], i64)> = open
+        .file_pages(2)
+        .iter()
+        .map(|p| (p.uuid, p.start_time_s))
+        .collect();
+    assert_eq!(order, [(B, 20), (A, 10), (B, 30)]);
+    open.remove_file(2);
+    assert!(open.pages(&A).is_none() && open.pages(&B).is_none());
+    assert!(open.file_pages(2).is_empty());
 }

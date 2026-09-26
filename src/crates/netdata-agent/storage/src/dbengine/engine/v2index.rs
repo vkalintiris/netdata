@@ -21,7 +21,7 @@ use super::load::Tier;
 use super::mrg::Mrg;
 use crate::dbengine::format::crc::{crc_bytes, crc32_update};
 use crate::dbengine::format::journal_v2::{
-    self, EXTENT_SIZE, ExtentEntry, HEADER_SIZE, Header, METRIC_SIZE, MetricEntry,
+    self, EXTENT_SIZE, ExtentEntry, HEADER_SIZE, Header, Layout, METRIC_SIZE, MetricEntry,
     PAGE_HEADER_SIZE, PAGE_SIZE, PageEntry, PageHeader, TRAILER_SIZE,
 };
 use crate::dbengine::format::{FileKind, ReadAt, file_name};
@@ -43,7 +43,30 @@ pub struct V2Index {
     sparse: Vec<([u8; 16], u32)>,
 }
 
+/// Samples the metric list for the sparse index: every `SPARSE_EVERY`-th uuid with its position.
+fn sparse_push(sparse: &mut Vec<([u8; 16], u32)>, index: u32, uuid: &[u8; 16]) {
+    if (index as usize).is_multiple_of(SPARSE_EVERY) {
+        sparse.push((*uuid, index));
+    }
+}
+
 impl V2Index {
+    /// A v2 file this run wrote, from its layout (nothing is read back).
+    pub(crate) fn from_layout(fileno: u32, file: File, layout: &Layout) -> V2Index {
+        let mut sparse = Vec::with_capacity(layout.header().metric_count as usize / SPARSE_EVERY + 1);
+        for (index, uuid) in (0u32..).zip(layout.uuids()) {
+            sparse_push(&mut sparse, index, uuid);
+        }
+        V2Index {
+            fileno,
+            file,
+            size: layout.size() as u64,
+            header: *layout.header(),
+            extents: layout.extents().to_vec(),
+            sparse,
+        }
+    }
+
     /// The header's start in seconds, the base of every delta in the file.
     pub fn start_time_s(&self) -> i64 {
         (self.header.start_time_ut / 1_000_000) as i64
@@ -227,9 +250,7 @@ fn populate_file(job: Job, mrg: &Mrg, now_s: i64) -> Populated {
     let mut sparse = Vec::with_capacity(h.metric_count as usize / SPARSE_EVERY + 1);
     let mut samples = 0;
     let walked = walk_metric_list(&file, &h, |index, m| {
-        if (index as usize).is_multiple_of(SPARSE_EVERY) {
-            sparse.push((m.uuid, index));
-        }
+        sparse_push(&mut sparse, index, &m.uuid);
         samples += mrg.update_retention_by_uuid(
             &m.uuid,
             tier,

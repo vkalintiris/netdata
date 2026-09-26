@@ -56,6 +56,7 @@ pub fn start(
                     direct_io: settings.direct_io,
                     max_disk_space: u64::from(mb) * 1024 * 1024,
                     journal_check: db.journal_check,
+                    max_retention_s: t.retention_s,
                     // `[db] dbengine page type` is tier 0's
                     page_type: if tier == 0 {
                         db.page_type

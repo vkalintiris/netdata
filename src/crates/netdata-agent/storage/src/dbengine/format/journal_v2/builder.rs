@@ -4,19 +4,19 @@
 //! Brief `knowledge/brief-dbengine-s0.md` §4.2, §4.3 and §4.5 in the status repository.
 
 use std::collections::{BTreeMap, HashMap, hash_map};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::Path;
 
 use super::super::BLOCK_SIZE;
-use super::super::crc::{crc_bytes, crc32};
+use super::super::crc::{crc_bytes, crc32, crc32_update};
 use super::super::descriptor::{
     PAGE_TYPE_GORILLA_32BIT, ValidatedPage, validate_extent_page_descr,
 };
 use super::super::journal_v1::{Event, Replay};
 use super::{
-    EXTENT_SIZE, ExtentEntry, HEADER_SIZE, Header, MAGIC, METRIC_SIZE, MetricEntry,
+    EXTENT_SIZE, ExtentEntry, Header, MAGIC, METRIC_SIZE, MetricEntry,
     PAGE_HEADER_SIZE, PAGE_SIZE, PageEntry, PageHeader, TRAILER_SIZE, file_size,
 };
 
@@ -128,13 +128,12 @@ impl Builder {
         replaced.is_some()
     }
 
-    /// The v2 file's bytes, or `None` without metrics (C then writes nothing and reports success). The page area's
-    /// slack is zero.
-    pub fn build(mut self) -> Option<Vec<u8>> {
+    /// The v2 file laid out, or `None` without metrics (C then writes nothing and reports success). Extents a
+    /// duplicate emptied are dropped and the rest renumbered in block order.
+    pub fn layout(mut self) -> Option<Layout> {
         if self.metrics.is_empty() {
             return None;
         }
-        // extents a duplicate emptied are dropped and the rest renumbered in block order
         if self.extents.values().any(|ei| ei.pages == 0) {
             self.extents.retain(|_, ei| ei.pages != 0);
             for (index, ei) in (0u32..).zip(self.extents.values_mut()) {
@@ -143,22 +142,25 @@ impl Builder {
         }
         let pages: usize = self.metrics.values().map(|mi| mi.pages.len()).sum();
         let (e, m) = (self.extents.len(), self.metrics.len());
-        let size = file_size(e, m, pages);
-        let mut b = vec![0u8; size];
-
-        let extent_offset = BLOCK_SIZE;
-        for (block, ei) in &self.extents {
-            let entry = ExtentEntry {
-                datafile_offset: block << 12,
-                datafile_size: ei.bytes,
-                file_index: 0,
-                pages: ei.pages as u8,
-            };
-            let at = extent_offset + ei.index as usize * EXTENT_SIZE;
-            b[at..at + EXTENT_SIZE].copy_from_slice(&entry.encode());
-        }
-        let extent_trailer = extent_offset + EXTENT_SIZE * e;
-        put_crc(&mut b, extent_offset, extent_trailer);
+        let mut extents: Vec<(u32, ExtentEntry)> = self
+            .extents
+            .iter()
+            .map(|(block, ei)| {
+                let entry = ExtentEntry {
+                    datafile_offset: block << 12,
+                    datafile_size: ei.bytes,
+                    file_index: 0,
+                    pages: ei.pages as u8,
+                };
+                (ei.index, entry)
+            })
+            .collect();
+        extents.sort_unstable_by_key(|(index, _)| *index);
+        let extent_index = self
+            .extents
+            .iter()
+            .map(|(block, ei)| (*block, ei.index))
+            .collect();
 
         let first = self.metrics.values().map(|mi| mi.first_time_s).min();
         let last = self
@@ -166,80 +168,240 @@ impl Builder {
             .values()
             .map(|mi| mi.last_time_s)
             .fold(0, i64::max);
-        let start_time_ut = (first.unwrap_or(0) as u64).wrapping_mul(1_000_000);
-        let base = (start_time_ut / 1_000_000) as i64;
-        let delta = |t: i64| t.wrapping_sub(base) as u32;
-        let mut sorted: Vec<_> = self.metrics.iter().collect();
-        sorted.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        let mut metrics: Vec<([u8; 16], MetricInfo)> = self.metrics.into_iter().collect();
+        metrics.sort_unstable_by_key(|(uuid, _)| *uuid);
 
+        let extent_offset = BLOCK_SIZE;
+        let extent_trailer = extent_offset + EXTENT_SIZE * e;
         let metric_offset = extent_trailer + TRAILER_SIZE;
         let metric_trailer = metric_offset + METRIC_SIZE * m;
-        let page_offset = metric_trailer + TRAILER_SIZE;
-        let mut at = page_offset;
-        for (i, (uuid, mi)) in sorted.into_iter().enumerate() {
-            let n = mi.pages.len();
-            let uuid_offset = metric_offset + i * METRIC_SIZE;
-            let entry = MetricEntry {
-                uuid: *uuid,
-                entries: n as u32,
-                page_offset: at as u32,
-                delta_start_s: delta(mi.first_time_s),
-                delta_end_s: delta(mi.last_time_s),
-                update_every_s: mi.pages.values().last().map_or(0, |pi| pi.update_every_s),
-            };
-            b[uuid_offset..uuid_offset + METRIC_SIZE].copy_from_slice(&entry.encode());
-            let mut ph = PageHeader {
-                crc: 0,
-                uuid_offset: uuid_offset as u32,
-                entries: n as u32,
-                uuid: *uuid,
-            };
-            ph.crc = ph.compute_crc();
-            b[at..at + PAGE_HEADER_SIZE].copy_from_slice(&ph.encode());
-            let list = at + PAGE_HEADER_SIZE;
-            for (j, (&start, pi)) in mi.pages.iter().enumerate() {
-                let entry = PageEntry {
-                    delta_start_s: delta(start as i64),
-                    delta_end_s: delta(pi.end_time_s),
-                    extent_index: self.extents[&pi.block].index,
-                    update_every_s: pi.update_every_s,
-                    page_length: 0,
-                    page_type: 0,
-                };
-                let pa = list + j * PAGE_SIZE;
-                b[pa..pa + PAGE_SIZE].copy_from_slice(&entry.encode());
-            }
-            put_crc(&mut b, list, list + n * PAGE_SIZE);
-            at = list + n * PAGE_SIZE + TRAILER_SIZE;
-        }
-        put_crc(&mut b, metric_offset, metric_trailer);
-
-        let h = Header {
+        let header = Header {
             magic: MAGIC,
-            start_time_ut,
+            start_time_ut: (first.unwrap_or(0) as u64).wrapping_mul(1_000_000),
             end_time_ut: (last as u64).wrapping_mul(1_000_000),
             extent_count: e as u32,
             extent_offset: extent_offset as u32,
             metric_count: m as u32,
             metric_offset: metric_offset as u32,
             page_count: pages as u32,
-            page_offset: page_offset as u32,
+            page_offset: (metric_trailer + TRAILER_SIZE) as u32,
             extent_trailer_offset: extent_trailer as u32,
             metric_trailer_offset: metric_trailer as u32,
             journal_v1_file_size: self.v1_size,
-            journal_v2_file_size: size as u32,
+            journal_v2_file_size: file_size(e, m, pages) as u32,
         };
-        let header = h.encode();
-        b[..HEADER_SIZE].copy_from_slice(&header);
-        b[size - TRAILER_SIZE..].copy_from_slice(&crc_bytes(crc32(&header)));
-        Some(b)
+        Some(Layout {
+            header,
+            extents: extents.into_iter().map(|(_, entry)| entry).collect(),
+            extent_index,
+            metrics,
+        })
+    }
+
+    /// The v2 file's bytes (`layout()` emitted into memory); the page area's slack is zero.
+    pub fn build(self) -> Option<Vec<u8>> {
+        self.layout().map(|l| l.to_vec())
     }
 }
 
-/// Stores the CRC of `b[from..to]` at `to`.
-fn put_crc(b: &mut [u8], from: usize, to: usize) {
-    let crc = crc_bytes(crc32(&b[from..to]));
-    b[to..to + TRAILER_SIZE].copy_from_slice(&crc);
+/// Where a v2 file's bytes go: each piece at its offset, sections in file order, the header last.
+pub trait Sink {
+    fn put(&mut self, offset: usize, bytes: &[u8]) -> io::Result<()>;
+}
+
+struct VecSink(Vec<u8>);
+
+impl Sink for VecSink {
+    fn put(&mut self, offset: usize, bytes: &[u8]) -> io::Result<()> {
+        self.0[offset..offset + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+}
+
+/// A file written in contiguous runs of at most `CHUNK` bytes.
+struct FileSink<'a> {
+    file: &'a File,
+    start: usize,
+    buf: Vec<u8>,
+}
+
+/// Small in unit tests, so that the runs split everywhere.
+const CHUNK: usize = if cfg!(test) { 7 } else { 1 << 20 };
+
+impl FileSink<'_> {
+    fn flush(&mut self) -> io::Result<()> {
+        if !self.buf.is_empty() {
+            self.file.write_all_at(&self.buf, self.start as u64)?;
+            self.start += self.buf.len();
+            self.buf.clear();
+        }
+        Ok(())
+    }
+}
+
+impl Sink for FileSink<'_> {
+    fn put(&mut self, offset: usize, mut bytes: &[u8]) -> io::Result<()> {
+        if offset != self.start + self.buf.len() {
+            self.flush()?;
+            self.start = offset;
+        }
+        while !bytes.is_empty() {
+            let (now, rest) = bytes.split_at((CHUNK - self.buf.len()).min(bytes.len()));
+            self.buf.extend_from_slice(now);
+            bytes = rest;
+            if self.buf.len() == CHUNK {
+                self.flush()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Why writing a v2 file failed, as C's records tell it apart.
+#[derive(Debug)]
+pub enum WriteError {
+    /// The file could not be created or opened.
+    Create(io::Error),
+    /// It could not be sized.
+    Size(io::Error),
+    /// A write failed (C's `SIGBUS` on its mapping); the file was removed.
+    Write(io::Error),
+}
+
+/// A journal v2 file laid out from an index (`journalfile_migrate_to_v2_callback()`'s arithmetic): every section's
+/// place and what goes there, emitted into memory or streamed to a file.
+#[derive(Debug)]
+pub struct Layout {
+    header: Header,
+    /// The extent list in file order.
+    extents: Vec<ExtentEntry>,
+    /// Each extent's place in the list, by block.
+    extent_index: HashMap<u64, u32>,
+    /// The metrics in uuid order (`memcmp()`).
+    metrics: Vec<([u8; 16], MetricInfo)>,
+}
+
+impl Layout {
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
+
+    pub fn size(&self) -> usize {
+        self.header.journal_v2_file_size as usize
+    }
+
+    /// The extent list in file order.
+    pub fn extents(&self) -> &[ExtentEntry] {
+        &self.extents
+    }
+
+    /// The metrics' uuids in the metric list's order.
+    pub fn uuids(&self) -> impl Iterator<Item = &[u8; 16]> {
+        self.metrics.iter().map(|(uuid, _)| uuid)
+    }
+
+    /// Emits the file: the extent list, the metric list, each metric's page list (each with its CRC), the file
+    /// trailer, and the header last, so that a file cut short reads as invalid.
+    pub fn emit(&self, sink: &mut impl Sink) -> io::Result<()> {
+        let h = &self.header;
+        let base = (h.start_time_ut / 1_000_000) as i64;
+        let delta = |t: i64| t.wrapping_sub(base) as u32;
+
+        let mut at = h.extent_offset as usize;
+        let mut crc = 0;
+        for e in &self.extents {
+            let b = e.encode();
+            sink.put(at, &b)?;
+            crc = crc32_update(crc, &b);
+            at += EXTENT_SIZE;
+        }
+        sink.put(at, &crc_bytes(crc))?;
+
+        let (mut at, mut page_at, mut crc) = (h.metric_offset as usize, h.page_offset as usize, 0);
+        for (uuid, mi) in &self.metrics {
+            let entry = MetricEntry {
+                uuid: *uuid,
+                entries: mi.pages.len() as u32,
+                page_offset: page_at as u32,
+                delta_start_s: delta(mi.first_time_s),
+                delta_end_s: delta(mi.last_time_s),
+                update_every_s: mi.pages.values().last().map_or(0, |pi| pi.update_every_s),
+            };
+            let b = entry.encode();
+            sink.put(at, &b)?;
+            crc = crc32_update(crc, &b);
+            at += METRIC_SIZE;
+            page_at += PAGE_HEADER_SIZE + mi.pages.len() * PAGE_SIZE + TRAILER_SIZE;
+        }
+        sink.put(at, &crc_bytes(crc))?;
+
+        let mut at = h.page_offset as usize;
+        for (i, (uuid, mi)) in self.metrics.iter().enumerate() {
+            let mut ph = PageHeader {
+                crc: 0,
+                uuid_offset: h.metric_offset + (i * METRIC_SIZE) as u32,
+                entries: mi.pages.len() as u32,
+                uuid: *uuid,
+            };
+            ph.crc = ph.compute_crc();
+            sink.put(at, &ph.encode())?;
+            at += PAGE_HEADER_SIZE;
+            let mut crc = 0;
+            for (&start, pi) in &mi.pages {
+                let entry = PageEntry {
+                    delta_start_s: delta(start as i64),
+                    delta_end_s: delta(pi.end_time_s),
+                    extent_index: self.extent_index[&pi.block],
+                    update_every_s: pi.update_every_s,
+                    page_length: 0,
+                    page_type: 0,
+                };
+                let b = entry.encode();
+                sink.put(at, &b)?;
+                crc = crc32_update(crc, &b);
+                at += PAGE_SIZE;
+            }
+            sink.put(at, &crc_bytes(crc))?;
+            at += TRAILER_SIZE;
+        }
+
+        let header = h.encode();
+        sink.put(self.size() - TRAILER_SIZE, &crc_bytes(crc32(&header)))?;
+        sink.put(0, &header)
+    }
+
+    /// The file's bytes in memory.
+    pub fn to_vec(&self) -> Vec<u8> {
+        let mut sink = VecSink(vec![0u8; self.size()]);
+        self.emit(&mut sink).expect("memory takes every write");
+        sink.0
+    }
+
+    /// Writes the file as C's migration does: created 0664, sized, the body first and the header last, no sync; a
+    /// failed write removes it (a failed sizing leaves it, as C). The file is emptied first, so no stale bytes of a
+    /// longer earlier file stay in the page area's slack (C keeps them).
+    pub fn write(&self, path: &Path) -> Result<File, WriteError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o664)
+            .open(path)
+            .map_err(WriteError::Create)?;
+        file.set_len(self.size() as u64).map_err(WriteError::Size)?;
+        let mut sink = FileSink {
+            file: &file,
+            start: 0,
+            buf: Vec::new(),
+        };
+        if let Err(err) = self.emit(&mut sink).and_then(|()| sink.flush()) {
+            drop(file);
+            let _ = fs::remove_file(path);
+            return Err(WriteError::Write(err));
+        }
+        Ok(file)
+    }
 }
 
 /// What C's replay reads and updates per metric in its metric registry: the update every a single-point page takes
@@ -459,38 +621,12 @@ pub fn from_v1(
     b.build()
 }
 
-/// Writes an image as C's migration does: created 0664, sized to the image, the body first and the header last, no
-/// sync, and removed if a write fails. The file is emptied first, so no stale bytes of a longer earlier file stay in
-/// the page area's slack (C keeps them). An image shorter than its 4096-byte header block is refused.
-pub fn write_in_place(path: &Path, image: &[u8]) -> io::Result<()> {
-    if image.len() < BLOCK_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "not a journal v2 image",
-        ));
-    }
-    let write = || -> io::Result<()> {
-        let f = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o664)
-            .open(path)?;
-        f.set_len(image.len() as u64)?;
-        f.write_all_at(&image[BLOCK_SIZE..], BLOCK_SIZE as u64)?;
-        f.write_all_at(&image[..HEADER_SIZE], 0)
-    };
-    write().inspect_err(|_| {
-        let _ = fs::remove_file(path);
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::super::descriptor::{PAGE_TYPE_ARRAY_32BIT, PageDescriptor};
     use super::super::super::journal_v1::StoreData;
     use super::super::{Verdict, extents, metrics, pages, validate};
+    use super::super::HEADER_SIZE;
     use super::*;
 
     const S: u64 = 1_000_000;
@@ -834,24 +970,72 @@ mod tests {
         );
     }
 
+    /// The streamed file is the image, byte for byte, whatever the runs (7 bytes in unit tests): one page, more
+    /// metrics than a sparse index step, duplicates at one start, an extent a duplicate empties, pages given out of
+    /// order.
     #[test]
-    fn write_in_place_replaces_a_longer_file() {
+    fn a_streamed_file_is_the_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journalfile-1-0000000001.njfv2");
+        let cases: Vec<(&str, Vec<Page>)> = vec![
+            ("one page", vec![page(1, 100, 103, 1)]),
+            (
+                "300 metrics",
+                (0..300u32)
+                    .map(|i| Page {
+                        uuid: {
+                            let mut u = [0u8; 16];
+                            u[..4].copy_from_slice(&i.to_be_bytes());
+                            u
+                        },
+                        ..page(0, 100 + i as i64, 200 + i as i64, 1 + u64::from(i / 109))
+                    })
+                    .collect(),
+            ),
+            (
+                "duplicates",
+                vec![page(1, 100, 103, 1), page(1, 100, 104, 2), page(1, 100, 102, 3)],
+            ),
+            (
+                "an emptied extent",
+                vec![page(1, 100, 103, 1), page(2, 100, 103, 2), page(1, 100, 110, 3)],
+            ),
+            (
+                "out of order",
+                vec![page(3, 300, 303, 9), page(1, 100, 103, 1), page(2, 200, 203, 5)],
+            ),
+        ];
+        for (name, pages) in cases {
+            let build = |pages: &[Page]| {
+                let mut b = Builder::new(4096);
+                for p in pages {
+                    b.page(*p);
+                }
+                b
+            };
+            let layout = build(&pages).layout().unwrap();
+            drop(layout.write(&path).unwrap());
+            assert_eq!(fs::read(&path).unwrap(), layout.to_vec(), "{name}");
+            assert_eq!(Some(layout.to_vec()), build(&pages).build(), "{name}");
+        }
+    }
+
+    /// Writing over a longer file leaves the image alone; a file that cannot be created is a creation error.
+    #[test]
+    fn writing_replaces_a_longer_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("journalfile-1-0000000001.njfv2");
         fs::write(&path, vec![0xAA; 3 * BLOCK_SIZE + 17]).unwrap();
         let mut b = Builder::new(4096);
         b.page(page(1, 100, 103, 1));
-        let image = b.build().unwrap();
-        write_in_place(&path, &image).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), image);
-        write_in_place(&path, &image).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), image);
-        // a failed write leaves no file
+        let layout = b.layout().unwrap();
+        drop(layout.write(&path).unwrap());
+        assert_eq!(fs::read(&path).unwrap(), layout.to_vec());
         let missing = dir
             .path()
             .join("none")
             .join("journalfile-1-0000000001.njfv2");
-        assert!(write_in_place(&missing, &image).is_err());
+        assert!(matches!(layout.write(&missing), Err(WriteError::Create(_))));
         assert!(!missing.exists());
     }
 }

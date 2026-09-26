@@ -163,7 +163,8 @@ impl Dbengine {
             );
         }
         df.writer_flushing_to_open();
-        flush_to_open(td, &df, pos, size_bytes, &written, result.is_ok());
+        let journal_pos = result.as_ref().map_or(0, |&at| at);
+        flush_to_open(td, &df, pos, size_bytes, journal_pos, &written, result.is_ok());
         td.extent_finished();
     }
 
@@ -201,11 +202,21 @@ impl Dbengine {
 
 /// `extent_flush_to_open()`: a written extent's pages join the open cache unless the tier is shutting down, and a
 /// write to a file other than the last one leaves it to index.
-fn flush_to_open(td: &TierData, df: &DataFile, pos: u64, size_bytes: u32, pages: &[Written], ok: bool) {
+/// The pages join in extent order, under the key of the extent's transaction (`journal_pos`); the file's last time
+/// moves to the newest page, while quiescing too.
+fn flush_to_open(
+    td: &TierData,
+    df: &DataFile,
+    pos: u64,
+    size_bytes: u32,
+    journal_pos: u64,
+    pages: &[Written],
+    ok: bool,
+) {
     let still_running = !td.quiesced();
     if still_running && ok {
         let mut open = td.open_mut();
-        for &(uuid, start_s, end_s, update_every_s) in pages {
+        for (i, &(uuid, start_s, end_s, update_every_s)) in (0u32..).zip(pages) {
             let page = OpenPage {
                 end_time_s: end_s,
                 update_every_s,
@@ -213,7 +224,13 @@ fn flush_to_open(td: &TierData, df: &DataFile, pos: u64, size_bytes: u32, pages:
                 block: pos / BLOCK_SIZE as u64,
                 bytes: size_bytes,
             };
-            open.add(uuid, start_s, page);
+            open.add(uuid, start_s, page, (journal_pos, i));
+        }
+    }
+    if ok {
+        let newest = pages.iter().map(|p| p.2).max().unwrap_or(0);
+        if newest > 0 {
+            df.extend_last_time(newest);
         }
     }
     df.flushed_to_open();

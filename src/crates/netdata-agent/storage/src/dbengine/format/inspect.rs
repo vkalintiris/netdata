@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
-use super::crc::crc32;
+use super::crc::{crc_bytes, crc32};
 use super::descriptor::{
     DESCRIPTOR_SIZE, PAGE_TYPE_ARRAY_32BIT, PAGE_TYPE_ARRAY_TIER1, PAGE_TYPE_GORILLA_32BIT,
     PageDescriptor,
@@ -18,7 +18,8 @@ use super::descriptor::{
 use super::extent::{self, Extent, PageSlot};
 use super::journal_v1::{self, Event};
 use super::journal_v2::{
-    self, HEADER_SIZE, Header, PAGE_HEADER_SIZE, PAGE_SIZE, PageEntry, PageHeader, Retention,
+    self, HEADER_SIZE, Header, METRIC_SIZE, MetricEntry, PAGE_HEADER_SIZE, PAGE_SIZE, PageEntry,
+    PageHeader, Retention, TRAILER_SIZE,
 };
 use super::page::{DiskPage, gorilla, tier1};
 use super::{BLOCK_SIZE, FileKind, ReadAt, file_name, parse_file_name, tier_dir_name};
@@ -816,6 +817,49 @@ pub fn dump(dir: &Path, uuid: &[u8; 16], out: &mut Vec<String>) -> io::Result<()
             }));
         }
     })
+}
+
+/// A v2 file with what its runtime and startup builds may tell apart made equal (D67.7): a single-point page's update
+/// every (the collector's at run time, the registry's at startup) becomes 0, each metric's update every its last
+/// page's, and the page and metric list CRCs follow. Anything out of bounds is left as it is.
+pub fn normalize_v2(data: &[u8]) -> Vec<u8> {
+    let mut out = data.to_vec();
+    let Some(hb) = data.get(..HEADER_SIZE) else {
+        return out;
+    };
+    let h = Header::decode(hb.try_into().expect("a header's bytes"));
+    let metric_offset = h.metric_offset as usize;
+    let metric_trailer = metric_offset + h.metric_count as usize * METRIC_SIZE;
+    if metric_trailer + TRAILER_SIZE > out.len() {
+        return out;
+    }
+    for i in 0..h.metric_count as usize {
+        let at = metric_offset + i * METRIC_SIZE;
+        let mut metric = MetricEntry::decode(out[at..at + METRIC_SIZE].try_into().expect("an entry"));
+        let list = metric.page_offset as usize + PAGE_HEADER_SIZE;
+        let end = list + metric.entries as usize * PAGE_SIZE;
+        if end + TRAILER_SIZE > out.len() {
+            continue;
+        }
+        let mut last_ue = 0;
+        for pa in (list..end).step_by(PAGE_SIZE) {
+            let mut page = PageEntry::decode(out[pa..pa + PAGE_SIZE].try_into().expect("an entry"));
+            if page.delta_start_s == page.delta_end_s {
+                page.update_every_s = 0;
+            }
+            last_ue = page.update_every_s;
+            out[pa..pa + PAGE_SIZE].copy_from_slice(&page.encode());
+        }
+        let crc = crc_bytes(crc32(&out[list..end]));
+        out[end..end + TRAILER_SIZE].copy_from_slice(&crc);
+        if metric.entries > 0 {
+            metric.update_every_s = last_ue;
+        }
+        out[at..at + METRIC_SIZE].copy_from_slice(&metric.encode());
+    }
+    let crc = crc_bytes(crc32(&out[metric_offset..metric_trailer]));
+    out[metric_trailer..metric_trailer + TRAILER_SIZE].copy_from_slice(&crc);
+    out
 }
 
 #[cfg(test)]

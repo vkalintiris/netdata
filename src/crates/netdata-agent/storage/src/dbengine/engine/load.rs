@@ -16,12 +16,12 @@ use std::time::Instant;
 use netdata_agent_log::{
     ErrorLimit, Priority, Source, nd_log, nd_log_limit, netdata_log_error, netdata_log_info,
 };
-use netdata_agent_text::size::size_to_string;
 
 use super::io::{
     IoFile, align_ceiling, align_floor, check_file_properties, open_for_io, unlink, unlink_if_exists,
     write_retrying,
 };
+use super::index::write_v2;
 use super::mrg::Mrg;
 use crate::dbengine::format::descriptor::{
     PAGE_TYPE_ARRAY_TIER1, PAGE_TYPE_GORILLA_32BIT, log_validation,
@@ -29,8 +29,7 @@ use crate::dbengine::format::descriptor::{
 use crate::dbengine::format::extent::COMPRESSION_ZSTD;
 use crate::dbengine::format::journal_v1::{self, Replay};
 use crate::dbengine::format::journal_v2::{
-    self, Builder, HEADER_SIZE, Invalid, Page, ReplayRecord, Verdict, open_cache_pages,
-    write_in_place,
+    self, HEADER_SIZE, Invalid, Page, ReplayRecord, Verdict, open_cache_pages,
 };
 use crate::dbengine::format::superblock::{self, SuperblockError};
 use crate::dbengine::format::{BLOCK_SIZE, FileKind, ReadAt, file_name};
@@ -56,6 +55,8 @@ pub struct TierConfig {
     pub max_disk_space: u64,
     /// `db_engine_journal_check`: v2 files are checked whole at load.
     pub journal_check: bool,
+    /// `ctx->config.max_retention_s`: the time quota, 0 for none.
+    pub max_retention_s: i64,
     /// `ctx->config.page_type`: what the tier's collectors write.
     pub page_type: u8,
     /// `ctx->config.global_compress_alg`: how the tier's extents are compressed.
@@ -72,6 +73,7 @@ impl TierConfig {
             direct_io: false,
             max_disk_space: 0,
             journal_check: false,
+            max_retention_s: 0,
             page_type: TierConfig::default_page_type(tier),
             compression: COMPRESSION_ZSTD,
         }
@@ -96,7 +98,7 @@ impl TierConfig {
         target.clamp(MIN_DATAFILE_SIZE, MAX_DATAFILE_SIZE)
     }
 
-    fn file(&self, kind: FileKind, fileno: u32) -> PathBuf {
+    pub(crate) fn file(&self, kind: FileKind, fileno: u32) -> PathBuf {
         self.path.join(file_name(kind, 1, fileno))
     }
 }
@@ -106,6 +108,9 @@ impl TierConfig {
 pub struct V2File {
     pub file: File,
     pub size: u64,
+    /// The header's start and end in seconds (`journalfile_v2_data_set()`).
+    pub first_time_s: i64,
+    pub last_time_s: i64,
 }
 
 /// A data file pair of the tier (`struct rrdengine_datafile` with its journal) as its startup left it.
@@ -122,6 +127,9 @@ pub struct Pair {
     pub journal_pos: u64,
     /// The v2 index when the file has one (loaded, or built at this start).
     pub v2: Option<V2File>,
+    /// `journalfile->v2.first_time_s` and `last_time_s`: the v2 header's, else the replay's.
+    pub first_time_s: i64,
+    pub last_time_s: i64,
 }
 
 /// A tier after its startup.
@@ -159,6 +167,8 @@ struct Journal {
     /// The replay's first time, which lowers the tier's (`journalfile_restore_extent_metadata()`); 0 when the journal
     /// was not replayed or had no transaction, `i64::MAX` when none of its pages was valid.
     first_time_s: i64,
+    /// The replay's last time, 0 when the journal was not replayed.
+    last_time_s: i64,
     /// The samples of the metrics the replay added to the registry.
     samples: u64,
 }
@@ -422,7 +432,12 @@ fn journal_v2_load(cfg: &TierConfig, fileno: u32) -> Option<V2File> {
                 0.0,
                 started.elapsed().as_secs_f64() * 1000.0
             );
-            Some(V2File { file, size })
+            Some(V2File {
+                file,
+                size,
+                first_time_s: (header.start_time_ut / 1_000_000) as i64,
+                last_time_s: (header.end_time_ut / 1_000_000) as i64,
+            })
         }
     }
 }
@@ -468,55 +483,6 @@ fn log_replay(records: &[ReplayRecord], now_s: i64) {
     }
 }
 
-/// `journalfile_migrate_to_v2_callback()` at startup: the replayed pages indexed and written in place, with C's
-/// records; `None` when there are no metrics (nothing is written) or the write failed (the file is removed and
-/// skipped).
-fn build_v2(cfg: &TierConfig, fileno: u32, journal_pos: u64, pages: &[Page]) -> Option<V2File> {
-    let mut b = Builder::new(journal_pos as u32);
-    let (mut metrics, mut extents) = (BTreeSet::new(), BTreeSet::new());
-    for p in pages {
-        metrics.insert(p.uuid);
-        extents.insert(p.block);
-        b.page(*p);
-    }
-    if metrics.is_empty() {
-        return None;
-    }
-    netdata_log_info!(
-        "DBENGINE: tier {}: indexing {}: extents {}, metrics {}, pages {}",
-        cfg.tier,
-        file_name(FileKind::JournalV2, 1, fileno),
-        extents.len(),
-        metrics.len(),
-        pages.len()
-    );
-    let path = cfg.file(FileKind::JournalV2, fileno);
-    let image = b.build()?;
-    let written = write_in_place(&path, &image).and_then(|()| File::open(&path));
-    match written {
-        Ok(file) => {
-            netdata_log_info!(
-                "DBENGINE: tier {}: migrated {}, {}",
-                cfg.tier,
-                file_name(FileKind::JournalV2, 1, fileno),
-                size_to_string(image.len() as u64, "B", false).unwrap_or_default()
-            );
-            Some(V2File {
-                file,
-                size: image.len() as u64,
-            })
-        }
-        Err(_) => {
-            netdata_log_info!(
-                "DBENGINE: failed to build index \"{}\", file will be skipped",
-                path.display()
-            );
-            let _ = std::fs::remove_file(&path);
-            None
-        }
-    }
-}
-
 /// `journalfile_load()`: the v2 index of a file that is not the last one, else the v1 journal replayed into the
 /// registry (`now_s` + 1 is the newest acceptable time); a replayed journal gets its v2 built, except the last file
 /// when it is small and (on tier 0) recent, whose pages stay open. `None` makes the pair invalid.
@@ -543,6 +509,7 @@ fn journal_load(
             open_pages: Vec::new(),
             create_new_pair: false,
             first_time_s: 0,
+            last_time_s: 0,
             samples: 0,
         });
     };
@@ -555,6 +522,7 @@ fn journal_load(
             open_pages: Vec::new(),
             create_new_pair: false,
             first_time_s: 0,
+            last_time_s: 0,
             samples: 0,
         });
     }
@@ -623,10 +591,16 @@ fn journal_load(
             open_pages: open.pages,
             create_new_pair: false,
             first_time_s: open.first_time_s,
+            last_time_s: open.last_time_s,
             samples,
         });
     }
-    let v2 = build_v2(cfg, fileno, size, &open.pages);
+    let v2 = write_v2(cfg, fileno, size, open.pages.iter().copied()).map(|(file, layout)| V2File {
+        file,
+        size: layout.size() as u64,
+        first_time_s: (layout.header().start_time_ut / 1_000_000) as i64,
+        last_time_s: (layout.header().end_time_ut / 1_000_000) as i64,
+    });
     // pages a failed or empty build did not index stay open
     let open_pages = if v2.is_some() { Vec::new() } else { open.pages };
     Some(Journal {
@@ -636,6 +610,7 @@ fn journal_load(
         open_pages,
         create_new_pair: is_last,
         first_time_s: open.first_time_s,
+        last_time_s: open.last_time_s,
         samples,
     })
 }
@@ -759,6 +734,8 @@ fn create_new_pair(cfg: &TierConfig, tier: &mut Tier) -> bool {
         journal: Some(journal),
         journal_pos: BLOCK_SIZE as u64,
         v2: None,
+        first_time_s: 0,
+        last_time_s: 0,
     });
     tier.current_disk_space += NEW_PAIR_SIZE;
     tier.last_fileno = fileno;
@@ -819,6 +796,10 @@ pub fn load(cfg: TierConfig, mrg: &Mrg, now_s: i64) -> io::Result<Tier> {
                 tier.current_disk_space +=
                     pos + journal.pos + journal.v2.as_ref().map_or(0, |v2| v2.size);
                 tier.samples += journal.samples;
+                let (first_time_s, last_time_s) = journal.v2.as_ref().map_or(
+                    (journal.first_time_s, journal.last_time_s),
+                    |v2| (v2.first_time_s, v2.last_time_s),
+                );
                 loaded.insert(
                     fileno,
                     Pair {
@@ -828,6 +809,8 @@ pub fn load(cfg: TierConfig, mrg: &Mrg, now_s: i64) -> io::Result<Tier> {
                         journal: journal.journal,
                         journal_pos: journal.pos,
                         v2: journal.v2,
+                        first_time_s,
+                        last_time_s,
                     },
                 );
             }
