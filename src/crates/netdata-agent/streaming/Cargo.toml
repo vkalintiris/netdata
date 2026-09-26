@@ -11,7 +11,8 @@ workspace = true
 [dependencies]
 netdata-agent-log = { workspace = true }
 brotli-decompressor = { workspace = true }
-flate2 = { workspace = true }
+# the C zlib the C agent links: the same inflate and its error codes
+flate2 = { workspace = true, features = ["zlib"] }
 lz4_flex = { workspace = true }
 mio = { workspace = true }
 netdata-agent-evloop = { workspace = true }

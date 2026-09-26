@@ -4,10 +4,20 @@
 //! the connection.
 
 use brotli_decompressor::{BrotliDecompressStream, BrotliResult, BrotliState, StandardAlloc};
-use flate2::{Crc, Decompress, FlushDecompress, Status};
+use flate2::{Decompress, FlushDecompress, Status};
+use netdata_agent_log::{Priority, Source, nd_log};
 use zstd::stream::raw::{Decoder as ZstdDecoder, InBuffer, Operation, OutBuffer};
 
 use crate::caps;
+
+/// The engines' own records before a failed message ends the connection (`netdata_log_error()`).
+fn failed(message: std::fmt::Arguments<'_>) {
+    nd_log!(
+        Source::Daemon,
+        Priority::Err,
+        "STREAM_DECOMPRESS: {message}"
+    );
+}
 
 /// `COMPRESSION_MAX_CHUNK`.
 const MAX_CHUNK: usize = 0x4000;
@@ -37,119 +47,6 @@ pub fn decode_signature(bytes: [u8; SIGNATURE_SIZE]) -> Option<usize> {
     Some((((sign >> 8) & 0x7f) | ((sign >> 9) & (0x7f << 7))) as usize)
 }
 
-/// The gzip member header zlib's `inflate()` parses before the deflate data (RFC 1952).
-#[derive(Debug, Default)]
-struct GzipHeader {
-    /// Bytes of the fixed part seen so far.
-    fixed: Vec<u8>,
-    /// What remains to skip after the fixed part: extra field, name, comment, header CRC.
-    stage: GzipStage,
-    extra_left: Option<usize>,
-    extra_len: Vec<u8>,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum GzipStage {
-    #[default]
-    Fixed,
-    Extra,
-    Name,
-    Comment,
-    HeaderCrc(u8),
-    Done,
-}
-
-const FHCRC: u8 = 1 << 1;
-const FEXTRA: u8 = 1 << 2;
-const FNAME: u8 = 1 << 3;
-const FCOMMENT: u8 = 1 << 4;
-
-impl GzipHeader {
-    /// Consumes header bytes from `input`; returns how many it took, or `Err` for a stream that is not gzip.
-    fn consume(&mut self, input: &[u8]) -> Result<usize, ()> {
-        let mut i = 0;
-        while i < input.len() && self.stage != GzipStage::Done {
-            let b = input[i];
-            let flags = self.fixed.get(3).copied().unwrap_or(0);
-            match self.stage {
-                GzipStage::Fixed => {
-                    self.fixed.push(b);
-                    i += 1;
-                    if self.fixed.len() == 1 && b != 0x1f
-                        || self.fixed.len() == 2 && b != 0x8b
-                        || self.fixed.len() == 3 && b != 8
-                        || self.fixed.len() == 4 && b & 0xe0 != 0
-                    {
-                        return Err(());
-                    }
-                    if self.fixed.len() == 10 {
-                        self.stage = self.after(GzipStage::Fixed, flags_of(&self.fixed));
-                    }
-                }
-                GzipStage::Extra => {
-                    match self.extra_left {
-                        None => {
-                            self.extra_len.push(b);
-                            if self.extra_len.len() == 2 {
-                                self.extra_left = Some(usize::from(u16::from_le_bytes([
-                                    self.extra_len[0],
-                                    self.extra_len[1],
-                                ])));
-                            }
-                        }
-                        Some(left) => self.extra_left = Some(left - 1),
-                    }
-                    i += 1;
-                    if self.extra_left == Some(0) {
-                        self.stage = self.after(GzipStage::Extra, flags);
-                    }
-                }
-                GzipStage::Name | GzipStage::Comment => {
-                    i += 1;
-                    if b == 0 {
-                        self.stage = self.after(self.stage, flags);
-                    }
-                }
-                GzipStage::HeaderCrc(seen) => {
-                    i += 1;
-                    self.stage = if seen == 1 {
-                        GzipStage::Done
-                    } else {
-                        GzipStage::HeaderCrc(seen + 1)
-                    };
-                }
-                GzipStage::Done => {}
-            }
-        }
-        Ok(i)
-    }
-
-    /// The stage after `stage`, given the header flags.
-    fn after(&self, stage: GzipStage, flags: u8) -> GzipStage {
-        let order = [
-            (GzipStage::Extra, FEXTRA),
-            (GzipStage::Name, FNAME),
-            (GzipStage::Comment, FCOMMENT),
-            (GzipStage::HeaderCrc(0), FHCRC),
-        ];
-        let from = match stage {
-            GzipStage::Fixed => 0,
-            GzipStage::Extra => 1,
-            GzipStage::Name => 2,
-            GzipStage::Comment => 3,
-            _ => 4,
-        };
-        order[from..]
-            .iter()
-            .find(|(_, flag)| flags & flag != 0)
-            .map_or(GzipStage::Done, |&(next, _)| next)
-    }
-}
-
-fn flags_of(fixed: &[u8]) -> u8 {
-    fixed[3]
-}
-
 /// One connection's decompression state (`struct decompressor_state`).
 enum Engine {
     Zstd(Box<ZstdDecoder<'static>>),
@@ -159,13 +56,8 @@ enum Engine {
         /// Where C's ring would write next; decides the room a block may decompress into.
         write_pos: usize,
     },
-    Gzip {
-        header: GzipHeader,
-        inflate: Box<Decompress>,
-        crc: Crc,
-        /// The member ended: the next 8 bytes are its trailer.
-        trailer: Option<Vec<u8>>,
-    },
+    /// zlib's own gzip inflate, as C's `inflateInit2(15 + 16)`.
+    Gzip(Box<Decompress>),
     Brotli(Box<BrotliState<StandardAlloc, StandardAlloc, StandardAlloc>>),
 }
 
@@ -228,12 +120,7 @@ impl Decompressor {
             (Engine::Brotli(Box::new(state)), SMALL_OUTPUT)
         } else if capabilities & caps::GZIP != 0 {
             (
-                Engine::Gzip {
-                    header: GzipHeader::default(),
-                    inflate: Box::new(Decompress::new(false)),
-                    crc: Crc::new(),
-                    trailer: None,
-                },
+                Engine::Gzip(Box::new(Decompress::new_gzip(15))),
                 SMALL_OUTPUT,
             )
         } else {
@@ -278,16 +165,28 @@ impl Decompressor {
         result
     }
 
-    /// `stream_decompress()`: one message into the output buffer; the decompressed length (0 is a failure too).
+    /// `stream_decompress()`: one message into the output buffer; the decompressed length (0 is a failure too). A
+    /// failing engine logs C's line first.
     fn decompress(&mut self, data: &[u8]) -> Result<usize, ()> {
         let output = &mut self.output;
+        let size = output.len();
         match &mut self.engine {
             Engine::Zstd(decoder) => {
                 let mut input = InBuffer::around(data);
                 let mut out = OutBuffer::around(&mut output[..]);
-                decoder.run(&mut input, &mut out).map_err(|_| ())?;
+                // the crate's error text is ZSTD_getErrorName()
+                if let Err(e) = decoder.run(&mut input, &mut out) {
+                    failed(format_args!("ZSTD_decompressStream() return error: {e}"));
+                    return Err(());
+                }
                 // A frame decompressing to more than the buffer is refused.
                 if input.pos < data.len() {
+                    failed(format_args!(
+                        "ZSTD_decompressStream() consumed only {} of {} compressed bytes after filling the {size}-byte \
+                         output buffer (frame decompresses to more than the buffer); failing the connection",
+                        input.pos,
+                        data.len()
+                    ));
                     return Err(());
                 }
                 Ok(out.pos())
@@ -297,63 +196,62 @@ impl Decompressor {
                     *write_pos = 0;
                 }
                 let room = LZ4_RING - *write_pos;
-                let n =
-                    lz4_flex::block::decompress_into_with_dict(data, &mut output[..room], history)
-                        .map_err(|_| ())?;
-                *write_pos += n;
-                history.extend_from_slice(&output[..n]);
-                if history.len() > LZ4_WINDOW {
-                    history.drain(..history.len() - LZ4_WINDOW);
-                }
-                Ok(n)
-            }
-            Engine::Gzip {
-                header,
-                inflate,
-                crc,
-                trailer,
-            } => {
-                let mut data = data;
-                let taken = header.consume(data)?;
-                data = &data[taken..];
-                let mut produced = 0;
-                if header.stage == GzipStage::Done && trailer.is_none() {
-                    let (before_in, before_out) = (inflate.total_in(), inflate.total_out());
-                    let status = inflate
-                        .decompress(data, &mut output[..], FlushDecompress::Sync)
-                        .map_err(|_| ())?;
-                    let consumed = (inflate.total_in() - before_in) as usize;
-                    produced = (inflate.total_out() - before_out) as usize;
-                    crc.update(&output[..produced]);
-                    data = &data[consumed..];
-                    match status {
-                        Status::StreamEnd => *trailer = Some(Vec::new()),
-                        Status::Ok => {}
-                        // zlib's Z_BUF_ERROR: no progress was possible.
-                        Status::BufError => return Err(()),
-                    }
-                }
-                if let Some(t) = trailer {
-                    let take = data.len().min(8 - t.len());
-                    t.extend_from_slice(&data[..take]);
-                    data = &data[take..];
-                    if t.len() == 8 {
-                        let want_crc = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
-                        let want_len = u32::from_le_bytes([t[4], t[5], t[6], t[7]]);
-                        if want_crc != crc.sum() || want_len != crc.amount() {
-                            return Err(());
+                match lz4_flex::block::decompress_into_with_dict(data, &mut output[..room], history)
+                {
+                    Ok(n) => {
+                        *write_pos += n;
+                        history.extend_from_slice(&output[..n]);
+                        if history.len() > LZ4_WINDOW {
+                            history.drain(..history.len() - LZ4_WINDOW);
                         }
+                        Ok(n)
+                    }
+                    Err(_) => {
+                        // liblz4 returns where in the input it failed, which lz4_flex does not tell (D55)
+                        failed(format_args!(
+                            "LZ4_decompress_safe_continue() returned negative value: -1 (compressed chunk is {} bytes)",
+                            data.len()
+                        ));
+                        Err(())
                     }
                 }
-                // Every compressed byte must be used, and the output must not fill the buffer.
-                if !data.is_empty() || produced == output.len() {
+            }
+            Engine::Gzip(inflate) => {
+                let (taken, produced) = (inflate.total_in(), inflate.total_out());
+                // zlib's return codes as C prints them: Z_NEED_DICT, Z_DATA_ERROR, Z_BUF_ERROR
+                let code = match inflate.decompress(data, &mut output[..], FlushDecompress::Sync) {
+                    Ok(Status::Ok | Status::StreamEnd) => 0,
+                    Ok(Status::BufError) => -5,
+                    Err(e) if e.needs_dictionary().is_some() => 2,
+                    Err(_) => -3,
+                };
+                if code != 0 {
+                    failed(format_args!("inflate() failed with error {code}"));
+                    return Err(());
+                }
+                let remaining = data.len() - (inflate.total_in() - taken) as usize;
+                if remaining != 0 {
+                    failed(format_args!(
+                        "inflate() did not use all compressed data we provided (compressed payload {} bytes, \
+                         remaining to be uncompressed {remaining})",
+                        data.len()
+                    ));
+                    return Err(());
+                }
+                let produced = (inflate.total_out() - produced) as usize;
+                if produced == size {
+                    failed(format_args!(
+                        "inflate() produced at least {size} bytes, exceeding the max supported size of {MAX_CHUNK} \
+                         bytes (compressed payload {} bytes)",
+                        data.len()
+                    ));
                     return Err(());
                 }
                 Ok(produced)
             }
             Engine::Brotli(state) => {
                 let (mut available_in, mut input_offset) = (data.len(), 0);
-                let (mut available_out, mut output_offset, mut total_out) = (output.len(), 0, 0);
+                let (mut available_out, mut output_offset, mut total_out) = (size, 0, 0);
                 let result = BrotliDecompressStream(
                     &mut available_in,
                     &mut input_offset,
@@ -364,13 +262,36 @@ impl Decompressor {
                     &mut total_out,
                     state,
                 );
-                if matches!(result, BrotliResult::ResultFailure)
-                    || available_in != 0
-                    || available_out == 0
-                {
+                if matches!(result, BrotliResult::ResultFailure) {
+                    failed(format_args!("Brotli decompression failed."));
                     return Err(());
                 }
-                Ok(output.len() - available_out)
+                if available_in != 0 {
+                    failed(format_args!(
+                        "BrotliDecoderDecompressStream() did not use all the input buffer, {available_in} bytes out \
+                         of {} remain",
+                        data.len()
+                    ));
+                    return Err(());
+                }
+                if available_out == 0 {
+                    failed(format_args!(
+                        "BrotliDecoderDecompressStream() produced at least {size} bytes, exceeding the max supported \
+                         size of {MAX_CHUNK} bytes (compressed payload {} bytes)",
+                        data.len()
+                    ));
+                    return Err(());
+                }
+                let produced = size - available_out;
+                if produced == 0 {
+                    failed(format_args!(
+                        "BrotliDecoderDecompressStream() did not produce any output from the input provided (input \
+                         buffer {} bytes)",
+                        data.len()
+                    ));
+                    return Err(());
+                }
+                Ok(produced)
             }
         }
     }
@@ -506,5 +427,38 @@ mod tests {
         let bomb = zstd::bulk::compress(&vec![0u8; 2 << 20], 1).unwrap();
         assert_eq!(run(caps::ZSTD, &frame(&bomb), 64), Err(Failure::NoBytes));
         assert!(Decompressor::for_capabilities(caps::V2).is_none());
+    }
+
+    #[test]
+    fn failing_engines_log_cs_lines() {
+        let line = |capabilities: u32, stream: &[u8]| {
+            let (result, records) =
+                netdata_agent_log::capture(|| run(capabilities, stream, 1 << 20));
+            assert_eq!(result, Err(Failure::NoBytes));
+            let messages: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+            assert_eq!(messages.len(), 1, "{messages:?}");
+            messages[0].clone()
+        };
+        assert_eq!(
+            line(caps::ZSTD, &frame(b"not zstd")),
+            "STREAM_DECOMPRESS: ZSTD_decompressStream() return error: Unknown frame descriptor"
+        );
+        let bomb = zstd::bulk::compress(&vec![0u8; 2 << 20], 1).unwrap();
+        assert!(line(caps::ZSTD, &frame(&bomb)).starts_with(&format!(
+            "STREAM_DECOMPRESS: ZSTD_decompressStream() consumed only "
+        )));
+        // zlib: "incorrect header check" is Z_DATA_ERROR
+        assert_eq!(
+            line(caps::GZIP, &frame(b"not gzip")),
+            "STREAM_DECOMPRESS: inflate() failed with error -3"
+        );
+        assert_eq!(
+            line(caps::BROTLI, &frame(&[0xff; 32])),
+            "STREAM_DECOMPRESS: Brotli decompression failed."
+        );
+        assert_eq!(
+            line(caps::LZ4, &frame(&[0xf0, 1, 2])),
+            "STREAM_DECOMPRESS: LZ4_decompress_safe_continue() returned negative value: -1 (compressed chunk is 3 bytes)"
+        );
     }
 }
