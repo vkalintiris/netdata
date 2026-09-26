@@ -84,3 +84,86 @@ fn opening_a_c_cache_keeps_its_schema() {
         assert_eq!(before, after, "{run}");
     }
 }
+
+/// A writable copy of a snapshot's two databases.
+fn copy_cache(fx: &std::path::Path, run: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for file in ["netdata-meta.db", "context-meta.db"] {
+        let copy = dir.path().join(file);
+        std::fs::copy(fx.join(run).join("cache").join(file), &copy).unwrap();
+        std::fs::set_permissions(&copy, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+            .unwrap();
+    }
+    dir
+}
+
+fn hex(id: &[u8; 16]) -> String {
+    id.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The chart and dimension readers give every host's metrics as the checkers' metric map lists them, the archived
+/// hosts are the stored children, and the dimension UUIDs are C's count (brief §5.2 items 2-4).
+#[test]
+fn the_readers_list_cs_metrics_and_hosts() {
+    use netdata_agent_metadata::open::{MetaDb, SqliteSettings};
+    use netdata_agent_metadata::read::{chart_list, dimension_list};
+    let Some(fx) = fixtures() else { return };
+    for (run, uuids) in [
+        ("run1", 116),
+        ("run2", 116),
+        ("runR", 116),
+        ("orig-20260924/run1", 122),
+        ("orig-20260924/run2", 116),
+        ("orig-20260924/runR", 122),
+    ] {
+        let dir = copy_cache(&fx, run);
+        let meta = MetaDb::open(dir.path(), &SqliteSettings::default()).expect(run);
+        let hosts: Vec<([u8; 16], String)> = {
+            let c = meta.lock();
+            let mut stmt = c.prepare("SELECT host_id, hostname FROM host").unwrap();
+            stmt.query_map([], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?.try_into().unwrap(), r.get(1)?))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+        };
+        let mut rows = Vec::new();
+        for (host, hostname) in &hosts {
+            let c = meta.lock();
+            let mut update_every = std::collections::HashMap::new();
+            chart_list(&c, host, |chart| {
+                update_every.insert(chart.id.unwrap(), chart.update_every);
+            });
+            dimension_list(&c, host, |dim| {
+                let chart = dim.chart_id.unwrap();
+                rows.push(format!(
+                    "{}\t{chart}\t{}\t{}\t{}\t{hostname}",
+                    hex(&dim.dim_id),
+                    dim.id.unwrap(),
+                    update_every[&chart],
+                    hex(host)
+                ));
+            });
+        }
+        rows.sort();
+        let result = run.replace('/', "-");
+        let mut want: Vec<String> =
+            std::fs::read_to_string(fx.join("results").join(&result).join("metric-map.tsv"))
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .map(String::from)
+                .collect();
+        want.sort();
+        assert_eq!(rows, want, "{run}");
+        let archived: Vec<String> = meta
+            .archived_hosts()
+            .into_iter()
+            .map(|h| h.hostname.unwrap())
+            .collect();
+        assert_eq!(archived, ["b6child"], "{run}");
+        assert_eq!(meta.dimension_uuids(|_| {}), uuids, "{run}");
+        meta.close();
+    }
+}

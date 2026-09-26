@@ -212,6 +212,11 @@ impl MetaDb {
         }
     }
 
+    /// The cache directory the database lives in.
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
+    }
+
     /// The connection, under the lock every user of `db_meta` takes.
     pub fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
