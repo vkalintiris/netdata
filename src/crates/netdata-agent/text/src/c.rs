@@ -99,6 +99,28 @@ pub fn strsep_skip<'a>(rest: &mut Option<&'a [u8]>, separators: &[u8]) -> &'a [u
     b""
 }
 
+/// `filename_from_path_entry()`: `path` and `entry` joined by one slash (trailing slashes of `path` and leading ones of
+/// `entry` collapse; an empty `path` is `.`), with `.extension` when one is given.
+pub fn filename_from_path_entry(path: &str, entry: &str, extension: Option<&str>) -> String {
+    let path = if path.is_empty() { "." } else { path };
+    let trimmed = path.trim_end_matches('/');
+    let entry = entry.trim_start_matches('/');
+    let (head, slash) = if trimmed.len() < path.len() && (!entry.is_empty() || trimmed.is_empty()) {
+        // keep one of the trailing slashes instead of adding one
+        (&path[..trimmed.len() + 1], "")
+    } else if entry.is_empty() {
+        (trimmed, "")
+    } else {
+        (trimmed, "/")
+    };
+    let mut out = format!("{head}{slash}{entry}");
+    if let Some(extension) = extension.filter(|e| !e.is_empty()) {
+        out.push('.');
+        out.push_str(extension);
+    }
+    out
+}
+
 /// The pieces successive `fgets(buf, size, fp)` calls return from `data`: each ends after a newline or holds
 /// `size - 1` bytes, whichever comes first; the last may end without a newline.
 pub fn fgets_chunks(data: &[u8], size: usize) -> impl Iterator<Item = &[u8]> {
@@ -179,6 +201,33 @@ pub(crate) fn modf(x: f64) -> (f64, f64) {
 
 #[cfg(test)]
 mod tests {
+    /// C's `check_strdupz_path_subpath()` (`src/daemon/unit_test.c`).
+    #[test]
+    fn paths_join_as_c() {
+        let cases = [
+            ("", "", "."),
+            ("/", "", "/"),
+            ("/etc/netdata", "", "/etc/netdata"),
+            ("/etc/netdata///", "", "/etc/netdata"),
+            ("/etc/netdata///", "health.d", "/etc/netdata/health.d"),
+            ("/etc/netdata///", "///health.d", "/etc/netdata/health.d"),
+            ("/etc/netdata", "///health.d", "/etc/netdata/health.d"),
+            ("", "///health.d", "./health.d"),
+            ("/", "///health.d", "/health.d"),
+        ];
+        for (path, entry, want) in cases {
+            assert_eq!(
+                filename_from_path_entry(path, entry, None),
+                want,
+                "{path:?} {entry:?}"
+            );
+        }
+        assert_eq!(
+            filename_from_path_entry("/x/", "tokens", Some("json")),
+            "/x/tokens.json"
+        );
+    }
+
     #[test]
     fn fgets_chunks_split_at_newlines_and_size() {
         let chunks: Vec<&[u8]> = fgets_chunks(b"ab\ncdefg\n\nh", 4).collect();

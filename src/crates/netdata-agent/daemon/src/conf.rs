@@ -10,6 +10,7 @@ use netdata_agent_inicfg::{
     SECTION_GLOBAL, SECTION_HEALTH, SECTION_LOGS, SECTION_PLUGINS, SECTION_PULSE, SECTION_REGISTRY,
     SECTION_STATSD, SECTION_WEB,
 };
+use netdata_agent_text::c::filename_from_path_entry;
 
 use netdata_agent_text::line_splitter::{Separators, quoted_strings_splitter};
 use netdata_agent_text::simple_pattern::{
@@ -110,12 +111,17 @@ impl Conf {
                 loaded.is_ok()
             }
             None => {
-                let user = format!("{}/{}", self.dirs.user_config, build::CONFIG_FILENAME);
+                let user =
+                    filename_from_path_entry(&self.dirs.user_config, build::CONFIG_FILENAME, None);
                 let mut loaded = self.netdata.load(Path::new(&user), overwrite_used, None);
                 if let Err(err) = &loaded {
                     nd_log!(Source::Daemon, Priority::Info, errno = netdata_agent_inicfg::load_errno(err);
                         "CONFIG: cannot load user config '{user}'. Will try the stock version.");
-                    let stock = format!("{}/{}", self.dirs.stock_config, build::CONFIG_FILENAME);
+                    let stock = filename_from_path_entry(
+                        &self.dirs.stock_config,
+                        build::CONFIG_FILENAME,
+                        None,
+                    );
                     loaded = self.netdata.load(Path::new(&stock), overwrite_used, None);
                     if let Err(err) = &loaded {
                         nd_log!(Source::Daemon, Priority::Info, errno = netdata_agent_inicfg::load_errno(err);
@@ -694,7 +700,7 @@ impl Conf {
     /// `cloud_conf_load()`: `cloud.d/cloud.conf` over the defaults.
     pub fn cloud_conf_load(&mut self, silent: bool) {
         self.section_directories();
-        let filename = format!("{}/cloud.conf", self.dirs.cloud);
+        let filename = filename_from_path_entry(&self.dirs.cloud, "cloud.conf", None);
         if let Err(err) = self.cloud.load(Path::new(&filename), true, None) {
             if !silent {
                 nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_inicfg::load_errno(&err);

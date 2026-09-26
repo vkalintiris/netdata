@@ -2,6 +2,7 @@
 //! settings and the `[db]` replication settings (read in C's order), and the per-connection receiver lookups that
 //! try the `[<machine guid>]` section, then the `[<api key>]` section, then the default.
 
+use netdata_agent_text::c::filename_from_path_entry;
 use std::path::Path;
 
 use netdata_agent_inicfg::{Config, load_errno};
@@ -163,11 +164,11 @@ fn text(v: Option<Vec<u8>>) -> String {
 impl StreamConf {
     /// `stream_conf_load_internal()`: the user file, else the stock one, then the renames.
     fn load_file(&mut self, user_dir: &str, stock_dir: &str) {
-        let user = format!("{user_dir}/stream.conf");
+        let user = filename_from_path_entry(user_dir, "stream.conf", None);
         if let Err(err) = self.config.load(Path::new(&user), false, None) {
             nd_log!(Source::Daemon, Priority::Notice, errno = load_errno(&err);
                 "CONFIG: cannot load user config '{user}'. Will try stock config.");
-            let stock = format!("{stock_dir}/stream.conf");
+            let stock = filename_from_path_entry(stock_dir, "stream.conf", None);
             if let Err(err) = self.config.load(Path::new(&stock), false, None) {
                 nd_log!(Source::Daemon, Priority::Notice, errno = load_errno(&err);
                     "CONFIG: cannot load stock config '{stock}'. Running with internal defaults.");
