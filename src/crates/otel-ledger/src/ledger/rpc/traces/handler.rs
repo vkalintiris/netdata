@@ -1,8 +1,8 @@
 //! `OtelTracesHandler` — typed `FunctionHandler` implementation for the
 //! `otel-traces` Function.
 //!
-//! The modes: `info` (capability discovery), `explore` (the span explorer)
-//! and `values` (its value suggestions), and `trace` (exact single-trace
+//! The modes: `info` (capability discovery), `explore` (the span explorer),
+//! `values` (its value suggestions) and `trace` (exact single-trace
 //! fetch). Mode selection and every request-SHAPE validation happen during
 //! deserialization (the wire's typed request — shape errors are transport
 //! 400s); this handler owns only the semantic validation (trace-id shape,
@@ -123,8 +123,7 @@ impl OtelTracesHandler {
     /// The `trace` mode: exact single-trace fetch via the engine's
     /// cross-source `trace_by_id`.
     ///
-    /// Ignores the ENVELOPE window; assembly bounds live in the `trace`
-    /// sub-object. Absent bounds capture the FULL range, remote history
+    /// Assembly bounds live in the `trace` sub-object. Absent bounds capture the FULL range, remote history
     /// included (so the lookup fails as too large once that history
     /// exceeds the download cache) — a trace is an exact object whose spans
     /// straddle files (WAL rotation is content-agnostic), and only the

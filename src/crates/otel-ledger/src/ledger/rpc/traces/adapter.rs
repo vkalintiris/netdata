@@ -32,8 +32,7 @@ pub(crate) fn parse_trace_id(s: &str) -> Result<sfst::TraceId, String> {
 
 /// Validate the `trace` sub-object's optional assembly bounds into a
 /// capture range. Both-or-neither; `after < before` — violations are
-/// client errors (the structural-error precedent of the envelope
-/// window). Any width is accepted: the agent is relaxed on time ranges
+/// client errors. Any width is accepted: the agent is relaxed on time ranges
 /// and the response's `coverage` declares the range used. `None` =
 /// full retention.
 pub(crate) fn validate_trace_bounds(

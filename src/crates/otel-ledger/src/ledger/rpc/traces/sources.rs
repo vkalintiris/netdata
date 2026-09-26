@@ -62,8 +62,7 @@ use wal::prefix::{chunk_boundaries, tail_start};
 const SFST_EXT: &str = "sfst";
 const WAL_EXT: &str = "wal";
 
-/// One WAL resolved to buildable parts: everything needed to
-/// materialize its sources any number of times without re-scanning.
+/// One WAL resolved to buildable parts: its chunk images and tail range.
 struct ResolvedWal {
     path: PathBuf,
     chunks: Vec<ResolvedChunk>,

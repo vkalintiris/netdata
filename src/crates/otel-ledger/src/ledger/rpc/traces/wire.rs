@@ -7,11 +7,12 @@
 //! selector, or more than one, is a client error; unknown keys anywhere are
 //! client errors.
 //!
-//! Nanosecond values (`*_ns`, `time_unix_nano`) go on the wire as JSON
-//! numbers and exceed 2^53: JavaScript consumers read them with ~256 ns
-//! granularity — fine for display, NOT for arithmetic requiring ns
-//! exactness. Anything a client must echo back exactly (a pagination
-//! anchor) is a STRING for exactly this reason.
+//! The trace answer's nanosecond values (`*_ns`, `time_unix_nano`) go on
+//! the wire as JSON numbers and exceed 2^53: JavaScript consumers read them
+//! with ~256 ns granularity — fine for display, NOT for arithmetic requiring
+//! ns exactness. The explorer sends the values a client computes with or
+//! echoes back (row starts, self-time sums, row cursors) as decimal STRINGS
+//! for exactly this reason.
 
 use serde::{Deserialize, Serialize};
 
