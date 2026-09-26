@@ -555,29 +555,6 @@ impl<'a> ChunkReader<'a> {
         Ok(index)
     }
 
-    /// Whether the file carries the optional per-file trace rollup (`TRSU`).
-    pub fn has_trace_rollup(&self) -> bool {
-        self.container.has_chunk(crate::CHUNK_TRACE_ROLLUP)
-    }
-
-    /// Decode and validate the per-file trace rollup (`TRSU`): every
-    /// struct-of-arrays field must be index-parallel (the corrupt-file
-    /// guard — a length mismatch is a decode error, not a panic later).
-    pub fn trace_rollup(&self) -> Result<crate::TraceRollup, Error> {
-        // The rollup summarizes the `TRCE` column — the writer guarantees
-        // TRSU ⟹ trace_id at seal; this is the symmetric read-side guard for
-        // a file produced out-of-band (the same guard TIDX and TBLM carry).
-        // Without it, a missing rollup row on such a file would let the
-        // trace-level gate prove "trace absent" where assembly would have
-        // surfaced the corruption.
-        self.require_column(TraceIds::NAME, TraceIds::COLUMN_TYPE)?;
-        let rollup: crate::TraceRollup = self.decode_chunk(crate::CHUNK_TRACE_ROLLUP)?;
-        // Structural validation lives on the type (unit-tested there):
-        // index-parallelism, ref ranges, flags, strictly increasing ids.
-        rollup.validate(self.metadata()?.id_ranges.high_end.0)?;
-        Ok(rollup)
-    }
-
     /// Decode and validate the span link structure (`LNKB`). See
     /// [`event_index`](Self::event_index).
     pub fn link_index(&self) -> Result<crate::LinkIndex, Error> {

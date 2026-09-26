@@ -77,14 +77,13 @@ const MEMBERSHIP: &str = "membership.rs";
 /// Reader methods membership must not call: everything beyond ids, times and
 /// durations. The column manifest may be read for which columns exist (the
 /// explorer's legacy rule), never the seal's derived values.
-const MEMBERSHIP_DENIED: [&str; 13] = [
+const MEMBERSHIP_DENIED: [&str; 12] = [
     ".metadata(",
     ".fields(",
     ".tree(",
     "_raw(",
     ".stream_batch",
     ".trace_id_index(",
-    ".trace_rollup(",
     ".event_index(",
     ".link_index(",
     ".child_durations(",

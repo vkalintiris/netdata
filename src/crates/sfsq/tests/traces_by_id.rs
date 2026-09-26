@@ -691,3 +691,37 @@ fn a_bloom_miss_opens_nothing_else_of_the_file() {
     );
     assert_eq!(data.trace.spans.len(), 2);
 }
+
+/// A file sealed while the seal still wrote the per-trace rollup chunk
+/// (`TRSU`, retired): three spans of `TRACE` (root → child → grandchild) at
+/// second 1_700_000_000. Readers resolve chunks by id, so the retired chunk
+/// is never read and the file answers like any other.
+fn trsu_golden() -> TraceSource {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/trsu_seal.sfst");
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(
+        bytes.windows(4).any(|w| w == b"TRSU"),
+        "the fixture must carry the retired chunk"
+    );
+    common::sealed_source_at(&path, "trsu_seal")
+}
+
+#[test]
+fn a_file_carrying_the_retired_rollup_chunk_answers_trace_by_id() {
+    let data = run(vec![trsu_golden()]);
+    assert!(data.status.is_complete(), "{:?}", data.status);
+    let names: Vec<String> = data
+        .trace
+        .spans
+        .iter()
+        .map(|s| {
+            s.fields
+                .iter()
+                .find(|(k, _)| k == "name")
+                .map(|(_, v)| v.clone())
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(names, ["root", "child", "grandchild"]);
+}

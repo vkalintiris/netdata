@@ -62,7 +62,6 @@ mod row_index;
 mod schema;
 mod span_extras;
 mod span_family;
-mod trace_rollup;
 mod trace_bloom;
 pub mod trace_combine;
 mod trace_index;
@@ -72,8 +71,8 @@ pub mod registry;
 
 pub use error::Error;
 pub use index_reader::{
-    BitmapFilter, DerivedValues, DurationRange, IndexReader, RollupRefOutcome, RollupRootResolver,
-    RowValues, Trace, TraceEvent, TraceFileSession, TraceLink, TraceSpan,
+    BitmapFilter, DerivedValues, DurationRange, IndexReader, RowValues, Trace, TraceEvent,
+    TraceFileSession, TraceLink, TraceSpan,
 };
 pub use index_writer::IndexWriter;
 pub use kv_interner::KvSlot;
@@ -86,10 +85,6 @@ pub use reader::{bloom_rules_out, read_summary, read_summary_path};
 pub use registry::{File, Registry, RetentionPolicy};
 pub use row_index::RowIndex;
 pub use span_extras::{EventIndex, EventRef, EventRows, LinkIndex, LinkRef, LinkRows};
-pub use trace_rollup::{
-    ROLLUP_NO_REF, ROOT_CLAIM_NONE, ROOT_CLAIM_TRUE, ROOT_CLAIM_WITHHELD, TraceRollup,
-    TraceRollupRows,
-};
 pub use schema::join_value_kinds;
 pub use span_family::{ERR_ORIGIN_FIELD, SpanFamily, SpanRows, derive_span_family};
 pub use trace_bloom::TraceIdBloom;
@@ -178,11 +173,9 @@ const CHUNK_TRACE_INDEX: chunk_file::ChunkId = *b"TIDX";
 // `span_extras`).
 const CHUNK_EVENTS: chunk_file::ChunkId = *b"EVNB";
 const CHUNK_LINKS: chunk_file::ChunkId = *b"LNKB";
-// Optional per-file trace rollup (cold region, after the span structures —
-// matching the writer stage order): one row per distinct set trace id — the
-// trace-level aggregate for the overview and facet folds without assembly.
-// Same additive TOC-indexed contract as TIDX (see `trace_rollup`).
-const CHUNK_TRACE_ROLLUP: chunk_file::ChunkId = *b"TRSU";
+// `TRSU` (the retired per-file trace rollup) stays reserved: files sealed
+// before its retirement still carry it, readers resolve chunks by id and never
+// meet it, and no new chunk may reuse the id (FORMAT.md, "Retired chunk ids").
 // Optional per-file trace-id bloom (cold region, after TIDX): a serialized
 // fastbloom filter over the file's distinct set trace ids — "definitely not in
 // this file" for cross-file trace-by-id, at a 0.8% build-time FP target. Same

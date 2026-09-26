@@ -697,7 +697,6 @@ mod tests {
                 trace_id_bloom: false,
                 event_index: true,
                 link_index: false,
-                trace_rollup: false,
                 mid_fields: 0,
                 high_fields: 0,
                 stream_batches: 1,

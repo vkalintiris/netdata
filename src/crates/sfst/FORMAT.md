@@ -105,10 +105,17 @@ within its tier in the trailing bytes.
     "TBLM"      TraceIdBloom  (per-file trace-id bloom filter)  No (optional)
     "EVNB"      EventIndex  (per-row span event structure)    No (optional)
     "LNKB"      LinkIndex  (per-row span link structure)      No (optional)
-    "TRSU"      TraceRollup  (per-file trace rollup rows)      No (optional)
     "MF{hi}{lo}" PrefixMap<BitmapValue>  (mid-card field)     No (one per mid field)
     "HF{hi}{lo}" HighField  (high-card field, columnar SoA)   No (one per high field)
     "SB0{N}"    StreamBatch  (stream-batch N, fixed-width arena)  Yes (at least 1)
+
+Retired chunk ids stay reserved: files written while they were current may
+still carry them, readers never look them up (chunks resolve by id through
+the TOC), and no new chunk may reuse them.
+
+    Id          Retired                          Was
+    ──────────  ───────────────────────────────  ─────────────────────────────────
+    "TRSU"      2026-09 (traces milestone 5)     per-file trace rollup rows
 
 The per-row column chunks (`OBTS`/`TRCE`/`SPAN`/`FLAG`/`DRAC`/`PSPN`/`DURN`/`CHLD`) are
 **independently optional** — a file carries any subset, or none — and live in
@@ -234,48 +241,6 @@ Both chunks live after `TIDX`
 nonzero dropped count that must survive), and are detected via the TOC
 (`IndexReader::has_event_index` / `has_link_index`). Rows are chronological
 like every per-row column; items within a row keep their original OTLP order.
-
-The optional `TRSU` chunk is the **per-file trace rollup** (traces signal):
-one row per DISTINCT set trace id in the file — the trace-level aggregate
-that lets a consumer fold trace counts/envelopes/roots across files WITHOUT
-assembling traces. A struct-of-arrays, index-parallel across every field,
-sorted ascending by trace id: `trace_ids` (16-byte arena), `root_span_ids`
-(8-byte arena; UNSET when the file holds no true root for the trace),
-`min_start_ns` / `max_end_ns` (`Vec<i64>`, the stored envelope — end is
-`start ⊕ duration`, saturating), `span_counts` / `error_counts` (`Vec<u32>`),
-`root_kinds` (`Vec<i32>`, raw OTLP kind; 0 when no true root),
-`root_is_true_root` (`Vec<u8>`, the tri-state claim flag: `0` = no
-unset-parent span of the trace is stored in this file — PROOF of local
-root absence; `1` = the root columns carry the file's claim; `2` = the
-claim was WITHHELD on an ambiguous tie — unset-parent spans exist but
-their pick is undecidable from recorded facets, so the root is unknown,
-neither absent nor any particular value), and `root_service_refs` /
-`root_name_refs` (`Vec<u32>`, file `KvId`s of the root's resource
-`service.name` / span `name` tokens, or the `u32::MAX` sentinel for absent).
-
-Semantics are deliberate and part of the contract:
-
-- Counts are **stored-row statistics**: a resent span counts every time it
-  is stored. The canonical `(span_id, kind)` resend dedup belongs to
-  assembly (`trace_combine`) and is NOT replicated here; consumers must
-  label rollup-derived numbers accordingly.
-- The root columns are **honest-or-absent**: populated only from a span
-  with a genuinely unset parent stored in THIS file (the earliest such span
-  wins; equal starts tie-break by ascending span id — the `summary_root`
-  convention). A full `(start_ns, span_id)` tie between candidates with
-  DIFFERENT recorded facets (kind, service, name) records `2` (WITHHELD)
-  instead of guessing a storage-order-dependent pick. For flags `0` and
-  `2` the other root columns are sentinels; a reader never synthesizes a
-  root, and only flag `0` may be read as proof that no root exists here.
-- The all-zero "unset" trace id is excluded (the `TIDX` rule).
-
-It lives after the span structures (`LNKB`), requires the `TRCE` column its
-data derives from, is written only when the file holds at least one set
-trace id, and is detected via the TOC (`IndexReader::has_trace_rollup`).
-Readers validate index-parallelism across all ten arrays at decode
-(`IndexReader::trace_rollup`). Same additive TOC-indexed contract as
-`TIDX`: presence needs no format version bump, and pre-rollup readers
-ignore it.
 
 The rows are listed in the order the canonical producer emits chunk
 bodies. This order is **not** part of the format contract — readers
@@ -655,13 +620,16 @@ the `TIDX` trace_id index, the `TBLM` trace-id bloom, and the
 follow exactly this rule.
 A derived token such as `_err_origin` is additive in the same way: an
 ordinary token plus its tree leaf changes no chunk's layout.
+Retiring an optional chunk id is the mirror image: files that carry it stay
+readable because no reader asks for it, so it needs no bump either — the id
+moves to the retired list in [§ Chunk Ids](#chunk-ids) and is never reused.
 
 ### When to bump the version
 
 A bump is required for any change that breaks the on-disk contract:
 
 - adding a required chunk id,
-- removing an existing chunk id,
+- removing a required chunk id,
 - changing any chunk's payload schema (bincode is **positional**:
   appending a field to a persisted struct — even one with a serde
   default — changes where the decoder expects bytes, so it is a

@@ -1619,3 +1619,18 @@ fn a_malformed_selection_is_refused() {
         assert!(answer.is_err());
     }
 }
+
+/// A file sealed while the seal still wrote the retired per-trace rollup
+/// chunk (`TRSU`) is an ordinary current file to the explorer: every span
+/// counted, nothing partial.
+#[test]
+fn a_file_carrying_the_retired_rollup_chunk_is_explored_like_any_other() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/trsu_seal.sfst");
+    let mut query = query("status_code", &[]);
+    query.grid = sfst::Grid::new(1_700_000_000 * S as i64, S as i64, 10);
+    let data = run(vec![sealed_source_at(&path, "trsu_seal")], query);
+    let histogram = data.histogram.unwrap();
+    assert!(histogram.status.is_complete(), "{:?}", histogram.status);
+    assert_eq!(histogram.totals.count, 3);
+}

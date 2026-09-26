@@ -15,10 +15,8 @@ use std::sync::Arc;
 use crate::PrefixMap;
 use crate::reader::ChunkReader;
 
-mod rollup_resolver;
 mod session;
 
-pub use rollup_resolver::{RollupRefOutcome, RollupRootResolver};
 pub use session::TraceFileSession;
 
 use crate::{
@@ -82,7 +80,6 @@ struct Decoded {
     trace_id_bloom: OnceCell<crate::TraceIdBloom>,
     event_index: OnceCell<crate::EventIndex>,
     link_index: OnceCell<crate::LinkIndex>,
-    trace_rollup: OnceCell<crate::TraceRollup>,
     mid_fields: Box<[OnceCell<PrefixMap<BitmapValue>>]>,
     high_fields: Box<[OnceCell<crate::HighField>]>,
     stream_batches: Box<[OnceCell<crate::StreamBatch>]>,
@@ -104,7 +101,6 @@ impl Decoded {
             trace_id_bloom: OnceCell::new(),
             event_index: OnceCell::new(),
             link_index: OnceCell::new(),
-            trace_rollup: OnceCell::new(),
             mid_fields: (0..num_mid).map(|_| OnceCell::new()).collect(),
             high_fields: (0..num_high).map(|_| OnceCell::new()).collect(),
             stream_batches: (0..num_batches).map(|_| OnceCell::new()).collect(),
@@ -616,15 +612,6 @@ impl<'a> IndexReader<'a> {
         })
     }
 
-    /// Whether the file carries the optional per-file trace rollup (`TRSU`).
-    pub fn has_trace_rollup(&self) -> bool {
-        self.sfst.has_trace_rollup()
-    }
-
-    /// Decode and validate the per-file trace rollup (`TRSU`).
-    pub fn trace_rollup(&self) -> Result<&crate::TraceRollup, crate::Error> {
-        memo(&self.decoded.trace_rollup, || self.sfst.trace_rollup())
-    }
 
     /// Whether the file carries the optional `trace_id` index (`TIDX`).
     pub fn has_trace_id_index(&self) -> bool {

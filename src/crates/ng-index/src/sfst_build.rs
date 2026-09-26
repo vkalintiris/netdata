@@ -401,16 +401,10 @@ fn populate_trace_row_index(
     let mut kv = String::new();
     let mut flattener = ng_flatten::Flattener::new();
 
-    // The producer-side storage keys the rollup captures by (this crate
-    // family DEFINES the storage paths via the flattener; the sfsq
-    // vocabulary mirrors them — a downstream lockstep test keeps both
-    // honest).
-    const ROLLUP_SERVICE_KEY: &str = "resource.attributes.service.name";
-    const ROLLUP_NAME_KEY: &str = "name";
-    const ROLLUP_KIND_RAW_KEY: &str = "_kind";
-    const ROLLUP_STATUS_KEY: &str = "status_code";
+    // The storage key of a span's status (this crate family DEFINES the
+    // storage paths via the flattener).
+    const STATUS_KEY: &str = "status_code";
 
-    let mut rollup = sfst::TraceRollupRows::new();
     let mut trace_ids = TraceIds::default();
     let mut span_ids = SpanIds::default();
     let mut parent_span_ids = ParentSpanIds::default();
@@ -449,29 +443,15 @@ fn populate_trace_row_index(
         let _ = flattener.merge_tree(tree);
         let paths: Vec<String> = (0..tree.len() as NodeId).map(|id| tree.path(id)).collect();
 
-        // Resolve the rollup capture keys to this frame's NodeIds ONCE —
-        // the per-span capture below compares node ids, not path strings.
-        let node_of = |key: &str| -> Option<NodeId> {
-            (0..tree.len() as NodeId).find(|&id| paths[id as usize] == key)
-        };
-        let service_node = node_of(ROLLUP_SERVICE_KEY);
-        let name_node = node_of(ROLLUP_NAME_KEY);
-        let kind_node = node_of(ROLLUP_KIND_RAW_KEY);
-        let status_node = node_of(ROLLUP_STATUS_KEY);
+        // Resolve the status key to this frame's NodeId ONCE — the per-span
+        // capture below compares node ids, not path strings.
+        let status_node = (0..tree.len() as NodeId).find(|&id| paths[id as usize] == STATUS_KEY);
 
         let mut tokens: Vec<KvSlot> = Vec::new();
         let mut records = 0u64;
         for rg in &flattened.resources {
             let resource_tokens =
                 intern_entries(row_index, &rg.resource, &paths, &mut kv, &mut stats);
-            // The rollup's root service ref: the resource group's
-            // `service.name` slot, constant across its spans.
-            let service_slot = service_node.and_then(|n| {
-                rg.resource
-                    .iter()
-                    .position(|e| e.node == n)
-                    .map(|i| resource_tokens[i])
-            });
             tokens.clear();
             tokens.extend_from_slice(&resource_tokens);
 
@@ -553,61 +533,20 @@ fn populate_trace_row_index(
                     events.end_row(span.dropped_events_count);
                     links.end_row(span.dropped_links_count);
 
-                    // The trace rollup folds this span: name/raw-kind/status
-                    // captured by storage key from the just-interned span
-                    // entries (tokens[base + j] is span.entries[j]'s slot).
-                    // FIRST entry wins per facet — the same value every
-                    // evaluation path reads (span_field / the tail fold /
-                    // canonical materialization all take the first), so
-                    // a crafted multi-valued frame cannot make the
-                    // recorded facets diverge from the evaluated ones.
-                    // Precisely: `name` locks on the first entry, `kind`
-                    // on the first Int-valued entry, `status` on the
-                    // first entry of any type — the flattener emits
-                    // `_kind` only as Int and `status_code` only as Str
-                    // (ng-flatten common.rs), so the per-facet nuances
-                    // are unreachable from the ingest path.
-                    // Honest OTLP spans carry each of these exactly once.
-                    let is_error = {
-                        let base = resource_tokens.len() + scope_tokens.len();
-                        let mut name_slot = None;
-                        let mut kind = None;
-                        let mut is_error = None;
-                        for (j, e) in span.entries.iter().enumerate() {
-                            if Some(e.node) == name_node {
-                                if name_slot.is_none() {
-                                    name_slot = Some(tokens[base + j]);
-                                }
-                            } else if Some(e.node) == kind_node {
-                                if kind.is_none() {
-                                    if let ng_flatten::Value::Int(k) = &e.value {
-                                        kind = Some(*k as i32);
-                                    }
-                                }
-                            } else if Some(e.node) == status_node && is_error.is_none() {
-                                is_error = Some(matches!(&e.value,
-                                    ng_flatten::Value::Str(s) if s == "ERROR"));
-                            }
-                        }
-                        let kind = kind.unwrap_or(0);
-                        let is_error = is_error.unwrap_or(false);
-                        // An empty/malformed parent id normalized to the
-                        // all-zero UNSET at ingest — the typed check IS the
-                        // OTLP root convention.
-                        let parent = SpanId::from(*span.parent_span_id.as_bytes());
-                        rollup.record_span(
-                            TraceId::from(*span.trace_id.as_bytes()),
-                            SpanId::from(*span.span_id.as_bytes()),
-                            parent.is_unset(),
-                            span.ts,
-                            span.duration,
-                            kind,
-                            is_error,
-                            service_slot,
-                            name_slot,
+                    // Whether the span is an error: its FIRST `status_code`
+                    // entry is "ERROR" — the value every evaluation path reads
+                    // (span_field / canonical materialization take the first),
+                    // so a crafted multi-valued frame cannot make the error
+                    // origin diverge from the evaluated status. The flattener
+                    // emits `status_code` only as Str (ng-flatten common.rs);
+                    // honest OTLP spans carry it exactly once.
+                    let is_error = span
+                        .entries
+                        .iter()
+                        .find(|e| Some(e.node) == status_node)
+                        .is_some_and(
+                            |e| matches!(&e.value, ng_flatten::Value::Str(s) if s == "ERROR"),
                         );
-                        is_error
-                    };
 
                     // Per-row span columns, one value per row (parallel to the row
                     // just fed) so they stay aligned for the build-time remap. Ids
@@ -680,9 +619,6 @@ fn populate_trace_row_index(
     // nonzero span-level dropped count) — an all-empty accumulator writes no chunk.
     row_index.events = events.is_meaningful().then_some(events);
     row_index.links = links.is_meaningful().then_some(links);
-    // The trace rollup, same is-meaningful rule (an empty rollup — an
-    // all-UNSET-trace-id file — writes no chunk).
-    row_index.trace_rollup = rollup.is_meaningful().then_some(rollup);
 
     Ok(stats)
 }

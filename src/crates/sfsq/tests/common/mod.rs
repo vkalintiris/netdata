@@ -355,7 +355,6 @@ pub fn legacy_sfst_source(dir: &Path, name: &str) -> TraceSource {
         trace_id_bloom: false,
         event_index: false,
         link_index: false,
-        trace_rollup: false,
         mid_fields: 0,
         high_fields: 0,
         stream_batches: 1,
