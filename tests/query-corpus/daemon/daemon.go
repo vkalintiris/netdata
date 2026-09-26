@@ -91,6 +91,8 @@ type Options struct {
 	// SeedCache, when set, is a directory copied into the cache directory before the first start (writable, as the
 	// daemon's own would be): the databases and dbengine files of an earlier run.
 	SeedCache string
+	// PulseOff sets `[plugins] netdata pulse = no`: the C agent's own charts stop writing into its database.
+	PulseOff bool
 }
 
 // StreamTo is a child's [stream] section.
@@ -184,7 +186,7 @@ const netdataConfTemplate = `[global]
     network-viewer = no
     timex = no
     profile = no
-`
+%[12]s`
 
 const streamConfTemplate = `[stream]
     enabled = no
@@ -406,8 +408,12 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	if dbMode == "" {
 		dbMode = "dbengine"
 	}
+	pulse := ""
+	if o.PulseOff {
+		pulse = "    netdata pulse = no\n"
+	}
 	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs, o.WebExtra,
-		o.GlobalExtra, bindTo, dbMode)
+		o.GlobalExtra, bindTo, dbMode, pulse)
 	if o.LogsExtra != "" {
 		conf += "\n[logs]\n" + o.LogsExtra
 	}
