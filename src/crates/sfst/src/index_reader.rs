@@ -17,14 +17,9 @@ use crate::reader::ChunkReader;
 
 mod rollup_resolver;
 mod session;
-mod trace_plan;
 
 pub use rollup_resolver::{RollupRefOutcome, RollupRootResolver};
 pub use session::TraceFileSession;
-pub use trace_plan::{
-    CompiledTracePlan, GroupCondition, IdColumnKind, NumberCmp, PlanMatcher, PlanTerm,
-    ScanWork, TracePlan, numeric_token_matches,
-};
 
 use crate::{
     BitmapValue, Bucket, FacetResult, FieldEntry, FieldTier, Filter, Grid, Histogram, IdRanges,
@@ -1797,15 +1792,8 @@ impl<'a> IndexReader<'a> {
                     return self.scan_high_positions(&targets, mask, total);
                 }
                 let (every, every_mask) = self.high_field_targets(idx)?;
-                let mut rows_visited = 0u64;
-                let mut sets = self
-                    .scan_high_multi(
-                        &[(&targets, mask), (&every, every_mask)],
-                        total,
-                        u64::MAX,
-                        &mut rows_visited,
-                    )?
-                    .expect("an unbounded scan cannot run out of budget");
+                let mut sets =
+                    self.scan_high_multi(&[(&targets, mask), (&every, every_mask)], total)?;
                 let present = sets.pop().expect("two terms in → two sets out");
                 let result = sets.pop().expect("two terms in → two sets out");
                 (result, present)
@@ -1942,8 +1930,7 @@ impl<'a> IndexReader<'a> {
     /// target — the OR of the matched values' per-value batch masks). Empty
     /// `targets` yields an empty set. Shared by the high-card paths of
     /// [`field_values_or`](Self::field_values_or) and
-    /// [`query_positions`](Self::query_positions), which have no work
-    /// ceiling to feed (hence the throwaway counter).
+    /// [`query_positions`](Self::query_positions).
     fn scan_high_positions(
         &self,
         targets: &KvIdSet,
@@ -1953,31 +1940,22 @@ impl<'a> IndexReader<'a> {
         if targets.is_empty() {
             return Ok(PosSet::empty(total));
         }
-        let mut rows_visited = 0u64;
         Ok(self
-            .scan_high_multi(&[(targets, mask)], total, u64::MAX, &mut rows_visited)?
-            .expect("an unbounded scan cannot run out of budget")
+            .scan_high_multi(&[(targets, mask)], total)?
             .pop()
             .expect("one term in → one set out"))
     }
 
     /// Position sets for SEVERAL high-card terms resolved in ONE
     /// stream-batch pass over the union of their batch masks (the
-    /// `materialize_fields` precedent) — the traces search plan counts
-    /// each visited row once into `rows_visited` however many terms
-    /// probe it, and the scan STOPS (returning `Ok(None)`) as soon as
-    /// the count exceeds `ceiling`: a work ceiling enforced only between
-    /// whole scans could overshoot by an entire file. A `None` result
-    /// means the per-term sets are incomplete and must not be used.
-    /// Matched positions ascend (batch start increases, position within
-    /// increases), so they feed `from_sorted`.
+    /// `materialize_fields` precedent). Matched positions ascend (batch
+    /// start increases, position within increases), so they feed
+    /// `from_sorted`.
     fn scan_high_multi(
         &self,
         terms: &[(&KvIdSet, u8)],
         total: u32,
-        ceiling: u64,
-        rows_visited: &mut u64,
-    ) -> Result<Option<Vec<PosSet>>, crate::Error> {
+    ) -> Result<Vec<PosSet>, crate::Error> {
         let union_mask = terms.iter().fold(0u8, |m, &(_, term_mask)| m | term_mask);
         let mut per_term: Vec<Vec<u32>> = vec![Vec::new(); terms.len()];
         let batch_size = crate::stream_batch_size(total);
@@ -1988,10 +1966,6 @@ impl<'a> IndexReader<'a> {
             let batch_start = u32::from(b) * batch_size;
             let batch = self.stream_batch(b)?;
             for i in 0..batch.num_rows() {
-                *rows_visited += 1;
-                if *rows_visited > ceiling {
-                    return Ok(None);
-                }
                 for (t, &(targets, _)) in terms.iter().enumerate() {
                     if batch.row(i).any(|id| targets.contains(id)) {
                         per_term[t].push(batch_start + i as u32);
@@ -1999,12 +1973,10 @@ impl<'a> IndexReader<'a> {
                 }
             }
         }
-        Ok(Some(
-            per_term
-                .into_iter()
-                .map(|positions| PosSet::from_sorted(positions, total))
-                .collect(),
-        ))
+        Ok(per_term
+            .into_iter()
+            .map(|positions| PosSet::from_sorted(positions, total))
+            .collect())
     }
 
     /// Per-value `(value, count)` pairs for `field` restricted to `scope`.
