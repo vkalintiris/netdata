@@ -9,7 +9,7 @@ use netdata_agent_log::{Priority, REDACTED, Source, nd_log, netdata_log_error};
 use netdata_agent_nrpc::Registry;
 use netdata_agent_text::parse::uuid_parse_flexi;
 
-use crate::chart::Charts;
+use crate::chart::{self, Charts};
 use crate::contexts::{self, Contexts};
 use crate::labels::Labels;
 use crate::mode::DbMode;
@@ -506,6 +506,7 @@ impl Host {
         *receiver = Some(slot);
         self.orphan
             .store(false, std::sync::atomic::Ordering::Release);
+        self.replication_reset();
         drop(receiver);
         // rrdcontext_host_child_connected(): every chart and dimension reports collection again.
         for chart in self.charts.all() {
@@ -532,6 +533,17 @@ impl Host {
         }
     }
 
+    /// `stream_receiver_replication_reset()`: no chart is being replicated by a receiver that just came or went, so
+    /// the next connection asks for every chart's missing data again.
+    fn replication_reset(&self) {
+        for chart in self.charts.all() {
+            chart.update_meta(|m| {
+                m.flags |= chart::flags::RECEIVER_REPLICATION_FINISHED;
+                m.flags &= !chart::flags::RECEIVER_REPLICATION_IN_PROGRESS;
+            });
+        }
+    }
+
     /// `rrdhost_clear_receiver()`: detaches `slot` if it is still the attached one.
     pub fn clear_receiver(&self, slot: &Arc<ReceiverSlot>) {
         let mut receiver = lock(&self.receiver);
@@ -540,9 +552,10 @@ impl Host {
             self.orphan
                 .store(true, std::sync::atomic::Ordering::Release);
             self.contexts.record_first_time_changes(false);
-            drop(receiver);
             // stream_path_child_disconnected()
             self.replace_stream_path(Vec::new());
+            self.replication_reset();
+            drop(receiver);
             self.contexts.child_disconnected();
         }
     }

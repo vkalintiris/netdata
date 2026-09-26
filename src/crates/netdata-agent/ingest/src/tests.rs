@@ -132,6 +132,40 @@ fn chart_definition_end_asks_for_replication() {
     assert!(p.take_output().is_empty());
 }
 
+/// `stream_receiver_replication_reset()`: a chart still replicating when its child disconnects asks again after the
+/// reconnect (C resets the flags when a receiver attaches and when it detaches).
+#[test]
+fn replication_is_asked_again_after_a_reconnect() {
+    let h = host();
+    let attach = |h: &Arc<Host>| {
+        let slot = Arc::new(netdata_agent_rrd::host::ReceiverSlot::new(
+            0,
+            Default::default(),
+            netdata_agent_rrd::host::ReceiverLink::default(),
+            Box::new(|| {}),
+        ));
+        assert!(h.set_receiver(Arc::clone(&slot)));
+        slot
+    };
+    let first = NOW - 100;
+    let end = format!("CHART_DEFINITION_END {first} {NOW} {NOW}");
+    let slot = attach(&h);
+    let mut p = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    feed_all(&mut p, &[&end]);
+    assert!(!p.take_output().is_empty());
+    // the child goes away mid-replication and comes back
+    h.clear_receiver(&slot);
+    attach(&h);
+    let mut p = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    feed_all(&mut p, &[&end]);
+    assert_eq!(
+        String::from_utf8(p.take_output()).unwrap(),
+        format!("REPLAY_CHART \"test.c1\" \"true\" {first} {NOW}\n")
+    );
+}
+
 #[test]
 fn replication_rows_are_stored_and_rend_finishes() {
     let h = host();
