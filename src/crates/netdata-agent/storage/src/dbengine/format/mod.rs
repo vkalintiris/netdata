@@ -3,6 +3,7 @@
 //! it on the supported targets; the layouts are C's 64-bit ones.
 
 pub mod crc;
+pub mod descriptor;
 pub mod superblock;
 
 use std::fs::File;
