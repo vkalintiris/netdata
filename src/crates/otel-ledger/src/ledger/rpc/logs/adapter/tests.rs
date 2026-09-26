@@ -239,7 +239,13 @@ fn build_table_joins_multivalued_fields_and_keeps_last_severity() {
         ],
     };
     let fields = vec!["tags".to_string(), "plain".to_string()];
-    let (_, data) = build_table(&[(cursor, row)], &fields, &BTreeSet::new());
+    let row = sfsq::logs::LogRow {
+        cursor,
+        row,
+        trace_id: None,
+        span_id: None,
+    };
+    let (_, data) = build_table(&[row], &fields, &BTreeSet::new());
 
     let rows = data.as_array().unwrap();
     let cells = rows[0].as_array().unwrap();

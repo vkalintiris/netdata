@@ -95,10 +95,13 @@ impl Pair {
 }
 
 /// One decoded log row: timestamp plus its pair tokens in stream order
-/// (duplicates preserved, exactly as the indexer stores them).
+/// (duplicates preserved, exactly as the indexer stores them), and the
+/// record's trace and span ids (unset when absent), as the index stores them.
 struct Row {
     ts_ns: i64,
     tokens: Vec<u32>,
+    trace_id: sfst::TraceId,
+    span_id: sfst::SpanId,
 }
 
 /// The decoded rows of one WAL file, ready to evaluate queries against.
@@ -192,7 +195,13 @@ impl WalScan {
                         tokens.truncate(resource_tokens.len() + scope_tokens.len());
                         tokens.extend_from_slice(&record_tokens);
                         // ts resolved at ingest (time/observed/clock); concrete.
-                        sink.row(record.ts, &tokens);
+                        // Ids are byte-copied as the sealed build copies them.
+                        sink.row(
+                            record.ts,
+                            &tokens,
+                            sfst::TraceId::from(*record.trace_id.as_bytes()),
+                            sfst::SpanId::from(*record.span_id.as_bytes()),
+                        );
                     }
                     tokens.truncate(resource_tokens.len());
                 }
@@ -272,6 +281,20 @@ impl WalScan {
                 }
             })
             .collect()
+    }
+
+    /// The trace and span ids of tail rows by insertion index (`None` when
+    /// unset), parallel to [`materialize_rows`](Self::materialize_rows).
+    pub fn row_ids(&self, positions: &[u32]) -> Vec<(Option<sfst::TraceId>, Option<sfst::SpanId>)> {
+        let mut out = Vec::with_capacity(positions.len());
+        for &pos in positions {
+            let row = &self.rows[pos as usize];
+            out.push((
+                (!row.trace_id.is_unset()).then_some(row.trace_id),
+                (!row.span_id.is_unset()).then_some(row.span_id),
+            ));
+        }
+        out
     }
 
     /// Evaluate `query` into a [`LogsShard`] — the row-scan counterpart
@@ -373,6 +396,8 @@ impl WalScan {
         Ok(CompiledFilter {
             per_field,
             query: query_set,
+            trace_ids: query.trace_ids.clone(),
+            span_ids: query.span_ids.clone(),
         })
     }
 
@@ -468,12 +493,14 @@ impl ScanSink {
         t
     }
 
-    /// One decoded row: its timestamp and the pair tokens in stream order
-    /// (duplicates preserved).
-    fn row(&mut self, ts_ns: i64, tokens: &[u32]) {
+    /// One decoded row: its timestamp, the pair tokens in stream order
+    /// (duplicates preserved) and its ids.
+    fn row(&mut self, ts_ns: i64, tokens: &[u32], trace_id: sfst::TraceId, span_id: sfst::SpanId) {
         self.rows.push(Row {
             ts_ns,
             tokens: tokens.to_vec(),
+            trace_id,
+            span_id,
         });
     }
 }
@@ -576,6 +603,9 @@ impl TokenSet {
 struct CompiledFilter {
     per_field: Vec<(String, TokenSet)>,
     query: Option<TokenSet>,
+    /// The query's id terms, sorted (empty: no term).
+    trace_ids: Vec<sfst::TraceId>,
+    span_ids: Vec<sfst::SpanId>,
 }
 
 /// Which parts of the filter one row satisfies. Reused across rows
@@ -585,7 +615,8 @@ struct CompiledFilter {
 struct RowMatch {
     /// Per filter-field conjunct, parallel to `CompiledFilter::per_field`.
     fields: Vec<bool>,
-    /// The full-text query term (`true` when no query was given).
+    /// The global terms — the full-text query and the ids (`true` when none
+    /// was given).
     query: bool,
     /// AND of every conjunct and the query — the full filter.
     full: bool,
@@ -599,10 +630,14 @@ impl CompiledFilter {
                 .iter()
                 .map(|(_, set)| row.tokens.iter().any(|&t| set.contains(t))),
         );
-        m.query = match &self.query {
+        let text = match &self.query {
             Some(set) => row.tokens.iter().any(|&t| set.contains(t)),
             None => true,
         };
+        let trace =
+            self.trace_ids.is_empty() || self.trace_ids.binary_search(&row.trace_id).is_ok();
+        let span = self.span_ids.is_empty() || self.span_ids.binary_search(&row.span_id).is_ok();
+        m.query = text && trace && span;
         m.full = m.query && m.fields.iter().all(|&ok| ok);
     }
 

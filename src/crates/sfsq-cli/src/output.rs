@@ -7,7 +7,7 @@
 use std::io::{self, Write};
 
 use clap::ValueEnum;
-use sfsq::logs::Cursor;
+use sfsq::logs::LogRow;
 use sfst::MaterializedRow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
@@ -22,14 +22,14 @@ pub enum OutputFormat {
 /// `Some`, restricts emitted fields to that set (journalctl `--output-fields`).
 pub fn write_rows(
     out: &mut impl Write,
-    rows: &[(Cursor, MaterializedRow)],
+    rows: &[LogRow],
     fields: Option<&[String]>,
     format: OutputFormat,
 ) -> io::Result<()> {
-    for (_, row) in rows {
+    for row in rows {
         match format {
             OutputFormat::Ndjson => {
-                writeln!(out, "{}", ndjson_record(row, fields))?;
+                writeln!(out, "{}", ndjson_record(&row.row, fields))?;
             }
         }
     }

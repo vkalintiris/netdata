@@ -41,6 +41,9 @@ pub struct LogsQuery {
     pub(super) grid: sfst::Grid,
     pub(super) filter: Filter,
     pub(super) query: Option<String>,
+    /// Sorted, without duplicates; empty for no term.
+    pub(super) trace_ids: Vec<sfst::TraceId>,
+    pub(super) span_ids: Vec<sfst::SpanId>,
     pub(super) histogram_field: String,
     pub(super) facet_fields: Vec<String>,
     pub(super) anchor: Option<Anchor>,
@@ -63,6 +66,15 @@ impl LogsQuery {
     /// alike).
     pub fn query(&self) -> Option<&str> {
         self.query.as_deref()
+    }
+    /// Keep only records of these traces (none: no trace term). A global AND
+    /// term like the text query.
+    pub fn trace_ids(&self) -> &[sfst::TraceId] {
+        &self.trace_ids
+    }
+    /// Keep only records of these spans (none: no span term).
+    pub fn span_ids(&self) -> &[sfst::SpanId] {
+        &self.span_ids
     }
     /// Histogram dimension field — always resolved (the default if the
     /// builder wasn't given one).
@@ -96,6 +108,8 @@ pub struct LogsQueryBuilder {
     grid: sfst::Grid,
     filter: Filter,
     query: Option<String>,
+    trace_ids: Vec<sfst::TraceId>,
+    span_ids: Vec<sfst::SpanId>,
     histogram_field: Option<String>,
     facet_fields: Vec<String>,
     anchor: Option<Anchor>,
@@ -110,6 +124,8 @@ impl LogsQueryBuilder {
             grid,
             filter: Filter::new(),
             query: None,
+            trace_ids: Vec::new(),
+            span_ids: Vec::new(),
             histogram_field: None,
             facet_fields: Vec::new(),
             anchor: None,
@@ -144,6 +160,19 @@ impl LogsQueryBuilder {
     /// term, so it narrows the aggregate counts as well as the page.
     pub fn query(mut self, query: impl Into<String>) -> Self {
         self.query = Some(query.into());
+        self
+    }
+
+    /// Keep only records of any of these traces (an unset id selects the
+    /// records without a trace id; request boundaries refuse it).
+    pub fn trace_ids(mut self, ids: Vec<sfst::TraceId>) -> Self {
+        self.trace_ids = ids;
+        self
+    }
+
+    /// Keep only records of any of these spans.
+    pub fn span_ids(mut self, ids: Vec<sfst::SpanId>) -> Self {
+        self.span_ids = ids;
         self
     }
 
@@ -184,10 +213,18 @@ impl LogsQueryBuilder {
         } else {
             self.facet_fields
         };
+        let mut trace_ids = self.trace_ids;
+        trace_ids.sort_unstable();
+        trace_ids.dedup();
+        let mut span_ids = self.span_ids;
+        span_ids.sort_unstable();
+        span_ids.dedup();
         LogsQuery {
             grid: self.grid,
             filter: self.filter,
             query: self.query,
+            trace_ids,
+            span_ids,
             histogram_field,
             facet_fields,
             anchor: self.anchor,

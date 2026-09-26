@@ -21,8 +21,10 @@ use super::mmap::Mapped;
 
 use super::cursor::{Cursor, NS_PER_S, Part};
 use super::engine::{LogSource, SfstCandidate, WalTail};
+use super::filter::has_column;
 use super::mmap;
 use super::query::{Anchor, Direction, LogsQuery};
+use super::result::LogRow;
 use super::wal_scan::WalScan;
 
 /// One file's (or one node's) page candidates: the window-matching
@@ -97,7 +99,7 @@ impl PageShard {
         anchor: Option<Cursor>,
         bound: Option<usize>,
     ) -> Result<PageShard, sfst::Error> {
-        let filter = reader.compile_filter(&query.filter, query.query())?;
+        let filter = super::filter::compile(reader, query)?;
         let matched = reader.matched_positions(&filter, query.grid.range_ns())?;
         let timestamps = reader.load_timestamps()?;
 
@@ -280,7 +282,7 @@ fn materialize(
     sfst_readers: &[(sfst::IndexReader<'_>, SourceKey)],
     tail_scans: &[(u64, WalScan)],
     selected: &SelectedPage,
-) -> Result<Vec<(Cursor, sfst::MaterializedRow)>, sfst::Error> {
+) -> Result<Vec<LogRow>, sfst::Error> {
     // Route by `SourceKey`: an SFST reader (on-disk or chunk) for
     // `Part::Indexed`, the WAL row scanner (keyed by `file_seq`, one tail
     // per WAL) for `Part::Tail`.
@@ -300,49 +302,77 @@ fn materialize(
             .push(cursor.position);
     }
 
-    let mut row_by_key: HashMap<RowKey, sfst::MaterializedRow> = HashMap::new();
+    let mut row_by_key: HashMap<RowKey, (sfst::MaterializedRow, RowIds)> = HashMap::new();
     for (source, pos) in &positions {
-        if source.part == Part::Tail {
-            if let Some(scan) = tail_by_seq.get(&source.file_seq) {
-                for (p, row) in pos.iter().zip(scan.materialize_rows(pos)) {
-                    row_by_key.insert(
-                        RowKey {
-                            source: *source,
-                            position: *p,
-                        },
-                        row,
-                    );
-                }
+        let (rows, ids) = if source.part == Part::Tail {
+            match tail_by_seq.get(&source.file_seq) {
+                Some(scan) => (scan.materialize_rows(pos), scan.row_ids(pos)),
+                None => continue,
             }
-        } else if let Some(reader) = sfst_by_key.get(source) {
-            for (p, row) in pos.iter().zip(reader.materialize_rows(pos)?) {
-                row_by_key.insert(
-                    RowKey {
-                        source: *source,
-                        position: *p,
-                    },
-                    row,
-                );
+        } else {
+            match sfst_by_key.get(source) {
+                Some(reader) => (reader.materialize_rows(pos)?, sfst_row_ids(reader, pos)?),
+                None => continue,
             }
+        };
+        for ((p, row), ids) in pos.iter().zip(rows).zip(ids) {
+            let key = RowKey {
+                source: *source,
+                position: *p,
+            };
+            row_by_key.insert(key, (row, ids));
         }
     }
 
-    let rows = selected
-        .cursors
-        .iter()
-        .filter_map(|cursor| {
-            row_by_key
-                .remove(&RowKey::of(cursor))
-                .map(|row| (*cursor, row))
-        })
-        .collect();
+    let mut rows = Vec::with_capacity(selected.cursors.len());
+    for cursor in &selected.cursors {
+        if let Some((row, (trace_id, span_id))) = row_by_key.remove(&RowKey::of(cursor)) {
+            rows.push(LogRow {
+                cursor: *cursor,
+                row,
+                trace_id,
+                span_id,
+            });
+        }
+    }
     Ok(rows)
+}
+
+/// A row's trace and span ids; `None` when unset or not stored.
+type RowIds = (Option<sfst::TraceId>, Option<sfst::SpanId>);
+
+/// The ids of an index file's rows at `positions`, from its id columns.
+fn sfst_row_ids(
+    reader: &sfst::IndexReader<'_>,
+    positions: &[u32],
+) -> Result<Vec<RowIds>, sfst::Error> {
+    let trace_ids = if has_column(reader, sfst::TraceIds::NAME) {
+        Some(reader.trace_ids()?)
+    } else {
+        None
+    };
+    let span_ids = if has_column(reader, sfst::SpanIds::NAME) {
+        Some(reader.span_ids()?)
+    } else {
+        None
+    };
+    let mut out = Vec::with_capacity(positions.len());
+    for &position in positions {
+        let trace = trace_ids
+            .map(|ids| ids.get(position as usize))
+            .filter(|id| !id.is_unset());
+        let span = span_ids
+            .map(|ids| ids.get(position as usize))
+            .filter(|id| !id.is_unset());
+        out.push((trace, span));
+    }
+    Ok(out)
 }
 
 /// A materialized page: rows newest-first plus the has-more flags.
 #[derive(Default)]
 pub(super) struct Page {
-    pub(super) rows: Vec<(Cursor, sfst::MaterializedRow)>,
+    pub(super) rows: Vec<LogRow>,
     pub(super) has_newer: bool,
     pub(super) has_older: bool,
 }

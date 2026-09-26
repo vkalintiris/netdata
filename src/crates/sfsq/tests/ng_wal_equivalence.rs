@@ -117,6 +117,11 @@ fn struct_array(items: Vec<AnyValue>) -> AnyValue {
 const BASE_S: u64 = 1_000_000;
 const NS: u64 = 1_000_000_000;
 
+/// Record ids come from small pools so an id term matches several records;
+/// about 30 % of generated records carry none.
+const TRACE_POOL: [[u8; 16]; 3] = [[0x11; 16], [0x22; 16], [0x33; 16]];
+const SPAN_POOL: [[u8; 8]; 4] = [[1; 8], [2; 8], [3; 8], [4; 8]];
+
 /// One generated corpus: the batches (one `flatten_log_request` call — one WAL
 /// frame — each).
 struct Corpus {
@@ -250,9 +255,19 @@ fn gen_corpus(seed: u64) -> Corpus {
             ));
         }
 
+        let (trace_id, span_id) = if rng.chance(70) {
+            (
+                TRACE_POOL[rng.below(3) as usize].to_vec(),
+                SPAN_POOL[rng.below(4) as usize].to_vec(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
         records.push(LogRecord {
             time_unix_nano: resolved_time,
             observed_time_unix_nano: observed_ns,
+            trace_id,
+            span_id,
             severity_number: [0, 9, 17][rng.below(3) as usize],
             severity_text: severities[rng.below(4) as usize].to_string(),
             body: if rng.chance(35) {
@@ -625,6 +640,41 @@ fn query_matrix(summary: &sfst::Summary) -> Vec<(String, LogsQuery)> {
         "fulltext-body".into(),
         b(g_eight).query("request|reset").build(),
     ));
+    let pool_trace = |i: usize| sfst::TraceId::from(TRACE_POOL[i]);
+    let pool_span = |i: usize| sfst::SpanId::from(SPAN_POOL[i]);
+    out.push((
+        "trace-ids".into(),
+        b(g_eight)
+            .trace_ids(vec![pool_trace(2), pool_trace(0)])
+            .facet_fields(vec!["attributes.level".into()])
+            .build(),
+    ));
+    out.push((
+        "span-ids".into(),
+        b(g_eight).span_ids(vec![pool_span(1)]).build(),
+    ));
+    out.push((
+        "trace+field".into(),
+        b(g_eight)
+            .trace_ids(vec![pool_trace(1)])
+            .filter(Filter::new().select("attributes.level", "error"))
+            .facet_fields(vec!["attributes.level".into()])
+            .build(),
+    ));
+    out.push((
+        "trace+text".into(),
+        b(g_eight)
+            .trace_ids(vec![pool_trace(0)])
+            .query("request|reset")
+            .build(),
+    ));
+    out.push((
+        "trace+span".into(),
+        b(g_eight)
+            .trace_ids(vec![pool_trace(1)])
+            .span_ids(vec![pool_span(3)])
+            .build(),
+    ));
     out.push((
         "negative-grid".into(),
         b(Grid::new(
@@ -753,6 +803,70 @@ fn tails_clone(ts: &[WalTail]) -> Vec<WalTail> {
         .collect()
 }
 
+/// The id terms select exactly the records carrying those ids — trace and span
+/// ANDed — and every page row carries its record's ids.
+#[test]
+fn trace_and_span_terms_select_their_records() {
+    let corpus = gen_corpus(7);
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_flattened_wal(dir.path(), &corpus);
+    let whole = ng_index_candidate(dir.path());
+    let summary = whole.summary.clone();
+    let start = summary.min_timestamp_s as i64 * NS as i64;
+    let span_ns = ((summary.max_timestamp_s - summary.min_timestamp_s) as i64 + 1) * NS as i64;
+
+    let mut records = Vec::new();
+    for batch in &corpus.batches {
+        for resource in batch {
+            for scope in &resource.scope_logs {
+                records.extend(scope.log_records.iter());
+            }
+        }
+    }
+    let traces = [
+        sfst::TraceId::from(TRACE_POOL[0]),
+        sfst::TraceId::from(TRACE_POOL[2]),
+    ];
+    let wanted_span = sfst::SpanId::from(SPAN_POOL[1]);
+    let expected = |span: Option<sfst::SpanId>| {
+        records
+            .iter()
+            .filter(|r| {
+                sfst::TraceId::from_bytes(&r.trace_id).is_some_and(|id| traces.contains(&id))
+                    && span.is_none_or(|s| r.span_id == s.as_bytes().to_vec())
+            })
+            .count() as u64
+    };
+    assert!(
+        expected(None) > 0 && expected(Some(wanted_span)) > 0,
+        "the corpus exercises both terms"
+    );
+
+    for span in [None, Some(wanted_span)] {
+        let mut query = LogsQueryBuilder::new(Grid::new(start, span_ns, 1))
+            .trace_ids(traces.to_vec())
+            .limit(1_000);
+        if let Some(span) = span {
+            query = query.span_ids(vec![span]);
+        }
+        let data = run_plain(
+            sources(vec![clone_candidate(&whole)], vec![]),
+            query.build(),
+        );
+        assert_eq!(data.matched, expected(span), "{span:?}");
+        assert_eq!(data.rows.len() as u64, data.matched);
+        for row in &data.rows {
+            assert!(
+                row.trace_id.is_some_and(|id| traces.contains(&id)),
+                "{row:?}"
+            );
+            if let Some(span) = span {
+                assert_eq!(row.span_id, Some(span));
+            }
+        }
+    }
+}
+
 #[test]
 fn ng_run_stats_equal_whole_file_index() {
     // Statistics equivalence over the live path: chunk SFSTs (built by
@@ -869,6 +983,16 @@ fn ng_run_rows_match_whole_file_index() {
     let records: Vec<LogRecord> = (0..200)
         .map(|i| LogRecord {
             time_unix_nano: (BASE_S + i) * NS,
+            trace_id: if i % 4 == 0 {
+                Vec::new()
+            } else {
+                vec![(i % 5) as u8 + 1; 16]
+            },
+            span_id: if i % 3 == 0 {
+                Vec::new()
+            } else {
+                vec![(i % 7) as u8 + 1; 8]
+            },
             severity_text: "INFO".to_string(),
             attributes: vec![
                 kv("level", s(levels[(i % 3) as usize])),
@@ -933,8 +1057,12 @@ fn ng_run_rows_match_whole_file_index() {
     let span =
         ((whole.summary.max_timestamp_s - whole.summary.min_timestamp_s) as i64 + 1) * NS as i64;
 
-    let rows_of = |data: &LogsData| -> Vec<MaterializedRow> {
-        data.rows.iter().map(|(_, row)| row.clone()).collect()
+    type Ids = (Option<sfst::TraceId>, Option<sfst::SpanId>);
+    let rows_of = |data: &LogsData| -> Vec<(MaterializedRow, Ids)> {
+        data.rows
+            .iter()
+            .map(|row| (row.row.clone(), (row.trace_id, row.span_id)))
+            .collect()
     };
 
     for (qlabel, q) in [

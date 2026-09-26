@@ -37,11 +37,21 @@ pub struct LogsData {
     pub columns: Vec<String>,
     /// The materialized page, newest-first, each row tagged with its
     /// [`Cursor`] in the global total order.
-    pub rows: Vec<(Cursor, sfst::MaterializedRow)>,
+    pub rows: Vec<LogRow>,
     /// A newer row exists beyond the page (consumer "scroll up").
     pub has_newer: bool,
     /// An older row exists beyond the page (consumer "scroll down").
     pub has_older: bool,
+}
+
+/// One page row: its place in the order, its fields, and its record's ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogRow {
+    pub cursor: Cursor,
+    pub row: sfst::MaterializedRow,
+    /// `None` when the record has none (or its file stores no ids).
+    pub trace_id: Option<sfst::TraceId>,
+    pub span_id: Option<sfst::SpanId>,
 }
 
 impl LogsData {

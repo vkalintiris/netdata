@@ -14,7 +14,7 @@ fn scan_from(rows: &[(i64, &[&str])]) -> WalScan {
     let mut sink = ScanSink::default();
     for &(ts, pairs) in rows {
         let tokens: Vec<u32> = pairs.iter().map(|kv| sink.intern(kv)).collect();
-        sink.row(ts, &tokens);
+        sink.row(ts, &tokens, sfst::TraceId::UNSET, sfst::SpanId::UNSET);
     }
     sink.finish()
 }

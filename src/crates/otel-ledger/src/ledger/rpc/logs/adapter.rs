@@ -543,14 +543,14 @@ fn build_row_cells(
 /// Build the wire `columns` schema and `data` rows from a materialized
 /// page — a thin orchestrator over [`build_columns`] and [`build_row_cells`].
 fn build_table(
-    rows: &[(Cursor, sfst::MaterializedRow)],
+    rows: &[sfsq::logs::LogRow],
     fields: &[String],
     facetable: &BTreeSet<&str>,
 ) -> (serde_json::Value, serde_json::Value) {
     let columns = build_columns(fields, facetable);
     let data = rows
         .iter()
-        .map(|(cursor, row)| serde_json::Value::Array(build_row_cells(cursor, row, fields)))
+        .map(|row| serde_json::Value::Array(build_row_cells(&row.cursor, &row.row, fields)))
         .collect();
     (columns, serde_json::Value::Array(data))
 }

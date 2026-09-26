@@ -195,7 +195,7 @@ fn query_all(dirs: &Dirs) -> (u64, Vec<sfst::MaterializedRow>) {
     let d = discover(dirs, "default", None, 0..u32::MAX).expect("discover");
     let q = build_query(0..u32::MAX, Filter::new(), None, 10_000);
     let data = run_query(d.sources, q);
-    let rows = data.rows.into_iter().map(|(_, r)| r).collect();
+    let rows = data.rows.into_iter().map(|r| r.row).collect();
     (data.matched, rows)
 }
 
@@ -241,7 +241,7 @@ fn limit_returns_newest_n_and_reports_total_matched() {
     assert_eq!(data.rows.len(), 5, "returned is capped to the limit");
 
     // The 5 newest timestamps, newest-first.
-    let ts: Vec<i64> = data.rows.iter().map(|(_, r)| r.timestamp_ns).collect();
+    let ts: Vec<i64> = data.rows.iter().map(|r| r.row.timestamp_ns).collect();
     let expected: Vec<i64> = (25..30).rev().map(|i| ((BASE_S + i) * NS) as i64).collect();
     assert_eq!(ts, expected);
 }
@@ -469,7 +469,7 @@ fn reverse_flips_row_order() {
     let newest_first: Vec<i64> = run_query(d.sources, q)
         .rows
         .into_iter()
-        .map(|(_, r)| r.timestamp_ns)
+        .map(|r| r.row.timestamp_ns)
         .collect();
 
     assert_eq!(newest_first.len(), 30);

@@ -39,6 +39,7 @@
 mod aggregate;
 mod cursor;
 mod engine;
+mod filter;
 mod mmap;
 mod page;
 mod query;
@@ -50,5 +51,5 @@ pub use cursor::{Cursor, Part};
 pub use engine::{LogSource, SfstCandidate, Source, WalTail, run};
 pub use page::PageShard;
 pub use query::{Anchor, Direction, LogsQuery, LogsQueryBuilder};
-pub use result::LogsData;
+pub use result::{LogRow, LogsData};
 pub use wal_scan::{FlattenedScanError, WalScan};
