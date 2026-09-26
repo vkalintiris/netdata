@@ -8,6 +8,10 @@ use std::io;
 use super::ReadAt;
 use super::crc::{crc_matches, crc32};
 
+mod builder;
+
+pub use builder::{Builder, MetricRetention, Page, Retention, UeSource, from_v1, write_in_place};
+
 /// `JOURVAL_V2_MAGIC`, `JOURVAL_V2_REBUILD_MAGIC`, `JOURVAL_V2_SKIP_MAGIC`.
 pub const MAGIC: u32 = 0x0123_0317;
 pub const REBUILD_MAGIC: u32 = 0x0023_0317;
