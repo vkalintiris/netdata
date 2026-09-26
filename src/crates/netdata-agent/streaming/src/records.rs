@@ -30,6 +30,8 @@ pub enum Reason {
     WriteFailed,
     ClosedByRemote,
     SocketError,
+    Timeout,
+    ReplicationStalled,
 }
 
 impl Reason {
@@ -49,6 +51,8 @@ impl Reason {
             Reason::WriteFailed => "DISCONNECTED SOCKET WRITE FAILED",
             Reason::ClosedByRemote => "DISCONNECTED SOCKET CLOSED BY REMOTE END",
             Reason::SocketError => "DISCONNECT SOCKET ERROR",
+            Reason::Timeout => "DISCONNECTED TIMEOUT",
+            Reason::ReplicationStalled => "REPLICATION STALLED",
         }
     }
 
@@ -65,6 +69,8 @@ impl Reason {
             Reason::SignaledToStop | Reason::ClosedByRemote => 499,
             Reason::ReadFailed | Reason::WriteFailed => 502,
             Reason::SocketError => 500,
+            Reason::Timeout => 504,
+            Reason::ReplicationStalled => 507,
         }
     }
 }

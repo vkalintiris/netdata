@@ -3090,6 +3090,8 @@ dependencies = [
  "netdata-agent-pluginsd-proto",
  "netdata-agent-rrd",
  "netdata-agent-text",
+ "nix",
+ "socket2",
  "zstd",
 ]
 

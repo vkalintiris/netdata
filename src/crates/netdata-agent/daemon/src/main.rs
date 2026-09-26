@@ -446,7 +446,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             stream_threads,
             conf.threads.thread_stack_size,
             |i| format!("STREAM[{i}]"),
-            move |_| StreamWorker::new(Arc::clone(&load)),
+            move |_| StreamWorker::new(Arc::clone(&load), db.update_every),
         ) {
             Ok(pool) => pool,
             // D37: C carries on without the thread; a pool cannot, so the daemon exits after C's record

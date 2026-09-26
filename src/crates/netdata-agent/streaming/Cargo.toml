@@ -21,4 +21,6 @@ netdata-agent-ingest = { workspace = true }
 netdata-agent-pluginsd-proto = { workspace = true }
 netdata-agent-rrd = { workspace = true }
 netdata-agent-text = { workspace = true }
+nix = { workspace = true, features = ["socket", "net"] }
+socket2 = { workspace = true }
 zstd = { workspace = true }

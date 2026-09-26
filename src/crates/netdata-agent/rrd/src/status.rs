@@ -136,7 +136,7 @@ impl Host {
     }
 
     /// `rrdhost_receiver_replicating_charts() > 0`.
-    fn any_chart_replicating(&self) -> bool {
+    pub fn any_chart_replicating(&self) -> bool {
         self.charts()
             .all()
             .iter()

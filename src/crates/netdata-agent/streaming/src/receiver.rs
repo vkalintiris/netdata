@@ -16,9 +16,12 @@ use netdata_agent_evloop::{Context, Event, Interest, PoolHandle, TimerId, Token,
 use netdata_agent_ingest::{self as ingest, Parser};
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_pluginsd_proto::LineReader;
+use netdata_agent_rrd::chart::flags;
 use netdata_agent_rrd::collection;
 use netdata_agent_rrd::host::{Host, HostInfo, Hosts, ReceiverLink, ReceiverSlot, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
+use netdata_agent_text::duration::duration_to_string;
+use netdata_agent_text::size::size_to_string;
 
 use crate::caps;
 use crate::conf::{Keepalive, ReceiverDefaults, StreamConf};
@@ -30,17 +33,87 @@ use crate::records::{self, Counters, Peer, Reason};
 const KEEPALIVE_PROBE_INTERVAL_S: u32 = 10;
 const KEEPALIVE_PROBES: u32 = 3;
 
-/// `stream_receiver_automatic_keepalive_idle()`: half the update every, 30..=3600 s. C prefers the host's smallest
-/// chart update every, which Rust does not track; the handshake's is its fallback and gives the same value for
-/// every update every below a minute.
-fn automatic_keepalive_idle(update_every: i64) -> u32 {
-    let update_every = u64::try_from(update_every).unwrap_or(0);
+/// `stream_receiver_automatic_keepalive_idle()`: half the update every, 30..=3600 s.
+fn automatic_keepalive_idle(update_every: u64) -> u32 {
     let idle = if update_every > 0 {
         update_every.div_ceil(2)
     } else {
         30
     };
     idle.clamp(30, 3600) as u32
+}
+
+/// `stream_receiver_update_every()`: the smallest update every of the child's charts, else the handshake's (0 for none).
+fn receiver_update_every(host: &Host, handshake_update_every: i64) -> u64 {
+    match host.receiver_min_update_every() {
+        u32::MAX => u64::try_from(handshake_update_every).unwrap_or(0),
+        observed => u64::from(observed),
+    }
+}
+
+/// `STREAM_RECEIVER_IDLE_TIMEOUT_MIN_SECONDS`: a child quiet this long (or twice its update every) is disconnected.
+const IDLE_TIMEOUT_MIN_S: u64 = 600;
+/// `CBUFFER_INITIAL_MAX_SIZE`: the buffer C queues data for a child in; its fill is in the timeout record.
+const SEND_BUFFER_MAX: usize = 10 * 1024 * 1024;
+/// How long replication may make no progress before a child is checked for stalled charts.
+const REPLICATION_STALL: Duration = Duration::from_secs(600);
+
+/// `stream_receiver_reconcile_keepalive()`: the keepalive options go on the socket once, and again when the
+/// automatic idle's update every changed; each failed option is logged.
+fn reconcile_keepalive(
+    fd: std::os::fd::BorrowedFd<'_>,
+    host: &Host,
+    peer: &Peer,
+    keepalive: &Keepalive,
+    handshake_update_every: i64,
+    initialized: &mut bool,
+) {
+    use nix::sys::socket::{setsockopt, sockopt};
+    let observed = host.receiver_min_update_every();
+    if *initialized
+        && (!keepalive.automatic || observed == host.receiver_min_update_every_applied())
+    {
+        return;
+    }
+    *initialized = true;
+    host.set_receiver_min_update_every_applied(observed);
+    let enabled = keepalive.enabled;
+    let idle_s = if enabled && keepalive.automatic {
+        automatic_keepalive_idle(receiver_update_every(host, handshake_update_every))
+    } else {
+        keepalive.idle_s
+    };
+    let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
+    let warn = |what: &str| {
+        nd_log!(
+            Source::Daemon,
+            Priority::Warning,
+            "STREAM RCV '{}' [from [{}]:{}]: {what} on socket {raw}",
+            host.hostname(),
+            peer.ip,
+            peer.port
+        );
+    };
+    if setsockopt(&fd, sockopt::KeepAlive, &enabled).is_err() {
+        warn(if enabled {
+            "cannot enable SO_KEEPALIVE"
+        } else {
+            "cannot disable SO_KEEPALIVE"
+        });
+        return;
+    }
+    if !enabled {
+        return;
+    }
+    if setsockopt(&fd, sockopt::TcpKeepIdle, &idle_s).is_err() {
+        warn("cannot set TCP_KEEPIDLE");
+    }
+    if setsockopt(&fd, sockopt::TcpKeepInterval, &KEEPALIVE_PROBE_INTERVAL_S).is_err() {
+        warn("cannot set TCP_KEEPINTVL");
+    }
+    if setsockopt(&fd, sockopt::TcpKeepCount, &KEEPALIVE_PROBES).is_err() {
+        warn("cannot set TCP_KEEPCNT");
+    }
 }
 
 /// A receiver older than this without traffic is stale and may be replaced (`stream_receiver_accept_connection()`).
@@ -115,6 +188,8 @@ pub struct Attached {
     /// For the text of socket errors: the receiver's TCP keepalive policy and `rpt->handshake_update_every`.
     keepalive: Keepalive,
     handshake_update_every: i64,
+    /// `rpt->thread.keepalive_initialized`.
+    keepalive_initialized: bool,
 }
 
 /// A connection on its stream thread.
@@ -132,8 +207,12 @@ struct Child {
     bytes_out: u64,
     /// Successful writes (`stats->sends`).
     sends: u64,
-    /// The last read or write, for the disconnect record's `idle=`.
+    /// The last read or write, for the disconnect record's `idle=` and the idle timeout.
     last_io: Instant,
+    /// `rpt->replication`: the request count last seen, when it last moved, and the progress time last checked.
+    replication_requests: u32,
+    replication_progress: Option<Instant>,
+    replication_checked: Option<Instant>,
 }
 
 /// The receiving side of this agent.
@@ -504,6 +583,15 @@ impl Receivers {
         }
         let prompt = caps::prompt(capabilities);
         let _ = stream.set_read_timeout(Some(Duration::from_secs(600)));
+        let mut keepalive_initialized = false;
+        reconcile_keepalive(
+            std::os::fd::AsFd::as_fd(&stream),
+            &host,
+            &peer,
+            &config.keepalive,
+            i64::from(request.update_every),
+            &mut keepalive_initialized,
+        );
         // the negotiated capabilities are logged before the prompt goes out
         peer.established(&host.hostname(), capabilities);
         if !send_timeout(&stream, prompt.as_bytes(), Duration::from_secs(60)) {
@@ -545,6 +633,7 @@ impl Receivers {
             accepted_s,
             keepalive: config.keepalive,
             handshake_update_every: i64::from(request.update_every),
+            keepalive_initialized,
         };
         // stream_receiver_add_to_queue()
         nd_log!(
@@ -594,14 +683,22 @@ pub struct StreamWorker {
     children: Vec<Option<Child>>,
     load: Arc<Mutex<Vec<usize>>>,
     tick: Option<TimerId>,
+    /// `nd_profile.update_every`: how often every child is probed and checked for idleness.
+    check_every: Duration,
+    last_check: Instant,
+    last_replication_check: Instant,
 }
 
 impl StreamWorker {
-    pub fn new(load: Arc<Mutex<Vec<usize>>>) -> Self {
+    pub fn new(load: Arc<Mutex<Vec<usize>>>, update_every: i32) -> Self {
+        let now = Instant::now();
         StreamWorker {
             children: Vec::new(),
             load,
             tick: None,
+            check_every: Duration::from_secs(u64::try_from(update_every).unwrap_or(1).max(1)),
+            last_check: now,
+            last_replication_check: now,
         }
     }
 
@@ -639,6 +736,173 @@ impl StreamWorker {
     }
 
     /// `STREAM RCV[n] '<host>' [from [<ip>]:<port>]: ` of the stream thread's records.
+    /// `stream_receiver_check_all_nodes_from_poll()`: a probe finds a connection the child closed or that failed,
+    /// and a child silent for longer than its timeout, while none of its charts replicates, is disconnected.
+    fn check_all(&mut self, cx: &mut Context<'_>, now: Instant) {
+        for index in 0..self.children.len() {
+            let Some(child) = self.children[index].as_mut() else {
+                continue;
+            };
+            let frame = Arc::clone(&child.frame);
+            let a = &child.attached;
+            let at = format!(
+                "STREAM RCV[{}] '{}' [from {}]: ",
+                a.thread,
+                a.host.hostname(),
+                a.peer.ip
+            );
+            let mut probe = [std::mem::MaybeUninit::uninit(); 1];
+            let peeked = socket2::SockRef::from(&a.stream).peek(&mut probe);
+            let reset =
+                |e: &std::io::Error| e.raw_os_error() == Some(nix::errno::Errno::ECONNRESET as i32);
+            match peeked {
+                Ok(0) => {
+                    let _frame = records::child_event(&frame);
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Err,
+                        "{at}socket closed by remote - closing connection"
+                    );
+                    self.disconnect(cx, index, Reason::ClosedByRemote);
+                    continue;
+                }
+                Err(e) if reset(&e) => {
+                    let _frame = records::child_event(&frame);
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Err,
+                        "{at}socket closed by remote - closing connection"
+                    );
+                    self.disconnect(cx, index, Reason::ClosedByRemote);
+                    continue;
+                }
+                Err(e)
+                    if !matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    let _frame = records::child_event(&frame);
+                    let text = netdata_agent_log::strerror(netdata_agent_log::errno_of(&e));
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Err,
+                        "{at}socket error detected: {text} - closing connection"
+                    );
+                    self.disconnect(cx, index, Reason::SocketError);
+                    continue;
+                }
+                _ => {}
+            }
+            let timeout_s = IDLE_TIMEOUT_MIN_S
+                .max(receiver_update_every(&a.host, a.handshake_update_every) * 2);
+            let idle = now.saturating_duration_since(child.last_io);
+            if idle > Duration::from_secs(timeout_s) && !a.host.any_chart_replicating() {
+                let _frame = records::child_event(&frame);
+                let idle_us = i64::try_from(idle.as_micros()).unwrap_or(i64::MAX);
+                let duration = duration_to_string(idle_us, "us", true).unwrap_or_default();
+                let outstanding = child.pending_out.len();
+                let pending = if outstanding == 0 {
+                    "0".to_string()
+                } else {
+                    size_to_string(outstanding as u64, "B", false).unwrap_or_default()
+                };
+                let ratio = outstanding as f64 * 100.0 / SEND_BUFFER_MAX as f64;
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "{at}there was not traffic for {timeout_s} seconds - closing connection - we have sent {} bytes in \
+                     {} operations, it is idle for {duration}, and we have {pending} pending to send (buffer is used \
+                     {ratio:.2}%).",
+                    child.bytes_out,
+                    child.sends
+                );
+                self.disconnect(cx, index, Reason::Timeout);
+            }
+        }
+    }
+
+    /// `stream_receiver_did_replication_progress()`: new replication requests, none yet, or less than ten minutes
+    /// since the last one.
+    fn replication_progressed(child: &mut Child, now: Instant) -> bool {
+        let requests = child.attached.host.replication_requests();
+        if child.replication_requests != requests {
+            child.replication_requests = requests;
+            child.replication_progress = Some(now);
+            return true;
+        }
+        if requests == 0 {
+            return true;
+        }
+        match child.replication_progress {
+            None => {
+                child.replication_progress = Some(now);
+                true
+            }
+            Some(last) => now.saturating_duration_since(last) < REPLICATION_STALL,
+        }
+    }
+
+    /// `stream_receiver_replication_check_from_poll()`: a child whose replication made no progress for ten minutes
+    /// while some of its charts never finished is disconnected, after its unfinished charts are listed.
+    fn check_replication(&mut self, cx: &mut Context<'_>, now: Instant) {
+        for index in 0..self.children.len() {
+            let Some(child) = self.children[index].as_mut() else {
+                continue;
+            };
+            if Self::replication_progressed(child, now) {
+                child.replication_checked = None;
+                continue;
+            }
+            if child.replication_checked == child.replication_progress {
+                continue;
+            }
+            let a = &child.attached;
+            let at = format!(
+                "STREAM RCV[{}] '{}' [from {}]: ",
+                a.thread,
+                a.host.hostname(),
+                a.peer.ip
+            );
+            let (mut stalled, mut finished) = (0usize, 0usize);
+            for chart in a.host.charts().all() {
+                let f = chart.flags();
+                if f & flags::OBSOLETE != 0 {
+                    continue;
+                }
+                if f & flags::RECEIVER_REPLICATION_FINISHED != 0 {
+                    finished += 1;
+                    continue;
+                }
+                let state = if f & flags::RECEIVER_REPLICATION_IN_PROGRESS != 0 {
+                    "has not finished"
+                } else {
+                    "has not started"
+                };
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Debug,
+                    "{at}REPLICATION EXCEPTIONS: instance '{}' {state} replication yet.",
+                    chart.id()
+                );
+                stalled += 1;
+            }
+            if stalled > 0 && !Self::replication_progressed(child, now) {
+                let requested = child.attached.host.replication_requests();
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Warning,
+                    "{at}REPLICATION EXCEPTIONS SUMMARY: node has {stalled} stalled replication requests ({finished} \
+                     finished). We have requested {requested} and got replies for 0 replication commands. \
+                     Disconnecting node to restore streaming."
+                );
+                self.disconnect(cx, index, Reason::ReplicationStalled);
+                continue;
+            }
+            child.replication_checked = child.replication_progress;
+        }
+    }
+
     fn prefix(child: &Child) -> String {
         let a = &child.attached;
         format!(
@@ -705,7 +969,10 @@ impl StreamWorker {
             "disabled".to_string()
         } else {
             let idle_s = if k.automatic {
-                automatic_keepalive_idle(child.attached.handshake_update_every)
+                automatic_keepalive_idle(receiver_update_every(
+                    &child.attached.host,
+                    child.attached.handshake_update_every,
+                ))
             } else {
                 k.idle_s
             };
@@ -817,6 +1084,16 @@ impl StreamWorker {
                             return self.disconnect(cx, index, Reason::ParseError);
                         }
                     }
+                    // the charts just received may lower the update every the keepalive follows
+                    let a = &mut child.attached;
+                    reconcile_keepalive(
+                        std::os::fd::AsFd::as_fd(&a.stream),
+                        &a.host,
+                        &a.peer,
+                        &a.keepalive,
+                        a.handshake_update_every,
+                        &mut a.keepalive_initialized,
+                    );
                     // stream_receiver_dequeue_senders(): a failed write here ends the connection as a read failure
                     if !self.flush(cx, index, false) {
                         let Some(child) = self.children[index].as_ref() else {
@@ -944,6 +1221,15 @@ impl Worker for StreamWorker {
                 attached.peer.port
             );
         }
+        let a = &mut attached;
+        reconcile_keepalive(
+            std::os::fd::AsFd::as_fd(&a.stream),
+            &a.host,
+            &a.peer,
+            &a.keepalive,
+            a.handshake_update_every,
+            &mut a.keepalive_initialized,
+        );
         self.children[index] = Some(Child {
             attached,
             decompressor,
@@ -955,6 +1241,9 @@ impl Worker for StreamWorker {
             bytes_out: 0,
             sends: 0,
             last_io: Instant::now(),
+            replication_requests: 0,
+            replication_progress: None,
+            replication_checked: None,
         });
         // the parser exists: the host's retention changes now owe the child a stream path
         // (stream_path_send_to_child() finds no parser before)
@@ -994,6 +1283,15 @@ impl Worker for StreamWorker {
                 self.flush(cx, index, true);
             }
         }
+        let now = Instant::now();
+        if now.duration_since(self.last_check) >= self.check_every {
+            self.last_check = now;
+            self.check_all(cx, now);
+            if now.duration_since(self.last_replication_check) >= REPLICATION_STALL {
+                self.last_replication_check = now;
+                self.check_replication(cx, now);
+            }
+        }
         self.tick = Some(cx.add_timer(Instant::now() + TICK));
     }
 
@@ -1001,5 +1299,106 @@ impl Worker for StreamWorker {
         for index in 0..self.children.len() {
             self.disconnect(cx, index, Reason::Shutdown);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use netdata_agent_rrd::host::HostInfo;
+    use std::os::fd::AsFd;
+
+    fn host() -> Host {
+        Host::new(
+            "guid",
+            false,
+            HostInfo {
+                hostname: "child".into(),
+                registry_hostname: "child".into(),
+                os: "linux".into(),
+                timezone: "UTC".into(),
+                abbrev_timezone: "UTC".into(),
+                utc_offset: 0,
+                program_name: "p".into(),
+                program_version: "1".into(),
+                update_every: 1,
+                db_mode: DbMode::Ram,
+                history_entries: 4096,
+                health_enabled: false,
+                system_info: Default::default(),
+                replication_enabled: false,
+                replication_period: 0,
+                replication_step: 0,
+                stream_send: None,
+                cache_dir: None,
+            },
+        )
+    }
+
+    fn keepalive() -> Keepalive {
+        Keepalive {
+            enabled: true,
+            automatic: true,
+            idle_s: 0,
+        }
+    }
+
+    #[test]
+    fn the_update_every_follows_the_charts_then_the_handshake() {
+        let h = host();
+        assert_eq!(receiver_update_every(&h, 5), 5);
+        assert_eq!(receiver_update_every(&h, -1), 0);
+        h.observe_receiver_update_every(10);
+        h.observe_receiver_update_every(2);
+        h.observe_receiver_update_every(7);
+        assert_eq!(receiver_update_every(&h, 5), 2);
+        assert_eq!(automatic_keepalive_idle(0), 30);
+        assert_eq!(automatic_keepalive_idle(121), 61);
+        assert_eq!(automatic_keepalive_idle(10_000), 3600);
+    }
+
+    #[test]
+    fn keepalive_goes_on_the_socket_and_follows_the_update_every() {
+        use nix::sys::socket::{getsockopt, sockopt};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let (h, peer) = (host(), Peer::default());
+        let mut initialized = false;
+        reconcile_keepalive(server.as_fd(), &h, &peer, &keepalive(), 0, &mut initialized);
+        assert!(initialized && getsockopt(&server, sockopt::KeepAlive).unwrap());
+        assert_eq!(getsockopt(&server, sockopt::TcpKeepIdle).unwrap(), 30);
+        assert_eq!(getsockopt(&server, sockopt::TcpKeepInterval).unwrap(), 10);
+        assert_eq!(getsockopt(&server, sockopt::TcpKeepCount).unwrap(), 3);
+        // a chart every 200 s makes the automatic idle 100 s
+        h.observe_receiver_update_every(200);
+        reconcile_keepalive(server.as_fd(), &h, &peer, &keepalive(), 0, &mut initialized);
+        assert_eq!(getsockopt(&server, sockopt::TcpKeepIdle).unwrap(), 100);
+        // a configured idle is applied once
+        let fixed = Keepalive {
+            automatic: false,
+            idle_s: 45,
+            ..keepalive()
+        };
+        let mut initialized = false;
+        reconcile_keepalive(server.as_fd(), &h, &peer, &fixed, 0, &mut initialized);
+        assert_eq!(getsockopt(&server, sockopt::TcpKeepIdle).unwrap(), 45);
+    }
+
+    #[test]
+    fn a_unix_child_gets_cs_warnings_for_the_tcp_options() {
+        let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (h, peer) = (host(), Peer::default());
+        let ((), records) = netdata_agent_log::capture(|| {
+            let mut initialized = false;
+            reconcile_keepalive(a.as_fd(), &h, &peer, &keepalive(), 1, &mut initialized);
+        });
+        let messages: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&a);
+        assert_eq!(
+            messages,
+            ["TCP_KEEPIDLE", "TCP_KEEPINTVL", "TCP_KEEPCNT"]
+                .map(|o| format!("STREAM RCV 'child' [from []:]: cannot set {o} on socket {fd}"))
+        );
     }
 }

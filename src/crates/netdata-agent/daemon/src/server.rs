@@ -347,13 +347,18 @@ impl WebWorker {
             Source::Daemon,
             Priority::Debug,
             "{} listening sockets (used TCP sockets {used}, max allowed for this worker {limit})",
-            if self.listening { "ENABLING" } else { "DISABLING" }
+            if self.listening {
+                "ENABLING"
+            } else {
+                "DISABLING"
+            }
         );
         for (i, listener) in self.listeners.iter().enumerate() {
             if let Some(fd) = listener.polled_fd() {
                 let mut source = mio::unix::SourceFd(&fd);
                 let _ = if self.listening {
-                    cx.registry().register(&mut source, Token(i), Interest::READABLE)
+                    cx.registry()
+                        .register(&mut source, Token(i), Interest::READABLE)
                 } else {
                     cx.registry().deregister(&mut source)
                 };

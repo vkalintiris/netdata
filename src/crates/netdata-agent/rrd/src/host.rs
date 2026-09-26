@@ -2,7 +2,7 @@
 //! by machine GUID and kept in creation order (localhost first).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use netdata_agent_log::{Priority, REDACTED, Source, nd_log, netdata_log_error};
@@ -225,6 +225,12 @@ pub struct Host {
     stream_path: RwLock<Vec<PathEntry>>,
     /// `RRDHOST_OPTION_EPHEMERAL_HOST`.
     ephemeral: AtomicBool,
+    /// `host->stream.rcv.min_update_every`: the smallest update every among the child's charts since it connected
+    /// (`u32::MAX` before one), and the one its receiver's keepalive last used (`min_update_every_applied`).
+    min_update_every: AtomicU32,
+    min_update_every_applied: AtomicU32,
+    /// `host->stream.rcv.status.replication.counter_out`: replication requests sent since the child connected.
+    replication_requests: AtomicU32,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -252,7 +258,45 @@ impl Host {
             replication_percent: AtomicU64::new(100f64.to_bits()),
             stream_path: RwLock::new(Vec::new()),
             ephemeral: AtomicBool::new(false),
+            min_update_every: AtomicU32::new(u32::MAX),
+            min_update_every_applied: AtomicU32::new(u32::MAX),
+            replication_requests: AtomicU32::new(0),
         }
+    }
+
+    /// `rrdset_observe_receiver_update_every()`: a chart's update every lowers the receiver's minimum.
+    pub fn observe_receiver_update_every(&self, update_every: i32) {
+        if update_every > 0 {
+            self.min_update_every
+                .fetch_min(update_every as u32, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    pub fn receiver_min_update_every(&self) -> u32 {
+        self.min_update_every
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The minimum update every the receiver's keepalive last used; `set_` records a new one.
+    pub fn receiver_min_update_every_applied(&self) -> u32 {
+        self.min_update_every_applied
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_receiver_min_update_every_applied(&self, update_every: u32) {
+        self.min_update_every_applied
+            .store(update_every, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// A replication request went to the child (`counter_out`).
+    pub fn count_replication_request(&self) {
+        self.replication_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn replication_requests(&self) -> u32 {
+        self.replication_requests
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// `host->stream.rcv.status.replication.percent`: 100 from creation, then the receiver's replication progress.
@@ -507,6 +551,11 @@ impl Host {
         self.orphan
             .store(false, std::sync::atomic::Ordering::Release);
         self.replication_reset();
+        // the child's charts report their update every again
+        self.min_update_every
+            .store(u32::MAX, std::sync::atomic::Ordering::Release);
+        self.min_update_every_applied
+            .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
         drop(receiver);
         // rrdcontext_host_child_connected(): every chart and dimension reports collection again.
         for chart in self.charts.all() {
@@ -547,6 +596,8 @@ impl Host {
                 m.flags &= !chart::flags::RECEIVER_REPLICATION_IN_PROGRESS;
             });
         }
+        self.replication_requests
+            .store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// `rrdhost_clear_receiver()`: detaches `slot` if it is still the attached one.

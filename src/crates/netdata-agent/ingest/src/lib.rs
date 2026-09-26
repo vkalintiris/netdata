@@ -525,6 +525,19 @@ impl Parser {
     // ---- metadata ----
 
     /// `pluginsd_chart()`.
+    /// `rrdset_set_update_every_s()` from the streaming parser: a valid update every is set, and a chart that is not
+    /// obsolete lowers the receiver's minimum with it, even when it did not change.
+    fn set_update_every(&self, chart: &Chart, update_every: i64) {
+        if update_every <= 0 || update_every > i64::from(i32::MAX) {
+            return;
+        }
+        chart.set_update_every(update_every);
+        if chart.flags() & flags::OBSOLETE == 0 {
+            self.host
+                .observe_receiver_update_every(chart.update_every());
+        }
+    }
+
     fn chart(&mut self, w: &Words) -> Rc {
         let slot = w.slot(CHART_SLOT_MAX);
         let mut idx = if slot.is_some() { 2 } else { 1 };
@@ -628,6 +641,7 @@ impl Parser {
         }
         self.set_scope(&chart);
         self.chart_to_slot(&chart, slot);
+        self.set_update_every(&chart, i64::from(chart.update_every()));
         Ok(())
     }
 
@@ -1225,7 +1239,7 @@ impl Parser {
             str2ull_encoded(wall) as i64
         };
         if update_every != i64::from(chart.update_every()) {
-            chart.set_update_every(update_every);
+            self.set_update_every(&chart, update_every);
         }
         self.v2 = V2 { end_time };
         let entries = chart.entries();
@@ -1422,6 +1436,7 @@ impl Parser {
             )
             .as_bytes(),
         );
+        self.host.count_replication_request();
     }
 
     /// `stream_parse_enable_streaming()`.
@@ -1487,7 +1502,7 @@ impl Parser {
                 && start < end
             {
                 if end - start != update_every {
-                    chart.set_update_every(end - start);
+                    self.set_update_every(&chart, end - start);
                 }
                 let entries = chart.entries();
                 chart.update_collection(|c| {
@@ -1700,7 +1715,7 @@ impl Parser {
         }
         if start_streaming {
             if i64::from(chart.update_every()) != update_every_child {
-                chart.set_update_every(update_every_child);
+                self.set_update_every(&chart, update_every_child);
             }
             let was_finished = chart.update_meta(|m| {
                 let old = m.flags;
