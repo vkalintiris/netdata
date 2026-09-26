@@ -16,17 +16,17 @@ import (
 	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
-// seedFromOracle runs the C agent with the identity while a fake child streams two charts and a host label, long
-// enough for the metadata sync to store them, then stops it and returns its cache directory: a C-written
-// netdata-meta.db that knows the child.
-func seedFromOracle(t *testing.T, id daemon.Identity) string {
+// seedFromOracle runs the C agent with the identity while a fake child (stored in childMode) streams two charts and
+// a host label, long enough for the metadata sync to store them, then stops it and returns its cache directory: a
+// C-written netdata-meta.db that knows the child, and the dbengine files.
+func seedFromOracle(t *testing.T, id daemon.Identity, childMode string) string {
 	t.Helper()
 	d, err := daemon.Start(daemon.Options{
 		Binary:           os.Getenv("PARITY_ORACLE"),
 		RunDir:           runDir(t, Role("seed")),
 		Identity:         &id,
 		StorageTiers:     1,
-		StreamMemoryMode: "ram",
+		StreamMemoryMode: childMode,
 	})
 	if err != nil {
 		t.Fatalf("seed: %v", err)
@@ -138,7 +138,7 @@ func compareArchived(t *testing.T, p *Pair, children ...string) {
 // own info, contexts and stream path, with C's records. Then with a new machine GUID (the old localhost becomes an
 // archived child too), and with the child connecting again in the archived host's memory mode and in another.
 func TestArchivedHosts(t *testing.T) {
-	seed := seedFromOracle(t, parentIdentity)
+	seed := seedFromOracle(t, parentIdentity, "ram")
 	opts := daemon.Options{DBMode: "alloc", StorageTiers: 1, StreamMemoryMode: "alloc", SeedCache: seed,
 		LogsExtra: "    level = debug\n"}
 	t.Run("seeded", func(t *testing.T) {

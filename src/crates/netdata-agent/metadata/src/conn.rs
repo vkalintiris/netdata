@@ -24,15 +24,19 @@ pub const RETRY_DELAY: Duration = Duration::from_millis(10);
 /// errors that are not SQLite's read as `SQLITE_ERROR`.
 pub fn result_code(err: &rusqlite::Error) -> i32 {
     match err {
-        rusqlite::Error::SqliteFailure(e, _) => e.extended_code & 0xff,
+        rusqlite::Error::SqliteFailure(e, _) | rusqlite::Error::SqlInputError { error: e, .. } => {
+            e.extended_code & 0xff
+        }
         _ => SQLITE_ERROR,
     }
 }
 
-/// The connection's message for an error (`sqlite3_errmsg()`, what `sqlite3_exec()` reports), else the code's text.
+/// The connection's message for an error (`sqlite3_errmsg()`, what `sqlite3_exec()` reports; rusqlite gives a failed
+/// prepare its own variant), else the code's text.
 pub fn message(err: &rusqlite::Error) -> String {
     match err {
-        rusqlite::Error::SqliteFailure(_, Some(msg)) => msg.clone(),
+        rusqlite::Error::SqliteFailure(_, Some(msg))
+        | rusqlite::Error::SqlInputError { msg, .. } => msg.clone(),
         err => errstr(result_code(err)).to_string(),
     }
 }
@@ -158,7 +162,8 @@ pub fn db_execute(conn: &Connection, sql: &str, markers: &Markers) -> Result<(),
         attempt += 1;
         let rc = result_code(&err);
         let msg = match &err {
-            rusqlite::Error::SqliteFailure(_, Some(msg)) => msg.as_str(),
+            rusqlite::Error::SqliteFailure(_, Some(msg))
+            | rusqlite::Error::SqlInputError { msg, .. } => msg.as_str(),
             _ => "unknown",
         };
         nd_log!(

@@ -88,8 +88,8 @@ type Options struct {
 	PipeName string
 	// DBMode is the [db] db value; empty is dbengine.
 	DBMode string
-	// SeedCache, when set, is a directory whose files are copied into the cache directory before the first start
-	// (writable, as the daemon's own would be): a metadata database written by an earlier run.
+	// SeedCache, when set, is a directory copied into the cache directory before the first start (writable, as the
+	// daemon's own would be): the databases and dbengine files of an earlier run.
 	SeedCache string
 }
 
@@ -284,21 +284,26 @@ func Start(o Options) (*Daemon, error) {
 	}
 
 	if o.SeedCache != "" {
-		entries, err := os.ReadDir(o.SeedCache)
+		cache := filepath.Join(o.RunDir, "cache")
+		err := filepath.WalkDir(o.SeedCache, func(path string, e os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, _ := filepath.Rel(o.SeedCache, path)
+			if e.IsDir() {
+				return os.MkdirAll(filepath.Join(cache, rel), 0o755)
+			}
+			if !e.Type().IsRegular() {
+				return nil
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(cache, rel), b, 0o644)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("daemon: seed cache: %w", err)
-		}
-		for _, e := range entries {
-			if !e.Type().IsRegular() {
-				continue
-			}
-			b, err := os.ReadFile(filepath.Join(o.SeedCache, e.Name()))
-			if err != nil {
-				return nil, fmt.Errorf("daemon: seed cache: %w", err)
-			}
-			if err := os.WriteFile(filepath.Join(o.RunDir, "cache", e.Name()), b, 0o644); err != nil {
-				return nil, fmt.Errorf("daemon: seed cache: %w", err)
-			}
 		}
 	}
 

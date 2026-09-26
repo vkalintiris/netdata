@@ -108,6 +108,17 @@ pub fn load_without_database(hosts: &Arc<Hosts>, metasync: Option<&MetaSync>) {
     );
     netdata_log_info!("Created 0 archived hosts (0 children and 0 vnodes)");
     let _ = queue_context_load(hosts, metasync);
+    // the node instances' pass, for ACLK, fails the same way
+    nd_log!(
+        Source::Daemon,
+        Priority::Err,
+        "Failed to prepare statement, rc=21 in aclk_synchronization_init"
+    );
+    nd_log!(
+        Source::Daemon,
+        Priority::Err,
+        "SQLite error when preparing statement to configure host ACLK synchronization parameters: out of memory"
+    );
     netdata_log_info!("ACLK sync initialization completed");
 }
 
