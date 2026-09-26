@@ -42,3 +42,45 @@ fn a_fresh_schema_equals_cs() {
         assert_eq!(schema_entries(&fresh), schema_entries(&c_db), "{run}");
     }
 }
+
+/// Opening a copy of a C-written cache changes neither schema nor version (brief §1.5 item 3).
+#[test]
+fn opening_a_c_cache_keeps_its_schema() {
+    use netdata_agent_metadata::open::{ContextDb, MetaDb, SqliteSettings};
+    let Some(fx) = fixtures() else { return };
+    let version = |c: &Connection| {
+        c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    for run in ["run1", "run2", "runR"] {
+        let dir = tempfile::tempdir().unwrap();
+        for file in ["netdata-meta.db", "context-meta.db"] {
+            let copy = dir.path().join(file);
+            std::fs::copy(fx.join(run).join("cache").join(file), &copy).unwrap();
+            // the fixtures are read-only, and a copy keeps the mode
+            std::fs::set_permissions(&copy, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+                .unwrap();
+        }
+        let before: Vec<_> = ["netdata-meta.db", "context-meta.db"]
+            .iter()
+            .map(|f| {
+                let c = Connection::open(dir.path().join(f)).unwrap();
+                (schema_entries(&c), version(&c))
+            })
+            .collect();
+        let (meta, records) =
+            netdata_agent_log::capture(|| MetaDb::open(dir.path(), &SqliteSettings::default()));
+        let meta = meta.unwrap_or_else(|| panic!("{run}: {records:?}"));
+        let context = ContextDb::open(dir.path(), &SqliteSettings::default()).expect(run);
+        context.close();
+        meta.close();
+        let after: Vec<_> = ["netdata-meta.db", "context-meta.db"]
+            .iter()
+            .map(|f| {
+                let c = Connection::open(dir.path().join(f)).unwrap();
+                (schema_entries(&c), version(&c))
+            })
+            .collect();
+        assert_eq!(before, after, "{run}");
+    }
+}
