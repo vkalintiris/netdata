@@ -28,7 +28,7 @@ pub use encode::strerror;
 pub use frame::{FrameGuard, Lazy, Value, push, push_shared};
 pub use limit::{DEFAULT_THROTTLE_LOGS, DEFAULT_THROTTLE_PERIOD, ErrorLimit};
 pub use model::{Field, Priority, Source, msgid};
-pub use output::{is_stderr_connected_to_journal, set_default_log_dir};
+pub use output::{collectors_fd, is_stderr_connected_to_journal, set_default_log_dir};
 
 /// What records print in place of a stream API key (D31, D34): in URLs, the receiver's records and the host record.
 pub const REDACTED: &str = "[REDACTED]";

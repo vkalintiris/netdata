@@ -417,6 +417,17 @@ fn journal_send_with_memfd(socket: &UnixDatagram, bytes: &[u8]) -> bool {
     .is_ok()
 }
 
+/// `nd_log_collectors_fd()`: the descriptor children write their stderr to, the collectors' log file when collectors
+/// log to a file, else stderr.
+pub fn collectors_fd() -> i32 {
+    let sources = read(&G.sources);
+    let e = &sources[Source::Collector as usize];
+    match e.fd.number() {
+        fd if e.method == Method::File && fd != -1 => fd,
+        _ => 2,
+    }
+}
+
 /// `is_stderr_connected_to_journal()`: `JOURNAL_STREAM` is `<dev>:<ino>` of fd 2.
 pub fn is_stderr_connected_to_journal() -> bool {
     let Some(stream) = std::env::var_os("JOURNAL_STREAM") else {

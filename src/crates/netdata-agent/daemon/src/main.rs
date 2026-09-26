@@ -18,10 +18,12 @@ mod router;
 mod rrdcontext;
 mod server;
 mod shutdown;
+mod spawn;
 mod startup;
 mod static_file;
 mod stream_info;
 mod system;
+mod system_info;
 mod timezone;
 mod v1_charts;
 mod v1_contexts;
@@ -319,6 +321,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     conf::threads_set_stack_size(conf.threads.pthread_stack_size);
     startup.step("registry");
     startup.step("system info");
+    let system_info = system_info::startup(&conf.primary_plugins_dir(), &conf.dirs.user_config);
     startup.step("RRD structures");
     startup.step("commands liveness support");
     // rrd_init(): the health defaults, then localhost.
@@ -344,7 +347,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             ),
             // no health without a database
             health_enabled: health_enabled && db.mode != DbMode::None,
-            system_info: Default::default(),
+            system_info,
             replication_enabled: false,
             replication_period: 0,
             replication_step: 0,

@@ -904,7 +904,7 @@ impl Conf {
 
     /// `netdata_configured_primary_plugins_dir`: no plugin directory at all is a NULL, which glibc prints as
     /// `(null)`.
-    fn primary_plugins_dir(&self) -> String {
+    pub fn primary_plugins_dir(&self) -> String {
         self.dirs
             .plugins
             .first()

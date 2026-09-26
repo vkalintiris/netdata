@@ -99,6 +99,25 @@ pub fn strsep_skip<'a>(rest: &mut Option<&'a [u8]>, separators: &[u8]) -> &'a [u
     b""
 }
 
+/// The pieces successive `fgets(buf, size, fp)` calls return from `data`: each ends after a newline or holds
+/// `size - 1` bytes, whichever comes first; the last may end without a newline.
+pub fn fgets_chunks(data: &[u8], size: usize) -> impl Iterator<Item = &[u8]> {
+    let max = size.saturating_sub(1).max(1);
+    let mut rest = data;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let end = rest[..rest.len().min(max)]
+            .iter()
+            .position(|&c| c == b'\n')
+            .map_or(rest.len().min(max), |nl| nl + 1);
+        let (chunk, tail) = rest.split_at(end);
+        rest = tail;
+        Some(chunk)
+    })
+}
+
 const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
 const TWO_POW_31: f64 = 2_147_483_648.0;
 
@@ -160,6 +179,13 @@ pub(crate) fn modf(x: f64) -> (f64, f64) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fgets_chunks_split_at_newlines_and_size() {
+        let chunks: Vec<&[u8]> = fgets_chunks(b"ab\ncdefg\n\nh", 4).collect();
+        assert_eq!(chunks, [&b"ab\n"[..], b"cde", b"fg\n", b"\n", b"h"]);
+        assert_eq!(fgets_chunks(b"", 4).count(), 0);
+    }
+
     use super::*;
 
     #[test]
