@@ -946,6 +946,35 @@ fn seal_writes_trace_id_bloom() {
     assert!(tr.spans.is_empty() && tr.roots.is_empty());
 }
 
+/// The chunk ids a sealed file's table of contents lists (the container's
+/// header: magic, version, count, then `id ‖ offset` entries).
+fn toc_ids(bytes: &[u8]) -> Vec<[u8; 4]> {
+    let count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    (0..count)
+        .map(|k| bytes[12 + 12 * k..16 + 12 * k].try_into().unwrap())
+        .collect()
+}
+
+#[test]
+fn seal_writes_no_trace_rollup() {
+    // TRSU is retired: a trace file carries no per-trace rollup, whatever
+    // its traces (a true root, a trace without one, an ERROR span).
+    let mut err = span([0xB; 16], [3; 8], [0; 8], 3_000, 3_100, "err-root");
+    err.status = Some(opentelemetry_proto::tonic::trace::v1::Status {
+        code: 2,
+        message: "boom".into(),
+    });
+    let bytes = seal(vec![req(vec![
+        span([0xA; 16], [1; 8], [0; 8], 1_000, 2_000, "root"),
+        span([0xA; 16], [2; 8], [1; 8], 1_100, 1_900, "child"),
+        span([0xC; 16], [4; 8], [9; 8], 4_000, 4_100, "orphan"),
+        err,
+    ])]);
+    let ids = toc_ids(&bytes);
+    assert!(ids.contains(b"TRCE"), "the TOC parse reads real ids: {ids:?}");
+    assert!(!ids.contains(b"TRSU"), "{ids:?}");
+}
+
 const DERIVED_TRACE: [u8; 16] = [0x5A; 16];
 const DERIVED_BASE: u64 = 1_700_000_000_000_000_000;
 
