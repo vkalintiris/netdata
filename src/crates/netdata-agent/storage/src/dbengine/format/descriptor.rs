@@ -342,6 +342,8 @@ mod tests {
         assert!(invalid(array(t, t + 59, 60), t + 58, false));
         assert!(invalid(array(0, t, 60), 0, false));
         assert!(invalid(array(t, t, 60), 0, false));
+        // 60 points in one second: no update every can hold them
+        assert!(invalid(array(t, t + 1, 60), 0, false));
         // gorilla pages may be 1024 bytes longer
         let gorilla = |len: usize| PageFacts {
             page_type: PAGE_TYPE_GORILLA_32BIT,
@@ -363,6 +365,28 @@ mod tests {
         let v = validate_page(array(t, t, 1), 0, 5, false);
         assert!(v.valid && !v.updated);
         assert_eq!(v.update_every_s, 5);
+        // the update every is wrong (only with one given): the fallback replaces it and the end follows
+        let given = PageFacts {
+            update_every_s: 2,
+            ..array(t, t + 59, 60)
+        };
+        let v = validate_page(given, 0, 3, false);
+        assert!(v.valid && v.updated);
+        assert_eq!((v.update_every_s, v.end_time_s), (3, t + 59 * 3));
+        // a gorilla page without entries takes the fallback, and C's end repair wraps to before its start
+        let v = validate_page(gorilla_entries(0), 0, 5, false);
+        assert!(v.valid && v.updated);
+        assert_eq!((v.entries, v.update_every_s, v.end_time_s), (0, 5, t - 5));
+    }
+
+    fn gorilla_entries(entries: usize) -> PageFacts {
+        let t = T as i64;
+        PageFacts {
+            page_type: PAGE_TYPE_GORILLA_32BIT,
+            page_length: 512,
+            entries,
+            ..array(t, t + 59, 60)
+        }
     }
 
     #[test]

@@ -20,7 +20,7 @@ use super::journal_v1::{self, Event};
 use super::journal_v2::{
     self, HEADER_SIZE, Header, PAGE_HEADER_SIZE, PAGE_SIZE, PageEntry, PageHeader, Retention,
 };
-use super::page::{self, gorilla, tier1};
+use super::page::{DiskPage, gorilla, tier1};
 use super::{BLOCK_SIZE, FileKind, ReadAt, file_name, parse_file_name, tier_dir_name};
 use crate::storage_number::SN_EMPTY_SLOT;
 
@@ -193,6 +193,10 @@ fn read_extent(
     ndf_size: u64,
     tx: &Tx,
 ) -> Option<(Result<Extent, extent::HeaderInvalid>, bool)> {
+    // a size no extent can have (a corrupt record's) is not read
+    if !extent::valid_disk_size(tx.extent_size) {
+        return None;
+    }
     let mut b = vec![0u8; tx.extent_size as usize];
     ndf.read_exact_at(&mut b, tx.extent_offset).ok()?;
     let end = tx.extent_offset + u64::from(tx.extent_size);
@@ -554,15 +558,6 @@ pub fn for_each_page(dir: &Path, mut f: impl FnMut(&PageDescriptor, &[u8])) -> i
     Ok(())
 }
 
-/// The storage numbers of a gorilla page with its buffer counts, `None` for an invalid chain.
-fn gorilla_values(bytes: &[u8]) -> Option<(Vec<u32>, usize, usize)> {
-    let dp = gorilla::from_disk(bytes)?;
-    let mut r = gorilla::Reader::new(&dp.buffers);
-    let values = std::iter::from_fn(|| r.read()).collect();
-    let trailing = bytes.len() / gorilla::BUFFER_SIZE - dp.buffers.len();
-    Some((values, dp.buffers.len(), trailing))
-}
-
 /// `totals.py`'s counters of one tier; like its `Counter`, a key exists once counted, even by 0.
 pub fn tier_totals(dir: &Path) -> io::Result<Value> {
     let mut c: BTreeMap<&str, u64> = BTreeMap::new();
@@ -573,26 +568,41 @@ pub fn tier_totals(dir: &Path) -> io::Result<Value> {
         add("pages", 1);
         add("page_bytes", d.page_length as usize);
         let empty = |v: &[u32]| v.iter().filter(|&&x| x == SN_EMPTY_SLOT).count();
-        match d.page_type {
-            PAGE_TYPE_GORILLA_32BIT => {
-                let (values, buffers, trailing) = gorilla_values(bytes).unwrap_or_default();
+        // an invalid page counts as one without slots
+        let page = DiskPage::from_disk(d.page_type, bytes);
+        let values = page
+            .as_ref()
+            .and_then(DiskPage::storage_numbers)
+            .unwrap_or_default();
+        match (d.page_type, &page) {
+            (PAGE_TYPE_GORILLA_32BIT, page) => {
+                let buffers = match page {
+                    Some(DiskPage::Gorilla(g)) => g.buffers.len(),
+                    _ => 0,
+                };
                 add("gorilla_pages", 1);
                 add("gorilla_buffers", buffers);
-                add("gorilla_trailing_buffers", trailing);
+                // a page shorter than a buffer still has one
+                add(
+                    "gorilla_trailing_buffers",
+                    (bytes.len() / gorilla::BUFFER_SIZE).saturating_sub(buffers),
+                );
                 add("slots", values.len());
                 add("empty_slots", empty(&values));
                 if values.len() != d.gorilla_entries() as usize {
                     add("gorilla_entries_mismatch", 1);
                 }
             }
-            PAGE_TYPE_ARRAY_32BIT => {
-                let values = page::array32_decode(bytes).unwrap_or_default();
+            (PAGE_TYPE_ARRAY_32BIT, _) => {
                 add("raw_pages", 1);
                 add("slots", values.len());
                 add("empty_slots", empty(&values));
             }
-            PAGE_TYPE_ARRAY_TIER1 => {
-                let records = tier1::decode(bytes).unwrap_or_default();
+            (PAGE_TYPE_ARRAY_TIER1, page) => {
+                let records = match page {
+                    Some(DiskPage::Tier1(records)) => records.as_slice(),
+                    _ => &[],
+                };
                 let count =
                     |f: fn(&tier1::Tier1Record) -> bool| records.iter().filter(|r| f(r)).count();
                 add("tier1_pages", 1);
@@ -789,19 +799,15 @@ pub fn dump(dir: &Path, uuid: &[u8; 16], out: &mut Vec<String>) -> io::Result<()
             d.page_length,
             hex(&d.tail)
         ));
-        let values = match d.page_type {
-            PAGE_TYPE_GORILLA_32BIT => gorilla_values(bytes).map(|v| v.0),
-            PAGE_TYPE_ARRAY_32BIT => page::array32_decode(bytes),
-            _ => None,
-        };
+        let page = DiskPage::from_disk(d.page_type, bytes);
+        let values = page.as_ref().and_then(DiskPage::storage_numbers);
         if let Some(values) = values {
             out.extend(
                 values
                     .iter()
                     .map(|&v| format!("  {v:#010x} {}", crate::storage_number::unpack(v))),
             );
-        } else if d.page_type == PAGE_TYPE_ARRAY_TIER1 {
-            let records = tier1::decode(bytes).unwrap_or_default();
+        } else if let Some(DiskPage::Tier1(records)) = &page {
             out.extend(records.iter().map(|r| {
                 format!(
                     "  sum {} min {} max {} count {} anomalies {}",
@@ -818,6 +824,7 @@ mod tests {
 
     use super::super::descriptor::PageDescriptor;
     use super::super::journal_v1::StoreData;
+    use super::super::page;
     use super::super::superblock;
     use super::*;
     use crate::storage_number::{SN_DEFAULT_FLAGS, pack};
@@ -825,23 +832,33 @@ mod tests {
     /// Writes a one-file tier with the encoders: `extents` of raw pages, each after the last, their journal, and
     /// the v2 file C would build.
     fn tier(dir: &Path, extents: &[Vec<(u8, u64, Vec<u32>)>]) {
+        let extents: Vec<Vec<_>> = extents
+            .iter()
+            .map(|pages| {
+                pages
+                    .iter()
+                    .map(|(uuid, start, values)| {
+                        let end = start + values.len() as u64 - 1;
+                        let d = PageDescriptor::array(
+                            PAGE_TYPE_ARRAY_32BIT,
+                            [*uuid; 16],
+                            values.len() as u32 * 4,
+                            start * 1_000_000,
+                            end * 1_000_000,
+                        );
+                        (d, page::array32_encode(values))
+                    })
+                    .collect()
+            })
+            .collect();
+        tier_of(dir, &extents);
+    }
+
+    /// A one-file tier of these pages, one extent per entry, with its journals.
+    fn tier_of(dir: &Path, extents: &[Vec<(PageDescriptor, Vec<u8>)>]) {
         let mut ndf = superblock::encode_datafile().to_vec();
         let mut njf = superblock::encode_journal().to_vec();
         for (id, pages) in (1u64..).zip(extents) {
-            let pages: Vec<_> = pages
-                .iter()
-                .map(|(uuid, start, values)| {
-                    let end = start + values.len() as u64 - 1;
-                    let d = PageDescriptor::array(
-                        PAGE_TYPE_ARRAY_32BIT,
-                        [*uuid; 16],
-                        values.len() as u32 * 4,
-                        start * 1_000_000,
-                        end * 1_000_000,
-                    );
-                    (d, page::array32_encode(values))
-                })
-                .collect();
             let refs: Vec<_> = pages.iter().map(|(d, b)| (*d, &b[..])).collect();
             let e = extent::encode(&refs, extent::COMPRESSION_ZSTD);
             let data = StoreData {
@@ -944,6 +961,21 @@ mod tests {
             "{}",
             r.line()
         );
+    }
+
+    #[test]
+    fn a_gorilla_page_shorter_than_a_buffer_is_counted() {
+        // C loads a page shorter than 512 bytes whose first buffer ends the chain
+        let mut w = gorilla::Writer::default();
+        w.append(pack(5.0, SN_DEFAULT_FLAGS));
+        let bytes = w.serialize()[..256].to_vec();
+        let d = PageDescriptor::gorilla([3; 16], 256, 1000 * 1_000_000, 1, 0);
+        let dir = tempfile::tempdir().unwrap();
+        tier_of(dir.path(), &[vec![(d, bytes)]]);
+        let totals = tier_totals(dir.path()).unwrap();
+        assert_eq!(totals["gorilla_buffers"], json!(1));
+        assert_eq!(totals["gorilla_trailing_buffers"], json!(0));
+        assert_eq!(totals["slots"], json!(1));
     }
 
     #[test]

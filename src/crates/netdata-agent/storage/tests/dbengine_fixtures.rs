@@ -8,12 +8,12 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use netdata_agent_storage::dbengine::format::descriptor::{
-    PAGE_TYPE_ARRAY_32BIT, PAGE_TYPE_GORILLA_32BIT, PageDescriptor, validate_extent_page_descr,
+    PAGE_TYPE_GORILLA_32BIT, PageDescriptor, validate_extent_page_descr,
 };
 use netdata_agent_storage::dbengine::format::extent::{self, PageSlot};
 use netdata_agent_storage::dbengine::format::journal_v1::{self, Event};
 use netdata_agent_storage::dbengine::format::journal_v2::{self, Retention, Verdict};
-use netdata_agent_storage::dbengine::format::page::{self, gorilla, tier1};
+use netdata_agent_storage::dbengine::format::page::DiskPage;
 use netdata_agent_storage::dbengine::format::{BLOCK_SIZE, ReadAt, inspect, superblock};
 use netdata_agent_storage::storage_number::{SN_EMPTY_SLOT, SN_FLAG_NOT_ANOMALOUS, unpack};
 use serde_json::{Value, json};
@@ -235,30 +235,22 @@ fn tier0_values(dir: &Path, metrics: &HashMap<[u8; 16], (i64, i64)>, driver: &Dr
         };
         count(&mut stats, format!("pages_type{}", d.page_type));
         let st = (d.start_time_ut / 1_000_000) as i64;
-        let (values, ue) = match d.page_type {
-            PAGE_TYPE_GORILLA_32BIT => {
-                let dp = gorilla::from_disk(bytes).unwrap();
-                let mut r = gorilla::Reader::new(&dp.buffers);
-                let values: Vec<_> = std::iter::from_fn(|| r.read()).collect();
-                let n = i64::from(d.gorilla_entries());
-                if values.len() as i64 != n {
-                    count(&mut stats, "gorilla_entries_mismatch");
-                }
-                (
-                    values,
-                    if n > 1 {
-                        i64::from(d.gorilla_delta_s()) / (n - 1)
-                    } else {
-                        1
-                    },
-                )
+        let values = DiskPage::from_disk(d.page_type, bytes)
+            .and_then(|p| p.storage_numbers())
+            .unwrap_or_else(|| panic!("page type {} at tier 0", d.page_type));
+        let ue = if d.page_type == PAGE_TYPE_GORILLA_32BIT {
+            let n = i64::from(d.gorilla_entries());
+            if values.len() as i64 != n {
+                count(&mut stats, "gorilla_entries_mismatch");
             }
-            PAGE_TYPE_ARRAY_32BIT => {
-                let values = page::array32_decode(bytes).unwrap_or_default();
-                let (et, n) = ((d.end_time_ut() / 1_000_000) as i64, values.len() as i64);
-                (values, if n > 1 { (et - st) / (n - 1) } else { 1 })
+            if n > 1 {
+                i64::from(d.gorilla_delta_s()) / (n - 1)
+            } else {
+                1
             }
-            other => panic!("page type {other} at tier 0"),
+        } else {
+            let (et, n) = ((d.end_time_ut() / 1_000_000) as i64, values.len() as i64);
+            if n > 1 { (et - st) / (n - 1) } else { 1 }
         };
         let series = points.entry(m).or_default();
         for (i, v) in (0i64..).zip(values) {
@@ -308,7 +300,10 @@ fn tier_records(
             (d.start_time_ut / 1_000_000) as i64,
             (d.end_time_ut() / 1_000_000) as i64,
         );
-        let records = tier1::decode(bytes).unwrap_or_default();
+        let records = match DiskPage::from_disk(d.page_type, bytes) {
+            Some(DiskPage::Tier1(records)) => records,
+            _ => Vec::new(),
+        };
         let n = records.len() as i64;
         let ue = if n > 1 { (et - st) / (n - 1) } else { grp };
         *per_page.entry(n).or_insert(0u64) += 1;

@@ -10,7 +10,10 @@ use super::crc::{crc_matches, crc32};
 
 mod builder;
 
-pub use builder::{Builder, MetricRetention, Page, Retention, UeSource, from_v1, write_in_place};
+pub use builder::{
+    Builder, MetricRetention, OpenCache, Page, Retention, UeSource, from_v1, open_cache_pages,
+    write_in_place,
+};
 
 /// `JOURVAL_V2_MAGIC`, `JOURVAL_V2_REBUILD_MAGIC`, `JOURVAL_V2_SKIP_MAGIC`.
 pub const MAGIC: u32 = 0x0123_0317;
@@ -343,6 +346,21 @@ pub enum Verdict {
     NoMetrics,
 }
 
+/// A list of `count` entries of `entry` bytes at `offset` inside a file of `size` bytes, its trailer right after it, in
+/// the order C checks it (nothing can overflow).
+fn list_in_bounds(
+    size: u64,
+    (offset, count, trailer_offset): (u32, u32, u32),
+    entry: usize,
+) -> bool {
+    let (off, trailer_at, entry) = (u64::from(offset), u64::from(trailer_offset), entry as u64);
+    off <= size
+        && u64::from(count) <= (size - off) / entry
+        && trailer_at <= size
+        && size - trailer_at >= TRAILER_SIZE as u64
+        && trailer_at == off + u64::from(count) * entry
+}
+
 /// `journalfile_check_v2_extent_list()` and `_metric_list()`: `count` entries of `entry` bytes at `offset` whose CRC
 /// is at `trailer_offset`, bounded before anything is read. The list's bytes when it holds.
 fn check_list<R: ReadAt + ?Sized>(
@@ -352,15 +370,10 @@ fn check_list<R: ReadAt + ?Sized>(
     entry: usize,
     (bounds, crc): (Invalid, Invalid),
 ) -> io::Result<Result<Vec<u8>, Invalid>> {
-    let (off, trailer_at, entry) = (u64::from(offset), u64::from(trailer_offset), entry as u64);
-    if off > size
-        || u64::from(count) > (size - off) / entry
-        || trailer_at > size
-        || size - trailer_at < TRAILER_SIZE as u64
-        || trailer_at != off + u64::from(count) * entry
-    {
+    if !list_in_bounds(size, (offset, count, trailer_offset), entry) {
         return Ok(Err(bounds));
     }
+    let (off, trailer_at) = (u64::from(offset), u64::from(trailer_offset));
     let mut list = vec![0u8; (trailer_at - off) as usize];
     r.read_exact_at(&mut list, off)?;
     let mut stored = [0u8; TRAILER_SIZE];
@@ -419,6 +432,32 @@ pub fn validate<R: ReadAt + ?Sized>(
     })
 }
 
+/// The metric list's bounds, which `journalfile_v2_populate_retention_to_mrg()` checks on every load of a file
+/// that validated.
+pub fn metric_list_in_bounds(h: &Header, size: u64) -> bool {
+    list_in_bounds(
+        size,
+        (h.metric_offset, h.metric_count, h.metric_trailer_offset),
+        METRIC_SIZE,
+    )
+}
+
+/// `journalfile_check_v2_metric_list()`: the metric list's bounds and CRC, which C checks once per file at its first
+/// retention load when the integrity check is off (D29). The list's bytes when they hold.
+pub fn check_metric_list<R: ReadAt + ?Sized>(
+    r: &R,
+    h: &Header,
+) -> io::Result<Result<Vec<u8>, Invalid>> {
+    let list = (h.metric_offset, h.metric_count, h.metric_trailer_offset);
+    check_list(
+        r,
+        r.size()?,
+        list,
+        METRIC_SIZE,
+        (Invalid::MetricBounds, Invalid::MetricCrc),
+    )
+}
+
 /// The integrity half of `journalfile_v2_validate()`: the metric list and each metric's page header and list. On
 /// success the pages verified (C's "total pages", wrapping as its `unsigned` does).
 pub fn validate_metric_list<R: ReadAt + ?Sized>(
@@ -426,9 +465,7 @@ pub fn validate_metric_list<R: ReadAt + ?Sized>(
     h: &Header,
 ) -> io::Result<Result<u32, Invalid>> {
     let size = r.size()?;
-    let list = (h.metric_offset, h.metric_count, h.metric_trailer_offset);
-    let reasons = (Invalid::MetricBounds, Invalid::MetricCrc);
-    let list = match check_list(r, size, list, METRIC_SIZE, reasons)? {
+    let list = match check_metric_list(r, h)? {
         Ok(list) => list,
         Err(invalid) => return Ok(Err(invalid)),
     };
@@ -825,6 +862,39 @@ mod tests {
             };
             assert_eq!(verdict(&c, true), invalid(want));
         }
+    }
+
+    #[test]
+    fn the_deferred_check_reads_only_the_metric_list() {
+        let (mut b, layout) = image(1, &[2, 1]);
+        let h = header(&b);
+        assert!(metric_list_in_bounds(&h, b.len() as u64));
+        assert_eq!(
+            check_metric_list(&b[..], &h).unwrap().map(|l| l.len()),
+            Ok(2 * METRIC_SIZE)
+        );
+        // a page list's CRC is the integrity check's business only
+        b[layout.page_headers[1] + PAGE_HEADER_SIZE + 19] = 1;
+        assert!(check_metric_list(&b[..], &h).unwrap().is_ok());
+        let want = Invalid::Unverified {
+            total: 2,
+            verified: 1,
+        };
+        assert_eq!(validate_metric_list(&b[..], &h).unwrap(), Err(want));
+        b[layout.metric_offset] ^= 1;
+        assert_eq!(
+            check_metric_list(&b[..], &h).unwrap(),
+            Err(Invalid::MetricCrc)
+        );
+        let bad = Header {
+            metric_count: 3,
+            ..h
+        };
+        assert!(!metric_list_in_bounds(&bad, b.len() as u64));
+        assert_eq!(
+            check_metric_list(&b[..], &bad).unwrap(),
+            Err(Invalid::MetricBounds)
+        );
     }
 
     #[test]

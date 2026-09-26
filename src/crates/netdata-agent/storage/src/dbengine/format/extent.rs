@@ -22,6 +22,11 @@ const MAX_EXTENT_SIZE: usize = HEADER_SIZE
     + DESCRIPTOR_SIZE * MAX_PAGES_PER_EXTENT
     + MAX_EXTENT_UNCOMPRESSED_SIZE
     + TRAILER_SIZE;
+/// `rrdeng_valid_extent_disk_size()`: an extent's size as a journal records it.
+pub fn valid_disk_size(size: u32) -> bool {
+    (MIN_EXTENT_SIZE..=MAX_EXTENT_SIZE).contains(&(size as usize))
+}
+
 /// ZSTD's level in `dbengine_compress()`.
 const ZSTD_LEVEL: i32 = 3;
 
@@ -54,7 +59,7 @@ pub struct Extent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageSlot<'a> {
     Page(&'a [u8]),
-    /// A page with no length or no start: C logs "is EMPTY" and does not cache it.
+    /// A page with no length or a start in the first second: C logs "is EMPTY" and does not cache it.
     Skipped,
     /// A page past the payload: `PGD_EMPTY`.
     Empty,
@@ -67,27 +72,32 @@ impl Extent {
     }
 
     /// The page of descriptor `i`: pages sit one after the other in descriptor order.
+    ///
+    /// # Panics
+    ///
+    /// When `i` is not a descriptor's index.
     pub fn page(&self, i: usize) -> PageSlot<'_> {
         let d = &self.descriptors[i];
-        let start: usize = self.descriptors[..i]
+        // C's u32 offset, which wraps
+        let start = self.descriptors[..i]
             .iter()
-            .map(|d| d.page_length as usize)
-            .sum();
+            .fold(0u32, |at, d| at.wrapping_add(d.page_length)) as usize;
         let len = d.page_length as usize;
-        if len == 0 || d.start_time_ut == 0 {
+        if len == 0 || d.start_time_ut / 1_000_000 == 0 {
             return PageSlot::Skipped;
         }
-        match self.payload.get(start..start + len) {
-            Some(bytes) => PageSlot::Page(bytes),
-            None => PageSlot::Empty,
+        let payload = self.payload.len();
+        if len > payload || start > payload - len {
+            return PageSlot::Empty;
         }
+        PageSlot::Page(&self.payload[start..start + len])
     }
 }
 
 /// Decodes the `bytes` of an extent (its size as the journal records it, padding excluded).
 pub fn decode(bytes: &[u8]) -> Result<Extent, HeaderInvalid> {
     let len = bytes.len();
-    if !(MIN_EXTENT_SIZE..=MAX_EXTENT_SIZE).contains(&len) {
+    if !u32::try_from(len).is_ok_and(valid_disk_size) {
         return Err(HeaderInvalid("size"));
     }
     let payload_length = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
@@ -118,7 +128,10 @@ pub fn decode(bytes: &[u8]) -> Result<Extent, HeaderInvalid> {
         crc32(&bytes[..crc_at]),
     );
     let mut read_error = !crc_ok;
-    let uncompressed: usize = descriptors.iter().map(|d| d.page_length as usize).sum();
+    // C's u32 sum, which wraps
+    let uncompressed = descriptors
+        .iter()
+        .fold(0u32, |sum, d| sum.wrapping_add(d.page_length)) as usize;
     let payload = if compression == COMPRESSION_NONE {
         stored.to_vec()
     } else {
@@ -176,7 +189,15 @@ pub struct Encoded {
 
 /// Builds an extent of `pages` (each descriptor with its page bytes, at most 109) with `compression`, falling back
 /// to none when it does not make the payload smaller, as `datafile_extent_build()` does.
+///
+/// # Panics
+///
+/// With no page or more than 109.
 pub fn encode(pages: &[(PageDescriptor, &[u8])], compression: u8) -> Encoded {
+    assert!(
+        (1..=MAX_PAGES_PER_EXTENT).contains(&pages.len()),
+        "an extent holds 1 to 109 pages"
+    );
     let payload: Vec<u8> = pages
         .iter()
         .flat_map(|(_, bytes)| bytes.iter().copied())
@@ -281,6 +302,23 @@ mod tests {
         let mut b = good.clone();
         b[0] = b[0].wrapping_add(1);
         assert_eq!(decode(&b).unwrap_err(), HeaderInvalid("payload length"));
+        let mut b = good.clone();
+        b[5] = 110;
+        assert_eq!(decode(&b).unwrap_err(), HeaderInvalid("number of pages"));
+    }
+
+    #[test]
+    fn a_compressed_extent_whose_pages_exceed_the_maximum_is_a_read_error() {
+        // one gorilla page of 4096 + 1000 buffers: allowed alone, but past 109 pages' worth
+        let d = PageDescriptor::gorilla([1; 16], 4096 + 1000 * 512, 1_000_000, 1, 0);
+        let mut b = 4u32.to_le_bytes().to_vec();
+        b.extend_from_slice(&[COMPRESSION_ZSTD, 1]);
+        b.extend_from_slice(&d.encode());
+        b.extend_from_slice(&[0; 4]);
+        let crc = crc_bytes(crc32(&b));
+        b.extend_from_slice(&crc);
+        let x = decode(&b).unwrap();
+        assert!(x.crc_ok && x.read_error);
     }
 
     #[test]
@@ -318,6 +356,46 @@ mod tests {
         assert!(long(4600, PAGE_TYPE_GORILLA_32BIT));
         // the right gorilla length only fails to decompress to that much, which C does not check
         assert!(!long(4608, PAGE_TYPE_GORILLA_32BIT));
+    }
+
+    #[test]
+    fn page_offsets_wrap_and_starts_count_in_seconds_as_c() {
+        // an uncompressed extent around `descriptors` and `payload`, with its CRC
+        let raw = |descriptors: &[PageDescriptor], payload: &[u8]| {
+            let mut b = (payload.len() as u32).to_le_bytes().to_vec();
+            b.extend_from_slice(&[COMPRESSION_NONE, descriptors.len() as u8]);
+            for d in descriptors {
+                b.extend_from_slice(&d.encode());
+            }
+            b.extend_from_slice(payload);
+            let crc = crc_bytes(crc32(&b));
+            b.extend_from_slice(&crc);
+            b
+        };
+        let d = |len: u32, start_ut: u64| {
+            PageDescriptor::array(
+                PAGE_TYPE_ARRAY_32BIT,
+                [1; 16],
+                len,
+                start_ut,
+                start_ut + 3_000_000,
+            )
+        };
+        // two lengths that wrap C's u32 offset back to 4
+        let b = raw(
+            &[
+                d(0x8000_0000, 1_000_000),
+                d(0x8000_0004, 1_000_000),
+                d(4, 1_000_000),
+            ],
+            &[1, 2, 3, 4, 5, 6, 7, 8],
+        );
+        let x = decode(&b).unwrap();
+        assert_eq!((x.page(0), x.page(1)), (PageSlot::Empty, PageSlot::Empty));
+        assert_eq!(x.page(2), PageSlot::Page(&[5, 6, 7, 8]));
+        // a start inside the first second is no start
+        let b = raw(&[d(4, 999_999)], &[1, 2, 3, 4]);
+        assert_eq!(decode(&b).unwrap().page(0), PageSlot::Skipped);
     }
 
     #[test]

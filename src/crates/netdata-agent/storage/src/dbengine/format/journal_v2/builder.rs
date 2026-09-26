@@ -312,23 +312,36 @@ impl UeSource for Retention {
     }
 }
 
-/// The v2 file C builds at startup from a replayed v1 journal of `v1_st_size` bytes: each descriptor of known type is
-/// validated against `now_s` (`max_acceptable_collected_time()`, 0 for no future check) with the registry's update
-/// every, recorded in `ue`, and kept in open-cache order: a page with a metric and start already held replaces it
-/// (moving to the end) only if it ends later. Exact for one data file; pages of other unindexed files in C's open
-/// cache are not modelled.
-pub fn from_v1(
-    replay: &Replay,
-    v1_st_size: u64,
-    now_s: i64,
-    ue: &mut dyn UeSource,
-) -> Option<Vec<u8>> {
+/// What a replayed v1 journal leaves in C's open cache (`journalfile_restore_extent_metadata()`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpenCache {
+    /// The hot pages in the order C walks them.
+    pub pages: Vec<Page>,
+    /// The journal's `v2.first_time_s` and `v2.last_time_s`: the valid pages' first start and last end, dropped pages
+    /// included. A journal with transactions but no valid page keeps C's `LONG_MAX` first time; one without
+    /// transactions keeps 0 for both.
+    pub first_time_s: i64,
+    pub last_time_s: i64,
+}
+
+/// The pages a v1 journal's replay puts in the open cache: each descriptor of known type is validated against `now_s`
+/// (`max_acceptable_collected_time()`, 0 for no future check) with the registry's update every and recorded in `ue`;
+/// a page whose metric and start are already held replaces the held one (moving to the end) only if it ends later.
+/// Exact for one data file; pages of other files in C's open cache are not modelled.
+pub fn open_cache_pages(replay: &Replay, now_s: i64, ue: &mut dyn UeSource) -> OpenCache {
     let mut hot: Vec<Option<Page>> = Vec::new();
     let mut held: HashMap<([u8; 16], i64), usize> = HashMap::new();
+    let (mut first_time_s, mut last_time_s) = (0i64, 0i64);
     for event in &replay.events {
         let Event::StoreData { data, .. } = event else {
             continue;
         };
+        let mut extent_first = if first_time_s != 0 {
+            first_time_s
+        } else {
+            i64::MAX
+        };
+        let mut extent_last = last_time_s;
         for d in &data.descriptors {
             if d.page_type > PAGE_TYPE_GORILLA_32BIT {
                 continue;
@@ -358,11 +371,30 @@ pub fn from_v1(
                     hot.push(Some(page));
                 }
             }
+            extent_first = extent_first.min(vd.start_time_s);
+            extent_last = extent_last.max(vd.end_time_s);
         }
+        first_time_s = extent_first;
+        last_time_s = extent_last;
     }
+    OpenCache {
+        pages: hot.into_iter().flatten().collect(),
+        first_time_s,
+        last_time_s,
+    }
+}
+
+/// The v2 file C builds at startup from a replayed v1 journal of `v1_st_size` bytes: its open-cache pages
+/// (`open_cache_pages()`) indexed.
+pub fn from_v1(
+    replay: &Replay,
+    v1_st_size: u64,
+    now_s: i64,
+    ue: &mut dyn UeSource,
+) -> Option<Vec<u8>> {
     let v1_size = v1_st_size / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
     let mut b = Builder::new(v1_size as u32);
-    for p in hot.into_iter().flatten() {
+    for p in open_cache_pages(replay, now_s, ue).pages {
         b.page(p);
     }
     b.build()
@@ -370,8 +402,14 @@ pub fn from_v1(
 
 /// Writes an image as C's migration does: created 0664, sized to the image, the body first and the header last, no
 /// sync, and removed if a write fails. The file is emptied first, so no stale bytes of a longer earlier file stay in
-/// the page area's slack (C keeps them).
+/// the page area's slack (C keeps them). An image shorter than its 4096-byte header block is refused.
 pub fn write_in_place(path: &Path, image: &[u8]) -> io::Result<()> {
+    if image.len() < BLOCK_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a journal v2 image",
+        ));
+    }
     let write = || -> io::Result<()> {
         let f = OpenOptions::new()
             .read(true)
@@ -641,6 +679,28 @@ mod tests {
             (p.pages[1][0].delta_end_s, p.pages[1][0].extent_index),
             (3, 0)
         );
+    }
+
+    #[test]
+    fn the_open_cache_keeps_the_journal_times() {
+        let empty = replay(vec![Event::Corrupt { pos: 0 }]);
+        let none = open_cache_pages(&empty, 0, &mut Retention::default());
+        assert_eq!(
+            (none.pages.len(), none.first_time_s, none.last_time_s),
+            (0, 0, 0)
+        );
+        // a transaction without a valid page leaves C's LONG_MAX first time
+        let invalid = replay(vec![store(4096, vec![array(1, 0, 100, 103)])]);
+        let got = open_cache_pages(&invalid, 0, &mut Retention::default());
+        assert_eq!((got.first_time_s, got.last_time_s), (i64::MAX, 0));
+        // a dropped page still counts
+        let r = replay(vec![
+            store(4096, vec![array(1, 4, 100, 106)]),
+            store(8192, vec![array(1, 3, 100, 102), array(2, 4, 90, 93)]),
+        ]);
+        let got = open_cache_pages(&r, 0, &mut Retention::default());
+        assert_eq!(got.pages.len(), 2);
+        assert_eq!((got.first_time_s, got.last_time_s), (90, 106));
     }
 
     #[test]

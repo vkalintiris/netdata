@@ -3,7 +3,12 @@
 
 use std::path::PathBuf;
 
-use netdata_agent_storage::dbengine::format::page::{self, tier1};
+use netdata_agent_storage::dbengine::format::descriptor::{
+    PAGE_TYPE_ARRAY_32BIT, PAGE_TYPE_ARRAY_TIER1, PAGE_TYPE_GORILLA_32BIT,
+};
+use netdata_agent_storage::dbengine::format::page::{
+    Cursor, DiskPage, PageBuilder, gorilla, tier1,
+};
 use netdata_agent_storage::storage_number::pack;
 use netdata_agent_storage::storage_point::StoragePoint;
 use serde_json::Value;
@@ -43,14 +48,18 @@ fn tuple(ok: bool, p: &StoragePoint) -> Value {
     ])
 }
 
-/// The cursor from slot 0: the used points, then empty ones.
-fn points(used: &[StoragePoint], wanted: usize) -> Vec<Value> {
-    (0..wanted)
-        .map(|i| match used.get(i) {
-            Some(p) => tuple(true, p),
-            None => tuple(false, &StoragePoint::empty(0, 0)),
+/// The next `n` points of a cursor.
+fn cursor_points(mut cursor: Cursor<'_>, n: usize) -> Vec<Value> {
+    (0..n)
+        .map(|_| {
+            let (ok, p) = cursor.next_point();
+            tuple(ok, &p)
         })
         .collect()
+}
+
+fn n(v: &Value) -> usize {
+    v.as_u64().unwrap() as usize
 }
 
 #[test]
@@ -60,40 +69,35 @@ fn raw_pages_as_c() {
     assert_eq!(cases.len(), 8);
     for c in cases {
         let name = c["name"].as_str().unwrap();
-        let tier1 = c["page_type_id"] == 1;
-        // what the writer puts on disk
+        let page_type = if c["page_type_id"] == 1 {
+            PAGE_TYPE_ARRAY_TIER1
+        } else {
+            PAGE_TYPE_ARRAY_32BIT
+        };
+        // what the collector builds and puts on disk
+        let slots = c["slots"].as_u64().unwrap_or(1024) as usize;
+        let mut page = PageBuilder::new(page_type, slots).unwrap();
         if let Some(values) = c["input_values"].as_array() {
-            let flags = c["input_flags"].as_array().unwrap();
-            let slots: Vec<u32> = values
-                .iter()
-                .zip(flags)
-                .map(|(v, f)| pack(bits(v), f.as_u64().unwrap() as u32))
-                .collect();
-            let bytes = page::array32_encode(&slots);
-            assert_eq!(to_hex(&bytes), c["page_hex"], "{name}");
-            assert_eq!(
-                bytes.len() as u64,
-                c["disk_footprint"].as_u64().unwrap(),
-                "{name}"
-            );
+            for (v, f) in values.iter().zip(c["input_flags"].as_array().unwrap()) {
+                let v = bits(v);
+                page.append(v, v, v, 1, 0, f.as_u64().unwrap() as u32)
+                    .unwrap();
+            }
         }
         if let Some(records) = c["input"].as_array() {
-            let encoded: Vec<tier1::Tier1Record> = records
-                .iter()
-                .map(|r| {
-                    tier1::Tier1Record::from_aggregate(
-                        bits(&r["sum"]),
-                        bits(&r["min"]),
-                        bits(&r["max"]),
-                        r["count"].as_u64().unwrap() as u16,
-                        r["anomaly_count"].as_u64().unwrap() as u16,
-                    )
-                })
-                .collect();
-            for (r, want) in encoded.iter().zip(c["records"].as_array().unwrap()) {
-                assert_eq!(to_hex(&r.encode()), want["hex"], "{name}");
+            for (r, want) in records.iter().zip(c["records"].as_array().unwrap()) {
+                let (sum, min, max) = (bits(&r["sum"]), bits(&r["min"]), bits(&r["max"]));
+                let (count, anomalies) = (n(&r["count"]) as u16, n(&r["anomaly_count"]) as u16);
+                let record = tier1::Tier1Record::from_aggregate(sum, min, max, count, anomalies);
+                assert_eq!(to_hex(&record.encode()), want["hex"], "{name}");
+                page.append(sum, min, max, count, anomalies, 0).unwrap();
             }
-            assert_eq!(to_hex(&tier1::encode(&encoded)), c["page_hex"], "{name}");
+        }
+        if c.get("pgd_slots_used").is_some() {
+            assert_eq!(to_hex(&page.to_extent_bytes()), c["page_hex"], "{name}");
+            assert_eq!(page.disk_footprint(), n(&c["disk_footprint"]), "{name}");
+            assert_eq!(page.slots_used(), n(&c["pgd_slots_used"]), "{name}");
+            assert_eq!(Value::Bool(page.is_empty()), c["pgd_is_empty"], "{name}");
         }
         // what a disk load gives back: the page's bytes, or the first `size` bytes of the disk input
         let mut disk = hex(c["page_hex"]
@@ -104,39 +108,23 @@ fn raw_pages_as_c() {
             disk.truncate(size as usize);
         }
         let from_disk = &c["from_disk"];
-        if from_disk == "PGD_EMPTY" {
-            let empty = if tier1 {
-                tier1::decode(&disk).is_none()
-            } else {
-                page::array32_decode(&disk).is_none()
-            };
-            assert!(empty, "{name}");
+        let Some(loaded) = DiskPage::from_disk(page_type, &disk) else {
+            assert_eq!(from_disk, "PGD_EMPTY", "{name}");
             continue;
-        }
-        let wanted = from_disk["points_from_0"].as_array().unwrap();
-        let used: Vec<StoragePoint> = if tier1 {
-            tier1::decode(&disk)
-                .unwrap_or_default()
-                .iter()
-                .map(tier1::Tier1Record::to_point)
-                .collect()
-        } else {
-            page::array32_decode(&disk)
-                .unwrap_or_default()
-                .into_iter()
-                .map(page::array32_point)
-                .collect()
         };
+        let wanted = from_disk["points_from_0"].as_array().unwrap();
         assert_eq!(
-            used.len() as u64,
-            from_disk["pgd_slots_used"].as_u64().unwrap(),
+            loaded.slots_used(),
+            n(&from_disk["pgd_slots_used"]),
             "{name}"
         );
-        assert_eq!(points(&used, wanted.len()), *wanted, "{name}");
+        assert_eq!(
+            cursor_points(loaded.cursor(0), wanted.len()),
+            *wanted,
+            "{name}"
+        );
     }
 }
-
-use netdata_agent_storage::dbengine::format::page::gorilla;
 
 fn u32_hex(v: &Value) -> u32 {
     u32::from_str_radix(v.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
@@ -145,17 +133,6 @@ fn u32_hex(v: &Value) -> u32 {
 fn read_all(mut r: gorilla::Reader<'_>) -> Vec<Value> {
     std::iter::from_fn(|| r.read())
         .map(|n| Value::String(format!("0x{n:08x}")))
-        .collect()
-}
-
-/// A gorilla cursor from slot 0 over `slots` points; a failed read is an empty point.
-fn gorilla_points(buffers: &[gorilla::Buffer], slots: usize, wanted: usize) -> Vec<Value> {
-    let mut r = gorilla::Reader::new(buffers);
-    (0..wanted)
-        .map(|i| match (i < slots).then(|| r.read()).flatten() {
-            Some(n) => tuple(true, &page::array32_point(n)),
-            None => tuple(false, &StoragePoint::empty(0, 0)),
-        })
         .collect()
 }
 
@@ -253,60 +230,53 @@ fn gorilla_pages_as_c() {
     assert_eq!(cases.len(), 10);
     for c in cases {
         let name = c["name"].as_str().unwrap();
-        let mut w = gorilla::Writer::default();
+        let mut page = PageBuilder::new(PAGE_TYPE_GORILLA_32BIT, n(&c["slots"])).unwrap();
         let mut grew = Vec::new();
-        let values = c["input_values"].as_array().unwrap();
-        let flags = c["input_flags"].as_array().unwrap();
         let mut packed = Vec::new();
-        for (i, (v, f)) in values.iter().zip(flags).enumerate() {
-            let n = pack(bits(v), f.as_u64().unwrap() as u32);
-            packed.push(Value::String(format!("0x{n:08x}")));
-            if w.append(n) {
+        let values = c["input_values"].as_array().unwrap();
+        for (i, (v, f)) in values
+            .iter()
+            .zip(c["input_flags"].as_array().unwrap())
+            .enumerate()
+        {
+            let (v, f) = (bits(v), f.as_u64().unwrap() as u32);
+            packed.push(Value::String(format!("0x{:08x}", pack(v, f))));
+            if page.append(v, v, v, 1, 0, f).unwrap() {
                 grew.push(i);
             }
         }
-        let count = values.len();
         assert_eq!(Value::Array(packed), c["packed_u32"], "{name}");
         assert_eq!(
             serde_json::json!(grew),
             c["append_returned_buffer_size_at"],
             "{name}"
         );
-        assert_eq!(
-            count as u64,
-            c["pgd_slots_used"].as_u64().unwrap(),
-            "{name}"
-        );
-        if count > 0 {
-            assert_eq!(
-                w.buffers().len() as u64,
-                c["num_buffers"].as_u64().unwrap(),
-                "{name}"
-            );
-            assert_eq!(Value::Array(buffers_json(&w)), c["buffers"], "{name}");
-            assert_eq!(
-                (w.buffers().len() * gorilla::BUFFER_SIZE) as u64,
-                c["disk_footprint"].as_u64().unwrap(),
-                "{name}"
-            );
+        assert_eq!(page.slots_used(), n(&c["pgd_slots_used"]), "{name}");
+        assert_eq!(Value::Bool(page.is_empty()), c["pgd_is_empty"], "{name}");
+        assert_eq!(page.disk_footprint(), n(&c["disk_footprint"]), "{name}");
+        let bytes = page.to_extent_bytes();
+        assert_eq!(bytes.len(), page.disk_footprint(), "{name}");
+        if page.slots_used() > 0 {
+            let w = page.gorilla().unwrap();
+            assert_eq!(w.buffers().len(), n(&c["num_buffers"]), "{name}");
+            assert_eq!(Value::Array(buffers_json(w)), c["buffers"], "{name}");
         }
         let live = c["collector_points_from_0"].as_array().unwrap();
-        assert_eq!(
-            gorilla_points(w.buffers(), count, live.len()),
-            *live,
-            "{name}"
-        );
+        assert_eq!(cursor_points(page.cursor(0), live.len()), *live, "{name}");
         let from_disk = &c["from_disk"];
         if from_disk.is_object() {
-            let disk = gorilla::from_disk(&w.serialize()).unwrap();
+            let disk = DiskPage::from_disk(PAGE_TYPE_GORILLA_32BIT, &bytes).unwrap();
+            assert_eq!(disk.slots_used(), n(&from_disk["pgd_slots_used"]), "{name}");
+            // a page from disk has as many slots as it uses
+            assert_eq!(disk.slots_used(), n(&from_disk["pgd_capacity"]), "{name}");
             assert_eq!(
-                u64::from(disk.slots),
-                from_disk["pgd_slots_used"].as_u64().unwrap(),
+                Value::Bool(disk.is_empty()),
+                from_disk["pgd_is_empty"],
                 "{name}"
             );
             let wanted = from_disk["points_from_0"].as_array().unwrap();
             assert_eq!(
-                gorilla_points(&disk.buffers, disk.slots.into(), wanted.len()),
+                cursor_points(disk.cursor(0), wanted.len()),
                 *wanted,
                 "{name}"
             );
@@ -322,24 +292,82 @@ fn gorilla_disk_loads_as_c() {
     for c in cases {
         let name = c["name"].as_str().unwrap();
         let mut bytes = hex(c["input_hex"].as_str().unwrap());
-        bytes.truncate(c["size"].as_u64().unwrap() as usize);
-        let disk = gorilla::from_disk(&bytes);
+        bytes.truncate(n(&c["size"]));
         let result = &c["result"];
-        if result == "PGD_EMPTY" {
-            assert!(disk.is_none(), "{name}");
+        let Some(disk) = DiskPage::from_disk(PAGE_TYPE_GORILLA_32BIT, &bytes) else {
+            assert_eq!(result, "PGD_EMPTY", "{name}");
             continue;
-        }
-        let disk = disk.unwrap_or_else(|| panic!("{name}: not loaded"));
-        assert_eq!(
-            u64::from(disk.slots),
-            result["pgd_slots_used"].as_u64().unwrap(),
-            "{name}"
-        );
+        };
+        assert_eq!(disk.slots_used(), n(&result["pgd_slots_used"]), "{name}");
+        assert_eq!(disk.slots_used(), n(&result["pgd_capacity"]), "{name}");
         let wanted = result["points_from_0"].as_array().unwrap();
         assert_eq!(
-            gorilla_points(&disk.buffers, disk.slots.into(), wanted.len()),
+            cursor_points(disk.cursor(0), wanted.len()),
             *wanted,
             "{name}"
         );
     }
+}
+
+/// `page_test.cc` never ran in C (no gtest in the build); each test's expectations live in a vector case, or here.
+#[test]
+fn pgd_tests_are_covered() {
+    let v = vectors("pgd-tests.json");
+    let tests = v["tests"].as_array().unwrap();
+    assert_eq!(tests.len(), 11);
+    let case_re = |file: &str| -> Vec<String> {
+        vectors(file)["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    for t in tests {
+        let Some(m) = t["materialized"].as_str() else {
+            continue;
+        };
+        // "<file>.json case[s] <name>[, <name>][, and <name>] [(note)]"
+        let (file, rest) = m.split_once(' ').unwrap();
+        let names = rest.split('(').next().unwrap();
+        let names = names
+            .trim_start_matches("cases ")
+            .trim_start_matches("case ");
+        let known = case_re(file);
+        for name in names
+            .split([',', ' '])
+            .filter(|w| !w.is_empty() && *w != "and")
+        {
+            assert!(
+                known.iter().any(|k| k == name),
+                "{}: {name} not in {file}",
+                t["test"]
+            );
+        }
+    }
+    // PGD.EmptyOrNull: PGD_EMPTY is None; an empty collected page has no points and no footprint
+    assert!(DiskPage::from_disk(PAGE_TYPE_GORILLA_32BIT, &[]).is_none());
+    let page = PageBuilder::new(PAGE_TYPE_GORILLA_32BIT, 1024).unwrap();
+    assert!(page.is_empty());
+    assert_eq!((page.slots_used(), page.disk_footprint()), (0, 0));
+    assert!(!page.cursor(0).next_point().0);
+    // PGD.Create: appends stop at the capacity (C's fatal)
+    let mut page = PageBuilder::new(PAGE_TYPE_ARRAY_32BIT, 2).unwrap();
+    assert!(page.append(1.0, 1.0, 1.0, 1, 0, 0).is_some());
+    assert!(page.append(2.0, 2.0, 2.0, 1, 0, 0).is_some());
+    assert!(page.append(3.0, 3.0, 3.0, 1, 0, 0).is_none());
+    assert_eq!(page.capacity(), 2);
+    // PGD.CursorHalfPage: a cursor reset to the middle of a gorilla page reads from there
+    let mut page = PageBuilder::new(PAGE_TYPE_GORILLA_32BIT, 1024).unwrap();
+    for i in 0..1024 {
+        page.append(f64::from(i), 0.0, 0.0, 1, 0, 0x0100_0000)
+            .unwrap();
+    }
+    let (ok, p) = page.cursor(512).next_point();
+    assert!(ok);
+    assert_eq!(p.sum, 512.0);
+    let disk = DiskPage::from_disk(PAGE_TYPE_GORILLA_32BIT, &page.to_extent_bytes()).unwrap();
+    let mut cursor = disk.cursor(1023);
+    assert_eq!(cursor.next_point().1.sum, 1023.0);
+    assert!(!cursor.next_point().0);
 }

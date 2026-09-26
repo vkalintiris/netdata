@@ -8,7 +8,8 @@ use std::io;
 
 use super::crc::{crc_bytes, crc_matches, crc32};
 use super::descriptor::{DESCRIPTOR_SIZE, PageDescriptor};
-use super::{BLOCK_SIZE, MAX_EXTENT_UNCOMPRESSED_SIZE, MAX_PAGES_PER_EXTENT, ReadAt};
+use super::extent;
+use super::{BLOCK_SIZE, MAX_PAGES_PER_EXTENT, ReadAt};
 
 /// `STORE_PADDING`, `STORE_DATA`, `STORE_LOGS`.
 pub const STORE_PADDING: u8 = 0;
@@ -70,15 +71,16 @@ pub struct Replay {
     pub read_error: bool,
 }
 
-/// `valid_extent_disk_size()`: 47..=506315 bytes.
-fn valid_extent_size(size: u32) -> bool {
-    let min = 6 + DESCRIPTOR_SIZE + 4;
-    let max = 6 + DESCRIPTOR_SIZE * MAX_PAGES_PER_EXTENT + MAX_EXTENT_UNCOMPRESSED_SIZE + 4;
-    (min..=max).contains(&(size as usize))
-}
-
 /// A STORE_DATA transaction in its 4096-byte block.
+///
+/// # Panics
+///
+/// With more than 109 descriptors, which cannot fit the block (an extent holds at most 109 pages).
 pub fn encode_transaction(id: u64, data: &StoreData) -> [u8; BLOCK_SIZE] {
+    assert!(
+        data.descriptors.len() <= MAX_PAGES_PER_EXTENT,
+        "more descriptors than an extent holds"
+    );
     let pages = data.descriptors.len();
     let payload_length = STORE_DATA_FIXED + DESCRIPTOR_SIZE * pages;
     let mut b = [0u8; BLOCK_SIZE];
@@ -135,7 +137,7 @@ fn one(b: &[u8], pos: u64, events: &mut Vec<Event>) -> (usize, u64) {
         .get(8..12)
         .map_or(0, |s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]));
     if STORE_DATA_FIXED + DESCRIPTOR_SIZE * pages > payload_length
-        || !valid_extent_size(extent_size)
+        || !extent::valid_disk_size(extent_size)
     {
         events.push(Event::CorruptPayload { pos, id });
         return (size, id);
@@ -268,7 +270,12 @@ mod tests {
         let lend = end + 8;
         let c = crc32(&longer[..lend]);
         longer[lend..lend + 4].copy_from_slice(&crc_bytes(c));
-        let j = journal(&[crc, unknown, bad_size, longer]);
+        // a page count whose descriptors do not fit the payload
+        let mut too_many = encode_transaction(24, &d);
+        too_many[HEADER_SIZE + 12] = 2;
+        let c = crc32(&too_many[..end]);
+        too_many[end..end + 4].copy_from_slice(&crc_bytes(c));
+        let j = journal(&[crc, unknown, bad_size, longer, too_many]);
         let r = replay(&j[..], j.len() as u64).unwrap();
         assert_eq!(
             r.events,
@@ -284,10 +291,11 @@ mod tests {
                     pos: 16384,
                     id: 23,
                     data: d
-                }
+                },
+                Event::CorruptPayload { pos: 20480, id: 24 }
             ]
         );
-        assert_eq!(r.max_id, 23);
+        assert_eq!(r.max_id, 24);
     }
 
     #[test]
@@ -302,11 +310,13 @@ mod tests {
         }
         j.resize(j.len().div_ceil(BLOCK_SIZE) * BLOCK_SIZE, 0);
         let r = replay(&j[..], j.len() as u64).unwrap();
-        let corrupt = r
+        let corrupt: Vec<_> = r
             .events
             .iter()
             .filter(|e| matches!(e, Event::Corrupt { .. }))
-            .count();
-        assert_eq!(corrupt, 1);
+            .collect();
+        // the first record that does not fit before the chunk's end
+        let pos = (BLOCK_SIZE + CHUNK as usize / len * len) as u64;
+        assert_eq!(corrupt, [&Event::Corrupt { pos }]);
     }
 }

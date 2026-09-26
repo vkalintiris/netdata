@@ -280,6 +280,9 @@ pub struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    /// # Panics
+    ///
+    /// Without a buffer: a chain has at least one.
     pub fn new(buffers: &'a [Buffer]) -> Self {
         let first = &buffers[0];
         Reader {
