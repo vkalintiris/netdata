@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use netdata_agent_log::{Priority, Source, nd_log, netdata_log_error};
 use rusqlite::Connection;
+use rusqlite::fallible_iterator::FallibleIterator;
 
 pub const SQLITE_ERROR: i32 = 1;
 pub const SQLITE_BUSY: i32 = 5;
@@ -124,6 +125,18 @@ pub enum BatchError {
     Failed,
 }
 
+/// `sqlite3_exec()` without a callback: every statement of `sql`, each stepped until it is done. rusqlite's
+/// `execute_batch()` steps a statement once, which is not enough for one that works a step at a time:
+/// `PRAGMA incremental_vacuum(N)` frees one page per step.
+pub fn exec(conn: &Connection, sql: &str) -> rusqlite::Result<()> {
+    let mut batch = rusqlite::Batch::new(conn, sql);
+    while let Some(mut stmt) = batch.next()? {
+        let mut rows = stmt.raw_query();
+        while rows.next()?.is_some() {}
+    }
+    Ok(())
+}
+
 /// `init_database_batch()`: each statement in turn; the first failure is recorded with its statement.
 pub fn init_database_batch(
     conn: &Connection,
@@ -131,7 +144,7 @@ pub fn init_database_batch(
     markers: &Markers,
 ) -> Result<(), BatchError> {
     for sql in batch {
-        let Err(err) = conn.execute_batch(sql) else {
+        let Err(err) = exec(conn, sql) else {
             continue;
         };
         let rc = result_code(&err);
@@ -156,7 +169,7 @@ pub fn init_database_batch(
 pub fn db_execute(conn: &Connection, sql: &str, markers: &Markers) -> Result<(), i32> {
     let mut attempt = 0;
     loop {
-        let Err(err) = conn.execute_batch(sql) else {
+        let Err(err) = exec(conn, sql) else {
             return Ok(());
         };
         attempt += 1;

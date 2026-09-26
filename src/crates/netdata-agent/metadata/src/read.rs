@@ -457,7 +457,7 @@ pub struct ContextRow {
     pub family: Option<String>,
 }
 
-fn guid(host: &[u8; 16]) -> String {
+pub(crate) fn guid(host: &[u8; 16]) -> String {
     uuid::Uuid::from_bytes(*host).hyphenated().to_string()
 }
 

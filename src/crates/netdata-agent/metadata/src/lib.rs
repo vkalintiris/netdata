@@ -12,3 +12,4 @@ pub mod open;
 pub mod read;
 pub mod recover;
 pub mod schema;
+pub mod write;
