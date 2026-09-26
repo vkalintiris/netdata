@@ -272,3 +272,193 @@ fn first_time_changes_are_recorded_while_asked() {
     contexts.recalculate_host_retention(flags::REASON_DISCONNECTED_CHILD);
     assert!(contexts.take_first_time_changes().is_empty());
 }
+
+// ---- loading from SQL (rrdcontext-loading.c) ----
+
+/// A tier that knows fixed retentions by UUID.
+#[derive(Debug, Default)]
+struct FakeTier(std::collections::HashMap<[u8; 16], (i64, i64)>);
+
+impl TierRetention for FakeTier {
+    fn retention_by_id(&self, uuid: &[u8; 16]) -> Option<(i64, i64)> {
+        self.0.get(uuid).copied()
+    }
+}
+
+#[derive(Debug)]
+struct FakeLabels;
+
+impl LabelSource for FakeLabels {
+    fn chart_labels(&self, chart_uuid: &[u8; 16]) -> Vec<(Vec<u8>, Vec<u8>, u32)> {
+        vec![(b"uuid".to_vec(), vec![b'0' + chart_uuid[0]], 1)]
+    }
+}
+
+fn sql_chart(uuid: u8, id: &str, context: &str) -> SqlChart {
+    SqlChart {
+        chart_id: [uuid; 16],
+        id: Some(id.into()),
+        name: None,
+        context: Some(context.into()),
+        title: Some("Title".into()),
+        units: Some("u".into()),
+        priority: 1000,
+        update_every: 1,
+        chart_type: ChartType::Area,
+        family: Some("fam".into()),
+    }
+}
+
+fn sql_dim(uuid: u8, id: &str, chart: &str, context: &str) -> SqlDim {
+    SqlDim {
+        dim_id: [uuid; 16],
+        id: Some(id.into()),
+        name: Some(id.into()),
+        hidden: false,
+        chart_id: Some(chart.into()),
+        context: Some(context.into()),
+        algorithm: Algorithm::Incremental,
+    }
+}
+
+#[test]
+fn a_load_counts_as_c_and_keeps_what_has_retention() {
+    let contexts = Contexts::default();
+    let tier = FakeTier(
+        [
+            ([10; 16], (T, T + 100)),
+            ([11; 16], (T + 50, T + 200)),
+            ([12; 16], (T, T + 10)),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    contexts.set_tiers(vec![Arc::new(tier)]);
+    contexts.set_label_source(Arc::new(FakeLabels));
+    let mut loader = contexts.loader().unwrap();
+    assert!(contexts.loader().is_none(), "it loads once");
+    // a versionless context row is skipped; a stored hub context is taken as it was
+    loader.context(&SqlContext {
+        id: Some("ctx.skip".into()),
+        ..SqlContext::default()
+    });
+    loader.context(&SqlContext {
+        id: Some("ctx.a".into()),
+        version: 42,
+        title: Some(b"Hub".to_vec()),
+        chart_type: Some("stacked".into()),
+        priority: 7,
+        first_time_s: T as u64,
+        last_time_s: (T + 5) as u64,
+        ..SqlContext::default()
+    });
+    loader.chart(&sql_chart(1, "t.one", "ctx.a"));
+    loader.chart(&sql_chart(2, "t.empty", "ctx.a"));
+    loader.chart(&sql_chart(3, "t.lonely", "ctx.b"));
+    loader.chart(&SqlChart {
+        context: None,
+        ..sql_chart(4, "t.x", "")
+    });
+    loader.chart(&SqlChart {
+        id: None,
+        ..sql_chart(5, "", "ctx.a")
+    });
+    loader.dim(&sql_dim(10, "d", "t.one", "ctx.a"));
+    // the same dimension id again: the later row's UUID wins
+    loader.dim(&sql_dim(11, "d", "t.one", "ctx.a"));
+    loader.dim(&sql_dim(12, "e", "t.nochart", "ctx.a"));
+    loader.dim(&sql_dim(13, "z", "t.one", "ctx.a"));
+    let (report, records) = netdata_agent_log::capture(|| loader.finish("node", || false));
+    assert_eq!(
+        report,
+        LoadReport {
+            contexts: 1,
+            contexts_deleted: 1,
+            instances: 1,
+            instances_deleted: 2,
+            instances_ignored: 2,
+            metrics: 1,
+            metrics_ignored: 1,
+            metrics_zero_retention: 1,
+            cleanup: vec!["ctx.b".into()],
+            deleted_from_sql: vec![],
+        }
+    );
+    let record = records
+        .into_iter()
+        .filter_map(|r| r.message)
+        .next_back()
+        .unwrap();
+    assert_eq!(
+        record,
+        "RRDCONTEXT: metadata for node 'node': contexts 1 (deleted 1), instances 1 (deleted 2, ignored 2), and metrics \
+         1 (ignored 1, zero retention 1)"
+    );
+    let rc = contexts.get("ctx.a").unwrap();
+    assert!(contexts.get("ctx.b").is_none() && contexts.get("ctx.skip").is_none());
+    let ri = rc.instance("t.one").unwrap();
+    let rm = ri.metric("d").unwrap();
+    assert_eq!(rm.state().uuid, [11; 16]);
+    // retention from the tiers for the UUID in force, archived all the way up
+    assert_eq!(
+        (rm.state().first_time_s, rm.state().last_time_s),
+        (T + 50, T + 200)
+    );
+    assert_eq!(
+        (rc.state().first_time_s, rc.state().last_time_s),
+        (T + 50, T + 200)
+    );
+    for f in [&rc.flags, &ri.flags, &rm.flags] {
+        assert!(f.is_archived(), "{:#x}", f.get());
+    }
+    assert_eq!(ri.state().name, "t.one");
+    assert_eq!(rc.state().priority, 1000);
+    // the chart's labels come at first use
+    assert!(ri.flags.check(flags::DEMAND_LABELS));
+    assert_eq!(ri.labels().get(b"uuid"), Some(&b"1"[..]));
+    assert!(!ri.flags.check(flags::DEMAND_LABELS));
+    // a chart and dimension created again keep their UUIDs
+    assert_eq!(contexts.find_chart_uuid("ctx.a", "t.one"), Some([1; 16]));
+    assert_eq!(
+        contexts.find_dimension_uuid("ctx.a", "t.one", "d"),
+        Some([11; 16])
+    );
+}
+
+#[test]
+fn charts_created_again_reuse_the_loaded_uuids() {
+    let (contexts, charts) = setup();
+    contexts.set_tiers(vec![Arc::new(FakeTier(
+        [([9; 16], (T, T + 1))].into_iter().collect(),
+    ))]);
+    let mut loader = contexts.loader().unwrap();
+    loader.chart(&sql_chart(7, "t.a", "ctx.a"));
+    loader.dim(&sql_dim(9, "d", "t.a", "ctx.a"));
+    loader.finish("node", || false);
+    let (chart, _) = charts.create(&spec("a", "ctx.a", "Title", 1000));
+    assert_eq!(*chart.uuid(), [7; 16]);
+    let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    assert_eq!(*dim.uuid(), [9; 16]);
+    // a collected chart's context is not touched by an archived newcomer
+    let (contexts, charts) = setup();
+    let (chart, _) = charts.create(&spec("b", "ctx.b", "Live", 1000));
+    chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    collect(&chart, T);
+    contexts.process_queued();
+    let before = (
+        contexts.version(),
+        contexts.get("ctx.b").unwrap().state().title,
+    );
+    let mut loader = contexts.loader().unwrap();
+    loader.chart(&SqlChart {
+        title: Some("Stored".into()),
+        ..sql_chart(8, "t.other", "ctx.b")
+    });
+    assert_eq!(
+        (
+            contexts.version(),
+            contexts.get("ctx.b").unwrap().state().title
+        ),
+        before
+    );
+}

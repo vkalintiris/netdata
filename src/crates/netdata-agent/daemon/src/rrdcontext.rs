@@ -40,7 +40,8 @@ impl Worker {
                     if *stopped {
                         break;
                     }
-                    for host in hosts.all() {
+                    // a host whose contexts are still loading waits for the load, as in C
+                    for host in hosts.all().iter().filter(|h| !h.is_pending_context_load()) {
                         host.contexts().worker_cycle();
                     }
                 }

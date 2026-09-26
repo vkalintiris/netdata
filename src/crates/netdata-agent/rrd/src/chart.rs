@@ -65,6 +65,17 @@ impl ChartType {
         }
     }
 
+    /// `RRDSET_TYPE` as stored in SQL (`chart.chart_type`): 0 line, 1 area, 2 stacked, 3 heatmap; others are lines,
+    /// as `rrdset_type_name()` names them.
+    pub fn from_id(id: i32) -> Self {
+        match id {
+            1 => ChartType::Area,
+            2 => ChartType::Stacked,
+            3 => ChartType::Heatmap,
+            _ => ChartType::Line,
+        }
+    }
+
     /// `rrdset_type_name()`.
     pub fn name(self) -> &'static str {
         match self {
@@ -92,6 +103,17 @@ impl Algorithm {
             b"incremental" => Algorithm::Incremental,
             b"percentage-of-absolute-row" => Algorithm::PcentOverRowTotal,
             b"percentage-of-incremental-row" => Algorithm::PcentOverDiffTotal,
+            _ => Algorithm::Absolute,
+        }
+    }
+
+    /// `RRD_ALGORITHM` as stored in SQL (`dimension.algorithm`): 0 absolute, 1 incremental, 2 percentage of the
+    /// incremental row, 3 percentage of the absolute row; others are absolute, as `rrd_algorithm_name()` names them.
+    pub fn from_id(id: i32) -> Self {
+        match id {
+            1 => Algorithm::Incremental,
+            2 => Algorithm::PcentOverDiffTotal,
+            3 => Algorithm::PcentOverRowTotal,
             _ => Algorithm::Absolute,
         }
     }
@@ -431,6 +453,8 @@ impl Chart {
         algorithm: Algorithm,
     ) -> (Arc<Dim>, bool) {
         let divisor = if divisor == 0 { 1 } else { divisor };
+        // read before the dimensions lock: a new dimension looks its UUID up in this context
+        let context = self.meta().context;
         let mut index = self.dims.write().unwrap_or_else(PoisonError::into_inner);
         if let Some(&i) = index.by_id.get(id) {
             let dim = Arc::clone(&index.ordered[i]);
@@ -499,11 +523,16 @@ impl Chart {
             }
             DbMode::Dbengine => None,
         };
+        // rrdcontext_find_dimension_uuid(): a dimension created again keeps its metric's UUID
+        let uuid = self
+            .host_contexts
+            .find_dimension_uuid(&context, &self.id, id)
+            .unwrap_or_else(|| *uuid::Uuid::new_v4().as_bytes());
         let dim = Arc::new_cyclic(|me| Dim {
             me: me.clone(),
             link: DimLink::default(),
             id: id.to_string(),
-            uuid: *uuid::Uuid::new_v4().as_bytes(),
+            uuid,
             meta: RwLock::new(DimMeta {
                 name: name
                     .filter(|n| !n.is_empty())
@@ -810,10 +839,16 @@ impl Charts {
                     align_entries_to_pagesize(spec.mode, spec.history_entries, spec.page_size)
                         as usize
                 };
+                // rrdcontext_find_chart_uuid(): a chart created again keeps its instance's UUID
+                let context = spec.context.filter(|c| !c.is_empty()).unwrap_or(&full_id);
+                let uuid = self
+                    .contexts
+                    .find_chart_uuid(&rrd_string(context), &full_id)
+                    .unwrap_or_else(|| *uuid::Uuid::new_v4().as_bytes());
                 let chart = Arc::new_cyclic(|me| Chart {
                     me: me.clone(),
                     id: full_id.clone(),
-                    uuid: *uuid::Uuid::new_v4().as_bytes(),
+                    uuid,
                     host_contexts: Arc::clone(&self.contexts),
                     link: ChartLink::default(),
                     type_: spec.type_.to_string(),

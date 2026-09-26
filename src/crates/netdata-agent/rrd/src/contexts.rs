@@ -5,13 +5,15 @@
 //! Charts and dimensions call the hooks (`rrdcontext_*` in C) when they are created, change or store; the hooks mark
 //! what changed and queue the context for post-processing, which `Contexts::process_queued()` runs on the worker.
 //!
+//! Loading from SQL (`load`, wired for dbengine hosts) builds the tree of an archived or restarting host; charts and
+//! dimensions created later reuse the UUIDs found in it.
+//!
 //! Not here yet, each with the subsystem that brings it (decisions D19): the hub queue and the versions sent to
-//! Netdata Cloud (claiming, ACLK), loading from SQL and UUID reuse (dbengine), garbage collection of deleted objects
-//! (chart deletion) and the extreme cardinality protection (dbengine rotations).
+//! Netdata Cloud (claiming, ACLK) and the extreme cardinality protection (dbengine rotations).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::chart::{Algorithm, Chart, ChartType, Dim, dim_flags, flags as chart_flags};
@@ -264,6 +266,27 @@ impl<T> Index<T> {
         self.by_id.insert(id.to_string(), self.ordered.len());
         self.ordered.push(item);
     }
+
+    /// Keeps the items `keep` accepts, in order; the number removed.
+    fn retain(&mut self, mut keep: impl FnMut(&Arc<T>) -> bool) -> usize {
+        let mut ids: Vec<Option<String>> = vec![None; self.ordered.len()];
+        for (id, &i) in &self.by_id {
+            ids[i] = Some(id.clone());
+        }
+        self.by_id.clear();
+        let mut removed = 0;
+        for (item, id) in std::mem::take(&mut self.ordered).into_iter().zip(ids) {
+            if keep(&item) {
+                if let Some(id) = id {
+                    self.by_id.insert(id, self.ordered.len());
+                }
+                self.ordered.push(item);
+            } else {
+                removed += 1;
+            }
+        }
+        removed
+    }
 }
 
 // ---- the post-processing queue (rrdcontext-queues.c) ----
@@ -375,6 +398,8 @@ pub struct Context {
     host_retention: Weak<Mutex<HostRetention>>,
     /// The RAM engine's metric index.
     ram_index: Weak<RamIndex>,
+    /// The host's tiers and label source.
+    storage: Weak<Storage>,
 }
 
 impl Context {
@@ -396,6 +421,12 @@ impl Context {
 
     pub fn instance(&self, id: &str) -> Option<Arc<Instance>> {
         lock(&self.instances).get(id)
+    }
+
+    /// `get_metric_retention_by_id()` on this context's host.
+    fn metric_retention(&self, uuid: &[u8; 16]) -> (i64, i64, bool) {
+        let (storage, ram) = (self.storage.upgrade(), self.ram_index.upgrade());
+        metric_retention(storage.as_deref(), ram.as_deref(), uuid)
     }
 
     fn queue_for_post_processing(self: &Arc<Self>) {
@@ -502,6 +533,71 @@ impl RamIndex {
     }
 }
 
+/// A storage tier's `metric_retention_by_id()`: the oldest and newest time it holds for a metric UUID.
+pub trait TierRetention: Send + Sync + std::fmt::Debug {
+    fn retention_by_id(&self, uuid: &[u8; 16]) -> Option<(i64, i64)>;
+}
+
+impl TierRetention for RamIndex {
+    fn retention_by_id(&self, uuid: &[u8; 16]) -> Option<(i64, i64)> {
+        RamIndex::retention_by_id(self, uuid)
+    }
+}
+
+/// Where the chart labels of an instance loaded from SQL come from (`load_instance_labels_on_demand()`).
+pub trait LabelSource: Send + Sync + std::fmt::Debug {
+    /// Name, value and source of each stored label of the chart.
+    fn chart_labels(&self, chart_uuid: &[u8; 16]) -> Vec<(Vec<u8>, Vec<u8>, u32)>;
+}
+
+/// The host's storage as the contexts tree sees it: the tiers that metrics without a dimension take their
+/// retention from (the RAM index when none are set: ram and alloc hosts) and the label source of loaded instances.
+#[derive(Debug, Default)]
+struct Storage {
+    tiers: RwLock<Vec<Arc<dyn TierRetention>>>,
+    labels: RwLock<Option<Arc<dyn LabelSource>>>,
+}
+
+/// `get_metric_retention_by_id()`: over the tiers (the RAM index when none are set), the oldest positive first time
+/// (`i64::MAX` without one), the newest last time and whether tier 0 holds any.
+fn metric_retention(
+    storage: Option<&Storage>,
+    ram: Option<&RamIndex>,
+    uuid: &[u8; 16],
+) -> (i64, i64, bool) {
+    let tiers: Vec<Arc<dyn TierRetention>> = storage
+        .map(|s| {
+            s.tiers
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        })
+        .unwrap_or_default();
+    let (mut min_first, mut max_last, mut tier0) = (i64::MAX, 0, false);
+    let mut account = |tier: usize, found: Option<(i64, i64)>| {
+        let (first, last) = found.unwrap_or((0, 0));
+        if first > 0 && first < min_first {
+            min_first = first;
+        }
+        if last > max_last {
+            max_last = last;
+        }
+        if tier == 0 {
+            tier0 = first != 0 || last != 0;
+        }
+    };
+    if tiers.is_empty() {
+        if let Some(ram) = ram {
+            account(0, ram.retention_by_id(uuid));
+        }
+    } else {
+        for (tier, t) in tiers.iter().enumerate() {
+            account(tier, t.retention_by_id(uuid));
+        }
+    }
+    (min_first, max_last, tier0)
+}
+
 // ---- instances ----
 
 /// The mutable part of an instance.
@@ -567,12 +663,34 @@ impl Instance {
         lock(&self.metrics).get(id)
     }
 
-    /// `rrdinstance_labels()`: the chart's labels while linked, else its own.
+    /// `rrdinstance_labels()`: the chart's labels while linked, else its own; an instance loaded from SQL reads its
+    /// chart's stored labels at the first call.
     pub fn labels(&self) -> Labels {
-        match self.chart() {
-            Some(chart) => chart.meta().labels,
-            None => lock(&self.state).own_labels.clone(),
+        if let Some(chart) = self.chart() {
+            return chart.meta().labels;
         }
+        if self.flags.check(flags::DEMAND_LABELS) {
+            self.flags.clear(flags::DEMAND_LABELS);
+            let source = self
+                .context()
+                .and_then(|rc| rc.storage.upgrade())
+                .and_then(|s| {
+                    s.labels
+                        .read()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone()
+                });
+            if let Some(source) = source {
+                let uuid = lock(&self.state).uuid;
+                let labels = source.chart_labels(&uuid);
+                let mut state = lock(&self.state);
+                for (name, value, src) in &labels {
+                    state.own_labels.add(name, value, *src);
+                }
+            }
+            self.trigger_updates();
+        }
+        lock(&self.state).own_labels.clone()
     }
 
     /// `rrdinstance_trigger_updates()`.
@@ -689,8 +807,8 @@ impl Metric {
         }
     }
 
-    /// `rrdmetric_update_retention()`: a live dimension's rings, else the storage engine by UUID
-    /// (`get_metric_retention_by_id()`, tier 0 only until dbengine).
+    /// `rrdmetric_update_retention()`: a live dimension's rings, else the storage tiers by UUID
+    /// (`get_metric_retention_by_id()`).
     fn update_retention(&self) {
         let (mut first, mut last) = match self.dim() {
             Some(dim) => {
@@ -699,18 +817,16 @@ impl Metric {
             }
             None => {
                 let uuid = lock(&self.state).uuid;
-                let found = self
+                let (first, last, tier0) = self
                     .instance()
                     .and_then(|ri| ri.context())
-                    .and_then(|rc| rc.ram_index.upgrade())
-                    .and_then(|index| index.retention_by_id(&uuid));
-                let (first, last) = found.unwrap_or((0, 0));
-                if first != 0 || last != 0 {
+                    .map_or((i64::MAX, 0, false), |rc| rc.metric_retention(&uuid));
+                if tier0 {
                     self.flags.clear(flags::NO_TIER0_RETENTION);
                 } else {
                     self.flags.set(flags::NO_TIER0_RETENTION);
                 }
-                (if first > 0 { first } else { 0 }, last.max(0))
+                (if first == i64::MAX { 0 } else { first }, last)
             }
         };
         if first > last {
@@ -952,7 +1068,7 @@ pub fn updated_rrdset(chart: &Chart) {
     let contexts = chart.host_contexts();
     let meta = chart.meta();
     let (priority, stored_priority) = chart_priority(chart);
-    let rc = contexts.upsert_context(&meta.context, |state_new| {
+    let rc = contexts.upsert_context(&meta.context, false, |state_new| {
         state_new.title = meta.title.clone().into_bytes();
         state_new.units = meta.units.clone();
         state_new.family = meta.family.clone().into_bytes();
@@ -1215,11 +1331,107 @@ pub struct Contexts {
     ram_index: Arc<RamIndex>,
     /// `dictionary_version(host->rrdctx.contexts)`: one per insert, delete and conflict that updated a context.
     version: AtomicU32,
+    /// The tiers and label source of the host's storage.
+    storage: Arc<Storage>,
+    /// The tree was loaded from SQL (or the load was started): it loads once.
+    loaded: AtomicBool,
 }
 
 impl Contexts {
     pub(crate) fn ram_index(&self) -> &RamIndex {
         &self.ram_index
+    }
+
+    /// The storage tiers metrics without a dimension read their retention from, tier 0 first (dbengine); ram and
+    /// alloc hosts keep the RAM index.
+    pub fn set_tiers(&self, tiers: Vec<Arc<dyn TierRetention>>) {
+        *self
+            .storage
+            .tiers
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = tiers;
+    }
+
+    /// Where loaded instances read their chart labels from.
+    pub fn set_label_source(&self, source: Arc<dyn LabelSource>) {
+        *self
+            .storage
+            .labels
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(source);
+    }
+
+    /// `get_metric_retention_by_id()` on this host.
+    fn metric_retention(&self, uuid: &[u8; 16]) -> (i64, i64, bool) {
+        metric_retention(Some(&self.storage), Some(&self.ram_index), uuid)
+    }
+
+    /// `rrdcontext_find_chart_uuid()`: the UUID of the instance of this chart in this context, which a chart created
+    /// again takes.
+    pub fn find_chart_uuid(&self, context: &str, chart_id: &str) -> Option<[u8; 16]> {
+        let ri = self.get(context)?.instance(chart_id)?;
+        let uuid = lock(&ri.state).uuid;
+        Some(uuid)
+    }
+
+    /// `rrdcontext_find_dimension_uuid()`: the UUID of this dimension's metric, which a dimension created again takes.
+    pub fn find_dimension_uuid(
+        &self,
+        context: &str,
+        chart_id: &str,
+        dim_id: &str,
+    ) -> Option<[u8; 16]> {
+        let rm = self.get(context)?.instance(chart_id)?.metric(dim_id)?;
+        let uuid = lock(&rm.state).uuid;
+        Some(uuid)
+    }
+
+    /// A new context of this host.
+    fn new_context(&self, id: &str, state: ContextState, flags: u32) -> Arc<Context> {
+        Arc::new(Context {
+            id: id.to_string(),
+            flags: Flags(AtomicU32::new(flags)),
+            state: Mutex::new(state),
+            instances: Mutex::new(Index::default()),
+            pp: Mutex::new(PpState::default()),
+            queue: Arc::downgrade(&self.queue),
+            host_retention: Arc::downgrade(&self.retention),
+            ram_index: Arc::downgrade(&self.ram_index),
+            storage: Arc::downgrade(&self.storage),
+        })
+    }
+
+    /// Removes a context from the tree (`dictionary_del()`), out of the post-processing queue.
+    fn remove_context(&self, rc: &Arc<Context>) {
+        {
+            let mut q = lock(&self.queue.inner);
+            PpQueue::del_locked(&mut q, rc);
+        }
+        if lock(&self.index).retain(|c| !Arc::ptr_eq(c, rc)) > 0 {
+            self.version.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// `rrdcontext_garbage_collect_single_host()`: metrics, instances and contexts that may be deleted are removed.
+    /// The deleted contexts are returned for their SQL rows when `from_sql` (a dbengine host,
+    /// `rrdcontext_delete_from_sql_unsafe()`).
+    pub fn garbage_collect(&self, from_sql: bool) -> Vec<String> {
+        let mut deleted = Vec::new();
+        for rc in self.all() {
+            for ri in rc.instances() {
+                lock(&ri.metrics).retain(|rm| !rm.should_be_deleted());
+                if instance_should_be_deleted(&ri) {
+                    lock(&rc.instances).retain(|i| !Arc::ptr_eq(i, &ri));
+                }
+            }
+            if context_should_be_deleted(&rc) {
+                if from_sql {
+                    deleted.push(rc.id.clone());
+                }
+                self.remove_context(&rc);
+            }
+        }
+        deleted
     }
 
     pub fn all(&self) -> Vec<Arc<Context>> {
@@ -1274,8 +1486,14 @@ impl Contexts {
         self.queue.len()
     }
 
-    /// The contexts dictionary's insert, conflict and react callbacks for a collected chart's metadata.
-    fn upsert_context(&self, id: &str, fill: impl FnOnce(&mut ContextState)) -> Arc<Context> {
+    /// The contexts dictionary's insert, conflict and react callbacks for a chart's metadata: a collected chart's, or
+    /// an archived one loaded from SQL, which does not touch a context that is not archived.
+    fn upsert_context(
+        &self,
+        id: &str,
+        archived: bool,
+        fill: impl FnOnce(&mut ContextState),
+    ) -> Arc<Context> {
         let mut new = ContextState {
             version: 0,
             title: Vec::new(),
@@ -1292,16 +1510,12 @@ impl Contexts {
         match index.get(id) {
             None => {
                 new.version = now_sec();
-                let rc = Arc::new(Context {
-                    id: id.to_string(),
-                    flags: Flags::default(),
-                    state: Mutex::new(new),
-                    instances: Mutex::new(Index::default()),
-                    pp: Mutex::new(PpState::default()),
-                    queue: Arc::downgrade(&self.queue),
-                    host_retention: Arc::downgrade(&self.retention),
-                    ram_index: Arc::downgrade(&self.ram_index),
-                });
+                let initial = if archived {
+                    flags::ARCHIVED | flags::REASON_LOAD_SQL
+                } else {
+                    0
+                };
+                let rc = self.new_context(id, new, initial);
                 rc.flags.set_updated(flags::REASON_NEW_OBJECT);
                 index.insert(id, Arc::clone(&rc));
                 self.version.fetch_add(1, Ordering::Relaxed);
@@ -1311,13 +1525,16 @@ impl Contexts {
             }
             Some(rc) => {
                 drop(index);
-                // rrdcontext_conflict_callback(): the newcomer comes from a collected chart, so it is not archived.
+                // rrdcontext_conflict_callback(): an archived newcomer leaves a context that is not archived alone
+                if archived && !rc.flags.is_archived() {
+                    return rc;
+                }
                 let updated = {
                     let mut state = lock(&rc.state);
                     rc.merge_with(
                         &mut state,
                         &Incoming {
-                            archived: false,
+                            archived,
                             title: &new.title,
                             family: &new.family,
                             units: &new.units,
@@ -1325,6 +1542,9 @@ impl Contexts {
                             priority: new.priority,
                         },
                     );
+                    if archived {
+                        rc.flags.set(flags::ARCHIVED | flags::REASON_LOAD_SQL);
+                    }
                     if rc.flags.is_collected() && rc.flags.is_archived() {
                         rc.flags.set_collected();
                     }
@@ -1545,6 +1765,18 @@ fn instance_should_be_deleted(ri: &Instance) -> bool {
     state.first_time_s == 0 && state.last_time_s == 0
 }
 
+/// `rrdcontext_should_be_deleted()`.
+fn context_should_be_deleted(rc: &Context) -> bool {
+    if !rc.flags.check(flags::REQUIRED_FOR_DELETIONS)
+        || rc.flags.check(flags::PREVENTING_DELETIONS)
+        || !lock(&rc.instances).ordered.is_empty()
+    {
+        return false;
+    }
+    let state = lock(&rc.state);
+    state.first_time_s == 0 && state.last_time_s == 0
+}
+
 /// `rrdcontext_post_process_updates()`.
 fn post_process_updates(rc: &Context, force: bool, reason: u32) {
     if reason != 0 {
@@ -1666,6 +1898,9 @@ fn post_process_updates(rc: &Context, force: bool, reason: u32) {
     }
     rc.flags.unset_updated();
 }
+
+mod load;
+pub use load::{LoadReport, Loader, SqlChart, SqlContext, SqlDim};
 
 #[cfg(test)]
 mod tests;
