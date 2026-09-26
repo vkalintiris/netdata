@@ -11,8 +11,8 @@ use super::crc::{crc_matches, crc32};
 mod builder;
 
 pub use builder::{
-    Builder, MetricRetention, OpenCache, Page, Retention, UeSource, from_v1, open_cache_pages,
-    write_in_place,
+    Builder, MetricRetention, OpenCache, Page, Retention, UeSource, expand, from_v1,
+    open_cache_pages, write_in_place,
 };
 
 /// `JOURVAL_V2_MAGIC`, `JOURVAL_V2_REBUILD_MAGIC`, `JOURVAL_V2_SKIP_MAGIC`.

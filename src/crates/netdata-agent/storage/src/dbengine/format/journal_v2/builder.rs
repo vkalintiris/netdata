@@ -259,25 +259,43 @@ pub struct MetricRetention {
     pub update_every_s: u32,
 }
 
+/// The conditions of `mrg_metric_expand_retention()`, shared by this offline registry and the engine's (whose
+/// setters also require the value to change, as C's `set_metric_field_with_condition()` does).
+pub mod expand {
+    /// A first time moves earlier, or replaces an unset one (`first` is neither 0 nor `LONG_MAX`).
+    pub fn first(current: i64, wanted: i64) -> bool {
+        current <= 0 || (wanted != 0 && wanted != i64::MAX && wanted < current)
+    }
+
+    /// A last time moves later, or replaces an unset one.
+    pub fn last(current: i64, wanted: i64) -> bool {
+        current <= 0 || wanted > current
+    }
+
+    /// An update every without a last time is taken only when none is set.
+    pub fn update_every_unset(current: u32) -> bool {
+        current == 0
+    }
+}
+
 impl MetricRetention {
     /// `mrg_metric_expand_retention()`.
     pub fn expand(&mut self, first_time_s: i64, last_time_s: i64, update_every_s: u32) {
         if first_time_s > 0
             && first_time_s != i64::MAX
-            && (self.first_time_s <= 0 || first_time_s < self.first_time_s)
+            && first_time_s != self.first_time_s
+            && expand::first(self.first_time_s, first_time_s)
         {
             self.first_time_s = first_time_s;
         }
         if last_time_s > 0 {
-            if (self.last_time_s <= 0 || last_time_s > self.last_time_s)
-                && last_time_s != self.last_time_s
-            {
+            if last_time_s != self.last_time_s && expand::last(self.last_time_s, last_time_s) {
                 self.last_time_s = last_time_s;
                 if update_every_s > 0 {
                     self.update_every_s = update_every_s;
                 }
             }
-        } else if update_every_s > 0 && self.update_every_s == 0 {
+        } else if update_every_s > 0 && expand::update_every_unset(self.update_every_s) {
             self.update_every_s = update_every_s;
         }
     }
