@@ -2993,6 +2993,7 @@ dependencies = [
  "netdata-agent-ingest",
  "netdata-agent-inicfg",
  "netdata-agent-log",
+ "netdata-agent-metadata",
  "netdata-agent-nrpc",
  "netdata-agent-query",
  "netdata-agent-rrd",
@@ -3052,6 +3053,7 @@ name = "netdata-agent-metadata"
 version = "0.1.3"
 dependencies = [
  "netdata-agent-log",
+ "netdata-agent-sys",
  "netdata-agent-text",
  "rusqlite",
  "tempfile",
@@ -3133,6 +3135,7 @@ version = "0.1.3"
 dependencies = [
  "libc",
  "nix",
+ "rusqlite",
 ]
 
 [[package]]

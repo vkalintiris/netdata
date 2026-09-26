@@ -17,7 +17,9 @@ pub fn version() -> &'static str {
 pub fn init() -> rusqlite::Result<()> {
     let conn = Connection::open_in_memory()?;
     let limit = |pragma: &str, value: i64| -> rusqlite::Result<i64> {
-        conn.query_row(&format!("PRAGMA {pragma}={value}"), [], |r| r.get::<_, i64>(0))?;
+        conn.query_row(&format!("PRAGMA {pragma}={value}"), [], |r| {
+            r.get::<_, i64>(0)
+        })?;
         conn.query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
     };
     let hard = limit("hard_heap_limit", HEAP_HARD_LIMIT)?;
@@ -105,8 +107,10 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 2);
         for vtab in ["dbstat", "sqlite_dbpage"] {
-            conn.query_row(&format!("SELECT count(*) FROM {vtab}"), [], |r| r.get::<_, i64>(0))
-                .unwrap_or_else(|e| panic!("{vtab}: {e}"));
+            conn.query_row(&format!("SELECT count(*) FROM {vtab}"), [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_or_else(|e| panic!("{vtab}: {e}"));
         }
         // C runs PRAGMA optimize=0x10002 on every start: without STAT4 it must not add sqlite_stat4
         conn.execute_batch("PRAGMA optimize=0x10002").unwrap();
@@ -119,8 +123,10 @@ mod tests {
             .unwrap();
         assert_eq!(stat4, 0);
         // double-quoted literals in C's SQL (appendix D §1.4) need the default DQS
-        conn.query_row("SELECT INSTR('hidden,x', \"hidden\")", [], |r| r.get::<_, i64>(0))
-            .unwrap();
+        conn.query_row("SELECT INSTR('hidden,x', \"hidden\")", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap();
     }
 
     #[test]
@@ -128,6 +134,9 @@ mod tests {
         let (result, records) = netdata_agent_log::capture(init);
         result.unwrap();
         let messages: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
-        assert_eq!(messages, ["SQLITE: heap memory hard limit 256MiB, soft limit 32MiB"]);
+        assert_eq!(
+            messages,
+            ["SQLITE: heap memory hard limit 256MiB, soft limit 32MiB"]
+        );
     }
 }

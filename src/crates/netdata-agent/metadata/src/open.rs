@@ -11,7 +11,7 @@ use netdata_agent_log::{Priority, Source, nd_log, netdata_log_error, netdata_log
 use rusqlite::{Connection, OpenFlags};
 
 use crate::conn::{self, Markers, init_database_batch};
-use crate::{functions, migrate, schema};
+use crate::{functions, migrate, recover, schema};
 
 /// `def_journal_size_limit`.
 pub const DEFAULT_JOURNAL_SIZE_LIMIT: i64 = 16_777_216;
@@ -102,6 +102,14 @@ fn close(c: Connection, name: &str) {
     }
 }
 
+/// The command-line maintenance of `netdata-meta.db` (`db_check_action_type_t`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Check {
+    Recover,
+    ReclaimSpace,
+    Analyze,
+}
+
 /// `netdata-meta.db` (`db_meta`).
 pub struct MetaDb {
     conn: Mutex<Connection>,
@@ -113,9 +121,15 @@ impl MetaDb {
         cache_dir.join("netdata-meta.db")
     }
 
-    /// The start-up markers: a `.delete` marker renames the database to `netdata-meta.bad` for a fresh start (the
-    /// `.recover` marker comes first; it is honoured once recover is ported).
+    /// The start-up markers: `.recover` recovers the database in place, then `.delete` renames it to
+    /// `netdata-meta.bad` for a fresh start.
     fn apply_markers(cache_dir: &Path) {
+        if std::fs::remove_file(cache_dir.join(".netdata-meta.db.recover")).is_ok() {
+            recover::recover_database(
+                &Self::path(cache_dir),
+                &cache_dir.join("netdata-meta-recover.db"),
+            );
+        }
         if std::fs::remove_file(cache_dir.join(".netdata-meta.db.delete")).is_ok() {
             let (from, to) = (Self::path(cache_dir), cache_dir.join("netdata-meta.bad"));
             if std::fs::rename(&from, &to).is_err() {
@@ -155,6 +169,47 @@ impl MetaDb {
             conn: Mutex::new(c),
             cache_dir: cache_dir.to_path_buf(),
         })
+    }
+
+    /// `-W sqlite-meta-recover`, `sqlite-compact` and `sqlite-analyze`: `sql_init_meta_database()` with its check.
+    /// Recover runs whether or not a marker asked for it; the other two run after the markers and end with the
+    /// database closed.
+    pub fn check(cache_dir: &Path, check: Check) {
+        let path = Self::path(cache_dir);
+        if check == Check::Recover {
+            let _ = std::fs::remove_file(cache_dir.join(".netdata-meta.db.recover"));
+            recover::recover_database(&path, &cache_dir.join("netdata-meta-recover.db"));
+            return;
+        }
+        Self::apply_markers(cache_dir);
+        let c = match open_rw(&path) {
+            Ok(c) => c,
+            Err(err) => {
+                open_failed(&path, &err);
+                return;
+            }
+        };
+        let sql = if check == Check::ReclaimSpace {
+            netdata_log_info!("Reclaiming space of {}", path.display());
+            "VACUUM"
+        } else {
+            netdata_log_info!("Running ANALYZE on {}", path.display());
+            "ANALYZE"
+        };
+        match c.execute_batch(sql) {
+            Err(err) => netdata_log_error!(
+                "Failed to execute {sql} rc = {} ({})",
+                conn::result_code(&err),
+                conn::message(&err)
+            ),
+            Ok(()) => {
+                let _ = conn::db_execute(
+                    &c,
+                    "select count(*) from sqlite_master limit 0",
+                    &Markers::default(),
+                );
+            }
+        }
     }
 
     /// The connection, under the lock every user of `db_meta` takes.
@@ -377,6 +432,50 @@ mod tests {
         assert_eq!(messages(records).len(), 2);
         assert!(dir.path().join("netdata-meta.bad").exists());
         assert!(!dir.path().join(".netdata-meta.db.delete").exists());
+    }
+
+    #[test]
+    fn a_recover_marker_recovers_before_the_open() {
+        let dir = tempfile::tempdir().unwrap();
+        MetaDb::open(dir.path(), &SqliteSettings::default())
+            .unwrap()
+            .close();
+        std::fs::write(dir.path().join(".netdata-meta.db.recover"), b"").unwrap();
+        let (meta, records) =
+            netdata_agent_log::capture(|| MetaDb::open(dir.path(), &SqliteSettings::default()));
+        assert!(meta.is_some());
+        let messages = messages(records);
+        assert_eq!(
+            messages[0],
+            format!("Recover {}", MetaDb::path(dir.path()).display())
+        );
+        assert_eq!(messages[2], "Recover complete");
+        assert!(!dir.path().join(".netdata-meta.db.recover").exists());
+    }
+
+    #[test]
+    fn the_command_line_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        MetaDb::open(dir.path(), &SqliteSettings::default())
+            .unwrap()
+            .close();
+        let db = MetaDb::path(dir.path()).display().to_string();
+        let run =
+            |check| messages(netdata_agent_log::capture(|| MetaDb::check(dir.path(), check)).1);
+        assert_eq!(
+            run(Check::ReclaimSpace),
+            [format!("Reclaiming space of {db}")]
+        );
+        assert_eq!(run(Check::Analyze), [format!("Running ANALYZE on {db}")]);
+        let recovered = run(Check::Recover);
+        assert_eq!(
+            recovered[..3],
+            [
+                format!("Recover {db}"),
+                format!("     to {}/netdata-meta-recover.db", dir.path().display()),
+                "Recover complete".to_string()
+            ]
+        );
     }
 
     #[test]

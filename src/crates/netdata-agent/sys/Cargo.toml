@@ -11,3 +11,4 @@ workspace = true
 [dependencies]
 libc = { workspace = true }
 nix = { workspace = true, features = ["process"] }
+rusqlite = { workspace = true }

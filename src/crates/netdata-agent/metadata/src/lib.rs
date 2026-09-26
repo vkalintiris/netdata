@@ -9,4 +9,5 @@ pub mod functions;
 pub mod library;
 pub mod migrate;
 pub mod open;
+pub mod recover;
 pub mod schema;

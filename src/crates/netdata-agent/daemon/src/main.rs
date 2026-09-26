@@ -123,6 +123,23 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 );
                 return 0;
             }
+            // sql_init_meta_database() with its check, in the cache directory known so far (compile-time, or a
+            // configuration's loaded by an earlier -c), before the library is initialized
+            Opt::WithArg(b'W', v)
+                if matches!(
+                    &v[..],
+                    b"sqlite-meta-recover" | b"sqlite-compact" | b"sqlite-analyze"
+                ) =>
+            {
+                use netdata_agent_metadata::open::{Check, MetaDb};
+                let check = match &v[..] {
+                    b"sqlite-meta-recover" => Check::Recover,
+                    b"sqlite-compact" => Check::ReclaimSpace,
+                    _ => Check::Analyze,
+                };
+                MetaDb::check(std::path::Path::new(&conf.dirs.cache), check);
+                return 0;
+            }
             Opt::WithArg(b'W', v) if v == b"simple-pattern" => {
                 let Some(words) = options.take_words(2) else {
                     out(&mut std::io::stderr(), cli::SIMPLE_PATTERN_USAGE.as_bytes());

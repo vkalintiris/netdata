@@ -626,7 +626,10 @@ mod tests {
             .collect();
         assert_eq!(
             records,
-            [(Errno::ENAMETOOLONG as i32, "uv_pipe_bind(): name too long".to_string())]
+            [(
+                Errno::ENAMETOOLONG as i32,
+                "uv_pipe_bind(): name too long".to_string()
+            )]
         );
     }
 

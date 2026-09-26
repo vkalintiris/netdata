@@ -12,6 +12,8 @@
 //! - `setsockopt(TCP_DEFER_ACCEPT)` (decision D47) passes a stack `int` with its size on a borrowed descriptor.
 //! - `close_range()` and `close()` of inherited descriptors (decision D52) run only while the process has one thread,
 //!   at startup, before the daemon opens a descriptor it keeps.
+//! - `sqlite3_recover_init/run/finish()` (decision D59.2) use a connection borrowed for the whole call; recover copies
+//!   its string arguments at init and is freed by finish, both inside the call.
 
 use std::io;
 
@@ -268,6 +270,34 @@ pub fn close_inherited_fds() -> io::Result<()> {
         unsafe { libc::close(fd) };
     }
     Ok(())
+}
+
+unsafe extern "C" {
+    fn sqlite3_recover_init(
+        db: *mut rusqlite::ffi::sqlite3,
+        schema: *const std::ffi::c_char,
+        dst: *const std::ffi::c_char,
+    ) -> *mut std::ffi::c_void;
+    fn sqlite3_recover_run(recover: *mut std::ffi::c_void) -> std::ffi::c_int;
+    fn sqlite3_recover_finish(recover: *mut std::ffi::c_void) -> std::ffi::c_int;
+}
+
+/// SQLite's recover extension (`ext/recover`, compiled into the vendored SQLite): what `conn` can read of its main
+/// database, written to a new database at `dst`. The result codes of `sqlite3_recover_run()` and
+/// `sqlite3_recover_finish()`, or `None` when the recover object could not be created.
+pub fn sqlite_recover(conn: &rusqlite::Connection, dst: &str) -> Option<(i32, i32)> {
+    let dst = std::ffi::CString::new(dst).ok()?;
+    // SAFETY: the handle belongs to `conn`, borrowed until this returns; the recover object lives only between init
+    // and finish below, and copies both strings at init.
+    unsafe {
+        let recover = sqlite3_recover_init(conn.handle(), c"main".as_ptr(), dst.as_ptr());
+        if recover.is_null() {
+            return None;
+        }
+        let run = sqlite3_recover_run(recover);
+        let finish = sqlite3_recover_finish(recover);
+        Some((run, finish))
+    }
 }
 
 #[cfg(test)]
