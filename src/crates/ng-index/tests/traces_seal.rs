@@ -92,6 +92,24 @@ fn seal(reqs: Vec<ExportTraceServiceRequest>) -> Vec<u8> {
 
 /// Ingest the requests into a traces WAL in `dir` and return its path.
 fn write_wal(dir: &std::path::Path, reqs: Vec<ExportTraceServiceRequest>) -> std::path::PathBuf {
+    let mut clock = MonotonicClock::new();
+    let mut frames = Vec::new();
+    for mut r in reqs {
+        let count = count_spans(&r);
+        if count == 0 {
+            continue;
+        }
+        let base = clock.now_ns().as_u64();
+        ng_flatten::normalize_trace_request(&mut r, base, None);
+        let (flat, _) = ng_flatten::flatten_trace_request(r);
+        frames.push((ng_flatten::encode_trace_frame(&flat).unwrap(), count));
+    }
+    write_wal_frames(dir, frames)
+}
+
+/// Writes encoded traces frames, each with its span count, into a traces WAL
+/// in `dir` and returns its path.
+fn write_wal_frames(dir: &std::path::Path, frames: Vec<(Vec<u8>, usize)>) -> std::path::PathBuf {
     let seq = Arc::new(wal::SeqAllocator::ephemeral(0));
     let config = wal::Config {
         rotation: wal::RotationConfig {
@@ -112,15 +130,7 @@ fn write_wal(dir: &std::path::Path, reqs: Vec<ExportTraceServiceRequest>) -> std
     )
     .unwrap();
     let mut clock = MonotonicClock::new();
-    for mut r in reqs {
-        let count = count_spans(&r);
-        if count == 0 {
-            continue;
-        }
-        let base = clock.now_ns().as_u64();
-        ng_flatten::normalize_trace_request(&mut r, base, None);
-        let (flat, _) = ng_flatten::flatten_trace_request(r);
-        let data = ng_flatten::encode_trace_frame(&flat).unwrap();
+    for (data, count) in frames {
         let ingestion_ns = clock.now_ns();
         // The production content_meta: the version-tagged empty-ServiceStream
         // blob the unattributed stream carries (not a bare empty slice), so
@@ -1670,4 +1680,101 @@ fn count_without_drops_a_fields_chips_from_both_operands() {
         10
     );
     assert_eq!(reader.count_without(&both, "other", EVERYTHING).unwrap(), 0);
+}
+
+/// A traces frame as the flattener wrote it before the per-span `_role` and
+/// `_duration_band` tokens: the same payload format and entries, less those two.
+fn token_free_frame(mut request: ExportTraceServiceRequest) -> (Vec<u8>, usize) {
+    let count = count_spans(&request);
+    ng_flatten::normalize_trace_request(&mut request, 1, None);
+    let mut flattener = ng_flatten::Flattener::new();
+    let mut resources = Vec::new();
+    for rs in request.resource_spans {
+        let resource = rs
+            .resource
+            .map(|r| flattener.flatten_resource(r))
+            .unwrap_or_default();
+        let mut scopes = Vec::new();
+        for ss in rs.scope_spans {
+            let scope = ss
+                .scope
+                .map(|s| flattener.flatten_scope(s))
+                .unwrap_or_default();
+            let mut spans = Vec::new();
+            for sp in ss.spans {
+                let end = sp.end_time_unix_nano.max(sp.start_time_unix_nano);
+                let record = ng_flatten::SpanRecord {
+                    ts: i64::try_from(sp.start_time_unix_nano).unwrap(),
+                    duration: i64::try_from(end - sp.start_time_unix_nano).unwrap(),
+                    trace_id: ng_flatten::TraceId::from_bytes(&sp.trace_id).unwrap_or_default(),
+                    span_id: ng_flatten::SpanId::from_bytes(&sp.span_id).unwrap_or_default(),
+                    parent_span_id: ng_flatten::SpanId::from_bytes(&sp.parent_span_id)
+                        .unwrap_or_default(),
+                    flags: sp.flags,
+                    dropped_attributes_count: sp.dropped_attributes_count,
+                    dropped_events_count: sp.dropped_events_count,
+                    dropped_links_count: sp.dropped_links_count,
+                    entries: Vec::new(),
+                    events: Vec::new(),
+                    links: Vec::new(),
+                };
+                let flat = flattener.flatten_span(sp);
+                spans.push(ng_flatten::SpanRecord {
+                    entries: flat.entries,
+                    events: flat.events,
+                    links: flat.links,
+                    ..record
+                });
+            }
+            scopes.push(ng_flatten::SpanScopeGroup { scope, spans });
+        }
+        resources.push(ng_flatten::SpanResourceGroup { resource, scopes });
+    }
+    let flat = ng_flatten::FlattenedTraceRequest {
+        tree: flattener.into_tree(),
+        resources,
+    };
+    (ng_flatten::encode_trace_frame(&flat).unwrap(), count)
+}
+
+/// FLAT-15: the frames kept their payload format, so a WAL written before the
+/// tokens still seals, into a file with no `_role` field (the query's legacy
+/// test); a WAL written now gives every sealed row exactly one role.
+#[test]
+fn a_wal_from_before_the_tokens_seals_without_roles() {
+    assert_eq!(ng_flatten::TRACE_FRAME_PAYLOAD_FORMAT, 3);
+    let spans = || {
+        vec![
+            family_span(1, 0, 0, 100, false),
+            family_span(2, 1, 10, 60, true),
+        ]
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let wal_path = write_wal_frames(dir.path(), vec![token_free_frame(req(spans()))]);
+    let out = dir.path().join("old.sfst");
+    build_sfst_traces_file(&wal_path, &out, &Metrics::new()).unwrap();
+    let old = std::fs::read(&out).unwrap();
+    let reader = IndexReader::open(&old).unwrap();
+    assert_eq!(reader.summary().record_count, 2);
+    assert!(reader.field_table().get(ng_flatten::ROLE_FIELD).is_none());
+    assert!(
+        reader
+            .field_table()
+            .get(ng_flatten::DURATION_BAND_FIELD)
+            .is_none()
+    );
+    assert!(reader.field_table().get("name").is_some());
+
+    let new = seal(vec![req(spans())]);
+    let reader = IndexReader::open(&new).unwrap();
+    let rows = reader.summary().record_count;
+    let roles = reader.row_values(ng_flatten::ROLE_FIELD, 0..rows).unwrap();
+    let mut with_a_role = 0;
+    for position in 0..rows {
+        if roles.value_at(position).is_some() {
+            with_a_role += 1;
+        }
+    }
+    assert_eq!(with_a_role, rows);
 }
