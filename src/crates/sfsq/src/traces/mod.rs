@@ -34,11 +34,11 @@ mod fold;
 mod rollup;
 mod search;
 mod sources;
-mod status;
 mod vocab;
 mod wal_scan;
 mod window;
 
+pub use crate::status::{PartialReason, QueryStatus, ReasonCount, StatusBuilder};
 pub use by_id::{DEFAULT_SPAN_CAP, FieldKinds, TraceData, TraceQuery, TraceRequestError, trace_by_id};
 pub use overview::{
     DURATION_BIN_COUNT, DURATION_BIN_LABELS, DurationPercentiles, FACET_TOP_K, FacetList,
@@ -60,7 +60,6 @@ pub use sources::{
     SourceId, SourceSetError, TraceFailed, TraceSfstCandidate, TraceSource, TraceUnavailable,
     TraceWalTail, WalCoverage, validate_sources,
 };
-pub use status::{PartialReason, QueryStatus, ReasonCount, StatusBuilder};
 pub use vocab::{AttributeOwner, BuiltinField};
 pub use wal_scan::{TraceScanError, TraceWalScan};
 pub use window::{TimeWindow, WindowError};

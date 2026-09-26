@@ -117,11 +117,11 @@ use super::by_id::{DEFAULT_SPAN_CAP, FieldKinds};
 use super::gate::{GateDecision, TraceGate};
 use super::predicate::{EvalPredicate, Predicate, PredicateError, TraceLevelEval};
 use super::sources::{SourceId, SourceSetError, TraceSource, validate_sources};
-use super::status::{PartialReason, QueryStatus, StatusBuilder};
 use super::vocab::BuiltinField;
 use super::wal_scan::TraceWalScan;
 use super::window::{TimeWindow, WindowError};
 use crate::source::map_source;
+use crate::status::{PartialReason, QueryStatus, StatusBuilder};
 
 // ── The numeric knobs (one module) ──────────────────────────────────────
 

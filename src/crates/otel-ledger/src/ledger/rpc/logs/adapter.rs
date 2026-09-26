@@ -13,6 +13,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use sfsq::logs::{Anchor, Cursor, LogsData, LogsQuery, LogsQueryBuilder};
 
+use super::super::status::StatusWire;
 use super::wire::{
     ACCEPTED_PARAMS, AnchorParam, AvailableHistogram, Chart, ChartDimensions, ChartPoint,
     ChartResult, ChartView, DataPoint, Facet, FacetOption, Histogram, Items, LogsResult,
@@ -324,7 +325,41 @@ pub fn to_result(data: LogsData, max_to_return: usize) -> LogsResult {
         response_type: String::from("table"),
         help: String::from("Query and visualize OpenTelemetry logs."),
         pagination: Pagination::default(),
+        completeness: None,
     }
+}
+
+/// Candidate sources the handler could not hand to the engine.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Unread {
+    /// WALs refused whole: a chunk would not build or parse.
+    pub refused_wals: u64,
+    /// Remote files that could not be downloaded, and unreadable catalogs
+    /// over the window (their files are unknown; each counts as one).
+    pub remote: u64,
+}
+
+/// A trace-filtered answer's completeness: the engine's failed sources and
+/// the refused WALs as `source_failure`, the unread remote data as
+/// `remote_unavailable`, each out of every candidate.
+pub fn completeness(data: &LogsData, unread: Unread) -> StatusWire {
+    let of = data.sources + unread.refused_wals + unread.remote;
+    let mut status = sfsq::StatusBuilder::new();
+    status.add_n(
+        sfsq::PartialReason::SourceFailure,
+        data.failed_sources + unread.refused_wals,
+    );
+    status.of(sfsq::PartialReason::SourceFailure, of);
+    status.add_n(sfsq::PartialReason::RemoteUnavailable, unread.remote);
+    status.of(sfsq::PartialReason::RemoteUnavailable, of);
+    StatusWire::from(&status.finish())
+}
+
+/// The completeness of an answer cut short by cancellation.
+pub fn cancelled() -> StatusWire {
+    let mut status = sfsq::StatusBuilder::new();
+    status.add(sfsq::PartialReason::Cancelled);
+    StatusWire::from(&status.finish())
 }
 
 // ── Per-structure converters ────────────────────────────────────────

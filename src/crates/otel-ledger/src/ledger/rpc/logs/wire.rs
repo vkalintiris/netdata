@@ -15,10 +15,14 @@
 //! - `data` + `columns` → log-row table.
 //! - `items` → pagination footer counts.
 //! - `accepted_params` → which request params the UI may send.
+//! - `completeness` → on a trace- or span-filtered answer only: whether
+//!   every candidate logs file was read.
 
 use serde::{Deserialize, Serialize};
 
 use sfsq::logs::Direction;
+
+use super::super::status::StatusWire;
 
 // ── Request ─────────────────────────────────────────────────────────
 
@@ -357,6 +361,12 @@ pub struct LogsResult {
     pub response_type: String,
     pub help: String,
     pub pagination: Pagination,
+    /// With `trace_ids` or `span_ids` only: `{"complete": true}`, or the
+    /// candidate files that could not be read (`source_failure`,
+    /// `remote_unavailable`), each out of every candidate. Absent otherwise,
+    /// so other requests keep their shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completeness: Option<StatusWire>,
 }
 
 #[derive(Debug, Serialize)]

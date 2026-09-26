@@ -9,6 +9,7 @@
 //! - `logs` — the `otel-logs` Function: wire types, engine adapter, and
 //!   the `OtelLogsHandler` glue over the wire-neutral [`sfsq::logs`]
 //!   engine.
+//! - `status` — the answer status wire shared by both Functions.
 //! - `traces` — the `otel-traces` Function: wire types, source
 //!   resolution, and the `OtelTracesHandler` glue over the wire-neutral
 //!   [`sfsq::traces`] engine.
@@ -19,6 +20,7 @@
 mod dispatch;
 mod grid;
 mod logs;
+mod status;
 mod traces;
 
 pub(crate) use logs::OtelLogsHandler;

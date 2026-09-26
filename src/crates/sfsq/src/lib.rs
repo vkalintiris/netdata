@@ -12,8 +12,8 @@
 //! trace-by-id through one shared combiner. Same wire-neutral philosophy;
 //! design authority: the phase-4 design record in the traces plan repo.
 //!
-//! [`Source`] (bytes provenance: sealed file or in-memory chunk image) is
-//! shared by both engines.
+//! [`Source`] (bytes provenance: sealed file or in-memory chunk image) and
+//! the result status ([`QueryStatus`]) are shared by both engines.
 
 pub mod logs;
 pub mod traces;
@@ -21,5 +21,7 @@ pub mod traces;
 pub(crate) mod merge;
 
 mod source;
+mod status;
 
 pub use source::Source;
+pub use status::{PartialReason, QueryStatus, ReasonCount, StatusBuilder};

@@ -60,10 +60,10 @@ use super::rollup::{
     tail_trace_aggregates,
 };
 use super::sources::TraceSource;
-use super::status::{PartialReason, StatusBuilder};
 use super::wal_scan::TraceWalScan;
 use super::window::TimeWindow;
 use crate::source::map_source;
+use crate::status::{PartialReason, StatusBuilder};
 use sfst::{ScanWork, TracePlan};
 
 /// How a caller parameterizes the shared fold.

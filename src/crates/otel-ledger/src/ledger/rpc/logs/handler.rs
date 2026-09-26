@@ -29,7 +29,9 @@ use tokio_util::sync::CancellationToken;
 use file_lifecycle::remote_read::RemoteRead;
 use sfsq::logs::{LogSource, LogsData, SfstCandidate, Source, WalTail, run};
 
-use super::adapter::{stream_required_params, to_result, window_secs};
+use super::adapter::{
+    Unread, cancelled, completeness, stream_required_params, to_result, window_secs,
+};
 use super::wire::{
     CatalogFileEntry, FilesResponse, InfoResponse, OtelLogsRequest, OtelLogsResponse,
     SfstFileEntry, StreamId, TenantFiles, WalFileEntry,
@@ -168,12 +170,12 @@ impl OtelLogsHandler {
     /// Scans the durable prefix's frame headers, groups them into chunks
     /// at `min_entries`, and builds each through the cache (singleflight).
     /// A chunk that fails to build or parse makes the **whole WAL**
-    /// un-queryable for this query: it returns no candidates and no tails,
-    /// so none of the WAL's data is served. That data reappears once the
-    /// WAL rotates into a sealed SFST — or, for a transient failure (e.g. a
-    /// count mismatch on an actively-written WAL), on a later query, since
-    /// build errors are not cached. The same empty result covers a WAL that
-    /// can't be read at all (rotated/deleted under us).
+    /// un-queryable for this query: the error says why, and none of the
+    /// WAL's data is served. That data reappears once the WAL rotates into a
+    /// sealed SFST — or, for a transient failure (e.g. a count mismatch on
+    /// an actively-written WAL), on a later query, since build errors are
+    /// not cached. The same error covers a WAL that can't be read at all
+    /// (rotated/deleted under us).
     ///
     /// Refusing the whole WAL keeps **at most one tail per `file_seq`** (the
     /// trailing un-chunked suffix). The pagination cursor routes tails by
@@ -184,7 +186,7 @@ impl OtelLogsHandler {
         &self,
         wal: WalDesc,
         cancel: &CancellationToken,
-    ) -> (Vec<SfstCandidate>, Vec<WalTail>) {
+    ) -> Result<(Vec<SfstCandidate>, Vec<WalTail>), String> {
         let header = wal::HEADER_SIZE as u64;
         let scan_path = wal.path.clone();
         let valid_up_to = wal.valid_up_to;
@@ -194,21 +196,15 @@ impl OtelLogsHandler {
         .await
         {
             Ok(Ok(frames)) => frames,
-            Ok(Err(e)) => {
-                tracing::warn!(seq = wal.id.seq, "WAL boundary scan failed: {e}");
-                return (Vec::new(), Vec::new());
-            }
-            Err(e) => {
-                tracing::warn!(seq = wal.id.seq, "WAL boundary scan task failed: {e}");
-                return (Vec::new(), Vec::new());
-            }
+            Ok(Err(e)) => return Err(format!("boundary scan failed: {e}")),
+            Err(e) => return Err(format!("boundary scan task failed: {e}")),
         };
 
         let chunks = chunk_boundaries(&frames, header, self.min_entries);
         let mut candidates = Vec::new();
         for chunk in &chunks {
             if cancel.is_cancelled() {
-                return (Vec::new(), Vec::new());
+                return Ok((Vec::new(), Vec::new()));
             }
             let seq = wal.id.seq;
             let path = wal.path.clone();
@@ -248,27 +244,13 @@ impl OtelLogsHandler {
                     }),
                     // Parsed-back failure is unexpected. Refuse the whole
                     // WAL this query rather than serve it partially.
-                    Err(e) => {
-                        tracing::warn!(
-                            seq,
-                            index = chunk.index,
-                            "chunk parse failed; refusing to query this WAL: {e}"
-                        );
-                        return (Vec::new(), Vec::new());
-                    }
+                    Err(e) => return Err(format!("chunk {} parse failed: {e}", chunk.index)),
                 },
                 // Build failed (decode error, count mismatch, panic).
                 // Refuse the whole WAL this query; its data returns via the
                 // sealed SFST after rotation (or next query for a transient
                 // failure — build errors aren't cached).
-                Err(e) => {
-                    tracing::warn!(
-                        seq,
-                        index = chunk.index,
-                        "chunk build failed; refusing to query this WAL: {e}"
-                    );
-                    return (Vec::new(), Vec::new());
-                }
+                Err(e) => return Err(format!("chunk {} build failed: {e}", chunk.index)),
             }
         }
 
@@ -284,7 +266,7 @@ impl OtelLogsHandler {
                 range: wal::FrameRange::new(tail_begin, wal.valid_up_to),
             });
         }
-        (candidates, tails)
+        Ok((candidates, tails))
     }
 }
 
@@ -331,6 +313,9 @@ impl FunctionHandler for OtelLogsHandler {
             }
         })?;
         let time_range = window_secs(&query.grid());
+        // Only a trace- or span-filtered answer reports what it could not
+        // read; other requests keep their shape.
+        let filtered = !query.trace_ids().is_empty() || !query.span_ids().is_empty();
         // The selector lists every stream in the window, independent of the
         // user's current pick, so it uses a time-only query (empty
         // partition_keys); `q` carries the user's filter for the data query.
@@ -342,6 +327,7 @@ impl FunctionHandler for OtelLogsHandler {
             time_range,
             partition_keys,
         };
+        let fetch_q = q.clone();
         // Snapshot under a brief read lock, in memory only: on-disk SFSTs plus
         // the unindexed WALs overlapping the window, the local half of the
         // stream selector, and (with remote storage) which catalog files to read
@@ -370,14 +356,20 @@ impl FunctionHandler for OtelLogsHandler {
 
         // Read the catalogs off the lock (blocking file I/O) and finish the
         // selector with the remote-only streams. A catalog that cannot be read
-        // is logged and skipped: the logs wire has no partial status. Logs
+        // is skipped; one over the window counts as unread remote data. Logs
         // plans without a size limit, so a too-large query is refused by the
         // download cache below, with its own message.
         // A failed planning task is an error: answering without the remote
         // data and the remote-only streams would be a silent gap.
+        let mut unread = Unread::default();
         let (selector_catalog, remote_cands) = match remote_input {
             Some(input) => match tokio::task::spawn_blocking(move || input.plan()).await {
                 Ok(plan) => {
+                    for catalog in &plan.unreadable {
+                        if fetch_q.overlaps(catalog.min_timestamp_s, catalog.max_timestamp_s) {
+                            unread.remote += 1;
+                        }
+                    }
                     let [selector, fetch]: [Vec<otel_catalog::CatalogEntry>; 2] = plan
                         .per_range
                         .try_into()
@@ -400,9 +392,17 @@ impl FunctionHandler for OtelLogsHandler {
         // call's cancellation token between builds.
         let mut wal_tails: Vec<WalTail> = Vec::new();
         for wal in wal_descs {
-            let (chunks, tails) = self.resolve_wal(wal, &ctx.cancellation).await;
-            sfst_candidates.extend(chunks);
-            wal_tails.extend(tails);
+            let seq = wal.id.seq;
+            match self.resolve_wal(wal, &ctx.cancellation).await {
+                Ok((chunks, tails)) => {
+                    sfst_candidates.extend(chunks);
+                    wal_tails.extend(tails);
+                }
+                Err(e) => {
+                    tracing::warn!(seq, "WAL refused for this query: {e}");
+                    unread.refused_wals += 1;
+                }
+            }
         }
 
         // Progress spans two phases: the remote fetch (one unit per attempted
@@ -423,8 +423,8 @@ impl FunctionHandler for OtelLogsHandler {
         // download cache and add them as sources. The returned pins move into
         // the blocking query run below, so the files stay in the cache until the
         // engine is done with them, even if this call is cancelled meanwhile.
-        // Files that could not be downloaded are omitted (the logs wire has no
-        // partial status); query-wide failures surface as actionable errors.
+        // Files that could not be downloaded are omitted and count as unread
+        // remote data; query-wide failures surface as actionable errors.
         let remote_pins: Vec<file_cache::CachedFile> = if let Some(remote) = &self.remote
             && !remote_cands.is_empty()
         {
@@ -433,6 +433,7 @@ impl FunctionHandler for OtelLogsHandler {
                 .await
             {
                 Ok(fetched) => {
+                    unread.remote += fetched.failed.len() as u64;
                     // Convert the neutral selected files to engine candidates at
                     // the boundary, same as the local sealed ones.
                     sfst_candidates.extend(fetched.files.into_iter().map(SfstCandidate::from));
@@ -448,6 +449,7 @@ impl FunctionHandler for OtelLogsHandler {
                         last,
                     );
                     result.required_params = required_params;
+                    result.completeness = filtered.then(cancelled);
                     return Ok(OtelLogsResponse::Logs(result));
                 }
                 Err(file_cache::CacheError::TooLarge {
@@ -509,11 +511,21 @@ impl FunctionHandler for OtelLogsHandler {
         let histogram_field = query.histogram_field().to_owned();
         let mut result = match tokio::task::spawn_blocking(move || {
             let _pins = remote_pins;
-            to_result(run(sources, query, cancel, done), last)
+            let data = run(sources, query, cancel, done);
+            let status = filtered.then(|| completeness(&data, unread));
+            let mut result = to_result(data, last);
+            result.completeness = status;
+            result
         })
         .await
         {
             Ok(result) => result,
+            // A trace-filtered answer never hides that nothing was read.
+            Err(e) if filtered => {
+                return Err(netdata_plugin_error::NetdataPluginError::FunctionHandler {
+                    message: format!("otel-logs query task failed: {e}"),
+                });
+            }
             Err(e) => {
                 tracing::warn!("otel-logs blocking task failed: {e}");
                 to_result(LogsData::empty(histogram_field, grid), last)

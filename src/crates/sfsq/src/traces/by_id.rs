@@ -38,9 +38,9 @@ use tokio_util::sync::CancellationToken;
 use sfst::trace_combine::{SpanSource, combine};
 
 use super::sources::{SourceSetError, TraceSource, validate_sources};
-use super::status::{PartialReason, QueryStatus, StatusBuilder};
 use super::wal_scan::TraceWalScan;
 use crate::source::map_source;
+use crate::status::{PartialReason, QueryStatus, StatusBuilder};
 
 /// The field whose first value says whether a span is an error.
 const STATUS_FIELD: &str = "status_code";

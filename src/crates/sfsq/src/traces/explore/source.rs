@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 
 use super::super::sources::TraceSource;
-use super::super::status::{PartialReason, StatusBuilder};
 use super::super::window::TimeWindow;
 use crate::source::{Mapped, map_source};
+use crate::status::{PartialReason, StatusBuilder};
 
 /// Sources that may hold rows for the window, and how many of them could not
 /// be counted in, by reason.

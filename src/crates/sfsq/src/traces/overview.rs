@@ -75,8 +75,8 @@ use tokio_util::sync::CancellationToken;
 use super::fold::{SourceFoldSpec, SpanFilter, merge_trace_sources};
 use super::predicate::{Predicate, PredicateError};
 use super::sources::{SourceSetError, TraceSource, validate_sources};
-use super::status::{PartialReason, QueryStatus, StatusBuilder};
 use super::window::{TimeWindow, WindowError};
+use crate::status::{PartialReason, QueryStatus, StatusBuilder};
 
 /// Number of log-scale duration bins (fixed): the per-span duration bands.
 pub const DURATION_BIN_COUNT: usize = ng_flatten::DURATION_BAND_COUNT;

@@ -157,6 +157,57 @@ fn write_logs_sfst(
     std::fs::write(path, &buf).unwrap();
 }
 
+/// Install [`write_logs_sfst`]'s file of sequence `seq`, in partition
+/// `part_key`, under tenant `default`; returns its path.
+fn install_logs_sfst(
+    tr: &mut TenantRegistries,
+    seq: u64,
+    part_key: u64,
+    min_s: u32,
+    ids: Option<(Vec<sfst::TraceId>, Vec<sfst::SpanId>)>,
+) -> std::path::PathBuf {
+    let id = FileId::new(test_identity(), 0, seq, part_key);
+    let reg = tr.get_or_create(&TenantId::from("default"));
+    let path = reg.sfst.file_path(id);
+    write_logs_sfst(&path, min_s, ids);
+    let size = ByteSize(std::fs::metadata(&path).unwrap().len());
+    let summary =
+        crate::test_helpers::summary_for(&ServiceStream::new("ns", "svc"), 6, min_s, min_s + 5);
+    reg.sfst.track(id, size, summary);
+    path
+}
+
+fn trace(b: u8) -> sfst::TraceId {
+    sfst::TraceId::from([b; 16])
+}
+
+fn span(b: u8) -> sfst::SpanId {
+    sfst::SpanId::from([b; 8])
+}
+
+/// Ids for [`write_logs_sfst`]'s six rows: three in trace 1 (spans 1, 3, 1),
+/// one in trace 2, two without a trace.
+fn six_ids() -> (Vec<sfst::TraceId>, Vec<sfst::SpanId>) {
+    let unset = sfst::TraceId::UNSET;
+    (
+        vec![trace(1), trace(2), trace(1), unset, trace(1), unset],
+        vec![
+            span(1),
+            span(2),
+            span(3),
+            span(4),
+            span(1),
+            sfst::SpanId::UNSET,
+        ],
+    )
+}
+
+/// The handler's answer to `body`, as JSON.
+async fn ask(h: &OtelLogsHandler, body: Value) -> Value {
+    let req: OtelLogsRequest = serde_json::from_value(body).unwrap();
+    serde_json::to_value(h.on_call(make_ctx("t"), req).await.unwrap()).unwrap()
+}
+
 /// Install a single SFST file under tenant `t`.
 fn install_sfst(tr: &mut TenantRegistries, tenant: &str, seq: u64, min_s: u32) {
     let id = FileId::new(test_identity(), 0, seq, 7);
@@ -529,40 +580,9 @@ async fn info_request_returns_capability_descriptor() {
 /// ids; they need an explicit window.
 #[tokio::test]
 async fn trace_filter_returns_only_the_traces_logs() {
-    let trace = |b: u8| sfst::TraceId::from([b; 16]);
-    let span = |b: u8| sfst::SpanId::from([b; 8]);
     let mut tr = make_tenant_registries();
     install_sfst(&mut tr, "default", 1, 1_000);
-    let reg = tr.get_or_create(&TenantId::from("default"));
-    let id = FileId::new(test_identity(), 0, 2, 7);
-    let path = reg.sfst.file_path(id);
-    let unset_trace = sfst::TraceId::UNSET;
-    write_logs_sfst(
-        &path,
-        1_000,
-        Some((
-            vec![
-                trace(1),
-                trace(2),
-                trace(1),
-                unset_trace,
-                trace(1),
-                unset_trace,
-            ],
-            vec![
-                span(1),
-                span(2),
-                span(3),
-                span(4),
-                span(1),
-                sfst::SpanId::UNSET,
-            ],
-        )),
-    );
-    let size = ByteSize(std::fs::metadata(&path).unwrap().len());
-    let summary =
-        crate::test_helpers::summary_for(&ServiceStream::new("ns", "svc"), 6, 1_000, 1_005);
-    reg.sfst.track(id, size, summary);
+    install_logs_sfst(&mut tr, 2, 7, 1_000, Some(six_ids()));
     let h = make_handler(tr);
 
     let ask = |body: String| {
@@ -606,6 +626,115 @@ async fn trace_filter_returns_only_the_traces_logs() {
         ask(format!(r#"{{"trace_ids": ["{t1}"]}}"#)).await.is_err(),
         "a trace filter needs its window"
     );
+}
+
+/// A trace-filtered request over the window 1000..1010.
+fn traced(extra: Value) -> Value {
+    let mut body = serde_json::json!({
+        "after": 1_000,
+        "before": 1_010,
+        "trace_ids": [trace(1).to_string()],
+    });
+    for (key, value) in extra.as_object().unwrap() {
+        body[key] = value.clone();
+    }
+    body
+}
+
+/// Only a trace-filtered answer states its completeness; a file that cannot
+/// be read makes it partial, and the other file's records are still there.
+#[tokio::test]
+async fn a_trace_filtered_answer_states_its_completeness() {
+    let mut tr = make_tenant_registries();
+    install_logs_sfst(&mut tr, 1, 7, 1_000, Some(six_ids()));
+    let h = make_handler(tr);
+    let v = ask(&h, traced(serde_json::json!({}))).await;
+    assert_eq!(
+        v["completeness"],
+        serde_json::json!({"complete": true}),
+        "{v}"
+    );
+    assert_eq!(v["items"]["matched"], 3);
+    let untouched = ask(&h, serde_json::json!({"after": 1_000, "before": 1_010})).await;
+    assert!(untouched.get("completeness").is_none(), "{untouched}");
+
+    let mut tr = make_tenant_registries();
+    install_logs_sfst(&mut tr, 1, 7, 1_000, Some(six_ids()));
+    let broken = install_logs_sfst(&mut tr, 2, 7, 1_000, Some(six_ids()));
+    std::fs::write(&broken, b"not an index").unwrap();
+    let h = make_handler(tr);
+    let v = ask(&h, traced(serde_json::json!({}))).await;
+    assert_eq!(
+        v["completeness"],
+        serde_json::json!({"partial": [{"reason": "source_failure", "count": 1, "of": 2}]}),
+        "{v}"
+    );
+    assert_eq!(v["items"]["matched"], 3);
+    let untouched = ask(&h, serde_json::json!({"after": 1_000, "before": 1_010})).await;
+    assert!(untouched.get("completeness").is_none(), "{untouched}");
+    assert_eq!(untouched["items"]["matched"], 6);
+}
+
+/// A WAL the query cannot index is refused whole: a failed source.
+#[tokio::test]
+async fn a_refused_wal_is_a_failed_source() {
+    let mut tr = make_tenant_registries();
+    install_logs_sfst(&mut tr, 1, 7, 1_000, Some(six_ids()));
+    let (_, content_meta) = crate::test_helpers::identity_for(&ServiceStream::new("ns", "svc"));
+    let reg = tr.get_or_create(&TenantId::from("default"));
+    // Tracked, but no file on disk: its frames cannot be scanned.
+    let wal = FileId::new(test_identity(), 0, 2, 7);
+    reg.wal
+        .apply_event(&wal::FileEvent::Created {
+            file_id: wal,
+            created_at_ns: TimestampNs(1_000_000_000_000),
+            content_meta,
+        })
+        .unwrap();
+    reg.wal
+        .apply_event(&wal::FileEvent::Synced {
+            file_id: wal,
+            valid_up_to: ByteSize(512),
+            frame_count: 1,
+            entry_count: 5,
+            min_timestamp_ns: TimestampNs(1_001_000_000_000),
+            max_timestamp_ns: TimestampNs(1_002_000_000_000),
+        })
+        .unwrap();
+    let h = make_handler(tr);
+
+    let v = ask(&h, traced(serde_json::json!({}))).await;
+    assert_eq!(
+        v["completeness"],
+        serde_json::json!({"partial": [{"reason": "source_failure", "count": 1, "of": 2}]}),
+        "{v}"
+    );
+    assert_eq!(v["items"]["matched"], 3);
+}
+
+/// LOGS-05: the streams a request names bound the files it reads, so a
+/// record of the trace in another stream is not returned.
+#[tokio::test]
+async fn trace_filter_prunes_streams() {
+    let listed = ServiceStream::new("ns", "svc").ns_hash();
+    let other = ServiceStream::new("ns", "other").ns_hash();
+    let mut tr = make_tenant_registries();
+    install_logs_sfst(&mut tr, 1, listed, 1_000, Some(six_ids()));
+    install_logs_sfst(&mut tr, 2, other, 1_000, Some(six_ids()));
+    let h = make_handler(tr);
+
+    let everywhere = ask(&h, traced(serde_json::json!({}))).await;
+    assert_eq!(everywhere["items"]["matched"], 6, "{everywhere}");
+
+    let v = ask(
+        &h,
+        traced(serde_json::json!({
+            "selections": {"__streams": [format!("{listed:016x}")]},
+        })),
+    )
+    .await;
+    assert_eq!(v["items"]["matched"], 3, "{v}");
+    assert_eq!(v["completeness"], serde_json::json!({"complete": true}));
 }
 
 #[tokio::test]
@@ -1396,6 +1525,45 @@ async fn a_failed_download_does_not_hide_the_other_remote_files() {
 
     assert_eq!(v["items"]["matched"], 6, "seq 2 is still served: {v:#}");
     assert_eq!(cache.file_count(), 1, "only seq 2 was downloaded");
+    assert!(v.get("completeness").is_none(), "{v:#}");
+
+    let traced = ask(
+        &h,
+        serde_json::json!({
+            "tenant": "default",
+            "after": min_s - 10,
+            "before": min_s + 100,
+            "trace_ids": [trace(1).to_string()],
+        }),
+    )
+    .await;
+    assert_eq!(
+        traced["completeness"],
+        serde_json::json!({"partial": [{"reason": "remote_unavailable", "count": 1, "of": 2}]}),
+        "{traced:#}"
+    );
+}
+
+/// A trace-filtered answer cut short while fetching says it was cancelled.
+#[tokio::test]
+async fn a_cancelled_trace_filtered_answer_says_so() {
+    let min_s = 1_700_000_000u32;
+    let (h, _cache) = remote_only_handler(min_s);
+    let ctx = make_ctx("t1");
+    ctx.cancellation.cancel();
+    let req: OtelLogsRequest = serde_json::from_value(serde_json::json!({
+        "tenant": "default",
+        "after": min_s - 10,
+        "before": min_s + 100,
+        "trace_ids": [trace(1).to_string()],
+    }))
+    .unwrap();
+    let v = serde_json::to_value(h.on_call(ctx, req).await.unwrap()).unwrap();
+    assert_eq!(
+        v["completeness"],
+        serde_json::json!({"partial": [{"reason": "cancelled", "count": 1}]}),
+        "{v:#}"
+    );
 }
 
 /// When the remote object cannot be read, the query degrades gracefully (no
@@ -1543,9 +1711,9 @@ async fn catalogs_are_read_off_the_registry_lock() {
     );
 }
 
-/// A catalog that cannot be read is skipped by logs, whose wire has no
-/// partial status: the query answers, and the readable catalog's remote-only
-/// stream is still listed.
+/// A catalog that cannot be read is skipped: the query answers, the readable
+/// catalog's remote-only stream is still listed, and a trace-filtered answer
+/// counts the catalog as unread remote data.
 #[tokio::test]
 async fn an_unreadable_catalog_is_skipped() {
     let mut tr = make_tenant_registries();
@@ -1606,5 +1774,22 @@ async fn an_unreadable_catalog_is_skipped() {
     assert!(
         streams.iter().any(|o| o["name"] == "ns/svc"),
         "the readable catalog's stream is listed: {v:#}"
+    );
+
+    // The readable catalog's one file is missing from storage as well.
+    let traced = ask(
+        &h,
+        serde_json::json!({
+            "tenant": "default",
+            "after": min_s - 10,
+            "before": min_s + 100,
+            "trace_ids": [trace(1).to_string()],
+        }),
+    )
+    .await;
+    assert_eq!(
+        traced["completeness"],
+        serde_json::json!({"partial": [{"reason": "remote_unavailable", "count": 2, "of": 2}]}),
+        "{traced:#}"
     );
 }

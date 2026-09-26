@@ -1,6 +1,7 @@
 //! Query-level result status — the no-silent-degrade contract.
 //!
-//! Every traces operation returns a [`QueryStatus`] beside its data:
+//! Every traces operation returns a [`QueryStatus`] beside its data, and the
+//! logs consumer builds one for a trace-filtered answer:
 //! [`Complete`](QueryStatus::Complete) means every relevant source was
 //! successfully and fully examined; [`Partial`](QueryStatus::Partial)
 //! carries the non-empty set of reasons why the result may be missing
