@@ -46,6 +46,8 @@ pub const STOP_STREAMING: usize = 5;
 pub const STOP_CONTEXT: usize = 8;
 pub const CANCEL_MAIN_THREADS: usize = 13;
 pub const STOP_COLLECTION: usize = 14;
+pub const JOIN_STATIC_THREADS: usize = 18;
+pub const CLOSE_SQL_DATABASES: usize = 19;
 pub const REMOVE_PID_FILE: usize = 20;
 
 /// systemd allows 150 s; the watcher gives up at 135 s since the shutdown started.
@@ -62,9 +64,10 @@ static EXITING: AtomicBool = AtomicBool::new(false);
 /// The `-P` pidfile, which step 21 removes on every exit, a fatal one included.
 static PIDFILE: OnceLock<String> = OnceLock::new();
 
-/// What the daemon's threads need at each step of a normal exit, set once startup completed: an exit can start on
-/// the main thread (a signal) or on `DAEMON_COMMAND` (`netdatacli shutdown-agent`).
-type Work = Box<dyn FnMut(usize) + Send>;
+/// What the daemon's threads and databases need at each step of an exit (the step, and whether the exit is normal),
+/// set once startup completed: an exit can start on the main thread (a signal), on `DAEMON_COMMAND` (`netdatacli
+/// shutdown-agent`) or on any thread (a fatal error).
+type Work = Box<dyn FnMut(usize, bool) + Send>;
 
 static WORK: Mutex<Option<Work>> = Mutex::new(None);
 
@@ -75,14 +78,14 @@ pub fn set_work(work: Work) {
 /// `netdata_exit_gracefully()`: the exit sequence with the daemon's work, taken by the first exit.
 pub fn exit_gracefully(reason: &str) {
     let work = WORK.lock().unwrap_or_else(PoisonError::into_inner).take();
-    let mut work = work.unwrap_or_else(|| Box::new(|_| {}));
+    let mut work = work.unwrap_or_else(|| Box::new(|_, _| {}));
     cleanup_and_exit(reason, true, &mut *work);
 }
 
 /// `netdata_exit_fatal()`, registered as `fatal()`'s final callback: the exit sequence as an abnormal exit.
 pub fn exit_fatal() {
     let work = WORK.lock().unwrap_or_else(PoisonError::into_inner).take();
-    let mut work = work.unwrap_or_else(|| Box::new(|_| {}));
+    let mut work = work.unwrap_or_else(|| Box::new(|_, _| {}));
     cleanup_and_exit("fatal", false, &mut *work);
 }
 
@@ -190,7 +193,7 @@ fn watch(shared: &Shared) {
 /// caller has for a step (its threads); the steps every exit shares (`cancel_main_threads()`, the pidfile) are done
 /// here. `reason` is the exit reason's name; a normal one is logged as a notice, anything else as critical. A second
 /// exit, such as a fatal on another thread while exiting, ends the process at once.
-pub fn cleanup_and_exit(reason: &str, normal: bool, mut work: impl FnMut(usize)) {
+pub fn cleanup_and_exit(reason: &str, normal: bool, mut work: impl FnMut(usize, bool)) {
     if EXITING.swap(true, Ordering::AcqRel) {
         nd_log!(
             Source::Daemon,
@@ -220,10 +223,7 @@ pub fn cleanup_and_exit(reason: &str, normal: bool, mut work: impl FnMut(usize))
         w.update(|s| s.begun = true);
     }
     for step in 0..STEPS.len() {
-        // an abnormal exit leaves the hosts' collection as it is
-        if normal || step != STOP_COLLECTION {
-            work(step);
-        }
+        work(step, normal);
         match step {
             // cancel_main_threads(): no static thread of C's table runs in the Rust agent
             CANCEL_MAIN_THREADS => {

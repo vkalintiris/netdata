@@ -12,8 +12,15 @@ fn mirrored_host_status(w: &mut JsonWriter, host: &Host) {
     w.member_add_int64("hops", i64::from(host.ingestion_hops()));
     w.member_add_boolean("reachable", host.is_localhost() || !host.is_orphan());
     w.member_add_string("guid", host.machine_guid());
-    // Node IDs arrive with claiming: all zero, printed as null.
-    w.member_add_null("node_id");
+    // the node id stored for the host, null when it has none
+    match host.node_id() {
+        id if id == [0; 16] => w.member_add_null("node_id"),
+        id => {
+            let mut text = Vec::new();
+            netdata_agent_text::print::print_uuid_lower(&mut text, &id);
+            w.member_add_string("node_id", &text);
+        }
+    }
     match host.claim_id() {
         Some(id) => {
             let mut text = Vec::new();

@@ -8,7 +8,7 @@ use std::path::Path;
 use netdata_agent_inicfg::{
     BOOLEAN_AUTO, Config, SECTION_CLOUD, SECTION_DB, SECTION_DIRECTORIES, SECTION_ENV_VARS,
     SECTION_GLOBAL, SECTION_HEALTH, SECTION_LOGS, SECTION_PLUGINS, SECTION_PULSE, SECTION_REGISTRY,
-    SECTION_STATSD, SECTION_WEB,
+    SECTION_SQLITE, SECTION_STATSD, SECTION_WEB,
 };
 use netdata_agent_text::c::filename_from_path_entry;
 
@@ -706,6 +706,41 @@ impl Conf {
 
     pub fn cloud_conf_filename(&self) -> String {
         filename_from_path_entry(&self.dirs.cloud, "cloud.conf", None)
+    }
+}
+
+/// The `[sqlite]` keys `configure_sqlite_database()` reads, each only when netdata.conf has it.
+pub fn sqlite_settings(c: &mut Config) -> netdata_agent_metadata::open::SqliteSettings {
+    let mut text = |name: &str, default: &str| {
+        c.exists(SECTION_SQLITE, name).then(|| {
+            String::from_utf8_lossy(
+                &c.get(SECTION_SQLITE, name, Some(default))
+                    .unwrap_or_default(),
+            )
+            .into_owned()
+        })
+    };
+    let auto_vacuum = text("auto vacuum", "INCREMENTAL");
+    let synchronous = text("synchronous", "NORMAL");
+    let journal_mode = text("journal mode", "WAL");
+    let temp_store = text("temp store", "MEMORY");
+    let journal_size_limit = c.exists(SECTION_SQLITE, "journal size limit").then(|| {
+        c.get_number(
+            SECTION_SQLITE,
+            "journal size limit",
+            netdata_agent_metadata::open::DEFAULT_JOURNAL_SIZE_LIMIT,
+        )
+    });
+    let cache_size = c
+        .exists(SECTION_SQLITE, "cache size")
+        .then(|| c.get_number(SECTION_SQLITE, "cache size", -2000));
+    netdata_agent_metadata::open::SqliteSettings {
+        auto_vacuum,
+        synchronous,
+        journal_mode,
+        temp_store,
+        journal_size_limit,
+        cache_size,
     }
 }
 

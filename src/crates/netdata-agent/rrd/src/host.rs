@@ -137,6 +137,22 @@ pub fn set_netdata_start_time(seconds: i64) {
     NETDATA_START_TIME.store(seconds, Ordering::Relaxed);
 }
 
+/// `get_agent_event_time_median()` of the start and shutdown events, in microseconds: cached from the agent event log
+/// at startup, 0 without events.
+static AGENT_EVENT_MEDIANS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+
+pub fn agent_event_medians_us() -> (u64, u64) {
+    (
+        AGENT_EVENT_MEDIANS[0].load(Ordering::Relaxed),
+        AGENT_EVENT_MEDIANS[1].load(Ordering::Relaxed),
+    )
+}
+
+pub fn set_agent_event_medians_us(start: u64, shutdown: u64) {
+    AGENT_EVENT_MEDIANS[0].store(start, Ordering::Relaxed);
+    AGENT_EVENT_MEDIANS[1].store(shutdown, Ordering::Relaxed);
+}
+
 /// What a receiver's connection negotiated, for what the parent tells the child about itself (the stream path).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReceiverLink {
@@ -487,6 +503,11 @@ impl Host {
 
     pub fn node_id(&self) -> [u8; 16] {
         *self.node_id.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `set_host_node_id()`: zero clears it.
+    pub fn set_node_id(&self, node_id: [u8; 16]) {
+        *self.node_id.write().unwrap_or_else(PoisonError::into_inner) = node_id;
     }
 
     pub fn info(&self) -> HostInfo {

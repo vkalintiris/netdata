@@ -5,7 +5,7 @@
 
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_pluginsd_proto::caps;
-use netdata_agent_rrd::host::{Host, netdata_start_time};
+use netdata_agent_rrd::host::{Host, agent_event_medians_us, netdata_start_time};
 use netdata_agent_rrd::stream_path::{
     FLAG_ACLK, FLAG_EPHEMERAL, FLAG_HEALTH, FLAG_ML, FLAG_VIRTUAL, PathEntry,
 };
@@ -221,9 +221,9 @@ pub fn self_entry(host: &Host, localhost: &Host, first_time_t: Option<i64>) -> P
         first_time_t: first_time_t.unwrap_or_else(|| host.contexts().retention().0),
         flags,
         capabilities: our_capabilities(receiver.map_or(0, |slot| slot.link.capabilities)),
-        // the medians of the agent-event log, 0 on a fresh database (D46 point 8)
-        start_time_ms: 0,
-        shutdown_time_ms: 0,
+        // the medians of the agent event log
+        start_time_ms: (agent_event_medians_us().0 / 1000) as u32,
+        shutdown_time_ms: (agent_event_medians_us().1 / 1000) as u32,
     }
 }
 

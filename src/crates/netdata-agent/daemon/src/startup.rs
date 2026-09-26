@@ -6,9 +6,6 @@ use nix::time::{ClockId, clock_gettime};
 
 use crate::build;
 
-/// `sqlite3_libversion()` of the SQLite C bundles (D11); SQLite is not linked yet (D36).
-const SQLITE_VERSION: &str = "3.53.4";
-
 /// `now_monotonic_usec()`: `CLOCK_MONOTONIC_RAW`, nanoseconds truncated to microseconds.
 pub(crate) fn now_ut() -> u64 {
     clock_gettime(ClockId::CLOCK_MONOTONIC_RAW).map_or(0, |ts| {
@@ -47,14 +44,20 @@ impl Startup {
         self.prev = Some(msg);
     }
 
-    /// The line of the "agent start timings" step. The median comes from the `agent_event_log` table, which is not
-    /// ported: 0, as on C's first start (D36).
-    pub fn completed(&self) {
+    /// Microseconds since the daemon started.
+    pub fn elapsed_us(&self) -> u64 {
+        now_ut().saturating_sub(self.started_ut)
+    }
+
+    /// The line of the "agent start timings" step, with the median start time of earlier starts.
+    pub fn completed(&self, elapsed_us: u64, median_us: u64) {
         netdata_log_info!(
-            "NETDATA STARTUP: version '{}', sqlite '{SQLITE_VERSION}', completed in {} ms (median start up time is 0 \
-             ms). Enjoy X-Ray Vision for your infrastructure!",
+            "NETDATA STARTUP: version '{}', sqlite '{}', completed in {} ms (median start up time is {} ms). Enjoy \
+             X-Ray Vision for your infrastructure!",
             build::NETDATA_VERSION,
-            now_ut().saturating_sub(self.started_ut) / 1000
+            netdata_agent_metadata::library::version(),
+            elapsed_us / 1000,
+            median_us / 1000
         );
     }
 }

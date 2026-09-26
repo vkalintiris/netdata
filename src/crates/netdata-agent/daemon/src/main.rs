@@ -33,6 +33,9 @@ mod timezone;
 mod v1_charts;
 mod v1_contexts;
 
+use netdata_agent_metadata::open::{ContextDb, MetaDb};
+use netdata_agent_metadata::read::{EventKind, NodeId};
+
 use netdata_agent_log::{Priority, Source, fatal, nd_log};
 use std::io::Write;
 use std::process::ExitCode;
@@ -384,6 +387,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
 
     startup.step("sqlite");
+    if netdata_agent_metadata::library::init().is_err() {
+        fatal!("Failed to initialize sqlite library");
+    }
     startup.step("ML");
     startup.step("resource limits");
     system::set_nofile_limit();
@@ -425,7 +431,29 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         conf.threads.thread_stack_size,
     );
     command_server::init(&uv_pool, conf.threads.thread_stack_size);
-    // rrd_init(): the health defaults, then localhost.
+    // rrd_init(): the metadata databases (a failure is fatal only when the configured mode is dbengine), the health
+    // defaults, then localhost.
+    let cache_dir = std::path::PathBuf::from(&conf.dirs.cache);
+    let sqlite = conf::sqlite_settings(&mut conf.netdata);
+    let meta = MetaDb::open(&cache_dir, &sqlite).map(Arc::new);
+    if meta.is_none() {
+        if db.mode == DbMode::Dbengine {
+            fatal!("Failed to initialize SQLite");
+        }
+        nd_log!(
+            Source::Daemon,
+            Priority::Debug,
+            "Skipping SQLITE metadata initialization since memory mode is not dbengine"
+        );
+    }
+    let context_db = ContextDb::open(&cache_dir, &sqlite);
+    if context_db.is_none() {
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "Failed to initialize context metadata database"
+        );
+    }
     let health_enabled = conf.health_load_config_defaults();
     let localhost = Host::new(
         &machine_guid,
@@ -460,7 +488,19 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             cache_dir: Some(conf.dirs.cache.clone()),
         },
     );
+    // sql_load_node_id() in rrdhost_create(), before the host's record
+    let host_id = netdata_agent_text::parse::uuid_parse_flexi(machine_guid.as_bytes());
+    if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
+        match meta.node_id(host_id) {
+            NodeId::Set(id) => localhost.set_node_id(id),
+            NodeId::Cleared => localhost.set_node_id([0; 16]),
+            NodeId::Absent => {}
+        }
+    }
     let hosts = Arc::new(Hosts::new(localhost));
+    if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
+        meta.detect_machine_guid_change(host_id);
+    }
     // stream_thread_get_unsafe(): one thread per core but one, 4..=2048, each started when a node is first assigned
     // to it.
     let stream_threads = (conf.threads.cpus - 1).clamp(4, 2048) as usize;
@@ -508,9 +548,22 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     startup.step("saved bearer tokens");
     startup.step("claiming info");
     startup.step("static threads");
-    // Flood protection back on, then netdata_conf_section_web() just before C starts its static threads, the web
-    // server among them, which then reads its thread count.
+    // Flood protection back on, the agent event medians cached (before this start's event), then
+    // netdata_conf_section_web() just before C starts its static threads, the web server among them, which then reads
+    // its thread count.
     netdata_agent_log::limits_reset();
+    let medians = match &meta {
+        Some(meta) => (
+            meta.agent_event_median(EventKind::StartTime),
+            meta.agent_event_median(EventKind::ShutdownTime),
+        ),
+        None => {
+            no_database("get_agent_event_time_median");
+            no_database("get_agent_event_time_median");
+            (0, 0)
+        }
+    };
+    netdata_agent_rrd::host::set_agent_event_medians_us(medians.0, medians.1);
     let web = conf.section_web();
     // The web server thread reads its sizing only when it runs.
     let (web_server_threads, max_sockets) = if web_enabled {
@@ -595,7 +648,19 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     });
     command_server::init(&uv_pool, conf.threads.thread_stack_size);
     startup.step("agent start timings");
-    startup.completed();
+    let elapsed_us = startup.elapsed_us();
+    match &meta {
+        Some(meta) => meta.add_agent_event(
+            EventKind::StartTime,
+            build::NETDATA_VERSION,
+            elapsed_us as i64,
+        ),
+        None => no_database("add_agent_event"),
+    }
+    startup.completed(elapsed_us, medians.0);
+    if let Some(meta) = &meta {
+        meta.cleanup_agent_event_log();
+    }
     commands::set_ready();
     // The ANALYTICS thread is not ported: nothing is sent either way.
     startup.step(if startup::analytics_enabled(&conf.dirs.user_config) {
@@ -608,7 +673,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let mut pool = pool;
     let mut stream_pool = Some(stream_pool);
     let mut contexts_worker = Some(contexts_worker);
-    shutdown::set_work(Box::new(move |step| match step {
+    let mut meta = meta;
+    let mut context_db = context_db;
+    let mut shutdown_started_ut = 0;
+    shutdown::set_work(Box::new(move |step, normal| match step {
+        0 => shutdown_started_ut = startup::now_ut(),
         shutdown::STOP_WEB_SERVERS => {
             if let Some(pool) = pool.take() {
                 let _ = pool.stop_within(Some(shutdown::WEB_SERVERS_WAIT));
@@ -624,8 +693,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 worker.stop_within(shutdown::CONTEXT_WAIT);
             }
         }
-        // rrd_finalize_collection_for_all_hosts()
-        shutdown::STOP_COLLECTION => {
+        // rrd_finalize_collection_for_all_hosts(), which an abnormal exit skips
+        shutdown::STOP_COLLECTION if normal => {
             for host in hosts.all() {
                 let hostname = host.hostname();
                 let _frame = netdata_agent_log::push(vec![(
@@ -637,6 +706,25 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                     Priority::Debug,
                     "RRD: 'host:{hostname}' stopping data collection..."
                 );
+            }
+        }
+        // the shutdown time goes into the agent event log, unless the exit is abnormal
+        shutdown::JOIN_STATIC_THREADS if normal => {
+            let took = startup::now_ut().saturating_sub(shutdown_started_ut) as i64;
+            match &meta {
+                Some(meta) => {
+                    meta.add_agent_event(EventKind::ShutdownTime, build::NETDATA_VERSION, took)
+                }
+                None => no_database("add_agent_event"),
+            }
+        }
+        // sqlite_close_databases(): an abnormal exit leaves them open
+        shutdown::CLOSE_SQL_DATABASES if normal => {
+            if let Some(context_db) = context_db.take() {
+                context_db.close();
+            }
+            if let Some(meta) = meta.take().and_then(Arc::into_inner) {
+                meta.close();
             }
         }
         _ => {}
@@ -686,6 +774,16 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
 
     shutdown::exit_gracefully(reason);
     0
+}
+
+/// `PREPARE_STATEMENT()`'s record for a statement on `db_meta` when the database could not be opened (C's handle is
+/// NULL, and SQLite answers SQLITE_MISUSE).
+fn no_database(function: &str) {
+    nd_log!(
+        Source::Daemon,
+        Priority::Err,
+        "Failed to prepare statement, rc=21 in {function}"
+    );
 }
 
 /// `stream_conf_load()`, which also detects the node profile for its replication defaults.
