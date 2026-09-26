@@ -36,8 +36,9 @@ var cOnlyRecords = []struct {
 	{regexp.MustCompile(`msg="(Creating archived hosts|Created \d+ archived hosts)`), "SQLite (archived hosts)"},
 	{regexp.MustCompile(`msg="ACLK[: ]`), "ACLK"},
 	{regexp.MustCompile(`msg="METADATA: `), "SQLite metadata sync"},
+	{regexp.MustCompile(`msg="(Using \d+ threads for context loading|Contexts for \d+ hosts loaded: )`), "context load (D4 S1, D59.5)"},
+	{regexp.MustCompile(`msg="SQL: (suppressing SQLite teardown|skipping )`), "SQLite teardown"},
 	{regexp.MustCompile(`msg="CLAIM: `), "claiming"},
-	{regexp.MustCompile(`msg="(Initializing command server for liveness CHECK|Initializing full command server\.|Shutting down command server\.|Shutting down command event loop\.|Shutting down command loop complete\.|Command server has stopped\.)"`), "netdatacli command server (D36)"},
 	{regexp.MustCompile(`msg="SERVICE CONTROL: waiting for the following|msg="SERVICE: Signal to stop : `), "service registry of C's static threads (D44)"},
 	{regexp.MustCompile(`msg="PLUGINSD: cleaning up\.\.\."|msg="PLUGINSD: cleanup completed\."`), "plugins.d"},
 	{regexp.MustCompile(`msg="Failed to delete socket \d+ from nd_poll\(\) - called from poll_events_cleanup\(\)`), "D43 (shared listening sockets)"},
@@ -51,8 +52,8 @@ var portedACLKRecords = regexp.MustCompile(`msg="ACLK: (proxy is|using |proxy is
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
 var cOnlyThreads = map[string]string{
 	"DBEV": "dbengine", "METASYNC": "SQLite metadata sync", "ACLKSYNC": "ACLK", "SDBUSWATCHER": "systemd bus watcher",
-	"PULSE": "pulse charts", "PLUGINSD": "plugins.d", "DAEMON_COMMAND": "netdatacli command server (D36)",
-	"SERVICE": "service thread", "HEALTH": "health", "ANALYTICS": "analytics", "UV_WORKER": "libuv workers",
+	"PULSE": "pulse charts", "PLUGINSD": "plugins.d",
+	"SERVICE": "service thread", "HEALTH": "health", "ANALYTICS": "analytics",
 	"DBENGINIT": "dbengine (milestone D4)", "EXPORTING": "exporting engine", "STATSD_FLUSH": "statsd",
 	"ACLK_MAIN": "ACLK", "BACKFILL": "dbengine tier backfill", "EXTENT_PGC": "dbengine", "MAIN_PGC": "dbengine",
 	"OPEN_PGC": "dbengine", "REPLAY": "replication sender threads", "rrdeng-exit": "dbengine",
@@ -72,7 +73,7 @@ var logMasks = []struct {
 	{regexp.MustCompile(` src_port=\d+`), " src_port=P"},
 	{regexp.MustCompile(`\]:\d+`), "]:P"},
 	{regexp.MustCompile(` ([a-z_]+_ut)=\d+`), " ${1}=U"},
-	{regexp.MustCompile(`thread=(WEB|STREAM)\[\d+\]`), "thread=${1}[n]"},
+	{regexp.MustCompile(`thread=(WEB|STREAM|UV_WORKER)\[\d+\]`), "thread=${1}[n]"},
 	{regexp.MustCompile(`STREAM RCV\[\d+\]`), "STREAM RCV[n]"},
 	{regexp.MustCompile(`in +\d+ ms, `), "in N ms, "},
 	{regexp.MustCompile(`connected=\d+s idle=\d+s`), "connected=Ns idle=Ns"},
@@ -126,12 +127,15 @@ func threadOf(line string) string {
 }
 
 // normalizeLog masks a record. The main thread's and the shutdown watcher's records carry a stale errno in C, which
-// the check ignores (D36). The harness picks each daemon's port.
+// the check ignores (D36), as do the command server's own lifecycle records (D57.2); its read and libuv error records
+// keep theirs. The harness picks each daemon's port.
 func normalizeLog(line, runDir, port string) string {
 	line = strings.ReplaceAll(line, runDir, "<RUN>")
 	line = strings.ReplaceAll(line, "port "+port+",", "port <PORT>,")
 	line = strings.ReplaceAll(line, ":"+port, ":<PORT>")
-	if th := threadOf(line); th == "" || th == "EXIT_WATCHER" {
+	th := threadOf(line)
+	if th == "" || th == "EXIT_WATCHER" ||
+		(th == "DAEMON_COMMAND" && !strings.Contains(line, `msg="pipe_read_cb: `) && !strings.Contains(line, `msg="uv_`)) {
 		line = errnoRe.ReplaceAllString(line, "")
 	}
 	for _, m := range logMasks {
@@ -330,6 +334,13 @@ func compareLogs(t *testing.T, logs string) {
 			t.Fatalf("parity: stop %s: %v", side.Role, err)
 		}
 	}
+	compareLogFiles(t, p)
+}
+
+// compareLogFiles compares the logs of a pair whose daemons have exited: the main thread's and the shutdown watcher's
+// records in order, every other thread's as a multiset, without the oracle's records of unported subsystems.
+func compareLogFiles(t *testing.T, p *Pair) {
+	t.Helper()
 	oProbes := probePorts(logLines(t, p.Oracle.Opts.RunDir, "access.log"))
 	cProbes := probePorts(logLines(t, p.Candidate.Opts.RunDir, "access.log"))
 	for _, name := range []string{"daemon.log", "access.log"} {

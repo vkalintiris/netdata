@@ -80,12 +80,10 @@ fn display(proxy: &str, proxy_type: ProxyType) -> String {
     format!("{}{host}", proxy_type.url())
 }
 
-fn log_using(proxy: &str, proxy_type: ProxyType, source: &str) {
-    nd_log!(
-        Source::Daemon,
-        Priority::Info,
-        "ACLK: using {} proxy {} ({}, from {source})",
-        proxy_type.record_name(),
+/// Logs the proxy in use and returns `aclk_proxy_get_full_display()`: address, credentials, where it came from.
+fn log_using(proxy: &str, proxy_type: ProxyType, source: &str) -> String {
+    let full = format!(
+        "{} ({}, from {source})",
         display(proxy, proxy_type),
         if proxy.contains('@') {
             "with credentials"
@@ -93,6 +91,13 @@ fn log_using(proxy: &str, proxy_type: ProxyType, source: &str) {
             "without credentials"
         }
     );
+    nd_log!(
+        Source::Daemon,
+        Priority::Info,
+        "ACLK: using {} proxy {full}",
+        proxy_type.record_name()
+    );
+    full
 }
 
 /// `safe_log_proxy_error()`.
@@ -125,7 +130,7 @@ fn configured(netdata: &mut Config, cloud: &mut Config) -> (String, &'static str
 }
 
 /// `check_environment_proxy()`: `http_proxy`, else `https_proxy`.
-fn from_environment() -> Option<ProxyType> {
+fn from_environment() -> Option<Resolved> {
     let (var, value) = ["http_proxy", "https_proxy"].into_iter().find_map(|var| {
         std::env::var(var)
             .ok()
@@ -134,8 +139,8 @@ fn from_environment() -> Option<ProxyType> {
     })?;
     match verify(&value) {
         Some(proxy_type) => {
-            log_using(&value, proxy_type, &format!("environment variable '{var}'"));
-            Some(proxy_type)
+            let display = log_using(&value, proxy_type, &format!("environment variable '{var}'"));
+            Some((proxy_type, display))
         }
         None => {
             log_error(
@@ -150,8 +155,15 @@ fn from_environment() -> Option<ProxyType> {
     }
 }
 
+/// A resolved proxy and its full display (`none` without one).
+type Resolved = (ProxyType, String);
+
+fn none() -> Resolved {
+    (ProxyType::Disabled, "none".to_string())
+}
+
 /// `aclk_lws_wss_get_proxy_setting()`.
-fn resolve(netdata: &mut Config, cloud: &mut Config) -> ProxyType {
+fn resolve(netdata: &mut Config, cloud: &mut Config) -> Resolved {
     let (proxy, source, explicit) = configured(netdata, cloud);
     if proxy.is_empty() || proxy == "none" {
         nd_log!(
@@ -164,7 +176,7 @@ fn resolve(netdata: &mut Config, cloud: &mut Config) -> ProxyType {
                 "set to 'none'"
             }
         );
-        return ProxyType::Disabled;
+        return none();
     }
     if proxy == "env" {
         return from_environment().unwrap_or_else(|| {
@@ -176,13 +188,13 @@ fn resolve(netdata: &mut Config, cloud: &mut Config) -> ProxyType {
                      variables are set. Will connect directly without proxy."
                 );
             }
-            ProxyType::Disabled
+            none()
         });
     }
     match verify(&proxy) {
         Some(proxy_type) => {
-            log_using(&proxy, proxy_type, source);
-            proxy_type
+            let display = log_using(&proxy, proxy_type, source);
+            (proxy_type, display)
         }
         None => {
             log_error(
@@ -190,15 +202,21 @@ fn resolve(netdata: &mut Config, cloud: &mut Config) -> ProxyType {
                  \"http://[user:pass@]host:port\" or \"socks5[h]://[user:pass@]host:port\".",
                 &proxy,
             );
-            ProxyType::Disabled
+            none()
         }
     }
 }
 
+static PROXY: OnceLock<Resolved> = OnceLock::new();
+
 /// `aclk_get_proxy()`: resolved on the first call, the same afterwards.
 pub fn get(netdata: &mut Config, cloud: &mut Config) -> ProxyType {
-    static PROXY: OnceLock<ProxyType> = OnceLock::new();
-    *PROXY.get_or_init(|| resolve(netdata, cloud))
+    PROXY.get_or_init(|| resolve(netdata, cloud)).0
+}
+
+/// `aclk_proxy_get_full_display()`.
+pub fn full_display(netdata: &mut Config, cloud: &mut Config) -> String {
+    PROXY.get_or_init(|| resolve(netdata, cloud)).1.clone()
 }
 
 #[cfg(test)]

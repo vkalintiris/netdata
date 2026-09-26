@@ -700,25 +700,35 @@ impl Conf {
     /// `cloud_conf_load()`: `cloud.d/cloud.conf` over the defaults.
     pub fn cloud_conf_load(&mut self, silent: bool) {
         self.section_directories();
-        let filename = filename_from_path_entry(&self.dirs.cloud, "cloud.conf", None);
-        if let Err(err) = self.cloud.load(Path::new(&filename), true, None) {
-            if !silent {
-                nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_inicfg::load_errno(&err);
-                    "CLAIM: cannot load cloud config '{filename}'. Running with internal defaults.");
-            }
-        }
-        let c = &mut self.cloud;
-        c.move_option(SECTION_GLOBAL, "cloud base url", SECTION_GLOBAL, "url");
-        c.get(SECTION_GLOBAL, "url", Some(DEFAULT_CLOUD_BASE_URL));
-        c.get(SECTION_GLOBAL, "proxy", Some("env"));
-        c.get(SECTION_GLOBAL, "token", Some(""));
-        c.get(SECTION_GLOBAL, "rooms", Some(""));
-        c.get_boolean(SECTION_GLOBAL, "insecure", false);
-        c.get(SECTION_GLOBAL, "machine_guid", Some(""));
-        c.get(SECTION_GLOBAL, "claimed_id", Some(""));
-        c.get(SECTION_GLOBAL, "hostname", Some(""));
+        let filename = self.cloud_conf_filename();
+        load_cloud_conf(&mut self.cloud, &filename, silent);
     }
 
+    pub fn cloud_conf_filename(&self) -> String {
+        filename_from_path_entry(&self.dirs.cloud, "cloud.conf", None)
+    }
+}
+
+/// `cloud_conf_load()` over the cloud configuration in hand.
+pub fn load_cloud_conf(c: &mut Config, filename: &str, silent: bool) {
+    if let Err(err) = c.load(Path::new(filename), true, None) {
+        if !silent {
+            nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_inicfg::load_errno(&err);
+                "CLAIM: cannot load cloud config '{filename}'. Running with internal defaults.");
+        }
+    }
+    c.move_option(SECTION_GLOBAL, "cloud base url", SECTION_GLOBAL, "url");
+    c.get(SECTION_GLOBAL, "url", Some(DEFAULT_CLOUD_BASE_URL));
+    c.get(SECTION_GLOBAL, "proxy", Some("env"));
+    c.get(SECTION_GLOBAL, "token", Some(""));
+    c.get(SECTION_GLOBAL, "rooms", Some(""));
+    c.get_boolean(SECTION_GLOBAL, "insecure", false);
+    c.get(SECTION_GLOBAL, "machine_guid", Some(""));
+    c.get(SECTION_GLOBAL, "claimed_id", Some(""));
+    c.get(SECTION_GLOBAL, "hostname", Some(""));
+}
+
+impl Conf {
     /// `nd_runtime_paths_load_hostname_from_inicfg()`: `[global] host access prefix`, then `hostname`.
     pub fn section_global_hostname(&mut self) {
         let prefix = text(

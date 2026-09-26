@@ -7,7 +7,7 @@ use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use netdata_agent_inicfg::{SECTION_GLOBAL, SECTION_HOST_LABEL};
+use netdata_agent_inicfg::{Config, SECTION_GLOBAL, SECTION_HOST_LABEL};
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_rrd::host::Hosts;
 use netdata_agent_rrd::labels::{self, MAX_VALUE_LENGTH};
@@ -15,7 +15,6 @@ use netdata_agent_text::c::fgets_chunks;
 
 use crate::build;
 use crate::cloud_proxy;
-use crate::conf::Conf;
 use crate::spawn::Popen;
 
 /// `env_expand_labels_value()` into a buffer of `size` bytes: `${VAR}` and `${VAR:-default}` (an empty variable is an
@@ -93,25 +92,17 @@ fn kubernetes_labels(plugins_dir: &str) -> (Vec<Vec<u8>>, bool) {
 /// `reload_host_labels()` at startup (the step `localhost labels`). The side effects run in C's order: netdata.conf's
 /// `[host labels]` reloaded (from the compile-time path, as C does), their expansion, the Kubernetes script, the
 /// proxy, then the `[global]` options the automatic labels read.
-pub fn reload(conf: &mut Conf, hosts: &Hosts) {
+pub fn reload(netdata: &mut Config, cloud: &mut Config, plugins_dir: &str, hosts: &Hosts) {
     let filename = format!("{}/netdata.conf", build::CONFIG_DIR);
-    if conf
-        .netdata
-        .load(Path::new(&filename), true, Some(SECTION_HOST_LABEL))
-        .is_err()
-    {
-        nd_log!(
-            Source::Daemon,
-            Priority::Warning,
-            "RRDLABEL: Cannot reload the configuration file '{filename}', using labels in memory"
-        );
+    if let Err(err) = netdata.load(Path::new(&filename), true, Some(SECTION_HOST_LABEL)) {
+        nd_log!(Source::Daemon, Priority::Warning, errno = netdata_agent_inicfg::load_errno(&err);
+            "RRDLABEL: Cannot reload the configuration file '{filename}', using labels in memory");
     }
     let mut configured = Vec::new();
-    conf.netdata
-        .foreach_value_in_section(SECTION_HOST_LABEL, |name, value| {
-            configured.push((name.to_vec(), value.to_vec()));
-            true
-        });
+    netdata.foreach_value_in_section(SECTION_HOST_LABEL, |name, value| {
+        configured.push((name.to_vec(), value.to_vec()));
+        true
+    });
     let configured: Vec<(Vec<u8>, Vec<u8>)> = configured
         .into_iter()
         .map(|(name, value)| {
@@ -123,14 +114,11 @@ pub fn reload(conf: &mut Conf, hosts: &Hosts) {
             (name, value)
         })
         .collect();
-    let (k8s, k8s_loaded) = kubernetes_labels(&conf.primary_plugins_dir());
-    let proxy = cloud_proxy::get(&mut conf.netdata, &mut conf.cloud);
-    let is_ephemeral = conf
-        .netdata
-        .get_boolean(SECTION_GLOBAL, "is ephemeral node", false);
+    let (k8s, k8s_loaded) = kubernetes_labels(plugins_dir);
+    let proxy = cloud_proxy::get(netdata, cloud);
+    let is_ephemeral = netdata.get_boolean(SECTION_GLOBAL, "is ephemeral node", false);
     let has_unstable_connection =
-        conf.netdata
-            .get_boolean(SECTION_GLOBAL, "has unstable connection", false);
+        netdata.get_boolean(SECTION_GLOBAL, "has unstable connection", false);
     let is_parent = hosts.is_parent_label();
     let localhost = hosts.localhost();
     let info = localhost.info();

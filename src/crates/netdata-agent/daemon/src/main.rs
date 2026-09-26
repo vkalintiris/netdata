@@ -9,6 +9,8 @@ mod api;
 mod build;
 mod cli;
 mod cloud_proxy;
+mod command_server;
+mod commands;
 mod conf;
 mod contexts_v2;
 mod daemon;
@@ -400,6 +402,12 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let system_info = system_info::startup(&conf.primary_plugins_dir(), &conf.dirs.user_config);
     startup.step("RRD structures");
     startup.step("commands liveness support");
+    // libuv's thread pool, which runs the netdatacli commands
+    let uv_pool = netdata_agent_evloop::work::WorkPool::new(
+        conf.threads.libuv_worker_threads as usize,
+        conf.threads.thread_stack_size,
+    );
+    command_server::init(&uv_pool, conf.threads.thread_stack_size);
     // rrd_init(): the health defaults, then localhost.
     let health_enabled = conf.health_load_config_defaults();
     let localhost = Host::new(
@@ -478,7 +486,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         stream_pool.handle(),
     ));
     startup.step("localhost labels");
-    host_labels::reload(&mut conf, &hosts);
+    let plugins_dir = conf.primary_plugins_dir();
+    host_labels::reload(&mut conf.netdata, &mut conf.cloud, &plugins_dir, &hosts);
     startup.step("saved bearer tokens");
     startup.step("claiming info");
     startup.step("static threads");
@@ -561,8 +570,16 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             }
         };
     startup.step("commands full API");
+    commands::set_context(commands::Ctx {
+        shared: Arc::clone(&shared),
+        cloud_conf_file: conf.cloud_conf_filename(),
+        plugins_dir: conf.primary_plugins_dir(),
+        cloud: std::sync::Mutex::new(std::mem::take(&mut conf.cloud)),
+    });
+    command_server::init(&uv_pool, conf.threads.thread_stack_size);
     startup.step("agent start timings");
     startup.completed();
+    commands::set_ready();
     // The ANALYTICS thread is not ported: nothing is sent either way.
     startup.step(if startup::analytics_enabled(&conf.dirs.user_config) {
         "anonymous analytics"
@@ -571,60 +588,10 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     });
     startup.step("mrg cleanup");
     startup.step("done");
-    // netdata_exit_fatal(): a fatal() from here on runs the exit sequence, as an abnormal exit
-    netdata_agent_log::register_fatal_final_callback(|| {
-        shutdown::cleanup_and_exit("fatal", false, |_| {})
-    });
-
-    // process_triggered_signals(). C's handler interrupts its poll(), so the SIGNAL records carry EINTR.
-    const EINTR: i32 = nix::errno::Errno::EINTR as i32;
-    let reason = loop {
-        let (name, reason) = match handled.wait() {
-            Ok(Signal::SIGINT) => ("SIGINT", "signal-interrupt"),
-            Ok(Signal::SIGQUIT) => ("SIGQUIT", "signal-quit"),
-            Ok(Signal::SIGTERM) => ("SIGTERM", "signal-terminate"),
-            // an exit started on another thread (a fatal): C's handler ignores the reload signals
-            Ok(signal @ (Signal::SIGHUP | Signal::SIGUSR2)) if shutdown::exiting() => {
-                nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
-                    "SIGNAL: Received {}. Ignoring it, as we are exiting...", signal.as_str());
-                continue;
-            }
-            Ok(Signal::SIGHUP) => {
-                netdata_agent_log::limits_unlimited();
-                nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
-                    "SIGNAL: Received SIGHUP. Reopening all log files...");
-                netdata_agent_log::reopen_log_files(true);
-                netdata_agent_log::limits_reset();
-                continue;
-            }
-            Ok(Signal::SIGUSR2) => {
-                // health is not ported: only C's records of the reload
-                netdata_agent_log::limits_unlimited();
-                nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
-                    "SIGNAL: Received SIGUSR2. Reloading HEALTH configuration...");
-                netdata_agent_log::limits_reset();
-                netdata_agent_log::limits_unlimited();
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Info,
-                    "COMMAND: Reloading HEALTH configuration."
-                );
-                netdata_agent_log::limits_reset();
-                continue;
-            }
-            // SIGPIPE is ignored.
-            Ok(_) | Err(_) => continue,
-        };
-        netdata_agent_log::limits_unlimited();
-        nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
-            "SIGNAL: Received {name}. Cleaning up to exit...");
-        break reason;
-    };
-
     let mut pool = pool;
     let mut stream_pool = Some(stream_pool);
     let mut contexts_worker = Some(contexts_worker);
-    shutdown::cleanup_and_exit(reason, true, |step| match step {
+    shutdown::set_work(Box::new(move |step| match step {
         shutdown::STOP_WEB_SERVERS => {
             if let Some(pool) = pool.take() {
                 let _ = pool.stop_within(Some(shutdown::WEB_SERVERS_WAIT));
@@ -656,7 +623,51 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             }
         }
         _ => {}
-    });
+    }));
+    // netdata_exit_fatal(): a fatal() from here on runs the exit sequence, as an abnormal exit
+    netdata_agent_log::register_fatal_final_callback(shutdown::exit_fatal);
+
+    // process_triggered_signals(). C's handler interrupts its poll(), so the SIGNAL records carry EINTR.
+    const EINTR: i32 = nix::errno::Errno::EINTR as i32;
+    let reason = loop {
+        let (name, reason) = match handled.wait() {
+            Ok(Signal::SIGINT) => ("SIGINT", "signal-interrupt"),
+            Ok(Signal::SIGQUIT) => ("SIGQUIT", "signal-quit"),
+            Ok(Signal::SIGTERM) => ("SIGTERM", "signal-terminate"),
+            // an exit started on another thread (a fatal): C's handler ignores the reload signals
+            Ok(signal @ (Signal::SIGHUP | Signal::SIGUSR2)) if shutdown::exiting() => {
+                nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
+                    "SIGNAL: Received {}. Ignoring it, as we are exiting...", signal.as_str());
+                continue;
+            }
+            // through the command server's locks and gating: nothing runs when it did not start
+            Ok(Signal::SIGHUP) => {
+                netdata_agent_log::limits_unlimited();
+                nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
+                    "SIGNAL: Received SIGHUP. Reopening all log files...");
+                netdata_agent_log::limits_reset();
+                commands::execute(commands::REOPEN_LOGS, b"");
+                continue;
+            }
+            Ok(Signal::SIGUSR2) => {
+                netdata_agent_log::limits_unlimited();
+                nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
+                    "SIGNAL: Received SIGUSR2. Reloading HEALTH configuration...");
+                netdata_agent_log::limits_reset();
+                commands::execute(commands::RELOAD_HEALTH, b"");
+                continue;
+            }
+            // SIGPIPE is ignored.
+            Ok(_) | Err(_) => continue,
+        };
+        netdata_agent_log::limits_unlimited();
+        nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
+            "SIGNAL: Received {name}. Cleaning up to exit...");
+        command_server::exit();
+        break reason;
+    };
+
+    shutdown::exit_gracefully(reason);
     0
 }
 

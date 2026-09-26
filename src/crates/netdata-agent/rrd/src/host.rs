@@ -734,6 +734,20 @@ impl Hosts {
             .clone()
     }
 
+    /// `rrdhost_unlink___while_having_rrd_wrlock()`: the host leaves the index (never localhost). Holders of its
+    /// `Arc` keep it until they drop it.
+    pub fn remove(&self, guid: &str) -> Option<Arc<Host>> {
+        let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        if guid == self.localhost.machine_guid {
+            return None;
+        }
+        let host = index.by_guid.remove(guid)?;
+        index.ordered.retain(|h| !Arc::ptr_eq(h, &host));
+        self.version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Some(host)
+    }
+
     /// The find half of `rrdhost_find_or_create()`: an existing host is updated by `update`; otherwise `create` makes
     /// the new one, appended after the others, and its records follow once the index is unlocked. The whole step
     /// holds the index lock, as `rrd_wrlock()` does in C, so two connections for one GUID cannot both create it.

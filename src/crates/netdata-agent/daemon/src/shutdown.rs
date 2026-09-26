@@ -62,6 +62,30 @@ static EXITING: AtomicBool = AtomicBool::new(false);
 /// The `-P` pidfile, which step 21 removes on every exit, a fatal one included.
 static PIDFILE: OnceLock<String> = OnceLock::new();
 
+/// What the daemon's threads need at each step of a normal exit, set once startup completed: an exit can start on
+/// the main thread (a signal) or on `DAEMON_COMMAND` (`netdatacli shutdown-agent`).
+type Work = Box<dyn FnMut(usize) + Send>;
+
+static WORK: Mutex<Option<Work>> = Mutex::new(None);
+
+pub fn set_work(work: Work) {
+    *WORK.lock().unwrap_or_else(PoisonError::into_inner) = Some(work);
+}
+
+/// `netdata_exit_gracefully()`: the exit sequence with the daemon's work, taken by the first exit.
+pub fn exit_gracefully(reason: &str) {
+    let work = WORK.lock().unwrap_or_else(PoisonError::into_inner).take();
+    let mut work = work.unwrap_or_else(|| Box::new(|_| {}));
+    cleanup_and_exit(reason, true, &mut *work);
+}
+
+/// `netdata_exit_fatal()`, registered as `fatal()`'s final callback: the exit sequence as an abnormal exit.
+pub fn exit_fatal() {
+    let work = WORK.lock().unwrap_or_else(PoisonError::into_inner).take();
+    let mut work = work.unwrap_or_else(|| Box::new(|_| {}));
+    cleanup_and_exit("fatal", false, &mut *work);
+}
+
 /// `exit_initiated_get()`.
 pub fn exiting() -> bool {
     EXITING.load(Ordering::Acquire)
@@ -196,10 +220,19 @@ pub fn cleanup_and_exit(reason: &str, normal: bool, mut work: impl FnMut(usize))
         w.update(|s| s.begun = true);
     }
     for step in 0..STEPS.len() {
-        work(step);
+        // an abnormal exit leaves the hosts' collection as it is
+        if normal || step != STOP_COLLECTION {
+            work(step);
+        }
         match step {
             // cancel_main_threads(): no static thread of C's table runs in the Rust agent
-            CANCEL_MAIN_THREADS => netdata_log_info!("All threads finished."),
+            CANCEL_MAIN_THREADS => {
+                netdata_log_info!("All threads finished.");
+                // an abnormal exit leaves the command server alone: a command may hold what the fatal thread waits for
+                if normal {
+                    crate::command_server::exit();
+                }
+            }
             REMOVE_PID_FILE => {
                 if let Some(pidfile) = PIDFILE.get()
                     && let Err(err) = std::fs::remove_file(pidfile)
@@ -207,6 +240,7 @@ pub fn cleanup_and_exit(reason: &str, normal: bool, mut work: impl FnMut(usize))
                     nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_log::errno_of(&err);
                         "EXIT: cannot unlink pidfile '{pidfile}'.");
                 }
+                crate::command_server::remove_socket_file();
             }
             _ => {}
         }
