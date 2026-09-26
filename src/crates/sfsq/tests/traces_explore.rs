@@ -845,6 +845,68 @@ fn every_section(stack: &str, order: RowOrder, limit: usize) -> ExploreQuery {
     query
 }
 
+/// QRY-37: however the sources are ordered and split among workers, every
+/// section of the answer is the same: 24 seeded shuffles of the mixed sources
+/// (sealed files, chunk images, tails, a high-cardinality and a broken file),
+/// each on its own worker count, against one sequential answer. The two files
+/// holding the same span keys keep their relative order: rows with equal keys
+/// are ordered by where they are listed, and the capture lists files in
+/// sequence order.
+#[test]
+fn explore_shard_merge_split_many_ways() {
+    let dir = tempfile::tempdir().unwrap();
+    let sources = mixed_sources(dir.path());
+    let answer = |sources: Vec<TraceSource>, query: ExploreQuery, workers: usize| {
+        explore(
+            sources,
+            query,
+            ExploreOptions { workers },
+            CancellationToken::new(),
+            Arc::new(AtomicUsize::new(0)),
+        )
+        .unwrap()
+    };
+    let queries = || {
+        [
+            every_section("status_code", newest(None, RowDirection::Older), 4),
+            every_section("_duration_band", RowOrder::Slowest, 4),
+        ]
+    };
+    let baseline: Vec<_> = queries()
+        .into_iter()
+        .map(|query| answer(sources.clone(), query, 1))
+        .collect();
+
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = |bound: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % bound as u64) as usize
+    };
+    for round in 0..24 {
+        let mut shuffled = sources.clone();
+        for at in (1..shuffled.len()).rev() {
+            shuffled.swap(at, next(at + 1));
+        }
+        let position = |name: &str| {
+            shuffled
+                .iter()
+                .position(|source| source.source_id().as_str() == name)
+                .unwrap()
+        };
+        let (first, second) = (position("sealed0"), position("sealed1"));
+        if first > second {
+            shuffled.swap(first, second);
+        }
+        let workers = [1, 2, 3, 5, 8, 16][round % 6];
+        for (query, want) in queries().into_iter().zip(&baseline) {
+            let got = answer(shuffled.clone(), query, workers);
+            assert_eq!(&got, want, "round {round}, {workers} workers");
+        }
+    }
+}
+
 #[test]
 fn explore_parallel_equals_sequential() {
     let dir = tempfile::tempdir().unwrap();
