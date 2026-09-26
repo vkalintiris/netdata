@@ -156,6 +156,54 @@ fn write_wal(dir: &std::path::Path, reqs: Vec<ExportTraceServiceRequest>) -> std
 /// The seal and the chunk image come from the same populate function, so they
 /// pin the same fields: 1,500 distinct span names keep `name` Mid (its facets
 /// and charts work) in both, while an unpinned field that many values is High.
+/// FLAT-09: every sealed row's `_duration_band` is the band of the duration the
+/// file stores for it: an unset end and an end before the start store 0, an
+/// overlong span saturates, and the edges fall on their band's first value.
+#[test]
+fn every_row_s_band_is_the_band_of_its_stored_duration() {
+    let t = [7u8; 16];
+    let base: u64 = 1_700_000_000_000_000_000;
+    let at = |id: u8, offset: u64, length: Option<u64>, name: &str| {
+        let start = base + offset;
+        let end = length.map_or(0, |length| start + length);
+        span(t, [id; 8], [1; 8], start, end, name)
+    };
+    let spans = vec![
+        span(t, [1; 8], [0; 8], base, base + 20_000_000_000, "root"),
+        at(2, 10, None, "unset end"),
+        span(t, [3; 8], [1; 8], base + 20, base + 5, "end before start"),
+        at(4, 30, Some(999_999), "just under 1ms"),
+        at(5, 40, Some(1_000_000), "1ms"),
+        at(6, 50, Some(9_999_999_999), "just under 10s"),
+        at(8, 60, Some(10_000_000_000), "10s"),
+        span(t, [9; 8], [1; 8], 1, u64::MAX, "overlong"),
+    ];
+    let bytes = seal(vec![req(spans)]);
+    let reader = IndexReader::open(&bytes).unwrap();
+    let rows = reader.summary().record_count;
+    assert_eq!(rows, 8);
+    let durations = reader.durations().unwrap();
+    let bands = reader
+        .row_values(ng_flatten::DURATION_BAND_FIELD, 0..rows)
+        .unwrap();
+    let mut seen = std::collections::BTreeMap::new();
+    for position in 0..rows {
+        let stored = durations.0[position as usize];
+        let label = bands
+            .value_at(position)
+            .map(|at| bands.values[at as usize].as_str());
+        let want = ng_flatten::DURATION_BAND_LABELS[ng_flatten::duration_band(stored)];
+        assert_eq!(label, Some(want), "row {position}, duration {stored}");
+        *seen.entry(stored).or_insert(0) += 1;
+    }
+    assert_eq!(
+        seen.get(&0),
+        Some(&2),
+        "the unset and the earlier end store 0"
+    );
+    assert_eq!(seen.get(&i64::MAX), Some(&1), "the overlong span saturates");
+}
+
 #[test]
 fn chunk_image_and_seal_pin_the_same_fields() {
     let spans = (0..1_500u32)
