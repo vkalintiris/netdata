@@ -143,7 +143,7 @@ impl DataRequest {
 }
 
 /// `name=value` pairs of a query string, with C's skipping: empty items, empty names and empty values are dropped.
-fn pairs(query: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
+pub fn pairs(query: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
     let mut url = Some(query);
     std::iter::from_fn(move || {
         while url.is_some() {

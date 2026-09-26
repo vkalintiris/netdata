@@ -515,6 +515,11 @@ impl Host {
         true
     }
 
+    /// `rrdhost_is_online()`: localhost, or a child whose receiver is attached (no vnodes here).
+    pub fn is_online(&self) -> bool {
+        self.is_localhost || (self.receiver().is_some() && !self.is_orphan())
+    }
+
     /// `RRDHOST_FLAG_ORPHAN`.
     pub fn is_orphan(&self) -> bool {
         self.orphan.load(std::sync::atomic::Ordering::Acquire)

@@ -2957,6 +2957,7 @@ dependencies = [
  "flate2",
  "mio",
  "netdata-agent-evloop",
+ "netdata-agent-ingest",
  "netdata-agent-inicfg",
  "netdata-agent-log",
  "netdata-agent-nrpc",

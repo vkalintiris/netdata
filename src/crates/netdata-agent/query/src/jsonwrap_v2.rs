@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use netdata_agent_rrd::chart::ID_LENGTH_MAX;
+use netdata_agent_rrd::host::Host;
 use netdata_agent_storage::storage_point::StoragePoint;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 
@@ -171,27 +172,9 @@ impl Ctx<'_> {
         w.object_close();
     }
 
-    /// `buffer_json_node_add_v2()` with its status (`buffer_json_agent_status_id()`).
     fn node(&self, w: &mut JsonWriter, n: usize, show_status: bool) {
-        let k = self.k;
         let qn = &self.qt.nodes[n];
-        w.member_add_string(k.machine_guid(), qn.host.machine_guid());
-        let node_id = qn.host.node_id();
-        if node_id != [0; 16] {
-            w.member_add_uuid(k.node_id(), &node_id);
-        }
-        w.member_add_string(k.hostname(), qn.host.hostname());
-        w.member_add_uint64(k.node_index(), n as u64);
-        if show_status {
-            w.member_add_object(k.status());
-            w.member_add_uint64(k.agent_index(), 0);
-            w.member_add_uint64("code", 200);
-            w.member_add_string("msg", "");
-            if qn.duration_ut != 0 {
-                w.member_add_double("ms", qn.duration_ut as f64 / 1000.0);
-            }
-            w.object_close();
-        }
+        node_add_v2(w, self.k, &qn.host, n, qn.duration_ut, show_status);
     }
 
     /// `query_target_summary_nodes_v2()`.
@@ -1188,14 +1171,47 @@ pub fn end_v2(
         query_timings(w, "timings", received, finished, qt);
         w.object_close();
         w.array_close();
-        w.member_add_object(b"timings");
-        w.member_add_double("routing_ms", 0.0);
-        w.member_add_double("node_max_ms", 0.0);
-        w.member_add_double(
-            "total_ms",
-            finished.saturating_duration_since(received).as_micros() as f64 / 1000.0,
-        );
-        w.object_close();
+        cloud_timings(w, "timings", received, finished);
     }
     w.finalize();
+}
+
+/// `buffer_json_node_add_v2()` with its status (`buffer_json_agent_status_id()`): a node's identity in v2 answers.
+pub fn node_add_v2(
+    w: &mut JsonWriter,
+    k: Keys,
+    host: &Host,
+    ni: usize,
+    duration_ut: u64,
+    show_status: bool,
+) {
+    w.member_add_string(k.machine_guid(), host.machine_guid());
+    let node_id = host.node_id();
+    if node_id != [0; 16] {
+        w.member_add_uuid(k.node_id(), &node_id);
+    }
+    w.member_add_string(k.hostname(), host.hostname());
+    w.member_add_uint64(k.node_index(), ni as u64);
+    if show_status {
+        w.member_add_object(k.status());
+        w.member_add_uint64(k.agent_index(), 0);
+        w.member_add_uint64("code", 200);
+        w.member_add_string("msg", "");
+        if duration_ut != 0 {
+            w.member_add_double("ms", duration_ut as f64 / 1000.0);
+        }
+        w.object_close();
+    }
+}
+
+/// `buffer_json_cloud_timings()`: no routing here, only the total.
+pub fn cloud_timings(w: &mut JsonWriter, key: &str, received: Instant, finished: Instant) {
+    w.member_add_object(key);
+    w.member_add_double("routing_ms", 0.0);
+    w.member_add_double("node_max_ms", 0.0);
+    w.member_add_double(
+        "total_ms",
+        finished.saturating_duration_since(received).as_micros() as f64 / 1000.0,
+    );
+    w.object_close();
 }

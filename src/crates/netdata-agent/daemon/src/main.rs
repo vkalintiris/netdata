@@ -10,6 +10,7 @@ mod build;
 mod cli;
 mod cloud_proxy;
 mod conf;
+mod contexts_v2;
 mod daemon;
 mod data;
 mod guid;

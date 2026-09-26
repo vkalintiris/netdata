@@ -216,13 +216,14 @@ pub const OPTIONS: [(&str, u64); 48] = {
     ]
 };
 
-/// `rrdr_options_parse()`: separators `,`, space and `|`; unknown words ignored.
-pub fn parse_options(o: &[u8]) -> u64 {
+/// The bits of the words of `o` in `table` (separators `,`, space and `|`; unknown words ignored), as
+/// `rrdr_options_parse()` and `contexts_options_str_to_id()` read them.
+fn parse_names(table: &[(&str, u64)], o: &[u8]) -> u64 {
     let mut bits = 0;
     let mut rest = Some(o);
     while rest.is_some_and(|r| !r.is_empty()) {
         let word = strsep_skip(&mut rest, b", |");
-        if let Some(&(_, bit)) = OPTIONS.iter().find(|(n, _)| n.as_bytes() == word) {
+        if let Some(&(_, bit)) = table.iter().find(|(n, _)| n.as_bytes() == word) {
             bits |= bit;
         }
     }
@@ -230,9 +231,12 @@ pub fn parse_options(o: &[u8]) -> u64 {
 }
 
 /// The first name of each set bit, once, in table order.
-fn option_names(bits: u64) -> impl Iterator<Item = &'static str> {
+fn names_of(
+    table: &'static [(&'static str, u64)],
+    bits: u64,
+) -> impl Iterator<Item = &'static str> {
     let mut used = 0u64;
-    OPTIONS
+    table
         .iter()
         .filter(move |&&(_, bit)| {
             let first = bits & bit != 0 && used & bit == 0;
@@ -242,13 +246,82 @@ fn option_names(bits: u64) -> impl Iterator<Item = &'static str> {
         .map(|&(name, _)| name)
 }
 
-/// `rrdr_options_to_buffer_json_array()`.
-pub fn options_to_json_array(w: &mut JsonWriter, key: &[u8], bits: u64) {
+fn names_to_json_array(w: &mut JsonWriter, key: &[u8], names: impl Iterator<Item = &'static str>) {
     w.member_add_array(Some(key));
-    for name in option_names(bits) {
+    for name in names {
         w.add_array_item_string(name);
     }
     w.array_close();
+}
+
+/// `rrdr_options_parse()`.
+pub fn parse_options(o: &[u8]) -> u64 {
+    parse_names(&OPTIONS, o)
+}
+
+fn option_names(bits: u64) -> impl Iterator<Item = &'static str> {
+    names_of(&OPTIONS, bits)
+}
+
+/// `rrdr_options_to_buffer_json_array()`.
+pub fn options_to_json_array(w: &mut JsonWriter, key: &[u8], bits: u64) {
+    names_to_json_array(w, key, option_names(bits));
+}
+
+/// `CONTEXTS_OPTIONS` (`src/web/api/maps/contexts_options.h`).
+pub mod contexts_options {
+    pub const MINIFY: u64 = 1 << 0;
+    pub const DEBUG: u64 = 1 << 1;
+    pub const CONFIGURATIONS: u64 = 1 << 2;
+    pub const INSTANCES: u64 = 1 << 3;
+    pub const VALUES: u64 = 1 << 4;
+    pub const SUMMARY: u64 = 1 << 5;
+    pub const MCP: u64 = 1 << 6;
+    pub const DIMENSIONS: u64 = 1 << 7;
+    pub const LABELS: u64 = 1 << 8;
+    pub const PRIORITIES: u64 = 1 << 9;
+    pub const TITLES: u64 = 1 << 10;
+    pub const RETENTION: u64 = 1 << 11;
+    pub const LIVENESS: u64 = 1 << 12;
+    pub const FAMILY: u64 = 1 << 13;
+    pub const UNITS: u64 = 1 << 14;
+    pub const RFC3339: u64 = 1 << 15;
+    pub const JSON_LONG_KEYS: u64 = 1 << 16;
+}
+
+/// `contexts_options[]` in C's order (the first name of a bit is its echo).
+pub const CONTEXTS_OPTIONS: [(&str, u64); 18] = {
+    use contexts_options::*;
+    [
+        ("minify", MINIFY),
+        ("debug", DEBUG),
+        ("config", CONFIGURATIONS),
+        ("instances", INSTANCES),
+        ("values", VALUES),
+        ("summary", SUMMARY),
+        ("mcp", MCP),
+        ("dimensions", DIMENSIONS),
+        ("labels", LABELS),
+        ("priorities", PRIORITIES),
+        ("titles", TITLES),
+        ("retention", RETENTION),
+        ("liveness", LIVENESS),
+        ("family", FAMILY),
+        ("units", UNITS),
+        ("rfc3339", RFC3339),
+        ("long-json-keys", JSON_LONG_KEYS),
+        ("long-keys", JSON_LONG_KEYS),
+    ]
+};
+
+/// `contexts_options_str_to_id()`.
+pub fn parse_contexts_options(o: &[u8]) -> u64 {
+    parse_names(&CONTEXTS_OPTIONS, o)
+}
+
+/// `contexts_options_to_buffer_json_array()`.
+pub fn contexts_options_to_json_array(w: &mut JsonWriter, key: &[u8], bits: u64) {
+    names_to_json_array(w, key, names_of(&CONTEXTS_OPTIONS, bits));
 }
 
 /// `web_client_api_request_data_vX_options_to_string(buf, 100, options)`: comma-joined, at most 99 bytes, cut

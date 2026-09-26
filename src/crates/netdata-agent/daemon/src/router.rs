@@ -3,7 +3,7 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: bearer checks, `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`,
-//! `context`, `contexts`, `data` and `stream_info`. `/netdata.conf` shows only the keys of the subsystems ported so far.
+//! `context`, `contexts`, `data`, `stream_info` and `stream_path`. `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -20,6 +20,7 @@ use crate::api;
 use netdata_agent_nrpc::access;
 
 use crate::acl;
+use crate::contexts_v2;
 use crate::data;
 use crate::server::{self, Reply, Shared};
 use crate::static_file;
@@ -125,6 +126,13 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |_, host, query| v1_contexts::context(host, query),
+    },
+    Command {
+        name: "stream_path",
+        acl: acl::bits::NODES,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::stream_path(route, query),
     },
     Command {
         name: "stream_info",
@@ -405,7 +413,7 @@ mod tests {
     #[test]
     fn api_routing_matches_c() {
         let s = shared();
-        let cases: [(&[u8], u16, &[u8]); 8] = [
+        let cases: [(&[u8], u16, &[u8]); 9] = [
             (b"/api", status::BAD_REQUEST, b"Which API version?"),
             (
                 b"/api/v9",
@@ -428,6 +436,11 @@ mod tests {
                 b"/api/v3/stream_info/",
                 status::BAD_REQUEST,
                 b"API command 'stream_info' does not support subpaths.",
+            ),
+            (
+                b"/api/v3/stream_path/x",
+                status::BAD_REQUEST,
+                b"API command 'stream_path' does not support subpaths.",
             ),
             (
                 b"/v1/v2/",

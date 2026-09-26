@@ -94,7 +94,7 @@ impl Host {
     /// child host exists because it connected, so a detached one is offline, never archived (decisions D48).
     pub fn status_basic(&self, now: i64) -> HostStatus {
         let attached = self.receiver().is_some();
-        let online = self.is_localhost() || (attached && !self.is_orphan());
+        let online = self.is_online();
         let (first_time_s, mut last_time_s) = self.contexts().retention();
         if online {
             last_time_s = now;

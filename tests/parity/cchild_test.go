@@ -283,6 +283,15 @@ func TestCChild(t *testing.T) {
 					}
 				}
 			})
+			// /api/v3/stream_path about this child, the stale ones before it and localhost: check
+			// `stream.cchild-path-api`.
+			t.Run("stream-path-api", func(t *testing.T) {
+				addrs := [2]string{p.Oracle.Addr, p.Candidate.Addr}
+				cOnly := [2]string{parentIdentity.MachineGUID, ""}
+				for _, path := range streamPathRequests(hostname, guid(i)) {
+					compareStreamPath(t, "tee", addrs, path, parentEntryTimes, cOnly)
+				}
+			})
 			for name, path := range cases {
 				t.Run(name, func(t *testing.T) {
 					var got [2][]byte

@@ -658,7 +658,7 @@ fn bounded(mut s: String) -> String {
 
 /// `query_scope_foreach_host()`: `scope_nodes` and `nodes` match a host by hostname, machine GUID, then its
 /// lowercase node id; the first match that is not NOT decides.
-fn host_matches(sp: &SimplePattern, host: &Host) -> bool {
+pub fn host_matches(sp: &SimplePattern, host: &Host) -> bool {
     let m = |s: &[u8]| sp.matches_extract(s, 0).0;
     let mut r = m(host.hostname().as_bytes());
     if r == SimplePatternResult::NotMatched {

@@ -170,6 +170,28 @@ impl SystemInfo {
         w.member_add_string_or_omit("cloud_instance_region", v(&self.cloud_instance_region));
     }
 
+    /// `rrdhost_system_info_to_json_v2()`: the `hw` and `os` objects of the v2 node answers, missing values empty.
+    pub fn to_json_v2(&self, w: &mut JsonWriter) {
+        w.member_add_object("hw");
+        w.member_add_string_or_empty("architecture", v(&self.architecture));
+        w.member_add_string_or_empty("cpu_frequency", v(&self.host_cpu_freq));
+        w.member_add_string_or_empty("cpus", v(&self.host_cores));
+        w.member_add_string_or_empty("memory", v(&self.host_ram_total));
+        w.member_add_string_or_empty("disk_space", v(&self.host_disk_space));
+        w.member_add_string_or_empty("virtualization", v(&self.virtualization));
+        w.member_add_string_or_empty("container", v(&self.container));
+        w.object_close();
+        w.member_add_object("os");
+        w.member_add_string_or_empty("id", v(&self.host_os_id));
+        w.member_add_string_or_empty("nm", v(&self.host_os_name));
+        w.member_add_string_or_empty("v", v(&self.host_os_version));
+        w.member_add_object("kernel");
+        w.member_add_string_or_empty("nm", v(&self.kernel_name));
+        w.member_add_string_or_empty("v", v(&self.kernel_version));
+        w.object_close();
+        w.object_close();
+    }
+
     /// `rrdhost_system_info_to_rrdlabels()`: the `_*` labels of the fields that are set, in C's order.
     pub fn to_labels(&self, labels: &mut crate::labels::Labels) {
         let fields: [(&str, &Option<String>); 32] = [
@@ -378,6 +400,26 @@ NETDATA_SYSTEM_DEFAULT_INTERFACE_DETECTION=procfs\n\
             ..SystemInfo::default()
         };
         assert_eq!(si, expected);
+    }
+
+    /// C's `hw` and `os` blocks for the box (brief `knowledge/brief-localhost-identity.md` §4), and the empty ones.
+    #[test]
+    fn v2_json_as_c() {
+        let (si, _, _) = records(BOX_OUTPUT.as_bytes());
+        let mut w = JsonWriter::new(netdata_agent_text::json::JsonOptions::MINIFY);
+        si.to_json_v2(&mut w);
+        w.finalize();
+        assert_eq!(
+            String::from_utf8_lossy(w.as_bytes()),
+            r#"{"hw":{"architecture":"x86_64","cpu_frequency":"1999000000","cpus":"16","memory":"33659879424","disk_space":"429496729600","virtualization":"kvm","container":"none"},"os":{"id":"debian","nm":"Debian GNU/Linux","v":"13 (trixie)","kernel":{"nm":"Linux","v":"6.12.107+deb13-cloud-amd64"}}}"#
+        );
+        let mut w = JsonWriter::new(netdata_agent_text::json::JsonOptions::MINIFY);
+        SystemInfo::default().to_json_v2(&mut w);
+        w.finalize();
+        assert_eq!(
+            String::from_utf8_lossy(w.as_bytes()),
+            r#"{"hw":{"architecture":"","cpu_frequency":"","cpus":"","memory":"","disk_space":"","virtualization":"","container":""},"os":{"id":"","nm":"","v":"","kernel":{"nm":"","v":""}}}"#
+        );
     }
 
     /// The crafted script of the brief (§1.4), whose records and values C was observed to produce.

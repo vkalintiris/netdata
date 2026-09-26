@@ -23,9 +23,12 @@ macro_rules! keys {
 
 impl Keys {
     pub fn new(options: u64) -> Self {
-        Keys {
-            long: options & options::LONG_JSON_KEYS != 0,
-        }
+        Self::with_long(options & options::LONG_JSON_KEYS != 0)
+    }
+
+    /// The long names when `long`, as `CONTEXTS_OPTION_JSON_LONG_KEYS` selects them.
+    pub fn with_long(long: bool) -> Self {
+        Keys { long }
     }
 }
 
