@@ -95,6 +95,7 @@ var logMasks = []struct {
 	{regexp.MustCompile(`currently available: [^,]*,`), "currently available: M,"},
 	{regexp.MustCompile(`(populated, size: [^,]*, metrics: [^,]*), [0-9.]+ ms"`), "${1}, N ms\""},
 	{regexp.MustCompile(`, mmap: [0-9.]+ ms, validate: [0-9.]+ ms"`), ", mmap: N ms, validate: N ms\""},
+	{regexp.MustCompile(`(host context cleanup items|dimension delete items) in [0-9.]+ ms"`), "${1} in N ms\""},
 }
 
 var (

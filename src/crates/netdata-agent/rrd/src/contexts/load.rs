@@ -60,9 +60,7 @@ pub struct SqlDim {
     pub algorithm: Algorithm,
 }
 
-/// The outcome of a load: C's counts, and the contexts left without instances, which C queues for the metadata
-/// writer to clean up (`metadata_queue_ctx_host_cleanup()`), and those the garbage collection deleted, whose rows C
-/// deletes from the context database.
+/// The outcome of a load: C's counts (the SQL changes go to `finish`'s callback as they happen).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LoadReport {
     pub contexts: usize,

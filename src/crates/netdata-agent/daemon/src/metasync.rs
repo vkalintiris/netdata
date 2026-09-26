@@ -48,6 +48,8 @@ struct Shared {
     shutdown: AtomicBool,
     /// `next_vacuum_run` of `run_metadata_cleanup()`.
     next_vacuum_run: AtomicI64,
+    /// `ctx_load_running`: a context load job runs; the shutdown waits for it.
+    ctx_load_running: AtomicBool,
 }
 
 /// The writer's databases and hosts, once localhost exists.
@@ -227,6 +229,7 @@ impl MetaSync {
                     check_after: AtomicI64::new(now_realtime_s() + HOST_CHECK_FIRST_S),
                     shutdown: AtomicBool::new(false),
                     next_vacuum_run: AtomicI64::new(0),
+                    ctx_load_running: AtomicBool::new(false),
                 });
                 let _ = done_tx.send(());
                 let mut writer: Option<Writer> = None;
@@ -257,7 +260,17 @@ impl MetaSync {
                                 shared: Arc::clone(&shared),
                                 vnodes,
                             });
-                            let _ = pool.queue(move || ctx_hosts_load(&hosts, cpus, stack_size, &load));
+                            shared.ctx_load_running.store(true, Ordering::Release);
+                            let job_shared = Arc::clone(&shared);
+                            if pool
+                                .queue(move || {
+                                    ctx_hosts_load(&hosts, cpus, stack_size, &load);
+                                    job_shared.ctx_load_running.store(false, Ordering::Release);
+                                })
+                                .is_err()
+                            {
+                                shared.ctx_load_running.store(false, Ordering::Release);
+                            }
                         }
                         Some(Cmd::StoreClaimId(meta, id)) => {
                             crate::meta_store::store_claim_id(meta.as_deref(), &id);
@@ -300,7 +313,10 @@ impl MetaSync {
                 }
                 // the shutdown waits for a running job, then stores what is still pending
                 let deadline = Instant::now() + SHUTDOWN_WAIT;
-                while running && Instant::now() < deadline {
+                // and for a running context load
+                while (running || shared.ctx_load_running.load(Ordering::Acquire))
+                    && Instant::now() < deadline
+                {
                     if let Ok(Cmd::StoreDone) = rx.recv_timeout(SHUTDOWN_POLL) {
                         running = false;
                     }
@@ -457,11 +473,21 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, load: &Arc<CtxL
             "Loading context for host {}",
             host.hostname()
         );
-        // cleanup_finished_threads(): a slot whose thread has finished is free again
-        let free = slots.iter_mut().find(|slot| match slot {
-            None => true,
-            Some(thread) => thread.is_finished(),
-        });
+        // cleanup_finished_threads(): a slot whose thread has finished is free again; up to 20 passes 10 ms apart
+        let mut free = None;
+        for pass in 0..20 {
+            free = slots.iter().position(|slot| match slot {
+                None => true,
+                Some(thread) => thread.is_finished(),
+            });
+            if free.is_some() || slots.is_empty() {
+                break;
+            }
+            if pass < 19 {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let free = free.map(|i| &mut slots[i]);
         let spawned = free.and_then(|slot| {
             if let Some(thread) = slot.take() {
                 let _ = thread.join();
@@ -493,7 +519,7 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, load: &Arc<CtxL
     netdata_log_info!(
         "Contexts for {} hosts loaded: {delegated} delegated to {max_threads} threads, {direct} handled directly, in \
          {}.",
-        order.len(),
+        delegated + direct,
         duration(now_ut().saturating_sub(started))
     );
 }
@@ -556,6 +582,7 @@ mod tests {
             check_after: AtomicI64::new(0),
             shutdown: AtomicBool::new(false),
             next_vacuum_run: AtomicI64::new(0),
+            ctx_load_running: AtomicBool::new(false),
         })
     }
 
@@ -587,6 +614,28 @@ mod tests {
         ));
         assert!(hosts.all().iter().all(|h| !h.is_pending_context_load()));
         assert_eq!(rx.try_iter().count(), 1);
+    }
+
+    /// Once METASYNC shuts down no host is dispatched, and C's record counts the dispatched ones only.
+    #[test]
+    fn a_shutdown_stops_the_context_loads() {
+        let hosts = hosts();
+        let (tx, _rx) = mpsc::channel();
+        let load = ctx_load(tx);
+        load.shared.shutdown.store(true, Ordering::Release);
+        let (_, records) =
+            netdata_agent_log::capture(|| ctx_hosts_load(&hosts, 1, 256 * 1024, &load));
+        let summary = records
+            .into_iter()
+            .filter_map(|r| r.message)
+            .next_back()
+            .unwrap();
+        assert!(
+            summary.starts_with(
+                "Contexts for 0 hosts loaded: 0 delegated to 1 threads, 0 handled directly, in "
+            ),
+            "{summary}"
+        );
     }
 
     #[test]

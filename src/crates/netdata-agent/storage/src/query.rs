@@ -1,8 +1,8 @@
 //! A query on either engine (`storage-engine.h`'s `seb` dispatch): a ram ring or a dbengine tier. Dropping a dbengine
 //! query is `rrdeng_load_metric_finalize()`.
 
-use crate::dbengine::engine::query::Query as DbengineQuery;
 pub use crate::dbengine::engine::query::Priority;
+use crate::dbengine::engine::query::Query as DbengineQuery;
 use crate::ram::RamQuery;
 use crate::storage_point::StoragePoint;
 

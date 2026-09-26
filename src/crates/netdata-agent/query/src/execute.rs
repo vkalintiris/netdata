@@ -1118,9 +1118,10 @@ mod tests {
         assert_eq!(qt.contexts[0].instances.queried, 1);
     }
 
-    /// C's planner vector "explicit selected tier disables gap filling" (QP:1061-1074), shifted to `T0`: tier 1
-    /// holds the metric from 100 to 200 of a 50..250 window, so the plan reads tier 1 there only; without `tier=` the
-    /// plan is tier 0's (D62.4); a selected tier that does not hold the metric falls back to tier 0 too.
+    /// The retentions of C's planner vector "explicit selected tier disables gap filling" (QP:1061-1074), shifted to
+    /// `T0`, through the whole query path: with `tier=1` the plan is tier 1's retention within the query's window (the
+    /// window's own alignment moves its start), with no other tier filling gaps; without `tier=` it is tier 0's
+    /// (D62.4); a selected tier that does not hold the metric falls back to tier 0 too.
     #[test]
     fn a_selected_tier_plans_on_that_tier() {
         use crate::testing::{dbengine_host, v1_tiers_target};

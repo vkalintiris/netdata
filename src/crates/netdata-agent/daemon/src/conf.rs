@@ -2208,7 +2208,10 @@ mod tests {
             ("[db]\ndbengine disk space MB = 30\n", true),
             ("[db]\ndbengine multihost disk space MB = 30\n", true),
             ("[db]\ndbengine tier 0 disk space MB = 30\n", true),
-            ("[db]\ndbengine tier 1 multihost disk space MB = 30\n", false),
+            (
+                "[db]\ndbengine tier 1 multihost disk space MB = 30\n",
+                false,
+            ),
             ("[db]\ndbengine tier 1 disk space MB = 30\n", false),
             ("[db]\ndbengine tier 0 retention days = 3\n", false),
             ("[global]\nport = 19999\n", false),

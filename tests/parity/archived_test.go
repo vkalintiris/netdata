@@ -209,10 +209,16 @@ func TestArchivedHosts(t *testing.T) {
 // engine's start, the context loads' records) and the context cleanup rows are C's.
 func TestArchivedHostsDbengine(t *testing.T) {
 	seed := seedFromOracle(t, parentIdentity, "dbengine")
+	// a stored context without charts: the load deletes it and queues its cleanup, which METASYNC stores
+	execDB(t, filepath.Join(seed, "context-meta.db"), "INSERT INTO context (host_id, id, version, title, "+
+		"chart_type, unit, priority, first_time_t, last_time_t, deleted, family) VALUES ("+
+		hexID(childHost.MachineGUID)+", 'seed.orphan', 1, 't', 'line', 'u', 1, 1, 2, 0, 'f')")
 	opts := daemon.Options{StorageTiers: 1, StreamMemoryMode: "dbengine", SeedCache: seed,
 		LogsExtra: "    level = debug\n"}
 	p := StartPair(t, opts, parentIdentity)
 	compareArchived(t, p, childHost.Hostname)
+	// METASYNC's first store job runs 6 s after it starts
+	time.Sleep(7 * time.Second)
 	for _, side := range p.Each() {
 		if err := side.Daemon.Stop(); err != nil {
 			t.Fatalf("stop %s: %v", side.Role, err)
@@ -226,5 +232,8 @@ func TestArchivedHostsDbengine(t *testing.T) {
 	}
 	if cleanup[0] != cleanup[1] {
 		t.Errorf("ctx_metadata_cleanup:\noracle:\n%s\ncandidate:\n%s", cleanup[0], cleanup[1])
+	}
+	if !strings.Contains(cleanup[1], "seed.orphan") {
+		t.Errorf("the chartless context's cleanup was not stored:\n%s", cleanup[1])
 	}
 }

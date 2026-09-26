@@ -294,7 +294,7 @@ fn log_invalid(invalid: &Invalid) {
 fn journal_v2_load(cfg: &TierConfig, fileno: u32) -> Option<V2File> {
     let v1 = std::fs::metadata(cfg.file(FileKind::Journal, fileno));
     let v1_size = v1.as_ref().map_or(0, |m| m.len() as u32);
-    // a failed stat() of the v1 journal leaves its errno on C's next record
+    // a failed stat() of the v1 journal leaves its errno on C's integrity record
     let stale_errno = v1.err().and_then(|e| e.raw_os_error()).unwrap_or(0);
     let path = cfg.file(FileKind::JournalV2, fileno);
     let file = match File::open(&path) {
@@ -317,8 +317,8 @@ fn journal_v2_load(cfg: &TierConfig, fileno: u32) -> Option<V2File> {
         }
     };
     if size < HEADER_SIZE as u64 {
-        nd_log!(Source::Daemon, Priority::Err, errno = stale_errno;
-            "Invalid file \"{}\". Not the expected size", path.display());
+        // error_report() clears errno before it logs
+        netdata_log_error!("Invalid file \"{}\". Not the expected size", path.display());
         return None;
     }
     nd_log!(Source::Daemon, Priority::Debug, errno = stale_errno;

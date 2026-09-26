@@ -491,8 +491,12 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         None => (None, vec![1]),
     };
     let storage = Arc::new(
-        StorageLayout::new(dbengine.as_ref().map(|dbengine| Arc::clone(dbengine.engine())))
-            .with_profile(grouping, i64::from(db.update_every)),
+        StorageLayout::new(
+            dbengine
+                .as_ref()
+                .map(|dbengine| Arc::clone(dbengine.engine())),
+        )
+        .with_profile(grouping, i64::from(db.update_every)),
     );
     let localhost = Host::with_storage(
         &machine_guid,
