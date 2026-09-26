@@ -27,12 +27,13 @@ fn engine(dir: &Path, pool: Option<WorkPool>) -> Arc<Dbengine> {
     })
 }
 
-/// Every point of a query, as (end time, value or NaN).
+/// Every point of a query, as (end time, value or NaN); each counts as one point, empty ones too.
 fn points(q: &mut Query) -> Vec<(i64, f64)> {
     let mut out = Vec::new();
     while !q.is_finished() {
         let p = q.next_metric();
-        out.push((p.end_time_s, if p.count == 0 { f64::NAN } else { p.sum }));
+        assert_eq!(p.count, 1, "at {}", p.end_time_s);
+        out.push((p.end_time_s, p.sum));
     }
     out
 }
@@ -82,7 +83,7 @@ fn points_follow_the_pages_with_gaps() {
             .is_some_and(|p| p.is_empty())
     );
 
-    // past the last page: one trailing empty point, at the query's end
+    // past the last page: the window ends with the retention, so no trailing point
     let mut q = e.query(&metric, T0 + 27, T0 + 40, Priority::Synchronous, NOW);
     let got = points(&mut q);
     assert!(
@@ -117,7 +118,8 @@ fn a_corrupt_extent_reads_empty_and_is_cached() {
     let (got, records) = netdata_agent_log::capture(|| {
         points(&mut e.query(&metric, T0, T0 + 9, Priority::Synchronous, NOW))
     });
-    assert!(got.iter().all(|p| p.1.is_nan()), "{got:?}");
+    // no page to read: one trailing empty point, at the query's end
+    assert!(same(&got, &[(T0 + 9, f64::NAN)]), "{got:?}");
     let messages: Vec<String> = records.into_iter().filter_map(|r| r.message).collect();
     assert_eq!(messages.len(), 2, "{messages:?}");
     assert!(messages[0].starts_with(

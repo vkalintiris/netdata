@@ -1,4 +1,5 @@
 use super::*;
+use crate::dbengine::format::descriptor::PageFacts;
 
 const A: [u8; 16] = [0xaa; 16];
 const B: [u8; 16] = [0xbb; 16];
@@ -209,6 +210,7 @@ fn replay_reads_and_expands_the_registry() {
         page_type: 0,
         valid: true,
         updated: false,
+        given: PageFacts::default(),
     };
     replay.replayed(&A, &page(40, 260, 60));
     replay.replayed(&B, &page(10, 20, 1));

@@ -330,6 +330,23 @@ impl UeSource for Retention {
     }
 }
 
+/// A record C's replay of a v1 journal logs (`journalfile_iterate_transactions()` and what it calls).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplayRecord {
+    /// "corrupted transaction record, skipping."
+    Corrupt,
+    /// "transaction %lu was read from disk. CRC32 check: FAILED"
+    CrcFailed { id: u64 },
+    /// "unknown transaction type, skipping record."
+    UnknownTransaction,
+    /// "corrupted transaction payload."
+    CorruptPayload,
+    /// "unknown page type %d encountered." (C logs each type once per process)
+    UnknownPageType(u8),
+    /// A page that failed its validation or was repaired (`validate_page_log()`).
+    Page { uuid: [u8; 16], vd: ValidatedPage },
+}
+
 /// What a replayed v1 journal leaves in C's open cache (`journalfile_restore_extent_metadata()`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OpenCache {
@@ -340,6 +357,8 @@ pub struct OpenCache {
     /// transactions keeps 0 for both.
     pub first_time_s: i64,
     pub last_time_s: i64,
+    /// C's records, in its order.
+    pub records: Vec<ReplayRecord>,
 }
 
 /// The pages a v1 journal's replay puts in the open cache: each descriptor of known type is validated against `now_s`
@@ -350,9 +369,26 @@ pub fn open_cache_pages(replay: &Replay, now_s: i64, ue: &mut dyn UeSource) -> O
     let mut hot: Vec<Option<Page>> = Vec::new();
     let mut held: HashMap<([u8; 16], i64), usize> = HashMap::new();
     let (mut first_time_s, mut last_time_s) = (0i64, 0i64);
+    let mut records = Vec::new();
     for event in &replay.events {
-        let Event::StoreData { data, .. } = event else {
-            continue;
+        let data = match event {
+            Event::StoreData { data, .. } => data,
+            Event::Corrupt { .. } => {
+                records.push(ReplayRecord::Corrupt);
+                continue;
+            }
+            Event::CrcFailed { id, .. } => {
+                records.push(ReplayRecord::CrcFailed { id: *id });
+                continue;
+            }
+            Event::UnknownType { .. } => {
+                records.push(ReplayRecord::UnknownTransaction);
+                continue;
+            }
+            Event::CorruptPayload { .. } => {
+                records.push(ReplayRecord::CorruptPayload);
+                continue;
+            }
         };
         let mut extent_first = if first_time_s != 0 {
             first_time_s
@@ -362,9 +398,13 @@ pub fn open_cache_pages(replay: &Replay, now_s: i64, ue: &mut dyn UeSource) -> O
         let mut extent_last = last_time_s;
         for d in &data.descriptors {
             if d.page_type > PAGE_TYPE_GORILLA_32BIT {
+                records.push(ReplayRecord::UnknownPageType(d.page_type));
                 continue;
             }
             let vd = validate_extent_page_descr(d, now_s, ue.update_every(&d.uuid), false);
+            if !vd.valid || vd.updated {
+                records.push(ReplayRecord::Page { uuid: d.uuid, vd });
+            }
             if !vd.valid {
                 continue;
             }
@@ -399,6 +439,7 @@ pub fn open_cache_pages(replay: &Replay, now_s: i64, ue: &mut dyn UeSource) -> O
         pages: hot.into_iter().flatten().collect(),
         first_time_s,
         last_time_s,
+        records,
     }
 }
 
@@ -707,10 +748,16 @@ mod tests {
             (none.pages.len(), none.first_time_s, none.last_time_s),
             (0, 0, 0)
         );
-        // a transaction without a valid page leaves C's LONG_MAX first time
+        assert_eq!(none.records, [ReplayRecord::Corrupt]);
+        // a transaction without a valid page leaves C's LONG_MAX first time, and C's record of the page
         let invalid = replay(vec![store(4096, vec![array(1, 0, 100, 103)])]);
         let got = open_cache_pages(&invalid, 0, &mut Retention::default());
         assert_eq!((got.first_time_s, got.last_time_s), (i64::MAX, 0));
+        assert!(
+            matches!(got.records.as_slice(), [ReplayRecord::Page { vd, .. }] if !vd.valid),
+            "{:?}",
+            got.records
+        );
         // a dropped page still counts
         let r = replay(vec![
             store(4096, vec![array(1, 4, 100, 106)]),

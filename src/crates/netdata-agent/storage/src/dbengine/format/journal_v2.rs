@@ -11,7 +11,7 @@ use super::crc::{crc_matches, crc32};
 mod builder;
 
 pub use builder::{
-    Builder, MetricRetention, OpenCache, Page, Retention, UeSource, expand, from_v1,
+    Builder, MetricRetention, OpenCache, Page, ReplayRecord, Retention, UeSource, expand, from_v1,
     open_cache_pages, write_in_place,
 };
 

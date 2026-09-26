@@ -55,15 +55,33 @@ pub enum DiskPage {
     Gorilla(gorilla::DiskPage),
 }
 
+/// Why a page from disk is C's `PGD_EMPTY`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmptyPage {
+    /// An unknown type, less than one slot, or a gorilla page C would read past: no record.
+    Unfit,
+    /// `gorilla_buffer_patch()` failed: C logs "invalid gorilla disk page chain."
+    InvalidChain,
+}
+
 impl DiskPage {
-    /// `None` is C's `PGD_EMPTY`: an unknown type, less than one slot, or an invalid gorilla chain.
-    pub fn from_disk(page_type: u8, bytes: &[u8]) -> Option<DiskPage> {
+    /// `pgd_create_from_disk_data()`.
+    pub fn load(page_type: u8, bytes: &[u8]) -> Result<DiskPage, EmptyPage> {
         match page_type {
-            PAGE_TYPE_ARRAY_32BIT => array32_decode(bytes).map(DiskPage::Array32),
-            PAGE_TYPE_ARRAY_TIER1 => tier1::decode(bytes).map(DiskPage::Tier1),
-            PAGE_TYPE_GORILLA_32BIT => gorilla::from_disk(bytes).map(DiskPage::Gorilla),
-            _ => None,
+            PAGE_TYPE_ARRAY_32BIT => array32_decode(bytes)
+                .map(DiskPage::Array32)
+                .ok_or(EmptyPage::Unfit),
+            PAGE_TYPE_ARRAY_TIER1 => tier1::decode(bytes)
+                .map(DiskPage::Tier1)
+                .ok_or(EmptyPage::Unfit),
+            PAGE_TYPE_GORILLA_32BIT => gorilla::load(bytes).map(DiskPage::Gorilla),
+            _ => Err(EmptyPage::Unfit),
         }
+    }
+
+    /// `load()` without the reason: `None` is C's `PGD_EMPTY`.
+    pub fn from_disk(page_type: u8, bytes: &[u8]) -> Option<DiskPage> {
+        Self::load(page_type, bytes).ok()
     }
 
     /// `pgd_slots_used()`, which is also `pgd_capacity()` for a page from disk.
@@ -72,6 +90,15 @@ impl DiskPage {
             DiskPage::Array32(v) => v.len(),
             DiskPage::Tier1(v) => v.len(),
             DiskPage::Gorilla(g) => usize::from(g.slots),
+        }
+    }
+
+    /// The bytes the page's data takes in memory, what the caches count against their budgets.
+    pub fn footprint(&self) -> usize {
+        match self {
+            DiskPage::Array32(v) => std::mem::size_of_val(v.as_slice()),
+            DiskPage::Tier1(v) => std::mem::size_of_val(v.as_slice()),
+            DiskPage::Gorilla(g) => std::mem::size_of_val(g.buffers.as_slice()),
         }
     }
 

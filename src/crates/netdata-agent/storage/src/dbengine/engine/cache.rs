@@ -1,7 +1,7 @@
 //! The read path's caches (`cache.c` as the main and extent caches use it, D62.5): pages by tier, metric and start,
 //! including empty gap pages (`PGD_EMPTY`), and raw extents by tier, file and block. Both hold what they are given
-//! within a byte budget, dropping the oldest entries nobody holds; evictor threads, autoscaling and memory pressure
-//! wait for S6.
+//! within a byte budget: the main cache drops the least recently used pages nobody holds, the extent cache the oldest
+//! extents; evictor threads, autoscaling and memory pressure wait for S6.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
@@ -28,7 +28,7 @@ impl CachedPage {
         update_every_s: u32,
         data: Option<DiskPage>,
     ) -> Self {
-        let size = 64 + data.as_ref().map_or(0, |d| d.slots_used() * 4);
+        let size = 64 + data.as_ref().map_or(0, DiskPage::footprint);
         CachedPage {
             start_time_s,
             end_time_s: AtomicI64::new(end_time_s),
@@ -85,11 +85,36 @@ pub enum Search {
 
 type PageKey = (usize, [u8; 16]);
 
+/// How many held pages one eviction pass steps over before it gives up: the cache then stays over its budget until
+/// queries release their pages, as C's does, without rescanning every held page on each insert.
+const EVICT_SKIPS: usize = 64;
+
+#[derive(Debug)]
+struct Entry {
+    page: Arc<CachedPage>,
+    /// The page's place in `MainInner::lru`.
+    tick: u64,
+}
+
 #[derive(Debug, Default)]
 struct MainInner {
-    pages: HashMap<PageKey, BTreeMap<i64, Arc<CachedPage>>>,
-    order: VecDeque<(PageKey, i64)>,
+    pages: HashMap<PageKey, BTreeMap<i64, Entry>>,
+    /// Pages by last access, least recent first.
+    lru: BTreeMap<u64, (PageKey, i64)>,
+    tick: u64,
     bytes: usize,
+}
+
+impl MainInner {
+    /// Marks a cached page as the most recently used one and returns it.
+    fn touch(&mut self, key: PageKey, start: i64) -> Option<Arc<CachedPage>> {
+        let entry = self.pages.get_mut(&key)?.get_mut(&start)?;
+        self.tick += 1;
+        self.lru.remove(&entry.tick);
+        entry.tick = self.tick;
+        self.lru.insert(self.tick, (key, start));
+        Some(Arc::clone(&entry.page))
+    }
 }
 
 /// The main cache.
@@ -119,77 +144,76 @@ impl MainCache {
         time_s: i64,
         mode: Search,
     ) -> Option<Arc<CachedPage>> {
-        let inner = self.lock();
-        let pages = inner.pages.get(&(tier, *uuid))?;
-        let next = || pages.range(time_s + 1..).next().map(|(_, p)| Arc::clone(p));
-        match mode {
-            Search::Exact => pages.get(&time_s).cloned(),
+        let mut inner = self.lock();
+        let key = (tier, *uuid);
+        let pages = inner.pages.get(&key)?;
+        let next = || pages.range(time_s + 1..).next().map(|(s, _)| *s);
+        let start = match mode {
+            Search::Exact => pages.contains_key(&time_s).then_some(time_s),
             Search::Next => next(),
+            Search::Closest if pages.contains_key(&time_s) => Some(time_s),
             Search::Closest => pages
-                .get(&time_s)
-                .cloned()
-                .or_else(|| {
-                    pages
-                        .range(..time_s)
-                        .next_back()
-                        .filter(|(_, p)| time_s <= p.end_time_s())
-                        .map(|(_, p)| Arc::clone(p))
-                })
+                .range(..time_s)
+                .next_back()
+                .filter(|(_, e)| time_s <= e.page.end_time_s())
+                .map(|(s, _)| *s)
                 .or_else(next),
-        }
+        }?;
+        inner.touch(key, start)
     }
 
     /// `pgc_page_add_and_acquire()`: a page already cached at the same start wins over the new one.
     pub fn add(&self, tier: usize, uuid: &[u8; 16], page: CachedPage) -> Arc<CachedPage> {
         let mut inner = self.lock();
         let key = (tier, *uuid);
-        if let Some(held) = inner
-            .pages
-            .get(&key)
-            .and_then(|p| p.get(&page.start_time_s))
-        {
-            return Arc::clone(held);
-        }
         let start = page.start_time_s;
+        if let Some(held) = inner.touch(key, start) {
+            return held;
+        }
         inner.bytes += page.size;
+        inner.tick += 1;
+        let tick = inner.tick;
         let page = Arc::new(page);
-        inner
-            .pages
-            .entry(key)
-            .or_default()
-            .insert(start, Arc::clone(&page));
-        inner.order.push_back((key, start));
+        inner.pages.entry(key).or_default().insert(
+            start,
+            Entry {
+                page: Arc::clone(&page),
+                tick,
+            },
+        );
+        inner.lru.insert(tick, (key, start));
         self.evict(&mut inner);
         page
     }
 
-    /// Drops the oldest pages nobody holds while over the budget.
+    /// Drops the least recently used pages nobody holds while over the budget. A held page moves to the recent end,
+    /// so a pass meets each one once, and a pass steps over at most `EVICT_SKIPS` of them.
     fn evict(&self, inner: &mut MainInner) {
-        let mut kept = VecDeque::new();
-        while inner.bytes > self.budget {
-            let Some((key, start)) = inner.order.pop_front() else {
+        let mut skipped = 0;
+        while inner.bytes > self.budget && skipped < EVICT_SKIPS {
+            let Some((_, (key, start))) = inner.lru.pop_first() else {
                 break;
             };
-            let removable = inner
-                .pages
-                .get(&key)
-                .and_then(|p| p.get(&start))
-                .is_some_and(|p| Arc::strong_count(p) == 1);
-            if !removable {
-                kept.push_back((key, start));
+            let Some(pages) = inner.pages.get_mut(&key) else {
                 continue;
-            }
-            if let Some(pages) = inner.pages.get_mut(&key) {
-                if let Some(p) = pages.remove(&start) {
-                    inner.bytes -= p.size;
+            };
+            match pages.get_mut(&start) {
+                Some(e) if Arc::strong_count(&e.page) > 1 => {
+                    inner.tick += 1;
+                    e.tick = inner.tick;
+                    inner.lru.insert(inner.tick, (key, start));
+                    skipped += 1;
                 }
-                if pages.is_empty() {
-                    inner.pages.remove(&key);
+                Some(_) => {
+                    if let Some(e) = pages.remove(&start) {
+                        inner.bytes -= e.page.size;
+                    }
+                    if pages.is_empty() {
+                        inner.pages.remove(&key);
+                    }
                 }
+                None => {}
             }
-        }
-        while let Some(entry) = kept.pop_back() {
-            inner.order.push_front(entry);
         }
     }
 
@@ -260,3 +284,6 @@ impl ExtentCache {
         bytes
     }
 }
+
+#[cfg(test)]
+mod tests;

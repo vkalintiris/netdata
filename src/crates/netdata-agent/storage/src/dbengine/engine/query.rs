@@ -7,23 +7,25 @@
 //! The preparation (the page list and the extent reads) runs as one job on the `UV_WORKER` pool, which the query
 //! waits for at its first point (C queues it for NORMAL priority and blocks at the first lookup).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, btree_map};
 use std::sync::{Arc, mpsc};
 
 use netdata_agent_evloop::work::WorkPool;
-use netdata_agent_log::{ErrorLimit, Priority as LogPriority, Source, nd_log_limit};
+use netdata_agent_log::{
+    ErrorLimit, Priority as LogPriority, Source, nd_log_limit, netdata_log_error,
+};
 
 use super::cache::{CachedPage, ExtentCache, MainCache, Search};
 use super::io::IoFile;
 use super::load::Tier;
 use super::mrg::{Handle, Mrg};
-use super::v2index::V2Index;
+use super::v2index::{PageListError, V2Index};
 use crate::dbengine::format::descriptor::{
     PAGE_TYPE_ARRAY_32BIT, PAGE_TYPE_ARRAY_TIER1, PAGE_TYPE_GORILLA_32BIT, PageDescriptor,
-    ValidatedPage, validate_extent_page_descr,
+    log_validation, uuid_text, validate_extent_page_descr,
 };
 use crate::dbengine::format::extent::{self, COMPRESSION_NONE, PageSlot};
-use crate::dbengine::format::page::DiskPage;
+use crate::dbengine::format::page::{DiskPage, EmptyPage};
 use crate::dbengine::format::{BLOCK_SIZE, ReadAt};
 use crate::storage_point::StoragePoint;
 
@@ -66,16 +68,24 @@ impl TierData {
     pub fn new(tier: Tier) -> TierData {
         let mut open: HashMap<[u8; 16], BTreeMap<i64, OpenPage>> = HashMap::new();
         for (fileno, p) in tier.open_pages {
-            open.entry(p.uuid).or_default().insert(
-                p.start_time_s,
-                OpenPage {
-                    end_time_s: p.end_time_s,
-                    update_every_s: p.update_every_s,
-                    fileno,
-                    block: p.block,
-                    bytes: p.extent_bytes,
-                },
-            );
+            let page = OpenPage {
+                end_time_s: p.end_time_s,
+                update_every_s: p.update_every_s,
+                fileno,
+                block: p.block,
+                bytes: p.extent_bytes,
+            };
+            // `pgc_open_add_hot_page()`: a page of another journal at the same start replaces the held one only if
+            // it ends later
+            match open.entry(p.uuid).or_default().entry(p.start_time_s) {
+                btree_map::Entry::Vacant(v) => {
+                    v.insert(page);
+                }
+                btree_map::Entry::Occupied(mut o) if page.end_time_s > o.get().end_time_s => {
+                    o.insert(page);
+                }
+                btree_map::Entry::Occupied(_) => {}
+            }
         }
         TierData {
             tier: tier.config.tier,
@@ -255,25 +265,14 @@ fn search_open(pages: &BTreeMap<i64, OpenPage>, t: i64, mode: Search) -> Option<
 
 /// Global once-a-second limits of the read path's records (`nd_log_limit_static_global_var(erl, 1, 0)`).
 static EXTENT_ERRORS: ErrorLimit = ErrorLimit::new(1, 0);
-static PAGE_VALIDATION: ErrorLimit = ErrorLimit::new(1, 0);
 static EXTENT_SIZE: ErrorLimit = ErrorLimit::new(1, 0);
 
 thread_local! {
-    /// `nd_log_limit_static_thread_var(erl, 60, 0)` of the v2 structure errors.
-    static V2_ERRORS: ErrorLimit = const { ErrorLimit::new(60, 0) };
-}
-
-/// `uuid_unparse_lower()`.
-fn uuid_text(u: &[u8; 16]) -> String {
-    let hex: String = u.iter().map(|b| format!("{b:02x}")).collect();
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
+    /// `nd_log_limit_static_thread_var(erl, 60, 0)` of each v2 structure error: the page list header, the page list,
+    /// the extent index.
+    static V2_HEADER_ERRORS: ErrorLimit = const { ErrorLimit::new(60, 0) };
+    static V2_LIST_ERRORS: ErrorLimit = const { ErrorLimit::new(60, 0) };
+    static V2_EXTENT_ERRORS: ErrorLimit = const { ErrorLimit::new(60, 0) };
 }
 
 /// `log_date()`: local time as `%Y-%m-%d %H:%M:%S`, empty for time 0.
@@ -336,57 +335,6 @@ fn extent_error(
         log_date(end),
         uuid_text(uuid)
     );
-}
-
-/// `validate_page_log()` for a page loaded from an extent that failed its validation or was repaired.
-fn log_validation(d: &PageDescriptor, vd: &ValidatedPage, now_s: i64) {
-    let uuid = uuid_text(&d.uuid);
-    let start = (d.start_time_ut / 1_000_000) as i64;
-    let (end, entries) = match d.page_type {
-        PAGE_TYPE_ARRAY_32BIT | PAGE_TYPE_ARRAY_TIER1 => ((d.end_time_ut() / 1_000_000) as i64, 0),
-        PAGE_TYPE_GORILLA_32BIT => (
-            start + i64::from(d.gorilla_delta_s()),
-            d.gorilla_entries() as usize,
-        ),
-        _ => (0, 0),
-    };
-    if !vd.valid {
-        nd_log_limit!(
-            &PAGE_VALIDATION,
-            Source::Daemon,
-            LogPriority::Err,
-            "DBENGINE: metric '{uuid}' loaded invalid page of type {} from {} to {} (now {now_s}), update every {}, \
-             page length {}, entries {} (flags: )",
-            vd.page_type,
-            vd.start_time_s,
-            vd.end_time_s,
-            vd.update_every_s,
-            vd.page_length,
-            vd.entries
-        );
-        return;
-    }
-    let mut log = format!(
-        "DBENGINE: metric '{uuid}' loaded page of type {} from {} to {} (now {now_s}), update every {}, page length \
-         {}, entries {}",
-        vd.page_type, vd.start_time_s, vd.end_time_s, vd.update_every_s, vd.page_length, vd.entries
-    );
-    for (changed, what) in [
-        (vd.start_time_s != start, "start time updated, "),
-        (vd.end_time_s != end, "end time updated, "),
-        (vd.update_every_s != 0, "update every updated, "),
-        (
-            vd.page_length != d.page_length as usize,
-            "page length updated, ",
-        ),
-        (vd.entries != entries, "entries updated, "),
-        (!(now_s != 0 && vd.end_time_s <= now_s), "future end time, "),
-    ] {
-        if changed {
-            log.push_str(what);
-        }
-    }
-    nd_log_limit!(&PAGE_VALIDATION, Source::Daemon, LogPriority::Err, "{log}");
 }
 
 /// A query's page list and what the preparation found (`struct page_details_control`).
@@ -526,7 +474,11 @@ impl Dbengine {
             let pages = match pages {
                 Ok(pages) => pages,
                 Err(err) => {
-                    V2_ERRORS.with(|erl| {
+                    let limit = match err {
+                        PageListError::Header => &V2_HEADER_ERRORS,
+                        PageListError::List => &V2_LIST_ERRORS,
+                    };
+                    limit.with(|erl| {
                         nd_log_limit!(
                             erl,
                             Source::Daemon,
@@ -551,7 +503,7 @@ impl Dbengine {
                     Range::In => {}
                 }
                 let Some(extent) = index.extents.get(p.extent_index as usize) else {
-                    V2_ERRORS.with(|erl| {
+                    V2_EXTENT_ERRORS.with(|erl| {
                         nd_log_limit!(
                             erl,
                             Source::Daemon,
@@ -801,15 +753,23 @@ impl Dbengine {
                     }
                     let pd_ue = list[&start_s].update_every_s;
                     let vd = validate_extent_page_descr(d, now_s + 1, pd_ue, extent.read_error);
-                    if !vd.valid || vd.updated {
-                        log_validation(d, &vd, now_s + 1);
-                    }
+                    log_validation(&d.uuid, &vd, now_s + 1, "loaded");
                     let data = if !vd.valid {
                         None
                     } else {
                         match slot {
                             PageSlot::Page(b) => {
-                                DiskPage::from_disk(d.page_type, &b[..vd.page_length.min(b.len())])
+                                match DiskPage::load(d.page_type, &b[..vd.page_length.min(b.len())])
+                                {
+                                    Ok(page) => Some(page),
+                                    Err(EmptyPage::InvalidChain) => {
+                                        netdata_log_error!(
+                                            "DBENGINE: invalid gorilla disk page chain."
+                                        );
+                                        None
+                                    }
+                                    Err(EmptyPage::Unfit) => None,
+                                }
                             }
                             _ => {
                                 let msg = if extent.compression == COMPRESSION_NONE {
@@ -1031,6 +991,8 @@ impl Query {
                 pd.page = None;
                 continue;
             }
+            // the query holds the page until it moves on (C releases the list's reference to the handle)
+            pd.page = None;
             pd.status |= RELEASED | PROCESSED;
             return Some((page, by_time));
         }

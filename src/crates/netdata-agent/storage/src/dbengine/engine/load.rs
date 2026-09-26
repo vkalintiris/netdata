@@ -22,10 +22,11 @@ use super::io::{
     IoFile, align_ceiling, align_floor, check_file_properties, open_for_io, unlink, write_block,
 };
 use super::mrg::Mrg;
-use crate::dbengine::format::descriptor::PAGE_TYPE_GORILLA_32BIT;
-use crate::dbengine::format::journal_v1::{self, Event, Replay};
+use crate::dbengine::format::descriptor::log_validation;
+use crate::dbengine::format::journal_v1::{self, Replay};
 use crate::dbengine::format::journal_v2::{
-    self, Builder, HEADER_SIZE, Invalid, Page, Verdict, open_cache_pages, write_in_place,
+    self, Builder, HEADER_SIZE, Invalid, Page, ReplayRecord, Verdict, open_cache_pages,
+    write_in_place,
 };
 use crate::dbengine::format::superblock::{self, SuperblockError};
 use crate::dbengine::format::{BLOCK_SIZE, FileKind, ReadAt, file_name};
@@ -393,38 +394,32 @@ fn log_checking_metrics(file: &File) {
     }
 }
 
-/// The records of `journalfile_iterate_transactions()`: the replay's refusals, and each unknown page type once per
-/// process (`page_error_map`), in the order C meets them.
-fn log_replay(replay: &Replay) {
+/// The records of `journalfile_iterate_transactions()` in C's order: the replay's refusals, each unknown page type
+/// once per process (`page_error_map`), and the pages validation failed or repaired (validated at `now_s`).
+fn log_replay(records: &[ReplayRecord], now_s: i64) {
     use std::sync::Mutex;
     static UNKNOWN_TYPES: Mutex<[bool; 256]> = Mutex::new([false; 256]);
-    for event in &replay.events {
-        match event {
-            Event::Corrupt { .. } => {
+    for record in records {
+        match record {
+            ReplayRecord::Corrupt => {
                 netdata_log_error!("DBENGINE: corrupted transaction record, skipping.")
             }
-            Event::CrcFailed { id, .. } => netdata_log_error!(
+            ReplayRecord::CrcFailed { id } => netdata_log_error!(
                 "DBENGINE: transaction {id} was read from disk. CRC32 check: FAILED"
             ),
-            Event::UnknownType { .. } => {
+            ReplayRecord::UnknownTransaction => {
                 netdata_log_error!("DBENGINE: unknown transaction type, skipping record.")
             }
-            Event::CorruptPayload { .. } => {
+            ReplayRecord::CorruptPayload => {
                 netdata_log_error!("DBENGINE: corrupted transaction payload.")
             }
-            Event::StoreData { data, .. } => {
-                for d in &data.descriptors {
-                    if d.page_type > PAGE_TYPE_GORILLA_32BIT {
-                        let mut seen = UNKNOWN_TYPES.lock().unwrap_or_else(|e| e.into_inner());
-                        if !std::mem::replace(&mut seen[usize::from(d.page_type)], true) {
-                            netdata_log_error!(
-                                "DBENGINE: unknown page type {} encountered.",
-                                d.page_type
-                            );
-                        }
-                    }
+            ReplayRecord::UnknownPageType(t) => {
+                let mut seen = UNKNOWN_TYPES.lock().unwrap_or_else(|e| e.into_inner());
+                if !std::mem::replace(&mut seen[usize::from(*t)], true) {
+                    netdata_log_error!("DBENGINE: unknown page type {t} encountered.");
                 }
             }
+            ReplayRecord::Page { uuid, vd } => log_validation(uuid, vd, now_s, "loaded"),
         }
     }
 }
@@ -550,14 +545,14 @@ fn journal_load(
         max_id: 1,
         read_error: None,
     });
-    log_replay(&replay);
+    let open = open_cache_pages(&replay, now_s + 1, &mut mrg.tier(cfg.tier));
+    log_replay(&open.records, now_s + 1);
     if let Some((pos, errno)) = replay.read_error {
         netdata_log_error!(
             "DBENGINE: uv_fs_read: pos={pos}, {}",
             netdata_agent_log::uv_strerror(errno)
         );
     }
-    let open = open_cache_pages(&replay, now_s + 1, &mut mrg.tier(cfg.tier));
     *transaction_id = (*transaction_id).max(replay.max_id + 1);
     nd_log!(
         Source::Daemon,

@@ -175,8 +175,9 @@ fn uuid_of(fx: &Path, chart: &str, dim: &str) -> [u8; 16] {
     u
 }
 
-/// Queries on runR read what the fixture generator sent: tier 0 point by point (`(t/10 % 1000) + c/2 + d/8`), c3's
-/// gap as empty points, tier 1 as one-minute aggregates of 60 points.
+/// Queries on runR read what the fixture generator sent: tier 0 point by point (`(t/10 % 1000) + c/2 + d/8`) over
+/// every metric's retention, with c3's gap jumped over and c1.d4's empty samples, tier 1 as one-minute aggregates of
+/// 60 points.
 #[test]
 fn queries_read_the_generated_values() {
     let Some(fx) = fixtures() else {
@@ -239,7 +240,7 @@ fn queries_read_the_generated_values() {
     }
     assert_eq!(n, to - from + 1);
 
-    // c3 has no data in [start + 100000, start + 105000)
+    // c3 has no data in [start + 100000, start + 105000): the points jump over the gap
     let metric = engine
         .mrg
         .get_and_acquire(&uuid_of(&fx, "b6.c3", "d0"), 0)
@@ -251,26 +252,60 @@ fn queries_read_the_generated_values() {
         QueryPriority::Normal,
         NOW,
     );
-    let (mut inside, mut outside) = (0, 0);
+    let mut times = Vec::new();
     while !q.is_finished() {
         let p = q.next_metric();
-        if (START + 100_000..START + 105_000).contains(&p.end_time_s) {
-            assert_eq!(p.count, 0, "a gap point at {}", p.end_time_s);
-            inside += 1;
-        } else if p.count > 0 {
-            let want = value(p.end_time_s, 3.0, 0.0);
-            assert!(
-                (p.sum - want).abs() < 1e-6 * want.max(1.0),
-                "at {}",
-                p.end_time_s
+        assert_eq!(p.count, 1, "at {}", p.end_time_s);
+        let want = value(p.end_time_s, 3.0, 0.0);
+        assert!(
+            (p.sum - want).abs() < 1e-6 * want.max(1.0),
+            "at {}",
+            p.end_time_s
+        );
+        times.push(p.end_time_s - START);
+    }
+    let want: Vec<i64> = (99_990..100_000).chain(105_000..=105_010).collect();
+    assert_eq!(times, want);
+
+    // every point of every metric over tier 0's retention
+    for c in 0..4 {
+        for d in 0..5 {
+            let metric = engine
+                .mrg
+                .get_and_acquire(&uuid_of(&fx, &format!("b6.c{c}"), &format!("d{d}")), 0)
+                .unwrap();
+            let r = metric.retention();
+            let mut q = engine.query(
+                &metric,
+                r.first_time_s,
+                r.last_time_s,
+                QueryPriority::Normal,
+                NOW,
             );
-            outside += 1;
+            let mut t = r.first_time_s;
+            while !q.is_finished() {
+                if c == 3 && t == START + 100_000 {
+                    t = START + 105_000;
+                }
+                let p = q.next_metric();
+                assert_eq!((p.end_time_s, p.count), (t, 1), "c{c}.d{d}");
+                if c == 1 && d == 4 && t % 1000 == 500 {
+                    assert!(p.sum.is_nan(), "c{c}.d{d} at {t}: sent empty");
+                } else {
+                    let want = value(t, f64::from(c), f64::from(d));
+                    assert!(
+                        (p.sum - want).abs() < 1e-6 * want.max(1.0),
+                        "c{c}.d{d} at {t}: {} != {want}",
+                        p.sum
+                    );
+                }
+                t += 1;
+            }
+            assert_eq!(t, r.last_time_s + 1, "c{c}.d{d}");
         }
     }
-    assert!(outside >= 20, "{outside}");
-    assert!(inside <= 5000, "{inside}");
 
-    // tier 1: minute aggregates
+    // tier 1: minute aggregates of the points in (end - 60, end]
     let metric = engine
         .mrg
         .get_and_acquire(&uuid_of(&fx, "b6.c0", "d0"), 1)
@@ -286,8 +321,13 @@ fn queries_read_the_generated_values() {
     while !q.is_finished() {
         let p = q.next_metric();
         if p.count > 0 {
-            assert_eq!(p.count, 60, "at {}", p.end_time_s);
-            assert_eq!(p.end_time_s % 60, 0);
+            let e = p.end_time_s;
+            assert_eq!((p.count, e % 60), (60, 0), "at {e}");
+            let values: Vec<f64> = (e - 59..=e).map(|t| value(t, 0.0, 0.0)).collect();
+            let sum: f64 = values.iter().sum();
+            let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+            let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            assert_eq!((p.sum, p.min, p.max), (sum, min, max), "at {e}");
             minutes += 1;
         }
     }

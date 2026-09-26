@@ -6,6 +6,8 @@
 //! C writes its heap pointer in `next`; readers only test it for zero, so a Rust writer stores 1 in every buffer but
 //! the last (D50 point 4).
 
+use super::EmptyPage;
+
 /// `RRDENG_GORILLA_32BIT_BUFFER_SIZE`.
 pub const BUFFER_SIZE: usize = 512;
 const HEADER_SIZE: usize = 16;
@@ -216,28 +218,34 @@ pub struct DiskPage {
     pub slots: u16,
 }
 
-/// `pgd_create_from_disk_data()` for GORILLA_32BIT with `gorilla_buffer_patch()`: `None` (`PGD_EMPTY`, C logs "invalid
-/// gorilla disk page chain") below 4 bytes, for a buffer whose `nbits` reaches the capacity, or a `next` past the last
-/// whole buffer. Where C would read past the page (a buffer or its bits beyond `size`), the page is empty too.
-pub fn from_disk(bytes: &[u8]) -> Option<DiskPage> {
+/// `pgd_create_from_disk_data()` for GORILLA_32BIT with `gorilla_buffer_patch()`: `EmptyPage::InvalidChain` (C logs
+/// "invalid gorilla disk page chain.") for a buffer whose `nbits` reaches the capacity or a `next` past the last whole
+/// buffer; `EmptyPage::Unfit` below 4 bytes and where C would read past the page (a buffer or its bits beyond `size`),
+/// which C does silently.
+pub fn load(bytes: &[u8]) -> Result<DiskPage, EmptyPage> {
     if bytes.len() < 4 {
-        return None;
+        return Err(EmptyPage::Unfit);
     }
     let nbuffers = bytes.len() / BUFFER_SIZE;
     let mut buffers = Vec::new();
     let mut entries: u32 = 0;
     loop {
         let start = buffers.len() * BUFFER_SIZE;
-        let header = bytes.get(start..start + HEADER_SIZE)?;
-        let next = u64::from_le_bytes(header[0..8].try_into().ok()?);
-        let buffer_entries = u32::from_le_bytes(header[8..12].try_into().ok()?);
-        let nbits = u32::from_le_bytes(header[12..16].try_into().ok()?);
+        let header = bytes
+            .get(start..start + HEADER_SIZE)
+            .ok_or(EmptyPage::Unfit)?;
+        let word = |at: usize| {
+            u32::from_le_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
+        };
+        let next = u64::from(word(0)) | u64::from(word(4)) << 32;
+        let buffer_entries = word(8);
+        let nbits = word(12);
         if nbits >= CAPACITY_BITS {
-            return None;
+            return Err(EmptyPage::InvalidChain);
         }
         let available = bytes.len().min(start + BUFFER_SIZE) - start - HEADER_SIZE;
         if nbits as usize > available * 8 {
-            return None;
+            return Err(EmptyPage::Unfit);
         }
         let mut b = Buffer {
             entries: buffer_entries,
@@ -247,7 +255,7 @@ pub fn from_disk(bytes: &[u8]) -> Option<DiskPage> {
         for (i, w) in b.data.iter_mut().enumerate() {
             let at = start + HEADER_SIZE + i * 4;
             if let Some(word) = bytes.get(at..at + 4) {
-                *w = u32::from_le_bytes(word.try_into().ok()?);
+                *w = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
             }
         }
         buffers.push(b);
@@ -256,14 +264,19 @@ pub fn from_disk(bytes: &[u8]) -> Option<DiskPage> {
             break;
         }
         if buffers.len() == nbuffers {
-            return None;
+            return Err(EmptyPage::InvalidChain);
         }
     }
-    Some(DiskPage {
+    Ok(DiskPage {
         buffers,
         entries,
         slots: entries as u16,
     })
+}
+
+/// `load()` without the reason.
+pub fn from_disk(bytes: &[u8]) -> Option<DiskPage> {
+    load(bytes).ok()
 }
 
 /// `gorilla_reader_t`: the numbers of a chain in order.

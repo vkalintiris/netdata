@@ -2,6 +2,8 @@
 //! page validation (`validate_extent_page_descr()`, `validate_page()` in `pdc.c`). Brief
 //! `knowledge/brief-dbengine-s0.md` §2.2 and §2.6 in the status repository.
 
+use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log_limit};
+
 /// `RRDENG_PAGE_TYPE_*`.
 pub const PAGE_TYPE_ARRAY_32BIT: u8 = 0;
 pub const PAGE_TYPE_ARRAY_TIER1: u8 = 1;
@@ -129,10 +131,13 @@ pub struct ValidatedPage {
     pub valid: bool,
     /// Whether validation repaired the page's end or update every (C then logs it).
     pub updated: bool,
+    /// The page as given, with the update every and entries C computes when they are unknown: what its record
+    /// compares the validated page with.
+    pub given: PageFacts,
 }
 
 /// What `validate_page()` needs about a page.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PageFacts {
     pub start_time_s: i64,
     pub end_time_s: i64,
@@ -144,7 +149,7 @@ pub struct PageFacts {
     pub entries: usize,
 }
 
-/// `validate_page()` without its log record: C's integer types and their wrapping arithmetic kept (`time_t`, `uint32_t`
+/// `validate_page()` without its log record (`log_validation()`): C's integer types and their wrapping arithmetic kept (`time_t`, `uint32_t`
 /// update every, `size_t` entries). `now_s` 0 skips the future check; `overwrite_ue` is the update every to fall back
 /// on (the metric registry's, or 0).
 pub fn validate_page(
@@ -164,6 +169,7 @@ pub fn validate_page(
         page_type: p.page_type,
         valid: true,
         updated: false,
+        given: p,
     };
     let mut entries = p.entries;
     let known = match p.page_type {
@@ -190,6 +196,8 @@ pub fn validate_page(
         };
         update_every_s = vd.update_every_s;
     }
+    vd.given.update_every_s = update_every_s;
+    vd.given.entries = entries;
     let max_page_length =
         4096 + usize::from(p.page_type == PAGE_TYPE_GORILLA_32BIT) * 2 * GORILLA_BUFFER_SIZE;
     if !known
@@ -239,6 +247,78 @@ pub fn validate_page(
     }
     vd.updated = updated;
     vd
+}
+
+impl ValidatedPage {
+    /// `validate_page_log()`'s text for a page that failed its validation or was repaired, `None` otherwise. `msg`
+    /// says where the page came from ("loaded").
+    pub fn record(&self, uuid: &[u8; 16], now_s: i64, msg: &str) -> Option<String> {
+        let head = format!(
+            "DBENGINE: metric '{}' {msg} {}page of type {} from {} to {} (now {now_s}), update every {}, page length {}, \
+             entries {} (flags: )",
+            uuid_text(uuid),
+            if self.valid { "" } else { "invalid " },
+            self.page_type,
+            self.start_time_s,
+            self.end_time_s,
+            self.update_every_s,
+            self.page_length,
+            self.entries
+        );
+        if !self.valid {
+            return Some(head);
+        }
+        if !self.updated {
+            return None;
+        }
+        let g = &self.given;
+        let mut log = format!(
+            "{head}found inconsistent - the right is {} to {}, update every {}, page length {}, entries {}",
+            self.start_time_s, self.end_time_s, self.update_every_s, self.page_length, self.entries
+        );
+        for (changed, what) in [
+            (self.start_time_s != g.start_time_s, "start time updated, "),
+            (self.end_time_s != g.end_time_s, "end time updated, "),
+            (
+                self.update_every_s != g.update_every_s,
+                "update every updated, ",
+            ),
+            (self.page_length != g.page_length, "page length updated, "),
+            (self.entries != g.entries, "entries updated, "),
+            (
+                !(now_s != 0 && self.end_time_s <= now_s),
+                "future end time, ",
+            ),
+        ] {
+            if changed {
+                log.push_str(what);
+            }
+        }
+        Some(log)
+    }
+}
+
+/// `validate_page_log()`'s once-a-second global limit, shared by every place that validates pages.
+static PAGE_VALIDATION: ErrorLimit = ErrorLimit::new(1, 0);
+
+/// Logs a validated page's record, if it has one (`validate_page_log()`).
+pub fn log_validation(uuid: &[u8; 16], vd: &ValidatedPage, now_s: i64, msg: &str) {
+    if let Some(record) = vd.record(uuid, now_s, msg) {
+        nd_log_limit!(&PAGE_VALIDATION, Source::Daemon, Priority::Err, "{record}");
+    }
+}
+
+/// `uuid_unparse_lower()`.
+pub fn uuid_text(u: &[u8; 16]) -> String {
+    let hex: String = u.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 /// `validate_extent_page_descr()`: a page read from an extent, its update every derived.
@@ -387,6 +467,48 @@ mod tests {
             entries,
             ..array(t, t + 59, 60)
         }
+    }
+
+    /// `validate_page_log()`'s texts: a repaired page compares with the update every and entries C computed, not
+    /// with zero (R11 B1); an invalid page has the short form; an intact page has none.
+    #[test]
+    fn validation_records_as_c() {
+        let t = T as i64;
+        let uuid = [7u8; 16];
+        let u = "07070707-0707-0707-0707-070707070707";
+        // 10 points over 10 s: update every 1, 11 entries by time; the fallback 0 collapses the page to its start
+        let d = PageDescriptor::array(0, uuid, 40, T * 1_000_000, (T + 10) * 1_000_000);
+        let vd = validate_extent_page_descr(&d, t + 100, 0, false);
+        assert_eq!(
+            vd.record(&uuid, t + 100, "loaded").as_deref(),
+            Some(
+                format!(
+                    "DBENGINE: metric '{u}' loaded page of type 0 from {t} to {t} (now {}), update every 0, page length \
+                     40, entries 10 (flags: )found inconsistent - the right is {t} to {t}, update every 0, page length \
+                     40, entries 10end time updated, update every updated, ",
+                    t + 100
+                )
+                .as_str()
+            )
+        );
+        let d = PageDescriptor::array(0, uuid, 0, T * 1_000_000, (T + 9) * 1_000_000);
+        let vd = validate_extent_page_descr(&d, 0, 0, false);
+        assert_eq!(
+            vd.record(&uuid, 0, "loaded").as_deref(),
+            Some(
+                format!(
+                    "DBENGINE: metric '{u}' loaded invalid page of type 0 from {t} to {} (now 0), update every 0, page \
+                     length 0, entries 0 (flags: )",
+                    t + 9
+                )
+                .as_str()
+            )
+        );
+        let d = PageDescriptor::array(0, uuid, 40, T * 1_000_000, (T + 9) * 1_000_000);
+        assert_eq!(
+            validate_extent_page_descr(&d, 0, 1, false).record(&uuid, 0, "loaded"),
+            None
+        );
     }
 
     #[test]
