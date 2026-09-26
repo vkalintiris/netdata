@@ -123,19 +123,53 @@ value per row, in the same chronological order as `TIMS` and the stream batches.
 
 The `CHLD` column (`child_duration`) holds, per row, the time the span's
 direct children cover within the file: the union of the children's
-`[start, start + duration)` intervals clipped to the span's own, so
-`0 ≤ child_duration ≤ duration` and the span's self time is
-`duration − child_duration`. Its scope is every row of the one WAL the file
-is built from (a child in another file does not count). Only files built by
-the traces seal carry it; WAL chunk images and logs files never do, so a
-reader checks the manifest for `child_duration` before asking.
+`[start, start + duration)` intervals (the end saturates at `i64::MAX`)
+clipped to the span's own, so `0 ≤ child_duration ≤ duration` and the span's
+self time is `duration − child_duration`. Rows are linked as
+`sfst::derive_span_family` does:
+
+- a row is a **child** iff its trace id, span id and parent id are set and
+  its parent id differs from its own span id (a self-parent row is nobody's
+  child);
+- a row is a **parent** iff its trace id and span id are set; its children
+  are the child rows of the same trace id whose parent id is its span id, so
+  every stored copy of a resent parent gets the same children and a
+  duplicate child changes nothing;
+- only direct children count.
+
+Its scope is every row of the one WAL the file is built from: a child stored
+in another file does not count, so a span whose children sit in another file
+shows too much self time here (trace-by-id derives it again over the
+assembled trace). Only files built by the traces seal carry the column, and
+the seal always writes it: a sealed traces file without `child_duration`
+predates it and readers treat it as legacy (its derived values were never
+computed). Logs files and chunk images never carry it, so a reader checks the
+manifest for `child_duration` before asking.
 
 **Traces-derived tokens.** The traces seal adds the token `_err_origin=true`
-(a Bool leaf at the top of the tree) to every row that is ERROR with no ERROR
-child in the file (same scope and linking rules as `CHLD`, see
-`sfst::derive_span_family`). The field is absent when the file has no such
-row, and chunk images never carry it. It is a stored per-file value, not an
-attribute of the span: trace-by-id does not return it as a span field.
+to every row that is ERROR with no ERROR child in the file (same scope and
+linking rules as `CHLD`). A row is ERROR when its first `status_code` value
+is the string `ERROR`; a row without `status_code` is not. Only origin rows
+carry the token (there is no `false` value); it is an ordinary token of the
+row index, and its Bool leaf sits at the top of the tree. The leaf exists iff
+the token does and is added before the tree is built: the field table is
+derived from the tree, and readers map token ids to fields by walking it. The
+field is absent when the file has no origin row. It is per file like `CHLD`:
+a span whose ERROR child is stored in another file is still an origin here
+(trace-by-id derives it again over the assembled trace). It is a stored
+per-file value, not an attribute of the span: trace-by-id does not return it
+as a span field.
+
+**Chunk images.** A chunk image is the in-memory SFST built at query time
+over a frame-aligned range of an active WAL
+(`ng_index::build_sfst_traces_range`). It carries neither `CHLD` nor
+`_err_origin`, and nothing in its bytes marks it as an image: the caller
+knows what it built. The explorer's live pass derives both values at query
+time over every row it captured from that WAL (its chunk images and its tail,
+from the first frame on) and attaches them with `IndexReader::with_derived`,
+so a live row reads as the sealed file of the same frames will. A file that
+already stores either value refuses the attachment with
+`Error::DerivedConflict` (see `IndexReader::stores_derived`).
 
 The optional `TIDX` chunk is the **`trace_id` index**: a 256-entry first-byte
 fanout (`fanout[256]`, cumulative count of indexed positions whose `trace_id`
@@ -619,6 +653,8 @@ one therefore needs **no version bump**. The optional per-row columns,
 the `TIDX` trace_id index, the `TBLM` trace-id bloom, and the
 `EVNB`/`LNKB` span event/link structures (see [§ Chunk Ids](#chunk-ids))
 follow exactly this rule.
+A derived token such as `_err_origin` is additive in the same way: an
+ordinary token plus its tree leaf changes no chunk's layout.
 
 ### When to bump the version
 
