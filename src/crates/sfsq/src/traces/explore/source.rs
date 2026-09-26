@@ -221,18 +221,3 @@ pub(super) fn evaluate_prepared<A: Send>(
     }
     Some(folded)
 }
-
-/// [`prepare_all`] then [`evaluate_prepared`], for requests without a live
-/// pass.
-pub(super) fn evaluate_sources<A: Send>(
-    sources: &[TraceSource],
-    window: &TimeWindow,
-    workers: usize,
-    cancel: &CancellationToken,
-    progress: &AtomicUsize,
-    init: impl Fn() -> A + Sync,
-    open: impl Fn(&mut A, &mut SourceTally, usize, Mapped) + Sync,
-) -> Option<Vec<(SourceTally, A)>> {
-    let prepared = prepare_all(sources, window, workers, cancel)?;
-    evaluate_prepared(sources, &prepared, workers, cancel, progress, init, open)
-}

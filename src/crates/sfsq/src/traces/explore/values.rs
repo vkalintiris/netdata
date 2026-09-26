@@ -6,7 +6,8 @@
 //! values of rows outside the window too. A file gives at most the first
 //! `limit + 1` values with the prefix, so memory stays at the limit however
 //! many values a field has. The live tail is read through its image, like
-//! everywhere in the explorer.
+//! everywhere in the explorer; the error origins of a live WAL exist only
+//! after the live pass, which runs when they are asked for.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -14,12 +15,14 @@ use std::sync::atomic::AtomicUsize;
 
 use tokio_util::sync::CancellationToken;
 
+use super::live::live_pass;
 use super::query::ExploreRequestError;
-use super::shard::is_legacy;
-use super::source::{ExploreOptions, SourceTally, evaluate_sources, is_sealed};
+use super::shard::{is_legacy, open_source};
+use super::source::{ExploreOptions, SourceTally, evaluate_prepared, is_sealed, prepare_all};
 use crate::traces::{
     PartialReason, QueryStatus, StatusBuilder, TimeWindow, TraceSource, validate_sources,
 };
+use sfst::ERR_ORIGIN_FIELD;
 
 /// Most values one request may ask for.
 pub const VALUES_LIMIT_MAX: usize = 1000;
@@ -80,15 +83,20 @@ pub fn field_values(
     // The smallest `limit + 1` values: one more than returned tells whether
     // the answer is truncated.
     let cap = query.limit + 1;
-    let Some(lanes) = evaluate_sources(
+    let Some(prepared) = prepare_all(&sources, &window, options.workers, &cancel) else {
+        return Ok(ValuesData::cancelled());
+    };
+    let live = (query.field == ERR_ORIGIN_FIELD).then(|| live_pass(&sources, &prepared));
+    let Some(lanes) = evaluate_prepared(
         &sources,
-        &window,
+        &prepared,
         options.workers,
         &cancel,
         &progress,
         BTreeSet::new,
         |kept, tally, index, mapped| match source_values(
             mapped.bytes(),
+            live.as_ref().and_then(|live| live.derived[index].as_ref()),
             &query,
             cap,
             is_sealed(&sources[index]),
@@ -125,8 +133,13 @@ pub fn field_values(
     for value in kept.into_iter().take(query.limit) {
         values.push(value);
     }
+    let mut status = tally.status();
+    if let Some(live) = live {
+        status.add_n(PartialReason::LivePassFailed, live.failed);
+        status.of(PartialReason::LivePassFailed, live.wals);
+    }
     Ok(ValuesData {
-        status: tally.status().finish(),
+        status: status.finish(),
         values,
         truncated,
     })
@@ -136,11 +149,12 @@ pub fn field_values(
 /// `None` for a legacy file.
 fn source_values(
     bytes: &[u8],
+    derived: Option<&Arc<sfst::DerivedValues>>,
     query: &ValuesQuery,
     cap: usize,
     sealed: bool,
 ) -> Result<Option<Vec<String>>, sfst::Error> {
-    let reader = sfst::IndexReader::open(bytes)?;
+    let reader = open_source(bytes, derived)?;
     if is_legacy(&reader, sealed) {
         return Ok(None);
     }

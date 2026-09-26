@@ -11,7 +11,7 @@ use sfsq::Source;
 use sfsq::traces::explore::{
     ExploreData, ExploreOptions, ExploreQuery, ExploreScope, ExploreSelection, FacetSpec,
     GroupsDelta, HistogramData, HistogramSpec, RowDirection, RowOrder, RowsSpec, Sections,
-    StackBucket, Totals, ValuesQuery, explore, field_values,
+    StackBucket, Totals, ValuesData, ValuesQuery, explore, field_values,
 };
 use sfsq::traces::{
     PartialReason, QueryStatus, ReasonCount, SourceId, TraceFailed, TraceSfstCandidate,
@@ -445,6 +445,60 @@ fn a_cancelled_values_request_answers_nothing() {
     assert_eq!(progress.load(Ordering::Relaxed), 0);
     assert!(values.values.is_empty() && !values.truncated);
     assert!(values.status.has(PartialReason::Cancelled));
+}
+
+fn origin_values(sources: Vec<TraceSource>) -> ValuesData {
+    field_values(
+        sources,
+        ValuesQuery {
+            window: 0..10 * S as i64,
+            field: sfst::ERR_ORIGIN_FIELD.to_string(),
+            prefix: String::new(),
+            limit: 10,
+        },
+        ExploreOptions::default(),
+        CancellationToken::new(),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .unwrap()
+}
+
+/// A live WAL's error origins exist only through the live pass: value
+/// suggestions list them as the sealed file will, and say when the pass
+/// could not run.
+#[test]
+fn error_origin_values_of_a_live_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(
+        dir.path(),
+        vec![req(&request(0x11, 0x10)), req(&request(0x12, 0x20))],
+        "live",
+    );
+    let sealed = origin_values(vec![sealed_source(dir.path(), &wal, "sealed")]);
+    assert!(sealed.status.is_complete());
+    assert!(!sealed.values.is_empty());
+    assert_eq!(
+        origin_values(vec![tail_source(&wal, "live#tail")]),
+        sealed,
+        "the live WAL answers as its sealed file"
+    );
+
+    let whole = whole_range(&wal);
+    let frames = wal::scan_frame_boundaries(&wal, whole).unwrap();
+    let broken = TraceSource::Tail(sfsq::traces::TraceWalTail {
+        source_id: SourceId::new("live#tail".to_string()),
+        path: wal.clone(),
+        coverage: WalCoverage {
+            wal_id: wal.display().to_string().into(),
+            range: wal::FrameRange::new(frames[0].end_offset, whole.end()),
+        },
+    });
+    let values = origin_values(vec![broken]);
+    assert_eq!(
+        values.status,
+        partial(&[(PartialReason::LivePassFailed, 1, 1)])
+    );
+    assert!(values.values.is_empty());
 }
 
 #[test]

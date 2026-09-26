@@ -1240,6 +1240,7 @@ fn explore_values_match_the_calculator() {
         ("attributes.request.id", "", 10),
         ("attributes.request.id", "a1", 1000),
         ("events.attributes.exception.type", "", 1000),
+        (model::ERR_ORIGIN_FIELD, "", 10),
         ("attributes.nope", "", 5),
     ];
     for live in [Live::Tail, Live::Split(100)] {
