@@ -4,6 +4,7 @@
 
 pub mod crc;
 pub mod descriptor;
+pub mod page;
 pub mod superblock;
 
 use std::fs::File;

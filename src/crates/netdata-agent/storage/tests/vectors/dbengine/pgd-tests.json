@@ -1,0 +1,275 @@
+{
+  "source": "src/database/engine/page_test.cc (netdata/netdata @ 1e97a0fc9e), hand-extracted; results of actually running it are in pgd-tests-run.json",
+  "facts": {
+    "dispatch": "`netdata -W pgd-tests` calls pgd_test(argc, argv) (src/daemon/main.c:432-433, inside #ifdef ENABLE_DBENGINE)",
+    "have_gtest": "HAVE_GTEST is defined nowhere: not in CMakeLists.txt, packaging/cmake, build/config.h, build/CMakeCache.txt, nor in the compile command of page_test.cc in build/compile_commands.json. The only references are page_test.cc:4,467,477. The production build therefore compiles the stub at page_test.cc:467-475, which prints 'Can not run PGD tests because the agent was not build with support for google tests.' and returns 0. Commit 2d974dc51d (#22955), which added the last three tests, says 'pgd-tests could not execute because that build lacks HAVE_GTEST'.",
+    "does_not_compile_with_gtest": [
+      "PAGE_METRICS and PAGE_GORILLA_METRICS (page_test.cc:37,41,43,203,206,228,231,259,262,282,285) are defined nowhere; commit 00f897a883 (#17237, 2024-03-24) renamed them to RRDENG_PAGE_TYPE_ARRAY_32BIT (0) and RRDENG_PAGE_TYPE_GORILLA_32BIT (2) (rrddiskprotocol.h:43-46)",
+      "page_test.cc:462 calls pgc_destroy(dummy_cache); cache.h:178 declares pgc_destroy(PGC *cache, bool flush) since 932bbf3b4e (#19823)"
+    ],
+    "slots_do_not_fit": "struct pgd has uint16_t used and uint16_t slots (page.c:32,35) and page_raw_t has uint16_t size (page.c:22), narrowed from uint32_t in 6b8c6baac2 (#18945, 2024-12-05). slots_for_page(1024 * 1024) returns 1048576 for gorilla (page_test.cc:43-44); pgd_create stores it as 0 (page.c:479), so the first pgd_append_point hits 'used >= slots' and calls pgd_fatal (page.c:951-953): 7 of the 11 tests die at their first append.",
+    "internal_checks_off": "NETDATA_INTERNAL_CHECKS is not defined in this build, so internal_fatal() is a no-op (libnetdata/log/nd_log-fatal.h:13-17); pgd_fatal/fatal are real and end in exit(1) (libnetdata/log/nd_log.c:509-596)",
+    "page_type": "page_type = PAGE_GORILLA_METRICS (page_test.cc:37); slots_for_page returns 1024 for PAGE_METRICS and n for PAGE_GORILLA_METRICS (page_test.cc:39-48); the switch statements in MemoryFootprint/DiskFootprint carry expectations for both",
+    "storage_point_equality": "operator== (page_test.cc:10-33) compares min, max, sum, start_time_s, end_time_s, count, flags; it does not compare anomaly_count. NaN points compare unequal."
+  },
+  "exercised_functions": {
+    "pgd_init_arals": "page.c:243-359",
+    "pgd_create": "page.c:471-520",
+    "pgd_create_from_disk_data": "page.c:522-576",
+    "pgd_free": "page.c:578-650",
+    "pgd_type": "page.c:707-710",
+    "pgd_is_empty": "page.c:712-727",
+    "pgd_slots_used": "page.c:729-738",
+    "pgd_memory_footprint": "page.c:751-784",
+    "pgd_disk_footprint": "page.c:820-878",
+    "pgd_copy_to_extent": "page.c:880-915",
+    "pgd_append_point": "page.c:922-1011",
+    "pgdc_seek (static)": "page.c:1016-1063",
+    "pgdc_reset": "page.c:1065-1082",
+    "pgdc_get_next_point": "page.c:1085-1151",
+    "gorilla_writer_write": "gorilla.cc:157-217",
+    "gorilla_writer_serialize": "gorilla.cc:265-283",
+    "gorilla_buffer_patch": "gorilla.cc:285-315",
+    "gorilla_reader_read": "gorilla.cc:364-439"
+  },
+  "append_signature": "pgd_append_point(pg, point_in_time_ut, n, min_value, max_value, count, anomaly_count, flags, expected_slot) (page.h:46-54). GORILLA and ARRAY_32BIT use only n and flags (pack_storage_number(n, flags), page.c:958,997); point_in_time_ut is unused (__maybe_unused); ARRAY_TIER1 uses n/min/max/count/anomaly_count (page.c:980-993).",
+  "tests": [
+    {
+      "test": "PGD.EmptyOrNull",
+      "lines": "50-78",
+      "page_types": ["none: NULL and PGD_EMPTY ((PGD *)-1, page.h:24)"],
+      "inputs": {},
+      "operations": [
+        {"line": 51, "op": "pg = NULL"},
+        {"line": 61, "op": "pgdc_reset(&cursor, NULL, 0)", "note": "returns early for NULL (page.c:1072-1073)"},
+        {"line": 64, "op": "pgd_free(NULL)", "note": "no-op (page.c:579-580)"},
+        {"line": 66, "op": "pg = PGD_EMPTY"},
+        {"line": 74, "op": "pgdc_reset(&cursor, PGD_EMPTY, 0)"},
+        {"line": 77, "op": "pgd_free(PGD_EMPTY)"}
+      ],
+      "expects": [
+        {"line": 56, "macro": "EXPECT_TRUE", "expr": "pgd_is_empty(NULL)", "expected": true},
+        {"line": 57, "macro": "EXPECT_EQ", "expr": "pgd_slots_used(NULL)", "expected": 0},
+        {"line": 58, "macro": "EXPECT_EQ", "expr": "pgd_memory_footprint(NULL)", "expected": 0},
+        {"line": 59, "macro": "EXPECT_EQ", "expr": "pgd_disk_footprint(NULL)", "expected": 0, "note": "pgd_slots_used(NULL) == 0 returns before any dereference (page.c:822-823)"},
+        {"line": 62, "macro": "EXPECT_FALSE", "expr": "pgdc_get_next_point(&cursor, 0, &sp) on a NULL cursor", "expected": false},
+        {"line": 68, "macro": "EXPECT_TRUE", "expr": "pgd_is_empty(PGD_EMPTY)", "expected": true},
+        {"line": 69, "macro": "EXPECT_EQ", "expr": "pgd_slots_used(PGD_EMPTY)", "expected": 0},
+        {"line": 70, "macro": "EXPECT_EQ", "expr": "pgd_memory_footprint(PGD_EMPTY)", "expected": 0},
+        {"line": 71, "macro": "EXPECT_EQ", "expr": "pgd_disk_footprint(PGD_EMPTY)", "expected": 0},
+        {"line": 72, "macro": "EXPECT_FALSE", "expr": "pgdc_get_next_point(&cursor, 0, &sp), cursor still bound to NULL from line 61", "expected": false},
+        {"line": 75, "macro": "EXPECT_FALSE", "expr": "pgdc_get_next_point(&cursor, 0, &sp) after reset to PGD_EMPTY", "expected": false}
+      ],
+      "exercises": ["pgd_is_empty", "pgd_slots_used", "pgd_memory_footprint", "pgd_disk_footprint", "pgdc_reset", "pgdc_get_next_point", "pgd_free"]
+    },
+    {
+      "test": "PGD.Create",
+      "lines": "80-100",
+      "page_types": ["GORILLA_32BIT (page_type)"],
+      "inputs": {"slots": "slots_for_page(1024 * 1024): 1048576 for gorilla (stored as 0 in the uint16_t pgd->slots), 1024 for PAGE_METRICS", "values": "n = i for i in [0, slots), flags SN_DEFAULT_FLAGS (0x01000000), count 1, anomaly_count 1, point_in_time_ut = i, expected_slot = i"},
+      "operations": [
+        {"line": 82, "op": "pg = pgd_create(page_type, slots)"},
+        {"line": 89, "op": "loop i in [0, slots): pgd_append_point(pg, i, i, 0, 0, 1, 1, SN_DEFAULT_FLAGS, i)"},
+        {"line": "94-97", "op": "EXPECT_DEATH(pgd_append_point(pg, slots, slots, 0, 0, 1, 1, SN_DEFAULT_FLAGS, slots))", "note": "used == slots -> pgd_fatal 'attempted to write beyond page size' (page.c:951-953)"},
+        {"line": 99, "op": "pgd_free(pg)"}
+      ],
+      "expects": [
+        {"line": 84, "macro": "EXPECT_EQ", "expr": "pgd_type(pg)", "expected": "page_type (2)"},
+        {"line": 85, "macro": "EXPECT_TRUE", "expr": "pgd_is_empty(pg) before any append", "expected": true, "note": "used == 0 and PAGE_OPTION_ALL_VALUES_EMPTY set by pgd_create (page.c:476)"},
+        {"line": 86, "macro": "EXPECT_EQ", "expr": "pgd_slots_used(pg)", "expected": 0},
+        {"line": 90, "macro": "EXPECT_FALSE", "expr": "pgd_is_empty(pg) after each append", "expected": false, "note": "pack(0, SN_DEFAULT_FLAGS) = 0x01000000 != SN_EMPTY_SLOT clears ALL_VALUES_EMPTY (page.c:960-961)"},
+        {"line": 92, "macro": "EXPECT_EQ", "expr": "pgd_slots_used(pg)", "expected": "slots"},
+        {"line": 94, "macro": "EXPECT_DEATH", "expr": "append at expected_slot == slots", "expected": "process dies"}
+      ],
+      "exercises": ["pgd_create", "pgd_type", "pgd_is_empty", "pgd_slots_used", "pgd_append_point", "pgd_free"]
+    },
+    {
+      "test": "PGD.CursorFullPage",
+      "lines": "102-155",
+      "page_types": ["GORILLA_32BIT (page_type)"],
+      "inputs": {"slots": "slots_for_page(1024 * 1024)", "values": "n = slot for slot in [0, slots), SN_DEFAULT_FLAGS, count 1, anomaly_count 1"},
+      "operations": [
+        {"line": "104-107", "op": "create, fill every slot"},
+        {"line": "109-125", "op": "twice: pgdc_reset(&cursor, pg, 0), read every slot, then read at position slots"},
+        {"line": "127-143", "op": "twice: pgdc_reset(&cursor, pg, slots / 2), read slots/2 .. slots-1, then read at slots"},
+        {"line": "146-152", "op": "pgdc_reset(&cursor, pg, 2 * slots) then read at 2 * slots", "note": "gorilla seek clamps position to the entry count (page.c:1038-1039); position >= slots returns false (page.c:1087)"}
+      ],
+      "expects": [
+        {"line": 115, "macro": "EXPECT_TRUE", "expr": "pgdc_get_next_point(&cursor, slot, &sp) for every slot", "expected": true},
+        {"line": 117, "macro": "EXPECT_EQ", "expr": "slot == (size_t)sp.min", "expected": true},
+        {"line": 118, "macro": "EXPECT_EQ", "expr": "sp.min == sp.max", "expected": true},
+        {"line": 119, "macro": "EXPECT_EQ", "expr": "sp.min == sp.sum", "expected": true},
+        {"line": 120, "macro": "EXPECT_EQ", "expr": "sp.count", "expected": 1},
+        {"line": 121, "macro": "EXPECT_EQ", "expr": "sp.anomaly_count", "expected": 0, "note": "anomaly_count 1 passed to append is ignored; the read side derives it from bit 24 (page.c:1107)"},
+        {"line": 124, "macro": "EXPECT_FALSE", "expr": "read at position slots", "expected": false},
+        {"lines": "133-139", "macro": "same six expectations for the half-page reads", "expected": "as above"},
+        {"line": 142, "macro": "EXPECT_FALSE", "expr": "read at position slots", "expected": false},
+        {"line": 151, "macro": "EXPECT_FALSE", "expr": "read at 2 * slots after an out-of-bounds seek", "expected": false}
+      ],
+      "exercises": ["pgd_create", "pgd_append_point", "pgdc_reset", "pgdc_seek", "pgdc_get_next_point", "gorilla_writer_get_reader", "gorilla_reader_read", "unpack_storage_number"]
+    },
+    {
+      "test": "PGD.CursorHalfPage",
+      "lines": "157-195",
+      "page_types": ["GORILLA_32BIT (page_type)"],
+      "inputs": {"slots": "slots_for_page(1024 * 1024)", "values": "n = slot, first for [0, slots/2) then for [slots/2, slots)"},
+      "operations": [
+        {"line": "165-166", "op": "append the first half"},
+        {"line": 168, "op": "pgdc_reset(&cursor, pg, 0) and read the first half"},
+        {"line": 184, "op": "pgdc_reset(&cursor, pg, slots / 2)", "note": "the cursor's slot count is captured at seek time: gorilla_writer_entries (page.c:1034) or used (page.c:1056)"},
+        {"line": "186-187", "op": "append the second half after the reset"}
+      ],
+      "expects": [
+        {"lines": "171-177", "macro": "EXPECT_TRUE / EXPECT_EQ", "expr": "same per-point checks as CursorFullPage for the first half", "expected": "as CursorFullPage"},
+        {"line": 179, "macro": "EXPECT_FALSE", "expr": "read at slots / 2", "expected": false},
+        {"line": 190, "macro": "EXPECT_FALSE", "expr": "read slots/2 .. slots-1 with the cursor reset before the second half was appended", "expected": false},
+        {"line": 192, "macro": "EXPECT_FALSE", "expr": "read at slots", "expected": false}
+      ],
+      "exercises": ["pgd_append_point", "pgdc_reset", "pgdc_seek", "pgdc_get_next_point", "gorilla_writer_entries"]
+    },
+    {
+      "test": "PGD.MemoryFootprint",
+      "lines": "197-239",
+      "page_types": ["GORILLA_32BIT (page_type); expectations also given for PAGE_METRICS"],
+      "inputs": {
+        "slots": "slots_for_page(1024 * 1024)",
+        "generator": {"engine": "std::mt19937", "seed": "std::random_device rand_dev; gen(rand_dev()) - non-deterministic", "distribution": "std::uniform_int_distribution<uint32_t>(0, UINT32_MAX)", "count": "slots", "use": "n = distr(gen) converted to double, SN_DEFAULT_FLAGS", "portability": "uniform_int_distribution is implementation-defined; libstdc++ (GCC 14.2) returns the raw engine output when the distribution range equals the engine range, checked for the first 100000 outputs of std::mt19937(5489); std::mt19937 itself is fully specified (its 10000th output from the default seed is 4123659995, checked)"}
+      },
+      "operations": [
+        {"line": 199, "op": "pg = pgd_create(page_type, slots)"},
+        {"line": "219-222", "op": "append slots random values"},
+        {"note": "pg is never freed"}
+      ],
+      "expects": [
+        {"line": 212, "macro": "EXPECT_NEAR", "expr": "pgd_memory_footprint(pg) of the empty page", "expected": {"PAGE_METRICS": "slots * 4 +- 128", "PAGE_GORILLA_METRICS": "128 * 4 = 512 +- 128"}},
+        {"line": 238, "macro": "EXPECT_NEAR", "expr": "pgd_memory_footprint(pg) of the full page", "expected": {"PAGE_METRICS": "slots * 4 +- 128", "PAGE_GORILLA_METRICS": "slots * 4 +- slots * 4 / 10"}}
+      ],
+      "exercises": ["pgd_create", "pgd_memory_footprint", "pgd_append_point"],
+      "note": "memory footprint = ARAL element sizes of the PGD, writer and buffers (page.c:759-768): an in-memory property, not an on-disk format"
+    },
+    {
+      "test": "PGD.DiskFootprint",
+      "lines": "241-294",
+      "page_types": ["GORILLA_32BIT (page_type); expectations also given for PAGE_METRICS"],
+      "inputs": {
+        "slots": "slots_for_page(1024 * 1024)",
+        "generator": {"engine": "std::mt19937", "seed": "std::random_device - non-deterministic", "distribution": "std::uniform_int_distribution<uint32_t>(0, UINT32_MAX)", "count": "16 for the first page, then the next 192 outputs of the same generator for the second page"},
+        "materialized": "gorilla-page.json cases disk_footprint_random_16_seed5489 and disk_footprint_random_192_seed5489 use seed 5489 (the std::mt19937 default)"
+      },
+      "operations": [
+        {"line": "250-255", "op": "append 16 random values"},
+        {"line": 268, "op": "pgd_disk_footprint(pg)"},
+        {"line": "270-279", "op": "pgd_free, new page, append 192 random values"},
+        {"line": 291, "op": "pgd_disk_footprint(pg)"}
+      ],
+      "expects": [
+        {"line": 268, "macro": "EXPECT_EQ", "expr": "pgd_disk_footprint(pg) after 16 values", "expected": {"PAGE_METRICS": 64, "PAGE_GORILLA_METRICS": 512}},
+        {"line": 291, "macro": "EXPECT_EQ", "expr": "pgd_disk_footprint(pg) after 192 values", "expected": {"PAGE_METRICS": 768, "PAGE_GORILLA_METRICS": 1024}}
+      ],
+      "exercises": ["pgd_append_point", "pgd_disk_footprint", "gorilla_writer_write (buffer growth page.c:963-976)"]
+    },
+    {
+      "test": "PGD.CopyToExtent",
+      "lines": "296-327",
+      "page_types": ["GORILLA_32BIT only (the expectations are gorilla buffer offsets)"],
+      "inputs": {"slots": "slots_for_page(1024 * 1024)", "values": "one point: n = 666, count 1, anomaly_count 0, SN_DEFAULT_FLAGS; pack_storage_number(666, SN_DEFAULT_FLAGS) = 0x21659fa0"},
+      "operations": [
+        {"line": 301, "op": "pgd_append_point(pg, 0, 666, 0, 0, 1, 0, SN_DEFAULT_FLAGS, 0)"},
+        {"line": 303, "op": "size_in_bytes = pgd_disk_footprint(pg)"},
+        {"line": "307-311", "op": "uint32_t disk_buffer[size_in_bytes / 4], alignas(uintptr_t), filled with 0xFFFFFFFF"},
+        {"line": 313, "op": "pgd_copy_to_extent(pg, disk_buffer, size_in_bytes)"}
+      ],
+      "expects": [
+        {"line": 304, "macro": "EXPECT_EQ", "expr": "size_in_bytes", "expected": 512},
+        {"line": 315, "macro": "EXPECT_EQ", "expr": "disk_buffer[0] (low half of next)", "expected": 0},
+        {"line": 316, "macro": "EXPECT_EQ", "expr": "disk_buffer[1] (high half of next)", "expected": 0},
+        {"line": 317, "macro": "EXPECT_EQ", "expr": "disk_buffer[2] (entries)", "expected": 1},
+        {"line": 318, "macro": "EXPECT_EQ", "expr": "disk_buffer[3] (nbits)", "expected": 32},
+        {"line": 320, "macro": "EXPECT_EQ", "expr": "disk_buffer[4]", "expected": "pack_storage_number(666, SN_DEFAULT_FLAGS) = 0x21659fa0"},
+        {"line": 324, "macro": "EXPECT_EQ", "expr": "disk_buffer[5 .. 127]", "expected": 0, "note": "comment at 322: the rest of the page is zeroed so it compresses"}
+      ],
+      "exercises": ["pgd_disk_footprint", "pgd_copy_to_extent", "gorilla_writer_serialize"],
+      "materialized": "gorilla-page.json case copy_to_extent_666"
+    },
+    {
+      "test": "PGD.Roundtrip",
+      "lines": "329-378",
+      "page_types": ["GORILLA_32BIT (page_type)"],
+      "inputs": {"slots": "slots_for_page(1024 * 1024)", "values": "n = i for i in [0, slots), count 1, anomaly_count 1, SN_DEFAULT_FLAGS"},
+      "operations": [
+        {"line": "333-343", "op": "fill, pgd_disk_footprint, copy into a 0xFF-filled aligned buffer"},
+        {"line": 345, "op": "pg_disk = pgd_create_from_disk_data(page_type, disk_buffer, size_in_bytes)"},
+        {"line": "355-374", "op": "for i in [0, 10): reset a collector cursor and a disk cursor at i * 1024, read both to slots, compare, then read at slots"}
+      ],
+      "expects": [
+        {"line": 346, "macro": "EXPECT_EQ", "expr": "pgd_slots_used(pg_disk)", "expected": "slots"},
+        {"line": 350, "macro": "EXPECT_NEAR", "expr": "pgd_memory_footprint(pg_disk)", "expected": "size_in_bytes +- 128"},
+        {"line": 353, "macro": "EXPECT_DEATH", "expr": "pgd_disk_footprint(pg_disk)", "expected": "process dies", "note": "only an internal_fatal (page.c:873-874): with NETDATA_INTERNAL_CHECKS off it returns raw.size and sets the state to SCHEDULED_FOR_FLUSHING instead of dying"},
+        {"line": 366, "macro": "EXPECT_TRUE", "expr": "collector cursor read", "expected": true},
+        {"line": 367, "macro": "EXPECT_TRUE", "expr": "disk cursor read", "expected": true},
+        {"line": 369, "macro": "EXPECT_EQ", "expr": "sp_collector == sp_disk (operator== page_test.cc:10-33)", "expected": true},
+        {"line": 372, "macro": "EXPECT_FALSE", "expr": "collector read at slots", "expected": false},
+        {"line": 373, "macro": "EXPECT_FALSE", "expr": "disk read at slots", "expected": false}
+      ],
+      "exercises": ["pgd_copy_to_extent", "pgd_create_from_disk_data", "gorilla_buffer_patch", "pgd_memory_footprint", "pgdc_reset", "pgdc_get_next_point", "gorilla_reader_init", "gorilla_reader_read"],
+      "note": "with PAGE_METRICS slots is 1024, and for i >= 2 the loop at line 365 starts above slots and runs until size_t wraps (never terminates)",
+      "materialized": "gorilla-page.json case sequence_0_1023 (1024 slots, the tier-0 maximum)"
+    },
+    {
+      "test": "PGD.RejectCorruptGorillaDiskChain",
+      "lines": "380-400",
+      "page_types": ["GORILLA_32BIT"],
+      "inputs": {"slots": "slots_for_page(16) = 16", "values": "n = i for i in [0, 16), count 1, anomaly_count 1, SN_DEFAULT_FLAGS (one 512-byte buffer)"},
+      "operations": [
+        {"line": "384-391", "op": "fill, footprint (512), copy to extent"},
+        {"line": "393-394", "op": "write the address of the last buffer into its own next field (a non-zero next on the last buffer)"},
+        {"line": 396, "op": "pg_disk = pgd_create_from_disk_data(page_type, disk_buffer, 512)"}
+      ],
+      "expects": [
+        {"line": 397, "macro": "EXPECT_EQ", "expr": "pg_disk", "expected": "PGD_EMPTY", "note": "gorilla_buffer_patch returns false when a next pointer would step past nbuffers (gorilla.cc:293-295); page.c:546-552 logs 'DBENGINE: invalid gorilla disk page chain.' and returns PGD_EMPTY"}
+      ],
+      "exercises": ["pgd_create_from_disk_data", "gorilla_buffer_patch"],
+      "materialized": "gorilla-disk-load.json case reject_last_buffer_next_nonzero (canonical next = 1 instead of an address)"
+    },
+    {
+      "test": "PGD.StopCorruptGorillaDiskEntriesAtEncodedBits",
+      "lines": "402-430",
+      "page_types": ["GORILLA_32BIT"],
+      "inputs": {"slots": "slots_for_page(1) = 1 (internal_fatal(slots == 1) at page.c:483 is a no-op here; with NETDATA_INTERNAL_CHECKS this test would die at pgd_create)", "values": "one point n = 666, count 1, anomaly_count 1, SN_DEFAULT_FLAGS"},
+      "operations": [
+        {"line": "403-412", "op": "create, append 666, footprint (512), copy"},
+        {"line": "414-415", "op": "header.entries++ (1 -> 2); nbits stays 32"},
+        {"line": 417, "op": "pg_disk = pgd_create_from_disk_data"},
+        {"line": 421, "op": "pgdc_reset(&cursor, pg_disk, 0)"}
+      ],
+      "expects": [
+        {"line": 418, "macro": "EXPECT_EQ", "expr": "pgd_slots_used(pg_disk)", "expected": 2, "note": "used = sum of header.entries, not cross-checked (page.c:554)"},
+        {"line": 424, "macro": "EXPECT_TRUE", "expr": "read position 0", "expected": true},
+        {"line": 425, "macro": "EXPECT_EQ", "expr": "(uint32_t)sp.min", "expected": 666},
+        {"line": 426, "macro": "EXPECT_FALSE", "expr": "read position 1", "expected": false, "note": "the reader's bit bound: position 32 == capacity 32 (gorilla.cc:355-356)"}
+      ],
+      "exercises": ["pgd_create_from_disk_data", "gorilla_buffer_patch", "gorilla_reader_read", "pgdc_get_next_point"],
+      "materialized": "gorilla-disk-load.json case entries_plus_one"
+    },
+    {
+      "test": "PGD.RejectCorruptGorillaDiskNbits",
+      "lines": "432-450",
+      "page_types": ["GORILLA_32BIT"],
+      "inputs": {"slots": "slots_for_page(1) = 1", "values": "one point n = 666"},
+      "operations": [
+        {"line": "435-441", "op": "create, append, footprint, copy"},
+        {"line": "443-444", "op": "header.nbits = RRDENG_GORILLA_32BIT_BUFFER_SIZE * CHAR_BIT = 4096"},
+        {"line": 446, "op": "pg_disk = pgd_create_from_disk_data"}
+      ],
+      "expects": [
+        {"line": 447, "macro": "EXPECT_EQ", "expr": "pg_disk", "expected": "PGD_EMPTY", "note": "a buffer is valid only if nbits < 128 * 32 - 16 * 8 = 3968 (gorilla.cc:32-38, 290-291)"}
+      ],
+      "exercises": ["pgd_create_from_disk_data", "gorilla_buffer_patch"],
+      "materialized": "gorilla-disk-load.json cases reject_nbits_4096, reject_nbits_3968, accept_nbits_3967"
+    }
+  ],
+  "harness": {
+    "line": "452-465",
+    "pgd_test": "pgc_create('pgd-tests-cache', 32 MiB, NULL, 64, NULL, NULL, 10, 10, 1000, 10, PGC_OPTIONS_NONE, 1, 11); pgd_init_arals(); InitGoogleTest; RUN_ALL_TESTS; pgc_destroy(dummy_cache). The cache is never used by page.c."
+  }
+}
