@@ -322,6 +322,95 @@ fn tail_spans_carry_the_calculator_tokens() {
     assert_eq!(got, expected);
 }
 
+type SpanKey = ([u8; 16], [u8; 8]);
+type CoreTokens = BTreeMap<String, BTreeSet<String>>;
+
+fn core_tokens<'a>(fields: impl Iterator<Item = (&'a str, &'a str)>) -> CoreTokens {
+    let mut core = CoreTokens::new();
+    for (field, value) in fields {
+        if CORE_FIELDS.contains(&field) {
+            core.entry(field.to_string())
+                .or_default()
+                .insert(value.to_string());
+        }
+    }
+    core
+}
+
+/// Each row of an index file: its span and core tokens.
+fn file_core_tokens(bytes: &[u8], out: &mut BTreeMap<SpanKey, Vec<CoreTokens>>) {
+    let reader = sfst::IndexReader::open(bytes).unwrap();
+    let positions: Vec<u32> = (0..reader.summary().record_count).collect();
+    let rows = reader.materialize_rows(&positions).unwrap();
+    let traces = reader.trace_ids().unwrap();
+    let spans = reader.span_ids().unwrap();
+    for (&position, row) in positions.iter().zip(&rows) {
+        let key = (
+            *traces.get(position as usize).as_bytes(),
+            *spans.get(position as usize).as_bytes(),
+        );
+        let fields = row.fields.iter().map(|(f, v)| (f.as_str(), v.as_str()));
+        out.entry(key).or_default().push(core_tokens(fields));
+    }
+}
+
+/// FLAT-13: the sealed file, and the live WAL cut into chunk images at several
+/// split points with the rest as the tail, store for every span the same core
+/// tokens (`_role` and `_duration_band` included) as the calculator.
+#[test]
+fn every_layout_stores_each_span_s_core_tokens() {
+    let stored = store(240, 21);
+    let mut expected: BTreeMap<SpanKey, Vec<CoreTokens>> = BTreeMap::new();
+    for span in &stored.oracle {
+        let key = (span.trace_id.unwrap(), span.span_id.unwrap());
+        let mut fields = Vec::new();
+        for (field, values) in span.fields.iter() {
+            for value in values {
+                fields.push((field, value));
+            }
+        }
+        expected
+            .entry(key)
+            .or_default()
+            .push(core_tokens(fields.into_iter()));
+    }
+    for copies in expected.values_mut() {
+        copies.sort();
+    }
+
+    let header = wal::HEADER_SIZE as u64;
+    let whole = common::whole_range(&stored.live_wal);
+    let frames = wal::scan_frame_boundaries(&stored.live_wal, whole).unwrap();
+    let mut layouts = BTreeSet::new();
+    for min_entries in [1, 13, 60, u64::MAX] {
+        let mut got: BTreeMap<SpanKey, Vec<CoreTokens>> = BTreeMap::new();
+        file_core_tokens(&stored.sealed, &mut got);
+        let chunks = wal::prefix::chunk_boundaries(&frames, header, min_entries);
+        for chunk in &chunks {
+            let (_, bytes) =
+                ng_index::build_sfst_traces_range(&stored.live_wal, chunk.range).unwrap();
+            file_core_tokens(&bytes, &mut got);
+        }
+        let tail = wal::prefix::tail_start(&chunks, header);
+        if tail < whole.end() {
+            let scan =
+                TraceWalScan::scan_range(&stored.live_wal, wal::FrameRange::new(tail, whole.end()))
+                    .unwrap();
+            for (trace_id, span) in scan.spans_with_ids() {
+                let key = (*trace_id.as_bytes(), *span.span_id.as_bytes());
+                let fields = span.fields.iter().map(|(f, v)| (f.as_str(), v.as_str()));
+                got.entry(key).or_default().push(core_tokens(fields));
+            }
+        }
+        for copies in got.values_mut() {
+            copies.sort();
+        }
+        layouts.insert((chunks.len(), tail < whole.end()));
+        assert_eq!(got, expected, "chunks of at least {min_entries} spans");
+    }
+    assert!(layouts.len() >= 3, "the splits differ: {layouts:?}");
+}
+
 /// ORC-HIST and ORC-TOTALS on the file statistics the explorer builds on: the
 /// entry-span histogram stacked by status, summed over the sealed file and the
 /// live chunk image, equals the calculator's.
