@@ -326,6 +326,13 @@ fn run(idx: usize, args: &[u8]) -> (Status, Option<Vec<u8>>) {
             if let Some(ctx) = CTX.get() {
                 netdata_agent_log::limits_unlimited();
                 conf::load_cloud_conf(&mut lock(&ctx.cloud), &ctx.cloud_conf_file, true);
+                // load_claiming_state()'s database side, as at startup
+                let meta = ctx.meta.upgrade();
+                let localhost = ctx.shared.hosts.localhost();
+                meta_store::invalidate_node_instances(meta.as_deref(), localhost);
+                if let Some(id) = meta_store::host_id(localhost) {
+                    ctx.metaqueue.store_claim_id(meta, id);
+                }
                 netdata_agent_log::limits_reset();
             }
             (

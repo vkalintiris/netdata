@@ -493,6 +493,8 @@ impl Host {
             let mut info = self.info.write().unwrap_or_else(PoisonError::into_inner);
             info.health_enabled = wanted.health_enabled;
             info.system_info = wanted.system_info.clone();
+            // under the same lock as the flags, as rrdhost_update() does: a store that takes INFO sees it
+            self.set_last_connected_s(now_realtime_s());
             self.set_meta_flags(meta_flags::INFO | meta_flags::CLAIMID | meta_flags::UPDATE);
             info.os.clone_from(&wanted.os);
             info.timezone.clone_from(&wanted.timezone);
@@ -569,7 +571,6 @@ impl Host {
         for (priority, text) in records {
             nd_log!(Source::Daemon, priority, "{text}");
         }
-        self.set_last_connected_s(now_realtime_s());
         // the host connected again: it gets its function registry back
         if self.archived.swap(false, Ordering::AcqRel) {
             let hostname = self.hostname();

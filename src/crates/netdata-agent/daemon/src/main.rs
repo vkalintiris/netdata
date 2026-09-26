@@ -595,7 +595,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     // load_claiming_state(), for an agent that is not claimed
     meta_store::invalidate_node_instances(meta.as_deref(), hosts.localhost());
     if let Some(id) = meta_store::host_id(hosts.localhost()) {
-        metasync.store_claim_id(meta.clone(), id);
+        metasync.queue().store_claim_id(meta.clone(), id);
     }
     startup.step("static threads");
     // Flood protection back on, the agent event medians cached (before this start's event), then

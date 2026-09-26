@@ -123,6 +123,8 @@ pub fn store_host_info_and_metadata(meta: &MetaDb, host: &Host) {
 /// the chart is flagged (the labels only when their version moved), and its flagged dimensions.
 struct ChartScan {
     chart: Arc<Chart>,
+    /// `rrdset_name()`, for the failure records.
+    name: String,
     meta: Option<ChartMeta>,
     labels: Option<(u32, Labels)>,
     dims: Vec<(Arc<Dim>, DimMeta)>,
@@ -166,37 +168,38 @@ fn scan_host(
             recheck = true;
             break;
         }
-        let mut scan = ChartScan {
-            meta: None,
-            labels: None,
-            dims: Vec::new(),
-            chart: Arc::clone(&chart),
-        };
-        if chart.take_metadata_update() {
-            let m = chart.meta();
-            if m.labels.version() != chart.labels_saved_version() {
-                scan.labels = Some((m.labels.version(), m.labels.clone()));
-            }
-            scan.meta = Some(m);
+        let meta = chart.take_metadata_update().then(|| chart.meta());
+        let dims: Vec<(Arc<Dim>, DimMeta)> = chart
+            .dims()
+            .into_iter()
+            .filter_map(|dim| chart.take_dim_metadata_update(&dim).map(|m| (dim, m)))
+            .collect();
+        if meta.is_none() && dims.is_empty() {
+            continue;
         }
-        for dim in chart.dims() {
-            if let Some(m) = chart.take_dim_metadata_update(&dim) {
-                scan.dims.push((dim, m));
-            }
+        let labels = meta
+            .as_ref()
+            .filter(|m| m.labels.version() != chart.labels_saved_version())
+            .map(|m| (m.labels.version(), m.labels.clone()));
+        let name = match &meta {
+            Some(m) => m.name.clone(),
+            None => chart.meta().name,
         }
-        scans.push(scan);
+        .unwrap_or_else(|| chart.id().to_string());
+        scans.push(ChartScan {
+            chart,
+            name,
+            meta,
+            labels,
+            dims,
+        });
     }
     let hostname = host.hostname();
     let outcome = meta.scan_host(|db| {
         let mut outcome = ScanOutcome::default();
         for scan in &scans {
             let chart = &scan.chart;
-            let name = || {
-                scan.meta
-                    .as_ref()
-                    .and_then(|m| m.name.clone())
-                    .unwrap_or_else(|| chart.meta().name.unwrap_or_else(|| chart.id().to_string()))
-            };
+            let name = || &scan.name;
             let mut labels_stored = None;
             let mut chart_failed = false;
             if let Some(m) = &scan.meta {

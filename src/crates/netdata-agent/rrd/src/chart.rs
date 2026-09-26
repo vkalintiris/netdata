@@ -380,6 +380,10 @@ impl Chart {
 
     /// The writer's check and clear of `RRDSET_FLAG_METADATA_UPDATE`: whether it was set.
     pub fn take_metadata_update(&self) -> bool {
+        // the common case, nothing to store, under the read lock
+        if self.flags() & flags::METADATA_UPDATE == 0 {
+            return false;
+        }
         self.update_meta(|m| {
             let was = m.flags & flags::METADATA_UPDATE != 0;
             m.flags &= !flags::METADATA_UPDATE;
@@ -406,6 +410,14 @@ impl Chart {
     /// The writer's step on a dimension (`metadata_scan_host()`): when `RRDDIM_FLAG_METADATA_UPDATE` is set, it is
     /// cleared, `RRDDIM_FLAG_META_HIDDEN` follows the `hidden` option, and the metadata to store is returned.
     pub fn take_dim_metadata_update(&self, dim: &Dim) -> Option<DimMeta> {
+        let flags = dim
+            .meta
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .flags;
+        if flags & dim_flags::METADATA_UPDATE == 0 {
+            return None;
+        }
         dim.update_meta(|m| {
             if m.flags & dim_flags::METADATA_UPDATE == 0 {
                 return None;
@@ -891,29 +903,24 @@ impl Charts {
                         m.priority = spec.priority;
                         changed = true;
                     }
-                    let mut plugin_or_module = false;
-                    for (field, value) in [
-                        (&mut m.plugin, Some(spec.plugin)),
-                        (&mut m.module, spec.module),
-                    ] {
-                        if let Some(value) = value.filter(|v| !v.is_empty() && *v != field.as_str())
-                        {
-                            *field = rrd_string(value);
-                            plugin_or_module = true;
-                        }
-                    }
+                    // rrdset_metadata_field_update(): a non-empty value whose sanitized text differs
+                    let update = |field: &mut String, value: Option<&str>| {
+                        let Some(value) = value.filter(|v| !v.is_empty()).map(rrd_string) else {
+                            return false;
+                        };
+                        let changed = value != *field;
+                        *field = value;
+                        changed
+                    };
+                    let plugin_or_module = update(&mut m.plugin, Some(spec.plugin))
+                        | update(&mut m.module, spec.module);
                     for (field, value) in [
                         (&mut m.title, Some(spec.title)),
                         (&mut m.units, Some(spec.units)),
                         (&mut m.family, spec.family),
                         (&mut m.context, spec.context),
                     ] {
-                        // rrdset_metadata_field_update(): only non-empty values that differ.
-                        if let Some(value) = value.filter(|v| !v.is_empty() && *v != field.as_str())
-                        {
-                            *field = rrd_string(value);
-                            changed = true;
-                        }
+                        changed |= update(field, value);
                     }
                     if m.chart_type != spec.chart_type {
                         m.chart_type = spec.chart_type;
@@ -1240,5 +1247,21 @@ mod tests {
         for (id, t) in types.into_iter().enumerate() {
             assert_eq!((t.id(), ChartType::from_id(t.id())), (id as i32, t));
         }
+    }
+
+    /// C compares the sanitized strings (`rrdset_metadata_field_update()`): a chart defined again with a plugin or a
+    /// title that sanitizing changes is unchanged.
+    #[test]
+    fn a_redefinition_compares_sanitized_fields() {
+        let host = Arc::new(AtomicU32::new(0));
+        let charts = Charts::new(Arc::default(), Arc::clone(&host));
+        let mut s = spec("t", "c", None);
+        s.plugin = " spaced  plugin ";
+        s.title = " spaced  title ";
+        s.module = Some(" spaced  module ");
+        let (chart, _) = charts.create(&s);
+        assert!(chart.take_metadata_update());
+        charts.create(&s);
+        assert!(!chart.take_metadata_update(), "the same plugin and module");
     }
 }

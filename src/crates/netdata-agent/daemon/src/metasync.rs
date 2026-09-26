@@ -129,6 +129,11 @@ enum Cmd {
 pub struct MetaQueue(mpsc::Sender<Cmd>);
 
 impl MetaQueue {
+    /// `metaqueue_store_claim_id()`.
+    pub fn store_claim_id(&self, meta: Option<Arc<MetaDb>>, id: [u8; 16]) {
+        let _ = self.0.send(Cmd::StoreClaimId(meta, id));
+    }
+
     /// `metaqueue_delete_dimension_uuid()`: a freed dimension's row goes at the next job (a failed queue drops it).
     pub fn delete_dimension(&self, uuid: [u8; 16]) {
         let _ = self.0.send(Cmd::DelDimension(uuid));
@@ -221,6 +226,8 @@ impl MetaSync {
                         if pool
                             .queue(move || {
                                 store_job(&w, &shared, pending);
+                                // the exit closes the database once METASYNC has seen this job end
+                                drop(w);
                                 let _ = tx.send(Cmd::StoreDone);
                             })
                             .is_err()
@@ -271,11 +278,6 @@ impl MetaSync {
     /// A handle that queues commands from other threads.
     pub fn queue(&self) -> MetaQueue {
         MetaQueue(self.tx.clone())
-    }
-
-    /// `metaqueue_store_claim_id()`.
-    pub fn store_claim_id(&self, meta: Option<Arc<MetaDb>>, id: [u8; 16]) {
-        let _ = self.tx.send(Cmd::StoreClaimId(meta, id));
     }
 
     /// `metadata_sync_shutdown()`, at the exit step "stop metasync threads".

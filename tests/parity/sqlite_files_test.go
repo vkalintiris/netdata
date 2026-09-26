@@ -188,6 +188,15 @@ func TestSQLiteFiles(t *testing.T) {
 				wait = time.Second
 			}
 			time.Sleep(wait)
+			if name == "child" {
+				// the periodic job stored the child while both run (the final store would too, later)
+				for _, side := range p.Each() {
+					db := filepath.Join(side.Daemon.Opts.RunDir, "cache", "netdata-meta.db")
+					if !strings.Contains(dumpDB(t, db, "--table", "host"), hexID(childHost.MachineGUID)) {
+						t.Errorf("%s: no child host row before the stop", side.Role)
+					}
+				}
+			}
 			compareFiles(t, p, hwLabels, writer...)
 			if name == "child-final" {
 				if o, c := writerRecords(t, p.Oracle), writerRecords(t, p.Candidate); o != c {
@@ -202,6 +211,31 @@ func TestSQLiteFiles(t *testing.T) {
 		o.SeedCache = seed
 		compareFiles(t, StartPair(t, o, parentIdentity), hwLabels,
 			append([]string{"--table", "agent_event_log"}, writer...)...)
+	})
+	t.Run("node-ids", func(t *testing.T) {
+		// an agent without a claimed id drops every node id at start (D61.3)
+		dir := t.TempDir()
+		for _, f := range []string{"netdata-meta.db", "context-meta.db"} {
+			b, err := os.ReadFile(filepath.Join(seed, f))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, f), b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		execDB(t, filepath.Join(dir, "netdata-meta.db"),
+			"UPDATE node_instance SET node_id = x'0102030405060708090a0b0c0d0e0f10'")
+		o := opts
+		o.SeedCache = dir
+		p := StartPair(t, o, parentIdentity)
+		compareFiles(t, p, hwLabels, append([]string{"--table", "agent_event_log"}, writer...)...)
+		for _, side := range p.Each() {
+			db := filepath.Join(side.Daemon.Opts.RunDir, "cache", "netdata-meta.db")
+			if strings.Contains(dumpDB(t, db, "--table", "node_instance"), "0102030405060708090a0b0c0d0e0f10") {
+				t.Errorf("%s: a node id survived the start", side.Role)
+			}
+		}
 	})
 	t.Run("newer-versions", func(t *testing.T) {
 		dir := t.TempDir()
