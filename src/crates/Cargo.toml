@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["jf"]
+exclude = ["jf", "vendor/libsqlite3-sys"]
 members = [
     # Individual crates
     "journal-common",
@@ -66,6 +66,7 @@ members = [
     "netdata-agent/ingest",
     "netdata-agent/inicfg",
     "netdata-agent/log",
+    "netdata-agent/metadata",
     "netdata-agent/nrpc",
     "netdata-agent/pluginsd-proto",
     "netdata-agent/query",
@@ -104,6 +105,7 @@ netdata-plugin-types = { path = "netdata-plugin/types" }
 netdata-agent-text = { path = "netdata-agent/text" }
 netdata-agent-inicfg = { path = "netdata-agent/inicfg" }
 netdata-agent-log = { path = "netdata-agent/log" }
+netdata-agent-metadata = { path = "netdata-agent/metadata" }
 netdata-agent-evloop = { path = "netdata-agent/evloop" }
 netdata-agent-web = { path = "netdata-agent/web" }
 netdata-agent-pluginsd-proto = { path = "netdata-agent/pluginsd-proto" }
@@ -121,6 +123,8 @@ tokio-stream = "0.1"
 tower = "0.5"
 tracing-opentelemetry = "0.32.0"
 static_assertions = "1.1"
+# SQLite as the C agent builds it: rusqlite over the patched libsqlite3-sys below (D59.1)
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "functions"] }
 thiserror = "2"
 zerocopy = { version = "0.9.0-alpha.0" }
 libc = "0.2"
@@ -316,6 +320,9 @@ flate2 = "1"
 brotli-decompressor = "5"
 reqwest = { version = "0.13.2", default-features = false }
 
+
+[patch.crates-io]
+libsqlite3-sys = { path = "vendor/libsqlite3-sys" }
 
 [profile.dev]
 opt-level = 1

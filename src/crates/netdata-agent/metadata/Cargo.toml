@@ -1,0 +1,14 @@
+[package]
+name = "netdata-agent-metadata"
+description = "The netdata agent's SQLite metadata databases"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rusqlite = { workspace = true }
+netdata-agent-log = { workspace = true }
+netdata-agent-text = { workspace = true }
