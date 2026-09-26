@@ -858,6 +858,26 @@ mod tests {
     }
 
     #[test]
+    fn normalize_trace_request_clears_a_wrong_length_span_id() {
+        let mut req = trace_req(
+            Span {
+                trace_id: vec![1u8; 16],
+                span_id: vec![2u8; 5],
+                parent_span_id: vec![3u8; 8],
+                ..Default::default()
+            },
+            None,
+            None,
+        );
+        let norm = normalize_trace_request(&mut req, 1, None);
+        assert_eq!((norm.bad_ids.trace, norm.bad_ids.span), (0, 1));
+        let span = &req.resource_spans[0].scope_spans[0].spans[0];
+        assert!(span.span_id.is_empty(), "malformed span_id cleared");
+        assert_eq!(span.trace_id, vec![1u8; 16]);
+        assert_eq!(span.parent_span_id, vec![3u8; 8]);
+    }
+
+    #[test]
     fn normalize_trace_request_keeps_conformant_ids() {
         let mut req = trace_req(
             Span {
