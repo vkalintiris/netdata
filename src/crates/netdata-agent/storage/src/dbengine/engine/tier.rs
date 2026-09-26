@@ -364,6 +364,11 @@ impl TierData {
         read(&self.files).contains_key(&fileno)
     }
 
+    /// The pairs' numbers, in order.
+    pub fn filenos(&self) -> Vec<u32> {
+        read(&self.files).keys().copied().collect()
+    }
+
     /// The pair extents are written to (a tier always has one).
     pub fn last_file(&self) -> Arc<DataFile> {
         read(&self.files)

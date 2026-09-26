@@ -10,13 +10,12 @@ use twox_hash::XxHash3_64;
 
 use super::cache::CachedPage;
 use super::mrg::Handle;
+use super::USEC_PER_SEC;
 use super::query::Dbengine;
 use crate::dbengine::RRD_STORAGE_TIERS;
 use crate::dbengine::format::descriptor::{point_size, uuid_text};
 use crate::dbengine::format::page::{PageBuilder, gorilla};
 use crate::storage_number::SN_EMPTY_SLOT;
-
-const USEC_PER_SEC: u64 = 1_000_000;
 
 /// `tier_page_size[]` on 64-bit hosts: the most bytes of points a tier's page holds.
 pub const TIER_PAGE_SIZE: [usize; RRD_STORAGE_TIERS] = [4096, 2048, 384, 384, 384];

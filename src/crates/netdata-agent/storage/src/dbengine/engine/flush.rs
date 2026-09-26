@@ -13,13 +13,12 @@ use super::cache::Batch;
 use super::io::write_retrying;
 use super::query::Dbengine;
 use super::runtime::Cmd;
+use super::USEC_PER_SEC;
 use super::tier::{DataFile, OpenPage, TierData};
 use crate::dbengine::format::BLOCK_SIZE;
 use crate::dbengine::format::descriptor::{PAGE_TYPE_GORILLA_32BIT, PageDescriptor};
 use crate::dbengine::format::extent;
 use crate::dbengine::format::journal_v1::{StoreData, encode_transaction};
-
-const USEC_PER_SEC: u64 = 1_000_000;
 
 /// `nd_log_limit_static_global_var(dbengine_rotate_erl, 10, 0)` and `(dbengine_erl, 10, 0)`.
 static ROTATING: ErrorLimit = ErrorLimit::new(10, 0);
@@ -79,10 +78,12 @@ impl Dbengine {
             let (engine, job_batch) = (Arc::clone(self), batch.clone());
             let job = move || {
                 engine.extent_write(&job_batch);
+                // the pages are the flusher's again before it makes them clean and evicts
+                drop(job_batch);
                 let _ = tx.send(());
             };
-            if pool.queue(job).is_ok() {
-                let _ = rx.recv();
+            // a job dropped without running (the pool gave up on its queue) is written here
+            if pool.queue(job).is_ok() && rx.recv().is_ok() {
                 return;
             }
         }
@@ -129,7 +130,7 @@ impl Dbengine {
         let mut pos = pos.expect("a reserve with no file to avoid places the extent");
         let mut id = td.next_transaction_id();
         td.flushed_to(df.fileno);
-        let mut moved = false;
+        let (mut moved, mut move_failed) = (false, false);
         let result = loop {
             let result = write_retrying(&df.file, &encoded.bytes, pos).and_then(|()| {
                 td.add_disk_space(real);
@@ -154,6 +155,7 @@ impl Dbengine {
                 &ROTATING,
                 Source::Daemon,
                 Priority::Err,
+                errno = errno(err);
                 "DBENGINE: tier {} datafile {} write failed ({}) - rotating to a new datafile and retrying the \
                  extent, to prevent data loss",
                 td.tier(),
@@ -165,6 +167,7 @@ impl Dbengine {
             let (next, next_pos) = self.reserve(td, real, Some(&df));
             df = next;
             let Some(next_pos) = next_pos else {
+                move_failed = true;
                 break result;
             };
             pos = next_pos;
@@ -172,10 +175,13 @@ impl Dbengine {
             td.flushed_to(df.fileno);
         };
         if let Err(err) = &result {
+            // after a failed move C's pair creation records left no errno
+            let last_errno = if move_failed { 0 } else { errno(err) };
             nd_log_limit!(
                 &LOST,
                 Source::Daemon,
                 Priority::Err,
+                errno = last_errno;
                 "DBENGINE: tier {} datafile {} write failed ({}) - the extent is lost",
                 td.tier(),
                 df.fileno,

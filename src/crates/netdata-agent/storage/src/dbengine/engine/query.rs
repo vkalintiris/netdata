@@ -396,7 +396,8 @@ impl Dbengine {
     ) -> usize {
         let tier = metric.tier();
         let data = &self.tiers[tier];
-        // the open cache stays read-locked for the pass (the writers take it alone)
+        // the file numbers first, then the open cache read-locked for the pass: the read path nests no locks
+        let filenos = if open { data.filenos() } else { Vec::new() };
         let open_list = open.then(|| data.open());
         let open_pages = open_list.as_ref().and_then(|l| l.pages(metric.uuid()));
         let mut found = 0;
@@ -454,7 +455,7 @@ impl Dbengine {
                     pd.page = Some(page);
                 }
                 if let Some(p) = open_page {
-                    if data.has_file(p.fileno) {
+                    if filenos.binary_search(&p.fileno).is_ok() {
                         pd.extent = Some((p.fileno, p.block, p.bytes));
                         pd.status |= DATAFILE_ACQUIRED | DISK_PENDING;
                     } else {

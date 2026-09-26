@@ -656,26 +656,30 @@ fn create_file(
     journal: bool,
 ) -> Option<IoFile> {
     let file = open_for_io(path, true, direct).ok()?;
-    if write_retrying(&file, superblock, 0).is_ok() {
+    let Err(err) = write_retrying(&file, superblock, 0) else {
         return Some(file);
-    }
+    };
     drop(file);
+    // the write's errno reaches C's record unless a failed unlink logged (and cleared it) first
+    let errno = err.raw_os_error().unwrap_or(0);
     if journal {
-        unlink_if_exists(&path.with_extension("njfv2"));
-        unlink_if_exists(path);
+        let v2 = unlink_if_exists(&path.with_extension("njfv2"));
+        let v1 = unlink_if_exists(path);
         nd_log_limit!(
             &JOURNAL_CREATE,
             Source::Daemon,
             Priority::Err,
+            errno = if v2 && v1 { errno } else { 0 };
             "DBENGINE: Failed to create journlfile \"{}\"",
             path.display()
         );
     } else {
-        unlink(path);
+        let removed = unlink(path);
         nd_log_limit!(
             &DATAFILE_CREATE,
             Source::Daemon,
             Priority::Err,
+            errno = if removed { errno } else { 0 };
             "DBENGINE: Failed to create datafile {}",
             path.display()
         );
