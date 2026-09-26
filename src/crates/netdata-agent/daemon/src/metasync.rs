@@ -10,6 +10,7 @@ use std::thread::JoinHandle;
 
 use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::{Priority, Source, nd_log, netdata_log_info};
+use netdata_agent_metadata::open::MetaDb;
 use netdata_agent_rrd::host::{Host, Hosts};
 use netdata_agent_text::duration::duration_to_string;
 
@@ -21,6 +22,8 @@ const VIRTUAL_HOST_OS: &str = "Netdata Virtual Host 1.0";
 enum Cmd {
     /// `METADATA_LOAD_HOST_CONTEXT`: load the pending hosts' contexts; vnodes report on the channel.
     LoadHostContexts(Arc<Hosts>, mpsc::Sender<()>),
+    /// `METADATA_STORE_CLAIM_ID`: a host's node instance with no claim id (D61.3).
+    StoreClaimId(Option<Arc<MetaDb>>, [u8; 16]),
     Shutdown,
 }
 
@@ -63,6 +66,9 @@ impl MetaSync {
                             let _ = pool
                                 .queue(move || ctx_hosts_load(&hosts, cpus, stack_size, &vnodes));
                         }
+                        Cmd::StoreClaimId(meta, id) => {
+                            crate::meta_store::store_claim_id(meta.as_deref(), &id);
+                        }
                         Cmd::Shutdown => break,
                     }
                 }
@@ -78,6 +84,11 @@ impl MetaSync {
         self.tx
             .send(Cmd::LoadHostContexts(Arc::clone(hosts), vnodes))
             .is_ok()
+    }
+
+    /// `metaqueue_store_claim_id()`.
+    pub fn store_claim_id(&self, meta: Option<Arc<MetaDb>>, id: [u8; 16]) {
+        let _ = self.tx.send(Cmd::StoreClaimId(meta, id));
     }
 
     /// `metadata_sync_shutdown()`, at the exit step "stop metasync threads".

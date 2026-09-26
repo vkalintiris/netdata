@@ -19,6 +19,7 @@ mod data;
 mod guid;
 mod host_labels;
 mod listen;
+mod meta_store;
 mod metasync;
 mod profile;
 mod router;
@@ -512,6 +513,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     }
     let hosts = Arc::new(Hosts::new(localhost));
+    // store_host_info_and_metadata() at the end of rrdhost_create(localhost)
+    match &meta {
+        Some(meta) => meta_store::store_host_info_and_metadata(meta, hosts.localhost()),
+        None => meta_store::store_localhost_without_database(hosts.localhost()),
+    }
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
         meta.detect_machine_guid_change(host_id);
     }
@@ -579,6 +585,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     host_labels::reload(&mut conf.netdata, &mut conf.cloud, &plugins_dir, &hosts);
     startup.step("saved bearer tokens");
     startup.step("claiming info");
+    // load_claiming_state(), for an agent that is not claimed
+    meta_store::invalidate_node_instances(meta.as_deref(), hosts.localhost());
+    if let Some(id) = meta_store::host_id(hosts.localhost()) {
+        metasync.store_claim_id(meta.clone(), id);
+    }
     startup.step("static threads");
     // Flood protection back on, the agent event medians cached (before this start's event), then
     // netdata_conf_section_web() just before C starts its static threads, the web server among them, which then reads
