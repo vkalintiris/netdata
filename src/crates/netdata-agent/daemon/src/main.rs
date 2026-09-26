@@ -521,6 +521,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
         meta.detect_machine_guid_change(host_id);
     }
+    if let Some(meta) = &meta {
+        metasync.set_writer(Arc::clone(meta), Arc::clone(&hosts));
+    }
     // aclk_synchronization_init(): archived hosts take the default mode after C's fallback, as children do
     match &meta {
         Some(meta) => archived::load(

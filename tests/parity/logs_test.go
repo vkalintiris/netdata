@@ -33,7 +33,6 @@ var cOnlyRecords = []struct {
 	{regexp.MustCompile(`msg="DBENGINE|msg="Flushing DBENGINE|thread=DBEV `), "dbengine (milestone D4)"},
 	{regexp.MustCompile(`msg="RRDCONTEXT: metadata for node `), "dbengine (milestone D4)"},
 	{regexp.MustCompile(`msg="ACLK[: ]`), "ACLK"},
-	{regexp.MustCompile(`msg="METADATA: Progress of metadata storage`), "metadata writer (D59.4, S1b)"},
 	{regexp.MustCompile(`msg="SQL: (suppressing SQLite teardown|skipping )`), "SQLite teardown"},
 	{regexp.MustCompile(`msg="CLAIM: `), "claiming"},
 	{regexp.MustCompile(`msg="SERVICE CONTROL: waiting for the following|msg="SERVICE: Signal to stop : `), "service registry of C's static threads (D44)"},
@@ -46,6 +45,11 @@ var cOnlyRecords = []struct {
 // resolution (D49 point 7), the end of the archived hosts' load and the metadata database's close (D4 S1), compared
 // despite the ACLK and METADATA entries.
 var portedRecords = regexp.MustCompile(`msg="ACLK: (proxy is|using |proxy is explicitly)|msg="ACLK sync initialization completed"|msg="METADATA: Closing sqlite database"`)
+
+// timedRecords depend on when a run stops rather than on what it did: the metadata writer's periodic job (from 6 s
+// after METASYNC starts) and the per-host lines of its final store, whose hosts are the ones changed since the last
+// job (C's localhost has pulse charts, D48.6). Both sides drop them; a check whose state is fixed compares them (D61.6).
+var timedRecords = regexp.MustCompile(`msg="Checking all hosts completed in |msg="METADATA: Progress of metadata storage: +[0-9.]+% completed"`)
 
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
 var cOnlyThreads = map[string]string{
@@ -82,6 +86,7 @@ var logMasks = []struct {
 	{regexp.MustCompile(`0x[0-9A-F]{16}`), "0xPTR"},
 	{regexp.MustCompile(`task id \d+`), "task id N"},
 	{regexp.MustCompile(`(loaded in|handled directly, in) [^"]*"`), "${1} D\""},
+	{regexp.MustCompile(`(Progress of metadata storage: +[0-9.]+% completed) in [^"]*"`), "${1} in D\""},
 	{regexp.MustCompile(`\(fd \d+\)|on fd \d+`), "fd N"},
 	{regexp.MustCompile(`stopped after \d+ connects, \d+ disconnects \(max concurrent \d+\), \d+ receptions and \d+ sends`), "stopped after C"},
 }
@@ -187,6 +192,9 @@ func logClasses(lines []string, d *daemon.Daemon, probes map[string]bool, oracle
 next:
 	for _, l := range lines {
 		if m := portRe.FindStringSubmatch(l); m != nil && probes[m[1]] {
+			continue
+		}
+		if timedRecords.MatchString(l) {
 			continue
 		}
 		th := threadOf(l)

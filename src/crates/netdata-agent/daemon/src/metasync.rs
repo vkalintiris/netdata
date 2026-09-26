@@ -1,12 +1,15 @@
-//! The METASYNC thread of `src/database/sqlite/sqlite_metadata.c` (`metadata_event_loop()`) as far as D4 S1 needs
-//! it: its lifecycle records, and the context load of the archived hosts, which it hands to the `UV_WORKER` pool
-//! (`ctx_hosts_load()`), one `CTXLOAD` thread per host while slots last (D59.5). The metadata writer comes with S1b;
-//! the contexts loader itself is wired with dbengine (S2), so the load of an alloc or ram host only clears its flag,
-//! as in C.
+//! The METASYNC thread of `src/database/sqlite/sqlite_metadata.c` (`metadata_event_loop()`): its lifecycle records;
+//! the metadata writer, whose store job it hands to the `UV_WORKER` pool 6 s after it starts and then about every 6 s
+//! (a 1 s timer, and 5 s after each job ends), with a final store at shutdown (D61); the claim id of an unclaimed
+//! start; and the context load of the archived hosts, also on the pool (`ctx_hosts_load()`), one `CTXLOAD` thread per
+//! host while slots last (D59.5). The contexts loader itself is wired with dbengine (S2), so the load of an alloc or
+//! ram host only clears its flag, as in C.
 
 use std::sync::Arc;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::{Priority, Source, nd_log, netdata_log_info};
@@ -19,11 +22,79 @@ use crate::startup::now_ut;
 /// `NETDATA_VIRTUAL_HOST`.
 const VIRTUAL_HOST_OS: &str = "Netdata Virtual Host 1.0";
 
+/// `METADATA_HOST_CHECK_FIRST_CHECK`, `METADATA_HOST_CHECK_INTERVAL`: seconds before the next store job may run.
+const HOST_CHECK_FIRST_S: i64 = 5;
+const HOST_CHECK_INTERVAL_S: i64 = 5;
+
+/// The loop's timer (`TIMER_INITIAL_PERIOD_MS`, `TIMER_REPEAT_PERIOD_MS`).
+const TIMER_PERIOD: Duration = Duration::from_secs(1);
+
+/// `MAX_SHUTDOWN_TIMEOUT_SECONDS`, `SHUTDOWN_SLEEP_INTERVAL_MS`: how long the shutdown waits for a running job.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(15);
+const SHUTDOWN_POLL: Duration = Duration::from_millis(100);
+
+fn now_realtime_s() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// What the loop and its store jobs share (`struct meta_config_s`).
+struct Shared {
+    /// `metadata_check_after`: the timer asks for a store once the wall clock is past it.
+    check_after: AtomicI64,
+    /// `shutdown_requested`.
+    shutdown: AtomicBool,
+    /// `next_vacuum_run` of `run_metadata_cleanup()`.
+    next_vacuum_run: AtomicI64,
+}
+
+/// The writer's database and hosts, once localhost exists.
+#[derive(Clone)]
+struct Writer {
+    meta: Arc<MetaDb>,
+    hosts: Arc<Hosts>,
+}
+
+/// `start_metadata_hosts()`, on a pool thread: the hosts' pending metadata, then the database's upkeep, and the next
+/// store no sooner than 5 s from now. `run_maintenace()` (the service thread's host cleanup) is not ported yet.
+fn store_job(writer: &Writer, shared: &Shared) {
+    let started = now_ut();
+    crate::meta_store::store_hosts_metadata(
+        &writer.meta,
+        &writer.hosts,
+        &shared.shutdown,
+        true,
+        false,
+    );
+    nd_log!(
+        Source::Daemon,
+        Priority::Debug,
+        "Checking all hosts completed in {}",
+        duration(now_ut().saturating_sub(started))
+    );
+    // run_metadata_cleanup(): the context cleanup and the long cycles come with S5 (D61.5)
+    if !shared.shutdown.load(Ordering::Acquire) {
+        let mut next = shared.next_vacuum_run.load(Ordering::Acquire);
+        writer.meta.vacuum(&mut next, now_realtime_s());
+        shared.next_vacuum_run.store(next, Ordering::Release);
+        writer.meta.wal_checkpoint();
+    }
+    shared.check_after.store(
+        now_realtime_s().saturating_add(HOST_CHECK_INTERVAL_S),
+        Ordering::Release,
+    );
+}
+
 enum Cmd {
     /// `METADATA_LOAD_HOST_CONTEXT`: load the pending hosts' contexts; vnodes report on the channel.
     LoadHostContexts(Arc<Hosts>, mpsc::Sender<()>),
     /// `METADATA_STORE_CLAIM_ID`: a host's node instance with no claim id (D61.3).
     StoreClaimId(Option<Arc<MetaDb>>, [u8; 16]),
+    /// The writer's database and hosts: C's writer reads the global host index, which exists once localhost does.
+    Writer(Writer),
+    /// `after_metadata_hosts()`: the store job has finished.
+    StoreDone,
     Shutdown,
 }
 
@@ -34,7 +105,7 @@ pub struct MetaSync {
     thread: JoinHandle<()>,
 }
 
-fn duration(us: u64) -> String {
+pub(crate) fn duration(us: u64) -> String {
     duration_to_string(i64::try_from(us).unwrap_or(i64::MAX), "us", true).unwrap_or_default()
 }
 
@@ -46,6 +117,7 @@ impl MetaSync {
     /// `metadata_sync_init()`: the thread, once it runs. `None` when it cannot start (C's creation asserts).
     pub fn start(pool: &WorkPool, cpus: usize, stack_size: usize) -> std::io::Result<MetaSync> {
         let (tx, rx) = mpsc::channel();
+        let job_tx = tx.clone();
         let (done_tx, done) = mpsc::channel();
         let pool = pool.clone();
         let thread = std::thread::Builder::new()
@@ -59,18 +131,76 @@ impl MetaSync {
                     "Starting metadata sync thread"
                 );
                 netdata_log_info!("METADATA: Synchronization thread is up and running");
+                let shared = Arc::new(Shared {
+                    check_after: AtomicI64::new(now_realtime_s() + HOST_CHECK_FIRST_S),
+                    shutdown: AtomicBool::new(false),
+                    next_vacuum_run: AtomicI64::new(0),
+                });
                 let _ = done_tx.send(());
-                while let Ok(cmd) = rx.recv() {
+                let mut writer: Option<Writer> = None;
+                let (mut store_metadata, mut running) = (false, false);
+                let mut next_tick = Instant::now() + TIMER_PERIOD;
+                loop {
+                    let cmd = match rx.recv_timeout(next_tick.saturating_duration_since(Instant::now())) {
+                        Ok(cmd) => Some(cmd),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    };
+                    // metadata_event_loop_timer_cb()
+                    let now = Instant::now();
+                    if now >= next_tick {
+                        next_tick = now + TIMER_PERIOD;
+                        if shared.check_after.load(Ordering::Acquire) < now_realtime_s() {
+                            store_metadata = true;
+                        }
+                    }
                     match cmd {
-                        Cmd::LoadHostContexts(hosts, vnodes) => {
+                        Some(Cmd::LoadHostContexts(hosts, vnodes)) => {
                             let _ = pool
                                 .queue(move || ctx_hosts_load(&hosts, cpus, stack_size, &vnodes));
                         }
-                        Cmd::StoreClaimId(meta, id) => {
+                        Some(Cmd::StoreClaimId(meta, id)) => {
                             crate::meta_store::store_claim_id(meta.as_deref(), &id);
                         }
-                        Cmd::Shutdown => break,
+                        Some(Cmd::Writer(w)) => writer = Some(w),
+                        Some(Cmd::StoreDone) => running = false,
+                        Some(Cmd::Shutdown) => {
+                            shared.shutdown.store(true, Ordering::Release);
+                            break;
+                        }
+                        None => {}
                     }
+                    // METADATA_STORE: one job at a time; without a database the writer stays off (D61.8)
+                    if store_metadata && !running && let Some(w) = &writer {
+                        store_metadata = false;
+                        running = true;
+                        let (w, shared, tx) = (w.clone(), Arc::clone(&shared), job_tx.clone());
+                        if pool
+                            .queue(move || {
+                                store_job(&w, &shared);
+                                let _ = tx.send(Cmd::StoreDone);
+                            })
+                            .is_err()
+                        {
+                            running = false;
+                        }
+                    }
+                }
+                // the shutdown waits for a running job, then stores what is still pending
+                let deadline = Instant::now() + SHUTDOWN_WAIT;
+                while running && Instant::now() < deadline {
+                    if let Ok(Cmd::StoreDone) = rx.recv_timeout(SHUTDOWN_POLL) {
+                        running = false;
+                    }
+                }
+                if running {
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Warning,
+                        "METADATA: skipping the final host metadata flush - a metadata scan is still running"
+                    );
+                } else if let Some(w) = &writer {
+                    crate::meta_store::store_hosts_metadata(&w.meta, &w.hosts, &shared.shutdown, false, true);
                 }
                 let _ = done_tx.send(());
                 netdata_agent_log::thread_finished();
@@ -84,6 +214,11 @@ impl MetaSync {
         self.tx
             .send(Cmd::LoadHostContexts(Arc::clone(hosts), vnodes))
             .is_ok()
+    }
+
+    /// The metadata writer's database and hosts, once localhost exists; without them the writer stays off.
+    pub fn set_writer(&self, meta: Arc<MetaDb>, hosts: Arc<Hosts>) {
+        let _ = self.tx.send(Cmd::Writer(Writer { meta, hosts }));
     }
 
     /// `metaqueue_store_claim_id()`.
