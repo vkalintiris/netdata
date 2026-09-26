@@ -25,34 +25,10 @@ pub enum PartialReason {
     /// A source failed (map/open, TIDX, column, EVNB/LNKB, tail decode):
     /// spans that may live there are absent from the result.
     SourceFailure,
-    /// The operation's work ceiling was hit before the candidate space
-    /// was exhausted (search-phase concept; unused by 4a trace-by-id,
-    /// which deliberately has no work ceiling — adversarial-input
-    /// hardening is deferred whole).
-    WorkCeiling,
     /// The caller cancelled: before all source heads were resolved the
     /// result is empty; during TRACE-BY-ID's merge it is the
     /// deterministic merged prefix (that mode's pinned exception).
-    /// Search and the aggregate folds are ALL-OR-EMPTY instead — a
-    /// mid-flight search prefix cannot be deterministic under canonical
-    /// re-ranking and grow-K, and a mid-loop aggregate cancel discards
-    /// the partial fold.
     Cancelled,
-    /// The overview's own visited-rows ceiling was hit before every
-    /// in-window source was binned: the grid holds the deterministic
-    /// prefix of sources (SourceId order) processed so far. Distinct
-    /// from [`WorkCeiling`] — the overview's cost is O(spans-in-window)
-    /// per source, a different budget than search's candidate loop.
-    OverviewCeiling,
-    /// A sealed source has no trace rollup chunk (`TRSU`) and was
-    /// EXCLUDED from trace-level aggregation: including it would
-    /// silently undercount, and mixing span-level numbers into a
-    /// trace-level result is forbidden (no mixed units). Two
-    /// causes: the file predates the rollup (data returns when it
-    /// ages out), or the file stored no real traces — an all-UNSET
-    /// trace-id file writes no chunk by the seal's `is_meaningful`
-    /// rule, and exclusion loses nothing.
-    RollupAbsent,
     /// A source's bytes could not be obtained from remote storage (a
     /// download failed or timed out, or the catalog listing the file
     /// could not be read): spans that may live there are absent.

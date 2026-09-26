@@ -63,8 +63,8 @@ pub fn kv_null(k: &str) -> KeyValue {
 
 #[derive(Clone)]
 pub struct SpanSpec {
-    /// The owning trace (defaults to the shared [`TRACE`]; the search
-    /// suite builds multi-trace corpora).
+    /// The owning trace (defaults to the shared [`TRACE`]; the explorer
+    /// suites build multi-trace corpora).
     pub trace: [u8; 16],
     pub id: [u8; 8],
     pub parent: [u8; 8],
@@ -344,8 +344,8 @@ pub fn missing_source(dir: &Path, id: &str, min_s: u32, max_s: u32) -> TraceSour
     })
 }
 
-/// A minimal valid SFST WITHOUT a `TRSU` chunk — a hand-built
-/// pre-rollup ("legacy") file for the no-mixed-units exclusion tests. Returns the
+/// A minimal valid traces SFST without the explorer's `_role` tokens — a
+/// hand-built "legacy" file for the legacy-exclusion tests. Returns the
 /// sealed-file source wrapping it.
 pub fn legacy_sfst_source(dir: &Path, name: &str) -> TraceSource {
     let legacy_path = dir.join(format!("{name}.sfst"));

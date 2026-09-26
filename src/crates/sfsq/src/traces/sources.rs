@@ -69,8 +69,7 @@ pub struct TraceSfstCandidate {
     pub source_id: SourceId,
     /// Cheap time/stream/size facts ([`sfst::Summary`]). Trace-by-id does
     /// not consume it (TBLM prunes better than time ranges for a by-id
-    /// probe); it is part of the candidate shape for the search phase's
-    /// window pruning (4c) and for parity with the logs candidates.
+    /// probe); the explorer prunes its window with it.
     pub summary: sfst::Summary,
     /// Where the bytes come from ([`Source::File`] sealed on disk,
     /// [`Source::Memory`] an in-memory chunk image).

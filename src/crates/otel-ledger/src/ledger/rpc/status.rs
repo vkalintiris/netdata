@@ -87,10 +87,7 @@ impl From<&QueryStatus> for StatusWire {
 pub enum PartialReasonWire {
     SizeCap,
     SourceFailure,
-    WorkCeiling,
     Cancelled,
-    OverviewCeiling,
-    RollupAbsent,
     RemoteUnavailable,
     LegacyFile,
     StackFieldHighCard,
@@ -105,10 +102,7 @@ impl From<PartialReason> for PartialReasonWire {
         match reason {
             PartialReason::SizeCap => PartialReasonWire::SizeCap,
             PartialReason::SourceFailure => PartialReasonWire::SourceFailure,
-            PartialReason::WorkCeiling => PartialReasonWire::WorkCeiling,
             PartialReason::Cancelled => PartialReasonWire::Cancelled,
-            PartialReason::OverviewCeiling => PartialReasonWire::OverviewCeiling,
-            PartialReason::RollupAbsent => PartialReasonWire::RollupAbsent,
             PartialReason::RemoteUnavailable => PartialReasonWire::RemoteUnavailable,
             PartialReason::LegacyFile => PartialReasonWire::LegacyFile,
             PartialReason::StackFieldHighCard => PartialReasonWire::StackFieldHighCard,

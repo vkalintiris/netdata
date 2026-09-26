@@ -55,10 +55,7 @@ fn every_partial_reason() -> Vec<PartialReason> {
     let all = vec![
         PartialReason::SizeCap,
         PartialReason::SourceFailure,
-        PartialReason::WorkCeiling,
         PartialReason::Cancelled,
-        PartialReason::OverviewCeiling,
-        PartialReason::RollupAbsent,
         PartialReason::RemoteUnavailable,
         PartialReason::LegacyFile,
         PartialReason::StackFieldHighCard,
@@ -71,10 +68,7 @@ fn every_partial_reason() -> Vec<PartialReason> {
         match reason {
             PartialReason::SizeCap
             | PartialReason::SourceFailure
-            | PartialReason::WorkCeiling
             | PartialReason::Cancelled
-            | PartialReason::OverviewCeiling
-            | PartialReason::RollupAbsent
             | PartialReason::RemoteUnavailable
             | PartialReason::LegacyFile
             | PartialReason::StackFieldHighCard
@@ -105,10 +99,7 @@ fn every_partial_reason_wire_name_is_pinned() {
         [
             "size_cap",
             "source_failure",
-            "work_ceiling",
             "cancelled",
-            "overview_ceiling",
-            "rollup_absent",
             "remote_unavailable",
             "legacy_file",
             "stack_field_high_card",

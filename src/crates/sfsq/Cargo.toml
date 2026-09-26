@@ -32,11 +32,11 @@ regex = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true }
-# test-util exposes the chunk-level writer: the overview suite hand-builds a
-# pre-rollup ("legacy") traces SFST to pin the D10 exclusion partial.
+# test-util exposes the chunk-level writer: `legacy_sfst_source` hand-builds a
+# traces SFST without the explorer's tokens to pin the legacy exclusion.
 sfst = { workspace = true, features = ["test-util"] }
-# The gate suite corrupts sealed chunks in place (CRC flips located via
-# the container TOC) to pin the skip-and-surface behavior.
+# `corrupt_chunk` flips chunk CRCs in place (located via the container TOC)
+# to pin the skip-and-surface behavior.
 chunk-file = { workspace = true }
 treight = { workspace = true }
 opentelemetry-proto = { workspace = true }

@@ -642,10 +642,7 @@
       "enum": [
         "size_cap",
         "source_failure",
-        "work_ceiling",
         "cancelled",
-        "overview_ceiling",
-        "rollup_absent",
         "remote_unavailable",
         "legacy_file",
         "stack_field_high_card",

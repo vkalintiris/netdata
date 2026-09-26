@@ -231,14 +231,8 @@ impl TraceWalScan {
         Ok(TraceWalScan { spans, field_kinds })
     }
 
-    /// Number of decoded spans in the range.
-    pub fn num_spans(&self) -> usize {
-        self.spans.len()
-    }
-
-    /// Every decoded span with its trace id, in decode order — the
-    /// search phase-1 tail path (the caller filters UNSET ids and
-    /// counts each visited span into its work ceiling).
+    /// Every decoded span with its trace id, in decode order (the tier-1
+    /// calculator checks read the stored tail through it).
     pub fn spans_with_ids(&self) -> impl Iterator<Item = (sfst::TraceId, &TraceSpan)> {
         self.spans.iter().map(|d| (d.trace_id, &d.span))
     }

@@ -1,5 +1,5 @@
-//! Multi-source trace-query subsystem: cross-source trace-by-id, search,
-//! the trace-level overview, and the span explorer ([`explore`]).
+//! Multi-source trace-query subsystem: cross-source trace-by-id and the span
+//! explorer ([`explore`]).
 //!
 //! Same philosophy as [`logs`](crate::logs): neutral, transport-free —
 //! plain Rust data in and out, no wire concerns; each consumer (the CLI,
@@ -27,39 +27,15 @@
 mod by_id;
 pub mod duration_hist;
 pub mod explore;
-mod gate;
-mod overview;
-mod predicate;
-mod fold;
-mod rollup;
-mod search;
 mod sources;
-mod vocab;
 mod wal_scan;
 mod window;
 
 pub use crate::status::{PartialReason, QueryStatus, ReasonCount, StatusBuilder};
 pub use by_id::{DEFAULT_SPAN_CAP, FieldKinds, TraceData, TraceQuery, TraceRequestError, trace_by_id};
-pub use overview::{
-    DURATION_BIN_COUNT, DURATION_BIN_LABELS, DurationPercentiles, FACET_TOP_K, FacetList,
-    OverviewData, OverviewQuery, OverviewRequestError, RootFacets, overview,
-};
-pub use rollup::{
-    TraceAggregate, TraceRootInfo, sealed_trace_aggregates, sealed_trace_envelopes,
-    tail_trace_aggregates,
-};
-pub use predicate::{
-    CompareOp, Condition, Predicate, PredicateError, PredicateTarget, PredicateValue,
-    span_matches,
-};
-pub use search::{
-    DEFAULT_SEARCH_LIMIT, DEFAULT_SPANS_PER_TRACE, SPANS_PER_TRACE_MAX, SearchData, SearchQuery, SearchRequestError,
-    SearchSources, TraceSummary, search,
-};
 pub use sources::{
     SourceId, SourceSetError, TraceFailed, TraceSfstCandidate, TraceSource, TraceUnavailable,
     TraceWalTail, WalCoverage, validate_sources,
 };
-pub use vocab::{AttributeOwner, BuiltinField};
 pub use wal_scan::{TraceScanError, TraceWalScan};
 pub use window::{TimeWindow, WindowError};
