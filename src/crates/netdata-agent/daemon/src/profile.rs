@@ -26,6 +26,18 @@ pub enum Profile {
     Iot,
 }
 
+impl Profile {
+    /// The profile's name, as `ND_PROFILE_2buffer()` writes a normalised profile.
+    pub fn name(self) -> &'static str {
+        match self {
+            Profile::Standalone => "standalone",
+            Profile::Parent => "parent",
+            Profile::Child => "child",
+            Profile::Iot => "iot",
+        }
+    }
+}
+
 /// `ND_PROFILE_2buffer(wb, bits, " ")`.
 fn to_text(bits: u32) -> String {
     NAMES

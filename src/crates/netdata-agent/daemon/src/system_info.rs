@@ -86,6 +86,15 @@ pub fn startup(plugins_dir: &str, user_config_dir: &str) -> SystemInfo {
     si
 }
 
+/// What `-W buildinfo` detects (`populate_packaging_info()`, `populate_system_info()` without localhost): the install
+/// type and one detection.
+pub fn for_build_info(plugins_dir: &str, user_config_dir: &str) -> SystemInfo {
+    let mut si = SystemInfo::default();
+    install_type(&mut si, user_config_dir);
+    detect(&mut si, plugins_dir);
+    si
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

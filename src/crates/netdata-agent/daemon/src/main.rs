@@ -9,6 +9,7 @@ mod api;
 mod archived;
 mod backfill;
 mod build;
+mod buildinfo;
 mod cli;
 mod cloud_proxy;
 mod command_server;
@@ -236,6 +237,41 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                     .unwrap_or_default();
                 value.push(b'\n');
                 out(&mut std::io::stdout(), &value);
+                return 0;
+            }
+            Opt::WithArg(b'W', v) if v == b"buildinfo" || v == b"buildinfojson" => {
+                // print_build_info(): the packaging info (the profile loads stream.conf), the system info, the
+                // directories; netdata.conf only when -c came first
+                conf.section_directories();
+                let stream_conf = load_stream_conf(&mut conf, &system);
+                let profile = profile::detect(
+                    &mut conf.netdata,
+                    system.system_cpus,
+                    system.memory.total,
+                    stream_conf.is_parent,
+                    stream_conf.send.enabled,
+                );
+                let memory = system::system_memory_cached(true);
+                let si = system_info::for_build_info(&conf.primary_plugins_dir(), &conf.dirs.user_config);
+                let info = buildinfo::BuildInfo::new(&buildinfo::Inputs {
+                    dirs: &conf.dirs,
+                    home: build::VARLIB_DIR,
+                    system: &si,
+                    profile: profile.name(),
+                    parent: stream_conf.is_parent,
+                    child: stream_conf.send.enabled,
+                    memory,
+                });
+                let text = if v == b"buildinfo" {
+                    info.text().into_bytes()
+                } else {
+                    info.json()
+                };
+                out(&mut std::io::stdout(), &text);
+                return 0;
+            }
+            Opt::WithArg(b'W', v) if v == b"cmakecache" => {
+                out(&mut std::io::stdout(), &buildinfo::cmake_cache());
                 return 0;
             }
             // an internal option: profilers keep their own descriptors open
