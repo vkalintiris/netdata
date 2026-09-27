@@ -5,6 +5,7 @@ package parity
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -138,7 +139,53 @@ func TestNetdataConfStandaloneProfile(t *testing.T) {
 	compareNetdataConf(t, daemon.Options{GlobalExtra: "    profile = standalone\n"})
 }
 
-func compareNetdataConf(t *testing.T, opts daemon.Options) {
+// dbClampRecords are the main thread's records about the [db] keys.
+var dbClampRecords = regexp.MustCompile(`(?i)msg="[^"]*(dbengine|dbegnine|tier|page cache|extent|pages per|backfill|storage|disk space)`)
+
+// TestNetdataConfDbClamps gives both daemons out-of-range [db] values (check `api.netdata-conf`, S6a commit 2): the
+// dump shows C's clamps and write-backs, and the main thread's warnings and errors about them come in C's order.
+// Run A: a page cache under its minimum, an extent cache over the int range, no pages per extent, an unknown backfill,
+// a tier 1 grouping of 1, tiers 0 and 1 under the minimum quota, 9 tiers; run B: too many pages per extent.
+func TestNetdataConfDbClamps(t *testing.T) {
+	runs := map[string]daemon.Options{
+		"A": {StorageTiers: 9, TierRetentionMB: [3]int{10, 10}, TierGrouping: [3]int{0, 1},
+			DBExtra: "    dbengine page cache size = 4MiB\n    dbengine extent cache size = 3PiB\n" +
+				"    dbengine pages per extent = 0\n    dbengine tier backfill = bogus\n"},
+		"B": {StorageTiers: 1, DBExtra: "    dbengine pages per extent = 110\n"},
+	}
+	for name, opts := range runs {
+		t.Run(name, func(t *testing.T) {
+			p := compareNetdataConf(t, opts)
+			var got [2][]string
+			for i, side := range p.Each() {
+				if err := side.Daemon.Stop(); err != nil {
+					t.Fatalf("stop %s: %v", side.Role, err)
+				}
+			next:
+				for _, l := range logLines(t, side.Daemon.Opts.RunDir, "daemon.log") {
+					// on the oracle, the records of subsystems not ported yet, as the log checks drop them
+					for _, c := range cOnlyRecords {
+						if side.Role == Oracle && c.re.MatchString(l) && !portedRecords.MatchString(l) {
+							continue next
+						}
+					}
+					if threadOf(l) == "" && (strings.Contains(l, "level=warning") || strings.Contains(l, "level=error")) &&
+						dbClampRecords.MatchString(l) {
+						got[i] = append(got[i], normalizeLog(l, side.Daemon.Opts.RunDir, strconv.Itoa(side.Daemon.Opts.Port)))
+					}
+				}
+			}
+			if d := diffSequences(got[0], got[1]); d != "" {
+				t.Errorf("the main thread's warnings and errors differ:\n%s", d)
+			}
+			if len(got[0]) == 0 {
+				t.Error("the oracle wrote no warning or error about the clamps")
+			}
+		})
+	}
+}
+
+func compareNetdataConf(t *testing.T, opts daemon.Options) *Pair {
 	p := StartPair(t, opts, parentIdentity)
 	var dumps [2]confDump
 	var heads [2][]byte
@@ -214,6 +261,7 @@ func compareNetdataConf(t *testing.T, opts daemon.Options) {
 		pendingBySubsystem[reason]++
 	}
 	t.Logf("compared %d sections; %d keys pending: %v", len(want), len(confPending), pendingBySubsystem)
+	return p
 }
 
 // firstLineDifference shows the first differing line of two texts, with the section it belongs to.
