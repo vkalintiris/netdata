@@ -4,6 +4,7 @@ package parity
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -27,7 +28,7 @@ const (
 // the C-written runR fixture cache (`NETDATA_DBENGINE_FIXTURES`; skipped without it): three dbengine tiers of three
 // days of an archived child's charts. Compared: the whole daemon log (the tiers' start with its file decisions, the
 // registry's pre-population, the context loads, the exit), the archived child's contexts, and data queries on every
-// tier, byte for byte.
+// tier and planned across the tiers, byte for byte.
 func TestDbengineRead(t *testing.T) {
 	fx := os.Getenv("NETDATA_DBENGINE_FIXTURES")
 	if fx == "" {
@@ -48,18 +49,17 @@ func TestDbengineRead(t *testing.T) {
 			compareGet(t, p, path)
 		}
 	})
-	// Without tier=, C plans across tiers where S2 reads tier 0 (D62.4, until S4b): the automatic queries select
-	// tier 0 explicitly, which C honours without filling gaps from other tiers.
+	host := "/host/b6child"
+	mid := int64(fixtureStart + 100000)
+	windows := map[string][2]int64{
+		"start":   {fixtureStart, fixtureStart + 600},
+		"gap":     {mid - 300, mid + 5300},
+		"end":     {fixtureEnd - 900, fixtureEnd},
+		"whole":   {fixtureStart, fixtureEnd},
+		"outside": {fixtureStart - 3600, fixtureStart - 60},
+	}
+	// A selected tier the metric has serves the window alone, with no other tier filling it (query-plan.c).
 	t.Run("data", func(t *testing.T) {
-		host := "/host/b6child"
-		mid := int64(fixtureStart + 100000)
-		windows := map[string][2]int64{
-			"start":   {fixtureStart, fixtureStart + 600},
-			"gap":     {mid - 300, mid + 5300},
-			"end":     {fixtureEnd - 900, fixtureEnd},
-			"whole":   {fixtureStart, fixtureEnd},
-			"outside": {fixtureStart - 3600, fixtureStart - 60},
-		}
 		for name, w := range windows {
 			win := fmt.Sprintf("after=%d&before=%d", w[0], w[1])
 			for _, q := range []string{
@@ -72,6 +72,62 @@ func TestDbengineRead(t *testing.T) {
 				"/api/v3/data?contexts=b6.ctx&" + win + "&points=8&tier=2&group_by=dimension",
 			} {
 				t.Run(name+" "+q, func(t *testing.T) { compareGet(t, p, host+q) })
+			}
+		}
+	})
+	// Without a selected tier each metric gets the best tier for the window, with coarser tiers before its data and
+	// finer ones after it (D74): the plans and weights (debug; v3 prints them under details), the reads per tier and
+	// the values across every switch. tier=5 is past the tiers, so automatic; tier=abc and selected-tier alone select
+	// tier 0. The outside window admits no metric.
+	t.Run("auto", func(t *testing.T) {
+		for name, w := range windows {
+			win := fmt.Sprintf("after=%d&before=%d", w[0], w[1])
+			var paths []string
+			for _, points := range []int{1, 10, 200} {
+				paths = append(paths,
+					fmt.Sprintf("/api/v1/data?chart=b6.c3&%s&points=%d&options=jsonwrap,debug", win, points),
+					fmt.Sprintf("/api/v1/data?context=b6.ctx&%s&points=%d&options=jsonwrap,debug", win, points))
+			}
+			paths = append(paths,
+				"/api/v3/data?contexts=b6.ctx&"+win+"&points=8&options=debug,details",
+				"/api/v3/data?contexts=b6.ctx&"+win+"&points=8&time_group=sum&options=debug,details",
+				"/api/v3/data?contexts=b6.ctx&"+win+"&points=8&group_by=dimension&options=debug,details",
+				"/api/v1/data?chart=b6.c0&"+win+"&points=10&tier=5&options=jsonwrap,debug",
+				"/api/v1/data?chart=b6.c0&"+win+"&points=10&tier=abc&options=jsonwrap,debug",
+				"/api/v1/data?chart=b6.c0&"+win+"&points=10&options=jsonwrap,debug,selected-tier")
+			for _, path := range paths {
+				t.Run(name+" "+path, func(t *testing.T) { compareGet(t, p, host+path) })
+			}
+		}
+		// An unaligned window starting at tier 1's last entry plans tier 1 for that instant and tier 0 from it, both
+		// starting there, in the order of the reference's qsort (D74.2); with a sum, the row switch waits for the
+		// grouping's offset. Aligned, the window starts past that instant, so tier 1 is out of it. Both daemons are
+		// asked for the retention (so both logs record the request), and must agree.
+		all := fmt.Sprintf("after=%d&before=%d", fixtureStart, fixtureEnd)
+		var last [2]int64
+		for i, side := range p.Each() {
+			var db struct {
+				PerTier []struct {
+					LastEntry int64 `json:"last_entry"`
+				} `json:"per_tier"`
+			}
+			doc := member(t, side.Daemon, host+"/api/v3/data?contexts=b6.ctx&"+all+"&points=1", "db")
+			if err := json.Unmarshal([]byte(doc), &db); err != nil || len(db.PerTier) < 2 || db.PerTier[1].LastEntry == 0 {
+				t.Fatalf("the %s's tier-1 last entry: %v %s", side.Role, err, doc)
+			}
+			last[i] = db.PerTier[1].LastEntry
+		}
+		if last[0] != last[1] {
+			t.Fatalf("tier-1 last entry: oracle %d, candidate %d", last[0], last[1])
+		}
+		tie := fmt.Sprintf("after=%d&before=%d", last[0], last[0]+3599)
+		for _, unaligned := range []string{"", ",unaligned"} {
+			for _, path := range []string{
+				"/api/v1/data?chart=b6.c0&" + tie + "&points=10&options=jsonwrap,debug" + unaligned,
+				"/api/v1/data?chart=b6.c0&" + tie + "&points=10&group=sum&options=jsonwrap,debug" + unaligned,
+				"/api/v3/data?contexts=b6.ctx&" + tie + "&points=10&time_group=sum&options=debug,details" + unaligned,
+			} {
+				t.Run("tie "+path, func(t *testing.T) { compareGet(t, p, host+path) })
 			}
 		}
 	})

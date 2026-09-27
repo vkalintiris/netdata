@@ -80,7 +80,8 @@ func (g s4gen) windows(end int64) map[string][2]int64 {
 	}
 }
 
-// compareTierWindows reads every window through both daemons on tiers 1 and 2 (and tier 0 where it is small).
+// compareTierWindows reads every window through both daemons on tiers 1 and 2 (and tier 0 where it is small), and as
+// the planner chooses the tiers.
 func (g s4gen) compareTierWindows(t *testing.T, p *Pair, end int64) {
 	host := "/host/" + s4child.Hostname
 	for name, w := range g.windows(end) {
@@ -89,8 +90,8 @@ func (g s4gen) compareTierWindows(t *testing.T, p *Pair, end int64) {
 		for tier := 1; tier <= 2; tier++ {
 			paths = append(paths,
 				fmt.Sprintf("/api/v3/data?contexts=%s&%s&points=200&tier=%d&options=debug", s4Steady, win, tier),
-				fmt.Sprintf("/api/v3/data?contexts=%s&%s&points=100&tier=%d&group=max&options=debug", s4Steady, win,
-					tier))
+				fmt.Sprintf("/api/v3/data?contexts=%s&%s&points=100&tier=%d&time_group=max&options=debug", s4Steady,
+					win, tier))
 			for c := 0; c < s4Charts; c++ {
 				paths = append(paths, fmt.Sprintf("/api/v1/data?chart=s4.c%d&%s&tier=%d&options=jsonwrap", c, win, tier))
 			}
@@ -99,8 +100,27 @@ func (g s4gen) compareTierWindows(t *testing.T, p *Pair, end int64) {
 			paths = append(paths, fmt.Sprintf("/api/v3/data?contexts=%s&%s&points=100&tier=0&options=debug", s4Steady,
 				win))
 		}
+		// Automatic (D74): tier 1 or 2 with plans down to tier 0 after it, the tail window's seam at the live edge;
+		// aggregates over the steady charts only (D72.10). v1 at natural points plans tier 0 and prints every tier's
+		// weight, per point for every chart (tier 0's whole span is too large).
+		for _, q := range []string{"&points=200&options=debug,details", "&points=100&options=debug,details",
+			"&points=200&time_group=sum&options=debug,details"} {
+			paths = append(paths, "/api/v3/data?contexts="+s4Steady+"&"+win+q)
+		}
+		for _, c := range []int{0, 2, 3} {
+			paths = append(paths, fmt.Sprintf("/api/v1/data?chart=s4.c%d&%s&points=200&options=jsonwrap,debug", c, win))
+		}
+		if name != "whole" {
+			for c := 0; c < s4Charts; c++ {
+				paths = append(paths, fmt.Sprintf("/api/v1/data?chart=s4.c%d&%s&options=jsonwrap,debug", c, win))
+			}
+		}
+		// A metric of the disconnected child prints the wall clock as its last entry until each agent's contexts
+		// worker archives it at its next tick (once a second), so the first answers may differ in that alone.
+		rules := dbengineWriteRules(true)
+		rules.Settle = 5 * time.Second
 		for _, path := range paths {
-			t.Run(name+" "+path, func(t *testing.T) { compareGetWith(t, p, host+path, dbengineWriteRules(true)) })
+			t.Run(name+" "+path, func(t *testing.T) { compareGetWith(t, p, host+path, rules) })
 		}
 	}
 }
