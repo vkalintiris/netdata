@@ -1,5 +1,8 @@
 //! `rrdeng_size_statistics()`: what `/api/v1/dbengine_stats` reports of a tier, from its v2 files as
-//! `populate_v2_statistics()` walks them, each read once and bounds-checked against its size as C checks its mapping.
+//! `populate_v2_statistics()` walks them, each bounds-checked against its size as C checks its mapping and read through
+//! a window of a MiB or one list, whichever is larger (C walks the mapping in the page cache).
+
+use netdata_agent_text::c::double_to_u64;
 
 use super::USEC_PER_SEC;
 use super::collect::TIER_PAGE_SIZE;
@@ -48,22 +51,56 @@ pub struct SizeStats {
     pub average_page_size_bytes: f64,
 }
 
-/// C's conversion of a double to `size_t` as x86-64 code does it (`cvttsd2si`, with 2^63 taken off first from 2^63
-/// on): a truncation in range; out of range, and for NaN, `i64::MIN`'s bits (flipped past 2^63).
-fn size_t_of(x: f64) -> u64 {
-    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
-    let cvttsd2si = |x: f64| {
-        if x.is_nan() || !(-TWO_63..TWO_63).contains(&x) {
-            i64::MIN
-        } else {
-            x as i64
+/// The bytes a walk holds of a file at most, unless one list takes more.
+const WINDOW: usize = 1 << 20;
+
+/// A window over a v2 file, read as the walk asks: a walk in file order reads each byte once.
+struct Window<'a, R: ReadAt + ?Sized> {
+    file: &'a R,
+    size: u64,
+    at: u64,
+    buf: Vec<u8>,
+}
+
+impl<'a, R: ReadAt + ?Sized> Window<'a, R> {
+    fn new(file: &'a R, size: u64) -> Self {
+        Window {
+            file,
+            size,
+            at: 0,
+            buf: Vec::new(),
         }
-    };
-    if x >= TWO_63 {
-        cvttsd2si(x - TWO_63) as u64 ^ (1 << 63)
-    } else {
-        cvttsd2si(x) as u64
     }
+
+    /// The `len` bytes at `offset`, which the caller checked are within the file; `None` when they cannot be read
+    /// (a file shorter than its size, where C's walk would fault and stop: a window that cannot be read whole is
+    /// read as asked).
+    fn bytes(&mut self, offset: u64, len: usize) -> Option<&[u8]> {
+        let end = offset + len as u64;
+        if offset < self.at || end > self.at + self.buf.len() as u64 {
+            self.at = offset;
+            for want in [
+                (len.max(WINDOW) as u64).min(self.size - offset) as usize,
+                len,
+            ] {
+                self.buf.resize(want, 0);
+                if self.file.read_exact_at(&mut self.buf, offset).is_ok() {
+                    break;
+                }
+                self.buf.clear();
+            }
+            if self.buf.len() < len {
+                return None;
+            }
+        }
+        let start = (offset - self.at) as usize;
+        Some(&self.buf[start..start + len])
+    }
+}
+
+/// Entries of `entry` bytes read at a time: about a MiB.
+fn chunk(entry: usize) -> u64 {
+    (WINDOW / entry) as u64
 }
 
 impl SizeStats {
@@ -96,49 +133,80 @@ impl SizeStats {
         }
     }
 
-    /// `populate_v2_statistics()` over a v2 file's bytes: its extents when their list is in bounds; then, when the
-    /// metric list is, every metric (counted before its page list is checked) and the pages of each whose header and
-    /// list are in bounds.
-    fn add_file(&mut self, data: &[u8], point_size: u64, granularity_s: i64) {
-        let Some(hb) = data.first_chunk::<HEADER_SIZE>() else {
+    /// `populate_v2_statistics()` over a v2 file of `size` bytes: its extents when their list is in bounds; then,
+    /// when the metric list is, every metric (counted before its page list is checked) and the pages of each whose
+    /// header and list are in bounds. A read that fails ends the walk with what it counted, as C's fault does.
+    fn add_file<R: ReadAt + ?Sized>(
+        &mut self,
+        file: &R,
+        size: u64,
+        point_size: u64,
+        granularity_s: i64,
+    ) {
+        let mut w = Window::new(file, size);
+        let Some(h) = (size >= HEADER_SIZE as u64)
+            .then(|| w.bytes(0, HEADER_SIZE))
+            .flatten()
+            .and_then(|b| b.first_chunk::<HEADER_SIZE>())
+            .map(Header::decode)
+        else {
             return;
         };
-        let h = Header::decode(hb);
-        let size = data.len() as u64;
         let in_bounds = |offset: u32, count: u32, entry: usize| {
             let (offset, count) = (u64::from(offset), u64::from(count));
-            (offset <= size && count <= (size - offset) / entry as u64)
-                .then(|| &data[offset as usize..][..count as usize * entry])
+            offset <= size && count <= (size - offset) / entry as u64
         };
-        if let Some(list) = in_bounds(h.extent_offset, h.extent_count, EXTENT_SIZE) {
+        if in_bounds(h.extent_offset, h.extent_count, EXTENT_SIZE) {
             self.extents += u64::from(h.extent_count);
-            for e in journal_v2::extents(list) {
-                self.extents_compressed_bytes += u64::from(e.datafile_size);
-                self.extents_pages += u64::from(e.pages);
+            let (offset, count) = (u64::from(h.extent_offset), u64::from(h.extent_count));
+            for first in (0..count).step_by(chunk(EXTENT_SIZE) as usize) {
+                let n = (count - first).min(chunk(EXTENT_SIZE)) as usize;
+                let at = offset + first * EXTENT_SIZE as u64;
+                let Some(list) = w.bytes(at, n * EXTENT_SIZE) else {
+                    return;
+                };
+                for e in journal_v2::extents(list) {
+                    self.extents_compressed_bytes += u64::from(e.datafile_size);
+                    self.extents_pages += u64::from(e.pages);
+                }
             }
         }
-        let Some(list) = in_bounds(h.metric_offset, h.metric_count, METRIC_SIZE) else {
+        if !in_bounds(h.metric_offset, h.metric_count, METRIC_SIZE) {
             return;
-        };
+        }
         let start_s = (h.start_time_ut / USEC_PER_SEC) as i64;
         self.metrics += u64::from(h.metric_count);
-        for m in journal_v2::metrics(list) {
-            let offset = u64::from(m.page_offset);
-            if offset > size || size - offset < PAGE_HEADER_SIZE as u64 {
-                continue;
-            }
-            let Some(hb) = data[offset as usize..].first_chunk::<PAGE_HEADER_SIZE>() else {
-                continue;
+        let (offset, count) = (u64::from(h.metric_offset), u64::from(h.metric_count));
+        for first in (0..count).step_by(chunk(METRIC_SIZE) as usize) {
+            let n = (count - first).min(chunk(METRIC_SIZE)) as usize;
+            let Some(list) = w.bytes(offset + first * METRIC_SIZE as u64, n * METRIC_SIZE) else {
+                return;
             };
-            let entries = PageHeader::decode(hb).entries;
-            let room = size - offset - PAGE_HEADER_SIZE as u64;
-            if u64::from(entries) > room / PAGE_SIZE as u64 {
-                continue;
-            }
-            self.metrics_pages += u64::from(entries);
-            let pages = &data[offset as usize + PAGE_HEADER_SIZE..][..entries as usize * PAGE_SIZE];
-            for p in journal_v2::pages(pages) {
-                self.add_page(start_s, &p, point_size, granularity_s);
+            let metrics: Vec<_> = journal_v2::metrics(list).collect();
+            for m in metrics {
+                let offset = u64::from(m.page_offset);
+                if offset > size || size - offset < PAGE_HEADER_SIZE as u64 {
+                    continue;
+                }
+                let Some(entries) = w
+                    .bytes(offset, PAGE_HEADER_SIZE)
+                    .and_then(|b| b.first_chunk::<PAGE_HEADER_SIZE>())
+                    .map(|b| PageHeader::decode(b).entries)
+                else {
+                    return;
+                };
+                let room = size - offset - PAGE_HEADER_SIZE as u64;
+                if u64::from(entries) > room / PAGE_SIZE as u64 {
+                    continue;
+                }
+                self.metrics_pages += u64::from(entries);
+                let at = offset + PAGE_HEADER_SIZE as u64;
+                let Some(pages) = w.bytes(at, entries as usize * PAGE_SIZE) else {
+                    return;
+                };
+                for p in journal_v2::pages(pages) {
+                    self.add_page(start_s, &p, point_size, granularity_s);
+                }
             }
         }
     }
@@ -166,7 +234,7 @@ impl SizeStats {
                     self.average_metric_retention_secs / self.database_retention_secs as f64;
                 let days = self.database_retention_secs as f64 / 86400.0;
                 self.estimated_concurrently_collected_metrics =
-                    size_t_of(self.metrics as f64 * coverage);
+                    double_to_u64(self.metrics as f64 * coverage);
                 self.ephemeral_metrics_per_day_percent = (self.metrics as f64 * 100.0
                     / self.estimated_concurrently_collected_metrics as f64
                     - 100.0)
@@ -177,9 +245,8 @@ impl SizeStats {
 }
 
 impl TierData {
-    /// `rrdeng_size_statistics()`: every pair counts as a data file; each whose v2 index serves it adds its v2 file
-    /// (read whole: one that cannot be read adds nothing, where C's walk would stop at the fault). `granularity_s` is
-    /// the tier's update every (`nd_profile.update_every` times `get_tier_grouping()`).
+    /// `rrdeng_size_statistics()`: every pair counts as a data file; each whose v2 index serves it adds its v2 file.
+    /// `granularity_s` is the tier's update every (`nd_profile.update_every` times `get_tier_grouping()`).
     pub fn size_statistics(&self, granularity_s: u64, pages_per_extent: usize) -> SizeStats {
         let point_size = point_size(self.config.page_type) as u64;
         let mut stats = SizeStats::default();
@@ -188,10 +255,7 @@ impl TierData {
             let Some(index) = self.v2_of(fileno).filter(|_| df.v2_available()) else {
                 continue;
             };
-            let mut data = vec![0u8; index.size as usize];
-            if ReadAt::read_exact_at(&index.file, &mut data, 0).is_ok() {
-                stats.add_file(&data, point_size, granularity_s as i64);
-            }
+            stats.add_file(&index.file, index.size, point_size, granularity_s as i64);
         }
         stats.currently_collected_metrics = self.collectors_running() as u64;
         stats.disk_space = self.current_disk_space();

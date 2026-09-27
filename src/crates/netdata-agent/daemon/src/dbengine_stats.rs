@@ -101,7 +101,8 @@ pub fn reply(storage: &StorageLayout) -> Reply {
     };
     let mut out = String::from("{");
     for (t, td) in engine.tiers.iter().enumerate() {
-        let granularity_s = storage.update_every() as u64 * storage.tier_grouping(t);
+        // C's size_t product wraps
+        let granularity_s = (storage.update_every() as u64).wrapping_mul(storage.tier_grouping(t));
         let stats = td.size_statistics(granularity_s, engine.main.pages_per_extent());
         let _ = write!(out, "{}\n\t\"tier{t}\": {{", if t == 0 { "" } else { "," });
         tier(&mut out, &stats);
@@ -120,10 +121,10 @@ pub fn reply(storage: &StorageLayout) -> Reply {
 mod tests {
     use super::*;
 
-    /// glibc's `%0.2f`: rounding to even on exact ties, the sign of a negative zero, infinities, NaN by its sign.
+    /// glibc's `%0.2f`: rounding to even on exact ties, the sign of a negative zero, infinities, NaN by its sign bit
+    /// (x86-64's default NaN, from 0/0, has it set).
     #[test]
     fn floats_print_as_glibc() {
-        let zero = std::hint::black_box(0.0f64);
         for (v, want) in [
             (0.125, "0.12"),
             (0.375, "0.38"),
@@ -134,8 +135,8 @@ mod tests {
             (-837.5, "-837.50"),
             (f64::INFINITY, "inf"),
             (f64::NEG_INFINITY, "-inf"),
-            (zero / zero, "-nan"),
-            (-(zero / zero), "nan"),
+            (f64::from_bits(0xfff8_0000_0000_0000), "-nan"),
+            (f64::from_bits(0x7ff8_0000_0000_0000), "nan"),
         ] {
             assert_eq!(f2(v), want, "{v}");
         }

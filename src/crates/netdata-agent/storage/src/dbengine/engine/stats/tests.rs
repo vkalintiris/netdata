@@ -81,7 +81,7 @@ fn lists_at(extents: usize, metrics: usize) -> u32 {
 /// The totals of one file walked with 4-byte points and a 1 s granularity.
 fn walk(data: &[u8]) -> SizeStats {
     let mut s = SizeStats::default();
-    s.add_file(data, 4, 1);
+    s.add_file(data, data.len() as u64, 4, 1);
     s
 }
 
@@ -165,7 +165,7 @@ fn out_of_bounds_lists_are_passed_over_as_c() {
     let data = file(512, &[], Some((HEADER_SIZE as u32, 13)), &[]);
     assert_eq!(walk(&data).metrics, 0, "a metric list longer than the file");
 
-    // page headers: past the end, 27 bytes before it, 28 bytes before it (no entries); a list longer than its room
+    // page headers: past the end, 27 bytes before it; a list longer than its room
     let size = 512u32;
     let data = file(
         size as usize,
@@ -174,12 +174,17 @@ fn out_of_bounds_lists_are_passed_over_as_c() {
         &[
             pages(size + 1, 0),
             pages(size - 27, 0),
-            pages(size - 28, 0),
-            pages(lists_at(0, 4), 18),
+            pages(lists_at(0, 3), 18),
         ],
     );
     let got = walk(&data);
-    assert_eq!((got.metrics, got.metrics_pages), (4, 0));
+    assert_eq!((got.metrics, got.metrics_pages), (3, 0));
+
+    // a header with one entry and room for exactly one page counts it; one byte less of room, none
+    for (offset, want) in [(size - 48, 1), (size - 47, 0)] {
+        let data = file(size as usize, &[], None, &[pages(offset, 1)]);
+        assert_eq!(walk(&data).metrics_pages, want, "at {offset}");
+    }
 
     // a list that just fits counts its entries
     let at = lists_at(0, 1);
@@ -193,6 +198,14 @@ fn out_of_bounds_lists_are_passed_over_as_c() {
 
     // a file shorter than its header adds nothing
     assert_eq!(walk(&data[..HEADER_SIZE - 1]), SizeStats::default());
+
+    // a file shorter than its size (a truncated one) keeps what the walk counted before the read failed, as C's
+    // fault does
+    let at = lists_at(1, 1);
+    let data = file(512, &[(100, 2)], None, &[pages(at, 1)]);
+    let mut got = SizeStats::default();
+    got.add_file(&data[..at as usize], 512, 4, 1);
+    assert_eq!((got.extents, got.metrics, got.metrics_pages), (1, 1, 0));
 }
 
 /// The update every of a page of several points divides its span unsigned, as C divides a `time_t` by a `size_t`:
@@ -223,25 +236,6 @@ fn the_update_every_divides_unsigned() {
     let update_every = ((-10i64) as u64 / 2) as i64;
     assert_eq!(got.pages_duration_secs, -10 + update_every);
     assert_eq!(got.first_time_s, 1020 - update_every);
-}
-
-/// A double becomes a `size_t` as x86-64 code converts it.
-#[test]
-fn doubles_convert_to_size_t_as_c() {
-    let two_63 = 9_223_372_036_854_775_808.0f64;
-    for (x, want) in [
-        (5.7, 5),
-        (0.4, 0),
-        (-5.7, (-5i64) as u64),
-        (f64::NAN, 1 << 63),
-        (f64::NEG_INFINITY, 1 << 63),
-        (f64::INFINITY, 0),
-        (two_63, 1 << 63),
-        (two_63 * 1.5, (1 << 63) + (1 << 62)),
-        (two_63 * 2.0, 0),
-    ] {
-        assert_eq!(size_t_of(x), want, "{x}");
-    }
 }
 
 /// With fewer concurrently collected metrics estimated than one, the ephemeral percentage divides by 0: C's infinity.

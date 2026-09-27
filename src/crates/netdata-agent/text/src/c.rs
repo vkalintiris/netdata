@@ -157,7 +157,7 @@ fn cvttsd2si64(x: f64) -> i64 {
 /// `(uint64_t)x` as lowered by gcc on x86-64: `comisd 2^63` then either a
 /// plain `cvttsd2si`, or `cvttsd2si(x - 2^63)` with bit 63 flipped.
 #[inline]
-pub(crate) fn double_to_u64(x: f64) -> u64 {
+pub fn double_to_u64(x: f64) -> u64 {
     if x >= TWO_POW_63 {
         (cvttsd2si64(x - TWO_POW_63) as u64) ^ (1 << 63)
     } else {
