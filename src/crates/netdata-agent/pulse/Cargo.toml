@@ -10,7 +10,9 @@ workspace = true
 
 [dependencies]
 netdata-agent-rrd = { workspace = true }
+netdata-agent-sys = { workspace = true }
 netdata-agent-text = { workspace = true }
+nix = { workspace = true, features = ["resource", "time"] }
 
 [dev-dependencies]
 netdata-agent-storage = { workspace = true }

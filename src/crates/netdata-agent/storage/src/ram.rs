@@ -50,6 +50,11 @@ impl RamMetric {
         self.data.len()
     }
 
+    /// `rd->db.memsize`: the ring's bytes, a storage number per slot.
+    pub fn memsize(&self) -> usize {
+        self.data.len() * std::mem::size_of::<u32>()
+    }
+
     /// The raw storage number in a slot (`rd->db.data[slot]`).
     pub fn slot(&self, slot: usize) -> u32 {
         self.data[slot].load(Relaxed)

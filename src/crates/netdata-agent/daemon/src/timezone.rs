@@ -2,11 +2,16 @@
 //! name, from `TZ`, `/etc/localtime`, `/etc/timezone` or `[global] timezone`, and the abbreviation and UTC offset in
 //! effect now, from the tzdb file (glibc builds have no `tzalloc()`) or the process time zone.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use netdata_agent_inicfg::{Config, SECTION_GLOBAL};
-use netdata_agent_log::{netdata_log_error, netdata_log_info};
+use netdata_agent_log::{Priority, Source, nd_log, netdata_log_error, netdata_log_info};
+use netdata_agent_rrd::host::{Host, meta_flags};
+use netdata_agent_rrd::labels::SRC_AUTO;
 use netdata_agent_sys::localtime;
+
+/// `pulse_daemon_timezone_do()`'s period: 30 minutes, for the daylight saving changes.
+const REFRESH_EVERY_UT: u64 = 30 * 60 * 1_000_000;
 
 /// The time zone triplet the host reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,9 +218,108 @@ fn refresh(name: &str, tzdb: bool, t: i64) -> SystemTimezone {
     }
 }
 
+/// The agent's time zone and C's globals about it (`system_tz`, `timezone_is_tzdb_name`, `timezone_user_configured`),
+/// with the state of the pulse refresh.
+#[derive(Debug)]
+pub struct Timezone {
+    current: SystemTimezone,
+    tzdb: bool,
+    user_configured: bool,
+    root: PathBuf,
+    mismatch_logged: bool,
+    last_refresh_ut: u64,
+}
+
+impl Timezone {
+    /// `system_tz_get()`.
+    pub fn current(&self) -> &SystemTimezone {
+        &self.current
+    }
+
+    /// `pulse_daemon_timezone_do()`: every 30 minutes of the monotonic clock `now_ut` (counted from 0, so at once on a
+    /// machine up for longer), a configured name refreshed as it is (with a NOTICE, once, when the system's differs),
+    /// else the system's detected again, else the stored one.
+    pub fn pulse_refresh(&mut self, localhost: &Host, now_ut: u64, now_s: i64) {
+        if now_ut.wrapping_sub(self.last_refresh_ut) < REFRESH_EVERY_UT {
+            return;
+        }
+        if self.user_configured {
+            if !self.mismatch_logged {
+                self.mismatch_logged = true;
+                if let Some(system) = detect_name(&self.root).filter(|s| *s != self.current.name) {
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Notice,
+                        "TIMEZONE: configured '{}' differs from system '{system}'",
+                        self.current.name
+                    );
+                }
+            }
+            let name = self.current.name.clone();
+            self.refresh_system(&name, true, localhost, now_s);
+        } else {
+            match detect_name(&self.root) {
+                Some(detected) if is_safe_tzdb_path(&detected) => {
+                    self.refresh_system(&detected, true, localhost, now_s);
+                }
+                detected => {
+                    if let Some(detected) = detected {
+                        netdata_log_error!(
+                            "TIMEZONE: detected unsafe timezone name '{detected}', ignoring"
+                        );
+                    }
+                    let (name, tzdb) = (self.current.name.clone(), self.tzdb);
+                    if !tzdb || is_safe_tzdb_path(&name) {
+                        self.refresh_system(&name, tzdb, localhost, now_s);
+                    } else {
+                        netdata_log_error!(
+                            "TIMEZONE: stored unsafe tzdb timezone name '{name}', ignoring"
+                        );
+                    }
+                }
+            }
+        }
+        self.last_refresh_ut = now_ut;
+    }
+
+    /// `refresh_system_timezone()` once localhost exists: the triplet now, and localhost's (its info, then its
+    /// `_timezone` and `_abbrev_timezone` labels) when any of the three changed. The stream sender's labels, health's
+    /// label recheck and the cloud's node info it also updates are not ported.
+    fn refresh_system(&mut self, name: &str, tzdb: bool, localhost: &Host, now_s: i64) {
+        // a tzdb name makes the flag sticky
+        if tzdb {
+            self.tzdb = true;
+        }
+        self.current = refresh(name, tzdb, now_s);
+        let tz = &self.current;
+        // rrdhost_update_timezone()
+        let mut changed = false;
+        localhost.update_info(|info| {
+            if info.timezone != tz.name
+                || info.abbrev_timezone != tz.abbrev
+                || info.utc_offset != tz.utc_offset
+            {
+                changed = true;
+                info.timezone = tz.name.clone();
+                info.abbrev_timezone = tz.abbrev.clone();
+                info.utc_offset = tz.utc_offset;
+            }
+        });
+        if !changed {
+            return;
+        }
+        localhost.set_meta_flags(meta_flags::INFO | meta_flags::UPDATE);
+        localhost.update_labels(|labels| {
+            let _ = labels.add_changed(b"_timezone", tz.name.as_bytes(), SRC_AUTO);
+            let _ = labels.add_changed(b"_abbrev_timezone", tz.abbrev.as_bytes(), SRC_AUTO);
+        });
+        localhost.set_meta_flags(meta_flags::LABELS | meta_flags::UPDATE);
+    }
+}
+
 /// `get_system_timezone()` after `TZ` is set: detects the name, lets `[global] timezone` override it (an empty
 /// value does not), and resolves the abbreviation and offset at `now_s`. `root` is `/` outside tests.
-pub fn system_timezone(c: &mut Config, root: &Path, now_s: i64) -> SystemTimezone {
+pub fn system_timezone(c: &mut Config, root: &Path, now_s: i64) -> Timezone {
     let mut tzdb = false;
     let mut name = std::env::var("TZ")
         .ok()
@@ -261,7 +365,14 @@ pub fn system_timezone(c: &mut Config, root: &Path, now_s: i64) -> SystemTimezon
     if user_configured {
         tzdb = true;
     }
-    refresh(&configured, tzdb, now_s)
+    Timezone {
+        current: refresh(&configured, tzdb, now_s),
+        tzdb,
+        user_configured,
+        root: root.to_path_buf(),
+        mismatch_logged: false,
+        last_refresh_ut: 0,
+    }
 }
 
 #[cfg(test)]
@@ -293,6 +404,151 @@ mod tests {
         .unwrap();
         assert_eq!(detect_name(&dir).as_deref(), Some("America/New_York"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `pulse_daemon_timezone_do()`: nothing before 30 minutes of the monotonic clock, then the system's zone detected
+    /// again and localhost updated (its info, its two labels, the metadata flags) when it changed; a configured zone
+    /// is kept, with a NOTICE, once, when the system's differs.
+    #[test]
+    fn the_pulse_refresh_as_c() {
+        use netdata_agent_rrd::host::{Host, HostInfo, meta_flags};
+        const MINUTE_UT: u64 = 60 * 1_000_000;
+        if !Path::new("/usr/share/zoneinfo/Etc/UTC").exists() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("etc")).unwrap();
+        std::os::unix::fs::symlink(
+            "/usr/share/zoneinfo/Etc/UTC",
+            dir.path().join("etc/localtime"),
+        )
+        .unwrap();
+        let localhost = Host::new(
+            "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",
+            true,
+            HostInfo {
+                hostname: "box".into(),
+                registry_hostname: "box".into(),
+                os: "linux".into(),
+                timezone: "America/New_York".into(),
+                abbrev_timezone: "EST".into(),
+                utc_offset: -18000,
+                program_name: "netdata".into(),
+                program_version: "v0".into(),
+                update_every: 1,
+                db_mode: netdata_agent_rrd::mode::DbMode::Ram,
+                history_entries: 4096,
+                health_enabled: false,
+                system_info: Default::default(),
+                replication_enabled: false,
+                replication_period: 0,
+                replication_step: 0,
+                stream_send: None,
+                cache_dir: None,
+            },
+        );
+        let stored = SystemTimezone {
+            name: "America/New_York".into(),
+            abbrev: "EST".into(),
+            utc_offset: -18000,
+        };
+        let mut tz = Timezone {
+            current: stored.clone(),
+            tzdb: true,
+            user_configured: false,
+            root: dir.path().to_path_buf(),
+            mismatch_logged: false,
+            last_refresh_ut: 0,
+        };
+        let changed = |host: &Host| host.take_meta_flags(meta_flags::INFO | meta_flags::LABELS);
+        let now_s = 1_790_000_000;
+        tz.pulse_refresh(&localhost, 29 * MINUTE_UT, now_s);
+        assert_eq!(
+            (tz.current(), changed(&localhost)),
+            (&stored, false),
+            "too early"
+        );
+        tz.pulse_refresh(&localhost, 30 * MINUTE_UT, now_s);
+        let utc = SystemTimezone {
+            name: "Etc/UTC".into(),
+            abbrev: "UTC".into(),
+            utc_offset: 0,
+        };
+        let info = localhost.info();
+        let labels = localhost.labels();
+        assert_eq!(
+            (
+                tz.current(),
+                (info.timezone, info.abbrev_timezone, info.utc_offset),
+                labels.get(b"_timezone"),
+                labels.get(b"_abbrev_timezone"),
+                changed(&localhost)
+            ),
+            (
+                &utc,
+                ("Etc/UTC".to_string(), "UTC".to_string(), 0),
+                Some(&b"Etc/UTC"[..]),
+                Some(&b"UTC"[..]),
+                true
+            )
+        );
+        tz.pulse_refresh(&localhost, 59 * MINUTE_UT, now_s);
+        tz.pulse_refresh(&localhost, 60 * MINUTE_UT, now_s);
+        assert!(!changed(&localhost), "nothing changed");
+
+        // a configured zone stays, and its difference from the system's is told once
+        let mut configured = Timezone {
+            current: stored.clone(),
+            tzdb: true,
+            user_configured: true,
+            root: dir.path().to_path_buf(),
+            mismatch_logged: false,
+            last_refresh_ut: 0,
+        };
+        let records = |tz: &mut Timezone, now_ut| {
+            netdata_agent_log::capture(|| tz.pulse_refresh(&localhost, now_ut, now_s))
+                .1
+                .into_iter()
+                .filter_map(|r| r.message)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            records(&mut configured, 30 * MINUTE_UT),
+            ["TIMEZONE: configured 'America/New_York' differs from system 'Etc/UTC'"]
+        );
+        assert_eq!(configured.current().name, "America/New_York");
+        assert!(records(&mut configured, 60 * MINUTE_UT).is_empty());
+
+        // an unsafe detection falls back to the stored name with its tzdb flag, which a tzdb refresh made sticky
+        std::fs::remove_file(dir.path().join("etc/localtime")).unwrap();
+        std::os::unix::fs::symlink(
+            "/usr/share/zoneinfo//Etc/UTC",
+            dir.path().join("etc/localtime"),
+        )
+        .unwrap();
+        tz.tzdb = false;
+        tz.refresh_system("Etc/UTC", true, &localhost, now_s);
+        assert!(tz.tzdb, "sticky");
+        assert_eq!(
+            records(&mut tz, 90 * MINUTE_UT),
+            ["TIMEZONE: detected unsafe timezone name '/Etc/UTC', ignoring"]
+        );
+        assert_eq!(tz.current(), &utc);
+        // a stored tzdb name that is unsafe is not refreshed
+        tz.current.name = "/etc/passwd".into();
+        assert_eq!(
+            records(&mut tz, 120 * MINUTE_UT),
+            [
+                "TIMEZONE: detected unsafe timezone name '/Etc/UTC', ignoring",
+                "TIMEZONE: stored unsafe tzdb timezone name '/etc/passwd', ignoring"
+            ]
+        );
+        assert_eq!(tz.current().name, "/etc/passwd");
+        // no detection at all: the stored name, refreshed with its flag
+        std::fs::remove_file(dir.path().join("etc/localtime")).unwrap();
+        tz.current = utc.clone();
+        assert!(records(&mut tz, 150 * MINUTE_UT).is_empty());
+        assert_eq!(tz.current(), &utc);
     }
 
     #[test]

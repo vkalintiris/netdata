@@ -9,7 +9,9 @@ use netdata_agent_pulse::{Pulse, Settings};
 use netdata_agent_rrd::host::Hosts;
 
 use crate::heartbeat::{Phase, Thread};
-use crate::{shutdown, system};
+use crate::metasync::now_realtime_s;
+use crate::timezone::Timezone;
+use crate::{shutdown, startup, system};
 
 /// `os_system_memory(true)` for the pulse charts: the available bytes, while the total is known.
 pub fn system_memory_available() -> Option<u64> {
@@ -17,12 +19,14 @@ pub fn system_memory_available() -> Option<u64> {
     (memory.total > 0).then_some(memory.available)
 }
 
-/// Starts `PULSE`. `update_every` runs first on the thread, as C reads `[pulse] update every` there.
+/// Starts `PULSE`. `update_every` runs first on the thread, as C reads `[pulse] update every` there; each cycle ends
+/// with the time zone's refresh, the last step of C's (`pulse_daemon_timezone_do()`).
 pub fn spawn(
     hosts: Arc<Hosts>,
     stack_size: usize,
     update_every: impl FnOnce() -> i64 + Send + 'static,
     settings: Settings,
+    mut timezone: Timezone,
 ) -> std::io::Result<Thread> {
     // keep the randomness at zero, to make sure we are not close to any other thread (C)
     Thread::spawn(
@@ -32,6 +36,7 @@ pub fn spawn(
         Phase::OnTheTick,
         move |ticker| {
             let step = update_every();
+            let localhost = Arc::clone(hosts.localhost());
             let mut pulse = Pulse::new(hosts, settings);
             let mut real_step = 1;
             // service_running(SERVICE_COLLECTORS), false once the exit starts
@@ -42,6 +47,7 @@ pub fn spawn(
                 }
                 real_step = 1;
                 pulse.cycle();
+                timezone.pulse_refresh(&localhost, startup::now_ut(), now_realtime_s());
             }
         },
     )

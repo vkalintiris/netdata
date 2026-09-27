@@ -136,7 +136,7 @@ pub fn charts(host: &Host, hosts: &Hosts, release_channel: &str, custom_info: &s
         memory += st
             .dims()
             .iter()
-            .filter_map(|rd| rd.ring().map(|r| (r.entries() * 4) as i64))
+            .filter_map(|rd| rd.ring().map(|r| r.memsize() as i64))
             .sum::<i64>();
         count += 1;
     }

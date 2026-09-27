@@ -729,6 +729,13 @@ impl MainCache {
         }
     }
 
+    /// The bytes of the pages held, clean, hot, dirty and being flushed: C's `pgc_get_statistics().size` without its
+    /// per-page overhead.
+    pub fn bytes(&self) -> usize {
+        let inner = self.lock();
+        inner.bytes + inner.hot_bytes + inner.dirty_bytes + inner.flushing_bytes
+    }
+
     pub fn stats(&self) -> CacheStats {
         let inner = self.lock();
         let entries = |q: &[Queue]| q.iter().map(|q| q.pages.len()).sum();
@@ -795,6 +802,11 @@ impl ExtentCache {
 
     pub fn get(&self, key: ExtentKey) -> Option<Arc<Vec<u8>>> {
         self.lock().extents.get(&key).cloned()
+    }
+
+    /// The bytes of the extents held: C's extent cache `size` without its per-page overhead.
+    pub fn bytes(&self) -> usize {
+        self.lock().bytes
     }
 
     /// An extent read from disk; one cached meanwhile wins.

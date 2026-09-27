@@ -523,9 +523,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             hostname: conf.hostname.clone(),
             registry_hostname: conf.hostname.clone(),
             os: "linux".to_string(),
-            timezone: tz.name,
-            abbrev_timezone: tz.abbrev,
-            utc_offset: tz.utc_offset,
+            timezone: tz.current().name.clone(),
+            abbrev_timezone: tz.current().abbrev.clone(),
+            utc_offset: tz.current().utc_offset,
             program_name: "netdata".to_string(),
             program_version: build::NETDATA_VERSION.to_string(),
             update_every: db.update_every,
@@ -754,6 +754,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             conf.threads.thread_stack_size,
             update_every,
             settings,
+            tz,
         ) {
             Ok(thread) => Some(thread),
             Err(err) => {

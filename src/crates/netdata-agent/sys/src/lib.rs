@@ -12,6 +12,8 @@
 //! - `setsockopt(TCP_DEFER_ACCEPT)` (decision D47) passes a stack `int` with its size on a borrowed descriptor.
 //! - `close_range()` and `close()` of inherited descriptors (decision D52) run only while the process has one thread,
 //!   at startup, before the daemon opens a descriptor it keeps.
+//! - `sqlite3_status64()` (decision D82.4) fills two stack integers; SQLite serialises it under its allocator's
+//!   mutex once initialised (before that no other SQLite call runs).
 //! - `sqlite3_recover_init/run/finish()` (decision D59.2) use a connection borrowed for the whole call; recover copies
 //!   its string arguments at init and is freed by finish, both inside the call.
 
@@ -272,6 +274,22 @@ pub fn close_inherited_fds() -> io::Result<()> {
     Ok(())
 }
 
+/// `sqlite3_status64(SQLITE_STATUS_MEMORY_USED, &current, &highwater, 1)`: the most memory SQLite held since the
+/// last call, which resets it to the current use.
+pub fn sqlite_memory_highwater() -> i64 {
+    let (mut current, mut highwater) = (0, 0);
+    // SAFETY: both pointers are to locals that outlive the call; the operation code is a constant SQLite knows.
+    unsafe {
+        rusqlite::ffi::sqlite3_status64(
+            rusqlite::ffi::SQLITE_STATUS_MEMORY_USED,
+            &mut current,
+            &mut highwater,
+            1,
+        );
+    }
+    highwater
+}
+
 unsafe extern "C" {
     fn sqlite3_recover_init(
         db: *mut rusqlite::ffi::sqlite3,
@@ -303,6 +321,18 @@ pub fn sqlite_recover(conn: &rusqlite::Connection, dst: &str) -> Option<(i32, i3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The high-water mark covers what SQLite held since the last reading, and a reading resets it to the use then.
+    #[test]
+    fn sqlite_memory_highwater_resets() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (zeroblob(1000000));")
+            .unwrap();
+        drop(conn);
+        let peak = sqlite_memory_highwater();
+        let after = sqlite_memory_highwater();
+        assert!(peak > 1_000_000 && after < peak, "{peak} {after}");
+    }
 
     #[test]
     fn multithreaded_processes_refuse_fork_and_setenv() {

@@ -137,6 +137,9 @@ fn a_cycle_creates_the_charts_as_c() {
     let sources = |dims: &[&'static str]| -> Vec<(&'static str, i32, i32, Algorithm)> {
         dims.iter().map(|&d| (d, 1, 1, I)).collect()
     };
+    let absolute = |dims: &[&'static str]| -> Vec<(&'static str, i32, i32, Algorithm)> {
+        dims.iter().map(|&d| (d, 1, 1, A)).collect()
+    };
     let eight = [
         "/api/vX/data",
         "/api/vX/weights",
@@ -219,6 +222,87 @@ fn a_cycle_creates_the_charts_as_c() {
             131001,
             ChartType::Stacked,
             &sources(&eight),
+        ),
+        shape(
+            [
+                "netdata.server_cpu",
+                "CPU usage",
+                "netdata.server_cpu",
+                "Netdata CPU usage",
+                "milliseconds/s",
+            ],
+            130000,
+            ChartType::Stacked,
+            &[("user", 1, 1000, I), ("system", 1, 1000, I)],
+        ),
+        shape(
+            [
+                "netdata.uptime",
+                "Uptime",
+                "netdata.uptime",
+                "Netdata uptime",
+                "seconds",
+            ],
+            130150,
+            ChartType::Line,
+            &[("uptime", 1, 1, A)],
+        ),
+        shape(
+            [
+                "netdata.memory",
+                "Memory Usage",
+                "netdata.memory",
+                "Netdata Memory",
+                "bytes",
+            ],
+            130100,
+            ChartType::Stacked,
+            &absolute(&[
+                "dbengine",
+                "rrd",
+                "sqlite3",
+                "metadata",
+                "uuid",
+                "labels",
+                "ML",
+                "strings",
+                "streaming",
+                "buffers",
+                "workers",
+                "aral",
+                "judy",
+                "slots",
+                "other",
+                "health log",
+            ]),
+        ),
+        shape(
+            [
+                "netdata.memory_buffers",
+                "Memory Usage",
+                "netdata.memory_buffers",
+                "Netdata Memory Buffers",
+                "bytes",
+            ],
+            130102,
+            ChartType::Stacked,
+            &absolute(&[
+                "queries",
+                "collection",
+                "aclk",
+                "api",
+                "functions",
+                "sqlite",
+                "exporters",
+                "health",
+                "streaming",
+                "streaming cbuf",
+                "replication",
+                "web",
+                "aral-by-size free",
+                "aral-judy free",
+                "uuid",
+            ]),
         ),
     ];
     assert_eq!(shapes(host), expected);
@@ -381,6 +465,10 @@ fn a_parent_charts_its_children() {
     expected.extend(per_child(EPHEMERAL_CHILD));
     expected.push("netdata.netdata.streaming_inbound_permanent".into());
     expected.push("netdata.netdata.streaming_inbound_ephemeral".into());
+    // the daemon step, last in the cycle
+    expected.extend(
+        ["server_cpu", "uptime", "memory", "memory_buffers"].map(|id| format!("netdata.{id}")),
+    );
     assert_eq!(ids, expected);
 
     let nodes = |ones: &[&str]| -> Vec<(String, i64)> {
@@ -556,19 +644,25 @@ fn the_parents_gates() {
         pulse(&hosts, gates).cycle();
         hosts.localhost().charts().all().len()
     };
-    assert_eq!(charted(false, false, false), 6);
+    // the first cycle's charts without the parents module's
+    const BASE: usize = 10;
+    assert_eq!(charted(false, false, false), BASE);
     assert_eq!(
         charted(false, true, false),
-        6,
+        BASE,
         "the walk runs for a parent or a child only"
     );
-    assert_eq!(charted(false, true, true), 6 + 4, "a child's own receivers");
+    assert_eq!(
+        charted(false, true, true),
+        BASE + 4,
+        "a child's own receivers"
+    );
     assert_eq!(
         charted(true, false, false),
-        6 + 2,
+        BASE + 2,
         "the inbound nodes without the children's charts"
     );
-    assert_eq!(charted(true, true, false), 6 + 4 + 2);
+    assert_eq!(charted(true, true, false), BASE + 4 + 2);
 }
 
 /// Hosts on a dbengine of `tiers` tiers, each with a 100 MiB quota and an hour of retention, at 1,800,000,000; the
@@ -791,4 +885,47 @@ fn the_out_of_memory_protection() {
     KNOWN.store(true, std::sync::atomic::Ordering::Relaxed);
     pulse.cycle();
     assert!(oom());
+}
+
+/// `pulse_daemon_do()`'s values: the uptime counts from the first cycle; the memory by owner is Rust's own for the
+/// dbengine caches, the ram rings and SQLite, 0 for the rest, and the buffers 0 (D82).
+#[test]
+fn the_daemon_charts_values() {
+    let hosts = hosts();
+    let host = hosts.localhost();
+    let mut charts = pulse(&hosts, Gates::default());
+    charts.cycle();
+    assert_eq!(values(host, "netdata.uptime"), [("uptime".to_string(), 0)]);
+    let memory = values(host, "netdata.memory");
+    assert_eq!(memory[0], ("dbengine".to_string(), 0), "no engine");
+    assert!(memory[1].1 > 0, "the pulse charts' own rings: {memory:?}");
+    assert!(memory[3..].iter().all(|(_, v)| *v == 0), "{memory:?}");
+    assert!(
+        values(host, "netdata.memory_buffers")
+            .iter()
+            .all(|(_, v)| *v == 0)
+    );
+    // the rings counted are the ones the charts hold; the first reading, as C's, came after the memory chart's own
+    // were made and before the buffers chart's
+    let rings = |ids: &[&str]| -> i64 {
+        host.charts()
+            .all()
+            .iter()
+            .filter(|c| ids.is_empty() || ids.contains(&c.id()))
+            .flat_map(|c| c.dims())
+            .filter_map(|d| d.ring().map(|r| r.memsize() as i64))
+            .sum()
+    };
+    assert_eq!(host.storage().pulse().rrd_memory.read(), rings(&[]));
+    assert_eq!(memory[1].1, rings(&[]) - rings(&["netdata.memory_buffers"]));
+
+    // a dbengine localhost: the caches hold its charts' pages once they stored (a point per second of the clock)
+    let (_dirs, hosts) = dbengine_hosts(1, DbMode::Dbengine);
+    let mut charts = pulse(&hosts, Gates::default());
+    charts.cycle();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    charts.cycle();
+    let memory = values(hosts.localhost(), "netdata.memory");
+    assert!(memory[0].1 > 0, "{memory:?}");
+    assert_eq!(memory[1], ("rrd".to_string(), 0), "no ram rings");
 }

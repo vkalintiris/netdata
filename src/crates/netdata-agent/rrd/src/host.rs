@@ -1867,6 +1867,30 @@ mod tests {
         assert_eq!(db_status(&host), DbStatus::Queryable);
     }
 
+    /// `pulse_rrd_memory_size`: a ram dimension's ring counts from its creation until the dimension is dropped with its
+    /// host.
+    #[test]
+    fn ram_rings_count_in_pulse() {
+        let storage = Arc::new(StorageLayout::default());
+        let memory = || storage.pulse().rrd_memory.read();
+        let host = Host::with_storage("guid-m", false, info("m"), &storage);
+        let chart = collected_chart(&host, DbMode::Ram);
+        let (dim, _) = chart.dim_add("d", None, 1, 1, crate::chart::Algorithm::Absolute);
+        let ring = dim.ring().unwrap();
+        let bytes = ring.entries() as i64 * 4;
+        assert_eq!((ring.memsize() as i64, memory()), (bytes, bytes));
+        chart.dim_add("e", None, 1, 1, crate::chart::Algorithm::Absolute);
+        assert_eq!(memory(), 2 * bytes);
+        chart.dim_add("e", None, 1, 1, crate::chart::Algorithm::Absolute);
+        assert_eq!(
+            memory(),
+            2 * bytes,
+            "an existing dimension is not counted again"
+        );
+        drop((dim, chart, host));
+        assert_eq!(memory(), 0);
+    }
+
     /// `labels_applied(_version)`: the pulse charts take a child's labels first, then again only when their version
     /// moves.
     #[test]

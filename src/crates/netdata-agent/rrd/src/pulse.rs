@@ -51,6 +51,30 @@ pub struct Pulse {
     pub network: Network,
     pub ingestion: Ingestion,
     pub queries: Queries,
+    pub rrd_memory: RrdMemory,
+}
+
+/// `pulse_rrd_memory_size` (`pulse-db-rrd.c`): the bytes of the ram dimensions' rings (C also counts their handles,
+/// D82.2).
+#[derive(Debug, Default)]
+pub struct RrdMemory {
+    bytes: AtomicI64,
+}
+
+impl RrdMemory {
+    /// `pulse_db_rrd_memory_add()`.
+    pub fn add(&self, bytes: usize) {
+        self.bytes.fetch_add(bytes as i64, Ordering::Relaxed);
+    }
+
+    /// `pulse_db_rrd_memory_sub()`.
+    pub fn sub(&self, bytes: usize) {
+        self.bytes.fetch_sub(bytes as i64, Ordering::Relaxed);
+    }
+
+    pub fn read(&self) -> i64 {
+        self.bytes.load(Ordering::Relaxed)
+    }
 }
 
 /// `web_statistics` (`pulse-http-api.c`): the web server's clients and completed requests.

@@ -745,6 +745,10 @@ impl Chart {
                 backfilled: false,
             }),
         });
+        // pulse_db_rrd_memory_add(), which the dimension's drop takes back
+        if let Some(ring) = dim.ring() {
+            self.storage.pulse().rrd_memory.add(ring.memsize());
+        }
         // C compares with the first other dimension only (the loop breaks after it).
         let heterogeneous = index.ordered.first().is_some_and(|td| {
             let t = td.meta();
@@ -880,6 +884,15 @@ impl TierCollect {
                 r.anomaly_count,
                 r.flags,
             );
+        }
+    }
+}
+
+impl Drop for Dim {
+    /// `rrddim_free()`'s `pulse_db_rrd_memory_sub()` of the ring.
+    fn drop(&mut self) {
+        if let Some(ring) = self.ring() {
+            self.storage.pulse().rrd_memory.sub(ring.memsize());
         }
     }
 }

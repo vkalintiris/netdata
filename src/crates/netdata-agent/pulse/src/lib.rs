@@ -3,6 +3,7 @@
 //! extended`), ML, gorilla, heartbeat, the dbengine caches, the registry, strings and ARAL are not (D80.4).
 
 mod chart;
+mod daemon;
 mod daemon_memory;
 mod http_api;
 mod ingestion;
@@ -42,7 +43,7 @@ pub struct Pulse {
     network: network::Charts,
     retention: retention::Charts,
     parents: parents::Charts,
-    daemon_memory: daemon_memory::Charts,
+    daemon: daemon::Charts,
 }
 
 impl Pulse {
@@ -56,7 +57,7 @@ impl Pulse {
             network: Default::default(),
             retention: Default::default(),
             parents: Default::default(),
-            daemon_memory: Default::default(),
+            daemon: Default::default(),
         }
     }
 
@@ -70,7 +71,7 @@ impl Pulse {
         self.retention.update(&localhost);
         self.parents
             .update(&localhost, &self.hosts, self.settings.parents);
-        self.daemon_memory.update(&localhost);
+        self.daemon.update(&localhost);
     }
 }
 
