@@ -82,6 +82,22 @@ fn init_hostname(hostname: &str) -> String {
     }
 }
 
+/// The records of `rrdhost_stream_parents_update_from_destination()` for a host that streams.
+fn log_stream_parents(info: &HostInfo) {
+    let Some(send) = &info.stream_send else {
+        return;
+    };
+    for (n, parent) in send.parents().enumerate() {
+        nd_log!(
+            Source::Daemon,
+            Priority::Debug,
+            "STREAM PARENTS '{}': added streaming destination No {}: '{parent}'",
+            info.hostname,
+            n + 1
+        );
+    }
+}
+
 /// The record `rrdhost_create()` writes. The health thread copies the alarm defaults into the host only later, so
 /// they print empty; C prints a child's unset cache directory with a raw `%s`.
 fn initialized_record(guid: &str, info: &HostInfo) -> String {
@@ -499,17 +515,7 @@ impl Host {
     /// The records of `rrdhost_create()`; an archived host gets no function registry, so no NRPC record.
     fn log_created_with(&self, registry: bool) {
         let info = self.info();
-        if let Some(send) = &info.stream_send {
-            for (n, parent) in send.parents().enumerate() {
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Debug,
-                    "STREAM PARENTS '{}': added streaming destination No {}: '{parent}'",
-                    info.hostname,
-                    n + 1
-                );
-            }
-        }
+        log_stream_parents(&info);
         if uuid_parse_flexi(self.machine_guid.as_bytes()).is_none() {
             netdata_log_error!("Host machine GUID {} is not valid", self.machine_guid);
         }
@@ -653,10 +659,24 @@ impl Host {
         for (priority, text) in records {
             nd_log!(Source::Daemon, priority, "{text}");
         }
-        // the host connected again: it gets its function registry back
+        // the host connected again: it gets back its function registry, and the sender and replication settings
+        // it was archived without
         if self.archived.swap(false, Ordering::AcqRel) {
             let hostname = self.hostname();
             self.log_registry_created(&hostname);
+            {
+                let mut info = self.info.write().unwrap_or_else(PoisonError::into_inner);
+                if info.stream_send.is_none() {
+                    info.stream_send.clone_from(&wanted.stream_send);
+                    log_stream_parents(&info);
+                }
+                info.set_replication(
+                    wanted.replication_enabled,
+                    wanted.replication_period,
+                    wanted.replication_step,
+                );
+            }
+            self.set_replication_percent(100.0);
             nd_log!(
                 Source::Daemon,
                 Priority::Debug,
@@ -1244,10 +1264,16 @@ mod tests {
         let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
         let ues = || -> Vec<u32> {
             (0..3)
-                .map(|t| e.mrg.get_and_acquire(dim.uuid(), t).unwrap().update_every_s())
+                .map(|t| {
+                    e.mrg
+                        .get_and_acquire(dim.uuid(), t)
+                        .unwrap()
+                        .update_every_s()
+                })
                 .collect()
         };
-        let collectors = || -> Vec<usize> { e.tiers.iter().map(|td| td.collectors_running()).collect() };
+        let collectors =
+            || -> Vec<usize> { e.tiers.iter().map(|td| td.collectors_running()).collect() };
         assert_eq!((ues(), collectors()), (vec![1, 60, 3600], vec![1, 1, 1]));
         assert!(dim.ring().is_none());
 
@@ -1256,7 +1282,10 @@ mod tests {
         }
         assert_eq!((dim.first_entry_s(), dim.last_entry_s()), (T0, T0 + 9));
         assert_eq!(chart.tier0_retention(), (T0, T0 + 9));
-        assert_eq!((dim.tier_retention(1), dim.tier_retention(2)), ((0, 0), (0, 0)));
+        assert_eq!(
+            (dim.tier_retention(1), dim.tier_retention(2)),
+            ((0, 0), (0, 0))
+        );
         assert_eq!(e.main.stats().hot_entries, 1);
 
         chart.set_update_every(2);
@@ -1270,7 +1299,10 @@ mod tests {
         dim.store_flush();
         assert_eq!(e.main.stats().hot_entries, 0);
         assert_eq!(
-            e.mrg.get_and_acquire(dim.uuid(), 0).unwrap().latest_clean_time_s(),
+            e.mrg
+                .get_and_acquire(dim.uuid(), 0)
+                .unwrap()
+                .latest_clean_time_s(),
             T0 + 11
         );
 
@@ -1308,9 +1340,19 @@ mod tests {
 
         let plain = Host::new("guid-p", false, info("p"));
         let chart = collected_chart(&plain, DbMode::Ram);
-        assert!(chart.dim_add("d", None, 1, 1, Algorithm::Absolute).0.finalize_collection());
+        assert!(
+            chart
+                .dim_add("d", None, 1, 1, Algorithm::Absolute)
+                .0
+                .finalize_collection()
+        );
         let orphan = collected_chart(&Host::new("guid-o", false, info("o")), DbMode::Dbengine);
-        assert!(orphan.dim_add("d", None, 1, 1, Algorithm::Absolute).0.finalize_collection());
+        assert!(
+            orphan
+                .dim_add("d", None, 1, 1, Algorithm::Absolute)
+                .0
+                .finalize_collection()
+        );
     }
 
     /// `rrdhost_finalize_collection()`: C's record, with the host's field, and every collection ended.
@@ -1670,6 +1712,57 @@ mod tests {
             ]
         );
         assert_eq!(hosts.all().len(), 3);
+    }
+
+    /// An archived host is loaded without replication or a sender; when it connects again it takes the receiver's,
+    /// as `rrdhost_update()` does: its replication period capped for a ring and its progress back at 100%.
+    #[test]
+    fn a_reconnected_archived_host_takes_the_receivers_settings() {
+        let hosts = Hosts::new(Host::new("local-guid", true, info("parent")));
+        let archived = HostInfo {
+            db_mode: DbMode::Alloc,
+            replication_enabled: false,
+            replication_period: 0,
+            replication_step: 0,
+            ..info("child")
+        };
+        let guid = "5a1e0000-0000-4000-8000-0000000000c3";
+        let host = hosts.add_archived(guid, archived.clone(), |_| {});
+        host.clear_pending_context_load();
+        host.set_replication_percent(42.0);
+        let mut wanted = HostInfo {
+            stream_send: StreamSend::new(true, "grandparent:19999", "a-key"),
+            ..archived
+        };
+        wanted.set_replication(true, 86400, 3600);
+        let (_, records) = netdata_agent_log::capture(|| {
+            hosts.find_or_create(
+                guid,
+                DbMode::Alloc,
+                || panic!("created"),
+                |h| h.update(&wanted, 1, 4096),
+            )
+        });
+        let info = host.info();
+        assert_eq!(
+            (
+                info.replication_enabled,
+                info.replication_period,
+                info.replication_step,
+                info.stream_send.is_some(),
+                host.replication_percent()
+            ),
+            (true, 4096, 3600, true, 100.0)
+        );
+        assert!(records.iter().any(|r| r.message.as_deref()
+            == Some(
+                "STREAM PARENTS 'child': added streaming destination No 1: 'grandparent:19999'"
+            )));
+        // a host that is not archived keeps its settings
+        let mut other = wanted.clone();
+        other.set_replication(false, 0, 0);
+        host.update(&other, 1, 4096);
+        assert!(host.info().replication_enabled);
     }
 
     /// `RRDHOST_FLAG_METADATA_*` as C raises them: at the creation of a host that connected (not an archived one),
