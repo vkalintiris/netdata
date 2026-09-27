@@ -44,6 +44,7 @@ fn query(stack: &str, chips: &[(&str, &str)]) -> ExploreQuery {
             histogram: Some(HistogramSpec {
                 stack: stack.to_string(),
                 percentiles: false,
+                durations: false,
             }),
             facets: None,
             groups: false,
@@ -96,6 +97,7 @@ fn bucket(counts: &[u64], unset: u64) -> StackBucket {
         unset,
         other: 0,
         percentiles: None,
+        durations: None,
     }
 }
 
@@ -115,6 +117,7 @@ fn one_request_histogram(times: u64) -> HistogramData {
             percentiles: None,
         },
         percentiles: false,
+        durations: false,
     }
 }
 
@@ -633,6 +636,7 @@ fn the_status_facet_counts_unset_rows() {
     q.sections.histogram = Some(HistogramSpec {
         stack: "status_code".to_string(),
         percentiles: false,
+        durations: false,
     });
     let data = run(
         vec![
@@ -888,6 +892,7 @@ fn every_section(stack: &str, order: RowOrder, limit: usize) -> ExploreQuery {
     query.sections.histogram = Some(HistogramSpec {
         stack: stack.to_string(),
         percentiles: true,
+        durations: false,
     });
     query.sections.facets = Some(FacetSpec { fields: None });
     query.sections.groups = true;

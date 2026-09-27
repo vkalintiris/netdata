@@ -217,6 +217,7 @@ fn parse_selection(value: serde_json::Value) -> Result<SelectionRequest, String>
 pub struct HistogramRequest {
     pub stack: String,
     pub percentiles: bool,
+    pub durations: bool,
 }
 
 #[derive(Deserialize)]
@@ -388,6 +389,8 @@ struct RawHistogram {
     stack: Option<String>,
     #[serde(default)]
     percentiles: Option<bool>,
+    #[serde(default)]
+    durations: Option<bool>,
 }
 
 impl TryFrom<RawExploreParams> for ExploreParams {
@@ -426,6 +429,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
                 Some(HistogramRequest {
                     stack: sfsq::traces::explore::DEFAULT_STACK_FIELD.to_string(),
                     percentiles: true,
+                    durations: false,
                 }),
                 Some(FacetsRequest { fields: None }),
                 true,
@@ -445,6 +449,7 @@ impl TryFrom<RawExploreParams> for ExploreParams {
                         Some(HistogramRequest {
                             stack,
                             percentiles: spec.percentiles.unwrap_or(true),
+                            durations: spec.durations.unwrap_or(false),
                         })
                     }
                 };
@@ -634,6 +639,10 @@ pub struct HistogramWire {
     /// Present when percentiles were asked for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub percentiles: Option<PercentileMethodWire>,
+    /// With `durations` asked for: each heatmap row's exclusive upper bound in
+    /// nanoseconds, `null` for the last; each bucket's `durations` is parallel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_rows: Option<Vec<Option<u64>>>,
 }
 
 /// `counts` per value, `unset` for rows without the stack field, `other`
@@ -645,6 +654,9 @@ pub struct BucketWire {
     pub other: u64,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub percentiles: Option<PercentilesWire>,
+    /// Scope rows per heatmap row, when asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub durations: Option<Vec<u64>>,
 }
 
 /// Duration percentiles, nanoseconds; approximate (see

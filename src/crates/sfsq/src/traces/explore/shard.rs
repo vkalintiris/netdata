@@ -200,7 +200,7 @@ pub(super) fn evaluate(
             }
             Err(e) => return Err(e),
         }
-        if histogram.percentiles {
+        if histogram.percentiles || histogram.durations {
             shard.durations = bucket_durations(&reader, &positions, grid)?;
         }
     }

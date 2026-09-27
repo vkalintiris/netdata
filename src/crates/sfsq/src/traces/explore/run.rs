@@ -373,6 +373,7 @@ pub fn explore(
                 unset,
                 other,
                 percentiles: percentiles(bucket_durations),
+                durations: spec.durations.then(|| bucket_durations.heatmap_rows()),
             });
         }
         HistogramData {
@@ -386,6 +387,7 @@ pub fn explore(
                 percentiles: percentiles(&window_durations),
             },
             percentiles: spec.percentiles,
+            durations: spec.durations,
         }
     });
 

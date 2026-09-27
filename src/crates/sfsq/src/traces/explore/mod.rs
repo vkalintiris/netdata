@@ -189,6 +189,8 @@ pub struct HistogramData {
     pub totals: Totals,
     /// Whether percentiles were computed (asked for).
     pub percentiles: bool,
+    /// Whether each bucket carries its heatmap rows (asked for).
+    pub durations: bool,
 }
 
 /// One bucket: `counts` per value, `unset` for rows without the field, and
@@ -201,6 +203,8 @@ pub struct StackBucket {
     pub other: u64,
     /// When asked for; `None` for a bucket without rows.
     pub percentiles: Option<Percentiles>,
+    /// When asked for: scope rows per duration heatmap row.
+    pub durations: Option<Vec<u64>>,
 }
 
 /// Scope rows in the whole window, and how many are errors.

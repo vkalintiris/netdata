@@ -353,7 +353,8 @@ fn explore_defaults_to_the_last_fifteen_minutes_stacked_by_status() {
         p.histogram,
         Some(HistogramRequest {
             stack: "status_code".to_string(),
-            percentiles: true
+            percentiles: true,
+            durations: false
         })
     );
 
@@ -374,7 +375,8 @@ fn explore_defaults_to_the_last_fifteen_minutes_stacked_by_status() {
         p.histogram,
         Some(HistogramRequest {
             stack: "_duration_band".to_string(),
-            percentiles: false
+            percentiles: false,
+            durations: false
         })
     );
 

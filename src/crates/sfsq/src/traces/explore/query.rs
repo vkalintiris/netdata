@@ -53,6 +53,8 @@ pub struct Sections {
 pub struct HistogramSpec {
     pub stack: String,
     pub percentiles: bool,
+    /// Each bucket's counts per duration heatmap row.
+    pub durations: bool,
 }
 
 /// Values with their scope-row counts, per field; a field's own chips do not

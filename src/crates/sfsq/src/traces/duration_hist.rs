@@ -58,6 +58,31 @@ pub fn bucket_value(index: u16) -> i64 {
     i64::try_from(mid).unwrap_or(i64::MAX)
 }
 
+/// Rows of the coarse layout the explorer's duration heatmap draws: row 0
+/// holds everything under 2^10 ns (about 1 µs), row `k` then holds
+/// `[2^(9+k), 2^(10+k))` ns, and the last row everything from 2^40 ns (about
+/// 18 minutes).
+pub const HEATMAP_ROWS: usize = 32;
+const HEATMAP_FIRST_BIT: u32 = 10;
+
+/// The heatmap row a bucket falls in; a bucket never straddles a power of two.
+fn heatmap_row(index: u16) -> usize {
+    let (low, _) = bucket_bounds(index);
+    if low < 1 << HEATMAP_FIRST_BIT {
+        return 0;
+    }
+    let bit = 63 - low.leading_zeros();
+    ((bit - HEATMAP_FIRST_BIT + 1) as usize).min(HEATMAP_ROWS - 1)
+}
+
+/// Each heatmap row's exclusive upper bound in nanoseconds; `None` for the
+/// last, unbounded row.
+pub fn heatmap_row_bounds() -> Vec<Option<u64>> {
+    (0..HEATMAP_ROWS)
+        .map(|row| (row + 1 < HEATMAP_ROWS).then(|| 1u64 << (HEATMAP_FIRST_BIT + row as u32)))
+        .collect()
+}
+
 /// Durations counted per bucket.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DurationHistogram {
@@ -81,6 +106,15 @@ impl DurationHistogram {
 
     pub fn count(&self) -> u64 {
         self.counts.values().sum()
+    }
+
+    /// Counts per heatmap row ([`HEATMAP_ROWS`] of them).
+    pub fn heatmap_rows(&self) -> Vec<u64> {
+        let mut rows = vec![0; HEATMAP_ROWS];
+        for (&index, &count) in &self.counts {
+            rows[heatmap_row(index)] += count;
+        }
+        rows
     }
 
     /// The `percent`-th percentile by nearest rank (rank `ceil(percent · n /
@@ -108,6 +142,26 @@ impl DurationHistogram {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heatmap_rows_are_powers_of_two() {
+        let mut h = DurationHistogram::new();
+        for duration in [0, 500, 1_023, 1_024, 1_000_000, 2_500_000_000, 1 << 40, i64::MAX] {
+            h.record(duration);
+        }
+        let mut expected = vec![0; HEATMAP_ROWS];
+        expected[0] = 3; // 0, 500, 1023: under 2^10
+        expected[1] = 1; // 1024: [2^10, 2^11)
+        expected[10] = 1; // 1 ms: [2^19, 2^20)
+        expected[22] = 1; // 2.5 s: [2^31, 2^32)
+        expected[HEATMAP_ROWS - 1] = 2; // 2^40 and beyond
+        assert_eq!(h.heatmap_rows(), expected);
+
+        let bounds = heatmap_row_bounds();
+        assert_eq!(bounds.len(), HEATMAP_ROWS);
+        assert_eq!((bounds[0], bounds[22]), (Some(1 << 10), Some(1 << 32)));
+        assert_eq!(bounds[HEATMAP_ROWS - 1], None);
+    }
 
     #[test]
     fn duration_hist_layout_golden() {

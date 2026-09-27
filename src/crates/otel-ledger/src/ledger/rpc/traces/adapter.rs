@@ -232,6 +232,7 @@ pub(crate) fn to_explore_query(
             histogram: params.histogram.as_ref().map(|h| HistogramSpec {
                 stack: h.stack.clone(),
                 percentiles: h.percentiles,
+                durations: h.durations,
             }),
             facets: params.facets.as_ref().map(|f| FacetSpec {
                 fields: f.fields.clone(),
@@ -315,6 +316,7 @@ pub(crate) fn to_explore_response(
                 unset: b.unset,
                 other: b.other,
                 percentiles: percentiles(b.percentiles),
+                durations: b.durations,
             });
         }
         HistogramWire {
@@ -331,6 +333,9 @@ pub(crate) fn to_explore_response(
                 approximate: true,
                 max_relative_error: sfsq::traces::duration_hist::MAX_RELATIVE_ERROR,
             }),
+            duration_rows: h
+                .durations
+                .then(sfsq::traces::duration_hist::heatmap_row_bounds),
         }
     });
     let facets = data.facets.map(|f| {

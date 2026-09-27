@@ -590,6 +590,7 @@ fn explore_query(grid: &Grid, scope: &Scope, stack: &str) -> ExploreQuery {
             histogram: Some(HistogramSpec {
                 stack: stack.to_string(),
                 percentiles: true,
+                durations: false,
             }),
             facets: None,
             groups: false,
