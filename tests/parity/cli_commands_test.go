@@ -339,7 +339,7 @@ func waitPulseStored(t *testing.T, d *daemon.Daemon) {
 					LastEntry int64 `json:"last_entry"`
 				} `json:"charts"`
 			}
-			if json.Unmarshal(httpBody(b), &doc) == nil && doc.Charts["netdata.uptime"].LastEntry > 0 {
+			if json.Unmarshal(httpBody(b), &doc) == nil && doc.Charts["netdata.clients"].LastEntry > 0 {
 				return
 			}
 		}
