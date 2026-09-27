@@ -111,7 +111,8 @@ pub struct QueryMetric {
     pub tiers: [TierSnapshot; RRD_STORAGE_TIERS],
     /// What the execution read, merged (`qm->query_points`).
     pub query_points: StoragePoint,
-    /// `qm->plan`: the plans in start order, kept for a failed plan; empty for the LATEST fast path.
+    /// `qm->plan`: the plans in start order, kept for a failed plan; empty for the LATEST fast path and when planning
+    /// fails before the first plan.
     pub plan: Vec<crate::plan::PlanEntry>,
     /// The v2 group it joined (`qm->grouped_as`).
     pub grouped_as: GroupedAs,

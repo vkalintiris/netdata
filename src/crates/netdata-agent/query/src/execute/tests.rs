@@ -379,7 +379,7 @@ fn a_tie_counts_the_instant_plan() {
     let a = T0 + 3600;
     let (_pages, h) = dbengine_pages_host(
         [(T0 + 10, a + 5000), (T0 + 30, a), (0, 0)],
-        7.0,
+        |_, _| 7.0,
         Algorithm::Absolute,
     );
     let query = format!("after={a}&before={}&points=10&options=unaligned", a + 3599);
@@ -422,19 +422,21 @@ fn assert_rows(r: &Rrdr, qt: &QueryTarget, want: impl Fn(usize) -> f64) {
 
 /// A fine tier whose first page starts inside a coarse point (the dbengine jumps to it, `query.rs` `next_metric()`):
 /// the coarse point serves up to where the fine one starts, and a sum keeps only its share before it (QE:309-323),
-/// scaled for stored values, cut by its duration for rates (QE:355-361). No row loses or doubles a second.
+/// scaled for stored values, cut by its duration for rates (QE:355-361); `absolute` makes the point read ahead
+/// positive too (QE:295-296). No row loses or doubles a second.
 #[test]
 fn a_coarse_head_joins_a_finer_tier_without_loss() {
     use crate::testing::dbengine_pages_host;
     // 7 every 10 s on both tiers; tier 0 starts with (T0+905, T0+915], inside tier 1's (T0+900, T0+930]
     let points = [(T0 + 915, T0 + 2000), (T0 + 30, T0 + 2010), (0, 0)];
     let query = format!("after={}&before={}&points=70", T0 + 600, T0 + 1500);
-    for (algorithm, group, per_second) in [
-        (Algorithm::Absolute, "average", None),
-        (Algorithm::Absolute, "sum", Some(0.7)),
-        (Algorithm::Incremental, "sum", Some(7.0)),
+    for (algorithm, value, group, per_second) in [
+        (Algorithm::Absolute, 7.0, "average", None),
+        (Algorithm::Absolute, 7.0, "sum", Some(0.7)),
+        (Algorithm::Absolute, -7.0, "sum&options=absolute", Some(0.7)),
+        (Algorithm::Incremental, 7.0, "sum", Some(7.0)),
     ] {
-        let (_pages, h) = dbengine_pages_host(points, 7.0, algorithm);
+        let (_pages, h) = dbengine_pages_host(points, move |_, _| value, algorithm);
         let (qt, r, got) = planned(&h, &format!("{query}&group={group}"), T0 + 2000);
         assert_eq!(
             (got.window, got.plans),
@@ -449,8 +451,67 @@ fn a_coarse_head_joins_a_finer_tier_without_loss() {
     }
 }
 
-/// A coarse tier whose last window is still open hands the tail to tier 0 (QE:302-308); `absolute` makes the point
-/// read ahead positive too (QE:295-296).
+/// A finer point read ahead that starts after the row keeps the coarse point serving only up to where it starts
+/// (QE:457-463), and is then consumed as the first point since the switch, which the non-advancing guard does not
+/// check against the coarse point it overlaps (QE:265-273, 387). Tier 1 holds 7; tier 0 holds its end time's offset,
+/// from (T0+915, T0+925] inside tier 1's (T0+900, T0+930].
+#[test]
+fn a_point_read_ahead_bounds_the_coarse_one() {
+    use crate::testing::dbengine_pages_host;
+    let (_pages, h) = dbengine_pages_host(
+        [(T0 + 925, T0 + 2000), (T0 + 30, T0 + 2010), (0, 0)],
+        |tier, t| if tier == 0 { (t - T0) as f64 } else { 7.0 },
+        Algorithm::Absolute,
+    );
+    let query = format!("after={}&before={}&points=70", T0 + 600, T0 + 1500);
+    let (_, r, got) = planned(&h, &query, T0 + 2000);
+    assert_eq!(
+        (got.window, got.plans),
+        (
+            (T0 + 602, T0 + 1511),
+            vec![entry(1, 602, 925), entry(0, 925, 1511)]
+        )
+    );
+    let row = |t: i64| (0..r.rows).find(|&i| r.t[i] == T0 + t).map(|i| r.v[i]);
+    // (T0+900, T0+913] from tier 1; (T0+913, T0+926] averages tier 0's (915, 925] and its next point interpolated at
+    // T0+926 from it
+    assert_eq!(row(913), Some(7.0));
+    let seam = row(926).unwrap();
+    assert!((seam - (925.0 + 926.0) / 2.0).abs() < 1e-9, "{seam}");
+}
+
+/// Three plans, each seam inside the coarser point (QE:309-323 twice): a sum loses no second across both.
+#[test]
+fn three_plans_join_without_loss() {
+    use crate::testing::dbengine_pages_host;
+    // tier 1 starts with (T0+915, T0+945] inside tier 2's (T0+900, T0+960]; tier 0 with (T0+1825, T0+1835] inside
+    // tier 1's (T0+1815, T0+1845]
+    let points = [
+        (T0 + 1835, T0 + 3000),
+        (T0 + 945, T0 + 3015),
+        (T0 + 60, T0 + 3060),
+    ];
+    let (_pages, h) = dbengine_pages_host(points, |_, _| 7.0, Algorithm::Absolute);
+    let query = format!("after={}&before={}&points=150", T0 + 600, T0 + 2500);
+    for (group, per_second) in [("average", None), ("sum", Some(0.7))] {
+        let (qt, r, got) = planned(&h, &format!("{query}&group={group}"), T0 + 3000);
+        assert_eq!(
+            (
+                got.plans.iter().map(|e| e.tier).collect::<Vec<_>>(),
+                got.queries.clone()
+            ),
+            (vec![2, 1, 0], vec![1, 1, 1]),
+            "{group}"
+        );
+        assert!(qt.db.tiers[..3].iter().all(|t| t.points > 0), "{group}");
+        let vue = (r.t[1] - r.t[0]) as f64;
+        assert_rows(&r, &qt, |_| per_second.map_or(7.0, |p| p * vue));
+    }
+}
+
+/// A coarse tier whose last window is still open hands the tail to tier 0: an average at the row that reaches its
+/// end (QE:208-212), a sum, whose switch waits for the grouping's offset, at the point crossing it, which the finer
+/// point read ahead replaces (QE:302-308).
 #[test]
 fn a_finer_tail_follows_a_coarse_tier() {
     use crate::testing::ram_tiers_host;
@@ -484,7 +545,7 @@ fn the_plans_and_weights_print_as_cs() {
     let a = T0 + 3600;
     let (_pages, h) = dbengine_pages_host(
         [(T0 + 10, a + 5000), (T0 + 30, a), (0, 0)],
-        7.0,
+        |_, _| 7.0,
         Algorithm::Absolute,
     );
     let query = format!("after={a}&before={}&points=10&options=unaligned", a + 3599);

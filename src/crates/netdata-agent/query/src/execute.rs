@@ -83,7 +83,7 @@ fn total_projection(point: &QueryPoint, row_start: i64, row_end: i64) -> f64 {
 }
 
 /// What `rrd2rrdr_query_ops_prep()` decided for one metric.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 enum Prepared {
     /// Serve the collector's last stored value (`query_latest_fast_path()`).
     Latest { value: f64, time_s: i64 },
@@ -124,7 +124,7 @@ struct Ops<'h> {
 }
 
 impl<'h> Ops<'h> {
-    /// The plans are open where their query is (`query_planer_initialize_plans()`); none is active yet.
+    /// Every plan is open with its query (`query_planer_initialize_plans()`); none is active yet.
     fn new(
         qt: &QueryTarget,
         window: &Window,
@@ -161,16 +161,7 @@ impl<'h> Ops<'h> {
             entries,
             views,
             storage_tiers: qt.request.profile.storage_tiers as usize,
-            states: queries
-                .iter()
-                .map(|q| {
-                    if q.is_some() {
-                        PlanState::Open
-                    } else {
-                        PlanState::Uninitialized
-                    }
-                })
-                .collect(),
+            states: vec![PlanState::Open; queries.len()],
             queries,
             window_before: window.before,
         }
@@ -225,7 +216,7 @@ impl<'h> Ops<'h> {
     }
 
     /// `query_planer_next_plan()`: activates the first later plan that neither `now` nor the last point's end has
-    /// passed, releasing the plan it leaves (skipped plans stay open until the end); otherwise the active plan runs
+    /// reached, releasing the plan it leaves (skipped plans stay open until the end); otherwise the active plan runs
     /// to the window's end.
     fn next_plan(&mut self, now: i64, last_point_end: i64) -> bool {
         let tiers = Tiers {
@@ -369,8 +360,8 @@ fn prepare(qt: &mut QueryTarget, d: usize, window: &Window) -> Option<Prepared> 
         qt.db.tiers[e.tier].queries += 1;
     }
     // query_plan() activates plan 0 once every plan is open
-    let open = vec![PlanState::Open; built.entries.len()];
-    if !plan::can_activate(&tiers, &built.entries, &open, 0) {
+    let open = [PlanState::Open; plan::QUERY_PLANS_MAX];
+    if !plan::can_activate(&tiers, &built.entries, &open[..built.entries.len()], 0) {
         return None;
     }
     Some(Prepared::Plans {
@@ -822,18 +813,19 @@ fn query_metric(
         Prepared::Latest { value, time_s } => execute_latest(r, col, qm, window, value, time_s),
         Prepared::Plans { entries, expanded } => {
             // metric_dup() per plan: the queries borrow these, which leaves `qt` free for the counters
-            let handles: Vec<Option<TierHandle>> = entries
+            let handles: Vec<TierHandle> = entries
                 .iter()
-                .map(|e| qm.tiers[e.tier].handle.clone())
+                .map(|e| {
+                    qm.tiers[e.tier]
+                        .handle
+                        .clone()
+                        .expect("a valid plan's tier holds the metric")
+                })
                 .collect();
             let queries = handles
                 .iter()
                 .zip(&expanded)
-                .map(|(handle, &(after, before))| {
-                    handle
-                        .as_ref()
-                        .map(|h| h.query(after, before, qt.request.priority))
-                })
+                .map(|(h, &(after, before))| Some(h.query(after, before, qt.request.priority)))
                 .collect();
             let mut ops = Ops::new(qt, window, qm.tier_views(), entries, queries);
             ops.set_active(0);

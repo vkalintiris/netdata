@@ -1,6 +1,6 @@
 //! The C planner's unit tests (`query_plan_unittest()`, `src/web/api/queries/query-plan.c:837-1105`, run by
 //! `netdata -W queryplantest`), with three tiers and C's expectations; the ops-cache case has no Rust analogue and the
-//! result-expiry case is `execute.rs`'s. Plus the reference's order of equal starts (D74.2) and the choice of the next
+//! result-expiry case is `execute/tests.rs`'s. Plus the reference's order of equal starts (D74.2) and the choice of the next
 //! plan.
 
 use super::*;

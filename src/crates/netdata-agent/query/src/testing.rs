@@ -109,7 +109,7 @@ pub fn v2_target(h: &Arc<Host>, query: &str) -> (QueryTarget, Window) {
     (qt, window)
 }
 
-/// The metric of [`dbengine_host`].
+/// The metric of [`dbengine_host`] and [`dbengine_pages_host`].
 pub const U: [u8; 16] = [0x11; 16];
 
 /// An engine of three empty tiers over temporary directories, loaded and clocked at `now()`, for charts collected
@@ -195,11 +195,11 @@ pub struct Pages {
 }
 
 /// A [`dbengine_host_over`] tiers holding points in hot pages, clocked at `T0 + 100_000`: per tier, the end times
-/// `(first, last)` of a point every tier update every, each the tier's grouping of samples of `value`; (0, 0) stores
-/// nothing.
+/// `(first, last)` of a point every tier update every, each the tier's grouping of samples of `value(tier, end)`;
+/// (0, 0) stores nothing.
 pub fn dbengine_pages_host(
     points: [(i64, i64); 3],
-    value: f64,
+    value: impl Fn(usize, i64) -> f64,
     algorithm: Algorithm,
 ) -> (Pages, Arc<Host>) {
     use netdata_agent_storage::dbengine::engine::collect::{Alignment, CollectHandle};
@@ -218,11 +218,11 @@ pub fn dbengine_pages_host(
             ue as u32,
             Alignment::new("guid-db", "t.a", tier),
         );
-        let sum = value * f64::from(samples);
         for t in (first..=last).step_by(ue as usize) {
+            let value = value(tier, t);
             collect.store_next(
                 t as u64 * 1_000_000,
-                sum,
+                value * f64::from(samples),
                 value,
                 value,
                 samples,
