@@ -24,7 +24,7 @@ pub(super) struct ExploreShard {
     /// stack field is high-cardinality here.
     pub other: Vec<u64>,
     pub stack_high: bool,
-    /// Per bucket: scope-row durations (only when percentiles are asked for).
+    /// Per bucket: scope-row durations (when percentiles or heatmap rows are asked for).
     pub durations: Vec<DurationHistogram>,
     /// Scope-row counts per value of each faceted field.
     pub facets: Vec<sfst::FacetResult>,
@@ -181,12 +181,13 @@ pub(super) fn evaluate(
     if let Some(both) = &both {
         shard.selection_matched = reader.matched_count(both, window.clone())?;
     }
-    let percentiles = query
+    // Per-bucket duration histograms feed both the percentiles and the heatmap rows.
+    let durations = query
         .sections
         .histogram
         .as_ref()
-        .is_some_and(|histogram| histogram.percentiles);
-    let positions = if percentiles || query.sections.groups {
+        .is_some_and(|histogram| histogram.percentiles || histogram.durations);
+    let positions = if durations || query.sections.groups {
         reader.matched_positions(&scope, window.clone())?
     } else {
         Vec::new()

@@ -178,6 +178,33 @@ fn entry_spans_are_counted_by_status() {
     assert!(histogram.buckets.iter().all(|b| b.unset == 0));
 }
 
+#[test]
+fn heatmap_rows_come_without_percentiles() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
+    let mut q = query("_role", &[]);
+    q.sections.histogram = Some(HistogramSpec {
+        stack: "_role".to_string(),
+        percentiles: false,
+        durations: true,
+    });
+    let histogram = run(vec![sealed_source(dir.path(), &wal, "a")], q)
+        .histogram
+        .unwrap();
+
+    assert!(histogram.durations);
+    let rows: Vec<&Vec<u64>> = histogram
+        .buckets
+        .iter()
+        .map(|b| b.durations.as_ref().expect("every bucket carries its rows"))
+        .collect();
+    assert!(rows
+        .iter()
+        .all(|r| r.len() == sfsq::traces::duration_hist::HEATMAP_ROWS));
+    assert_eq!(rows.iter().flat_map(|r| r.iter()).sum::<u64>(), 4);
+    assert!(histogram.buckets.iter().all(|b| b.percentiles.is_none()));
+}
+
 /// Four bytes posing as an in-memory chunk over the first seconds.
 fn garbage_source() -> TraceSource {
     TraceSource::Sfst(TraceSfstCandidate {
