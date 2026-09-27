@@ -44,8 +44,10 @@ fn the_pass_drops_the_least_recently_used_unheld_pages() {
     }
     drop(cache.search(0, &U, 20, Search::Exact));
     assert_eq!(cache.len(), 5);
-    // 1.25 MiB of a wanted 1 MiB: 293602 bytes to evict, two quarters
+    // 1.25 MiB of a wanted 1 MiB: 293602 bytes to evict, two quarters; the pass signals nobody (D86.2)
+    let signalled = signals(cache.wakeup());
     assert_eq!(cache.evict_pass(), 1250);
+    assert_eq!(signals(cache.wakeup()), signalled);
     let cached = [10, 20, 30, 40, 50].map(|start| cache.cached(start));
     assert_eq!(cached, [true, true, false, false, true]);
     drop(held);
@@ -353,6 +355,19 @@ fn the_usage_as_c() {
             )
         },
     ];
+    // pages being flushed count in the size, and in the minimum
+    let flushing = Sizes {
+        flushing: 2 * MIB,
+        ..sizes(MIB, MIB, 0, 0, 0)
+    };
+    let cases: Vec<Case> = cases
+        .into_iter()
+        .chain([case(
+            flushing,
+            MIB,
+            (3145728, 3145728, 1000, 0, Pressure::None),
+        )])
+        .collect();
     for (i, c) in cases.iter().enumerate() {
         let limits = Limits {
             clean_size: c.clean_size,
@@ -469,6 +484,18 @@ fn adders_signal_at_the_aggressive_threshold() {
     assert_eq!(signals(cache.wakeup()), 2);
 }
 
+/// Adders publish the usage the extent cache's target reads.
+#[test]
+fn adders_publish_the_usage() {
+    let cache = small();
+    let h = CachedPage::with_state(1, 1, 1, PageData::Empty, 10 * MIB as usize, PageState::Hot);
+    let h = cache.add(0, &U, h).unwrap();
+    drop(cache.add_clean(0, &U, sized(10, 4096)));
+    // wanted 17476266 (two thirds over the hot peak), current 10489856
+    assert_eq!(cache.extent_target(), 5242880 + (17476266 - 10489856));
+    drop(h);
+}
+
 /// The extent cache's target follows the main cache's (`dynamic_extent_cache_size()`), its clean size the floor.
 #[test]
 fn the_extent_target_as_c() {
@@ -505,7 +532,7 @@ fn the_extent_pass_drops_the_oldest_unheld_extents() {
     }
     // the fifth reaches 1000 per mille, the sixth 1200
     assert_eq!(signals(extents.wakeup()), 2);
-    extents.evict_pass(target);
+    extents.evict_pass(|| target);
     let cached = [0, 1, 2, 3, 4, 5].map(|block| extents.get((0, 1, block)).is_some());
     assert_eq!(cached, [true, false, false, true, true, true]);
     drop(held);

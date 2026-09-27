@@ -155,42 +155,61 @@ fn read_memory(root: &Path, source: MemorySource) -> SystemMemory {
     }
 }
 
-/// `os_system_memory()`'s process-wide reading: kept for a millisecond while it holds both numbers, else read again
-/// from the source found last, detected anew when `detect` or when none was found yet; read outside its lock.
-pub fn system_memory_cached(detect: bool) -> SystemMemory {
-    struct Cached {
-        at: Option<Instant>,
-        memory: SystemMemory,
-        source: Option<MemorySource>,
+/// `os_system_memory()`'s cache: the last reading, when it was taken, and where it came from.
+#[derive(Debug)]
+struct MemoryCache {
+    at: Option<Instant>,
+    memory: SystemMemory,
+    source: Option<MemorySource>,
+}
+
+impl MemoryCache {
+    const fn new() -> Self {
+        MemoryCache {
+            at: None,
+            memory: SystemMemory {
+                total: 0,
+                available: 0,
+            },
+            source: None,
+        }
     }
-    static CACHED: Mutex<Cached> = Mutex::new(Cached {
-        at: None,
-        memory: SystemMemory {
-            total: 0,
-            available: 0,
-        },
-        source: None,
-    });
+}
+
+/// `os_system_memory()` over `cache` at `now`: the reading of the last millisecond while it holds both numbers, else
+/// read again from the source found last, detected anew when `detect` or when none was found yet; read outside the
+/// cache's lock, its time taken before the read (C's `last_ut`).
+fn cached_memory(
+    cache: &Mutex<MemoryCache>,
+    root: &Path,
+    detect: bool,
+    now: Instant,
+) -> SystemMemory {
     let source = {
-        let c = CACHED.lock().unwrap_or_else(PoisonError::into_inner);
+        let c = cache.lock().unwrap_or_else(PoisonError::into_inner);
         let fresh =
-            c.at.is_some_and(|at| at.elapsed() < Duration::from_millis(1));
+            c.at.is_some_and(|at| now.saturating_duration_since(at) < Duration::from_millis(1));
         if fresh && c.memory.total != 0 && c.memory.available != 0 {
             return c.memory;
         }
         if detect { None } else { c.source }
     };
-    let root = Path::new("/");
     let (memory, source) = match source {
         Some(source) => (read_memory(root, source), source),
         None => detect_memory(root),
     };
-    *CACHED.lock().unwrap_or_else(PoisonError::into_inner) = Cached {
-        at: Some(Instant::now()),
+    *cache.lock().unwrap_or_else(PoisonError::into_inner) = MemoryCache {
+        at: Some(now),
         memory,
         source: Some(source),
     };
     memory
+}
+
+/// `os_system_memory()`'s process-wide reading (`cached_memory()` of `/`).
+pub fn system_memory_cached(detect: bool) -> SystemMemory {
+    static CACHE: Mutex<MemoryCache> = Mutex::new(MemoryCache::new());
+    cached_memory(&CACHE, Path::new("/"), detect, Instant::now())
 }
 
 /// The main cache's reading (`os_system_memory(false)`): the available bytes, while the total is known.
@@ -410,6 +429,59 @@ mod tests {
         for (name, (text, want)) in cases {
             assert_eq!(cpuset_cpus(text), want, "{name}");
         }
+    }
+
+    #[test]
+    fn the_reading_is_cached_as_c() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        let meminfo = |total: u64, available: u64| {
+            write(
+                "proc/meminfo",
+                &format!("MemTotal: {total} kB\nMemAvailable: {available} kB\n"),
+            );
+        };
+        let cache = Mutex::new(MemoryCache::new());
+        let t0 = Instant::now();
+        let at = |us| t0 + Duration::from_micros(us);
+        meminfo(16384, 8192);
+        assert_eq!(
+            cached_memory(&cache, root, false, at(0)).available,
+            8192 * 1024
+        );
+        meminfo(16384, 4096);
+        // a reading holds for a millisecond, detection asked or not
+        assert_eq!(
+            cached_memory(&cache, root, true, at(999)).available,
+            8192 * 1024
+        );
+        assert_eq!(
+            cached_memory(&cache, root, false, at(1000)).available,
+            4096 * 1024
+        );
+        // a limited v2 cgroup appears: without detection meminfo stays the source, with it the cgroup is found
+        write("sys/fs/cgroup/memory.max", "4194304\n");
+        write("sys/fs/cgroup/memory.current", "1048576\n");
+        write("sys/fs/cgroup/memory.stat", "inactive_file 524288\n");
+        assert_eq!(
+            cached_memory(&cache, root, false, at(2000)).total,
+            16384 * 1024
+        );
+        assert_eq!(cached_memory(&cache, root, true, at(3000)).total, 4194304);
+        assert_eq!(cached_memory(&cache, root, false, at(4000)).total, 4194304);
+        // a reading without both numbers is not kept: the next call reads again within the millisecond
+        write("sys/fs/cgroup/memory.current", "0\n");
+        assert_eq!(
+            cached_memory(&cache, root, false, at(5000)),
+            SystemMemory::default()
+        );
+        write("sys/fs/cgroup/memory.current", "1048576\n");
+        assert_eq!(cached_memory(&cache, root, false, at(5001)).total, 4194304);
     }
 
     #[test]

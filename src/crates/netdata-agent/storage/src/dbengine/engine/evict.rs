@@ -18,7 +18,7 @@ const WAIT: Duration = Duration::from_secs(1);
 
 /// A cache's signal to its evictor (`cache->evictor.completion`): counted, so one sent during a pass is not lost.
 #[derive(Debug, Default)]
-pub struct Wakeup {
+pub(crate) struct Wakeup {
     jobs: Mutex<u64>,
     cv: Condvar,
 }
@@ -101,7 +101,7 @@ fn run(engine: Weak<Dbengine>, wakeup: &Wakeup, evicts: Evicts) {
         };
         let per1000 = match evicts {
             Evicts::Main => engine.main.evict_pass(),
-            Evicts::Extents => engine.extents.evict_pass(engine.main.extent_target()),
+            Evicts::Extents => engine.extents.evict_pass(|| engine.main.extent_target()),
         };
         drop(engine);
         if per1000 > AGGRESSIVE {

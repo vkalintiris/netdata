@@ -4,7 +4,7 @@
 
 pub mod cache;
 pub mod collect;
-pub mod evict;
+mod evict;
 mod flush;
 pub mod index;
 pub mod io;

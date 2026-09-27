@@ -408,6 +408,29 @@ fn batch_pages(last: usize, per1000: i64) -> usize {
     }
 }
 
+/// `evict_pages(cache, 0, 0, true, false)` of a cache: above its healthy size, batches of what `take` evicts (their
+/// size from the usage each recomputes, C's schedule) until the cache is back to it or a batch frees nothing.
+/// `usage_now` reads the sizes and computes the usage with no lock of the cache held, as C computes before it takes the
+/// clean queue's lock. The per mille the pass began with; its computations signal nobody (D86.2).
+fn evict_batches(usage_now: impl Fn() -> Usage, mut take: impl FnMut(usize, i64) -> usize) -> i64 {
+    let first = usage_now();
+    if first.per1000 < HEALTHY {
+        return first.per1000;
+    }
+    let mut pages = 0;
+    loop {
+        let u = usage_now();
+        if u.size_to_evict == 0 {
+            break;
+        }
+        pages = batch_pages(pages, u.per1000);
+        if take(pages, u.size_to_evict) == 0 {
+            break;
+        }
+    }
+    first.per1000
+}
+
 /// The last usage a cache computed (`cache->usage.per1000`, `stats.wanted_cache_size`, `stats.current_cache_size`),
 /// behind the lock that one computation at a time takes (`cache->usage.spinlock`).
 #[derive(Debug, Default)]
@@ -680,14 +703,16 @@ impl MainCache {
         self.memory.and_then(|f| f())
     }
 
-    /// An adder's usage (`evict_pages_inline()` of a cache that never evicts inline) from the sizes it left.
+    /// An adder's usage (`evict_pages_inline()` of a cache that never evicts inline) from the sizes it left, the
+    /// memory read before the usage lock is tried.
     fn note_usage(&self, sizes: Sizes) {
         #[cfg(test)]
         if self.keep_no_clean.load(Ordering::Relaxed) {
             self.free_all_unreferenced_clean_pages();
         }
+        let available = self.available();
         self.usage.note(&self.wakeup, || {
-            usage(&sizes, &self.limits, None, self.available())
+            usage(&sizes, &self.limits, None, available)
         });
     }
 
@@ -698,37 +723,20 @@ impl MainCache {
         (wanted / 100 * 30).max(5 * 1024 * 1024) + (wanted - current).max(0)
     }
 
-    /// `pgc_evict_thread()`'s pass (`evict_pages(cache, 0, 0, true, false)`): above the healthy size, batches of
-    /// unheld clean pages, each batch's size from the usage it recomputes, until the cache is back to it; the victims
-    /// are dropped outside the lock. The usage per mille the pass began with (its evictor's `system_cleanup` test).
-    /// Its computations signal nobody: C's evictor wakes itself at once after a pass that freed nothing (D86.2).
+    /// `pgc_evict_thread()`'s pass over the least recently used clean pages nobody holds, dropped outside the lock.
     pub(crate) fn evict_pass(&self) -> i64 {
-        let available = self.available();
-        let sizes = self.lock().sizes();
-        let first = self
-            .usage
-            .compute(|| usage(&sizes, &self.limits, None, available));
-        if first.per1000 < HEALTHY {
-            return first.per1000;
-        }
-        let mut pages = 0;
-        loop {
-            let available = self.available();
-            let mut inner = self.lock();
-            let u = self
-                .usage
-                .compute(|| usage(&inner.sizes(), &self.limits, None, available));
-            if u.size_to_evict == 0 {
-                break;
-            }
-            pages = batch_pages(pages, u.per1000);
-            let victims = inner.take_victims(pages, u.size_to_evict);
-            drop(inner);
-            if victims.is_empty() {
-                break;
-            }
-        }
-        first.per1000
+        evict_batches(
+            || {
+                let available = self.available();
+                let sizes = self.lock().sizes();
+                self.usage
+                    .compute(|| usage(&sizes, &self.limits, None, available))
+            },
+            |pages, size| {
+                let victims = self.lock().take_victims(pages, size);
+                victims.len()
+            },
+        )
     }
 
     /// `free_all_unreferenced_clean_pages()`: every clean page nobody holds leaves.
@@ -808,10 +816,17 @@ impl MainCache {
         let key = (tier, *uuid);
         let start = page.start_time_s;
         if let Some(e) = inner.pages.get(&key).and_then(|p| p.get(&start)) {
-            return Err(Conflict {
+            let conflict = Conflict {
                 existing: Arc::clone(&e.page),
                 page: Box::new(page),
-            });
+            };
+            // C computes the usage after any clean add, a conflicting one too
+            if !conflict.page.is_hot() {
+                let sizes = inner.sizes();
+                drop(inner);
+                self.note_usage(sizes);
+            }
+            return Err(conflict);
         }
         let page = Arc::new(page);
         let size = page.size();
@@ -1176,42 +1191,36 @@ impl ExtentCache {
     /// An extent read from disk; one cached meanwhile wins. Then the usage against `target`.
     pub fn add(&self, key: ExtentKey, bytes: Vec<u8>, target: i64) -> Arc<Vec<u8>> {
         let mut inner = self.lock();
-        if let Some(held) = inner.extents.get(&key) {
-            return Arc::clone(held);
-        }
-        inner.bytes += bytes.len();
-        let bytes = Arc::new(bytes);
-        inner.extents.insert(key, Arc::clone(&bytes));
-        inner.order.push_back(key);
+        let extent = match inner.extents.get(&key) {
+            Some(cached) => Arc::clone(cached),
+            None => {
+                inner.bytes += bytes.len();
+                let bytes = Arc::new(bytes);
+                inner.extents.insert(key, Arc::clone(&bytes));
+                inner.order.push_back(key);
+                bytes
+            }
+        };
         let held = inner.bytes;
         drop(inner);
         self.usage
             .note(&self.wakeup, || self.usage_at(held, target));
-        bytes
+        extent
     }
 
     /// Its evictor's pass, as the main cache's, over the oldest extents; one someone holds moves to the newest end.
-    pub(crate) fn evict_pass(&self, target: i64) -> i64 {
-        let bytes = self.bytes();
-        let first = self.usage.compute(|| self.usage_at(bytes, target));
-        if first.per1000 < HEALTHY {
-            return first.per1000;
-        }
-        let mut pages = 0;
-        loop {
-            let mut inner = self.lock();
-            let u = self.usage.compute(|| self.usage_at(inner.bytes, target));
-            if u.size_to_evict == 0 {
-                break;
-            }
-            pages = batch_pages(pages, u.per1000);
-            let victims = inner.take_victims(pages, u.size_to_evict);
-            drop(inner);
-            if victims.is_empty() {
-                break;
-            }
-        }
-        first.per1000
+    /// `target` is read for each computation, as C calls its callback.
+    pub(crate) fn evict_pass(&self, target: impl Fn() -> i64) -> i64 {
+        evict_batches(
+            || {
+                let (target, bytes) = (target(), self.bytes());
+                self.usage.compute(|| self.usage_at(bytes, target))
+            },
+            |max, size| {
+                let victims = self.lock().take_victims(max, size);
+                victims.len()
+            },
+        )
     }
 }
 
