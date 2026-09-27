@@ -44,7 +44,7 @@ func TestCorpusProfilesAreValid(t *testing.T) {
 	}
 
 	// Decision D25, D70.9 and D72.6 counts.
-	for name, want := range map[string][2]int{"ram": {118, 7}, "dbengine1": {111, 3}, "dbengine3": {49, 1}} {
+	for name, want := range map[string][2]int{"ram": {118, 7}, "dbengine1": {111, 3}, "dbengine3": {39, 0}} {
 		whole, components := 0, 0
 		for scope := range corpusProfiles[name].notApplicable {
 			if scope.component == "" {

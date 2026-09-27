@@ -133,7 +133,6 @@ const (
 	naRestart      = "ram keeps nothing across a daemon restart"
 	naReplication  = "a ram child caps replication at entries x update_every, so old fixture rows never replicate"
 	naDBEngine     = "needs dbengine storage"
-	naRetention    = "switches tiers over a tier 0 whose oldest files were deleted at its size limit, which the Rust agent does from S5 (D74.3)"
 )
 
 func wholeContracts(reason string, names ...string) map[contractScope]string {
@@ -263,11 +262,9 @@ var dbengine1NotApplicable = mergeScopes(
 	components(naMultiTier, "CASE-033/anomaly-rate-counts-samples-in-the-row", "plan-seam-source"),
 )
 
-// dbengine3NotApplicable: 49 whole contracts and 1 component scope, the plan switches over a rotated tier 0 and the
-// endpoints outside slice 1 (decisions D72.6, D74.3); every rollup, backfill, restart, replication and automatic tier
-// contract applies.
+// dbengine3NotApplicable: the 39 endpoints outside slice 1 (decision D72.6); every rollup, backfill, restart,
+// replication, automatic tier and plan-switch contract applies (the plan switches over a tier 0 whose oldest files were
+// deleted, from S5, D74.3).
 var dbengine3NotApplicable = mergeScopes(
-	wholeContracts(naRetention, slices.Concat(planningContracts, cadenceMultiTierContracts)...),
 	wholeContracts(naEndpoint, endpointContracts...),
-	components(naRetention, "CASE-033/anomaly-rate-counts-samples-in-the-row", "plan-seam-source"),
 )
