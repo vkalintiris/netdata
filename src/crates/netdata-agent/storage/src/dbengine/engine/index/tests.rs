@@ -280,3 +280,20 @@ fn the_indexer_passes_over_a_file_it_cannot_take() {
         "DBENGINE: tier 0: datafile-1-0000000002 is ready to be indexed"
     );
 }
+
+/// A page whose metric left the registry is not indexed (`pgc_open_cache_to_journal_v2()`'s rejected page, D76.3).
+#[test]
+fn a_page_of_a_metric_gone_is_not_indexed() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = write_engine(&[dir.path()], 0, None);
+    let gone = dirty_page(&e, 0, nth(1 << 20), T0, &seq_values(1024, 0));
+    e.flush_pages(0, None, true, true);
+    gone.clear_retention();
+    assert!(gone.release(), "it leaves the registry");
+    let _metrics = fill(&e, 0, 63);
+    let (count, _) = netdata_agent_log::capture(|| journal_index(&e, 0));
+    assert_eq!(count, 1);
+    let index = e.tiers[0].v2_from(0).into_iter().next().unwrap();
+    assert!(index.find(&nth(1 << 20)).unwrap().is_none());
+    assert!(index.find(&nth(0)).unwrap().is_some());
+}

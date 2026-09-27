@@ -163,7 +163,7 @@ struct Populated {
 }
 
 /// Reads the metric list in chunks, handing each entry to `f`; the CRC of the whole list.
-fn walk_metric_list(
+pub(crate) fn walk_metric_list(
     file: &File,
     h: &Header,
     mut f: impl FnMut(u32, &MetricEntry),

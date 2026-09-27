@@ -389,6 +389,27 @@ impl MainCache {
         lock(&self.inner)
     }
 
+    /// The walk of `mrg_metric_has_zero_disk_retention()` over a metric's pages: the earliest start above 0 of its hot
+    /// and dirty pages (0 without one) and the latest end of its dirty ones (0 without one); a page being flushed is
+    /// neither. Clean pages are not touched in the LRU, which only orders evictions.
+    pub(crate) fn metric_span(&self, tier: usize, uuid: &[u8; 16]) -> (i64, i64) {
+        let inner = self.lock();
+        let (mut first, mut end) = (i64::MAX, 0);
+        if let Some(pages) = inner.pages.get(&(tier, *uuid)) {
+            for (&start, entry) in pages {
+                let state = entry.page.state();
+                if matches!(state, PageState::Hot | PageState::Dirty) && start > 0 && start < first
+                {
+                    first = start;
+                }
+                if state == PageState::Dirty {
+                    end = end.max(entry.page.end_time_s());
+                }
+            }
+        }
+        (if first == i64::MAX { 0 } else { first }, end)
+    }
+
     /// `pgc_page_get_and_acquire()`.
     pub fn search(
         &self,

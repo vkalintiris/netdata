@@ -65,6 +65,17 @@ impl Drop for Inflight {
 /// `DEFAULT_PAGES_PER_EXTENT`.
 pub const DEFAULT_PAGES_PER_EXTENT: usize = 109;
 
+/// `rrdcontext_db_rotation()`: what the engine calls after each data file deletion it attempted, on the thread that
+/// ran it.
+#[derive(Clone)]
+pub struct RotationHook(pub Arc<dyn Fn() + Send + Sync>);
+
+impl std::fmt::Debug for RotationHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RotationHook")
+    }
+}
+
 /// What an engine is built with besides its registry and tiers.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -79,6 +90,8 @@ pub struct EngineConfig {
     pub pool: Option<WorkPool>,
     /// The wall clock in seconds (`now_realtime_sec()`).
     pub now: fn() -> i64,
+    /// Called after each data file deletion.
+    pub rotation: Option<RotationHook>,
 }
 
 impl EngineConfig {
@@ -91,6 +104,7 @@ impl EngineConfig {
             update_every_s: 1,
             pool: None,
             now,
+            rotation: None,
         }
     }
 }
@@ -107,6 +121,8 @@ pub struct Dbengine {
     /// `nd_profile.update_every`.
     pub update_every_s: u32,
     now: fn() -> i64,
+    /// Called after each data file deletion.
+    pub(crate) rotation: Option<RotationHook>,
     /// `get_datafile_to_write_extent()`'s mutex: one extent at a time finds its place.
     pub(crate) reserve: Mutex<()>,
     /// The `DBEV` thread of a running engine, which hears of written extents.
@@ -357,6 +373,7 @@ impl Dbengine {
             pool: cfg.pool,
             update_every_s: cfg.update_every_s,
             now: cfg.now,
+            rotation: cfg.rotation,
             reserve: Mutex::new(()),
             events: OnceLock::new(),
         })

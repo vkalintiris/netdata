@@ -122,7 +122,7 @@ pub fn journal_index(engine: &Dbengine, tier: usize) -> u32 {
             Priority::Info,
             "DBENGINE: tier {tier}: {name} is ready to be indexed"
         );
-        index_file(td, &df);
+        index_file(engine, tier, td, &df);
         count += 1;
         if td.quiesced() {
             break;
@@ -139,10 +139,12 @@ pub fn journal_index(engine: &Dbengine, tier: usize) -> u32 {
 }
 
 /// `pgc_open_cache_to_journal_v2()` of one file: its open pages written as its v2 index, which serves them from then
-/// on (it is registered before they leave the open cache, so a query finds each page in one or the other). A file
-/// that could not be written keeps its pages open for the next run.
-fn index_file(td: &TierData, df: &DataFile) {
-    let pages = td.open().file_pages(df.fileno);
+/// on (it is registered before they leave the open cache, so a query finds each page in one or the other). A page
+/// whose metric left the registry is rejected: nothing can read it any more (D67.3, D76.3). A file that could not be
+/// written keeps its pages open for the next run.
+fn index_file(engine: &Dbengine, tier: usize, td: &TierData, df: &DataFile) {
+    let mut pages = td.open().file_pages(df.fileno);
+    pages.retain(|p| engine.mrg.get_and_acquire(&p.uuid, tier).is_some());
     let indexed = !pages.is_empty();
     let Some((file, layout)) = write_v2(&td.config, df.fileno, df.journal_pos(), pages) else {
         return;

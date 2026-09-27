@@ -8,7 +8,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use netdata_agent_log::netdata_log_info;
+use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log_limit, netdata_log_info};
 
 use super::io::{IoFile, write_retrying};
 use super::load::{NEW_PAIR_SIZE, Tier, TierConfig, create_pair_files};
@@ -82,10 +82,6 @@ impl OpenList {
     }
 
     /// A file's current pages: the open-cache uses of it that its hot pages hold (D76.2).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the deletion of S5 commit 4 takes it")
-    )]
     pub fn current_pages_of(&self, fileno: u32) -> u32 {
         self.by_file.get(&fileno).map_or(0, |list| {
             list.values()
@@ -157,10 +153,6 @@ pub(crate) enum Reason {
     /// A query's page details, until the query is done with them.
     PageDetails = 1,
     /// A retention recalculation reading the file's index.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the deletion of S5 commit 4 takes it")
-    )]
     Retention = 2,
     /// The indexer writing the file's v2 index.
     Indexing = 3,
@@ -311,10 +303,6 @@ impl DataFile {
     }
 
     /// The uses the file has, and those for `reason`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the deletion of S5 commit 4 takes it")
-    )]
     pub(crate) fn lockers(&self, reason: Option<Reason>) -> u32 {
         let u = self.users();
         reason.map_or(u.lockers, |r| u.by_reason[r as usize])
@@ -414,8 +402,8 @@ pub struct TierData {
     last_flush_fileno: AtomicU32,
     /// `ctx->atomic.transaction_id`: the next transaction's id.
     transaction_id: AtomicU64,
-    /// `ctx->atomic.first_time_s`.
-    pub first_time_s: i64,
+    /// `ctx->atomic.first_time_s`: the readiness sets it, a deletion moves it to the remaining files' oldest start.
+    first_time_s: AtomicI64,
     /// `ctx->atomic.current_disk_space`.
     current_disk_space: AtomicU64,
     /// `ctx->atomic.samples`.
@@ -482,7 +470,7 @@ impl TierData {
             last_fileno: AtomicU32::new(tier.last_fileno),
             last_flush_fileno: AtomicU32::new(0),
             transaction_id: AtomicU64::new(tier.transaction_id),
-            first_time_s: tier.first_time_s,
+            first_time_s: AtomicI64::new(tier.first_time_s),
             current_disk_space: AtomicU64::new(tier.current_disk_space),
             samples: AtomicU64::new(tier.samples),
             needs_indexing: AtomicBool::new(false),
@@ -516,19 +504,64 @@ impl TierData {
         read(&self.files).clone()
     }
 
+    /// The oldest pair (`get_first_ctx_datafile()`).
+    pub(crate) fn first_file(&self) -> Option<Arc<DataFile>> {
+        read(&self.files).values().next().cloned()
+    }
+
+    /// The pair after `fileno` (`get_next_datafile()`).
+    pub(crate) fn next_fileno(&self, fileno: u32) -> Option<u32> {
+        read(&self.files)
+            .range(fileno + 1..)
+            .next()
+            .map(|(f, _)| *f)
+    }
+
+    /// The first pair from `fileno` on that can be taken for `reason`, passing over those that cannot.
+    pub(crate) fn acquire_from(&self, fileno: u32, reason: Reason) -> Option<FileUse> {
+        read(&self.files)
+            .range(fileno..)
+            .find_map(|(_, df)| df.acquire(reason))
+    }
+
+    /// `datafile_list_delete_unsafe()`: the pair leaves the list.
+    pub(crate) fn remove_file(&self, fileno: u32) -> Option<Arc<DataFile>> {
+        write(&self.files).remove(&fileno)
+    }
+
+    /// The v2 index serving a file.
+    pub(crate) fn v2_of(&self, fileno: u32) -> Option<Arc<V2Index>> {
+        read(&self.v2)
+            .values()
+            .find(|i| i.fileno == fileno)
+            .cloned()
+    }
+
+    /// `njfv2idx_remove()`: the file's v2 index stops serving (queries holding it keep reading it).
+    pub(crate) fn remove_v2(&self, fileno: u32) -> Option<Arc<V2Index>> {
+        let mut v2 = write(&self.v2);
+        let key = v2
+            .iter()
+            .find(|(_, i)| i.fileno == fileno)
+            .map(|(k, _)| *k)?;
+        v2.remove(&key)
+    }
+
     /// `datafile_acquire()` of a listed pair.
     pub(crate) fn acquire(&self, fileno: u32, reason: Reason) -> Option<FileUse> {
         self.file(fileno)?.acquire(reason)
+    }
+
+    /// The open cache's uses of a file: its current hot pages and its clean-page mark (D76.1, D76.2).
+    pub(crate) fn open_lockers(&self, df: &DataFile) -> u32 {
+        read(&self.open).current_pages_of(df.fileno)
+            + u32::from(df.clean_open.load(Ordering::Acquire))
     }
 
     /// `datafile_acquire_for_deletion()`: marks the file pending deletion (recorded once); true when no extent is being
     /// written to it and nothing uses it, which then makes it unavailable. While uses remain its clean open-cache
     /// pages are evicted, and once no extent is being written the file takes no new uses (recorded once). The open
     /// cache's uses are the file's current hot pages and its clean pages (D76.1, D76.2).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the deletion of S5 commit 4 takes it")
-    )]
     pub(crate) fn acquire_for_deletion(&self, df: &DataFile) -> bool {
         let tier = self.tier();
         let hot = read(&self.open).current_pages_of(df.fileno);
@@ -725,6 +758,20 @@ impl TierData {
         self.current_disk_space.fetch_add(bytes, Ordering::AcqRel);
     }
 
+    /// `ctx_current_disk_space_decrease()`: a plain subtraction, which wraps as C's.
+    pub(crate) fn sub_disk_space(&self, bytes: u64) {
+        self.current_disk_space.fetch_sub(bytes, Ordering::AcqRel);
+    }
+
+    /// `ctx->atomic.first_time_s`.
+    pub fn first_time_s(&self) -> i64 {
+        self.first_time_s.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_first_time_s(&self, first_time_s: i64) {
+        self.first_time_s.store(first_time_s, Ordering::Relaxed);
+    }
+
     pub fn needs_indexing(&self) -> bool {
         self.needs_indexing.load(Ordering::Acquire)
     }
@@ -770,6 +817,47 @@ impl TierData {
 
     pub(crate) fn add_samples(&self, samples: u64) {
         self.samples.fetch_add(samples, Ordering::Relaxed);
+    }
+
+    /// `rrdeng_atomic_uint64_sub_saturating()` of the samples: an underflow is recorded (at most once a minute) and
+    /// leaves 0.
+    pub(crate) fn sub_samples_saturating(&self, value: u64, reason: &str) {
+        static UNDERFLOW: ErrorLimit = ErrorLimit::new(60, 0);
+        if value == 0 {
+            return;
+        }
+        let mut old = self.samples.load(Ordering::Relaxed);
+        loop {
+            if old < value {
+                nd_log_limit!(
+                    &UNDERFLOW,
+                    Source::Daemon,
+                    Priority::Err,
+                    "DBENGINE: tier {}: samples counter underflow while {reason} (current={old}, subtract={value}); \
+                     saturating to zero",
+                    self.tier()
+                );
+                match self
+                    .samples
+                    .compare_exchange(old, 0, Ordering::Relaxed, Ordering::Relaxed)
+                {
+                    Ok(_) => return,
+                    Err(now) => {
+                        old = now;
+                        continue;
+                    }
+                }
+            }
+            match self.samples.compare_exchange(
+                old,
+                old - value,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(now) => old = now,
+            }
+        }
     }
 
     /// `RRDENG_OPCODE_CTX_QUIESCE`: queries started from now on read nothing, and written extents no longer reach

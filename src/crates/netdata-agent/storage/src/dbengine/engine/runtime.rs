@@ -22,7 +22,7 @@ use netdata_agent_text::size::size_to_string;
 use super::index::journal_index;
 use super::load::{Tier, TierConfig, load};
 use super::mrg::Mrg;
-use super::query::{Dbengine, EngineConfig};
+use super::query::{Dbengine, EngineConfig, RotationHook};
 use super::v2index::{Slots, populate_files, populating_record, readiness};
 
 /// `RRDENG_FD_BUDGET_PER_INSTANCE`.
@@ -58,6 +58,8 @@ pub struct InitConfig {
     pub stack_size: usize,
     /// `TIMER_PERIOD_MS`: how often `DBEV` starts flushers.
     pub timer_period: Duration,
+    /// Called after each data file deletion (`rrdcontext_db_rotation()`).
+    pub rotation: Option<RotationHook>,
 }
 
 /// The commands of the `DBEV` thread.
@@ -560,6 +562,7 @@ impl Runtime {
                 update_every_s: cfg.update_every_s,
                 pool: Some(pool.clone()),
                 now,
+                rotation: cfg.rotation.clone(),
             },
         );
         let dbev = shared

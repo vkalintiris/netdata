@@ -223,6 +223,19 @@ impl Metric {
         self.latest_time_s_clean.load(Ordering::Relaxed)
     }
 
+    /// `metric->latest_time_s_hot`.
+    pub fn latest_hot_time_s(&self) -> i64 {
+        self.latest_time_s_hot.load(Ordering::Relaxed)
+    }
+
+    /// The end of `mrg_metric_has_zero_disk_retention()`: the first and clean latest times the main cache's pages
+    /// give, stored whatever they were.
+    pub(crate) fn set_disk_retention(&self, first_time_s: i64, latest_clean_time_s: i64) {
+        self.first_time_s.store(first_time_s, Ordering::Relaxed);
+        self.latest_time_s_clean
+            .store(latest_clean_time_s, Ordering::Relaxed);
+    }
+
     /// `mrg_metric_set_update_every()`.
     pub fn set_update_every(&self, update_every_s: u32) -> bool {
         update_every_s > 0 && set_if(&self.latest_update_every_s, update_every_s, |_, _| true)

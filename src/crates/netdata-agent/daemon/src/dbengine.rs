@@ -90,6 +90,8 @@ pub fn start(
             update_every_s: db.update_every as u32,
             stack_size: conf.threads.thread_stack_size,
             timer_period: std::time::Duration::from_secs(1),
+            // the contexts' deep pass after a rotation comes with S5 (D75.6)
+            rotation: None,
         },
         pool,
         prepopulate,

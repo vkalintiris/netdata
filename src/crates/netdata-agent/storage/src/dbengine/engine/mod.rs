@@ -10,6 +10,7 @@ pub mod io;
 pub mod load;
 pub mod mrg;
 pub mod query;
+mod rotate;
 pub mod runtime;
 pub mod tier;
 pub mod v2index;
