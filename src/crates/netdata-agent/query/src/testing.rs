@@ -135,8 +135,7 @@ pub fn dbengine_host(retention: [(i64, i64); 3]) -> (Vec<tempfile::TempDir>, Arc
             ..EngineConfig::new(|| T0 + 1000)
         },
     );
-    let storage =
-        Arc::new(StorageLayout::new(Some(engine)).with_profile(vec![10, 3, 2], 10));
+    let storage = Arc::new(StorageLayout::new(Some(engine)).with_profile(vec![10, 3, 2], 10));
     let info = HostInfo {
         hostname: "db".into(),
         registry_hostname: "db".into(),
