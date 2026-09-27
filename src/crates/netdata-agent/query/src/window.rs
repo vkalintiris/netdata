@@ -103,7 +103,13 @@ pub fn calculate(qt: &QueryTarget, wall_s: i64) -> Option<Window> {
     let tiers = qt.request.profile.storage_tiers;
     let tier = qt.request.tier;
     if natural && opts & options::SELECTED_TIER != 0 && tier > 0 && tier < tiers && tiers > 1 {
-        ue = min_update_every_for_tier(qt, tier as usize);
+        let tier = tier as usize;
+        ue = crate::plan::min_update_every_for_tier(
+            qt.query.iter().map(|qm| qm.tiers[tier].update_every_s),
+            tier,
+            qt.request.profile.storage_tiers as usize,
+            qt.request.profile.update_every,
+        );
         if ue <= 0 {
             ue = qt.db.minimum_latest_update_every_s;
         }
@@ -203,20 +209,6 @@ pub fn calculate(qt: &QueryTarget, wall_s: i64) -> Option<Window> {
         options: opts,
         aligned,
     })
-}
-
-/// `query_target_min_update_every_for_tier()`: the smallest update every the admitted metrics have on the tier, else
-/// the agent's.
-fn min_update_every_for_tier(qt: &QueryTarget, tier: usize) -> i64 {
-    if tier >= qt.request.profile.storage_tiers as usize {
-        return qt.request.profile.update_every;
-    }
-    qt.query
-        .iter()
-        .map(|qm| qm.tiers[tier].update_every_s)
-        .filter(|&ue| ue != 0)
-        .min()
-        .unwrap_or(qt.request.profile.update_every)
 }
 
 #[cfg(test)]

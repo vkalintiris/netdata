@@ -211,12 +211,6 @@ impl Ops {
     }
 }
 
-/// `query_metric_is_valid_tier()`.
-fn tier_is_valid(qm: &QueryMetric, tier: usize) -> bool {
-    let t = &qm.tiers[tier];
-    t.handle.is_some() && t.first_time_s != 0 && t.last_time_s != 0 && t.update_every_s != 0
-}
-
 /// `rrd2rrdr_query_ops_prep()`: the LATEST fast path, else the plan (`query_plan()`); `None` fails the metric.
 fn prepare(qt: &mut QueryTarget, d: usize, window: &Window) -> Option<Prepared> {
     let qm = &qt.query[d];
@@ -240,28 +234,38 @@ fn prepare(qt: &mut QueryTarget, d: usize, window: &Window) -> Option<Prepared> 
             });
         }
     }
-    // a valid selected tier, else tier 0 where C picks the best tier for the timeframe (D62.4, until S4b)
+    let views = qm.tier_views();
+    let tiers = crate::plan::Tiers {
+        views: &views,
+        storage_tiers: qt.request.profile.storage_tiers as usize,
+    };
+    // a valid selected tier, else tier 0 where C picks the best tier for the timeframe (D62.4, until S4b commit 2)
     let selected = qt.request.tier as usize;
     let tier = if window.options & options::SELECTED_TIER != 0
         && qt.request.tier < qt.request.profile.storage_tiers
-        && tier_is_valid(qm, selected)
+        && tiers.is_valid(selected)
     {
         selected
     } else {
         0
     };
-    if !tier_is_valid(qm, tier) {
+    if !tiers.is_valid(tier) {
         return None;
     }
     let (first, last) = (qm.tiers[tier].first_time_s, qm.tiers[tier].last_time_s);
     if first > window.before || last < window.after {
         return None;
     }
-    let (after, before) = (first.max(window.after), last.min(window.before));
-    // query_plan_points_coverage_weight()'s entry check (QP:19-31): an empty plan fails before it counts
-    if after == 0 || before == 0 || after > before {
+    let entry = crate::plan::PlanEntry {
+        tier,
+        after: first.max(window.after),
+        before: last.min(window.before),
+    };
+    // query_plan_entry_is_valid(): an empty plan fails before it counts
+    if !tiers.entry_is_valid(&entry, window.after, window.before) {
         return None;
     }
+    let (after, before) = (entry.after, entry.before);
     qt.query[d].plan = Some((tier, after, before));
     qt.db.tiers[tier].queries += 1;
     Some(Prepared::Plan {

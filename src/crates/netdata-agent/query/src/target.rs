@@ -115,6 +115,21 @@ pub struct QueryMetric {
     pub grouped_as: GroupedAs,
 }
 
+impl QueryMetric {
+    /// The tiers as the planner sees them.
+    pub fn tier_views(&self) -> [crate::plan::TierView; RRD_STORAGE_TIERS] {
+        std::array::from_fn(|t| {
+            let tier = &self.tiers[t];
+            crate::plan::TierView {
+                has_handle: tier.handle.is_some(),
+                first_time_s: tier.first_time_s,
+                last_time_s: tier.last_time_s,
+                update_every_s: tier.update_every_s,
+            }
+        })
+    }
+}
+
 /// `qm->grouped_as`: the slot in the first group-by pass and in the latest one, and that group's identity.
 #[derive(Debug, Default, Clone)]
 pub struct GroupedAs {

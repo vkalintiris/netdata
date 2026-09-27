@@ -14,6 +14,7 @@ pub mod jsonwrap;
 pub mod jsonwrap_v2;
 pub mod keys;
 pub mod output;
+pub mod plan;
 pub mod request;
 pub mod rrdr;
 pub mod tables;
