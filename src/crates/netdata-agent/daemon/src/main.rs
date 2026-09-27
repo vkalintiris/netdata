@@ -772,16 +772,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         // rrd_finalize_collection_for_all_hosts(), which an abnormal exit skips
         shutdown::STOP_COLLECTION if normal => {
             for host in hosts.all() {
-                let hostname = host.hostname();
-                let _frame = netdata_agent_log::push(vec![(
-                    netdata_agent_log::Field::NidlNode,
-                    netdata_agent_log::Value::txt(hostname.as_str()),
-                )]);
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Debug,
-                    "RRD: 'host:{hostname}' stopping data collection..."
-                );
+                host.finalize_collection();
             }
         }
         shutdown::STOP_DBENGINE_TIERS => {

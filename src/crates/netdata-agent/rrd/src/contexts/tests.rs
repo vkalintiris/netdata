@@ -9,7 +9,7 @@ const T: i64 = 1_700_000_000;
 
 fn setup() -> (Arc<Contexts>, Charts) {
     let contexts = Arc::new(Contexts::default());
-    let charts = Charts::new(Arc::clone(&contexts), Arc::default());
+    let charts = Charts::new(Arc::clone(&contexts), Arc::default(), Arc::default(), "");
     (contexts, charts)
 }
 
@@ -234,7 +234,7 @@ fn v1_collections_report_through_timed_done() {
     for i in 0..4 {
         collection::next_usec_unfiltered(&chart, (T + i, 0), 1_000_000);
         collection::set_value(&dim, (T + i, 0), 7);
-        collection::timed_done(&chart, (T + i, 0), false, 3);
+        collection::timed_done(&chart, "h", (T + i, 0), false, 3);
     }
     contexts.process_queued();
     let rc = contexts.get("ctx").unwrap();

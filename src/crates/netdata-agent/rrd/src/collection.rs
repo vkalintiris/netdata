@@ -5,6 +5,7 @@
 use crate::chart::{Algorithm, Chart, ChartCollection, DimCollection, dim_flags, flags};
 use crate::contexts;
 use crate::mode::DbMode;
+use netdata_agent_log::{Priority, Source, nd_log};
 
 use netdata_agent_storage::storage_number::{SN_DEFAULT_FLAGS, SN_FLAG_RESET};
 
@@ -116,9 +117,7 @@ fn collection_reset(chart: &Chart) {
             d.last_collected_time = (0, 0);
             d.counter = 0;
         });
-        if let Some(ring) = dim.ring() {
-            ring.flush();
-        }
+        dim.store_flush();
     }
 }
 
@@ -139,9 +138,11 @@ fn last_collected_as_double(d: &DimCollection, is_float: bool) -> f64 {
 }
 
 /// `rrdset_timed_done()`: turns the values collected since the last call into stored points on the update grid,
-/// interpolating between collections. `gap_when_lost_iterations_above` is `[db] gap when lost iterations above`.
+/// interpolating between collections. `gap_when_lost_iterations_above` is `[db] gap when lost iterations above`;
+/// `hostname` names the chart's host in the reset record.
 pub fn timed_done(
     chart: &Chart,
+    hostname: &str,
     now: (i64, i64),
     pending_next: bool,
     gap_when_lost_iterations_above: i64,
@@ -160,7 +161,18 @@ pub fn timed_done(
     let mut store_this_entry = true;
     let mut first_entry = false;
 
-    if chart.collection().usec_since_last_update as i64 > max_update_gap_ut {
+    let before = chart.collection();
+    if before.usec_since_last_update as i64 > max_update_gap_ut {
+        nd_log!(
+            Source::Daemon,
+            Priority::Debug,
+            "host '{hostname}', chart '{}': took too long to be updated (counter #{}, update #{}, {:.3} secs). \
+             Resetting it.",
+            chart.id(),
+            before.counter as u32,
+            before.counter_done as u32,
+            before.usec_since_last_update as f64 / USEC_PER_SEC as f64
+        );
         collection_reset(chart);
         chart.update_collection(|c| c.usec_since_last_update = update_every_ut as u64);
         store_this_entry = false;
@@ -187,6 +199,17 @@ pub fn timed_done(
     if (as_ut(c.last_collected) - as_ut(c.last_updated)).abs()
         > max_stored_gap_iterations * update_every_ut
     {
+        nd_log!(
+            Source::Daemon,
+            Priority::Debug,
+            "'{}': too old data (last updated at {}.{}, last collected at {}.{}). Resetting it. Will not store the \
+             next entry.",
+            chart.id(),
+            c.last_updated.0,
+            c.last_updated.1,
+            c.last_collected.0,
+            c.last_collected.1
+        );
         chart.update_collection(|x| *x = c);
         collection_reset(chart);
         c = chart.collection();

@@ -1202,6 +1202,7 @@ impl Parser {
         }
         collection::timed_done(
             &chart,
+            &self.host.hostname(),
             tv,
             pending_next,
             self.config.gap_when_lost_iterations_above,

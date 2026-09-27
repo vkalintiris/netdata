@@ -77,6 +77,14 @@ impl StorageLayout {
         self.dbengine.as_ref().map_or(1, |e| e.tiers.len())
     }
 
+    /// Whether a host of `mode` keeps `tier` in the dbengine (`rrdhost_create()`'s `host->db[]`): every tier in use
+    /// of a dbengine host, the tiers above 0 of the others.
+    pub fn tier_is_dbengine(&self, mode: DbMode, tier: usize) -> bool {
+        self.dbengine.is_some()
+            && tier < self.storage_tiers()
+            && (tier > 0 || mode == DbMode::Dbengine)
+    }
+
     /// The retention view of a host of `mode` (`rrdhost_create()`'s `host->db[]`): every tier from the engine for a
     /// dbengine host; tier 0 from the RAM index and the others from the engine for the other modes; nothing without
     /// the engine (the contexts tree then keeps the RAM index).
@@ -90,7 +98,7 @@ impl StorageLayout {
         };
         (0..engine.tiers.len())
             .map(|tier| -> Arc<dyn TierRetention> {
-                if tier == 0 && mode != DbMode::Dbengine {
+                if !self.tier_is_dbengine(mode, tier) {
                     Arc::clone(ram) as Arc<dyn TierRetention>
                 } else {
                     Arc::new(MrgTier {

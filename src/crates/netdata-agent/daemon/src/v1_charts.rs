@@ -51,7 +51,8 @@ fn available_for_viewers(st: &Chart) -> bool {
 fn chart_json(w: &mut JsonWriter, st: &Chart) -> usize {
     let meta = st.meta();
     let name = meta.name.clone().unwrap_or_else(|| st.id().to_string());
-    let (first, last) = st.tier0_retention();
+    // rrdset_first_entry_s() and rrdset_last_entry_s(): every tier
+    let (first, last) = st.retention();
     // snprintfz(buf, RRD_ID_LENGTH_MAX + 15, ...).
     let cut = |mut s: String| {
         if s.len() > ID_LENGTH_MAX + 15 {

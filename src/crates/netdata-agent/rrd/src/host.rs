@@ -298,18 +298,34 @@ impl Host {
         storage: &Arc<StorageLayout>,
     ) -> Self {
         let mode = info.db_mode;
-        let mut host = Host::new(machine_guid, is_localhost, info);
+        let host = Host::build(machine_guid, is_localhost, info, storage);
         let tiers = storage.tiers_for(mode, host.contexts.ram_index());
         if !tiers.is_empty() {
             host.contexts.set_tiers(tiers);
         }
-        host.storage = Arc::clone(storage);
         host
     }
 
     /// `host->db[]`: the storage the host's tiers come from.
     pub fn storage(&self) -> &Arc<StorageLayout> {
         &self.storage
+    }
+
+    /// `rrdhost_finalize_collection()`: every chart's collection ends, dimensions included.
+    pub fn finalize_collection(&self) {
+        let hostname = self.hostname();
+        let _frame = netdata_agent_log::push(vec![(
+            netdata_agent_log::Field::NidlNode,
+            netdata_agent_log::Value::txt(hostname.as_str()),
+        )]);
+        nd_log!(
+            Source::Daemon,
+            Priority::Debug,
+            "RRD: 'host:{hostname}' stopping data collection..."
+        );
+        for chart in self.charts.all() {
+            chart.finalize_collection(true);
+        }
     }
 
     /// `qn->rrdhost->db[tier]` for a metric (`metric_dup()` of the dimension's, else `metric_get_by_id()`): its
@@ -320,7 +336,7 @@ impl Host {
             return None;
         }
         match self.storage.dbengine() {
-            Some(engine) if tier > 0 || self.info().db_mode == DbMode::Dbengine => {
+            Some(engine) if self.storage.tier_is_dbengine(self.info().db_mode, tier) => {
                 let metric = engine.mrg.get_and_acquire(&rm.uuid(), tier)?;
                 Some(TierHandle::Dbengine {
                     engine: Arc::clone(engine),
@@ -336,7 +352,17 @@ impl Host {
     }
 
     /// A host without the dbengine: its contexts take retention from the RAM index.
-    pub fn new(machine_guid: &str, is_localhost: bool, mut info: HostInfo) -> Self {
+    pub fn new(machine_guid: &str, is_localhost: bool, info: HostInfo) -> Self {
+        Host::build(machine_guid, is_localhost, info, &Arc::default())
+    }
+
+    /// The host with its charts on `storage`.
+    fn build(
+        machine_guid: &str,
+        is_localhost: bool,
+        mut info: HostInfo,
+        storage: &Arc<StorageLayout>,
+    ) -> Self {
         info.hostname = init_hostname(&info.hostname);
         let contexts = Arc::new(Contexts::default());
         let meta_flags = Arc::new(AtomicU32::new(0));
@@ -347,7 +373,12 @@ impl Host {
             info: RwLock::new(info),
             receiver: Mutex::new(None),
             orphan: AtomicBool::new(false),
-            charts: Charts::new(Arc::clone(&contexts), Arc::clone(&meta_flags)),
+            charts: Charts::new(
+                Arc::clone(&contexts),
+                Arc::clone(&meta_flags),
+                Arc::clone(storage),
+                machine_guid,
+            ),
             contexts,
             labels: RwLock::new(Labels::default()),
             claim_id_of_origin: RwLock::new([0; 16]),
@@ -364,7 +395,7 @@ impl Host {
             last_connected_s: AtomicI64::new(0),
             meta_flags,
             metadata_lifetime: RwLock::new(false),
-            storage: Arc::default(),
+            storage: Arc::clone(storage),
         }
     }
 
@@ -1142,6 +1173,142 @@ mod tests {
         );
         let archived = hosts.add_archived("guid-x", dbengine, |_| {});
         assert_eq!(retention(&archived), (100, 300, true));
+    }
+
+    const T0: i64 = 1_790_180_000;
+
+    /// A chart of `mode` collected every second.
+    fn collected_chart(host: &Host, mode: DbMode) -> Arc<crate::chart::Chart> {
+        use crate::chart::{ChartSpec, ChartType};
+        host.charts()
+            .create(&ChartSpec {
+                type_: "t",
+                id: "c",
+                name: None,
+                family: None,
+                context: None,
+                title: "t",
+                units: "u",
+                plugin: "p",
+                module: None,
+                priority: 1,
+                update_every: 1,
+                chart_type: ChartType::Line,
+                mode,
+                history_entries: 60,
+                page_size: 4096,
+            })
+            .0
+    }
+
+    fn store(dim: &crate::chart::Dim, t: i64, v: f64) {
+        use netdata_agent_storage::storage_number::SN_DEFAULT_FLAGS;
+        dim.store_metric(t as u64 * 1_000_000, v, SN_DEFAULT_FLAGS);
+    }
+
+    /// A dbengine dimension keeps a registry entry and a collection on every tier (N8, D68.6.1): the registry's
+    /// update every is each tier's, stores go to tier 0, and the retention is the registry's. A new update every
+    /// closes the page; a reset flushes it; finalize ends every tier's collection, and a re-add starts it again.
+    #[test]
+    fn dbengine_dims_collect_on_every_tier() {
+        use crate::chart::Algorithm;
+        let (_dirs, storage) = engine(3);
+        let e = storage.dbengine().unwrap();
+        let dbengine = HostInfo {
+            db_mode: DbMode::Dbengine,
+            ..info("d")
+        };
+        let host = Host::with_storage("guid-d", false, dbengine, &storage);
+        let chart = collected_chart(&host, DbMode::Dbengine);
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        let ues = || -> Vec<u32> {
+            (0..3)
+                .map(|t| e.mrg.get_and_acquire(dim.uuid(), t).unwrap().update_every_s())
+                .collect()
+        };
+        let collectors = || -> Vec<usize> { e.tiers.iter().map(|td| td.collectors_running()).collect() };
+        assert_eq!((ues(), collectors()), (vec![1, 60, 3600], vec![1, 1, 1]));
+        assert!(dim.ring().is_none());
+
+        for i in 0..10 {
+            store(&dim, T0 + i, i as f64);
+        }
+        assert_eq!((dim.first_entry_s(), dim.last_entry_s()), (T0, T0 + 9));
+        assert_eq!(chart.tier0_retention(), (T0, T0 + 9));
+        assert_eq!((dim.tier_retention(1), dim.tier_retention(2)), ((0, 0), (0, 0)));
+        assert_eq!(e.main.stats().hot_entries, 1);
+
+        chart.set_update_every(2);
+        assert_eq!(
+            (e.main.stats().hot_entries, e.main.stats().dirty_entries),
+            (0, 1)
+        );
+        assert_eq!(ues(), [2, 120, 7200]);
+        store(&dim, T0 + 11, 11.0);
+        assert_eq!(dim.last_entry_s(), T0 + 11);
+        dim.store_flush();
+        assert_eq!(e.main.stats().hot_entries, 0);
+        assert_eq!(
+            e.mrg.get_and_acquire(dim.uuid(), 0).unwrap().latest_clean_time_s(),
+            T0 + 11
+        );
+
+        assert!(dim.finalize_collection(), "tier 0 has data");
+        assert_eq!(collectors(), [0, 0, 0]);
+        store(&dim, T0 + 13, 13.0);
+        assert_eq!(dim.last_entry_s(), T0 + 11, "no collection after finalize");
+        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        assert_eq!(collectors(), [1, 1, 1]);
+
+        let (fresh, _) = chart.dim_add("e", None, 1, 1, Algorithm::Absolute);
+        assert!(!fresh.finalize_collection(), "no tier has data");
+    }
+
+    /// A ram host on the engine: the ring is tier 0, the tiers above hold registry entries; finalize counts the ring
+    /// as retained, as C.
+    #[test]
+    fn ram_dims_on_the_engine_keep_their_ring_at_tier_0() {
+        use crate::chart::Algorithm;
+        let (_dirs, storage) = engine(3);
+        let e = storage.dbengine().unwrap();
+        let host = Host::with_storage("guid-a", false, info("a"), &storage);
+        let chart = collected_chart(&host, DbMode::Ram);
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        let ring = dim.ring().expect("tier 0 is a ring");
+        assert!(e.mrg.get_and_acquire(dim.uuid(), 0).is_none());
+        assert!(e.mrg.get_and_acquire(dim.uuid(), 2).is_some());
+        assert_eq!(e.tiers[0].collectors_running(), 0);
+        store(&dim, T0, 1.0);
+        assert_eq!(
+            (dim.first_entry_s(), dim.last_entry_s()),
+            (ring.oldest_time_s(), T0)
+        );
+        assert!(dim.finalize_collection());
+
+        let plain = Host::new("guid-p", false, info("p"));
+        let chart = collected_chart(&plain, DbMode::Ram);
+        assert!(chart.dim_add("d", None, 1, 1, Algorithm::Absolute).0.finalize_collection());
+        let orphan = collected_chart(&Host::new("guid-o", false, info("o")), DbMode::Dbengine);
+        assert!(orphan.dim_add("d", None, 1, 1, Algorithm::Absolute).0.finalize_collection());
+    }
+
+    /// `rrdhost_finalize_collection()`: C's record, with the host's field, and every collection ended.
+    #[test]
+    fn a_host_finalizes_its_collection() {
+        use crate::chart::Algorithm;
+        let (_dirs, storage) = engine(2);
+        let dbengine = HostInfo {
+            db_mode: DbMode::Dbengine,
+            ..info("h")
+        };
+        let host = Host::with_storage("guid-h", false, dbengine, &storage);
+        let chart = collected_chart(&host, DbMode::Dbengine);
+        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        let ((), records) = netdata_agent_log::capture(|| host.finalize_collection());
+        let messages: Vec<String> = records.into_iter().filter_map(|r| r.message).collect();
+        assert_eq!(messages, ["RRD: 'host:h' stopping data collection..."]);
+        let e = storage.dbengine().unwrap();
+        assert!(e.tiers.iter().all(|td| td.collectors_running() == 0));
     }
 
     /// `stream_receiver_replication_reset()` on attach and on detach, each on its own.

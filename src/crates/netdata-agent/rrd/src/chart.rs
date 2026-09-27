@@ -1,6 +1,7 @@
 //! Charts and dimensions, ported from `src/database/rrdset-index-id.c`, `rrdset-index-name.c`, `rrdset-collection.c`
-//! (`rrdset_set_update_every_s()`) and `rrddim.c`: the per-host chart index with C's insert/conflict rules and chart
-//! naming, and the dimensions with their tier-0 ring.
+//! (`rrdset_set_update_every_s()`, `rrdset_finalize_collection()`) and `rrddim.c`: the per-host chart index with C's
+//! insert/conflict rules and chart naming, and the dimensions with their storage on each tier: a ram ring, or a
+//! dbengine registry entry with its collection handle (decisions D65, D68).
 //!
 //! One collector (a stream thread) changes a chart while queries read it: the mutable state sits behind locks that
 //! are held only for short, bounded steps.
@@ -9,6 +10,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, Weak};
 
+use netdata_agent_storage::dbengine::engine::collect::{Alignment, CollectHandle};
+use netdata_agent_storage::dbengine::engine::mrg::Handle;
 use netdata_agent_storage::ram::{ALLOC_MIN_ENTRIES, RamMetric, Seed};
 use netdata_agent_text::sanitize::{rrd_string_sanitize, rrdset_strncpyz_name};
 
@@ -16,6 +19,7 @@ use crate::contexts::{self, ChartLink, Contexts, DimLink};
 use crate::host::meta_flags;
 use crate::labels::{FLAG_DONT_DELETE, Labels, SRC_AUTO};
 use crate::mode::{DbMode, align_entries_to_pagesize};
+use crate::storage::StorageLayout;
 
 /// `RRD_ID_LENGTH_MAX`.
 pub const ID_LENGTH_MAX: usize = 1200;
@@ -251,6 +255,10 @@ pub struct Chart {
     mode: DbMode,
     /// `st->db.entries`.
     entries: usize,
+    /// The host's storage (`st->rrdhost->db[]`).
+    storage: Arc<StorageLayout>,
+    /// `st->smg[tier]`: what staggers the chart's pages in each tier (D65.1), kept for the chart's life.
+    alignment: Vec<Alignment>,
     /// `st->parts.name`: the name `rrdset_create()` was first called with, as the metadata writer stores it.
     name_part: Option<String>,
     /// The host's `RRDHOST_FLAG_METADATA_*`, which this chart's metadata changes raise.
@@ -337,7 +345,7 @@ impl Chart {
         }
     }
 
-    /// `rrddim_isnot_obsolete___safe_from_collector_thread()`.
+    /// `rrddim_isnot_obsolete___safe_from_collector_thread()`: a dimension back from obsolete collects again.
     pub fn dim_isnot_obsolete(&self, dim: &Dim) {
         let was = dim.update_meta(|m| {
             let was = m.flags;
@@ -345,8 +353,29 @@ impl Chart {
             was
         });
         if was & dim_flags::OBSOLETE != 0 {
+            self.reinitialize_collection(dim);
             contexts::updated_rrddim_flags(dim);
             self.metadata_updated();
+        }
+    }
+
+    /// `rrddim_reinitialize_collection()`: each dbengine tier whose collection ended starts it again.
+    fn reinitialize_collection(&self, dim: &Dim) {
+        let Some(engine) = self.storage.dbengine() else {
+            return;
+        };
+        let ue = i64::from(self.update_every());
+        let mut collect = lock(&dim.collect);
+        for (t, tier) in dim.tiers.iter().enumerate() {
+            if let (TierMetric::Dbengine(metric), None) = (tier, &collect[t]) {
+                let tier_ue = (self.storage.tier_grouping(t) as i64 * ue) as u32;
+                collect[t] = Some(CollectHandle::init(
+                    engine,
+                    metric,
+                    tier_ue,
+                    self.alignment[t],
+                ));
+            }
         }
     }
 
@@ -494,22 +523,24 @@ impl Chart {
     }
 
     /// `rrdset_first_entry_s_of_tier(st, 0)` and `rrdset_last_entry_s_of_tier(st, 0)`: the oldest and newest time any
-    /// dimension's ring holds (0 when none).
+    /// dimension holds in tier 0 (0 when none).
     pub fn tier0_retention(&self) -> (i64, i64) {
-        let mut first = 0;
-        let mut last = 0;
-        for dim in self.dims() {
-            if let Some(ring) = dim.ring() {
-                let (f, l) = (ring.oldest_time_s(), ring.latest_time_s());
-                if f != 0 && (first == 0 || f < first) {
-                    first = f;
-                }
-                if l > last {
-                    last = l;
-                }
+        span(self.dims().iter().map(|dim| dim.tier_retention(0)))
+    }
+
+    /// `rrdset_first_entry_s()` and `rrdset_last_entry_s()`: over every dimension and tier.
+    pub fn retention(&self) -> (i64, i64) {
+        span(self.dims().iter().map(|dim| dim.retention()))
+    }
+
+    /// `rrdset_finalize_collection()`: the dimensions' collection ends (with `dimensions_too`), their retention
+    /// verdicts unused.
+    pub fn finalize_collection(&self, dimensions_too: bool) {
+        if dimensions_too {
+            for dim in self.dims() {
+                dim.finalize_collection();
             }
         }
-        (first, last)
     }
 
     pub fn update_every(&self) -> i32 {
@@ -532,8 +563,8 @@ impl Chart {
         dims.by_id.get(id).map(|&i| Arc::clone(&dims.ordered[i]))
     }
 
-    /// `rrdset_set_update_every_s()`: an invalid value is ignored; a change flushes every ring. Returns the value
-    /// in force afterwards.
+    /// `rrdset_set_update_every_s()`: an invalid value is ignored; a change reaches every dimension's storage on every
+    /// tier. Returns the value in force afterwards.
     pub fn set_update_every(&self, update_every: i64) -> i32 {
         let mut meta = self.meta.write().unwrap_or_else(PoisonError::into_inner);
         if update_every <= 0
@@ -545,9 +576,7 @@ impl Chart {
         meta.update_every = update_every as i32;
         drop(meta);
         for dim in self.dims() {
-            if let Some(ring) = &dim.ring {
-                ring.change_update_every(update_every);
-            }
+            dim.change_collection_frequency(&self.storage, update_every);
         }
         update_every as i32
     }
@@ -612,34 +641,53 @@ impl Chart {
                 self.update_meta(|m| m.flags |= flags::SYNC_CLOCK | flags::HOMOGENEOUS_CHECK);
                 self.dim_metadata_updated(&dim);
             }
+            // the conflict callback ends by collecting again where the collection had ended
+            self.reinitialize_collection(&dim);
             return (dim, false);
         }
         let meta = self.meta();
         let collection = self.collection();
-        let ring = match self.mode {
-            DbMode::Ram | DbMode::Alloc | DbMode::None => {
-                let entries = if self.mode == DbMode::Ram {
-                    self.entries.max(1)
-                } else {
-                    self.entries.max(ALLOC_MIN_ENTRIES)
-                };
-                Some(RamMetric::new(
-                    entries,
-                    Seed {
-                        counter: collection.counter,
-                        current_entry: collection.current_entry,
-                        last_updated_s: collection.last_updated.0,
-                        update_every_s: i64::from(meta.update_every),
-                    },
-                ))
-            }
-            DbMode::Dbengine => None,
-        };
         // rrdcontext_find_dimension_uuid(): a dimension created again keeps its metric's UUID
         let uuid = self
             .host_contexts
             .find_dimension_uuid(&context, &self.id, id)
             .unwrap_or_else(|| *uuid::Uuid::new_v4().as_bytes());
+        // the ram engine's tier 0 for the modes that are not dbengine, then the dbengine's tiers (N8)
+        let (mut tiers, mut collect) = (Vec::new(), Vec::new());
+        if self.mode != DbMode::Dbengine {
+            let entries = if self.mode == DbMode::Ram {
+                self.entries.max(1)
+            } else {
+                self.entries.max(ALLOC_MIN_ENTRIES)
+            };
+            tiers.push(TierMetric::Ram(RamMetric::new(
+                entries,
+                Seed {
+                    counter: collection.counter,
+                    current_entry: collection.current_entry,
+                    last_updated_s: collection.last_updated.0,
+                    update_every_s: i64::from(meta.update_every),
+                },
+            )));
+            collect.push(None);
+        }
+        if let Some(engine) = self.storage.dbengine() {
+            for t in 0..self.storage.storage_tiers() {
+                if !self.storage.tier_is_dbengine(self.mode, t) {
+                    continue;
+                }
+                // rrdeng_metric_get_or_create(), then rrdeng_store_metric_init() at the tier's update every
+                let (metric, _) = engine.mrg.add_and_acquire(&uuid, t, 0, 0, 0);
+                let tier_ue = (self.storage.tier_grouping(t) as i64 * i64::from(meta.update_every)) as u32;
+                collect.push(Some(CollectHandle::init(
+                    engine,
+                    &metric,
+                    tier_ue,
+                    self.alignment[t],
+                )));
+                tiers.push(TierMetric::Dbengine(metric));
+            }
+        }
         let dim = Arc::new_cyclic(|me| Dim {
             me: me.clone(),
             link: DimLink::default(),
@@ -659,7 +707,8 @@ impl Chart {
                 counter: usize::from(meta.flags & flags::STORE_FIRST != 0),
                 ..DimCollection::default()
             }),
-            ring,
+            tiers,
+            collect: Mutex::new(collect),
         });
         // C compares with the first other dimension only (the loop breaks after it).
         let heterogeneous = index.ordered.first().is_some_and(|td| {
@@ -678,7 +727,7 @@ impl Chart {
                 m.flags |= flags::HETEROGENEOUS;
             }
         });
-        if dim.ring.is_some() {
+        if dim.ring().is_some() {
             self.host_contexts().ram_index().register(&dim);
         }
         self.host_meta
@@ -733,6 +782,25 @@ pub struct DimCollection {
     pub calculated_value: f64,
 }
 
+/// `rd->tiers[t].smh`: a dimension's storage on one tier, fixed at insert.
+#[derive(Debug)]
+enum TierMetric {
+    Ram(RamMetric),
+    Dbengine(Handle),
+}
+
+/// The earliest non-zero first time and the latest last time of these retentions (0 when none).
+fn span(retentions: impl Iterator<Item = (i64, i64)>) -> (i64, i64) {
+    retentions.fold((0, 0), |(first, last), (f, l)| {
+        let first = if f != 0 && (first == 0 || f < first) {
+            f
+        } else {
+            first
+        };
+        (first, last.max(l))
+    })
+}
+
 /// `RRDDIM`.
 #[derive(Debug)]
 pub struct Dim {
@@ -743,8 +811,11 @@ pub struct Dim {
     link: DimLink,
     meta: RwLock<DimMeta>,
     collection: Mutex<DimCollection>,
-    /// Tier 0 of a ram/alloc/none chart; dbengine storage comes with slice 2.
-    ring: Option<RamMetric>,
+    /// The storage of each tier in use, by tier: the ram ring of a chart that is not dbengine at tier 0, the
+    /// dbengine's registry entries elsewhere.
+    tiers: Vec<TierMetric>,
+    /// `rd->tiers[t].sch` by tier: a dbengine tier's collection until it is finalized (`None` for a ram tier).
+    collect: Mutex<Vec<Option<CollectHandle>>>,
 }
 
 impl Dim {
@@ -775,8 +846,12 @@ impl Dim {
         update(&mut lock(&self.collection))
     }
 
+    /// The ram ring of tier 0, for a chart that is not dbengine.
     pub fn ring(&self) -> Option<&RamMetric> {
-        self.ring.as_ref()
+        match self.tiers.first() {
+            Some(TierMetric::Ram(ring)) => Some(ring),
+            _ => None,
+        }
     }
 
     pub(crate) fn weak(&self) -> Weak<Dim> {
@@ -788,22 +863,89 @@ impl Dim {
         &self.link
     }
 
-    /// `rrddim_first_entry_s()`: the oldest point of any tier (one tier until dbengine, D15).
-    pub fn first_entry_s(&self) -> i64 {
-        self.ring.as_ref().map_or(0, RamMetric::oldest_time_s)
-    }
-
-    /// `rrddim_last_entry_s()`.
-    pub fn last_entry_s(&self) -> i64 {
-        self.ring.as_ref().map_or(0, RamMetric::latest_time_s)
-    }
-
-    /// `rrddim_store_metric()` at tier 0; the first store after a (re)link marks the metric collected.
-    pub fn store_metric(&self, point_end_time_ut: u64, value: f64, flags: u32) {
-        if let Some(ring) = &self.ring {
-            ring.store(point_end_time_ut, value, flags);
+    /// `rrddim_first_entry_s_of_tier()` and `rrddim_last_entry_s_of_tier()`: the ring's oldest and newest points, or
+    /// the registry's retention; `(0, 0)` past the tiers.
+    pub fn tier_retention(&self, tier: usize) -> (i64, i64) {
+        match self.tiers.get(tier) {
+            Some(TierMetric::Ram(ring)) => (ring.oldest_time_s(), ring.latest_time_s()),
+            Some(TierMetric::Dbengine(metric)) => (metric.first_time_s(), metric.latest_time_s()),
+            None => (0, 0),
         }
+    }
+
+    /// Over every tier.
+    fn retention(&self) -> (i64, i64) {
+        span((0..self.tiers.len()).map(|t| self.tier_retention(t)))
+    }
+
+    /// `rrddim_first_entry_s()`: the oldest point of any tier.
+    pub fn first_entry_s(&self) -> i64 {
+        self.retention().0
+    }
+
+    /// `rrddim_last_entry_s()`: the newest point of any tier.
+    pub fn last_entry_s(&self) -> i64 {
+        self.retention().1
+    }
+
+    /// `rrddim_store_metric()`: the point into tier 0 (the ring, or the dbengine collection while it runs); the first
+    /// store after a (re)link marks the metric collected.
+    pub fn store_metric(&self, point_end_time_ut: u64, value: f64, flags: u32) {
+        match self.tiers.first() {
+            Some(TierMetric::Ram(ring)) => ring.store(point_end_time_ut, value, flags),
+            Some(TierMetric::Dbengine(_)) => {
+                if let Some(handle) = lock(&self.collect)[0].as_mut() {
+                    handle.store_next(point_end_time_ut, value, 0.0, 0.0, 1, 0, flags);
+                }
+            }
+            None => {}
+        }
+        // S4a: the tiers above 0 aggregate the point (`store_metric_at_tier()`)
         contexts::collected_rrddim(self);
+    }
+
+    /// `rrdset_set_update_every_s()` for this dimension: each tier's storage takes the tier's update every.
+    fn change_collection_frequency(&self, storage: &StorageLayout, update_every: i64) {
+        let mut collect = lock(&self.collect);
+        for (t, tier) in self.tiers.iter().enumerate() {
+            match (tier, collect[t].as_mut()) {
+                (TierMetric::Ram(ring), _) => ring.change_update_every(update_every),
+                (TierMetric::Dbengine(_), Some(handle)) => handle
+                    .change_collection_frequency((storage.tier_grouping(t) as i64 * update_every) as u32),
+                (TierMetric::Dbengine(_), None) => {}
+            }
+        }
+    }
+
+    /// `storage_engine_store_flush()` of every tier: the ring's pending point, a dbengine tier's page.
+    pub(crate) fn store_flush(&self) {
+        let mut collect = lock(&self.collect);
+        for (t, tier) in self.tiers.iter().enumerate() {
+            match (tier, collect[t].as_mut()) {
+                (TierMetric::Ram(ring), _) => ring.flush(),
+                (TierMetric::Dbengine(_), Some(handle)) => handle.flush_current_page(),
+                (TierMetric::Dbengine(_), None) => {}
+            }
+        }
+    }
+
+    /// `rrddim_finalize_collection_and_check_retention()`: every tier's collection ends; whether the dimension still
+    /// has data (a tier with retention, a ram tier, which C counts as retained, or no tier at all).
+    pub fn finalize_collection(&self) -> bool {
+        let mut collect = lock(&self.collect);
+        let (mut available, mut said_no) = (0, 0);
+        for (t, tier) in self.tiers.iter().enumerate() {
+            match tier {
+                TierMetric::Ram(_) => available += 1,
+                TierMetric::Dbengine(_) => {
+                    if let Some(handle) = collect[t].take() {
+                        available += 1;
+                        said_no += usize::from(handle.finalize());
+                    }
+                }
+            }
+        }
+        said_no == 0 || available > said_no
     }
 }
 
@@ -815,6 +957,10 @@ pub struct Charts {
     contexts: Arc<Contexts>,
     /// The host's `RRDHOST_FLAG_METADATA_*`.
     host_meta: Arc<AtomicU32>,
+    /// The host's storage, which its charts' dimensions keep their points in.
+    storage: Arc<StorageLayout>,
+    /// The host's GUID, which staggers its charts' pages (D65.1).
+    host_guid: String,
 }
 
 #[derive(Debug, Default)]
@@ -855,11 +1001,18 @@ impl ChartIndex {
 }
 
 impl Charts {
-    pub fn new(contexts: Arc<Contexts>, host_meta: Arc<AtomicU32>) -> Self {
+    pub fn new(
+        contexts: Arc<Contexts>,
+        host_meta: Arc<AtomicU32>,
+        storage: Arc<StorageLayout>,
+        host_guid: &str,
+    ) -> Self {
         Charts {
             inner: RwLock::default(),
             contexts,
             host_meta,
+            storage,
+            host_guid: host_guid.to_string(),
         }
     }
 
@@ -982,6 +1135,11 @@ impl Charts {
                     id_part: spec.id.to_string(),
                     mode: spec.mode,
                     entries,
+                    storage: Arc::clone(&self.storage),
+                    // rrdset_index_insert(): the metrics group of every tier with an engine
+                    alignment: (0..self.storage.storage_tiers())
+                        .map(|t| Alignment::new(&self.host_guid, &full_id, t))
+                        .collect(),
                     name_part: spec.name.filter(|n| !n.is_empty()).map(str::to_string),
                     host_meta: Arc::clone(&self.host_meta),
                     labels_saved_version: AtomicU32::new(0),
@@ -1156,7 +1314,7 @@ mod tests {
     #[test]
     fn metadata_flags_follow_cs_setters() {
         let host = Arc::new(AtomicU32::new(0));
-        let charts = Charts::new(Arc::default(), Arc::clone(&host));
+        let charts = Charts::new(Arc::default(), Arc::clone(&host), Arc::default(), "");
         let take_host = || host.swap(0, Ordering::AcqRel) & meta_flags::UPDATE != 0;
         let (chart, _) = charts.create(&spec("t", "c", Some("named")));
         assert!(chart.take_metadata_update() && take_host(), "new chart");
@@ -1254,7 +1412,7 @@ mod tests {
     #[test]
     fn a_redefinition_compares_sanitized_fields() {
         let host = Arc::new(AtomicU32::new(0));
-        let charts = Charts::new(Arc::default(), Arc::clone(&host));
+        let charts = Charts::new(Arc::default(), Arc::clone(&host), Arc::default(), "");
         let mut s = spec("t", "c", None);
         s.plugin = " spaced  plugin ";
         s.title = " spaced  title ";

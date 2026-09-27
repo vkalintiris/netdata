@@ -54,7 +54,7 @@ fn c_unit_tests() {
             if let Some(rd2) = &rd2 {
                 set_value(rd2, t, case.feed2[c]);
             }
-            timed_done(&st, t, false, GAP_WHEN_LOST_ITERATIONS_ABOVE);
+            timed_done(&st, "h", t, false, GAP_WHEN_LOST_ITERATIONS_ABOVE);
             if c == 0 {
                 // run_test() pins the first collection `microseconds` past the second boundary.
                 let usec = microseconds as i64;
