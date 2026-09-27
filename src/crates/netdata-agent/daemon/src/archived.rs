@@ -204,5 +204,6 @@ fn load_row(meta: &MetaDb, hosts: &Hosts, row: HostRow, defaults: &Defaults) -> 
         }
     });
     host.set_last_connected_s(last_connected);
+    host.pulse_status(0);
     Some(host)
 }

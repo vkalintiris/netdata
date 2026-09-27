@@ -499,6 +499,7 @@ fn remove_ephemeral_host(out: &mut Vec<u8>, host: &Host, report: bool, unregiste
         (None, _) => meta_store::no_database("sql_set_host_label"),
         (Some(_), None) => {}
     }
+    host.pulse_status(0);
     if unregister {
         // unregister_node(): ACLKSYNC is not ported, so its statements run here
         if let (Some(meta), Some(id)) = (&meta, &id) {

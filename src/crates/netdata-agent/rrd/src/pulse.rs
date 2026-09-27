@@ -7,6 +7,43 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 
+/// `PULSE_HOST_STATUS`: a host's streaming state as the pulse charts count it (`pulse-parents.h`).
+pub mod host_status {
+    pub const LOCAL: u32 = 1 << 0;
+    pub const VIRTUAL: u32 = 1 << 1;
+    pub const LOADING: u32 = 1 << 2;
+    pub const ARCHIVED: u32 = 1 << 3;
+    pub const RCV_OFFLINE: u32 = 1 << 4;
+    pub const RCV_WAITING: u32 = 1 << 5;
+    pub const RCV_REPLICATING: u32 = 1 << 6;
+    pub const RCV_REPLICATION_WAIT: u32 = 1 << 7;
+    pub const RCV_RUNNING: u32 = 1 << 8;
+    pub const SND_OFFLINE: u32 = 1 << 9;
+    pub const SND_PENDING: u32 = 1 << 10;
+    pub const SND_CONNECTING: u32 = 1 << 11;
+    pub const SND_NO_DST: u32 = 1 << 12;
+    pub const SND_NO_DST_FAILED: u32 = 1 << 13;
+    pub const SND_WAITING: u32 = 1 << 14;
+    pub const SND_REPLICATING: u32 = 1 << 15;
+    pub const SND_RUNNING: u32 = 1 << 16;
+    pub const DELETED: u32 = 1 << 17;
+    pub const EPHEMERAL: u32 = 1 << 18;
+    pub const PERMANENT: u32 = 1 << 19;
+
+    pub const EPHEMERALITY: u32 = EPHEMERAL | PERMANENT;
+    pub const BASIC: u32 = LOCAL | VIRTUAL | LOADING | ARCHIVED | DELETED;
+    pub const RECEIVER: u32 =
+        RCV_OFFLINE | RCV_WAITING | RCV_REPLICATING | RCV_REPLICATION_WAIT | RCV_RUNNING;
+    pub const SENDER: u32 = SND_OFFLINE
+        | SND_PENDING
+        | SND_CONNECTING
+        | SND_WAITING
+        | SND_REPLICATING
+        | SND_RUNNING
+        | SND_NO_DST
+        | SND_NO_DST_FAILED;
+}
+
 /// Every counter group.
 #[derive(Debug, Default)]
 pub struct Pulse {

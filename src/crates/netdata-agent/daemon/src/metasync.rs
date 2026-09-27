@@ -526,6 +526,7 @@ fn restore_host_context(host: &Host, load: &CtxLoad, dbs: &mut ThreadDbs) {
         duration(now_ut().saturating_sub(started))
     );
     host.clear_pending_context_load();
+    host.pulse_status(0);
     if is_vnode(host) {
         let _ = load.vnodes.send(());
     }

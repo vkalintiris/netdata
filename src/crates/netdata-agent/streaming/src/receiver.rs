@@ -200,6 +200,8 @@ pub struct Attached {
     keepalive_initialized: bool,
     /// The stream threads, for the backfilled charts' requests to come back to this one.
     pool: PoolHandle<StreamMsg>,
+    /// The receiver waits for replication once attached (replication is enabled), else runs.
+    replication_wait: bool,
 }
 
 /// A connection on its stream thread.
@@ -475,7 +477,8 @@ impl Receivers {
         } = pending;
         let key = request.key.clone().unwrap_or_default();
         let guid = request.machine_guid.clone().unwrap_or_default();
-        let config = {
+        // `stream_receive.replication.enabled` ([db] enable replication) decides the state a receiver starts in
+        let (config, replication_wait) = {
             let mut conf = self.conf.lock().unwrap_or_else(PoisonError::into_inner);
             let defaults = ReceiverDefaults {
                 db_mode: self.defaults.db_mode.clone(),
@@ -483,7 +486,10 @@ impl Receivers {
                 health_enabled: self.defaults.health_enabled,
                 update_every: i64::from(request.update_every),
             };
-            conf.receiver_config(&key, &guid, &defaults)
+            (
+                conf.receiver_config(&key, &guid, &defaults),
+                conf.receive.enabled,
+            )
         };
         let dbengine = self.hosts.storage().dbengine().is_some();
         let (mode, fallback) = receiver_mode(&config.db_mode, &self.defaults.db_mode, dbengine);
@@ -675,8 +681,12 @@ impl Receivers {
             handshake_update_every: i64::from(request.update_every),
             keepalive_initialized,
             pool: self.pool.clone(),
+            replication_wait,
         };
-        // stream_receiver_add_to_queue()
+        // stream_receiver_add_to_queue(); the host waits for its stream thread (set before the thread can attach it)
+        attached
+            .host
+            .pulse_status(netdata_agent_rrd::pulse::host_status::RCV_WAITING);
         nd_log!(
             Source::Daemon,
             Priority::Debug,
@@ -856,6 +866,12 @@ impl StreamWorker {
                 .host
                 .contexts()
                 .record_first_time_changes(true);
+            use netdata_agent_rrd::pulse::host_status::{RCV_REPLICATION_WAIT, RCV_RUNNING};
+            child.attached.host.pulse_status(if child.attached.replication_wait {
+                RCV_REPLICATION_WAIT
+            } else {
+                RCV_RUNNING
+            });
         }
         // Bytes may have arrived before the registration.
         let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
@@ -925,6 +941,9 @@ impl StreamWorker {
                 reason,
                 &counters,
             );
+            attached
+                .host
+                .pulse_status(netdata_agent_rrd::pulse::host_status::RCV_OFFLINE);
             attached.host.clear_receiver(&attached.slot);
             attached.hosts.update_is_parent_label();
             self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
@@ -993,7 +1012,7 @@ impl StreamWorker {
             let timeout_s = IDLE_TIMEOUT_MIN_S
                 .max(receiver_update_every(&a.host, a.handshake_update_every) * 2);
             let idle = now.saturating_duration_since(child.last_io);
-            if idle > Duration::from_secs(timeout_s) && !a.host.any_chart_replicating() {
+            if idle > Duration::from_secs(timeout_s) && a.host.replicating_charts() == 0 {
                 let _frame = records::child_event(&frame);
                 let idle_us = i64::try_from(idle.as_micros()).unwrap_or(i64::MAX);
                 let duration = duration_to_string(idle_us, "us", true).unwrap_or_default();
@@ -1124,6 +1143,7 @@ impl StreamWorker {
                         .pulse()
                         .network
                         .stream_sent(n);
+                    child.attached.host.stream_bytes_sent(n);
                     child.sends += 1;
                     child.last_io = Instant::now();
                     continue;
@@ -1253,6 +1273,7 @@ impl StreamWorker {
                         .pulse()
                         .network
                         .stream_received(n);
+                    child.attached.host.stream_bytes_received(n);
                     child.last_io = Instant::now();
                     child
                         .attached

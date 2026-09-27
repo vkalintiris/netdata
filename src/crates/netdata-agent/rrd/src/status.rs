@@ -1,7 +1,6 @@
 //! A host's status (`rrdhost_status()` with `RRDHOST_STATUS_BASIC`, `src/database/rrdhost-status.c`): whether its
 //! database is queryable, whether it is live, and what feeds it. Only the fields this agent reports so far.
 
-use crate::chart::flags;
 use crate::host::Host;
 
 /// `RRDHOST_DB_STATUS`.
@@ -116,7 +115,7 @@ impl Host {
             IngestStatus::Initializing
         } else if self.is_localhost() {
             IngestStatus::Online
-        } else if self.any_chart_replicating() || !self.contexts().any_metric_collected() {
+        } else if self.replicating_charts() > 0 || !self.contexts().any_metric_collected() {
             IngestStatus::Replicating
         } else {
             IngestStatus::Online
@@ -139,13 +138,5 @@ impl Host {
             first_time_s,
             last_time_s,
         }
-    }
-
-    /// `rrdhost_receiver_replicating_charts() > 0`.
-    pub fn any_chart_replicating(&self) -> bool {
-        self.charts()
-            .all()
-            .iter()
-            .any(|chart| chart.flags() & flags::RECEIVER_REPLICATION_IN_PROGRESS != 0)
     }
 }

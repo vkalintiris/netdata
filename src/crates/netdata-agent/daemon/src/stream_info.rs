@@ -241,9 +241,13 @@ mod tests {
         };
         let query = format!("machine_guid={CHILD}");
         assert_eq!(body(&hosts, &query), (200, online("live", "online")));
+        // a chart's replication starts as the ingest starts it: the flags and the host's counter
         chart.update_meta(|m| {
-            m.flags |= netdata_agent_rrd::chart::flags::RECEIVER_REPLICATION_IN_PROGRESS;
+            use netdata_agent_rrd::chart::flags;
+            m.flags |= flags::RECEIVER_REPLICATION_IN_PROGRESS;
+            m.flags &= !flags::RECEIVER_REPLICATION_FINISHED;
         });
+        child.replicating_charts_plus_one();
         assert_eq!(body(&hosts, &query), (200, online("stale", "replicating")));
         // after the disconnect: offline, with the retention's own last time
         child.clear_receiver(&slot);

@@ -360,6 +360,15 @@ impl Parser {
 
     // ---- scope and caches (pluginsd_internals.h) ----
 
+    /// `rrdhost_receiver_replicating_charts_minus_one()` of a chart whose replication just finished: the last one
+    /// puts the host's receiver in the running state.
+    fn replication_finished(&self) {
+        if self.host.replicating_charts_minus_one() == 0 {
+            self.host
+                .pulse_status(netdata_agent_rrd::pulse::host_status::RCV_RUNNING);
+        }
+    }
+
     /// `pluginsd_clear_scope_chart()`.
     fn clear_scope(&mut self) {
         self.scope = None;
@@ -1393,6 +1402,10 @@ impl Parser {
             old & flags::RECEIVER_REPLICATION_IN_PROGRESS != 0
         });
         if !was_in_progress {
+            if self.host.replicating_charts_plus_one() == 1 {
+                self.host
+                    .pulse_status(netdata_agent_rrd::pulse::host_status::RCV_REPLICATING);
+            }
             let request = ReplayRequest {
                 chart: Arc::clone(&chart),
                 first_entry_child: first_entry,
@@ -1822,7 +1835,9 @@ impl Parser {
                 m.flags &= !(flags::RECEIVER_REPLICATION_IN_PROGRESS | flags::SYNC_CLOCK);
                 old & flags::RECEIVER_REPLICATION_FINISHED != 0
             });
-            if was_finished {
+            if !was_finished {
+                self.replication_finished();
+            } else {
                 let hostname = self.host.hostname();
                 plog!(
                     self,
@@ -1865,10 +1880,15 @@ impl Parser {
                 chart.receiver().replication_empty_response_count
             );
             chart.receiver().replication_empty_response_count = 0;
-            chart.update_meta(|m| {
+            let was_finished = chart.update_meta(|m| {
+                let old = m.flags;
                 m.flags |= flags::RECEIVER_REPLICATION_FINISHED;
                 m.flags &= !(flags::RECEIVER_REPLICATION_IN_PROGRESS | flags::SYNC_CLOCK);
+                old & flags::RECEIVER_REPLICATION_FINISHED != 0
             });
+            if !was_finished {
+                self.replication_finished();
+            }
             self.clear_scope();
             self.replicate_chart_request(
                 &chart,

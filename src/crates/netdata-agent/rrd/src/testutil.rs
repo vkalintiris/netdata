@@ -57,7 +57,6 @@ pub(crate) fn engine(tiers: usize) -> (Vec<tempfile::TempDir>, Arc<StorageLayout
     (dirs, Arc::new(StorageLayout::new(Some(engine))))
 }
 
-/// A chart of `mode` collected every second.
 /// The spec of the test chart `t.c`, of `mode`, collected every second.
 pub(crate) fn chart_spec(mode: DbMode) -> crate::chart::ChartSpec<'static> {
     crate::chart::ChartSpec {
@@ -79,6 +78,7 @@ pub(crate) fn chart_spec(mode: DbMode) -> crate::chart::ChartSpec<'static> {
     }
 }
 
+/// A chart of `mode` collected every second.
 pub(crate) fn collected_chart(host: &Host, mode: DbMode) -> Arc<crate::chart::Chart> {
     host.charts().create(&chart_spec(mode)).0
 }

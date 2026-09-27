@@ -302,6 +302,18 @@ pub struct Host {
     metadata_lifetime: RwLock<bool>,
     /// `host->db[]`.
     storage: Arc<StorageLayout>,
+    /// `host->stream.pulse_state`: the host's streaming state in the pulse charts (`pulse::host_status` bits).
+    pulse_state: AtomicU32,
+    /// `host->stream.rcv.status.running_latched`: the receiver reached running since it connected.
+    running_latched: AtomicBool,
+    /// `host->stream.rcv.status.state_changed_s`: when the inbound state last changed, in wall-clock seconds.
+    state_changed_s: AtomicI64,
+    /// `host->stream.rcv.status.bytes_in` and `bytes_out`: the stream bytes of every connection of this host.
+    stream_bytes_in: AtomicU64,
+    stream_bytes_out: AtomicU64,
+    /// `host->stream.rcv.status.replication.charts`: the charts whose replication is in progress (it wraps below 0,
+    /// as C's, until a reset zeroes it).
+    replicating_charts: AtomicU32,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -422,6 +434,12 @@ impl Host {
             archived: AtomicBool::new(false),
             pending_context_load: AtomicBool::new(false),
             last_connected_s: AtomicI64::new(0),
+            pulse_state: AtomicU32::new(0),
+            running_latched: AtomicBool::new(false),
+            state_changed_s: AtomicI64::new(0),
+            stream_bytes_in: AtomicU64::new(0),
+            stream_bytes_out: AtomicU64::new(0),
+            replicating_charts: AtomicU32::new(0),
             meta_flags,
             metadata_lifetime: RwLock::new(false),
             storage: Arc::clone(storage),
@@ -869,14 +887,158 @@ impl Host {
     /// the next connection asks for every chart's missing data again.
     fn replication_reset(&self) {
         for chart in self.charts.all() {
-            chart.update_meta(|m| {
+            let old = chart.update_meta(|m| {
+                let old = m.flags;
                 m.flags |= chart::flags::RECEIVER_REPLICATION_FINISHED;
                 m.flags &= !chart::flags::RECEIVER_REPLICATION_IN_PROGRESS;
+                old
             });
+            if old & chart::flags::RECEIVER_REPLICATION_FINISHED == 0 {
+                self.replicating_charts_minus_one();
+            }
+        }
+        let left = self.replicating_charts();
+        if left != 0 {
+            nd_log!(
+                Source::Daemon,
+                Priority::Warning,
+                "STREAM REPLAY ERROR: receiver replication instances counter should be zero, but it is {left} - \
+                 resetting it to zero"
+            );
+            self.replicating_charts.store(0, Ordering::Relaxed);
         }
         self.replication_requests
             .store(0, std::sync::atomic::Ordering::Relaxed);
         self.backfill_pending.store(0, Ordering::Relaxed);
+    }
+
+    /// `pulse_host_status()`, without its reason counters (they feed the extended charts only, D80.4): `status` 0
+    /// detects the receiver's state from the host's status. A basic or receiver state takes the host's ephemerality;
+    /// the running latch keeps a receiver that reached running there through its charts' replication ripples; the
+    /// state replaces the flags of its class (all of them for a basic one, the inbound ones for a receiver one, the
+    /// sender ones for a sender one), and a change of the inbound state restarts its age. As in C, a deletion takes
+    /// the ephemerality bit before its test, so it is stored with it instead of clearing the state.
+    pub fn pulse_status(&self, status: u32) {
+        use crate::pulse::host_status::*;
+        let now_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        let mut status = if status == 0 {
+            self.detect_receiver_status(now_s)
+        } else {
+            status
+        };
+        if status & (BASIC | RECEIVER) != 0 && status & EPHEMERALITY == 0 {
+            status |= if self.is_ephemeral() {
+                EPHEMERAL
+            } else {
+                PERMANENT
+            };
+        }
+        if status & RCV_RUNNING != 0 {
+            self.running_latched.store(true, Ordering::Relaxed);
+        } else if status & RCV_REPLICATING != 0 {
+            if self.running_latched.load(Ordering::Relaxed)
+                && self.pulse_state.load(Ordering::Relaxed) & RCV_RUNNING != 0
+            {
+                status = (status & !RCV_REPLICATING) | RCV_RUNNING;
+            } else {
+                self.running_latched.store(false, Ordering::Relaxed);
+            }
+        } else if status & RCV_OFFLINE != 0 {
+            self.running_latched.store(false, Ordering::Relaxed);
+        }
+        let remove = if status & BASIC != 0 {
+            BASIC | RECEIVER | EPHEMERALITY | SENDER
+        } else if status & RECEIVER != 0 {
+            BASIC | RECEIVER | EPHEMERALITY
+        } else if status & SENDER != 0 {
+            SENDER
+        } else {
+            0
+        };
+        let next = |cur: u32| {
+            if status == DELETED {
+                0
+            } else {
+                (cur & !remove) | status
+            }
+        };
+        let old = self
+            .pulse_state
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| Some(next(cur)))
+            .unwrap_or_else(|cur| cur);
+        if next(old) & (BASIC | RECEIVER) != old & (BASIC | RECEIVER) {
+            self.state_changed_s.store(now_s, Ordering::Relaxed);
+        }
+    }
+
+    /// `pulse_host_detect_receiver_status()`: the state the host's basic status gives (no vnodes).
+    fn detect_receiver_status(&self, now_s: i64) -> u32 {
+        use crate::pulse::host_status::*;
+        use crate::status::{DbStatus, IngestStatus, IngestType};
+        let s = self.status_basic(now_s);
+        if s.db_status == DbStatus::Initializing || s.ingest_status == IngestStatus::Initializing {
+            LOADING
+        } else if s.ingest_type == IngestType::Localhost {
+            LOCAL
+        } else {
+            match s.ingest_status {
+                IngestStatus::Archived => ARCHIVED,
+                IngestStatus::Replicating => RCV_REPLICATING,
+                IngestStatus::Offline => RCV_OFFLINE,
+                IngestStatus::Online => RCV_RUNNING,
+                IngestStatus::Initializing => 0,
+            }
+        }
+    }
+
+    /// `host->stream.pulse_state`.
+    pub fn pulse_state(&self) -> u32 {
+        self.pulse_state.load(Ordering::Relaxed)
+    }
+
+    /// `host->stream.rcv.status.state_changed_s`.
+    pub fn state_changed_s(&self) -> i64 {
+        self.state_changed_s.load(Ordering::Relaxed)
+    }
+
+    /// Bytes a receiver of this host read from, and wrote to, its child.
+    pub fn stream_bytes_received(&self, bytes: usize) {
+        self.stream_bytes_in
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    pub fn stream_bytes_sent(&self, bytes: usize) {
+        self.stream_bytes_out
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    /// `host->stream.rcv.status.bytes_in` and `bytes_out`.
+    pub fn stream_bytes(&self) -> (u64, u64) {
+        (
+            self.stream_bytes_in.load(Ordering::Relaxed),
+            self.stream_bytes_out.load(Ordering::Relaxed),
+        )
+    }
+
+    /// `rrdhost_receiver_replicating_charts()`.
+    pub fn replicating_charts(&self) -> u32 {
+        self.replicating_charts.load(Ordering::Relaxed)
+    }
+
+    /// `rrdhost_receiver_replicating_charts_plus_one()`: the new count.
+    pub fn replicating_charts_plus_one(&self) -> u32 {
+        self.replicating_charts
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+    }
+
+    /// `rrdhost_receiver_replicating_charts_minus_one()`: the new count (it wraps below 0, as C's).
+    pub fn replicating_charts_minus_one(&self) -> u32 {
+        self.replicating_charts
+            .fetch_sub(1, Ordering::Relaxed)
+            .wrapping_sub(1)
     }
 
     /// `host->stream.rcv.status.connections`.
@@ -1107,6 +1269,7 @@ impl Hosts {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         drop(index);
         host.log_archive_mode();
+        host.pulse_status(crate::pulse::host_status::DELETED);
         Some(host)
     }
 
@@ -1565,6 +1728,122 @@ mod tests {
         replicating(&chart);
         assert!(host.set_receiver(slot()));
         assert!(reset(&chart), "attach resets");
+    }
+
+    /// `pulse_host_status()`'s transitions: a basic or receiver state takes the host's ephemerality and replaces the
+    /// inbound state (a basic one the sender's too), a sender state only the sender's; the running latch holds a
+    /// receiver that reached running through its charts' replication ripples, until it goes offline; the inbound
+    /// state's age restarts only when that state changes; a deletion keeps its ephemerality bit, as C's.
+    #[test]
+    fn pulse_status_follows_cs_transitions() {
+        use crate::pulse::host_status::*;
+        let host = Host::new("guid-p", false, info("p"));
+        // whether the age restarted since the last step
+        let restarted = |host: &Host| {
+            let changed = host.state_changed_s.swap(1, Ordering::Relaxed) != 1;
+            (host.running_latched.load(Ordering::Relaxed), changed)
+        };
+        let steps = [
+            (RCV_WAITING, RCV_WAITING | PERMANENT, (false, true)),
+            (RCV_REPLICATING, RCV_REPLICATING | PERMANENT, (false, true)),
+            (RCV_RUNNING, RCV_RUNNING | PERMANENT, (true, true)),
+            (RCV_REPLICATING, RCV_RUNNING | PERMANENT, (true, false)),
+            (
+                SND_RUNNING,
+                RCV_RUNNING | PERMANENT | SND_RUNNING,
+                (true, false),
+            ),
+            (
+                SND_OFFLINE,
+                RCV_RUNNING | PERMANENT | SND_OFFLINE,
+                (true, false),
+            ),
+            (
+                RCV_OFFLINE,
+                RCV_OFFLINE | PERMANENT | SND_OFFLINE,
+                (false, true),
+            ),
+            (
+                RCV_REPLICATING,
+                RCV_REPLICATING | PERMANENT | SND_OFFLINE,
+                (false, true),
+            ),
+            (ARCHIVED, ARCHIVED | PERMANENT, (false, true)),
+        ];
+        for (status, state, latch_and_age) in steps {
+            host.pulse_status(status);
+            assert_eq!(
+                (host.pulse_state(), restarted(&host)),
+                (state, latch_and_age),
+                "after {status:#x}"
+            );
+        }
+        host.set_ephemeral(true);
+        host.pulse_status(RCV_RUNNING);
+        assert_eq!(host.pulse_state(), RCV_RUNNING | EPHEMERAL);
+        host.pulse_status(DELETED);
+        assert_eq!(
+            (host.pulse_state(), restarted(&host)),
+            (DELETED | EPHEMERAL, (true, true))
+        );
+    }
+
+    /// `pulse_host_detect_receiver_status()`: a host without data is loading, one with data and no receiver since it
+    /// was created is archived, and one whose receiver left is offline.
+    #[test]
+    fn pulse_status_detects_the_receivers_state() {
+        use crate::pulse::host_status::*;
+        let host = Host::new("guid-p", false, info("p"));
+        host.pulse_status(0);
+        assert_eq!(host.pulse_state(), LOADING | PERMANENT);
+        let chart = collected_chart(&host, DbMode::Ram);
+        let (dim, _) = chart.dim_add("d", None, 1, 1, crate::chart::Algorithm::Absolute);
+        store(&dim, T0, 1.0);
+        crate::contexts::collected_rrdset(&chart);
+        host.contexts().worker_cycle();
+        host.pulse_status(0);
+        assert_eq!(host.pulse_state(), ARCHIVED | PERMANENT);
+        let slot = Arc::new(ReceiverSlot::new(
+            1,
+            Default::default(),
+            ReceiverLink::default(),
+            Box::new(|| {}),
+        ));
+        assert!(host.set_receiver(Arc::clone(&slot)));
+        host.clear_receiver(&slot);
+        host.pulse_status(0);
+        assert_eq!(host.pulse_state(), RCV_OFFLINE | PERMANENT);
+    }
+
+    /// `rrdhost_receiver_replicating_charts()`: the ingest counts each chart's replication once; a reset takes back
+    /// the charts it finishes and, as C's, zeroes what is left with a warning.
+    #[test]
+    fn a_reset_takes_back_the_replicating_charts() {
+        use crate::chart::flags;
+        let host = Host::new("guid-r", false, info("r"));
+        let chart = collected_chart(&host, DbMode::Ram);
+        chart.update_meta(|m| {
+            m.flags |= flags::RECEIVER_REPLICATION_IN_PROGRESS;
+            m.flags &= !flags::RECEIVER_REPLICATION_FINISHED;
+        });
+        assert_eq!(host.replicating_charts_plus_one(), 1);
+        let ((), records) = netdata_agent_log::capture(|| host.replication_reset());
+        assert_eq!((host.replicating_charts(), texts(&records)), (0, vec![]));
+        assert_eq!(host.replicating_charts_plus_one(), 1);
+        let ((), records) = netdata_agent_log::capture(|| host.replication_reset());
+        assert_eq!(
+            (host.replicating_charts(), texts(&records)),
+            (
+                0,
+                vec![(
+                    Priority::Warning,
+                    "STREAM REPLAY ERROR: receiver replication instances counter should be zero, but it is 1 - \
+                     resetting it to zero"
+                        .to_string()
+                )]
+            )
+        );
+        assert_eq!(host.replicating_charts_minus_one(), u32::MAX, "it wraps");
     }
 
     #[test]

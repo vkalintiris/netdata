@@ -590,6 +590,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         });
         hosts.load_contexts(hosts.localhost());
     }
+    // rrd_init(): localhost's pulse state, once its contexts are loaded
+    hosts.localhost().pulse_status(0);
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
         meta.detect_machine_guid_change(host_id);
     }
