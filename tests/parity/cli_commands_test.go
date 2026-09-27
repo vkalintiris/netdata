@@ -285,16 +285,31 @@ func TestCLICommands(t *testing.T) {
 			t.Errorf("%s: the socket file remains after the exit: %v", side.Role, err)
 		}
 	}
+	// How many zero-byte reads a large command meets depends on how the kernel hands its chunks to the reader, on
+	// both agents (libuv reads again after a full buffer and records the EAGAIN): those records compare as a set.
 	var records [2][]string
+	var zeroReads [2][]string
 	for i, side := range p.Each() {
+		seen := map[string]bool{}
 		for _, l := range logLines(t, side.Daemon.Opts.RunDir, "daemon.log") {
-			if commandRecords.MatchString(l) {
-				records[i] = append(records[i], normalizeLog(l, side.Daemon.Opts.RunDir, ""))
+			if !commandRecords.MatchString(l) {
+				continue
+			}
+			n := normalizeLog(l, side.Daemon.Opts.RunDir, "")
+			switch {
+			case !strings.Contains(l, `msg="pipe_read_cb: `):
+				records[i] = append(records[i], n)
+			case !seen[n]:
+				seen[n] = true
+				zeroReads[i] = append(zeroReads[i], n)
 			}
 		}
 	}
 	if d := diffMultisets(records[0], records[1]); d != "" {
 		t.Errorf("command records differ:\n%s", d)
+	}
+	if d := diffMultisets(zeroReads[0], zeroReads[1]); d != "" {
+		t.Errorf("zero-byte read records differ:\n%s", d)
 	}
 	if len(records[0]) == 0 {
 		t.Errorf("no command records")
