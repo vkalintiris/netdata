@@ -54,6 +54,12 @@ pub fn file_name(kind: FileKind, tier: u32, fileno: u32) -> String {
     format!("{prefix}{tier}-{fileno:010}{extension}")
 }
 
+/// `DATAFILE_PREFIX RRDENG_FILE_NUMBER_PRINT_TMPL`: a pair's name in C's records, `datafile-1-0000000001`.
+pub fn pair_name(fileno: u32) -> String {
+    let name = file_name(FileKind::Datafile, 1, fileno);
+    name.trim_end_matches(FileKind::Datafile.parts().1).to_string()
+}
+
 /// The `(tier, fileno)` of a file name `file_name()` produces (`RRDENG_FILE_NUMBER_SCAN_TMPL`, `%1u-%10u`).
 pub fn parse_file_name(kind: FileKind, name: &str) -> Option<(u32, u32)> {
     let (prefix, extension) = kind.parts();

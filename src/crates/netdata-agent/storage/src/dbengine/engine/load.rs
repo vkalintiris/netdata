@@ -18,8 +18,8 @@ use netdata_agent_log::{
 };
 
 use super::io::{
-    IoFile, align_ceiling, align_floor, check_file_properties, open_for_io, unlink, unlink_if_exists,
-    write_retrying,
+    IoFile, align_ceiling, align_floor, check_file_properties, open_for_io, unlink, unlink_failed,
+    unlink_if_exists, write_retrying,
 };
 use super::index::write_v2;
 use super::mrg::Mrg;
@@ -32,7 +32,7 @@ use crate::dbengine::format::journal_v2::{
     self, HEADER_SIZE, Invalid, Page, ReplayRecord, Verdict, open_cache_pages,
 };
 use crate::dbengine::format::superblock::{self, SuperblockError};
-use crate::dbengine::format::{BLOCK_SIZE, FileKind, ReadAt, file_name};
+use crate::dbengine::format::{BLOCK_SIZE, FileKind, ReadAt, file_name, pair_name};
 
 /// `MAX_DATAFILES`.
 const MAX_DATAFILES: usize = 65536 * 4;
@@ -656,30 +656,36 @@ fn create_file(
     journal: bool,
 ) -> Option<IoFile> {
     let file = open_for_io(path, true, direct).ok()?;
-    let Err(err) = write_retrying(&file, superblock, 0) else {
+    if write_retrying(&file, superblock, 0).is_ok() {
         return Some(file);
-    };
+    }
     drop(file);
-    // the write's errno reaches C's record unless a failed unlink logged (and cleared it) first
-    let errno = err.raw_os_error().unwrap_or(0);
+    // C's cleanup runs synchronous libuv calls, which reset errno: the record carries none, except a journal's
+    // ENOENT when its v1 unlink found nothing (a failed unlink logs, clearing it)
     if journal {
-        let v2 = unlink_if_exists(&path.with_extension("njfv2"));
-        let v1 = unlink_if_exists(path);
+        unlink_if_exists(&path.with_extension("njfv2"));
+        let errno = match std::fs::remove_file(path) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => libc::ENOENT,
+            Err(err) => {
+                unlink_failed(path, &err);
+                0
+            }
+            Ok(()) => 0,
+        };
         nd_log_limit!(
             &JOURNAL_CREATE,
             Source::Daemon,
             Priority::Err,
-            errno = if v2 && v1 { errno } else { 0 };
+            errno = errno;
             "DBENGINE: Failed to create journlfile \"{}\"",
             path.display()
         );
     } else {
-        let removed = unlink(path);
+        unlink(path);
         nd_log_limit!(
             &DATAFILE_CREATE,
             Source::Daemon,
             Priority::Err,
-            errno = if removed { errno } else { 0 };
             "DBENGINE: Failed to create datafile {}",
             path.display()
         );
@@ -717,7 +723,7 @@ pub(crate) fn create_pair_files(cfg: &TierConfig, fileno: u32) -> Option<(IoFile
     netdata_log_info!(
         "DBENGINE: tier {}: created {} (.ndf, .njf).",
         cfg.tier,
-        file_name(FileKind::Datafile, 1, fileno).trim_end_matches(".ndf")
+        pair_name(fileno)
     );
     Some((file, journal))
 }

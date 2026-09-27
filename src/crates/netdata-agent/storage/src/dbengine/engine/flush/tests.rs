@@ -254,13 +254,13 @@ fn an_extent_with_no_pair_to_move_to_is_lost() {
     let metric = dirty_page(&e, 0, nth(0), T0, &seq_values(10, 0));
     fault::script([Some(libc::EBADF), Some(libc::EACCES)]);
     let (_, records) = netdata_agent_log::capture(|| e.flush_pages(0, None, true, true));
-    // the write's errno on the rotation, the superblock write's on the failed creation, none after it
+    // the write's errno on the rotation; none on the failed creation (C's cleanup reset it) or after it
     let errnos: Vec<i32> = records
         .iter()
         .filter(|r| r.priority == netdata_agent_log::Priority::Err)
         .map(|r| r.errno)
         .collect();
-    assert_eq!(errnos, [libc::EBADF, libc::EACCES, 0]);
+    assert_eq!(errnos, [libc::EBADF, 0, 0]);
     let ndf2 = dir.path().join("datafile-1-0000000002.ndf");
     assert_eq!(
         messages(records),

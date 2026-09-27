@@ -96,7 +96,8 @@ fn busy_and_last_files_are_skipped() {
     assert!(!e.tiers[0].file(2).unwrap().v2_available());
 }
 
-/// Over its quota a tier indexes one file, then stops and leaves the rest to index.
+/// Over its quota a tier indexes one file, then stops and leaves the rest to the next rotation's run: it does not
+/// ask for another run, which without S5's deletion would repeat forever (review R16 B1, D69).
 #[test]
 fn a_tier_over_its_quota_indexes_one_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -108,6 +109,8 @@ fn a_tier_over_its_quota_indexes_one_file() {
     let tier = load(cfg, &mrg, NOW).unwrap();
     let e = Dbengine::new(mrg, vec![tier], EngineConfig::new(|| NOW));
     let _m = fill(&e, 0, 3 * 63 + 1);
+    // as DBEV does when it starts the run
+    e.tiers[0].clear_needs_indexing();
     let (count, records) = netdata_agent_log::capture(|| journal_index(&e, 0));
     assert_eq!(count, 1);
     let records = messages(records);
@@ -119,8 +122,11 @@ fn a_tier_over_its_quota_indexes_one_file() {
         ]
     );
     let td = &e.tiers[0];
-    assert!(td.needs_indexing());
+    assert!(!td.needs_indexing());
     assert!(td.file(1).unwrap().v2_available() && !td.file(2).unwrap().v2_available());
+    // the next run goes on from the next file
+    assert_eq!(journal_index(&e, 0), 1);
+    assert!(td.file(2).unwrap().v2_available() && !td.file(3).unwrap().v2_available());
 }
 
 /// A shutting-down tier indexes nothing.

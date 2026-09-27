@@ -349,6 +349,8 @@ pub struct MainCache {
     budget: usize,
     /// `max_dirty_pages_per_call`: `rrdeng_pages_per_extent`.
     pages_per_extent: usize,
+    /// `flushing_critical()`'s verdict, kept as the sizes change so that collectors and queries read it unlocked.
+    critical: AtomicBool,
 }
 
 impl MainCache {
@@ -357,7 +359,16 @@ impl MainCache {
             inner: Mutex::default(),
             budget,
             pages_per_extent: pages_per_extent.max(1),
+            critical: AtomicBool::new(false),
         }
+    }
+
+    /// After the dirty size or the hot peak changed.
+    fn note_sizes(&self, inner: &MainInner) {
+        self.critical.store(
+            inner.dirty_bytes > inner.hot_max_bytes,
+            Ordering::Relaxed,
+        );
     }
 
     fn lock(&self) -> MutexGuard<'_, MainInner> {
@@ -417,6 +428,7 @@ impl MainCache {
                 .insert(seq, (*uuid, Arc::clone(&page)));
             inner.hot_bytes += size;
             inner.hot_max_bytes = inner.hot_max_bytes.max(inner.hot_bytes);
+            self.note_sizes(&inner);
             None
         } else {
             inner.bytes += size;
@@ -471,12 +483,12 @@ impl MainCache {
         {
             inner.dirty_version += 1;
         }
+        self.note_sizes(inner);
     }
 
     /// `flushing_critical()`: the dirty pages take more than the hot ones ever did.
     pub fn flushing_critical(&self) -> bool {
-        let inner = self.lock();
-        inner.dirty_bytes > inner.hot_max_bytes
+        self.critical.load(Ordering::Relaxed)
     }
 
     /// `pgc_hot_and_dirty_entries()`: the pages not yet on disk.
@@ -533,6 +545,7 @@ impl MainCache {
             PageState::Clean => inner.bytes += delta,
             PageState::Flushing => inner.flushing_bytes += delta,
         }
+        self.note_sizes(&inner);
     }
 
     /// `flush_pages()`: batches of pages-per-extent dirty pages from each tier's queue head (fewer only with `all`),
@@ -609,6 +622,7 @@ impl MainCache {
                 }
             }
             first = true;
+            self.note_sizes(&inner);
             save_init(tier);
             drop(inner);
             let batch = Batch { tier, pages };

@@ -84,19 +84,16 @@ pub fn unlink(path: &Path) -> bool {
     }
 }
 
-/// A journal's unlink (`journalfile_destroy_unsafe()`): a file already gone is fine, any other failure recorded;
-/// whether nothing was recorded.
-pub fn unlink_if_exists(path: &Path) -> bool {
+/// A journal's unlink (`journalfile_destroy_unsafe()`): a file already gone is fine, any other failure recorded.
+pub fn unlink_if_exists(path: &Path) {
     match std::fs::remove_file(path) {
-        Err(err) if err.kind() != io::ErrorKind::NotFound => {
-            unlink_failed(path, &err);
-            false
-        }
-        _ => true,
+        Err(err) if err.kind() != io::ErrorKind::NotFound => unlink_failed(path, &err),
+        _ => {}
     }
 }
 
-fn unlink_failed(path: &Path, err: &io::Error) {
+/// `UNLINK_FILE()`'s record of a failed unlink.
+pub fn unlink_failed(path: &Path, err: &io::Error) {
     let errno = err.raw_os_error().unwrap_or(0);
     nd_log!(Source::Daemon, Priority::Err, errno = errno;
         "DBENGINE: uv_fs_unlink(\"{}\"): {}", path.display(), uv_strerror(errno));

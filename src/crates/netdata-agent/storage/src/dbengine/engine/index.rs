@@ -5,7 +5,7 @@
 
 use std::fs::File;
 
-use netdata_agent_log::{Priority, Source, nd_log, netdata_log_info};
+use netdata_agent_log::{Priority, Source, errno_of, nd_log, netdata_log_info};
 use netdata_agent_text::size::size_to_string;
 
 use super::load::TierConfig;
@@ -13,7 +13,7 @@ use super::query::Dbengine;
 use super::tier::{DataFile, TierData};
 use super::v2index::V2Index;
 use crate::dbengine::format::journal_v2::{Builder, Layout, Page, WriteError};
-use crate::dbengine::format::{FileKind, file_name};
+use crate::dbengine::format::{FileKind, file_name, pair_name};
 
 /// `journalfile_migrate_to_v2_callback()`: the pages indexed and the v2 file written, with C's records; `None` when
 /// there is no metric (nothing is written, no record) or the file could not be written. `v1_size` is the journal's
@@ -40,7 +40,6 @@ pub(crate) fn write_v2(
     );
     let path = cfg.file(FileKind::JournalV2, fileno);
     let size = layout.size();
-    let errno = |err: &std::io::Error| err.raw_os_error().unwrap_or(0);
     let failed_allocation = || {
         nd_log!(
             Source::Daemon,
@@ -59,13 +58,13 @@ pub(crate) fn write_v2(
             Some((file, layout))
         }
         Err(WriteError::Create(err)) => {
-            nd_log!(Source::Daemon, Priority::Err, errno = errno(&err);
+            nd_log!(Source::Daemon, Priority::Err, errno = errno_of(&err);
                 "Cannot create/open file '{}'.", path.display());
             failed_allocation();
             None
         }
         Err(WriteError::Size(err)) => {
-            nd_log!(Source::Daemon, Priority::Err, errno = errno(&err);
+            nd_log!(Source::Daemon, Priority::Err, errno = errno_of(&err);
                 "Cannot truncate file '{}' to size {size}.", path.display());
             failed_allocation();
             None
@@ -88,8 +87,8 @@ pub(crate) fn write_v2(
 
 /// `journal_v2_indexing_tp_worker()`: the tier's files that are neither the last one nor the one extents last went to,
 /// and have no v2 index, indexed in order; a file with writers still on it is skipped for now, and after the first
-/// file a tier over its quota stops, leaving the rest to index. Nothing while the tier is shutting down. How many
-/// files it indexed.
+/// file a tier over its quota stops, leaving the rest to the next run. Nothing while the tier is shutting down. How
+/// many files it indexed.
 pub fn journal_index(engine: &Dbengine, tier: usize) -> u32 {
     let td = &engine.tiers[tier];
     if td.quiesced() {
@@ -98,8 +97,7 @@ pub fn journal_index(engine: &Dbengine, tier: usize) -> u32 {
     let (mut count, mut after) = (0, None);
     while let Some(df) = td.next_for_indexing(after) {
         after = Some(df.fileno);
-        let name = file_name(FileKind::Datafile, 1, df.fileno);
-        let name = name.trim_end_matches(".ndf");
+        let name = pair_name(df.fileno);
         if df.writers_running() != (0, 0) {
             nd_log!(
                 Source::Daemon,
@@ -115,7 +113,8 @@ pub fn journal_index(engine: &Dbengine, tier: usize) -> u32 {
                 Priority::Info,
                 "DBENGINE: tier {tier}: reached quota limit, stopping journal indexing"
             );
-            td.set_needs_indexing();
+            // C asks for another run here, which the deletion of the oldest files it schedules then lets progress;
+            // until S5 deletes, the next rotation starts the next run (D69)
             break;
         }
         nd_log!(

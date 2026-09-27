@@ -283,7 +283,13 @@ fn dbev_loop(
         let cmd = match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
             Ok(cmd) => cmd,
             Err(RecvTimeoutError::Timeout) => {
-                next = (next + period).max(Instant::now());
+                // a timer running late restarts its period from now, as libuv's repeat does
+                let now = Instant::now();
+                next = if next + period > now {
+                    next + period
+                } else {
+                    now + period
+                };
                 Cmd::FlushMain
             }
             Err(RecvTimeoutError::Disconnected) => break,

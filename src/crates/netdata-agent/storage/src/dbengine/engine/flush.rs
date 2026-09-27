@@ -7,7 +7,7 @@
 use std::sync::{Arc, PoisonError, mpsc};
 
 use netdata_agent_evloop::work::on_worker;
-use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log_limit, uv_strerror};
+use netdata_agent_log::{ErrorLimit, Priority, Source, errno_of, nd_log_limit, uv_strerror};
 
 use super::cache::Batch;
 use super::io::write_retrying;
@@ -26,10 +26,6 @@ static LOST: ErrorLimit = ErrorLimit::new(10, 0);
 
 /// A page of a written extent, as it joins the open cache: metric, start, end, update every.
 type Written = ([u8; 16], i64, i64, u32);
-
-fn errno(err: &std::io::Error) -> i32 {
-    err.raw_os_error().unwrap_or(libc::EIO)
-}
 
 impl Dbengine {
     /// `pgc_flush_pages()` and its variants over the main cache: see `MainCache::flush_pages()`. Whether it stopped
@@ -155,12 +151,12 @@ impl Dbengine {
                 &ROTATING,
                 Source::Daemon,
                 Priority::Err,
-                errno = errno(err);
+                errno = errno_of(err);
                 "DBENGINE: tier {} datafile {} write failed ({}) - rotating to a new datafile and retrying the \
                  extent, to prevent data loss",
                 td.tier(),
                 df.fileno,
-                uv_strerror(errno(err))
+                uv_strerror(errno_of(err))
             );
             // `extent_move_to_new_datafile()`
             df.writer_finished();
@@ -176,7 +172,7 @@ impl Dbengine {
         };
         if let Err(err) = &result {
             // after a failed move C's pair creation records left no errno
-            let last_errno = if move_failed { 0 } else { errno(err) };
+            let last_errno = if move_failed { 0 } else { errno_of(err) };
             nd_log_limit!(
                 &LOST,
                 Source::Daemon,
@@ -185,7 +181,7 @@ impl Dbengine {
                 "DBENGINE: tier {} datafile {} write failed ({}) - the extent is lost",
                 td.tier(),
                 df.fileno,
-                uv_strerror(errno(err))
+                uv_strerror(errno_of(err))
             );
         }
         df.writer_flushing_to_open();
