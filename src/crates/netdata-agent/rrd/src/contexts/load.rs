@@ -91,6 +91,13 @@ pub struct Loader<'a> {
     metrics_zero_retention: usize,
 }
 
+impl Drop for Loader<'_> {
+    /// The load ended, finished or given up.
+    fn drop(&mut self) {
+        self.contexts.loading.store(false, Ordering::Release);
+    }
+}
+
 /// `string_strdupz()`: NULL and empty are both no string.
 fn non_empty(s: &Option<String>) -> Option<&str> {
     s.as_deref().filter(|s| !s.is_empty())
@@ -102,6 +109,7 @@ impl Contexts {
         if self.loaded.swap(true, Ordering::AcqRel) {
             return None;
         }
+        self.loading.store(true, Ordering::Release);
         Some(Loader {
             contexts: self,
             instances_ignored: 0,

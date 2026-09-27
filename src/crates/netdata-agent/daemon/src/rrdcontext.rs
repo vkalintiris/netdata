@@ -91,7 +91,7 @@ impl Worker {
                         if !running() {
                             break;
                         }
-                        host.contexts().worker_cycle();
+                        host.contexts().worker_cycle_while(&running);
                     }
                 }
                 netdata_agent_log::thread_finished();
@@ -134,8 +134,10 @@ mod tests {
         stop.request();
         assert!(thread.join().unwrap());
         assert!(started.elapsed() < Duration::from_secs(1));
+        let waited = std::time::Instant::now();
+        assert!(stop.wait(Duration::from_secs(10)));
         assert!(
-            stop.wait(Duration::from_secs(10)),
+            waited.elapsed() < Duration::from_secs(1),
             "a waiter returns at once"
         );
     }

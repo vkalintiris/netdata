@@ -51,9 +51,9 @@ impl DbRotation {
 /// The worker's check before its per-host loop: once the armed deadline passed at `now_ut`, every host's retention is
 /// recomputed (`rrdcontext_recalculate_retention_all_hosts()`), then every host's garbage collected
 /// (`rrdcontext_garbage_collect_for_all_hosts()`), each context the collection removes passed to `delete_from_sql`
-/// with its host and hub version; then the deadline is cleared. Hosts whose contexts are still loading are left out
-/// (D77.3). `running` false stops the pass between hosts and inside a collection, as C's service checks. Whether a
-/// pass ran.
+/// with its host and hub version; then the deadline is cleared. Hosts whose contexts wait for their load or are being
+/// loaded are left out (D77.3). `running` false stops the pass between hosts and contexts, as C's service checks.
+/// Whether a pass ran.
 pub fn deep_pass(
     hosts: &Hosts,
     now_ut: u64,
@@ -67,14 +67,14 @@ pub fn deep_pass(
     let loaded: Vec<Arc<Host>> = hosts
         .all()
         .into_iter()
-        .filter(|h| !h.is_pending_context_load())
+        .filter(|h| !h.is_pending_context_load() && !h.contexts().is_loading())
         .collect();
     for host in &loaded {
         if !running() {
             break;
         }
         host.contexts()
-            .recalculate_host_retention(flags::REASON_DB_ROTATION);
+            .recalculate_host_retention_while(flags::REASON_DB_ROTATION, running);
     }
     for host in &loaded {
         if !running() {

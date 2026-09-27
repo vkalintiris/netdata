@@ -356,4 +356,75 @@ mod tests {
             (1_789_980_541, 1_790_239_740)
         );
     }
+
+    /// A host of `mode` with a valid machine GUID.
+    fn host(mode: DbMode) -> Host {
+        Host::new(
+            "5a1e0000-0000-4000-8000-0000000000bb",
+            false,
+            HostInfo {
+                hostname: "child".into(),
+                registry_hostname: "child".into(),
+                os: "linux".into(),
+                timezone: String::new(),
+                abbrev_timezone: String::new(),
+                utc_offset: 0,
+                program_name: "netdata".into(),
+                program_version: "v0".into(),
+                update_every: 1,
+                db_mode: mode,
+                history_entries: 3600,
+                health_enabled: false,
+                system_info: Default::default(),
+                replication_enabled: false,
+                replication_period: 0,
+                replication_step: 0,
+                stream_send: None,
+                cache_dir: None,
+            },
+        )
+    }
+
+    /// `rrdcontext_delete_from_sql_unsafe()`: nothing for a host that is not dbengine; on a dbengine host the row goes
+    /// and the host's context cleanup is queued once the statement is prepared; without the database, C's records.
+    #[test]
+    fn a_collected_context_leaves_the_context_database_of_a_dbengine_host() {
+        let cleanups = std::cell::RefCell::new(Vec::new());
+        let cleanup =
+            |host_id: [u8; 16], context: String| cleanups.borrow_mut().push((host_id, context));
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(ContextDb::open(dir.path(), &SqliteSettings::default()).unwrap());
+        let ((), records) = netdata_agent_log::capture(|| {
+            delete_context(&host(DbMode::Ram), Some(&db), "c.ram", 7, &cleanup);
+        });
+        assert!(
+            records.is_empty() && cleanups.borrow().is_empty(),
+            "a ram host"
+        );
+        let dbengine = host(DbMode::Dbengine);
+        let host_id = meta_store::host_id(&dbengine).unwrap();
+        let ((), records) = netdata_agent_log::capture(|| {
+            delete_context(&dbengine, Some(&db), "c.gone", 7, &cleanup);
+        });
+        assert!(records.is_empty());
+        assert_eq!(*cleanups.borrow(), [(host_id, "c.gone".to_string())]);
+        let ((), records) = netdata_agent_log::capture(|| {
+            delete_context(&dbengine, None, "c.gone", 7, &cleanup);
+        });
+        assert_eq!(
+            records
+                .into_iter()
+                .filter_map(|r| r.message)
+                .collect::<Vec<_>>(),
+            [
+                "Failed to prepare statement, rc=21 in ctx_delete_context",
+                "RRDCONTEXT: failed to delete context 'c.gone' version 7 from SQL."
+            ]
+        );
+        assert_eq!(
+            cleanups.borrow().len(),
+            1,
+            "no cleanup without the database"
+        );
+    }
 }

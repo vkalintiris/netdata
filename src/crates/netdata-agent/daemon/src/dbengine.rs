@@ -22,6 +22,13 @@ use crate::metasync::now_realtime_s;
 use crate::rrdcontext::now_realtime_ut;
 use crate::system;
 
+/// `rrdcontext_db_rotation()` as the engine's rotation hook: each rotation arms the contexts' deep pass in `slot`,
+/// the one the storage layout holds (D75.6, D77).
+fn rotation_hook(slot: &Arc<DbRotation>) -> RotationHook {
+    let slot = Arc::clone(slot);
+    RotationHook(Arc::new(move || slot.rotated(now_realtime_ut())))
+}
+
 /// `rrd_init()`'s engine start: its record, the keys, then the tiers; and the tiers' grouping iterations
 /// (`storage_tiers_grouping_iterations`) and the backfill mode (`default_backfill`). C's fallbacks after it (one tier, alloc mode) cannot run in a dbengine
 /// build, where the start either brings a tier up or is fatal, so they are not ported.
@@ -96,11 +103,7 @@ pub fn start(
             update_every_s: db.update_every as u32,
             stack_size: conf.threads.thread_stack_size,
             timer_period: std::time::Duration::from_secs(1),
-            // rrdcontext_db_rotation(): each rotation arms the contexts' deep pass (D75.6, D77)
-            rotation: Some({
-                let db_rotation = Arc::clone(db_rotation);
-                RotationHook(Arc::new(move || db_rotation.rotated(now_realtime_ut())))
-            }),
+            rotation: Some(rotation_hook(db_rotation)),
             // localhost->db[tier].eng: a ram or alloc localhost keeps tier 0 out of the dbengine
             retention_tiers: (0..retention_tiers)
                 .map(|t| t > 0 || db.mode == DbMode::Dbengine)
@@ -111,4 +114,21 @@ pub fn start(
         now_realtime_s,
     );
     (runtime, settings.grouping_iterations, settings.backfill)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The hook arms the slot it was made from, 120 s past now, and counts the rotation.
+    #[test]
+    fn the_rotation_hook_arms_the_layouts_slot() {
+        let slot = Arc::new(DbRotation::default());
+        let hook = rotation_hook(&slot);
+        let before = now_realtime_ut();
+        (hook.0)();
+        assert_eq!(slot.rotations(), 1);
+        assert_eq!(slot.due(before + 119_000_000), None);
+        assert!(slot.due(now_realtime_ut() + 121_000_000).is_some());
+    }
 }

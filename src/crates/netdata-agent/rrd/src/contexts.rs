@@ -1366,6 +1366,8 @@ pub struct Contexts {
     storage: Arc<Storage>,
     /// The tree was loaded from SQL (or the load was started): it loads once.
     loaded: AtomicBool,
+    /// A load from SQL is building the tree (a [`Loader`] exists).
+    loading: AtomicBool,
 }
 
 impl Contexts {
@@ -1616,6 +1618,11 @@ impl Contexts {
         self.version.load(Ordering::Relaxed)
     }
 
+    /// Whether a load from SQL is building the tree: its instances may still wait for their dimension rows.
+    pub fn is_loading(&self) -> bool {
+        self.loading.load(Ordering::Acquire)
+    }
+
     /// `rrdcontext_host_child_disconnected()`: the worker recomputes every retention on its next cycle.
     pub fn child_disconnected(&self) {
         self.get_retention.store(true, Ordering::Release);
@@ -1623,18 +1630,27 @@ impl Contexts {
 
     /// One host's share of a worker cycle (`rrdcontext_main()`): the retention after a disconnect, then the queue.
     pub fn worker_cycle(&self) {
+        self.worker_cycle_while(&|| true);
+    }
+
+    /// [`Contexts::worker_cycle`] that `running` false stops between contexts, as the worker's service checks.
+    pub fn worker_cycle_while(&self, running: &dyn Fn() -> bool) {
         if self.get_retention.load(Ordering::Acquire) {
-            self.recalculate_host_retention(flags::REASON_DISCONNECTED_CHILD);
+            self.recalculate_host_retention_while(flags::REASON_DISCONNECTED_CHILD, running);
             self.get_retention.store(false, Ordering::Release);
         }
-        self.process_queued();
+        self.process_queued_while(running);
     }
 
     /// `rrdcontext_post_process_queued_contexts()`: every queued context in queue order, including those queued
     /// while the pass runs.
     pub fn process_queued(&self) {
+        self.process_queued_while(&|| true);
+    }
+
+    fn process_queued_while(&self, running: &dyn Fn() -> bool) {
         let mut after = 0;
-        loop {
+        while running() {
             let rc = {
                 let mut q = lock(&self.queue.inner);
                 let Some((&idx, rc)) = q.by_idx.range(after + 1..).next() else {
@@ -1651,8 +1667,16 @@ impl Contexts {
 
     /// `rrdcontext_recalculate_host_retention()`: every context, forced; the host's retention is replaced.
     pub fn recalculate_host_retention(&self, reason: u32) {
+        self.recalculate_host_retention_while(reason, &|| true);
+    }
+
+    /// [`Contexts::recalculate_host_retention`] that `running` false stops between contexts.
+    pub fn recalculate_host_retention_while(&self, reason: u32, running: &dyn Fn() -> bool) {
         let (mut first, mut last) = (0, 0);
         for rc in self.all() {
+            if !running() {
+                break;
+            }
             recalculate_context_retention(&rc, reason);
             let state = lock(&rc.state);
             if first == 0 || (state.first_time_s != 0 && state.first_time_s < first) {

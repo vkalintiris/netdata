@@ -21,12 +21,12 @@ impl TierRetention for Tier {
 }
 
 /// `host` loaded from SQL with contexts `ctx.a` (chart `t.a`, metric UUID 10) and `ctx.b` (chart `t.b`, metric UUID
-/// 20), both with retention in `tier`.
+/// 20, the wider retention), both with retention in `tier`.
 fn load(host: &Host, tier: &Arc<Tier>) {
     tier.0
         .lock()
         .unwrap()
-        .extend([([10; 16], (T, T + 100)), ([20; 16], (T, T + 100))]);
+        .extend([([10; 16], (T, T + 100)), ([20; 16], (T - 50, T + 150))]);
     host.contexts().set_tiers(vec![Arc::clone(tier) as _]);
     let mut loader = host.contexts().loader().unwrap();
     loader.chart(&sql_chart(1, "t.a", "ctx.a"));
@@ -70,8 +70,8 @@ fn rotations_arm_the_deadline_and_passes_clear_it() {
 }
 
 /// Once due, every loaded host's retention is recomputed and its garbage collected: a context whose metrics lost
-/// their retention goes, through the SQL delete with its host; a host still loading its contexts is left out; the
-/// deadline is cleared.
+/// their retention goes, through the SQL delete with its host and hub version, and the host's retention narrows;
+/// hosts waiting for their load or being loaded are left out; the deadline is cleared.
 #[test]
 fn a_due_pass_recomputes_and_collects_every_loaded_host() {
     let storage = Arc::new(StorageLayout::default());
@@ -83,6 +83,21 @@ fn a_due_pass_recomputes_and_collects_every_loaded_host() {
     load(hosts.localhost(), &tier);
     let pending = hosts.add_archived("guid-p", info("p"), |_| {});
     load(&pending, &tier);
+    // a host whose load is under way: a chart read, its dimension not yet
+    let loading = hosts.add_archived("guid-g", info("g"), |_| {});
+    loading.clear_pending_context_load();
+    loading.contexts().set_tiers(vec![Arc::clone(&tier) as _]);
+    let mut loader = loading.contexts().loader().unwrap();
+    loader.chart(&sql_chart(3, "t.c", "ctx.c"));
+    assert_eq!(hosts.localhost().contexts().retention(), (T - 50, T + 150));
+    let version = hosts
+        .localhost()
+        .contexts()
+        .get("ctx.b")
+        .unwrap()
+        .state()
+        .hub
+        .version;
     let mut deleted = Vec::new();
     let running = || true;
     assert!(
@@ -106,16 +121,20 @@ fn a_due_pass_recomputes_and_collects_every_loaded_host() {
         |host, id, version| deleted.push((host.hostname(), id.to_string(), version))
     ));
     assert_eq!(contexts_of(hosts.localhost()), ["ctx.a"]);
-    assert_eq!(deleted.len(), 1);
-    assert_eq!(
-        (deleted[0].0.as_str(), deleted[0].1.as_str()),
-        ("l", "ctx.b")
-    );
+    assert_eq!(deleted, [("l".to_string(), "ctx.b".to_string(), version)]);
     assert_eq!(
         contexts_of(&pending),
         ["ctx.a", "ctx.b"],
-        "a host whose contexts are loading is left out"
+        "a host waiting for its load is left out"
     );
+    assert_eq!(
+        contexts_of(&loading),
+        ["ctx.c"],
+        "a host whose contexts are being loaded is left out"
+    );
+    assert!(loading.contexts().is_loading());
+    drop(loader);
+    assert!(!loading.contexts().is_loading());
     assert_eq!(hosts.localhost().contexts().retention(), (T, T + 100));
     assert_eq!(storage.db_rotation().due(u64::MAX), None);
 }
