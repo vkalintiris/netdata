@@ -46,16 +46,12 @@ var portedRecords = regexp.MustCompile(`msg="ACLK: (proxy is|using |proxy is exp
 
 // timedRecords depend on when a run stops rather than on what it did: the metadata writer's periodic job (from 6 s
 // after METASYNC starts) and the per-host lines of its final store, whose hosts are the ones changed since the last
-// job (C's localhost has pulse charts, D48.6). Both sides drop them; a check whose state is fixed compares them (D61.6).
+// job (localhost's pulse charts change every second). Both sides drop them; a check whose state is fixed compares
+// them (D61.6).
 // The dbengine population's progress lines race its workers, so they drop too, as do the shutdown flush's progress
 // and the tier shutdown's wait, which depend on the extents in flight (D68.7.3), and the indexer meeting an extent
 // still being written.
 var timedRecords = regexp.MustCompile(`msg="Checking all hosts completed in |msg="METADATA: Progress of metadata storage: +[0-9.]+% completed"|msg="DBENGINE: tier \d+: MRG population completed: |msg="DBENGINE: flushing at |msg="DBENGINE: waiting for \d+ inflight queries to finish|needs to be indexed, but it has writers working on it`)
-
-// pulseRecords are the shutdown flush's records (N4, D68.7.1): pulse charts leave pages to flush, C's always, the
-// candidate's once its PULSE thread stored (P1). Both sides drop them unless the run turns pulse off, where only the
-// children's pages are left to flush and they compare; P1 commit 4 compares them in pulse-on runs too.
-var pulseRecords = regexp.MustCompile(`msg="Flushing DBENGINE (only|hot &) dirty pages\.\.\."|msg="DBENGINE: flushing completed!"`)
 
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
 var cOnlyThreads = map[string]string{
@@ -229,9 +225,6 @@ next:
 			continue
 		}
 		if timedRecords.MatchString(l) {
-			continue
-		}
-		if !d.Opts.PulseOff && pulseRecords.MatchString(l) {
 			continue
 		}
 		th := threadOf(l)

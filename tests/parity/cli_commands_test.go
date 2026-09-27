@@ -325,6 +325,31 @@ func TestCLICommands(t *testing.T) {
 	compareArchived(t, restarted)
 }
 
+// waitPulseStored waits until localhost's pulse charts stored a point (their second cycle): from then on an exit has
+// dirty pages to flush on both sides, and the flush's records compare.
+func waitPulseStored(t *testing.T, d *daemon.Daemon) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		// a connection of its own per poll, tagged, which the log checks leave out (probeRe)
+		req := "GET /api/v1/charts?harness=wait HTTP/1.1\r\nConnection: close\r\n\r\n"
+		if b, err := rawExchange(d.Addr, []byte(req), 10*time.Second); err == nil {
+			var doc struct {
+				Charts map[string]struct {
+					LastEntry int64 `json:"last_entry"`
+				} `json:"charts"`
+			}
+			if json.Unmarshal(httpBody(b), &doc) == nil && doc.Charts["netdata.uptime"].LastEntry > 0 {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: localhost's pulse charts stored nothing", d.Opts.Binary)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // TestCLILifecycle compares the command server's ways out: `shutdown-agent` (the exit runs on its thread),
 // `fatal-agent` (an abnormal exit from a command) and a pipe that cannot be bound (no server; SIGHUP and SIGUSR2 then
 // do nothing but log). Each compares what the client and the daemon exit with, whether the socket file is gone, and
@@ -332,6 +357,9 @@ func TestCLICommands(t *testing.T) {
 func TestCLILifecycle(t *testing.T) {
 	opts := daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1, LogsExtra: "    level = debug\n"}
 	exit := func(t *testing.T, p *Pair, command string) {
+		for _, side := range p.Each() {
+			waitPulseStored(t, side.Daemon)
+		}
 		var got [2]string
 		for i, side := range p.Each() {
 			r := runCLI(t, side.Daemon, command)
@@ -355,6 +383,9 @@ func TestCLILifecycle(t *testing.T) {
 		o := opts
 		o.PipeName = "{run}/missing/netdata.pipe"
 		p := StartPair(t, o, parentIdentity)
+		for _, side := range p.Each() {
+			waitPulseStored(t, side.Daemon)
+		}
 		for _, side := range p.Each() {
 			if r := runCLI(t, side.Daemon, "ping"); r.Exit != 255 {
 				t.Errorf("%s: ping %+v", side.Role, r)
