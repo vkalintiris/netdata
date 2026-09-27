@@ -43,9 +43,11 @@ pub const STEPS: [&str; 22] = [
 /// The steps the Rust agent has work in (indices into [`STEPS`]).
 pub const STOP_WEB_SERVERS: usize = 3;
 pub const STOP_STREAMING: usize = 5;
+pub const STOP_REPLICATION: usize = 6;
 pub const STOP_CONTEXT: usize = 8;
 pub const CANCEL_MAIN_THREADS: usize = 13;
 pub const STOP_COLLECTION: usize = 14;
+pub const WAIT_DBENGINE_COLLECTORS: usize = 15;
 pub const STOP_DBENGINE_TIERS: usize = 16;
 pub const STOP_METASYNC_THREADS: usize = 17;
 pub const JOIN_STATIC_THREADS: usize = 18;
@@ -253,5 +255,18 @@ pub fn cleanup_and_exit(reason: &str, normal: bool, mut work: impl FnMut(usize, 
     if let Some(w) = watcher {
         w.update(|s| s.ended = true);
         let _ = w.thread.join();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The steps the Rust agent works in name C's steps.
+    #[test]
+    fn step_indices_name_cs_steps() {
+        assert_eq!(STEPS[STOP_REPLICATION], "stop replication threads");
+        assert_eq!(STEPS[WAIT_DBENGINE_COLLECTORS], "wait for dbengine collectors to finish");
+        assert_eq!(STEPS[STOP_DBENGINE_TIERS], "stop dbengine tiers");
     }
 }

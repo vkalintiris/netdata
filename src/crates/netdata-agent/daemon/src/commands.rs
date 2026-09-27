@@ -505,15 +505,15 @@ fn remove_ephemeral_host(out: &mut Vec<u8>, host: &Host, report: bool, unregiste
         }
         host.set_node_id([0; 16]);
         out.extend(name("has been unregistered"));
-        // rrdhost_free___consume_metadata_lifetime_writelock(): the freed dimensions of ram, alloc and none charts
-        // leave no data behind
+        // rrdhost_free___consume_metadata_lifetime_writelock(): each dimension's collection ends; one that leaves no
+        // data behind loses its metadata row
         if let Some(freed) = write.as_deref_mut() {
             *freed = true;
         }
         ctx.shared.hosts.remove(host.machine_guid());
         for chart in host.charts().all() {
-            if matches!(chart.mode(), DbMode::Ram | DbMode::Alloc | DbMode::None) {
-                for dim in chart.dims() {
+            for dim in chart.dims() {
+                if freed_dimension_deletes(chart.mode(), dim.finalize_collection()) {
                     ctx.metaqueue.delete_dimension(*dim.uuid());
                 }
             }
@@ -736,10 +736,31 @@ fn write_config(args: &[u8]) -> (Status, Option<Vec<u8>>) {
     (SUCCESS, None)
 }
 
+/// `rrddim_delete_callback()`'s row deletion: a dbengine dimension without retention, or any dimension of the
+/// other modes.
+fn freed_dimension_deletes(mode: DbMode, has_retention: bool) -> bool {
+    (mode == DbMode::Dbengine && !has_retention)
+        || matches!(mode, DbMode::Ram | DbMode::Alloc | DbMode::None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// `rrddim_delete_callback()`: a dbengine row goes only without retention; the other modes' rows always go.
+    #[test]
+    fn freed_dimensions_delete_their_rows_as_c() {
+        for (mode, has_retention, deletes) in [
+            (DbMode::Dbengine, true, false),
+            (DbMode::Dbengine, false, true),
+            (DbMode::Ram, true, true),
+            (DbMode::Alloc, false, true),
+            (DbMode::None, true, true),
+        ] {
+            assert_eq!(freed_dimension_deletes(mode, has_retention), deletes, "{mode:?} {has_retention}");
+        }
+    }
 
     /// Request, and the command and arguments it parses to.
     type ParseCase = (Vec<u8>, Option<(usize, &'static [u8])>);

@@ -612,14 +612,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         Arc::clone(&hosts),
         stream_load,
         receiver::Defaults {
-            // children stay in alloc memory until the dbengine write path (D62.2)
-            db_mode: if db.mode == DbMode::Dbengine {
-                DbMode::Alloc
-            } else {
-                db.mode
-            }
-            .name()
-            .to_string(),
+            db_mode: db.mode.name().to_string(),
             history: db.history_entries,
             health_enabled,
             update_every: db.update_every,
@@ -747,11 +740,18 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let mut dbengine = dbengine;
     let mut shutdown_started_ut = 0;
     shutdown::set_work(Box::new(move |step, normal| match step {
-        // rrdeng_quiesce_all() as the watcher starts, unless the exit is abnormal
+        // rrdeng_quiesce_all() and a first flush of the dirty pages as the watcher starts, unless the exit is abnormal
         0 => {
             shutdown_started_ut = startup::now_ut();
             if let (Some(dbengine), true) = (&dbengine, normal) {
                 dbengine.quiesce();
+                dbengine.flush_everything(false, false, true);
+            }
+        }
+        // the dirty pages again once the collectors and streams stopped
+        shutdown::STOP_REPLICATION if normal => {
+            if let Some(dbengine) = &dbengine {
+                dbengine.flush_everything(false, false, true);
             }
         }
         shutdown::STOP_WEB_SERVERS => {
@@ -773,6 +773,12 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         shutdown::STOP_COLLECTION if normal => {
             for host in hosts.all() {
                 host.finalize_collection();
+            }
+        }
+        // everything, hot pages too, once the collectors finished
+        shutdown::WAIT_DBENGINE_COLLECTORS if normal => {
+            if let Some(dbengine) = &dbengine {
+                dbengine.flush_everything(true, true, false);
             }
         }
         shutdown::STOP_DBENGINE_TIERS => {

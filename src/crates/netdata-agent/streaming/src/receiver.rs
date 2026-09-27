@@ -475,10 +475,17 @@ impl Receivers {
             };
             conf.receiver_config(&key, &guid, &defaults)
         };
-        // A child asking for dbengine gets the default until the dbengine write path (D62.2).
-        let mut mode = DbMode::from_name(&config.db_mode);
-        if mode == DbMode::Dbengine {
-            mode = DbMode::from_name(&self.defaults.db_mode);
+        let dbengine = self.hosts.storage().dbengine().is_some();
+        let (mode, fallback) = receiver_mode(&config.db_mode, &self.defaults.db_mode, dbengine);
+        if fallback {
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "STREAM RCV '{}' [from [{}]:{}]: dbengine is not enabled, falling back to default.",
+                peer.hostname.as_deref().unwrap_or(""),
+                peer.ip,
+                peer.port
+            );
         }
         let update_every = if config.update_every <= 0 {
             1
@@ -1316,11 +1323,37 @@ impl Worker for StreamWorker {
     }
 }
 
+/// `stream_conf_receiver_config()`'s memory mode: a child configured for dbengine gets the default when the dbengine
+/// does not run, which C logs (N7); whether it fell back.
+fn receiver_mode(configured: &str, default: &str, dbengine: bool) -> (DbMode, bool) {
+    let mode = DbMode::from_name(configured);
+    if mode == DbMode::Dbengine && !dbengine {
+        return (DbMode::from_name(default), true);
+    }
+    (mode, false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use netdata_agent_rrd::host::HostInfo;
     use std::os::fd::AsFd;
+
+    /// A child configured for dbengine falls back to the default only when the dbengine does not run; other names
+    /// are C's modes (an unknown one is ram).
+    #[test]
+    fn dbengine_children_fall_back_only_without_the_engine() {
+        let cases = [
+            ("dbengine", "ram", false, (DbMode::Ram, true)),
+            ("dbengine", "alloc", false, (DbMode::Alloc, true)),
+            ("dbengine", "dbengine", true, (DbMode::Dbengine, false)),
+            ("ram", "dbengine", true, (DbMode::Ram, false)),
+            ("bogus", "dbengine", true, (DbMode::Ram, false)),
+        ];
+        for (configured, default, dbengine, want) in cases {
+            assert_eq!(receiver_mode(configured, default, dbengine), want, "{configured}");
+        }
+    }
 
     fn host() -> Host {
         Host::new(
