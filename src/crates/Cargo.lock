@@ -3113,6 +3113,7 @@ dependencies = [
  "netdata-agent-log",
  "netdata-agent-sys",
  "netdata-agent-text",
+ "nix",
  "serde_json",
  "tempfile",
  "twox-hash",

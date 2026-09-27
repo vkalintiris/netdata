@@ -15,6 +15,7 @@ netdata-agent-evloop = { workspace = true }
 netdata-agent-log = { workspace = true }
 netdata-agent-sys = { workspace = true }
 netdata-agent-text = { workspace = true }
+nix = { workspace = true, features = ["fs"] }
 lz4_flex = { workspace = true }
 serde_json = { workspace = true }
 twox-hash = { workspace = true, features = ["xxhash3_64"] }

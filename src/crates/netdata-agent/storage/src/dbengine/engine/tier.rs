@@ -24,6 +24,40 @@ fn indexing_pause() {
     std::thread::sleep(std::time::Duration::from_millis(200));
 }
 
+/// `rrdeng_atomic_uint64_sub_saturating()`: `value` taken from a tier's `counter`. An underflow is recorded, rate
+/// limited by `limit` (C's static of the calling file), and leaves 0.
+pub(crate) fn sub_saturating(
+    counter: &AtomicU64,
+    value: u64,
+    tier: usize,
+    name: &str,
+    reason: &str,
+    limit: &ErrorLimit,
+) {
+    if value == 0 {
+        return;
+    }
+    let mut old = counter.load(Ordering::Relaxed);
+    loop {
+        let new = if old < value {
+            nd_log_limit!(
+                limit,
+                Source::Daemon,
+                Priority::Err,
+                "DBENGINE: tier {tier}: {name} counter underflow while {reason} (current={old}, subtract={value}); \
+                 saturating to zero"
+            );
+            0
+        } else {
+            old - value
+        };
+        match counter.compare_exchange(old, new, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(now) => old = now,
+        }
+    }
+}
+
 /// A page the open cache holds: a page of a journal not indexed yet (replayed, or written by this run).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OpenPage {
@@ -844,45 +878,45 @@ impl TierData {
         self.samples.fetch_add(samples, Ordering::Relaxed);
     }
 
-    /// `rrdeng_atomic_uint64_sub_saturating()` of the samples: an underflow is recorded (at most once a minute) and
-    /// leaves 0.
+    /// `rrdeng_atomic_uint64_sub_saturating()` of the samples.
     pub(crate) fn sub_samples_saturating(&self, value: u64, reason: &str) {
         static UNDERFLOW: ErrorLimit = ErrorLimit::new(60, 0);
-        if value == 0 {
-            return;
+        sub_saturating(
+            &self.samples,
+            value,
+            self.tier(),
+            "samples",
+            reason,
+            &UNDERFLOW,
+        );
+    }
+
+    /// `rrdeng_global_first_time_s()`: the tier's oldest time, 0 while unknown.
+    pub fn global_first_time_s(&self) -> i64 {
+        match self.first_time_s() {
+            i64::MAX => 0,
+            t if t < 0 => 0,
+            t => t,
         }
-        let mut old = self.samples.load(Ordering::Relaxed);
-        loop {
-            if old < value {
-                nd_log_limit!(
-                    &UNDERFLOW,
-                    Source::Daemon,
-                    Priority::Err,
-                    "DBENGINE: tier {}: samples counter underflow while {reason} (current={old}, subtract={value}); \
-                     saturating to zero",
-                    self.tier()
-                );
-                match self
-                    .samples
-                    .compare_exchange(old, 0, Ordering::Relaxed, Ordering::Relaxed)
-                {
-                    Ok(_) => return,
-                    Err(now) => {
-                        old = now;
-                        continue;
-                    }
-                }
-            }
-            match self.samples.compare_exchange(
-                old,
-                old - value,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return,
-                Err(now) => old = now,
-            }
-        }
+    }
+
+    /// `rrdeng_get_directory_free_bytes_space()`: the bytes of the tier's filesystem free to unprivileged users, less
+    /// 5%; 0 when the filesystem cannot be read.
+    // `fsblkcnt_t` and `c_ulong` are 32-bit on the armv7l and i386 targets, where the conversions are not no-ops.
+    #[allow(clippy::useless_conversion)]
+    pub fn directory_free_bytes(&self) -> u64 {
+        let free = nix::sys::statvfs::statvfs(&self.config.path)
+            .ok()
+            .map(|s| {
+                let fragment = u64::from(s.fragment_size());
+                (
+                    u64::from(s.blocks()).saturating_mul(fragment),
+                    u64::from(s.blocks_available()).saturating_mul(fragment),
+                )
+            })
+            .filter(|(total, _)| *total > 0)
+            .map_or(0, |(_, free)| free);
+        free - free * 5 / 100
     }
 
     /// `RRDENG_OPCODE_CTX_QUIESCE`: queries started from now on read nothing, and written extents no longer reach

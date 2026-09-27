@@ -28,6 +28,7 @@ fn a_metric_is_added_once_per_tier() {
     assert!(added && !std::ptr::eq(&*m1, &*t1));
     assert!(mrg.get_and_acquire(&B, 0).is_none());
     assert_eq!(mrg.entries(), 2);
+    assert_eq!((mrg.metrics(0), mrg.metrics(1), mrg.metrics(2)), (1, 1, 0));
 }
 
 /// `metric_release()`: the last holder of a metric without retention removes it; one with retention stays with no
@@ -51,6 +52,9 @@ fn releases_remove_metrics_without_retention() {
     // first after last is no retention
     let (inverted, _) = mrg.add_and_acquire(&B, 2, 300, 200, 1);
     assert!(inverted.release());
+    // each tier counts its own adds and deletions
+    assert_eq!((mrg.metrics(0), mrg.metrics(1), mrg.metrics(2)), (1, 0, 0));
+    assert_eq!(mrg.metrics(RRD_STORAGE_TIERS), 0);
 }
 
 /// The setters' conditions (`mrg_metric_expand_retention()`, `set_clean_latest_time_s()`, the first time's smart

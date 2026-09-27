@@ -8,11 +8,13 @@
 //! [`Handle`] is another. C's writer counters exist only in its internal-checks builds, so they never keep a metric.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log, nd_log_limit};
 
+use super::tier::sub_saturating;
+use crate::dbengine::RRD_STORAGE_TIERS;
 use crate::dbengine::format::descriptor::ValidatedPage;
 use crate::dbengine::format::journal_v2::{UeSource, expand};
 
@@ -269,6 +271,9 @@ struct Inner {
     partitions: [Mutex<Partition>; PARTITIONS],
     /// `acquired_metrics`: what the pre-population keeps acquired until "mrg cleanup".
     prepopulated: Mutex<Vec<Arc<Metric>>>,
+    /// `ctx->atomic.metrics` of each tier: its metrics in the registry (`MRG_STATS_ADDED_METRIC()`,
+    /// `MRG_STATS_DELETED_METRIC()`).
+    metrics: [AtomicU64; RRD_STORAGE_TIERS],
 }
 
 /// The registry (`MRG`); clones share it.
@@ -369,6 +374,18 @@ impl Mrg {
         // the map's reference and `held`
         if Arc::strong_count(&held) == 2 && !held.has_retention() {
             partition.remove(&key);
+            drop(partition);
+            if let Some(count) = self.0.metrics.get(key.1) {
+                static UNDERFLOW: ErrorLimit = ErrorLimit::new(60, 0);
+                sub_saturating(
+                    count,
+                    1,
+                    key.1,
+                    "metrics",
+                    "deleting an MRG metric",
+                    &UNDERFLOW,
+                );
+            }
             return true;
         }
         false
@@ -399,6 +416,9 @@ impl Mrg {
         ));
         partition.insert((*uuid, tier), Arc::clone(&metric));
         drop(partition);
+        if let Some(count) = self.0.metrics.get(tier) {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
         (self.handle(metric), true)
     }
 
@@ -412,6 +432,14 @@ impl Mrg {
     /// lookup releases what it acquired, so a metric without retention that nobody else holds goes, as in C.
     pub fn retention_by_uuid(&self, uuid: &[u8; 16], tier: usize) -> Option<Retention> {
         self.get_and_acquire(uuid, tier).map(|h| h.retention())
+    }
+
+    /// `rrdeng_metrics()`: the metrics of `tier` in the registry.
+    pub fn metrics(&self, tier: usize) -> u64 {
+        self.0
+            .metrics
+            .get(tier)
+            .map_or(0, |count| count.load(Ordering::Relaxed))
     }
 
     /// The number of metrics held (`mrg_get_statistics().entries`).
