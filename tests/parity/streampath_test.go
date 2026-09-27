@@ -81,8 +81,8 @@ func compareStreamPath(t *testing.T, name string, addrs [2]string, path string, 
 }
 
 // streamPathRequests are the requests of check `stream.cchild-path-api` for a child named `child` with machine GUID
-// `guid` (spec `knowledge/spec-stream-path-api.md` §5.1). Context and window filters are scoped to the child: the
-// candidate's localhost has only part of C's pulse contexts until pulse P1 ends (D51 point 5, lifted in its commit 4).
+// `guid` (spec `knowledge/spec-stream-path-api.md` §5.1). Context and window filters run on every node (localhost
+// kept or dropped by its pulse contexts and retention) and scoped to the child.
 func streamPathRequests(child, guid string) []string {
 	return []string{
 		"/api/v3/stream_path",
@@ -100,6 +100,10 @@ func streamPathRequests(child, guid string) []string {
 		"/api/v3/stream_path?scope_nodes=parity-parent",
 		"/api/v3/stream_path?nodes=nomatch&nodes=" + child,
 		"/api/v3/stream_path?nodes=parity-parent%26nodes%3Dnomatch",
+		"/api/v3/stream_path?contexts=nomatch",
+		"/api/v3/stream_path?scope_contexts=nomatch",
+		"/api/v3/stream_path?scope_contexts=netdata.*",
+		"/api/v3/stream_path?after=1000000000&before=1000000100",
 		"/api/v3/stream_path?nodes=" + child + "&contexts=nomatch",
 		"/api/v3/stream_path?nodes=" + child + "&scope_contexts=nomatch",
 		"/api/v3/stream_path?nodes=" + child + "&scope_contexts=netdata.*",

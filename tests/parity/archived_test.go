@@ -24,8 +24,14 @@ import (
 // C-written netdata-meta.db that knows the child, and the dbengine files.
 func seedFromOracle(t *testing.T, id daemon.Identity, childMode string) string {
 	t.Helper()
+	return seedFrom(t, os.Getenv("PARITY_ORACLE"), id, childMode)
+}
+
+// seedFrom is seedFromOracle with the agent binary given.
+func seedFrom(t *testing.T, binary string, id daemon.Identity, childMode string) string {
+	t.Helper()
 	d, err := daemon.Start(daemon.Options{
-		Binary:           os.Getenv("PARITY_ORACLE"),
+		Binary:           binary,
 		RunDir:           runDir(t, Role("seed")),
 		Identity:         &id,
 		StorageTiers:     1,
@@ -172,12 +178,25 @@ func TestArchivedHosts(t *testing.T) {
 		}
 		compareLogFiles(t, p, "daemon.log")
 	})
+	// a new name too, so that the old localhost's name means only the archived host
+	changed := parentIdentity
+	changed.Hostname = "parity-newparent"
+	changed.MachineGUID = "5a1e0000-0000-4000-8000-0000000000ab"
 	t.Run("guid-change", func(t *testing.T) {
-		// a new name too, so that the old localhost's name means only the archived host
-		id := parentIdentity
-		id.Hostname = "parity-newparent"
-		id.MachineGUID = "5a1e0000-0000-4000-8000-0000000000ab"
-		compareArchived(t, StartPair(t, opts, id), childHost.Hostname, parentIdentity.Hostname)
+		compareArchived(t, StartPair(t, opts, changed), childHost.Hostname, parentIdentity.Hostname)
+	})
+	// the same after a Rust-only run: its localhost's pulse charts keep the old localhost through C's startup
+	// cleanup, as C's do (D61.7)
+	t.Run("guid-change-rust-seed", func(t *testing.T) {
+		o := opts
+		o.SeedCache = seedFrom(t, os.Getenv("PARITY_CANDIDATE"), parentIdentity, "ram")
+		p := StartPair(t, o, changed)
+		compareArchived(t, p, childHost.Hostname, parentIdentity.Hostname)
+		for _, side := range p.Each() {
+			if view := archivedHostsView(t, side.Daemon); !strings.Contains(view, parentIdentity.Hostname) {
+				t.Errorf("%s: the old localhost is not an archived host: %s", side.Role, view)
+			}
+		}
 	})
 	for _, mode := range []string{"alloc", "ram"} {
 		t.Run("reconnect-"+mode, func(t *testing.T) {
