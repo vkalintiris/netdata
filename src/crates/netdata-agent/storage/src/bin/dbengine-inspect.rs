@@ -1,14 +1,16 @@
-//! `dbengine-inspect [--json|--totals|--rebuild-v2|--dump <uuid>] <cache-dir|tier-dir>...`: reads dbengine files
-//! and reports what they hold (`netdata_agent_storage::dbengine::format::inspect`). The exit status is 1 when a check
-//! fails (the extents' zero padding excepted) or a rebuilt v2 file differs, 2 on a usage or I/O error.
+//! `dbengine-inspect [--json|--totals|--rebuild-v2|--dump <uuid>] [--normalize-v2] <cache-dir|tier-dir>...`: reads
+//! dbengine files and reports what they hold (`netdata_agent_storage::dbengine::format::inspect`). The exit status is 1
+//! when a check fails (the extents' zero padding excepted) or a rebuilt v2 file differs, 2 on a usage or I/O error.
+//! `--normalize-v2` (with the summary or `--rebuild-v2`) compares the v2 files through `inspect::normalize_v2()`, so a
+//! runtime-built v2 matches its startup rebuild (D67.7).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use netdata_agent_storage::dbengine::format::inspect;
 
-const USAGE: &str =
-    "usage: dbengine-inspect [--json|--totals|--rebuild-v2|--dump <uuid>] <cache-dir|tier-dir>...";
+const USAGE: &str = "usage: dbengine-inspect [--json|--totals|--rebuild-v2|--dump <uuid>] [--normalize-v2] \
+                     <cache-dir|tier-dir>...";
 
 enum Mode {
     Summary,
@@ -30,7 +32,7 @@ fn parse_uuid(s: &str) -> Option<[u8; 16]> {
     Some(out)
 }
 
-fn run(mode: &Mode, dir: &Path) -> std::io::Result<bool> {
+fn run(mode: &Mode, normalize: bool, dir: &Path) -> std::io::Result<bool> {
     let mut ok = true;
     match mode {
         Mode::Json => {
@@ -47,7 +49,7 @@ fn run(mode: &Mode, dir: &Path) -> std::io::Result<bool> {
         Mode::Totals => println!("{:#}", inspect::cache_totals(dir)?),
         Mode::RebuildV2 => {
             for (_, tier) in inspect::tier_dirs(dir) {
-                for r in inspect::rebuild_v2(&tier)? {
+                for r in inspect::rebuild_v2(&tier, normalize)? {
                     ok &= r.identical();
                     println!("{}", r.line());
                 }
@@ -64,7 +66,7 @@ fn run(mode: &Mode, dir: &Path) -> std::io::Result<bool> {
         Mode::Summary => {
             for (t, tier) in inspect::tier_dirs(dir) {
                 let report = inspect::tier_report(&tier)?;
-                let rebuilds = inspect::rebuild_v2(&tier)?;
+                let rebuilds = inspect::rebuild_v2(&tier, normalize)?;
                 println!("{}", tier.display());
                 for f in report["files"]
                     .as_array()
@@ -89,12 +91,14 @@ fn run(mode: &Mode, dir: &Path) -> std::io::Result<bool> {
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let mut mode = Mode::Summary;
+    let mut normalize = false;
     let mut dirs = Vec::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--json" => mode = Mode::Json,
             "--totals" => mode = Mode::Totals,
             "--rebuild-v2" => mode = Mode::RebuildV2,
+            "--normalize-v2" => normalize = true,
             "--dump" => match args.next().as_deref().and_then(parse_uuid) {
                 Some(uuid) => mode = Mode::Dump(uuid),
                 None => {
@@ -113,13 +117,13 @@ fn main() -> ExitCode {
             _ => dirs.push(PathBuf::from(arg)),
         }
     }
-    if dirs.is_empty() {
+    if dirs.is_empty() || normalize && !matches!(mode, Mode::Summary | Mode::RebuildV2) {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     }
     let mut ok = true;
     for dir in &dirs {
-        match run(&mode, dir) {
+        match run(&mode, normalize, dir) {
             Ok(dir_ok) => ok &= dir_ok,
             Err(e) => {
                 eprintln!("dbengine-inspect: {}: {e}", dir.display());

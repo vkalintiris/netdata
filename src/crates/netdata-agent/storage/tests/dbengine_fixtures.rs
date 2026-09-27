@@ -456,4 +456,15 @@ fn runtime_v2_files_are_cs() {
             journal_v2::from_v1(&replay, njf.len() as u64, 0, &mut Retention::default()).unwrap();
         assert!(rebuilt == startup, "file {fileno}: the startup build");
     }
+    // the inspector's view: C's runtime file 1 differs from its rebuild unless normalized
+    let tier = obs.join("runA/cache/dbengine");
+    let identical = |normalize| -> Vec<bool> {
+        inspect::rebuild_v2(&tier, normalize)
+            .unwrap()
+            .iter()
+            .map(inspect::Rebuild::identical)
+            .collect()
+    };
+    assert_eq!(identical(false), [false, true]);
+    assert_eq!(identical(true), [true, true]);
 }

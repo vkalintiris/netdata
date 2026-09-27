@@ -671,8 +671,9 @@ impl Rebuild {
     }
 }
 
-/// The rebuild of every v2 file of a tier: the startup rebuild with no known metrics and no future check.
-pub fn rebuild_v2(dir: &Path) -> io::Result<Vec<Rebuild>> {
+/// The rebuild of every v2 file of a tier: the startup rebuild with no known metrics and no future check; with
+/// `normalize` both files are compared through `normalize_v2()` (a runtime v2 against its startup rebuild).
+pub fn rebuild_v2(dir: &Path, normalize: bool) -> io::Result<Vec<Rebuild>> {
     let mut out = Vec::new();
     for tf in tier_files(dir)? {
         if !tf.njfv2.exists() {
@@ -680,9 +681,12 @@ pub fn rebuild_v2(dir: &Path) -> io::Result<Vec<Rebuild>> {
         }
         let j = fs::read(&tf.njf)?;
         let replay = journal_v1::replay(&j[..], j.len() as u64)?;
-        let mine = journal_v2::from_v1(&replay, j.len() as u64, 0, &mut Retention::default())
+        let mut mine = journal_v2::from_v1(&replay, j.len() as u64, 0, &mut Retention::default())
             .unwrap_or_default();
-        let theirs = fs::read(&tf.njfv2)?;
+        let mut theirs = fs::read(&tf.njfv2)?;
+        if normalize {
+            (mine, theirs) = (normalize_v2(&mine), normalize_v2(&theirs));
+        }
         let diffs = mine
             .iter()
             .zip(&theirs)
@@ -966,7 +970,7 @@ mod tests {
             json!([[0, 4, 0, 1, 0, 0], [5, 9, 1, 1, 0, 0]])
         );
         assert_eq!(file["v2_page_update_every_values"], json!({"1": 3}));
-        let rebuilds = rebuild_v2(&dir).unwrap();
+        let rebuilds = rebuild_v2(&dir, false).unwrap();
         assert!(rebuilds[0].identical(), "{}", rebuilds[0].line());
         let line = file_line(file, rebuilds.first());
         assert!(line.ends_with("B ok, rebuild identical"), "{line}");
@@ -999,7 +1003,7 @@ mod tests {
         fs::write(&v2, &b).unwrap();
         let file = &tier_report(dir).unwrap()["files"][0];
         assert_eq!(failed_checks(file), ["page_list_crc_ok"]);
-        let r = &rebuild_v2(dir).unwrap()[0];
+        let r = &rebuild_v2(dir, false).unwrap()[0];
         assert!(
             r.line().starts_with("DIFF ") && r.line().ends_with(&format!("[{at}] count 1")),
             "{}",
