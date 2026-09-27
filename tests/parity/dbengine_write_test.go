@@ -68,13 +68,15 @@ func (g s3gen) stored(from, to int64) int {
 	return n
 }
 
-// childGen is a fake child's workload: its charts (prefix + "c<n>", each with dims "d0".. and a context) and, for
-// each chart and second, whether it sends nothing and else each dimension's value and flags.
+// childGen is a fake child's workload: its charts (prefix + "c<n>", each with dims "d0".. and a context, and an
+// algorithm, absolute when nil) and, for each chart and second, whether it sends nothing and else each dimension's
+// value and flags.
 type childGen struct {
 	host         stream.HostInfo
 	prefix       string
 	charts, dims int
 	context      func(c int) string
+	algorithm    func(c int) string
 	skips        func(c int, t int64) bool
 	point        func(c, d int, t int64) (value, flags string)
 }
@@ -89,8 +91,12 @@ func (g childGen) stream(d *daemon.Daemon, from, to int64) error {
 	for c := 0; c < g.charts; c++ {
 		conn.DefineChart(stream.Chart{ID: fmt.Sprintf("%sc%d", g.prefix, c), Title: g.prefix, Units: "u", Family: "f",
 			Context: g.context(c)})
+		algorithm := "absolute"
+		if g.algorithm != nil {
+			algorithm = g.algorithm(c)
+		}
 		for dim := 0; dim < g.dims; dim++ {
-			conn.Dimension(fmt.Sprintf("d%d", dim), "absolute", 1, 1)
+			conn.Dimension(fmt.Sprintf("d%d", dim), algorithm, 1, 1)
 		}
 	}
 	n := 0
