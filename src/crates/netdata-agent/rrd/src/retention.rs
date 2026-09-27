@@ -1,5 +1,6 @@
 //! `rrdstats_retention_collect()` (`database/rrd-retention.c`): each storage tier of localhost with its size and its
-//! retention, as `/api/v2/info`'s `db_size` and the pulse retention charts show them (S6, D75.4).
+//! retention, as `/api/v2/info`'s `db_size` shows them (S6, D75.4). The pulse retention charts compute their own
+//! (a disk-space estimate, integer percentages).
 
 use netdata_agent_text::duration::duration_to_string;
 
