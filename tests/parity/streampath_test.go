@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -143,25 +142,8 @@ func TestCChildStreamPath(t *testing.T) {
 		StreamExtra: fmt.Sprintf("\n[%s]\n    enable compression = no\n", guid)}, parentIdentity)
 	var children [2]*daemon.Daemon
 	for i, side := range p.Each() {
-		child, err := daemon.Start(daemon.Options{
-			Binary:       os.Getenv("PARITY_ORACLE"),
-			RunDir:       runDir(t, Role("child-of-"+string(side.Role))),
-			StorageTiers: 1,
-			Identity:     &daemon.Identity{Hostname: hostname, StreamKey: "5a1e0000-0000-4000-8000-00000000c1ff", MachineGUID: guid},
-			StreamTo:     &daemon.StreamTo{Destination: side.Daemon.Addr, APIKey: parentIdentity.StreamKey},
-		})
-		if err != nil {
-			t.Fatalf("start child of %s: %v", side.Role, err)
-		}
-		children[i] = child
+		children[i] = startCChild(t, Role("child-of-"+string(side.Role)), hostname, guid, side.Daemon.Addr, false)
 	}
-	defer func() {
-		for _, c := range children {
-			if c != nil {
-				_ = c.Stop()
-			}
-		}
-	}()
 	parents := [2]string{p.Oracle.Addr, p.Candidate.Addr}
 	for _, addr := range parents {
 		waitOnline(t, addr, guid)
@@ -173,9 +155,8 @@ func TestCChildStreamPath(t *testing.T) {
 	// the children are C on both sides: all their labels compare
 	compareStreamPath(t, "children", [2]string{children[0].Addr, children[1].Addr}, "/api/v3/stream_path",
 		entryTimes, [2]string{}, "_streams_to")
-	for i, c := range children {
+	for _, c := range children {
 		_ = c.Stop()
-		children[i] = nil
 	}
 	time.Sleep(3 * time.Second)
 	compareStreamPath(t, "stale parents", parents, "/api/v3/stream_path", entryTimes, cOnly, "_streams_to")

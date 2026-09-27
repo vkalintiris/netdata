@@ -154,6 +154,27 @@ func maskStreamInfo(b []byte, localhost bool, from, to int64) []byte {
 	return b
 }
 
+// cChildKey is the stream key the C children use as their own (the parents take `StreamTo.APIKey`).
+const cChildKey = "5a1e0000-0000-4000-8000-00000000c1ff"
+
+// startCChild starts the oracle binary as a child (one tier, its internal charts) streaming to dest with the parents'
+// key, and stops it when the test ends.
+func startCChild(t *testing.T, role Role, hostname, guid, dest string, compression bool) *daemon.Daemon {
+	t.Helper()
+	child, err := daemon.Start(daemon.Options{
+		Binary:       os.Getenv("PARITY_ORACLE"),
+		RunDir:       runDir(t, role),
+		StorageTiers: 1,
+		Identity:     &daemon.Identity{Hostname: hostname, StreamKey: cChildKey, MachineGUID: guid},
+		StreamTo:     &daemon.StreamTo{Destination: dest, APIKey: parentIdentity.StreamKey, Compression: compression},
+	})
+	if err != nil {
+		t.Fatalf("start %s: %v", role, err)
+	}
+	t.Cleanup(func() { _ = child.Stop() })
+	return child
+}
+
 func httpBody(b []byte) []byte {
 	if i := bytes.Index(b, []byte("\r\n\r\n")); i >= 0 {
 		return b[i+4:]
@@ -180,25 +201,7 @@ func TestCChild(t *testing.T) {
 		t.Run(algorithm, func(t *testing.T) {
 			hostname := "parity-cchild-" + algorithm
 			replies := &teeReplies{}
-			child, err := daemon.Start(daemon.Options{
-				Binary:       os.Getenv("PARITY_ORACLE"),
-				RunDir:       runDir(t, Role("child-"+algorithm)),
-				StorageTiers: 1,
-				Identity: &daemon.Identity{
-					Hostname:    hostname,
-					StreamKey:   "5a1e0000-0000-4000-8000-00000000c1ff",
-					MachineGUID: guid(i),
-				},
-				StreamTo: &daemon.StreamTo{
-					Destination: startTee(t, p, replies),
-					APIKey:      parentIdentity.StreamKey,
-					Compression: true,
-				},
-			})
-			if err != nil {
-				t.Fatalf("start child: %v", err)
-			}
-			t.Cleanup(func() { _ = child.Stop() })
+			startCChild(t, Role("child-"+algorithm), hostname, guid(i), startTee(t, p, replies), true)
 
 			get := func(addr, path string) []byte {
 				b, err := rawExchange(addr, []byte("GET "+path+" HTTP/1.1\r\n\r\n"), 5*time.Second)

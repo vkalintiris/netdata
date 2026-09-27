@@ -338,11 +338,10 @@ func TestArchivedHostsDbengine(t *testing.T) {
 			Mask{Pattern: "**.contexts_hard_hash", Reason: "context events"})
 		compareGetWith(t, p, fmt.Sprintf("/host/%s/api/v3/data?contexts=seed.*&after=%d&before=%d&points=7",
 			childHost.Hostname, l0-2, l0+5), rules)
-		for _, side := range p.Each() {
-			if err := side.Daemon.Stop(); err != nil {
-				t.Fatalf("stop %s: %v", side.Role, err)
-			}
-		}
+		// the query created the points-generated chart: both sides' metadata then compare whole, localhost's rows in
+		// their natural order, so a pulse dimension given a new UUID shows as an added row (R29 B2)
+		waitLocalCharts(t, p, 10*time.Second, "netdata.db_points_results")
+		compareFiles(t, p, hwLabels, writerArgs(true)...)
 		reconnect := regexp.MustCompile(`msg="(Archived host '|Host '[^']*' has |Host [^ ]+ is not in archived mode anymore)`)
 		var got [2]string
 		for i, side := range p.Each() {
@@ -366,9 +365,21 @@ func TestArchivedHostsDbengine(t *testing.T) {
 				t.Errorf("%s: the dimension rows changed:\n%s", side.Role, firstDifference([]byte(seeded), []byte(got)))
 			}
 		}
-		// and every seeded localhost dimension row survives as it was: the pulse charts reuse their UUIDs
+		// and every seeded localhost dimension row survives as it was: no pulse dimension's UUID replaced
 		all := []string{"--table", "dimension"}
 		seededAll := strings.Split(dumpDB(t, filepath.Join(seed, "netdata-meta.db"), all...), "\n")
+		rowCount := func(lines []string) int {
+			n := 0
+			for _, l := range lines {
+				if strings.HasPrefix(l, "row dimension") {
+					n++
+				}
+			}
+			return n
+		}
+		if rowCount(seededAll) <= rowCount(strings.Split(seeded, "\n")) {
+			t.Fatalf("the seed has no localhost dimension rows")
+		}
 		for _, side := range p.Each() {
 			rows := map[string]bool{}
 			for _, l := range strings.Split(dumpDB(t, filepath.Join(side.Daemon.Opts.RunDir, "cache",

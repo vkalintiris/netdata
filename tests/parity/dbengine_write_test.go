@@ -164,22 +164,12 @@ func waitChartsLast(t *testing.T, d *daemon.Daemon, host, prefix string, n int, 
 	deadline := time.Now().Add(timeout)
 	for {
 		ok := func() bool {
-			// a connection of its own per poll, tagged, which the log checks leave out (probeRe)
-			req := "GET /host/" + host + "/api/v1/charts?harness=wait HTTP/1.1\r\nConnection: close\r\n\r\n"
-			b, err := rawExchange(d.Addr, []byte(req), 10*time.Second)
+			_, charts, err := hostCharts(d, host)
 			if err != nil {
 				return false
 			}
-			var doc struct {
-				Charts map[string]struct {
-					LastEntry int64 `json:"last_entry"`
-				} `json:"charts"`
-			}
-			if json.Unmarshal(httpBody(b), &doc) != nil {
-				return false
-			}
 			found := 0
-			for id, c := range doc.Charts {
+			for id, c := range charts {
 				if strings.HasPrefix(id, prefix) {
 					if c.LastEntry != last {
 						return false

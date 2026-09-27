@@ -195,21 +195,7 @@ func TestCLICommands(t *testing.T) {
 
 	// a C child: node instances while it streams, then the stale-node commands once it left
 	const childGUID = "5a1e0000-0000-4000-8000-00000000cc01"
-	child, err := daemon.Start(daemon.Options{
-		Binary:       os.Getenv("PARITY_ORACLE"),
-		RunDir:       runDir(t, Role("child")),
-		StorageTiers: 1,
-		Identity: &daemon.Identity{
-			Hostname:    "parity-cli-child",
-			StreamKey:   "5a1e0000-0000-4000-8000-00000000c1ff",
-			MachineGUID: childGUID,
-		},
-		StreamTo: &daemon.StreamTo{Destination: startTee(t, p, &teeReplies{}), APIKey: parentIdentity.StreamKey},
-	})
-	if err != nil {
-		t.Fatalf("start child: %v", err)
-	}
-	t.Cleanup(func() { _ = child.Stop() })
+	child := startCChild(t, Role("child"), "parity-cli-child", childGUID, startTee(t, p, &teeReplies{}), false)
 	reachable := func(d *daemon.Daemon) (bool, bool) {
 		r, err := Get(d, "/api/v1/info", nil)
 		var info map[string]any
@@ -331,17 +317,8 @@ func waitPulseStored(t *testing.T, d *daemon.Daemon) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		// a connection of its own per poll, tagged, which the log checks leave out (probeRe)
-		req := "GET /api/v1/charts?harness=wait HTTP/1.1\r\nConnection: close\r\n\r\n"
-		if b, err := rawExchange(d.Addr, []byte(req), 10*time.Second); err == nil {
-			var doc struct {
-				Charts map[string]struct {
-					LastEntry int64 `json:"last_entry"`
-				} `json:"charts"`
-			}
-			if json.Unmarshal(httpBody(b), &doc) == nil && doc.Charts["netdata.clients"].LastEntry > 0 {
-				return
-			}
+		if _, charts, err := hostCharts(d, ""); err == nil && charts["netdata.clients"].LastEntry > 0 {
+			return
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("%s: localhost's pulse charts stored nothing", d.Opts.Binary)

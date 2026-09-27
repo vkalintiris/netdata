@@ -4,6 +4,8 @@ package parity
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"regexp"
 	"testing"
 	"time"
@@ -11,6 +13,47 @@ import (
 	"github.com/netdata/netdata/tests/query-corpus/daemon"
 	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
+
+// chartEntry is what the waits read of a chart in /api/v1/charts.
+type chartEntry struct {
+	LastEntry int64 `json:"last_entry"`
+}
+
+// hostCharts fetches a host's /api/v1/charts ("" for localhost) on a connection of its own, tagged so the log checks
+// leave it out (probeRe): the chart ids in the answer's order and each chart's last entry. Anything but a 200 with a
+// `charts` member is an error.
+func hostCharts(d *daemon.Daemon, host string) ([]string, map[string]chartEntry, error) {
+	path := "/api/v1/charts?harness=wait"
+	if host != "" {
+		path = "/host/" + host + path
+	}
+	b, err := rawExchange(d.Addr, []byte("GET "+path+" HTTP/1.1\r\nConnection: close\r\n\r\n"), 10*time.Second)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !bytes.HasPrefix(b, []byte("HTTP/1.1 200 ")) {
+		return nil, nil, fmt.Errorf("%s: %q", path, truncateBytes(b))
+	}
+	var doc struct {
+		Charts map[string]chartEntry `json:"charts"`
+	}
+	if err := json.Unmarshal(httpBody(b), &doc); err != nil {
+		return nil, nil, fmt.Errorf("%s: %v", path, err)
+	}
+	if doc.Charts == nil {
+		return nil, nil, fmt.Errorf("%s: no charts member", path)
+	}
+	v, err := ParseJSON(httpBody(b))
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %v", path, err)
+	}
+	for _, m := range v.Members {
+		if m.Key == "charts" {
+			return memberKeys(m.Value), doc.Charts, nil
+		}
+	}
+	return nil, nil, fmt.Errorf("%s: no charts member", path)
+}
 
 // memoryBytesRe finds /api/v1/charts' memory figure: each implementation reports its own structures.
 var memoryBytesRe = regexp.MustCompile(`"rrd_memory_bytes":[0-9]+`)

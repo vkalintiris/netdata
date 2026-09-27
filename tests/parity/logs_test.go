@@ -375,11 +375,11 @@ func compareLogs(t *testing.T, logs string, tiers int) {
 	for _, side := range p.Each() {
 		logWorkload(t, side.Daemon)
 	}
+	// the exit flushes a stored pulse point on both sides (R29 M7)
 	for _, side := range p.Each() {
-		if err := side.Daemon.Stop(); err != nil {
-			t.Fatalf("parity: stop %s: %v", side.Role, err)
-		}
+		waitPulseStored(t, side.Daemon)
 	}
+	stopBoth(t, p)
 	compareLogFiles(t, p)
 }
 

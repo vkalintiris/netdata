@@ -255,17 +255,6 @@ func restarted(t *testing.T, opts daemon.Options, id daemon.Identity, caches [2]
 	return out
 }
 
-// stopBoth stops both daemons and returns their caches.
-func stopBoth(t *testing.T, p *Pair) [2]string {
-	t.Helper()
-	for _, side := range p.Each() {
-		if err := side.Daemon.Stop(); err != nil {
-			t.Fatalf("stop %s: %v", side.Role, err)
-		}
-	}
-	return [2]string{filepath.Join(p.Oracle.Opts.RunDir, "cache"), filepath.Join(p.Candidate.Opts.RunDir, "cache")}
-}
-
 // stopAndCompare stops both daemons, compares their tier-0 files and their whole daemon logs, and returns their
 // caches.
 func stopAndCompare(t *testing.T, p *Pair) [2]string {

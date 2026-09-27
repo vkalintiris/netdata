@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,6 +70,27 @@ func (p *Pair) Each() []struct {
 func StartPair(t *testing.T, opts daemon.Options, id daemon.Identity) *Pair {
 	t.Helper()
 	return startPair(t, opts, id, binaries(t), [2]string{opts.SeedCache, opts.SeedCache}, [2]Role{Oracle, Candidate})
+}
+
+// stopBoth stops both daemons at once (neither side's exit waits for the other's) and returns their caches.
+func stopBoth(t *testing.T, p *Pair) [2]string {
+	t.Helper()
+	var wg sync.WaitGroup
+	var errs [2]error
+	for i, side := range p.Each() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = side.Daemon.Stop()
+		}()
+	}
+	wg.Wait()
+	for i, side := range p.Each() {
+		if errs[i] != nil {
+			t.Fatalf("stop %s: %v", side.Role, errs[i])
+		}
+	}
+	return [2]string{filepath.Join(p.Oracle.Opts.RunDir, "cache"), filepath.Join(p.Candidate.Opts.RunDir, "cache")}
 }
 
 // binaries are the oracle's and the candidate's executables.

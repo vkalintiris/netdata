@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -102,16 +101,19 @@ func writerArgs(chartRows bool) []string {
 	return args
 }
 
-// compareFiles stops both daemons and compares their databases: the whole context database but its rows, and the
-// metadata database's header, pragmas, schema and tables as metadata-dump prints them with args (lines matching
-// drop left out on both sides), then the migration records.
+// compareFiles stops both daemons, together, once localhost's pulse charts stored a point and both sides have the
+// same lazy ones (C's exit stores one more cycle, D81.3), and compares their databases: the whole context database
+// but its rows, and the metadata database's header, pragmas, schema and tables as metadata-dump prints them with args
+// (lines matching drop left out on both sides), then the migration records.
 func compareFiles(t *testing.T, p *Pair, drop *regexp.Regexp, args ...string) {
 	t.Helper()
-	for _, side := range p.Each() {
-		if err := side.Daemon.Stop(); err != nil {
-			t.Fatalf("stop %s: %v", side.Role, err)
+	if !p.Oracle.Opts.PulseOff {
+		for _, side := range p.Each() {
+			waitPulseStored(t, side.Daemon)
 		}
+		waitLazyEqual(t, p)
 	}
+	stopBoth(t, p)
 	args = append([]string{"--mask", "agent_event_log.value", "--mask", "health_log_detail.global_id",
 		"--mask", "health_log_detail.transition_id"}, args...)
 	var got [2]string
@@ -193,24 +195,26 @@ func TestSQLiteFiles(t *testing.T) {
 	})
 	for _, name := range []string{"child", "child-final"} {
 		t.Run(name, func(t *testing.T) {
-			p := StartPair(t, opts, parentIdentity)
-			started := time.Now()
+			o := opts
+			if name == "child-final" {
+				// the periodic job's record, which must not appear, is a debug one
+				o.LogsExtra = "    level = debug\n"
+			}
+			p := StartPair(t, o, parentIdentity)
 			for _, side := range p.Each() {
 				writerChild(t, side.Daemon)
 			}
 			if name == "child" {
 				time.Sleep(8 * time.Second)
 			} else {
-				// the periodic job first runs 6 s after METASYNC starts: child-final stops before it, once the
-				// child's pulse charts exist on both sides (D83.3)
-				state := "netdata.streaming.in.state." + childHost.MachineGUID
+				// the periodic job first runs 6 s after METASYNC starts: child-final stops before it, both sides
+				// together, once the child's pulse charts exist on both; the job's record fails it if it ran first
+				// (D83.3)
+				waitLocalCharts(t, p, 5*time.Second,
+					append(childPulseCharts(childHost.MachineGUID), "netdata.network_streaming")...)
 				for _, side := range p.Each() {
-					for !slices.Contains(localCharts(t, side.Daemon), state) {
-						if time.Since(started) > 5*time.Second {
-							t.Fatalf("%s: the child's pulse charts came after the metadata job's start", side.Role)
-						}
-						time.Sleep(100 * time.Millisecond)
-					}
+					t.Logf("%s: the child's pulse charts %.1f s after the launch", side.Role,
+						time.Since(side.Daemon.LaunchStartedAt).Seconds())
 				}
 			}
 			if name == "child" {
@@ -226,6 +230,13 @@ func TestSQLiteFiles(t *testing.T) {
 			if name == "child-final" {
 				if o, c := writerRecords(t, p.Oracle), writerRecords(t, p.Candidate); o != c {
 					t.Errorf("final store records:\noracle:\n%s\ncandidate:\n%s", o, c)
+				}
+				for _, side := range p.Each() {
+					for _, l := range logLines(t, side.Daemon.Opts.RunDir, "daemon.log") {
+						if strings.Contains(l, `msg="Checking all hosts completed in `) {
+							t.Errorf("%s: the periodic job ran before the stop: %s", side.Role, l)
+						}
+					}
 				}
 			}
 		})
