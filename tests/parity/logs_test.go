@@ -59,8 +59,7 @@ var pulseRecords = regexp.MustCompile(`msg="Flushing DBENGINE (only|hot &) dirty
 
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
 var cOnlyThreads = map[string]string{
-	"ACLKSYNC": "ACLK", "SDBUSWATCHER": "systemd bus watcher",
-	"PULSE": "pulse charts", "PLUGINSD": "plugins.d",
+	"ACLKSYNC": "ACLK", "SDBUSWATCHER": "systemd bus watcher", "PLUGINSD": "plugins.d",
 	"SERVICE": "service thread", "HEALTH": "health", "ANALYTICS": "analytics",
 	"EXPORTING": "exporting engine", "STATSD_FLUSH": "statsd",
 	"ACLK_MAIN": "ACLK", "EXTENT_PGC": "dbengine evictors (S6)",
@@ -146,8 +145,8 @@ func threadOf(line string) string {
 	return ""
 }
 
-// normalizeLog masks a record. The main thread's and the shutdown watcher's records carry a stale errno in C, which
-// the check ignores (D36), as do the command server's own lifecycle records (D57.2), the registry's pre-population
+// normalizeLog masks a record. The main thread's, the shutdown watcher's and PULSE's records carry a stale errno in C
+// (PULSE's end record the ENOENT of its cycle, D81), which the check ignores (D36), as do the command server's own lifecycle records (D57.2), the registry's pre-population
 // record (D63.1) and the context loads' record (D64); the command server's read and libuv error records keep theirs. The harness picks each daemon's port.
 func normalizeLog(line, runDir, port string) string {
 	line = strings.ReplaceAll(line, runDir, "<RUN>")
@@ -157,7 +156,7 @@ func normalizeLog(line, runDir, port string) string {
 	}
 	th := threadOf(line)
 	// C's netdata_log_error() of the N7 fallback carries whatever errno the web thread had
-	if th == "" || th == "EXIT_WATCHER" || strings.Contains(line, `msg="MRG: Loaded `) ||
+	if th == "" || th == "EXIT_WATCHER" || th == "PULSE" || strings.Contains(line, `msg="MRG: Loaded `) ||
 		strings.Contains(line, `msg="RRDCONTEXT: metadata for node `) ||
 		strings.Contains(line, `dbengine is not enabled, falling back to default.`) ||
 		(th == "DAEMON_COMMAND" && !strings.Contains(line, `msg="pipe_read_cb: `) && !strings.Contains(line, `msg="uv_`)) {

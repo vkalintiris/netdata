@@ -1758,6 +1758,17 @@ pub fn static_threads_pulse(netdata: &mut Config) -> bool {
     enabled
 }
 
+/// `pulse_thread_main()`'s `[pulse] update every` (default localhost's update every), a lower value raised to it and
+/// written back.
+pub fn pulse_update_every(netdata: &mut Config, localhost_update_every: i64) -> i64 {
+    let update_every =
+        netdata.get_duration_seconds(SECTION_PULSE, "update every", localhost_update_every);
+    if update_every < localhost_update_every {
+        return netdata.set_duration_seconds(SECTION_PULSE, "update every", localhost_update_every);
+    }
+    update_every
+}
+
 /// `NETDATA_INTERNALS_MONITORING`'s value.
 fn internals_monitoring(enabled: bool) -> &'static str {
     if enabled { "YES" } else { "NO" }
@@ -1982,6 +1993,26 @@ mod tests {
         assert_eq!(
             (internals_monitoring(true), internals_monitoring(false)),
             ("YES", "NO")
+        );
+    }
+
+    /// `[pulse] update every`: localhost's update every by default, a longer one kept, a shorter one raised and
+    /// written back.
+    #[test]
+    fn pulse_update_every_as_c() {
+        let mut c = Config::new();
+        assert_eq!(pulse_update_every(&mut c, 2), 2);
+        assert_eq!(
+            c.get(SECTION_PULSE, "update every", None),
+            Some(b"2s".to_vec())
+        );
+        c.set(SECTION_PULSE, "update every", "5s");
+        assert_eq!(pulse_update_every(&mut c, 2), 5);
+        c.set(SECTION_PULSE, "update every", "1s");
+        assert_eq!(pulse_update_every(&mut c, 2), 2);
+        assert_eq!(
+            c.get(SECTION_PULSE, "update every", None),
+            Some(b"2s".to_vec())
         );
     }
 

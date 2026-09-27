@@ -1,0 +1,13 @@
+[package]
+name = "netdata-agent-pulse"
+description = "The netdata agent's own charts on localhost (pulse)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+netdata-agent-rrd = { workspace = true }
+

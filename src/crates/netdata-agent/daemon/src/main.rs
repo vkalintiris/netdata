@@ -20,11 +20,13 @@ mod daemon;
 mod data;
 mod dbengine;
 mod guid;
+mod heartbeat;
 mod host_labels;
 mod listen;
 mod meta_store;
 mod metasync;
 mod profile;
+mod pulse;
 mod router;
 mod rrdcontext;
 mod server;
@@ -380,7 +382,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
 
     startup.step("static threads");
     // the loop's pulse entries while the process has one thread (setenv); the other entries come with their plugins
-    let _pulse_enabled = conf::static_threads_pulse(&mut conf.netdata);
+    let pulse_enabled = conf::static_threads_pulse(&mut conf.netdata);
     startup.step("web server api");
     // nd_web_api_init(): the time-grouping limits, read before the listen sockets as in C.
     let grouping_windows = conf::grouping_windows(&mut conf.netdata);
@@ -716,6 +718,38 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         custom_dashboard_info: Default::default(),
         ready: commands::is_ready,
     });
+    // PULSE, a static thread started before the web server's as in C's table; C carries on without it
+    let pulse_thread = if pulse_enabled {
+        let localhost_update_every = i64::from(db.update_every);
+        let update_every = {
+            let shared = Arc::clone(&shared);
+            move || {
+                let mut c = shared
+                    .netdata_conf
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                conf::pulse_update_every(&mut c, localhost_update_every)
+            }
+        };
+        let settings = netdata_agent_pulse::Settings {
+            gap_when_lost_iterations_above: db.gap_when_lost_iterations_above,
+            page_size: system.page_size,
+        };
+        match pulse::spawn(
+            Arc::clone(hosts.localhost()),
+            conf.threads.thread_stack_size,
+            update_every,
+            settings,
+        ) {
+            Ok(thread) => Some(thread),
+            Err(err) => {
+                nd_log!(Source::Daemon, Priority::Err, "{err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     // One descriptor per listener, shared by every web worker.
     let listeners: Arc<[server::WebListener]> = listeners
         .into_iter()
@@ -779,7 +813,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 .configure(enabled, keep, min);
         }
     };
-    let contexts_worker = match rrdcontext::Worker::spawn(
+    let contexts_worker = match rrdcontext::spawn(
         Arc::clone(&hosts),
         conf.threads.thread_stack_size,
         settings,
@@ -818,6 +852,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let mut pool = pool;
     let mut stream_pool = Some(stream_pool);
     let mut contexts_worker = Some(contexts_worker);
+    let mut pulse_thread = pulse_thread;
     let mut backfill_thread = backfill_thread;
     let mut meta = meta;
     let mut context_db = context_db;
@@ -844,9 +879,13 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 let _ = pool.stop_within(Some(shutdown::WEB_SERVERS_WAIT));
             }
         }
-        // the stream threads and the BACKFILL threads under one service wait
+        // PULSE, the stream threads and the BACKFILL threads under one service wait; PULSE ends by itself at its
+        // first tick after the exit started
         shutdown::STOP_STREAMING => {
             let deadline = std::time::Instant::now() + shutdown::STREAMING_WAIT;
+            if let Some(thread) = pulse_thread.take() {
+                thread.stop_within(shutdown::STREAMING_WAIT);
+            }
             if let Some(pool) = stream_pool.take() {
                 let _ = pool.stop_within(Some(shutdown::STREAMING_WAIT));
             }

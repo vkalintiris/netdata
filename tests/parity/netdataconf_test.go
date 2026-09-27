@@ -44,7 +44,6 @@ func init() {
 		"registry save db every new entries", "registry expire idle persons", "registry domain", "registry to announce",
 		"registry hostname", "verify browser cookies support", "enable cookies SameSite and Secure", "max URL length",
 		"max URL name length", "netdata management api key file")
-	pending("pulse", "pulse", "update every")
 	// go.d is a file key C does not read either; its annotation depends on the section having a used key.
 	pending("plugins.d", "plugins", "enable running new plugins", "check for new plugins every", "cups", "xenstat",
 		"systemd-units", "nfacct", "scripts.d", "ebpf-go", "freeipmi", "otel", "apps", "go.d", "charts.d", "python.d",
