@@ -326,6 +326,13 @@ impl Host {
         host
     }
 
+    /// The host shared, its contexts linked back to it (`rc->rrdhost`): the index makes its hosts' `Arc`s here.
+    pub fn into_shared(self) -> Arc<Host> {
+        let host = Arc::new(self);
+        host.contexts().set_host(&host);
+        host
+    }
+
     /// `host->db[]`: the storage the host's tiers come from.
     pub fn storage(&self) -> &Arc<StorageLayout> {
         &self.storage
@@ -971,8 +978,7 @@ impl Hosts {
 
     /// The index of hosts with this storage; `localhost` was created with it.
     pub fn with_storage(localhost: Host, storage: Arc<StorageLayout>) -> Self {
-        let localhost = Arc::new(localhost);
-        localhost.contexts().set_host(&localhost);
+        let localhost = localhost.into_shared();
         let index = Index {
             ordered: vec![Arc::clone(&localhost)],
             by_guid: HashMap::from([(localhost.machine_guid.clone(), Arc::clone(&localhost))]),
@@ -1117,8 +1123,7 @@ impl Hosts {
         if let Some(host) = index.by_guid.get(guid) {
             return Arc::clone(host);
         }
-        let host = Arc::new(Host::with_storage(guid, false, info, &self.storage));
-        host.contexts().set_host(&host);
+        let host = Host::with_storage(guid, false, info, &self.storage).into_shared();
         host.archived.store(true, Ordering::Release);
         host.pending_context_load.store(true, Ordering::Release);
         host.orphan.store(true, Ordering::Release);
@@ -1176,8 +1181,7 @@ impl Hosts {
             }
             return host;
         }
-        let host = Arc::new(Host::with_storage(guid, false, create(), &self.storage));
-        host.contexts().set_host(&host);
+        let host = Host::with_storage(guid, false, create(), &self.storage).into_shared();
         host.created_connected();
         index.ordered.push(Arc::clone(&host));
         index.by_guid.insert(guid.to_string(), Arc::clone(&host));

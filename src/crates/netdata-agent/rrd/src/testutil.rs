@@ -132,7 +132,7 @@ pub(crate) fn backfill_fixture(
             .with_backfill(backfill),
     );
     let e = Arc::clone(storage.dbengine().unwrap());
-    let host = Arc::new(Host::with_storage(
+    let host = Host::with_storage(
         "guid-b",
         false,
         HostInfo {
@@ -140,7 +140,8 @@ pub(crate) fn backfill_fixture(
             ..info("b")
         },
         &storage,
-    ));
+    )
+    .into_shared();
     let chart = collected_chart(&host, mode);
     let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
     let slot = Arc::new(ReceiverSlot::new(

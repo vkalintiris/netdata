@@ -1633,7 +1633,8 @@ impl Contexts {
         self.worker_cycle_while(&|| true);
     }
 
-    /// [`Contexts::worker_cycle`] that `running` false stops between contexts, as the worker's service checks.
+    /// [`Contexts::worker_cycle`] that `running` false stops between contexts (C's worker checks inside them, at its
+    /// instances and metrics; its recompute after a disconnect never stops).
     pub fn worker_cycle_while(&self, running: &dyn Fn() -> bool) {
         if self.get_retention.load(Ordering::Acquire) {
             self.recalculate_host_retention_while(flags::REASON_DISCONNECTED_CHILD, running);
@@ -1915,8 +1916,9 @@ fn post_process_updates(rc: &Context, force: bool, reason: u32) -> bool {
             max_last = ri_state.last_time_s;
         }
     }
-    // the protection runs before the context's lock, as in C: its clears queue the context
-    let cleared = !instances.is_empty()
+    // the protection runs before the context's lock, as in C: its clears queue the context; it needs one instance
+    // without tier 0 at least (`keep instances` is 1 at least)
+    let cleared = no_tier0 > 0
         && rc
             .host()
             .is_some_and(|host| cardinality::protect(rc, &host, active, no_tier0));

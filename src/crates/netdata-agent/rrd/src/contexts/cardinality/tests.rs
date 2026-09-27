@@ -79,9 +79,10 @@ impl TierRetention for Tier {
     }
 }
 
-/// A host whose context `ctx.y` has three instances (charts 1-3, metric UUIDs 11-13) with retention on tier 1 only,
-/// the third's metric without any; the protection configured and the engine rotated once.
-fn fixture(keep: usize, min: usize) -> (Hosts, Arc<Tier>) {
+/// A host whose context `ctx.y` was loaded with three charts (1-3, metric UUIDs 11-13), the first two with retention on
+/// tier 1 only, the third's metric without any (so the load keeps two instances); the protection configured and the
+/// engine rotated `rotations` times.
+fn fixture(keep: usize, min: usize, rotations: usize) -> (Hosts, Arc<Tier>) {
     let storage = Arc::new(StorageLayout::default());
     storage.extreme_cardinality().configure(true, keep, min);
     let hosts = Hosts::with_storage(
@@ -104,35 +105,38 @@ fn fixture(keep: usize, min: usize) -> (Hosts, Arc<Tier>) {
     let ((), _) = capture(|| {
         loader.finish("l", || false, |_| {});
     });
-    storage.db_rotation().rotated(1);
+    for _ in 0..rotations {
+        storage.db_rotation().rotated(1);
+    }
     (hosts, tier1)
 }
 
-/// `rrdinstance_forcefully_clear_retention()` from the recompute: of three instances without tier-0 retention with
-/// `keep = 1` and no minimum, two lose their retention on every tier in the context's order, with one NOTICE; the
-/// retry sees nothing left to clear.
+/// The one NOTICE of clearing `t.e1` in `fixture`.
+const CLEARED: &str = "EXTREME CARDINALITY PROTECTION: host 'l', context 'ctx.y', total active instances 2, not in \
+                       tier0 2, ephemerality 100%: forcefully cleared the retention of 1 metrics and 1 instances, \
+                       having non-tier0 retention from 2023-11-14T22:13:20Z to 2023-11-14T22:15:00Z.";
+
+fn notices(records: &[netdata_agent_log::Captured]) -> Vec<String> {
+    records
+        .iter()
+        .filter(|r| r.priority == Priority::Notice)
+        .filter_map(|r| r.message.clone())
+        .collect()
+}
+
+/// `rrdinstance_forcefully_clear_retention()` from the recompute: of two instances without tier-0 retention with
+/// `keep = 1` and no minimum, the first loses its retention on every tier, with one NOTICE; the retry sees nothing
+/// left to clear.
 #[test]
 fn excess_instances_lose_their_retention_once() {
-    let (hosts, tier1) = fixture(1, 0);
+    let (hosts, tier1) = fixture(1, 0, 1);
     let contexts = hosts.localhost().contexts();
     let rc = contexts.get("ctx.y").unwrap();
     assert_eq!(rc.instances().len(), 2, "t.e3 had no retention at the load");
     let ((), records) = capture(|| {
         super::super::recalculate_context_retention(&rc, flags::REASON_DB_ROTATION);
     });
-    let notices: Vec<_> = records
-        .iter()
-        .filter(|r| r.priority == Priority::Notice)
-        .filter_map(|r| r.message.clone())
-        .collect();
-    assert_eq!(
-        notices,
-        [
-            "EXTREME CARDINALITY PROTECTION: host 'l', context 'ctx.y', total active instances 2, not in tier0 2, \
-             ephemerality 100%: forcefully cleared the retention of 1 metrics and 1 instances, having non-tier0 \
-             retention from 2023-11-14T22:13:20Z to 2023-11-14T22:15:00Z."
-        ]
-    );
+    assert_eq!(notices(&records), [CLEARED]);
     assert_eq!(
         tier1.0.lock().unwrap().keys().copied().collect::<Vec<_>>(),
         [[12; 16]],
@@ -153,13 +157,30 @@ fn excess_instances_lose_their_retention_once() {
 /// Nothing is cleared before a rotation, or while the protection is off.
 #[test]
 fn no_clear_before_a_rotation_or_when_off() {
-    let (hosts, tier1) = fixture(1, 0);
-    let storage = hosts.storage();
-    storage.extreme_cardinality().configure(false, 1, 0);
-    let rc = hosts.localhost().contexts().get("ctx.y").unwrap();
-    let ((), records) = capture(|| {
-        super::super::recalculate_context_retention(&rc, flags::REASON_DB_ROTATION);
-    });
-    assert!(records.iter().all(|r| r.priority != Priority::Notice));
-    assert_eq!(tier1.0.lock().unwrap().len(), 2);
+    for (name, rotations, enabled) in [("before a rotation", 0, true), ("off", 1, false)] {
+        let (hosts, tier1) = fixture(1, 0, rotations);
+        hosts
+            .storage()
+            .extreme_cardinality()
+            .configure(enabled, 1, 0);
+        let rc = hosts.localhost().contexts().get("ctx.y").unwrap();
+        let ((), records) = capture(|| {
+            super::super::recalculate_context_retention(&rc, flags::REASON_DB_ROTATION);
+        });
+        assert!(notices(&records).is_empty(), "{name}");
+        assert_eq!(tier1.0.lock().unwrap().len(), 2, "{name}");
+    }
+}
+
+/// The post-processing queue's pass runs the protection too, once (only the recompute retries).
+#[test]
+fn a_queued_context_is_protected() {
+    let (hosts, tier1) = fixture(1, 0, 1);
+    let contexts = hosts.localhost().contexts();
+    let rc = contexts.get("ctx.y").unwrap();
+    rc.flags.set_updated(flags::REASON_DB_ROTATION);
+    rc.trigger_updates();
+    let ((), records) = capture(|| contexts.process_queued());
+    assert_eq!(notices(&records), [CLEARED]);
+    assert_eq!(tier1.0.lock().unwrap().len(), 1);
 }

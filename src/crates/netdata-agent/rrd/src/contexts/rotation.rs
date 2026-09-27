@@ -52,8 +52,9 @@ impl DbRotation {
 /// recomputed (`rrdcontext_recalculate_retention_all_hosts()`), then every host's garbage collected
 /// (`rrdcontext_garbage_collect_for_all_hosts()`), each context the collection removes passed to `delete_from_sql`
 /// with its host and hub version; then the deadline is cleared. Hosts whose contexts wait for their load or are being
-/// loaded are left out (D77.3). `running` false stops the pass between hosts and contexts, as C's service checks.
-/// Whether a pass ran.
+/// loaded are left out, each checked again right before its recompute and its collection: a host the index has just
+/// created loads after it is listed (D77.3). `running` false stops the pass between hosts and contexts (C checks
+/// inside them too). Whether a pass ran.
 pub fn deep_pass(
     hosts: &Hosts,
     now_ut: u64,
@@ -64,19 +65,16 @@ pub fn deep_pass(
     let Some(deadline) = slot.due(now_ut) else {
         return false;
     };
-    let loaded: Vec<Arc<Host>> = hosts
-        .all()
-        .into_iter()
-        .filter(|h| !h.is_pending_context_load() && !h.contexts().is_loading())
-        .collect();
-    for host in &loaded {
+    let hosts = hosts.all();
+    let loaded = |host: &Host| !host.is_pending_context_load() && !host.contexts().is_loading();
+    for host in hosts.iter().filter(|h| loaded(h)) {
         if !running() {
             break;
         }
         host.contexts()
             .recalculate_host_retention_while(flags::REASON_DB_ROTATION, running);
     }
-    for host in &loaded {
+    for host in hosts.iter().filter(|h| loaded(h)) {
         if !running() {
             break;
         }

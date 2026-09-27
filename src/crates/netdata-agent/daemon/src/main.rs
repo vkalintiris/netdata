@@ -672,27 +672,6 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     };
     netdata_agent_rrd::host::set_agent_event_medians_us(medians.0, medians.1);
-    // the extreme cardinality protection's settings, which the RRDCONTEXT thread reads as it starts
-    let protection = conf.netdata.get_boolean(
-        "db",
-        "extreme cardinality protection",
-        hosts.storage().storage_tiers() > 1 && db.mode == DbMode::Dbengine,
-    );
-    let keep_instances = conf.netdata.get_number_range(
-        "db",
-        "extreme cardinality keep instances",
-        1000,
-        1,
-        1_000_000,
-    );
-    let min_ephemerality =
-        conf.netdata
-            .get_number_range("db", "extreme cardinality min ephemerality", 50, 0, 100);
-    hosts.storage().extreme_cardinality().configure(
-        protection,
-        keep_instances as usize,
-        min_ephemerality as usize,
-    );
     let web = conf.section_web();
     // The web server thread reads its sizing only when it runs.
     let (web_server_threads, max_sockets) = if web_enabled {
@@ -778,9 +757,26 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             );
         }
     };
+    // the extreme cardinality protection's settings, which the thread reads from netdata.conf as it starts
+    let settings = {
+        let (shared, hosts) = (Arc::clone(&shared), Arc::clone(&hosts));
+        let default_on = hosts.storage().storage_tiers() > 1 && db.mode == DbMode::Dbengine;
+        move || {
+            let mut c = shared
+                .netdata_conf
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (enabled, keep, min) = rrdcontext::extreme_cardinality_settings(&mut c, default_on);
+            hosts
+                .storage()
+                .extreme_cardinality()
+                .configure(enabled, keep, min);
+        }
+    };
     let contexts_worker = match rrdcontext::Worker::spawn(
         Arc::clone(&hosts),
         conf.threads.thread_stack_size,
+        settings,
         delete_context,
     ) {
         Ok(worker) => worker,
