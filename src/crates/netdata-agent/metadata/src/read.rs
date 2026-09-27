@@ -13,7 +13,7 @@ use crate::conn::{self, Markers};
 use crate::open::MetaDb;
 
 /// A UUID column: a blob of exactly 16 bytes.
-fn uuid(row: &Row<'_>, i: usize) -> Option<[u8; 16]> {
+pub(crate) fn uuid(row: &Row<'_>, i: usize) -> Option<[u8; 16]> {
     match row.get_ref(i) {
         Ok(ValueRef::Blob(b)) => b.try_into().ok(),
         _ => None,
@@ -49,7 +49,7 @@ fn int(row: &Row<'_>, i: usize) -> i64 {
 }
 
 /// `PREPARE_STATEMENT()`'s record, with the C function it names.
-fn prepare_failed(err: &rusqlite::Error, function: &str) {
+pub(crate) fn prepare_failed(err: &rusqlite::Error, function: &str) {
     nd_log!(
         Source::Daemon,
         Priority::Err,

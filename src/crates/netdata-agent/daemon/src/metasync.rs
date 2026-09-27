@@ -28,6 +28,11 @@ const VIRTUAL_HOST_OS: &str = "Netdata Virtual Host 1.0";
 const HOST_CHECK_FIRST_S: i64 = 5;
 const HOST_CHECK_INTERVAL_S: i64 = 5;
 
+/// `run_metadata_cleanup()`'s first context cleanup scan, 5 s after the first job reached it, and
+/// `METADATA_MAINTENANCE_CTX_CLEAN_REPEAT`, the seconds from a scan's end to the next.
+const CTX_CLEANUP_FIRST_S: i64 = 5;
+const CTX_CLEANUP_REPEAT_S: i64 = 300;
+
 /// The loop's timer (`TIMER_INITIAL_PERIOD_MS`, `TIMER_REPEAT_PERIOD_MS`).
 const TIMER_PERIOD: Duration = Duration::from_secs(1);
 
@@ -47,8 +52,9 @@ struct Shared {
     check_after: AtomicI64,
     /// `shutdown_requested`.
     shutdown: AtomicBool,
-    /// `next_vacuum_run` of `run_metadata_cleanup()`.
+    /// `next_vacuum_run` and `next_context_list_cleanup` of `run_metadata_cleanup()`, 0 before the first job.
     next_vacuum_run: AtomicI64,
+    next_ctx_cleanup: AtomicI64,
     /// `ctx_load_running`: a context load job runs; the shutdown waits for it.
     ctx_load_running: AtomicBool,
 }
@@ -65,25 +71,32 @@ struct Writer {
     datafiles_present: bool,
 }
 
-/// `dimension_can_be_deleted()` or, without the dbengine, whether no datafiles were found at start: a freed
-/// dimension's row goes when no tier holds retention for it.
+/// `dimension_can_be_deleted()`: no dbengine tier holds retention for the dimension; never without the dbengine,
+/// whose files may still hold it.
 fn dimension_can_be_deleted(writer: &Writer, uuid: &[u8; 16]) -> bool {
-    match writer.hosts.storage().dbengine() {
-        None => !writer.datafiles_present,
-        Some(engine) => (0..engine.tiers.len()).all(|tier| {
+    writer.hosts.storage().dbengine().is_some_and(|engine| {
+        (0..engine.tiers.len()).all(|tier| {
             engine
                 .mrg
                 .retention_by_uuid(uuid, tier)
                 .is_none_or(|r| r.first_time_s <= 0)
-        }),
-    }
+        })
+    })
+}
+
+/// `do_pending_uuid_deletion()`'s check of a freed dimension: without the dbengine and with no datafiles found at
+/// start nothing can hold its data, so its row goes.
+fn freed_dimension_can_be_deleted(writer: &Writer, uuid: &[u8; 16]) -> bool {
+    (writer.hosts.storage().dbengine().is_none() && !writer.datafiles_present)
+        || dimension_can_be_deleted(writer, uuid)
 }
 
 /// `do_pending_uuid_deletion()`: the rows of the dimensions freed since the last job.
 fn delete_pending_dimensions(writer: &Writer, shared: &Shared, pending: Vec<[u8; 16]>) {
     let started = now_ut();
     for uuid in &pending {
-        if !shared.shutdown.load(Ordering::Acquire) && dimension_can_be_deleted(writer, uuid) {
+        if !shared.shutdown.load(Ordering::Acquire) && freed_dimension_can_be_deleted(writer, uuid)
+        {
             writer.meta.delete_dimension(uuid);
         }
     }
@@ -118,9 +131,49 @@ struct Pending {
     deletions: Option<Vec<[u8; 16]>>,
 }
 
+/// `run_metadata_cleanup()`: the context cleanup scan of every host, 5 s after the first job reached it and then
+/// 300 s after each scan ends, skipped (and cut short) while the WAL is too large; then the database's upkeep. A
+/// shutdown stops it between the steps. The dimension, chart and label cycles come with S5's next commit (D61.5, the
+/// health log with the health port, D75.9).
+fn run_metadata_cleanup(writer: &Writer, shared: &Shared) {
+    let shutting_down = || shared.shutdown.load(Ordering::Acquire);
+    let now = now_realtime_s();
+    if shared.next_ctx_cleanup.load(Ordering::Acquire) == 0 {
+        shared
+            .next_ctx_cleanup
+            .store(now.saturating_add(CTX_CLEANUP_FIRST_S), Ordering::Release);
+    }
+    if shared.next_ctx_cleanup.load(Ordering::Acquire) < now && writer.meta.wal_size_acceptable() {
+        for host in writer.hosts.all() {
+            if let Some(host_id) = crate::meta_store::host_id(&host) {
+                writer.meta.cleanup_host_contexts(
+                    &host_id,
+                    &host.hostname(),
+                    |uuid| dimension_can_be_deleted(writer, uuid),
+                    shutting_down,
+                );
+            }
+            if shutting_down() || !writer.meta.wal_size_acceptable() {
+                break;
+            }
+        }
+        shared.next_ctx_cleanup.store(
+            now_realtime_s().saturating_add(CTX_CLEANUP_REPEAT_S),
+            Ordering::Release,
+        );
+    }
+    if shutting_down() {
+        return;
+    }
+    let mut next = shared.next_vacuum_run.load(Ordering::Acquire);
+    writer.meta.vacuum(&mut next, now_realtime_s());
+    shared.next_vacuum_run.store(next, Ordering::Release);
+    writer.meta.wal_checkpoint();
+}
+
 /// `start_metadata_hosts()`, on a pool thread: the context cleanups, the freed dimensions, the hosts' pending
-/// metadata, then the database's upkeep, and the next store no sooner than 5 s from now. `run_maintenace()` (the
-/// service thread's host cleanup) is not ported yet.
+/// metadata, then the maintenance, and the next store no sooner than 5 s from now. `run_maintenace()` (the service
+/// thread's host cleanup) is not ported yet.
 fn store_job(writer: &Writer, shared: &Shared, pending: Pending) {
     if let Some(cleanup) = pending.ctx_cleanup {
         store_ctx_cleanup(writer, shared, cleanup);
@@ -143,12 +196,8 @@ fn store_job(writer: &Writer, shared: &Shared, pending: Pending) {
         "Checking all hosts completed in {}",
         duration(now_ut().saturating_sub(started))
     );
-    // run_metadata_cleanup(): the context cleanup and the long cycles come with S5 (D61.5)
     if !shared.shutdown.load(Ordering::Acquire) {
-        let mut next = shared.next_vacuum_run.load(Ordering::Acquire);
-        writer.meta.vacuum(&mut next, now_realtime_s());
-        shared.next_vacuum_run.store(next, Ordering::Release);
-        writer.meta.wal_checkpoint();
+        run_metadata_cleanup(writer, shared);
     }
     shared.check_after.store(
         now_realtime_s().saturating_add(HOST_CHECK_INTERVAL_S),
@@ -230,6 +279,7 @@ impl MetaSync {
                     check_after: AtomicI64::new(now_realtime_s() + HOST_CHECK_FIRST_S),
                     shutdown: AtomicBool::new(false),
                     next_vacuum_run: AtomicI64::new(0),
+                    next_ctx_cleanup: AtomicI64::new(0),
                     ctx_load_running: AtomicBool::new(false),
                 });
                 let _ = done_tx.send(());
@@ -602,6 +652,7 @@ mod tests {
             check_after: AtomicI64::new(0),
             shutdown: AtomicBool::new(false),
             next_vacuum_run: AtomicI64::new(0),
+            next_ctx_cleanup: AtomicI64::new(0),
             ctx_load_running: AtomicBool::new(false),
         })
     }
@@ -789,6 +840,74 @@ mod tests {
         writer.datafiles_present = false;
         delete_pending_dimensions(&writer, &shared, vec![[3; 16]]);
         assert_eq!(dimensions(&meta), 1, "nothing goes during a shutdown");
+    }
+
+    /// The context cleanup scan checks with C's plain `dimension_can_be_deleted()`: without the dbengine no row goes,
+    /// even with no datafiles, where a freed dimension's row does (D75.12).
+    #[test]
+    fn the_scan_keeps_every_row_without_the_dbengine() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = Writer {
+            meta: meta_with_dimensions(dir.path()),
+            context_db: Weak::new(),
+            hosts: hosts(),
+            datafiles_present: false,
+        };
+        assert!(!dimension_can_be_deleted(&writer, &[1; 16]));
+        assert!(freed_dimension_can_be_deleted(&writer, &[1; 16]));
+    }
+
+    /// `run_metadata_cleanup()`: the first job arms the scan 5 s later; a due scan consumes the queued context of a
+    /// host, its dimensions going only with the dbengine and no retention, and arms the next 300 s after it.
+    #[test]
+    fn the_context_scan_runs_after_5_s_then_every_300_s() {
+        let dirs: Vec<_> = (0..2).map(|_| tempfile::tempdir().unwrap()).collect();
+        for engine in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let hosts = if engine {
+                hosts_with_engine(&dirs)
+            } else {
+                hosts()
+            };
+            let host_id = crate::meta_store::host_id(&hosts.all()[0]).unwrap();
+            let meta = meta_with_dimensions(dir.path());
+            meta.lock()
+                .execute(
+                    "INSERT INTO chart (chart_id, host_id, context) VALUES (x'02', ?, 'ctx.a')",
+                    [&host_id[..]],
+                )
+                .unwrap();
+            meta.schedule_host_ctx_cleanup(&[(host_id, "ctx.a".into())], || false);
+            let writer = Writer {
+                meta: Arc::clone(&meta),
+                context_db: Weak::new(),
+                hosts,
+                datafiles_present: false,
+            };
+            let queued = |meta: &MetaDb| -> i64 {
+                meta.lock()
+                    .query_row("SELECT count(*) FROM ctx_metadata_cleanup", [], |r| {
+                        r.get(0)
+                    })
+                    .unwrap()
+            };
+            let shared = shared();
+            let now = now_realtime_s();
+            run_metadata_cleanup(&writer, &shared);
+            let armed = shared.next_ctx_cleanup.load(Ordering::Acquire);
+            assert!((now + 5..=now + 6).contains(&armed), "{armed}");
+            assert_eq!((dimensions(&meta), queued(&meta)), (3, 1));
+            shared.next_ctx_cleanup.store(1, Ordering::Release);
+            run_metadata_cleanup(&writer, &shared);
+            let kept = if engine { 0 } else { 3 };
+            assert_eq!(
+                (dimensions(&meta), queued(&meta)),
+                (kept, 0),
+                "engine {engine}"
+            );
+            let next = shared.next_ctx_cleanup.load(Ordering::Acquire);
+            assert!((now + 300..=now + 301).contains(&next), "{next}");
+        }
     }
 
     /// A job stores the context cleanups before it deletes the freed dimensions, each list with C's record; the items

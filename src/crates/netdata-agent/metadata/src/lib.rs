@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+mod cleanup;
 pub mod conn;
 pub mod functions;
 pub mod library;

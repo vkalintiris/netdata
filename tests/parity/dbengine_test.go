@@ -29,7 +29,10 @@ const (
 // days of an archived child's charts. Compared: the whole daemon log (the tiers' start with its file decisions, the
 // registry's pre-population, the context loads, the exit), the archived child's contexts, and data queries on every
 // tier and planned across the tiers, byte for byte.
-func TestDbengineRead(t *testing.T) {
+// runRParent is the fixture directory (`NETDATA_DBENGINE_FIXTURES`; the test is skipped without it) and the identity
+// of the runR fixture's parent.
+func runRParent(t *testing.T) (string, daemon.Identity) {
+	t.Helper()
 	fx := os.Getenv("NETDATA_DBENGINE_FIXTURES")
 	if fx == "" {
 		t.Skip("NETDATA_DBENGINE_FIXTURES unset")
@@ -38,8 +41,12 @@ func TestDbengineRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := daemon.Identity{Hostname: "b6parent", StreamKey: parentIdentity.StreamKey,
+	return fx, daemon.Identity{Hostname: "b6parent", StreamKey: parentIdentity.StreamKey,
 		MachineGUID: strings.TrimSpace(string(guid))}
+}
+
+func TestDbengineRead(t *testing.T) {
+	fx, id := runRParent(t)
 	p := StartPair(t, daemon.Options{StorageTiers: 3, TierRetentionMB: [3]int{25, 25, 25},
 		SeedCache: filepath.Join(fx, "runR", "cache"), PulseOff: true, LogsExtra: "    level = debug\n"}, id)
 
@@ -221,16 +228,7 @@ func copyTree(t *testing.T, from, to string) {
 // tier 0's second pair: both agents take C's file decisions with C's records (the whole daemon log), and the archived
 // child's contexts and data read the same afterwards.
 func TestDbengineReadFaults(t *testing.T) {
-	fx := os.Getenv("NETDATA_DBENGINE_FIXTURES")
-	if fx == "" {
-		t.Skip("NETDATA_DBENGINE_FIXTURES unset")
-	}
-	guid, err := os.ReadFile(filepath.Join(fx, "runR", "lib", "registry", "netdata.public.unique.id"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := daemon.Identity{Hostname: "b6parent", StreamKey: parentIdentity.StreamKey,
-		MachineGUID: strings.TrimSpace(string(guid))}
+	fx, id := runRParent(t)
 	flip := func(t *testing.T, path string, at int64) {
 		b, err := os.ReadFile(path)
 		if err != nil {
@@ -302,16 +300,7 @@ func TestDbengineReadFaults(t *testing.T) {
 // it, next to the C agent starting after its own run on the same cache: the same file decisions and engine records,
 // the same archived child's contexts and data on every tier.
 func TestDbengineHandBack(t *testing.T) {
-	fx := os.Getenv("NETDATA_DBENGINE_FIXTURES")
-	if fx == "" {
-		t.Skip("NETDATA_DBENGINE_FIXTURES unset")
-	}
-	guid, err := os.ReadFile(filepath.Join(fx, "runR", "lib", "registry", "netdata.public.unique.id"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := daemon.Identity{Hostname: "b6parent", StreamKey: parentIdentity.StreamKey,
-		MachineGUID: strings.TrimSpace(string(guid))}
+	fx, id := runRParent(t)
 	opts := daemon.Options{StorageTiers: 3, TierRetentionMB: [3]int{25, 25, 25}, PulseOff: true,
 		LogsExtra: "    level = debug\n"}
 	seed := filepath.Join(fx, "runR", "cache")

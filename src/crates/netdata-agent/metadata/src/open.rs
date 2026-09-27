@@ -114,6 +114,8 @@ pub enum Check {
 pub struct MetaDb {
     conn: Mutex<Connection>,
     cache_dir: PathBuf,
+    /// `def_journal_size_limit`: the WAL size the metadata cleanup waits under is ten times it.
+    pub(crate) journal_size_limit: i64,
 }
 
 impl MetaDb {
@@ -168,6 +170,9 @@ impl MetaDb {
         Some(MetaDb {
             conn: Mutex::new(c),
             cache_dir: cache_dir.to_path_buf(),
+            journal_size_limit: settings
+                .journal_size_limit
+                .unwrap_or(DEFAULT_JOURNAL_SIZE_LIMIT),
         })
     }
 

@@ -9,6 +9,7 @@ use std::cell::RefCell;
 
 use crate::conn;
 use crate::open::MetaDb;
+use crate::read::prepare_failed;
 
 const SQL_STORE_HOST_INFO: &str = "INSERT OR REPLACE INTO host (host_id, hostname, registry_hostname, update_every, \
      os, timezone, tags, hops, memory_mode, abbrev_timezone, utc_offset, program_name, program_version, entries, \
@@ -158,18 +159,8 @@ pub struct DimRecord<'a> {
     pub hidden: bool,
 }
 
-/// `PREPARE_STATEMENT()`'s record, with the C function it names.
-fn prepare_failed(err: &rusqlite::Error, function: &str) {
-    nd_log!(
-        Source::Daemon,
-        Priority::Err,
-        "Failed to prepare statement, rc={} in {function}",
-        conn::result_code(err)
-    );
-}
-
 /// Bytes bound as text, as `sqlite3_bind_text()` binds a C string.
-fn text(bytes: &[u8]) -> ToSqlOutput<'_> {
+pub(crate) fn text(bytes: &[u8]) -> ToSqlOutput<'_> {
     ToSqlOutput::Borrowed(ValueRef::Text(bytes))
 }
 
