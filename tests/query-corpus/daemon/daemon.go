@@ -54,6 +54,10 @@ type Options struct {
 	// own quota with a fixture of practical size: at the default 60, tier1
 	// would need ~60x more data than tier0 to rotate at all.
 	TierGrouping [3]int
+	// TierRetentionTime sets "dbengine tier N retention time" (index = tier),
+	// "0" (no time limit) when empty. A retention the fixture's data times are
+	// older than deletes their files at the first retention check.
+	TierRetentionTime [3]string
 	// ReplicationStepSeconds, when non-zero, bounds the parent's per-request
 	// replication window, so a streaming fixture can generate rows per
 	// request instead of materializing millions of points.
@@ -154,10 +158,7 @@ const netdataConfTemplate = `[global]
     storage tiers = %[4]d
     replication period = 3650d
     replication step = %[5]s
-    dbengine tier 0 retention time = 0
-    dbengine tier 1 retention time = 0
-    dbengine tier 2 retention time = 0
-%[6]s
+%[13]s%[6]s
 [ml]
     enabled = no
 
@@ -380,6 +381,13 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	if o.ReplicationStepSeconds > 0 {
 		step = fmt.Sprintf("%ds", o.ReplicationStepSeconds)
 	}
+	retentionTime := ""
+	for tier, t := range o.TierRetentionTime {
+		if t == "" {
+			t = "0"
+		}
+		retentionTime += fmt.Sprintf("    dbengine tier %d retention time = %s\n", tier, t)
+	}
 	extraDB := ""
 	for tier, mb := range o.TierRetentionMB {
 		if mb > 0 {
@@ -420,7 +428,7 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 		pulse = "    netdata pulse = no\n"
 	}
 	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs, o.WebExtra,
-		o.GlobalExtra, bindTo, dbMode, pulse)
+		o.GlobalExtra, bindTo, dbMode, pulse, retentionTime)
 	if o.LogsExtra != "" {
 		conf += "\n[logs]\n" + o.LogsExtra
 	}
