@@ -314,11 +314,17 @@ func TestStaticEdgeFiles(t *testing.T) {
 // candidate must answer the same (check api.info-ready). The window can be a few milliseconds, so each side gets a
 // few starts to show it.
 func TestInfoBeforeReady(t *testing.T) {
+	compareBeforeReady(t, "/api/v1/info")
+}
+
+// compareBeforeReady compares the first 503 each binary answers for path while its startup runs.
+func compareBeforeReady(t *testing.T, path string) {
+	t.Helper()
 	bins := binaries(t)
 	var first [2][]byte
 	for i, role := range []Role{Oracle, Candidate} {
 		for attempt := 1; attempt <= 5 && first[i] == nil; attempt++ {
-			first[i] = infoBeforeReady(t, bins[i], Role(fmt.Sprintf("%s-%d", role, attempt)))
+			first[i] = beforeReady(t, bins[i], Role(fmt.Sprintf("%s-%d", role, attempt)), path)
 		}
 		if first[i] == nil {
 			t.Fatalf("%s: no 503 before startup completed in 5 starts", role)
@@ -329,10 +335,10 @@ func TestInfoBeforeReady(t *testing.T) {
 	}
 }
 
-// infoBeforeReady starts the binary while polling /api/v1/info; the first 503 it answers, masked, or nil.
-func infoBeforeReady(t *testing.T, bin string, role Role) []byte {
+// beforeReady starts the binary while polling path; the first 503 it answers, masked, or nil.
+func beforeReady(t *testing.T, bin string, role Role, path string) []byte {
 	t.Helper()
-	request := []byte("GET /api/v1/info HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+	request := []byte("GET " + path + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
 	port := freePorts(t, 1)[0]
 	addr := "127.0.0.1:" + strconv.Itoa(port)
 	stop := make(chan struct{})

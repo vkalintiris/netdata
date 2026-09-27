@@ -19,6 +19,7 @@ mod ctxload;
 mod daemon;
 mod data;
 mod dbengine;
+mod dbengine_stats;
 mod guid;
 mod heartbeat;
 mod host_labels;

@@ -12,6 +12,7 @@ pub mod mrg;
 pub mod query;
 mod rotate;
 pub mod runtime;
+pub mod stats;
 pub mod tier;
 pub mod v2index;
 

@@ -3,7 +3,7 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: bearer checks, `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`,
-//! `context`, `contexts`, `data`, `stream_info` and `stream_path`. `/netdata.conf` shows only the keys of the subsystems ported so far.
+//! `context`, `contexts`, `data`, `dbengine_stats`, `stream_info` and `stream_path`. `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,6 +22,7 @@ use netdata_agent_nrpc::access;
 use crate::acl;
 use crate::contexts_v2;
 use crate::data;
+use crate::dbengine_stats;
 use crate::server::{self, Reply, Shared};
 use crate::static_file;
 use crate::stream_info;
@@ -55,22 +56,13 @@ const API_V1: &[Command] = &[
         acl: acl::bits::NODES,
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
-        // api_v1_info(): until startup completes, 503 with the response buffer unflushed (the request)
         callback: |route, host, _| {
-            if !(route.shared.ready)() {
-                return Reply {
-                    code: status::SERVICE_UNAVAILABLE,
-                    content_type: ContentType::TextPlain,
-                    body: route.input.to_vec(),
-                    ..Reply::default()
-                };
-            }
-            Reply {
+            not_ready(route).unwrap_or_else(|| Reply {
                 code: status::OK,
                 content_type: ContentType::ApplicationJson,
                 body: api::info_json(host, route.shared),
                 ..Reply::default()
-            }
+            })
         },
     },
     Command {
@@ -115,7 +107,27 @@ const API_V1: &[Command] = &[
         allow_subpaths: false,
         callback: data::v1,
     },
+    Command {
+        name: "dbengine_stats",
+        acl: acl::bits::NODES,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, _| {
+            not_ready(route).unwrap_or_else(|| dbengine_stats::reply(route.shared.hosts.storage()))
+        },
+    },
 ];
+
+/// `api_v1_info()` and `api_v1_dbengine_stats()` until startup completes: 503, the response buffer unflushed (the
+/// request).
+fn not_ready(route: &Route<'_>) -> Option<Reply> {
+    (!(route.shared.ready)()).then(|| Reply {
+        code: status::SERVICE_UNAVAILABLE,
+        content_type: ContentType::TextPlain,
+        body: route.input.to_vec(),
+        ..Reply::default()
+    })
+}
 const API_V2: &[Command] = &[Command {
     name: "data",
     acl: acl::bits::METRICS,
@@ -430,16 +442,21 @@ mod tests {
         )
     }
 
-    /// Until startup completes `/api/v1/info` answers 503 with what was received, as `api_v1_info()` returns before
-    /// flushing the buffer the request was read into; the other commands answer.
+    /// Until startup completes `/api/v1/info` and `/api/v1/dbengine_stats` answer 503 with what was received, as
+    /// `api_v1_info()` and `api_v1_dbengine_stats()` return before flushing the buffer the request was read into; the
+    /// other commands answer.
     #[test]
-    fn info_waits_for_startup() {
+    fn info_and_dbengine_stats_wait_for_startup() {
         let s = Shared {
             ready: || false,
             ..shared()
         };
         let input = b"GET /api/v1/info HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        for path in [&b"/api/v1/info"[..], b"/host/box/api/v1/info"] {
+        for path in [
+            &b"/api/v1/info"[..],
+            b"/host/box/api/v1/info",
+            b"/api/v1/dbengine_stats",
+        ] {
             let mut req = Request::default();
             req.path = path.to_vec();
             req.url_as_received = path.to_vec();
@@ -462,6 +479,21 @@ mod tests {
             );
         }
         assert_eq!(route(&s, b"/api/v1/charts").code, status::OK);
+    }
+
+    /// Without the dbengine `/api/v1/dbengine_stats` answers 404 with C's text, the reply otherwise as it started.
+    #[test]
+    fn dbengine_stats_without_the_dbengine() {
+        let r = route(&shared(), b"/api/v1/dbengine_stats");
+        assert_eq!(
+            (r.code, r.content_type, r.body.as_slice(), r.no_cacheable),
+            (
+                status::NOT_FOUND,
+                ContentType::TextPlain,
+                &b"dbengine is not enabled"[..],
+                true
+            )
+        );
     }
 
     /// `/api/v1/info` ends with the routed host's memory mode and the dbengine's quota and page cache size, as

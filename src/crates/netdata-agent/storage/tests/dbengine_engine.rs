@@ -369,3 +369,117 @@ fn runr_last_file_follows_the_one_day_rule() {
         }
     }
 }
+
+/// `/api/v1/dbengine_stats`' walk (`TierData::size_statistics()`) on the C-written runs, after a start: every pair
+/// counts as a data file, and each indexed pair adds its metrics and its extents' pages, each single-point as C's v2
+/// pages hold no length: the v2 files agree with the data files and journals they index.
+#[test]
+fn size_statistics_agree_with_the_indexed_pairs() {
+    let Some(fx) = fixtures() else {
+        return;
+    };
+    const NOW: i64 = 1_790_351_792 + 3600;
+    const GRANULARITY: [i64; 3] = [1, 60, 3600];
+    for run in ["runR", "run1", "run2"] {
+        let work = tempfile::tempdir().unwrap();
+        let mrg = Mrg::new();
+        let pool = WorkPool::new(4, 256 * 1024);
+        let mut tiers = Vec::new();
+        let mut dirs = Vec::new();
+        for tier in 0..3 {
+            let name = if tier == 0 {
+                "dbengine".to_string()
+            } else {
+                format!("dbengine-tier{tier}")
+            };
+            let dir = work.path().join(&name);
+            copy_dir(&fx.join(run).join("cache").join(&name), &dir);
+            let cfg = TierConfig {
+                max_disk_space: 25 * 1024 * 1024,
+                ..TierConfig::new(tier, dir.clone())
+            };
+            let mut loaded = load(cfg, &mrg, NOW).unwrap();
+            populate(&mut loaded, &mrg, &pool, 4, NOW);
+            readiness(&mut loaded, NOW);
+            tiers.push(loaded);
+            dirs.push(dir);
+        }
+        let engine = Dbengine::new(mrg, tiers, EngineConfig::new(|| NOW));
+        let mut indexed = 0;
+        for (tier, dir) in dirs.iter().enumerate() {
+            let g = GRANULARITY[tier];
+            let got = engine.tiers[tier].size_statistics(g as u64, 109);
+            let names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect();
+            let mut want = (0u64, 0u64, 0i64, None::<i64>, None::<i64>);
+            for v2 in names.iter().filter(|n| n.ends_with(".njfv2")) {
+                let pair = work.path().join(format!("pair-{tier}"));
+                let _ = std::fs::remove_dir_all(&pair);
+                std::fs::create_dir(&pair).unwrap();
+                let njf = v2.trim_end_matches("v2");
+                let ndf = njf
+                    .replace("journalfile", "datafile")
+                    .replace(".njf", ".ndf");
+                for f in [njf, ndf.as_str()] {
+                    std::fs::copy(dir.join(f), pair.join(f)).unwrap();
+                }
+                let mut uuids = std::collections::HashSet::new();
+                for_each_page(&pair, |d, _| {
+                    uuids.insert(d.uuid);
+                    let start = (d.start_time_ut / 1_000_000) as i64;
+                    let end = if d.page_type == PAGE_TYPE_GORILLA_32BIT {
+                        start + i64::from(d.gorilla_delta_s())
+                    } else {
+                        (d.end_time_ut() / 1_000_000) as i64
+                    };
+                    want.1 += 1;
+                    want.2 += end - start + g;
+                    want.3 = Some(want.3.map_or(start - g, |t| t.min(start - g)));
+                    want.4 = Some(want.4.map_or(end, |t| t.max(end)));
+                })
+                .unwrap();
+                want.0 += uuids.len() as u64;
+            }
+            let (metrics, pages, duration, first, last) = want;
+            let ctx = format!("{run} tier {tier}");
+            indexed += pages;
+            assert_eq!(
+                got.datafiles,
+                names.iter().filter(|n| n.ends_with(".ndf")).count() as u64,
+                "{ctx}"
+            );
+            assert_eq!(
+                (
+                    got.metrics,
+                    got.metrics_pages,
+                    got.extents_pages,
+                    got.single_point_pages
+                ),
+                (metrics, pages, pages, pages),
+                "{ctx}"
+            );
+            assert_eq!(
+                (
+                    got.points,
+                    got.pages_uncompressed_bytes,
+                    got.pages_duration_secs
+                ),
+                (0, 0, duration),
+                "{ctx}"
+            );
+            assert_eq!(
+                (got.first_time_s, got.last_time_s),
+                (first.unwrap_or(0), last.unwrap_or(0)),
+                "{ctx}"
+            );
+            assert_eq!(
+                got.disk_space,
+                engine.tiers[tier].current_disk_space(),
+                "{ctx}"
+            );
+        }
+        assert!(indexed > 0, "{run}: no indexed pages");
+    }
+}

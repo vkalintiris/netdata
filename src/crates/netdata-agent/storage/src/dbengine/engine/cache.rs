@@ -729,6 +729,11 @@ impl MainCache {
         }
     }
 
+    /// `rrdeng_pages_per_extent`.
+    pub fn pages_per_extent(&self) -> usize {
+        self.pages_per_extent
+    }
+
     /// The bytes of the pages held, clean, hot, dirty and being flushed: C's `pgc_get_statistics().size` without its
     /// per-page overhead.
     pub fn bytes(&self) -> usize {
