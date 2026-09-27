@@ -8,7 +8,7 @@ use netdata_agent_inicfg::Config;
 use netdata_agent_rrd::contexts;
 use netdata_agent_rrd::host::{Host, Hosts};
 
-use crate::heartbeat::Thread;
+use crate::heartbeat::{Phase, Thread};
 
 /// `RRDCONTEXT_WORKER_THREAD_HEARTBEAT_USEC`.
 const HEARTBEAT: Duration = Duration::from_secs(1);
@@ -45,22 +45,28 @@ pub fn spawn(
     settings: impl FnOnce() + Send + 'static,
     delete_from_sql: impl Fn(&Host, &str, u64) + Send + 'static,
 ) -> std::io::Result<Thread> {
-    Thread::spawn("RRDCONTEXT", stack_size, HEARTBEAT, move |ticker| {
-        settings();
-        let running = || ticker.running();
-        while ticker.next() {
-            contexts::deep_pass(&hosts, now_realtime_ut(), &running, |host, id, version| {
-                delete_from_sql(host, id, version)
-            });
-            // a host whose contexts are still loading waits for the load, as in C
-            for host in hosts.all().iter().filter(|h| !h.is_pending_context_load()) {
-                if !running() {
-                    break;
+    Thread::spawn(
+        "RRDCONTEXT",
+        stack_size,
+        HEARTBEAT,
+        Phase::Randomized,
+        move |ticker| {
+            settings();
+            let running = || ticker.running();
+            while ticker.next() {
+                contexts::deep_pass(&hosts, now_realtime_ut(), &running, |host, id, version| {
+                    delete_from_sql(host, id, version)
+                });
+                // a host whose contexts are still loading waits for the load, as in C
+                for host in hosts.all().iter().filter(|h| !h.is_pending_context_load()) {
+                    if !running() {
+                        break;
+                    }
+                    host.contexts().worker_cycle_while(&running);
                 }
-                host.contexts().worker_cycle_while(&running);
             }
-        }
-    })
+        },
+    )
 }
 
 #[cfg(test)]

@@ -99,9 +99,9 @@ impl Web {
     }
 
     /// `pulse_web_copy()`: the counters; with `reset_max` the maximum starts again from 0 unless a request raised it
-    /// since it was read.
+    /// since it was read, and then the raised one is reported, as C's exchange writes it back.
     pub fn read(&self, reset_max: bool) -> WebStats {
-        let stats = WebStats {
+        let mut stats = WebStats {
             connected_clients: self.connected_clients.load(Ordering::Relaxed),
             requests: self.requests.load(Ordering::Relaxed),
             usec: self.usec.load(Ordering::Relaxed),
@@ -109,13 +109,15 @@ impl Web {
             content_size_uncompressed: self.content_size_uncompressed.load(Ordering::Relaxed),
             content_size_compressed: self.content_size_compressed.load(Ordering::Relaxed),
         };
-        if reset_max {
-            let _ = self.usec_max.compare_exchange(
+        if reset_max
+            && let Err(raised) = self.usec_max.compare_exchange(
                 stats.usec_max,
                 0,
                 Ordering::Relaxed,
                 Ordering::Relaxed,
-            );
+            )
+        {
+            stats.usec_max = raised;
         }
         stats
     }

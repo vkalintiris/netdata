@@ -229,8 +229,8 @@ pub fn cleanup_and_exit(reason: &str, normal: bool, mut work: impl FnMut(usize, 
     for step in 0..STEPS.len() {
         work(step, normal);
         match step {
-            // cancel_main_threads(): of C's static threads the Rust agent runs BACKFILL, which the work above names
-            // when its loop still runs
+            // cancel_main_threads(): of C's static threads the Rust agent runs PULSE, whose loop ended when the exit
+            // started, and BACKFILL, which the work above names when its loop still runs
             CANCEL_MAIN_THREADS => {
                 netdata_log_info!("All threads finished.");
                 // an abnormal exit leaves the command server alone: a command may hold what the fatal thread waits for

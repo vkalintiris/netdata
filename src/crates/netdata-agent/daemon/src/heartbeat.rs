@@ -36,22 +36,76 @@ impl Stop {
     }
 }
 
+/// `HEARTBEAT_MIN_OFFSET_UT` and `HEARTBEAT_RANDOM_OFFSET_UT`.
+const MIN_OFFSET_UT: u64 = 150_000;
+const RANDOM_OFFSET_UT: u64 = 350_000;
+
+/// Where in its period a thread wakes.
+#[derive(Debug, Clone, Copy)]
+pub enum Phase {
+    /// On the tick (PULSE sets `hb.randomness = 0`, to stay clear of the other threads).
+    OnTheTick,
+    /// `heartbeat_randomness()`: a fixed offset of the thread, 150 to 500 ms past the tick.
+    Randomized,
+}
+
+impl Phase {
+    fn offset(self) -> Duration {
+        match self {
+            Phase::OnTheTick => Duration::ZERO,
+            Phase::Randomized => Duration::from_micros(randomness(random_u64(), system_hz())),
+        }
+    }
+}
+
+/// `heartbeat_randomness()`: 150 ms plus up to 350 ms, moved a quarter of a scheduler tick away from one.
+fn randomness(hash: u64, hz: u64) -> u64 {
+    let mut offset_ut = MIN_OFFSET_UT + hash % RANDOM_OFFSET_UT;
+    let scheduler_step_ut = (1_000_000 / hz.max(1)).clamp(1, 10_000);
+    if offset_ut % scheduler_step_ut < scheduler_step_ut / 4 {
+        offset_ut += scheduler_step_ut / 4;
+    }
+    offset_ut
+}
+
+/// C hashes the thread, the time and the heartbeat's id: any per-thread random value serves.
+fn random_u64() -> u64 {
+    use std::hash::{BuildHasher, Hash, Hasher};
+    let mut hasher = std::hash::RandomState::new().build_hasher();
+    std::thread::current().id().hash(&mut hasher);
+    SystemTime::now().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// `system_hz` (`os_get_system_HZ()`): the clock ticks per second, 100 when unknown.
+fn system_hz() -> u64 {
+    use nix::unistd::{SysconfVar, sysconf};
+    match sysconf(SysconfVar::CLK_TCK) {
+        Ok(Some(ticks)) if ticks > 0 => ticks as u64,
+        _ => 100,
+    }
+}
+
+/// `heartbeat_next()`'s sleep from `now`: to the next tick of the period's wall-clock grid, plus the offset.
+fn wait_from(now: Duration, period: Duration, offset: Duration) -> Duration {
+    period - Duration::from_nanos((now.as_nanos() % period.as_nanos()) as u64) + offset
+}
+
 /// What a periodic thread's body waits on.
 pub struct Ticker {
     stop: Arc<Stop>,
     period: Duration,
+    offset: Duration,
 }
 
 impl Ticker {
-    /// `heartbeat_next()` without randomness: waits for the next tick on the wall-clock grid of the period; false
+    /// `heartbeat_next()`: waits for the next tick of the period's wall-clock grid, plus the thread's offset; false
     /// once a stop came.
     pub fn next(&self) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
-        let wait =
-            self.period - Duration::from_nanos((now.as_nanos() % self.period.as_nanos()) as u64);
-        !self.stop.wait(wait)
+        !self.stop.wait(wait_from(now, self.period, self.offset))
     }
 
     /// Whether no stop was requested.
@@ -66,17 +120,19 @@ pub struct Thread {
 }
 
 impl Thread {
-    /// Starts `name`, whose `body` waits on a ticker of `period`.
+    /// Starts `name`, whose `body` waits on a ticker of `period` at `phase`.
     pub fn spawn(
         name: &str,
         stack_size: usize,
         period: Duration,
+        phase: Phase,
         body: impl FnOnce(&Ticker) + Send + 'static,
     ) -> std::io::Result<Self> {
         let stop = Arc::new(Stop::default());
         let ticker = Ticker {
             stop: Arc::clone(&stop),
             period,
+            offset: phase.offset(),
         };
         let thread = std::thread::Builder::new()
             .name(name.into())
@@ -132,19 +188,62 @@ mod tests {
         );
     }
 
-    /// A ticker wakes on its period's grid and stops at once when asked; the thread's stop waits for its end.
+    /// `heartbeat_next()`'s sleep: to the next tick of the grid (never the current one), plus the offset.
+    #[test]
+    fn a_ticker_waits_for_the_next_tick_and_its_offset() {
+        let second = Duration::from_secs(1);
+        let at = |ms: u64| Duration::from_millis(1_790_000_000_000 + ms);
+        assert_eq!(wait_from(at(0), second, Duration::ZERO), second);
+        assert_eq!(
+            wait_from(at(250), second, Duration::ZERO),
+            Duration::from_millis(750)
+        );
+        assert_eq!(
+            wait_from(at(100), second, Duration::from_millis(300)),
+            Duration::from_millis(1200),
+            "an offset still ahead in this second waits for the next one, as C's"
+        );
+        assert_eq!(
+            wait_from(at(500), 2 * second, Duration::ZERO),
+            Duration::from_millis(1500)
+        );
+    }
+
+    /// `heartbeat_randomness()`: 150 to 500 ms, a quarter of a scheduler tick away from one.
+    #[test]
+    fn randomness_as_c() {
+        assert_eq!(randomness(0, 100), 150_000 + 2_500, "on a 10 ms tick");
+        assert_eq!(randomness(1_000, 100), 151_000 + 2_500, "near a tick");
+        assert_eq!(randomness(5_000, 100), 155_000, "clear of the ticks");
+        assert_eq!(randomness(349_999, 100), 499_999);
+        assert_eq!(randomness(0, 1000), 150_000 + 250, "a 1 ms tick");
+        assert_eq!(randomness(0, 50), 150_000 + 2_500, "at most 10 ms");
+        for _ in 0..100 {
+            let offset = Phase::Randomized.offset();
+            assert!(
+                (Duration::from_millis(150)..Duration::from_millis(503)).contains(&offset),
+                "{offset:?}"
+            );
+        }
+    }
+
+    /// A thread ticks until it is stopped, and the stop wakes it at once.
     #[test]
     fn a_thread_ticks_until_it_is_stopped() {
         let (sender, ticks) = std::sync::mpsc::channel();
-        let thread = Thread::spawn("TICKS", 64 * 1024, Duration::from_millis(20), move |t| {
-            while t.next() {
-                let _ = sender.send(SystemTime::now());
-            }
-        })
+        let thread = Thread::spawn(
+            "TICKS",
+            64 * 1024,
+            Duration::from_millis(20),
+            Phase::OnTheTick,
+            move |t| {
+                while t.next() {
+                    let _ = sender.send(());
+                }
+            },
+        )
         .unwrap();
-        let first = ticks.recv_timeout(Duration::from_secs(5)).unwrap();
-        let since_epoch = first.duration_since(UNIX_EPOCH).unwrap();
-        assert!(since_epoch.as_millis() % 20 < 15, "{since_epoch:?}");
+        ticks.recv_timeout(Duration::from_secs(5)).unwrap();
         let started = Instant::now();
         thread.stop_within(Duration::from_secs(5));
         assert!(started.elapsed() < Duration::from_secs(1));

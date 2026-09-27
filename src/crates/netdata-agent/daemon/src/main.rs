@@ -886,12 +886,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 let _ = pool.stop_within(Some(shutdown::WEB_SERVERS_WAIT));
             }
         }
-        // PULSE, the stream threads and the BACKFILL threads under one service wait; PULSE ends by itself at its
-        // first tick after the exit started
+        // PULSE, the stream threads and the BACKFILL threads under one service wait
         shutdown::STOP_STREAMING => {
             let deadline = std::time::Instant::now() + shutdown::STREAMING_WAIT;
             if let Some(thread) = pulse_thread.take() {
-                thread.stop_within(shutdown::STREAMING_WAIT);
+                thread.stop_within(deadline.saturating_duration_since(std::time::Instant::now()));
             }
             if let Some(pool) = stream_pool.take() {
                 let _ = pool.stop_within(Some(shutdown::STREAMING_WAIT));

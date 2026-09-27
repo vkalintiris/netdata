@@ -52,9 +52,9 @@ var portedRecords = regexp.MustCompile(`msg="ACLK: (proxy is|using |proxy is exp
 // still being written.
 var timedRecords = regexp.MustCompile(`msg="Checking all hosts completed in |msg="METADATA: Progress of metadata storage: +[0-9.]+% completed"|msg="DBENGINE: tier \d+: MRG population completed: |msg="DBENGINE: flushing at |msg="DBENGINE: waiting for \d+ inflight queries to finish|needs to be indexed, but it has writers working on it`)
 
-// pulseRecords are the shutdown flush's records (N4, D68.7.1): C's pulse charts always leave pages to flush, the
-// candidate's only when children wrote into dbengine. Both sides drop them unless the run turns pulse off, where only
-// the children's pages are left to flush and they compare.
+// pulseRecords are the shutdown flush's records (N4, D68.7.1): pulse charts leave pages to flush, C's always, the
+// candidate's once its PULSE thread stored (P1). Both sides drop them unless the run turns pulse off, where only the
+// children's pages are left to flush and they compare; P1 commit 4 compares them in pulse-on runs too.
 var pulseRecords = regexp.MustCompile(`msg="Flushing DBENGINE (only|hot &) dirty pages\.\.\."|msg="DBENGINE: flushing completed!"`)
 
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
@@ -146,8 +146,9 @@ func threadOf(line string) string {
 }
 
 // normalizeLog masks a record. The main thread's, the shutdown watcher's and PULSE's records carry a stale errno in C
-// (PULSE's end record the ENOENT of its cycle, D81), which the check ignores (D36), as do the command server's own lifecycle records (D57.2), the registry's pre-population
-// record (D63.1) and the context loads' record (D64); the command server's read and libuv error records keep theirs. The harness picks each daemon's port.
+// (PULSE's end record the ENOENT of its cycle, D81), which the check ignores (D36), as do the command server's own
+// lifecycle records (D57.2), the registry's pre-population record (D63.1) and the context loads' record (D64); the
+// command server's read and libuv error records keep theirs. The harness picks each daemon's port.
 func normalizeLog(line, runDir, port string) string {
 	line = strings.ReplaceAll(line, runDir, "<RUN>")
 	if port != "" {
