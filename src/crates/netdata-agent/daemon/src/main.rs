@@ -710,6 +710,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         // Every startup read is done: from here on netdata.conf is read and dumped under its lock.
         netdata_conf: std::sync::Mutex::new(std::mem::take(&mut conf.netdata)),
         custom_dashboard_info: Default::default(),
+        ready: commands::is_ready,
     });
     // One descriptor per listener, shared by every web worker.
     let listeners: Arc<[server::WebListener]> = listeners

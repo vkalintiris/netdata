@@ -49,6 +49,8 @@ pub struct Shared {
     pub netdata_conf: Mutex<Config>,
     /// `[web] custom dashboard_info.js`, read at its first use.
     pub custom_dashboard_info: OnceLock<String>,
+    /// `netdata_ready_load()`: whether startup completed.
+    pub ready: fn() -> bool,
 }
 
 impl Shared {
@@ -827,6 +829,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
             let stream = &client.stream;
             let (reply, allowed) = dispatch(
                 &client.request,
+                &client.received,
                 client.acl,
                 shared,
                 received,
@@ -1018,6 +1021,7 @@ fn is_socket_closed(stream: &Conn, errno: &mut i32) -> bool {
 /// other denials break out of the switch to the checkpoint.
 fn dispatch(
     req: &Request,
+    input: &[u8],
     client_acl: u32,
     shared: &Shared,
     received: Instant,
@@ -1034,14 +1038,14 @@ fn dispatch(
                 || acl::can(client_acl, acl::bits::MCP) =>
         {
             let reply =
-                router::process_request(req, client_acl, shared, received, ctx, interrupted);
+                router::process_request(req, input, client_acl, shared, received, ctx, interrupted);
             (reply, true)
         }
         Some(Mode::Get | Mode::Post | Mode::Put | Mode::Delete)
             if acl::can_access_web(client_acl, req.path_is_mcp) =>
         {
             let reply =
-                router::process_request(req, client_acl, shared, received, ctx, interrupted);
+                router::process_request(req, input, client_acl, shared, received, ctx, interrupted);
             (reply, true)
         }
         Some(Mode::Options | Mode::Get | Mode::Post | Mode::Put | Mode::Delete) => {

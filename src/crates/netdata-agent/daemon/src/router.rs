@@ -55,11 +55,22 @@ const API_V1: &[Command] = &[
         acl: acl::bits::NODES,
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
-        callback: |route, host, _| Reply {
-            code: status::OK,
-            content_type: ContentType::ApplicationJson,
-            body: api::info_json(host, &route.shared.hosts),
-            ..Reply::default()
+        // api_v1_info(): until startup completes, 503 with the response buffer unflushed (the request)
+        callback: |route, host, _| {
+            if !(route.shared.ready)() {
+                return Reply {
+                    code: status::SERVICE_UNAVAILABLE,
+                    content_type: ContentType::TextPlain,
+                    body: route.input.to_vec(),
+                    ..Reply::default()
+                };
+            }
+            Reply {
+                code: status::OK,
+                content_type: ContentType::ApplicationJson,
+                body: api::info_json(host, &route.shared.hosts),
+                ..Reply::default()
+            }
         },
     },
     Command {
@@ -156,6 +167,9 @@ pub struct Route<'a> {
     pub ctx: &'a RequestContext,
     pub url_as_received: &'a [u8],
     pub query: &'a [u8],
+    /// `w->response.data` as the request left it: what was received, which a callback that returns before
+    /// flushing it sends back.
+    pub input: &'a [u8],
     /// `WEB_CLIENT_FLAG_PATH_IS_V0` .. `_V3`.
     pub version: Option<u8>,
     pub trailing_slash: bool,
@@ -165,6 +179,7 @@ pub struct Route<'a> {
 /// The GET/POST/PUT/DELETE branch of `web_client_process_request_from_web_server()`.
 pub fn process_request(
     req: &Request,
+    input: &[u8],
     acl: u32,
     shared: &Shared,
     received: Instant,
@@ -186,6 +201,7 @@ pub fn process_request(
         ctx,
         url_as_received: &req.url_as_received,
         query: &req.query,
+        input,
         version: None,
         trailing_slash: end == 0 || path[end - 1] == b'/',
         has_extension: last_marker == Some(b'.'),
@@ -343,6 +359,7 @@ mod tests {
             release_channel: "nightly",
             netdata_conf: Default::default(),
             custom_dashboard_info: Default::default(),
+            ready: || true,
             hosts: Arc::new(netdata_agent_rrd::host::Hosts::new(
                 netdata_agent_rrd::host::Host::new(
                     "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",
@@ -402,12 +419,47 @@ mod tests {
         req.url_as_received = path.to_vec();
         process_request(
             &req,
+            path,
             acl::bits::TRANSPORTS | acl::bits::ALL_LISTENER_FEATURES,
             shared,
             Instant::now(),
             &crate::access_log::RequestContext::default(),
             &|_| false,
         )
+    }
+
+    /// Until startup completes `/api/v1/info` answers 503 with what was received, as `api_v1_info()` returns before
+    /// flushing the buffer the request was read into; the other commands answer.
+    #[test]
+    fn info_waits_for_startup() {
+        let s = Shared {
+            ready: || false,
+            ..shared()
+        };
+        let input = b"GET /api/v1/info HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        for path in [&b"/api/v1/info"[..], b"/host/box/api/v1/info"] {
+            let mut req = Request::default();
+            req.path = path.to_vec();
+            req.url_as_received = path.to_vec();
+            let r = process_request(
+                &req,
+                input,
+                acl::bits::TRANSPORTS | acl::bits::ALL_LISTENER_FEATURES,
+                &s,
+                Instant::now(),
+                &crate::access_log::RequestContext::default(),
+                &|_| false,
+            );
+            assert_eq!(
+                (r.code, r.content_type, r.body.as_slice()),
+                (
+                    status::SERVICE_UNAVAILABLE,
+                    ContentType::TextPlain,
+                    &input[..]
+                )
+            );
+        }
+        assert_eq!(route(&s, b"/api/v1/charts").code, status::OK);
     }
 
     #[test]

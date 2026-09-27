@@ -258,6 +258,11 @@ pub fn set_ready() {
     READY.store(true, Ordering::Release);
 }
 
+/// `netdata_ready_load()`.
+pub fn is_ready() -> bool {
+    READY.load(Ordering::Acquire)
+}
+
 /// What the FULL commands work on, set before the command server goes FULL.
 pub struct Ctx {
     /// netdata.conf and the hosts.
@@ -377,11 +382,7 @@ fn run(idx: usize, args: &[u8]) -> (Status, Option<Vec<u8>>) {
         READ_CONFIG => read_config(args),
         WRITE_CONFIG => write_config(args),
         PING => (
-            if READY.load(Ordering::Acquire) {
-                SUCCESS
-            } else {
-                FAILURE
-            },
+            if is_ready() { SUCCESS } else { FAILURE },
             Some(b"pong".to_vec()),
         ),
         VERSION => (
