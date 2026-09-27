@@ -86,8 +86,8 @@ fn population_fills_the_registry_and_indexes_files() {
     assert_eq!(tier.first_time_s, NOW - 1000, "known: unchanged");
 }
 
-/// A metric list that fails its CRC (checked here once, as the load skipped it) leaves the file unavailable and the
-/// registry untouched; a tier with no retention is ready from now.
+/// A metric list that fails its CRC (checked here once, as the load skipped it) leaves the file unavailable, without
+/// times, and the registry untouched; a tier with no retention is ready from now.
 #[test]
 fn a_bad_metric_list_hides_its_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -109,4 +109,9 @@ fn a_bad_metric_list_hides_its_file() {
         messages,
         ["DBENGINE: tier 0: ready for data collection and queries"]
     );
+    // unmapped, the file keeps no times (D76.4)
+    let td = crate::dbengine::engine::tier::TierData::new(tier);
+    let df = td.file(1).unwrap();
+    assert!(!df.v2_available());
+    assert_eq!((df.first_time_s(), df.last_time_s()), (0, 0));
 }

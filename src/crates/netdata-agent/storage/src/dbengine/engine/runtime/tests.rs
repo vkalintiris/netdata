@@ -32,6 +32,7 @@ fn init(dirs: &[Option<&Path>]) -> InitConfig {
         stack_size: 256 * 1024,
         timer_period: Duration::from_millis(10),
         rotation: None,
+        retention_tiers: vec![true; dirs.len()],
     }
 }
 
@@ -332,5 +333,60 @@ fn a_tier_shutdown_waits_for_its_extents() {
         messages(records),
         ["DBENGINE: waiting for 0 inflight queries to finish to shutdown tier 0..."]
     );
+    rt.exit();
+}
+
+/// `check_and_schedule_db_rotation()` and `DATABASE_ROTATE`: a tier over its caps gets one rotation queued (asking
+/// again while queued is recorded), one deletion runs at a time, none with two files or once under the caps, and its
+/// end lets the next be queued.
+#[test]
+fn dbev_schedules_rotations_as_c() {
+    let mut s = Sched {
+        cpus: 1,
+        tiers: vec![TierSched::default(); 1],
+        ..Sched::default()
+    };
+    assert!(!s.schedule_rotation(0, || false));
+    assert!(s.schedule_rotation(0, || true));
+    let (again, records) = netdata_agent_log::capture(|| s.schedule_rotation(0, || true));
+    assert!(!again);
+    assert_eq!(
+        messages(records),
+        ["DBENGINE: tier 0 is already pending rotation"]
+    );
+    assert!(!s.database_rotate(0, 2, || true), "two files");
+    assert!(s.schedule_rotation(0, || true));
+    assert!(s.database_rotate(0, 3, || true));
+    assert!(s.schedule_rotation(0, || true), "queued while deleting");
+    assert!(!s.database_rotate(0, 3, || true), "one deletion at a time");
+    s.rotate_done(0);
+    assert!(s.schedule_rotation(0, || true));
+    assert!(!s.database_rotate(0, 3, || false), "under the caps by then");
+}
+
+/// A tier over its size quota deletes its oldest pairs by itself, each once indexed, until it is under the quota (it
+/// never deletes below three files).
+#[test]
+fn a_tier_over_its_quota_deletes_its_oldest_pairs() {
+    use crate::dbengine::engine::testutil::{dirty_page, nth, seq_values, write_cfg};
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = init(&[Some(dir.path())]);
+    cfg.tiers = vec![Some(TierConfig {
+        max_disk_space: 2 << 20,
+        ..write_cfg(0, dir.path())
+    })];
+    let rt = Runtime::start(cfg, &WorkPool::new(4, 256 * 1024), Box::new(|_| {}), || NOW);
+    let e = Arc::clone(rt.engine());
+    let mut held = Vec::new();
+    for i in 0..5 * 63 {
+        held.push(dirty_page(&e, 0, nth(i), T0, &seq_values(1024, i)));
+        e.flush_dirty(0);
+    }
+    let ndf = dir.path().join("datafile-1-0000000001.ndf");
+    assert!(eventually(
+        || !ndf.exists() && e.tiers[0].filenos().first() > Some(&1)
+    ));
+    assert!(eventually(|| !e.tiers[0].cap_exceeded(NOW)));
+    assert!(e.tiers[0].filenos().len() >= 2);
     rt.exit();
 }

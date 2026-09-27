@@ -94,7 +94,7 @@ pub fn journal_index(engine: &Dbengine, tier: usize) -> u32 {
     if td.quiesced() {
         return 0;
     }
-    let (mut count, mut after) = (0, None);
+    let (mut count, mut indexed, mut after) = (0, 0, None);
     while let Some(df) = td.next_for_indexing(after) {
         after = Some(df.fileno);
         let name = pair_name(df.fileno);
@@ -113,8 +113,11 @@ pub fn journal_index(engine: &Dbengine, tier: usize) -> u32 {
                 Priority::Info,
                 "DBENGINE: tier {tier}: reached quota limit, stopping journal indexing"
             );
-            // C asks for another run here, which the deletion of the oldest files it schedules then lets progress;
-            // until S5 deletes, the next rotation starts the next run (D69)
+            // another run follows, once this one indexed a file: C asks for it whatever the run did, which makes a
+            // file whose v2 cannot be written spin (D75.2)
+            if indexed > 0 {
+                td.set_needs_indexing();
+            }
             break;
         }
         nd_log!(
@@ -122,7 +125,9 @@ pub fn journal_index(engine: &Dbengine, tier: usize) -> u32 {
             Priority::Info,
             "DBENGINE: tier {tier}: {name} is ready to be indexed"
         );
-        index_file(engine, tier, td, &df);
+        if index_file(engine, tier, td, &df) {
+            indexed += 1;
+        }
         count += 1;
         if td.quiesced() {
             break;
@@ -141,13 +146,13 @@ pub fn journal_index(engine: &Dbengine, tier: usize) -> u32 {
 /// `pgc_open_cache_to_journal_v2()` of one file: its open pages written as its v2 index, which serves them from then
 /// on (it is registered before they leave the open cache, so a query finds each page in one or the other). A page
 /// whose metric left the registry is rejected: nothing can read it any more (D67.3, D76.3). A file that could not be
-/// written keeps its pages open for the next run.
-fn index_file(engine: &Dbengine, tier: usize, td: &TierData, df: &DataFile) {
+/// written keeps its pages open for the next run. Whether the v2 index was written.
+fn index_file(engine: &Dbengine, tier: usize, td: &TierData, df: &DataFile) -> bool {
     let mut pages = td.open().file_pages(df.fileno);
     pages.retain(|p| engine.mrg.get_and_acquire(&p.uuid, tier).is_some());
     let indexed = !pages.is_empty();
     let Some((file, layout)) = write_v2(&td.config, df.fileno, df.journal_pos(), pages) else {
-        return;
+        return false;
     };
     let index = V2Index::from_layout(df.fileno, file, &layout);
     td.add_disk_space(layout.size() as u64);
@@ -158,6 +163,7 @@ fn index_file(engine: &Dbengine, tier: usize, td: &TierData, df: &DataFile) {
     if indexed {
         df.mark_clean_open();
     }
+    true
 }
 
 #[cfg(test)]

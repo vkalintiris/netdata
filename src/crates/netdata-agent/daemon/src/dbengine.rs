@@ -9,6 +9,7 @@ use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_metadata::open::MetaDb;
 use netdata_agent_metadata::read::populate_metrics;
+use netdata_agent_rrd::mode::DbMode;
 use netdata_agent_rrd::storage::Backfill;
 use netdata_agent_storage::dbengine::engine::cache::cache_budgets;
 use netdata_agent_storage::dbengine::engine::load::TierConfig;
@@ -42,6 +43,7 @@ pub fn start(
         conf.legacy_multihost_db_space,
         system::system_memory(Path::new("/")),
     );
+    let retention_tiers = settings.tiers.len();
     let tiers = settings
         .tiers
         .iter()
@@ -92,6 +94,10 @@ pub fn start(
             timer_period: std::time::Duration::from_secs(1),
             // the contexts' deep pass after a rotation comes with S5 (D75.6)
             rotation: None,
+            // localhost->db[tier].eng: a ram or alloc localhost keeps tier 0 out of the dbengine
+            retention_tiers: (0..retention_tiers)
+                .map(|t| t > 0 || db.mode == DbMode::Dbengine)
+                .collect(),
         },
         pool,
         prepopulate,

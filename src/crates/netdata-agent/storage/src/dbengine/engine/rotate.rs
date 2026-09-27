@@ -28,10 +28,6 @@ fn deletion_pause() {
 
 /// `database_rotate_tp_worker()`: the tier's oldest pair deleted, the registry updated unless the tier is shutting
 /// down, then the rotation hook, whether the deletion happened or gave up.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "S5's scheduling (commit 5) runs it")
-)]
 pub(crate) fn database_rotate(e: &Dbengine, tier: usize) {
     let td = &e.tiers[tier];
     if let Some(df) = td.first_file() {

@@ -23,10 +23,13 @@ use super::index::journal_index;
 use super::load::{Tier, TierConfig, load};
 use super::mrg::Mrg;
 use super::query::{Dbengine, EngineConfig, RotationHook};
+use super::rotate::database_rotate;
 use super::v2index::{Slots, populate_files, populating_record, readiness};
 
 /// `RRDENG_FD_BUDGET_PER_INSTANCE`.
 const FD_BUDGET_PER_TIER: u64 = 50;
+/// `retention_timer`'s period in timer periods (`TIMER_PERIOD_MS * 60`).
+const RETENTION_PERIODS: u32 = 60;
 
 /// `global_stats.rrdeng_reserved_file_descriptors`.
 static RESERVED_FDS: AtomicU64 = AtomicU64::new(0);
@@ -60,6 +63,9 @@ pub struct InitConfig {
     pub timer_period: Duration,
     /// Called after each data file deletion (`rrdcontext_db_rotation()`).
     pub rotation: Option<RotationHook>,
+    /// The tiers the retention timer checks: those localhost stores in the dbengine (`localhost->db[tier].eng`), not
+    /// a ram or alloc localhost's tier 0.
+    pub retention_tiers: Vec<bool>,
 }
 
 /// The commands of the `DBEV` thread.
@@ -81,6 +87,12 @@ pub(crate) enum Cmd {
     JournalIndex(usize),
     /// `after_journal_v2_indexing()`.
     IndexDone(usize),
+    /// `RRDENG_OPCODE_DATABASE_ROTATE`.
+    DatabaseRotate(usize),
+    /// `after_database_rotate()`.
+    RotateDone(usize),
+    /// `retention_timer_cb()`, every 60 periods.
+    RetentionTick,
     /// `RRDENG_OPCODE_CTX_FLUSH_DIRTY`, `RRDENG_OPCODE_CTX_FLUSH_HOT_DIRTY`.
     CtxFlushDirty(usize),
     CtxFlushHotDirty(usize),
@@ -102,7 +114,8 @@ struct Dbev {
 }
 
 /// What `DBEV` alone decides: the flushers running (`rrdeng_main.flushes_running`) and, per tier, whether an index
-/// is queued (`pending_index`) or running (`migration_to_v2_running`).
+/// is queued (`pending_index`) or running (`migration_to_v2_running`), and whether a rotation is queued
+/// (`pending_rotate`) or deleting (`now_deleting_files`).
 #[derive(Debug, Default)]
 struct Sched {
     cpus: usize,
@@ -114,6 +127,8 @@ struct Sched {
 struct TierSched {
     pending_index: bool,
     indexing: bool,
+    pending_rotate: bool,
+    deleting: bool,
 }
 
 impl Sched {
@@ -154,6 +169,45 @@ impl Sched {
     fn index_done(&mut self, tier: usize) {
         self.tiers[tier].indexing = false;
     }
+
+    /// `check_and_schedule_db_rotation()`'s rotation half: whether to queue a rotation for a tier over its caps; not
+    /// while one is queued, which is recorded.
+    fn schedule_rotation(&mut self, tier: usize, cap_exceeded: impl FnOnce() -> bool) -> bool {
+        let t = &mut self.tiers[tier];
+        if t.pending_rotate {
+            nd_log!(
+                Source::Daemon,
+                Priority::Debug,
+                "DBENGINE: tier {tier} is already pending rotation"
+            );
+            return false;
+        }
+        if cap_exceeded() {
+            t.pending_rotate = true;
+            return true;
+        }
+        false
+    }
+
+    /// `DATABASE_ROTATE`: whether to start a deletion (none running, more than two files, the tier still over).
+    fn database_rotate(
+        &mut self,
+        tier: usize,
+        files: usize,
+        cap_exceeded: impl FnOnce() -> bool,
+    ) -> bool {
+        let t = &mut self.tiers[tier];
+        t.pending_rotate = false;
+        if !t.deleting && files > 2 && cap_exceeded() {
+            t.deleting = true;
+            return true;
+        }
+        false
+    }
+
+    fn rotate_done(&mut self, tier: usize) {
+        self.tiers[tier].deleting = false;
+    }
 }
 
 /// `ctx_shutdown_tp_worker()`: waits for the tier's extents being written and its queries in flight, with C's record
@@ -178,6 +232,7 @@ struct Loop {
     tx: mpsc::Sender<Cmd>,
     pool: WorkPool,
     sched: Sched,
+    retention_tiers: Vec<bool>,
 }
 
 impl Loop {
@@ -204,6 +259,34 @@ impl Loop {
             Cmd::IndexDone(tier) => {
                 self.sched.index_done(tier);
                 self.check_and_schedule(e, tier);
+            }
+            Cmd::DatabaseRotate(tier) => {
+                let td = &e.tiers[tier];
+                let files = td.filenos().len();
+                if self
+                    .sched
+                    .database_rotate(tier, files, || td.cap_exceeded(e.now_s()))
+                {
+                    let (e, tx) = (Arc::clone(e), self.tx.clone());
+                    let job = move || {
+                        database_rotate(&e, tier);
+                        let _ = tx.send(Cmd::RotateDone(tier));
+                    };
+                    if self.pool.queue(job).is_err() {
+                        self.sched.rotate_done(tier);
+                    }
+                }
+            }
+            Cmd::RotateDone(tier) => {
+                self.sched.rotate_done(tier);
+                self.check_and_schedule(e, tier);
+            }
+            Cmd::RetentionTick => {
+                for tier in 0..e.tiers.len() {
+                    if self.retention_tiers.get(tier).copied().unwrap_or(false) {
+                        self.check_and_schedule(e, tier);
+                    }
+                }
             }
             Cmd::JournalIndex(tier) => {
                 if self.sched.journal_index(tier, e.tiers[tier].quiesced()) {
@@ -249,19 +332,25 @@ impl Loop {
         }
     }
 
-    /// `check_and_schedule_db_rotation()`: a tier with a file to index gets its indexing queued, once.
+    /// `check_and_schedule_db_rotation()`: a tier with a file to index gets its indexing queued, once, and a tier over
+    /// its caps its rotation.
     fn check_and_schedule(&mut self, e: &Dbengine, tier: usize) {
+        let td = &e.tiers[tier];
+        if self.sched.check_and_schedule(tier, td.needs_indexing()) {
+            let _ = self.tx.send(Cmd::JournalIndex(tier));
+        }
         if self
             .sched
-            .check_and_schedule(tier, e.tiers[tier].needs_indexing())
+            .schedule_rotation(tier, || td.cap_exceeded(e.now_s()))
         {
-            let _ = self.tx.send(Cmd::JournalIndex(tier));
+            let _ = self.tx.send(Cmd::DatabaseRotate(tier));
         }
     }
 }
 
 /// `dbengine_event_loop()`: the commands in order, the timer's tick (`timer_per_sec_cb()`: a flusher; C's cleanup has
-/// nothing to do here) each period. The retention timer waits for S5 (D67.11).
+/// nothing to do here) each period, and the retention timer's (`retention_timer_cb()`) every 60 periods from 60 periods
+/// after the start.
 #[allow(clippy::too_many_arguments)]
 fn dbev_loop(
     rx: mpsc::Receiver<Cmd>,
@@ -272,6 +361,7 @@ fn dbev_loop(
     now: fn() -> i64,
     cpus: usize,
     period: Duration,
+    retention_tiers: Vec<bool>,
 ) {
     thread_created();
     let mut engine: Option<Arc<Dbengine>> = None;
@@ -282,20 +372,32 @@ fn dbev_loop(
             cpus,
             ..Sched::default()
         },
+        retention_tiers,
     };
+    let retention_period = period * RETENTION_PERIODS;
     let mut next = Instant::now() + period;
+    let mut next_retention = Instant::now() + retention_period;
+    // a timer running late restarts its period from now, as libuv's repeat does
+    let advance = |at: Instant, period: Duration, now: Instant| {
+        if at + period > now {
+            at + period
+        } else {
+            now + period
+        }
+    };
     loop {
-        let cmd = match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
+        let deadline = next.min(next_retention);
+        let cmd = match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(cmd) => cmd,
             Err(RecvTimeoutError::Timeout) => {
-                // a timer running late restarts its period from now, as libuv's repeat does
                 let now = Instant::now();
-                next = if next + period > now {
-                    next + period
+                if now >= next_retention {
+                    next_retention = advance(next_retention, retention_period, now);
+                    Cmd::RetentionTick
                 } else {
-                    now + period
-                };
-                Cmd::FlushMain
+                    next = advance(next, period, now);
+                    Cmd::FlushMain
+                }
             }
             Err(RecvTimeoutError::Disconnected) => break,
         };
@@ -339,6 +441,7 @@ struct Shared {
     stack_size: usize,
     now: fn() -> i64,
     timer_period: Duration,
+    retention_tiers: Vec<bool>,
 }
 
 struct Spawn {
@@ -367,10 +470,23 @@ impl Shared {
                 self.now,
             );
             let (cpus, period) = (self.cpus, self.timer_period);
+            let retention_tiers = self.retention_tiers.clone();
             let thread = std::thread::Builder::new()
                 .name("DBEV".into())
                 .stack_size(self.stack_size)
-                .spawn(move || dbev_loop(rx, loop_tx, pool, mrg, slots, now, cpus, period))
+                .spawn(move || {
+                    dbev_loop(
+                        rx,
+                        loop_tx,
+                        pool,
+                        mrg,
+                        slots,
+                        now,
+                        cpus,
+                        period,
+                        retention_tiers,
+                    )
+                })
                 .unwrap_or_else(|err| fatal!("{}", thread_create_failed("DBEV", &err)));
             spawn.dbev = Some(Dbev { tx, thread });
         }
@@ -462,6 +578,7 @@ impl Runtime {
             stack_size: cfg.stack_size,
             now,
             timer_period: cfg.timer_period,
+            retention_tiers: cfg.retention_tiers.clone(),
         });
         let parallel = configured <= cfg.cpus;
         enum Started {

@@ -447,7 +447,12 @@ impl TierData {
             .into_iter()
             .map(|p| {
                 let file = DataFile::new(p.fileno, p.file, p.pos, p.journal, p.journal_pos);
-                file.set_times(p.first_time_s, p.last_time_s);
+                // a v2 index whose population failed is unmapped, which clears its times (D76.4)
+                if p.v2.is_some() && !tier.indexes.contains_key(&p.fileno) {
+                    file.set_times(0, 0);
+                } else {
+                    file.set_times(p.first_time_s, p.last_time_s);
+                }
                 if p.clean_open {
                     file.mark_clean_open();
                 }
