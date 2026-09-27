@@ -71,6 +71,7 @@ impl Charts {
                 }
                 if let Some(state) = inbound_state(status) {
                     inbound[usize::from(status & EPHEMERAL != 0)][state] += 1;
+                    // rrdhost_is_local(): localhost, or a virtual host, which is not ported
                     if gates.stream_is_parent && !host.is_localhost() {
                         child_charts(localhost, &host, state);
                     }
@@ -125,14 +126,14 @@ fn child_dim(chart: &Chart, id: &str, multiplier: i32, algorithm: Algorithm) -> 
 /// ported, to recheck the chart's labels.
 fn child_labels(chart: &Chart, host: &Host) {
     let labels = host.labels();
+    let hostname = host.hostname();
     let node_id = host.node_id();
     let hops = host.ingestion_hops().to_string();
     chart.update_meta(|m| {
         m.labels.copy_from(&labels);
         m.labels
             .add(b"machine_guid", host.machine_guid().as_bytes(), SRC_AUTO);
-        m.labels
-            .add(b"hostname", host.hostname().as_bytes(), SRC_AUTO);
+        m.labels.add(b"hostname", hostname.as_bytes(), SRC_AUTO);
         if node_id != [0; 16] {
             let mut text = Vec::new();
             print_uuid_lower(&mut text, &node_id);

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, Dim};
 use netdata_agent_rrd::collection::{now_realtime_timeval, set_value, timed_done};
 use netdata_agent_rrd::host::Host;
+use netdata_agent_rrd::mode::DbMode;
 
 use crate::Settings;
 
@@ -21,25 +22,32 @@ pub(crate) struct Def<'a> {
     pub chart_type: ChartType,
 }
 
-/// Localhost for one cycle.
+/// Localhost for one cycle, with what its charts take from it read once.
 pub(crate) struct Localhost<'a> {
     pub host: &'a Host,
     hostname: String,
     settings: &'a Settings,
+    /// `localhost->rrd_update_every`, `rrd_memory_mode` and `rrd_history_entries`.
+    update_every: i32,
+    mode: DbMode,
+    history_entries: i64,
 }
 
 impl<'a> Localhost<'a> {
     pub fn new(host: &'a Host, settings: &'a Settings) -> Self {
+        let info = host.info();
         Localhost {
             host,
-            hostname: host.hostname(),
+            hostname: info.hostname,
             settings,
+            update_every: info.update_every,
+            mode: info.db_mode,
+            history_entries: info.history_entries,
         }
     }
 
     /// `rrdset_create_localhost()` with localhost's update every.
     pub fn create(&self, def: &Def<'_>) -> Arc<Chart> {
-        let info = self.host.info();
         let spec = ChartSpec {
             type_: "netdata",
             id: def.id,
@@ -51,10 +59,10 @@ impl<'a> Localhost<'a> {
             plugin: "netdata",
             module: Some(def.module),
             priority: def.priority,
-            update_every: info.update_every,
+            update_every: self.update_every,
             chart_type: def.chart_type,
-            mode: info.db_mode,
-            history_entries: info.history_entries,
+            mode: self.mode,
+            history_entries: self.history_entries,
             page_size: self.settings.page_size,
         };
         self.host.charts().create(&spec).0

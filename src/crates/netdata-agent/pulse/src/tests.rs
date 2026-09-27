@@ -344,7 +344,9 @@ fn a_parent_charts_its_children() {
     let hosts = hosts();
     let host = hosts.localhost();
     host.pulse_status(LOCAL);
-    let child = hosts.add_archived(CHILD, info("child"), |_| {});
+    let mut child_info = info("child");
+    child_info.system_info.hops = 2;
+    let child = hosts.add_archived(CHILD, child_info, |_| {});
     child.update_labels(|l| l.add(b"env", b"prod", SRC_CONFIG));
     child.set_node_id([0xab; 16]);
     child.pulse_status(RCV_RUNNING);
@@ -452,7 +454,6 @@ fn a_parent_charts_its_children() {
         .filter(|l| !l.name.starts_with(b"_collect"))
         .map(|l| (l.name.clone(), l.value.clone()))
         .collect();
-    let hops = child.ingestion_hops().to_string().into_bytes();
     assert_eq!(
         labels,
         [
@@ -463,7 +464,7 @@ fn a_parent_charts_its_children() {
                 b"node_id".to_vec(),
                 b"abababab-abab-abab-abab-abababababab".to_vec()
             ),
-            (b"hops".to_vec(), hops),
+            (b"hops".to_vec(), b"2".to_vec()),
         ]
     );
     assert_eq!(
@@ -491,7 +492,16 @@ fn a_parent_charts_its_children() {
         [("in".to_string(), 1), ("out".to_string(), -1)]
     );
 
-    // the next pass keeps the labels (their version did not move) and follows the state
+    // the next pass keeps the labels (their version did not move), follows the state and the traffic, and revives
+    // an obsolete dimension
+    let label_version = traffic.meta().labels.version();
+    let connections = host
+        .charts()
+        .find(&format!("netdata.streaming.in.reconnects.{CHILD}"))
+        .unwrap()
+        .dim("connections")
+        .unwrap();
+    connections.update_meta(|m| m.flags |= netdata_agent_rrd::chart::dim_flags::OBSOLETE);
     child.stream_bytes_received(100);
     child.pulse_status(RCV_OFFLINE);
     pulse.cycle();
@@ -500,39 +510,60 @@ fn a_parent_charts_its_children() {
         values(host, "netdata.netdata.streaming_inbound_permanent"),
         nodes(&["local", "stale disconnected"])
     );
+    assert_eq!(traffic.meta().labels.version(), label_version);
+    assert_eq!(
+        values(host, &format!("netdata.streaming.in.traffic.{CHILD}"))[0],
+        ("in".to_string(), 100)
+    );
+    assert_eq!(
+        connections.meta().flags & netdata_agent_rrd::chart::dim_flags::OBSOLETE,
+        0
+    );
+
+    // a new label of the child reaches its four charts on the next pass
+    child.update_labels(|l| l.add(b"rack", b"r1", SRC_CONFIG));
+    pulse.cycle();
+    for id in per_child(CHILD) {
+        let chart = host.charts().find(&id).unwrap();
+        assert_eq!(chart.meta().labels.get(b"rack"), Some(&b"r1"[..]), "{id}");
+    }
 }
 
-/// A node that neither is a parent nor streams charts nothing about its hosts; one whose stream.conf enables an API
-/// key but whose profile is not parent charts its children without the inbound nodes.
+/// The parents module's gates: a node that neither is a parent nor streams walks no host; the children's charts need an
+/// API key in stream.conf, the inbound nodes a parent's profile.
 #[test]
 fn the_parents_gates() {
     use netdata_agent_rrd::pulse::host_status::*;
-    const CHILD: &str = "5a1e0000-0000-4000-8000-0000000000c1";
-    let hosts = hosts();
-    hosts.localhost().pulse_status(LOCAL);
-    hosts
-        .add_archived(CHILD, info("child"), |_| {})
-        .pulse_status(RCV_RUNNING);
-    // the charts of localhost after a cycle with these gates (they accumulate from one call to the next)
-    let charted = |gates| {
+    // localhost's charts after a cycle of fresh hosts, with a child running, under these gates
+    let charted = |is_parent, stream_is_parent, is_child| {
+        let hosts = hosts();
+        hosts.localhost().pulse_status(LOCAL);
+        hosts
+            .add_archived(
+                "5a1e0000-0000-4000-8000-0000000000c1",
+                info("child"),
+                |_| {},
+            )
+            .pulse_status(RCV_RUNNING);
+        let gates = Gates {
+            is_parent,
+            stream_is_parent,
+            is_child,
+        };
         pulse(&hosts, gates).cycle();
         hosts.localhost().charts().all().len()
     };
-    assert_eq!(charted(Gates::default()), 6);
-    let api_key_only = Gates {
-        is_parent: false,
-        stream_is_parent: true,
-        is_child: false,
-    };
+    assert_eq!(charted(false, false, false), 6);
     assert_eq!(
-        charted(api_key_only),
+        charted(false, true, false),
         6,
         "the walk runs for a parent or a child only"
     );
-    let streaming_child = Gates {
-        is_parent: false,
-        stream_is_parent: true,
-        is_child: true,
-    };
-    assert_eq!(charted(streaming_child), 6 + 4, "a child's own receivers");
+    assert_eq!(charted(false, true, true), 6 + 4, "a child's own receivers");
+    assert_eq!(
+        charted(true, false, false),
+        6 + 2,
+        "the inbound nodes without the children's charts"
+    );
+    assert_eq!(charted(true, true, false), 6 + 4 + 2);
 }
