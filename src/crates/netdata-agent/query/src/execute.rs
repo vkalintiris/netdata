@@ -1,10 +1,13 @@
-//! Reading each admitted metric into result rows: the plan on one tier (a valid selected tier, else tier 0 until
-//! the best-tier planner, D62.4) and the LATEST fast path (`src/web/api/queries/query-plan.c`), the execute loop
-//! (`query-execute.c`) and the per-metric driver (`rrd2rrdr()`, `query.c`). Spec §4.3, §5.
+//! Reading each admitted metric into result rows: the LATEST fast path and the plans of `plan.rs` (a valid selected
+//! tier, else the best tier with coarser tiers before its data and finer ones after it;
+//! `src/web/api/queries/query-plan.c`), the execute loop that switches between them (`query-execute.c`) and the
+//! per-metric driver (`rrd2rrdr()`, `query.c`). Spec §4.3, §5.
 
 use netdata_agent_log::{Priority, Source, nd_log};
 use std::time::Instant;
 
+use netdata_agent_rrd::storage::TierHandle;
+use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::query::StorageQuery;
 use netdata_agent_storage::storage_number::SN_FLAG_RESET;
 use netdata_agent_storage::storage_point::StoragePoint;
@@ -12,13 +15,11 @@ use netdata_agent_storage::storage_point::StoragePoint;
 use crate::finalize::{cardinality_limit, percentage_of_total};
 use crate::groupby::{AddMode, add_metric, finalize, initialize};
 use crate::grouping::{Grouping, Windows};
+use crate::plan::{self, PlanEntry, PlanState, TierView, Tiers};
 use crate::rrdr::{Rrdr, result_flags, value_flags};
 use crate::tables::{TimeGrouping, options};
 use crate::target::{QueryMetric, QueryTarget, metric_status, status};
 use crate::window::Window;
-
-/// `POINTS_TO_EXPAND_QUERY`: the points a plan reads past its end.
-const POINTS_TO_EXPAND_QUERY: i64 = 5;
 
 /// `QUERY_POINT_MODE`: how a point that spans a row end is projected onto it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,20 +83,19 @@ fn total_projection(point: &QueryPoint, row_start: i64, row_end: i64) -> f64 {
 }
 
 /// What `rrd2rrdr_query_ops_prep()` decided for one metric.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Prepared {
     /// Serve the collector's last stored value (`query_latest_fast_path()`).
     Latest { value: f64, time_s: i64 },
-    /// Read `tier` over `[after, before]` (`qm->plan.array[0]`).
-    Plan {
-        tier: usize,
-        after: i64,
-        before: i64,
+    /// Read the plans (`qm->plan`), each over its window read past its ends (`ops->plans[p].expanded_after/before`).
+    Plans {
+        entries: Vec<PlanEntry>,
+        expanded: Vec<(i64, i64)>,
     },
 }
 
-/// `QUERY_ENGINE_OPS`: one metric's execution state.
-struct Ops {
+/// `QUERY_ENGINE_OPS`: one metric's execution state, with its plans' queries.
+struct Ops<'h> {
     fetch: Fetch,
     point_mode: PointMode,
     view_update_every: i64,
@@ -108,13 +108,30 @@ struct Ops {
     query_point: StoragePoint,
     group_value_flags: u32,
     group_points_non_zero: usize,
-    db_points_read: usize,
-    /// `ops->tier`: the plan's tier.
+    db_total_points_read: usize,
+    db_points_read_per_tier: [usize; RRD_STORAGE_TIERS],
+    /// `ops->tier`: the active plan's tier.
     tier: usize,
+    current_plan: usize,
+    entries: Vec<PlanEntry>,
+    views: [TierView; RRD_STORAGE_TIERS],
+    storage_tiers: usize,
+    states: Vec<PlanState>,
+    /// `ops->plans[p].handle`: a plan's query until the plan is finalized.
+    queries: Vec<Option<StorageQuery<'h>>>,
+    /// `qt->window.before`: where the last plan runs to.
+    window_before: i64,
 }
 
-impl Ops {
-    fn new(qt: &QueryTarget, window: &Window) -> Self {
+impl<'h> Ops<'h> {
+    /// The plans are open where their query is (`query_planer_initialize_plans()`); none is active yet.
+    fn new(
+        qt: &QueryTarget,
+        window: &Window,
+        views: [TierView; RRD_STORAGE_TIERS],
+        entries: Vec<PlanEntry>,
+        queries: Vec<Option<StorageQuery<'h>>>,
+    ) -> Self {
         let (fetch, mut point_mode) = fetch_and_mode(qt.request.time_group);
         if window.options & options::ANOMALY_BIT != 0 {
             point_mode = PointMode::Hold;
@@ -137,8 +154,25 @@ impl Ops {
             query_point: StoragePoint::UNSET,
             group_value_flags: value_flags::NOTHING,
             group_points_non_zero: 0,
-            db_points_read: 0,
+            db_total_points_read: 0,
+            db_points_read_per_tier: [0; RRD_STORAGE_TIERS],
             tier: 0,
+            current_plan: 0,
+            entries,
+            views,
+            storage_tiers: qt.request.profile.storage_tiers as usize,
+            states: queries
+                .iter()
+                .map(|q| {
+                    if q.is_some() {
+                        PlanState::Open
+                    } else {
+                        PlanState::Uninitialized
+                    }
+                })
+                .collect(),
+            queries,
+            window_before: window.before,
         }
     }
 
@@ -157,10 +191,79 @@ impl Ops {
         }
     }
 
-    /// `query_planer_next_plan()` with a single plan: nothing to switch to, the plan runs to the window's end.
-    fn next_plan(&mut self, window: &Window) -> bool {
-        self.set_expire_time(window.before);
-        false
+    /// `query_plan_should_switch_plan()`: a point ending at `now` crosses the active plan's expiry.
+    fn should_switch(&self, now: i64) -> bool {
+        now >= self.current_plan_expire_time
+    }
+
+    /// `query_result_plan_should_switch_plan()`: the row ending at `now` is past the expiry and the offset of the
+    /// grouping; never when the sum overflowed.
+    fn result_should_switch(&self, now: i64) -> bool {
+        now >= self.result_plan_expire_time && !self.result_plan_expire_time_overflow
+    }
+
+    /// `query_planer_set_active_plan()`.
+    fn set_active(&mut self, p: usize) {
+        self.tier = self.entries[p].tier;
+        self.current_plan = p;
+        self.set_expire_time(plan::expire_time(&self.entries, p));
+    }
+
+    /// `query_planer_finalize_plan()`: an open plan's query is released.
+    fn finalize(&mut self, p: usize) {
+        if self.states[p] == PlanState::Open {
+            self.queries[p] = None;
+            self.states[p] = PlanState::Finalized;
+        }
+    }
+
+    /// `query_planer_finalize_remaining_plans()`.
+    fn finalize_remaining(&mut self) {
+        for p in 0..self.entries.len() {
+            self.finalize(p);
+        }
+    }
+
+    /// `query_planer_next_plan()`: activates the first later plan that neither `now` nor the last point's end has
+    /// passed, releasing the plan it leaves (skipped plans stay open until the end); otherwise the active plan runs
+    /// to the window's end.
+    fn next_plan(&mut self, now: i64, last_point_end: i64) -> bool {
+        let tiers = Tiers {
+            views: &self.views,
+            storage_tiers: self.storage_tiers,
+        };
+        match plan::next_plan(
+            &tiers,
+            &self.entries,
+            &self.states,
+            self.current_plan,
+            now,
+            last_point_end,
+        ) {
+            Some(p) => {
+                self.finalize(self.current_plan);
+                self.set_active(p);
+                true
+            }
+            None => {
+                self.set_expire_time(self.window_before);
+                false
+            }
+        }
+    }
+
+    /// `ops->seqh`: the active plan's query, open because only open plans are activated and the plan left is
+    /// released after the switch.
+    fn query(&mut self) -> &mut StorageQuery<'h> {
+        self.queries[self.current_plan]
+            .as_mut()
+            .expect("the active plan is open")
+    }
+
+    /// A point read from the active plan.
+    fn count_read(&mut self) {
+        self.db_points_read_per_tier[self.tier] += 1;
+        self.db_total_points_read += 1;
     }
 
     /// `query_project_point()`.
@@ -211,7 +314,8 @@ impl Ops {
     }
 }
 
-/// `rrd2rrdr_query_ops_prep()`: the LATEST fast path, else the plan (`query_plan()`); `None` fails the metric.
+/// `rrd2rrdr_query_ops_prep()`: the LATEST fast path, else the plans (`query_plan()`), which the metric keeps with the
+/// tiers' weights, even when planning fails, and `queries` counts; `None` fails the metric.
 fn prepare(qt: &mut QueryTarget, d: usize, window: &Window) -> Option<Prepared> {
     let qm = &qt.query[d];
     let (db_last, db_ue) = (qm.tiers[0].last_time_s, qm.tiers[0].update_every_s);
@@ -235,43 +339,43 @@ fn prepare(qt: &mut QueryTarget, d: usize, window: &Window) -> Option<Prepared> 
         }
     }
     let views = qm.tier_views();
-    let tiers = crate::plan::Tiers {
+    let tiers = Tiers {
         views: &views,
         storage_tiers: qt.request.profile.storage_tiers as usize,
     };
-    // a valid selected tier, else tier 0 where C picks the best tier for the timeframe (D62.4, until S4b commit 2)
-    let selected = qt.request.tier as usize;
-    let tier = if window.options & options::SELECTED_TIER != 0
-        && qt.request.tier < qt.request.profile.storage_tiers
-        && tiers.is_valid(selected)
-    {
-        selected
-    } else {
-        0
-    };
-    if !tiers.is_valid(tier) {
+    // a selected tier the agent runs; build_entries() checks the metric has it
+    let selected = (window.options & options::SELECTED_TIER != 0
+        && qt.request.tier < qt.request.profile.storage_tiers)
+        .then_some(qt.request.tier as usize);
+    let mut weights = [0; RRD_STORAGE_TIERS];
+    let built = plan::build_entries(
+        &tiers,
+        selected,
+        window.after,
+        window.before,
+        window.points as usize,
+        &mut weights,
+    );
+    let qm = &mut qt.query[d];
+    for (tier, weight) in qm.tiers.iter_mut().zip(weights) {
+        tier.weight = weight;
+    }
+    qm.plan.clone_from(&built.entries);
+    if !built.ok {
         return None;
     }
-    let (first, last) = (qm.tiers[tier].first_time_s, qm.tiers[tier].last_time_s);
-    if first > window.before || last < window.after {
+    let expanded = plan::expanded_windows(&tiers, &built.entries);
+    for e in &built.entries {
+        qt.db.tiers[e.tier].queries += 1;
+    }
+    // query_plan() activates plan 0 once every plan is open
+    let open = vec![PlanState::Open; built.entries.len()];
+    if !plan::can_activate(&tiers, &built.entries, &open, 0) {
         return None;
     }
-    let entry = crate::plan::PlanEntry {
-        tier,
-        after: first.max(window.after),
-        before: last.min(window.before),
-    };
-    // query_plan_entry_is_valid(): an empty plan fails before it counts
-    if !tiers.entry_is_valid(&entry, window.after, window.before) {
-        return None;
-    }
-    let (after, before) = (entry.after, entry.before);
-    qt.query[d].plan = Some((tier, after, before));
-    qt.db.tiers[tier].queries += 1;
-    Some(Prepared::Plan {
-        tier,
-        after,
-        before,
+    Some(Prepared::Plans {
+        entries: built.entries,
+        expanded,
     })
 }
 
@@ -321,18 +425,16 @@ fn execute_latest(
     }
 }
 
-/// `rrd2rrdr_query_execute()` over one plan: fills column `col` and returns the metric's merged points; the reads
-/// are left in `ops.db_points_read`.
+/// `rrd2rrdr_query_execute()` over the plans from the active one: fills column `col` and returns the metric's merged
+/// points; the reads per tier are left in `ops.db_points_read_per_tier`.
 fn execute_plan(
     r: &mut Rrdr,
     col: usize,
     grouping: &mut Grouping,
     qm: &QueryMetric,
     window: &Window,
-    ops: &mut Ops,
-    handle: &mut StorageQuery<'_>,
+    ops: &mut Ops<'_>,
 ) -> StoragePoint {
-    let tier = ops.tier;
     let opts = window.options;
     let use_anomaly_bit_as_value = opts & options::ANOMALY_BIT != 0;
     let points_wanted = r.n;
@@ -340,14 +442,17 @@ fn execute_plan(
     let mut points_added = 0;
     let (mut min, mut max) = (r.view.min, r.view.max);
     let (mut last2, mut last1, mut new) = (EMPTY_POINT, EMPTY_POINT, EMPTY_POINT);
+    // At a plan switch, the new plan's first point, read ahead to join the plans where it starts.
+    let mut next1 = StoragePoint::UNSET;
+    let mut next1_tier = 0;
     let mut now_start = window.after - ops.query_granularity;
     let mut now_end = window.after + (vue - ops.query_granularity);
     let mut read_since_plan_switch = 0usize;
     let mut finished_counter = 0;
 
     while points_added < points_wanted && finished_counter <= 10 {
-        if now_end >= ops.result_plan_expire_time && !ops.result_plan_expire_time_overflow {
-            ops.next_plan(window);
+        if ops.result_should_switch(now_end) {
+            ops.next_plan(now_end - ops.plan_switch_time_offset, new.sp.end_time_s);
             read_since_plan_switch = 0;
         }
 
@@ -371,30 +476,75 @@ fn execute_plan(
                 last2 = last1;
                 last1 = new;
             }
-            if handle.is_finished() {
-                finished_counter += 1;
-                if count_same_end_time != 0 {
-                    last2 = last1;
-                    last1 = new;
+            let mut sp;
+            let mut sp_tier;
+            if next1.is_unset() {
+                if ops.query().is_finished() {
+                    finished_counter += 1;
+                    if count_same_end_time != 0 {
+                        last2 = last1;
+                        last1 = new;
+                    }
+                    new = EMPTY_POINT;
+                    new.sp.start_time_s = last1.sp.end_time_s;
+                    new.sp.end_time_s = now_end;
+                    break;
                 }
-                new = EMPTY_POINT;
-                new.sp.start_time_s = last1.sp.end_time_s;
-                new.sp.end_time_s = now_end;
-                break;
+                finished_counter = 0;
+                read_since_plan_switch += 1;
+                sp_tier = ops.tier;
+                sp = ops.query().next_metric();
+                ops.count_read();
+                if opts & options::ABSOLUTE != 0 {
+                    sp.make_positive();
+                }
+            } else {
+                // The point read ahead is served without asking whether its query finished.
+                finished_counter = 0;
+                sp = next1;
+                sp_tier = next1_tier;
+                next1 = StoragePoint::UNSET;
+                read_since_plan_switch = 1;
             }
-            finished_counter = 0;
-            read_since_plan_switch += 1;
-            let mut sp = handle.next_metric();
-            ops.db_points_read += 1;
-            if opts & options::ABSOLUTE != 0 {
-                sp.make_positive();
-            }
-            // The point crosses the plan's end: with one plan the switch only moves the expiry.
-            if sp.end_time_s >= ops.current_plan_expire_time {
-                ops.next_plan(window);
+            let mut prepared_sum = sp.sum;
+
+            // The point crosses the plan's end and the next plan took over: its first point decides which serves.
+            if ops.should_switch(sp.end_time_s)
+                && ops.next_plan(now_end - ops.plan_switch_time_offset, new.sp.end_time_s)
+            {
+                let mut sp2 = ops.query().next_metric();
+                let sp2_tier = ops.tier;
+                ops.count_read();
+                if opts & options::ABSOLUTE != 0 {
+                    sp2.make_positive();
+                }
+                let finer_total_overlap = ops.point_mode == PointMode::Total
+                    && sp2_tier < sp_tier
+                    && sp2.start_time_s < sp.end_time_s;
+                if sp.start_time_s > sp2.start_time_s
+                    || (finer_total_overlap && sp2.start_time_s <= sp.start_time_s)
+                {
+                    // The old plan's point is wholly after the new one's, or a finer total covers it: dropped.
+                    sp = sp2;
+                    sp_tier = sp2_tier;
+                    prepared_sum = sp2.sum;
+                } else {
+                    // The old plan's point serves up to where the new one starts, which ends its interpolation; a
+                    // finer total keeps only the old point's share before it.
+                    next1 = sp2;
+                    next1_tier = sp2_tier;
+                    if finer_total_overlap {
+                        let duration = sp.end_time_s - sp.start_time_s;
+                        let retained = sp2.start_time_s - sp.start_time_s;
+                        if !qm.values_stored_as_rates && duration > 0 {
+                            prepared_sum *= retained as f64 / duration as f64;
+                        }
+                        sp.end_time_s = sp2.start_time_s;
+                    }
+                }
             }
             new.sp = sp;
-            new.tier = tier;
+            new.tier = sp_tier;
             new.added = false;
             new.value = if !sp.is_unset() && !sp.is_gap() {
                 if use_anomaly_bit_as_value {
@@ -405,7 +555,7 @@ fn execute_plan(
                         Fetch::Min => sp.min,
                         Fetch::Max => sp.max,
                         Fetch::Sum => {
-                            let mut value = sp.sum;
+                            let mut value = prepared_sum;
                             let duration = sp.end_time_s - sp.start_time_s;
                             if qm.values_stored_as_rates && duration > 0 {
                                 value *= duration as f64 / f64::from(sp.count);
@@ -425,9 +575,9 @@ fn execute_plan(
                 f64::NAN
             };
 
-            // A zero-duration point from the engine is widened to one update interval.
+            // A zero-duration point from the engine is widened to one update interval of the active plan's tier.
             if read_since_plan_switch > 1 && new.sp.start_time_s == new.sp.end_time_s {
-                new.sp.start_time_s = new.sp.end_time_s - qm.tiers[tier].update_every_s;
+                new.sp.start_time_s = new.sp.end_time_s - qm.tiers[ops.tier].update_every_s;
             }
             // The engine did not advance.
             if read_since_plan_switch > 1 && new.sp.end_time_s <= last1.sp.end_time_s {
@@ -451,8 +601,11 @@ fn execute_plan(
             new.sp.end_time_s = now_end;
         }
 
-        // Emit every row the three points in memory (last2, last1, new) cover.
-        let stop_time = new.sp.end_time_s;
+        // Emit every row the three points in memory (last2, last1, new) cover, up to where a point read ahead starts.
+        let mut stop_time = new.sp.end_time_s;
+        if !next1.is_unset() && next1.start_time_s >= now_end {
+            stop_time = next1.start_time_s;
+        }
         let mut new_point_total_remaining = f64::NAN;
         loop {
             let mut current;
@@ -529,7 +682,7 @@ fn execute_plan(
             && ((new.added
                 && (ops.point_mode == PointMode::Total
                     || (new.tier == 0 && new.sp.start_time_s < next_row_start)))
-                || (!new.added && ops.point_mode == PointMode::Total))
+                || (!new.added && ops.point_mode == PointMode::Total && next1.is_unset()))
         {
             let settle =
                 ops.point_mode == PointMode::Total || new.sp.end_time_s >= qm.tiers[0].last_time_s;
@@ -569,6 +722,7 @@ fn execute_plan(
         now_start = now_end;
         now_end += vue;
     }
+    ops.finalize_remaining();
 
     while points_added < points_wanted {
         let idx = r.index(points_added, col);
@@ -582,7 +736,7 @@ fn execute_plan(
     r.view.min = min;
     r.view.max = max;
     r.result_points_generated += points_added;
-    r.db_points_read += ops.db_points_read;
+    r.db_points_read += ops.db_total_points_read;
     ops.query_point
 }
 
@@ -641,8 +795,8 @@ fn new_grouping(qt: &QueryTarget, window: &Window, windows: Windows) -> Grouping
 }
 
 /// One metric of the `rrd2rrdr()` loop up to its execution: column `col` of `r` takes the metric's status, the
-/// grouping is reset, and the metric is executed there (its merged points kept); a failed plan is counted and
-/// gives `None`.
+/// grouping is reset, and the metric is executed there (its merged points kept, its reads counted per tier), every
+/// plan's query open from the start; a failed plan is counted and gives `None`.
 fn query_metric(
     qt: &mut QueryTarget,
     d: usize,
@@ -666,32 +820,34 @@ fn query_metric(
     let qm = &qt.query[d];
     let query_points = match prepared {
         Prepared::Latest { value, time_s } => execute_latest(r, col, qm, window, value, time_s),
-        Prepared::Plan {
-            tier,
-            after,
-            before,
-        } => {
-            let mut ops = Ops::new(qt, window);
-            ops.set_expire_time(before);
-            // query_planer_initialize_plans(): tiers above 0 also read points before the plan
-            let ue = qm.tiers[tier].update_every_s;
-            let expand_after = if tier == 0 {
-                0
-            } else {
-                ue * POINTS_TO_EXPAND_QUERY
-            };
-            let handle = qm.tiers[tier]
-                .handle
-                .clone()
-                .expect("prepare() checked the tier");
-            let mut query = handle.query(
-                after - expand_after,
-                before + ue * POINTS_TO_EXPAND_QUERY,
-                qt.request.priority,
-            );
-            ops.tier = tier;
-            let query_points = execute_plan(r, col, grouping, qm, window, &mut ops, &mut query);
-            qt.db.tiers[tier].points += ops.db_points_read;
+        Prepared::Plans { entries, expanded } => {
+            // metric_dup() per plan: the queries borrow these, which leaves `qt` free for the counters
+            let handles: Vec<Option<TierHandle>> = entries
+                .iter()
+                .map(|e| qm.tiers[e.tier].handle.clone())
+                .collect();
+            let queries = handles
+                .iter()
+                .zip(&expanded)
+                .map(|(handle, &(after, before))| {
+                    handle
+                        .as_ref()
+                        .map(|h| h.query(after, before, qt.request.priority))
+                })
+                .collect();
+            let mut ops = Ops::new(qt, window, qm.tier_views(), entries, queries);
+            ops.set_active(0);
+            let query_points = execute_plan(r, col, grouping, qm, window, &mut ops);
+            let storage_tiers = qt.request.profile.storage_tiers as usize;
+            for (stats, points) in qt
+                .db
+                .tiers
+                .iter_mut()
+                .zip(ops.db_points_read_per_tier)
+                .take(storage_tiers)
+            {
+                stats.points += points;
+            }
             query_points
         }
     };
@@ -865,380 +1021,4 @@ pub fn run_v2(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> O
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use netdata_agent_rrd::chart::Algorithm;
-    use netdata_agent_rrd::host::Host;
-    use netdata_agent_storage::storage_number::{SN_FLAG_NOT_ANOMALOUS, pack, unpack};
-
-    use super::*;
-    use crate::testing::{T0, host, v1_target, v2_target};
-
-    fn run(h: &Arc<Host>, query: &str) -> (QueryTarget, Window, Rrdr) {
-        let (mut qt, mut window) = v1_target(h, query);
-        let control = Control {
-            received: Instant::now(),
-            interrupted: &|_| false,
-            windows: Windows::default(),
-        };
-        let r = run_v1(&mut qt, &mut window, &control);
-        (qt, window, r)
-    }
-
-    fn rows(r: &Rrdr) -> Vec<(f64, u32)> {
-        (0..r.rows).map(|i| (r.v[i], r.o[i])).collect()
-    }
-
-    const EMPTY_ROW: (f64, u32) = (0.0, value_flags::EMPTY);
-
-    #[test]
-    fn natural_points_follow_the_worked_example() {
-        let h = host();
-        let (qt, window, r) = run(&h, &format!("after={T0}&before={}", T0 + 6));
-        assert_eq!(
-            (window.after, window.before, window.points),
-            (T0, T0 + 6, 7)
-        );
-        let thirty = unpack(pack(30.0, 0));
-        assert_eq!(
-            rows(&r),
-            vec![
-                EMPTY_ROW,
-                (10.0, 0),
-                EMPTY_ROW,
-                (20.0, 0),
-                (thirty, 0),
-                EMPTY_ROW,
-                (40.0, 0)
-            ]
-        );
-        assert_eq!(r.t, (T0..=T0 + 6).collect::<Vec<_>>());
-        assert_eq!((r.view.min, r.view.max), (0.0, 40.0));
-        assert_eq!(r.view.flags, result_flags::ABSOLUTE);
-        let selected = metric_status::SELECTED;
-        assert_eq!(
-            r.od[0],
-            selected | metric_status::NONZERO | metric_status::QUERIED
-        );
-        assert_eq!((qt.db.tiers[0].queries, qt.db.tiers[0].points), (1, 7));
-        assert_eq!(
-            (r.queries_count, r.result_points_generated, r.db_points_read),
-            (1, 7, 7)
-        );
-        assert_eq!(
-            qt.query[0].query_points,
-            StoragePoint {
-                min: 10.0,
-                max: 40.0,
-                sum: 10.0 + 20.0 + thirty + 40.0,
-                start_time_s: T0,
-                end_time_s: T0 + 6,
-                count: 4,
-                anomaly_count: 0,
-                // The first merged point is copied whole; later merges only add RESET.
-                flags: SN_FLAG_NOT_ANOMALOUS,
-            }
-        );
-        assert_eq!(
-            qt.query[0].status,
-            selected | metric_status::QUERIED,
-            "v1 execution never copies NONZERO back to the metric"
-        );
-        assert_eq!(qt.dimensions[0].status & status::QUERIED, status::QUERIED);
-        assert_eq!(
-            (qt.instances[0].metrics.queried, qt.nodes[0].metrics.queried),
-            (1, 1)
-        );
-    }
-
-    #[test]
-    fn virtual_points_group_the_samples() {
-        let h = host();
-        let thirty = unpack(pack(30.0, 0));
-        let (qt, window, r) = run(&h, &format!("after={T0}&before={}&points=3", T0 + 6));
-        assert_eq!((window.after, window.points, window.group), (T0 + 1, 3, 2));
-        assert_eq!(
-            rows(&r),
-            vec![(10.0, 0), ((20.0 + thirty) / 2.0, 0), (40.0, 0)]
-        );
-        assert_eq!(qt.db.tiers[0].points, 6);
-
-        let (qt, window, r) = run(&h, &format!("after={T0}&before={}&points=2", T0 + 6));
-        assert_eq!(
-            (window.after, window.before, window.group),
-            (T0 + 2, T0 + 7, 3)
-        );
-        assert_eq!(rows(&r), vec![((20.0 + thirty) / 2.0, 0), (40.0, 0)]);
-        assert_eq!(qt.db.tiers[0].points, 6);
-    }
-
-    #[test]
-    fn latest_serves_the_last_stored_value() {
-        let h = host();
-        let dim = h.charts().find("t.a").unwrap().dim("d").unwrap();
-        dim.update_collection(|c| c.last_stored_value = -41.5);
-        let q = format!("after={T0}&before={}&points=1&group=latest", T0 + 6);
-        let (qt, _, r) = run(&h, &q);
-        assert_eq!(rows(&r), vec![(-41.5, 0)]);
-        assert_eq!(
-            r.od[0],
-            metric_status::SELECTED | metric_status::NONZERO | metric_status::QUERIED
-        );
-        assert_eq!((r.view.min, r.view.max), (-41.5, -41.5));
-        assert_eq!(
-            (
-                qt.db.tiers[0].queries,
-                qt.db.tiers[0].points,
-                r.db_points_read
-            ),
-            (0, 0, 0)
-        );
-        assert_eq!(
-            qt.query[0].query_points,
-            StoragePoint {
-                min: -41.5,
-                max: -41.5,
-                sum: -41.5,
-                start_time_s: T0 + 5,
-                end_time_s: T0 + 6,
-                count: 1,
-                anomaly_count: 0,
-                flags: 0,
-            }
-        );
-        let (_, _, r) = run(&h, &format!("{q}&options=abs"));
-        assert_eq!(rows(&r), vec![(41.5, 0)]);
-
-        // Without a finite cached value, and with anomaly-bit, the storage path answers.
-        let (qt, _, r) = run(&h, &format!("{q}&options=anomaly-bit"));
-        assert_eq!(qt.db.tiers[0].queries, 1);
-        assert_eq!(rows(&r), vec![(0.0, 0)], "no stored sample is anomalous");
-        dim.update_collection(|c| c.last_stored_value = f64::NAN);
-        let (qt, _, r) = run(&h, &q);
-        assert_eq!(qt.db.tiers[0].queries, 1);
-        assert_eq!(rows(&r), vec![(40.0, 0)]);
-    }
-
-    #[test]
-    fn a_metric_ending_before_the_window_fails() {
-        let h = host();
-        // `e` ends two seconds before `d`: admission tolerates two update intervals, the plan does not.
-        let chart = h.charts().find("t.a").unwrap();
-        let (e, _) = chart.dim_add("e", None, 1, 1, Algorithm::Absolute);
-        for t in T0 + 1..=T0 + 4 {
-            e.store_metric(t as u64 * 1_000_000, 1.0, SN_FLAG_NOT_ANOMALOUS);
-        }
-        h.contexts().process_queued();
-        let (qt, window, r) = run(&h, &format!("after={}&before={}", T0 + 6, T0 + 6));
-        assert_eq!((window.after, window.points), (T0 + 6, 1));
-        assert_eq!(r.dn, ["d", "e"]);
-        assert_eq!(rows(&r), vec![(40.0, 0)]);
-        assert_eq!(
-            (r.od[1], qt.query[1].status),
-            (
-                metric_status::SELECTED,
-                metric_status::SELECTED | metric_status::FAILED
-            )
-        );
-        assert_eq!(qt.dimensions[1].status & status::FAILED, status::FAILED);
-        assert_eq!(
-            (
-                qt.instances[0].metrics.failed,
-                qt.contexts[0].metrics.failed
-            ),
-            (1, 1)
-        );
-        assert_eq!(
-            (
-                qt.instances[0].metrics.queried,
-                qt.db.tiers[0].queries,
-                r.queries_count
-            ),
-            (1, 1, 1)
-        );
-    }
-
-    #[test]
-    fn nonzero_is_dropped_when_no_metric_is_nonzero() {
-        let h = host();
-        let (_, window, _) = run(&h, &format!("after={T0}&before={}&options=nonzero", T0 + 6));
-        assert_eq!(window.options & options::NONZERO, 0);
-    }
-
-    #[test]
-    fn a_negative_timeout_cancels_after_the_first_metric() {
-        let h = host();
-        let (_, _, r) = run(&h, &format!("after={T0}&before={}&timeout=-1", T0 + 6));
-        assert_eq!(r.view.flags & result_flags::CANCEL, result_flags::CANCEL);
-    }
-
-    #[test]
-    fn v2_groups_the_metric_and_averages_its_rows() {
-        let h = host();
-        let (mut qt, mut window) = v2_target(
-            &h,
-            &format!("scope_contexts=ctx.a&after={T0}&before={}&points=6", T0 + 6),
-        );
-        let control = Control {
-            received: Instant::now(),
-            interrupted: &|_| false,
-            windows: Windows::default(),
-        };
-        let r = run_v2(&mut qt, &mut window, &control).unwrap();
-        let thirty = unpack(pack(30.0, 0));
-        assert_eq!(
-            (r.columns, r.di.as_slice(), r.dgbc.as_slice()),
-            (1, &["d".to_string()][..], &[1][..])
-        );
-        let shown: Vec<Option<f64>> = (0..r.rows)
-            .map(|i| (r.o[i] & value_flags::EMPTY == 0).then_some(r.v[i]))
-            .collect();
-        // The window ends within two update intervals of now: the empty row at T0+5 trims the live edge; the view
-        // statistics still cover every row (C's quirk).
-        assert_eq!(shown, [Some(10.0), None, Some(20.0), Some(thirty)]);
-        assert_eq!(
-            (r.n, r.trimming.expected_after, r.trimming.trimmed_after),
-            (6, T0 + 4, T0 + 5)
-        );
-        assert_eq!(r.gbc, [1, 0, 1, 1, 0, 1]);
-        assert_eq!(
-            r.od[0] & (metric_status::QUERIED | metric_status::GROUPED | metric_status::NONZERO),
-            metric_status::QUERIED | metric_status::GROUPED | metric_status::NONZERO
-        );
-        assert_eq!(
-            (r.dview[0].count, r.dview[0].min, r.dview[0].max),
-            (4, 10.0, 40.0)
-        );
-        assert_eq!(qt.query_points.count, 4);
-        assert_eq!(
-            (
-                qt.instances[0].query_points.count,
-                qt.nodes[0].query_points.count
-            ),
-            (4, 4)
-        );
-        assert_eq!(qt.contexts[0].instances.queried, 1);
-    }
-
-    /// The retentions of C's planner vector "explicit selected tier disables gap filling" (QP:1061-1074), shifted to
-    /// `T0`, through the whole query path: with `tier=1` the plan is tier 1's retention within the query's window (the
-    /// window's own alignment moves its start), with no other tier filling gaps; without `tier=` it is tier 0's
-    /// (D62.4); a selected tier that does not hold the metric falls back to tier 0 too.
-    #[test]
-    fn a_selected_tier_plans_on_that_tier() {
-        use crate::testing::{dbengine_host, v1_tiers_target};
-        let retention = [
-            (T0 + 180, T0 + 260),
-            (T0 + 100, T0 + 200),
-            (T0 + 50, T0 + 150),
-        ];
-        let (_dirs, h) = dbengine_host(retention);
-        let now = T0 + 1000;
-        let window = format!("after={}&before={}&points=1", T0 + 50, T0 + 250);
-        let plan = |query: &str| {
-            let (mut qt, mut window) = v1_tiers_target(&h, query, now);
-            let control = Control {
-                received: Instant::now(),
-                interrupted: &|_| false,
-                windows: Windows::default(),
-            };
-            let bounds = (window.after, window.before);
-            run_v1(&mut qt, &mut window, &control);
-            let queries: Vec<usize> = qt.db.tiers[..3].iter().map(|t| t.queries).collect();
-            (qt.query[0].plan, queries, bounds)
-        };
-        let (got, queries, (after, before)) = plan(&format!("{window}&tier=1"));
-        assert_eq!(
-            (got, queries),
-            (
-                Some((1, after.max(T0 + 100), before.min(T0 + 200))),
-                vec![0, 1, 0]
-            )
-        );
-        let (got, queries, (after, before)) = plan(&window);
-        assert_eq!(
-            (got, queries),
-            (
-                Some((0, after.max(T0 + 180), before.min(T0 + 260))),
-                vec![1, 0, 0]
-            )
-        );
-        let (_dirs, h) = dbengine_host([(T0 + 180, T0 + 260), (T0 + 100, T0 + 200), (0, 0)]);
-        let (mut qt, mut w) = v1_tiers_target(&h, &format!("{window}&tier=2"), now);
-        let control = Control {
-            received: Instant::now(),
-            interrupted: &|_| false,
-            windows: Windows::default(),
-        };
-        run_v1(&mut qt, &mut w, &control);
-        assert_eq!(qt.query[0].plan.map(|p| p.0), Some(0));
-    }
-
-    /// Admission over the tiers (QT:258-384): a metric only tier 2 holds in the window is admitted with the common
-    /// retention; every tier's statistics count it; each tier's update every is its grouping of the chart's.
-    #[test]
-    fn admission_takes_the_common_retention_of_the_tiers() {
-        use crate::testing::{dbengine_host, v1_tiers_target};
-        let (_dirs, h) = dbengine_host([(0, 0), (0, 0), (T0 + 50, T0 + 150)]);
-        let (qt, _) = v1_tiers_target(
-            &h,
-            &format!("after={}&before={}&points=1", T0 + 100, T0 + 120),
-            T0 + 1000,
-        );
-        assert_eq!(qt.query.len(), 1);
-        let tiers: Vec<(bool, i64, i64, i64)> = qt.query[0].tiers[..3]
-            .iter()
-            .map(|t| {
-                (
-                    t.handle.is_some(),
-                    t.first_time_s,
-                    t.last_time_s,
-                    t.update_every_s,
-                )
-            })
-            .collect();
-        assert_eq!(
-            tiers,
-            [
-                (false, 0, 0, 0),
-                (false, 0, 0, 0),
-                (true, T0 + 50, T0 + 150, 60)
-            ]
-        );
-        assert_eq!(
-            (
-                qt.db.first_time_s,
-                qt.db.last_time_s,
-                qt.db.tiers[2].update_every
-            ),
-            (T0 + 50, T0 + 150, 60)
-        );
-        // outside every tier's retention: not admitted, still counted in the tiers' statistics
-        let (qt, _) = v1_tiers_target(
-            &h,
-            &format!("after={}&before={}&points=1", T0 + 400, T0 + 500),
-            T0 + 1000,
-        );
-        assert!(qt.query.is_empty());
-        assert_eq!(
-            (qt.db.tiers[2].first_time_s, qt.db.tiers[2].last_time_s),
-            (T0 + 50, T0 + 150)
-        );
-    }
-
-    /// Natural points on a selected tier above 0 step by that tier's update every (query-window.c:153-159).
-    #[test]
-    fn natural_points_on_a_selected_tier_use_its_update_every() {
-        use crate::testing::{dbengine_host, v1_tiers_target};
-        let (_dirs, h) = dbengine_host([(T0 + 100, T0 + 900), (T0 + 100, T0 + 900), (0, 0)]);
-        let (_, window) = v1_tiers_target(&h, "after=-300&before=0&tier=1", T0 + 900);
-        assert_eq!(window.group, 1);
-        assert_eq!(window.points, 10, "300 s of 30 s points");
-        let (_, window) = v1_tiers_target(&h, "after=-300&before=0", T0 + 900);
-        assert_eq!(
-            window.points, 29,
-            "tier 0's 10 s points, as C's window counts them"
-        );
-    }
-}
+mod tests;

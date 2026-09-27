@@ -1,8 +1,7 @@
 //! The query target (`query_target_create()`, `src/database/contexts/query_target.c`): the nodes, contexts,
 //! instances and dimensions a data request selects, and the metrics admitted for querying. Spec §3.1-3.8.
 //!
-//! The window is converted here only for admission; `query_target_calculate_window()` (spec §4.1) comes with the
-//! planner.
+//! The window is converted here only for admission; `query_target_calculate_window()` (spec §4.1) is `window.rs`'s.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -97,6 +96,9 @@ pub struct TierSnapshot {
     pub first_time_s: i64,
     pub last_time_s: i64,
     pub update_every_s: i64,
+    /// `weight`: the points density the best-tier choice gave the tier, `-i64::MAX` when the tier does not overlap
+    /// the window; 0 when no choice ran.
+    pub weight: i64,
 }
 
 /// An admitted metric (`QUERY_METRIC`).
@@ -109,8 +111,8 @@ pub struct QueryMetric {
     pub tiers: [TierSnapshot; RRD_STORAGE_TIERS],
     /// What the execution read, merged (`qm->query_points`).
     pub query_points: StoragePoint,
-    /// The plan's `(tier, after, before)` (`qm->plan.array[0]`); none for the LATEST fast path or a failed plan.
-    pub plan: Option<(usize, i64, i64)>,
+    /// `qm->plan`: the plans in start order, kept for a failed plan; empty for the LATEST fast path.
+    pub plan: Vec<crate::plan::PlanEntry>,
     /// The v2 group it joined (`qm->grouped_as`).
     pub grouped_as: GroupedAs,
 }
@@ -394,6 +396,7 @@ impl Walk<'_> {
                 first_time_s: f,
                 last_time_s: l,
                 update_every_s: tier_ue,
+                weight: 0,
             };
             added += 1;
         }
@@ -432,7 +435,7 @@ impl Walk<'_> {
             tiers,
             // C zeroes the metric; only execution sets its points.
             query_points: StoragePoint::default(),
-            plan: None,
+            plan: Vec::new(),
             grouped_as: GroupedAs::default(),
         });
         true

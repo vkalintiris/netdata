@@ -349,6 +349,27 @@ pub fn can_activate(
         && tiers.plan_tier_is_valid(e.tier)
 }
 
+/// `query_planer_next_plan()`'s choice: the first plan after `current` whose end neither `now` nor the last point's
+/// end has reached; `None` past the last plan, or when that plan cannot be activated.
+pub fn next_plan(
+    tiers: &Tiers<'_>,
+    entries: &[PlanEntry],
+    states: &[PlanState],
+    current: usize,
+    now: i64,
+    last_point_end: i64,
+) -> Option<usize> {
+    let mut p = current;
+    loop {
+        p += 1;
+        let before = entries.get(p)?.before;
+        if now < before && last_point_end < before {
+            break;
+        }
+    }
+    can_activate(tiers, entries, states, p).then_some(p)
+}
+
 /// `query_planer_set_active_plan()`'s expiry: where the next plan starts when it starts inside this one, else this
 /// one's end.
 pub fn expire_time(entries: &[PlanEntry], plan: usize) -> i64 {

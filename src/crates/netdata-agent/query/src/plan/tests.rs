@@ -1,6 +1,7 @@
 //! The C planner's unit tests (`query_plan_unittest()`, `src/web/api/queries/query-plan.c:837-1105`, run by
 //! `netdata -W queryplantest`), with three tiers and C's expectations; the ops-cache case has no Rust analogue and the
-//! result-expiry case is `execute.rs`'s. Plus the reference's order of equal starts (D74.2).
+//! result-expiry case is `execute.rs`'s. Plus the reference's order of equal starts (D74.2) and the choice of the next
+//! plan.
 
 use super::*;
 
@@ -318,4 +319,57 @@ fn expansions_are_cs() {
     assert_eq!(expanded_windows(&t, &[entry(0, 400, 900)]), [(400, 905)]);
     assert_eq!(expire_time(&entries, 0), 400);
     assert_eq!(expire_time(&entries, 1), 900);
+}
+
+/// `query_planer_next_plan()`'s choice (QP:319-343): a plan that `now` or the last point's end has reached is
+/// skipped; the chosen plan must be open.
+#[test]
+fn the_next_plan_is_the_first_not_reached() {
+    let v = views(&[(0, 100, 300, 10), (1, 50, 200, 30), (2, 10, 100, 60)]);
+    let t = tiers(&v);
+    let tie = [entry(0, 100, 200), entry(1, 100, 100)];
+    let three = [entry(2, 10, 50), entry(1, 50, 100), entry(0, 100, 300)];
+    let open = [PlanState::Open; 3];
+    let spent = [PlanState::Open, PlanState::Open, PlanState::Finalized];
+    for (name, entries, states, now, last_end, want) in [
+        (
+            "a tie's instant plan is reached",
+            &tie[..],
+            &open[..2],
+            100,
+            0,
+            None,
+        ),
+        (
+            "the spent middle plan is skipped",
+            &three,
+            &open,
+            120,
+            0,
+            Some(2),
+        ),
+        (
+            "the last point's end alone spends a plan",
+            &three,
+            &open,
+            60,
+            100,
+            Some(2),
+        ),
+        (
+            "the next plan is not reached",
+            &three,
+            &open,
+            60,
+            99,
+            Some(1),
+        ),
+        ("a finalized next plan", &three, &spent, 120, 0, None),
+    ] {
+        assert_eq!(
+            next_plan(&t, entries, states, 0, now, last_end),
+            want,
+            "{name}"
+        );
+    }
 }

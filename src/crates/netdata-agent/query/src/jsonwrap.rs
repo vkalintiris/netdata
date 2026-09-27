@@ -208,11 +208,11 @@ pub fn query_metric_plan(w: &mut JsonWriter, qm: &QueryMetric, storage_tiers: us
     let rfc3339 = options & options::RFC3339 != 0;
     let k = Keys::new(options);
     w.member_add_array(Some(b"plans"));
-    if let Some((tier, after, before)) = qm.plan {
+    for e in &qm.plan {
         w.add_array_item_object();
-        w.member_add_uint64(k.tier(), tier as u64);
-        w.member_add_time_t_formatted(k.after(), after, rfc3339);
-        w.member_add_time_t_formatted(k.before(), before, rfc3339);
+        w.member_add_uint64(k.tier(), e.tier as u64);
+        w.member_add_time_t_formatted(k.after(), e.after, rfc3339);
+        w.member_add_time_t_formatted(k.before(), e.before, rfc3339);
         w.object_close();
     }
     w.array_close();
@@ -222,8 +222,7 @@ pub fn query_metric_plan(w: &mut JsonWriter, qm: &QueryMetric, storage_tiers: us
         w.member_add_uint64(k.tier(), t as u64);
         w.member_add_time_t_formatted(k.first_entry(), tier.first_time_s, rfc3339);
         w.member_add_time_t_formatted(k.last_entry(), tier.last_time_s, rfc3339);
-        // the weights come from the best-tier planner, which a selected tier or tier 0 skips (D62.4)
-        w.member_add_int64(k.weight(), 0);
+        w.member_add_int64(k.weight(), tier.weight);
         w.object_close();
     }
     w.array_close();

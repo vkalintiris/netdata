@@ -3,8 +3,11 @@
 use std::sync::Arc;
 
 use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+use netdata_agent_rrd::contexts::{SqlChart, SqlDim};
 use netdata_agent_rrd::host::{Host, HostInfo};
 use netdata_agent_rrd::mode::DbMode;
+use netdata_agent_rrd::storage::StorageLayout;
+use netdata_agent_storage::dbengine::engine::query::Dbengine;
 use netdata_agent_storage::storage_number::SN_FLAG_NOT_ANOMALOUS;
 
 use crate::request::{parse_v1, parse_v2};
@@ -14,19 +17,18 @@ use crate::window::{Window, calculate};
 pub const T0: i64 = 1_700_000_000;
 pub const E: f64 = f64::NAN;
 
-/// The spec's worked example (§5.9): one ram dimension with `10, E, 20, 30, E, 40` at `T0+1..=T0+6`.
-pub fn host() -> Arc<Host> {
-    let info = HostInfo {
-        hostname: "child".into(),
-        registry_hostname: "child".into(),
+fn info(hostname: &str, update_every: i32, db_mode: DbMode) -> HostInfo {
+    HostInfo {
+        hostname: hostname.into(),
+        registry_hostname: hostname.into(),
         os: "linux".into(),
         timezone: "UTC".into(),
         abbrev_timezone: "UTC".into(),
         utc_offset: 0,
         program_name: "p".into(),
         program_version: "1".into(),
-        update_every: 1,
-        db_mode: DbMode::Ram,
+        update_every,
+        db_mode,
         history_entries: 3600,
         health_enabled: false,
         system_info: Default::default(),
@@ -35,9 +37,12 @@ pub fn host() -> Arc<Host> {
         replication_step: 0,
         stream_send: None,
         cache_dir: None,
-    };
-    let h = Arc::new(Host::new("guid-1", false, info));
-    let (chart, _) = h.charts().create(&ChartSpec {
+    }
+}
+
+/// `ctx.a`'s chart `t.a` in ram mode, collected every second, keeping `history` points.
+fn ram_chart(history: i64) -> ChartSpec<'static> {
+    ChartSpec {
         type_: "t",
         id: "a",
         name: None,
@@ -51,9 +56,15 @@ pub fn host() -> Arc<Host> {
         update_every: 1,
         chart_type: ChartType::Line,
         mode: DbMode::Ram,
-        history_entries: 3600,
+        history_entries: history,
         page_size: 4096,
-    });
+    }
+}
+
+/// The spec's worked example (§5.9): one ram dimension with `10, E, 20, 30, E, 40` at `T0+1..=T0+6`.
+pub fn host() -> Arc<Host> {
+    let h = Arc::new(Host::new("guid-1", false, info("child", 1, DbMode::Ram)));
+    let (chart, _) = h.charts().create(&ram_chart(3600));
     let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
     for (i, v) in [10.0, E, 20.0, 30.0, E, 40.0].into_iter().enumerate() {
         dim.store_metric(
@@ -101,62 +112,44 @@ pub fn v2_target(h: &Arc<Host>, query: &str) -> (QueryTarget, Window) {
 /// The metric of [`dbengine_host`].
 pub const U: [u8; 16] = [0x11; 16];
 
-/// A dbengine host over an engine of three empty tiers (grouping 3 then 2, so a chart of update every 10 has tiers of
-/// 10, 30 and 60 s), with `ctx.a`'s chart `t.a` and its metric `d` loaded from SQL rows; `retention` is the metric's
-/// (first, last) per tier in the registry, (0, 0) for none.
-pub fn dbengine_host(retention: [(i64, i64); 3]) -> (Vec<tempfile::TempDir>, Arc<Host>) {
-    use netdata_agent_rrd::contexts::{SqlChart, SqlDim};
-    use netdata_agent_rrd::storage::StorageLayout;
+/// An engine of three empty tiers over temporary directories, loaded and clocked at `now()`, for charts collected
+/// every `update_every_s`.
+fn engine(update_every_s: u32, now: fn() -> i64) -> (Vec<tempfile::TempDir>, Arc<Dbengine>) {
     use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
     use netdata_agent_storage::dbengine::engine::mrg::Mrg;
-    use netdata_agent_storage::dbengine::engine::query::{Dbengine, EngineConfig};
+    use netdata_agent_storage::dbengine::engine::query::EngineConfig;
     let mrg = Mrg::new();
     let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
     let tiers = dirs
         .iter()
         .enumerate()
         .map(|(tier, dir)| {
-            let cfg = TierConfig::new(tier, dir.path().to_path_buf());
-            load(cfg, &mrg, T0 + 1000).unwrap()
+            load(TierConfig::new(tier, dir.path().to_path_buf()), &mrg, now()).unwrap()
         })
         .collect();
-    for (tier, (first, last)) in retention.into_iter().enumerate() {
-        if first != 0 || last != 0 {
-            drop(mrg.add_and_acquire(&U, tier, first, last, 10));
-        }
-    }
     let engine = Dbengine::new(
         mrg,
         tiers,
         EngineConfig {
             main_cache_bytes: 1 << 20,
             extent_cache_bytes: 1 << 20,
-            update_every_s: 10,
-            ..EngineConfig::new(|| T0 + 1000)
+            update_every_s,
+            ..EngineConfig::new(now)
         },
     );
+    (dirs, engine)
+}
+
+/// A dbengine host over `engine` (grouping 3 then 2, so a chart of update every 10 has tiers of 10, 30 and 60 s),
+/// with `ctx.a`'s chart `t.a` and its metric `d` of `algorithm` loaded from SQL rows.
+fn dbengine_host_over(engine: Arc<Dbengine>, algorithm: Algorithm) -> Arc<Host> {
     let storage = Arc::new(StorageLayout::new(Some(engine)).with_profile(vec![10, 3, 2], 10));
-    let info = HostInfo {
-        hostname: "db".into(),
-        registry_hostname: "db".into(),
-        os: "linux".into(),
-        timezone: "UTC".into(),
-        abbrev_timezone: "UTC".into(),
-        utc_offset: 0,
-        program_name: "p".into(),
-        program_version: "1".into(),
-        update_every: 10,
-        db_mode: DbMode::Dbengine,
-        history_entries: 3600,
-        health_enabled: false,
-        system_info: Default::default(),
-        replication_enabled: false,
-        replication_period: 0,
-        replication_step: 0,
-        stream_send: None,
-        cache_dir: None,
-    };
-    let h = Arc::new(Host::with_storage("guid-db", false, info, &storage));
+    let h = Arc::new(Host::with_storage(
+        "guid-db",
+        false,
+        info("db", 10, DbMode::Dbengine),
+        &storage,
+    ));
     let mut loader = h.contexts().loader().unwrap();
     loader.chart(&SqlChart {
         chart_id: [0x22; 16],
@@ -177,9 +170,102 @@ pub fn dbengine_host(retention: [(i64, i64); 3]) -> (Vec<tempfile::TempDir>, Arc
         hidden: false,
         chart_id: Some("t.a".into()),
         context: Some("ctx.a".into()),
-        algorithm: Algorithm::Absolute,
+        algorithm,
     });
     loader.finish("db", || false, |_| {});
+    h
+}
+
+/// A [`dbengine_host_over`] three empty tiers, clocked at `T0 + 1000`; `retention` is the metric's (first, last) per
+/// tier in the registry, (0, 0) for none.
+pub fn dbengine_host(retention: [(i64, i64); 3]) -> (Vec<tempfile::TempDir>, Arc<Host>) {
+    let (dirs, engine) = engine(10, || T0 + 1000);
+    for (tier, (first, last)) in retention.into_iter().enumerate() {
+        if first != 0 || last != 0 {
+            drop(engine.mrg.add_and_acquire(&U, tier, first, last, 10));
+        }
+    }
+    (dirs, dbengine_host_over(engine, Algorithm::Absolute))
+}
+
+/// The engine of [`dbengine_pages_host`]: its collections stay open, so their pages stay hot.
+pub struct Pages {
+    _collect: Vec<netdata_agent_storage::dbengine::engine::collect::CollectHandle>,
+    _dirs: Vec<tempfile::TempDir>,
+}
+
+/// A [`dbengine_host_over`] tiers holding points in hot pages, clocked at `T0 + 100_000`: per tier, the end times
+/// `(first, last)` of a point every tier update every, each the tier's grouping of samples of `value`; (0, 0) stores
+/// nothing.
+pub fn dbengine_pages_host(
+    points: [(i64, i64); 3],
+    value: f64,
+    algorithm: Algorithm,
+) -> (Pages, Arc<Host>) {
+    use netdata_agent_storage::dbengine::engine::collect::{Alignment, CollectHandle};
+    let (dirs, engine) = engine(10, || T0 + 100_000);
+    let mut open = Vec::new();
+    for (tier, (first, last)) in points.into_iter().enumerate() {
+        if first == 0 && last == 0 {
+            continue;
+        }
+        let ue = [10, 30, 60][tier];
+        let samples = (ue / 10) as u16;
+        let (metric, _) = engine.mrg.add_and_acquire(&U, tier, 0, 0, ue as u32);
+        let mut collect = CollectHandle::init(
+            &engine,
+            &metric,
+            ue as u32,
+            Alignment::new("guid-db", "t.a", tier),
+        );
+        let sum = value * f64::from(samples);
+        for t in (first..=last).step_by(ue as usize) {
+            collect.store_next(
+                t as u64 * 1_000_000,
+                sum,
+                value,
+                value,
+                samples,
+                0,
+                SN_FLAG_NOT_ANOMALOUS,
+            );
+        }
+        open.push(collect);
+    }
+    let h = dbengine_host_over(engine, algorithm);
+    (
+        Pages {
+            _collect: open,
+            _dirs: dirs,
+        },
+        h,
+    )
+}
+
+/// A ram host whose chart `t.a` keeps `history` points in its ring and rolls tiers 1 and 2 up by `groupings`, with
+/// `value(t)` stored at every second of `span`; the ring answers tier 0.
+pub fn ram_tiers_host(
+    history: i64,
+    groupings: [u64; 2],
+    span: std::ops::RangeInclusive<i64>,
+    value: impl Fn(i64) -> f64,
+) -> (Vec<tempfile::TempDir>, Arc<Host>) {
+    let (dirs, engine) = engine(1, || T0 + 100_000);
+    let storage = Arc::new(
+        StorageLayout::new(Some(engine)).with_profile(vec![1, groupings[0], groupings[1]], 1),
+    );
+    let h = Arc::new(Host::with_storage(
+        "guid-ram",
+        false,
+        info("ram", 1, DbMode::Ram),
+        &storage,
+    ));
+    let (chart, _) = h.charts().create(&ram_chart(history));
+    let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    for t in span {
+        dim.store_metric(t as u64 * 1_000_000, value(t), SN_FLAG_NOT_ANOMALOUS);
+    }
+    h.contexts().process_queued();
     (dirs, h)
 }
 
@@ -187,7 +273,7 @@ pub fn dbengine_host(retention: [(i64, i64); 3]) -> (Vec<tempfile::TempDir>, Arc
 pub fn v1_tiers_target(h: &Arc<Host>, query: &str, now: i64) -> (QueryTarget, Window) {
     let profile = crate::request::Profile {
         storage_tiers: 3,
-        update_every: 10,
+        update_every: h.info().update_every.into(),
     };
     let p = parse_v1(format!("context=ctx.a&{query}").as_bytes(), &profile);
     let qt = create(
