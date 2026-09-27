@@ -174,7 +174,7 @@ fn deletions_wait_for_the_users_of_a_file() {
     let e = write_engine(&[dir.path()], 0, None);
     fill(&e, 0, 64 + 63);
     let td = &e.tiers[0];
-    // file 1 is indexed (clean pages in C's open cache), file 2 is not (hot pages)
+    // the indexer takes file 1 first, then indexes files 1 and 2 (clean pages in C's open cache)
     let ((), _) = netdata_agent_log::capture(|| {
         let use_ = td.next_for_indexing(None).unwrap();
         assert_eq!(use_.fileno, 1);

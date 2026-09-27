@@ -3,6 +3,7 @@
 //! open pages written as its v2 index, which then serves its queries in their place. Brief
 //! `knowledge/brief-dbengine-s3-commit45-map.md` in the status repository; decisions D65 and D67.
 
+use std::collections::HashMap;
 use std::fs::File;
 
 use netdata_agent_log::{Priority, Source, errno_of, nd_log, netdata_log_info};
@@ -145,12 +146,31 @@ pub fn journal_index(engine: &Dbengine, tier: usize) -> u32 {
 
 /// `pgc_open_cache_to_journal_v2()` of one file: its open pages written as its v2 index, which serves them from then
 /// on (it is registered before they leave the open cache, so a query finds each page in one or the other). A page
-/// whose metric left the registry is rejected: nothing can read it any more (D67.3, D76.3). A file that could not be
-/// written keeps its pages open for the next run. Whether the v2 index was written.
+/// whose metric left the registry is rejected: nothing can read it any more (D67.3, D76.3); the metrics indexed are
+/// held until the pages left the open cache, as C holds them. A file whose pages were all rejected writes no index,
+/// and its pages turn clean as C's rejected ones do, so a deletion can take the file. A file that could not be written
+/// keeps its pages open for the next run. Whether the v2 index was written.
 fn index_file(engine: &Dbengine, tier: usize, td: &TierData, df: &DataFile) -> bool {
     let mut pages = td.open().file_pages(df.fileno);
-    pages.retain(|p| engine.mrg.get_and_acquire(&p.uuid, tier).is_some());
-    let indexed = !pages.is_empty();
+    let had_pages = !pages.is_empty();
+    let mut held = HashMap::new();
+    pages.retain(|p| {
+        if held.contains_key(&p.uuid) {
+            return true;
+        }
+        match engine.mrg.get_and_acquire(&p.uuid, tier) {
+            Some(handle) => {
+                held.insert(p.uuid, handle);
+                true
+            }
+            None => false,
+        }
+    });
+    if had_pages && pages.is_empty() {
+        td.open_mut().remove_file(df.fileno);
+        df.mark_clean_open();
+        return false;
+    }
     let Some((file, layout)) = write_v2(&td.config, df.fileno, df.journal_pos(), pages) else {
         return false;
     };
@@ -160,9 +180,8 @@ fn index_file(engine: &Dbengine, tier: usize, td: &TierData, df: &DataFile) -> b
     td.add_v2(df, index);
     td.open_mut().remove_file(df.fileno);
     // C keeps the indexed pages in its open cache as clean pages of the file (D76.1)
-    if indexed {
-        df.mark_clean_open();
-    }
+    df.mark_clean_open();
+    drop(held);
     true
 }
 

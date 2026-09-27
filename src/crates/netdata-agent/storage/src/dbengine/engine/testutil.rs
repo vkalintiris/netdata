@@ -144,6 +144,24 @@ pub fn write_engine(
     )
 }
 
+/// A tier-0 write engine on `dir` as a restart finds it: the files loaded and their v2 indexes populated into a fresh
+/// registry, no main cache.
+pub fn restarted_engine(dir: &Path) -> Arc<Dbengine> {
+    let mrg = Mrg::new();
+    let mut tier = load(write_cfg(0, dir), &mrg, NOW).unwrap();
+    let ((), _) = netdata_agent_log::capture(|| {
+        super::v2index::populate(&mut tier, &mrg, &WorkPool::new(2, 256 * 1024), 2, NOW)
+    });
+    Dbengine::new(
+        mrg,
+        vec![tier],
+        EngineConfig {
+            main_cache_bytes: 0,
+            ..EngineConfig::new(|| NOW)
+        },
+    )
+}
+
 pub fn nth(n: usize) -> [u8; 16] {
     let mut u = [0u8; 16];
     u[..8].copy_from_slice(&(n as u64 + 1).to_be_bytes());

@@ -577,7 +577,7 @@ impl Dbengine {
                 };
                 // the page joins C's open cache as a clean page of the file, and gives its page details a use of
                 // the file of their own
-                file.mark_clean_open();
+                file.add_clean_open();
                 if let btree_map::Entry::Vacant(v) = list.entry(first_s) {
                     if let Some(use_) = file.acquire(Reason::PageDetails) {
                         v.insert(Pd {

@@ -313,8 +313,27 @@ impl DataFile {
         self.users().pending_deletion
     }
 
-    /// C's open cache took clean pages of the file (D76.1).
+    /// C's open cache took clean pages of the file (D76.1): its hot pages turned clean, keeping their uses.
     pub(crate) fn mark_clean_open(&self) {
+        self.clean_open.store(true, Ordering::Release);
+    }
+
+    /// A query's page of the file joins C's open cache as a clean page, which takes a use of the file
+    /// (`datafile_acquire(OPEN_CACHE)`) and so is refused as that is.
+    pub(crate) fn add_clean_open(&self) {
+        if self.clean_open.load(Ordering::Acquire) {
+            return;
+        }
+        let u = self.users();
+        if !u.available {
+            return;
+        }
+        if u.pending_deletion {
+            let w = self.writers();
+            if w.running == 0 && w.flushed_to_open == 0 {
+                return;
+            }
+        }
         self.clean_open.store(true, Ordering::Release);
     }
 
@@ -567,27 +586,25 @@ impl TierData {
     /// written to it and nothing uses it, which then makes it unavailable. While uses remain its clean open-cache
     /// pages are evicted, and once no extent is being written the file takes no new uses (recorded once). The open
     /// cache's uses are the file's current hot pages and its clean pages (D76.1, D76.2).
+    ///
+    /// Both passes read the hot pages, the users and the writer counters under one read guard of the open list: a
+    /// flush joins its pages to the open list before its writer counter drops, so a file with an extent in flight
+    /// shows either (C reads its lockers and writers under the users lock for the same reason).
     pub(crate) fn acquire_for_deletion(&self, df: &DataFile) -> bool {
         let tier = self.tier();
-        let hot = read(&self.open).current_pages_of(df.fileno);
-        let (marked, evict) = {
+        let (marked, deletable, evict) = {
+            let open = read(&self.open);
+            let hot = open.current_pages_of(df.fileno);
             let mut u = df.users();
             let marked = !u.pending_deletion;
             u.pending_deletion = true;
             let (running, flushed) = df.writers_running();
             let lockers = u.lockers + hot + u32::from(df.clean_open.load(Ordering::Acquire));
-            if running == 0 && flushed == 0 && lockers == 0 {
+            let deletable = running == 0 && flushed == 0 && lockers == 0;
+            if deletable {
                 u.available = false;
-                drop(u);
-                if marked {
-                    netdata_log_info!(
-                        "DBENGINE: tier {tier}: datafile-1-{:010} is pending deletion",
-                        df.fileno
-                    );
-                }
-                return true;
             }
-            (marked, lockers != 0)
+            (marked, deletable, lockers != 0)
         };
         if marked {
             netdata_log_info!(
@@ -595,11 +612,15 @@ impl TierData {
                 df.fileno
             );
         }
+        if deletable {
+            return true;
+        }
         if evict {
             // pgc_open_evict_clean_pages_of_datafile()
             df.clean_open.store(false, Ordering::Release);
         }
-        let hot = read(&self.open).current_pages_of(df.fileno);
+        let open = read(&self.open);
+        let hot = open.current_pages_of(df.fileno);
         let mut u = df.users();
         let (running, flushed) = df.writers_running();
         if running != 0 || flushed != 0 {
@@ -663,13 +684,12 @@ impl TierData {
                 }
                 candidate?
             };
-            for attempt in 0..INDEXING_ATTEMPTS {
+            // C pauses after every refusal, the last one included
+            for _ in 0..INDEXING_ATTEMPTS {
                 if let Some(use_) = df.acquire(Reason::Indexing) {
                     return Some(use_);
                 }
-                if attempt + 1 < INDEXING_ATTEMPTS {
-                    indexing_pause();
-                }
+                indexing_pause();
             }
             netdata_log_info!(
                 "DBENGINE: tier {}: datafile-1-{:010} cannot be locked for indexing after retries; skipping",
