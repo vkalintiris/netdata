@@ -35,8 +35,10 @@ func TestWebACL(t *testing.T) {
 				"static":   get("/"),
 				"info":     get("/api/v1/info"),
 				"contexts": get("/api/v1/contexts"),
-				"unknown":  get("/api/v1/nope"),
-				"stream":   get("/stream?key=x&hostname=y&machine_guid=z"),
+				// ACL NODES, as info
+				"dbengine-stats": get("/api/v1/dbengine_stats"),
+				"unknown":        get("/api/v1/nope"),
+				"stream":         get("/stream?key=x&hostname=y&machine_guid=z"),
 				// the STREAM method itself, which the streaming list denies before any key check
 				"stream-method": []byte("STREAM key=11111111-2222-3333-4444-555555555555&hostname=y&machine_guid=" +
 					"66666666-7777-8888-9999-000000000000 HTTP/1.1\r\n\r\n"),
