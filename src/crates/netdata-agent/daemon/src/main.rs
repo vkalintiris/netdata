@@ -547,23 +547,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         Some(meta) => meta_store::store_host_info_and_metadata(meta, hosts.localhost()),
         None => meta_store::store_localhost_without_database(hosts.localhost()),
     }
-    // rrdhost_load_rrdcontext_data(localhost), on this thread with the shared databases
-    if let Some(meta) = &meta {
-        let queue = metasync.queue();
-        let cleanup = |host_id, context| queue.ctx_host_cleanup(host_id, context);
-        ctxload::load_host_contexts(
-            hosts.localhost(),
-            &ctxload::Sources {
-                meta,
-                context_db: context_db.as_ref(),
-                meta_thread: None,
-                context_thread: None,
-                cleanup: &cleanup,
-            },
-        );
-    }
-    // rrdhost_load_rrdcontext_data() of every host created from now on, on the creating thread; the databases are
-    // held weakly, so that they close at their shutdown step
+    // rrdhost_load_rrdcontext_data() of localhost and of every host created from now on, on the creating thread. The
+    // databases are held weakly, so that they close at their shutdown step, and read through handles of the load's
+    // own: C's shared connection does not wait for METASYNC's transactions, as a lock on ours would.
     if let Some(meta) = &meta {
         let (meta, context_db, queue) = (
             Arc::downgrade(meta),
@@ -575,18 +561,23 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 return;
             };
             let context_db = context_db.as_ref().and_then(std::sync::Weak::upgrade);
+            let cache_dir = meta.cache_dir();
+            let meta_thread = netdata_agent_metadata::read::read_only(&MetaDb::path(cache_dir));
+            let context_thread =
+                netdata_agent_metadata::read::read_only(&ContextDb::path(cache_dir));
             let cleanup = |host_id, context| queue.ctx_host_cleanup(host_id, context);
             ctxload::load_host_contexts(
                 host,
                 &ctxload::Sources {
                     meta: &meta,
                     context_db: context_db.as_ref(),
-                    meta_thread: None,
-                    context_thread: None,
+                    meta_thread: meta_thread.as_ref(),
+                    context_thread: context_thread.as_ref(),
                     cleanup: &cleanup,
                 },
             );
         });
+        hosts.load_contexts(hosts.localhost());
     }
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
         meta.detect_machine_guid_change(host_id);

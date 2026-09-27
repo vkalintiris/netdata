@@ -574,8 +574,17 @@ impl Host {
 
     /// `rrdhost_update()` for a child that connects again: what it reports about itself replaces the stored values,
     /// and what needs a restart (update every, memory mode, history) is only warned about. `update_every` and
-    /// `history` are the configured values before `rrdhost_create()` normalizes them, as C compares them.
-    pub fn update(&self, wanted: &HostInfo, update_every: i64, history: i64) {
+    /// `history` are the configured values before `rrdhost_create()` normalizes them, as C compares them; so are the
+    /// replication settings, which only an archived host takes, capped for its own ring.
+    pub fn update(
+        &self,
+        wanted: &HostInfo,
+        update_every: i64,
+        history: i64,
+        replication: bool,
+        replication_period: i64,
+        replication_step: i64,
+    ) {
         let mut records = Vec::new();
         {
             let mut info = self.info.write().unwrap_or_else(PoisonError::into_inner);
@@ -664,17 +673,17 @@ impl Host {
         if self.archived.swap(false, Ordering::AcqRel) {
             let hostname = self.hostname();
             self.log_registry_created(&hostname);
-            {
+            let sender_initialized = {
                 let mut info = self.info.write().unwrap_or_else(PoisonError::into_inner);
-                if info.stream_send.is_none() {
+                let initialized = info.stream_send.is_none();
+                if initialized {
                     info.stream_send.clone_from(&wanted.stream_send);
-                    log_stream_parents(&info);
                 }
-                info.set_replication(
-                    wanted.replication_enabled,
-                    wanted.replication_period,
-                    wanted.replication_step,
-                );
+                info.set_replication(replication, replication_period, replication_step);
+                initialized
+            };
+            if sender_initialized {
+                log_stream_parents(&self.info());
             }
             self.set_replication_percent(100.0);
             nd_log!(
@@ -937,6 +946,13 @@ impl Hosts {
         let _ = self.context_loader.set(ContextLoader(Box::new(loader)));
     }
 
+    /// `rrdhost_load_rrdcontext_data()` through the daemon's loader, when one is set.
+    pub fn load_contexts(&self, host: &Host) {
+        if let Some(loader) = self.context_loader.get() {
+            (loader.0)(host);
+        }
+    }
+
     /// `stream_receivers_currently_connected()`: hosts with a receiver attached.
     pub fn receivers_connected(&self) -> usize {
         self.all().iter().filter(|h| h.receiver().is_some()).count()
@@ -1116,9 +1132,7 @@ impl Hosts {
         drop(index);
         host.log_created();
         // rrdhost_create() of a host that is not archived: its contexts load here (a dbengine host's from SQL)
-        if let Some(loader) = self.context_loader.get() {
-            (loader.0)(&host);
-        }
+        self.load_contexts(&host);
         host
     }
 }
@@ -1584,7 +1598,8 @@ mod tests {
         let mut wanted = info("renamed");
         wanted.program_name = "other".into();
         wanted.program_version = "v1".into();
-        let ((), records) = netdata_agent_log::capture(|| host.update(&wanted, 2, 8192));
+        let ((), records) =
+            netdata_agent_log::capture(|| host.update(&wanted, 2, 8192, true, 86400, 3600));
         assert_eq!(
             texts(&records),
             [
@@ -1618,7 +1633,8 @@ mod tests {
         );
         assert_eq!(host.info().registry_hostname, "renamed");
         wanted.db_mode = DbMode::Alloc;
-        let ((), records) = netdata_agent_log::capture(|| host.update(&wanted, 1, 8192));
+        let ((), records) =
+            netdata_agent_log::capture(|| host.update(&wanted, 1, 8192, true, 86400, 3600));
         assert_eq!(
             texts(&records),
             [(
@@ -1676,7 +1692,7 @@ mod tests {
                 "5a1e0000-0000-4000-8000-0000000000c1",
                 DbMode::Alloc,
                 || panic!("created"),
-                |h| h.update(&alloc, 1, 3600),
+                |h| h.update(&alloc, 1, 3600, true, 86400, 3600),
             )
         });
         assert!(Arc::ptr_eq(&again, &host) && !again.is_archived());
@@ -1715,7 +1731,8 @@ mod tests {
     }
 
     /// An archived host is loaded without replication or a sender; when it connects again it takes the receiver's,
-    /// as `rrdhost_update()` does: its replication period capped for a ring and its progress back at 100%.
+    /// as `rrdhost_update()` does: the configured period capped for the host's own ring (not the receiver's), its
+    /// progress back at 100%.
     #[test]
     fn a_reconnected_archived_host_takes_the_receivers_settings() {
         let hosts = Hosts::new(Host::new("local-guid", true, info("parent")));
@@ -1730,8 +1747,10 @@ mod tests {
         let host = hosts.add_archived(guid, archived.clone(), |_| {});
         host.clear_pending_context_load();
         host.set_replication_percent(42.0);
+        // the receiver's ring is smaller than the archived host's
         let mut wanted = HostInfo {
             stream_send: StreamSend::new(true, "grandparent:19999", "a-key"),
+            history_entries: 3600,
             ..archived
         };
         wanted.set_replication(true, 86400, 3600);
@@ -1740,7 +1759,7 @@ mod tests {
                 guid,
                 DbMode::Alloc,
                 || panic!("created"),
-                |h| h.update(&wanted, 1, 4096),
+                |h| h.update(&wanted, 1, 3600, true, 86400, 3600),
             )
         });
         let info = host.info();
@@ -1759,9 +1778,7 @@ mod tests {
                 "STREAM PARENTS 'child': added streaming destination No 1: 'grandparent:19999'"
             )));
         // a host that is not archived keeps its settings
-        let mut other = wanted.clone();
-        other.set_replication(false, 0, 0);
-        host.update(&other, 1, 4096);
+        host.update(&wanted, 1, 3600, false, 0, 0);
         assert!(host.info().replication_enabled);
     }
 
@@ -1784,7 +1801,7 @@ mod tests {
             child.take_meta_flags(meta_flags::INFO) && !child.take_meta_flags(meta_flags::LABELS)
         );
         assert_eq!(child.meta_flags(), meta_flags::UPDATE);
-        child.update(&info("a"), 1, 3600);
+        child.update(&info("a"), 1, 3600, true, 86400, 3600);
         assert_eq!(
             child.meta_flags(),
             meta_flags::INFO | meta_flags::CLAIMID | meta_flags::UPDATE

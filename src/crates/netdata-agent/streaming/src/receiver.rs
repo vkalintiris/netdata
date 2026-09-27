@@ -540,7 +540,16 @@ impl Receivers {
             &guid,
             mode,
             || wanted.clone(),
-            |host| host.update(&wanted, config.update_every, config.history),
+            |host| {
+                host.update(
+                    &wanted,
+                    config.update_every,
+                    config.history,
+                    config.replication.enabled,
+                    config.replication.period,
+                    config.replication.step,
+                )
+            },
         );
         if host.is_pending_context_load() {
             peer.status(
@@ -1351,7 +1360,11 @@ mod tests {
             ("bogus", "dbengine", true, (DbMode::Ram, false)),
         ];
         for (configured, default, dbengine, want) in cases {
-            assert_eq!(receiver_mode(configured, default, dbengine), want, "{configured}");
+            assert_eq!(
+                receiver_mode(configured, default, dbengine),
+                want,
+                "{configured}"
+            );
         }
     }
 

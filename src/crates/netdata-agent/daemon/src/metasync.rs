@@ -472,10 +472,10 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, load: &Arc<CtxL
         .collect();
     others.sort_by_key(|h| std::cmp::Reverse(h.last_connected_s()));
     order.extend(others);
-    // each slot: its thread, which hands the slot's handles back when it ends, or the handles themselves
-    let mut slots: Vec<(Option<JoinHandle<ThreadDbs>>, ThreadDbs)> =
+    // each slot's thread hands the slot's handles back when it ends, for the next thread on the slot
+    let mut slots: Vec<Option<JoinHandle<ThreadDbs>>> =
         (0..if max_threads > 1 { max_threads } else { 0 })
-            .map(|_| (None, ThreadDbs::default()))
+            .map(|_| None)
             .collect();
     let mut own = ThreadDbs::default();
     let (mut delegated, mut direct) = (0, 0);
@@ -493,7 +493,7 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, load: &Arc<CtxL
         // cleanup_finished_threads(): a slot whose thread has finished is free again; up to 20 passes 10 ms apart
         let mut free = None;
         for pass in 0..20 {
-            free = slots.iter().position(|(thread, _)| match thread {
+            free = slots.iter().position(|thread| match thread {
                 None => true,
                 Some(thread) => thread.is_finished(),
             });
@@ -505,12 +505,12 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, load: &Arc<CtxL
             }
         }
         let free = free.map(|i| &mut slots[i]);
-        let spawned = free.and_then(|(slot, dbs)| {
-            if let Some(thread) = slot.take() {
-                *dbs = thread.join().unwrap_or_default();
-            }
+        let spawned = free.and_then(|slot| {
+            let mut handed = slot
+                .take()
+                .map(|thread| thread.join().unwrap_or_default())
+                .unwrap_or_default();
             let (host, load) = (Arc::clone(host), Arc::clone(load));
-            let mut handed = std::mem::take(dbs);
             let thread = std::thread::Builder::new()
                 .name("CTXLOAD".into())
                 .stack_size(stack_size)
@@ -533,10 +533,8 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, load: &Arc<CtxL
         }
     }
     // the slots' handles close with their last thread
-    for (thread, _) in slots {
-        if let Some(thread) = thread {
-            let _ = thread.join();
-        }
+    for thread in slots.into_iter().flatten() {
+        let _ = thread.join();
     }
     netdata_log_info!(
         "Contexts for {} hosts loaded: {delegated} delegated to {max_threads} threads, {direct} handled directly, in \
