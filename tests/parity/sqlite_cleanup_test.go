@@ -83,10 +83,14 @@ func TestSQLiteCtxCleanup(t *testing.T) {
 			}
 			p := StartPair(t, daemon.Options{StorageTiers: v.tiers, TierRetentionMB: [3]int{25, 25, 25}, DBMode: v.mode,
 				StreamMemoryMode: v.children, SeedCache: seed, PulseOff: true, LogsExtra: "    level = debug\n"}, id)
-			// the second store job scans, about 12 s after the start; a host the scan skips logs nothing
+			// the second store job scans b6child, about 12 s after the start
 			deadline := time.Now().Add(40 * time.Second)
 			for _, side := range p.Each() {
-				for len(scanRecords(t, side.Daemon)) < 2 && time.Now().Before(deadline) {
+				for !strings.Contains(strings.Join(scanRecords(t, side.Daemon), "\n"),
+					"Verified the contexts of host b6child") {
+					if time.Now().After(deadline) {
+						t.Fatalf("%s: no scan of b6child: %q", side.Role, scanRecords(t, side.Daemon))
+					}
 					time.Sleep(500 * time.Millisecond)
 				}
 			}
@@ -113,8 +117,11 @@ func TestSQLiteCtxCleanup(t *testing.T) {
 	}
 }
 
-// cyclesSeed adds orphans to the runR fixture's metadata database: two dimensions no tier holds on a chart of b6child
-// (with a label), a chart of b6child without dimensions, and a label of a chart that does not exist.
+// cyclesSeed adds orphans to the runR fixture's metadata database: a chart of b6child in its own context with two
+// dimensions no tier holds and a label (the context loader finds the context empty and queues it, so the context
+// cleanup scan deletes them about 12 s after the start), a dimension no tier holds on b6.c0 (whose context has data,
+// so it waits for the dimension cycle), a chart of b6child without dimensions, and a label of a chart that does not
+// exist.
 const cyclesSeed = `
 INSERT INTO chart (chart_id, host_id, type, id, name, family, context, title, unit, plugin, module, priority,
   update_every, chart_type, memory_mode, history_entries)
@@ -129,6 +136,9 @@ INSERT INTO chart_label (chart_id, source_type, label_key, label_value, date_cre
 INSERT INTO dimension (dim_id, chart_id, id, name, multiplier, divisor, algorithm)
   VALUES (x'd1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1', x'c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1', 'a', 'a', 1, 1, 0),
          (x'd2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2', x'c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1', 'b', 'b', 1, 1, 0);
+INSERT INTO dimension (dim_id, chart_id, id, name, multiplier, divisor, algorithm)
+  SELECT x'd3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3', chart_id, 'extra', 'extra', 1, 1, 0 FROM chart
+  WHERE type = 'b6' AND id = 'c0' AND host_id = (SELECT host_id FROM host WHERE hostname = 'b6child');
 `
 
 // cycleRecords are the dimension, chart and chart-label cycles' records.
