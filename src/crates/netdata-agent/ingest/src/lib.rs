@@ -1362,6 +1362,12 @@ impl Parser {
             dim.update_meta(|m| m.flags &= !dim_flags::UPDATED);
         }
         self.v2 = V2::default();
+        // store_metric_collection_completed()
+        let storage = self.host.storage();
+        storage
+            .pulse()
+            .ingestion
+            .collection_completed(storage.storage_tiers());
         contexts::collected_rrdset(&chart);
         Ok(())
     }
@@ -1787,6 +1793,12 @@ impl Parser {
             }
         }
         self.replay = Replay::default();
+        // store_metric_collection_completed()
+        let storage = self.host.storage();
+        storage
+            .pulse()
+            .ingestion
+            .collection_completed(storage.storage_tiers());
         chart.update_collection(|c| {
             c.counter += 1;
             c.counter_done += 1;

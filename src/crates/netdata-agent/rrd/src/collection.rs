@@ -444,6 +444,12 @@ pub fn timed_done(
         });
         dim.update_meta(|m| m.flags &= !dim_flags::UPDATED);
     }
+    // store_metric_collection_completed()
+    let storage = chart.storage();
+    storage
+        .pulse()
+        .ingestion
+        .collection_completed(storage.storage_tiers());
     contexts::collected_rrdset(chart);
 }
 

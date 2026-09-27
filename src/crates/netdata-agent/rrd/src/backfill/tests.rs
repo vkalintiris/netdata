@@ -191,3 +191,31 @@ fn thread_counts_are_cs() {
         .collect();
     assert_eq!(counts, [2, 2, 3, 16, 16]);
 }
+
+/// The pulse counters: every stored point counts on its tier once this thread flushes them (tier 0 per point, a
+/// higher tier per completed window); a first store after a restart backfills the higher tiers with queries of the
+/// lower ones, each counted with the points it read.
+#[test]
+fn stored_points_and_backfill_queries_count_for_pulse() {
+    let f = backfill_fixture(Backfill::New, DbMode::Dbengine);
+    let storage = Arc::clone(f.host.storage());
+    let pulse = storage.pulse();
+    let tiers = storage.storage_tiers();
+    for t in B..B + 30 {
+        store(&f.dim, t, (t - B) as f64);
+    }
+    assert_eq!(pulse.ingestion.read(), [0; 5], "not flushed yet");
+    pulse.ingestion.collection_completed(tiers);
+    let stored = pulse.ingestion.read();
+    assert_eq!(stored[0], 30);
+    assert!(
+        (5..=6).contains(&stored[1]),
+        "tier 1 windows of 5 s: {stored:?}"
+    );
+    assert!(stored[2] <= 2, "tier 2 windows of 15 s: {stored:?}");
+    assert_eq!(pulse.queries.backfill(), (0, 0));
+    f.dim.restarted();
+    store(&f.dim, B + 60, 0.0);
+    let (queries, points) = pulse.queries.backfill();
+    assert!(queries >= 1 && points >= 1, "{queries} {points}");
+}

@@ -20,6 +20,7 @@ use crate::contexts::{self, ChartLink, Contexts, DimLink};
 use crate::host::meta_flags;
 use crate::labels::{FLAG_DONT_DELETE, Labels, SRC_AUTO};
 use crate::mode::{DbMode, align_entries_to_pagesize};
+use crate::pulse;
 use crate::storage::{Backfill, StorageLayout};
 use crate::tiers::{self, BackfillRunning, Rollup, TierRecord};
 
@@ -286,6 +287,11 @@ struct DimIndex {
 }
 
 impl Chart {
+    /// The daemon's storage (`host->db[]` and C's process globals).
+    pub fn storage(&self) -> &Arc<StorageLayout> {
+        &self.storage
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -685,6 +691,7 @@ impl Chart {
                 },
             )));
             collect.push(TierCollect {
+                tier: 0,
                 handle: None,
                 rollup: rollup(0),
             });
@@ -699,6 +706,7 @@ impl Chart {
                 let tier_ue =
                     (self.storage.tier_grouping(t) as i64 * i64::from(meta.update_every)) as u32;
                 collect.push(TierCollect {
+                    tier: t,
                     handle: Some(CollectHandle::init(
                         engine,
                         &metric,
@@ -851,14 +859,18 @@ pub struct Dim {
 /// window it aggregates.
 #[derive(Debug)]
 struct TierCollect {
+    /// The tier (its position among the dimension's tiers).
+    tier: usize,
     handle: Option<CollectHandle>,
     rollup: Rollup,
 }
 
 impl TierCollect {
-    /// `storage_engine_store_metric()` of a tier record: nothing once the collection ended (a NULL `sch`).
+    /// `storage_engine_store_metric()` of a tier record: nothing once the collection ended (a NULL `sch`); a stored
+    /// record counts in the pulse charts.
     fn write(&mut self, record: Option<TierRecord>) {
         if let (Some(r), Some(handle)) = (record, self.handle.as_mut()) {
+            pulse::point_stored(self.tier);
             handle.store_next(
                 r.end_time_s as u64 * 1_000_000,
                 r.sum,
@@ -974,6 +986,7 @@ impl Dim {
             }
             None => {}
         }
+        pulse::point_stored(0);
         let update_every = store.update_every;
         let point = tiers::collected_point(point_end_time_ut, value, flags, update_every);
         for (t, tier) in self.tiers.iter().enumerate().skip(1) {
@@ -1030,8 +1043,10 @@ impl Dim {
                     Priority::SynchronousFirst,
                 )),
             };
+            let mut points_read = 0;
             while !q.is_finished() {
                 let point = q.next_metric();
+                points_read += 1;
                 if point.end_time_s > latest_s {
                     latest_s = point.end_time_s;
                     let target = &mut store.tiers[tier];
@@ -1039,6 +1054,12 @@ impl Dim {
                     target.write(record);
                 }
             }
+            drop(q);
+            let pulse = self.storage.pulse();
+            pulse
+                .ingestion
+                .collection_completed(self.storage.storage_tiers());
+            pulse.queries.backfill_query_completed(points_read);
         }
         true
     }

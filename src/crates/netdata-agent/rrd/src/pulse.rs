@@ -2,13 +2,18 @@
 //! query engine count as they work, read once a second by the PULSE thread. They live in the storage layout, with
 //! C's other process globals (D77.2, D80.5).
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+
+use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 
 /// Every counter group.
 #[derive(Debug, Default)]
 pub struct Pulse {
     pub web: Web,
     pub network: Network,
+    pub ingestion: Ingestion,
+    pub queries: Queries,
 }
 
 /// `web_statistics` (`pulse-http-api.c`): the web server's clients and completed requests.
@@ -130,6 +135,73 @@ impl Network {
     }
 }
 
+/// `ingest_statistics` (`pulse-ingestion.c`): the points stored per tier.
+#[derive(Debug, Default)]
+pub struct Ingestion {
+    stored: [AtomicU64; RRD_STORAGE_TIERS],
+}
+
+thread_local! {
+    /// `rrdset_done_statistics_points_stored_per_tier`: this thread's points stored since it last flushed them, kept
+    /// per thread since every stream thread stores points.
+    static STORED: Cell<[u64; RRD_STORAGE_TIERS]> = const { Cell::new([0; RRD_STORAGE_TIERS]) };
+}
+
+/// A point stored on `tier` by this thread.
+pub fn point_stored(tier: usize) {
+    STORED.with(|stored| {
+        let mut counts = stored.get();
+        if let Some(count) = counts.get_mut(tier) {
+            *count += 1;
+        }
+        stored.set(counts);
+    });
+}
+
+impl Ingestion {
+    /// `store_metric_collection_completed()`: this thread's points stored on the `tiers` in use since its last flush
+    /// move to the counters (C flushes at the end of a collection, of a backfill query, and at END2 and REND).
+    pub fn collection_completed(&self, tiers: usize) {
+        STORED.with(|stored| {
+            let mut counts = stored.get();
+            for (count, total) in counts.iter_mut().zip(&self.stored).take(tiers) {
+                total.fetch_add(*count, Ordering::Relaxed);
+                *count = 0;
+            }
+            stored.set(counts);
+        });
+    }
+
+    /// `pulse_ingestion_copy()`.
+    pub fn read(&self) -> [u64; RRD_STORAGE_TIERS] {
+        std::array::from_fn(|t| self.stored[t].load(Ordering::Relaxed))
+    }
+}
+
+/// `query_statistics` (`pulse-queries.c`): the queries made and the points they read, per source.
+#[derive(Debug, Default)]
+pub struct Queries {
+    backfill_queries: AtomicU64,
+    backfill_points_read: AtomicU64,
+}
+
+impl Queries {
+    /// `pulse_queries_backfill_query_completed()`: one query of a lower tier for a backfill, and its points.
+    pub fn backfill_query_completed(&self, points_read: u64) {
+        self.backfill_queries.fetch_add(1, Ordering::Relaxed);
+        self.backfill_points_read
+            .fetch_add(points_read, Ordering::Relaxed);
+    }
+
+    /// The backfill queries and their points.
+    pub fn backfill(&self) -> (u64, u64) {
+        (
+            self.backfill_queries.load(Ordering::Relaxed),
+            self.backfill_points_read.load(Ordering::Relaxed),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +230,29 @@ mod tests {
         assert_eq!(web.read(false).usec_max, 0, "reset by the read");
         web.request_completed(20, 0, 0);
         assert_eq!(web.read(false).usec_max, 20);
+    }
+
+    /// Stored points count per thread until a flush moves the tiers in use to the totals; another thread's points
+    /// wait for that thread's flush.
+    #[test]
+    fn stored_points_flush_per_thread() {
+        let ingestion = Ingestion::default();
+        point_stored(0);
+        point_stored(0);
+        point_stored(1);
+        point_stored(2);
+        point_stored(RRD_STORAGE_TIERS);
+        ingestion.collection_completed(2);
+        assert_eq!(ingestion.read()[..3], [2, 1, 0]);
+        std::thread::scope(|s| {
+            s.spawn(|| point_stored(0));
+        });
+        ingestion.collection_completed(3);
+        assert_eq!(
+            ingestion.read()[..3],
+            [2, 1, 1],
+            "tier 2 waited here; the other thread's point not"
+        );
     }
 
     #[test]
