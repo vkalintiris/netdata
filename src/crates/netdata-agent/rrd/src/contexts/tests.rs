@@ -294,7 +294,7 @@ impl LabelSource for FakeLabels {
     }
 }
 
-fn sql_chart(uuid: u8, id: &str, context: &str) -> SqlChart {
+pub(super) fn sql_chart(uuid: u8, id: &str, context: &str) -> SqlChart {
     SqlChart {
         chart_id: [uuid; 16],
         id: Some(id.into()),
@@ -309,7 +309,7 @@ fn sql_chart(uuid: u8, id: &str, context: &str) -> SqlChart {
     }
 }
 
-fn sql_dim(uuid: u8, id: &str, chart: &str, context: &str) -> SqlDim {
+pub(super) fn sql_dim(uuid: u8, id: &str, chart: &str, context: &str) -> SqlDim {
     SqlDim {
         dim_id: [uuid; 16],
         id: Some(id.into()),

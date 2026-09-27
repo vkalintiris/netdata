@@ -1419,10 +1419,21 @@ impl Contexts {
 
     /// `rrdcontext_garbage_collect_single_host()`: metrics, instances and contexts that may be deleted are removed;
     /// each deleted context's id and hub version go to `delete_from_sql` first (`rrdcontext_delete_from_sql_unsafe()`,
-    /// which does nothing for a host that is not dbengine).
-    pub fn garbage_collect(&self, mut delete_from_sql: impl FnMut(&str, u64)) {
+    /// which does nothing for a host that is not dbengine). `running` false stops the walk before the next context or
+    /// instance, as the worker's service checks do (the loader's collection has none).
+    pub fn garbage_collect(
+        &self,
+        running: &dyn Fn() -> bool,
+        mut delete_from_sql: impl FnMut(&str, u64),
+    ) {
         for rc in self.all() {
+            if !running() {
+                break;
+            }
             for ri in rc.instances() {
+                if !running() {
+                    break;
+                }
                 lock(&ri.metrics).retain(|rm| !rm.should_be_deleted());
                 if instance_should_be_deleted(&ri) {
                     lock(&rc.instances).retain(|i| !Arc::ptr_eq(i, &ri));
@@ -1904,6 +1915,8 @@ fn post_process_updates(rc: &Context, force: bool, reason: u32) {
 
 mod load;
 pub use load::{LoadReport, Loader, SqlChange, SqlChart, SqlContext, SqlDim};
+mod rotation;
+pub use rotation::{DbRotation, deep_pass};
 
 #[cfg(test)]
 mod tests;

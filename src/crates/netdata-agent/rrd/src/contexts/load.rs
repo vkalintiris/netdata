@@ -381,7 +381,7 @@ impl Loader<'_> {
                 report.contexts += 1;
             }
         }
-        contexts.garbage_collect(|id, version| sql(SqlChange::Delete(id, version)));
+        contexts.garbage_collect(&|| true, |id, version| sql(SqlChange::Delete(id, version)));
         let priority = if report.metrics_ignored != 0 || report.instances_ignored != 0 {
             Priority::Warning
         } else {

@@ -9,14 +9,17 @@ use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_metadata::open::MetaDb;
 use netdata_agent_metadata::read::populate_metrics;
+use netdata_agent_rrd::contexts::DbRotation;
 use netdata_agent_rrd::mode::DbMode;
 use netdata_agent_rrd::storage::Backfill;
 use netdata_agent_storage::dbengine::engine::cache::cache_budgets;
 use netdata_agent_storage::dbengine::engine::load::TierConfig;
+use netdata_agent_storage::dbengine::engine::query::RotationHook;
 use netdata_agent_storage::dbengine::engine::runtime::{InitConfig, Runtime};
 
 use crate::conf::{self, Conf, DbSection};
 use crate::metasync::now_realtime_s;
+use crate::rrdcontext::now_realtime_ut;
 use crate::system;
 
 /// `rrd_init()`'s engine start: its record, the keys, then the tiers; and the tiers' grouping iterations
@@ -28,6 +31,7 @@ pub fn start(
     parent_profile: bool,
     pool: &WorkPool,
     meta: Option<Arc<MetaDb>>,
+    db_rotation: &Arc<DbRotation>,
 ) -> (Runtime, Vec<u64>, Backfill) {
     nd_log!(
         Source::Daemon,
@@ -92,8 +96,11 @@ pub fn start(
             update_every_s: db.update_every as u32,
             stack_size: conf.threads.thread_stack_size,
             timer_period: std::time::Duration::from_secs(1),
-            // the contexts' deep pass after a rotation comes with S5 (D75.6)
-            rotation: None,
+            // rrdcontext_db_rotation(): each rotation arms the contexts' deep pass (D75.6, D77)
+            rotation: Some({
+                let db_rotation = Arc::clone(db_rotation);
+                RotationHook(Arc::new(move || db_rotation.rotated(now_realtime_ut())))
+            }),
             // localhost->db[tier].eng: a ram or alloc localhost keeps tier 0 out of the dbengine
             retention_tiers: (0..retention_tiers)
                 .map(|t| t > 0 || db.mode == DbMode::Dbengine)

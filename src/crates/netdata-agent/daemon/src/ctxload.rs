@@ -94,24 +94,40 @@ pub fn load_host_contexts(host: &Host, src: &Sources<'_>) {
     }
     loader.finish(&host.hostname(), shutdown::exiting, |change| match change {
         SqlChange::Cleanup(context) => (src.cleanup)(host_id, context.to_string()),
-        // rrdcontext_delete_from_sql_unsafe()
         SqlChange::Delete(context, version) => {
-            let deleted = match src.context_db {
-                Some(db) => db.delete_context(&host_id, context, || {
-                    (src.cleanup)(host_id, context.to_string());
-                }),
-                None => {
-                    no_database("ctx_delete_context");
-                    false
-                }
-            };
-            if !deleted {
-                netdata_log_error!(
-                    "RRDCONTEXT: failed to delete context '{context}' version {version} from SQL."
-                );
-            }
+            delete_context(host, src.context_db, context, version, src.cleanup);
         }
     });
+}
+
+/// `rrdcontext_delete_from_sql_unsafe()` of a context the garbage collection removed: on a dbengine host, its row
+/// leaves the context database (`ctx_delete_context()`, which queues the host's context cleanup once its statement
+/// is prepared), with C's record when it cannot.
+pub fn delete_context(
+    host: &Host,
+    context_db: Option<&Arc<ContextDb>>,
+    context: &str,
+    version: u64,
+    cleanup: &dyn Fn([u8; 16], String),
+) {
+    if host.info().db_mode != DbMode::Dbengine {
+        return;
+    }
+    let Some(host_id) = meta_store::host_id(host) else {
+        return;
+    };
+    let deleted = match context_db {
+        Some(db) => db.delete_context(&host_id, context, || cleanup(host_id, context.to_string())),
+        None => {
+            no_database("ctx_delete_context");
+            false
+        }
+    };
+    if !deleted {
+        netdata_log_error!(
+            "RRDCONTEXT: failed to delete context '{context}' version {version} from SQL."
+        );
+    }
 }
 
 /// A row of `CTX_GET_CONTEXT_LIST` as the loader takes it (C's integer conversions).

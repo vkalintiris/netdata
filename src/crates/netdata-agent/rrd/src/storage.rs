@@ -11,7 +11,7 @@ use netdata_agent_storage::dbengine::engine::query::Dbengine;
 use netdata_agent_storage::query::{Priority, StorageQuery};
 
 use crate::chart::Dim;
-use crate::contexts::{RamIndex, TierRetention};
+use crate::contexts::{DbRotation, RamIndex, TierRetention};
 use crate::mode::DbMode;
 
 /// `storage_tiers_grouping_iterations` before the configuration: tier 0 the update every, the others 60.
@@ -41,6 +41,8 @@ pub struct StorageLayout {
     backfill_queue: crate::backfill::BackfillQueue,
     /// `global_rrdset_counter`: the charts created by every host of the daemon.
     charts_created: AtomicUsize,
+    /// `rrdcontext_next_db_rotation_ut`: the deadline the engine's rotations arm for the contexts' deep pass.
+    db_rotation: Arc<DbRotation>,
 }
 
 impl Default for StorageLayout {
@@ -59,6 +61,7 @@ impl StorageLayout {
             backfill: Backfill::New,
             backfill_queue: crate::backfill::BackfillQueue::default(),
             charts_created: AtomicUsize::new(0),
+            db_rotation: Arc::default(),
         }
     }
 
@@ -80,6 +83,17 @@ impl StorageLayout {
     pub fn with_backfill(mut self, backfill: Backfill) -> Self {
         self.backfill = backfill;
         self
+    }
+
+    /// The deep pass's deadline, which the engine's rotation hook arms: the engine starts before the layout, so the
+    /// daemon makes the slot first.
+    pub fn with_db_rotation(mut self, db_rotation: Arc<DbRotation>) -> Self {
+        self.db_rotation = db_rotation;
+        self
+    }
+
+    pub fn db_rotation(&self) -> &Arc<DbRotation> {
+        &self.db_rotation
     }
 
     pub fn backfill(&self) -> Backfill {

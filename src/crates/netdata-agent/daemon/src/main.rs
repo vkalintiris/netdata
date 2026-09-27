@@ -49,6 +49,7 @@ use std::sync::{Arc, Weak};
 
 use netdata_agent_evloop::Pool;
 use netdata_agent_inicfg::{SECTION_GLOBAL, SECTION_LOGS, SECTION_WEB};
+use netdata_agent_rrd::contexts::DbRotation;
 use netdata_agent_rrd::host::{Host, HostInfo, Hosts, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 use netdata_agent_rrd::storage::{Backfill, StorageLayout};
@@ -463,6 +464,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
     // the dbengine, when the configured mode or an enabled stream.conf receiver section stores in it
     let mut stream_conf = stream_conf;
+    // the deep pass's deadline: the engine's rotations arm it before the hosts exist
+    let db_rotation = Arc::new(DbRotation::default());
     let dbengine = (db.mode == DbMode::Dbengine || stream_conf.config.stream_conf_needs_dbengine())
         .then(|| {
             dbengine::start(
@@ -471,6 +474,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 profile == profile::Profile::Parent,
                 &uv_pool,
                 meta.clone(),
+                &db_rotation,
             )
         });
     // metadata_sync_init()
@@ -498,6 +502,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 .map(|dbengine| Arc::clone(dbengine.engine())),
         )
         .with_profile(grouping, i64::from(db.update_every))
+        .with_db_rotation(db_rotation)
         .with_backfill(backfill),
     );
     let localhost = Host::with_storage(
@@ -735,14 +740,34 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     };
     // The workers hold the listeners from here on; they close when the last one stops.
     drop(listeners);
-    let contexts_worker =
-        match rrdcontext::Worker::spawn(Arc::clone(&hosts), conf.threads.thread_stack_size) {
-            Ok(worker) => worker,
-            Err(err) => {
-                nd_log!(Source::Daemon, Priority::Err, "{err}");
-                return 1;
-            }
-        };
+    // the deep pass's SQL deletes; the database is held weakly, so that it closes at its shutdown step
+    let delete_context = {
+        let (context_db, queue) = (
+            context_db.as_ref().map_or_else(Weak::new, Arc::downgrade),
+            metasync.queue(),
+        );
+        move |host: &Host, context: &str, version: u64| {
+            let cleanup = |host_id, context| queue.ctx_host_cleanup(host_id, context);
+            ctxload::delete_context(
+                host,
+                context_db.upgrade().as_ref(),
+                context,
+                version,
+                &cleanup,
+            );
+        }
+    };
+    let contexts_worker = match rrdcontext::Worker::spawn(
+        Arc::clone(&hosts),
+        conf.threads.thread_stack_size,
+        delete_context,
+    ) {
+        Ok(worker) => worker,
+        Err(err) => {
+            nd_log!(Source::Daemon, Priority::Err, "{err}");
+            return 1;
+        }
+    };
     // BACKFILL: a parent's static thread (the profile alone decides, as C's enable_routine)
     let backfill_thread = if profile == profile::Profile::Parent {
         match backfill::Thread::spawn(
