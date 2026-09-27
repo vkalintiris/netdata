@@ -5,6 +5,7 @@ package parity
 import (
 	"fmt"
 	"math"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -75,6 +76,21 @@ func compareLocalData(t *testing.T, p *Pair, chart string, after, before int64, 
 	}
 }
 
+// pulseContextsRules compare localhost's /api/v1/contexts: every context's definition, charts, dimensions and
+// labels, in any context order, the clocks masked.
+var pulseContextsRules = Rules{
+	Masks: []Mask{
+		{Pattern: "**.first_time_t", Reason: "each daemon's own start"},
+		{Pattern: "**.last_time_t", Reason: "the clock"},
+		{Pattern: "**.version", Reason: "each side's context events"},
+		{Pattern: "host_labels", Reason: "compared by api.localhost-identity (C's _hw_* labels, D49.3)"},
+	},
+	// C keeps a chart's labels in pointer order (D22.2)
+	Unordered: []string{"contexts", "contexts.*.charts", "contexts.*.charts.*.labels"},
+	// the contexts follow their charts through RRDCONTEXT's queue
+	Settle: 10 * time.Second,
+}
+
 // localCharts are localhost's chart ids in /api/v1/charts' order.
 func localCharts(t *testing.T, d *daemon.Daemon) []string {
 	t.Helper()
@@ -115,12 +131,17 @@ func TestPulseLocalhostCharts(t *testing.T) {
 		if !slices.Equal(order[0], order[1]) {
 			t.Errorf("first-cycle charts:\noracle:    %v\ncandidate: %v", order[0], order[1])
 		}
-		diffs, err := p.CompareJSON("/api/v1/charts", nil, pulseChartsRules)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, d := range diffs {
-			t.Error(d)
+		for path, rules := range map[string]Rules{
+			"/api/v1/charts": pulseChartsRules,
+			"/api/v1/contexts?options=charts,dimensions,labels": pulseContextsRules,
+		} {
+			diffs, err := p.CompareJSON(path, nil, rules)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, d := range diffs {
+				t.Errorf("%s: %s", path, d)
+			}
 		}
 		return p
 	}
@@ -189,6 +210,54 @@ func TestPulseLocalhostCharts(t *testing.T) {
 				}
 			}
 		}
+	})
+	t.Run("dbengine-cchild", func(t *testing.T) {
+		// a real C child through the tee: its states as both parents follow it, online, stopped, then marked
+		// ephemeral
+		const hostname, guid = "parity-cchild-pulse", "5a1e0000-0000-4000-8000-00000000c0ab"
+		p := StartPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity)
+		child, err := daemon.Start(daemon.Options{
+			Binary:       os.Getenv("PARITY_ORACLE"),
+			RunDir:       runDir(t, Role("child")),
+			StorageTiers: 1,
+			Identity: &daemon.Identity{
+				Hostname:    hostname,
+				StreamKey:   "5a1e0000-0000-4000-8000-00000000c2ff",
+				MachineGUID: guid,
+			},
+			StreamTo: &daemon.StreamTo{
+				Destination: startTee(t, p, &teeReplies{}),
+				APIKey:      parentIdentity.StreamKey,
+			},
+		})
+		if err != nil {
+			t.Fatalf("start child: %v", err)
+		}
+		t.Cleanup(func() { _ = child.Stop() })
+		states := func(phase string) {
+			t.Helper()
+			now := time.Now().Unix()
+			for _, chart := range []string{"netdata.netdata.streaming_inbound_permanent",
+				"netdata.netdata.streaming_inbound_ephemeral", "netdata.streaming.in.state." + guid} {
+				t.Run(phase, func(t *testing.T) { compareLocalData(t, p, chart, now-3, now-1, "average") })
+			}
+		}
+		for _, side := range p.Each() {
+			waitOnline(t, side.Daemon.Addr, guid)
+		}
+		states("online")
+		if err := child.Stop(); err != nil {
+			t.Fatalf("stop child: %v", err)
+		}
+		time.Sleep(5 * time.Second)
+		states("stopped")
+		for _, side := range p.Each() {
+			if r := runCLI(t, side.Daemon, "mark-stale-nodes-ephemeral", hostname); r.Exit != 0 {
+				t.Fatalf("%s: mark-stale-nodes-ephemeral %+v", side.Role, r)
+			}
+		}
+		time.Sleep(5 * time.Second)
+		states("ephemeral")
 	})
 	t.Run("seeded", func(t *testing.T) {
 		// an archived child from the seed: counted stale, and its own state archived

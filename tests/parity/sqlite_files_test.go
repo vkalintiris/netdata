@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -193,15 +194,25 @@ func TestSQLiteFiles(t *testing.T) {
 	for _, name := range []string{"child", "child-final"} {
 		t.Run(name, func(t *testing.T) {
 			p := StartPair(t, opts, parentIdentity)
+			started := time.Now()
 			for _, side := range p.Each() {
 				writerChild(t, side.Daemon)
 			}
-			// the periodic job first runs 6 s after METASYNC starts; child-final stops before it
-			wait := 8 * time.Second
-			if name == "child-final" {
-				wait = time.Second
+			if name == "child" {
+				time.Sleep(8 * time.Second)
+			} else {
+				// the periodic job first runs 6 s after METASYNC starts: child-final stops before it, once the
+				// child's pulse charts exist on both sides (D83.3)
+				state := "netdata.streaming.in.state." + childHost.MachineGUID
+				for _, side := range p.Each() {
+					for !slices.Contains(localCharts(t, side.Daemon), state) {
+						if time.Since(started) > 5*time.Second {
+							t.Fatalf("%s: the child's pulse charts came after the metadata job's start", side.Role)
+						}
+						time.Sleep(100 * time.Millisecond)
+					}
+				}
 			}
-			time.Sleep(wait)
 			if name == "child" {
 				// the periodic job stored the child while both run (the final store would too, later)
 				for _, side := range p.Each() {
