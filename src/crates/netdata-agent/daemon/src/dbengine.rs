@@ -9,6 +9,7 @@ use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_metadata::open::MetaDb;
 use netdata_agent_metadata::read::populate_metrics;
+use netdata_agent_rrd::storage::Backfill;
 use netdata_agent_storage::dbengine::engine::cache::cache_budgets;
 use netdata_agent_storage::dbengine::engine::load::TierConfig;
 use netdata_agent_storage::dbengine::engine::runtime::{InitConfig, Runtime};
@@ -18,7 +19,7 @@ use crate::metasync::now_realtime_s;
 use crate::system;
 
 /// `rrd_init()`'s engine start: its record, the keys, then the tiers; and the tiers' grouping iterations
-/// (`storage_tiers_grouping_iterations`). C's fallbacks after it (one tier, alloc mode) cannot run in a dbengine
+/// (`storage_tiers_grouping_iterations`) and the backfill mode (`default_backfill`). C's fallbacks after it (one tier, alloc mode) cannot run in a dbengine
 /// build, where the start either brings a tier up or is fatal, so they are not ported.
 pub fn start(
     conf: &mut Conf,
@@ -26,7 +27,7 @@ pub fn start(
     parent_profile: bool,
     pool: &WorkPool,
     meta: Option<Arc<MetaDb>>,
-) -> (Runtime, Vec<u64>) {
+) -> (Runtime, Vec<u64>, Backfill) {
     nd_log!(
         Source::Daemon,
         Priority::Debug,
@@ -94,5 +95,5 @@ pub fn start(
         prepopulate,
         now_realtime_s,
     );
-    (runtime, settings.grouping_iterations)
+    (runtime, settings.grouping_iterations, settings.backfill)
 }

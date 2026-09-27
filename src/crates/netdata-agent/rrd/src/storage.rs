@@ -17,6 +17,17 @@ use crate::mode::DbMode;
 /// `storage_tiers_grouping_iterations` before the configuration: tier 0 the update every, the others 60.
 const GROUPING_ITERATIONS: [u64; RRD_STORAGE_TIERS] = [1, 60, 60, 60, 60];
 
+/// `RRD_BACKFILL` (`[db] dbengine tier backfill`): what a tier collected for the first time takes from the tiers
+/// below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backfill {
+    /// Only a tier that already has data.
+    #[default]
+    New,
+    Full,
+    None,
+}
+
 /// `nd_profile` (`storage_tiers`, `update_every`) with `multidb_ctx` and `storage_tiers_grouping_iterations`: the
 /// dbengine, when it runs, its tiers in use and their grouping.
 #[derive(Debug)]
@@ -24,6 +35,8 @@ pub struct StorageLayout {
     dbengine: Option<Arc<Dbengine>>,
     grouping_iterations: Vec<u64>,
     update_every: i64,
+    /// `default_backfill`.
+    backfill: Backfill,
     /// `global_rrdset_counter`: the charts created by every host of the daemon.
     charts_created: AtomicUsize,
 }
@@ -41,6 +54,7 @@ impl StorageLayout {
             dbengine,
             grouping_iterations: GROUPING_ITERATIONS.to_vec(),
             update_every: 1,
+            backfill: Backfill::New,
             charts_created: AtomicUsize::new(0),
         }
     }
@@ -57,6 +71,16 @@ impl StorageLayout {
         self.grouping_iterations = grouping_iterations;
         self.update_every = update_every;
         self
+    }
+
+    /// `default_backfill`, as `netdata_conf_dbengine_init()` reads it.
+    pub fn with_backfill(mut self, backfill: Backfill) -> Self {
+        self.backfill = backfill;
+        self
+    }
+
+    pub fn backfill(&self) -> Backfill {
+        self.backfill
     }
 
     /// `nd_profile.update_every`.

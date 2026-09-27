@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, Weak};
 
 use netdata_agent_storage::dbengine::engine::collect::{Alignment, CollectHandle};
 use netdata_agent_storage::dbengine::engine::mrg::Handle;
+use netdata_agent_storage::query::{Priority, StorageQuery};
 use netdata_agent_storage::ram::{ALLOC_MIN_ENTRIES, RamMetric, Seed};
 use netdata_agent_text::sanitize::{rrd_string_sanitize, rrdset_strncpyz_name};
 
@@ -19,8 +20,8 @@ use crate::contexts::{self, ChartLink, Contexts, DimLink};
 use crate::host::meta_flags;
 use crate::labels::{FLAG_DONT_DELETE, Labels, SRC_AUTO};
 use crate::mode::{DbMode, align_entries_to_pagesize};
-use crate::storage::StorageLayout;
-use crate::tiers::{self, Rollup, TierRecord};
+use crate::storage::{Backfill, StorageLayout};
+use crate::tiers::{self, BackfillRunning, Rollup, TierRecord};
 
 /// `RRD_ID_LENGTH_MAX`.
 pub const ID_LENGTH_MAX: usize = 1200;
@@ -727,6 +728,7 @@ impl Chart {
                 ..DimCollection::default()
             }),
             tiers,
+            storage: Arc::clone(&self.storage),
             store: Mutex::new(DimStore {
                 tiers: collect,
                 update_every: i64::from(meta.update_every),
@@ -839,6 +841,8 @@ pub struct Dim {
     tiers: Vec<TierMetric>,
     /// What the collection writes through, by tier; one lock serializes stores, finalization and frequency changes.
     store: Mutex<DimStore>,
+    /// The host's storage (`rd->rrdset->rrdhost->db[]`): the backfill mode and the engine the tiers read from.
+    storage: Arc<StorageLayout>,
 }
 
 /// `rd->tiers[t]`: a tier's collection (`sch`, `None` for a ram tier and once finalized) and, above tier 0, the
@@ -974,7 +978,9 @@ impl Dim {
             if !matches!(tier, TierMetric::Dbengine(_)) {
                 continue;
             }
-            // the backfill of a tier collected for the first time comes with S4a commit 2
+            if !store.backfilled {
+                self.backfill(&mut store, t, point.end_time_s);
+            }
             let tier = &mut store.tiers[t];
             let record = tier.rollup.store(update_every, point);
             tier.write(record);
@@ -982,6 +988,67 @@ impl Dim {
         store.backfilled = true;
         drop(store);
         contexts::collected_rrddim(self);
+    }
+
+    /// `backfill_tier_from_smaller_tiers()`: a tier collected for the first time takes, into its window, the points
+    /// the tiers below it hold after its own newest one, the closest tier first; not with the backfill off, not an
+    /// empty tier unless it is `full`, and not when less than one window is missing. Whether it read the tiers below.
+    fn backfill(&self, store: &mut DimStore, tier: usize, now_s: i64) -> bool {
+        let backfill = self.storage.backfill();
+        let (Some(engine), Some(TierMetric::Dbengine(metric))) =
+            (self.storage.dbengine(), self.tiers.get(tier))
+        else {
+            return false;
+        };
+        if backfill == Backfill::None {
+            return false;
+        }
+        let mut latest_s = metric.latest_time_s();
+        let update_every = store.update_every;
+        let granularity = store.tiers[tier].rollup.grouping() * update_every;
+        if backfill == Backfill::New && latest_s <= 0 {
+            return false;
+        }
+        if now_s <= latest_s || now_s - latest_s < granularity {
+            return false;
+        }
+        let _running = BackfillRunning::start();
+        for read_tier in (0..tier).rev() {
+            let (first_s, last_s) = self.tier_retention(read_tier);
+            if last_s <= latest_s {
+                continue;
+            }
+            let after_s = latest_s.max(first_s);
+            let mut q = match &self.tiers[read_tier] {
+                TierMetric::Ram(ring) => StorageQuery::Ram(ring.query(after_s, last_s)),
+                TierMetric::Dbengine(metric) => StorageQuery::Dbengine(engine.query(
+                    metric,
+                    after_s,
+                    last_s,
+                    Priority::SynchronousFirst,
+                )),
+            };
+            while !q.is_finished() {
+                let point = q.next_metric();
+                if point.end_time_s > latest_s {
+                    latest_s = point.end_time_s;
+                    let target = &mut store.tiers[tier];
+                    let record = target.rollup.store(update_every, point);
+                    target.write(record);
+                }
+            }
+        }
+        true
+    }
+
+    /// A restart as the tiers see it: the windows and the backfilled option start over, the collections stay.
+    #[cfg(test)]
+    pub(crate) fn restarted(&self) {
+        let mut store = lock(&self.store);
+        store.backfilled = false;
+        for tier in &mut store.tiers {
+            tier.rollup = Rollup::new(tier.rollup.grouping() as u64, tier.rollup.flush_modulo());
+        }
     }
 
     /// `rrdset_set_update_every_s()` for this dimension: each tier's storage takes the tier's update every.

@@ -36,6 +36,8 @@ use crate::storage_point::StoragePoint;
 pub enum Priority {
     High,
     Normal,
+    /// Prepared on the caller's thread, its first extent read there too (a tier backfill); C's enum puts it here.
+    SynchronousFirst,
     Low,
     BestEffort,
     /// Prepared on the caller's thread.
@@ -939,7 +941,7 @@ impl Dbengine {
         let (engine, job_metric, s, e) =
             (Arc::clone(self), metric.dup(), q.start_time_s, q.end_time_s);
         match (&self.pool, priority) {
-            (Some(pool), p) if p != Priority::Synchronous => {
+            (Some(pool), p) if !matches!(p, Priority::Synchronous | Priority::SynchronousFirst) => {
                 let (tx, rx) = mpsc::channel();
                 if pool
                     .queue(move || {

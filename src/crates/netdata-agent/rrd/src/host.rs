@@ -1394,7 +1394,6 @@ mod tests {
     #[test]
     fn tiers_aggregate_collected_windows() {
         use crate::chart::Algorithm;
-        use netdata_agent_storage::dbengine::engine::query::Priority;
         // multiples of 15
         const B: i64 = 1_790_179_995;
         let (_dirs, storage) = engine(3);
@@ -1415,24 +1414,135 @@ mod tests {
             store(&dim, t, (t - B) as f64);
         }
         assert!(dim.finalize_collection());
-        let records = |tier: usize| -> Vec<(i64, f64, u32)> {
-            let metric = e.mrg.get_and_acquire(dim.uuid(), tier).unwrap();
-            let mut q = e.query(&metric, B, B + 60, Priority::Normal);
-            let mut out = Vec::new();
-            while !q.is_finished() {
-                let p = q.next_metric();
-                if p.sum.is_finite() {
-                    out.push((p.end_time_s, p.sum, p.count));
-                }
-            }
-            out
-        };
         // the first window starts on a boundary and holds 6 points; B + 40's window was parked by B + 41
         let mut tier1 = vec![(B + 5, 15.0, 6)];
         tier1.extend((2..=8).map(|k| (B + 5 * k, (25 * k - 10) as f64, 5)));
-        assert_eq!(records(1), tier1);
+        assert_eq!(tier_records(&e, &dim, 1), tier1);
         // the window being filled (from B + 31) is lost at finalize
-        assert_eq!(records(2), [(B + 15, 120.0, 16), (B + 30, 345.0, 15)]);
+        assert_eq!(
+            tier_records(&e, &dim, 2),
+            [(B + 15, 120.0, 16), (B + 30, 345.0, 15)]
+        );
+    }
+
+    /// The records with a value of a dimension's tier.
+    fn tier_records(
+        e: &Arc<netdata_agent_storage::dbengine::engine::query::Dbengine>,
+        dim: &crate::chart::Dim,
+        tier: usize,
+    ) -> Vec<(i64, f64, u32)> {
+        use netdata_agent_storage::dbengine::engine::query::Priority;
+        let metric = e.mrg.get_and_acquire(dim.uuid(), tier).unwrap();
+        let mut q = e.query(&metric, 1, 1_900_000_000, Priority::Normal);
+        let mut out = Vec::new();
+        while !q.is_finished() {
+            let p = q.next_metric();
+            if p.sum.is_finite() {
+                out.push((p.end_time_s, p.sum, p.count));
+            }
+        }
+        out
+    }
+
+    /// A dimension of a host of `mode` over a three-tier engine with windows of 5 and 15 s, of the host's first
+    /// chart (flush modulo 1), with the backfill mode given.
+    fn backfill_dim(
+        backfill: crate::storage::Backfill,
+        mode: DbMode,
+    ) -> (
+        Vec<tempfile::TempDir>,
+        Arc<crate::chart::Dim>,
+        Arc<netdata_agent_storage::dbengine::engine::query::Dbengine>,
+    ) {
+        use crate::chart::Algorithm;
+        let (dirs, storage) = engine(3);
+        let storage = Arc::new(
+            Arc::try_unwrap(storage)
+                .unwrap()
+                .with_profile(vec![1, 5, 3], 1)
+                .with_backfill(backfill),
+        );
+        let e = Arc::clone(storage.dbengine().unwrap());
+        let host = Host::with_storage(
+            "guid-b",
+            false,
+            HostInfo {
+                db_mode: mode,
+                ..info("b")
+            },
+            &storage,
+        );
+        let chart = collected_chart(&host, mode);
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        (dirs, dim, e)
+    }
+
+    /// `backfill_tier_from_smaller_tiers()` after a restart (mode `new`): each tier takes the points after its newest
+    /// record from the tier below first, then from tier 0, restoring the window the restart lost; the point just
+    /// stored is read back and then stored again, as C does (D72.9).
+    #[test]
+    fn a_restarted_dimension_backfills_its_tiers() {
+        const B: i64 = 1_790_179_995;
+        let (_dirs, dim, e) = backfill_dim(crate::storage::Backfill::New, DbMode::Dbengine);
+        for t in B..=B + 20 {
+            store(&dim, t, (t - B) as f64);
+        }
+        dim.restarted();
+        store(&dim, B + 40, 40.0);
+        store(&dim, B + 41, 41.0);
+        assert!(dim.finalize_collection());
+        assert_eq!(
+            tier_records(&e, &dim, 1),
+            [
+                (B + 5, 15.0, 6),
+                (B + 10, 40.0, 5),
+                (B + 15, 65.0, 5),
+                (B + 20, 90.0, 5),
+                (B + 40, 80.0, 2)
+            ]
+        );
+        assert_eq!(
+            tier_records(&e, &dim, 2),
+            [(B + 15, 120.0, 16), (B + 30, 90.0, 5)]
+        );
+    }
+
+    /// With the backfill off the restart's lost window stays lost; `new` does not backfill an empty tier; `full`
+    /// does, reading back the first point just stored.
+    #[test]
+    fn backfill_modes() {
+        use crate::storage::Backfill;
+        const B: i64 = 1_790_179_995;
+        let (_dirs, dim, e) = backfill_dim(Backfill::None, DbMode::Dbengine);
+        for t in B..=B + 20 {
+            store(&dim, t, (t - B) as f64);
+        }
+        dim.restarted();
+        store(&dim, B + 40, 40.0);
+        store(&dim, B + 41, 41.0);
+        dim.finalize_collection();
+        assert_eq!(
+            tier_records(&e, &dim, 1),
+            [(B + 5, 15.0, 6), (B + 10, 40.0, 5), (B + 15, 65.0, 5)]
+        );
+        // a ram host reads tier 0 from its ring, whose retention starts one interval before its first point
+        // (rrddim_query_oldest_time_s()): the backfill's first point ends there, so the first window ends at B
+        for (mode, db, want) in [
+            (Backfill::New, DbMode::Dbengine, vec![(B + 5, 15.0, 6)]),
+            (Backfill::Full, DbMode::Dbengine, vec![(B + 5, 15.0, 7)]),
+            (
+                Backfill::Full,
+                DbMode::Ram,
+                vec![(B, 0.0, 2), (B + 5, 15.0, 5)],
+            ),
+        ] {
+            let (_dirs, dim, e) = backfill_dim(mode, db);
+            for t in B..=B + 6 {
+                store(&dim, t, (t - B) as f64);
+            }
+            store(&dim, B + 7, 7.0);
+            assert_eq!(tier_records(&e, &dim, 1), want, "{mode:?} {db:?}");
+        }
     }
 
     /// `rrdhost_create()` of a host that is not archived loads its contexts, once, on the creating thread; finding it

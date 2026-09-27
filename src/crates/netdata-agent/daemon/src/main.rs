@@ -50,7 +50,7 @@ use netdata_agent_evloop::Pool;
 use netdata_agent_inicfg::{SECTION_GLOBAL, SECTION_LOGS, SECTION_WEB};
 use netdata_agent_rrd::host::{Host, HostInfo, Hosts, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
-use netdata_agent_rrd::storage::StorageLayout;
+use netdata_agent_rrd::storage::{Backfill, StorageLayout};
 use netdata_agent_streaming::conf::{LoadDefaults, StreamConf};
 use netdata_agent_streaming::receiver::{self, Receivers, StreamWorker};
 use netdata_agent_web::request::Settings;
@@ -486,9 +486,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     };
     let health_enabled = conf.health_load_config_defaults();
     // nd_profile.storage_tiers and multidb_ctx: every host's tiers
-    let (dbengine, grouping) = match dbengine {
-        Some((runtime, grouping)) => (Some(runtime), grouping),
-        None => (None, vec![1]),
+    let (dbengine, grouping, backfill) = match dbengine {
+        Some((runtime, grouping, backfill)) => (Some(runtime), grouping, backfill),
+        None => (None, vec![1], Backfill::New),
     };
     let storage = Arc::new(
         StorageLayout::new(
@@ -496,7 +496,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 .as_ref()
                 .map(|dbengine| Arc::clone(dbengine.engine())),
         )
-        .with_profile(grouping, i64::from(db.update_every)),
+        .with_profile(grouping, i64::from(db.update_every))
+        .with_backfill(backfill),
     );
     let localhost = Host::with_storage(
         &machine_guid,

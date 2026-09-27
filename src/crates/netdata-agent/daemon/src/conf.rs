@@ -21,6 +21,7 @@ use netdata_agent_text::sanitize::rrdlabels_sanitize_value;
 
 use netdata_agent_query::grouping::Windows;
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
+use netdata_agent_rrd::storage::Backfill;
 use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::dbengine::engine::query::DEFAULT_PAGES_PER_EXTENT;
 use netdata_agent_storage::dbengine::format::descriptor::{
@@ -919,14 +920,6 @@ pub fn section_db(c: &mut Config, page_size: i64, cache_dir: &str) -> DbSection 
         extent_cache_mb,
         journal_check,
     }
-}
-
-/// `dbengine tier backfill` (`RRD_BACKFILL`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backfill {
-    New,
-    Full,
-    None,
 }
 
 /// A configured tier as `netdata_conf_dbengine_init()` prepares it.
