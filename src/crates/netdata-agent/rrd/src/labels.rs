@@ -232,6 +232,34 @@ impl Labels {
         added > 0 || removed > 0 || cleaned > 0
     }
 
+    /// `rrdlabels_copy()`: every label of `src` with its source, a pair already here re-marked OLD, a new one marked
+    /// NEW in the place of this set's label of the same name; each insert and each replaced label bumps the version.
+    pub fn copy_from(&mut self, src: &Labels) {
+        for label in &src.labels {
+            if let Some(same) = self
+                .labels
+                .iter_mut()
+                .find(|l| l.name == label.name && l.value == label.value)
+            {
+                same.flags = (label.flags & !FLAG_NEW) | FLAG_OLD;
+                continue;
+            }
+            let new = Label {
+                name: label.name.clone(),
+                value: label.value.clone(),
+                flags: (label.flags & !FLAG_OLD) | FLAG_NEW,
+            };
+            self.version = self.version.wrapping_add(1);
+            match self.labels.iter_mut().find(|l| l.name == new.name) {
+                Some(slot) => {
+                    *slot = new;
+                    self.version = self.version.wrapping_add(1);
+                }
+                None => self.labels.push(new),
+            }
+        }
+    }
+
     /// `rrdlabels_match_simple_pattern_parsed()`: the first label that matches decides. With `equal` 0 the names are
     /// matched (a negative match counts as none); otherwise `name<equal>value`, after the name alone.
     pub fn match_simple_pattern_parsed(&self, pattern: &SimplePattern, equal: u8) -> LabelsMatch {
@@ -284,6 +312,37 @@ impl Labels {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `rrdlabels_copy()`: the source's labels join this set with their sources, replacing the ones of the same
+    /// name and keeping the others; a pair already here is only re-marked.
+    #[test]
+    fn copy_as_c() {
+        let mut src = Labels::default();
+        src.add(b"a", b"1", SRC_CONFIG);
+        src.add(b"b", b"2", SRC_AUTO);
+        let mut dst = Labels::default();
+        dst.add(b"b", b"old", SRC_AUTO);
+        dst.add(b"c", b"3", SRC_AUTO);
+        let version = dst.version();
+        dst.copy_from(&src);
+        let pairs = |l: &Labels| {
+            l.iter()
+                .map(|l| (l.name.clone(), l.value.clone(), l.flags))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            pairs(&dst),
+            [
+                (b"b".to_vec(), b"2".to_vec(), SRC_AUTO | FLAG_NEW),
+                (b"c".to_vec(), b"3".to_vec(), SRC_AUTO | FLAG_NEW),
+                (b"a".to_vec(), b"1".to_vec(), SRC_CONFIG | FLAG_NEW),
+            ]
+        );
+        assert_eq!(dst.version(), version + 3, "two inserts and a replacement");
+        dst.copy_from(&src);
+        assert_eq!(dst.version(), version + 3, "the same pairs change nothing");
+        assert_eq!(pairs(&dst)[0].2, SRC_AUTO | FLAG_OLD);
+    }
 
     /// C's `rrdlabels_unittest_add_pairs()`.
     #[test]

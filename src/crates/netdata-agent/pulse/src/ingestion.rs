@@ -1,14 +1,12 @@
 //! `pulse-ingestion.c`: the points stored per tier.
 
-use std::sync::Arc;
+use netdata_agent_rrd::chart::{Algorithm, ChartType};
 
-use netdata_agent_rrd::chart::{Algorithm, Chart, ChartType, Dim};
-
-use crate::chart::{Def, Localhost, dim, set};
+use crate::chart::{Def, Localhost, WithDims, dim, set};
 
 #[derive(Default)]
 pub(crate) struct Charts {
-    points_stored: Option<(Arc<Chart>, Vec<Arc<Dim>>)>,
+    points_stored: Option<WithDims>,
 }
 
 impl Charts {

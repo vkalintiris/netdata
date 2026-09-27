@@ -1,12 +1,10 @@
 //! `pulse-queries.c`: the queries, the samples they read and the points they generated, per source. The exporters
 //! are not ported and the replication queries are the stream sender's, which is not either: both are 0.
 
-use std::sync::Arc;
-
-use netdata_agent_rrd::chart::{Algorithm, Chart, ChartType, Dim};
+use netdata_agent_rrd::chart::{Algorithm, ChartType};
 use netdata_agent_rrd::pulse::{QuerySource, SourceStats};
 
-use crate::chart::{Def, Localhost, dim, set};
+use crate::chart::{Def, Localhost, WithDims, dim, set};
 
 /// The dimensions of the queries and samples read charts; the points generated chart has neither exporters nor
 /// backfill.
@@ -31,14 +29,14 @@ const GENERATED: [&str; 6] = [
 
 #[derive(Default)]
 pub(crate) struct Charts {
-    queries: Option<(Arc<Chart>, Vec<Arc<Dim>>)>,
-    points_read: Option<(Arc<Chart>, Vec<Arc<Dim>>)>,
-    points_generated: Option<(Arc<Chart>, Vec<Arc<Dim>>)>,
+    queries: Option<WithDims>,
+    points_read: Option<WithDims>,
+    points_generated: Option<WithDims>,
 }
 
 /// A chart of the query statistics, its dimensions incremental.
 fn update(
-    slot: &mut Option<(Arc<Chart>, Vec<Arc<Dim>>)>,
+    slot: &mut Option<WithDims>,
     localhost: &Localhost<'_>,
     def: &Def<'_>,
     dims: &[&str],

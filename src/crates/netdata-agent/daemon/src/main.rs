@@ -639,6 +639,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             }
         }
     };
+    // stream_conf_is_parent() and stream_conf_is_child(), which PULSE reads
+    let (stream_is_parent, stream_is_child) = (stream_conf.is_parent, stream_conf.send.enabled);
     let receivers = Arc::new(Receivers::new(
         stream_conf,
         Arc::clone(&hosts),
@@ -734,9 +736,14 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         let settings = netdata_agent_pulse::Settings {
             gap_when_lost_iterations_above: db.gap_when_lost_iterations_above,
             page_size: system.page_size,
+            parents: netdata_agent_pulse::Gates {
+                is_parent: profile == profile::Profile::Parent,
+                stream_is_parent,
+                is_child: stream_is_child,
+            },
         };
         match pulse::spawn(
-            Arc::clone(hosts.localhost()),
+            Arc::clone(&hosts),
             conf.threads.thread_stack_size,
             update_every,
             settings,

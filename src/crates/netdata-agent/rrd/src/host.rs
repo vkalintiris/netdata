@@ -314,6 +314,10 @@ pub struct Host {
     /// `host->stream.rcv.status.replication.charts`: the charts whose replication is in progress (it wraps below 0,
     /// as C's, until a reset zeroes it).
     replicating_charts: AtomicU32,
+    /// `host->stream.rcv.status.labels_applied` and `labels_applied_version`: the pulse charts of this child took its
+    /// labels, and at which version.
+    labels_applied: AtomicBool,
+    labels_applied_version: AtomicU32,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -440,6 +444,8 @@ impl Host {
             stream_bytes_in: AtomicU64::new(0),
             stream_bytes_out: AtomicU64::new(0),
             replicating_charts: AtomicU32::new(0),
+            labels_applied: AtomicBool::new(false),
+            labels_applied_version: AtomicU32::new(0),
             meta_flags,
             metadata_lifetime: RwLock::new(false),
             storage: Arc::clone(storage),
@@ -742,6 +748,22 @@ impl Host {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// `rrdlabels_version(host->rrdlabels)`.
+    pub fn labels_version(&self) -> u32 {
+        self.labels
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .version()
+    }
+
+    /// The pulse charts of this child take its labels of `version`: whether they must (again), because the version
+    /// moved or they never took them (a host without labels stays at version 0).
+    pub fn pulse_labels_refresh(&self, version: u32) -> bool {
+        let old = self.labels_applied_version.swap(version, Ordering::Relaxed);
+        let applied = self.labels_applied.swap(true, Ordering::Relaxed);
+        old != version || !applied
     }
 
     pub fn update_labels<T>(&self, update: impl FnOnce(&mut Labels) -> T) -> T {
@@ -1843,6 +1865,19 @@ mod tests {
         assert_eq!(db_status(&host), DbStatus::Initializing);
         host.clear_pending_context_load();
         assert_eq!(db_status(&host), DbStatus::Queryable);
+    }
+
+    /// `labels_applied(_version)`: the pulse charts take a child's labels first, then again only when their version
+    /// moves.
+    #[test]
+    fn pulse_charts_take_the_labels_when_they_change() {
+        let host = Host::new("guid-p", false, info("p"));
+        let version = host.labels_version();
+        assert!(host.pulse_labels_refresh(version), "never taken");
+        assert!(!host.pulse_labels_refresh(version));
+        host.update_labels(|l| l.add(b"k", b"v", crate::labels::SRC_AUTO));
+        assert!(host.pulse_labels_refresh(host.labels_version()));
+        assert!(!host.pulse_labels_refresh(host.labels_version()));
     }
 
     /// `rrdhost_receiver_replicating_charts()`: the ingest counts each chart's replication once; a reset takes back

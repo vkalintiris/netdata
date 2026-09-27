@@ -5,21 +5,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use netdata_agent_pulse::{Pulse, Settings};
-use netdata_agent_rrd::host::Host;
+use netdata_agent_rrd::host::Hosts;
 
 use crate::heartbeat::Thread;
 use crate::shutdown;
 
 /// Starts `PULSE`. `update_every` runs first on the thread, as C reads `[pulse] update every` there.
 pub fn spawn(
-    localhost: Arc<Host>,
+    hosts: Arc<Hosts>,
     stack_size: usize,
     update_every: impl FnOnce() -> i64 + Send + 'static,
     settings: Settings,
 ) -> std::io::Result<Thread> {
     Thread::spawn("PULSE", stack_size, Duration::from_secs(1), move |ticker| {
         let step = update_every();
-        let mut pulse = Pulse::new(localhost, settings);
+        let mut pulse = Pulse::new(hosts, settings);
         let mut real_step = 1;
         // service_running(SERVICE_COLLECTORS), false once the exit starts
         while ticker.next() && !shutdown::exiting() {

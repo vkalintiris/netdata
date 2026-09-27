@@ -73,6 +73,9 @@ impl<'a> Localhost<'a> {
     }
 }
 
+/// A created chart and its dimensions, in creation order.
+pub(crate) type WithDims = (Arc<Chart>, Vec<Arc<Dim>>);
+
 /// `rrddim_add()` without a name.
 pub(crate) fn dim(
     chart: &Chart,
