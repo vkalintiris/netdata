@@ -194,6 +194,18 @@ var (
 	portRe  = regexp.MustCompile(` src_port=(\d+) `)
 )
 
+// probeConnections counts the probe's connections, one request each: a long poll can reuse a client port, which
+// probePorts then holds once.
+func probeConnections(access []string) int {
+	n := 0
+	for _, l := range access {
+		if probeRe.MatchString(l) {
+			n++
+		}
+	}
+	return n
+}
+
 // probePorts are the client ports of the readiness probe's connections.
 func probePorts(access []string) map[string]bool {
 	ports := map[string]bool{}
@@ -392,16 +404,16 @@ func compareLogFilesWith(t *testing.T, p *Pair, extra []logMask, names ...string
 	if len(names) == 0 {
 		names = []string{"daemon.log", "access.log"}
 	}
-	oProbes := probePorts(logLines(t, p.Oracle.Opts.RunDir, "access.log"))
-	cProbes := probePorts(logLines(t, p.Candidate.Opts.RunDir, "access.log"))
+	oAccess, cAccess := logLines(t, p.Oracle.Opts.RunDir, "access.log"), logLines(t, p.Candidate.Opts.RunDir, "access.log")
+	oProbes, cProbes := probePorts(oAccess), probePorts(cAccess)
 	for _, name := range names {
 		o, c := logLines(t, p.Oracle.Opts.RunDir, name), logLines(t, p.Candidate.Opts.RunDir, name)
 		if name == "daemon.log" {
 			// each probe connection is one connect, one disconnect and one reception
 			wo, wc := webTotals(o), webTotals(c)
 			for i := range wo {
-				wo[i] -= len(oProbes)
-				wc[i] -= len(cProbes)
+				wo[i] -= probeConnections(oAccess)
+				wc[i] -= probeConnections(cAccess)
 			}
 			if wo != wc {
 				t.Errorf("%s: web threads' connects, disconnects and receptions: oracle %v, candidate %v", name, wo, wc)

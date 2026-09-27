@@ -450,10 +450,13 @@ func TestDbengineRetention(t *testing.T) {
 			retention[i] = tierRetention(t, side.Daemon, r2child.Hostname, tierUUIDs(t, side.Daemon, r2child.Hostname),
 				start, end)
 		}
+		if len(retention[0]) != len(retention[1]) {
+			t.Errorf("metrics: oracle %d, candidate %d", len(retention[0]), len(retention[1]))
+		}
 		for name, tiers := range retention[0] {
 			other, ok := retention[1][name]
-			if !ok {
-				t.Errorf("%s: only on the oracle", name)
+			if !ok || len(tiers) == 0 || len(other) == 0 {
+				t.Errorf("%s: oracle %v, candidate %v", name, tiers, other)
 				continue
 			}
 			var of, ol, cf, cl int64
