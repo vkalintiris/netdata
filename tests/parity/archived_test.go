@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -236,4 +239,101 @@ func TestArchivedHostsDbengine(t *testing.T) {
 	if !strings.Contains(cleanup[1], "seed.orphan") {
 		t.Errorf("the chartless context's cleanup was not stored:\n%s", cleanup[1])
 	}
+	// The child connects again with replication: the archived dbengine host comes back (no discard), asks for the
+	// points after the registry's last time, and stores them under the dimensions it had (check C5, D70.7).
+	t.Run("reconnect-dbengine", func(t *testing.T) {
+		p := StartPair(t, opts, parentIdentity)
+		// an archived host has no charts: its registry's last time comes through its contexts
+		var last struct {
+			Contexts map[string]struct {
+				LastTime int64 `json:"last_time_t"`
+			} `json:"contexts"`
+		}
+		b, err := rawExchange(p.Oracle.Addr,
+			[]byte("GET /host/"+childHost.Hostname+"/api/v1/contexts HTTP/1.1\r\n\r\n"), 10*time.Second)
+		if err != nil || json.Unmarshal(httpBody(b), &last) != nil {
+			t.Fatalf("the archived child's contexts: %v: %s", err, httpBody(b))
+		}
+		l0 := last.Contexts["seed.one"].LastTime
+		if l0 == 0 {
+			t.Fatalf("the archived child has no retention: %s", httpBody(b))
+		}
+		now := time.Now().Unix()
+		charts := map[string]stream.ReplayChart{"seed.one": {FirstT: l0 - 3, LastT: l0 + 5, UpdateEvery: 1},
+			"seed.two": {FirstT: l0 - 3, LastT: l0 + 5, UpdateEvery: 1}}
+		var windows [2][]string
+		for i, side := range p.Each() {
+			conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, childHost, stream.CapsReplication)
+			if err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			for _, chart := range []string{"seed.one", "seed.two"} {
+				conn.Linef("CHART '%s' '' 'title' 'units' 'family' '%s' line 1000 1 '' fixture-pusher corpus", chart, chart)
+				conn.Linef("DIMENSION 'd1' '' absolute 1 1 ''")
+				conn.ChartDefinitionEnd(l0-3, l0+5, now)
+			}
+			var mu sync.Mutex
+			_, err = conn.ServeReplication(charts, now, func(chart string, after, before int64) []stream.ReplayRow {
+				mu.Lock()
+				windows[i] = append(windows[i], fmt.Sprintf("%s (%d, %d]", chart, after-l0, before-l0))
+				mu.Unlock()
+				var rows []stream.ReplayRow
+				for t := after + 1; t <= before; t++ {
+					rows = append(rows, stream.ReplayRow{T: t, Dims: []stream.ReplayValue{
+						{ID: "d1", Collected: strconv.FormatInt(t%100, 10), Flags: stream.FlagNotAnomalous}}})
+				}
+				return rows
+			}, 30*time.Second)
+			if err != nil {
+				t.Fatalf("%s: replication: %v", side.Role, err)
+			}
+		}
+		sort.Strings(windows[0])
+		sort.Strings(windows[1])
+		if strings.Join(windows[0], "; ") != strings.Join(windows[1], "; ") {
+			t.Errorf("replication windows (relative to the registry's last time):\noracle:    %v\ncandidate: %v",
+				windows[0], windows[1])
+		}
+		if len(windows[0]) == 0 || !strings.HasPrefix(windows[0][0], "seed.one (0, ") {
+			t.Errorf("oracle: replication does not start at the registry's last time: %v", windows[0])
+		}
+		for _, side := range p.Each() {
+			waitChartsLast(t, side.Daemon, childHost.Hostname, "seed.", 2, l0+5, 30*time.Second)
+		}
+		if o, c := archivedHostsView(t, p.Oracle), archivedHostsView(t, p.Candidate); o != c {
+			t.Errorf("hosts:\noracle:    %s\ncandidate: %s", o, c)
+		}
+		rules := dbengineReadRules
+		rules.Masks = append(append([]Mask{}, dbengineReadRules.Masks...),
+			Mask{Pattern: "**.contexts_hard_hash", Reason: "context events"})
+		compareGetWith(t, p, fmt.Sprintf("/host/%s/api/v3/data?contexts=seed.*&after=%d&before=%d&points=7",
+			childHost.Hostname, l0-2, l0+5), rules)
+		for _, side := range p.Each() {
+			if err := side.Daemon.Stop(); err != nil {
+				t.Fatalf("stop %s: %v", side.Role, err)
+			}
+		}
+		reconnect := regexp.MustCompile(`msg="(Archived host '|Host '[^']*' has |Host [^ ]+ is not in archived mode anymore)`)
+		var got [2]string
+		for i, side := range p.Each() {
+			for _, l := range logLines(t, side.Daemon.Opts.RunDir, "daemon.log") {
+				if reconnect.MatchString(l) {
+					got[i] += fmt.Sprintln(normalizeLog(l, side.Daemon.Opts.RunDir, ""))
+				}
+			}
+		}
+		if got[0] != got[1] || strings.Contains(got[1], "Discarding archived state") {
+			t.Errorf("reconnect records:\noracle:\n%s\ncandidate:\n%s", got[0], got[1])
+		}
+		// the child keeps its dimensions: no new UUIDs (the localhost's are C's pulse charts, D48.6)
+		dims := []string{"--table", "dimension", "--skip-host-charts", strings.ReplaceAll(parentIdentity.MachineGUID, "-", "")}
+		seeded := dumpDB(t, filepath.Join(seed, "netdata-meta.db"), dims...)
+		for _, side := range p.Each() {
+			if got := dumpDB(t, filepath.Join(side.Daemon.Opts.RunDir, "cache", "netdata-meta.db"),
+				dims...); got != seeded {
+				t.Errorf("%s: the dimension rows changed:\n%s", side.Role, firstDifference([]byte(seeded), []byte(got)))
+			}
+		}
+	})
 }

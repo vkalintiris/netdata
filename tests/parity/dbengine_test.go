@@ -103,12 +103,19 @@ var dbengineReadRules = Rules{
 // compareGet compares both daemons' JSON answers to one request under dbengineReadRules.
 func compareGet(t *testing.T, p *Pair, path string) {
 	t.Helper()
+	compareGetWith(t, p, path, dbengineReadRules)
+}
+
+// compareGetWith compares both daemons' JSON answers to one request under rules; a text answer compares byte for
+// byte.
+func compareGetWith(t *testing.T, p *Pair, path string, rules Rules) {
+	t.Helper()
 	base, query, _ := strings.Cut(path, "?")
 	params, err := url.ParseQuery(query)
 	if err != nil {
 		t.Fatal(err)
 	}
-	diffs, err := p.CompareJSON(base, params, dbengineReadRules)
+	diffs, err := p.CompareJSON(base, params, rules)
 	if err != nil && strings.Contains(err.Error(), "invalid JSON") {
 		// a text answer (no metric matched): byte for byte
 		var got [2][]byte
@@ -249,35 +256,20 @@ func TestDbengineHandBack(t *testing.T) {
 	}
 	id := daemon.Identity{Hostname: "b6parent", StreamKey: parentIdentity.StreamKey,
 		MachineGUID: strings.TrimSpace(string(guid))}
-	opts := func(binary string, role Role, cache string) daemon.Options {
-		return daemon.Options{Binary: binary, RunDir: runDir(t, role), Identity: &id, StorageTiers: 3,
-			TierRetentionMB: [3]int{25, 25, 25}, SeedCache: cache, PulseOff: true, LogsExtra: "    level = debug\n"}
-	}
+	opts := daemon.Options{StorageTiers: 3, TierRetentionMB: [3]int{25, 25, 25}, PulseOff: true,
+		LogsExtra: "    level = debug\n"}
+	seed := filepath.Join(fx, "runR", "cache")
+	first := startPair(t, opts, id, binaries(t), [2]string{seed, seed}, [2]Role{"first0", "first1"})
+	time.Sleep(2 * time.Second)
 	var caches [2]string
-	for i, binary := range []string{os.Getenv("PARITY_ORACLE"), os.Getenv("PARITY_CANDIDATE")} {
-		d, err := daemon.Start(opts(binary, Role(fmt.Sprintf("first%d", i)), filepath.Join(fx, "runR", "cache")))
-		if err != nil {
-			t.Fatalf("first run %d: %v", i, err)
-		}
-		time.Sleep(2 * time.Second)
-		if err := d.Stop(); err != nil {
+	for i, side := range first.Each() {
+		if err := side.Daemon.Stop(); err != nil {
 			t.Fatalf("first run %d: stop: %v", i, err)
 		}
-		caches[i] = filepath.Join(d.Opts.RunDir, "cache")
+		caches[i] = filepath.Join(side.Daemon.Opts.RunDir, "cache")
 	}
-	p := &Pair{}
-	for i, cache := range caches {
-		d, err := daemon.Start(opts(os.Getenv("PARITY_ORACLE"), Role(fmt.Sprintf("second%d", i)), cache))
-		if err != nil {
-			t.Fatalf("second run %d: %v", i, err)
-		}
-		t.Cleanup(func() { _ = d.Stop() })
-		if i == 0 {
-			p.Oracle = d
-		} else {
-			p.Candidate = d
-		}
-	}
+	oracle := binaries(t)[0]
+	p := startPair(t, opts, id, [2]string{oracle, oracle}, caches, [2]Role{"second0", "second1"})
 	compareGet(t, p, "/host/b6child/api/v1/contexts")
 	win := fmt.Sprintf("after=%d&before=%d", fixtureStart, fixtureEnd)
 	for tier := 0; tier < 3; tier++ {
@@ -289,18 +281,26 @@ func TestDbengineHandBack(t *testing.T) {
 		}
 	}
 	// both sides are C: the engine's threads' records as sorted multisets, errno and timings masked
-	engine := func(d *daemon.Daemon) string {
-		var out []string
-		for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
-			switch th, _, _ := strings.Cut(threadOf(l), "["); th {
-			case "DBENGINIT", "DBEV", "CTXLOAD", "rrdeng-exit":
-				out = append(out, errnoRe.ReplaceAllString(normalizeLog(l, d.Opts.RunDir, ""), ""))
-			}
-		}
-		sort.Strings(out)
-		return strings.Join(out, "\n")
-	}
-	if o, c := engine(p.Oracle), engine(p.Candidate); o != c {
+	if o, c := engineRecords(t, p.Oracle, nil), engineRecords(t, p.Candidate, nil); o != c {
 		t.Errorf("engine records differ\n%s", firstDifference([]byte(o), []byte(c)))
 	}
+}
+
+// engineRecords are a daemon's records from the engine's threads as a sorted multiset, errno removed and the extra
+// masks applied after the usual normalization.
+func engineRecords(t *testing.T, d *daemon.Daemon, extra []logMask) string {
+	t.Helper()
+	var out []string
+	for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
+		switch th, _, _ := strings.Cut(threadOf(l), "["); th {
+		case "DBENGINIT", "DBEV", "CTXLOAD", "rrdeng-exit":
+			n := errnoRe.ReplaceAllString(normalizeLog(l, d.Opts.RunDir, ""), "")
+			for _, m := range extra {
+				n = m.re.ReplaceAllString(n, m.with)
+			}
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return strings.Join(out, "\n")
 }

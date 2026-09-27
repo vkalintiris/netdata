@@ -16,18 +16,32 @@ import (
 	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
-// metadataDump is the metadata crate's dump tool: PARITY_METADATA_DUMP, else the workspace's debug build.
-func metadataDump(t *testing.T) string {
+// workspaceTool is a tool of the Rust workspace: the path in env, else the workspace's debug build of name (build
+// says how to make it).
+func workspaceTool(t *testing.T, env, name, build string) string {
 	t.Helper()
-	bin := os.Getenv("PARITY_METADATA_DUMP")
+	bin := os.Getenv(env)
 	if bin == "" {
-		bin = filepath.Join("..", "..", "src", "crates", "target", "debug", "metadata-dump")
+		bin = filepath.Join("..", "..", "src", "crates", "target", "debug", name)
 	}
 	if _, err := os.Stat(bin); err != nil {
-		t.Fatalf("parity: metadata-dump (cargo build -p netdata-agent-metadata --bin metadata-dump, or set "+
-			"PARITY_METADATA_DUMP): %v", err)
+		t.Fatalf("parity: %s (%s, or set %s): %v", name, build, env, err)
 	}
 	return bin
+}
+
+// metadataDump is the metadata crate's dump tool.
+func metadataDump(t *testing.T) string {
+	t.Helper()
+	return workspaceTool(t, "PARITY_METADATA_DUMP", "metadata-dump",
+		"cargo build -p netdata-agent-metadata --bin metadata-dump")
+}
+
+// dbengineInspect is the storage crate's inspector.
+func dbengineInspect(t *testing.T) string {
+	t.Helper()
+	return workspaceTool(t, "PARITY_DBENGINE_INSPECT", "dbengine-inspect",
+		"cargo build -p netdata-agent-storage --bin dbengine-inspect")
 }
 
 // dumpDB prints a database as metadata-dump does (on a copy: a read-only open of a WAL database needs its -shm).

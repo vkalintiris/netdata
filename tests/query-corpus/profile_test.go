@@ -43,18 +43,26 @@ func TestCorpusProfilesAreValid(t *testing.T) {
 		}
 	}
 
-	// Decision D25 counts: 118 whole contracts and 7 component scopes.
-	whole, components := 0, 0
-	for scope := range corpusProfiles["ram"].notApplicable {
-		if scope.component == "" {
-			whole++
-		} else {
-			components++
+	// Decision D25 and D70.9 counts.
+	for name, want := range map[string][2]int{"ram": {118, 7}, "dbengine1": {111, 3}} {
+		whole, components := 0, 0
+		for scope := range corpusProfiles[name].notApplicable {
+			if scope.component == "" {
+				whole++
+			} else {
+				components++
+			}
+		}
+		if whole != want[0] || components != want[1] {
+			t.Errorf("%s profile: %d whole contracts and %d component scopes not applicable, want %d and %d",
+				name, whole, components, want[0], want[1])
 		}
 	}
-	if whole != 118 || components != 7 {
-		t.Errorf("ram profile: %d whole contracts and %d component scopes not applicable, want 118 and 7",
-			whole, components)
+	// dbengine storage only adds what ram cannot hold: a scope dbengine1 cannot hold, ram cannot either.
+	for scope := range corpusProfiles["dbengine1"].notApplicable {
+		if _, ok := corpusProfiles["ram"].notApplicableReason(scope.contract, scope.component); !ok {
+			t.Errorf("dbengine1 profile: %v is not applicable, but ram holds it", scope)
+		}
 	}
 }
 

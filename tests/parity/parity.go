@@ -68,20 +68,30 @@ func (p *Pair) Each() []struct {
 // identity, and stops both when the test ends.
 func StartPair(t *testing.T, opts daemon.Options, id daemon.Identity) *Pair {
 	t.Helper()
-	binaries := map[Role]string{
-		Oracle:    os.Getenv("PARITY_ORACLE"),
-		Candidate: os.Getenv("PARITY_CANDIDATE"),
-	}
-	for role, bin := range binaries {
-		if bin == "" {
+	return startPair(t, opts, id, binaries(t), [2]string{opts.SeedCache, opts.SeedCache}, [2]Role{Oracle, Candidate})
+}
+
+// binaries are the oracle's and the candidate's executables.
+func binaries(t *testing.T) [2]string {
+	t.Helper()
+	bins := [2]string{os.Getenv("PARITY_ORACLE"), os.Getenv("PARITY_CANDIDATE")}
+	for i, role := range []Role{Oracle, Candidate} {
+		if bins[i] == "" {
 			t.Fatalf("parity: set PARITY_ORACLE and PARITY_CANDIDATE (missing the %s binary)", role)
 		}
 	}
+	return bins
+}
 
+// startPair boots two daemons with the same options and identity, each with its own binary and seed cache, in run
+// directories named after the roles, and stops both when the test ends. The first is the pair's Oracle side.
+func startPair(t *testing.T, opts daemon.Options, id daemon.Identity, bins, seeds [2]string, roles [2]Role) *Pair {
+	t.Helper()
 	p := &Pair{}
-	for _, role := range []Role{Oracle, Candidate} {
+	for i, role := range roles {
 		o := opts
-		o.Binary = binaries[role]
+		o.Binary = bins[i]
+		o.SeedCache = seeds[i]
 		o.RunDir = runDir(t, role)
 		o.Identity = &id
 		d, err := daemon.Start(o)
@@ -93,7 +103,7 @@ func StartPair(t *testing.T, opts daemon.Options, id daemon.Identity) *Pair {
 				t.Errorf("parity: stop %s: %v", role, err)
 			}
 		})
-		if role == Oracle {
+		if i == 0 {
 			p.Oracle = d
 		} else {
 			p.Candidate = d

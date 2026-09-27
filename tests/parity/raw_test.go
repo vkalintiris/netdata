@@ -5,10 +5,12 @@ package parity
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -305,4 +307,62 @@ func TestStaticEdgeFiles(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestInfoBeforeReady polls /api/v1/info from the moment each daemon starts. Until startup completes C answers 503
+// with the request as the body (api_v1_info() returns before flushing the buffer the request was read into); the
+// candidate must answer the same (check api.info-ready). The window can be a few milliseconds, so each side gets a
+// few starts to show it.
+func TestInfoBeforeReady(t *testing.T) {
+	bins := binaries(t)
+	var first [2][]byte
+	for i, role := range []Role{Oracle, Candidate} {
+		for attempt := 1; attempt <= 5 && first[i] == nil; attempt++ {
+			first[i] = infoBeforeReady(t, bins[i], Role(fmt.Sprintf("%s-%d", role, attempt)))
+		}
+		if first[i] == nil {
+			t.Fatalf("%s: no 503 before startup completed in 5 starts", role)
+		}
+	}
+	if !bytes.Equal(first[0], first[1]) {
+		t.Errorf("the answers before startup completed differ\n%s", firstDifference(first[0], first[1]))
+	}
+}
+
+// infoBeforeReady starts the binary while polling /api/v1/info; the first 503 it answers, masked, or nil.
+func infoBeforeReady(t *testing.T, bin string, role Role) []byte {
+	t.Helper()
+	request := []byte("GET /api/v1/info HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+	port := freePorts(t, 1)[0]
+	addr := "127.0.0.1:" + strconv.Itoa(port)
+	stop := make(chan struct{})
+	got := make(chan []byte, 1)
+	go func() {
+		defer close(got)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if b, err := rawExchange(addr, request, time.Second); err == nil && bytes.HasPrefix(b, []byte("HTTP/1.1 503 ")) {
+				got <- b
+				return
+			}
+			time.Sleep(500 * time.Microsecond)
+		}
+	}()
+	d, err := daemon.Start(daemon.Options{Binary: bin, Port: port, RunDir: runDir(t, role), Identity: &parentIdentity})
+	close(stop)
+	if err != nil {
+		t.Fatalf("start %s: %v", role, err)
+	}
+	b := <-got
+	if err := d.Stop(); err != nil {
+		t.Errorf("stop %s: %v", role, err)
+	}
+	if b == nil {
+		return nil
+	}
+	return maskRaw(b)
 }

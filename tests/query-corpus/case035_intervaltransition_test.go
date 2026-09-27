@@ -764,10 +764,8 @@ func TestCase035Tier0PageBoundaryKeepsEverySample(t *testing.T) {
 }
 
 func TestCase023AvailabilityAcrossIntervalChange(t *testing.T) {
-	skipIfNotApplicable(t,
-		contractScope{"CASE-023/cadence-change-availability-tier0", ""},
-		contractScope{"CASE-023/cadence-change-availability-higher-tiers", ""},
-	)
+	// the higher-tiers scope skips at its registration where one tier is stored
+	skipIfNotApplicable(t, contractScope{"CASE-023/cadence-change-availability-tier0", ""})
 	for _, item := range c035Cases {
 		item := item
 		t.Run(item.name, func(t *testing.T) {

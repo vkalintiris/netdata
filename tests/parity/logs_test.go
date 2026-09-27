@@ -48,8 +48,9 @@ var portedRecords = regexp.MustCompile(`msg="ACLK: (proxy is|using |proxy is exp
 // after METASYNC starts) and the per-host lines of its final store, whose hosts are the ones changed since the last
 // job (C's localhost has pulse charts, D48.6). Both sides drop them; a check whose state is fixed compares them (D61.6).
 // The dbengine population's progress lines race its workers, so they drop too, as do the shutdown flush's progress
-// and the tier shutdown's wait, which depend on the extents in flight (D68.7.3).
-var timedRecords = regexp.MustCompile(`msg="Checking all hosts completed in |msg="METADATA: Progress of metadata storage: +[0-9.]+% completed"|msg="DBENGINE: tier \d+: MRG population completed: |msg="DBENGINE: flushing at |msg="DBENGINE: waiting for \d+ inflight queries to finish`)
+// and the tier shutdown's wait, which depend on the extents in flight (D68.7.3), and the indexer meeting an extent
+// still being written.
+var timedRecords = regexp.MustCompile(`msg="Checking all hosts completed in |msg="METADATA: Progress of metadata storage: +[0-9.]+% completed"|msg="DBENGINE: tier \d+: MRG population completed: |msg="DBENGINE: flushing at |msg="DBENGINE: waiting for \d+ inflight queries to finish|needs to be indexed, but it has writers working on it`)
 
 // pulseRecords are the shutdown flush's records (N4, D68.7.1): C's pulse charts always leave pages to flush, the
 // candidate's only when children wrote into dbengine. Both sides drop them unless the run turns pulse off, where only
@@ -66,11 +67,14 @@ var cOnlyThreads = map[string]string{
 	"MAIN_PGC": "dbengine evictors (S6)", "OPEN_PGC": "dbengine evictors (S6)", "REPLAY": "replication sender threads",
 }
 
-// logMasks hide what differs between any two runs of the same binary: clocks, ids, ports, descriptors, timings.
-var logMasks = []struct {
+// logMask replaces what a pattern matches in a normalized record.
+type logMask struct {
 	re   *regexp.Regexp
 	with string
-}{
+}
+
+// logMasks hide what differs between any two runs of the same binary: clocks, ids, ports, descriptors, timings.
+var logMasks = []logMask{
 	{regexp.MustCompile(`^time=\S+ `), "time=T "},
 	{regexp.MustCompile(` tid=\d+`), " tid=N"},
 	{regexp.MustCompile(` transaction=[0-9a-f]+`), " transaction=X"},
@@ -152,8 +156,10 @@ func normalizeLog(line, runDir, port string) string {
 		line = strings.ReplaceAll(line, ":"+port, ":<PORT>")
 	}
 	th := threadOf(line)
+	// C's netdata_log_error() of the N7 fallback carries whatever errno the web thread had
 	if th == "" || th == "EXIT_WATCHER" || strings.Contains(line, `msg="MRG: Loaded `) ||
 		strings.Contains(line, `msg="RRDCONTEXT: metadata for node `) ||
+		strings.Contains(line, `dbengine is not enabled, falling back to default.`) ||
 		(th == "DAEMON_COMMAND" && !strings.Contains(line, `msg="pipe_read_cb: `) && !strings.Contains(line, `msg="uv_`)) {
 		line = errnoRe.ReplaceAllString(line, "")
 	}
@@ -181,9 +187,10 @@ func webTotals(lines []string) [3]int {
 
 // probeRe is the harness's readiness probe: its body is the `/api/v1/info` answer, which the candidate does not
 // produce byte for byte yet, and C answers it 503 until it is ready, so its connections (found by their client
-// port) are left out on both sides.
+// port) are left out on both sides. The polls of waitChartsLast (tagged `harness=wait`) go too: how many there are
+// depends on each side's timing.
 var (
-	probeRe = regexp.MustCompile(` src_port=(\d+) .* request=/api/v1/info$`)
+	probeRe = regexp.MustCompile(` src_port=(\d+) .* request="?(/api/v1/info|[^" ]+[?&]harness=wait)"?$`)
 	portRe  = regexp.MustCompile(` src_port=(\d+) `)
 )
 
@@ -200,7 +207,7 @@ func probePorts(access []string) map[string]bool {
 
 // logClasses splits records into what must match in order (the main thread, the shutdown watcher, the access log)
 // and what must match as a multiset (worker threads whose interleaving is not deterministic).
-func logClasses(lines []string, d *daemon.Daemon, probes map[string]bool, oracle bool) (ordered map[string][]string, unordered map[string][]string, dropped int) {
+func logClasses(lines []string, d *daemon.Daemon, probes map[string]bool, oracle bool, extra []logMask) (ordered map[string][]string, unordered map[string][]string, dropped int) {
 	_, port, _ := strings.Cut(d.Addr, ":")
 	runDir := d.Opts.RunDir
 	ordered, unordered = map[string][]string{}, map[string][]string{}
@@ -230,6 +237,9 @@ next:
 			}
 		}
 		n := normalizeLog(l, runDir, port)
+		for _, m := range extra {
+			n = m.re.ReplaceAllString(n, m.with)
+		}
 		switch base, _, _ := strings.Cut(th, "["); base {
 		case "", "EXIT_WATCHER":
 			ordered[base] = append(ordered[base], n)
@@ -373,6 +383,12 @@ func compareLogs(t *testing.T, logs string, tiers int) {
 // the oracle's records of unported subsystems.
 func compareLogFiles(t *testing.T, p *Pair, names ...string) {
 	t.Helper()
+	compareLogFilesWith(t, p, nil, names...)
+}
+
+// compareLogFilesWith is compareLogFiles with a check's own masks applied after the usual ones.
+func compareLogFilesWith(t *testing.T, p *Pair, extra []logMask, names ...string) {
+	t.Helper()
 	if len(names) == 0 {
 		names = []string{"daemon.log", "access.log"}
 	}
@@ -391,8 +407,8 @@ func compareLogFiles(t *testing.T, p *Pair, names ...string) {
 				t.Errorf("%s: web threads' connects, disconnects and receptions: oracle %v, candidate %v", name, wo, wc)
 			}
 		}
-		oo, ou, dropped := logClasses(o, p.Oracle, oProbes, true)
-		co, cu, _ := logClasses(c, p.Candidate, cProbes, false)
+		oo, ou, dropped := logClasses(o, p.Oracle, oProbes, true, extra)
+		co, cu, _ := logClasses(c, p.Candidate, cProbes, false, extra)
 		t.Logf("%s: %d oracle records of unported subsystems left out", name, dropped)
 		for _, class := range sortedKeys(oo, co) {
 			if d := diffSequences(oo[class], co[class]); d != "" {

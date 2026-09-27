@@ -40,18 +40,23 @@ func TestChartsAPI(t *testing.T) {
 		"chart-empty":   host + "/api/v1/chart?chart=",
 	}
 	for name, path := range cases {
-		t.Run(name, func(t *testing.T) {
-			var got [2][]byte
-			for i, side := range p.Each() {
-				b, err := rawExchange(side.Daemon.Addr, []byte("GET "+path+" HTTP/1.1\r\n\r\n"), 2*time.Second)
-				if err != nil {
-					t.Fatalf("%s: %v", side.Role, err)
-				}
-				got[i] = memoryBytesRe.ReplaceAll(maskTimings(maskRaw(b)), []byte(`"rrd_memory_bytes":"<masked>"`))
-			}
-			if !bytes.Equal(got[0], got[1]) {
-				t.Errorf("responses differ\n%s", firstDifference(got[0], got[1]))
-			}
-		})
+		t.Run(name, func(t *testing.T) { compareChartsRaw(t, p, path) })
+	}
+}
+
+// compareChartsRaw compares both daemons' raw answers to one request, byte for byte, with the timings and each
+// side's memory figure masked.
+func compareChartsRaw(t *testing.T, p *Pair, path string) {
+	t.Helper()
+	var got [2][]byte
+	for i, side := range p.Each() {
+		b, err := rawExchange(side.Daemon.Addr, []byte("GET "+path+" HTTP/1.1\r\n\r\n"), 20*time.Second)
+		if err != nil {
+			t.Fatalf("%s: %v", side.Role, err)
+		}
+		got[i] = memoryBytesRe.ReplaceAll(maskTimings(maskRaw(b)), []byte(`"rrd_memory_bytes":"<masked>"`))
+	}
+	if !bytes.Equal(got[0], got[1]) {
+		t.Errorf("%s: responses differ\n%s", path, firstDifference(got[0], got[1]))
 	}
 }

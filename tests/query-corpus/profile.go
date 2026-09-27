@@ -4,6 +4,7 @@ package corpus
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -27,6 +28,8 @@ var corpusProfiles = map[string]corpusProfile{
 	"dbengine": {Name: "dbengine", StorageTiers: 3},
 	// ram is the slice-1 reference profile of the Rust agent: ram children, one storage tier.
 	"ram": {Name: "ram", StreamMemoryMode: "ram", StorageTiers: 1, notApplicable: ramNotApplicable},
+	// dbengine1 is the write-path profile of the Rust agent (D4 S3): dbengine children, one storage tier.
+	"dbengine1": {Name: "dbengine1", StorageTiers: 1, notApplicable: dbengine1NotApplicable},
 }
 
 var activeProfile = corpusProfiles["dbengine"]
@@ -118,12 +121,12 @@ func pinCorpusProfile(t *testing.T, name string) {
 	t.Cleanup(func() { activeProfile = saved })
 }
 
-// The structural reasons of the ram profile.
+// The structural reasons of the one-tier profiles.
 const (
 	naTier1        = "reads storage tier 1 or above, which a one-tier profile does not store"
 	naMultiTier    = "boots dedicated multi-tier dbengine daemons"
 	naLargeFixture = "its fixture is larger than the ram ring and the same contract reads higher tiers"
-	naEndpoint     = "the endpoint is outside slice 1 (the ram reference profile covers the data APIs)"
+	naEndpoint     = "the endpoint is outside slice 1 (the one-tier profiles cover the data APIs)"
 	naCadence      = "an update_every change flushes a ram ring (rrddim_store_metric_change_collection_frequency)"
 	naRestart      = "ram keeps nothing across a daemon restart"
 	naReplication  = "a ram child caps replication at entries x update_every, so old fixture rows never replicate"
@@ -156,9 +159,9 @@ func mergeScopes(parts ...map[contractScope]string) map[contractScope]string {
 	return out
 }
 
-// ramNotApplicable: 118 whole contracts and 7 component scopes (spec-query §12.3, decision D25).
-var ramNotApplicable = mergeScopes(
-	wholeContracts(naTier1,
+// The scopes the one-tier profiles share, grouped by why they cannot hold with one tier.
+var (
+	tier1Contracts = []string{
 		"L2/tier1-complete", "L2/tier1-interior-gaps", "L2/tier1-anomaly-rate", "L2/tier1-reset-flags",
 		"L2/tier1-float32-fields", "L2/partial-wide-point", "L2/partial-wide-point-values",
 		"L2/tier-rollup-original-values", "L2/update-every-5",
@@ -180,22 +183,23 @@ var ramNotApplicable = mergeScopes(
 		"CASE-023/tier-wide-point-number-of-times", "CASE-023/tier-wide-point-number-of-flaps",
 		"L10/buckets-finer-than-stored-data-answer", "L10/counts-do-not-inflate-with-zoom",
 		"L10/time-shares-stable-across-zoom", "L10/queries-are-deterministic",
-	),
-	wholeContracts(naMultiTier,
+	}
+	multiTierContracts = []string{
 		"L2/historical-tier-grouping", "L2/v1-rollup-count-65536",
 		"L4/plan-switching", "L4/three-tier-join-grid", "L4/three-tier-condition-groupings",
 		"CASE-026/totals-survive-a-plan-switch", "CASE-026/partial-evidence-survives-a-plan-switch",
 		"CASE-031/rate-volume-across-an-automatic-seam", "CASE-036/absolute-across-plan-seam",
 		"CASE-038/higher-tier-only-rate-volume", "CASE-038/higher-tier-only-rate-partial-evidence",
-	),
-	wholeContracts(naLargeFixture,
+	}
+	// largeFixtureContracts also read tiers 1 and 2.
+	largeFixtureContracts = []string{
 		"CASE-023/tier-resolution-source", "CASE-023/tier-resolution-percentage-of-time",
 		"CASE-023/tier-resolution-percentage-of-samples", "CASE-023/tier-resolution-number-of-times",
 		"CASE-023/tier-resolution-number-of-flaps",
 		"CASE-028/rate-with-gaps-totals-what-was-measured", "CASE-028/partial-and-off-grid-rate-windows",
 		"CASE-029/tier0-slow-metric-totals-at-every-zoom",
-	),
-	wholeContracts(naEndpoint,
+	}
+	endpointContracts = []string{
 		"CASE-020/badge-rate-sum-value", "CASE-020/badge-gauge-sum-value", "CASE-020/badge-rate-sum-units",
 		"CASE-020/badge-gauge-sum-units", "CASE-020/badge-mixed-algorithm-sum-units", "CASE-023/badge-invalid-options",
 		"CASE-023/mcp-protocol-lifecycle", "CASE-023/mcp-query-tool-schema", "CASE-023/mcp-valid-result-schema",
@@ -209,19 +213,43 @@ var ramNotApplicable = mergeScopes(
 		"W/limit-aliases", "W/limit-boundaries", "W/limit-invalid", "W/limit-ranking", "W/limit-summaries",
 		"W/limit-legacy", "W/limit-grouped", "W/limit-complete-groups", "W/limit-thousand", "W/limit-hierarchy",
 		"W/limit-node-ties", "W/limit-mcp",
-	),
-	wholeContracts(naCadence,
-		"CASE-023/cadence-change-availability-tier0", "CASE-023/cadence-change-availability-higher-tiers",
-		"CASE-023/historical-gap-slots-after-cadence-change",
+	}
+	// The update_every change contracts: those at tier 0, those that read higher tiers, and one that boots
+	// multi-tier daemons.
+	cadenceTier0Contracts = []string{
+		"CASE-023/cadence-change-availability-tier0", "CASE-035/tier0-page-boundary-keeps-every-sample",
+	}
+	cadenceTier1Contracts = []string{
+		"CASE-023/cadence-change-availability-higher-tiers", "CASE-023/historical-gap-slots-after-cadence-change",
 		"CASE-030/interval-change-slowing-down", "CASE-030/interval-change-speeding-up",
 		"CASE-035/completed-rollup-keeps-original-cadence", "CASE-035/transition-volume-slowing-down",
-		"CASE-035/transition-volume-speeding-up", "CASE-035/tier0-page-boundary-keeps-every-sample",
-		"CASE-037/rate-volume-across-three-tier-cadence-query",
-	),
+		"CASE-035/transition-volume-speeding-up",
+	}
+	cadenceMultiTierContracts = []string{"CASE-037/rate-volume-across-three-tier-cadence-query"}
+)
+
+// ramNotApplicable: 118 whole contracts and 7 component scopes (spec-query §12.3, decision D25).
+var ramNotApplicable = mergeScopes(
+	wholeContracts(naTier1, tier1Contracts...),
+	wholeContracts(naMultiTier, multiTierContracts...),
+	wholeContracts(naLargeFixture, largeFixtureContracts...),
+	wholeContracts(naEndpoint, endpointContracts...),
+	wholeContracts(naCadence, slices.Concat(cadenceTier0Contracts, cadenceTier1Contracts, cadenceMultiTierContracts)...),
 	wholeContracts(naRestart, "L0/restart", "L1/gap-states", "CASE-016/fresh-host-forgotten-on-restart"),
 	wholeContracts(naReplication, "L0/replication", "CASE-015/replication-disconnect-discard"),
 	components(naDBEngine, "L1/storage-backend-gap-state",
 		"dbengine-gorilla-hot", "dbengine-gorilla-restart", "dbengine-raw-hot", "dbengine-raw-restart"),
+	components(naTier1, "L4/minmax-absolute-semantics", "tier1-min", "tier1-max"),
+	components(naMultiTier, "CASE-033/anomaly-rate-counts-samples-in-the-row", "plan-seam-source"),
+)
+
+// dbengine1NotApplicable: 111 whole contracts and 3 component scopes, the scopes that need rollups or multi-tier
+// planning (decision D70.9). Tier 0 keeps a dbengine child's history across cadence changes, restarts and
+// replication, so ram's cadence, restart, replication and dbengine-only scopes apply.
+var dbengine1NotApplicable = mergeScopes(
+	wholeContracts(naTier1, slices.Concat(tier1Contracts, largeFixtureContracts, cadenceTier1Contracts)...),
+	wholeContracts(naMultiTier, slices.Concat(multiTierContracts, cadenceMultiTierContracts)...),
+	wholeContracts(naEndpoint, endpointContracts...),
 	components(naTier1, "L4/minmax-absolute-semantics", "tier1-min", "tier1-max"),
 	components(naMultiTier, "CASE-033/anomaly-rate-counts-samples-in-the-row", "plan-seam-source"),
 )
