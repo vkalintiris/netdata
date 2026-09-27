@@ -371,6 +371,26 @@ fn finalize_says_whether_the_metric_has_retention() {
     assert_eq!(e.main.stats().hot_entries, 0);
 }
 
+/// A collector over a metric with retention expects its next point after the retention's last time, as
+/// `rrdeng_store_metric_init()` sets `page_end_time_ut`: points at or before it are dropped; the update every is the
+/// collector's.
+#[test]
+fn a_collector_starts_after_the_metrics_retention() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = engine(dir.path(), PAGE_TYPE_ARRAY_32BIT);
+    let (metric, _) = e.mrg.add_and_acquire(&A, 0, T0 - 100, T0, 5);
+    let mut h = CollectHandle::init(&e, &metric, 1, Alignment::from_hash(77));
+    assert_eq!(h.metric.update_every_s(), 1);
+    h.store(T0, 1.0);
+    h.store(T0 - 3, 1.0);
+    assert_eq!(h.hot(), None);
+    h.store(T0 + 1, 1.0);
+    assert_eq!(
+        h.hot().map(|(start, end, used, _)| (start, end, used)),
+        Some((T0 + 1, T0 + 1, 1))
+    );
+}
+
 /// A new update every closes the page; the next page carries it; the same one changes nothing.
 #[test]
 fn a_new_update_every_closes_the_page() {
