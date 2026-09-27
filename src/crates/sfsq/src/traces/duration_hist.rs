@@ -146,7 +146,16 @@ mod tests {
     #[test]
     fn heatmap_rows_are_powers_of_two() {
         let mut h = DurationHistogram::new();
-        for duration in [0, 500, 1_023, 1_024, 1_000_000, 2_500_000_000, 1 << 40, i64::MAX] {
+        for duration in [
+            0,
+            500,
+            1_023,
+            1_024,
+            1_000_000,
+            2_500_000_000,
+            1 << 40,
+            i64::MAX,
+        ] {
             h.record(duration);
         }
         let mut expected = vec![0; HEATMAP_ROWS];

@@ -198,9 +198,10 @@ fn heatmap_rows_come_without_percentiles() {
         .iter()
         .map(|b| b.durations.as_ref().expect("every bucket carries its rows"))
         .collect();
-    assert!(rows
-        .iter()
-        .all(|r| r.len() == sfsq::traces::duration_hist::HEATMAP_ROWS));
+    assert!(
+        rows.iter()
+            .all(|r| r.len() == sfsq::traces::duration_hist::HEATMAP_ROWS)
+    );
     assert_eq!(rows.iter().flat_map(|r| r.iter()).sum::<u64>(), 4);
     assert!(histogram.buckets.iter().all(|b| b.percentiles.is_none()));
 }
