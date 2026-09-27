@@ -43,7 +43,9 @@ pub struct WorkPool {
 
 impl std::fmt::Debug for WorkPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WorkPool").field("size", &self.inner.size).finish()
+        f.debug_struct("WorkPool")
+            .field("size", &self.inner.size)
+            .finish()
     }
 }
 
