@@ -100,7 +100,11 @@ impl Host {
         if online {
             last_time_s = now;
         }
-        let db_status = if first_time_s == 0 || last_time_s == 0 || !self.contexts().any_metric() {
+        let db_status = if first_time_s == 0
+            || last_time_s == 0
+            || self.is_pending_context_load()
+            || !self.contexts().any_metric()
+        {
             DbStatus::Initializing
         } else {
             DbStatus::Queryable

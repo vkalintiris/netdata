@@ -292,6 +292,78 @@ fn replication_rows_are_stored_and_rend_finishes() {
     assert_eq!(flags & flags::RECEIVER_REPLICATION_IN_PROGRESS, 0);
 }
 
+/// `rrdhost_receiver_replicating_charts()` in the ingest: a chart's first `CHART_DEFINITION_END` of a round counts it
+/// and puts the host's receiver in replicating; the REND that starts its streaming takes it back, puts the receiver
+/// in running and the completion at 100%; a REND on a chart not replicating takes nothing back.
+#[test]
+fn chart_replications_are_counted_on_the_host() {
+    use netdata_agent_rrd::pulse::host_status::{RCV_REPLICATING, RCV_RUNNING, RECEIVER};
+    let h = host();
+    let mut p = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    let counted = |h: &Host| (h.replicating_charts(), h.pulse_state() & RECEIVER);
+    let end = format!("CHART_DEFINITION_END {} {NOW} {NOW}", NOW - 100);
+    feed_all(&mut p, &[&end, &end]);
+    assert_eq!(counted(&h), (1, RCV_REPLICATING));
+    h.set_replication_percent(42.0);
+    let (s, e) = (NOW - 20, NOW - 19);
+    let lines = [
+        "RBEGIN 'test.c1'".to_string(),
+        format!("RBEGIN 'test.c1' {s} {e} {NOW}"),
+        format!("REND 1 {} {} true {} {} 0x{:x}", NOW - 100, NOW, s, e, NOW),
+    ];
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
+    assert_eq!(
+        (counted(&h), h.replication_percent()),
+        ((0, RCV_RUNNING), 100.0)
+    );
+    assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
+    assert_eq!(counted(&h), (0, RCV_RUNNING));
+}
+
+/// The stuck replication loop: a parent that holds the child's last entry and keeps getting RENDs that bring nothing
+/// (no RBEGIN window) forces the chart's replication to finish at the third in a row, taking it back from the
+/// host's count, as a REND that starts its streaming does.
+#[test]
+fn a_stuck_replication_is_taken_back() {
+    use netdata_agent_rrd::pulse::host_status::{RCV_RUNNING, RECEIVER};
+    let h = host();
+    let mut p = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    feed_all(
+        &mut p,
+        &[&format!("CHART_DEFINITION_END {} {NOW} {NOW}", NOW - 100)],
+    );
+    let (s, e) = (NOW - 20, NOW - 19);
+    let rend = format!("REND 1 {} {e} false {s} {e} 0x{:x}", NOW - 100, NOW);
+    let data = [
+        "RBEGIN 'test.c1'".to_string(),
+        format!("RBEGIN 'test.c1' {s} {e} {NOW}"),
+        "RSET 'd1' 7 A".to_string(),
+        format!("RSSTATE {0} {0}", e * 1_000_000),
+        rend.clone(),
+    ];
+    let empty = ["RBEGIN 'test.c1'".to_string(), rend];
+    let feed = |p: &mut Parser, lines: &[String]| {
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert!(feed_all(p, &refs).iter().all(|&ok| ok));
+    };
+    feed(&mut p, &data);
+    feed(&mut p, &empty);
+    assert_eq!(h.replicating_charts(), 1);
+    h.set_replication_percent(42.0);
+    feed(&mut p, &empty);
+    assert_eq!(
+        (
+            h.replicating_charts(),
+            h.pulse_state() & RECEIVER,
+            h.replication_percent()
+        ),
+        (0, RCV_RUNNING, 100.0)
+    );
+}
+
 #[test]
 fn errors_disconnect() {
     let cases: [&[&str]; 6] = [

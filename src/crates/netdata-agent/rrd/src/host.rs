@@ -920,9 +920,7 @@ impl Host {
     /// the ephemerality bit before its test, so it is stored with it instead of clearing the state.
     pub fn pulse_status(&self, status: u32) {
         use crate::pulse::host_status::*;
-        let now_s = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64);
+        let now_s = now_realtime_s();
         let mut status = if status == 0 {
             self.detect_receiver_status(now_s)
         } else {
@@ -1789,7 +1787,8 @@ mod tests {
     }
 
     /// `pulse_host_detect_receiver_status()`: a host without data is loading, one with data and no receiver since it
-    /// was created is archived, and one whose receiver left is offline.
+    /// was created is archived; with a receiver it replicates while the counter says so and runs after, and it is
+    /// offline once the receiver left; localhost is local.
     #[test]
     fn pulse_status_detects_the_receivers_state() {
         use crate::pulse::host_status::*;
@@ -1810,9 +1809,40 @@ mod tests {
             Box::new(|| {}),
         ));
         assert!(host.set_receiver(Arc::clone(&slot)));
+        host.replicating_charts_plus_one();
+        host.pulse_status(0);
+        assert_eq!(host.pulse_state(), RCV_REPLICATING | PERMANENT);
+        host.replicating_charts_minus_one();
+        host.pulse_status(0);
+        assert_eq!(host.pulse_state(), RCV_RUNNING | PERMANENT);
         host.clear_receiver(&slot);
         host.pulse_status(0);
         assert_eq!(host.pulse_state(), RCV_OFFLINE | PERMANENT);
+        let localhost = Host::new("guid-l", true, info("l"));
+        let chart = collected_chart(&localhost, DbMode::Ram);
+        let (dim, _) = chart.dim_add("d", None, 1, 1, crate::chart::Algorithm::Absolute);
+        store(&dim, T0, 1.0);
+        crate::contexts::collected_rrdset(&chart);
+        localhost.contexts().worker_cycle();
+        localhost.pulse_status(0);
+        assert_eq!(localhost.pulse_state(), LOCAL | PERMANENT);
+    }
+
+    /// `rrdhost_status_db()`: a host whose contexts are still loading is initializing, whatever its retention says.
+    #[test]
+    fn a_host_loading_its_contexts_is_initializing() {
+        use crate::status::DbStatus;
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let host = hosts.add_archived("guid-a", info("a"), |_| {});
+        let chart = collected_chart(&host, DbMode::Ram);
+        let (dim, _) = chart.dim_add("d", None, 1, 1, crate::chart::Algorithm::Absolute);
+        store(&dim, T0, 1.0);
+        crate::contexts::collected_rrdset(&chart);
+        host.contexts().worker_cycle();
+        let db_status = |host: &Host| host.status_basic(T0).db_status;
+        assert_eq!(db_status(&host), DbStatus::Initializing);
+        host.clear_pending_context_load();
+        assert_eq!(db_status(&host), DbStatus::Queryable);
     }
 
     /// `rrdhost_receiver_replicating_charts()`: the ingest counts each chart's replication once; a reset takes back

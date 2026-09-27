@@ -1848,6 +1848,7 @@ impl Parser {
                 );
             }
             self.clear_scope();
+            self.host.set_replication_percent(100.0);
             return Ok(());
         }
         let (_, local_last) = retention_for_collected_chart(&chart, self.now_s());
@@ -1890,6 +1891,7 @@ impl Parser {
                 self.replication_finished();
             }
             self.clear_scope();
+            self.host.set_replication_percent(100.0);
             self.replicate_chart_request(
                 &chart,
                 first_entry_child,

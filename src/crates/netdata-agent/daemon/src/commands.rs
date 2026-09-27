@@ -440,8 +440,8 @@ fn reload_labels() -> (Status, Option<Vec<u8>>) {
 
 /// `remove_ephemeral_host()`: an offline child marked ephemeral (its `_is_ephemeral` label too, stored at once), and
 /// with `unregister` its node unregistered and the host freed, its dimensions queued for deletion. Positive when
-/// changed, 0 otherwise, negative when busy; the texts go to `out` (errors only if `report`). The cloud and pulse are
-/// not ported: their updates are left out.
+/// changed, 0 otherwise, negative when busy; the texts go to `out` (errors only if `report`). The cloud is not
+/// ported: its update is left out.
 fn remove_ephemeral_host(out: &mut Vec<u8>, host: &Host, report: bool, unregister: bool) -> i32 {
     let ctx = CTX.get().expect("the command server is FULL");
     let name = |what: &str| {

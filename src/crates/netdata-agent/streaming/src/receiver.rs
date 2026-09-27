@@ -204,6 +204,17 @@ pub struct Attached {
     replication_wait: bool,
 }
 
+impl Attached {
+    /// `stream_receiver_remove()`'s release of the host: offline in pulse, the receiver slot freed, the parent label
+    /// updated. The caller gives back its stream thread's load.
+    fn leave_host(&self) {
+        self.host
+            .pulse_status(netdata_agent_rrd::pulse::host_status::RCV_OFFLINE);
+        self.host.clear_receiver(&self.slot);
+        self.hosts.update_is_parent_label();
+    }
+}
+
 /// A connection on its stream thread.
 struct Child {
     attached: Attached,
@@ -697,8 +708,7 @@ impl Receivers {
             .pool
             .send(thread, StreamMsg::Attach(Box::new(attached)))
         {
-            attached.host.clear_receiver(&attached.slot);
-            self.hosts.update_is_parent_label();
+            attached.leave_host();
             self.load.lock().unwrap_or_else(PoisonError::into_inner)[thread] -= 1;
         }
     }
@@ -790,8 +800,7 @@ impl StreamWorker {
             )
             .is_err()
         {
-            attached.host.clear_receiver(&attached.slot);
-            attached.hosts.update_is_parent_label();
+            attached.leave_host();
             self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
             return;
         }
@@ -867,11 +876,14 @@ impl StreamWorker {
                 .contexts()
                 .record_first_time_changes(true);
             use netdata_agent_rrd::pulse::host_status::{RCV_REPLICATION_WAIT, RCV_RUNNING};
-            child.attached.host.pulse_status(if child.attached.replication_wait {
-                RCV_REPLICATION_WAIT
-            } else {
-                RCV_RUNNING
-            });
+            child
+                .attached
+                .host
+                .pulse_status(if child.attached.replication_wait {
+                    RCV_REPLICATION_WAIT
+                } else {
+                    RCV_RUNNING
+                });
         }
         // Bytes may have arrived before the registration.
         let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
@@ -941,11 +953,7 @@ impl StreamWorker {
                 reason,
                 &counters,
             );
-            attached
-                .host
-                .pulse_status(netdata_agent_rrd::pulse::host_status::RCV_OFFLINE);
-            attached.host.clear_receiver(&attached.slot);
-            attached.hosts.update_is_parent_label();
+            attached.leave_host();
             self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
         }
     }
