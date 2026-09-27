@@ -19,6 +19,8 @@ use netdata_agent_log::{
 };
 use netdata_agent_text::size::size_to_string;
 
+use super::cache::CacheConfig;
+use super::evict;
 use super::index::journal_index;
 use super::load::{Tier, TierConfig, load};
 use super::mrg::Mrg;
@@ -51,9 +53,7 @@ pub struct InitConfig {
     pub cpus: usize,
     /// `rlimit_nofile.rlim_cur`.
     pub nofile_limit: u64,
-    /// The caches' budgets in bytes (`cache_budgets()`).
-    pub main_cache_bytes: usize,
-    pub extent_cache_bytes: usize,
+    pub caches: CacheConfig,
     /// `rrdeng_pages_per_extent`.
     pub pages_per_extent: usize,
     /// `nd_profile.update_every`.
@@ -673,8 +673,7 @@ impl Runtime {
             shared.mrg.clone(),
             tiers,
             EngineConfig {
-                main_cache_bytes: cfg.main_cache_bytes,
-                extent_cache_bytes: cfg.extent_cache_bytes,
+                caches: cfg.caches,
                 pages_per_extent: cfg.pages_per_extent,
                 update_every_s: cfg.update_every_s,
                 pool: Some(pool.clone()),
@@ -689,6 +688,8 @@ impl Runtime {
             .dbev
             .take()
             .expect("DBEV starts with the first tier");
+        // C creates the evictors with the caches; they compare as the threads' records, in any order
+        evict::spawn(&engine, cfg.stack_size);
         let _ = engine.events.set(dbev.tx.clone());
         let _ = dbev.tx.send(Cmd::Attach(Arc::clone(&engine)));
         Runtime {

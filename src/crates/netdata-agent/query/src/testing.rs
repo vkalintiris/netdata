@@ -115,6 +115,7 @@ pub const U: [u8; 16] = [0x11; 16];
 /// An engine of three empty tiers over temporary directories, loaded and clocked at `now()`, for charts collected
 /// every `update_every_s`.
 fn engine(update_every_s: u32, now: fn() -> i64) -> (Vec<tempfile::TempDir>, Arc<Dbengine>) {
+    use netdata_agent_storage::dbengine::engine::cache::CacheConfig;
     use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
     use netdata_agent_storage::dbengine::engine::mrg::Mrg;
     use netdata_agent_storage::dbengine::engine::query::EngineConfig;
@@ -131,8 +132,7 @@ fn engine(update_every_s: u32, now: fn() -> i64) -> (Vec<tempfile::TempDir>, Arc
         mrg,
         tiers,
         EngineConfig {
-            main_cache_bytes: 1 << 20,
-            extent_cache_bytes: 1 << 20,
+            caches: CacheConfig::new(1 << 20, 1 << 20),
             update_every_s,
             ..EngineConfig::new(now)
         },

@@ -23,8 +23,7 @@ fn engine(dir: &Path, pool: Option<WorkPool>) -> Arc<Dbengine> {
         mrg,
         vec![(tier)],
         EngineConfig {
-            main_cache_bytes: 64 * 1024 * 1024,
-            extent_cache_bytes: 16 * 1024 * 1024,
+            caches: CacheConfig::new(64 * 1024 * 1024, 16 * 1024 * 1024),
             pool,
             ..EngineConfig::new(|| NOW)
         },

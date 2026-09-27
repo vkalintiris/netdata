@@ -182,6 +182,7 @@ mod tests {
     use netdata_agent_metadata::open::SqliteSettings;
     use netdata_agent_rrd::host::{HostInfo, Hosts};
     use netdata_agent_rrd::storage::StorageLayout;
+    use netdata_agent_storage::dbengine::engine::cache::CacheConfig;
     use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
     use netdata_agent_storage::dbengine::engine::mrg::Mrg;
     use netdata_agent_storage::dbengine::engine::query::{Dbengine, EngineConfig};
@@ -231,8 +232,7 @@ mod tests {
             mrg,
             tiers,
             EngineConfig {
-                main_cache_bytes: 1 << 24,
-                extent_cache_bytes: 1 << 22,
+                caches: CacheConfig::new(1 << 24, 1 << 22),
                 ..EngineConfig::new(|| NOW)
             },
         );

@@ -122,26 +122,27 @@ pub fn write_cfg(tier: usize, dir: &Path) -> TierConfig {
     }
 }
 
-pub fn write_engine(
-    dirs: &[&Path],
-    main_cache_bytes: usize,
-    pool: Option<WorkPool>,
-) -> Arc<Dbengine> {
+/// A write engine on `dirs`, one tier each; without `keep_clean` the main cache keeps no clean page nobody holds, so
+/// that queries read from disk.
+pub fn write_engine(dirs: &[&Path], keep_clean: bool, pool: Option<WorkPool>) -> Arc<Dbengine> {
     let mrg = Mrg::new();
     let tiers = dirs
         .iter()
         .enumerate()
         .map(|(t, d)| load(write_cfg(t, d), &mrg, NOW).unwrap())
         .collect();
-    Dbengine::new(
+    let e = Dbengine::new(
         mrg,
         tiers,
         EngineConfig {
-            main_cache_bytes,
             pool,
             ..EngineConfig::new(|| NOW)
         },
-    )
+    );
+    if !keep_clean {
+        e.main.keep_no_clean_pages();
+    }
+    e
 }
 
 /// A tier-0 write engine on `dir` as a restart finds it: the files loaded and their v2 indexes populated into a fresh
@@ -152,14 +153,9 @@ pub fn restarted_engine(dir: &Path) -> Arc<Dbengine> {
     let ((), _) = netdata_agent_log::capture(|| {
         super::v2index::populate(&mut tier, &mrg, &WorkPool::new(2, 256 * 1024), 2, NOW)
     });
-    Dbengine::new(
-        mrg,
-        vec![tier],
-        EngineConfig {
-            main_cache_bytes: 0,
-            ..EngineConfig::new(|| NOW)
-        },
-    )
+    let e = Dbengine::new(mrg, vec![tier], EngineConfig::new(|| NOW));
+    e.main.keep_no_clean_pages();
+    e
 }
 
 pub fn nth(n: usize) -> [u8; 16] {

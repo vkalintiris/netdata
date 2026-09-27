@@ -32,6 +32,7 @@ pub(crate) fn info(hostname: &str) -> HostInfo {
 
 /// An engine of `tiers` empty tiers over temporary directories, and its registry.
 pub(crate) fn engine(tiers: usize) -> (Vec<tempfile::TempDir>, Arc<StorageLayout>) {
+    use netdata_agent_storage::dbengine::engine::cache::CacheConfig;
     use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
     use netdata_agent_storage::dbengine::engine::mrg::Mrg;
     use netdata_agent_storage::dbengine::engine::query::{Dbengine, EngineConfig};
@@ -49,8 +50,7 @@ pub(crate) fn engine(tiers: usize) -> (Vec<tempfile::TempDir>, Arc<StorageLayout
         mrg,
         tiers,
         EngineConfig {
-            main_cache_bytes: 1 << 20,
-            extent_cache_bytes: 1 << 20,
+            caches: CacheConfig::new(1 << 20, 1 << 20),
             ..EngineConfig::new(|| 1_800_000_000)
         },
     );

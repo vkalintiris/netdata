@@ -1,7 +1,6 @@
 //! The `PULSE` thread, ported from `pulse_thread_main()` (`src/daemon/pulse/pulse.c`): on the wall-clock grid of a
 //! second, every `[pulse] update every` seconds, a cycle of localhost's pulse charts, until the exit starts.
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,7 +14,7 @@ use crate::{shutdown, startup, system};
 
 /// `os_system_memory(true)` for the pulse charts: the available bytes, while the total is known.
 pub fn system_memory_available() -> Option<u64> {
-    let memory = system::system_memory(Path::new("/"));
+    let memory = system::system_memory_cached(true);
     (memory.total > 0).then_some(memory.available)
 }
 

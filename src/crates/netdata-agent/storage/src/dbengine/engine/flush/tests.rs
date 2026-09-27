@@ -17,7 +17,7 @@ const T0: i64 = NOW - 1000;
 #[test]
 fn a_full_batch_becomes_one_extent() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     let _metrics: Vec<Handle> = (0..109)
         .map(|i| dirty_page(&e, 0, nth(i), T0, &seq_values(10, i)))
         .collect();
@@ -64,7 +64,7 @@ fn a_full_batch_becomes_one_extent() {
 #[test]
 fn batches_are_whole_unless_all() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     let _m: Vec<Handle> = (0..108)
         .map(|i| dirty_page(&e, 0, nth(i), T0, &seq_values(2, i)))
         .collect();
@@ -91,7 +91,7 @@ fn batches_are_whole_unless_all() {
 #[test]
 fn tiers_flush_their_own_batches() {
     let (d0, d1) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let e = write_engine(&[d0.path(), d1.path()], 64 << 20, None);
+    let e = write_engine(&[d0.path(), d1.path()], true, None);
     let mut m = Vec::new();
     for i in 0..109 {
         m.push(dirty_page(&e, 0, nth(i), T0, &seq_values(2, i)));
@@ -108,7 +108,7 @@ fn tiers_flush_their_own_batches() {
 #[test]
 fn a_full_data_file_rotates_to_a_new_pair() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     let mut m = Vec::new();
     // 1000 points: 4047 bytes, one block per extent
     for i in 0..127 {
@@ -144,7 +144,7 @@ fn a_full_data_file_rotates_to_a_new_pair() {
 fn a_restart_appends_to_the_reused_pair() {
     let dir = tempfile::tempdir().unwrap();
     {
-        let e = write_engine(&[dir.path()], 64 << 20, None);
+        let e = write_engine(&[dir.path()], true, None);
         let _m: Vec<Handle> = (0..3)
             .map(|i| {
                 let m = dirty_page(&e, 0, nth(i), T0 + i as i64 * 10, &seq_values(10, i));
@@ -153,7 +153,7 @@ fn a_restart_appends_to_the_reused_pair() {
             })
             .collect();
     }
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     let _m = dirty_page(&e, 0, nth(3), T0 + 30, &seq_values(10, 3));
     e.flush_pages(0, None, true, true);
     let reports = file_reports(dir.path());
@@ -169,7 +169,7 @@ fn a_restart_appends_to_the_reused_pair() {
 fn an_indexed_last_file_gets_a_new_pair() {
     let dir = tempfile::tempdir().unwrap();
     {
-        let e = write_engine(&[dir.path()], 64 << 20, None);
+        let e = write_engine(&[dir.path()], true, None);
         let mut m = Vec::new();
         for i in 0..128 {
             m.push(dirty_page(&e, 0, nth(i), T0, &seq_values(1000, 0)));
@@ -180,7 +180,7 @@ fn an_indexed_last_file_gets_a_new_pair() {
     let ndf2 = dir.path().join("datafile-1-0000000002.ndf");
     std::fs::write(&ndf2, vec![0u8; 8192]).unwrap();
     let before = std::fs::read(dir.path().join("datafile-1-0000000001.ndf")).unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     assert_eq!(e.tiers[0].last_fileno(), 2);
     let _m = dirty_page(&e, 0, nth(200), T0, &seq_values(10, 0));
     let (_, records) = netdata_agent_log::capture(|| e.flush_pages(0, None, true, true));
@@ -200,7 +200,7 @@ fn an_indexed_last_file_gets_a_new_pair() {
 #[test]
 fn a_failed_write_moves_the_extent_to_a_new_pair() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     let _m = dirty_page(&e, 0, nth(0), T0, &seq_values(10, 0));
     fault::script([Some(libc::EBADF)]);
     let (_, records) = netdata_agent_log::capture(|| e.flush_pages(0, None, true, true));
@@ -238,7 +238,7 @@ fn a_failed_write_moves_the_extent_to_a_new_pair() {
 #[test]
 fn a_failed_journal_write_retries_in_a_new_pair() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     let _m = dirty_page(&e, 0, nth(0), T0, &seq_values(10, 0));
     fault::script([None, Some(libc::EROFS)]);
     let (_, records) = netdata_agent_log::capture(|| e.flush_pages(0, None, true, true));
@@ -262,7 +262,7 @@ fn a_failed_journal_write_retries_in_a_new_pair() {
 #[test]
 fn writes_retry_as_c() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     let _m = dirty_page(&e, 0, nth(0), T0, &seq_values(10, 0));
     fault::script([Some(libc::EIO); 8]);
     let (_, records) = netdata_agent_log::capture(|| e.flush_pages(0, None, true, true));
@@ -288,7 +288,7 @@ fn writes_retry_as_c() {
 #[test]
 fn an_extent_with_no_pair_to_move_to_is_lost() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     let metric = dirty_page(&e, 0, nth(0), T0, &seq_values(10, 0));
     fault::script([Some(libc::EBADF), Some(libc::EACCES)]);
     let (_, records) = netdata_agent_log::capture(|| e.flush_pages(0, None, true, true));
@@ -327,21 +327,21 @@ fn an_extent_with_no_pair_to_move_to_is_lost() {
     assert_eq!(file_reports(dir.path())[1]["tx_ids"], json!([2, "...", 2]));
 }
 
-/// With no cache budget the flushed pages are evicted: queries read them through the open cache and the data file,
-/// and after a restart through the replayed journal.
+/// With no clean pages kept the flushed pages leave the cache: queries read them through the open cache and the data
+/// file, and after a restart through the replayed journal.
 #[test]
 fn flushed_pages_read_back_from_disk() {
     let dir = tempfile::tempdir().unwrap();
     let want: Vec<(i64, f64)> = (0..10).map(|i| (T0 + i, i as f64)).collect();
     {
-        let e = write_engine(&[dir.path()], 0, None);
+        let e = write_engine(&[dir.path()], false, None);
         let metric = dirty_page(&e, 0, nth(0), T0, &seq_values(10, 0));
         e.flush_pages(0, None, true, true);
         assert!(e.main.is_empty());
         let got = points(&mut e.query(&metric, T0, T0 + 9, Priority::Normal));
         assert!(same(&got, &want), "{got:?}");
     }
-    let e = write_engine(&[dir.path()], 0, None);
+    let e = write_engine(&[dir.path()], false, None);
     let metric = e.mrg.get_and_acquire(&nth(0), 0).unwrap();
     let got = points(&mut e.query(&metric, T0, T0 + 9, Priority::Normal));
     assert!(same(&got, &want), "{got:?}");
@@ -351,7 +351,7 @@ fn flushed_pages_read_back_from_disk() {
 #[test]
 fn a_quiesced_tier_writes_without_the_open_cache() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     let _m = dirty_page(&e, 0, nth(0), T0, &seq_values(10, 0));
     e.tiers[0].quiesce();
     e.flush_pages(0, None, true, true);
@@ -364,7 +364,7 @@ fn a_quiesced_tier_writes_without_the_open_cache() {
 #[test]
 fn a_pool_writes_the_extent() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, Some(WorkPool::new(2, 256 * 1024)));
+    let e = write_engine(&[dir.path()], true, Some(WorkPool::new(2, 256 * 1024)));
     let _m = dirty_page(&e, 0, nth(0), T0, &seq_values(10, 0));
     e.flush_pages(0, None, true, true);
     assert_eq!(file_reports(dir.path())[0]["tx_ids"], json!([1, "...", 1]));
@@ -375,7 +375,7 @@ fn a_pool_writes_the_extent() {
 #[test]
 fn pages_validate_against_the_engine_clock() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 0, None);
+    let e = write_engine(&[dir.path()], false, None);
     let valid = dirty_page(&e, 0, nth(0), NOW - 8, &seq_values(10, 0));
     let future = dirty_page(&e, 0, nth(1), NOW - 7, &seq_values(10, 0));
     e.flush_pages(0, None, true, true);
@@ -391,7 +391,7 @@ fn pages_validate_against_the_engine_clock() {
 #[test]
 fn concurrent_flushes_tile_the_file() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     let _m: Vec<Handle> = (0..8 * 109)
         .map(|i| dirty_page(&e, 0, nth(i), T0, &seq_values(10, i)))
         .collect();
@@ -422,7 +422,7 @@ fn concurrent_flushes_tile_the_file() {
 #[test]
 fn critical_flushes_write_two_batches_inline() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     let _m: Vec<Handle> = (0..250)
         .map(|i| dirty_page(&e, 0, nth(i), T0, &seq_values(10, i)))
         .collect();

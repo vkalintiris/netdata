@@ -9,6 +9,7 @@
 //! - `pthread_attr_init/getstacksize/destroy()` (decision D28) work on a stack attribute object, initialised before
 //!   use and destroyed once.
 //! - `mallopt()` (decision D28, glibc only) passes two integers; glibc serialises it against its own allocator.
+//! - `malloc_trim()` (decision D84.1, glibc on Linux only) passes an integer; glibc locks every arena it trims.
 //! - `setsockopt(TCP_DEFER_ACCEPT)` (decision D47) passes a stack `int` with its size on a borrowed descriptor.
 //! - `close_range()` and `close()` of inherited descriptors (decision D52) run only while the process has one thread,
 //!   at startup, before the daemon opens a descriptor it keeps.
@@ -105,6 +106,25 @@ pub fn mallopt_arenas(arenas: i32, trim_threshold: i32) {
         libc::mallopt(libc::M_TRIM_THRESHOLD, trim_threshold);
     }
 }
+
+/// `mallocz_release_as_much_memory_to_the_system()`: `malloc_trim(0)`, skipped while another thread runs it.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub fn malloc_trim() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static TRIMMING: AtomicBool = AtomicBool::new(false);
+    if TRIMMING.swap(true, Ordering::Acquire) {
+        return;
+    }
+    // SAFETY: an integer argument only; glibc locks each arena as it trims it.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    TRIMMING.store(false, Ordering::Release);
+}
+
+/// Without glibc there is nothing to trim.
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+pub fn malloc_trim() {}
 
 /// `gethostid()`.
 // `c_long` is 32-bit on the armv7l and i386 targets, where the conversion is not a no-op.

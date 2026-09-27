@@ -12,7 +12,7 @@ use netdata_agent_metadata::read::populate_metrics;
 use netdata_agent_rrd::contexts::DbRotation;
 use netdata_agent_rrd::mode::DbMode;
 use netdata_agent_rrd::storage::Backfill;
-use netdata_agent_storage::dbengine::engine::cache::cache_budgets;
+use netdata_agent_storage::dbengine::engine::cache::{CacheConfig, cache_budgets};
 use netdata_agent_storage::dbengine::engine::load::TierConfig;
 use netdata_agent_storage::dbengine::engine::query::RotationHook;
 use netdata_agent_storage::dbengine::engine::runtime::{InitConfig, Runtime};
@@ -94,8 +94,7 @@ pub fn start(
             })
         })
         .collect();
-    let (main_cache_bytes, extent_cache_bytes) =
-        cache_budgets(db.page_cache_mb, db.extent_cache_mb);
+    let (main_clean_size, extent_clean_size) = cache_budgets(db.page_cache_mb, db.extent_cache_mb);
     let cache_dir = PathBuf::from(&conf.dirs.cache);
     let prepopulate = Box::new(move |cb: &mut dyn FnMut(&[u8; 16])| {
         populate_metrics(&cache_dir, meta.as_deref(), cb);
@@ -109,8 +108,12 @@ pub fn start(
             tiers,
             cpus: conf.threads.cpus as usize,
             nofile_limit,
-            main_cache_bytes,
-            extent_cache_bytes,
+            caches: CacheConfig {
+                out_of_memory_protection: settings.out_of_memory_protection,
+                use_all_ram: settings.use_all_ram_for_caches,
+                system_memory: Some(system::dbengine_memory_available),
+                ..CacheConfig::new(main_clean_size, extent_clean_size)
+            },
             pages_per_extent: settings.pages_per_extent as usize,
             update_every_s: db.update_every as u32,
             stack_size: conf.threads.thread_stack_size,

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::Priority;
+use netdata_agent_storage::dbengine::engine::cache::CacheConfig;
 use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
 use netdata_agent_storage::dbengine::engine::mrg::Mrg;
 use netdata_agent_storage::dbengine::engine::query::{
@@ -203,8 +204,7 @@ fn queries_read_the_generated_values() {
         mrg,
         tiers,
         EngineConfig {
-            main_cache_bytes: 64 * 1024 * 1024,
-            extent_cache_bytes: 16 * 1024 * 1024,
+            caches: CacheConfig::new(64 * 1024 * 1024, 16 * 1024 * 1024),
             pool: Some(pool),
             ..EngineConfig::new(|| NOW)
         },

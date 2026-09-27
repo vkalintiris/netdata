@@ -11,6 +11,7 @@ use netdata_agent_rrd::host::{Host, HostInfo};
 use netdata_agent_rrd::mode::DbMode;
 use netdata_agent_rrd::storage::StorageLayout;
 use netdata_agent_rrd::system_info::SystemInfo;
+use netdata_agent_storage::dbengine::engine::cache::CacheConfig;
 use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
 use netdata_agent_storage::dbengine::engine::mrg::Mrg;
 use netdata_agent_storage::dbengine::engine::query::{Dbengine, EngineConfig, Priority};
@@ -79,8 +80,7 @@ fn engine(root: &Path, seed: Option<&Path>) -> Arc<Dbengine> {
         mrg,
         tiers,
         EngineConfig {
-            main_cache_bytes: 256 * 1024 * 1024,
-            extent_cache_bytes: 16 * 1024 * 1024,
+            caches: CacheConfig::new(256 * 1024 * 1024, 16 * 1024 * 1024),
             ..EngineConfig::new(|| NOW)
         },
     )

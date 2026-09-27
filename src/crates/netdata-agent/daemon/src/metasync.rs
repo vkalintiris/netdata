@@ -793,6 +793,7 @@ mod tests {
     /// Hosts over an engine of two empty tiers in these directories.
     fn hosts_with_engine(dirs: &[tempfile::TempDir]) -> Arc<Hosts> {
         use netdata_agent_rrd::storage::StorageLayout;
+        use netdata_agent_storage::dbengine::engine::cache::CacheConfig;
         use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
         use netdata_agent_storage::dbengine::engine::mrg::Mrg;
         use netdata_agent_storage::dbengine::engine::query::{Dbengine, EngineConfig};
@@ -809,8 +810,7 @@ mod tests {
             mrg,
             tiers,
             EngineConfig {
-                main_cache_bytes: 1 << 20,
-                extent_cache_bytes: 1 << 20,
+                caches: CacheConfig::new(1 << 20, 1 << 20),
                 ..EngineConfig::new(|| 1_800_000_000)
             },
         );

@@ -41,7 +41,7 @@ fn read_v2(dir: &Path, fileno: u32) -> Vec<u8> {
 #[test]
 fn a_rotated_file_is_indexed() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 0, None);
+    let e = write_engine(&[dir.path()], false, None);
     let metrics = fill(&e, 0, 64);
     let query = |m: &Handle| points(&mut e.query(m, T0, T0 + 1023, Priority::Normal));
     let before = query(&metrics[0]);
@@ -77,7 +77,7 @@ fn a_rotated_file_is_indexed() {
 #[test]
 fn busy_and_last_files_are_skipped() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     assert_eq!(journal_index(&e, 0), 0);
     let _m = fill(&e, 0, 64);
     let df = e.tiers[0].file(1).unwrap();
@@ -149,7 +149,7 @@ fn a_tier_over_its_quota_indexes_one_file() {
 #[test]
 fn a_quiesced_tier_indexes_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    let e = write_engine(&[dir.path()], true, None);
     let _m = fill(&e, 0, 64);
     e.tiers[0].quiesce();
     let (count, records) = netdata_agent_log::capture(|| journal_index(&e, 0));
@@ -161,8 +161,8 @@ fn a_quiesced_tier_indexes_nothing() {
 #[test]
 fn a_reused_file_indexes_replayed_and_written_pages() {
     let dir = tempfile::tempdir().unwrap();
-    drop(fill(&write_engine(&[dir.path()], 64 << 20, None), 0, 3));
-    let e = write_engine(&[dir.path()], 64 << 20, None);
+    drop(fill(&write_engine(&[dir.path()], true, None), 0, 3));
+    let e = write_engine(&[dir.path()], true, None);
     let _m = fill(&e, 3, 61);
     assert_eq!(e.tiers[0].last_fileno(), 2);
     assert_eq!(journal_index(&e, 0), 1);
@@ -177,7 +177,7 @@ fn a_reused_file_indexes_replayed_and_written_pages() {
 fn deletions_wait_for_the_users_of_a_file() {
     use crate::dbengine::engine::tier::Reason;
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 0, None);
+    let e = write_engine(&[dir.path()], false, None);
     fill(&e, 0, 64 + 63);
     let td = &e.tiers[0];
     // the indexer takes file 1 first, then indexes files 1 and 2 (clean pages in C's open cache)
@@ -221,7 +221,7 @@ fn deletions_wait_for_the_users_of_a_file() {
 
     // after a restart file 2's v2 is loaded: nothing holds it
     drop(e);
-    let e = write_engine(&[dir.path()], 0, None);
+    let e = write_engine(&[dir.path()], false, None);
     let td = &e.tiers[0];
     let f2 = td.file(2).unwrap();
     let (deletable, records) = netdata_agent_log::capture(|| td.acquire_for_deletion(&f2));
@@ -237,7 +237,7 @@ fn deletions_wait_for_the_users_of_a_file() {
 fn a_pending_file_takes_the_open_cache_while_written() {
     use crate::dbengine::engine::tier::Reason;
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 0, None);
+    let e = write_engine(&[dir.path()], false, None);
     let td = &e.tiers[0];
     let df = td.last_file();
     df.writer_started();
@@ -257,7 +257,7 @@ fn a_pending_file_takes_the_open_cache_while_written() {
 #[test]
 fn a_query_holds_the_files_of_its_pages() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 0, None);
+    let e = write_engine(&[dir.path()], false, None);
     let metrics = fill(&e, 0, 64);
     assert_eq!(journal_index(&e, 0), 1);
     let td = &e.tiers[0];
@@ -279,7 +279,7 @@ fn a_query_holds_the_files_of_its_pages() {
 #[test]
 fn the_indexer_passes_over_a_file_it_cannot_take() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 0, None);
+    let e = write_engine(&[dir.path()], false, None);
     fill(&e, 0, 64 + 63 + 1);
     let td = &e.tiers[0];
     let ((), _) =
@@ -301,7 +301,7 @@ fn the_indexer_passes_over_a_file_it_cannot_take() {
 #[test]
 fn a_page_of_a_metric_gone_is_not_indexed() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 0, None);
+    let e = write_engine(&[dir.path()], false, None);
     let gone = dirty_page(&e, 0, nth(1 << 20), T0, &seq_values(1024, 0));
     e.flush_pages(0, None, true, true);
     gone.clear_retention();

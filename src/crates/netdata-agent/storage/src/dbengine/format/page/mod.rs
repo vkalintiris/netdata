@@ -93,7 +93,7 @@ impl DiskPage {
         }
     }
 
-    /// The bytes the page's data takes in memory, what the caches count against their budgets.
+    /// The bytes the page's data takes in memory, what the caches count in their sizes.
     pub fn footprint(&self) -> usize {
         match self {
             DiskPage::Array32(v) => std::mem::size_of_val(v.as_slice()),

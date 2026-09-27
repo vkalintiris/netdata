@@ -1,4 +1,5 @@
 use super::*;
+use crate::dbengine::engine::cache::CacheConfig;
 use crate::dbengine::engine::query::{DEFAULT_PAGES_PER_EXTENT, Priority};
 use crate::dbengine::engine::testutil::{A, B, NOW, array_page, cfg, pair_with_extents, points};
 use crate::storage_number::{SN_DEFAULT_FLAGS, pack};
@@ -25,8 +26,7 @@ fn init(dirs: &[Option<&Path>]) -> InitConfig {
             .collect(),
         cpus: 4,
         nofile_limit: 1 << 20,
-        main_cache_bytes: 1 << 24,
-        extent_cache_bytes: 1 << 22,
+        caches: CacheConfig::new(1 << 24, 1 << 22),
         pages_per_extent: DEFAULT_PAGES_PER_EXTENT,
         update_every_s: 1,
         stack_size: 256 * 1024,

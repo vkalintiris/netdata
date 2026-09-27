@@ -16,7 +16,7 @@ use netdata_agent_log::{
     ErrorLimit, Priority as LogPriority, Source, nd_log_limit, netdata_log_error,
 };
 
-use super::cache::{CachedPage, Conflict, ExtentCache, MainCache, Search};
+use super::cache::{CacheConfig, CachedPage, Conflict, ExtentCache, MainCache, Search};
 use super::load::Tier;
 use super::mrg::{Handle, Mrg};
 use super::runtime::Cmd;
@@ -79,9 +79,7 @@ impl std::fmt::Debug for RotationHook {
 /// What an engine is built with besides its registry and tiers.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
-    /// The caches' budgets in bytes (`cache_budgets()`).
-    pub main_cache_bytes: usize,
-    pub extent_cache_bytes: usize,
+    pub caches: CacheConfig,
     /// `rrdeng_pages_per_extent`.
     pub pages_per_extent: usize,
     /// `nd_profile.update_every`.
@@ -95,11 +93,10 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
-    /// C's default pages per extent, 64 MiB and 16 MiB caches, a 1 s update every and no pool.
+    /// C's default pages per extent, caches of 64 MiB and 16 MiB clean sizes, a 1 s update every and no pool.
     pub fn new(now: fn() -> i64) -> EngineConfig {
         EngineConfig {
-            main_cache_bytes: 64 << 20,
-            extent_cache_bytes: 16 << 20,
+            caches: CacheConfig::new(64 << 20, 16 << 20),
             pages_per_extent: DEFAULT_PAGES_PER_EXTENT,
             update_every_s: 1,
             pool: None,
@@ -368,8 +365,8 @@ impl Dbengine {
         Arc::new(Dbengine {
             mrg,
             tiers: tiers.into_iter().map(TierData::new).collect(),
-            main: MainCache::new(cfg.main_cache_bytes, cfg.pages_per_extent),
-            extents: ExtentCache::new(cfg.extent_cache_bytes),
+            main: cfg.caches.main(cfg.pages_per_extent),
+            extents: ExtentCache::new(cfg.caches.extent_clean_size),
             pool: cfg.pool,
             update_every_s: cfg.update_every_s,
             now: cfg.now,
@@ -756,7 +753,10 @@ impl Dbengine {
             .read_exact_at(&mut buf, block * BLOCK_SIZE as u64)
             .ok()?;
         buf.truncate(bytes as usize);
-        Some(self.extents.add((tier, fileno, block), buf))
+        Some(
+            self.extents
+                .add((tier, fileno, block), buf, self.main.extent_target()),
+        )
     }
 
     /// `epdl_find_extent_and_populate_pages()` for one extent: its requested pages validated, decoded and cached

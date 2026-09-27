@@ -55,7 +55,7 @@ fn a_deletion_recalculates_the_first_times_exactly() {
     let dir = tempfile::tempdir().unwrap();
     let (a, b) = (nth(0), nth(1 << 20));
     let fillers: Vec<[u8; 16]> = {
-        let e = write_engine(&[dir.path()], 0, None);
+        let e = write_engine(&[dir.path()], false, None);
         let mut next = 1;
         let _ab = (extent(&e, a, T0), extent(&e, b, T0));
         let held = fill_to(&e, 2, &mut next);
@@ -136,7 +136,7 @@ fn a_deletion_recalculates_the_first_times_exactly() {
 #[test]
 fn a_file_of_rejected_pages_is_deleted_as_one_without_an_index() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 0, None);
+    let e = write_engine(&[dir.path()], false, None);
     let mut next = 0;
     let gone = fill_to(&e, 2, &mut next);
     let _held = fill_to(&e, 3, &mut next);
@@ -183,7 +183,7 @@ fn a_query_walk_holds_a_file_until_its_pages_are_evicted() {
     use crate::query::Priority;
     let dir = tempfile::tempdir().unwrap();
     {
-        let e = write_engine(&[dir.path()], 0, None);
+        let e = write_engine(&[dir.path()], false, None);
         let mut next = 0;
         let _held = fill_to(&e, 3, &mut next);
         let ((), _) = netdata_agent_log::capture(|| assert_eq!(journal_index(&e, 0), 2));
@@ -220,7 +220,7 @@ fn a_query_walk_holds_a_file_until_its_pages_are_evicted() {
 #[test]
 fn a_metric_without_retention_left_leaves_the_registry() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 0, None);
+    let e = write_engine(&[dir.path()], false, None);
     let (gone, dirty) = (nth(0), nth(1));
     drop(extent(&e, gone, T0));
     drop(extent(&e, dirty, T0));
@@ -244,7 +244,7 @@ fn a_metric_without_retention_left_leaves_the_registry() {
 #[test]
 fn deletions_wait_give_up_and_report_partial_results() {
     let dir = tempfile::tempdir().unwrap();
-    let e = write_engine(&[dir.path()], 0, None);
+    let e = write_engine(&[dir.path()], false, None);
     let mut next = 0;
     let _held = fill_to(&e, 3, &mut next);
     let td = &e.tiers[0];
@@ -313,13 +313,13 @@ fn a_rotation_deletes_the_oldest_pair_then_calls_the_hook() {
         mrg,
         tiers,
         EngineConfig {
-            main_cache_bytes: 0,
             rotation: Some(RotationHook(Arc::new(move || {
                 counted.fetch_add(1, Ordering::Relaxed);
             }))),
             ..EngineConfig::new(|| NOW)
         },
     );
+    e.main.keep_no_clean_pages();
     let mut next = 0;
     let _held = fill_to(&e, 3, &mut next);
     let td = &e.tiers[0];

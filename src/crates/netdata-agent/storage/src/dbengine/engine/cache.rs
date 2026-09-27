@@ -1,17 +1,17 @@
-//! The main and extent caches (`cache.c` as the engine uses it, D62.5, D65.N3). The main cache indexes pages by tier,
-//! metric and start whatever their state: hot pages (being collected) and dirty ones (closed, waiting for their extent)
-//! sit in per-tier queues outside the LRU and the budget, as C's hot and dirty queues, and flushing ones (in an extent
-//! being written) in none; clean pages (read from disk, gaps, flushed) are the LRU, the least recently used dropped
-//! while over the budget when nobody holds them, when a clean page is added and after a flush (C's evictor threads,
-//! autoscaling and memory pressure wait for S6). The extent cache holds raw extents by tier, file and block, the oldest
-//! dropped first.
-
+//! The main and extent caches (`cache.c` as the engine uses it, D62.5, D65.N3, D84, D86). The main cache indexes pages
+//! by tier, metric and start whatever their state: hot pages (being collected) and dirty ones (closed, waiting for their
+//! extent) sit in per-tier queues outside the LRU, as C's hot and dirty queues, and flushing ones (in an extent being
+//! written) in none; clean pages (read from disk, gaps, flushed) are the LRU. The extent cache holds raw extents by
+//! tier, file and block, oldest first. Both autoscale as C's: adders compute the cache's usage against the size it
+//! wants and signal its evictor thread (`evict.rs`) under pressure; the evictor drops unheld clean pages, least recently
+//! used or oldest first, until the cache is back to its healthy size.
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{
     AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
 };
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 
+use super::evict::Wakeup;
 use crate::dbengine::RRD_STORAGE_TIERS;
 use crate::dbengine::format::page::{Cursor, DiskPage, PageBuilder};
 use crate::storage_point::StoragePoint;
@@ -64,7 +64,7 @@ pub struct CachedPage {
     end_time_s: AtomicI64,
     update_every_s: AtomicU32,
     data: PageData,
-    /// What the page counts against the budget or its queue; changed under the cache's lock.
+    /// What the page counts in its cache's size and its queue; changed under the cache's lock.
     size: AtomicUsize,
     state: AtomicU8,
     /// The page's key in its hot or dirty queue; changed under the cache's lock.
@@ -249,9 +249,9 @@ pub enum Search {
     Exact,
 }
 
-/// The main and extent caches' budgets in bytes from `[db] dbengine page cache size` and `dbengine extent cache size`
-/// (MiB), as `pgc_and_mrg_initialize()` splits them: 70% and 30% of the page cache, the extent share at least 5 MiB
-/// (taken from the main one), plus the extent cache size.
+/// The main and extent caches' clean sizes in bytes from `[db] dbengine page cache size` and `dbengine extent cache
+/// size` (MiB), as `pgc_and_mrg_initialize()` splits them: 70% and 30% of the page cache, the extent share at least
+/// 5 MiB (taken from the main one), plus the extent cache size.
 pub fn cache_budgets(page_cache_mb: i32, extent_cache_mb: i32) -> (usize, usize) {
     const MIB: usize = 1024 * 1024;
     let target = (page_cache_mb as usize).wrapping_mul(MIB);
@@ -266,9 +266,189 @@ pub fn cache_budgets(page_cache_mb: i32, extent_cache_mb: i32) -> (usize, usize)
 
 type PageKey = (usize, [u8; 16]);
 
-/// How many held pages one eviction pass steps over before it gives up: the cache then stays over its budget until
-/// queries release their pages, as C's does, without rescanning every held page on each insert.
-const EVICT_SKIPS: usize = 64;
+/// `cache_usage_per1000()`'s thresholds (`pgc_create()`): the evictor is signalled at the severe and aggressive ones,
+/// evicts above the healthy one, and each batch at most down to the low one.
+pub(crate) const SEVERE: i64 = 1010;
+pub(crate) const AGGRESSIVE: i64 = 990;
+pub(crate) const HEALTHY: i64 = 980;
+const LOW: i64 = 970;
+
+/// `pgc_create()`'s floor of a cache's clean size.
+const MIN_CLEAN_SIZE: i64 = 1024 * 1024;
+
+/// What a cache's usage is computed from (its queues' sizes and peaks; C's `evicting` is 0 here, the victims leaving
+/// the accounting as they are taken).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Sizes {
+    pub hot: i64,
+    pub dirty: i64,
+    pub clean: i64,
+    pub flushing: i64,
+    pub hot_max: i64,
+    pub dirty_max: i64,
+}
+
+/// What bounds a cache (`cache->config`): its clean size, and for the main cache the memory it leaves the system and
+/// whether it grows into the rest (a cache with a dynamic target has neither, `pgc_set_dynamic_target_cache_size_callback()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    pub clean_size: i64,
+    pub out_of_memory_protection: i64,
+    pub use_all_ram: bool,
+}
+
+impl Limits {
+    /// A cache of `clean_size` bytes (at least 1 MiB) without memory protection.
+    pub fn new(clean_size: usize) -> Limits {
+        Limits {
+            clean_size: (clean_size as i64).max(MIN_CLEAN_SIZE),
+            out_of_memory_protection: 0,
+            use_all_ram: false,
+        }
+    }
+}
+
+/// Which threshold a usage crossed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pressure {
+    None,
+    Aggressive,
+    Severe,
+}
+
+/// `cache_usage_per1000()`'s outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Usage {
+    pub wanted: i64,
+    pub current: i64,
+    pub per1000: i64,
+    /// What an evictor takes now: 0 at or below the healthy size.
+    pub size_to_evict: i64,
+    pub pressure: Pressure,
+}
+
+/// `pgc_threshold()`.
+fn threshold(per1000: i64, wanted: i64, current: i64, clean: i64) -> i64 {
+    let current = current.max(clean);
+    let wanted = wanted.max(current - clean);
+    (wanted.saturating_mul(per1000) / 1000).max(current - clean)
+}
+
+/// `pgc_wanted_size()`: twice the hot peak, less when flushing keeps up.
+fn wanted_size(hot: i64, hot_max: i64, dirty_max: i64, index: i64) -> i64 {
+    let promise = hot_max.max(hot).saturating_mul(2);
+    let slow_flushing = hot_max + (dirty_max.saturating_mul(2)).max(hot_max * 2 / 3) + index;
+    promise.min(slow_flushing)
+}
+
+/// `cache_usage_per1000()` of an autoscaling cache, without C's index overhead and held-page size (D84.5): `target` is
+/// a dynamic target (the extent cache's), `available` the system's available memory when its total is known.
+pub(crate) fn usage(s: &Sizes, l: &Limits, target: Option<i64>, available: Option<u64>) -> Usage {
+    let index = 0;
+    let current = s.hot + s.dirty + s.clean + s.flushing;
+    let mut wanted = match target {
+        Some(target) => wanted_size(s.hot, s.hot, s.dirty, index).max(target),
+        None => wanted_size(s.hot, s.hot_max, s.dirty_max, index),
+    };
+    wanted = wanted.max(s.hot + s.dirty + index + l.clean_size);
+    let min1 = s.hot + s.dirty + index;
+    let min2 = if current > s.clean {
+        current - s.clean
+    } else {
+        min1
+    };
+    let min_cache = min1.max(min2);
+    if let (true, Some(available)) = (l.out_of_memory_protection != 0, available) {
+        let available = available as i64;
+        if available < l.out_of_memory_protection {
+            let must_lose = l.out_of_memory_protection - available;
+            wanted = if current > must_lose {
+                current - must_lose
+            } else {
+                min_cache
+            };
+        } else if l.use_all_ram {
+            wanted = current.saturating_add(available - l.out_of_memory_protection);
+        }
+    }
+    // never below the minimum, nor below 64 KiB for an empty cache
+    let wanted = wanted.max(min_cache).max(65536);
+    let per1000 = current.saturating_mul(1000) / wanted;
+    let (size_to_evict, pressure) = if current > threshold(HEALTHY, wanted, current, s.clean) {
+        let low = threshold(LOW, wanted, current, s.clean);
+        let pressure = if per1000 >= SEVERE {
+            Pressure::Severe
+        } else if per1000 >= AGGRESSIVE {
+            Pressure::Aggressive
+        } else {
+            Pressure::None
+        };
+        ((current - low).min(s.clean), pressure)
+    } else {
+        (0, Pressure::None)
+    };
+    Usage {
+        wanted,
+        current,
+        per1000,
+        size_to_evict,
+        pressure,
+    }
+}
+
+/// `evict_pages()`' batch size after `last`: from 16 doubling to 64 under severe pressure, from 4 doubling to 16
+/// under aggressive pressure, else 1.
+fn batch_pages(last: usize, per1000: i64) -> usize {
+    if per1000 >= SEVERE {
+        (if last == 0 { 16 } else { last * 2 }).min(64)
+    } else if per1000 >= AGGRESSIVE {
+        (if last == 0 { 4 } else { last * 2 }).min(16)
+    } else {
+        1
+    }
+}
+
+/// The last usage a cache computed (`cache->usage.per1000`, `stats.wanted_cache_size`, `stats.current_cache_size`),
+/// behind the lock that one computation at a time takes (`cache->usage.spinlock`).
+#[derive(Debug, Default)]
+struct Published {
+    lock: Mutex<()>,
+    wanted: AtomicI64,
+    current: AtomicI64,
+    per1000: AtomicI64,
+}
+
+impl Published {
+    fn store(&self, u: &Usage) {
+        self.wanted.store(u.wanted, Ordering::Relaxed);
+        self.current.store(u.current, Ordering::Relaxed);
+        self.per1000.store(u.per1000, Ordering::Relaxed);
+    }
+
+    /// The evictor's computation (`cache_usage_per1000(cache, &size_to_evict)`): it waits for the lock, and signals
+    /// nobody (D86.2).
+    fn compute(&self, compute: impl FnOnce() -> Usage) -> Usage {
+        let _computing = lock(&self.lock);
+        let u = compute();
+        self.store(&u);
+        u
+    }
+
+    /// An adder's computation (`cache_usage_per1000(cache, NULL)`): none while another runs; the evictor signalled
+    /// under pressure.
+    fn note(&self, wakeup: &Wakeup, compute: impl FnOnce() -> Usage) {
+        let _computing = match self.lock.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => return,
+        };
+        let u = compute();
+        self.store(&u);
+        if u.pressure != Pressure::None {
+            wakeup.signal();
+        }
+    }
+}
 
 #[derive(Debug)]
 struct Entry {
@@ -292,7 +472,7 @@ struct MainInner {
     /// The most recent tick, and the least recent one (C prepends clean pages nobody accessed).
     tick: i64,
     front: i64,
-    /// What the clean pages take, which the budget bounds.
+    /// What the clean pages take.
     bytes: usize,
     hot: [Queue; RRD_STORAGE_TIERS],
     dirty: [Queue; RRD_STORAGE_TIERS],
@@ -301,6 +481,8 @@ struct MainInner {
     /// The hot queue's peak size, updated when a page joins it (`pgc_queue_add()`).
     hot_max_bytes: usize,
     dirty_bytes: usize,
+    /// The dirty queue's peak size, updated when a page joins it.
+    dirty_max_bytes: usize,
     /// Bumped whenever a tier's dirty queue reaches a multiple of the pages per extent.
     dirty_version: u64,
     /// The version the last flush that walked every queue saw.
@@ -328,6 +510,58 @@ impl MainInner {
         self.seq += 1;
         self.seq
     }
+
+    fn sizes(&self) -> Sizes {
+        Sizes {
+            hot: self.hot_bytes as i64,
+            dirty: self.dirty_bytes as i64,
+            clean: self.bytes as i64,
+            flushing: self.flushing_bytes as i64,
+            hot_max: self.hot_max_bytes as i64,
+            dirty_max: self.dirty_max_bytes as i64,
+        }
+    }
+
+    /// One batch of `evict_pages_with_filter()`: from the least recently used end, the clean pages nobody else holds,
+    /// until `max_pages` of them or `max_size` bytes; a held one moves to the recent end, and the scan stops when it
+    /// comes back to the first one it moved. The victims leave the index and the accounting.
+    fn take_victims(&mut self, max_pages: usize, max_size: i64) -> Vec<Arc<CachedPage>> {
+        let (mut victims, mut size, mut first_moved) = (Vec::new(), 0i64, None);
+        while let Some((&tick, &(key, start))) = self.lru.first_key_value() {
+            if first_moved == Some(tick) {
+                break;
+            }
+            self.lru.remove(&tick);
+            let Some(pages) = self.pages.get_mut(&key) else {
+                continue;
+            };
+            match pages.get_mut(&start) {
+                Some(e) if Arc::strong_count(&e.page) > 1 => {
+                    self.tick += 1;
+                    e.tick = Some(self.tick);
+                    self.lru.insert(self.tick, (key, start));
+                    first_moved.get_or_insert(self.tick);
+                    continue;
+                }
+                Some(_) => {}
+                None => continue,
+            }
+            let Some(e) = pages.remove(&start) else {
+                continue;
+            };
+            if pages.is_empty() {
+                self.pages.remove(&key);
+            }
+            let bytes = e.page.size();
+            self.bytes -= bytes;
+            size += bytes as i64;
+            victims.push(e.page);
+            if victims.len() >= max_pages || size >= max_size {
+                break;
+            }
+        }
+        victims
+    }
 }
 
 /// `pgc_page_add_and_acquire()` found a page at the same start: the held one, and the page given back.
@@ -346,6 +580,7 @@ pub struct CacheStats {
     pub hot_max_bytes: usize,
     pub dirty_entries: usize,
     pub dirty_bytes: usize,
+    pub dirty_max_bytes: usize,
     pub dirty_version: u64,
     pub flushing_entries: usize,
     pub flushing_bytes: usize,
@@ -358,25 +593,149 @@ pub struct Batch {
     pub pages: Vec<([u8; 16], Arc<CachedPage>)>,
 }
 
+/// The system's available memory while its total is known (`os_system_memory(false)`).
+pub type SystemMemory = fn() -> Option<u64>;
+
+/// How the caches are sized (`pgc_and_mrg_initialize()`'s inputs).
+#[derive(Debug, Clone, Copy)]
+pub struct CacheConfig {
+    /// The clean sizes (`cache_budgets()`), floors of what each cache wants.
+    pub main_clean_size: usize,
+    pub extent_clean_size: usize,
+    /// `dbengine_out_of_memory_protection` and `dbengine_use_all_ram_for_caches`, the main cache's.
+    pub out_of_memory_protection: u64,
+    pub use_all_ram: bool,
+    pub system_memory: Option<SystemMemory>,
+}
+
+impl CacheConfig {
+    /// Caches of these clean sizes without memory protection.
+    pub fn new(main_clean_size: usize, extent_clean_size: usize) -> CacheConfig {
+        CacheConfig {
+            main_clean_size,
+            extent_clean_size,
+            out_of_memory_protection: 0,
+            use_all_ram: false,
+            system_memory: None,
+        }
+    }
+
+    /// The main cache.
+    pub fn main(&self, pages_per_extent: usize) -> MainCache {
+        let limits = Limits {
+            out_of_memory_protection: self.out_of_memory_protection as i64,
+            use_all_ram: self.use_all_ram,
+            ..Limits::new(self.main_clean_size)
+        };
+        MainCache::new(limits, pages_per_extent, self.system_memory)
+    }
+}
+
 /// The main cache.
 #[derive(Debug)]
 pub struct MainCache {
     inner: Mutex<MainInner>,
-    budget: usize,
+    limits: Limits,
+    memory: Option<SystemMemory>,
     /// `max_dirty_pages_per_call`: `rrdeng_pages_per_extent`.
     pages_per_extent: usize,
     /// `flushing_critical()`'s verdict, kept as the sizes change so that collectors and queries read it unlocked.
     critical: AtomicBool,
+    usage: Published,
+    wakeup: Arc<Wakeup>,
+    /// Tests of other parts that want no clean pages kept: unheld ones leave whenever the usage is computed.
+    #[cfg(test)]
+    keep_no_clean: AtomicBool,
 }
 
 impl MainCache {
-    pub fn new(budget: usize, pages_per_extent: usize) -> Self {
+    /// A cache within `limits`, reading the system's memory through `memory` for its out of memory protection.
+    pub fn new(limits: Limits, pages_per_extent: usize, memory: Option<SystemMemory>) -> Self {
         MainCache {
             inner: Mutex::default(),
-            budget,
+            limits,
+            memory,
             pages_per_extent: pages_per_extent.max(1),
             critical: AtomicBool::new(false),
+            usage: Published::default(),
+            wakeup: Arc::default(),
+            #[cfg(test)]
+            keep_no_clean: AtomicBool::new(false),
         }
+    }
+
+    /// Its evictor's signal.
+    pub(crate) fn wakeup(&self) -> &Arc<Wakeup> {
+        &self.wakeup
+    }
+
+    /// From now on the cache keeps no clean page nobody holds (the tests' "no main cache").
+    #[cfg(test)]
+    pub(crate) fn keep_no_clean_pages(&self) {
+        self.keep_no_clean.store(true, Ordering::Relaxed);
+    }
+
+    /// The available memory, read with no lock of the cache held.
+    fn available(&self) -> Option<u64> {
+        self.memory.and_then(|f| f())
+    }
+
+    /// An adder's usage (`evict_pages_inline()` of a cache that never evicts inline) from the sizes it left.
+    fn note_usage(&self, sizes: Sizes) {
+        #[cfg(test)]
+        if self.keep_no_clean.load(Ordering::Relaxed) {
+            self.free_all_unreferenced_clean_pages();
+        }
+        self.usage.note(&self.wakeup, || {
+            usage(&sizes, &self.limits, None, self.available())
+        });
+    }
+
+    /// `dynamic_extent_cache_size()`: 30% of what the main cache wants (at least 5 MiB), plus what it has yet to take.
+    pub fn extent_target(&self) -> i64 {
+        let wanted = self.usage.wanted.load(Ordering::Relaxed);
+        let current = self.usage.current.load(Ordering::Relaxed);
+        (wanted / 100 * 30).max(5 * 1024 * 1024) + (wanted - current).max(0)
+    }
+
+    /// `pgc_evict_thread()`'s pass (`evict_pages(cache, 0, 0, true, false)`): above the healthy size, batches of
+    /// unheld clean pages, each batch's size from the usage it recomputes, until the cache is back to it; the victims
+    /// are dropped outside the lock. The usage per mille the pass began with (its evictor's `system_cleanup` test).
+    /// Its computations signal nobody: C's evictor wakes itself at once after a pass that freed nothing (D86.2).
+    pub(crate) fn evict_pass(&self) -> i64 {
+        let available = self.available();
+        let sizes = self.lock().sizes();
+        let first = self
+            .usage
+            .compute(|| usage(&sizes, &self.limits, None, available));
+        if first.per1000 < HEALTHY {
+            return first.per1000;
+        }
+        let mut pages = 0;
+        loop {
+            let available = self.available();
+            let mut inner = self.lock();
+            let u = self
+                .usage
+                .compute(|| usage(&inner.sizes(), &self.limits, None, available));
+            if u.size_to_evict == 0 {
+                break;
+            }
+            pages = batch_pages(pages, u.per1000);
+            let victims = inner.take_victims(pages, u.size_to_evict);
+            drop(inner);
+            if victims.is_empty() {
+                break;
+            }
+        }
+        first.per1000
+    }
+
+    /// `free_all_unreferenced_clean_pages()`: every clean page nobody holds leaves.
+    #[cfg(test)]
+    pub(crate) fn free_all_unreferenced_clean_pages(&self) {
+        let victims = self.lock().take_victims(usize::MAX, i64::MAX);
+        drop(victims);
     }
 
     /// After the dirty size or the hot peak changed.
@@ -437,7 +796,8 @@ impl MainCache {
     }
 
     /// `pgc_page_add_and_acquire()`: a page already cached at the same start wins over the new one, which comes back
-    /// untouched; neither moves in the LRU. A hot page joins its tier's hot queue, a clean one the LRU.
+    /// untouched; neither moves in the LRU. A hot page joins its tier's hot queue, a clean one the LRU, after which the
+    /// usage is computed.
     pub fn add(
         &self,
         tier: usize,
@@ -480,7 +840,9 @@ impl MainCache {
             },
         );
         if tick.is_some() {
-            self.evict(&mut inner);
+            let sizes = inner.sizes();
+            drop(inner);
+            self.note_usage(sizes);
         }
         Ok(page)
     }
@@ -511,6 +873,7 @@ impl MainCache {
         page.seq.store(seq, Ordering::Relaxed);
         inner.dirty[tier].pages.insert(seq, (uuid, page));
         inner.dirty_bytes += size;
+        inner.dirty_max_bytes = inner.dirty_max_bytes.max(inner.dirty_bytes);
         if inner.dirty[tier]
             .pages
             .len()
@@ -566,6 +929,9 @@ impl MainCache {
         }
         inner.lru.insert(tick, (key, start));
         inner.bytes += size;
+        let sizes = inner.sizes();
+        drop(inner);
+        self.note_usage(sizes);
         false
     }
 
@@ -665,6 +1031,11 @@ impl MainCache {
             flushes += 1;
             inner = self.lock();
             self.flushed(&mut inner, batch);
+            // the flushed pages are clean: the usage, outside the lock
+            let sizes = inner.sizes();
+            drop(inner);
+            self.note_usage(sizes);
+            inner = self.lock();
         }
         if !stopped && version_at_entry > inner.last_version_checked {
             inner.last_version_checked = version_at_entry;
@@ -672,8 +1043,7 @@ impl MainCache {
         stopped
     }
 
-    /// `page_set_clean()` of a flushed batch: pages someone read become the most recently used, the others the least;
-    /// then the budget holds.
+    /// `page_set_clean()` of a flushed batch: pages someone read become the most recently used, the others the least.
     fn flushed(&self, inner: &mut MainInner, batch: Batch) {
         for (uuid, page) in batch.pages {
             let size = page.size();
@@ -693,38 +1063,6 @@ impl MainCache {
                 e.tick = Some(tick);
                 inner.lru.insert(tick, (key, start));
                 inner.bytes += size;
-            }
-        }
-        self.evict(inner);
-    }
-
-    /// Drops the least recently used pages nobody holds while over the budget. A held page moves to the recent end,
-    /// and a pass steps over at most `EVICT_SKIPS` held pages.
-    fn evict(&self, inner: &mut MainInner) {
-        let mut skipped = 0;
-        while inner.bytes > self.budget && skipped < EVICT_SKIPS {
-            let Some((_, (key, start))) = inner.lru.pop_first() else {
-                break;
-            };
-            let Some(pages) = inner.pages.get_mut(&key) else {
-                continue;
-            };
-            match pages.get_mut(&start) {
-                Some(e) if Arc::strong_count(&e.page) > 1 => {
-                    inner.tick += 1;
-                    e.tick = Some(inner.tick);
-                    inner.lru.insert(inner.tick, (key, start));
-                    skipped += 1;
-                }
-                Some(_) => {
-                    if let Some(e) = pages.remove(&start) {
-                        inner.bytes -= e.page.size();
-                    }
-                    if pages.is_empty() {
-                        inner.pages.remove(&key);
-                    }
-                }
-                None => {}
             }
         }
     }
@@ -751,6 +1089,7 @@ impl MainCache {
             hot_max_bytes: inner.hot_max_bytes,
             dirty_entries: entries(&inner.dirty),
             dirty_bytes: inner.dirty_bytes,
+            dirty_max_bytes: inner.dirty_max_bytes,
             dirty_version: inner.dirty_version,
             flushing_entries: inner.flushing_entries,
             flushing_bytes: inner.flushing_bytes,
@@ -786,23 +1125,34 @@ struct ExtentInner {
     bytes: usize,
 }
 
-/// The extent cache: extents as read from their data files, by tier, file number and block.
+/// The extent cache: extents as read from their data files, by tier, file number and block. Its target follows the
+/// main cache's (`dynamic_extent_cache_size()`), and its evictor drops the oldest extents nobody holds.
 #[derive(Debug)]
 pub struct ExtentCache {
     inner: Mutex<ExtentInner>,
-    budget: usize,
+    limits: Limits,
+    usage: Published,
+    wakeup: Arc<Wakeup>,
 }
 
 impl ExtentCache {
-    pub fn new(budget: usize) -> Self {
+    /// A cache of at least `clean_size` bytes.
+    pub fn new(clean_size: usize) -> Self {
         ExtentCache {
             inner: Mutex::default(),
-            budget,
+            limits: Limits::new(clean_size),
+            usage: Published::default(),
+            wakeup: Arc::default(),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, ExtentInner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Its evictor's signal.
+    pub(crate) fn wakeup(&self) -> &Arc<Wakeup> {
+        &self.wakeup
     }
 
     pub fn get(&self, key: ExtentKey) -> Option<Arc<Vec<u8>>> {
@@ -814,8 +1164,17 @@ impl ExtentCache {
         self.lock().bytes
     }
 
-    /// An extent read from disk; one cached meanwhile wins.
-    pub fn add(&self, key: ExtentKey, bytes: Vec<u8>) -> Arc<Vec<u8>> {
+    /// Its usage against `target`, the main cache's `extent_target()`: every extent is clean.
+    fn usage_at(&self, bytes: usize, target: i64) -> Usage {
+        let sizes = Sizes {
+            clean: bytes as i64,
+            ..Sizes::default()
+        };
+        usage(&sizes, &self.limits, Some(target), None)
+    }
+
+    /// An extent read from disk; one cached meanwhile wins. Then the usage against `target`.
+    pub fn add(&self, key: ExtentKey, bytes: Vec<u8>, target: i64) -> Arc<Vec<u8>> {
         let mut inner = self.lock();
         if let Some(held) = inner.extents.get(&key) {
             return Arc::clone(held);
@@ -824,19 +1183,68 @@ impl ExtentCache {
         let bytes = Arc::new(bytes);
         inner.extents.insert(key, Arc::clone(&bytes));
         inner.order.push_back(key);
-        while inner.bytes > self.budget {
-            let Some(old) = inner.order.pop_front() else {
-                break;
-            };
-            if old == key {
-                inner.order.push_back(old);
+        let held = inner.bytes;
+        drop(inner);
+        self.usage
+            .note(&self.wakeup, || self.usage_at(held, target));
+        bytes
+    }
+
+    /// Its evictor's pass, as the main cache's, over the oldest extents; one someone holds moves to the newest end.
+    pub(crate) fn evict_pass(&self, target: i64) -> i64 {
+        let bytes = self.bytes();
+        let first = self.usage.compute(|| self.usage_at(bytes, target));
+        if first.per1000 < HEALTHY {
+            return first.per1000;
+        }
+        let mut pages = 0;
+        loop {
+            let mut inner = self.lock();
+            let u = self.usage.compute(|| self.usage_at(inner.bytes, target));
+            if u.size_to_evict == 0 {
                 break;
             }
-            if let Some(e) = inner.extents.remove(&old) {
-                inner.bytes -= e.len();
+            pages = batch_pages(pages, u.per1000);
+            let victims = inner.take_victims(pages, u.size_to_evict);
+            drop(inner);
+            if victims.is_empty() {
+                break;
             }
         }
-        bytes
+        first.per1000
+    }
+}
+
+impl ExtentInner {
+    /// One batch: the oldest extents nobody else holds, until `max` of them or `max_size` bytes; a held one moves to
+    /// the newest end, and the scan stops when it comes back to the first one it moved.
+    fn take_victims(&mut self, max: usize, max_size: i64) -> Vec<Arc<Vec<u8>>> {
+        let (mut victims, mut size, mut first_moved) = (Vec::new(), 0i64, None);
+        while let Some(key) = self.order.pop_front() {
+            // back at the first one moved, whether or not it is still held
+            if first_moved == Some(key) {
+                self.order.push_front(key);
+                break;
+            }
+            let Some(extent) = self.extents.get(&key) else {
+                continue;
+            };
+            if Arc::strong_count(extent) > 1 {
+                first_moved.get_or_insert(key);
+                self.order.push_back(key);
+                continue;
+            }
+            let Some(extent) = self.extents.remove(&key) else {
+                continue;
+            };
+            self.bytes -= extent.len();
+            size += extent.len() as i64;
+            victims.push(extent);
+            if victims.len() >= max || size >= max_size {
+                break;
+            }
+        }
+        victims
     }
 }
 

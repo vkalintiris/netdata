@@ -6,6 +6,8 @@ use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_text::c::find;
 use netdata_agent_text::parse::str2uint64;
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use nix::sys::resource::{Resource, getrlimit, setrlimit};
 use nix::unistd::{SysconfVar, sysconf};
@@ -116,33 +118,105 @@ pub struct SystemMemory {
     pub available: u64,
 }
 
+/// Where `os_system_memory()` found the memory (`OS_MEM_SRC`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemorySource {
+    Meminfo,
+    CgroupV1,
+    CgroupV2,
+}
+
 /// `os_system_memory(true)`: cgroup v2, else v1, when it reports less than `/proc/meminfo`; else meminfo.
 pub fn system_memory(root: &Path) -> SystemMemory {
+    detect_memory(root).0
+}
+
+fn detect_memory(root: &Path) -> (SystemMemory, MemorySource) {
     let mi = meminfo(root);
-    let v1 = cgroup_memory(
+    let v1 = cgroup_v1(root);
+    let v2 = cgroup_v2(root);
+    let fits = |m: &SystemMemory| {
+        m.total != 0 && m.available != 0 && m.total <= mi.total && m.available < mi.available
+    };
+    if fits(&v2) {
+        (v2, MemorySource::CgroupV2)
+    } else if fits(&v1) {
+        (v1, MemorySource::CgroupV1)
+    } else {
+        (mi, MemorySource::Meminfo)
+    }
+}
+
+fn read_memory(root: &Path, source: MemorySource) -> SystemMemory {
+    match source {
+        MemorySource::Meminfo => meminfo(root),
+        MemorySource::CgroupV1 => cgroup_v1(root),
+        MemorySource::CgroupV2 => cgroup_v2(root),
+    }
+}
+
+/// `os_system_memory()`'s process-wide reading: kept for a millisecond while it holds both numbers, else read again
+/// from the source found last, detected anew when `detect` or when none was found yet; read outside its lock.
+pub fn system_memory_cached(detect: bool) -> SystemMemory {
+    struct Cached {
+        at: Option<Instant>,
+        memory: SystemMemory,
+        source: Option<MemorySource>,
+    }
+    static CACHED: Mutex<Cached> = Mutex::new(Cached {
+        at: None,
+        memory: SystemMemory {
+            total: 0,
+            available: 0,
+        },
+        source: None,
+    });
+    let source = {
+        let c = CACHED.lock().unwrap_or_else(PoisonError::into_inner);
+        let fresh =
+            c.at.is_some_and(|at| at.elapsed() < Duration::from_millis(1));
+        if fresh && c.memory.total != 0 && c.memory.available != 0 {
+            return c.memory;
+        }
+        if detect { None } else { c.source }
+    };
+    let root = Path::new("/");
+    let (memory, source) = match source {
+        Some(source) => (read_memory(root, source), source),
+        None => detect_memory(root),
+    };
+    *CACHED.lock().unwrap_or_else(PoisonError::into_inner) = Cached {
+        at: Some(Instant::now()),
+        memory,
+        source: Some(source),
+    };
+    memory
+}
+
+/// The main cache's reading (`os_system_memory(false)`): the available bytes, while the total is known.
+pub fn dbengine_memory_available() -> Option<u64> {
+    let memory = system_memory_cached(false);
+    (memory.total > 0).then_some(memory.available)
+}
+
+fn cgroup_v1(root: &Path) -> SystemMemory {
+    cgroup_memory(
         root,
         "sys/fs/cgroup/memory/memory.limit_in_bytes",
         "sys/fs/cgroup/memory/memory.usage_in_bytes",
         "sys/fs/cgroup/memory/memory.stat",
         b"total_inactive_file ",
-    );
-    let v2 = cgroup_memory(
+    )
+}
+
+fn cgroup_v2(root: &Path) -> SystemMemory {
+    cgroup_memory(
         root,
         "sys/fs/cgroup/memory.max",
         "sys/fs/cgroup/memory.current",
         "sys/fs/cgroup/memory.stat",
         b"inactive_file ",
-    );
-    let fits = |m: &SystemMemory| {
-        m.total != 0 && m.available != 0 && m.total <= mi.total && m.available < mi.available
-    };
-    if fits(&v2) {
-        v2
-    } else if fits(&v1) {
-        v1
-    } else {
-        mi
-    }
+    )
 }
 
 /// `os_system_memory_meminfo()`.
