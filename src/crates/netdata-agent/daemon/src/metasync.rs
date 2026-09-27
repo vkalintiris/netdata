@@ -7,13 +7,14 @@
 
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::{Priority, Source, nd_log, netdata_log_info};
 use netdata_agent_metadata::Connection;
+use netdata_agent_metadata::cleanup::{CleanupCycle, CycleEnv, CycleKind};
 use netdata_agent_metadata::open::{ContextDb, MetaDb};
 use netdata_agent_metadata::read;
 use netdata_agent_rrd::host::{Host, Hosts};
@@ -55,6 +56,8 @@ struct Shared {
     /// `next_vacuum_run` and `next_context_list_cleanup` of `run_metadata_cleanup()`, 0 before the first job.
     next_vacuum_run: AtomicI64,
     next_ctx_cleanup: AtomicI64,
+    /// `dim_cleanup_cycle`, `chart_cleanup_cycle` and `label_cleanup_cycle`.
+    cycles: Mutex<[CleanupCycle; 3]>,
     /// `ctx_load_running`: a context load job runs; the shutdown waits for it.
     ctx_load_running: AtomicBool,
 }
@@ -131,10 +134,18 @@ struct Pending {
     deletions: Option<Vec<[u8; 16]>>,
 }
 
+fn cleanup_cycles() -> [CleanupCycle; 3] {
+    [
+        CleanupCycle::new(CycleKind::Dimension),
+        CleanupCycle::new(CycleKind::Chart),
+        CleanupCycle::new(CycleKind::ChartLabel),
+    ]
+}
+
 /// `run_metadata_cleanup()`: the context cleanup scan of every host, 5 s after the first job reached it and then
-/// 300 s after each scan ends, skipped (and cut short) while the WAL is too large; then the database's upkeep. A
-/// shutdown stops it between the steps. The dimension, chart and label cycles come with S5's next commit (D61.5, the
-/// health log with the health port, D75.9).
+/// 300 s after each scan ends, skipped (and cut short) while the WAL is too large; then the dimension cycle, the chart
+/// cycle when the dimension cycle had nothing to do, and the chart-label cycle when neither had; then the database's
+/// upkeep. A shutdown stops it between the steps. The health log's cleanup comes with the health port (D75.9).
 fn run_metadata_cleanup(writer: &Writer, shared: &Shared) {
     let shutting_down = || shared.shutdown.load(Ordering::Acquire);
     let now = now_realtime_s();
@@ -161,6 +172,26 @@ fn run_metadata_cleanup(writer: &Writer, shared: &Shared) {
             now_realtime_s().saturating_add(CTX_CLEANUP_REPEAT_S),
             Ordering::Release,
         );
+    }
+    if shutting_down() {
+        return;
+    }
+    {
+        let can_be_deleted = |uuid: &[u8; 16]| dimension_can_be_deleted(writer, uuid);
+        let monotonic = || (now_ut() / 1_000_000) as i64;
+        let env = CycleEnv {
+            now: &now_realtime_s,
+            monotonic: &monotonic,
+            shutting_down: &shutting_down,
+            dimension_can_be_deleted: &can_be_deleted,
+        };
+        let mut cycles = shared.cycles.lock().unwrap_or_else(PoisonError::into_inner);
+        let [dimension, chart, label] = &mut *cycles;
+        if writer.meta.run_cleanup_cycle(dimension, &env)
+            && writer.meta.run_cleanup_cycle(chart, &env)
+        {
+            writer.meta.run_cleanup_cycle(label, &env);
+        }
     }
     if shutting_down() {
         return;
@@ -280,6 +311,7 @@ impl MetaSync {
                     shutdown: AtomicBool::new(false),
                     next_vacuum_run: AtomicI64::new(0),
                     next_ctx_cleanup: AtomicI64::new(0),
+                    cycles: Mutex::new(cleanup_cycles()),
                     ctx_load_running: AtomicBool::new(false),
                 });
                 let _ = done_tx.send(());
@@ -653,6 +685,7 @@ mod tests {
             shutdown: AtomicBool::new(false),
             next_vacuum_run: AtomicI64::new(0),
             next_ctx_cleanup: AtomicI64::new(0),
+            cycles: Mutex::new(cleanup_cycles()),
             ctx_load_running: AtomicBool::new(false),
         })
     }

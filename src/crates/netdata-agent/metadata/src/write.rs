@@ -184,6 +184,18 @@ fn execute(c: &Connection, sql: &str, function: &str, params: &[&dyn ToSql]) -> 
         .map_err(|err| Step::Failed(conn::result_code(&err)))
 }
 
+/// `delete_dimension_uuid()` on a connection already held: its own statement each time, as C prepares it.
+pub(crate) fn delete_dimension_uuid(c: &Connection, dim_id: &[u8; 16]) {
+    if let Err(Step::Failed(rc)) = execute(
+        c,
+        DELETE_DIMENSION_UUID,
+        "delete_dimension_uuid",
+        &[&&dim_id[..]],
+    ) {
+        netdata_log_error!("Failed to delete dimension uuid, rc = {rc}");
+    }
+}
+
 /// Why a statement did not run.
 enum Step {
     /// Its prepare failed (reported).
@@ -524,15 +536,7 @@ impl MetaDb {
 
     /// `delete_dimension_uuid()`.
     pub fn delete_dimension(&self, dim_id: &[u8; 16]) {
-        let c = self.lock();
-        if let Err(Step::Failed(rc)) = execute(
-            &c,
-            DELETE_DIMENSION_UUID,
-            "delete_dimension_uuid",
-            &[&&dim_id[..]],
-        ) {
-            netdata_log_error!("Failed to delete dimension uuid, rc = {rc}");
-        }
+        delete_dimension_uuid(&self.lock(), dim_id);
     }
 
     /// `sql_set_host_label()`: one label, stored at once with the `AUTO` source; true when stored.
