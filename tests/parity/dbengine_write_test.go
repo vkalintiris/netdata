@@ -68,30 +68,41 @@ func (g s3gen) stored(from, to int64) int {
 	return n
 }
 
+// childGen is a fake child's workload: its charts (prefix + "c<n>", each with dims "d0".. and a context) and, for
+// each chart and second, whether it sends nothing and else each dimension's value and flags.
+type childGen struct {
+	host         stream.HostInfo
+	prefix       string
+	charts, dims int
+	context      func(c int) string
+	skips        func(c int, t int64) bool
+	point        func(c, d int, t int64) (value, flags string)
+}
+
 // stream connects the child to d, defines its charts, sends [from, to] and disconnects.
-func (g s3gen) stream(d *daemon.Daemon, from, to int64) error {
-	conn, err := stream.Connect(d.Addr, d.StreamKey, s3child, stream.CapsLive)
+func (g childGen) stream(d *daemon.Daemon, from, to int64) error {
+	conn, err := stream.Connect(d.Addr, d.StreamKey, g.host, stream.CapsLive)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	for c := 0; c < s3Charts; c++ {
-		conn.DefineChart(stream.Chart{ID: fmt.Sprintf("s3.c%d", c), Title: "s3", Units: "u", Family: "f",
-			Context: s3context(c)})
-		for dim := 0; dim < s3Dims; dim++ {
+	for c := 0; c < g.charts; c++ {
+		conn.DefineChart(stream.Chart{ID: fmt.Sprintf("%sc%d", g.prefix, c), Title: g.prefix, Units: "u", Family: "f",
+			Context: g.context(c)})
+		for dim := 0; dim < g.dims; dim++ {
 			conn.Dimension(fmt.Sprintf("d%d", dim), "absolute", 1, 1)
 		}
 	}
 	n := 0
 	for t := from; t <= to; t++ {
-		for c := 0; c < s3Charts; c++ {
+		for c := 0; c < g.charts; c++ {
 			if g.skips(c, t) {
 				continue
 			}
-			conn.Begin2(fmt.Sprintf("s3.c%d", c), 1, t)
-			for dim := 0; dim < s3Dims; dim++ {
-				conn.Set2(fmt.Sprintf("d%d", dim), strconv.FormatFloat(s3value(c, dim, t), 'f', -1, 64),
-					stream.FlagNotAnomalous)
+			conn.Begin2(fmt.Sprintf("%sc%d", g.prefix, c), 1, t)
+			for dim := 0; dim < g.dims; dim++ {
+				v, f := g.point(c, dim, t)
+				conn.Set2(fmt.Sprintf("d%d", dim), v, f)
 			}
 			conn.End2()
 		}
@@ -105,7 +116,7 @@ func (g s3gen) stream(d *daemon.Daemon, from, to int64) error {
 }
 
 // streamBoth streams [from, to] into both daemons at once, then waits until each has every chart at to.
-func (g s3gen) streamBoth(t *testing.T, p *Pair, from, to int64) {
+func (g childGen) streamBoth(t *testing.T, p *Pair, from, to int64) {
 	t.Helper()
 	var wg sync.WaitGroup
 	errs := make([]error, 2)
@@ -121,8 +132,23 @@ func (g s3gen) streamBoth(t *testing.T, p *Pair, from, to int64) {
 		if errs[i] != nil {
 			t.Fatalf("%s: streaming: %v", side.Role, errs[i])
 		}
-		waitChartsLast(t, side.Daemon, s3child.Hostname, "s3.", s3Charts, to, 10*time.Minute)
+		waitChartsLast(t, side.Daemon, g.host.Hostname, g.prefix, g.charts, to, 10*time.Minute)
 	}
+}
+
+// child is the S3 workload as a childGen.
+func (g s3gen) child() childGen {
+	return childGen{host: s3child, prefix: "s3.", charts: s3Charts, dims: s3Dims, context: s3context, skips: g.skips,
+		point: func(c, d int, t int64) (string, string) {
+			return strconv.FormatFloat(s3value(c, d, t), 'f', -1, 64), stream.FlagNotAnomalous
+		}}
+}
+
+func (g s3gen) stream(d *daemon.Daemon, from, to int64) error { return g.child().stream(d, from, to) }
+
+func (g s3gen) streamBoth(t *testing.T, p *Pair, from, to int64) {
+	t.Helper()
+	g.child().streamBoth(t, p, from, to)
 }
 
 // waitChartsLast waits until the host has n charts with the prefix, each with its last entry at last (WaitRetention
