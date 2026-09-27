@@ -16,8 +16,8 @@ use super::super::descriptor::{
 };
 use super::super::journal_v1::{Event, Replay};
 use super::{
-    EXTENT_SIZE, ExtentEntry, Header, MAGIC, METRIC_SIZE, MetricEntry,
-    PAGE_HEADER_SIZE, PAGE_SIZE, PageEntry, PageHeader, TRAILER_SIZE, file_size,
+    EXTENT_SIZE, ExtentEntry, Header, MAGIC, METRIC_SIZE, MetricEntry, PAGE_HEADER_SIZE, PAGE_SIZE,
+    PageEntry, PageHeader, TRAILER_SIZE, file_size,
 };
 
 /// A page to index, as the open cache holds it.
@@ -625,8 +625,8 @@ pub fn from_v1(
 mod tests {
     use super::super::super::descriptor::{PAGE_TYPE_ARRAY_32BIT, PageDescriptor};
     use super::super::super::journal_v1::StoreData;
-    use super::super::{Verdict, extents, metrics, pages, validate};
     use super::super::HEADER_SIZE;
+    use super::super::{Verdict, extents, metrics, pages, validate};
     use super::*;
 
     const S: u64 = 1_000_000;
@@ -994,15 +994,27 @@ mod tests {
             ),
             (
                 "duplicates",
-                vec![page(1, 100, 103, 1), page(1, 100, 104, 2), page(1, 100, 102, 3)],
+                vec![
+                    page(1, 100, 103, 1),
+                    page(1, 100, 104, 2),
+                    page(1, 100, 102, 3),
+                ],
             ),
             (
                 "an emptied extent",
-                vec![page(1, 100, 103, 1), page(2, 100, 103, 2), page(1, 100, 110, 3)],
+                vec![
+                    page(1, 100, 103, 1),
+                    page(2, 100, 103, 2),
+                    page(1, 100, 110, 3),
+                ],
             ),
             (
                 "out of order",
-                vec![page(3, 300, 303, 9), page(1, 100, 103, 1), page(2, 200, 203, 5)],
+                vec![
+                    page(3, 300, 303, 9),
+                    page(1, 100, 103, 1),
+                    page(2, 200, 203, 5),
+                ],
             ),
         ];
         for (name, pages) in cases {

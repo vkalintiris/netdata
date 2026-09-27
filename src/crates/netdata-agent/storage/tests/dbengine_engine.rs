@@ -300,12 +300,7 @@ fn queries_read_the_generated_values() {
         .mrg
         .get_and_acquire(&uuid_of(&fx, "b6.c0", "d0"), 1)
         .unwrap();
-    let mut q = engine.query(
-        &metric,
-        START + 3600,
-        START + 7200,
-        QueryPriority::Normal,
-    );
+    let mut q = engine.query(&metric, START + 3600, START + 7200, QueryPriority::Normal);
     let mut minutes = 0;
     while !q.is_finished() {
         let p = q.next_metric();

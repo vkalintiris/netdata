@@ -1,8 +1,8 @@
 use super::*;
 use crate::dbengine::engine::query::{DEFAULT_PAGES_PER_EXTENT, Priority};
-use netdata_agent_evloop::work::WorkPool;
 use crate::dbengine::engine::testutil::{A, B, NOW, array_page, cfg, pair_with_extents, points};
 use crate::storage_number::{SN_DEFAULT_FLAGS, pack};
+use netdata_agent_evloop::work::WorkPool;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 
@@ -174,7 +174,10 @@ fn dbev_schedules_as_c() {
         tiers: vec![TierSched::default(); 2],
         ..Sched::default()
     };
-    assert_eq!([s.flush_main(), s.flush_main(), s.flush_main()], [true, true, false]);
+    assert_eq!(
+        [s.flush_main(), s.flush_main(), s.flush_main()],
+        [true, true, false]
+    );
     s.flush_done();
     assert!(s.flush_main());
 
@@ -205,7 +208,10 @@ fn the_timer_flushes_whole_batches() {
     m.push(dirty_page(&e, 0, nth(108), T0, &seq_values(10, 108)));
     assert!(eventually(|| e.main.stats().dirty_entries == 0));
     assert!(eventually(|| e.tiers[0].extents_in_flight() == 0));
-    assert_eq!(file_reports(dir.path())[0]["pages_per_extent"], serde_json::json!({"109": 1}));
+    assert_eq!(
+        file_reports(dir.path())[0]["pages_per_extent"],
+        serde_json::json!({"109": 1})
+    );
     rt.exit();
 }
 
@@ -227,7 +233,9 @@ fn rotations_get_indexed() {
             .collect::<Vec<_>>()
     };
     let _m = fill(0);
-    assert!(eventually(|| e.tiers[0].file(1).is_some_and(|df| df.v2_available())));
+    assert!(eventually(|| e.tiers[0]
+        .file(1)
+        .is_some_and(|df| df.v2_available())));
     assert!(v2(1).exists());
     rt.quiesce();
     assert!(eventually(|| e.tiers[0].quiesced()));
@@ -266,7 +274,10 @@ fn flush_everything_reports_as_c() {
         .take_while(|r| *r == "waiting for 1 collectors to finish")
         .count();
     assert_eq!(waits, 50);
-    assert!(records[51].starts_with("DBENGINE: flushing at "), "{records:?}");
+    assert!(
+        records[51].starts_with("DBENGINE: flushing at "),
+        "{records:?}"
+    );
     assert_eq!(records.last().unwrap(), "DBENGINE: flushing completed!");
     drop(h);
     rt.exit();

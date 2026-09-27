@@ -16,7 +16,15 @@ const S: u64 = 1_000_000;
 /// An engine with one empty tier 0 of this page type, its clock at `NOW`.
 fn engine(dir: &Path, page_type: u8) -> Arc<Dbengine> {
     let mrg = Mrg::new();
-    let tier = load(TierConfig { page_type, ..cfg(dir) }, &mrg, NOW).unwrap();
+    let tier = load(
+        TierConfig {
+            page_type,
+            ..cfg(dir)
+        },
+        &mrg,
+        NOW,
+    )
+    .unwrap();
     Dbengine::new(mrg, vec![tier], EngineConfig::new(|| NOW))
 }
 
@@ -32,14 +40,27 @@ impl CollectHandle {
     }
 
     fn store_empty(&mut self, t_s: i64) {
-        self.store_next(t_s as u64 * S, f64::NAN, f64::NAN, f64::NAN, 1, 0, SN_EMPTY_SLOT);
+        self.store_next(
+            t_s as u64 * S,
+            f64::NAN,
+            f64::NAN,
+            f64::NAN,
+            1,
+            0,
+            SN_EMPTY_SLOT,
+        );
     }
 
     /// The hot page: start, end, points, capacity.
     fn hot(&self) -> Option<(i64, i64, usize, usize)> {
-        self.page
-            .as_ref()
-            .map(|p| (p.start_time_s, p.end_time_s(), p.slots_used(), self.entries_max))
+        self.page.as_ref().map(|p| {
+            (
+                p.start_time_s,
+                p.end_time_s(),
+                p.slots_used(),
+                self.entries_max,
+            )
+        })
     }
 
     fn retention(&self) -> (i64, i64) {
@@ -50,7 +71,10 @@ impl CollectHandle {
 
 /// The values of a page's points, NaN for empty ones.
 fn values(page: &CachedPage, entries: usize) -> Vec<f64> {
-    page.points(0, entries).into_iter().map(|(_, p)| p.sum).collect()
+    page.points(0, entries)
+        .into_iter()
+        .map(|(_, p)| p.sum)
+        .collect()
 }
 
 fn same_values(got: &[f64], want: &[f64]) -> bool {
@@ -100,7 +124,10 @@ fn slots_end_pages_at_the_target() {
 fn alignments_hash_the_chart() {
     const GUID: &str = "5a1e0000-0000-4000-8000-0000000000a0";
     assert_eq!(XxHash3_64::oneshot(b""), 0x2d06_8005_38d3_94c2);
-    assert_eq!(Alignment::new(GUID, "s3.c0", 0), Alignment::from_hash(0x1fe3_a4cb_7f68_b2d8));
+    assert_eq!(
+        Alignment::new(GUID, "s3.c0", 0),
+        Alignment::from_hash(0x1fe3_a4cb_7f68_b2d8)
+    );
     assert_eq!(Alignment::new(GUID, "s3.c0", 0).target(1024), 728);
     assert_eq!(Alignment::new(GUID, "s3.c0", 1).target(128), 75);
     assert_eq!(Alignment::new(GUID, "s3.c1", 0).target(1024), 180);
@@ -130,7 +157,12 @@ fn pages_fill_then_align() {
     for i in 0..1053 {
         b.store(T0 + i, 0.0);
     }
-    let size = |start| e.main.search(0, &B, start, Search::Exact).unwrap().slots_used();
+    let size = |start| {
+        e.main
+            .search(0, &B, start, Search::Exact)
+            .unwrap()
+            .slots_used()
+    };
     assert_eq!((size(T0), size(T0 + 341)), (341, 711));
     assert_eq!(b.hot(), Some((T0 + 1052, T0 + 1052, 1, 1024)));
 
@@ -162,7 +194,11 @@ fn points_append_fill_gaps_or_close_the_page() {
     h.store(T0 + 13, 13.0);
     assert_eq!(h.hot(), Some((T0, T0 + 13, 14, 429)));
     let page = h.page.clone().unwrap();
-    let want: Vec<f64> = (0..10).map(f64::from).chain([f64::NAN; 3]).chain([13.0]).collect();
+    let want: Vec<f64> = (0..10)
+        .map(f64::from)
+        .chain([f64::NAN; 3])
+        .chain([13.0])
+        .collect();
     assert!(same_values(&values(&page, 14), &want));
     assert!(page.points(10, 13).iter().all(|(_, p)| p.count == 1));
     drop(page);
@@ -173,14 +209,23 @@ fn points_append_fill_gaps_or_close_the_page() {
     assert_eq!(h.hot(), Some((T0, T0 + 427, 428, 429)));
     h.store(T0 + 428, 428.0);
     assert_eq!(h.hot(), None);
-    assert_eq!(e.main.search(0, &[3; 16], T0, Search::Exact).unwrap().slots_used(), 429);
+    assert_eq!(
+        e.main
+            .search(0, &[3; 16], T0, Search::Exact)
+            .unwrap()
+            .slots_used(),
+        429
+    );
 
     // one more does not fit: the page closes and the point starts a new one
     let mut h = open(4);
     h.store(T0 + 428, 428.0);
     assert_eq!(h.hot(), Some((T0 + 428, T0 + 428, 1, 341)));
     let closed = e.main.search(0, &[4; 16], T0, Search::Exact).unwrap();
-    assert_eq!((closed.state(), closed.slots_used()), (PageState::Dirty, 10));
+    assert_eq!(
+        (closed.state(), closed.slots_used()),
+        (PageState::Dirty, 10)
+    );
 
     // older and repeated points are dropped
     let mut h = open(5);
@@ -256,7 +301,11 @@ fn pages_created_in_the_future_record_no_first_time() {
 fn a_page_cached_at_the_start_moves_the_new_one_back() {
     let dir = tempfile::tempdir().unwrap();
     let e = engine(dir.path(), PAGE_TYPE_ARRAY_32BIT);
-    drop(e.main.add(0, &A, CachedPage::new(T0, T0 + 9, 0, None)).unwrap());
+    drop(
+        e.main
+            .add(0, &A, CachedPage::new(T0, T0 + 9, 0, None))
+            .unwrap(),
+    );
     let mut h = collector(&e, A, 1, 77);
     let ((), records) = netdata_agent_log::capture(|| {
         h.store(T0, 10.0);

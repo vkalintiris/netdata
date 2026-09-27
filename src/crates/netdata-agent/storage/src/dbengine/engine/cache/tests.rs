@@ -75,7 +75,10 @@ fn hot_and_dirty_pages_are_never_evicted() {
     }
     drop(cache.add_clean(0, &U, gap(40)));
     let cached = |start| cache.search(0, &U, start, Search::Exact).is_some();
-    assert_eq!([5, 10, 20, 30, 40].map(cached), [true, false, true, true, true]);
+    assert_eq!(
+        [5, 10, 20, 30, 40].map(cached),
+        [true, false, true, true, true]
+    );
     assert_eq!(
         cache.stats(),
         CacheStats {
@@ -92,7 +95,10 @@ fn hot_and_dirty_pages_are_never_evicted() {
         drop(cache.add_clean(0, &U, gap(start)));
     }
     assert!(cached(5));
-    assert_eq!(cache.search(0, &U, 5, Search::Exact).unwrap().state(), PageState::Dirty);
+    assert_eq!(
+        cache.search(0, &U, 5, Search::Exact).unwrap().state(),
+        PageState::Dirty
+    );
     assert_eq!(
         cache.stats(),
         CacheStats {
@@ -117,7 +123,12 @@ fn dirty_pages_queue_per_tier_with_a_version() {
         cache.stats().dirty_version
     };
     assert_eq!(
-        [close(0, &U, 10), close(0, &B, 10), close(0, &U, 20), close(1, &U, 10)],
+        [
+            close(0, &U, 10),
+            close(0, &B, 10),
+            close(0, &U, 20),
+            close(1, &U, 10)
+        ],
         [0, 1, 1, 1]
     );
     assert_eq!(cache.dirty_queue(0), [(U, 10), (B, 10), (U, 20)]);

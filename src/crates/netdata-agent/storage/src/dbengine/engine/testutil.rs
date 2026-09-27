@@ -11,13 +11,13 @@ use super::cache::CachedPage;
 use super::load::{TierConfig, load};
 use super::mrg::{Handle, Mrg};
 use super::query::{Dbengine, EngineConfig, Query};
+use crate::dbengine::format::descriptor::{PAGE_TYPE_ARRAY_32BIT, PageDescriptor};
 use crate::dbengine::format::extent::COMPRESSION_NONE;
 use crate::dbengine::format::inspect::{for_each_page, tier_report};
-use crate::dbengine::format::page::{DiskPage, PageBuilder};
-use crate::storage_number::{SN_DEFAULT_FLAGS, pack};
-use crate::dbengine::format::descriptor::{PAGE_TYPE_ARRAY_32BIT, PageDescriptor};
 use crate::dbengine::format::journal_v1::{StoreData, encode_transaction};
+use crate::dbengine::format::page::{DiskPage, PageBuilder};
 use crate::dbengine::format::{BLOCK_SIZE, FileKind, file_name, superblock};
+use crate::storage_number::{SN_DEFAULT_FLAGS, pack};
 
 pub const NOW: i64 = 1_800_000_000;
 pub const A: [u8; 16] = [0xaa; 16];
@@ -122,7 +122,11 @@ pub fn write_cfg(tier: usize, dir: &Path) -> TierConfig {
     }
 }
 
-pub fn write_engine(dirs: &[&Path], main_cache_bytes: usize, pool: Option<WorkPool>) -> Arc<Dbengine> {
+pub fn write_engine(
+    dirs: &[&Path],
+    main_cache_bytes: usize,
+    pool: Option<WorkPool>,
+) -> Arc<Dbengine> {
     let mrg = Mrg::new();
     let tiers = dirs
         .iter()

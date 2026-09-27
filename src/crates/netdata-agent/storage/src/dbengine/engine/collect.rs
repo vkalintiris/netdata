@@ -8,9 +8,9 @@ use std::sync::Arc;
 use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log_limit};
 use twox_hash::XxHash3_64;
 
+use super::USEC_PER_SEC;
 use super::cache::CachedPage;
 use super::mrg::Handle;
-use super::USEC_PER_SEC;
 use super::query::Dbengine;
 use crate::dbengine::RRD_STORAGE_TIERS;
 use crate::dbengine::format::descriptor::{point_size, uuid_text};
@@ -157,7 +157,15 @@ impl CollectHandle {
                     let stop_ut = t_ut - ue;
                     let mut this_ut = self.page_end_ut + ue;
                     while this_ut <= stop_ut {
-                        self.append_point(this_ut, f64::NAN, f64::NAN, f64::NAN, 1, 0, SN_EMPTY_SLOT);
+                        self.append_point(
+                            this_ut,
+                            f64::NAN,
+                            f64::NAN,
+                            f64::NAN,
+                            1,
+                            0,
+                            SN_EMPTY_SLOT,
+                        );
                         this_ut = self.page_end_ut + ue;
                     }
                 }

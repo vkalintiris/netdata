@@ -7,7 +7,9 @@
 //! dropped first.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 
 use crate::dbengine::RRD_STORAGE_TIERS;
@@ -81,14 +83,28 @@ impl CachedPage {
     ) -> Self {
         let size = 64 + data.as_ref().map_or(0, DiskPage::footprint);
         let data = data.map_or(PageData::Empty, PageData::Disk);
-        CachedPage::with_state(start_time_s, end_time_s, update_every_s, data, size, PageState::Clean)
+        CachedPage::with_state(
+            start_time_s,
+            end_time_s,
+            update_every_s,
+            data,
+            size,
+            PageState::Clean,
+        )
     }
 
     /// A hot page holding its collector's first point at `start_time_s`.
     pub(crate) fn collected(start_time_s: i64, update_every_s: u32, builder: PageBuilder) -> Self {
         let size = 64 + builder.memory_footprint();
         let data = PageData::Collected(Mutex::new(builder));
-        CachedPage::with_state(start_time_s, start_time_s, update_every_s, data, size, PageState::Hot)
+        CachedPage::with_state(
+            start_time_s,
+            start_time_s,
+            update_every_s,
+            data,
+            size,
+            PageState::Hot,
+        )
     }
 
     fn with_state(
@@ -365,10 +381,8 @@ impl MainCache {
 
     /// After the dirty size or the hot peak changed.
     fn note_sizes(&self, inner: &MainInner) {
-        self.critical.store(
-            inner.dirty_bytes > inner.hot_max_bytes,
-            Ordering::Relaxed,
-        );
+        self.critical
+            .store(inner.dirty_bytes > inner.hot_max_bytes, Ordering::Relaxed);
     }
 
     fn lock(&self) -> MutexGuard<'_, MainInner> {

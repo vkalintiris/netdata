@@ -143,7 +143,13 @@ pub struct DataFile {
 }
 
 impl DataFile {
-    fn new(fileno: u32, file: IoFile, pos: u64, journal: Option<IoFile>, journal_pos: u64) -> DataFile {
+    fn new(
+        fileno: u32,
+        file: IoFile,
+        pos: u64,
+        journal: Option<IoFile>,
+        journal_pos: u64,
+    ) -> DataFile {
         DataFile {
             fileno,
             file,
@@ -178,8 +184,7 @@ impl DataFile {
 
     /// A written extent's newest point moves the file's last time.
     pub(crate) fn extend_last_time(&self, last_time_s: i64) {
-        self.last_time_s
-            .fetch_max(last_time_s, Ordering::AcqRel);
+        self.last_time_s.fetch_max(last_time_s, Ordering::AcqRel);
     }
 
     /// Whether a v2 index serves the file.
@@ -479,8 +484,7 @@ impl TierData {
     }
 
     pub(crate) fn flushed_to(&self, fileno: u32) {
-        self.last_flush_fileno
-            .fetch_max(fileno, Ordering::AcqRel);
+        self.last_flush_fileno.fetch_max(fileno, Ordering::AcqRel);
     }
 
     /// A transaction id, taken for good.
@@ -493,8 +497,7 @@ impl TierData {
     }
 
     pub(crate) fn add_disk_space(&self, bytes: u64) {
-        self.current_disk_space
-            .fetch_add(bytes, Ordering::AcqRel);
+        self.current_disk_space.fetch_add(bytes, Ordering::AcqRel);
     }
 
     pub fn needs_indexing(&self) -> bool {

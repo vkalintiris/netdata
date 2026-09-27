@@ -85,7 +85,10 @@ pub(crate) enum Cmd {
     /// `RRDENG_OPCODE_CTX_QUIESCE`.
     Quiesce(usize),
     /// `RRDENG_OPCODE_CTX_SHUTDOWN`: a pool job waits for the tier's extents and queries in flight.
-    CtxShutdown { tier: usize, done: mpsc::Sender<()> },
+    CtxShutdown {
+        tier: usize,
+        done: mpsc::Sender<()>,
+    },
     /// `RRDENG_OPCODE_SHUTDOWN_EVLOOP`.
     Shutdown,
 }

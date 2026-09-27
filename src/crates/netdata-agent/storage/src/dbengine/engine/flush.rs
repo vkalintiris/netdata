@@ -9,11 +9,11 @@ use std::sync::{Arc, PoisonError, mpsc};
 use netdata_agent_evloop::work::on_worker;
 use netdata_agent_log::{ErrorLimit, Priority, Source, errno_of, nd_log_limit, uv_strerror};
 
+use super::USEC_PER_SEC;
 use super::cache::Batch;
 use super::io::write_retrying;
 use super::query::Dbengine;
 use super::runtime::Cmd;
-use super::USEC_PER_SEC;
 use super::tier::{DataFile, OpenPage, TierData};
 use crate::dbengine::format::BLOCK_SIZE;
 use crate::dbengine::format::descriptor::{PAGE_TYPE_GORILLA_32BIT, PageDescriptor};
@@ -186,7 +186,15 @@ impl Dbengine {
         }
         df.writer_flushing_to_open();
         let journal_pos = result.as_ref().map_or(0, |&at| at);
-        flush_to_open(td, &df, pos, size_bytes, journal_pos, &written, result.is_ok());
+        flush_to_open(
+            td,
+            &df,
+            pos,
+            size_bytes,
+            journal_pos,
+            &written,
+            result.is_ok(),
+        );
         td.extent_finished();
         // `after_extent_write()`: a rotation may have left a file to index
         if let Some(events) = self.events.get() {
@@ -203,10 +211,7 @@ impl Dbengine {
         size: u64,
         avoid: Option<&Arc<DataFile>>,
     ) -> (Arc<DataFile>, Option<u64>) {
-        let _reserve = self
-            .reserve
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _reserve = self.reserve.lock().unwrap_or_else(PoisonError::into_inner);
         let mut df = td.last_file();
         df.writer_started();
         if df.is_full(size, td.config.target_datafile_size()) {

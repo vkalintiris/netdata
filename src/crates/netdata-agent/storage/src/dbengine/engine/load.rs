@@ -17,11 +17,11 @@ use netdata_agent_log::{
     ErrorLimit, Priority, Source, nd_log, nd_log_limit, netdata_log_error, netdata_log_info,
 };
 
+use super::index::write_v2;
 use super::io::{
     IoFile, align_ceiling, align_floor, check_file_properties, open_for_io, unlink, unlink_failed,
     unlink_if_exists, write_retrying,
 };
-use super::index::write_v2;
 use super::mrg::Mrg;
 use crate::dbengine::format::descriptor::{
     PAGE_TYPE_ARRAY_TIER1, PAGE_TYPE_GORILLA_32BIT, log_validation,
@@ -806,10 +806,12 @@ pub fn load(cfg: TierConfig, mrg: &Mrg, now_s: i64) -> io::Result<Tier> {
                 tier.current_disk_space +=
                     pos + journal.pos + journal.v2.as_ref().map_or(0, |v2| v2.size);
                 tier.samples += journal.samples;
-                let (first_time_s, last_time_s) = journal.v2.as_ref().map_or(
-                    (journal.first_time_s, journal.last_time_s),
-                    |v2| (v2.first_time_s, v2.last_time_s),
-                );
+                let (first_time_s, last_time_s) = journal
+                    .v2
+                    .as_ref()
+                    .map_or((journal.first_time_s, journal.last_time_s), |v2| {
+                        (v2.first_time_s, v2.last_time_s)
+                    });
                 loaded.insert(
                     fileno,
                     Pair {

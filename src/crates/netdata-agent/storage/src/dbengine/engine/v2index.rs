@@ -53,7 +53,8 @@ fn sparse_push(sparse: &mut Vec<([u8; 16], u32)>, index: u32, uuid: &[u8; 16]) {
 impl V2Index {
     /// A v2 file this run wrote, from its layout (nothing is read back).
     pub(crate) fn from_layout(fileno: u32, file: File, layout: &Layout) -> V2Index {
-        let mut sparse = Vec::with_capacity(layout.header().metric_count as usize / SPARSE_EVERY + 1);
+        let mut sparse =
+            Vec::with_capacity(layout.header().metric_count as usize / SPARSE_EVERY + 1);
         for (index, uuid) in (0u32..).zip(layout.uuids()) {
             sparse_push(&mut sparse, index, uuid);
         }

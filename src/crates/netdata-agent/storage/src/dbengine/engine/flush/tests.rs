@@ -3,7 +3,8 @@ use crate::dbengine::engine::io::fault;
 use crate::dbengine::engine::mrg::Handle;
 use crate::dbengine::engine::query::Priority;
 use crate::dbengine::engine::testutil::{
-    NOW, dirty_page, file_reports, messages, nth, packed, points, same, seq_values, stored_pages, write_engine,
+    NOW, dirty_page, file_reports, messages, nth, packed, points, same, seq_values, stored_pages,
+    write_engine,
 };
 use crate::dbengine::format::inspect::failed_checks;
 use netdata_agent_evloop::work::WorkPool;
@@ -32,17 +33,30 @@ fn a_full_batch_becomes_one_extent() {
     let pages = stored_pages(dir.path());
     assert_eq!(pages.len(), 109);
     for (i, (u, start, numbers)) in pages.into_iter().enumerate() {
-        assert_eq!((u, start, numbers), (nth(i), T0, packed(&seq_values(10, i))));
+        assert_eq!(
+            (u, start, numbers),
+            (nth(i), T0, packed(&seq_values(10, i)))
+        );
     }
     let td = &e.tiers[0];
     assert_eq!(td.current_disk_space(), 8192 + 12288 + 4096);
-    assert_eq!((td.last_flush_fileno(), td.needs_indexing(), td.extents_in_flight()), (1, false, 0));
+    assert_eq!(
+        (
+            td.last_flush_fileno(),
+            td.needs_indexing(),
+            td.extents_in_flight()
+        ),
+        (1, false, 0)
+    );
     assert_eq!(td.last_file().writers_running(), (0, 0));
     let page = e.main.search(0, &nth(0), T0, Search::Exact).unwrap();
     assert_eq!(page.state(), PageState::Clean);
     let open = td.open();
     let op = open.pages(&nth(0)).unwrap()[&T0];
-    assert_eq!((op.fileno, op.block, op.bytes, op.end_time_s), (1, 1, 8403, T0 + 9));
+    assert_eq!(
+        (op.fileno, op.block, op.bytes, op.end_time_s),
+        (1, 1, 8403, T0 + 9)
+    );
 }
 
 /// Without `all`, fewer pages than an extent takes stay dirty; a timer flush writes whole batches in the order the
@@ -171,9 +185,13 @@ fn an_indexed_last_file_gets_a_new_pair() {
     let _m = dirty_page(&e, 0, nth(200), T0, &seq_values(10, 0));
     let (_, records) = netdata_agent_log::capture(|| e.flush_pages(0, None, true, true));
     assert!(
-        messages(records).contains(&"DBENGINE: tier 0: created datafile-1-0000000003 (.ndf, .njf).".to_string())
+        messages(records)
+            .contains(&"DBENGINE: tier 0: created datafile-1-0000000003 (.ndf, .njf).".to_string())
     );
-    assert_eq!(std::fs::read(dir.path().join("datafile-1-0000000001.ndf")).unwrap(), before);
+    assert_eq!(
+        std::fs::read(dir.path().join("datafile-1-0000000001.ndf")).unwrap(),
+        before
+    );
     assert_eq!(e.tiers[0].last_file().fileno, 3);
 }
 
@@ -194,16 +212,25 @@ fn a_failed_write_moves_the_extent_to_a_new_pair() {
         "DBENGINE: tier 0 datafile 1 write failed (bad file descriptor) - rotating to a new datafile and retrying \
          the extent, to prevent data loss"
     );
-    assert_eq!(messages[2], "DBENGINE: tier 0: created datafile-1-0000000002 (.ndf, .njf).");
+    assert_eq!(
+        messages[2],
+        "DBENGINE: tier 0: created datafile-1-0000000002 (.ndf, .njf)."
+    );
     let reports = file_reports(dir.path());
-    assert_eq!((&reports[0]["ndf_size"], &reports[0]["tx_count"]), (&json!(4096), &json!(0)));
+    assert_eq!(
+        (&reports[0]["ndf_size"], &reports[0]["tx_count"]),
+        (&json!(4096), &json!(0))
+    );
     assert_eq!(reports[1]["tx_ids"], json!([2, "...", 2]));
     let td = &e.tiers[0];
     assert_eq!(td.open().pages(&nth(0)).unwrap()[&T0].fileno, 2);
     assert_eq!(td.current_disk_space(), 8192 + 8192 + 4096 + 4096);
     let _m2 = dirty_page(&e, 0, nth(1), T0, &seq_values(10, 0));
     e.flush_pages(0, None, true, true);
-    assert_eq!(file_reports(dir.path())[1]["tx_ids"], json!([2, 3, "...", 2, 3]));
+    assert_eq!(
+        file_reports(dir.path())[1]["tx_ids"],
+        json!([2, 3, "...", 2, 3])
+    );
 }
 
 /// A journal write that fails leaves the extent in the data file (counted) without its transaction, and the retry
@@ -215,11 +242,19 @@ fn a_failed_journal_write_retries_in_a_new_pair() {
     let _m = dirty_page(&e, 0, nth(0), T0, &seq_values(10, 0));
     fault::script([None, Some(libc::EROFS)]);
     let (_, records) = netdata_agent_log::capture(|| e.flush_pages(0, None, true, true));
-    assert!(messages(records)[0].contains("datafile 1 write failed (read-only file system) - rotating"));
+    assert!(
+        messages(records)[0].contains("datafile 1 write failed (read-only file system) - rotating")
+    );
     let reports = file_reports(dir.path());
-    assert_eq!((&reports[0]["ndf_size"], &reports[0]["njf_size"]), (&json!(8192), &json!(4096)));
+    assert_eq!(
+        (&reports[0]["ndf_size"], &reports[0]["njf_size"]),
+        (&json!(8192), &json!(4096))
+    );
     assert_eq!(reports[1]["tx_ids"], json!([2, "...", 2]));
-    assert_eq!(e.tiers[0].current_disk_space(), 8192 + 4096 + 8192 + 4096 + 4096);
+    assert_eq!(
+        e.tiers[0].current_disk_space(),
+        8192 + 4096 + 8192 + 4096 + 4096
+    );
 }
 
 /// Retries: eight passing failures and a success write without a record; nine fail; an error no retry passes stops
@@ -242,7 +277,10 @@ fn writes_retry_as_c() {
     let _m = dirty_page(&e, 0, nth(2), T0, &seq_values(10, 0));
     fault::script([Some(libc::ENOSPC), None]);
     let (_, records) = netdata_agent_log::capture(|| e.flush_pages(0, None, true, true));
-    assert!(messages(records)[0].contains("datafile 2 write failed (no space left on device) - rotating"));
+    assert!(
+        messages(records)[0]
+            .contains("datafile 2 write failed (no space left on device) - rotating")
+    );
 }
 
 /// When the move finds no new pair the extent is lost: its pages stay readable while cached, and join no open
@@ -364,7 +402,11 @@ fn concurrent_flushes_tile_the_file() {
     });
     e.flush_pages(0, None, true, true);
     let report = &file_reports(dir.path())[0];
-    for check in ["extent_crc_all_ok", "extent_descr_eq_journal", "tx_crc_all_ok"] {
+    for check in [
+        "extent_crc_all_ok",
+        "extent_descr_eq_journal",
+        "tx_crc_all_ok",
+    ] {
         assert_eq!(report[check], json!(true), "{check}");
     }
     let mut pages = stored_pages(dir.path());
@@ -387,7 +429,10 @@ fn critical_flushes_write_two_batches_inline() {
     assert!(e.main.flushing_critical());
     e.flush_inline();
     assert_eq!(e.main.stats().dirty_entries, 32);
-    assert_eq!(file_reports(dir.path())[0]["pages_per_extent"], json!({"109": 2}));
+    assert_eq!(
+        file_reports(dir.path())[0]["pages_per_extent"],
+        json!({"109": 2})
+    );
     // a big hot page raises the peak above the dirty pages left: nothing more
     let big = crate::dbengine::format::page::PageBuilder::new(
         crate::dbengine::format::descriptor::PAGE_TYPE_ARRAY_32BIT,

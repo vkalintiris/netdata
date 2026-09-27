@@ -384,7 +384,12 @@ fn a_doomed_last_pair_rotates_as_c() {
 #[test]
 fn startup_counts_the_disk_space() {
     let empty = tempfile::tempdir().unwrap();
-    assert_eq!(load(cfg(empty.path()), &Mrg::new(), NOW).unwrap().current_disk_space, 8192);
+    assert_eq!(
+        load(cfg(empty.path()), &Mrg::new(), NOW)
+            .unwrap()
+            .current_disk_space,
+        8192
+    );
 
     // a reused last pair: 3 blocks of data file, 2 of journal
     let reused = tempfile::tempdir().unwrap();

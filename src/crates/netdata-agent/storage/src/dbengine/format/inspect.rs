@@ -839,7 +839,8 @@ pub fn normalize_v2(data: &[u8]) -> Vec<u8> {
     }
     for i in 0..h.metric_count as usize {
         let at = metric_offset + i * METRIC_SIZE;
-        let mut metric = MetricEntry::decode(out[at..at + METRIC_SIZE].try_into().expect("an entry"));
+        let mut metric =
+            MetricEntry::decode(out[at..at + METRIC_SIZE].try_into().expect("an entry"));
         let list = metric.page_offset as usize + PAGE_HEADER_SIZE;
         let end = list + metric.entries as usize * PAGE_SIZE;
         if end + TRAILER_SIZE > out.len() {

@@ -17,9 +17,9 @@ use netdata_agent_log::{
 };
 
 use super::cache::{CachedPage, Conflict, ExtentCache, MainCache, Search};
-use super::runtime::Cmd;
 use super::load::Tier;
 use super::mrg::{Handle, Mrg};
+use super::runtime::Cmd;
 use super::tier::{OpenPage, TierData};
 use super::v2index::PageListError;
 use crate::dbengine::format::descriptor::{
@@ -834,7 +834,12 @@ impl Dbengine {
                         .add_page(
                             tier,
                             metric.uuid(),
-                            CachedPage::new(vd.start_time_s, vd.end_time_s, vd.update_every_s, data),
+                            CachedPage::new(
+                                vd.start_time_s,
+                                vd.end_time_s,
+                                vd.update_every_s,
+                                data,
+                            ),
                         )
                         .unwrap_or_else(|c| c.existing);
                     if let Some(pd) = list.get_mut(&start_s) {
