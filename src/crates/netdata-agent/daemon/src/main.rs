@@ -371,12 +371,16 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let tz = timezone::system_timezone(&mut conf.netdata, std::path::Path::new("/"), server::now());
 
     startup.step("pulse");
+    // the extended pulse charts are not ported (D80.4): the key is read and written as C does
+    let _pulse_extended = conf::pulse_extended(&mut conf.netdata);
     startup.step("replication");
     startup.step("inflight functions");
     startup.step("silencers");
     conf.health_silencers_filename();
 
     startup.step("static threads");
+    // the loop's pulse entries while the process has one thread (setenv); the other entries come with their plugins
+    let _pulse_enabled = conf::static_threads_pulse(&mut conf.netdata);
     startup.step("web server api");
     // nd_web_api_init(): the time-grouping limits, read before the listen sockets as in C.
     let grouping_windows = conf::grouping_windows(&mut conf.netdata);

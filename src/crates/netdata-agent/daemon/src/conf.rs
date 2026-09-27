@@ -1738,6 +1738,31 @@ pub fn set_timezone_env(netdata: &mut Config) -> std::io::Result<()> {
     netdata_agent_sys::setenv("TZ", &String::from_utf8_lossy(&tz))
 }
 
+/// The "pulse" step of `netdata_main()`: `[pulse] extended` (default no), the extended pulse charts' switch.
+pub fn pulse_extended(netdata: &mut Config) -> bool {
+    netdata.get_boolean(SECTION_PULSE, "extended", false)
+}
+
+/// The pulse entries of the static-threads loop (`static_threads[]`, `daemon/static_threads.c`), in C's order: PULSE's
+/// `[plugins] netdata pulse` (default yes), exported to the plugins as `NETDATA_INTERNALS_MONITORING` (`YES`/`NO`),
+/// then the three extended pulse threads' `[pulse] extended` (default no, the key already read). Whether pulse runs.
+pub fn static_threads_pulse(netdata: &mut Config) -> bool {
+    let enabled = netdata.get_boolean(SECTION_PLUGINS, "netdata pulse", true);
+    export(
+        "NETDATA_INTERNALS_MONITORING",
+        internals_monitoring(enabled),
+    );
+    for _ in ["PULSE-SQLITE3", "PULSE-WORKERS", "PULSE-MEMORY"] {
+        netdata.get_boolean(SECTION_PULSE, "extended", false);
+    }
+    enabled
+}
+
+/// `NETDATA_INTERNALS_MONITORING`'s value.
+fn internals_monitoring(enabled: bool) -> &'static str {
+    if enabled { "YES" } else { "NO" }
+}
+
 /// `netdata_conf_web_query_threads()`: two per CPU on a parent (at most 256 CPUs), at least 6, unless configured.
 pub fn web_query_threads(c: &mut Config, cpus: usize, is_parent: bool) -> usize {
     let cpus = cpus.min(256);
@@ -1936,6 +1961,29 @@ fn make_dns_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pulse keys as C reads them: `[pulse] extended` at the "pulse" step, then the static-threads loop's
+    /// `[plugins] netdata pulse` and the extended threads' re-reads, which add no key.
+    #[test]
+    fn pulse_keys_read_as_c() {
+        let mut c = Config::new();
+        assert!(!pulse_extended(&mut c));
+        let (enabled, _) = netdata_agent_log::capture(|| static_threads_pulse(&mut c));
+        assert!(enabled);
+        assert_eq!(
+            c.get(SECTION_PLUGINS, "netdata pulse", None),
+            Some(b"yes".to_vec())
+        );
+        assert_eq!(c.get(SECTION_PULSE, "extended", None), Some(b"no".to_vec()));
+        let mut off = Config::new();
+        off.set(SECTION_PLUGINS, "netdata pulse", "no");
+        let (enabled, _) = netdata_agent_log::capture(|| static_threads_pulse(&mut off));
+        assert!(!enabled);
+        assert_eq!(
+            (internals_monitoring(true), internals_monitoring(false)),
+            ("YES", "NO")
+        );
+    }
 
     #[test]
     fn thread_stacks_follow_libuv_not_the_stack_size_key() {
