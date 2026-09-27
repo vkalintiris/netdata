@@ -68,7 +68,7 @@ const API_V1: &[Command] = &[
             Reply {
                 code: status::OK,
                 content_type: ContentType::ApplicationJson,
-                body: api::info_json(host, &route.shared.hosts),
+                body: api::info_json(host, route.shared),
                 ..Reply::default()
             }
         },
@@ -360,6 +360,8 @@ mod tests {
             netdata_conf: Default::default(),
             custom_dashboard_info: Default::default(),
             ready: || true,
+            multidb_disk_quota_mb: 1024,
+            page_cache_mb: 32,
             hosts: Arc::new(netdata_agent_rrd::host::Hosts::new(
                 netdata_agent_rrd::host::Host::new(
                     "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",
@@ -460,6 +462,24 @@ mod tests {
             );
         }
         assert_eq!(route(&s, b"/api/v1/charts").code, status::OK);
+    }
+
+    /// `/api/v1/info` ends with the routed host's memory mode and the dbengine's quota and page cache size, as
+    /// `api_v1_info()` writes them after the flags (the members between are not ported yet, D84.2).
+    #[test]
+    fn info_ends_with_the_dbengine_members() {
+        let s = Shared {
+            multidb_disk_quota_mb: 25,
+            page_cache_mb: 8,
+            ..shared()
+        };
+        let body = String::from_utf8(route(&s, b"/api/v1/info").body).unwrap();
+        let tail = &body[body.find("\"host_labels\"").unwrap()..];
+        let tail = &tail[tail.find('}').unwrap() + 1..];
+        assert_eq!(
+            tail.trim_end(),
+            ",\n    \"memory-mode\":\"ram\",\n    \"multidb-disk-quota\":25,\n    \"page-cache-size\":8\n}"
+        );
     }
 
     #[test]

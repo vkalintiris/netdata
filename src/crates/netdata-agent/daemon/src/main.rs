@@ -497,15 +497,24 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     };
     let health_enabled = conf.health_load_config_defaults();
     // nd_profile.storage_tiers and multidb_ctx: every host's tiers
-    let (dbengine, grouping, backfill, out_of_memory_protection) = match dbengine {
-        Some(started) => (
-            Some(started.runtime),
-            started.grouping,
-            started.backfill,
-            started.out_of_memory_protection,
-        ),
-        None => (None, vec![1], Backfill::New, 0),
-    };
+    let (dbengine, grouping, backfill, out_of_memory_protection, multidb_disk_quota_mb) =
+        match dbengine {
+            Some(started) => (
+                Some(started.runtime),
+                started.grouping,
+                started.backfill,
+                started.out_of_memory_protection,
+                started.multidb_disk_quota_mb,
+            ),
+            // without the engine, C's globals keep their initial values
+            None => (
+                None,
+                vec![1],
+                Backfill::New,
+                0,
+                conf::DEFAULT_TIER_DISK_SPACE_MB as i32,
+            ),
+        };
     let storage = Arc::new(
         StorageLayout::new(
             dbengine
@@ -724,6 +733,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         netdata_conf: std::sync::Mutex::new(std::mem::take(&mut conf.netdata)),
         custom_dashboard_info: Default::default(),
         ready: commands::is_ready,
+        multidb_disk_quota_mb: multidb_disk_quota_mb as u64,
+        page_cache_mb: db.page_cache_mb as u64,
     });
     // PULSE, a static thread started before the web server's as in C's table; C carries on without it
     let pulse_thread = if pulse_enabled {

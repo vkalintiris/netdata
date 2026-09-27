@@ -38,6 +38,8 @@ pub struct Started {
     pub backfill: Backfill,
     /// `dbengine_out_of_memory_protection`, in bytes (0 without one).
     pub out_of_memory_protection: u64,
+    /// `default_multidb_disk_quota_mb`.
+    pub multidb_disk_quota_mb: i32,
 }
 
 /// `rrd_init()`'s engine start: its record, the keys, then the tiers. C's fallbacks after it (one tier, alloc mode)
@@ -128,6 +130,7 @@ pub fn start(
         grouping: settings.grouping_iterations,
         backfill: settings.backfill,
         out_of_memory_protection: settings.out_of_memory_protection,
+        multidb_disk_quota_mb: settings.multidb_disk_quota_mb,
     }
 }
 

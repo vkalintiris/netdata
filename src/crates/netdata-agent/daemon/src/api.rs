@@ -2,8 +2,10 @@
 //! (`web_client_api_request_v1_info_fill_buffer()`); its members after `host_labels` follow as the subsystems that
 //! own them are ported.
 
-use netdata_agent_rrd::host::{Host, Hosts};
+use netdata_agent_rrd::host::Host;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
+
+use crate::server::Shared;
 
 /// `web_client_api_request_v1_info_mirrored_hosts_status()`.
 fn mirrored_host_status(w: &mut JsonWriter, host: &Host) {
@@ -32,10 +34,11 @@ fn mirrored_host_status(w: &mut JsonWriter, host: &Host) {
     w.object_close();
 }
 
-/// The members of `/api/v1/info` up to `host_labels`, about the routed host: every host in creation order, then the
-/// reachable ones before the orphans, the alert summary, the host's system info and labels.
-pub fn info_json(host: &Host, hosts: &Hosts) -> Vec<u8> {
-    let all = hosts.all();
+/// The members of `/api/v1/info` about the routed host: every host in creation order, then the reachable ones before
+/// the orphans, the alert summary, the host's system info and labels, then its memory mode and the dbengine's disk
+/// quota and page cache size (the members between them are not ported yet, D84.2).
+pub fn info_json(host: &Host, shared: &Shared) -> Vec<u8> {
+    let all = shared.hosts.all();
     let info = host.info();
     let mut w = JsonWriter::new(JsonOptions::DEFAULT);
     w.member_add_string("version", &info.program_version);
@@ -66,6 +69,9 @@ pub fn info_json(host: &Host, hosts: &Hosts) -> Vec<u8> {
     w.member_add_object("host_labels");
     host.labels().to_json_members(&mut w);
     w.object_close();
+    w.member_add_string("memory-mode", info.db_mode.name());
+    w.member_add_uint64("multidb-disk-quota", shared.multidb_disk_quota_mb);
+    w.member_add_uint64("page-cache-size", shared.page_cache_mb);
     w.finalize();
     w.into_bytes()
 }

@@ -52,6 +52,9 @@ pub struct Shared {
     pub custom_dashboard_info: OnceLock<String>,
     /// `netdata_ready_load()`: whether startup completed.
     pub ready: fn() -> bool,
+    /// `default_multidb_disk_quota_mb` and `default_rrdeng_page_cache_mb`, which `/api/v1/info` reports.
+    pub multidb_disk_quota_mb: u64,
+    pub page_cache_mb: u64,
 }
 
 impl Shared {

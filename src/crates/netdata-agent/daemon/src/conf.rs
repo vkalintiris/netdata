@@ -939,6 +939,8 @@ pub struct DbengineConf {
     pub use_all_ram_for_caches: bool,
     /// `dbengine_out_of_memory_protection` in bytes, 0 when the system memory is unknown.
     pub out_of_memory_protection: u64,
+    /// `default_multidb_disk_quota_mb`: tier 0's retention size as first read (`/api/v1/info`'s `multidb-disk-quota`).
+    pub multidb_disk_quota_mb: i32,
     pub direct_io: bool,
     pub journal_v2_unmount_time_s: i64,
     pub pages_per_extent: u32,
@@ -1172,6 +1174,7 @@ pub fn dbengine_init(
     DbengineConf {
         use_all_ram_for_caches,
         out_of_memory_protection: oom,
+        multidb_disk_quota_mb: tier0_mb,
         direct_io,
         journal_v2_unmount_time_s,
         pages_per_extent,
@@ -1561,8 +1564,9 @@ const DEFAULT_HISTORY_ENTRIES: i64 = 3600;
 const DEFAULT_PAGE_CACHE_MB: u64 = 32;
 const MIN_PAGE_CACHE_MB: i32 = 8;
 const PAGES_PER_EXTENT: u32 = DEFAULT_PAGES_PER_EXTENT as u32;
-/// `RRDENG_DEFAULT_TIER_DISK_SPACE_MB` and `RRDENG_MIN_DISK_SPACE_MB`.
-const DEFAULT_TIER_DISK_SPACE_MB: u64 = 1024;
+/// `RRDENG_DEFAULT_TIER_DISK_SPACE_MB` (also `default_multidb_disk_quota_mb` without the engine) and
+/// `RRDENG_MIN_DISK_SPACE_MB`.
+pub(crate) const DEFAULT_TIER_DISK_SPACE_MB: u64 = 1024;
 pub(crate) const MIN_DISK_SPACE_MB: i32 = 25;
 
 /// What `[db]` sets for the rest of the daemon.
@@ -2439,12 +2443,14 @@ mod tests {
                     got.pages_per_extent,
                     got.backfill,
                     got.grouping_iterations.as_slice(),
+                    got.multidb_disk_quota_mb,
                     got.tiers
                 ),
                 (
                     case.pages_per_extent,
                     case.backfill,
                     case.grouping,
+                    case.disk_space_mb[0],
                     want_tiers
                 ),
                 "{name}"
