@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::chart::{Algorithm, Chart, ChartType, Dim, dim_flags, flags as chart_flags};
+use crate::host::Host;
 use crate::labels::Labels;
 
 /// `RRD_FLAGS`.
@@ -429,6 +430,26 @@ impl Context {
         metric_retention(storage.as_deref(), ram.as_deref(), uuid)
     }
 
+    /// `rc->rrdhost`, once the host is set.
+    fn host(&self) -> Option<Arc<Host>> {
+        let storage = self.storage.upgrade()?;
+        storage
+            .host
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .upgrade()
+    }
+
+    /// The host's storage tiers (`host->db[]`), tier 0 first.
+    fn tiers(&self) -> Vec<Arc<dyn TierRetention>> {
+        self.storage.upgrade().map_or_else(Vec::new, |s| {
+            s.tiers
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        })
+    }
+
     fn queue_for_post_processing(self: &Arc<Self>) {
         if let Some(queue) = self.queue.upgrade() {
             queue.add(self);
@@ -536,6 +557,9 @@ impl RamIndex {
 /// A storage tier's `metric_retention_by_id()`: the oldest and newest time it holds for a metric UUID.
 pub trait TierRetention: Send + Sync + std::fmt::Debug {
     fn retention_by_id(&self, uuid: &[u8; 16]) -> Option<(i64, i64)>;
+
+    /// `metric_retention_delete_by_id()`: the tier forgets the metric's retention; the memory engine's does nothing.
+    fn delete_by_id(&self, _uuid: &[u8; 16]) {}
 }
 
 impl TierRetention for RamIndex {
@@ -556,6 +580,8 @@ pub trait LabelSource: Send + Sync + std::fmt::Debug {
 struct Storage {
     tiers: RwLock<Vec<Arc<dyn TierRetention>>>,
     labels: RwLock<Option<Arc<dyn LabelSource>>>,
+    /// `rc->rrdhost`: its current name and the daemon's storage, for the extreme cardinality protection.
+    host: RwLock<Weak<Host>>,
 }
 
 /// `get_metric_retention_by_id()`: over the tiers (the RAM index when none are set), the oldest positive first time
@@ -1357,6 +1383,15 @@ impl Contexts {
             .unwrap_or_else(PoisonError::into_inner) = tiers;
     }
 
+    /// The host these contexts belong to (`rc->rrdhost`), set once its `Arc` exists.
+    pub fn set_host(&self, host: &Arc<Host>) {
+        *self
+            .storage
+            .host
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(host);
+    }
+
     /// Where loaded instances read their chart labels from.
     pub fn set_label_source(&self, source: Arc<dyn LabelSource>) {
         *self
@@ -1635,10 +1670,10 @@ impl Contexts {
     }
 }
 
-/// `rrdcontext_recalculate_context_retention()`: a forced post-processing (repeated in C while the extreme
-/// cardinality protection removes instances, which is not here yet).
+/// `rrdcontext_recalculate_context_retention()`: a forced post-processing, repeated while the extreme cardinality
+/// protection clears instances.
 pub fn recalculate_context_retention(rc: &Context, reason: u32) {
-    post_process_updates(rc, true, reason);
+    while post_process_updates(rc, true, reason) {}
 }
 
 /// `rrdhost_update_cached_retention()` (not global): widens the host's retention.
@@ -1791,14 +1826,14 @@ fn context_should_be_deleted(rc: &Context) -> bool {
     state.first_time_s == 0 && state.last_time_s == 0
 }
 
-/// `rrdcontext_post_process_updates()`.
-fn post_process_updates(rc: &Context, force: bool, reason: u32) {
+/// `rrdcontext_post_process_updates()`: whether the extreme cardinality protection cleared instances.
+fn post_process_updates(rc: &Context, force: bool, reason: u32) -> bool {
     if reason != 0 {
         rc.flags.set_updated(reason);
     }
     let (mut min_priority_collected, mut min_priority_not_collected) = (u32::MAX, u32::MAX);
     let (mut min_first, mut max_last) = (i64::MAX, 0);
-    let mut active = 0usize;
+    let (mut active, mut no_tier0) = (0usize, 0usize);
     let (mut live_retention, mut currently_collected, mut hidden) = (true, false, true);
     let instances = rc.instances();
     for ri in &instances {
@@ -1815,6 +1850,9 @@ fn post_process_updates(rc: &Context, force: bool, reason: u32) {
         }
         if instance_should_be_deleted(ri) {
             continue;
+        }
+        if ri.flags.check(flags::NO_TIER0_RETENTION) {
+            no_tier0 += 1;
         }
         let ri_state = ri.state();
         if ri.flags.is_collected() && !ri.flags.check(flags::MERGED_COLLECTED_RI_TO_RC) {
@@ -1853,6 +1891,11 @@ fn post_process_updates(rc: &Context, force: bool, reason: u32) {
             max_last = ri_state.last_time_s;
         }
     }
+    // the protection runs before the context's lock, as in C: its clears queue the context
+    let cleared = !instances.is_empty()
+        && rc
+            .host()
+            .is_some_and(|host| cardinality::protect(rc, &host, active, no_tier0));
     let min_priority = if instances.is_empty() {
         u32::MAX
     } else if min_priority_collected != u32::MAX {
@@ -1911,10 +1954,13 @@ fn post_process_updates(rc: &Context, force: bool, reason: u32) {
         state.version = state.version.max(state.hub.version).max(now_sec()) + 1;
     }
     rc.flags.unset_updated();
+    cleared
 }
 
 mod load;
 pub use load::{LoadReport, Loader, SqlChange, SqlChart, SqlContext, SqlDim};
+mod cardinality;
+pub use cardinality::ExtremeCardinality;
 mod rotation;
 pub use rotation::{DbRotation, deep_pass};
 

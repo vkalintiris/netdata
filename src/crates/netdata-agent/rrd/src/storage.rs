@@ -11,7 +11,7 @@ use netdata_agent_storage::dbengine::engine::query::Dbengine;
 use netdata_agent_storage::query::{Priority, StorageQuery};
 
 use crate::chart::Dim;
-use crate::contexts::{DbRotation, RamIndex, TierRetention};
+use crate::contexts::{DbRotation, ExtremeCardinality, RamIndex, TierRetention};
 use crate::mode::DbMode;
 
 /// `storage_tiers_grouping_iterations` before the configuration: tier 0 the update every, the others 60.
@@ -43,6 +43,8 @@ pub struct StorageLayout {
     charts_created: AtomicUsize,
     /// `rrdcontext_next_db_rotation_ut`: the deadline the engine's rotations arm for the contexts' deep pass.
     db_rotation: Arc<DbRotation>,
+    /// `extreme_cardinality`: the protection's settings.
+    extreme_cardinality: ExtremeCardinality,
 }
 
 impl Default for StorageLayout {
@@ -62,6 +64,7 @@ impl StorageLayout {
             backfill_queue: crate::backfill::BackfillQueue::default(),
             charts_created: AtomicUsize::new(0),
             db_rotation: Arc::default(),
+            extreme_cardinality: ExtremeCardinality::default(),
         }
     }
 
@@ -94,6 +97,10 @@ impl StorageLayout {
 
     pub fn db_rotation(&self) -> &Arc<DbRotation> {
         &self.db_rotation
+    }
+
+    pub fn extreme_cardinality(&self) -> &ExtremeCardinality {
+        &self.extreme_cardinality
     }
 
     pub fn backfill(&self) -> Backfill {
@@ -180,6 +187,14 @@ impl TierRetention for MrgTier {
             .retention_by_uuid(uuid, self.tier)
             .map(|r| (r.first_time_s, r.last_time_s))
     }
+
+    /// `rrdeng_metric_retention_delete_by_id()`: the metric's times cleared; releasing it then removes it from the
+    /// registry unless someone else holds it.
+    fn delete_by_id(&self, uuid: &[u8; 16]) {
+        if let Some(metric) = self.mrg.get_and_acquire(uuid, self.tier) {
+            metric.clear_retention();
+        }
+    }
 }
 
 /// A metric's storage on one tier, as the query target holds it (`qm->tiers[t].smh`): a ram ring or a dbengine
@@ -231,5 +246,34 @@ impl TierHandle {
                 StorageQuery::Dbengine(engine.query(metric, start_s, end_s, priority))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `rrdeng_metric_retention_delete_by_id()`: the metric's times cleared; one nobody holds leaves the registry,
+    /// and its tier counts one metric less; one held stays until released.
+    #[test]
+    fn a_tier_forgets_a_metric_by_id() {
+        let (_dirs, layout) = crate::testutil::engine(2);
+        let mrg = layout.dbengine().unwrap().mrg.clone();
+        let tier = MrgTier {
+            mrg: mrg.clone(),
+            tier: 1,
+        };
+        drop(mrg.add_and_acquire(&[1; 16], 1, 100, 200, 1));
+        let (held, _) = mrg.add_and_acquire(&[2; 16], 1, 100, 200, 1);
+        assert_eq!(mrg.metrics(1), 2);
+        tier.delete_by_id(&[1; 16]);
+        tier.delete_by_id(&[2; 16]);
+        tier.delete_by_id(&[3; 16]);
+        assert!(mrg.get_and_acquire(&[1; 16], 1).is_none());
+        assert_eq!(tier.retention_by_id(&[2; 16]), Some((0, 0)));
+        assert_eq!(mrg.metrics(1), 1);
+        drop(held);
+        assert!(mrg.get_and_acquire(&[2; 16], 1).is_none());
+        assert_eq!(mrg.metrics(1), 0);
     }
 }

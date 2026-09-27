@@ -3,7 +3,7 @@
 //! host's garbage once the deadline passed (`rrdcontext_main()` in `rrdcontext-worker.c`). D75.6, D77.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use super::flags;
 use crate::host::{Host, Hosts};
@@ -11,18 +11,27 @@ use crate::host::{Host, Hosts};
 /// `FULL_RETENTION_SCAN_DELAY_AFTER_DB_ROTATION_SECS`, in microseconds.
 const PASS_DELAY_UT: u64 = 120 * 1_000_000;
 
-/// `rrdcontext_next_db_rotation_ut`: the wall-clock deadline of the next deep pass, 0 when none is armed.
+/// `rrdcontext_next_db_rotation_ut`: the wall-clock deadline of the next deep pass, 0 when none is armed; and
+/// `extreme_cardinality.db_rotations`, the rotations the engine made.
 #[derive(Debug, Default)]
 pub struct DbRotation {
     next_ut: AtomicU64,
+    rotations: AtomicUsize,
 }
 
 impl DbRotation {
-    /// `rrdcontext_db_rotation()`: a rotation at `now_ut` moves the deadline to 120 s later, whatever it was. It takes
-    /// no lock and records nothing, so the engine's deletion thread may call it at any time.
+    /// `rrdcontext_db_rotation()`: a rotation at `now_ut` moves the deadline to 120 s later, whatever it was, and
+    /// counts (`rrdcontext_count_db_rotation()`). It takes no lock and records nothing, so the engine's deletion thread
+    /// may call it at any time.
     pub fn rotated(&self, now_ut: u64) {
         self.next_ut
             .store(now_ut + PASS_DELAY_UT, Ordering::Relaxed);
+        self.rotations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The rotations counted so far, which enable the extreme cardinality protection.
+    pub fn rotations(&self) -> usize {
+        self.rotations.load(Ordering::Relaxed)
     }
 
     /// The armed deadline, once `now_ut` is past it.

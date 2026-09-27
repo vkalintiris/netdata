@@ -972,6 +972,7 @@ impl Hosts {
     /// The index of hosts with this storage; `localhost` was created with it.
     pub fn with_storage(localhost: Host, storage: Arc<StorageLayout>) -> Self {
         let localhost = Arc::new(localhost);
+        localhost.contexts().set_host(&localhost);
         let index = Index {
             ordered: vec![Arc::clone(&localhost)],
             by_guid: HashMap::from([(localhost.machine_guid.clone(), Arc::clone(&localhost))]),
@@ -1117,6 +1118,7 @@ impl Hosts {
             return Arc::clone(host);
         }
         let host = Arc::new(Host::with_storage(guid, false, info, &self.storage));
+        host.contexts().set_host(&host);
         host.archived.store(true, Ordering::Release);
         host.pending_context_load.store(true, Ordering::Release);
         host.orphan.store(true, Ordering::Release);
@@ -1175,6 +1177,7 @@ impl Hosts {
             return host;
         }
         let host = Arc::new(Host::with_storage(guid, false, create(), &self.storage));
+        host.contexts().set_host(&host);
         host.created_connected();
         index.ordered.push(Arc::clone(&host));
         index.by_guid.insert(guid.to_string(), Arc::clone(&host));

@@ -672,6 +672,27 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     };
     netdata_agent_rrd::host::set_agent_event_medians_us(medians.0, medians.1);
+    // the extreme cardinality protection's settings, which the RRDCONTEXT thread reads as it starts
+    let protection = conf.netdata.get_boolean(
+        "db",
+        "extreme cardinality protection",
+        hosts.storage().storage_tiers() > 1 && db.mode == DbMode::Dbengine,
+    );
+    let keep_instances = conf.netdata.get_number_range(
+        "db",
+        "extreme cardinality keep instances",
+        1000,
+        1,
+        1_000_000,
+    );
+    let min_ephemerality =
+        conf.netdata
+            .get_number_range("db", "extreme cardinality min ephemerality", 50, 0, 100);
+    hosts.storage().extreme_cardinality().configure(
+        protection,
+        keep_instances as usize,
+        min_ephemerality as usize,
+    );
     let web = conf.section_web();
     // The web server thread reads its sizing only when it runs.
     let (web_server_threads, max_sockets) = if web_enabled {
