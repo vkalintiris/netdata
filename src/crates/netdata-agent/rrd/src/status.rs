@@ -29,6 +29,7 @@ pub enum IngestType {
 /// `RRDHOST_INGEST_STATUS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IngestStatus {
+    Archived,
     Initializing,
     Replicating,
     Online,
@@ -70,6 +71,7 @@ impl IngestStatus {
     /// `rrdhost_ingest_status_to_string()`.
     pub fn name(self) -> &'static str {
         match self {
+            IngestStatus::Archived => "archived",
             IngestStatus::Initializing => "initializing",
             IngestStatus::Replicating => "replicating",
             IngestStatus::Online => "online",
@@ -90,8 +92,8 @@ pub struct HostStatus {
 }
 
 impl Host {
-    /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_BASIC)`. No vnodes and no hosts loaded from SQLite here: a
-    /// child host exists because it connected, so a detached one is offline, never archived (decisions D48).
+    /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_BASIC)`, without vnodes: a host that is not online is archived
+    /// when no receiver attached to it since the agent started (one loaded from the metadata database), else offline.
     pub fn status_basic(&self, now: i64) -> HostStatus {
         let attached = self.receiver().is_some();
         let online = self.is_online();
@@ -105,7 +107,11 @@ impl Host {
             DbStatus::Queryable
         };
         let ingest_status = if !online {
-            IngestStatus::Offline
+            if self.receiver_connections() == 0 {
+                IngestStatus::Archived
+            } else {
+                IngestStatus::Offline
+            }
         } else if db_status == DbStatus::Initializing {
             IngestStatus::Initializing
         } else if self.is_localhost() {

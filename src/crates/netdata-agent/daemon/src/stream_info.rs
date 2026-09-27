@@ -78,10 +78,10 @@ pub fn reply(hosts: &Hosts, query: &[u8], now: i64) -> Reply {
     }
 }
 
-/// An offline host reads initializing while backfills run: the parent does not accept children then
+/// An archived or offline host reads initializing while backfills run: the parent does not accept children then
 /// (`stream_control_children_should_be_accepted()`).
 fn reported_ingest_status(status: IngestStatus, backfill_runners: usize) -> IngestStatus {
-    if status == IngestStatus::Offline && backfill_runners != 0 {
+    if matches!(status, IngestStatus::Archived | IngestStatus::Offline) && backfill_runners != 0 {
         IngestStatus::Initializing
     } else {
         status
@@ -160,6 +160,10 @@ mod tests {
         assert_eq!(
             reported_ingest_status(IngestStatus::Online, 2),
             IngestStatus::Online
+        );
+        assert_eq!(
+            reported_ingest_status(IngestStatus::Archived, 1),
+            IngestStatus::Initializing
         );
     }
 

@@ -127,6 +127,16 @@ func compareArchivedTimes(t *testing.T, p *Pair, times *regexp.Regexp, children 
 		compare(child+" contexts", func(d *daemon.Daemon) string {
 			return member(t, d, "/host/"+child+"/api/v1/contexts", "contexts")
 		})
+		// what a child asks before it connects: an archived host (no receiver since the start) reads "archived"
+		compare(child+" stream_info", func(d *daemon.Daemon) string {
+			uid := strings.Trim(member(t, d, "/host/"+child+"/api/v1/info", "uid"), `"`)
+			b, err := rawExchange(d.Addr, []byte("GET /api/v3/stream_info?machine_guid="+uid+" HTTP/1.1\r\n\r\n"),
+				10*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(maskStreamInfo(httpBody(b), false, 0, 0))
+		})
 		addrs := [2]string{p.Oracle.Addr, p.Candidate.Addr}
 		compareStreamPath(t, "archived", addrs, "/api/v3/stream_path?nodes="+child, times,
 			[2]string{parentIdentity.Hostname, ""})

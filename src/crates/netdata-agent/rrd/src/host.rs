@@ -262,6 +262,8 @@ pub struct Host {
     receiver: Mutex<Option<Arc<ReceiverSlot>>>,
     /// `host->stream.rcv.status.replication.backfill_pending`: charts whose replication waits for a backfill.
     backfill_pending: AtomicU32,
+    /// `host->stream.rcv.status.connections`: the receivers attached since the agent started.
+    receiver_connections: AtomicU32,
     /// `RRDHOST_FLAG_ORPHAN`: a child whose receiver has gone.
     orphan: AtomicBool,
     charts: Charts,
@@ -391,6 +393,7 @@ impl Host {
             info: RwLock::new(info),
             receiver: Mutex::new(None),
             backfill_pending: AtomicU32::new(0),
+            receiver_connections: AtomicU32::new(0),
             orphan: AtomicBool::new(false),
             charts: Charts::new(
                 Arc::clone(&contexts),
@@ -815,6 +818,7 @@ impl Host {
             return false;
         }
         *receiver = Some(slot);
+        self.receiver_connections.fetch_add(1, Ordering::Relaxed);
         self.orphan
             .store(false, std::sync::atomic::Ordering::Release);
         self.replication_reset();
@@ -866,6 +870,11 @@ impl Host {
         self.replication_requests
             .store(0, std::sync::atomic::Ordering::Relaxed);
         self.backfill_pending.store(0, Ordering::Relaxed);
+    }
+
+    /// `host->stream.rcv.status.connections`.
+    pub fn receiver_connections(&self) -> u32 {
+        self.receiver_connections.load(Ordering::Relaxed)
     }
 
     /// `backfill_pending`.
@@ -1455,6 +1464,35 @@ mod tests {
             store(&dim, B + 7, 7.0);
             assert_eq!(tier_records(&e, &dim, 1), want, "{mode:?} {db:?}");
         }
+    }
+
+    /// `rrdhost_status_ingest()`: a host not online is archived until a receiver attached to it, offline after.
+    #[test]
+    fn hosts_are_archived_until_a_child_connects() {
+        use crate::status::IngestStatus;
+        let hosts = Hosts::new(Host::new("local-guid", true, info("parent")));
+        let host = hosts.add_archived(
+            "5a1e0000-0000-4000-8000-0000000000c9",
+            info("child"),
+            |_| {},
+        );
+        host.clear_pending_context_load();
+        assert_eq!(host.status_basic(1).ingest_status, IngestStatus::Archived);
+        let slot = Arc::new(ReceiverSlot::new(
+            1,
+            Default::default(),
+            ReceiverLink::default(),
+            Box::new(|| {}),
+        ));
+        assert!(host.set_receiver(Arc::clone(&slot)));
+        host.clear_receiver(&slot);
+        assert_eq!(
+            (
+                host.receiver_connections(),
+                host.status_basic(1).ingest_status
+            ),
+            (1, IngestStatus::Offline)
+        );
     }
 
     /// `rrdhost_create()` of a host that is not archived loads its contexts, once, on the creating thread; finding it
