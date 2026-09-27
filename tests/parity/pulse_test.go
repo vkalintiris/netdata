@@ -211,16 +211,42 @@ func compareLazyDefinitions(t *testing.T, p *Pair, guid string, streaming bool) 
 		ids = append(ids, "netdata.network_streaming")
 	}
 	waitLocalCharts(t, p, 10*time.Second, ids...)
-	comparePulseDefinitions(t, p)
+	comparePulseDefinitions(t, p, ids...)
 }
 
-// comparePulseDefinitions compares localhost's charts and contexts on both sides.
-func comparePulseDefinitions(t *testing.T, p *Pair) {
+// pulseChartRules compare one localhost chart's /api/v1/chart: its clock masked, its labels in any order.
+var pulseChartRules = Rules{
+	Masks: []Mask{
+		{Pattern: "first_entry", Reason: "each daemon's own start"},
+		{Pattern: "last_entry", Reason: "the clock"},
+		{Pattern: "duration", Reason: "each daemon's own start"},
+	},
+	Unordered: []string{"chart_labels"},
+}
+
+// pulseContextRules compare /api/v3/context of a localhost context with its instances.
+var pulseContextRules = Rules{
+	Masks: []Mask{
+		{Pattern: "**.first_time_t", Reason: "each daemon's own start"},
+		{Pattern: "**.last_time_t", Reason: "the clock"},
+	},
+	Unordered: []string{"charts.*.labels"},
+	Settle:    10 * time.Second,
+}
+
+// comparePulseDefinitions compares localhost's charts and contexts on both sides, with their flags, and the
+// streaming contexts' instances and each chart of ids apart.
+func comparePulseDefinitions(t *testing.T, p *Pair, ids ...string) {
 	t.Helper()
-	for path, rules := range map[string]Rules{
+	paths := map[string]Rules{
 		"/api/v1/charts": pulseChartsRules,
-		"/api/v1/contexts?options=charts,dimensions,labels": pulseContextsRules,
-	} {
+		"/api/v1/contexts?options=charts,dimensions,flags,labels":             pulseContextsRules,
+		"/api/v3/context?context=netdata.streaming_inbound&options=instances": pulseContextRules,
+	}
+	for _, id := range ids {
+		paths["/api/v1/chart?chart="+id] = pulseChartRules
+	}
+	for path, rules := range paths {
 		diffs, err := p.CompareJSON(path, nil, rules)
 		if err != nil {
 			t.Fatal(err)
@@ -252,39 +278,75 @@ func TestPulseLocalhostCharts(t *testing.T) {
 	t.Run("alloc", func(t *testing.T) {
 		p := definitions(t, daemon.Options{DBMode: "alloc", StreamMemoryMode: "alloc", StorageTiers: 1})
 
-		// the web API's requests over a window idle on both ends: K requests, as many on each side
+		// the web API over a window idle on both ends: K requests of each kind, as many on each side (4g). First a
+		// data query, so the points-generated chart exists before the window, and the harness's idle connections
+		// closed, which would count as clients.
 		const k = 5
-		time.Sleep(3 * time.Second)
+		for _, side := range p.Each() {
+			now := time.Now().Unix()
+			localData(t, side.Daemon, "netdata.uptime", now-2, now-1, "average")
+		}
+		waitLocalCharts(t, p, 10*time.Second, "netdata.db_points_results")
+		waitLazyEqual(t, p)
+		client.CloseIdleConnections()
+		// idle, and long enough for the window's queries to find five stored points
+		time.Sleep(6 * time.Second)
 		from := time.Now().Unix()
 		for _, side := range p.Each() {
 			for range k {
-				if _, err := rawExchange(side.Daemon.Addr,
-					[]byte("GET /api/v1/info HTTP/1.1\r\nConnection: close\r\n\r\n"), 10*time.Second); err != nil {
-					t.Fatal(err)
+				for _, path := range []string{"/api/v1/info",
+					fmt.Sprintf("/api/v1/data?chart=netdata.uptime&after=%d&before=%d&points=5&group=average", from-5,
+						from-1)} {
+					if _, err := rawExchange(side.Daemon.Addr,
+						[]byte("GET "+path+" HTTP/1.1\r\nConnection: close\r\n\r\n"), 10*time.Second); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 		}
 		time.Sleep(3 * time.Second)
 		to := time.Now().Unix()
 		time.Sleep(2 * time.Second)
-		compareLocalData(t, p, "netdata.requests", from, to, "sum")
-		if got := localData(t, p.Candidate, "netdata.requests", from, to, "sum"); !strings.HasSuffix(got, ","+strconv.Itoa(k)) {
-			t.Errorf("the candidate counted other than %d requests: %s", k, got)
+		for chart, want := range map[string]int{
+			"netdata.requests": 2 * k,
+			// one query per metric, five points each
+			"netdata.queries&dimensions=/api/vX/data":           k,
+			"netdata.db_points_results&dimensions=/api/vX/data": 5 * k,
+			// equal on both sides: what a query reads, what localhost collects
+			"netdata.db_samples_read&dimensions=/api/vX/data": -1,
+			"netdata.db_samples_collected":                    -1,
+		} {
+			compareLocalData(t, p, chart, from, to, "sum")
+			for _, side := range p.Each() {
+				if got := localData(t, side.Daemon, chart, from, to, "sum"); want >= 0 &&
+					!strings.HasSuffix(got, ","+strconv.Itoa(want)) {
+					t.Errorf("%s: %s over the window: %s, expected %d", side.Role, chart, got, want)
+				}
+			}
+		}
+		// no client connected before the window
+		for _, side := range p.Each() {
+			if got := localData(t, side.Daemon, "netdata.clients", from-2, from-1, "max"); !strings.HasSuffix(got, ",0") {
+				t.Errorf("%s: clients before the window: %s", side.Role, got)
+			}
 		}
 
 		// a child: the inbound nodes, and its state, one-hot, over settled seconds
+		var conns []interface{ Close() error }
 		for _, side := range p.Each() {
 			conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, childHost, stream.CapsLive)
 			if err != nil {
 				t.Fatalf("%s: %v", side.Role, err)
 			}
 			t.Cleanup(func() { _ = conn.Close() })
+			conns = append(conns, conn)
 			streamDataFixture(t, conn, time.Now().Unix()/60*60-120)
 		}
 		time.Sleep(5 * time.Second)
 		now := time.Now().Unix()
-		for _, chart := range []string{"netdata.netdata.streaming_inbound_permanent",
-			"netdata.netdata.streaming_inbound_ephemeral", "netdata.streaming.in.state." + childHost.MachineGUID} {
+		states := []string{"netdata.netdata.streaming_inbound_permanent",
+			"netdata.netdata.streaming_inbound_ephemeral", "netdata.streaming.in.state." + childHost.MachineGUID}
+		for _, chart := range states {
 			compareLocalData(t, p, chart, now-3, now-1, "average")
 		}
 		compareLazyDefinitions(t, p, childHost.MachineGUID, true)
@@ -297,6 +359,16 @@ func TestPulseLocalhostCharts(t *testing.T) {
 				t.Errorf("%s: uptime %d at %d, its first entry %d: %d off the stored span", side.Role, v, now-1, first,
 					off)
 			}
+		}
+
+		// the child gone: its state and the inbound nodes as each side counts them then (4g)
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
+		time.Sleep(5 * time.Second)
+		now = time.Now().Unix()
+		for _, chart := range states {
+			compareLocalData(t, p, chart, now-3, now-1, "average")
 		}
 	})
 	t.Run("dbengine", func(t *testing.T) {
@@ -404,6 +476,11 @@ func TestPulseLocalhostCharts(t *testing.T) {
 			if n := jsonNumber(t, side.Daemon, "/api/v1/charts", "charts_count"); n != 0 {
 				t.Errorf("%s: charts_count %d with pulse off", side.Role, n)
 			}
+		}
+		// localhost's streaming view without its charts (4g)
+		path := "/api/v3/stream_info?machine_guid=" + parentIdentity.MachineGUID
+		if o, c := streamInfoAnswer(t, p.Oracle, path, true), streamInfoAnswer(t, p.Candidate, path, true); !bytes.Equal(o, c) {
+			t.Errorf("%s: responses differ\n%s", path, firstDifference(o, c))
 		}
 	})
 }

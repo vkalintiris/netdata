@@ -24,7 +24,7 @@ const (
 	fixtureEnd   = 1790239740
 )
 
-// TestDbengineRead (check `dbengine.read`) starts both daemons, the C agent with its pulse charts off, on copies of
+// TestDbengineRead (check `dbengine.read`) starts both daemons, their pulse charts off, on copies of
 // the C-written runR fixture cache (`NETDATA_DBENGINE_FIXTURES`; skipped without it): three dbengine tiers of three
 // days of an archived child's charts. Compared: the whole daemon log (the tiers' start with its file decisions, the
 // registry's pre-population, the context loads, the exit), the archived child's contexts, and data queries on every

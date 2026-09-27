@@ -59,7 +59,7 @@ func hostCharts(d *daemon.Daemon, host string) ([]string, map[string]chartEntry,
 var memoryBytesRe = regexp.MustCompile(`"rrd_memory_bytes":[0-9]+`)
 
 // TestChartsAPI streams the data fixture into both daemons and compares /api/v1/charts and /api/v1/chart for the
-// child (the parents' own charts differ by design).
+// child (localhost's pulse charts are compared by `pulse.localhost-charts`).
 func TestChartsAPI(t *testing.T) {
 	p := StartPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity)
 	base := time.Now().Unix()/60*60 - 120

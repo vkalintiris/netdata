@@ -192,7 +192,7 @@ func TestDataAPI(t *testing.T) {
 		cases["group-"+g] = chart + "&points=7&group=" + g
 		cases["group-two-"+g] = "/api/v1/data?chart=q.two&" + win + "&points=4&group=" + g
 	}
-	// v2/v3 walk every host: scope them to the child, the parent's own charts differ by design.
+	// v2/v3 walk every host: scope them to the child (localhost's pulse charts are compared by `pulse.localhost-charts`).
 	v3 := "/api/v3/data?scope_nodes=" + childHost.Hostname + "&scope_contexts=q.ctx&" + win
 	for name, extra := range map[string]string{
 		"default":            "&points=6",

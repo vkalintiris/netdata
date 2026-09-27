@@ -154,6 +154,18 @@ func maskStreamInfo(b []byte, localhost bool, from, to int64) []byte {
 	return b
 }
 
+// streamInfoAnswer is a daemon's raw /api/v3/stream_info answer at path, its clocks masked (and localhost's retention
+// start, for localhost's answer).
+func streamInfoAnswer(t *testing.T, d *daemon.Daemon, path string, localhost bool) []byte {
+	t.Helper()
+	from := time.Now().Unix()
+	b, err := rawExchange(d.Addr, []byte("GET "+path+" HTTP/1.1\r\n\r\n"), 5*time.Second)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	return maskStreamInfo(maskTimings(maskRaw(b)), localhost, from, time.Now().Unix())
+}
+
 // cChildKey is the stream key the C children use as their own (the parents take `StreamTo.APIKey`).
 const cChildKey = "5a1e0000-0000-4000-8000-00000000c1ff"
 
@@ -289,9 +301,7 @@ func TestCChild(t *testing.T) {
 				for _, q := range queries {
 					var got [2][]byte
 					for s, side := range p.Each() {
-						from := time.Now().Unix()
-						b := get(side.Daemon.Addr, q.path)
-						got[s] = maskStreamInfo(maskTimings(maskRaw(b)), q.localhost, from, time.Now().Unix())
+						got[s] = streamInfoAnswer(t, side.Daemon, q.path, q.localhost)
 					}
 					if !bytes.Equal(got[0], got[1]) {
 						t.Errorf("%s: responses differ\n%s", q.path, firstDifference(got[0], got[1]))

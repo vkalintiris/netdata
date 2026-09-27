@@ -79,24 +79,26 @@ var hwLabels = regexp.MustCompile(`label_key="_hw_`)
 // writerArgs has metadata-dump print the metadata writer's tables as the checks compare them: label and node
 // instance rows sorted (C writes labels in pointer order), the chart, dimension and chart label rows in their
 // natural order (the pulse charts are created as their data comes, D83.2), chart and dimension ids aliased (random
-// UUIDs, still joinable), and the last connection masked (a clock). Without chartRows the chart dimension and label
-// rows are left out: on a chart table too old to store charts in, the pulse charts leave dimension and label rows
-// that no chart row ties to the localhost.
+// UUIDs, still joinable), and the last connection masked (a clock). Without chartRows the dimension and chart label
+// rows compare as multisets, their ids masked: on a chart table too old to store charts in, the pulse charts leave
+// rows that no chart row ties to localhost (4g).
 func writerArgs(chartRows bool) []string {
 	args := []string{"--natural-order", "--mask", "host.last_connected"}
-	tables := []string{"host", "host_info", "host_label", "node_instance", "chart"}
-	if chartRows {
-		tables = append(tables, "dimension", "chart_label")
-	}
-	for _, table := range tables {
+	for _, table := range []string{"host", "host_info", "host_label", "node_instance", "chart", "dimension",
+		"chart_label"} {
 		args = append(args, "--table", table)
 	}
-	for _, table := range []string{"host_label", "node_instance", "chart_label"} {
+	sorted := []string{"host_label", "node_instance", "chart_label"}
+	ids, keep := []string{"dimension.dim_id", "dimension.chart_id", "chart_label.chart_id"}, "--alias"
+	if !chartRows {
+		sorted, keep = append(sorted, "dimension"), "--mask"
+	}
+	for _, table := range sorted {
 		args = append(args, "--sort", table)
 	}
-	for _, column := range []string{"chart.chart_id", "dimension.dim_id", "dimension.chart_id",
-		"chart_label.chart_id"} {
-		args = append(args, "--alias", column)
+	args = append(args, "--alias", "chart.chart_id")
+	for _, column := range ids {
+		args = append(args, keep, column)
 	}
 	return args
 }
@@ -330,25 +332,44 @@ func TestSQLiteFiles(t *testing.T) {
 }
 
 // TestSQLiteHandBack gives C a cache the Rust agent ran on (check `sqlite.handback`): a C-written cache with a
-// dbengine child goes through a Rust start and exit, then C starts on it in dbengine mode, next to C on an
-// untouched copy. Both must list the same hosts and the child's contexts, with the same context load records. The
-// agent-event medians differ by design (the Rust run added its own events). The Rust run keeps pulse off: an alloc
-// localhost gives its pulse dimensions new UUIDs (no context load outside dbengine mode, C's too), so C would then
-// find them without retention (D81).
+// dbengine child goes through an alloc start and exit, then C starts on it in dbengine mode. Both final runs must list
+// the same hosts and the child's contexts, with the same context load records. The agent-event medians differ by
+// design (the Rust run added its own events). `pulse-off`: Rust alone runs, next to C on an untouched copy (an alloc
+// localhost gives its pulse dimensions new UUIDs, as C's does, which C would then find without retention, D81).
+// `pulse-on` (4g): C and Rust both run on the seed with their pulse charts, and C takes back each one's cache.
 func TestSQLiteHandBack(t *testing.T) {
 	seed := seedFromOracle(t, parentIdentity, "dbengine")
-	rust, err := daemon.Start(daemon.Options{Binary: os.Getenv("PARITY_CANDIDATE"), RunDir: runDir(t, Role("rust")),
-		Identity: &parentIdentity, DBMode: "alloc", StorageTiers: 1, StreamMemoryMode: "alloc", SeedCache: seed,
-		PulseOff: true})
-	if err != nil {
-		t.Fatalf("rust: %v", err)
+	for name, pulse := range map[string]bool{"pulse-off": false, "pulse-on": true} {
+		t.Run(name, func(t *testing.T) { handBack(t, seed, pulse) })
 	}
-	time.Sleep(2 * time.Second)
-	if err := rust.Stop(); err != nil {
-		t.Fatalf("rust: stop: %v", err)
+}
+
+func handBack(t *testing.T, seed string, pulse bool) {
+	caches := [2]string{seed, ""}
+	opts := daemon.Options{DBMode: "alloc", StorageTiers: 1, StreamMemoryMode: "alloc", PulseOff: !pulse}
+	if pulse {
+		mid := startPair(t, opts, parentIdentity, binaries(t), [2]string{seed, seed},
+			[2]Role{Role("c-alloc"), Role("rust")})
+		for _, side := range mid.Each() {
+			waitPulseStored(t, side.Daemon)
+		}
+		waitLazyEqual(t, mid)
+		caches = stopBoth(t, mid)
+	} else {
+		opts.Binary, opts.RunDir, opts.Identity, opts.SeedCache = os.Getenv("PARITY_CANDIDATE"),
+			runDir(t, Role("rust")), &parentIdentity, seed
+		rust, err := daemon.Start(opts)
+		if err != nil {
+			t.Fatalf("rust: %v", err)
+		}
+		time.Sleep(2 * time.Second)
+		if err := rust.Stop(); err != nil {
+			t.Fatalf("rust: stop: %v", err)
+		}
+		caches[1] = filepath.Join(rust.Opts.RunDir, "cache")
 	}
 	p := &Pair{}
-	for i, cache := range []string{seed, filepath.Join(rust.Opts.RunDir, "cache")} {
+	for i, cache := range caches {
 		d, err := daemon.Start(daemon.Options{Binary: os.Getenv("PARITY_ORACLE"),
 			RunDir: runDir(t, Role(fmt.Sprintf("c%d", i))), Identity: &parentIdentity, StorageTiers: 1,
 			StreamMemoryMode: "dbengine", SeedCache: cache, LogsExtra: "    level = debug\n"})
@@ -385,7 +406,7 @@ func TestSQLiteHandBack(t *testing.T) {
 		}},
 	} {
 		if o, c := check.get(p.Oracle), check.get(p.Candidate); o != c {
-			t.Errorf("%s:\nC on the untouched cache: %s\nC after the Rust agent: %s", check.name, o, c)
+			t.Errorf("%s:\nC after C (or on the untouched cache): %s\nC after the Rust agent: %s", check.name, o, c)
 		}
 	}
 	if got := member(t, p.Candidate, "/host/"+childHost.Hostname+"/api/v1/contexts", "contexts"); got == "{}" ||
