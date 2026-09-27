@@ -8,11 +8,21 @@ use std::io;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use netdata_agent_log::netdata_log_info;
+
 use super::io::{IoFile, write_retrying};
 use super::load::{NEW_PAIR_SIZE, Tier, TierConfig, create_pair_files};
 use super::v2index::V2Index;
 use crate::dbengine::format::BLOCK_SIZE;
 use crate::dbengine::format::journal_v2::Page;
+
+/// The indexer's attempts at taking a file, and the pause between them (none in tests).
+const INDEXING_ATTEMPTS: u32 = 5;
+
+fn indexing_pause() {
+    #[cfg(not(test))]
+    std::thread::sleep(std::time::Duration::from_millis(200));
+}
 
 /// A page the open cache holds: a page of a journal not indexed yet (replayed, or written by this run).
 #[derive(Debug, Clone, Copy)]
@@ -71,6 +81,21 @@ impl OpenList {
             .filter(|p| p.fileno == fileno && p.block == block)
     }
 
+    /// A file's current pages: the open-cache uses of it that its hot pages hold (D76.2).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the deletion of S5 commit 4 takes it")
+    )]
+    pub fn current_pages_of(&self, fileno: u32) -> u32 {
+        self.by_file.get(&fileno).map_or(0, |list| {
+            list.values()
+                .filter(|&&(uuid, start, block)| {
+                    self.current(&uuid, start, fileno, block).is_some()
+                })
+                .count() as u32
+        })
+    }
+
     /// A file's pages in the order they joined, as the indexer takes them (`pgc_open_cache_to_journal_v2()`).
     pub fn file_pages(&self, fileno: u32) -> Vec<Page> {
         let Some(list) = self.by_file.get(&fileno) else {
@@ -124,12 +149,69 @@ struct Writers {
     failed: bool,
 }
 
+/// `DATAFILE_ACQUIRE_REASONS`: what a use of a data file is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reason {
+    /// A page of the open cache.
+    OpenCache = 0,
+    /// A query's page details, until the query is done with them.
+    PageDetails = 1,
+    /// A retention recalculation reading the file's index.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the deletion of S5 commit 4 takes it")
+    )]
+    Retention = 2,
+    /// The indexer writing the file's v2 index.
+    Indexing = 3,
+}
+
+/// `datafile->users`.
+#[derive(Debug)]
+struct Users {
+    /// New uses are taken: false once a deletion found the file unused.
+    available: bool,
+    /// A deletion waits for the file: only the open cache may still take it, while extents are written to it.
+    pending_deletion: bool,
+    lockers: u32,
+    by_reason: [u32; 4],
+}
+
+/// A use of a data file (`datafile_acquire()` until `datafile_release()`): the file stays until every use is dropped.
+#[derive(Debug)]
+pub(crate) struct FileUse {
+    df: Arc<DataFile>,
+    reason: Reason,
+}
+
+impl std::ops::Deref for FileUse {
+    type Target = Arc<DataFile>;
+
+    fn deref(&self) -> &Arc<DataFile> {
+        &self.df
+    }
+}
+
+impl Drop for FileUse {
+    fn drop(&mut self) {
+        let mut u = self.df.users();
+        debug_assert!(u.lockers > 0, "a released data file use was not taken");
+        u.lockers = u.lockers.saturating_sub(1);
+        let r = &mut u.by_reason[self.reason as usize];
+        *r = r.saturating_sub(1);
+    }
+}
+
 /// A data file pair while the engine runs (`struct rrdengine_datafile` with its journal).
 #[derive(Debug)]
 pub struct DataFile {
     pub fileno: u32,
     pub(crate) file: IoFile,
     writers: Mutex<Writers>,
+    users: Mutex<Users>,
+    /// The file has clean pages in C's open cache (its indexed pages, and the v2 pages queries walked), each of which
+    /// holds a use of it there; the Rust open cache keeps none, so one mark stands for them (D76.1).
+    clean_open: AtomicBool,
     /// The v1 journal open for writes: only for a reused last file and the pairs created in this run, the files
     /// without a v2 index.
     journal: Option<IoFile>,
@@ -159,6 +241,13 @@ impl DataFile {
                 flushed_to_open: 0,
                 failed: false,
             }),
+            users: Mutex::new(Users {
+                available: true,
+                pending_deletion: false,
+                lockers: 0,
+                by_reason: [0; 4],
+            }),
+            clean_open: AtomicBool::new(false),
             journal,
             journal_pos: AtomicU64::new(journal_pos),
             first_time_s: AtomicI64::new(0),
@@ -194,6 +283,51 @@ impl DataFile {
 
     fn writers(&self) -> MutexGuard<'_, Writers> {
         self.writers.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn users(&self) -> MutexGuard<'_, Users> {
+        self.users.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `datafile_acquire()`: a use of the file for `reason`, none once the file is unavailable; while its deletion is
+    /// pending, only the open cache may take it, and only while extents are still being written to it.
+    pub(crate) fn acquire(self: &Arc<Self>, reason: Reason) -> Option<FileUse> {
+        let mut u = self.users();
+        if !u.available {
+            return None;
+        }
+        if u.pending_deletion {
+            let w = self.writers();
+            if reason != Reason::OpenCache || (w.running == 0 && w.flushed_to_open == 0) {
+                return None;
+            }
+        }
+        u.lockers += 1;
+        u.by_reason[reason as usize] += 1;
+        Some(FileUse {
+            df: Arc::clone(self),
+            reason,
+        })
+    }
+
+    /// The uses the file has, and those for `reason`.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the deletion of S5 commit 4 takes it")
+    )]
+    pub(crate) fn lockers(&self, reason: Option<Reason>) -> u32 {
+        let u = self.users();
+        reason.map_or(u.lockers, |r| u.by_reason[r as usize])
+    }
+
+    /// `datafile->users.pending_deletion`.
+    pub fn pending_deletion(&self) -> bool {
+        self.users().pending_deletion
+    }
+
+    /// C's open cache took clean pages of the file (D76.1).
+    pub(crate) fn mark_clean_open(&self) {
+        self.clean_open.store(true, Ordering::Release);
     }
 
     /// `datafile->pos`.
@@ -326,6 +460,9 @@ impl TierData {
             .map(|p| {
                 let file = DataFile::new(p.fileno, p.file, p.pos, p.journal, p.journal_pos);
                 file.set_times(p.first_time_s, p.last_time_s);
+                if p.clean_open {
+                    file.mark_clean_open();
+                }
                 // a file whose population failed serves nothing: it looks unindexed, as C clears its flag
                 file.v2_available
                     .store(tier.indexes.contains_key(&p.fileno), Ordering::Release);
@@ -360,7 +497,7 @@ impl TierData {
         self.config.tier
     }
 
-    /// A pair by its number, for extent reads.
+    /// A pair by its number, while it is listed (queries read through the uses of it they take).
     pub fn file(&self, fileno: u32) -> Option<Arc<DataFile>> {
         read(&self.files).get(&fileno).cloned()
     }
@@ -372,6 +509,72 @@ impl TierData {
     /// The pairs' numbers, in order.
     pub fn filenos(&self) -> Vec<u32> {
         read(&self.files).keys().copied().collect()
+    }
+
+    /// The pairs, for a query to take uses of them without holding the list.
+    pub(crate) fn files_snapshot(&self) -> BTreeMap<u32, Arc<DataFile>> {
+        read(&self.files).clone()
+    }
+
+    /// `datafile_acquire()` of a listed pair.
+    pub(crate) fn acquire(&self, fileno: u32, reason: Reason) -> Option<FileUse> {
+        self.file(fileno)?.acquire(reason)
+    }
+
+    /// `datafile_acquire_for_deletion()`: marks the file pending deletion (recorded once); true when no extent is being
+    /// written to it and nothing uses it, which then makes it unavailable. While uses remain its clean open-cache
+    /// pages are evicted, and once no extent is being written the file takes no new uses (recorded once). The open
+    /// cache's uses are the file's current hot pages and its clean pages (D76.1, D76.2).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the deletion of S5 commit 4 takes it")
+    )]
+    pub(crate) fn acquire_for_deletion(&self, df: &DataFile) -> bool {
+        let tier = self.tier();
+        let hot = read(&self.open).current_pages_of(df.fileno);
+        let (marked, evict) = {
+            let mut u = df.users();
+            let marked = !u.pending_deletion;
+            u.pending_deletion = true;
+            let (running, flushed) = df.writers_running();
+            let lockers = u.lockers + hot + u32::from(df.clean_open.load(Ordering::Acquire));
+            if running == 0 && flushed == 0 && lockers == 0 {
+                u.available = false;
+                drop(u);
+                if marked {
+                    netdata_log_info!(
+                        "DBENGINE: tier {tier}: datafile-1-{:010} is pending deletion",
+                        df.fileno
+                    );
+                }
+                return true;
+            }
+            (marked, lockers != 0)
+        };
+        if marked {
+            netdata_log_info!(
+                "DBENGINE: tier {tier}: datafile-1-{:010} is pending deletion",
+                df.fileno
+            );
+        }
+        if evict {
+            // pgc_open_evict_clean_pages_of_datafile()
+            df.clean_open.store(false, Ordering::Release);
+        }
+        let hot = read(&self.open).current_pages_of(df.fileno);
+        let mut u = df.users();
+        let (running, flushed) = df.writers_running();
+        if running != 0 || flushed != 0 {
+            return false;
+        }
+        if u.available {
+            u.available = false;
+            netdata_log_info!(
+                "DBENGINE: tier {tier}: datafile-1-{:010} entered deletion phase-2 (new users blocked)",
+                df.fileno
+            );
+        }
+        u.lockers + hot == 0
     }
 
     /// The pair extents are written to (a tier always has one).
@@ -401,20 +604,42 @@ impl TierData {
     }
 
     /// `release_and_aquire_next_datafile_for_indexing()`: the first file after `after` (from the first without one)
-    /// without a v2 index, walking while a file is neither the last one nor the one extents last went to.
-    pub(crate) fn next_for_indexing(&self, after: Option<u32>) -> Option<Arc<DataFile>> {
-        let files = read(&self.files);
-        let (last, flushed) = (self.last_fileno(), self.last_flush_fileno());
-        let from = after.map_or(0, |f| f + 1);
-        for df in files.range(from..).map(|(_, df)| df) {
-            if df.fileno == last || df.fileno == flushed {
-                return None;
+    /// without a v2 index, walking while a file is neither the last one nor the one extents last went to, taken for
+    /// indexing in five attempts 200 ms apart; a file that cannot be taken is recorded and passed over. The list is not
+    /// held while the attempts wait (C holds it; here that would stall the extent writer's new pairs).
+    pub(crate) fn next_for_indexing(&self, after: Option<u32>) -> Option<FileUse> {
+        let mut from = after.map_or(0, |f| f + 1);
+        loop {
+            let df = {
+                let files = read(&self.files);
+                let (last, flushed) = (self.last_fileno(), self.last_flush_fileno());
+                let mut candidate = None;
+                for df in files.range(from..).map(|(_, df)| df) {
+                    if df.fileno == last || df.fileno == flushed {
+                        return None;
+                    }
+                    if !df.v2_available() {
+                        candidate = Some(Arc::clone(df));
+                        break;
+                    }
+                }
+                candidate?
+            };
+            for attempt in 0..INDEXING_ATTEMPTS {
+                if let Some(use_) = df.acquire(Reason::Indexing) {
+                    return Some(use_);
+                }
+                if attempt + 1 < INDEXING_ATTEMPTS {
+                    indexing_pause();
+                }
             }
-            if !df.v2_available() {
-                return Some(Arc::clone(df));
-            }
+            netdata_log_info!(
+                "DBENGINE: tier {}: datafile-1-{:010} cannot be locked for indexing after retries; skipping",
+                self.tier(),
+                df.fileno
+            );
+            from = df.fileno + 1;
         }
-        None
     }
 
     /// `rrdeng_ctx_tier_cap_exceeded()` with two files at least: the first file's newest point older than the time

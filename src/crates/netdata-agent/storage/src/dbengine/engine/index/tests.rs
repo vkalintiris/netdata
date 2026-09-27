@@ -152,3 +152,131 @@ fn a_reused_file_indexes_replayed_and_written_pages() {
     assert_eq!(journal_index(&e, 0), 1);
     assert!(read_v2(dir.path(), 1) == startup_build(dir.path(), 1));
 }
+
+/// `datafile_acquire_for_deletion()`'s records and answers: a file whose hot pages the open cache holds is marked
+/// pending and blocked (phase 2) but not deletable, and the indexer can no longer take it; a file C's open cache
+/// holds clean pages of (indexed in this run) is blocked, its clean pages evicted, and deletable; a file nothing
+/// holds (its v2 loaded at start) is deletable at once.
+#[test]
+fn deletions_wait_for_the_users_of_a_file() {
+    use crate::dbengine::engine::tier::Reason;
+    let dir = tempfile::tempdir().unwrap();
+    let e = write_engine(&[dir.path()], 0, None);
+    fill(&e, 0, 64 + 63);
+    let td = &e.tiers[0];
+    // file 1 is indexed (clean pages in C's open cache), file 2 is not (hot pages)
+    let ((), _) = netdata_agent_log::capture(|| {
+        let use_ = td.next_for_indexing(None).unwrap();
+        assert_eq!(use_.fileno, 1);
+        drop(use_);
+    });
+    assert_eq!(journal_index(&e, 0), 2, "files 1 and 2");
+    fill(&e, 200, 1);
+    let (f1, f3) = (td.file(1).unwrap(), td.file(3).unwrap());
+    let (deletable, records) = netdata_agent_log::capture(|| td.acquire_for_deletion(&f1));
+    assert!(deletable);
+    assert_eq!(
+        messages(records),
+        [
+            "DBENGINE: tier 0: datafile-1-0000000001 is pending deletion",
+            "DBENGINE: tier 0: datafile-1-0000000001 entered deletion phase-2 (new users blocked)"
+        ]
+    );
+    for reason in [
+        Reason::OpenCache,
+        Reason::PageDetails,
+        Reason::Retention,
+        Reason::Indexing,
+    ] {
+        assert!(f1.acquire(reason).is_none(), "{reason:?}");
+    }
+    // file 3 holds hot pages: pending and blocked, not deletable, and the indexer passes it over
+    let (deletable, records) = netdata_agent_log::capture(|| td.acquire_for_deletion(&f3));
+    assert!(!deletable);
+    assert_eq!(
+        messages(records),
+        [
+            "DBENGINE: tier 0: datafile-1-0000000003 is pending deletion",
+            "DBENGINE: tier 0: datafile-1-0000000003 entered deletion phase-2 (new users blocked)"
+        ]
+    );
+    let (again, records) = netdata_agent_log::capture(|| td.acquire_for_deletion(&f3));
+    assert!(!again && messages(records).is_empty(), "recorded once");
+
+    // after a restart file 2's v2 is loaded: nothing holds it
+    drop(e);
+    let e = write_engine(&[dir.path()], 0, None);
+    let td = &e.tiers[0];
+    let f2 = td.file(2).unwrap();
+    let (deletable, records) = netdata_agent_log::capture(|| td.acquire_for_deletion(&f2));
+    assert!(deletable);
+    assert_eq!(
+        messages(records),
+        ["DBENGINE: tier 0: datafile-1-0000000002 is pending deletion"]
+    );
+}
+
+/// While a deletion is pending, only the open cache takes the file, and only while an extent is being written to it.
+#[test]
+fn a_pending_file_takes_the_open_cache_while_written() {
+    use crate::dbengine::engine::tier::Reason;
+    let dir = tempfile::tempdir().unwrap();
+    let e = write_engine(&[dir.path()], 0, None);
+    let td = &e.tiers[0];
+    let df = td.last_file();
+    df.writer_started();
+    let ((), _) = netdata_agent_log::capture(|| assert!(!td.acquire_for_deletion(&df)));
+    let open = df.acquire(Reason::OpenCache);
+    assert!(open.is_some());
+    assert!(df.acquire(Reason::PageDetails).is_none());
+    df.writer_finished();
+    assert!(df.acquire(Reason::OpenCache).is_none());
+    assert_eq!(df.lockers(Some(Reason::OpenCache)), 1);
+    drop(open);
+    assert_eq!(df.lockers(None), 0);
+}
+
+/// A query holds its page details' file until it is dropped: the file cannot be deleted meanwhile, and a query that
+/// starts once it is pending finds none of its pages.
+#[test]
+fn a_query_holds_the_files_of_its_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = write_engine(&[dir.path()], 0, None);
+    let metrics = fill(&e, 0, 64);
+    assert_eq!(journal_index(&e, 0), 1);
+    let td = &e.tiers[0];
+    let f1 = td.file(1).unwrap();
+    let held = e.query(&metrics[0], T0, T0 + 1023, Priority::Normal);
+    assert!(f1.lockers(None) > 0);
+    let ((), _) = netdata_agent_log::capture(|| assert!(!td.acquire_for_deletion(&f1)));
+    let after = points(&mut e.query(&metrics[1], T0, T0 + 1023, Priority::Normal));
+    assert!(
+        after.iter().all(|p| p.1.is_nan()),
+        "the pending file's pages are skipped"
+    );
+    drop(held);
+    assert_eq!(f1.lockers(None), 0);
+    let ((), _) = netdata_agent_log::capture(|| assert!(td.acquire_for_deletion(&f1)));
+}
+
+/// The indexer takes a file in five attempts and passes over one it cannot take, with C's record.
+#[test]
+fn the_indexer_passes_over_a_file_it_cannot_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = write_engine(&[dir.path()], 0, None);
+    fill(&e, 0, 64 + 63 + 1);
+    let td = &e.tiers[0];
+    let ((), _) =
+        netdata_agent_log::capture(|| assert!(!td.acquire_for_deletion(&td.file(1).unwrap())));
+    let (count, records) = netdata_agent_log::capture(|| journal_index(&e, 0));
+    assert_eq!(count, 1);
+    let records = messages(records);
+    assert_eq!(
+        records[0],
+        "DBENGINE: tier 0: datafile-1-0000000001 cannot be locked for indexing after retries; skipping"
+    );
+    assert_eq!(
+        records[1],
+        "DBENGINE: tier 0: datafile-1-0000000002 is ready to be indexed"
+    );
+}

@@ -130,6 +130,9 @@ pub struct Pair {
     /// `journalfile->v2.first_time_s` and `last_time_s`: the v2 header's, else the replay's.
     pub first_time_s: i64,
     pub last_time_s: i64,
+    /// The v2 index was built at this start from replayed pages, which C keeps in its open cache as clean pages of
+    /// the file (D76.1).
+    pub clean_open: bool,
 }
 
 /// A tier after its startup.
@@ -171,6 +174,8 @@ struct Journal {
     last_time_s: i64,
     /// The samples of the metrics the replay added to the registry.
     samples: u64,
+    /// The v2 index was built from the replayed pages (D76.1).
+    clean_open: bool,
 }
 
 /// `sscanf(name, "<prefix>%1u-%10u")`: both numbers convert (after optional white space, digits only within their
@@ -511,6 +516,7 @@ fn journal_load(
             first_time_s: 0,
             last_time_s: 0,
             samples: 0,
+            clean_open: false,
         });
     };
     let size = check_file_properties(&file.file, BLOCK_SIZE as u64)?;
@@ -524,6 +530,7 @@ fn journal_load(
             first_time_s: 0,
             last_time_s: 0,
             samples: 0,
+            clean_open: false,
         });
     }
     let size = align_floor(size);
@@ -593,6 +600,7 @@ fn journal_load(
             first_time_s: open.first_time_s,
             last_time_s: open.last_time_s,
             samples,
+            clean_open: false,
         });
     }
     let v2 = write_v2(cfg, fileno, size, open.pages.iter().copied()).map(|(file, layout)| V2File {
@@ -602,6 +610,7 @@ fn journal_load(
         last_time_s: (layout.header().end_time_ut / 1_000_000) as i64,
     });
     // pages a failed or empty build did not index stay open
+    let clean_open = v2.is_some() && !open.pages.is_empty();
     let open_pages = if v2.is_some() { Vec::new() } else { open.pages };
     Some(Journal {
         pos: size,
@@ -612,6 +621,7 @@ fn journal_load(
         first_time_s: open.first_time_s,
         last_time_s: open.last_time_s,
         samples,
+        clean_open,
     })
 }
 
@@ -746,6 +756,7 @@ fn create_new_pair(cfg: &TierConfig, tier: &mut Tier) -> bool {
         v2: None,
         first_time_s: 0,
         last_time_s: 0,
+        clean_open: false,
     });
     tier.current_disk_space += NEW_PAIR_SIZE;
     tier.last_fileno = fileno;
@@ -823,6 +834,7 @@ pub fn load(cfg: TierConfig, mrg: &Mrg, now_s: i64) -> io::Result<Tier> {
                         v2: journal.v2,
                         first_time_s,
                         last_time_s,
+                        clean_open: journal.clean_open,
                     },
                 );
             }

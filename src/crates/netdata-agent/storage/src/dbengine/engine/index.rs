@@ -143,6 +143,7 @@ pub fn journal_index(engine: &Dbengine, tier: usize) -> u32 {
 /// that could not be written keeps its pages open for the next run.
 fn index_file(td: &TierData, df: &DataFile) {
     let pages = td.open().file_pages(df.fileno);
+    let indexed = !pages.is_empty();
     let Some((file, layout)) = write_v2(&td.config, df.fileno, df.journal_pos(), pages) else {
         return;
     };
@@ -151,6 +152,10 @@ fn index_file(td: &TierData, df: &DataFile) {
     df.set_times(index.start_time_s(), index.end_time_s());
     td.add_v2(df, index);
     td.open_mut().remove_file(df.fileno);
+    // C keeps the indexed pages in its open cache as clean pages of the file (D76.1)
+    if indexed {
+        df.mark_clean_open();
+    }
 }
 
 #[cfg(test)]

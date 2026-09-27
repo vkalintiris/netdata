@@ -7,7 +7,7 @@
 //! The preparation (the page list and the extent reads) runs as one job on the `UV_WORKER` pool, which the query
 //! waits for at its first point (C queues it for NORMAL priority and blocks at the first lookup).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, btree_map};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
@@ -20,7 +20,7 @@ use super::cache::{CachedPage, Conflict, ExtentCache, MainCache, Search};
 use super::load::Tier;
 use super::mrg::{Handle, Mrg};
 use super::runtime::Cmd;
-use super::tier::{OpenPage, TierData};
+use super::tier::{DataFile, FileUse, OpenPage, Reason, TierData};
 use super::v2index::PageListError;
 use crate::dbengine::format::descriptor::{
     PAGE_TYPE_ARRAY_32BIT, PAGE_TYPE_ARRAY_TIER1, PAGE_TYPE_GORILLA_32BIT, PageDescriptor,
@@ -129,7 +129,7 @@ const DATAFILE_ACQUIRED: u32 = 1 << 30;
 const GLOBAL_SKIP: u32 = FAILED | SKIP | INVALID | RELEASED;
 
 /// `struct page_details`.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Pd {
     first_time_s: i64,
     last_time_s: i64,
@@ -138,6 +138,9 @@ struct Pd {
     page: Option<Arc<CachedPage>>,
     /// Where the page's extent is: data file, block and size.
     extent: Option<(u32, u64, u32)>,
+    /// `pd->datafile.ptr`: the use of the extent's file, held until the query is done with its pages
+    /// (`DATAFILE_ACQUIRED`).
+    file: Option<FileUse>,
 }
 
 /// `TIME_RANGE_COMPARE` of `is_page_in_time_range()`.
@@ -398,8 +401,13 @@ impl Dbengine {
     ) -> usize {
         let tier = metric.tier();
         let data = &self.tiers[tier];
-        // the file numbers first, then the open cache read-locked for the pass: the read path nests no locks
-        let filenos = if open { data.filenos() } else { Vec::new() };
+        // the files first, then the open cache read-locked for the pass: the read path nests no locks but a file's
+        // users
+        let files = if open {
+            data.files_snapshot()
+        } else {
+            BTreeMap::new()
+        };
         let open_list = open.then(|| data.open());
         let open_pages = open_list.as_ref().and_then(|l| l.pages(metric.uuid()));
         let mut found = 0;
@@ -448,6 +456,7 @@ impl Dbengine {
                     status: 0,
                     page: None,
                     extent: None,
+                    file: None,
                 };
                 if let Some(page) = cached {
                     pd.status |= READY | PRELOADED;
@@ -457,11 +466,16 @@ impl Dbengine {
                     pd.page = Some(page);
                 }
                 if let Some(p) = open_page {
-                    if filenos.binary_search(&p.fileno).is_ok() {
-                        pd.extent = Some((p.fileno, p.block, p.bytes));
-                        pd.status |= DATAFILE_ACQUIRED | DISK_PENDING;
-                    } else {
-                        pd.status |= FAILED;
+                    match files
+                        .get(&p.fileno)
+                        .and_then(|df| df.acquire(Reason::PageDetails))
+                    {
+                        Some(use_) => {
+                            pd.extent = Some((p.fileno, p.block, p.bytes));
+                            pd.file = Some(use_);
+                            pd.status |= DATAFILE_ACQUIRED | DISK_PENDING;
+                        }
+                        None => pd.status |= FAILED,
                     }
                 }
                 v.insert(pd);
@@ -491,6 +505,10 @@ impl Dbengine {
         let data = &self.tiers[metric.tier()];
         let mut found = 0;
         for index in data.v2_from(start_s) {
+            // the file's use for the walk, before its range: a file pending deletion is skipped, not an end
+            let Some(file) = data.acquire(index.fileno, Reason::PageDetails) else {
+                continue;
+            };
             match in_range(index.start_time_s(), index.end_time_s(), start_s, end_s) {
                 Range::Past => continue,
                 Range::Future => break,
@@ -519,9 +537,6 @@ impl Dbengine {
                     continue;
                 }
             };
-            if !data.has_file(index.fileno) {
-                continue;
-            }
             let base = index.start_time_s();
             for p in pages {
                 let first_s = base + i64::from(p.delta_start_s);
@@ -543,18 +558,26 @@ impl Dbengine {
                     });
                     break;
                 };
-                list.entry(first_s).or_insert(Pd {
-                    first_time_s: first_s,
-                    last_time_s: last_s,
-                    update_every_s: p.update_every_s,
-                    status: DISK_PENDING | DATAFILE_ACQUIRED,
-                    page: None,
-                    extent: Some((
-                        index.fileno,
-                        extent.datafile_offset / BLOCK_SIZE as u64,
-                        extent.datafile_size,
-                    )),
-                });
+                // the page joins C's open cache as a clean page of the file, and gives its page details a use of
+                // the file of their own
+                file.mark_clean_open();
+                if let btree_map::Entry::Vacant(v) = list.entry(first_s) {
+                    if let Some(use_) = file.acquire(Reason::PageDetails) {
+                        v.insert(Pd {
+                            first_time_s: first_s,
+                            last_time_s: last_s,
+                            update_every_s: p.update_every_s,
+                            status: DISK_PENDING | DATAFILE_ACQUIRED,
+                            page: None,
+                            extent: Some((
+                                index.fileno,
+                                extent.datafile_offset / BLOCK_SIZE as u64,
+                                extent.datafile_size,
+                            )),
+                            file: Some(use_),
+                        });
+                    }
+                }
                 found += 1;
             }
         }
@@ -687,10 +710,11 @@ impl Dbengine {
         (prep, to_load)
     }
 
-    /// `datafile_extent_read()`: the extent's bytes, read in whole blocks.
+    /// `datafile_extent_read()`: the extent's bytes, read in whole blocks from the file its page details hold.
     fn read_extent(
         &self,
         tier: usize,
+        file: Option<&DataFile>,
         fileno: u32,
         block: u64,
         bytes: u32,
@@ -708,7 +732,7 @@ impl Dbengine {
             );
             return None;
         }
-        let file = self.tiers[tier].file(fileno)?;
+        let file = file?;
         let len = u64::from(bytes).div_ceil(BLOCK_SIZE as u64) * BLOCK_SIZE as u64;
         let mut buf = vec![0u8; len as usize];
         file.file
@@ -733,8 +757,9 @@ impl Dbengine {
         let tier = metric.tier();
         let first_pd = &list[&keys[0]];
         let pd_subject = (first_pd.first_time_s, first_pd.last_time_s);
+        let file = first_pd.file.as_ref().map(|u| Arc::clone(u));
         let decoded = self
-            .read_extent(tier, fileno, block, bytes)
+            .read_extent(tier, file.as_deref(), fileno, block, bytes)
             .map(|data| extent::decode(&data));
         match decoded {
             Some(Ok(extent)) => {
