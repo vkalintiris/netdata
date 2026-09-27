@@ -758,7 +758,11 @@ mod tests {
             (DbMode::Alloc, false, true),
             (DbMode::None, true, true),
         ] {
-            assert_eq!(freed_dimension_deletes(mode, has_retention), deletes, "{mode:?} {has_retention}");
+            assert_eq!(
+                freed_dimension_deletes(mode, has_retention),
+                deletes,
+                "{mode:?} {has_retention}"
+            );
         }
     }
 

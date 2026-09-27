@@ -678,7 +678,8 @@ impl Chart {
                 }
                 // rrdeng_metric_get_or_create(), then rrdeng_store_metric_init() at the tier's update every
                 let (metric, _) = engine.mrg.add_and_acquire(&uuid, t, 0, 0, 0);
-                let tier_ue = (self.storage.tier_grouping(t) as i64 * i64::from(meta.update_every)) as u32;
+                let tier_ue =
+                    (self.storage.tier_grouping(t) as i64 * i64::from(meta.update_every)) as u32;
                 collect.push(Some(CollectHandle::init(
                     engine,
                     &metric,
@@ -910,8 +911,9 @@ impl Dim {
         for (t, tier) in self.tiers.iter().enumerate() {
             match (tier, collect[t].as_mut()) {
                 (TierMetric::Ram(ring), _) => ring.change_update_every(update_every),
-                (TierMetric::Dbengine(_), Some(handle)) => handle
-                    .change_collection_frequency((storage.tier_grouping(t) as i64 * update_every) as u32),
+                (TierMetric::Dbengine(_), Some(handle)) => handle.change_collection_frequency(
+                    (storage.tier_grouping(t) as i64 * update_every) as u32,
+                ),
                 (TierMetric::Dbengine(_), None) => {}
             }
         }

@@ -266,7 +266,10 @@ mod tests {
     #[test]
     fn step_indices_name_cs_steps() {
         assert_eq!(STEPS[STOP_REPLICATION], "stop replication threads");
-        assert_eq!(STEPS[WAIT_DBENGINE_COLLECTORS], "wait for dbengine collectors to finish");
+        assert_eq!(
+            STEPS[WAIT_DBENGINE_COLLECTORS],
+            "wait for dbengine collectors to finish"
+        );
         assert_eq!(STEPS[STOP_DBENGINE_TIERS], "stop dbengine tiers");
     }
 }
