@@ -3,6 +3,7 @@
 //! Decisions D48 in the status repository.
 
 use netdata_agent_rrd::host::Hosts;
+use netdata_agent_rrd::status::IngestStatus;
 use netdata_agent_text::c::strsep_skip;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 use netdata_agent_text::parse::uuid_parse_flexi;
@@ -56,12 +57,15 @@ pub fn reply(hosts: &Hosts, query: &[u8], now: i64) -> Reply {
         random.as_bytes()[3],
     ]);
     w.member_add_uint64("nonce", u64::from(nonce));
-    // backfill never runs here (no tiers), so an offline host is never reported initializing
     if let Some(s) = status {
         w.member_add_string("db_status", s.db_status.name());
         w.member_add_string("db_liveness", s.db_liveness.name());
         w.member_add_string("ingest_type", s.ingest_type.name());
-        w.member_add_string("ingest_status", s.ingest_status.name());
+        let ingest_status = reported_ingest_status(
+            s.ingest_status,
+            netdata_agent_rrd::tiers::backfill_runners(),
+        );
+        w.member_add_string("ingest_status", ingest_status.name());
         w.member_add_uint64("first_time_s", s.first_time_s as u64);
         w.member_add_uint64("last_time_s", s.last_time_s as u64);
     }
@@ -71,6 +75,16 @@ pub fn reply(hosts: &Hosts, query: &[u8], now: i64) -> Reply {
         content_type: ContentType::ApplicationJson,
         body: w.into_bytes(),
         ..Reply::default()
+    }
+}
+
+/// An offline host reads initializing while backfills run: the parent does not accept children then
+/// (`stream_control_children_should_be_accepted()`).
+fn reported_ingest_status(status: IngestStatus, backfill_runners: usize) -> IngestStatus {
+    if status == IngestStatus::Offline && backfill_runners != 0 {
+        IngestStatus::Initializing
+    } else {
+        status
     }
 }
 
@@ -132,6 +146,24 @@ mod tests {
     }
 
     /// C's bodies byte for byte (the spec's captures, `evidence/2026-09-26-sp1-stream-info-spec.md` §1.4 and §5).
+    /// C's override: an offline host reads initializing only while a backfill runs.
+    #[test]
+    fn backfills_make_offline_hosts_initializing() {
+        use super::{IngestStatus, reported_ingest_status};
+        assert_eq!(
+            reported_ingest_status(IngestStatus::Offline, 1),
+            IngestStatus::Initializing
+        );
+        assert_eq!(
+            reported_ingest_status(IngestStatus::Offline, 0),
+            IngestStatus::Offline
+        );
+        assert_eq!(
+            reported_ingest_status(IngestStatus::Online, 2),
+            IngestStatus::Online
+        );
+    }
+
     #[test]
     fn answers_as_c() {
         let hosts = Hosts::new(Host::new(LOCALHOST, true, info("parity-parent")));

@@ -177,6 +177,14 @@ pub struct PoolHandle<M> {
     lazy: Option<Arc<Lazy<M>>>,
 }
 
+impl<M> fmt::Debug for PoolHandle<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PoolHandle")
+            .field("threads", &self.mailboxes.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<M> Clone for PoolHandle<M> {
     fn clone(&self) -> Self {
         Self {

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -319,6 +320,84 @@ func TestDbengineTiers(t *testing.T) {
 				filepath.Join(b.Candidate.Opts.RunDir, "cache")}, bnames)
 		})
 	}
+	// after a restart the child reconnects with replication and has 1,500 s more: the parent backfills the tiers on
+	// its BACKFILL pool up to the wall clock, then asks from its last point, and the replayed points roll up
+	t.Run("replication", func(t *testing.T) {
+		r := startPair(t, opts, parentIdentity, binaries(t), copyCaches(t, caches),
+			[2]Role{"replication-oracle", "replication-candidate"})
+		to := end + 1500
+		now := time.Now().Unix()
+		gen := g.child()
+		charts := map[string]stream.ReplayChart{}
+		for c := 0; c < s4Charts; c++ {
+			charts[fmt.Sprintf("s4.c%d", c)] = stream.ReplayChart{FirstT: g.start, LastT: to, UpdateEvery: 1}
+		}
+		var windows [2][]string
+		for i, side := range r.Each() {
+			conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, s4child, stream.CapsReplication)
+			if err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			for c := 0; c < s4Charts; c++ {
+				conn.Linef("CHART 's4.c%d' '' 's4.' 'u' 'f' 's4.ctx%d' line 1000 1 '' fixture-pusher corpus", c, c)
+				for d := 0; d < s4Dims; d++ {
+					conn.Linef("DIMENSION 'd%d' '' absolute 1 1 ''", d)
+				}
+				conn.ChartDefinitionEnd(g.start, to, now)
+			}
+			var mu sync.Mutex
+			_, err = conn.ServeReplication(charts, now, func(chart string, after, before int64) []stream.ReplayRow {
+				mu.Lock()
+				windows[i] = append(windows[i], fmt.Sprintf("%s (%d, %d]", chart, after-end, before-end))
+				mu.Unlock()
+				var c int
+				fmt.Sscanf(chart, "s4.c%d", &c)
+				var rows []stream.ReplayRow
+				for t := after + 1; t <= before; t++ {
+					if gen.skips(c, t) {
+						continue
+					}
+					row := stream.ReplayRow{T: t}
+					for d := 0; d < s4Dims; d++ {
+						v, f := gen.point(c, d, t)
+						row.Dims = append(row.Dims, stream.ReplayValue{ID: fmt.Sprintf("d%d", d), Collected: v, Flags: f})
+					}
+					rows = append(rows, row)
+				}
+				return rows
+			}, 60*time.Second)
+			if err != nil {
+				t.Fatalf("%s: replication: %v", side.Role, err)
+			}
+		}
+		sort.Strings(windows[0])
+		sort.Strings(windows[1])
+		if strings.Join(windows[0], "; ") != strings.Join(windows[1], "; ") {
+			t.Errorf("replication windows (relative to the parent's last point):\noracle:    %v\ncandidate: %v",
+				windows[0], windows[1])
+		}
+		var rnames [2]map[string]string
+		for i, side := range r.Each() {
+			waitChartsLast(t, side.Daemon, s4child.Hostname, "s4.", s4Charts, to, 2*time.Minute)
+			rnames[i] = tierUUIDs(t, side.Daemon, s4child.Hostname)
+		}
+		host := "/host/" + s4child.Hostname
+		win := fmt.Sprintf("after=%d&before=%d", end-7200, to)
+		for tier := 1; tier <= 2; tier++ {
+			for c := 0; c < s4Charts; c++ {
+				compareGetWith(t, r, fmt.Sprintf("%s/api/v1/data?chart=s4.c%d&%s&tier=%d&options=jsonwrap", host, c, win,
+					tier), dbengineWriteRules(true))
+			}
+		}
+		for _, side := range r.Each() {
+			if err := side.Daemon.Stop(); err != nil {
+				t.Fatalf("stop %s: %v", side.Role, err)
+			}
+		}
+		compareTierRecords(t, [2]string{filepath.Join(r.Oracle.Opts.RunDir, "cache"),
+			filepath.Join(r.Candidate.Opts.RunDir, "cache")}, rnames)
+	})
 }
 
 // TestDbengineTiersSmallGrouping repeats the S4a child's first 40,000 s with tier windows of 5 and 15 s, so the tier

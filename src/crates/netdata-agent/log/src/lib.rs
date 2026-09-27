@@ -187,6 +187,25 @@ pub fn thread_created() {
     );
 }
 
+thread_local! {
+    /// A tag `thread_tag_set()` gave this thread in place of its name.
+    static THREAD_TAG: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `nd_thread_tag_set()`: the thread's records carry this tag from now on (its name stays as it was spawned).
+pub fn thread_tag_set(tag: &str) {
+    THREAD_TAG.with(|t| *t.borrow_mut() = Some(tag.to_string()));
+}
+
+/// The tag this thread's records carry: its `thread_tag_set()` tag, else its name; none for the main thread, as in C.
+fn thread_tag() -> String {
+    let retagged = THREAD_TAG.with(|t| t.borrow().clone());
+    match retagged.or_else(|| std::thread::current().name().map(str::to_string)) {
+        Some(name) if name != "main" => name,
+        _ => String::new(),
+    }
+}
+
 /// `nd_thread_exit()`'s record, from the thread as it ends.
 pub fn thread_finished() {
     nd_log!(
@@ -296,12 +315,8 @@ fn log_record(
     }
     let message = message.map(|m| m.to_string());
     let invocation = invocation_id();
-    let thread = std::thread::current();
-    // the main thread has no tag in C
-    let tag = match thread.name() {
-        Some("main") | None => "",
-        Some(name) => name,
-    };
+    let tag = thread_tag();
+    let tag = tag.as_str();
 
     let routed = frame::with_fields(|frames| {
         let mut record = Record::new();
@@ -505,6 +520,21 @@ mod tests {
         assert_eq!(outer(), "outer");
         let closure = || (here!().function)();
         assert_eq!(closure(), "here_names_the_enclosing_function");
+    }
+
+    #[test]
+    fn a_thread_tag_replaces_the_name_from_then_on() {
+        let tags = std::thread::Builder::new()
+            .name("BACKFILL".into())
+            .spawn(|| {
+                let before = thread_tag();
+                thread_tag_set("BACKFILL[0]");
+                (before, thread_tag())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(tags, ("BACKFILL".to_string(), "BACKFILL[0]".to_string()));
     }
 
     #[test]

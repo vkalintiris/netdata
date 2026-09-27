@@ -132,6 +132,104 @@ fn chart_definition_end_asks_for_replication() {
     assert!(p.take_output().is_empty());
 }
 
+/// On a parent with the BACKFILL pool running, the first `CHART_DEFINITION_END` of a chart queues its dimensions'
+/// backfill and sends nothing; the chart's last job hands the request to the stream thread's sink, which answers as
+/// the inline path does. The chart is never queued again: after a reconnect the request goes out at once.
+#[test]
+fn chart_definition_end_waits_for_the_backfill() {
+    let h = host();
+    let slot = Arc::new(netdata_agent_rrd::host::ReceiverSlot::new(
+        0,
+        Default::default(),
+        netdata_agent_rrd::host::ReceiverLink::default(),
+        Box::new(|| {}),
+    ));
+    assert!(h.set_receiver(Arc::clone(&slot)));
+    let queue = h.storage().backfill_queue();
+    queue.start();
+    let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut p = parser(&h);
+    let sink = Arc::clone(&asked);
+    p.set_replay_sink(Arc::new(move |r: ReplayRequest| {
+        sink.lock().unwrap().push(r);
+        true
+    }));
+    feed_all(&mut p, &DEFINE);
+    let first = NOW - 100;
+    assert!(p.feed(format!("CHART_DEFINITION_END {first} {NOW} {NOW}\n").as_bytes()));
+    let chart = h.charts().find("test.c1").unwrap();
+    assert!(p.take_output().is_empty());
+    assert_eq!(
+        (
+            chart.flags() & flags::BACKFILLED_HIGH_TIERS != 0,
+            h.backfill_pending(),
+            queue.queued()
+        ),
+        (true, 1, chart.dim_count())
+    );
+    queue.worker(false, &|| queue.queued() > 0);
+    let requests = std::mem::take(&mut *asked.lock().unwrap());
+    assert_eq!(requests.len(), 1);
+    assert_eq!(h.backfill_pending(), 0);
+    p.replay_backfilled(&requests[0]);
+    let want = format!("REPLAY_CHART \"test.c1\" \"true\" {first} {NOW}\n");
+    assert_eq!(String::from_utf8(p.take_output()).unwrap(), want);
+    // the child comes back: the chart was queued once, so the new round asks at once
+    h.clear_receiver(&slot);
+    assert!(
+        h.set_receiver(Arc::new(netdata_agent_rrd::host::ReceiverSlot::new(
+            0,
+            Default::default(),
+            netdata_agent_rrd::host::ReceiverLink::default(),
+            Box::new(|| {}),
+        )))
+    );
+    let mut p = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    assert!(p.feed(format!("CHART_DEFINITION_END {first} {NOW} {NOW}\n").as_bytes()));
+    assert_eq!(String::from_utf8(p.take_output()).unwrap(), want);
+    assert_eq!(
+        (
+            queue.queued(),
+            h.backfill_pending(),
+            asked.lock().unwrap().len()
+        ),
+        (0, 0, 0)
+    );
+    queue.finish();
+}
+
+/// A backfill answer for a receiver that went is refused: the request is not handed to the sink.
+#[test]
+fn a_backfill_answer_after_a_reconnect_is_dropped() {
+    let h = host();
+    let slot = Arc::new(netdata_agent_rrd::host::ReceiverSlot::new(
+        0,
+        Default::default(),
+        netdata_agent_rrd::host::ReceiverLink::default(),
+        Box::new(|| {}),
+    ));
+    assert!(h.set_receiver(Arc::clone(&slot)));
+    let queue = h.storage().backfill_queue();
+    queue.start();
+    let asked = Arc::new(std::sync::Mutex::new(0));
+    let mut p = parser(&h);
+    let sink = Arc::clone(&asked);
+    p.set_replay_sink(Arc::new(move |_| {
+        *sink.lock().unwrap() += 1;
+        true
+    }));
+    feed_all(&mut p, &DEFINE);
+    assert!(p.feed(format!("CHART_DEFINITION_END {} {NOW} {NOW}\n", NOW - 100).as_bytes()));
+    h.clear_receiver(&slot);
+    let ((), records) = netdata_agent_log::capture(|| queue.worker(false, &|| queue.queued() > 0));
+    assert_eq!(*asked.lock().unwrap(), 0);
+    assert!(records.iter().any(|r| r.message.as_deref()
+        == Some("PLUGINSD REPLAY ERROR: 'host:child' failed to acquire host for sending replication command for \
+                 'chart:test.c1'")));
+    queue.finish();
+}
+
 /// `stream_receiver_replication_reset()`: a chart still replicating when its child disconnects asks again after the
 /// reconnect (C resets the flags when a receiver attaches and when it detaches).
 #[test]

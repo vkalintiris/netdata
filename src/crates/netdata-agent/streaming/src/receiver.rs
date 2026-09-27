@@ -8,7 +8,7 @@
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::conn::{Conn, Stream};
@@ -174,6 +174,14 @@ pub struct Pending {
     accepted_s: i64,
 }
 
+/// What a stream thread is sent: a connection to take over, or a backfilled chart's replication request for the
+/// connection of `receiver`.
+#[derive(Debug)]
+pub enum StreamMsg {
+    Attach(Box<Attached>),
+    Replay(Weak<ReceiverSlot>, ingest::ReplayRequest),
+}
+
 /// A connection handed to a stream thread.
 #[derive(Debug)]
 pub struct Attached {
@@ -190,6 +198,8 @@ pub struct Attached {
     handshake_update_every: i64,
     /// `rpt->thread.keepalive_initialized`.
     keepalive_initialized: bool,
+    /// The stream threads, for the backfilled charts' requests to come back to this one.
+    pool: PoolHandle<StreamMsg>,
 }
 
 /// A connection on its stream thread.
@@ -220,7 +230,7 @@ pub struct Receivers {
     pub conf: Mutex<StreamConf>,
     pub hosts: Arc<Hosts>,
     pub defaults: Defaults,
-    pool: PoolHandle<Attached>,
+    pool: PoolHandle<StreamMsg>,
     /// Children per stream thread (`nodes_count`).
     load: Arc<Mutex<Vec<usize>>>,
     /// `[web] accept a streaming request every` (seconds, 0 for no limit).
@@ -263,7 +273,7 @@ impl Receivers {
         hosts: Arc<Hosts>,
         load: Arc<Mutex<Vec<usize>>>,
         defaults: Defaults,
-        pool: PoolHandle<Attached>,
+        pool: PoolHandle<StreamMsg>,
     ) -> Self {
         load.lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -664,6 +674,7 @@ impl Receivers {
             keepalive: config.keepalive,
             handshake_update_every: i64::from(request.update_every),
             keepalive_initialized,
+            pool: self.pool.clone(),
         };
         // stream_receiver_add_to_queue()
         nd_log!(
@@ -672,7 +683,10 @@ impl Receivers {
             "STREAM RCV[{thread}] '{}': moving host to receiver queue...",
             attached.host.hostname()
         );
-        if let Err(attached) = self.pool.send(thread, attached) {
+        if let Err(StreamMsg::Attach(attached)) = self
+            .pool
+            .send(thread, StreamMsg::Attach(Box::new(attached)))
+        {
             attached.host.clear_receiver(&attached.slot);
             self.hosts.update_is_parent_label();
             self.load.lock().unwrap_or_else(PoisonError::into_inner)[thread] -= 1;
@@ -720,6 +734,132 @@ pub struct StreamWorker {
 }
 
 impl StreamWorker {
+    /// `stream_receiver_move_to_running_unsafe()`: the connection joins this thread, its parser answering
+    /// backfilled charts through this thread's messages.
+    fn attach(&mut self, cx: &mut Context<'_>, mut attached: Attached) {
+        let index = self
+            .children
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or_else(|| {
+                self.children.push(None);
+                self.children.len() - 1
+            });
+        if cx
+            .registry()
+            .register(
+                &mut attached.stream,
+                Token(index),
+                Interest::READABLE | Interest::WRITABLE,
+            )
+            .is_err()
+        {
+            attached.host.clear_receiver(&attached.slot);
+            attached.hosts.update_is_parent_label();
+            self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
+            return;
+        }
+        let mut parser = Parser::new(
+            Arc::clone(&attached.host),
+            Arc::clone(attached.hosts.localhost()),
+            attached.parser,
+        );
+        // a backfilled chart's request comes back to this thread for this connection
+        let (pool, thread, receiver) = (
+            attached.pool.clone(),
+            attached.thread,
+            Arc::downgrade(&attached.slot),
+        );
+        parser.set_replay_sink(Arc::new(move |request| {
+            pool.send(thread, StreamMsg::Replay(receiver.clone(), request))
+                .is_ok()
+        }));
+        let decompressor = Decompressor::for_capabilities(attached.parser.capabilities);
+        let frame = attached.peer.child_frame(attached.parser.capabilities);
+        {
+            // stream_receiver_move_to_running_unsafe()
+            let _frame = netdata_agent_log::push(vec![
+                (
+                    netdata_agent_log::Field::NidlNode,
+                    netdata_agent_log::Value::Str(attached.host.hostname()),
+                ),
+                (
+                    netdata_agent_log::Field::MessageId,
+                    netdata_agent_log::Value::Uuid(netdata_agent_log::msgid::STREAMING_FROM_CHILD),
+                ),
+            ]);
+            nd_log!(
+                Source::Daemon,
+                Priority::Debug,
+                "STREAM RCV[{}] '{}' [from [{}]:{}]: moving host from receiver queue to receiver running...",
+                attached.thread,
+                attached.peer.hostname_or_dash(),
+                attached.peer.ip,
+                attached.peer.port
+            );
+        }
+        let a = &mut attached;
+        reconcile_keepalive(
+            std::os::fd::AsFd::as_fd(&a.stream),
+            &a.host,
+            &a.peer,
+            &a.keepalive,
+            a.handshake_update_every,
+            &mut a.keepalive_initialized,
+        );
+        self.children[index] = Some(Child {
+            attached,
+            decompressor,
+            reader: LineReader::default(),
+            parser,
+            pending_out: Vec::new(),
+            frame,
+            bytes_in: 0,
+            bytes_out: 0,
+            sends: 0,
+            last_io: Instant::now(),
+            replication_requests: 0,
+            replication_progress: None,
+            replication_checked: None,
+        });
+        // the parser exists: the host's retention changes now owe the child a stream path
+        // (stream_path_send_to_child() finds no parser before)
+        if let Some(child) = &self.children[index] {
+            child
+                .attached
+                .host
+                .contexts()
+                .record_first_time_changes(true);
+        }
+        // Bytes may have arrived before the registration.
+        let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
+        let _frame = frame.as_ref().map(records::child_event);
+        self.receive(cx, index);
+    }
+
+    /// A backfilled chart's replication request, for the connection it came from: sent and flushed under the
+    /// child's frame; dropped when the connection is gone (C's bytes go with the buffer they were added to).
+    fn replay(
+        &mut self,
+        cx: &mut Context<'_>,
+        receiver: &Weak<ReceiverSlot>,
+        request: &ingest::ReplayRequest,
+    ) {
+        let Some(index) = self.children.iter().position(|c| {
+            c.as_ref()
+                .is_some_and(|c| std::ptr::eq(Arc::as_ptr(&c.attached.slot), receiver.as_ptr()))
+        }) else {
+            return;
+        };
+        let Some(child) = self.children[index].as_mut() else {
+            return;
+        };
+        let frame = Arc::clone(&child.frame);
+        let _frame = records::child_event(&frame);
+        child.parser.replay_backfilled(request);
+        self.flush(cx, index, true);
+    }
+
     pub fn new(load: Arc<Mutex<Vec<usize>>>, update_every: i32) -> Self {
         let now = Instant::now();
         StreamWorker {
@@ -862,6 +1002,10 @@ impl StreamWorker {
             return true;
         }
         if requests == 0 {
+            return true;
+        }
+        // charts waiting for their backfill are not a stall
+        if child.attached.host.backfill_pending() != 0 {
             return true;
         }
         match child.replication_progress {
@@ -1152,7 +1296,7 @@ impl StreamWorker {
 }
 
 impl Worker for StreamWorker {
-    type Msg = Attached;
+    type Msg = StreamMsg;
 
     fn start(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
         self.tick = Some(cx.add_timer(Instant::now() + TICK));
@@ -1199,95 +1343,11 @@ impl Worker for StreamWorker {
         }
     }
 
-    fn message(&mut self, cx: &mut Context<'_>, mut attached: Attached) {
-        let index = self
-            .children
-            .iter()
-            .position(Option::is_none)
-            .unwrap_or_else(|| {
-                self.children.push(None);
-                self.children.len() - 1
-            });
-        if cx
-            .registry()
-            .register(
-                &mut attached.stream,
-                Token(index),
-                Interest::READABLE | Interest::WRITABLE,
-            )
-            .is_err()
-        {
-            attached.host.clear_receiver(&attached.slot);
-            attached.hosts.update_is_parent_label();
-            self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
-            return;
+    fn message(&mut self, cx: &mut Context<'_>, msg: StreamMsg) {
+        match msg {
+            StreamMsg::Attach(attached) => self.attach(cx, *attached),
+            StreamMsg::Replay(receiver, request) => self.replay(cx, &receiver, &request),
         }
-        let parser = Parser::new(
-            Arc::clone(&attached.host),
-            Arc::clone(attached.hosts.localhost()),
-            attached.parser,
-        );
-        let decompressor = Decompressor::for_capabilities(attached.parser.capabilities);
-        let frame = attached.peer.child_frame(attached.parser.capabilities);
-        {
-            // stream_receiver_move_to_running_unsafe()
-            let _frame = netdata_agent_log::push(vec![
-                (
-                    netdata_agent_log::Field::NidlNode,
-                    netdata_agent_log::Value::Str(attached.host.hostname()),
-                ),
-                (
-                    netdata_agent_log::Field::MessageId,
-                    netdata_agent_log::Value::Uuid(netdata_agent_log::msgid::STREAMING_FROM_CHILD),
-                ),
-            ]);
-            nd_log!(
-                Source::Daemon,
-                Priority::Debug,
-                "STREAM RCV[{}] '{}' [from [{}]:{}]: moving host from receiver queue to receiver running...",
-                attached.thread,
-                attached.peer.hostname_or_dash(),
-                attached.peer.ip,
-                attached.peer.port
-            );
-        }
-        let a = &mut attached;
-        reconcile_keepalive(
-            std::os::fd::AsFd::as_fd(&a.stream),
-            &a.host,
-            &a.peer,
-            &a.keepalive,
-            a.handshake_update_every,
-            &mut a.keepalive_initialized,
-        );
-        self.children[index] = Some(Child {
-            attached,
-            decompressor,
-            reader: LineReader::default(),
-            parser,
-            pending_out: Vec::new(),
-            frame,
-            bytes_in: 0,
-            bytes_out: 0,
-            sends: 0,
-            last_io: Instant::now(),
-            replication_requests: 0,
-            replication_progress: None,
-            replication_checked: None,
-        });
-        // the parser exists: the host's retention changes now owe the child a stream path
-        // (stream_path_send_to_child() finds no parser before)
-        if let Some(child) = &self.children[index] {
-            child
-                .attached
-                .host
-                .contexts()
-                .record_first_time_changes(true);
-        }
-        // Bytes may have arrived before the registration.
-        let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
-        let _frame = frame.as_ref().map(records::child_event);
-        self.receive(cx, index);
     }
 
     fn timer(&mut self, cx: &mut Context<'_>, _timer: TimerId) {

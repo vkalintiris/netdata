@@ -63,7 +63,7 @@ var cOnlyThreads = map[string]string{
 	"PULSE": "pulse charts", "PLUGINSD": "plugins.d",
 	"SERVICE": "service thread", "HEALTH": "health", "ANALYTICS": "analytics",
 	"EXPORTING": "exporting engine", "STATSD_FLUSH": "statsd",
-	"ACLK_MAIN": "ACLK", "BACKFILL": "dbengine tier backfill", "EXTENT_PGC": "dbengine evictors (S6)",
+	"ACLK_MAIN": "ACLK", "EXTENT_PGC": "dbengine evictors (S6)",
 	"MAIN_PGC": "dbengine evictors (S6)", "OPEN_PGC": "dbengine evictors (S6)", "REPLAY": "replication sender threads",
 }
 

@@ -169,6 +169,8 @@ pub mod flags {
     pub const METADATA_UPDATE: u32 = 1 << 7;
     pub const HETEROGENEOUS: u32 = 1 << 8;
     pub const HOMOGENEOUS_CHECK: u32 = 1 << 9;
+    /// `RRDSET_FLAG_BACKFILLED_HIGH_TIERS`: the chart's dimensions were queued for a backfill once; never cleared.
+    pub const BACKFILLED_HIGH_TIERS: u32 = 1 << 10;
 }
 
 /// What `rrdset_create()` is called with.
@@ -1039,6 +1041,25 @@ impl Dim {
             }
         }
         true
+    }
+
+    /// `RRDDIM_OPTION_BACKFILLED_HIGH_TIERS`.
+    pub fn is_backfilled(&self) -> bool {
+        lock(&self.store).backfilled
+    }
+
+    /// `backfill_execute()` for this dimension: every tier above 0 backfills up to `now_s`; the dimension counts as
+    /// backfilled only when some tier got past the backfill's checks.
+    pub fn backfill_tiers(&self, now_s: i64) -> bool {
+        let mut store = lock(&self.store);
+        let mut success = false;
+        for tier in 1..self.tiers.len() {
+            success |= self.backfill(&mut store, tier, now_s);
+        }
+        if success {
+            store.backfilled = true;
+        }
+        success
     }
 
     /// A restart as the tiers see it: the windows and the backfilled option start over, the collections stay.

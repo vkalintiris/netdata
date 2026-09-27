@@ -121,6 +121,19 @@ enum OnDone {
 }
 
 /// The receiver side of one connection.
+/// A replication request a backfill held back: `REPLAY_CHART` for `chart` once its tiers are backfilled
+/// (`struct backfill_request_data`).
+#[derive(Debug, Clone)]
+pub struct ReplayRequest {
+    pub chart: Arc<Chart>,
+    pub first_entry_child: i64,
+    pub last_entry_child: i64,
+    pub child_wall_clock_time: i64,
+}
+
+/// Where a backfill's answer goes: the stream thread that owns the connection (false when it is gone).
+pub type ReplaySink = Arc<dyn Fn(ReplayRequest) -> bool + Send + Sync>;
+
 pub struct Parser {
     host: Arc<Host>,
     /// `localhost`, whose entry the stream path sent back to the child carries.
@@ -144,6 +157,8 @@ pub struct Parser {
     new_host_labels: Option<Labels>,
     /// Bytes for the child (`send_to_plugin`), drained by the caller.
     out: Vec<u8>,
+    /// How a backfill hands its replication request back; none without a stream thread (no BACKFILL pool use).
+    replay_sink: Option<ReplaySink>,
 }
 
 impl Parser {
@@ -165,7 +180,26 @@ impl Parser {
             on_done: OnDone::Nothing,
             new_host_labels: None,
             out: Vec::new(),
+            replay_sink: None,
         }
+    }
+
+    /// Where backfilled charts' replication requests go (the stream thread that owns this parser).
+    pub fn set_replay_sink(&mut self, sink: ReplaySink) {
+        self.replay_sink = Some(sink);
+    }
+
+    /// The replication request of a chart whose backfill finished (`backfill_callback()`'s send, on the stream
+    /// thread).
+    pub fn replay_backfilled(&mut self, r: &ReplayRequest) {
+        self.replicate_chart_request(
+            &r.chart,
+            r.first_entry_child,
+            r.last_entry_child,
+            r.child_wall_clock_time,
+            0,
+            0,
+        );
     }
 
     /// What must be written to the child.
@@ -1334,8 +1368,9 @@ impl Parser {
 
     // ---- replication ----
 
-    /// `pluginsd_chart_definition_end()`: the first of a round asks the child for the missing data (sent inline,
-    /// decisions D16).
+    /// `pluginsd_chart_definition_end()`: the first of a round asks the child for the missing data: after the chart's
+    /// dimensions backfill their tiers on the BACKFILL pool, the first time (D72.2, D73), or at once (D16) when
+    /// the chart was queued before, the pool does not run, or no dimension needs it.
     fn chart_definition_end(&mut self, w: &Words) -> Rc {
         let chart = self.require_scope("CHART_DEFINITION_END", "CHART")?;
         let number = |v: Option<&[u8]>| v.filter(|v| !v.is_empty()).map_or(0, |v| str2ul(v) as i64);
@@ -1352,9 +1387,63 @@ impl Parser {
             old & flags::RECEIVER_REPLICATION_IN_PROGRESS != 0
         });
         if !was_in_progress {
-            self.replicate_chart_request(&chart, first_entry, last_entry, wall, 0, 0);
+            let request = ReplayRequest {
+                chart: Arc::clone(&chart),
+                first_entry_child: first_entry,
+                last_entry_child: last_entry,
+                child_wall_clock_time: wall,
+            };
+            self.host.backfill_requested();
+            let queued = chart.flags() & flags::BACKFILLED_HIGH_TIERS == 0
+                && self.queue_backfill(request.clone()).is_ok();
+            if queued {
+                chart.update_meta(|m| m.flags |= flags::BACKFILLED_HIGH_TIERS);
+            } else {
+                self.host.backfill_answered_inline();
+                self.replay_backfilled(&request);
+            }
         }
         Ok(())
+    }
+
+    /// `backfill_request_add()` of the chart with `backfill_callback()`: its last job hands the request to the
+    /// stream thread, unless the receiver it came from went. Fails without a stream thread to answer to.
+    fn queue_backfill(&self, request: ReplayRequest) -> Result<(), ()> {
+        let (Some(sink), Some(slot)) = (self.replay_sink.clone(), self.host.receiver()) else {
+            return Err(());
+        };
+        let receiver = Arc::downgrade(&slot);
+        let host = Arc::clone(&self.host);
+        let chart = Arc::clone(&request.chart);
+        let callback: netdata_agent_rrd::backfill::Callback = Box::new(move |_, _| {
+            if !host.backfill_answered(&receiver) {
+                // the host got reconnected
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Debug,
+                    "PLUGINSD REPLAY ERROR: 'host:{}' failed to acquire host for sending replication command for \
+                     'chart:{}'",
+                    host.hostname(),
+                    request.chart.id()
+                );
+                return;
+            }
+            let chart_id = request.chart.id().to_string();
+            if !sink(request) {
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "PLUGINSD REPLAY ERROR: 'host:{}' failed to initiate replication for 'chart:{chart_id}' - \
+                     replication may not proceed for this instance.",
+                    host.hostname()
+                );
+            }
+        });
+        self.host
+            .storage()
+            .backfill_queue()
+            .request_add(&self.host, Arc::downgrade(&slot), &chart, callback)
+            .map_err(|_| ())
     }
 
     /// `replicate_chart_request()`: sends `REPLAY_CHART` for what the child has and this host lacks, one step at a

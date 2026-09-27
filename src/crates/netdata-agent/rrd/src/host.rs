@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 
 use netdata_agent_log::{Priority, REDACTED, Source, nd_log, netdata_log_error};
 use netdata_agent_nrpc::Registry;
@@ -260,6 +260,8 @@ pub struct Host {
     node_id: RwLock<[u8; 16]>,
     info: RwLock<HostInfo>,
     receiver: Mutex<Option<Arc<ReceiverSlot>>>,
+    /// `host->stream.rcv.status.replication.backfill_pending`: charts whose replication waits for a backfill.
+    backfill_pending: AtomicU32,
     /// `RRDHOST_FLAG_ORPHAN`: a child whose receiver has gone.
     orphan: AtomicBool,
     charts: Charts,
@@ -388,6 +390,7 @@ impl Host {
             node_id: RwLock::new([0; 16]),
             info: RwLock::new(info),
             receiver: Mutex::new(None),
+            backfill_pending: AtomicU32::new(0),
             orphan: AtomicBool::new(false),
             charts: Charts::new(
                 Arc::clone(&contexts),
@@ -862,6 +865,45 @@ impl Host {
         }
         self.replication_requests
             .store(0, std::sync::atomic::Ordering::Relaxed);
+        self.backfill_pending.store(0, Ordering::Relaxed);
+    }
+
+    /// `backfill_pending`.
+    pub fn backfill_pending(&self) -> u32 {
+        self.backfill_pending.load(Ordering::Relaxed)
+    }
+
+    /// A chart's replication now waits for its backfill (`backfill_pending++`).
+    pub fn backfill_requested(&self) {
+        self.backfill_pending.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `backfill_pending--` of an answer on the receiver's own thread.
+    pub fn backfill_answered_inline(&self) {
+        let _ = self
+            .backfill_pending
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1));
+    }
+
+    /// `object_state_acquire()` and `backfill_pending--` of a backfill's answer: false when `receiver` is no longer
+    /// the attached one (it went, or another came), which a reset already accounted for.
+    pub fn backfill_answered(&self, receiver: &Weak<ReceiverSlot>) -> bool {
+        let attached = lock(&self.receiver);
+        if !attached
+            .as_ref()
+            .is_some_and(|r| std::ptr::eq(Arc::as_ptr(r), receiver.as_ptr()))
+        {
+            return false;
+        }
+        self.backfill_answered_inline();
+        true
+    }
+
+    /// Whether `receiver` is the attached one (C's host state id).
+    pub fn is_receiver(&self, receiver: &Weak<ReceiverSlot>) -> bool {
+        lock(&self.receiver)
+            .as_ref()
+            .is_some_and(|r| std::ptr::eq(Arc::as_ptr(r), receiver.as_ptr()))
     }
 
     /// `rrdhost_clear_receiver()`: detaches `slot` if it is still the attached one.
@@ -1140,56 +1182,7 @@ impl Hosts {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn info(hostname: &str) -> HostInfo {
-        HostInfo {
-            hostname: hostname.into(),
-            registry_hostname: hostname.into(),
-            os: "linux".into(),
-            timezone: "UTC".into(),
-            abbrev_timezone: "UTC".into(),
-            utc_offset: 0,
-            program_name: "netdata".into(),
-            program_version: "v0".into(),
-            update_every: 1,
-            db_mode: DbMode::Ram,
-            history_entries: 4096,
-            health_enabled: false,
-            system_info: SystemInfo::default(),
-            replication_enabled: true,
-            replication_period: 86400,
-            replication_step: 3600,
-            stream_send: None,
-            cache_dir: None,
-        }
-    }
-
-    /// An engine of `tiers` empty tiers over temporary directories, and its registry.
-    fn engine(tiers: usize) -> (Vec<tempfile::TempDir>, Arc<StorageLayout>) {
-        use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
-        use netdata_agent_storage::dbengine::engine::mrg::Mrg;
-        use netdata_agent_storage::dbengine::engine::query::{Dbengine, EngineConfig};
-        let mrg = Mrg::new();
-        let dirs: Vec<_> = (0..tiers).map(|_| tempfile::tempdir().unwrap()).collect();
-        let tiers = dirs
-            .iter()
-            .enumerate()
-            .map(|(tier, dir)| {
-                let cfg = TierConfig::new(tier, dir.path().to_path_buf());
-                load(cfg, &mrg, 1_800_000_000).unwrap()
-            })
-            .collect();
-        let engine = Dbengine::new(
-            mrg,
-            tiers,
-            EngineConfig {
-                main_cache_bytes: 1 << 20,
-                extent_cache_bytes: 1 << 20,
-                ..EngineConfig::new(|| 1_800_000_000)
-            },
-        );
-        (dirs, Arc::new(StorageLayout::new(Some(engine))))
-    }
+    use crate::testutil::{backfill_dim, collected_chart, engine, info, store, tier_records};
 
     /// `rrdhost_create()`'s tiers: every tier from the engine for a dbengine host, tier 0 from the RAM index for the
     /// other modes, the RAM index alone without the engine; hosts the index creates get the same.
@@ -1231,35 +1224,6 @@ mod tests {
     }
 
     const T0: i64 = 1_790_180_000;
-
-    /// A chart of `mode` collected every second.
-    fn collected_chart(host: &Host, mode: DbMode) -> Arc<crate::chart::Chart> {
-        use crate::chart::{ChartSpec, ChartType};
-        host.charts()
-            .create(&ChartSpec {
-                type_: "t",
-                id: "c",
-                name: None,
-                family: None,
-                context: None,
-                title: "t",
-                units: "u",
-                plugin: "p",
-                module: None,
-                priority: 1,
-                update_every: 1,
-                chart_type: ChartType::Line,
-                mode,
-                history_entries: 60,
-                page_size: 4096,
-            })
-            .0
-    }
-
-    fn store(dim: &crate::chart::Dim, t: i64, v: f64) {
-        use netdata_agent_storage::storage_number::SN_DEFAULT_FLAGS;
-        dim.store_metric(t as u64 * 1_000_000, v, SN_DEFAULT_FLAGS);
-    }
 
     /// A dbengine dimension keeps a registry entry and a collection on every tier (N8, D68.6.1): the registry's
     /// update every is each tier's, stores go to tier 0, and the retention is the registry's. A new update every
@@ -1423,58 +1387,6 @@ mod tests {
             tier_records(&e, &dim, 2),
             [(B + 15, 120.0, 16), (B + 30, 345.0, 15)]
         );
-    }
-
-    /// The records with a value of a dimension's tier.
-    fn tier_records(
-        e: &Arc<netdata_agent_storage::dbengine::engine::query::Dbengine>,
-        dim: &crate::chart::Dim,
-        tier: usize,
-    ) -> Vec<(i64, f64, u32)> {
-        use netdata_agent_storage::dbengine::engine::query::Priority;
-        let metric = e.mrg.get_and_acquire(dim.uuid(), tier).unwrap();
-        let mut q = e.query(&metric, 1, 1_900_000_000, Priority::Normal);
-        let mut out = Vec::new();
-        while !q.is_finished() {
-            let p = q.next_metric();
-            if p.sum.is_finite() {
-                out.push((p.end_time_s, p.sum, p.count));
-            }
-        }
-        out
-    }
-
-    /// A dimension of a host of `mode` over a three-tier engine with windows of 5 and 15 s, of the host's first
-    /// chart (flush modulo 1), with the backfill mode given.
-    fn backfill_dim(
-        backfill: crate::storage::Backfill,
-        mode: DbMode,
-    ) -> (
-        Vec<tempfile::TempDir>,
-        Arc<crate::chart::Dim>,
-        Arc<netdata_agent_storage::dbengine::engine::query::Dbengine>,
-    ) {
-        use crate::chart::Algorithm;
-        let (dirs, storage) = engine(3);
-        let storage = Arc::new(
-            Arc::try_unwrap(storage)
-                .unwrap()
-                .with_profile(vec![1, 5, 3], 1)
-                .with_backfill(backfill),
-        );
-        let e = Arc::clone(storage.dbengine().unwrap());
-        let host = Host::with_storage(
-            "guid-b",
-            false,
-            HostInfo {
-                db_mode: mode,
-                ..info("b")
-            },
-            &storage,
-        );
-        let chart = collected_chart(&host, mode);
-        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
-        (dirs, dim, e)
     }
 
     /// `backfill_tier_from_smaller_tiers()` after a restart (mode `new`): each tier takes the points after its newest

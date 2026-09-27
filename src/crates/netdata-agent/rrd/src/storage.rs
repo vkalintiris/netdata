@@ -37,6 +37,8 @@ pub struct StorageLayout {
     update_every: i64,
     /// `default_backfill`.
     backfill: Backfill,
+    /// `backfill_globals`: the BACKFILL queue of every host of the daemon.
+    backfill_queue: crate::backfill::BackfillQueue,
     /// `global_rrdset_counter`: the charts created by every host of the daemon.
     charts_created: AtomicUsize,
 }
@@ -55,6 +57,7 @@ impl StorageLayout {
             grouping_iterations: GROUPING_ITERATIONS.to_vec(),
             update_every: 1,
             backfill: Backfill::New,
+            backfill_queue: crate::backfill::BackfillQueue::default(),
             charts_created: AtomicUsize::new(0),
         }
     }
@@ -81,6 +84,11 @@ impl StorageLayout {
 
     pub fn backfill(&self) -> Backfill {
         self.backfill
+    }
+
+    /// The BACKFILL queue the daemon's threads work on.
+    pub fn backfill_queue(&self) -> &crate::backfill::BackfillQueue {
+        &self.backfill_queue
     }
 
     /// `nd_profile.update_every`.

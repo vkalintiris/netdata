@@ -7,6 +7,7 @@ mod access_log;
 mod acl;
 mod api;
 mod archived;
+mod backfill;
 mod build;
 mod cli;
 mod cloud_proxy;
@@ -742,6 +743,22 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 return 1;
             }
         };
+    // BACKFILL: a parent's static thread (the profile alone decides, as C's enable_routine)
+    let backfill_thread = if profile == profile::Profile::Parent {
+        match backfill::Thread::spawn(
+            Arc::clone(hosts.storage()),
+            conf.threads.cpus as usize,
+            conf.threads.thread_stack_size,
+        ) {
+            Ok(thread) => Some(thread),
+            Err(err) => {
+                nd_log!(Source::Daemon, Priority::Err, "{err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     // The exit's work is registered before the command server accepts every command, so an exit it starts (a
     // netdatacli shutdown-agent) stops what runs, as C's globals do. Main keeps its own references for the rest of the
     // startup and drops them before it waits for signals.
@@ -753,6 +770,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let mut pool = pool;
     let mut stream_pool = Some(stream_pool);
     let mut contexts_worker = Some(contexts_worker);
+    let mut backfill_thread = backfill_thread;
     let mut meta = meta;
     let mut context_db = context_db;
     let mut metasync = Some(metasync);
@@ -778,9 +796,19 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 let _ = pool.stop_within(Some(shutdown::WEB_SERVERS_WAIT));
             }
         }
+        // the stream threads and the BACKFILL threads under one service wait
         shutdown::STOP_STREAMING => {
+            let deadline = std::time::Instant::now() + shutdown::STREAMING_WAIT;
             if let Some(pool) = stream_pool.take() {
                 let _ = pool.stop_within(Some(shutdown::STREAMING_WAIT));
+            }
+            backfill_thread = backfill_thread
+                .take()
+                .and_then(|thread| thread.stop_by(deadline));
+        }
+        shutdown::CANCEL_MAIN_THREADS => {
+            if let Some(thread) = &backfill_thread {
+                thread.cancel();
             }
         }
         shutdown::STOP_CONTEXT => {
