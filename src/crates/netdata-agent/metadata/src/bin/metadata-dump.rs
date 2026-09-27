@@ -1,5 +1,6 @@
 //! `metadata-dump <database> [--table <name>]... [--mask <table>.<column>]... [--sort <table>]...
-//! [--alias <table>.<column>]... [--skip-host-charts <hex>]...` prints a netdata SQLite database in a canonical form
+//! [--alias <table>.<column>]... [--skip-host-charts <hex>]... [--natural-order]` prints a netdata SQLite database in a
+//! canonical form
 //! the parity checks compare: the file header's fields, the pragmas the agents set, `sqlite_master` in rowid order,
 //! then each named table's rows in rowid order, blobs as hex, `date_created` and the named columns masked.
 //!
@@ -7,6 +8,10 @@
 //! - `--alias` prints the 16-byte blobs of a column as `u<N>`, numbered by first appearance across every aliased
 //!   column: random UUIDs then compare, and stay joinable between tables.
 //! - `--skip-host-charts` leaves out a host's chart rows and the dimension and chart label rows of those charts.
+//! - `--natural-order` prints the chart rows by host, type and id, and the dimension and chart label rows by their
+//!   chart's (then by rowid, a chart label's by its key first): charts created as their data comes, such as the pulse
+//!   charts, then compare whatever order they were created in, and the aliases follow that order. A chart table too
+//!   old to key charts by host, type and id keeps rowid order.
 //!
 //! `--exec <sql>` runs statements on the database instead and prints nothing: the checks build old and corrupted
 //! databases with it. The database is opened read-only unless it runs statements.
@@ -21,7 +26,7 @@ use rusqlite::{Connection, OpenFlags};
 fn usage() -> ExitCode {
     eprintln!(
         "usage: metadata-dump <database> [--table <name>]... [--mask <table>.<column>]... [--sort <table>]... \
-         [--alias <table>.<column>]... [--skip-host-charts <hex>]...\n       \
+         [--alias <table>.<column>]... [--skip-host-charts <hex>]... [--natural-order]\n       \
          metadata-dump <database> --exec <sql>"
     );
     ExitCode::from(2)
@@ -79,8 +84,13 @@ fn main() -> ExitCode {
     }
     let (mut tables, mut masks) = (Vec::new(), vec!["date_created".to_string()]);
     let (mut sorted, mut aliased, mut skip_hosts) = (Vec::new(), Vec::new(), Vec::new());
+    let mut natural_order = false;
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
+        if arg == "--natural-order" {
+            natural_order = true;
+            continue;
+        }
         match (arg.as_str(), rest.next()) {
             ("--table", Some(t)) => tables.push(t.clone()),
             ("--mask", Some(m)) => masks.push(m.clone()),
@@ -137,17 +147,36 @@ fn main() -> ExitCode {
             let skipped: Vec<String> = skip_hosts.iter().map(|h| format!("x'{h}'")).collect();
             let filter = match (table.as_str(), skipped.is_empty()) {
                 (_, true) => String::new(),
-                ("chart", false) => format!(" WHERE host_id NOT IN ({})", skipped.join(", ")),
+                ("chart", false) => format!(" WHERE t.host_id NOT IN ({})", skipped.join(", ")),
                 ("dimension" | "chart_label", false) => format!(
-                    " WHERE chart_id NOT IN (SELECT chart_id FROM chart WHERE host_id IN ({}))",
+                    " WHERE t.chart_id NOT IN (SELECT chart_id FROM chart WHERE host_id IN ({}))",
                     skipped.join(", ")
                 ),
                 _ => String::new(),
             };
-            let mut stmt = c.prepare(&format!(
-                "SELECT * FROM \"{}\"{filter} ORDER BY rowid",
-                table.replace('"', "\"\"")
-            ))?;
+            let quoted = format!("\"{}\" t", table.replace('"', "\"\""));
+            let by_chart = " LEFT JOIN chart c ON c.chart_id = t.chart_id";
+            // an old chart table keeps no host, type and id: its rows stay in rowid order
+            let chart_keyed = {
+                let mut stmt = c.prepare("SELECT name FROM pragma_table_info('chart')")?;
+                let columns: Vec<String> = stmt
+                    .query_map([], |r| r.get(0))?
+                    .collect::<Result<_, _>>()?;
+                ["host_id", "type", "id"]
+                    .iter()
+                    .all(|k| columns.iter().any(|c| c == k))
+            };
+            let (from, order) = match (table.as_str(), natural_order && chart_keyed) {
+                ("chart", true) => (quoted, "t.host_id, t.type, t.id, t.rowid"),
+                ("dimension", true) => (quoted + by_chart, "c.host_id, c.type, c.id, t.rowid"),
+                ("chart_label", true) => (
+                    quoted + by_chart,
+                    "c.host_id, c.type, c.id, t.label_key, t.rowid",
+                ),
+                _ => (quoted, "t.rowid"),
+            };
+            let mut stmt =
+                c.prepare(&format!("SELECT t.* FROM {from}{filter} ORDER BY {order}"))?;
             let names: Vec<String> = stmt.column_names().into_iter().map(String::from).collect();
             let mut rows = stmt.query([])?;
             let mut lines = Vec::new();

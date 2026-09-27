@@ -336,13 +336,30 @@ func TestArchivedHostsDbengine(t *testing.T) {
 		if got[0] != got[1] || strings.Contains(got[1], "Discarding archived state") {
 			t.Errorf("reconnect records:\noracle:\n%s\ncandidate:\n%s", got[0], got[1])
 		}
-		// the child keeps its dimensions: no new UUIDs (the localhost's are C's pulse charts, D48.6)
-		dims := []string{"--table", "dimension", "--skip-host-charts", strings.ReplaceAll(parentIdentity.MachineGUID, "-", "")}
+		// the child keeps its dimensions: no new UUIDs (localhost may add the pulse charts created as their data came,
+		// so its rows are compared apart)
+		localhost := strings.ReplaceAll(parentIdentity.MachineGUID, "-", "")
+		dims := []string{"--table", "dimension", "--skip-host-charts", localhost}
 		seeded := dumpDB(t, filepath.Join(seed, "netdata-meta.db"), dims...)
 		for _, side := range p.Each() {
 			if got := dumpDB(t, filepath.Join(side.Daemon.Opts.RunDir, "cache", "netdata-meta.db"),
 				dims...); got != seeded {
 				t.Errorf("%s: the dimension rows changed:\n%s", side.Role, firstDifference([]byte(seeded), []byte(got)))
+			}
+		}
+		// and every seeded localhost dimension row survives as it was: the pulse charts reuse their UUIDs
+		all := []string{"--table", "dimension"}
+		seededAll := strings.Split(dumpDB(t, filepath.Join(seed, "netdata-meta.db"), all...), "\n")
+		for _, side := range p.Each() {
+			rows := map[string]bool{}
+			for _, l := range strings.Split(dumpDB(t, filepath.Join(side.Daemon.Opts.RunDir, "cache",
+				"netdata-meta.db"), all...), "\n") {
+				rows[l] = true
+			}
+			for _, l := range seededAll {
+				if strings.HasPrefix(l, "row dimension") && !rows[l] {
+					t.Errorf("%s: a seeded dimension row is gone or changed: %s", side.Role, l)
+				}
 			}
 		}
 	})

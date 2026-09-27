@@ -77,13 +77,13 @@ var migrationRecords = regexp.MustCompile(`msg="(SQLite database |[a-z]+ databas
 var hwLabels = regexp.MustCompile(`label_key="_hw_`)
 
 // writerArgs has metadata-dump print the metadata writer's tables as the checks compare them: label and node
-// instance rows sorted (C writes labels in pointer order), chart and dimension ids aliased (random UUIDs, still
-// joinable), the localhost's charts left out (C's pulse charts, D48.6), and the last connection masked (a clock).
-// Without chartRows the chart dimension and label rows are left out too: on a chart table too old to store charts
-// in, C's pulse charts leave dimension and label rows that no chart row ties to the localhost.
-func writerArgs(localhost string, chartRows bool) []string {
-	args := []string{"--skip-host-charts", strings.Trim(strings.TrimPrefix(localhost, "x"), "'"),
-		"--mask", "host.last_connected"}
+// instance rows sorted (C writes labels in pointer order), the chart, dimension and chart label rows in their
+// natural order (the pulse charts are created as their data comes, D83.2), chart and dimension ids aliased (random
+// UUIDs, still joinable), and the last connection masked (a clock). Without chartRows the chart dimension and label
+// rows are left out: on a chart table too old to store charts in, the pulse charts leave dimension and label rows
+// that no chart row ties to the localhost.
+func writerArgs(chartRows bool) []string {
+	args := []string{"--natural-order", "--mask", "host.last_connected"}
 	tables := []string{"host", "host_info", "host_label", "node_instance", "chart"}
 	if chartRows {
 		tables = append(tables, "dimension", "chart_label")
@@ -185,7 +185,7 @@ func writerRecords(t *testing.T, d *daemon.Daemon) string {
 // by its periodic job and by the final store at shutdown (with that store's records).
 func TestSQLiteFiles(t *testing.T) {
 	opts := daemon.Options{DBMode: "alloc", StorageTiers: 1, StreamMemoryMode: "alloc"}
-	writer := writerArgs(hexID(parentIdentity.MachineGUID), true)
+	writer := writerArgs(true)
 	t.Run("fresh", func(t *testing.T) {
 		compareFiles(t, StartPair(t, opts, parentIdentity), hwLabels,
 			append([]string{"--table", "agent_event_log"}, writer...)...)
@@ -302,7 +302,7 @@ func TestSQLiteFiles(t *testing.T) {
 			compareFiles(t, StartPair(t, o, parentIdentity), hwLabels, append([]string{"--table",
 				"agent_event_log", "--table", "health_log", "--table", "health_log_detail",
 				"--mask", "health_log.last_transition_id"},
-				writerArgs(hexID(parentIdentity.MachineGUID), false)...)...)
+				writerArgs(false)...)...)
 		})
 	}
 }
