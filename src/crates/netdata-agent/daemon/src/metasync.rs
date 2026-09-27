@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::{Priority, Source, nd_log, netdata_log_info};
+use netdata_agent_metadata::Connection;
 use netdata_agent_metadata::open::{ContextDb, MetaDb};
 use netdata_agent_metadata::read;
 use netdata_agent_rrd::host::{Host, Hosts};
@@ -398,17 +399,30 @@ struct CtxLoad {
     vnodes: mpsc::Sender<()>,
 }
 
-/// `restore_host_context()`: nothing once the exit started; else the host's contexts, read on read-only handles of
-/// its own when they open (the shared ones otherwise), then the host no longer waits for them.
-fn restore_host_context(host: &Host, load: &CtxLoad) {
+/// A context-load slot's read-only handles (`hclt->db_meta_thread`, `db_context_thread`): opened by the first load on
+/// the slot and handed to the next, as C does, since opening one parses the whole schema.
+#[derive(Default)]
+struct ThreadDbs {
+    meta: Option<Connection>,
+    context: Option<Connection>,
+}
+
+/// `restore_host_context()`: nothing once the exit started; else the host's contexts, read on the slot's read-only
+/// handles (opened here when missing; the shared ones when they do not open), then the host no longer waits for them.
+fn restore_host_context(host: &Host, load: &CtxLoad, dbs: &mut ThreadDbs) {
     if crate::shutdown::exiting() {
         return;
     }
-    let started = now_ut();
     if let Some(w) = &load.writer {
         let cache_dir = w.meta.cache_dir();
-        let meta_thread = read::read_only(&MetaDb::path(cache_dir));
-        let context_thread = read::read_only(&ContextDb::path(cache_dir));
+        if dbs.meta.is_none() {
+            dbs.meta = read::read_only(&MetaDb::path(cache_dir));
+            dbs.context = read::read_only(&ContextDb::path(cache_dir));
+        }
+    }
+    let started = now_ut();
+    if let Some(w) = &load.writer {
+        let (meta_thread, context_thread) = (dbs.meta.as_ref(), dbs.context.as_ref());
         let context_db = w.context_db.upgrade();
         let cleanup = |host_id, context| load.queue.ctx_host_cleanup(host_id, context);
         crate::ctxload::load_host_contexts(
@@ -416,8 +430,8 @@ fn restore_host_context(host: &Host, load: &CtxLoad) {
             &crate::ctxload::Sources {
                 meta: &w.meta,
                 context_db: context_db.as_ref(),
-                meta_thread: meta_thread.as_ref(),
-                context_thread: context_thread.as_ref(),
+                meta_thread,
+                context_thread,
                 cleanup: &cleanup,
             },
         );
@@ -458,9 +472,12 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, load: &Arc<CtxL
         .collect();
     others.sort_by_key(|h| std::cmp::Reverse(h.last_connected_s()));
     order.extend(others);
-    let mut slots: Vec<Option<JoinHandle<()>>> = (0..if max_threads > 1 { max_threads } else { 0 })
-        .map(|_| None)
-        .collect();
+    // each slot: its thread, which hands the slot's handles back when it ends, or the handles themselves
+    let mut slots: Vec<(Option<JoinHandle<ThreadDbs>>, ThreadDbs)> =
+        (0..if max_threads > 1 { max_threads } else { 0 })
+            .map(|_| (None, ThreadDbs::default()))
+            .collect();
+    let mut own = ThreadDbs::default();
     let (mut delegated, mut direct) = (0, 0);
     let shutting_down = || load.shared.shutdown.load(Ordering::Acquire);
     for host in &order {
@@ -476,7 +493,7 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, load: &Arc<CtxL
         // cleanup_finished_threads(): a slot whose thread has finished is free again; up to 20 passes 10 ms apart
         let mut free = None;
         for pass in 0..20 {
-            free = slots.iter().position(|slot| match slot {
+            free = slots.iter().position(|(thread, _)| match thread {
                 None => true,
                 Some(thread) => thread.is_finished(),
             });
@@ -488,18 +505,20 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, load: &Arc<CtxL
             }
         }
         let free = free.map(|i| &mut slots[i]);
-        let spawned = free.and_then(|slot| {
+        let spawned = free.and_then(|(slot, dbs)| {
             if let Some(thread) = slot.take() {
-                let _ = thread.join();
+                *dbs = thread.join().unwrap_or_default();
             }
             let (host, load) = (Arc::clone(host), Arc::clone(load));
+            let mut handed = std::mem::take(dbs);
             let thread = std::thread::Builder::new()
                 .name("CTXLOAD".into())
                 .stack_size(stack_size)
                 .spawn(move || {
                     netdata_agent_log::thread_created();
-                    restore_host_context(&host, &load);
+                    restore_host_context(&host, &load, &mut handed);
                     netdata_agent_log::thread_finished();
+                    handed
                 })
                 .ok()?;
             *slot = Some(thread);
@@ -509,12 +528,15 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, load: &Arc<CtxL
             Some(()) => delegated += 1,
             None => {
                 direct += 1;
-                restore_host_context(host, load);
+                restore_host_context(host, load, &mut own);
             }
         }
     }
-    for thread in slots.into_iter().flatten() {
-        let _ = thread.join();
+    // the slots' handles close with their last thread
+    for (thread, _) in slots {
+        if let Some(thread) = thread {
+            let _ = thread.join();
+        }
     }
     netdata_log_info!(
         "Contexts for {} hosts loaded: {delegated} delegated to {max_threads} threads, {direct} handled directly, in \
