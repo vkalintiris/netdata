@@ -38,15 +38,18 @@ fn hosts() -> Arc<Hosts> {
     )))
 }
 
+fn settings(parents: Gates) -> Settings {
+    Settings {
+        gap_when_lost_iterations_above: 1,
+        page_size: 4096,
+        parents,
+        out_of_memory_protection: 0,
+        system_memory: || None,
+    }
+}
+
 fn pulse(hosts: &Arc<Hosts>, parents: Gates) -> Pulse {
-    Pulse::new(
-        Arc::clone(hosts),
-        Settings {
-            gap_when_lost_iterations_above: 1,
-            page_size: 4096,
-            parents,
-        },
-    )
+    Pulse::new(Arc::clone(hosts), settings(parents))
 }
 
 /// A chart as `rrdset_create_localhost()` makes it: id, family, context, title, units, module, priority, type, and
@@ -566,4 +569,226 @@ fn the_parents_gates() {
         "the inbound nodes without the children's charts"
     );
     assert_eq!(charted(true, true, false), 6 + 4 + 2);
+}
+
+/// Hosts on a dbengine of `tiers` tiers, each with a 100 MiB quota and an hour of retention, at 1,800,000,000; the
+/// localhost of `mode`.
+fn dbengine_hosts(tiers: usize, mode: DbMode) -> (Vec<tempfile::TempDir>, Arc<Hosts>) {
+    use netdata_agent_rrd::storage::StorageLayout;
+    use netdata_agent_storage::dbengine::engine::load::{TierConfig, load};
+    use netdata_agent_storage::dbengine::engine::mrg::Mrg;
+    use netdata_agent_storage::dbengine::engine::query::{Dbengine, EngineConfig};
+    let mrg = Mrg::new();
+    let dirs: Vec<_> = (0..tiers).map(|_| tempfile::tempdir().unwrap()).collect();
+    let tiers = dirs
+        .iter()
+        .enumerate()
+        .map(|(tier, dir)| {
+            let cfg = TierConfig {
+                max_disk_space: 100 << 20,
+                max_retention_s: 3600,
+                ..TierConfig::new(tier, dir.path().to_path_buf())
+            };
+            load(cfg, &mrg, 1_800_000_000).unwrap()
+        })
+        .collect();
+    let engine = Dbengine::new(
+        mrg,
+        tiers,
+        EngineConfig {
+            main_cache_bytes: 1 << 20,
+            extent_cache_bytes: 1 << 20,
+            ..EngineConfig::new(|| 1_800_000_000)
+        },
+    );
+    let storage = Arc::new(StorageLayout::new(Some(engine)));
+    let localhost = Host::with_storage(
+        "5a1e0000-0000-4000-8000-000000000001",
+        true,
+        HostInfo {
+            db_mode: mode,
+            ..info("parent")
+        },
+        &storage,
+    );
+    (dirs, Arc::new(Hosts::with_storage(localhost, storage)))
+}
+
+/// `dbengine_retention_statistics()`: a chart per tier localhost keeps in the dbengine, every ten seconds, labelled
+/// by its tier, with the space and time retention.
+#[test]
+fn the_dbengine_tiers_retention() {
+    let (_dirs, hosts) = dbengine_hosts(2, DbMode::Dbengine);
+    pulse(&hosts, Gates::default()).cycle();
+    let host = hosts.localhost();
+    for tier in 0..2 {
+        let id = format!("netdata.dbengine_retention_tier{tier}");
+        let chart = host.charts().find(&id).unwrap();
+        let m = chart.meta();
+        assert_eq!(
+            (
+                m.family.as_str(),
+                m.context.as_str(),
+                m.title.as_str(),
+                m.units.as_str(),
+                m.module.as_str(),
+                m.priority,
+                m.update_every,
+                m.chart_type,
+                m.labels.get(b"tier")
+            ),
+            (
+                "dbengine retention",
+                "netdata.dbengine_tier_retention",
+                "dbengine space and time retention",
+                "%",
+                "stats",
+                134900,
+                10,
+                ChartType::Line,
+                Some(tier.to_string().as_bytes())
+            )
+        );
+        // rrdeng_get_used_disk_space(): the files, a file's target, less what the last file holds
+        let td = &host.storage().dbengine().unwrap().tiers[tier];
+        let last = td.filenos().into_iter().max().unwrap();
+        let used = td.current_disk_space() + td.config.target_datafile_size()
+            - td.file(last).unwrap().pos();
+        assert_eq!(
+            values(host, &id),
+            [
+                ("space".to_string(), (used * 100 / (100 << 20)) as i64),
+                ("time".to_string(), 0)
+            ]
+        );
+        assert_ne!(
+            m.flags & netdata_agent_rrd::chart::flags::METADATA_UPDATE,
+            0,
+            "the metadata writer stores it"
+        );
+    }
+    // an alloc localhost keeps tier 0 out of the dbengine
+    let (_dirs, hosts) = dbengine_hosts(2, DbMode::Alloc);
+    pulse(&hosts, Gates::default()).cycle();
+    let host = hosts.localhost();
+    assert!(
+        host.charts()
+            .find("netdata.dbengine_retention_tier0")
+            .is_none()
+    );
+    assert!(
+        host.charts()
+            .find("netdata.dbengine_retention_tier1")
+            .is_some()
+    );
+}
+
+/// The retention percentages as C computes them.
+#[test]
+fn retention_percentages_as_c() {
+    use crate::retention::{space_percent, time_percent};
+    assert_eq!(space_percent(25, 100, 7), 25, "of the quota");
+    assert_eq!(
+        space_percent(25, 0, 75),
+        25,
+        "of the free and used space without one"
+    );
+    assert_eq!(space_percent(250, 100, 0), 250, "not clamped");
+    assert_eq!(space_percent(0, 0, 0), 0);
+    assert_eq!(time_percent(1000, 1900, 3600), 25);
+    assert_eq!(time_percent(1000, 9000, 3600), 100, "clamped at 100");
+    assert_eq!(time_percent(0, 9000, 3600), 0, "no oldest point");
+    assert_eq!(time_percent(1000, 1900, 0), 0, "no time limit");
+    assert_eq!(
+        time_percent(2000, 1100, 3600),
+        -25,
+        "an oldest point ahead of the clock"
+    );
+    assert_eq!(
+        space_percent(u64::MAX / 50, 100, 0),
+        ((u64::MAX / 50).wrapping_mul(100) / 100) as i64,
+        "the product wraps as C's"
+    );
+}
+
+/// `pulse_daemon_memory_do()`'s out of memory protection: charted only while the system's memory is known and the
+/// dbengine keeps some free.
+#[test]
+fn the_out_of_memory_protection() {
+    let charted = |protection, system_memory: fn() -> Option<u64>| {
+        let hosts = hosts();
+        let mut pulse = Pulse::new(
+            Arc::clone(&hosts),
+            Settings {
+                out_of_memory_protection: protection,
+                system_memory,
+                ..settings(Gates::default())
+            },
+        );
+        pulse.cycle();
+        hosts
+            .localhost()
+            .charts()
+            .find("netdata.out_of_memory_protection")
+            .map(|chart| {
+                let m = chart.meta();
+                assert_eq!(
+                    (
+                        m.family.as_str(),
+                        m.context.as_str(),
+                        m.title.as_str(),
+                        m.units.as_str(),
+                        m.module.as_str(),
+                        m.priority,
+                        m.update_every,
+                        m.chart_type
+                    ),
+                    (
+                        "Memory Usage",
+                        "netdata.out_of_memory_protection",
+                        "Out of Memory Protection",
+                        "bytes",
+                        "pulse",
+                        130103,
+                        1,
+                        ChartType::Area
+                    )
+                );
+                values(hosts.localhost(), "netdata.out_of_memory_protection")
+            })
+    };
+    assert_eq!(
+        charted(1 << 30, || Some(123_456)),
+        Some(vec![("available".to_string(), 123_456)])
+    );
+    assert_eq!(charted(0, || Some(123_456)), None, "no protection");
+    assert_eq!(charted(1 << 30, || None), None, "the memory unknown");
+
+    // the gate is read every cycle: memory unknown at the first, known at the second
+    static KNOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let hosts = hosts();
+    let mut pulse = Pulse::new(
+        Arc::clone(&hosts),
+        Settings {
+            out_of_memory_protection: 1 << 30,
+            system_memory: || {
+                KNOWN
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    .then_some(42)
+            },
+            ..settings(Gates::default())
+        },
+    );
+    let oom = || {
+        hosts
+            .localhost()
+            .charts()
+            .find("netdata.out_of_memory_protection")
+            .is_some()
+    };
+    pulse.cycle();
+    assert!(!oom());
+    KNOWN.store(true, std::sync::atomic::Ordering::Relaxed);
+    pulse.cycle();
+    assert!(oom());
 }

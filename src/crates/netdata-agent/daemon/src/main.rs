@@ -497,9 +497,14 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     };
     let health_enabled = conf.health_load_config_defaults();
     // nd_profile.storage_tiers and multidb_ctx: every host's tiers
-    let (dbengine, grouping, backfill) = match dbengine {
-        Some((runtime, grouping, backfill)) => (Some(runtime), grouping, backfill),
-        None => (None, vec![1], Backfill::New),
+    let (dbengine, grouping, backfill, out_of_memory_protection) = match dbengine {
+        Some(started) => (
+            Some(started.runtime),
+            started.grouping,
+            started.backfill,
+            started.out_of_memory_protection,
+        ),
+        None => (None, vec![1], Backfill::New, 0),
     };
     let storage = Arc::new(
         StorageLayout::new(
@@ -741,6 +746,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 stream_is_parent,
                 is_child: stream_is_child,
             },
+            out_of_memory_protection,
+            system_memory: pulse::system_memory_available,
         };
         match pulse::spawn(
             Arc::clone(&hosts),

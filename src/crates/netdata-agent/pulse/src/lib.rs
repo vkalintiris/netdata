@@ -3,11 +3,13 @@
 //! extended`), ML, gorilla, heartbeat, the dbengine caches, the registry, strings and ARAL are not (D80.4).
 
 mod chart;
+mod daemon_memory;
 mod http_api;
 mod ingestion;
 mod network;
 mod parents;
 mod queries;
+mod retention;
 
 use std::sync::Arc;
 
@@ -24,6 +26,10 @@ pub struct Settings {
     pub page_size: i64,
     /// Where the parents module runs.
     pub parents: Gates,
+    /// `dbengine_out_of_memory_protection`: what the dbengine's start keeps free, 0 without it.
+    pub out_of_memory_protection: u64,
+    /// `os_system_memory(true)`: the available bytes, while the total is known.
+    pub system_memory: fn() -> Option<u64>,
 }
 
 /// The pulse charts, each created on its first update as C's `static RRDSET *`.
@@ -34,7 +40,9 @@ pub struct Pulse {
     http_api: http_api::Charts,
     queries: queries::Charts,
     network: network::Charts,
+    retention: retention::Charts,
     parents: parents::Charts,
+    daemon_memory: daemon_memory::Charts,
 }
 
 impl Pulse {
@@ -46,7 +54,9 @@ impl Pulse {
             http_api: http_api::Charts::new(),
             queries: Default::default(),
             network: Default::default(),
+            retention: Default::default(),
             parents: Default::default(),
+            daemon_memory: Default::default(),
         }
     }
 
@@ -57,8 +67,10 @@ impl Pulse {
         self.http_api.update(&localhost);
         self.queries.update(&localhost);
         self.network.update(&localhost);
+        self.retention.update(&localhost);
         self.parents
             .update(&localhost, &self.hosts, self.settings.parents);
+        self.daemon_memory.update(&localhost);
     }
 }
 

@@ -12,3 +12,6 @@ workspace = true
 netdata-agent-rrd = { workspace = true }
 netdata-agent-text = { workspace = true }
 
+[dev-dependencies]
+netdata-agent-storage = { workspace = true }
+tempfile = { workspace = true }

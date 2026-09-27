@@ -124,6 +124,12 @@ fn a_tier_over_its_quota_indexes_one_file() {
     let td = &e.tiers[0];
     assert!(td.needs_indexing());
     assert!(td.file(1).unwrap().v2_available() && !td.file(2).unwrap().v2_available());
+    // rrdeng_get_used_disk_space(): the files, plus a file's target, less what the last file holds
+    let last = td.filenos().into_iter().max().unwrap();
+    assert_eq!(
+        td.used_disk_space(),
+        td.current_disk_space() + td.config.target_datafile_size() - td.file(last).unwrap().pos()
+    );
     // the next run goes on from the next file
     td.clear_needs_indexing();
     assert_eq!(journal_index(&e, 0), 1);

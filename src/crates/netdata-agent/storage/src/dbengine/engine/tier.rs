@@ -755,11 +755,24 @@ impl TierData {
             }
         }
         self.config.max_disk_space != 0
-            && self
-                .current_disk_space()
-                .wrapping_add(self.config.target_datafile_size())
-                .wrapping_sub(last.pos())
-                > self.config.max_disk_space
+            && self.used_disk_space_after(last.pos()) > self.config.max_disk_space
+    }
+
+    /// `rrdeng_get_used_disk_space()`: the space the tier will take with its last file full, its files plus a file's
+    /// target less what the last file holds (nothing without files); C's share of the database files is 0 (D67.5).
+    pub fn used_disk_space(&self) -> u64 {
+        let active = read(&self.files)
+            .values()
+            .next_back()
+            .map_or(0, |last| last.pos());
+        self.used_disk_space_after(active)
+    }
+
+    /// `rrdeng_get_used_disk_space(having_lock)`: with the files already read.
+    fn used_disk_space_after(&self, active: u64) -> u64 {
+        self.current_disk_space()
+            .wrapping_add(self.config.target_datafile_size())
+            .wrapping_sub(active)
     }
 
     /// The open cache.

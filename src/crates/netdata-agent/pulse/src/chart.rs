@@ -46,8 +46,28 @@ impl<'a> Localhost<'a> {
         }
     }
 
+    /// localhost's `rrd_memory_mode`.
+    pub fn mode(&self) -> DbMode {
+        self.mode
+    }
+
+    /// `os_system_memory(true).ram_available_bytes`, while the system's memory is known.
+    pub fn system_memory_available(&self) -> Option<u64> {
+        (self.settings.system_memory)()
+    }
+
+    /// `dbengine_out_of_memory_protection`.
+    pub fn out_of_memory_protection(&self) -> u64 {
+        self.settings.out_of_memory_protection
+    }
+
     /// `rrdset_create_localhost()` with localhost's update every.
     pub fn create(&self, def: &Def<'_>) -> Arc<Chart> {
+        self.create_every(def, self.update_every)
+    }
+
+    /// `rrdset_create_localhost()`.
+    pub fn create_every(&self, def: &Def<'_>, update_every: i32) -> Arc<Chart> {
         let spec = ChartSpec {
             type_: "netdata",
             id: def.id,
@@ -59,7 +79,7 @@ impl<'a> Localhost<'a> {
             plugin: "netdata",
             module: Some(def.module),
             priority: def.priority,
-            update_every: self.update_every,
+            update_every,
             chart_type: def.chart_type,
             mode: self.mode,
             history_entries: self.history_entries,

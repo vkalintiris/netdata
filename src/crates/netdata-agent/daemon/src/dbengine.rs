@@ -29,9 +29,19 @@ fn rotation_hook(slot: &Arc<DbRotation>) -> RotationHook {
     RotationHook(Arc::new(move || slot.rotated(now_realtime_ut())))
 }
 
-/// `rrd_init()`'s engine start: its record, the keys, then the tiers; and the tiers' grouping iterations
-/// (`storage_tiers_grouping_iterations`) and the backfill mode (`default_backfill`). C's fallbacks after it (one tier, alloc mode) cannot run in a dbengine
-/// build, where the start either brings a tier up or is fatal, so they are not ported.
+/// What the engine's start gives the rest of `rrd_init()`.
+pub struct Started {
+    pub runtime: Runtime,
+    /// `storage_tiers_grouping_iterations`.
+    pub grouping: Vec<u64>,
+    /// `default_backfill`.
+    pub backfill: Backfill,
+    /// `dbengine_out_of_memory_protection`, in bytes (0 without one).
+    pub out_of_memory_protection: u64,
+}
+
+/// `rrd_init()`'s engine start: its record, the keys, then the tiers. C's fallbacks after it (one tier, alloc mode)
+/// cannot run in a dbengine build, where the start either brings a tier up or is fatal, so they are not ported.
 pub fn start(
     conf: &mut Conf,
     db: &DbSection,
@@ -39,7 +49,7 @@ pub fn start(
     pool: &WorkPool,
     meta: Option<Arc<MetaDb>>,
     db_rotation: &Arc<DbRotation>,
-) -> (Runtime, Vec<u64>, Backfill) {
+) -> Started {
     nd_log!(
         Source::Daemon,
         Priority::Debug,
@@ -113,7 +123,12 @@ pub fn start(
         prepopulate,
         now_realtime_s,
     );
-    (runtime, settings.grouping_iterations, settings.backfill)
+    Started {
+        runtime,
+        grouping: settings.grouping_iterations,
+        backfill: settings.backfill,
+        out_of_memory_protection: settings.out_of_memory_protection,
+    }
 }
 
 #[cfg(test)]
