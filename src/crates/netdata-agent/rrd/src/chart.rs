@@ -20,6 +20,7 @@ use crate::host::meta_flags;
 use crate::labels::{FLAG_DONT_DELETE, Labels, SRC_AUTO};
 use crate::mode::{DbMode, align_entries_to_pagesize};
 use crate::storage::StorageLayout;
+use crate::tiers::{self, Rollup, TierRecord};
 
 /// `RRD_ID_LENGTH_MAX`.
 pub const ID_LENGTH_MAX: usize = 1200;
@@ -259,6 +260,8 @@ pub struct Chart {
     storage: Arc<StorageLayout>,
     /// `st->smg[tier]`: what staggers the chart's pages in each tier (D65.1), kept for the chart's life.
     alignment: Vec<Alignment>,
+    /// `st->collection_modulo`: what spreads the tiers' writes of the chart's dimensions over time (D72.3).
+    collection_modulo: u16,
     /// `st->parts.name`: the name `rrdset_create()` was first called with, as the metadata writer stores it.
     name_part: Option<String>,
     /// The host's `RRDHOST_FLAG_METADATA_*`, which this chart's metadata changes raise.
@@ -365,11 +368,11 @@ impl Chart {
             return;
         };
         let ue = i64::from(self.update_every());
-        let mut collect = lock(&dim.collect);
+        let mut store = lock(&dim.store);
         for (t, tier) in dim.tiers.iter().enumerate() {
-            if let (TierMetric::Dbengine(metric), None) = (tier, &collect[t]) {
+            if let (TierMetric::Dbengine(metric), None) = (tier, &store.tiers[t].handle) {
                 let tier_ue = (self.storage.tier_grouping(t) as i64 * ue) as u32;
-                collect[t] = Some(CollectHandle::init(
+                store.tiers[t].handle = Some(CollectHandle::init(
                     engine,
                     metric,
                     tier_ue,
@@ -652,8 +655,17 @@ impl Chart {
             .host_contexts
             .find_dimension_uuid(&context, &self.id, id)
             .unwrap_or_else(|| *uuid::Uuid::new_v4().as_bytes());
-        // the ram engine's tier 0 for the modes that are not dbengine, then the dbengine's tiers (N8)
+        // the ram engine's tier 0 for the modes that are not dbengine, then the dbengine's tiers (N8); every tier
+        // above 0 aggregates into windows that its flush modulo spreads (rrddim_collection_modulo())
         let (mut tiers, mut collect) = (Vec::new(), Vec::new());
+        let rollup = |t: usize| {
+            let grouping = self.storage.tier_grouping(t);
+            let spread = (grouping as i64 * i64::from(meta.update_every)) as u32;
+            Rollup::new(
+                grouping,
+                tiers::flush_modulo(self.collection_modulo, spread),
+            )
+        };
         if self.mode != DbMode::Dbengine {
             let entries = if self.mode == DbMode::Ram {
                 self.entries.max(1)
@@ -669,7 +681,10 @@ impl Chart {
                     update_every_s: i64::from(meta.update_every),
                 },
             )));
-            collect.push(None);
+            collect.push(TierCollect {
+                handle: None,
+                rollup: rollup(0),
+            });
         }
         if let Some(engine) = self.storage.dbengine() {
             for t in 0..self.storage.storage_tiers() {
@@ -680,12 +695,15 @@ impl Chart {
                 let (metric, _) = engine.mrg.add_and_acquire(&uuid, t, 0, 0, 0);
                 let tier_ue =
                     (self.storage.tier_grouping(t) as i64 * i64::from(meta.update_every)) as u32;
-                collect.push(Some(CollectHandle::init(
-                    engine,
-                    &metric,
-                    tier_ue,
-                    self.alignment[t],
-                )));
+                collect.push(TierCollect {
+                    handle: Some(CollectHandle::init(
+                        engine,
+                        &metric,
+                        tier_ue,
+                        self.alignment[t],
+                    )),
+                    rollup: rollup(t),
+                });
                 tiers.push(TierMetric::Dbengine(metric));
             }
         }
@@ -709,7 +727,11 @@ impl Chart {
                 ..DimCollection::default()
             }),
             tiers,
-            collect: Mutex::new(collect),
+            store: Mutex::new(DimStore {
+                tiers: collect,
+                update_every: i64::from(meta.update_every),
+                backfilled: false,
+            }),
         });
         // C compares with the first other dimension only (the loop breaks after it).
         let heterogeneous = index.ordered.first().is_some_and(|td| {
@@ -815,8 +837,51 @@ pub struct Dim {
     /// The storage of each tier in use, by tier: the ram ring of a chart that is not dbengine at tier 0, the
     /// dbengine's registry entries elsewhere.
     tiers: Vec<TierMetric>,
-    /// `rd->tiers[t].sch` by tier: a dbengine tier's collection until it is finalized (`None` for a ram tier).
-    collect: Mutex<Vec<Option<CollectHandle>>>,
+    /// What the collection writes through, by tier; one lock serializes stores, finalization and frequency changes.
+    store: Mutex<DimStore>,
+}
+
+/// `rd->tiers[t]`: a tier's collection (`sch`, `None` for a ram tier and once finalized) and, above tier 0, the
+/// window it aggregates.
+#[derive(Debug)]
+struct TierCollect {
+    handle: Option<CollectHandle>,
+    rollup: Rollup,
+}
+
+impl TierCollect {
+    /// `storage_engine_store_metric()` of a tier record: nothing once the collection ended (a NULL `sch`).
+    fn write(&mut self, record: Option<TierRecord>) {
+        if let (Some(r), Some(handle)) = (record, self.handle.as_mut()) {
+            handle.store_next(
+                r.end_time_s as u64 * 1_000_000,
+                r.sum,
+                r.min,
+                r.max,
+                r.count,
+                r.anomaly_count,
+                r.flags,
+            );
+        }
+    }
+}
+
+impl Drop for TierCollect {
+    /// A dropped collection does finalize's work (D66 2.Q6), the parked window first.
+    fn drop(&mut self) {
+        let parked = self.rollup.flush();
+        self.write(parked);
+    }
+}
+
+/// A dimension's storage state.
+#[derive(Debug)]
+struct DimStore {
+    tiers: Vec<TierCollect>,
+    /// `rd->rrdset->update_every`, which the windows follow: the chart's, updated with its frequency changes.
+    update_every: i64,
+    /// `RRDDIM_OPTION_BACKFILLED_HIGH_TIERS`: set after the first store.
+    backfilled: bool,
 }
 
 impl Dim {
@@ -889,27 +954,42 @@ impl Dim {
         self.retention().1
     }
 
-    /// `rrddim_store_metric()`: the point into tier 0 (the ring, or the dbengine collection while it runs); the first
-    /// store after a (re)link marks the metric collected.
+    /// `rrddim_store_metric()`: the point into tier 0 (the ring, or the dbengine collection while it runs), then
+    /// into the window of every dbengine tier above it, whose state advances even once its collection ended; the
+    /// first store after a (re)link marks the metric collected.
     pub fn store_metric(&self, point_end_time_ut: u64, value: f64, flags: u32) {
+        let mut store = lock(&self.store);
         match self.tiers.first() {
             Some(TierMetric::Ram(ring)) => ring.store(point_end_time_ut, value, flags),
             Some(TierMetric::Dbengine(_)) => {
-                if let Some(handle) = lock(&self.collect)[0].as_mut() {
+                if let Some(handle) = store.tiers[0].handle.as_mut() {
                     handle.store_next(point_end_time_ut, value, 0.0, 0.0, 1, 0, flags);
                 }
             }
             None => {}
         }
-        // S4a: the tiers above 0 aggregate the point (`store_metric_at_tier()`)
+        let update_every = store.update_every;
+        let point = tiers::collected_point(point_end_time_ut, value, flags, update_every);
+        for (t, tier) in self.tiers.iter().enumerate().skip(1) {
+            if !matches!(tier, TierMetric::Dbengine(_)) {
+                continue;
+            }
+            // the backfill of a tier collected for the first time comes with S4a commit 2
+            let tier = &mut store.tiers[t];
+            let record = tier.rollup.store(update_every, point);
+            tier.write(record);
+        }
+        store.backfilled = true;
+        drop(store);
         contexts::collected_rrddim(self);
     }
 
     /// `rrdset_set_update_every_s()` for this dimension: each tier's storage takes the tier's update every.
     fn change_collection_frequency(&self, storage: &StorageLayout, update_every: i64) {
-        let mut collect = lock(&self.collect);
+        let mut store = lock(&self.store);
+        store.update_every = update_every;
         for (t, tier) in self.tiers.iter().enumerate() {
-            match (tier, collect[t].as_mut()) {
+            match (tier, store.tiers[t].handle.as_mut()) {
                 (TierMetric::Ram(ring), _) => ring.change_update_every(update_every),
                 (TierMetric::Dbengine(_), Some(handle)) => handle.change_collection_frequency(
                     (storage.tier_grouping(t) as i64 * update_every) as u32,
@@ -921,9 +1001,9 @@ impl Dim {
 
     /// `storage_engine_store_flush()` of every tier: the ring's pending point, a dbengine tier's page.
     pub(crate) fn store_flush(&self) {
-        let mut collect = lock(&self.collect);
+        let mut store = lock(&self.store);
         for (t, tier) in self.tiers.iter().enumerate() {
-            match (tier, collect[t].as_mut()) {
+            match (tier, store.tiers[t].handle.as_mut()) {
                 (TierMetric::Ram(ring), _) => ring.flush(),
                 (TierMetric::Dbengine(_), Some(handle)) => handle.flush_current_page(),
                 (TierMetric::Dbengine(_), None) => {}
@@ -931,16 +1011,25 @@ impl Dim {
         }
     }
 
-    /// `rrddim_finalize_collection_and_check_retention()`: every tier's collection ends; whether the dimension still
-    /// has data (a tier with retention, a ram tier, which C counts as retained, or no tier at all).
+    /// `rrddim_finalize_collection_and_check_retention()`: every tier's collection ends, a tier above 0 writing its
+    /// parked window first (the one being filled is lost); whether the dimension still has data (a tier with
+    /// retention, a ram tier, which C counts as retained, or no tier at all).
     pub fn finalize_collection(&self) -> bool {
-        let mut collect = lock(&self.collect);
+        let mut store = lock(&self.store);
         let (mut available, mut said_no) = (0, 0);
         for (t, tier) in self.tiers.iter().enumerate() {
             match tier {
                 TierMetric::Ram(_) => available += 1,
                 TierMetric::Dbengine(_) => {
-                    if let Some(handle) = collect[t].take() {
+                    let tier = &mut store.tiers[t];
+                    if tier.handle.is_none() {
+                        continue;
+                    }
+                    if t > 0 {
+                        let parked = tier.rollup.flush();
+                        tier.write(parked);
+                    }
+                    if let Some(handle) = tier.handle.take() {
                         available += 1;
                         said_no += usize::from(handle.finalize());
                     }
@@ -1142,6 +1231,7 @@ impl Charts {
                     alignment: (0..self.storage.storage_tiers())
                         .map(|t| Alignment::new(&self.host_guid, &full_id, t))
                         .collect(),
+                    collection_modulo: self.storage.next_collection_modulo(),
                     name_part: spec.name.filter(|n| !n.is_empty()).map(str::to_string),
                     host_meta: Arc::clone(&self.host_meta),
                     labels_saved_version: AtomicU32::new(0),

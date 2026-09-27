@@ -72,8 +72,9 @@ impl StoragePoint {
                 self.max = src.max;
             }
             self.sum += src.sum;
-            self.count += src.count;
-            self.anomaly_count += src.anomaly_count;
+            // C's u32 counts wrap
+            self.count = self.count.wrapping_add(src.count);
+            self.anomaly_count = self.anomaly_count.wrapping_add(src.anomaly_count);
             self.flags |= src.flags & crate::storage_number::SN_FLAG_RESET;
         }
     }

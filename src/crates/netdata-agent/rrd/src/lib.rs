@@ -13,3 +13,4 @@ pub mod status;
 pub mod storage;
 pub mod stream_path;
 pub mod system_info;
+pub mod tiers;

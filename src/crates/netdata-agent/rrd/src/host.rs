@@ -1388,6 +1388,53 @@ mod tests {
         assert!(e.tiers.iter().all(|td| td.collectors_running() == 0));
     }
 
+    /// The tiers above 0 aggregate tier 0's points into windows of `update every × grouping`: a completed window is
+    /// parked and written at its chart's flush modulo (1 for the first chart), and finalize writes the parked one
+    /// while the window being filled is lost (D72).
+    #[test]
+    fn tiers_aggregate_collected_windows() {
+        use crate::chart::Algorithm;
+        use netdata_agent_storage::dbengine::engine::query::Priority;
+        // multiples of 15
+        const B: i64 = 1_790_179_995;
+        let (_dirs, storage) = engine(3);
+        let storage = Arc::new(
+            Arc::try_unwrap(storage)
+                .unwrap()
+                .with_profile(vec![1, 5, 3], 1),
+        );
+        let e = Arc::clone(storage.dbengine().unwrap());
+        let dbengine = HostInfo {
+            db_mode: DbMode::Dbengine,
+            ..info("t")
+        };
+        let host = Host::with_storage("guid-t", false, dbengine, &storage);
+        let chart = collected_chart(&host, DbMode::Dbengine);
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        for t in B..=B + 41 {
+            store(&dim, t, (t - B) as f64);
+        }
+        assert!(dim.finalize_collection());
+        let records = |tier: usize| -> Vec<(i64, f64, u32)> {
+            let metric = e.mrg.get_and_acquire(dim.uuid(), tier).unwrap();
+            let mut q = e.query(&metric, B, B + 60, Priority::Normal);
+            let mut out = Vec::new();
+            while !q.is_finished() {
+                let p = q.next_metric();
+                if p.sum.is_finite() {
+                    out.push((p.end_time_s, p.sum, p.count));
+                }
+            }
+            out
+        };
+        // the first window starts on a boundary and holds 6 points; B + 40's window was parked by B + 41
+        let mut tier1 = vec![(B + 5, 15.0, 6)];
+        tier1.extend((2..=8).map(|k| (B + 5 * k, (25 * k - 10) as f64, 5)));
+        assert_eq!(records(1), tier1);
+        // the window being filled (from B + 31) is lost at finalize
+        assert_eq!(records(2), [(B + 15, 120.0, 16), (B + 30, 345.0, 15)]);
+    }
+
     /// `rrdhost_create()` of a host that is not archived loads its contexts, once, on the creating thread; finding it
     /// again does not.
     #[test]

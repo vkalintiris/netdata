@@ -3,6 +3,7 @@
 //! repository; D64.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::dbengine::engine::mrg::{Handle, Mrg};
@@ -23,6 +24,8 @@ pub struct StorageLayout {
     dbengine: Option<Arc<Dbengine>>,
     grouping_iterations: Vec<u64>,
     update_every: i64,
+    /// `global_rrdset_counter`: the charts created by every host of the daemon.
+    charts_created: AtomicUsize,
 }
 
 impl Default for StorageLayout {
@@ -38,7 +41,14 @@ impl StorageLayout {
             dbengine,
             grouping_iterations: GROUPING_ITERATIONS.to_vec(),
             update_every: 1,
+            charts_created: AtomicUsize::new(0),
         }
+    }
+
+    /// `rrdset_collection_modulo_init()`: a new chart's number, which spreads its tier writes over time.
+    pub fn next_collection_modulo(&self) -> u16 {
+        (self.charts_created.fetch_add(1, Ordering::Relaxed)
+            % crate::tiers::COLLECTION_MODULO_RANGE) as u16
     }
 
     /// The configured grouping iterations (`[db] dbengine tier N update every iterations`, tier 0 first) and
