@@ -178,14 +178,86 @@ impl Ingestion {
     }
 }
 
+/// `QUERY_SOURCE`: who asked for a query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuerySource {
+    ApiData,
+    Ml,
+    ApiWeights,
+    ApiBadge,
+    Health,
+    UnitTest,
+    Unknown,
+}
+
+/// The queries of one source, the points they read and the points they generated.
+#[derive(Debug, Default)]
+struct SourceCounters {
+    queries: AtomicU64,
+    points_read: AtomicU64,
+    points_generated: AtomicU64,
+}
+
+/// A read of one source's counters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceStats {
+    pub queries: u64,
+    pub points_read: u64,
+    pub points_generated: u64,
+}
+
 /// `query_statistics` (`pulse-queries.c`): the queries made and the points they read, per source.
 #[derive(Debug, Default)]
 pub struct Queries {
+    /// `/api/vX/data`, ML, weights, badges, health.
+    sources: [SourceCounters; 5],
     backfill_queries: AtomicU64,
     backfill_points_read: AtomicU64,
 }
 
+impl QuerySource {
+    /// The counters a source's queries add to; none for unit tests and unknown sources.
+    fn index(self) -> Option<usize> {
+        match self {
+            QuerySource::ApiData => Some(0),
+            QuerySource::Ml => Some(1),
+            QuerySource::ApiWeights => Some(2),
+            QuerySource::ApiBadge => Some(3),
+            QuerySource::Health => Some(4),
+            QuerySource::UnitTest | QuerySource::Unknown => None,
+        }
+    }
+}
+
 impl Queries {
+    /// `pulse_queries_rrdr_query_completed()`: queries of `source` and the points they read and generated.
+    pub fn rrdr_query_completed(
+        &self,
+        queries: u64,
+        points_read: u64,
+        points_generated: u64,
+        source: QuerySource,
+    ) {
+        if let Some(c) = source.index().map(|i| &self.sources[i]) {
+            c.queries.fetch_add(queries, Ordering::Relaxed);
+            c.points_read.fetch_add(points_read, Ordering::Relaxed);
+            c.points_generated
+                .fetch_add(points_generated, Ordering::Relaxed);
+        }
+    }
+
+    /// The counters of `source` (zero for the ones C does not count).
+    pub fn source(&self, source: QuerySource) -> SourceStats {
+        source.index().map_or_else(SourceStats::default, |i| {
+            let c = &self.sources[i];
+            SourceStats {
+                queries: c.queries.load(Ordering::Relaxed),
+                points_read: c.points_read.load(Ordering::Relaxed),
+                points_generated: c.points_generated.load(Ordering::Relaxed),
+            }
+        })
+    }
+
     /// `pulse_queries_backfill_query_completed()`: one query of a lower tier for a backfill, and its points.
     pub fn backfill_query_completed(&self, points_read: u64) {
         self.backfill_queries.fetch_add(1, Ordering::Relaxed);
@@ -253,6 +325,26 @@ mod tests {
             [2, 1, 1],
             "tier 2 waited here; the other thread's point not"
         );
+    }
+
+    /// Each source counts apart; unit tests and unknown sources count nowhere.
+    #[test]
+    fn queries_count_per_source() {
+        let q = Queries::default();
+        q.rrdr_query_completed(1, 10, 5, QuerySource::ApiData);
+        q.rrdr_query_completed(1, 2, 1, QuerySource::ApiData);
+        q.rrdr_query_completed(3, 4, 5, QuerySource::Health);
+        q.rrdr_query_completed(9, 9, 9, QuerySource::UnitTest);
+        q.rrdr_query_completed(9, 9, 9, QuerySource::Unknown);
+        let stats = |queries, points_read, points_generated| SourceStats {
+            queries,
+            points_read,
+            points_generated,
+        };
+        assert_eq!(q.source(QuerySource::ApiData), stats(2, 12, 6));
+        assert_eq!(q.source(QuerySource::Health), stats(3, 4, 5));
+        assert_eq!(q.source(QuerySource::Ml), stats(0, 0, 0));
+        assert_eq!(q.source(QuerySource::UnitTest), stats(0, 0, 0));
     }
 
     #[test]

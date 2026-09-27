@@ -6,6 +6,7 @@
 use netdata_agent_log::{Priority, Source, nd_log};
 use std::time::Instant;
 
+use netdata_agent_rrd::pulse::{Queries, QuerySource};
 use netdata_agent_rrd::storage::TierHandle;
 use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::query::StorageQuery;
@@ -740,9 +741,21 @@ pub struct Control<'a> {
     pub interrupted: &'a dyn Fn(&mut i32) -> bool,
     /// The configured SES/DES window limits.
     pub windows: Windows,
+    /// The pulse counters and the query's source (`qt->request.query_source`), when the query counts.
+    pub pulse: Option<(&'a Queries, QuerySource)>,
 }
 
 impl Control<'_> {
+    /// `pulse_queries_rrdr_query_completed()` of a queried metric: one query, and the points `r` read and generated
+    /// since `last`, which it then holds.
+    fn metric_queried(&self, r: &Rrdr, last: &mut (u64, u64)) {
+        let now = (r.db_points_read as u64, r.result_points_generated as u64);
+        if let Some((queries, source)) = self.pulse {
+            queries.rrdr_query_completed(1, now.0 - last.0, now.1 - last.1, source);
+        }
+        *last = now;
+    }
+
     /// The two checks `rrd2rrdr()` makes after each queried metric; both can log in the same iteration. `errno` is
     /// what C's errno holds between iterations: the interrupt callback's peek leaves EAGAIN while the client is
     /// connected (ECONNRESET after a reset), and every record written clears it.
@@ -919,6 +932,7 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
     let (mut used, mut nonzero) = (0, 0);
     let mut timer = NodeTimer::new();
     // C's errno as the loop leaves it
+    let mut last_points = (0, 0);
     let mut errno = 0;
     for d in 0..qt.query.len() {
         timer.enter(qt, d);
@@ -927,6 +941,7 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
         }
         timer.executed();
         count_queried(qt, d);
+        control.metric_queried(&r, &mut last_points);
         if qt.query[d].status & metric_status::NONZERO != 0 {
             nonzero += 1;
         }
@@ -958,6 +973,7 @@ pub fn run_v2(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> O
     let (mut used, mut nonzero) = (0, 0);
     let mut timer = NodeTimer::new();
     // C's errno as the loop leaves it
+    let mut last_points = (0, 0);
     let mut errno = 0;
     for d in 0..qt.query.len() {
         timer.enter(qt, d);
@@ -986,6 +1002,7 @@ pub fn run_v2(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> O
             AddMode::default(),
         );
         count_queried(qt, d);
+        control.metric_queried(&grouped.r_tmp, &mut last_points);
         // Aggregated across metrics from here: positive.
         let (_, qi, qc, qn) = links(qt, d);
         qt.query[d].query_points.make_positive();

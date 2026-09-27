@@ -13,6 +13,7 @@ fn run(h: &Arc<Host>, query: &str) -> (QueryTarget, Window, Rrdr) {
         received: Instant::now(),
         interrupted: &|_| false,
         windows: Windows::default(),
+        pulse: None,
     };
     let r = run_v1(&mut qt, &mut window, &control);
     (qt, window, r)
@@ -216,6 +217,7 @@ fn v2_groups_the_metric_and_averages_its_rows() {
         received: Instant::now(),
         interrupted: &|_| false,
         windows: Windows::default(),
+        pulse: None,
     };
     let r = run_v2(&mut qt, &mut window, &control).unwrap();
     let thirty = unpack(pack(30.0, 0));
@@ -267,6 +269,7 @@ fn planned(h: &Arc<Host>, query: &str, now: i64) -> (QueryTarget, Rrdr, Planned)
         received: Instant::now(),
         interrupted: &|_| false,
         windows: Windows::default(),
+        pulse: None,
     };
     let bounds = (window.after, window.before);
     let r = run_v1(&mut qt, &mut window, &control);
@@ -667,4 +670,39 @@ fn natural_points_on_a_selected_tier_use_its_update_every() {
         window.points, 29,
         "tier 0's 10 s points, as C's window counts them"
     );
+}
+
+/// `pulse_queries_rrdr_query_completed()` per queried metric: a counted v1 and v2 query each add one query per
+/// metric and the points its execution read and generated, to its source.
+#[test]
+fn counted_queries_add_their_points_to_their_source() {
+    let h = host();
+    let queries = Queries::default();
+    let control = Control {
+        received: Instant::now(),
+        interrupted: &|_| false,
+        windows: Windows::default(),
+        pulse: Some((&queries, QuerySource::ApiData)),
+    };
+    let (mut qt, mut window) = v1_target(&h, &format!("after={T0}&before={}", T0 + 6));
+    let r = run_v1(&mut qt, &mut window, &control);
+    let v1 = queries.source(QuerySource::ApiData);
+    assert_eq!(
+        (v1.queries, v1.points_read, v1.points_generated),
+        (
+            qt.query.len() as u64,
+            r.db_points_read as u64,
+            r.result_points_generated as u64
+        )
+    );
+    assert!(v1.points_read > 0);
+    let (mut qt, mut window) = v2_target(
+        &h,
+        &format!("scope_contexts=ctx.a&after={T0}&before={}&points=6", T0 + 6),
+    );
+    run_v2(&mut qt, &mut window, &control).unwrap();
+    let both = queries.source(QuerySource::ApiData);
+    assert_eq!(both.queries, v1.queries + qt.query.len() as u64);
+    assert!(both.points_read > v1.points_read && both.points_generated > v1.points_generated);
+    assert_eq!(queries.source(QuerySource::Health).queries, 0);
 }

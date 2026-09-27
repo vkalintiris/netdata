@@ -2,6 +2,7 @@
 //! `src/web/api/v1/api_v1_data.c` and `api_v23_data_internal()` in `src/web/api/v2/api_v2_data.c`, with the timeout
 //! checkpoint of `src/web/server/web_client.c`. Spec §2.3-2.4, §2.10-2.12.
 
+use netdata_agent_rrd::pulse::QuerySource;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -156,6 +157,10 @@ fn execute(
         received,
         interrupted: route.interrupted,
         windows: route.shared.grouping_windows,
+        pulse: Some((
+            &route.shared.hosts.storage().pulse().queries,
+            QuerySource::ApiData,
+        )),
     };
     let response = data_query_execute(&mut qt, &mut window, &control, &agent);
     body.extend_from_slice(&response.body);
