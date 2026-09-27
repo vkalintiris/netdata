@@ -199,7 +199,8 @@ pub fn thread_tag_set(tag: &str) {
 
 /// The tag this thread's records carry: its `thread_tag_set()` tag, else its name; none for the main thread, as in C.
 fn thread_tag() -> String {
-    let retagged = THREAD_TAG.with(|t| t.borrow().clone());
+    // during thread-local teardown the tag is gone, and the name serves
+    let retagged = THREAD_TAG.try_with(|t| t.borrow().clone()).ok().flatten();
     match retagged.or_else(|| std::thread::current().name().map(str::to_string)) {
         Some(name) if name != "main" => name,
         _ => String::new(),

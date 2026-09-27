@@ -120,7 +120,6 @@ enum OnDone {
     StreamPath,
 }
 
-/// The receiver side of one connection.
 /// A replication request a backfill held back: `REPLAY_CHART` for `chart` once its tiers are backfilled
 /// (`struct backfill_request_data`).
 #[derive(Debug, Clone)]
@@ -134,6 +133,7 @@ pub struct ReplayRequest {
 /// Where a backfill's answer goes: the stream thread that owns the connection (false when it is gone).
 pub type ReplaySink = Arc<dyn Fn(ReplayRequest) -> bool + Send + Sync>;
 
+/// The receiver side of one connection.
 pub struct Parser {
     host: Arc<Host>,
     /// `localhost`, whose entry the stream path sent back to the child carries.

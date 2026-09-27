@@ -1048,13 +1048,13 @@ impl Dim {
         lock(&self.store).backfilled
     }
 
-    /// `backfill_execute()` for this dimension: every tier above 0 backfills up to `now_s`; the dimension counts as
-    /// backfilled only when some tier got past the backfill's checks.
-    pub fn backfill_tiers(&self, now_s: i64) -> bool {
+    /// `backfill_execute()` for this dimension: every tier above 0 backfills up to the wall clock as it reads it;
+    /// the dimension counts as backfilled only when some tier got past the backfill's checks.
+    pub fn backfill_tiers(&self, clock: fn() -> i64) -> bool {
         let mut store = lock(&self.store);
         let mut success = false;
         for tier in 1..self.tiers.len() {
-            success |= self.backfill(&mut store, tier, now_s);
+            success |= self.backfill(&mut store, tier, clock());
         }
         if success {
             store.backfilled = true;

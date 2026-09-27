@@ -145,7 +145,6 @@ mod tests {
         (reply.code, format!("{head}\"nonce\":X{tail}"))
     }
 
-    /// C's bodies byte for byte (the spec's captures, `evidence/2026-09-26-sp1-stream-info-spec.md` §1.4 and §5).
     /// C's override: an offline host reads initializing only while a backfill runs.
     #[test]
     fn backfills_make_offline_hosts_initializing() {
@@ -164,6 +163,7 @@ mod tests {
         );
     }
 
+    /// C's bodies byte for byte (the spec's captures, `evidence/2026-09-26-sp1-stream-info-spec.md` §1.4 and §5).
     #[test]
     fn answers_as_c() {
         let hosts = Hosts::new(Host::new(LOCALHOST, true, info("parity-parent")));

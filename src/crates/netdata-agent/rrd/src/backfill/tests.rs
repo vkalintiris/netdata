@@ -69,7 +69,7 @@ fn requests_queue_the_dimensions_not_backfilled() {
 }
 
 /// After a restart the pool backfills up to the wall clock: a seam shorter than a tier window, which the first
-/// store's backfill does not reach, is restored, and the point the child replays next is not counted twice.
+/// store's backfill does not reach (its gap to the tier is under one window), is restored.
 #[test]
 fn the_pool_backfills_up_to_the_wall_clock() {
     for pool in [true, false] {
@@ -132,9 +132,21 @@ fn jobs_of_a_gone_receiver_fail() {
     drain(&q);
     assert_eq!(*answers.lock().unwrap(), [(0, 1)]);
     assert!(!f.dim.is_backfilled());
-    // the reset counted the pending answer out; the stale receiver's answer is refused
+    // the reset counted the pending answer out; the stale receiver's answer is refused, before and after another
+    // receiver attached, and only that one's answer counts
     assert_eq!(f.host.backfill_pending(), 0);
     assert!(!f.host.backfill_answered(&weak));
+    let again = Arc::new(crate::host::ReceiverSlot::new(
+        2,
+        Default::default(),
+        crate::host::ReceiverLink::default(),
+        Box::new(|| {}),
+    ));
+    assert!(f.host.set_receiver(Arc::clone(&again)));
+    f.host.backfill_requested();
+    assert!(!f.host.backfill_answered(&weak));
+    assert_eq!(f.host.backfill_pending(), 1);
+    assert!(f.host.backfill_answered(&Arc::downgrade(&again)));
     assert_eq!(f.host.backfill_pending(), 0);
 }
 

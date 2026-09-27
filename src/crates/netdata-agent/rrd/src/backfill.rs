@@ -112,12 +112,10 @@ impl BackfillQueue {
         if dims.is_empty() {
             return Err(callback);
         }
-        let mut queue = self.lock();
-        if !queue.running {
-            return Err(callback);
-        }
+        // the dimensions' options before the queue's lock, which the workers wait on
         let pending: Vec<Arc<Dim>> = dims.into_iter().filter(|d| !d.is_backfilled()).collect();
-        if pending.is_empty() {
+        let mut queue = self.lock();
+        if !queue.running || pending.is_empty() {
             return Err(callback);
         }
         let request = Arc::new(Request {
@@ -145,7 +143,7 @@ impl BackfillQueue {
         if !work.request.host.is_receiver(&work.request.receiver) {
             return false;
         }
-        work.dim.backfill_tiers((self.clock)())
+        work.dim.backfill_tiers(self.clock)
     }
 
     /// `backfill_dim_work_free()`: the chart's last job runs its callback.

@@ -694,6 +694,32 @@ impl Receivers {
     }
 }
 
+/// `stream_receiver_did_replication_progress()`: new replication requests, none yet, charts waiting for their
+/// backfill, or less than ten minutes since the last request; `seen` is the request count last seen and when it moved.
+fn replication_progressed(
+    seen: (&mut u32, &mut Option<Instant>),
+    requests: u32,
+    backfill_pending: u32,
+    now: Instant,
+) -> bool {
+    let (last_requests, progress) = seen;
+    if *last_requests != requests {
+        *last_requests = requests;
+        *progress = Some(now);
+        return true;
+    }
+    if requests == 0 || backfill_pending != 0 {
+        return true;
+    }
+    match *progress {
+        None => {
+            *progress = Some(now);
+            true
+        }
+        Some(last) => now.saturating_duration_since(last) < REPLICATION_STALL,
+    }
+}
+
 /// `stream_receiver_connected_msg()`: how old the host's last sample is.
 fn connected_msg(host: &Host) -> String {
     let now = now_s();
@@ -992,29 +1018,18 @@ impl StreamWorker {
         }
     }
 
-    /// `stream_receiver_did_replication_progress()`: new replication requests, none yet, or less than ten minutes
-    /// since the last one.
+    /// `stream_receiver_did_replication_progress()` for a child.
     fn replication_progressed(child: &mut Child, now: Instant) -> bool {
-        let requests = child.attached.host.replication_requests();
-        if child.replication_requests != requests {
-            child.replication_requests = requests;
-            child.replication_progress = Some(now);
-            return true;
-        }
-        if requests == 0 {
-            return true;
-        }
-        // charts waiting for their backfill are not a stall
-        if child.attached.host.backfill_pending() != 0 {
-            return true;
-        }
-        match child.replication_progress {
-            None => {
-                child.replication_progress = Some(now);
-                true
-            }
-            Some(last) => now.saturating_duration_since(last) < REPLICATION_STALL,
-        }
+        let host = &child.attached.host;
+        replication_progressed(
+            (
+                &mut child.replication_requests,
+                &mut child.replication_progress,
+            ),
+            host.replication_requests(),
+            host.backfill_pending(),
+            now,
+        )
     }
 
     /// `stream_receiver_replication_check_from_poll()`: a child whose replication made no progress for ten minutes
@@ -1410,6 +1425,45 @@ mod tests {
 
     /// A child configured for dbengine falls back to the default only when the dbengine does not run; other names
     /// are C's modes (an unknown one is ram).
+    /// Replication stalls after ten minutes without new requests, unless charts wait for their backfill (C's
+    /// `backfill_pending` check); new requests restart the clock.
+    #[test]
+    fn replication_progress_waits_for_backfills() {
+        let t0 = Instant::now();
+        let later = t0 + REPLICATION_STALL + Duration::from_secs(1);
+        let (mut requests, mut since) = (0, None);
+        assert!(replication_progressed(
+            (&mut requests, &mut since),
+            3,
+            0,
+            t0
+        ));
+        assert!(!replication_progressed(
+            (&mut requests, &mut since),
+            3,
+            0,
+            later
+        ));
+        assert!(replication_progressed(
+            (&mut requests, &mut since),
+            3,
+            2,
+            later
+        ));
+        assert!(replication_progressed(
+            (&mut requests, &mut since),
+            4,
+            0,
+            later
+        ));
+        assert!(replication_progressed(
+            (&mut requests, &mut since),
+            0,
+            0,
+            later
+        ));
+    }
+
     #[test]
     fn dbengine_children_fall_back_only_without_the_engine() {
         let cases = [
