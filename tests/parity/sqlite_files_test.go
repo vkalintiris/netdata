@@ -310,11 +310,14 @@ func TestSQLiteFiles(t *testing.T) {
 // TestSQLiteHandBack gives C a cache the Rust agent ran on (check `sqlite.handback`): a C-written cache with a
 // dbengine child goes through a Rust start and exit, then C starts on it in dbengine mode, next to C on an
 // untouched copy. Both must list the same hosts and the child's contexts, with the same context load records. The
-// agent-event medians differ by design (the Rust run added its own events).
+// agent-event medians differ by design (the Rust run added its own events). The Rust run keeps pulse off: an alloc
+// localhost gives its pulse dimensions new UUIDs (no context load outside dbengine mode, C's too), so C would then
+// find them without retention (D81).
 func TestSQLiteHandBack(t *testing.T) {
 	seed := seedFromOracle(t, parentIdentity, "dbengine")
 	rust, err := daemon.Start(daemon.Options{Binary: os.Getenv("PARITY_CANDIDATE"), RunDir: runDir(t, Role("rust")),
-		Identity: &parentIdentity, DBMode: "alloc", StorageTiers: 1, StreamMemoryMode: "alloc", SeedCache: seed})
+		Identity: &parentIdentity, DBMode: "alloc", StorageTiers: 1, StreamMemoryMode: "alloc", SeedCache: seed,
+		PulseOff: true})
 	if err != nil {
 		t.Fatalf("rust: %v", err)
 	}
