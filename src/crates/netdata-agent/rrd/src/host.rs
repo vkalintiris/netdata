@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 
 use netdata_agent_log::{Priority, REDACTED, Source, nd_log, netdata_log_error};
 use netdata_agent_nrpc::Registry;
@@ -863,6 +863,17 @@ pub struct Hosts {
     is_parent: Mutex<bool>,
     /// The storage every host it creates gets.
     storage: Arc<StorageLayout>,
+    /// `rrdhost_load_rrdcontext_data()` over the daemon's databases, for the hosts it creates.
+    context_loader: OnceLock<ContextLoader>,
+}
+
+/// Loads a new host's contexts on the creating thread.
+struct ContextLoader(Box<dyn Fn(&Host) + Send + Sync>);
+
+impl std::fmt::Debug for ContextLoader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ContextLoader")
+    }
 }
 
 #[derive(Debug, Default)]
@@ -893,11 +904,17 @@ impl Hosts {
             version: std::sync::atomic::AtomicU32::new(1),
             is_parent: Mutex::new(false),
             storage,
+            context_loader: OnceLock::new(),
         }
     }
 
     pub fn storage(&self) -> &Arc<StorageLayout> {
         &self.storage
+    }
+
+    /// The loader of the contexts of the hosts `find_or_create()` creates (set once, by the daemon).
+    pub fn set_context_loader(&self, loader: impl Fn(&Host) + Send + Sync + 'static) {
+        let _ = self.context_loader.set(ContextLoader(Box::new(loader)));
     }
 
     /// `stream_receivers_currently_connected()`: hosts with a receiver attached.
@@ -1078,6 +1095,10 @@ impl Hosts {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         drop(index);
         host.log_created();
+        // rrdhost_create() of a host that is not archived: its contexts load here (a dbengine host's from SQL)
+        if let Some(loader) = self.context_loader.get() {
+            (loader.0)(&host);
+        }
         host
     }
 }
@@ -1309,6 +1330,20 @@ mod tests {
         assert_eq!(messages, ["RRD: 'host:h' stopping data collection..."]);
         let e = storage.dbengine().unwrap();
         assert!(e.tiers.iter().all(|td| td.collectors_running() == 0));
+    }
+
+    /// `rrdhost_create()` of a host that is not archived loads its contexts, once, on the creating thread; finding it
+    /// again does not.
+    #[test]
+    fn created_hosts_load_their_contexts() {
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let loaded = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&loaded);
+        hosts.set_context_loader(move |host| seen.lock().unwrap().push(host.hostname()));
+        for _ in 0..2 {
+            hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {});
+        }
+        assert_eq!(*loaded.lock().unwrap(), ["c"]);
     }
 
     /// `stream_receiver_replication_reset()` on attach and on detach, each on its own.

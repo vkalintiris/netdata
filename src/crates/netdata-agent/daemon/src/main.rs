@@ -562,6 +562,32 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             },
         );
     }
+    // rrdhost_load_rrdcontext_data() of every host created from now on, on the creating thread; the databases are
+    // held weakly, so that they close at their shutdown step
+    if let Some(meta) = &meta {
+        let (meta, context_db, queue) = (
+            Arc::downgrade(meta),
+            context_db.as_ref().map(Arc::downgrade),
+            metasync.queue(),
+        );
+        hosts.set_context_loader(move |host| {
+            let Some(meta) = meta.upgrade() else {
+                return;
+            };
+            let context_db = context_db.as_ref().and_then(std::sync::Weak::upgrade);
+            let cleanup = |host_id, context| queue.ctx_host_cleanup(host_id, context);
+            ctxload::load_host_contexts(
+                host,
+                &ctxload::Sources {
+                    meta: &meta,
+                    context_db: context_db.as_ref(),
+                    meta_thread: None,
+                    context_thread: None,
+                    cleanup: &cleanup,
+                },
+            );
+        });
+    }
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
         meta.detect_machine_guid_change(host_id);
     }
