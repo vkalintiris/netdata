@@ -43,8 +43,8 @@ func TestCorpusProfilesAreValid(t *testing.T) {
 		}
 	}
 
-	// Decision D25 and D70.9 counts.
-	for name, want := range map[string][2]int{"ram": {118, 7}, "dbengine1": {111, 3}} {
+	// Decision D25, D70.9 and D72.6 counts.
+	for name, want := range map[string][2]int{"ram": {118, 7}, "dbengine1": {111, 3}, "dbengine3": {54, 1}} {
 		whole, components := 0, 0
 		for scope := range corpusProfiles[name].notApplicable {
 			if scope.component == "" {
@@ -58,10 +58,12 @@ func TestCorpusProfilesAreValid(t *testing.T) {
 				name, whole, components, want[0], want[1])
 		}
 	}
-	// dbengine storage only adds what ram cannot hold: a scope dbengine1 cannot hold, ram cannot either.
-	for scope := range corpusProfiles["dbengine1"].notApplicable {
-		if _, ok := corpusProfiles["ram"].notApplicableReason(scope.contract, scope.component); !ok {
-			t.Errorf("dbengine1 profile: %v is not applicable, but ram holds it", scope)
+	// each profile only adds what the one before cannot hold: dbengine1 to ram, dbengine3 to dbengine1
+	for _, pair := range [][2]string{{"dbengine1", "ram"}, {"dbengine3", "dbengine1"}} {
+		for scope := range corpusProfiles[pair[0]].notApplicable {
+			if _, ok := corpusProfiles[pair[1]].notApplicableReason(scope.contract, scope.component); !ok {
+				t.Errorf("%s profile: %v is not applicable, but %s holds it", pair[0], scope, pair[1])
+			}
 		}
 	}
 }

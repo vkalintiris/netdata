@@ -823,6 +823,39 @@ pub fn dump(dir: &Path, uuid: &[u8; 16], out: &mut Vec<String>) -> io::Result<()
     })
 }
 
+/// A tier's aggregated records (ARRAY_TIER1 pages), one line each and sorted: tier, metric UUID, the record's end time
+/// (the page's start plus its update every per record), the sum, min and max as f32 bit patterns, the count and the
+/// anomaly count. Pages of other types are left out.
+pub fn records(dir: &Path, tier: usize, out: &mut Vec<String>) -> io::Result<()> {
+    let mut lines = Vec::new();
+    for_each_page(dir, |d, bytes| {
+        let Some(DiskPage::Tier1(records)) = DiskPage::from_disk(d.page_type, bytes) else {
+            return;
+        };
+        let start_s = (d.start_time_ut / 1_000_000) as i64;
+        let end_s = (d.end_time_ut() / 1_000_000) as i64;
+        let every_s = match records.len() {
+            0 | 1 => 0,
+            n => (end_s - start_s) / (n as i64 - 1),
+        };
+        for (i, r) in records.iter().enumerate() {
+            lines.push(format!(
+                "{tier} {} {} {:08x} {:08x} {:08x} {} {}",
+                hex(&d.uuid),
+                start_s + i as i64 * every_s,
+                r.sum.to_bits(),
+                r.min.to_bits(),
+                r.max.to_bits(),
+                r.count,
+                r.anomaly_count
+            ));
+        }
+    })?;
+    lines.sort();
+    out.extend(lines);
+    Ok(())
+}
+
 /// A v2 file with what its runtime and startup builds may tell apart made equal (D67.7): a single-point page's update
 /// every (the collector's at run time, the registry's at startup) becomes 0, each metric's update every its last
 /// page's, and the page and metric list CRCs follow. Anything out of bounds is left as it is.

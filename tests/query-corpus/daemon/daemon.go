@@ -88,6 +88,8 @@ type Options struct {
 	PipeName string
 	// DBMode is the [db] db value; empty is dbengine.
 	DBMode string
+	// DBExtra is appended to the [db] section verbatim (one "key = value" per line), e.g. `dbengine tier backfill`.
+	DBExtra string
 	// SeedCache, when set, is a directory copied into the cache directory before the first start (writable, as the
 	// daemon's own would be): the databases and dbengine files of an earlier run.
 	SeedCache string
@@ -391,6 +393,11 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	}
 	if o.DBEnginePageType != "" {
 		extraDB += fmt.Sprintf("    dbengine page type = %s\n", o.DBEnginePageType)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(o.DBExtra), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			extraDB += "    " + line + "\n"
+		}
 	}
 	extraDirs := ""
 	if o.WebDir != "" {

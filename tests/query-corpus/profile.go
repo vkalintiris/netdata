@@ -30,6 +30,8 @@ var corpusProfiles = map[string]corpusProfile{
 	"ram": {Name: "ram", StreamMemoryMode: "ram", StorageTiers: 1, notApplicable: ramNotApplicable},
 	// dbengine1 is the write-path profile of the Rust agent (D4 S3): dbengine children, one storage tier.
 	"dbengine1": {Name: "dbengine1", StorageTiers: 1, notApplicable: dbengine1NotApplicable},
+	// dbengine3 is the tier profile of the Rust agent (D4 S4a): dbengine children, three storage tiers.
+	"dbengine3": {Name: "dbengine3", StorageTiers: 3, notApplicable: dbengine3NotApplicable},
 }
 
 var activeProfile = corpusProfiles["dbengine"]
@@ -131,6 +133,7 @@ const (
 	naRestart      = "ram keeps nothing across a daemon restart"
 	naReplication  = "a ram child caps replication at entries x update_every, so old fixture rows never replicate"
 	naDBEngine     = "needs dbengine storage"
+	naPlanner      = "needs multi-tier query planning (automatic tier choice, plan switching), which the Rust agent gains in S4b (D62.4)"
 )
 
 func wholeContracts(reason string, names ...string) map[contractScope]string {
@@ -174,8 +177,6 @@ var (
 		"L2/whole-chart-absence", "L2/tier2", "L2/update-every-sweep",
 		"CASE-017/tier-boundary-absorption",
 		"L3/anomaly-bit-tier-rates", "CASE-023/tier-anomaly-bit",
-		"L4/auto-tier-choice", "L4/auto-tier-grid", "L4/auto-tier-values", "L4/auto-tier-anomaly-rates",
-		"L4/auto-tier-annotations",
 		"CASE-023/redelivery-samples-everywhere", "CASE-023/redelivery-counted-once",
 		"CASE-023/redelivery-zero-not-empty", "CASE-023/reset-counted-once",
 		"CASE-023/previous-survives-redelivery", "CASE-023/previous-drop-at-every-zoom",
@@ -184,8 +185,14 @@ var (
 		"L10/buckets-finer-than-stored-data-answer", "L10/counts-do-not-inflate-with-zoom",
 		"L10/time-shares-stable-across-zoom", "L10/queries-are-deterministic",
 	}
-	multiTierContracts = []string{
-		"L2/historical-tier-grouping", "L2/v1-rollup-count-65536",
+	// autoTierContracts read higher tiers through the automatic tier choice.
+	autoTierContracts = []string{
+		"L4/auto-tier-choice", "L4/auto-tier-grid", "L4/auto-tier-values", "L4/auto-tier-anomaly-rates",
+		"L4/auto-tier-annotations",
+	}
+	// dedicatedDaemonContracts boot their own two-tier dbengine daemons; the others plan across tiers.
+	dedicatedDaemonContracts = []string{"L2/historical-tier-grouping", "L2/v1-rollup-count-65536"}
+	planningContracts        = []string{
 		"L4/plan-switching", "L4/three-tier-join-grid", "L4/three-tier-condition-groupings",
 		"CASE-026/totals-survive-a-plan-switch", "CASE-026/partial-evidence-survives-a-plan-switch",
 		"CASE-031/rate-volume-across-an-automatic-seam", "CASE-036/absolute-across-plan-seam",
@@ -230,8 +237,8 @@ var (
 
 // ramNotApplicable: 118 whole contracts and 7 component scopes (spec-query §12.3, decision D25).
 var ramNotApplicable = mergeScopes(
-	wholeContracts(naTier1, tier1Contracts...),
-	wholeContracts(naMultiTier, multiTierContracts...),
+	wholeContracts(naTier1, slices.Concat(tier1Contracts, autoTierContracts)...),
+	wholeContracts(naMultiTier, slices.Concat(dedicatedDaemonContracts, planningContracts)...),
 	wholeContracts(naLargeFixture, largeFixtureContracts...),
 	wholeContracts(naEndpoint, endpointContracts...),
 	wholeContracts(naCadence, slices.Concat(cadenceTier0Contracts, cadenceTier1Contracts, cadenceMultiTierContracts)...),
@@ -247,9 +254,19 @@ var ramNotApplicable = mergeScopes(
 // planning (decision D70.9). Tier 0 keeps a dbengine child's history across cadence changes, restarts and
 // replication, so ram's cadence, restart, replication and dbengine-only scopes apply.
 var dbengine1NotApplicable = mergeScopes(
-	wholeContracts(naTier1, slices.Concat(tier1Contracts, largeFixtureContracts, cadenceTier1Contracts)...),
-	wholeContracts(naMultiTier, slices.Concat(multiTierContracts, cadenceMultiTierContracts)...),
+	wholeContracts(naTier1, slices.Concat(tier1Contracts, autoTierContracts, largeFixtureContracts,
+		cadenceTier1Contracts)...),
+	wholeContracts(naMultiTier, slices.Concat(dedicatedDaemonContracts, planningContracts,
+		cadenceMultiTierContracts)...),
 	wholeContracts(naEndpoint, endpointContracts...),
 	components(naTier1, "L4/minmax-absolute-semantics", "tier1-min", "tier1-max"),
 	components(naMultiTier, "CASE-033/anomaly-rate-counts-samples-in-the-row", "plan-seam-source"),
+)
+
+// dbengine3NotApplicable: 54 whole contracts and 1 component scope, the planning scopes and the endpoints outside
+// slice 1 (decision D72.6); every rollup, backfill, restart and replication contract applies.
+var dbengine3NotApplicable = mergeScopes(
+	wholeContracts(naPlanner, slices.Concat(autoTierContracts, planningContracts, cadenceMultiTierContracts)...),
+	wholeContracts(naEndpoint, endpointContracts...),
+	components(naPlanner, "CASE-033/anomaly-rate-counts-samples-in-the-row", "plan-seam-source"),
 )

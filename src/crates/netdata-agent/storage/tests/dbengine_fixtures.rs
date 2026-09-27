@@ -468,3 +468,52 @@ fn runtime_v2_files_are_cs() {
     assert_eq!(identical(false), [false, true]);
     assert_eq!(identical(true), [true, true]);
 }
+
+/// `inspect::records()` over run1's tiers 1 and 2: every record the checkers counted (the b6 records and the other
+/// metrics' 90), sorted, with the first b6.c0.d0 window's aggregate of the generator's 60 points.
+#[test]
+fn records_list_every_tier_record() {
+    let Some(fx) = fixtures() else {
+        return;
+    };
+    let cache = fx.join("run1/cache");
+    let mut lines = Vec::new();
+    for (tier, dir) in inspect::tier_dirs(&cache) {
+        inspect::records(&dir, tier, &mut lines).unwrap();
+    }
+    let per_tier = |t: &str| {
+        lines
+            .iter()
+            .filter(|l| l.split(' ').next() == Some(t))
+            .count()
+    };
+    assert_eq!(
+        (per_tier("0"), per_tier("1"), per_tier("2")),
+        (0, 86_055, 1_440)
+    );
+    let map = fs::read_to_string(results(&fx, "run1").join("metric-map.tsv")).unwrap();
+    let uuid = map
+        .lines()
+        .find(|l| l.contains("\tb6.c0\td0\t"))
+        .and_then(|l| l.split('\t').next())
+        .unwrap();
+    let first = lines
+        .iter()
+        .find(|l| l.starts_with(&format!("1 {uuid} ")))
+        .unwrap();
+    // the driver's first point is at start + 0; the window ends at the next minute
+    let (start, end) = (1_789_980_541_i64, 1_789_980_600_i64);
+    let sum: f64 = (start..=end).map(|t| (t / 10 % 1000) as f64).sum();
+    let (min, max) = (start..=end)
+        .map(|t| (t / 10 % 1000) as f32)
+        .fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
+    assert_eq!(
+        first,
+        &format!(
+            "1 {uuid} {end} {:08x} {:08x} {:08x} 60 0",
+            (sum as f32).to_bits(),
+            min.to_bits(),
+            max.to_bits()
+        )
+    );
+}
