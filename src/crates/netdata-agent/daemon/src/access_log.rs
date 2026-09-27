@@ -3,6 +3,7 @@
 //! `web_client_api_request()` that every record logged while serving a request inherits, and the model of C's web
 //! client cache that numbers the connections (`web_client_cache.c`). Brief: `knowledge/brief-logging-l3-l5.md` §1.
 
+use netdata_agent_rrd::pulse::Web;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
@@ -348,12 +349,13 @@ impl Completed {
     }
 
     /// `web_client_log_completed_request()`: written only when a URL was received, at a priority from the code,
-    /// without a message, and outside any request frame.
-    pub fn log(&self, client: &ClientLog) {
+    /// without a message, and outside any request frame; the request then counts in the pulse charts.
+    pub fn log(&self, client: &ClientLog, web: &Web) {
         if self.url.is_empty() {
             return;
         }
         let now = Instant::now();
+        web.request_completed(dt_usec(now, self.tv_in), self.size, self.sent);
         let (prep_ut, sent_ut) = match client.tv_ready {
             Some(ready) => (dt_usec(ready, self.tv_in), dt_usec(now, ready)),
             None => (0, 0),

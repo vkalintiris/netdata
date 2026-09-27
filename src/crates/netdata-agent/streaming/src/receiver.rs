@@ -1117,6 +1117,13 @@ impl StreamWorker {
                 Ok(n) if n > 0 => {
                     child.pending_out.drain(..n);
                     child.bytes_out += n as u64;
+                    child
+                        .attached
+                        .hosts
+                        .storage()
+                        .pulse()
+                        .network
+                        .stream_sent(n);
                     child.sends += 1;
                     child.last_io = Instant::now();
                     continue;
@@ -1239,6 +1246,13 @@ impl StreamWorker {
                 }
                 Ok(n) => {
                     child.bytes_in += n as u64;
+                    child
+                        .attached
+                        .hosts
+                        .storage()
+                        .pulse()
+                        .network
+                        .stream_received(n);
                     child.last_io = Instant::now();
                     child
                         .attached

@@ -13,6 +13,7 @@ use netdata_agent_storage::query::{Priority, StorageQuery};
 use crate::chart::Dim;
 use crate::contexts::{DbRotation, ExtremeCardinality, RamIndex, TierRetention};
 use crate::mode::DbMode;
+use crate::pulse::Pulse;
 
 /// `storage_tiers_grouping_iterations` before the configuration: tier 0 the update every, the others 60.
 const GROUPING_ITERATIONS: [u64; RRD_STORAGE_TIERS] = [1, 60, 60, 60, 60];
@@ -45,6 +46,8 @@ pub struct StorageLayout {
     db_rotation: Arc<DbRotation>,
     /// `extreme_cardinality`: the protection's settings.
     extreme_cardinality: ExtremeCardinality,
+    /// The counters of the pulse charts.
+    pulse: Pulse,
 }
 
 impl Default for StorageLayout {
@@ -65,6 +68,7 @@ impl StorageLayout {
             charts_created: AtomicUsize::new(0),
             db_rotation: Arc::default(),
             extreme_cardinality: ExtremeCardinality::default(),
+            pulse: Pulse::default(),
         }
     }
 
@@ -101,6 +105,10 @@ impl StorageLayout {
 
     pub fn extreme_cardinality(&self) -> &ExtremeCardinality {
         &self.extreme_cardinality
+    }
+
+    pub fn pulse(&self) -> &Pulse {
+        &self.pulse
     }
 
     pub fn backfill(&self) -> Backfill {

@@ -10,6 +10,7 @@ pub mod contexts;
 pub mod host;
 pub mod labels;
 pub mod mode;
+pub mod pulse;
 pub mod retention;
 pub mod status;
 pub mod storage;

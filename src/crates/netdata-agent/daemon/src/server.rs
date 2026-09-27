@@ -18,6 +18,7 @@ use netdata_agent_web::status;
 use netdata_agent_text::print::html_escape;
 
 use netdata_agent_rrd::host::Hosts;
+use netdata_agent_rrd::pulse::Web;
 use netdata_agent_streaming::receiver::{PreAdmission, Receivers};
 
 use netdata_agent_inicfg::{Config, SECTION_WEB};
@@ -195,9 +196,9 @@ struct Client {
 
 impl Client {
     /// `web_client_request_done()` after a keep-alive response went out: its record, then the reset.
-    fn request_done(&mut self) {
+    fn request_done(&mut self, web: &Web) {
         if let Some(done) = self.pending.take() {
-            done.log(&self.log);
+            done.log(&self.log, web);
         }
         self.log.request_done();
         self.auth = Arc::default();
@@ -468,6 +469,7 @@ impl WebWorker {
                     });
                     if let Some(client) = &self.clients[slot] {
                         // web_server_add_callback()
+                        self.shared.hosts.storage().pulse().web.client_connected();
                         let s = &mut self.stats;
                         s.connected += 1;
                         s.max_concurrent = s.max_concurrent.max(s.connected - s.disconnected);
@@ -499,6 +501,8 @@ impl WebWorker {
     fn close(&mut self, cx: &mut Context<'_>, slot: usize, hangup: bool) {
         if let Some(mut client) = self.clients[slot].take() {
             self.stats.disconnected += 1;
+            let web = &self.shared.hosts.storage().pulse().web;
+            web.client_disconnected();
             let _ = cx.registry().deregister(&mut client.stream);
             let _frame = hangup.then(|| client.log.hangup_frame());
             client.log.connection("DISCONNECTED", 0);
@@ -506,7 +510,7 @@ impl WebWorker {
                 if client.written < client.output.len() {
                     done.sent_when(client.written);
                 }
-                done.log(&client.log);
+                done.log(&client.log, web);
             }
         }
     }
@@ -538,9 +542,11 @@ impl WebWorker {
             }
         }
         self.stats.disconnected += 1;
+        let web = &self.shared.hosts.storage().pulse().web;
+        web.client_disconnected();
         client.log.connection("DISCONNECTED", 0);
         if let Some(done) = client.pending.take() {
-            done.log(&client.log);
+            done.log(&client.log, web);
         }
     }
 
@@ -596,6 +602,7 @@ impl WebWorker {
                         return;
                     }
                     Ok(n) => {
+                        shared.hosts.storage().pulse().network.api_received(n);
                         client.received.truncate(start + n);
                         client.activity.recv_count += 1;
                         client.activity.last_received = Some(Instant::now());
@@ -645,6 +652,7 @@ impl WebWorker {
         while client.written < client.output.len() {
             match client.stream.write(&client.output[client.written..]) {
                 Ok(n) => {
+                    shared.hosts.storage().pulse().network.api_sent(n);
                     client.written += n;
                     client.activity.send_count += 1;
                     client.activity.last_sent = Some(Instant::now());
@@ -671,7 +679,7 @@ impl WebWorker {
                 self.close(cx, slot, false);
                 return;
             }
-            client.request_done();
+            client.request_done(&shared.hosts.storage().pulse().web);
             let _ = cx
                 .registry()
                 .reregister(&mut client.stream, token, Interest::READABLE);
