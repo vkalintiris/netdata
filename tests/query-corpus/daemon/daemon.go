@@ -75,6 +75,8 @@ type Options struct {
 	GlobalExtra string
 	// LogsExtra, when set, is written as a [logs] section at the end of netdata.conf (one "key = value" per line).
 	LogsExtra string
+	// HealthExtra is appended to the [health] section verbatim (one "key = value" per line).
+	HealthExtra string
 	// HostLabels, when set, is written as a [host labels] section at the end of netdata.conf (one "key = value"
 	// per line).
 	HostLabels string
@@ -164,7 +166,7 @@ const netdataConfTemplate = `[global]
 
 [health]
     enabled = no
-
+%[14]s
 [registry]
     enabled = no
 
@@ -431,7 +433,7 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 		pulse = "    netdata pulse = no\n"
 	}
 	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs, o.WebExtra,
-		o.GlobalExtra, bindTo, dbMode, pulse, retentionTime)
+		o.GlobalExtra, bindTo, dbMode, pulse, retentionTime, o.HealthExtra)
 	if o.LogsExtra != "" {
 		conf += "\n[logs]\n" + o.LogsExtra
 	}
