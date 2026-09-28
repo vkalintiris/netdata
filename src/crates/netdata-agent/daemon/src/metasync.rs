@@ -23,9 +23,6 @@ use netdata_agent_text::duration::duration_to_string;
 
 use crate::startup::now_ut;
 
-/// `NETDATA_VIRTUAL_HOST`.
-const VIRTUAL_HOST_OS: &str = "Netdata Virtual Host 1.0";
-
 /// `METADATA_HOST_CHECK_FIRST_CHECK`, `METADATA_HOST_CHECK_INTERVAL`: seconds before the next store job may run.
 const HOST_CHECK_FIRST_S: i64 = 5;
 const HOST_CHECK_INTERVAL_S: i64 = 5;
@@ -284,10 +281,6 @@ pub(crate) fn duration(us: u64) -> String {
     duration_to_string(i64::try_from(us).unwrap_or(i64::MAX), "us", true).unwrap_or_default()
 }
 
-fn is_vnode(host: &Host) -> bool {
-    host.info().os == VIRTUAL_HOST_OS
-}
-
 impl MetaSync {
     /// `metadata_sync_init()`: the thread, once it runs. `None` when it cannot start (C's creation asserts).
     pub fn start(pool: &WorkPool, cpus: usize, stack_size: usize) -> std::io::Result<MetaSync> {
@@ -528,7 +521,7 @@ fn restore_host_context(host: &Host, load: &CtxLoad, dbs: &mut ThreadDbs) {
     );
     host.clear_pending_context_load();
     host.pulse_status(0);
-    if is_vnode(host) {
+    if host.is_virtual_host_os() {
         let _ = load.vnodes.send(());
     }
 }
@@ -546,12 +539,12 @@ fn ctx_hosts_load(hosts: &Hosts, cpus: usize, stack_size: usize, load: &Arc<CtxL
     let all = hosts.all();
     let mut order: Vec<Arc<Host>> = all
         .iter()
-        .filter(|h| is_vnode(h) && h.is_pending_context_load())
+        .filter(|h| h.is_virtual_host_os() && h.is_pending_context_load())
         .cloned()
         .collect();
     let mut others: Vec<Arc<Host>> = all
         .iter()
-        .filter(|h| !is_vnode(h) && h.is_pending_context_load())
+        .filter(|h| !h.is_virtual_host_os() && h.is_pending_context_load())
         .cloned()
         .collect();
     others.sort_by_key(|h| std::cmp::Reverse(h.last_connected_s()));
@@ -665,7 +658,7 @@ mod tests {
         )));
         for (n, (name, os, last_connected)) in [
             ("old", "linux", 100),
-            ("vnode", VIRTUAL_HOST_OS, 50),
+            ("vnode", netdata_agent_rrd::host::VIRTUAL_HOST_OS, 50),
             ("recent", "linux", 300),
         ]
         .into_iter()

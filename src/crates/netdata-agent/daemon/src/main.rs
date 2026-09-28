@@ -435,7 +435,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     // get_system_timezone(). No thread has started yet, so setenv() cannot fail for lack of exclusivity; C does not
     // check it either.
     let _ = conf::set_timezone_env(&mut conf.netdata);
-    let tz = timezone::system_timezone(&mut conf.netdata, std::path::Path::new("/"), server::now());
+    let tz = timezone::system_timezone(&mut conf.netdata, std::path::Path::new("/"), netdata_agent_rrd::clock::now_realtime_s());
 
     startup.step("pulse");
     // the extended pulse charts are not ported (D80.4): the key is read and written as C does
@@ -712,7 +712,6 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             &archived::Defaults {
                 db_mode: db.mode,
                 page_size: system.page_size,
-                free_ephemeral_time_s: db.cleanup.ephemeral_hosts_s,
             },
             Some(&metasync),
         ),

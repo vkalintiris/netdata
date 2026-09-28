@@ -4,6 +4,7 @@
 use netdata_agent_log::{Priority, Source, nd_log, netdata_log_info};
 use netdata_agent_metadata::open::MetaDb;
 use netdata_agent_metadata::read::{HostRow, NodeId};
+use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::{Host, HostInfo, Hosts};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 use netdata_agent_rrd::system_info::SystemInfo;
@@ -11,23 +12,13 @@ use std::sync::{Arc, mpsc};
 
 use crate::metasync::MetaSync;
 
-/// `NETDATA_VIRTUAL_HOST`: the operating system of a virtual node.
-const VIRTUAL_HOST_OS: &str = "Netdata Virtual Host 1.0";
-
 /// What archived hosts get from the daemon's configuration.
 pub struct Defaults {
     /// `default_rrd_memory_mode` after its fallback: the receivers' default.
     pub db_mode: DbMode,
     pub page_size: i64,
-    /// `rrdhost_free_ephemeral_time_s`.
-    pub free_ephemeral_time_s: i64,
 }
 
-fn now_s() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
 
 /// Creates the archived hosts, then has METASYNC load their contexts (the flags clear at once when it cannot, as in
 /// C), and waits up to a minute for the vnodes among them.
@@ -36,7 +27,7 @@ pub fn load(meta: &MetaDb, hosts: &Arc<Hosts>, defaults: &Defaults, metasync: Op
     let (mut children, mut vnodes) = (0, 0);
     for row in meta.archived_hosts() {
         if let Some(host) = load_row(meta, hosts, row, defaults) {
-            if host.info().os == VIRTUAL_HOST_OS {
+            if host.is_virtual_host_os() {
                 vnodes += 1;
             } else {
                 children += 1;
@@ -125,7 +116,7 @@ pub fn load_without_database(hosts: &Arc<Hosts>, metasync: Option<&MetaSync>) {
 /// `load_archived_host_from_row()`: `None` for an unregistered ephemeral host past its time.
 fn load_row(meta: &MetaDb, hosts: &Hosts, row: HostRow, defaults: &Defaults) -> Option<Arc<Host>> {
     let guid = uuid::Uuid::from_bytes(row.host_id).hyphenated().to_string();
-    let now = now_s();
+    let now = now_realtime_s();
     let last_connected = if row.last_connected == 0 {
         now
     } else {
@@ -133,9 +124,10 @@ fn load_row(meta: &MetaDb, hosts: &Hosts, row: HostRow, defaults: &Defaults) -> 
     };
     let age = now - last_connected;
     let hostname = row.hostname.clone().unwrap_or_else(|| "(null)".to_string());
+    // rrdhost_free_ephemeral_time_s
+    let ephemeral_s = hosts.storage().cleanup_times().ephemeral_hosts_s;
     if row.is_ephemeral
-        && ((!row.is_registered && last_connected == 1)
-            || (defaults.free_ephemeral_time_s != 0 && age > defaults.free_ephemeral_time_s))
+        && ((!row.is_registered && last_connected == 1) || (ephemeral_s != 0 && age > ephemeral_s))
     {
         netdata_log_info!(
             "{} ephemeral hostname \"{hostname}\" with GUID \"{guid}\", age = {age} seconds (limit {} seconds)",
@@ -144,7 +136,7 @@ fn load_row(meta: &MetaDb, hosts: &Hosts, row: HostRow, defaults: &Defaults) -> 
             } else {
                 "Skipping unregistered"
             },
-            defaults.free_ephemeral_time_s
+            ephemeral_s
         );
         if !row.is_registered {
             return None;
@@ -196,7 +188,7 @@ fn load_row(meta: &MetaDb, hosts: &Hosts, row: HostRow, defaults: &Defaults) -> 
     });
     if row.is_ephemeral {
         host.set_ephemeral(true);
-        host.set_receiver_last_disconnected_s(netdata_agent_rrd::clock::now_realtime_s());
+        host.set_receiver_last_disconnected_s(now_realtime_s());
     }
     let labels = meta.host_labels(&row.host_id);
     host.update_labels(|l| {

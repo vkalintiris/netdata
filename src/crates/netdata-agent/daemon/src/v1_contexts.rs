@@ -1,6 +1,7 @@
 //! `/api/v1/contexts` and `/api/v1/context`, ported from `src/web/api/v1/api_v1_contexts.c`, `api_v1_context.c`,
 //! `rrdcontext_to_json_parse_options()` in `src/web/api/web_api.c` and `src/database/contexts/api_v1_contexts.c`.
 
+use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::contexts::{self, Context, Flags, Instance, Metric, REASONS, flags};
 use netdata_agent_rrd::host::Host;
 use netdata_agent_text::c::strsep_skip;
@@ -420,16 +421,10 @@ fn reasons_to_json(w: &mut JsonWriter, f: u32) {
     }
 }
 
-fn now_s() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
-
 /// Both endpoints convert a window only when both ends are given.
 fn window(p: &Params) -> (i64, i64) {
     if p.after != 0 && p.before != 0 {
-        let (after, before, _) = relative_window_to_absolute_query(p.after, p.before, now_s());
+        let (after, before, _) = relative_window_to_absolute_query(p.after, p.before, now_realtime_s());
         (after, before)
     } else {
         (p.after, p.before)
@@ -474,7 +469,7 @@ pub fn contexts(host: &Host, query: &[u8]) -> Reply {
         options: p.options,
         after,
         before,
-        now: now_s(),
+        now: now_realtime_s(),
     };
     let mut total = Combined::default();
     for rc in host.contexts().all() {
@@ -505,7 +500,7 @@ pub fn context(host: &Host, query: &[u8]) -> Reply {
         options: p.options | options::SKIP_ID,
         after,
         before,
-        now: now_s(),
+        now: now_realtime_s(),
     };
     let mut total = Combined::default();
     t.context(&mut w, &mut total, &rc);

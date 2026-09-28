@@ -15,6 +15,7 @@ use netdata_agent_query::tables::{
     contexts_options_to_json_array, parse_contexts_options,
 };
 use netdata_agent_query::target::{host_matches, matches_retention};
+use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::retention::retention_stats;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
@@ -25,7 +26,7 @@ use netdata_agent_web::content_type::ContentType;
 use netdata_agent_web::status;
 
 use crate::router::Route;
-use crate::server::{self, Reply, Shared};
+use crate::server::{Reply, Shared};
 use crate::{capas, cloud, startup};
 
 /// `CONTEXTS_V2_MODE`.
@@ -428,7 +429,7 @@ fn db_size(w: &mut JsonWriter, shared: &Shared, rfc3339: bool) {
         info.db_mode,
         i64::from(info.update_every),
         shared.history_entries,
-        server::now(),
+        now_realtime_s(),
     );
     w.member_add_array(Some(b"db_size"));
     for t in &tiers {
@@ -464,14 +465,14 @@ fn db_size(w: &mut JsonWriter, shared: &Shared, rfc3339: bool) {
 pub fn stream_path(route: &Route<'_>, query: &[u8]) -> Reply {
     let stream_path_mode = mode::NODES | mode::NODES_STREAM_PATH;
     let req = parse(query, stream_path_mode, 0);
-    render(route.shared, &req, stream_path_mode, server::now())
+    render(route.shared, &req, stream_path_mode, now_realtime_s())
 }
 
 /// `api_v2_info()` (`/api/v2/info`, `/api/v3/info`): the agent with its info; the host in the URL does not matter.
 pub fn info(route: &Route<'_>, query: &[u8]) -> Reply {
     let info_mode = mode::AGENTS | mode::AGENTS_INFO;
     let req = parse(query, info_mode, 0);
-    render(route.shared, &req, info_mode, server::now())
+    render(route.shared, &req, info_mode, now_realtime_s())
 }
 
 #[cfg(test)]

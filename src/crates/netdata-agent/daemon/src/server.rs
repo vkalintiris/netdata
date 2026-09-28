@@ -17,6 +17,7 @@ use netdata_agent_web::status;
 
 use netdata_agent_text::print::html_escape;
 
+use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::Hosts;
 use netdata_agent_rrd::pulse::Web;
 use netdata_agent_streaming::receiver::{PreAdmission, Receivers};
@@ -141,13 +142,6 @@ impl Reply {
             ..Reply::default()
         }
     }
-}
-
-/// `now_realtime_sec()`.
-pub fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// The capacity of a web client's receive buffer (`w->response.data`), which decides how much each `recv()` asks
@@ -931,7 +925,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         url_as_received: &client.request.url_as_received,
         transaction: client.transaction,
     };
-    let built = response::build(&head, now());
+    let built = response::build(&head, now_realtime_s());
     let mut out = built.bytes;
     let header_len = out.len();
     out.extend_from_slice(&body);

@@ -14,11 +14,12 @@ use netdata_agent_query::tables::Format;
 use netdata_agent_query::target::{QueryTarget, Source, create};
 use netdata_agent_query::window::{Window, calculate};
 use netdata_agent_rrd::chart::Chart;
+use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::Host;
 use netdata_agent_web::status;
 
 use crate::router::Route;
-use crate::server::{self, Reply};
+use crate::server::Reply;
 
 /// `nd_profile` as the data queries read it: the tiers in use and the agent's update every.
 fn profile(route: &Route<'_>) -> netdata_agent_query::request::Profile {
@@ -53,7 +54,7 @@ pub fn v1(route: &Route<'_>, host: &Arc<Host>, query: &[u8]) -> Reply {
         .as_ref()
         .map_or(0, |st| st.collection().last_updated.0);
     let request = req.clone();
-    let now_s = server::now();
+    let now_s = now_realtime_s();
     // v1 sets no `received_ut`: the query target's clock starts at its creation.
     let received = Instant::now();
     let qt = create(req, Source::V1 { host, chart }, now_s);
@@ -73,7 +74,7 @@ pub fn v23(route: &Route<'_>, query: &[u8], version: u8) -> Reply {
     let received = Instant::now();
     let req = parse_v2(query, version, &profile(route));
     let request = req.clone();
-    let now_s = server::now();
+    let now_s = now_realtime_s();
     let hosts = &route.shared.hosts;
     let qt = create(
         req,

@@ -195,7 +195,7 @@ pub fn serve(route: &mut Route<'_>, filename: &[u8]) -> Reply {
             content_type: ContentType::for_filename(path.as_bytes()),
             body,
             date: mtime,
-            expires: crate::server::now() + 86400,
+            expires: netdata_agent_rrd::clock::now_realtime_s() + 86400,
             no_cacheable: false,
             ..Reply::default()
         },

@@ -346,9 +346,7 @@ fn get_or_create(varlib: &str, previous: &[u8; 16]) -> MachineGuid {
         );
         *previous
     };
-    let modified_ut = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_micros() as u64);
+    let modified_ut = netdata_agent_rrd::clock::now_realtime_ut();
     let guid = MachineGuid { txt: canonical(&uuid), uuid, last_modified_ut: modified_ut };
     if let Err(e) = fs::DirBuilder::new().mode(0o775).create(&dir) {
         if e.kind() != io::ErrorKind::AlreadyExists {

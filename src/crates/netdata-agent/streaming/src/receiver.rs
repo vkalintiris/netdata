@@ -428,15 +428,6 @@ impl Receivers {
                      one.",
                     peer.hostname.as_deref().unwrap_or("")
                 );
-            } else {
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Err,
-                    "STREAM RCV[x] '{}' [from [{}]:{}]: streaming thread takes too long to stop, giving up...",
-                    host.hostname(),
-                    slot.remote.0,
-                    slot.remote.1
-                );
             }
         }
         if working || stale.is_some() {

@@ -178,7 +178,7 @@ const API_V3: &[Command] = &[
         acl: acl::bits::NOCHECK,
         access: access::NONE,
         allow_subpaths: false,
-        callback: |route, _, query| stream_info::reply(&route.shared.hosts, query, server::now()),
+        callback: |route, _, query| stream_info::reply(&route.shared.hosts, query, netdata_agent_rrd::clock::now_realtime_s()),
     },
 ];
 

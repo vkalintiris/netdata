@@ -879,6 +879,11 @@ impl Host {
         changed
     }
 
+    /// `IS_VIRTUAL_HOST_OS()`: a virtual node, by its operating system.
+    pub fn is_virtual_host_os(&self) -> bool {
+        self.info().os == VIRTUAL_HOST_OS
+    }
+
     /// `RRDHOST_OPTION_EPHEMERAL_HOST`.
     pub fn is_ephemeral(&self) -> bool {
         self.ephemeral.load(Ordering::Relaxed)
@@ -1021,7 +1026,7 @@ impl Host {
         self.log_archive_mode();
     }
 
-    /// `stream_receiver_signal_to_stop_and_wait()`: true when the receiver let go within 2 s.
+    /// `stream_receiver_signal_to_stop_and_wait()`: true when the receiver let go within 2 s, else C's error record.
     pub fn stop_receiver_and_wait(&self, slot: &Arc<ReceiverSlot>) -> bool {
         slot.stop();
         let attached = || self.receiver().is_some_and(|r| Arc::ptr_eq(&r, slot));
@@ -1031,7 +1036,18 @@ impl Host {
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        !attached()
+        if !attached() {
+            return true;
+        }
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            "STREAM RCV[x] '{}' [from [{}]:{}]: streaming thread takes too long to stop, giving up...",
+            self.hostname(),
+            slot.remote.0,
+            slot.remote.1
+        );
+        false
     }
 
     /// `rrdhost_free_unlinked()` of a host out of the index: its data collection cleaned up, then marked deleted.
@@ -1298,6 +1314,41 @@ pub struct Hosts {
     context_loader: OnceLock<ContextLoader>,
 }
 
+/// `NETDATA_VIRTUAL_HOST`: the operating system of a virtual node.
+pub const VIRTUAL_HOST_OS: &str = "Netdata Virtual Host 1.0";
+
+/// The hosts' write lock held across a walk, as `rrd_wrlock()`.
+pub struct HostsWrite<'a> {
+    hosts: &'a Hosts,
+    index: std::sync::RwLockWriteGuard<'a, Index<Host>>,
+}
+
+impl HostsWrite<'_> {
+    /// Every host, localhost first, then in creation order.
+    pub fn all(&self) -> Vec<Arc<Host>> {
+        self.index.items().to_vec()
+    }
+
+    /// `rrdhost_free___while_having_rrd_wrlock()`: `host` leaves the index while the index still holds that very host
+    /// (C's `host_check == host`; never localhost), then its data collection is cleaned up and it is marked deleted.
+    /// Holders of its `Arc` keep it until they drop it.
+    pub fn free(&mut self, host: &Host) -> Option<Arc<Host>> {
+        let guid = host.machine_guid();
+        if guid == self.hosts.localhost.machine_guid
+            || !self.index.get(guid).is_some_and(|h| std::ptr::eq(&*h, host))
+        {
+            return None;
+        }
+        let host = self.index.remove(guid)?;
+        self.hosts
+            .version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // nothing inside takes the index again
+        host.freed_unlinked();
+        Some(host)
+    }
+}
+
 /// Loads a new host's contexts on the creating thread.
 struct ContextLoader(Box<dyn Fn(&Host) + Send + Sync>);
 
@@ -1417,19 +1468,18 @@ impl Hosts {
             .to_vec()
     }
 
-    /// `rrdhost_free___while_having_rrd_wrlock()`: the host leaves the index (never localhost), then its data
-    /// collection is cleaned up and it is marked deleted. Holders of its `Arc` keep it until they drop it.
-    pub fn free(&self, guid: &str) -> Option<Arc<Host>> {
-        let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        if guid == self.localhost.machine_guid {
-            return None;
+    /// `rrd_wrlock()`: the hosts' write lock, for a walk that frees hosts; creating, discarding and freeing hosts, and
+    /// every lookup, wait for it.
+    pub fn write(&self) -> HostsWrite<'_> {
+        HostsWrite {
+            hosts: self,
+            index: self.inner.write().unwrap_or_else(PoisonError::into_inner),
         }
-        let host = index.remove(guid)?;
-        self.version
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        drop(index);
-        host.freed_unlinked();
-        Some(host)
+    }
+
+    /// [`HostsWrite::free`] under its own write lock.
+    pub fn free(&self, host: &Host) -> Option<Arc<Host>> {
+        self.write().free(host)
     }
 
     /// `rrdhost_find_or_create(archived = true)` for a host of the metadata database: appended as archived, orphan
@@ -2489,5 +2539,46 @@ mod tests {
         *freed = true;
         drop(freed);
         assert!(host.metadata_try_read().is_none() && host.metadata_try_write().is_none());
+    }
+
+    /// `rrdhost_set_receiver()` while the obsolete-all walk runs: refused as busy, before the already-served check;
+    /// accepted once the walk ended.
+    #[test]
+    fn an_attach_during_the_obsolete_all_walk_is_busy() {
+        let host = Host::new("guid-b", false, info("b"));
+        let slot = || {
+            Arc::new(ReceiverSlot::new(
+                1,
+                Default::default(),
+                ReceiverLink::default(),
+                Box::new(|| {}),
+            ))
+        };
+        host.obsolete_all_busy.store(true, Ordering::Release);
+        assert_eq!(host.set_receiver(slot()), Attach::CleanupBusy);
+        assert!(host.receiver().is_none());
+        host.obsolete_all_busy.store(false, Ordering::Release);
+        assert_eq!(host.set_receiver(slot()), Attach::Attached);
+        host.obsolete_all_busy.store(true, Ordering::Release);
+        assert_eq!(host.set_receiver(slot()), Attach::CleanupBusy, "busy first");
+        host.obsolete_all_busy.store(false, Ordering::Release);
+        assert_eq!(host.set_receiver(slot()), Attach::AlreadyServed);
+    }
+
+    /// `rrdhost_free___while_having_rrd_wrlock()` after C's `host_check == host`: a host the index no longer holds (a
+    /// discard created another under its GUID) is not freed; localhost never is.
+    #[test]
+    fn a_free_takes_only_the_indexed_host() {
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let old = hosts.add_archived("guid-a", info("a"), |_| {});
+        old.clear_pending_context_load();
+        // the discard of an archived host of another memory mode
+        let new = hosts.find_or_create("guid-a", DbMode::Alloc, || info("a"), |_| {});
+        assert!(!Arc::ptr_eq(&old, &new));
+        assert!(hosts.free(&old).is_none());
+        assert!(hosts.find_by_guid("guid-a").is_some_and(|h| Arc::ptr_eq(&h, &new)));
+        assert!(hosts.free(hosts.localhost()).is_none());
+        assert!(hosts.free(&new).is_some_and(|h| Arc::ptr_eq(&h, &new)));
+        assert!(hosts.find_by_guid("guid-a").is_none());
     }
 }

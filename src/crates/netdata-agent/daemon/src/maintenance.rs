@@ -46,7 +46,7 @@ fn cleanup_obsolete_charts_from_all_hosts(hosts: &Hosts, now_s: i64) {
     let mut archived = 0;
     for host in hosts.all() {
         archived += cleanup_charts_marked_obsolete(&host, obsolete_s, now_s);
-        if host.is_localhost() {
+        if host.is_localhost() || host.is_virtual_host_os() {
             continue;
         }
         host.obsolete_all_if_gone(now_s, obsolete_s);
@@ -140,10 +140,12 @@ fn archive_obsolete_dimensions(chart: &Chart, chart_obsolete: bool, obsolete_s: 
 }
 
 /// `svc_rrdhost_cleanup_orphan_hosts()`: a host that should be cleaned up is archived, or freed when it is ephemeral
-/// past its time or archived without retention; a host whose metadata is being stored waits for the next run.
+/// past its time or archived without retention; a host whose metadata is being stored waits for the next run. The
+/// hosts' write lock is held throughout, as `rrd_wrlock()`.
 fn cleanup_orphan_hosts(hosts: &Hosts, meta: Option<&MetaDb>, protected: &Host, now_s: i64) {
     let ephemeral_s = hosts.storage().cleanup_times().ephemeral_hosts_s;
-    for host in hosts.all() {
+    let mut locked = hosts.write();
+    for host in locked.all() {
         if !host.should_be_cleaned_up(protected, now_s) {
             continue;
         }
@@ -173,7 +175,7 @@ fn cleanup_orphan_hosts(hosts: &Hosts, meta: Option<&MetaDb>, protected: &Host, 
             }
             *freed = true;
             drop(freed);
-            hosts.free(host.machine_guid());
+            locked.free(&host);
         } else {
             host.cleanup_data_collection();
         }
@@ -274,6 +276,27 @@ mod tests {
         run(&hosts, None, now + 11);
         assert!(chart.is_freed() && child.charts().find("t.c", true).is_none());
         assert_eq!(child.pending_flags(), 0);
+    }
+
+    /// A streamed vnode gone for the obsolete time keeps its charts: C skips virtual hosts' obsolete-all.
+    #[test]
+    fn a_vnode_gone_keeps_its_charts() {
+        let (hosts, _) = hosts();
+        let vnode = hosts.find_or_create(
+            "5a1e0000-0000-4000-8000-00000000c006",
+            DbMode::Ram,
+            || HostInfo {
+                os: netdata_agent_rrd::host::VIRTUAL_HOST_OS.into(),
+                ..info("vnode")
+            },
+            |_| {},
+        );
+        let (chart, _) = vnode.charts().create(&spec("c"));
+        let slot = Arc::new(ReceiverSlot::new(0, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        assert_eq!(vnode.set_receiver(Arc::clone(&slot)), Attach::Attached);
+        vnode.clear_receiver(&slot);
+        run(&hosts, None, now_realtime_s() + 11);
+        assert_eq!(chart.flags() & chart_flags::OBSOLETE, 0);
     }
 
     /// A child gone for the obsolete time has its charts marked obsolete; after the orphan time and more than 10 HEALTH
