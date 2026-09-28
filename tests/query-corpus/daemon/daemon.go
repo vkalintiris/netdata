@@ -105,6 +105,9 @@ type Options struct {
 	// Env is appended to the daemon's environment, after the harness's own, so an entry here wins (os/exec keeps the
 	// last of duplicates).
 	Env []string
+	// NoStreamKey leaves out the stream key's `[<key>] type = api` section, so the daemon is no parent: its profile
+	// is a child's or a standalone's (their compression levels and replication threads).
+	NoStreamKey bool
 	// Wrap, when set, is a command that execs the daemon in place, so its PID stays the daemon's (e.g. `unshare` into
 	// namespaces); the daemon's own command line follows it.
 	Wrap []string
@@ -115,6 +118,8 @@ type StreamTo struct {
 	Destination string // host:port
 	APIKey      string
 	Compression bool // enable compression (the parent picks the algorithm)
+	// Extra is appended to the [stream] section verbatim (one "key = value" per line), e.g. `reconnect delay = 5`.
+	Extra string
 }
 
 // Identity is a fixed daemon identity. StreamKey and MachineGUID must be UUIDs.
@@ -326,10 +331,13 @@ func Start(o Options) (*Daemon, error) {
 		return nil, err
 	}
 	streamConf := fmt.Sprintf(streamConfTemplate, streamKey, streamMemoryMode(o))
+	if o.NoStreamKey {
+		streamConf = "[stream]\n    enabled = no\n"
+	}
 	if o.StreamTo != nil {
 		streamConf = strings.Replace(streamConf, "[stream]\n    enabled = no\n", fmt.Sprintf(
-			"[stream]\n    enabled = yes\n    destination = %s\n    api key = %s\n    enable compression = %s\n",
-			o.StreamTo.Destination, o.StreamTo.APIKey, yesNo(o.StreamTo.Compression)), 1)
+			"[stream]\n    enabled = yes\n    destination = %s\n    api key = %s\n    enable compression = %s\n%s",
+			o.StreamTo.Destination, o.StreamTo.APIKey, yesNo(o.StreamTo.Compression), o.StreamTo.Extra), 1)
 	}
 	streamConf += o.StreamExtra
 	if err := os.WriteFile(filepath.Join(o.RunDir, "etc", "stream.conf"), []byte(streamConf), 0o644); err != nil {
