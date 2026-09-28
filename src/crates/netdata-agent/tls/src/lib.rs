@@ -123,9 +123,10 @@ pub enum State {
     Failed,
 }
 
-/// A connection over TLS on a non-blocking socket (`NETDATA_SSL`).
+/// A connection over TLS on a non-blocking socket (`NETDATA_SSL`). Dropping it sends the peer a `close_notify`
+/// (`netdata_ssl_close()`), as every C path that frees a connection does.
 #[derive(Debug)]
-pub struct TlsStream<S> {
+pub struct TlsStream<S: Read + Write> {
     stream: SslStream<S>,
     state: State,
     /// What the last operation waits for (`ssl_errno`): `WANT_READ` or `WANT_WRITE`.
@@ -218,6 +219,11 @@ impl<S: Read + Write> TlsStream<S> {
         self.io("read", peers, |s| s.ssl_read(buf))
     }
 
+    /// `netdata_ssl_peek()`: [`TlsStream::read`] that leaves the data for the next read.
+    pub fn peek(&mut self, buf: &mut [u8], peers: &Peers) -> io::Result<usize> {
+        self.io("peek", peers, |s| s.ssl_peek(buf))
+    }
+
     /// `netdata_ssl_write()`.
     pub fn write(&mut self, buf: &[u8], peers: &Peers) -> io::Result<usize> {
         self.io("write", peers, |s| s.ssl_write(buf))
@@ -237,13 +243,17 @@ impl<S: Read + Write> TlsStream<S> {
         match f(&mut self.stream) {
             Ok(n) => Ok(n),
             // the peer's close_notify ends a read; C's write has no such case and reports it below
-            Err(e) if e.code() == ErrorCode::ZERO_RETURN && op == "read" => Ok(0),
+            Err(e) if e.code() == ErrorCode::ZERO_RETURN && op != "write" => Ok(0),
             Err(e) if matches!(e.code(), ErrorCode::WANT_READ | ErrorCode::WANT_WRITE) => {
                 self.want = Some(e.code());
                 Err(io::ErrorKind::WouldBlock.into())
             }
             Err(e) => {
-                let call = if op == "read" { "SSL_read" } else { "SSL_write" };
+                let call = match op {
+                    "read" => "SSL_read",
+                    "peek" => "SSL_peek",
+                    _ => "SSL_write",
+                };
                 self.log(&e, call, peers);
                 if matches!(e.code(), ErrorCode::SSL | ErrorCode::SYSCALL | ErrorCode::ZERO_RETURN) {
                     self.state = State::Failed;
@@ -254,7 +264,7 @@ impl<S: Read + Write> TlsStream<S> {
     }
 
     /// `netdata_ssl_close()`: a `close_notify` for the peer, twice when the first only sent it.
-    pub fn shutdown(&mut self) {
+    fn shutdown(&mut self) {
         if let Ok(ShutdownResult::Sent) = self.stream.shutdown() {
             let _ = self.stream.shutdown();
         }
@@ -264,6 +274,68 @@ impl<S: Read + Write> TlsStream<S> {
         let queue = e.ssl_error().map_or(&[][..], ErrorStack::errors);
         let errno = e.io_error().and_then(io::Error::raw_os_error).unwrap_or(0);
         log_error_queue(call, Some(self.stream.ssl()), peers, e.code().as_raw(), queue, errno);
+    }
+}
+
+impl<S: Read + Write> Drop for TlsStream<S> {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+/// A connection's socket, plain or over TLS (`NETDATA_SSL` beside the socket): what the web server serves and the
+/// stream receiver takes over.
+#[derive(Debug)]
+pub enum Link<S: Read + Write> {
+    Plain(S),
+    Tls(Box<TlsStream<S>>),
+    /// The socket went with a TLS connection OpenSSL could not make; the connection is closed.
+    Gone,
+}
+
+impl<S: Read + Write> Link<S> {
+    pub fn socket(&self) -> Option<&S> {
+        match self {
+            Link::Plain(s) => Some(s),
+            Link::Tls(t) => Some(t.get_ref()),
+            Link::Gone => None,
+        }
+    }
+
+    pub fn socket_mut(&mut self) -> Option<&mut S> {
+        match self {
+            Link::Plain(s) => Some(s),
+            Link::Tls(t) => Some(t.get_mut()),
+            Link::Gone => None,
+        }
+    }
+
+    /// `nd_sock_is_ssl()`: the connection has TLS (its handshake started, even when it failed).
+    pub fn is_tls(&self) -> bool {
+        matches!(self, Link::Tls(_))
+    }
+
+    /// Whether the last TLS operation waits for the socket to be writable.
+    pub fn wants_write(&self) -> bool {
+        matches!(self, Link::Tls(t) if t.wants_write())
+    }
+
+    /// `recv()` or `netdata_ssl_read()`.
+    pub fn read(&mut self, buf: &mut [u8], peers: &Peers) -> io::Result<usize> {
+        match self {
+            Link::Plain(s) => s.read(buf),
+            Link::Tls(t) => t.read(buf, peers),
+            Link::Gone => Err(io::ErrorKind::NotConnected.into()),
+        }
+    }
+
+    /// `send()` or `netdata_ssl_write()`.
+    pub fn write(&mut self, buf: &[u8], peers: &Peers) -> io::Result<usize> {
+        match self {
+            Link::Plain(s) => s.write(buf),
+            Link::Tls(t) => t.write(buf, peers),
+            Link::Gone => Err(io::ErrorKind::NotConnected.into()),
+        }
     }
 }
 
@@ -525,7 +597,7 @@ mod tests {
         };
         assert_eq!(&buf[..n], b"GET / HTTP/1.1\r\n\r\n");
         assert_eq!(t.write(b"answer", &peers).unwrap(), 6);
-        t.shutdown();
+        // the drop sends the close_notify the client reads as the end
         drop(t);
         assert_eq!(peer.join().unwrap(), b"answer");
     }

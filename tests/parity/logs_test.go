@@ -402,8 +402,18 @@ func compareLogFilesWith(t *testing.T, p *Pair, extra []logMask, names ...string
 	for _, name := range names {
 		o, c := logLines(t, p.Oracle.Opts.RunDir, name), logLines(t, p.Candidate.Opts.RunDir, name)
 		if name == "daemon.log" {
-			// each probe connection is one connect, one disconnect and one reception
-			wo, wc := webTotals(o), webTotals(c)
+			// each probe connection is one connect, one disconnect and one reception; a check's own masks apply
+			masked := func(lines []string) []string {
+				out := make([]string, len(lines))
+				for i, l := range lines {
+					for _, m := range extra {
+						l = m.re.ReplaceAllString(l, m.with)
+					}
+					out[i] = l
+				}
+				return out
+			}
+			wo, wc := webTotals(masked(o)), webTotals(masked(c))
 			for i := range wo {
 				wo[i] -= probeConnections(oAccess)
 				wc[i] -= probeConnections(cAccess)

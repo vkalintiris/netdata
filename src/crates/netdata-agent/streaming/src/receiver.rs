@@ -5,13 +5,14 @@
 //! go back on the web connection; after the takeover the socket is written with blocking sends and a timeout, then
 //! handed to the least loaded stream thread.
 
-use std::io::{self, Read, Write};
+use std::io;
 use std::net::Shutdown;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use netdata_agent_evloop::conn::{Conn, Stream};
+use netdata_agent_evloop::conn::Conn;
+use netdata_agent_tls::{Link, Peers};
 use netdata_agent_evloop::{Context, Event, Interest, PoolHandle, TimerId, Token, Worker};
 use netdata_agent_ingest::{self as ingest, Parser};
 use netdata_agent_log::{Priority, Source, nd_log};
@@ -188,7 +189,9 @@ pub struct Attached {
     host: Arc<Host>,
     hosts: Arc<Hosts>,
     slot: Arc<ReceiverSlot>,
-    stream: Conn,
+    stream: Link<Conn>,
+    /// The socket's addresses, for the TLS records.
+    peers: Peers,
     thread: usize,
     parser: ingest::Config,
     peer: Peer,
@@ -267,16 +270,22 @@ fn logged_value<'a>(name: &str, value: &'a str) -> &'a str {
     }
 }
 
-/// One blocking `send()` bounded by `timeout` (`nd_sock_send_timeout()`): true when everything went out.
-fn send_timeout(stream: &Stream, bytes: &[u8], timeout: Duration) -> bool {
-    let sent = stream
-        .set_nonblocking(false)
-        .and_then(|()| stream.set_write_timeout(Some(timeout)))
-        .and_then(|()| {
-            let mut s = stream;
-            s.write(bytes)
-        });
-    matches!(sent, Ok(n) if n == bytes.len())
+/// The descriptor a record names, -1 for none.
+fn raw_fd(link: &Link<Conn>) -> std::os::fd::RawFd {
+    link.socket().map_or(-1, std::os::fd::AsRawFd::as_raw_fd)
+}
+
+/// One blocking `send()` or `netdata_ssl_write()` bounded by `timeout` (`nd_sock_send_timeout()`): true when
+/// everything went out.
+fn send_timeout(link: &mut Link<Conn>, peers: &Peers, bytes: &[u8], timeout: Duration) -> bool {
+    let Some(conn) = link.socket() else {
+        return false;
+    };
+    let socket = socket2::SockRef::from(conn);
+    if socket.set_nonblocking(false).and_then(|()| socket.set_write_timeout(Some(timeout))).is_err() {
+        return false;
+    }
+    matches!(link.write(bytes, peers), Ok(n) if n == bytes.len())
 }
 
 impl Receivers {
@@ -454,10 +463,10 @@ impl Receivers {
     }
 
     /// `PreAdmission::Refuse`: the connection has been taken over; the status is logged, then the reply sent.
-    pub fn refuse(&self, stream: Stream, message: &str, refusal: &Refusal) {
+    pub fn refuse(&self, mut link: Link<Conn>, peers: &Peers, message: &str, refusal: &Refusal) {
         let peer = &refusal.peer;
         peer.status(refusal.msg, refusal.reason, refusal.priority);
-        if !send_timeout(&stream, message.as_bytes(), Duration::from_secs(60)) {
+        if !send_timeout(&mut link, peers, message.as_bytes(), Duration::from_secs(60)) {
             nd_log!(
                 Source::Daemon,
                 Priority::Err,
@@ -471,7 +480,7 @@ impl Receivers {
 
     /// The rest of `stream_receiver_accept_connection()`: the receiver configuration, the host, the prompt, and the
     /// handover to a stream thread.
-    pub fn admit(&self, pending: Pending, stream: Stream) {
+    pub fn admit(&self, pending: Pending, mut link: Link<Conn>, peers: Peers) {
         let Pending {
             request,
             peer,
@@ -576,7 +585,8 @@ impl Receivers {
                 Priority::Notice,
             );
             send_timeout(
-                &stream,
+                &mut link,
+                &peers,
                 handshake::ERROR_INITIALIZATION.as_bytes(),
                 Duration::from_secs(5),
             );
@@ -588,7 +598,8 @@ impl Receivers {
             &config.compression_priorities,
             caps::COMPRESSIONS_AVAILABLE,
         );
-        let shutdown_handle = stream.try_clone().ok();
+        // stream_receiver_signal_to_stop_and_wait()'s shutdown() of the socket, from another thread
+        let shutdown_handle = link.socket().and_then(|c| socket2::SockRef::from(c).try_clone().ok());
         let slot = Arc::new(ReceiverSlot::new(
             now_monotonic_ut(),
             (peer.ip.clone(), peer.port.clone()),
@@ -612,7 +623,8 @@ impl Receivers {
                     Priority::Info,
                 );
                 send_timeout(
-                    &stream,
+                    &mut link,
+                    &peers,
                     handshake::ERROR_ALREADY_STREAMING.as_bytes(),
                     Duration::from_secs(5),
                 );
@@ -626,7 +638,8 @@ impl Receivers {
                     Priority::Info,
                 );
                 send_timeout(
-                    &stream,
+                    &mut link,
+                    &peers,
                     handshake::ERROR_BUSY_TRY_LATER.as_bytes(),
                     Duration::from_secs(5),
                 );
@@ -647,19 +660,21 @@ impl Receivers {
             );
         }
         let prompt = caps::prompt(capabilities);
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(600)));
         let mut keepalive_initialized = false;
-        reconcile_keepalive(
-            std::os::fd::AsFd::as_fd(&stream),
-            &host,
-            &peer,
-            &config.keepalive,
-            i64::from(request.update_every),
-            &mut keepalive_initialized,
-        );
+        if let Some(conn) = link.socket() {
+            let _ = socket2::SockRef::from(conn).set_read_timeout(Some(Duration::from_secs(600)));
+            reconcile_keepalive(
+                std::os::fd::AsFd::as_fd(conn),
+                &host,
+                &peer,
+                &config.keepalive,
+                i64::from(request.update_every),
+                &mut keepalive_initialized,
+            );
+        }
         // the negotiated capabilities are logged before the prompt goes out
         peer.established(&host.hostname(), capabilities);
-        if !send_timeout(&stream, prompt.as_bytes(), Duration::from_secs(60)) {
+        if !send_timeout(&mut link, &peers, prompt.as_bytes(), Duration::from_secs(60)) {
             peer.status(
                 "cannot reply back, dropping connection",
                 Reason::SendTimeout,
@@ -672,7 +687,8 @@ impl Receivers {
         host.obsolete_all_charts();
         peer.status(&connected_msg(&host), Reason::Never, Priority::Info);
         self.hosts.update_is_parent_label();
-        if stream.set_nonblocking(true).is_err() {
+        let nonblocking = link.socket().map(|c| socket2::SockRef::from(c).set_nonblocking(true));
+        if !matches!(nonblocking, Some(Ok(()))) {
             host.clear_receiver(&slot);
             self.hosts.update_is_parent_label();
             return;
@@ -687,7 +703,8 @@ impl Receivers {
             host,
             hosts: Arc::clone(&self.hosts),
             slot,
-            stream: Conn::from_std(stream),
+            stream: link,
+            peers,
             thread,
             parser: ingest::Config {
                 capabilities,
@@ -792,7 +809,7 @@ impl StreamWorker {
         if cx
             .registry()
             .register(
-                &mut attached.stream,
+                attached.stream.socket_mut().expect("a taken-over link has its socket"),
                 Token(index),
                 Interest::READABLE | Interest::WRITABLE,
             )
@@ -818,7 +835,7 @@ impl StreamWorker {
                 .is_ok()
         }));
         let decompressor = Decompressor::for_capabilities(attached.parser.capabilities);
-        let frame = attached.peer.child_frame(attached.parser.capabilities);
+        let frame = attached.peer.child_frame(attached.parser.capabilities, attached.stream.is_tls());
         {
             // stream_receiver_move_to_running_unsafe()
             let _frame = netdata_agent_log::push(vec![
@@ -843,7 +860,7 @@ impl StreamWorker {
         }
         let a = &mut attached;
         reconcile_keepalive(
-            std::os::fd::AsFd::as_fd(&a.stream),
+            std::os::fd::AsFd::as_fd(a.stream.socket().expect("a taken-over link has its socket")),
             &a.host,
             &a.peer,
             &a.keepalive,
@@ -929,7 +946,9 @@ impl StreamWorker {
     fn disconnect(&mut self, cx: &mut Context<'_>, index: usize, reason: Reason) {
         if let Some(mut child) = self.children[index].take() {
             let attached = &mut child.attached;
-            let _ = cx.registry().deregister(&mut attached.stream);
+            if let Some(conn) = attached.stream.socket_mut() {
+                let _ = cx.registry().deregister(conn);
+            }
             let counters = Counters {
                 thread: attached.thread,
                 msgs: child.parser.data_collections_count,
@@ -965,6 +984,15 @@ impl StreamWorker {
                 continue;
             };
             let frame = Arc::clone(&child.frame);
+            // nd_sock_peek_nowait(): recv(MSG_PEEK), or netdata_ssl_peek()
+            let Attached { stream, peers, .. } = &mut child.attached;
+            let peeked = match stream {
+                Link::Plain(conn) => {
+                    socket2::SockRef::from(&*conn).peek(&mut [std::mem::MaybeUninit::uninit(); 1])
+                }
+                Link::Tls(t) => t.peek(&mut [0u8; 1], peers),
+                Link::Gone => Ok(0),
+            };
             let a = &child.attached;
             let at = format!(
                 "STREAM RCV[{}] '{}' [from {}]: ",
@@ -972,8 +1000,6 @@ impl StreamWorker {
                 a.host.hostname(),
                 a.peer.ip
             );
-            let mut probe = [std::mem::MaybeUninit::uninit(); 1];
-            let peeked = socket2::SockRef::from(&a.stream).peek(&mut probe);
             let reset =
                 |e: &std::io::Error| e.raw_os_error() == Some(nix::errno::Errno::ECONNRESET as i32);
             match peeked {
@@ -1138,7 +1164,8 @@ impl StreamWorker {
         let out = child.parser.take_output();
         child.pending_out.extend_from_slice(&out);
         while !child.pending_out.is_empty() {
-            let failure = match child.attached.stream.write(&child.pending_out) {
+            let Attached { stream, peers, .. } = &mut child.attached;
+            let failure = match stream.write(&child.pending_out, peers) {
                 Ok(n) if n > 0 => {
                     child.pending_out.drain(..n);
                     child.bytes_out += n as u64;
@@ -1172,7 +1199,7 @@ impl StreamWorker {
                 "{}{} ({rc}, on fd {}) - closing receiver connection - we have sent {} bytes in {} operations.",
                 Self::prefix(child),
                 reason.text(),
-                std::os::fd::AsRawFd::as_raw_fd(&child.attached.stream),
+                raw_fd(&child.attached.stream),
                 child.bytes_out,
                 child.sends
             );
@@ -1208,7 +1235,7 @@ impl StreamWorker {
             )
         };
         let prefix = Self::prefix(child);
-        match child.attached.stream.take_error() {
+        match child.attached.stream.socket().map_or(Ok(None), Conn::take_error) {
             Err(err) => {
                 let errno = netdata_agent_log::errno_of(&err);
                 nd_log!(
@@ -1248,7 +1275,8 @@ impl StreamWorker {
             let Some(child) = self.children[index].as_mut() else {
                 return;
             };
-            let read = child.attached.stream.read(&mut buf);
+            let Attached { stream, peers, .. } = &mut child.attached;
+            let read = stream.read(&mut buf, peers);
             // C's parser frame of stream_receiver_receive_data() covers every record after the read; the parser's
             // fields are taken when a record is due, as C's callbacks read them
             let failed = |child: &Child, reason: Reason, errno: i32| {
@@ -1260,7 +1288,7 @@ impl StreamWorker {
                     "{}{} (fd {}) - closing receiver connection.",
                     Self::prefix(child),
                     reason.text(),
-                    std::os::fd::AsRawFd::as_raw_fd(&child.attached.stream)
+                    raw_fd(&child.attached.stream)
                 );
                 reason
             };
@@ -1317,7 +1345,7 @@ impl StreamWorker {
                     // the charts just received may lower the update every the keepalive follows
                     let a = &mut child.attached;
                     reconcile_keepalive(
-                        std::os::fd::AsFd::as_fd(&a.stream),
+                        std::os::fd::AsFd::as_fd(a.stream.socket().expect("a taken-over link has its socket")),
                         &a.host,
                         &a.peer,
                         &a.keepalive,

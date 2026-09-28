@@ -16,6 +16,7 @@ flate2 = { workspace = true, features = ["zlib"] }
 lz4_flex = { workspace = true }
 mio = { workspace = true }
 netdata-agent-evloop = { workspace = true }
+netdata-agent-tls = { workspace = true }
 netdata-agent-inicfg = { workspace = true }
 netdata-agent-ingest = { workspace = true }
 netdata-agent-pluginsd-proto = { workspace = true }

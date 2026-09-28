@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/netdata/netdata/tests/query-corpus/daemon"
+	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
 // tlsACL is every feature a web listener serves.
@@ -155,6 +156,8 @@ var tlsLogMasks = []logMask{
 //   - config: `tls version = 1.2`, a TLS 1.2 cipher list, a list OpenSSL rejects (reported, the context kept), no
 //     files, a key that is not the certificate's and a key that is no PEM (no context: plain everywhere, no
 //     redirect): a TLS request's outcome, a plain request on the default listener, both logs.
+//   - stream (commit 6): a child streams over TLS to the default and the force listener, then closes: its chart's
+//     answer and both logs (the receiver's records "https", the web side's after the takeover "http").
 //   - stream-force: a `^SSL=force` listener refuses a plain STREAM even with no certificate configured: 400 "HTTP
 //     method requested is not supported..." and C's ERR record naming the child's `hostname=` (up to its `&`, else
 //     "not available"). A plain GET is served there (no TLS context, no redirect).
@@ -324,6 +327,68 @@ func TestWebTLS(t *testing.T) {
 			}
 		}
 		compareLogFilesWith(t, p, tlsLogMasks)
+	})
+	t.Run("stream", func(t *testing.T) {
+		key, cert := selfSigned(t)
+		p, ls := tlsPair(t, "", map[string][]byte{"key.pem": key, "cert.pem": cert})
+		children := []struct {
+			host stream.HostInfo
+			pick func(tlsListeners) string
+		}{
+			{stream.HostInfo{Hostname: "tls-child-a", MachineGUID: "b6b6b6b6-6666-4666-8666-00000000000a"},
+				func(l tlsListeners) string { return l.standard }},
+			{stream.HostInfo{Hostname: "tls-child-b", MachineGUID: "b6b6b6b6-6666-4666-8666-00000000000b"},
+				func(l tlsListeners) string { return l.force }},
+		}
+		for _, c := range children {
+			var got [2]string
+			for i, side := range p.Each() {
+				conn, err := stream.ConnectTLS(c.pick(ls[i]), side.Daemon.StreamKey, c.host, stream.CapsLive,
+					&tls.Config{InsecureSkipVerify: true})
+				if err != nil {
+					t.Fatalf("%s: %s: %v", side.Role, c.host.Hostname, err)
+				}
+				now := time.Now().Unix()
+				conn.Linef("CHART 'tls.c' '' 'title' 'units' 'family' 'tls.c' line 1000 1 '' tls corpus")
+				conn.Linef("DIMENSION 'd' '' absolute 1 1 ''")
+				for t := now - 5; t <= now; t++ {
+					conn.Linef("BEGIN2 'tls.c' 1 %d #", t)
+					conn.Linef("SET2 'd' %d %d A", t%100, t%100)
+					conn.Linef("END2")
+				}
+				if err := conn.Flush(); err != nil {
+					t.Fatal(err)
+				}
+				// the chart answers once the receiver stored it; the polls stay out of the log comparison
+				deadline := time.Now().Add(20 * time.Second)
+				for {
+					b, err := rawExchange(side.Daemon.Addr, []byte("GET /host/"+c.host.Hostname+
+						"/api/v1/chart?chart=tls.c&harness=wait HTTP/1.1\r\n\r\n"), 5*time.Second)
+					head, _, _ := bytes.Cut(b, []byte("\r\n"))
+					got[i] = string(head)
+					if (err == nil && strings.Contains(got[i], " 200 ")) || time.Now().After(deadline) {
+						break
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+				_ = conn.Close()
+			}
+			if got[0] != got[1] {
+				t.Errorf("%s: oracle %q, candidate %q", c.host.Hostname, got[0], got[1])
+			}
+			t.Logf("%s: %s", c.host.Hostname, got[0])
+		}
+		// the receivers see the closes
+		time.Sleep(2 * time.Second)
+		for _, side := range p.Each() {
+			if err := side.Daemon.Stop(); err != nil {
+				t.Fatalf("stop %s: %v", side.Role, err)
+			}
+		}
+		// a client hello arrives in one readable event or two: the receptions compare as the connects do
+		receptions := logMask{regexp.MustCompile(`stopped after (\d+) connects, (\d+) disconnects \(max concurrent ` +
+			`(\d+)\), \d+ receptions`), "stopped after ${1} connects, ${2} disconnects (max concurrent ${3}), ${1} receptions"}
+		compareLogFilesWith(t, p, append(slices.Clone(tlsLogMasks), receptions))
 	})
 	t.Run("stream-force", func(t *testing.T) {
 		opts := daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1, LogsExtra: "    level = debug\n",

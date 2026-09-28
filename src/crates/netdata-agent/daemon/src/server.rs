@@ -2,12 +2,12 @@
 //! `static-threaded` web server does (`src/web/server/static/static-threaded.c`, `web_client.c`).
 
 use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log, nd_log_limit, netdata_log_error};
-use std::io::{self, Read, Write};
+use std::io;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use netdata_agent_evloop::conn::{Conn, Stream};
-use netdata_agent_tls::{Handshake, Peers, SslContext, State, TlsStream};
+use netdata_agent_evloop::conn::Conn;
+use netdata_agent_tls::{Handshake, Link, Peers, SslContext, State, TlsStream};
 use netdata_agent_evloop::{Context, Event, Interest, TimerId, Token, Worker};
 use netdata_agent_web::content_type::ContentType;
 use netdata_agent_web::request::{
@@ -187,66 +187,13 @@ impl RecvBuffer {
     }
 }
 
-/// A web connection's socket: plain, or TLS once its first byte started a handshake (`w->ssl`).
-#[derive(Debug)]
-enum Link {
-    Plain(Conn),
-    Tls(Box<TlsStream<Conn>>),
-    /// The socket went with a TLS connection OpenSSL could not make; the client is closed.
-    Gone,
+/// The descriptor a record names, -1 for none.
+fn link_fd(link: &Link<Conn>) -> std::os::fd::RawFd {
+    link.socket().map_or(-1, std::os::fd::AsRawFd::as_raw_fd)
 }
 
-impl Link {
-    fn conn(&self) -> Option<&Conn> {
-        match self {
-            Link::Plain(c) => Some(c),
-            Link::Tls(t) => Some(t.get_ref()),
-            Link::Gone => None,
-        }
-    }
-
-    fn conn_mut(&mut self) -> Option<&mut Conn> {
-        match self {
-            Link::Plain(c) => Some(c),
-            Link::Tls(t) => Some(t.get_mut()),
-            Link::Gone => None,
-        }
-    }
-
-    fn fd(&self) -> std::os::fd::RawFd {
-        self.conn().map_or(-1, std::os::fd::AsRawFd::as_raw_fd)
-    }
-
-    fn is_unix(&self) -> bool {
-        self.conn().is_some_and(Conn::is_unix)
-    }
-
-    fn is_tls(&self) -> bool {
-        matches!(self, Link::Tls(_))
-    }
-
-    /// Whether the last TLS operation waits for the socket to be writable.
-    fn wants_write(&self) -> bool {
-        matches!(self, Link::Tls(t) if t.wants_write())
-    }
-
-    /// `web_client_receive()`'s `recv()` or `netdata_ssl_read()`.
-    fn read(&mut self, buf: &mut [u8], peers: &Peers) -> io::Result<usize> {
-        match self {
-            Link::Plain(c) => c.read(buf),
-            Link::Tls(t) => t.read(buf, peers),
-            Link::Gone => Err(io::ErrorKind::NotConnected.into()),
-        }
-    }
-
-    /// `web_client_send()`'s `send()` or `netdata_ssl_write()`.
-    fn write(&mut self, buf: &[u8], peers: &Peers) -> io::Result<usize> {
-        match self {
-            Link::Plain(c) => c.write(buf),
-            Link::Tls(t) => t.write(buf, peers),
-            Link::Gone => Err(io::ErrorKind::NotConnected.into()),
-        }
-    }
+fn link_is_unix(link: &Link<Conn>) -> bool {
+    link.socket().is_some_and(Conn::is_unix)
 }
 
 /// What `web_server_check_tcp_ssl()` decided for this event.
@@ -259,7 +206,7 @@ enum TlsCheck {
 }
 
 struct Client {
-    stream: Link,
+    stream: Link<Conn>,
     /// `WEB_CLIENT_FLAG_SSL_CHECKED`: the first byte was looked at.
     ssl_checked: bool,
     /// The socket's addresses, for the TLS records.
@@ -598,13 +545,10 @@ impl WebWorker {
             self.stats.disconnected += 1;
             let web = &self.shared.hosts.storage().pulse().web;
             web.client_disconnected();
-            if let Some(conn) = client.stream.conn_mut() {
+            if let Some(conn) = client.stream.socket_mut() {
                 let _ = cx.registry().deregister(conn);
             }
-            // netdata_ssl_close()
-            if let Link::Tls(t) = &mut client.stream {
-                t.shutdown();
-            }
+            // netdata_ssl_close(): the link's drop sends the close_notify
             let _frame = hangup.then(|| client.log.hangup_frame());
             client.log.connection("DISCONNECTED", 0);
             if let Some(mut done) = client.pending.take() {
@@ -625,32 +569,29 @@ impl WebWorker {
         cx: &mut Context<'_>,
         slot: usize,
         pre: PreAdmission,
-        ctx: RequestContext,
+        mut ctx: RequestContext,
     ) {
         let Some(mut client) = self.clients[slot].take() else {
             return;
         };
-        let conn = match client.stream {
-            Link::Plain(conn) => conn,
-            // the receiver over TLS is milestone 6's next step (D96): until then its connection is closed
-            link @ (Link::Tls(_) | Link::Gone) => {
-                client.stream = link;
-                self.clients[slot] = Some(client);
-                self.close(cx, slot, false);
-                return;
-            }
+        let mut link = std::mem::replace(&mut client.stream, Link::Gone);
+        let Some(conn) = link.socket_mut() else {
+            return;
         };
-        let mut conn = conn;
-        let _ = cx.registry().deregister(&mut conn);
-        let stream = Stream::from(conn);
+        let _ = cx.registry().deregister(conn);
+        // the SSL session goes with the socket (w->ssl unset): the web side's records say http from now on
+        ctx.transport = "http";
+        client.log.https = false;
         {
             let _frame = ctx.outer_frame();
             let _request = ctx.request_frame();
             match pre {
                 PreAdmission::Refuse(message, refusal) => {
-                    self.receivers.refuse(stream, message, &refusal)
+                    self.receivers.refuse(link, &client.peers, message, &refusal)
                 }
-                PreAdmission::Proceed(pending) => self.receivers.admit(*pending, stream),
+                PreAdmission::Proceed(pending) => {
+                    self.receivers.admit(*pending, link, client.peers.clone())
+                }
                 PreAdmission::Reply(..) => unreachable!("replies stay on the web connection"),
             }
         }
@@ -686,7 +627,7 @@ impl WebWorker {
                     flag(event.is_error(), "ERROR"),
                     flag(hangup, "HUP"),
                     "",
-                    client.stream.fd(),
+                    link_fd(&client.stream),
                     client.log.accept_ip,
                     client.log.port,
                     flag(!sending, "READ"),
@@ -715,7 +656,7 @@ impl WebWorker {
                 TlsCheck::Wait => return,
                 TlsCheck::Ready if handshaking && !event.is_readable() => {
                     // web_server_snd_callback(): a handshake completed by a writable event waits for the request
-                    if let Some(conn) = client.stream.conn_mut() {
+                    if let Some(conn) = client.stream.socket_mut() {
                         let _ = cx.registry().reregister(conn, token, Interest::READABLE);
                     }
                     return;
@@ -768,7 +709,7 @@ impl WebWorker {
                         client.received.truncate(start);
                         // web_server_enable_ssl_wait_from_ssl(): a TLS read that waits to write
                         if client.stream.wants_write() {
-                            if let Some(conn) = client.stream.conn_mut() {
+                            if let Some(conn) = client.stream.socket_mut() {
                                 let _ = cx.registry().reregister(
                                     conn,
                                     token,
@@ -820,7 +761,7 @@ impl WebWorker {
                 }
                 _ => Interest::WRITABLE,
             };
-            if let Some(conn) = client.stream.conn_mut() {
+            if let Some(conn) = client.stream.socket_mut() {
                 let _ = cx.registry().reregister(conn, token, interest);
             }
             return;
@@ -833,7 +774,7 @@ impl WebWorker {
                 return;
             }
             client.request_done(&shared.hosts.storage().pulse().web);
-            if let Some(conn) = client.stream.conn_mut() {
+            if let Some(conn) = client.stream.socket_mut() {
                 let _ = cx.registry().reregister(conn, token, Interest::READABLE);
             }
         }
@@ -879,7 +820,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         mode => mode,
     };
     let conn = Connection {
-        transport: if client.stream.is_unix() {
+        transport: if link_is_unix(&client.stream) {
             Transport::Unix
         } else {
             Transport::Tcp
@@ -1009,7 +950,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         }
         Validation::Ok => {
             let stream = &client.stream;
-            let closed = |errno: &mut i32| stream.conn().is_none_or(|c| is_socket_closed(c, errno));
+            let closed = |errno: &mut i32| stream.socket().is_none_or(|c| is_socket_closed(c, errno));
             let (reply, allowed) = dispatch(
                 &client.request,
                 &client.received,
@@ -1181,7 +1122,7 @@ fn handshake(t: &mut TlsStream<Conn>, peers: &Peers, cx: &mut Context<'_>, token
 
 /// `web_client_send_http_header()`'s send: how much of the header went out, or `None` (after C's two records) when
 /// the client is gone. A full socket sends nothing now; the rest goes out with the body.
-fn send_header(stream: &mut Link, peers: &Peers, header: &[u8]) -> Option<usize> {
+fn send_header(stream: &mut Link<Conn>, peers: &Peers, header: &[u8]) -> Option<usize> {
     loop {
         match stream.write(header, peers) {
             Ok(n) => return Some(n),
@@ -1355,7 +1296,7 @@ impl Worker for WebWorker {
                 // C prints the poller's loop index left at the number of listening sockets, and a trailing space
                 let (listeners, fd) = (
                     self.listeners.len(),
-                    client.stream.fd(),
+                    link_fd(&client.stream),
                 );
                 let (ip, port) = (&client.log.accept_ip, &client.log.port);
                 if never_asked {

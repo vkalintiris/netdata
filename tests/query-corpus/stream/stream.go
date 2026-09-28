@@ -9,6 +9,7 @@ package stream
 
 import (
 	"bufio"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"strconv"
@@ -94,7 +95,23 @@ func Connect(addr, apiKey string, hi HostInfo, caps uint32) (*Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stream: dial %s: %w", addr, err)
 	}
+	return connectOn(nc, apiKey, hi, caps)
+}
 
+// ConnectTLS is Connect over TLS (a parent's `ssl key` and `ssl certificate`, or a listener with `^SSL=force`).
+func ConnectTLS(addr, apiKey string, hi HostInfo, caps uint32, cfg *tls.Config) (*Conn, error) {
+	if hi.UpdateEvery <= 0 {
+		hi.UpdateEvery = 1
+	}
+	nc, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", addr, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("stream: tls dial %s: %w", addr, err)
+	}
+	return connectOn(nc, apiKey, hi, caps)
+}
+
+// connectOn performs the STREAM handshake on a connected socket.
+func connectOn(nc net.Conn, apiKey string, hi HostInfo, caps uint32) (*Conn, error) {
 	// the large write buffer lets a caller emit a whole fixture burst as one
 	// write() syscall, keeping burst boundaries (Flush) meaningful
 	c := &Conn{conn: nc, r: bufio.NewReader(nc), w: bufio.NewWriterSize(nc, 2<<20)}

@@ -156,7 +156,7 @@ impl Peer {
 
     /// The frame `stream_receive_process_poll_events()` pushes for every event of a child's socket: built once per
     /// child and shared.
-    pub fn child_frame(&self, capabilities: u32) -> Arc<[(Field, Value)]> {
+    pub fn child_frame(&self, capabilities: u32, tls: bool) -> Arc<[(Field, Value)]> {
         Arc::from(vec![
             (Field::SrcIp, Value::txt(self.ip.as_str())),
             (Field::SrcPort, Value::txt(self.port.as_str())),
@@ -164,8 +164,8 @@ impl Peer {
                 Field::NidlNode,
                 Value::txt(self.hostname.clone().unwrap_or_default()),
             ),
-            // no TLS: C's transport callback prints http
-            (Field::SrcTransport, Value::txt("http")),
+            // stream_receiver_log_transport()
+            (Field::SrcTransport, Value::txt(if tls { "https" } else { "http" })),
             // C's callback prints even no capabilities, as an empty string
             (
                 Field::SrcCapabilities,
