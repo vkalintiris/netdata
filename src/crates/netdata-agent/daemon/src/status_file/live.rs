@@ -301,8 +301,8 @@ pub fn refresh(s: &mut StatusFile, status: DaemonStatus) {
     s.db_tiers = DB_TIERS.load(Ordering::Relaxed);
     s.pid = std::process::id() as i32;
 
-    // the highest cloud status is kept; without ACLK, claiming or a stream sender it is "available"
-    let cs = cloud_status::AVAILABLE;
+    // the highest cloud status is kept
+    let cs = crate::cloud::status();
     if matches!(s.cloud_status, 0 | cloud_status::AVAILABLE | cloud_status::OFFLINE)
         || matches!(cs, cloud_status::BANNED | cloud_status::ONLINE | cloud_status::INDIRECT)
     {

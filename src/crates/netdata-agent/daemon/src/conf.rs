@@ -38,7 +38,7 @@ use crate::system::{self, Resources};
 const PLUGINSD_MAX_DIRECTORIES: usize = 20;
 
 /// `DEFAULT_CLOUD_BASE_URL`.
-const DEFAULT_CLOUD_BASE_URL: &str = "https://app.netdata.cloud";
+pub const DEFAULT_CLOUD_BASE_URL: &str = "https://app.netdata.cloud";
 
 /// The `netdata_configured_*` directories.
 #[derive(Debug, Clone)]
@@ -1250,7 +1250,7 @@ impl Conf {
 
     /// The "home" startup step: `[directories] home`, the running user's home unless the key is set, exported as
     /// `HOME` (root's would be inherited otherwise).
-    pub fn section_home(&mut self) {
+    pub fn section_home(&mut self) -> String {
         let pw_dir = nix::unistd::User::from_uid(nix::unistd::getuid())
             .ok()
             .flatten()
@@ -1264,6 +1264,7 @@ impl Conf {
                 .get_path(SECTION_DIRECTORIES, "home", Some(&default)),
         );
         export("HOME", &home);
+        home
     }
 
     /// `netdata_configured_primary_plugins_dir`: no plugin directory at all is a NULL, which glibc prints as

@@ -1,11 +1,13 @@
 //! The contexts v2 engine, ported from `api_v2_contexts_internal()` (`src/web/api/v2/api_v2_contexts.c`),
 //! `rrdcontext_to_json_v2()` and its host walk (`src/database/contexts/api_v2_contexts.c`, `query_scope.c`) for the
-//! modes the agent serves so far: `/api/v3/stream_path`. Decisions D51 in the status repository.
+//! modes the agent serves so far: `/api/v3/stream_path` and `/api/v2/info` (`/api/v3/info`). Decisions D51 and D92
+//! in the status repository.
 
 use std::sync::Arc;
 use std::time::Instant;
 
-use netdata_agent_query::jsonwrap_v2::{cloud_timings, node_add_v2};
+use netdata_agent_query::jsonwrap::timings;
+use netdata_agent_query::jsonwrap_v2::{Agent, agents_v2, cloud_timings, node_add_v2};
 use netdata_agent_query::keys::Keys;
 use netdata_agent_query::request::pairs;
 use netdata_agent_query::tables::{
@@ -14,6 +16,7 @@ use netdata_agent_query::tables::{
 };
 use netdata_agent_query::target::{host_matches, matches_retention};
 use netdata_agent_rrd::host::Host;
+use netdata_agent_rrd::retention::retention_stats;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 use netdata_agent_text::parse::str2l;
 use netdata_agent_text::simple_pattern::SimplePattern;
@@ -22,8 +25,8 @@ use netdata_agent_web::content_type::ContentType;
 use netdata_agent_web::status;
 
 use crate::router::Route;
-use crate::server::{self, Reply};
-use crate::startup;
+use crate::server::{self, Reply, Shared};
+use crate::{capas, cloud, startup};
 
 /// `CONTEXTS_V2_MODE`.
 pub mod mode {
@@ -243,9 +246,11 @@ fn request_to_json(w: &mut JsonWriter, req: &Request, mode: u32) {
     w.object_close();
 }
 
-/// `rrdcontext_to_json_v2()` for the node modes served.
-fn render(hosts: &[Arc<Host>], localhost: &Host, req: &Request, mode: u32, wall_s: i64) -> Reply {
+/// `rrdcontext_to_json_v2()` for the modes served.
+fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     let received = Instant::now();
+    let hosts = shared.hosts.all();
+    let localhost = shared.hosts.localhost();
     let received_ut = startup::now_ut();
     let pattern = |v: &Option<Vec<u8>>| v.as_deref().and_then(SimplePattern::from_web);
     let (scope_nodes, nodes) = (pattern(&req.scope_nodes), pattern(&req.nodes));
@@ -264,7 +269,7 @@ fn render(hosts: &[Arc<Host>], localhost: &Host, req: &Request, mode: u32, wall_
     };
     // query_scope_foreach_host() with rrdcontext_to_json_v2_add_host()
     let mut selected = Vec::new();
-    for host in hosts {
+    for host in &hosts {
         if scope_nodes
             .as_ref()
             .is_some_and(|sp| !host_matches(sp, host))
@@ -307,6 +312,7 @@ fn render(hosts: &[Arc<Host>], localhost: &Host, req: &Request, mode: u32, wall_
             selected.push(Arc::clone(host));
         }
     }
+    let executed = Instant::now();
     let debug = req.options & DEBUG != 0;
     let mut w = JsonWriter::new(if req.options & MINIFY != 0 && !debug {
         JsonOptions::MINIFY
@@ -320,14 +326,24 @@ fn render(hosts: &[Arc<Host>], localhost: &Host, req: &Request, mode: u32, wall_
     if debug {
         request_to_json(&mut w, req, mode);
     }
-    let k = Keys::with_long(req.options & JSON_LONG_KEYS != 0);
-    w.member_add_array(Some(b"nodes"));
-    for (ni, host) in selected.iter().enumerate() {
-        node_to_json(&mut w, host, localhost, ni, k, req, mode);
+    if mode & mode::NODES != 0 {
+        let k = Keys::with_long(req.options & JSON_LONG_KEYS != 0);
+        w.member_add_array(Some(b"nodes"));
+        for (ni, host) in selected.iter().enumerate() {
+            node_to_json(&mut w, host, localhost, ni, k, req, mode);
+        }
+        w.array_close();
     }
-    w.array_close();
+    // the agents' timings end the query; the cloud timings end there too
+    let finished = (mode & mode::AGENTS != 0)
+        .then(|| agents(&mut w, shared, req, mode, window.now, received, executed));
     if !mcp {
-        cloud_timings(&mut w, "timings", received, Instant::now());
+        cloud_timings(
+            &mut w,
+            "timings",
+            received,
+            finished.unwrap_or_else(Instant::now),
+        );
     }
     w.finalize();
     Reply {
@@ -338,18 +354,124 @@ fn render(hosts: &[Arc<Host>], localhost: &Host, req: &Request, mode: u32, wall_
     }
 }
 
+/// `buffer_json_agents_v2()` as `rrdcontext_to_json_v2()` calls it: localhost at `now_s`, the info members with
+/// `AGENTS_INFO`, then the timings; when they end.
+fn agents(
+    w: &mut JsonWriter,
+    shared: &Shared,
+    req: &Request,
+    mode: u32,
+    now_s: i64,
+    received: Instant,
+    executed: Instant,
+) -> Instant {
+    let localhost = shared.hosts.localhost();
+    let hostname = localhost.hostname();
+    let agent = Agent {
+        machine_guid: localhost.machine_guid(),
+        node_id: localhost.node_id(),
+        hostname: &hostname,
+    };
+    let rfc3339 = req.options & RFC3339 != 0;
+    let mut finished = executed;
+    agents_v2(w, agent, now_s, rfc3339, |w| {
+        if mode & mode::AGENTS_INFO != 0 {
+            agent_info(w, shared, now_s, rfc3339);
+        }
+        finished = Instant::now();
+        // nothing is preprocessed
+        timings(w, "timings", received, received, executed, finished);
+    });
+    finished
+}
+
+/// The `info` members of `buffer_json_agents_v2()`.
+fn agent_info(w: &mut JsonWriter, shared: &Shared, now_s: i64, rfc3339: bool) {
+    w.member_add_object("application");
+    shared.build_info.to_json_object(w);
+    w.object_close();
+    let url = cloud::url(&mut shared.cloud_conf());
+    cloud::status_to_json(w, now_s, &url);
+    // rrdstats_metadata_collect()
+    let m = shared.hosts.metadata_stats();
+    w.member_add_object("nodes");
+    w.member_add_uint64("total", m.nodes_total);
+    w.member_add_uint64("receiving", m.nodes_receiving);
+    w.member_add_uint64("sending", m.nodes_sending);
+    w.member_add_uint64("archived", m.nodes_archived);
+    w.object_close();
+    for (key, c) in [("metrics", m.metrics), ("instances", m.instances)] {
+        w.member_add_object(key);
+        w.member_add_uint64("collected", c.collected);
+        w.member_add_uint64("available", c.available);
+        w.object_close();
+    }
+    w.member_add_object("contexts");
+    w.member_add_uint64("collected", m.contexts.collected);
+    w.member_add_uint64("available", m.contexts.available);
+    w.member_add_uint64("unique", m.contexts_unique);
+    w.object_close();
+    capas::to_json(w, b"capabilities");
+    w.member_add_object("api");
+    w.member_add_uint64("version", capas::HTTP_API_V2_VERSION);
+    // netdata_bearer_protection_is_enabled(): `[web] bearer token protection` is not read yet (M6)
+    w.member_add_boolean("bearer_protection", false);
+    w.object_close();
+    db_size(w, shared, rfc3339);
+}
+
+/// `db_size` from `rrdstats_retention_collect()`: each tier with an engine.
+fn db_size(w: &mut JsonWriter, shared: &Shared, rfc3339: bool) {
+    let info = shared.hosts.localhost().info();
+    let tiers = retention_stats(
+        shared.hosts.storage(),
+        info.db_mode,
+        i64::from(info.update_every),
+        shared.history_entries,
+        server::now(),
+    );
+    w.member_add_array(Some(b"db_size"));
+    for t in &tiers {
+        w.add_array_item_object();
+        w.member_add_uint64("tier", t.tier as u64);
+        w.member_add_string("granularity", &t.granularity_human);
+        w.member_add_uint64("metrics", t.metrics);
+        w.member_add_uint64("samples", t.samples);
+        let sized = t.disk_used != 0 || t.disk_max != 0;
+        if sized {
+            w.member_add_uint64("disk_used", t.disk_used);
+            w.member_add_uint64("disk_max", t.disk_max);
+            w.member_add_double("disk_percent", (t.disk_percent * 100.0 + 0.5).floor() / 100.0);
+        }
+        if t.retention != 0 {
+            w.member_add_time_t_formatted("from", t.first_time_s, rfc3339);
+            w.member_add_time_t_formatted("to", t.last_time_s, rfc3339);
+            w.member_add_time_t("retention", t.retention);
+            w.member_add_string("retention_human", &t.retention_human);
+            if sized {
+                w.member_add_time_t("requested_retention", t.requested_retention);
+                w.member_add_string("requested_retention_human", &t.requested_retention_human);
+                w.member_add_time_t("expected_retention", t.expected_retention);
+                w.member_add_string("expected_retention_human", &t.expected_retention_human);
+            }
+        }
+        w.object_close();
+    }
+    w.array_close();
+}
+
 /// `api_v3_stream_path()`: the nodes with their stream paths; the host in the URL does not matter.
 pub fn stream_path(route: &Route<'_>, query: &[u8]) -> Reply {
-    let hosts = &route.shared.hosts;
     let stream_path_mode = mode::NODES | mode::NODES_STREAM_PATH;
     let req = parse(query, stream_path_mode, 0);
-    render(
-        &hosts.all(),
-        hosts.localhost(),
-        &req,
-        stream_path_mode,
-        server::now(),
-    )
+    render(route.shared, &req, stream_path_mode, server::now())
+}
+
+/// `api_v2_info()` (`/api/v2/info`, `/api/v3/info`): the agent with its info; the host in the URL does not matter.
+pub fn info(route: &Route<'_>, query: &[u8]) -> Reply {
+    let info_mode = mode::AGENTS | mode::AGENTS_INFO;
+    let req = parse(query, info_mode, 0);
+    render(route.shared, &req, info_mode, server::now())
 }
 
 #[cfg(test)]

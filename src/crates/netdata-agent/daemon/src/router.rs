@@ -128,13 +128,22 @@ fn not_ready(route: &Route<'_>) -> Option<Reply> {
         ..Reply::default()
     })
 }
-const API_V2: &[Command] = &[Command {
-    name: "data",
-    acl: acl::bits::METRICS,
-    access: access::ANONYMOUS_DATA,
-    allow_subpaths: false,
-    callback: |route, _, query| data::v23(route, query, 2),
-}];
+const API_V2: &[Command] = &[
+    Command {
+        name: "data",
+        acl: acl::bits::METRICS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| data::v23(route, query, 2),
+    },
+    Command {
+        name: "info",
+        acl: acl::bits::NOCHECK,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::info(route, query),
+    },
+];
 const API_V3: &[Command] = &[
     Command {
         name: "data",
@@ -149,6 +158,13 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |_, host, query| v1_contexts::context(host, query),
+    },
+    Command {
+        name: "info",
+        acl: acl::bits::NOCHECK,
+        access: access::NONE,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::info(route, query),
     },
     Command {
         name: "stream_path",
@@ -374,6 +390,18 @@ mod tests {
             ready: || true,
             multidb_disk_quota_mb: 1024,
             page_cache_mb: 32,
+            history_entries: 3600,
+            build_info: crate::buildinfo::BuildInfo::new(&crate::buildinfo::Inputs {
+                dirs: &Default::default(),
+                home: "/nonexistent-home",
+                system: &Default::default(),
+                profile: "standalone",
+                parent: false,
+                child: false,
+                memory: Default::default(),
+            }),
+            cloud_conf: Default::default(),
+            cloud_conf_file: "/nonexistent-cloud.conf".into(),
             hosts: Arc::new(netdata_agent_rrd::host::Hosts::new(
                 netdata_agent_rrd::host::Host::new(
                     "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",
@@ -512,6 +540,42 @@ mod tests {
             tail.trim_end(),
             ",\n    \"memory-mode\":\"ram\",\n    \"multidb-disk-quota\":25,\n    \"page-cache-size\":8\n}"
         );
+    }
+
+    /// `/api/v2/info` and `/api/v3/info` need no listener ACL (NOCHECK) and answer the agent in C's member order.
+    #[test]
+    fn info_v2_and_v3_answer_the_agent() {
+        let s = shared();
+        for path in [&b"/api/v2/info"[..], b"/api/v3/info"] {
+            let mut req = Request::default();
+            req.path = path.to_vec();
+            req.url_as_received = path.to_vec();
+            let r = process_request(
+                &req,
+                path,
+                acl::bits::TRANSPORTS,
+                &s,
+                Instant::now(),
+                &crate::access_log::RequestContext::default(),
+                &|_| false,
+            );
+            assert_eq!(r.code, status::OK, "{}", String::from_utf8_lossy(path));
+            assert!(r.no_cacheable);
+            let body = String::from_utf8(r.body).unwrap();
+            let keys = [
+                "\"api\"", "\"agents\"", "\"mg\"", "\"nd\"", "\"nm\"", "\"now\"", "\"ai\"",
+                "\"application\"", "\"cloud\"", "\"nodes\"", "\"metrics\"", "\"instances\"", "\"contexts\"",
+                "\"capabilities\"", "\"api\"", "\"db_size\"", "\"prep_ms\"", "\"routing_ms\"",
+            ];
+            let mut at = 0;
+            for key in keys {
+                at += body[at..].find(key).unwrap_or_else(|| panic!("{key} after {at} in {body}")) + key.len();
+            }
+            assert!(body.contains("\"reason\":\"Agent is not claimed yet\""), "{body}");
+            let nodes = &body[body.find("\"nodes\":{").unwrap()..];
+            let nodes: String = nodes[..nodes.find('}').unwrap()].split_whitespace().collect();
+            assert_eq!(nodes, "\"nodes\":{\"total\":1,\"receiving\":0,\"sending\":0,\"archived\":0");
+        }
     }
 
     #[test]

@@ -267,9 +267,6 @@ pub fn is_ready() -> bool {
 pub struct Ctx {
     /// netdata.conf and the hosts.
     pub shared: Arc<server::Shared>,
-    /// `cloud_config`, and the file `reload-claiming-state` reloads it from.
-    pub cloud: Mutex<Config>,
-    pub cloud_conf_file: String,
     /// Where `reload-labels` finds the Kubernetes labels script.
     pub plugins_dir: String,
     /// `db_meta`, which the stale-node commands read and write; weak, so that the exit can close it.
@@ -332,7 +329,7 @@ fn run(idx: usize, args: &[u8]) -> (Status, Option<Vec<u8>>) {
             // unclaimed
             if let Some(ctx) = CTX.get() {
                 netdata_agent_log::limits_unlimited();
-                conf::load_cloud_conf(&mut lock(&ctx.cloud), &ctx.cloud_conf_file, true);
+                conf::load_cloud_conf(&mut ctx.shared.cloud_conf(), &ctx.shared.cloud_conf_file, true);
                 // load_claiming_state()'s database side, as at startup
                 let meta = ctx.meta.upgrade();
                 let localhost = ctx.shared.hosts.localhost();
@@ -345,8 +342,11 @@ fn run(idx: usize, args: &[u8]) -> (Status, Option<Vec<u8>>) {
             (
                 SUCCESS,
                 Some(
-                    b"Netdata Agent is not claimed to Netdata Cloud: Agent is not claimed yet"
-                        .to_vec(),
+                    format!(
+                        "Netdata Agent is not claimed to Netdata Cloud: {}",
+                        crate::cloud::CLAIM_FAILURE_REASON
+                    )
+                    .into_bytes(),
                 ),
             )
         }
@@ -425,7 +425,7 @@ fn reload_labels() -> (Status, Option<Vec<u8>>) {
     let hosts = &ctx.shared.hosts;
     {
         let mut netdata = ctx.shared.conf();
-        let mut cloud = lock(&ctx.cloud);
+        let mut cloud = ctx.shared.cloud_conf();
         host_labels::reload(&mut netdata, &mut cloud, &ctx.plugins_dir, hosts);
     }
     // rrdlabels_log_to_buffer()
@@ -627,7 +627,7 @@ fn jsonc_string(out: &mut Vec<u8>, text: &[u8]) {
 fn aclk_state_json(ctx: &Ctx) -> Vec<u8> {
     let (url, proxy) = {
         let mut netdata = ctx.shared.conf();
-        let mut cloud = lock(&ctx.cloud);
+        let mut cloud = ctx.shared.cloud_conf();
         let url = cloud.get(netdata_agent_inicfg::SECTION_GLOBAL, "url", None);
         (url, cloud_proxy::full_display(&mut netdata, &mut cloud))
     };
@@ -699,7 +699,7 @@ fn split_config_args(args: &[u8], n: usize) -> Option<Vec<String>> {
 /// The configuration `conf_file` names: `cloud` is cloud.conf, anything else netdata.conf.
 fn with_config<R>(ctx: &Ctx, conf_file: &str, f: impl FnOnce(&mut Config) -> R) -> R {
     if conf_file == "cloud" {
-        f(&mut lock(&ctx.cloud))
+        f(&mut ctx.shared.cloud_conf())
     } else {
         f(&mut ctx.shared.conf())
     }

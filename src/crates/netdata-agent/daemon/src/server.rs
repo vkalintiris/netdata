@@ -25,6 +25,7 @@ use netdata_agent_inicfg::{Config, SECTION_WEB};
 
 use crate::access_log::{Auth, ClientLog, Completed, RequestContext, logged_url};
 use crate::acl::{self, WebAcl};
+use crate::buildinfo::BuildInfo;
 use crate::router;
 
 /// What every worker needs to answer requests.
@@ -55,12 +56,26 @@ pub struct Shared {
     /// `default_multidb_disk_quota_mb` and `default_rrdeng_page_cache_mb`, which `/api/v1/info` reports.
     pub multidb_disk_quota_mb: u64,
     pub page_cache_mb: u64,
+    /// `default_rrd_history_entries`: the memory engine's window in `/api/v2/info`'s `db_size`.
+    pub history_entries: i64,
+    /// `BUILD_INFO` as the startup's `system info` step filled it (`/api/v2/info`'s `application`).
+    pub build_info: BuildInfo,
+    /// `cloud_config` (cloud.conf) and its lock, and the file `reload-claiming-state` reloads it from.
+    pub cloud_conf: Mutex<Config>,
+    pub cloud_conf_file: String,
 }
 
 impl Shared {
     /// netdata.conf under its lock; a panic while it was held does not make it unreadable.
     pub fn conf(&self) -> MutexGuard<'_, Config> {
         self.netdata_conf
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// cloud.conf under its lock; after netdata.conf when both are held.
+    pub fn cloud_conf(&self) -> MutexGuard<'_, Config> {
+        self.cloud_conf
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }

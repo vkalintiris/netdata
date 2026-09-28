@@ -1173,19 +1173,33 @@ pub fn end_v2(
 
     if opts & options::MINIMAL_STATS == 0 {
         let finished = Instant::now();
-        w.member_add_array(Some(b"agents"));
-        w.add_array_item_object();
-        w.member_add_string("mg", agent.machine_guid);
-        w.member_add_uuid("nd", &agent.node_id);
-        w.member_add_string("nm", agent.hostname);
-        w.member_add_time_t_formatted("now", crate::now_s(), rfc3339);
-        w.member_add_uint64("ai", 0);
-        query_timings(w, "timings", received, finished, qt);
-        w.object_close();
-        w.array_close();
+        agents_v2(w, *agent, crate::now_s(), rfc3339, |w| {
+            query_timings(w, "timings", received, finished, qt)
+        });
         cloud_timings(w, "timings", received, finished);
     }
     w.finalize();
+}
+
+/// `buffer_json_agents_v2()` in its array form: the agent's identity at `now_s`, then what `rest` writes (the info
+/// members, the timings).
+pub fn agents_v2(
+    w: &mut JsonWriter,
+    agent: Agent<'_>,
+    now_s: i64,
+    rfc3339: bool,
+    rest: impl FnOnce(&mut JsonWriter),
+) {
+    w.member_add_array(Some(b"agents"));
+    w.add_array_item_object();
+    w.member_add_string("mg", agent.machine_guid);
+    w.member_add_uuid("nd", &agent.node_id);
+    w.member_add_string("nm", agent.hostname);
+    w.member_add_time_t_formatted("now", now_s, rfc3339);
+    w.member_add_uint64("ai", 0);
+    rest(w);
+    w.object_close();
+    w.array_close();
 }
 
 /// `buffer_json_node_add_v2()` with its status (`buffer_json_agent_status_id()`): a node's identity in v2 answers.

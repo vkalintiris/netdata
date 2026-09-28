@@ -239,7 +239,7 @@ fn query_plan(w: &mut JsonWriter, qt: &QueryTarget, options: u64) {
     w.object_close();
 }
 
-/// `buffer_json_query_timings()`: milliseconds from whole microseconds, up to `finished`.
+/// `buffer_json_query_timings()` of a query: milliseconds from whole microseconds, up to `finished`.
 pub fn query_timings(
     w: &mut JsonWriter,
     key: &str,
@@ -247,12 +247,30 @@ pub fn query_timings(
     finished: Instant,
     qt: &QueryTarget,
 ) {
-    let executed = qt.executed.unwrap_or(finished);
+    timings(
+        w,
+        key,
+        received,
+        qt.preprocessed,
+        qt.executed.unwrap_or(finished),
+        finished,
+    );
+}
+
+/// `buffer_json_query_timings()`: milliseconds from whole microseconds between the stages.
+pub fn timings(
+    w: &mut JsonWriter,
+    key: &str,
+    received: Instant,
+    preprocessed: Instant,
+    executed: Instant,
+    finished: Instant,
+) {
     let ms =
         |to: Instant, from: Instant| to.saturating_duration_since(from).as_micros() as f64 / 1000.0;
     w.member_add_object(key);
-    w.member_add_double("prep_ms", ms(qt.preprocessed, received));
-    w.member_add_double("query_ms", ms(executed, qt.preprocessed));
+    w.member_add_double("prep_ms", ms(preprocessed, received));
+    w.member_add_double("query_ms", ms(executed, preprocessed));
     w.member_add_double("output_ms", ms(finished, executed));
     w.member_add_double("total_ms", ms(finished, received));
     w.member_add_double("cloud_ms", ms(finished, received));

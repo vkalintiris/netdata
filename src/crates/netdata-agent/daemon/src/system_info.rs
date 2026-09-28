@@ -93,18 +93,17 @@ pub fn install_type_of(user_config_dir: &str) -> Option<String> {
     si.install_type
 }
 
-/// The startup step `system info`: detection, the install type, then the second detection C runs for its build info
-/// (`set_late_analytics_variables()` → `populate_system_info()`, localhost not existing yet), whose result feeds
-/// `BUILD_INFO` (`application` in `/api/v2/info` and `-W buildinfo`, not ported yet).
-pub fn startup(plugins_dir: &str, user_config_dir: &str) -> SystemInfo {
+/// The startup step `system info`: detection and the install type for localhost, then what C detects again for its
+/// build info (`set_late_analytics_variables()` → `populate_packaging_info()` and `populate_system_info()`, localhost
+/// not existing yet), which `BUILD_INFO` keeps.
+pub fn startup(plugins_dir: &str, user_config_dir: &str) -> (SystemInfo, SystemInfo) {
     let mut si = SystemInfo::default();
     detect(&mut si, plugins_dir);
     install_type(&mut si, user_config_dir);
-    detect(&mut SystemInfo::default(), plugins_dir);
-    si
+    (si, for_build_info(plugins_dir, user_config_dir))
 }
 
-/// What `-W buildinfo` detects (`populate_packaging_info()`, `populate_system_info()` without localhost): the install
+/// What the build info detects (`populate_packaging_info()`, `populate_system_info()` without localhost): the install
 /// type and one detection.
 pub fn for_build_info(plugins_dir: &str, user_config_dir: &str) -> SystemInfo {
     let mut si = SystemInfo::default();

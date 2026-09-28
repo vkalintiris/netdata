@@ -10,7 +10,9 @@ mod archived;
 mod backfill;
 mod build;
 mod buildinfo;
+mod capas;
 mod cli;
+mod cloud;
 mod cloud_proxy;
 mod command_server;
 mod commands;
@@ -491,7 +493,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     startup.step("plugins spawn server");
     startup.step("home");
     // After the user switch, while there is still one thread.
-    conf.section_home();
+    let home = conf.section_home();
 
     startup.step("dyncfg");
     startup.step("threads after fork");
@@ -499,7 +501,18 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     conf::threads_set_stack_size(conf.threads.pthread_stack_size);
     startup.step("registry");
     startup.step("system info");
-    let system_info = system_info::startup(&conf.primary_plugins_dir(), &conf.dirs.user_config);
+    let (system_info, build_system_info) =
+        system_info::startup(&conf.primary_plugins_dir(), &conf.dirs.user_config);
+    // set_late_analytics_variables() → analytics_build_info(): C fills BUILD_INFO once, here
+    let build_info = buildinfo::BuildInfo::new(&buildinfo::Inputs {
+        dirs: &conf.dirs,
+        home: &home,
+        system: &build_system_info,
+        profile: profile.name(),
+        parent: stream_conf.is_parent,
+        child: stream_conf.send.enabled,
+        memory: system::system_memory_cached(true),
+    });
     startup.step("RRD structures");
     startup.step("commands liveness support");
     // libuv's thread pool, which runs the netdatacli commands
@@ -802,6 +815,10 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         ready: commands::is_ready,
         multidb_disk_quota_mb: multidb_disk_quota_mb as u64,
         page_cache_mb: db.page_cache_mb as u64,
+        history_entries: db.history_entries,
+        build_info,
+        cloud_conf_file: conf.cloud_conf_filename(),
+        cloud_conf: std::sync::Mutex::new(std::mem::take(&mut conf.cloud)),
     });
     // PULSE, a static thread started before the web server's as in C's table; C carries on without it
     let pulse_thread = if pulse_enabled {
@@ -1051,9 +1068,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     startup.step("commands full API");
     commands::set_context(commands::Ctx {
         shared: Arc::clone(&shared),
-        cloud_conf_file: conf.cloud_conf_filename(),
         plugins_dir: conf.primary_plugins_dir(),
-        cloud: std::sync::Mutex::new(std::mem::take(&mut conf.cloud)),
         meta: meta_main.as_ref().map(Arc::downgrade).unwrap_or_default(),
         metaqueue,
     });
