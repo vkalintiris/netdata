@@ -274,36 +274,42 @@ fn raw_fd(link: &Link<Conn>) -> std::os::fd::RawFd {
 }
 
 /// `nd_sock_send_timeout()`: wait up to `timeout` for the socket to take data, then one `send()` or
-/// `netdata_ssl_write()` in the socket's current mode: true when everything went out. A refusal runs on the web
+/// `netdata_ssl_write()` in the socket's current mode. `Err` carries the errno C's next record reports: ETIMEDOUT when
+/// the socket never took data, a failed `poll()`'s or send's, 0 for a partial send. A refusal runs on the web
 /// server's non-blocking socket, so dropping its link afterwards never waits on the peer's `close_notify`.
-fn send_timeout(link: &mut Link<Conn>, bytes: &[u8], timeout: Duration) -> bool {
+fn send_timeout(link: &mut Link<Conn>, bytes: &[u8], timeout: Duration) -> Result<(), i32> {
     let Some(conn) = link.socket() else {
-        return false;
+        return Err(0);
     };
-    if !writable_within(std::os::fd::AsFd::as_fd(conn), timeout) {
-        return false;
+    writable_within(std::os::fd::AsFd::as_fd(conn), timeout)?;
+    match link.write(bytes) {
+        Ok(n) if n == bytes.len() => Ok(()),
+        Ok(_) => Err(0),
+        Err(e) => Err(netdata_agent_log::errno_of(&e)),
     }
-    matches!(link.write(bytes), Ok(n) if n == bytes.len())
 }
 
-/// `wait_on_socket_or_cancel_with_timeout()` for `POLLOUT`: false on a timeout, a failed `poll()` or an event
-/// other than writable.
-fn writable_within(fd: std::os::fd::BorrowedFd<'_>, timeout: Duration) -> bool {
+/// `wait_on_socket_or_cancel_with_timeout()` for `POLLOUT`: `Err` with C's errno on a timeout (ETIMEDOUT), a failed
+/// `poll()` (its errno) or an event other than writable (0, cleared before the poll).
+fn writable_within(fd: std::os::fd::BorrowedFd<'_>, timeout: Duration) -> Result<(), i32> {
     use nix::errno::Errno;
     use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
     let deadline = Instant::now() + timeout;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return false;
+            return Err(Errno::ETIMEDOUT as i32);
         }
         // errno_clear(): what the send and the close leave is the next records' errno
         Errno::clear();
         let mut fds = [PollFd::new(fd, PollFlags::POLLOUT)];
-        match poll(&mut fds, PollTimeout::try_from(left).unwrap_or(PollTimeout::MAX)) {
+        // whole milliseconds, rounded up, so the last one does not spin
+        let ms = PollTimeout::try_from(left.as_micros().div_ceil(1000)).unwrap_or(PollTimeout::MAX);
+        match poll(&mut fds, ms) {
             Ok(0) | Err(Errno::EINTR | Errno::EAGAIN) => {}
-            Ok(_) => return fds[0].revents().is_some_and(|r| r.contains(PollFlags::POLLOUT)),
-            Err(_) => return false,
+            Ok(_) if fds[0].revents().is_some_and(|r| r.contains(PollFlags::POLLOUT)) => return Ok(()),
+            Ok(_) => return Err(0),
+            Err(e) => return Err(e as i32),
         }
     }
 }
@@ -486,10 +492,11 @@ impl Receivers {
     pub fn refuse(&self, mut link: Link<Conn>, message: &str, refusal: &Refusal) {
         let peer = &refusal.peer;
         peer.status(refusal.msg, refusal.reason, refusal.priority);
-        if !send_timeout(&mut link, message.as_bytes(), Duration::from_secs(60)) {
+        if let Err(errno) = send_timeout(&mut link, message.as_bytes(), Duration::from_secs(60)) {
             nd_log!(
                 Source::Daemon,
                 Priority::Err,
+                errno = errno;
                 "STREAM RCV '{}' [from [{}]:{}]: failed to reply.",
                 peer.hostname.as_deref().unwrap_or(""),
                 peer.ip,
@@ -499,8 +506,9 @@ impl Receivers {
     }
 
     /// The rest of `stream_receiver_accept_connection()`: the receiver configuration, the host, the prompt, and the
-    /// handover to a stream thread.
-    pub fn admit(&self, pending: Pending, mut link: Link<Conn>) {
+    /// handover to a stream thread. False when the connection was refused or failed here, and closed (C's
+    /// `stream_receiver_free()` in the web thread).
+    pub fn admit(&self, pending: Pending, mut link: Link<Conn>) -> bool {
         let Pending {
             request,
             peer,
@@ -604,12 +612,12 @@ impl Receivers {
                 Reason::ParentIsInitializing,
                 Priority::Notice,
             );
-            send_timeout(
+            let _ = send_timeout(
                 &mut link,
                 handshake::ERROR_INITIALIZATION.as_bytes(),
                 Duration::from_secs(5),
             );
-            return;
+            return false;
         }
         let capabilities = caps::select_compression(
             request.capabilities,
@@ -641,12 +649,12 @@ impl Receivers {
                     Reason::AlreadyConnected,
                     Priority::Info,
                 );
-                send_timeout(
+                let _ = send_timeout(
                     &mut link,
                     handshake::ERROR_ALREADY_STREAMING.as_bytes(),
                     Duration::from_secs(5),
                 );
-                return;
+                return false;
             }
             Attach::CleanupBusy => {
                 peer.status(
@@ -655,12 +663,12 @@ impl Receivers {
                     Reason::BusyTryLater,
                     Priority::Info,
                 );
-                send_timeout(
+                let _ = send_timeout(
                     &mut link,
                     handshake::ERROR_BUSY_TRY_LATER.as_bytes(),
                     Duration::from_secs(5),
                 );
-                return;
+                return false;
             }
         }
         // rrdhost_set_receiver(); health itself is not ported, the delay is only logged
@@ -681,8 +689,17 @@ impl Receivers {
         // web server sockets are non-blocking: C sends the prompt in blocking mode
         if let Some(conn) = link.socket() {
             let socket = socket2::SockRef::from(conn);
-            let _ = socket.set_nonblocking(false);
-            let _ = socket.set_read_timeout(Some(Duration::from_secs(600)));
+            let fd = std::os::fd::AsRawFd::as_raw_fd(conn);
+            if let Err(e) = socket.set_nonblocking(false) {
+                nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_log::errno_of(&e);
+                    "STREAM RCV '{}' [from [{}]:{}]: cannot remove the non-blocking flag from socket {fd}",
+                    host.hostname(), peer.ip, peer.port);
+            }
+            if let Err(e) = socket.set_read_timeout(Some(Duration::from_secs(600))) {
+                nd_log!(Source::Daemon, Priority::Err, errno = netdata_agent_log::errno_of(&e);
+                    "STREAM RCV '{}' [from [{}]:{}]: cannot set timeout for socket {fd}",
+                    host.hostname(), peer.ip, peer.port);
+            }
             reconcile_keepalive(
                 std::os::fd::AsFd::as_fd(conn),
                 &host,
@@ -694,14 +711,15 @@ impl Receivers {
         }
         // the negotiated capabilities are logged before the prompt goes out
         peer.established(&host.hostname(), capabilities);
-        if !send_timeout(&mut link, prompt.as_bytes(), Duration::from_secs(60)) {
-            peer.status(
+        if let Err(errno) = send_timeout(&mut link, prompt.as_bytes(), Duration::from_secs(60)) {
+            peer.status_errno(
                 "cannot reply back, dropping connection",
                 Reason::SendTimeout,
                 Priority::Err,
+                errno,
             );
             host.clear_receiver(&slot);
-            return;
+            return false;
         }
         // svc_rrdhost_obsolete_all_charts(): the charts the child does not define again stay obsolete
         host.obsolete_all_charts();
@@ -711,7 +729,7 @@ impl Receivers {
         if !matches!(nonblocking, Some(Ok(()))) {
             host.clear_receiver(&slot);
             self.hosts.update_is_parent_label();
-            return;
+            return false;
         }
         let thread = {
             let mut load = self.load.lock().unwrap_or_else(PoisonError::into_inner);
@@ -756,7 +774,9 @@ impl Receivers {
         {
             attached.leave_host();
             self.load.lock().unwrap_or_else(PoisonError::into_inner)[thread] -= 1;
+            return false;
         }
+        true
     }
 }
 
@@ -828,7 +848,7 @@ impl StreamWorker {
         if cx
             .registry()
             .register(
-                attached.stream.socket_mut().expect("a taken-over link has its socket"),
+                &mut attached.stream,
                 Token(index),
                 Interest::READABLE | Interest::WRITABLE,
             )
@@ -965,9 +985,7 @@ impl StreamWorker {
     fn disconnect(&mut self, cx: &mut Context<'_>, index: usize, reason: Reason) {
         if let Some(mut child) = self.children[index].take() {
             let attached = &mut child.attached;
-            if let Some(conn) = attached.stream.socket_mut() {
-                let _ = cx.registry().deregister(conn);
-            }
+            let _ = cx.registry().deregister(&mut attached.stream);
             let counters = Counters {
                 thread: attached.thread,
                 msgs: child.parser.data_collections_count,

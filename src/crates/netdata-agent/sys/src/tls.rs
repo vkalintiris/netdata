@@ -4,7 +4,7 @@
 //! its alerts take another path. Here OpenSSL does its own I/O on the descriptor, as in C.
 
 use std::ffi::c_int;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd};
 
 use foreign_types::ForeignTypeRef;
 use openssl::ssl::{Ssl, SslRef};
@@ -14,8 +14,9 @@ unsafe extern "C" {
     fn SSL_set_fd(ssl: *mut openssl_sys::SSL, fd: c_int) -> c_int;
 }
 
-/// A TLS connection on `stream`'s descriptor. The connection is freed before the stream closes its descriptor (field
-/// order), so OpenSSL never works on a descriptor it does not have.
+/// A TLS connection on `stream`'s descriptor. The stream is owned (`AsFd`) and never handed out mutably, and the
+/// connection is freed before the stream closes its descriptor (field order), so OpenSSL never works on a descriptor
+/// it does not have. A poller registers the stream through this type's `mio::event::Source`.
 #[derive(Debug)]
 pub struct SocketSsl<S> {
     ssl: Ssl,
@@ -27,12 +28,12 @@ fn len(buf: &[u8]) -> c_int {
     c_int::try_from(buf.len()).unwrap_or(c_int::MAX)
 }
 
-impl<S: AsRawFd> SocketSsl<S> {
+impl<S: AsFd> SocketSsl<S> {
     /// `SSL_set_fd()` (OpenSSL 3 also enables kTLS on the socket, as for C); on a failure (OpenSSL could not make the
     /// BIO, the error queue says why) both come back.
     pub fn new(ssl: Ssl, stream: S) -> Result<SocketSsl<S>, (Ssl, S)> {
         // SAFETY: `ssl` is a live connection; the descriptor stays open while it lives (see the struct).
-        let set = unsafe { SSL_set_fd(ssl.as_ptr(), stream.as_raw_fd()) };
+        let set = unsafe { SSL_set_fd(ssl.as_ptr(), stream.as_fd().as_raw_fd()) };
         if set == 1 { Ok(SocketSsl { ssl, stream }) } else { Err((ssl, stream)) }
     }
 
@@ -42,11 +43,6 @@ impl<S: AsRawFd> SocketSsl<S> {
 
     pub fn get_ref(&self) -> &S {
         &self.stream
-    }
-
-    /// The stream, to register it with a poller; replacing it would leave OpenSSL on the old descriptor.
-    pub fn get_mut(&mut self) -> &mut S {
-        &mut self.stream
     }
 
     /// `SSL_accept()`.
@@ -83,5 +79,25 @@ impl<S: AsRawFd> SocketSsl<S> {
     pub fn error(&self, ret: c_int) -> c_int {
         // SAFETY: a live connection; it only reads the connection and the thread's error queue.
         unsafe { openssl_sys::SSL_get_error(self.ssl.as_ptr(), ret) }
+    }
+}
+
+/// The stream's registration with a poller, delegated: no caller gets the stream itself mutably.
+impl<S: AsFd + mio::event::Source> mio::event::Source for SocketSsl<S> {
+    fn register(&mut self, registry: &mio::Registry, token: mio::Token, interests: mio::Interest) -> std::io::Result<()> {
+        self.stream.register(registry, token, interests)
+    }
+
+    fn reregister(
+        &mut self,
+        registry: &mio::Registry,
+        token: mio::Token,
+        interests: mio::Interest,
+    ) -> std::io::Result<()> {
+        self.stream.reregister(registry, token, interests)
+    }
+
+    fn deregister(&mut self, registry: &mio::Registry) -> std::io::Result<()> {
+        self.stream.deregister(registry)
     }
 }

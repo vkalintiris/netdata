@@ -1,11 +1,13 @@
 //! TLS of the agent over the system's OpenSSL (D10), ported from `src/libnetdata/socket/security.c`: the library's
 //! initialization, the web server's context as `netdata_ssl_create_server_ctx()` builds it, a connection's TLS as
 //! `NETDATA_SSL` runs it (the non-blocking handshake, reads, writes and the close), and C's records of OpenSSL's
-//! errors. Decisions D96 in the status repository.
+//! errors. Decisions D96, D97 and D99 in the status repository.
+
+#![forbid(unsafe_code)]
 
 use std::ffi::c_int;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, RawFd};
 
 use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log, nd_log_limit, netdata_log_error};
 use netdata_agent_sys::SocketSsl;
@@ -129,7 +131,7 @@ pub enum State {
 /// A connection over TLS (`NETDATA_SSL`), OpenSSL reading and writing the socket itself (D97.2). Dropping it sends
 /// the peer a `close_notify` (`netdata_ssl_close()`), as every C path that frees a connection does.
 #[derive(Debug)]
-pub struct TlsStream<S: AsRawFd> {
+pub struct TlsStream<S: AsFd> {
     ssl: SocketSsl<S>,
     state: State,
     /// What the last operation waits for (`ssl_errno`): `WANT_READ` or `WANT_WRITE`.
@@ -145,7 +147,7 @@ pub enum Handshake {
     Failed,
 }
 
-impl<S: AsRawFd> TlsStream<S> {
+impl<S: AsFd> TlsStream<S> {
     /// `netdata_ssl_open()` on the web server's context: the handshake has not started. `None` (with C's record) when
     /// OpenSSL cannot make the connection; the socket is then gone with it.
     pub fn new(context: &SslContext, stream: S) -> Option<TlsStream<S>> {
@@ -173,10 +175,6 @@ impl<S: AsRawFd> TlsStream<S> {
 
     pub fn get_ref(&self) -> &S {
         self.ssl.get_ref()
-    }
-
-    pub fn get_mut(&mut self) -> &mut S {
-        self.ssl.get_mut()
     }
 
     pub fn state(&self) -> State {
@@ -232,7 +230,7 @@ impl<S: AsRawFd> TlsStream<S> {
         Errno::clear();
         self.want = None;
         if self.state != State::Complete {
-            incomplete(op, self.state, self.get_ref().as_raw_fd());
+            incomplete(op, self.state, self.get_ref().as_fd().as_raw_fd());
             return Err(io::Error::from_raw_os_error(Errno::ENOTCONN as i32));
         }
         let ret = f(&mut self.ssl);
@@ -276,12 +274,12 @@ impl<S: AsRawFd> TlsStream<S> {
     }
 
     fn log(&self, code: ErrorCode, call: &str) {
-        let fd = self.get_ref().as_raw_fd();
+        let fd = self.get_ref().as_fd().as_raw_fd();
         log_error_queue(call, Some(self.ssl.ssl()), Some(fd), code.as_raw(), ErrorStack::get().errors());
     }
 }
 
-impl<S: AsRawFd> Drop for TlsStream<S> {
+impl<S: AsFd> Drop for TlsStream<S> {
     fn drop(&mut self) {
         self.shutdown();
     }
@@ -290,26 +288,18 @@ impl<S: AsRawFd> Drop for TlsStream<S> {
 /// A connection's socket, plain or over TLS (`NETDATA_SSL` beside the socket): what the web server serves and the
 /// stream receiver takes over.
 #[derive(Debug)]
-pub enum Link<S: Read + Write + AsRawFd> {
+pub enum Link<S: Read + Write + AsFd> {
     Plain(S),
     Tls(Box<TlsStream<S>>),
     /// The socket went with a TLS connection OpenSSL could not make; the connection is closed.
     Gone,
 }
 
-impl<S: Read + Write + AsRawFd> Link<S> {
+impl<S: Read + Write + AsFd> Link<S> {
     pub fn socket(&self) -> Option<&S> {
         match self {
             Link::Plain(s) => Some(s),
             Link::Tls(t) => Some(t.get_ref()),
-            Link::Gone => None,
-        }
-    }
-
-    pub fn socket_mut(&mut self) -> Option<&mut S> {
-        match self {
-            Link::Plain(s) => Some(s),
-            Link::Tls(t) => Some(t.get_mut()),
             Link::Gone => None,
         }
     }
@@ -338,6 +328,48 @@ impl<S: Read + Write + AsRawFd> Link<S> {
         match self {
             Link::Plain(s) => s.write(buf),
             Link::Tls(t) => t.write(buf),
+            Link::Gone => Err(io::ErrorKind::NotConnected.into()),
+        }
+    }
+}
+
+/// A TLS connection's socket registers with a poller through the connection (D99.1).
+impl<S: AsFd + mio::event::Source> mio::event::Source for TlsStream<S> {
+    fn register(&mut self, registry: &mio::Registry, token: mio::Token, interests: mio::Interest) -> io::Result<()> {
+        self.ssl.register(registry, token, interests)
+    }
+
+    fn reregister(&mut self, registry: &mio::Registry, token: mio::Token, interests: mio::Interest) -> io::Result<()> {
+        self.ssl.reregister(registry, token, interests)
+    }
+
+    fn deregister(&mut self, registry: &mio::Registry) -> io::Result<()> {
+        self.ssl.deregister(registry)
+    }
+}
+
+/// A link registers its socket, whatever carries it; a gone link has none.
+impl<S: Read + Write + AsFd + mio::event::Source> mio::event::Source for Link<S> {
+    fn register(&mut self, registry: &mio::Registry, token: mio::Token, interests: mio::Interest) -> io::Result<()> {
+        match self {
+            Link::Plain(s) => s.register(registry, token, interests),
+            Link::Tls(t) => t.register(registry, token, interests),
+            Link::Gone => Err(io::ErrorKind::NotConnected.into()),
+        }
+    }
+
+    fn reregister(&mut self, registry: &mio::Registry, token: mio::Token, interests: mio::Interest) -> io::Result<()> {
+        match self {
+            Link::Plain(s) => s.reregister(registry, token, interests),
+            Link::Tls(t) => t.reregister(registry, token, interests),
+            Link::Gone => Err(io::ErrorKind::NotConnected.into()),
+        }
+    }
+
+    fn deregister(&mut self, registry: &mio::Registry) -> io::Result<()> {
+        match self {
+            Link::Plain(s) => s.deregister(registry),
+            Link::Tls(t) => t.deregister(registry),
             Link::Gone => Err(io::ErrorKind::NotConnected.into()),
         }
     }

@@ -19,3 +19,5 @@ rusqlite = { workspace = true }
 openssl = { workspace = true }
 openssl-sys = { workspace = true }
 foreign-types = { workspace = true }
+# a TLS connection registers its socket with a poller without handing the socket out (SocketSsl)
+mio = { workspace = true }

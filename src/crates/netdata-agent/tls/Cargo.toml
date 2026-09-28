@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 netdata-agent-log = { workspace = true }
 netdata-agent-sys = { workspace = true }
+mio = { workspace = true }
 nix = { workspace = true, features = ["socket", "net"] }
 openssl = { workspace = true }
 

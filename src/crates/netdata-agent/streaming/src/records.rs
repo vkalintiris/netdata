@@ -103,6 +103,12 @@ impl Peer {
     /// message, both at `priority`, under a frame of the peer, the host name, the reason's code and the
     /// "streaming from child" message id.
     pub fn status(&self, msg: &str, reason: Reason, priority: Priority) {
+        self.status_errno(msg, reason, priority, 0);
+    }
+
+    /// [`Peer::status`] after a failed call: the access record carries its errno (C's logger clears errno after it,
+    /// so the daemon record carries none).
+    pub fn status_errno(&self, msg: &str, reason: Reason, priority: Priority, errno: i32) {
         let _frame = push(vec![
             (Field::SrcIp, Value::txt(self.ip.as_str())),
             (Field::SrcPort, Value::txt(self.port.as_str())),
@@ -120,6 +126,7 @@ impl Peer {
         nd_log!(
             Source::Access,
             priority,
+            errno = errno;
             "api_key:'{key}' machine_guid:'{}' node:'{}' msg:'{msg}' reason:'{}'",
             self.machine_guid.as_deref().unwrap_or(""),
             self.hostname.as_deref().unwrap_or(""),

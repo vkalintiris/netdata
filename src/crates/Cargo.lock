@@ -3207,6 +3207,7 @@ version = "0.1.3"
 dependencies = [
  "foreign-types",
  "libc",
+ "mio",
  "nix",
  "openssl",
  "openssl-sys",
@@ -3221,6 +3222,7 @@ version = "0.1.3"
 name = "netdata-agent-tls"
 version = "0.1.3"
 dependencies = [
+ "mio",
  "netdata-agent-log",
  "netdata-agent-sys",
  "nix",

@@ -2,6 +2,8 @@
 //! them in C's order, creating each on first use. Only the charts of D80 are ported: the extended ones (`[pulse]
 //! extended`), ML, gorilla, heartbeat, the dbengine caches, the registry, strings and ARAL are not (D80.4).
 
+#![forbid(unsafe_code)]
+
 mod chart;
 mod daemon;
 mod daemon_memory;

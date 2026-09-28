@@ -542,9 +542,7 @@ impl WebWorker {
             self.stats.disconnected += 1;
             let web = &self.shared.hosts.storage().pulse().web;
             web.client_disconnected();
-            if let Some(conn) = client.stream.socket_mut() {
-                let _ = cx.registry().deregister(conn);
-            }
+            let _ = cx.registry().deregister(&mut client.stream);
             // netdata_ssl_close(): the link's drop sends the close_notify
             let _frame = hangup.then(|| client.log.hangup_frame());
             client.log.connection("DISCONNECTED", 0);
@@ -572,10 +570,10 @@ impl WebWorker {
             return;
         };
         let mut link = std::mem::replace(&mut client.stream, Link::Gone);
-        let Some(conn) = link.socket_mut() else {
+        if link.socket().is_none() {
             return;
-        };
-        let _ = cx.registry().deregister(conn);
+        }
+        let _ = cx.registry().deregister(&mut link);
         // the SSL session goes with the socket (w->ssl unset): the web side's records say http from now on
         ctx.transport = "http";
         client.log.https = false;
@@ -583,16 +581,21 @@ impl WebWorker {
         {
             let _frame = ctx.outer_frame();
             let _request = ctx.request_frame();
-            match pre {
+            let tls = link.is_tls();
+            let closed = match pre {
                 PreAdmission::Refuse(message, refusal) => {
                     self.receivers.refuse(link, message, &refusal);
-                    // the refusal closed the socket: its close leaves the errno of DISCONNECTED (EAGAIN after a TLS
-                    // close_notify), and web_client_request_done()'s TCP_CORK on the closed descriptor EBADF
-                    disconnected_errno = nix::errno::Errno::last_raw();
-                    client.log.request_errno = nix::errno::Errno::EBADF as i32;
+                    true
                 }
-                PreAdmission::Proceed(pending) => self.receivers.admit(*pending, link),
+                PreAdmission::Proceed(pending) => !self.receivers.admit(*pending, link),
                 PreAdmission::Reply(..) => unreachable!("replies stay on the web connection"),
+            };
+            if closed {
+                // the receiver closed the socket here (stream_receiver_free()): netdata_ssl_close() leaves its errno
+                // to DISCONNECTED (0, or EAGAIN after a TLS close_notify's second SSL_shutdown()), and
+                // web_client_request_done()'s TCP_CORK on the closed descriptor EBADF to the request record
+                disconnected_errno = if tls { nix::errno::Errno::last_raw() } else { 0 };
+                client.log.request_errno = nix::errno::Errno::EBADF as i32;
             }
         }
         self.stats.disconnected += 1;
@@ -646,8 +649,11 @@ impl WebWorker {
         let now = Instant::now();
         if event.is_writable() {
             self.stats.sends += 1;
-            client.activity.send_count += 1;
             client.activity.last_sent = Some(now);
+            // a writable event the handshake takes is no application send: the first-request timeout still applies
+            if !matches!(&client.stream, Link::Tls(t) if t.state() == State::Init) {
+                client.activity.send_count += 1;
+            }
         } else if event.is_readable() {
             self.stats.receptions += 1;
             client.activity.recv_count += 1;
@@ -665,9 +671,7 @@ impl WebWorker {
                 TlsCheck::Wait => return,
                 TlsCheck::Ready if handshaking && !event.is_readable() => {
                     // web_server_snd_callback(): a handshake completed by a writable event waits for the request
-                    if let Some(conn) = client.stream.socket_mut() {
-                        let _ = cx.registry().reregister(conn, token, Interest::READABLE);
-                    }
+                    let _ = cx.registry().reregister(&mut client.stream, token, Interest::READABLE);
                     return;
                 }
                 TlsCheck::Ready => {}
@@ -677,7 +681,8 @@ impl WebWorker {
         // One request at a time, as C: reading stops at the first complete request and resumes only after its
         // response is written, so later bytes wait in the kernel (backpressure) and are reported again when
         // reading is re-armed.
-        if client.output.is_empty() && event.is_readable() {
+        let reads = client.output.is_empty() && event.is_readable();
+        if reads {
             // web_server_rcv_callback()
             loop {
                 let start = client.received.len();
@@ -718,13 +723,11 @@ impl WebWorker {
                         client.received.truncate(start);
                         // web_server_enable_ssl_wait_from_ssl(): a TLS read that waits to write
                         if client.stream.wants_write() {
-                            if let Some(conn) = client.stream.socket_mut() {
-                                let _ = cx.registry().reregister(
-                                    conn,
-                                    token,
-                                    Interest::READABLE | Interest::WRITABLE,
-                                );
-                            }
+                            let _ = cx.registry().reregister(
+                                &mut client.stream,
+                                token,
+                                Interest::READABLE | Interest::WRITABLE,
+                            );
                         }
                         break;
                     }
@@ -744,7 +747,7 @@ impl WebWorker {
         };
         // web_server_snd_callback(): a response this event's read queued goes out now, where C's poller reports the
         // socket writable next
-        if client.written < client.output.len() && !event.is_writable() {
+        if reads && client.written < client.output.len() && !event.is_writable() {
             self.stats.sends += 1;
         }
         while client.written < client.output.len() {
@@ -771,9 +774,7 @@ impl WebWorker {
                 }
                 _ => Interest::WRITABLE,
             };
-            if let Some(conn) = client.stream.socket_mut() {
-                let _ = cx.registry().reregister(conn, token, interest);
-            }
+            let _ = cx.registry().reregister(&mut client.stream, token, interest);
             return;
         }
         if !client.output.is_empty() {
@@ -784,9 +785,7 @@ impl WebWorker {
                 return;
             }
             client.request_done(&shared.hosts.storage().pulse().web);
-            if let Some(conn) = client.stream.socket_mut() {
-                let _ = cx.registry().reregister(conn, token, Interest::READABLE);
-            }
+            let _ = cx.registry().reregister(&mut client.stream, token, Interest::READABLE);
         }
     }
 }
@@ -1124,7 +1123,7 @@ fn handshake(t: &mut TlsStream<Conn>, cx: &mut Context<'_>, token: Token) -> Tls
         Handshake::Complete => TlsCheck::Ready,
         Handshake::Pending { write } => {
             let interest = if write { Interest::WRITABLE } else { Interest::READABLE };
-            let _ = cx.registry().reregister(t.get_mut(), token, interest);
+            let _ = cx.registry().reregister(t, token, interest);
             TlsCheck::Wait
         }
         Handshake::Failed => TlsCheck::Dead,
@@ -1132,8 +1131,9 @@ fn handshake(t: &mut TlsStream<Conn>, cx: &mut Context<'_>, token: Token) -> Tls
 }
 
 /// `web_client_send_http_header()`'s send: how much of the header went out, or `None` (after C's records) when the
-/// client is dead. Over TLS one write, whose every failure (a full socket too) kills the client; plain, a full socket
-/// is tried up to 100 times at once. The rest of a partial send goes out with the body, where C drops it (D97.4).
+/// client is dead. Over TLS one write, whose every failure (a full socket too) kills the client and whose errno the
+/// record carries; plain, a full socket is tried up to 100 times at once, and the first record carries the errno. The
+/// rest of a partial send goes out with the body, where C drops it (D97.4).
 fn send_header(stream: &mut Link<Conn>, header: &[u8]) -> Option<usize> {
     let sent = match stream {
         Link::Tls(t) => t.write(header).map_err(|e| netdata_agent_log::errno_of(&e)),
@@ -1148,7 +1148,8 @@ fn send_header(stream: &mut Link<Conn>, header: &[u8]) -> Option<usize> {
                         if count > 100 || e.kind() != io::ErrorKind::WouldBlock {
                             nd_log!(Source::Daemon, Priority::Err, errno = errno;
                                 "Cannot send HTTP headers to web client.");
-                            break Err(errno);
+                            // C's logger cleared errno after that record
+                            break Err(0);
                         }
                     }
                 }
