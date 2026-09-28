@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::conn::Conn;
 use netdata_agent_tls::Link;
-use netdata_agent_evloop::{Context, Event, Interest, PoolHandle, TimerId, Token, Worker};
+use netdata_agent_evloop::{Context, Event, Interest, PoolHandle, Token};
 use netdata_agent_ingest::{self as ingest, Parser};
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_pluginsd_proto::LineReader;
@@ -31,6 +31,7 @@ use crate::handshake::{self, StreamRequest};
 use crate::pins::Pins;
 use crate::reason::Reason;
 use crate::records::{self, Counters, Peer};
+use crate::thread::{StreamMsg, StreamWorker};
 
 /// `CONNECTION_PROBE_INTERVAL_SECONDS` and `CONNECTION_PROBE_COUNT` of the receiver's TCP keepalive.
 const KEEPALIVE_PROBE_INTERVAL_S: u32 = 10;
@@ -59,7 +60,7 @@ const IDLE_TIMEOUT_MIN_S: u64 = 600;
 /// `CBUFFER_INITIAL_MAX_SIZE`: the buffer C queues data for a child in; its fill is in the timeout record.
 const SEND_BUFFER_MAX: usize = 10 * 1024 * 1024;
 /// How long replication may make no progress before a child is checked for stalled charts.
-const REPLICATION_STALL: Duration = Duration::from_secs(600);
+pub(crate) const REPLICATION_STALL: Duration = Duration::from_secs(600);
 
 /// `stream_receiver_reconcile_keepalive()`: the keepalive options go on the socket once, and again when the
 /// automatic idle's update every changed; each failed option is logged.
@@ -121,8 +122,6 @@ fn reconcile_keepalive(
 
 /// A receiver older than this without traffic is stale and may be replaced (`stream_receiver_accept_connection()`).
 const STALE_RECEIVER_S: u64 = 30;
-/// How often a stream thread checks its receivers for stop requests.
-const TICK: Duration = Duration::from_millis(100);
 
 /// `now_monotonic_usec()`.
 pub fn now_monotonic_ut() -> u64 {
@@ -177,16 +176,6 @@ pub struct Pending {
     accepted_s: i64,
 }
 
-/// What a stream thread is sent: a connection to take over, or a backfilled chart's replication request for the
-/// connection of `receiver`.
-#[derive(Debug)]
-pub enum StreamMsg {
-    Attach(Box<Attached>),
-    Replay(Weak<ReceiverSlot>, ingest::ReplayRequest),
-    /// A sender's connection to its parent (`stream_sender_add_to_queue()`).
-    AttachSender(Box<crate::sender::Connected>),
-}
-
 /// A connection handed to a stream thread.
 #[derive(Debug)]
 pub struct Attached {
@@ -221,7 +210,7 @@ impl Attached {
 }
 
 /// A connection on its stream thread.
-struct Child {
+pub(crate) struct Child {
     attached: Attached,
     /// The negotiated compression's decompressor; `None` for an uncompressed stream.
     decompressor: Option<Decompressor>,
@@ -819,24 +808,10 @@ fn connected_msg(host: &Host) -> String {
     }
 }
 
-/// A stream thread: owns the connections of the children assigned to it, and parses what they send inline
-/// (decisions D8).
-pub struct StreamWorker {
-    children: Vec<Option<Child>>,
-    /// Senders connected to their parents, held without I/O until the sender runtime (D102.2).
-    senders: Vec<crate::sender::Connected>,
-    pins: Arc<Mutex<Pins>>,
-    tick: Option<TimerId>,
-    /// `nd_profile.update_every`: how often every child is probed and checked for idleness.
-    check_every: Duration,
-    last_check: Instant,
-    last_replication_check: Instant,
-}
-
 impl StreamWorker {
     /// `stream_receiver_move_to_running_unsafe()`: the connection joins this thread, its parser answering
     /// backfilled charts through this thread's messages.
-    fn attach(&mut self, cx: &mut Context<'_>, mut attached: Attached) {
+    pub(crate) fn attach(&mut self, cx: &mut Context<'_>, mut attached: Attached) {
         let index = self
             .children
             .iter()
@@ -947,7 +922,7 @@ impl StreamWorker {
 
     /// A backfilled chart's replication request, for the connection it came from: sent and flushed under the
     /// child's frame; dropped when the connection is gone (C's bytes go with the buffer they were added to).
-    fn replay(
+    pub(crate) fn replay(
         &mut self,
         cx: &mut Context<'_>,
         receiver: &Weak<ReceiverSlot>,
@@ -968,16 +943,75 @@ impl StreamWorker {
         self.flush(cx, index, true);
     }
 
-    pub fn new(pins: Arc<Mutex<Pins>>, update_every: i32) -> Self {
-        let now = Instant::now();
-        StreamWorker {
-            children: Vec::new(),
-            senders: Vec::new(),
-            pins,
-            tick: None,
-            check_every: Duration::from_secs(u64::try_from(update_every).unwrap_or(1).max(1)),
-            last_check: now,
-            last_replication_check: now,
+    /// `stream_receive_process_poll_events()`: under the child's frame, the stop flag, then socket errors (or a
+    /// hangup with nothing left to read), then sending, then receiving.
+    pub(crate) fn child_event(&mut self, cx: &mut Context<'_>, index: usize, event: &Event) {
+        let Some(child) = self.children.get(index).and_then(Option::as_ref) else {
+            return;
+        };
+        let _frame = records::child_event(&child.frame);
+        // the shutdown that woke the socket is not a remote close
+        if child.attached.slot.stop_requested.load(Ordering::Acquire) {
+            return self.disconnect(cx, index, Reason::DISCONNECT_SIGNALED_TO_STOP);
+        }
+        let hangup = event.is_read_closed();
+        if event.is_error() || (hangup && !event.is_readable()) {
+            let reason = if hangup {
+                Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE
+            } else {
+                Reason::DISCONNECT_SOCKET_ERROR
+            };
+            if event.is_error() {
+                Self::log_poll_error(child, reason);
+            } else {
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "{}{} - closing connection",
+                    Self::prefix(child),
+                    reason.text()
+                );
+            }
+            return self.disconnect(cx, index, reason);
+        }
+        if event.is_writable() && !self.flush(cx, index, true) {
+            return;
+        }
+        if event.is_readable() || hangup {
+            self.receive(cx, index);
+        }
+    }
+
+    /// The 100 ms tick's receiver part: stop requests, then the retention changes the RRDCONTEXT thread recorded.
+    pub(crate) fn tick_children(&mut self, cx: &mut Context<'_>) {
+        for index in 0..self.children.len() {
+            let Some(child) = self.children[index].as_mut() else {
+                continue;
+            };
+            if child.attached.slot.stop_requested.load(Ordering::Acquire) {
+                let frame = Arc::clone(&child.frame);
+                let _frame = records::child_event(&frame);
+                self.disconnect(cx, index, Reason::DISCONNECT_SIGNALED_TO_STOP);
+                continue;
+            }
+            // stream_path_retention_updated() from the RRDCONTEXT thread: its messages go out on this tick (D46
+            // point 4), each with the retention start of its change
+            let changes = child.attached.host.contexts().take_first_time_changes();
+            if !changes.is_empty() {
+                for first_time_s in changes {
+                    child.parser.retention_updated(first_time_s);
+                }
+                let frame = Arc::clone(&child.frame);
+                let _frame = records::child_event(&frame);
+                self.flush(cx, index, true);
+            }
+        }
+    }
+
+    /// The thread's exit: every child disconnected.
+    pub(crate) fn stop_children(&mut self, cx: &mut Context<'_>) {
+        for index in 0..self.children.len() {
+            self.disconnect(cx, index, Reason::DISCONNECT_SHUTDOWN);
         }
     }
 
@@ -1016,7 +1050,7 @@ impl StreamWorker {
     /// `STREAM RCV[n] '<host>' [from [<ip>]:<port>]: ` of the stream thread's records.
     /// `stream_receiver_check_all_nodes_from_poll()`: a probe finds a connection the child closed or that failed,
     /// and a child silent for longer than its timeout, while none of its charts replicates, is disconnected.
-    fn check_all(&mut self, cx: &mut Context<'_>, now: Instant) {
+    pub(crate) fn check_all(&mut self, cx: &mut Context<'_>, now: Instant) {
         for index in 0..self.children.len() {
             let Some(child) = self.children[index].as_mut() else {
                 continue;
@@ -1122,7 +1156,7 @@ impl StreamWorker {
 
     /// `stream_receiver_replication_check_from_poll()`: a child whose replication made no progress for ten minutes
     /// while some of its charts never finished is disconnected, after its unfinished charts are listed.
-    fn check_replication(&mut self, cx: &mut Context<'_>, now: Instant) {
+    pub(crate) fn check_replication(&mut self, cx: &mut Context<'_>, now: Instant) {
         for index in 0..self.children.len() {
             let Some(child) = self.children[index].as_mut() else {
                 continue;
@@ -1414,104 +1448,6 @@ impl StreamWorker {
                     return self.disconnect(cx, index, reason);
                 }
             }
-        }
-    }
-}
-
-impl Worker for StreamWorker {
-    type Msg = StreamMsg;
-
-    fn start(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
-        self.tick = Some(cx.add_timer(Instant::now() + TICK));
-        Ok(())
-    }
-
-    /// `stream_receive_process_poll_events()`: under the child's frame, the stop flag, then socket errors (or a
-    /// hangup with nothing left to read), then sending, then receiving.
-    fn event(&mut self, cx: &mut Context<'_>, event: &Event) {
-        let index = event.token().0;
-        let Some(child) = self.children.get(index).and_then(Option::as_ref) else {
-            return;
-        };
-        let _frame = records::child_event(&child.frame);
-        // the shutdown that woke the socket is not a remote close
-        if child.attached.slot.stop_requested.load(Ordering::Acquire) {
-            return self.disconnect(cx, index, Reason::DISCONNECT_SIGNALED_TO_STOP);
-        }
-        let hangup = event.is_read_closed();
-        if event.is_error() || (hangup && !event.is_readable()) {
-            let reason = if hangup {
-                Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE
-            } else {
-                Reason::DISCONNECT_SOCKET_ERROR
-            };
-            if event.is_error() {
-                Self::log_poll_error(child, reason);
-            } else {
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Err,
-                    "{}{} - closing connection",
-                    Self::prefix(child),
-                    reason.text()
-                );
-            }
-            return self.disconnect(cx, index, reason);
-        }
-        if event.is_writable() && !self.flush(cx, index, true) {
-            return;
-        }
-        if event.is_readable() || hangup {
-            self.receive(cx, index);
-        }
-    }
-
-    fn message(&mut self, cx: &mut Context<'_>, msg: StreamMsg) {
-        match msg {
-            StreamMsg::Attach(attached) => self.attach(cx, *attached),
-            StreamMsg::Replay(receiver, request) => self.replay(cx, &receiver, &request),
-            StreamMsg::AttachSender(connected) => self.senders.push(*connected),
-        }
-    }
-
-    fn timer(&mut self, cx: &mut Context<'_>, _timer: TimerId) {
-        for index in 0..self.children.len() {
-            let Some(child) = self.children[index].as_mut() else {
-                continue;
-            };
-            if child.attached.slot.stop_requested.load(Ordering::Acquire) {
-                let frame = Arc::clone(&child.frame);
-                let _frame = records::child_event(&frame);
-                self.disconnect(cx, index, Reason::DISCONNECT_SIGNALED_TO_STOP);
-                continue;
-            }
-            // stream_path_retention_updated() from the RRDCONTEXT thread: its messages go out on this tick (D46
-            // point 4), each with the retention start of its change
-            let changes = child.attached.host.contexts().take_first_time_changes();
-            if !changes.is_empty() {
-                for first_time_s in changes {
-                    child.parser.retention_updated(first_time_s);
-                }
-                let frame = Arc::clone(&child.frame);
-                let _frame = records::child_event(&frame);
-                self.flush(cx, index, true);
-            }
-        }
-        let now = Instant::now();
-        if now.duration_since(self.last_check) >= self.check_every {
-            self.last_check = now;
-            self.check_all(cx, now);
-            if now.duration_since(self.last_replication_check) >= REPLICATION_STALL {
-                self.last_replication_check = now;
-                self.check_replication(cx, now);
-            }
-        }
-        self.tick = Some(cx.add_timer(Instant::now() + TICK));
-    }
-
-    fn stop(&mut self, cx: &mut Context<'_>) {
-        for index in 0..self.children.len() {
-            self.disconnect(cx, index, Reason::DISCONNECT_SHUTDOWN);
         }
     }
 }

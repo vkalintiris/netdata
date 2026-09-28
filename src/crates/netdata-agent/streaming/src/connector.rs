@@ -21,7 +21,7 @@ use crate::handshake;
 use crate::parents::Local;
 use crate::pins::Pins;
 use crate::reason::Reason;
-use crate::receiver::StreamMsg;
+use crate::thread::StreamMsg;
 use crate::sender::{Connected, Sender, Settings, State};
 
 /// `CONNECTED_TO_SIZE`: what `s->remote_ip` keeps of the destination.

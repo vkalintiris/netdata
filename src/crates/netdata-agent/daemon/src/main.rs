@@ -66,7 +66,8 @@ use netdata_agent_rrd::host::{Host, HostInfo, Hosts, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 use netdata_agent_rrd::storage::{Backfill, StorageLayout};
 use netdata_agent_streaming::conf::{LoadDefaults, StreamConf};
-use netdata_agent_streaming::receiver::{self, Receivers, StreamWorker};
+use netdata_agent_streaming::receiver::{self, Receivers};
+use netdata_agent_streaming::thread::StreamWorker;
 use netdata_agent_web::request::Settings;
 use nix::sys::signal::{SigSet, Signal};
 
