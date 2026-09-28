@@ -62,6 +62,11 @@ func buildinfoSlots(t *testing.T, role Role, out string) ([]string, map[string]s
 	if err != nil {
 		t.Fatalf("%s: %v", role, err)
 	}
+	return buildinfoSlotsOf(v)
+}
+
+// buildinfoSlotsOf are the slots of a build info object (`build_info_to_json_object()`).
+func buildinfoSlotsOf(v Value) ([]string, map[string]string) {
 	var keys []string
 	values := map[string]string{}
 	for _, section := range v.Members {
@@ -72,6 +77,42 @@ func buildinfoSlots(t *testing.T, role Role, out string) ([]string, map[string]s
 		}
 	}
 	return keys, values
+}
+
+// compareBuildinfoSlots compares two build infos slot by slot: the same slots in order, equal values but for the
+// available memory (a decimal string on both sides) and `buildinfoDiffs`, whose values must be the listed ones.
+func compareBuildinfoSlots(t *testing.T, where string, keys, cKeys []string, oValues, cValues map[string]string) {
+	t.Helper()
+	if strings.Join(keys, " ") != strings.Join(cKeys, " ") {
+		t.Fatalf("%s: slots differ\noracle:    %v\ncandidate: %v", where, keys, cKeys)
+	}
+	listed := 0
+	for _, key := range keys {
+		o, c := oValues[key], cValues[key]
+		d, ok := buildinfoDiffs[key]
+		switch {
+		case key == "runtime.mem-available":
+			if !decimalRe.MatchString(o) || !decimalRe.MatchString(c) {
+				t.Errorf("%s: %s: oracle %s, candidate %s", where, key, o, c)
+			}
+		case ok:
+			listed++
+			any := func(want, got string) bool { return want == "*" && strings.HasPrefix(got, `"`) || want == got }
+			if !any(d.c, o) || !any(d.rust, c) {
+				t.Errorf("%s: %s (%s): oracle %s, candidate %s; listed %s and %s", where, key, d.closes, o, c, d.c,
+					d.rust)
+			}
+			if d.c != "*" && o == c {
+				t.Errorf("%s: %s: the candidate now says %s as C does: remove it from buildinfoDiffs (%s)", where,
+					key, c, d.closes)
+			}
+		case o != c:
+			t.Errorf("%s: %s: oracle %s, candidate %s", where, key, o, c)
+		}
+	}
+	if listed != len(buildinfoDiffs) {
+		t.Errorf("%s: %d of the %d listed slots exist", where, listed, len(buildinfoDiffs))
+	}
 }
 
 // TestCLIBuildInfo compares -W buildinfo, -W buildinfojson and -W cmakecache (check `cli.buildinfo`): stdout, stderr
@@ -100,35 +141,7 @@ func TestCLIBuildInfo(t *testing.T) {
 	json := get("-W", "buildinfojson")
 	keys, oValues := buildinfoSlots(t, Oracle, json[0].out)
 	cKeys, cValues := buildinfoSlots(t, Candidate, json[1].out)
-	if strings.Join(keys, " ") != strings.Join(cKeys, " ") {
-		t.Fatalf("slots differ\noracle:    %v\ncandidate: %v", keys, cKeys)
-	}
-	listed := 0
-	for _, key := range keys {
-		o, c := oValues[key], cValues[key]
-		d, ok := buildinfoDiffs[key]
-		switch {
-		case key == "runtime.mem-available":
-			if !decimalRe.MatchString(o) || !decimalRe.MatchString(c) {
-				t.Errorf("%s: oracle %s, candidate %s", key, o, c)
-			}
-		case ok:
-			listed++
-			any := func(want, got string) bool { return want == "*" && strings.HasPrefix(got, `"`) || want == got }
-			if !any(d.c, o) || !any(d.rust, c) {
-				t.Errorf("%s (%s): oracle %s, candidate %s; listed %s and %s", key, d.closes, o, c, d.c, d.rust)
-			}
-			if d.c != "*" && o == c {
-				t.Errorf("%s: the candidate now says %s as C does: remove it from buildinfoDiffs (%s)", key, c,
-					d.closes)
-			}
-		case o != c:
-			t.Errorf("%s: oracle %s, candidate %s", key, o, c)
-		}
-	}
-	if listed != len(buildinfoDiffs) {
-		t.Errorf("%d of the %d listed slots exist", listed, len(buildinfoDiffs))
-	}
+	compareBuildinfoSlots(t, "-W buildinfojson", keys, cKeys, oValues, cValues)
 	// the bytes: C's layout, the listed slots' and the available memory's values masked
 	var masked [2]string
 	for i := range json {
