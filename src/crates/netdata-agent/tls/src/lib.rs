@@ -1,10 +1,18 @@
 //! TLS of the agent over the system's OpenSSL (D10), ported from `src/libnetdata/socket/security.c`: the library's
-//! initialization and the web server's context as `netdata_ssl_create_server_ctx()` builds it, with C's records.
-//! Decisions D96 in the status repository.
+//! initialization, the web server's context as `netdata_ssl_create_server_ctx()` builds it, a connection's TLS as
+//! `NETDATA_SSL` runs it (the non-blocking handshake, reads, writes and the close), and C's records of OpenSSL's
+//! errors. Decisions D96 in the status repository.
 
-use netdata_agent_log::{netdata_log_error, netdata_log_info};
+use std::io::{self, Read, Write};
+
+use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log, nd_log_limit, netdata_log_error};
 use openssl::error::{Error, ErrorStack};
-use openssl::ssl::{SslContext, SslContextBuilder, SslFiletype, SslMethod, SslMode, SslVerifyMode, SslVersion};
+use openssl::ssl::{
+    self, ErrorCode, ShutdownResult, Ssl, SslContextBuilder, SslFiletype, SslMethod, SslMode, SslRef, SslStream,
+    SslVerifyMode, SslVersion,
+};
+
+pub use openssl::ssl::SslContext;
 
 /// `netdata_conf_ssl()`: OpenSSL initialized, its configuration file loaded (`OPENSSL_INIT_LOAD_CONFIG`, a default
 /// since 1.1.1).
@@ -30,11 +38,11 @@ pub struct ServerConfig<'a> {
 /// `netdata_ssl_initialize_ctx(NETDATA_SSL_WEB_SERVER_CTX)`: the context, or none (the server then speaks plain
 /// HTTP only), with C's records.
 pub fn web_server_context(config: &ServerConfig<'_>) -> Option<SslContext> {
-    let exists = |path: &str| std::fs::metadata(path).is_ok();
-    if !exists(config.key) || !exists(config.certificate) {
-        netdata_log_info!(
-            "To use encryption it is necessary to set \"ssl certificate\" and \"ssl key\" in [web] !\n"
-        );
+    // stat(key) || stat(certificate): the record carries the errno of the first that fails
+    let missing = [config.key, config.certificate].into_iter().find_map(|path| std::fs::metadata(path).err());
+    if let Some(e) = missing {
+        nd_log!(Source::Daemon, Priority::Info, errno = e.raw_os_error().unwrap_or(0);
+            "To use encryption it is necessary to set \"ssl certificate\" and \"ssl key\" in [web] !\n");
         return None;
     }
     match server_context(config) {
@@ -106,6 +114,301 @@ pub fn error_string(e: &Error) -> String {
     format!("error:{code:08X}:{library}::{reason}")
 }
 
+/// A connection's TLS state (`NETDATA_SSL_STATE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    /// The handshake is under way.
+    Init,
+    Complete,
+    Failed,
+}
+
+/// A connection over TLS on a non-blocking socket (`NETDATA_SSL`).
+#[derive(Debug)]
+pub struct TlsStream<S> {
+    stream: SslStream<S>,
+    state: State,
+    /// What the last operation waits for (`ssl_errno`): `WANT_READ` or `WANT_WRITE`.
+    want: Option<ErrorCode>,
+}
+
+/// What a step of the handshake did.
+#[derive(Debug)]
+pub enum Handshake {
+    Complete,
+    /// Waiting for the socket to be readable (`false`) or writable (`true`).
+    Pending { write: bool },
+    Failed,
+}
+
+/// `socket_peers()`: a socket's addresses as C's records print them.
+#[derive(Debug, Clone, Default)]
+pub struct Peers {
+    pub local_ip: String,
+    pub local_port: u16,
+    pub remote_ip: String,
+    pub remote_port: u16,
+}
+
+impl Peers {
+    pub fn new(local: Option<std::net::SocketAddr>, remote: Option<std::net::SocketAddr>) -> Peers {
+        let part = |a: Option<std::net::SocketAddr>| a.map_or((String::new(), 0), |a| (a.ip().to_string(), a.port()));
+        let ((local_ip, local_port), (remote_ip, remote_port)) = (part(local), part(remote));
+        Peers { local_ip, local_port, remote_ip, remote_port }
+    }
+}
+
+impl<S: Read + Write> TlsStream<S> {
+    /// `netdata_ssl_open()` on the web server's context: the handshake has not started. `None` (with C's record) when
+    /// OpenSSL cannot make the connection; the socket is then gone with it.
+    pub fn new(context: &SslContext, stream: S, peers: &Peers) -> Option<TlsStream<S>> {
+        let made = Ssl::new(context).and_then(|ssl| SslStream::new(ssl, stream));
+        match made {
+            Ok(stream) => Some(TlsStream { stream, state: State::Init, want: None }),
+            Err(stack) => {
+                log_error_queue("SSL_new", None, peers, 0, stack.errors(), 0);
+                None
+            }
+        }
+    }
+
+    pub fn get_ref(&self) -> &S {
+        self.stream.get_ref()
+    }
+
+    pub fn get_mut(&mut self) -> &mut S {
+        self.stream.get_mut()
+    }
+
+    pub fn state(&self) -> State {
+        self.state
+    }
+
+    /// Whether the last operation waits for the socket to be writable (`SSL_ERROR_WANT_WRITE`).
+    pub fn wants_write(&self) -> bool {
+        self.want == Some(ErrorCode::WANT_WRITE)
+    }
+
+    /// `netdata_ssl_accept_nonblocking()`.
+    pub fn accept(&mut self, peers: &Peers) -> Handshake {
+        self.want = None;
+        if self.state != State::Init {
+            return Handshake::Failed;
+        }
+        match self.stream.accept() {
+            Ok(()) => {
+                self.state = State::Complete;
+                Handshake::Complete
+            }
+            Err(e) if matches!(e.code(), ErrorCode::WANT_READ | ErrorCode::WANT_WRITE) => {
+                self.want = Some(e.code());
+                Handshake::Pending { write: e.code() == ErrorCode::WANT_WRITE }
+            }
+            Err(e) => {
+                self.log(&e, "SSL_accept", peers);
+                self.state = State::Failed;
+                Handshake::Failed
+            }
+        }
+    }
+
+    /// `netdata_ssl_read()`: `Ok(0)` at the peer's `close_notify`, `WouldBlock` while a record is incomplete, else an
+    /// error after C's record.
+    pub fn read(&mut self, buf: &mut [u8], peers: &Peers) -> io::Result<usize> {
+        self.io("read", peers, |s| s.ssl_read(buf))
+    }
+
+    /// `netdata_ssl_write()`.
+    pub fn write(&mut self, buf: &[u8], peers: &Peers) -> io::Result<usize> {
+        self.io("write", peers, |s| s.ssl_write(buf))
+    }
+
+    fn io(
+        &mut self,
+        op: &str,
+        peers: &Peers,
+        f: impl FnOnce(&mut SslStream<S>) -> Result<usize, ssl::Error>,
+    ) -> io::Result<usize> {
+        self.want = None;
+        if self.state != State::Complete {
+            incomplete(op, self.state, peers);
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        match f(&mut self.stream) {
+            Ok(n) => Ok(n),
+            // the peer's close_notify ends a read; C's write has no such case and reports it below
+            Err(e) if e.code() == ErrorCode::ZERO_RETURN && op == "read" => Ok(0),
+            Err(e) if matches!(e.code(), ErrorCode::WANT_READ | ErrorCode::WANT_WRITE) => {
+                self.want = Some(e.code());
+                Err(io::ErrorKind::WouldBlock.into())
+            }
+            Err(e) => {
+                let call = if op == "read" { "SSL_read" } else { "SSL_write" };
+                self.log(&e, call, peers);
+                if matches!(e.code(), ErrorCode::SSL | ErrorCode::SYSCALL | ErrorCode::ZERO_RETURN) {
+                    self.state = State::Failed;
+                }
+                Err(e.into_io_error().unwrap_or_else(|e| io::Error::other(e.to_string())))
+            }
+        }
+    }
+
+    /// `netdata_ssl_close()`: a `close_notify` for the peer, twice when the first only sent it.
+    pub fn shutdown(&mut self) {
+        if let Ok(ShutdownResult::Sent) = self.stream.shutdown() {
+            let _ = self.stream.shutdown();
+        }
+    }
+
+    fn log(&self, e: &ssl::Error, call: &str, peers: &Peers) {
+        let queue = e.ssl_error().map_or(&[][..], ErrorStack::errors);
+        let errno = e.io_error().and_then(io::Error::raw_os_error).unwrap_or(0);
+        log_error_queue(call, Some(self.stream.ssl()), peers, e.code().as_raw(), queue, errno);
+    }
+}
+
+thread_local! {
+    /// `nd_log_limit_static_thread_var(erl, 1, 0)` of the SSL records: one a second per thread.
+    static SSL_ERRORS: ErrorLimit = const { ErrorLimit::new(1, 0) };
+    static SSL_STATES: ErrorLimit = const { ErrorLimit::new(1, 0) };
+}
+
+/// `is_handshake_complete()`'s record of an operation on a connection that is not established.
+fn incomplete(op: &str, state: State, peers: &Peers) {
+    let what = match state {
+        State::Init => "an incomplete",
+        State::Failed => "a failed",
+        State::Complete => return,
+    };
+    SSL_STATES.with(|limit| {
+        nd_log_limit!(
+            limit,
+            Source::Daemon,
+            Priority::Warning,
+            "SSL: on socket local [[{}]:{}] <-> remote [[{}]:{}], attempt to {op} on {what} connection",
+            peers.local_ip,
+            peers.local_port,
+            peers.remote_ip,
+            peers.remote_port
+        );
+    });
+}
+
+/// `SSL_get_error()`'s codes as `netdata_ssl_log_error_queue()` names them; a packed error is none of them.
+fn error_code_name(code: u64) -> &'static str {
+    match code {
+        1 => "SSL_ERROR_SSL",
+        2 => "SSL_ERROR_WANT_READ",
+        3 => "SSL_ERROR_WANT_WRITE",
+        4 => "SSL_ERROR_WANT_X509_LOOKUP",
+        5 => "SSL_ERROR_SYSCALL",
+        6 => "SSL_ERROR_ZERO_RETURN",
+        7 => "SSL_ERROR_WANT_CONNECT",
+        8 => "SSL_ERROR_WANT_ACCEPT",
+        9 => "SSL_ERROR_WANT_ASYNC",
+        10 => "SSL_ERROR_WANT_ASYNC_JOB",
+        11 => "SSL_ERROR_WANT_CLIENT_HELLO_CB",
+        12 => "SSL_ERROR_WANT_RETRY_VERIFY",
+        _ => "SSL_ERROR_UNKNOWN",
+    }
+}
+
+/// `ERR_LIB_SSL`.
+const LIB_SSL: i32 = 20;
+
+/// `SSL_alert_type_string_long()` of OpenSSL 3.5.7 (`openssl/openssl @ openssl-3.5.7`, `ssl/ssl_stat.c`).
+fn alert_type(value: i32) -> &'static str {
+    match value >> 8 {
+        1 => "warning",
+        2 => "fatal",
+        _ => "unknown",
+    }
+}
+
+/// `SSL_alert_desc_string_long()` of OpenSSL 3.5.7, by the alert codes of its `ssl3.h` and `tls1.h`.
+fn alert_desc(value: i32) -> &'static str {
+    match value & 0xff {
+        0 => "close notify",
+        10 => "unexpected message",
+        20 => "bad record mac",
+        30 => "decompression failure",
+        40 => "handshake failure",
+        41 => "no certificate",
+        42 => "bad certificate",
+        43 => "unsupported certificate",
+        44 => "certificate revoked",
+        45 => "certificate expired",
+        46 => "certificate unknown",
+        47 => "illegal parameter",
+        21 => "decryption failed",
+        22 => "record overflow",
+        48 => "unknown CA",
+        49 => "access denied",
+        50 => "decode error",
+        51 => "decrypt error",
+        60 => "export restriction",
+        70 => "protocol version",
+        71 => "insufficient security",
+        80 => "internal error",
+        90 => "user canceled",
+        100 => "no renegotiation",
+        110 => "unsupported extension",
+        111 => "certificate unobtainable",
+        112 => "unrecognized name",
+        113 => "bad certificate status response",
+        114 => "bad certificate hash value",
+        115 => "unknown PSK identity",
+        120 => "no application protocol",
+        _ => "unknown",
+    }
+}
+
+/// `netdata_ssl_log_error_queue()`: a record for `code` (`SSL_get_error()`'s, when set), then one for each queued
+/// error, all under the thread's one-a-second limit.
+pub fn log_error_queue(call: &str, ssl: Option<&SslRef>, peers: &Peers, code: i32, queue: &[Error], errno: i32) {
+    let state = ssl.map_or("No SSL connection", SslRef::state_string_long);
+    let cipher = ssl.map_or("Unknown", |s| s.current_cipher().map_or("(NONE)", |c| c.name()));
+    let alpn = ssl.and_then(SslRef::selected_alpn_protocol).unwrap_or(b"");
+    let alpn = String::from_utf8_lossy(alpn);
+    // (err, err_code, err_str, reason_code, reason, alert type, alert description)
+    let mut lines: Vec<(u64, &str, String, i32, String, &str, &str)> = Vec::new();
+    if code != 0 {
+        // ERR_error_string_n() of a small code: no library, no reason text
+        let code = code as u64;
+        let text = format!("error:{code:08X}:lib(0)::reason({code})");
+        lines.push((code, error_code_name(code), text, code as i32, "Unknown".into(), "None", "None"));
+    }
+    for e in queue {
+        // c_ulong: 32 bits on 32-bit targets
+        #[allow(clippy::useless_conversion)]
+        let code = u64::from(e.code());
+        let reason_code = e.reason_code();
+        let (at, ad) = if e.library_code() == LIB_SSL {
+            (alert_type(reason_code), alert_desc(reason_code))
+        } else {
+            ("None", "None")
+        };
+        let reason = e.reason().unwrap_or("Unknown").to_string();
+        lines.push((code, error_code_name(code), error_string(e), reason_code, reason, at, ad));
+    }
+    for (err, name, text, reason_code, reason, at, ad) in lines {
+        SSL_ERRORS.with(|limit| {
+            nd_log_limit!(
+                limit,
+                Source::Daemon,
+                Priority::Err,
+                "SSL ERROR: {call}() on socket local [[{}]:{}] <-> remote [[{}]:{}], State [{state}], Cipher: [{cipher}], \
+                 ALPN: [{alpn}], Error [{err}, {name}, {text}], Reason [{reason_code}, {reason}], Alert [{at}, {ad}], \
+                 Errno [{errno}]",
+                peers.local_ip,
+                peers.local_port,
+                peers.remote_ip,
+                peers.remote_port
+            );
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use openssl::asn1::Asn1Time;
@@ -169,6 +472,62 @@ mod tests {
         std::fs::write(&key_file, "not a key").unwrap();
         let garbage = server_context(&config(&key_file, &cert_file, "none")).unwrap_err();
         assert!(garbage.starts_with("SSL cannot check the private key: error:"), "{garbage}");
+    }
+
+    /// OpenSSL 3.5.7's alert names, and the codes C names in its records.
+    #[test]
+    fn alerts_and_codes_as_openssl() {
+        assert_eq!((alert_type(0x228), alert_desc(0x228)), ("fatal", "handshake failure"));
+        assert_eq!((alert_type(0x10a), alert_desc(0x10a)), ("warning", "unexpected message"));
+        assert_eq!((alert_type(267), alert_desc(267)), ("warning", "unknown"));
+        assert_eq!((alert_type(198), alert_desc(198)), ("unknown", "unknown"));
+        assert_eq!((error_code_name(1), error_code_name(5), error_code_name(0x0a00010b)), ("SSL_ERROR_SSL", "SSL_ERROR_SYSCALL", "SSL_ERROR_UNKNOWN"));
+    }
+
+    /// A handshake on a non-blocking socket waits for the client, then data goes both ways and the close sends a
+    /// `close_notify` the client reads as the end.
+    #[test]
+    fn a_connection_as_c() {
+        use openssl::ssl::{SslConnector, SslVerifyMode};
+        use std::os::unix::net::UnixStream;
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        let k = key();
+        let (key_file, cert_file) = files(&dir, &k, &certificate(&k));
+        let context = server_context(&config(&key_file, &cert_file, "none")).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let peers = Peers::default();
+        let mut t = TlsStream::new(&context, server, &peers).unwrap();
+        assert!(matches!(t.accept(&peers), Handshake::Pending { write: false }), "no client hello yet");
+        let peer = std::thread::spawn(move || {
+            let mut b = SslConnector::builder(SslMethod::tls_client()).unwrap();
+            b.set_verify(SslVerifyMode::NONE);
+            let mut s = b.build().connect("localhost", client).unwrap();
+            s.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+            let mut answer = Vec::new();
+            s.read_to_end(&mut answer).unwrap();
+            answer
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !matches!(t.accept(&peers), Handshake::Complete) {
+            assert!(std::time::Instant::now() < deadline, "the handshake completes");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(t.state(), State::Complete);
+        let mut buf = [0u8; 64];
+        let n = loop {
+            match t.read(&mut buf, &peers) {
+                Ok(n) => break n,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(5)),
+                Err(e) => panic!("{e}"),
+            }
+        };
+        assert_eq!(&buf[..n], b"GET / HTTP/1.1\r\n\r\n");
+        assert_eq!(t.write(b"answer", &peers).unwrap(), 6);
+        t.shutdown();
+        drop(t);
+        assert_eq!(peer.join().unwrap(), b"answer");
     }
 
     #[test]

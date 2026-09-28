@@ -427,6 +427,7 @@ mod tests {
             gzip_level: 3,
             web_dir: "/nonexistent-web-dir".into(),
             x_frame_options: None,
+            tls: None,
             acl: test_acl(),
             first_request_timeout_s: 60,
             idle_timeout_s: 60,

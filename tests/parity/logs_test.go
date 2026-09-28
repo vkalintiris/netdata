@@ -33,7 +33,6 @@ var cOnlyRecords = []struct {
 	{regexp.MustCompile(`msg="SERVICE CONTROL: waiting for the following|msg="SERVICE: Signal to stop : `), "service registry of C's static threads (D44)"},
 	{regexp.MustCompile(`msg="PLUGINSD: cleaning up\.\.\."|msg="PLUGINSD: cleanup completed\."`), "plugins.d"},
 	{regexp.MustCompile(`msg="Failed to delete socket \d+ from nd_poll\(\) - called from poll_events_cleanup\(\)`), "D43 (shared listening sockets)"},
-	{regexp.MustCompile(`msg="To use encryption it is necessary to set \\"ssl certificate\\" and \\"ssl key\\" in \[web\] !`), "web TLS"},
 }
 
 // portedRecords are records the candidate writes too although an entry of cOnlyRecords matches them: the ACLK proxy

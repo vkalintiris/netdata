@@ -1800,6 +1800,29 @@ fn internals_monitoring(enabled: bool) -> &'static str {
     if enabled { "YES" } else { "NO" }
 }
 
+/// `netdata_conf_web_security_init()`: the web server's TLS files and protocol choices.
+#[derive(Debug, Clone, Default)]
+pub struct WebSecurity {
+    pub key: String,
+    pub certificate: String,
+    pub tls_version: String,
+    pub ciphers: String,
+}
+
+/// [`WebSecurity`] from `[web]`: the key and certificate default under the user configuration directory.
+pub fn web_security(c: &mut Config, user_config: &str) -> WebSecurity {
+    let text = |v: Option<Vec<u8>>| String::from_utf8_lossy(&v.unwrap_or_default()).into_owned();
+    let key = text(c.get_filename(SECTION_WEB, "ssl key", Some(&format!("{user_config}/ssl/key.pem"))));
+    let certificate = text(c.get_filename(
+        SECTION_WEB,
+        "ssl certificate",
+        Some(&format!("{user_config}/ssl/cert.pem")),
+    ));
+    let tls_version = text(c.get(SECTION_WEB, "tls version", Some("1.3")));
+    let ciphers = text(c.get(SECTION_WEB, "tls ciphers", Some("none")));
+    WebSecurity { key, certificate, tls_version, ciphers }
+}
+
 /// `netdata_conf_web_query_threads()`: two per CPU on a parent (at most 256 CPUs), at least 6, unless configured.
 pub fn web_query_threads(c: &mut Config, cpus: usize, is_parent: bool) -> usize {
     let cpus = cpus.min(256);

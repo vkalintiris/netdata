@@ -54,7 +54,7 @@ mod v1_contexts;
 use netdata_agent_metadata::open::{ContextDb, MetaDb};
 use netdata_agent_metadata::read::{EventKind, NodeId};
 
-use netdata_agent_log::{Priority, Source, fatal, nd_log};
+use netdata_agent_log::{Priority, Source, fatal, nd_log, netdata_log_info};
 use std::io::Write;
 use std::process::ExitCode;
 use std::sync::{Arc, Weak};
@@ -421,6 +421,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     status_file::check_crash(&mut conf.netdata, startup::analytics_enabled(&conf.dirs.user_config));
     startup.step("temp spawn server");
     startup.step("ssl");
+    netdata_agent_tls::init();
     startup.step("environment for plugins");
     // set_environment_for_plugins_and_scripts(): an unusable required directory is C's fatal().
     if let Err((errno, message)) = conf.environment_for_plugins(db.update_every) {
@@ -451,6 +452,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     // the loop's pulse entries while the process has one thread (setenv); the other entries come with their plugins
     let pulse_enabled = conf::static_threads_pulse(&mut conf.netdata);
     startup.step("web server api");
+    let web_security = conf::web_security(&mut conf.netdata, &conf.dirs.user_config);
     // nd_web_api_init(): the time-grouping limits, read before the listen sockets as in C.
     let grouping_windows = conf::grouping_windows(&mut conf.netdata);
     // web_server_threading_selection(): with `[web] mode = none` there is no web server at all.
@@ -741,6 +743,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     };
     // stream_conf_is_parent() and stream_conf_is_child(), which PULSE reads
     let (stream_is_parent, stream_is_child) = (stream_conf.is_parent, stream_conf.send.enabled);
+    // netdata_ssl_validate_certificate_sender, which the web server's thread reads
+    let senders_validate = stream_conf.send.ssl_validate_certificate;
     let receivers = Arc::new(Receivers::new(
         stream_conf,
         Arc::clone(&hosts),
@@ -789,6 +793,12 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     netdata_agent_rrd::host::set_agent_event_medians_us(medians.0, medians.1);
     let web = conf.section_web();
     // The web server thread reads its sizing only when it runs.
+    // socket_listen_main_static_threaded(): its thread, WEB[1], starts with the TLS context, before its sizing
+    let tls_context = if web_enabled {
+        web_tls_context(&mut conf.netdata, &web_security, senders_validate)
+    } else {
+        None
+    };
     let (web_server_threads, max_sockets) = if web_enabled {
         // netdata_conf_is_parent(): the node profile, not whether stream.conf enables an API key
         let threads = conf::web_query_threads(
@@ -812,6 +822,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         version: build::NETDATA_VERSION,
         gzip_level: web.gzip_level,
         x_frame_options: web.x_frame_options,
+        tls: tls_context,
         acl: web.acl,
         // C keeps these as int seconds; a negative value disables the check as 0 does.
         first_request_timeout_s: web.first_request_timeout_s.max(0) as u64,
@@ -1252,6 +1263,38 @@ fn signal_loop(handled: &SigSet) -> i32 {
 }
 
 /// `stream_conf_load()`, which also detects the node profile for its replication defaults.
+/// The start of `socket_listen_main_static_threaded()`, in a thread named as C's (`WEB[1]`) so its records carry that
+/// name: `[web] ssl skip certificate verification`, C's notice of the streaming senders' skip (C checks the senders'
+/// flag here), then the web server's TLS context.
+fn web_tls_context(
+    config: &mut netdata_agent_inicfg::Config,
+    security: &conf::WebSecurity,
+    senders_validate: bool,
+) -> Option<netdata_agent_tls::SslContext> {
+    std::thread::scope(|scope| {
+        let thread = std::thread::Builder::new()
+            .name("WEB[1]".into())
+            .spawn_scoped(scope, || {
+                let skip = config.get_boolean(
+                    netdata_agent_inicfg::SECTION_WEB,
+                    "ssl skip certificate verification",
+                    false,
+                );
+                if !senders_validate {
+                    netdata_log_info!("SSL: web server will skip SSL certificates verification.");
+                }
+                netdata_agent_tls::web_server_context(&netdata_agent_tls::ServerConfig {
+                    key: &security.key,
+                    certificate: &security.certificate,
+                    tls_version: &security.tls_version,
+                    ciphers: &security.ciphers,
+                    skip_verification: skip,
+                })
+            });
+        thread.ok().and_then(|t| t.join().ok()).flatten()
+    })
+}
+
 fn load_stream_conf(conf: &mut Conf, system: &system::Resources) -> StreamConf {
     let mut stream_conf = StreamConf::default();
     stream_conf.load(

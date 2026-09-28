@@ -225,6 +225,8 @@ pub struct ClientLog {
     pub forwarded_for: Vec<u8>,
     /// The errno C's request records carry: a unix connection's failed `TCP_CORK`.
     pub request_errno: i32,
+    /// `web_server_log_transport()`: "https" once the connection has TLS (its handshake started).
+    pub https: bool,
 }
 
 impl ClientLog {
@@ -239,7 +241,13 @@ impl ClientLog {
             forwarded_host: Vec::new(),
             forwarded_for: Vec::new(),
             request_errno: 0,
+            https: false,
         }
+    }
+
+    /// The transport the records name.
+    pub fn transport(&self) -> &'static str {
+        if self.https { "https" } else { "http" }
     }
 
     /// `web_server_log_connection()`: an access record at debug, `[<ip>]:<port> CONNECTED` / `DISCONNECTED`, with
@@ -247,7 +255,7 @@ impl ClientLog {
     pub fn connection(&self, what: &str, errno: i32) {
         let _frame = push(vec![
             (Field::ConnectionId, Value::U64(self.slot.id)),
-            (Field::SrcTransport, Value::txt("http")),
+            (Field::SrcTransport, Value::txt(self.transport())),
             (Field::SrcIp, Value::txt(self.ip.as_str())),
             (Field::SrcPort, Value::txt(self.port.as_str())),
             (
@@ -303,6 +311,8 @@ pub struct RequestContext {
     pub url: String,
     pub transaction: [u8; 16],
     pub auth: Arc<Auth>,
+    /// [`ClientLog::transport`].
+    pub transport: &'static str,
 }
 
 impl RequestContext {
@@ -310,7 +320,7 @@ impl RequestContext {
     /// previous pass, which C frees during this one; the port leaves it out.
     pub fn outer_frame(&self) -> FrameGuard {
         push(vec![
-            (Field::SrcTransport, Value::txt("http")),
+            (Field::SrcTransport, Value::txt(self.transport)),
             (Field::SrcIp, Value::txt(self.ip.as_str())),
             (Field::SrcPort, Value::txt(self.port.as_str())),
             (

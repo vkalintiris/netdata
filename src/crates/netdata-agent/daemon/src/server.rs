@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::conn::{Conn, Stream};
+use netdata_agent_tls::{Handshake, Peers, SslContext, State, TlsStream};
 use netdata_agent_evloop::{Context, Event, Interest, TimerId, Token, Worker};
 use netdata_agent_web::content_type::ContentType;
 use netdata_agent_web::request::{
@@ -38,6 +39,8 @@ pub struct Shared {
     pub x_frame_options: Option<String>,
     /// The `[web]` access lists.
     pub acl: WebAcl,
+    /// `netdata_ssl_web_server_ctx`: TLS on the TCP listeners, when the certificate and key loaded.
+    pub tls: Option<netdata_agent_tls::SslContext>,
     /// `[web] timeout for first request` and `disconnect idle clients after`, in seconds (0 disables).
     pub first_request_timeout_s: u64,
     pub idle_timeout_s: u64,
@@ -184,8 +187,83 @@ impl RecvBuffer {
     }
 }
 
+/// A web connection's socket: plain, or TLS once its first byte started a handshake (`w->ssl`).
+#[derive(Debug)]
+enum Link {
+    Plain(Conn),
+    Tls(Box<TlsStream<Conn>>),
+    /// The socket went with a TLS connection OpenSSL could not make; the client is closed.
+    Gone,
+}
+
+impl Link {
+    fn conn(&self) -> Option<&Conn> {
+        match self {
+            Link::Plain(c) => Some(c),
+            Link::Tls(t) => Some(t.get_ref()),
+            Link::Gone => None,
+        }
+    }
+
+    fn conn_mut(&mut self) -> Option<&mut Conn> {
+        match self {
+            Link::Plain(c) => Some(c),
+            Link::Tls(t) => Some(t.get_mut()),
+            Link::Gone => None,
+        }
+    }
+
+    fn fd(&self) -> std::os::fd::RawFd {
+        self.conn().map_or(-1, std::os::fd::AsRawFd::as_raw_fd)
+    }
+
+    fn is_unix(&self) -> bool {
+        self.conn().is_some_and(Conn::is_unix)
+    }
+
+    fn is_tls(&self) -> bool {
+        matches!(self, Link::Tls(_))
+    }
+
+    /// Whether the last TLS operation waits for the socket to be writable.
+    fn wants_write(&self) -> bool {
+        matches!(self, Link::Tls(t) if t.wants_write())
+    }
+
+    /// `web_client_receive()`'s `recv()` or `netdata_ssl_read()`.
+    fn read(&mut self, buf: &mut [u8], peers: &Peers) -> io::Result<usize> {
+        match self {
+            Link::Plain(c) => c.read(buf),
+            Link::Tls(t) => t.read(buf, peers),
+            Link::Gone => Err(io::ErrorKind::NotConnected.into()),
+        }
+    }
+
+    /// `web_client_send()`'s `send()` or `netdata_ssl_write()`.
+    fn write(&mut self, buf: &[u8], peers: &Peers) -> io::Result<usize> {
+        match self {
+            Link::Plain(c) => c.write(buf),
+            Link::Tls(t) => t.write(buf, peers),
+            Link::Gone => Err(io::ErrorKind::NotConnected.into()),
+        }
+    }
+}
+
+/// What `web_server_check_tcp_ssl()` decided for this event.
+enum TlsCheck {
+    /// The connection may be read or written now.
+    Ready,
+    /// The handshake waits for the socket (its interest is set).
+    Wait,
+    Dead,
+}
+
 struct Client {
-    stream: Conn,
+    stream: Link,
+    /// `WEB_CLIENT_FLAG_SSL_CHECKED`: the first byte was looked at.
+    ssl_checked: bool,
+    /// The socket's addresses, for the TLS records.
+    peers: Peers,
     /// `w->acl`.
     acl: u32,
     /// `w->port_acl`: the listener's, with its `^SSL` mode.
@@ -458,7 +536,9 @@ impl WebWorker {
                     }
                     let _ = socket2::SockRef::from(&stream).set_keepalive(true);
                     self.clients[slot] = Some(Client {
-                        stream,
+                        stream: Link::Plain(stream),
+                        ssl_checked: false,
+                        peers: Peers::default(),
                         acl: client_acl,
                         port_acl: self.listeners[index].acl,
                         activity: Activity {
@@ -518,7 +598,13 @@ impl WebWorker {
             self.stats.disconnected += 1;
             let web = &self.shared.hosts.storage().pulse().web;
             web.client_disconnected();
-            let _ = cx.registry().deregister(&mut client.stream);
+            if let Some(conn) = client.stream.conn_mut() {
+                let _ = cx.registry().deregister(conn);
+            }
+            // netdata_ssl_close()
+            if let Link::Tls(t) = &mut client.stream {
+                t.shutdown();
+            }
             let _frame = hangup.then(|| client.log.hangup_frame());
             client.log.connection("DISCONNECTED", 0);
             if let Some(mut done) = client.pending.take() {
@@ -544,8 +630,19 @@ impl WebWorker {
         let Some(mut client) = self.clients[slot].take() else {
             return;
         };
-        let _ = cx.registry().deregister(&mut client.stream);
-        let stream = Stream::from(client.stream);
+        let conn = match client.stream {
+            Link::Plain(conn) => conn,
+            // the receiver over TLS is milestone 6's next step (D96): until then its connection is closed
+            link @ (Link::Tls(_) | Link::Gone) => {
+                client.stream = link;
+                self.clients[slot] = Some(client);
+                self.close(cx, slot, false);
+                return;
+            }
+        };
+        let mut conn = conn;
+        let _ = cx.registry().deregister(&mut conn);
+        let stream = Stream::from(conn);
         {
             let _frame = ctx.outer_frame();
             let _request = ctx.request_frame();
@@ -589,7 +686,7 @@ impl WebWorker {
                     flag(event.is_error(), "ERROR"),
                     flag(hangup, "HUP"),
                     "",
-                    std::os::fd::AsRawFd::as_raw_fd(&client.stream),
+                    client.stream.fd(),
                     client.log.accept_ip,
                     client.log.port,
                     flag(!sending, "READ"),
@@ -602,17 +699,41 @@ impl WebWorker {
             return;
         }
 
+        // web_server_rcv_callback() counts every readable event, the TLS handshake's too
+        if event.is_readable() {
+            self.stats.receptions += 1;
+        }
+        // web_server_check_tcp_ssl(): a TCP connection's first byte decides TLS, whose handshake runs before any read
+        // or write
+        if event.is_readable() || event.is_writable() {
+            let handshaking = matches!(&client.stream, Link::Tls(t) if t.state() == State::Init);
+            match check_tls(client, shared.tls.as_ref(), cx, token) {
+                TlsCheck::Dead => {
+                    self.close(cx, slot, false);
+                    return;
+                }
+                TlsCheck::Wait => return,
+                TlsCheck::Ready if handshaking && !event.is_readable() => {
+                    // web_server_snd_callback(): a handshake completed by a writable event waits for the request
+                    if let Some(conn) = client.stream.conn_mut() {
+                        let _ = cx.registry().reregister(conn, token, Interest::READABLE);
+                    }
+                    return;
+                }
+                TlsCheck::Ready => {}
+            }
+        }
+
         // One request at a time, as C: reading stops at the first complete request and resumes only after its
         // response is written, so later bytes wait in the kernel (backpressure) and are reported again when
         // reading is re-armed.
         if client.output.is_empty() && event.is_readable() {
             // web_server_rcv_callback()
-            self.stats.receptions += 1;
             loop {
                 let start = client.received.len();
                 let want = client.recv.recv_len(start);
                 client.received.resize(start + want, 0);
-                match client.stream.read(&mut client.received[start..]) {
+                match client.stream.read(&mut client.received[start..], &client.peers) {
                     Ok(0) => {
                         self.close(cx, slot, true);
                         return;
@@ -645,6 +766,16 @@ impl WebWorker {
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                         client.received.truncate(start);
+                        // web_server_enable_ssl_wait_from_ssl(): a TLS read that waits to write
+                        if client.stream.wants_write() {
+                            if let Some(conn) = client.stream.conn_mut() {
+                                let _ = cx.registry().reregister(
+                                    conn,
+                                    token,
+                                    Interest::READABLE | Interest::WRITABLE,
+                                );
+                            }
+                        }
                         break;
                     }
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {
@@ -666,7 +797,7 @@ impl WebWorker {
             self.stats.sends += 1;
         }
         while client.written < client.output.len() {
-            match client.stream.write(&client.output[client.written..]) {
+            match client.stream.write(&client.output[client.written..], &client.peers) {
                 Ok(n) => {
                     shared.hosts.storage().pulse().network.api_sent(n);
                     client.written += n;
@@ -682,10 +813,16 @@ impl WebWorker {
             }
         }
         if client.written < client.output.len() {
-            // While sending, C polls for writing only.
-            let _ = cx
-                .registry()
-                .reregister(&mut client.stream, token, Interest::WRITABLE);
+            // While sending, C polls for writing only (and for reading when TLS waits for it).
+            let interest = match &client.stream {
+                Link::Tls(t) if !t.wants_write() && t.state() == State::Complete => {
+                    Interest::WRITABLE | Interest::READABLE
+                }
+                _ => Interest::WRITABLE,
+            };
+            if let Some(conn) = client.stream.conn_mut() {
+                let _ = cx.registry().reregister(conn, token, interest);
+            }
             return;
         }
         if !client.output.is_empty() {
@@ -696,9 +833,9 @@ impl WebWorker {
                 return;
             }
             client.request_done(&shared.hosts.storage().pulse().web);
-            let _ = cx
-                .registry()
-                .reregister(&mut client.stream, token, Interest::READABLE);
+            if let Some(conn) = client.stream.conn_mut() {
+                let _ = cx.registry().reregister(conn, token, Interest::READABLE);
+            }
         }
     }
 }
@@ -747,8 +884,8 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         } else {
             Transport::Tcp
         },
-        tls_configured: false,
-        tls_active: false,
+        tls_configured: shared.tls.is_some(),
+        tls_active: client.stream.is_tls(),
         tls_force: client.port_acl & acl::bits::SSL_FORCE != 0,
         tls_default: client.port_acl & acl::bits::SSL_DEFAULT != 0,
         acl_aclk: false,
@@ -780,6 +917,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         url: lossy(&logged_url(&client.request.url_as_received, mode)),
         transaction: client.transaction,
         auth: Arc::clone(&client.auth),
+        transport: client.log.transport(),
     };
     let _frame = ctx.outer_frame();
     // web_client_valid_method(), in the outer frame
@@ -871,6 +1009,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         }
         Validation::Ok => {
             let stream = &client.stream;
+            let closed = |errno: &mut i32| stream.conn().is_none_or(|c| is_socket_closed(c, errno));
             let (reply, allowed) = dispatch(
                 &client.request,
                 &client.received,
@@ -878,7 +1017,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
                 shared,
                 received,
                 &ctx,
-                &|errno| is_socket_closed(stream, errno),
+                &closed,
             );
             ready = allowed;
             reply
@@ -972,17 +1111,79 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
     client.request = Request::default();
     client.received.clear();
     // web_client_send_http_header(): the header goes out now, still inside the request's frame
-    match send_header(&mut client.stream, &out[..header_len]) {
+    match send_header(&mut client.stream, &client.peers, &out[..header_len]) {
         Some(sent) => Some(Outcome::Reply(out, sent)),
         None => Some(Outcome::Dead),
     }
 }
 
+/// `web_server_check_tcp_ssl()`: with a context, a TCP client's first byte (a C `char`, signed on x86) at most 0x17
+/// starts a TLS handshake, which completes before anything is read or written; another byte keeps it plain.
+fn check_tls(client: &mut Client, context: Option<&SslContext>, cx: &mut Context<'_>, token: Token) -> TlsCheck {
+    let Some(context) = context else {
+        return TlsCheck::Ready;
+    };
+    if let Link::Tls(t) = &mut client.stream {
+        return match t.state() {
+            State::Complete => TlsCheck::Ready,
+            State::Init => handshake(t, &client.peers, cx, token),
+            State::Failed => TlsCheck::Dead,
+        };
+    }
+    let Link::Plain(Conn::Tcp(tcp)) = &client.stream else {
+        // unix clients never speak TLS
+        return TlsCheck::Ready;
+    };
+    if client.ssl_checked {
+        return TlsCheck::Ready;
+    }
+    let mut first = [0u8; 1];
+    match tcp.peek(&mut first) {
+        Ok(1) => {}
+        Ok(_) => return TlsCheck::Dead,
+        Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
+            return TlsCheck::Wait;
+        }
+        Err(_) => return TlsCheck::Dead,
+    }
+    client.ssl_checked = true;
+    if (first[0] as std::ffi::c_char) > 0x17 {
+        return TlsCheck::Ready;
+    }
+    client.peers = Peers::new(tcp.local_addr().ok(), tcp.peer_addr().ok());
+    let Link::Plain(conn) = std::mem::replace(&mut client.stream, Link::Gone) else {
+        return TlsCheck::Dead;
+    };
+    // netdata_ssl_open(): the socket goes with a connection OpenSSL cannot make
+    let Some(t) = TlsStream::new(context, conn, &client.peers) else {
+        return TlsCheck::Dead;
+    };
+    client.log.https = true;
+    client.stream = Link::Tls(Box::new(t));
+    let Link::Tls(t) = &mut client.stream else {
+        return TlsCheck::Dead;
+    };
+    handshake(t, &client.peers, cx, token)
+}
+
+/// `web_server_complete_ssl_handshake()`: the handshake's step; a pending one waits for what OpenSSL asked.
+fn handshake(t: &mut TlsStream<Conn>, peers: &Peers, cx: &mut Context<'_>, token: Token) -> TlsCheck {
+    match t.accept(peers) {
+        Handshake::Complete => TlsCheck::Ready,
+        Handshake::Pending { write } => {
+            let interest = if write { Interest::WRITABLE } else { Interest::READABLE };
+            let _ = cx.registry().reregister(t.get_mut(), token, interest);
+            TlsCheck::Wait
+        }
+        Handshake::Failed => TlsCheck::Dead,
+    }
+}
+
 /// `web_client_send_http_header()`'s send: how much of the header went out, or `None` (after C's two records) when
 /// the client is gone. A full socket sends nothing now; the rest goes out with the body.
-fn send_header(stream: &mut Conn, header: &[u8]) -> Option<usize> {
+fn send_header(stream: &mut Link, peers: &Peers, header: &[u8]) -> Option<usize> {
     loop {
-        match stream.write(header) {
+        match stream.write(header, peers) {
             Ok(n) => return Some(n),
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Some(0),
@@ -1154,7 +1355,7 @@ impl Worker for WebWorker {
                 // C prints the poller's loop index left at the number of listening sockets, and a trailing space
                 let (listeners, fd) = (
                     self.listeners.len(),
-                    std::os::fd::AsRawFd::as_raw_fd(&client.stream),
+                    client.stream.fd(),
                 );
                 let (ip, port) = (&client.log.accept_ip, &client.log.port);
                 if never_asked {

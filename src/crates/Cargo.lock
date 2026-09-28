@@ -3017,6 +3017,7 @@ dependencies = [
  "netdata-agent-streaming",
  "netdata-agent-sys",
  "netdata-agent-text",
+ "netdata-agent-tls",
  "netdata-agent-web",
  "nix",
  "serde_json",
