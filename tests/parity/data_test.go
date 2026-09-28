@@ -252,11 +252,30 @@ func TestDataAPI(t *testing.T) {
 				}
 				got[i] = maskNowEntries(maskTimings(maskRaw(b)), from, time.Now().Unix())
 			}
-			if !bytes.Equal(got[0], got[1]) {
+			if !bytes.Equal(got[0], got[1]) && !labelOrderOnly(got[0], got[1]) {
 				t.Errorf("responses differ\n%s", firstDifference(got[0], got[1]))
 			}
 		})
 	}
+}
+
+// labelOrderPaths are where the answers print labels in their order, which in C is heap-address order and differs
+// between runs (D22.2): the instances' and group-by labels, the chart labels, v3's summary of label keys and v1's
+// label pairs.
+var labelOrderPaths = []string{"**.labels", "**.chart_labels", "summary.labels[]", "full_chart_labels[]"}
+
+// labelOrderOnly tells whether two raw answers differ in their label order alone: the same headers, and JSON bodies
+// equal but for the order at labelOrderPaths.
+func labelOrderOnly(a, b []byte) bool {
+	sep := []byte("\r\n\r\n")
+	ha, ba, _ := bytes.Cut(a, sep)
+	hb, bb, _ := bytes.Cut(b, sep)
+	if !bytes.Equal(ha, hb) {
+		return false
+	}
+	va, errA := ParseJSON(ba)
+	vb, errB := ParseJSON(bb)
+	return errA == nil && errB == nil && len(Compare(va, vb, labelOrderPaths...)) == 0
 }
 
 // firstDifference shows both responses around their first differing byte, in the bodies when those differ.

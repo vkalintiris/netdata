@@ -99,7 +99,7 @@ func compareChartsRaw(t *testing.T, p *Pair, path string) {
 		}
 		got[i] = memoryBytesRe.ReplaceAll(maskTimings(maskRaw(b)), []byte(`"rrd_memory_bytes":"<masked>"`))
 	}
-	if !bytes.Equal(got[0], got[1]) {
+	if !bytes.Equal(got[0], got[1]) && !labelOrderOnly(got[0], got[1]) {
 		t.Errorf("%s: responses differ\n%s", path, firstDifference(got[0], got[1]))
 	}
 }

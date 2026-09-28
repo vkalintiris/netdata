@@ -94,9 +94,14 @@ func (d Difference) String() string {
 // of the unordered patterns (same syntax as Mask patterns): the C agent emits
 // most members in a fixed order that clients may depend on, but a few objects
 // (e.g. host labels added by concurrent startup threads) have no stable order.
+// A pattern ending in "[]" names an array whose item order is not compared.
 func Compare(oracle, candidate Value, unordered ...string) []Difference {
 	c := comparer{}
 	for _, u := range unordered {
+		if arr, ok := strings.CutSuffix(u, "[]"); ok {
+			c.unorderedArrays = append(c.unorderedArrays, strings.Split(arr, "."))
+			continue
+		}
 		c.unordered = append(c.unordered, strings.Split(u, "."))
 	}
 	c.compareAt("$", nil, oracle, candidate)
@@ -104,17 +109,27 @@ func Compare(oracle, candidate Value, unordered ...string) []Difference {
 }
 
 type comparer struct {
-	unordered [][]string
-	out       []Difference
+	unordered       [][]string
+	unorderedArrays [][]string
+	out             []Difference
 }
 
 func (c *comparer) isUnordered(segs []string) bool {
-	for _, u := range c.unordered {
+	return matchAny(c.unordered, segs)
+}
+
+func matchAny(patterns [][]string, segs []string) bool {
+	for _, u := range patterns {
 		if matchPath(u, segs) {
 			return true
 		}
 	}
 	return false
+}
+
+// sortedItems are an array's items in the order of their compact renderings.
+func sortedItems(items []Value) []Value {
+	return slices.SortedFunc(slices.Values(items), func(x, y Value) int { return strings.Compare(x.String(), y.String()) })
 }
 
 func (c *comparer) compareAt(path string, segs []string, a, b Value) {
@@ -134,10 +149,14 @@ func (c *comparer) compareAt(path string, segs []string, a, b Value) {
 			*out = append(*out, Difference{Path: path, Oracle: a.String(), Candidate: b.String()})
 		}
 	case KindArray:
-		n := min(len(a.Items), len(b.Items))
+		ai, bi := a.Items, b.Items
+		if matchAny(c.unorderedArrays, segs) {
+			ai, bi = sortedItems(ai), sortedItems(bi)
+		}
+		n := min(len(ai), len(bi))
 		for i := range n {
 			idx := "[" + strconv.Itoa(i) + "]"
-			c.compareAt(path+idx, append(segs, idx), a.Items[i], b.Items[i])
+			c.compareAt(path+idx, append(segs, idx), ai[i], bi[i])
 		}
 		if len(a.Items) != len(b.Items) {
 			*out = append(*out, Difference{
