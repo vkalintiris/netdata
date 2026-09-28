@@ -287,6 +287,19 @@ func copyCaches(t *testing.T, caches [2]string) [2]string {
 	return out
 }
 
+// tier3End is `end` moved back, when needed, so that a tier-3 window (60 tier-2 points: 216,000 s on the epoch's
+// grid) ends at least two tier-2 windows after the data starts: tiers-raise-backfill-full then always has a tier-3
+// point to backfill, whatever the time of day. The move is at most 50,400 s, within the replication period.
+func tier3End(end int64) int64 {
+	const window, margin = 216000, 7200
+	start := end - s4Span + 1
+	boundary := end / window * window
+	if boundary-start < margin {
+		end -= margin - (boundary - start)
+	}
+	return end
+}
+
 // TestDbengineTiers streams the S4a child into two dbengine parents with three tiers (fresh caches, 25 MiB each,
 // pulse off) and compares the tiers above 0: their windows while the tail is live, every record with a value after
 // the stop, the files, a restart, C on both caches, and the backfill of each mode after a restart (checks
@@ -295,7 +308,7 @@ func TestDbengineTiers(t *testing.T) {
 	opts := daemon.Options{StorageTiers: 3, TierRetentionMB: [3]int{25, 25, 25}, PulseOff: true,
 		LogsExtra: "    level = debug\n"}
 	p := StartPair(t, opts, parentIdentity)
-	end := time.Now().Unix() - 3600
+	end := tier3End(time.Now().Unix() - 3600)
 	g := s4gen{start: end - s4Span + 1, dims: s4Dims}
 	g.child().streamBoth(t, p, g.start, end)
 	var names [2]map[string]string
