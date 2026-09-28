@@ -210,6 +210,24 @@ fn reads_and_writes_the_oracle_file_byte_for_byte() {
     );
 }
 
+/// C's file after `kill -SEGV` while running: its signal members read, and the file written back byte for byte.
+#[test]
+fn reads_and_writes_a_c_crash_file_byte_for_byte() {
+    let golden = include_bytes!("../../tests/golden/status-netdata-master-prod-sigsegv.json");
+    let mut ds = StatusFile::default();
+    assert!(from_json(golden, &mut ds));
+    let f = &ds.fatal;
+    assert_eq!(ds.exit_reason, exit_reason::SIGSEGV);
+    assert_eq!(ds.status, DaemonStatus::Running);
+    assert_eq!(f.signal_code, signal_code::create(11, 0));
+    assert_eq!(f.fault_address, 0x3E8_002E_6A04);
+    assert_eq!((f.thread.as_bytes(), f.function.as_bytes()), (&b"NO_NAME"[..], &b"nd_process_signals"[..]));
+    assert_eq!((f.thread_id, f.worker_job_id, f.line), (4242, 0, 0));
+    assert!(f.stack_trace.as_bytes().starts_with(b"#0 <unknown> ["));
+    let written = to_json(&with_texts(ds));
+    assert_eq!(String::from_utf8_lossy(&written), String::from_utf8_lossy(golden));
+}
+
 #[test]
 fn reads_the_pre_v18_keys() {
     let text = br#"{
