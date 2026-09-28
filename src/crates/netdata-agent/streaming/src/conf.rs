@@ -61,6 +61,28 @@ pub struct Send {
     pub ssl_ca_path: Option<String>,
     pub ssl_ca_file: Option<String>,
     pub compression_enabled: bool,
+    /// `compression.levels`, set with the node profile (`stream_conf_set_sender_compression_levels()`).
+    pub compression_levels: CompressionLevels,
+}
+
+/// The sender's compression levels (`levels[COMPRESSION_ALGORITHM_MAX]`); lz4's is its acceleration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompressionLevels {
+    pub zstd: i32,
+    pub lz4: i32,
+    pub brotli: i32,
+    pub gzip: i32,
+}
+
+impl CompressionLevels {
+    /// `ND_COMPRESSION_DEFAULT` (children, standalone agents) or `ND_COMPRESSION_FASTEST` (parents, IoT).
+    pub fn of_profile(fastest: bool) -> CompressionLevels {
+        if fastest {
+            CompressionLevels { zstd: 1, lz4: 9, brotli: 1, gzip: 1 }
+        } else {
+            CompressionLevels { zstd: 3, lz4: 1, brotli: 3, gzip: 3 }
+        }
+    }
 }
 
 impl Default for Send {
@@ -82,6 +104,7 @@ impl Default for Send {
             ssl_ca_path: None,
             ssl_ca_file: None,
             compression_enabled: true,
+            compression_levels: CompressionLevels::of_profile(false),
         }
     }
 }
@@ -162,6 +185,19 @@ fn text(v: Option<Vec<u8>>) -> String {
 }
 
 impl StreamConf {
+    /// `stream_conf_set_sender_compression_levels()`, from `nd_profile_setup()`: the profile's levels, then
+    /// `[stream]`'s keys over them, in C's order.
+    pub fn set_sender_compression_levels(&mut self, fastest: bool) {
+        let c = &mut self.config;
+        let mut l = CompressionLevels::of_profile(fastest);
+        let mut get = |key: &str, level: i32| c.get_number(SECTION_STREAM, key, i64::from(level)) as i32;
+        l.brotli = get("brotli compression level", l.brotli);
+        l.zstd = get("zstd compression level", l.zstd);
+        l.lz4 = get("lz4 compression acceleration", l.lz4);
+        l.gzip = get("gzip compression level", l.gzip);
+        self.send.compression_levels = l;
+    }
+
     /// `stream_conf_load_internal()`: the user file, else the stock one, then the renames.
     fn load_file(&mut self, user_dir: &str, stock_dir: &str) {
         let user = filename_from_path_entry(user_dir, "stream.conf", None);
@@ -532,6 +568,22 @@ fn has_ago_suffix(value: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// C's levels by profile, each key over them (`stream_conf_unittest()`'s zstd 19).
+    #[test]
+    fn compression_levels_as_c() {
+        // once per run, as C's: a read keeps its default in the config
+        let mut conf = StreamConf::default();
+        conf.set_sender_compression_levels(false);
+        assert_eq!(conf.send.compression_levels, CompressionLevels { zstd: 3, lz4: 1, brotli: 3, gzip: 3 });
+        let mut conf = StreamConf::default();
+        conf.set_sender_compression_levels(true);
+        assert_eq!(conf.send.compression_levels, CompressionLevels { zstd: 1, lz4: 9, brotli: 1, gzip: 1 });
+        let mut conf = StreamConf::default();
+        conf.config.set(SECTION_STREAM, "zstd compression level", "19");
+        conf.set_sender_compression_levels(true);
+        assert_eq!(conf.send.compression_levels, CompressionLevels { zstd: 19, lz4: 9, brotli: 1, gzip: 1 });
+    }
 
     #[test]
     fn keepalive_parsing() {

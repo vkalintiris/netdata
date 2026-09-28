@@ -333,7 +333,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     startup.step_line("signals");
     // The status-file refresh of this step detects the node profile, which loads stream.conf first; the load
     // detects the profile too (for its replication defaults), so C parses [global] profile twice here.
-    let stream_conf = load_stream_conf(&mut conf, &system);
+    let mut stream_conf = load_stream_conf(&mut conf, &system);
     let detected = profile::detect(
         &mut conf.netdata,
         system.system_cpus,
@@ -396,6 +396,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         stream_conf.send.enabled,
     );
     profile::setup_malloc(&mut conf.netdata, profile, system.system_cpus);
+    stream_conf.set_sender_compression_levels(matches!(profile, profile::Profile::Parent | profile::Profile::Iot));
     // nd_profile_setup(): every profile starts with 3 tiers, until the dbengine reads [db]
     status_file::set_profile(profile.bits());
     status_file::set_db_tiers(3);
@@ -553,7 +554,6 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         );
     }
     // the dbengine, when the configured mode or an enabled stream.conf receiver section stores in it
-    let mut stream_conf = stream_conf;
     // the deep pass's deadline: the engine's rotations arm it before the hosts exist
     let db_rotation = Arc::new(DbRotation::default());
     let dbengine = (db.mode == DbMode::Dbengine || stream_conf.config.stream_conf_needs_dbengine())
@@ -726,14 +726,14 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     // stream_thread_get_unsafe(): one thread per core but one, 4..=2048, each started when a node is first assigned
     // to it.
     let stream_threads = (conf.threads.cpus - 1).clamp(4, 2048) as usize;
-    let stream_load: Arc<std::sync::Mutex<Vec<usize>>> = Arc::default();
+    let stream_pins: Arc<std::sync::Mutex<netdata_agent_streaming::pins::Pins>> = Arc::default();
     let stream_pool = {
-        let load = Arc::clone(&stream_load);
+        let pins = Arc::clone(&stream_pins);
         match Pool::spawn_lazy(
             stream_threads,
             conf.threads.thread_stack_size,
             |i| format!("STREAM[{i}]"),
-            move |_| StreamWorker::new(Arc::clone(&load), db.update_every),
+            move |_| StreamWorker::new(Arc::clone(&pins), db.update_every),
         ) {
             Ok(pool) => pool,
             // D37: C carries on without the thread; a pool cannot, so the daemon exits after C's record
@@ -750,7 +750,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let receivers = Arc::new(Receivers::new(
         stream_conf,
         Arc::clone(&hosts),
-        stream_load,
+        stream_pins,
         receiver::Defaults {
             db_mode: db.mode.name().to_string(),
             history: db.history_entries,

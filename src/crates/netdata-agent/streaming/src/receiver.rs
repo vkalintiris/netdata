@@ -28,6 +28,7 @@ use crate::caps;
 use crate::conf::{Keepalive, ReceiverDefaults, StreamConf};
 use crate::decompress::Decompressor;
 use crate::handshake::{self, StreamRequest};
+use crate::pins::Pins;
 use crate::records::{self, Counters, Peer, Reason};
 
 /// `CONNECTION_PROBE_INTERVAL_SECONDS` and `CONNECTION_PROBE_COUNT` of the receiver's TCP keepalive.
@@ -207,7 +208,7 @@ pub struct Attached {
 
 impl Attached {
     /// `stream_receiver_remove()`'s release of the host: offline in pulse, the receiver slot freed, the parent label
-    /// updated. The caller gives back its stream thread's load.
+    /// updated. The caller gives back the host's stream thread pin.
     fn leave_host(&self) {
         self.host
             .pulse_status(netdata_agent_rrd::pulse::host_status::RCV_OFFLINE);
@@ -245,8 +246,8 @@ pub struct Receivers {
     pub hosts: Arc<Hosts>,
     pub defaults: Defaults,
     pool: PoolHandle<StreamMsg>,
-    /// Children per stream thread (`nodes_count`).
-    load: Arc<Mutex<Vec<usize>>>,
+    /// The hosts' stream threads (`stream_thread_globals.assign`).
+    pins: Arc<Mutex<Pins>>,
     /// `[web] accept a streaming request every` (seconds, 0 for no limit).
     streaming_rate_s: AtomicI64,
     /// The wall-clock second of the last accepted request under the rate limit (`last_stream_accepted_t`).
@@ -315,23 +316,21 @@ fn writable_within(fd: std::os::fd::BorrowedFd<'_>, timeout: Duration) -> Result
 }
 
 impl Receivers {
-    /// `load` is the table the stream threads of `pool` share (see `StreamWorker::new()`).
+    /// `pins` is the table the stream threads of `pool` share (see `StreamWorker::new()`).
     pub fn new(
         conf: StreamConf,
         hosts: Arc<Hosts>,
-        load: Arc<Mutex<Vec<usize>>>,
+        pins: Arc<Mutex<Pins>>,
         defaults: Defaults,
         pool: PoolHandle<StreamMsg>,
     ) -> Self {
-        load.lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .resize(pool.threads(), 0);
+        *pins.lock().unwrap_or_else(PoisonError::into_inner) = Pins::new(pool.threads());
         Receivers {
             conf: Mutex::new(conf),
             hosts,
             defaults,
             pool,
-            load,
+            pins,
             streaming_rate_s: AtomicI64::new(0),
             last_accepted_s: Mutex::new(0),
         }
@@ -731,12 +730,8 @@ impl Receivers {
             self.hosts.update_is_parent_label();
             return false;
         }
-        let thread = {
-            let mut load = self.load.lock().unwrap_or_else(PoisonError::into_inner);
-            let thread = (0..load.len()).min_by_key(|&i| load[i]).unwrap_or(0);
-            load[thread] += 1;
-            thread
-        };
+        // stream_receiver_add_to_queue(): the host's stream thread, which its sender shares
+        let thread = self.pins.lock().unwrap_or_else(PoisonError::into_inner).queue(host.machine_guid());
         let attached = Attached {
             host,
             hosts: Arc::clone(&self.hosts),
@@ -772,8 +767,8 @@ impl Receivers {
             .pool
             .send(thread, StreamMsg::Attach(Box::new(attached)))
         {
+            self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
             attached.leave_host();
-            self.load.lock().unwrap_or_else(PoisonError::into_inner)[thread] -= 1;
             return false;
         }
         true
@@ -825,7 +820,7 @@ fn connected_msg(host: &Host) -> String {
 /// (decisions D8).
 pub struct StreamWorker {
     children: Vec<Option<Child>>,
-    load: Arc<Mutex<Vec<usize>>>,
+    pins: Arc<Mutex<Pins>>,
     tick: Option<TimerId>,
     /// `nd_profile.update_every`: how often every child is probed and checked for idleness.
     check_every: Duration,
@@ -855,7 +850,7 @@ impl StreamWorker {
             .is_err()
         {
             attached.leave_host();
-            self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
+            self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
             return;
         }
         let mut parser = Parser::new(
@@ -968,11 +963,11 @@ impl StreamWorker {
         self.flush(cx, index, true);
     }
 
-    pub fn new(load: Arc<Mutex<Vec<usize>>>, update_every: i32) -> Self {
+    pub fn new(pins: Arc<Mutex<Pins>>, update_every: i32) -> Self {
         let now = Instant::now();
         StreamWorker {
             children: Vec::new(),
-            load,
+            pins,
             tick: None,
             check_every: Duration::from_secs(u64::try_from(update_every).unwrap_or(1).max(1)),
             last_check: now,
@@ -1008,7 +1003,7 @@ impl StreamWorker {
                 &counters,
             );
             attached.leave_host();
-            self.load.lock().unwrap_or_else(PoisonError::into_inner)[attached.thread] -= 1;
+            self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
         }
     }
 

@@ -7,5 +7,6 @@ pub mod caps;
 pub mod conf;
 pub mod decompress;
 pub mod handshake;
+pub mod pins;
 pub mod receiver;
 pub mod records;
