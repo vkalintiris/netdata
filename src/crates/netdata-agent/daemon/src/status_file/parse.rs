@@ -54,9 +54,19 @@ fn object(
     }
 }
 
+/// The first JSON value of `text`, as json-c's default tokener reads it: what follows the value is ignored, and a text
+/// that is not UTF-8 is read with U+FFFD in place of each invalid sequence (D89).
+fn first_value(text: &[u8]) -> Option<Value> {
+    let first = |t: &[u8]| serde_json::Deserializer::from_slice(t).into_iter::<Value>().next()?.ok();
+    match first(text) {
+        None if std::str::from_utf8(text).is_err() => first(String::from_utf8_lossy(text).as_bytes()),
+        value => value,
+    }
+}
+
 /// Fills `ds` from a status file's text as C does, true when it parsed through.
 pub fn from_json(text: &[u8], ds: &mut StatusFile) -> bool {
-    let Ok(Value::Object(root)) = serde_json::from_slice::<Value>(text) else {
+    let Some(Value::Object(root)) = first_value(text) else {
         return false;
     };
     let mut error = String::new();
@@ -77,7 +87,7 @@ fn parse(root: &Obj, ds: &mut StatusFile, e: &mut String) -> Option<()> {
         ds.invocation = jsonc::uuid(o, "ephemeral_id", OPT, e)?;
         txt(o, "version", &mut ds.version, e)?;
         ds.uptime = uint64(o, "uptime", e)? as i64;
-        ds.profile = jsonc::bitmap(o, key("profile", "ND_profile"), profile::from_name, OPT, e)?;
+        jsonc::bitmap_into(o, key("profile", "ND_profile"), profile::from_name, OPT, e, &mut ds.profile)?;
         enum_of(
             o,
             key("status", "ND_status"),
@@ -85,12 +95,13 @@ fn parse(root: &Obj, ds: &mut StatusFile, e: &mut String) -> Option<()> {
             &mut ds.status,
             e,
         )?;
-        ds.exit_reason = jsonc::bitmap(
+        jsonc::bitmap_into(
             o,
             key("exit_reason", "ND_exit_reason"),
             exit_reason::from_name,
             OPT,
             e,
+            &mut ds.exit_reason,
         )?;
         ds.node_id = jsonc::uuid(o, key("node_id", "ND_node_id"), OPT, e)?;
         ds.claim_id = jsonc::uuid(o, key("claim_id", "ND_claim_id"), OPT, e)?;

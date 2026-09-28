@@ -196,11 +196,14 @@ fn save_this(dir: &CStr, filename: &CStr, data: &[u8]) -> bool {
     if dir.is_empty() {
         return false;
     }
+    let attempt = TMP_ATTEMPTS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    save_attempt(dir, filename, data, attempt)
+}
+
+/// [`save_this`] with the temporary file's number given.
+pub(super) fn save_attempt(dir: &CStr, filename: &CStr, data: &[u8], attempt: u64) -> bool {
     let mut digits = [0u8; 20];
-    let attempt = decimal(
-        TMP_ATTEMPTS.fetch_add(1, Ordering::Relaxed).wrapping_add(1),
-        &mut digits,
-    );
+    let attempt = decimal(attempt, &mut digits);
     let (dir, filename) = (dir.to_bytes(), filename.to_bytes());
     if dir.len() + 1 + filename.len() + 1 + attempt.len() + 1 >= PATH_MAX {
         return false;

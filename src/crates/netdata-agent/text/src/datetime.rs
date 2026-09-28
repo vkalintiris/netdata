@@ -148,9 +148,9 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + doe - 719_468 + day - 1
 }
 
-/// `strptime()`'s `%Y`/`%m`/... number: up to `max_digits` digits within `min..=max`, after spaces.
+/// `strptime()`'s `%Y`/`%m`/... number: up to `max_digits` digits within `min..=max`, after `isspace()` bytes.
 fn strptime_number(s: &[u8], at: &mut usize, max_digits: usize, min: i64, max: i64) -> Option<i64> {
-    while s.get(*at) == Some(&b' ') {
+    while s.get(*at).is_some_and(|c| matches!(c, b' ' | b'\t'..=b'\r')) {
         *at += 1;
     }
     let start = *at;
@@ -253,6 +253,8 @@ mod tests {
             ("2026-09-27T22:25:28-01:00", Some(base)),
             ("2026-09-27T23:25:28+0300", None),
             ("2026-09-27T23:25:28", None),
+            // glibc skips any isspace() before a number
+            ("\t2026-09-27T\n23:25:28Z", Some(base)),
             ("2026-13-27T23:25:28Z", None),
             ("", None),
         ] {

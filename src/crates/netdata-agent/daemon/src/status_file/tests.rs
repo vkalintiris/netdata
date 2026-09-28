@@ -288,60 +288,136 @@ fn a_hard_failure_keeps_what_was_read() {
     }
 }
 
-#[test]
-fn the_record_version_gates_the_members() {
-    let keys = |v: u32| {
-        let text = to_json(&StatusFile { v, ..full() });
-        let value: serde_json::Value = serde_json::from_slice(&text).unwrap();
-        let mut keys = Vec::new();
-        fn walk(prefix: &str, v: &serde_json::Value, keys: &mut Vec<String>) {
-            if let serde_json::Value::Object(o) = v {
-                for (k, v) in o {
-                    let path = format!("{prefix}.{k}");
-                    keys.push(path.clone());
-                    walk(&path, v, keys);
-                }
+/// The members the writer gates on the record's version, with the version each needs.
+const WRITER_GATES: [(&str, u32); 21] = [
+    (".agent.since", 24),
+    (".agent.crashes", 24),
+    (".agent.pid", 27),
+    (".agent.posts", 22),
+    (".agent.aclk", 22),
+    (".agent.db_mode", 14),
+    (".agent.db_tiers", 14),
+    (".agent.kubernetes", 14),
+    (".agent.sentry_available", 16),
+    (".agent.reliability", 18),
+    (".agent.stack_traces", 18),
+    (".host.timezone", 20),
+    (".host.cloud_provider", 20),
+    (".host.cloud_instance", 20),
+    (".host.cloud_region", 20),
+    (".host.memory.netdata", 21),
+    (".host.memory.oom_protection", 21),
+    (".fatal.signal_code", 16),
+    (".fatal.sentry", 17),
+    (".fatal.fault_address", 18),
+    (".fatal.worker_job_id", 23),
+];
+
+fn written_keys(v: u32) -> Vec<String> {
+    let text = to_json(&StatusFile { v, ..full() });
+    let value: serde_json::Value = serde_json::from_slice(&text).unwrap();
+    fn walk(prefix: &str, v: &serde_json::Value, keys: &mut Vec<String>) {
+        if let serde_json::Value::Object(o) = v {
+            for (k, v) in o {
+                let path = format!("{prefix}.{k}");
+                keys.push(path.clone());
+                walk(&path, v, keys);
             }
         }
-        walk("", &value, &mut keys);
-        keys
-    };
-    let (old, new) = (keys(13), keys(VERSION));
-    let mut added: Vec<_> = new
-        .iter()
-        .filter(|k| !old.contains(k))
-        .map(String::as_str)
-        .collect();
+    }
+    let mut keys = Vec::new();
+    walk("", &value, &mut keys);
+    keys
+}
+
+#[test]
+fn the_record_version_gates_the_members() {
+    for (member, v) in WRITER_GATES {
+        assert!(written_keys(v).iter().any(|k| k == member), "{member} at {v}");
+        assert!(!written_keys(v - 1).iter().any(|k| k == member), "{member} at {}", v - 1);
+    }
+    // the rest are always written
+    let (old, new) = (written_keys(0), written_keys(VERSION));
+    let mut added: Vec<_> = new.iter().filter(|k| !old.contains(k)).map(String::as_str).collect();
+    let mut gated: Vec<_> = WRITER_GATES.iter().map(|(m, _)| *m).collect();
     added.sort_unstable();
-    let mut expected = [
-        ".agent.since",
-        ".agent.crashes",
-        ".agent.pid",
-        ".agent.posts",
-        ".agent.aclk",
-        ".agent.db_mode",
-        ".agent.db_tiers",
-        ".agent.kubernetes",
-        ".agent.sentry_available",
-        ".agent.reliability",
-        ".agent.stack_traces",
-        ".host.timezone",
-        ".host.cloud_provider",
-        ".host.cloud_instance",
-        ".host.cloud_region",
-        ".host.memory.netdata",
-        ".host.memory.oom_protection",
-        ".fatal.signal_code",
-        ".fatal.sentry",
-        ".fatal.fault_address",
-        ".fatal.worker_job_id",
-    ];
-    expected.sort_unstable();
-    assert_eq!(added, expected);
-    assert!(old.iter().all(|k| new.contains(k)));
+    gated.sort_unstable();
+    assert_eq!(added, gated);
     // "version" is always the writer's own
     let text = to_json(&StatusFile { v: 13, ..full() });
     assert!(String::from_utf8_lossy(&text).contains("\"version\":29,"));
+}
+
+/// The full record's file as a record of version `v` would have it: its version, and the agent's keys with the
+/// `ND_` prefix before 18.
+fn file_of_version(v: u32) -> Vec<u8> {
+    let mut text = String::from_utf8(to_json(&full())).unwrap().replace("\"version\":29,", &format!("\"version\":{v},"));
+    if v < 18 {
+        for key in [
+            "profile", "status", "exit_reason", "node_id", "claim_id", "install_type", "timings", "restarts",
+            "db_mode", "db_tiers", "kubernetes", "sentry_available",
+        ] {
+            text = text.replace(&format!("\"{key}\":"), &format!("\"ND_{key}\":"));
+        }
+    }
+    text.into_bytes()
+}
+
+#[test]
+fn the_file_version_gates_what_is_read() {
+    let read = |v: u32| {
+        let mut ds = StatusFile::default();
+        assert!(from_json(&file_of_version(v), &mut ds), "{v}");
+        ds
+    };
+    let all = full();
+    type Get = fn(&StatusFile) -> String;
+    let gates: [(u32, &str, Get); 17] = [
+        (4, "restarts", |d| d.restarts.to_string()),
+        (14, "db_mode", |d| d.db_mode.to_string()),
+        (14, "kubernetes", |d| d.kubernetes.to_string()),
+        (16, "signal_code", |d| d.fatal.signal_code.to_string()),
+        (17, "sentry_available", |d| d.sentry_available.to_string()),
+        (18, "reliability", |d| d.reliability.to_string()),
+        (18, "stack_traces", |d| format!("{:?}", d.stack_traces)),
+        (18, "thread_id", |d| d.fatal.thread_id.to_string()),
+        (18, "fault_address", |d| d.fatal.fault_address.to_string()),
+        (20, "timezone", |d| format!("{:?}", d.timezone)),
+        (20, "cloud_region", |d| format!("{:?}", d.cloud_instance_region)),
+        (21, "netdata", |d| d.netdata_max_rss.to_string()),
+        (22, "posts", |d| d.posts.to_string()),
+        (22, "aclk", |d| d.cloud_status.to_string()),
+        (23, "worker_job_id", |d| d.fatal.worker_job_id.to_string()),
+        (24, "since", |d| d.host_id.last_modified_ut.to_string()),
+        (27, "pid", |d| d.pid.to_string()),
+    ];
+    for (v, name, get) in gates {
+        assert_eq!(get(&read(v)), get(&all), "{name} read at {v}");
+        assert_ne!(get(&read(v - 1)), get(&all), "{name} not read at {}", v - 1);
+    }
+}
+
+#[test]
+fn reads_what_json_c_reads() {
+    // a multi-byte character cut at a text's limit: the record still loads (D89)
+    let mut ds = full();
+    ds.fatal.message.set(format!("{}é", "x".repeat(510)));
+    assert_eq!(ds.fatal.message.as_bytes().len(), 511);
+    let mut back = StatusFile::default();
+    assert!(from_json(&to_json(&ds), &mut back));
+    assert_eq!(back.restarts, ds.restarts);
+    // U+FFFD in the lone byte's place, itself cut at the limit: 0xEF where C keeps 0xC3
+    let mut want = vec![b'x'; 510];
+    want.push(0xef);
+    assert_eq!(back.fatal.message.as_bytes(), &want[..]);
+    // text after the root object is ignored
+    let mut ds = StatusFile::default();
+    assert!(from_json(b"{\"version\":29,\"agent\":{\"restarts\":7}} xyz", &mut ds));
+    assert_eq!(ds.restarts, 7);
+    // a bitmap keeps the bits read before a bad item
+    let mut ds = StatusFile::default();
+    assert!(!from_json(br#"{"version":29,"agent":{"exit_reason":["signal-segmentation-fault",5]}}"#, &mut ds));
+    assert_eq!(ds.exit_reason, exit_reason::SIGSEGV);
 }
 
 /// A name no other test or process uses: a save unlinks it from `/tmp`, `/run`, `/var/run` and `.` too.
@@ -459,4 +535,27 @@ fn loads_the_newest_copy() {
     assert_eq!(loaded(&loc), None);
     std::fs::write(cache.path().join(file), vec![b' '; 65536]).unwrap();
     assert_eq!(loaded(&loc).map(|c| c.len()), Some(65536));
+}
+
+#[test]
+fn reuses_a_regular_leftover_and_refuses_anything_else() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = CString::new(dir.path().to_str().unwrap()).unwrap();
+    let name = unique_name("leftover");
+    let file = name.to_str().unwrap();
+    let temp = |n: u64| dir.path().join(format!("{file}-{n}"));
+    // an interrupted save's temporary file is reused, truncated first
+    std::fs::write(temp(1), vec![b'z'; 100]).unwrap();
+    assert!(io::save_attempt(&d, &name, b"new", 1));
+    assert_eq!(std::fs::read(dir.path().join(file)).unwrap(), b"new");
+    assert!(!temp(1).exists());
+    // a symlink in its place is not followed, a directory not used
+    let target = dir.path().join("target");
+    std::fs::write(&target, b"keep").unwrap();
+    std::os::unix::fs::symlink(&target, temp(2)).unwrap();
+    assert!(!io::save_attempt(&d, &name, b"evil", 2));
+    assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+    std::fs::create_dir(temp(3)).unwrap();
+    assert!(!io::save_attempt(&d, &name, b"x", 3));
+    assert_eq!(std::fs::read(dir.path().join(file)).unwrap(), b"new");
 }

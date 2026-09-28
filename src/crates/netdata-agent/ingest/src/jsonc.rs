@@ -235,22 +235,36 @@ pub fn bitmap(
     presence: Presence,
     error: &mut String,
 ) -> Option<u32> {
+    let mut bits = 0;
+    bitmap_into(obj, member, parse_one, presence, error, &mut bits).map(|()| bits)
+}
+
+/// [`bitmap`] into `bits`, as C fills its destination: zeroed once the member is an array, then each item's bit
+/// added, so a failing item keeps the bits before it; untouched when an optional member is missing or no array.
+pub fn bitmap_into(
+    obj: &Map<String, Value>,
+    member: &str,
+    parse_one: fn(&[u8]) -> u32,
+    presence: Presence,
+    error: &mut String,
+    bits: &mut u32,
+) -> Option<()> {
     let required = presence == Presence::Required;
     let Some(value) = obj.get(member) else {
         return if required {
             fail(error, format!("missing '.{member}' array"))
         } else {
-            Some(0)
+            Some(())
         };
     };
     let Value::Array(items) = value else {
         return if required {
             fail(error, format!("invalid type for '.{member}' array"))
         } else {
-            Some(0)
+            Some(())
         };
     };
-    let mut bits = 0;
+    *bits = 0;
     for (i, item) in items.iter().enumerate() {
         let Value::String(name) = item else {
             return fail(error, format!("invalid type for '.{member}' at index {i}"));
@@ -263,9 +277,9 @@ pub fn bitmap(
                 String::from_utf8_lossy(name)
             ));
         }
-        bits |= bit;
+        *bits |= bit;
     }
-    Some(bits)
+    Some(())
 }
 
 /// `JSONC_PARSE_BOOL_OR_ERROR_AND_RETURN`: strings "true"/"yes"/"on" and "false"/"no"/"off" (any case), numbers by
