@@ -64,6 +64,55 @@ fn v(field: &Option<String>) -> Option<&[u8]> {
 }
 
 impl SystemInfo {
+    /// `rrdhost_system_info_to_url_encode_stream()`: the STREAM request's query parameters after `ver`, in C's order,
+    /// each value url-encoded (`key=` for none, `buffer_key_value_urlencode()`).
+    pub fn to_url_encode_stream(&self, dst: &mut Vec<u8>) {
+        use netdata_agent_text::print::print_int64;
+        for (key, value) in [
+            ("&ml_capable=", i64::from(self.ml_capable)),
+            ("&ml_enabled=", i64::from(self.ml_enabled)),
+            ("&mc_version=", i64::from(self.mc_version)),
+        ] {
+            dst.extend_from_slice(key.as_bytes());
+            print_int64(dst, value);
+        }
+        for (key, value) in [
+            ("&NETDATA_INSTANCE_CLOUD_TYPE", &self.cloud_provider_type),
+            ("&NETDATA_INSTANCE_CLOUD_INSTANCE_TYPE", &self.cloud_instance_type),
+            ("&NETDATA_INSTANCE_CLOUD_INSTANCE_REGION", &self.cloud_instance_region),
+            ("&NETDATA_SYSTEM_OS_NAME", &self.host_os_name),
+            ("&NETDATA_SYSTEM_OS_ID", &self.host_os_id),
+            ("&NETDATA_SYSTEM_OS_ID_LIKE", &self.host_os_id_like),
+            ("&NETDATA_SYSTEM_OS_VERSION", &self.host_os_version),
+            ("&NETDATA_SYSTEM_OS_VERSION_ID", &self.host_os_version_id),
+            ("&NETDATA_SYSTEM_OS_DETECTION", &self.host_os_detection),
+            ("&NETDATA_HOST_IS_K8S_NODE", &self.is_k8s_node),
+            ("&NETDATA_SYSTEM_KERNEL_NAME", &self.kernel_name),
+            ("&NETDATA_SYSTEM_KERNEL_VERSION", &self.kernel_version),
+            ("&NETDATA_SYSTEM_ARCHITECTURE", &self.architecture),
+            ("&NETDATA_SYSTEM_VIRTUALIZATION", &self.virtualization),
+            ("&NETDATA_SYSTEM_VIRT_DETECTION", &self.virt_detection),
+            ("&NETDATA_SYSTEM_CONTAINER", &self.container),
+            ("&NETDATA_SYSTEM_CONTAINER_DETECTION", &self.container_detection),
+            ("&NETDATA_CONTAINER_OS_NAME", &self.container_os_name),
+            ("&NETDATA_CONTAINER_OS_ID", &self.container_os_id),
+            ("&NETDATA_CONTAINER_OS_ID_LIKE", &self.container_os_id_like),
+            ("&NETDATA_CONTAINER_OS_VERSION", &self.container_os_version),
+            ("&NETDATA_CONTAINER_OS_VERSION_ID", &self.container_os_version_id),
+            ("&NETDATA_CONTAINER_OS_DETECTION", &self.container_os_detection),
+            ("&NETDATA_SYSTEM_CPU_LOGICAL_CPU_COUNT", &self.host_cores),
+            ("&NETDATA_SYSTEM_CPU_FREQ", &self.host_cpu_freq),
+            ("&NETDATA_SYSTEM_TOTAL_RAM", &self.host_ram_total),
+            ("&NETDATA_SYSTEM_TOTAL_DISK_SIZE", &self.host_disk_space),
+        ] {
+            dst.extend_from_slice(key.as_bytes());
+            dst.push(b'=');
+            if let Some(value) = value {
+                netdata_agent_text::url::url_encode(dst, value.as_bytes());
+            }
+        }
+    }
+
     /// `rrdhost_system_info_foreach()`: the keys the metadata writer stores in `host_info`, in C's order, with their
     /// values (`None` is stored as `unknown`).
     pub fn stored_keys(&self) -> [(&'static str, Option<&str>); 27] {
@@ -353,6 +402,25 @@ impl SystemInfo {
 
 #[cfg(test)]
 mod tests {
+
+    /// C's order and encoding: the three numbers, then the 27 texts, `key=` for a missing one.
+    #[test]
+    fn url_encodes_as_c() {
+        let info = SystemInfo {
+            mc_version: 1,
+            host_os_name: Some("Debian GNU/Linux".into()),
+            host_cores: Some("16".into()),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        info.to_url_encode_stream(&mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("&ml_capable=0&ml_enabled=0&mc_version=1&NETDATA_INSTANCE_CLOUD_TYPE=&"), "{text}");
+        assert!(text.contains("&NETDATA_SYSTEM_OS_NAME=Debian+GNU%2fLinux&NETDATA_SYSTEM_OS_ID=&"), "{text}");
+        assert!(text.ends_with("&NETDATA_SYSTEM_CPU_LOGICAL_CPU_COUNT=16&NETDATA_SYSTEM_CPU_FREQ=&NETDATA_SYSTEM_TOTAL_RAM=&NETDATA_SYSTEM_TOTAL_DISK_SIZE="), "{text}");
+        assert_eq!(text.matches('&').count(), 30);
+    }
+
     use super::*;
 
     /// `system-info.sh`'s output on the development box (brief `knowledge/brief-localhost-identity.md` §4 in the

@@ -40,7 +40,7 @@ use netdata_agent_rrd::collection;
 use netdata_agent_rrd::contexts;
 use netdata_agent_rrd::host::{Host, meta_flags};
 use netdata_agent_rrd::labels::{self, Labels};
-use netdata_agent_storage::storage_number::{SN_EMPTY_SLOT, SN_FLAG_NOT_ANOMALOUS, SN_FLAG_RESET};
+use netdata_agent_storage::storage_number::{self, SN_EMPTY_SLOT};
 use netdata_agent_text::parse::{
     str2i, str2ll, str2ll_encoded, str2ndd_encoded, str2u, str2ul, str2ull_encoded,
     uuid_parse_flexi,
@@ -94,20 +94,6 @@ fn refuse_with(keyword: &str, why: &str) -> Rc {
 
 fn text(v: &[u8]) -> String {
     String::from_utf8_lossy(v).into_owned()
-}
-
-/// `pluginsd_parse_storage_number_flags()`: `A` not anomalous, `R` reset, `E` an empty slot at once.
-fn parse_sn_flags(flags: &[u8]) -> u32 {
-    let mut out = 0;
-    for &c in flags {
-        match c {
-            b'A' => out |= SN_FLAG_NOT_ANOMALOUS,
-            b'R' => out |= SN_FLAG_RESET,
-            b'E' => return SN_EMPTY_SLOT,
-            _ => {}
-        }
-    }
-    out
 }
 
 /// What finishing a deferred body does.
@@ -1337,7 +1323,7 @@ impl Parser {
         } else {
             str2ndd_encoded(value_s).0
         };
-        let mut sn_flags = parse_sn_flags(flags_s);
+        let mut sn_flags = storage_number::parse_flags(flags_s);
         // ML is not running here: without ML_MODELS the child's anomaly bits are kept as received.
         if !value.is_finite() || sn_flags == SN_EMPTY_SLOT {
             value = f64::NAN;
@@ -1687,7 +1673,7 @@ impl Parser {
         }
         let value_s = value_s.filter(|v| !v.is_empty()).unwrap_or(b"NAN");
         let mut value = str2ndd_encoded(value_s).0;
-        let mut sn_flags = parse_sn_flags(flags_s.unwrap_or(b""));
+        let mut sn_flags = storage_number::parse_flags(flags_s.unwrap_or(b""));
         if !value.is_finite() || sn_flags == SN_EMPTY_SLOT {
             value = f64::NAN;
             sn_flags = SN_EMPTY_SLOT;

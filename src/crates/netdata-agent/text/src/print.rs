@@ -162,6 +162,19 @@ pub fn print_netdata_double(dst: &mut Vec<u8>, value: f64) {
     }
 }
 
+/// glibc's `%.*f`: the exact binary value rounded to `precision` digits, ties to even as glibc rounds them, with
+/// glibc's names for NaN (`nan` or `-nan` by the sign bit) and the infinities.
+pub fn print_fixed(dst: &mut Vec<u8>, value: f64, precision: usize) {
+    if value.is_nan() {
+        dst.extend_from_slice(if value.is_sign_negative() { b"-nan" } else { b"nan" });
+    } else if value.is_infinite() {
+        dst.extend_from_slice(if value < 0.0 { b"-inf" } else { b"inf" });
+    } else {
+        use std::io::Write;
+        let _ = write!(dst, "{value:.precision$}");
+    }
+}
+
 /// `buffer_print_netdata_double()`: `null` for NaN and infinities, otherwise
 /// [`print_netdata_double`].
 pub fn print_netdata_double_or_null(dst: &mut Vec<u8>, value: f64) {
@@ -312,6 +325,26 @@ pub fn html_escape(out: &mut Vec<u8>, text: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    /// glibc's `%.*f` against its known outputs: exact ties go to even, NaN keeps its sign, `-0.0` its minus.
+    #[test]
+    fn fixed_as_glibc() {
+        let f = |v: f64, p: usize| {
+            let mut out = Vec::new();
+            print_fixed(&mut out, v, p);
+            String::from_utf8(out).unwrap()
+        };
+        assert_eq!(f(0.00390625, 7), "0.0039062");
+        assert_eq!(f(0.125, 2), "0.12");
+        assert_eq!(f(0.375, 2), "0.38");
+        assert_eq!(f(-0.0, 7), "-0.0000000");
+        assert_eq!(f(1.5, 0), "2");
+        assert_eq!(f(2.5, 0), "2");
+        assert_eq!(f(f64::NAN, 7), "nan");
+        assert_eq!(f(-f64::NAN, 7), "-nan");
+        assert_eq!(f(f64::NEG_INFINITY, 2), "-inf");
+        assert_eq!(f(1e20, 7), "100000000000000000000.0000000");
+    }
+
     use super::*;
 
     #[test]

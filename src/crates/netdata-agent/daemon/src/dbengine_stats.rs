@@ -9,13 +9,11 @@ use netdata_agent_web::status;
 
 use crate::server::Reply;
 
-/// `%0.2f` as glibc prints it: Rust's text, but for NaN, which glibc names `nan` or `-nan` by its sign.
+/// `%0.2f` as glibc prints it.
 fn f2(v: f64) -> String {
-    match (v.is_nan(), v.is_sign_negative()) {
-        (true, true) => "-nan".into(),
-        (true, false) => "nan".into(),
-        _ => format!("{v:.2}"),
-    }
+    let mut text = Vec::new();
+    netdata_agent_text::print::print_fixed(&mut text, v, 2);
+    String::from_utf8_lossy(&text).into_owned()
 }
 
 /// `web_client_api_v1_dbengine_stats_for_tier()`.

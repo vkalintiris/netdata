@@ -4,6 +4,8 @@
 #![forbid(unsafe_code)]
 
 pub mod caps;
+pub mod compress;
+pub mod compression;
 pub mod conf;
 pub mod decompress;
 pub mod handshake;

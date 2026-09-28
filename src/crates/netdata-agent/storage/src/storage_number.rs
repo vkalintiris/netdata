@@ -21,6 +21,34 @@ pub const SN_DEFAULT_FLAGS: u32 = SN_FLAG_NOT_ANOMALOUS;
 /// `SN_EMPTY_SLOT`.
 pub const SN_EMPTY_SLOT: u32 = SN_FLAG_NOT_EXISTS_MUL100;
 
+/// `buffer_print_sn_flags()`: the flags as the stream protocol writes them, `E` for an empty slot alone, else `A`
+/// (not anomalous, when `anomaly_bit`) and `R` (reset), `''` (an empty word) for neither.
+pub fn flags_text(flags: u32, anomaly_bit: bool) -> &'static [u8] {
+    if flags == SN_EMPTY_SLOT {
+        return b"E";
+    }
+    match (anomaly_bit && flags & SN_FLAG_NOT_ANOMALOUS != 0, flags & SN_FLAG_RESET != 0) {
+        (true, true) => b"AR",
+        (true, false) => b"A",
+        (false, true) => b"R",
+        (false, false) => b"''",
+    }
+}
+
+/// `pluginsd_parse_storage_number_flags()`: `A` not anomalous, `R` reset, `E` an empty slot at once.
+pub fn parse_flags(text: &[u8]) -> u32 {
+    let mut out = 0;
+    for &c in text {
+        match c {
+            b'A' => out |= SN_FLAG_NOT_ANOMALOUS,
+            b'R' => out |= SN_FLAG_RESET,
+            b'E' => return SN_EMPTY_SLOT,
+            _ => {}
+        }
+    }
+    out
+}
+
 const MANTISSA_MAX: f64 = 0x00ff_ffff as f64;
 
 /// `pack_storage_number()`.
@@ -112,4 +140,30 @@ pub fn did_reset(value: u32) -> bool {
 /// `is_storage_number_anomalous()`.
 pub fn is_anomalous(value: u32) -> bool {
     exists(value) && value & SN_FLAG_NOT_ANOMALOUS == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C's five texts, and what the parser reads back.
+    #[test]
+    fn flags_text_as_c() {
+        let got: Vec<_> = [
+            (SN_EMPTY_SLOT, true),
+            (SN_FLAG_NOT_ANOMALOUS, true),
+            (SN_FLAG_RESET, true),
+            (SN_FLAG_NOT_ANOMALOUS | SN_FLAG_RESET, true),
+            (0, true),
+            (SN_FLAG_NOT_ANOMALOUS, false),
+            (SN_EMPTY_SLOT | SN_FLAG_RESET, true),
+        ]
+        .iter()
+        .map(|&(f, a)| flags_text(f, a))
+        .collect();
+        assert_eq!(got, [&b"E"[..], b"A", b"R", b"AR", b"''", b"''", b"R"]);
+        for f in [SN_EMPTY_SLOT, SN_FLAG_NOT_ANOMALOUS, SN_FLAG_RESET, SN_FLAG_NOT_ANOMALOUS | SN_FLAG_RESET, 0] {
+            assert_eq!(parse_flags(flags_text(f, true)), f);
+        }
+    }
 }

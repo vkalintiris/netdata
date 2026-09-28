@@ -154,6 +154,12 @@ fn cvttsd2si64(x: f64) -> i64 {
     }
 }
 
+/// `(int64_t)x` on x86-64: `cvttsd2si`, `i64::MIN` for NaN and what does not fit.
+#[inline]
+pub fn double_to_i64(x: f64) -> i64 {
+    cvttsd2si64(x)
+}
+
 /// `(uint64_t)x` as lowered by gcc on x86-64: `comisd 2^63` then either a
 /// plain `cvttsd2si`, or `cvttsd2si(x - 2^63)` with bit 63 flipped.
 #[inline]

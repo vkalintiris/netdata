@@ -32,3 +32,4 @@ pub mod sanitize;
 pub mod simple_pattern;
 pub mod size;
 pub mod time_window;
+pub mod url;

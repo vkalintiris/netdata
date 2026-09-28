@@ -38,11 +38,15 @@ fn named_host(hostname: &str, guid: &str, is_localhost: bool) -> Arc<Host> {
 }
 
 fn parser(host: &Arc<Host>) -> Parser {
+    parser_with(host, 0)
+}
+
+fn parser_with(host: &Arc<Host>, capabilities: u32) -> Parser {
     Parser::new(
         Arc::clone(host),
         named_host("parent", "5a1e0000-0000-4000-8000-0000000000aa", true),
         Config {
-            capabilities: 0,
+            capabilities,
             update_every: 1,
             page_size: 4096,
             now: || (NOW, 0),
@@ -112,6 +116,78 @@ fn a_chart_is_defined_and_collected_with_v2() {
     assert!(q.next_metric().is_gap());
     assert_eq!(chart.collection().last_updated, (t, 0));
     assert_eq!(p.data_collections_count, 1);
+}
+
+/// The sender's lines (`pluginsd_proto::emit::stream`), plain, with slots and IEEE754, and with float baselines,
+/// define and fill a chart through this parser as a C child's lines do.
+#[test]
+fn the_senders_lines_round_trip() {
+    use netdata_agent_pluginsd_proto::caps;
+    use netdata_agent_pluginsd_proto::emit::stream::*;
+    for capabilities in [
+        caps::INTERPOLATED,
+        caps::INTERPOLATED | caps::SLOTS | caps::IEEE754,
+        caps::INTERPOLATED | caps::SLOTS | caps::IEEE754 | caps::FLOAT_BASELINE,
+    ] {
+        let h = host();
+        let mut p = parser_with(&h, capabilities);
+        let e = Enc::live(capabilities);
+        let mut out = Vec::new();
+        let def = ChartDef {
+            slot: 3,
+            id: "test.rt",
+            name: chart_name("test.rt", Some("test.named")),
+            title: "t t",
+            units: "u",
+            family: "f",
+            context: "ctx.rt",
+            chart_type: "stacked",
+            priority: 7,
+            update_every: 1,
+            obsolete: false,
+            store_first: false,
+            hidden: false,
+            plugin: "pl",
+            module: "mo",
+        };
+        chart(&mut out, &e, &def);
+        clabel(&mut out, "k", "v", 2);
+        clabel_commit(&mut out);
+        let a = DimDef {
+            slot: 1,
+            id: "a",
+            name: "a",
+            algorithm: "absolute",
+            multiplier: 1,
+            divisor: 1,
+            obsolete: false,
+            hidden: false,
+            noreset: false,
+            float: false,
+        };
+        dimension(&mut out, &e, &a);
+        dimension(&mut out, &e, &DimDef { slot: 2, id: "b", name: "bee", ..a });
+        let t = NOW - 10;
+        let mut block = V2Block::new(e, 3, "test.rt", 1, NOW);
+        block.set2(&mut out, t, 1, "a", Baseline::Int(5), 5.0, b"A");
+        block.set2(&mut out, t, 2, "b", Baseline::Int(-7), -7.5, b"AR");
+        end2(&mut out);
+        let text = String::from_utf8(out).unwrap();
+        for line in text.lines() {
+            assert!(p.feed(format!("{line}\n").as_bytes()), "{capabilities:#x}: {line}");
+        }
+        let chart = h.charts().find("test.rt", true).unwrap();
+        let meta = chart.meta();
+        assert_eq!(meta.name.as_deref(), Some("test.named"), "{text}");
+        assert_eq!((meta.context.as_str(), meta.priority), ("ctx.rt", 7));
+        assert_eq!(meta.labels.get(b"k"), Some(&b"v"[..]));
+        assert_eq!(chart.dim("b").unwrap().meta().name, "bee");
+        for (id, value) in [("a", 5.0), ("b", -7.5)] {
+            let dim = chart.dim(id).unwrap();
+            let mut q = dim.ring().unwrap().query(t, t);
+            assert_eq!(q.next_metric().sum, value, "{capabilities:#x} {id}: {text}");
+        }
+    }
 }
 
 #[test]

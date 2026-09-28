@@ -163,9 +163,12 @@ impl DeferredBody {
     }
 }
 
-/// The lines the agent writes to a plugin or a child to drive a function call (`src/plugins.d/pluginsd_functions.c`).
+/// The lines the agent writes to a plugin or a child to drive a function call (`src/plugins.d/pluginsd_functions.c`),
+/// and a streaming child's lines to its parent (`stream`).
 pub mod emit {
     use std::fmt::Write as _;
+
+    pub mod stream;
 
     /// `FUNCTION <tx> <timeout> "<cmd>" "0x<access>" "<source>"\n`; strings go out raw.
     pub fn function(tx: &str, timeout_s: i32, command: &str, access: u32, source: &str) -> String {

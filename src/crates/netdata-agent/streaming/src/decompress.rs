@@ -8,7 +8,9 @@ use flate2::{Decompress, FlushDecompress, Status};
 use netdata_agent_log::{Priority, Source, nd_log};
 use zstd::stream::raw::{Decoder as ZstdDecoder, InBuffer, Operation, OutBuffer};
 
-use crate::caps;
+use crate::compression::{
+    Algorithm, LZ4_WINDOW, MAX_CHUNK, MAX_MSG_SIZE, SIGNATURE_SIZE, decode_signature,
+};
 
 /// The engines' own records before a failed message ends the connection (`netdata_log_error()`).
 fn failed(message: std::fmt::Arguments<'_>) {
@@ -19,33 +21,11 @@ fn failed(message: std::fmt::Arguments<'_>) {
     );
 }
 
-/// `COMPRESSION_MAX_CHUNK`.
-const MAX_CHUNK: usize = 0x4000;
-/// `COMPRESSION_MAX_MSG_SIZE`: the largest compressed message accepted.
-const MAX_MSG_SIZE: usize = MAX_CHUNK - 128 - 1;
-/// `STREAM_COMPRESSION_SIGNATURE_SIZE`.
-const SIGNATURE_SIZE: usize = 4;
-
 /// The output buffer sizes C allocates (`simple_ring_buffer_make_room()` from empty: 16 KiB, then + the request).
 const ZSTD_OUTPUT: usize = MAX_CHUNK + 131_072;
 const LZ4_RING: usize = MAX_CHUNK + 65_536 + MAX_CHUNK * 2;
 /// gzip and brotli: `simple_ring_buffer_set_capacity(COMPRESSION_MAX_CHUNK + 1)`.
 const SMALL_OUTPUT: usize = MAX_CHUNK + 1;
-/// How far back an lz4 block may reference.
-const LZ4_WINDOW: usize = 65_536;
-
-/// `stream_decompress_decode_signature()`: the compressed length, or `None` when the bytes are not a signature
-/// (uncompressed data inside a compressed stream). The signature is a host-endian `uint32`: little-endian here.
-pub fn decode_signature(bytes: [u8; SIGNATURE_SIZE]) -> Option<usize> {
-    const SIGNATURE: u32 =
-        (b'z' as u32 | 0x80) | (0x80 << 8) | (0x80 << 16) | ((b'\n' as u32) << 24);
-    const MASK: u32 = 0xff | (0x80 << 8) | (0x80 << 16) | (0xff << 24);
-    let sign = u32::from_le_bytes(bytes);
-    if sign & MASK != SIGNATURE {
-        return None;
-    }
-    Some((((sign >> 8) & 0x7f) | ((sign >> 9) & (0x7f << 7))) as usize)
-}
 
 /// One connection's decompression state (`struct decompressor_state`).
 enum Engine {
@@ -98,33 +78,30 @@ impl Decompressor {
     /// `stream_decompression_initialize()`: the negotiated compression, by the fixed priority zstd, lz4, brotli,
     /// gzip; `None` for an uncompressed stream.
     pub fn for_capabilities(capabilities: u32) -> Option<Self> {
-        let (engine, output) = if capabilities & caps::ZSTD != 0 {
-            (
+        let (engine, output) = match Algorithm::for_capabilities(capabilities)? {
+            Algorithm::Zstd => (
                 Engine::Zstd(Box::new(ZstdDecoder::new().ok()?)),
                 ZSTD_OUTPUT,
-            )
-        } else if capabilities & caps::LZ4 != 0 {
-            (
+            ),
+            Algorithm::Lz4 => (
                 Engine::Lz4 {
                     history: Vec::new(),
                     write_pos: 0,
                 },
                 LZ4_RING,
-            )
-        } else if capabilities & caps::BROTLI != 0 {
-            let state = BrotliState::new(
-                StandardAlloc::default(),
-                StandardAlloc::default(),
-                StandardAlloc::default(),
-            );
-            (Engine::Brotli(Box::new(state)), SMALL_OUTPUT)
-        } else if capabilities & caps::GZIP != 0 {
-            (
+            ),
+            Algorithm::Brotli => {
+                let state = BrotliState::new(
+                    StandardAlloc::default(),
+                    StandardAlloc::default(),
+                    StandardAlloc::default(),
+                );
+                (Engine::Brotli(Box::new(state)), SMALL_OUTPUT)
+            }
+            Algorithm::Gzip => (
                 Engine::Gzip(Box::new(Decompress::new_gzip(15))),
                 SMALL_OUTPUT,
-            )
-        } else {
-            return None;
+            ),
         };
         Some(Decompressor {
             engine,
@@ -302,14 +279,10 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+    use crate::caps;
 
-    /// `stream_compress_encode_signature()`.
     fn frame(payload: &[u8]) -> Vec<u8> {
-        let len = payload.len() as u32;
-        let signature = (((len & 0x7f) | 0x80 | (((len & (0x7f << 7)) << 1) | 0x8000)) << 8)
-            | 0xfa
-            | ((b'\n' as u32) << 24);
-        let mut out = signature.to_le_bytes().to_vec();
+        let mut out = crate::compression::encode_signature(payload.len()).unwrap().to_vec();
         out.extend_from_slice(payload);
         out
     }

@@ -17,6 +17,7 @@ use netdata_agent_log::{Priority, Source, errno_of, nd_log, netdata_log_error};
 use netdata_agent_text::c::{c_str, eq_ignore_case, is_space};
 use netdata_agent_text::duration::{duration_parse, duration_parse_seconds, duration_to_string};
 use netdata_agent_text::parse::{str2ndd, strtoll0, uuid_parse_flexi};
+use netdata_agent_text::print::print_fixed;
 use netdata_agent_text::size::{size_parse, size_to_string};
 
 pub const SECTION_GLOBAL: &str = "global";
@@ -284,23 +285,10 @@ fn reformat_size_mb(value: &[u8]) -> Option<Vec<u8>> {
 
 /// `snprintf("%0.5f")`, falling back to `"%0.19e"` when that does not fit the 100-byte buffer.
 fn double_text(value: f64) -> Vec<u8> {
-    if value.is_nan() {
-        return if value.is_sign_negative() {
-            b"-nan".to_vec()
-        } else {
-            b"nan".to_vec()
-        };
-    }
-    if value.is_infinite() {
-        return if value < 0.0 {
-            b"-inf".to_vec()
-        } else {
-            b"inf".to_vec()
-        };
-    }
-    let fixed = format!("{value:.5}");
+    let mut fixed = Vec::new();
+    print_fixed(&mut fixed, value, 5);
     if fixed.len() < 100 {
-        return fixed.into_bytes();
+        return fixed;
     }
     // C writes the exponent with a sign and at least two digits.
     let sci = format!("{value:.19e}");
