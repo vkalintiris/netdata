@@ -18,6 +18,7 @@ use netdata_agent_text::sanitize::{rrd_string_sanitize, rrdset_strncpyz_name};
 
 use crate::contexts::{self, ChartLink, Contexts, DimLink};
 use crate::host::meta_flags;
+use crate::index::Index;
 use crate::labels::{FLAG_DONT_DELETE, Labels, SRC_AUTO};
 use crate::mode::{DbMode, align_entries_to_pagesize};
 use crate::pulse;
@@ -274,16 +275,10 @@ pub struct Chart {
     labels_saved_version: AtomicU32,
     meta: RwLock<ChartMeta>,
     collection: Mutex<ChartCollection>,
-    dims: RwLock<DimIndex>,
+    dims: RwLock<Index<Dim>>,
     receiver: Mutex<ReceiverState>,
     /// Chart variables (`VARIABLE CHART`), used by health.
     variables: Mutex<HashMap<String, f64>>,
-}
-
-#[derive(Debug, Default)]
-struct DimIndex {
-    ordered: Vec<Arc<Dim>>,
-    by_id: HashMap<String, usize>,
 }
 
 impl Chart {
@@ -530,7 +525,7 @@ impl Chart {
         self.dims
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .ordered
+            .items()
             .len()
     }
 
@@ -566,13 +561,12 @@ impl Chart {
         self.dims
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .ordered
-            .clone()
+            .items()
+            .to_vec()
     }
 
     pub fn dim(&self, id: &str) -> Option<Arc<Dim>> {
-        let dims = self.dims.read().unwrap_or_else(PoisonError::into_inner);
-        dims.by_id.get(id).map(|&i| Arc::clone(&dims.ordered[i]))
+        self.dims.read().unwrap_or_else(PoisonError::into_inner).get(id)
     }
 
     /// `rrdset_set_update_every_s()`: an invalid value is ignored; a change reaches every dimension's storage on every
@@ -607,8 +601,7 @@ impl Chart {
         // read before the dimensions lock: a new dimension looks its UUID up in this context
         let context = self.meta().context;
         let mut index = self.dims.write().unwrap_or_else(PoisonError::into_inner);
-        if let Some(&i) = index.by_id.get(id) {
-            let dim = Arc::clone(&index.ordered[i]);
+        if let Some(dim) = index.get(id) {
             drop(index);
             self.dim_isnot_obsolete(&dim);
             // rrddim_conflict_callback(): rename, algorithm, multiplier, divisor, each reported as it changes.
@@ -750,15 +743,13 @@ impl Chart {
             self.storage.pulse().rrd_memory.add(ring.memsize());
         }
         // C compares with the first other dimension only (the loop breaks after it).
-        let heterogeneous = index.ordered.first().is_some_and(|td| {
+        let heterogeneous = index.items().first().is_some_and(|td| {
             let t = td.meta();
             t.algorithm != algorithm
                 || i64::from(t.multiplier).abs() != i64::from(multiplier).abs()
                 || i64::from(t.divisor).abs() != i64::from(divisor).abs()
         });
-        let position = index.ordered.len();
-        index.by_id.insert(id.to_string(), position);
-        index.ordered.push(Arc::clone(&dim));
+        index.insert(id, Arc::clone(&dim));
         drop(index);
         self.update_meta(|m| {
             m.flags |= flags::SYNC_CLOCK;
@@ -1176,11 +1167,11 @@ pub struct Charts {
     host_guid: String,
 }
 
+/// A host's charts by id, and their names (`rrdset_index_name`) with the id each names.
 #[derive(Debug, Default)]
 struct ChartIndex {
-    ordered: Vec<Arc<Chart>>,
-    by_id: HashMap<String, usize>,
-    by_name: HashMap<String, usize>,
+    charts: Index<Chart>,
+    by_name: HashMap<String, String>,
 }
 
 impl ChartIndex {
@@ -1230,24 +1221,21 @@ impl Charts {
     }
 
     pub fn find(&self, id: &str) -> Option<Arc<Chart>> {
-        let index = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        index.by_id.get(id).map(|&i| Arc::clone(&index.ordered[i]))
+        self.inner.read().unwrap_or_else(PoisonError::into_inner).charts.get(id)
     }
 
     pub fn find_by_name(&self, name: &str) -> Option<Arc<Chart>> {
         let index = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        index
-            .by_name
-            .get(name)
-            .map(|&i| Arc::clone(&index.ordered[i]))
+        index.by_name.get(name).and_then(|id| index.charts.get(id))
     }
 
     pub fn all(&self) -> Vec<Arc<Chart>> {
         self.inner
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .ordered
-            .clone()
+            .charts
+            .items()
+            .to_vec()
     }
 
     /// `rrdset_create()`: a new chart, or the existing one un-obsoleted and updated by the conflict rules, then
@@ -1260,9 +1248,8 @@ impl Charts {
         let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         // rrdset_conflict_callback() reports whether anything changed, and whether the plugin or the module did
         // (RRDSET_REACT_PLUGIN_UPDATED, RRDSET_REACT_MODULE_UPDATED); the react step then runs.
-        let (chart, is_new, changed, plugin_or_module) = match index.by_id.get(&full_id) {
-            Some(&i) => {
-                let chart = Arc::clone(&index.ordered[i]);
+        let (chart, is_new, changed, plugin_or_module) = match index.charts.get(&full_id) {
+            Some(chart) => {
                 let (mut changed, plugin_or_module) = chart.update_meta(|m| {
                     let mut changed = false;
                     if m.priority != spec.priority {
@@ -1378,13 +1365,11 @@ impl Charts {
                         labels,
                     }),
                     collection: Mutex::new(ChartCollection::default()),
-                    dims: RwLock::new(DimIndex::default()),
+                    dims: RwLock::new(Index::default()),
                     receiver: Mutex::new(ReceiverState::default()),
                     variables: Mutex::new(HashMap::new()),
                 });
-                let position = index.ordered.len();
-                index.by_id.insert(full_id.clone(), position);
-                index.ordered.push(Arc::clone(&chart));
+                index.charts.insert(&full_id, Arc::clone(&chart));
                 (chart, true, false, false)
             }
         };
@@ -1412,8 +1397,7 @@ impl Charts {
             if let Some(old) = &current {
                 index.by_name.remove(old);
             }
-            let position = index.by_id[&full_id];
-            index.by_name.insert(new_name.clone(), position);
+            index.by_name.insert(new_name.clone(), full_id.clone());
             chart.update_meta(|m| m.name = Some(new_name));
             drop(index);
             chart.set_metadata_update();

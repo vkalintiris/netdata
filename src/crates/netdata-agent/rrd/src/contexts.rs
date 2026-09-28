@@ -18,6 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::chart::{Algorithm, Chart, ChartType, Dim, dim_flags, flags as chart_flags};
 use crate::host::Host;
+use crate::index::Index;
 use crate::labels::Labels;
 
 /// `RRD_FLAGS`.
@@ -242,54 +243,6 @@ impl Flags {
     }
 }
 
-/// A dictionary of this tree: creation order plus an id index.
-#[derive(Debug)]
-struct Index<T> {
-    ordered: Vec<Arc<T>>,
-    by_id: HashMap<String, usize>,
-}
-
-impl<T> Default for Index<T> {
-    fn default() -> Self {
-        Index {
-            ordered: Vec::new(),
-            by_id: HashMap::new(),
-        }
-    }
-}
-
-impl<T> Index<T> {
-    fn get(&self, id: &str) -> Option<Arc<T>> {
-        self.by_id.get(id).map(|&i| Arc::clone(&self.ordered[i]))
-    }
-
-    fn insert(&mut self, id: &str, item: Arc<T>) {
-        self.by_id.insert(id.to_string(), self.ordered.len());
-        self.ordered.push(item);
-    }
-
-    /// Keeps the items `keep` accepts, in order; the number removed.
-    fn retain(&mut self, mut keep: impl FnMut(&Arc<T>) -> bool) -> usize {
-        let mut ids: Vec<Option<String>> = vec![None; self.ordered.len()];
-        for (id, &i) in &self.by_id {
-            ids[i] = Some(id.clone());
-        }
-        self.by_id.clear();
-        let mut removed = 0;
-        for (item, id) in std::mem::take(&mut self.ordered).into_iter().zip(ids) {
-            if keep(&item) {
-                if let Some(id) = id {
-                    self.by_id.insert(id, self.ordered.len());
-                }
-                self.ordered.push(item);
-            } else {
-                removed += 1;
-            }
-        }
-        removed
-    }
-}
-
 // ---- the post-processing queue (rrdcontext-queues.c) ----
 
 /// `host->rrdctx.pp_queue`: contexts in the order they were queued; a queued context keeps its place.
@@ -417,7 +370,7 @@ impl Context {
     }
 
     pub fn instances(&self) -> Vec<Arc<Instance>> {
-        lock(&self.instances).ordered.clone()
+        lock(&self.instances).items().to_vec()
     }
 
     pub fn instance(&self, id: &str) -> Option<Arc<Instance>> {
@@ -682,7 +635,7 @@ impl Instance {
     }
 
     pub fn metrics(&self) -> Vec<Arc<Metric>> {
-        lock(&self.metrics).ordered.clone()
+        lock(&self.metrics).items().to_vec()
     }
 
     pub fn metric(&self, id: &str) -> Option<Arc<Metric>> {
@@ -1486,7 +1439,7 @@ impl Contexts {
     }
 
     pub fn all(&self) -> Vec<Arc<Context>> {
-        lock(&self.index).ordered.clone()
+        lock(&self.index).items().to_vec()
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Context>> {
@@ -1525,7 +1478,7 @@ impl Contexts {
             for ri in rc.instances() {
                 counts.instances.add(ri.flags.is_collected());
                 let metrics = lock(&ri.metrics);
-                for rm in &metrics.ordered {
+                for rm in metrics.items() {
                     counts.metrics.add(rm.flags.is_collected());
                 }
             }
@@ -1851,7 +1804,7 @@ fn instance_should_be_deleted(ri: &Instance) -> bool {
     if !ri.flags.check(flags::REQUIRED_FOR_DELETIONS)
         || ri.flags.check(flags::PREVENTING_DELETIONS)
         || ri.chart().is_some()
-        || !lock(&ri.metrics).ordered.is_empty()
+        || !lock(&ri.metrics).items().is_empty()
     {
         return false;
     }
@@ -1863,7 +1816,7 @@ fn instance_should_be_deleted(ri: &Instance) -> bool {
 fn context_should_be_deleted(rc: &Context) -> bool {
     if !rc.flags.check(flags::REQUIRED_FOR_DELETIONS)
         || rc.flags.check(flags::PREVENTING_DELETIONS)
-        || !lock(&rc.instances).ordered.is_empty()
+        || !lock(&rc.instances).items().is_empty()
     {
         return false;
     }

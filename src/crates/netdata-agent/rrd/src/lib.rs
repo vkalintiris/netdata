@@ -8,6 +8,7 @@ pub mod chart;
 pub mod collection;
 pub mod contexts;
 pub mod host;
+mod index;
 pub mod labels;
 pub mod metadata_stats;
 pub mod mode;

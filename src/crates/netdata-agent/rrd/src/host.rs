@@ -12,6 +12,7 @@ use netdata_agent_text::parse::uuid_parse_flexi;
 use crate::chart::{self, Charts};
 use crate::contexts::Metric;
 use crate::contexts::{self, Contexts};
+use crate::index::Index;
 use crate::labels::Labels;
 use crate::mode::DbMode;
 use crate::storage::{StorageLayout, TierHandle};
@@ -1125,7 +1126,7 @@ impl Host {
 #[derive(Debug)]
 pub struct Hosts {
     localhost: Arc<Host>,
-    inner: RwLock<Index>,
+    inner: RwLock<Index<Host>>,
     /// `dictionary_version(rrdhost_root_index)`: one per insert (and delete).
     version: std::sync::atomic::AtomicU32,
     /// `is_parent_label_cached_state` under its commit lock: whether localhost's `_is_parent` says a child is connected.
@@ -1145,13 +1146,6 @@ impl std::fmt::Debug for ContextLoader {
     }
 }
 
-#[derive(Debug, Default)]
-struct Index {
-    /// Creation order, localhost first.
-    ordered: Vec<Arc<Host>>,
-    by_guid: HashMap<String, Arc<Host>>,
-}
-
 impl Hosts {
     /// The index of hosts without the dbengine.
     pub fn new(localhost: Host) -> Self {
@@ -1161,10 +1155,9 @@ impl Hosts {
     /// The index of hosts with this storage; `localhost` was created with it.
     pub fn with_storage(localhost: Host, storage: Arc<StorageLayout>) -> Self {
         let localhost = localhost.into_shared();
-        let index = Index {
-            ordered: vec![Arc::clone(&localhost)],
-            by_guid: HashMap::from([(localhost.machine_guid.clone(), Arc::clone(&localhost))]),
-        };
+        // creation order, localhost first
+        let mut index = Index::default();
+        index.insert(&localhost.machine_guid, Arc::clone(&localhost));
         localhost.log_created();
         localhost.created_connected();
         Hosts {
@@ -1231,12 +1224,7 @@ impl Hosts {
 
     /// `rrdhost_find_by_guid()`: an exact match.
     pub fn find_by_guid(&self, guid: &str) -> Option<Arc<Host>> {
-        self.inner
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .by_guid
-            .get(guid)
-            .cloned()
+        self.inner.read().unwrap_or_else(PoisonError::into_inner).get(guid)
     }
 
     /// `rrdhost_find_by_hostname()`: `localhost` is always this agent; otherwise the first host in creation order
@@ -1249,22 +1237,14 @@ impl Hosts {
             return None;
         }
         let index = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        index
-            .ordered
-            .iter()
-            .find(|h| h.hostname() == hostname)
-            .cloned()
+        index.items().iter().find(|h| h.hostname() == hostname).cloned()
     }
 
     /// `rrdhost_find_by_node_id()`: the first host whose node ID equals the parsed UUID. Unclaimed hosts have a
     /// zero node ID, so the nil UUID finds the first of them.
     pub fn find_by_node_id(&self, node_id: &[u8; 16]) -> Option<Arc<Host>> {
         let index = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        index
-            .ordered
-            .iter()
-            .find(|h| h.node_id() == *node_id)
-            .cloned()
+        index.items().iter().find(|h| h.node_id() == *node_id).cloned()
     }
 
     /// Every host, localhost first, then in creation order.
@@ -1272,8 +1252,8 @@ impl Hosts {
         self.inner
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .ordered
-            .clone()
+            .items()
+            .to_vec()
     }
 
     /// `rrdhost_unlink___while_having_rrd_wrlock()`: the host leaves the index (never localhost). Holders of its
@@ -1283,8 +1263,7 @@ impl Hosts {
         if guid == self.localhost.machine_guid {
             return None;
         }
-        let host = index.by_guid.remove(guid)?;
-        index.ordered.retain(|h| !Arc::ptr_eq(h, &host));
+        let host = index.remove(guid)?;
         self.version
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         drop(index);
@@ -1303,16 +1282,15 @@ impl Hosts {
         before_record: impl FnOnce(&Host),
     ) -> Arc<Host> {
         let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        if let Some(host) = index.by_guid.get(guid) {
-            return Arc::clone(host);
+        if let Some(host) = index.get(guid) {
+            return host;
         }
         let host = Host::with_storage(guid, false, info, &self.storage).into_shared();
         host.archived.store(true, Ordering::Release);
         host.pending_context_load.store(true, Ordering::Release);
         host.orphan.store(true, Ordering::Release);
         before_record(&host);
-        index.ordered.push(Arc::clone(&host));
-        index.by_guid.insert(guid.to_string(), Arc::clone(&host));
+        index.insert(guid, Arc::clone(&host));
         self.version
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         drop(index);
@@ -1334,7 +1312,7 @@ impl Hosts {
         update: impl FnOnce(&Host),
     ) -> Arc<Host> {
         let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        let found = index.by_guid.get(guid).cloned();
+        let found = index.get(guid);
         let found = match found {
             Some(host) if host.is_archived() && host.info().db_mode != mode => {
                 if host.is_pending_context_load() {
@@ -1348,8 +1326,7 @@ impl Hosts {
                     host.info().db_mode.name(),
                     mode.name()
                 );
-                index.by_guid.remove(guid);
-                index.ordered.retain(|h| !Arc::ptr_eq(h, &host));
+                index.remove(guid);
                 self.version
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 host.log_archive_mode();
@@ -1366,8 +1343,7 @@ impl Hosts {
         }
         let host = Host::with_storage(guid, false, create(), &self.storage).into_shared();
         host.created_connected();
-        index.ordered.push(Arc::clone(&host));
-        index.by_guid.insert(guid.to_string(), Arc::clone(&host));
+        index.insert(guid, Arc::clone(&host));
         self.version
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         drop(index);
