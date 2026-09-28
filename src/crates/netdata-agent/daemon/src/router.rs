@@ -20,6 +20,7 @@ use crate::api;
 use netdata_agent_nrpc::access;
 
 use crate::acl;
+use crate::auth;
 use crate::contexts_v2;
 use crate::data;
 use crate::dbengine_stats;
@@ -36,6 +37,7 @@ pub const FILENAME_MAX: usize = 4096;
 pub type Host = Arc<netdata_agent_rrd::host::Host>;
 
 /// An API command (`struct web_api_command`).
+#[derive(Clone, Copy)]
 struct Command {
     name: &'static str,
     /// `HTTP_ACL` bits the client must hold.
@@ -45,10 +47,6 @@ struct Command {
     allow_subpaths: bool,
     callback: fn(&Route<'_>, &Host, &[u8]) -> Reply,
 }
-
-/// What an unauthenticated client may do (`web_client_ensure_proper_authorization()` without bearer protection);
-/// bearer tokens and Cloud users come with their subsystems.
-const ANONYMOUS_ACCESS: u32 = access::ANONYMOUS_DATA;
 
 const API_V1: &[Command] = &[
     Command {
@@ -143,6 +141,37 @@ const API_V2: &[Command] = &[
         allow_subpaths: false,
         callback: |route, _, query| contexts_v2::info(route, query),
     },
+    CLOUD_ONLY[0],
+    CLOUD_ONLY[1],
+    CLOUD_ONLY[2],
+];
+/// The commands of v2 and v3 only the Cloud reaches (`HTTP_ACL_ACLK`, which no local connection holds): a local
+/// request gets the ACL's 451. Their handlers arrive with the ACLK (M11).
+const CLOUD_ONLY: [Command; 3] = [
+    Command {
+        name: "rtc_offer",
+        acl: acl::bits::ACLK,
+        access: access::SIGNED_ID | access::SAME_SPACE,
+        allow_subpaths: false,
+        callback: |_, _, _| server::permission_denied_acl(),
+    },
+    Command {
+        name: "bearer_protection",
+        acl: acl::bits::ACLK,
+        access: access::SIGNED_ID
+            | access::SAME_SPACE
+            | access::VIEW_AGENT_CONFIG
+            | access::EDIT_AGENT_CONFIG,
+        allow_subpaths: false,
+        callback: |_, _, _| server::permission_denied_acl(),
+    },
+    Command {
+        name: "bearer_get_token",
+        acl: acl::bits::ACLK,
+        access: access::SIGNED_ID | access::SAME_SPACE,
+        allow_subpaths: false,
+        callback: |_, _, _| server::permission_denied_acl(),
+    },
 ];
 const API_V3: &[Command] = &[
     Command {
@@ -180,6 +209,16 @@ const API_V3: &[Command] = &[
         allow_subpaths: false,
         callback: |route, _, query| stream_info::reply(&route.shared.hosts, query, netdata_agent_rrd::clock::now_realtime_s()),
     },
+    Command {
+        name: "me",
+        acl: acl::bits::NOCHECK,
+        access: access::NONE,
+        allow_subpaths: false,
+        callback: |route, _, _| auth::me(&route.ctx.auth),
+    },
+    CLOUD_ONLY[0],
+    CLOUD_ONLY[1],
+    CLOUD_ONLY[2],
 ];
 
 /// The per-request routing state (`WEB_CLIENT_FLAG_PATH_*`).
@@ -333,8 +372,8 @@ impl<'a> Route<'a> {
 
     /// `web_client_api_request_vX()`.
     fn api_command(&self, host: &Host, endpoint: &[u8], table: &[Command]) -> Reply {
-        // web_client_ensure_proper_authorization(): no bearer protection, so anonymous data access
-        self.ctx.auth.authorize_anonymous();
+        // web_client_ensure_proper_authorization(): every client is unauthenticated until bearer tokens (M6 commit 3)
+        self.ctx.auth.authorize_anonymous(auth::bearer_protection());
         if endpoint.is_empty() {
             return Reply::text(status::BAD_REQUEST, "Which API command?");
         }
@@ -354,12 +393,20 @@ impl<'a> Route<'a> {
         if !acl::can(self.acl, command.acl) && command.acl & acl::bits::NOCHECK == 0 {
             return server::permission_denied_acl();
         }
-        if ANONYMOUS_ACCESS & command.access != command.access {
-            // web_client_permission_denied() for a client that is not signed in.
-            return Reply::text(
-                status::PRECOND_FAIL,
-                "You need to be authorized to access this resource",
-            );
+        let held = self.ctx.auth.access();
+        if held & command.access != command.access {
+            // web_client_permission_denied()
+            return if held & access::SIGNED_ID != 0 {
+                Reply::text(
+                    status::FORBIDDEN,
+                    "You don't have enough permissions to access this resource",
+                )
+            } else {
+                Reply::text(
+                    status::PRECOND_FAIL,
+                    "You need to be authorized to access this resource",
+                )
+            };
         }
         let query = self.query.strip_prefix(b"?").unwrap_or(self.query);
         (command.callback)(self, host, query)

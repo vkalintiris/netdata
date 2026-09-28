@@ -39,7 +39,6 @@ func init() {
 		"stream anomaly detection charts")
 	pending("web TLS", "web", "ssl key", "ssl certificate", "tls version", "tls ciphers",
 		"ssl skip certificate verification")
-	pending("bearer tokens", "web", "bearer token protection")
 	pending("registry", "registry", "enabled", "registry db file", "registry log file",
 		"registry save db every new entries", "registry expire idle persons", "registry domain", "registry to announce",
 		"registry hostname", "verify browser cookies support", "enable cookies SameSite and Secure", "max URL length",

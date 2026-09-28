@@ -4,7 +4,7 @@
 //! client cache that numbers the connections (`web_client_cache.c`). Brief: `knowledge/brief-logging-l3-l5.md` §1.
 
 use netdata_agent_rrd::pulse::Web;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
@@ -76,27 +76,29 @@ impl Drop for Slot {
 /// an API version handler. Shared with the request's log frames, which read the access when they write.
 #[derive(Debug, Default)]
 pub struct Auth {
-    anonymous: AtomicBool,
+    role: AtomicU8,
     access: AtomicU32,
 }
 
 impl Auth {
-    /// `web_client_ensure_proper_authorization()` without bearer protection: anonymous data access.
-    pub fn authorize_anonymous(&self) {
-        self.anonymous.store(true, Ordering::Relaxed);
-        self.access.store(access::ANONYMOUS_DATA, Ordering::Relaxed);
-    }
-
-    /// `http_id2user_role()` of the two roles the web server gives without bearer tokens.
-    fn role(&self) -> &'static str {
-        if self.anonymous.load(Ordering::Relaxed) {
-            "any"
+    /// `web_client_ensure_proper_authorization()` of an unauthenticated client: anonymous data access, or nothing
+    /// under bearer protection.
+    pub fn authorize_anonymous(&self, bearer_protection: bool) {
+        let (access, role) = if bearer_protection {
+            (access::NONE, access::role::NONE)
         } else {
-            "none"
-        }
+            (access::ANONYMOUS_DATA, access::role::ANY)
+        };
+        self.role.store(role, Ordering::Relaxed);
+        self.access.store(access, Ordering::Relaxed);
     }
 
-    fn access(&self) -> u32 {
+    /// `http_id2user_role()`.
+    pub fn role(&self) -> &'static str {
+        access::role::name(self.role.load(Ordering::Relaxed))
+    }
+
+    pub fn access(&self) -> u32 {
         self.access.load(Ordering::Relaxed)
     }
 }

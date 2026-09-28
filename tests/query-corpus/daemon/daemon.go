@@ -498,6 +498,15 @@ func (d *Daemon) launch() error {
 	var lastProbeErr error
 	for {
 		info, err := getJSONWithClient(client, d.BaseURL+"/api/v1/info")
+		if err != nil && strings.Contains(err.Error(), "HTTP 412") {
+			// [web] bearer token protection: /api/v3/info alone stays open to an anonymous client
+			if info3, err3 := getJSONWithClient(client, d.BaseURL+"/api/v3/info"); err3 == nil {
+				info, err = nil, infoV3HasDaemonIdentity(info3, d.Hostname)
+				if err == nil {
+					return nil
+				}
+			}
+		}
 		if err == nil {
 			if err := infoHasDaemonIdentity(info, d.Hostname); err == nil {
 				return nil
@@ -528,6 +537,22 @@ func (d *Daemon) launch() error {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// infoV3HasDaemonIdentity: /api/v3/info's first agent is this daemon, by hostname, with a machine GUID.
+func infoV3HasDaemonIdentity(doc map[string]any, hostname string) error {
+	agents, _ := doc["agents"].([]any)
+	if len(agents) == 0 {
+		return fmt.Errorf("daemon: /api/v3/info has no agents")
+	}
+	agent, _ := agents[0].(map[string]any)
+	if nm, _ := agent["nm"].(string); nm != hostname {
+		return fmt.Errorf("daemon: /api/v3/info's agent is %q, want %q", nm, hostname)
+	}
+	if mg, _ := agent["mg"].(string); mg == "" {
+		return fmt.Errorf("daemon: /api/v3/info's agent has no machine GUID")
+	}
+	return nil
 }
 
 func infoHasDaemonIdentity(doc map[string]any, hostname string) error {

@@ -7,6 +7,7 @@ mod access_log;
 mod acl;
 mod api;
 mod archived;
+mod auth;
 mod backfill;
 mod build;
 mod buildinfo;
@@ -757,6 +758,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let plugins_dir = conf.primary_plugins_dir();
     host_labels::reload(&mut conf.netdata, &mut conf.cloud, &plugins_dir, &hosts);
     startup.step("saved bearer tokens");
+    auth::init(&mut conf.netdata);
     startup.step("claiming info");
     // load_claiming_state(), for an agent that is not claimed
     meta_store::invalidate_node_instances(meta.as_deref(), hosts.localhost());

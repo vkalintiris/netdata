@@ -415,8 +415,7 @@ fn agent_info(w: &mut JsonWriter, shared: &Shared, now_s: i64, rfc3339: bool) {
     capas::to_json(w, b"capabilities");
     w.member_add_object("api");
     w.member_add_uint64("version", capas::HTTP_API_V2_VERSION);
-    // netdata_bearer_protection_is_enabled(): `[web] bearer token protection` is not read yet (M6)
-    w.member_add_boolean("bearer_protection", false);
+    w.member_add_boolean("bearer_protection", crate::auth::bearer_protection());
     w.object_close();
     db_size(w, shared, rfc3339);
 }

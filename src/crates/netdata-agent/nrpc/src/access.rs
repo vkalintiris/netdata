@@ -25,6 +25,55 @@ pub const MAP_OLD_MEMBER: u32 = SIGNED_ID | SAME_SPACE | ANONYMOUS_DATA | SENSIT
 /// `HTTP_ACCESS_MAP_OLD_ADMIN`.
 pub const MAP_OLD_ADMIN: u32 = MAP_OLD_MEMBER | VIEW_AGENT_CONFIG | EDIT_AGENT_CONFIG;
 
+/// `http_access_name[]`, in bit order.
+const NAMES: [(u32, &str); 11] = [
+    (SIGNED_ID, "signed-in"),
+    (SAME_SPACE, "same-space"),
+    (COMMERCIAL_SPACE, "commercial"),
+    (ANONYMOUS_DATA, "anonymous-data"),
+    (SENSITIVE_DATA, "sensitive-data"),
+    (VIEW_AGENT_CONFIG, "view-config"),
+    (EDIT_AGENT_CONFIG, "edit-config"),
+    (VIEW_NOTIFICATIONS_CONFIG, "view-notifications-config"),
+    (EDIT_NOTIFICATIONS_CONFIG, "edit-notifications-config"),
+    (VIEW_ALERTS_SILENCING, "view-alerts-silencing"),
+    (EDIT_ALERTS_SILENCING, "edit-alerts-silencing"),
+];
+
+/// `http_access2buffer_json_array()`'s names: each bit held, in bit order.
+pub fn names(access: u32) -> impl Iterator<Item = &'static str> {
+    NAMES
+        .into_iter()
+        .filter(move |(bit, _)| access & bit != 0)
+        .map(|(_, name)| name)
+}
+
+/// `HTTP_USER_ROLE`.
+pub mod role {
+    pub const NONE: u8 = 0;
+    pub const ADMIN: u8 = 1;
+    pub const MANAGER: u8 = 2;
+    pub const TROUBLESHOOTER: u8 = 3;
+    pub const OBSERVER: u8 = 4;
+    pub const MEMBER: u8 = 5;
+    pub const BILLING: u8 = 6;
+    pub const ANY: u8 = 7;
+
+    /// `http_id2user_role()`: the first name of the role in C's table.
+    pub fn name(role: u8) -> &'static str {
+        match role {
+            ADMIN => "admin",
+            MANAGER => "manager",
+            TROUBLESHOOTER => "troubleshooter",
+            OBSERVER => "observer",
+            MEMBER => "member",
+            BILLING => "billing",
+            ANY => "any",
+            _ => "none",
+        }
+    }
+}
+
 /// `http_access_from_hex_mapping_old_roles()`: the old role names, else hex bits.
 pub fn from_hex_mapping_old_roles(s: &[u8]) -> u32 {
     match s {
@@ -40,6 +89,18 @@ pub fn from_hex_mapping_old_roles(s: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_in_bit_order() {
+        assert_eq!(names(NONE).count(), 0);
+        assert_eq!(names(ANONYMOUS_DATA).collect::<Vec<_>>(), ["anonymous-data"]);
+        assert_eq!(
+            names(EDIT_ALERTS_SILENCING | SIGNED_ID | SENSITIVE_DATA).collect::<Vec<_>>(),
+            ["signed-in", "sensitive-data", "edit-alerts-silencing"]
+        );
+        assert_eq!(names(ALL).count(), 11);
+        assert_eq!((role::name(role::ANY), role::name(role::MEMBER), role::name(9)), ("any", "member", "none"));
+    }
 
     #[test]
     fn roles_and_hex() {
