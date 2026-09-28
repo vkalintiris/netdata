@@ -215,7 +215,8 @@ fn scenarios(spans: &[OracleSpan], grid: &Grid) -> Vec<Scenario> {
 }
 
 /// The W3 selections judged: errors, the slow bands, the middle third of the
-/// window, durations at least the scope's p95, and errors or an unset status.
+/// window, durations at least the scope's p95, errors or an unset status, and
+/// a value chip mixed with a chip for the rows without the field.
 fn selections(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec<(&'static str, Selection)> {
     let mut out = vec![
         (
@@ -266,8 +267,20 @@ fn selections(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec<(&'static
             ..Selection::default()
         },
     ));
+    out.push((
+        "E6 catalog tags or none",
+        Selection {
+            terms: Scope::default()
+                .with(TAGS_FIELD, &["catalog"])
+                .with_absent(TAGS_FIELD),
+            ..Selection::default()
+        },
+    ));
     out
 }
+
+/// A multi-valued field the corpus sets on some spans only.
+const TAGS_FIELD: &str = "attributes.app.tags[]";
 
 /// A scope's chips as the wire's filter: `null` for the rows without a field.
 fn chips_json(scope: &Scope) -> Value {
@@ -2033,17 +2046,18 @@ mod tests {
             ]
         );
         assert_eq!(
-            names[4..9],
+            names[4..10],
             [
                 "F1 entry spans × E1 errors",
                 "F1 entry spans × E2 slow bands",
                 "F1 entry spans × E3 middle third",
                 "F1 entry spans × E4 at least the p95",
                 "F1 entry spans × E5 errors or unset",
+                "F1 entry spans × E6 catalog tags or none",
             ]
         );
-        assert!(names[9].starts_with("F5 "), "{names:?}");
-        assert_eq!(names[10..], ["F6 entry spans with an unset status"]);
+        assert!(names[10].starts_with("F5 "), "{names:?}");
+        assert_eq!(names[11..], ["F6 entry spans with an unset status"]);
         let selections: Vec<&Value> = plan
             .requests
             .iter()
@@ -2058,6 +2072,11 @@ mod tests {
             selections
                 .iter()
                 .any(|s| s["filter"]["status_code"] == json!(["error", "unset"]))
+        );
+        assert!(
+            selections
+                .iter()
+                .any(|s| s["filter"][TAGS_FIELD] == json!(["catalog", null]))
         );
         assert!(
             plan.requests

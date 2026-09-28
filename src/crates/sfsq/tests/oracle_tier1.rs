@@ -882,6 +882,9 @@ fn explore_absent_chips_match_the_calculator() {
     }
 }
 
+/// A multi-valued field some spans lack.
+const TAGS_FIELD: &str = "attributes.app.tags[]";
+
 /// Columns every rows comparison reads: a plain value, an array's values and a
 /// field no row has.
 const ROW_COLUMNS: [&str; 3] = [
@@ -2530,6 +2533,22 @@ fn selections(
             ..calc::Selection::default()
         },
     ));
+    out.push((
+        "E6 catalog tags or none",
+        ExploreSelection {
+            filter: sfst::Filter::new()
+                .select(TAGS_FIELD, "catalog")
+                .select_absent(TAGS_FIELD),
+            duration: None,
+            time_ns: None,
+        },
+        calc::Selection {
+            terms: Scope::default()
+                .with(TAGS_FIELD, &["catalog"])
+                .with_absent(TAGS_FIELD),
+            ..calc::Selection::default()
+        },
+    ));
     let (filter, terms) = chips(&[(model::STATUS_FIELD, &["error"])]);
     out.push((
         "E1+E3",
@@ -2548,7 +2567,8 @@ fn selections(
 }
 
 /// ORC-CMP (QRY-07, QRY-15, QRY-04): for every way of serving the live WAL,
-/// four scopes and five selections, the compared facets equal the
+/// four scopes and every selection of [`selections`] (one mixes a value chip
+/// with a chip for the rows without the field), the compared facets equal the
 /// calculator's exactly — totals, per-value selection and baseline rows,
 /// eligibility, exact differences, ranks and the order they give — and the
 /// rows follow the selection.
@@ -2562,6 +2582,7 @@ fn explore_comparison_matches_the_calculator() {
         model::STATUS_FIELD,
         model::DURATION_BAND_FIELD,
         model::ROLE_FIELD,
+        TAGS_FIELD,
     ]
     .iter()
     .map(|field| field.to_string())
