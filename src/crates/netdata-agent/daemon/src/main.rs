@@ -340,8 +340,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
 
     // signals_block_all_except_deadly(): every thread started from here on inherits the mask. The main thread waits
     // for the signals C handles; any other signal stays pending forever, so it is ignored.
-    let mut blocked = SigSet::all();
-    for deadly in [
+    const DEADLY: [Signal; 8] = [
         Signal::SIGBUS,
         Signal::SIGSEGV,
         Signal::SIGFPE,
@@ -350,7 +349,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         Signal::SIGSYS,
         Signal::SIGXCPU,
         Signal::SIGXFSZ,
-    ] {
+    ];
+    let mut blocked = SigSet::all();
+    for deadly in DEADLY {
         blocked.remove(deadly);
     }
     if blocked.thread_block().is_err() {
@@ -359,6 +360,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             Priority::Err,
             "SIGNALS: cannot apply the default mask for signals"
         );
+    }
+    // nd_initialize_signals(): the deadly signals recorded in the status file (D91)
+    if let Err(errno) = netdata_agent_sys::install_deadly(&DEADLY, status_file::deadly_signal) {
+        nd_log!(Source::Daemon, Priority::Err, errno = errno as i32;
+            "SIGNALS: cannot install the deadly signal handler");
     }
     let mut handled = SigSet::empty();
     for signal in [

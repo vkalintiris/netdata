@@ -339,24 +339,121 @@ pub fn out_of_memory() {
 }
 
 /// `copy_and_clean_thread_name_if_empty()`: the thread's tag (NO_NAME without one) unless a name is recorded, its
-/// `[N]` index cut.
-fn set_thread_if_empty(s: &mut StatusFile, tag: &str) {
+/// `[N]` index cut; allocates nothing (a signal handler calls it).
+fn set_thread_if_empty(s: &mut StatusFile, tag: &[u8]) {
     if !s.fatal.thread.is_empty() && s.fatal.thread.as_bytes() != b"NO_NAME" {
         return;
     }
-    s.fatal.thread.set(if tag.is_empty() { "NO_NAME" } else { tag });
-    let name = s.fatal.thread.as_bytes();
+    s.fatal.thread.set(if tag.is_empty() { &b"NO_NAME"[..] } else { tag });
+    let name = s.fatal.thread;
+    let name = name.as_bytes();
     if let Some(at) = name.iter().position(|&c| c == b'[')
         && name.get(at + 1).is_some_and(u8::is_ascii_digit)
         && name.get(at + 2).is_some_and(|c| c.is_ascii_digit() || *c == b']')
     {
-        let cut = name[..at].to_vec();
-        s.fatal.thread.set(cut);
+        s.fatal.thread.set(&name[..at]);
     }
 }
 
-/// `daemon_status_file_register_fatal()`, the log's fatal hook: once, the fatal reason and the record's fields (its code
-/// location is the Rust agent's own, D90), then a save as it is, with C's text for a missing stack trace backend.
+/// `nd_signal_handler()` for a deadly signal with `daemon_status_file_deadly_signal_received()` (D91.4): once, the
+/// signal's record over the last saved one, saved without allocating; then C's stderr line, and the end by the
+/// signal.
+pub fn deadly_signal(d: &netdata_agent_sys::Deadly) {
+    use nix::sys::signal::Signal;
+    static ONCE: AtomicBool = AtomicBool::new(false);
+    let Ok(signal) = Signal::try_from(d.signal) else { return };
+    let reason = match signal {
+        Signal::SIGBUS => exit_reason::SIGBUS,
+        Signal::SIGSEGV => exit_reason::SIGSEGV,
+        Signal::SIGFPE => exit_reason::SIGFPE,
+        Signal::SIGILL => exit_reason::SIGILL,
+        Signal::SIGABRT => exit_reason::SIGABRT,
+        Signal::SIGSYS => exit_reason::SIGSYS,
+        Signal::SIGXCPU => exit_reason::SIGXCPU,
+        Signal::SIGXFSZ => exit_reason::SIGXFSZ,
+        _ => 0,
+    };
+    let code = super::signal_code::create(d.signal, d.si_code);
+    let (tag, tag_len) = netdata_agent_log::thread_tag_async_safe();
+    let tag = &tag[..tag_len];
+    let tid = netdata_agent_log::tid();
+    if !ONCE.swap(true, Ordering::AcqRel) {
+        exit_reason::add(reason);
+        save_frozen(|ds| deadly_record(ds, reason, code, d.fault_address, tid as i32, tag));
+    }
+    // the stderr line, from the stack
+    let mut line = [0u8; 1024];
+    let mut len = 0;
+    let mut put = |bytes: &[u8]| {
+        let n = bytes.len().min(line.len() - 1 - len);
+        line[len..len + n].copy_from_slice(&bytes[..n]);
+        len += n;
+    };
+    put(b"SIGNAL HANDLER: received deadly signal: ");
+    put(signal.as_str().as_bytes());
+    put(b" (");
+    put(super::signal_code::text(code, &mut [0; 24]));
+    put(b") in thread ");
+    put(decimal(tid, &mut [0; 20]));
+    put(b" ");
+    put(tag);
+    put(b"!\n");
+    let _ = nix::unistd::write(std::io::stderr(), &line[..len]);
+    netdata_agent_sys::die_by(signal);
+}
+
+/// `print_uint64()` on the stack.
+fn decimal(mut value: u64, out: &mut [u8; 20]) -> &[u8] {
+    let mut at = out.len();
+    loop {
+        at -= 1;
+        out[at] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    &out[at..]
+}
+
+/// The record of a deadly signal over the last saved one, as `daemon_status_file_deadly_signal_received()` without a
+/// stack trace backend leaves it; allocates nothing.
+fn deadly_record(ds: &mut StatusFile, reason: u32, code: u64, fault_address: u64, tid: i32, tag: &[u8]) {
+    ds.exit_reason |= reason;
+    ds.fatal.sentry = false;
+    if code != 0 {
+        ds.fatal.signal_code = code;
+    }
+    if fault_address != 0 {
+        ds.fatal.fault_address = fault_address;
+    }
+    if ds.fatal.thread_id == 0 {
+        ds.fatal.thread_id = tid;
+    }
+    // workers_get_last_job_id(): the worker registry is not ported (D90.3)
+    set_thread_if_empty(ds, tag);
+    let function = ds.fatal.function.as_bytes();
+    if function.is_empty() || function.starts_with(b"startup(") || function.starts_with(b"shutdown(") {
+        // "thread:<thread>:<job>", the job shown while it is a job type's (<= WORKER_UTILIZATION_MAX_JOB_TYPES)
+        let mut text = [0u8; 128];
+        let mut len = 0;
+        let mut job = [0; 20];
+        let job = decimal(u64::from(ds.fatal.worker_job_id), &mut job);
+        for part in [&b"thread:"[..], ds.fatal.thread.as_bytes(), b":", job] {
+            let n = part.len().min(text.len() - len);
+            text[len..len + n].copy_from_slice(&part[..n]);
+            len += n;
+        }
+        ds.fatal.function.set(&text[..len]);
+    }
+    if stack_trace_is_empty(ds) {
+        ds.fatal.stack_trace.set(NO_BACKEND);
+    }
+}
+
+/// `daemon_status_file_register_fatal()`, the log's fatal hook: once, the fatal reason and the record's fields (its
+/// code location is the Rust agent's own, D90), then a save as it is, with C's text for a missing stack trace
+/// backend.
 pub fn register_fatal(r: &netdata_agent_log::FatalRecord) {
     static ONCE: AtomicBool = AtomicBool::new(false);
     if ONCE.swap(true, Ordering::AcqRel) {
@@ -376,7 +473,7 @@ fn fatal_record(s: &mut StatusFile, r: &netdata_agent_log::FatalRecord, tid: i32
     if s.fatal.thread_id == 0 {
         s.fatal.thread_id = tid;
     }
-    set_thread_if_empty(s, tag);
+    set_thread_if_empty(s, tag.as_bytes());
     if !r.filename.is_empty() {
         s.fatal.filename.set(&r.filename);
     }
@@ -796,9 +893,33 @@ mod tests {
         // no tag is NO_NAME; an index is cut only when it is one
         for (tag, want) in [("", "NO_NAME"), ("WEB[12]", "WEB"), ("STREAM[x]", "STREAM[x]"), ("A[1b]", "A[1b]")] {
             let mut s = StatusFile::default();
-            set_thread_if_empty(&mut s, tag);
+            set_thread_if_empty(&mut s, tag.as_bytes());
             assert_eq!(s.fatal.thread.as_bytes(), want.as_bytes(), "{tag}");
         }
+    }
+
+    /// C's deadly signal record over the last save: the signal, the address, the thread, `thread:<name>:<job>` in
+    /// place of an empty or step function, the no-backend text; nothing allocated.
+    #[test]
+    fn records_a_deadly_signal_as_c() {
+        let mut s = StatusFile::default();
+        s.fatal.function.set("startup(signals)");
+        let before = netdata_agent_sys::allocations();
+        deadly_record(&mut s, exit_reason::SIGSEGV, super::super::signal_code::create(11, 0), 0x3E8_0000_1234, 77, b"");
+        assert_eq!(netdata_agent_sys::allocations(), before);
+        let f = &s.fatal;
+        assert_eq!(s.exit_reason, exit_reason::SIGSEGV);
+        assert_eq!((f.fault_address, f.thread_id, f.sentry), (0x3E8_0000_1234, 77, false));
+        assert_eq!((f.thread.as_bytes(), f.function.as_bytes()), (&b"NO_NAME"[..], &b"thread:NO_NAME:0"[..]));
+        assert_eq!(f.stack_trace.as_bytes(), NO_BACKEND.as_bytes());
+        // a function of its own stays, as do an address and a code already recorded when these are 0
+        let mut s = StatusFile::default();
+        s.fatal.function.set("cmd_fatal_execute");
+        s.fatal.fault_address = 5;
+        deadly_record(&mut s, exit_reason::SIGABRT, 0, 0, 9, b"UV_WORKER[2]");
+        let f = &s.fatal;
+        assert_eq!((f.function.as_bytes(), f.thread.as_bytes()), (&b"cmd_fatal_execute"[..], &b"UV_WORKER"[..]));
+        assert_eq!((f.fault_address, f.signal_code), (5, 0));
     }
 
     /// A thread inside the status file does not wait for itself (D90.5).

@@ -18,10 +18,14 @@
 //! - `sqlite3_recover_init/run/finish()` (decision D59.2) use a connection borrowed for the whole call; recover copies
 //!   its string arguments at init and is freed by finish, both inside the call.
 //! - `Alloc` (decisions D87 F5, D91.1), the process's `GlobalAlloc`, hands every call to `System` unchanged.
+//! - `install_deadly()` and `die_by()` (decision D91.1) call `sigaction()`; the handler's trampoline reads the
+//!   `siginfo_t` the kernel passes it.
 
 mod alloc;
+mod deadly;
 
 pub use alloc::{Alloc, on_out_of_memory};
+pub use deadly::{Deadly, die_by, install_deadly};
 #[cfg(feature = "alloc-count")]
 pub use alloc::allocations;
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -48,6 +49,14 @@ var fatalDifferences = []Mask{
 	{"fatal.line", "each agent's source (D90.1)"},
 	{"fatal.stack_trace", "libbacktrace (D87 F3)"},
 	{"fatal.worker_job_id", "no worker registry (D90.3)"},
+	{"fatal.thread_id", "the thread's id"},
+}
+
+// deadlyDifferences are what a deadly signal's record says differently: C names the function from its stack trace
+// (libbacktrace, D87 F3; the Rust agent writes C's `thread:<name>:<job>`), and the stack trace itself.
+var deadlyDifferences = []Mask{
+	{"fatal.function", "C's from libbacktrace (D87 F3, D91.4)"},
+	{"fatal.stack_trace", "libbacktrace (D87 F3)"},
 	{"fatal.thread_id", "the thread's id"},
 }
 
@@ -279,6 +288,50 @@ func TestStatusFile(t *testing.T) {
 		compareStatusFiles(t, "killed-hard", p, false)
 	})
 
+	// deadly signals while running: C's record from the handler over the last save, death by the signal; SIGSEGV is a
+	// crash for the next start, SIGABRT not (it is not a deadly signal for the classification)
+	for _, c := range []struct {
+		name, reason, code, exit string
+		sig                      syscall.Signal
+	}{
+		{"sigsegv", `["signal-segmentation-fault"]`, `"SIGSEGV/SI_USER"`,
+			"Netdata was last crashed after receiving a deadly signal (deadly signal)", syscall.SIGSEGV},
+		{"sigabrt", `["signal-abort"]`, `"SIGABRT/SI_USER"`,
+			"Netdata was last crashed due to a fatal error (killed fatal)", syscall.SIGABRT},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, side := range p.Each() {
+				d := side.Daemon
+				if err := d.Restart(); err != nil {
+					t.Fatalf("parity: restart %s: %v", side.Role, err)
+				}
+				waitRunning(t, d)
+				if err := d.Signal(c.sig); err != nil {
+					t.Fatalf("parity: signal %s: %v", side.Role, err)
+				}
+				if code, err := d.WaitExit(60 * time.Second); code != -1 || err != nil {
+					t.Errorf("%s: exit %d (%v), want death by the signal", side.Role, code, err)
+				}
+			}
+			expectStatus(t, c.name, p, map[string]string{
+				"agent.status": `"running"`, "agent.exit_reason": c.reason, "fatal.signal_code": c.code,
+				"fatal.thread": `"NO_NAME"`,
+			}, "Netdata was last stopped gracefully (exit instructed)")
+			compareStatusFiles(t, c.name, p, false, deadlyDifferences...)
+			for _, side := range p.Each() {
+				if err := side.Daemon.Restart(); err != nil {
+					t.Fatalf("parity: restart %s: %v", side.Role, err)
+				}
+			}
+			for _, side := range p.Each() {
+				if got := lastExit(t, side.Daemon); got != c.exit {
+					t.Errorf("%s: %s: last exit %q, want %q", c.name, side.Role, got, c.exit)
+				}
+			}
+			stopBoth(t, p)
+		})
+	}
+
 	// a fatal error (netdatacli fatal-agent): its record, then a crash for the next start
 	t.Run("fatal-agent", func(t *testing.T) {
 		for _, side := range p.Each() {
@@ -302,7 +355,8 @@ func TestStatusFile(t *testing.T) {
 				t.Fatalf("parity: restart %s: %v", side.Role, err)
 			}
 		}
-		expectStatus(t, "after fatal-agent", p, map[string]string{"agent.crashes": "2", "agent.reliability": "-1"},
+		// the kill, the two deadly signals and this fatal error: four crashes
+		expectStatus(t, "after fatal-agent", p, map[string]string{"agent.crashes": "4", "agent.reliability": "-1"},
 			"Netdata was last stopped gracefully after it encountered a fatal error (fatal and exit)")
 		stopBoth(t, p)
 		compareStatusFiles(t, "after fatal-agent", p, false)

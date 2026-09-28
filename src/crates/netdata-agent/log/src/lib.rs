@@ -222,6 +222,7 @@ pub fn forked() {
 
 /// `nd_thread_starting_point()`'s record, from the new thread once its name is set.
 pub fn thread_created() {
+    cache_tag(&thread_tag());
     nd_log!(
         Source::Daemon,
         Priority::Debug,
@@ -238,6 +239,27 @@ thread_local! {
 /// `nd_thread_tag_set()`: the thread's records carry this tag from now on (its name stays as it was spawned).
 pub fn thread_tag_set(tag: &str) {
     THREAD_TAG.with(|t| *t.borrow_mut() = Some(tag.to_string()));
+    cache_tag(tag);
+}
+
+thread_local! {
+    /// The thread's tag where a signal handler can read it (`ND_THREAD_TAG_MAX` bytes and its length); const and
+    /// without a destructor, so reading it neither allocates nor fails.
+    static TAG_CACHE: Cell<([u8; 15], usize)> = const { Cell::new(([0; 15], 0)) };
+}
+
+fn cache_tag(tag: &str) {
+    let bytes = tag.as_bytes();
+    let len = bytes.len().min(15);
+    let mut cached = [0; 15];
+    cached[..len].copy_from_slice(&bytes[..len]);
+    TAG_CACHE.with(|c| c.set((cached, len)));
+}
+
+/// `nd_thread_tag_async_safe()`: the tag set when the thread started or was tagged, without allocating; empty for
+/// the main thread.
+pub fn thread_tag_async_safe() -> ([u8; 15], usize) {
+    TAG_CACHE.with(Cell::get)
 }
 
 /// `nd_thread_tag()`: the tag this thread's records carry: its `thread_tag_set()` tag, else its name; none for the

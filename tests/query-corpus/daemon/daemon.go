@@ -632,6 +632,14 @@ func (d *Daemon) Stop() error {
 	}
 }
 
+// Signal sends the daemon a signal; WaitExit collects it if the signal ends it.
+func (d *Daemon) Signal(sig os.Signal) error {
+	if d.process == nil {
+		return errors.New("daemon: not running")
+	}
+	return d.process.Signal(sig)
+}
+
 // Kill ends the daemon with SIGKILL, as the OOM killer or a crash would, and reaps it.
 func (d *Daemon) Kill() error {
 	if d.process == nil {
