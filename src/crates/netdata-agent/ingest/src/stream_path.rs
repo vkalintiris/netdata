@@ -58,18 +58,18 @@ const TIME_T_MAX: u64 = i64::MAX as u64;
 fn parse_single_path(obj: &Map<String, Value>, error: &mut String) -> Option<PathEntry> {
     use jsonc::Presence::{Optional, Required};
     let mut p = PathEntry::default();
-    jsonc::uint64(obj, "version", Optional, error)?;
-    let hostname = jsonc::txt(obj, "hostname", Required, error)?;
-    p.host_id = jsonc::uuid(obj, "host_id", Required, error)?;
-    p.node_id = jsonc::uuid(obj, "node_id", Required, error)?;
-    p.claim_id = jsonc::uuid(obj, "claim_id", Required, error)?;
-    let hops = jsonc::int64(obj, "hops", Required, error)?;
-    let since = jsonc::uint64(obj, "since", Required, error)?;
-    let first_time_t = jsonc::uint64(obj, "first_time_t", Required, error)?;
-    let start_time_ms = jsonc::int64(obj, "start_time", Required, error)?;
-    let shutdown_time_ms = jsonc::int64(obj, "shutdown_time", Required, error)?;
-    p.flags = jsonc::bitmap(obj, "flags", flag_parse_one, Optional, error)? as u8;
-    p.capabilities = jsonc::bitmap(obj, "capabilities", caps::parse_one, Optional, error)?;
+    jsonc::uint64(obj, "", "version", Optional, error)?;
+    let hostname = jsonc::txt(obj, "", "hostname", Required, error)?;
+    p.host_id = jsonc::uuid(obj, "", "host_id", Required, error)?;
+    p.node_id = jsonc::uuid(obj, "", "node_id", Required, error)?;
+    p.claim_id = jsonc::uuid(obj, "", "claim_id", Required, error)?;
+    let hops = jsonc::int64(obj, "", "hops", Required, error)?;
+    let since = jsonc::uint64(obj, "", "since", Required, error)?;
+    let first_time_t = jsonc::uint64(obj, "", "first_time_t", Required, error)?;
+    let start_time_ms = jsonc::int64(obj, "", "start_time", Required, error)?;
+    let shutdown_time_ms = jsonc::int64(obj, "", "shutdown_time", Required, error)?;
+    p.flags = jsonc::bitmap(obj, "", "flags", flag_parse_one, Optional, error)? as u8;
+    p.capabilities = jsonc::bitmap(obj, "", "capabilities", caps::parse_one, Optional, error)?;
 
     let Some(hostname) = hostname else {
         error.push_str("hostname cannot be empty");

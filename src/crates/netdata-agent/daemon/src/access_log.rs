@@ -4,7 +4,7 @@
 //! client cache that numbers the connections (`web_client_cache.c`). Brief: `knowledge/brief-logging-l3-l5.md` §1.
 
 use netdata_agent_rrd::pulse::Web;
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
@@ -76,14 +76,21 @@ impl Drop for Slot {
 /// an API version handler. Shared with the request's log frames, which read the access when they write.
 #[derive(Debug, Default)]
 pub struct Auth {
+    /// `USER_AUTH_METHOD`: none, or bearer once a token authenticated the request.
+    bearer: AtomicBool,
     role: AtomicU8,
     access: AtomicU32,
+    /// `client_name` and `cloud_account_id`: a token's.
+    identity: Mutex<(String, [u8; 16])>,
 }
 
 impl Auth {
-    /// `web_client_ensure_proper_authorization()` of an unauthenticated client: anonymous data access, or nothing
-    /// under bearer protection.
+    /// `web_client_ensure_proper_authorization()`: a client no token authenticated gets anonymous data access, or
+    /// nothing under bearer protection.
     pub fn authorize_anonymous(&self, bearer_protection: bool) {
+        if self.is_bearer() {
+            return;
+        }
         let (access, role) = if bearer_protection {
             (access::NONE, access::role::NONE)
         } else {
@@ -91,6 +98,29 @@ impl Auth {
         };
         self.role.store(role, Ordering::Relaxed);
         self.access.store(access, Ordering::Relaxed);
+    }
+
+    /// `web_client_set_permissions(access, role, USER_AUTH_METHOD_BEARER)` with the token's name and account.
+    pub fn authorize_bearer(&self, access: u32, role: u8, client_name: &str, account: [u8; 16]) {
+        *self.identity.lock().unwrap_or_else(PoisonError::into_inner) = (client_name.to_string(), account);
+        self.access.store(access, Ordering::Relaxed);
+        self.role.store(role, Ordering::Relaxed);
+        self.bearer.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_bearer(&self) -> bool {
+        self.bearer.load(Ordering::Relaxed)
+    }
+
+    /// The client name and the Cloud account.
+    pub fn identity(&self) -> (String, [u8; 16]) {
+        self.identity.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// The account and name a token just set, for the records the request's outer frame logs from then on (C's
+    /// pointers into `w->user_auth`).
+    pub fn identity_frame(&self) -> FrameGuard {
+        push(identity_fields(self).into())
     }
 
     /// `http_id2user_role()`.
@@ -101,6 +131,13 @@ impl Auth {
     pub fn access(&self) -> u32 {
         self.access.load(Ordering::Relaxed)
     }
+}
+
+/// `NDF_ACCOUNT_ID` and `NDF_USER_NAME`: the caller's account and name, each left out while zero or empty. C reads
+/// them through pointers when it logs; they change only when a token authenticates (see [`Auth::identity_frame`]).
+fn identity_fields(auth: &Auth) -> [(Field, Value); 2] {
+    let (name, account) = auth.identity();
+    [(Field::AccountId, Value::Uuid(account)), (Field::UserName, Value::Txt(name))]
 }
 
 /// `log_cb_http_access_to_hex()`: always prints, `0x0` included.
@@ -285,12 +322,20 @@ impl RequestContext {
                 Field::RequestMethod,
                 Value::txt(mode_name(self.previous_mode)),
             ),
-            (Field::Request, Value::txt(self.url.as_str())),
             (Field::ConnectionId, Value::U64(self.conn)),
             (Field::TransactionId, Value::Uuid(self.transaction)),
             (Field::UserRole, Value::txt(self.auth.role())),
             (Field::UserAccess, access_value(&self.auth)),
-        ])
+        ]
+        .into_iter()
+        .chain(identity_fields(&self.auth))
+        .collect())
+    }
+
+    /// The outer frame's `NDF_REQUEST`, a pointer to `w->url_as_received`, which C fills once the headers are parsed:
+    /// pushed after the records of the validation.
+    pub fn request_frame(&self) -> FrameGuard {
+        push(vec![(Field::Request, Value::txt(self.url.as_str()))])
     }
 
     /// The frame of `web_client_api_request()`: pushed after validation, so with the real mode and forwarded host.
@@ -313,7 +358,10 @@ impl RequestContext {
             (Field::TransactionId, Value::Uuid(self.transaction)),
             (Field::UserRole, Value::txt(self.auth.role())),
             (Field::UserAccess, access_value(&self.auth)),
-        ])
+        ]
+        .into_iter()
+        .chain(identity_fields(&self.auth))
+        .collect())
     }
 }
 
@@ -391,7 +439,10 @@ impl Completed {
             ),
             (Field::UserRole, Value::txt(self.auth.role())),
             (Field::UserAccess, access_value(&self.auth)),
-        ]);
+        ]
+        .into_iter()
+        .chain(identity_fields(&self.auth))
+        .collect());
         netdata_agent_log::logger(
             Source::Access,
             priority,

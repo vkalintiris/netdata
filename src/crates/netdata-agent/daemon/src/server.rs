@@ -548,6 +548,7 @@ impl WebWorker {
         let stream = Stream::from(client.stream);
         {
             let _frame = ctx.outer_frame();
+            let _request = ctx.request_frame();
             match pre {
                 PreAdmission::Refuse(message, refusal) => {
                     self.receivers.refuse(stream, message, &refusal)
@@ -789,6 +790,14 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
             String::from_utf8_lossy(&hostname)
         );
     }
+    // web_client_bearer_token_auth(), for each token this pass's headers presented, in order
+    let mut _identity = Vec::new();
+    for token in std::mem::take(&mut client.request.headers.bearer_tokens) {
+        if crate::bearer::authenticate(&client.auth, &token) {
+            _identity.push(client.auth.identity_frame());
+        }
+    }
+    let _request = ctx.request_frame();
     let completed = |client: &Client, code: u16, sent: usize, size: usize| Completed {
         url: logged_url(&client.request.url_as_received, mode),
         mode,

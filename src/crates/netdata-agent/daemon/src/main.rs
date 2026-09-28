@@ -9,6 +9,7 @@ mod api;
 mod archived;
 mod auth;
 mod backfill;
+mod bearer;
 mod build;
 mod buildinfo;
 mod capas;
@@ -759,6 +760,10 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     host_labels::reload(&mut conf.netdata, &mut conf.cloud, &plugins_dir, &hosts);
     startup.step("saved bearer tokens");
     auth::init(&mut conf.netdata);
+    bearer::init(
+        &conf.dirs.varlib,
+        meta_store::host_id(hosts.localhost()).unwrap_or_default(),
+    );
     startup.step("claiming info");
     // load_claiming_state(), for an agent that is not claimed
     meta_store::invalidate_node_instances(meta.as_deref(), hosts.localhost());

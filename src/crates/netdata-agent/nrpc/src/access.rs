@@ -48,6 +48,14 @@ pub fn names(access: u32) -> impl Iterator<Item = &'static str> {
         .map(|(_, name)| name)
 }
 
+/// `http_access2id_one()`: the bit of an access name, none for another text.
+pub fn id_one(name: &[u8]) -> u32 {
+    NAMES
+        .iter()
+        .find(|(_, n)| n.as_bytes() == name)
+        .map_or(NONE, |(bit, _)| *bit)
+}
+
 /// `HTTP_USER_ROLE`.
 pub mod role {
     pub const NONE: u8 = 0;
@@ -71,6 +79,22 @@ pub mod role {
             ANY => "any",
             _ => "none",
         }
+    }
+
+    /// `http_user_role2id()` without its record: an empty text is member, the aliases members, admins and all are
+    /// accepted; `None` for another text (C logs it and takes none).
+    pub fn from_name(name: &[u8]) -> Option<u8> {
+        Some(match name {
+            b"" | b"member" | b"members" => MEMBER,
+            b"none" => NONE,
+            b"admin" | b"admins" => ADMIN,
+            b"manager" => MANAGER,
+            b"troubleshooter" => TROUBLESHOOTER,
+            b"observer" => OBSERVER,
+            b"billing" => BILLING,
+            b"any" | b"all" => ANY,
+            _ => return None,
+        })
     }
 }
 
@@ -100,6 +124,11 @@ mod tests {
         );
         assert_eq!(names(ALL).count(), 11);
         assert_eq!((role::name(role::ANY), role::name(role::MEMBER), role::name(9)), ("any", "member", "none"));
+        assert_eq!((id_one(b"view-config"), id_one(b"none"), id_one(b"View-config")), (VIEW_AGENT_CONFIG, NONE, NONE));
+        assert_eq!(
+            [b"".as_slice(), b"admins", b"all", b"observer", b"nope"].map(role::from_name),
+            [Some(role::MEMBER), Some(role::ADMIN), Some(role::ANY), Some(role::OBSERVER), None]
+        );
     }
 
     #[test]

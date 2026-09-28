@@ -18,13 +18,13 @@ const OPT: Presence = Presence::Optional;
 /// `JSONC_PARSE_TXT2CHAR_OR_ERROR_AND_RETURN`: the text (json-c's for numbers and booleans), empty for null, for
 /// another type or when missing.
 fn txt<const N: usize>(o: &Obj, member: &str, dst: &mut FixedStr<N>, e: &mut String) -> Option<()> {
-    let text = jsonc::txt(o, member, OPT, e)?;
+    let text = jsonc::txt(o, "", member, OPT, e)?;
     dst.set(text.as_deref().unwrap_or_default());
     Some(())
 }
 
 fn uint64(o: &Obj, member: &str, e: &mut String) -> Option<u64> {
-    jsonc::uint64(o, member, OPT, e)
+    jsonc::uint64(o, "", member, OPT, e)
 }
 
 /// `JSONC_PARSE_TXT2ENUM_OR_ERROR_AND_RETURN`: `dst` changes only for a string.
@@ -35,7 +35,7 @@ fn enum_of<T>(
     dst: &mut T,
     e: &mut String,
 ) -> Option<()> {
-    if let Some(text) = jsonc::enum_text(o, member, OPT, e)? {
+    if let Some(text) = jsonc::enum_text(o, "", member, OPT, e)? {
         *dst = convert(text);
     }
     Some(())
@@ -48,25 +48,15 @@ fn object(
     e: &mut String,
     block: impl FnOnce(&Obj, &mut String) -> Option<()>,
 ) -> Option<()> {
-    match jsonc::object(o, member, OPT, e)? {
+    match jsonc::object(o, "", member, OPT, e)? {
         Some(sub) => block(sub, e),
         None => Some(()),
     }
 }
 
-/// The first JSON value of `text`, as json-c's default tokener reads it: what follows the value is ignored, and a text
-/// that is not UTF-8 is read with U+FFFD in place of each invalid sequence (D89).
-fn first_value(text: &[u8]) -> Option<Value> {
-    let first = |t: &[u8]| serde_json::Deserializer::from_slice(t).into_iter::<Value>().next()?.ok();
-    match first(text) {
-        None if std::str::from_utf8(text).is_err() => first(String::from_utf8_lossy(text).as_bytes()),
-        value => value,
-    }
-}
-
 /// Fills `ds` from a status file's text as C does, true when it parsed through.
 pub fn from_json(text: &[u8], ds: &mut StatusFile) -> bool {
-    let Some(Value::Object(root)) = first_value(text) else {
+    let Some(Value::Object(root)) = jsonc::tokener_parse(text) else {
         return false;
     };
     let mut error = String::new();
@@ -74,20 +64,20 @@ pub fn from_json(text: &[u8], ds: &mut StatusFile) -> bool {
 }
 
 fn parse(root: &Obj, ds: &mut StatusFile, e: &mut String) -> Option<()> {
-    let version = jsonc::uint64(root, "version", Presence::Required, e)?;
+    let version = jsonc::uint64(root, "", "version", Presence::Required, e)?;
     ds.v = version as u32;
-    ds.timestamp_ut = jsonc::rfc3339(root, "@timestamp", OPT, e)?;
+    ds.timestamp_ut = jsonc::rfc3339(root, "", "@timestamp", OPT, e)?;
     let key = |current: &'static str, old: &'static str| if version >= 18 { current } else { old };
 
     object(root, "agent", e, |o, e| {
-        ds.host_id.uuid = jsonc::uuid(o, "id", OPT, e)?;
+        ds.host_id.uuid = jsonc::uuid(o, "", "id", OPT, e)?;
         if version >= 24 {
-            ds.host_id.last_modified_ut = jsonc::rfc3339(o, "since", OPT, e)?;
+            ds.host_id.last_modified_ut = jsonc::rfc3339(o, "", "since", OPT, e)?;
         }
-        ds.invocation = jsonc::uuid(o, "ephemeral_id", OPT, e)?;
+        ds.invocation = jsonc::uuid(o, "", "ephemeral_id", OPT, e)?;
         txt(o, "version", &mut ds.version, e)?;
         ds.uptime = uint64(o, "uptime", e)? as i64;
-        jsonc::bitmap_into(o, key("profile", "ND_profile"), profile::from_name, OPT, e, &mut ds.profile)?;
+        jsonc::bitmap_into(o, "", key("profile", "ND_profile"), profile::from_name, OPT, e, &mut ds.profile)?;
         enum_of(
             o,
             key("status", "ND_status"),
@@ -96,15 +86,15 @@ fn parse(root: &Obj, ds: &mut StatusFile, e: &mut String) -> Option<()> {
             e,
         )?;
         jsonc::bitmap_into(
-            o,
+            o, "",
             key("exit_reason", "ND_exit_reason"),
             exit_reason::from_name,
             OPT,
             e,
             &mut ds.exit_reason,
         )?;
-        ds.node_id = jsonc::uuid(o, key("node_id", "ND_node_id"), OPT, e)?;
-        ds.claim_id = jsonc::uuid(o, key("claim_id", "ND_claim_id"), OPT, e)?;
+        ds.node_id = jsonc::uuid(o, "", key("node_id", "ND_node_id"), OPT, e)?;
+        ds.claim_id = jsonc::uuid(o, "", key("claim_id", "ND_claim_id"), OPT, e)?;
         txt(
             o,
             key("install_type", "ND_install_type"),
@@ -138,7 +128,7 @@ fn parse(root: &Obj, ds: &mut StatusFile, e: &mut String) -> Option<()> {
                 e,
             )?;
             ds.db_tiers = uint64(o, key("db_tiers", "ND_db_tiers"), e)? as u8;
-            ds.kubernetes = jsonc::boolean(o, key("kubernetes", "ND_kubernetes"), OPT, e)?;
+            ds.kubernetes = jsonc::boolean(o, "", key("kubernetes", "ND_kubernetes"), OPT, e)?;
         } else {
             // C's compile default, and `nd_profile.storage_tiers` before the profile's setup
             ds.db_mode = db_mode::DBENGINE;
@@ -147,26 +137,26 @@ fn parse(root: &Obj, ds: &mut StatusFile, e: &mut String) -> Option<()> {
         }
         if version >= 17 {
             ds.sentry_available =
-                jsonc::boolean(o, key("sentry_available", "ND_sentry_available"), OPT, e)?;
+                jsonc::boolean(o, "", key("sentry_available", "ND_sentry_available"), OPT, e)?;
         } else if version == 16 {
-            ds.sentry_available = jsonc::boolean(o, "ND_sentry", OPT, e)?;
+            ds.sentry_available = jsonc::boolean(o, "", "ND_sentry", OPT, e)?;
         }
         if version >= 18 {
-            ds.reliability = jsonc::int64(o, "reliability", OPT, e)?;
+            ds.reliability = jsonc::int64(o, "", "reliability", OPT, e)?;
             txt(o, "stack_traces", &mut ds.stack_traces, e)?;
         }
         Some(())
     })?;
 
     object(root, "host", e, |o, e| {
-        ds.machine_id = jsonc::uuid(o, "id", OPT, e)?;
+        ds.machine_id = jsonc::uuid(o, "", "id", OPT, e)?;
         txt(o, "architecture", &mut ds.architecture, e)?;
         txt(o, "virtualization", &mut ds.virtualization, e)?;
         txt(o, "container", &mut ds.container, e)?;
         ds.boottime = uint64(o, "uptime", e)? as i64;
         ds.system_cpus = uint64(o, "system_cpus", e)?;
         object(o, "boot", e, |o, e| {
-            ds.boot_id = jsonc::uuid(o, "id", OPT, e)?;
+            ds.boot_id = jsonc::uuid(o, "", "id", OPT, e)?;
             Some(())
         })?;
         object(o, "memory", e, |o, e| {
@@ -188,7 +178,7 @@ fn parse(root: &Obj, ds: &mut StatusFile, e: &mut String) -> Option<()> {
                 db.free_bytes = uint64(o, "free", e)?;
                 db.total_inodes = uint64(o, "inodes_total", e)?;
                 db.free_inodes = uint64(o, "inodes_free", e)?;
-                db.read_only = jsonc::boolean(o, "read_only", OPT, e)?;
+                db.read_only = jsonc::boolean(o, "", "read_only", OPT, e)?;
                 if db.total_bytes == 0 {
                     *db = Default::default();
                 }
@@ -199,7 +189,7 @@ fn parse(root: &Obj, ds: &mut StatusFile, e: &mut String) -> Option<()> {
                 f.dbengine = uint64(o, "dbengine", e)?;
                 f.sqlite = uint64(o, "sqlite", e)?;
                 f.other = uint64(o, "other", e)?;
-                f.last_updated_ut = jsonc::rfc3339(o, "last_updated", OPT, e)?;
+                f.last_updated_ut = jsonc::rfc3339(o, "", "last_updated", OPT, e)?;
                 Some(())
             })
         })?;

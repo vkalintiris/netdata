@@ -1,7 +1,7 @@
 //! The member readers of `src/libnetdata/json/json-c-parser-inline.h` (`JSONC_PARSE_*_OR_ERROR_AND_RETURN`) over
 //! parsed JSON: json-c 0.18's coercions between types and the texts appended to the caller's error buffer (spec:
-//! `evidence/2026-09-26-sp1-jsonc-spec.md` §3 in the status repository). Members are read at the root of an object
-//! (C's `path` is empty), so they print as `'.member'`. json-c sees every string up to its first NUL.
+//! `evidence/2026-09-26-sp1-jsonc-spec.md` §3 in the status repository). `path` is C's: a member prints as
+//! `'{path}.{member}'`. json-c sees every string up to its first NUL.
 //!
 //! `None` is a failure (the text is in the buffer). A member an optional reader skips reads as zero or absent: every
 //! destination the callers use starts at zero.
@@ -10,6 +10,17 @@ use netdata_agent_text::c::c_str;
 use netdata_agent_text::parse::{strtoll10, strtoull10, uuid_parse_flexi};
 use netdata_agent_text::print::{print_int64, print_netdata_double};
 use serde_json::{Map, Number, Value};
+
+/// `json_tokener_parse()`: the first JSON value of `text` up to its first NUL; what follows the value is ignored, and
+/// a text that is not UTF-8 is read with U+FFFD in place of each invalid sequence (D89).
+pub fn tokener_parse(text: &[u8]) -> Option<Value> {
+    let text = c_str(text);
+    let first = |t: &[u8]| serde_json::Deserializer::from_slice(t).into_iter::<Value>().next()?.ok();
+    match first(text) {
+        None if std::str::from_utf8(text).is_err() => first(String::from_utf8_lossy(text).as_bytes()),
+        value => value,
+    }
+}
 
 /// `JSONC_REQUIRED` or `JSONC_OPTIONAL`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,9 +66,9 @@ fn fail<T>(error: &mut String, text: String) -> Option<T> {
 }
 
 /// A missing member: an error when required, else zero.
-fn missing<T: Default>(member: &str, presence: Presence, error: &mut String) -> Option<T> {
+fn missing<T: Default>(path: &str, member: &str, presence: Presence, error: &mut String) -> Option<T> {
     match presence {
-        Presence::Required => fail(error, format!("missing '.{member}'")),
+        Presence::Required => fail(error, format!("missing '{path}.{member}'")),
         Presence::Optional => Some(T::default()),
     }
 }
@@ -73,12 +84,13 @@ fn wrong_type<T: Default>(text: String, presence: Presence, error: &mut String) 
 /// `JSONC_PARSE_INT64_OR_ERROR_AND_RETURN`: bad strings and doubles fail even when optional.
 pub fn int64(
     obj: &Map<String, Value>,
+    path: &str,
     member: &str,
     presence: Presence,
     error: &mut String,
 ) -> Option<i64> {
     let Some(value) = obj.get(member) else {
-        return missing(member, presence, error);
+        return missing(path, member, presence, error);
     };
     match value {
         Value::Null => Some(0),
@@ -88,7 +100,7 @@ pub fn int64(
                 if d.is_finite() && (-TWO_63..TWO_63).contains(&d) {
                     Some(d as i64)
                 } else {
-                    fail(error, format!("cannot convert to int64 for '.{member}'"))
+                    fail(error, format!("cannot convert to int64 for '{path}.{member}'"))
                 }
             }
             n => int_as_i64(&n),
@@ -100,14 +112,14 @@ pub fn int64(
                 _ => fail(
                     error,
                     format!(
-                        "cannot convert string '{}' to int64 for '.{member}'",
+                        "cannot convert string '{}' to int64 for '{path}.{member}'",
                         String::from_utf8_lossy(s)
                     ),
                 ),
             }
         }
         Value::Object(_) | Value::Array(_) => wrong_type(
-            format!("cannot convert to int64 for '.{member}'"),
+            format!("cannot convert to int64 for '{path}.{member}'"),
             presence,
             error,
         ),
@@ -118,12 +130,13 @@ pub fn int64(
 /// optional.
 pub fn uint64(
     obj: &Map<String, Value>,
+    path: &str,
     member: &str,
     presence: Presence,
     error: &mut String,
 ) -> Option<u64> {
     let Some(value) = obj.get(member) else {
-        return missing(member, presence, error);
+        return missing(path, member, presence, error);
     };
     match value {
         Value::Null => Some(0),
@@ -135,7 +148,7 @@ pub fn uint64(
                 if d.is_finite() && (0.0..TWO_64).contains(&d) {
                     Some(d as u64)
                 } else {
-                    fail(error, format!("cannot convert to uint64 for '.{member}'"))
+                    fail(error, format!("cannot convert to uint64 for '{path}.{member}'"))
                 }
             }
         },
@@ -145,19 +158,19 @@ pub fn uint64(
             if s.first() == Some(&b'-') {
                 return fail(
                     error,
-                    format!("cannot convert negative string '{shown}' to uint64 for '.{member}'"),
+                    format!("cannot convert negative string '{shown}' to uint64 for '{path}.{member}'"),
                 );
             }
             match strtoull10(s) {
                 (v, used, false) if used > 0 && used == s.len() => Some(v),
                 _ => fail(
                     error,
-                    format!("cannot convert string '{shown}' to uint64 for '.{member}'"),
+                    format!("cannot convert string '{shown}' to uint64 for '{path}.{member}'"),
                 ),
             }
         }
         Value::Object(_) | Value::Array(_) => wrong_type(
-            format!("cannot convert to uint64 for '.{member}'"),
+            format!("cannot convert to uint64 for '{path}.{member}'"),
             presence,
             error,
         ),
@@ -168,12 +181,13 @@ pub fn uint64(
 /// null or empty text (`string_strdupz()` of `""` is NULL).
 pub fn txt(
     obj: &Map<String, Value>,
+    path: &str,
     member: &str,
     presence: Presence,
     error: &mut String,
 ) -> Option<Option<String>> {
     let Some(value) = obj.get(member) else {
-        return missing(member, presence, error);
+        return missing(path, member, presence, error);
     };
     let text = match value {
         Value::Null => return Some(None),
@@ -189,7 +203,7 @@ pub fn txt(
         }
         Value::Object(_) | Value::Array(_) => {
             return wrong_type(
-                format!("cannot convert to string for '.{member}'"),
+                format!("cannot convert to string for '{path}.{member}'"),
                 presence,
                 error,
             );
@@ -202,6 +216,7 @@ pub fn txt(
 /// UUID.
 pub fn uuid(
     obj: &Map<String, Value>,
+    path: &str,
     member: &str,
     presence: Presence,
     error: &mut String,
@@ -209,7 +224,7 @@ pub fn uuid(
     let required = presence == Presence::Required;
     let Some(value) = obj.get(member) else {
         return if required {
-            fail(error, format!("missing UUID '.{member}'"))
+            fail(error, format!("missing UUID '{path}.{member}'"))
         } else {
             Some([0; 16])
         };
@@ -218,10 +233,10 @@ pub fn uuid(
         Value::Null => Some([0; 16]),
         Value::String(s) => match uuid_parse_flexi(s.as_bytes()) {
             Some(uuid) => Some(uuid),
-            None if required => fail(error, format!("invalid UUID '.{member}'")),
+            None if required => fail(error, format!("invalid UUID '{path}.{member}'")),
             None => Some([0; 16]),
         },
-        _ if required => fail(error, format!("invalid type for UUID '.{member}'")),
+        _ if required => fail(error, format!("invalid type for UUID '{path}.{member}'")),
         _ => Some([0; 16]),
     }
 }
@@ -230,19 +245,21 @@ pub fn uuid(
 /// only reported; an item that is not a string fails.
 pub fn bitmap(
     obj: &Map<String, Value>,
+    path: &str,
     member: &str,
     parse_one: fn(&[u8]) -> u32,
     presence: Presence,
     error: &mut String,
 ) -> Option<u32> {
     let mut bits = 0;
-    bitmap_into(obj, member, parse_one, presence, error, &mut bits).map(|()| bits)
+    bitmap_into(obj, path, member, parse_one, presence, error, &mut bits).map(|()| bits)
 }
 
 /// [`bitmap`] into `bits`, as C fills its destination: zeroed once the member is an array, then each item's bit
 /// added, so a failing item keeps the bits before it; untouched when an optional member is missing or no array.
 pub fn bitmap_into(
     obj: &Map<String, Value>,
+    path: &str,
     member: &str,
     parse_one: fn(&[u8]) -> u32,
     presence: Presence,
@@ -252,14 +269,14 @@ pub fn bitmap_into(
     let required = presence == Presence::Required;
     let Some(value) = obj.get(member) else {
         return if required {
-            fail(error, format!("missing '.{member}' array"))
+            fail(error, format!("missing '{path}.{member}' array"))
         } else {
             Some(())
         };
     };
     let Value::Array(items) = value else {
         return if required {
-            fail(error, format!("invalid type for '.{member}' array"))
+            fail(error, format!("invalid type for '{path}.{member}' array"))
         } else {
             Some(())
         };
@@ -267,13 +284,13 @@ pub fn bitmap_into(
     *bits = 0;
     for (i, item) in items.iter().enumerate() {
         let Value::String(name) = item else {
-            return fail(error, format!("invalid type for '.{member}' at index {i}"));
+            return fail(error, format!("invalid type for '{path}.{member}' at index {i}"));
         };
         let name = c_str(name.as_bytes());
         let bit = parse_one(name);
         if bit == 0 {
             error.push_str(&format!(
-                "unknown option '{}' in '.{member}' at index {i}",
+                "unknown option '{}' in '{path}.{member}' at index {i}",
                 String::from_utf8_lossy(name)
             ));
         }
@@ -286,13 +303,14 @@ pub fn bitmap_into(
 /// being non-zero, null as false; another string fails even when optional. A skipped member reads as false.
 pub fn boolean(
     obj: &Map<String, Value>,
+    path: &str,
     member: &str,
     presence: Presence,
     error: &mut String,
 ) -> Option<bool> {
     let Some(value) = obj.get(member) else {
         return match presence {
-            Presence::Required => fail(error, format!("missing '.{member}' boolean")),
+            Presence::Required => fail(error, format!("missing '{path}.{member}' boolean")),
             Presence::Optional => Some(false),
         };
     };
@@ -309,7 +327,7 @@ pub fn boolean(
                 fail(
                     error,
                     format!(
-                        "invalid boolean string '{}' for '.{member}'",
+                        "invalid boolean string '{}' for '{path}.{member}'",
                         String::from_utf8_lossy(s)
                     ),
                 )
@@ -321,7 +339,7 @@ pub fn boolean(
         }),
         Value::Null => Some(false),
         Value::Object(_) | Value::Array(_) => wrong_type(
-            format!("cannot convert to boolean for '.{member}'"),
+            format!("cannot convert to boolean for '{path}.{member}'"),
             presence,
             error,
         ),
@@ -332,6 +350,7 @@ pub fn boolean(
 /// (an error only when required).
 pub fn rfc3339(
     obj: &Map<String, Value>,
+    path: &str,
     member: &str,
     presence: Presence,
     error: &mut String,
@@ -339,14 +358,14 @@ pub fn rfc3339(
     let required = presence == Presence::Required;
     let Some(value) = obj.get(member) else {
         return if required {
-            fail(error, format!("missing '.{member}' string"))
+            fail(error, format!("missing '{path}.{member}' string"))
         } else {
             Some(0)
         };
     };
     let Value::String(s) = value else {
         return if required {
-            fail(error, format!("invalid type for '.{member}' string"))
+            fail(error, format!("invalid type for '{path}.{member}' string"))
         } else {
             Some(0)
         };
@@ -358,7 +377,7 @@ pub fn rfc3339(
         .min(netdata_agent_text::datetime::RFC3339_MAX_LENGTH - 1)];
     match netdata_agent_text::datetime::rfc3339_parse_ut(text) {
         Some(ut) => Some(ut),
-        None if required => fail(error, format!("invalid RFC3339 datetime for '.{member}'")),
+        None if required => fail(error, format!("invalid RFC3339 datetime for '{path}.{member}'")),
         None => Some(0),
     }
 }
@@ -367,6 +386,7 @@ pub fn rfc3339(
 /// missing or not a string: C leaves the destination as it was.
 pub fn enum_text<'a>(
     obj: &'a Map<String, Value>,
+    path: &str,
     member: &str,
     presence: Presence,
     error: &mut String,
@@ -374,9 +394,9 @@ pub fn enum_text<'a>(
     match obj.get(member) {
         Some(Value::String(s)) => Some(Some(c_str(s.as_bytes()))),
         Some(_) if presence == Presence::Required => {
-            fail(error, format!("invalid type for '.{member}' enum"))
+            fail(error, format!("invalid type for '{path}.{member}' enum"))
         }
-        None if presence == Presence::Required => fail(error, format!("missing '.{member}' enum")),
+        None if presence == Presence::Required => fail(error, format!("missing '{path}.{member}' enum")),
         _ => Some(None),
     }
 }
@@ -385,6 +405,7 @@ pub fn enum_text<'a>(
 /// skips its block.
 pub fn object<'a>(
     obj: &'a Map<String, Value>,
+    path: &str,
     member: &str,
     presence: Presence,
     error: &mut String,
@@ -392,10 +413,10 @@ pub fn object<'a>(
     match obj.get(member) {
         Some(Value::Object(o)) => Some(Some(o)),
         Some(_) if presence == Presence::Required => {
-            fail(error, format!("not an object '.{member}'"))
+            fail(error, format!("not an object '{path}.{member}'"))
         }
         None if presence == Presence::Required => {
-            fail(error, format!("missing '.{member}' object"))
+            fail(error, format!("missing '{path}.{member}' object"))
         }
         _ => Some(None),
     }
@@ -431,17 +452,17 @@ mod tests {
             ("arr", Some(false)),
             ("missing", Some(false)),
         ] {
-            assert_eq!(boolean(&o, member, Optional, &mut e), want, "{member}");
+            assert_eq!(boolean(&o, "", member, Optional, &mut e), want, "{member}");
         }
         assert_eq!(e, "");
-        assert_eq!(boolean(&o, "bad", Optional, &mut e), None);
+        assert_eq!(boolean(&o, "", "bad", Optional, &mut e), None);
         assert_eq!(e, "invalid boolean string 'maybe' for '.bad'");
         for (member, text) in [
             ("arr", "cannot convert to boolean for '.arr'"),
             ("missing", "missing '.missing' boolean"),
         ] {
             let mut e = String::new();
-            assert_eq!(boolean(&o, member, Required, &mut e), None);
+            assert_eq!(boolean(&o, "", member, Required, &mut e), None);
             assert_eq!(e, text);
         }
     }
@@ -450,9 +471,9 @@ mod tests {
     fn rfc3339_as_c() {
         let o = obj(r#"{"ok": "2026-09-27T23:25:28.50Z", "bad": "yesterday", "num": 5}"#);
         let mut e = String::new();
-        assert_eq!(rfc3339(&o, "ok", Required, &mut e), Some(1_790_551_528_500_000));
+        assert_eq!(rfc3339(&o, "", "ok", Required, &mut e), Some(1_790_551_528_500_000));
         for member in ["bad", "num", "missing"] {
-            assert_eq!(rfc3339(&o, member, Optional, &mut e), Some(0), "{member}");
+            assert_eq!(rfc3339(&o, "", member, Optional, &mut e), Some(0), "{member}");
         }
         assert_eq!(e, "");
         for (member, text) in [
@@ -461,7 +482,7 @@ mod tests {
             ("missing", "missing '.missing' string"),
         ] {
             let mut e = String::new();
-            assert_eq!(rfc3339(&o, member, Required, &mut e), None);
+            assert_eq!(rfc3339(&o, "", member, Required, &mut e), None);
             assert_eq!(e, text);
         }
     }
@@ -470,21 +491,21 @@ mod tests {
     fn enums_and_objects_as_c() {
         let o = obj(r#"{"s": "running", "n": 1, "o": {"a": 1}}"#);
         let mut e = String::new();
-        assert_eq!(enum_text(&o, "s", Required, &mut e), Some(Some(&b"running"[..])));
-        assert_eq!(enum_text(&o, "n", Optional, &mut e), Some(None));
-        assert_eq!(enum_text(&o, "missing", Optional, &mut e), Some(None));
-        assert_eq!(object(&o, "o", Required, &mut e).map(|o| o.map(Map::len)), Some(Some(1)));
-        assert_eq!(object(&o, "s", Optional, &mut e), Some(None));
-        assert_eq!(object(&o, "missing", Optional, &mut e), Some(None));
+        assert_eq!(enum_text(&o, "", "s", Required, &mut e), Some(Some(&b"running"[..])));
+        assert_eq!(enum_text(&o, "", "n", Optional, &mut e), Some(None));
+        assert_eq!(enum_text(&o, "", "missing", Optional, &mut e), Some(None));
+        assert_eq!(object(&o, "", "o", Required, &mut e).map(|o| o.map(Map::len)), Some(Some(1)));
+        assert_eq!(object(&o, "", "s", Optional, &mut e), Some(None));
+        assert_eq!(object(&o, "", "missing", Optional, &mut e), Some(None));
         assert_eq!(e, "");
         let enum_error = |member| {
             let mut e = String::new();
-            assert!(enum_text(&o, member, Required, &mut e).is_none());
+            assert!(enum_text(&o, "", member, Required, &mut e).is_none());
             e
         };
         let object_error = |member| {
             let mut e = String::new();
-            assert!(object(&o, member, Required, &mut e).is_none());
+            assert!(object(&o, "", member, Required, &mut e).is_none());
             e
         };
         assert_eq!(enum_error("n"), "invalid type for '.n' enum");

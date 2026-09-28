@@ -26,13 +26,13 @@ pub fn init(conf: &mut Config) {
     BEARER_PROTECTION.store(enabled, Ordering::Relaxed);
 }
 
-/// `api_v3_me()`: the caller's method, Cloud account, name, access and role (bearer tokens and Cloud users arrive with
-/// their subsystems: until then every caller is unauthenticated).
+/// `api_v3_me()`: the caller's method, Cloud account, name, access and role (Cloud users arrive with the ACLK).
 pub fn me(auth: &Auth) -> Reply {
+    let (client_name, account) = auth.identity();
     let mut w = JsonWriter::new(JsonOptions::MINIFY);
-    w.member_add_string("auth", "none");
-    w.member_add_uuid("cloud_account_id", &[0; 16]);
-    w.member_add_string("client_name", "");
+    w.member_add_string("auth", if auth.is_bearer() { "bearer" } else { "none" });
+    w.member_add_uuid("cloud_account_id", &account);
+    w.member_add_string("client_name", &client_name);
     w.member_add_array(Some(b"access"));
     for name in access::names(auth.access()) {
         w.add_array_item_string(name);

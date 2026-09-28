@@ -3007,6 +3007,7 @@ dependencies = [
  "serde_json",
  "socket2",
  "tempfile",
+ "twox-hash",
  "uuid",
 ]
 
