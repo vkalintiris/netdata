@@ -2,7 +2,7 @@
 //! record's own version, `"version"` always 29.
 
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
-use netdata_agent_text::print::print_uint64_hex;
+use netdata_agent_text::print::HEX_DIGITS;
 
 use super::{
     StatusFile, VERSION, bitmap_names, cloud_status, db_mode, exit_reason, profile, signal_code,
@@ -221,17 +221,15 @@ fn fatal(w: &mut JsonWriter, ds: &StatusFile) {
     w.member_add_uint64("thread_id", f.thread_id as u64);
     w.member_add_string("stack_trace", f.stack_trace.as_bytes());
     if ds.v >= 16 {
-        w.member_add_string("signal_code", signal_code::to_text(f.signal_code));
+        w.member_add_string("signal_code", signal_code::text(f.signal_code, &mut [0; 24]));
     }
     if ds.v >= 17 {
         w.member_add_boolean("sentry", f.sentry);
     }
     if ds.v >= 18 {
-        let mut address = Vec::new();
-        if f.signal_code != 0 {
-            print_uint64_hex(&mut address, f.fault_address);
-        }
-        w.member_add_string("fault_address", &address);
+        let mut address = [0u8; 18];
+        let text = if f.signal_code != 0 { hex(f.fault_address, &mut address) } else { &address[..0] };
+        w.member_add_string("fault_address", text);
     }
     if ds.v >= 23 {
         w.member_add_uint64("worker_job_id", u64::from(f.worker_job_id));
@@ -239,17 +237,43 @@ fn fatal(w: &mut JsonWriter, ds: &StatusFile) {
     w.object_close();
 }
 
+/// `print_uint64_hex()` on the stack: `0x` and uppercase digits, no padding.
+fn hex(mut value: u64, out: &mut [u8; 18]) -> &[u8] {
+    let mut at = out.len();
+    loop {
+        at -= 1;
+        out[at] = HEX_DIGITS[(value & 0xf) as usize];
+        value >>= 4;
+        if value == 0 {
+            break;
+        }
+    }
+    out[at - 2..at].copy_from_slice(b"0x");
+    &out[at - 2..]
+}
+
 /// The file's text: `buffer_json_initialize()`, the members, `buffer_json_finalize()`.
 pub fn to_json(ds: &StatusFile) -> Vec<u8> {
     let mut w = JsonWriter::new(JsonOptions::DEFAULT);
+    members(&mut w, ds);
+    w.into_bytes()
+}
+
+/// The file's text in `w`, reset first: nothing is allocated while it fits the writer's capacity (the signal
+/// handler's save, D91.3).
+pub fn to_json_in(w: &mut JsonWriter, ds: &StatusFile) {
+    w.reset(JsonOptions::DEFAULT);
+    members(w, ds);
+}
+
+fn members(w: &mut JsonWriter, ds: &StatusFile) {
     w.member_add_string("@timestamp", ds.timestamp_rfc3339.as_bytes());
     w.member_add_uint64("version", u64::from(VERSION));
-    agent(&mut w, ds);
-    metrics(&mut w, ds);
-    host(&mut w, ds);
-    os(&mut w, ds);
-    hw(&mut w, ds);
-    fatal(&mut w, ds);
+    agent(w, ds);
+    metrics(w, ds);
+    host(w, ds);
+    os(w, ds);
+    hw(w, ds);
+    fatal(w, ds);
     w.finalize();
-    w.into_bytes()
 }

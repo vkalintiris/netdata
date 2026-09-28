@@ -37,4 +37,6 @@ socket2 = { workspace = true, features = ["all"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+# counts allocations, for the tests that prove the signal handler's save allocates nothing
+netdata-agent-sys = { workspace = true, features = ["alloc-count"] }
 tempfile = { workspace = true }

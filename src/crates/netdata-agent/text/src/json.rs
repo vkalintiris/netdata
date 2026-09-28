@@ -11,8 +11,7 @@ use crate::c;
 use crate::datetime::{RFC3339_MAX_LENGTH, rfc3339_datetime_utc};
 use crate::duration::duration_to_string;
 use crate::print::{
-    HEX_DIGITS, print_int64, print_netdata_double_or_null, print_uint64, print_uuid_lower,
-    print_uuid_lower_compact,
+    HEX_DIGITS, print_int64, print_netdata_double_or_null, print_uint64, uuid_lower_text,
 };
 
 /// `BUFFER_JSON_MAX_DEPTH`.
@@ -177,6 +176,23 @@ impl JsonWriter {
             writer.options = writer.options | JsonOptions::NON_ANONYMOUS;
         }
         writer
+    }
+
+    /// `buffer_flush()` then `buffer_json_initialize(wb, "\"", "\"", 0, true, options)` on a writer made by
+    /// [`JsonWriter::new`]: a new document in the same buffer, which keeps its capacity, so no allocation happens
+    /// while the document fits it.
+    pub fn reset(&mut self, options: JsonOptions) {
+        self.buf.clear();
+        self.depth = -1;
+        self.options = options;
+        self.push(NodeType::Object);
+        self.root = self.depth;
+        self.buf.push(b'{');
+    }
+
+    /// Room for `bytes` more without growing the buffer.
+    pub fn reserve(&mut self, bytes: usize) {
+        self.buf.reserve(bytes);
     }
 
     /// The bytes written so far.
@@ -469,27 +485,27 @@ impl JsonWriter {
     /// `buffer_json_member_add_uuid()`: lowercase with dashes, `null` for the nil UUID.
     pub fn member_add_uuid(&mut self, key: impl AsRef<[u8]>, uuid: &[u8; 16]) {
         let key = key.as_ref();
-        self.member_with(key, |w| w.uuid_value(Some(uuid), print_uuid_lower));
+        self.member_with(key, |w| w.uuid_value(Some(uuid), false));
     }
 
     /// `buffer_json_member_add_uuid_ptr()`: `null` for `None` or the nil UUID.
     pub fn member_add_uuid_ptr(&mut self, key: impl AsRef<[u8]>, uuid: Option<&[u8; 16]>) {
         let key = key.as_ref();
-        self.member_with(key, |w| w.uuid_value(uuid, print_uuid_lower));
+        self.member_with(key, |w| w.uuid_value(uuid, false));
     }
 
     /// `buffer_json_member_add_uuid_compact()`: 32 lowercase hex digits, `null` for the nil UUID.
     pub fn member_add_uuid_compact(&mut self, key: impl AsRef<[u8]>, uuid: &[u8; 16]) {
         let key = key.as_ref();
-        self.member_with(key, |w| w.uuid_value(Some(uuid), print_uuid_lower_compact));
+        self.member_with(key, |w| w.uuid_value(Some(uuid), true));
     }
 
-    fn uuid_value(&mut self, uuid: Option<&[u8; 16]>, format: fn(&mut Vec<u8>, &[u8; 16])) {
+    /// The UUID as a string, dashed or `compact`, from the stack; `null` for none or the nil UUID.
+    fn uuid_value(&mut self, uuid: Option<&[u8; 16]>, compact: bool) {
         match uuid.filter(|u| u.iter().any(|&b| b != 0)) {
             Some(uuid) => {
-                let mut text = Vec::with_capacity(36);
-                format(&mut text, uuid);
-                self.string_value(Some(&text));
+                let (text, len) = uuid_lower_text(uuid, compact);
+                self.string_value(Some(&text[..len]));
             }
             None => self.string_value(None),
         }
@@ -583,12 +599,12 @@ impl JsonWriter {
 
     /// `buffer_json_add_array_item_uuid()`: `null` for `None` or the nil UUID.
     pub fn add_array_item_uuid(&mut self, uuid: Option<&[u8; 16]>) {
-        self.item_with(|w| w.uuid_value(uuid, print_uuid_lower));
+        self.item_with(|w| w.uuid_value(uuid, false));
     }
 
     /// `buffer_json_add_array_item_uuid_compact()`: `null` for `None` or the nil UUID.
     pub fn add_array_item_uuid_compact(&mut self, uuid: Option<&[u8; 16]>) {
-        self.item_with(|w| w.uuid_value(uuid, print_uuid_lower_compact));
+        self.item_with(|w| w.uuid_value(uuid, true));
     }
 
     /// `buffer_json_add_array_item_double()`: `null` for NaN and infinities.

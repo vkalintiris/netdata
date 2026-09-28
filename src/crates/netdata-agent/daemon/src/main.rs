@@ -316,6 +316,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     status_file::init(&conf.dirs.varlib, &conf.dirs.cache, &conf.dirs.user_config);
     let machine_guid = guid::machine_guid_get(&conf.dirs.varlib, &[0; 16]).txt.clone();
     netdata_agent_log::register_fatal_hook(status_file::register_fatal);
+    // mallocz_register_out_of_memory_cb(): recorded before the allocator's abort (D91.5)
+    netdata_agent_sys::on_out_of_memory(status_file::out_of_memory);
     // fatal_status_file_save(): until startup completes, a fatal() saves the status file and exits
     netdata_agent_log::register_fatal_final_callback(|| status_file::update_status(status_file::DaemonStatus::None));
     // a panic is a fatal error (D87 F6, D90.4)
@@ -1214,6 +1216,10 @@ fn load_stream_conf(conf: &mut Conf, system: &system::Resources) -> StreamConf {
     );
     stream_conf
 }
+
+/// The allocator that tells the status file when memory runs out (D87 F5, D91.1).
+#[global_allocator]
+static ALLOC: netdata_agent_sys::Alloc = netdata_agent_sys::Alloc;
 
 fn main() -> ExitCode {
     use std::os::unix::ffi::OsStringExt;

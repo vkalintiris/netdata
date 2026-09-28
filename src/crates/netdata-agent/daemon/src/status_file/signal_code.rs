@@ -117,29 +117,58 @@ fn id<T: Copy>(table: &[(T, &str)], text: &[u8]) -> Option<T> {
         .map(|(i, _)| *i)
 }
 
-/// `SIGNAL_CODE_2str_h()` into a `UINT64_MAX_LENGTH` buffer: the signal's name (else its number), a slash, the
-/// code's name (else its `si_code` name, else its number), cut at 23 bytes; empty for 0.
-pub fn to_text(code: u64) -> String {
-    const SIZE: usize = 24;
+/// `SIGNAL_CODE_2str_h()`'s `UINT64_MAX_LENGTH` buffer.
+pub type Text = [u8; 24];
+
+/// A decimal `int` on the stack.
+fn decimal(value: i32, out: &mut [u8; 12]) -> &[u8] {
+    let mut at = out.len();
+    let mut v = value.unsigned_abs();
+    loop {
+        at -= 1;
+        out[at] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    if value < 0 {
+        at -= 1;
+        out[at] = b'-';
+    }
+    &out[at..]
+}
+
+/// `SIGNAL_CODE_2str_h()` into `out`, without allocating: the signal's name (else its number), a slash, the code's
+/// name (else its `si_code` name, else its number), cut at 23 bytes; empty for 0.
+pub fn text(code: u64, out: &mut Text) -> &[u8] {
     if code == 0 {
-        return String::new();
+        return &out[..0];
     }
     let signo = (code >> 32) as i32;
     let si_code = code as u32 as i32;
-    let signal = name(&SIGNALS, signo).map_or_else(|| signo.to_string(), str::to_string);
-    let what = name(&CODES, code)
-        .or_else(|| name(&SI_CODES, si_code))
-        .map_or_else(|| si_code.to_string(), str::to_string);
-    let mut out = signal;
-    out.truncate(SIZE - 1);
-    if SIZE - 1 > out.len() {
-        out.push('/');
+    let mut len = 0;
+    let mut put = |bytes: &[u8], out: &mut Text| {
+        let n = bytes.len().min(out.len() - 1 - len);
+        out[len..len + n].copy_from_slice(&bytes[..n]);
+        len += n;
+    };
+    let mut number = [0u8; 12];
+    match name(&SIGNALS, signo) {
+        Some(signal) => put(signal.as_bytes(), out),
+        None => put(decimal(signo, &mut number), out),
     }
-    if SIZE - 1 > out.len() {
-        let room = SIZE - 1 - out.len();
-        out.push_str(&what[..what.len().min(room)]);
+    put(b"/", out);
+    match name(&CODES, code).or_else(|| name(&SI_CODES, si_code)) {
+        Some(what) => put(what.as_bytes(), out),
+        None => put(decimal(si_code, &mut number), out),
     }
-    out
+    &out[..len]
+}
+
+#[cfg(test)]
+fn to_text(code: u64) -> String {
+    String::from_utf8_lossy(text(code, &mut [0; 24])).into_owned()
 }
 
 /// `SIGNAL_CODE_2id_h()`: a signal (by name or number), then after a slash a code (a full name wins, then an

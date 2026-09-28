@@ -577,3 +577,31 @@ fn reuses_a_regular_leftover_and_refuses_anything_else() {
     assert!(!io::save_attempt(&d, &name, b"x", 3));
     assert_eq!(std::fs::read(dir.path().join(file)).unwrap(), b"new");
 }
+
+/// The save a signal handler or a failed allocation makes (D91.3): the largest record, escaped the most, written in
+/// the reserved writer and saved, allocates nothing, and gives `to_json()`'s bytes.
+#[test]
+fn the_signal_path_saves_without_allocating() {
+    let mut ds = full();
+    ds.fatal.stack_trace.set(vec![0x01u8; 4095]);
+    ds.fatal.message.set(vec![b'"'; 511]);
+    ds.fatal.signal_code = signal_code::create(11, 1);
+    ds.fatal.fault_address = u64::MAX;
+    let mut w = netdata_agent_text::json::JsonWriter::new(netdata_agent_text::json::JsonOptions::DEFAULT);
+    w.reserve(64 * 1024);
+    let dir = tempfile::tempdir().unwrap();
+    let loc = Locations::new(dir.path().to_str().unwrap(), dir.path().to_str().unwrap());
+    let name = unique_name("no-alloc");
+    let before = netdata_agent_sys::allocations();
+    super::json::to_json_in(&mut w, &ds);
+    let saved = io::save(&loc, &name, w.as_bytes(), false);
+    let allocations = netdata_agent_sys::allocations() - before;
+    assert!(saved);
+    assert_eq!(allocations, 0);
+    // the counter counts: the allocating writer moves it
+    let before = netdata_agent_sys::allocations();
+    let _ = to_json(&ds);
+    assert!(netdata_agent_sys::allocations() > before);
+    assert_eq!(w.as_bytes(), &to_json(&ds)[..]);
+    assert_eq!(std::fs::read(dir.path().join(name.to_str().unwrap())).unwrap(), to_json(&ds));
+}

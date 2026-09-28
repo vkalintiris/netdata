@@ -70,7 +70,7 @@ pub fn from_name(name: &[u8]) -> u32 {
 }
 /// `EXIT_REASON_2buffer()`: the names of the bits, in table order, joined by `separator`; empty for none.
 pub fn names(reason: u32, separator: &str) -> String {
-    crate::status_file::bitmap_names(&NAMES, reason).join(separator)
+    crate::status_file::bitmap_names(&NAMES, reason).collect::<Vec<_>>().join(separator)
 }
 
 /// `exit_initiated`.

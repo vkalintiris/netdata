@@ -21,8 +21,8 @@ pub use json::to_json;
 pub use parse::from_json;
 pub use live::{set_db_mode, set_db_tiers, set_host_prefix, set_localhost, set_oom_protection, set_profile};
 pub use session::{
-    SHUTDOWN_TIMINGS_HEADER, check_crash, init, product, register_fatal, shutdown_step, shutdown_timeout, startup_step,
-    update_status,
+    SHUTDOWN_TIMINGS_HEADER, check_crash, init, out_of_memory, product, register_fatal, shutdown_step, shutdown_timeout,
+    startup_step, update_status,
 };
 
 /// `STATUS_FILE_VERSION`.
@@ -97,18 +97,20 @@ fn name_of<T: Copy + PartialEq>(
 }
 
 /// The names of a bitmap's bits, each name's bits taken once (`BITMAP_STR_DEFINE_FUNCTIONS`' `_2json`).
-pub fn bitmap_names(names: &[(u32, &'static str)], mut bits: u32) -> Vec<&'static str> {
-    let mut out = Vec::new();
-    for (bit, name) in names {
-        if bits == 0 {
-            break;
+pub fn bitmap_names<'a>(names: &'a [(u32, &'static str)], mut bits: u32) -> impl Iterator<Item = &'static str> + 'a {
+    let mut rest = names.iter();
+    std::iter::from_fn(move || {
+        for (bit, name) in rest.by_ref() {
+            if bits == 0 {
+                return None;
+            }
+            if bits & bit == *bit {
+                bits &= !bit;
+                return Some(*name);
+            }
         }
-        if bits & bit == *bit {
-            out.push(*name);
-            bits &= !bit;
-        }
-    }
-    out
+        None
+    })
 }
 
 /// `DAEMON_STATUS`.

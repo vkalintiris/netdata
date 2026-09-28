@@ -4,26 +4,80 @@
 
 use std::cell::Cell;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 
 use netdata_agent_inicfg::{Config, SECTION_GLOBAL};
 use netdata_agent_log::{Field, Priority, Source, Value, msgid, nd_log, push};
 
 use super::io::{self, Locations, STATUS_FILENAME};
+use netdata_agent_text::json::{JsonOptions, JsonWriter};
+
+use super::json::to_json_in;
 use super::{DaemonStatus, Product, StatusFile, dmi, exit_reason, from_json, live, rfc3339, to_json};
 use crate::build;
 
 /// `STACK_TRACE_INFO_PREFIX`.
 const INFO_PREFIX: &str = "info: ";
+/// `set_stack_trace_message_if_empty()`'s text without a stack trace backend (D87 F3).
+const NO_BACKEND: &str = "info: no stack trace backend available";
 /// `DAEMON_STATUS_FILE_ROLLING_SHUTDOWN_TIMINGS_HEADER`.
 pub const SHUTDOWN_TIMINGS_HEADER: &str = "info:  shutdown steps timings";
 
-/// The records and where they are saved.
+/// The records.
 struct Files {
-    loc: Locations,
     last: StatusFile,
     session: StatusFile,
+}
+
+/// Where the records are saved, set once by `init()`.
+static LOCATIONS: OnceLock<Locations> = OnceLock::new();
+
+/// `session_status_for_signals`: the last saved record in two slots, the one not being written the active one; a
+/// freeze keeps the active one for good (D91.2).
+static SNAPSHOTS: [Mutex<Option<StatusFile>>; 2] = [const { Mutex::new(None) }; 2];
+/// Bit 0 the active slot, bit 1 frozen.
+static SNAPSHOT_STATE: AtomicU32 = AtomicU32::new(0);
+const FROZEN: u32 = 2;
+
+/// The writer of the saves that must not allocate, reserved by `init()` (D91.3).
+static WRITER: Mutex<Option<JsonWriter>> = Mutex::new(None);
+
+/// What the largest record needs: a 4 KiB stack trace escaped six times over, and the rest.
+const WRITER_CAPACITY: usize = 64 * 1024;
+
+/// `daemon_status_file_publish_session_status_for_signals()`.
+fn publish(s: &StatusFile) {
+    let state = SNAPSHOT_STATE.load(Ordering::Acquire);
+    if state & FROZEN != 0 {
+        return;
+    }
+    let next = (state & 1) ^ 1;
+    *SNAPSHOTS[next as usize].lock().unwrap_or_else(PoisonError::into_inner) = Some(*s);
+    // a freeze meanwhile keeps the slot it found
+    let _ = SNAPSHOT_STATE.compare_exchange(state, next, Ordering::AcqRel, Ordering::Relaxed);
+}
+
+/// A lock for a signal handler: taken only when free (a poisoned one is taken).
+fn try_take<T>(lock: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    match lock.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(guard)) => Some(guard.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
+
+/// For a signal handler or a failed allocation (D91.2): the last save's record, frozen for good, changed by
+/// `change`, then saved without allocating; false when it cannot be had.
+pub(super) fn save_frozen(change: impl FnOnce(&mut StatusFile)) -> bool {
+    let state = SNAPSHOT_STATE.fetch_or(FROZEN, Ordering::AcqRel);
+    let Some(mut slot) = try_take(&SNAPSHOTS[(state & 1) as usize]) else { return false };
+    let Some(ds) = slot.as_mut() else { return false };
+    change(ds);
+    let (Some(loc), Some(mut writer)) = (LOCATIONS.get(), try_take(&WRITER)) else { return false };
+    let Some(w) = writer.as_mut() else { return false };
+    to_json_in(w, ds);
+    io::save(loc, STATUS_FILENAME, w.as_bytes(), false)
 }
 
 /// The one lock of every refresh and save (D88.9).
@@ -70,9 +124,13 @@ fn files() -> Option<Held> {
     Some(Held(guard))
 }
 
-/// `daemon_status_file_save()`: the record's JSON into the primary directory or a fallback, logged when `log`.
+/// `daemon_status_file_save()`: the record published for the signal handlers, then its JSON into the primary
+/// directory or a fallback, logged when `log`.
 fn save(f: &Files, log: bool) {
-    io::save(&f.loc, STATUS_FILENAME, &to_json(&f.session), log);
+    publish(&f.session);
+    if let Some(loc) = LOCATIONS.get() {
+        io::save(loc, STATUS_FILENAME, &to_json(&f.session), log);
+    }
 }
 
 /// `daemon_status_file_update_status()` under the lock: a refresh, then a logged save.
@@ -96,9 +154,9 @@ pub fn has_crashed(ds: &StatusFile) -> bool {
 /// falling back to the last record's (`machine_guid_get()`), before anything is saved.
 pub fn init(varlib: &str, cache: &str, user_config: &str) {
     live::set_dirs(varlib, cache);
-    let loc = Locations::new(varlib, cache);
+    let loc = LOCATIONS.get_or_init(|| Locations::new(varlib, cache));
     let mut last = StatusFile::default();
-    io::load(&loc, STATUS_FILENAME, true, |path| {
+    io::load(loc, STATUS_FILENAME, true, |path| {
         io::read_text(path, 65536).is_some_and(|text| from_json(&text, &mut last))
     });
     // what older versions of the file did not keep (a missing file is version 0)
@@ -121,8 +179,12 @@ pub fn init(varlib: &str, cache: &str, user_config: &str) {
 
     let mut session = StatusFile { v: super::VERSION, ..Default::default() };
     migrate(&mut session, &last, varlib, user_config);
+    let mut writer = JsonWriter::new(JsonOptions::DEFAULT);
+    writer.reserve(WRITER_CAPACITY);
+    *WRITER.lock().unwrap_or_else(PoisonError::into_inner) = Some(writer);
+    publish(&session);
     if let Some(mut files) = files() {
-        *files = Some(Files { loc, last, session });
+        *files = Some(Files { last, session });
     }
 }
 
@@ -263,6 +325,19 @@ fn timeout_record(s: &mut StatusFile, step: &str, timings: &str) {
     s.fatal.function.set("shutdown_timeout");
 }
 
+/// `daemon_status_file_out_of_memory()`, the allocator's callback (D91.5): the reason, C's text for a missing stack
+/// trace backend, and a save that allocates nothing, of the last saved record (frozen, so a signal that follows adds
+/// to it).
+pub fn out_of_memory() {
+    exit_reason::add(exit_reason::OUT_OF_MEMORY);
+    save_frozen(|ds| {
+        ds.exit_reason |= exit_reason::OUT_OF_MEMORY;
+        if stack_trace_is_empty(ds) {
+            ds.fatal.stack_trace.set(NO_BACKEND);
+        }
+    });
+}
+
 /// `copy_and_clean_thread_name_if_empty()`: the thread's tag (NO_NAME without one) unless a name is recorded, its
 /// `[N]` index cut.
 fn set_thread_if_empty(s: &mut StatusFile, tag: &str) {
@@ -322,7 +397,7 @@ fn fatal_record(s: &mut StatusFile, r: &netdata_agent_log::FatalRecord, tid: i32
         s.fatal.line = r.line;
     }
     if stack_trace_is_empty(s) {
-        s.fatal.stack_trace.set(format!("{INFO_PREFIX}no stack trace backend available"));
+        s.fatal.stack_trace.set(NO_BACKEND);
     }
 }
 

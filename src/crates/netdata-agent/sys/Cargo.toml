@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# counts each thread's allocations, for tests that prove a path allocates nothing (the daemon's dev-dependencies)
+alloc-count = []
+
 [lints]
 workspace = true
 

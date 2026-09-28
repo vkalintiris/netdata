@@ -269,21 +269,30 @@ pub fn print_date(
 
 /// `uuid_unparse_lower()`: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
 pub fn print_uuid_lower(dst: &mut Vec<u8>, uuid: &[u8; 16]) {
-    for (i, byte) in uuid.iter().enumerate() {
-        if matches!(i, 4 | 6 | 8 | 10) {
-            dst.push(b'-');
-        }
-        dst.push(HEX_DIGITS_LOWER[usize::from(byte >> 4)]);
-        dst.push(HEX_DIGITS_LOWER[usize::from(byte & 0xf)]);
-    }
+    let (text, len) = uuid_lower_text(uuid, false);
+    dst.extend_from_slice(&text[..len]);
 }
 
 /// `uuid_unparse_lower_compact()`: 32 lowercase hex digits.
 pub fn print_uuid_lower_compact(dst: &mut Vec<u8>, uuid: &[u8; 16]) {
-    for byte in uuid {
-        dst.push(HEX_DIGITS_LOWER[usize::from(byte >> 4)]);
-        dst.push(HEX_DIGITS_LOWER[usize::from(byte & 0xf)]);
+    let (text, len) = uuid_lower_text(uuid, true);
+    dst.extend_from_slice(&text[..len]);
+}
+
+/// The lowercase text of a UUID on the stack, dashed (36 bytes) or compact (32), and its length.
+pub fn uuid_lower_text(uuid: &[u8; 16], compact: bool) -> ([u8; 36], usize) {
+    let mut text = [0u8; 36];
+    let mut len = 0;
+    for (i, byte) in uuid.iter().enumerate() {
+        if !compact && matches!(i, 4 | 6 | 8 | 10) {
+            text[len] = b'-';
+            len += 1;
+        }
+        text[len] = HEX_DIGITS_LOWER[usize::from(byte >> 4)];
+        text[len + 1] = HEX_DIGITS_LOWER[usize::from(byte & 0xf)];
+        len += 2;
     }
+    (text, len)
 }
 
 /// `buffer_strcat_htmlescape()`.
