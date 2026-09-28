@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -248,8 +249,20 @@ func TestArchivedHostsDbengine(t *testing.T) {
 		LogsExtra: "    level = debug\n"}
 	p := StartPair(t, opts, parentIdentity)
 	compareArchived(t, p, childHost.Hostname)
-	// METASYNC's first store job runs 6 s after it starts
-	time.Sleep(7 * time.Second)
+	// METASYNC's first store job runs 6 s after it starts and its context cleanup scan 5 s after the job reached the
+	// host: both are waited for, where a fixed wait raced each agent's startup time
+	scanned := "Verified the contexts of host " + childHost.Hostname
+	deadline := time.Now().Add(30 * time.Second)
+	for _, side := range p.Each() {
+		for !slices.ContainsFunc(logLines(t, side.Daemon.Opts.RunDir, "daemon.log"), func(l string) bool {
+			return strings.Contains(l, scanned)
+		}) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: no context cleanup scan of the child", side.Role)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
 	for _, side := range p.Each() {
 		if err := side.Daemon.Stop(); err != nil {
 			t.Fatalf("stop %s: %v", side.Role, err)
