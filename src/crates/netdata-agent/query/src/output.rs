@@ -52,10 +52,14 @@ pub fn data_query_execute(
     agent: &Agent<'_>,
 ) -> DataResponse {
     let v2 = qt.request.version >= 2;
-    let r = if v2 {
-        run_v2(qt, window, control)
-    } else {
-        Some(run_v1(qt, window, control))
+    let r = {
+        // what the HEALTH loop yields to
+        let _query = netdata_agent_rrd::stream_control::UserDataQuery::start();
+        if v2 {
+            run_v2(qt, window, control)
+        } else {
+            Some(run_v1(qt, window, control))
+        }
     };
     // A cancelled or failed query leaves the response's initial content type.
     let mut response = DataResponse {

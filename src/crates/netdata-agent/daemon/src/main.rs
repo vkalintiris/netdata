@@ -25,6 +25,7 @@ mod dbengine;
 mod dbengine_stats;
 mod exit_reason;
 mod guid;
+mod health;
 mod heartbeat;
 mod host_labels;
 mod listen;
@@ -571,7 +572,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             netdata_agent_evloop::thread_create_failed("METASYNC", &err)
         ),
     };
-    let health_enabled = conf.health_load_config_defaults();
+    let health_defaults = conf.health_load_config_defaults();
+    let health_enabled = health_defaults.enabled;
     // nd_profile.storage_tiers and multidb_ctx: every host's tiers
     let (dbengine, grouping, backfill, out_of_memory_protection, multidb_disk_quota_mb) =
         match dbengine {
@@ -820,6 +822,19 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         cloud_conf_file: conf.cloud_conf_filename(),
         cloud_conf: std::sync::Mutex::new(std::mem::take(&mut conf.cloud)),
     });
+    // HEALTH, before PULSE in C's table, which starts it with health off too (D93.2); C carries on without it
+    let health_thread = match health::spawn(
+        Arc::clone(hosts.storage()),
+        conf.threads.thread_stack_size,
+        health_defaults.run_at_least_every_s,
+        health_defaults.postpone_s,
+    ) {
+        Ok(thread) => Some(thread),
+        Err(err) => {
+            nd_log!(Source::Daemon, Priority::Err, "{err}");
+            None
+        }
+    };
     // PULSE, a static thread started before the web server's as in C's table; C carries on without it
     let pulse_thread = if pulse_enabled {
         let localhost_update_every = i64::from(db.update_every);
@@ -968,6 +983,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let mut stream_pool = Some(stream_pool);
     let mut contexts_worker = Some(contexts_worker);
     let mut pulse_thread = pulse_thread;
+    let mut health_thread = health_thread;
     let mut backfill_thread = backfill_thread;
     let mut meta = meta;
     let mut context_db = context_db;
@@ -989,9 +1005,14 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 dbengine.flush_everything(false, false, true);
             }
         }
+        // the exporters, HEALTH and the web servers under one service wait
         shutdown::STOP_WEB_SERVERS => {
+            let deadline = std::time::Instant::now() + shutdown::WEB_SERVERS_WAIT;
+            if let Some(thread) = health_thread.take() {
+                thread.stop_within(shutdown::WEB_SERVERS_WAIT);
+            }
             if let Some(pool) = pool.take() {
-                let _ = pool.stop_within(Some(shutdown::WEB_SERVERS_WAIT));
+                let _ = pool.stop_within(Some(deadline.saturating_duration_since(std::time::Instant::now())));
             }
         }
         // PULSE, the stream threads and the BACKFILL threads under one service wait

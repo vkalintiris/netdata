@@ -3,7 +3,7 @@
 //! repository; D64.
 
 use std::sync::{Arc, OnceLock};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::dbengine::engine::mrg::{Handle, Mrg};
@@ -50,6 +50,8 @@ pub struct StorageLayout {
     pulse: Pulse,
     /// `metaqueue_delete_dimension_uuid()`: what removes a freed dimension's metadata row, installed by the daemon.
     freed_dimension_row: OnceLock<DimensionRowHook>,
+    /// `health_evloop_iteration`: the passes of the HEALTH loop.
+    health_iteration: AtomicU64,
 }
 
 /// A freed dimension's UUID to the metadata writer.
@@ -81,7 +83,18 @@ impl StorageLayout {
             extreme_cardinality: ExtremeCardinality::default(),
             pulse: Pulse::default(),
             freed_dimension_row: OnceLock::new(),
+            health_iteration: AtomicU64::new(0),
         }
+    }
+
+    /// `health_evloop_current_iteration()`.
+    pub fn health_iteration(&self) -> u64 {
+        self.health_iteration.load(Ordering::Relaxed)
+    }
+
+    /// A pass of the HEALTH loop begins; its number.
+    pub fn next_health_iteration(&self) -> u64 {
+        self.health_iteration.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     /// Installs what removes a freed dimension's metadata row; once.

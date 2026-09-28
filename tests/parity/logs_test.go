@@ -53,7 +53,7 @@ var timedRecords = regexp.MustCompile(`msg="Checking all hosts completed in |msg
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
 var cOnlyThreads = map[string]string{
 	"ACLKSYNC": "ACLK", "SDBUSWATCHER": "systemd bus watcher", "PLUGINSD": "plugins.d",
-	"SERVICE": "service thread", "HEALTH": "health", "ANALYTICS": "analytics",
+	"SERVICE": "service thread", "ANALYTICS": "analytics",
 	"EXPORTING": "exporting engine", "STATSD_FLUSH": "statsd",
 	"ACLK_MAIN": "ACLK", "OPEN_PGC": "the open cache's evictor (no open cache, D84.4)",
 	"REPLAY": "replication sender threads",

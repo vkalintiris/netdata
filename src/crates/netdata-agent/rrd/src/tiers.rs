@@ -3,34 +3,8 @@
 //! `update every × grouping` seconds. A completed window is parked and written later: at a second that is a multiple
 //! of the tier's flush modulo, when the next window completes, or when the collection ends. Decisions D72.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use netdata_agent_storage::storage_number::SN_FLAG_NOT_ANOMALOUS;
 use netdata_agent_storage::storage_point::StoragePoint;
-
-/// `backfill_runners`: the tier backfills running now, which streaming reports and waits on.
-static BACKFILL_RUNNERS: AtomicUsize = AtomicUsize::new(0);
-
-/// How many tier backfills run now.
-pub fn backfill_runners() -> usize {
-    BACKFILL_RUNNERS.load(Ordering::Acquire)
-}
-
-/// `stream_control_backfill_query_started()` and `_finished()`: a backfill counts while its guard lives.
-pub(crate) struct BackfillRunning;
-
-impl BackfillRunning {
-    pub(crate) fn start() -> Self {
-        BACKFILL_RUNNERS.fetch_add(1, Ordering::AcqRel);
-        BackfillRunning
-    }
-}
-
-impl Drop for BackfillRunning {
-    fn drop(&mut self) {
-        BACKFILL_RUNNERS.fetch_sub(1, Ordering::AcqRel);
-    }
-}
 
 /// `rrdset_collection_modulo_init()`'s range: the chart counter wraps below it.
 pub const COLLECTION_MODULO_RANGE: usize = 65535;

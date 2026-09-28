@@ -5,10 +5,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use netdata_agent_pulse::{Pulse, Settings};
+use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::Hosts;
 
 use crate::heartbeat::{Phase, Thread};
-use netdata_agent_rrd::clock::now_realtime_s;
 use crate::timezone::Timezone;
 use crate::{shutdown, startup, system};
 

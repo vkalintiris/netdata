@@ -24,7 +24,8 @@ use crate::labels::{FLAG_DONT_DELETE, Labels, SRC_AUTO};
 use crate::mode::{DbMode, align_entries_to_pagesize};
 use crate::pulse;
 use crate::storage::{Backfill, StorageLayout};
-use crate::tiers::{self, BackfillRunning, Rollup, TierRecord};
+use crate::stream_control::BackfillRunning;
+use crate::tiers::{self, Rollup, TierRecord};
 
 /// `RRD_ID_LENGTH_MAX`.
 pub const ID_LENGTH_MAX: usize = 1200;

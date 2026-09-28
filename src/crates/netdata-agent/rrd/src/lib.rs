@@ -17,6 +17,7 @@ pub mod pulse;
 pub mod retention;
 pub mod status;
 pub mod storage;
+pub mod stream_control;
 pub mod stream_path;
 pub mod system_info;
 #[cfg(test)]

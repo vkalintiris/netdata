@@ -63,7 +63,7 @@ pub fn reply(hosts: &Hosts, query: &[u8], now: i64) -> Reply {
         w.member_add_string("ingest_type", s.ingest_type.name());
         let ingest_status = reported_ingest_status(
             s.ingest_status,
-            netdata_agent_rrd::tiers::backfill_runners(),
+            netdata_agent_rrd::stream_control::backfill_runners(),
         );
         w.member_add_string("ingest_status", ingest_status.name());
         w.member_add_uint64("first_time_s", s.first_time_s as u64);

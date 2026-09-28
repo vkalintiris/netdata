@@ -1286,8 +1286,8 @@ impl Conf {
     }
 
     /// `health_load_config_defaults()`, in `rrd_init()` before localhost is created: every `[health]` default with
-    /// C's corrections and records. Health is not ported; only `enabled` has a reader yet.
-    pub fn health_load_config_defaults(&mut self) -> bool {
+    /// C's corrections and records. Health is not ported; `enabled` and the HEALTH loop's pacing have readers.
+    pub fn health_load_config_defaults(&mut self) -> HealthDefaults {
         let alarm_notify = format!("{}/alarm-notify.sh", self.primary_plugins_dir());
         let c = &mut self.netdata;
         let h = SECTION_HEALTH;
@@ -1309,8 +1309,9 @@ impl Conf {
         ) as u32;
         c.get_filename(h, "script to execute on alarm", Some(&alarm_notify));
         c.get(h, "enabled alarms", Some("*"));
-        c.get_duration_seconds(h, "run at least every", 10);
-        c.get_duration_seconds(h, "postpone alarms during hibernation for", 60);
+        // at least 1
+        let run_at_least_every_s = c.get_duration_seconds(h, "run at least every", 10).max(1);
+        let postpone_s = c.get_duration_seconds(h, "postpone alarms during hibernation for", 60);
         c.get_duration_seconds(h, "notification execution timeout", 120);
         let bound = if entries < HEALTH_LOG_ENTRIES_MIN {
             Some(("minimum", HEALTH_LOG_ENTRIES_MIN))
@@ -1342,8 +1343,22 @@ impl Conf {
             "Health log history is set to {retention} seconds ({} days)",
             retention / 86400
         );
-        enabled
+        HealthDefaults {
+            enabled,
+            run_at_least_every_s,
+            postpone_s,
+        }
     }
+}
+
+/// The `[health]` values the Rust agent reads so far.
+#[derive(Debug, Clone, Copy)]
+pub struct HealthDefaults {
+    pub enabled: bool,
+    /// `run at least every`: the HEALTH loop's pass interval.
+    pub run_at_least_every_s: i64,
+    /// `postpone alarms during hibernation for`, which the HEALTH loop's resume record names.
+    pub postpone_s: i64,
 }
 
 /// `health_internals.h` and `health.h` (the retention default is streaming's).

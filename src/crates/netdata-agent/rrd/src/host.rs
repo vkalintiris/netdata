@@ -270,6 +270,9 @@ pub struct Host {
     /// lock: when the attached receiver came (0 without one), when the last one left (0 while one is attached).
     receiver_last_connected_s: AtomicI64,
     receiver_last_disconnected_s: AtomicI64,
+    /// `host->health.evloop_iteration`: the HEALTH loop's pass when a receiver last attached or left; the host is
+    /// archived only after more than 10 more.
+    health_last_iteration: AtomicU64,
     /// `RRDHOST_FLAG_ORPHAN`: a child whose receiver has gone.
     orphan: AtomicBool,
     charts: Charts,
@@ -428,6 +431,7 @@ impl Host {
             receiver_connections: AtomicU32::new(0),
             receiver_last_connected_s: AtomicI64::new(0),
             receiver_last_disconnected_s: AtomicI64::new(0),
+            health_last_iteration: AtomicU64::new(0),
             orphan: AtomicBool::new(false),
             charts: Charts::new(
                 Arc::clone(&contexts),
@@ -881,6 +885,17 @@ impl Host {
         self.receiver_last_disconnected_s.load(Ordering::Relaxed)
     }
 
+    /// `rrdhost_set_health_evloop_iteration()`.
+    fn stamp_health_iteration(&self) {
+        self.health_last_iteration
+            .store(self.storage().health_iteration(), Ordering::Relaxed);
+    }
+
+    /// `rrdhost_health_evloop_last_iteration()`.
+    pub fn health_last_iteration(&self) -> u64 {
+        self.health_last_iteration.load(Ordering::Relaxed)
+    }
+
     /// An ephemeral host loaded from the metadata database counts as disconnected at its load
     /// (`sql_create_aclk_table_for_host()`), so that its cleanup time runs from then.
     pub fn set_receiver_last_disconnected_s(&self, seconds: i64) {
@@ -904,6 +919,7 @@ impl Host {
         self.receiver_last_connected_s
             .store(now_realtime_s(), Ordering::Relaxed);
         self.receiver_last_disconnected_s.store(0, Ordering::Relaxed);
+        self.stamp_health_iteration();
         self.orphan
             .store(false, std::sync::atomic::Ordering::Release);
         self.replication_reset();
@@ -1150,6 +1166,7 @@ impl Host {
             self.receiver_last_connected_s.store(0, Ordering::Relaxed);
             self.receiver_last_disconnected_s
                 .store(now_realtime_s(), Ordering::Relaxed);
+            self.stamp_health_iteration();
             self.orphan
                 .store(true, std::sync::atomic::Ordering::Release);
             self.contexts.record_first_time_changes(false);
@@ -1793,11 +1810,16 @@ mod tests {
         let first = slot();
         let times = |h: &Host| (h.receiver_last_connected_s() > 0, h.receiver_last_disconnected_s() > 0);
         assert_eq!(times(&host), (false, false));
+        host.storage().next_health_iteration();
+        host.storage().next_health_iteration();
         assert!(host.set_receiver(Arc::clone(&first)));
         assert_eq!(times(&host), (true, false), "attached: connected, not disconnected");
+        assert_eq!(host.health_last_iteration(), 2, "attached: stamped with the HEALTH pass");
         replicating(&chart);
+        host.storage().next_health_iteration();
         host.clear_receiver(&first);
         assert_eq!(times(&host), (false, true), "detached: disconnected, not connected");
+        assert_eq!(host.health_last_iteration(), 3, "detached: stamped again");
         assert!(reset(&chart), "detach resets");
         replicating(&chart);
         assert!(host.set_receiver(slot()));

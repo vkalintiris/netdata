@@ -108,6 +108,11 @@ impl Ticker {
         !self.stop.wait(wait_from(now, self.period, self.offset))
     }
 
+    /// Sleeps `wait` unless a stop comes first; false once one came.
+    pub fn sleep(&self, wait: Duration) -> bool {
+        !self.stop.wait(wait)
+    }
+
     /// Whether no stop was requested.
     pub fn running(&self) -> bool {
         !self.stop.requested()
