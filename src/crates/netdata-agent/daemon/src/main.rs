@@ -510,8 +510,10 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     conf::threads_set_stack_size(conf.threads.pthread_stack_size);
     startup.step("registry");
     startup.step("system info");
-    let (system_info, build_system_info) =
+    let (mut system_info, build_system_info) =
         system_info::startup(&conf.primary_plugins_dir(), &conf.dirs.user_config);
+    // rrdhost_create() of localhost: metric_correlations_version (D101.5; ml_capable stays 0 without ML)
+    system_info.mc_version = 1;
     // set_late_analytics_variables() → analytics_build_info(): C fills BUILD_INFO once, here
     let build_info = buildinfo::BuildInfo::new(&buildinfo::Inputs {
         dirs: &conf.dirs,
@@ -743,6 +745,23 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             }
         }
     };
+    // stream_sender_structures_init() of localhost, with the connector its first collection starts
+    let connector = {
+        let info = hosts.localhost().info();
+        netdata_agent_streaming::connector::Connector::new(
+            netdata_agent_streaming::sender::Settings::of(&stream_conf.send),
+            netdata_agent_streaming::parents::Local {
+                host_id: netdata_agent_text::parse::uuid_parse_flexi(hosts.localhost().machine_guid().as_bytes())
+                    .unwrap_or_default(),
+                user_agent: format!("{}/{}", info.program_name, info.program_version),
+                update_every: db.update_every,
+            },
+            stream_pool.handle(),
+            Arc::clone(&stream_pins),
+            conf.threads.thread_stack_size,
+        )
+    };
+    netdata_agent_streaming::sender::Sender::attach(hosts.localhost(), &connector);
     // stream_conf_is_parent() and stream_conf_is_child(), which PULSE reads
     let (stream_is_parent, stream_is_child) = (stream_conf.is_parent, stream_conf.send.enabled);
     // netdata_ssl_validate_certificate_sender, which the web server's thread reads
@@ -1039,6 +1058,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
         // PULSE, the stream threads and the BACKFILL threads under one service wait
         shutdown::STOP_STREAMING => {
+            // stream_threads_cancel(): the connector's attempt in progress stops
+            connector.cancel();
             let deadline = std::time::Instant::now() + shutdown::STREAMING_WAIT;
             if let Some(thread) = pulse_thread.take() {
                 thread.stop_within(deadline.saturating_duration_since(std::time::Instant::now()));
@@ -1049,6 +1070,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             backfill_thread = backfill_thread
                 .take()
                 .and_then(|thread| thread.stop_by(deadline));
+            // service_signal_exit(SERVICE_STREAMING_CONNECTOR): its thread removes the queued hosts and ends
+            connector.signal_exit();
         }
         shutdown::CANCEL_MAIN_THREADS => {
             if let Some(thread) = &backfill_thread {

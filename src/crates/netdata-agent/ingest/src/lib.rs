@@ -1235,6 +1235,8 @@ impl Parser {
         if tv.0 == 0 {
             tv = self.now_tv();
         }
+        // rrdset_timed_done() starts with it
+        self.host.stream_send_metrics_init();
         collection::timed_done(
             &chart,
             &self.host.hostname(),

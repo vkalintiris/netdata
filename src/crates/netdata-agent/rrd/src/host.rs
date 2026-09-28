@@ -65,13 +65,13 @@ impl StreamSend {
         })
     }
 
-    /// The parents as `stream_parent_add_one_unsafe()` records them from `foreach_entry_in_connection_string()`:
-    /// the first `:SSL` cuts an entry short.
-    fn parents(&self) -> impl Iterator<Item = &str> {
+    /// The parents as `stream_parent_add_one_unsafe()` records them from `foreach_entry_in_connection_string()`,
+    /// each with whether it uses TLS: the first `:SSL` cuts an entry short.
+    pub fn parents(&self) -> impl Iterator<Item = (&str, bool)> {
         self.destination
             .split(|c: char| c == ',' || (c.is_ascii() && netdata_agent_text::c::is_space(c as u8)))
             .filter(|entry| !entry.is_empty())
-            .map(|entry| entry.find(":SSL").map_or(entry, |at| &entry[..at]))
+            .map(|entry| entry.find(":SSL").map_or((entry, false), |at| (&entry[..at], true)))
     }
 }
 
@@ -89,7 +89,7 @@ fn log_stream_parents(info: &HostInfo) {
     let Some(send) = &info.stream_send else {
         return;
     };
-    for (n, parent) in send.parents().enumerate() {
+    for (n, (parent, _)) in send.parents().enumerate() {
         nd_log!(
             Source::Daemon,
             Priority::Debug,
@@ -263,6 +263,23 @@ pub mod pending_flags {
     pub const OBSOLETE_DIMENSIONS: u32 = 1 << 1;
 }
 
+/// `RRDHOST_FLAG_STREAM_SENDER_*`: the sender's state as the collectors read it.
+pub mod sender_flags {
+    /// Queued for its parents (until the sender is removed).
+    pub const ADDED: u32 = 1 << 0;
+    pub const CONNECTED: u32 = 1 << 1;
+    pub const READY_4_METRICS: u32 = 1 << 2;
+    /// The "not ready" record was written and the "ready" one is due.
+    pub const LOGGED_STATUS: u32 = 1 << 3;
+}
+
+/// A host's sender (`host->sender`) as the host and its collectors see it, set once when the host streams
+/// (`stream_sender_structures_init()`, D103.1).
+pub trait Upstream: Send + Sync + std::fmt::Debug {
+    /// `stream_sender_start_host()`: queue the host for its parents.
+    fn start(&self);
+}
+
 /// `struct rrdhost`.
 #[derive(Debug)]
 pub struct Host {
@@ -341,6 +358,10 @@ pub struct Host {
     /// labels, and at which version.
     labels_applied: AtomicBool,
     labels_applied_version: AtomicU32,
+    /// `RRDHOST_FLAG_STREAM_SENDER_*` ([`sender_flags`]).
+    sender_flags: AtomicU32,
+    /// `host->sender`, with `RRDHOST_OPTION_SENDER_ENABLED` as its presence.
+    upstream: OnceLock<Arc<dyn Upstream>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -475,6 +496,8 @@ impl Host {
             replicating_charts: AtomicU32::new(0),
             labels_applied: AtomicBool::new(false),
             labels_applied_version: AtomicU32::new(0),
+            sender_flags: AtomicU32::new(0),
+            upstream: OnceLock::new(),
             meta_flags,
             pending_flags,
             metadata_lifetime: RwLock::new(false),
@@ -1077,6 +1100,67 @@ impl Host {
                 .system_info
                 .hops
         }
+    }
+
+    /// Sets the host's sender (once).
+    pub fn set_upstream(&self, upstream: Arc<dyn Upstream>) {
+        let _ = self.upstream.set(upstream);
+    }
+
+    /// `host->sender` when the host streams (`rrdhost_has_stream_sender_enabled()`).
+    pub fn upstream(&self) -> Option<&Arc<dyn Upstream>> {
+        self.upstream.get()
+    }
+
+    pub fn sender_flags(&self) -> u32 {
+        self.sender_flags.load(Ordering::SeqCst)
+    }
+
+    pub fn sender_flags_set(&self, bits: u32) {
+        self.sender_flags.fetch_or(bits, Ordering::SeqCst);
+    }
+
+    pub fn sender_flags_clear(&self, bits: u32) {
+        self.sender_flags.fetch_and(!bits, Ordering::SeqCst);
+    }
+
+    /// `stream_send_metrics_init()` from `rrdset_timed_done()`: a host that streams but is not ready yet is queued
+    /// for its parents (once, while its collection is online) and says so once; the first collection after it
+    /// becomes ready says that. True when the collection's data are streamed.
+    pub fn stream_send_metrics_init(&self) -> bool {
+        let Some(upstream) = self.upstream.get() else {
+            return false;
+        };
+        let flags = self.sender_flags();
+        if flags & sender_flags::READY_4_METRICS == 0 {
+            // RRDHOST_FLAG_COLLECTOR_ONLINE
+            if self.is_online() && flags & sender_flags::ADDED == 0 {
+                upstream.start();
+            }
+            // one record per transition, where C's check-then-set can log twice in a race (D104.7)
+            let before = self.sender_flags.fetch_or(sender_flags::LOGGED_STATUS, Ordering::SeqCst);
+            if before & sender_flags::LOGGED_STATUS == 0 {
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Info,
+                    "STREAM SND '{}': streaming is not ready, not sending data to a parent...",
+                    self.hostname()
+                );
+            }
+            return false;
+        }
+        if flags & sender_flags::LOGGED_STATUS != 0
+            && self.sender_flags.fetch_and(!sender_flags::LOGGED_STATUS, Ordering::SeqCst) & sender_flags::LOGGED_STATUS
+                != 0
+        {
+            nd_log!(
+                Source::Daemon,
+                Priority::Info,
+                "STREAM SND '{}': streaming is ready, sending metrics to parent...",
+                self.hostname()
+            );
+        }
+        true
     }
 
     /// `stream_receiver_replication_reset()`: no chart is being replicated by a receiver that just came or went, so

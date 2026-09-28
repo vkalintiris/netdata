@@ -5,6 +5,7 @@ package stream
 import (
 	"bufio"
 	"bytes"
+	"io"
 	"net"
 	"net/url"
 	"regexp"
@@ -85,6 +86,10 @@ type Answer struct {
 	// StartStreaming answers each chart's CHART_DEFINITION_END with `REPLAY_CHART "<id>" "true" 0 0`: nothing to
 	// replay, start streaming (a child with REPLICATION sends a chart's data only after its parent's request).
 	StartStreaming bool
+	// Silent writes no reply and keeps the connection until the child closes it (a parent that never answers).
+	Silent bool
+	// CloseNow closes the connection without a reply.
+	CloseNow bool
 }
 
 // VCaps is the capabilities prompt with `caps`.
@@ -154,15 +159,26 @@ func (s *Session) Close() error {
 	return s.conn.Close()
 }
 
-// Parent is a scripted streaming parent on 127.0.0.1: it answers a child's `stream_info` probe with 404 (the child
-// keeps the parent as a candidate), records each STREAM request and every byte after it, and answers as `Script` says
-// (PlaintextAnswer when nil).
+// NotFound is the default answer to a `stream_info` probe: 404 with no content (the child keeps the parent as a
+// candidate).
+const NotFound = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+
+// Parent is a scripted streaming parent on 127.0.0.1: it answers a child's `stream_info` probe as `Probe` says
+// (NotFound when nil), an h2o `GET /stream` upgrade as `Upgrade` says (a 101 answer keeps the connection for the
+// STREAM request that follows), records each STREAM request and every byte after it, and answers as `Script` says
+// (PlaintextAnswer when nil). Set `Probe` and `Upgrade` before a child connects.
 type Parent struct {
-	Script   func(Request) Answer
+	Script func(Request) Answer
+	// Probe is the raw answer to a probe's raw request; nil bytes close the connection without one.
+	Probe func(raw string) []byte
+	// Upgrade is the raw answer to `GET /stream`; nil or empty bytes close without one.
+	Upgrade  func(raw string) []byte
 	ln       net.Listener
 	mu       sync.Mutex
 	sessions []*Session
 	probes   []string
+	probeRaw []string
+	upgrades []string
 }
 
 // StartParent listens on a free port of 127.0.0.1.
@@ -212,6 +228,36 @@ func (p *Parent) Probes() []string {
 	return append([]string(nil), p.probes...)
 }
 
+// ProbeRequests are the probes' raw requests so far.
+func (p *Parent) ProbeRequests() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.probeRaw...)
+}
+
+// Upgrades are the raw `GET /stream` requests so far.
+func (p *Parent) Upgrades() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.upgrades...)
+}
+
+// readRequest reads an HTTP request's head, up to and including its blank line.
+func readRequest(c net.Conn, br *bufio.Reader) (Request, bool) {
+	_ = c.SetReadDeadline(time.Now().Add(30 * time.Second))
+	var raw strings.Builder
+	for !strings.HasSuffix(raw.String(), "\r\n\r\n") {
+		line, err := br.ReadString('\n')
+		raw.WriteString(line)
+		if err != nil {
+			return Request{}, false
+		}
+	}
+	_ = c.SetReadDeadline(time.Time{})
+	lines := strings.Split(strings.TrimSuffix(raw.String(), "\r\n\r\n"), "\r\n")
+	return Request{Raw: raw.String(), Line: lines[0], Headers: lines[1:]}, true
+}
+
 // WaitSession waits up to `timeout` for the n-th session (1-based).
 func (p *Parent) WaitSession(n int, timeout time.Duration) *Session {
 	deadline := time.Now().Add(timeout)
@@ -228,24 +274,45 @@ func (p *Parent) WaitSession(n int, timeout time.Duration) *Session {
 
 func (p *Parent) serve(c net.Conn) {
 	br := bufio.NewReader(c)
-	_ = c.SetReadDeadline(time.Now().Add(30 * time.Second))
-	var raw strings.Builder
-	for !strings.HasSuffix(raw.String(), "\r\n\r\n") {
-		line, err := br.ReadString('\n')
-		raw.WriteString(line)
-		if err != nil {
+	req, ok := readRequest(c, br)
+	if !ok {
+		_ = c.Close()
+		return
+	}
+	if strings.HasPrefix(req.Line, "GET /stream ") {
+		p.mu.Lock()
+		p.upgrades = append(p.upgrades, req.Raw)
+		upgrade := p.Upgrade
+		p.mu.Unlock()
+		var answer []byte
+		if upgrade != nil {
+			answer = upgrade(req.Raw)
+		}
+		if len(answer) > 0 {
+			_, _ = c.Write(answer)
+		}
+		if !strings.HasPrefix(string(answer), "HTTP/1.1 101 ") {
+			_ = c.Close()
+			return
+		}
+		if req, ok = readRequest(c, br); !ok {
 			_ = c.Close()
 			return
 		}
 	}
-	_ = c.SetReadDeadline(time.Time{})
-	lines := strings.Split(strings.TrimSuffix(raw.String(), "\r\n\r\n"), "\r\n")
-	req := Request{Raw: raw.String(), Line: lines[0], Headers: lines[1:]}
 	if !strings.HasPrefix(req.Line, "STREAM ") {
 		p.mu.Lock()
 		p.probes = append(p.probes, req.Line)
+		p.probeRaw = append(p.probeRaw, req.Raw)
+		probe := p.Probe
 		p.mu.Unlock()
-		_, _ = c.Write([]byte("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
+		answer := []byte(NotFound)
+		if probe != nil {
+			answer = probe(req.Raw)
+		}
+		if answer != nil {
+			_, _ = c.Write(answer)
+		}
 		_ = c.Close()
 		return
 	}
@@ -260,6 +327,21 @@ func (p *Parent) serve(c net.Conn) {
 	p.mu.Lock()
 	p.sessions = append(p.sessions, s)
 	p.mu.Unlock()
+	if a.CloseNow {
+		_ = c.Close()
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
+		return
+	}
+	if a.Silent {
+		_, _ = io.Copy(io.Discard, br)
+		_ = c.Close()
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
+		return
+	}
 	if _, err := c.Write([]byte(a.Reply)); err != nil || a.Close {
 		_ = c.Close()
 		s.mu.Lock()

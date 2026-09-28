@@ -9,10 +9,21 @@ const STREAM_OLD_VERSION_CLAIM: u32 = 3;
 const STREAM_OLD_VERSION_CLABELS: u32 = 4;
 const STREAM_OLD_VERSION_LZ4: u32 = 5;
 
-/// `convert_stream_version_to_capabilities(version, NULL, false)`: legacy versions (and negative ones) map to fixed
-/// sets, anything above 5 is the bitmap itself; the result is ANDed with what this receiver offers. The C parameter
-/// is an `int32_t`, so callers pass `strtoul()` results truncated to 32 bits.
+/// `convert_stream_version_to_capabilities(version, NULL, false)`: the receiver's, against what it offers. The C
+/// parameter is an `int32_t`, so callers pass `strtoul()` results truncated to 32 bits.
 pub fn from_version(version: i32) -> u32 {
+    negotiate(version, ours(GLOBALLY_DISABLED))
+}
+
+/// `stream_our_capabilities(host, true)` of a sender: no ML runs here and the host's receiver, if any, did not
+/// negotiate ML_MODELS; `disabled` is the sender's own (`sender->disabled_capabilities`).
+pub fn sender_ours(disabled: u32) -> u32 {
+    ours(GLOBALLY_DISABLED | ML_MODELS | disabled)
+}
+
+/// `convert_stream_version_to_capabilities()` given `stream_our_capabilities()`: legacy versions (and negative ones)
+/// map to fixed sets, anything above 5 is the bitmap itself, ANDed with `ours`; ML_MODELS needs INTERPOLATED.
+pub fn negotiate(version: i32, ours: u32) -> u32 {
     let mut caps = match version {
         i32::MIN..=1 => V1,
         2 => V2 | HLABELS,
@@ -30,7 +41,7 @@ pub fn from_version(version: i32) -> u32 {
     if caps & V2 != 0 {
         caps &= !V1;
     }
-    let mut common = caps & ours(GLOBALLY_DISABLED);
+    let mut common = caps & ours;
     if common & INTERPOLATED == 0 {
         common &= !ML_MODELS;
     }
@@ -146,6 +157,16 @@ mod tests {
             from_version((VCAPS | ML_MODELS | DATA_WITH_ML | 1 << 29) as i32),
             VCAPS
         );
+    }
+
+    /// A child's offer: 469565432 with compression, as a C child's request; without, the harness default.
+    #[test]
+    fn a_senders_offer_is_c_s() {
+        assert_eq!(sender_ours(0), 469_565_432);
+        assert_eq!(sender_ours(COMPRESSIONS_AVAILABLE), 465_894_392);
+        assert_eq!(negotiate(3, sender_ours(0)), VN | HLABELS | CLAIM);
+        // the parent's VCAPS answer drops the legacy version bits
+        assert_eq!(negotiate(469_565_432, sender_ours(0)), 469_565_432 & !(V1 | V2 | VN));
     }
 
     #[test]

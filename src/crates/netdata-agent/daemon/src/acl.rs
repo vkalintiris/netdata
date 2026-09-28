@@ -117,7 +117,7 @@ pub struct Client {
 /// `getnameinfo(NI_NAMEREQD)` of a peer: glibc names a unix peer by the node name.
 fn reverse_name(peer: Option<IpAddr>) -> Result<String, String> {
     match peer {
-        Some(ip) => dns_lookup::lookup_addr(&ip).map_err(|e| crate::listen::gai_text(&e)),
+        Some(ip) => dns_lookup::lookup_addr(&ip).map_err(|e| netdata_agent_streaming::connect_to::gai_text(&e)),
         None => nix::unistd::gethostname()
             .map(|name| name.to_string_lossy().into_owned())
             .map_err(|e| e.to_string()),

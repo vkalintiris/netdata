@@ -3197,6 +3197,7 @@ version = "0.1.3"
 dependencies = [
  "brotli",
  "brotli-decompressor",
+ "dns-lookup",
  "flate2",
  "lz4_flex 0.12.2",
  "mio",
@@ -3206,9 +3207,12 @@ dependencies = [
  "netdata-agent-log",
  "netdata-agent-pluginsd-proto",
  "netdata-agent-rrd",
+ "netdata-agent-sys",
  "netdata-agent-text",
  "netdata-agent-tls",
  "nix",
+ "rand 0.9.5",
+ "serde_json",
  "socket2",
  "zstd",
 ]

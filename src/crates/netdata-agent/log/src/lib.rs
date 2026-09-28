@@ -24,7 +24,7 @@ pub use config::{
     limits_unlimited, reopen_log_files, set_facility, set_flood_protection, set_host_prefix,
     set_priority_level, set_user_settings,
 };
-pub use encode::{strerror, uv_strerror};
+pub use encode::{rfc3339_local, strerror, uv_strerror};
 pub use frame::{FrameGuard, Lazy, Value, push, push_shared};
 pub use limit::{DEFAULT_THROTTLE_LOGS, DEFAULT_THROTTLE_PERIOD, ErrorLimit};
 pub use model::{Field, Priority, Source, msgid};
@@ -332,6 +332,12 @@ fn captured(
         }
     });
     true
+}
+
+/// Whether `netdata_logger()` drops a record of this source and priority. C clears `errno` after every record it
+/// writes, and only then, so callers that carry C's `errno` across records need it.
+pub fn filtered(source: Source, priority: Priority) -> bool {
+    CAPTURE.with(|c| c.borrow().is_none()) && output::filtered(source, priority)
 }
 
 /// `netdata_logger()`: filtered by the source's minimum priority (except debug); daemon and collector records count

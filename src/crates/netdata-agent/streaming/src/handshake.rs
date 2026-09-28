@@ -22,6 +22,8 @@ pub const ERROR_NOT_PERMITTED: &str =
 /// `START_STREAMING_ERROR_BUSY_TRY_LATER`.
 pub const ERROR_BUSY_TRY_LATER: &str =
     "The server is too busy now to accept this request. Try later.";
+/// `START_STREAMING_ERROR_INTERNAL_ERROR`.
+pub const ERROR_INTERNAL_ERROR: &str = "The server encountered an internal error. Try later.";
 /// `START_STREAMING_ERROR_INITIALIZATION`.
 pub const ERROR_INITIALIZATION: &str = "The server is initializing. Try later.";
 

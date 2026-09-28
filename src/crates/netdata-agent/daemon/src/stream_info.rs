@@ -48,15 +48,7 @@ pub fn reply(hosts: &Hosts, query: &[u8], now: i64) -> Reply {
     // stream_receivers_currently_connected()
     let receivers = hosts.receivers_connected();
     w.member_add_uint64("receivers", receivers as u64);
-    // os_random32(): v4 UUIDs fix only bytes 6 and 8
-    let random = uuid::Uuid::new_v4();
-    let nonce = u32::from_ne_bytes([
-        random.as_bytes()[0],
-        random.as_bytes()[1],
-        random.as_bytes()[2],
-        random.as_bytes()[3],
-    ]);
-    w.member_add_uint64("nonce", u64::from(nonce));
+    w.member_add_uint64("nonce", u64::from(netdata_agent_streaming::random::os_random32()));
     if let Some(s) = status {
         w.member_add_string("db_status", s.db_status.name());
         w.member_add_string("db_liveness", s.db_liveness.name());

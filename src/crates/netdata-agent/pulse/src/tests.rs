@@ -621,7 +621,7 @@ fn a_parent_charts_its_children() {
 }
 
 /// The parents module's gates: a node that neither is a parent nor streams walks no host; the children's charts need an
-/// API key in stream.conf, the inbound nodes a parent's profile.
+/// API key in stream.conf, the inbound nodes a parent's profile, the outbound nodes `[stream] enabled`.
 #[test]
 fn the_parents_gates() {
     use netdata_agent_rrd::pulse::host_status::*;
@@ -654,9 +654,10 @@ fn the_parents_gates() {
     );
     assert_eq!(
         charted(false, true, true),
-        BASE + 4,
-        "a child's own receivers"
+        BASE + 4 + 1,
+        "a child's own receivers, and the outbound nodes"
     );
+    assert_eq!(charted(false, false, true), BASE + 1, "a child's outbound nodes");
     assert_eq!(
         charted(true, false, false),
         BASE + 2,

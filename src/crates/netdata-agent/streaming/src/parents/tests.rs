@@ -1,0 +1,232 @@
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::atomic::AtomicBool;
+
+use netdata_agent_log::Priority;
+use netdata_agent_rrd::host::HostInfo;
+use netdata_agent_rrd::mode::DbMode;
+
+use super::*;
+
+fn host() -> Host {
+    Host::new(
+        "5a1e0000-0000-4000-8000-0000000000cc",
+        true,
+        HostInfo {
+            hostname: "child".into(),
+            registry_hostname: "child".into(),
+            os: "linux".into(),
+            timezone: "UTC".into(),
+            abbrev_timezone: "UTC".into(),
+            utc_offset: 0,
+            program_name: "netdata".into(),
+            program_version: "v1".into(),
+            update_every: 1,
+            db_mode: DbMode::Ram,
+            history_entries: 4096,
+            health_enabled: false,
+            system_info: Default::default(),
+            replication_enabled: false,
+            replication_period: 0,
+            replication_step: 0,
+            stream_send: None,
+            cache_dir: None,
+        },
+    )
+}
+
+fn local() -> Local {
+    Local { host_id: [7; 16], user_agent: "netdata/v1".into(), update_every: 1 }
+}
+
+/// An HTTP answer carrying `body` with its length.
+fn json_answer(body: &str) -> &'static [u8] {
+    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len()).leak().as_bytes()
+}
+
+/// A parent that answers its first connection (the probe) with `answer` and holds the next open.
+fn parent(answer: &'static [u8]) -> (String, std::thread::JoinHandle<Vec<u8>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let handle = std::thread::spawn(move || {
+        let (mut probe, _) = listener.accept().unwrap();
+        let mut request = vec![0u8; 4096];
+        let n = probe.read(&mut request).unwrap();
+        request.truncate(n);
+        probe.write_all(answer).unwrap();
+        drop(probe);
+        if answer.starts_with(b"HTTP/1.1 404") {
+            let _ = listener.accept();
+        }
+        request
+    });
+    (addr, handle)
+}
+
+/// One pass over `parents`: whether it connected, the records (priority and text), the host's reason.
+fn pass(parents: &mut Parents) -> (bool, Vec<(Priority, String)>, Reason, SockError) {
+    let cancel = AtomicBool::new(false);
+    let th = Thread::new(&cancel);
+    let mut sock = NdSock::default();
+    let mut reason = Reason::NEVER;
+    let h = host();
+    let (ok, records) = netdata_agent_log::capture(|| {
+        parents.connect_to_one(&mut sock, &h, &local(), 1, &mut reason, 19999, 5, &th)
+    });
+    let records = records.into_iter().map(|r| (r.priority, r.message.unwrap_or_default())).collect();
+    (ok, records, reason, sock.error)
+}
+
+fn messages(records: &[(Priority, String)]) -> Vec<String> {
+    records.iter().map(|(_, m)| m.clone()).collect()
+}
+
+#[test]
+fn a_probe_answered_with_an_empty_404_keeps_the_parent_and_connects() {
+    let (addr, stub) = parent(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+    let mut parents = Parents::new([(addr.as_str(), false)].into_iter());
+    let (ok, records, reason, error) = pass(&mut parents);
+    assert!(ok);
+    assert_eq!((reason, error), (Reason::SP_CONNECTED, SockError::None));
+    let fd = records.last().unwrap().1.rsplit("fd ").next().unwrap().to_string();
+    assert_eq!(
+        messages(&records),
+        [
+            format!("STREAM PARENTS 'child': fetching stream info from '{addr}'..."),
+            format!("STREAM PARENTS 'child': stream info response from '{addr}' has invalid Content-Length"),
+            format!("STREAM PARENTS 'child': only 1 parent is available: '{addr}'"),
+            format!("STREAM PARENTS 'child': connecting to '{addr}' (default port: 19999, parent 1 of 1)..."),
+            format!("STREAM PARENTS 'child': connected to '{addr}' (default port: 19999, fd {fd}"),
+        ]
+    );
+    assert_eq!(parents.current().map(|d| (d.attempts, d.reason)), Some((1, Reason::PARENT_INTERNAL_ERROR)));
+    let request = String::from_utf8(stub.join().unwrap()).unwrap();
+    assert_eq!(
+        request,
+        format!(
+            "GET /api/v3/stream_info?machine_guid=5a1e0000-0000-4000-8000-0000000000cc HTTP/1.1\r\nHost: {addr}\r\n\
+             User-Agent: netdata/v1\r\nAccept: */*\r\nAccept-Encoding: identity\r\nTE: identity\r\nPragma: \
+             no-cache\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
+        )
+    );
+}
+
+#[test]
+fn a_c_parents_404_is_reported_and_its_members_kept() {
+    let (addr, _stub) = parent(json_answer(
+        r#"{"version":1,"status":404,"host_id":"11111111-2222-3333-4444-555555555555","nodes":3,"receivers":0,"nonce":7}"#,
+    ));
+    let mut parents = Parents::new([(addr.as_str(), false)].into_iter());
+    let (_, records, ..) = pass(&mut parents);
+    assert_eq!(
+        records[1],
+        (
+            Priority::Warning,
+            format!(
+                "STREAM PARENTS 'child': failed to extract fields from JSON stream info response from '{addr}': status \
+                 reported (404) is not OK (200) - JSON data: {{\"version\":1,\"status\":404,\"host_id\":\
+                 \"11111111-2222-3333-4444-555555555555\",\"nodes\":3,\"receivers\":0,\"nonce\":7}}"
+            )
+        )
+    );
+    let d = &parents.list[0];
+    assert_eq!((d.remote.nodes, d.remote.nonce, d.remote.status), (3, 7, 404));
+}
+
+#[test]
+fn a_parent_reporting_our_host_as_its_localhost_is_banned_for_good() {
+    let (addr, _stub) = parent(json_answer(
+        r#"{"version":1,"status":200,"host_id":"11111111-2222-3333-4444-555555555555","nodes":1,"receivers":0,"nonce":1,"db_status":"online","db_liveness":"live","ingest_type":"localhost","ingest_status":"online","first_time_s":1,"last_time_s":2}"#,
+    ));
+    let mut parents = Parents::new([(addr.as_str(), false)].into_iter());
+    let (ok, records, reason, error) = pass(&mut parents);
+    assert!(!ok);
+    assert_eq!((reason, error), (Reason::SP_NO_DESTINATION, SockError::NoDestinationAvailable));
+    assert_eq!(
+        &records[2..],
+        [
+            (
+                Priority::Warning,
+                format!(
+                    "STREAM PARENTS 'child': destination '{addr}' is banned permanently because it is the origin \
+                     server, but it is not in the stream path before us!"
+                )
+            ),
+            (
+                Priority::Debug,
+                "STREAM PARENTS 'child': no parents available (0 skipped but useful, 1 skipped not useful, 0 potential)"
+                    .to_string()
+            ),
+        ]
+    );
+    assert!(parents.list[0].banned_permanently);
+}
+
+#[test]
+fn a_refused_probe_postpones_and_blocks_its_parent() {
+    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let addr = format!("127.0.0.1:{port}");
+    let mut parents = Parents::new([(addr.as_str(), false)].into_iter());
+    let before = now_realtime_ut();
+    let (ok, records, _, error) = pass(&mut parents);
+    assert!(!ok);
+    // the connection's own socket never tried, so the connector logs nothing more
+    assert_eq!(error, SockError::NoDestinationAvailable);
+    assert_eq!(
+        messages(&records)[1..],
+        [
+            format!("Failed to connect to '127.0.0.1', port '{port}'"),
+            format!("STREAM PARENTS 'child': failed to connect for stream info to '{addr}': connection refused"),
+            format!("STREAM PARENTS 'child': only 1 parent is available: '{addr}'"),
+        ]
+    );
+    let d = &parents.list[0];
+    assert_eq!(d.reason, Reason::SP_CONNECTION_REFUSED);
+    assert!((before + 30_000_000..before + 61_000_000).contains(&d.postpone_until_ut));
+    assert!(is_blocked(&addr));
+    // the next pass counts it potential without a record
+    let (_, records, reason, _) = pass(&mut parents);
+    assert_eq!(
+        messages(&records),
+        ["STREAM PARENTS 'child': no parents available (0 skipped but useful, 0 skipped not useful, 1 potential)"]
+    );
+    assert_eq!(reason, Reason::SP_CONNECTION_REFUSED);
+}
+
+#[test]
+fn parents_rank_by_newest_data_and_shuffle_within_120_seconds() {
+    let mut parents = Parents::new([("a", false), ("b", false), ("c", false)].into_iter());
+    for (d, last) in parents.list.iter_mut().zip([100, 1000, 950]) {
+        d.remote.db_last_time_s = last;
+    }
+    let cancel = AtomicBool::new(false);
+    let th = Thread::new(&cancel);
+    let mut array = vec![0, 1, 2];
+    parents.rank(&mut array, "child", &th);
+    let mut first_two = [array[0], array[1]];
+    first_two.sort();
+    assert_eq!((first_two, array[2]), ([1, 2], 0));
+    assert!(parents.list[1].selection.random && !parents.list[0].selection.random);
+    assert_eq!(parents.list[0].selection.batch, 2);
+}
+
+#[test]
+fn delays_fall_within_c_s_bounds() {
+    for (min, max, low, high) in [(5, 60, 5, 60), (0, 0, 5, 5), (30, 10, 30, 30), (3600, 7200, 3600, 7200)] {
+        let now = now_realtime_ut();
+        let at = randomize_wait_ut(min, max);
+        let after = now_realtime_ut();
+        assert!(at >= now + low * 1_000_000, "{min} {max}");
+        assert!(at <= after + (high.max(low + 1)) * 1_000_000, "{min} {max}");
+    }
+}
+
+#[test]
+fn the_path_before_us_is_the_agent_itself_or_a_closer_hop() {
+    let entry = |id: u8, hops| PathEntry { host_id: [id; 16], hops, ..PathEntry::default() };
+    let path = [entry(1, 0), entry(2, 1)];
+    assert!(is_in_stream_path_before_us(&[9; 16], &path, &[9; 16], 1));
+    assert!(is_in_stream_path_before_us(&[9; 16], &path, &[1; 16], 1));
+    assert!(!is_in_stream_path_before_us(&[9; 16], &path, &[2; 16], 1));
+    assert!(!is_in_stream_path_before_us(&[0; 16], &path, &[0; 16], 1));
+}

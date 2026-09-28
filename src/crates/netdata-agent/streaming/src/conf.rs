@@ -49,11 +49,13 @@ pub struct Send {
     pub destination: String,
     pub api_key: String,
     pub send_charts_matching: String,
-    pub initial_clock_resync_iterations: i64,
+    /// C's `uint16_t`.
+    pub initial_clock_resync_iterations: u16,
     pub buffer_max_size: u64,
     pub replication_threads: i64,
     pub replication_prefetch: i64,
-    pub default_port: i64,
+    /// C's `uint16_t`.
+    pub default_port: u16,
     pub h2o: bool,
     pub timeout_s: i64,
     pub reconnect_delay_s: i64,
@@ -318,12 +320,14 @@ impl StreamConf {
             "buffer size bytes",
             s.buffer_max_size as i64,
         ) as u64;
-        s.default_port = c.get_number(SECTION_STREAM, "default port", s.default_port) as i32 as i64;
+        // (int) and (unsigned int) casts into uint16_t fields
+        s.default_port =
+            c.get_number(SECTION_STREAM, "default port", i64::from(s.default_port)) as i32 as u16;
         s.initial_clock_resync_iterations = c.get_number(
             SECTION_STREAM,
             "initial clock resync iterations",
-            s.initial_clock_resync_iterations,
-        ) as u32 as i64;
+            i64::from(s.initial_clock_resync_iterations),
+        ) as u32 as u16;
         s.ssl_validate_certificate = !c.get_boolean(
             SECTION_STREAM,
             "ssl skip certificate verification",

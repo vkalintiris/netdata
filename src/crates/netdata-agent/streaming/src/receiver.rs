@@ -29,7 +29,8 @@ use crate::conf::{Keepalive, ReceiverDefaults, StreamConf};
 use crate::decompress::Decompressor;
 use crate::handshake::{self, StreamRequest};
 use crate::pins::Pins;
-use crate::records::{self, Counters, Peer, Reason};
+use crate::reason::Reason;
+use crate::records::{self, Counters, Peer};
 
 /// `CONNECTION_PROBE_INTERVAL_SECONDS` and `CONNECTION_PROBE_COUNT` of the receiver's TCP keepalive.
 const KEEPALIVE_PROBE_INTERVAL_S: u32 = 10;
@@ -182,6 +183,8 @@ pub struct Pending {
 pub enum StreamMsg {
     Attach(Box<Attached>),
     Replay(Weak<ReceiverSlot>, ingest::ReplayRequest),
+    /// A sender's connection to its parent (`stream_sender_add_to_queue()`).
+    AttachSender(Box<crate::sender::Connected>),
 }
 
 /// A connection handed to a stream thread.
@@ -397,7 +400,7 @@ impl Receivers {
             machine_guid: request.machine_guid.clone(),
         };
         if let Err(denied) = validated {
-            peer.status(denied.message(), Reason::Denied, Priority::Warning);
+            peer.status(denied.message(), Reason::PARENT_DENIED_ACCESS, Priority::Warning);
             return PreAdmission::Reply(handshake::ERROR_NOT_PERMITTED, 401);
         }
         let guid = request.machine_guid.clone().unwrap_or_default();
@@ -407,7 +410,7 @@ impl Receivers {
                 Box::new(Refusal {
                     peer,
                     msg: "rejecting streaming connection; machine UUID is my own",
-                    reason: Reason::Localhost,
+                    reason: Reason::PARENT_IS_LOCALHOST,
                     priority: Priority::Debug,
                 }),
             );
@@ -418,7 +421,7 @@ impl Receivers {
                 &format!(
                     "rejecting streaming connection; rate limit, will accept new connection in {wait_s} secs"
                 ),
-                Reason::BusyTryLater,
+                Reason::PARENT_BUSY_TRY_LATER,
                 Priority::Notice,
             );
             return PreAdmission::Reply(handshake::ERROR_BUSY_TRY_LATER, 503);
@@ -446,7 +449,7 @@ impl Receivers {
             if host.hostname() != request.hostname.as_deref().unwrap_or_default() {
                 peer.status(
                     "rejecting streaming connection; machine GUID is connected with a different hostname",
-                    Reason::Denied,
+                    Reason::PARENT_DENIED_ACCESS,
                     Priority::Warning,
                 );
                 return PreAdmission::Reply(handshake::ERROR_NOT_PERMITTED, 401);
@@ -475,7 +478,7 @@ impl Receivers {
                         " (new connection not accepted)"
                     }
                 ),
-                Reason::AlreadyConnected,
+                Reason::PARENT_NODE_ALREADY_CONNECTED,
                 Priority::Warning,
             );
             return PreAdmission::Reply(handshake::ERROR_ALREADY_STREAMING, 409);
@@ -608,7 +611,7 @@ impl Receivers {
         if host.is_pending_context_load() {
             peer.status(
                 "rejecting streaming connection; host is initializing, retry later",
-                Reason::ParentIsInitializing,
+                Reason::PARENT_IS_INITIALIZING,
                 Priority::Notice,
             );
             let _ = send_timeout(
@@ -645,7 +648,7 @@ impl Receivers {
             Attach::AlreadyServed => {
                 peer.status(
                     "rejecting streaming connection; host is already served by another receiver",
-                    Reason::AlreadyConnected,
+                    Reason::PARENT_NODE_ALREADY_CONNECTED,
                     Priority::Info,
                 );
                 let _ = send_timeout(
@@ -659,7 +662,7 @@ impl Receivers {
                 peer.status(
                     "rejecting streaming connection; internal cleanup is in progress for this node, please retry \
                      shortly",
-                    Reason::BusyTryLater,
+                    Reason::PARENT_BUSY_TRY_LATER,
                     Priority::Info,
                 );
                 let _ = send_timeout(
@@ -713,7 +716,7 @@ impl Receivers {
         if let Err(errno) = send_timeout(&mut link, prompt.as_bytes(), Duration::from_secs(60)) {
             peer.status_errno(
                 "cannot reply back, dropping connection",
-                Reason::SendTimeout,
+                Reason::CONNECT_SEND_TIMEOUT,
                 Priority::Err,
                 errno,
             );
@@ -722,7 +725,7 @@ impl Receivers {
         }
         // svc_rrdhost_obsolete_all_charts(): the charts the child does not define again stay obsolete
         host.obsolete_all_charts();
-        peer.status(&connected_msg(&host), Reason::Never, Priority::Info);
+        peer.status(&connected_msg(&host), Reason::NEVER, Priority::Info);
         self.hosts.update_is_parent_label();
         let nonblocking = link.socket().map(|c| socket2::SockRef::from(c).set_nonblocking(true));
         if !matches!(nonblocking, Some(Ok(()))) {
@@ -820,6 +823,8 @@ fn connected_msg(host: &Host) -> String {
 /// (decisions D8).
 pub struct StreamWorker {
     children: Vec<Option<Child>>,
+    /// Senders connected to their parents, held without I/O until the sender runtime (D102.2).
+    senders: Vec<crate::sender::Connected>,
     pins: Arc<Mutex<Pins>>,
     tick: Option<TimerId>,
     /// `nd_profile.update_every`: how often every child is probed and checked for idleness.
@@ -967,6 +972,7 @@ impl StreamWorker {
         let now = Instant::now();
         StreamWorker {
             children: Vec::new(),
+            senders: Vec::new(),
             pins,
             tick: None,
             check_every: Duration::from_secs(u64::try_from(update_every).unwrap_or(1).max(1)),
@@ -1041,7 +1047,7 @@ impl StreamWorker {
                         Priority::Err,
                         "{at}socket closed by remote - closing connection"
                     );
-                    self.disconnect(cx, index, Reason::ClosedByRemote);
+                    self.disconnect(cx, index, Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE);
                     continue;
                 }
                 Err(e) if reset(&e) => {
@@ -1051,7 +1057,7 @@ impl StreamWorker {
                         Priority::Err,
                         "{at}socket closed by remote - closing connection"
                     );
-                    self.disconnect(cx, index, Reason::ClosedByRemote);
+                    self.disconnect(cx, index, Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE);
                     continue;
                 }
                 Err(e)
@@ -1067,7 +1073,7 @@ impl StreamWorker {
                         Priority::Err,
                         "{at}socket error detected: {text} - closing connection"
                     );
-                    self.disconnect(cx, index, Reason::SocketError);
+                    self.disconnect(cx, index, Reason::DISCONNECT_SOCKET_ERROR);
                     continue;
                 }
                 _ => {}
@@ -1095,7 +1101,7 @@ impl StreamWorker {
                     child.bytes_out,
                     child.sends
                 );
-                self.disconnect(cx, index, Reason::Timeout);
+                self.disconnect(cx, index, Reason::DISCONNECT_TIMEOUT);
             }
         }
     }
@@ -1167,7 +1173,7 @@ impl StreamWorker {
                      finished). We have requested {requested} and got replies for 0 replication commands. \
                      Disconnecting node to restore streaming."
                 );
-                self.disconnect(cx, index, Reason::ReplicationStalled);
+                self.disconnect(cx, index, Reason::DISCONNECT_REPLICATION_STALLED);
                 continue;
             }
             child.replication_checked = child.replication_progress;
@@ -1214,11 +1220,11 @@ impl StreamWorker {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return true,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 // only a zero write or a reset is the remote end closing; EPIPE is a write failure
-                Ok(_) => (Reason::ClosedByRemote, 0, 0),
+                Ok(_) => (Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, 0, 0),
                 Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
-                    (Reason::ClosedByRemote, -1, netdata_agent_log::errno_of(&e))
+                    (Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, -1, netdata_agent_log::errno_of(&e))
                 }
-                Err(e) => (Reason::WriteFailed, -1, netdata_agent_log::errno_of(&e)),
+                Err(e) => (Reason::DISCONNECT_SOCKET_WRITE_FAILED, -1, netdata_agent_log::errno_of(&e)),
             };
             let (reason, rc, errno) = failure;
             let _parser = (!remove).then(|| child.parser.log_frame());
@@ -1327,7 +1333,7 @@ impl StreamWorker {
             };
             match read {
                 Ok(0) => {
-                    let reason = failed(child, Reason::ClosedByRemote, 0);
+                    let reason = failed(child, Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, 0);
                     let _parser = child.parser.log_frame();
                     return self.disconnect(cx, index, reason);
                 }
@@ -1363,7 +1369,7 @@ impl StreamWorker {
                                     a.peer.ip,
                                     a.peer.port
                                 );
-                                return self.disconnect(cx, index, Reason::DecompressionFailed);
+                                return self.disconnect(cx, index, Reason::RCV_DECOMPRESSION_FAILED);
                             }
                             plain = out;
                             &plain[..]
@@ -1372,7 +1378,7 @@ impl StreamWorker {
                     for line in child.reader.push(received) {
                         if !child.parser.feed(&line) {
                             let _parser = child.parser.log_frame();
-                            return self.disconnect(cx, index, Reason::ParseError);
+                            return self.disconnect(cx, index, Reason::RCV_DISCONNECT_PARSER_FAILED);
                         }
                     }
                     // the charts just received may lower the update every the keepalive follows
@@ -1390,7 +1396,7 @@ impl StreamWorker {
                         let Some(child) = self.children[index].as_ref() else {
                             return;
                         };
-                        let reason = failed(child, Reason::ReadFailed, 0);
+                        let reason = failed(child, Reason::DISCONNECT_SOCKET_READ_FAILED, 0);
                         let _parser = child.parser.log_frame();
                         return self.disconnect(cx, index, reason);
                     }
@@ -1399,9 +1405,9 @@ impl StreamWorker {
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
                     let reason = if e.kind() == io::ErrorKind::ConnectionReset {
-                        Reason::ClosedByRemote
+                        Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE
                     } else {
-                        Reason::ReadFailed
+                        Reason::DISCONNECT_SOCKET_READ_FAILED
                     };
                     let reason = failed(child, reason, netdata_agent_log::errno_of(&e));
                     let _parser = child.parser.log_frame();
@@ -1430,14 +1436,14 @@ impl Worker for StreamWorker {
         let _frame = records::child_event(&child.frame);
         // the shutdown that woke the socket is not a remote close
         if child.attached.slot.stop_requested.load(Ordering::Acquire) {
-            return self.disconnect(cx, index, Reason::SignaledToStop);
+            return self.disconnect(cx, index, Reason::DISCONNECT_SIGNALED_TO_STOP);
         }
         let hangup = event.is_read_closed();
         if event.is_error() || (hangup && !event.is_readable()) {
             let reason = if hangup {
-                Reason::ClosedByRemote
+                Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE
             } else {
-                Reason::SocketError
+                Reason::DISCONNECT_SOCKET_ERROR
             };
             if event.is_error() {
                 Self::log_poll_error(child, reason);
@@ -1464,6 +1470,7 @@ impl Worker for StreamWorker {
         match msg {
             StreamMsg::Attach(attached) => self.attach(cx, *attached),
             StreamMsg::Replay(receiver, request) => self.replay(cx, &receiver, &request),
+            StreamMsg::AttachSender(connected) => self.senders.push(*connected),
         }
     }
 
@@ -1475,7 +1482,7 @@ impl Worker for StreamWorker {
             if child.attached.slot.stop_requested.load(Ordering::Acquire) {
                 let frame = Arc::clone(&child.frame);
                 let _frame = records::child_event(&frame);
-                self.disconnect(cx, index, Reason::SignaledToStop);
+                self.disconnect(cx, index, Reason::DISCONNECT_SIGNALED_TO_STOP);
                 continue;
             }
             // stream_path_retention_updated() from the RRDCONTEXT thread: its messages go out on this tick (D46
@@ -1504,7 +1511,7 @@ impl Worker for StreamWorker {
 
     fn stop(&mut self, cx: &mut Context<'_>) {
         for index in 0..self.children.len() {
-            self.disconnect(cx, index, Reason::Shutdown);
+            self.disconnect(cx, index, Reason::DISCONNECT_SHUTDOWN);
         }
     }
 }

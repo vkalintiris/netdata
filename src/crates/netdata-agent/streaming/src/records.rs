@@ -10,74 +10,7 @@ use netdata_agent_log::{
 };
 
 use crate::caps;
-
-/// `STREAM_HANDSHAKE`: the reasons the receiver logs, with `stream_handshake_error_to_string()` and
-/// `stream_handshake_error_to_response_code()`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reason {
-    /// `STREAM_HANDSHAKE_NEVER`, the "connected" status.
-    Never,
-    Localhost,
-    AlreadyConnected,
-    Denied,
-    SendTimeout,
-    BusyTryLater,
-    ParseError,
-    DecompressionFailed,
-    SignaledToStop,
-    Shutdown,
-    ReadFailed,
-    WriteFailed,
-    ClosedByRemote,
-    SocketError,
-    Timeout,
-    ReplicationStalled,
-    /// `STREAM_HANDSHAKE_PARENT_IS_INITIALIZING`: the host's contexts are still loading.
-    ParentIsInitializing,
-}
-
-impl Reason {
-    pub fn text(self) -> &'static str {
-        match self {
-            Reason::Never => "NEVER CONNECTED",
-            Reason::Localhost => "LOCALHOST",
-            Reason::AlreadyConnected => "ALREADY CONNECTED",
-            Reason::Denied => "DENIED",
-            Reason::SendTimeout => "SEND TIMEOUT",
-            Reason::BusyTryLater => "BUSY TRY LATER",
-            Reason::ParseError => "DISCONNECTED PARSE ERROR",
-            Reason::DecompressionFailed => "DISCONNECTED DECOMPRESSION FAILED",
-            Reason::SignaledToStop => "DISCONNECTED SIGNALED TO STOP",
-            Reason::Shutdown => "DISCONNECTED SHUTDOWN REQUESTED",
-            Reason::ReadFailed => "DISCONNECTED SOCKET READ FAILED",
-            Reason::WriteFailed => "DISCONNECTED SOCKET WRITE FAILED",
-            Reason::ClosedByRemote => "DISCONNECTED SOCKET CLOSED BY REMOTE END",
-            Reason::SocketError => "DISCONNECT SOCKET ERROR",
-            Reason::Timeout => "DISCONNECTED TIMEOUT",
-            Reason::ReplicationStalled => "REPLICATION STALLED",
-            Reason::ParentIsInitializing => "REMOTE IS INITIALIZING",
-        }
-    }
-
-    pub fn code(self) -> i64 {
-        match self {
-            Reason::Never => 204,
-            Reason::Localhost => 101,
-            Reason::AlreadyConnected => 409,
-            Reason::Denied => 403,
-            Reason::SendTimeout => 408,
-            Reason::BusyTryLater | Reason::Shutdown => 503,
-            Reason::ParseError => 400,
-            Reason::DecompressionFailed => 415,
-            Reason::SignaledToStop | Reason::ClosedByRemote => 499,
-            Reason::ReadFailed | Reason::WriteFailed => 502,
-            Reason::SocketError => 500,
-            Reason::Timeout => 504,
-            Reason::ReplicationStalled => 507,
-            Reason::ParentIsInitializing => 102,
-        }
-    }
-}
+use crate::reason::Reason;
 
 /// What the receiver's records print of the connection: `rpt->remote_ip`, `rpt->remote_port` and the request's
 /// hostname, key and machine GUID.
@@ -133,7 +66,7 @@ impl Peer {
             reason.text()
         );
         // "<msg>  (<REASON>)" with two spaces, or "<msg> NEVER CONNECTED"
-        let (open, close) = if reason == Reason::Never {
+        let (open, close) = if reason == Reason::NEVER {
             ("", "")
         } else {
             (" (", ")")
@@ -287,7 +220,7 @@ mod tests {
                 &peer(),
                 "host",
                 Some("lo"),
-                Reason::ClosedByRemote,
+                Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE,
                 &counters,
             );
             let anonymous = Peer::default();
@@ -296,7 +229,7 @@ mod tests {
                 &anonymous,
                 "host",
                 Some(&long),
-                Reason::SocketError,
+                Reason::DISCONNECT_SOCKET_ERROR,
                 &counters,
             );
         });
@@ -331,12 +264,12 @@ mod tests {
         let ((), records) = netdata_agent_log::capture(|| {
             peer().status(
                 "rejecting streaming connection; API key is not enabled in stream.conf",
-                Reason::Denied,
+                Reason::PARENT_DENIED_ACCESS,
                 Priority::Warning,
             );
             peer().status(
                 "connected and ready to receive data, new node",
-                Reason::Never,
+                Reason::NEVER,
                 Priority::Info,
             );
         });

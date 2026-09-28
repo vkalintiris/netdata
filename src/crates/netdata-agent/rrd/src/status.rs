@@ -21,6 +21,8 @@ pub enum DbLiveness {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IngestType {
     Localhost,
+    /// A vnode's (none exists here yet); parents report it in `stream_info`.
+    Virtual,
     Child,
     Archived,
 }
@@ -45,6 +47,47 @@ impl DbStatus {
     }
 }
 
+/// `ENUM_STR_DEFINE_FUNCTIONS`' `_2id()`: the variant whose name is exactly `text`, else `default`.
+fn from_name<T: Copy>(all: &[T], name: impl Fn(T) -> &'static str, text: &[u8], default: T) -> T {
+    all.iter().copied().find(|&v| name(v).as_bytes() == text).unwrap_or(default)
+}
+
+impl DbStatus {
+    /// `RRDHOST_DB_STATUS_2id()`.
+    pub fn from_name(text: &[u8]) -> Self {
+        from_name(&[DbStatus::Initializing, DbStatus::Queryable], DbStatus::name, text, DbStatus::Initializing)
+    }
+}
+
+impl DbLiveness {
+    /// `RRDHOST_DB_LIVENESS_2id()`.
+    pub fn from_name(text: &[u8]) -> Self {
+        from_name(&[DbLiveness::Stale, DbLiveness::Live], DbLiveness::name, text, DbLiveness::Stale)
+    }
+}
+
+impl IngestType {
+    /// `RRDHOST_INGEST_TYPE_2id()`.
+    pub fn from_name(text: &[u8]) -> Self {
+        let all = [IngestType::Localhost, IngestType::Virtual, IngestType::Child, IngestType::Archived];
+        from_name(&all, IngestType::name, text, IngestType::Archived)
+    }
+}
+
+impl IngestStatus {
+    /// `RRDHOST_INGEST_STATUS_2id()`.
+    pub fn from_name(text: &[u8]) -> Self {
+        let all = [
+            IngestStatus::Archived,
+            IngestStatus::Initializing,
+            IngestStatus::Replicating,
+            IngestStatus::Online,
+            IngestStatus::Offline,
+        ];
+        from_name(&all, IngestStatus::name, text, IngestStatus::Offline)
+    }
+}
+
 impl DbLiveness {
     /// `rrdhost_db_liveness_to_string()`.
     pub fn name(self) -> &'static str {
@@ -60,6 +103,7 @@ impl IngestType {
     pub fn name(self) -> &'static str {
         match self {
             IngestType::Localhost => "localhost",
+            IngestType::Virtual => "virtual",
             IngestType::Child => "child",
             IngestType::Archived => "archived",
         }

@@ -1,5 +1,5 @@
-//! `pulse-parents.c`: the inbound nodes per state and ephemerality, and each child's streaming charts, from one walk
-//! of the hosts. The outbound nodes and the extended reason charts are left out: there is no stream sender (D80.7).
+//! `pulse-parents.c`: the inbound nodes per state and ephemerality, the outbound nodes per state, and each child's
+//! streaming charts, from one walk of the hosts. The extended reason charts are left out (D80.4).
 
 use std::sync::Arc;
 
@@ -23,6 +23,26 @@ const INBOUND: [(u32, &str); 9] = [
     (RCV_REPLICATING, "replicating"),
     (RCV_RUNNING, "running"),
 ];
+
+/// `PULSE_OUTBOUND_STATE`, in C's order (a host's state is the first of these it has), with the outbound nodes
+/// chart's dimension of each, in the chart's order.
+const OUTBOUND: [u32; 8] =
+    [SND_OFFLINE, SND_CONNECTING, SND_PENDING, SND_WAITING, SND_REPLICATING, SND_RUNNING, SND_NO_DST, SND_NO_DST_FAILED];
+const OUTBOUND_DIMS: [(&str, u32); 8] = [
+    ("connecting", SND_CONNECTING),
+    ("pending", SND_PENDING),
+    ("offline", SND_OFFLINE),
+    ("waiting", SND_WAITING),
+    ("replicating", SND_REPLICATING),
+    ("running", SND_RUNNING),
+    ("no dst", SND_NO_DST),
+    ("failed", SND_NO_DST_FAILED),
+];
+
+/// `pulse_outbound_state()`.
+fn outbound_state(status: u32) -> Option<u32> {
+    OUTBOUND.into_iter().find(|&bit| status & bit != 0)
+}
 
 /// The per-child state chart's dimensions, by inbound state (none for local, virtual and loading).
 const CHILD_STATES: [Option<&str>; 9] = [
@@ -56,12 +76,14 @@ pub struct Gates {
 #[derive(Default)]
 pub(crate) struct Charts {
     nodes: [Option<WithDims>; 2],
+    outbound: Option<WithDims>,
 }
 
 impl Charts {
     /// `pulse_parents_do()`.
     pub fn update(&mut self, localhost: &Localhost<'_>, hosts: &Hosts, gates: Gates) {
         let mut inbound = [[0i64; INBOUND.len()]; 2];
+        let mut outbound = [0i64; OUTBOUND.len()];
         if gates.is_parent || gates.is_child {
             for host in hosts.all() {
                 let status = host.pulse_state();
@@ -76,11 +98,38 @@ impl Charts {
                         child_charts(localhost, &host, state);
                     }
                 }
+                if let Some(bit) = outbound_state(status) {
+                    outbound[OUTBOUND.iter().position(|&b| b == bit).unwrap_or(0)] += 1;
+                }
             }
         }
-        if !gates.is_parent {
-            return;
+        if gates.is_parent {
+            self.inbound(localhost, &inbound);
         }
+        if gates.is_child {
+            let (chart, dims) = self.outbound.get_or_insert_with(|| {
+                let chart = localhost.create(&Def {
+                    id: "netdata.streaming_outbound",
+                    family: "Streaming",
+                    context: Some("netdata.streaming_outbound"),
+                    title: "Outbound Nodes",
+                    units: "nodes",
+                    module: "pulse",
+                    priority: 130153,
+                    chart_type: ChartType::Line,
+                });
+                let dims = OUTBOUND_DIMS.iter().map(|&(name, _)| dim(&chart, name, 1, 1, Algorithm::Absolute)).collect();
+                (chart, dims)
+            });
+            for (rd, &(_, bit)) in dims.iter().zip(&OUTBOUND_DIMS) {
+                set(rd, outbound[OUTBOUND.iter().position(|&b| b == bit).unwrap_or(0)]);
+            }
+            localhost.done(chart);
+        }
+    }
+
+    /// The inbound nodes charts, per ephemerality.
+    fn inbound(&mut self, localhost: &Localhost<'_>, inbound: &[[i64; INBOUND.len()]; 2]) {
         for (idx, (kind, id)) in [
             ("permanent", "netdata.streaming_inbound_permanent"),
             ("ephemeral", "netdata.streaming_inbound_ephemeral"),

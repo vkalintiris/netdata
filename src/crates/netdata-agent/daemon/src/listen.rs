@@ -40,8 +40,6 @@ const MAX_LISTEN_FDS: usize = 50;
 const LARGE_SOCK_SIZE: usize = 32 * 1024 * 1024;
 /// `sizeof(sockaddr_un.sun_path) - 1`: what `strncpyz()` keeps of a unix path.
 const UNIX_PATH_MAX: usize = 107;
-/// glibc's `EAI_SYSTEM`.
-const EAI_SYSTEM: i32 = -11;
 
 /// One `bind to` definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,18 +132,6 @@ fn unix_address(path: &[u8]) -> std::io::Result<SockAddr> {
         path[..path.len().min(UNIX_PATH_MAX)].to_vec()
     };
     SockAddr::unix(OsStr::from_bytes(&bytes))
-}
-
-/// `gai_strerror()` of a failed lookup: dns-lookup prefixes it, and for `EAI_SYSTEM` it gives the OS error instead.
-pub fn gai_text(err: &dns_lookup::LookupError) -> String {
-    if err.error_num() == EAI_SYSTEM {
-        return "System error".to_string();
-    }
-    let text = err.to_string();
-    match text.strip_prefix("failed to lookup address information: ") {
-        Some(t) => t.to_string(),
-        None => text,
-    }
 }
 
 /// `sock_enlarge_rcv_buf()`: 32 MiB when smaller (the kernel caps it at twice `rmem_max`); errors are ignored.
@@ -421,7 +407,7 @@ impl Setup {
             let service = std::str::from_utf8(service)
                 .map_err(|_| "Servname not supported for ai_socktype")?;
             let results = dns_lookup::getaddrinfo(host, Some(service), Some(hints))
-                .map_err(|e| gai_text(&e))?;
+                .map_err(|e| netdata_agent_streaming::connect_to::gai_text(&e))?;
             Ok(results.filter_map(Result::ok).map(|a| a.sockaddr).collect())
         };
         let addrs = match lookup() {
@@ -645,13 +631,5 @@ mod tests {
         let def = [b"unix:", missing.as_os_str().as_bytes()].concat();
         s.bind_to_this(&def, 19999, 16);
         assert_eq!((s.listeners.len(), s.failed), (2, 1));
-    }
-
-    #[test]
-    fn gai_texts_lose_the_crate_prefix() {
-        let Err(err) = dns_lookup::getaddrinfo(Some("127.0.0.1"), Some("nosuchsvc"), None) else {
-            panic!("nosuchsvc resolved");
-        };
-        assert_eq!(gai_text(&err), "Servname not supported for ai_socktype");
     }
 }

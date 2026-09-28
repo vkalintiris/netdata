@@ -91,6 +91,8 @@ impl<'a> Localhost<'a> {
     /// `rrdset_done()`: the collection's time is now, and the chart's next is implicit after its first.
     pub fn done(&self, chart: &Chart) {
         let pending_next = chart.collection().counter_done != 0;
+        // rrdset_timed_done() starts with it
+        self.host.stream_send_metrics_init();
         timed_done(
             chart,
             &self.hostname,

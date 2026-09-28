@@ -85,9 +85,14 @@ fn timestamp(usec: u64) -> Option<String> {
     if usec == 0 {
         return None;
     }
-    // a time localtime_r() rejects leaves C's buffer empty, which logfmt prints as ""
+    Some(rfc3339_local(usec, 3))
+}
+
+/// `rfc3339_datetime_ut(..., usec, fractional_digits, false)`: local time. A time `localtime_r()` rejects leaves
+/// C's buffer empty.
+pub fn rfc3339_local(usec: u64, fractional_digits: usize) -> String {
     let Some(tm) = netdata_agent_sys::localtime((usec / 1_000_000) as i64) else {
-        return Some(String::new());
+        return String::new();
     };
     let civil = CivilTime {
         year: i64::from(tm.year),
@@ -97,7 +102,7 @@ fn timestamp(usec: u64) -> Option<String> {
         minute: i64::from(tm.min),
         second: i64::from(tm.sec),
     };
-    Some(rfc3339_datetime_local(&civil, tm.gmtoff, usec, 3))
+    rfc3339_datetime_local(&civil, tm.gmtoff, usec, fractional_digits)
 }
 
 /// `strerror_r()`'s text for an errno, which is what `std::io::Error` prints before its ` (os error N)`.
