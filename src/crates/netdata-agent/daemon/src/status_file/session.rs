@@ -144,9 +144,9 @@ fn save(f: &Files, log: bool) {
     }
 }
 
-/// `daemon_status_file_update_status()` under the lock: a refresh, then a logged save.
-fn update(f: &mut Files, status: DaemonStatus) {
-    live::refresh(&mut f.session, status);
+/// `daemon_status_file_update_status()` under the lock: a refresh with the counts taken before it, then a logged save.
+fn update(f: &mut Files, status: DaemonStatus, metrics: Option<super::Metrics>) {
+    live::refresh(&mut f.session, status, metrics);
     save(f, true);
 }
 
@@ -257,29 +257,32 @@ fn carry_over(s: &mut StatusFile, last: &StatusFile) {
 
 /// `daemon_status_file_update_status()`: refreshed with `status` (`None` keeps the current one) and saved.
 pub fn update_status(status: DaemonStatus) {
+    let metrics = live::metrics();
     if let Some(mut files) = files()
         && let Some(f) = files.as_mut()
     {
-        update(f, status);
+        update(f, status, metrics);
     }
 }
 
 /// `daemon_status_file_startup_step()`: the step (or none) as the record's function, saved as initializing; nothing
 /// once a fatal error is recorded.
 pub fn startup_step(step: Option<&str>) {
+    let metrics = live::metrics();
     let Some(mut guard) = files() else { return };
     let Some(f) = guard.as_mut() else { return };
     if !f.session.fatal.filename.is_empty() {
         return;
     }
     f.session.fatal.function.set(step.unwrap_or_default());
-    update(f, DaemonStatus::Initializing);
+    update(f, DaemonStatus::Initializing, metrics);
 }
 
 /// `daemon_status_file_shutdown_step()`: `shutdown(<step>)` (or none) as the record's function, the timings so far as
 /// its stack trace while it has none, saved as exiting; nothing once a fatal error is recorded or the shutdown timed
 /// out.
 pub fn shutdown_step(step: Option<&str>, timings: &str) {
+    let metrics = live::metrics();
     let Some(mut guard) = files() else { return };
     let Some(f) = guard.as_mut() else { return };
     if !f.session.fatal.filename.is_empty() {
@@ -298,7 +301,7 @@ pub fn shutdown_step(step: Option<&str>, timings: &str) {
     if !timings.is_empty() && stack_trace_is_empty(s) {
         s.fatal.stack_trace.set(timings);
     }
-    update(f, DaemonStatus::Exiting);
+    update(f, DaemonStatus::Exiting, metrics);
 }
 
 /// `daemon_status_file_shutdown_timeout()`: once, the shutdown-timeout reason, the timings as the stack trace, the

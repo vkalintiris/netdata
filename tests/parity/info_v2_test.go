@@ -19,8 +19,8 @@ import (
 // enabled flag, the candidate's, and the milestone that closes the difference.
 type capabilityDiff struct{ c, rust, closes string }
 
-// capabilityDiffs are those capabilities by name, as C answers under the harness's configuration (`[ml]` and
-// `[health]` off). A milestone that ports the subsystem deletes its entry; a candidate that matches C on a listed
+// capabilityDiffs are those capabilities by name, as the oracle (built with ML, D2) answers under the harness's
+// configuration (`[ml]` and `[health]` off). A milestone that ports the subsystem deletes its entry; a candidate that matches C on a listed
 // capability fails until then. `health` is off on both sides here, so it is not listed: with health on, C says
 // 2/true and the Rust agent 2/false until M9.
 var capabilityDiffs = map[string]capabilityDiff{
@@ -32,18 +32,43 @@ var capabilityDiffs = map[string]capabilityDiff{
 	"dyncfg":     {"2/true", "2/false", "M8 plugins.d"},
 }
 
-// infoV2Volatile hides what differs between two runs of one binary: the clocks, the durations, each agent's start
-// (the cloud status's `since` and `age`) and the live memory. The build info and the capabilities are compared on
-// their own (compareBuildinfoSlots, capabilityDiffs).
+// infoV2Volatile hides what differs between two runs of one binary: the clocks (their text's shape is compared),
+// the durations (C's constant zeros are not), each agent's start (the cloud status's `since` and `age`). The build
+// info's slots and the capabilities' values are compared on their own (compareBuildinfoSlots, capabilityDiffs).
 var infoV2Volatile = []Mask{
 	{"agents.[].now", "the clock"},
 	{"agents.[].application", "compared slot by slot"},
-	{"agents.[].capabilities", "compared by name"},
+	{"agents.[].capabilities.[].version", "compared by name"},
+	{"agents.[].capabilities.[].enabled", "compared by name"},
 	{"agents.[].cloud.since", "each agent's start"},
 	{"agents.[].cloud.age", "each agent's start"},
 	{"agents.[].db_size.[].to", "the clock"},
-	{"agents.[].timings", "durations"},
-	{"timings", "durations"},
+	{"agents.[].timings.query_ms", "durations"},
+	{"agents.[].timings.output_ms", "durations"},
+	{"agents.[].timings.total_ms", "durations"},
+	{"agents.[].timings.cloud_ms", "durations"},
+	{"timings.total_ms", "durations"},
+}
+
+// digitsRe finds the digits of a clock's text, which leaves its shape (a number, or an RFC 3339 date).
+var digitsRe = regexp.MustCompile(`[0-9]+`)
+
+// clockShapes are the shapes of the first agent's `now` and its tiers' `to`.
+func clockShapes(v Value) []string {
+	var out []string
+	if now, ok := agentMember(v, "now"); ok {
+		out = append(out, digitsRe.ReplaceAllString(now.String(), "9"))
+	}
+	if db, ok := agentMember(v, "db_size"); ok {
+		for _, tier := range db.Items {
+			for _, m := range tier.Members {
+				if m.Key == "to" {
+					out = append(out, digitsRe.ReplaceAllString(m.Value.String(), "9"))
+				}
+			}
+		}
+	}
+	return out
 }
 
 // infoV2Since hides a tier's retention start where it is not data: the memory engine's window ends now, and an
@@ -221,6 +246,9 @@ func compareInfoV2(t *testing.T, p *Pair, from string, requests [][2]string, mas
 		if oc, ok := agentMember(v[0], "capabilities"); ok {
 			cc, _ := agentMember(v[1], "capabilities")
 			compareCapabilities(t, path, oc, cc)
+		}
+		if o, c := clockShapes(v[0]), clockShapes(v[1]); strings.Join(o, " ") != strings.Join(c, " ") {
+			t.Errorf("%s: clocks: oracle %v, candidate %v", path, o, c)
 		}
 		for _, d := range Compare(ApplyMasks(v[0], masks), ApplyMasks(v[1], masks)) {
 			t.Errorf("%s: %s", path, d)

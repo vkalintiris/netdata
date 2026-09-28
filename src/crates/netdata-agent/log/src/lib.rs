@@ -540,7 +540,6 @@ pub fn fatal_at(file: &str, line: u32, function: &str, message: fmt::Arguments<'
 /// [`fatal()`], with `code` (file, line, function) in place of the call site: a frame that lives only while the
 /// record is logged, as the fatal MESSAGE_ID's does.
 fn fatal_with(errno: i32, location: &Location, code: Option<(&str, u32, &str)>, message: fmt::Arguments<'_>) -> ! {
-    static THREADS_IN_FATAL: AtomicUsize = AtomicUsize::new(0);
     let (file, line, function) = code.unwrap_or((location.file, location.line, (location.function)()));
     if IN_FATAL.with(|f| f.replace(true)) {
         output::write_stderr_raw(
@@ -589,6 +588,14 @@ fn fatal_with(errno: i32, location: &Location, code: Option<(&str, u32, &str)>, 
 }
 
 static FATAL_FINAL: std::sync::Mutex<Option<fn()>> = std::sync::Mutex::new(None);
+
+/// The threads that entered [`fatal()`].
+static THREADS_IN_FATAL: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether a thread is in [`fatal()`]: it exits without unwinding, so the locks it holds are never released.
+pub fn fatal_in_progress() -> bool {
+    THREADS_IN_FATAL.load(Ordering::SeqCst) > 0
+}
 
 /// `nd_log_register_fatal_final_cb()`: what `fatal()` runs before exiting; a later registration replaces it.
 pub fn register_fatal_final_callback(callback: fn()) {

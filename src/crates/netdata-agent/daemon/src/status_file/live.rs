@@ -266,9 +266,32 @@ fn system_info_once(s: &mut StatusFile, host: &Host) {
     super::product::normalize(s, HOST_PREFIX.get().map_or("", String::as_str));
 }
 
+/// `rrdstats_metadata_collect()` for a refresh (D92.2), taken before the status file's lock: none once the hosts are
+/// gone, or while a thread is in a fatal error, which exits without unwinding, so a tree lock it holds would stop the
+/// walk for good (the last counts stay).
+pub(super) fn metrics() -> Option<super::Metrics> {
+    if netdata_agent_log::fatal_in_progress() {
+        return None;
+    }
+    let m = hosts()?.metadata_stats();
+    let counts = |c: netdata_agent_rrd::metadata_stats::Counts| super::Counts {
+        collected: c.collected,
+        available: c.available,
+    };
+    Some(super::Metrics {
+        nodes_total: m.nodes_total,
+        nodes_receiving: m.nodes_receiving,
+        nodes_sending: m.nodes_sending,
+        nodes_archived: m.nodes_archived,
+        metrics: counts(m.metrics),
+        instances: counts(m.instances),
+        contexts: counts(m.contexts),
+    })
+}
+
 /// `daemon_status_file_refresh()`: the record from the live agent; `status` replaces the record's own unless it is
 /// `None`. The timings of a phase are measured while the record is in it.
-pub fn refresh(s: &mut StatusFile, status: DaemonStatus) {
+pub fn refresh(s: &mut StatusFile, status: DaemonStatus, metrics: Option<super::Metrics>) {
     let now_ut = now_realtime_ut();
     s.os_type = OsType::Linux;
     if s.timings.init_started_ut == 0 {
@@ -335,22 +358,8 @@ pub fn refresh(s: &mut StatusFile, status: DaemonStatus) {
     s.var_cache =
         DIRS.get().map_or_else(DiskSpace::default, |(_, cache)| netdata_agent_sys::disk_space(Path::new(cache)));
     s.system_cpus = system_cpus();
-    // rrdstats_metadata_collect() (D92.2)
-    if let Some(hosts) = &hosts {
-        let m = hosts.metadata_stats();
-        let counts = |c: netdata_agent_rrd::metadata_stats::Counts| super::Counts {
-            collected: c.collected,
-            available: c.available,
-        };
-        s.metrics = super::Metrics {
-            nodes_total: m.nodes_total,
-            nodes_receiving: m.nodes_receiving,
-            nodes_sending: m.nodes_sending,
-            nodes_archived: m.nodes_archived,
-            metrics: counts(m.metrics),
-            instances: counts(m.instances),
-            contexts: counts(m.contexts),
-        };
+    if let Some(metrics) = metrics {
+        s.metrics = metrics;
     }
 
     // at most once every 10 minutes
