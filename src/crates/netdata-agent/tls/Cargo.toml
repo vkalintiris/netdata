@@ -1,0 +1,16 @@
+[package]
+name = "netdata-agent-tls"
+description = "TLS of the netdata agent over OpenSSL: contexts, error records"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+netdata-agent-log = { workspace = true }
+openssl = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
