@@ -215,6 +215,11 @@ var writeLogMasks = []logMask{
 	{regexp.MustCompile(`(populated, size: )[0-9.]+ MiB, metrics: [0-9.]+ k`), "${1}X MiB, metrics: Y k"},
 }
 
+// restartLogMasks are writeLogMasks for daemons that restart on their own caches: the median start time is of each
+// one's own earlier starts.
+var restartLogMasks = append([]logMask{{regexp.MustCompile(`(median start up time is )\d+( ms)`), "${1}N${2}"}},
+	writeLogMasks...)
+
 // s3windows are the data windows the checks read: name, after, before.
 func (g s3gen) windows(end int64) map[string][2]int64 {
 	third := g.start + s3Span/3

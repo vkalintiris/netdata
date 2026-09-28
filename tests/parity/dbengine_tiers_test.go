@@ -9,7 +9,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -335,9 +334,6 @@ func TestDbengineTiers(t *testing.T) {
 			[2]Role{"handback-oracle", "handback-candidate"})
 		g.compareTierWindows(t, h, end)
 	})
-	// each side restarts on its own cache: the median start time is of its own earlier starts
-	restartMasks := append([]logMask{{regexp.MustCompile(`(median start up time is )\d+( ms)`), "${1}N${2}"}},
-		writeLogMasks...)
 	// fewer tiers (S7a, D93): tiers 1 and 2 are neither read nor touched, every tier asked for and the planner answer
 	// from tier 0 alone; back at three tiers the windows read as before
 	t.Run("tiers-lower", func(t *testing.T) {
@@ -356,7 +352,7 @@ func TestDbengineTiers(t *testing.T) {
 				t.Fatalf("stop %s: %v", side.Role, err)
 			}
 		}
-		compareLogFilesWith(t, l, restartMasks, "daemon.log")
+		compareLogFilesWith(t, l, restartLogMasks, "daemon.log")
 		lowered := [2]string{filepath.Join(l.Oracle.Opts.RunDir, "cache"), filepath.Join(l.Candidate.Opts.RunDir, "cache")}
 		for i, side := range l.Each() {
 			if got := tierHashes(t, lowered[i], 1, 2); got != before[i] {
@@ -378,7 +374,7 @@ func TestDbengineTiers(t *testing.T) {
 				t.Fatalf("stop %s: %v", side.Role, err)
 			}
 		}
-		compareLogFilesWith(t, r, restartMasks, "daemon.log")
+		compareLogFilesWith(t, r, restartLogMasks, "daemon.log")
 		raised := [2]string{filepath.Join(r.Oracle.Opts.RunDir, "cache"), filepath.Join(r.Candidate.Opts.RunDir, "cache")}
 		if o, c := tierFiles(t, raised[0]), tierFiles(t, raised[1]); o != c {
 			t.Errorf("files:\noracle:    %s\ncandidate: %s", o, c)

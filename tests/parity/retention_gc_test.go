@@ -121,13 +121,13 @@ func gcCharts(t *testing.T, d *daemon.Daemon, context string) []string {
 	return ids
 }
 
-// gcStart has C write the seed into `tiers` tiers, starts both daemons on copies with a tier-0 retention time that
-// deletes file 1 at the first retention check (and dbExtra in [db]), and waits for the deletion. The window and the
-// D30 victim: the gc.c0 dimension with the highest UUID, the last entry of file 2's list, whose file-1 pages C's
-// walk skips there.
-func gcStart(t *testing.T, tiers int, dbExtra string) (*Pair, daemon.Options, int64, int64, string) {
+// gcStart has C write the seed into `seedTiers` tiers, starts both daemons at `tiers` tiers on copies with a tier-0
+// retention time that deletes file 1 at the first retention check (and dbExtra in [db]), and waits for the deletion.
+// The window and the D30 victim: the gc.c0 dimension with the highest UUID, the last entry of file 2's list, whose
+// file-1 pages C's walk skips there.
+func gcStart(t *testing.T, seedTiers, tiers int, dbExtra string) (*Pair, daemon.Options, int64, int64, string) {
 	t.Helper()
-	seed, start, end := gcSeed(t, tiers)
+	seed, start, end := gcSeed(t, seedTiers)
 	cutoff := (v2EndIn(t, seed, 1) + v2EndIn(t, seed, 2)) / 2
 	opts := daemon.Options{StorageTiers: tiers, TierRetentionMB: [3]int{25, 25, 25}, SeedCache: seed, PulseOff: true,
 		TierRetentionTime: [3]string{fmt.Sprintf("%ds", time.Now().Unix()-cutoff)}, DBExtra: dbExtra,
@@ -183,7 +183,8 @@ func gcRetention(t *testing.T, p *Pair, victim string, start, end int64) ([2]map
 		f, _ := strconv.ParseInt(strings.Split(r[victim][0], "..")[0], 10, 64)
 		return f
 	}
-	if first(retention[0]) <= first(retention[1]) {
+	// C against C, both walks date it alike
+	if p.Candidate.Opts.Binary != p.Oracle.Opts.Binary && first(retention[0]) <= first(retention[1]) {
 		t.Errorf("the victim %s on tier 0: oracle %s, candidate %s; want C's later (its walk)", victim,
 			retention[0][victim][0], retention[1][victim][0])
 	}
@@ -228,6 +229,50 @@ func gcDimFirstTimes(t *testing.T, d *daemon.Daemon) map[string]int64 {
 	return out
 }
 
+// compareGCTables compares the metadata tables the context cleanup scan deletes from.
+func compareGCTables(t *testing.T, caches [2]string) {
+	t.Helper()
+	args := []string{"--table", "dimension", "--table", "chart", "--table", "chart_label",
+		"--table", "ctx_metadata_cleanup", "--mask", "ctx_metadata_cleanup.date_created"}
+	var dumps [2]string
+	for i := range caches {
+		dumps[i] = dumpDB(t, filepath.Join(caches[i], "netdata-meta.db"), args...)
+	}
+	if dumps[0] != dumps[1] {
+		t.Errorf("tables differ:\noracle:\n%s\ncandidate:\n%s", dumps[0], dumps[1])
+	}
+}
+
+// waitGCPass waits until each daemon lists only gc.x of gcchild's contexts: the deep pass 120 s after the deletion,
+// on the worker's next tick.
+func waitGCPass(t *testing.T, p *Pair) {
+	t.Helper()
+	deadline := time.Now().Add(150 * time.Second)
+	for _, side := range p.Each() {
+		for strings.Join(gcContextIDs(t, side.Daemon), " ") != "gc.x" {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: gcchild's contexts after the pass: %v", side.Role, gcContextIDs(t, side.Daemon))
+			}
+			time.Sleep(time.Second)
+		}
+	}
+}
+
+// waitGCScan waits for each daemon's context cleanup scan of gcchild (about 312 s after the start), which deletes
+// gc.y's rows; the one before it found no cleanup row of gcchild and logged nothing of it.
+func waitGCScan(t *testing.T, p *Pair) {
+	t.Helper()
+	scans := time.Now().Add(240 * time.Second)
+	for _, side := range p.Each() {
+		for !strings.Contains(strings.Join(scanRecords(t, side.Daemon), "\n"), "Verified the contexts of host gcchild") {
+			if time.Now().After(scans) {
+				t.Fatalf("%s: no scan of gcchild: %q", side.Role, scanRecords(t, side.Daemon))
+			}
+			time.Sleep(time.Second)
+		}
+	}
+}
+
 // TestRetentionContextsGC (check `retention.contexts-gc`, S5 commit 7, D77): the contexts' deep pass 120 s after a
 // rotation. C writes a one-tier cache where gcchild's context gc.y and gc.x's chart gc.c1 have data in tier 0's file 1
 // only (gcSeed); both daemons start on copies with a retention time that deletes file 1 at the first retention check.
@@ -239,40 +284,13 @@ func TestRetentionContextsGC(t *testing.T) {
 	if os.Getenv("PARITY_LONG") == "" {
 		t.Skip("PARITY_LONG unset (about 6 minutes)")
 	}
-	p, opts, start, end, victim := gcStart(t, 1, "")
-	// the pass runs 120 s after the deletion, on the worker's next tick
-	deadline := time.Now().Add(150 * time.Second)
-	for _, side := range p.Each() {
-		for strings.Join(gcContextIDs(t, side.Daemon), " ") != "gc.x" {
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: gcchild's contexts after the pass: %v", side.Role, gcContextIDs(t, side.Daemon))
-			}
-			time.Sleep(time.Second)
-		}
-	}
+	p, opts, start, end, victim := gcStart(t, 1, 1, "")
+	waitGCPass(t, p)
 	live, rules := gcRetention(t, p, victim, start, end)
 	compareGetWith(t, p, gcContexts, rules)
-	// the next context cleanup scan (about 312 s after the start) deletes gc.y's rows; the one before it found no
-	// cleanup row of gcchild and logged nothing of it
-	scans := time.Now().Add(240 * time.Second)
-	for _, side := range p.Each() {
-		for !strings.Contains(strings.Join(scanRecords(t, side.Daemon), "\n"), "Verified the contexts of host gcchild") {
-			if time.Now().After(scans) {
-				t.Fatalf("%s: no scan of gcchild: %q", side.Role, scanRecords(t, side.Daemon))
-			}
-			time.Sleep(time.Second)
-		}
-	}
+	waitGCScan(t, p)
 	caches := stopBoth(t, p)
-	args := []string{"--table", "dimension", "--table", "chart", "--table", "chart_label",
-		"--table", "ctx_metadata_cleanup", "--mask", "ctx_metadata_cleanup.date_created"}
-	var dumps [2]string
-	for i := range caches {
-		dumps[i] = dumpDB(t, filepath.Join(caches[i], "netdata-meta.db"), args...)
-	}
-	if dumps[0] != dumps[1] {
-		t.Errorf("tables differ:\noracle:\n%s\ncandidate:\n%s", dumps[0], dumps[1])
-	}
+	compareGCTables(t, caches)
 	compareLogFiles(t, p, "daemon.log")
 	// the candidate's retention is what its files left give (a restart rebuilds it from them, C's too)
 	exact := restarted(t, opts, parentIdentity, caches, gcchild.Hostname, start, end)
@@ -292,7 +310,7 @@ func TestRetentionExtremeCardinality(t *testing.T) {
 	if os.Getenv("PARITY_LONG") == "" {
 		t.Skip("PARITY_LONG unset (about 4 minutes)")
 	}
-	p, opts, start, end, victim := gcStart(t, 3,
+	p, opts, start, end, victim := gcStart(t, 3, 3,
 		"extreme cardinality keep instances = 1\nextreme cardinality min ephemerality = 0\n")
 	deadline := time.Now().Add(150 * time.Second)
 	for _, side := range p.Each() {
@@ -314,4 +332,53 @@ func TestRetentionExtremeCardinality(t *testing.T) {
 	if got, want := live[1][victim][0], exact[victim][0]; got != want {
 		t.Errorf("candidate: the victim %s tier 0 %s after the pass, %s from the files left", victim, got, want)
 	}
+}
+
+// TestDbengineTiersLoweredGC (check `dbengine.tier-change`, case lowered-gc, S7a remainder, D93): C writes the gc
+// workload into three tiers (gcSeed), so gc.y's rollups stay in tiers 1 and 2 once tier 0's file 1 goes; both daemons
+// run on copies at one tier, where that deletion leaves gc.y no retention: the deep pass removes it and the next
+// context cleanup scan deletes its rows, while the files of tiers 1 and 2 stay as they were. Back at three tiers their
+// rollups are read again, but gc.y, without its metadata, stays gone. Compared: the contexts and every metric's
+// retention at one tier (the D30 victim's tier 0 apart) and after the restore, the metadata tables, both runs' daemon
+// logs.
+func TestDbengineTiersLoweredGC(t *testing.T) {
+	if os.Getenv("PARITY_LONG") == "" {
+		t.Skip("PARITY_LONG unset (about 8 minutes)")
+	}
+	p, opts, start, end, victim := gcStart(t, 3, 1, "")
+	var before [2]string
+	for i, side := range p.Each() {
+		before[i] = tierHashes(t, filepath.Join(side.Daemon.Opts.RunDir, "cache"), 1, 2)
+	}
+	waitGCPass(t, p)
+	_, rules := gcRetention(t, p, victim, start, end)
+	compareGetWith(t, p, gcContexts, rules)
+	waitGCScan(t, p)
+	caches := stopBoth(t, p)
+	compareGCTables(t, caches)
+	compareLogFiles(t, p, "daemon.log")
+	for i, side := range p.Each() {
+		if got := tierHashes(t, caches[i], 1, 2); got != before[i] {
+			t.Errorf("%s: one tier changed the files of tiers 1 and 2", side.Role)
+		}
+	}
+	o := opts
+	o.StorageTiers = 3
+	r := startPair(t, o, parentIdentity, binaries(t), caches, [2]Role{"restore-oracle", "restore-candidate"})
+	for _, side := range r.Each() {
+		if got := gcContextIDs(t, side.Daemon); strings.Join(got, " ") != "gc.x" {
+			t.Errorf("%s: gcchild's contexts at three tiers again: %v", side.Role, got)
+		}
+	}
+	// a restart rebuilds the victim's retention from the files left, on both sides
+	var got [2]map[string][]string
+	for i, side := range r.Each() {
+		got[i] = tierRetention(t, side.Daemon, gcchild.Hostname, tierUUIDs(t, side.Daemon, gcchild.Hostname), start, end)
+	}
+	for _, d := range retentionDiff(got[1], got[0]) {
+		t.Errorf("at three tiers again: candidate %s, oracle in parentheses", d)
+	}
+	compareGetWith(t, r, gcContexts, dbengineReadRules)
+	stopBoth(t, r)
+	compareLogFilesWith(t, r, restartLogMasks, "daemon.log")
 }
