@@ -5,9 +5,7 @@ use std::sync::Arc;
 
 use super::super::duration_hist::DurationHistogram;
 use super::groups::{ScopeTraces, UnsetRows, add_trace};
-use super::query::{
-    ExploreQuery, ExploreSelection, HIDDEN_FIELDS, STATUS_FIELD, UNSET_FACET_FIELDS,
-};
+use super::query::{ExploreQuery, ExploreSelection, HIDDEN_FIELDS, STATUS_FIELD};
 use super::rows::{RowsSpec, SourceRows, source_rows};
 
 /// A readable source's numbers for the request.
@@ -15,7 +13,7 @@ use super::rows::{RowsSpec, SourceRows, source_rows};
 pub(super) struct ExploreShard {
     /// Scope rows in the window.
     pub matched: u64,
-    /// Of which `status_code=ERROR`.
+    /// Of which `status_code=error`.
     pub errors: u64,
     /// Scope rows per bucket stacked by the stack field; `None` when the
     /// field is high-cardinality in this source (see `other`).
@@ -34,10 +32,6 @@ pub(super) struct ExploreShard {
     pub selection_matched: u64,
     pub selection_facets: Vec<sfst::FacetResult>,
     pub facet_totals: BTreeMap<String, (u64, u64)>,
-    /// Per faceted field of [`UNSET_FACET_FIELDS`] low or mid cardinality
-    /// here: its `(scope, selection)` rows without a value, the field's own
-    /// chips dropped.
-    pub facet_unset: BTreeMap<String, (u64, u64)>,
     /// Faceted fields that are high-cardinality here.
     pub facet_high: BTreeSet<String>,
     /// Scope rows that can make the rows page.
@@ -170,8 +164,10 @@ pub(super) fn evaluate(
     let window = grid.range_ns();
     let scope = compile_scope(&reader, query)?;
     let both = compile_both(&reader, query, &scope)?;
-    let errors_only =
-        reader.compile_filter(&sfst::Filter::new().select(STATUS_FIELD, "ERROR"), None)?;
+    let errors_only = reader.compile_filter(
+        &sfst::Filter::new().select(STATUS_FIELD, ng_flatten::STATUS_ERROR),
+        None,
+    )?;
 
     let mut shard = ExploreShard {
         matched: reader.matched_count(&scope, window.clone())?,
@@ -247,26 +243,6 @@ pub(super) fn evaluate(
                 .for_each(&mut consider),
         }
         shard.facets = reader.facets(&eligible, &scope, window.clone())?;
-        // A file without the field counts every row as unset.
-        for field in UNSET_FACET_FIELDS {
-            let faceted = spec
-                .fields
-                .as_ref()
-                .is_none_or(|fields| fields.iter().any(|f| f == field));
-            if faceted && !shard.facet_high.contains(field) {
-                // A field the selection is made of needs no selection count.
-                let selection = match (&both, &query.selection) {
-                    (Some(both), Some(selection)) if !selection.made_of(field) => {
-                        reader.count_absent(both, field, window.clone())?
-                    }
-                    _ => 0,
-                };
-                let scope = reader.count_absent(&scope, field, window.clone())?;
-                shard
-                    .facet_unset
-                    .insert(field.to_string(), (scope, selection));
-            }
-        }
         if let (Some(both), Some(selection)) = (&both, &query.selection) {
             // A field the selection is made of is listed plainly: it needs no
             // selection counts, and its chips are the selection's own.

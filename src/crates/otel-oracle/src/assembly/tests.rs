@@ -24,7 +24,7 @@ fn row(unit: usize, (id, parent): (u8, u8), kind: i32, start: i64, duration: i64
 }
 
 fn failed(mut span: OracleSpan) -> OracleSpan {
-    span.fields.insert(STATUS_FIELD, "ERROR");
+    span.fields.insert(STATUS_FIELD, "error");
     span
 }
 

@@ -795,7 +795,7 @@ fn events_links_and_deferred_scalars_round_trip() {
     };
     assert_eq!(field(root, "trace_state"), ["ot=th:8"]);
     assert_eq!(field(root, "status_message"), ["disk full"]);
-    assert_eq!(field(root, "status_code"), ["ERROR"]);
+    assert_eq!(field(root, "status_code"), ["error"]);
 
     // Structured events: grouping, order, per-event scalars, stripped attr keys.
     assert_eq!(root.dropped_events_count, 4);

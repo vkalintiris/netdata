@@ -534,7 +534,7 @@ fn populate_trace_row_index(
                     links.end_row(span.dropped_links_count);
 
                     // Whether the span is an error: its FIRST `status_code`
-                    // entry is "ERROR" — the value every evaluation path reads
+                    // entry is "error" — the value every evaluation path reads
                     // (span_field / canonical materialization take the first),
                     // so a crafted multi-valued frame cannot make the error
                     // origin diverge from the evaluated status. The flattener
@@ -545,7 +545,7 @@ fn populate_trace_row_index(
                         .iter()
                         .find(|e| Some(e.node) == status_node)
                         .is_some_and(
-                            |e| matches!(&e.value, ng_flatten::Value::Str(s) if s == "ERROR"),
+                            |e| matches!(&e.value, ng_flatten::Value::Str(s) if s == ng_flatten::STATUS_ERROR),
                         );
 
                     // Per-row span columns, one value per row (parallel to the row

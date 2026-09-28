@@ -481,11 +481,11 @@ fn selection_shapes() {
 
     assert_eq!(explore(json!({})).selection, None);
     assert_eq!(
-        selection(json!({"filter": {"status_code": ["ERROR", null]}})),
+        selection(json!({"filter": {"status_code": ["error", null]}})),
         Some(SelectionRequest {
             filter: [(
                 "status_code".to_string(),
-                vec![Some("ERROR".to_string()), None],
+                vec![Some("error".to_string()), None],
             )]
             .into(),
             duration: None,

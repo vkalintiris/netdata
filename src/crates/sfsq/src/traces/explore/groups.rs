@@ -144,7 +144,7 @@ pub(super) fn evaluate_groups(
         }
         Ok(marks)
     };
-    let errors = marked(sfst::Filter::new().select(STATUS_FIELD, "ERROR"))?;
+    let errors = marked(sfst::Filter::new().select(STATUS_FIELD, ng_flatten::STATUS_ERROR))?;
     let origins = marked(sfst::Filter::new().select(sfst::ERR_ORIGIN_FIELD, "true"))?;
     let durations = reader.durations()?;
     let children = if reader.has_child_durations() {

@@ -43,7 +43,7 @@ use crate::source::map_source;
 use crate::status::{PartialReason, QueryStatus, StatusBuilder};
 
 /// The field whose first value says whether a span is an error.
-const STATUS_FIELD: &str = "status_code";
+const STATUS_FIELD: &str = ng_flatten::STATUS_FIELD;
 
 /// The library default span cap ([`TraceQuery::new`] applies it): far
 /// above any honest trace, low enough that a runaway merge stays bounded.
@@ -338,7 +338,7 @@ pub fn trace_by_id(
 }
 
 /// The seal's derivation over one assembled trace. A span is an error when
-/// its first `status_code` is `ERROR`, as the seal reads it.
+/// its first `status_code` is `error`, as the seal reads it.
 fn span_family(trace_id: sfst::TraceId, spans: &[sfst::TraceSpan]) -> sfst::SpanFamily {
     let mut trace_ids = sfst::TraceIds::with_capacity(spans.len());
     let mut span_ids = sfst::SpanIds::with_capacity(spans.len());
@@ -359,7 +359,7 @@ fn span_family(trace_id: sfst::TraceId, spans: &[sfst::TraceSpan]) -> sfst::Span
                 break;
             }
         }
-        is_error.push(status == Some("ERROR"));
+        is_error.push(status == Some(ng_flatten::STATUS_ERROR));
     }
     sfst::derive_span_family(&sfst::SpanRows {
         trace_ids: &trace_ids,

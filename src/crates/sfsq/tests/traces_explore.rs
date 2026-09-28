@@ -101,15 +101,16 @@ fn bucket(counts: &[u64], unset: u64) -> StackBucket {
     }
 }
 
-/// The histogram of `request(..)` once, entry spans stacked by status.
+/// The histogram of `request(..)` once, entry spans stacked by status; the
+/// request's unset spans are not entry spans, so `unset` counts none.
 fn one_request_histogram(times: u64) -> HistogramData {
-    let mut buckets = vec![bucket(&[0, 0], 0); 10];
-    buckets[1] = bucket(&[times, 0], 0);
-    buckets[2] = bucket(&[0, times], 0);
+    let mut buckets = vec![bucket(&[0, 0, 0], 0); 10];
+    buckets[1] = bucket(&[times, 0, 0], 0);
+    buckets[2] = bucket(&[0, times, 0], 0);
     HistogramData {
         status: QueryStatus::Complete,
         stack: "status_code".to_string(),
-        dimensions: vec!["ERROR".to_string(), "OK".to_string()],
+        dimensions: vec!["error".to_string(), "ok".to_string(), "unset".to_string()],
         buckets,
         totals: Totals {
             count: 2 * times,
@@ -631,9 +632,9 @@ fn facets_count_scope_rows_and_ignore_the_fields_own_chips() {
     );
     assert_eq!(
         facet_values(&data, "status_code"),
-        pairs(&[("ERROR", 2), ("OK", 2)])
+        pairs(&[("error", 2), ("ok", 2)])
     );
-    assert_eq!(facet_values(&data, "kind"), pairs(&[("SERVER", 4)]));
+    assert_eq!(facet_values(&data, "kind"), pairs(&[("server", 4)]));
     assert_eq!(facet_values(&data, "absent.field"), pairs(&[]));
     let facets = data.facets.unwrap();
     assert_eq!(
@@ -647,11 +648,10 @@ fn facets_count_scope_rows_and_ignore_the_fields_own_chips() {
     );
 }
 
-/// The status facet lists the rows without a status as the unset value,
-/// last: a file without the field counts every row; the values and the
-/// unset value add up to the scope; other facets list no unset value.
+/// A span without a status is stored as `unset`, so the status facet lists
+/// it like any value and its values add up to the scope.
 #[test]
-fn the_status_facet_counts_unset_rows() {
+fn the_status_facet_lists_unset_like_any_value() {
     let dir = tempfile::tempdir().unwrap();
     let a = write_wal(dir.path(), vec![req(&request(0x11, 0x10))], "a");
     let b = write_wal(dir.path(), vec![req(&request(0x22, 0x20))], "b");
@@ -675,24 +675,16 @@ fn the_status_facet_counts_unset_rows() {
         q,
     );
     assert!(data.status.is_complete(), "{:?}", data.status);
-    let mut statuses = pairs(&[("ERROR", 2), ("OK", 2)]);
-    statuses.push((None, 6));
+    let statuses = pairs(&[("error", 2), ("ok", 2), ("unset", 6)]);
     assert_eq!(facet_values(&data, "status_code"), statuses);
     let listed: u64 = statuses.iter().map(|(_, count)| count).sum();
     assert_eq!(listed, data.histogram.as_ref().unwrap().totals.count);
-    assert!(
-        facet_values(&data, "kind")
-            .iter()
-            .all(|(value, _)| value.is_some()),
-        "only the status facet lists an unset value"
-    );
 
     let errors = run(
         vec![sealed_source(dir.path(), &a, "a")],
-        facets_query(&[("status_code", "ERROR")], Some(&["status_code"])),
+        facets_query(&[("status_code", "error")], Some(&["status_code"])),
     );
-    let mut own_chip_dropped = pairs(&[("ERROR", 1), ("OK", 1)]);
-    own_chip_dropped.push((None, 2));
+    let own_chip_dropped = pairs(&[("error", 1), ("ok", 1), ("unset", 2)]);
     assert_eq!(
         facet_values(&errors, "status_code"),
         own_chip_dropped,
@@ -1567,7 +1559,7 @@ fn a_selection_leaves_the_histogram_and_narrows_the_rows() {
 
     let plain = run(source(), every_span_with_rows());
     let mut q = every_span_with_rows();
-    q.selection = selection(sfst::Filter::new().select("status_code", "ERROR"));
+    q.selection = selection(sfst::Filter::new().select("status_code", "error"));
     let data = run(source(), q);
 
     assert!(data.status.is_complete(), "{:?}", data.status);
@@ -1575,7 +1567,7 @@ fn a_selection_leaves_the_histogram_and_narrows_the_rows() {
     let rows = data.rows.unwrap();
     assert_eq!(rows.matched, 1);
     assert_eq!(rows.items.len(), 1);
-    assert_eq!(rows.items[0].status.as_deref(), Some("ERROR"));
+    assert_eq!(rows.items[0].status.as_deref(), Some("error"));
     let facets = data.facets.unwrap();
     assert_eq!(
         facets.comparison,

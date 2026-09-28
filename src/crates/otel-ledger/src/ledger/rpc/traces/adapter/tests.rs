@@ -192,7 +192,7 @@ fn explore_chips_become_the_scope_filter() {
             "filter": {
                 "_role": ["root", "inbound"],
                 "resource.attributes.service.name": ["checkout"],
-                "status_code": ["ERROR", null]
+                "status_code": ["error", null]
             },
             "selection": {"filter": {"name": [null]}}
         })),
@@ -204,7 +204,7 @@ fn explore_chips_become_the_scope_filter() {
             .select("_role", "root")
             .select("_role", "inbound")
             .select("resource.attributes.service.name", "checkout")
-            .select("status_code", "ERROR")
+            .select("status_code", "error")
             .select_absent("status_code")
     );
     assert_eq!(

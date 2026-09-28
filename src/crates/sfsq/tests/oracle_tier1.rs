@@ -459,7 +459,7 @@ fn entry_span_histogram_by_status_matches_the_calculator() {
         .sum();
     let errors: u64 = got
         .iter()
-        .map(|b| b.counts.get("ERROR").copied().unwrap_or(0))
+        .map(|b| b.counts.get("error").copied().unwrap_or(0))
         .sum();
     assert_eq!((spans, errors), (totals.spans, totals.errors));
     assert!(
@@ -763,8 +763,11 @@ fn explore_facets_match_the_calculator() {
                 .expect("the status facet is requested");
             if scope.terms.is_empty() {
                 assert!(
-                    status.values.iter().any(|(value, _)| value.is_none()),
-                    "{case}: every span includes some without a status"
+                    status
+                        .values
+                        .iter()
+                        .any(|(value, _)| value.as_deref() == Some("unset")),
+                    "{case}: every span includes some with an unset status"
                 );
             }
         }
@@ -841,8 +844,8 @@ fn assert_histogram_matches(stored: &Stored, live: Live, scope: &Scope, case: &s
     assert_eq!(calc_buckets(&histogram), want, "{case}");
 }
 
-/// ORC-FILTER with absent chips (W-1): rows without a status, errors or
-/// unset, spans without a multi-valued field, a field no row has, and a
+/// ORC-FILTER with absent chips (W-1): the stored unset status beside them,
+/// spans without a multi-valued field, a field no row has, and a
 /// high-cardinality field OR'd with a value (high in the sealed unit only);
 /// the histogram and totals equal the calculator's however the live WAL is
 /// served.
@@ -852,13 +855,11 @@ fn explore_absent_chips_match_the_calculator() {
     let scopes = [
         (
             "entry spans, unset status",
-            Scope::entry_spans().with_absent(model::STATUS_FIELD),
+            Scope::entry_spans().with(model::STATUS_FIELD, &["unset"]),
         ),
         (
             "entry spans, errors or unset",
-            Scope::entry_spans()
-                .with(model::STATUS_FIELD, &["ERROR"])
-                .with_absent(model::STATUS_FIELD),
+            Scope::entry_spans().with(model::STATUS_FIELD, &["error", "unset"]),
         ),
         (
             "spans without tags",
@@ -2472,7 +2473,7 @@ fn selections(
         (filter, terms)
     };
     let mut out = Vec::new();
-    let (filter, terms) = chips(&[(model::STATUS_FIELD, &["ERROR"])]);
+    let (filter, terms) = chips(&[(model::STATUS_FIELD, &["error"])]);
     out.push((
         "E1 errors",
         ExploreSelection {
@@ -2529,19 +2530,17 @@ fn selections(
         "E5 errors or unset",
         ExploreSelection {
             filter: sfst::Filter::new()
-                .select(model::STATUS_FIELD, "ERROR")
-                .select_absent(model::STATUS_FIELD),
+                .select(model::STATUS_FIELD, "error")
+                .select(model::STATUS_FIELD, "unset"),
             duration: None,
             time_ns: None,
         },
         calc::Selection {
-            terms: Scope::default()
-                .with(model::STATUS_FIELD, &["ERROR"])
-                .with_absent(model::STATUS_FIELD),
+            terms: Scope::default().with(model::STATUS_FIELD, &["error", "unset"]),
             ..calc::Selection::default()
         },
     ));
-    let (filter, terms) = chips(&[(model::STATUS_FIELD, &["ERROR"])]);
+    let (filter, terms) = chips(&[(model::STATUS_FIELD, &["error"])]);
     out.push((
         "E1+E3",
         ExploreSelection {

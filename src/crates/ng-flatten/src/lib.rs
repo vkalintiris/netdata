@@ -203,9 +203,9 @@ mod tests {
 
         assert_eq!(at(&leaves, "name"), [&Value::Str("GET /x".into())]);
         // dual representation: readable label under the clean name, raw int under `_`.
-        assert_eq!(at(&leaves, "kind"), [&Value::Str("SERVER".into())]);
+        assert_eq!(at(&leaves, "kind"), [&Value::Str("server".into())]);
         assert_eq!(at(&leaves, "_kind"), [&Value::Int(2)]);
-        assert_eq!(at(&leaves, "status_code"), [&Value::Str("ERROR".into())]);
+        assert_eq!(at(&leaves, "status_code"), [&Value::Str("error".into())]);
         assert_eq!(at(&leaves, "_status_code"), [&Value::Int(2)]);
         assert_eq!(
             at(&leaves, "attributes.http.method"),
@@ -219,8 +219,9 @@ mod tests {
     }
 
     #[test]
-    fn span_enum_default_skipped_unknown_keeps_raw_int() {
-        // UNSPECIFIED kind (0) + UNSET status (0) → no enum facets at all.
+    fn span_enum_defaults_and_unknown_variants() {
+        // UNSPECIFIED kind (0) → no kind facets; UNSET status (0) → the
+        // "unset" label and no raw int.
         let mut f = Flattener::new();
         let e = f.flatten_span(Span {
             name: "x".into(),
@@ -233,7 +234,8 @@ mod tests {
         });
         let l = f.into_tree().resolve(&e.entries);
         assert!(at(&l, "kind").is_empty() && at(&l, "_kind").is_empty());
-        assert!(at(&l, "status_code").is_empty() && at(&l, "_status_code").is_empty());
+        assert_eq!(at(&l, "status_code"), [&Value::Str("unset".into())]);
+        assert!(at(&l, "_status_code").is_empty());
 
         // Unknown future variant → raw int survives (forward-compat), no label.
         let mut f = Flattener::new();
@@ -365,7 +367,7 @@ mod tests {
         );
         assert_eq!(
             at(&flat.tree.resolve(&sr.entries), "kind"),
-            [&Value::Str("CLIENT".into())]
+            [&Value::Str("client".into())]
         );
     }
 
@@ -685,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn span_no_status_and_empty_name_emit_nothing() {
+    fn span_no_status_is_unset_and_empty_name_emits_nothing() {
         // status: None (vs Some(UNSET)) and an empty name → those facets absent;
         // an unrelated facet (kind) still emits.
         let mut f = Flattener::new();
@@ -697,11 +699,13 @@ mod tests {
         });
         let l = f.into_tree().resolve(&e.entries);
         assert!(at(&l, "name").is_empty(), "empty name → no facet");
-        assert!(
-            at(&l, "status_code").is_empty() && at(&l, "_status_code").is_empty(),
-            "status None → no facet"
+        assert_eq!(
+            at(&l, "status_code"),
+            [&Value::Str("unset".into())],
+            "status None is UNSET"
         );
-        assert_eq!(at(&l, "kind"), [&Value::Str("SERVER".into())]);
+        assert!(at(&l, "_status_code").is_empty());
+        assert_eq!(at(&l, "kind"), [&Value::Str("server".into())]);
     }
 
     #[test]
@@ -718,9 +722,10 @@ mod tests {
         let l = f.into_tree().resolve(&e.entries);
         assert_eq!(at(&l, "trace_state"), [&Value::Str("ot=th:8".into())]);
         assert_eq!(at(&l, "status_message"), [&Value::Str("boom".into())]);
-        assert!(
-            at(&l, "status_code").is_empty(),
-            "UNSET code stays absent even with a message"
+        assert_eq!(
+            at(&l, "status_code"),
+            [&Value::Str("unset".into())],
+            "UNSET code keeps its label alongside a message"
         );
 
         // Empty trace_state / message → absent (proto3 empty == unset on the wire).
@@ -741,7 +746,7 @@ mod tests {
             ..Default::default()
         });
         let l = f.into_tree().resolve(&e.entries);
-        assert_eq!(at(&l, "status_code"), [&Value::Str("OK".into())]);
+        assert_eq!(at(&l, "status_code"), [&Value::Str("ok".into())]);
         assert_eq!(at(&l, "_status_code"), [&Value::Int(1)]);
         assert!(at(&l, "status_message").is_empty());
     }

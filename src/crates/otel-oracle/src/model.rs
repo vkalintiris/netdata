@@ -13,7 +13,8 @@
 //!   `[]`, an empty map `{}`; a key that is empty becomes `_` and `=` in a key
 //!   becomes `_`;
 //! - enum fields store a label (`kind`, `status_code`) and the raw int
-//!   (`_kind`, `_status_code`); UNSPECIFIED and UNSET store nothing;
+//!   (`_kind`, `_status_code`), labels in lower case; UNSPECIFIED kind stores
+//!   nothing, UNSET status (code 0 or no status) stores only the label `unset`;
 //! - two derived fields: `_role` and `_duration_band`.
 
 use std::collections::{BTreeSet, HashSet};
@@ -271,7 +272,7 @@ impl OracleSpan {
     }
 
     pub fn is_error(&self) -> bool {
-        self.has(STATUS_FIELD, "ERROR")
+        self.has(STATUS_FIELD, "error")
     }
 }
 
@@ -329,16 +330,18 @@ fn span_row(span: &Span, context: &[Pair], strings: &mut Strings, unit: usize) -
     if !span.trace_state.is_empty() {
         fields.push(strings.pair("trace_state", &span.trace_state));
     }
-    if let Some(status) = &span.status {
-        if status.code != 0 {
-            if let Some(label) = status_label(status.code) {
-                fields.push(strings.pair(STATUS_FIELD, label));
-            }
-            fields.push(strings.pair("_status_code", &status.code.to_string()));
-        }
-        if !status.message.is_empty() {
-            fields.push(strings.pair("status_message", &status.message));
-        }
+    let (code, message) = span
+        .status
+        .as_ref()
+        .map_or((0, ""), |status| (status.code, status.message.as_str()));
+    if let Some(label) = status_label(code) {
+        fields.push(strings.pair(STATUS_FIELD, label));
+    }
+    if code != 0 {
+        fields.push(strings.pair("_status_code", &code.to_string()));
+    }
+    if !message.is_empty() {
+        fields.push(strings.pair("status_message", message));
     }
     for kv in &span.attributes {
         render_kv("attributes", kv, strings, &mut fields);
@@ -442,19 +445,20 @@ pub(crate) fn id<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
 
 fn kind_label(kind: i32) -> Option<&'static str> {
     match kind {
-        1 => Some("INTERNAL"),
-        2 => Some("SERVER"),
-        3 => Some("CLIENT"),
-        4 => Some("PRODUCER"),
-        5 => Some("CONSUMER"),
+        1 => Some("internal"),
+        2 => Some("server"),
+        3 => Some("client"),
+        4 => Some("producer"),
+        5 => Some("consumer"),
         _ => None,
     }
 }
 
 fn status_label(code: i32) -> Option<&'static str> {
     match code {
-        1 => Some("OK"),
-        2 => Some("ERROR"),
+        0 => Some("unset"),
+        1 => Some("ok"),
+        2 => Some("error"),
         _ => None,
     }
 }
@@ -670,9 +674,9 @@ mod tests {
         let want: [(&str, &str); 18] = [
             ("resource.attributes.service.name", "api"),
             ("name", "op"),
-            ("kind", "CLIENT"),
+            ("kind", "client"),
             ("_kind", "3"),
-            ("status_code", "ERROR"),
+            ("status_code", "error"),
             ("_status_code", "2"),
             ("status_message", "boom"),
             ("attributes.s", "x"),
@@ -695,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn unset_enums_and_empty_names_store_nothing() {
+    fn unset_enums_and_empty_names_store_nothing_but_the_unset_status() {
         let span = one_span(Span {
             parent_span_id: vec![9; 8],
             status: Some(Status {
@@ -704,17 +708,22 @@ mod tests {
             }),
             ..Default::default()
         });
-        for field in [
-            "name",
-            "kind",
-            "_kind",
-            "status_code",
-            "_status_code",
-            "status_message",
-        ] {
+        for field in ["name", "kind", "_kind", "_status_code", "status_message"] {
             assert!(!span.fields.contains_key(field), "{field}");
         }
+        assert_eq!(values(&span, STATUS_FIELD), ["unset"]);
         assert_eq!(values(&span, ROLE_FIELD), ["internal"]);
+
+        let span = one_span(Span {
+            status: None,
+            ..Default::default()
+        });
+        assert_eq!(
+            values(&span, STATUS_FIELD),
+            ["unset"],
+            "a missing status is UNSET"
+        );
+        assert!(!span.fields.contains_key("_status_code"));
     }
 
     #[test]

@@ -433,7 +433,7 @@ mod tests {
                 "histogram": {
                     "status": {"complete": true},
                     "stack": "status_code",
-                    "dimensions": ["ERROR", "OK"],
+                    "dimensions": ["error", "ok"],
                     "buckets": [
                         {"counts": [1, 4], "unset": 2, "other": 0, "p50_ns": 10, "p95_ns": 20, "p99_ns": 30},
                         {"counts": [0, 0], "unset": 0, "other": 5}

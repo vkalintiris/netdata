@@ -730,8 +730,8 @@ async fn explore_percentiles_are_on_by_default_and_marked_approximate() {
 async fn explore_answers_the_histogram_in_the_functions_envelope() {
     let (h, _) = explore_corpus().await;
     let v = serde_json::to_value(call_on(&h, entry_spans_body()).await.unwrap()).unwrap();
-    let unset_only = json!({"counts": [0], "unset": 1, "other": 0});
-    let empty = json!({"counts": [0], "unset": 0, "other": 0});
+    let unset_only = json!({"counts": [0, 1], "unset": 0, "other": 0});
+    let empty = json!({"counts": [0, 0], "unset": 0, "other": 0});
     assert_eq!(
         v,
         json!({
@@ -749,9 +749,9 @@ async fn explore_answers_the_histogram_in_the_functions_envelope() {
                 "histogram": {
                     "status": {"complete": true},
                     "stack": "status_code",
-                    "dimensions": ["ERROR"],
+                    "dimensions": ["error", "unset"],
                     "buckets": [
-                        {"counts": [1], "unset": 0, "other": 0},
+                        {"counts": [1, 0], "unset": 0, "other": 0},
                         unset_only, unset_only, unset_only,
                         empty, empty, empty, empty, empty
                     ],
@@ -838,10 +838,10 @@ async fn a_refused_wal_marks_every_section() {
     }
 }
 
-/// A `null` chip keeps the rows without the field: of the four roots, the
-/// three svc roots have no status.
+/// Of the four roots, the three svc roots have an unset status, stored as a
+/// value, so a `null` chip (rows without the field) keeps none of them.
 #[tokio::test]
-async fn explore_scopes_rows_without_a_status() {
+async fn explore_scopes_rows_by_the_unset_status() {
     let (h, _) = explore_corpus().await;
     let count = |statuses: serde_json::Value| {
         json!({"explore": {
@@ -850,7 +850,11 @@ async fn explore_scopes_rows_without_a_status() {
             "sections": {"histogram": {"stack": "status_code"}}
         }})
     };
-    for (statuses, want) in [(json!([null]), 3), (json!(["ERROR", null]), 4)] {
+    for (statuses, want) in [
+        (json!(["unset"]), 3),
+        (json!(["error", "unset"]), 4),
+        (json!([null]), 0),
+    ] {
         let v = serde_json::to_value(call_on(&h, count(statuses.clone())).await.unwrap()).unwrap();
         assert_eq!(
             v["data"]["histogram"]["totals"]["count"], want,
@@ -859,7 +863,7 @@ async fn explore_scopes_rows_without_a_status() {
     }
 }
 
-/// The status facet lists the roots without a status as `null`, last.
+/// The status facet lists the unset roots like any value.
 #[tokio::test]
 async fn explore_lists_the_unset_status() {
     let (h, _) = explore_corpus().await;
@@ -870,7 +874,7 @@ async fn explore_lists_the_unset_status() {
     let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
     assert_eq!(
         v["data"]["facets"]["fields"][0]["values"],
-        json!([{"value": "ERROR", "count": 1}, {"value": null, "count": 3}])
+        json!([{"value": "error", "count": 1}, {"value": "unset", "count": 3}])
     );
 }
 
@@ -879,7 +883,7 @@ async fn explore_answers_a_selection() {
     let (h, _) = explore_corpus().await;
     let body = json!({"explore": {
         "after": 1, "before": 10, "filter": {"_role": ["root"]},
-        "selection": {"filter": {"status_code": ["ERROR"]}},
+        "selection": {"filter": {"status_code": ["error"]}},
         "sections": {
             "facets": {"fields": ["resource.attributes.service.name", "status_code"]},
             "rows": {"limit": 5}
@@ -901,8 +905,8 @@ async fn explore_answers_a_selection() {
                 "omitted_values": 0,
                 "omitted_rows": 0,
                 "values": [
-                    {"value": "ERROR", "count": 1},
-                    {"value": null, "count": 3}
+                    {"value": "error", "count": 1},
+                    {"value": "unset", "count": 3}
                 ]
             }, {
                 "field": "resource.attributes.service.name",
@@ -971,7 +975,7 @@ async fn explore_answers_groups_under_a_selection() {
     let (h, _) = explore_corpus().await;
     let body = json!({"explore": {
         "after": 1, "before": 10, "filter": {"_role": ["root"]},
-        "selection": {"filter": {"status_code": ["ERROR"]}},
+        "selection": {"filter": {"status_code": ["error"]}},
         "sections": {"groups": {}}
     }});
     let v = serde_json::to_value(call_on(&h, body).await.unwrap()).unwrap();
@@ -1085,7 +1089,7 @@ async fn explore_pages_rows_newest_first_by_cursor() {
             "matched": 4,
             "has_older": true,
             "has_newer": false,
-            "items": [root_row(0x44, 4, "svc", None), root_row(0x33, 3, "svc", None)]
+            "items": [root_row(0x44, 4, "svc", Some("unset")), root_row(0x33, 3, "svc", Some("unset"))]
         })
     );
 
@@ -1102,8 +1106,8 @@ async fn explore_pages_rows_newest_first_by_cursor() {
     assert_eq!(
         rows["items"],
         json!([
-            root_row(0x22, 2, "svc", None),
-            root_row(0x11, 1, "checkout", Some("ERROR"))
+            root_row(0x22, 2, "svc", Some("unset")),
+            root_row(0x11, 1, "checkout", Some("error"))
         ])
     );
 }
@@ -1122,7 +1126,7 @@ async fn explore_lists_the_slowest_rows() {
             "status": {"complete": true},
             "order": "slowest",
             "matched": 4,
-            "items": [root_row(0x44, 4, "svc", None)]
+            "items": [root_row(0x44, 4, "svc", Some("unset"))]
         }),
         "equal durations: the latest start first"
     );

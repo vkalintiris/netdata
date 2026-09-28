@@ -126,6 +126,12 @@ fn span_duration(span: &Span) -> i64 {
 /// Storage key of the span-role entry every span carries (see [`SpanRole`]).
 pub const ROLE_FIELD: &str = "_role";
 
+/// Storage key of the status label every span carries.
+pub const STATUS_FIELD: &str = "status_code";
+
+/// The [`STATUS_FIELD`] label of an error span.
+pub const STATUS_ERROR: &str = "error";
+
 /// Storage key of the duration-band entry every span carries (see
 /// [`duration_band`]).
 pub const DURATION_BAND_FIELD: &str = "_duration_band";
@@ -136,7 +142,7 @@ pub const DURATION_BAND_FIELD: &str = "_duration_band";
 pub const TRACE_PINNED_FIELDS: [&str; 6] = [
     "resource.attributes.service.name",
     "name",
-    "status_code",
+    STATUS_FIELD,
     "kind",
     ROLE_FIELD,
     DURATION_BAND_FIELD,

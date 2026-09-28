@@ -78,7 +78,7 @@ fn derive_wal(
     let mut durations: Vec<i64> = Vec::new();
     let mut errors: Vec<bool> = Vec::new();
     let mut lengths = Vec::with_capacity(members.len());
-    let errors_only = sfst::Filter::new().select(STATUS_FIELD, "ERROR");
+    let errors_only = sfst::Filter::new().select(STATUS_FIELD, ng_flatten::STATUS_ERROR);
     for &(_, _, index) in members {
         let Some(Prepared::Open { mapped, .. }) = prepared.get(index) else {
             return Err("one of its images could not be read".to_string());

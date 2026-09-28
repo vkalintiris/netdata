@@ -266,7 +266,7 @@ mod tests {
         let fields = [
             (SERVICE, service),
             ("name", name),
-            ("status_code", "ERROR"),
+            ("status_code", "error"),
             ("_role", "root"),
             ("attributes.retries", "1234"),
         ]

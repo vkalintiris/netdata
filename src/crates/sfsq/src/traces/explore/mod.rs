@@ -26,7 +26,6 @@ pub use groups::GROUPS_CAP;
 pub use query::{
     DEFAULT_POPULATION, DEFAULT_STACK_FIELD, ExploreQuery, ExploreRequestError, ExploreScope,
     ExploreSelection, FacetSpec, HIDDEN_FIELDS, HistogramSpec, Sections, TRACE_IDS_MAX,
-    UNSET_FACET_FIELDS,
 };
 pub use rows::{
     MoreRows, NOT_ROW_COLUMN_PREFIXES, ROW_COLUMNS_MAX, ROW_VALUE_COLUMNS, ROWS_PAGE_MAX,
@@ -156,7 +155,7 @@ impl PartialOrd for GroupKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupNumbers {
     pub spans: u64,
-    /// Of which `status_code=ERROR`.
+    /// Of which `status_code=error`.
     pub errors: u64,
     /// Of which carry `_err_origin=true`.
     pub errors_originated: u64,
@@ -249,8 +248,7 @@ pub struct FacetData {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FacetValue {
-    /// `None`: the rows without the field (on [`UNSET_FACET_FIELDS`] only),
-    /// listed after the values.
+    /// `None` is not produced: every listed value has a name.
     pub value: Option<String>,
     /// Scope rows.
     pub count: u64,

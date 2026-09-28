@@ -208,7 +208,7 @@ fn scenarios(spans: &[OracleSpan], grid: &Grid) -> Vec<Scenario> {
     }
     out.push(Scenario {
         name: "F6 entry spans with an unset status".to_string(),
-        scope: Scope::entry_spans().with_absent(STATUS_FIELD),
+        scope: Scope::entry_spans().with(STATUS_FIELD, &["unset"]),
         selection: None,
     });
     out
@@ -221,7 +221,7 @@ fn selections(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec<(&'static
         (
             "E1 errors",
             Selection {
-                terms: Scope::default().with(STATUS_FIELD, &["ERROR"]),
+                terms: Scope::default().with(STATUS_FIELD, &["error"]),
                 ..Selection::default()
             },
         ),
@@ -262,9 +262,7 @@ fn selections(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec<(&'static
     out.push((
         "E5 errors or unset",
         Selection {
-            terms: Scope::default()
-                .with(STATUS_FIELD, &["ERROR"])
-                .with_absent(STATUS_FIELD),
+            terms: Scope::default().with(STATUS_FIELD, &["error", "unset"]),
             ..Selection::default()
         },
     ));
@@ -2064,17 +2062,17 @@ mod tests {
         assert!(
             selections
                 .iter()
-                .any(|s| s["filter"]["status_code"] == json!(["ERROR"]))
+                .any(|s| s["filter"]["status_code"] == json!(["error"]))
         );
         assert!(
             selections
                 .iter()
-                .any(|s| s["filter"]["status_code"] == json!(["ERROR", null]))
+                .any(|s| s["filter"]["status_code"] == json!(["error", "unset"]))
         );
         assert!(
             plan.requests
                 .iter()
-                .any(|r| r.body["explore"]["filter"]["status_code"] == json!([null]))
+                .any(|r| r.body["explore"]["filter"]["status_code"] == json!(["unset"]))
         );
         assert!(selections.iter().any(|s| s["time"]["after_ns"].is_string()));
         assert!(selections.iter().any(|s| s["duration"]["min_ns"].is_i64()));

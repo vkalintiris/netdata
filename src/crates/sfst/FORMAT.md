@@ -154,9 +154,9 @@ computed). Logs files and chunk images never carry it, so a reader checks the
 manifest for `child_duration` before asking.
 
 **Traces-derived tokens.** The traces seal adds the token `_err_origin=true`
-to every row that is ERROR with no ERROR child in the file (same scope and
-linking rules as `CHLD`). A row is ERROR when its first `status_code` value
-is the string `ERROR`; a row without `status_code` is not. Only origin rows
+to every row that is an error with no error child in the file (same scope and
+linking rules as `CHLD`). A row is an error when its first `status_code` value
+is the string `error`; a row without `status_code` is not. Only origin rows
 carry the token (there is no `false` value); it is an ordinary token of the
 row index, and its Bool leaf sits at the top of the tree. The leaf exists iff
 the token does and is added before the tree is built: the field table is
