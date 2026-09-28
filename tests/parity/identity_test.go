@@ -18,13 +18,9 @@ import (
 	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
-// cOnlyHostLabels are localhost labels only the oracle has: they come from C's daemon status file, not ported yet
-// (decisions D49 point 3).
-var cOnlyHostLabels = regexp.MustCompile(`^_hw_(product_id|product_name|sys_vendor|product_type)$`)
-
 // infoIdentity splits an /api/v1/info answer into what must match byte for byte (version, uid, and the members from
 // "alarms" up to "host_labels") and the host labels, compared as a map (C orders them by heap address).
-func infoIdentity(t *testing.T, addr, path string, oracle bool) (string, map[string]any) {
+func infoIdentity(t *testing.T, addr, path string) (string, map[string]any) {
 	t.Helper()
 	b, err := rawExchange(addr, []byte("GET "+path+" HTTP/1.1\r\n\r\n"), 10*time.Second)
 	if err != nil {
@@ -44,18 +40,11 @@ func infoIdentity(t *testing.T, addr, path string, oracle bool) (string, map[str
 	if from < 0 || to < from {
 		t.Fatalf("%s: no alarms..host_labels members: %s", path, body)
 	}
-	if oracle {
-		for k := range doc.HostLabels {
-			if cOnlyHostLabels.MatchString(k) {
-				delete(doc.HostLabels, k)
-			}
-		}
-	}
 	return doc.Version + " " + doc.UID + "\n" + string(body[from:to]), doc.HostLabels
 }
 
 // contextsHostLabels are the host labels /api/v1/contexts shows for localhost.
-func contextsHostLabels(t *testing.T, addr string, oracle bool) map[string]any {
+func contextsHostLabels(t *testing.T, addr string) map[string]any {
 	t.Helper()
 	b, err := rawExchange(addr, []byte("GET /api/v1/contexts?options=labels HTTP/1.1\r\n\r\n"), 10*time.Second)
 	if err != nil {
@@ -66,13 +55,6 @@ func contextsHostLabels(t *testing.T, addr string, oracle bool) map[string]any {
 	}
 	if err := json.Unmarshal(httpBody(b), &doc); err != nil {
 		t.Fatalf("contexts: %v", err)
-	}
-	if oracle {
-		for k := range doc.HostLabels {
-			if cOnlyHostLabels.MatchString(k) {
-				delete(doc.HostLabels, k)
-			}
-		}
 	}
 	return doc.HostLabels
 }
@@ -101,7 +83,7 @@ func compareIdentity(t *testing.T, p *Pair, stage, path string) {
 	var text [2]string
 	var labels [2]map[string]any
 	for i, side := range p.Each() {
-		text[i], labels[i] = infoIdentity(t, side.Daemon.Addr, path, side.Role == Oracle)
+		text[i], labels[i] = infoIdentity(t, side.Daemon.Addr, path)
 	}
 	if text[0] != text[1] {
 		t.Errorf("%s %s: differs\n%s", stage, path, firstDifference([]byte(text[0]), []byte(text[1])))
@@ -124,7 +106,7 @@ func TestLocalhostIdentity(t *testing.T) {
 	compareIdentity(t, p, "standalone", "/api/v1/info")
 	var contexts [2]map[string]any
 	for i, side := range p.Each() {
-		contexts[i] = contextsHostLabels(t, side.Daemon.Addr, side.Role == Oracle)
+		contexts[i] = contextsHostLabels(t, side.Daemon.Addr)
 	}
 	if !reflect.DeepEqual(contexts[0], contexts[1]) {
 		t.Errorf("contexts host labels differ\noracle:    %v\ncandidate: %v", contexts[0], contexts[1])
@@ -143,7 +125,7 @@ func TestLocalhostIdentity(t *testing.T) {
 	time.Sleep(time.Second)
 	compareIdentity(t, p, "child connected", "/api/v1/info")
 	compareIdentity(t, p, "child connected", "/host/"+childHost.Hostname+"/api/v1/info")
-	if got := contextsHostLabels(t, p.Candidate.Addr, false)["_is_parent"]; got != "true" {
+	if got := contextsHostLabels(t, p.Candidate.Addr)["_is_parent"]; got != "true" {
 		t.Errorf("candidate _is_parent with a child: %v", got)
 	}
 	for _, c := range conns {

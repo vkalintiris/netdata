@@ -35,6 +35,12 @@ static OOM_PROTECTION: AtomicU64 = AtomicU64::new(0);
 static LOCALHOST: Mutex<Option<Weak<Host>>> = Mutex::new(None);
 /// The directories the disk footprint walks: `[directories] lib` and `cache`.
 static DIRS: OnceLock<(String, String)> = OnceLock::new();
+/// `netdata_configured_host_prefix`, once `[global]` is read.
+static HOST_PREFIX: OnceLock<String> = OnceLock::new();
+
+pub fn set_host_prefix(prefix: &str) {
+    let _ = HOST_PREFIX.set(prefix.to_string());
+}
 
 pub fn set_profile(bits: u32) {
     PROFILE.store(bits, Ordering::Relaxed);
@@ -69,7 +75,7 @@ fn now_realtime_ut() -> u64 {
 }
 
 /// `read_txt_file()`: one read of at most `size - 1` bytes.
-fn read_txt_file(path: &str, size: usize) -> Option<Vec<u8>> {
+pub(super) fn read_txt_file(path: impl AsRef<Path>, size: usize) -> Option<Vec<u8>> {
     let mut buf = vec![0; size - 1];
     let n = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
     buf.truncate(n);
@@ -155,7 +161,11 @@ pub fn boot_ids_match(a: &[u8; 16], b: &[u8; 16]) -> bool {
 /// `machine_guid_get()` as the record keeps it.
 pub fn machine_guid(varlib: &str, previous: &HostId) -> HostId {
     let guid = guid::machine_guid_get(varlib, &previous.uuid);
-    HostId { uuid: guid.uuid, last_modified_ut: guid.last_modified_ut, last_modified_rfc3339: rfc3339(guid.last_modified_ut) }
+    HostId {
+        uuid: guid.uuid,
+        last_modified_ut: guid.last_modified_ut,
+        last_modified_rfc3339: rfc3339(guid.last_modified_ut),
+    }
 }
 
 /// `os_get_system_cpus()`, cached.
@@ -247,7 +257,7 @@ fn copy<const N: usize>(dst: &mut super::FixedStr<N>, src: &Option<String>) {
     }
 }
 
-/// `get_daemon_status_fields_from_system_info()`: localhost's system info, once.
+/// `get_daemon_status_fields_from_system_info()`: localhost's system info, once, then the product named anew.
 fn system_info_once(s: &mut StatusFile, host: &Host) {
     if s.read_system_info {
         return;
@@ -267,6 +277,7 @@ fn system_info_once(s: &mut StatusFile, host: &Host) {
     copy(&mut s.cloud_provider_type, &known(&si.cloud_provider_type));
     copy(&mut s.cloud_instance_type, &known(&si.cloud_instance_type));
     copy(&mut s.cloud_instance_region, &known(&si.cloud_instance_region));
+    super::product::normalize(s, HOST_PREFIX.get().map_or("", String::as_str));
 }
 
 /// `daemon_status_file_refresh()`: the record from the live agent; `status` replaces the record's own unless it is
@@ -334,13 +345,15 @@ pub fn refresh(s: &mut StatusFile, status: DaemonStatus) {
         s.status = status;
     }
     s.memory = system::system_memory_cached(true);
-    s.var_cache = DIRS.get().map_or_else(DiskSpace::default, |(_, cache)| netdata_agent_sys::disk_space(Path::new(cache)));
+    s.var_cache =
+        DIRS.get().map_or_else(DiskSpace::default, |(_, cache)| netdata_agent_sys::disk_space(Path::new(cache)));
     s.system_cpus = system_cpus();
     // rrdstats_metadata_collect(): the host counters are not ported (D88.6)
     s.metrics = Default::default();
 
     // at most once every 10 minutes
-    if now_ut.wrapping_sub(s.disk_footprint.last_updated_ut) >= 600 * 1_000_000 || s.disk_footprint.last_updated_ut == 0 {
+    let updated_ut = s.disk_footprint.last_updated_ut;
+    if now_ut.wrapping_sub(updated_ut) >= 600 * 1_000_000 || updated_ut == 0 {
         let (dbengine, sqlite, other) = disk_footprint();
         let f = &mut s.disk_footprint;
         (f.dbengine, f.sqlite, f.other) = (dbengine, sqlite, other);

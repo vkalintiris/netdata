@@ -84,15 +84,9 @@ func rawCommand(t *testing.T, pipe string, payload []byte, pause time.Duration, 
 // commandRecords are the records the commands write.
 var commandRecords = regexp.MustCompile(`msg="(COMMAND: |write-config |Cannot execute read-config|Reopening all log files\.|Log files re-opened\.|pipe_read_cb: |RRDLABEL: Cannot reload)`)
 
-// labelLines keeps reload-labels' lines, sorted (C lists them in pointer order), without the labels only C has.
+// labelLines keeps reload-labels' lines, sorted (C lists them in pointer order).
 func labelLines(stdout string) string {
-	var lines []string
-	for _, l := range strings.Split(strings.TrimSuffix(stdout, "\n"), "\n") {
-		name, _, _ := strings.Cut(strings.TrimPrefix(l, "Label: "), ":")
-		if !cOnlyHostLabels.MatchString(name) {
-			lines = append(lines, l)
-		}
-	}
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
 	sort.Strings(lines)
 	return strings.Join(lines, "\n")
 }

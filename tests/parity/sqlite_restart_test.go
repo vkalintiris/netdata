@@ -65,7 +65,7 @@ func TestSQLiteRestart(t *testing.T) {
 		compareArchivedTimes(t, p, agentTimes, childHost.Hostname)
 		// the child's labels as C stored them and as the Rust agent did
 		for _, side := range p.Each() {
-			_, labels := infoIdentity(t, side.Daemon.Addr, "/host/"+childHost.Hostname+"/api/v1/info", false)
+			_, labels := infoIdentity(t, side.Daemon.Addr, "/host/"+childHost.Hostname+"/api/v1/info")
 			if b, _ := json.Marshal(labels); len(labels) == 0 {
 				t.Errorf("%s: no child labels: %s", side.Role, b)
 			}

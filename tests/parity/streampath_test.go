@@ -20,9 +20,8 @@ import (
 var nodeLabelsRe = regexp.MustCompile(`"(?:mg|machine_guid)":"([^"]+)"[^{}]*?"labels":(\{[^{}]*\})`)
 
 // streamPathLabels cuts every node's labels out of a /api/v3/stream_path answer and returns them as maps, in node
-// order: C prints labels in heap-address order. With cOnlyFor set, the C-only labels of that node are dropped
-// (localhost's `_hw_*`, D49 point 3); every label named in maskValues compares by presence only.
-func streamPathLabels(t *testing.T, b []byte, cOnlyFor string, maskValues ...string) ([]byte, []map[string]any) {
+// order: C prints labels in heap-address order. Every label named in maskValues compares by presence only.
+func streamPathLabels(t *testing.T, b []byte, maskValues ...string) ([]byte, []map[string]any) {
 	t.Helper()
 	var all []map[string]any
 	out := nodeLabelsRe.ReplaceAllFunc(b, func(m []byte) []byte {
@@ -30,13 +29,6 @@ func streamPathLabels(t *testing.T, b []byte, cOnlyFor string, maskValues ...str
 		var labels map[string]any
 		if err := json.Unmarshal(sub[2], &labels); err != nil {
 			t.Fatalf("labels: %v: %s", err, sub[2])
-		}
-		if string(sub[1]) == cOnlyFor {
-			for k := range labels {
-				if cOnlyHostLabels.MatchString(k) {
-					delete(labels, k)
-				}
-			}
 		}
 		for _, k := range maskValues {
 			if _, ok := labels[k]; ok {
@@ -59,7 +51,7 @@ var entryTimes = regexp.MustCompile(`("since":)\d+(,\s*"first_time_t":)\d+`)
 
 // compareStreamPath compares one request on two daemons: the raw answers byte for byte after the masks, with labels
 // compared as maps.
-func compareStreamPath(t *testing.T, name string, addrs [2]string, path string, times *regexp.Regexp, cOnly [2]string, maskLabels ...string) {
+func compareStreamPath(t *testing.T, name string, addrs [2]string, path string, times *regexp.Regexp, maskLabels ...string) {
 	t.Helper()
 	var text [2][]byte
 	var labels [2][]map[string]any
@@ -69,7 +61,7 @@ func compareStreamPath(t *testing.T, name string, addrs [2]string, path string, 
 			t.Fatalf("%s %s: %v", name, path, err)
 		}
 		b = times.ReplaceAll(maskTimings(maskRaw(b)), []byte("${1}0${2}0"))
-		text[i], labels[i] = streamPathLabels(t, b, cOnly[i], maskLabels...)
+		text[i], labels[i] = streamPathLabels(t, b, maskLabels...)
 	}
 	if !bytes.Equal(text[0], text[1]) {
 		t.Errorf("%s %s: differs\n%s", name, path, firstDifference(text[0], text[1]))
@@ -148,18 +140,17 @@ func TestCChildStreamPath(t *testing.T) {
 	for _, addr := range parents {
 		waitOnline(t, addr, guid)
 	}
-	cOnly := [2]string{parentIdentity.MachineGUID, ""}
 	for _, path := range []string{"/api/v3/stream_path", "/api/v3/stream_path?options=minify"} {
-		compareStreamPath(t, "connected parents", parents, path, entryTimes, cOnly, "_streams_to")
+		compareStreamPath(t, "connected parents", parents, path, entryTimes, "_streams_to")
 	}
 	// the children are C on both sides: all their labels compare
 	compareStreamPath(t, "children", [2]string{children[0].Addr, children[1].Addr}, "/api/v3/stream_path",
-		entryTimes, [2]string{}, "_streams_to")
+		entryTimes, "_streams_to")
 	for _, c := range children {
 		_ = c.Stop()
 	}
 	time.Sleep(3 * time.Second)
-	compareStreamPath(t, "stale parents", parents, "/api/v3/stream_path", entryTimes, cOnly, "_streams_to")
+	compareStreamPath(t, "stale parents", parents, "/api/v3/stream_path", entryTimes, "_streams_to")
 	if t.Failed() {
 		return
 	}

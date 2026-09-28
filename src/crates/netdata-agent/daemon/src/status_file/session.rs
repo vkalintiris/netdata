@@ -9,7 +9,7 @@ use netdata_agent_inicfg::{Config, SECTION_GLOBAL};
 use netdata_agent_log::{Field, Priority, Source, Value, msgid, nd_log, push};
 
 use super::io::{self, Locations, STATUS_FILENAME};
-use super::{DaemonStatus, StatusFile, exit_reason, from_json, live, rfc3339, to_json};
+use super::{DaemonStatus, Product, StatusFile, dmi, exit_reason, from_json, live, rfc3339, to_json};
 use crate::build;
 
 /// `STACK_TRACE_INFO_PREFIX`.
@@ -65,7 +65,10 @@ pub fn init(varlib: &str, cache: &str, user_config: &str) {
     io::load(&loc, STATUS_FILENAME, true, |path| {
         io::read_text(path, 65536).is_some_and(|text| from_json(&text, &mut last))
     });
-    // what older versions of the file did not keep
+    // what older versions of the file did not keep (a missing file is version 0)
+    if last.v <= 26 {
+        dmi::fill(&mut last);
+    }
     if last.v <= 27 {
         last.system_cpus = live::system_cpus();
     }
@@ -101,6 +104,13 @@ fn migrate(s: &mut StatusFile, last: &StatusFile, varlib: &str, user_config: &st
     s.host_id = live::machine_guid(varlib, &last.host_id);
     carry_over(s, last);
     s.stack_traces.set(live::STACK_TRACE_BACKEND);
+    dmi::fill(s);
+}
+
+/// `daemon_status_file_get_product_*()`: this run's product (empty before `init()`), which localhost's `_hw_*`
+/// labels take when the system info is detected.
+pub fn product() -> Product {
+    files().as_ref().map_or_else(Product::default, |f| f.session.product)
 }
 
 /// What this run keeps of the last one: its ids, host strings and counters, one more restart, and the crash or
@@ -295,7 +305,12 @@ pub fn last_exit(last: &mut StatusFile, session: &StatusFile) -> LastExit {
         }
         DaemonStatus::Exited => {
             if reason == 0 {
-                set("exit no reason", "Netdata was last stopped gracefully, without setting a reason", ALL_NORMAL, false);
+                set(
+                    "exit no reason",
+                    "Netdata was last stopped gracefully, without setting a reason",
+                    ALL_NORMAL,
+                    false,
+                );
                 e.dump_json = last.timestamp_ut != 0;
             } else if deadly {
                 set(
@@ -312,7 +327,12 @@ pub fn last_exit(last: &mut StatusFile, session: &StatusFile) -> LastExit {
                     true,
                 );
             } else if reason & exit_reason::SYSTEM_SHUTDOWN != 0 {
-                set("exit on system shutdown", "Netdata has gracefully stopped due to system shutdown", ALL_NORMAL, false);
+                set(
+                    "exit on system shutdown",
+                    "Netdata has gracefully stopped due to system shutdown",
+                    ALL_NORMAL,
+                    false,
+                );
             } else if reason & exit_reason::UPDATE != 0 {
                 set("exit to update", "Netdata has gracefully restarted to update to a new version", ALL_NORMAL, false);
             } else if new_version {
@@ -495,7 +515,8 @@ mod tests {
             ds.boot_id = [1; 16];
             ds
         };
-        let disk = |free, read_only| DiskSpace { total_bytes: 1 << 40, free_bytes: free, read_only, ..Default::default() };
+        let disk =
+            |free, read_only| DiskSpace { total_bytes: 1 << 40, free_bytes: free, read_only, ..Default::default() };
         let cases: Vec<(StatusFile, &str, bool)> = vec![
             (last(None, 0), "no last status", false),
             (last(Exited, 0), "exit no reason", false),
@@ -525,7 +546,11 @@ mod tests {
             (last(Running, SIGFPE), "deadly signal", true),
             (last(Running, FATAL), "killed fatal", false),
             (
-                StatusFile { memory: Memory { total: 8 << 30, available: 1 << 20 }, oom_protection: 1 << 30, ..last(Running, 0) },
+                StatusFile {
+                    memory: Memory { total: 8 << 30, available: 1 << 20 },
+                    oom_protection: 1 << 30,
+                    ..last(Running, 0)
+                },
                 "killed hard low ram",
                 true,
             ),
@@ -575,6 +600,7 @@ mod tests {
         assert_eq!((s.fatal.stack_trace.as_bytes(), s.fatal.message.as_bytes()), (&b"#0 main"[..], &b"earlier"[..]));
         let mut s = StatusFile::default();
         timeout_record(&mut s, "", "info: other");
-        assert_eq!((s.fatal.stack_trace.as_bytes(), s.fatal.message.as_bytes()), (&b"shutdown timings: other"[..], &b""[..]));
+        let got = (s.fatal.stack_trace.as_bytes(), s.fatal.message.as_bytes());
+        assert_eq!(got, (&b"shutdown timings: other"[..], &b""[..]));
     }
 }

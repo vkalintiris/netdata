@@ -126,7 +126,7 @@ func compareArchivedTimes(t *testing.T, p *Pair, times *regexp.Regexp, children 
 	for _, child := range children {
 		// an archived host's labels come from the database on both sides, C's _hw_* ones included
 		compare(child+" info", func(d *daemon.Daemon) string {
-			text, labels := infoIdentity(t, d.Addr, "/host/"+child+"/api/v1/info", false)
+			text, labels := infoIdentity(t, d.Addr, "/host/"+child+"/api/v1/info")
 			sorted, _ := json.Marshal(labels)
 			return text + "\n" + string(sorted)
 		})
@@ -144,8 +144,7 @@ func compareArchivedTimes(t *testing.T, p *Pair, times *regexp.Regexp, children 
 			return string(maskStreamInfo(httpBody(b), false, 0, 0))
 		})
 		addrs := [2]string{p.Oracle.Addr, p.Candidate.Addr}
-		compareStreamPath(t, "archived", addrs, "/api/v3/stream_path?nodes="+child, times,
-			[2]string{parentIdentity.Hostname, ""})
+		compareStreamPath(t, "archived", addrs, "/api/v3/stream_path?nodes="+child, times)
 	}
 	compare("records", func(d *daemon.Daemon) string {
 		var out []string
@@ -341,7 +340,7 @@ func TestArchivedHostsDbengine(t *testing.T) {
 		// the query created the points-generated chart: both sides' metadata then compare whole, localhost's rows in
 		// their natural order, so a pulse dimension given a new UUID shows as an added row (R29 B2)
 		waitLocalCharts(t, p, 10*time.Second, "netdata.db_points_results")
-		compareFiles(t, p, hwLabels, writerArgs(true)...)
+		compareFiles(t, p, writerArgs(true)...)
 		reconnect := regexp.MustCompile(`msg="(Archived host '|Host '[^']*' has |Host [^ ]+ is not in archived mode anymore)`)
 		var got [2]string
 		for i, side := range p.Each() {

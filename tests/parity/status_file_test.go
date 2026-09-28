@@ -35,8 +35,6 @@ var statusVolatile = []Mask{
 // statusDifferences are what C and the Rust agent write differently, each with its reason.
 var statusDifferences = []Mask{
 	{"agent.stack_traces", "no libbacktrace (D87 F3)"},
-	{"hw", "DMI (status file commit 4)"},
-	{"product", "DMI (status file commit 4)"},
 	{"host.memory.oom_protection", "not verified equal"},
 }
 

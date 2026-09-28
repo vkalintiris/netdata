@@ -370,6 +370,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     // netdata_conf_section_global(): the hostname, nd_profile_setup() (the profile detected once more, then its
     // malloc settings) and [db]. registry_init() follows in C (D42).
     conf.section_global_hostname();
+    status_file::set_host_prefix(&conf.host_prefix);
     let profile = profile::detect(
         &mut conf.netdata,
         system.system_cpus,

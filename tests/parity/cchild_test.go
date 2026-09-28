@@ -313,7 +313,7 @@ func TestCChild(t *testing.T) {
 				var text [2]string
 				var labels [2]map[string]any
 				for s, side := range p.Each() {
-					text[s], labels[s] = infoIdentity(t, side.Daemon.Addr, "/host/"+hostname+"/api/v1/info", false)
+					text[s], labels[s] = infoIdentity(t, side.Daemon.Addr, "/host/"+hostname+"/api/v1/info")
 				}
 				if text[0] != text[1] {
 					t.Errorf("differs\n%s", firstDifference([]byte(text[0]), []byte(text[1])))
@@ -326,9 +326,8 @@ func TestCChild(t *testing.T) {
 			// `stream.cchild-path-api`.
 			t.Run("stream-path-api", func(t *testing.T) {
 				addrs := [2]string{p.Oracle.Addr, p.Candidate.Addr}
-				cOnly := [2]string{parentIdentity.MachineGUID, ""}
 				for _, path := range streamPathRequests(hostname, guid(i)) {
-					compareStreamPath(t, "tee", addrs, path, parentEntryTimes, cOnly)
+					compareStreamPath(t, "tee", addrs, path, parentEntryTimes)
 				}
 			})
 			for name, path := range cases {

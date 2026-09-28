@@ -122,10 +122,9 @@ var pulseContextsRules = Rules{
 	Masks: []Mask{
 		{Pattern: "**.first_time_t", Reason: "each daemon's own start"},
 		{Pattern: "**.last_time_t", Reason: "the clock"},
-		{Pattern: "host_labels", Reason: "compared by api.localhost-identity (C's _hw_* labels, D49.3)"},
 	},
-	// C keeps a chart's labels in pointer order (D22.2)
-	Unordered: []string{"contexts", "contexts.*.charts.*.labels"},
+	// C keeps a chart's labels, and the host's, in pointer order (D22.2)
+	Unordered: []string{"contexts", "contexts.*.charts.*.labels", "host_labels"},
 	// the contexts follow their charts through RRDCONTEXT's queue
 	Settle: 10 * time.Second,
 }

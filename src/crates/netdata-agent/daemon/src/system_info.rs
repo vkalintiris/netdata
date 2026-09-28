@@ -13,7 +13,18 @@ use crate::spawn::Popen;
 /// `rrdhost_system_info_detect()`: `<plugins>/system-info.sh`'s pairs, each exported to the environment the
 /// plugins inherit. The script's exit code does not matter.
 fn detect(si: &mut SystemInfo, plugins_dir: &str) {
-    // the daemon status file's hardware fields come with its port (D49 point 3)
+    // the product the status file named from DMI, while it is known (the `_hw_*` labels)
+    let product = crate::status_file::product();
+    for (field, value) in [
+        (&mut si.hw_product_id, product.id.as_bytes()),
+        (&mut si.hw_product_name, product.name.as_bytes()),
+        (&mut si.hw_sys_vendor, product.vendor.as_bytes()),
+        (&mut si.hw_product_type, product.kind.as_bytes()),
+    ] {
+        if !value.is_empty() {
+            *field = Some(String::from_utf8_lossy(value).into_owned());
+        }
+    }
     let script = format!("{plugins_dir}/system-info.sh");
     if let Err(errno) = nix::unistd::access(script.as_str(), nix::unistd::AccessFlags::R_OK) {
         nd_log!(Source::Daemon, Priority::Err, errno = errno as i32;

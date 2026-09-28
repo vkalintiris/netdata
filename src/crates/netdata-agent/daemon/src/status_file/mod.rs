@@ -3,10 +3,12 @@
 //! restart and crash accounting. This module holds its model, its JSON writer and parser, its file I/O, and this
 //! run's records (`session`) with the live values they are refreshed from (`live`).
 
+mod dmi;
 pub mod io;
 mod json;
 mod live;
 mod parse;
+mod product;
 mod session;
 pub mod signal_code;
 
@@ -17,9 +19,9 @@ use netdata_agent_text::datetime::{RFC3339_MAX_LENGTH, rfc3339_datetime_utc};
 
 pub use json::to_json;
 pub use parse::from_json;
-pub use live::{set_db_mode, set_db_tiers, set_localhost, set_oom_protection, set_profile};
+pub use live::{set_db_mode, set_db_tiers, set_host_prefix, set_localhost, set_oom_protection, set_profile};
 pub use session::{
-    SHUTDOWN_TIMINGS_HEADER, check_crash, init, shutdown_step, shutdown_timeout, startup_step, update_status,
+    SHUTDOWN_TIMINGS_HEADER, check_crash, init, product, shutdown_step, shutdown_timeout, startup_step, update_status,
 };
 
 /// `STATUS_FILE_VERSION`.

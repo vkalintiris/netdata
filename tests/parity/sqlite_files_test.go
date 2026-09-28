@@ -73,9 +73,6 @@ func execDB(t *testing.T, db, sql string) {
 // migrationRecords are the migration and open records of the main thread.
 var migrationRecords = regexp.MustCompile(`msg="(SQLite database |[a-z]+ database version is|Database version is|Running database|Database [a-z]+ migration|SQLite error|SQLite failed statement|Database is corrupted)`)
 
-// hwLabels are C's `_hw_*` host labels, which come from its daemon status file (D49.3): C-only for now.
-var hwLabels = regexp.MustCompile(`label_key="_hw_`)
-
 // writerArgs has metadata-dump print the metadata writer's tables as the checks compare them: label and node
 // instance rows sorted (C writes labels in pointer order), the chart, dimension and chart label rows in their
 // natural order (the pulse charts are created as their data comes, D83.2), chart and dimension ids aliased (random
@@ -105,9 +102,9 @@ func writerArgs(chartRows bool) []string {
 
 // compareFiles stops both daemons, together, once localhost's pulse charts stored a point and both sides have the
 // same lazy ones (C's exit stores one more cycle, D81.3), and compares their databases: the whole context database
-// but its rows, and the metadata database's header, pragmas, schema and tables as metadata-dump prints them with args
-// (lines matching drop left out on both sides), then the migration records.
-func compareFiles(t *testing.T, p *Pair, drop *regexp.Regexp, args ...string) {
+// but its rows, and the metadata database's header, pragmas, schema and tables as metadata-dump prints them with args,
+// then the migration records.
+func compareFiles(t *testing.T, p *Pair, args ...string) {
 	t.Helper()
 	if !p.Oracle.Opts.PulseOff {
 		for _, side := range p.Each() {
@@ -121,13 +118,7 @@ func compareFiles(t *testing.T, p *Pair, drop *regexp.Regexp, args ...string) {
 	var got [2]string
 	for i, side := range p.Each() {
 		cache := filepath.Join(side.Daemon.Opts.RunDir, "cache")
-		var kept []string
-		for _, l := range strings.Split(dumpDB(t, filepath.Join(cache, "netdata-meta.db"), args...), "\n") {
-			if drop == nil || !drop.MatchString(l) {
-				kept = append(kept, l)
-			}
-		}
-		got[i] = strings.Join(kept, "\n") + dumpDB(t, filepath.Join(cache, "context-meta.db"))
+		got[i] = dumpDB(t, filepath.Join(cache, "netdata-meta.db"), args...) + dumpDB(t, filepath.Join(cache, "context-meta.db"))
 		for _, l := range logLines(t, side.Daemon.Opts.RunDir, "daemon.log") {
 			if threadOf(l) == "" && migrationRecords.MatchString(l) {
 				got[i] += normalizeLog(l, side.Daemon.Opts.RunDir, "") + "\n"
@@ -192,7 +183,7 @@ func TestSQLiteFiles(t *testing.T) {
 	opts := daemon.Options{DBMode: "alloc", StorageTiers: 1, StreamMemoryMode: "alloc"}
 	writer := writerArgs(true)
 	t.Run("fresh", func(t *testing.T) {
-		compareFiles(t, StartPair(t, opts, parentIdentity), hwLabels,
+		compareFiles(t, StartPair(t, opts, parentIdentity),
 			append([]string{"--table", "agent_event_log"}, writer...)...)
 	})
 	for _, name := range []string{"child", "child-final"} {
@@ -228,7 +219,7 @@ func TestSQLiteFiles(t *testing.T) {
 					}
 				}
 			}
-			compareFiles(t, p, hwLabels, writer...)
+			compareFiles(t, p, writer...)
 			if name == "child-final" {
 				if o, c := writerRecords(t, p.Oracle), writerRecords(t, p.Candidate); o != c {
 					t.Errorf("final store records:\noracle:\n%s\ncandidate:\n%s", o, c)
@@ -247,7 +238,7 @@ func TestSQLiteFiles(t *testing.T) {
 	t.Run("seeded", func(t *testing.T) {
 		o := opts
 		o.SeedCache = seed
-		compareFiles(t, StartPair(t, o, parentIdentity), hwLabels,
+		compareFiles(t, StartPair(t, o, parentIdentity),
 			append([]string{"--table", "agent_event_log"}, writer...)...)
 	})
 	t.Run("node-ids", func(t *testing.T) {
@@ -267,7 +258,7 @@ func TestSQLiteFiles(t *testing.T) {
 		o := opts
 		o.SeedCache = dir
 		p := StartPair(t, o, parentIdentity)
-		compareFiles(t, p, hwLabels, append([]string{"--table", "agent_event_log"}, writer...)...)
+		compareFiles(t, p, append([]string{"--table", "agent_event_log"}, writer...)...)
 		for _, side := range p.Each() {
 			db := filepath.Join(side.Daemon.Opts.RunDir, "cache", "netdata-meta.db")
 			if strings.Contains(dumpDB(t, db, "--table", "node_instance"), "0102030405060708090a0b0c0d0e0f10") {
@@ -290,7 +281,7 @@ func TestSQLiteFiles(t *testing.T) {
 		execDB(t, filepath.Join(dir, "context-meta.db"), "PRAGMA user_version=7")
 		o := opts
 		o.SeedCache = dir
-		compareFiles(t, StartPair(t, o, parentIdentity), hwLabels,
+		compareFiles(t, StartPair(t, o, parentIdentity),
 			append([]string{"--table", "agent_event_log"}, writer...)...)
 	})
 	old := map[string]string{
@@ -323,7 +314,7 @@ func TestSQLiteFiles(t *testing.T) {
 			o := opts
 			o.SeedCache = dir
 			// the migrations give old health log rows random transition ids
-			compareFiles(t, StartPair(t, o, parentIdentity), hwLabels, append([]string{"--table",
+			compareFiles(t, StartPair(t, o, parentIdentity), append([]string{"--table",
 				"agent_event_log", "--table", "health_log", "--table", "health_log_detail",
 				"--mask", "health_log.last_transition_id"},
 				writerArgs(false)...)...)

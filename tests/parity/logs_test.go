@@ -99,13 +99,6 @@ var logMasks = []logMask{
 	{regexp.MustCompile(`(host context cleanup items|dimension delete items) in [0-9.]+ ms"`), "${1} in N ms\""},
 }
 
-// differenceMasks hide what C and the Rust agent still write differently, each until its port lands: the DMI members
-// (`hw`, `product`) of the startup record's last status, which C fills for a record older than version 27 (status
-// file commit 4).
-var differenceMasks = []logMask{
-	{regexp.MustCompile(`\\"hw\\":\{.*\\"fatal\\":\{`), `\"hw\":DMI,\"fatal\":{`},
-}
-
 var (
 	threadRe  = regexp.MustCompile(` thread=(\S+)`)
 	errnoRe   = regexp.MustCompile(` errno="[^"]*"`)
@@ -164,9 +157,6 @@ func normalizeLog(line, runDir, port string) string {
 		line = errnoRe.ReplaceAllString(line, "")
 	}
 	for _, m := range logMasks {
-		line = m.re.ReplaceAllString(line, m.with)
-	}
-	for _, m := range differenceMasks {
 		line = m.re.ReplaceAllString(line, m.with)
 	}
 	return line
