@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -225,8 +227,9 @@ func copyTree(t *testing.T, from, to string) {
 }
 
 // TestDbengineReadFaults (check `dbengine.read`) repeats the start over the runR cache with one file fault each in
-// tier 0's second pair: both agents take C's file decisions with C's records (the whole daemon log), and the archived
-// child's contexts and data read the same afterwards.
+// tier 0's second or last pair (spec §6.4, appendix A §9): both agents take C's file decisions with C's records (the
+// whole daemon log), and the archived child's contexts and data, and every tier-0 page of the window (twice), read
+// the same afterwards.
 func TestDbengineReadFaults(t *testing.T) {
 	fx, id := runRParent(t)
 	flip := func(t *testing.T, path string, at int64) {
@@ -236,6 +239,21 @@ func TestDbengineReadFaults(t *testing.T) {
 		}
 		b[at] ^= 0xff
 		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	truncate := func(t *testing.T, path string, size int64) {
+		if err := os.Truncate(path, size); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendZeros := func(t *testing.T, path string, n int) {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if _, err := f.Write(make([]byte, n)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -274,7 +292,63 @@ func TestDbengineReadFaults(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
+		// C2: a byte inside the first extent of the second data file: its pages read as gaps, once
+		"c2-extent-payload": func(t *testing.T, tier0 string) {
+			flip(t, filepath.Join(tier0, "datafile-1-0000000002.ndf"), 4096+2048)
+		},
+		// C4: the last journal cut inside its only transaction block: the replay floors it away
+		"c4-torn-last-transaction": func(t *testing.T, tier0 string) {
+			truncate(t, filepath.Join(tier0, "journalfile-1-0000000004.njf"), 8192-2000)
+		},
+		// the last journal's size off a block boundary, its transactions intact
+		"unaligned-njf-tail": func(t *testing.T, tier0 string) {
+			appendZeros(t, filepath.Join(tier0, "journalfile-1-0000000004.njf"), 100)
+		},
+		// a transaction's payload fails its checksum in the last journal
+		"corrupt-tx-payload": func(t *testing.T, tier0 string) {
+			flip(t, filepath.Join(tier0, "journalfile-1-0000000004.njf"), 4096+100)
+		},
+		// the last pair holds only its superblocks
+		"empty-last-pair": func(t *testing.T, tier0 string) {
+			truncate(t, filepath.Join(tier0, "journalfile-1-0000000004.njf"), 4096)
+			truncate(t, filepath.Join(tier0, "datafile-1-0000000004.ndf"), 4096)
+		},
+		// a v2 index whose header is zeros: rebuilt from the v1 journal
+		"zero-header-v2": func(t *testing.T, tier0 string) {
+			path := filepath.Join(tier0, "journalfile-1-0000000002.njfv2")
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clear(b[:256])
+			if err := os.WriteFile(path, b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		// zero-size files: a v2 index is rebuilt, a data file or v1 journal deletes the pair
+		"empty-v2": func(t *testing.T, tier0 string) {
+			truncate(t, filepath.Join(tier0, "journalfile-1-0000000002.njfv2"), 0)
+		},
+		"empty-ndf": func(t *testing.T, tier0 string) {
+			truncate(t, filepath.Join(tier0, "datafile-1-0000000002.ndf"), 0)
+		},
+		"empty-njf": func(t *testing.T, tier0 string) {
+			truncate(t, filepath.Join(tier0, "journalfile-1-0000000002.njf"), 0)
+		},
+		// D3(c): no v2 index and a v1 superblock that fails its check: the pair is deleted
+		"v1-superblock": func(t *testing.T, tier0 string) {
+			if err := os.Remove(filepath.Join(tier0, "journalfile-1-0000000002.njfv2")); err != nil {
+				t.Fatal(err)
+			}
+			flip(t, filepath.Join(tier0, "journalfile-1-0000000002.njf"), 0)
+		},
 	}
+	// C2: which metric's page reports the failed extent, and how many times, depends on which concurrent read reaches
+	// it first: the records compare by presence
+	extentFailed := regexp.MustCompile(`DBENGINE: error while reading extent from datafile 2 of tier 0, at offset 4096 ` +
+		`\([0-9]+ bytes\) to extract page .* CRC32 checksum FAILED`)
+	c2Records := []logMask{{regexp.MustCompile(`^.*msg="DBENGINE: (error while reading extent from datafile 2 of ` +
+		`tier 0,|metric '[^']+' loaded invalid page ).*$`), ""}}
 	for name, fault := range faults {
 		t.Run(name, func(t *testing.T) {
 			seed := t.TempDir()
@@ -286,12 +360,26 @@ func TestDbengineReadFaults(t *testing.T) {
 			win := fmt.Sprintf("after=%d&before=%d", fixtureStart, fixtureEnd)
 			compareGet(t, p, "/host/b6child/api/v1/data?chart=b6.c2&"+win+"&points=30&tier=0&options=jsonwrap")
 			compareGet(t, p, "/host/b6child/api/v3/data?contexts=b6.ctx&"+win+"&points=6&tier=1")
+			// every tier-0 page of the window, twice: failed pages are cached as gaps and log once (C2b)
+			all := "/api/v3/data?scope_nodes=*&scope_contexts=*&" + win + "&points=10&tier=0"
+			compareGet(t, p, all)
+			time.Sleep(2 * time.Second)
+			compareGet(t, p, all)
 			for _, side := range p.Each() {
 				if err := side.Daemon.Stop(); err != nil {
 					t.Fatalf("stop %s: %v", side.Role, err)
 				}
 			}
-			compareLogFiles(t, p, "daemon.log")
+			if name != "c2-extent-payload" {
+				compareLogFiles(t, p, "daemon.log")
+				return
+			}
+			compareLogFilesWith(t, p, c2Records, "daemon.log")
+			for _, side := range p.Each() {
+				if !slices.ContainsFunc(logLines(t, side.Daemon.Opts.RunDir, "daemon.log"), extentFailed.MatchString) {
+					t.Errorf("%s: no record of the failed extent", side.Role)
+				}
+			}
 		})
 	}
 }

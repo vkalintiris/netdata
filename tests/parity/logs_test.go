@@ -242,6 +242,10 @@ next:
 		for _, m := range extra {
 			n = m.re.ReplaceAllString(n, m.with)
 		}
+		if n == "" {
+			// a check's mask emptied the record: the check compares it its own way
+			continue
+		}
 		switch base, _, _ := strings.Cut(th, "["); base {
 		case "", "EXIT_WATCHER":
 			ordered[base] = append(ordered[base], n)
@@ -410,7 +414,8 @@ func compareLogFilesWith(t *testing.T, p *Pair, extra []logMask, names ...string
 			}
 		}
 		oo, ou, dropped := logClasses(o, p.Oracle, oProbes, true, extra)
-		co, cu, _ := logClasses(c, p.Candidate, cProbes, false, extra)
+		// C against C: the candidate's records of the subsystems the Rust agent lacks are left out too
+		co, cu, _ := logClasses(c, p.Candidate, cProbes, p.Candidate.Opts.Binary == p.Oracle.Opts.Binary, extra)
 		t.Logf("%s: %d oracle records of unported subsystems left out", name, dropped)
 		for _, class := range sortedKeys(oo, co) {
 			if d := diffSequences(oo[class], co[class]); d != "" {
