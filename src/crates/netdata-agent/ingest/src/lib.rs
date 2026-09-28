@@ -294,7 +294,7 @@ impl Parser {
                 none()
             }
         });
-        let (instance, context) = match &self.scope {
+        let (instance, context) = match self.scope() {
             Some(chart) => {
                 let meta = chart.meta();
                 let name = meta.name.unwrap_or_else(|| chart.id().to_string());
@@ -384,8 +384,13 @@ impl Parser {
     }
 
     /// `pluginsd_require_scope_chart()`.
+    /// The chart in scope, unless the maintenance freed it: then no chart is (C's scope pointer dangles there, D95.3).
+    fn scope(&self) -> Option<&Arc<Chart>> {
+        self.scope.as_ref().filter(|chart| !chart.is_freed())
+    }
+
     fn require_scope(&mut self, keyword: &str, parent: &str) -> Result<Arc<Chart>, Refused> {
-        match &self.scope {
+        match self.scope() {
             Some(chart) => Ok(Arc::clone(chart)),
             None => {
                 plog!(
@@ -761,7 +766,7 @@ impl Parser {
             );
             return refuse();
         };
-        let Some(chart) = self.scope.clone() else {
+        let Some(chart) = self.scope().cloned() else {
             return refuse_with("CLABEL", "Got CHART LABEL without a chart");
         };
         let first = self.clabel_count == 0;
@@ -812,7 +817,7 @@ impl Parser {
     fn variable(&mut self, w: &Words) -> Rc {
         let mut name = w.get(1);
         let mut value = w.get(2);
-        let chart = self.scope.clone();
+        let chart = self.scope().cloned();
         let mut global = chart.is_none();
         if let Some(n) = name.filter(|n| !n.is_empty()) {
             if n == b"GLOBAL" || n == b"HOST" {
@@ -1014,7 +1019,7 @@ impl Parser {
             );
             return refuse();
         };
-        if !global && let Some(chart) = &self.scope {
+        if !global && let Some(chart) = self.scope() {
             plog!(
                 self,
                 Source::Daemon,
@@ -1775,7 +1780,7 @@ impl Parser {
                 Priority::Err,
                 "REPLAY: malformed REND command"
             );
-            if let Some(chart) = &self.scope {
+            if let Some(chart) = self.scope() {
                 chart.receiver().replication_empty_response_count = 0;
             }
             return refuse();

@@ -121,15 +121,22 @@ fn archive_obsolete_dimensions(chart: &Chart, chart_obsolete: bool, obsolete_s: 
         return 0;
     }
     let candidate = |dim: &Dim| chart_obsolete || dim.meta().flags & dim_flags::OBSOLETE != 0;
+    let uncollected = |dim: &Dim| dim.collection().last_collected_time.0.saturating_add(obsolete_s) < now_s;
+    // C's destroy_lock, held across its loop: rechecked under the dimensions' lock, which a revive takes too
+    let still = |dim: &Dim| {
+        uncollected(dim)
+            && (dim.meta().flags & dim_flags::OBSOLETE != 0
+                || chart_obsolete
+                    && chart.flags() & chart_flags::OBSOLETE != 0
+                    && chart.last_accessed_s().saturating_add(obsolete_s) < now_s)
+    };
     let (mut candidates, mut archives) = (0, 0);
     for dim in chart.dims() {
         if !candidate(&dim) {
             continue;
         }
         candidates += 1;
-        if dim.collection().last_collected_time.0.saturating_add(obsolete_s) < now_s
-            && chart.free_dim_if(&dim, candidate)
-        {
+        if uncollected(&dim) && chart.free_dim_if(&dim, still) {
             archives += 1;
         }
     }
@@ -276,6 +283,25 @@ mod tests {
         run(&hosts, None, now + 11);
         assert!(chart.is_freed() && child.charts().find("t.c", true).is_none());
         assert_eq!(child.pending_flags(), 0);
+    }
+
+    /// A sweep that found the chart obsolete frees none of its dimensions once a revive cleared the flag (a CHART
+    /// line meanwhile): the free rechecks under the dimensions' lock, as C's destroy_lock holds the loop (D95.2).
+    #[test]
+    fn a_revive_during_the_sweep_keeps_the_dimensions() {
+        let (_hosts, child) = hosts();
+        let (chart, _) = child.charts().create(&spec("c"));
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        let now = now_realtime_s();
+        assert_eq!(archive_obsolete_dimensions(&chart, true, 10, now + 11), 0, "not obsolete");
+        chart.is_obsolete();
+        chart.isnot_obsolete();
+        assert_eq!(archive_obsolete_dimensions(&chart, true, 10, now + 11), 0, "revived");
+        assert!(!dim.is_freed() && chart.dim("d").is_some());
+        chart.is_obsolete();
+        assert_eq!(archive_obsolete_dimensions(&chart, true, 10, now), 0, "accessed within the time");
+        assert_eq!(archive_obsolete_dimensions(&chart, true, 10, now + 11), 1);
+        assert!(dim.is_freed());
     }
 
     /// A streamed vnode gone for the obsolete time keeps its charts: C skips virtual hosts' obsolete-all.

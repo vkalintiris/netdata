@@ -443,16 +443,25 @@ impl Chart {
 
     /// `rrdset_isnot_obsolete___safe_from_collector_thread()`.
     pub fn isnot_obsolete(&self) {
-        let was = self.update_meta(|m| {
-            let was = m.flags;
+        if self.clear_obsolete() {
+            self.obsolete_cleared();
+        }
+    }
+
+    /// The flag half of [`Chart::isnot_obsolete`]: whether the chart was obsolete.
+    fn clear_obsolete(&self) -> bool {
+        self.update_meta(|m| {
+            let was = m.flags & flags::OBSOLETE != 0;
             m.flags &= !flags::OBSOLETE;
             was
-        });
-        if was & flags::OBSOLETE != 0 {
-            self.touch_last_accessed();
-            self.metadata_updated();
-            contexts::updated_rrdset_flags(self);
-        }
+        })
+    }
+
+    /// The rest of [`Chart::isnot_obsolete`], for a chart that was obsolete.
+    fn obsolete_cleared(&self) {
+        self.touch_last_accessed();
+        self.metadata_updated();
+        contexts::updated_rrdset_flags(self);
     }
 
     /// `rrddim_is_obsolete___safe_from_collector_thread()`.
@@ -473,16 +482,16 @@ impl Chart {
 
     /// `rrddim_isnot_obsolete___safe_from_collector_thread()`: a dimension back from obsolete collects again.
     pub fn dim_isnot_obsolete(&self, dim: &Dim) {
-        let was = dim.update_meta(|m| {
-            let was = m.flags;
-            m.flags &= !dim_flags::OBSOLETE;
-            was
-        });
-        if was & dim_flags::OBSOLETE != 0 {
-            self.reinitialize_collection(dim);
-            contexts::updated_rrddim_flags(dim);
-            self.metadata_updated();
+        if clear_dim_obsolete(dim) {
+            self.dim_obsolete_cleared(dim);
         }
+    }
+
+    /// The rest of [`Chart::dim_isnot_obsolete`], for a dimension that was obsolete.
+    fn dim_obsolete_cleared(&self, dim: &Dim) {
+        self.reinitialize_collection(dim);
+        contexts::updated_rrddim_flags(dim);
+        self.metadata_updated();
     }
 
     /// `rrddim_reinitialize_collection()`: each dbengine tier whose collection ended starts it again.
@@ -492,6 +501,10 @@ impl Chart {
         };
         let ue = i64::from(self.update_every());
         let mut store = lock(&dim.store);
+        // a freed dimension never collects again: its mark is set before its collection ends, under this lock
+        if dim.is_freed() {
+            return;
+        }
         for (t, tier) in dim.tiers.iter().enumerate() {
             if let (TierMetric::Dbengine(metric), None) = (tier, &store.tiers[t].handle) {
                 let tier_ue = (self.storage.tier_grouping(t) as i64 * ue) as u32;
@@ -726,9 +739,14 @@ impl Chart {
         let context = self.meta().context;
         let mut index = self.dims.write().unwrap_or_else(PoisonError::into_inner);
         if let Some(dim) = index.get(id) {
+            // cleared under the dimensions' lock, which the maintenance's free takes too (C's destroy_lock): the free
+            // came first and the dimension is added again, or it sees the dimension live
+            let revived = clear_dim_obsolete(&dim);
             drop(index);
-            self.dim_isnot_obsolete(&dim);
-            // freed by the maintenance sweep since the lookup: added again (C retries on the destroy lock)
+            if revived {
+                self.dim_obsolete_cleared(&dim);
+            }
+            // freed since the lookup all the same: added again (C retries on the destroy lock)
             if dim.is_freed() {
                 return self.dim_add(id, name, multiplier, divisor, algorithm);
             }
@@ -1439,11 +1457,10 @@ impl Charts {
     /// named. Returns the chart and whether it is new.
     pub fn create(&self, spec: &ChartSpec<'_>) -> (Arc<Chart>, bool) {
         let full_id = bounded(format!("{}.{}", spec.type_, spec.id), ID_LENGTH_MAX);
-        let existing = self.inner.read().unwrap_or_else(PoisonError::into_inner).charts.get(&full_id);
-        if let Some(existing) = existing {
-            existing.isnot_obsolete();
-        }
         let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        // un-obsoleted under the charts' lock, which the maintenance's free takes too (C's destroy_lock): the free came
+        // first and the chart is created again, or it sees the chart live
+        let revived = index.charts.get(&full_id).is_some_and(|c| c.clear_obsolete());
         // rrdset_conflict_callback() reports whether anything changed, and whether the plugin or the module did
         // (RRDSET_REACT_PLUGIN_UPDATED, RRDSET_REACT_MODULE_UPDATED); the react step then runs.
         let (chart, is_new, changed, plugin_or_module) = match index.charts.get(&full_id) {
@@ -1575,6 +1592,9 @@ impl Charts {
             }
         };
         drop(index);
+        if revived {
+            chart.obsolete_cleared();
+        }
         // rrdset_react_callback(): created or updated, the chart is accessed
         chart.touch_last_accessed();
         if is_new || plugin_or_module {
@@ -1612,6 +1632,15 @@ impl Charts {
         }
         (chart, is_new)
     }
+}
+
+/// The flag half of [`Chart::dim_isnot_obsolete`]: whether the dimension was obsolete.
+fn clear_dim_obsolete(dim: &Dim) -> bool {
+    dim.update_meta(|m| {
+        let was = m.flags & dim_flags::OBSOLETE != 0;
+        m.flags &= !dim_flags::OBSOLETE;
+        was
+    })
 }
 
 #[cfg(test)]
@@ -1884,5 +1913,28 @@ mod tests {
         assert!(chart.take_metadata_update());
         charts.create(&s);
         assert!(!chart.take_metadata_update(), "the same plugin and module");
+    }
+
+    /// A dbengine dimension the maintenance freed never collects again: a revive through a held `Arc` (a late SET on
+    /// the obsolete dimension) starts no tier's collection (D95.2).
+    #[test]
+    fn a_freed_dimension_never_collects_again() {
+        use crate::host::{Host, HostInfo};
+        use crate::testutil::{collected_chart, engine, info};
+        let (_dirs, storage) = engine(1);
+        let dbengine = HostInfo {
+            db_mode: DbMode::Dbengine,
+            ..info("f")
+        };
+        let host = Host::with_storage("guid-f", false, dbengine, &storage).into_shared();
+        let chart = collected_chart(&host, DbMode::Dbengine);
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        let collecting = |dim: &Dim| lock(&dim.store).tiers[0].handle.is_some();
+        assert!(collecting(&dim));
+        chart.dim_is_obsolete(&dim);
+        assert!(chart.free_dim_if(&dim, |_| true));
+        assert!(!collecting(&dim), "its collection ended");
+        chart.dim_isnot_obsolete(&dim);
+        assert!(!collecting(&dim), "not started again");
     }
 }

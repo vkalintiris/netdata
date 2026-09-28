@@ -24,7 +24,9 @@ impl<T> Index<T> {
         self.by_id.get(id).map(|&i| Arc::clone(&self.ordered[i]))
     }
 
+    /// Appends an item under an id not indexed yet (every caller looks it up first).
     pub(crate) fn insert(&mut self, id: &str, item: Arc<T>) {
+        debug_assert!(!self.by_id.contains_key(id), "{id} indexed twice");
         self.by_id.insert(id.to_string(), self.ordered.len());
         self.ordered.push(item);
     }
