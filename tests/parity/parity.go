@@ -109,6 +109,14 @@ func binaries(t *testing.T) [2]string {
 // directories named after the roles, and stops both when the test ends. The first is the pair's Oracle side.
 func startPair(t *testing.T, opts daemon.Options, id daemon.Identity, bins, seeds [2]string, roles [2]Role) *Pair {
 	t.Helper()
+	return startPairWith(t, opts, id, bins, seeds, roles, nil)
+}
+
+// startPairWith is startPair with `prepare` run on each side's run directory before its daemon starts (it may lay
+// out the cache itself: the seed is copied after it).
+func startPairWith(t *testing.T, opts daemon.Options, id daemon.Identity, bins, seeds [2]string, roles [2]Role,
+	prepare func(t *testing.T, runDir string)) *Pair {
+	t.Helper()
 	p := &Pair{}
 	for i, role := range roles {
 		o := opts
@@ -116,6 +124,9 @@ func startPair(t *testing.T, opts daemon.Options, id daemon.Identity, bins, seed
 		o.SeedCache = seeds[i]
 		o.RunDir = runDir(t, role)
 		o.Identity = &id
+		if prepare != nil {
+			prepare(t, o.RunDir)
+		}
 		d, err := daemon.Start(o)
 		if err != nil {
 			t.Fatalf("parity: start %s (%s): %v", role, o.Binary, err)
