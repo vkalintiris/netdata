@@ -18,21 +18,23 @@ pub struct Deadly {
 static HANDLER: OnceLock<fn(&Deadly)> = OnceLock::new();
 
 extern "C" fn trampoline(signo: libc::c_int, info: *mut libc::siginfo_t, _context: *mut libc::c_void) {
-    if info.is_null() {
-        return;
+    if !info.is_null()
+        && let Some(handler) = HANDLER.get()
+    {
+        // SAFETY: the kernel hands an SA_SIGINFO handler a valid `siginfo_t` for the handler's duration; `si_addr()`
+        // reads the union's first member, as C's `info->si_addr` does.
+        let (si_code, address) = unsafe { ((*info).si_code, (*info).si_addr() as usize as u64) };
+        let faults = matches!(signo, libc::SIGSEGV | libc::SIGBUS | libc::SIGILL | libc::SIGFPE);
+        handler(&Deadly { signal: signo, si_code, fault_address: if faults { address } else { 0 } });
     }
-    // SAFETY: the kernel hands an SA_SIGINFO handler a valid `siginfo_t` for the handler's duration; `si_addr()`
-    // reads the union's first member, as C's `info->si_addr` does.
-    let (si_code, address) = unsafe { ((*info).si_code, (*info).si_addr() as usize as u64) };
-    let faults = matches!(signo, libc::SIGSEGV | libc::SIGBUS | libc::SIGILL | libc::SIGFPE);
-    let deadly = Deadly { signal: signo, si_code, fault_address: if faults { address } else { 0 } };
-    if let Some(handler) = HANDLER.get() {
-        handler(&deadly);
+    // whatever the handler did, the process ends by the signal (a fault would otherwise run again)
+    if let Ok(signal) = Signal::try_from(signo) {
+        die_by(signal);
     }
 }
 
-/// `nd_initialize_signals()`'s deadly part: `handler` for each of `signals`, with every signal masked while it runs.
-/// The handler must not allocate or block (D91.2).
+/// `nd_initialize_signals()`'s deadly part: `handler` for each of `signals`, with every signal masked while it runs,
+/// then the end by the signal ([`die_by`]). The handler must not allocate or block (D91.2).
 pub fn install_deadly(signals: &[Signal], handler: fn(&Deadly)) -> nix::Result<()> {
     let _ = HANDLER.set(handler);
     let action = SigAction::new(SigHandler::SigAction(trampoline), SaFlags::SA_SIGINFO, SigSet::all());

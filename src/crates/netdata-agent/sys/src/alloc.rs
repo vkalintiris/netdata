@@ -1,30 +1,28 @@
-//! The process's allocator (decisions D87 F5, D91.1): `System` underneath; a failed allocation calls the registered
-//! out-of-memory callback once, before Rust's `handle_alloc_error()` aborts, so the status file can record it. With
-//! the `alloc-count` feature each thread's allocations are counted, for the tests that prove a path allocates nothing.
+//! The process's allocator (decisions D87 F5, D91.1 and D91.5 as amended): `System` underneath; each thread knows
+//! whether its last allocation failed, so the SIGABRT that Rust's `handle_alloc_error()` raises right after can be
+//! recorded as running out of memory (a failure std recovers from, `try_reserve`, is followed by a success that
+//! clears it). With the `alloc-count` feature each thread's allocations are counted, for the tests that prove a path
+//! allocates nothing.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::Cell;
 
 /// Declared by the daemon as its `#[global_allocator]`.
 pub struct Alloc;
 
-static OUT_OF_MEMORY: OnceLock<fn()> = OnceLock::new();
-static OUT_OF_MEMORY_ONCE: AtomicBool = AtomicBool::new(false);
-
-/// What a failed allocation calls, once. It runs with memory exhausted: it must not allocate.
-pub fn on_out_of_memory(callback: fn()) {
-    let _ = OUT_OF_MEMORY.set(callback);
+thread_local! {
+    // const, without a destructor: reading or writing it never allocates, even while the thread exits
+    static LAST_FAILED: Cell<bool> = const { Cell::new(false) };
 }
 
 fn failed(ptr: *mut u8) -> *mut u8 {
-    if ptr.is_null()
-        && !OUT_OF_MEMORY_ONCE.swap(true, Ordering::AcqRel)
-        && let Some(callback) = OUT_OF_MEMORY.get()
-    {
-        callback();
-    }
+    LAST_FAILED.with(|f| f.set(ptr.is_null()));
     ptr
+}
+
+/// This thread's last allocation failed.
+pub fn allocation_failed() -> bool {
+    LAST_FAILED.with(Cell::get)
 }
 
 #[cfg(feature = "alloc-count")]

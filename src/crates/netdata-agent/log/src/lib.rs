@@ -267,10 +267,13 @@ pub fn thread_tag_async_safe() -> ([u8; 15], usize) {
 pub fn thread_tag() -> String {
     // during thread-local teardown the tag is gone, and the name serves
     let retagged = THREAD_TAG.try_with(|t| t.borrow().clone()).ok().flatten();
-    match retagged.or_else(|| std::thread::current().name().map(str::to_string)) {
+    let tag = match retagged.or_else(|| std::thread::current().name().map(str::to_string)) {
         Some(name) if name != "main" => name,
         _ => String::new(),
-    }
+    };
+    // what a signal handler reads (a thread's records compute it; C caches a libuv worker's name the same way)
+    cache_tag(&tag);
+    tag
 }
 
 /// `nd_thread_exit()`'s record, from the thread as it ends.

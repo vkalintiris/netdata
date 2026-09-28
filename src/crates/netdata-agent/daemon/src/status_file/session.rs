@@ -19,6 +19,8 @@ use crate::build;
 
 /// `STACK_TRACE_INFO_PREFIX`.
 const INFO_PREFIX: &str = "info: ";
+/// `WORKER_UTILIZATION_MAX_JOB_TYPES`.
+const WORKER_UTILIZATION_MAX_JOB_TYPES: u32 = 80;
 /// `set_stack_trace_message_if_empty()`'s text without a stack trace backend (D87 F3).
 const NO_BACKEND: &str = "info: no stack trace backend available";
 /// `DAEMON_STATUS_FILE_ROLLING_SHUTDOWN_TIMINGS_HEADER`.
@@ -67,8 +69,8 @@ fn try_take<T>(lock: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
     }
 }
 
-/// For a signal handler or a failed allocation (D91.2): the last save's record, frozen for good, changed by
-/// `change`, then saved without allocating; false when it cannot be had.
+/// For a signal handler (D91.2): the last save's record, frozen for good, changed by `change`, then saved without
+/// allocating; false when it cannot be had.
 pub(super) fn save_frozen(change: impl FnOnce(&mut StatusFile)) -> bool {
     let state = SNAPSHOT_STATE.fetch_or(FROZEN, Ordering::AcqRel);
     let Some(mut slot) = try_take(&SNAPSHOTS[(state & 1) as usize]) else { return false };
@@ -334,19 +336,6 @@ fn timeout_record(s: &mut StatusFile, step: &str, timings: &str) {
     s.fatal.function.set("shutdown_timeout");
 }
 
-/// `daemon_status_file_out_of_memory()`, the allocator's callback (D91.5): the reason, C's text for a missing stack
-/// trace backend, and a save that allocates nothing, of the last saved record (frozen, so a signal that follows adds
-/// to it).
-pub fn out_of_memory() {
-    exit_reason::add(exit_reason::OUT_OF_MEMORY);
-    save_frozen(|ds| {
-        ds.exit_reason |= exit_reason::OUT_OF_MEMORY;
-        if stack_trace_is_empty(ds) {
-            ds.fatal.stack_trace.set(NO_BACKEND);
-        }
-    });
-}
-
 /// `copy_and_clean_thread_name_if_empty()`: the thread's tag (NO_NAME without one) unless a name is recorded, its
 /// `[N]` index cut; allocates nothing (a signal handler calls it).
 fn set_thread_if_empty(s: &mut StatusFile, tag: &[u8]) {
@@ -365,12 +354,15 @@ fn set_thread_if_empty(s: &mut StatusFile, tag: &[u8]) {
 }
 
 /// `nd_signal_handler()` for a deadly signal with `daemon_status_file_deadly_signal_received()` (D91.4): once, the
-/// signal's record over the last saved one, saved without allocating; then C's stderr line, and the end by the
-/// signal.
+/// signal's record over the last saved one, saved without allocating, then C's stderr line (the handler's caller
+/// ends the process by the signal). A SIGABRT right after a failed allocation on this thread is Rust's
+/// `handle_alloc_error()`: it is recorded as running out of memory too (`daemon_status_file_out_of_memory()`, D91.5
+/// as amended).
 pub fn deadly_signal(d: &netdata_agent_sys::Deadly) {
     use nix::sys::signal::Signal;
     static ONCE: AtomicBool = AtomicBool::new(false);
     let Ok(signal) = Signal::try_from(d.signal) else { return };
+    let out_of_memory = signal == Signal::SIGABRT && netdata_agent_sys::allocation_failed();
     let reason = match signal {
         Signal::SIGBUS => exit_reason::SIGBUS,
         Signal::SIGSEGV => exit_reason::SIGSEGV,
@@ -381,7 +373,7 @@ pub fn deadly_signal(d: &netdata_agent_sys::Deadly) {
         Signal::SIGXCPU => exit_reason::SIGXCPU,
         Signal::SIGXFSZ => exit_reason::SIGXFSZ,
         _ => 0,
-    };
+    } | if out_of_memory { exit_reason::OUT_OF_MEMORY } else { 0 };
     let code = super::signal_code::create(d.signal, d.si_code);
     let (tag, tag_len) = netdata_agent_log::thread_tag_async_safe();
     let tag = &tag[..tag_len];
@@ -408,7 +400,6 @@ pub fn deadly_signal(d: &netdata_agent_sys::Deadly) {
     put(tag);
     put(b"!\n");
     let _ = nix::unistd::write(std::io::stderr(), &line[..len]);
-    netdata_agent_sys::die_by(signal);
 }
 
 /// `print_uint64()` on the stack.
@@ -447,8 +438,13 @@ fn deadly_record(ds: &mut StatusFile, reason: u32, code: u64, fault_address: u64
         let mut text = [0u8; 128];
         let mut len = 0;
         let mut job = [0; 20];
-        let job = decimal(u64::from(ds.fatal.worker_job_id), &mut job);
-        for part in [&b"thread:"[..], ds.fatal.thread.as_bytes(), b":", job] {
+        let job: &[u8] = if ds.fatal.worker_job_id <= WORKER_UTILIZATION_MAX_JOB_TYPES {
+            decimal(u64::from(ds.fatal.worker_job_id), &mut job)
+        } else {
+            &[]
+        };
+        let colon: &[u8] = if job.is_empty() { b"" } else { b":" };
+        for part in [&b"thread:"[..], ds.fatal.thread.as_bytes(), colon, job] {
             let n = part.len().min(text.len() - len);
             text[len..len + n].copy_from_slice(&part[..n]);
             len += n;
@@ -929,6 +925,23 @@ mod tests {
         let f = &s.fatal;
         assert_eq!((f.function.as_bytes(), f.thread.as_bytes()), (&b"cmd_fatal_execute"[..], &b"UV_WORKER"[..]));
         assert_eq!((f.fault_address, f.signal_code), (5, 0));
+        // a job id beyond C's job types is not shown
+        let mut s = StatusFile::default();
+        s.fatal.worker_job_id = 81;
+        deadly_record(&mut s, exit_reason::SIGSEGV, 1, 0, 9, b"WEB[1]");
+        assert_eq!(s.fatal.function.as_bytes(), b"thread:WEB");
+    }
+
+    /// A failed allocation std recovers from (`try_reserve`) is forgotten at the next success: only a SIGABRT right
+    /// after it is recorded as running out of memory (R35 1, D91.5).
+    #[test]
+    fn a_recovered_allocation_failure_is_not_out_of_memory() {
+        let mut v: Vec<u8> = Vec::new();
+        assert!(v.try_reserve_exact(1 << 47).is_err());
+        assert!(netdata_agent_sys::allocation_failed());
+        let small = vec![0u8; 16];
+        assert!(!netdata_agent_sys::allocation_failed());
+        drop(small);
     }
 
     /// A thread inside the status file does not wait for itself, and once it came back in, no thread waits for the

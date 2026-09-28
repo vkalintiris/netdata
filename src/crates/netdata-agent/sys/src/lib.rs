@@ -26,7 +26,7 @@
 mod alloc;
 mod deadly;
 
-pub use alloc::{Alloc, on_out_of_memory};
+pub use alloc::{Alloc, allocation_failed};
 pub use deadly::{Deadly, die_by, install_deadly};
 #[cfg(feature = "alloc-count")]
 pub use alloc::allocations;

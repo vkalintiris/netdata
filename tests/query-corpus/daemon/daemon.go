@@ -632,7 +632,28 @@ func (d *Daemon) Stop() error {
 	}
 }
 
-// Signal sends the daemon a signal; WaitExit collects it if the signal ends it.
+// WaitSignal waits for a daemon that ends by a signal and returns that signal (0 when it exited on its own).
+func (d *Daemon) WaitSignal(timeout time.Duration) (syscall.Signal, error) {
+	if d.process == nil {
+		return 0, errors.New("daemon: not running")
+	}
+	select {
+	case werr := <-d.waitCh:
+		d.process = nil
+		d.processPID = 0
+		var exitErr *exec.ExitError
+		if errors.As(werr, &exitErr) {
+			if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+				return ws.Signal(), nil
+			}
+		}
+		return 0, werr
+	case <-time.After(timeout):
+		return 0, fmt.Errorf("daemon: PID %d still running after %s", d.processPID, timeout)
+	}
+}
+
+// Signal sends the daemon a signal; WaitSignal or WaitExit collects it if the signal ends it.
 func (d *Daemon) Signal(sig os.Signal) error {
 	if d.process == nil {
 		return errors.New("daemon: not running")

@@ -309,8 +309,8 @@ func TestStatusFile(t *testing.T) {
 				if err := d.Signal(c.sig); err != nil {
 					t.Fatalf("parity: signal %s: %v", side.Role, err)
 				}
-				if code, err := d.WaitExit(60 * time.Second); code != -1 || err != nil {
-					t.Errorf("%s: exit %d (%v), want death by the signal", side.Role, code, err)
+				if sig, err := d.WaitSignal(60 * time.Second); sig != c.sig || err != nil {
+					t.Errorf("%s: ended by signal %d (%v), want %d", side.Role, sig, err, c.sig)
 				}
 			}
 			expectStatus(t, c.name, p, map[string]string{
@@ -318,6 +318,16 @@ func TestStatusFile(t *testing.T) {
 				"fatal.thread": `"NO_NAME"`,
 			}, "Netdata was last stopped gracefully (exit instructed)")
 			compareStatusFiles(t, c.name, p, false, deadlyDifferences...)
+			// what the Rust agent writes in place of C's libbacktrace members (D91.4)
+			rust := statusFile(t, p.Candidate)
+			for path, want := range map[string]string{
+				"fatal.function":    `"thread:NO_NAME:0"`,
+				"fatal.stack_trace": `"info: no stack trace backend available"`,
+			} {
+				if got := statusMember(rust, path); got != want {
+					t.Errorf("%s: candidate: %s = %s, want %s", c.name, path, got, want)
+				}
+			}
 			for _, side := range p.Each() {
 				if err := side.Daemon.Restart(); err != nil {
 					t.Fatalf("parity: restart %s: %v", side.Role, err)
