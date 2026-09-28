@@ -35,6 +35,13 @@ func ScrubEnvironment() {
 		"NETDATA_CLAIM_PROXY", "NETDATA_CLAIM_INSECURE",
 		// the ACLK proxy resolution reads them; C and Rust log what they find
 		"http_proxy", "https_proxy",
+		// libcurl's (the crash report): a proxy or a no-proxy match would send it elsewhere (TestMain sets a guard)
+		"HTTPS_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY",
+		// nd_is_running_under_ci(): set, even empty, they change whether a crash report goes out
+		"CI", "CONTINUOUS_INTEGRATION", "BUILD_NUMBER", "RUN_ID", "TRAVIS", "GITHUB_ACTIONS", "GITHUB_TOKEN",
+		"GITLAB_CI", "CIRCLECI", "APPVEYOR", "BITBUCKET_BUILD_NUMBER", "SYSTEM_TEAMFOUNDATIONCOLLECTIONURI", "TF_BUILD",
+		"BAMBOO_BUILDKEY", "GO_PIPELINE_NAME", "HUDSON_URL", "TEAMCITY_VERSION", "CI_NAME", "CI_WORKER", "CI_SERVER",
+		"HEROKU_TEST_RUN_ID", "BUILDKITE", "DRONE", "SEMAPHORE", "NETLIFY", "NOW_BUILDER",
 	} {
 		os.Unsetenv(name)
 	}

@@ -267,6 +267,12 @@ pub fn to_json_in(w: &mut JsonWriter, ds: &StatusFile) {
 }
 
 fn members(w: &mut JsonWriter, ds: &StatusFile) {
+    record_members(w, ds);
+    w.finalize();
+}
+
+/// `daemon_status_file_to_json()`: the record's members, which the crash report appends to its own.
+pub fn record_members(w: &mut JsonWriter, ds: &StatusFile) {
     w.member_add_string("@timestamp", ds.timestamp_rfc3339.as_bytes());
     w.member_add_uint64("version", u64::from(VERSION));
     agent(w, ds);
@@ -275,5 +281,4 @@ fn members(w: &mut JsonWriter, ds: &StatusFile) {
     os(w, ds);
     hw(w, ds);
     fatal(w, ds);
-    w.finalize();
 }

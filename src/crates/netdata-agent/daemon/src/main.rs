@@ -88,6 +88,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     netdata_agent_log::init_invocation_id();
     netdata_agent_log::set_program_name("netdata");
     netdata_agent_log::set_default_log_dir(build::LOG_DIR);
+    // curl_global_init(CURL_GLOBAL_ALL), before the options, as C
+    curl::init();
     let prog = argv.first().cloned().unwrap_or_else(|| b"netdata".to_vec());
     let mut conf = Conf::default();
     let mut config_loaded = false;

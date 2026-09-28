@@ -14,8 +14,9 @@ use super::io::{self, Locations, STATUS_FILENAME};
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 
 use super::json::to_json_in;
-use super::{DaemonStatus, Product, StatusFile, dmi, exit_reason, from_json, live, rfc3339, to_json};
+use super::{DaemonStatus, Product, StatusFile, dedup, dmi, exit_reason, from_json, live, report, rfc3339, to_json};
 use crate::build;
+use netdata_agent_rrd::clock::now_realtime_ut;
 
 /// `STACK_TRACE_INFO_PREFIX`.
 const INFO_PREFIX: &str = "info: ";
@@ -79,7 +80,27 @@ pub(super) fn save_frozen(change: impl FnOnce(&mut StatusFile)) -> bool {
     let (Some(loc), Some(mut writer)) = (LOCATIONS.get(), try_take(&WRITER)) else { return false };
     let Some(w) = writer.as_mut() else { return false };
     to_json_in(w, ds);
-    io::save(loc, STATUS_FILENAME, w.as_bytes(), false)
+    saved(io::save(loc, STATUS_FILENAME, w.as_bytes(), false))
+}
+
+/// `daemon_status_file_startup_save_state`: whether a save landed before the crash check closed the gate, which lets
+/// a first run (no last record) report itself.
+static STARTUP_SAVE: AtomicU32 = AtomicU32::new(STARTUP_SAVE_WAITING);
+const STARTUP_SAVE_WAITING: u32 = 0;
+const STARTUP_SAVE_SUCCEEDED: u32 = 1;
+const STARTUP_SAVE_CLOSED: u32 = 2;
+
+/// `daemon_status_file_mark_startup_save_succeeded()` for a save that landed; lock-free, for the signal handlers.
+fn saved(ok: bool) -> bool {
+    if ok {
+        let _ = STARTUP_SAVE.compare_exchange(
+            STARTUP_SAVE_WAITING,
+            STARTUP_SAVE_SUCCEEDED,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+    ok
 }
 
 /// The one lock of every refresh and save (D88.9).
@@ -140,7 +161,7 @@ fn files() -> Option<Held> {
 fn save(f: &Files, log: bool) {
     publish(&f.session);
     if let Some(loc) = LOCATIONS.get() {
-        io::save(loc, STATUS_FILENAME, &to_json(&f.session), log);
+        saved(io::save(loc, STATUS_FILENAME, &to_json(&f.session), log));
     }
 }
 
@@ -742,7 +763,9 @@ pub fn last_exit(last: &mut StatusFile, session: &StatusFile) -> LastExit {
 }
 
 /// `daemon_status_file_check_crash()`: the "Last exit status" record with the last run's record, saved as the
-/// "crash reports check" step; `[global] crash reports` is read (the report itself is not ported).
+/// "crash reports check" step, then, when `[global] crash reports` asks for it, the startup save landed or a last
+/// record exists, the run is no CI run (or the last one restarted more than once) and the same report did not go out
+/// within a day, the report, synchronously as C posts it. The record's log frame covers everything after it.
 pub fn check_crash(conf: &mut Config, analytics: bool) {
     let (exit, dump) = {
         let Some(mut guard) = files() else { return };
@@ -757,25 +780,67 @@ pub fn check_crash(conf: &mut Config, analytics: bool) {
         };
         (exit, dump)
     };
-    {
-        let _frame = push(vec![(Field::MessageId, Value::Uuid(msgid::STARTUP))]);
-        nd_log!(
-            Source::Daemon,
-            exit.pri.0,
-            "Netdata Agent version '{}' is starting...\nLast exit status: {} ({}):\n\n{}",
-            build::NETDATA_VERSION,
-            exit.msg,
-            exit.cause,
-            String::from_utf8_lossy(&dump)
-        );
-    }
+    let _frame = push(vec![(Field::MessageId, Value::Uuid(msgid::STARTUP))]);
+    nd_log!(
+        Source::Daemon,
+        exit.pri.0,
+        "Netdata Agent version '{}' is starting...\nLast exit status: {} ({}):\n\n{}",
+        build::NETDATA_VERSION,
+        exit.msg,
+        exit.cause,
+        String::from_utf8_lossy(&dump)
+    );
     startup_step(Some("startup(crash reports check)"));
-    let guard = files();
-    if let Some(f) = guard.as_ref().and_then(|g| g.as_ref()) {
-        let (last, session) = (f.last, f.session);
-        drop(guard);
-        let _ = crash_reports(conf, analytics, &last, &session);
+    let startup_saved = STARTUP_SAVE.swap(STARTUP_SAVE_CLOSED, Ordering::Relaxed) == STARTUP_SAVE_SUCCEEDED;
+    let Some((mut last, session)) = files().and_then(|f| f.as_ref().map(|f| (f.last, f.session))) else {
+        return;
+    };
+    let reports = crash_reports(conf, analytics, &last, &session);
+    let Some(loc) = LOCATIONS.get() else { return };
+    let report = (reports == CrashReports::All || (exit.crash && reports == CrashReports::Crashes))
+        && (!exit.no_previous_status || startup_saved)
+        && (last.restarts > 1 || !report::running_under_ci())
+        && !dedup::already_posted(loc, dedup::hash(&last, exit.msg, exit.cause), now_realtime_ut());
+    if !report {
+        return;
     }
+    startup_step(Some("startup(crash reports prep)"));
+    // netdata_conf_ssl()
+    netdata_agent_tls::init();
+    if exit.no_previous_status {
+        // this run's record stands for the missing one
+        last = session;
+        last.status = DaemonStatus::None;
+        last.exit_reason = 0;
+        last.fatal = super::Fatal::default();
+    }
+    post(loc, &last, &exit);
+}
+
+/// `post_status_file()`: the report of `last` and what follows it: one more post in this run's record, the report's
+/// hash kept, and a save.
+fn post(loc: &Locations, last: &StatusFile, exit: &LastExit) {
+    startup_step(Some("startup(crash reports json)"));
+    let body = report::body(last, exit.cause, exit.msg, exit.pri.1);
+    startup_step(Some("startup(crash reports curl)"));
+    if report::post(report::AGENT_EVENTS_URL, &body) {
+        startup_step(Some("startup(crash reports dedup)"));
+        if let Some(mut guard) = files()
+            && let Some(f) = guard.as_mut()
+        {
+            f.session.posts = f.session.posts.wrapping_add(1);
+        }
+        nd_log!(Source::Daemon, Priority::Info, "Posted last status to agent-events successfully.");
+        dedup::keep(loc, dedup::hash(last, exit.msg, exit.cause), now_realtime_ut());
+        if let Some(guard) = files()
+            && let Some(f) = guard.as_ref()
+        {
+            save(f, true);
+        }
+    } else {
+        nd_log!(Source::Daemon, Priority::Info, "Failed to post last status to agent-events.");
+    }
+    startup_step(Some("startup(crash reports cleanup)"));
 }
 
 #[cfg(test)]

@@ -16,7 +16,12 @@ import (
 
 func TestMain(m *testing.M) {
 	ScrubEnvironment()
-	os.Exit(m.Run())
+	startReportGuard()
+	code := m.Run()
+	if reportGuardFailed() && code == 0 {
+		code = 1
+	}
+	os.Exit(code)
 }
 
 var (

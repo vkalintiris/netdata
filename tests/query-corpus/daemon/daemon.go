@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -101,6 +102,12 @@ type Options struct {
 	SeedCache string
 	// PulseOff sets `[plugins] netdata pulse = no`: the C agent's own charts stop writing into its database.
 	PulseOff bool
+	// Env is appended to the daemon's environment, after the harness's own, so an entry here wins (os/exec keeps the
+	// last of duplicates).
+	Env []string
+	// Wrap, when set, is a command that execs the daemon in place, so its PID stays the daemon's (e.g. `unshare` into
+	// namespaces); the daemon's own command line follows it.
+	Wrap []string
 }
 
 // StreamTo is a child's [stream] section.
@@ -467,11 +474,14 @@ func (d *Daemon) PID() int { return d.processPID }
 func (d *Daemon) launch() error {
 	confPath := filepath.Join(d.Opts.RunDir, "etc", "netdata.conf")
 	cmd := exec.Command(d.Opts.Binary, "-D", "-c", confPath)
+	if len(d.Opts.Wrap) > 0 {
+		cmd = exec.Command(d.Opts.Wrap[0], append(slices.Clone(d.Opts.Wrap[1:]), d.Opts.Binary, "-D", "-c", confPath)...)
+	}
 	d.PipeName = filepath.Join(d.Opts.RunDir, "netdata.pipe")
 	if d.Opts.PipeName != "" {
 		d.PipeName = strings.ReplaceAll(d.Opts.PipeName, "{run}", d.Opts.RunDir)
 	}
-	cmd.Env = append(os.Environ(), "NETDATA_PIPENAME="+d.PipeName)
+	cmd.Env = append(append(os.Environ(), "NETDATA_PIPENAME="+d.PipeName), d.Opts.Env...)
 	stdout, err := os.Create(filepath.Join(d.Opts.RunDir, "log", "stdout.log"))
 	if err != nil {
 		return fmt.Errorf("daemon: stdout log: %w", err)

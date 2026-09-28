@@ -3,12 +3,14 @@
 //! restart and crash accounting. This module holds its model, its JSON writer and parser, its file I/O, and this
 //! run's records (`session`) with the live values they are refreshed from (`live`).
 
+mod dedup;
 mod dmi;
 pub mod io;
 mod json;
 mod live;
 mod parse;
 mod product;
+mod report;
 mod session;
 pub mod signal_code;
 
@@ -241,6 +243,9 @@ pub mod db_mode {
 /// `ND_MACHINE_GUID`: the machine GUID and when its file was last modified.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HostId {
+    /// The GUID's text when it comes from the GUID file, empty in a loaded record (C's parser leaves it); only the
+    /// crash report's hash reads it.
+    pub txt: FixedStr<37>,
     pub uuid: [u8; 16],
     pub last_modified_ut: u64,
     pub last_modified_rfc3339: Rfc3339,

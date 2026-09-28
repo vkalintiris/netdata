@@ -146,6 +146,8 @@ twox-hash = { version = "2.1", default-features = false }
 openssl = "0.10"
 openssl-sys = "0.9"
 foreign-types = "0.3"
+# libcurl as the system has it (pkg-config), no bundled copy (D96.2)
+curl = { version = "0.4", default-features = false }
 # Pinned exactly: the no-`unsafe`-in-crate guarantee was audited per-version
 # (v0.17.0, `grep -rc unsafe src/` == 0); re-audit before any bump.
 fastbloom = { version = "=0.17.0", features = ["serde"] }

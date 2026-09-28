@@ -16,7 +16,7 @@ use netdata_agent_rrd::host::{Host, Hosts};
 use netdata_agent_text::parse::uuid_parse_flexi;
 use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatternMode};
 
-use super::{DaemonStatus, DiskSpace, HostId, OsType, StatusFile, cloud_status, db_mode, exit_reason, rfc3339};
+use super::{DaemonStatus, DiskSpace, FixedStr, HostId, OsType, StatusFile, cloud_status, db_mode, exit_reason, rfc3339};
 use crate::{guid, system};
 
 /// `stacktrace_backend()`: none in the Rust agent (D87 F3).
@@ -145,6 +145,7 @@ pub fn boot_ids_match(a: &[u8; 16], b: &[u8; 16]) -> bool {
 pub fn machine_guid(varlib: &str, previous: &HostId) -> HostId {
     let guid = guid::machine_guid_get(varlib, &previous.uuid);
     HostId {
+        txt: FixedStr::from(&guid.txt),
         uuid: guid.uuid,
         last_modified_ut: guid.last_modified_ut,
         last_modified_rfc3339: rfc3339(guid.last_modified_ut),
@@ -307,6 +308,7 @@ pub fn refresh(s: &mut StatusFile, status: DaemonStatus, metrics: Option<super::
 
     if let Some(g) = guid::machine_guid() {
         s.host_id = HostId {
+            txt: FixedStr::from(&g.txt),
             uuid: g.uuid,
             last_modified_ut: g.last_modified_ut,
             last_modified_rfc3339: rfc3339(g.last_modified_ut),
