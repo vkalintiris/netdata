@@ -1221,7 +1221,6 @@
         "limits",
         "percentiles",
         "approximations",
-        "duration_bands",
         "partial_reasons"
       ],
       "properties": {
@@ -1265,19 +1264,6 @@
             "label": { "type": "string" }
           },
           "additionalProperties": false
-        },
-        "duration_bands": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["label", "min_ns", "max_ns"],
-            "properties": {
-              "label": { "type": "string" },
-              "min_ns": { "type": "integer", "minimum": 0 },
-              "max_ns": { "type": ["integer", "null"] }
-            },
-            "additionalProperties": false
-          }
         },
         "partial_reasons": {
           "type": "array",

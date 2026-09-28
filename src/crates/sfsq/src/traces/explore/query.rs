@@ -154,12 +154,10 @@ impl ExploreQuery {
 
 impl ExploreSelection {
     /// Whether `field` is one the selection is made of: a field its chips
-    /// name, or the duration band when it bounds the duration. Such a field
-    /// differs between the selection and the rest only because of the
-    /// selection, so the comparison lists it unranked (D43).
+    /// name. Such a field differs between the selection and the rest only
+    /// because of the selection, so the comparison lists it unranked (D43).
     pub fn made_of(&self, field: &str) -> bool {
         self.filter.has_field(field)
-            || (self.duration.is_some() && field == ng_flatten::DURATION_BAND_FIELD)
     }
 
     fn validate(&self) -> Result<(), ExploreRequestError> {

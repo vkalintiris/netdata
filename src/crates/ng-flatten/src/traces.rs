@@ -43,9 +43,9 @@ pub struct SpanScopeGroup {
 /// `status_message`) and `attributes.*` live in [`entries`](Self::entries);
 /// events and links are structured lists ([`EventRecord`] / [`LinkRecord`])
 /// whose searchable parts double as entries at seal time. The entries also hold
-/// two derived values, [`ROLE_FIELD`] and [`DURATION_BAND_FIELD`]; a leading `_`
-/// marks a top-level entry that is not an OTLP field verbatim (these, and the
-/// raw enum ints `_kind` / `_status_code`).
+/// one derived value, [`ROLE_FIELD`]; a leading `_` marks a top-level entry
+/// that is not an OTLP field verbatim (it, and the raw enum ints `_kind` /
+/// `_status_code`).
 ///
 /// Per-row columns (NOT FST facets): `ts` = the resolved `start_time_unix_nano`
 /// (the row-ordering key; callers MUST normalize first, see
@@ -132,20 +132,15 @@ pub const STATUS_FIELD: &str = "status_code";
 /// The [`STATUS_FIELD`] label of an error span.
 pub const STATUS_ERROR: &str = "error";
 
-/// Storage key of the duration-band entry every span carries (see
-/// [`duration_band`]).
-pub const DURATION_BAND_FIELD: &str = "_duration_band";
-
 /// The traces core fields: the seal and the WAL chunk images pin them, so they
 /// are never High tier and their facets, charts and filters work at any
 /// cardinality. The raw enum numbers (`_kind`, `_status_code`) are not pinned.
-pub const TRACE_PINNED_FIELDS: [&str; 6] = [
+pub const TRACE_PINNED_FIELDS: [&str; 5] = [
     "resource.attributes.service.name",
     "name",
     STATUS_FIELD,
     "kind",
     ROLE_FIELD,
-    DURATION_BAND_FIELD,
 ];
 
 /// Where a span sits in its request. Written at flatten time because it depends
@@ -197,28 +192,6 @@ impl SpanRole {
     }
 }
 
-/// Number of fixed duration bands.
-pub const DURATION_BAND_COUNT: usize = 6;
-
-/// Stored values of the duration bands, fastest first.
-pub const DURATION_BAND_LABELS: [&str; DURATION_BAND_COUNT] =
-    ["<1ms", "1-10ms", "10-100ms", "100ms-1s", "1-10s", ">10s"];
-
-/// Lower edges of bands 1.. in nanoseconds; a band includes its lower edge.
-pub const DURATION_BAND_EDGES_NS: [i64; DURATION_BAND_COUNT - 1] = [
-    1_000_000,      // 1ms
-    10_000_000,     // 10ms
-    100_000_000,    // 100ms
-    1_000_000_000,  // 1s
-    10_000_000_000, // 10s
-];
-
-/// Index into [`DURATION_BAND_LABELS`] of a span duration (the clamped
-/// `SpanRecord::duration`).
-pub fn duration_band(duration_ns: i64) -> usize {
-    DURATION_BAND_EDGES_NS.partition_point(|&edge| duration_ns >= edge)
-}
-
 /// Flatten a decoded **traces** request INTO a shared [`Flattener`] (span analog of
 /// [`crate::logs::flatten_log_into`]). Resource is flattened once per `ResourceSpans`,
 /// scope once per `ScopeSpans`, reusing the signal-neutral
@@ -258,16 +231,10 @@ pub fn flatten_trace_into(
                     let dropped_events_count = sp.dropped_events_count;
                     let dropped_links_count = sp.dropped_links_count;
                     let role = SpanRole::of(&parent_span_id, sp.kind);
-                    let band = DURATION_BAND_LABELS[duration_band(duration)];
                     let mut flat = flattener.flatten_span(sp);
                     flattener.scalar(
                         ROLE_FIELD,
                         Value::Str(role.label().to_string()),
-                        &mut flat.entries,
-                    );
-                    flattener.scalar(
-                        DURATION_BAND_FIELD,
-                        Value::Str(band.to_string()),
                         &mut flat.entries,
                     );
                     SpanRecord {

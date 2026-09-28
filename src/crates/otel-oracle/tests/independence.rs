@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 const FORBIDDEN_CRATES: [&str; 4] = ["sfsq", "otel-ledger", "ng-index", "file-lifecycle"];
 
 /// The query side of `sfst`, the engine's own grouping and ingest code, and
-/// the crate paths of the judged crates, matched as whole words: `_role` or
-/// `_duration_band` inside the calculator's own names do not count.
-const FORBIDDEN_IDENTIFIERS: [&str; 45] = [
+/// the crate paths of the judged crates, matched as whole words: `_role`
+/// inside the calculator's own names does not count.
+const FORBIDDEN_IDENTIFIERS: [&str; 44] = [
     "sfsq::",
     "otel_ledger::",
     "ng_index::",
@@ -31,7 +31,6 @@ const FORBIDDEN_IDENTIFIERS: [&str; 45] = [
     "normalize_trace_request",
     "prepare_trace_frame",
     "flatten_trace_request",
-    "duration_band",
     "CHUNK_MIN_ENTRIES",
     "MAX_FACET_VALUES",
     "DEFAULT_CARDINALITY_THRESHOLD",
@@ -259,12 +258,7 @@ fn the_guard_catches_what_it_is_for() {
             "wal::Reader::open(path)",
             false,
         ),
-        (
-            "the calculator's own field name",
-            model,
-            "\"_duration_band\"",
-            false,
-        ),
+        ("the calculator's own field name", model, "\"_role\"", false),
         (
             "a name containing a banned word",
             model,
@@ -272,9 +266,9 @@ fn the_guard_catches_what_it_is_for() {
             false,
         ),
         (
-            "the engine's band function",
+            "the engine's family derivation",
             model,
-            "duration_band(ns)",
+            "derive_span_family(&rows)",
             true,
         ),
         (

@@ -166,11 +166,11 @@ fn write_wal_frames(dir: &std::path::Path, frames: Vec<(Vec<u8>, usize)>) -> std
 /// The seal and the chunk image come from the same populate function, so they
 /// pin the same fields: 1,500 distinct span names keep `name` Mid (its facets
 /// and charts work) in both, while an unpinned field that many values is High.
-/// FLAT-09: every sealed row's `_duration_band` is the band of the duration the
-/// file stores for it: an unset end and an end before the start store 0, an
-/// overlong span saturates, and the edges fall on their band's first value.
+/// The duration a sealed file stores for a row: an unset end and an end before
+/// the start store 0, an overlong span saturates, and no duration band is
+/// stored (D61).
 #[test]
-fn every_row_s_band_is_the_band_of_its_stored_duration() {
+fn every_row_stores_its_clamped_duration_and_no_band() {
     let t = [7u8; 16];
     let base: u64 = 1_700_000_000_000_000_000;
     let at = |id: u8, offset: u64, length: Option<u64>, name: &str| {
@@ -192,19 +192,11 @@ fn every_row_s_band_is_the_band_of_its_stored_duration() {
     let reader = IndexReader::open(&bytes).unwrap();
     let rows = reader.summary().record_count;
     assert_eq!(rows, 8);
+    assert!(reader.field_table().get("_duration_band").is_none());
     let durations = reader.durations().unwrap();
-    let bands = reader
-        .row_values(ng_flatten::DURATION_BAND_FIELD, 0..rows)
-        .unwrap();
     let mut seen = std::collections::BTreeMap::new();
     for position in 0..rows {
-        let stored = durations.0[position as usize];
-        let label = bands
-            .value_at(position)
-            .map(|at| bands.values[at as usize].as_str());
-        let want = ng_flatten::DURATION_BAND_LABELS[ng_flatten::duration_band(stored)];
-        assert_eq!(label, Some(want), "row {position}, duration {stored}");
-        *seen.entry(stored).or_insert(0) += 1;
+        *seen.entry(durations.0[position as usize]).or_insert(0) += 1;
     }
     assert_eq!(
         seen.get(&0),
@@ -1609,8 +1601,8 @@ fn count_without_drops_a_fields_chips_from_both_operands() {
     assert_eq!(reader.count_without(&both, "other", EVERYTHING).unwrap(), 0);
 }
 
-/// A traces frame as the flattener wrote it before the per-span `_role` and
-/// `_duration_band` tokens: the same payload format and entries, less those two.
+/// A traces frame as the flattener wrote it before the per-span `_role` token:
+/// the same payload format and entries, less the role.
 fn token_free_frame(mut request: ExportTraceServiceRequest) -> (Vec<u8>, usize) {
     let count = count_spans(&request);
     ng_flatten::normalize_trace_request(&mut request, 1, None);
@@ -1685,12 +1677,6 @@ fn a_wal_from_before_the_tokens_seals_without_roles() {
     let reader = IndexReader::open(&old).unwrap();
     assert_eq!(reader.summary().record_count, 2);
     assert!(reader.field_table().get(ng_flatten::ROLE_FIELD).is_none());
-    assert!(
-        reader
-            .field_table()
-            .get(ng_flatten::DURATION_BAND_FIELD)
-            .is_none()
-    );
     assert!(reader.field_table().get("name").is_some());
 
     let new = seal(vec![req(spans())]);

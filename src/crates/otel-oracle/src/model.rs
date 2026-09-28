@@ -15,7 +15,7 @@
 //! - enum fields store a label (`kind`, `status_code`) and the raw int
 //!   (`_kind`, `_status_code`), labels in lower case; UNSPECIFIED kind stores
 //!   nothing, UNSET status (code 0 or no status) stores only the label `unset`;
-//! - two derived fields: `_role` and `_duration_band`.
+//! - one derived field: `_role`.
 
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
@@ -27,23 +27,11 @@ use opentelemetry_proto::tonic::{
 };
 
 pub const ROLE_FIELD: &str = "_role";
-pub const DURATION_BAND_FIELD: &str = "_duration_band";
 pub const STATUS_FIELD: &str = "status_code";
 pub const SERVICE_FIELD: &str = "resource.attributes.service.name";
 /// The token the traces seal adds to a sealed file's error-origin rows (the
 /// calculator's own copy of the documented name).
 pub const ERR_ORIGIN_FIELD: &str = "_err_origin";
-
-/// Band labels, fastest first, and the lower edges (ns) of bands 1.., each
-/// edge inclusive: <1ms, 1-10ms, 10-100ms, 100ms-1s, 1-10s, >10s.
-pub const DURATION_BANDS: [&str; 6] = ["<1ms", "1-10ms", "10-100ms", "100ms-1s", "1-10s", ">10s"];
-const BAND_EDGES_NS: [i64; 5] = [
-    1_000_000,
-    10_000_000,
-    100_000_000,
-    1_000_000_000,
-    10_000_000_000,
-];
 
 type Pair = (Arc<str>, Arc<str>);
 
@@ -381,7 +369,6 @@ fn span_row(span: &Span, context: &[Pair], strings: &mut Strings, unit: usize) -
         fields.extend(attributes);
     }
     fields.push(strings.pair(ROLE_FIELD, role(parent_span_id.is_some(), span.kind)));
-    fields.push(strings.pair(DURATION_BAND_FIELD, DURATION_BANDS[band(duration_ns)]));
 
     OracleSpan {
         trace_id: id::<16>(&span.trace_id),
@@ -425,17 +412,6 @@ pub fn role(has_parent: bool, kind: i32) -> &'static str {
         3 | 4 => "outbound",
         _ => "internal",
     }
-}
-
-/// Index into [`DURATION_BANDS`].
-pub fn band(duration_ns: i64) -> usize {
-    let mut index = 0;
-    for edge in BAND_EDGES_NS {
-        if duration_ns >= edge {
-            index += 1;
-        }
-    }
-    index
 }
 
 pub(crate) fn id<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
@@ -671,7 +647,7 @@ mod tests {
         assert_eq!(span.unit, 3);
         assert_eq!(span.parent_span_id, None, "a wrong-length parent is unset");
         assert_eq!(span.duration_ns, 2_499_000);
-        let want: [(&str, &str); 18] = [
+        let want: [(&str, &str); 17] = [
             ("resource.attributes.service.name", "api"),
             ("name", "op"),
             ("kind", "client"),
@@ -689,7 +665,6 @@ mod tests {
             ("attributes.map.k", "1"),
             ("attributes.a_b", "eq"),
             ("_role", "root"),
-            ("_duration_band", "1-10ms"),
         ];
         for (field, value) in want {
             assert_eq!(values(&span, field), [value], "{field}");
@@ -724,27 +699,6 @@ mod tests {
             "a missing status is UNSET"
         );
         assert!(!span.fields.contains_key("_status_code"));
-    }
-
-    #[test]
-    fn bands_include_their_lower_edge() {
-        let cases: [(i64, &str); 12] = [
-            (0, "<1ms"),
-            (999_999, "<1ms"),
-            (1_000_000, "1-10ms"),
-            (9_999_999, "1-10ms"),
-            (10_000_000, "10-100ms"),
-            (99_999_999, "10-100ms"),
-            (100_000_000, "100ms-1s"),
-            (999_999_999, "100ms-1s"),
-            (1_000_000_000, "1-10s"),
-            (9_999_999_999, "1-10s"),
-            (10_000_000_000, ">10s"),
-            (i64::MAX, ">10s"),
-        ];
-        for (duration, want) in cases {
-            assert_eq!(DURATION_BANDS[band(duration)], want, "{duration}");
-        }
     }
 
     /// The span's detail keeps what the row does not: the raw kind, flags,

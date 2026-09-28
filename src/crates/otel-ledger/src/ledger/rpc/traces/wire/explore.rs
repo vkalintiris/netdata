@@ -727,9 +727,8 @@ pub struct ExploreFacetWire {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub totals: Option<ComparisonTotalsWire>,
     /// `true` under a selection for a field the selection is made of (a field
-    /// its chips name, or the duration band under a duration bound): its
-    /// values carry their plain counts and no comparison, and it has no rank,
-    /// difference or totals. Absent otherwise.
+    /// its chips name): its values carry their plain counts and no
+    /// comparison, and it has no rank, difference or totals. Absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub in_selection: Option<bool>,
 }

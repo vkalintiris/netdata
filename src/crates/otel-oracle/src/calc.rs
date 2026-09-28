@@ -3,9 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::model::{
-    DURATION_BAND_FIELD, ERR_ORIGIN_FIELD, OracleSpan, ROLE_FIELD, SERVICE_FIELD, STATUS_FIELD,
-};
+use crate::model::{ERR_ORIGIN_FIELD, OracleSpan, ROLE_FIELD, SERVICE_FIELD, STATUS_FIELD};
 
 /// Bucket widths the explorer may use, seconds.
 const BUCKET_WIDTHS_S: [u32; 25] = [
@@ -441,10 +439,9 @@ impl Selection {
     }
 
     /// Whether the selection is made of `field` (D43): its chips name the
-    /// field, or it bounds the duration and the field is the duration band.
+    /// field.
     pub fn made_of(&self, field: &str) -> bool {
         self.terms.terms.contains_key(field)
-            || (self.duration.is_some() && field == DURATION_BAND_FIELD)
     }
 
     fn without(&self, field: &str) -> Selection {
@@ -747,14 +744,7 @@ const UNLISTED_FIELDS: [&str; 2] = ["_kind", "_status_code"];
 
 /// The traces core fields the plugin pins: never high, whatever their
 /// values (the calculator's own copy of the documented list).
-const PINNED_FIELDS: [&str; 6] = [
-    SERVICE_FIELD,
-    "name",
-    STATUS_FIELD,
-    "kind",
-    ROLE_FIELD,
-    DURATION_BAND_FIELD,
-];
+const PINNED_FIELDS: [&str; 5] = [SERVICE_FIELD, "name", STATUS_FIELD, "kind", ROLE_FIELD];
 
 /// The tier of `field` with `distinct` values in one unit.
 pub fn tier_of(field: &str, distinct: usize) -> Tier {
@@ -1372,26 +1362,24 @@ pub struct TokenKey {
     pub value: String,
 }
 
-/// ORC-TOKENS: per stored unit, how many rows carry each `_role` and each
-/// `_duration_band` value, overall and per group.
+/// ORC-TOKENS: per stored unit, how many rows carry each `_role` value,
+/// overall and per group.
 pub fn token_counts(spans: &[OracleSpan]) -> BTreeMap<usize, BTreeMap<TokenKey, u64>> {
     let mut out: BTreeMap<usize, BTreeMap<TokenKey, u64>> = BTreeMap::new();
     for span in spans {
         let unit = out.entry(span.unit).or_default();
         let group = GroupKey::of(span);
-        for field in [ROLE_FIELD, DURATION_BAND_FIELD] {
-            let Some(values) = span.fields.get(field) else {
-                continue;
-            };
-            for value in values {
-                for scope in [None, Some(group.clone())] {
-                    let key = TokenKey {
-                        group: scope,
-                        field,
-                        value: value.to_string(),
-                    };
-                    *unit.entry(key).or_default() += 1;
-                }
+        let Some(values) = span.fields.get(ROLE_FIELD) else {
+            continue;
+        };
+        for value in values {
+            for scope in [None, Some(group.clone())] {
+                let key = TokenKey {
+                    group: scope,
+                    field: ROLE_FIELD,
+                    value: value.to_string(),
+                };
+                *unit.entry(key).or_default() += 1;
             }
         }
     }
@@ -1401,7 +1389,7 @@ pub fn token_counts(spans: &[OracleSpan]) -> BTreeMap<usize, BTreeMap<TokenKey, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DURATION_BAND_FIELD, ROLE_FIELD, STATUS_FIELD};
+    use crate::model::{ROLE_FIELD, STATUS_FIELD};
 
     fn row(start_s: i64, fields: &[(&str, &str)]) -> OracleSpan {
         OracleSpan {
@@ -1444,7 +1432,7 @@ mod tests {
     }
 
     /// ORC-TOKENS on a hand-cut two-unit corpus: a group's rows and the unit's
-    /// rows, counted per `_role` and `_duration_band` value.
+    /// rows, counted per `_role` value.
     #[test]
     fn token_counts_per_unit_and_group() {
         let at = |unit: usize, fields: &[(&str, &str)]| OracleSpan {
@@ -1458,7 +1446,6 @@ mod tests {
                     (SERVICE_FIELD, "api"),
                     ("name", "GET"),
                     (ROLE_FIELD, "root"),
-                    (DURATION_BAND_FIELD, "<1ms"),
                 ],
             ),
             at(
@@ -1467,7 +1454,6 @@ mod tests {
                     (SERVICE_FIELD, "api"),
                     ("name", "GET"),
                     (ROLE_FIELD, "outbound"),
-                    (DURATION_BAND_FIELD, "<1ms"),
                 ],
             ),
             at(
@@ -1476,17 +1462,9 @@ mod tests {
                     (SERVICE_FIELD, "db"),
                     ("name", "SELECT"),
                     (ROLE_FIELD, "inbound"),
-                    (DURATION_BAND_FIELD, "1-10ms"),
                 ],
             ),
-            at(
-                1,
-                &[
-                    ("name", "GET"),
-                    (ROLE_FIELD, "root"),
-                    (DURATION_BAND_FIELD, ">10s"),
-                ],
-            ),
+            at(1, &[("name", "GET"), (ROLE_FIELD, "root")]),
         ];
         let group = |service: Option<&str>, operation: &str| {
             Some(GroupKey {
@@ -1510,13 +1488,9 @@ mod tests {
                     (key(None, ROLE_FIELD, "root"), 1),
                     (key(None, ROLE_FIELD, "outbound"), 1),
                     (key(None, ROLE_FIELD, "inbound"), 1),
-                    (key(None, DURATION_BAND_FIELD, "<1ms"), 2),
-                    (key(None, DURATION_BAND_FIELD, "1-10ms"), 1),
                     (key(api.clone(), ROLE_FIELD, "root"), 1),
                     (key(api.clone(), ROLE_FIELD, "outbound"), 1),
-                    (key(api, DURATION_BAND_FIELD, "<1ms"), 2),
                     (key(db.clone(), ROLE_FIELD, "inbound"), 1),
-                    (key(db, DURATION_BAND_FIELD, "1-10ms"), 1),
                 ]
                 .into_iter()
                 .collect(),
@@ -1525,9 +1499,7 @@ mod tests {
                 1,
                 [
                     (key(None, ROLE_FIELD, "root"), 1),
-                    (key(None, DURATION_BAND_FIELD, ">10s"), 1),
                     (key(bare.clone(), ROLE_FIELD, "root"), 1),
-                    (key(bare, DURATION_BAND_FIELD, ">10s"), 1),
                 ]
                 .into_iter()
                 .collect(),
@@ -1729,7 +1701,7 @@ mod tests {
             &grid,
             &Scope::default(),
             &long,
-            &[STATUS_FIELD.to_string(), DURATION_BAND_FIELD.to_string()],
+            &[STATUS_FIELD.to_string(), SERVICE_FIELD.to_string()],
         );
         let kinds: Vec<(&str, bool)> = under_threshold
             .fields
@@ -1738,8 +1710,8 @@ mod tests {
             .collect();
         assert_eq!(
             kinds,
-            [(DURATION_BAND_FIELD, true), (STATUS_FIELD, false)],
-            "a duration bound makes the band; the status still compares, after it (unranked)"
+            [(STATUS_FIELD, false), (SERVICE_FIELD, false)],
+            "a duration bound makes no field the selection's own: every field compares"
         );
 
         let later = Selection {
@@ -2177,8 +2149,12 @@ mod tests {
                 errors: 1
             }
         );
-        let by_band = histogram(&spans, &grid, &Scope::default(), DURATION_BAND_FIELD);
-        assert_eq!(by_band.iter().map(|b| b.unset).sum::<u64>(), 4);
+        let by_absent = histogram(&spans, &grid, &Scope::default(), "attributes.nope");
+        assert_eq!(
+            by_absent.iter().map(|b| b.unset).sum::<u64>(),
+            4,
+            "a field no row has counts every row without a value"
+        );
     }
 
     #[test]

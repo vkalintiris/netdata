@@ -253,14 +253,6 @@ fn info_response_shape_is_pinned() {
             },
             "percentiles": {"approximate": true, "max_relative_error": 0.0078125, "label": "≈"},
             "approximations": {"origin_and_self_time": "per stored file", "label": "≈"},
-            "duration_bands": [
-                {"label": "<1ms", "min_ns": 0, "max_ns": 999_999},
-                {"label": "1-10ms", "min_ns": 1_000_000, "max_ns": 9_999_999},
-                {"label": "10-100ms", "min_ns": 10_000_000, "max_ns": 99_999_999},
-                {"label": "100ms-1s", "min_ns": 100_000_000, "max_ns": 999_999_999},
-                {"label": "1-10s", "min_ns": 1_000_000_000, "max_ns": 9_999_999_999_i64},
-                {"label": ">10s", "min_ns": 10_000_000_000_i64, "max_ns": null}
-            ],
             "partial_reasons": [
                 "source_failure", "remote_unavailable", "cancelled", "legacy_file",
                 "stack_field_high_card", "facet_high_card", "facet_value_cap", "groups_cap",
@@ -268,25 +260,6 @@ fn info_response_shape_is_pinned() {
             ],
         })
     );
-}
-
-#[test]
-fn info_bands_follow_the_flattener() {
-    let v = serde_json::to_value(InfoResponse::default()).unwrap();
-    let bands = v["duration_bands"].as_array().unwrap();
-    let labels: Vec<&str> = bands.iter().map(|b| b["label"].as_str().unwrap()).collect();
-    assert_eq!(labels, sfsq::traces::explore::DURATION_BAND_LABELS);
-    let edges: Vec<i64> = bands[1..]
-        .iter()
-        .map(|b| b["min_ns"].as_i64().unwrap())
-        .collect();
-    assert_eq!(edges, sfsq::traces::explore::DURATION_BAND_EDGES_NS);
-    for (band, next) in bands.iter().zip(&bands[1..]) {
-        assert_eq!(
-            band["max_ns"].as_i64().unwrap() + 1,
-            next["min_ns"].as_i64().unwrap()
-        );
-    }
 }
 
 #[test]
@@ -364,7 +337,7 @@ fn explore_defaults_to_the_last_fifteen_minutes_stacked_by_status() {
     let p = explore(json!({
         "after": -3600,
         "filter": {"_role": ["root", "inbound"]},
-        "sections": {"histogram": {"stack": "_duration_band", "percentiles": false}}
+        "sections": {"histogram": {"stack": "_role", "percentiles": false}}
     }));
     assert_eq!((p.window.after, p.window.before), (-3600, 0));
     assert_eq!(
@@ -374,7 +347,7 @@ fn explore_defaults_to_the_last_fifteen_minutes_stacked_by_status() {
     assert_eq!(
         p.histogram,
         Some(HistogramRequest {
-            stack: "_duration_band".to_string(),
+            stack: "_role".to_string(),
             percentiles: false,
             durations: false
         })
@@ -502,16 +475,12 @@ fn selection_shapes() {
     );
     assert_eq!(
         selection(json!({
-            "filter": {"_duration_band": ["1-10s"]},
+            "filter": {"_role": ["root"]},
             "duration": {"max_ns": 10},
             "time": {"after_ns": "1758791340000000000", "before_ns": "1758791580000000000"}
         })),
         Some(SelectionRequest {
-            filter: [(
-                "_duration_band".to_string(),
-                vec![Some("1-10s".to_string())]
-            )]
-            .into(),
+            filter: [("_role".to_string(), vec![Some("root".to_string())])].into(),
             duration: Some(sfst::DurationRange {
                 min_ns: None,
                 max_ns: Some(10),

@@ -381,7 +381,7 @@ fn tail_chunk_and_sealed_file_agree() {
         .push(("exception", vec![kv_str("exception.type", "Boom")]));
     spans[2].events.push(("retry", Vec::new()));
     let wal = write_wal(dir.path(), vec![req(&spans)], "a");
-    for stack in ["status_code", "events.name", "_duration_band"] {
+    for stack in ["status_code", "events.name", "_role"] {
         let sealed = run(
             vec![sealed_source(dir.path(), &wal, "s")],
             query(stack, &[]),
@@ -708,7 +708,6 @@ fn default_facets_are_every_visible_field() {
         assert!(!fields.iter().any(|f| f == hidden), "{hidden} is hidden");
     }
     for visible in [
-        "_duration_band",
         "_role",
         "kind",
         "name",
@@ -946,7 +945,7 @@ fn explore_shard_merge_split_many_ways() {
     let queries = || {
         [
             every_section("status_code", newest(None, RowDirection::Older), 4),
-            every_section("_duration_band", RowOrder::Slowest, 4),
+            every_section("_role", RowOrder::Slowest, 4),
         ]
     };
     let baseline: Vec<_> = queries()

@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Value, json};
 
 use crate::calc::{self, Grid, Scope, Selection, Tier, fixed_histogram};
-use crate::model::{DURATION_BAND_FIELD, OracleSpan, ROLE_FIELD, SERVICE_FIELD, STATUS_FIELD};
+use crate::model::{OracleSpan, ROLE_FIELD, SERVICE_FIELD, STATUS_FIELD};
 use crate::report::{CheckCount, Finding, Locator, Subject};
 use crate::wire;
 
@@ -214,9 +214,10 @@ fn scenarios(spans: &[OracleSpan], grid: &Grid) -> Vec<Scenario> {
     out
 }
 
-/// The W3 selections judged: errors, the slow bands, the middle third of the
-/// window, durations at least the scope's p95, errors or an unset status, and
-/// a value chip mixed with a chip for the rows without the field.
+/// The W3 selections judged: errors, durations from 100 ms to under 10 s, the
+/// middle third of the window, durations at least the scope's p95, errors or
+/// an unset status, and a value chip mixed with a chip for the rows without
+/// the field.
 fn selections(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec<(&'static str, Selection)> {
     let mut out = vec![
         (
@@ -227,9 +228,9 @@ fn selections(spans: &[OracleSpan], grid: &Grid, scope: &Scope) -> Vec<(&'static
             },
         ),
         (
-            "E2 slow bands",
+            "E2 100ms to 10s",
             Selection {
-                terms: Scope::default().with(DURATION_BAND_FIELD, &["100ms-1s", "1-10s"]),
+                duration: Some((Some(100_000_000), Some(9_999_999_999))),
                 ..Selection::default()
             },
         ),
@@ -371,7 +372,7 @@ pub fn plan(after_s: u32, before_s: u32, spans: &[OracleSpan], candidates: u64) 
             },
             first,
         )];
-        for (label, stack) in [("band", DURATION_BAND_FIELD), ("service", SERVICE_FIELD)] {
+        for (label, stack) in [("role", ROLE_FIELD), ("service", SERVICE_FIELD)] {
             asks.push((
                 label,
                 Ask::Explore {
@@ -2049,7 +2050,7 @@ mod tests {
             names[4..10],
             [
                 "F1 entry spans × E1 errors",
-                "F1 entry spans × E2 slow bands",
+                "F1 entry spans × E2 100ms to 10s",
                 "F1 entry spans × E3 middle third",
                 "F1 entry spans × E4 at least the p95",
                 "F1 entry spans × E5 errors or unset",

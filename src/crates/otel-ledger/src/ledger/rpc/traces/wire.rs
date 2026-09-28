@@ -382,8 +382,6 @@ pub struct InfoResponse {
     percentiles: InfoPercentiles,
     /// Numbers the explorer derives per stored file, not per whole trace.
     approximations: InfoApproximations,
-    /// The fixed duration bands, fastest first, with inclusive bounds.
-    duration_bands: Vec<DurationBandWire>,
     /// The partial reasons an `explore` answer may carry.
     partial_reasons: Vec<PartialReasonWire>,
 }
@@ -432,31 +430,6 @@ pub struct InfoPercentiles {
     label: &'static str,
 }
 
-#[derive(Debug, Serialize)]
-pub struct DurationBandWire {
-    label: &'static str,
-    min_ns: i64,
-    /// `None` for the last, open-ended band.
-    max_ns: Option<i64>,
-}
-
-fn duration_bands() -> Vec<DurationBandWire> {
-    let mut bands = Vec::with_capacity(sfsq::traces::explore::DURATION_BAND_COUNT);
-    let mut min_ns = 0;
-    for (index, label) in sfsq::traces::explore::DURATION_BAND_LABELS.into_iter().enumerate() {
-        let next = sfsq::traces::explore::DURATION_BAND_EDGES_NS.get(index).copied();
-        bands.push(DurationBandWire {
-            label,
-            min_ns,
-            max_ns: next.map(|edge| edge - 1),
-        });
-        if let Some(edge) = next {
-            min_ns = edge;
-        }
-    }
-    bands
-}
-
 impl Default for InfoResponse {
     fn default() -> Self {
         let (role_field, roles) = sfsq::traces::explore::DEFAULT_POPULATION;
@@ -497,7 +470,6 @@ impl Default for InfoResponse {
                 origin_and_self_time: "per stored file",
                 label: "≈",
             },
-            duration_bands: duration_bands(),
             partial_reasons: vec![
                 PartialReasonWire::SourceFailure,
                 PartialReasonWire::RemoteUnavailable,

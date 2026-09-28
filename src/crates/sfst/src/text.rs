@@ -2,7 +2,7 @@
 
 /// A case-insensitive literal matched against the value part of stored
 /// `field=value` pairs. Top-level fields added by the plugin (names starting
-/// with `_`, such as `_role` or `_duration_band`) are never searched, so a
+/// with `_`, such as `_role` or `_err_origin`) are never searched, so a
 /// search for `root` does not match every entry span.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiteralText {

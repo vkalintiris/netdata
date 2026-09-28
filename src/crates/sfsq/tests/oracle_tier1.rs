@@ -36,9 +36,8 @@ const SEALED: usize = 0;
 const LIVE: usize = 1;
 
 /// Fields every comparison looks at: the explorer's core fields.
-const CORE_FIELDS: [&str; 7] = [
+const CORE_FIELDS: [&str; 6] = [
     model::ROLE_FIELD,
-    model::DURATION_BAND_FIELD,
     model::STATUS_FIELD,
     model::SERVICE_FIELD,
     "name",
@@ -261,15 +260,14 @@ fn stored_tokens_match_the_calculator() {
                         None => filter.select_absent(field),
                     };
                 }
-                for field in [model::ROLE_FIELD, model::DURATION_BAND_FIELD] {
-                    for (value, count) in stored_value_counts_in(bytes, &filter, field) {
-                        let key = calc::TokenKey {
-                            group: Some(group.clone()),
-                            field,
-                            value,
-                        };
-                        got.insert(key, count);
-                    }
+                let field = model::ROLE_FIELD;
+                for (value, count) in stored_value_counts_in(bytes, &filter, field) {
+                    let key = calc::TokenKey {
+                        group: Some(group.clone()),
+                        field,
+                        value,
+                    };
+                    got.insert(key, count);
                 }
             }
             let mut want_groups = BTreeMap::new();
@@ -356,7 +354,7 @@ fn file_core_tokens(bytes: &[u8], out: &mut BTreeMap<SpanKey, Vec<CoreTokens>>) 
 
 /// FLAT-13: the sealed file, and the live WAL cut into chunk images at several
 /// split points with the rest as the tail, store for every span the same core
-/// tokens (`_role` and `_duration_band` included) as the calculator.
+/// tokens (`_role` included) as the calculator.
 #[test]
 fn every_layout_stores_each_span_s_core_tokens() {
     let stored = store(240, 21);
@@ -469,19 +467,28 @@ fn entry_span_histogram_by_status_matches_the_calculator() {
 }
 
 /// The corpus requests the comparisons are built from stay representative: all
-/// four roles and all six bands occur.
+/// four roles occur, and durations reach every decade from under 1 ms to 10 s
+/// and over.
 #[test]
-fn corpus_reaches_every_role_and_band() {
+fn corpus_reaches_every_role_and_duration_decade() {
     let stored = store(300, 41);
     let all: Vec<&OracleSpan> = stored.oracle.iter().collect();
     let roles: BTreeSet<String> = oracle_value_counts(&all, model::ROLE_FIELD)
         .into_keys()
         .collect();
-    let bands: BTreeSet<String> = oracle_value_counts(&all, model::DURATION_BAND_FIELD)
-        .into_keys()
-        .collect();
     assert_eq!(roles.len(), 4, "{roles:?}");
-    assert_eq!(bands.len(), 6, "{bands:?}");
+    let edges: [i64; 5] = [
+        1_000_000,
+        10_000_000,
+        100_000_000,
+        1_000_000_000,
+        10_000_000_000,
+    ];
+    let decades: BTreeSet<usize> = all
+        .iter()
+        .map(|span| edges.partition_point(|&edge| span.duration_ns >= edge))
+        .collect();
+    assert_eq!(decades.len(), 6, "{decades:?}");
 }
 
 /// How the live WAL is served to the engine.
@@ -611,11 +618,7 @@ fn explore_histogram_and_totals_match_the_calculator() {
         ("F0 every span", Scope::default()),
         ("F1 entry spans", Scope::entry_spans()),
     ];
-    let stacks = [
-        model::STATUS_FIELD,
-        model::DURATION_BAND_FIELD,
-        model::SERVICE_FIELD,
-    ];
+    let stacks = [model::STATUS_FIELD, model::ROLE_FIELD, model::SERVICE_FIELD];
     for live in [Live::Tail, Live::Chunk, Live::Split(100)] {
         for (scope_name, scope) in &scopes {
             for stack in stacks {
@@ -2479,16 +2482,18 @@ fn selections(
             ..calc::Selection::default()
         },
     ));
-    let (filter, terms) = chips(&[(model::DURATION_BAND_FIELD, &["100ms-1s", "1-10s"])]);
     out.push((
-        "E2 slow bands",
+        "E2 100ms to 10s",
         ExploreSelection {
-            filter,
-            duration: None,
+            filter: sfst::Filter::new(),
+            duration: Some(sfst::DurationRange {
+                min_ns: Some(100_000_000),
+                max_ns: Some(9_999_999_999),
+            }),
             time_ns: None,
         },
         calc::Selection {
-            terms,
+            duration: Some((Some(100_000_000), Some(9_999_999_999))),
             ..calc::Selection::default()
         },
     ));
@@ -2580,7 +2585,6 @@ fn explore_comparison_matches_the_calculator() {
         model::SERVICE_FIELD,
         "name",
         model::STATUS_FIELD,
-        model::DURATION_BAND_FIELD,
         model::ROLE_FIELD,
         TAGS_FIELD,
     ]

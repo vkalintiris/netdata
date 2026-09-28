@@ -250,7 +250,8 @@ impl TraceBuilder {
     }
 
     /// The trace's time unit: most requests are milliseconds, some
-    /// sub-millisecond, a few seconds, so every duration band is populated.
+    /// sub-millisecond, a few seconds, so durations span several orders of
+    /// magnitude.
     fn unit(&self) -> u64 {
         match self.pick(0x5ca1e, 0, 15) {
             0..=1 => 50_000,
@@ -723,7 +724,7 @@ fn checkout(b: &mut TraceBuilder, t0: u64, variant: ErrorVariant) {
 }
 
 /// A long streaming call whose caller never exports its span: the entry span
-/// is an orphan with an inbound role and lands in the slowest band.
+/// is an orphan with an inbound role and is the slowest span (over 10 s).
 fn flag_stream(b: &mut TraceBuilder, t0: u64, variant: ErrorVariant) {
     let duration = b.pick(12, 12, 40) * 1_000_000_000;
     let resolve = b.pick(13, 1, 9) * 100_000;

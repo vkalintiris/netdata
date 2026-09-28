@@ -433,38 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn duration_band_includes_its_lower_edge() {
-        let cases: [(u64, u64, &str); 13] = [
-            (100, 100 + 999_999, "<1ms"),
-            (100, 100 + 1_000_000, "1-10ms"),
-            (100, 100 + 9_999_999, "1-10ms"),
-            (100, 100 + 10_000_000, "10-100ms"),
-            (100, 100 + 99_999_999, "10-100ms"),
-            (100, 100 + 100_000_000, "100ms-1s"),
-            (100, 100 + 999_999_999, "100ms-1s"),
-            (100, 100 + 1_000_000_000, "1-10s"),
-            (100, 100 + 9_999_999_999, "1-10s"),
-            (100, 100 + 10_000_000_000, ">10s"),
-            (100, 0, "<1ms"),
-            (250, 100, "<1ms"),
-            (1, u64::MAX, ">10s"),
-        ];
-        for (start, end, want) in cases {
-            let leaves = single_span_leaves(Span {
-                start_time_unix_nano: start,
-                end_time_unix_nano: end,
-                ..Default::default()
-            });
-            assert_eq!(
-                at(&leaves, DURATION_BAND_FIELD),
-                [&Value::Str(want.into())],
-                "start {start}, end {end}"
-            );
-        }
-    }
-
-    #[test]
-    fn every_span_of_a_request_gets_one_role_and_one_band() {
+    fn every_span_of_a_request_gets_one_role_and_no_duration_band() {
         let span = |parent: Vec<u8>, kind| Span {
             span_id: vec![0x44; 8],
             parent_span_id: parent,
@@ -493,10 +462,7 @@ mod tests {
             let role = at(&leaves, ROLE_FIELD);
             assert_eq!(role.len(), 1);
             roles.push(role[0].clone());
-            assert_eq!(
-                at(&leaves, DURATION_BAND_FIELD),
-                [&Value::Str("1-10ms".into())]
-            );
+            assert!(at(&leaves, "_duration_band").is_empty());
         }
         assert_eq!(
             roles,
@@ -652,10 +618,6 @@ mod tests {
         assert_eq!(span.ts, 1_000);
         let leaves = decoded.tree.resolve(&span.entries);
         assert_eq!(at(&leaves, ROLE_FIELD), [&Value::Str("root".into())]);
-        assert_eq!(
-            at(&leaves, DURATION_BAND_FIELD),
-            [&Value::Str("<1ms".into())]
-        );
 
         // Zero spans → nothing prepared, nothing to write.
         let frame =
