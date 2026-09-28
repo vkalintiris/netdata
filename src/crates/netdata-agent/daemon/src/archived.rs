@@ -196,6 +196,7 @@ fn load_row(meta: &MetaDb, hosts: &Hosts, row: HostRow, defaults: &Defaults) -> 
     });
     if row.is_ephemeral {
         host.set_ephemeral(true);
+        host.set_receiver_last_disconnected_s(netdata_agent_rrd::clock::now_realtime_s());
     }
     let labels = meta.host_labels(&row.host_id);
     host.update_labels(|l| {

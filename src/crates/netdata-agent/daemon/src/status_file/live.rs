@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
 use netdata_agent_log::{Priority, Source, nd_log};
+use netdata_agent_rrd::clock::now_realtime_ut;
 use netdata_agent_rrd::host::{Host, Hosts};
 use netdata_agent_text::parse::uuid_parse_flexi;
 use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatternMode};
@@ -66,10 +67,6 @@ pub(super) fn set_dirs(varlib: &str, cache: &str) {
 
 fn hosts() -> Option<Arc<Hosts>> {
     HOSTS.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(Weak::upgrade)
-}
-
-fn now_realtime_ut() -> u64 {
-    crate::rrdcontext::now_realtime_ut()
 }
 
 

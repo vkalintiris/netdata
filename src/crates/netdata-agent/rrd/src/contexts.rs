@@ -14,9 +14,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, Weak};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::chart::{Algorithm, Chart, ChartType, Dim, dim_flags, flags as chart_flags};
+use crate::clock::now_realtime_ut;
 use crate::host::Host;
 use crate::index::Index;
 use crate::labels::Labels;
@@ -129,15 +129,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn now_usec() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_micros() as u64)
-}
-
-fn now_sec() -> u64 {
-    now_usec() / 1_000_000
-}
 
 /// The atomic flags of a context, instance or metric, with C's transitions.
 #[derive(Debug, Default)]
@@ -284,7 +275,7 @@ impl PpQueue {
             pp.idx = q.next_idx;
             q.by_idx.insert(pp.idx, Arc::clone(rc));
             pp.queued_flags = rc.flags.get();
-            pp.queued_ut = now_usec();
+            pp.queued_ut = now_realtime_ut();
         }
     }
 
@@ -297,7 +288,7 @@ impl PpQueue {
         {
             q.by_idx.remove(&pp.idx);
             rc.flags.clear(flags::QUEUED_FOR_PP);
-            pp.dequeued_ut = now_usec();
+            pp.dequeued_ut = now_realtime_ut();
         }
         pp.idx = 0;
     }
@@ -1533,7 +1524,7 @@ impl Contexts {
         let mut index = lock(&self.index);
         match index.get(id) {
             None => {
-                new.version = now_sec();
+                new.version = now_realtime_ut() / 1_000_000;
                 let initial = if archived {
                     flags::ARCHIVED | flags::REASON_LOAD_SQL
                 } else {
@@ -1950,7 +1941,7 @@ fn post_process_updates(rc: &Context, force: bool, reason: u32) -> bool {
     }
     // The hub queue comes with claiming; until then only the version moves (rrdcontext_get_next_version()).
     if rc.flags.is_updated() && cloud_version_changed(rc, &state) {
-        state.version = state.version.max(state.hub.version).max(now_sec()) + 1;
+        state.version = state.version.max(state.hub.version).max(now_realtime_ut() / 1_000_000) + 1;
     }
     rc.flags.unset_updated();
     cleared

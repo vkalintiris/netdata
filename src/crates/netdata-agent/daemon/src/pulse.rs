@@ -8,7 +8,7 @@ use netdata_agent_pulse::{Pulse, Settings};
 use netdata_agent_rrd::host::Hosts;
 
 use crate::heartbeat::{Phase, Thread};
-use crate::metasync::now_realtime_s;
+use netdata_agent_rrd::clock::now_realtime_s;
 use crate::timezone::Timezone;
 use crate::{shutdown, startup, system};
 

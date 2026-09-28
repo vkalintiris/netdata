@@ -18,8 +18,7 @@ use netdata_agent_storage::dbengine::engine::query::RotationHook;
 use netdata_agent_storage::dbengine::engine::runtime::{InitConfig, Runtime};
 
 use crate::conf::{self, Conf, DbSection};
-use crate::metasync::now_realtime_s;
-use crate::rrdcontext::now_realtime_ut;
+use netdata_agent_rrd::clock::{now_realtime_s, now_realtime_ut};
 use crate::system;
 
 /// `rrdcontext_db_rotation()` as the engine's rotation hook: each rotation arms the contexts' deep pass in `slot`,

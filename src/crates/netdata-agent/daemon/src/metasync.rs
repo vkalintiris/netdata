@@ -17,6 +17,7 @@ use netdata_agent_metadata::Connection;
 use netdata_agent_metadata::cleanup::{CleanupCycle, CycleEnv, CycleKind};
 use netdata_agent_metadata::open::{ContextDb, MetaDb};
 use netdata_agent_metadata::read;
+use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::{Host, Hosts};
 use netdata_agent_text::duration::duration_to_string;
 
@@ -40,12 +41,6 @@ const TIMER_PERIOD: Duration = Duration::from_secs(1);
 /// `MAX_SHUTDOWN_TIMEOUT_SECONDS`, `SHUTDOWN_SLEEP_INTERVAL_MS`: how long the shutdown waits for a running job.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(15);
 const SHUTDOWN_POLL: Duration = Duration::from_millis(100);
-
-pub(crate) fn now_realtime_s() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
 
 /// What the loop and its store jobs share (`struct meta_config_s`).
 struct Shared {

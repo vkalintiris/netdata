@@ -2,9 +2,10 @@
 //! second, the deep pass a dbengine rotation armed, then every host's contexts post-processed.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use netdata_agent_inicfg::Config;
+use netdata_agent_rrd::clock::now_realtime_ut;
 use netdata_agent_rrd::contexts;
 use netdata_agent_rrd::host::{Host, Hosts};
 
@@ -12,13 +13,6 @@ use crate::heartbeat::{Phase, Thread};
 
 /// `RRDCONTEXT_WORKER_THREAD_HEARTBEAT_USEC`.
 const HEARTBEAT: Duration = Duration::from_secs(1);
-
-/// `now_realtime_usec()`.
-pub fn now_realtime_ut() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_micros() as u64)
-}
 
 /// `rrdcontext_main()`'s `[db] extreme cardinality protection` (on by default with more than one tier in dbengine
 /// mode), `keep instances` (1000, 1 to 1,000,000) and `min ephemerality` (50, 0 to 100), out-of-range values written

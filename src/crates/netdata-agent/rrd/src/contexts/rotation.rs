@@ -3,7 +3,7 @@
 //! host's garbage once the deadline passed (`rrdcontext_main()` in `rrdcontext-worker.c`). D75.6, D77.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use super::flags;
 use crate::host::{Host, Hosts};
@@ -11,11 +11,13 @@ use crate::host::{Host, Hosts};
 /// `FULL_RETENTION_SCAN_DELAY_AFTER_DB_ROTATION_SECS`, in microseconds.
 const PASS_DELAY_UT: u64 = 120 * 1_000_000;
 
-/// `rrdcontext_next_db_rotation_ut`: the wall-clock deadline of the next deep pass, 0 when none is armed; and
+/// `rrdcontext_next_db_rotation_ut`: the wall-clock deadline of the next deep pass, 0 when none is armed;
+/// `rrdcontext_full_gc_rerun_requested`: a pass asked for while one was under way; and
 /// `extreme_cardinality.db_rotations`, the rotations the engine made.
 #[derive(Debug, Default)]
 pub struct DbRotation {
     next_ut: AtomicU64,
+    rerun: AtomicBool,
     rotations: AtomicUsize,
 }
 
@@ -29,6 +31,20 @@ impl DbRotation {
         self.rotations.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// `rrdcontext_request_full_gc()`: freed charts ask for a deep pass, so that the hosts without the dbengine drop
+    /// their archived entries too. It is armed 120 s after `now_ut` only when none is, so that requests every sweep
+    /// do not push it out for good; a request once an armed deadline has passed (the pass is under way, and may have
+    /// walked the host already) asks for one more after it. Not a rotation.
+    pub fn request_full_gc(&self, now_ut: u64) {
+        if let Err(armed) =
+            self.next_ut
+                .compare_exchange(0, now_ut + PASS_DELAY_UT, Ordering::Relaxed, Ordering::Relaxed)
+            && armed <= now_ut
+        {
+            self.rerun.store(true, Ordering::Relaxed);
+        }
+    }
+
     /// The rotations counted so far, which enable the extreme cardinality protection.
     pub fn rotations(&self) -> usize {
         self.rotations.load(Ordering::Relaxed)
@@ -40,11 +56,20 @@ impl DbRotation {
         (deadline != 0 && now_ut > deadline).then_some(deadline)
     }
 
-    /// Clears the deadline a pass processed, unless a rotation during the pass armed a new one, which drives the next.
-    pub fn done(&self, deadline: u64) {
+    /// Clears the deadline a pass processed, unless a rotation during the pass armed a new one, which drives the next;
+    /// then a pass asked for during this one is armed 120 s after `now_ut` if none is.
+    pub fn done(&self, deadline: u64, now_ut: u64) {
         let _ = self
             .next_ut
             .compare_exchange(deadline, 0, Ordering::Relaxed, Ordering::Relaxed);
+        if self.rerun.swap(false, Ordering::Relaxed) {
+            let _ = self.next_ut.compare_exchange(
+                0,
+                now_ut + PASS_DELAY_UT,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+        }
     }
 }
 
@@ -81,7 +106,7 @@ pub fn deep_pass(
         host.contexts()
             .garbage_collect(running, |id, version| delete_from_sql(host, id, version));
     }
-    slot.done(deadline);
+    slot.done(deadline, crate::clock::now_realtime_ut());
     true
 }
 

@@ -5,6 +5,7 @@
 
 pub mod backfill;
 pub mod chart;
+pub mod clock;
 pub mod collection;
 pub mod contexts;
 pub mod host;

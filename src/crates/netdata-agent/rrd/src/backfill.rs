@@ -10,6 +10,7 @@ use std::time::Duration;
 use netdata_agent_log::{Priority, Source, nd_log};
 
 use crate::chart::{Chart, Dim};
+use crate::clock::now_realtime_s;
 use crate::host::{Host, ReceiverSlot};
 
 /// What a chart's last job runs: `backfill_callback_t` with the successful and failed dimensions.
@@ -59,12 +60,6 @@ impl std::fmt::Debug for BackfillQueue {
             .field("callbacks_executed", &self.callbacks_executed)
             .finish_non_exhaustive()
     }
-}
-
-fn now_realtime_s() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
 }
 
 impl Default for BackfillQueue {

@@ -59,13 +59,38 @@ fn rotations_arm_the_deadline_and_passes_clear_it() {
     assert_eq!(slot.due(deadline + 1), None);
     let later = deadline + 5_000_000;
     assert_eq!(slot.due(later + 1), Some(later));
-    slot.done(deadline);
+    slot.done(deadline, later);
     assert_eq!(
         slot.due(later + 1),
         Some(later),
         "armed after the processed one"
     );
-    slot.done(later);
+    slot.done(later, later);
+    assert_eq!(slot.due(u64::MAX), None);
+}
+
+/// `rrdcontext_request_full_gc()`: armed only when nothing is (requests coalesce instead of pushing it out); one made
+/// once the armed deadline passed, while its pass runs, arms the next pass after it; not a rotation.
+#[test]
+fn full_gc_requests_arm_once_and_rerun_after_a_running_pass() {
+    let slot = DbRotation::default();
+    slot.request_full_gc(NOW_UT);
+    let deadline = NOW_UT + 120_000_000;
+    slot.request_full_gc(NOW_UT + 50_000_000);
+    assert_eq!(slot.due(deadline + 1), Some(deadline), "coalesced");
+    assert_eq!(slot.rotations(), 0);
+    // during the pass
+    slot.request_full_gc(deadline + 10);
+    slot.done(deadline, deadline + 1_000_000);
+    let rerun = deadline + 1_000_000 + 120_000_000;
+    assert_eq!(slot.due(rerun), None);
+    assert_eq!(slot.due(rerun + 1), Some(rerun), "a pass after the one running");
+    slot.done(rerun, rerun + 1);
+    assert_eq!(slot.due(u64::MAX), None, "one rerun only");
+    // a request before an armed deadline needs no rerun: that pass will see it
+    slot.rotated(NOW_UT);
+    slot.request_full_gc(NOW_UT + 1);
+    slot.done(deadline, deadline + 1);
     assert_eq!(slot.due(u64::MAX), None);
 }
 
