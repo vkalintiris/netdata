@@ -1,7 +1,7 @@
 //! The web workers: each pool thread polls every listener, accepts, and serves its clients inline, as the C
 //! `static-threaded` web server does (`src/web/server/static/static-threaded.c`, `web_client.c`).
 
-use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log, nd_log_limit};
+use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log, nd_log_limit, netdata_log_error};
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -188,6 +188,8 @@ struct Client {
     stream: Conn,
     /// `w->acl`.
     acl: u32,
+    /// `w->port_acl`: the listener's, with its `^SSL` mode.
+    port_acl: u32,
     /// The `POLLINFO` activity the timeout checks read.
     activity: Activity,
     recv: RecvBuffer,
@@ -458,6 +460,7 @@ impl WebWorker {
                     self.clients[slot] = Some(Client {
                         stream,
                         acl: client_acl,
+                        port_acl: self.listeners[index].acl,
                         activity: Activity {
                             connected: Instant::now(),
                             last_received: None,
@@ -738,11 +741,15 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         mode => mode,
     };
     let conn = Connection {
-        transport: Transport::Tcp,
+        transport: if client.stream.is_unix() {
+            Transport::Unix
+        } else {
+            Transport::Tcp
+        },
         tls_configured: false,
         tls_active: false,
-        tls_force: false,
-        tls_default: false,
+        tls_force: client.port_acl & acl::bits::SSL_FORCE != 0,
+        tls_default: client.port_acl & acl::bits::SSL_DEFAULT != 0,
         acl_aclk: false,
     };
     let validation = client
@@ -774,6 +781,14 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         auth: Arc::clone(&client.auth),
     };
     let _frame = ctx.outer_frame();
+    // web_client_valid_method(), in the outer frame
+    if let Some(hostname) = client.request.stream_tls_refused_hostname.take() {
+        netdata_log_error!(
+            "The server is configured to always use encrypted connections, please enable the SSL on child with \
+             hostname '{}'.",
+            String::from_utf8_lossy(&hostname)
+        );
+    }
     let completed = |client: &Client, code: u16, sent: usize, size: usize| Completed {
         url: logged_url(&client.request.url_as_received, mode),
         mode,
