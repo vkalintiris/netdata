@@ -3004,6 +3004,7 @@ dependencies = [
  "netdata-agent-text",
  "netdata-agent-web",
  "nix",
+ "serde_json",
  "socket2",
  "tempfile",
  "uuid",

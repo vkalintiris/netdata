@@ -36,6 +36,9 @@ mod shutdown;
 mod spawn;
 mod startup;
 mod static_file;
+#[expect(dead_code, reason = "saved and loaded once the daemon calls it (D88)")]
+#[cfg_attr(not(test), expect(unused_imports, reason = "as above"))]
+mod status_file;
 mod stream_info;
 mod system;
 mod system_info;

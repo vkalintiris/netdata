@@ -8,7 +8,7 @@
 
 #![forbid(unsafe_code)]
 
-mod jsonc;
+pub mod jsonc;
 pub mod stream_path;
 
 use std::sync::Arc;
