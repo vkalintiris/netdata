@@ -525,32 +525,49 @@ fn write_record(
 /// subject to flood protection), runs the final callback and exits with 1. A fatal inside a fatal, on the same
 /// thread or on another one, writes C's raw line to fd 2 and exits at once.
 pub fn fatal(errno: i32, location: &Location, message: fmt::Arguments<'_>) -> ! {
+    fatal_with(errno, location, None, message)
+}
+
+/// [`fatal()`] of a panic: its file and line, and `function`, as the record's code location (a frame, as C lets a log
+/// frame set them).
+pub fn fatal_at(file: &str, line: u32, function: &str, message: fmt::Arguments<'_>) -> ! {
+    fatal_with(0, &here!(), Some((file, line, function)), message)
+}
+
+/// [`fatal()`], with `code` (file, line, function) in place of the call site: a frame that lives only while the
+/// record is logged, as the fatal MESSAGE_ID's does.
+fn fatal_with(errno: i32, location: &Location, code: Option<(&str, u32, &str)>, message: fmt::Arguments<'_>) -> ! {
     static THREADS_IN_FATAL: AtomicUsize = AtomicUsize::new(0);
-    let function = (location.function)();
+    let (file, line, function) = code.unwrap_or((location.file, location.line, (location.function)()));
     if IN_FATAL.with(|f| f.replace(true)) {
         output::write_stderr_raw(
             format!(
-                "\nRECURSIVE FATAL STATEMENTS, latest from {function}() of {}@{}, EXITING NOW! \
-                 23e93dfccbf64e11aac858b9410d8a82\n",
-                location.line, location.file
+                "\nRECURSIVE FATAL STATEMENTS, latest from {function}() of {line}@{file}, EXITING NOW! \
+                 23e93dfccbf64e11aac858b9410d8a82\n"
             )
             .as_bytes(),
         );
-        std::process::exit(1);
+        // recursive_fatal_abort() of a build without Sentry
+        netdata_agent_sys::exit_now(1);
     }
     if THREADS_IN_FATAL.fetch_add(1, Ordering::SeqCst) + 1 > 1 {
         output::write_stderr_raw(
             format!(
-                "\nCONCURRENT FATAL from {function}() of {}@{}, deferring to the first fatal and exiting.\n",
-                location.line, location.file
+                "\nCONCURRENT FATAL from {function}() of {line}@{file}, deferring to the first fatal and exiting.\n"
             )
             .as_bytes(),
         );
         std::thread::sleep(std::time::Duration::from_secs(2));
-        std::process::exit(1);
+        netdata_agent_sys::exit_now(1);
     }
     if !captured(Source::Daemon, Priority::Alert, errno, Some(message)) {
-        let _msgid = push(vec![(Field::MessageId, Value::Uuid(msgid::FATAL))]);
+        let mut fields = vec![(Field::MessageId, Value::Uuid(msgid::FATAL))];
+        if let Some((file, line, function)) = code {
+            fields.push((Field::File, Value::Txt(file.to_string())));
+            fields.push((Field::Func, Value::Txt(function.to_string())));
+            fields.push((Field::Line, Value::U64(u64::from(line))));
+        }
+        let _frame = push(fields);
         FATAL_EVENT.with(|f| f.set(true));
         log_record(
             Source::Daemon,
@@ -566,17 +583,6 @@ pub fn fatal(errno: i32, location: &Location, message: fmt::Arguments<'_>) -> ! 
         callback();
     }
     std::process::exit(1);
-}
-
-/// [`fatal()`] of a panic: its file and line, and `function`, as the record's code location (a frame, as C lets a log
-/// frame set them).
-pub fn fatal_at(file: &str, line: u32, function: &str, message: fmt::Arguments<'_>) -> ! {
-    let _frame = push(vec![
-        (Field::File, Value::Txt(file.to_string())),
-        (Field::Func, Value::Txt(function.to_string())),
-        (Field::Line, Value::U64(u64::from(line))),
-    ]);
-    fatal(0, &here!(), message)
 }
 
 static FATAL_FINAL: std::sync::Mutex<Option<fn()>> = std::sync::Mutex::new(None);

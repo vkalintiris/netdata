@@ -114,7 +114,10 @@ pub fn push_shared(fields: Arc<[(Field, Value)]>) -> FrameGuard {
 
 fn push_entries(fields: Entries) -> FrameGuard {
     let id = STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
+        // a push while a record is being assembled from the stack (a panic there reaching `fatal_at()`) is dropped
+        let Ok(mut stack) = stack.try_borrow_mut() else {
+            return None;
+        };
         if stack.frames.len() >= STACK_MAX {
             return None;
         }

@@ -1105,6 +1105,11 @@ fn panic_hook(info: &std::panic::PanicHookInfo<'_>) {
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "Box<dyn Any>".to_string());
     let (file, line) = info.location().map_or(("", 0), |l| (l.file(), l.line()));
+    // the default hook's line, raw on stderr (review R34): it shows even when the daemon log is off
+    let thread = std::thread::current();
+    let at = info.location().map(|l| l.to_string()).unwrap_or_default();
+    let text = format!("\nthread '{}' panicked at {at}:\n{message}\n", thread.name().unwrap_or("<unnamed>"));
+    let _ = nix::unistd::write(std::io::stderr(), text.as_bytes());
     netdata_agent_log::fatal_at(file, line, "panic", format_args!("{message}"))
 }
 

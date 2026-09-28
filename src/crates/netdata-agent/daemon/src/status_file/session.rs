@@ -114,9 +114,18 @@ impl Drop for Held {
     }
 }
 
-/// The records, unless this thread already holds them.
+/// The records were left by a thread that went into the fatal path holding them: from then on nothing takes them, so
+/// the exit that follows (its watcher's saves) cannot wait for them (D90.5 as amended, review R34).
+static ABANDONED: AtomicBool = AtomicBool::new(false);
+
+/// The records, unless this thread already holds them (then they are abandoned) or they were abandoned.
 fn files() -> Option<Held> {
     if HOLDING.with(Cell::get) {
+        // only the fatal path comes back in while they are held: the holder never resumes
+        ABANDONED.store(true, Ordering::Release);
+        return None;
+    }
+    if ABANDONED.load(Ordering::Acquire) {
         return None;
     }
     let guard = FILES.lock().unwrap_or_else(PoisonError::into_inner);
@@ -922,13 +931,16 @@ mod tests {
         assert_eq!((f.fault_address, f.signal_code), (5, 0));
     }
 
-    /// A thread inside the status file does not wait for itself (D90.5).
+    /// A thread inside the status file does not wait for itself, and once it came back in, no thread waits for the
+    /// records it holds (D90.5, R34).
     #[test]
     fn a_thread_holding_the_records_is_not_let_in_again() {
         let held = files();
         assert!(held.is_some());
         assert!(files().is_none());
+        assert!(std::thread::spawn(|| files().is_none()).join().unwrap());
         drop(held);
+        ABANDONED.store(false, Ordering::Release);
         assert!(files().is_some());
     }
 

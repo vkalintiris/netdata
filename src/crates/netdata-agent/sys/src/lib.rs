@@ -20,6 +20,8 @@
 //! - `Alloc` (decisions D87 F5, D91.1), the process's `GlobalAlloc`, hands every call to `System` unchanged.
 //! - `install_deadly()` and `die_by()` (decision D91.1) call `sigaction()`; the handler's trampoline reads the
 //!   `siginfo_t` the kernel passes it.
+//! - `exit_now()` (review R34) calls `_exit()` with an integer: no atexit handler or flush runs, as C's fatal paths
+//!   want when another thread is already exiting.
 
 mod alloc;
 mod deadly;
@@ -164,6 +166,12 @@ pub fn disk_space(path: &std::path::Path) -> DiskSpace {
         free_inodes: u64::from(s.files_available()),
         read_only: s.flags().contains(nix::sys::statvfs::FsFlags::ST_RDONLY),
     }
+}
+
+/// `_exit(code)`: the process ends now, without atexit handlers or buffer flushes.
+pub fn exit_now(code: i32) -> ! {
+    // SAFETY: `_exit()` takes an integer and never returns.
+    unsafe { libc::_exit(code) }
 }
 
 /// `gethostid()`.
