@@ -82,18 +82,8 @@ pub struct ValueComparison {
     pub diff: Option<ShareDiff>,
 }
 
-/// One value's rows: `(value, scope, selection)`; `None` is the unset value.
-pub(super) type ValueRows<'a> = (Option<&'a str>, u64, u64);
-
-/// Values in byte order, the unset value after every value.
-pub(super) fn value_order(a: Option<&str>, b: Option<&str>) -> Ordering {
-    match (a, b) {
-        (Some(a), Some(b)) => a.cmp(b),
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
-        (None, None) => Ordering::Equal,
-    }
-}
+/// One value's rows: `(value, scope, selection)`.
+pub(super) type ValueRows<'a> = (&'a str, u64, u64);
 
 /// Compares a field's values, index-parallel to `values`, and returns its
 /// best eligible difference.
@@ -135,7 +125,7 @@ pub(super) fn compare_values(
         out[b]
             .diff
             .cmp(&out[a].diff)
-            .then_with(|| value_order(values[a].0, values[b].0))
+            .then_with(|| values[a].0.cmp(values[b].0))
     });
     let best = eligible.first().and_then(|&i| out[i].diff);
     for (rank, index) in eligible.into_iter().enumerate() {
@@ -174,12 +164,7 @@ mod tests {
     #[test]
     fn comparison_ranks_by_exact_share_difference() {
         // Scope 100, selection 20, baseline 80.
-        let values = [
-            (Some("a"), 30, 15),
-            (Some("b"), 50, 4),
-            (Some("c"), 20, 1),
-            (Some("d"), 10, 5),
-        ];
+        let values = [("a", 30, 15), ("b", 50, 4), ("c", 20, 1), ("d", 10, 5)];
         let (got, best) = compare_values(totals(100, 20), &values);
         let fraction = |num, den| Some(ShareDiff { num, den });
         type Summary = (u64, u64, bool, Option<u32>, Option<ShareDiff>);
@@ -198,17 +183,14 @@ mod tests {
         );
         assert_eq!(best, got[0].diff);
 
-        let (tied, _) = compare_values(
-            totals(30, 15),
-            &[(None, 10, 5), (Some("y"), 10, 5), (Some("x"), 10, 5)],
-        );
+        let (tied, _) = compare_values(totals(30, 15), &[("z", 10, 5), ("y", 10, 5), ("x", 10, 5)]);
         assert_eq!(
             [tied[0].rank, tied[1].rank, tied[2].rank],
             [Some(3), Some(2), Some(1)],
-            "ties by value, the unset value last"
+            "ties by value, in byte order"
         );
 
-        let (whole, best) = compare_values(totals(10, 10), &[(Some("a"), 6, 6), (Some("b"), 4, 4)]);
+        let (whole, best) = compare_values(totals(10, 10), &[("a", 6, 6), ("b", 4, 4)]);
         assert_eq!(
             whole[0].diff.unwrap().to_f64(),
             0.6,
@@ -216,7 +198,7 @@ mod tests {
         );
         assert_eq!(best.unwrap().to_f64(), 0.6);
 
-        let (none, best) = compare_values(totals(10, 0), &[(Some("a"), 10, 0)]);
+        let (none, best) = compare_values(totals(10, 0), &[("a", 10, 0)]);
         assert!(none[0].diff.is_none() && !none[0].eligible && best.is_none());
     }
 

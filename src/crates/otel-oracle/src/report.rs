@@ -74,10 +74,6 @@ pub enum Subject {
         field: String,
         value: String,
     },
-    /// The rows without a value of the field.
-    Unset {
-        field: String,
-    },
     Trace([u8; 16]),
     Span([u8; 8]),
     Missing,
@@ -110,7 +106,6 @@ impl Subject {
             Subject::Flag(b) => b.to_string(),
             Subject::Name(name) => name.clone(),
             Subject::Value { field, value } => aliases.value(field, value),
-            Subject::Unset { field } => format!("{field} unset"),
             Subject::Trace(id) => aliases.trace(*id),
             Subject::Span(id) => aliases.span(*id),
             Subject::Missing => "missing".to_string(),

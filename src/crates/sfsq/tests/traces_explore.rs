@@ -582,7 +582,7 @@ fn facets_query(chips: &[(&str, &str)], fields: Option<&[&str]>) -> ExploreQuery
     q
 }
 
-fn facet_values(data: &ExploreData, field: &str) -> Vec<(Option<String>, u64)> {
+fn facet_values(data: &ExploreData, field: &str) -> Vec<(String, u64)> {
     let facets = data.facets.as_ref().expect("facets section");
     let facet = facets
         .fields
@@ -597,11 +597,8 @@ fn facet_values(data: &ExploreData, field: &str) -> Vec<(Option<String>, u64)> {
 }
 
 /// Named facet values with their counts.
-fn pairs(items: &[(&str, u64)]) -> Vec<(Option<String>, u64)> {
-    items
-        .iter()
-        .map(|(v, c)| (Some(v.to_string()), *c))
-        .collect()
+fn pairs(items: &[(&str, u64)]) -> Vec<(String, u64)> {
+    items.iter().map(|(v, c)| (v.to_string(), *c)).collect()
 }
 
 #[test]

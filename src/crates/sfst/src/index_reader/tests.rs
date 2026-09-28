@@ -325,7 +325,6 @@ fn memo_decodes_each_chunk_once() {
             .compile_span_ids(&[SpanId::from(3u64.to_be_bytes())])
             .unwrap();
         reader.count_without(&filter, "m", window.clone()).unwrap();
-        reader.count_absent(&filter, "h", window.clone()).unwrap();
     }
     reader.timeline("m", &filter, grid).unwrap();
     assert!(reader.timeline("h", &filter, grid).is_err());

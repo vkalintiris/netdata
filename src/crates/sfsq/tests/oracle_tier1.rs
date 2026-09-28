@@ -749,7 +749,7 @@ fn explore_facets_match_the_calculator() {
             assert_eq!(facets.fields.len(), fields.len(), "{case}");
             for (facet, want) in facets.fields.iter().zip(&want.fields) {
                 assert_eq!(facet.field, want.field, "{case}");
-                let got: Vec<(Option<String>, u64)> = facet
+                let got: Vec<(String, u64)> = facet
                     .values
                     .iter()
                     .map(|v| (v.value.clone(), v.count))
@@ -763,10 +763,7 @@ fn explore_facets_match_the_calculator() {
                 .expect("the status facet is requested");
             if scope.terms.is_empty() {
                 assert!(
-                    status
-                        .values
-                        .iter()
-                        .any(|(value, _)| value.as_deref() == Some("unset")),
+                    status.values.iter().any(|(value, _)| value == "unset"),
                     "{case}: every span includes some with an unset status"
                 );
             }
@@ -1811,11 +1808,7 @@ fn family_store_cut(cut: usize) -> Stored {
 
 /// What the explorer answers about error origins: the `_err_origin` facet,
 /// the histogram stacked by it, and the ids of the rows it scopes to.
-type OriginAnswers = (
-    BTreeMap<Option<String>, u64>,
-    Vec<calc::Bucket>,
-    Vec<(u8, u8)>,
-);
+type OriginAnswers = (BTreeMap<String, u64>, Vec<calc::Bucket>, Vec<(u8, u8)>);
 
 /// With the statuses of both requests and of each of their sections.
 fn origin_answers(sources: Vec<TraceSource>, grid: &Grid) -> (OriginAnswers, Vec<QueryStatus>) {
@@ -1837,7 +1830,7 @@ fn origin_answers(sources: Vec<TraceSource>, grid: &Grid) -> (OriginAnswers, Vec
     let facets = data.facets.expect("facets section");
     let histogram = data.histogram.expect("histogram section");
     let mut statuses = vec![data.status, facets.status, histogram.status.clone()];
-    let facet: BTreeMap<Option<String>, u64> = facets
+    let facet: BTreeMap<String, u64> = facets
         .fields
         .into_iter()
         .flat_map(|facet| facet.values)
@@ -1921,15 +1914,12 @@ fn live_split_equals_sealed() {
         "{statuses:?}"
     );
     assert_eq!(sealed.2, FAMILY_ORIGINS);
-    let facet: BTreeMap<Option<String>, u64> = calc::facet_counts(
+    let facet = calc::facet_counts(
         &stored.oracle,
         &grid,
         &Scope::default(),
         model::ERR_ORIGIN_FIELD,
-    )
-    .into_iter()
-    .map(|(value, count)| (Some(value), count))
-    .collect();
+    );
     assert_eq!(sealed.0, facet);
     let histogram = calc::histogram(
         &stored.oracle,
@@ -1997,7 +1987,7 @@ fn a_live_wal_with_a_gap_fails_its_live_pass() {
     sources.remove(2);
     let ((facet, _, ids), statuses) = origin_answers(sources.clone(), &grid);
     assert!(ids.is_empty(), "{ids:?}");
-    assert!(!facet.contains_key(&Some("true".to_string())), "{facet:?}");
+    assert!(!facet.contains_key("true"), "{facet:?}");
     for status in &statuses {
         let failed = status
             .count(PartialReason::LivePassFailed)

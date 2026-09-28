@@ -426,7 +426,7 @@ pub fn explore(
             let mut values = Vec::with_capacity(facet.values.len());
             for (value, count) in facet.values {
                 values.push(FacetValue {
-                    value: Some(value),
+                    value,
                     count,
                     comparison: None,
                 });
@@ -698,13 +698,11 @@ fn compare_facets(
         let counts = selected.get(facet.field.as_str());
         let mut rows = Vec::with_capacity(facet.values.len());
         for value in &facet.values {
-            let c = value
-                .value
-                .as_deref()
-                .and_then(|named| counts.and_then(|counts| counts.get(named)))
+            let c = counts
+                .and_then(|counts| counts.get(value.value.as_str()))
                 .copied()
                 .unwrap_or(0);
-            rows.push((value.value.as_deref(), value.count, c));
+            rows.push((value.value.as_str(), value.count, c));
         }
         let (compared, best) = compare::compare_values(totals, &rows);
         for (value, comparison) in facet.values.iter_mut().zip(compared) {
@@ -716,10 +714,7 @@ fn compare_facets(
                 (Some(x), Some(y)) => x.cmp(&y),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => b
-                    .count
-                    .cmp(&a.count)
-                    .then_with(|| compare::value_order(a.value.as_deref(), b.value.as_deref())),
+                (None, None) => b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)),
             }
         });
         facet.comparison = Some(FieldComparison {
@@ -772,7 +767,7 @@ mod tests {
             values: values
                 .iter()
                 .map(|&(value, count)| FacetValue {
-                    value: Some(value.to_string()),
+                    value: value.to_string(),
                     count,
                     comparison: None,
                 })

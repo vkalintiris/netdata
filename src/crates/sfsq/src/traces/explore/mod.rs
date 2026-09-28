@@ -248,8 +248,7 @@ pub struct FacetData {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FacetValue {
-    /// `None` is not produced: every listed value has a name.
-    pub value: Option<String>,
+    pub value: String,
     /// Scope rows.
     pub count: u64,
     pub comparison: Option<ValueComparison>,

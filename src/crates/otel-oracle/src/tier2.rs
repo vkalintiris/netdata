@@ -780,16 +780,11 @@ fn judge_groups(
     judge_delta(judge, scenario, &want, got);
 }
 
-/// A facet value as a subject: `None` is the field's unset value.
-fn value_subject(field: &str, value: Option<&str>) -> Subject {
-    match value {
-        Some(value) => Subject::Value {
-            field: field.to_string(),
-            value: value.to_string(),
-        },
-        None => Subject::Unset {
-            field: field.to_string(),
-        },
+/// A facet value as a subject.
+fn value_subject(field: &str, value: &str) -> Subject {
+    Subject::Value {
+        field: field.to_string(),
+        value: value.to_string(),
     }
 }
 
@@ -980,7 +975,7 @@ fn judge_comparison(
                 ]);
                 for value in &field.values {
                     want_lines.extend([
-                        value_subject(&field.field, value.value.as_deref()),
+                        value_subject(&field.field, &value.value),
                         Subject::Count(value.count),
                         Subject::Count(value.selection),
                         Subject::Count(value.baseline),
@@ -1001,7 +996,7 @@ fn judge_comparison(
                 ]);
                 for (value, count) in &facet.values {
                     want_lines.extend([
-                        value_subject(&facet.field, value.as_deref()),
+                        value_subject(&facet.field, value),
                         Subject::Count(*count),
                         Subject::Missing,
                         Subject::Missing,
@@ -1031,7 +1026,7 @@ fn judge_comparison(
         ]);
         for value in &field.values {
             got_lines.extend([
-                value_subject(&field.field, value.value.as_deref()),
+                value_subject(&field.field, &value.value),
                 Subject::Count(value.count),
                 value.selection.map_or(Subject::Missing, Subject::Count),
                 value.baseline.map_or(Subject::Missing, Subject::Count),
@@ -1103,7 +1098,7 @@ fn judge_facets(
             continue;
         }
         let at = vec![name("facets"), name(&want.field)];
-        let values = |pairs: Vec<(Option<&str>, u64)>| {
+        let values = |pairs: Vec<(&str, u64)>| {
             let mut out = Vec::new();
             for (value, count) in pairs {
                 out.push(value_subject(&want.field, value));
@@ -1115,16 +1110,11 @@ fn judge_facets(
             "ORC-FACET",
             &scenario.name,
             at.clone(),
-            &values(
-                want.values
-                    .iter()
-                    .map(|(v, c)| (v.as_deref(), *c))
-                    .collect(),
-            ),
+            &values(want.values.iter().map(|(v, c)| (v.as_str(), *c)).collect()),
             &values(
                 got.values
                     .iter()
-                    .map(|v| (v.value.as_deref(), v.count))
+                    .map(|v| (v.value.as_str(), v.count))
                     .collect(),
             ),
         );
