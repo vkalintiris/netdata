@@ -18,8 +18,8 @@ import (
 	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
-// The maintenance check's children: A stays and loses a dimension and a chart, B (alloc) and E (dbengine, ephemeral)
-// disconnect and are cleaned up.
+// The maintenance check's children: A stays, loses a dimension and a chart, then reconnects without a third; B (alloc)
+// and E (dbengine, ephemeral) disconnect and are cleaned up.
 var (
 	maintA = stream.HostInfo{Hostname: "maint-a", MachineGUID: "b6b6b6b6-2222-4222-8222-00000000000a"}
 	maintB = stream.HostInfo{Hostname: "maint-b", MachineGUID: "b6b6b6b6-2222-4222-8222-00000000000b"}
@@ -39,9 +39,16 @@ type liveChild struct {
 func startLiveChild(t *testing.T, d *daemon.Daemon, host stream.HostInfo, labels [][2]string,
 	charts map[string][]string) *liveChild {
 	t.Helper()
-	conn, err := stream.Connect(d.Addr, d.StreamKey, host, stream.CapsLive)
-	if err != nil {
-		t.Fatalf("%s: %v", host.Hostname, err)
+	// a reconnect is refused while the agent still serves the previous connection
+	var conn *stream.Conn
+	for end := time.Now().Add(30 * time.Second); ; time.Sleep(time.Second) {
+		var err error
+		if conn, err = stream.Connect(d.Addr, d.StreamKey, host, stream.CapsLive); err == nil {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("%s: %v", host.Hostname, err)
+		}
 	}
 	for _, l := range labels {
 		conn.Linef("LABEL '%s' 1 '%s'", l[0], l[1])
@@ -129,7 +136,7 @@ func maintenanceView(t *testing.T, d *daemon.Daemon) string {
 		return code, httpBody(b)
 	}
 	var out []string
-	for _, chart := range []string{"a.c1", "a.c2"} {
+	for _, chart := range []string{"a.c1", "a.c2", "a.c3"} {
 		code, body := get("/host/" + maintA.Hostname + "/api/v1/chart?chart=" + chart)
 		var doc struct {
 			Dimensions map[string]any `json:"dimensions"`
@@ -173,12 +180,14 @@ func maintenanceView(t *testing.T, d *daemon.Daemon) string {
 	return strings.Join(out, "\n")
 }
 
-// TestRRDMaintenance (check `rrd.maintenance`, S7b commit 9, D94; about 4 minutes, PARITY_LONG=1): the cleanup times
-// at their minimum or a little above (obsolete charts 10 s, orphan hosts 90 s, ephemeral hosts 120 s) and a HEALTH pass
-// every second. Each agent runs the same timeline and the check waits, at each step, until both show the same view
-// (A's chart answers, the hosts listed and mirrored, the dimension rows with the UUIDs masked), then compares the
-// records of the maintenance.
+// TestRRDMaintenance (check `rrd.maintenance`, S7b commit 9, D94, D95.5; about 3 minutes, PARITY_LONG=1): the cleanup
+// times at their minimum or a little above (obsolete charts 10 s, orphan hosts 90 s, ephemeral hosts 120 s) and a
+// HEALTH pass every second. Each agent runs the same timeline and the check waits, at each step, until both show the
+// same view (A's chart answers, the hosts listed and mirrored, the dimension rows with the UUIDs masked), then compares
+// the records of the maintenance.
 //   - A obsoletes a dimension and a chart: gone from the chart answers at once, their rows once freed.
+//   - A reconnects defining one chart: the obsolete-all at connection marks the one it leaves out (gone from the
+//     answers at once), freed like the others.
 //   - B (alloc) and E (dbengine, `_is_ephemeral`) disconnect: B's charts are marked obsolete and freed, B is archived
 //     after the orphan time, then freed once a deep pass leaves it no retention; E is freed after the ephemeral time.
 func TestRRDMaintenance(t *testing.T) {
@@ -194,7 +203,8 @@ func TestRRDMaintenance(t *testing.T) {
 	p := StartPair(t, opts, parentIdentity)
 	var a, b, e [2]*liveChild
 	for i, side := range p.Each() {
-		a[i] = startLiveChild(t, side.Daemon, maintA, nil, map[string][]string{"a.c1": {"d1", "d2"}, "a.c2": {"x"}})
+		a[i] = startLiveChild(t, side.Daemon, maintA, nil,
+			map[string][]string{"a.c1": {"d1", "d2"}, "a.c2": {"x"}, "a.c3": {"z"}})
 		b[i] = startLiveChild(t, side.Daemon, maintB, nil, map[string][]string{"b.c1": {"d"}})
 		e[i] = startLiveChild(t, side.Daemon, maintE, [][2]string{{"_is_ephemeral", "true"}},
 			map[string][]string{"e.c1": {"d"}})
@@ -231,8 +241,8 @@ func TestRRDMaintenance(t *testing.T) {
 	}
 	// A's charts answer and every dimension has its row (METASYNC stores them within about 6 s)
 	settle("connected", 60*time.Second, func(v string) bool {
-		return all("chart a.c1: 200 [d1 d2]", "chart a.c2: 200 [x]",
-			"mirrored: [maint-a maint-b maint-e parity-parent]")(v) && strings.Count(v, "row dimension") == 5
+		return all("chart a.c1: 200 [d1 d2]", "chart a.c2: 200 [x]", "chart a.c3: 200 [z]",
+			"mirrored: [maint-a maint-b maint-e parity-parent]")(v) && strings.Count(v, "row dimension") == 6
 	})
 
 	for i := range a {
@@ -245,14 +255,23 @@ func TestRRDMaintenance(t *testing.T) {
 		b[i].close()
 		e[i].close()
 	}
-	// out of the chart answers at once
-	settle("obsoleted", 20*time.Second, all("chart a.c1: 200 [d1]", "chart a.c2: 404"))
+	// out of the chart answers at once, their rows kept until the free
+	settle("obsoleted", 20*time.Second, all("chart a.c1: 200 [d1]", "chart a.c2: 404", `id="d2"`, `id="x"`))
 	// freed after 10 s quiet and a sweep: the rows go at the job after
 	settle("freed", 60*time.Second, func(v string) bool {
 		return !strings.Contains(v, `id="d2"`) && !strings.Contains(v, `id="x"`)
 	})
-	// B and E archived after 90 s and more than 10 HEALTH passes: left out of the charts' hosts
-	settle("archived", 150*time.Second, has("charts hosts: 4 [maint-a parity-parent]"))
+	// A's new connection defines a.c1 alone: a.c3, marked obsolete at the connection, is out of the answers at once
+	// and freed after the time
+	for i, side := range p.Each() {
+		a[i].close()
+		a[i] = startLiveChild(t, side.Daemon, maintA, nil, map[string][]string{"a.c1": {"d1"}})
+	}
+	settle("reconnected", 30*time.Second, all("chart a.c1: 200 [d1]", "chart a.c3: 404", `id="z"`))
+	settle("reconnect freed", 60*time.Second, func(v string) bool { return !strings.Contains(v, `id="z"`) })
+	// B and E archived after 90 s and more than 10 HEALTH passes: left out of the charts' hosts, still mirrored
+	settle("archived", 150*time.Second, all("charts hosts: 4 [maint-a parity-parent]",
+		"mirrored: [maint-a maint-b maint-e parity-parent]"))
 	// E freed after 120 s; B once a deep pass leaves it no retention
 	settle("hosts freed", 240*time.Second, has("mirrored: [maint-a parity-parent]"))
 	for _, side := range p.Each() {
