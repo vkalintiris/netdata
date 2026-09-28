@@ -491,6 +491,18 @@ impl RamIndex {
         lock(&self.rings).insert(*dim.uuid(), dim.weak());
     }
 
+    /// `rrddim_metric_release()` of a freed dimension: its entry goes, only while it is this dimension's (one created
+    /// again with the UUID may have taken it, D94.3).
+    pub(crate) fn release(&self, dim: &Dim) {
+        let mut rings = lock(&self.rings);
+        if rings
+            .get(dim.uuid())
+            .is_some_and(|w| std::ptr::eq(w.as_ptr(), dim))
+        {
+            rings.remove(dim.uuid());
+        }
+    }
+
     /// `rrddim_metric_retention_by_id()`: the oldest and newest time of the live ring with this UUID.
     fn retention_by_id(&self, uuid: &[u8; 16]) -> Option<(i64, i64)> {
         let dim = lock(&self.rings).get(uuid).and_then(Weak::upgrade)?;
@@ -915,6 +927,10 @@ fn chart_instance(chart: &Chart) -> Option<Arc<Instance>> {
 
 /// `rrdmetric_from_rrddim()` (`rrdcontext_updated_rrddim()`): upserts the dimension's metric in its chart's instance.
 pub fn updated_rrddim(chart: &Chart, dim: &Dim) {
+    // a freed object's holders do not reach the contexts again (D94.1)
+    if dim.is_freed() {
+        return;
+    }
     let Some(ri) = chart_instance(chart) else {
         return;
     };
@@ -993,6 +1009,10 @@ pub fn updated_rrddim(chart: &Chart, dim: &Dim) {
 
 /// `rrdmetric_updated_rrddim_flags()`: multiplier, divisor or obsolete changed.
 pub fn updated_rrddim_flags(dim: &Dim) {
+    // a freed object's holders do not reach the contexts again (D94.1)
+    if dim.is_freed() {
+        return;
+    }
     dim.contexts().not_collected();
     let Some(rm) = dim_metric(dim) else {
         return;
@@ -1005,6 +1025,10 @@ pub fn updated_rrddim_flags(dim: &Dim) {
 
 /// `rrdmetric_updated_rrddim_algorithm()`.
 pub fn updated_rrddim_algorithm(dim: &Dim) {
+    // a freed object's holders do not reach the contexts again (D94.1)
+    if dim.is_freed() {
+        return;
+    }
     dim.contexts().not_collected();
     let Some(rm) = dim_metric(dim) else {
         return;
@@ -1022,6 +1046,10 @@ pub fn updated_rrddim_algorithm(dim: &Dim) {
 
 /// `rrdmetric_collected_rrddim()`: the first store since the link was (re)established.
 pub fn collected_rrddim(dim: &Dim) {
+    // a freed object's holders do not reach the contexts again (D94.1)
+    if dim.is_freed() {
+        return;
+    }
     if dim.contexts().collected.swap(true, Ordering::Relaxed) {
         return;
     }
@@ -1040,6 +1068,10 @@ pub fn collected_rrddim(dim: &Dim) {
 /// `rrdinstance_from_rrdset()` (`rrdcontext_updated_rrdset()`): upserts the chart's context and instance and links
 /// the chart to them; a chart that moved to another context leaves its old instance and metrics deleted.
 pub fn updated_rrdset(chart: &Chart) {
+    // a freed object's holders do not reach the contexts again (D94.1)
+    if chart.is_freed() {
+        return;
+    }
     let contexts = chart.host_contexts();
     let meta = chart.meta();
     let (priority, stored_priority) = chart_priority(chart);
@@ -1201,6 +1233,40 @@ fn instance_conflict(
     ri.flags.is_updated()
 }
 
+/// `rrdmetric_rrddim_is_freed()`: the metric, while still linked to the dimension, is archived (if collected),
+/// unlinked and triggers its updates; the dimension forgets it.
+pub(crate) fn removed_rrddim(dim: &Dim) {
+    let link = dim.contexts();
+    if let Some(rm) = link.metric().filter(|rm| rm.is_linked_to(dim)) {
+        if rm.flags.is_collected() {
+            rm.flags.set_archived();
+        }
+        *lock(&rm.dim) = None;
+        rm.trigger_updates();
+    }
+    *lock(&link.metric) = None;
+    link.not_collected();
+}
+
+/// `rrdinstance_rrdset_is_freed()`: the instance, while still linked to the chart, is archived, keeps the chart's
+/// labels as its own, is unlinked and triggers its updates; the chart forgets its context and instance.
+pub(crate) fn removed_rrdset(chart: &Chart) {
+    rrdset_not_collected(chart);
+    let link = chart.contexts();
+    let linked = |ri: &Arc<Instance>| {
+        ri.chart()
+            .is_some_and(|c| std::ptr::eq(Arc::as_ptr(&c), chart))
+    };
+    if let Some(ri) = link.instance().filter(linked) {
+        ri.flags.set_archived();
+        lock(&ri.state).own_labels = chart.meta().labels;
+        ri.flags.set(flags::OWN_LABELS);
+        *lock(&ri.chart) = None;
+        ri.trigger_updates();
+    }
+    *lock(&link.context) = None;
+}
+
 /// `rrdinstance_rrdset_not_collected()`: the next store and collection count again.
 pub fn rrdset_not_collected(chart: &Chart) {
     chart.contexts().collected.store(false, Ordering::Relaxed);
@@ -1211,6 +1277,10 @@ pub fn rrdset_not_collected(chart: &Chart) {
 
 /// `rrdinstance_updated_rrdset_name()`.
 pub fn updated_rrdset_name(chart: &Chart) {
+    // a freed object's holders do not reach the contexts again (D94.1)
+    if chart.is_freed() {
+        return;
+    }
     rrdset_not_collected(chart);
     let Some(ri) = chart_instance(chart) else {
         return;
@@ -1227,6 +1297,10 @@ pub fn updated_rrdset_name(chart: &Chart) {
 
 /// `rrdinstance_updated_rrdset_flags()`: obsolete or hidden changed.
 pub fn updated_rrdset_flags(chart: &Chart) {
+    // a freed object's holders do not reach the contexts again (D94.1)
+    if chart.is_freed() {
+        return;
+    }
     rrdset_not_collected(chart);
     let Some(ri) = chart_instance(chart) else {
         return;
@@ -1240,6 +1314,10 @@ pub fn updated_rrdset_flags(chart: &Chart) {
 
 /// `rrdinstance_rrdset_has_updated_retention()`: replication filled in the past.
 pub fn updated_retention_rrdset(chart: &Chart) {
+    // a freed object's holders do not reach the contexts again (D94.1)
+    if chart.is_freed() {
+        return;
+    }
     let Some(ri) = chart_instance(chart) else {
         return;
     };
@@ -1250,6 +1328,10 @@ pub fn updated_retention_rrdset(chart: &Chart) {
 /// `rrdinstance_collected_rrdset()`: the first completed collection since the link was (re)established; the
 /// instance becomes collected only if a metric stored in between.
 pub fn collected_rrdset(chart: &Chart) {
+    // a freed object's holders do not reach the contexts again (D94.1)
+    if chart.is_freed() {
+        return;
+    }
     if chart.contexts().collected.swap(true, Ordering::Relaxed) {
         return;
     }

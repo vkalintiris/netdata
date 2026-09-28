@@ -955,6 +955,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     // netdatacli shutdown-agent) stops what runs, as C's globals do. Main keeps its own references for the rest of the
     // startup and drops them before it waits for signals.
     let metaqueue = metasync.queue();
+    // metaqueue_delete_dimension_uuid() of every freed dimension that leaves no data behind
+    hosts.storage().set_freed_dimension_hook({
+        let metaqueue = metaqueue.clone();
+        move |uuid| metaqueue.delete_dimension(uuid)
+    });
     let meta_main = meta.clone();
     let engine_main = dbengine
         .as_ref()

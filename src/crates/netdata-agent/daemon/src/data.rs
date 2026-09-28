@@ -11,7 +11,7 @@ use netdata_agent_query::jsonwrap_v2::Agent;
 use netdata_agent_query::output::data_query_execute;
 use netdata_agent_query::request::{DataRequest, is_valid_sp, parse_v1, parse_v2};
 use netdata_agent_query::tables::Format;
-use netdata_agent_query::target::{QueryTarget, Source, chart_is_queryable, create};
+use netdata_agent_query::target::{QueryTarget, Source, create};
 use netdata_agent_query::window::{Window, calculate};
 use netdata_agent_rrd::chart::Chart;
 use netdata_agent_rrd::host::Host;
@@ -29,14 +29,12 @@ fn profile(route: &Route<'_>) -> netdata_agent_query::request::Profile {
     }
 }
 
-/// `rrdset_find_and_acquire(host, id, false)`, then by name: an obsolete chart only while it replicates.
+/// `rrdset_find_and_acquire(host, id, false)`, then `rrdset_find_byname_and_acquire()`: discoverable charts only.
 pub fn find_chart(host: &Host, chart: &[u8]) -> Option<Arc<Chart>> {
     let chart = std::str::from_utf8(chart).ok()?;
-    let queryable = |st: &Arc<Chart>| chart_is_queryable(st.meta().flags);
     host.charts()
-        .find(chart)
-        .filter(queryable)
-        .or_else(|| host.charts().find_by_name(chart).filter(queryable))
+        .find(chart, false)
+        .or_else(|| host.charts().find_by_name(chart))
 }
 
 /// `api_v1_data()`.

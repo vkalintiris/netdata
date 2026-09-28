@@ -246,6 +246,13 @@ pub mod meta_flags {
     pub const CLAIMID: u32 = 1 << 3;
 }
 
+/// The host flags its maintenance reads (`RRDHOST_FLAG_PENDING_OBSOLETE_*`): some chart or dimension turned obsolete
+/// since the last sweep.
+pub mod pending_flags {
+    pub const OBSOLETE_CHARTS: u32 = 1 << 0;
+    pub const OBSOLETE_DIMENSIONS: u32 = 1 << 1;
+}
+
 /// `struct rrdhost`.
 #[derive(Debug)]
 pub struct Host {
@@ -296,6 +303,8 @@ pub struct Host {
     last_connected_s: AtomicI64,
     /// `RRDHOST_FLAG_METADATA_*` (`meta_flags`), shared with the charts, whose changes raise `UPDATE`.
     meta_flags: Arc<AtomicU32>,
+    /// `pending_flags`, which the host's charts raise.
+    pending_flags: Arc<AtomicU32>,
     /// `host->metadata_lifetime_lock`: the metadata writer stores the host under its read side, a netdatacli removal
     /// frees it under its write side; true once freed.
     metadata_lifetime: RwLock<bool>,
@@ -408,6 +417,7 @@ impl Host {
         info.hostname = init_hostname(&info.hostname);
         let contexts = Arc::new(Contexts::default());
         let meta_flags = Arc::new(AtomicU32::new(0));
+        let pending_flags = Arc::new(AtomicU32::new(0));
         Host {
             machine_guid: machine_guid.to_string(),
             is_localhost,
@@ -422,6 +432,7 @@ impl Host {
             charts: Charts::new(
                 Arc::clone(&contexts),
                 Arc::clone(&meta_flags),
+                Arc::clone(&pending_flags),
                 Arc::clone(storage),
                 machine_guid,
             ),
@@ -448,6 +459,7 @@ impl Host {
             labels_applied: AtomicBool::new(false),
             labels_applied_version: AtomicU32::new(0),
             meta_flags,
+            pending_flags,
             metadata_lifetime: RwLock::new(false),
             storage: Arc::clone(storage),
         }
@@ -490,6 +502,11 @@ impl Host {
 
     pub fn meta_flags(&self) -> u32 {
         self.meta_flags.load(Ordering::Acquire)
+    }
+
+    /// The `pending_flags` its charts have raised.
+    pub fn pending_flags(&self) -> u32 {
+        self.pending_flags.load(Ordering::Acquire)
     }
 
     /// `rrdset_observe_receiver_update_every()`: a chart's update every lowers the receiver's minimum.

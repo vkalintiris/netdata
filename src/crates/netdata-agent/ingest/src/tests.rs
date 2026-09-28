@@ -80,7 +80,7 @@ fn a_chart_is_defined_and_collected_with_v2() {
     let h = host();
     let mut p = parser(&h);
     assert!(feed_all(&mut p, &DEFINE).iter().all(|&ok| ok));
-    let chart = h.charts().find("test.c1").unwrap();
+    let chart = h.charts().find("test.c1", true).unwrap();
     let meta = chart.meta();
     assert_eq!(
         (
@@ -157,7 +157,7 @@ fn chart_definition_end_waits_for_the_backfill() {
     feed_all(&mut p, &DEFINE);
     let first = NOW - 100;
     assert!(p.feed(format!("CHART_DEFINITION_END {first} {NOW} {NOW}\n").as_bytes()));
-    let chart = h.charts().find("test.c1").unwrap();
+    let chart = h.charts().find("test.c1", true).unwrap();
     assert!(p.take_output().is_empty());
     assert_eq!(
         (
@@ -279,7 +279,7 @@ fn replication_rows_are_stored_and_rend_finishes() {
     ];
     let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
     assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
-    let chart = h.charts().find("test.c1").unwrap();
+    let chart = h.charts().find("test.c1", true).unwrap();
     let d1 = chart.dim("d1").unwrap();
     let mut q = d1.ring().unwrap().query(e, e);
     assert_eq!(q.next_metric().sum, 7.0);
@@ -453,7 +453,7 @@ fn v1_collection_times_keep_their_microseconds() {
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
     }
-    let d1 = h.charts().find("test.c1").unwrap().dim("d1").unwrap();
+    let d1 = h.charts().find("test.c1", true).unwrap().dim("d1").unwrap();
     let ring = d1.ring().unwrap();
     let mut q = ring.query(ring.oldest_time_s(), ring.latest_time_s());
     let mut stored = Vec::new();
@@ -479,7 +479,7 @@ fn v1_collections_are_stored_on_the_grid() {
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
     }
-    let chart = h.charts().find("test.c1").unwrap();
+    let chart = h.charts().find("test.c1", true).unwrap();
     let d1 = chart.dim("d1").unwrap();
     let ring = d1.ring().unwrap();
     assert!(chart.collection().counter >= 3, "{:?}", chart.collection());
@@ -555,7 +555,7 @@ fn a_label_change_resyncs_the_instance_hidden_flag() {
     feed_all(&mut p, &DEFINE);
     let ri = || {
         h.charts()
-            .find("test.c1")
+            .find("test.c1", true)
             .unwrap()
             .contexts()
             .instance()

@@ -7,7 +7,7 @@
 //! are held only for short, bounded steps.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, Weak};
 
 use netdata_agent_storage::dbengine::engine::collect::{Alignment, CollectHandle};
@@ -16,8 +16,9 @@ use netdata_agent_storage::query::{Priority, StorageQuery};
 use netdata_agent_storage::ram::{ALLOC_MIN_ENTRIES, RamMetric, Seed};
 use netdata_agent_text::sanitize::{rrd_string_sanitize, rrdset_strncpyz_name};
 
+use crate::clock::now_realtime_s;
 use crate::contexts::{self, ChartLink, Contexts, DimLink};
-use crate::host::meta_flags;
+use crate::host::{meta_flags, pending_flags};
 use crate::index::Index;
 use crate::labels::{FLAG_DONT_DELETE, Labels, SRC_AUTO};
 use crate::mode::{DbMode, align_entries_to_pagesize};
@@ -173,6 +174,20 @@ pub mod flags {
     pub const HOMOGENEOUS_CHECK: u32 = 1 << 9;
     /// `RRDSET_FLAG_BACKFILLED_HIGH_TIERS`: the chart's dimensions were queued for a backfill once; never cleared.
     pub const BACKFILLED_HIGH_TIERS: u32 = 1 << 10;
+    /// `RRDSET_FLAG_OBSOLETE_DIMENSIONS`: some dimension turned obsolete, for the maintenance sweep.
+    pub const OBSOLETE_DIMENSIONS: u32 = 1 << 11;
+
+    /// `rrdset_is_replicating()`: a replication in progress and none finished. A chart starts with both finished bits
+    /// and nothing clears the sender's without a stream sender, so on this agent no chart replicates in this sense.
+    pub fn is_replicating(flags: u32) -> bool {
+        flags & RECEIVER_REPLICATION_IN_PROGRESS != 0
+            && flags & (SENDER_REPLICATION_FINISHED | RECEIVER_REPLICATION_FINISHED) == 0
+    }
+
+    /// `rrdset_is_discoverable()`: what the lookups find unless asked for obsolete charts too.
+    pub fn is_discoverable(flags: u32) -> bool {
+        is_replicating(flags) || flags & OBSOLETE == 0
+    }
 }
 
 /// What `rrdset_create()` is called with.
@@ -271,6 +286,13 @@ pub struct Chart {
     name_part: Option<String>,
     /// The host's `RRDHOST_FLAG_METADATA_*`, which this chart's metadata changes raise.
     host_meta: Arc<AtomicU32>,
+    /// The host's `pending_flags`, which this chart's obsolete transitions raise.
+    host_pending: Arc<AtomicU32>,
+    /// `st->last_accessed_time_s`: the last lookup, creation or obsolete transition; the maintenance sweep frees an
+    /// obsolete chart only after a quiet time.
+    last_accessed_s: AtomicI64,
+    /// Out of the host's index for good (D94.1): lookups miss it, the contexts hooks and the parser leave it alone.
+    freed: AtomicBool,
     /// `st->rrdlabels_last_saved_version`.
     labels_saved_version: AtomicU32,
     meta: RwLock<ChartMeta>,
@@ -313,6 +335,81 @@ impl Chart {
         contexts::updated_rrdset(self);
     }
 
+    /// `rrdset_touch_last_accessed_time_s()`.
+    pub fn touch_last_accessed(&self) {
+        self.last_accessed_s
+            .store(now_realtime_s(), Ordering::Relaxed);
+    }
+
+    /// `st->last_accessed_time_s`.
+    pub fn last_accessed_s(&self) -> i64 {
+        self.last_accessed_s.load(Ordering::Relaxed)
+    }
+
+    /// `rrdset_is_discoverable()`.
+    pub fn is_discoverable(&self) -> bool {
+        flags::is_discoverable(self.flags())
+    }
+
+    /// Whether the chart was freed (D94.1).
+    pub fn is_freed(&self) -> bool {
+        self.freed.load(Ordering::Acquire)
+    }
+
+    /// `rrddim_free()` of an obsolete dimension, when `free` still holds under the index lock: the dimension leaves the
+    /// index and is marked freed (writes through a held `Arc` then do nothing, D94.1), then [`Chart::dim_freed`].
+    /// Whether it was freed.
+    pub fn free_dim_if(&self, dim: &Arc<Dim>, free: impl FnOnce(&Dim) -> bool) -> bool {
+        {
+            let mut index = self.dims.write().unwrap_or_else(PoisonError::into_inner);
+            if dim.is_freed()
+                || !index.get(dim.id()).is_some_and(|d| Arc::ptr_eq(&d, dim))
+                || !free(dim)
+            {
+                return false;
+            }
+            dim.freed.store(true, Ordering::Release);
+            index.remove(dim.id());
+        }
+        self.dim_freed(dim);
+        true
+    }
+
+    /// `rrddim_delete_callback()`: the dimension's metric is archived and unlinked, its collection ends, its metadata
+    /// row goes when no data remains (always in the memory modes), the RAM index forgets it and the receiver's
+    /// dimension cache drops it.
+    fn dim_freed(&self, dim: &Arc<Dim>) {
+        contexts::removed_rrddim(dim);
+        let has_retention = dim.finalize_collection();
+        if freed_dimension_deletes(self.mode, has_retention) {
+            self.storage.freed_dimension_row(dim.uuid());
+        }
+        self.host_contexts.ram_index().release(dim);
+        for entry in &mut self.receiver().prd {
+            if entry.as_ref().is_some_and(|d| Arc::ptr_eq(d, dim)) {
+                *entry = None;
+            }
+        }
+    }
+
+    /// `rrdset_delete_callback()` of a chart out of the index: every dimension freed, then the chart's instance
+    /// archived with the chart's labels and unlinked (`rrdcontext_removed_rrdset()`, after the dimensions, as C orders
+    /// it), and the receiver's caches emptied.
+    fn freed_contents(&self) {
+        let dims = {
+            let mut index = self.dims.write().unwrap_or_else(PoisonError::into_inner);
+            for dim in index.items() {
+                dim.freed.store(true, Ordering::Release);
+            }
+            std::mem::take(&mut *index)
+        };
+        for dim in dims.items() {
+            self.dim_freed(dim);
+        }
+        contexts::removed_rrdset(self);
+        *self.receiver() = ReceiverState::default();
+    }
+
     /// `rrdset_is_obsolete___safe_from_collector_thread()`, without the sender's parts.
     pub fn is_obsolete(&self) {
         let was = self.update_meta(|m| {
@@ -321,6 +418,9 @@ impl Chart {
             was
         });
         if was & flags::OBSOLETE == 0 {
+            self.host_pending
+                .fetch_or(pending_flags::OBSOLETE_CHARTS, Ordering::AcqRel);
+            self.touch_last_accessed();
             self.metadata_updated();
             contexts::updated_rrdset_flags(self);
         }
@@ -334,6 +434,7 @@ impl Chart {
             was
         });
         if was & flags::OBSOLETE != 0 {
+            self.touch_last_accessed();
             self.metadata_updated();
             contexts::updated_rrdset_flags(self);
         }
@@ -347,6 +448,9 @@ impl Chart {
             was
         });
         if was & dim_flags::OBSOLETE == 0 {
+            self.update_meta(|m| m.flags |= flags::OBSOLETE_DIMENSIONS);
+            self.host_pending
+                .fetch_or(pending_flags::OBSOLETE_DIMENSIONS, Ordering::AcqRel);
             contexts::updated_rrddim_flags(dim);
             self.metadata_updated();
         }
@@ -565,8 +669,13 @@ impl Chart {
             .to_vec()
     }
 
+    /// `rrddim_find(st, id, include_obsolete = true)`: a dimension found touches its chart's last accessed time.
     pub fn dim(&self, id: &str) -> Option<Arc<Dim>> {
-        self.dims.read().unwrap_or_else(PoisonError::into_inner).get(id)
+        let dim = self.dims.read().unwrap_or_else(PoisonError::into_inner).get(id);
+        if dim.is_some() {
+            self.touch_last_accessed();
+        }
+        dim
     }
 
     /// `rrdset_set_update_every_s()`: an invalid value is ignored; a change reaches every dimension's storage on every
@@ -604,6 +713,10 @@ impl Chart {
         if let Some(dim) = index.get(id) {
             drop(index);
             self.dim_isnot_obsolete(&dim);
+            // freed by the maintenance sweep since the lookup: added again (C retries on the destroy lock)
+            if dim.is_freed() {
+                return self.dim_add(id, name, multiplier, divisor, algorithm);
+            }
             // rrddim_conflict_callback(): rename, algorithm, multiplier, divisor, each reported as it changes.
             let (renamed, algorithm_changed, multiplier_changed, divisor_changed) = dim
                 .update_meta(|m| {
@@ -737,6 +850,7 @@ impl Chart {
                 update_every: i64::from(meta.update_every),
                 backfilled: false,
             }),
+            freed: AtomicBool::new(false),
         });
         // pulse_db_rrd_memory_add(), which the dimension's drop takes back
         if let Some(ring) = dim.ring() {
@@ -848,6 +962,8 @@ pub struct Dim {
     store: Mutex<DimStore>,
     /// The host's storage (`rd->rrdset->rrdhost->db[]`): the backfill mode and the engine the tiers read from.
     storage: Arc<StorageLayout>,
+    /// Out of its chart's index for good (D94.1).
+    freed: AtomicBool,
 }
 
 /// `rd->tiers[t]`: a tier's collection (`sch`, `None` for a ram tier and once finalized) and, above tier 0, the
@@ -906,7 +1022,19 @@ struct DimStore {
     backfilled: bool,
 }
 
+/// `rrddim_delete_callback()`'s row deletion: a dbengine dimension without retention, or any dimension of the
+/// other modes (their data lives only in memory).
+fn freed_dimension_deletes(mode: DbMode, has_retention: bool) -> bool {
+    (mode == DbMode::Dbengine && !has_retention)
+        || matches!(mode, DbMode::Ram | DbMode::Alloc | DbMode::None)
+}
+
 impl Dim {
+    /// Whether the dimension was freed (D94.1).
+    pub fn is_freed(&self) -> bool {
+        self.freed.load(Ordering::Acquire)
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -1161,6 +1289,8 @@ pub struct Charts {
     contexts: Arc<Contexts>,
     /// The host's `RRDHOST_FLAG_METADATA_*`.
     host_meta: Arc<AtomicU32>,
+    /// The host's `pending_flags`.
+    host_pending: Arc<AtomicU32>,
     /// The host's storage, which its charts' dimensions keep their points in.
     storage: Arc<StorageLayout>,
     /// The host's GUID, which staggers its charts' pages (D65.1).
@@ -1208,6 +1338,7 @@ impl Charts {
     pub fn new(
         contexts: Arc<Contexts>,
         host_meta: Arc<AtomicU32>,
+        host_pending: Arc<AtomicU32>,
         storage: Arc<StorageLayout>,
         host_guid: &str,
     ) -> Self {
@@ -1215,18 +1346,69 @@ impl Charts {
             inner: RwLock::default(),
             contexts,
             host_meta,
+            host_pending,
             storage,
             host_guid: host_guid.to_string(),
         }
     }
 
-    pub fn find(&self, id: &str) -> Option<Arc<Chart>> {
-        self.inner.read().unwrap_or_else(PoisonError::into_inner).charts.get(id)
+    /// `rrdset_find()`: a chart that is not discoverable only with `include_obsolete`; a chart found touches its last
+    /// accessed time.
+    pub fn find(&self, id: &str, include_obsolete: bool) -> Option<Arc<Chart>> {
+        let chart = self.inner.read().unwrap_or_else(PoisonError::into_inner).charts.get(id)?;
+        if !include_obsolete && !chart.is_discoverable() {
+            return None;
+        }
+        chart.touch_last_accessed();
+        Some(chart)
     }
 
+    /// `rrdset_free()` of an obsolete chart, when `free` still holds under the index lock: the chart leaves the indexes
+    /// and is marked freed (D94.1), then its dimensions and its instance go as C's delete callback takes them. Whether
+    /// it was freed.
+    pub fn free_if(&self, chart: &Arc<Chart>, free: impl FnOnce(&Chart) -> bool) -> bool {
+        {
+            let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+            if chart.is_freed()
+                || !index.charts.get(chart.id()).is_some_and(|c| Arc::ptr_eq(&c, chart))
+                || !free(chart)
+            {
+                return false;
+            }
+            chart.freed.store(true, Ordering::Release);
+            index.charts.remove(chart.id());
+            if let Some(name) = chart.meta().name
+                && index.by_name.get(&name).is_some_and(|id| id == chart.id())
+            {
+                index.by_name.remove(&name);
+            }
+        }
+        chart.freed_contents();
+        true
+    }
+
+    /// `rrdset_index_destroy()`: every chart freed (a host archived or freed).
+    pub fn flush(&self) {
+        let index = std::mem::take(&mut *self.inner.write().unwrap_or_else(PoisonError::into_inner));
+        for chart in index.charts.items() {
+            chart.freed.store(true, Ordering::Release);
+        }
+        for chart in index.charts.items() {
+            chart.freed_contents();
+        }
+    }
+
+    /// `rrdset_find_byname()`: a discoverable chart by name, touched.
     pub fn find_by_name(&self, name: &str) -> Option<Arc<Chart>> {
-        let index = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        index.by_name.get(name).and_then(|id| index.charts.get(id))
+        let chart = {
+            let index = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+            index.by_name.get(name).and_then(|id| index.charts.get(id))?
+        };
+        if !chart.is_discoverable() {
+            return None;
+        }
+        chart.touch_last_accessed();
+        Some(chart)
     }
 
     pub fn all(&self) -> Vec<Arc<Chart>> {
@@ -1242,7 +1424,8 @@ impl Charts {
     /// named. Returns the chart and whether it is new.
     pub fn create(&self, spec: &ChartSpec<'_>) -> (Arc<Chart>, bool) {
         let full_id = bounded(format!("{}.{}", spec.type_, spec.id), ID_LENGTH_MAX);
-        if let Some(existing) = self.find(&full_id) {
+        let existing = self.inner.read().unwrap_or_else(PoisonError::into_inner).charts.get(&full_id);
+        if let Some(existing) = existing {
             existing.isnot_obsolete();
         }
         let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
@@ -1343,6 +1526,9 @@ impl Charts {
                     collection_modulo: self.storage.next_collection_modulo(),
                     name_part: spec.name.filter(|n| !n.is_empty()).map(str::to_string),
                     host_meta: Arc::clone(&self.host_meta),
+                    host_pending: Arc::clone(&self.host_pending),
+                    last_accessed_s: AtomicI64::new(0),
+                    freed: AtomicBool::new(false),
                     labels_saved_version: AtomicU32::new(0),
                     meta: RwLock::new(ChartMeta {
                         name: None,
@@ -1374,7 +1560,8 @@ impl Charts {
             }
         };
         drop(index);
-        // rrdset_react_callback()
+        // rrdset_react_callback(): created or updated, the chart is accessed
+        chart.touch_last_accessed();
         if is_new || plugin_or_module {
             chart.set_metadata_update();
         }
@@ -1506,13 +1693,76 @@ mod tests {
         assert_ne!(chart.meta().flags & flags::HETEROGENEOUS, 0);
     }
 
+    /// The obsolete transitions as the maintenance sweep reads them: a chart raises the host's pending charts bit
+    /// and touches its last accessed time, a dimension raises its chart's and host's obsolete dimensions bits; an
+    /// obsolete chart is found only when obsolete ones are asked for, by id, and a lookup touches it.
+    #[test]
+    fn obsolete_transitions_raise_the_pending_bits_and_hide_the_chart() {
+        let pending = Arc::new(AtomicU32::new(0));
+        let charts = Charts::new(Arc::default(), Arc::default(), Arc::clone(&pending), Arc::default(), "");
+        let (chart, _) = charts.create(&spec("t", "c", Some("named")));
+        assert!(chart.last_accessed_s() > 0, "created: accessed");
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        chart.last_accessed_s.store(1, Ordering::Relaxed);
+        chart.dim_is_obsolete(&dim);
+        assert_ne!(chart.flags() & flags::OBSOLETE_DIMENSIONS, 0);
+        assert_eq!(pending.swap(0, Ordering::AcqRel), pending_flags::OBSOLETE_DIMENSIONS);
+        assert_eq!(chart.last_accessed_s(), 1, "a dimension's transition does not touch");
+        chart.is_obsolete();
+        assert_eq!(pending.swap(0, Ordering::AcqRel), pending_flags::OBSOLETE_CHARTS);
+        assert!(chart.last_accessed_s() > 1, "obsolete: touched");
+        chart.is_obsolete();
+        assert_eq!(pending.load(Ordering::Acquire), 0, "only the transition raises it");
+        assert!(charts.find("t.c", false).is_none());
+        assert!(charts.find_by_name("t.named").is_none());
+        chart.last_accessed_s.store(1, Ordering::Relaxed);
+        assert!(charts.find("t.c", true).is_some_and(|c| c.last_accessed_s() > 1), "found: touched");
+        chart.last_accessed_s.store(1, Ordering::Relaxed);
+        chart.isnot_obsolete();
+        assert!(chart.last_accessed_s() > 1, "back: touched");
+        assert!(charts.find("t.c", false).is_some() && charts.find_by_name("t.named").is_some());
+    }
+
+    /// `rrddim_delete_callback()`: a dbengine row goes only without retention; the other modes' rows always go.
+    #[test]
+    fn freed_dimensions_delete_their_rows_as_c() {
+        for (mode, has_retention, deletes) in [
+            (DbMode::Dbengine, true, false),
+            (DbMode::Dbengine, false, true),
+            (DbMode::Ram, true, true),
+            (DbMode::Alloc, false, true),
+            (DbMode::None, true, true),
+        ] {
+            assert_eq!(
+                freed_dimension_deletes(mode, has_retention),
+                deletes,
+                "{mode:?} {has_retention}"
+            );
+        }
+    }
+
+    /// `rrdset_is_replicating()`: a chart keeps the sender's finished bit without a sender, so a receiver's replication
+    /// in progress does not make an obsolete chart discoverable.
+    #[test]
+    fn a_chart_never_replicates_without_a_sender() {
+        let (chart, _) = Charts::default().create(&spec("t", "c", None));
+        chart.update_meta(|m| {
+            m.flags |= flags::RECEIVER_REPLICATION_IN_PROGRESS | flags::OBSOLETE;
+            m.flags &= !flags::RECEIVER_REPLICATION_FINISHED;
+        });
+        assert!(!flags::is_replicating(chart.flags()));
+        assert!(!chart.is_discoverable());
+        assert!(flags::is_replicating(flags::RECEIVER_REPLICATION_IN_PROGRESS));
+        assert!(flags::is_discoverable(flags::RECEIVER_REPLICATION_IN_PROGRESS | flags::OBSOLETE));
+    }
+
     /// The metadata writer's flags as C raises them: a new chart or dimension, a plugin or module change, a name, a
     /// dimension's name, algorithm, multiplier or divisor, and its `hidden` option against the stored one; not the
     /// other conflict fields. Each raises the host's `UPDATE`.
     #[test]
     fn metadata_flags_follow_cs_setters() {
         let host = Arc::new(AtomicU32::new(0));
-        let charts = Charts::new(Arc::default(), Arc::clone(&host), Arc::default(), "");
+        let charts = Charts::new(Arc::default(), Arc::clone(&host), Arc::default(), Arc::default(), "");
         let take_host = || host.swap(0, Ordering::AcqRel) & meta_flags::UPDATE != 0;
         let (chart, _) = charts.create(&spec("t", "c", Some("named")));
         assert!(chart.take_metadata_update() && take_host(), "new chart");
@@ -1610,7 +1860,7 @@ mod tests {
     #[test]
     fn a_redefinition_compares_sanitized_fields() {
         let host = Arc::new(AtomicU32::new(0));
-        let charts = Charts::new(Arc::default(), Arc::clone(&host), Arc::default(), "");
+        let charts = Charts::new(Arc::default(), Arc::clone(&host), Arc::default(), Arc::default(), "");
         let mut s = spec("t", "c", None);
         s.plugin = " spaced  plugin ";
         s.title = " spaced  title ";

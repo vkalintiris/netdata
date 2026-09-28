@@ -9,7 +9,7 @@ const T: i64 = 1_700_000_000;
 
 fn setup() -> (Arc<Contexts>, Charts) {
     let contexts = Arc::new(Contexts::default());
-    let charts = Charts::new(Arc::clone(&contexts), Arc::default(), Arc::default(), "");
+    let charts = Charts::new(Arc::clone(&contexts), Arc::default(), Arc::default(), Arc::default(), "");
     (contexts, charts)
 }
 
@@ -498,4 +498,73 @@ fn counts_the_tree_as_c_counts_it() {
             metrics: Counts { collected: 2, available: 4 },
         }
     );
+}
+
+/// A freed dimension (the maintenance sweep's `rrddim_free()`): out of its chart and marked freed, its metric
+/// archived and unlinked, its row deleted (a ram dimension leaves no data), the receiver's cache and the RAM index
+/// dropping it; a free whose condition no longer holds, or a second one, does nothing.
+#[test]
+fn a_freed_dimension_leaves_its_chart_and_its_metric() {
+    let contexts = Arc::new(Contexts::default());
+    let storage = Arc::new(crate::storage::StorageLayout::default());
+    let rows = Arc::new(Mutex::new(Vec::new()));
+    storage.set_freed_dimension_hook({
+        let rows = Arc::clone(&rows);
+        move |uuid| rows.lock().unwrap().push(uuid)
+    });
+    let charts = Charts::new(Arc::clone(&contexts), Arc::default(), Arc::default(), storage, "");
+    let (chart, _) = charts.create(&spec("a", "ctx.a", "T", 1000));
+    let (d1, _) = chart.dim_add("d1", None, 1, 1, Algorithm::Absolute);
+    let (d2, _) = chart.dim_add("d2", None, 1, 1, Algorithm::Absolute);
+    collect(&chart, T);
+    collect(&chart, T + 1);
+    contexts.worker_cycle();
+    let rm = d1.contexts().metric().unwrap();
+    assert!(contexts.ram_index().retention_by_id(d1.uuid()).is_some());
+    chart.receiver().prd = vec![Some(Arc::clone(&d1)), Some(Arc::clone(&d2))];
+    assert!(!chart.free_dim_if(&d1, |_| false), "the condition no longer holds");
+    assert!(chart.free_dim_if(&d1, |d| d.id() == "d1"));
+    assert!(!chart.free_dim_if(&d1, |_| true), "freed once");
+    assert!(d1.is_freed() && chart.dim("d1").is_none() && chart.dim("d2").is_some());
+    assert!(rm.dim().is_none() && d1.contexts().metric().is_none() && rm.flags.is_archived());
+    assert_eq!(*rows.lock().unwrap(), vec![*d1.uuid()]);
+    let state = chart.receiver();
+    assert!(state.prd[0].is_none() && state.prd[1].is_some());
+    drop(state);
+    assert!(contexts.ram_index().retention_by_id(d1.uuid()).is_none());
+    // a holder's writes reach no context
+    collected_rrddim(&d1);
+    assert!(d1.contexts().metric().is_none());
+}
+
+/// A freed chart: out of the indexes, its dimensions freed, its instance archived keeping the chart's labels, and no
+/// hook of a holder links it again; created again, it keeps its UUID while its instance is kept (D94.2).
+#[test]
+fn a_freed_chart_archives_its_instance_and_revives_with_its_uuid() {
+    let (contexts, charts) = setup();
+    let mut s = spec("a", "ctx.a", "T", 1000);
+    s.name = Some("named");
+    let (chart, _) = charts.create(&s);
+    chart.update_meta(|m| m.labels.add(b"k", b"v", crate::labels::SRC_AUTO));
+    let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    collect(&chart, T);
+    collect(&chart, T + 1);
+    contexts.worker_cycle();
+    let ri = chart.contexts().instance().unwrap();
+    let uuid = *chart.uuid();
+    assert!(!charts.free_if(&chart, |_| false));
+    assert!(charts.free_if(&chart, |c| c.id() == "t.a"));
+    assert!(!charts.free_if(&chart, |_| true), "freed once");
+    assert!(chart.is_freed() && dim.is_freed());
+    assert!(charts.find("t.a", true).is_none() && charts.find_by_name("t.named").is_none());
+    assert!(ri.chart().is_none() && ri.flags.is_archived() && ri.flags.check(flags::OWN_LABELS));
+    assert_eq!(ri.labels().get(b"k"), Some(&b"v"[..]));
+    assert!(chart.contexts().instance().is_none());
+    chart.metadata_updated();
+    collected_rrdset(&chart);
+    assert!(chart.contexts().instance().is_none(), "no hook links a freed chart again");
+    let (again, is_new) = charts.create(&s);
+    assert!(is_new && !Arc::ptr_eq(&again, &chart));
+    assert_eq!(*again.uuid(), uuid);
+    assert!(charts.find_by_name("t.named").is_some_and(|c| Arc::ptr_eq(&c, &again)));
 }

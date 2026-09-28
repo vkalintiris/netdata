@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use netdata_agent_rrd::chart::{Chart, dim_flags, flags as chart_flags};
+use netdata_agent_rrd::chart::{Chart, dim_flags};
 use netdata_agent_rrd::contexts::{self, Context, Instance, Metric, flags};
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::labels::Labels;
@@ -580,6 +580,13 @@ impl Walk<'_> {
             && instances_ok
             && self.labels.as_ref().is_none_or(|a| a.matches(&ri.labels()))
             && !(self.req.version >= 2 && self.alerts);
+        // query_target_eval_instance_rrdcalc() acquires the chart of a v2 query's queryable instance, which touches it
+        if queryable
+            && self.req.version >= 2
+            && let Some(chart) = ri.chart()
+        {
+            chart.touch_last_accessed();
+        }
         let instance = self.qt.instances.len();
         self.qt.instances.push(QueryInstance {
             context,
@@ -853,11 +860,6 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
     qt
 }
 
-/// Whether a v1 `chart=` names a chart the data API accepts: obsolete charts only while replicating.
-pub fn chart_is_queryable(flags: u32) -> bool {
-    flags & chart_flags::OBSOLETE == 0 || flags & chart_flags::RECEIVER_REPLICATION_IN_PROGRESS != 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1040,7 +1042,7 @@ mod tests {
     #[test]
     fn label_pattern_arrays_follow_c() {
         let h = host();
-        let chart = h.charts().find("t.a").unwrap();
+        let chart = h.charts().find("t.a", true).unwrap();
         chart.update_meta(|m| {
             m.labels
                 .add(b"k", b"v", netdata_agent_rrd::labels::SRC_CONFIG)

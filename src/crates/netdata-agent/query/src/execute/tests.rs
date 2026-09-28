@@ -109,7 +109,7 @@ fn virtual_points_group_the_samples() {
 #[test]
 fn latest_serves_the_last_stored_value() {
     let h = host();
-    let dim = h.charts().find("t.a").unwrap().dim("d").unwrap();
+    let dim = h.charts().find("t.a", true).unwrap().dim("d").unwrap();
     dim.update_collection(|c| c.last_stored_value = -41.5);
     let q = format!("after={T0}&before={}&points=1&group=latest", T0 + 6);
     let (qt, _, r) = run(&h, &q);
@@ -157,7 +157,7 @@ fn latest_serves_the_last_stored_value() {
 fn a_metric_ending_before_the_window_fails() {
     let h = host();
     // `e` ends two seconds before `d`: admission tolerates two update intervals, the plan does not.
-    let chart = h.charts().find("t.a").unwrap();
+    let chart = h.charts().find("t.a", true).unwrap();
     let (e, _) = chart.dim_add("e", None, 1, 1, Algorithm::Absolute);
     for t in T0 + 1..=T0 + 4 {
         e.store_metric(t as u64 * 1_000_000, 1.0, SN_FLAG_NOT_ANOMALOUS);

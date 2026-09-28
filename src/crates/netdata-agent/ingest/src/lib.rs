@@ -411,7 +411,7 @@ impl Parser {
             );
             return None;
         };
-        let chart = self.host.charts().find(&text(id));
+        let chart = self.host.charts().find(&text(id), true);
         if chart.is_none() {
             plog!(
                 self,
@@ -451,7 +451,8 @@ impl Parser {
     ) -> Option<Arc<Chart>> {
         match slot {
             Some(s) if s >= 1 && (s as usize) <= self.chart_slots.len() => {
-                if let Some(chart) = &self.chart_slots[s as usize - 1] {
+                // a chart the maintenance sweep freed stays in the slot until it is looked up again (D94.1)
+                if let Some(chart) = self.chart_slots[s as usize - 1].as_ref().filter(|c| !c.is_freed()) {
                     return Some(Arc::clone(chart));
                 }
                 let chart = self.find_chart(id, keyword)?;

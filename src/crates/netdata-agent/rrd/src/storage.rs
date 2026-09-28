@@ -2,7 +2,7 @@
 //! the dbengine tiers when the engine runs. Brief `knowledge/brief-dbengine-s2-query-map.md` §3 in the status
 //! repository; D64.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
@@ -48,6 +48,17 @@ pub struct StorageLayout {
     extreme_cardinality: ExtremeCardinality,
     /// The counters of the pulse charts.
     pulse: Pulse,
+    /// `metaqueue_delete_dimension_uuid()`: what removes a freed dimension's metadata row, installed by the daemon.
+    freed_dimension_row: OnceLock<DimensionRowHook>,
+}
+
+/// A freed dimension's UUID to the metadata writer.
+struct DimensionRowHook(Box<dyn Fn([u8; 16]) + Send + Sync>);
+
+impl std::fmt::Debug for DimensionRowHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DimensionRowHook")
+    }
 }
 
 impl Default for StorageLayout {
@@ -69,6 +80,19 @@ impl StorageLayout {
             db_rotation: Arc::default(),
             extreme_cardinality: ExtremeCardinality::default(),
             pulse: Pulse::default(),
+            freed_dimension_row: OnceLock::new(),
+        }
+    }
+
+    /// Installs what removes a freed dimension's metadata row; once.
+    pub fn set_freed_dimension_hook(&self, hook: impl Fn([u8; 16]) + Send + Sync + 'static) {
+        let _ = self.freed_dimension_row.set(DimensionRowHook(Box::new(hook)));
+    }
+
+    /// A freed dimension leaves no data behind: its metadata row goes.
+    pub(crate) fn freed_dimension_row(&self, uuid: &[u8; 16]) {
+        if let Some(hook) = self.freed_dimension_row.get() {
+            (hook.0)(*uuid);
         }
     }
 

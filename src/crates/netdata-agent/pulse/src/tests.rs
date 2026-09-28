@@ -315,7 +315,7 @@ fn a_cycle_creates_the_charts_as_c() {
     counters.network.stream_sent(30);
     pulse.cycle();
     let traffic = |id, endpoint| {
-        let chart = host.charts().find(id).unwrap();
+        let chart = host.charts().find(id, true).unwrap();
         assert_eq!(chart.meta().labels.get(b"endpoint"), Some(endpoint), "{id}");
         shape(
             [
@@ -363,7 +363,7 @@ fn response_time_as_c() {
     let mut pulse = pulse(&hosts, Gates::default());
     let web = &host.storage().pulse().web;
     let collected = || {
-        let chart = host.charts().find("netdata.response_time").unwrap();
+        let chart = host.charts().find("netdata.response_time", true).unwrap();
         let value = |id| chart.dim(id).unwrap().collection().last_collected_value;
         (value("average"), value("max"))
     };
@@ -377,7 +377,7 @@ fn response_time_as_c() {
     assert_eq!(collected(), (3000, 3000));
     web.client_connected();
     pulse.cycle();
-    let clients = host.charts().find("netdata.clients").unwrap();
+    let clients = host.charts().find("netdata.clients", true).unwrap();
     assert_eq!(
         clients
             .dim("clients")
@@ -398,7 +398,7 @@ fn the_stored_points_per_tier() {
     netdata_agent_rrd::pulse::point_stored(0);
     host.storage().pulse().ingestion.collection_completed(1);
     pulse.cycle();
-    let chart = host.charts().find("netdata.db_samples_collected").unwrap();
+    let chart = host.charts().find("netdata.db_samples_collected", true).unwrap();
     assert_eq!(
         chart
             .dim("tier0")
@@ -411,7 +411,7 @@ fn the_stored_points_per_tier() {
 
 /// The last collected value of each dimension of a chart, in order.
 fn values(host: &Host, id: &str) -> Vec<(String, i64)> {
-    let chart = host.charts().find(id).unwrap();
+    let chart = host.charts().find(id, true).unwrap();
     chart
         .dims()
         .iter()
@@ -497,7 +497,7 @@ fn a_parent_charts_its_children() {
     );
     let inbound = host
         .charts()
-        .find("netdata.netdata.streaming_inbound_ephemeral")
+        .find("netdata.netdata.streaming_inbound_ephemeral", true)
         .unwrap();
     let m = inbound.meta();
     assert_eq!(
@@ -536,7 +536,7 @@ fn a_parent_charts_its_children() {
     assert_eq!(values(host, &state), one_hot("running"));
     let traffic = host
         .charts()
-        .find(&format!("netdata.streaming.in.traffic.{CHILD}"))
+        .find(&format!("netdata.streaming.in.traffic.{CHILD}"), true)
         .unwrap();
     let m = traffic.meta();
     let labels: Vec<(Vec<u8>, Vec<u8>)> = m
@@ -588,7 +588,7 @@ fn a_parent_charts_its_children() {
     let label_version = traffic.meta().labels.version();
     let connections = host
         .charts()
-        .find(&format!("netdata.streaming.in.reconnects.{CHILD}"))
+        .find(&format!("netdata.streaming.in.reconnects.{CHILD}"), true)
         .unwrap()
         .dim("connections")
         .unwrap();
@@ -615,7 +615,7 @@ fn a_parent_charts_its_children() {
     child.update_labels(|l| l.add(b"rack", b"r1", SRC_CONFIG));
     pulse.cycle();
     for id in per_child(CHILD) {
-        let chart = host.charts().find(&id).unwrap();
+        let chart = host.charts().find(&id, true).unwrap();
         assert_eq!(chart.meta().labels.get(b"rack"), Some(&b"r1"[..]), "{id}");
     }
 }
@@ -717,7 +717,7 @@ fn the_dbengine_tiers_retention() {
     let host = hosts.localhost();
     for tier in 0..2 {
         let id = format!("netdata.dbengine_retention_tier{tier}");
-        let chart = host.charts().find(&id).unwrap();
+        let chart = host.charts().find(&id, true).unwrap();
         let m = chart.meta();
         assert_eq!(
             (
@@ -767,12 +767,12 @@ fn the_dbengine_tiers_retention() {
     let host = hosts.localhost();
     assert!(
         host.charts()
-            .find("netdata.dbengine_retention_tier0")
+            .find("netdata.dbengine_retention_tier0", true)
             .is_none()
     );
     assert!(
         host.charts()
-            .find("netdata.dbengine_retention_tier1")
+            .find("netdata.dbengine_retention_tier1", true)
             .is_some()
     );
 }
@@ -823,7 +823,7 @@ fn the_out_of_memory_protection() {
         hosts
             .localhost()
             .charts()
-            .find("netdata.out_of_memory_protection")
+            .find("netdata.out_of_memory_protection", true)
             .map(|chart| {
                 let m = chart.meta();
                 assert_eq!(
@@ -877,7 +877,7 @@ fn the_out_of_memory_protection() {
         hosts
             .localhost()
             .charts()
-            .find("netdata.out_of_memory_protection")
+            .find("netdata.out_of_memory_protection", true)
             .is_some()
     };
     pulse.cycle();
