@@ -68,11 +68,18 @@ pub fn system_cpus(root: &Path) -> i64 {
     }
 }
 
-/// `read_txt_file()` into a 4 KiB buffer: at most 4095 bytes, trailing newline kept.
+/// `read_txt_file()` into a buffer of `size` bytes: one read of at most `size - 1`, trailing newline kept.
+pub fn read_txt_file(path: impl AsRef<Path>, size: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = vec![0; size.saturating_sub(1)];
+    let n = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
+    buf.truncate(n);
+    Some(buf)
+}
+
+/// `read_txt_file()` into a 4 KiB buffer.
 fn read_txt(path: &Path) -> Option<Vec<u8>> {
-    let mut data = std::fs::read(path).ok()?;
-    data.truncate(4095);
-    Some(data)
+    read_txt_file(path, 4096)
 }
 
 /// `os_read_cpuset_cpus()`: the CPUs a cpuset list (`0-3,8,10-11`) allows, 0 when unreadable or malformed. As in C,

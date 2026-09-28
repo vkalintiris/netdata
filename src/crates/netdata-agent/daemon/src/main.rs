@@ -1125,6 +1125,8 @@ fn signal_loop(handled: &SigSet) -> i32 {
         let save_again = threshold_trigger_smaller(t1, 1.0, 1.0, free)
             || threshold_trigger_smaller(t5, 5.0, 1.0, free)
             || threshold_trigger_smaller(t10, 10.0, 1.0, free);
+        // after a threshold's save C's `last += 15 min` passes now, and the difference wraps: from then on every loop
+        // saves (DEFECTS), as here
         if startup::now_ut().wrapping_sub(last_update_mt) >= SAVE_EVERY_UT || save_again {
             status_file::update_status(status_file::DaemonStatus::None);
             last_update_mt += SAVE_EVERY_UT;

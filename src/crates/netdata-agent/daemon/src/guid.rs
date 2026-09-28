@@ -47,7 +47,7 @@ const BLACKLISTED: [&str; 27] = [
     "8e45bc30-0dc7-11f0-8e50-0242ac110002",
 ];
 
-fn canonical(uuid: &[u8; 16]) -> String {
+pub(crate) fn canonical(uuid: &[u8; 16]) -> String {
     let mut text = Vec::with_capacity(36);
     print_uuid_lower(&mut text, uuid);
     String::from_utf8_lossy(&text).into_owned()

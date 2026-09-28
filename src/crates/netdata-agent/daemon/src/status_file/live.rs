@@ -4,7 +4,6 @@
 //! `knowledge/map-status-file-refresh-inputs.md` in the status repository.
 
 use std::collections::HashSet;
-use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -14,7 +13,6 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_rrd::host::Host;
 use netdata_agent_text::parse::uuid_parse_flexi;
-use netdata_agent_text::print::print_uuid_lower;
 use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatternMode};
 
 use super::{DaemonStatus, DiskSpace, HostId, OsType, StatusFile, cloud_status, db_mode, exit_reason, rfc3339};
@@ -74,13 +72,6 @@ fn now_realtime_ut() -> u64 {
     crate::rrdcontext::now_realtime_ut()
 }
 
-/// `read_txt_file()`: one read of at most `size - 1` bytes.
-pub(super) fn read_txt_file(path: impl AsRef<Path>, size: usize) -> Option<Vec<u8>> {
-    let mut buf = vec![0; size - 1];
-    let n = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
-    buf.truncate(n);
-    Some(buf)
-}
 
 /// `trim()`: whitespace at both ends.
 fn trim(text: &[u8]) -> &[u8] {
@@ -103,20 +94,15 @@ fn from_halves(hi: u64, lo: u64) -> [u8; 16] {
     uuid
 }
 
-fn uuid_text(uuid: &[u8; 16]) -> String {
-    let mut text = Vec::with_capacity(36);
-    print_uuid_lower(&mut text, uuid);
-    String::from_utf8_lossy(&text).into_owned()
-}
 
 /// `os_machine_id()`: systemd's machine id, D-Bus's, or the DMI product UUID; `NO_MACHINE_ID` without one.
 pub fn machine_id() -> [u8; 16] {
     let found = ["/etc/machine-id", "/var/lib/dbus/machine-id", "/sys/class/dmi/id/product_uuid"]
         .iter()
-        .find_map(|path| read_txt_file(path, 128).and_then(|text| uuid_parse_flexi(trim(&text))));
+        .find_map(|path| system::read_txt_file(path, 128).and_then(|text| uuid_parse_flexi(trim(&text))));
     match found {
         Some(id) => {
-            nd_log!(Source::Daemon, Priority::Notice, "OS_MACHINE_ID: machine ID found '{}'", uuid_text(&id));
+            nd_log!(Source::Daemon, Priority::Notice, "OS_MACHINE_ID: machine ID found '{}'", guid::canonical(&id));
             id
         }
         None => {
@@ -134,7 +120,7 @@ pub fn install_type(user_config_dir: &str) -> Option<String> {
 /// `os_boot_id()`: the kernel's boot id; without it, the boot time in seconds as the lower half.
 pub fn boot_id() -> [u8; 16] {
     if let Some(id) =
-        read_txt_file("/proc/sys/kernel/random/boot_id", 37).and_then(|text| uuid_parse_flexi(trim(&text)))
+        system::read_txt_file("/proc/sys/kernel/random/boot_id", 37).and_then(|text| uuid_parse_flexi(trim(&text)))
     {
         return id;
     }
@@ -176,12 +162,12 @@ pub fn system_cpus() -> u64 {
 
 /// `os_process_memory(0)`: the peak resident size (`VmHWM`) in bytes, when the resident size is known.
 fn max_rss() -> Option<u64> {
-    let statm = read_txt_file("/proc/self/statm", 4097)?;
+    let statm = system::read_txt_file("/proc/self/statm", 4097)?;
     let resident: u64 = std::str::from_utf8(&statm).ok()?.split_whitespace().nth(1)?.parse().ok()?;
     if resident == 0 {
         return None;
     }
-    let status = read_txt_file("/proc/self/status", 4097).unwrap_or_default();
+    let status = system::read_txt_file("/proc/self/status", 4097).unwrap_or_default();
     let status = String::from_utf8_lossy(&status);
     let hwm = status.find("VmHWM:").map_or(0, |at| {
         let rest = status[at + 6..].trim_start();
@@ -373,7 +359,7 @@ mod tests {
         assert!(!boot_ids_match(&a, &from_halves(0, 1_004)));
         assert!(!boot_ids_match(&from_halves(7, 1_000), &from_halves(7, 1_001)));
         assert!(boot_ids_match(&[9; 16], &[9; 16]));
-        assert_eq!(uuid_text(&from_halves(1, 1)).replace('-', "").len(), 32);
+        assert_eq!(guid::canonical(&from_halves(1, 1)).replace('-', "").len(), 32);
     }
 
     /// `dir_size()`'s rules: apparent sizes, paths relative to the root, no symlinks, `-wal` files are "other".

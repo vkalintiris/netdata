@@ -637,14 +637,23 @@ func (d *Daemon) Kill() error {
 	if d.process == nil {
 		return nil
 	}
+	killWait := d.killTimeout
+	if killWait <= 0 {
+		killWait = defaultKillWait
+	}
 	killErr := d.process.Kill()
 	if errors.Is(killErr, os.ErrProcessDone) {
 		killErr = nil
 	}
-	<-d.waitCh
-	d.process = nil
-	d.processPID = 0
-	return killErr
+	select {
+	case <-d.waitCh:
+		d.process = nil
+		d.processPID = 0
+		return killErr
+	case <-time.After(killWait):
+		return errors.Join(killErr, fmt.Errorf("daemon: process PID %d did not deliver reap result within %s after SIGKILL",
+			d.processPID, killWait))
+	}
 }
 
 // WaitExit waits for a daemon that exits by itself (a shutdown command, a fatal error) and returns its exit status.

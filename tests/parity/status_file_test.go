@@ -18,7 +18,7 @@ import (
 // zeros until they are ported (D88.6), which the mask hides too.
 var statusVolatile = []Mask{
 	{"@timestamp", "clock"},
-	{"agent.since", "the GUID file's modification time"},
+	{"agent.since", "the GUID file's modification time (checked against each side's file)"},
 	{"agent.ephemeral_id", "invocation id"},
 	{"agent.uptime", "clock"},
 	{"agent.pid", "process"},
@@ -35,7 +35,6 @@ var statusVolatile = []Mask{
 // statusDifferences are what C and the Rust agent write differently, each with its reason.
 var statusDifferences = []Mask{
 	{"agent.stack_traces", "no libbacktrace (D87 F3)"},
-	{"host.memory.oom_protection", "not verified equal"},
 }
 
 // stepDurations are the shutdown steps' durations in the stack trace's timings.
@@ -84,12 +83,27 @@ func compareStatusFiles(t *testing.T, stage string, p *Pair, both bool) [2]Value
 	}
 	var files [2]Value
 	for i, side := range p.Each() {
-		files[i] = ApplyMasks(statusFile(t, side.Daemon), masks)
+		f := statusFile(t, side.Daemon)
+		checkSince(t, stage, side.Role, side.Daemon, f)
+		files[i] = ApplyMasks(f, masks)
 	}
 	for _, d := range Compare(files[0], files[1]) {
 		t.Errorf("%s: %s", stage, d)
 	}
 	return files
+}
+
+// checkSince checks `agent.since` against the daemon's GUID file: its modification time, centiseconds truncated.
+func checkSince(t *testing.T, stage string, role Role, d *daemon.Daemon, f Value) {
+	t.Helper()
+	st, err := os.Stat(filepath.Join(d.Opts.RunDir, "lib", "registry", "netdata.public.unique.id"))
+	if err != nil {
+		t.Fatalf("parity: %v", err)
+	}
+	want := `"` + st.ModTime().UTC().Format("2006-01-02T15:04:05.00") + `Z"`
+	if got := statusMember(f, "agent.since"); got != want {
+		t.Errorf("%s: %s: agent.since %s, want the GUID file's %s", stage, role, got, want)
+	}
 }
 
 // lastExit is the "Last exit status" line of the daemon's latest start.

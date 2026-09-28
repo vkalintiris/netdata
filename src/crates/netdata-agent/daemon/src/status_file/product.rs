@@ -282,7 +282,7 @@ fn is_server_hardware(prefix: &str) -> bool {
     }
     let packages: HashSet<Vec<u8>> = numbered(&root.join("sys/devices/system/cpu"), "cpu")
         .iter()
-        .filter_map(|cpu| super::live::read_txt_file(cpu.join("topology/physical_package_id"), 64))
+        .filter_map(|cpu| crate::system::read_txt_file(cpu.join("topology/physical_package_id"), 64))
         .filter(|id| !id.is_empty())
         .collect();
     packages.len() > 1

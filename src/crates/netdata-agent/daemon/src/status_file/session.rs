@@ -135,11 +135,12 @@ fn carry_over(s: &mut StatusFile, last: &StatusFile) {
     s.restarts = last.restarts.wrapping_add(1);
     s.crashes = last.crashes;
     s.reliability = last.reliability;
+    // C's signed arithmetic, as its builds wrap
     if has_crashed(last) {
         s.crashes = s.crashes.wrapping_add(1);
-        s.reliability = s.reliability.min(0) - 1;
+        s.reliability = s.reliability.min(0).wrapping_sub(1);
     } else {
-        s.reliability = s.reliability.max(0) + 1;
+        s.reliability = s.reliability.max(0).wrapping_add(1);
     }
 }
 

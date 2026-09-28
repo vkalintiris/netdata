@@ -85,7 +85,7 @@ fn read_field<const N: usize>(root: &Path, field: &str, alt: Option<&str>, dst: 
     let Some(path) = candidates.iter().chain(alt.as_ref()).find(|p| readable(p)) else {
         return;
     };
-    let Some(text) = super::live::read_txt_file(path, 256) else {
+    let Some(text) = crate::system::read_txt_file(path, 256) else {
         return;
     };
     dst.set(clean_field(&text));

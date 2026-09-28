@@ -84,7 +84,9 @@ pub fn set_work(work: Work) {
 }
 
 /// `netdata_exit_gracefully()`: the reason is added, then the first graceful exit runs the exit sequence with the
-/// daemon's work (true); a later one only adds its reason and its caller carries on (false).
+/// daemon's work (true); a later one only adds its reason and its caller carries on (false). Added before the
+/// sequence sets it, the reason keeps `exit_reason::set()` from detecting a system shutdown or an update, as in C
+/// (DEFECTS).
 pub fn exit_gracefully(reason: u32) -> bool {
     exit_reason::add(reason);
     if GRACEFUL.swap(true, Ordering::AcqRel) {
