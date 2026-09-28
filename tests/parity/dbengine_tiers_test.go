@@ -3,11 +3,13 @@
 package parity
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -234,8 +236,13 @@ func compareTierRecords(t *testing.T, caches [2]string, names [2]map[string]stri
 func tierFiles(t *testing.T, cache string) string {
 	t.Helper()
 	var all []string
-	for _, dir := range []string{"dbengine", "dbengine-tier1", "dbengine-tier2"} {
-		entries, err := os.ReadDir(filepath.Join(cache, dir))
+	dirs, err := filepath.Glob(filepath.Join(cache, "dbengine*"))
+	if err != nil || len(dirs) == 0 {
+		t.Fatalf("%s: no tier directory", cache)
+	}
+	for _, path := range dirs {
+		dir := filepath.Base(path)
+		entries, err := os.ReadDir(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -246,6 +253,27 @@ func tierFiles(t *testing.T, cache string) string {
 		}
 	}
 	sort.Strings(all)
+	return strings.Join(all, " ")
+}
+
+// tierHashes are the SHA-256 digests of every file of the tiers' directories of a cache.
+func tierHashes(t *testing.T, cache string, tiers ...int) string {
+	t.Helper()
+	var all []string
+	for _, tier := range tiers {
+		dir := filepath.Join(cache, fmt.Sprintf("dbengine-tier%d", tier))
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			all = append(all, fmt.Sprintf("tier%d/%s %x", tier, e.Name(), sha256.Sum256(b)))
+		}
+	}
 	return strings.Join(all, " ")
 }
 
@@ -306,6 +334,86 @@ func TestDbengineTiers(t *testing.T) {
 		h := startPair(t, opts, parentIdentity, [2]string{oracle, oracle}, copyCaches(t, caches),
 			[2]Role{"handback-oracle", "handback-candidate"})
 		g.compareTierWindows(t, h, end)
+	})
+	// each side restarts on its own cache: the median start time is of its own earlier starts
+	restartMasks := append([]logMask{{regexp.MustCompile(`(median start up time is )\d+( ms)`), "${1}N${2}"}},
+		writeLogMasks...)
+	// fewer tiers (S7a, D93): tiers 1 and 2 are neither read nor touched, every tier asked for and the planner answer
+	// from tier 0 alone; back at three tiers the windows read as before
+	t.Run("tiers-lower", func(t *testing.T) {
+		o := opts
+		o.StorageTiers = 1
+		o.TierRetentionMB = [3]int{25}
+		seeds := copyCaches(t, caches)
+		var before [2]string
+		for i := range seeds {
+			before[i] = tierHashes(t, seeds[i], 1, 2)
+		}
+		l := startPair(t, o, parentIdentity, binaries(t), seeds, [2]Role{"lower-oracle", "lower-candidate"})
+		g.compareTierWindows(t, l, end)
+		for _, side := range l.Each() {
+			if err := side.Daemon.Stop(); err != nil {
+				t.Fatalf("stop %s: %v", side.Role, err)
+			}
+		}
+		compareLogFilesWith(t, l, restartMasks, "daemon.log")
+		lowered := [2]string{filepath.Join(l.Oracle.Opts.RunDir, "cache"), filepath.Join(l.Candidate.Opts.RunDir, "cache")}
+		for i, side := range l.Each() {
+			if got := tierHashes(t, lowered[i], 1, 2); got != before[i] {
+				t.Errorf("%s: one tier changed the files of tiers 1 and 2", side.Role)
+			}
+		}
+		r := startPair(t, opts, parentIdentity, binaries(t), lowered, [2]Role{"restore-oracle", "restore-candidate"})
+		g.compareTierWindows(t, r, end)
+	})
+	// more tiers: the new ones start with their first pair, the others read as before
+	t.Run("tiers-raise", func(t *testing.T) {
+		o := opts
+		o.StorageTiers = 5
+		o.DBExtra = "    dbengine tier 3 retention size = 25MiB\n    dbengine tier 4 retention size = 25MiB\n"
+		r := startPair(t, o, parentIdentity, binaries(t), copyCaches(t, caches), [2]Role{"raise-oracle", "raise-candidate"})
+		g.compareTierWindows(t, r, end)
+		for _, side := range r.Each() {
+			if err := side.Daemon.Stop(); err != nil {
+				t.Fatalf("stop %s: %v", side.Role, err)
+			}
+		}
+		compareLogFilesWith(t, r, restartMasks, "daemon.log")
+		raised := [2]string{filepath.Join(r.Oracle.Opts.RunDir, "cache"), filepath.Join(r.Candidate.Opts.RunDir, "cache")}
+		if o, c := tierFiles(t, raised[0]), tierFiles(t, raised[1]); o != c {
+			t.Errorf("files:\noracle:    %s\ncandidate: %s", o, c)
+		}
+	})
+	// a new tier with full backfill: once the child resumes, tier 3 fills from tier 2 as C fills it
+	t.Run("tiers-raise-backfill-full", func(t *testing.T) {
+		o := opts
+		o.StorageTiers = 4
+		o.DBExtra = "    dbengine tier 3 retention size = 25MiB\n    dbengine tier backfill = full\n"
+		b := startPair(t, o, parentIdentity, binaries(t), copyCaches(t, caches),
+			[2]Role{"raise-full-oracle", "raise-full-candidate"})
+		s4gen{start: g.start, dims: s4Dims}.child().streamBoth(t, b, end+1001, end+1900)
+		var bnames [2]map[string]string
+		for i, side := range b.Each() {
+			bnames[i] = tierUUIDs(t, side.Daemon, s4child.Hostname)
+		}
+		for _, side := range b.Each() {
+			if err := side.Daemon.Stop(); err != nil {
+				t.Fatalf("stop %s: %v", side.Role, err)
+			}
+		}
+		raised := [2]string{filepath.Join(b.Oracle.Opts.RunDir, "cache"), filepath.Join(b.Candidate.Opts.RunDir, "cache")}
+		compareTierRecords(t, raised, bnames)
+		recs, _ := tierRecords(t, raised[0], bnames[0])
+		tier3 := 0
+		for k, r := range recs {
+			if strings.HasPrefix(k, "3 ") {
+				tier3 += len(r)
+			}
+		}
+		if tier3 == 0 {
+			t.Errorf("the oracle backfilled no tier-3 record")
+		}
+		t.Logf("tier-3 records with a value: %d", tier3)
 	})
 	// after a restart the child resumes 1,000 s later (under one tier-2 window) with a sixth dimension per chart:
 	// each mode backfills, or not, what the restart lost, and full backfills the new dimensions too
