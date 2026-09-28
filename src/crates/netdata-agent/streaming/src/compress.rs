@@ -124,6 +124,11 @@ impl Compressor {
         self.level
     }
 
+    /// The first `len` bytes of the last message `compress()` produced.
+    pub fn output(&self, len: usize) -> &[u8] {
+        &self.output[..len]
+    }
+
     /// `stream_compress()`: `piece`'s message (without its signature), or `None` after C's record: the engine failed,
     /// produced nothing, or more than a message may carry.
     pub fn compress(&mut self, piece: &[u8]) -> Option<&[u8]> {

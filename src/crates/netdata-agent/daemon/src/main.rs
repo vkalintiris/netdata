@@ -757,6 +757,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 user_agent: format!("{}/{}", info.program_name, info.program_version),
                 update_every: db.update_every,
             },
+            hosts.localhost(),
             stream_pool.handle(),
             Arc::clone(&stream_pins),
             conf.threads.thread_stack_size,
@@ -765,6 +766,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     netdata_agent_streaming::sender::Sender::attach(hosts.localhost(), &connector);
     // stream_conf_is_parent() and stream_conf_is_child(), which PULSE reads
     let (stream_is_parent, stream_is_child) = (stream_conf.is_parent, stream_conf.send.enabled);
+    // [db] replication threads, which REPLAY[1] starts
+    let replication_threads = stream_conf.send.replication_threads.max(1) as usize;
     // netdata_ssl_validate_certificate_sender, which the web server's thread reads
     let senders_validate = stream_conf.send.ssl_validate_certificate;
     let receivers = Arc::new(Receivers::new(
@@ -863,6 +866,21 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         build_info,
         cloud_conf_file: conf.cloud_conf_filename(),
         cloud_conf: std::sync::Mutex::new(std::mem::take(&mut conf.cloud)),
+    });
+    // what a parent's NODE_ID may change here: the agent is never claimed (D61.3), so the Cloud URL follows the parent
+    connector.set_env(netdata_agent_streaming::connector::Env {
+        claimed: Box::new(|| false),
+        aclk_online: Box::new(|| false),
+        set_cloud_url: {
+            let shared = Arc::clone(&shared);
+            Box::new(move |url| {
+                // cloud_config_url_set(): only a different URL is stored
+                let mut cloud = shared.cloud_conf();
+                if cloud::url(&mut cloud) != url.as_bytes() {
+                    cloud.set(netdata_agent_inicfg::SECTION_GLOBAL, "url", url);
+                }
+            })
+        },
     });
     // HEALTH, before PULSE in C's table, which starts it with health off too (D93.2); C carries on without it
     let health_thread = match health::spawn(
@@ -992,6 +1010,17 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             return 1;
         }
     };
+    // REPLAY[1], after RRDCONTEXT in C's table; C carries on without it
+    let replication = match netdata_agent_streaming::replication::ReplicationThreads::spawn(
+        replication_threads,
+        conf.threads.thread_stack_size,
+    ) {
+        Ok(threads) => Some(threads),
+        Err(err) => {
+            nd_log!(Source::Daemon, Priority::Err, "{err}");
+            None
+        }
+    };
     // BACKFILL: a parent's static thread (the profile alone decides, as C's enable_routine)
     let backfill_thread = if profile == profile::Profile::Parent {
         match backfill::Thread::spawn(
@@ -1027,6 +1056,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let mut pulse_thread = pulse_thread;
     let mut health_thread = health_thread;
     let mut backfill_thread = backfill_thread;
+    let mut replication = replication;
     let mut meta = meta;
     let mut context_db = context_db;
     let mut metasync = Some(metasync);
@@ -1042,9 +1072,13 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             }
         }
         // the dirty pages again once the collectors and streams stopped
-        shutdown::STOP_REPLICATION if normal => {
-            if let Some(dbengine) = &dbengine {
+        shutdown::STOP_REPLICATION => {
+            if let (Some(dbengine), true) = (&dbengine, normal) {
                 dbengine.flush_everything(false, false, true);
+            }
+            // service_wait_exit(SERVICE_REPLICATION, 5 s)
+            if let Some(threads) = replication.take() {
+                threads.stop_within(shutdown::REPLICATION_WAIT);
             }
         }
         // the exporters, HEALTH and the web servers under one service wait

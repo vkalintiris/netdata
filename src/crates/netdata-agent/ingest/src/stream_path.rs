@@ -205,15 +205,16 @@ pub fn self_entry(host: &Host, localhost: &Host, first_time_t: Option<i64>) -> P
         since,
         first_time_t: first_time_t.unwrap_or_else(|| host.contexts().retention().0),
         flags,
-        capabilities: our_capabilities(receiver.map_or(0, |slot| slot.link.capabilities)),
+        capabilities: our_capabilities(receiver.map_or(0, |slot| slot.link.capabilities))
+            & !host.upstream().map_or(0, |u| u.disabled_capabilities()),
         // the medians of the agent event log
         start_time_ms: (agent_event_medians_us().0 / 1000) as u32,
         shutdown_time_ms: (agent_event_medians_us().1 / 1000) as u32,
     }
 }
 
-/// `stream_our_capabilities(host, true)` without ML and without a sender for the host: MLMODELS stays only when
-/// the child's receiver negotiated it.
+/// `stream_our_capabilities(host, true)` without ML, before the host's sender's disabled capabilities: MLMODELS stays
+/// only when the child's receiver negotiated it.
 fn our_capabilities(negotiated: u32) -> u32 {
     let mut ours = caps::ours(caps::GLOBALLY_DISABLED);
     if negotiated & caps::ML_MODELS == 0 {

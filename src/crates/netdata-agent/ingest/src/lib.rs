@@ -1539,31 +1539,10 @@ impl Parser {
         self.host.count_replication_request();
     }
 
-    /// `stream_parse_enable_streaming()`.
+    /// `stream_parse_enable_streaming()` under the parser's frame.
     fn parse_enable_streaming(&self, v: Option<&[u8]>) -> bool {
-        match v {
-            None | Some(b"") => {
-                plog!(
-                    self,
-                    Source::Daemon,
-                    Priority::Err,
-                    "REPLAY: malformed start_streaming boolean value empty"
-                );
-                false
-            }
-            Some(b"false") => false,
-            Some(b"true") => true,
-            Some(other) => {
-                plog!(
-                    self,
-                    Source::Daemon,
-                    Priority::Err,
-                    "REPLAY: malformed start_streaming boolean value '{}'",
-                    text(other)
-                );
-                false
-            }
-        }
+        let _frame = self.log_frame();
+        parse_enable_streaming(v)
     }
 
     /// `pluginsd_replay_begin()`.
@@ -1932,5 +1911,27 @@ fn retention_for_collected_chart(chart: &Chart, now: i64) -> (i64, i64) {
     (first, last)
 }
 
+
+/// `stream_parse_enable_streaming()`: REPLAY_CHART's start flag, "true" or "false"; anything else is false after C's
+/// record.
+pub fn parse_enable_streaming(v: Option<&[u8]>) -> bool {
+    match v {
+        None | Some(b"") => {
+            nd_log!(Source::Daemon, Priority::Err, "REPLAY: malformed start_streaming boolean value empty");
+            false
+        }
+        Some(b"false") => false,
+        Some(b"true") => true,
+        Some(other) => {
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "REPLAY: malformed start_streaming boolean value '{}'",
+                text(other)
+            );
+            false
+        }
+    }
+}
 #[cfg(test)]
 mod tests;

@@ -38,6 +38,15 @@ impl Words {
         ))
     }
 
+    /// `quoted_strings_splitter_whitespace()`: the words of a line a stream sender receives.
+    pub fn split_whitespace(line: &[u8]) -> Self {
+        Words(quoted_strings_splitter(
+            line,
+            PLUGINSD_MAX_WORDS,
+            Separators::Whitespace,
+        ))
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }

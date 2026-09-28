@@ -644,6 +644,15 @@ pub fn strtoll10(s: &[u8]) -> (i64, usize, bool) {
     (value, used, erange)
 }
 
+/// `strtol(s, &end, 16)` in the "C" locale: as [`strtoll10`] in base 16, with an optional `0x`.
+pub fn strtoll16(s: &[u8]) -> (i64, usize, bool) {
+    let Some((negative, magnitude, overflow, used)) = scan_base(s, 16) else {
+        return (0, 0, false);
+    };
+    let (value, erange) = clamp_signed(negative, magnitude, overflow);
+    (value, used, erange)
+}
+
 /// A signed result of a scan: out-of-range magnitudes clamp to `i64::MAX` or `i64::MIN` (the `bool` is ERANGE).
 fn clamp_signed(negative: bool, magnitude: u64, overflow: bool) -> (i64, bool) {
     let limit: u64 = if negative {

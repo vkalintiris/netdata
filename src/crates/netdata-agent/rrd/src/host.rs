@@ -278,6 +278,8 @@ pub mod sender_flags {
 pub trait Upstream: Send + Sync + std::fmt::Debug {
     /// `stream_sender_start_host()`: queue the host for its parents.
     fn start(&self);
+    /// `sender->disabled_capabilities`, which `stream_our_capabilities(host, true)` leaves out.
+    fn disabled_capabilities(&self) -> u32;
 }
 
 /// `struct rrdhost`.
@@ -311,6 +313,8 @@ pub struct Host {
     labels: RwLock<Labels>,
     /// The claim id a child reported (`CLAIMED_ID`), zero when unclaimed.
     claim_id_of_origin: RwLock<[u8; 16]>,
+    /// `host->aclk.claim_id_of_parent`: the claim id the parent sent with NODE_ID, zero when none.
+    claim_id_of_parent: RwLock<[u8; 16]>,
     /// Host variables (`VARIABLE HOST`), used by health.
     variables: Mutex<HashMap<String, f64>>,
     /// The functions registered for this host (`rrdhost_nrpc_owner()`).
@@ -477,6 +481,7 @@ impl Host {
             contexts,
             labels: RwLock::new(Labels::default()),
             claim_id_of_origin: RwLock::new([0; 16]),
+            claim_id_of_parent: RwLock::new([0; 16]),
             variables: Mutex::new(HashMap::new()),
             functions: Registry::default(),
             replication_percent: AtomicU64::new(100f64.to_bits()),
@@ -837,6 +842,21 @@ impl Host {
         (id != [0; 16]).then_some(id)
     }
 
+    /// `rrdhost_claim_id_of_parent_get()`.
+    pub fn claim_id_of_parent(&self) -> [u8; 16] {
+        *self.claim_id_of_parent.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `rrdhost_claim_id_of_parent_update()`: the previous id when it changed.
+    pub fn update_claim_id_of_parent(&self, id: [u8; 16]) -> Option<[u8; 16]> {
+        let mut current = self.claim_id_of_parent.write().unwrap_or_else(PoisonError::into_inner);
+        let previous = *current;
+        (previous != id).then(|| {
+            *current = id;
+            previous
+        })
+    }
+
     /// `rrdhost_claim_id_of_origin_set()`.
     pub fn set_claim_id_of_origin(&self, id: [u8; 16]) {
         *self
@@ -848,6 +868,11 @@ impl Host {
     /// `rrdvar_host_variable_set()`.
     pub fn set_variable(&self, name: &str, value: f64) {
         lock(&self.variables).insert(name.to_string(), value);
+    }
+
+    /// The host variables, for `VARIABLE HOST` (C walks them in insertion order; commit 5 orders them, D104.5).
+    pub fn variables(&self) -> Vec<(String, f64)> {
+        lock(&self.variables).iter().map(|(k, v)| (k.clone(), *v)).collect()
     }
 
     /// `host->rrdset_root_index`.

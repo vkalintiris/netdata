@@ -8,9 +8,8 @@ use std::collections::HashMap;
 use netdata_agent_log::Priority;
 
 use crate::connect_to::{NdSock, Thread, log_errno};
+use crate::parents::HTTP_HEADER_SIZE;
 
-/// `HTTP_HEADER_SIZE`.
-const HTTP_HEADER_SIZE: usize = 8192;
 /// `HTTP_HDR_BUFFER_SIZE`.
 const HDR_BUFFER_SIZE: usize = 1024;
 /// The prelude's send and receive timeouts: `nd_sock_*_timeout()` take seconds, so C's 1000 is 1000 s.
@@ -53,8 +52,7 @@ impl<'a> Response<'a> {
 
     /// `rbuf_find_bytes()`: the offset from the tail of the first `needle`.
     fn find(&self, needle: &[u8]) -> Option<usize> {
-        let rest = self.available();
-        (0..rest.len()).find(|&i| rest[i..].starts_with(needle))
+        netdata_agent_text::c::find(self.available(), needle)
     }
 
     /// `rbuf_pop()`.
@@ -117,25 +115,25 @@ impl<'a> Response<'a> {
             aclk_error(th, format_args!("Key name is too long"));
             return false;
         }
-        let key = self.pop(at).to_ascii_lowercase();
+        // C's copies end at their first NUL; the key is lowercased after the value's check
+        let key = netdata_agent_text::c::c_str(self.pop(at));
         self.bump(2);
         end -= 2 + at;
         if end >= HDR_BUFFER_SIZE {
-            aclk_error(th, format_args!("Value of key \"{}\" too long", String::from_utf8_lossy(&key)));
+            aclk_error(th, format_args!("Value of key \"{}\" too long", String::from_utf8_lossy(key)));
             return false;
         }
-        let value = self.pop(end);
-        // C's copies end at their first NUL
-        let (key, value) = (netdata_agent_text::c::c_str(&key).to_vec(), netdata_agent_text::c::c_str(value));
-        self.process_header(key, value, th)
+        let value = netdata_agent_text::c::c_str(self.pop(end));
+        self.process_header(key.to_ascii_lowercase(), value, th)
     }
 
     /// `process_chunked_content()`: the chunks up to the final one, or the error that stops them.
     fn chunked(&mut self, th: &Thread<'_>) -> Parse {
         loop {
             let Some(at) = self.find(CRLF) else {
-                // the buffer holds exactly what was received: it is full
-                return Parse::Error;
+                // C's ring is exactly as large as what was received, but the headers were taken from it, so it is
+                // never full here
+                return Parse::NeedMoreData;
             };
             if at == 0 {
                 return self.final_crlf(th);
@@ -144,7 +142,7 @@ impl<'a> Response<'a> {
                 aclk_error(th, format_args!("Chunk size is too long"));
                 return Parse::Error;
             }
-            let size = strtol16(netdata_agent_text::c::c_str(self.pop(at)));
+            let size = netdata_agent_text::parse::strtoll16(netdata_agent_text::c::c_str(self.pop(at))).0;
             if size < 0 || size == i64::MAX {
                 aclk_error(th, format_args!("Chunk size out of range"));
                 return Parse::Error;
@@ -235,33 +233,6 @@ impl<'a> Response<'a> {
     fn header(&self, name: &str) -> Option<&[u8]> {
         self.headers.get(name.as_bytes()).map(Vec::as_slice)
     }
-}
-
-/// `strtol(s, NULL, 16)`: leading spaces, a sign, an optional `0x`, then hex digits; overflow saturates.
-fn strtol16(s: &[u8]) -> i64 {
-    let mut s = s;
-    while let Some((&c, rest)) = s.split_first() {
-        if !netdata_agent_text::c::is_space(c) {
-            break;
-        }
-        s = rest;
-    }
-    let negative = s.first() == Some(&b'-');
-    if matches!(s.first(), Some(b'-' | b'+')) {
-        s = &s[1..];
-    }
-    if s.len() > 2 && (s.starts_with(b"0x") || s.starts_with(b"0X")) && s[2].is_ascii_hexdigit() {
-        s = &s[2..];
-    }
-    let mut value: i64 = 0;
-    for &c in s.iter().take_while(|c| c.is_ascii_hexdigit()) {
-        let digit = i64::from((c as char).to_digit(16).unwrap_or(0));
-        value = match value.checked_mul(16).and_then(|v| v.checked_add(digit)) {
-            Some(v) => v,
-            None => return if negative { i64::MIN } else { i64::MAX },
-        };
-    }
-    if negative { -value } else { value }
 }
 
 /// `error_report()`: an error record with `errno` cleared first.
@@ -380,5 +351,10 @@ mod tests {
             ["ACLK: Content-length and transfer-encoding: chunked headers are mutually exclusive"]
         );
         assert_eq!(parse(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n").0, Parse::Success);
+        // a reply cut before its chunk size's CRLF waits for more (R40 m1)
+        assert_eq!(parse(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3").0, Parse::NeedMoreData);
+        // the too-long value's record names the key as received (R40 m2)
+        let long = format!("HTTP/1.1 200 OK\r\nContent-Security-Policy: {}\r\n\r\n", "x".repeat(1024));
+        assert_eq!(parse(long.as_bytes()).2, ["ACLK: Value of key \"Content-Security-Policy\" too long"]);
     }
 }

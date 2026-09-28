@@ -271,6 +271,7 @@ fn connect_to_ip46(
     let addrs: Vec<SocketAddr> = match dns_lookup::getaddrinfo(Some(host), Some(service), Some(hints)) {
         Ok(results) => results.filter_map(Result::ok).map(|a| a.sockaddr).collect(),
         Err(e) => {
+            // errno is the close's 0: glibc's resolver leaves it alone on this failure (R40 m5, checked against C)
             log_errno!(th, Priority::Err, "Cannot resolve host '{host}', port '{service}': {}", gai_text(&e));
             return Err(SockError::CannotResolveHostname);
         }

@@ -11,8 +11,17 @@ use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::{Host, Upstream, sender_flags};
 use netdata_agent_rrd::pulse::host_status;
 
+pub mod buffer;
+mod commit;
+pub(crate) mod dispatch;
+mod execute;
+mod hooks;
+
+pub use buffer::Traffic;
+
 use crate::caps;
 use crate::compress::Compressor;
+use crate::compression::Algorithm;
 use crate::conf::{CompressionLevels, Send};
 use crate::connector::Connector;
 use crate::parents::Parents;
@@ -27,6 +36,8 @@ pub struct Settings {
     pub h2o: bool,
     pub compression_enabled: bool,
     pub compression_levels: CompressionLevels,
+    /// `stream_send.buffer_max_size`: the buffer's maximum at every connection.
+    pub buffer_max_size: usize,
 }
 
 impl Settings {
@@ -38,6 +49,7 @@ impl Settings {
             h2o: send.h2o,
             compression_enabled: send.compression_enabled,
             compression_levels: send.compression_levels,
+            buffer_max_size: send.buffer_max_size as usize,
         }
     }
 }
@@ -47,8 +59,6 @@ impl Settings {
 pub(crate) struct State {
     /// `s->capabilities`: offered, then negotiated.
     pub capabilities: u32,
-    /// `s->disabled_capabilities`: every compression when `enable compression = no`.
-    pub disabled_capabilities: u32,
     pub hops: i16,
     /// `s->remote_ip`: the destination connected to, cut to `CONNECTED_TO_SIZE`.
     pub remote_ip: String,
@@ -59,7 +69,56 @@ pub(crate) struct State {
     pub status_reason: Reason,
     /// `s->last_state_since_t`.
     pub last_state_since_s: i64,
-    pub parents: Parents,
+}
+
+/// `s->thread.msg`: the stream thread and the random session of a dispatched connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Session {
+    pub thread: usize,
+    pub id: u32,
+}
+
+/// `STREAM_OPCODE_SENDER_*`.
+pub mod op {
+    pub const POLLOUT: u32 = 1 << 0;
+    pub const BUFFER_OVERFLOW: u32 = 1 << 2;
+    pub const RECONNECT_WITHOUT_COMPRESSION: u32 = 1 << 4;
+    pub const STOP_RECEIVER_LEFT: u32 = 1 << 5;
+    pub const STOP_HOST_CLEANUP: u32 = 1 << 6;
+}
+
+/// Opcodes waiting for the sender's stream thread (`s->thread.msg_slot`): ORed, the last nonzero reason kept, for the
+/// session they were posted for.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Ops {
+    pub session: Session,
+    pub bits: u32,
+    pub reason: Reason,
+}
+
+/// What the commit lock guards (`stream_sender_lock()` around `s->scb`, `s->thread.compressor` and `s->thread.msg`).
+pub(crate) struct Out {
+    pub buffer: buffer::CircularBuffer,
+    pub compressor: Option<Compressor>,
+    /// `s->thread.compressor.algorithm`, which stays when a set up fails.
+    pub algorithm: Option<Algorithm>,
+    pub levels: CompressionLevels,
+    /// None while no connection is dispatched: commits are dropped.
+    pub session: Option<Session>,
+    /// `s->remote_ip` and `s->capabilities`, for the records and the pieces.
+    pub remote_ip: String,
+    pub capabilities: u32,
+}
+
+impl std::fmt::Debug for Out {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Out")
+            .field("buffer", &self.buffer)
+            .field("algorithm", &self.algorithm)
+            .field("session", &self.session)
+            .field("remote_ip", &self.remote_ip)
+            .finish_non_exhaustive()
+    }
 }
 
 /// `struct sender_state`.
@@ -70,6 +129,15 @@ pub struct Sender {
     pub(crate) api_key: String,
     pub(crate) connector: Arc<Connector>,
     state: Mutex<State>,
+    /// `host->stream.snd.parents`: held by the connector for an attempt, briefly by everyone else.
+    parents: Mutex<Parents>,
+    out: Mutex<Out>,
+    ops: Mutex<Option<Ops>>,
+    /// `s->disabled_capabilities`: every compression when `enable compression = no`, and an algorithm that failed.
+    pub(crate) disabled: std::sync::atomic::AtomicU32,
+    /// `host->stream.snd.status.replication.counter_in` and `counter_out`: requests received and answered.
+    pub(crate) counter_in: std::sync::atomic::AtomicU32,
+    pub(crate) counter_out: std::sync::atomic::AtomicU32,
     /// `s->exit.shutdown`.
     pub(crate) shutdown: AtomicBool,
 }
@@ -112,15 +180,27 @@ impl Sender {
             state: Mutex::new(State {
                 // stream_our_capabilities() runs before the disabled capabilities are set
                 capabilities: caps::sender_ours(0),
-                disabled_capabilities: disabled,
                 hops: 0,
                 remote_ip: String::new(),
                 parent_using_h2o: false,
                 exit_reason: Reason::NEVER,
                 status_reason: Reason::NEVER,
                 last_state_since_s: 0,
-                parents: Parents::new(send.parents()),
             }),
+            parents: Mutex::new(Parents::new(send.parents())),
+            out: Mutex::new(Out {
+                buffer: buffer::CircularBuffer::default(),
+                compressor: None,
+                algorithm: None,
+                levels: connector.settings.compression_levels,
+                session: None,
+                remote_ip: String::new(),
+                capabilities: 0,
+            }),
+            ops: Mutex::new(None),
+            disabled: std::sync::atomic::AtomicU32::new(disabled),
+            counter_in: std::sync::atomic::AtomicU32::new(0),
+            counter_out: std::sync::atomic::AtomicU32::new(0),
             shutdown: AtomicBool::new(false),
         });
         host.set_upstream(Arc::clone(&sender) as Arc<dyn Upstream>);
@@ -139,6 +219,52 @@ impl Sender {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    pub(crate) fn parents(&self) -> MutexGuard<'_, Parents> {
+        self.parents.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The commit lock.
+    pub(crate) fn out(&self) -> MutexGuard<'_, Out> {
+        self.out.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `stream_sender_send_opcode()`: a POLLOUT posted on the session's own thread is handled there before it waits
+    /// again; everything else waits in the sender's slot for one message to its thread. Opcodes of an earlier
+    /// session are dropped where they are handled (D103.5).
+    pub(crate) fn post(&self, session: Session, op: u32, reason: Reason) {
+        let Some(me) = self.me.upgrade() else {
+            return;
+        };
+        if op == op::POLLOUT && crate::thread::current() == Some(session.thread) {
+            crate::thread::pollout_inline(&me, session);
+            return;
+        }
+        let first = {
+            let mut slot = self.ops.lock().unwrap_or_else(PoisonError::into_inner);
+            match slot.as_mut() {
+                Some(ops) if ops.session == session => {
+                    ops.bits |= op;
+                    if reason != Reason::NEVER {
+                        ops.reason = reason;
+                    }
+                    false
+                }
+                _ => {
+                    *slot = Some(Ops { session, bits: op, reason });
+                    true
+                }
+            }
+        };
+        if first {
+            let _ = self.connector.pool().send(session.thread, crate::thread::StreamMsg::SenderOps(Arc::downgrade(&me)));
+        }
+    }
+
+    /// The opcodes waiting for this sender, taken.
+    pub(crate) fn take_ops(&self) -> Option<Ops> {
+        self.ops.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+
     /// The frame of the connector's records for this host.
     pub(crate) fn frame(&self) -> FrameGuard {
         push(vec![
@@ -147,42 +273,36 @@ impl Sender {
         ])
     }
 
-    /// `stream_sender_on_connect()`, on the connector thread; the chart reset, the default interface and the read
-    /// buffer come with the sender runtime (commit 4).
-    pub(crate) fn on_connect(&self, host: &Host) {
-        nd_log!(Source::Daemon, Priority::Debug, "STREAM SND [{}]: running on-connect hooks...", host.hostname());
-        host.sender_flags_set(sender_flags::CONNECTED);
-    }
-
-    /// `stream_sender_on_disconnect()`, as far as commit 3 has it (the chart reset and the child's path update come
-    /// with commit 4).
-    pub(crate) fn on_disconnect(&self, host: &Host) {
-        nd_log!(Source::Daemon, Priority::Debug, "STREAM SND '{}': running on-disconnect hooks...", host.hostname());
-        host.sender_flags_clear(sender_flags::READY_4_METRICS);
-    }
-
     /// `stream_sender_remove()`: the host is off its connector and stream thread, ready to be queued again.
     pub(crate) fn remove(&self, host: &Host, reason: Reason) {
-        let mut state = self.lock();
-        let reason = if reason == Reason::DISCONNECT_SIGNALED_TO_STOP && state.exit_reason != Reason::NEVER {
-            state.exit_reason
-        } else {
+        let reason = {
+            let mut state = self.lock();
+            let reason = if reason == Reason::DISCONNECT_SIGNALED_TO_STOP && state.exit_reason != Reason::NEVER {
+                state.exit_reason
+            } else {
+                reason
+            };
+            state.exit_reason = Reason::NEVER;
+            self.shutdown.store(false, Ordering::Relaxed);
+            host.sender_flags_clear(sender_flags::ADDED | sender_flags::CONNECTED | sender_flags::READY_4_METRICS);
+            state.last_state_since_s = now_realtime_s();
             reason
         };
-        state.exit_reason = Reason::NEVER;
-        self.shutdown.store(false, Ordering::Relaxed);
-        host.sender_flags_clear(sender_flags::ADDED | sender_flags::CONNECTED | sender_flags::READY_4_METRICS);
-        state.last_state_since_s = now_realtime_s();
-        // stream_parent_set_host_disconnect_reason()
-        state.status_reason = reason;
-        let since_ut = state.last_state_since_s as u64 * 1_000_000;
-        if let Some(i) = state.parents.current {
-            let d = &mut state.parents.list[i];
-            d.since_ut = since_ut;
-            d.reason = reason;
+        let since_s = self.lock().last_state_since_s;
+        self.set_disconnect_reason(reason, since_s);
+        self.parents().reset(reason, self.connector.settings.reconnect_delay_s);
+    }
+
+    /// `stream_parent_set_host_disconnect_reason()`.
+    pub(crate) fn set_disconnect_reason(&self, reason: Reason, since_s: i64) {
+        self.lock().status_reason = reason;
+        let mut parents = self.parents();
+        if let Some(i) = parents.current {
+            if let Some(d) = parents.list.get_mut(i) {
+                d.since_ut = since_s as u64 * 1_000_000;
+                d.reason = reason;
+            }
         }
-        let delay = self.connector.settings.reconnect_delay_s;
-        state.parents.reset(reason, delay);
     }
 
     /// `stream_connector_remove()`: a host signalled to stop while waiting for its parents.
@@ -205,6 +325,10 @@ impl Sender {
 }
 
 impl Upstream for Sender {
+    fn disabled_capabilities(&self) -> u32 {
+        self.disabled.load(Ordering::Relaxed)
+    }
+
     /// `stream_sender_add_to_connector_queue()`.
     fn start(&self) {
         let (Some(me), Some(host)) = (self.me.upgrade(), self.host()) else {

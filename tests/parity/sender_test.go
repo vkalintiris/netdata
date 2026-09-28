@@ -51,6 +51,10 @@ func parseCapture(req stream.Request, data []byte) capture {
 		replays: map[string][]string{}}
 	params := make([]string, 0, len(req.Params))
 	for k, v := range req.Params {
+		if k == "ml_capable" {
+			// no ML here (D101.5)
+			v = []string{"M"}
+		}
 		params = append(params, k+"="+strings.Join(v, ","))
 	}
 	sort.Strings(params)
@@ -76,8 +80,9 @@ func parseCapture(req stream.Request, data []byte) capture {
 			sort.Strings(labels)
 			c.start = append(append(c.start, labels...), line)
 			labels = nil
-		case strings.HasPrefix(line, "CLAIMED_ID "), strings.HasPrefix(line, "VARIABLE HOST "),
-			strings.HasPrefix(line, "FUNCTION "), strings.HasPrefix(line, "FUNCTION_DEL "):
+		case strings.HasPrefix(line, "FUNCTION "), strings.HasPrefix(line, "FUNCTION_DEL "):
+			// the functions' catalogue comes with the functions milestone, M8 (D100.9)
+		case strings.HasPrefix(line, "CLAIMED_ID "), strings.HasPrefix(line, "VARIABLE HOST "):
 			c.start = append(c.start, line)
 		case chartLineRe.MatchString(line):
 			chart = chartLineRe.FindStringSubmatch(line)[1]
@@ -137,8 +142,9 @@ func parseCapture(req stream.Request, data []byte) capture {
 	return c
 }
 
-// compareCaptures reports how two captures differ.
-func compareCaptures(t *testing.T, stage string, a, b capture) {
+// compareCaptures reports how two captures differ; without `charts`, only the requests and the session starts
+// (a Rust child sends no charts before milestone 7 commit 5).
+func compareCaptures(t *testing.T, stage string, a, b capture, charts bool) {
 	t.Helper()
 	diff := func(what string, x, y []string) {
 		if !slices.Equal(x, y) {
@@ -148,6 +154,9 @@ func compareCaptures(t *testing.T, stage string, a, b capture) {
 	}
 	diff("requests", a.request, b.request)
 	diff("session starts", a.start, b.start)
+	if !charts {
+		return
+	}
 	keys := func(m map[string][]string) []string {
 		var k []string
 		for id := range m {
@@ -192,14 +201,14 @@ func senderChild(t *testing.T, bin string, role Role, parent *stream.Parent) *da
 	return d
 }
 
-// TestSenderCapture (check `stream.sender-capture`, milestone 7 commit 0, D100): a child streams to a recording
-// parent that accepts it in plaintext; after the session's start and a few seconds of data the two children's
-// captures are compared. C against C proves the capture and its normalization stable; the Rust sender comes later.
+// TestSenderCapture (check `stream.sender-capture`, milestone 7 commits 0 and 4, D100): a child streams to a
+// recording parent that accepts it in plaintext; after the session's start and a few seconds of data the two
+// children's captures are compared. C against C proves the capture and its normalization stable. A Rust child's
+// request and session start are compared since the sender runtime (commit 4); its charts, data and replication come
+// with commits 5 and 6 (`PARITY_SENDER=1` compares them anyway).
 func TestSenderCapture(t *testing.T) {
 	bins := binaries(t)
-	if bins[0] != bins[1] && os.Getenv("PARITY_SENDER") != "1" {
-		t.Skip("the Rust sender comes with milestone 7 commit 4 (D100); PARITY_SENDER=1 runs it anyway")
-	}
+	charts := bins[0] == bins[1] || os.Getenv("PARITY_SENDER") == "1"
 	var caps [2]capture
 	for i, role := range []Role{"sender-oracle", "sender-candidate"} {
 		parent, err := stream.StartParent(nil)
@@ -223,7 +232,7 @@ func TestSenderCapture(t *testing.T) {
 		t.Logf("%s: %d bytes, %d charts, %d with data, %d other lines, probes %q", role, len(s.Data()),
 			len(caps[i].charts), len(caps[i].data), len(caps[i].other), parent.Probes())
 	}
-	compareCaptures(t, "capture", caps[0], caps[1])
+	compareCaptures(t, "capture", caps[0], caps[1], charts)
 	if len(caps[0].charts) == 0 || len(caps[0].data) == 0 {
 		t.Errorf("the oracle's capture has %d charts and %d with data", len(caps[0].charts), len(caps[0].data))
 	}

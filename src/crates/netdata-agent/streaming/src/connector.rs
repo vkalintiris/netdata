@@ -22,7 +22,7 @@ use crate::parents::Local;
 use crate::pins::Pins;
 use crate::reason::Reason;
 use crate::thread::StreamMsg;
-use crate::sender::{Connected, Sender, Settings, State};
+use crate::sender::{Connected, Sender, Settings};
 
 /// `CONNECTED_TO_SIZE`: what `s->remote_ip` keeps of the destination.
 const CONNECTED_TO_SIZE: usize = 100;
@@ -31,7 +31,7 @@ const RESPONSE_SIZE: usize = 4095;
 
 /// `STRCNT_CMD`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Cmd {
+pub(crate) enum Cmd {
     Connect,
     Remove,
 }
@@ -161,10 +161,29 @@ impl Completion {
     }
 }
 
+/// What the sender needs of the daemon: its claim and Cloud state, and the Cloud URL a parent may hand down.
+pub struct Env {
+    /// `is_agent_claimed()`.
+    pub claimed: Box<dyn Fn() -> bool + Send + Sync>,
+    /// `aclk_online()`.
+    pub aclk_online: Box<dyn Fn() -> bool + Send + Sync>,
+    /// `cloud_config_url_set()`.
+    pub set_cloud_url: Box<dyn Fn(&str) + Send + Sync>,
+}
+
+impl Default for Env {
+    /// An agent that is not claimed and whose Cloud URL does not change.
+    fn default() -> Self {
+        Env { claimed: Box::new(|| false), aclk_online: Box::new(|| false), set_cloud_url: Box::new(|_| {}) }
+    }
+}
+
 /// `struct connector` (`MAX_CONNECTORS` is 1).
 pub struct Connector {
     pub(crate) settings: Settings,
     local: Local,
+    localhost: std::sync::Weak<Host>,
+    env: std::sync::OnceLock<Env>,
     pool: PoolHandle<StreamMsg>,
     pins: Arc<Mutex<Pins>>,
     stack_size: usize,
@@ -191,6 +210,7 @@ impl Connector {
     pub fn new(
         settings: Settings,
         local: Local,
+        localhost: &Arc<Host>,
         pool: PoolHandle<StreamMsg>,
         pins: Arc<Mutex<Pins>>,
         stack_size: usize,
@@ -198,6 +218,8 @@ impl Connector {
         Arc::new(Connector {
             settings,
             local,
+            localhost: Arc::downgrade(localhost),
+            env: std::sync::OnceLock::new(),
             pool,
             pins,
             stack_size,
@@ -227,6 +249,28 @@ impl Connector {
     }
 
     /// `stream_connector_init()`: starts the thread once; false when it could not start.
+    pub(crate) fn pool(&self) -> &PoolHandle<StreamMsg> {
+        &self.pool
+    }
+
+    pub(crate) fn local(&self) -> &Local {
+        &self.local
+    }
+
+    pub(crate) fn localhost(&self) -> Option<Arc<Host>> {
+        self.localhost.upgrade()
+    }
+
+    /// Sets the daemon's side (once, when the daemon has it).
+    pub fn set_env(&self, env: Env) {
+        let _ = self.env.set(env);
+    }
+
+    pub(crate) fn env(&self) -> &Env {
+        static DEFAULT: std::sync::OnceLock<Env> = std::sync::OnceLock::new();
+        self.env.get().unwrap_or_else(|| DEFAULT.get_or_init(Env::default))
+    }
+
     pub(crate) fn init(self: &Arc<Self>, hostname: &str) -> bool {
         let mut started = self.started.lock().unwrap_or_else(PoisonError::into_inner);
         if *started {
@@ -268,13 +312,13 @@ impl Connector {
             host.sender_flags_set(sender_flags::ADDED);
             host.sender_flags_clear(sender_flags::CONNECTED | sender_flags::READY_4_METRICS);
             state.parent_using_h2o = self.settings.h2o;
-            state.parents.reset(Reason::NEVER, self.settings.reconnect_delay_s);
         }
+        s.parents().reset(Reason::NEVER, self.settings.reconnect_delay_s);
         self.requeue(s, host, Cmd::Connect);
     }
 
     /// `stream_connector_requeue()`.
-    fn requeue(&self, s: &Arc<Sender>, host: &Host, cmd: Cmd) {
+    pub(crate) fn requeue(&self, s: &Arc<Sender>, host: &Host, cmd: Cmd) {
         if cmd == Cmd::Connect {
             nd_log!(
                 Source::Daemon,
@@ -284,8 +328,12 @@ impl Connector {
             );
             host.pulse_status(host_status::SND_PENDING);
         }
-        let idx = self.idx.fetch_add(1, Ordering::Relaxed) + 1;
-        self.queue().insert(idx, (Arc::clone(s), cmd));
+        {
+            // the index is taken under the queue's lock, so the queue keeps the order of the requeues
+            let mut queue = self.queue();
+            let idx = self.idx.fetch_add(1, Ordering::Relaxed) + 1;
+            queue.insert(idx, (Arc::clone(s), cmd));
+        }
         self.completion.mark();
     }
 
@@ -320,7 +368,7 @@ impl Connector {
                     Cmd::Connect => {
                         if let Some(connected) = self.stream_connect(&s, &host, &th) {
                             self.queue().remove(&key);
-                            s.on_connect(&host);
+                            s.on_connect(&host, &connected.socket);
                             self.add_to_queue(connected, &host);
                         }
                     }
@@ -379,11 +427,33 @@ impl Connector {
 
     /// `stream_connect()`: a parent, the request, its answer and the compressor; the connection on success.
     fn stream_connect(&self, s: &Arc<Sender>, host: &Arc<Host>, th: &Thread<'_>) -> Option<Connected> {
+        // the parents stay locked for the attempt (C holds their read lock); the sender's state is only copied in
+        // and out, so nothing else waits on it across the attempt's I/O
+        let mut attempt = {
+            let st = s.lock();
+            Attempt {
+                parents: s.parents(),
+                hops: host.ingestion_hops().wrapping_add(1),
+                status_reason: st.status_reason,
+                capabilities: st.capabilities,
+                remote_ip: st.remote_ip.clone(),
+                parent_using_h2o: st.parent_using_h2o,
+            }
+        };
+        let connected = self.attempt(s, host, &mut attempt, th);
+        let mut st = s.lock();
+        st.hops = attempt.hops;
+        st.status_reason = attempt.status_reason;
+        st.capabilities = attempt.capabilities;
+        st.remote_ip = attempt.remote_ip;
+        connected
+    }
+
+    fn attempt(&self, s: &Arc<Sender>, host: &Arc<Host>, st: &mut Attempt<'_>, th: &Thread<'_>) -> Option<Connected> {
         let settings = &self.settings;
-        let mut guard = s.lock();
-        let st: &mut State = &mut guard;
         let mut sock = NdSock::default();
-        st.hops = host.ingestion_hops() + 1;
+        // nd_sock_close() of the previous socket clears errno
+        sock.close(th);
         host.pulse_status(host_status::SND_PENDING);
         let connected = st.parents.connect_to_one(
             &mut sock,
@@ -402,8 +472,8 @@ impl Connector {
             return None;
         }
         let destination = st.parents.current().map(|d| d.destination.clone()).unwrap_or_default();
-        st.remote_ip = cut(&destination, CONNECTED_TO_SIZE).to_string();
-        st.capabilities = caps::sender_ours(st.disabled_capabilities);
+        st.remote_ip = crate::records::cut(&destination, CONNECTED_TO_SIZE).to_string();
+        st.capabilities = caps::sender_ours(s.disabled.load(Ordering::Relaxed));
         let request = self.request(host, &s.api_key, st.hops, st.capabilities);
         let hostname = host.hostname();
         let remote = st.remote_ip.clone();
@@ -432,7 +502,7 @@ impl Connector {
             st.parents.set_connect_failure_reason(host, &mut st.status_reason, Reason::CONNECT_RECEIVE_TIMEOUT, 30);
             return None;
         }
-        if !self.validate_first_response(host, st, &response[..bytes as usize], th) {
+        if !self.validate_first_response(host, st, s.disabled.load(Ordering::Relaxed), &response[..bytes as usize], th) {
             sock.close(th);
             return None;
         }
@@ -460,11 +530,11 @@ impl Connector {
 
     /// `stream_connect_validate_first_response()`: a prompt negotiates the capabilities; a refusal postpones the
     /// parent and says when it is tried again.
-    fn validate_first_response(&self, host: &Host, st: &mut State, http: &[u8], th: &Thread<'_>) -> bool {
+    fn validate_first_response(&self, host: &Host, st: &mut Attempt<'_>, disabled: u32, http: &[u8], th: &Thread<'_>) -> bool {
         let (version, row) = response_version(http);
         if version >= 1 {
             st.parents.set_reconnect_delay(Reason::SP_CONNECTED, self.settings.reconnect_delay_s);
-            st.capabilities = caps::negotiate(version, caps::sender_ours(st.disabled_capabilities));
+            st.capabilities = caps::negotiate(version, caps::sender_ours(disabled));
             st.status_reason = Reason(st.capabilities as i32);
             return true;
         }
@@ -485,13 +555,14 @@ impl Connector {
     }
 }
 
-/// `strncpyz()` into C's buffer.
-fn cut(s: &str, max: usize) -> &str {
-    let mut end = s.len().min(max);
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
+/// What an attempt reads and writes of the sender's state, with the parents it holds.
+struct Attempt<'a> {
+    parents: MutexGuard<'a, crate::parents::Parents>,
+    hops: i16,
+    status_reason: Reason,
+    capabilities: u32,
+    remote_ip: String,
+    parent_using_h2o: bool,
 }
 
 #[cfg(test)]

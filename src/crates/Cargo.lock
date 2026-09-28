@@ -3207,7 +3207,6 @@ dependencies = [
  "netdata-agent-log",
  "netdata-agent-pluginsd-proto",
  "netdata-agent-rrd",
- "netdata-agent-sys",
  "netdata-agent-text",
  "netdata-agent-tls",
  "nix",

@@ -3,11 +3,13 @@
 package parity
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -71,10 +73,6 @@ func (s *stubs) destination() string {
 }
 
 var (
-	// runtimeRecordRe are the records of the sender runtime (milestone 7 commit 4): a Rust child of commit 3 hands
-	// its link to a stream thread that only holds it (D102.2), so neither side's copy is compared until then
-	runtimeRecordRe = regexp.MustCompile(`streaming is ready, sending metrics to parent|streaming connector removed ` +
-		`host: DISCONNECTED SHUTDOWN REQUESTED|running on-disconnect hooks`)
 	// optionalRecordRe are the records a shutdown may leave while an attempt runs (the map's §2 "Shutdown"), and the
 	// connector thread's end, which neither agent waits for
 	optionalRecordRe = regexp.MustCompile(`last error: thread cancelled|Thread is cancelled while connecting|` +
@@ -98,8 +96,9 @@ func handshakeRecords(t *testing.T, d *daemon.Daemon, s *stubs) []string {
 	var out []string
 	for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
 		th := threadOf(l)
-		if th != "SNDR-CN[0]" && !(th == "PULSE" && strings.Contains(l, "STREAM SND")) ||
-			runtimeRecordRe.MatchString(l) || optionalRecordRe.MatchString(l) {
+		// the start trigger's records and the connector's calls from the collector (PULSE)
+		collector := th == "PULSE" && (strings.Contains(l, "STREAM SND") || strings.Contains(l, "STREAM CONNECT"))
+		if th != "SNDR-CN[0]" && !collector || optionalRecordRe.MatchString(l) {
 			continue
 		}
 		if m := retryAtRe.FindStringSubmatch(l); m != nil {
@@ -158,10 +157,12 @@ func checkRetryAt(t *testing.T, line, secs, at string) {
 	}
 }
 
-// requestLines are a STREAM request's parameters and headers, the stub's port masked; `ml_capable` is masked (no ML
-// here, D101.5).
+var mlCapableRe = regexp.MustCompile(`ml_capable=[^&]*`)
+
+// requestLines are a STREAM request's line as sent (its parameters' order and encoding), then its parameters and
+// headers, the stub's port masked; `ml_capable` is masked (no ML here, D101.5).
 func requestLines(r stream.Request) []string {
-	var out []string
+	out := []string{mlCapableRe.ReplaceAllString(r.Line, "ml_capable=M")}
 	for k, v := range r.Params {
 		if k == "ml_capable" {
 			v = []string{"M"}
@@ -413,4 +414,240 @@ func freePort(t *testing.T) string {
 	addr := ln.Addr().String()
 	ln.Close()
 	return addr
+}
+
+var (
+	// the parents listen on their own ports; the records name them
+	anyLocalPortRe = regexp.MustCompile(`127\.0\.0\.1(:|', port '| port )\d+`)
+	anyDstPortRe   = regexp.MustCompile(` dst_port=\d+`)
+	// how much a connection has carried when it closes
+	carriedRe = regexp.MustCompile(`\d+ bytes (transmitted )?in \d+ operations|sent \d+ bytes in \d+ operations`)
+	threadNRe = regexp.MustCompile(`(STREAM (?:SND|THREAD|RCV))\[\d+\]`)
+)
+
+// rchildRecords are a child's streaming records, each once: the connector's (SNDR-CN[0]) and its stream thread's
+// (STREAM[n]) about its parent, with the parent's port, the counts and the stream thread's number masked.
+func rchildRecords(t *testing.T, d *daemon.Daemon) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
+		th := threadOf(l)
+		if th != "SNDR-CN[0]" && !strings.HasPrefix(th, "STREAM[") || optionalRecordRe.MatchString(l) {
+			continue
+		}
+		n := normalizeLog(l, d.Opts.RunDir, "")
+		n = anyLocalPortRe.ReplaceAllString(n, "127.0.0.1${1}P")
+		n = anyDstPortRe.ReplaceAllString(n, " dst_port=P")
+		n = carriedRe.ReplaceAllString(n, "N bytes in N operations")
+		n = threadNRe.ReplaceAllString(n, "${1}[n]")
+		n = fdRe.ReplaceAllString(n, ", fd N)")
+		n = postponedRe.ReplaceAllString(n, "POSTPONED FOR N SECS MORE")
+		// a parent's stream_info answer carries a random nonce
+		n = probeNonceRe.ReplaceAllString(n, `nonce\":N`)
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+var probeNonceRe = regexp.MustCompile(`nonce\\":\d+`)
+
+// TestRChild (check `stream.rchild`, milestone 7 commit 4, D103): a C child and a Rust child with the same identity,
+// each streaming to its own C parent (the oracle on both sides, `ram`, one tier). Compared while connected: both
+// parents' `/api/v3/stream_path` (the child's entry and its capabilities), each child's own path once its parent's
+// came down, the parents' `stream_info` for the child with its retention masked (a Rust child sends no charts before
+// commit 5), and each child's `_net_default_iface`; after the children stop, their streaming records as sets.
+// Variants: compression off (the harness default) and on (the C parent decodes the Rust child's zstd).
+func TestRChild(t *testing.T) {
+	const hostname, guid = "parity-rchild", "5a1e0000-0000-4000-8000-00000000c0bb"
+	bins := binaries(t)
+	for _, compression := range []bool{false, true} {
+		name := "plain"
+		if compression {
+			name = "compressed"
+		}
+		t.Run(name, func(t *testing.T) {
+			p := startPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity,
+				[2]string{bins[0], bins[0]}, [2]string{}, [2]Role{"rchild-parent-oracle", "rchild-parent-candidate"})
+			var children [2]*daemon.Daemon
+			for i, side := range p.Each() {
+				id := daemon.Identity{Hostname: hostname, StreamKey: cChildKey, MachineGUID: guid}
+				d, err := daemon.Start(daemon.Options{Binary: bins[i], RunDir: runDir(t, Role("rchild-"+name+"-"+strconv.Itoa(i))),
+					StorageTiers: 1, DBMode: "alloc", Identity: &id, NoStreamKey: true,
+					StreamTo: &daemon.StreamTo{Destination: side.Daemon.Addr, APIKey: parentIdentity.StreamKey,
+						Compression: compression, Extra: "    reconnect delay = 5\n"}})
+				if err != nil {
+					t.Fatalf("start child %d: %v", i, err)
+				}
+				t.Cleanup(func() { _ = d.Stop() })
+				children[i] = d
+			}
+			parents := [2]string{p.Oracle.Addr, p.Candidate.Addr}
+			// a C parent calls a child online only once it holds data for it: a Rust child's charts come with commit 5
+			for _, addr := range parents {
+				waitReceiver(t, addr, guid)
+			}
+			compareStreamPath(t, "parents", parents, "/api/v3/stream_path", entryTimes, "_streams_to")
+			compareStreamPath(t, "children", [2]string{children[0].Addr, children[1].Addr}, "/api/v3/stream_path",
+				entryTimes, "_streams_to")
+			var info [2][]byte
+			for i, addr := range parents {
+				b, err := rawExchange(addr, []byte("GET /api/v3/stream_info?machine_guid="+guid+" HTTP/1.1\r\n\r\n"),
+					5*time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				info[i] = streamInfoRetentionRe.ReplaceAll(httpBody(b), []byte(`"${1}":T`))
+				// what the parent's data for the child decide (commit 5)
+				info[i] = streamInfoDataRe.ReplaceAll(info[i], []byte(`"${1}":"D"`))
+				info[i] = streamInfoNonceRe.ReplaceAll(info[i], []byte(`"nonce":N`))
+			}
+			if !bytes.Equal(info[0], info[1]) {
+				t.Errorf("stream_info differs:\noracle:    %s\ncandidate: %s", info[0], info[1])
+			}
+			for i, c := range children {
+				b, err := rawExchange(c.Addr, []byte("GET /api/v1/info HTTP/1.1\r\n\r\n"), 5*time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(b), `"_net_default_iface":"lo"`) {
+					t.Errorf("child %d: no _net_default_iface lo in /api/v1/info", i)
+				}
+			}
+			var records [2][]string
+			for i, c := range children {
+				_ = c.Stop()
+				records[i] = rchildRecords(t, c)
+			}
+			diffLines(t, "children's records", records[0], records[1])
+			t.Logf("records:\n%s", strings.Join(records[0], "\n"))
+		})
+	}
+}
+
+// waitReceiver waits until the parent has a receiver for the child (its stream_info names the child's host and
+// counts the receiver), then a few seconds for the session's metadata.
+func waitReceiver(t *testing.T, addr, guid string) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		b, err := rawExchange(addr, []byte("GET /api/v3/stream_info?machine_guid="+guid+" HTTP/1.1\r\n\r\n"), 5*time.Second)
+		if err == nil && bytes.Contains(b, []byte(`"receivers":1`)) && bytes.Contains(b, []byte(`"ingest_type":"child"`)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: no receiver for the child: %s", addr, b)
+		}
+		time.Sleep(time.Second)
+	}
+	time.Sleep(5 * time.Second)
+}
+
+var (
+	streamInfoDataRe      = regexp.MustCompile(`"(db_status|db_liveness|ingest_status)":"[^"]*"`)
+	streamInfoRetentionRe = regexp.MustCompile(`"(first_time_s|last_time_s)":\d+`)
+	streamInfoNonceRe     = regexp.MustCompile(`"nonce":\d+`)
+)
+
+// runtimeScript are the lines a scripted parent sends down after its prompt: functions this agent does not have, the
+// incomplete forms, bodies, cancels and progress requests, replication requests the sender rejects, NODE_IDs it
+// rejects, JSON bodies and unknown commands (the map's §11 item 1). Each answer or record is the child's.
+var runtimeScript = []string{
+	`FUNCTION tx-1 10 "no-such-function" 0x13 "method=api"`,
+	`FUNCTION tx-2`,
+	`FUNCTION_PAYLOAD tx-3 10 "no-such-function" 0x13 "method=api" application/json`,
+	`{"a":1}`,
+	`{"b":2}`,
+	`FUNCTION_PAYLOAD_END`,
+	`FUNCTION_PAYLOAD`,
+	`FUNCTION_PAYLOAD_END`,
+	`FUNCTION_CANCEL tx-9`,
+	`FUNCTION_PROGRESS tx-9`,
+	`REPLAY_CHART "no.such.chart"`,
+	`NODE_ID 'not-a-uuid' 'x' 'https://example.invalid'`,
+	`NODE_ID '00000000-0000-0000-0000-000000000000' '11111111-2222-3333-4444-555555555555' 'https://example.invalid'`,
+	`NODE_ID '11111111-2222-3333-4444-555555555555' '00000000-0000-0000-0000-000000000000' 'https://example.invalid'`,
+	`NODE_ID '11111111-2222-3333-4444-555555555555' 'x' 'https://example.invalid'`,
+	`JSON STREAM_PATH`,
+	`{not json`,
+	`JSON_PAYLOAD_END`,
+	`JSON FOO`,
+	`some payload`,
+	`JSON_PAYLOAD_END`,
+	`GARBAGE x "y z"`,
+	``,
+}
+
+var expiresRe = regexp.MustCompile(`^(FUNCTION_RESULT_BEGIN "[^"]*" \d+ "[^"]*") \d+$`)
+
+// runtimeUpstream are the lines a child sent back that the capture does not otherwise parse (its function results),
+// with their expiry masked.
+func runtimeUpstream(c capture) []string {
+	var out []string
+	for _, l := range c.other {
+		out = append(out, expiresRe.ReplaceAllString(l, "${1} E"))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestRChildRuntime (check `stream.rchild-runtime`, milestone 7 commit 4, D103): C and Rust children against
+// scripted recording parents that accept in plaintext. Compared: the lines each child sends back, and the child's
+// streaming records as sets.
+//   - executor: the parent sends `runtimeScript` down after its prompt.
+//   - long-line: a 15487-byte line with no newline fills the child's receive buffer; the child restarts the
+//     connection ("error during receive") and connects again.
+//   - parent-close: the parent closes the connection after the session starts; the child sees the hangup and connects
+//     again.
+func TestRChildRuntime(t *testing.T) {
+	cases := map[string]struct {
+		down  []string
+		close bool
+	}{
+		"executor": {down: runtimeScript},
+		// the line fills the child's 15488-byte buffer before its newline arrives
+		"long-line":    {down: []string{strings.Repeat("x", 15487)}},
+		"parent-close": {close: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var up, records [2][]string
+			runBoth(t, func(i int, bin string, role Role) {
+				parent, err := stream.StartParent(func(r stream.Request) stream.Answer {
+					a := stream.PlaintextAnswer(r)
+					a.Down = tc.down
+					a.DownAfter = time.Second
+					return a
+				})
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				t.Cleanup(func() { parent.Close() })
+				d := senderChild(t, bin, Role(string(role)+"-"+name), parent)
+				s := parent.WaitSession(1, 60*time.Second)
+				if s == nil {
+					t.Errorf("%s: no STREAM connection within 60 s", role)
+					return
+				}
+				time.Sleep(3 * time.Second)
+				if tc.close {
+					_ = s.Close()
+				}
+				if name != "executor" && parent.WaitSession(2, 30*time.Second) == nil {
+					t.Errorf("%s: no second connection within 30 s", role)
+				}
+				_ = d.Stop()
+				up[i] = runtimeUpstream(parseCapture(s.Request, s.Data()))
+				records[i] = rchildRecords(t, d)
+			})
+			diffLines(t, "upstream lines", up[0], up[1])
+			diffLines(t, "records", records[0], records[1])
+			t.Logf("upstream:\n%s\nrecords:\n%s", strings.Join(up[0], "\n"), strings.Join(records[0], "\n"))
+		})
+	}
 }

@@ -16,6 +16,7 @@ pub mod parents;
 pub mod pins;
 pub mod random;
 pub mod reason;
+pub mod replication;
 pub mod receiver;
 pub mod records;
 pub mod sender;

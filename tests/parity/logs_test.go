@@ -55,7 +55,6 @@ var cOnlyThreads = map[string]string{
 	"SERVICE": "service thread", "ANALYTICS": "analytics",
 	"EXPORTING": "exporting engine", "STATSD_FLUSH": "statsd",
 	"ACLK_MAIN": "ACLK", "OPEN_PGC": "the open cache's evictor (no open cache, D84.4)",
-	"REPLAY": "replication sender threads",
 }
 
 // logMask replaces what a pattern matches in a normalized record.

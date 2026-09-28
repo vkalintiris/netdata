@@ -177,6 +177,8 @@ pub mod flags {
     pub const BACKFILLED_HIGH_TIERS: u32 = 1 << 10;
     /// `RRDSET_FLAG_OBSOLETE_DIMENSIONS`: some dimension turned obsolete, for the maintenance sweep.
     pub const OBSOLETE_DIMENSIONS: u32 = 1 << 11;
+    /// `RRDSET_FLAG_SENDER_REPLICATION_IN_PROGRESS`: the chart's definition claimed a replication (commit 5 sets it).
+    pub const SENDER_REPLICATION_IN_PROGRESS: u32 = 1 << 12;
 
     /// `rrdset_is_replicating()`: a replication in progress and none finished. A chart starts with both finished bits
     /// and nothing clears the sender's without a stream sender, so on this agent no chart replicates in this sense.

@@ -25,7 +25,7 @@ pub const MIN_RECONNECT_DELAY_S: i64 = 5;
 /// `TIME_TO_CONSIDER_PARENTS_SIMILAR`.
 const SIMILAR_S: i64 = 120;
 /// `HTTP_HEADER_SIZE`: the probe's request and response buffer.
-const HTTP_HEADER_SIZE: usize = 8192;
+pub(crate) const HTTP_HEADER_SIZE: usize = 8192;
 /// The probe's connect, send and receive timeouts.
 const PROBE_TIMEOUT_S: i64 = 5;
 const USEC_PER_SEC: u64 = 1_000_000;
@@ -584,11 +584,6 @@ fn parse_v1(root: &serde_json::Value, remote: &mut Remote, error: &mut String) -
     false
 }
 
-/// `strstr()` over a C string.
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
 /// `stream_info_fetch()`: `GET /api/v3/stream_info` of this host on its own connection, 5 s for each step. A failure
 /// at the socket level postpones the parent; one in the answer only marks its reason. The connection's close at the
 /// function's end (`CLEAN_ND_SOCK`) clears `errno`.
@@ -690,14 +685,14 @@ fn fetch(
         let text = c_str(&buf[..total]);
         let start = match payload_start {
             Some(start) => start,
-            None => match find(text, b"\r\n\r\n") {
+            None => match netdata_agent_text::c::find(text, b"\r\n\r\n") {
                 Some(end) => *payload_start.insert(end + 4),
                 None => continue,
             },
         };
         payload_received = total - start;
         if content_length == 0 {
-            let Some(at) = find(text, b"Content-Length: ") else {
+            let Some(at) = netdata_agent_text::c::find(text, b"Content-Length: ") else {
                 log_errno!(
                     th,
                     Priority::Warning,

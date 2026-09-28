@@ -167,8 +167,8 @@ pub fn disconnected(
     );
 }
 
-/// The label copied into C's 64-byte buffer.
-fn cut(s: &str, max: usize) -> &str {
+/// `strncpyz()` into a C buffer of `max` bytes.
+pub(crate) fn cut(s: &str, max: usize) -> &str {
     let mut end = s.len().min(max);
     while !s.is_char_boundary(end) {
         end -= 1;

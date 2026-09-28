@@ -81,6 +81,9 @@ type Answer struct {
 	Close bool
 	// Down are lines written after the reply, each ending with a newline.
 	Down []string
+	// DownAfter delays Down: a child reads its prompt with one receive, so lines sent with it would be read as part
+	// of the prompt.
+	DownAfter time.Duration
 	// StopReading leaves the child's data unread after the handshake (a parent whose buffers fill).
 	StopReading bool
 	// StartStreaming answers each chart's CHART_DEFINITION_END with `REPLAY_CHART "<id>" "true" 0 0`: nothing to
@@ -350,6 +353,7 @@ func (p *Parent) serve(c net.Conn) {
 		return
 	}
 	if len(a.Down) > 0 {
+		time.Sleep(a.DownAfter)
 		_ = s.Send(a.Down...)
 	}
 	if a.StopReading {

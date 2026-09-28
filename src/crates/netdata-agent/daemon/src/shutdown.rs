@@ -62,6 +62,8 @@ const TIMEOUT_S: u64 = 135;
 /// How long C's service waits give the threads of each step (`service_wait_exit()` in steps 4, 6 and 9).
 pub const WEB_SERVERS_WAIT: Duration = Duration::from_secs(3);
 pub const STREAMING_WAIT: Duration = Duration::from_secs(20);
+/// `service_wait_exit(SERVICE_REPLICATION, 5 * USEC_PER_SEC)`.
+pub const REPLICATION_WAIT: Duration = Duration::from_secs(5);
 pub const CONTEXT_WAIT: Duration = Duration::from_secs(5);
 
 /// `netdata_cleanup_and_exit()`'s `run`: set by the first exit sequence.
