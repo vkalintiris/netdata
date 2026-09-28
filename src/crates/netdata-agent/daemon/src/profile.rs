@@ -36,6 +36,17 @@ impl Profile {
             Profile::Iot => "iot",
         }
     }
+
+    /// Its `ND_PROFILE` bit, as the status file keeps it.
+    pub fn bits(self) -> u32 {
+        use crate::status_file::profile;
+        match self {
+            Profile::Standalone => profile::STANDALONE,
+            Profile::Parent => profile::PARENT,
+            Profile::Child => profile::CHILD,
+            Profile::Iot => profile::IOT,
+        }
+    }
 }
 
 /// `ND_PROFILE_2buffer(wb, bits, " ")`.

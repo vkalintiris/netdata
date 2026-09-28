@@ -1,12 +1,14 @@
 //! The machine GUID, ported from `src/daemon/machine-guid.c`: read from `<lib>/registry/netdata.public.unique.id`,
-//! or generated and published there with a temporary file, a rename and a lock. A GUID that cannot be saved is
-//! still used. The daemon status file's fallback GUID comes with the status file.
+//! else the last status file's, else generated, and published there with a temporary file, a rename and a lock. A
+//! GUID that cannot be saved is still used. It is read once, when the status file is loaded, and kept.
 
 use netdata_agent_log::{Priority, Source, nd_log};
 use std::fs::{self, File, Permissions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use netdata_agent_text::parse::uuid_parse_flexi;
 use netdata_agent_text::print::print_uuid_lower;
@@ -64,9 +66,19 @@ fn blacklisted(guid: &str) -> bool {
     found
 }
 
+/// `ND_MACHINE_GUID`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineGuid {
+    /// Canonical lowercase.
+    pub txt: String,
+    pub uuid: [u8; 16],
+    /// The GUID file's modification time, or when the GUID was made.
+    pub last_modified_ut: u64,
+}
+
 /// `machine_guid_read_from_file()`: exactly 36 bytes of a regular file, as `uuid_parse_flexi()` reads them, not zero,
-/// not blacklisted; returned in canonical lowercase.
-fn read_from_file(filename: &Path, log_errors: bool) -> Option<String> {
+/// not blacklisted; its text in canonical lowercase, and the file's modification time after the read.
+fn read_from_file(filename: &Path, log_errors: bool) -> Option<MachineGuid> {
     let name = filename.display();
     // the errno of the failed call, as the C record carries it
     let fail = |errno: i32, message: String| {
@@ -130,16 +142,21 @@ fn read_from_file(filename: &Path, log_errors: bool) -> Option<String> {
             format!("MACHINE_GUID: GUID read from file '{name}' is zero"),
         );
     }
-    let guid = canonical(&uuid);
-    if blacklisted(&guid) {
+    let meta = match file.metadata() {
+        Ok(m) => m,
+        Err(e) => return fail(errno(&e), format!("MACHINE_GUID: cannot stat the GUID file '{name}'")),
+    };
+    let txt = canonical(&uuid);
+    if blacklisted(&txt) {
         return None;
     }
+    let last_modified_ut = (meta.mtime() as u64).wrapping_mul(1_000_000).wrapping_add(meta.mtime_nsec() as u64 / 1_000);
     nd_log!(
         Source::Daemon,
         Priority::Info,
         "MACHINE_GUID: GUID read from file '{name}'"
     );
-    Some(guid)
+    Some(MachineGuid { txt, uuid, last_modified_ut })
 }
 
 /// `mkstemp()` for `<prefix>XXXXXX`: a new file, mode 0600, never an existing one.
@@ -283,8 +300,25 @@ fn write_to_file(dir: &Path, filename: &Path, guid: &str, modified_ut: u64) -> b
     true
 }
 
+static GUID: OnceLock<MachineGuid> = OnceLock::new();
+
+/// `machine_guid_get()`: read or made once (`previous` is the last status file's GUID, the fallback), exported to
+/// the plugins as `NETDATA_REGISTRY_UNIQUE_ID`, and kept.
+pub fn machine_guid_get(varlib: &str, previous: &[u8; 16]) -> &'static MachineGuid {
+    GUID.get_or_init(|| {
+        let guid = get_or_create(varlib, previous);
+        let _ = netdata_agent_sys::setenv("NETDATA_REGISTRY_UNIQUE_ID", &guid.txt);
+        guid
+    })
+}
+
+/// The GUID `machine_guid_get()` kept.
+pub fn machine_guid() -> Option<&'static MachineGuid> {
+    GUID.get()
+}
+
 /// `machine_guid_get_or_create()`: never fails; a GUID that cannot be published is used in memory.
-pub fn machine_guid_get(varlib: &str) -> String {
+fn get_or_create(varlib: &str, previous: &[u8; 16]) -> MachineGuid {
     let dir = Path::new(varlib).join("registry");
     let filename = dir.join("netdata.public.unique.id");
     if let Some(guid) = read_from_file(&filename, true) {
@@ -296,15 +330,26 @@ pub fn machine_guid_get(varlib: &str) -> String {
         "MACHINE_GUID: failed to read GUID from file '{}'",
         filename.display()
     );
-    nd_log!(
-        Source::Daemon,
-        Priority::Info,
-        "MACHINE_GUID: generating a new GUID"
-    );
-    let guid = canonical(uuid::Uuid::new_v4().as_bytes());
+    let txt = canonical(previous);
+    let uuid = if *previous == [0; 16] || blacklisted(&txt) {
+        nd_log!(
+            Source::Daemon,
+            Priority::Info,
+            "MACHINE_GUID: generating a new GUID"
+        );
+        *uuid::Uuid::new_v4().as_bytes()
+    } else {
+        nd_log!(
+            Source::Daemon,
+            Priority::Info,
+            "MACHINE_GUID: got previous GUID from daemon status file"
+        );
+        *previous
+    };
     let modified_ut = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_micros() as u64);
+    let guid = MachineGuid { txt: canonical(&uuid), uuid, last_modified_ut: modified_ut };
     if let Err(e) = fs::DirBuilder::new().mode(0o775).create(&dir) {
         if e.kind() != io::ErrorKind::AlreadyExists {
             nd_log!(
@@ -348,7 +393,7 @@ pub fn machine_guid_get(varlib: &str) -> String {
     if let Some(published) = read_from_file(&filename, false) {
         return published;
     }
-    if !write_to_file(&dir, &filename, &guid, modified_ut) {
+    if !write_to_file(&dir, &filename, &guid.txt, modified_ut) {
         nd_log!(
             Source::Daemon,
             Priority::Err,
@@ -390,7 +435,7 @@ mod tests {
         for (content, expected) in cases {
             fs::write(&file, content).unwrap();
             assert_eq!(
-                read_from_file(&file, true).as_deref(),
+                read_from_file(&file, true).map(|g| g.txt).as_deref(),
                 expected,
                 "{}",
                 String::from_utf8_lossy(content)
@@ -402,20 +447,38 @@ mod tests {
     #[test]
     fn a_guid_that_cannot_be_saved_is_still_used() {
         let dir = scratch("save");
-        let guid = machine_guid_get(dir.to_str().unwrap());
+        let guid = get_or_create(dir.to_str().unwrap(), &[0; 16]);
         let saved = fs::read_to_string(dir.join("registry/netdata.public.unique.id")).unwrap();
-        assert_eq!(saved, guid);
+        assert_eq!(saved, guid.txt);
         let mode = fs::metadata(dir.join("registry/netdata.public.unique.id"))
             .unwrap()
             .mode()
             & 0o777;
         assert_eq!(mode & 0o222, 0);
-        assert_eq!(machine_guid_get(dir.to_str().unwrap()), guid);
+        // read back with the file's time, which the publication set to the GUID's
+        assert_eq!(get_or_create(dir.to_str().unwrap(), &[0; 16]), guid);
         // A registry path that is a file: nothing can be written, a GUID comes back anyway.
         let blocked = dir.join("blocked");
         fs::write(&blocked, b"").unwrap();
-        let fresh = machine_guid_get(blocked.to_str().unwrap());
-        assert_eq!(fresh.len(), 36);
+        let fresh = get_or_create(blocked.to_str().unwrap(), &[0; 16]);
+        assert_eq!(fresh.txt.len(), 36);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_status_files_guid_is_the_fallback() {
+        let dir = scratch("previous");
+        let previous = [0x5a; 16];
+        let guid = get_or_create(dir.to_str().unwrap(), &previous);
+        assert_eq!((guid.uuid, guid.txt.as_str()), (previous, "5a5a5a5a-5a5a-5a5a-5a5a-5a5a5a5a5a5a"));
+        assert_eq!(
+            fs::read_to_string(dir.join("registry/netdata.public.unique.id")).unwrap(),
+            guid.txt
+        );
+        // a blacklisted one is not reused
+        fs::remove_file(dir.join("registry/netdata.public.unique.id")).unwrap();
+        let cloned = uuid_parse_flexi(BLACKLISTED[0].as_bytes()).unwrap();
+        assert_ne!(get_or_create(dir.to_str().unwrap(), &cloned).uuid, cloned);
         let _ = fs::remove_dir_all(&dir);
     }
 }

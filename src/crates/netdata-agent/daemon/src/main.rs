@@ -21,6 +21,7 @@ mod daemon;
 mod data;
 mod dbengine;
 mod dbengine_stats;
+mod exit_reason;
 mod guid;
 mod heartbeat;
 mod host_labels;
@@ -36,8 +37,6 @@ mod shutdown;
 mod spawn;
 mod startup;
 mod static_file;
-#[expect(dead_code, reason = "saved and loaded once the daemon calls it (D88)")]
-#[cfg_attr(not(test), expect(unused_imports, reason = "as above"))]
 mod status_file;
 mod stream_info;
 mod system;
@@ -313,19 +312,26 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     netdata_agent_log::limits_unlimited();
     netdata_agent_log::initialize();
 
-    let machine_guid = guid::machine_guid_get(&conf.dirs.varlib);
+    // before anything else saves one: the last run's status file, which the machine GUID may come from
+    status_file::init(&conf.dirs.varlib, &conf.dirs.cache, &conf.dirs.user_config);
+    let machine_guid = guid::machine_guid_get(&conf.dirs.varlib, &[0; 16]).txt.clone();
+    // fatal_status_file_save(): until startup completes, a fatal() saves the status file and exits
+    netdata_agent_log::register_fatal_final_callback(|| status_file::update_status(status_file::DaemonStatus::None));
+    exit_reason::init();
 
-    startup.step("signals");
-    // The status-file refresh of this step line detects the node profile, which loads stream.conf first; the load
+    startup.step_line("signals");
+    // The status-file refresh of this step detects the node profile, which loads stream.conf first; the load
     // detects the profile too (for its replication defaults), so C parses [global] profile twice here.
     let stream_conf = load_stream_conf(&mut conf, &system);
-    profile::detect(
+    let detected = profile::detect(
         &mut conf.netdata,
         system.system_cpus,
         system.memory.total,
         stream_conf.is_parent,
         stream_conf.send.enabled,
     );
+    status_file::set_profile(detected.bits());
+    status_file::startup_step(Some("startup(signals)"));
 
     // signals_block_all_except_deadly(): every thread started from here on inherits the mask. The main thread waits
     // for the signals C handles; any other signal stays pending forever, so it is ignored.
@@ -372,7 +378,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         stream_conf.send.enabled,
     );
     profile::setup_malloc(&mut conf.netdata, profile, system.system_cpus);
+    // nd_profile_setup(): every profile starts with 3 tiers, until the dbengine reads [db]
+    status_file::set_profile(profile.bits());
+    status_file::set_db_tiers(3);
     let db = conf::section_db(&mut conf.netdata, system.page_size, &conf.dirs.cache);
+    status_file::set_db_mode(db.mode as u8);
 
     startup.step("run dir");
     match system::run_dir(true) {
@@ -392,6 +402,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
 
     startup.step("crash reports");
+    status_file::check_crash(&mut conf.netdata, startup::analytics_enabled(&conf.dirs.user_config));
     startup.step("temp spawn server");
     startup.step("ssl");
     startup.step("environment for plugins");
@@ -436,6 +447,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         Vec::new()
     };
     if web_enabled && listeners.is_empty() {
+        exit_reason::add(exit_reason::ALREADY_RUNNING);
+        status_file::update_status(status_file::DaemonStatus::None);
         // web_server_listen_sockets_setup() clears errno first: the bind failure is on the listener's own record
         fatal!("Cannot setup listen port(s). Is Netdata already running?");
     }
@@ -609,6 +622,10 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     }
     let hosts = Arc::new(Hosts::with_storage(localhost, storage));
+    // what the status file refreshes from localhost's creation on
+    status_file::set_localhost(hosts.localhost());
+    status_file::set_db_tiers(u8::try_from(hosts.storage().storage_tiers()).unwrap_or(u8::MAX));
+    status_file::set_oom_protection(out_of_memory_protection);
     // store_host_info_and_metadata() at the end of rrdhost_create(localhost)
     match &meta {
         Some(meta) => meta_store::store_host_info_and_metadata(meta, hosts.localhost()),
@@ -1060,49 +1077,98 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     startup.step("done");
     // netdata_exit_fatal(): a fatal() from here on runs the exit sequence, as an abnormal exit
     netdata_agent_log::register_fatal_final_callback(shutdown::exit_fatal);
+    status_file::startup_step(None);
+    status_file::update_status(status_file::DaemonStatus::Running);
 
-    // process_triggered_signals(). C's handler interrupts its poll(), so the SIGNAL records carry EINTR.
+    signal_loop(&handled)
+}
+
+/// `threshold_trigger_smaller()`: true once when `free` falls under `threshold`, again only after it rose to
+/// `threshold + hysteresis`.
+fn threshold_trigger_smaller(last: &mut bool, threshold: f64, hysteresis: f64, free: f64) -> bool {
+    let triggered = *last;
+    if free < threshold {
+        *last = true;
+    }
+    if free >= threshold + hysteresis {
+        *last = false;
+    }
+    !triggered && *last
+}
+
+/// `nd_process_signals()`: the status file saved every 15 minutes and whenever free memory falls under 10, 5 or 1%,
+/// C's `poll()` of 13.379 s, then `process_triggered_signals()`. Returns when this thread ran the exit sequence.
+fn signal_loop(handled: &SigSet) -> i32 {
+    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+    use nix::sys::signalfd::{SfdFlags, SignalFd};
+    use std::os::fd::AsFd;
+
+    const SAVE_EVERY_UT: u64 = 15 * 60 * 1_000_000;
+    // C's handler interrupts its poll(), so the SIGNAL records carry EINTR
     const EINTR: i32 = nix::errno::Errno::EINTR as i32;
-    let reason = loop {
-        let (name, reason) = match handled.wait() {
-            Ok(Signal::SIGINT) => ("SIGINT", "signal-interrupt"),
-            Ok(Signal::SIGQUIT) => ("SIGQUIT", "signal-quit"),
-            Ok(Signal::SIGTERM) => ("SIGTERM", "signal-terminate"),
-            // an exit started on another thread (a fatal): C's handler ignores the reload signals
-            Ok(signal @ (Signal::SIGHUP | Signal::SIGUSR2)) if shutdown::exiting() => {
-                nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
-                    "SIGNAL: Received {}. Ignoring it, as we are exiting...", signal.as_str());
-                continue;
-            }
-            // through the command server's locks and gating: nothing runs when it did not start
-            Ok(Signal::SIGHUP) => {
-                netdata_agent_log::limits_unlimited();
-                nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
-                    "SIGNAL: Received SIGHUP. Reopening all log files...");
-                netdata_agent_log::limits_reset();
-                commands::execute(commands::REOPEN_LOGS, b"");
-                continue;
-            }
-            Ok(Signal::SIGUSR2) => {
-                netdata_agent_log::limits_unlimited();
-                nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
-                    "SIGNAL: Received SIGUSR2. Reloading HEALTH configuration...");
-                netdata_agent_log::limits_reset();
-                commands::execute(commands::RELOAD_HEALTH, b"");
-                continue;
-            }
-            // SIGPIPE is ignored.
-            Ok(_) | Err(_) => continue,
-        };
-        netdata_agent_log::limits_unlimited();
-        nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
-            "SIGNAL: Received {name}. Cleaning up to exit...");
-        command_server::exit();
-        break reason;
+    let signals = match SignalFd::with_flags(handled, SfdFlags::SFD_NONBLOCK | SfdFlags::SFD_CLOEXEC) {
+        Ok(fd) => fd,
+        Err(errno) => fatal!(errno = errno as i32; "SIGNAL: cannot receive the signals"),
     };
-
-    shutdown::exit_gracefully(reason);
-    0
+    let mut last_update_mt = startup::now_ut();
+    let mut triggered = [false; 3];
+    loop {
+        // os_system_memory_available_percent(os_system_memory(false)); C's || stops at the first trigger
+        let memory = system::system_memory_cached(false);
+        let free = if memory.total > 0 {
+            100.0 * memory.available as f64 / memory.total as f64
+        } else {
+            100.0
+        };
+        let [t1, t5, t10] = &mut triggered;
+        let save_again = threshold_trigger_smaller(t1, 1.0, 1.0, free)
+            || threshold_trigger_smaller(t5, 5.0, 1.0, free)
+            || threshold_trigger_smaller(t10, 10.0, 1.0, free);
+        if startup::now_ut().wrapping_sub(last_update_mt) >= SAVE_EVERY_UT || save_again {
+            status_file::update_status(status_file::DaemonStatus::None);
+            last_update_mt += SAVE_EVERY_UT;
+        }
+        let _ = poll(&mut [PollFd::new(signals.as_fd(), PollFlags::POLLIN)], PollTimeout::from(13_379u16));
+        while let Ok(Some(info)) = signals.read_signal() {
+            let reason = match Signal::try_from(info.ssi_signo as i32) {
+                Ok(Signal::SIGINT) => ("SIGINT", exit_reason::SIGINT),
+                Ok(Signal::SIGQUIT) => ("SIGQUIT", exit_reason::SIGQUIT),
+                Ok(Signal::SIGTERM) => ("SIGTERM", exit_reason::SIGTERM),
+                Ok(signal @ (Signal::SIGHUP | Signal::SIGUSR2)) if shutdown::exiting() => {
+                    nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
+                        "SIGNAL: Received {}. Ignoring it, as we are exiting...", signal.as_str());
+                    continue;
+                }
+                // through the command server's locks and gating: nothing runs when it did not start
+                Ok(Signal::SIGHUP) => {
+                    netdata_agent_log::limits_unlimited();
+                    nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
+                        "SIGNAL: Received SIGHUP. Reopening all log files...");
+                    netdata_agent_log::limits_reset();
+                    commands::execute(commands::REOPEN_LOGS, b"");
+                    continue;
+                }
+                Ok(Signal::SIGUSR2) => {
+                    netdata_agent_log::limits_unlimited();
+                    nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
+                        "SIGNAL: Received SIGUSR2. Reloading HEALTH configuration...");
+                    netdata_agent_log::limits_reset();
+                    commands::execute(commands::RELOAD_HEALTH, b"");
+                    continue;
+                }
+                // SIGPIPE is ignored.
+                Ok(_) | Err(_) => continue,
+            };
+            netdata_agent_log::limits_unlimited();
+            nd_log!(Source::Daemon, Priority::Info, errno = EINTR;
+                "SIGNAL: Received {}. Cleaning up to exit...", reason.0);
+            command_server::exit();
+            // a later exit (the command server's, a fatal's) leaves this thread to its signals, as in C
+            if shutdown::exit_gracefully(reason.1) {
+                return 0;
+            }
+        }
+    }
 }
 
 /// `stream_conf_load()`, which also detects the node profile for its replication defaults.

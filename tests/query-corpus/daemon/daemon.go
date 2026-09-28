@@ -338,8 +338,11 @@ func Start(o Options) (*Daemon, error) {
 		},
 		freePort,
 		func(err error) bool {
-			return !errors.Is(err, errProcessNotReaped) &&
-				startupLogShowsBindCollision(o.RunDir)
+			retry := !errors.Is(err, errProcessNotReaped) && startupLogShowsBindCollision(o.RunDir)
+			if retry {
+				forgetFailedAttempt(o.RunDir)
+			}
+			return retry
 		},
 	)
 }
@@ -561,6 +564,19 @@ func infoHasDaemonIdentity(doc map[string]any, hostname string) error {
 	return nil
 }
 
+// forgetFailedAttempt removes what a start that lost its port left for the next attempt to read: the daemon status
+// file and its report dedup file (the next start would report an "already running" exit), and the logs, which are
+// kept aside.
+func forgetFailedAttempt(runDir string) {
+	for _, name := range []string{"status-netdata.json", "dedup-netdata.dat"} {
+		_ = os.Remove(filepath.Join(runDir, "lib", name))
+	}
+	logs, _ := filepath.Glob(filepath.Join(runDir, "log", "*.log"))
+	for _, log := range logs {
+		_ = os.Rename(log, log+".failed-attempt")
+	}
+}
+
 func startupLogShowsBindCollision(runDir string) bool {
 	log, err := os.ReadFile(filepath.Join(runDir, "log", "stdout.log"))
 	if err != nil {
@@ -614,6 +630,21 @@ func (d *Daemon) Stop() error {
 			fmt.Errorf("daemon: process PID %d did not deliver reap result within %s after SIGKILL",
 				d.processPID, killWait))
 	}
+}
+
+// Kill ends the daemon with SIGKILL, as the OOM killer or a crash would, and reaps it.
+func (d *Daemon) Kill() error {
+	if d.process == nil {
+		return nil
+	}
+	killErr := d.process.Kill()
+	if errors.Is(killErr, os.ErrProcessDone) {
+		killErr = nil
+	}
+	<-d.waitCh
+	d.process = nil
+	d.processPID = 0
+	return killErr
 }
 
 // WaitExit waits for a daemon that exits by itself (a shutdown command, a fatal error) and returns its exit status.

@@ -12,7 +12,9 @@ use netdata_agent_log::{
 };
 use netdata_agent_text::duration::duration_to_string;
 
+use crate::exit_reason;
 use crate::startup::now_ut;
+use crate::status_file::{self, DaemonStatus};
 
 /// `watcher_steps[].msg`, in `watcher_step_id_t` order.
 pub const STEPS: [&str; 22] = [
@@ -62,8 +64,10 @@ pub const WEB_SERVERS_WAIT: Duration = Duration::from_secs(3);
 pub const STREAMING_WAIT: Duration = Duration::from_secs(20);
 pub const CONTEXT_WAIT: Duration = Duration::from_secs(5);
 
-/// `exit_initiated`: set when the exit sequence starts.
-static EXITING: AtomicBool = AtomicBool::new(false);
+/// `netdata_cleanup_and_exit()`'s `run`: set by the first exit sequence.
+static RUN: AtomicBool = AtomicBool::new(false);
+/// `netdata_exit_gracefully()`'s `FUNCTION_RUN_ONCE()`.
+static GRACEFUL: AtomicBool = AtomicBool::new(false);
 
 /// The `-P` pidfile, which step 21 removes on every exit, a fatal one included.
 static PIDFILE: OnceLock<String> = OnceLock::new();
@@ -79,23 +83,29 @@ pub fn set_work(work: Work) {
     *WORK.lock().unwrap_or_else(PoisonError::into_inner) = Some(work);
 }
 
-/// `netdata_exit_gracefully()`: the exit sequence with the daemon's work, taken by the first exit.
-pub fn exit_gracefully(reason: &str) {
+/// `netdata_exit_gracefully()`: the reason is added, then the first graceful exit runs the exit sequence with the
+/// daemon's work (true); a later one only adds its reason and its caller carries on (false).
+pub fn exit_gracefully(reason: u32) -> bool {
+    exit_reason::add(reason);
+    if GRACEFUL.swap(true, Ordering::AcqRel) {
+        return false;
+    }
     let work = WORK.lock().unwrap_or_else(PoisonError::into_inner).take();
     let mut work = work.unwrap_or_else(|| Box::new(|_, _| {}));
     cleanup_and_exit(reason, true, &mut *work);
+    true
 }
 
 /// `netdata_exit_fatal()`, registered as `fatal()`'s final callback: the exit sequence as an abnormal exit.
 pub fn exit_fatal() {
     let work = WORK.lock().unwrap_or_else(PoisonError::into_inner).take();
     let mut work = work.unwrap_or_else(|| Box::new(|_, _| {}));
-    cleanup_and_exit("fatal", false, &mut *work);
+    cleanup_and_exit(exit_reason::FATAL, false, &mut *work);
 }
 
-/// `exit_initiated_get()`.
+/// `exit_initiated_get()`: an exit reason has been given.
 pub fn exiting() -> bool {
-    EXITING.load(Ordering::Acquire)
+    exit_reason::get() != 0
 }
 
 pub fn set_pidfile(path: &str) {
@@ -158,6 +168,8 @@ fn watch(shared: &Shared) {
     );
     netdata_log_info!("Shutdown process started");
     let shutdown_start = now_ut();
+    // the status file's record of the steps so far
+    let mut timings = String::from(status_file::SHUTDOWN_TIMINGS_HEADER);
     for (step, msg) in STEPS.iter().enumerate() {
         let step_start = now_ut();
         let since_start = step_start.saturating_sub(shutdown_start);
@@ -165,6 +177,7 @@ fn watch(shared: &Shared) {
         let n = step + 1;
         let total = STEPS.len();
         netdata_log_info!("shutdown step: [{n}/{total}] - {{at {at}}} started '{msg}'...");
+        status_file::shutdown_step(Some(msg), &timings);
         let remaining = Duration::from_secs(TIMEOUT_S.saturating_sub(since_start / 1_000_000));
         let (state, _) = wake
             .wait_timeout_while(lock(shared), remaining, |s| !s.done[step])
@@ -172,6 +185,7 @@ fn watch(shared: &Shared) {
         let ok = state.done[step];
         drop(state);
         let took = duration(now_ut().saturating_sub(step_start));
+        timings.push_str(&format!("\n#{n} '{msg}': {took}"));
         if ok {
             netdata_log_info!(
                 "shutdown step: [{n}/{total}] - {{at {at}}} finished '{msg}' in {took}"
@@ -180,6 +194,7 @@ fn watch(shared: &Shared) {
             netdata_log_error!(
                 "shutdown step: [{n}/{total}] - {{at {at}}} timeout '{msg}' takes too long ({took}) - giving up..."
             );
+            status_file::shutdown_timeout(msg, &timings);
             std::process::abort();
         }
     }
@@ -191,14 +206,18 @@ fn watch(shared: &Shared) {
         "Shutdown process ended in {}",
         duration(now_ut().saturating_sub(shutdown_start))
     );
+    status_file::shutdown_step(None, &timings);
+    status_file::update_status(DaemonStatus::Exited);
 }
 
-/// `netdata_cleanup_and_exit()`: the shutdown record, then every step under the watcher. `work(step)` does what the
-/// caller has for a step (its threads); the steps every exit shares (`cancel_main_threads()`, the pidfile) are done
-/// here. `reason` is the exit reason's name; a normal one is logged as a notice, anything else as critical. A second
-/// exit, such as a fatal on another thread while exiting, ends the process at once.
-pub fn cleanup_and_exit(reason: &str, normal: bool, mut work: impl FnMut(usize, bool)) {
-    if EXITING.swap(true, Ordering::AcqRel) {
+/// `netdata_cleanup_and_exit()`: the reason set, the status file saved as exiting, the shutdown record, then every
+/// step under the watcher. `work(step)` does what the caller has for a step (its threads); the steps every exit
+/// shares (`cancel_main_threads()`, the pidfile) are done here. The record names every reason given so far, as a
+/// notice when they are normal, else as critical. A second exit, such as a fatal on another thread while exiting,
+/// ends the process at once.
+pub fn cleanup_and_exit(reason: u32, normal: bool, mut work: impl FnMut(usize, bool)) {
+    exit_reason::set(reason);
+    if RUN.swap(true, Ordering::AcqRel) {
         nd_log!(
             Source::Daemon,
             Priority::Err,
@@ -206,11 +225,13 @@ pub fn cleanup_and_exit(reason: &str, normal: bool, mut work: impl FnMut(usize, 
         );
         std::process::exit(1);
     }
+    status_file::update_status(DaemonStatus::Exiting);
     netdata_agent_log::limits_unlimited();
     {
         // netdata_log_exit_reason()
         let _frame = push(vec![(Field::MessageId, Value::Uuid(msgid::EXIT))]);
-        let priority = if normal {
+        let reasons = exit_reason::get();
+        let priority = if exit_reason::is_normal(reasons) {
             Priority::Notice
         } else {
             Priority::Crit
@@ -218,7 +239,8 @@ pub fn cleanup_and_exit(reason: &str, normal: bool, mut work: impl FnMut(usize, 
         nd_log!(
             Source::Daemon,
             priority,
-            "NETDATA SHUTDOWN: initializing shutdown with code due to: {reason}"
+            "NETDATA SHUTDOWN: initializing shutdown with code due to: {}",
+            exit_reason::names(reasons, ", ")
         );
     }
     // C does not check the watcher's creation either: without it the steps still run, unlogged.

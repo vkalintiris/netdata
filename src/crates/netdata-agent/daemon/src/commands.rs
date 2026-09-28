@@ -321,8 +321,10 @@ fn run(idx: usize, args: &[u8]) -> (Status, Option<Vec<u8>>) {
         EXIT => {
             netdata_agent_log::limits_unlimited();
             netdata_log_info!("COMMAND: Cleaning up to exit.");
-            shutdown::exit_gracefully("cmd-exit");
-            std::process::exit(0);
+            if shutdown::exit_gracefully(crate::exit_reason::CMD_EXIT) {
+                std::process::exit(0);
+            }
+            (SUCCESS, None)
         }
         FATAL => netdata_agent_log::fatal!("COMMAND: netdata now exits."),
         RELOAD_CLAIMING_STATE => {

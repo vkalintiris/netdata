@@ -491,17 +491,18 @@ pub fn fatal(errno: i32, location: &Location, message: fmt::Arguments<'_>) -> ! 
             Some(message),
         );
     }
-    if let Some(callback) = FATAL_FINAL.get() {
+    let callback = *FATAL_FINAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(callback) = callback {
         callback();
     }
     std::process::exit(1);
 }
 
-static FATAL_FINAL: OnceLock<fn()> = OnceLock::new();
+static FATAL_FINAL: std::sync::Mutex<Option<fn()>> = std::sync::Mutex::new(None);
 
-/// `nd_log_register_fatal_final_cb()`: what `fatal()` runs before exiting.
+/// `nd_log_register_fatal_final_cb()`: what `fatal()` runs before exiting; a later registration replaces it.
 pub fn register_fatal_final_callback(callback: fn()) {
-    let _ = FATAL_FINAL.set(callback);
+    *FATAL_FINAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(callback);
 }
 
 /// The `errno` of an I/O error, 0 when it has none.

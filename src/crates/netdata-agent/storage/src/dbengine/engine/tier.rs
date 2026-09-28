@@ -915,20 +915,9 @@ impl TierData {
 
     /// `rrdeng_get_directory_free_bytes_space()`: the bytes of the tier's filesystem free to unprivileged users, less
     /// 5%; 0 when the filesystem cannot be read.
-    // `fsblkcnt_t` and `c_ulong` are 32-bit on the armv7l and i386 targets, where the conversions are not no-ops.
-    #[allow(clippy::useless_conversion)]
     pub fn directory_free_bytes(&self) -> u64 {
-        let free = nix::sys::statvfs::statvfs(&self.config.path)
-            .ok()
-            .map(|s| {
-                let fragment = u64::from(s.fragment_size());
-                (
-                    u64::from(s.blocks()).saturating_mul(fragment),
-                    u64::from(s.blocks_available()).saturating_mul(fragment),
-                )
-            })
-            .filter(|(total, _)| *total > 0)
-            .map_or(0, |(_, free)| free);
+        let space = netdata_agent_sys::disk_space(&self.config.path);
+        let free = if space.total_bytes > 0 { space.free_bytes } else { 0 };
         free - free * 5 / 100
     }
 

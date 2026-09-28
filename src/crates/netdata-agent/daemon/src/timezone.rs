@@ -291,6 +291,7 @@ impl Timezone {
             self.tzdb = true;
         }
         self.current = refresh(name, tzdb, now_s);
+        system_tz_set(&self.current);
         let tz = &self.current;
         // rrdhost_update_timezone()
         let mut changed = false;
@@ -365,14 +366,29 @@ pub fn system_timezone(c: &mut Config, root: &Path, now_s: i64) -> Timezone {
     if user_configured {
         tzdb = true;
     }
+    let current = refresh(&configured, tzdb, now_s);
+    system_tz_set(&current);
     Timezone {
-        current: refresh(&configured, tzdb, now_s),
+        current,
         tzdb,
         user_configured,
         root: root.to_path_buf(),
         mismatch_logged: false,
         last_refresh_ut: 0,
     }
+}
+
+/// `system_tz`: the process-wide timezone, for readers without the `Timezone` (the status file).
+static SYSTEM_TZ: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn system_tz_set(tz: &SystemTimezone) {
+    *SYSTEM_TZ.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tz.name.clone());
+}
+
+/// `system_tz_get()`'s name: "unknown" until `get_system_timezone()` has run.
+pub fn system_tz_name() -> String {
+    let tz = SYSTEM_TZ.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    tz.clone().unwrap_or_else(|| "unknown".to_string())
 }
 
 #[cfg(test)]

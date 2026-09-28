@@ -30,8 +30,14 @@ impl Startup {
         }
     }
 
-    /// `delta_startup_time(msg)`: the time since the previous step line, the first one without it.
+    /// `delta_startup_time(msg)`: the step line, then the status file saved with `startup(<msg>)` as its step.
     pub fn step(&mut self, msg: &'static str) {
+        self.step_line(msg);
+        crate::status_file::startup_step(Some(&format!("startup({msg})")));
+    }
+
+    /// The line of `delta_startup_time(msg)`: the time since the previous step line, the first one without it.
+    pub fn step_line(&mut self, msg: &'static str) {
         let now = now_ut();
         match self.prev {
             Some(prev) => netdata_log_info!(

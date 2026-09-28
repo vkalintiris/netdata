@@ -75,6 +75,13 @@ fn install_type(si: &mut SystemInfo, user_config_dir: &str) {
     }
 }
 
+/// `get_install_type_internal()`'s install type, for the status file.
+pub fn install_type_of(user_config_dir: &str) -> Option<String> {
+    let mut si = SystemInfo::default();
+    install_type(&mut si, user_config_dir);
+    si.install_type
+}
+
 /// The startup step `system info`: detection, the install type, then the second detection C runs for its build info
 /// (`set_late_analytics_variables()` → `populate_system_info()`, localhost not existing yet), whose result feeds
 /// `BUILD_INFO` (`application` in `/api/v2/info` and `-W buildinfo`, not ported yet).

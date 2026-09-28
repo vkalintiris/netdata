@@ -14,6 +14,7 @@ use nix::sys::stat::{Mode, umask};
 use nix::unistd::{Gid, Uid, User};
 
 use crate::conf::Dirs;
+use crate::status_file;
 use crate::system;
 
 /// `OOM_SCORE_ADJ_MIN` and `OOM_SCORE_ADJ_MAX`.
@@ -459,7 +460,9 @@ pub fn become_daemon(
     c: &mut Config,
     dirs: &Dirs,
 ) -> Outcome {
+    let step = |name| status_file::startup_step(Some(name));
     if !dont_fork {
+        step("startup(become daemon - fork1)");
         match sys::fork() {
             Ok(Forked::Parent { .. }) => return Outcome::ExitParent,
             Ok(Forked::Child) => netdata_agent_log::forked(),
@@ -468,6 +471,7 @@ pub fn become_daemon(
         if let Err(errno) = nix::unistd::setsid() {
             fatal!(errno = errno as i32; "Cannot become session leader.");
         }
+        step("startup(become daemon - fork2)");
         match sys::fork() {
             Ok(Forked::Parent { .. }) => return Outcome::ExitParent,
             Ok(Forked::Child) => netdata_agent_log::forked(),
@@ -476,6 +480,7 @@ pub fn become_daemon(
             }
         }
     }
+    step("startup(become daemon - write pid)");
     let mut pid_file = None;
     if let Some(path) = pidfile.filter(|p| !p.is_empty()) {
         // std opens with O_CLOEXEC.
@@ -516,9 +521,12 @@ pub fn become_daemon(
         }
     }
     umask(Mode::from_bits_truncate(0o007));
+    step("startup(become daemon - oom)");
     oom_score_adj(c);
+    step("startup(become daemon - sched)");
     sched_setscheduler_set(c);
     if !user.is_empty() {
+        step("startup(become daemon - user)");
         match become_user(user, pidfile, pid_file.as_ref(), dirs) {
             Err(()) => nd_log!(
                 Source::Daemon,
@@ -532,8 +540,10 @@ pub fn become_daemon(
             ),
         }
     } else {
+        step("startup(become daemon - dirs)");
         prepare_required_directories(dirs, nix::unistd::getuid(), nix::unistd::getgid());
     }
+    step("startup(become daemon - done)");
     drop(pid_file);
     Outcome::Continue
 }

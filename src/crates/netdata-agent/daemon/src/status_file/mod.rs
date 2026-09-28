@@ -1,17 +1,26 @@
 //! The daemon status file `status-netdata.json` (`src/daemon/status-file.c`, `status-file.h`; D87, D88): the
 //! agent's state, saved at every startup and shutdown step and every 15 minutes, and read at the next start for the
-//! restart and crash accounting. This module holds its model, its JSON writer and parser, and its file I/O.
+//! restart and crash accounting. This module holds its model, its JSON writer and parser, its file I/O, and this
+//! run's records (`session`) with the live values they are refreshed from (`live`).
 
 pub mod io;
 mod json;
+mod live;
 mod parse;
+mod session;
 pub mod signal_code;
+
+pub(crate) use crate::exit_reason;
 
 use netdata_agent_text::c::c_str;
 use netdata_agent_text::datetime::{RFC3339_MAX_LENGTH, rfc3339_datetime_utc};
 
 pub use json::to_json;
 pub use parse::from_json;
+pub use live::{set_db_mode, set_db_tiers, set_localhost, set_oom_protection, set_profile};
+pub use session::{
+    SHUTDOWN_TIMINGS_HEADER, check_crash, init, shutdown_step, shutdown_timeout, startup_step, update_status,
+};
 
 /// `STATUS_FILE_VERSION`.
 pub const VERSION: u32 = 29;
@@ -157,72 +166,6 @@ impl OsType {
     }
 }
 
-/// `EXIT_REASON` (`src/libnetdata/exit/exit_initiated.h`): the bits and their names, in C's table order.
-pub mod exit_reason {
-    pub const SIGBUS: u32 = 1 << 0;
-    pub const SIGSEGV: u32 = 1 << 1;
-    pub const SIGFPE: u32 = 1 << 2;
-    pub const SIGILL: u32 = 1 << 3;
-    pub const SIGABRT: u32 = 1 << 4;
-    pub const SIGSYS: u32 = 1 << 5;
-    pub const SIGXCPU: u32 = 1 << 6;
-    pub const SIGXFSZ: u32 = 1 << 7;
-    pub const OUT_OF_MEMORY: u32 = 1 << 8;
-    pub const ALREADY_RUNNING: u32 = 1 << 9;
-    pub const FATAL: u32 = 1 << 10;
-    pub const API_QUIT: u32 = 1 << 11;
-    pub const CMD_EXIT: u32 = 1 << 12;
-    pub const SIGQUIT: u32 = 1 << 13;
-    pub const SIGTERM: u32 = 1 << 14;
-    pub const SIGINT: u32 = 1 << 15;
-    pub const SERVICE_STOP: u32 = 1 << 16;
-    pub const SYSTEM_SHUTDOWN: u32 = 1 << 17;
-    pub const UPDATE: u32 = 1 << 18;
-    pub const SHUTDOWN_TIMEOUT: u32 = 1 << 19;
-
-    pub const NAMES: [(u32, &str); 20] = [
-        (SIGBUS, "signal-bus-error"),
-        (SIGSEGV, "signal-segmentation-fault"),
-        (SIGFPE, "signal-floating-point-exception"),
-        (SIGILL, "signal-illegal-instruction"),
-        (SIGABRT, "signal-abort"),
-        (SIGSYS, "signal-bad-system-call"),
-        (SIGXCPU, "signal-cpu-time-limit-exceeded"),
-        (SIGXFSZ, "signal-file-size-limit-exceeded"),
-        (OUT_OF_MEMORY, "out-of-memory"),
-        (ALREADY_RUNNING, "already-running"),
-        (FATAL, "fatal"),
-        (API_QUIT, "api-quit"),
-        (CMD_EXIT, "cmd-exit"),
-        (SIGQUIT, "signal-quit"),
-        (SIGTERM, "signal-terminate"),
-        (SIGINT, "signal-interrupt"),
-        (SERVICE_STOP, "service-stop"),
-        (SYSTEM_SHUTDOWN, "system-shutdown"),
-        (UPDATE, "update"),
-        (SHUTDOWN_TIMEOUT, "shutdown-timeout"),
-    ];
-
-    /// `EXIT_REASON_NORMAL`.
-    pub const NORMAL: u32 =
-        SIGINT | SIGTERM | SIGQUIT | API_QUIT | CMD_EXIT | SERVICE_STOP | SYSTEM_SHUTDOWN | UPDATE;
-    /// `EXIT_REASON_DEADLY_SIGNAL`.
-    pub const DEADLY_SIGNAL: u32 = SIGBUS | SIGSEGV | SIGFPE | SIGILL | SIGSYS | SIGXCPU | SIGXFSZ;
-    /// `EXIT_REASON_ABNORMAL`.
-    pub const ABNORMAL: u32 =
-        DEADLY_SIGNAL | SIGABRT | FATAL | ALREADY_RUNNING | OUT_OF_MEMORY | SHUTDOWN_TIMEOUT;
-
-    /// `is_exit_reason_normal()`.
-    pub fn is_normal(reason: u32) -> bool {
-        (reason == 0 || reason & NORMAL != 0) && reason & ABNORMAL == 0
-    }
-
-    /// `EXIT_REASON_2id_one()`: 0 for an unknown or empty name.
-    pub fn from_name(name: &[u8]) -> u32 {
-        super::id_of(&NAMES, name, 0)
-    }
-}
-
 /// `ND_PROFILE`'s names (`netdata-conf-profile.c`).
 pub mod profile {
     pub const PARENT: u32 = 1 << 30;
@@ -308,21 +251,10 @@ pub struct Timings {
 }
 
 /// `OS_SYSTEM_MEMORY`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Memory {
-    pub total: u64,
-    pub available: u64,
-}
+pub use crate::system::SystemMemory as Memory;
 
 /// `OS_SYSTEM_DISK_SPACE`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DiskSpace {
-    pub total_bytes: u64,
-    pub free_bytes: u64,
-    pub total_inodes: u64,
-    pub free_inodes: u64,
-    pub read_only: bool,
-}
+pub use netdata_agent_sys::DiskSpace;
 
 /// The disk footprint of the agent's files.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -462,6 +394,8 @@ pub struct StatusFile {
     pub product: Product,
     pub stack_traces: FixedStr<63>,
     pub fatal: Fatal,
+    /// Localhost's system info was copied in (it is, once); not in the file.
+    pub read_system_info: bool,
 }
 
 #[cfg(test)]

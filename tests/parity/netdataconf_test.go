@@ -27,7 +27,6 @@ func pending(reason, section string, keys ...string) {
 }
 
 func init() {
-	pending("daemon status file", "global", "crash reports")
 	pending("registry", "directories", "registry")
 	pending("cloud/ACLK", "cloud", "query threads")
 	pending("ml", "ml", "enabled", "training window", "min training window", "max training vectors",

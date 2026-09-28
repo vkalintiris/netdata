@@ -126,6 +126,35 @@ pub fn malloc_trim() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 pub fn malloc_trim() {}
 
+/// `OS_SYSTEM_DISK_SPACE`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiskSpace {
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+    pub total_inodes: u64,
+    pub free_inodes: u64,
+    pub read_only: bool,
+}
+
+/// `os_disk_space()`: the filesystem of `path` as `statvfs()` reports it (the bytes free to unprivileged users);
+/// zeros when it cannot be read.
+// `fsblkcnt_t`, `fsfilcnt_t` and `c_ulong` are 32-bit on the armv7l and i386 targets, where the conversions are not
+// no-ops.
+#[allow(clippy::useless_conversion)]
+pub fn disk_space(path: &std::path::Path) -> DiskSpace {
+    let Ok(s) = nix::sys::statvfs::statvfs(path) else {
+        return DiskSpace::default();
+    };
+    let fragment = u64::from(s.fragment_size());
+    DiskSpace {
+        total_bytes: u64::from(s.blocks()).wrapping_mul(fragment),
+        free_bytes: u64::from(s.blocks_available()).wrapping_mul(fragment),
+        total_inodes: u64::from(s.files()),
+        free_inodes: u64::from(s.files_available()),
+        read_only: s.flags().contains(nix::sys::statvfs::FsFlags::ST_RDONLY),
+    }
+}
+
 /// `gethostid()`.
 // `c_long` is 32-bit on the armv7l and i386 targets, where the conversion is not a no-op.
 #[allow(clippy::useless_conversion)]
