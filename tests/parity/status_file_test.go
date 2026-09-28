@@ -15,8 +15,7 @@ import (
 )
 
 // statusVolatile hides what differs between two runs of one binary: clocks, the process, the live memory and disk,
-// the peak RSS, the files' sizes, the host counters and the steps' durations. The Rust agent's host counters are
-// zeros until they are ported (D88.6), which the mask hides too.
+// the peak RSS, the files' sizes, the metric counts and the steps' durations; `metrics.nodes` compares (S6b).
 var statusVolatile = []Mask{
 	{"@timestamp", "clock"},
 	{"agent.since", "the GUID file's modification time (checked against each side's file)"},
@@ -30,7 +29,9 @@ var statusVolatile = []Mask{
 	{"host.disk.db.free", "live"},
 	{"host.disk.db.inodes_free", "live"},
 	{"host.disk.netdata", "file sizes"},
-	{"metrics", "the host counters at the last save, which move while pulse runs"},
+	{"metrics.metrics", "the counts at the last save, which move while pulse runs"},
+	{"metrics.instances", "the counts at the last save, which move while pulse runs"},
+	{"metrics.contexts", "the counts at the last save, which move while pulse runs"},
 }
 
 // statusDifferences are what C and the Rust agent write differently, each with its reason.
@@ -58,6 +59,8 @@ var deadlyDifferences = []Mask{
 	{"fatal.function", "C's from libbacktrace (D87 F3, D91.4)"},
 	{"fatal.stack_trace", "libbacktrace (D87 F3)"},
 	{"fatal.thread_id", "the thread's id"},
+	// a signal sent to the process goes to any thread that does not block it: the main thread or another
+	{"fatal.thread", "the thread the kernel picked"},
 }
 
 // statusOpts: crash reports off, so neither agent posts a report when a carried id enables them by default (D88.10).
@@ -315,13 +318,16 @@ func TestStatusFile(t *testing.T) {
 			}
 			expectStatus(t, c.name, p, map[string]string{
 				"agent.status": `"running"`, "agent.exit_reason": c.reason, "fatal.signal_code": c.code,
-				"fatal.thread": `"NO_NAME"`,
 			}, "Netdata was last stopped gracefully (exit instructed)")
 			compareStatusFiles(t, c.name, p, false, deadlyDifferences...)
 			// what the Rust agent writes in place of C's libbacktrace members (D91.4)
 			rust := statusFile(t, p.Candidate)
+			thread := strings.Trim(statusMember(rust, "fatal.thread"), `"`)
+			if thread == "" || strings.Contains(thread, "[") {
+				t.Errorf("%s: candidate: fatal.thread %q, want a name without its index", c.name, thread)
+			}
 			for path, want := range map[string]string{
-				"fatal.function":    `"thread:NO_NAME:0"`,
+				"fatal.function":    `"thread:` + thread + `:0"`,
 				"fatal.stack_trace": `"info: no stack trace backend available"`,
 			} {
 				if got := statusMember(rust, path); got != want {

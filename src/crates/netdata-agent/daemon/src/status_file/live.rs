@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
 use netdata_agent_log::{Priority, Source, nd_log};
-use netdata_agent_rrd::host::Host;
+use netdata_agent_rrd::host::{Host, Hosts};
 use netdata_agent_text::parse::uuid_parse_flexi;
 use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatternMode};
 
@@ -29,8 +29,8 @@ static DB_MODE: AtomicU8 = AtomicU8::new(db_mode::DBENGINE);
 static DB_TIERS: AtomicU8 = AtomicU8::new(0);
 /// `dbengine_out_of_memory_protection`.
 static OOM_PROTECTION: AtomicU64 = AtomicU64::new(0);
-/// `localhost`, once it exists; weak, so it does not outlive the exit's steps.
-static LOCALHOST: Mutex<Option<Weak<Host>>> = Mutex::new(None);
+/// The hosts (`localhost` among them) once they exist; weak, so they do not outlive the exit's steps.
+static HOSTS: Mutex<Option<Weak<Hosts>>> = Mutex::new(None);
 /// The directories the disk footprint walks: `[directories] lib` and `cache`.
 static DIRS: OnceLock<(String, String)> = OnceLock::new();
 /// `netdata_configured_host_prefix`, once `[global]` is read.
@@ -56,16 +56,16 @@ pub fn set_oom_protection(bytes: u64) {
     OOM_PROTECTION.store(bytes, Ordering::Relaxed);
 }
 
-pub fn set_localhost(host: &Arc<Host>) {
-    *LOCALHOST.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::downgrade(host));
+pub fn set_hosts(hosts: &Arc<Hosts>) {
+    *HOSTS.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::downgrade(hosts));
 }
 
 pub(super) fn set_dirs(varlib: &str, cache: &str) {
     let _ = DIRS.set((varlib.to_string(), cache.to_string()));
 }
 
-fn localhost() -> Option<Arc<Host>> {
-    LOCALHOST.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(Weak::upgrade)
+fn hosts() -> Option<Arc<Hosts>> {
+    HOSTS.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(Weak::upgrade)
 }
 
 fn now_realtime_ut() -> u64 {
@@ -314,7 +314,8 @@ pub fn refresh(s: &mut StatusFile, status: DaemonStatus) {
     }
     // claim_id_get_uuid(): the Rust agent is never claimed (D61.3)
     s.claim_id = [0; 16];
-    if let Some(host) = localhost() {
+    let hosts = hosts();
+    if let Some(host) = hosts.as_ref().map(|h| Arc::clone(h.localhost())) {
         if let Some(id) = crate::meta_store::host_id(&host).filter(|id| *id != [0; 16]) {
             s.host_id.uuid = id;
         }
@@ -334,8 +335,23 @@ pub fn refresh(s: &mut StatusFile, status: DaemonStatus) {
     s.var_cache =
         DIRS.get().map_or_else(DiskSpace::default, |(_, cache)| netdata_agent_sys::disk_space(Path::new(cache)));
     s.system_cpus = system_cpus();
-    // rrdstats_metadata_collect(): the host counters are not ported (D88.6)
-    s.metrics = Default::default();
+    // rrdstats_metadata_collect() (D92.2)
+    if let Some(hosts) = &hosts {
+        let m = hosts.metadata_stats();
+        let counts = |c: netdata_agent_rrd::metadata_stats::Counts| super::Counts {
+            collected: c.collected,
+            available: c.available,
+        };
+        s.metrics = super::Metrics {
+            nodes_total: m.nodes_total,
+            nodes_receiving: m.nodes_receiving,
+            nodes_sending: m.nodes_sending,
+            nodes_archived: m.nodes_archived,
+            metrics: counts(m.metrics),
+            instances: counts(m.instances),
+            contexts: counts(m.contexts),
+        };
+    }
 
     // at most once every 10 minutes
     let updated_ut = s.disk_footprint.last_updated_ut;

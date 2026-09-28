@@ -633,7 +633,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
     let hosts = Arc::new(Hosts::with_storage(localhost, storage));
     // what the status file refreshes from localhost's creation on
-    status_file::set_localhost(hosts.localhost());
+    status_file::set_hosts(&hosts);
     status_file::set_db_tiers(u8::try_from(hosts.storage().storage_tiers()).unwrap_or(u8::MAX));
     status_file::set_oom_protection(out_of_memory_protection);
     // store_host_info_and_metadata() at the end of rrdhost_create(localhost)

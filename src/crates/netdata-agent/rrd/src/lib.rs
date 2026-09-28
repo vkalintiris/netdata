@@ -9,6 +9,7 @@ pub mod collection;
 pub mod contexts;
 pub mod host;
 pub mod labels;
+pub mod metadata_stats;
 pub mod mode;
 pub mod pulse;
 pub mod retention;

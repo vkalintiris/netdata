@@ -469,3 +469,33 @@ fn charts_created_again_reuse_the_loaded_uuids() {
         before
     );
 }
+
+/// `rrdctx.*_count` and `collected.*_count` as the tree holds them: every entry is available, the collected ones
+/// also collected; a chart that never stored is deleted but still counted until it is collected as garbage.
+#[test]
+fn counts_the_tree_as_c_counts_it() {
+    let (contexts, charts) = setup();
+    let (a, _) = charts.create(&spec("a", "ctx.a", "T", 1000));
+    a.dim_add("d1", None, 1, 1, Algorithm::Absolute);
+    a.dim_add("d2", None, 1, 1, Algorithm::Absolute);
+    collect(&a, T);
+    collect(&a, T + 1);
+    let (b, _) = charts.create(&spec("b", "ctx.a", "T", 1000));
+    b.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    let (c, _) = charts.create(&spec("c", "ctx.c", "T", 1000));
+    c.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    contexts.worker_cycle();
+    let mut ids = Vec::new();
+    let counts = contexts.counts(|id| ids.push(id.to_string()));
+    ids.sort();
+    assert_eq!(ids, ["ctx.a", "ctx.c"]);
+    use crate::metadata_stats::{Counts, TreeCounts};
+    assert_eq!(
+        counts,
+        TreeCounts {
+            contexts: Counts { collected: 1, available: 2 },
+            instances: Counts { collected: 1, available: 3 },
+            metrics: Counts { collected: 2, available: 4 },
+        }
+    );
+}

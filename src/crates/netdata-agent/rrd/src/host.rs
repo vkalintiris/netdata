@@ -1422,6 +1422,40 @@ mod tests {
         assert_eq!(retention(&archived), (100, 300, true));
     }
 
+    /// `rrdstats_metadata_collect()`: every host is a node, an offline one archived; the collected counts only of
+    /// online hosts; a context id shared by two hosts is one unique context.
+    #[test]
+    fn counts_the_hosts_as_c() {
+        use crate::chart::Algorithm;
+        use crate::metadata_stats::{Counts, MetadataStats};
+        let storage = Arc::<StorageLayout>::default();
+        let hosts = Hosts::with_storage(Host::with_storage("guid-l", true, info("l"), &storage), Arc::clone(&storage));
+        let archived = hosts.add_archived("guid-x", info("x"), |_| {});
+        for host in [hosts.localhost(), &archived] {
+            let chart = collected_chart(host, DbMode::Ram);
+            let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+            for t in [T0, T0 + 1] {
+                store(&dim, t, 1.0);
+                crate::contexts::collected_rrdset(&chart);
+            }
+            host.contexts().worker_cycle();
+        }
+        let one = Counts { collected: 1, available: 2 };
+        assert_eq!(
+            hosts.metadata_stats(),
+            MetadataStats {
+                nodes_total: 2,
+                nodes_receiving: 0,
+                nodes_sending: 0,
+                nodes_archived: 1,
+                metrics: one,
+                instances: one,
+                contexts: one,
+                contexts_unique: 1,
+            }
+        );
+    }
+
     const T0: i64 = 1_790_180_000;
 
     /// A dbengine dimension keeps a registry entry and a collection on every tier (N8, D68.6.1): the registry's

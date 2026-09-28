@@ -19,7 +19,7 @@ use netdata_agent_text::datetime::{RFC3339_MAX_LENGTH, rfc3339_datetime_utc};
 
 pub use json::to_json;
 pub use parse::from_json;
-pub use live::{set_db_mode, set_db_tiers, set_host_prefix, set_localhost, set_oom_protection, set_profile};
+pub use live::{set_db_mode, set_db_tiers, set_host_prefix, set_hosts, set_oom_protection, set_profile};
 pub use session::{
     SHUTDOWN_TIMINGS_HEADER, check_crash, deadly_signal, init, product, register_fatal, shutdown_step, shutdown_timeout,
     startup_step, update_status,

@@ -1513,6 +1513,25 @@ impl Contexts {
             .unwrap_or_default()
     }
 
+    /// This host's `rrdctx.{contexts,instances,metrics}_count` and `collected.*_count`, which C keeps as counters of
+    /// the tree's entries (in any state, until they are collected as garbage) and of their collected flags; each
+    /// context's id goes to `id`. One lock at a time, each level's list copied, as the other readers do.
+    pub fn counts(&self, mut id: impl FnMut(&str)) -> crate::metadata_stats::TreeCounts {
+        let mut counts = crate::metadata_stats::TreeCounts::default();
+        for rc in self.all() {
+            id(rc.id());
+            counts.contexts.add(rc.flags.is_collected());
+            for ri in rc.instances() {
+                counts.instances.add(ri.flags.is_collected());
+                let metrics = lock(&ri.metrics);
+                for rm in &metrics.ordered {
+                    counts.metrics.add(rm.flags.is_collected());
+                }
+            }
+        }
+        counts
+    }
+
     /// Whether any context holds a metric (C's `rrdctx` metric, instance and context counts are all above zero), in
     /// any state.
     pub fn any_metric(&self) -> bool {
