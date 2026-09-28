@@ -2,6 +2,8 @@
 //! loaded at start and reported in the "Last exit status" record, this run's record carried over from it, refreshed
 //! and saved at every startup and shutdown step, every 15 minutes and at exit. Before `init()` nothing is saved.
 
+use std::cell::Cell;
+use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 
@@ -30,8 +32,42 @@ static FILES: Mutex<Option<Files>> = Mutex::new(None);
 /// `shutdown_timeout_spinlock`: kept once the shutdown timed out, so no later step overwrites its record.
 static TIMEOUT: Mutex<()> = Mutex::new(());
 
-fn files() -> MutexGuard<'static, Option<Files>> {
-    FILES.lock().unwrap_or_else(PoisonError::into_inner)
+thread_local! {
+    /// This thread holds [`FILES`]: a panic inside the status file's own code reaches the fatal path with the lock
+    /// held, and the status file then does nothing on this thread rather than wait for itself (D90.5).
+    static HOLDING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// [`FILES`]' guard, marking the thread as holding it.
+struct Held(MutexGuard<'static, Option<Files>>);
+
+impl Deref for Held {
+    type Target = Option<Files>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Held {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        HOLDING.with(|h| h.set(false));
+    }
+}
+
+/// The records, unless this thread already holds them.
+fn files() -> Option<Held> {
+    if HOLDING.with(Cell::get) {
+        return None;
+    }
+    let guard = FILES.lock().unwrap_or_else(PoisonError::into_inner);
+    HOLDING.with(|h| h.set(true));
+    Some(Held(guard))
 }
 
 /// `daemon_status_file_save()`: the record's JSON into the primary directory or a fallback, logged when `log`.
@@ -85,7 +121,9 @@ pub fn init(varlib: &str, cache: &str, user_config: &str) {
 
     let mut session = StatusFile { v: super::VERSION, ..Default::default() };
     migrate(&mut session, &last, varlib, user_config);
-    *files() = Some(Files { loc, last, session });
+    if let Some(mut files) = files() {
+        *files = Some(Files { loc, last, session });
+    }
 }
 
 /// `daemon_status_file_migrate_once()`: this run's identity, and what it keeps of the last run.
@@ -110,7 +148,7 @@ fn migrate(s: &mut StatusFile, last: &StatusFile, varlib: &str, user_config: &st
 /// `daemon_status_file_get_product_*()`: this run's product (empty before `init()`), which localhost's `_hw_*`
 /// labels take when the system info is detected.
 pub fn product() -> Product {
-    files().as_ref().map_or_else(Product::default, |f| f.session.product)
+    files().and_then(|f| f.as_ref().map(|f| f.session.product)).unwrap_or_default()
 }
 
 /// What this run keeps of the last one: its ids, host strings and counters, one more restart, and the crash or
@@ -146,7 +184,9 @@ fn carry_over(s: &mut StatusFile, last: &StatusFile) {
 
 /// `daemon_status_file_update_status()`: refreshed with `status` (`None` keeps the current one) and saved.
 pub fn update_status(status: DaemonStatus) {
-    if let Some(f) = files().as_mut() {
+    if let Some(mut files) = files()
+        && let Some(f) = files.as_mut()
+    {
         update(f, status);
     }
 }
@@ -154,7 +194,7 @@ pub fn update_status(status: DaemonStatus) {
 /// `daemon_status_file_startup_step()`: the step (or none) as the record's function, saved as initializing; nothing
 /// once a fatal error is recorded.
 pub fn startup_step(step: Option<&str>) {
-    let mut guard = files();
+    let Some(mut guard) = files() else { return };
     let Some(f) = guard.as_mut() else { return };
     if !f.session.fatal.filename.is_empty() {
         return;
@@ -167,7 +207,7 @@ pub fn startup_step(step: Option<&str>) {
 /// its stack trace while it has none, saved as exiting; nothing once a fatal error is recorded or the shutdown timed
 /// out.
 pub fn shutdown_step(step: Option<&str>, timings: &str) {
-    let mut guard = files();
+    let Some(mut guard) = files() else { return };
     let Some(f) = guard.as_mut() else { return };
     if !f.session.fatal.filename.is_empty() {
         return;
@@ -199,7 +239,7 @@ pub fn shutdown_timeout(step: &str, timings: &str) {
     // held for good
     std::mem::forget(TIMEOUT.lock().unwrap_or_else(PoisonError::into_inner));
     exit_reason::add(exit_reason::SHUTDOWN_TIMEOUT);
-    let mut guard = files();
+    let Some(mut guard) = files() else { return };
     let Some(f) = guard.as_mut() else { return };
     timeout_record(&mut f.session, step, timings);
     save(f, false);
@@ -221,6 +261,69 @@ fn timeout_record(s: &mut StatusFile, step: &str, timings: &str) {
         s.fatal.message.set(format!("shutdown timed out at step: {step}"));
     }
     s.fatal.function.set("shutdown_timeout");
+}
+
+/// `copy_and_clean_thread_name_if_empty()`: the thread's tag (NO_NAME without one) unless a name is recorded, its
+/// `[N]` index cut.
+fn set_thread_if_empty(s: &mut StatusFile, tag: &str) {
+    if !s.fatal.thread.is_empty() && s.fatal.thread.as_bytes() != b"NO_NAME" {
+        return;
+    }
+    s.fatal.thread.set(if tag.is_empty() { "NO_NAME" } else { tag });
+    let name = s.fatal.thread.as_bytes();
+    if let Some(at) = name.iter().position(|&c| c == b'[')
+        && name.get(at + 1).is_some_and(u8::is_ascii_digit)
+        && name.get(at + 2).is_some_and(|c| c.is_ascii_digit() || *c == b']')
+    {
+        let cut = name[..at].to_vec();
+        s.fatal.thread.set(cut);
+    }
+}
+
+/// `daemon_status_file_register_fatal()`, the log's fatal hook: once, the fatal reason and the record's fields (its code
+/// location is the Rust agent's own, D90), then a save as it is, with C's text for a missing stack trace backend.
+pub fn register_fatal(r: &netdata_agent_log::FatalRecord) {
+    static ONCE: AtomicBool = AtomicBool::new(false);
+    if ONCE.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    exit_reason::add(exit_reason::FATAL);
+    let Some(mut guard) = files() else { return };
+    let Some(f) = guard.as_mut() else { return };
+    fatal_record(&mut f.session, r, netdata_agent_log::tid() as i32, &netdata_agent_log::thread_tag());
+    save(f, false);
+}
+
+/// The record of a fatal error on thread `tid` tagged `tag`, as `daemon_status_file_register_fatal()` and
+/// `daemon_status_file_save_twice_if_we_can_get_stack_trace()` without a backend leave it.
+fn fatal_record(s: &mut StatusFile, r: &netdata_agent_log::FatalRecord, tid: i32, tag: &str) {
+    s.exit_reason |= exit_reason::FATAL;
+    if s.fatal.thread_id == 0 {
+        s.fatal.thread_id = tid;
+    }
+    set_thread_if_empty(s, tag);
+    if !r.filename.is_empty() {
+        s.fatal.filename.set(&r.filename);
+    }
+    if !r.function.is_empty() {
+        s.fatal.function.set(&r.function);
+    }
+    if !r.message.is_empty() {
+        s.fatal.message.set(&r.message);
+    }
+    if !r.errno.is_empty() {
+        s.fatal.errno.set(&r.errno);
+    }
+    if !r.stack_trace.is_empty() && stack_trace_is_empty(s) {
+        s.fatal.stack_trace.set(&r.stack_trace);
+    }
+    // workers_get_last_job_id(): the worker registry is not ported (D90.3)
+    if r.line != 0 {
+        s.fatal.line = r.line;
+    }
+    if stack_trace_is_empty(s) {
+        s.fatal.stack_trace.set(format!("{INFO_PREFIX}no stack trace backend available"));
+    }
 }
 
 /// `DSF_REPORT_*`.
@@ -462,7 +565,7 @@ pub fn last_exit(last: &mut StatusFile, session: &StatusFile) -> LastExit {
 /// "crash reports check" step; `[global] crash reports` is read (the report itself is not ported).
 pub fn check_crash(conf: &mut Config, analytics: bool) {
     let (exit, dump) = {
-        let mut guard = files();
+        let Some(mut guard) = files() else { return };
         let Some(f) = guard.as_mut() else { return };
         let exit = last_exit(&mut f.last, &f.session);
         let dump = if exit.dump_json {
@@ -488,7 +591,7 @@ pub fn check_crash(conf: &mut Config, analytics: bool) {
     }
     startup_step(Some("startup(crash reports check)"));
     let guard = files();
-    if let Some(f) = guard.as_ref() {
+    if let Some(f) = guard.as_ref().and_then(|g| g.as_ref()) {
         let (last, session) = (f.last, f.session);
         drop(guard);
         let _ = crash_reports(conf, analytics, &last, &session);
@@ -583,6 +686,54 @@ mod tests {
         assert_eq!(run(DaemonStatus::Running, 0, 5), (5, 3, 3, -1));
         assert_eq!(run(DaemonStatus::Exited, exit_reason::FATAL, -3), (5, 3, 3, -4));
         assert_eq!(run(DaemonStatus::None, 0, 0), (5, 2, 3, 1));
+    }
+
+    #[test]
+    fn records_a_fatal_error_as_c() {
+        let r = netdata_agent_log::FatalRecord {
+            filename: "netdata-agent/daemon/src/commands.rs".into(),
+            function: "run".into(),
+            message: "COMMAND: netdata now exits.".into(),
+            errno: String::new(),
+            stack_trace: String::new(),
+            line: 329,
+        };
+        let mut s = StatusFile::default();
+        fatal_record(&mut s, &r, 77, "UV_WORKER[3]");
+        let f = &s.fatal;
+        assert_eq!(s.exit_reason, exit_reason::FATAL);
+        assert_eq!((f.thread_id, f.line, f.worker_job_id), (77, 329, 0));
+        assert_eq!(f.thread.as_bytes(), b"UV_WORKER");
+        assert_eq!(f.filename.as_bytes(), r.filename.as_bytes());
+        assert_eq!((f.function.as_bytes(), f.message.as_bytes()), (&b"run"[..], r.message.as_bytes()));
+        assert!(f.errno.is_empty());
+        assert_eq!(f.stack_trace.as_bytes(), b"info: no stack trace backend available");
+        // what was recorded stays: a name, a thread id, a real stack trace; empty fields do not erase
+        let mut s = StatusFile::default();
+        s.fatal.thread.set("PULSE");
+        s.fatal.thread_id = 5;
+        s.fatal.stack_trace.set("#0 main");
+        s.fatal.function.set("startup(signals)");
+        fatal_record(&mut s, &netdata_agent_log::FatalRecord::default(), 77, "");
+        let f = &s.fatal;
+        assert_eq!((f.thread.as_bytes(), f.thread_id), (&b"PULSE"[..], 5));
+        assert_eq!((f.stack_trace.as_bytes(), f.function.as_bytes()), (&b"#0 main"[..], &b"startup(signals)"[..]));
+        // no tag is NO_NAME; an index is cut only when it is one
+        for (tag, want) in [("", "NO_NAME"), ("WEB[12]", "WEB"), ("STREAM[x]", "STREAM[x]"), ("A[1b]", "A[1b]")] {
+            let mut s = StatusFile::default();
+            set_thread_if_empty(&mut s, tag);
+            assert_eq!(s.fatal.thread.as_bytes(), want.as_bytes(), "{tag}");
+        }
+    }
+
+    /// A thread inside the status file does not wait for itself (D90.5).
+    #[test]
+    fn a_thread_holding_the_records_is_not_let_in_again() {
+        let held = files();
+        assert!(held.is_some());
+        assert!(files().is_none());
+        drop(held);
+        assert!(files().is_some());
     }
 
     #[test]

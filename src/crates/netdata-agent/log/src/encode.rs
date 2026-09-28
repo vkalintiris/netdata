@@ -42,7 +42,7 @@ impl<'a> From<&'a Value> for Slot<'a> {
 
 impl Slot<'_> {
     /// `log_field_to_uint64()`, as the annotators read numbers.
-    fn as_u64(&self) -> u64 {
+    pub(crate) fn as_u64(&self) -> u64 {
         match *self {
             Slot::U64(v) => v,
             Slot::I64(v) => v as u64,
@@ -55,7 +55,7 @@ impl Slot<'_> {
     }
 
     /// The text of a text-like field, `None` when it has none (a lazy value returned false).
-    fn text<'b>(&'b self, tmp: &'b mut Vec<u8>) -> Option<&'b [u8]> {
+    pub(crate) fn text<'b>(&'b self, tmp: &'b mut Vec<u8>) -> Option<&'b [u8]> {
         match *self {
             Slot::Txt(text) | Slot::Str(text) => Some(c_str(text.as_bytes())),
             Slot::Lazy(f) => {

@@ -40,6 +40,17 @@ var statusDifferences = []Mask{
 // stepDurations are the shutdown steps' durations in the stack trace's timings.
 var stepDurations = regexp.MustCompile(`(\\n#\d+ '[^']*'): [^\\"]*`)
 
+// fatalDifferences are what a fatal error's record says differently (D90): the code location is each agent's own
+// source, C's stack trace comes from libbacktrace (D87 F3), and the Rust agent has no worker registry yet.
+var fatalDifferences = []Mask{
+	{"fatal.filename", "each agent's source (D90.1)"},
+	{"fatal.function", "each agent's source (D90.1)"},
+	{"fatal.line", "each agent's source (D90.1)"},
+	{"fatal.stack_trace", "libbacktrace (D87 F3)"},
+	{"fatal.worker_job_id", "no worker registry (D90.3)"},
+	{"fatal.thread_id", "the thread's id"},
+}
+
 // statusOpts: crash reports off, so neither agent posts a report when a carried id enables them by default (D88.10).
 var statusOpts = daemon.Options{DBMode: "alloc", StorageTiers: 1, GlobalExtra: "    crash reports = off\n"}
 
@@ -74,12 +85,12 @@ func statusMember(v Value, path string) string {
 	return v.String()
 }
 
-// compareStatusFiles compares two daemons' status files; `both` when C wrote both.
-func compareStatusFiles(t *testing.T, stage string, p *Pair, both bool) [2]Value {
+// compareStatusFiles compares two daemons' status files; `both` when C wrote both; `extra` masks more.
+func compareStatusFiles(t *testing.T, stage string, p *Pair, both bool, extra ...Mask) [2]Value {
 	t.Helper()
-	masks := statusVolatile
+	masks := append(append([]Mask{}, statusVolatile...), extra...)
 	if !both {
-		masks = append(append([]Mask{}, statusVolatile...), statusDifferences...)
+		masks = append(masks, statusDifferences...)
 	}
 	var files [2]Value
 	for i, side := range p.Each() {
@@ -164,8 +175,8 @@ func noStrayStatusFiles(t *testing.T) {
 }
 
 // TestStatusFile compares the daemon status file (check `daemon.status-file`): after a clean stop, a restart, a C
-// start after a Rust run and a Rust start after a C run, the recovery of a lost GUID from it, and a start after a
-// SIGKILL; each start's "Last exit status" is the same as C's.
+// start after a Rust run and a Rust start after a C run, the recovery of a lost GUID from it, a start after a
+// SIGKILL, and a fatal error's record; each start's "Last exit status" is the same as C's.
 func TestStatusFile(t *testing.T) {
 	noStrayStatusFiles(t)
 	bins := binaries(t)
@@ -266,5 +277,34 @@ func TestStatusFile(t *testing.T) {
 			"Netdata was last killed/crashed while operating normally (killed hard)")
 		stopBoth(t, p)
 		compareStatusFiles(t, "killed-hard", p, false)
+	})
+
+	// a fatal error (netdatacli fatal-agent): its record, then a crash for the next start
+	t.Run("fatal-agent", func(t *testing.T) {
+		for _, side := range p.Each() {
+			d := side.Daemon
+			if err := d.Restart(); err != nil {
+				t.Fatalf("parity: restart %s: %v", side.Role, err)
+			}
+			waitRunning(t, d)
+			runCLI(t, d, "fatal-agent")
+			if code, err := d.WaitExit(60 * time.Second); code != 1 || err != nil {
+				t.Errorf("%s: exit %d (%v), want 1", side.Role, code, err)
+			}
+		}
+		expectStatus(t, "fatal-agent", p, map[string]string{
+			"agent.status": `"exited"`, "agent.exit_reason": `["fatal"]`, "fatal.thread": `"UV_WORKER"`,
+			"fatal.message": `"COMMAND: netdata now exits."`, "fatal.errno": `""`,
+		}, "Netdata was last stopped gracefully (exit instructed)")
+		compareStatusFiles(t, "fatal-agent", p, false, fatalDifferences...)
+		for _, side := range p.Each() {
+			if err := side.Daemon.Restart(); err != nil {
+				t.Fatalf("parity: restart %s: %v", side.Role, err)
+			}
+		}
+		expectStatus(t, "after fatal-agent", p, map[string]string{"agent.crashes": "2", "agent.reliability": "-1"},
+			"Netdata was last stopped gracefully after it encountered a fatal error (fatal and exit)")
+		stopBoth(t, p)
+		compareStatusFiles(t, "after fatal-agent", p, false)
 	})
 }

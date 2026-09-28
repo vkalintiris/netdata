@@ -315,8 +315,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     // before anything else saves one: the last run's status file, which the machine GUID may come from
     status_file::init(&conf.dirs.varlib, &conf.dirs.cache, &conf.dirs.user_config);
     let machine_guid = guid::machine_guid_get(&conf.dirs.varlib, &[0; 16]).txt.clone();
+    netdata_agent_log::register_fatal_hook(status_file::register_fatal);
     // fatal_status_file_save(): until startup completes, a fatal() saves the status file and exits
     netdata_agent_log::register_fatal_final_callback(|| status_file::update_status(status_file::DaemonStatus::None));
+    // a panic is a fatal error (D87 F6, D90.4)
+    std::panic::set_hook(Box::new(panic_hook));
     exit_reason::init();
 
     startup.step_line("signals");
@@ -1082,6 +1085,19 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     status_file::update_status(status_file::DaemonStatus::Running);
 
     signal_loop(&handled)
+}
+
+/// A panic as `fatal()`: at the panic's file and line, function "panic", its message; the fatal path then records it in
+/// the status file and exits.
+fn panic_hook(info: &std::panic::PanicHookInfo<'_>) {
+    let payload = info.payload();
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "Box<dyn Any>".to_string());
+    let (file, line) = info.location().map_or(("", 0), |l| (l.file(), l.line()));
+    netdata_agent_log::fatal_at(file, line, "panic", format_args!("{message}"))
 }
 
 /// `threshold_trigger_smaller()`: true once when `free` falls under `threshold`, again only after it rose to

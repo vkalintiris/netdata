@@ -160,10 +160,53 @@ thread_local! {
     static TID: Cell<u64> = const { Cell::new(0) };
     static CAPTURE: RefCell<Option<Vec<Captured>>> = const { RefCell::new(None) };
     static IN_FATAL: Cell<bool> = const { Cell::new(false) };
+    /// `nd_log_fatal_event`: the record being logged is `fatal()`'s.
+    static FATAL_EVENT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// What `fatal()` hands its hook (`nd_log_fatal_hook()`): the record's fields as they were assembled (a frame's code
+/// location wins over the call site's), empty when unset; `errno` as its annotation prints it ("2, No such file...").
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FatalRecord {
+    pub filename: String,
+    pub function: String,
+    pub message: String,
+    pub errno: String,
+    pub stack_trace: String,
+    pub line: i64,
+}
+
+static FATAL_HOOK: std::sync::Mutex<Option<fn(&FatalRecord)>> = std::sync::Mutex::new(None);
+
+/// `nd_log_register_fatal_hook_cb()`: what a fatal record calls before it is written. The hook must not push frames.
+pub fn register_fatal_hook(hook: fn(&FatalRecord)) {
+    *FATAL_HOOK.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+}
+
+/// `nd_log_fatal_hook()`: the hook, with the fatal record's fields.
+fn fatal_hook(record: &Record<'_>) {
+    let hook = *FATAL_HOOK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(hook) = hook else { return };
+    let slot = |field: Field| record.slots[field as usize].as_ref();
+    let text = |field: Field| {
+        let mut tmp = Vec::new();
+        slot(field)
+            .and_then(|s| s.text(&mut tmp).map(|t| String::from_utf8_lossy(t).into_owned()))
+            .unwrap_or_default()
+    };
+    let errno = slot(Field::Errno).map(encode::Slot::as_u64).filter(|&e| e != 0);
+    hook(&FatalRecord {
+        filename: text(Field::File),
+        function: text(Field::Func),
+        message: text(Field::Message),
+        errno: errno.map(|e| format!("{e}, {}", strerror(e as i32))).unwrap_or_default(),
+        stack_trace: text(Field::StackTrace),
+        line: slot(Field::Line).map_or(0, |s| s.as_u64() as i64),
+    });
 }
 
 /// `gettid_cached()`.
-fn tid() -> u64 {
+pub fn tid() -> u64 {
     TID.with(|tid| {
         if tid.get() == 0 {
             tid.set(nix::unistd::gettid().as_raw() as u64);
@@ -197,8 +240,9 @@ pub fn thread_tag_set(tag: &str) {
     THREAD_TAG.with(|t| *t.borrow_mut() = Some(tag.to_string()));
 }
 
-/// The tag this thread's records carry: its `thread_tag_set()` tag, else its name; none for the main thread, as in C.
-fn thread_tag() -> String {
+/// `nd_thread_tag()`: the tag this thread's records carry: its `thread_tag_set()` tag, else its name; none for the
+/// main thread, as in C.
+pub fn thread_tag() -> String {
     // during thread-local teardown the tag is gone, and the name serves
     let retagged = THREAD_TAG.try_with(|t| t.borrow().clone()).ok().flatten();
     match retagged.or_else(|| std::thread::current().name().map(str::to_string)) {
@@ -406,7 +450,7 @@ fn log_record(
     }
 }
 
-/// `nd_logger_log_fields()`.
+/// `nd_logger_log_fields()`: a fatal record calls the fatal hook first, before the flood limit.
 fn write_record(
     target: &Target,
     format: Format,
@@ -415,6 +459,9 @@ fn write_record(
     limit: bool,
     record: &Record<'_>,
 ) {
+    if FATAL_EVENT.with(|f| f.replace(false)) {
+        fatal_hook(record);
+    }
     if limit
         && output::lock(&G.limits[source as usize])
             .reached(limit::now_monotonic_usec(), program_name())
@@ -482,6 +529,7 @@ pub fn fatal(errno: i32, location: &Location, message: fmt::Arguments<'_>) -> ! 
     }
     if !captured(Source::Daemon, Priority::Alert, errno, Some(message)) {
         let _msgid = push(vec![(Field::MessageId, Value::Uuid(msgid::FATAL))]);
+        FATAL_EVENT.with(|f| f.set(true));
         log_record(
             Source::Daemon,
             Priority::Alert,
@@ -496,6 +544,17 @@ pub fn fatal(errno: i32, location: &Location, message: fmt::Arguments<'_>) -> ! 
         callback();
     }
     std::process::exit(1);
+}
+
+/// [`fatal()`] of a panic: its file and line, and `function`, as the record's code location (a frame, as C lets a log
+/// frame set them).
+pub fn fatal_at(file: &str, line: u32, function: &str, message: fmt::Arguments<'_>) -> ! {
+    let _frame = push(vec![
+        (Field::File, Value::Txt(file.to_string())),
+        (Field::Func, Value::Txt(function.to_string())),
+        (Field::Line, Value::U64(u64::from(line))),
+    ]);
+    fatal(0, &here!(), message)
 }
 
 static FATAL_FINAL: std::sync::Mutex<Option<fn()>> = std::sync::Mutex::new(None);
@@ -513,6 +572,28 @@ pub fn errno_of(err: &std::io::Error) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fatal_hook_gets_the_records_fields() {
+        static GOT: std::sync::Mutex<Option<FatalRecord>> = std::sync::Mutex::new(None);
+        register_fatal_hook(|r| *GOT.lock().unwrap() = Some(r.clone()));
+        let mut record = Record::new();
+        record.slots[Field::File as usize] = Some(Slot::Txt("netdata-agent/daemon/src/commands.rs"));
+        record.slots[Field::Func as usize] = Some(Slot::Txt("run"));
+        record.slots[Field::Line as usize] = Some(Slot::U64(329));
+        record.slots[Field::Message as usize] = Some(Slot::Txt("COMMAND: netdata now exits."));
+        record.slots[Field::Errno as usize] = Some(Slot::I64(2));
+        fatal_hook(&record);
+        let want = FatalRecord {
+            filename: "netdata-agent/daemon/src/commands.rs".into(),
+            function: "run".into(),
+            message: "COMMAND: netdata now exits.".into(),
+            errno: "2, No such file or directory".into(),
+            stack_trace: String::new(),
+            line: 329,
+        };
+        assert_eq!(GOT.lock().unwrap().take(), Some(want));
+    }
 
     #[test]
     fn here_names_the_enclosing_function() {
