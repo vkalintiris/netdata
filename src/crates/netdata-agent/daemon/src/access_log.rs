@@ -72,8 +72,9 @@ impl Drop for Slot {
     }
 }
 
-/// `w->user_auth`'s role and access: `none`/0 until `web_client_ensure_proper_authorization()` runs at the start of
-/// an API version handler. Shared with the request's log frames, which read the access when they write.
+/// `w->user_auth`: the method, role, access and identity a bearer token set, else `none`/0 until
+/// `web_client_ensure_proper_authorization()` runs at the start of an API version handler. Shared with the request's
+/// log frames, which read the access when they write.
 #[derive(Debug, Default)]
 pub struct Auth {
     /// `USER_AUTH_METHOD`: none, or bearer once a token authenticated the request.

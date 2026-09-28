@@ -16,3 +16,6 @@ workspace = true
 libc = { workspace = true }
 nix = { workspace = true, features = ["process", "fs", "signal"] }
 rusqlite = { workspace = true }
+openssl = { workspace = true }
+openssl-sys = { workspace = true }
+foreign-types = { workspace = true }

@@ -142,8 +142,10 @@ ruzstd = "0.8"
 siphasher = "1.0"
 hashers = "1.0"
 twox-hash = { version = "2.1", default-features = false }
-# TLS over the system libssl, as C links it (D10)
+# TLS over the system libssl, as C links it (D10); the sys crate's socket BIO calls go through openssl-sys (D97)
 openssl = "0.10"
+openssl-sys = "0.9"
+foreign-types = "0.3"
 # Pinned exactly: the no-`unsafe`-in-crate guarantee was audited per-version
 # (v0.17.0, `grep -rc unsafe src/` == 0); re-audit before any bump.
 fastbloom = { version = "=0.17.0", features = ["serde"] }

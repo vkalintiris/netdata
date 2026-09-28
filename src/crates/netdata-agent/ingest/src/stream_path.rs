@@ -38,18 +38,6 @@ fn flag_parse_one(name: &[u8]) -> u32 {
         .map_or(0, |&(flag, _)| u32::from(flag))
 }
 
-/// `JSON_TOKENER_DEFAULT_DEPTH`: json-c refuses values nested deeper (serde_json allows 127).
-const TOKENER_DEPTH: usize = 32;
-
-/// How deep values nest, the root counting as 1 (keys do not count).
-fn depth(value: &Value) -> usize {
-    1 + match value {
-        Value::Array(items) => items.iter().map(depth).max().unwrap_or(0),
-        Value::Object(members) => members.values().map(depth).max().unwrap_or(0),
-        _ => 0,
-    }
-}
-
 /// `nd_time_t_max()` on a 64-bit `time_t`.
 const TIME_T_MAX: u64 = i64::MAX as u64;
 
@@ -126,10 +114,7 @@ fn parse_single_path(obj: &Map<String, Value>, error: &mut String) -> Option<Pat
 /// path is then kept).
 fn parse(hostname: &str, json: &[u8]) -> Option<Vec<PathEntry>> {
     let shown = || String::from_utf8_lossy(json);
-    let root = serde_json::from_slice::<Value>(json)
-        .ok()
-        .filter(|root| depth(root) <= TOKENER_DEPTH);
-    let Some(root) = root else {
+    let Some(root) = jsonc::tokener_parse(json) else {
         nd_log!(
             Source::Daemon,
             Priority::Err,

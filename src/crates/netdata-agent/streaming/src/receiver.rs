@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::conn::Conn;
-use netdata_agent_tls::{Link, Peers};
+use netdata_agent_tls::Link;
 use netdata_agent_evloop::{Context, Event, Interest, PoolHandle, TimerId, Token, Worker};
 use netdata_agent_ingest::{self as ingest, Parser};
 use netdata_agent_log::{Priority, Source, nd_log};
@@ -190,8 +190,6 @@ pub struct Attached {
     hosts: Arc<Hosts>,
     slot: Arc<ReceiverSlot>,
     stream: Link<Conn>,
-    /// The socket's addresses, for the TLS records.
-    peers: Peers,
     thread: usize,
     parser: ingest::Config,
     peer: Peer,
@@ -275,17 +273,39 @@ fn raw_fd(link: &Link<Conn>) -> std::os::fd::RawFd {
     link.socket().map_or(-1, std::os::fd::AsRawFd::as_raw_fd)
 }
 
-/// One blocking `send()` or `netdata_ssl_write()` bounded by `timeout` (`nd_sock_send_timeout()`): true when
-/// everything went out.
-fn send_timeout(link: &mut Link<Conn>, peers: &Peers, bytes: &[u8], timeout: Duration) -> bool {
+/// `nd_sock_send_timeout()`: wait up to `timeout` for the socket to take data, then one `send()` or
+/// `netdata_ssl_write()` in the socket's current mode: true when everything went out. A refusal runs on the web
+/// server's non-blocking socket, so dropping its link afterwards never waits on the peer's `close_notify`.
+fn send_timeout(link: &mut Link<Conn>, bytes: &[u8], timeout: Duration) -> bool {
     let Some(conn) = link.socket() else {
         return false;
     };
-    let socket = socket2::SockRef::from(conn);
-    if socket.set_nonblocking(false).and_then(|()| socket.set_write_timeout(Some(timeout))).is_err() {
+    if !writable_within(std::os::fd::AsFd::as_fd(conn), timeout) {
         return false;
     }
-    matches!(link.write(bytes, peers), Ok(n) if n == bytes.len())
+    matches!(link.write(bytes), Ok(n) if n == bytes.len())
+}
+
+/// `wait_on_socket_or_cancel_with_timeout()` for `POLLOUT`: false on a timeout, a failed `poll()` or an event
+/// other than writable.
+fn writable_within(fd: std::os::fd::BorrowedFd<'_>, timeout: Duration) -> bool {
+    use nix::errno::Errno;
+    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+    let deadline = Instant::now() + timeout;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        // errno_clear(): what the send and the close leave is the next records' errno
+        Errno::clear();
+        let mut fds = [PollFd::new(fd, PollFlags::POLLOUT)];
+        match poll(&mut fds, PollTimeout::try_from(left).unwrap_or(PollTimeout::MAX)) {
+            Ok(0) | Err(Errno::EINTR | Errno::EAGAIN) => {}
+            Ok(_) => return fds[0].revents().is_some_and(|r| r.contains(PollFlags::POLLOUT)),
+            Err(_) => return false,
+        }
+    }
 }
 
 impl Receivers {
@@ -463,10 +483,10 @@ impl Receivers {
     }
 
     /// `PreAdmission::Refuse`: the connection has been taken over; the status is logged, then the reply sent.
-    pub fn refuse(&self, mut link: Link<Conn>, peers: &Peers, message: &str, refusal: &Refusal) {
+    pub fn refuse(&self, mut link: Link<Conn>, message: &str, refusal: &Refusal) {
         let peer = &refusal.peer;
         peer.status(refusal.msg, refusal.reason, refusal.priority);
-        if !send_timeout(&mut link, peers, message.as_bytes(), Duration::from_secs(60)) {
+        if !send_timeout(&mut link, message.as_bytes(), Duration::from_secs(60)) {
             nd_log!(
                 Source::Daemon,
                 Priority::Err,
@@ -480,7 +500,7 @@ impl Receivers {
 
     /// The rest of `stream_receiver_accept_connection()`: the receiver configuration, the host, the prompt, and the
     /// handover to a stream thread.
-    pub fn admit(&self, pending: Pending, mut link: Link<Conn>, peers: Peers) {
+    pub fn admit(&self, pending: Pending, mut link: Link<Conn>) {
         let Pending {
             request,
             peer,
@@ -586,7 +606,6 @@ impl Receivers {
             );
             send_timeout(
                 &mut link,
-                &peers,
                 handshake::ERROR_INITIALIZATION.as_bytes(),
                 Duration::from_secs(5),
             );
@@ -624,7 +643,6 @@ impl Receivers {
                 );
                 send_timeout(
                     &mut link,
-                    &peers,
                     handshake::ERROR_ALREADY_STREAMING.as_bytes(),
                     Duration::from_secs(5),
                 );
@@ -639,7 +657,6 @@ impl Receivers {
                 );
                 send_timeout(
                     &mut link,
-                    &peers,
                     handshake::ERROR_BUSY_TRY_LATER.as_bytes(),
                     Duration::from_secs(5),
                 );
@@ -661,8 +678,11 @@ impl Receivers {
         }
         let prompt = caps::prompt(capabilities);
         let mut keepalive_initialized = false;
+        // web server sockets are non-blocking: C sends the prompt in blocking mode
         if let Some(conn) = link.socket() {
-            let _ = socket2::SockRef::from(conn).set_read_timeout(Some(Duration::from_secs(600)));
+            let socket = socket2::SockRef::from(conn);
+            let _ = socket.set_nonblocking(false);
+            let _ = socket.set_read_timeout(Some(Duration::from_secs(600)));
             reconcile_keepalive(
                 std::os::fd::AsFd::as_fd(conn),
                 &host,
@@ -674,7 +694,7 @@ impl Receivers {
         }
         // the negotiated capabilities are logged before the prompt goes out
         peer.established(&host.hostname(), capabilities);
-        if !send_timeout(&mut link, &peers, prompt.as_bytes(), Duration::from_secs(60)) {
+        if !send_timeout(&mut link, prompt.as_bytes(), Duration::from_secs(60)) {
             peer.status(
                 "cannot reply back, dropping connection",
                 Reason::SendTimeout,
@@ -704,7 +724,6 @@ impl Receivers {
             hosts: Arc::clone(&self.hosts),
             slot,
             stream: link,
-            peers,
             thread,
             parser: ingest::Config {
                 capabilities,
@@ -985,12 +1004,11 @@ impl StreamWorker {
             };
             let frame = Arc::clone(&child.frame);
             // nd_sock_peek_nowait(): recv(MSG_PEEK), or netdata_ssl_peek()
-            let Attached { stream, peers, .. } = &mut child.attached;
-            let peeked = match stream {
+            let peeked = match &mut child.attached.stream {
                 Link::Plain(conn) => {
                     socket2::SockRef::from(&*conn).peek(&mut [std::mem::MaybeUninit::uninit(); 1])
                 }
-                Link::Tls(t) => t.peek(&mut [0u8; 1], peers),
+                Link::Tls(t) => t.peek(&mut [0u8; 1]),
                 Link::Gone => Ok(0),
             };
             let a = &child.attached;
@@ -1164,8 +1182,7 @@ impl StreamWorker {
         let out = child.parser.take_output();
         child.pending_out.extend_from_slice(&out);
         while !child.pending_out.is_empty() {
-            let Attached { stream, peers, .. } = &mut child.attached;
-            let failure = match stream.write(&child.pending_out, peers) {
+            let failure = match child.attached.stream.write(&child.pending_out) {
                 Ok(n) if n > 0 => {
                     child.pending_out.drain(..n);
                     child.bytes_out += n as u64;
@@ -1275,10 +1292,13 @@ impl StreamWorker {
             let Some(child) = self.children[index].as_mut() else {
                 return;
             };
-            let Attached { stream, peers, .. } = &mut child.attached;
-            let read = stream.read(&mut buf, peers);
-            // C's parser frame of stream_receiver_receive_data() covers every record after the read; the parser's
-            // fields are taken when a record is due, as C's callbacks read them
+            // C's parser frame of stream_receiver_receive_data() covers the read (a TLS read's records carry the
+            // scope chart) and every record after it; the parser's fields are taken when a record is due, as C's
+            // callbacks read them
+            let read = {
+                let _parser = child.attached.stream.is_tls().then(|| child.parser.log_frame());
+                child.attached.stream.read(&mut buf)
+            };
             let failed = |child: &Child, reason: Reason, errno: i32| {
                 let _parser = child.parser.log_frame();
                 nd_log!(

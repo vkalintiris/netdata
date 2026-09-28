@@ -11,15 +11,30 @@ use netdata_agent_text::parse::{strtoll10, strtoull10, uuid_parse_flexi};
 use netdata_agent_text::print::{print_int64, print_netdata_double};
 use serde_json::{Map, Number, Value};
 
+/// `JSON_TOKENER_DEFAULT_DEPTH`: json-c refuses values nested deeper (serde_json allows 127).
+const TOKENER_DEPTH: usize = 32;
+
+/// How deep values nest, the root counting as 1 (keys do not count).
+fn depth(value: &Value) -> usize {
+    1 + match value {
+        Value::Array(items) => items.iter().map(depth).max().unwrap_or(0),
+        Value::Object(members) => members.values().map(depth).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
 /// `json_tokener_parse()`: the first JSON value of `text` up to its first NUL; what follows the value is ignored, and
-/// a text that is not UTF-8 is read with U+FFFD in place of each invalid sequence (D89).
+/// a text that is not UTF-8 is read with U+FFFD in place of each invalid sequence (D89). Input json-c tolerates and
+/// serde_json does not (comments, single quotes, trailing commas, NaN, a number or literal root followed by text) is
+/// refused: Rust only ever refuses more than C (D46.1).
 pub fn tokener_parse(text: &[u8]) -> Option<Value> {
     let text = c_str(text);
     let first = |t: &[u8]| serde_json::Deserializer::from_slice(t).into_iter::<Value>().next()?.ok();
-    match first(text) {
+    let value = match first(text) {
         None if std::str::from_utf8(text).is_err() => first(String::from_utf8_lossy(text).as_bytes()),
         value => value,
-    }
+    };
+    value.filter(|root| depth(root) <= TOKENER_DEPTH)
 }
 
 /// `JSONC_REQUIRED` or `JSONC_OPTIONAL`.
@@ -429,6 +444,19 @@ mod tests {
 
     fn obj(text: &str) -> Map<String, Value> {
         serde_json::from_str(text).unwrap()
+    }
+
+    /// json-c's tokener: the first value up to a NUL, text after it ignored, invalid UTF-8 read lossily, nesting
+    /// deeper than 32 refused (the root and every value count, keys do not).
+    #[test]
+    fn tokener_as_json_c() {
+        assert_eq!(tokener_parse(br#"{"a":1} tail"#), Some(serde_json::json!({"a": 1})));
+        assert_eq!(tokener_parse(b"{\"a\":1}\0{"), Some(serde_json::json!({"a": 1})));
+        assert_eq!(tokener_parse(b"{\"a\":\"\xff\"}"), Some(serde_json::json!({"a": "\u{fffd}"})));
+        assert_eq!(tokener_parse(b"\0{}"), None);
+        let nested = |n: usize| format!("{}1{}", "[".repeat(n), "]".repeat(n));
+        assert!(tokener_parse(nested(31).as_bytes()).is_some());
+        assert_eq!(tokener_parse(nested(32).as_bytes()), None);
     }
 
     #[test]

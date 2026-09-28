@@ -1262,7 +1262,6 @@ fn signal_loop(handled: &SigSet) -> i32 {
     }
 }
 
-/// `stream_conf_load()`, which also detects the node profile for its replication defaults.
 /// The start of `socket_listen_main_static_threaded()`, in a thread named as C's (`WEB[1]`) so its records carry that
 /// name: `[web] ssl skip certificate verification`, C's notice of the streaming senders' skip (C checks the senders'
 /// flag here), then the web server's TLS context.
@@ -1295,6 +1294,7 @@ fn web_tls_context(
     })
 }
 
+/// `stream_conf_load()`, which also detects the node profile for its replication defaults.
 fn load_stream_conf(conf: &mut Conf, system: &system::Resources) -> StreamConf {
     let mut stream_conf = StreamConf::default();
     stream_conf.load(

@@ -95,7 +95,7 @@ func Connect(addr, apiKey string, hi HostInfo, caps uint32) (*Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stream: dial %s: %w", addr, err)
 	}
-	return connectOn(nc, apiKey, hi, caps)
+	return ConnectOn(nc, apiKey, hi, caps)
 }
 
 // ConnectTLS is Connect over TLS (a parent's `ssl key` and `ssl certificate`, or a listener with `^SSL=force`).
@@ -107,11 +107,12 @@ func ConnectTLS(addr, apiKey string, hi HostInfo, caps uint32, cfg *tls.Config) 
 	if err != nil {
 		return nil, fmt.Errorf("stream: tls dial %s: %w", addr, err)
 	}
-	return connectOn(nc, apiKey, hi, caps)
+	return ConnectOn(nc, apiKey, hi, caps)
 }
 
-// connectOn performs the STREAM handshake on a connected socket.
-func connectOn(nc net.Conn, apiKey string, hi HostInfo, caps uint32) (*Conn, error) {
+// ConnectOn performs the STREAM handshake on a connected socket; a caller that keeps the socket can close it under
+// the connection (a TLS peer that goes away without a close_notify).
+func ConnectOn(nc net.Conn, apiKey string, hi HostInfo, caps uint32) (*Conn, error) {
 	// the large write buffer lets a caller emit a whole fixture burst as one
 	// write() syscall, keeping burst boundaries (Flush) meaningful
 	c := &Conn{conn: nc, r: bufio.NewReader(nc), w: bufio.NewWriterSize(nc, 2<<20)}

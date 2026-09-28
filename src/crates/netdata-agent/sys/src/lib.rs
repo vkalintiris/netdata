@@ -22,12 +22,16 @@
 //!   `siginfo_t` the kernel passes it.
 //! - `exit_now()` (review R34) calls `_exit()` with an integer: no atexit handler or flush runs, as C's fatal paths
 //!   want when another thread is already exiting.
+//! - `SocketSsl` (decision D97.2): `SSL_set_fd()`, `SSL_accept/read/peek/write/shutdown()` and `SSL_get_error()` on a
+//!   connection it owns, with buffers passed as slices and their lengths; the connection is freed before its socket.
 
 mod alloc;
 mod deadly;
+mod tls;
 
 pub use alloc::{Alloc, allocation_failed};
 pub use deadly::{Deadly, die_by, install_deadly};
+pub use tls::SocketSsl;
 #[cfg(feature = "alloc-count")]
 pub use alloc::allocations;
 

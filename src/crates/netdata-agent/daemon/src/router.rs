@@ -372,7 +372,7 @@ impl<'a> Route<'a> {
 
     /// `web_client_api_request_vX()`.
     fn api_command(&self, host: &Host, endpoint: &[u8], table: &[Command]) -> Reply {
-        // web_client_ensure_proper_authorization(): every client is unauthenticated until bearer tokens (M6 commit 3)
+        // web_client_ensure_proper_authorization()
         self.ctx.auth.authorize_anonymous(auth::bearer_protection());
         if endpoint.is_empty() {
             return Reply::text(status::BAD_REQUEST, "Which API command?");

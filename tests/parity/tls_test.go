@@ -158,6 +158,9 @@ var tlsLogMasks = []logMask{
 //     redirect): a TLS request's outcome, a plain request on the default listener, both logs.
 //   - stream (commit 6): a child streams over TLS to the default and the force listener, then closes: its chart's
 //     answer and both logs (the receiver's records "https", the web side's after the takeover "http").
+//   - refused-held (review R38a): with one web server thread, a TLS child refused after the takeover (this agent's
+//     own machine GUID) that keeps its connection open: the refusal, then a plain request's answer, then the same
+//     refusal on a plain connection; both logs (the errno C's records carry after a refusal).
 //   - stream-force: a `^SSL=force` listener refuses a plain STREAM even with no certificate configured: 400 "HTTP
 //     method requested is not supported..." and C's ERR record naming the child's `hostname=` (up to its `&`, else
 //     "not available"). A plain GET is served there (no TLS context, no redirect).
@@ -389,6 +392,101 @@ func TestWebTLS(t *testing.T) {
 		receptions := logMask{regexp.MustCompile(`stopped after (\d+) connects, (\d+) disconnects \(max concurrent ` +
 			`(\d+)\), \d+ receptions`), "stopped after ${1} connects, ${2} disconnects (max concurrent ${3}), ${1} receptions"}
 		compareLogFilesWith(t, p, append(slices.Clone(tlsLogMasks), receptions))
+	})
+	// a TLS client and a TLS child that go away without a close_notify (the client in the middle of its request)
+	t.Run("raw-close", func(t *testing.T) {
+		key, cert := selfSigned(t)
+		p, ls := tlsPair(t, "", map[string][]byte{"key.pem": key, "cert.pem": cert})
+		for i, side := range p.Each() {
+			raw, err := net.DialTimeout("tcp", ls[i].standard, 5*time.Second)
+			if err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			c := tls.Client(raw, &tls.Config{InsecureSkipVerify: true})
+			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+			if err := c.Handshake(); err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			if _, err := c.Write([]byte("GET /api/v1/info HTTP/1.1\r\n")); err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			time.Sleep(500 * time.Millisecond)
+			_ = raw.Close()
+			// a child, once its chart is stored
+			raw, err = net.DialTimeout("tcp", ls[i].standard, 5*time.Second)
+			if err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			host := stream.HostInfo{Hostname: "raw-child", MachineGUID: "b6b6b6b6-6666-4666-8666-0000000000cc"}
+			conn, err := stream.ConnectOn(tls.Client(raw, &tls.Config{InsecureSkipVerify: true}),
+				side.Daemon.StreamKey, host, stream.CapsLive)
+			if err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			now := time.Now().Unix()
+			conn.Linef("CHART 'tls.r' '' 'title' 'units' 'family' 'tls.r' line 1000 1 '' tls corpus")
+			conn.Linef("DIMENSION 'd' '' absolute 1 1 ''")
+			conn.Linef("BEGIN2 'tls.r' 1 %d #", now)
+			conn.Linef("SET2 'd' 1 1 A")
+			conn.Linef("END2")
+			if err := conn.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				b, err := rawExchange(side.Daemon.Addr, []byte("GET /host/raw-child/api/v1/chart?chart=tls.r"+
+					"&harness=wait HTTP/1.1\r\n\r\n"), 5*time.Second)
+				if (err == nil && bytes.Contains(b, []byte(" 200 "))) || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+			_ = raw.Close()
+		}
+		time.Sleep(2 * time.Second)
+		for _, side := range p.Each() {
+			if err := side.Daemon.Stop(); err != nil {
+				t.Fatalf("stop %s: %v", side.Role, err)
+			}
+		}
+		compareLogFilesWith(t, p, tlsLogMasks)
+	})
+	// a child refused after the takeover that keeps its connection open does not hold up the web server's thread
+	t.Run("refused-held", func(t *testing.T) {
+		key, cert := selfSigned(t)
+		p, ls := tlsPair(t, "    web server threads = 1\n", map[string][]byte{"key.pem": key, "cert.pem": cert})
+		var got [2]string
+		for i, side := range p.Each() {
+			c, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", ls[i].standard,
+				&tls.Config{InsecureSkipVerify: true})
+			if err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			// this agent's own machine GUID: "machine UUID is my own", refused after the takeover
+			req := fmt.Sprintf("STREAM key=%s&hostname=held&registry_hostname=held&machine_guid=%s&update_every=1"+
+				"&os=linux&ver=1 HTTP/1.1\r\n\r\n", side.Daemon.StreamKey, parentIdentity.MachineGUID)
+			if _, err := c.Write([]byte(req)); err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+			reply, _ := io.ReadAll(c)
+			b, err := rawExchange(side.Daemon.Addr, []byte("GET /api/v1/info HTTP/1.1\r\n\r\n"), 5*time.Second)
+			head, _, _ := bytes.Cut(b, []byte("\r\n"))
+			// the same refusal on a plain connection
+			plain, perr := rawExchange(side.Daemon.Addr, []byte(req), 5*time.Second)
+			got[i] = fmt.Sprintf("refusal %q, then %q (%v); plain %q (%v)", reply, head, err, plain, perr)
+			_ = c.Close()
+		}
+		if got[0] != got[1] {
+			t.Errorf("oracle %s\ncandidate %s", got[0], got[1])
+		}
+		t.Log(got[0])
+		for _, side := range p.Each() {
+			if err := side.Daemon.Stop(); err != nil {
+				t.Fatalf("stop %s: %v", side.Role, err)
+			}
+		}
+		compareLogFilesWith(t, p, tlsLogMasks)
 	})
 	t.Run("stream-force", func(t *testing.T) {
 		opts := daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1, LogsExtra: "    level = debug\n",
