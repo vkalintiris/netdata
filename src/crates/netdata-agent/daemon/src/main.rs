@@ -29,6 +29,7 @@ mod health;
 mod heartbeat;
 mod host_labels;
 mod listen;
+mod maintenance;
 mod meta_store;
 mod metasync;
 mod profile;
@@ -647,6 +648,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     }
     let hosts = Arc::new(Hosts::with_storage(localhost, storage));
+    // rrdset_free_obsolete_time_s and the host cleanup times, which the maintenance and its readers share
+    hosts.storage().set_cleanup_times(db.cleanup);
     // what the status file refreshes from localhost's creation on
     status_file::set_hosts(&hosts);
     status_file::set_db_tiers(u8::try_from(hosts.storage().storage_tiers()).unwrap_or(u8::MAX));
@@ -709,7 +712,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             &archived::Defaults {
                 db_mode: db.mode,
                 page_size: system.page_size,
-                free_ephemeral_time_s: db.free_ephemeral_time_s,
+                free_ephemeral_time_s: db.cleanup.ephemeral_hosts_s,
             },
             Some(&metasync),
         ),

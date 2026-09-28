@@ -55,6 +55,8 @@ struct Shared {
     cycles: Mutex<[CleanupCycle; 3]>,
     /// `ctx_load_running`: a context load job runs; the shutdown waits for it.
     ctx_load_running: AtomicBool,
+    /// When the store job runs the maintenance next.
+    maintenance: crate::maintenance::Schedule,
 }
 
 /// The writer's databases and hosts, once localhost exists.
@@ -197,10 +199,13 @@ fn run_metadata_cleanup(writer: &Writer, shared: &Shared) {
     writer.meta.wal_checkpoint();
 }
 
-/// `start_metadata_hosts()`, on a pool thread: the context cleanups, the freed dimensions, the hosts' pending
-/// metadata, then the maintenance, and the next store no sooner than 5 s from now. `run_maintenace()` (the service
-/// thread's host cleanup) is not ported yet.
+/// `start_metadata_hosts()`, on a pool thread: the maintenance at most every 10 s (`run_maintenace()`, whose freed
+/// dimensions reach the next job), the context cleanups, the freed dimensions, the hosts' pending metadata, then the
+/// metadata cleanup, and the next store no sooner than 5 s from now.
 fn store_job(writer: &Writer, shared: &Shared, pending: Pending) {
+    shared
+        .maintenance
+        .run_if_due(&writer.hosts, Some(&writer.meta), now_realtime_s());
     if let Some(cleanup) = pending.ctx_cleanup {
         store_ctx_cleanup(writer, shared, cleanup);
     }
@@ -308,6 +313,7 @@ impl MetaSync {
                     next_ctx_cleanup: AtomicI64::new(0),
                     cycles: Mutex::new(cleanup_cycles()),
                     ctx_load_running: AtomicBool::new(false),
+                    maintenance: Default::default(),
                 });
                 let _ = done_tx.send(());
                 let mut writer: Option<Writer> = None;
@@ -683,6 +689,7 @@ mod tests {
             next_ctx_cleanup: AtomicI64::new(0),
             cycles: Mutex::new(cleanup_cycles()),
             ctx_load_running: AtomicBool::new(false),
+            maintenance: Default::default(),
         })
     }
 

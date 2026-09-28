@@ -18,7 +18,7 @@ use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_pluginsd_proto::LineReader;
 use netdata_agent_rrd::chart::flags;
 use netdata_agent_rrd::collection;
-use netdata_agent_rrd::host::{Host, HostInfo, Hosts, ReceiverLink, ReceiverSlot, StreamSend};
+use netdata_agent_rrd::host::{Attach, Host, HostInfo, Hosts, ReceiverLink, ReceiverSlot, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 use netdata_agent_text::duration::duration_to_string;
 use netdata_agent_text::size::size_to_string;
@@ -419,7 +419,7 @@ impl Receivers {
             }
         }
         if let (Some(slot), Some(host)) = (&stale, &existing) {
-            if stop_and_wait(host, slot) {
+            if host.stop_receiver_and_wait(slot) {
                 stale = None;
                 nd_log!(
                     Source::Daemon,
@@ -612,18 +612,35 @@ impl Receivers {
                 }
             }),
         ));
-        if !host.set_receiver(Arc::clone(&slot)) {
-            peer.status(
-                "rejecting streaming connection; host is already served by another receiver",
-                Reason::AlreadyConnected,
-                Priority::Info,
-            );
-            send_timeout(
-                &stream,
-                handshake::ERROR_ALREADY_STREAMING.as_bytes(),
-                Duration::from_secs(5),
-            );
-            return;
+        match host.set_receiver(Arc::clone(&slot)) {
+            Attach::Attached => {}
+            Attach::AlreadyServed => {
+                peer.status(
+                    "rejecting streaming connection; host is already served by another receiver",
+                    Reason::AlreadyConnected,
+                    Priority::Info,
+                );
+                send_timeout(
+                    &stream,
+                    handshake::ERROR_ALREADY_STREAMING.as_bytes(),
+                    Duration::from_secs(5),
+                );
+                return;
+            }
+            Attach::CleanupBusy => {
+                peer.status(
+                    "rejecting streaming connection; internal cleanup is in progress for this node, please retry \
+                     shortly",
+                    Reason::BusyTryLater,
+                    Priority::Info,
+                );
+                send_timeout(
+                    &stream,
+                    handshake::ERROR_BUSY_TRY_LATER.as_bytes(),
+                    Duration::from_secs(5),
+                );
+                return;
+            }
         }
         // rrdhost_set_receiver(); health itself is not ported, the delay is only logged
         if config.health_enabled != 0 && config.health_delay > 0 {
@@ -660,6 +677,8 @@ impl Receivers {
             host.clear_receiver(&slot);
             return;
         }
+        // svc_rrdhost_obsolete_all_charts(): the charts the child does not define again stay obsolete
+        host.obsolete_all_charts();
         peer.status(&connected_msg(&host), Reason::Never, Priority::Info);
         self.hosts.update_is_parent_label();
         if stream.set_nonblocking(true).is_err() {
@@ -753,18 +772,6 @@ fn connected_msg(host: &Host) -> String {
             .unwrap_or_default();
         format!("connected and ready to receive data, last sample in the db {ago} ago")
     }
-}
-
-/// `stream_receiver_signal_to_stop_and_wait()`: true when the old receiver let go within 2 s.
-fn stop_and_wait(host: &Host, slot: &Arc<ReceiverSlot>) -> bool {
-    slot.stop();
-    for _ in 0..2000 {
-        if !host.receiver().is_some_and(|r| Arc::ptr_eq(&r, slot)) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    !host.receiver().is_some_and(|r| Arc::ptr_eq(&r, slot))
 }
 
 /// A stream thread: owns the connections of the children assigned to it, and parses what they send inline

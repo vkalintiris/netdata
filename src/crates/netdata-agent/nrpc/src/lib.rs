@@ -109,6 +109,11 @@ impl Registry {
         self.methods.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// `nrpc_registry_destroy()` of an archived host: every function gone.
+    pub fn clear(&self) {
+        self.lock().clear();
+    }
+
     /// `nrpc_method_register()`. `Err` carries the warning C logs when it refuses (`host` names the owner there).
     pub fn register(&self, host: &str, desc: &MethodDesc) -> Result<(), String> {
         let tags = if desc.tags.is_empty() {

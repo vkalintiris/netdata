@@ -513,8 +513,7 @@ fn remove_ephemeral_host(out: &mut Vec<u8>, host: &Host, report: bool, unregiste
         if let Some(freed) = write.as_deref_mut() {
             *freed = true;
         }
-        ctx.shared.hosts.remove(host.machine_guid());
-        host.charts().flush();
+        ctx.shared.hosts.free(host.machine_guid());
         return 1;
     }
     if marked {

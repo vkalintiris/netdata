@@ -52,6 +52,29 @@ pub struct StorageLayout {
     freed_dimension_row: OnceLock<DimensionRowHook>,
     /// `health_evloop_iteration`: the passes of the HEALTH loop.
     health_iteration: AtomicU64,
+    /// The `[db]` cleanup times the maintenance and its readers share.
+    cleanup: OnceLock<CleanupTimes>,
+}
+
+/// `rrdset_free_obsolete_time_s`, `rrdhost_cleanup_orphan_to_archive_time_s` and `rrdhost_free_ephemeral_time_s`
+/// (`[db] cleanup obsolete charts after`, `cleanup orphan hosts after`, `cleanup ephemeral hosts after`), seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupTimes {
+    pub obsolete_charts_s: i64,
+    pub orphan_hosts_s: i64,
+    /// 0: ephemeral hosts are not freed.
+    pub ephemeral_hosts_s: i64,
+}
+
+impl Default for CleanupTimes {
+    /// C's defaults.
+    fn default() -> Self {
+        CleanupTimes {
+            obsolete_charts_s: 3600,
+            orphan_hosts_s: 3600,
+            ephemeral_hosts_s: 0,
+        }
+    }
 }
 
 /// A freed dimension's UUID to the metadata writer.
@@ -84,7 +107,18 @@ impl StorageLayout {
             pulse: Pulse::default(),
             freed_dimension_row: OnceLock::new(),
             health_iteration: AtomicU64::new(0),
+            cleanup: OnceLock::new(),
         }
+    }
+
+    /// Sets the cleanup times the configuration gives; once.
+    pub fn set_cleanup_times(&self, times: CleanupTimes) {
+        let _ = self.cleanup.set(times);
+    }
+
+    /// The cleanup times, C's defaults until set.
+    pub fn cleanup_times(&self) -> CleanupTimes {
+        self.cleanup.get().copied().unwrap_or_default()
     }
 
     /// `health_evloop_current_iteration()`.

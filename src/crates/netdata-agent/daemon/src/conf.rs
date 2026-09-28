@@ -21,7 +21,7 @@ use netdata_agent_text::sanitize::rrdlabels_sanitize_value;
 
 use netdata_agent_query::grouping::Windows;
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
-use netdata_agent_rrd::storage::Backfill;
+use netdata_agent_rrd::storage::{Backfill, CleanupTimes};
 use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::dbengine::engine::query::DEFAULT_PAGES_PER_EXTENT;
 use netdata_agent_storage::dbengine::format::descriptor::{
@@ -853,12 +853,14 @@ pub fn section_db(c: &mut Config, page_size: i64, cache_dir: &str) -> DbSection 
         ephemeral = orphan;
         c.set_duration_seconds(SECTION_DB, "cleanup ephemeral hosts after", orphan);
     }
-    if c.get_duration_seconds(SECTION_DB, "cleanup obsolete charts after", 3600) < 10 {
+    let mut obsolete = c.get_duration_seconds(SECTION_DB, "cleanup obsolete charts after", 3600);
+    if obsolete < 10 {
         nd_log!(
             Source::Daemon,
             Priority::Info,
             "The \"cleanup obsolete charts after\" option was set to 10 seconds."
         );
+        obsolete = 10;
         c.set_duration_seconds(SECTION_DB, "cleanup obsolete charts after", 10);
     }
 
@@ -913,7 +915,11 @@ pub fn section_db(c: &mut Config, page_size: i64, cache_dir: &str) -> DbSection 
         mode,
         history_entries,
         gap_when_lost_iterations_above: i64::from(gap) + 2,
-        free_ephemeral_time_s: ephemeral,
+        cleanup: CleanupTimes {
+            obsolete_charts_s: obsolete,
+            orphan_hosts_s: orphan,
+            ephemeral_hosts_s: ephemeral,
+        },
         datafiles_present,
         page_type,
         page_cache_mb,
@@ -1596,8 +1602,8 @@ pub struct DbSection {
     pub history_entries: i64,
     /// `gap_when_lost_iterations_above`: the option plus the 2 C adds after reading it.
     pub gap_when_lost_iterations_above: i64,
-    /// `rrdhost_free_ephemeral_time_s`: `[db] cleanup ephemeral hosts after`, 0 for never.
-    pub free_ephemeral_time_s: i64,
+    /// `[db] cleanup obsolete charts after`, `cleanup orphan hosts after` and `cleanup ephemeral hosts after`.
+    pub cleanup: CleanupTimes,
     /// `dbengine_datafiles_present`.
     pub datafiles_present: bool,
     /// `tier_page_type[0]`: `[db] dbengine page type`.
@@ -2160,7 +2166,7 @@ mod tests {
             mode: DbMode::Dbengine,
             history_entries: 3600,
             gap_when_lost_iterations_above: 3,
-            free_ephemeral_time_s: 0,
+            cleanup: CleanupTimes::default(),
             datafiles_present: false,
             page_type: PAGE_TYPE_GORILLA_32BIT,
             page_cache_mb: 32,
@@ -2186,7 +2192,11 @@ mod tests {
                     file: "update every = 0\ngap when lost iterations above = 0\ncleanup orphan hosts after = 5\n\
                            cleanup ephemeral hosts after = 7\ncleanup obsolete charts after = 2\n",
                     want: DbSection {
-                        free_ephemeral_time_s: 10,
+                        cleanup: CleanupTimes {
+                            obsolete_charts_s: 10,
+                            orphan_hosts_s: 10,
+                            ephemeral_hosts_s: 10,
+                        },
                         ..dbengine
                     },
                     values: &[

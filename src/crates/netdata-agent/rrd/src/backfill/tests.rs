@@ -142,7 +142,7 @@ fn jobs_of_a_gone_receiver_fail() {
         crate::host::ReceiverLink::default(),
         Box::new(|| {}),
     ));
-    assert!(f.host.set_receiver(Arc::clone(&again)));
+    assert_eq!(f.host.set_receiver(Arc::clone(&again)), crate::host::Attach::Attached);
     f.host.backfill_requested();
     assert!(!f.host.backfill_answered(&weak));
     assert_eq!(f.host.backfill_pending(), 1);

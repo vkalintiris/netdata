@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::host::{Host, HostInfo};
+use crate::host::{Attach, Host, HostInfo};
 use crate::mode::DbMode;
 use crate::storage::StorageLayout;
 use crate::system_info::SystemInfo;
@@ -150,7 +150,7 @@ pub(crate) fn backfill_fixture(
         ReceiverLink::default(),
         Box::new(|| {}),
     ));
-    assert!(host.set_receiver(Arc::clone(&slot)));
+    assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
     BackfillFixture {
         _dirs: dirs,
         host,

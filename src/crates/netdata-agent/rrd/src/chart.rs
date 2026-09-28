@@ -352,6 +352,20 @@ impl Chart {
         flags::is_discoverable(self.flags())
     }
 
+    /// Takes the chart's `OBSOLETE_DIMENSIONS` flag, for a sweep of its dimensions; whether it was set.
+    pub fn take_obsolete_dimensions(&self) -> bool {
+        self.update_meta(|m| {
+            let was = m.flags & flags::OBSOLETE_DIMENSIONS != 0;
+            m.flags &= !flags::OBSOLETE_DIMENSIONS;
+            was
+        })
+    }
+
+    /// Raises `OBSOLETE_DIMENSIONS` again: a sweep left some dimension for the next one.
+    pub fn raise_obsolete_dimensions(&self) {
+        self.update_meta(|m| m.flags |= flags::OBSOLETE_DIMENSIONS);
+    }
+
     /// Whether the chart was freed (D94.1).
     pub fn is_freed(&self) -> bool {
         self.freed.load(Ordering::Acquire)

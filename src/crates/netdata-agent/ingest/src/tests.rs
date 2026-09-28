@@ -144,7 +144,7 @@ fn chart_definition_end_waits_for_the_backfill() {
         netdata_agent_rrd::host::ReceiverLink::default(),
         Box::new(|| {}),
     ));
-    assert!(h.set_receiver(Arc::clone(&slot)));
+    assert_eq!(h.set_receiver(Arc::clone(&slot)), netdata_agent_rrd::host::Attach::Attached);
     let queue = h.storage().backfill_queue();
     queue.start();
     let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -176,13 +176,14 @@ fn chart_definition_end_waits_for_the_backfill() {
     assert_eq!(String::from_utf8(p.take_output()).unwrap(), want);
     // the child comes back: the chart was queued once, so the new round asks at once
     h.clear_receiver(&slot);
-    assert!(
+    assert_eq!(
         h.set_receiver(Arc::new(netdata_agent_rrd::host::ReceiverSlot::new(
             0,
             Default::default(),
             netdata_agent_rrd::host::ReceiverLink::default(),
             Box::new(|| {}),
-        )))
+        ))),
+        netdata_agent_rrd::host::Attach::Attached
     );
     let mut p = parser(&h);
     feed_all(&mut p, &DEFINE);
@@ -209,7 +210,7 @@ fn a_backfill_answer_after_a_reconnect_is_dropped() {
         netdata_agent_rrd::host::ReceiverLink::default(),
         Box::new(|| {}),
     ));
-    assert!(h.set_receiver(Arc::clone(&slot)));
+    assert_eq!(h.set_receiver(Arc::clone(&slot)), netdata_agent_rrd::host::Attach::Attached);
     let queue = h.storage().backfill_queue();
     queue.start();
     let asked = Arc::new(std::sync::Mutex::new(0));
@@ -242,7 +243,7 @@ fn replication_is_asked_again_after_a_reconnect() {
             netdata_agent_rrd::host::ReceiverLink::default(),
             Box::new(|| {}),
         ));
-        assert!(h.set_receiver(Arc::clone(&slot)));
+        assert_eq!(h.set_receiver(Arc::clone(&slot)), netdata_agent_rrd::host::Attach::Attached);
         slot
     };
     let first = NOW - 100;
@@ -596,13 +597,14 @@ fn stream_path_parser(capabilities: u32) -> (Arc<Host>, Parser) {
         connected_since_s: 1_790_360_450,
         capabilities,
     };
-    assert!(
+    assert_eq!(
         h.set_receiver(Arc::new(netdata_agent_rrd::host::ReceiverSlot::new(
             0,
             Default::default(),
             link,
             Box::new(|| {}),
-        )))
+        ))),
+        netdata_agent_rrd::host::Attach::Attached
     );
     let mut p = Parser::new(
         Arc::clone(&h),

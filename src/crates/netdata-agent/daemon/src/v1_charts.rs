@@ -148,8 +148,9 @@ pub fn charts(host: &Host, hosts: &Hosts, release_channel: &str, custom_info: &s
     let all = hosts.all();
     w.member_add_int64("hosts_count", all.len() as i64);
     w.member_add_array(Some(b"hosts"));
-    // Orphan hosts are not archived yet: every host is listed.
-    for h in &all {
+    // a host that should be cleaned up is left out before its archive
+    let now_s = netdata_agent_rrd::clock::now_realtime_s();
+    for h in all.iter().filter(|h| !h.should_be_cleaned_up(host, now_s)) {
         w.add_array_item_object();
         w.member_add_string("hostname", h.hostname());
         w.object_close();

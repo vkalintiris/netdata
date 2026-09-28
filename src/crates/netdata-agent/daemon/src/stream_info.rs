@@ -93,7 +93,7 @@ mod tests {
     use std::sync::Arc;
 
     use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
-    use netdata_agent_rrd::host::{Host, HostInfo, ReceiverLink, ReceiverSlot};
+    use netdata_agent_rrd::host::{Attach, Host, HostInfo, ReceiverLink, ReceiverSlot};
     use netdata_agent_rrd::mode::DbMode;
 
     use super::*;
@@ -132,7 +132,7 @@ mod tests {
             ReceiverLink::default(),
             Box::new(|| {}),
         ));
-        assert!(host.set_receiver(Arc::clone(&slot)));
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
         slot
     }
 

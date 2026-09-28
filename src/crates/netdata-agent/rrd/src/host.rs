@@ -246,6 +246,16 @@ pub mod meta_flags {
     pub const CLAIMID: u32 = 1 << 3;
 }
 
+/// `rrdhost_set_receiver()`'s outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attach {
+    Attached,
+    /// Another receiver serves the host.
+    AlreadyServed,
+    /// `RRDHOST_SET_RECEIVER_CLEANUP_BUSY`: the maintenance is marking the host's charts obsolete.
+    CleanupBusy,
+}
+
 /// The host flags its maintenance reads (`RRDHOST_FLAG_PENDING_OBSOLETE_*`): some chart or dimension turned obsolete
 /// since the last sweep.
 pub mod pending_flags {
@@ -273,6 +283,8 @@ pub struct Host {
     /// `host->health.evloop_iteration`: the HEALTH loop's pass when a receiver last attached or left; the host is
     /// archived only after more than 10 more.
     health_last_iteration: AtomicU64,
+    /// `RRDHOST_FLAG_OBSOLETE_ALL_IN_PROGRESS`: the maintenance marks the host's charts obsolete; receivers wait.
+    obsolete_all_busy: AtomicBool,
     /// `RRDHOST_FLAG_ORPHAN`: a child whose receiver has gone.
     orphan: AtomicBool,
     charts: Charts,
@@ -432,6 +444,7 @@ impl Host {
             receiver_last_connected_s: AtomicI64::new(0),
             receiver_last_disconnected_s: AtomicI64::new(0),
             health_last_iteration: AtomicU64::new(0),
+            obsolete_all_busy: AtomicBool::new(false),
             orphan: AtomicBool::new(false),
             charts: Charts::new(
                 Arc::clone(&contexts),
@@ -885,6 +898,16 @@ impl Host {
         self.receiver_last_disconnected_s.load(Ordering::Relaxed)
     }
 
+    /// Takes the `pending_flags` its charts raised, for a maintenance sweep.
+    pub fn take_pending_flags(&self) -> u32 {
+        self.pending_flags.swap(0, Ordering::AcqRel)
+    }
+
+    /// Raises `pending_flags` again: a sweep left work for the next one.
+    pub fn raise_pending_flags(&self, flags: u32) {
+        self.pending_flags.fetch_or(flags, Ordering::AcqRel);
+    }
+
     /// `rrdhost_set_health_evloop_iteration()`.
     fn stamp_health_iteration(&self) {
         self.health_last_iteration
@@ -908,11 +931,15 @@ impl Host {
         lock(&self.receiver).clone()
     }
 
-    /// `rrdhost_set_receiver()`: false when another receiver is already attached.
-    pub fn set_receiver(&self, slot: Arc<ReceiverSlot>) -> bool {
+    /// `rrdhost_set_receiver()`: refused while the maintenance marks the host's charts obsolete, or while another
+    /// receiver is attached.
+    pub fn set_receiver(&self, slot: Arc<ReceiverSlot>) -> Attach {
         let mut receiver = lock(&self.receiver);
+        if self.obsolete_all_busy.load(Ordering::Acquire) {
+            return Attach::CleanupBusy;
+        }
         if receiver.is_some() {
-            return false;
+            return Attach::AlreadyServed;
         }
         *receiver = Some(slot);
         self.receiver_connections.fetch_add(1, Ordering::Relaxed);
@@ -933,7 +960,84 @@ impl Host {
         for chart in self.charts.all() {
             contexts::rrdset_not_collected(&chart);
         }
+        Attach::Attached
+    }
+
+    /// `svc_rrdhost_obsolete_all_charts()`: every chart is marked obsolete, so the charts a child does not define again
+    /// are freed by the maintenance; each accepted connection does it, and so does the maintenance for a child gone.
+    pub fn obsolete_all_charts(&self) {
+        for chart in self.charts.all() {
+            chart.is_obsolete();
+        }
+    }
+
+    /// The maintenance's obsolete-all of a child gone for longer than `obsolete_s`: decided under the receiver lock (no
+    /// receiver, none attached since, gone long enough, no pass running), the walk after it, a receiver that attaches
+    /// meanwhile refused as busy. Whether it ran.
+    pub fn obsolete_all_if_gone(&self, now_s: i64, obsolete_s: i64) -> bool {
+        {
+            let receiver = lock(&self.receiver);
+            if receiver.is_some()
+                || self.receiver_last_connected_s() != 0
+                || self.receiver_last_disconnected_s().saturating_add(obsolete_s) >= now_s
+                || self.obsolete_all_busy.load(Ordering::Acquire)
+            {
+                return false;
+            }
+            self.obsolete_all_busy.store(true, Ordering::Release);
+        }
+        self.obsolete_all_charts();
+        self.obsolete_all_busy.store(false, Ordering::Release);
         true
+    }
+
+    /// `rrdhost_should_be_cleaned_up()`: a child other than `protected` that nothing replicates, orphan, loaded and not
+    /// collecting, with more than 10 HEALTH passes and the orphan time since it was disconnected.
+    pub fn should_be_cleaned_up(&self, protected: &Host, now_s: i64) -> bool {
+        let disconnected = self.receiver_last_disconnected_s();
+        !std::ptr::eq(self, protected)
+            && !self.is_localhost
+            && self.replicating_charts() == 0
+            && self.is_orphan()
+            && !self.is_pending_context_load()
+            && !self.is_online()
+            && self.storage().health_iteration().saturating_sub(self.health_last_iteration()) > 10
+            && disconnected != 0
+            && disconnected.saturating_add(self.storage().cleanup_times().orphan_hosts_s) < now_s
+    }
+
+    /// `rrdhost_cleanup_data_collection_and_health()`: the host's receiver stopped (a wait of about 2 s), every chart
+    /// freed, its stream path, variables and functions gone; archived and orphan, with C's record.
+    pub fn cleanup_data_collection(&self) {
+        if let Some(slot) = self.receiver() {
+            self.stop_receiver_and_wait(&slot);
+        }
+        self.charts.flush();
+        lock(&self.variables).clear();
+        self.replace_stream_path(Vec::new());
+        self.functions.clear();
+        self.archived.store(true, Ordering::Release);
+        self.orphan.store(true, Ordering::Release);
+        self.log_archive_mode();
+    }
+
+    /// `stream_receiver_signal_to_stop_and_wait()`: true when the receiver let go within 2 s.
+    pub fn stop_receiver_and_wait(&self, slot: &Arc<ReceiverSlot>) -> bool {
+        slot.stop();
+        let attached = || self.receiver().is_some_and(|r| Arc::ptr_eq(&r, slot));
+        for _ in 0..2000 {
+            if !attached() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        !attached()
+    }
+
+    /// `rrdhost_free_unlinked()` of a host out of the index: its data collection cleaned up, then marked deleted.
+    fn freed_unlinked(&self) {
+        self.cleanup_data_collection();
+        self.pulse_status(crate::pulse::host_status::DELETED);
     }
 
     /// `rrdhost_is_online()`: localhost, or a child whose receiver is attached (no vnodes here).
@@ -1313,9 +1417,9 @@ impl Hosts {
             .to_vec()
     }
 
-    /// `rrdhost_unlink___while_having_rrd_wrlock()`: the host leaves the index (never localhost). Holders of its
-    /// `Arc` keep it until they drop it.
-    pub fn remove(&self, guid: &str) -> Option<Arc<Host>> {
+    /// `rrdhost_free___while_having_rrd_wrlock()`: the host leaves the index (never localhost), then its data
+    /// collection is cleaned up and it is marked deleted. Holders of its `Arc` keep it until they drop it.
+    pub fn free(&self, guid: &str) -> Option<Arc<Host>> {
         let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         if guid == self.localhost.machine_guid {
             return None;
@@ -1324,8 +1428,7 @@ impl Hosts {
         self.version
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         drop(index);
-        host.log_archive_mode();
-        host.pulse_status(crate::pulse::host_status::DELETED);
+        host.freed_unlinked();
         Some(host)
     }
 
@@ -1386,7 +1489,8 @@ impl Hosts {
                 index.remove(guid);
                 self.version
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                host.log_archive_mode();
+                // rrdhost_free___while_having_rrd_wrlock(): nothing inside takes the index again
+                host.freed_unlinked();
                 None
             }
             found => found,
@@ -1741,7 +1845,7 @@ mod tests {
             ReceiverLink::default(),
             Box::new(|| {}),
         ));
-        assert!(host.set_receiver(Arc::clone(&slot)));
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
         host.clear_receiver(&slot);
         assert_eq!(
             (
@@ -1812,7 +1916,7 @@ mod tests {
         assert_eq!(times(&host), (false, false));
         host.storage().next_health_iteration();
         host.storage().next_health_iteration();
-        assert!(host.set_receiver(Arc::clone(&first)));
+        assert_eq!(host.set_receiver(Arc::clone(&first)), Attach::Attached);
         assert_eq!(times(&host), (true, false), "attached: connected, not disconnected");
         assert_eq!(host.health_last_iteration(), 2, "attached: stamped with the HEALTH pass");
         replicating(&chart);
@@ -1822,7 +1926,7 @@ mod tests {
         assert_eq!(host.health_last_iteration(), 3, "detached: stamped again");
         assert!(reset(&chart), "detach resets");
         replicating(&chart);
-        assert!(host.set_receiver(slot()));
+        assert_eq!(host.set_receiver(slot()), Attach::Attached);
         assert_eq!(times(&host), (true, false));
         assert!(reset(&chart), "attach resets");
     }
@@ -1907,7 +2011,7 @@ mod tests {
             ReceiverLink::default(),
             Box::new(|| {}),
         ));
-        assert!(host.set_receiver(Arc::clone(&slot)));
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
         host.replicating_charts_plus_one();
         host.pulse_status(0);
         assert_eq!(host.pulse_state(), RCV_REPLICATING | PERMANENT);
@@ -2045,8 +2149,8 @@ mod tests {
             ReceiverLink::default(),
             Box::new(|| {}),
         ));
-        assert!(a.set_receiver(Arc::clone(&first)));
-        assert!(!a.set_receiver(Arc::clone(&second)));
+        assert_eq!(a.set_receiver(Arc::clone(&first)), Attach::Attached);
+        assert_eq!(a.set_receiver(Arc::clone(&second)), Attach::AlreadyServed);
         a.clear_receiver(&second);
         assert!(a.receiver().is_some());
         a.clear_receiver(&first);
