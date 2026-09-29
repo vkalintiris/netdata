@@ -90,6 +90,10 @@ var proxyVariants = map[string]proxyVariant{
 	// one at the next gate
 	"batch": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 60, function: 40, gated: true,
 		extra: []proxyChart{proxyWide}},
+	// a parent without INTERPOLATED nor REPLICATION gets v1 from the proxy: C writes the collected values it never
+	// set, zeros (D106.3), still batched
+	"v1up": {caps: proxyPlainCaps, refused: stream.CapIEEE754 | stream.CapInterpolated | stream.CapReplication,
+		ticks: 12, gated: true},
 	// a chart the proxy's pattern excludes is never defined upstream and makes no commits
 	"pattern": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 12, gated: true,
 		section: "    proxy send charts matching = !proxy.excluded *\n",
@@ -232,8 +236,13 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 	// P3: the definitions go up, and the stub's plan replicates each chart in three windows
 	all(func(c *stream.Conn) { pokeProxyCharts(c, v, v.charts(), base+2) })
 	for i := range sides {
-		if !sessions[i].WaitData(func(b []byte) bool { return rendTrueCount(b) >= len(proxyCharts) }, 30*time.Second) {
-			t.Fatalf("side %d: replication upstream never finished: %s", i, sessions[i].Data())
+		// without replication upstream the definitions are enough
+		done := func(b []byte) bool { return rendTrueCount(b) >= len(proxyCharts) }
+		if v.refused&stream.CapReplication != 0 {
+			done = func(b []byte) bool { return len(proxyChartLineRe.FindAll(b, -1)) >= len(proxyCharts) }
+		}
+		if !sessions[i].WaitData(done, 30*time.Second) {
+			t.Fatalf("side %d: the definitions or their replication upstream never finished: %s", i, sessions[i].Data())
 		}
 	}
 	time.Sleep(time.Second)
@@ -280,8 +289,11 @@ func startProxySide(t *testing.T, role Role, bin string, v proxyVariant, base in
 			{Start: true, After: base - 1, Before: base + 2}}
 	}
 	stub, err := stream.StartParent(func(r stream.Request) stream.Answer {
-		return stream.Answer{Reply: stream.VCaps(r.Caps() &^ (stream.CapsCompression | v.refused)),
-			Replay: stream.ReplayPlan(plan)}
+		a := stream.Answer{Reply: stream.VCaps(r.Caps() &^ (stream.CapsCompression | v.refused))}
+		if v.refused&stream.CapReplication == 0 {
+			a.Replay = stream.ReplayPlan(plan)
+		}
+		return a
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -360,8 +372,9 @@ func pokeProxyCharts(c *stream.Conn, v proxyVariant, charts []proxyChart, at int
 }
 
 var (
-	rendTrueRe      = regexp.MustCompile(`(?m)^REND .* true `)
-	proxyFlushDefRe = regexp.MustCompile(`(?m)^CHART (?:SLOT:\S+ )?"proxy\.flush"`)
+	rendTrueRe       = regexp.MustCompile(`(?m)^REND .* true `)
+	proxyChartLineRe = regexp.MustCompile(`(?m)^CHART `)
+	proxyFlushDefRe  = regexp.MustCompile(`(?m)^CHART (?:SLOT:\S+ )?"proxy\.flush"`)
 )
 
 func rendTrueCount(b []byte) int { return len(rendTrueRe.FindAll(b, -1)) }
@@ -379,6 +392,8 @@ var (
 var (
 	proxyChartRe  = regexp.MustCompile(`^CHART (?:SLOT:\S+ )?"([^"]*)"`)
 	proxyReplayRe = regexp.MustCompile(`^RBEGIN (?:SLOT:\S+ )?'([^']+)'$`)
+	// the lines of a definition after its CHART
+	proxyDefLineRe = regexp.MustCompile(`^(CLABEL |CLABEL_COMMIT$|DIMENSION |CHART_DEFINITION_END )`)
 )
 
 // proxyTranscript is what a stub received, in comparable parts. First the lines before the first definition (the
@@ -395,8 +410,11 @@ func proxyTranscript(data string) []string {
 	for i := 0; i < len(lines); i++ {
 		l := proxyMask(lines[i])
 		if m := proxyChartRe.FindStringSubmatch(l); m != nil {
-			// a definition, up to its CHART_DEFINITION_END
-			for ; i < len(lines); i++ {
+			// a definition: its CHART, CLABEL and DIMENSION lines, and its CHART_DEFINITION_END (sent only with
+			// REPLICATION)
+			charts[m[1]] = append(charts[m[1]], l)
+			for i+1 < len(lines) && proxyDefLineRe.MatchString(lines[i+1]) {
+				i++
 				charts[m[1]] = append(charts[m[1]], proxyMask(lines[i]))
 				if strings.HasPrefix(lines[i], "CHART_DEFINITION_END ") {
 					break
@@ -504,6 +522,14 @@ func TestProxyTranscriptParse(t *testing.T) {
 		if got := proxyTranscript(other); slices.Equal(got, base) {
 			t.Errorf("%s: compares equal", name)
 		}
+	}
+	// a definition without CHART_DEFINITION_END (a parent without REPLICATION) ends at its last DIMENSION
+	v1 := proxyTranscript(strings.Join([]string{`CHART "a" "" "a" "u" "f" "a" "line" 1 1 "  " "p" "m"`,
+		`DIMENSION "x" "x" "absolute" 1 1 ""`, `BEGIN "a" 0`, `SET "x" = 0`, "END", marker}, "\n") + "\n")
+	if want := []string{"== hooks", "== chart a", `CHART "a" "" "a" "u" "f" "a" "line" 1 1 "  " "p" "m"`,
+		`DIMENSION "x" "x" "absolute" 1 1 ""`, "== stream", "DEF a", `BEGIN "a" 0`, `SET "x" = 0`, "END",
+		marker}; !slices.Equal(v1, want) {
+		t.Errorf("v1 definition:\n%s", strings.Join(v1, "\n"))
 	}
 	// the block after the marker instead of before it
 	moved := strings.Replace(capture(labels, append(answer("a", "10"), answer("b", "10")...), "10", "5", ""),
