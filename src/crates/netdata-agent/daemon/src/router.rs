@@ -253,6 +253,15 @@ pub fn process_request(
     ctx: &RequestContext,
     interrupted: &dyn Fn(&mut i32) -> bool,
 ) -> Reply {
+    // web_client_process_url(): once the exit started every request is refused
+    if (shared.exiting)() {
+        return Reply {
+            code: status::SERVICE_UNAVAILABLE,
+            content_type: ContentType::TextPlain,
+            body: b"This service is currently unavailable.".to_vec(),
+            ..Reply::default()
+        };
+    }
     let path = &req.path[..req.path.len().min(FILENAME_MAX)];
     let end = path.iter().position(|&c| c == b'?').unwrap_or(path.len());
     // The first byte is never inspected for a dot, as in C.
@@ -436,6 +445,7 @@ mod tests {
             netdata_conf: Default::default(),
             custom_dashboard_info: Default::default(),
             ready: || true,
+            exiting: || false,
             multidb_disk_quota_mb: 1024,
             page_cache_mb: 32,
             history_entries: 3600,
@@ -525,6 +535,7 @@ mod tests {
     fn info_and_dbengine_stats_wait_for_startup() {
         let s = Shared {
             ready: || false,
+            exiting: || false,
             ..shared()
         };
         let input = b"GET /api/v1/info HTTP/1.1\r\nHost: localhost\r\n\r\n";
@@ -555,6 +566,21 @@ mod tests {
             );
         }
         assert_eq!(route(&s, b"/api/v1/charts").code, status::OK);
+    }
+
+    /// Once the exit started every request answers C's 503, static files and the netdata.conf page included.
+    #[test]
+    fn requests_after_the_exit_started_are_refused() {
+        let s = Shared { exiting: || true, ..shared() };
+        for path in [&b"/api/v1/info"[..], b"/api/v1/charts", b"/host/box/api/v1/info", b"/index.html", b"/netdata.conf"] {
+            let r = route(&s, path);
+            assert_eq!(
+                (r.code, r.content_type, r.body.as_slice()),
+                (status::SERVICE_UNAVAILABLE, ContentType::TextPlain, &b"This service is currently unavailable."[..]),
+                "{}",
+                String::from_utf8_lossy(path)
+            );
+        }
     }
 
     /// Without the dbengine `/api/v1/dbengine_stats` answers 404 with C's text, the reply otherwise as it started.

@@ -861,6 +861,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         netdata_conf: std::sync::Mutex::new(std::mem::take(&mut conf.netdata)),
         custom_dashboard_info: Default::default(),
         ready: commands::is_ready,
+        exiting: netdata_agent_sys::exit::initiated,
         multidb_disk_quota_mb: multidb_disk_quota_mb as u64,
         page_cache_mb: db.page_cache_mb as u64,
         history_entries: db.history_entries,

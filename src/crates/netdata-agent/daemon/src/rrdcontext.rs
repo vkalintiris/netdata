@@ -10,6 +10,7 @@ use netdata_agent_rrd::contexts;
 use netdata_agent_rrd::host::{Host, Hosts};
 
 use crate::heartbeat::{Phase, Thread};
+use crate::shutdown;
 
 /// `RRDCONTEXT_WORKER_THREAD_HEARTBEAT_USEC`.
 const HEARTBEAT: Duration = Duration::from_secs(1);
@@ -46,8 +47,9 @@ pub fn spawn(
         Phase::Randomized,
         move |ticker| {
             settings();
-            let running = || ticker.running();
-            while ticker.next() {
+            // service_running(SERVICE_CONTEXT), before and after the wait: false once the exit starts (D110)
+            let running = || ticker.running() && !shutdown::exiting();
+            while running() && ticker.next() && running() {
                 contexts::deep_pass(&hosts, now_realtime_ut(), &running, |host, id, version| {
                     delete_from_sql(host, id, version)
                 });

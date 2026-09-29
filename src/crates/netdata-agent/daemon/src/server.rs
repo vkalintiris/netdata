@@ -57,6 +57,8 @@ pub struct Shared {
     pub custom_dashboard_info: OnceLock<String>,
     /// `netdata_ready_load()`: whether startup completed.
     pub ready: fn() -> bool,
+    /// `!service_running(ABILITY_WEB_REQUESTS)`: the exit started, so requests get 503 and the workers leave.
+    pub exiting: fn() -> bool,
     /// `default_multidb_disk_quota_mb` and `default_rrdeng_page_cache_mb`, which `/api/v1/info` reports.
     pub multidb_disk_quota_mb: u64,
     pub page_cache_mb: u64,
@@ -334,7 +336,12 @@ pub struct WebWorker {
     shared: Arc<Shared>,
     receivers: Arc<Receivers>,
     stats: Stats,
+    /// The wake that tests the exit's start as C's 100 ms poll does.
+    wake: Option<TimerId>,
 }
+
+/// `POLL_EVENTS`' poll timeout: how soon a worker notices the exit's start.
+const EXIT_CHECK: Duration = Duration::from_millis(100);
 
 /// The counters of C's `worker_private`, one per poller callback, logged when the thread stops.
 #[derive(Debug, Default)]
@@ -362,6 +369,7 @@ impl WebWorker {
             shared,
             receivers,
             stats: Stats::default(),
+            wake: None,
         }
     }
 
@@ -1291,12 +1299,22 @@ impl Worker for WebWorker {
         }
         self.throttle(cx);
         cx.add_timer(Instant::now() + self.checks_every());
+        self.wake = Some(cx.add_timer(Instant::now() + EXIT_CHECK));
         Ok(())
+    }
+
+    /// `web_server_should_stop()`: the workers leave, closing their clients, once the exit starts (D110).
+    fn running(&self) -> bool {
+        !(self.shared.exiting)()
     }
 
     /// The cleanup pass of `poll_events()`: a client that has not completed its first request (and was sent
     /// nothing) within the first-request timeout, or has moved no data for the idle timeout, is closed.
-    fn timer(&mut self, cx: &mut Context<'_>, _timer: TimerId) {
+    fn timer(&mut self, cx: &mut Context<'_>, timer: TimerId) {
+        if self.wake == Some(timer) {
+            self.wake = Some(cx.add_timer(Instant::now() + EXIT_CHECK));
+            return;
+        }
         let now = Instant::now();
         let (first, idle) = (
             self.shared.first_request_timeout_s,

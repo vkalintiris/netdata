@@ -244,6 +244,8 @@ pub struct Receivers {
     streaming_rate_s: AtomicI64,
     /// The wall-clock second of the last accepted request under the rate limit (`last_stream_accepted_t`).
     last_accepted_s: Mutex<i64>,
+    /// `!service_running(ABILITY_STREAMING_CONNECTIONS)`: the exit started (D110).
+    exiting: fn() -> bool,
 }
 
 fn now_s() -> i64 {
@@ -325,7 +327,13 @@ impl Receivers {
             pins,
             streaming_rate_s: AtomicI64::new(0),
             last_accepted_s: Mutex::new(0),
+            exiting: netdata_agent_sys::exit::initiated,
         }
+    }
+
+    /// The same receivers testing `exiting` for the exit's start.
+    pub fn with_exit(self, exiting: fn() -> bool) -> Self {
+        Receivers { exiting, ..self }
     }
 
     /// Sets `[web] accept a streaming request every`, which is read after the receivers exist.
@@ -365,6 +373,10 @@ impl Receivers {
         client_ip: &str,
         client_port: &str,
     ) -> PreAdmission {
+        // stream_receiver_response_too_busy_now() once the exit started, before anything is read or logged
+        if (self.exiting)() {
+            return PreAdmission::Reply(handshake::ERROR_BUSY_TRY_LATER, 503);
+        }
         let accepted_s = now_s();
         let mut request = StreamRequest::parse(decoded, self.defaults.update_every, user_agent);
         for (hostname, name, value) in &request.unused {

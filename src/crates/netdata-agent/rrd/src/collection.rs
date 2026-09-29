@@ -150,6 +150,10 @@ pub fn timed_done(
     pending_next: bool,
     gap_when_lost_iterations_above: i64,
 ) {
+    // service_running(SERVICE_COLLECTORS): nothing is stored or streamed once the exit started (D110)
+    if netdata_agent_sys::exit::initiated() {
+        return;
+    }
     let mut stream = upstream::metrics_init(host, chart, now.0);
     if pending_next {
         timed_next(chart, now, 0);

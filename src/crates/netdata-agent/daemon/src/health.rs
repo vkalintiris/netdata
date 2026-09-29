@@ -12,6 +12,7 @@ use netdata_agent_rrd::storage::StorageLayout;
 use netdata_agent_rrd::stream_control;
 
 use crate::heartbeat::{Phase, Thread};
+use crate::shutdown;
 
 /// `check_if_resumed_from_suspension()`: the wall clock moved more than twice as far as the monotonic one since the
 /// last pass.
@@ -47,7 +48,8 @@ pub fn spawn(
         Phase::OnTheTick,
         move |ticker| {
             let mut suspension = Suspension { last: None };
-            while ticker.running() {
+            // service_running(SERVICE_HEALTH): false once the exit starts (D110)
+            while ticker.running() && !shutdown::exiting() {
                 if !stream_control::health_should_be_running() {
                     ticker.sleep(stream_control::throttle_wait());
                     continue;
@@ -63,7 +65,7 @@ pub fn spawn(
                 // health_event_loop_for_host(): with health off no host runs its alerts
                 storage.next_health_iteration();
                 // health_sleep()
-                while now_realtime_s() < next_run && ticker.sleep(Duration::from_secs(1)) {}
+                while now_realtime_s() < next_run && !shutdown::exiting() && ticker.sleep(Duration::from_secs(1)) {}
             }
             nd_log!(Source::Daemon, Priority::Debug, "Health thread ended.");
         },

@@ -38,8 +38,12 @@ pub fn spawn(
             let localhost = Arc::clone(hosts.localhost());
             let mut pulse = Pulse::new(hosts, settings);
             let mut real_step = 1;
-            // service_running(SERVICE_COLLECTORS), false once the exit starts
-            while ticker.next() && !shutdown::exiting() {
+            // service_running(SERVICE_COLLECTORS), false once the exit starts, is tested before the wait: the cycle
+            // after the exit's start still runs, its stores dropped by `timed_done` (D81.3, D110.5)
+            while !shutdown::exiting() {
+                if !ticker.next() {
+                    break;
+                }
                 if real_step < step {
                     real_step += 1;
                     continue;
