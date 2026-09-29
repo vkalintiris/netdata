@@ -198,6 +198,8 @@ pub struct Attached {
     pool: PoolHandle<StreamMsg>,
     /// The receiver waits for replication once attached (replication is enabled), else runs.
     replication_wait: bool,
+    /// The senders' connector, whose environment a NODE_ID to the child reads.
+    connector: Arc<Connector>,
 }
 
 impl Attached {
@@ -771,6 +773,7 @@ impl Receivers {
             keepalive_initialized,
             pool: self.pool.clone(),
             replication_wait,
+            connector: Arc::clone(&self.connector),
         };
         // stream_receiver_add_to_queue(); the host waits for its stream thread (set before the thread can attach it)
         attached
@@ -947,7 +950,37 @@ impl StreamWorker {
         // Bytes may have arrived before the registration.
         let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
         let _frame = frame.as_ref().map(records::child_event);
+        // the end of the move to running: lines owed before it are dropped as C's (no buffer yet, D119.2), then the
+        // host's node id goes down (D106.9)
+        if let Some(child) = &self.children[index] {
+            child.attached.slot.take_to_child();
+            crate::sender::send_node_and_claim_id_to_child(&child.attached.host, child.attached.connector.env());
+        }
+        self.deliver_owed(cx, index);
         self.receive(cx, index);
+    }
+
+    /// The lines other threads owed a host's child (`send_to_child`), written to it now: after the host's sender
+    /// executed its parent's commands.
+    pub(crate) fn deliver_to_child(&mut self, cx: &mut Context<'_>, host: &Arc<Host>) {
+        let index = self.children.iter().position(|c| c.as_ref().is_some_and(|c| Arc::ptr_eq(&c.attached.host, host)));
+        if let Some(index) = index {
+            let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
+            let _frame = frame.as_ref().map(records::child_event);
+            self.deliver_owed(cx, index);
+        }
+    }
+
+    /// The child's owed lines, flushed with whatever else waits for it.
+    fn deliver_owed(&mut self, cx: &mut Context<'_>, index: usize) {
+        let Some(child) = self.children[index].as_mut() else {
+            return;
+        };
+        let owed = child.attached.slot.take_to_child();
+        if !owed.is_empty() {
+            child.pending_out.extend_from_slice(&owed);
+            self.flush(cx, index, true);
+        }
     }
 
     /// A backfilled chart's replication request, for the connection it came from: sent and flushed under the
@@ -1027,7 +1060,10 @@ impl StreamWorker {
             // stream_path_retention_updated() from the RRDCONTEXT thread: its messages go out on this tick (D46
             // point 4), each with the retention start of its change
             let changes = child.attached.host.contexts().take_first_time_changes();
-            if !changes.is_empty() {
+            // and what the connector thread owed the child (D106.5)
+            let owed = child.attached.slot.take_to_child();
+            if !changes.is_empty() || !owed.is_empty() {
+                child.pending_out.extend_from_slice(&owed);
                 for first_time_s in changes {
                     child.parser.retention_updated(first_time_s);
                 }

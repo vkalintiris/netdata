@@ -138,7 +138,12 @@ fn run_deferred(d: &mut Dispatched, defer: Deferred) {
         }
         Action::Json { keyword } => {
             if keyword == b"STREAM_PATH" {
-                netdata_agent_ingest::stream_path::set_from_json(&d.host, &defer.payload);
+                // stream_path_set_from_json(…, from_parent = true): a changed path goes to the child only
+                if netdata_agent_ingest::stream_path::set_from_json(&d.host, &defer.payload)
+                    && let Some(localhost) = d.sender.connector.localhost()
+                {
+                    netdata_agent_ingest::stream_path::send_to_child(&d.host, &localhost);
+                }
             } else {
                 nd_log!(
                     Source::Daemon,

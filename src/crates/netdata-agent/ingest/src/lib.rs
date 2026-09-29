@@ -1012,6 +1012,7 @@ impl Parser {
             return Ok(());
         }
         self.host.set_claim_id_of_origin(claim_uuid);
+        upstream::send_claimed_id(&self.host);
         Ok(())
     }
 
@@ -1176,21 +1177,24 @@ impl Parser {
         self.deferred = Some(DeferredBody::new("JSON_PAYLOAD_END"));
     }
 
-    /// `pluginsd_json_stream_paths()` → `stream_path_set_from_json()`: a changed path goes back to the child with
-    /// this agent's entry (`stream_path_send_to_child()`), inline, before anything the next lines produce.
+    /// `pluginsd_json_stream_paths()` → `stream_path_set_from_json()`: a changed path goes up to the host's parent
+    /// and back to the child with this agent's entry (`stream_path_send_to_child()`), inline, before anything the
+    /// next lines produce.
     fn stream_path_received(&mut self, body: &[u8]) {
         let changed = {
             let _frame = self.log_frame();
             stream_path::set_from_json(&self.host, body)
         };
         if changed {
+            stream_path::send_to_parent(&self.host, &self.localhost, None);
             self.send_stream_path(None);
         }
     }
 
-    /// `stream_path_retention_updated()` for the child of this connection: the host's first time became
-    /// `first_time_s`.
+    /// `stream_path_retention_updated()` for the host of this connection: the host's first time became
+    /// `first_time_s`; its path goes up to its parent, then to the child.
     pub fn retention_updated(&mut self, first_time_s: i64) {
+        stream_path::send_to_parent(&self.host, &self.localhost, Some(first_time_s));
         self.send_stream_path(Some(first_time_s));
     }
 

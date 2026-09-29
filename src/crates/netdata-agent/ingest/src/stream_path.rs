@@ -6,6 +6,7 @@
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_pluginsd_proto::caps;
 use netdata_agent_rrd::host::{Host, agent_event_medians_us, netdata_start_time};
+use netdata_agent_rrd::upstream::Traffic;
 use netdata_agent_rrd::stream_path::{
     FLAG_ACLK, FLAG_EPHEMERAL, FLAG_HEALTH, FLAG_ML, FLAG_VIRTUAL, PathEntry,
 };
@@ -283,6 +284,32 @@ pub fn message(host: &Host, localhost: &Host, first_time_t: Option<i64>) -> Vec<
     out.extend_from_slice(w.as_bytes());
     out.extend_from_slice(b"\nJSON_PAYLOAD_END\n");
     out
+}
+
+/// `stream_path_send_to_parent()`: the host's path with this agent's entry, in its own message (it overtakes a
+/// proxy's batch), when the host's parent takes paths and metadata now.
+pub fn send_to_parent(host: &Host, localhost: &Host, first_time_t: Option<i64>) {
+    let Some(up) = host.upstream() else {
+        return;
+    };
+    if up.capabilities() & caps::PATHS == 0 || !host.can_stream_metadata() {
+        return;
+    }
+    up.commit(&message(host, localhost, first_time_t), Traffic::Metadata);
+}
+
+/// `stream_path_send_to_child()` from outside the child's parser (whose own lines go out with its reads): into the
+/// receiver's outbox, when the child takes paths and is online.
+pub fn send_to_child(host: &Host, localhost: &Host) {
+    if host.is_localhost() {
+        return;
+    }
+    let Some(slot) = host.receiver() else {
+        return;
+    };
+    if slot.link.capabilities & caps::PATHS != 0 && host.is_online() {
+        slot.send_to_child(&message(host, localhost, None));
+    }
 }
 
 #[cfg(test)]

@@ -86,8 +86,7 @@ type proxyVariant struct {
 	records func(c *stream.Conn, base int64)
 	// leave replaces the flush: after the ticks the child leaves and comes back (proxyLeaveRun)
 	leave bool
-	// gated variants run against the candidate only with PARITY_PROXY=1 (8f: v1in and metadata, which need 8h's
-	// relays: the path again when the retention changes, CLAIMED_ID up and NODE_ID down)
+	// gated variants run against the candidate only with PARITY_PROXY=1 (none since 8h)
 	gated bool
 }
 
@@ -129,12 +128,12 @@ var proxyVariants = map[string]proxyVariant{
 	// (proxying off) nowhere
 	"sections": {caps: proxyPlainCaps, sections: true},
 	// a v1 child: the proxy commits one block per chart per collection, and the 101st commit closes the first batch
-	"v1in": {caps: stream.CapsLiveV1, refused: stream.CapIEEE754, ticks: 34, v1in: true, gated: true},
+	"v1in": {caps: stream.CapsLiveV1, refused: stream.CapIEEE754, ticks: 34, v1in: true},
 	// the child's metadata overtakes the batch (CLAIMED_ID, VARIABLE HOST) or rides the chart's next block (VARIABLE
 	// CHART); the parent's NODE_ID comes down to the child; the child's stream path (tick 3) goes up and back down,
 	// the grandparent's (tick 5) down to the child only
 	"metadata": {caps: proxyPlainCaps | stream.CapClaim | stream.CapNodeID | stream.CapPaths, refused: stream.CapIEEE754,
-		ticks: 8, metadata: true, gated: true},
+		ticks: 8, metadata: true},
 	// the same through the proxy: what it forwards of a BEGIN2 without END2 (C closes the block before the next BEGIN2
 	// and forwards the other chart's under the first's gate)
 	"malformed": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 6, malformedAt: 3},

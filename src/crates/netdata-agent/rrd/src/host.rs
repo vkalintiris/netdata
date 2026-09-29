@@ -205,6 +205,8 @@ pub struct ReceiverSlot {
     pub link: ReceiverLink,
     /// Shuts the connection down so its stream thread notices at once.
     shutdown: Box<dyn Fn() + Send + Sync>,
+    /// `rpt->thread.send_to_child`: lines other threads owe the child (D119.1), taken by its stream thread.
+    to_child: Mutex<Vec<u8>>,
 }
 
 impl std::fmt::Debug for ReceiverSlot {
@@ -229,7 +231,18 @@ impl ReceiverSlot {
             remote,
             link,
             shutdown,
+            to_child: Mutex::new(Vec::new()),
         }
+    }
+
+    /// `send_to_plugin()` of a line for the child from outside its parser.
+    pub fn send_to_child(&self, bytes: &[u8]) {
+        lock(&self.to_child).extend_from_slice(bytes);
+    }
+
+    /// What is owed to the child so far, taken.
+    pub fn take_to_child(&self) -> Vec<u8> {
+        std::mem::take(&mut *lock(&self.to_child))
     }
 
     /// The first half of `stream_receiver_signal_to_stop_and_wait()`: flag it and shut the socket down, once.

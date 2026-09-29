@@ -884,6 +884,10 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 }
             })
         },
+        cloud_url: {
+            let shared = Arc::clone(&shared);
+            Box::new(move || String::from_utf8_lossy(&cloud::url(&mut shared.cloud_conf())).into_owned())
+        },
     });
     // HEALTH, before PULSE in C's table, which starts it with health off too (D93.2); C carries on without it
     let health_thread = match health::spawn(

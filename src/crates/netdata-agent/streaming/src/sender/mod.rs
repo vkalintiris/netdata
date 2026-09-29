@@ -17,6 +17,7 @@ mod commit;
 pub(crate) mod dispatch;
 mod execute;
 mod hooks;
+pub(crate) use hooks::send_node_and_claim_id_to_child;
 
 pub use buffer::Traffic;
 

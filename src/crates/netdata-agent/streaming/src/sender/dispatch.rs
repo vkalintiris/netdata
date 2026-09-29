@@ -387,7 +387,10 @@ impl StreamWorker {
             return false;
         };
         let ok = super::execute::execute(d);
+        let host = Arc::clone(&d.host);
         self.drain_inline(cx);
+        // what the commands owe the host's child (NODE_ID, the path) goes out now, as C's send_to_child
+        self.deliver_to_child(cx, &host);
         ok
     }
 

@@ -8,13 +8,16 @@ use std::sync::atomic::Ordering;
 use netdata_agent_evloop::conn::Conn;
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_tls::Link;
+use netdata_agent_ingest::stream_path;
+use netdata_agent_pluginsd_proto::emit::stream as emit;
 use netdata_agent_rrd::host::{Host, sender_flags};
 use netdata_agent_rrd::labels::SRC_AUTO;
 use netdata_agent_rrd::upstream;
 use netdata_agent_text::parse::uuid_parse_flexi;
 
 use super::dispatch::Dispatched;
-use super::{Sender, Traffic, shown, text};
+use crate::connector::Env;
+use super::{Sender, shown, text};
 use crate::caps;
 
 /// `OS_IFNAME_MAX`: the name is cut to one byte less.
@@ -45,8 +48,14 @@ impl Sender {
         nd_log!(Source::Daemon, Priority::Debug, "STREAM SND '{}': running on-disconnect hooks...", host.hostname());
         host.sender_flags_clear(sender_flags::READY_4_METRICS);
         self.on_connect_and_disconnect(host);
-        // stream_path_parent_disconnected(): the entries after this agent's go (sent to a child with the proxy)
-        host.cut_stream_path_after(self.connector.local().host_id);
+        // update the child (the receiver side) for this parent: stream_path_parent_disconnected() sends the path cut
+        // after this agent's entry, when something was cut
+        if host.cut_stream_path_after(self.connector.local().host_id)
+            && let Some(localhost) = self.connector.localhost()
+        {
+            stream_path::send_to_child(host, &localhost);
+        }
+        send_node_and_claim_id_to_child(host, self.connector.env());
     }
 
     /// `stream_sender_on_connect_and_disconnect()`: the pending replication requests flushed and the charts' state
@@ -66,23 +75,35 @@ impl Sender {
         nd_log!(Source::Daemon, Priority::Debug, "STREAM SND '{}': running ready-to-dispatch hooks...", host.hostname());
         host.sender_flags_set(sender_flags::READY_4_METRICS);
         upstream::send_host_variables(host);
-        self.send_path(host, capabilities);
+        if capabilities & caps::PATHS != 0
+            && let Some(localhost) = self.connector.localhost()
+        {
+            stream_path::send_to_parent(host, &localhost, None);
+        }
         upstream::send_claimed_id(host);
         upstream::send_host_labels(host);
         upstream::send_global_functions(host);
     }
 
-    /// `stream_path_send_to_parent()`.
-    pub(crate) fn send_path(&self, host: &Host, capabilities: u32) {
-        if capabilities & caps::PATHS == 0 || !host.can_stream_metadata() {
-            return;
-        }
-        let Some(localhost) = self.connector.localhost() else {
-            return;
-        };
-        let message = netdata_agent_ingest::stream_path::message(host, &localhost, None);
-        self.commit(&message, Traffic::Metadata);
+}
+
+/// `stream_receiver_send_node_and_claim_id_to_child()`: the host's node id to a child that takes NODE_ID, with the
+/// parent's claim id (this agent is never claimed before M11, D61.3) and the Cloud URL, into the receiver's outbox.
+/// The receiver is checked before the URL is read.
+pub(crate) fn send_node_and_claim_id_to_child(host: &Host, env: &Env) {
+    let node_id = host.node_id();
+    if host.is_localhost() || node_id == [0; 16] {
+        return;
     }
+    let Some(slot) = host.receiver() else {
+        return;
+    };
+    if slot.link.capabilities & caps::NODE_ID == 0 {
+        return;
+    }
+    let mut line = Vec::new();
+    emit::node_id(&mut line, &host.claim_id_of_parent(), &node_id, &(env.cloud_url)());
+    slot.send_to_child(&line);
 }
 
 /// `os_socket_egress_interface()`: the first interface whose address is the socket's local one (a v4-mapped address
@@ -209,11 +230,16 @@ pub(crate) fn node_and_claim_id_from_parent(
     if claimed && (env.aclk_online)() {
         return;
     }
-    if current == [0; 16] || update_node_id {
+    let updated = current == [0; 16] || update_node_id;
+    if updated {
         host.set_node_id(node_id);
         (env.set_cloud_url)(&text(url));
-        // stream_path_node_id_updated(); the node id goes down to children with the proxy
-        let caps = d.capabilities;
-        d.sender.send_path(&d.host, caps);
+    }
+    // send it down the line (to the child)
+    send_node_and_claim_id_to_child(host, env);
+    // stream_path_node_id_updated()
+    if updated && let Some(localhost) = d.sender.connector.localhost() {
+        stream_path::send_to_parent(host, &localhost, None);
+        stream_path::send_to_child(host, &localhost);
     }
 }

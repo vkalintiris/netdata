@@ -175,12 +175,19 @@ pub struct Env {
     pub aclk_online: Box<dyn Fn() -> bool + Send + Sync>,
     /// `cloud_config_url_set()`.
     pub set_cloud_url: Box<dyn Fn(&str) + Send + Sync>,
+    /// `cloud_config_url_get()`, which a NODE_ID to a child carries.
+    pub cloud_url: Box<dyn Fn() -> String + Send + Sync>,
 }
 
 impl Default for Env {
-    /// An agent that is not claimed and whose Cloud URL does not change.
+    /// An agent that is not claimed and whose Cloud URL does not change from C's default.
     fn default() -> Self {
-        Env { claimed: Box::new(|| false), aclk_online: Box::new(|| false), set_cloud_url: Box::new(|_| {}) }
+        Env {
+            claimed: Box::new(|| false),
+            aclk_online: Box::new(|| false),
+            set_cloud_url: Box::new(|_| {}),
+            cloud_url: Box::new(|| "https://app.netdata.cloud".to_string()),
+        }
     }
 }
 
@@ -686,7 +693,7 @@ mod tests {
     use std::time::Instant;
 
     use netdata_agent_evloop::Pool;
-    use netdata_agent_rrd::host::{HostInfo, StreamSend};
+    use netdata_agent_rrd::host::{Attach, HostInfo, ReceiverSlot, StreamSend};
     use netdata_agent_rrd::mode::DbMode;
 
     use super::*;
@@ -752,6 +759,35 @@ mod tests {
         assert_eq!(s.lock().api_key, "key-b");
         let destinations: Vec<String> = s.parents().list.iter().map(|d| d.destination.clone()).collect();
         assert_eq!(destinations, ["127.0.0.2:2"]);
+    }
+
+    /// `stream_receiver_send_node_and_claim_id_to_child()`: the host's node id with the parent's claim id and the
+    /// Cloud URL, into the receiver's outbox; nothing for a zero node id or a child without NODE_ID.
+    #[test]
+    fn a_node_id_goes_down_to_a_child_that_takes_it() {
+        let env = Env { cloud_url: Box::new(|| "https://nodeid.invalid".to_string()), ..Env::default() };
+        let host = Host::new("5a1e0000-0000-4000-8000-0000000000c3", false, info("", ""));
+        let attach = |caps: u32| {
+            let link = netdata_agent_rrd::host::ReceiverLink { capabilities: caps, ..Default::default() };
+            let slot = Arc::new(ReceiverSlot::new(0, Default::default(), link, Box::new(|| {})));
+            assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
+            slot
+        };
+        let slot = attach(caps::NODE_ID);
+        crate::sender::send_node_and_claim_id_to_child(&host, &env);
+        assert!(slot.take_to_child().is_empty(), "no node id yet");
+        host.set_node_id([0x33; 16]);
+        host.update_claim_id_of_parent([0x22; 16]);
+        crate::sender::send_node_and_claim_id_to_child(&host, &env);
+        assert_eq!(
+            String::from_utf8(slot.take_to_child()).unwrap(),
+            "NODE_ID '22222222-2222-2222-2222-222222222222' '33333333-3333-3333-3333-333333333333' \
+             'https://nodeid.invalid'\n"
+        );
+        host.clear_receiver(&slot, 0);
+        let slot = attach(0);
+        crate::sender::send_node_and_claim_id_to_child(&host, &env);
+        assert!(slot.take_to_child().is_empty(), "a child without NODE_ID");
     }
 
     /// A sender that stays queued elsewhere is given up after the free's 2 s (D118.2), with the record.

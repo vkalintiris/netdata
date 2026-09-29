@@ -1138,3 +1138,37 @@ fn filtered_and_unproxied_charts_forward_nothing() {
     feed_ok(&mut p, &block(NOW - 10));
     assert!(p.forward.bytes().is_empty());
 }
+
+/// A proxied host's metadata goes up in messages of its own (they overtake the batch, D119): the child's claim id,
+/// and its changed path (up, then back to the child); a retention change sends the path up, then down; nothing goes
+/// up before the sender can take metadata, nor a path to a parent without PATHS.
+#[test]
+fn a_proxied_hosts_metadata_goes_up() {
+    let (h, mut p) = stream_path_parser(CAPTURED_CAPS);
+    let r = Arc::new(Recorder::with_capabilities(caps::CLAIM | caps::PATHS));
+    h.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
+    let claim = "5a1e0000-0000-4000-8000-0000000000e1";
+    let claimed = [format!("CLAIMED_ID '{}' '{claim}'", h.machine_guid())];
+    feed_ok(&mut p, &claimed);
+    assert!(r.take().is_empty(), "not ready");
+    h.sender_flags_set(sender_flags::READY_4_METRICS);
+    feed_ok(&mut p, &claimed);
+    assert_eq!(r.take(), vec![(Traffic::Metadata, format!("CLAIMED_ID '{}' '{claim}'\n", h.machine_guid()))]);
+    let reply = |first: i64| {
+        format!(
+            "JSON STREAM_PATH\n{{\"version\":1,\"streaming_path\":[{CAPTURED_CHILD_ENTRY},{}]}}\nJSON_PAYLOAD_END\n",
+            captured_parent_entry(first)
+        )
+    };
+    let body = format!(r#"{{"version":1,"streaming_path":[{CAPTURED_CHILD_ENTRY}]}}"#);
+    feed_ok(&mut p, &stream_path_block(&body));
+    assert_eq!(r.take(), vec![(Traffic::Metadata, reply(0))]);
+    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(0));
+    p.retention_updated(1_790_360_431);
+    assert_eq!(r.take(), vec![(Traffic::Metadata, reply(1_790_360_431))]);
+    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(1_790_360_431));
+    r.capabilities.store(caps::CLAIM, std::sync::atomic::Ordering::Relaxed);
+    p.retention_updated(1_790_360_432);
+    assert!(r.take().is_empty(), "a parent without PATHS");
+    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(1_790_360_432));
+}
