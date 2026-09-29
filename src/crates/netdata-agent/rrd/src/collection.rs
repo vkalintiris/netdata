@@ -6,7 +6,7 @@ use crate::chart::{Algorithm, Chart, ChartCollection, DimCollection, dim_flags, 
 use crate::contexts;
 use crate::host::Host;
 use crate::mode::DbMode;
-use crate::upstream::{self, LastCollected};
+use crate::upstream::{self, BufferSource, LastCollected};
 use netdata_agent_log::{Priority, Source, nd_log, netdata_log_error};
 
 use netdata_agent_storage::storage_number::{SN_DEFAULT_FLAGS, SN_FLAG_RESET};
@@ -142,13 +142,14 @@ fn last_collected_as_double(d: &DimCollection, is_float: bool) -> f64 {
 /// `rrdset_timed_done()`: turns the values collected since the last call into stored points on the update grid,
 /// interpolating between collections, and streams them when the host streams (the gate first, before the clock
 /// moves: the definition's resync horizon reads the previous collection). `gap_when_lost_iterations_above` is
-/// `[db] gap when lost iterations above`.
+/// `[db] gap when lost iterations above`; `source` is where the data for the parent is rendered.
 pub fn timed_done(
     host: &Host,
     chart: &Chart,
     now: (i64, i64),
     pending_next: bool,
     gap_when_lost_iterations_above: i64,
+    source: BufferSource<'_>,
 ) {
     // service_running(SERVICE_COLLECTORS): nothing is stored or streamed once the exit started (D110)
     if netdata_agent_sys::exit::initiated() {
@@ -157,7 +158,7 @@ pub fn timed_done(
     // before the gate, where C takes it after (D111.3): a replication that finishes meanwhile is seen here, so the
     // point stored now goes out live instead of in neither the answer nor the stream
     let collecting = Chart::lock_collection(chart);
-    let mut stream = upstream::metrics_init(host, chart, now.0);
+    let mut stream = upstream::metrics_init(host, chart, now.0, source);
     if pending_next {
         timed_next(chart, now, 0);
     }

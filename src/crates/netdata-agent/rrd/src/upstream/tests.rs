@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use netdata_agent_log::{Captured, Priority};
@@ -18,6 +18,8 @@ const T: i64 = 1_700_000_000;
 struct Recorder {
     capabilities: AtomicU32,
     starts: AtomicU32,
+    /// The last flush of the sender's buffer.
+    flush_ut: AtomicU64,
     commits: Mutex<Vec<(Traffic, String)>>,
 }
 
@@ -46,6 +48,18 @@ impl Upstream for Recorder {
 
     fn resync_iterations(&self) -> u16 {
         3
+    }
+
+    fn flush_ut(&self) -> u64 {
+        self.flush_ut.load(Ordering::Relaxed)
+    }
+
+    fn commit_since(&self, bytes: &[u8], traffic: Traffic, flush_ut: u64) -> bool {
+        if bytes.is_empty() || flush_ut != self.flush_ut() {
+            return false;
+        }
+        self.commit(bytes, traffic);
+        true
     }
 }
 
@@ -79,7 +93,7 @@ fn collect(host: &Host, chart: &Chart, values: &[(&Arc<Dim>, i64)], t: i64) {
         set_value(dim, (t, 0), *v);
     }
     let pending = chart.collection().counter_done != 0;
-    timed_done(host, chart, (t, 0), pending, 3);
+    timed_done(host, chart, (t, 0), pending, 3, BufferSource::Thread);
 }
 
 fn texts(records: &[Captured]) -> Vec<(Priority, String)> {
@@ -344,7 +358,7 @@ fn a_float_dimension_sends_a_double_only_with_float_baseline() {
         dim.update_meta(|m| m.flags |= dim_flags::FLOAT);
         for (i, v) in [2.5, 2.5].into_iter().enumerate() {
             set_value_float(&dim, (T + i as i64, 0), v);
-            timed_done(&host, &chart, (T + i as i64, 0), i != 0, 3);
+            timed_done(&host, &chart, (T + i as i64, 0), i != 0, 3, BufferSource::Thread);
         }
         let data = recorder.take().into_iter().filter(|(t, _)| *t == Traffic::Data).map(|(_, s)| s).collect::<Vec<_>>();
         assert_eq!(data.len(), 1, "{data:?}");
@@ -356,7 +370,7 @@ fn a_float_dimension_sends_a_double_only_with_float_baseline() {
         let (dim, _) = chart.dim_add("f", None, 1, 1, Algorithm::Absolute);
         dim.update_meta(|m| m.flags |= dim_flags::FLOAT);
         set_value_float(&dim, (T, 0), 3.5);
-        timed_done(&host, &chart, (T, 0), false, 3);
+        timed_done(&host, &chart, (T, 0), false, 3, BufferSource::Thread);
         let data = recorder.take().into_iter().filter(|(t, _)| *t == Traffic::Data).map(|(_, s)| s).collect::<Vec<_>>();
         assert!(data[0].contains(v1), "{extra:#x}: {data:?}");
     }
@@ -459,3 +473,173 @@ fn chart_slots_are_reused_until_the_charts_all_go() {
 }
 
 mod replay;
+
+/// DATA commits of `blocks` through a receiver's forward buffer.
+fn hold(up: &dyn Upstream, fwd: &mut ForwardBuffer, blocks: &[&str]) {
+    for b in blocks {
+        fwd.start(up).extend_from_slice(b.as_bytes());
+        fwd.commit(up, Traffic::Data);
+    }
+}
+
+/// A commit through the forward buffer that is not DATA: `line`, after what the buffer held.
+fn metadata(up: &dyn Upstream, fwd: &mut ForwardBuffer, line: &str) {
+    fwd.start(up).extend_from_slice(line.as_bytes());
+    fwd.commit(up, Traffic::Metadata);
+}
+
+/// A receiver's batch: 100 DATA commits are held, empty ones too, and the 101st sends them all in order.
+#[test]
+fn a_forward_batch_is_101_data_commits() {
+    let r = Recorder::default();
+    let mut fwd = ForwardBuffer::default();
+    let blocks: Vec<String> =
+        (0..=BATCH_HELD).map(|i| if i % 10 == 3 { String::new() } else { format!("B{i}\n") }).collect();
+    let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
+    hold(&r, &mut fwd, &blocks[..100]);
+    assert!(r.take().is_empty());
+    hold(&r, &mut fwd, &blocks[100..]);
+    assert_eq!(r.take(), vec![(Traffic::Data, blocks.concat())]);
+    hold(&r, &mut fwd, &["C\n"]);
+    assert!(r.take().is_empty(), "the next batch starts over");
+}
+
+/// Or the DATA commit that brings the pending bytes to 10,836 (`batch`'s 19 blocks hold 10,070 bytes, its 20th
+/// sends them).
+#[test]
+fn a_forward_batch_goes_at_10836_bytes() {
+    let r = Recorder::default();
+    let mut fwd = ForwardBuffer::default();
+    let a = "x".repeat(BATCH_BYTES - 2) + "\n";
+    hold(&r, &mut fwd, &[&a]);
+    assert!(r.take().is_empty(), "10,835 bytes are held");
+    hold(&r, &mut fwd, &["\n"]);
+    assert_eq!(r.take(), vec![(Traffic::Data, format!("{a}\n"))]);
+}
+
+/// Any other commit through the buffer sends the held DATA ahead of itself, as its own traffic; one committed
+/// elsewhere (a host variable's) overtakes them.
+#[test]
+fn a_metadata_commit_sends_the_held_data_ahead_of_itself() {
+    let (host, r) = streaming("*", PLAIN);
+    ready(&host);
+    let mut fwd = ForwardBuffer::default();
+    hold(&*r, &mut fwd, &["B1\n", "B2\n"]);
+    host.set_variable("v", 1.0);
+    assert_eq!(r.take(), vec![(Traffic::Metadata, "VARIABLE HOST v = 1.0000000\n".to_string())]);
+    metadata(&*r, &mut fwd, "M\n");
+    assert_eq!(r.take(), vec![(Traffic::Metadata, "B1\nB2\nM\n".to_string())]);
+}
+
+/// A flush of the sender's buffer (each connection and disconnection) drops what was held, as C frees the host
+/// buffer; a block started before one is refused at its commit (D106.11).
+#[test]
+fn a_flush_of_the_senders_buffer_drops_the_held_data() {
+    let r = Recorder::default();
+    let mut fwd = ForwardBuffer::default();
+    hold(&r, &mut fwd, &["B1\n"]);
+    r.flush_ut.store(5, Ordering::Relaxed);
+    hold(&r, &mut fwd, &["B2\n"]);
+    metadata(&r, &mut fwd, "M\n");
+    assert_eq!(r.take(), vec![(Traffic::Metadata, "B2\nM\n".to_string())]);
+    fwd.start(&r).extend_from_slice(b"B3\n");
+    r.flush_ut.store(9, Ordering::Relaxed);
+    fwd.commit(&r, Traffic::Metadata);
+    assert!(r.take().is_empty());
+    hold(&r, &mut fwd, &["B4\n"]);
+    metadata(&r, &mut fwd, "M\n");
+    assert_eq!(r.take(), vec![(Traffic::Metadata, "B4\nM\n".to_string())]);
+}
+
+/// The forward gate: the chart's definition goes through the batch, after the held blocks, and so does the
+/// functions' resend at the next gate; a forwarded block is closed at its finish and held.
+#[test]
+fn the_forward_gate_commits_its_metadata_through_the_batch() {
+    let (host, r) = streaming("*", PLAIN);
+    ready(&host);
+    let chart = host.charts().create(&chart_spec(DbMode::Ram)).0;
+    chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    let mut fwd = ForwardBuffer::default();
+    hold(&*r, &mut fwd, &["B1\n"]);
+    let b = forward_gate(&host, &chart, &mut fwd).unwrap();
+    assert!(b.v2 && !b.begin_added);
+    let commits = r.take();
+    assert_eq!(commits.len(), 1, "{commits:?}");
+    assert_eq!(commits[0].0, Traffic::Metadata);
+    assert!(commits[0].1.starts_with("B1\nCHART \"t.c\" "), "{commits:?}");
+    fwd.bytes().extend_from_slice(b"BEGIN2 't.c' 1 2 #\n");
+    forward_finish(&host, &chart, &ProxyBlock { begin_added: true, ..b }, &mut fwd);
+    assert!(r.take().is_empty(), "the block is held");
+    let desc = MethodDesc {
+        name: b"f",
+        help: b"h",
+        tags: b"",
+        timeout_s: 10,
+        priority: 0,
+        version: 3,
+        access: 0,
+        sync: false,
+        source: NrpcSource::Stream,
+    };
+    host.register_function(&desc).unwrap();
+    let b = forward_gate(&host, &chart, &mut fwd).unwrap();
+    assert_eq!(
+        r.take(),
+        vec![(
+            Traffic::Metadata,
+            "BEGIN2 't.c' 1 2 #\nEND2\nFUNCTION GLOBAL \"f\" 10 \"h\" \"top\" 0x0 100 3\n".to_string()
+        )]
+    );
+    // a block with no BEGIN2 forwarded commits nothing but counts
+    forward_finish(&host, &chart, &b, &mut fwd);
+    metadata(&*r, &mut fwd, "M\n");
+    assert_eq!(r.take(), vec![(Traffic::Metadata, "M\n".to_string())]);
+}
+
+/// A v1 child's collections on its receiver (`timed_done` from the forward buffer) are held in the batch, empty
+/// commits too.
+#[test]
+fn a_collection_through_the_forward_buffer_is_batched() {
+    let (host, r) = streaming("*", PLAIN);
+    ready(&host);
+    let chart = host.charts().create(&chart_spec(DbMode::Ram)).0;
+    let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    let mut fwd = ForwardBuffer::default();
+    for i in 0..3 {
+        set_value(&dim, (T + i, 0), 7);
+        timed_done(&host, &chart, (T + i, 0), i != 0, 3, BufferSource::Forward(&mut fwd));
+    }
+    let commits = r.take();
+    assert_eq!((commits.len(), definitions(&commits)), (1, 1), "{commits:?}");
+    metadata(&*r, &mut fwd, "M\n");
+    let (t1, t2) = (format!("0x{:X}", T + 1), format!("0x{:X}", T + 2));
+    assert_eq!(
+        r.take(),
+        vec![(
+            Traffic::Metadata,
+            format!(
+                "BEGIN2 't.c' 0x1 {t1} #\nSET2 'd' 0x7 # A\nEND2\nBEGIN2 't.c' 0x1 {t2} #\nSET2 'd' 0x7 # A\nEND2\nM\n"
+            )
+        )]
+    );
+}
+
+/// A forwarded block to a parent without INTERPOLATED: END2 writes the chart's collected values as v1, into the
+/// batch; with INTERPOLATED nothing.
+#[test]
+fn a_forwarded_block_goes_as_v1_without_interpolated() {
+    let (host, r) = streaming("*", PLAIN & !caps::INTERPOLATED);
+    ready(&host);
+    let chart = host.charts().create(&chart_spec(DbMode::Ram)).0;
+    let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    let mut fwd = ForwardBuffer::default();
+    let b = forward_gate(&host, &chart, &mut fwd).unwrap();
+    assert!(!b.v2);
+    r.take();
+    dim.update_meta(|m| m.flags |= dim_flags::UPDATED);
+    forward_v1(&chart, &b, &mut fwd);
+    forward_finish(&host, &chart, &b, &mut fwd);
+    forward_v1(&chart, &ProxyBlock { v2: true, ..b }, &mut fwd);
+    metadata(&*r, &mut fwd, "M\n");
+    assert_eq!(r.take(), vec![(Traffic::Metadata, "BEGIN \"t.c\" 0\nSET \"d\" = 0\nEND\nM\n".to_string())]);
+}

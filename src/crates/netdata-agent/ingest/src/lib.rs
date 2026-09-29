@@ -40,6 +40,7 @@ use netdata_agent_rrd::collection;
 use netdata_agent_rrd::contexts;
 use netdata_agent_rrd::host::{Host, meta_flags};
 use netdata_agent_rrd::labels::{self, Labels};
+use netdata_agent_rrd::upstream::BufferSource;
 use netdata_agent_storage::storage_number::{self, SN_EMPTY_SLOT};
 use netdata_agent_text::parse::{
     str2i, str2ll, str2ll_encoded, str2ndd_encoded, str2u, str2ul, str2ull_encoded,
@@ -1263,6 +1264,7 @@ impl Parser {
             tv,
             pending_next,
             self.config.gap_when_lost_iterations_above,
+            BufferSource::Thread,
         );
         Ok(())
     }

@@ -235,7 +235,7 @@ fn v1_collections_report_through_timed_done() {
     for i in 0..4 {
         collection::next_usec_unfiltered(&chart, (T + i, 0), 1_000_000);
         collection::set_value(&dim, (T + i, 0), 7);
-        collection::timed_done(&host, &chart, (T + i, 0), false, 3);
+        collection::timed_done(&host, &chart, (T + i, 0), false, 3, crate::upstream::BufferSource::Thread);
     }
     contexts.process_queued();
     let rc = contexts.get("ctx").unwrap();

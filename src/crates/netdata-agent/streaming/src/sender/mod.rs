@@ -397,6 +397,14 @@ impl Upstream for Sender {
         self.connector.settings.resync_iterations
     }
 
+    fn flush_ut(&self) -> u64 {
+        self.replication.last_flush_ut.load(Ordering::Relaxed)
+    }
+
+    fn commit_since(&self, bytes: &[u8], traffic: Traffic, flush_ut: u64) -> bool {
+        self.commit_into(bytes, traffic, Some(flush_ut))
+    }
+
     /// `stream_sender_add_to_connector_queue()`.
     fn start(&self) {
         let (Some(me), Some(host)) = (self.me.upgrade(), self.host()) else {

@@ -3,6 +3,7 @@
 //! them (map `knowledge/map-m7-commit2-codecs.md` in the status repository). Nothing is escaped, as in C. Each emitter
 //! appends to `out`; the callers apply the capabilities they negotiated and hold the values.
 
+use netdata_agent_text::c::double_to_i64;
 use netdata_agent_text::print::{
     NumberEncoding, print_fixed, print_int64, print_int64_encoded, print_netdata_double_encoded,
     print_netdata_double_or_null, print_uint64, print_uint64_encoded, print_uuid_lower,
@@ -307,6 +308,117 @@ impl<'a> V2Block<'a> {
 /// `END2`.
 pub fn end2(out: &mut Vec<u8>) {
     s(out, "END2\n");
+}
+
+/// How a proxy forwards a child's BEGIN2 and SET2 lines (`pluginsd_begin_v2()`, `pluginsd_set_v2()`): in the
+/// parent's slots and encodings, the child's words copied when both links read numbers alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Forward {
+    /// The parent's slots and encodings.
+    pub enc: Enc,
+    /// Both links agree on IEEE754 (`can_copy`).
+    pub same_numbers: bool,
+    /// The parent takes a float dimension's baseline as a double (FLOAT_BASELINE).
+    pub parent_float: bool,
+}
+
+impl Forward {
+    /// Between a child that negotiated `child_caps` and a parent that negotiated `parent_caps`.
+    pub fn new(child_caps: u32, parent_caps: u32) -> Forward {
+        Forward {
+            enc: Enc::live(parent_caps),
+            same_numbers: (child_caps & caps::IEEE754 != 0) == (parent_caps & caps::IEEE754 != 0),
+            parent_float: parent_caps & caps::FLOAT_BASELINE != 0,
+        }
+    }
+}
+
+/// A number as the child sent it: its word, and the value the parser read from it.
+#[derive(Debug, Clone, Copy)]
+pub struct Sent<'a, T> {
+    pub word: &'a [u8],
+    pub value: T,
+}
+
+/// A forwarded BEGIN2 (an END2 first when the previous block is still `open`): the update every copied only while
+/// the chart kept the child's, the end and wall clock copied (`#` too) or encoded; the chart's slot is the proxy's.
+#[allow(clippy::too_many_arguments)]
+pub fn begin2_forward(
+    out: &mut Vec<u8>,
+    f: &Forward,
+    open: bool,
+    chart_slot: u64,
+    chart_id: &str,
+    update_every: Sent<'_, u64>,
+    chart_update_every: u64,
+    end: Sent<'_, u64>,
+    wall: Sent<'_, u64>,
+) {
+    if open {
+        end2(out);
+    }
+    s(out, "BEGIN2");
+    f.enc.slot(out, chart_slot);
+    out.extend_from_slice(b" '");
+    s(out, chart_id);
+    out.extend_from_slice(b"' ");
+    if f.same_numbers && chart_update_every == update_every.value {
+        out.extend_from_slice(update_every.word);
+    } else {
+        print_uint64_encoded(out, f.enc.int, chart_update_every);
+    }
+    for n in [end, wall] {
+        out.push(b' ');
+        if f.same_numbers {
+            out.extend_from_slice(n.word);
+        } else {
+            print_uint64_encoded(out, f.enc.int, n.value);
+        }
+    }
+    out.push(b'\n');
+}
+
+/// A forwarded SET2: the child's words copied unless the links differ in IEEE754 or in whether this dimension's
+/// baseline is a double (`collected` is a [`Baseline::Float`] when the child sent one); else the baseline as a double
+/// or C's cast to an integer and an explicit value. `flags` are rendered again, anomaly bit included.
+#[allow(clippy::too_many_arguments)]
+pub fn set2_forward(
+    out: &mut Vec<u8>,
+    f: &Forward,
+    dim_slot: u64,
+    dim_id: &str,
+    is_float: bool,
+    collected: Sent<'_, Baseline>,
+    value: Sent<'_, f64>,
+    flags: &[u8],
+) {
+    let parent_float = is_float && f.parent_float;
+    let copy = f.same_numbers && matches!(collected.value, Baseline::Float(_)) == parent_float;
+    s(out, "SET2");
+    f.enc.slot(out, dim_slot);
+    out.extend_from_slice(b" '");
+    s(out, dim_id);
+    out.extend_from_slice(b"' ");
+    if copy {
+        out.extend_from_slice(collected.word);
+    } else if parent_float {
+        print_netdata_double_encoded(out, f.enc.dbl, collected.value.as_double());
+    } else {
+        let v = match collected.value {
+            Baseline::Int(v) => v,
+            Baseline::Float(v) => double_to_i64(v),
+        };
+        print_int64_encoded(out, f.enc.int, v);
+    }
+    out.push(b' ');
+    if copy {
+        out.extend_from_slice(value.word);
+    } else {
+        print_netdata_double_encoded(out, f.enc.dbl, value.value);
+    }
+    out.push(b' ');
+    out.extend_from_slice(flags);
+    out.push(b'\n');
 }
 
 /// `BEGIN "<chart id>" <microseconds since the last update>` (v1, 0 until the chart resynced).
@@ -627,6 +739,115 @@ mod tests {
         let mut b = V2Block::new(Enc::live(0), 0, "c", 2, 100);
         let got = text(|o| b.set2(o, 90, 0, "d", Baseline::Float(1.25), 0.5, b"AR"));
         assert_eq!(got, "BEGIN2 'c' 0x2 0x5A 0x64\nSET2 'd' 1.25 0.5 AR\n");
+    }
+
+    /// A block as a C proxy forwards it: each variant's lines of `TestProxyTranscript`'s upstream capture
+    /// (`evidence/2026-09-29-proxy-golden/` in the status repository), rebuilt from the child's words.
+    #[test]
+    fn forward_as_a_c_proxy() {
+        const PROXY: u32 = caps::SLOTS | caps::IEEE754 | caps::FLOAT_BASELINE;
+        const PLAIN: u32 = caps::FLOAT_BASELINE;
+        const C_LIKE: u32 = caps::FLOAT_BASELINE | caps::IEEE754 | caps::SLOTS;
+        let b64 = |v: u64| text(|o| print_uint64_encoded(o, NumberEncoding::Base64, v));
+        // the parser's reading of BEGIN2's words: `#` is the end time
+        let begin2 = |f: &Forward, open: bool, id: &str, ue: &str, chart_ue: u64, end: &str, wall: &str| {
+            let end_s = Sent { word: end.as_bytes(), value: u(end) };
+            let wall_v = if wall == "#" { u(end) } else { u(wall) };
+            text(|o| {
+                begin2_forward(
+                    o,
+                    f,
+                    open,
+                    1,
+                    id,
+                    Sent { word: ue.as_bytes(), value: u(ue) },
+                    chart_ue,
+                    end_s,
+                    Sent { word: wall.as_bytes(), value: wall_v },
+                )
+            })
+        };
+        // SET2's: a double baseline when the child sent one for a float dimension, `#` the baseline, an empty slot
+        // or no number a NaN
+        let set2 = |f: &Forward, slot: u64, id: &str, float: bool, sent_float: bool, c: &str, v: &str, flags: &str| {
+            let collected =
+                if sent_float { Baseline::Float(d(c)) } else { Baseline::Int(str2ll_encoded(c.as_bytes())) };
+            let value = if v == "#" { collected.as_double() } else { d(v) };
+            let value = if flags == "E" || !value.is_finite() { f64::NAN } else { value };
+            text(|o| {
+                set2_forward(
+                    o,
+                    f,
+                    slot,
+                    id,
+                    float,
+                    Sent { word: c.as_bytes(), value: collected },
+                    Sent { word: v.as_bytes(), value },
+                    flags.as_bytes(),
+                )
+            })
+        };
+
+        // copy: neither link has IEEE754, the words go as sent (the proxy renders `RA` as `AR`)
+        let f = Forward::new(PLAIN, PROXY & !caps::IEEE754);
+        assert_eq!(
+            begin2(&f, false, "proxy.gauge", "1", 1, "1790690343", "#"),
+            "BEGIN2 SLOT:0x1 'proxy.gauge' 1 1790690343 #\n"
+        );
+        assert_eq!(set2(&f, 1, "g1", false, false, "1", "1", "A"), "SET2 SLOT:0x1 'g1' 1 1 A\n");
+        assert_eq!(set2(&f, 2, "g2", false, false, "2", "#", "AR"), "SET2 SLOT:0x2 'g2' 2 # AR\n");
+        assert_eq!(set2(&f, 1, "i1", false, false, "1010", "10", "''"), "SET2 SLOT:0x1 'i1' 1010 10 ''\n");
+        assert_eq!(set2(&f, 1, "f1", true, true, "1", "1.25", "A"), "SET2 SLOT:0x1 'f1' 1 1.25 A\n");
+        assert_eq!(set2(&f, 1, "f1", true, true, "0", "NAN", "E"), "SET2 SLOT:0x1 'f1' 0 NAN E\n");
+
+        // reencode-up: base64 for a parent with IEEE754, the wall clock explicit
+        let f = Forward::new(PLAIN, PROXY);
+        let end = u("#Bqu8Sf").to_string();
+        assert_eq!(
+            begin2(&f, false, "proxy.gauge", "1", 1, &end, "#"),
+            "BEGIN2 SLOT:#B 'proxy.gauge' #B #Bqu8Sf #Bqu8Sf\n"
+        );
+        assert_eq!(set2(&f, 1, "g1", false, false, "1", "1", "A"), "SET2 SLOT:#B 'g1' #B @D/wAAAAAAAA A\n");
+        assert_eq!(set2(&f, 2, "g2", false, false, "2", "#", "AR"), "SET2 SLOT:#C 'g2' #C @EAAAAAAAAAA AR\n");
+        assert_eq!(set2(&f, 1, "i1", false, false, "1010", "10", "''"), "SET2 SLOT:#B 'i1' #Py @EAkAAAAAAAA ''\n");
+        assert_eq!(set2(&f, 1, "f1", true, true, "1", "1.25", "A"), "SET2 SLOT:#B 'f1' @D/wAAAAAAAA @D/0AAAAAAAA A\n");
+        assert_eq!(set2(&f, 1, "f1", true, true, "0", "NAN", "E"), "SET2 SLOT:#B 'f1' @A @H/4AAAAAAAA E\n");
+
+        // reencode-down: a base64 child, a parent without IEEE754: hex and decimal, NaN as `null`
+        let f = Forward::new(C_LIKE, PROXY & !caps::IEEE754);
+        let end = b64(0x6ABB_C463);
+        assert_eq!(
+            begin2(&f, false, "proxy.gauge", "#B", 1, &end, "#"),
+            "BEGIN2 SLOT:0x1 'proxy.gauge' 0x1 0x6ABBC463 0x6ABBC463\n"
+        );
+        assert_eq!(set2(&f, 1, "g1", false, false, "#B", "@D/wAAAAAAAA", "A"), "SET2 SLOT:0x1 'g1' 0x1 1 A\n");
+        assert_eq!(set2(&f, 2, "g2", false, false, "#C", "#", "AR"), "SET2 SLOT:0x2 'g2' 0x2 2 AR\n");
+        assert_eq!(set2(&f, 1, "i1", false, false, "#Py", "@EAkAAAAAAAA", "''"), "SET2 SLOT:0x1 'i1' 0x3F2 10 ''\n");
+        assert_eq!(set2(&f, 1, "f1", true, true, "#B", "@D/0AAAAAAAA", "A"), "SET2 SLOT:0x1 'f1' 1 1.25 A\n");
+        assert_eq!(set2(&f, 1, "f1", true, true, "#A", "NAN", "E"), "SET2 SLOT:0x1 'f1' 0 null E\n");
+
+        // float-up: the child sent an integer baseline, the parent takes a double
+        let f = Forward::new(0, PROXY);
+        assert_eq!(set2(&f, 1, "f1", true, false, "1", "1.25", "A"), "SET2 SLOT:#B 'f1' @D/wAAAAAAAA @D/0AAAAAAAA A\n");
+        assert_eq!(set2(&f, 1, "f1", true, false, "0", "NAN", "E"), "SET2 SLOT:#B 'f1' @A @H/4AAAAAAAA E\n");
+
+        // float-down: the numbers agree but the parent takes an integer baseline: C's cast, in hex
+        let f = Forward::new(PLAIN, PROXY & !(caps::IEEE754 | caps::FLOAT_BASELINE));
+        assert_eq!(
+            begin2(&f, false, "proxy.gauge", "1", 1, "1790690403", "#"),
+            "BEGIN2 SLOT:0x1 'proxy.gauge' 1 1790690403 #\n"
+        );
+        assert_eq!(set2(&f, 1, "g1", false, false, "1", "1", "A"), "SET2 SLOT:0x1 'g1' 1 1 A\n");
+        assert_eq!(set2(&f, 1, "f1", true, true, "1", "1.25", "A"), "SET2 SLOT:0x1 'f1' 0x1 1.25 A\n");
+        assert_eq!(set2(&f, 1, "f1", true, true, "0", "NAN", "E"), "SET2 SLOT:0x1 'f1' 0x0 null E\n");
+        assert_eq!(set2(&f, 1, "f1", true, true, "1.75", "#", "A"), "SET2 SLOT:0x1 'f1' 0x1 1.75 A\n");
+        assert_eq!(set2(&f, 1, "f1", true, true, "-1.75", "#", "A"), "SET2 SLOT:0x1 'f1' -0x1 -1.75 A\n");
+
+        // an open block closes first; an update every the chart did not take is the chart's; no slots without SLOTS
+        let f = Forward::new(PLAIN, caps::FLOAT_BASELINE);
+        assert_eq!(begin2(&f, true, "c", "1", 2, "10", "#"), "END2\nBEGIN2 'c' 0x2 10 #\n");
+        let f = Forward::new(PLAIN, PROXY);
+        assert_eq!(begin2(&f, false, "c", "2", 2, "10", "11"), "BEGIN2 SLOT:#B 'c' #C #K #L\n");
     }
 
     /// The replication lines of a C child's capture.

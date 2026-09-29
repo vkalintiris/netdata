@@ -10,6 +10,7 @@ use netdata_agent_rrd::collection::{now_realtime_timeval, set_value, timed_done}
 use netdata_agent_rrd::host::{Host, HostInfo};
 use netdata_agent_rrd::mode::DbMode;
 use netdata_agent_rrd::system_info::SystemInfo;
+use netdata_agent_rrd::upstream::BufferSource;
 use netdata_agent_storage::storage_number::{SN_DEFAULT_FLAGS, pack, unpack};
 
 /// `[db] gap when lost iterations above` after `netdata_conf_section_db()`: 1 + 2.
@@ -84,7 +85,7 @@ fn c_unit_tests() {
             if let Some(rd2) = &rd2 {
                 set_value(rd2, t, case.feed2[c]);
             }
-            timed_done(&host, &st, t, false, GAP_WHEN_LOST_ITERATIONS_ABOVE);
+            timed_done(&host, &st, t, false, GAP_WHEN_LOST_ITERATIONS_ABOVE, BufferSource::Thread);
             if c == 0 {
                 // run_test() pins the first collection `microseconds` past the second boundary.
                 let usec = microseconds as i64;

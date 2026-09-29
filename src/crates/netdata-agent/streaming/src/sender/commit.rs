@@ -26,17 +26,17 @@ static COMPRESSION_RECORD: ErrorLimit = ErrorLimit::new(1, 0);
 impl Sender {
     /// `sender_buffer_commit()`: dropped without a dispatched connection (no session).
     pub fn commit(&self, src: &[u8], traffic: Traffic) {
-        self.commit_since(src, traffic, None);
+        self.commit_into(src, traffic, None);
     }
 
     /// A replication answer's commit: only into the session whose buffer flush it was asked after, whether it went
     /// (D105.6; C commits it into a newer session too).
     pub(crate) fn commit_replication(&self, src: &[u8], flush_ut: u64) -> bool {
-        self.commit_since(src, Traffic::Replication, Some(flush_ut))
+        self.commit_into(src, Traffic::Replication, Some(flush_ut))
     }
 
     /// The commit, when the buffer was last flushed at `flush_ut` if one is given; whether a session took it.
-    fn commit_since(&self, src: &[u8], traffic: Traffic, flush_ut: Option<u64>) -> bool {
+    pub(crate) fn commit_into(&self, src: &[u8], traffic: Traffic, flush_ut: Option<u64>) -> bool {
         if src.is_empty() {
             return false;
         }

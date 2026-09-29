@@ -8,6 +8,7 @@ use netdata_agent_rrd::collection::{set_value, timed_done};
 use netdata_agent_rrd::host::{Host, HostInfo};
 use netdata_agent_rrd::mode::DbMode;
 use netdata_agent_rrd::system_info::SystemInfo;
+use netdata_agent_rrd::upstream::BufferSource;
 
 #[test]
 fn a_collection_after_the_exit_started_stores_nothing() {
@@ -53,14 +54,14 @@ fn a_collection_after_the_exit_started_stores_nothing() {
     const T: i64 = 1_700_000_000;
     for i in 0..3 {
         set_value(&dim, (T + i, 0), 7);
-        timed_done(&host, &chart, (T + i, 0), i != 0, 3);
+        timed_done(&host, &chart, (T + i, 0), i != 0, 3, BufferSource::Thread);
     }
     let before = chart.collection();
     assert_eq!(before.counter_done, 3);
     netdata_agent_sys::exit::add(1);
     for i in 3..6 {
         set_value(&dim, (T + i, 0), 7);
-        timed_done(&host, &chart, (T + i, 0), true, 3);
+        timed_done(&host, &chart, (T + i, 0), true, 3, BufferSource::Thread);
     }
     assert_eq!(chart.collection(), before, "nothing collected or stored after the exit started");
 }

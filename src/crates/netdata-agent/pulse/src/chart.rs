@@ -7,6 +7,7 @@ use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, Dim};
 use netdata_agent_rrd::collection::{now_realtime_timeval, set_value, timed_done};
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::mode::DbMode;
+use netdata_agent_rrd::upstream::BufferSource;
 
 use crate::Settings;
 
@@ -95,6 +96,7 @@ impl<'a> Localhost<'a> {
             now_realtime_timeval(),
             pending_next,
             self.settings.gap_when_lost_iterations_above,
+            BufferSource::Thread,
         );
     }
 }

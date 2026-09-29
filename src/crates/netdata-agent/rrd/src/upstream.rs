@@ -41,6 +41,12 @@ pub trait Upstream: Send + Sync + std::fmt::Debug {
     fn commit(&self, bytes: &[u8], traffic: Traffic);
     /// `stream_send.initial_clock_resync_iterations`.
     fn resync_iterations(&self) -> u16;
+    /// `stream_circular_buffer_last_flush_ut()`: when the sender's buffer was last emptied (each connection and
+    /// disconnection).
+    fn flush_ut(&self) -> u64;
+    /// `sender_buffer_commit()` of a message rendered since the buffer flush at `flush_ut`: dropped when the buffer
+    /// was flushed again meanwhile (D106.11) or no connection is dispatched; whether a session took it.
+    fn commit_since(&self, bytes: &[u8], traffic: Traffic, flush_ut: u64) -> bool;
 }
 
 thread_local! {
@@ -62,6 +68,97 @@ fn give_back(b: Vec<u8>) {
     }
 }
 
+/// The DATA commits a child's receiver holds before the next one sends them (`sender_thread_commit()`'s `reused`).
+pub const BATCH_HELD: u32 = 100;
+/// The pending bytes that send a receiver's DATA at once (`COMPRESSION_MAX_MSG_SIZE * 2 / 3`).
+pub const BATCH_BYTES: usize = 16_255 * 2 / 3;
+
+/// The host buffer a child's receiver forwards through (`host->stream.snd.commit`), owned by its parser and passed
+/// down (D106.1): no lock, no thread identity. DATA commits are held until the 101st or until the pending bytes reach
+/// [`BATCH_BYTES`]; any other commit sends what is held ahead of itself. What was held when the sender's buffer was
+/// flushed is dropped, as C frees the host buffer at each disconnection.
+#[derive(Debug, Default)]
+pub struct ForwardBuffer {
+    buf: Vec<u8>,
+    /// `commit->reused`: the DATA commits held.
+    reused: u32,
+    /// The sender's buffer flush the bytes belong to.
+    flush_ut: u64,
+}
+
+impl ForwardBuffer {
+    /// `sender_commit_start()`: the bytes to render into, which still hold the batch while DATA is held.
+    pub fn start(&mut self, up: &dyn Upstream) -> &mut Vec<u8> {
+        let flush_ut = up.flush_ut();
+        if flush_ut != self.flush_ut {
+            self.flush_ut = flush_ut;
+            self.reused = 0;
+        }
+        if self.reused == 0 {
+            self.buf.clear();
+        }
+        &mut self.buf
+    }
+
+    /// The bytes of the block [`ForwardBuffer::start`] began.
+    pub fn bytes(&mut self) -> &mut Vec<u8> {
+        &mut self.buf
+    }
+
+    /// `sender_thread_commit()` on the receiver's thread: a DATA commit is held while fewer than [`BATCH_HELD`] are
+    /// and the bytes stay under [`BATCH_BYTES`]; any other sends the whole buffer as its own traffic.
+    pub fn commit(&mut self, up: &dyn Upstream, traffic: Traffic) {
+        if traffic == Traffic::Data && self.reused < BATCH_HELD && self.buf.len() < BATCH_BYTES {
+            self.reused += 1;
+            return;
+        }
+        up.commit_since(&self.buf, traffic, self.flush_ut);
+        self.buf.clear();
+        self.reused = 0;
+    }
+}
+
+/// `preferred_sender_buffer()`: a collection's lines go through the collecting thread's own buffer, each commit sent
+/// at once, or, on a child's receiver, through its forward buffer.
+#[derive(Debug)]
+pub enum BufferSource<'f> {
+    Thread,
+    Forward(&'f mut ForwardBuffer),
+}
+
+/// A gate's metadata commit: at once from the thread's buffer, or through the forward buffer, sending the DATA held
+/// there ahead of it.
+fn commit_metadata(up: &dyn Upstream, src: &mut BufferSource<'_>, render: impl FnOnce(&mut Vec<u8>)) {
+    match src {
+        BufferSource::Thread => {
+            let mut out = take_buffer();
+            render(&mut out);
+            up.commit(&out, Traffic::Metadata);
+            give_back(out);
+        }
+        BufferSource::Forward(fwd) => {
+            render(fwd.start(up));
+            fwd.commit(up, Traffic::Metadata);
+        }
+    }
+}
+
+/// Where a collection's data is rendered.
+#[derive(Debug)]
+enum Out<'f> {
+    Thread(Vec<u8>),
+    Forward(&'f mut ForwardBuffer),
+}
+
+impl Out<'_> {
+    fn bytes(&mut self) -> &mut Vec<u8> {
+        match self {
+            Out::Thread(out) => out,
+            Out::Forward(fwd) => fwd.bytes(),
+        }
+    }
+}
+
 /// `RRDSET_STREAM_BUFFER`: a chart collection's data for the parent, committed by [`StreamBuffer::finish`].
 #[derive(Debug)]
 pub struct StreamBuffer<'a> {
@@ -71,15 +168,71 @@ pub struct StreamBuffer<'a> {
     v2: bool,
     /// The chart's flags at the gate.
     chart_flags: u32,
-    out: Vec<u8>,
+    out: Out<'a>,
     block: V2Block<'a>,
 }
 
-/// `stream_send_metrics_init()`, at the top of `rrdset_timed_done()`: nothing until the sender is ready (queued for
-/// its parents meanwhile, with one record per transition, D104.7); the host's functions again when they changed; the
-/// chart's definition when the parent lacks it; then a buffer for this collection's data, unless the chart is
-/// filtered out or waits for its replication.
-pub fn metrics_init<'a>(host: &'a Host, chart: &'a Chart, wall_clock_s: i64) -> Option<StreamBuffer<'a>> {
+/// `RRDSET_STREAM_BUFFER` of a block a child's receiver forwards: what its gate saw, kept by the parser from BEGIN2
+/// to END2.
+#[derive(Debug, Clone, Copy)]
+pub struct ProxyBlock {
+    /// The parent's, at the gate.
+    pub capabilities: u32,
+    /// INTERPOLATED: the child's BEGIN2 and SET2 go on; else END2 sends the chart's collected values in v1.
+    pub v2: bool,
+    /// The chart's, at the gate.
+    pub chart_flags: u32,
+    /// `begin_v2_added`: a forwarded BEGIN2 is open.
+    pub begin_added: bool,
+}
+
+/// `stream_send_metrics_init()`, at the top of `rrdset_timed_done()`: a buffer for this collection's data from `src`
+/// when the gate lets it go.
+pub fn metrics_init<'a>(
+    host: &'a Host,
+    chart: &'a Chart,
+    wall_clock_s: i64,
+    mut src: BufferSource<'a>,
+) -> Option<StreamBuffer<'a>> {
+    let (up, chart_flags) = gate(host, chart, &mut src)?;
+    let capabilities = up.capabilities();
+    let out = match src {
+        BufferSource::Thread => Out::Thread(take_buffer()),
+        BufferSource::Forward(fwd) => {
+            fwd.start(up);
+            Out::Forward(fwd)
+        }
+    };
+    Some(StreamBuffer {
+        up,
+        capabilities,
+        v2: capabilities & caps::INTERPOLATED != 0,
+        chart_flags,
+        out,
+        block: V2Block::new(
+            Enc::live(capabilities),
+            u64::from(chart.chart_slot()),
+            chart.id(),
+            chart.update_every() as u64,
+            wall_clock_s,
+        ),
+    })
+}
+
+/// `stream_send_metrics_init()` on a child's receiver, at BEGIN2: the chart's forwarded block, started in `fwd`, when
+/// the gate lets it go.
+pub fn forward_gate(host: &Host, chart: &Chart, fwd: &mut ForwardBuffer) -> Option<ProxyBlock> {
+    let (up, chart_flags) = gate(host, chart, &mut BufferSource::Forward(&mut *fwd))?;
+    let capabilities = up.capabilities();
+    fwd.start(up);
+    Some(ProxyBlock { capabilities, v2: capabilities & caps::INTERPOLATED != 0, chart_flags, begin_added: false })
+}
+
+/// The gate both share: nothing until the sender is ready (queued for its parents meanwhile, with one record per
+/// transition, D104.7); the host's functions again when they changed; the chart's definition when the parent lacks
+/// it, both committed through `src`; then the sender and the chart's flags, unless the chart is filtered out or
+/// waits for its replication.
+fn gate<'a>(host: &'a Host, chart: &Chart, src: &mut BufferSource<'_>) -> Option<(&'a dyn Upstream, u32)> {
     let up = host.upstream()?.as_ref();
     let host_flags = host.sender_flags();
     if host_flags & sender_flags::READY_4_METRICS == 0 {
@@ -111,7 +264,7 @@ pub fn metrics_init<'a>(host: &'a Host, chart: &'a Chart, wall_clock_s: i64) -> 
         );
     }
     if host_flags & sender_flags::GLOBAL_FUNCTIONS_UPDATED != 0 {
-        render_global_functions(host, up);
+        render_global_functions(host, up, src);
     }
     let exposed = chart.is_exposed_upstream();
     let chart_flags = chart.flags();
@@ -120,29 +273,12 @@ pub fn metrics_init<'a>(host: &'a Host, chart: &'a Chart, wall_clock_s: i64) -> 
         return None;
     }
     if !exposed {
-        let mut out = take_buffer();
-        replicating = send_definition(host, up, chart, &mut out);
-        up.commit(&out, Traffic::Metadata);
-        give_back(out);
+        commit_metadata(up, src, |out| replicating = send_definition(host, up, chart, out));
     }
     if replicating {
         return None;
     }
-    let capabilities = up.capabilities();
-    Some(StreamBuffer {
-        up,
-        capabilities,
-        v2: capabilities & caps::INTERPOLATED != 0,
-        chart_flags,
-        out: take_buffer(),
-        block: V2Block::new(
-            Enc::live(capabilities),
-            u64::from(chart.chart_slot()),
-            chart.id(),
-            chart.update_every() as u64,
-            wall_clock_s,
-        ),
-    })
+    Some((up, chart_flags))
 }
 
 /// A dimension's last collected value, as the collection loop holds it before this collection's carry.
@@ -176,7 +312,7 @@ impl StreamBuffer<'_> {
         }
         let baseline = last.baseline(self.capabilities);
         self.block.set2(
-            &mut self.out,
+            self.out.bytes(),
             (point_end_ut / 1_000_000) as i64,
             u64::from(dim.slot()),
             dim.id(),
@@ -186,52 +322,88 @@ impl StreamBuffer<'_> {
         );
     }
 
-    /// `stream_send_rrdset_metrics_v1()` without INTERPOLATED, after the collection counted: the values collected, `0` for the time until
-    /// the chart resynced; a dimension collected but not yet sent with the chart's definition is left for its next
-    /// definition.
+    /// `stream_send_rrdset_metrics_v1()` without INTERPOLATED, after the collection counted.
     pub fn v1(&mut self, chart: &Chart, dims: &[Arc<Dim>], c: &ChartCollection) {
-        if self.v2 {
-            return;
+        if !self.v2 {
+            write_v1(self.out.bytes(), chart, dims, c, self.capabilities, self.chart_flags);
         }
-        let usec = if c.last_collected.0 > chart.resync_time_s() { c.usec_since_last_update } else { 0 };
-        emit::v1_begin(&mut self.out, chart.id(), usec);
-        for dim in dims {
-            let m = dim.meta();
-            if m.flags & dim_flags::UPDATED == 0 {
-                continue;
-            }
-            // read per dimension, as C's `rrddim_check_upstream_exposed_collector()`: an unexposed one moves it
-            if !dim.is_exposed_upstream(chart.version()) {
-                chart.dim_metadata_updated(dim);
-                continue;
-            }
-            let d = dim.collection();
-            let value = if m.flags & dim_flags::FLOAT == 0 {
-                V1Value::Int(d.collected_value)
-            } else if self.capabilities & caps::FLOAT_BASELINE != 0 {
-                V1Value::Float(d.collected_value_float)
-            } else {
-                V1Value::Int(double_to_i64(d.collected_value_float))
-            };
-            emit::v1_set(&mut self.out, dim.id(), value);
-        }
-        if self.chart_flags & flags::UPSTREAM_SEND_VARIABLES != 0 {
-            chart_variables(chart, &mut self.out);
-        }
-        emit::v1_end(&mut self.out);
     }
 
-    /// `stream_send_rrdset_metrics_finished()`: the open block closed (with the chart's variables when they changed
-    /// before the gate), then the collection's data committed.
+    /// `stream_send_rrdset_metrics_finished()`: the open block closed, then the collection's data committed.
     pub fn finish(mut self, chart: &Chart) {
-        if self.v2 && self.block.is_open() {
-            if self.chart_flags & flags::UPSTREAM_SEND_VARIABLES != 0 {
-                chart_variables(chart, &mut self.out);
+        close_block(chart, self.v2 && self.block.is_open(), self.chart_flags, self.out.bytes());
+        match self.out {
+            Out::Thread(out) => {
+                self.up.commit(&out, Traffic::Data);
+                give_back(out);
             }
-            emit::end2(&mut self.out);
+            Out::Forward(fwd) => fwd.commit(self.up, Traffic::Data),
         }
-        self.up.commit(&self.out, Traffic::Data);
-        give_back(self.out);
+    }
+}
+
+/// `stream_send_rrdset_metrics_v1()` of a forwarded block, at END2 for a parent without INTERPOLATED: the chart's
+/// collected values, which SET2 never sets, so zeros as C (D106.3).
+pub fn forward_v1(chart: &Chart, b: &ProxyBlock, fwd: &mut ForwardBuffer) {
+    if !b.v2 {
+        write_v1(fwd.bytes(), chart, &chart.dims(), &chart.collection(), b.capabilities, b.chart_flags);
+    }
+}
+
+/// `stream_send_rrdset_metrics_finished()` of a forwarded block: closed, then committed as DATA into the batch.
+pub fn forward_finish(host: &Host, chart: &Chart, b: &ProxyBlock, fwd: &mut ForwardBuffer) {
+    let Some(up) = host.upstream() else {
+        return;
+    };
+    close_block(chart, b.v2 && b.begin_added, b.chart_flags, fwd.bytes());
+    fwd.commit(up.as_ref(), Traffic::Data);
+}
+
+/// The v1 block: the values collected, `0` for the time until the chart resynced; a dimension collected but not yet
+/// sent with the chart's definition is left for its next definition.
+fn write_v1(
+    out: &mut Vec<u8>,
+    chart: &Chart,
+    dims: &[Arc<Dim>],
+    c: &ChartCollection,
+    capabilities: u32,
+    chart_flags: u32,
+) {
+    let usec = if c.last_collected.0 > chart.resync_time_s() { c.usec_since_last_update } else { 0 };
+    emit::v1_begin(out, chart.id(), usec);
+    for dim in dims {
+        let m = dim.meta();
+        if m.flags & dim_flags::UPDATED == 0 {
+            continue;
+        }
+        // read per dimension, as C's `rrddim_check_upstream_exposed_collector()`: an unexposed one moves it
+        if !dim.is_exposed_upstream(chart.version()) {
+            chart.dim_metadata_updated(dim);
+            continue;
+        }
+        let d = dim.collection();
+        let value = if m.flags & dim_flags::FLOAT == 0 {
+            V1Value::Int(d.collected_value)
+        } else if capabilities & caps::FLOAT_BASELINE != 0 {
+            V1Value::Float(d.collected_value_float)
+        } else {
+            V1Value::Int(double_to_i64(d.collected_value_float))
+        };
+        emit::v1_set(out, dim.id(), value);
+    }
+    if chart_flags & flags::UPSTREAM_SEND_VARIABLES != 0 {
+        chart_variables(chart, out);
+    }
+    emit::v1_end(out);
+}
+
+/// An open v2 block's end: the chart's variables when they changed before the gate, then END2.
+fn close_block(chart: &Chart, open: bool, chart_flags: u32, out: &mut Vec<u8>) {
+    if open {
+        if chart_flags & flags::UPSTREAM_SEND_VARIABLES != 0 {
+            chart_variables(chart, out);
+        }
+        emit::end2(out);
     }
 }
 
@@ -497,24 +669,24 @@ pub fn send_global_functions(host: &Host) {
     if up.capabilities() & caps::FUNCTIONS == 0 || !host.can_stream_metadata() {
         return;
     }
-    render_global_functions(host, up.as_ref());
+    render_global_functions(host, up.as_ref(), &mut BufferSource::Thread);
 }
 
 /// The render and commit both call sites share, under the host's lock (`global_functions_spinlock`) so neither
 /// interleaves with the other: the flag is cleared first, so a change after the render is sent again. Dynamic
 /// configuration methods are left out (`NRPC_CATALOG_FILTER_STREAM_GLOBAL`); the FUNCTION_DEL queue and DynCfg's own
 /// line, which stands for them, come with the functions milestone, M8 (D100.9).
-fn render_global_functions(host: &Host, up: &dyn Upstream) {
+fn render_global_functions(host: &Host, up: &dyn Upstream, src: &mut BufferSource<'_>) {
     let _serialized = host.lock_global_functions();
     host.sender_flags_clear(sender_flags::GLOBAL_FUNCTIONS_UPDATED);
-    let mut out = Vec::new();
-    for (name, m) in host.functions().all() {
-        if m.flags & netdata_agent_nrpc::FLAG_DYNCFG != 0 {
-            continue;
+    commit_metadata(up, src, |out| {
+        for (name, m) in host.functions().all() {
+            if m.flags & netdata_agent_nrpc::FLAG_DYNCFG != 0 {
+                continue;
+            }
+            emit::function_global(out, &name, m.timeout_s, &m.help, &m.tags, m.access, m.priority, m.version);
         }
-        emit::function_global(&mut out, &name, m.timeout_s, &m.help, &m.tags, m.access, m.priority, m.version);
-    }
-    up.commit(&out, Traffic::Metadata);
+    });
 }
 
 pub mod replay;
