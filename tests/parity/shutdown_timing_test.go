@@ -113,7 +113,9 @@ func TestShutdownTiming(t *testing.T) {
 		if !s.found || !s.disconnected || !s.stepped || s.total == 0 {
 			t.Fatalf("side %d: records missing: %+v", i, s)
 		}
-		if s.disconnect > s.step6 {
+		// the stream thread leaves at its next 100 ms tick: a [6/22] that starts sooner (a quick web and HEALTH
+		// wait) may come first by chance
+		if s.step6 >= 150*time.Millisecond && s.disconnect > s.step6 {
 			t.Errorf("side %d: the sender disconnected at +%v, not before [6/22] at +%v", i, s.disconnect, s.step6)
 		}
 		if s.disconnect > 500*time.Millisecond {

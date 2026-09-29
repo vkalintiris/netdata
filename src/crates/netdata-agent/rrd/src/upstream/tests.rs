@@ -362,8 +362,9 @@ fn a_float_dimension_sends_a_double_only_with_float_baseline() {
     }
 }
 
-/// The host's own metadata: labels then OVERWRITE, the claimed id, variables (a changed value at once), and the
-/// functions again at the next collection after they changed.
+/// The host's own metadata: labels then OVERWRITE, the claimed id, variables (each VARIABLE line at once, as C's
+/// add-then-set always counts as a change; names sanitized), and the functions again at the next collection after
+/// they changed, dynamic-configuration ones left out.
 #[test]
 fn the_host_metadata_goes_when_the_sender_can_take_it() {
     let (host, recorder) = streaming("*", PLAIN);
@@ -374,10 +375,10 @@ fn the_host_metadata_goes_when_the_sender_can_take_it() {
     host.update_labels(|l| l.add(b"k", b"v", crate::labels::SRC_CONFIG));
     send_host_labels(&host);
     send_claimed_id(&host);
-    host.set_variable("v", 1.0);
+    host.set_variable("v", 2.0);
     host.set_variable("v", 2.0);
     host.set_variable("n", f64::NAN);
-    host.set_variable("n", f64::NAN);
+    host.set_variable("a b", 3.0);
     send_host_variables(&host);
     let commits: Vec<String> = recorder.take().into_iter().map(|(_, s)| s).collect();
     let source = host.labels().iter().next().unwrap().flags;
@@ -387,9 +388,10 @@ fn the_host_metadata_goes_when_the_sender_can_take_it() {
             format!("LABEL \"k\" = {source} \"v\"\nOVERWRITE labels\n"),
             "CLAIMED_ID 'guid-s' 'NULL'\n".to_string(),
             "VARIABLE HOST v = 2.0000000\n".to_string(),
+            "VARIABLE HOST v = 2.0000000\n".to_string(),
             "VARIABLE HOST n = nan\n".to_string(),
-            "VARIABLE HOST n = nan\n".to_string(),
-            "VARIABLE HOST v = 2.0000000\nVARIABLE HOST n = nan\n".to_string(),
+            "VARIABLE HOST a_b = 3.0000000\n".to_string(),
+            "VARIABLE HOST v = 2.0000000\nVARIABLE HOST n = nan\nVARIABLE HOST a_b = 3.0000000\n".to_string(),
         ]
     );
     let chart = host.charts().create(&chart_spec(DbMode::Ram)).0;
@@ -408,6 +410,7 @@ fn the_host_metadata_goes_when_the_sender_can_take_it() {
         source: NrpcSource::Stream,
     };
     host.register_function(&desc).unwrap();
+    host.register_function(&MethodDesc { name: b"config", ..desc }).unwrap();
     collect(&host, &chart, &[(&dim, 1)], T + 1);
     let commits = recorder.take();
     assert_eq!(commits[0], (Traffic::Metadata, "FUNCTION GLOBAL \"f\" 10 \"h\" \"top\" 0x0 100 3\n".to_string()));

@@ -151,6 +151,7 @@ impl StreamWorker {
         }
         let Ok(conn) = to_conn(socket) else {
             // getsockname() failed on a connected socket: back to the connector before anything commits to it
+            host.sender_flags_clear(sender_flags::CONNECTED);
             self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(host.machine_guid());
             sender.connector.requeue(&sender, &host, Cmd::Connect);
             return;
@@ -167,6 +168,7 @@ impl StreamWorker {
             out.session = Some(session);
             out.remote_ip = remote_ip.clone();
             out.capabilities = capabilities;
+            sender.negotiated.store(capabilities, Ordering::Relaxed);
             out.algorithm = compressor.as_ref().map(|c| c.algorithm());
             out.compressor = compressor;
             out.buffer.flush(sender.connector.settings.buffer_max_size, now_monotonic_ut());

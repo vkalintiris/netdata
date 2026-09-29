@@ -244,8 +244,6 @@ pub struct Receivers {
     streaming_rate_s: AtomicI64,
     /// The wall-clock second of the last accepted request under the rate limit (`last_stream_accepted_t`).
     last_accepted_s: Mutex<i64>,
-    /// `!service_running(ABILITY_STREAMING_CONNECTIONS)`: the exit started (D110).
-    exiting: fn() -> bool,
 }
 
 fn now_s() -> i64 {
@@ -327,13 +325,7 @@ impl Receivers {
             pins,
             streaming_rate_s: AtomicI64::new(0),
             last_accepted_s: Mutex::new(0),
-            exiting: netdata_agent_sys::exit::initiated,
         }
-    }
-
-    /// The same receivers testing `exiting` for the exit's start.
-    pub fn with_exit(self, exiting: fn() -> bool) -> Self {
-        Receivers { exiting, ..self }
     }
 
     /// Sets `[web] accept a streaming request every`, which is read after the receivers exist.
@@ -373,8 +365,9 @@ impl Receivers {
         client_ip: &str,
         client_port: &str,
     ) -> PreAdmission {
-        // stream_receiver_response_too_busy_now() once the exit started, before anything is read or logged
-        if (self.exiting)() {
+        // stream_receiver_response_too_busy_now() once the exit started (!service_running(ABILITY_STREAMING_CONNECTIONS)),
+        // before anything is read or logged
+        if netdata_agent_sys::exit::initiated() {
             return PreAdmission::Reply(handshake::ERROR_BUSY_TRY_LATER, 503);
         }
         let accepted_s = now_s();
@@ -858,7 +851,8 @@ impl StreamWorker {
             Arc::downgrade(&attached.slot),
         );
         parser.set_replay_sink(Arc::new(move |request| {
-            pool.send(thread, StreamMsg::Replay(receiver.clone(), request))
+            // an ended thread is not started again for it
+            pool.send_if_running(thread, StreamMsg::Replay(receiver.clone(), request))
                 .is_ok()
         }));
         let decompressor = Decompressor::for_capabilities(attached.parser.capabilities);
@@ -1446,6 +1440,11 @@ impl StreamWorker {
                         let reason = failed(child, Reason::DISCONNECT_SOCKET_READ_FAILED, 0);
                         let _parser = child.parser.log_frame();
                         return self.disconnect(cx, index, reason);
+                    }
+                    // service_running(SERVICE_STREAMING) per chunk: once the exit started the rest waits for the
+                    // loop's exit path (D110)
+                    if netdata_agent_sys::exit::initiated() {
+                        return;
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,

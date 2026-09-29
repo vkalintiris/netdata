@@ -195,8 +195,6 @@ pub struct Connector {
     cancel: AtomicBool,
     /// `service_signal_exit(SERVICE_STREAMING_CONNECTOR)`.
     exit: AtomicBool,
-    /// The exit started: `service_running()` is false for every service from then (D110).
-    exiting: fn() -> bool,
     started: Mutex<bool>,
     /// The thread, for the shutdown's wait of every remaining thread (`[13/22]`).
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -232,7 +230,6 @@ impl Connector {
             completion: Completion::default(),
             cancel: AtomicBool::new(false),
             exit: AtomicBool::new(false),
-            exiting: netdata_agent_sys::exit::initiated,
             started: Mutex::new(false),
             thread: Mutex::new(None),
         })
@@ -247,14 +244,12 @@ impl Connector {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
-    /// `service_signal_exit(SERVICE_STREAMING_CONNECTOR)`: the thread removes every queued host over five more
-    /// passes, 250 ms apart, then ends.
+    /// `service_signal_exit(SERVICE_STREAMING_CONNECTOR)`: a flag the thread sees at its next wake, as C's (no
+    /// request-quit callback wakes it); it then removes every queued host over five more passes, 250 ms apart.
     pub fn signal_exit(&self) {
         self.exit.store(true, Ordering::Relaxed);
-        self.completion.mark();
     }
 
-    /// `stream_connector_init()`: starts the thread once; false when it could not start.
     pub(crate) fn pool(&self) -> &PoolHandle<StreamMsg> {
         &self.pool
     }
@@ -277,6 +272,7 @@ impl Connector {
         self.env.get().unwrap_or_else(|| DEFAULT.get_or_init(Env::default))
     }
 
+    /// `stream_connector_init()`: starts the thread once; false when it could not start.
     pub(crate) fn init(self: &Arc<Self>, hostname: &str) -> bool {
         let mut started = self.started.lock().unwrap_or_else(PoisonError::into_inner);
         if *started {
@@ -310,9 +306,13 @@ impl Connector {
         let Some(join) = self.thread.lock().unwrap_or_else(PoisonError::into_inner).take() else {
             return;
         };
+        // an exit on this very thread does not wait for itself, as C's waits skip their caller
+        if join.thread().id() == std::thread::current().id() {
+            return;
+        }
         let deadline = std::time::Instant::now() + limit;
         while std::time::Instant::now() < deadline && !join.is_finished() {
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(50));
         }
         if join.is_finished() {
             let _ = join.join();
@@ -367,7 +367,8 @@ impl Connector {
         let (mut job_id, mut exiting) = (0, 0);
         while exiting <= 5 {
             job_id = self.completion.wait(job_id, Duration::from_millis(if exiting > 0 { 250 } else { 1000 }));
-            if self.exit.load(Ordering::Relaxed) || (self.exiting)() {
+            // service_running(SERVICE_STREAMING_CONNECTOR): false once signalled or once the exit started (D110)
+            if self.exit.load(Ordering::Relaxed) || netdata_agent_sys::exit::initiated() {
                 exiting += 1;
             }
             let mut next = 0;

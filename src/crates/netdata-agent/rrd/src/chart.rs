@@ -27,6 +27,7 @@ use crate::storage::{Backfill, StorageLayout};
 use crate::stream_control::BackfillRunning;
 use crate::tiers::{self, Rollup, TierRecord};
 use crate::upstream;
+use crate::variables::Variables;
 
 /// `RRD_ID_LENGTH_MAX`.
 pub const ID_LENGTH_MAX: usize = 1200;
@@ -308,8 +309,8 @@ pub struct Chart {
     collection: Mutex<ChartCollection>,
     dims: RwLock<Index<Dim>>,
     receiver: Mutex<ReceiverState>,
-    /// Chart variables (`VARIABLE CHART`, `st->rrdvars`), in insertion order.
-    variables: Mutex<Vec<(String, f64)>>,
+    /// Chart variables (`VARIABLE CHART`, `st->rrdvars`).
+    variables: Variables,
     /// `st->version`: the metadata version, which moves with every change a parent must see.
     version: AtomicU32,
     /// `st->stream.snd.sent_version`: the version last sent upstream.
@@ -708,31 +709,16 @@ impl Chart {
         update(&mut lock(&self.collection))
     }
 
-    /// `rrdvar_chart_variable_add_and_acquire()` and `rrdvar_chart_variable_set()`: a changed value (a new variable
-    /// starts as NaN, which equals nothing) is flagged for the parent.
+    /// A `VARIABLE CHART` line (`rrdvar_chart_variable_add_and_acquire()`, then `rrdvar_chart_variable_set()`): the
+    /// value always counts as changed, so the chart's variables go with its next data.
     pub fn set_variable(&self, name: &str, value: f64) {
-        let changed = {
-            let mut variables = lock(&self.variables);
-            match variables.iter_mut().find(|(n, _)| n == name) {
-                Some((_, v)) => {
-                    let changed = *v != value;
-                    *v = value;
-                    changed
-                }
-                None => {
-                    variables.push((name.to_string(), value));
-                    true
-                }
-            }
-        };
-        if changed {
-            self.update_meta(|m| m.flags |= flags::UPSTREAM_SEND_VARIABLES);
-        }
+        self.variables.put(name, value);
+        self.update_meta(|m| m.flags |= flags::UPSTREAM_SEND_VARIABLES);
     }
 
     /// The chart variables, in insertion order.
     pub fn variables(&self) -> Vec<(String, f64)> {
-        lock(&self.variables).clone()
+        self.variables.all()
     }
 
     /// The parser's state on this chart.
@@ -994,7 +980,7 @@ impl Chart {
                 backfilled: false,
             }),
             freed: AtomicBool::new(false),
-            slot: self.dim_last_slot.fetch_add(1, Ordering::Relaxed) + 1,
+            slot: self.dim_last_slot.fetch_add(1, Ordering::Relaxed).wrapping_add(1),
             sent_version: AtomicU32::new(0),
         });
         // pulse_db_rrd_memory_add(), which the dimension's drop takes back
@@ -1477,7 +1463,7 @@ impl SendSlots {
     /// `rrdset_stream_send_chart_slot_assign()`.
     fn assign(&mut self) -> u32 {
         self.available.pop().unwrap_or_else(|| {
-            self.last_used += 1;
+            self.last_used = self.last_used.wrapping_add(1);
             self.last_used
         })
     }
@@ -1753,7 +1739,7 @@ impl Charts {
                     collection: Mutex::new(ChartCollection::default()),
                     dims: RwLock::new(Index::default()),
                     receiver: Mutex::new(ReceiverState::default()),
-                    variables: Mutex::new(Vec::new()),
+                    variables: Variables::default(),
                     version: AtomicU32::new(0),
                     sent_version: AtomicU32::new(0),
                     // rrdset_insert_callback(): every chart takes a slot, whether the host streams or not

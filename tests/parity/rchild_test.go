@@ -544,9 +544,36 @@ func TestRChild(t *testing.T) {
 				records[i] = rchildRecords(t, c)
 			}
 			diffLines(t, "children's records", records[0], records[1])
+			// what each C parent's parser said of its child's stream (a line it tolerates with an error)
+			var parsed [2][]string
+			for i, side := range p.Each() {
+				parsed[i] = pluginsdRecords(t, side.Daemon)
+			}
+			diffLines(t, "the parents' PLUGINSD records", parsed[0], parsed[1])
 			t.Logf("records:\n%s", strings.Join(records[0], "\n"))
 		})
 	}
+}
+
+// pluginsdRecords are a parent's parser records (PLUGINSD) about its children's streams, each once, normalized.
+func pluginsdRecords(t *testing.T, d *daemon.Daemon) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
+		if !strings.Contains(l, `msg="PLUGINSD`) {
+			continue
+		}
+		n := normalizeLog(l, d.Opts.RunDir, "")
+		n = anyLocalPortRe.ReplaceAllString(n, "127.0.0.1${1}P")
+		n = threadNRe.ReplaceAllString(n, "${1}[n]")
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // waitReceiver waits until the parent has a receiver for the child (its stream_info names the child's host and

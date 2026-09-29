@@ -1279,6 +1279,8 @@ fn dispatch(
 
 impl Worker for WebWorker {
     type Msg = ();
+    // poll_events() tests its stop at the top of its loop: the last wait's events are handled first
+    const EXIT_AT_LOOP_TOP: bool = true;
 
     fn start(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
         for (i, listener) in self.listeners.iter().enumerate() {

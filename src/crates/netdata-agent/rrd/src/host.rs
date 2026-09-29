@@ -20,6 +20,7 @@ use crate::storage::{StorageLayout, TierHandle};
 use crate::stream_path::PathEntry;
 use crate::system_info::SystemInfo;
 use crate::upstream::{self, Upstream};
+use crate::variables::Variables;
 
 /// What a host is and how it is stored; the mutable part of `struct rrdhost`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -318,8 +319,8 @@ pub struct Host {
     claim_id_of_origin: RwLock<[u8; 16]>,
     /// `host->aclk.claim_id_of_parent`: the claim id the parent sent with NODE_ID, zero when none.
     claim_id_of_parent: RwLock<[u8; 16]>,
-    /// Host variables (`VARIABLE HOST`, `host->rrdvars`), in insertion order.
-    variables: Mutex<Vec<(String, f64)>>,
+    /// Host variables (`VARIABLE HOST`, `host->rrdvars`).
+    variables: Variables,
     /// The functions registered for this host (`rrdhost_nrpc_owner()`).
     functions: Registry,
     /// `host->stream.rcv.status.replication.percent`, as `f64` bits: kept across reconnections.
@@ -490,7 +491,7 @@ impl Host {
             labels: RwLock::new(Labels::default()),
             claim_id_of_origin: RwLock::new([0; 16]),
             claim_id_of_parent: RwLock::new([0; 16]),
-            variables: Mutex::new(Vec::new()),
+            variables: Variables::default(),
             functions: Registry::default(),
             replication_percent: AtomicU64::new(100f64.to_bits()),
             stream_path: RwLock::new(Vec::new()),
@@ -875,31 +876,16 @@ impl Host {
             .unwrap_or_else(PoisonError::into_inner) = id;
     }
 
-    /// `rrdvar_host_variable_add_and_acquire()` and `rrdvar_host_variable_set()`: a changed value (a new variable
-    /// starts as NaN, which equals nothing) goes to the parent at once.
+    /// A `VARIABLE HOST` line (`rrdvar_host_variable_add_and_acquire()`, then `rrdvar_host_variable_set()`): the
+    /// value always counts as changed, so it goes to the parent at once.
     pub fn set_variable(&self, name: &str, value: f64) {
-        let changed = {
-            let mut variables = lock(&self.variables);
-            match variables.iter_mut().find(|(n, _)| n == name) {
-                Some((_, v)) => {
-                    let changed = *v != value;
-                    *v = value;
-                    changed
-                }
-                None => {
-                    variables.push((name.to_string(), value));
-                    true
-                }
-            }
-        };
-        if changed {
-            upstream::send_host_variable(self, name, value);
-        }
+        let name = self.variables.put(name, value);
+        upstream::send_host_variable(self, &name, value);
     }
 
     /// The host variables, in insertion order.
     pub fn variables(&self) -> Vec<(String, f64)> {
-        lock(&self.variables).clone()
+        self.variables.all()
     }
 
     /// `host->rrdset_root_index`.
@@ -1094,7 +1080,7 @@ impl Host {
             self.stop_receiver_and_wait(&slot);
         }
         self.charts.flush();
-        lock(&self.variables).clear();
+        self.variables.clear();
         self.replace_stream_path(Vec::new());
         self.functions.clear();
         self.archived.store(true, Ordering::Release);

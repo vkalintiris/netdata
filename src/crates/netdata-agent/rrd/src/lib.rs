@@ -24,3 +24,4 @@ pub mod system_info;
 mod testutil;
 pub mod tiers;
 pub mod upstream;
+mod variables;

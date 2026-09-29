@@ -29,7 +29,8 @@ impl Sender {
         if src.is_empty() {
             return;
         }
-        let hostname = self.hostname();
+        // only the rare records name the host: no lookup on the hot path
+        let hostname = || self.hostname();
         let mut out = self.out();
         let Some(session) = out.session else {
             return;
@@ -38,7 +39,8 @@ impl Sender {
             nd_log!(
                 Source::Daemon,
                 Priority::Notice,
-                "STREAM SND '{hostname}' [to {}]: Increased max buffer size to {} (message size {}).",
+                "STREAM SND '{}' [to {}]: Increased max buffer size to {} (message size {}).",
+                hostname(),
                 out.remote_ip,
                 out.buffer.stats().bytes_max_size,
                 src.len() + 1
@@ -68,15 +70,16 @@ impl Sender {
                     &OVERFLOW_RECORD,
                     Source::Daemon,
                     Priority::Err,
-                    "STREAM SND '{hostname}' [to {remote_ip}]: buffer overflow (buffer size {}, max size {}, available \
-                     {}). Restarting connection.",
+                    "STREAM SND '{}' [to {remote_ip}]: buffer overflow (buffer size {}, max size {}, available {}). \
+                     Restarting connection.",
+                    hostname(),
                     stats.bytes_size,
                     stats.bytes_max_size,
                     stats.bytes_available
                 );
             }
             Ended::CompressionFailed => {
-                self.deactivate_compression(&out, &hostname);
+                self.deactivate_compression(&out, &hostname());
                 let remote_ip = out.remote_ip.clone();
                 drop(out);
                 self.post(session, op::RECONNECT_WITHOUT_COMPRESSION, Reason::SND_DISCONNECT_COMPRESSION_FAILED);
@@ -84,8 +87,9 @@ impl Sender {
                     &COMPRESSION_RECORD,
                     Source::Daemon,
                     Priority::Err,
-                    "STREAM SND '{hostname}' [to {remote_ip}]: COMPRESSION failed (twice). Deactivating compression \
-                     and restarting connection."
+                    "STREAM SND '{}' [to {remote_ip}]: COMPRESSION failed (twice). Deactivating compression and \
+                     restarting connection.",
+                    hostname()
                 );
             }
         }
@@ -122,7 +126,7 @@ impl Sender {
 /// The compressed branch: each piece compressed (after a failure the compressor is set up again from the
 /// capabilities and the piece retried once), then its signature and its bytes added. Pieces added before a failure
 /// stay in the buffer.
-fn compressed(out: &mut Out, hostname: &str, src: &[u8], traffic: Traffic, enable_sending: bool) -> Ended {
+fn compressed(out: &mut Out, hostname: &dyn Fn() -> String, src: &[u8], traffic: Traffic, enable_sending: bool) -> Ended {
     let binary = out.capabilities & caps::BINARY != 0;
     let mut rest = src;
     while !rest.is_empty() {
@@ -133,7 +137,8 @@ fn compressed(out: &mut Out, hostname: &str, src: &[u8], traffic: Traffic, enabl
             nd_log!(
                 Source::Daemon,
                 Priority::Err,
-                "STREAM SND '{hostname}' [to {}]: COMPRESSION failed. Resetting compressor and re-trying",
+                "STREAM SND '{}' [to {}]: COMPRESSION failed. Resetting compressor and re-trying",
+                hostname(),
                 out.remote_ip
             );
             // stream_compression_initialize()

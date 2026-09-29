@@ -27,9 +27,14 @@ type capture struct {
 	request []string
 	start   []string
 	charts  map[string][]string
-	// defs counts each chart's definitions: a version that moves at every collection would redefine it each time
+	// defs counts each chart's definitions: a version that moves at every collection would redefine it each time; a
+	// chart's entry in charts holds every definition, in order
 	defs map[string]int
 	data map[string][]string
+	// v1zero counts each chart's v1 blocks sent with no time since the last update (the resync horizon)
+	v1zero map[string]int
+	// dimSlots are each chart's dimensions' slots in its last definition, which its SET2 lines must use
+	dimSlots map[string]map[string]string
 	// replays are each chart's replication answers: their lines' kinds and dimensions
 	replays map[string][]string
 	other   []string
@@ -45,7 +50,8 @@ var (
 	replayVerdictRe = regexp.MustCompile(` (true|false) `)
 	chartLineRe     = regexp.MustCompile(`^CHART (?:SLOT:\S+ )?"([^"]*)"`)
 	begin2Re        = regexp.MustCompile(`^BEGIN2 (?:SLOT:\S+ )?'([^']*)' `)
-	set2Re          = regexp.MustCompile(`^SET2 (?:SLOT:\S+ )?'([^']*)' \S+ \S+ (\S*)$`)
+	set2Re          = regexp.MustCompile(`^SET2 (?:(SLOT:\S+) )?'([^']*)' \S+ \S+ (\S*)$`)
+	dimensionRe     = regexp.MustCompile(`^DIMENSION (?:(SLOT:\S+) )?"([^"]*)"`)
 	definitionEndRe = regexp.MustCompile(`^CHART_DEFINITION_END .*`)
 	v1BeginRe       = regexp.MustCompile(`^BEGIN "([^"]*)" (\d+)$`)
 	v1SetRe         = regexp.MustCompile(`^SET "([^"]*)" = \S+$`)
@@ -54,7 +60,14 @@ var (
 // parseCapture splits a plaintext stream into its parts.
 func parseCapture(req stream.Request, data []byte) capture {
 	c := capture{charts: map[string][]string{}, defs: map[string]int{}, data: map[string][]string{},
-		slots: map[string]string{}, replays: map[string][]string{}}
+		slots: map[string]string{}, replays: map[string][]string{}, v1zero: map[string]int{},
+		dimSlots: map[string]map[string]string{}}
+	// data must follow their chart's definition in the session
+	defined := func(chart, what string) {
+		if c.defs[chart] == 0 {
+			c.other = append(c.other, what+" of "+chart+" before its definition")
+		}
+	}
 	params := make([]string, 0, len(req.Params))
 	for k, v := range req.Params {
 		if k == "ml_capable" {
@@ -94,8 +107,12 @@ func parseCapture(req stream.Request, data []byte) capture {
 		case chartLineRe.MatchString(line):
 			chart = chartLineRe.FindStringSubmatch(line)[1]
 			c.slots[chart] = slotRe.FindString(line)
-			c.charts[chart] = []string{slotRe.ReplaceAllString(line, "SLOT:N ")}
+			if c.defs[chart] > 0 {
+				c.charts[chart] = append(c.charts[chart], "--- defined again")
+			}
+			c.charts[chart] = append(c.charts[chart], slotRe.ReplaceAllString(line, "SLOT:N "))
 			c.defs[chart]++
+			c.dimSlots[chart] = map[string]string{}
 			clabels = nil
 		case strings.HasPrefix(line, "CLABEL "):
 			clabels = append(clabels, line)
@@ -105,18 +122,25 @@ func parseCapture(req stream.Request, data []byte) capture {
 			c.charts[chart] = append(append(c.charts[chart], clabels...), line)
 			clabels = nil
 		case strings.HasPrefix(line, "DIMENSION "), strings.HasPrefix(line, "VARIABLE CHART "):
+			if m := dimensionRe.FindStringSubmatch(line); m != nil && c.dimSlots[chart] != nil {
+				c.dimSlots[chart][m[2]] = m[1]
+			}
 			c.charts[chart] = append(c.charts[chart], slotRe.ReplaceAllString(line, "SLOT:N "))
 		case definitionEndRe.MatchString(line):
 			c.charts[chart] = append(c.charts[chart], "CHART_DEFINITION_END <times>")
 		case begin2Re.MatchString(line):
 			chart = begin2Re.FindStringSubmatch(line)[1]
+			defined(chart, "BEGIN2")
 			if slot := slotRe.FindString(line); slot != c.slots[chart] {
 				c.other = append(c.other, "BEGIN2 of "+chart+" in "+slot+", its definition's "+c.slots[chart])
 			}
 			block = nil
 		case set2Re.MatchString(line):
 			m := set2Re.FindStringSubmatch(line)
-			block = append(block, m[1]+" "+m[2])
+			if want := c.dimSlots[chart][m[2]]; m[1] != want {
+				c.other = append(c.other, "SET2 of "+chart+"/"+m[2]+" in "+m[1]+", its definition's "+want)
+			}
+			block = append(block, m[2]+" "+m[3])
 		case replayRe.MatchString(line):
 			m := replayRe.FindStringSubmatch(line)
 			if m[1] == "RBEGIN" && m[2] != "''" {
@@ -143,8 +167,10 @@ func parseCapture(req stream.Request, data []byte) capture {
 		case v1BeginRe.MatchString(line):
 			m := v1BeginRe.FindStringSubmatch(line)
 			chart, block, v1Time = m[1], nil, "N"
+			defined(chart, "BEGIN")
 			if m[2] == "0" {
 				v1Time = "0"
+				c.v1zero[chart]++
 			}
 		case v1SetRe.MatchString(line):
 			block = append(block, v1SetRe.FindStringSubmatch(line)[1])
@@ -197,6 +223,12 @@ func compareCaptures(t *testing.T, stage string, a, b capture, charts bool) {
 		}
 	}
 	diff("charts with data", keys(a.data), keys(b.data))
+	for _, id := range keys(a.charts) {
+		if a.v1zero[id] != b.v1zero[id] {
+			t.Errorf("%s: chart %s sent %d v1 blocks with no time by the oracle, %d by the candidate", stage, id,
+				a.v1zero[id], b.v1zero[id])
+		}
+	}
 	for _, id := range keys(a.data) {
 		if y, ok := b.data[id]; ok {
 			diff("data of "+id, a.data[id], y)
@@ -266,6 +298,13 @@ var senderVariants = []senderVariant{
 	{name: "hex", refused: stream.CapReplication | stream.CapSlots | stream.CapIEEE754 | stream.CapFloatBaseline},
 	{name: "v1", refused: stream.CapReplication | stream.CapInterpolated,
 		extra: "    initial clock resync iterations = 3\n"},
+	// a definition after a reconnect waits for the resync horizon: v1 blocks with no time until then
+	{name: "v1-reconnect", refused: stream.CapReplication | stream.CapInterpolated, sessions: 2,
+		extra: "    initial clock resync iterations = 3\n",
+		during: func(t *testing.T, _ *daemon.Daemon, s *stream.Session) {
+			time.Sleep(8 * time.Second)
+			_ = s.Close()
+		}},
 	{name: "nolabels",
 		refused: stream.CapReplication | stream.CapCLabels | stream.CapHLabels | stream.CapClaim | stream.CapPaths},
 	{name: "pattern", refused: stream.CapReplication,

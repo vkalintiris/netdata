@@ -54,8 +54,12 @@ fn take_buffer() -> Vec<u8> {
     b
 }
 
+/// Kept for the next collection, unless a large one (a long gap) grew it: C recreates an oversized thread buffer too.
 fn give_back(b: Vec<u8>) {
-    BUFFER.with(|slot| *slot.borrow_mut() = b);
+    const KEEP: usize = 256 * 1024;
+    if b.capacity() <= KEEP {
+        BUFFER.with(|slot| *slot.borrow_mut() = b);
+    }
 }
 
 /// `RRDSET_STREAM_BUFFER`: a chart collection's data for the parent, committed by [`StreamBuffer::finish`].
@@ -83,7 +87,10 @@ pub fn metrics_init<'a>(host: &'a Host, chart: &'a Chart, wall_clock_s: i64) -> 
         if host.is_online() && host_flags & sender_flags::ADDED == 0 {
             up.start();
         }
-        if host.sender_flags_set(sender_flags::LOGGED_STATUS) & sender_flags::LOGGED_STATUS == 0 {
+        // the snapshot first, as C: no shared write at every collection while the sender waits
+        if host_flags & sender_flags::LOGGED_STATUS == 0
+            && host.sender_flags_set(sender_flags::LOGGED_STATUS) & sender_flags::LOGGED_STATUS == 0
+        {
             nd_log!(
                 Source::Daemon,
                 Priority::Info,
@@ -180,13 +187,13 @@ impl StreamBuffer<'_> {
         }
         let usec = if c.last_collected.0 > chart.resync_time_s() { c.usec_since_last_update } else { 0 };
         emit::v1_begin(&mut self.out, chart.id(), usec);
-        let version = chart.version();
         for dim in dims {
             let m = dim.meta();
             if m.flags & dim_flags::UPDATED == 0 {
                 continue;
             }
-            if !dim.is_exposed_upstream(version) {
+            // read per dimension, as C's `rrddim_check_upstream_exposed_collector()`: an unexposed one moves it
+            if !dim.is_exposed_upstream(chart.version()) {
                 chart.dim_metadata_updated(dim);
                 continue;
             }
@@ -344,15 +351,7 @@ fn send_definition(host: &Host, up: &dyn Upstream, chart: &Chart, out: &mut Vec<
             }
             if chart.flags() & flags::OBSOLETE != 0 || !host.can_stream_metadata() {
                 if we_caused_transition {
-                    let undo = chart.flags_set_and_clear(
-                        flags::SENDER_REPLICATION_FINISHED,
-                        flags::SENDER_REPLICATION_IN_PROGRESS,
-                    );
-                    if undo & flags::SENDER_REPLICATION_IN_PROGRESS != 0
-                        && host.sender_replicating_charts_minus_one() == 0
-                    {
-                        host.pulse_status(host_status::SND_RUNNING);
-                    }
+                    give_back_claim(host, chart);
                 }
             } else {
                 replication_progress = true;
@@ -383,13 +382,19 @@ pub fn send_definition_now(host: &Host, chart: &Chart) -> bool {
     true
 }
 
-/// The release of `rrdset_is_obsolete___safe_from_collector_thread()`: the parent does not replicate an obsolete
-/// chart, so a claim it held is given back.
-pub(crate) fn release_on_obsolete(host: &Host, chart: &Chart) {
+/// A claim given back (the chart finished, as at the parent's end of its replication): the last one marks the host
+/// running. Only the thread that finds the claim takes it back.
+fn give_back_claim(host: &Host, chart: &Chart) {
     let old = chart.flags_set_and_clear(flags::SENDER_REPLICATION_FINISHED, flags::SENDER_REPLICATION_IN_PROGRESS);
     if old & flags::SENDER_REPLICATION_IN_PROGRESS != 0 && host.sender_replicating_charts_minus_one() == 0 {
         host.pulse_status(host_status::SND_RUNNING);
     }
+}
+
+/// The release of `rrdset_is_obsolete___safe_from_collector_thread()`: the parent does not replicate an obsolete
+/// chart, so a claim it held is given back.
+pub(crate) fn release_on_obsolete(host: &Host, chart: &Chart) {
+    give_back_claim(host, chart);
 }
 
 /// `stream_sender_charts_and_replication_reset()`'s charts, at every connection and disconnection: no replication
@@ -488,13 +493,17 @@ pub fn send_global_functions(host: &Host) {
 }
 
 /// The render and commit both call sites share, under the host's lock (`global_functions_spinlock`) so neither
-/// interleaves with the other: the flag is cleared first, so a change after the render is sent again. The full
-/// catalogue (FUNCTION_DEL and DynCfg's line) comes with the functions milestone, M8 (D100.9).
+/// interleaves with the other: the flag is cleared first, so a change after the render is sent again. Dynamic
+/// configuration methods are left out (`NRPC_CATALOG_FILTER_STREAM_GLOBAL`); the FUNCTION_DEL queue and DynCfg's own
+/// line, which stands for them, come with the functions milestone, M8 (D100.9).
 fn render_global_functions(host: &Host, up: &dyn Upstream) {
     let _serialized = host.lock_global_functions();
     host.sender_flags_clear(sender_flags::GLOBAL_FUNCTIONS_UPDATED);
     let mut out = Vec::new();
     for (name, m) in host.functions().all() {
+        if m.flags & netdata_agent_nrpc::FLAG_DYNCFG != 0 {
+            continue;
+        }
         emit::function_global(&mut out, &name, m.timeout_s, &m.help, &m.tags, m.access, m.priority, m.version);
     }
     up.commit(&out, Traffic::Metadata);

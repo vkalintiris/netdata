@@ -154,6 +154,8 @@ pub struct Sender {
     pub(crate) counter_out: std::sync::atomic::AtomicU32,
     /// `s->exit.shutdown`.
     pub(crate) shutdown: AtomicBool,
+    /// `s->capabilities` as the collectors read it, without the commit lock (C reads it unlocked).
+    pub(crate) negotiated: std::sync::atomic::AtomicU32,
 }
 
 /// The connection the connector hands to the host's stream thread (`stream_sender_add_to_queue()`).
@@ -216,6 +218,7 @@ impl Sender {
             counter_in: std::sync::atomic::AtomicU32::new(0),
             counter_out: std::sync::atomic::AtomicU32::new(0),
             shutdown: AtomicBool::new(false),
+            negotiated: std::sync::atomic::AtomicU32::new(0),
         });
         host.set_upstream(Arc::clone(&sender) as Arc<dyn Upstream>);
         Some(sender)
@@ -269,11 +272,22 @@ impl Sender {
                 }
             }
         };
-        if first {
-            let _ = self
+        if first
+            && self
                 .connector
                 .pool()
-                .send(session.thread, crate::thread::StreamMsg::SenderOps(Arc::downgrade(&me), session));
+                .send_if_running(session.thread, crate::thread::StreamMsg::SenderOps(Arc::downgrade(&me), session))
+                .is_err()
+        {
+            // the thread ended (the exit started): C's stream_thread_by_slot_id() finds no thread
+            *self.ops.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            let remote_ip = self.out().remote_ip.clone();
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "STREAM SND[x] '{}' [to {remote_ip}] the opcode ({op}) message cannot be verified. Ignoring it.",
+                self.hostname()
+            );
         }
     }
 
@@ -348,7 +362,7 @@ impl Upstream for Sender {
     }
 
     fn capabilities(&self) -> u32 {
-        self.out().capabilities
+        self.negotiated.load(Ordering::Relaxed)
     }
 
     fn commit(&self, bytes: &[u8], traffic: Traffic) {

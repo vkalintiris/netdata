@@ -157,7 +157,7 @@ impl Thread {
         if self.thread.thread().id() != std::thread::current().id() {
             let deadline = Instant::now() + limit;
             while Instant::now() < deadline && !self.thread.is_finished() {
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(50));
             }
         }
         self.stop.request();

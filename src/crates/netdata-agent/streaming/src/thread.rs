@@ -59,14 +59,14 @@ pub struct StreamWorker {
     pub(crate) senders: Vec<Option<Dispatched>>,
     /// Senders queued by the connector, started at the next tick (`sth->queue.senders`, D103.6).
     pub(crate) queued_senders: Vec<Connected>,
+    /// Receivers still queued when the loop ended itself: dequeued after the senders, as C's exit path does.
+    exit_receivers: Vec<Attached>,
     pub(crate) pins: Arc<Mutex<Pins>>,
     tick: Option<TimerId>,
     /// `nd_profile.update_every`: how often every connection is probed and checked for idleness.
     check_every: Duration,
     last_check: Instant,
     last_replication_check: Instant,
-    /// `!service_running(SERVICE_STREAMING)`: the exit started (D110).
-    exiting: fn() -> bool,
 }
 
 impl StreamWorker {
@@ -76,18 +76,13 @@ impl StreamWorker {
             children: Vec::new(),
             senders: Vec::new(),
             queued_senders: Vec::new(),
+            exit_receivers: Vec::new(),
             pins,
             tick: None,
             check_every: Duration::from_secs(u64::try_from(update_every).unwrap_or(1).max(1)),
             last_check: now,
             last_replication_check: now,
-            exiting: netdata_agent_sys::exit::initiated,
         }
-    }
-
-    /// The same worker testing `exiting` for the exit's start.
-    pub fn with_exit(self, exiting: fn() -> bool) -> Self {
-        StreamWorker { exiting, ..self }
     }
 }
 
@@ -97,7 +92,7 @@ impl Worker for StreamWorker {
     /// `stream_thread_worker()`'s loop: it leaves at its first wake after the exit started (its tick bounds it as C's
     /// 100 ms poll does), through its exit path.
     fn running(&self) -> bool {
-        !(self.exiting)()
+        !netdata_agent_sys::exit::initiated()
     }
 
     fn start(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
@@ -132,9 +127,9 @@ impl Worker for StreamWorker {
 
     /// What `stream_thread_worker()`'s exit path does with its queues: the connections queued for it are dequeued
     /// (and then disconnected by the cleanup), the opcodes and replication requests are dropped with the thread.
-    fn exit_message(&mut self, cx: &mut Context<'_>, msg: StreamMsg) {
+    fn exit_message(&mut self, _cx: &mut Context<'_>, msg: StreamMsg) {
         match msg {
-            StreamMsg::Attach(attached) => self.attach(cx, *attached),
+            StreamMsg::Attach(attached) => self.exit_receivers.push(*attached),
             StreamMsg::AttachSender(connected) => self.queued_senders.push(*connected),
             StreamMsg::Replay(..) | StreamMsg::SenderOps(..) => {}
         }
@@ -158,9 +153,13 @@ impl Worker for StreamWorker {
         self.tick = Some(cx.add_timer(Instant::now() + TICK));
     }
 
-    /// The thread's exit: the senders first, then the receivers (`stream_sender_cleanup()` before
-    /// `stream_receiver_cleanup()`).
+    /// The thread's exit: the queued senders, then the queued receivers move to running, then the senders are
+    /// cleaned up before the receivers (`stream_sender_cleanup()` before `stream_receiver_cleanup()`).
     fn stop(&mut self, cx: &mut Context<'_>) {
+        self.dequeue_senders(cx);
+        for attached in std::mem::take(&mut self.exit_receivers) {
+            self.attach(cx, attached);
+        }
         self.stop_senders(cx);
         self.stop_children(cx);
     }
