@@ -335,6 +335,8 @@ pub struct Host {
     min_update_every_applied: AtomicU32,
     /// `host->stream.rcv.status.replication.counter_out`: replication requests sent since the child connected.
     replication_requests: AtomicU32,
+    /// `counter_in`: the child's replication replies since it connected (a chart's first claim, every REND).
+    replication_replies: AtomicU32,
     /// `RRDHOST_FLAG_ARCHIVED`: loaded from the metadata database, not connected since this start.
     archived: AtomicBool,
     /// `RRDHOST_FLAG_PENDING_CONTEXT_LOAD`: its contexts are still loading; a child connecting now is refused.
@@ -499,6 +501,7 @@ impl Host {
             min_update_every: AtomicU32::new(u32::MAX),
             min_update_every_applied: AtomicU32::new(u32::MAX),
             replication_requests: AtomicU32::new(0),
+            replication_replies: AtomicU32::new(0),
             archived: AtomicBool::new(false),
             pending_context_load: AtomicBool::new(false),
             last_connected_s: AtomicI64::new(0),
@@ -598,6 +601,15 @@ impl Host {
     pub fn replication_requests(&self) -> u32 {
         self.replication_requests
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A replication reply came from the child (`counter_in`).
+    pub fn count_replication_reply(&self) {
+        self.replication_replies.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn replication_replies(&self) -> u32 {
+        self.replication_replies.load(Ordering::Relaxed)
     }
 
     /// `host->stream.rcv.status.replication.percent`: 100 from creation, then the receiver's replication progress.
@@ -1241,6 +1253,7 @@ impl Host {
         }
         self.replication_requests
             .store(0, std::sync::atomic::Ordering::Relaxed);
+        self.replication_replies.store(0, Ordering::Relaxed);
         self.backfill_pending.store(0, Ordering::Relaxed);
     }
 

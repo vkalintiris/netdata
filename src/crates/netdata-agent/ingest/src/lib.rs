@@ -1397,6 +1397,7 @@ impl Parser {
                 self.host
                     .pulse_status(netdata_agent_rrd::pulse::host_status::RCV_REPLICATING);
             }
+            self.host.count_replication_reply();
             let request = ReplayRequest {
                 chart: Arc::clone(&chart),
                 first_entry_child: first_entry,
@@ -1760,6 +1761,8 @@ impl Parser {
             Some(v) => str2ull_encoded(v) as i64,
             None => self.now_s(),
         };
+        // counted once the host is in scope, before the chart is required, as C
+        self.host.count_replication_reply();
         let chart = self.require_scope("REND", "RBEGIN")?;
         self.data_collections_count += 1;
         if self.replay.rset_enabled {

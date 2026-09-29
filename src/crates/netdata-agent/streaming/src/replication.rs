@@ -93,6 +93,8 @@ struct Entry {
     /// The sender's buffer flush when the request came (`sender_circular_buffer_last_flush_ut`).
     flush_ut: u64,
     place: Place,
+    /// Its arrival among all requests: C's dictionary walks a sender's requests in this order.
+    arrival: u64,
 }
 
 /// One sender's requests (`s->replication.requests`), by chart.
@@ -110,6 +112,8 @@ struct Order {
     /// global minimum (the map's §2.1).
     index: BTreeMap<(i64, u64), (u64, String)>,
     unique_id: u64,
+    /// Requests added so far, which orders a sender's requests as they came.
+    arrivals: u64,
     pending: usize,
     added: usize,
     removed: usize,
@@ -167,7 +171,8 @@ struct State {
 impl State {
     /// `dictionary_del()` of the request a thread took (`replication_request_delete_callback()`): only one of its
     /// session, not a newer request for the chart that came after a reconnect; unlinked if it was indexed again
-    /// meanwhile, so it is answered once.
+    /// meanwhile (an unpark), so no other thread answers it later. One that another thread took again in between is
+    /// answered twice, as C's with one prefetch slot.
     fn delete_taken(&mut self, sender_id: u64, chart: &str, flush_ut: u64) {
         let Some(requests) = self.senders.get_mut(&sender_id) else {
             return;
@@ -225,9 +230,9 @@ impl Queue {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// `replication_sender_request_add()`: a new chart's request waits in the order; one for a chart already queued
-    /// is a duplicate and ignored (C's conflict callback, whose other branches need a parked sender); an empty chart
-    /// id is refused, unanswered, as C's dictionary refuses it.
+    /// `replication_sender_request_add()`: a new chart's request waits in the order (parked with its sender); one for
+    /// a chart already queued is a duplicate, which a parked request takes its window from and any other ignores
+    /// (C's conflict callback); an empty chart id is refused, unanswered, as C's dictionary refuses it.
     pub(crate) fn request_add(&self, sender: &Arc<Sender>, chart: String, after: i64, before: i64, start: bool) {
         self.add(Arc::downgrade(sender), sender.replication(), chart, after, before, start);
     }
@@ -253,7 +258,15 @@ impl Queue {
                     }
                 }
                 std::collections::hash_map::Entry::Vacant(slot) => {
-                    let mut e = Entry { after, before, start_streaming: start, flush_ut, place: Place::Picked };
+                    order.arrivals += 1;
+                    let mut e = Entry {
+                        after,
+                        before,
+                        start_streaming: start,
+                        flush_ut,
+                        place: Place::Picked,
+                        arrival: order.arrivals,
+                    };
                     order.add(queue, slot.key(), &mut e);
                     slot.insert(e);
                     queue.charts_replicating.fetch_add(1, Ordering::Relaxed);
@@ -294,10 +307,15 @@ impl Queue {
             }
             order.senders_full += 1;
         } else {
-            for (chart, e) in charts.into_iter().flat_map(|c| c.iter_mut()) {
-                if !matches!(e.place, Place::Indexed(_)) {
-                    order.add(queue, chart, e);
-                }
+            let mut unindexed: Vec<(&String, &mut Entry)> = charts
+                .into_iter()
+                .flat_map(|c| c.iter_mut())
+                .filter(|(_, e)| !matches!(e.place, Place::Indexed(_)))
+                .collect();
+            // in the order they came, as C's dictionary walk
+            unindexed.sort_by_key(|(_, e)| e.arrival);
+            for (chart, e) in unindexed {
+                order.add(queue, chart, e);
             }
             order.senders_full -= 1;
             order.sender_resets += 1;
@@ -771,6 +789,30 @@ mod tests {
         q.recalculate(&s, 0);
         assert_eq!(requests(&q).first(), Some(&(1, "a".into())), "the dropped pick is indexed again");
         assert_eq!(counts(&q), (4, 0, 0, 2));
+    }
+
+    /// A request picked, indexed again by an unpark and parked again leaves the queue with its delete, its parked
+    /// count given back; an unpark indexes a sender's requests in the order they came.
+    #[test]
+    fn parked_requests_come_back_in_their_order_and_leave_once() {
+        let q = Queue::default();
+        let s = SenderQueue::new();
+        for chart in ["z", "a", "m"] {
+            q.add(Weak::new(), &s, chart.into(), 10, 20, false);
+        }
+        q.recalculate(&s, 60);
+        q.recalculate(&s, 0);
+        let order: Vec<String> = requests(&q).into_iter().map(|(_, c)| c).collect();
+        assert_eq!(order, ["z", "a", "m"]);
+        let taken = q.take().unwrap();
+        q.recalculate(&s, 60);
+        q.recalculate(&s, 0);
+        q.recalculate(&s, 60);
+        q.lock().delete_taken(taken.sender_id, &taken.request.chart_id, taken.flush_ut);
+        assert_eq!(counts(&q), (0, 2, 1, 2));
+        q.delete_pending(&s);
+        assert_eq!(counts(&q), (0, 0, 1, 2));
+        assert!(!s.busy());
     }
 
     /// A reset flushes parked requests too.

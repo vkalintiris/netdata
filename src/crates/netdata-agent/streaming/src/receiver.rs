@@ -1156,7 +1156,7 @@ impl StreamWorker {
                 &mut child.replication_requests,
                 &mut child.replication_progress,
             ),
-            u64::from(host.replication_requests()),
+            u64::from(host.replication_requests()) + u64::from(host.replication_replies()),
             host.backfill_pending() != 0,
             now,
         )
@@ -1207,12 +1207,13 @@ impl StreamWorker {
                 stalled += 1;
             }
             if stalled > 0 && !Self::replication_progressed(child, now) {
-                let requested = child.attached.host.replication_requests();
+                let host = &child.attached.host;
+                let (requested, replies) = (host.replication_requests(), host.replication_replies());
                 nd_log!(
                     Source::Daemon,
                     Priority::Warning,
                     "{at}REPLICATION EXCEPTIONS SUMMARY: node has {stalled} stalled replication requests ({finished} \
-                     finished). We have requested {requested} and got replies for 0 replication commands. \
+                     finished). We have requested {requested} and got replies for {replies} replication commands. \
                      Disconnecting node to restore streaming."
                 );
                 self.disconnect(cx, index, Reason::DISCONNECT_REPLICATION_STALLED);

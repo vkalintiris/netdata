@@ -83,8 +83,14 @@ fn claim(chart: &Chart) -> u32 {
 #[test]
 fn an_answer_walks_the_window_step_by_step() {
     let (host, _, chart) = replicating_chart(&[10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    let queries = &chart.storage().pulse().queries;
+    let before = queries.replication();
     let (a, got) = answered(&host, &request("t.c", T + 2, T + 5, false), 1 << 20, true);
     assert_eq!(a, Answered::Executed);
+    let after = queries.replication();
+    // one dimension query, its three points generated
+    assert_eq!((after.queries - before.queries, after.points_generated - before.points_generated), (1, 3));
+    assert!(after.points_read - before.points_read >= 3);
     let (first, last) = chart.retention_for_collected(now_realtime_s());
     let mut want = vec!["RBEGIN 't.c'".to_string()];
     for t in T + 3..=T + 5 {

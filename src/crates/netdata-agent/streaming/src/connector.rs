@@ -388,6 +388,8 @@ impl Connector {
                 next = key + 1;
                 let Some(host) = s.host() else {
                     self.queue().remove(&key);
+                    // no hook runs for a freed host: its requests leave the replication queue here, parked ones too
+                    self.replication.delete_pending(s.replication());
                     continue;
                 };
                 let _frame = s.frame();
