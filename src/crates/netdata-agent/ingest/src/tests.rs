@@ -369,6 +369,41 @@ fn replication_rows_are_stored_and_rend_finishes() {
     assert_eq!(flags & flags::RECEIVER_REPLICATION_IN_PROGRESS, 0);
 }
 
+/// SET2 keeps the child's value as the dimension's last collected one, in its type's lane, which END2's reset of the
+/// collected values leaves alone; RDSTATE writes the same lanes (C's `rrddim_set_last_collected_*()`, D105.11).
+#[test]
+fn set2_and_rdstate_keep_the_last_collected_values() {
+    let h = host();
+    let mut p = parser(&h);
+    let define = [DEFINE[0], DEFINE[1], "DIMENSION 'f1' '' absolute 1 1 'type=float'"];
+    assert!(feed_all(&mut p, &define).iter().all(|&ok| ok));
+    let t = NOW - 10;
+    let lines = [
+        format!("BEGIN2 'test.c1' 1 {t} #"),
+        "SET2 'd1' 5 5 A".to_string(),
+        "SET2 'f1' 7 7 A".to_string(),
+        "END2".to_string(),
+    ];
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
+    let chart = h.charts().find("test.c1", true).unwrap();
+    let lanes = |id: &str| {
+        let c = chart.dim(id).unwrap().collection();
+        (c.last_collected_value, c.last_collected_value_float, c.collected_value, c.collected_value_float)
+    };
+    assert_eq!((lanes("d1"), lanes("f1")), ((5, 0.0, 0, 0.0), (0, 7.0, 0, 0.0)));
+    let (s, e) = (NOW - 20, NOW - 19);
+    let lines = [
+        "RBEGIN 'test.c1'".to_string(),
+        format!("RBEGIN 'test.c1' {s} {e} {NOW}"),
+        format!("RDSTATE 'd1' {} 9 9 9", e * 1_000_000),
+        format!("RDSTATE 'f1' {} 11 11 11", e * 1_000_000),
+    ];
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
+    assert_eq!((lanes("d1"), lanes("f1")), ((9, 0.0, 0, 0.0), (0, 11.0, 0, 0.0)));
+}
+
 /// `rrdhost_receiver_replicating_charts()` in the ingest: a chart's first `CHART_DEFINITION_END` of a round counts it
 /// and puts the host's receiver in replicating; the REND that starts its streaming takes it back, puts the receiver
 /// in running and the completion at 100%; a REND on a chart not replicating takes nothing back.

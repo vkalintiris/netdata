@@ -1330,16 +1330,17 @@ impl Parser {
         }
         let end_time = self.v2.end_time;
         dim.store_metric(end_time as u64 * 1_000_000, value, sn_flags);
+        // rrddim_set_last_collected_*(): the collected value lanes stay as END2 leaves them (zero)
         dim.update_collection(|c| {
             c.last_collected_time = (end_time, 0);
             if sender_sent_float || is_float {
-                c.collected_value_float = if sender_sent_float {
+                c.last_collected_value_float = if sender_sent_float {
                     collected_d
                 } else {
                     collected as f64
                 };
             } else {
-                c.collected_value = collected;
+                c.last_collected_value = collected;
             }
             c.last_stored_value = value;
             c.last_calculated_value = value;
@@ -1699,10 +1700,10 @@ impl Parser {
                 c.last_collected_time = ((got / 1_000_000) as i64, (got % 1_000_000) as i64);
             }
             if sender_sent_float {
-                c.collected_value_float =
+                c.last_collected_value_float =
                     last_collected_value_s.map_or(0.0, |v| str2ndd_encoded(v).0);
             } else if is_float {
-                c.collected_value_float =
+                c.last_collected_value_float =
                     last_collected_value_s.map_or(0.0, |v| str2ll_encoded(v) as f64);
             } else {
                 c.last_collected_value = last_collected_value_s.map_or(0, str2ll_encoded);
