@@ -869,3 +869,55 @@ fn overwrite_sets_the_ephemeral_option() {
     feed_all(&mut p, &["LABEL '_is_ephemeral' 1 'no'", "OVERWRITE"]);
     assert!(!h.is_ephemeral());
 }
+
+/// A BEGIN2 that follows a BEGIN2 without its END2, of the same chart and then of another, finds the collection lock
+/// still held: it is released with C's record naming the chart it was taken for; END2 releases it without one.
+#[test]
+fn a_begin2_without_end2_reports_the_stale_lock() {
+    let h = host();
+    let mut p = parser(&h);
+    let define = [DEFINE[0], DEFINE[1], "CHART 'test.c2' '' 't' 'u' 'f' 'ctx.c2' line 1000 1 '' p m", DEFINE[1]];
+    assert!(feed_all(&mut p, &define).iter().all(|&ok| ok));
+    let t = NOW - 10;
+    let (ok, records) = feed_logged(
+        &mut p,
+        &[
+            &format!("BEGIN2 'test.c1' 1 {t} #"),
+            "SET2 'd1' 1 1 A",
+            &format!("BEGIN2 'test.c1' 1 {} #", t + 1),
+            "SET2 'd1' 2 2 A",
+            "END2",
+            &format!("BEGIN2 'test.c1' 1 {} #", t + 2),
+            &format!("BEGIN2 'test.c2' 1 {} #", t + 2),
+            "END2",
+        ],
+    );
+    assert!(ok.iter().all(|&ok| ok));
+    let stale = "PLUGINSD: 'host:child/chart:test.c1/' stale data collection lock found during BEGIN2; it has been \
+                 unlocked";
+    assert_eq!(records, [stale, stale]);
+}
+
+/// The collection lock is held from BEGIN2 to END2 across reads: a replication answer for the chart waits for the
+/// block's end (D106.4).
+#[test]
+fn the_collection_lock_spans_a_block() {
+    let h = host();
+    let mut p = parser(&h);
+    assert!(feed_all(&mut p, &DEFINE).iter().all(|&ok| ok));
+    let chart = h.charts().find("test.c1", true).unwrap();
+    assert!(feed_all(&mut p, &[&format!("BEGIN2 'test.c1' 1 {} #", NOW - 10), "SET2 'd1' 1 1 A"])[0]);
+    let acquired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let contender = {
+        let (chart, acquired) = (Arc::clone(&chart), Arc::clone(&acquired));
+        std::thread::spawn(move || {
+            let _guard = Chart::lock_collection(chart.as_ref());
+            acquired.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(!acquired.load(std::sync::atomic::Ordering::SeqCst), "taken inside the block");
+    assert!(feed_all(&mut p, &["END2"])[0]);
+    contender.join().unwrap();
+    assert!(acquired.load(std::sync::atomic::Ordering::SeqCst));
+}

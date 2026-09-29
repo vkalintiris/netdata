@@ -14,7 +14,7 @@ pub mod stream_path;
 use std::sync::Arc;
 
 use netdata_agent_log::{
-    ErrorLimit, Field, FrameGuard, Priority, Source, Value, nd_log, nd_log_limit, push,
+    ErrorLimit, Field, FrameGuard, Priority, Source, Value, nd_log, nd_log_limit, netdata_log_error, push,
 };
 
 thread_local! {
@@ -35,7 +35,7 @@ use netdata_agent_pluginsd_proto::{
     CHART_SLOT_MAX, DIMENSION_SLOT_MAX, Deferred, DeferredBody, Keyword, MAX_DEFERRED_SIZE,
     Repertoire, Words, caps,
 };
-use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, Dim, dim_flags, flags};
+use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, CollectionGuard, Dim, dim_flags, flags};
 use netdata_agent_rrd::collection;
 use netdata_agent_rrd::contexts;
 use netdata_agent_rrd::host::{Host, meta_flags};
@@ -127,6 +127,8 @@ pub struct Parser {
     config: Config,
     line: usize,
     scope: Option<Arc<Chart>>,
+    /// `parser->user.v2.locked_data_collection`: the scope chart's collection lock, held from BEGIN2 to END2 (D106.4).
+    collecting: Option<CollectionGuard<Arc<Chart>>>,
     clabel_count: usize,
     clabel_changed: bool,
     v2: V2,
@@ -147,6 +149,14 @@ pub struct Parser {
     replay_sink: Option<ReplaySink>,
 }
 
+/// `pluginsd_cleanup_v2()`'s `pluginsd_clear_scope_chart(…, "THREAD CLEANUP")`: a connection that ends inside a
+/// BEGIN2 lets its collection lock go, and says so.
+impl Drop for Parser {
+    fn drop(&mut self) {
+        self.clear_scope("THREAD CLEANUP");
+    }
+}
+
 impl Parser {
     pub fn new(host: Arc<Host>, localhost: Arc<Host>, config: Config) -> Self {
         Parser {
@@ -155,6 +165,7 @@ impl Parser {
             config,
             line: 0,
             scope: None,
+            collecting: None,
             clabel_count: 0,
             clabel_changed: false,
             v2: V2::default(),
@@ -355,16 +366,28 @@ impl Parser {
         }
     }
 
-    /// `pluginsd_clear_scope_chart()`.
-    fn clear_scope(&mut self) {
+    /// `pluginsd_clear_scope_chart()`: a collection lock still held (a BEGIN2 without its END2) is released and
+    /// reported (`rrdset_previous_scope_chart_unlock(…, stale = true)`).
+    fn clear_scope(&mut self, keyword: &str) {
+        if self.collecting.take().is_some()
+            && let Some(chart) = &self.scope
+        {
+            // the parser's fields, the chart still the one the lock was taken for
+            let _frame = self.log_frame();
+            netdata_log_error!(
+                "PLUGINSD: 'host:{}/chart:{}/' stale data collection lock found during {keyword}; it has been unlocked",
+                self.host.hostname(),
+                chart.id()
+            );
+        }
         self.scope = None;
         self.clabel_count = 0;
         self.clabel_changed = false;
     }
 
     /// `pluginsd_set_scope_chart()`.
-    fn set_scope(&mut self, chart: &Arc<Chart>) {
-        self.clear_scope();
+    fn set_scope(&mut self, chart: &Arc<Chart>, keyword: &str) {
+        self.clear_scope(keyword);
         chart.receiver().pos = 0;
         self.scope = Some(Arc::clone(chart));
     }
@@ -674,7 +697,7 @@ impl Parser {
             }
             None => chart.update_meta(|m| m.flags &= !flags::STORE_FIRST),
         }
-        self.set_scope(&chart);
+        self.set_scope(&chart, "CHART");
         self.chart_to_slot(&chart, slot);
         self.set_update_every(&chart, i64::from(chart.update_every()));
         Ok(())
@@ -1183,7 +1206,7 @@ impl Parser {
         let Some(chart) = self.chart_from_slot(id, slot, "BEGIN") else {
             return refuse();
         };
-        self.set_scope(&chart);
+        self.set_scope(&chart, "BEGIN");
         let microseconds = match microseconds_s.filter(|m| !m.is_empty()) {
             Some(m) => str2ll(m).0.max(0) as u64,
             None => 0,
@@ -1227,7 +1250,7 @@ impl Parser {
         let tv_usec = w.get(2);
         let pending_next = w.get(3).is_some_and(|p| !p.is_empty());
         let chart = self.require_scope("END", "BEGIN")?;
-        self.clear_scope();
+        self.clear_scope("END");
         self.data_collections_count += 1;
         let number = |v: Option<&[u8]>| v.filter(|v| !v.is_empty()).map_or(0, |v| str2ll(v).0);
         let mut tv = (number(tv_sec), number(tv_usec));
@@ -1261,7 +1284,7 @@ impl Parser {
         let Some(chart) = self.chart_from_slot(Some(id), slot, "BEGIN2") else {
             return refuse();
         };
-        self.set_scope(&chart);
+        self.set_scope(&chart, "BEGIN2");
         chart.isnot_obsolete();
         let update_every = str2ull_encoded(ue) as i64;
         let end_time = str2ull_encoded(end) as i64;
@@ -1272,6 +1295,10 @@ impl Parser {
         };
         if update_every != i64::from(chart.update_every()) {
             self.set_update_every(&chart, update_every);
+        }
+        // rrdset_data_collection_lock(): held until END2 or the next scope change, across reads
+        if self.collecting.is_none() {
+            self.collecting = Some(Chart::lock_collection(Arc::clone(&chart)));
         }
         self.v2 = V2 { end_time };
         let entries = chart.entries();
@@ -1354,6 +1381,8 @@ impl Parser {
     fn end2(&mut self) -> Rc {
         let chart = self.require_scope("END2", "BEGIN2")?;
         self.data_collections_count += 1;
+        // unblock data collection (rrdset_previous_scope_chart_unlock(…, stale = false))
+        self.collecting = None;
         for dim in chart.dims() {
             dim.update_collection(|c| {
                 c.collected_value = 0;
@@ -1559,7 +1588,7 @@ impl Parser {
                 None => return refuse(),
             },
         };
-        self.set_scope(&chart);
+        self.set_scope(&chart, "RBEGIN");
         if let (Some(start_s), Some(end_s)) = (start_s, end_s) {
             let start = str2ull_encoded(start_s) as i64;
             let end = str2ull_encoded(end_s) as i64;
@@ -1821,7 +1850,7 @@ impl Parser {
                     chart.id()
                 );
             }
-            self.clear_scope();
+            self.clear_scope("REND");
             self.host.set_replication_percent(100.0);
             return Ok(());
         }
@@ -1864,7 +1893,7 @@ impl Parser {
             if !was_finished {
                 self.replication_finished();
             }
-            self.clear_scope();
+            self.clear_scope("REND");
             self.host.set_replication_percent(100.0);
             self.replicate_chart_request(
                 &chart,
@@ -1876,7 +1905,7 @@ impl Parser {
             );
             return Ok(());
         }
-        self.clear_scope();
+        self.clear_scope("REND");
         contexts::updated_retention_rrdset(&chart);
         self.replicate_chart_request(
             &chart,
