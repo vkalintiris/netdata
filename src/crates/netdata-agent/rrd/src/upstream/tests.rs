@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use netdata_agent_log::{Captured, Priority};
 use netdata_agent_nrpc::{MethodDesc, Source as NrpcSource};
@@ -13,61 +13,7 @@ use crate::testutil::{chart_spec, info};
 
 const T: i64 = 1_700_000_000;
 
-/// The sender as the collectors see it, recording what they commit.
-#[derive(Debug, Default)]
-struct Recorder {
-    capabilities: AtomicU32,
-    starts: AtomicU32,
-    /// The last flush of the sender's buffer.
-    flush_ut: AtomicU64,
-    commits: Mutex<Vec<(Traffic, String)>>,
-}
-
-impl Upstream for Recorder {
-    fn start(&self) {
-        self.starts.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn disabled_capabilities(&self) -> u32 {
-        0
-    }
-
-    fn capabilities(&self) -> u32 {
-        self.capabilities.load(Ordering::Relaxed)
-    }
-
-    fn commit(&self, bytes: &[u8], traffic: Traffic) {
-        // sender_buffer_commit() drops an empty message
-        if !bytes.is_empty() {
-            self.commits
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push((traffic, String::from_utf8_lossy(bytes).into_owned()));
-        }
-    }
-
-    fn resync_iterations(&self) -> u16 {
-        3
-    }
-
-    fn flush_ut(&self) -> u64 {
-        self.flush_ut.load(Ordering::Relaxed)
-    }
-
-    fn commit_since(&self, bytes: &[u8], traffic: Traffic, flush_ut: u64) -> bool {
-        if bytes.is_empty() || flush_ut != self.flush_ut() {
-            return false;
-        }
-        self.commit(bytes, traffic);
-        true
-    }
-}
-
-impl Recorder {
-    fn take(&self) -> Vec<(Traffic, String)> {
-        std::mem::take(&mut *self.commits.lock().unwrap_or_else(PoisonError::into_inner))
-    }
-}
+use crate::testing::Recorder;
 
 /// Readable numbers: no SLOTS, no IEEE754.
 const PLAIN: u32 = caps::INTERPOLATED | caps::CLABELS | caps::HLABELS | caps::CLAIM | caps::FUNCTIONS;
@@ -77,8 +23,7 @@ fn streaming(pattern: &str, capabilities: u32) -> (Host, Arc<Recorder>) {
     let mut i = info("child");
     i.stream_send = StreamSend::new(true, "parent:19999", "key", pattern);
     let host = Host::new("guid-s", true, i);
-    let recorder = Arc::new(Recorder::default());
-    recorder.capabilities.store(capabilities, Ordering::Relaxed);
+    let recorder = Arc::new(Recorder::with_capabilities(capabilities));
     host.set_upstream(Arc::clone(&recorder) as Arc<dyn Upstream>);
     (host, recorder)
 }

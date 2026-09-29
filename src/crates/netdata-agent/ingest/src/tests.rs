@@ -921,3 +921,189 @@ fn the_collection_lock_spans_a_block() {
     contender.join().unwrap();
     assert!(acquired.load(std::sync::atomic::Ordering::SeqCst));
 }
+
+// ---- the proxy (milestone 7 commit 8f, D117) ----
+
+use netdata_agent_rrd::host::{StreamSend, sender_flags};
+use netdata_agent_rrd::testing::Recorder;
+use netdata_agent_rrd::upstream::{Traffic, Upstream};
+
+/// The proxied chart, as a child without SLOTS defines it.
+const PROXIED: [&str; 3] = [
+    "CHART 'proxy.gauge' '' 'title' 'units' 'family' 'proxy.gauge' line 1000 1 '' fixture-pusher corpus",
+    "DIMENSION 'g1' '' absolute 1 1 ''",
+    "DIMENSION 'g2' '' absolute 1 1 ''",
+];
+
+/// A child without IEEE754.
+const CHILD: u32 = caps::INTERPOLATED | caps::FLOAT_BASELINE;
+/// A parent that refused IEEE754.
+const PARENT: u32 = caps::INTERPOLATED | caps::SLOTS | caps::FLOAT_BASELINE;
+
+/// A child host whose proxy settings stream it with `pattern`, its sender (a recorder) ready with `parent_caps`, and
+/// its receiver's parser with `child_caps`.
+fn proxied(pattern: &str, child_caps: u32, parent_caps: u32) -> (Arc<Host>, Arc<Recorder>, Parser) {
+    let h = named_host("child", "guid", false);
+    let mut info = h.info();
+    info.stream_send = StreamSend::new(true, "grandparent:19999", "key", pattern);
+    let h = Arc::new(Host::new("guid", false, info));
+    let r = Arc::new(Recorder::with_capabilities(parent_caps));
+    h.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
+    h.sender_flags_set(sender_flags::ADDED | sender_flags::CONNECTED | sender_flags::READY_4_METRICS);
+    let mut p = parser_with(&h, child_caps);
+    assert!(feed_all(&mut p, &PROXIED).iter().all(|&ok| ok));
+    (h, r, p)
+}
+
+fn feed_ok(p: &mut Parser, lines: &[String]) {
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    assert!(feed_all(p, &refs).iter().all(|&ok| ok), "{lines:?}");
+}
+
+/// What reached the parent so far, after a marker committed through the batch sends what it holds.
+fn upstream_bytes(p: &mut Parser, r: &Recorder) -> Vec<(Traffic, String)> {
+    p.forward.start(r).extend_from_slice(b"M\n");
+    p.forward.commit(r, Traffic::Metadata);
+    r.take()
+}
+
+fn block(t: i64) -> Vec<String> {
+    vec![format!("BEGIN2 'proxy.gauge' 1 {t} #"), "SET2 'g1' 1 1 A".into(), "SET2 'g2' 2 # RA".into(), "END2".into()]
+}
+
+/// A child's block goes on in the parent's slots, the words copied when both links read numbers alike, else
+/// re-encoded; the definition goes first and the block waits in the batch.
+#[test]
+fn a_proxied_block_goes_on_as_a_c_proxy() {
+    let t = NOW - 10;
+    let (_h, r, mut p) = proxied("*", CHILD, PARENT);
+    feed_ok(&mut p, &block(t));
+    let commits = r.take();
+    assert_eq!(commits.len(), 1, "{commits:?}");
+    assert!(commits[0].1.starts_with("CHART SLOT:0x1 \"proxy.gauge\" "), "{commits:?}");
+    assert_eq!(
+        upstream_bytes(&mut p, &r),
+        vec![(
+            Traffic::Metadata,
+            format!(
+                "BEGIN2 SLOT:0x1 'proxy.gauge' 1 {t} #\nSET2 SLOT:0x1 'g1' 1 1 A\nSET2 SLOT:0x2 'g2' 2 # AR\nEND2\nM\n"
+            )
+        )]
+    );
+    // a parent with IEEE754: base64, the wall clock and the value explicit
+    let (_h, r, mut p) = proxied("*", CHILD, PARENT | caps::IEEE754);
+    feed_ok(&mut p, &block(1));
+    r.take();
+    assert_eq!(
+        upstream_bytes(&mut p, &r)[0].1,
+        "BEGIN2 SLOT:#B 'proxy.gauge' #B #B #B\nSET2 SLOT:#B 'g1' #B @D/wAAAAAAAA A\n\
+         SET2 SLOT:#C 'g2' #C @EAAAAAAAAAA AR\nEND2\nM\n"
+    );
+}
+
+/// A parent without INTERPOLATED gets v1 at END2 with the collected values, which SET2 never sets (D106.3): zeros,
+/// every dimension still there (the dimensions are reset only after the finish).
+#[test]
+fn a_v1_parent_gets_zeros() {
+    let (_h, r, mut p) = proxied("*", CHILD, PARENT & !caps::INTERPOLATED);
+    feed_ok(&mut p, &block(NOW - 10));
+    r.take();
+    assert_eq!(
+        upstream_bytes(&mut p, &r),
+        vec![(Traffic::Metadata, "BEGIN \"proxy.gauge\" 0\nSET \"g1\" = 0\nSET \"g2\" = 0\nEND\nM\n".to_string())]
+    );
+}
+
+/// A BEGIN2 without END2 closes the open block before the next BEGIN2, and another chart's block goes on under the
+/// first chart's gate, one DATA commit for both.
+#[test]
+fn a_begin2_without_end2_closes_the_forwarded_block() {
+    let (h, r, mut p) = proxied("*", CHILD, PARENT);
+    let mut other: Vec<String> = PROXIED.iter().map(|l| l.replace("proxy.gauge", "proxy.other")).collect();
+    other.extend(block(NOW - 20).into_iter().map(|l| l.replace("proxy.gauge", "proxy.other")));
+    feed_ok(&mut p, &other);
+    feed_ok(&mut p, &block(NOW - 20));
+    r.take();
+    upstream_bytes(&mut p, &r);
+    let t = NOW - 10;
+    let lines = [
+        format!("BEGIN2 'proxy.gauge' 1 {t} #"),
+        "SET2 'g1' 1 1 A".to_string(),
+        format!("BEGIN2 'proxy.gauge' 1 {} #", t + 1),
+        "SET2 'g1' 2 2 A".to_string(),
+        format!("BEGIN2 'proxy.other' 1 {} #", t + 1),
+        "SET2 'g1' 3 3 A".to_string(),
+        "END2".to_string(),
+    ];
+    let (_, records) = netdata_agent_log::capture(|| feed_ok(&mut p, &lines));
+    assert_eq!(records.len(), 2, "the stale lock twice: {records:?}");
+    let other_slot = h.charts().find("proxy.other", true).unwrap().chart_slot();
+    assert_eq!(
+        upstream_bytes(&mut p, &r),
+        vec![(
+            Traffic::Metadata,
+            format!(
+                "BEGIN2 SLOT:0x1 'proxy.gauge' 1 {t} #\nSET2 SLOT:0x1 'g1' 1 1 A\nEND2\n\
+                 BEGIN2 SLOT:0x1 'proxy.gauge' 1 {} #\nSET2 SLOT:0x1 'g1' 2 2 A\nEND2\n\
+                 BEGIN2 SLOT:0x{other_slot:X} 'proxy.other' 1 {} #\nSET2 SLOT:0x1 'g1' 3 3 A\nEND2\nM\n",
+                t + 1,
+                t + 1
+            )
+        )]
+    );
+}
+
+/// D116.2: a v1 collection inside an open forwarded block (C fatal()s) closes and commits the block first, so every
+/// BEGIN2 upstream has its END2.
+#[test]
+fn a_v1_end_inside_a_forwarded_block_closes_it_first() {
+    let (_h, r, mut p) = proxied("*", CHILD, PARENT);
+    let t = NOW - 10;
+    let lines = [
+        format!("BEGIN2 'proxy.gauge' 1 {t} #"),
+        "SET2 'g1' 1 1 A".to_string(),
+        "BEGIN 'proxy.gauge'".to_string(),
+        "SET 'g1' = 4".to_string(),
+        format!("END {} 0", t + 1),
+    ];
+    let _ = netdata_agent_log::capture(|| feed_ok(&mut p, &lines));
+    r.take();
+    let sent = upstream_bytes(&mut p, &r);
+    assert!(
+        sent[0].1.starts_with(&format!("BEGIN2 SLOT:0x1 'proxy.gauge' 1 {t} #\nSET2 SLOT:0x1 'g1' 1 1 A\nEND2\n")),
+        "{sent:?}"
+    );
+    assert_eq!(sent[0].1.matches("BEGIN2").count(), sent[0].1.matches("END2").count(), "{sent:?}");
+}
+
+/// A v1 child's collections go through the batch too: 100 held, the 101st sends them.
+#[test]
+fn v1_collections_are_batched() {
+    let (_h, r, mut p) = proxied("*", CHILD, PARENT);
+    let collect = |p: &mut Parser, i: i64| {
+        feed_ok(p, &["BEGIN 'proxy.gauge'".to_string(), "SET 'g1' = 1".to_string(), format!("END {} 0", NOW - 200 + i)])
+    };
+    for i in 0..100 {
+        collect(&mut p, i);
+    }
+    let commits = r.take();
+    assert_eq!(commits.len(), 1, "the definition only: {commits:?}");
+    collect(&mut p, 100);
+    let commits = r.take();
+    assert_eq!(commits.len(), 1, "{commits:?}");
+    assert_eq!(commits[0].0, Traffic::Data);
+    assert!(commits[0].1.starts_with("BEGIN2 SLOT:0x1 'proxy.gauge' "), "{commits:?}");
+}
+
+/// A chart the pattern excludes goes nowhere; a child not proxied forwards nothing.
+#[test]
+fn filtered_and_unproxied_charts_forward_nothing() {
+    let (_h, r, mut p) = proxied("!proxy.gauge *", CHILD, PARENT);
+    feed_ok(&mut p, &block(NOW - 10));
+    assert_eq!(upstream_bytes(&mut p, &r), vec![(Traffic::Metadata, "M\n".to_string())]);
+    let h = host();
+    let mut p = parser_with(&h, CHILD);
+    assert!(feed_all(&mut p, &PROXIED).iter().all(|&ok| ok));
+    feed_ok(&mut p, &block(NOW - 10));
+    assert!(p.forward.bytes().is_empty());
+}

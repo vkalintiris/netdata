@@ -208,7 +208,7 @@ impl Sender {
             connector: Arc::clone(connector),
             state: Mutex::new(State {
                 // stream_our_capabilities() runs before the disabled capabilities are set
-                capabilities: caps::sender_ours(0),
+                capabilities: caps::sender_ours(0, 0),
                 hops: 0,
                 remote_ip: String::new(),
                 parent_using_h2o: false,

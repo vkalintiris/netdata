@@ -18,6 +18,10 @@ netdata-agent-text = { workspace = true }
 nix = { workspace = true, features = ["time"] }
 uuid = { workspace = true, features = ["v4"] }
 
+[features]
+# The recording `Upstream` (`testing::Recorder`) for other crates' tests.
+testing = []
+
 [dev-dependencies]
 netdata-agent-evloop = { workspace = true }
 tempfile = { workspace = true }

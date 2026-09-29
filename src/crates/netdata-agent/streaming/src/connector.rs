@@ -133,6 +133,11 @@ fn response_version(http: &[u8]) -> (i32, &'static Row) {
     (last.version, last)
 }
 
+/// What the host's receiver negotiated with its child, 0 without one (a proxied host's ML_MODELS).
+fn receiver_capabilities(host: &Host) -> u32 {
+    host.receiver().map_or(0, |slot| slot.link.capabilities)
+}
+
 /// `buffer_key_value_urlencode()`: `key=` and the url-encoded value.
 fn key_value(wb: &mut Vec<u8>, key: &str, value: &str) {
     wb.extend_from_slice(key.as_bytes());
@@ -545,7 +550,7 @@ impl Connector {
         }
         let destination = s.parents().current().map(|d| d.destination.clone()).unwrap_or_default();
         st.remote_ip = crate::records::cut(&destination, CONNECTED_TO_SIZE).to_string();
-        st.capabilities = caps::sender_ours(s.disabled.load(Ordering::Relaxed));
+        st.capabilities = caps::sender_ours(s.disabled.load(Ordering::Relaxed), receiver_capabilities(host));
         let request = self.request(host, &s.api_key, st.hops, st.capabilities);
         let hostname = host.hostname();
         let remote = st.remote_ip.clone();
@@ -606,7 +611,8 @@ impl Connector {
         let (version, row) = response_version(http);
         if version >= 1 {
             s.parents().set_reconnect_delay(Reason::SP_CONNECTED, self.settings.reconnect_delay_s);
-            st.capabilities = caps::negotiate(version, caps::sender_ours(s.disabled.load(Ordering::Relaxed)));
+            let ours = caps::sender_ours(s.disabled.load(Ordering::Relaxed), receiver_capabilities(host));
+            st.capabilities = caps::negotiate(version, ours);
             st.status_reason = Reason(st.capabilities as i32);
             return true;
         }

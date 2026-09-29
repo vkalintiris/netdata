@@ -83,7 +83,8 @@ type proxyVariant struct {
 	// records, when set, replaces the ticks: the child writes these lines after its charts' replication, and the
 	// proxies' PLUGINSD records compare instead of the transcript
 	records func(c *stream.Conn, base int64)
-	// gated variants run against the candidate only with PARITY_PROXY=1 (8c: all; 8d-8h flip the ones they pass)
+	// gated variants run against the candidate only with PARITY_PROXY=1 (8f: v1in and metadata, which need 8h's
+	// relays: the path again when the retention changes, CLAIMED_ID up and NODE_ID down)
 	gated bool
 }
 
@@ -95,31 +96,31 @@ const (
 
 var proxyVariants = map[string]proxyVariant{
 	// the proxy copies the child's words when both sides speak alike
-	"copy": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 12, gated: true},
+	"copy": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 12},
 	// the parent takes IEEE754 the child does not send: every number re-encoded in base64
-	"reencode-up": {caps: proxyPlainCaps, ticks: 12, gated: true},
+	"reencode-up": {caps: proxyPlainCaps, ticks: 12},
 	// the child sends IEEE754 and slots the parent refuses: hex and decimal, the proxy's own slots, one more hop
 	"reencode-down": {caps: proxyCLikeCaps, refused: stream.CapIEEE754, ints: stream.EncBase64,
-		doubles: stream.EncBase64, slots: true, hops: 2, ticks: 12, gated: true},
+		doubles: stream.EncBase64, slots: true, hops: 2, ticks: 12},
 	// a child without float baselines, a parent that takes IEEE754: the float dimension's value as a double
-	"float-up": {caps: proxyPlainCaps &^ stream.CapFloatBaseline, ticks: 12, gated: true},
+	"float-up": {caps: proxyPlainCaps &^ stream.CapFloatBaseline, ticks: 12},
 	// a parent without IEEE754 nor float baselines: the float dimension as a truncated integer
-	"float-down": {caps: proxyPlainCaps, refused: stream.CapIEEE754 | stream.CapFloatBaseline, ticks: 12, gated: true},
+	"float-down": {caps: proxyPlainCaps, refused: stream.CapIEEE754 | stream.CapFloatBaseline, ticks: 12},
 	// batches close at 101 blocks or 10,836 bytes (an 80-dimension chart), and a function's registration flushes
 	// the held blocks at the next gate (tick 42, between two of the fifth-tick batches)
-	"batch": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 60, function: 42, gated: true,
+	"batch": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 60, function: 42,
 		extra: []proxyChart{proxyWide}},
 	// a parent without INTERPOLATED nor REPLICATION gets v1 from the proxy: C writes the collected values it never
 	// set, zeros (D106.3), still batched
 	"v1up": {caps: proxyPlainCaps, refused: stream.CapIEEE754 | stream.CapInterpolated | stream.CapReplication,
-		ticks: 12, gated: true},
+		ticks: 12},
 	// a BEGIN2 after a BEGIN2 without END2, of the same chart and of another: the parser unlocks the stale collection
 	// lock and says so (the records; D106.4, commit 8d)
 	"malformed-records": {caps: proxyPlainCaps, refused: stream.CapIEEE754, records: malformedLines},
 	// a child's proxy settings come from its [<guid>] section, else its key's (a repeated [<key>] header merging),
 	// else [stream]: G1 by its section to A, G2 by its key to B, G3 by its section's switch and [stream] to C, G4
 	// (proxying off) nowhere
-	"sections": {caps: proxyPlainCaps, sections: true, gated: true},
+	"sections": {caps: proxyPlainCaps, sections: true},
 	// a v1 child: the proxy commits one block per chart per collection, and the 101st commit closes the first batch
 	"v1in": {caps: stream.CapsLiveV1, refused: stream.CapIEEE754, ticks: 34, v1in: true, gated: true},
 	// the child's metadata overtakes the batch (CLAIMED_ID, VARIABLE HOST) or rides the chart's next block (VARIABLE
@@ -128,9 +129,9 @@ var proxyVariants = map[string]proxyVariant{
 		ticks: 8, metadata: true, gated: true},
 	// the same through the proxy: what it forwards of a BEGIN2 without END2 (C closes the block before the next BEGIN2
 	// and forwards the other chart's under the first's gate)
-	"malformed": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 6, malformedAt: 3, gated: true},
+	"malformed": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 6, malformedAt: 3},
 	// a chart the proxy's pattern excludes is never defined upstream and makes no commits
-	"pattern": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 12, gated: true,
+	"pattern": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 12,
 		section: "    proxy send charts matching = !proxy.excluded *\n",
 		extra:   []proxyChart{{"proxy.excluded", []proxyDim{{"e1", "absolute", ""}}}}},
 }

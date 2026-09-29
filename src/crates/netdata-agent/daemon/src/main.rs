@@ -784,6 +784,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             page_size: system.page_size,
         },
         stream_pool.handle(),
+        Arc::clone(&connector),
     ));
     startup.step("localhost labels");
     let plugins_dir = conf.primary_plugins_dir();

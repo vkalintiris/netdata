@@ -65,6 +65,14 @@ pub fn ours(disabled: u32) -> u32 {
         & !disabled
 }
 
+/// `stream_our_capabilities(host, true)`: what a host's sender offers. No ML runs here, so ML_MODELS stays only when
+/// the host's receiver negotiated it (`receiver`, 0 without one); `disabled` is the sender's own
+/// (`sender->disabled_capabilities`).
+pub fn sender_ours(disabled: u32, receiver: u32) -> u32 {
+    let ml = if receiver & ML_MODELS != 0 { 0 } else { ML_MODELS };
+    ours(GLOBALLY_DISABLED | ml | disabled)
+}
+
 /// `globally_disabled_capabilities` after `check_local_streaming_capabilities()` on an IEEE-754 host.
 pub const GLOBALLY_DISABLED: u32 = ALWAYS_DISABLED;
 

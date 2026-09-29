@@ -26,11 +26,13 @@ use netdata_agent_text::size::size_to_string;
 
 use crate::caps;
 use crate::conf::{Keepalive, ReceiverDefaults, StreamConf};
+use crate::connector::Connector;
 use crate::decompress::Decompressor;
 use crate::handshake::{self, StreamRequest};
 use crate::pins::Pins;
 use crate::reason::Reason;
 use crate::records::{self, Counters, Peer};
+use crate::sender::Sender;
 use crate::thread::{StreamMsg, StreamWorker};
 
 /// `CONNECTION_PROBE_INTERVAL_SECONDS` and `CONNECTION_PROBE_COUNT` of the receiver's TCP keepalive.
@@ -240,6 +242,8 @@ pub struct Receivers {
     pool: PoolHandle<StreamMsg>,
     /// The hosts' stream threads (`stream_thread_globals.assign`).
     pins: Arc<Mutex<Pins>>,
+    /// The senders' connector, which a proxied child's sender joins.
+    connector: Arc<Connector>,
     /// `[web] accept a streaming request every` (seconds, 0 for no limit).
     streaming_rate_s: AtomicI64,
     /// The wall-clock second of the last accepted request under the rate limit (`last_stream_accepted_t`).
@@ -308,13 +312,15 @@ fn writable_within(fd: std::os::fd::BorrowedFd<'_>, timeout: Duration) -> Result
 }
 
 impl Receivers {
-    /// `pins` is the table the stream threads of `pool` share (see `StreamWorker::new()`).
+    /// `pins` is the table the stream threads of `pool` share (see `StreamWorker::new()`); `connector` is the one
+    /// localhost's sender uses.
     pub fn new(
         conf: StreamConf,
         hosts: Arc<Hosts>,
         pins: Arc<Mutex<Pins>>,
         defaults: Defaults,
         pool: PoolHandle<StreamMsg>,
+        connector: Arc<Connector>,
     ) -> Self {
         *pins.lock().unwrap_or_else(PoisonError::into_inner) = Pins::new(pool.threads());
         Receivers {
@@ -323,6 +329,7 @@ impl Receivers {
             defaults,
             pool,
             pins,
+            connector,
             streaming_rate_s: AtomicI64::new(0),
             last_accepted_s: Mutex::new(0),
         }
@@ -615,6 +622,10 @@ impl Receivers {
                 Duration::from_secs(5),
             );
             return false;
+        }
+        // stream_sender_structures_init() of a created or revived host whose proxy settings stream it (D117.1)
+        if host.upstream().is_none() {
+            Sender::attach(&host, &self.connector);
         }
         let capabilities = caps::select_compression(
             request.capabilities,
@@ -1353,6 +1364,23 @@ impl StreamWorker {
         }
     }
 
+    /// `stream_receiver_dequeue_senders()`'s second half, after each read (D117.3): the POLLOUTs this read's commits
+    /// posted, then the host's own sender when it runs on this thread, so a forwarded burst does not wait whole in its
+    /// ring. A failure there leaves the receiver alone.
+    fn send_proxied(&mut self, cx: &mut Context<'_>, index: usize) {
+        let Some(host) = self.children[index].as_ref().map(|c| Arc::clone(&c.attached.host)) else {
+            return;
+        };
+        if host.upstream().is_none() {
+            return;
+        }
+        self.drain_inline(cx);
+        let mine = self.senders.iter().position(|d| d.as_ref().is_some_and(|d| Arc::ptr_eq(&d.host, &host)));
+        if let Some(i) = mine {
+            self.send_sender(cx, i, false);
+        }
+    }
+
     /// `stream_receiver_receive_data()`: reads what arrived and feeds every complete line to the parser; a refused
     /// line ends the connection. The caller has pushed the child's frame.
     fn receive(&mut self, cx: &mut Context<'_>, index: usize) {
@@ -1450,6 +1478,7 @@ impl StreamWorker {
                         let _parser = child.parser.log_frame();
                         return self.disconnect(cx, index, reason);
                     }
+                    self.send_proxied(cx, index);
                     // service_running(SERVICE_STREAMING) per chunk: once the exit started the rest waits for the
                     // loop's exit path (D110)
                     if netdata_agent_sys::exit::initiated() {

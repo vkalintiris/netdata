@@ -31,6 +31,7 @@ macro_rules! plog {
     }};
 }
 use netdata_agent_nrpc as nrpc;
+use netdata_agent_pluginsd_proto::emit::stream::{self as emit, Baseline, Forward, Sent};
 use netdata_agent_pluginsd_proto::{
     CHART_SLOT_MAX, DIMENSION_SLOT_MAX, Deferred, DeferredBody, Keyword, MAX_DEFERRED_SIZE,
     Repertoire, Words, caps,
@@ -40,7 +41,7 @@ use netdata_agent_rrd::collection;
 use netdata_agent_rrd::contexts;
 use netdata_agent_rrd::host::{Host, meta_flags};
 use netdata_agent_rrd::labels::{self, Labels};
-use netdata_agent_rrd::upstream::BufferSource;
+use netdata_agent_rrd::upstream::{self, BufferSource, ForwardBuffer, ProxyBlock};
 use netdata_agent_storage::storage_number::{self, SN_EMPTY_SLOT};
 use netdata_agent_text::parse::{
     str2i, str2ll, str2ll_encoded, str2ndd_encoded, str2u, str2ul, str2ull_encoded,
@@ -69,6 +70,16 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, Default)]
 struct V2 {
     end_time: i64,
+    /// `stream_buffer`: the forwarded block's gate, from the first BEGIN2 that passed it until END2 (a BEGIN2 without
+    /// END2, even of another chart, goes on under it, as C).
+    proxy: Option<Proxy>,
+}
+
+/// A block forwarded to the host's parent: what its gate saw, and how the child's words go on.
+#[derive(Debug, Clone, Copy)]
+struct Proxy {
+    block: ProxyBlock,
+    fwd: Forward,
 }
 
 /// `parser->user.replay`.
@@ -146,6 +157,10 @@ pub struct Parser {
     new_host_labels: Option<Labels>,
     /// Bytes for the child (`send_to_plugin`), drained by the caller.
     out: Vec<u8>,
+    /// `host->stream.snd.commit` while this parser is the host's receiver (`receiver_tid`): the batch its forwarded
+    /// blocks and collections go through (D106.1). A plugins.d parser would use the thread's buffer (C's
+    /// `receiver_tid` is 0 for localhost).
+    forward: ForwardBuffer,
     /// How a backfill hands its replication request back; none without a stream thread (no BACKFILL pool use).
     replay_sink: Option<ReplaySink>,
 }
@@ -178,6 +193,7 @@ impl Parser {
             on_done: OnDone::Nothing,
             new_host_labels: None,
             out: Vec::new(),
+            forward: ForwardBuffer::default(),
             replay_sink: None,
         }
     }
@@ -1253,6 +1269,13 @@ impl Parser {
         let chart = self.require_scope("END", "BEGIN")?;
         self.clear_scope("END");
         self.data_collections_count += 1;
+        // D116.2: C fatal()s on a collection inside an open forwarded block; the block is closed and committed first
+        if let Some(p) = self.v2.proxy.take()
+            && p.block.v2
+            && p.block.begin_added
+        {
+            upstream::forward_finish(&self.host, &chart, &p.block, &mut self.forward);
+        }
         let number = |v: Option<&[u8]>| v.filter(|v| !v.is_empty()).map_or(0, |v| str2ll(v).0);
         let mut tv = (number(tv_sec), number(tv_usec));
         if tv.0 == 0 {
@@ -1264,7 +1287,7 @@ impl Parser {
             tv,
             pending_next,
             self.config.gap_when_lost_iterations_above,
-            BufferSource::Thread,
+            BufferSource::Forward(&mut self.forward),
         );
         Ok(())
     }
@@ -1290,7 +1313,7 @@ impl Parser {
         chart.isnot_obsolete();
         let update_every = str2ull_encoded(ue) as i64;
         let end_time = str2ull_encoded(end) as i64;
-        let _wall_clock = if wall.first() == Some(&b'#') {
+        let wall_clock = if wall.first() == Some(&b'#') {
             end_time
         } else {
             str2ull_encoded(wall) as i64
@@ -1302,7 +1325,29 @@ impl Parser {
         if self.collecting.is_none() {
             self.collecting = Some(Chart::lock_collection(Arc::clone(&chart)));
         }
-        self.v2 = V2 { end_time };
+        self.v2.end_time = end_time;
+        // propagate it forward in v2: the gate once per block, then the child's words in the parent's encoding
+        if self.v2.proxy.is_none() {
+            let child = self.config.capabilities;
+            self.v2.proxy = upstream::forward_gate(&self.host, &chart, &mut self.forward)
+                .map(|block| Proxy { block, fwd: Forward::new(child, block.capabilities) });
+        }
+        if let Some(p) = self.v2.proxy.as_mut()
+            && p.block.v2
+        {
+            emit::begin2_forward(
+                self.forward.bytes(),
+                &p.fwd,
+                p.block.begin_added,
+                u64::from(chart.chart_slot()),
+                chart.id(),
+                Sent { word: ue, value: update_every as u64 },
+                chart.update_every() as u64,
+                Sent { word: end, value: end_time as u64 },
+                Sent { word: wall, value: wall_clock as u64 },
+            );
+            p.block.begin_added = true;
+        }
         let entries = chart.entries();
         chart.update_collection(|c| {
             c.last_collected = (end_time, 0);
@@ -1357,6 +1402,23 @@ impl Parser {
             value = f64::NAN;
             sn_flags = SN_EMPTY_SLOT;
         }
+        // propagate it forward in v2
+        if let Some(p) = &self.v2.proxy
+            && p.block.v2
+            && p.block.begin_added
+        {
+            let baseline = if sender_sent_float { Baseline::Float(collected_d) } else { Baseline::Int(collected) };
+            emit::set2_forward(
+                self.forward.bytes(),
+                &p.fwd,
+                u64::from(dim.slot()),
+                dim.id(),
+                is_float,
+                Sent { word: collected_s, value: baseline },
+                Sent { word: value_s, value },
+                storage_number::flags_text(sn_flags, true),
+            );
+        }
         let end_time = self.v2.end_time;
         dim.store_metric(end_time as u64 * 1_000_000, value, sn_flags);
         // rrddim_set_last_collected_*(): the collected value lanes stay as END2 leaves them (zero)
@@ -1383,8 +1445,24 @@ impl Parser {
     fn end2(&mut self) -> Rc {
         let chart = self.require_scope("END2", "BEGIN2")?;
         self.data_collections_count += 1;
+        // propagate the whole chart update in v1: the collected values, which SET2 never sets (D106.3)
+        if let Some(p) = &self.v2.proxy {
+            upstream::forward_v1(&chart, &p.block, &mut self.forward);
+        }
         // unblock data collection (rrdset_previous_scope_chart_unlock(…, stale = false))
         self.collecting = None;
+        contexts::collected_rrdset(&chart);
+        // store_metric_collection_completed()
+        let storage = self.host.storage();
+        storage
+            .pulse()
+            .ingestion
+            .collection_completed(storage.storage_tiers());
+        // propagate it forward, under the gate of the block's first BEGIN2 (the scope chart's variables and END2)
+        if let Some(p) = self.v2.proxy.take() {
+            upstream::forward_finish(&self.host, &chart, &p.block, &mut self.forward);
+        }
+        // after the v1 block, which sends only the dimensions still flagged
         for dim in chart.dims() {
             dim.update_collection(|c| {
                 c.collected_value = 0;
@@ -1394,13 +1472,6 @@ impl Parser {
             dim.update_meta(|m| m.flags &= !dim_flags::UPDATED);
         }
         self.v2 = V2::default();
-        // store_metric_collection_completed()
-        let storage = self.host.storage();
-        storage
-            .pulse()
-            .ingestion
-            .collection_completed(storage.storage_tiers());
-        contexts::collected_rrdset(&chart);
         Ok(())
     }
 
