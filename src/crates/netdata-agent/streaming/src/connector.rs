@@ -12,13 +12,14 @@ use netdata_agent_evloop::PoolHandle;
 use netdata_agent_log::{Field, Priority, Source, Value, nd_log, push};
 use netdata_agent_rrd::host::{Host, sender_flags};
 use netdata_agent_rrd::pulse::host_status;
+use netdata_agent_tls::SslContext;
 
 use crate::caps;
 use crate::compress::Compressor;
 use crate::compression::Algorithm;
 use crate::connect_to::{NdSock, SockError, Thread, log_errno};
 use crate::handshake;
-use crate::parents::Local;
+use crate::parents::{Local, Parents};
 use crate::pins::Pins;
 use crate::reason::Reason;
 use crate::thread::StreamMsg;
@@ -200,6 +201,8 @@ pub struct Connector {
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// The replication requests of every sender, which the REPLAY threads answer (D111.1).
     replication: Arc<crate::replication::Queue>,
+    /// `netdata_ssl_streaming_sender_ctx`: built for the first host with an `:SSL` parent, again while it fails.
+    tls: Mutex<Option<SslContext>>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -235,7 +238,28 @@ impl Connector {
             started: Mutex::new(false),
             thread: Mutex::new(None),
             replication: Arc::default(),
+            tls: Mutex::new(None),
         })
+    }
+
+    /// `rrdhost_stream_parent_ssl_init()`: the sender's TLS context, built once some host's parents include an
+    /// `:SSL` one, with the configured CA locations (C's records carry the host's frame, which the caller pushed).
+    pub(crate) fn ssl_init(&self, parents: &Parents) {
+        let mut tls = self.tls.lock().unwrap_or_else(PoisonError::into_inner);
+        if tls.is_some() || !parents.list.iter().any(|d| d.ssl) {
+            return;
+        }
+        let s = &self.settings;
+        *tls = netdata_agent_tls::streaming_sender_context(&netdata_agent_tls::ClientConfig {
+            skip_verification: !s.ssl_validate_certificate,
+            ca_file: &s.ssl_ca_file,
+            ca_path: &s.ssl_ca_path,
+        });
+    }
+
+    /// The context an attempt connects with (`s->sock.ctx`, re-read at every attempt): a clone shares it.
+    fn tls(&self) -> Option<SslContext> {
+        self.tls.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// The senders' replication requests, for the REPLAY threads.
@@ -350,10 +374,16 @@ impl Connector {
 
     /// `stream_connector_requeue()`.
     pub(crate) fn requeue(&self, s: &Arc<Sender>, host: &Host, cmd: Cmd) {
+        self.requeue_after_close(s, host, cmd, 0);
+    }
+
+    /// [`Connector::requeue`], its record carrying `errno` (what a TLS close left, D107.5).
+    pub(crate) fn requeue_after_close(&self, s: &Arc<Sender>, host: &Host, cmd: Cmd, errno: i32) {
         if cmd == Cmd::Connect {
             nd_log!(
                 Source::Daemon,
                 Priority::Debug,
+                errno = errno;
                 "STREAM CONNECT '{}' [to parent]: adding host in connector queue...",
                 host.hostname()
             );
@@ -403,7 +433,7 @@ impl Connector {
                     Cmd::Connect => {
                         if let Some(connected) = self.stream_connect(&s, &host, &th) {
                             self.queue().remove(&key);
-                            s.on_connect(&host, &connected.socket);
+                            s.on_connect(&host, &connected.link);
                             self.add_to_queue(connected, &host);
                         }
                     }
@@ -486,7 +516,8 @@ impl Connector {
 
     fn attempt(&self, s: &Arc<Sender>, host: &Arc<Host>, st: &mut Attempt<'_>, th: &Thread<'_>) -> Option<Connected> {
         let settings = &self.settings;
-        let mut sock = NdSock::default();
+        // the context and the verification as they are now (stream-connector.c:278-280)
+        let mut sock = NdSock::new(self.tls(), settings.ssl_validate_certificate);
         // nd_sock_close() of the previous socket clears errno
         sock.close(th);
         host.pulse_status(host_status::SND_PENDING);
@@ -555,7 +586,7 @@ impl Connector {
         log_errno!(th, Priority::Debug, "STREAM CONNECT '{hostname}' [to {remote}]: connected to parent...");
         Some(Connected {
             sender: Arc::clone(s),
-            socket: sock.socket.take()?,
+            link: sock.take_link()?,
             capabilities: st.capabilities,
             compressor,
             remote_ip: remote,

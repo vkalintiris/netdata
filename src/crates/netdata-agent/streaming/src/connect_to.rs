@@ -1,16 +1,17 @@
 //! Outgoing connections as C makes them (`src/libnetdata/socket/connect-to.c`, `nd-sock.c` and
 //! `wait_on_socket_or_cancel_with_timeout()`): a definition `[tcp:|udp:]host[%iface][:service]` or a Unix socket
-//! path, resolved and tried address by address on a blocking socket, and C's timed sends and receives.
-//! Map: `knowledge/map-m7-commit3-connector.md` §5.
+//! path, resolved and tried address by address on a blocking socket, over TLS for an `:SSL` parent, and C's timed
+//! sends and receives. Maps: `knowledge/map-m7-commit3-connector.md` §5, `map-m7-commit7-tls.md` §2, §4.
 
 use std::cell::Cell;
-use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::os::fd::AsFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use netdata_agent_evloop::conn::Conn;
 use netdata_agent_log::{Field, Priority, Source, Value, push};
+use netdata_agent_tls::{Link, OpenError, SslContext, TlsStream};
 use nix::errno::Errno as OsErrno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
@@ -364,23 +365,71 @@ fn connect_to_this(definition: &str, default_port: u16, timeout_s: i64, th: &Thr
     connect_to_ip46(host, service, scope_id, dgram, timeout_s, th)
 }
 
-/// `ND_SOCK` without TLS (commit 7 adds it): a connected socket or none, and the last error.
+/// `nd-sock.c`'s server name for a TLS connection: the definition without `tcp:` or `udp:`, the text inside
+/// brackets (an interface kept), else the text before the first `:` or `%`; none when empty. A `unix:` definition
+/// gives `unix`, as C's.
+fn sni_host(definition: &str) -> Option<&str> {
+    let host = definition.strip_prefix("tcp:").or_else(|| definition.strip_prefix("udp:")).unwrap_or(definition);
+    let host = match host.strip_prefix('[') {
+        Some(inner) => inner.split(']').next().unwrap_or(inner),
+        None => host.split([':', '%']).next().unwrap_or(host),
+    };
+    Some(host).filter(|h| !h.is_empty())
+}
+
+/// The connected socket as the event loop's connection, kept blocking until the stream thread takes it.
+fn to_conn(socket: Socket) -> std::io::Result<Conn> {
+    if socket.local_addr()?.as_socket().is_some() {
+        Ok(Conn::Tcp(mio::net::TcpStream::from_std(socket.into())))
+    } else {
+        let fd = std::os::fd::OwnedFd::from(socket);
+        Ok(Conn::Unix(mio::net::UnixStream::from_std(std::os::unix::net::UnixStream::from(fd))))
+    }
+}
+
+/// `ND_SOCK`: a connected socket, plain or over TLS, or none; the last error; the sender's TLS context and whether
+/// it verifies the parent's certificate.
 #[derive(Debug, Default)]
 pub struct NdSock {
-    pub socket: Option<Socket>,
+    link: Option<Link<Conn>>,
     pub error: SockError,
+    pub ctx: Option<SslContext>,
+    pub verify: bool,
 }
 
 impl NdSock {
-    /// `nd_sock_close()`, whose `netdata_ssl_close()` clears `errno`.
+    /// `ND_SOCK_INIT(ctx, verify)`.
+    pub fn new(ctx: Option<SslContext>, verify: bool) -> NdSock {
+        NdSock { ctx, verify, ..NdSock::default() }
+    }
+
+    /// The connection's descriptor, -1 without one.
+    pub fn fd(&self) -> i32 {
+        self.link.as_ref().and_then(Link::socket).map_or(-1, std::os::fd::AsRawFd::as_raw_fd)
+    }
+
+    /// The connection, for the stream thread.
+    pub fn take_link(&mut self) -> Option<Link<Conn>> {
+        self.link.take()
+    }
+
+    /// `nd_sock_close()`: `netdata_ssl_close()` clears `errno`, then a TLS connection's `close_notify` leaves what
+    /// the shutdown set.
     pub fn close(&mut self, th: &Thread<'_>) {
         th.errno.set(0);
-        self.socket = None;
+        if let Some(link) = self.link.take() {
+            let tls = link.is_tls();
+            drop(link);
+            if tls {
+                th.errno.set(OsErrno::last_raw());
+            }
+        }
         self.error = SockError::None;
     }
 
-    /// `nd_sock_connect_to_this()`. Until the TLS client exists a `:SSL` parent fails as a TLS context that cannot
-    /// open, after the TCP connection (D102.3): C without a context would send the API key in clear.
+    /// `nd_sock_connect_to_this()`: the connection, then for an `:SSL` parent its TLS (the server name from the
+    /// definition). Without a context an `:SSL` parent fails to open (D107.2: C would send the API key in clear, which
+    /// its context's failure crashes before).
     pub fn connect_to_this(
         &mut self,
         definition: &str,
@@ -394,28 +443,58 @@ impl NdSock {
             self.error = SockError::NoHostInDefinition;
             return false;
         }
-        match connect_to_this(definition, default_port, timeout_s, th) {
-            Ok(_) if ssl => {
-                self.error = SockError::SslFailedToOpen;
-                false
+        let socket = match connect_to_this(definition, default_port, timeout_s, th) {
+            Ok(socket) => socket,
+            Err(e) => {
+                self.error = e;
+                return false;
             }
-            Ok(socket) => {
-                self.socket = Some(socket);
+        };
+        // getsockname() of a connected socket: a failure here is not C's, so it is only an error
+        let Ok(conn) = to_conn(socket) else {
+            self.error = SockError::UnknownError;
+            return false;
+        };
+        if !ssl {
+            self.link = Some(Link::Plain(conn));
+            return true;
+        }
+        let Some(ctx) = &self.ctx else {
+            self.error = SockError::SslFailedToOpen;
+            return false;
+        };
+        match TlsStream::connect(ctx, conn, sni_host(definition), self.verify) {
+            Ok(tls) => {
+                self.link = Some(Link::Tls(Box::new(tls)));
                 true
             }
             Err(e) => {
-                self.error = e;
+                self.error = match e {
+                    OpenError::FailedToOpen => SockError::SslFailedToOpen,
+                    OpenError::CantEstablish => SockError::SslCantEstablishSslConnection,
+                    OpenError::InvalidCertificate => SockError::SslInvalidCertificate,
+                };
+                // what the failed connection's close left
+                th.errno.set(OsErrno::last_raw());
                 false
             }
         }
     }
 
-    /// Waits as `nd_sock_*_timeout()` do: the error of a timeout (0) or of a failed wait (-1).
+    /// Waits as `nd_sock_*_timeout()` do: the error of a timeout (0) or of a failed wait (-1). A read finds bytes a
+    /// TLS connection already holds at once, after the cancellation's check.
     fn wait(&mut self, events: PollFlags, timeout_s: i64, th: &Thread<'_>) -> Result<(), isize> {
-        let Some(socket) = &self.socket else {
+        let Some(link) = &self.link else {
             self.error = SockError::PollError;
             return Err(-1);
         };
+        let Some(socket) = link.socket() else {
+            self.error = SockError::PollError;
+            return Err(-1);
+        };
+        if events == PollFlags::POLLIN && link.has_pending() && !th.cancelled() {
+            return Ok(());
+        }
         match wait_on_socket(socket.as_fd(), timeout_s.saturating_mul(1000), events, th) {
             0 => Ok(()),
             1 => {
@@ -439,7 +518,7 @@ impl NdSock {
         if let Err(r) = self.wait(PollFlags::POLLOUT, timeout_s, th) {
             return r;
         }
-        match self.socket.as_ref().map(|mut s| s.write(buf)) {
+        match self.link.as_mut().map(|l| l.write(buf)) {
             Some(Ok(n)) => n as isize,
             Some(Err(e)) => {
                 th.errno.set(netdata_agent_log::errno_of(&e));
@@ -454,7 +533,7 @@ impl NdSock {
         if let Err(r) = self.wait(PollFlags::POLLIN, timeout_s, th) {
             return r;
         }
-        match self.socket.as_ref().map(|mut s| s.read(buf)) {
+        match self.link.as_mut().map(|l| l.read(buf)) {
             Some(Ok(n)) => n as isize,
             Some(Err(e)) => {
                 th.errno.set(netdata_agent_log::errno_of(&e));
@@ -467,6 +546,8 @@ impl NdSock {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+
     use super::*;
 
     #[test]
@@ -540,15 +621,37 @@ mod tests {
         assert_eq!(sock.error, SockError::ThreadCancelled);
     }
 
+    /// An `:SSL` parent without a TLS context fails to open after the connection (D107.2).
     #[test]
-    fn an_ssl_parent_fails_until_the_tls_client() {
+    fn an_ssl_parent_without_a_context_fails_to_open() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let cancel = AtomicBool::new(false);
         let th = Thread::new(&cancel);
         let mut sock = NdSock::default();
         assert!(!sock.connect_to_this(&format!("127.0.0.1:{port}"), 19999, 5, true, &th));
-        assert_eq!((sock.error, sock.socket.is_none()), (SockError::SslFailedToOpen, true));
+        assert_eq!((sock.error, sock.fd()), (SockError::SslFailedToOpen, -1));
+    }
+
+    /// `nd-sock.c`'s server names.
+    #[test]
+    fn server_names_as_c() {
+        let cases = [
+            ("h:1", Some("h")),
+            ("tcp:h:1", Some("h")),
+            ("udp:h", Some("h")),
+            ("[::1]:1", Some("::1")),
+            ("[fe80::1%eth0]:1", Some("fe80::1%eth0")),
+            ("h%eth0:1", Some("h")),
+            ("unix:/p", Some("unix")),
+            ("/p", Some("/p")),
+            ("[]:1", None),
+            ("tcp:", None),
+            ("[::1", Some("::1")),
+        ];
+        for (definition, want) in cases {
+            assert_eq!(sni_host(definition), want, "{definition}");
+        }
     }
 
     #[test]

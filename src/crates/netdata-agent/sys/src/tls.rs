@@ -51,6 +51,22 @@ impl<S: AsFd> SocketSsl<S> {
         unsafe { openssl_sys::SSL_accept(self.ssl.as_ptr()) }
     }
 
+    /// `SSL_set_connect_state()`: the connection is a client's.
+    pub fn set_connect_state(&mut self) {
+        self.ssl.set_connect_state();
+    }
+
+    /// `SSL_set_tlsext_host_name()`: the server name the client sends (SNI).
+    pub fn set_hostname(&mut self, name: &str) -> Result<(), openssl::error::ErrorStack> {
+        self.ssl.set_hostname(name)
+    }
+
+    /// `SSL_connect()`.
+    pub fn connect(&mut self) -> c_int {
+        // SAFETY: a live connection over the descriptor the struct owns, as `accept()`.
+        unsafe { openssl_sys::SSL_connect(self.ssl.as_ptr()) }
+    }
+
     /// `SSL_read()` into `buf`.
     pub fn read(&mut self, buf: &mut [u8]) -> c_int {
         // SAFETY: a live connection; OpenSSL writes at most `len(buf)` bytes into `buf`.

@@ -51,6 +51,10 @@ pub struct Settings {
     pub buffer_max_size: usize,
     /// `stream_send.initial_clock_resync_iterations`.
     pub resync_iterations: u16,
+    /// `netdata_ssl_validate_certificate_sender`, `ssl_ca_file` and `ssl_ca_path` (empty when unset).
+    pub ssl_validate_certificate: bool,
+    pub ssl_ca_file: String,
+    pub ssl_ca_path: String,
 }
 
 impl Settings {
@@ -64,6 +68,9 @@ impl Settings {
             compression_levels: send.compression_levels,
             buffer_max_size: send.buffer_max_size as usize,
             resync_iterations: send.initial_clock_resync_iterations,
+            ssl_validate_certificate: send.ssl_validate_certificate,
+            ssl_ca_file: send.ssl_ca_file.clone().unwrap_or_default(),
+            ssl_ca_path: send.ssl_ca_path.clone().unwrap_or_default(),
         }
     }
 }
@@ -160,10 +167,11 @@ pub struct Sender {
     replication: Arc<crate::replication::SenderQueue>,
 }
 
-/// The connection the connector hands to the host's stream thread (`stream_sender_add_to_queue()`).
+/// The connection the connector hands to the host's stream thread (`stream_sender_add_to_queue()`): still blocking,
+/// plain or over TLS.
 pub struct Connected {
     pub sender: Arc<Sender>,
-    pub socket: socket2::Socket,
+    pub link: netdata_agent_tls::Link<netdata_agent_evloop::conn::Conn>,
     pub capabilities: u32,
     /// `s->thread.compressor`, set up after the handshake; none on an uncompressed link.
     pub compressor: Option<Compressor>,
@@ -175,7 +183,7 @@ impl std::fmt::Debug for Connected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Connected")
             .field("host", &self.sender.hostname())
-            .field("socket", &self.socket)
+            .field("tls", &self.link.is_tls())
             .field("capabilities", &self.capabilities)
             .field("compressed", &self.compressor.is_some())
             .field("remote_ip", &self.remote_ip)
@@ -394,6 +402,7 @@ impl Upstream for Sender {
         let _frame = self.frame();
         // C queues the host even when its connector thread could not start
         self.connector.init(&host.hostname());
+        self.connector.ssl_init(&self.parents());
         self.connector.add(&me, &host);
     }
 }

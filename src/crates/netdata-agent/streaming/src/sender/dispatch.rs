@@ -61,6 +61,8 @@ pub(crate) struct Dispatched {
     pub capabilities: u32,
     /// The parent's address as `socket_peers()` gives it, for DST_IP and DST_PORT.
     peer: Option<(String, u16)>,
+    /// The link is over TLS: DST_TRANSPORT `https` until its close.
+    tls: bool,
     pub executor: Executor,
     /// `s->replication.last_counter_sum`, `last_progress_ut` and `last_checked_ut`: the stall check's state.
     replication_commands: u64,
@@ -76,13 +78,13 @@ impl Dispatched {
     /// The sender's frame (`stream_sender_log_*()` callbacks): the host, the parent while the socket is open, the
     /// transport and the capabilities.
     pub(crate) fn frame(&self) -> FrameGuard {
-        sender_frame(&self.host.hostname(), self.peer.as_ref(), self.capabilities)
+        sender_frame(&self.host.hostname(), self.peer.as_ref(), self.capabilities, self.tls)
     }
 }
 
 /// With no peer (the socket closed) the DST_IP and DST_PORT callbacks return false, and C's logfmt keeps their
-/// separators.
-fn sender_frame(hostname: &str, peer: Option<&(String, u16)>, capabilities: u32) -> FrameGuard {
+/// separators; DST_TRANSPORT is `https` while a TLS link is open (`nd_sock_is_ssl()`).
+fn sender_frame(hostname: &str, peer: Option<&(String, u16)>, capabilities: u32, tls: bool) -> FrameGuard {
     let mut fields = vec![(Field::NidlNode, Value::Str(hostname.to_string()))];
     match peer {
         Some((ip, port)) => {
@@ -94,23 +96,13 @@ fn sender_frame(hostname: &str, peer: Option<&(String, u16)>, capabilities: u32)
             fields.push((Field::DstPort, Value::lazy(|_| false)));
         }
     }
-    fields.push((Field::DstTransport, Value::txt("http")));
+    fields.push((Field::DstTransport, Value::txt(if tls { "https" } else { "http" })));
     fields.push((Field::DstCapabilities, Value::Str(caps::to_string(capabilities))));
     push(fields)
 }
 
-/// The connector's socket as the event loop's (made non-blocking first).
-fn to_conn(socket: socket2::Socket) -> io::Result<Conn> {
-    if socket.local_addr()?.as_socket().is_some() {
-        Ok(Conn::Tcp(mio::net::TcpStream::from_std(socket.into())))
-    } else {
-        let fd = std::os::fd::OwnedFd::from(socket);
-        Ok(Conn::Unix(mio::net::UnixStream::from_std(std::os::unix::net::UnixStream::from(fd))))
-    }
-}
-
 /// `socket_peers()` of an inet socket.
-fn peer_of(socket: &socket2::Socket) -> Option<(String, u16)> {
+fn peer_of(socket: &socket2::SockRef<'_>) -> Option<(String, u16)> {
     let addr = socket.peer_addr().ok()?.as_socket()?;
     Some((addr.ip().to_string(), addr.port()))
 }
@@ -128,40 +120,38 @@ impl StreamWorker {
     }
 
     fn start_sender(&mut self, cx: &mut Context<'_>, connected: Connected) {
-        let Connected { sender, socket, capabilities, compressor, remote_ip, thread } = connected;
+        let Connected { sender, mut link, capabilities, compressor, remote_ip, thread } = connected;
         let Some(host) = sender.host() else {
             return;
         };
         let hostname = host.hostname();
-        let peer = peer_of(&socket);
-        let _frame = sender_frame(&hostname, peer.as_ref(), capabilities);
+        let tls = link.is_tls();
+        let peer = link.socket().and_then(|c| peer_of(&socket2::SockRef::from(c)));
+        let _frame = sender_frame(&hostname, peer.as_ref(), capabilities, tls);
         nd_log!(
             Source::Daemon,
             Priority::Debug,
             "STREAM SND[{thread}] '{hostname}' [to {remote_ip}]: moving host from dispatcher queue to dispatcher running..."
         );
-        let fd = socket.as_raw_fd();
-        if socket.set_nonblocking(true).is_err() {
-            nd_log!(
-                Source::Daemon,
-                Priority::Debug,
-                "STREAM SND[{thread}] '{hostname}' [to {remote_ip}]: failed to set non-blocking mode on socket {fd}"
-            );
+        // the connector's blocking socket, a TLS connection's included, goes non-blocking under it
+        if let Some(conn) = link.socket() {
+            let socket = socket2::SockRef::from(conn);
+            let fd = conn.as_raw_fd();
+            if socket.set_nonblocking(true).is_err() {
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Debug,
+                    "STREAM SND[{thread}] '{hostname}' [to {remote_ip}]: failed to set non-blocking mode on socket {fd}"
+                );
+            }
+            // socket2 opened it close-on-exec; sock_enlarge_rcv_buf() and sock_enlarge_snd_buf(), errors ignored
+            if socket.recv_buffer_size().is_ok_and(|size| size < LARGE_SOCK_SIZE) {
+                let _ = socket.set_recv_buffer_size(LARGE_SOCK_SIZE);
+            }
+            if socket.send_buffer_size().is_ok_and(|size| size < LARGE_SOCK_SIZE) {
+                let _ = socket.set_send_buffer_size(LARGE_SOCK_SIZE);
+            }
         }
-        // socket2 opened it close-on-exec; sock_enlarge_rcv_buf() and sock_enlarge_snd_buf(), errors ignored
-        if socket.recv_buffer_size().is_ok_and(|size| size < LARGE_SOCK_SIZE) {
-            let _ = socket.set_recv_buffer_size(LARGE_SOCK_SIZE);
-        }
-        if socket.send_buffer_size().is_ok_and(|size| size < LARGE_SOCK_SIZE) {
-            let _ = socket.set_send_buffer_size(LARGE_SOCK_SIZE);
-        }
-        let Ok(conn) = to_conn(socket) else {
-            // getsockname() failed on a connected socket: back to the connector before anything commits to it
-            host.sender_flags_clear(sender_flags::CONNECTED);
-            self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(host.machine_guid());
-            sender.connector.requeue(&sender, &host, Cmd::Connect);
-            return;
-        };
         let session = Session { thread, id: loop {
             // a zero session means "no dispatcher"
             let id = os_random32();
@@ -185,7 +175,6 @@ impl StreamWorker {
             self.senders.push(None);
             self.senders.len() - 1
         });
-        let mut link = Link::Plain(conn);
         if cx
             .registry()
             .register(&mut link, Self::sender_token(index), Interest::READABLE | Interest::WRITABLE)
@@ -208,6 +197,7 @@ impl StreamWorker {
             remote_ip,
             capabilities,
             peer,
+            tls,
             executor: Executor::default(),
             replication_commands: 0,
             // set at the dequeue, as C's
@@ -644,18 +634,22 @@ impl StreamWorker {
             }
         }
         drop(d.link);
-        // the socket is closed: the rest of the records have no parent address
+        // a TLS close leaves what its shutdown set (EAGAIN on the non-blocking socket), which C's next record carries
+        let mut errno = if d.tls { nix::errno::Errno::last_raw() } else { 0 };
+        // the socket is closed: the rest of the records have no parent address, and no TLS
         drop(_frame);
-        let _frame = sender_frame(&hostname, None, d.capabilities);
+        let _frame = sender_frame(&hostname, None, d.capabilities, false);
         d.sender.set_disconnect_reason(reason, now_realtime_s());
         // stream_sender_clear_parent_claim_id()
         if d.host.update_claim_id_of_parent([0; 16]).is_some_and(|previous| previous != [0; 16]) {
-            nd_log!(Source::Daemon, Priority::Info, "Host '{hostname}' [PCLAIMID] cleared parent's claim id");
+            nd_log!(Source::Daemon, Priority::Info, errno = errno;
+                "Host '{hostname}' [PCLAIMID] cleared parent's claim id");
+            errno = 0;
         }
         d.host.pulse_status(host_status::SND_OFFLINE);
         self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(d.host.machine_guid());
         let cmd = if reconnect && !d.sender.shutdown.load(Ordering::Relaxed) { Cmd::Connect } else { Cmd::Remove };
-        d.sender.connector.requeue(&d.sender, &d.host, cmd);
+        d.sender.connector.requeue_after_close(&d.sender, &d.host, cmd, errno);
     }
 
     /// `stream_sender_cleanup()` at the thread's exit, after the queued senders started (their hooks run): every

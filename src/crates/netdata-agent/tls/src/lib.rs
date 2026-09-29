@@ -1,7 +1,8 @@
 //! TLS of the agent over the system's OpenSSL (D10), ported from `src/libnetdata/socket/security.c`: the library's
-//! initialization, the web server's context as `netdata_ssl_create_server_ctx()` builds it, a connection's TLS as
-//! `NETDATA_SSL` runs it (the non-blocking handshake, reads, writes and the close), and C's records of OpenSSL's
-//! errors. Decisions D96, D97 and D99 in the status repository.
+//! initialization, the web server's context as `netdata_ssl_create_server_ctx()` builds it and the stream sender's as
+//! `netdata_ssl_create_client_ctx()` does, a connection's TLS as `NETDATA_SSL` runs it (the server's non-blocking
+//! handshake, the client's blocking one with its certificate test, reads, writes and the close), and C's records of
+//! OpenSSL's errors. Decisions D96, D97, D99, D107 and D113 in the status repository.
 
 #![forbid(unsafe_code)]
 
@@ -99,6 +100,57 @@ fn server_context(config: &ServerConfig<'_>) -> Result<SslContext, String> {
     Ok(b.build())
 }
 
+/// `alpn_proto_list` of `nd-sock.c`: what a stream sender offers.
+pub const STREAM_ALPN: &[u8] = b"\x12netdata_stream/2.0\x08http/1.1";
+
+/// The stream sender's `[stream]` TLS keys.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClientConfig<'a> {
+    /// `ssl skip certificate verification`.
+    pub skip_verification: bool,
+    /// `CAfile` and `CApath`, empty when unset.
+    pub ca_file: &'a str,
+    pub ca_path: &'a str,
+}
+
+/// `netdata_ssl_initialize_ctx(NETDATA_SSL_STREAMING_SENDER_CTX)` then `ssl_security_location_for_context()`: TLS 1.0
+/// to 1.3, partial and moving writes, no verification when skipping it, the configured CA locations, then OpenSSL's
+/// own, each failure only reported; none when OpenSSL cannot make a context.
+pub fn streaming_sender_context(config: &ClientConfig<'_>) -> Option<SslContext> {
+    let mut b = SslContextBuilder::new(SslMethod::tls_client()).ok()?;
+    let _ = b.set_min_proto_version(Some(SslVersion::TLS1));
+    let _ = b.set_max_proto_version(Some(SslVersion::TLS1_3));
+    b.set_mode(SslMode::ENABLE_PARTIAL_WRITE | SslMode::ACCEPT_MOVING_WRITE_BUFFER);
+    if config.skip_verification {
+        b.set_verify(SslVerifyMode::NONE);
+    }
+    let (file, path) = (Some(config.ca_file).filter(|f| !f.is_empty()), Some(config.ca_path).filter(|p| !p.is_empty()));
+    if (file.is_some() || path.is_some())
+        && b.load_verify_locations(file.map(std::path::Path::new), path.map(std::path::Path::new)).is_err()
+    {
+        // the errno OpenSSL's file access left
+        nd_log!(Source::Daemon, Priority::Info, errno = Errno::last_raw();
+            "Netdata can not verify custom CAfile or CApath for parent's SSL certificate, so it will use the default \
+             OpenSSL configuration to validate certificates!");
+    }
+    if b.set_default_verify_paths().is_err() {
+        nd_log!(Source::Daemon, Priority::Info, errno = Errno::last_raw();
+            "Can not verify default OpenSSL configuration to validate certificates!");
+    }
+    Some(b.build())
+}
+
+/// Why a client's TLS open failed (`ND_SOCK_ERR_SSL_*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenError {
+    FailedToOpen,
+    CantEstablish,
+    InvalidCertificate,
+}
+
+/// `WANT_READ_WRITE_TIMEOUT_MS`: how long the client's handshake waits on its socket for each step.
+const WANT_READ_WRITE_TIMEOUT_MS: u8 = 10;
+
 /// `netdata_ssl_select_tls_version()`: the highest version the server offers; another text is the library's
 /// highest (`TLS_MAX_VERSION`, 1.3).
 fn tls_version(text: &str) -> SslVersion {
@@ -171,6 +223,102 @@ impl<S: AsFd> TlsStream<S> {
                 None
             }
         }
+    }
+
+    /// `nd_sock_open_ssl()` on a blocking socket: the connection with the stream's ALPN list (its result ignored),
+    /// the descriptor, the server name when there is one (a failure only reported), the handshake retried while the
+    /// socket turns ready within 10 ms, then, when `verify`, the peer's certificate tested. A failure drops the
+    /// connection as C's `netdata_ssl_close()` does, then the socket.
+    pub fn connect(context: &SslContext, stream: S, sni: Option<&str>, verify: bool) -> Result<TlsStream<S>, OpenError> {
+        Errno::clear();
+        let mut ssl = match Ssl::new(context) {
+            Ok(ssl) => ssl,
+            Err(stack) => {
+                log_error_queue("SSL_new", None, None, 0, stack.errors());
+                return Err(OpenError::FailedToOpen);
+            }
+        };
+        let _ = ssl.set_alpn_protos(STREAM_ALPN);
+        let socket = match SocketSsl::new(ssl, stream) {
+            Ok(socket) => socket,
+            Err((ssl, _)) => {
+                log_error_queue("SSL_set_fd", Some(&ssl), None, 0, ErrorStack::get().errors());
+                return Err(OpenError::FailedToOpen);
+            }
+        };
+        // ERR_clear_error()
+        let _ = ErrorStack::get();
+        let mut tls = TlsStream { ssl: socket, state: State::Init, want: None };
+        if let Some(name) = sni.filter(|n| !n.is_empty())
+            && tls.ssl.set_hostname(name).is_err()
+        {
+            nd_log!(Source::Daemon, Priority::Warning, "Failed to set SNI hostname '{name}' for SSL connection");
+        }
+        if !tls.handshake() {
+            return Err(OpenError::CantEstablish);
+        }
+        if verify && !tls.certificate_ok() {
+            return Err(OpenError::InvalidCertificate);
+        }
+        Ok(tls)
+    }
+
+    /// `netdata_ssl_connect()`: `SSL_connect()` again while it only waits for the socket and the socket turns ready
+    /// within 10 ms; the error's record otherwise.
+    fn handshake(&mut self) -> bool {
+        Errno::clear();
+        self.ssl.set_connect_state();
+        let mut ret = self.ssl.connect();
+        while ret != 1 && self.retry(ret) {
+            ret = self.ssl.connect();
+        }
+        if ret == 1 {
+            self.state = State::Complete;
+            return true;
+        }
+        self.log(ErrorCode::from_raw(self.ssl.error(ret)), "SSL_connect");
+        self.state = State::Failed;
+        false
+    }
+
+    /// `want_read_write_should_retry()`.
+    fn retry(&self, ret: c_int) -> bool {
+        use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+        let flags = match ErrorCode::from_raw(self.ssl.error(ret)) {
+            ErrorCode::WANT_READ => PollFlags::POLLIN,
+            ErrorCode::WANT_WRITE => PollFlags::POLLOUT,
+            _ => return false,
+        };
+        let mut fds = [PollFd::new(self.get_ref().as_fd(), flags)];
+        poll(&mut fds, PollTimeout::from(WANT_READ_WRITE_TIMEOUT_MS)).is_ok_and(|n| n > 0)
+    }
+
+    /// `security_test_certificate()`: the peer sent a certificate that verified; the record of one that did not (a
+    /// missing one has none).
+    fn certificate_ok(&self) -> bool {
+        let ssl = self.ssl.ssl();
+        if ssl.peer_certificate().is_none() {
+            return false;
+        }
+        let status = ssl.verify_result();
+        if status == openssl::x509::X509VerifyResult::OK {
+            return true;
+        }
+        // ERR_error_string_n(ERR_get_error()): the oldest queued error, code 0 when none
+        let message = ErrorStack::get()
+            .errors()
+            .first()
+            .map_or_else(|| "error:00000000:lib(0)::reason(0)".to_string(), error_string);
+        netdata_log_error!(
+            "SSL RFC4158 check:  We have a invalid certificate, the tests result with {} and message {message}",
+            status.as_raw()
+        );
+        false
+    }
+
+    /// `netdata_ssl_has_pending()`: decrypted bytes OpenSSL holds for the next read.
+    pub fn has_pending(&self) -> bool {
+        self.ssl.ssl().pending() > 0
     }
 
     pub fn get_ref(&self) -> &S {
@@ -314,6 +462,11 @@ impl<S: Read + Write + AsFd> Link<S> {
         matches!(self, Link::Tls(t) if t.wants_write())
     }
 
+    /// `netdata_ssl_has_pending()`: a TLS link holds decrypted bytes for the next read.
+    pub fn has_pending(&self) -> bool {
+        matches!(self, Link::Tls(t) if t.has_pending())
+    }
+
     /// `recv()` or `netdata_ssl_read()`.
     pub fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
@@ -388,7 +541,8 @@ fn peers(fd: Option<RawFd>) -> [(String, u16); 2] {
     let Some(fd) = fd else {
         return [("not connected".into(), 0), ("not connected".into(), 0)];
     };
-    // C reads any family but IPv4 as IPv6; a TLS connection is never on a unix socket
+    // C reads any family but IPv4 as IPv6, a unix socket's too (garbage for a `unix:` `:SSL` parent, whose local side
+    // is unnamed): here it is "unknown":0 (D107.10)
     let part = |a: nix::Result<SockaddrStorage>| match a.ok() {
         Some(a) if a.as_sockaddr_in().is_some() => a.as_sockaddr_in().map(|v4| (v4.ip().to_string(), v4.port())),
         Some(a) => a.as_sockaddr_in6().map(|v6| (v6.ip().to_string(), v6.port())),
@@ -656,6 +810,141 @@ mod tests {
         // the drop sends the close_notify the client reads as the end
         drop(t);
         assert_eq!(peer.join().unwrap(), b"answer");
+    }
+
+    /// A server on its own non-blocking side of a pair, recording the client's server name and ALPN list, then
+    /// echoing what it reads until the close.
+    fn tls_server(
+        key: &PKey<Private>,
+        cert: &X509,
+        stream: std::os::unix::net::UnixStream,
+    ) -> std::thread::JoinHandle<(Option<String>, Vec<u8>)> {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<(Option<String>, Vec<u8>)>> = Arc::default();
+        let mut b = SslContextBuilder::new(SslMethod::tls_server()).unwrap();
+        b.set_private_key(key).unwrap();
+        b.set_certificate(cert).unwrap();
+        let (names, protos) = (Arc::clone(&seen), Arc::clone(&seen));
+        b.set_servername_callback(move |ssl, _| {
+            names.lock().unwrap().0 = ssl.servername(openssl::ssl::NameType::HOST_NAME).map(str::to_string);
+            Ok(())
+        });
+        b.set_alpn_select_callback(move |_, client| {
+            protos.lock().unwrap().1 = client.to_vec();
+            Err(openssl::ssl::AlpnError::NOACK)
+        });
+        let context = b.build();
+        stream.set_nonblocking(true).unwrap();
+        std::thread::spawn(move || {
+            let mut t = TlsStream::new(&context, stream).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                match t.accept() {
+                    Handshake::Complete => break,
+                    Handshake::Failed => return seen.lock().unwrap().clone(),
+                    Handshake::Pending { .. } if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(2))
+                    }
+                    Handshake::Pending { .. } => panic!("the handshake completes"),
+                }
+            }
+            let mut buf = [0u8; 64];
+            loop {
+                match t.read(&mut buf) {
+                    Ok(0) | Err(_) if std::time::Instant::now() > deadline => break,
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let _ = t.write(&buf[..n]);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(2))
+                    }
+                    Err(_) => break,
+                }
+            }
+            seen.lock().unwrap().clone()
+        })
+    }
+
+    /// A stream sender's connection verifies the parent's certificate against its CAfile, sends the parent's name
+    /// and C's ALPN list, and carries data both ways.
+    #[test]
+    fn a_client_connects_as_c() {
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        let k = key();
+        let cert = certificate(&k);
+        let (_, cert_file) = files(&dir, &k, &cert);
+        let context = streaming_sender_context(&ClientConfig { ca_file: &cert_file, ..ClientConfig::default() }).unwrap();
+        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let peer = tls_server(&k, &cert, server);
+        let mut t = TlsStream::connect(&context, client, Some("localhost"), true).unwrap();
+        assert_eq!(t.state(), State::Complete);
+        assert_eq!(t.write(b"ping").unwrap(), 4);
+        let mut buf = [0u8; 4];
+        assert_eq!(t.read(&mut buf).unwrap(), 4);
+        assert_eq!(&buf, b"ping");
+        drop(t);
+        let (name, alpn) = peer.join().unwrap();
+        assert_eq!(name.as_deref(), Some("localhost"));
+        assert_eq!(alpn, STREAM_ALPN);
+    }
+
+    /// Without the parent's CA the certificate fails the test after the handshake, with C's record (a self-signed
+    /// leaf: 18); skipping the verification accepts it.
+    #[test]
+    fn an_untrusted_certificate_fails_unless_skipped() {
+        init();
+        let k = key();
+        let cert = certificate(&k);
+        let strict = streaming_sender_context(&ClientConfig::default()).unwrap();
+        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let peer = tls_server(&k, &cert, server);
+        let (result, records) = netdata_agent_log::capture(|| TlsStream::connect(&strict, client, None, true).err());
+        assert_eq!(result, Some(OpenError::InvalidCertificate));
+        let texts: Vec<String> = records.iter().filter_map(|r| r.message.clone()).collect();
+        assert_eq!(
+            texts,
+            ["SSL RFC4158 check:  We have a invalid certificate, the tests result with 18 and message \
+              error:00000000:lib(0)::reason(0)"]
+        );
+        let _ = peer.join();
+        let skip = streaming_sender_context(&ClientConfig { skip_verification: true, ..ClientConfig::default() }).unwrap();
+        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let peer = tls_server(&k, &cert, server);
+        assert!(TlsStream::connect(&skip, client, None, false).is_ok(), "not verified");
+        let _ = peer.join();
+    }
+
+    /// A peer that answers the client hello with plain text fails the handshake, with C's SSL_connect record.
+    #[test]
+    fn a_plaintext_peer_fails_the_handshake() {
+        use std::io::Write as _;
+        init();
+        let context = streaming_sender_context(&ClientConfig::default()).unwrap();
+        let (mut server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        server.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").unwrap();
+        drop(server);
+        let (result, records) = netdata_agent_log::capture(|| TlsStream::connect(&context, client, None, true).err());
+        assert_eq!(result, Some(OpenError::CantEstablish));
+        let first = records.first().and_then(|r| r.message.clone()).unwrap_or_default();
+        assert!(first.starts_with("SSL ERROR: SSL_connect() "), "{first}");
+    }
+
+    /// A CAfile that does not exist is reported, and the context still builds with OpenSSL's defaults.
+    #[test]
+    fn a_missing_cafile_is_reported() {
+        init();
+        let (context, records) = netdata_agent_log::capture(|| {
+            streaming_sender_context(&ClientConfig { ca_file: "/nonexistent/ca.pem", ..ClientConfig::default() })
+        });
+        assert!(context.is_some());
+        let texts: Vec<String> = records.iter().filter_map(|r| r.message.clone()).collect();
+        assert_eq!(
+            texts,
+            ["Netdata can not verify custom CAfile or CApath for parent's SSL certificate, so it will use the default \
+              OpenSSL configuration to validate certificates!"]
+        );
     }
 
     #[test]

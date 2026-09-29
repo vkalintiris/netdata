@@ -5,7 +5,9 @@
 
 use std::sync::atomic::Ordering;
 
+use netdata_agent_evloop::conn::Conn;
 use netdata_agent_log::{Priority, Source, nd_log};
+use netdata_agent_tls::Link;
 use netdata_agent_rrd::host::{Host, sender_flags};
 use netdata_agent_rrd::labels::SRC_AUTO;
 use netdata_agent_rrd::upstream;
@@ -26,11 +28,11 @@ impl Sender {
 
     /// `stream_sender_on_connect()`, on the connector thread: connected, reset, and the egress interface recorded
     /// before the first labels go out.
-    pub(crate) fn on_connect(&self, host: &Host, socket: &socket2::Socket) {
+    pub(crate) fn on_connect(&self, host: &Host, link: &Link<Conn>) {
         nd_log!(Source::Daemon, Priority::Debug, "STREAM SND [{}]: running on-connect hooks...", host.hostname());
         host.sender_flags_set(sender_flags::CONNECTED);
         self.on_connect_and_disconnect(host);
-        if let Some(iface) = egress_interface(socket) {
+        if let Some(iface) = link.socket().and_then(|c| egress_interface(&socket2::SockRef::from(c))) {
             host.update_labels(|l| {
                 let _ = l.add_changed(b"_net_default_iface", iface.as_bytes(), SRC_AUTO);
             });
@@ -90,7 +92,7 @@ impl Sender {
 
 /// `os_socket_egress_interface()`: the first interface whose address is the socket's local one (a v4-mapped address
 /// against the IPv4 ones, a link-local IPv6 one with its scope), cut to 31 bytes.
-fn egress_interface(socket: &socket2::Socket) -> Option<String> {
+fn egress_interface(socket: &socket2::SockRef<'_>) -> Option<String> {
     use std::net::{IpAddr, SocketAddr};
     let local = socket.local_addr().ok()?.as_socket()?;
     for ifa in nix::ifaddrs::getifaddrs().ok()? {

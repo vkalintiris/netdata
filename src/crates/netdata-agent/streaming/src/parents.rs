@@ -3,7 +3,6 @@
 //! blocks shared by every host. Map: `knowledge/map-m7-commit3-connector.md` §1, §3, §4.
 
 use std::collections::HashMap;
-use std::os::fd::AsRawFd;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -15,6 +14,7 @@ use netdata_agent_rrd::pulse::host_status;
 use netdata_agent_rrd::status::{DbLiveness, DbStatus, IngestStatus, IngestType};
 use netdata_agent_rrd::stream_path::PathEntry;
 use netdata_agent_text::c::c_str;
+use netdata_agent_tls::SslContext;
 
 use crate::connect_to::{NdSock, SockError, Thread, effective_service, log_errno};
 use crate::random::{os_random, os_random32};
@@ -281,7 +281,8 @@ impl Parents {
                 );
                 continue;
             }
-            if stream_info_fetch(d, host.machine_guid(), default_port, &local.user_agent, &hostname, th) {
+            let tls = (sock.ctx.clone(), sock.verify);
+            if stream_info_fetch(d, host.machine_guid(), default_port, &local.user_agent, &hostname, tls, th) {
                 if matches!(d.remote.ingest_type(), IngestType::Virtual | IngestType::Localhost) {
                     d.reason = Reason::PARENT_IS_LOCALHOST;
                     d.since_ut = now_ut;
@@ -400,7 +401,7 @@ impl Parents {
             d.attempts += 1;
             host.pulse_status(host_status::SND_CONNECTING);
             if sock.connect_to_this(&d.destination, default_port, timeout_s, d.ssl, th) {
-                let fd = sock.socket.as_ref().map_or(-1, AsRawFd::as_raw_fd);
+                let fd = sock.fd();
                 // the connected parent goes last, so that a parent failing later does not stop the others
                 let d = self.list.remove(index);
                 let destination = d.destination.clone();
@@ -584,23 +585,28 @@ fn parse_v1(root: &serde_json::Value, remote: &mut Remote, error: &mut String) -
     false
 }
 
-/// `stream_info_fetch()`: `GET /api/v3/stream_info` of this host on its own connection, 5 s for each step. A failure
-/// at the socket level postpones the parent; one in the answer only marks its reason. The connection's close at the
-/// function's end (`CLEAN_ND_SOCK`) clears `errno`.
+/// `stream_info_fetch()`: `GET /api/v3/stream_info` of this host on its own connection (TLS as the sender's: its
+/// context and verification), 5 s for each step. A failure at the socket level postpones the parent; one in the
+/// answer only marks its reason. The connection's close at the function's end (`CLEAN_ND_SOCK`) leaves `errno` as
+/// the close does: 0, or what a TLS shutdown set.
+#[allow(clippy::too_many_arguments)]
 fn stream_info_fetch(
     d: &mut Parent,
     machine_guid: &str,
     default_port: u16,
     user_agent: &str,
     hostname: &str,
+    (ctx, verify): (Option<SslContext>, bool),
     th: &Thread<'_>,
 ) -> bool {
-    let fetched = fetch(d, machine_guid, default_port, user_agent, hostname, th);
-    th.errno.set(0);
+    let mut sock = NdSock::new(ctx, verify);
+    let fetched = fetch(&mut sock, d, machine_guid, default_port, user_agent, hostname, th);
+    sock.close(th);
     fetched
 }
 
 fn fetch(
+    sock: &mut NdSock,
     d: &mut Parent,
     machine_guid: &str,
     default_port: u16,
@@ -622,7 +628,6 @@ fn fetch(
     );
     log_errno!(th, Priority::Debug, "STREAM PARENTS '{hostname}': fetching stream info from '{}'...", d.destination);
     d.reason = Reason::SP_CONNECTING;
-    let mut sock = NdSock::default();
     if !sock.connect_to_this(&d.destination, default_port, PROBE_TIMEOUT_S, d.ssl, th) {
         d.selection.info = false;
         d.sock_error_to_reason(sock.error);
