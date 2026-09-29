@@ -470,7 +470,6 @@ var probeNonceRe = regexp.MustCompile(`nonce\\":\d+`)
 // own; after the children stop, their streaming records as sets. Variants: compression off (the harness default) and
 // on (the C parent decodes the Rust child's zstd).
 func TestRChild(t *testing.T) {
-	const hostname, guid = "parity-rchild", "5a1e0000-0000-4000-8000-00000000c0bb"
 	bins := binaries(t)
 	for _, compression := range []bool{false, true} {
 		name := "plain"
@@ -480,98 +479,110 @@ func TestRChild(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			p := startPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1}, parentIdentity,
 				[2]string{bins[0], bins[0]}, [2]string{}, [2]Role{"rchild-parent-oracle", "rchild-parent-candidate"})
-			var children [2]*daemon.Daemon
-			for i, side := range p.Each() {
-				id := daemon.Identity{Hostname: hostname, StreamKey: cChildKey, MachineGUID: guid}
-				d, err := daemon.Start(daemon.Options{Binary: bins[i], RunDir: runDir(t, Role("rchild-"+name+"-"+strconv.Itoa(i))),
-					StorageTiers: 1, DBMode: "alloc", Identity: &id, NoStreamKey: true,
-					StreamTo: &daemon.StreamTo{Destination: side.Daemon.Addr, APIKey: parentIdentity.StreamKey,
-						Compression: compression, Extra: "    reconnect delay = 5\n"}})
-				if err != nil {
-					t.Fatalf("start child %d: %v", i, err)
-				}
-				t.Cleanup(func() { _ = d.Stop() })
-				children[i] = d
-			}
-			parents := [2]string{p.Oracle.Addr, p.Candidate.Addr}
-			// a C parent calls a child online once it holds data for it
-			for _, addr := range parents {
-				waitReceiver(t, addr, guid)
-				if !ingestOnline(addr, guid, 60*time.Second) {
-					t.Fatalf("%s: the child never came online", addr)
-				}
-			}
-			compareStreamPath(t, "parents", parents, "/api/v3/stream_path", entryTimes, "_streams_to")
-			compareStreamPath(t, "children", [2]string{children[0].Addr, children[1].Addr}, "/api/v3/stream_path",
-				entryTimes, "_streams_to")
-			var info [2][]byte
-			for i, addr := range parents {
-				b, err := rawExchange(addr, []byte("GET /api/v3/stream_info?machine_guid="+guid+" HTTP/1.1\r\n\r\n"),
-					5*time.Second)
-				if err != nil {
-					t.Fatal(err)
-				}
-				info[i] = streamInfoRetentionRe.ReplaceAll(httpBody(b), []byte(`"${1}":T`))
-				info[i] = streamInfoNonceRe.ReplaceAll(info[i], []byte(`"nonce":N`))
-			}
-			if !bytes.Equal(info[0], info[1]) {
-				t.Errorf("stream_info differs:\noracle:    %s\ncandidate: %s", info[0], info[1])
-			}
-			// the charts each parent holds for its child, as their definitions made them: the two children's data
-			// differ, so retention and values are masked (the data are compared within each side below)
-			var defs [2][]byte
-			for i, addr := range parents {
-				b, err := rawExchange(addr, []byte("GET /host/"+hostname+"/api/v1/charts HTTP/1.1\r\n\r\n"),
-					5*time.Second)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defs[i] = parentCharts(t, httpBody(b))
-				if os.Getenv("PARITY_KEEP") == "1" {
-					_ = os.WriteFile(filepath.Join(children[i].Opts.RunDir, "parent-charts.json"), defs[i], 0o644)
-				}
-			}
-			if len(defs[0]) < 1000 || !bytes.Equal(defs[0], defs[1]) {
-				t.Errorf("the parents' charts of the child differ (%d, %d bytes; PARITY_KEEP=1 keeps them)",
-					len(defs[0]), len(defs[1]))
-			}
-			// within each side, the parent's series of its child equal the child's own over settled seconds (D113.1)
-			time.Sleep(2 * time.Second)
-			now := time.Now().Unix()
-			for i, side := range p.Each() {
-				own := seriesCSV(t, children[i].Addr, "", now-12, now-2)
-				streamed := seriesCSV(t, side.Daemon.Addr, "/host/"+hostname, now-12, now-2)
-				if rows := strings.Count(own, "\n"); rows < 8 {
-					t.Errorf("%s: the child's own series has %d rows: %q", side.Role, rows, own)
-				} else if own != streamed {
-					t.Errorf("%s: the parent's series of the child differ from the child's own:\nchild:  %s\nparent: %s",
-						side.Role, own, streamed)
-				}
-			}
-			for i, c := range children {
-				b, err := rawExchange(c.Addr, []byte("GET /api/v1/info HTTP/1.1\r\n\r\n"), 5*time.Second)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !strings.Contains(string(b), `"_net_default_iface":"lo"`) {
-					t.Errorf("child %d: no _net_default_iface lo in /api/v1/info", i)
-				}
-			}
-			var records [2][]string
-			for i, c := range children {
-				_ = c.Stop()
-				records[i] = rchildRecords(t, c)
-			}
-			diffLines(t, "children's records", records[0], records[1])
-			// what each C parent's parser said of its child's stream (a line it tolerates with an error)
-			var parsed [2][]string
-			for i, side := range p.Each() {
-				parsed[i] = pluginsdRecords(t, side.Daemon)
-			}
-			diffLines(t, "the parents' PLUGINSD records", parsed[0], parsed[1])
-			t.Logf("records:\n%s", strings.Join(records[0], "\n"))
+			rchildCompare(t, p, name, func(i int) *daemon.StreamTo {
+				return &daemon.StreamTo{Destination: p.Each()[i].Daemon.Addr, APIKey: parentIdentity.StreamKey,
+					Compression: compression, Extra: "    reconnect delay = 5\n"}
+			})
 		})
 	}
+}
+
+const rchildHostname, rchildGUID = "parity-rchild", "5a1e0000-0000-4000-8000-00000000c0bb"
+
+// rchildCompare starts a C child and a Rust child with the same identity, side i streaming as `stream(i)` says to
+// side i's parent of `p`, runs TestRChild's comparison and returns the children, stopped.
+func rchildCompare(t *testing.T, p *Pair, name string, stream func(i int) *daemon.StreamTo) [2]*daemon.Daemon {
+	t.Helper()
+	bins := binaries(t)
+	var children [2]*daemon.Daemon
+	for i := range p.Each() {
+		id := daemon.Identity{Hostname: rchildHostname, StreamKey: cChildKey, MachineGUID: rchildGUID}
+		d, err := daemon.Start(daemon.Options{Binary: bins[i], RunDir: runDir(t, Role("rchild-"+name+"-"+strconv.Itoa(i))),
+			StorageTiers: 1, DBMode: "alloc", Identity: &id, NoStreamKey: true, StreamTo: stream(i)})
+		if err != nil {
+			t.Fatalf("start child %d: %v", i, err)
+		}
+		t.Cleanup(func() { _ = d.Stop() })
+		children[i] = d
+	}
+	parents := [2]string{p.Oracle.Addr, p.Candidate.Addr}
+	// a C parent calls a child online once it holds data for it
+	for _, addr := range parents {
+		waitReceiver(t, addr, rchildGUID)
+		if !ingestOnline(addr, rchildGUID, 60*time.Second) {
+			t.Fatalf("%s: the child never came online", addr)
+		}
+	}
+	compareStreamPath(t, "parents", parents, "/api/v3/stream_path", entryTimes, "_streams_to")
+	compareStreamPath(t, "children", [2]string{children[0].Addr, children[1].Addr}, "/api/v3/stream_path",
+		entryTimes, "_streams_to")
+	var info [2][]byte
+	for i, addr := range parents {
+		b, err := rawExchange(addr, []byte("GET /api/v3/stream_info?machine_rchildGUID="+rchildGUID+" HTTP/1.1\r\n\r\n"),
+			5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info[i] = streamInfoRetentionRe.ReplaceAll(httpBody(b), []byte(`"${1}":T`))
+		info[i] = streamInfoNonceRe.ReplaceAll(info[i], []byte(`"nonce":N`))
+	}
+	if !bytes.Equal(info[0], info[1]) {
+		t.Errorf("stream_info differs:\noracle:    %s\ncandidate: %s", info[0], info[1])
+	}
+	// the charts each parent holds for its child, as their definitions made them: the two children's data
+	// differ, so retention and values are masked (the data are compared within each side below)
+	var defs [2][]byte
+	for i, addr := range parents {
+		b, err := rawExchange(addr, []byte("GET /host/"+rchildHostname+"/api/v1/charts HTTP/1.1\r\n\r\n"),
+			5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defs[i] = parentCharts(t, httpBody(b))
+		if os.Getenv("PARITY_KEEP") == "1" {
+			_ = os.WriteFile(filepath.Join(children[i].Opts.RunDir, "parent-charts.json"), defs[i], 0o644)
+		}
+	}
+	if len(defs[0]) < 1000 || !bytes.Equal(defs[0], defs[1]) {
+		t.Errorf("the parents' charts of the child differ (%d, %d bytes; PARITY_KEEP=1 keeps them)",
+			len(defs[0]), len(defs[1]))
+	}
+	// within each side, the parent's series of its child equal the child's own over settled seconds (D113.1)
+	time.Sleep(2 * time.Second)
+	now := time.Now().Unix()
+	for i, side := range p.Each() {
+		own := seriesCSV(t, children[i].Addr, "", now-12, now-2)
+		streamed := seriesCSV(t, side.Daemon.Addr, "/host/"+rchildHostname, now-12, now-2)
+		if rows := strings.Count(own, "\n"); rows < 8 {
+			t.Errorf("%s: the child's own series has %d rows: %q", side.Role, rows, own)
+		} else if own != streamed {
+			t.Errorf("%s: the parent's series of the child differ from the child's own:\nchild:  %s\nparent: %s",
+				side.Role, own, streamed)
+		}
+	}
+	for i, c := range children {
+		b, err := rawExchange(c.Addr, []byte("GET /api/v1/info HTTP/1.1\r\n\r\n"), 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), `"_net_default_iface":"lo"`) {
+			t.Errorf("child %d: no _net_default_iface lo in /api/v1/info", i)
+		}
+	}
+	var records [2][]string
+	for i, c := range children {
+		_ = c.Stop()
+		records[i] = rchildRecords(t, c)
+	}
+	diffLines(t, "children's records", records[0], records[1])
+	// what each C parent's parser said of its child's stream (a line it tolerates with an error)
+	var parsed [2][]string
+	for i, side := range p.Each() {
+		parsed[i] = pluginsdRecords(t, side.Daemon)
+	}
+	diffLines(t, "the parents' PLUGINSD records", parsed[0], parsed[1])
+	t.Logf("records:\n%s", strings.Join(records[0], "\n"))
+	return children
 }
 
 // pluginsdRecords are a parent's parser records (PLUGINSD) about its children's streams, each once, normalized.
@@ -583,12 +594,13 @@ func pluginsdRecords(t *testing.T, d *daemon.Daemon) []string {
 var (
 	// lastSampleRe is how long before a child's reconnect its last stored sample was
 	lastSampleRe = regexp.MustCompile(`last sample in the db [^"]* ago`)
-	// receivedRe is what a receiver got and sent until it disconnected, which the session's length decides
-	receivedRe = regexp.MustCompile(` (msgs|bytes_in|bytes_out)=\d+`)
+	// receivedRe is what a receiver got and sent until it disconnected, which the session's length decides, and the
+	// web connection's id, which counts the parent's connections before it (a test's polls among them)
+	receivedRe = regexp.MustCompile(` (msgs|bytes_in|bytes_out|conn)=\d+`)
 )
 
 // parentRecords are a parent's records that contain `marker`, each once, normalized (ports, thread numbers, the
-// last sample's age, what a receiver got), with `rewrite` applied when given.
+// last sample's age, what a receiver got, the web connection's id), with `rewrite` applied when given.
 func parentRecords(t *testing.T, d *daemon.Daemon, marker string, rewrite *strings.Replacer) []string {
 	t.Helper()
 	seen := map[string]bool{}

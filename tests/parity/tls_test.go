@@ -60,10 +60,16 @@ type tlsListeners struct{ optional, standard, force, unix string }
 // and a force listener of its own.
 func tlsPair(t *testing.T, webExtra string, files map[string][]byte) (*Pair, [2]tlsListeners) {
 	t.Helper()
+	return tlsPairOf(t, webExtra, files, binaries(t), [2]Role{"tls-oracle", "tls-candidate"})
+}
+
+// tlsPairOf is tlsPair with each side's binary and role (two C parents for a child's TLS).
+func tlsPairOf(t *testing.T, webExtra string, files map[string][]byte, bins [2]string, roles [2]Role) (*Pair,
+	[2]tlsListeners) {
+	t.Helper()
 	p := &Pair{}
 	var ls [2]tlsListeners
-	bins := binaries(t)
-	for i, role := range []Role{"tls-oracle", "tls-candidate"} {
+	for i, role := range roles {
 		ports := freePorts(t, 2)
 		id := parentIdentity
 		o := daemon.Options{Binary: bins[i], RunDir: runDir(t, role), Identity: &id, DBMode: "alloc",
