@@ -106,8 +106,8 @@ var proxyVariants = map[string]proxyVariant{
 	// a parent without IEEE754 nor float baselines: the float dimension as a truncated integer
 	"float-down": {caps: proxyPlainCaps, refused: stream.CapIEEE754 | stream.CapFloatBaseline, ticks: 12, gated: true},
 	// batches close at 101 blocks or 10,836 bytes (an 80-dimension chart), and a function's registration flushes
-	// one at the next gate
-	"batch": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 60, function: 40, gated: true,
+	// the held blocks at the next gate (tick 42, between two of the fifth-tick batches)
+	"batch": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 60, function: 42, gated: true,
 		extra: []proxyChart{proxyWide}},
 	// a parent without INTERPOLATED nor REPLICATION gets v1 from the proxy: C writes the collected values it never
 	// set, zeros (D106.3), still batched
