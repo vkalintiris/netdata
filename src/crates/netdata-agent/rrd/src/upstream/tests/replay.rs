@@ -215,3 +215,31 @@ fn a_collection_waits_for_the_collection_lock() {
         collected.recv_timeout(Duration::from_secs(5)).expect("collected once the lock was released");
     });
 }
+
+/// A second answer that starts streaming finds the chart finished: nothing is given back twice.
+#[test]
+fn a_finished_chart_gives_nothing_back_twice() {
+    let (host, _, chart) = replicating_chart(&[10, 11, 12, 13, 14, 15]);
+    // a second chart keeps its claim, so the host's counter shows a double give-back
+    let c2 = host.charts().create(&ChartSpec { id: "c2", ..chart_spec(DbMode::Ram) }).0;
+    let (d2, _) = c2.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    collect(&host, &c2, &[(&d2, 1)], T + 6);
+    assert_eq!(host.sender_replicating_charts(), 2);
+    answered(&host, &request("t.c", T + 3, T + 5, true), 1 << 20, true);
+    assert_eq!(host.sender_replicating_charts(), 1);
+    answered(&host, &request("t.c", T + 3, T + 5, true), 1 << 20, true);
+    assert_eq!(host.sender_replicating_charts(), 1, "the second answer gives nothing back");
+    assert_eq!(claim(&chart), flags::SENDER_REPLICATION_FINISHED);
+}
+
+/// A dimension added since the chart's definition went upstream is not in its answer: no points, no state.
+#[test]
+fn a_dimension_not_sent_yet_is_left_out() {
+    let (host, _, chart) = replicating_chart(&[10, 11, 12, 13]);
+    let (fresh, _) = chart.dim_add("e", None, 1, 1, Algorithm::Absolute);
+    assert!(!fresh.is_sent_upstream());
+    let (_, got) = answered(&host, &request("t.c", T + 1, T + 3, true), 1 << 20, true);
+    assert!(got.iter().any(|l| l.starts_with("RSET \"d\" ")), "{got:?}");
+    assert!(got.iter().any(|l| l.starts_with("RDSTATE 'd' ")), "{got:?}");
+    assert!(!got.iter().any(|l| l.contains("\"e\"") || l.contains("'e'")), "{got:?}");
+}

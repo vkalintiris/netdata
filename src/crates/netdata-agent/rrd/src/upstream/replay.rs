@@ -86,11 +86,6 @@ struct DimQuery<'a> {
     skip: bool,
 }
 
-/// `storage_point_is_unset()` or `storage_point_is_gap()`.
-fn unset_or_gap(sp: &StoragePoint) -> bool {
-    sp.count == 0 || !sp.sum.is_finite()
-}
-
 /// What the walk did.
 struct Walk {
     finished_with_gap: bool,
@@ -188,7 +183,7 @@ fn walk(
             last_end_in_buffer = min_end;
             emit::rbegin_point(out, enc, chart_slot, min_start, min_end, wall_s);
             for d in dims.iter() {
-                if d.sp.start_time_s <= min_end && d.sp.end_time_s >= min_end && !unset_or_gap(&d.sp) {
+                if d.sp.start_time_s <= min_end && d.sp.end_time_s >= min_end && !d.sp.is_unset() && !d.sp.is_gap() {
                     emit::rset(
                         out,
                         enc,
@@ -313,14 +308,16 @@ pub fn answer(
         return Answered::NotFound;
     };
     let wall_s = now_realtime_s();
-    let update_every = i64::from(chart.update_every());
-    let mut window = normalize(request, wall_s, update_every, chart.retention_for_collected(wall_s));
-    let all = chart.dims();
+    let mut window =
+        normalize(request, wall_s, i64::from(chart.update_every()), chart.retention_for_collected(wall_s));
+    let mut all = chart.dims();
     let mut guard = None;
     let mut dims = Vec::new();
     if !all.is_empty() && window.after != 0 && window.before != 0 {
         if window.streaming {
             guard = Some(Chart::lock_collection(chart.as_ref()));
+            // the dimensions as the lock leaves them, as C walks them under it
+            all = chart.dims();
             let last_updated_s = chart.collection().last_updated.0;
             if last_updated_s > window.before {
                 window.before = last_updated_s.min(wall_s);
@@ -353,6 +350,8 @@ pub fn answer(
     drop(dims);
     let end_wall_s = now_realtime_s();
     let (db_first, db_last) = chart.retention_for_collected(end_wall_s);
+    // C reads it as it writes REND
+    let update_every = i64::from(chart.update_every());
     emit::rend(out, &enc, update_every, db_first, db_last, window.streaming, window.after, window.before, end_wall_s);
     if commit(out) && window.streaming {
         finish(host, &chart, finished_with_gap);

@@ -124,12 +124,16 @@ struct State {
 }
 
 impl State {
-    /// `dictionary_del()` of one request (`replication_request_delete_callback()`).
-    fn delete(&mut self, sender_id: u64, chart: &str) {
+    /// `dictionary_del()` of the request a thread took (`replication_request_delete_callback()`): only one of its
+    /// session, not a newer request for the chart that came after a reconnect; unlinked if it was indexed again
+    /// meanwhile, so it is answered once.
+    fn delete_taken(&mut self, sender_id: u64, chart: &str, flush_ut: u64) {
         let Some(requests) = self.senders.get_mut(&sender_id) else {
             return;
         };
-        if let Some(e) = requests.charts.remove(chart) {
+        if requests.charts.get(chart).is_some_and(|e| e.flush_ut == flush_ut)
+            && let Some(e) = requests.charts.remove(chart)
+        {
             requests.queue.charts_replicating.fetch_sub(1, Ordering::Relaxed);
             if let Place::Indexed(uid) = e.place {
                 self.order.unlink(&requests.queue, e.after, uid);
@@ -254,18 +258,23 @@ impl Queue {
         if sender.replication().last_flush_ut.load(Ordering::Relaxed) != taken.flush_ut {
             return false;
         }
-        self.lock().delete(taken.sender_id, &taken.request.chart_id);
+        self.lock().delete_taken(taken.sender_id, &taken.request.chart_id, taken.flush_ut);
         self.latest_first_time.store(taken.request.after, Ordering::Relaxed);
         let Some(host) = sender.host() else {
             return true;
         };
         let capabilities = sender.negotiated.load(Ordering::Relaxed);
         let max_msg_size = sender.out().buffer.stats().bytes_max_size * MAX_MESSAGE_PERCENT_OF_BUFFER / 100;
+        let mut committed = false;
         let answered = replay::answer(&host, &taken.request, capabilities, max_msg_size, buffer, |bytes| {
-            sender.commit_replication(bytes, taken.flush_ut)
+            committed = sender.commit_replication(bytes, taken.flush_ut);
+            committed
         });
-        sender.counter_out.fetch_add(1, Ordering::Relaxed);
-        self.replied.fetch_add(1, Ordering::Relaxed);
+        // an answer dropped for a newer session is not one it got (D105.6)
+        if committed {
+            sender.counter_out.fetch_add(1, Ordering::Relaxed);
+            self.replied.fetch_add(1, Ordering::Relaxed);
+        }
         match answered {
             Answered::NotFound => self.not_found.fetch_add(1, Ordering::Relaxed),
             Answered::Executed => self.executed.fetch_add(1, Ordering::Relaxed),
@@ -497,7 +506,7 @@ mod tests {
         assert_eq!(taken.request, Request { chart_id: "b.1".into(), after: 10, before: 30, start_streaming: false });
         assert_eq!(b.pending_requests.load(Ordering::Relaxed), 0);
         assert!(b.busy(), "picked, not executed");
-        q.lock().delete(taken.sender_id, &taken.request.chart_id);
+        q.lock().delete_taken(taken.sender_id, &taken.request.chart_id, taken.flush_ut);
         assert!(!b.busy());
         assert_eq!(q.take().unwrap().request.chart_id, "a.1");
         assert_eq!(q.received.load(Ordering::Relaxed), 3);
@@ -519,6 +528,41 @@ mod tests {
         assert_eq!(q.duplicate.load(Ordering::Relaxed), 2);
         assert_eq!(q.received.load(Ordering::Relaxed), 4);
         assert_eq!(s.charts_replicating.load(Ordering::Relaxed), 1);
+    }
+
+    /// The delete after a pick takes only the request picked: a newer one for the chart, asked after a reconnect,
+    /// stays queued.
+    #[test]
+    fn a_newer_request_survives_the_delete_of_the_one_picked() {
+        let q = Queue::default();
+        let s = SenderQueue::new();
+        q.add(Weak::new(), &s, "c".into(), 10, 20, false);
+        let taken = q.take().unwrap();
+        q.delete_pending(&s);
+        s.last_flush_ut.store(7, Ordering::Relaxed);
+        q.add(Weak::new(), &s, "c".into(), 30, 40, true);
+        q.lock().delete_taken(taken.sender_id, &taken.request.chart_id, taken.flush_ut);
+        assert_eq!(requests(&q), [(30, "c".into())]);
+        assert_eq!(s.charts_replicating.load(Ordering::Relaxed), 1);
+    }
+
+    /// A picked request indexed again meanwhile (an unpark) leaves the order with its delete: answered once.
+    #[test]
+    fn a_picked_request_indexed_again_is_deleted_from_the_order() {
+        let q = Queue::default();
+        let s = SenderQueue::new();
+        q.add(Weak::new(), &s, "c".into(), 10, 20, false);
+        let taken = q.take().unwrap();
+        {
+            let mut state = q.lock();
+            let State { order, senders } = &mut *state;
+            let e = senders.get_mut(&s.id).unwrap().charts.get_mut("c").unwrap();
+            order.add(&s, "c", e);
+        }
+        q.lock().delete_taken(taken.sender_id, &taken.request.chart_id, taken.flush_ut);
+        assert!(requests(&q).is_empty());
+        assert_eq!(s.pending_requests.load(Ordering::Relaxed), 0);
+        assert!(!s.busy());
     }
 
     /// A sender's reset flushes its requests, picked or not, and leaves the others'.

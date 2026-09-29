@@ -276,22 +276,34 @@ pub struct ReceiverState {
 /// parser holds it from BEGIN2 to END2 (commit 8).
 #[derive(Debug, Default)]
 struct DataCollectionLock {
-    held: Mutex<bool>,
+    state: Mutex<LockState>,
     released: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct LockState {
+    held: bool,
+    /// Those waiting for it: an uncontended release wakes nobody, so a collection costs no syscall for it.
+    waiters: usize,
 }
 
 impl DataCollectionLock {
     fn acquire(&self) {
-        let mut held = lock(&self.held);
-        while *held {
-            held = self.released.wait(held).unwrap_or_else(PoisonError::into_inner);
+        let mut state = lock(&self.state);
+        while state.held {
+            state.waiters += 1;
+            state = self.released.wait(state).unwrap_or_else(PoisonError::into_inner);
+            state.waiters -= 1;
         }
-        *held = true;
+        state.held = true;
     }
 
     fn release(&self) {
-        *lock(&self.held) = false;
-        self.released.notify_one();
+        let mut state = lock(&self.state);
+        state.held = false;
+        if state.waiters != 0 {
+            self.released.notify_one();
+        }
     }
 }
 
