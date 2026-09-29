@@ -361,6 +361,16 @@ impl Connector {
     pub(crate) fn add(&self, s: &Arc<Sender>, host: &Arc<Host>) {
         {
             let mut state = s.lock();
+            // a host freed meanwhile (the sender's ENABLED bit)
+            if host.sender_flags() & sender_flags::ENABLED == 0 {
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "STREAM CONNECT '{}' [disabled]: host has streaming disabled - not sending data to a parent.",
+                    host.hostname()
+                );
+                return;
+            }
             if host.sender_flags() & sender_flags::ADDED != 0 {
                 nd_log!(
                     Source::Daemon,
@@ -376,6 +386,22 @@ impl Connector {
         }
         s.parents().reset(Reason::NEVER, self.settings.reconnect_delay_s);
         self.requeue(s, host, Cmd::Connect);
+    }
+
+    /// `stream_connector_remove_host()`: a sender still in the queue leaves it, its disconnect hooks run and it is
+    /// removed with its exit reason, without the connector's record.
+    pub(crate) fn remove_host(&self, s: &Arc<Sender>, host: &Host) {
+        let found = {
+            let mut queue = self.queue();
+            let key = queue.iter().find(|(_, (q, _))| Arc::ptr_eq(q, s)).map(|(&k, _)| k);
+            key.and_then(|k| queue.remove(&k))
+        };
+        if found.is_some() {
+            let _frame = s.frame();
+            s.on_disconnect(host);
+            let reason = s.lock().exit_reason;
+            s.remove(host, reason);
+        }
     }
 
     /// `stream_connector_requeue()`.
@@ -434,25 +460,35 @@ impl Connector {
                     continue;
                 };
                 let _frame = s.frame();
+                // each branch acts on the entry it takes out: a free's remove_host() may have taken it meanwhile
                 if s.shutdown.load(Ordering::Relaxed) {
-                    self.queue().remove(&key);
-                    s.on_disconnect(&host);
-                    s.connector_remove(&host);
+                    if self.queue().remove(&key).is_some() {
+                        s.on_disconnect(&host);
+                        s.connector_remove(&host);
+                    }
                     continue;
                 }
                 match if exiting > 0 { Cmd::Remove } else { cmd } {
                     Cmd::Connect => {
                         if let Some(connected) = self.stream_connect(&s, &host, &th) {
-                            self.queue().remove(&key);
+                            if self.queue().remove(&key).is_none() {
+                                // removed during the attempt: never dispatched, and a TLS link's close does not wait
+                                // on the parent (R46 n5)
+                                if let Some(conn) = connected.link.socket() {
+                                    let _ = socket2::SockRef::from(conn).set_nonblocking(true);
+                                }
+                                continue;
+                            }
                             s.on_connect(&host, &connected.link);
                             self.add_to_queue(connected, &host);
                         }
                     }
                     Cmd::Remove => {
-                        self.queue().remove(&key);
-                        s.on_disconnect(&host);
-                        let reason = s.lock().exit_reason;
-                        s.remove(&host, reason);
+                        if self.queue().remove(&key).is_some() {
+                            s.on_disconnect(&host);
+                            let reason = s.lock().exit_reason;
+                            s.remove(&host, reason);
+                        }
                     }
                 }
             }
@@ -512,6 +548,7 @@ impl Connector {
                 capabilities: st.capabilities,
                 remote_ip: st.remote_ip.clone(),
                 parent_using_h2o: st.parent_using_h2o,
+                api_key: st.api_key.clone(),
             }
         };
         let connected = self.attempt(s, host, &mut attempt, th);
@@ -551,7 +588,7 @@ impl Connector {
         let destination = s.parents().current().map(|d| d.destination.clone()).unwrap_or_default();
         st.remote_ip = crate::records::cut(&destination, CONNECTED_TO_SIZE).to_string();
         st.capabilities = caps::sender_ours(s.disabled.load(Ordering::Relaxed), receiver_capabilities(host));
-        let request = self.request(host, &s.api_key, st.hops, st.capabilities);
+        let request = self.request(host, &st.api_key, st.hops, st.capabilities);
         let hostname = host.hostname();
         let remote = st.remote_ip.clone();
         if st.parent_using_h2o && !crate::h2o::upgrade_prelude(&mut sock, th) {
@@ -641,11 +678,97 @@ struct Attempt {
     capabilities: u32,
     remote_ip: String,
     parent_using_h2o: bool,
+    api_key: String,
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use netdata_agent_evloop::Pool;
+    use netdata_agent_rrd::host::{HostInfo, StreamSend};
+    use netdata_agent_rrd::mode::DbMode;
+
     use super::*;
+    use crate::conf::Send;
+
+    fn info(destination: &str, key: &str) -> HostInfo {
+        HostInfo {
+            hostname: "child".into(),
+            registry_hostname: "child".into(),
+            os: "linux".into(),
+            timezone: "UTC".into(),
+            abbrev_timezone: "UTC".into(),
+            utc_offset: 0,
+            program_name: "p".into(),
+            program_version: "1".into(),
+            update_every: 1,
+            db_mode: DbMode::Ram,
+            history_entries: 4096,
+            health_enabled: false,
+            system_info: Default::default(),
+            replication_enabled: false,
+            replication_period: 0,
+            replication_step: 0,
+            stream_send: StreamSend::new(!destination.is_empty(), destination, key, "*"),
+            cache_dir: None,
+        }
+    }
+
+    /// A connector with one stream thread, its own thread not started.
+    fn connector() -> (Pool<StreamMsg>, Arc<Connector>) {
+        let pins = Arc::new(Mutex::new(Pins::new(1)));
+        let pool = Pool::spawn(1, 256 * 1024, |i| format!("TEST[{i}]"), |_| {
+            crate::thread::StreamWorker::new(Arc::clone(&pins), 1)
+        })
+        .unwrap();
+        let localhost = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, info("", "")));
+        let local = Local { host_id: [0xaa; 16], user_agent: "t/1".into(), update_every: 1 };
+        let c = Connector::new(Settings::of(&Send::default()), local, &localhost, pool.handle(), pins, 256 * 1024);
+        (pool, c)
+    }
+
+    /// The free at a host's cleanup (HOST CLEANUP) takes a queued sender off the connector at once, without the
+    /// connector's record, and the host streams no more; the revival sets the same sender up with its new key and
+    /// parents (D118).
+    #[test]
+    fn a_free_takes_a_queued_sender_off_the_connector_and_a_revival_sets_it_up_again() {
+        let (_pool, c) = connector();
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c1", false, info("127.0.0.1:1", "key-a")));
+        let s = Sender::attach(&host, &c).expect("created");
+        host.sender_flags_set(sender_flags::ADDED);
+        c.requeue(&s, &host, Cmd::Connect);
+        assert_eq!(c.queue().len(), 1);
+        let ((), records) = netdata_agent_log::capture(|| host.cleanup_data_collection());
+        assert!(c.queue().is_empty());
+        assert_eq!(host.sender_flags() & (sender_flags::ADDED | sender_flags::ENABLED), 0);
+        assert!(host.upstream().is_none());
+        let texts: Vec<String> = records.iter().filter_map(|r| r.message.clone()).collect();
+        assert!(!texts.iter().any(|t| t.contains("removed host") || t.contains("giving up")), "{texts:?}");
+        assert!(s.parents().list.is_empty());
+        host.update(&info("127.0.0.2:2", "key-b"), 1, 3600, false, 0, 0);
+        assert!(Sender::attach(&host, &c).is_none(), "set up again, not created");
+        assert!(host.upstream().is_some());
+        assert_eq!(s.lock().api_key, "key-b");
+        let destinations: Vec<String> = s.parents().list.iter().map(|d| d.destination.clone()).collect();
+        assert_eq!(destinations, ["127.0.0.2:2"]);
+    }
+
+    /// A sender that stays queued elsewhere is given up after the free's 2 s (D118.2), with the record.
+    #[test]
+    fn a_free_gives_up_on_a_sender_that_does_not_leave() {
+        let (_pool, c) = connector();
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c2", false, info("127.0.0.1:1", "key")));
+        Sender::attach(&host, &c).expect("created");
+        host.sender_flags_set(sender_flags::ADDED);
+        let started = Instant::now();
+        let ((), records) = netdata_agent_log::capture(|| host.cleanup_data_collection());
+        assert!(started.elapsed() >= Duration::from_secs(2));
+        assert!(host.upstream().is_none());
+        let texts: Vec<String> = records.iter().filter_map(|r| r.message.clone()).collect();
+        let giving_up = "STREAM SND 'child': sender takes too long to stop, giving up...".to_string();
+        assert!(texts.contains(&giving_up), "{texts:?}");
+    }
 
     #[test]
     fn answers_map_to_c_s_versions() {

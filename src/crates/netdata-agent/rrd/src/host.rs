@@ -284,6 +284,8 @@ pub mod sender_flags {
     pub const LOGGED_STATUS: u32 = 1 << 3;
     /// The host's functions changed since they were last sent (`rrdhost_nrpc_changed()`).
     pub const GLOBAL_FUNCTIONS_UPDATED: u32 = 1 << 4;
+    /// `RRDHOST_OPTION_SENDER_ENABLED`: the host's sender is set up and not freed (`Host::upstream()` is it).
+    pub const ENABLED: u32 = 1 << 5;
 }
 
 /// `struct rrdhost`.
@@ -1110,6 +1112,8 @@ impl Host {
         self.charts.flush();
         self.variables.clear();
         self.replace_stream_path(Vec::new());
+        // before the functions go (C frees the sender before the function registry)
+        self.free_upstream();
         self.functions.clear();
         self.archived.store(true, Ordering::Release);
         self.orphan.store(true, Ordering::Release);
@@ -1169,14 +1173,46 @@ impl Host {
         }
     }
 
-    /// Sets the host's sender (once).
+    /// Sets the host's sender (the first one set stays) and enables it.
     pub fn set_upstream(&self, upstream: Arc<dyn Upstream>) {
         let _ = self.upstream.set(upstream);
+        self.sender_flags_set(sender_flags::ENABLED);
+    }
+
+    /// `stream_sender_structures_init()`: a host whose settings stream it gets its sender, `create`d the first time
+    /// and set up again with the settings of now after a free (where C allocates a new one); nothing while one is
+    /// enabled or without settings.
+    pub fn init_upstream(&self, create: impl FnOnce(&StreamSend) -> Arc<dyn Upstream>) {
+        if self.sender_flags() & sender_flags::ENABLED != 0 {
+            return;
+        }
+        let Some(send) = self.info.read().unwrap_or_else(PoisonError::into_inner).stream_send.clone() else {
+            return;
+        };
+        match self.upstream.get() {
+            Some(up) => {
+                up.reinit(&send);
+                self.sender_flags_set(sender_flags::ENABLED);
+            }
+            None => self.set_upstream(create(&send)),
+        }
+    }
+
+    /// `stream_sender_structures_free()`: the sender stops and is emptied, and the host streams no more until a
+    /// revival sets it up with the settings of that time (D118).
+    fn free_upstream(&self) {
+        let was = self.sender_flags_clear(sender_flags::ENABLED);
+        if was & sender_flags::ENABLED != 0
+            && let Some(up) = self.upstream.get()
+        {
+            up.free();
+        }
+        self.info.write().unwrap_or_else(PoisonError::into_inner).stream_send = None;
     }
 
     /// `host->sender` when the host streams (`rrdhost_has_stream_sender_enabled()`).
     pub fn upstream(&self) -> Option<&Arc<dyn Upstream>> {
-        self.upstream.get()
+        self.upstream.get().filter(|_| self.sender_flags() & sender_flags::ENABLED != 0)
     }
 
     pub fn sender_flags(&self) -> u32 {
@@ -1195,7 +1231,7 @@ impl Host {
 
     /// `rrdhost_can_stream_metadata_to_parent()`: the host streams, its sender is ready and its collection is online.
     pub fn can_stream_metadata(&self) -> bool {
-        self.upstream.get().is_some()
+        self.upstream().is_some()
             && self.sender_flags() & sender_flags::READY_4_METRICS != 0
             && self.is_online()
     }
@@ -2078,6 +2114,39 @@ mod tests {
         host.clear_receiver(&attached, -19);
         assert!(host.receiver().is_none());
         assert_eq!(*r.calls.lock().unwrap(), vec![("receiver_left", -19), ("parents_reset", -19)]);
+    }
+
+    /// `stream_sender_structures_free()` at the host's cleanup: the sender freed once, before the host's functions
+    /// go; the host no longer streams and its settings go with it; the revival's update brings the settings of that
+    /// time back, and `init_upstream` sets the same sender up again.
+    #[test]
+    fn a_cleaned_up_host_frees_its_sender_and_a_revival_sets_it_up_again() {
+        let mut i = info("child");
+        i.stream_send = StreamSend::new(true, "grandparent:19999", "key", "*");
+        let host = Host::new("5a1e0000-0000-4000-8000-0000000000cb", false, i.clone());
+        let r = Arc::new(crate::testing::Recorder::default());
+        host.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
+        host.sender_flags_set(sender_flags::READY_4_METRICS);
+        assert!(host.upstream().is_some());
+        host.cleanup_data_collection();
+        host.cleanup_data_collection();
+        assert_eq!(*r.calls.lock().unwrap(), vec![("free", 0)]);
+        assert!(host.upstream().is_none());
+        assert!(!host.can_stream_metadata());
+        assert!(host.info().stream_send.is_none());
+        host.init_upstream(|_| unreachable!("no settings, no sender"));
+        assert!(host.upstream().is_none());
+        host.update(&i, 1, 3600, false, 0, 0);
+        assert!(host.info().stream_send.is_some(), "the revival's settings");
+        host.init_upstream(|_| unreachable!("set up again, not created"));
+        assert!(host.upstream().is_some());
+        host.init_upstream(|_| unreachable!("enabled already"));
+        assert_eq!(*r.calls.lock().unwrap(), vec![("free", 0), ("reinit", 0)]);
+        // a host without a sender gets one created
+        let other = Host::new("5a1e0000-0000-4000-8000-0000000000cc", false, i);
+        let created = Arc::new(crate::testing::Recorder::default());
+        other.init_upstream(|_| Arc::clone(&created) as Arc<dyn Upstream>);
+        assert!(other.upstream().is_some() && created.calls.lock().unwrap().is_empty());
     }
 
     /// `rrdhost_status_ingest()`: a host not online is archived until a receiver attached to it, offline after.

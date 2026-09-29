@@ -15,7 +15,7 @@ use netdata_agent_text::simple_pattern::SimplePatternResult;
 
 use crate::chart::{Chart, ChartCollection, Dim, dim_flags, flags};
 use crate::clock::now_realtime_s;
-use crate::host::{Host, sender_flags};
+use crate::host::{Host, StreamSend, sender_flags};
 use crate::labels::FLAG_INTERNAL;
 use crate::pulse::host_status;
 
@@ -52,6 +52,10 @@ pub trait Upstream: Send + Sync + std::fmt::Debug {
     fn receiver_left(&self, reason: i32);
     /// `stream_parents_host_reset()`: every parent waits one reconnect delay, `reason` recorded on each.
     fn parents_reset(&self, reason: i32);
+    /// `stream_sender_structures_free()`'s sender side: stopped (a bounded wait, D118.2) and emptied.
+    fn free(&self);
+    /// `stream_sender_structures_init()` of a freed sender: set up again as a new one, with `send`'s settings.
+    fn reinit(&self, send: &StreamSend);
 }
 
 thread_local! {

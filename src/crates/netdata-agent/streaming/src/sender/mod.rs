@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use netdata_agent_log::{Field, FrameGuard, Priority, Source, Value, msgid, nd_log, push};
 use netdata_agent_rrd::clock::now_realtime_s;
-use netdata_agent_rrd::host::{Host, sender_flags};
+use netdata_agent_rrd::host::{Host, StreamSend, sender_flags};
 use netdata_agent_rrd::upstream::Upstream;
 use netdata_agent_rrd::pulse::host_status;
 
@@ -90,6 +90,8 @@ pub(crate) struct State {
     pub status_reason: Reason,
     /// `s->last_state_since_t`.
     pub last_state_since_s: i64,
+    /// `host->stream.snd.api_key`: the key of the settings the sender was set up with (a revival replaces it).
+    pub api_key: String,
 }
 
 /// `s->thread.msg`: the stream thread and the random session of a dispatched connection.
@@ -149,7 +151,6 @@ pub struct Sender {
     host: Weak<Host>,
     /// The host's machine GUID, which keys its stream thread's pin after the host is gone.
     pub(crate) machine_guid: String,
-    pub(crate) api_key: String,
     pub(crate) connector: Arc<Connector>,
     state: Mutex<State>,
     /// `host->stream.snd.parents`: held by the connector for an attempt, briefly by everyone else.
@@ -195,16 +196,24 @@ impl std::fmt::Debug for Connected {
 }
 
 impl Sender {
-    /// `stream_sender_structures_init()`: the sender of a host that streams (its `stream_send` is set), installed in
-    /// the host.
+    /// `stream_sender_structures_init()`: a host whose settings stream it (`stream_send`) gets its sender, created
+    /// the first time and set up again after a free ([`Upstream::reinit`]); the sender when this call created it.
     pub fn attach(host: &Arc<Host>, connector: &Arc<Connector>) -> Option<Arc<Sender>> {
-        let send = host.info().stream_send?;
+        let mut created = None;
+        host.init_upstream(|send| {
+            let s = Sender::new(host, connector, send);
+            created = Some(Arc::clone(&s));
+            s as Arc<dyn Upstream>
+        });
+        created
+    }
+
+    fn new(host: &Arc<Host>, connector: &Arc<Connector>, send: &StreamSend) -> Arc<Sender> {
         let disabled = if connector.settings.compression_enabled { 0 } else { caps::COMPRESSIONS_AVAILABLE };
-        let sender = Arc::new_cyclic(|me| Sender {
+        Arc::new_cyclic(|me| Sender {
             me: Weak::clone(me),
             host: Arc::downgrade(host),
             machine_guid: host.machine_guid().to_string(),
-            api_key: send.api_key.clone(),
             connector: Arc::clone(connector),
             state: Mutex::new(State {
                 // stream_our_capabilities() runs before the disabled capabilities are set
@@ -215,6 +224,7 @@ impl Sender {
                 exit_reason: Reason::NEVER,
                 status_reason: Reason::NEVER,
                 last_state_since_s: 0,
+                api_key: send.api_key.clone(),
             }),
             parents: Mutex::new(Parents::new(send.parents())),
             out: Mutex::new(Out {
@@ -233,9 +243,62 @@ impl Sender {
             shutdown: AtomicBool::new(false),
             negotiated: std::sync::atomic::AtomicU32::new(0),
             replication: crate::replication::SenderQueue::new(),
-        });
-        host.set_upstream(Arc::clone(&sender) as Arc<dyn Upstream>);
-        Some(sender)
+        })
+    }
+
+    /// `stream_sender_structures_free()`: signalled to stop with HOST CLEANUP, then, while still queued or
+    /// dispatched, taken off the connector every 10 ms, for at most 2 s where C waits for good (D118.2); then emptied
+    /// as a new sender.
+    fn free_now(&self) {
+        self.signal_stop(Reason::SND_DISCONNECT_HOST_CLEANUP, op::STOP_HOST_CLEANUP);
+        if let (Some(me), Some(host)) = (self.me.upgrade(), self.host()) {
+            let mut waits = 0;
+            while host.sender_flags() & sender_flags::ADDED != 0 {
+                if waits == 200 {
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Err,
+                        "STREAM SND '{}': sender takes too long to stop, giving up...",
+                        host.hostname()
+                    );
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                self.connector.remove_host(&me, &host);
+                waits += 1;
+            }
+        }
+        {
+            let mut out = self.out();
+            self.flush_buffer(&mut out);
+            out.compressor = None;
+            out.algorithm = None;
+            out.remote_ip.clear();
+            out.capabilities = 0;
+        }
+        self.negotiated.store(0, Ordering::Relaxed);
+        self.connector.replication().delete_pending(&self.replication);
+        self.replication.replicating_zero();
+        self.counter_in.store(0, Ordering::Relaxed);
+        self.counter_out.store(0, Ordering::Relaxed);
+        *self.parents() = Parents::new(std::iter::empty());
+    }
+
+    /// `stream_sender_structures_init()` of a freed sender: set up as a new one with the settings of now.
+    fn reinit_now(&self, send: &StreamSend) {
+        let disabled = if self.connector.settings.compression_enabled { 0 } else { caps::COMPRESSIONS_AVAILABLE };
+        self.disabled.store(disabled, Ordering::Relaxed);
+        {
+            let mut state = self.lock();
+            state.capabilities = caps::sender_ours(0, 0);
+            state.hops = 0;
+            state.remote_ip.clear();
+            state.parent_using_h2o = false;
+            state.exit_reason = Reason::NEVER;
+            state.status_reason = Reason::NEVER;
+            state.api_key.clone_from(&send.api_key);
+        }
+        *self.parents() = Parents::new(send.parents());
     }
 
     pub fn host(&self) -> Option<Arc<Host>> {
@@ -429,6 +492,14 @@ impl Upstream for Sender {
 
     fn parents_reset(&self, reason: i32) {
         self.parents().reset(Reason(reason), self.connector.settings.reconnect_delay_s);
+    }
+
+    fn free(&self) {
+        self.free_now();
+    }
+
+    fn reinit(&self, send: &StreamSend) {
+        self.reinit_now(send);
     }
 
     /// `stream_sender_add_to_connector_queue()`.

@@ -13,7 +13,8 @@ pub struct Recorder {
     /// The last flush of the sender's buffer.
     pub flush_ut: AtomicU64,
     commits: Mutex<Vec<(Traffic, String)>>,
-    /// The lifecycle calls, in order: `("receiver_left", reason)`, `("parents_reset", reason)`.
+    /// The lifecycle calls, in order: `("receiver_left", reason)`, `("parents_reset", reason)`, `("free", 0)`,
+    /// `("reinit", 0)`.
     pub calls: Mutex<Vec<(&'static str, i32)>>,
 }
 
@@ -62,6 +63,14 @@ impl Upstream for Recorder {
 
     fn parents_reset(&self, reason: i32) {
         self.calls.lock().unwrap_or_else(PoisonError::into_inner).push(("parents_reset", reason));
+    }
+
+    fn free(&self) {
+        self.calls.lock().unwrap_or_else(PoisonError::into_inner).push(("free", 0));
+    }
+
+    fn reinit(&self, _send: &crate::host::StreamSend) {
+        self.calls.lock().unwrap_or_else(PoisonError::into_inner).push(("reinit", 0));
     }
 }
 
