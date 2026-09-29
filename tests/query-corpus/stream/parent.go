@@ -203,6 +203,20 @@ func StartParent(script func(Request) Answer) (*Parent, error) {
 	return p, nil
 }
 
+// SetProbe replaces the probe's answer while children connect.
+func (p *Parent) SetProbe(probe func(raw string) []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Probe = probe
+}
+
+// SetScript replaces the answer to the STREAM requests that follow.
+func (p *Parent) SetScript(script func(Request) Answer) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Script = script
+}
+
 // Addr is the parent's host:port, a child's `destination`.
 func (p *Parent) Addr() string { return p.ln.Addr().String() }
 
@@ -321,7 +335,9 @@ func (p *Parent) serve(c net.Conn) {
 	}
 	query := strings.TrimSuffix(strings.TrimPrefix(req.Line, "STREAM "), " HTTP/1.1")
 	req.Params, _ = url.ParseQuery(query)
+	p.mu.Lock()
 	script := p.Script
+	p.mu.Unlock()
 	if script == nil {
 		script = PlaintextAnswer
 	}

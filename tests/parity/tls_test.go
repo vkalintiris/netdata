@@ -356,7 +356,8 @@ func TestWebTLS(t *testing.T) {
 				conn.Linef("DIMENSION 'd' '' absolute 1 1 ''")
 				for t := now - 5; t <= now; t++ {
 					conn.Linef("BEGIN2 'tls.c' 1 %d #", t)
-					conn.Linef("SET2 'd' %d %d A", t%100, t%100)
+					// two digits always: the receiver's bytes_in record compares between two sessions seconds apart
+					conn.Linef("SET2 'd' %d %d A", 10+t%90, 10+t%90)
 					conn.Linef("END2")
 				}
 				if err := conn.Flush(); err != nil {

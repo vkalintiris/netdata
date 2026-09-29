@@ -79,13 +79,13 @@ var (
 	// optionalRecordRe are the records a shutdown may leave while an attempt runs (the map's §2 "Shutdown"); the
 	// connector thread's end is waited for by both agents since D110
 	optionalRecordRe = regexp.MustCompile(`last error: thread cancelled|Thread is cancelled while connecting`)
-	dstPortRe     = regexp.MustCompile(` dst_port=(\d+)`)
-	retryAtRe     = regexp.MustCompile(`will retry in (\d+) secs, at (\S+?)"`)
-	postponedRe   = regexp.MustCompile(`POSTPONED FOR \d+ SECS MORE`)
-	fdRe          = regexp.MustCompile(`, fd \d+\)`)
-	stubPortRe    = regexp.MustCompile(`127\.0\.0\.1(:|', port '| port )(\d+)`)
-	recordTimeRe  = regexp.MustCompile(`^time=(\S+) `)
-	requestPortRe = regexp.MustCompile(`127\.0\.0\.1:\d+`)
+	dstPortRe        = regexp.MustCompile(` dst_port=(\d+)`)
+	retryAtRe        = regexp.MustCompile(`will retry in (\d+) secs, at (\S+?)"`)
+	postponedRe      = regexp.MustCompile(`POSTPONED FOR \d+ SECS MORE`)
+	fdRe             = regexp.MustCompile(`, fd \d+\)`)
+	stubPortRe       = regexp.MustCompile(`127\.0\.0\.1(:|', port '| port )(\d+)`)
+	recordTimeRe     = regexp.MustCompile(`^time=(\S+) `)
+	requestPortRe    = regexp.MustCompile(`127\.0\.0\.1:\d+`)
 )
 
 // handshakeRecords are a child's connector records (thread SNDR-CN[0]) and its collector's streaming records, each
@@ -230,7 +230,7 @@ func waitRecords(t *testing.T, d *daemon.Daemon, s *stubs, want map[string]strin
 // rejecting answers every STREAM request with `reply` and closes.
 func rejecting(reply string) func(*stream.Parent) {
 	return func(p *stream.Parent) {
-		p.Script = func(stream.Request) stream.Answer { return stream.Answer{Reply: reply, Close: true} }
+		p.SetScript(func(stream.Request) stream.Answer { return stream.Answer{Reply: reply, Close: true} })
 	}
 }
 

@@ -141,7 +141,9 @@ type Daemon struct {
 	LaunchStartedAt time.Time
 	process         daemonProcess
 	processPID      int
-	waitCh          chan error
+	// runtime is the daemon's NETDATA_RUN_DIR while it runs: short, since C names its spawn server's socket there
+	runtime string
+	waitCh  chan error
 
 	// Tests shorten these bounds; zero selects the production defaults.
 	termTimeout time.Duration
@@ -476,6 +478,16 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	return d, nil
 }
 
+// reaped forgets the process once its exit was collected, and its runtime directory.
+func (d *Daemon) reaped() {
+	d.process = nil
+	d.processPID = 0
+	if d.runtime != "" {
+		_ = os.RemoveAll(d.runtime)
+		d.runtime = ""
+	}
+}
+
 // PID is the daemon's process ID, 0 once it has exited.
 func (d *Daemon) PID() int { return d.processPID }
 
@@ -489,7 +501,15 @@ func (d *Daemon) launch() error {
 	if d.Opts.PipeName != "" {
 		d.PipeName = strings.ReplaceAll(d.Opts.PipeName, "{run}", d.Opts.RunDir)
 	}
-	cmd.Env = append(append(os.Environ(), "NETDATA_PIPENAME="+d.PipeName), d.Opts.Env...)
+	// each daemon its own runtime directory (os_run_dir()): C's spawn server names its socket there, so two C daemons
+	// started together would otherwise take each other's (one then fails to run its system-info script); a short
+	// path, as a unix socket's is limited to 107 bytes
+	runtime, err := os.MkdirTemp("", "ndrun-")
+	if err != nil {
+		return fmt.Errorf("daemon: runtime directory: %w", err)
+	}
+	d.runtime = runtime
+	cmd.Env = append(append(os.Environ(), "NETDATA_PIPENAME="+d.PipeName, "NETDATA_RUN_DIR="+runtime), d.Opts.Env...)
 	stdout, err := os.Create(filepath.Join(d.Opts.RunDir, "log", "stdout.log"))
 	if err != nil {
 		return fmt.Errorf("daemon: stdout log: %w", err)
@@ -538,8 +558,7 @@ func (d *Daemon) launch() error {
 		case werr := <-d.waitCh:
 			// the process is already reaped; make a later Stop() a no-op
 			// instead of blocking forever on the drained wait channel
-			d.process = nil
-			d.processPID = 0
+			d.reaped()
 			return fmt.Errorf(
 				"daemon: exited during startup: %v; last readiness probe: %v (see %s/log/stdout.log)",
 				werr, lastProbeErr, d.Opts.RunDir)
@@ -653,8 +672,7 @@ func (d *Daemon) Stop() error {
 	}
 	select {
 	case waitErr := <-d.waitCh:
-		d.process = nil
-		d.processPID = 0
+		d.reaped()
 		return errors.Join(termErr, waitErr)
 	case <-time.After(termWait):
 	}
@@ -665,8 +683,7 @@ func (d *Daemon) Stop() error {
 	}
 	select {
 	case <-d.waitCh:
-		d.process = nil
-		d.processPID = 0
+		d.reaped()
 		return errors.Join(termErr, killErr)
 	case <-time.After(killWait):
 		return errors.Join(
@@ -684,8 +701,7 @@ func (d *Daemon) WaitSignal(timeout time.Duration) (syscall.Signal, error) {
 	}
 	select {
 	case werr := <-d.waitCh:
-		d.process = nil
-		d.processPID = 0
+		d.reaped()
 		var exitErr *exec.ExitError
 		if errors.As(werr, &exitErr) {
 			if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
@@ -721,8 +737,7 @@ func (d *Daemon) Kill() error {
 	}
 	select {
 	case <-d.waitCh:
-		d.process = nil
-		d.processPID = 0
+		d.reaped()
 		return killErr
 	case <-time.After(killWait):
 		return errors.Join(killErr, fmt.Errorf("daemon: process PID %d did not deliver reap result within %s after SIGKILL",
@@ -737,8 +752,7 @@ func (d *Daemon) WaitExit(timeout time.Duration) (int, error) {
 	}
 	select {
 	case werr := <-d.waitCh:
-		d.process = nil
-		d.processPID = 0
+		d.reaped()
 		if werr == nil {
 			return 0, nil
 		}
