@@ -70,8 +70,8 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, Default)]
 struct V2 {
     end_time: i64,
-    /// `stream_buffer`: the forwarded block's gate, from the first BEGIN2 that passed it until END2 (a BEGIN2 without
-    /// END2, even of another chart, goes on under it, as C).
+    /// `stream_buffer`: the forwarded block's gate, from the first BEGIN2 that passed it until END2 or a v1 END
+    /// (D116.2); a BEGIN2 without END2, even of another chart, goes on under it, as C.
     proxy: Option<Proxy>,
 }
 
@@ -1269,12 +1269,14 @@ impl Parser {
         let chart = self.require_scope("END", "BEGIN")?;
         self.clear_scope("END");
         self.data_collections_count += 1;
-        // D116.2: C fatal()s on a collection inside an open forwarded block; the block is closed and committed first
+        // D116.2: C fatal()s on a collection inside an open forwarded block; the block is closed and committed first,
+        // with END2 only: its chart may not be the END's, whose variables go with its own collection (R47 n1)
         if let Some(p) = self.v2.proxy.take()
             && p.block.v2
             && p.block.begin_added
         {
-            upstream::forward_finish(&self.host, &chart, &p.block, &mut self.forward);
+            let block = ProxyBlock { chart_flags: p.block.chart_flags & !flags::UPSTREAM_SEND_VARIABLES, ..p.block };
+            upstream::forward_finish(&self.host, &chart, &block, &mut self.forward);
         }
         let number = |v: Option<&[u8]>| v.filter(|v| !v.is_empty()).map_or(0, |v| str2ll(v).0);
         let mut tv = (number(tv_sec), number(tv_usec));

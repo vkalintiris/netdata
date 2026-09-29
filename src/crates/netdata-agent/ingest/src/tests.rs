@@ -1076,6 +1076,34 @@ fn a_v1_end_inside_a_forwarded_block_closes_it_first() {
     assert_eq!(sent[0].1.matches("BEGIN2").count(), sent[0].1.matches("END2").count(), "{sent:?}");
 }
 
+/// The close of D116.2 writes END2 only: another chart's variables are not attached to the block (R47 n1).
+#[test]
+fn a_v1_end_of_another_chart_leaves_the_blocks_variables_alone() {
+    let (_h, r, mut p) = proxied("*", CHILD, PARENT);
+    let other: Vec<String> = PROXIED.iter().map(|l| l.replace("proxy.gauge", "proxy.other")).collect();
+    feed_ok(&mut p, &other);
+    let t = NOW - 20;
+    let mut lines = block(t);
+    lines.push("VARIABLE CHART av = 1".into());
+    lines.extend(block(t).into_iter().map(|l| l.replace("proxy.gauge", "proxy.other")));
+    lines.push("VARIABLE CHART bv = 2".into());
+    feed_ok(&mut p, &lines);
+    upstream_bytes(&mut p, &r);
+    let lines = [
+        format!("BEGIN2 'proxy.gauge' 1 {} #", t + 1),
+        "SET2 'g1' 1 1 A".to_string(),
+        "BEGIN 'proxy.other'".to_string(),
+        "SET 'g1' = 4".to_string(),
+        format!("END {} 0", t + 2),
+    ];
+    let _ = netdata_agent_log::capture(|| feed_ok(&mut p, &lines));
+    let sent = upstream_bytes(&mut p, &r);
+    assert!(
+        sent[0].1.starts_with(&format!("BEGIN2 SLOT:0x1 'proxy.gauge' 1 {} #\nSET2 SLOT:0x1 'g1' 1 1 A\nEND2\n", t + 1)),
+        "{sent:?}"
+    );
+}
+
 /// A v1 child's collections go through the batch too: 100 held, the 101st sends them.
 #[test]
 fn v1_collections_are_batched() {

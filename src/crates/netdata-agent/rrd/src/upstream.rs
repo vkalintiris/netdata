@@ -195,7 +195,7 @@ pub fn metrics_init<'a>(
     mut src: BufferSource<'a>,
 ) -> Option<StreamBuffer<'a>> {
     let (up, chart_flags) = gate(host, chart, &mut src)?;
-    let capabilities = up.capabilities();
+    // the flush stamp before the capabilities: a block never carries an older session's encodings under a newer stamp
     let out = match src {
         BufferSource::Thread => Out::Thread(take_buffer()),
         BufferSource::Forward(fwd) => {
@@ -203,6 +203,7 @@ pub fn metrics_init<'a>(
             Out::Forward(fwd)
         }
     };
+    let capabilities = up.capabilities();
     Some(StreamBuffer {
         up,
         capabilities,
@@ -223,8 +224,9 @@ pub fn metrics_init<'a>(
 /// the gate lets it go.
 pub fn forward_gate(host: &Host, chart: &Chart, fwd: &mut ForwardBuffer) -> Option<ProxyBlock> {
     let (up, chart_flags) = gate(host, chart, &mut BufferSource::Forward(&mut *fwd))?;
-    let capabilities = up.capabilities();
+    // the flush stamp first, as metrics_init
     fwd.start(up);
+    let capabilities = up.capabilities();
     Some(ProxyBlock { capabilities, v2: capabilities & caps::INTERPOLATED != 0, chart_flags, begin_added: false })
 }
 

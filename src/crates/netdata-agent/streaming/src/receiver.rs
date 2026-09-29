@@ -1368,12 +1368,13 @@ impl StreamWorker {
     /// posted, then the host's own sender when it runs on this thread, so a forwarded burst does not wait whole in its
     /// ring. A failure there leaves the receiver alone.
     fn send_proxied(&mut self, cx: &mut Context<'_>, index: usize) {
-        let Some(host) = self.children[index].as_ref().map(|c| Arc::clone(&c.attached.host)) else {
+        let Some(child) = self.children[index].as_ref() else {
             return;
         };
-        if host.upstream().is_none() {
+        if child.attached.host.upstream().is_none() {
             return;
         }
+        let host = Arc::clone(&child.attached.host);
         self.drain_inline(cx);
         let mine = self.senders.iter().position(|d| d.as_ref().is_some_and(|d| Arc::ptr_eq(&d.host, &host)));
         if let Some(i) = mine {
