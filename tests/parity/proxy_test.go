@@ -27,7 +27,13 @@ var (
 	proxiedHost = stream.HostInfo{Hostname: "parity-proxied", MachineGUID: "5a1e0000-0000-4000-8000-0000000000d3"}
 )
 
-const proxyUpKey = "5a1e0000-0000-4000-8000-0000000000d4"
+const (
+	proxyUpKey = "5a1e0000-0000-4000-8000-0000000000d4"
+	// the child's claim id, and the parent's claim id and node id it sends down
+	proxyClaimID     = "5a1e0000-0000-4000-8000-0000000000e1"
+	proxyParentClaim = "5a1e0000-0000-4000-8000-0000000000e2"
+	proxyNodeID      = "5a1e0000-0000-4000-8000-0000000000e3"
+)
 
 // A chart the fake child defines through the proxy, and its dimensions.
 type proxyChart struct {
@@ -66,6 +72,8 @@ type proxyVariant struct {
 	function int
 	// malformedAt, when positive, is the tick whose lines are malformed (malformedTick) instead
 	malformedAt int
+	// metadata sends the child's claim id and variables after tick 2, and the parent's NODE_ID down after tick 4
+	metadata bool
 	// records, when set, replaces the ticks: the child writes these lines after its charts' replication, and the
 	// proxies' PLUGINSD records compare instead of the transcript
 	records func(c *stream.Conn, base int64)
@@ -102,6 +110,10 @@ var proxyVariants = map[string]proxyVariant{
 	// a BEGIN2 after a BEGIN2 without END2, of the same chart and of another: the parser unlocks the stale collection
 	// lock and says so (the records; D106.4, commit 8d)
 	"malformed-records": {caps: proxyPlainCaps, refused: stream.CapIEEE754, records: malformedLines},
+	// the child's metadata overtakes the batch (CLAIMED_ID, VARIABLE HOST) or rides the chart's next block (VARIABLE
+	// CHART); the parent's NODE_ID comes down to the child
+	"metadata": {caps: proxyPlainCaps | stream.CapClaim | stream.CapNodeID | stream.CapPaths, refused: stream.CapIEEE754,
+		ticks: 8, metadata: true, gated: true},
 	// the same through the proxy: what it forwards of a BEGIN2 without END2 (C closes the block before the next BEGIN2
 	// and forwards the other chart's under the first's gate)
 	"malformed": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 6, malformedAt: 3, gated: true},
@@ -278,7 +290,21 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 			if k == v.function {
 				c.FunctionGlobal("proxy-fn", "a proxied function")
 			}
+			if v.metadata && k == 2 {
+				c.ClaimedID(proxiedHost.MachineGUID, proxyClaimID)
+				c.Variable("CHART", "proxy_cvar", "5")
+				c.Variable("HOST", "proxy_hvar", "7")
+				c.Variable("HOST", "proxy_hvar", "7")
+			}
 		})
+		if v.metadata && k == 4 {
+			for i := range sessions {
+				if err := sessions[i].Send(fmt.Sprintf("NODE_ID '%s' '%s' 'https://nodeid.invalid'", proxyParentClaim,
+					proxyNodeID)); err != nil {
+					t.Fatalf("side %d: NODE_ID: %v", i, err)
+				}
+			}
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	// P5: a definition flushes the pending batch
@@ -300,6 +326,7 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 	for i, s := range sides {
 		_ = s.proxy.Stop()
 		out[i] = append(requestLines(sessions[i].Request), proxyTranscript(string(sessions[i].Data()))...)
+		out[i] = append(append(out[i], "== child"), proxyDownstream(s.child.Downstream())...)
 	}
 	return out
 }
@@ -497,11 +524,12 @@ var (
 // proxyTranscript is what a stub received, in comparable parts. First the lines before the first definition (the
 // host labels sorted: C prints them in heap order). Then each chart's definitions and replication answers, in the
 // order the chart got them: the proxy's replication threads commit the answers of different charts in any order.
-// Last the stream in arrival order: the blocks, the markers, a `DEF <chart>` where each definition came, and every
-// other line. The proxy's clocks and the path's times are masked, chart labels sorted within their run, FUNCTION
+// Then the stream in arrival order: the blocks, the markers, a `DEF <chart>` where each definition came, and every
+// other line. Last the last stream path (the sender's side sends one when its NODE_ID or retention changes, racing
+// the receiver's lines). The proxy's clocks and the path's times are masked, chart labels sorted within their run, FUNCTION
 // lines left out (D100.9).
 func proxyTranscript(data string) []string {
-	var hooks, labels, flow []string
+	var hooks, labels, flow, lastPath []string
 	charts := map[string][]string{}
 	lines := strings.Split(strings.TrimSuffix(data, "\n"), "\n")
 	defined := false
@@ -520,6 +548,17 @@ func proxyTranscript(data string) []string {
 			}
 			flow = append(flow, "DEF "+m[1])
 			defined = true
+			continue
+		}
+		if strings.HasPrefix(l, "JSON ") {
+			// a stream path: the sender's side commits it (a NODE_ID, retention) racing the receiver's lines, so
+			// only the last one compares, out of the positions
+			payload := []string{l}
+			for i+1 < len(lines) && !strings.HasPrefix(lines[i], "JSON_PAYLOAD_END") {
+				i++
+				payload = append(payload, proxyMask(lines[i]))
+			}
+			lastPath = payload
 			continue
 		}
 		if m := proxyReplayRe.FindStringSubmatch(l); m != nil {
@@ -548,7 +587,8 @@ func proxyTranscript(data string) []string {
 		out = append(out, "== chart "+id)
 		out = append(out, sortedLabelRuns(charts[id])...)
 	}
-	return append(append(out, "== stream"), flow...)
+	out = append(append(out, "== stream"), flow...)
+	return append(append(out, "== last path"), lastPath...)
 }
 
 // sortedLabelRuns sorts each run of CLABEL lines: C prints a chart's labels in heap-address order (RECIPES).
@@ -565,6 +605,29 @@ func sortedLabelRuns(lines []string) []string {
 		} else {
 			i++
 		}
+	}
+	return out
+}
+
+// proxyDownstream is what the proxy sent the child: its replication requests as a set (their order across charts
+// varies between C runs), every other line in order (NODE_ID), then the last stream path, masked as upstream.
+func proxyDownstream(down []stream.DownLine) []string {
+	var requests, out []string
+	last := ""
+	for _, d := range down {
+		switch {
+		case strings.HasPrefix(d.Line, "JSON "):
+			last = proxyMask(d.Line)
+		case strings.HasPrefix(d.Line, "REPLAY_CHART "):
+			requests = append(requests, d.Line)
+		default:
+			out = append(out, proxyMask(d.Line))
+		}
+	}
+	sort.Strings(requests)
+	out = append(requests, out...)
+	if last != "" {
+		out = append(out, "LAST PATH "+last)
 	}
 	return out
 }
@@ -626,7 +689,7 @@ func TestProxyTranscriptParse(t *testing.T) {
 		`DIMENSION "x" "x" "absolute" 1 1 ""`, `BEGIN "a" 0`, `SET "x" = 0`, "END", marker}, "\n") + "\n")
 	if want := []string{"== hooks", "== chart a", `CHART "a" "" "a" "u" "f" "a" "line" 1 1 "  " "p" "m"`,
 		`DIMENSION "x" "x" "absolute" 1 1 ""`, "== stream", "DEF a", `BEGIN "a" 0`, `SET "x" = 0`, "END",
-		marker}; !slices.Equal(v1, want) {
+		marker, "== last path"}; !slices.Equal(v1, want) {
 		t.Errorf("v1 definition:\n%s", strings.Join(v1, "\n"))
 	}
 	// the block after the marker instead of before it
