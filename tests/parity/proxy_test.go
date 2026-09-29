@@ -131,7 +131,8 @@ var proxyVariants = map[string]proxyVariant{
 	// a v1 child: the proxy commits one block per chart per collection, and the 101st commit closes the first batch
 	"v1in": {caps: stream.CapsLiveV1, refused: stream.CapIEEE754, ticks: 34, v1in: true, gated: true},
 	// the child's metadata overtakes the batch (CLAIMED_ID, VARIABLE HOST) or rides the chart's next block (VARIABLE
-	// CHART); the parent's NODE_ID comes down to the child
+	// CHART); the parent's NODE_ID comes down to the child; the child's stream path (tick 3) goes up and back down,
+	// the grandparent's (tick 5) down to the child only
 	"metadata": {caps: proxyPlainCaps | stream.CapClaim | stream.CapNodeID | stream.CapPaths, refused: stream.CapIEEE754,
 		ticks: 8, metadata: true, gated: true},
 	// the same through the proxy: what it forwards of a BEGIN2 without END2 (C closes the block before the next BEGIN2
@@ -141,6 +142,24 @@ var proxyVariants = map[string]proxyVariant{
 	"pattern": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 12,
 		section: "    proxy send charts matching = !proxy.excluded *\n",
 		extra:   []proxyChart{{"proxy.excluded", []proxyDim{{"e1", "absolute", ""}}}}},
+}
+
+// proxyPathJSON is a stream path of `entries` hops from the proxied child: the child's own (the child sends it
+// up), then the proxy's and a grandparent's (the stub sends it down), at fixed times.
+func proxyPathJSON(base int64, entries int) string {
+	hosts := []struct{ name, guid string }{
+		{proxiedHost.Hostname, proxiedHost.MachineGUID},
+		{proxyIdentity.Hostname, proxyIdentity.MachineGUID},
+		{"parity-grandparent", "5a1e0000-0000-4000-8000-0000000000d5"},
+	}
+	var out []string
+	for hops, h := range hosts[:entries] {
+		out = append(out, fmt.Sprintf(`{"version":1,"hostname":"%s","host_id":"%s","node_id":null,"claim_id":null,`+
+			`"hops":%d,"since":%d,"first_time_t":%d,"start_time":0,"shutdown_time":0,`+
+			`"capabilities":["V1","V2","VN","VCAPS","HLABELS","CLAIM","FUNCTIONS","REPLICATION","INTERPOLATED",`+
+			`"NODEID","PATHS","FLOATBASELINE"],"flags":[]}`, h.name, h.guid, hops, base, base-60))
+	}
+	return `{"version":1,"streaming_path":[` + strings.Join(out, ",") + `]}`
 }
 
 // proxyWide is a chart of 80 dimensions: a few of its blocks pass the 10,836 bytes a batch holds.
@@ -338,6 +357,9 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 			if k == v.function {
 				c.FunctionGlobal("proxy-fn", "a proxied function")
 			}
+			if v.metadata && k == 3 {
+				c.StreamPath(proxyPathJSON(base, 1))
+			}
 			if v.metadata && k == 2 {
 				c.ClaimedID(proxiedHost.MachineGUID, proxyClaimID)
 				c.Variable("CHART", "proxy_cvar", "5")
@@ -350,6 +372,13 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 				if err := sessions[i].Send(fmt.Sprintf("NODE_ID '%s' '%s' 'https://nodeid.invalid'", proxyParentClaim,
 					proxyNodeID)); err != nil {
 					t.Fatalf("side %d: NODE_ID: %v", i, err)
+				}
+			}
+		}
+		if v.metadata && k == 5 {
+			for i := range sessions {
+				if err := sessions[i].Send("JSON STREAM_PATH", proxyPathJSON(base, 3), "JSON_PAYLOAD_END"); err != nil {
+					t.Fatalf("side %d: the grandparent's path: %v", i, err)
 				}
 			}
 		}
