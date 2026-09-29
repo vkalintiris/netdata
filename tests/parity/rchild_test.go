@@ -558,15 +558,34 @@ func TestRChild(t *testing.T) {
 // pluginsdRecords are a parent's parser records (PLUGINSD) about its children's streams, each once, normalized.
 func pluginsdRecords(t *testing.T, d *daemon.Daemon) []string {
 	t.Helper()
+	return parentRecords(t, d, `msg="PLUGINSD`, nil)
+}
+
+var (
+	// lastSampleRe is how long before a child's reconnect its last stored sample was
+	lastSampleRe = regexp.MustCompile(`last sample in the db [^"]* ago`)
+	// receivedRe is what a receiver got until it disconnected, which the session's length decides
+	receivedRe = regexp.MustCompile(` (msgs|bytes_in)=\d+`)
+)
+
+// parentRecords are a parent's records that contain `marker`, each once, normalized (ports, thread numbers, the
+// last sample's age, what a receiver got), with `rewrite` applied when given.
+func parentRecords(t *testing.T, d *daemon.Daemon, marker string, rewrite *strings.Replacer) []string {
+	t.Helper()
 	seen := map[string]bool{}
 	var out []string
 	for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
-		if !strings.Contains(l, `msg="PLUGINSD`) {
+		if !strings.Contains(l, marker) {
 			continue
 		}
 		n := normalizeLog(l, d.Opts.RunDir, "")
 		n = anyLocalPortRe.ReplaceAllString(n, "127.0.0.1${1}P")
 		n = threadNRe.ReplaceAllString(n, "${1}[n]")
+		n = lastSampleRe.ReplaceAllString(n, "last sample in the db D ago")
+		n = receivedRe.ReplaceAllString(n, " ${1}=N")
+		if rewrite != nil {
+			n = rewrite.Replace(n)
+		}
 		if !seen[n] {
 			seen[n] = true
 			out = append(out, n)
@@ -582,8 +601,8 @@ func waitReceiver(t *testing.T, addr, guid string) {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		b, err := rawExchange(addr, []byte("GET /api/v3/stream_info?machine_guid="+guid+" HTTP/1.1\r\n\r\n"), 5*time.Second)
-		if err == nil && bytes.Contains(b, []byte(`"receivers":1`)) && bytes.Contains(b, []byte(`"ingest_type":"child"`)) {
+		ok, b := hasReceiver(addr, guid)
+		if ok {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -592,6 +611,12 @@ func waitReceiver(t *testing.T, addr, guid string) {
 		time.Sleep(time.Second)
 	}
 	time.Sleep(5 * time.Second)
+}
+
+// hasReceiver tells whether the parent's stream_info names the child's host and counts its receiver, with the answer.
+func hasReceiver(addr, guid string) (bool, []byte) {
+	b, err := rawExchange(addr, []byte("GET /api/v3/stream_info?machine_guid="+guid+" HTTP/1.1\r\n\r\n"), 5*time.Second)
+	return err == nil && bytes.Contains(b, []byte(`"receivers":1`)) && bytes.Contains(b, []byte(`"ingest_type":"child"`)), b
 }
 
 // parentCharts is a parent's /api/v1/charts of a child as its definitions made it: each chart's retention, the

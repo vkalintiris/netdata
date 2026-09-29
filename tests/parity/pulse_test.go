@@ -239,8 +239,12 @@ func comparePulseDefinitions(t *testing.T, p *Pair, ids ...string) {
 	t.Helper()
 	paths := map[string]Rules{
 		"/api/v1/charts": pulseChartsRules,
-		"/api/v1/contexts?options=charts,dimensions,flags,labels":             pulseContextsRules,
-		"/api/v3/context?context=netdata.streaming_inbound&options=instances": pulseContextRules,
+		"/api/v1/contexts?options=charts,dimensions,flags,labels": pulseContextsRules,
+	}
+	// a parent's context: an agent that is no parent answers it 404 with no body and closes, which the harness's
+	// client reads as a truncated answer (both agents alike, 2026-09-29)
+	if !p.Oracle.Opts.NoStreamKey {
+		paths["/api/v3/context?context=netdata.streaming_inbound&options=instances"] = pulseContextRules
 	}
 	for _, id := range ids {
 		paths["/api/v1/chart?chart="+id] = pulseChartRules
@@ -465,6 +469,44 @@ func TestPulseLocalhostCharts(t *testing.T) {
 		// the archived child's charts take its labels from the seed's SQLite
 		compareLazyDefinitions(t, p, childHost.MachineGUID, false)
 	})
+	// a child's outbound chart (D109.3, map `knowledge/map-m7-commit9-topologies.md` §7.3): both sides stream to one
+	// scripted parent, as a child only and as a child that is a parent too
+	for name, noKey := range map[string]bool{"child": true, "child-parent": false} {
+		t.Run(name, func(t *testing.T) {
+			stub, err := stream.StartParent(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { stub.Close() })
+			p := StartPair(t, pulseChildOptions(stub, noKey), parentIdentity)
+			if stub.WaitSession(2, 60*time.Second) == nil {
+				t.Fatalf("the stub has %d sessions after 60 s", len(stub.Sessions()))
+			}
+			childDefinitions(t, p, true)
+			time.Sleep(5 * time.Second)
+			compareOutbound(t, p, "running")
+			// the closed port postpones the parent for 30 to 60 s
+			_ = stub.Close()
+			time.Sleep(5 * time.Second)
+			compareOutbound(t, p, "pending")
+		})
+	}
+	t.Run("child-no-dst", func(t *testing.T) {
+		// the parent's probe says it is the child itself: nothing to connect to
+		stub, err := stream.StartParent(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { stub.Close() })
+		stub.SetProbe(func(string) []byte { return streamInfo(parentIdentity.MachineGUID, "localhost", "online") })
+		p := StartPair(t, pulseChildOptions(stub, true), parentIdentity)
+		childDefinitions(t, p, false)
+		time.Sleep(12 * time.Second)
+		compareOutbound(t, p, "no dst")
+		if n := len(stub.Sessions()); n != 0 {
+			t.Errorf("%d sessions with a parent that is the child itself", n)
+		}
+	})
 	t.Run("pulse-off", func(t *testing.T) {
 		p := StartPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1, PulseOff: true}, parentIdentity)
 		time.Sleep(3 * time.Second)
@@ -482,4 +524,66 @@ func TestPulseLocalhostCharts(t *testing.T) {
 			t.Errorf("%s: responses differ\n%s", path, firstDifference(o, c))
 		}
 	})
+}
+
+// childDefinitions compares a child pair's pulse charts once both store them and their lazy charts agree, the
+// streaming traffic's too when they stream (each side creates it a cycle after its first bytes): the first cycle's
+// order and every definition, the outbound chart's and its context's too.
+func childDefinitions(t *testing.T, p *Pair, streaming bool) {
+	t.Helper()
+	for _, side := range p.Each() {
+		waitPulseStored(t, side.Daemon)
+	}
+	if streaming {
+		waitLocalCharts(t, p, 10*time.Second, "netdata.network_streaming")
+	}
+	waitLazyEqual(t, p)
+	var order [2][]string
+	for i, side := range p.Each() {
+		order[i] = firstCycle(localCharts(t, side.Daemon))
+	}
+	if !slices.Equal(order[0], order[1]) {
+		t.Errorf("first-cycle charts:\noracle:    %v\ncandidate: %v", order[0], order[1])
+	}
+	comparePulseDefinitions(t, p, "netdata.streaming_outbound")
+	diffs, err := p.CompareJSON("/api/v3/context?context=netdata.streaming_outbound&options=instances", nil,
+		pulseContextRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range diffs {
+		t.Errorf("outbound context: %s", d)
+	}
+}
+
+// pulseChildOptions stream to `stub` (its key is the harness parents'), a child only when noKey.
+func pulseChildOptions(stub *stream.Parent, noKey bool) daemon.Options {
+	return daemon.Options{DBMode: "alloc", StreamMemoryMode: "alloc", StorageTiers: 1, NoStreamKey: noKey,
+		StreamTo: &daemon.StreamTo{Destination: stub.Addr(), APIKey: parentIdentity.StreamKey,
+			Extra: "    reconnect delay = 5\n"}}
+}
+
+// compareOutbound compares the last three seconds of `netdata.streaming_outbound` between the sides, and checks the
+// oracle's localhost counted under `state` alone in each of them.
+func compareOutbound(t *testing.T, p *Pair, state string) {
+	t.Helper()
+	now := time.Now().Unix()
+	compareLocalData(t, p, "netdata.streaming_outbound", now-3, now-1, "average")
+	lines := strings.Split(localData(t, p.Oracle, "netdata.streaming_outbound", now-3, now-1, "average"), "\n")
+	header := strings.Split(lines[0], ",")
+	want := make([]string, len(header))
+	for i, name := range header {
+		want[i] = "0"
+		if name == state {
+			want[i] = "1"
+		}
+	}
+	if !slices.Contains(header, state) {
+		t.Fatalf("%s: no such dimension in %q", state, lines[0])
+	}
+	for _, l := range lines[1:] {
+		if cells := strings.Split(l, ","); !slices.Equal(cells[1:], want[1:]) {
+			t.Errorf("%s: the oracle's outbound states %q (header %q)", state, l, lines[0])
+		}
+	}
 }

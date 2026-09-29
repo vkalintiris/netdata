@@ -53,12 +53,23 @@ var entryTimes = regexp.MustCompile(`("since":)\d+(,\s*"first_time_t":)\d+`)
 // compared as maps.
 func compareStreamPath(t *testing.T, name string, addrs [2]string, path string, times *regexp.Regexp, maskLabels ...string) {
 	t.Helper()
+	compareStreamPathWith(t, name, addrs, [2]*strings.Replacer{}, path, times, maskLabels...)
+}
+
+// compareStreamPathWith is compareStreamPath with each side's answer rewritten first when its replacer is given (a
+// side's own names for what the other side names differently).
+func compareStreamPathWith(t *testing.T, name string, addrs [2]string, rewrite [2]*strings.Replacer, path string,
+	times *regexp.Regexp, maskLabels ...string) {
+	t.Helper()
 	var text [2][]byte
 	var labels [2][]map[string]any
 	for i, addr := range addrs {
 		b, err := rawExchange(addr, []byte("GET "+path+" HTTP/1.1\r\n\r\n"), 10*time.Second)
 		if err != nil {
 			t.Fatalf("%s %s: %v", name, path, err)
+		}
+		if rewrite[i] != nil {
+			b = []byte(rewrite[i].Replace(string(b)))
 		}
 		b = times.ReplaceAll(maskTimings(maskRaw(b)), []byte("${1}0${2}0"))
 		text[i], labels[i] = streamPathLabels(t, b, maskLabels...)
@@ -106,20 +117,25 @@ func streamPathRequests(child, guid string) []string {
 	}
 }
 
+// ingestOnline waits up to `limit` until a parent says the child's ingestion is online.
+func ingestOnline(addr, guid string, limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		b, err := rawExchange(addr, []byte("GET /api/v3/stream_info?machine_guid="+guid+" HTTP/1.1\r\n\r\n"), 5*time.Second)
+		if err == nil && bytes.Contains(b, []byte(`"ingest_status":"online"`)) {
+			return true
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
+}
+
 // waitOnline waits until a parent says the child's ingestion is online (its /api/v3/stream_info), then a little
 // more for replication and the retention to settle.
 func waitOnline(t *testing.T, addr, guid string) {
 	t.Helper()
-	deadline := time.Now().Add(60 * time.Second)
-	for {
-		b, err := rawExchange(addr, []byte("GET /api/v3/stream_info?machine_guid="+guid+" HTTP/1.1\r\n\r\n"), 5*time.Second)
-		if err == nil && bytes.Contains(b, []byte(`"ingest_status":"online"`)) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: the child never came online: %s", addr, b)
-		}
-		time.Sleep(time.Second)
+	if !ingestOnline(addr, guid, 60*time.Second) {
+		t.Fatalf("%s: the child never came online", addr)
 	}
 	time.Sleep(5 * time.Second)
 }
