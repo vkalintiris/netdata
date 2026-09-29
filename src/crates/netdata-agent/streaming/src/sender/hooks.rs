@@ -7,10 +7,9 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::Ordering;
 
 use netdata_agent_log::{Priority, Source, nd_log};
-use netdata_agent_pluginsd_proto::emit::stream as emit;
-use netdata_agent_rrd::chart::flags;
 use netdata_agent_rrd::host::{Host, sender_flags};
 use netdata_agent_rrd::labels::SRC_AUTO;
+use netdata_agent_rrd::upstream;
 use netdata_agent_text::parse::uuid_parse_flexi;
 
 use super::dispatch::Dispatched;
@@ -26,11 +25,6 @@ fn text(b: &[u8]) -> String {
 }
 
 impl Sender {
-    /// `rrdhost_can_stream_metadata_to_parent()`: the sender runs, is ready, and the host collects.
-    pub(crate) fn can_stream_metadata(&self, host: &Host) -> bool {
-        host.sender_flags() & sender_flags::READY_4_METRICS != 0 && host.is_online()
-    }
-
     /// `host->stream.snd.status.replication.counter_in++`.
     pub(crate) fn replication_counter_in(&self) {
         self.counter_in.fetch_add(1, Ordering::Relaxed);
@@ -49,7 +43,8 @@ impl Sender {
         }
     }
 
-    /// `stream_sender_on_disconnect()`, on the connector's remove: not ready, reset, and our path cut after this agent.
+    /// `stream_sender_on_disconnect()`, on the connector's remove: not ready (before the reset, so a definition in
+    /// flight gives its claim back), reset, and our path cut after this agent.
     pub(crate) fn on_disconnect(&self, host: &Host) {
         nd_log!(Source::Daemon, Priority::Debug, "STREAM SND '{}': running on-disconnect hooks...", host.hostname());
         host.sender_flags_clear(sender_flags::READY_4_METRICS);
@@ -63,17 +58,11 @@ impl Sender {
         }
     }
 
-    /// `stream_sender_on_connect_and_disconnect()`: the charts' replication state reset and the buffer flushed (the
-    /// executor's state is the connection's own).
+    /// `stream_sender_on_connect_and_disconnect()`: the charts' state reset (`stream_sender_charts_and_replication_
+    /// reset()`, whose pending replication requests come with commit 6), the counters zeroed and the buffer flushed
+    /// (the executor's state is the connection's own).
     fn on_connect_and_disconnect(&self, host: &Host) {
-        // stream_sender_charts_and_replication_reset(), as far as the sender runtime has it (commit 5 adds the
-        // exposure and the claims)
-        for chart in host.charts().all() {
-            chart.update_meta(|m| {
-                m.flags |= flags::SENDER_REPLICATION_FINISHED;
-                m.flags &= !flags::SENDER_REPLICATION_IN_PROGRESS;
-            });
-        }
+        upstream::reset_charts(host);
         self.counter_in.store(0, Ordering::Relaxed);
         self.counter_out.store(0, Ordering::Relaxed);
         let max = self.connector.settings.buffer_max_size;
@@ -84,28 +73,16 @@ impl Sender {
     pub(crate) fn on_ready_to_dispatch(&self, host: &Host, capabilities: u32) {
         nd_log!(Source::Daemon, Priority::Debug, "STREAM SND '{}': running ready-to-dispatch hooks...", host.hostname());
         host.sender_flags_set(sender_flags::READY_4_METRICS);
-        self.send_host_variables(host);
+        upstream::send_host_variables(host);
         self.send_path(host, capabilities);
-        self.send_claimed_id(host, capabilities);
-        self.send_host_labels(host, capabilities);
-        self.send_global_functions(host, capabilities);
-    }
-
-    /// `stream_sender_send_custom_host_variables()`: `VARIABLE HOST` per variable.
-    fn send_host_variables(&self, host: &Host) {
-        if !self.can_stream_metadata(host) {
-            return;
-        }
-        let mut out = Vec::new();
-        for (name, value) in host.variables() {
-            emit::variable(&mut out, emit::VarScope::Host, &name, value);
-        }
-        self.commit(&out, Traffic::Metadata);
+        upstream::send_claimed_id(host);
+        upstream::send_host_labels(host);
+        upstream::send_global_functions(host);
     }
 
     /// `stream_path_send_to_parent()`.
     pub(crate) fn send_path(&self, host: &Host, capabilities: u32) {
-        if capabilities & caps::PATHS == 0 || !self.can_stream_metadata(host) {
+        if capabilities & caps::PATHS == 0 || !host.can_stream_metadata() {
             return;
         }
         let Some(localhost) = self.connector.localhost() else {
@@ -113,44 +90,6 @@ impl Sender {
         };
         let message = netdata_agent_ingest::stream_path::message(host, &localhost, None);
         self.commit(&message, Traffic::Metadata);
-    }
-
-    /// `stream_sender_send_claimed_id()`.
-    fn send_claimed_id(&self, host: &Host, capabilities: u32) {
-        if capabilities & caps::CLAIM == 0 || !self.can_stream_metadata(host) {
-            return;
-        }
-        let mut out = Vec::new();
-        emit::claimed_id(&mut out, host.machine_guid(), host.claim_id().as_ref());
-        self.commit(&out, Traffic::Metadata);
-    }
-
-    /// `stream_send_host_labels()`: every label with its source, then `OVERWRITE labels` even with none.
-    pub(crate) fn send_host_labels(&self, host: &Host, capabilities: u32) {
-        if !self.can_stream_metadata(host) || capabilities & caps::HLABELS == 0 {
-            return;
-        }
-        let mut out = Vec::new();
-        for label in host.labels().iter() {
-            emit::label(&mut out, &text(&label.name), label.flags, &text(&label.value));
-        }
-        emit::overwrite_labels(&mut out);
-        self.commit(&out, Traffic::Metadata);
-    }
-
-    /// `stream_send_global_functions()`: the host's functions (the full catalogue, FUNCTION_DEL and DynCfg's line,
-    /// comes with the functions milestone, M8; the lines are masked in the checks until then, D100.9).
-    fn send_global_functions(&self, host: &Host, capabilities: u32) {
-        if capabilities & caps::FUNCTIONS == 0 || !self.can_stream_metadata(host) {
-            return;
-        }
-        let mut out = Vec::new();
-        for (name, m) in host.functions().all() {
-            let tags = if m.tags.is_empty() { "top".to_string() } else { text(&m.tags) };
-            let priority = if m.priority == 0 { 100 } else { m.priority };
-            emit::function_global(&mut out, &text(&name), m.timeout_s, &text(&m.help), &tags, m.access, priority, m.version);
-        }
-        self.commit(&out, Traffic::Metadata);
     }
 }
 

@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use netdata_agent_log::{Field, FrameGuard, Priority, Source, Value, msgid, nd_log, push};
 use netdata_agent_rrd::clock::now_realtime_s;
-use netdata_agent_rrd::host::{Host, Upstream, sender_flags};
+use netdata_agent_rrd::host::{Host, sender_flags};
+use netdata_agent_rrd::upstream::Upstream;
 use netdata_agent_rrd::pulse::host_status;
 
 pub mod buffer;
@@ -38,6 +39,8 @@ pub struct Settings {
     pub compression_levels: CompressionLevels,
     /// `stream_send.buffer_max_size`: the buffer's maximum at every connection.
     pub buffer_max_size: usize,
+    /// `stream_send.initial_clock_resync_iterations`.
+    pub resync_iterations: u16,
 }
 
 impl Settings {
@@ -50,6 +53,7 @@ impl Settings {
             compression_enabled: send.compression_enabled,
             compression_levels: send.compression_levels,
             buffer_max_size: send.buffer_max_size as usize,
+            resync_iterations: send.initial_clock_resync_iterations,
         }
     }
 }
@@ -327,6 +331,18 @@ impl Sender {
 impl Upstream for Sender {
     fn disabled_capabilities(&self) -> u32 {
         self.disabled.load(Ordering::Relaxed)
+    }
+
+    fn capabilities(&self) -> u32 {
+        self.out().capabilities
+    }
+
+    fn commit(&self, bytes: &[u8], traffic: Traffic) {
+        Sender::commit(self, bytes, traffic);
+    }
+
+    fn resync_iterations(&self) -> u16 {
+        self.connector.settings.resync_iterations
     }
 
     /// `stream_sender_add_to_connector_queue()`.

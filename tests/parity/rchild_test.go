@@ -4,8 +4,11 @@ package parity
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -509,6 +512,24 @@ func TestRChild(t *testing.T) {
 			if !bytes.Equal(info[0], info[1]) {
 				t.Errorf("stream_info differs:\noracle:    %s\ncandidate: %s", info[0], info[1])
 			}
+			// the charts each parent holds for its child, as their definitions made them (commit 5): the data wait
+			// for the replication answers (commit 6), so retention and values are masked
+			var defs [2][]byte
+			for i, addr := range parents {
+				b, err := rawExchange(addr, []byte("GET /host/"+hostname+"/api/v1/charts HTTP/1.1\r\n\r\n"),
+					5*time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defs[i] = parentCharts(t, httpBody(b))
+				if os.Getenv("PARITY_KEEP") == "1" {
+					_ = os.WriteFile(filepath.Join(children[i].Opts.RunDir, "parent-charts.json"), defs[i], 0o644)
+				}
+			}
+			if len(defs[0]) < 1000 || !bytes.Equal(defs[0], defs[1]) {
+				t.Errorf("the parents' charts of the child differ (%d, %d bytes; PARITY_KEEP=1 keeps them)",
+					len(defs[0]), len(defs[1]))
+			}
 			for i, c := range children {
 				b, err := rawExchange(c.Addr, []byte("GET /api/v1/info HTTP/1.1\r\n\r\n"), 5*time.Second)
 				if err != nil {
@@ -545,6 +566,28 @@ func waitReceiver(t *testing.T, addr, guid string) {
 		time.Sleep(time.Second)
 	}
 	time.Sleep(5 * time.Second)
+}
+
+// parentCharts is a parent's /api/v1/charts of a child as its definitions made it: each chart's retention, the
+// totals, and the chart of the points the child's replication answers generate (commit 6) are left out.
+func parentCharts(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var v map[string]any
+	if err := json.Unmarshal(body, &v); err != nil {
+		t.Fatalf("charts: %v: %.200s", err, body)
+	}
+	for _, k := range []string{"charts_count", "dimensions_count", "rrd_memory_bytes"} {
+		delete(v, k)
+	}
+	charts, _ := v["charts"].(map[string]any)
+	delete(charts, "netdata.db_points_results")
+	for _, c := range charts {
+		for _, k := range []string{"first_entry", "last_entry", "duration"} {
+			delete(c.(map[string]any), k)
+		}
+	}
+	out, _ := json.MarshalIndent(v, "", " ")
+	return out
 }
 
 var (
@@ -628,7 +671,7 @@ func TestRChildRuntime(t *testing.T) {
 					return
 				}
 				t.Cleanup(func() { parent.Close() })
-				d := senderChild(t, bin, Role(string(role)+"-"+name), parent)
+				d := senderChild(t, bin, Role(string(role)+"-"+name), parent, "")
 				s := parent.WaitSession(1, 60*time.Second)
 				if s == nil {
 					t.Errorf("%s: no STREAM connection within 60 s", role)

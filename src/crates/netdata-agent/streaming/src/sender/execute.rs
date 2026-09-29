@@ -300,7 +300,7 @@ fn execute_function(
     w.member_add_int64("status", 404);
     w.member_add_string("errorMessage", "This feature is not available on this host at this time.");
     w.finalize();
-    if d.sender.can_stream_metadata(&d.host) {
+    if d.host.can_stream_metadata() {
         let mut out = format!(
             "FUNCTION_RESULT_BEGIN \"{}\" 404 \"application/json\" {}\n",
             text(transaction.unwrap_or_default()),

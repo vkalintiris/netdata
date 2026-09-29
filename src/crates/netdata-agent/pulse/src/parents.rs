@@ -109,7 +109,7 @@ impl Charts {
         if gates.is_child {
             let (chart, dims) = self.outbound.get_or_insert_with(|| {
                 let chart = localhost.create(&Def {
-                    id: "netdata.streaming_outbound",
+                    id: "streaming_outbound",
                     family: "Streaming",
                     context: Some("netdata.streaming_outbound"),
                     title: "Outbound Nodes",

@@ -11,14 +11,7 @@ pub const ADAPT_TO_TIMES_MAX_SIZE: usize = 3;
 /// How long a drained buffer keeps a grown ring before it shrinks back (`recreate_timed`).
 const RECREATE_EVERY_UT: u64 = 300 * 1_000_000;
 
-/// `STREAM_TRAFFIC_TYPE`, the per-type byte counters' index.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Traffic {
-    Replication = 0,
-    Functions,
-    Metadata,
-    Data,
-}
+pub use netdata_agent_rrd::upstream::Traffic;
 
 /// `STREAM_CIRCULAR_BUFFER_STATS`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

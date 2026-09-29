@@ -283,8 +283,8 @@ impl Timezone {
     }
 
     /// `refresh_system_timezone()` once localhost exists: the triplet now, and localhost's (its info, then its
-    /// `_timezone` and `_abbrev_timezone` labels) when any of the three changed. The stream sender's labels, health's
-    /// label recheck and the cloud's node info it also updates are not ported.
+    /// `_timezone` and `_abbrev_timezone` labels, sent to the parent) when any of the three changed. Health's label
+    /// recheck and the cloud's node info it also updates are not ported.
     fn refresh_system(&mut self, name: &str, tzdb: bool, localhost: &Host, now_s: i64) {
         // a tzdb name makes the flag sticky
         if tzdb {
@@ -315,6 +315,7 @@ impl Timezone {
             let _ = labels.add_changed(b"_abbrev_timezone", tz.abbrev.as_bytes(), SRC_AUTO);
         });
         localhost.set_meta_flags(meta_flags::LABELS | meta_flags::UPDATE);
+        netdata_agent_rrd::upstream::send_host_labels(localhost);
     }
 }
 

@@ -642,6 +642,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 stream_conf.send.enabled,
                 &stream_conf.send.destination,
                 &stream_conf.send.api_key,
+                &stream_conf.send.send_charts_matching,
             ),
             cache_dir: Some(conf.dirs.cache.clone()),
         },

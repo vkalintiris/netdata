@@ -163,6 +163,7 @@ pub fn reload(netdata: &mut Config, cloud: &mut Config, plugins_dir: &str, hosts
         l.remove_all_unmarked();
     });
     localhost.set_meta_flags(meta_flags::LABELS | meta_flags::UPDATE);
+    netdata_agent_rrd::upstream::send_host_labels(localhost);
 }
 
 #[cfg(test)]

@@ -276,7 +276,7 @@ mod tests {
         assert!(d1.is_freed() && chart.dim("d1").is_none() && chart.dim("d2").is_some());
         assert_eq!(child.pending_flags(), 0, "all done");
         assert!(hosts.storage().db_rotation().due(u64::MAX).is_some(), "a deep pass asked for");
-        chart.is_obsolete();
+        chart.is_obsolete(&child);
         run(&hosts, None, now);
         assert!(!chart.is_freed(), "accessed within the time");
         assert_eq!(child.pending_flags(), pending_flags::OBSOLETE_CHARTS, "kept for the next sweep");
@@ -294,11 +294,11 @@ mod tests {
         let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
         let now = now_realtime_s();
         assert_eq!(archive_obsolete_dimensions(&chart, true, 10, now + 11), 0, "not obsolete");
-        chart.is_obsolete();
+        chart.is_obsolete(&child);
         chart.isnot_obsolete();
         assert_eq!(archive_obsolete_dimensions(&chart, true, 10, now + 11), 0, "revived");
         assert!(!dim.is_freed() && chart.dim("d").is_some());
-        chart.is_obsolete();
+        chart.is_obsolete(&child);
         assert_eq!(archive_obsolete_dimensions(&chart, true, 10, now), 0, "accessed within the time");
         assert_eq!(archive_obsolete_dimensions(&chart, true, 10, now + 11), 1);
         assert!(dim.is_freed());

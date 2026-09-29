@@ -30,6 +30,11 @@ pub(crate) fn info(hostname: &str) -> HostInfo {
     }
 }
 
+/// A host that does not stream, for the host-scoped calls on charts built outside any host (a no-op upstream).
+pub(crate) fn bare_host() -> Host {
+    Host::with_storage("00000000-0000-0000-0000-000000000001", false, info("bare"), &Arc::default())
+}
+
 /// An engine of `tiers` empty tiers over temporary directories, and its registry.
 pub(crate) fn engine(tiers: usize) -> (Vec<tempfile::TempDir>, Arc<StorageLayout>) {
     use netdata_agent_storage::dbengine::engine::cache::CacheConfig;

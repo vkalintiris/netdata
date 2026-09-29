@@ -655,7 +655,7 @@ impl Parser {
             Some(o) => {
                 let has = |what: &[u8]| o.windows(what.len()).any(|x| x == what);
                 if has(b"obsolete") {
-                    chart.is_obsolete();
+                    chart.is_obsolete(&self.host);
                 } else {
                     chart.isnot_obsolete();
                 }
@@ -1020,8 +1020,7 @@ impl Parser {
                 Some(n) if n > 0 => n,
                 _ => default,
             };
-        let registered = self.host.functions().register(
-            &hostname,
+        let registered = self.host.register_function(
             &nrpc::MethodDesc {
                 name,
                 help,
@@ -1060,7 +1059,7 @@ impl Parser {
             );
             return refuse();
         };
-        match self.host.functions().unregister(name, nrpc::Source::Stream) {
+        match self.host.unregister_function(name, nrpc::Source::Stream) {
             nrpc::Unregistered::Removed => {}
             not_removed => {
                 if let nrpc::Unregistered::Refused(warning) = not_removed {
@@ -1235,11 +1234,9 @@ impl Parser {
         if tv.0 == 0 {
             tv = self.now_tv();
         }
-        // rrdset_timed_done() starts with it
-        self.host.stream_send_metrics_init();
         collection::timed_done(
+            &self.host,
             &chart,
-            &self.host.hostname(),
             tv,
             pending_next,
             self.config.gap_when_lost_iterations_above,
@@ -1475,7 +1472,7 @@ impl Parser {
         if child_last > child_wall {
             child_last = child_wall;
         }
-        let (local_first, local_last) = retention_for_collected_chart(chart, now);
+        let (local_first, local_last) = chart.retention_for_collected(now);
         let gap_from = if prev_after == 0 || prev_before == 0 {
             if local_last != 0 {
                 local_last
@@ -1824,7 +1821,7 @@ impl Parser {
             self.host.set_replication_percent(100.0);
             return Ok(());
         }
-        let (_, local_last) = retention_for_collected_chart(&chart, self.now_s());
+        let (_, local_last) = chart.retention_for_collected(self.now_s());
         let caught_up = local_last >= last_entry_child;
         let suspicious = (first_requested != 0 || last_requested != 0) && caught_up;
         let stuck = {
@@ -1888,29 +1885,6 @@ impl Parser {
         Ok(())
     }
 }
-
-/// `rrdset_get_retention_of_tier_for_collected_chart(st, ..., now, 0)`.
-fn retention_for_collected_chart(chart: &Chart, now: i64) -> (i64, i64) {
-    let (mut first, tier_last) = chart.tier0_retention();
-    let mut last = chart.collection().last_updated.0;
-    if last == 0 {
-        last = tier_last;
-        if last == 0 {
-            first = 0;
-        }
-    }
-    if last > now {
-        last = now;
-    }
-    if first != 0 && last != 0 && first >= last {
-        first = last - i64::from(chart.update_every());
-    }
-    if first == 0 && last != 0 {
-        first = last - i64::from(chart.update_every());
-    }
-    (first, last)
-}
-
 
 /// `stream_parse_enable_streaming()`: REPLAY_CHART's start flag, "true" or "false"; anything else is false after C's
 /// record.

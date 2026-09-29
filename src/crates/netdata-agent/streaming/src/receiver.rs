@@ -574,6 +574,7 @@ impl Receivers {
                 config.send_enabled,
                 &config.send_parents,
                 &config.send_api_key,
+                &config.send_charts_matching,
             ),
             cache_dir: None,
         };

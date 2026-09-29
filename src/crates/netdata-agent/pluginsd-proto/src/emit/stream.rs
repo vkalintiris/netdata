@@ -51,8 +51,12 @@ fn s(out: &mut Vec<u8>, text: &str) {
 
 /// `"<text>"` after a space.
 fn quoted(out: &mut Vec<u8>, text: &str) {
+    quoted_bytes(out, text.as_bytes());
+}
+
+fn quoted_bytes(out: &mut Vec<u8>, text: &[u8]) {
     out.extend_from_slice(b" \"");
-    s(out, text);
+    out.extend_from_slice(text);
     out.push(b'"');
 }
 
@@ -117,10 +121,10 @@ pub fn chart(out: &mut Vec<u8>, e: &Enc, c: &ChartDef<'_>) {
 }
 
 /// `CLABEL "<name>" "<value>" <source without the internal bits>`.
-pub fn clabel(out: &mut Vec<u8>, name: &str, value: &str, source: i32) {
+pub fn clabel(out: &mut Vec<u8>, name: &[u8], value: &[u8], source: i32) {
     s(out, "CLABEL");
-    quoted(out, name);
-    quoted(out, value);
+    quoted_bytes(out, name);
+    quoted_bytes(out, value);
     out.push(b' ');
     int(out, source);
     out.push(b'\n');
@@ -339,12 +343,12 @@ pub fn v1_end(out: &mut Vec<u8>) {
 }
 
 /// `LABEL "<name>" = <source> "<value>"` (a host label).
-pub fn label(out: &mut Vec<u8>, name: &str, source: u32, value: &str) {
+pub fn label(out: &mut Vec<u8>, name: &[u8], source: u32, value: &[u8]) {
     s(out, "LABEL \"");
-    s(out, name);
+    out.extend_from_slice(name);
     out.extend_from_slice(b"\" = ");
     print_uint64(out, u64::from(source));
-    quoted(out, value);
+    quoted_bytes(out, value);
     out.push(b'\n');
 }
 
@@ -369,21 +373,21 @@ pub fn claimed_id(out: &mut Vec<u8>, machine_guid: &str, claim_id: Option<&[u8; 
 #[allow(clippy::too_many_arguments)]
 pub fn function_global(
     out: &mut Vec<u8>,
-    name: &str,
+    name: &[u8],
     timeout_s: i32,
-    help: &str,
-    tags: &str,
+    help: &[u8],
+    tags: &[u8],
     access: u32,
     priority: i32,
     version: u32,
 ) {
     use std::io::Write as _;
     s(out, "FUNCTION GLOBAL");
-    quoted(out, name);
+    quoted_bytes(out, name);
     out.push(b' ');
     int(out, timeout_s);
-    quoted(out, help);
-    quoted(out, tags);
+    quoted_bytes(out, help);
+    quoted_bytes(out, tags);
     let _ = write!(out, " 0x{access:x} ");
     int(out, priority);
     out.push(b' ');
@@ -574,7 +578,7 @@ mod tests {
             float: false,
         };
         assert_eq!(text(|o| dimension(o, &e, &dim)), "DIMENSION SLOT:#B \"tier0\" \"tier0\" \"incremental\" 1 1 \"   type=int\"\n");
-        assert_eq!(text(|o| clabel(o, "_collect_plugin", "netdata", 1)), "CLABEL \"_collect_plugin\" \"netdata\" 1\n");
+        assert_eq!(text(|o| clabel(o, b"_collect_plugin", b"netdata", 1)), "CLABEL \"_collect_plugin\" \"netdata\" 1\n");
         assert_eq!(
             text(|o| chart_definition_end(o, 1790619274, 1790619280, 1790619281)),
             "CHART_DEFINITION_END 1790619274 1790619280 1790619281\n"
@@ -656,12 +660,12 @@ mod tests {
 
     #[test]
     fn session_and_v1_lines_as_c() {
-        assert_eq!(text(|o| label(o, "_os", 2147483649, "linux")), "LABEL \"_os\" = 2147483649 \"linux\"\n");
+        assert_eq!(text(|o| label(o, b"_os", 2147483649, b"linux")), "LABEL \"_os\" = 2147483649 \"linux\"\n");
         assert_eq!(text(overwrite_labels), "OVERWRITE labels\n");
         assert_eq!(text(|o| variable(o, VarScope::Host, "v", 0.00390625)), "VARIABLE HOST v = 0.0039062\n");
         assert_eq!(text(|o| variable(o, VarScope::Chart, "w", f64::NAN)), "VARIABLE CHART w = nan\n");
         assert_eq!(
-            text(|o| function_global(o, "f", 10, "help", "top", 0x3a, 100, 3)),
+            text(|o| function_global(o, b"f", 10, b"help", b"top", 0x3a, 100, 3)),
             "FUNCTION GLOBAL \"f\" 10 \"help\" \"top\" 0x3a 100 3\n"
         );
         assert_eq!(text(|o| function_del_global(o, "f")), "FUNCTION_DEL GLOBAL \"f\"\n");

@@ -18,7 +18,7 @@ use netdata_agent_text::sanitize::{rrd_string_sanitize, rrdset_strncpyz_name};
 
 use crate::clock::now_realtime_s;
 use crate::contexts::{self, ChartLink, Contexts, DimLink};
-use crate::host::{meta_flags, pending_flags};
+use crate::host::{Host, meta_flags, pending_flags};
 use crate::index::Index;
 use crate::labels::{FLAG_DONT_DELETE, Labels, SRC_AUTO};
 use crate::mode::{DbMode, align_entries_to_pagesize};
@@ -26,6 +26,7 @@ use crate::pulse;
 use crate::storage::{Backfill, StorageLayout};
 use crate::stream_control::BackfillRunning;
 use crate::tiers::{self, Rollup, TierRecord};
+use crate::upstream;
 
 /// `RRD_ID_LENGTH_MAX`.
 pub const ID_LENGTH_MAX: usize = 1200;
@@ -177,13 +178,18 @@ pub mod flags {
     pub const BACKFILLED_HIGH_TIERS: u32 = 1 << 10;
     /// `RRDSET_FLAG_OBSOLETE_DIMENSIONS`: some dimension turned obsolete, for the maintenance sweep.
     pub const OBSOLETE_DIMENSIONS: u32 = 1 << 11;
-    /// `RRDSET_FLAG_SENDER_REPLICATION_IN_PROGRESS`: the chart's definition claimed a replication (commit 5 sets it).
+    /// `RRDSET_FLAG_SENDER_REPLICATION_IN_PROGRESS`: the chart's definition claimed a replication from the parent.
     pub const SENDER_REPLICATION_IN_PROGRESS: u32 = 1 << 12;
+    /// `RRDSET_FLAG_UPSTREAM_SEND` and `RRDSET_FLAG_UPSTREAM_IGNORE`: the host's `send charts matching` verdict, cached
+    /// until a rename.
+    pub const UPSTREAM_SEND: u32 = 1 << 13;
+    pub const UPSTREAM_IGNORE: u32 = 1 << 14;
+    /// `RRDSET_FLAG_UPSTREAM_SEND_VARIABLES`: a chart variable changed since the chart's variables were last sent.
+    pub const UPSTREAM_SEND_VARIABLES: u32 = 1 << 15;
 
-    /// `rrdset_is_replicating()`: a replication in progress and none finished. A chart starts with both finished bits
-    /// and nothing clears the sender's without a stream sender, so on this agent no chart replicates in this sense.
+    /// `rrdset_is_replicating()`: a replication in progress, either way, and none finished.
     pub fn is_replicating(flags: u32) -> bool {
-        flags & RECEIVER_REPLICATION_IN_PROGRESS != 0
+        flags & (SENDER_REPLICATION_IN_PROGRESS | RECEIVER_REPLICATION_IN_PROGRESS) != 0
             && flags & (SENDER_REPLICATION_FINISHED | RECEIVER_REPLICATION_FINISHED) == 0
     }
 
@@ -302,8 +308,18 @@ pub struct Chart {
     collection: Mutex<ChartCollection>,
     dims: RwLock<Index<Dim>>,
     receiver: Mutex<ReceiverState>,
-    /// Chart variables (`VARIABLE CHART`), used by health.
-    variables: Mutex<HashMap<String, f64>>,
+    /// Chart variables (`VARIABLE CHART`, `st->rrdvars`), in insertion order.
+    variables: Mutex<Vec<(String, f64)>>,
+    /// `st->version`: the metadata version, which moves with every change a parent must see.
+    version: AtomicU32,
+    /// `st->stream.snd.sent_version`: the version last sent upstream.
+    sent_version: AtomicU32,
+    /// `st->stream.snd.chart_slot`: 1-based per host, 0 once released.
+    chart_slot: AtomicU32,
+    /// `st->stream.snd.dim_last_slot_used`.
+    dim_last_slot: AtomicU32,
+    /// `st->stream.snd.resync_time_s`: until then v1 data go out with no time since the last update.
+    resync_time_s: AtomicI64,
 }
 
 impl Chart {
@@ -333,9 +349,48 @@ impl Chart {
         &self.host_contexts
     }
 
-    /// `rrdset_metadata_updated()`: the metadata version moves with the stream sender; contexts follow now.
+    /// `rrdset_metadata_updated()`: the metadata version moves, so the definition goes upstream again, and the contexts
+    /// follow.
     pub fn metadata_updated(&self) {
+        self.version.fetch_add(1, Ordering::Relaxed);
         contexts::updated_rrdset(self);
+    }
+
+    /// `rrdset_metadata_version()`.
+    pub fn version(&self) -> u32 {
+        self.version.load(Ordering::Relaxed)
+    }
+
+    /// `rrdset_check_upstream_exposed()`: the parent has the current definition.
+    pub fn is_exposed_upstream(&self) -> bool {
+        self.version() == self.sent_version.load(Ordering::Relaxed)
+    }
+
+    /// `rrdset_metadata_exposed_upstream()`.
+    pub fn set_exposed_upstream(&self, version: u32) {
+        self.sent_version.store(version, Ordering::Relaxed);
+    }
+
+    /// `st->stream.snd.chart_slot`.
+    pub fn chart_slot(&self) -> u32 {
+        self.chart_slot.load(Ordering::Relaxed)
+    }
+
+    pub fn resync_time_s(&self) -> i64 {
+        self.resync_time_s.load(Ordering::Relaxed)
+    }
+
+    pub fn set_resync_time_s(&self, t: i64) {
+        self.resync_time_s.store(t, Ordering::Relaxed);
+    }
+
+    /// `rrdset_flag_set_and_clear()`: one change of the flags; the flags before it.
+    pub fn flags_set_and_clear(&self, set: u32, clear: u32) -> u32 {
+        self.update_meta(|m| {
+            let old = m.flags;
+            m.flags = (old | set) & !clear;
+            old
+        })
     }
 
     /// `rrdset_touch_last_accessed_time_s()`.
@@ -427,8 +482,9 @@ impl Chart {
         *self.receiver() = ReceiverState::default();
     }
 
-    /// `rrdset_is_obsolete___safe_from_collector_thread()`, without the sender's parts.
-    pub fn is_obsolete(&self) {
+    /// `rrdset_is_obsolete___safe_from_collector_thread()` of a chart of `host`: a replication it claimed from the
+    /// parent is given back, and, since the chart will not be collected again, its definition goes upstream now.
+    pub fn is_obsolete(&self, host: &Host) {
         let was = self.update_meta(|m| {
             let was = m.flags;
             m.flags |= flags::OBSOLETE;
@@ -438,7 +494,9 @@ impl Chart {
             self.host_pending
                 .fetch_or(pending_flags::OBSOLETE_CHARTS, Ordering::AcqRel);
             self.touch_last_accessed();
+            upstream::release_on_obsolete(host, self);
             self.metadata_updated();
+            upstream::send_definition_now(host, self);
             contexts::updated_rrdset_flags(self);
         }
     }
@@ -625,6 +683,11 @@ impl Chart {
             .clone()
     }
 
+    /// Reads the metadata in place.
+    pub fn with_meta<T>(&self, read: impl FnOnce(&ChartMeta) -> T) -> T {
+        read(&self.meta.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
     pub fn update_meta<T>(&self, update: impl FnOnce(&mut ChartMeta) -> T) -> T {
         update(&mut self.meta.write().unwrap_or_else(PoisonError::into_inner))
     }
@@ -645,9 +708,31 @@ impl Chart {
         update(&mut lock(&self.collection))
     }
 
-    /// `rrdvar_chart_variable_set()`.
+    /// `rrdvar_chart_variable_add_and_acquire()` and `rrdvar_chart_variable_set()`: a changed value (a new variable
+    /// starts as NaN, which equals nothing) is flagged for the parent.
     pub fn set_variable(&self, name: &str, value: f64) {
-        lock(&self.variables).insert(name.to_string(), value);
+        let changed = {
+            let mut variables = lock(&self.variables);
+            match variables.iter_mut().find(|(n, _)| n == name) {
+                Some((_, v)) => {
+                    let changed = *v != value;
+                    *v = value;
+                    changed
+                }
+                None => {
+                    variables.push((name.to_string(), value));
+                    true
+                }
+            }
+        };
+        if changed {
+            self.update_meta(|m| m.flags |= flags::UPSTREAM_SEND_VARIABLES);
+        }
+    }
+
+    /// The chart variables, in insertion order.
+    pub fn variables(&self) -> Vec<(String, f64)> {
+        lock(&self.variables).clone()
     }
 
     /// The parser's state on this chart.
@@ -667,6 +752,29 @@ impl Chart {
     /// dimension holds in tier 0 (0 when none).
     pub fn tier0_retention(&self) -> (i64, i64) {
         span(self.dims().iter().map(|dim| dim.tier_retention(0)))
+    }
+
+    /// `rrdset_get_retention_of_tier_for_collected_chart(st, ..., now, 0)`: tier 0's oldest time and the last update,
+    /// kept consistent with `now` and each other.
+    pub fn retention_for_collected(&self, now: i64) -> (i64, i64) {
+        let (mut first, tier_last) = self.tier0_retention();
+        let mut last = self.collection().last_updated.0;
+        if last == 0 {
+            last = tier_last;
+            if last == 0 {
+                first = 0;
+            }
+        }
+        if last > now {
+            last = now;
+        }
+        if first != 0 && last != 0 && first >= last {
+            first = last - i64::from(self.update_every());
+        }
+        if first == 0 && last != 0 {
+            first = last - i64::from(self.update_every());
+        }
+        (first, last)
     }
 
     /// `rrdset_first_entry_s()` and `rrdset_last_entry_s()`: over every dimension and tier.
@@ -886,6 +994,8 @@ impl Chart {
                 backfilled: false,
             }),
             freed: AtomicBool::new(false),
+            slot: self.dim_last_slot.fetch_add(1, Ordering::Relaxed) + 1,
+            sent_version: AtomicU32::new(0),
         });
         // pulse_db_rrd_memory_add(), which the dimension's drop takes back
         if let Some(ring) = dim.ring() {
@@ -916,7 +1026,7 @@ impl Chart {
     }
 
     /// `rrddim_metadata_updated()`.
-    fn dim_metadata_updated(&self, dim: &Dim) {
+    pub(crate) fn dim_metadata_updated(&self, dim: &Dim) {
         contexts::updated_rrddim(self, dim);
         self.metadata_updated();
     }
@@ -999,6 +1109,10 @@ pub struct Dim {
     storage: Arc<StorageLayout>,
     /// Out of its chart's index for good (D94.1).
     freed: AtomicBool,
+    /// `rd->stream.snd.dim_slot`: 1-based per chart, never reused.
+    slot: u32,
+    /// `rd->stream.snd.sent_version`: the chart version the dimension was last sent with, 0 when not sent.
+    sent_version: AtomicU32,
 }
 
 /// `rd->tiers[t]`: a tier's collection (`sch`, `None` for a ram tier and once finalized) and, above tier 0, the
@@ -1065,6 +1179,21 @@ fn freed_dimension_deletes(mode: DbMode, has_retention: bool) -> bool {
 }
 
 impl Dim {
+    /// `rd->stream.snd.dim_slot`.
+    pub fn slot(&self) -> u32 {
+        self.slot
+    }
+
+    /// `rrddim_metadata_exposed_upstream()`; 0 is `rrddim_metadata_exposed_upstream_clear()`.
+    pub fn set_exposed_upstream(&self, version: u32) {
+        self.sent_version.store(version, Ordering::Relaxed);
+    }
+
+    /// `rrddim_check_upstream_exposed_collector()`: sent with the chart's current definition.
+    pub fn is_exposed_upstream(&self, chart_version: u32) -> bool {
+        self.sent_version.load(Ordering::Relaxed) == chart_version
+    }
+
     /// Whether the dimension was freed (D94.1).
     pub fn is_freed(&self) -> bool {
         self.freed.load(Ordering::Acquire)
@@ -1330,6 +1459,35 @@ pub struct Charts {
     storage: Arc<StorageLayout>,
     /// The host's GUID, which staggers its charts' pages (D65.1).
     host_guid: String,
+    /// `host->stream.snd.pluginsd_chart_slots`.
+    send_slots: Mutex<SendSlots>,
+}
+
+/// `host->stream.snd.pluginsd_chart_slots`: the chart slots of the stream a host sends, reused last-freed first.
+#[derive(Debug, Default)]
+struct SendSlots {
+    available: Vec<u32>,
+    last_used: u32,
+    /// Set when the host's charts go all at once (`rrdhost_pluginsd_send_chart_slots_free()`): no slot is given back
+    /// after it.
+    ignore: bool,
+}
+
+impl SendSlots {
+    /// `rrdset_stream_send_chart_slot_assign()`.
+    fn assign(&mut self) -> u32 {
+        self.available.pop().unwrap_or_else(|| {
+            self.last_used += 1;
+            self.last_used
+        })
+    }
+
+    /// `rrdset_stream_send_chart_slot_release()`.
+    fn release(&mut self, slot: u32) {
+        if slot != 0 && !self.ignore {
+            self.available.push(slot);
+        }
+    }
 }
 
 /// A host's charts by id, and their names (`rrdset_index_name`) with the id each names.
@@ -1384,6 +1542,7 @@ impl Charts {
             host_pending,
             storage,
             host_guid: host_guid.to_string(),
+            send_slots: Mutex::default(),
         }
     }
 
@@ -1418,12 +1577,19 @@ impl Charts {
                 index.by_name.remove(&name);
             }
         }
+        lock(&self.send_slots).release(chart.chart_slot.swap(0, Ordering::Relaxed));
         chart.freed_contents();
         true
     }
 
-    /// `rrdset_index_destroy()`: every chart freed (a host archived or freed).
+    /// `rrdset_index_flush()` after `rrdhost_pluginsd_send_chart_slots_free()`: every chart freed (a host archived or
+    /// freed), and no slot given back, then or later.
     pub fn flush(&self) {
+        {
+            let mut slots = lock(&self.send_slots);
+            slots.ignore = true;
+            slots.available = Vec::new();
+        }
         let index = std::mem::take(&mut *self.inner.write().unwrap_or_else(PoisonError::into_inner));
         for chart in index.charts.items() {
             chart.freed.store(true, Ordering::Release);
@@ -1587,7 +1753,13 @@ impl Charts {
                     collection: Mutex::new(ChartCollection::default()),
                     dims: RwLock::new(Index::default()),
                     receiver: Mutex::new(ReceiverState::default()),
-                    variables: Mutex::new(HashMap::new()),
+                    variables: Mutex::new(Vec::new()),
+                    version: AtomicU32::new(0),
+                    sent_version: AtomicU32::new(0),
+                    // rrdset_insert_callback(): every chart takes a slot, whether the host streams or not
+                    chart_slot: AtomicU32::new(lock(&self.send_slots).assign()),
+                    dim_last_slot: AtomicU32::new(0),
+                    resync_time_s: AtomicI64::new(0),
                 });
                 index.charts.insert(&full_id, Arc::clone(&chart));
                 (chart, true, false, false)
@@ -1625,8 +1797,10 @@ impl Charts {
             chart.update_meta(|m| m.name = Some(new_name));
             drop(index);
             chart.set_metadata_update();
-            // rrdset_reset_name() reports a rename itself; rrdset_create() then reports the name update.
+            // rrdset_reset_name() reports a rename itself, and the send verdict is taken again; rrdset_create() then
+            // reports the name update.
             if current.is_some() {
+                chart.update_meta(|m| m.flags &= !(flags::UPSTREAM_SEND | flags::UPSTREAM_IGNORE));
                 chart.metadata_updated();
                 contexts::updated_rrdset_name(&chart);
             }
@@ -1754,10 +1928,11 @@ mod tests {
         assert_ne!(chart.flags() & flags::OBSOLETE_DIMENSIONS, 0);
         assert_eq!(pending.swap(0, Ordering::AcqRel), pending_flags::OBSOLETE_DIMENSIONS);
         assert_eq!(chart.last_accessed_s(), 1, "a dimension's transition does not touch");
-        chart.is_obsolete();
+        let host = crate::testutil::bare_host();
+        chart.is_obsolete(&host);
         assert_eq!(pending.swap(0, Ordering::AcqRel), pending_flags::OBSOLETE_CHARTS);
         assert!(chart.last_accessed_s() > 1, "obsolete: touched");
-        chart.is_obsolete();
+        chart.is_obsolete(&host);
         assert_eq!(pending.load(Ordering::Acquire), 0, "only the transition raises it");
         assert!(charts.find("t.c", false).is_none());
         assert!(charts.find_by_name("t.named").is_none());

@@ -4,8 +4,10 @@
 
 use crate::chart::{Algorithm, Chart, ChartCollection, DimCollection, dim_flags, flags};
 use crate::contexts;
+use crate::host::Host;
 use crate::mode::DbMode;
-use netdata_agent_log::{Priority, Source, nd_log};
+use crate::upstream::{self, LastCollected};
+use netdata_agent_log::{Priority, Source, nd_log, netdata_log_error};
 
 use netdata_agent_storage::storage_number::{SN_DEFAULT_FLAGS, SN_FLAG_RESET};
 
@@ -138,15 +140,17 @@ fn last_collected_as_double(d: &DimCollection, is_float: bool) -> f64 {
 }
 
 /// `rrdset_timed_done()`: turns the values collected since the last call into stored points on the update grid,
-/// interpolating between collections. `gap_when_lost_iterations_above` is `[db] gap when lost iterations above`;
-/// `hostname` names the chart's host in the reset record.
+/// interpolating between collections, and streams them when the host streams (the gate first, before the clock
+/// moves: the definition's resync horizon reads the previous collection). `gap_when_lost_iterations_above` is
+/// `[db] gap when lost iterations above`.
 pub fn timed_done(
+    host: &Host,
     chart: &Chart,
-    hostname: &str,
     now: (i64, i64),
     pending_next: bool,
     gap_when_lost_iterations_above: i64,
 ) {
+    let mut stream = upstream::metrics_init(host, chart, now.0);
     if pending_next {
         timed_next(chart, now, 0);
     }
@@ -157,7 +161,11 @@ pub fn timed_done(
     let entries = chart.entries() as i64;
     let max_update_gap_iterations = entries.max(60);
     let max_update_gap_ut = max_update_gap_iterations * update_every_ut;
-    chart.isnot_obsolete();
+    // after the gate: this collection's data go out under the obsolete definition, the next one without it
+    if meta.flags & flags::OBSOLETE != 0 {
+        netdata_log_error!("Chart '{}' has the OBSOLETE flag set, but it is collected.", chart.id());
+        chart.isnot_obsolete();
+    }
     let mut store_this_entry = true;
     let mut first_entry = false;
 
@@ -166,8 +174,9 @@ pub fn timed_done(
         nd_log!(
             Source::Daemon,
             Priority::Debug,
-            "host '{hostname}', chart '{}': took too long to be updated (counter #{}, update #{}, {:.3} secs). \
+            "host '{}', chart '{}': took too long to be updated (counter #{}, update #{}, {:.3} secs). \
              Resetting it.",
+            host.hostname(),
             chart.id(),
             before.counter as u32,
             before.counter_done as u32,
@@ -237,6 +246,9 @@ pub fn timed_done(
 
     // Per dimension: the totals, then the calculated value of this collection.
     let dims = chart.dims();
+    if let Some(sb) = stream.as_mut() {
+        sb.v1(chart, &dims, &c);
+    }
     let mut reset_or_overflow = vec![false; dims.len()];
     let mut collected_total = 0.0;
     let mut last_collected_total = 0.0;
@@ -262,7 +274,14 @@ pub fn timed_done(
             last_collected_total += last_collected_as_double(d, is_float);
             collected_total += collected_as_double(d, is_float);
         });
-        chart.dim_isnot_obsolete(dim);
+        if m.flags & dim_flags::OBSOLETE != 0 {
+            netdata_log_error!(
+                "Dimension {} in chart '{}' has the OBSOLETE flag set, but it is collected.",
+                m.name,
+                chart.id()
+            );
+            chart.dim_isnot_obsolete(dim);
+        }
     }
     for (i, dim) in dims.iter().enumerate() {
         let m = dim.meta();
@@ -360,7 +379,8 @@ pub fn timed_done(
                 storage_flags |= SN_FLAG_RESET;
             }
             let updated = m.flags & dim_flags::UPDATED != 0;
-            let (value, sn_flags) = dim.update_collection(|d| {
+            let is_float = m.flags & dim_flags::FLOAT != 0;
+            let (value, sn_flags, last) = dim.update_collection(|d| {
                 let new_value = match m.algorithm {
                     Algorithm::Incremental => {
                         let mut v = d.calculated_value * (next_store_ut - last_collect_ut) as f64
@@ -386,16 +406,26 @@ pub fn timed_done(
                         }
                     }
                 };
+                // the baseline the parent computes from: the previous collection's value, carried after the loop
+                let last = LastCollected {
+                    int: d.last_collected_value,
+                    float: d.last_collected_value_float,
+                    is_float,
+                };
                 if !store_this_entry {
-                    (f64::NAN, 0)
+                    (f64::NAN, 0, last)
                 } else if updated && d.counter > 1 && iterations < gap_when_lost_iterations_above {
                     d.last_stored_value = new_value;
-                    (new_value, storage_flags)
+                    (new_value, storage_flags, last)
                 } else {
                     d.last_stored_value = f64::NAN;
-                    (f64::NAN, 0)
+                    (f64::NAN, 0, last)
                 }
             });
+            // only a stored value goes out: the parent takes a missing point as a gap
+            if let Some(sb) = stream.as_mut() {
+                sb.set2(dim, next_store_ut as u64, value, sn_flags, last);
+            }
             dim.store_metric(next_store_ut as u64, value, sn_flags);
         }
         chart.update_collection(|c| {
@@ -443,6 +473,9 @@ pub fn timed_done(
             }
         });
         dim.update_meta(|m| m.flags &= !dim_flags::UPDATED);
+    }
+    if let Some(sb) = stream {
+        sb.finish(chart);
     }
     // store_metric_collection_completed()
     let storage = chart.storage();

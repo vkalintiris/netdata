@@ -25,7 +25,6 @@ pub(crate) struct Def<'a> {
 /// Localhost for one cycle, with what its charts take from it read once.
 pub(crate) struct Localhost<'a> {
     pub host: &'a Host,
-    hostname: String,
     settings: &'a Settings,
     /// `localhost->rrd_update_every`, `rrd_memory_mode` and `rrd_history_entries`.
     update_every: i32,
@@ -38,7 +37,6 @@ impl<'a> Localhost<'a> {
         let info = host.info();
         Localhost {
             host,
-            hostname: info.hostname,
             settings,
             update_every: info.update_every,
             mode: info.db_mode,
@@ -91,11 +89,9 @@ impl<'a> Localhost<'a> {
     /// `rrdset_done()`: the collection's time is now, and the chart's next is implicit after its first.
     pub fn done(&self, chart: &Chart) {
         let pending_next = chart.collection().counter_done != 0;
-        // rrdset_timed_done() starts with it
-        self.host.stream_send_metrics_init();
         timed_done(
+            self.host,
             chart,
-            &self.hostname,
             now_realtime_timeval(),
             pending_next,
             self.settings.gap_when_lost_iterations_above,

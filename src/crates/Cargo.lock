@@ -3167,6 +3167,7 @@ dependencies = [
  "netdata-agent-evloop",
  "netdata-agent-log",
  "netdata-agent-nrpc",
+ "netdata-agent-pluginsd-proto",
  "netdata-agent-storage",
  "netdata-agent-text",
  "tempfile",

@@ -188,7 +188,7 @@ fn obsolete_charts_and_dimensions_are_archived() {
     let rm = ri.metric("d").unwrap();
     chart.dim_is_obsolete(&dim);
     assert!(rm.flags.is_archived());
-    chart.is_obsolete();
+    chart.is_obsolete(&crate::testutil::bare_host());
     assert!(ri.flags.is_archived());
     // Collecting again clears both (rrdset_timed_done() and SET2 do this).
     chart.isnot_obsolete();
@@ -230,11 +230,12 @@ fn v1_collections_report_through_timed_done() {
     let (contexts, charts) = setup();
     let (chart, _) = charts.create(&spec("a", "ctx", "T", 1000));
     let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    let host = crate::testutil::bare_host();
     // BEGIN (a trusted one-second step), SET, END: the first collection only starts the clock.
     for i in 0..4 {
         collection::next_usec_unfiltered(&chart, (T + i, 0), 1_000_000);
         collection::set_value(&dim, (T + i, 0), 7);
-        collection::timed_done(&chart, "h", (T + i, 0), false, 3);
+        collection::timed_done(&host, &chart, (T + i, 0), false, 3);
     }
     contexts.process_queued();
     let rc = contexts.get("ctx").unwrap();

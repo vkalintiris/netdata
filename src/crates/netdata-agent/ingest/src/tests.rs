@@ -151,7 +151,7 @@ fn the_senders_lines_round_trip() {
             module: "mo",
         };
         chart(&mut out, &e, &def);
-        clabel(&mut out, "k", "v", 2);
+        clabel(&mut out, b"k", b"v", 2);
         clabel_commit(&mut out);
         let a = DimDef {
             slot: 1,

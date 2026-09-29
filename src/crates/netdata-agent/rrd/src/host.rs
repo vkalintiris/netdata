@@ -1,13 +1,13 @@
 //! Hosts, ported from `src/database/rrdhost.c`: localhost plus one host per child that ever streamed here, indexed
 //! by machine GUID and kept in creation order (localhost first).
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 
 use netdata_agent_log::{Priority, REDACTED, Source, nd_log, netdata_log_error};
-use netdata_agent_nrpc::Registry;
+use netdata_agent_nrpc::{self as nrpc, MethodDesc, Registry, Unregistered};
 use netdata_agent_text::parse::uuid_parse_flexi;
+use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatternMode};
 
 use crate::chart::{self, Charts};
 use crate::clock::now_realtime_s;
@@ -19,6 +19,7 @@ use crate::mode::DbMode;
 use crate::storage::{StorageLayout, TierHandle};
 use crate::stream_path::PathEntry;
 use crate::system_info::SystemInfo;
+use crate::upstream::{self, Upstream};
 
 /// What a host is and how it is stored; the mutable part of `struct rrdhost`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,21 +48,29 @@ pub struct HostInfo {
     pub cache_dir: Option<String>,
 }
 
-/// `host->stream.snd.destination` and `api_key`.
+/// `host->stream.snd.destination`, `api_key` and `charts_matching`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamSend {
     /// As configured: parents separated by whitespace or commas, each optionally with `:SSL`.
     pub destination: String,
     pub api_key: String,
+    /// `send charts matching`: which charts go upstream, by context, name or id (none when empty).
+    pub charts_matching: SimplePattern,
 }
 
 impl StreamSend {
     /// `stream_sender_structures_init()`: a sender only with streaming on, a destination and an API key (an empty
     /// setting is NULL in C).
-    pub fn new(enabled: bool, destination: &str, api_key: &str) -> Option<StreamSend> {
+    pub fn new(enabled: bool, destination: &str, api_key: &str, charts_matching: &str) -> Option<StreamSend> {
         (enabled && !destination.is_empty() && !api_key.is_empty()).then(|| StreamSend {
             destination: destination.to_string(),
             api_key: api_key.to_string(),
+            charts_matching: SimplePattern::new(
+                charts_matching.as_bytes(),
+                Separators::Whitespace,
+                SimplePatternMode::Exact,
+                true,
+            ),
         })
     }
 
@@ -263,7 +272,8 @@ pub mod pending_flags {
     pub const OBSOLETE_DIMENSIONS: u32 = 1 << 1;
 }
 
-/// `RRDHOST_FLAG_STREAM_SENDER_*`: the sender's state as the collectors read it.
+/// `RRDHOST_FLAG_STREAM_SENDER_*` and `RRDHOST_FLAG_GLOBAL_FUNCTIONS_UPDATED`: the sender's state as the collectors
+/// read it.
 pub mod sender_flags {
     /// Queued for its parents (until the sender is removed).
     pub const ADDED: u32 = 1 << 0;
@@ -271,15 +281,8 @@ pub mod sender_flags {
     pub const READY_4_METRICS: u32 = 1 << 2;
     /// The "not ready" record was written and the "ready" one is due.
     pub const LOGGED_STATUS: u32 = 1 << 3;
-}
-
-/// A host's sender (`host->sender`) as the host and its collectors see it, set once when the host streams
-/// (`stream_sender_structures_init()`, D103.1).
-pub trait Upstream: Send + Sync + std::fmt::Debug {
-    /// `stream_sender_start_host()`: queue the host for its parents.
-    fn start(&self);
-    /// `sender->disabled_capabilities`, which `stream_our_capabilities(host, true)` leaves out.
-    fn disabled_capabilities(&self) -> u32;
+    /// The host's functions changed since they were last sent (`rrdhost_nrpc_changed()`).
+    pub const GLOBAL_FUNCTIONS_UPDATED: u32 = 1 << 4;
 }
 
 /// `struct rrdhost`.
@@ -315,8 +318,8 @@ pub struct Host {
     claim_id_of_origin: RwLock<[u8; 16]>,
     /// `host->aclk.claim_id_of_parent`: the claim id the parent sent with NODE_ID, zero when none.
     claim_id_of_parent: RwLock<[u8; 16]>,
-    /// Host variables (`VARIABLE HOST`), used by health.
-    variables: Mutex<HashMap<String, f64>>,
+    /// Host variables (`VARIABLE HOST`, `host->rrdvars`), in insertion order.
+    variables: Mutex<Vec<(String, f64)>>,
     /// The functions registered for this host (`rrdhost_nrpc_owner()`).
     functions: Registry,
     /// `host->stream.rcv.status.replication.percent`, as `f64` bits: kept across reconnections.
@@ -366,6 +369,11 @@ pub struct Host {
     sender_flags: AtomicU32,
     /// `host->sender`, with `RRDHOST_OPTION_SENDER_ENABLED` as its presence.
     upstream: OnceLock<Arc<dyn Upstream>>,
+    /// `host->stream.snd.status.replication.charts`: the charts whose definition claimed a replication from the parent
+    /// (it wraps below 0, as C's).
+    sender_replicating_charts: AtomicU32,
+    /// `sender->global_functions_spinlock`: the functions' render and commit, one call site at a time.
+    global_functions: Mutex<()>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -482,7 +490,7 @@ impl Host {
             labels: RwLock::new(Labels::default()),
             claim_id_of_origin: RwLock::new([0; 16]),
             claim_id_of_parent: RwLock::new([0; 16]),
-            variables: Mutex::new(HashMap::new()),
+            variables: Mutex::new(Vec::new()),
             functions: Registry::default(),
             replication_percent: AtomicU64::new(100f64.to_bits()),
             stream_path: RwLock::new(Vec::new()),
@@ -502,6 +510,8 @@ impl Host {
             labels_applied: AtomicBool::new(false),
             labels_applied_version: AtomicU32::new(0),
             sender_flags: AtomicU32::new(0),
+            sender_replicating_charts: AtomicU32::new(0),
+            global_functions: Mutex::new(()),
             upstream: OnceLock::new(),
             meta_flags,
             pending_flags,
@@ -865,14 +875,31 @@ impl Host {
             .unwrap_or_else(PoisonError::into_inner) = id;
     }
 
-    /// `rrdvar_host_variable_set()`.
+    /// `rrdvar_host_variable_add_and_acquire()` and `rrdvar_host_variable_set()`: a changed value (a new variable
+    /// starts as NaN, which equals nothing) goes to the parent at once.
     pub fn set_variable(&self, name: &str, value: f64) {
-        lock(&self.variables).insert(name.to_string(), value);
+        let changed = {
+            let mut variables = lock(&self.variables);
+            match variables.iter_mut().find(|(n, _)| n == name) {
+                Some((_, v)) => {
+                    let changed = *v != value;
+                    *v = value;
+                    changed
+                }
+                None => {
+                    variables.push((name.to_string(), value));
+                    true
+                }
+            }
+        };
+        if changed {
+            upstream::send_host_variable(self, name, value);
+        }
     }
 
-    /// The host variables, for `VARIABLE HOST` (C walks them in insertion order; commit 5 orders them, D104.5).
+    /// The host variables, in insertion order.
     pub fn variables(&self) -> Vec<(String, f64)> {
-        lock(&self.variables).iter().map(|(k, v)| (k.clone(), *v)).collect()
+        lock(&self.variables).clone()
     }
 
     /// `host->rrdset_root_index`.
@@ -1020,7 +1047,7 @@ impl Host {
     /// are freed by the maintenance; each accepted connection does it, and so does the maintenance for a child gone.
     pub fn obsolete_all_charts(&self) {
         for chart in self.charts.all() {
-            chart.is_obsolete();
+            chart.is_obsolete(self);
         }
     }
 
@@ -1051,6 +1078,7 @@ impl Host {
         !std::ptr::eq(self, protected)
             && !self.is_localhost
             && self.replicating_charts() == 0
+            && self.sender_replicating_charts() == 0
             && self.is_orphan()
             && !self.is_pending_context_load()
             && !self.is_online()
@@ -1141,51 +1169,64 @@ impl Host {
         self.sender_flags.load(Ordering::SeqCst)
     }
 
-    pub fn sender_flags_set(&self, bits: u32) {
-        self.sender_flags.fetch_or(bits, Ordering::SeqCst);
+    /// Sets `bits`; the flags before.
+    pub fn sender_flags_set(&self, bits: u32) -> u32 {
+        self.sender_flags.fetch_or(bits, Ordering::SeqCst)
     }
 
-    pub fn sender_flags_clear(&self, bits: u32) {
-        self.sender_flags.fetch_and(!bits, Ordering::SeqCst);
+    /// Clears `bits`; the flags before.
+    pub fn sender_flags_clear(&self, bits: u32) -> u32 {
+        self.sender_flags.fetch_and(!bits, Ordering::SeqCst)
     }
 
-    /// `stream_send_metrics_init()` from `rrdset_timed_done()`: a host that streams but is not ready yet is queued
-    /// for its parents (once, while its collection is online) and says so once; the first collection after it
-    /// becomes ready says that. True when the collection's data are streamed.
-    pub fn stream_send_metrics_init(&self) -> bool {
-        let Some(upstream) = self.upstream.get() else {
-            return false;
-        };
-        let flags = self.sender_flags();
-        if flags & sender_flags::READY_4_METRICS == 0 {
-            // RRDHOST_FLAG_COLLECTOR_ONLINE
-            if self.is_online() && flags & sender_flags::ADDED == 0 {
-                upstream.start();
-            }
-            // one record per transition, where C's check-then-set can log twice in a race (D104.7)
-            let before = self.sender_flags.fetch_or(sender_flags::LOGGED_STATUS, Ordering::SeqCst);
-            if before & sender_flags::LOGGED_STATUS == 0 {
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Info,
-                    "STREAM SND '{}': streaming is not ready, not sending data to a parent...",
-                    self.hostname()
-                );
-            }
-            return false;
+    /// `rrdhost_can_stream_metadata_to_parent()`: the host streams, its sender is ready and its collection is online.
+    pub fn can_stream_metadata(&self) -> bool {
+        self.upstream.get().is_some()
+            && self.sender_flags() & sender_flags::READY_4_METRICS != 0
+            && self.is_online()
+    }
+
+    /// `host->stream.snd.charts_matching`, none when the host does not stream.
+    pub fn with_charts_matching<T>(&self, f: impl FnOnce(Option<&SimplePattern>) -> T) -> T {
+        let info = self.info.read().unwrap_or_else(PoisonError::into_inner);
+        f(info.stream_send.as_ref().map(|s| &s.charts_matching))
+    }
+
+    /// `rrdhost_sender_replicating_charts()`.
+    pub fn sender_replicating_charts(&self) -> u32 {
+        self.sender_replicating_charts.load(Ordering::Relaxed)
+    }
+
+    /// `rrdhost_sender_replicating_charts_plus_one()`: the new count.
+    pub fn sender_replicating_charts_plus_one(&self) -> u32 {
+        self.sender_replicating_charts.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
+    }
+
+    /// `rrdhost_sender_replicating_charts_minus_one()`: the new count.
+    pub fn sender_replicating_charts_minus_one(&self) -> u32 {
+        self.sender_replicating_charts.fetch_sub(1, Ordering::Relaxed).wrapping_sub(1)
+    }
+
+    /// `sender->global_functions_spinlock`.
+    pub(crate) fn lock_global_functions(&self) -> MutexGuard<'_, ()> {
+        lock(&self.global_functions)
+    }
+
+    /// `nrpc_method_register()` on the host's registry, then `rrdhost_nrpc_changed()`: the functions go to the parent
+    /// again at the next collection.
+    pub fn register_function(&self, desc: &MethodDesc<'_>) -> Result<(), String> {
+        self.functions.register(&self.hostname(), desc)?;
+        self.sender_flags_set(sender_flags::GLOBAL_FUNCTIONS_UPDATED);
+        Ok(())
+    }
+
+    /// `nrpc_method_unregister()` on the host's registry, then `rrdhost_nrpc_changed()` for a removal.
+    pub fn unregister_function(&self, name: &[u8], source: nrpc::Source) -> Unregistered {
+        let r = self.functions.unregister(name, source);
+        if r == Unregistered::Removed {
+            self.sender_flags_set(sender_flags::GLOBAL_FUNCTIONS_UPDATED);
         }
-        if flags & sender_flags::LOGGED_STATUS != 0
-            && self.sender_flags.fetch_and(!sender_flags::LOGGED_STATUS, Ordering::SeqCst) & sender_flags::LOGGED_STATUS
-                != 0
-        {
-            nd_log!(
-                Source::Daemon,
-                Priority::Info,
-                "STREAM SND '{}': streaming is ready, sending metrics to parent...",
-                self.hostname()
-            );
-        }
-        true
+        r
     }
 
     /// `stream_receiver_replication_reset()`: no chart is being replicated by a receiver that just came or went, so
@@ -2331,7 +2372,7 @@ mod tests {
         local.program_version = "v2.11.0-458-g1e97a0fc9e".into();
         local.timezone = "Etc/UTC".into();
         local.health_enabled = false;
-        local.stream_send = StreamSend::new(true, "127.0.0.1:29181:SSL, other:19999", "a-key");
+        local.stream_send = StreamSend::new(true, "127.0.0.1:29181:SSL, other:19999", "a-key", "*");
         local.cache_dir = Some("/var/cache/netdata".into());
         let (hosts, records) = netdata_agent_log::capture(|| {
             Hosts::new(Host::new(
@@ -2571,7 +2612,7 @@ mod tests {
         host.set_replication_percent(42.0);
         // the receiver's ring is smaller than the archived host's
         let mut wanted = HostInfo {
-            stream_send: StreamSend::new(true, "grandparent:19999", "a-key"),
+            stream_send: StreamSend::new(true, "grandparent:19999", "a-key", "*"),
             history_entries: 3600,
             ..archived
         };

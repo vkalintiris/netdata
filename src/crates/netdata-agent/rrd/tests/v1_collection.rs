@@ -3,9 +3,13 @@
 
 mod v1_cases;
 
-use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType, Charts};
+use std::sync::Arc;
+
+use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
 use netdata_agent_rrd::collection::{now_realtime_timeval, set_value, timed_done};
+use netdata_agent_rrd::host::{Host, HostInfo};
 use netdata_agent_rrd::mode::DbMode;
+use netdata_agent_rrd::system_info::SystemInfo;
 use netdata_agent_storage::storage_number::{SN_DEFAULT_FLAGS, pack, unpack};
 
 /// `[db] gap when lost iterations above` after `netdata_conf_section_db()`: 1 + 2.
@@ -16,11 +20,37 @@ fn same(a: f64, b: f64) -> bool {
     (a * 10_000_000.0).round() == (b * 10_000_000.0).round() || (a.is_nan() && b.is_nan())
 }
 
+/// A RAM host that does not stream, as `run_test()`'s localhost.
+fn host() -> Host {
+    let info = HostInfo {
+        hostname: "unittest".into(),
+        registry_hostname: "unittest".into(),
+        os: "linux".into(),
+        timezone: "UTC".into(),
+        abbrev_timezone: "UTC".into(),
+        utc_offset: 0,
+        program_name: "netdata".into(),
+        program_version: "v0".into(),
+        update_every: 1,
+        db_mode: DbMode::Ram,
+        history_entries: 3600,
+        health_enabled: false,
+        system_info: SystemInfo::default(),
+        replication_enabled: false,
+        replication_period: 0,
+        replication_step: 0,
+        stream_send: None,
+        cache_dir: None,
+    };
+    Host::with_storage("00000000-0000-0000-0000-000000000001", true, info, &Arc::default())
+}
+
 #[test]
 fn c_unit_tests() {
     let mut failures = Vec::new();
     for case in v1_cases::CASES {
-        let charts = Charts::default();
+        let host = host();
+        let charts = host.charts();
         let name = format!("unittest-{}", case.name);
         let (st, _) = charts.create(&ChartSpec {
             type_: "netdata",
@@ -54,7 +84,7 @@ fn c_unit_tests() {
             if let Some(rd2) = &rd2 {
                 set_value(rd2, t, case.feed2[c]);
             }
-            timed_done(&st, "h", t, false, GAP_WHEN_LOST_ITERATIONS_ABOVE);
+            timed_done(&host, &st, t, false, GAP_WHEN_LOST_ITERATIONS_ABOVE);
             if c == 0 {
                 // run_test() pins the first collection `microseconds` past the second boundary.
                 let usec = microseconds as i64;
