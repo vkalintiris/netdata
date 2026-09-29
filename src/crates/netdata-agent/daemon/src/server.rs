@@ -18,7 +18,7 @@ use netdata_agent_web::status;
 
 use netdata_agent_text::print::html_escape;
 
-use netdata_agent_rrd::clock::now_realtime_s;
+use netdata_agent_rrd::clock::{now_boottime_s, now_realtime_s};
 use netdata_agent_rrd::host::Hosts;
 use netdata_agent_rrd::pulse::Web;
 use netdata_agent_streaming::receiver::{PreAdmission, Receivers};
@@ -223,6 +223,9 @@ struct Client {
     output: Vec<u8>,
     written: usize,
     close_after_write: bool,
+    /// A receive of 0 bytes (a TLS `close_notify`) left C's `pi->events` empty: only the hangup, an error or a
+    /// timeout ends the client.
+    awaits_hangup: bool,
     /// The access log's view of the connection.
     log: ClientLog,
     /// `w->user_auth`'s role and access for the current request, shared with its log frames.
@@ -245,11 +248,12 @@ impl Client {
     }
 }
 
-/// `POLLINFO`: when the connection came and last moved data.
+/// `POLLINFO`: when the connection came and last moved data, in whole seconds of the boot clock as C compares them
+/// (0 before the first).
 struct Activity {
-    connected: Instant,
-    last_received: Option<Instant>,
-    last_sent: Option<Instant>,
+    connected_s: i64,
+    last_received_s: i64,
+    last_sent_s: i64,
     recv_count: u64,
     send_count: u64,
     /// `POLLINFO_FLAG_FIRST_REQUEST_RECEIVED`.
@@ -494,9 +498,9 @@ impl WebWorker {
                         acl: client_acl,
                         port_acl: self.listeners[index].acl,
                         activity: Activity {
-                            connected: Instant::now(),
-                            last_received: None,
-                            last_sent: None,
+                            connected_s: now_boottime_s(),
+                            last_received_s: 0,
+                            last_sent_s: 0,
                             recv_count: 0,
                             send_count: 0,
                             first_request_received: false,
@@ -509,6 +513,7 @@ impl WebWorker {
                         output: Vec::new(),
                         written: 0,
                         close_after_write: false,
+                        awaits_hangup: false,
                         log,
                         auth: Arc::default(),
                         transaction: [0; 16],
@@ -546,21 +551,38 @@ impl WebWorker {
     /// `web_server_del_callback()`: DISCONNECTED, then the pending request's record, then the client goes back to
     /// the cache. After a hangup C's poller pushes its copies of the IP and port around it.
     fn close(&mut self, cx: &mut Context<'_>, slot: usize, hangup: bool) {
+        self.close_carrying(cx, slot, hangup, 0);
+    }
+
+    /// `close()` with the `errno` C's thread holds, which its DISCONNECTED record carries: the `errno` after, cleared
+    /// by a written record and set by a TLS close (`netdata_ssl_close()`'s second `SSL_shutdown()`).
+    fn close_carrying(&mut self, cx: &mut Context<'_>, slot: usize, hangup: bool, mut errno: i32) -> i32 {
         if let Some(mut client) = self.clients[slot].take() {
             self.stats.disconnected += 1;
             let web = &self.shared.hosts.storage().pulse().web;
             web.client_disconnected();
             let _ = cx.registry().deregister(&mut client.stream);
-            // netdata_ssl_close(): the link's drop sends the close_notify
-            let _frame = hangup.then(|| client.log.hangup_frame());
-            client.log.connection("DISCONNECTED", 0);
-            if let Some(mut done) = client.pending.take() {
-                if client.written < client.output.len() {
-                    done.sent_when(client.written);
+            {
+                let _frame = hangup.then(|| client.log.hangup_frame());
+                client.log.connection("DISCONNECTED", errno);
+                if !netdata_agent_log::filtered(Source::Access, Priority::Debug) {
+                    errno = 0;
                 }
-                done.log(&client.log, web);
+                if let Some(mut done) = client.pending.take() {
+                    if client.written < client.output.len() {
+                        done.sent_when(client.written);
+                    }
+                    done.log(&client.log, web);
+                }
+            }
+            // netdata_ssl_close(): the link's drop sends the close_notify
+            let tls = client.stream.is_tls();
+            drop(client);
+            if tls {
+                errno = nix::errno::Errno::last_raw();
             }
         }
+        errno
     }
 
     /// `stream_receiver_takeover_web_connection()`: the socket leaves this worker for the streaming code; whatever
@@ -627,8 +649,10 @@ impl WebWorker {
         if event.is_read_closed() || event.is_error() {
             let flag = |set: bool, name: &'static str| if set { name } else { "" };
             let hangup = event.is_read_closed() || event.is_write_closed();
-            // C polls for writing only while a response is pending
+            // C polls for writing only while a response is pending, and for nothing after a receive of 0 bytes; its
+            // poller reports only the events it polls for
             let sending = !client.output.is_empty();
+            let (expects_read, expects_write) = (!client.awaits_hangup && !sending, !client.awaits_hangup && sending);
             {
                 let _frame = client.log.hangup_frame();
                 nd_log!(
@@ -641,23 +665,26 @@ impl WebWorker {
                     link_fd(&client.stream),
                     client.log.accept_ip,
                     client.log.port,
-                    flag(!sending, "READ"),
-                    flag(sending, "WRITE"),
-                    flag(event.is_readable(), "READ"),
-                    flag(event.is_writable(), "WRITE")
+                    flag(expects_read, "READ"),
+                    flag(expects_write, "WRITE"),
+                    flag(event.is_readable() && expects_read, "READ"),
+                    flag(event.is_writable() && expects_write, "WRITE")
                 );
             }
             self.close(cx, slot, true);
+            return;
+        }
+        if client.awaits_hangup {
             return;
         }
 
         // poll_events(): a writable event is a send (poll_process_send(), web_server_snd_callback()), else a readable
         // one a reception (poll_process_tcp_read(), web_server_rcv_callback()); both are the client's activity, the
         // TLS handshake's events too
-        let now = Instant::now();
+        let now = now_boottime_s();
         if event.is_writable() {
             self.stats.sends += 1;
-            client.activity.last_sent = Some(now);
+            client.activity.last_sent_s = now;
             // a writable event the handshake takes is no application send: the first-request timeout still applies
             if !matches!(&client.stream, Link::Tls(t) if t.state() == State::Init) {
                 client.activity.send_count += 1;
@@ -665,7 +692,7 @@ impl WebWorker {
         } else if event.is_readable() {
             self.stats.receptions += 1;
             client.activity.recv_count += 1;
-            client.activity.last_received = Some(now);
+            client.activity.last_received_s = now;
         }
         // web_server_check_tcp_ssl(): a TCP connection's first byte decides TLS, whose handshake runs before any read
         // or write
@@ -698,7 +725,11 @@ impl WebWorker {
                 client.received.resize(start + want, 0);
                 match client.stream.read(&mut client.received[start..]) {
                     Ok(0) => {
-                        self.close(cx, slot, true);
+                        // web_server_rcv_callback()'s `bytes == 0`: the client is kept, polled for nothing (readable
+                        // interest stays for the hangup, as C's poller always polls for EPOLLRDHUP)
+                        client.received.truncate(start);
+                        client.awaits_hangup = true;
+                        let _ = cx.registry().reregister(&mut client.stream, token, Interest::READABLE);
                         return;
                     }
                     Ok(n) => {
@@ -706,7 +737,7 @@ impl WebWorker {
                         client.received.truncate(start + n);
                         let outcome = respond(client, &shared, &receivers);
                         // the idle timeout counts from the end of a request's processing
-                        client.activity.last_received = Some(Instant::now());
+                        client.activity.last_received_s = now_boottime_s();
                         if outcome.is_some() {
                             client.activity.first_request_received = true;
                         }
@@ -764,7 +795,7 @@ impl WebWorker {
                     shared.hosts.storage().pulse().network.api_sent(n);
                     client.written += n;
                     client.activity.send_count += 1;
-                    client.activity.last_sent = Some(Instant::now());
+                    client.activity.last_sent_s = now_boottime_s();
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -1318,6 +1349,7 @@ impl Worker for WebWorker {
             return;
         }
         let now = Instant::now();
+        let now_s = now_boottime_s();
         let (first, idle) = (
             self.shared.first_request_timeout_s,
             self.shared.idle_timeout_s,
@@ -1328,17 +1360,18 @@ impl Worker for WebWorker {
             .enumerate()
             .filter_map(|(slot, client)| {
                 let a = &client.as_ref()?.activity;
-                let secs = |t: Instant| now.saturating_duration_since(t).as_secs();
                 let never_asked = !a.first_request_received
                     && a.send_count == 0
                     && first > 0
-                    && secs(a.connected) >= first;
-                let last = a.last_received.max(a.last_sent);
-                let idle_expired =
-                    a.recv_count > 0 && idle > 0 && last.is_some_and(|t| secs(t) >= idle);
+                    && now_s - a.connected_s >= first as i64;
+                let last = a.last_received_s.max(a.last_sent_s);
+                let idle_expired = a.recv_count > 0 && idle > 0 && now_s - last >= idle as i64;
                 (never_asked || idle_expired).then_some((slot, never_asked))
             })
             .collect();
+        // C's errno through the pass: nd_poll_wait() cleared it before the timeout the pass follows, each written
+        // record clears it, and a TLS client's close leaves it to the next client's records
+        let mut errno = 0;
         for (slot, never_asked) in expired {
             if let Some(client) = &self.clients[slot] {
                 // C prints the poller's loop index left at the number of listening sockets, and a trailing space
@@ -1351,17 +1384,22 @@ impl Worker for WebWorker {
                     nd_log!(
                         Source::Daemon,
                         Priority::Debug,
+                        errno = errno;
                         "POLLFD: LISTENER: client slot {listeners} (fd {fd}) from {ip} port {port} has not completed its first request in {first} seconds - closing it. "
                     );
                 } else {
                     nd_log!(
                         Source::Daemon,
                         Priority::Debug,
+                        errno = errno;
                         "POLLFD: LISTENER: client slot {listeners} (fd {fd}) from {ip} port {port} is idle for more than {idle} seconds - closing it. "
                     );
                 }
+                if !netdata_agent_log::filtered(Source::Daemon, Priority::Debug) {
+                    errno = 0;
+                }
             }
-            self.close(cx, slot, false);
+            errno = self.close_carrying(cx, slot, false, errno);
         }
         self.throttle(cx);
         cx.add_timer(now + self.checks_every());

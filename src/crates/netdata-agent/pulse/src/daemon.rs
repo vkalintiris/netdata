@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use netdata_agent_rrd::chart::{Algorithm, Chart, ChartType, Dim};
+use netdata_agent_rrd::clock::now_boottime_s;
 use nix::sys::resource::{UsageWho, getrusage};
 use nix::sys::time::TimeValLike;
-use nix::time::{ClockId, clock_gettime};
 
 use crate::chart::{Def, Localhost, dim, set};
 use crate::daemon_memory;
@@ -18,11 +18,6 @@ pub(crate) struct Charts {
     /// `netdata_boottime_time`: the boot time clock at the first cycle.
     boottime_s: i64,
     memory: daemon_memory::Charts,
-}
-
-/// `now_boottime_sec()`.
-fn now_boottime_s() -> i64 {
-    clock_gettime(ClockId::CLOCK_BOOTTIME).map_or(0, |t| t.tv_sec())
 }
 
 impl Charts {

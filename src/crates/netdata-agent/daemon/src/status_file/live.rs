@@ -314,7 +314,7 @@ pub fn refresh(s: &mut StatusFile, status: DaemonStatus, metrics: Option<super::
             last_modified_rfc3339: rfc3339(g.last_modified_ut),
         };
     }
-    s.boottime = nix::time::clock_gettime(nix::time::ClockId::CLOCK_BOOTTIME).map_or(0, |t| t.tv_sec());
+    s.boottime = netdata_agent_rrd::clock::now_boottime_s();
     s.uptime = (now_ut / 1_000_000) as i64 - netdata_agent_rrd::host::netdata_start_time();
     s.timestamp_ut = now_ut;
     s.timestamp_rfc3339 = rfc3339(now_ut);
