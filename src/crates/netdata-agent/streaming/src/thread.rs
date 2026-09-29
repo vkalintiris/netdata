@@ -47,8 +47,8 @@ pub enum StreamMsg {
     Replay(Weak<ReceiverSlot>, ingest::ReplayRequest),
     /// A sender's connection to its parent (`stream_sender_add_to_queue()`).
     AttachSender(Box<Connected>),
-    /// A sender's opcodes are waiting in its slot (`stream_sender_send_opcode()`).
-    SenderOps(Weak<Sender>),
+    /// A sender's opcodes for a session are waiting in its slot (`stream_sender_send_opcode()`).
+    SenderOps(Weak<Sender>, Session),
 }
 
 /// A stream thread: owns the connections of the children assigned to it, and parses what they send inline, and the
@@ -107,9 +107,9 @@ impl Worker for StreamWorker {
             StreamMsg::Attach(attached) => self.attach(cx, *attached),
             StreamMsg::Replay(receiver, request) => self.replay(cx, &receiver, &request),
             StreamMsg::AttachSender(connected) => self.queued_senders.push(*connected),
-            StreamMsg::SenderOps(sender) => {
+            StreamMsg::SenderOps(sender, session) => {
                 if let Some(sender) = sender.upgrade() {
-                    self.sender_ops(cx, &sender);
+                    self.sender_ops(cx, &sender, session);
                 }
             }
         }

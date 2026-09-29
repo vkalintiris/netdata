@@ -10,7 +10,9 @@ use std::sync::{Arc, PoisonError};
 
 use netdata_agent_evloop::conn::Conn;
 use netdata_agent_evloop::{Context, Event, Interest, Token};
-use netdata_agent_log::{Field, FrameGuard, Priority, Source, Value, msgid, nd_log, push};
+use netdata_agent_log::{
+    ErrorLimit, Field, FrameGuard, Priority, Source, Value, errno_of, msgid, nd_log, nd_log_limit, push,
+};
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::{Host, sender_flags};
 use netdata_agent_rrd::pulse::host_status;
@@ -107,10 +109,6 @@ fn peer_of(socket: &socket2::Socket) -> Option<(String, u16)> {
     Some((addr.ip().to_string(), addr.port()))
 }
 
-fn errno_of(e: &io::Error) -> i32 {
-    netdata_agent_log::errno_of(e)
-}
-
 impl StreamWorker {
     fn sender_token(index: usize) -> Token {
         Token(SENDER_TOKENS + index)
@@ -151,6 +149,12 @@ impl StreamWorker {
         if socket.send_buffer_size().is_ok_and(|size| size < LARGE_SOCK_SIZE) {
             let _ = socket.set_send_buffer_size(LARGE_SOCK_SIZE);
         }
+        let Ok(conn) = to_conn(socket) else {
+            // getsockname() failed on a connected socket: back to the connector before anything commits to it
+            self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(host.machine_guid());
+            sender.connector.requeue(&sender, &host, Cmd::Connect);
+            return;
+        };
         let session = Session { thread, id: loop {
             // a zero session means "no dispatcher"
             let id = os_random32();
@@ -168,9 +172,6 @@ impl StreamWorker {
             out.buffer.flush(sender.connector.settings.buffer_max_size, now_monotonic_ut());
         }
         sender.status_connected();
-        let Ok(conn) = to_conn(socket) else {
-            return;
-        };
         let index = self.senders.iter().position(Option::is_none).unwrap_or_else(|| {
             self.senders.push(None);
             self.senders.len() - 1
@@ -266,10 +267,9 @@ impl StreamWorker {
                         (Status::Continue, n as isize, 0)
                     }
                 }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) if e.kind() == io::ErrorKind::ConnectionReset => (Status::Closed, -1, errno_of(&e)),
-                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
-                    (Status::Full, -1, errno_of(&e))
-                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => (Status::Full, -1, errno_of(&e)),
                 Err(e) => (Status::Error, -1, errno_of(&e)),
             };
             let stats = *out.buffer.stats();
@@ -283,22 +283,20 @@ impl StreamWorker {
                     } else {
                         ("socket reports EOF (closed by parent)", Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE)
                     };
-                    {
-                        let _frame = d.frame();
-                        nd_log!(
-                            Source::Daemon,
-                            Priority::Err,
-                            errno = errno;
-                            "STREAM SND[{}] '{}' [to {}]: {text} ({rc}, on fd {}) - restarting connection - we have sent \
-                             {} bytes in {} operations.",
-                            cx.index(),
-                            d.host.hostname(),
-                            d.remote_ip,
-                            d.fd(),
-                            stats.bytes_sent,
-                            stats.sends
-                        );
-                    }
+                    // under the caller's frame: the poll's, or none on the opcode path (C's)
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Err,
+                        errno = errno;
+                        "STREAM SND[{}] '{}' [to {}]: {text} ({rc}, on fd {}) - restarting connection - we have sent {} \
+                         bytes in {} operations.",
+                        cx.index(),
+                        d.host.hostname(),
+                        d.remote_ip,
+                        d.fd(),
+                        stats.bytes_sent,
+                        stats.sends
+                    );
                     if remove {
                         self.disconnect_sender(cx, index, reason, Reason::NEVER, true);
                     }
@@ -327,10 +325,9 @@ impl StreamWorker {
                         d.host.storage().pulse().network.stream_received(n);
                         (Status::Continue, 0)
                     }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                     Err(e) if e.kind() == io::ErrorKind::ConnectionReset => (Status::Closed, errno_of(&e)),
-                    Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
-                        (Status::Full, 0)
-                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => (Status::Full, 0),
                     Err(e) => (Status::Error, errno_of(&e)),
                 }
             };
@@ -379,15 +376,15 @@ impl StreamWorker {
         let Some(d) = self.senders.get_mut(index).and_then(Option::as_mut) else {
             return false;
         };
-        let ok = super::execute::execute(d, cx.index());
+        let ok = super::execute::execute(d);
         self.drain_inline(cx);
         ok
     }
 
     /// `stream_thread_handle_op()` for a sender: the opcodes of its current session only (D103.5); POLLOUT sends
     /// without removing, the rest disconnect.
-    pub(crate) fn sender_ops(&mut self, cx: &mut Context<'_>, sender: &Arc<Sender>) {
-        let Some(ops) = sender.take_ops() else {
+    pub(crate) fn sender_ops(&mut self, cx: &mut Context<'_>, sender: &Arc<Sender>, session: Session) {
+        let Some(ops) = sender.take_ops(session) else {
             return;
         };
         self.handle_ops(cx, sender, ops.session, ops.bits, ops.reason);
@@ -475,7 +472,7 @@ impl StreamWorker {
             let idle_ut = now_ut - d.last_traffic_ut;
             let timeout_s = d.sender.connector.settings.timeout_s;
             let idle = stats.bytes_outstanding != 0
-                && idle_ut > timeout_s.max(0) as u64 * 1_000_000
+                && idle_ut > (timeout_s as u64).wrapping_mul(1_000_000)
                 && !d.executor.pending_replication_requests();
             if idle {
                 {
@@ -499,6 +496,8 @@ impl StreamWorker {
                 }
                 self.disconnect_sender(cx, index, Reason::DISCONNECT_TIMEOUT, Reason::NEVER, true);
             } else if stats.bytes_outstanding != 0 {
+                // an edge the send missed: C's level-triggered poll sends it under the poll's frame
+                let _frame = d.frame();
                 self.send_sender(cx, index, true);
             }
         }
@@ -594,14 +593,8 @@ impl StreamWorker {
 
 /// "STREAM THREAD[%zu]: OPCODE %u ignored.", once a second.
 fn opcode_ignored(thread: usize, bits: u32) {
-    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-    let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
-    let now = std::time::Instant::now();
-    if last.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(1)) {
-        return;
-    }
-    *last = Some(now);
-    nd_log!(Source::Daemon, Priority::Debug, "STREAM THREAD[{thread}]: OPCODE {bits} ignored.");
+    static LIMIT: ErrorLimit = ErrorLimit::new(1, 0);
+    nd_log_limit!(&LIMIT, Source::Daemon, Priority::Debug, "STREAM THREAD[{thread}]: OPCODE {bits} ignored.");
 }
 
 impl Sender {

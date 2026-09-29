@@ -3,7 +3,7 @@
 //! restarts without compression. Every commit takes the host's one lock (D100.7). Map:
 //! `knowledge/map-m7-commit4-runtime.md` §2.
 
-use netdata_agent_log::{Priority, Source, nd_log};
+use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log, nd_log_limit};
 
 use super::buffer::{ADAPT_TO_TIMES_MAX_SIZE, Traffic};
 use super::{Out, Sender, op};
@@ -20,18 +20,8 @@ enum Ended {
 }
 
 /// `nd_log_limit_static_global_var(erl, 1, 0)`: one record a second, for all hosts.
-fn limited(last: &std::sync::Mutex<Option<std::time::Instant>>) -> bool {
-    let mut last = last.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let now = std::time::Instant::now();
-    if last.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(1)) {
-        return false;
-    }
-    *last = Some(now);
-    true
-}
-
-static OVERFLOW_RECORD: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-static COMPRESSION_RECORD: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+static OVERFLOW_RECORD: ErrorLimit = ErrorLimit::new(1, 0);
+static COMPRESSION_RECORD: ErrorLimit = ErrorLimit::new(1, 0);
 
 impl Sender {
     /// `sender_buffer_commit()`: dropped without a dispatched connection (no session).
@@ -74,31 +64,29 @@ impl Sender {
                 let remote_ip = out.remote_ip.clone();
                 drop(out);
                 self.post(session, op::BUFFER_OVERFLOW, Reason::DISCONNECT_BUFFER_OVERFLOW);
-                if limited(&OVERFLOW_RECORD) {
-                    nd_log!(
-                        Source::Daemon,
-                        Priority::Err,
-                        "STREAM SND '{hostname}' [to {remote_ip}]: buffer overflow (buffer size {}, max size {}, \
-                         available {}). Restarting connection.",
-                        stats.bytes_size,
-                        stats.bytes_max_size,
-                        stats.bytes_available
-                    );
-                }
+                nd_log_limit!(
+                    &OVERFLOW_RECORD,
+                    Source::Daemon,
+                    Priority::Err,
+                    "STREAM SND '{hostname}' [to {remote_ip}]: buffer overflow (buffer size {}, max size {}, available \
+                     {}). Restarting connection.",
+                    stats.bytes_size,
+                    stats.bytes_max_size,
+                    stats.bytes_available
+                );
             }
             Ended::CompressionFailed => {
                 self.deactivate_compression(&out, &hostname);
                 let remote_ip = out.remote_ip.clone();
                 drop(out);
                 self.post(session, op::RECONNECT_WITHOUT_COMPRESSION, Reason::SND_DISCONNECT_COMPRESSION_FAILED);
-                if limited(&COMPRESSION_RECORD) {
-                    nd_log!(
-                        Source::Daemon,
-                        Priority::Err,
-                        "STREAM SND '{hostname}' [to {remote_ip}]: COMPRESSION failed (twice). Deactivating \
-                         compression and restarting connection."
-                    );
-                }
+                nd_log_limit!(
+                    &COMPRESSION_RECORD,
+                    Source::Daemon,
+                    Priority::Err,
+                    "STREAM SND '{hostname}' [to {remote_ip}]: COMPRESSION failed (twice). Deactivating compression \
+                     and restarting connection."
+                );
             }
         }
     }

@@ -3,7 +3,6 @@
 //! label, the metadata the child sends first, and NODE_ID from the parent (`protocol/command-nodeid.c`). Map:
 //! `knowledge/map-m7-commit4-runtime.md` §5 (NODE_ID), §6, §7.
 
-use std::os::fd::AsRawFd;
 use std::sync::atomic::Ordering;
 
 use netdata_agent_log::{Priority, Source, nd_log};
@@ -13,16 +12,12 @@ use netdata_agent_rrd::upstream;
 use netdata_agent_text::parse::uuid_parse_flexi;
 
 use super::dispatch::Dispatched;
-use super::{Sender, Traffic};
+use super::{Sender, Traffic, shown, text};
 use crate::caps;
 use crate::receiver::now_monotonic_ut;
 
 /// `OS_IFNAME_MAX`: the name is cut to one byte less.
 const IFNAME_MAX: usize = 32;
-
-fn text(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).into_owned()
-}
 
 impl Sender {
     /// `host->stream.snd.status.replication.counter_in++`.
@@ -97,7 +92,6 @@ impl Sender {
 /// against the IPv4 ones, a link-local IPv6 one with its scope), cut to 31 bytes.
 fn egress_interface(socket: &socket2::Socket) -> Option<String> {
     use std::net::{IpAddr, SocketAddr};
-    let _ = socket.as_raw_fd();
     let local = socket.local_addr().ok()?.as_socket()?;
     for ifa in nix::ifaddrs::getifaddrs().ok()? {
         let Some(addr) = ifa.address else {
@@ -121,7 +115,7 @@ fn egress_interface(socket: &socket2::Socket) -> Option<String> {
                 end -= 1;
             }
             name.truncate(end);
-            return Some(name);
+            return Some(name).filter(|n| !n.is_empty());
         }
     }
     None
@@ -140,7 +134,6 @@ pub(crate) fn node_and_claim_id_from_parent(
     let remote = &d.remote_ip;
     let env = d.sender.connector.env();
     let claimed = (env.claimed)();
-    let shown = |w: Option<&[u8]>| w.map_or_else(|| "(unset)".to_string(), text);
     let Some(claim_id) = uuid_parse_flexi(claim.unwrap_or_default()) else {
         nd_log!(
             Source::Daemon,

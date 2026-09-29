@@ -1,7 +1,7 @@
-//! A host's sender (`struct sender_state`: `src/streaming/stream-sender-api.c` and the connector's side of
-//! `stream-sender.c`) as far as milestone 7 commit 3 has it: created with the host's streaming settings, queued for
-//! its parents at its first collection, connected by the connector and handed to its stream thread, which holds the
-//! connection until the sender runtime (commit 4, D102.2). Map: `knowledge/map-m7-commit3-connector.md` §1-§2.
+//! A host's sender (`struct sender_state`: `src/streaming/stream-sender-api.c` and `stream-sender.c`): created with
+//! the host's streaming settings, queued for its parents at its first collection, connected by the connector and
+//! handed to its stream thread, which sends what the host commits and executes what the parent sends down. Maps:
+//! `knowledge/map-m7-commit3-connector.md` §1-§2, `knowledge/map-m7-commit4-runtime.md`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
@@ -27,6 +27,16 @@ use crate::conf::{CompressionLevels, Send};
 use crate::connector::Connector;
 use crate::parents::Parents;
 use crate::reason::Reason;
+
+/// Bytes from the wire in a record.
+pub(crate) fn text(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
+}
+
+/// A word in a record: `(unset)` when missing.
+pub(crate) fn shown(w: Option<&[u8]>) -> String {
+    w.map_or_else(|| "(unset)".to_string(), text)
+}
 
 /// What the connector reads of `stream_send` (`[stream]` in `stream.conf`).
 #[derive(Debug, Clone)]
@@ -260,13 +270,17 @@ impl Sender {
             }
         };
         if first {
-            let _ = self.connector.pool().send(session.thread, crate::thread::StreamMsg::SenderOps(Arc::downgrade(&me)));
+            let _ = self
+                .connector
+                .pool()
+                .send(session.thread, crate::thread::StreamMsg::SenderOps(Arc::downgrade(&me), session));
         }
     }
 
-    /// The opcodes waiting for this sender, taken.
-    pub(crate) fn take_ops(&self) -> Option<Ops> {
-        self.ops.lock().unwrap_or_else(PoisonError::into_inner).take()
+    /// The opcodes waiting for this sender's `session`, taken: a newer session's stay for its own thread's message.
+    pub(crate) fn take_ops(&self, session: Session) -> Option<Ops> {
+        let mut slot = self.ops.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.as_ref().is_some_and(|ops| ops.session == session) { slot.take() } else { None }
     }
 
     /// The frame of the connector's records for this host.

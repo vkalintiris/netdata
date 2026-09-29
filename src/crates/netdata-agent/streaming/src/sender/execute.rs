@@ -10,17 +10,13 @@ use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_text::c::c_str;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 
-use super::Traffic;
 use super::dispatch::Dispatched;
+use super::{Traffic, shown, text};
 
 /// `PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT`.
 const FUNCTIONS_TIMEOUT_DEFAULT: i32 = 10;
 const FUNCTION_PAYLOAD_END: &str = "FUNCTION_PAYLOAD_END";
 const JSON_PAYLOAD_END: &str = "JSON_PAYLOAD_END";
-
-fn text(b: &[u8]) -> String {
-    String::from_utf8_lossy(b).into_owned()
-}
 
 /// What a deferred body runs at its end keyword.
 #[derive(Debug)]
@@ -68,6 +64,8 @@ fn append(d: &mut Dispatched, line: &[u8], newline: bool) -> bool {
     let add = line.len() + usize::from(newline);
     let current = defer.payload.len();
     if add > MAX_DEFERRED_SIZE || current > MAX_DEFERRED_SIZE - add {
+        // under C's REQUEST callback, which has no words here and leaves its separator
+        let _request = request_field(None);
         nd_log!(
             Source::Daemon,
             Priority::Err,
@@ -88,8 +86,7 @@ fn append(d: &mut Dispatched, line: &[u8], newline: bool) -> bool {
 
 /// `stream_sender_execute_commands()` over the bytes received: complete lines run, the rest waits. False when the
 /// connection must restart (a deferred body too big).
-pub(crate) fn execute(d: &mut Dispatched, thread: usize) -> bool {
-    let _ = thread;
+pub(crate) fn execute(d: &mut Dispatched) -> bool {
     let end = d.read_len;
     let mut start = 0;
     while start < end {
@@ -211,7 +208,6 @@ fn command(d: &mut Dispatched, line: &[u8]) {
             d.sender.replication_counter_in();
             let (chart, start, after, before) = (words.get(1), words.get(2), words.get(3), words.get(4));
             let (Some(chart), Some(start), Some(after), Some(before)) = (chart, start, after, before) else {
-                let shown = |w: Option<&[u8]>| w.map_or_else(|| "(unset)".to_string(), text);
                 nd_log!(
                     Source::Daemon,
                     Priority::Err,
@@ -301,12 +297,10 @@ fn execute_function(
     w.member_add_string("errorMessage", "This feature is not available on this host at this time.");
     w.finalize();
     if d.host.can_stream_metadata() {
-        let mut out = format!(
-            "FUNCTION_RESULT_BEGIN \"{}\" 404 \"application/json\" {}\n",
-            text(transaction.unwrap_or_default()),
-            now_realtime_s() + 1
-        )
-        .into_bytes();
+        // the transaction's bytes as they came
+        let mut out = b"FUNCTION_RESULT_BEGIN \"".to_vec();
+        out.extend_from_slice(transaction.unwrap_or_default());
+        out.extend_from_slice(format!("\" 404 \"application/json\" {}\n", now_realtime_s() + 1).as_bytes());
         out.extend_from_slice(w.as_bytes());
         out.extend_from_slice(b"\nFUNCTION_RESULT_END\n");
         d.sender.commit(&out, Traffic::Functions);

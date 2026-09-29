@@ -650,8 +650,13 @@ func TestRChildRuntime(t *testing.T) {
 	cases := map[string]struct {
 		down  []string
 		close bool
+		// later are sent after the child read the first lines and went quiet: C's first record then carries
+		// the errno its last read left (review R41 m2)
+		later []string
 	}{
 		"executor": {down: runtimeScript},
+		"executor-later": {down: []string{`GARBAGE a`},
+			later: []string{`GARBAGE b`, `FUNCTION tx-2`, `NODE_ID 'not-a-uuid' 'x' 'https://example.invalid'`}},
 		// the line fills the child's 15488-byte buffer before its newline arrives
 		"long-line":    {down: []string{strings.Repeat("x", 15487)}},
 		"parent-close": {close: true},
@@ -678,10 +683,14 @@ func TestRChildRuntime(t *testing.T) {
 					return
 				}
 				time.Sleep(3 * time.Second)
+				if tc.later != nil {
+					_ = s.Send(tc.later...)
+					time.Sleep(2 * time.Second)
+				}
 				if tc.close {
 					_ = s.Close()
 				}
-				if name != "executor" && parent.WaitSession(2, 30*time.Second) == nil {
+				if !strings.HasPrefix(name, "executor") && parent.WaitSession(2, 30*time.Second) == nil {
 					t.Errorf("%s: no second connection within 30 s", role)
 				}
 				_ = d.Stop()
