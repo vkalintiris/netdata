@@ -70,6 +70,7 @@ impl Sender {
         };
         match ended {
             Ended::Added { enable_sending } => {
+                self.connector.replication().recalculate(&self.replication, out.buffer.used_percent());
                 drop(out);
                 if enable_sending {
                     self.post(session, op::POLLOUT, Reason::NEVER);

@@ -2,8 +2,8 @@
 //! `[db] replication prefetch = 1`, D105.3): the window normalized against the chart's retention, the exposed
 //! dimensions' tier 0 walked step by step into `RBEGIN`/`RSET` lines up to a quarter of the sender's buffer, the
 //! collection state when the answer starts streaming, `REND`, and the flip that ends the chart's replication. The
-//! queue, the threads and the transport are the streaming crate's (D111.5). Map: `knowledge/map-m7-commit6-replication.md`
-//! §4-§6 in the status repository.
+//! queue, the threads and the transport are the streaming crate's (D111.5). Map:
+//! `knowledge/map-m7-commit6-replication.md` §4-§6 in the status repository.
 
 use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log, nd_log_limit};
 use netdata_agent_pluginsd_proto::caps;
@@ -217,7 +217,13 @@ fn walk(
 /// `replication_query_align_to_optimal_before()`: a query that does not start streaming ends where the pages it
 /// reads end, when that is later but within 1024 intervals, before the chart's last update and before now. C's
 /// minimum restarts at a dimension that answers 0.
-fn align_to_optimal_before(dims: &mut [DimQuery<'_>], window: &mut Window, chart: &Chart, last_updated_s: i64, wall_s: i64) {
+fn align_to_optimal_before(
+    dims: &mut [DimQuery<'_>],
+    window: &mut Window,
+    chart: &Chart,
+    last_updated_s: i64,
+    wall_s: i64,
+) {
     let mut expanded = 0;
     for d in dims.iter_mut() {
         let new_before = d.query.align_to_optimal_before();
@@ -342,6 +348,11 @@ pub fn answer(
         let interpolated = capabilities & caps::INTERPOLATED != 0;
         let walked = walk(out, &enc, host, &chart, &mut dims, &mut window, wall_s, interpolated, max_msg_size);
         finished_with_gap = walked.finished_with_gap;
+        chart.storage().pulse().queries.replication_query_completed(
+            dims.len() as u64,
+            walked.points_read as u64,
+            walked.points_generated as u64,
+        );
     }
     if window.streaming {
         collection_state(out, &enc, &chart, capabilities);

@@ -274,6 +274,8 @@ pub struct SourceStats {
 pub struct Queries {
     /// `/api/vX/data`, ML, weights, badges, health.
     sources: [SourceCounters; 5],
+    /// `replication_queries`: the replication sender's dimension queries (`queries_finished`) and their points.
+    replication: SourceCounters,
     backfill_queries: AtomicU64,
     backfill_points_read: AtomicU64,
 }
@@ -319,6 +321,24 @@ impl Queries {
                 points_generated: c.points_generated.load(Ordering::Relaxed),
             }
         })
+    }
+
+    /// `replication_query_finalize()`'s statistics: an executed answer's dimension queries and their points.
+    pub fn replication_query_completed(&self, queries: u64, points_read: u64, points_generated: u64) {
+        let c = &self.replication;
+        c.queries.fetch_add(queries, Ordering::Relaxed);
+        c.points_read.fetch_add(points_read, Ordering::Relaxed);
+        c.points_generated.fetch_add(points_generated, Ordering::Relaxed);
+    }
+
+    /// `replication_get_query_statistics()`.
+    pub fn replication(&self) -> SourceStats {
+        let c = &self.replication;
+        SourceStats {
+            queries: c.queries.load(Ordering::Relaxed),
+            points_read: c.points_read.load(Ordering::Relaxed),
+            points_generated: c.points_generated.load(Ordering::Relaxed),
+        }
     }
 
     /// `pulse_queries_backfill_query_completed()`: one query of a lower tier for a backfill, and its points.

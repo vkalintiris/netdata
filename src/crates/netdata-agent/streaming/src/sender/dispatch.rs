@@ -7,12 +7,14 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
+use std::time::Instant;
 
 use netdata_agent_evloop::conn::Conn;
 use netdata_agent_evloop::{Context, Event, Interest, Token};
 use netdata_agent_log::{
     ErrorLimit, Field, FrameGuard, Priority, Source, Value, errno_of, msgid, nd_log, nd_log_limit, push,
 };
+use netdata_agent_rrd::chart::flags;
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::{Host, sender_flags};
 use netdata_agent_rrd::pulse::host_status;
@@ -26,7 +28,7 @@ use crate::caps;
 use crate::connector::Cmd;
 use crate::random::os_random32;
 use crate::reason::Reason;
-use crate::receiver::now_monotonic_ut;
+use crate::receiver::{now_monotonic_ut, replication_progressed};
 use crate::thread::StreamWorker;
 
 /// The tokens of senders' sockets: above every receiver's.
@@ -60,6 +62,10 @@ pub(crate) struct Dispatched {
     /// The parent's address as `socket_peers()` gives it, for DST_IP and DST_PORT.
     peer: Option<(String, u16)>,
     pub executor: Executor,
+    /// `s->replication.last_counter_sum`, `last_progress_ut` and `last_checked_ut`: the stall check's state.
+    replication_commands: u64,
+    replication_progress: Option<Instant>,
+    replication_checked: Option<Instant>,
 }
 
 impl Dispatched {
@@ -172,6 +178,7 @@ impl StreamWorker {
             out.algorithm = compressor.as_ref().map(|c| c.algorithm());
             out.compressor = compressor;
             sender.flush_buffer(&mut out);
+            sender.connector.replication().recalculate(sender.replication(), out.buffer.used_percent());
         }
         sender.status_connected();
         let index = self.senders.iter().position(Option::is_none).unwrap_or_else(|| {
@@ -202,6 +209,10 @@ impl StreamWorker {
             capabilities,
             peer,
             executor: Executor::default(),
+            replication_commands: 0,
+            // set at the dequeue, as C's
+            replication_progress: Some(Instant::now()),
+            replication_checked: None,
         });
         sender.on_ready_to_dispatch(&host, capabilities);
         self.drain_inline(cx);
@@ -261,6 +272,7 @@ impl StreamWorker {
                 Ok(n) => {
                     d.host.storage().pulse().network.stream_sent(n);
                     out.buffer.del(n, now_ut);
+                    d.sender.connector.replication().recalculate(d.sender.replication(), out.buffer.used_percent());
                     d.last_traffic_ut = now_ut;
                     if out.buffer.stats().bytes_outstanding == 0 {
                         out.buffer.recreate_timed(now_ut, false);
@@ -502,6 +514,74 @@ impl StreamWorker {
                 let _frame = d.frame();
                 self.send_sender(cx, index, true);
             }
+        }
+    }
+
+    /// `stream_sender_did_replication_progress()` for a dispatched sender: the commands received and answered.
+    fn sender_replication_progressed(d: &mut Dispatched, now: Instant) -> bool {
+        let commands = u64::from(d.sender.counter_in.load(Ordering::Relaxed))
+            + u64::from(d.sender.counter_out.load(Ordering::Relaxed));
+        let waiting = d.sender.replication().queued();
+        replication_progressed((&mut d.replication_commands, &mut d.replication_progress), commands, waiting, now)
+    }
+
+    /// `stream_sender_replication_check_from_poll()`: a sender whose replication made no progress for ten minutes
+    /// while some of its host's charts never finished is disconnected, after its unfinished charts are listed, and
+    /// connects again.
+    pub(crate) fn check_sender_replication(&mut self, cx: &mut Context<'_>, now: Instant) {
+        for index in 0..self.senders.len() {
+            let Some(d) = self.senders[index].as_mut() else {
+                continue;
+            };
+            if Self::sender_replication_progressed(d, now) {
+                d.replication_checked = None;
+                continue;
+            }
+            if d.replication_checked == d.replication_progress {
+                continue;
+            }
+            let frame = d.frame();
+            let at = format!("STREAM SND[{}] '{}' [to {}]: ", cx.index(), d.host.hostname(), d.remote_ip);
+            let (mut stalled, mut finished) = (0usize, 0usize);
+            for chart in d.host.charts().all() {
+                let f = chart.flags();
+                if f & (flags::OBSOLETE | flags::UPSTREAM_IGNORE) != 0 {
+                    continue;
+                }
+                if f & flags::SENDER_REPLICATION_FINISHED != 0 {
+                    finished += 1;
+                    continue;
+                }
+                let state = if f & flags::SENDER_REPLICATION_IN_PROGRESS != 0 {
+                    "has not finished"
+                } else {
+                    "has not started"
+                };
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Debug,
+                    "{at}REPLICATION STALLED: instance '{}' {state} replication yet.",
+                    chart.id()
+                );
+                stalled += 1;
+            }
+            if stalled > 0 && !Self::sender_replication_progressed(d, now) {
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "{at}REPLICATION EXCEPTIONS SUMMARY: node has {stalled} stalled replication requests ({finished} \
+                     completed).We have received {} and sent {} replication commands. Disconnecting node to restore \
+                     streaming.",
+                    d.sender.counter_in.load(Ordering::Relaxed),
+                    d.sender.counter_out.load(Ordering::Relaxed)
+                );
+                // the disconnect's record carries its own frame, as the idle check's
+                drop(frame);
+                self.disconnect_sender(cx, index, Reason::DISCONNECT_REPLICATION_STALLED, Reason::NEVER, true);
+                continue;
+            }
+            d.replication_checked = d.replication_progress;
+            drop(frame);
         }
     }
 

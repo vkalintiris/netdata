@@ -147,6 +147,8 @@ impl Worker for StreamWorker {
             self.check_all(cx, now);
             if now.duration_since(self.last_replication_check) >= REPLICATION_STALL {
                 self.last_replication_check = now;
+                // the senders before the receivers, as C's
+                self.check_sender_replication(cx, now);
                 self.check_replication(cx, now);
             }
         }

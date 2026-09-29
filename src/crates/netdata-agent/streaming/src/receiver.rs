@@ -227,7 +227,7 @@ pub(crate) struct Child {
     /// The last read or write, for the disconnect record's `idle=` and the idle timeout.
     last_io: Instant,
     /// `rpt->replication`: the request count last seen, when it last moved, and the progress time last checked.
-    replication_requests: u32,
+    replication_requests: u64,
     replication_progress: Option<Instant>,
     replication_checked: Option<Instant>,
 }
@@ -773,21 +773,22 @@ impl Receivers {
     }
 }
 
-/// `stream_receiver_did_replication_progress()`: new replication requests, none yet, charts waiting for their
-/// backfill, or less than ten minutes since the last request; `seen` is the request count last seen and when it moved.
-fn replication_progressed(
-    seen: (&mut u32, &mut Option<Instant>),
-    requests: u32,
-    backfill_pending: u32,
+/// `stream_receiver_did_replication_progress()` and `stream_sender_did_replication_progress()`: the replication
+/// commands counted moved, none yet, some work still waits, or less than ten minutes since they last moved; `seen`
+/// is the count last seen and when it moved.
+pub(crate) fn replication_progressed(
+    seen: (&mut u64, &mut Option<Instant>),
+    commands: u64,
+    waiting: bool,
     now: Instant,
 ) -> bool {
-    let (last_requests, progress) = seen;
-    if *last_requests != requests {
-        *last_requests = requests;
+    let (last_commands, progress) = seen;
+    if *last_commands != commands {
+        *last_commands = commands;
         *progress = Some(now);
         return true;
     }
-    if requests == 0 || backfill_pending != 0 {
+    if commands == 0 || waiting {
         return true;
     }
     match *progress {
@@ -1155,8 +1156,8 @@ impl StreamWorker {
                 &mut child.replication_requests,
                 &mut child.replication_progress,
             ),
-            host.replication_requests(),
-            host.backfill_pending(),
+            u64::from(host.replication_requests()),
+            host.backfill_pending() != 0,
             now,
         )
     }
@@ -1489,36 +1490,11 @@ mod tests {
         let t0 = Instant::now();
         let later = t0 + REPLICATION_STALL + Duration::from_secs(1);
         let (mut requests, mut since) = (0, None);
-        assert!(replication_progressed(
-            (&mut requests, &mut since),
-            3,
-            0,
-            t0
-        ));
-        assert!(!replication_progressed(
-            (&mut requests, &mut since),
-            3,
-            0,
-            later
-        ));
-        assert!(replication_progressed(
-            (&mut requests, &mut since),
-            3,
-            2,
-            later
-        ));
-        assert!(replication_progressed(
-            (&mut requests, &mut since),
-            4,
-            0,
-            later
-        ));
-        assert!(replication_progressed(
-            (&mut requests, &mut since),
-            0,
-            0,
-            later
-        ));
+        assert!(replication_progressed((&mut requests, &mut since), 3, false, t0));
+        assert!(!replication_progressed((&mut requests, &mut since), 3, false, later));
+        assert!(replication_progressed((&mut requests, &mut since), 3, true, later), "work waits");
+        assert!(replication_progressed((&mut requests, &mut since), 4, false, later));
+        assert!(replication_progressed((&mut requests, &mut since), 0, false, later), "not started");
     }
 
     #[test]

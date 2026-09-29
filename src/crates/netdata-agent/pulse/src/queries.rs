@@ -1,5 +1,5 @@
 //! `pulse-queries.c`: the queries, the samples they read and the points they generated, per source. The exporters
-//! are not ported and the replication queries are the stream sender's, which is not either: both are 0.
+//! are not ported: they are 0.
 
 use netdata_agent_rrd::chart::{Algorithm, ChartType};
 use netdata_agent_rrd::pulse::{QuerySource, SourceStats};
@@ -69,7 +69,7 @@ impl Charts {
         ]
         .map(|source| queries.source(source));
         let (backfill_queries, backfill_points) = queries.backfill();
-        let (exporters, replication) = (SourceStats::default(), SourceStats::default());
+        let (exporters, replication) = (SourceStats::default(), queries.replication());
         let def = |id, context, title, units, priority| Def {
             id,
             family: "Time-Series Queries",
