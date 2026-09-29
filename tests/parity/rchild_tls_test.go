@@ -4,6 +4,7 @@ package parity
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -19,10 +20,11 @@ var tlsPeersRe = regexp.MustCompile(`\[\[([^\]]*)\]:\d+\]`)
 // TestRChildTLS (check `stream.rchild-tls`, milestone 7 commit 7, D107, D113; map `knowledge/map-m7-commit7-tls.md`
 // §11): a C child and a Rust child with the same identity each stream over TLS (`destination = …:SSL`) to its own C
 // parent (the oracle on both sides) whose certificate is a self-signed one for 127.0.0.1.
-//   - cafile (the certificate as the child's `CAfile`) and skip (`ssl skip certificate verification = yes`): the
-//     comparison of `stream.rchild` (paths, stream_info, the parents' charts, the data within each side, the
-//     children's records, which carry `dst_transport=https`), and the parents' receiver records (`src_transport=https`);
-//     skip also requires C's NOTICE that the senders skip the verification.
+//   - cafile (the certificate as the child's `CAfile`), capath (a hashed `CApath`) and skip (`ssl skip certificate
+//     verification = yes`): the comparison of `stream.rchild` (paths, stream_info, the parents' charts, the data
+//     within each side, the children's records, which carry `dst_transport=https`), and the parents' receiver records
+//     (`src_transport=https`); skip also requires C's NOTICE that the senders skip the verification and its web
+//     server's INFO, which reads the senders' flag.
 //   - invalid (no CA, verification on): the probe fails its certificate test and the parent is postponed, no session;
 //     the record of the failure comes once the parent closes the idle connection the close waits on (D107.1).
 //   - plain-port (a parent without certificates): the probe's handshake fails.
@@ -45,17 +47,31 @@ func TestRChildTLS(t *testing.T) {
 				Extra: "    reconnect delay = 5\n" + extra}
 		}
 	}
+	// CApath: a directory hashed as OpenSSL looks it up (D107.8)
+	caPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(caPath, "ca.pem"), cert, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rehashed := exec.Command("openssl", "rehash", caPath).Run() == nil
 	for name, extra := range map[string]string{
 		"cafile": "    CAfile = " + caFile + "\n",
+		"capath": "    CApath = " + caPath + "\n",
 		"skip":   "    ssl skip certificate verification = yes\n",
 	} {
 		t.Run(name, func(t *testing.T) {
+			if name == "capath" && !rehashed {
+				t.Skip("no `openssl rehash`")
+			}
 			p, ls := parents(t, name, certificates)
 			children := rchildCompare(t, p, "tls-"+name, to(ls, extra))
 			if name == "skip" {
 				for i, c := range children {
 					if !logContains(t, c, "SSL: streaming senders will skip SSL certificates verification.") {
 						t.Errorf("child %d: no NOTICE that the senders skip the verification", i)
+					}
+					// C's web server tests the senders' flag (static-threaded.c:466)
+					if !logContains(t, c, "SSL: web server will skip SSL certificates verification.") {
+						t.Errorf("child %d: no web server INFO that it skips the verification", i)
 					}
 				}
 			}

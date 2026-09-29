@@ -5,6 +5,9 @@ package stream
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/url"
@@ -178,6 +181,42 @@ func (s *Session) Close() error {
 	return s.conn.Close()
 }
 
+// CloseNotify sends a TLS close_notify and keeps the TCP connection, which CloseRaw ends.
+func (s *Session) CloseNotify() error {
+	if tc, ok := s.conn.(*tls.Conn); ok {
+		return tc.CloseWrite()
+	}
+	return nil
+}
+
+// CloseRaw ends the session's TCP connection without a TLS close_notify (Close sends one over TLS).
+func (s *Session) CloseRaw() error {
+	if tc, ok := s.conn.(*tls.Conn); ok {
+		return tc.NetConn().Close()
+	}
+	return s.conn.Close()
+}
+
+// Hello is a TLS client's ClientHello as a TLS parent read it, and when.
+type Hello struct {
+	At                time.Time
+	ServerName        string
+	SupportedProtos   []string
+	SupportedVersions []uint16
+	CipherSuites      []uint16
+	SupportedCurves   []tls.CurveID
+	SignatureSchemes  []tls.SignatureScheme
+	SupportedPoints   []uint8
+	Extensions        []uint16
+}
+
+// String is the hello without its time, for comparisons.
+func (h Hello) String() string {
+	return fmt.Sprintf("sni=%q alpn=%q versions=%x suites=%x curves=%d schemes=%x points=%d extensions=%d",
+		h.ServerName, h.SupportedProtos, h.SupportedVersions, h.CipherSuites, h.SupportedCurves, h.SignatureSchemes,
+		h.SupportedPoints, h.Extensions)
+}
+
 // NotFound is the default answer to a `stream_info` probe: 404 with no content (the child keeps the parent as a
 // candidate).
 const NotFound = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -185,38 +224,97 @@ const NotFound = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: clo
 // Parent is a scripted streaming parent on 127.0.0.1: it answers a child's `stream_info` probe as `Probe` says
 // (NotFound when nil), an h2o `GET /stream` upgrade as `Upgrade` says (a 101 answer keeps the connection for the
 // STREAM request that follows), records each STREAM request and every byte after it, and answers as `Script` says
-// (PlaintextAnswer when nil). Set `Probe` and `Upgrade` before a child connects.
+// (PlaintextAnswer when nil). Set `Probe` and `Upgrade` before a child connects. A TLS parent (StartParentTLS)
+// does the same over TLS, recording each connection's ClientHello.
 type Parent struct {
 	Script func(Request) Answer
 	// Probe is the raw answer to a probe's raw request; nil bytes close the connection without one.
 	Probe func(raw string) []byte
 	// Upgrade is the raw answer to `GET /stream`; nil or empty bytes close without one.
-	Upgrade  func(raw string) []byte
-	ln       net.Listener
-	mu       sync.Mutex
-	sessions []*Session
-	probes   []string
-	probeRaw []string
-	upgrades []string
+	Upgrade func(raw string) []byte
+	// RefuseHandshake, on a TLS parent, fails the n-th connection's handshake (1-based) with an alert after its
+	// ClientHello.
+	RefuseHandshake func(n int) bool
+	ln              net.Listener
+	tls             *tls.Config
+	mu              sync.Mutex
+	sessions        []*Session
+	probes          []string
+	probeRaw        []string
+	upgrades        []string
+	hellos          []Hello
+	accepted        int
 }
 
 // StartParent listens on a free port of 127.0.0.1.
 func StartParent(script func(Request) Answer) (*Parent, error) {
+	return StartParentTLS(script, nil)
+}
+
+// StartParentTLS is StartParent over TLS with `config` (its certificates), plain text when nil.
+func StartParentTLS(script func(Request) Answer, config *tls.Config) (*Parent, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
-	p := &Parent{Script: script, ln: ln}
+	p := &Parent{Script: script, ln: ln, tls: config}
 	go func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			go p.serve(c)
+			if config == nil {
+				go p.serve(c)
+			} else {
+				go p.serveTLS(c)
+			}
 		}
 	}()
 	return p, nil
+}
+
+// SetRefuseHandshake replaces which TLS handshakes fail while children connect.
+func (p *Parent) SetRefuseHandshake(refuse func(n int) bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.RefuseHandshake = refuse
+}
+
+// Hellos are a TLS parent's ClientHellos so far, in arrival order.
+func (p *Parent) Hellos() []Hello {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]Hello(nil), p.hellos...)
+}
+
+// serveTLS records the connection's ClientHello, fails its handshake when RefuseHandshake says so, and serves the
+// rest over TLS.
+func (p *Parent) serveTLS(c net.Conn) {
+	p.mu.Lock()
+	p.accepted++
+	n, refuse := p.accepted, p.RefuseHandshake
+	p.mu.Unlock()
+	config := p.tls.Clone()
+	config.GetConfigForClient = func(h *tls.ClientHelloInfo) (*tls.Config, error) {
+		p.mu.Lock()
+		p.hellos = append(p.hellos, Hello{At: time.Now(), ServerName: h.ServerName, SupportedProtos: h.SupportedProtos,
+			SupportedVersions: h.SupportedVersions, CipherSuites: h.CipherSuites, SupportedCurves: h.SupportedCurves,
+			SignatureSchemes: h.SignatureSchemes, SupportedPoints: h.SupportedPoints, Extensions: h.Extensions})
+		p.mu.Unlock()
+		if refuse != nil && refuse(n) {
+			return nil, errors.New("handshake refused")
+		}
+		return nil, nil
+	}
+	tc := tls.Server(c, config)
+	_ = tc.SetDeadline(time.Now().Add(30 * time.Second))
+	if err := tc.Handshake(); err != nil {
+		_ = c.Close()
+		return
+	}
+	_ = tc.SetDeadline(time.Time{})
+	p.serve(tc)
 }
 
 // SetProbe replaces the probe's answer while children connect.

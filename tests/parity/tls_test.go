@@ -35,14 +35,46 @@ const tlsACL = "dashboard|registry|badges|management|netdata.conf|streaming|mcp"
 // selfSigned is a P-256 key and its self-signed certificate for localhost, as PEM.
 func selfSigned(t *testing.T) (key, cert []byte) {
 	t.Helper()
+	return caSigned(t, nil, nil, time.Now().Add(24*time.Hour))
+}
+
+// newCA is a P-256 certificate authority named `name`: its certificate, its key, and the certificate as PEM.
+func newCA(t *testing.T, name string) (*x509.Certificate, *ecdsa.PrivateKey, []byte) {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: name},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour), IsCA: true,
+		BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &k.PublicKey, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ca, k, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// caSigned is a P-256 key and its certificate for localhost and 127.0.0.1, valid for the 25 hours before
+// `notAfter`, signed by `ca` (itself when nil), as PEM.
+func caSigned(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, notAfter time.Time) (key, cert []byte) {
+	t.Helper()
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "localhost"},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		NotBefore: notAfter.Add(-25 * time.Hour), NotAfter: notAfter,
 		DNSNames: []string{"localhost"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &k.PublicKey, k)
+	parent, signer := tmpl, k
+	if ca != nil {
+		parent, signer = ca, caKey
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, &k.PublicKey, signer)
 	if err != nil {
 		t.Fatal(err)
 	}
