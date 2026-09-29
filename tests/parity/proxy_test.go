@@ -64,6 +64,8 @@ type proxyVariant struct {
 	ticks int
 	// function, when positive, is the tick after which the child registers a host function
 	function int
+	// malformedAt, when positive, is the tick whose lines are malformed (malformedTick) instead
+	malformedAt int
 	// records, when set, replaces the ticks: the child writes these lines after its charts' replication, and the
 	// proxies' PLUGINSD records compare instead of the transcript
 	records func(c *stream.Conn, base int64)
@@ -100,6 +102,9 @@ var proxyVariants = map[string]proxyVariant{
 	// a BEGIN2 after a BEGIN2 without END2, of the same chart and of another: the parser unlocks the stale collection
 	// lock and says so (the records; D106.4, commit 8d)
 	"malformed-records": {caps: proxyPlainCaps, refused: stream.CapIEEE754, records: malformedLines},
+	// the same through the proxy: what it forwards of a BEGIN2 without END2 (C closes the block before the next BEGIN2
+	// and forwards the other chart's under the first's gate)
+	"malformed": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 6, malformedAt: 3, gated: true},
 	// a chart the proxy's pattern excludes is never defined upstream and makes no commits
 	"pattern": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 12, gated: true,
 		section: "    proxy send charts matching = !proxy.excluded *\n",
@@ -264,7 +269,11 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 	// P4: the variant's ticks, each followed by its marker
 	for k := 1; k <= v.ticks; k++ {
 		all(func(c *stream.Conn) {
-			proxyTick(c, v, base, k)
+			if k == v.malformedAt {
+				malformedTick(c, base, k)
+			} else {
+				proxyTick(c, v, base, k)
+			}
 			c.Variable("HOST", "proxy_marker", strconv.Itoa(k))
 			if k == v.function {
 				c.FunctionGlobal("proxy-fn", "a proxied function")
@@ -307,6 +316,23 @@ func malformedLines(c *stream.Conn, base int64) {
 	c.Set2Raw("", "g1", "3", "3", stream.FlagNotAnomalous)
 	c.Begin2Raw("", "proxy.incr", "1", at(3), "#")
 	c.Set2Raw("", "i1", "1030", "10", stream.FlagNotAnomalous)
+	c.End2()
+}
+
+// malformedTick is tick k's lines, malformed: the gauge's BEGIN2 repeated without its END2, then the counter's BEGIN2
+// and the float's without the counter's END2 (plain encodings).
+func malformedTick(c *stream.Conn, base int64, k int) {
+	t := strconv.FormatInt(base+2+int64(k), 10)
+	c.Begin2Raw("", "proxy.gauge", "1", t, "#")
+	c.Set2Raw("", "g1", strconv.Itoa(k), strconv.Itoa(k), stream.FlagNotAnomalous)
+	c.Begin2Raw("", "proxy.gauge", "1", t, "#")
+	c.Set2Raw("", "g1", strconv.Itoa(k), strconv.Itoa(k), stream.FlagNotAnomalous)
+	c.Set2Raw("", "g2", strconv.Itoa(2*k), "#", "RA")
+	c.End2()
+	c.Begin2Raw("", "proxy.incr", "1", t, "#")
+	c.Set2Raw("", "i1", strconv.Itoa(1000+10*k), "10", stream.FlagAnomalous)
+	c.Begin2Raw("", "proxy.float", "1", t, "#")
+	c.Set2Raw("", "f1", strconv.Itoa(k), strconv.Itoa(k), stream.FlagNotAnomalous)
 	c.End2()
 }
 
