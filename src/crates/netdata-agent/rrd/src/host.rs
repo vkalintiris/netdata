@@ -1443,8 +1443,10 @@ impl Host {
             .is_some_and(|r| std::ptr::eq(Arc::as_ptr(r), receiver.as_ptr()))
     }
 
-    /// `rrdhost_clear_receiver()`: detaches `slot` if it is still the attached one.
-    pub fn clear_receiver(&self, slot: &Arc<ReceiverSlot>) {
+    /// `rrdhost_clear_receiver()`: detaches `slot` if it is still the attached one; then, the receiver lock released
+    /// as C releases it, the host's sender is told the receiver left and its parents reset, with the receiver's
+    /// `reason` (a `STREAM_HANDSHAKE` code).
+    pub fn clear_receiver(&self, slot: &Arc<ReceiverSlot>, reason: i32) {
         let mut receiver = lock(&self.receiver);
         if receiver.as_ref().is_some_and(|r| Arc::ptr_eq(r, slot)) {
             *receiver = None;
@@ -1459,7 +1461,13 @@ impl Host {
             self.replace_stream_path(Vec::new());
             self.replication_reset();
             drop(receiver);
+            if let Some(up) = self.upstream() {
+                up.receiver_left(reason);
+            }
             self.contexts.child_disconnected();
+            if let Some(up) = self.upstream() {
+                up.parents_reset(reason);
+            }
         }
     }
 }
@@ -2055,6 +2063,23 @@ mod tests {
         }
     }
 
+    /// `rrdhost_clear_receiver()`: the receiver's end tells the host's sender and resets its parents, both with the
+    /// receiver's reason and after the receiver lock is released; a slot not attached does nothing.
+    #[test]
+    fn a_receivers_end_stops_the_hosts_sender() {
+        let host = Host::new("5a1e0000-0000-4000-8000-0000000000ca", false, info("child"));
+        let r = Arc::new(crate::testing::Recorder::default());
+        host.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
+        let slot = || Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        let (attached, other) = (slot(), slot());
+        assert_eq!(host.set_receiver(Arc::clone(&attached)), Attach::Attached);
+        host.clear_receiver(&other, -5);
+        assert!(r.calls.lock().unwrap().is_empty());
+        host.clear_receiver(&attached, -19);
+        assert!(host.receiver().is_none());
+        assert_eq!(*r.calls.lock().unwrap(), vec![("receiver_left", -19), ("parents_reset", -19)]);
+    }
+
     /// `rrdhost_status_ingest()`: a host not online is archived until a receiver attached to it, offline after.
     #[test]
     fn hosts_are_archived_until_a_child_connects() {
@@ -2074,7 +2099,7 @@ mod tests {
             Box::new(|| {}),
         ));
         assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
-        host.clear_receiver(&slot);
+        host.clear_receiver(&slot, 0);
         assert_eq!(
             (
                 host.receiver_connections(),
@@ -2149,7 +2174,7 @@ mod tests {
         assert_eq!(host.health_last_iteration(), 2, "attached: stamped with the HEALTH pass");
         replicating(&chart);
         host.storage().next_health_iteration();
-        host.clear_receiver(&first);
+        host.clear_receiver(&first, 0);
         assert_eq!(times(&host), (false, true), "detached: disconnected, not connected");
         assert_eq!(host.health_last_iteration(), 3, "detached: stamped again");
         assert!(reset(&chart), "detach resets");
@@ -2246,7 +2271,7 @@ mod tests {
         host.replicating_charts_minus_one();
         host.pulse_status(0);
         assert_eq!(host.pulse_state(), RCV_RUNNING | PERMANENT);
-        host.clear_receiver(&slot);
+        host.clear_receiver(&slot, 0);
         host.pulse_status(0);
         assert_eq!(host.pulse_state(), RCV_OFFLINE | PERMANENT);
         let localhost = Host::new("guid-l", true, info("l"));
@@ -2379,9 +2404,9 @@ mod tests {
         ));
         assert_eq!(a.set_receiver(Arc::clone(&first)), Attach::Attached);
         assert_eq!(a.set_receiver(Arc::clone(&second)), Attach::AlreadyServed);
-        a.clear_receiver(&second);
+        a.clear_receiver(&second, 0);
         assert!(a.receiver().is_some());
-        a.clear_receiver(&first);
+        a.clear_receiver(&first, 0);
         assert!(a.receiver().is_none());
     }
 

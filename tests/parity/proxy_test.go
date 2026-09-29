@@ -119,8 +119,8 @@ var proxyVariants = map[string]proxyVariant{
 		ticks: 12},
 	// the child leaves with 49 of its 150 blocks in the proxy's batch: C loses them with the host buffer when the
 	// receiver's end stops the sender (RECEIVER LEFT); on the child's return the sender starts again and the stub's
-	// second plan replicates the lost seconds (8g)
-	"receiver-left": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 50, leave: true, gated: true},
+	// second plan replicates the lost seconds
+	"receiver-left": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 50, leave: true},
 	// a BEGIN2 after a BEGIN2 without END2, of the same chart and of another: the parser unlocks the stale collection
 	// lock and says so (the records; D106.4, commit 8d)
 	"malformed-records": {caps: proxyPlainCaps, refused: stream.CapIEEE754, records: malformedLines},

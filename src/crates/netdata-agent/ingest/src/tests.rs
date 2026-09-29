@@ -251,7 +251,7 @@ fn chart_definition_end_waits_for_the_backfill() {
     let want = format!("REPLAY_CHART \"test.c1\" \"true\" {first} {NOW}\n");
     assert_eq!(String::from_utf8(p.take_output()).unwrap(), want);
     // the child comes back: the chart was queued once, so the new round asks at once
-    h.clear_receiver(&slot);
+    h.clear_receiver(&slot, 0);
     assert_eq!(
         h.set_receiver(Arc::new(netdata_agent_rrd::host::ReceiverSlot::new(
             0,
@@ -298,7 +298,7 @@ fn a_backfill_answer_after_a_reconnect_is_dropped() {
     }));
     feed_all(&mut p, &DEFINE);
     assert!(p.feed(format!("CHART_DEFINITION_END {} {NOW} {NOW}\n", NOW - 100).as_bytes()));
-    h.clear_receiver(&slot);
+    h.clear_receiver(&slot, 0);
     let ((), records) = netdata_agent_log::capture(|| queue.worker(false, &|| queue.queued() > 0));
     assert_eq!(*asked.lock().unwrap(), 0);
     assert!(records.iter().any(|r| r.message.as_deref()
@@ -330,7 +330,7 @@ fn replication_is_asked_again_after_a_reconnect() {
     feed_all(&mut p, &[&end]);
     assert!(!p.take_output().is_empty());
     // the child goes away mid-replication and comes back
-    h.clear_receiver(&slot);
+    h.clear_receiver(&slot, 0);
     attach(&h);
     let mut p = parser(&h);
     feed_all(&mut p, &DEFINE);
@@ -856,7 +856,7 @@ fn stream_path_bodies_that_are_not_paths() {
     // the receiver going away clears the path (stream_path_child_disconnected())
     feed_strings(&mut p, &stream_path_block(&body));
     let slot = h.receiver().unwrap();
-    h.clear_receiver(&slot);
+    h.clear_receiver(&slot, 0);
     assert!(h.stream_path().is_empty());
 }
 
@@ -1099,7 +1099,10 @@ fn a_v1_end_of_another_chart_leaves_the_blocks_variables_alone() {
     let _ = netdata_agent_log::capture(|| feed_ok(&mut p, &lines));
     let sent = upstream_bytes(&mut p, &r);
     assert!(
-        sent[0].1.starts_with(&format!("BEGIN2 SLOT:0x1 'proxy.gauge' 1 {} #\nSET2 SLOT:0x1 'g1' 1 1 A\nEND2\n", t + 1)),
+        sent[0].1.starts_with(&format!(
+            "BEGIN2 SLOT:0x1 'proxy.gauge' 1 {} #\nSET2 SLOT:0x1 'g1' 1 1 A\nEND2\n",
+            t + 1
+        )),
         "{sent:?}"
     );
 }

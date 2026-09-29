@@ -128,7 +128,7 @@ fn jobs_of_a_gone_receiver_fail() {
         q.request_add(&f.host, weak.clone(), &f.chart, answering(&answers))
             .is_ok()
     );
-    f.host.clear_receiver(&f.slot);
+    f.host.clear_receiver(&f.slot, 0);
     drain(&q);
     assert_eq!(*answers.lock().unwrap(), [(0, 1)]);
     assert!(!f.dim.is_backfilled());

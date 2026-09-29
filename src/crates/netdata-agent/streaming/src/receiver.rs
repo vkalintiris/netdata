@@ -201,12 +201,13 @@ pub struct Attached {
 }
 
 impl Attached {
-    /// `stream_receiver_remove()`'s release of the host: offline in pulse, the receiver slot freed, the parent label
-    /// updated. The caller gives back the host's stream thread pin.
-    fn leave_host(&self) {
+    /// `stream_receiver_remove()`'s release of the host: offline in pulse, the receiver slot freed with `reason` (the
+    /// one the host's sender stops with), the parent label updated. The caller gives back the host's stream thread
+    /// pin.
+    fn leave_host(&self, reason: Reason) {
         self.host
             .pulse_status(netdata_agent_rrd::pulse::host_status::RCV_OFFLINE);
-        self.host.clear_receiver(&self.slot);
+        self.host.clear_receiver(&self.slot, reason.0);
         self.hosts.update_is_parent_label();
     }
 }
@@ -650,7 +651,12 @@ impl Receivers {
             }),
         ));
         match host.set_receiver(Arc::clone(&slot)) {
-            Attach::Attached => {}
+            // rrdhost_set_receiver()'s stream_parents_host_reset(), outside the receiver lock here (D118.3)
+            Attach::Attached => {
+                if let Some(up) = host.upstream() {
+                    up.parents_reset(Reason::SP_PREPARING.0);
+                }
+            }
             Attach::AlreadyServed => {
                 peer.status(
                     "rejecting streaming connection; host is already served by another receiver",
@@ -726,16 +732,20 @@ impl Receivers {
                 Priority::Err,
                 errno,
             );
-            host.clear_receiver(&slot);
+            host.clear_receiver(&slot, Reason::DISCONNECT_SOCKET_WRITE_FAILED.0);
             return false;
         }
         // svc_rrdhost_obsolete_all_charts(): the charts the child does not define again stay obsolete
         host.obsolete_all_charts();
         peer.status(&connected_msg(&host), Reason::NEVER, Priority::Info);
         self.hosts.update_is_parent_label();
+        // let it reconnect to parents asap
+        if let Some(up) = host.upstream() {
+            up.parents_reset(Reason::SP_PREPARING.0);
+        }
         let nonblocking = link.socket().map(|c| socket2::SockRef::from(c).set_nonblocking(true));
         if !matches!(nonblocking, Some(Ok(()))) {
-            host.clear_receiver(&slot);
+            host.clear_receiver(&slot, Reason::DISCONNECT_SOCKET_WRITE_FAILED.0);
             self.hosts.update_is_parent_label();
             return false;
         }
@@ -777,7 +787,8 @@ impl Receivers {
             .send(thread, StreamMsg::Attach(Box::new(attached)))
         {
             self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
-            attached.leave_host();
+            // the stream threads ended: the exit started
+            attached.leave_host(Reason::DISCONNECT_SHUTDOWN);
             return false;
         }
         true
@@ -847,7 +858,7 @@ impl StreamWorker {
             )
             .is_err()
         {
-            attached.leave_host();
+            attached.leave_host(Reason::DISCONNECT_SOCKET_ERROR);
             self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
             return;
         }
@@ -1064,7 +1075,7 @@ impl StreamWorker {
                 reason,
                 &counters,
             );
-            attached.leave_host();
+            attached.leave_host(reason);
             self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
         }
         // stream_receiver_free(): the socket closes after the records, and a TLS close leaves what its shutdown set

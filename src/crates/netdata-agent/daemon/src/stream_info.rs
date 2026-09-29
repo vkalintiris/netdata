@@ -242,7 +242,7 @@ mod tests {
         child.replicating_charts_plus_one();
         assert_eq!(body(&hosts, &query), (200, online("stale", "replicating")));
         // after the disconnect: offline, with the retention's own last time
-        child.clear_receiver(&slot);
+        child.clear_receiver(&slot, 0);
         let last = child.contexts().retention().1;
         let offline = format!(
             "{{\n    \"version\":1,\n    \"status\":200,\n    \"host_id\":\"{LOCALHOST}\",\n    \"nodes\":2,\n    \"receivers\":0,\n    \"nonce\":X,\n    \"db_status\":\"online\",\n    \"db_liveness\":\"stale\",\n    \"ingest_type\":\"archived\",\n    \"ingest_status\":\"offline\",\n    \"first_time_s\":{first},\n    \"last_time_s\":{last}\n}}\n"

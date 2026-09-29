@@ -320,7 +320,7 @@ mod tests {
         let (chart, _) = vnode.charts().create(&spec("c"));
         let slot = Arc::new(ReceiverSlot::new(0, Default::default(), ReceiverLink::default(), Box::new(|| {})));
         assert_eq!(vnode.set_receiver(Arc::clone(&slot)), Attach::Attached);
-        vnode.clear_receiver(&slot);
+        vnode.clear_receiver(&slot, 0);
         run(&hosts, None, now_realtime_s() + 11);
         assert_eq!(chart.flags() & chart_flags::OBSOLETE, 0);
     }
@@ -333,7 +333,7 @@ mod tests {
         let (chart, _) = child.charts().create(&spec("c"));
         let slot = Arc::new(ReceiverSlot::new(0, Default::default(), ReceiverLink::default(), Box::new(|| {})));
         assert_eq!(child.set_receiver(Arc::clone(&slot)), Attach::Attached);
-        child.clear_receiver(&slot);
+        child.clear_receiver(&slot, 0);
         let now = now_realtime_s();
         run(&hosts, None, now + 11);
         assert!(chart.flags() & chart_flags::OBSOLETE != 0, "obsolete-all of a child gone");

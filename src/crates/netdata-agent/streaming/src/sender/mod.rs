@@ -321,6 +321,24 @@ impl Sender {
         if slot.as_ref().is_some_and(|ops| ops.session == session) { slot.take() } else { None }
     }
 
+    /// `stream_sender_signal_to_stop_and_wait()` without its wait: a sender queued for its parents or dispatched is
+    /// marked to stop with `reason` (the connector's next pass removes a queued one), and a dispatched one gets `op`
+    /// (a session gone meanwhile drops it where it is handled).
+    pub(crate) fn signal_stop(&self, reason: Reason, op: u32) {
+        let added = self.host().is_some_and(|h| h.sender_flags() & sender_flags::ADDED != 0);
+        {
+            let mut state = self.lock();
+            if added {
+                self.shutdown.store(true, Ordering::Relaxed);
+                state.exit_reason = reason;
+            }
+        }
+        let session = self.out().session;
+        if let Some(session) = session {
+            self.post(session, op, reason);
+        }
+    }
+
     /// The frame of the connector's records for this host.
     pub(crate) fn frame(&self) -> FrameGuard {
         push(vec![
@@ -403,6 +421,14 @@ impl Upstream for Sender {
 
     fn commit_since(&self, bytes: &[u8], traffic: Traffic, flush_ut: u64) -> bool {
         self.commit_into(bytes, traffic, Some(flush_ut))
+    }
+
+    fn receiver_left(&self, reason: i32) {
+        self.signal_stop(Reason(reason), op::STOP_RECEIVER_LEFT);
+    }
+
+    fn parents_reset(&self, reason: i32) {
+        self.parents().reset(Reason(reason), self.connector.settings.reconnect_delay_s);
     }
 
     /// `stream_sender_add_to_connector_queue()`.
