@@ -812,15 +812,28 @@ mod tests {
         assert_eq!(peer.join().unwrap(), b"answer");
     }
 
+    /// What a test server saw: the client's server name, its ALPN list, and the bytes it read.
+    type Seen = (Option<String>, Vec<u8>, usize);
+
     /// A server on its own non-blocking side of a pair, recording the client's server name and ALPN list, then
     /// echoing what it reads until the close.
     fn tls_server(
         key: &PKey<Private>,
         cert: &X509,
         stream: std::os::unix::net::UnixStream,
-    ) -> std::thread::JoinHandle<(Option<String>, Vec<u8>)> {
+    ) -> std::thread::JoinHandle<Seen> {
+        tls_peer(key, cert, stream, true)
+    }
+
+    /// `tls_server`, echoing or only reading; also the count of the bytes it read.
+    fn tls_peer(
+        key: &PKey<Private>,
+        cert: &X509,
+        stream: std::os::unix::net::UnixStream,
+        echo: bool,
+    ) -> std::thread::JoinHandle<Seen> {
         use std::sync::{Arc, Mutex};
-        let seen: Arc<Mutex<(Option<String>, Vec<u8>)>> = Arc::default();
+        let seen: Arc<Mutex<Seen>> = Arc::default();
         let mut b = SslContextBuilder::new(SslMethod::tls_server()).unwrap();
         b.set_private_key(key).unwrap();
         b.set_certificate(cert).unwrap();
@@ -854,7 +867,10 @@ mod tests {
                     Ok(0) | Err(_) if std::time::Instant::now() > deadline => break,
                     Ok(0) => break,
                     Ok(n) => {
-                        let _ = t.write(&buf[..n]);
+                        seen.lock().unwrap().2 += n;
+                        if echo {
+                            let _ = t.write(&buf[..n]);
+                        }
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(2))
@@ -885,7 +901,7 @@ mod tests {
         assert_eq!(t.read(&mut buf).unwrap(), 4);
         assert_eq!(&buf, b"ping");
         drop(t);
-        let (name, alpn) = peer.join().unwrap();
+        let (name, alpn, _) = peer.join().unwrap();
         assert_eq!(name.as_deref(), Some("localhost"));
         assert_eq!(alpn, STREAM_ALPN);
     }
@@ -929,6 +945,43 @@ mod tests {
         assert_eq!(result, Some(OpenError::CantEstablish));
         let first = records.first().and_then(|r| r.message.clone()).unwrap_or_default();
         assert!(first.starts_with("SSL ERROR: SSL_connect() "), "{first}");
+    }
+
+    /// Over a full socket a client write waits (WouldBlock) and its retry from the same first byte with more after it,
+    /// as the sender's ring grows its first chunk, goes through: the context's partial and moving writes (review R46
+    /// m1).
+    #[test]
+    fn a_blocked_write_takes_a_grown_retry() {
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        let k = key();
+        let cert = certificate(&k);
+        let (_, cert_file) = files(&dir, &k, &cert);
+        let context = streaming_sender_context(&ClientConfig { ca_file: &cert_file, ..ClientConfig::default() }).unwrap();
+        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let peer = tls_peer(&k, &cert, server, false);
+        let mut t = TlsStream::connect(&context, client, Some("localhost"), true).unwrap();
+        t.get_ref().set_nonblocking(true).unwrap();
+        let data: Vec<u8> = (0..4 << 20).map(|i: u32| i as u8).collect();
+        const CHUNK: usize = 64 << 10;
+        let (mut sent, mut end, mut blocked) = (0, CHUNK, 0);
+        while sent < data.len() {
+            match t.write(&data[sent..end.min(data.len())]) {
+                Ok(n) => {
+                    sent += n;
+                    end = sent + CHUNK;
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    blocked += 1;
+                    end += CHUNK;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(e) => panic!("write at {sent}: {e}"),
+            }
+        }
+        assert!(blocked > 0, "the socket never filled");
+        drop(t);
+        assert_eq!(peer.join().unwrap().2, data.len());
     }
 
     /// A CAfile that does not exist is reported, and the context still builds with OpenSSL's defaults.

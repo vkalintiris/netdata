@@ -518,13 +518,17 @@ func rchildCompare(t *testing.T, p *Pair, name string, stream func(i int) *daemo
 		entryTimes, "_streams_to")
 	var info [2][]byte
 	for i, addr := range parents {
-		b, err := rawExchange(addr, []byte("GET /api/v3/stream_info?machine_rchildGUID="+rchildGUID+" HTTP/1.1\r\n\r\n"),
+		b, err := rawExchange(addr, []byte("GET /api/v3/stream_info?machine_guid="+rchildGUID+" HTTP/1.1\r\n\r\n"),
 			5*time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
 		info[i] = streamInfoRetentionRe.ReplaceAll(httpBody(b), []byte(`"${1}":T`))
 		info[i] = streamInfoNonceRe.ReplaceAll(info[i], []byte(`"nonce":N`))
+	}
+	// an answer about no host has neither its db nor its ingest status: equal whatever the children did
+	if !bytes.Contains(info[0], []byte(`"status":200`)) {
+		t.Errorf("the oracle's parent has no stream_info of the child: %s", info[0])
 	}
 	if !bytes.Equal(info[0], info[1]) {
 		t.Errorf("stream_info differs:\noracle:    %s\ncandidate: %s", info[0], info[1])

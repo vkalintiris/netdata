@@ -244,6 +244,7 @@ impl Connector {
 
     /// `rrdhost_stream_parent_ssl_init()`: the sender's TLS context, built once some host's parents include an
     /// `:SSL` one, with the configured CA locations (C's records carry the host's frame, which the caller pushed).
+    /// A context OpenSSL could not make is tried again at the next host's start, as C's.
     pub(crate) fn ssl_init(&self, parents: &Parents) {
         let mut tls = self.tls.lock().unwrap_or_else(PoisonError::into_inner);
         if tls.is_some() || !parents.list.iter().any(|d| d.ssl) {
