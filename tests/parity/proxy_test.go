@@ -74,6 +74,9 @@ type proxyVariant struct {
 	malformedAt int
 	// metadata sends the child's claim id and variables after tick 2, and the parent's NODE_ID down after tick 4
 	metadata bool
+	// sections replaces the run: four children resolve their proxy settings from their own sections, their keys'
+	// and [stream] (proxySectionsRun)
+	sections bool
 	// v1in makes the child a v1 one (BEGIN/SET/END, no replication), collecting once a second: the proxy runs each
 	// collection through its own clock, so its blocks compare by shape, their times and values masked
 	v1in bool
@@ -113,6 +116,10 @@ var proxyVariants = map[string]proxyVariant{
 	// a BEGIN2 after a BEGIN2 without END2, of the same chart and of another: the parser unlocks the stale collection
 	// lock and says so (the records; D106.4, commit 8d)
 	"malformed-records": {caps: proxyPlainCaps, refused: stream.CapIEEE754, records: malformedLines},
+	// a child's proxy settings come from its [<guid>] section, else its key's (a repeated [<key>] header merging),
+	// else [stream]: G1 by its section to A, G2 by its key to B, G3 by its section's switch and [stream] to C, G4
+	// (proxying off) nowhere
+	"sections": {caps: proxyPlainCaps, sections: true, gated: true},
 	// a v1 child: the proxy commits one block per chart per collection, and the 101st commit closes the first batch
 	"v1in": {caps: stream.CapsLiveV1, refused: stream.CapIEEE754, ticks: 34, v1in: true, gated: true},
 	// the child's metadata overtakes the batch (CLAIMED_ID, VARIABLE HOST) or rides the chart's next block (VARIABLE
@@ -202,6 +209,14 @@ func TestProxyTranscript(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if v.gated && !oracleOnly && os.Getenv("PARITY_PROXY") != "1" {
 				t.Skip("gated until the Rust proxy passes it (PARITY_PROXY=1 runs it)")
+			}
+			if v.sections {
+				got := proxySectionsRun(t, name, bins)
+				if want := []string{"G1 -> A", "G2 -> B", "G3 -> C"}; !slices.Equal(got[0], want) {
+					t.Errorf("the oracle's children went %v, want %v", got[0], want)
+				}
+				diffLines(t, "where the children went", got[0], got[1])
+				return
 			}
 			if v.records != nil {
 				got := proxyRecordsRun(t, name, v, bins)
@@ -356,6 +371,75 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 		}
 		out[i] = append(requestLines(sessions[i].Request), transcript...)
 		out[i] = append(append(out[i], "== child"), proxyDownstream(s.child.Downstream())...)
+	}
+	return out
+}
+
+// proxySectionsRun starts, on each side, three stubs (A, B, C), a proxy whose stream.conf spreads the proxy settings
+// over sections, and four children; after 30 s it returns which child reached which stub.
+func proxySectionsRun(t *testing.T, name string, bins [2]string) [2][]string {
+	t.Helper()
+	const k1, k2 = "5a1e0000-0000-4000-8000-0000000000f1", "5a1e0000-0000-4000-8000-0000000000f2"
+	guids := []string{"5a1e0000-0000-4000-8000-0000000000f5", "5a1e0000-0000-4000-8000-0000000000f6",
+		"5a1e0000-0000-4000-8000-0000000000f7", "5a1e0000-0000-4000-8000-0000000000f8"}
+	base := time.Now().Unix()/60*60 - 3600
+	var out [2][]string
+	for i, role := range []Role{"proxy-oracle", "proxy-candidate"} {
+		stubs := map[string]*stream.Parent{}
+		for _, n := range []string{"A", "B", "C"} {
+			p, err := stream.StartParent(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { p.Close() })
+			stubs[n] = p
+		}
+		id := proxyIdentity
+		d, err := daemon.Start(daemon.Options{Binary: bins[i], RunDir: runDir(t, Role(string(role)+"-"+name)),
+			Identity: &id, StorageTiers: 1,
+			StreamSection: fmt.Sprintf("    destination = %s\n    api key = %s\n    reconnect delay = 5\n",
+				stubs["C"].Addr(), proxyUpKey),
+			StreamExtra: fmt.Sprintf("\n[%[1]s]\n    enabled = yes\n    type = api\n"+
+				"\n[%[1]s]\n    proxy enabled = yes\n    proxy destination = %[3]s\n    proxy api key = %[5]s\n"+
+				"\n[%[2]s]\n    enabled = yes\n    type = api\n"+
+				"\n[%[6]s]\n    proxy enabled = yes\n    proxy destination = %[4]s\n    proxy api key = %[5]s\n"+
+				"\n[%[7]s]\n    proxy enabled = yes\n",
+				k1, k2, stubs["B"].Addr(), stubs["A"].Addr(), proxyUpKey, guids[0], guids[2])})
+		if err != nil {
+			t.Fatalf("start %s: %v", role, err)
+		}
+		t.Cleanup(func() { _ = d.Stop() })
+		keys := []string{d.StreamKey, k1, k2, k2}
+		for g, guid := range guids {
+			host := stream.HostInfo{Hostname: fmt.Sprintf("proxied-g%d", g+1), MachineGUID: guid}
+			c, err := stream.Connect(d.Addr, keys[g], host, proxyPlainCaps)
+			if err != nil {
+				t.Fatalf("%s: child G%d: %v", role, g+1, err)
+			}
+			t.Cleanup(func() { _ = c.Close() })
+			ch := proxyCharts[0]
+			c.Serve(map[string]stream.ReplayChart{ch.id: {FirstT: base - 60, LastT: base, UpdateEvery: 1}}, base,
+				func(chart string, after, before int64) []stream.ReplayRow {
+					return proxyRows(proxyVariant{}, chart, after, before)
+				})
+			_ = c.Burst(func() { defineProxyChart(c, proxyVariant{caps: proxyPlainCaps}, 7, ch, base) })
+			if err := c.WaitGranted([]string{ch.id}, 30*time.Second); err != nil {
+				t.Fatalf("%s: child G%d: %v", role, g+1, err)
+			}
+			_ = c.Burst(func() { pokeProxyCharts(c, proxyVariant{}, []proxyChart{ch}, base+1, true) })
+		}
+		// the connector's first pass comes after [5, 10) s; G4 must stay unconnected past it
+		time.Sleep(30 * time.Second)
+		for _, n := range []string{"A", "B", "C"} {
+			for _, sess := range stubs[n].Sessions() {
+				g := slices.Index(guids, sess.Request.Params.Get("machine_guid"))
+				out[i] = append(out[i], fmt.Sprintf("G%d -> %s", g+1, n))
+			}
+		}
+		sort.Strings(out[i])
+		// a child that reconnected is listed once
+		out[i] = slices.Compact(out[i])
+		_ = d.Stop()
 	}
 	return out
 }
