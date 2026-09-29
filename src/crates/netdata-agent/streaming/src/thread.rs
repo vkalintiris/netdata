@@ -65,6 +65,8 @@ pub struct StreamWorker {
     check_every: Duration,
     last_check: Instant,
     last_replication_check: Instant,
+    /// `!service_running(SERVICE_STREAMING)`: the exit started (D110).
+    exiting: fn() -> bool,
 }
 
 impl StreamWorker {
@@ -79,12 +81,24 @@ impl StreamWorker {
             check_every: Duration::from_secs(u64::try_from(update_every).unwrap_or(1).max(1)),
             last_check: now,
             last_replication_check: now,
+            exiting: netdata_agent_sys::exit::initiated,
         }
+    }
+
+    /// The same worker testing `exiting` for the exit's start.
+    pub fn with_exit(self, exiting: fn() -> bool) -> Self {
+        StreamWorker { exiting, ..self }
     }
 }
 
 impl Worker for StreamWorker {
     type Msg = StreamMsg;
+
+    /// `stream_thread_worker()`'s loop: it leaves at its first wake after the exit started (its tick bounds it as C's
+    /// 100 ms poll does), through its exit path.
+    fn running(&self) -> bool {
+        !(self.exiting)()
+    }
 
     fn start(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
         CURRENT.with(|c| c.set(Some(cx.index())));

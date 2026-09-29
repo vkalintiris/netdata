@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 netdata-agent-log = { workspace = true }
+netdata-agent-sys = { workspace = true }
 dns-lookup = { workspace = true }
 brotli = { workspace = true }
 brotli-decompressor = { workspace = true }

@@ -154,6 +154,11 @@ impl Thread {
     /// Stops the thread, waiting at most `limit` as C's service wait does.
     pub fn stop_within(self, limit: Duration) {
         self.stop.request();
+        // the exit running on this very thread (a fatal error in its loop) does not wait for itself, as C's waits skip
+        // their caller
+        if self.thread.thread().id() == std::thread::current().id() {
+            return;
+        }
         let deadline = Instant::now() + limit;
         while Instant::now() < deadline && !self.thread.is_finished() {
             std::thread::sleep(Duration::from_millis(10));

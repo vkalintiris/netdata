@@ -195,6 +195,8 @@ pub struct Connector {
     cancel: AtomicBool,
     /// `service_signal_exit(SERVICE_STREAMING_CONNECTOR)`.
     exit: AtomicBool,
+    /// The exit started: `service_running()` is false for every service from then (D110).
+    exiting: fn() -> bool,
     started: Mutex<bool>,
 }
 
@@ -228,6 +230,7 @@ impl Connector {
             completion: Completion::default(),
             cancel: AtomicBool::new(false),
             exit: AtomicBool::new(false),
+            exiting: netdata_agent_sys::exit::initiated,
             started: Mutex::new(false),
         })
     }
@@ -338,12 +341,13 @@ impl Connector {
     }
 
     /// `stream_connector_thread()`: a pass over the queue at every new host or every second (250 ms while exiting).
+    /// From its first wake after the exit started (or its signal) every host is removed, and it ends six passes later.
     fn run(&self) {
         let th = Thread::new(&self.cancel);
         let (mut job_id, mut exiting) = (0, 0);
         while exiting <= 5 {
             job_id = self.completion.wait(job_id, Duration::from_millis(if exiting > 0 { 250 } else { 1000 }));
-            if self.exit.load(Ordering::Relaxed) {
+            if self.exit.load(Ordering::Relaxed) || (self.exiting)() {
                 exiting += 1;
             }
             let mut next = 0;

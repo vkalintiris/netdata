@@ -28,6 +28,7 @@
 
 mod alloc;
 mod deadly;
+pub mod exit;
 mod tls;
 
 pub use alloc::{Alloc, allocation_failed};

@@ -79,6 +79,10 @@ impl Thread {
     /// The service wait of "stop collectors and streaming threads": at most until `deadline`; the thread when it did
     /// not finish.
     pub fn stop_by(self, deadline: Instant) -> Option<Self> {
+        // not waited for by itself (an exit on this thread)
+        if self.thread.thread().id() == std::thread::current().id() {
+            return Some(self);
+        }
         while Instant::now() < deadline && !self.thread.is_finished() {
             std::thread::sleep(Duration::from_millis(10));
         }

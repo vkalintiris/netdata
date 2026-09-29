@@ -4,7 +4,6 @@
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 pub const SIGBUS: u32 = 1 << 0;
 pub const SIGSEGV: u32 = 1 << 1;
@@ -73,9 +72,6 @@ pub fn names(reason: u32, separator: &str) -> String {
     crate::status_file::bitmap_names(&NAMES, reason).collect::<Vec<_>>().join(separator)
 }
 
-/// `exit_initiated`.
-static EXIT_INITIATED: AtomicU32 = AtomicU32::new(0);
-
 /// `self_path` and its `OS_FILE_METADATA` (modification time, size) at start, when both are known.
 static SELF: OnceLock<Option<(PathBuf, (i64, u64))>> = OnceLock::new();
 
@@ -87,19 +83,19 @@ fn file_metadata(path: &std::path::Path) -> Option<(i64, u64)> {
 
 /// `exit_initiated_init()`: no reason yet, and the executable's metadata, to tell an update at exit.
 pub fn init() {
-    EXIT_INITIATED.store(0, Ordering::Relaxed);
+    netdata_agent_sys::exit::clear();
     // os_get_process_path(): libuv's uv_exepath() reads /proc/self/exe as the fallback does
     let _ = SELF.set(std::env::current_exe().ok().and_then(|p| file_metadata(&p).map(|m| (p, m))));
 }
 
-/// `exit_initiated_get()`.
+/// `exit_initiated_get()`, which every service loop reads (`netdata_agent_sys::exit`).
 pub fn get() -> u32 {
-    EXIT_INITIATED.load(Ordering::Relaxed)
+    netdata_agent_sys::exit::reasons()
 }
 
 /// `exit_initiated_add()`.
 pub fn add(reason: u32) {
-    EXIT_INITIATED.fetch_or(reason, Ordering::Relaxed);
+    netdata_agent_sys::exit::add(reason);
 }
 
 /// `is_system_shutdown()` on Linux: a file the shutdown creates exists.

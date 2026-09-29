@@ -43,6 +43,12 @@ pub trait Worker: Send + 'static {
         Ok(())
     }
 
+    /// Checked each time the loop wakes, before anything is handled (C's `service_running()` after `nd_poll_wait()`):
+    /// false ends the loop, as a stop does. A worker that tests a condition nothing wakes it for arms a timer.
+    fn running(&self) -> bool {
+        true
+    }
+
     /// A registered source became ready.
     fn event(&mut self, cx: &mut Context<'_>, event: &Event);
 
@@ -363,7 +369,7 @@ impl<M: Send + 'static> Pool<M> {
     }
 
     /// Like [`Pool::stop`], waiting at most `limit` (C's service waits): threads still running then are left to the
-    /// exiting process.
+    /// exiting process. A pool thread that asks is not waited for, as C's waits skip their caller.
     pub fn stop_within(self, limit: Option<std::time::Duration>) -> Result<(), PoolPanicked> {
         for mailbox in self.handle.mailboxes.iter() {
             if mailbox.tx.send(Envelope::Stop).is_ok() {
@@ -374,6 +380,8 @@ impl<M: Send + 'static> Pool<M> {
         if let Some(lazy) = &self.handle.lazy {
             threads.append(&mut lazy.started.lock().unwrap_or_else(PoisonError::into_inner));
         }
+        let me = std::thread::current().id();
+        threads.retain(|join| join.thread().id() != me);
         if let Some(limit) = limit {
             let deadline = Instant::now() + limit;
             while Instant::now() < deadline && !threads.iter().all(JoinHandle::is_finished) {
@@ -441,6 +449,11 @@ fn run_worker<W: Worker>(
             timers: &mut timers,
             index,
         };
+
+        if !worker.running() {
+            worker.stop(&mut cx);
+            return;
+        }
 
         for event in events.iter() {
             if event.token() != WAKER_TOKEN {
@@ -550,7 +563,7 @@ mod tests {
         (pool, log)
     }
 
-    fn wait_for(log: &Arc<Mutex<Vec<Seen>>>, pred: impl Fn(&[Seen]) -> bool) {
+    fn wait_for<T: std::fmt::Debug>(log: &Arc<Mutex<Vec<T>>>, pred: impl Fn(&[T]) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !pred(&log.lock().unwrap()) {
             assert!(
@@ -757,6 +770,49 @@ mod tests {
         fn message(&mut self, _cx: &mut Context<'_>, _msg: ()) {
             panic!("worker failure");
         }
+    }
+
+    /// A worker whose condition turned false (C's `service_running()`) at a wake of its loop: its stop runs and its
+    /// thread ends before the pool is stopped, without handling what woke it.
+    struct Leaver {
+        running: Arc<std::sync::atomic::AtomicBool>,
+        log: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl Worker for Leaver {
+        type Msg = ();
+        fn running(&self) -> bool {
+            self.running.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        fn event(&mut self, _cx: &mut Context<'_>, _event: &Event) {}
+        fn message(&mut self, _cx: &mut Context<'_>, _msg: ()) {
+            self.log.lock().unwrap().push("message");
+        }
+        fn stop(&mut self, _cx: &mut Context<'_>) {
+            self.log.lock().unwrap().push("stop");
+        }
+    }
+
+    #[test]
+    fn a_worker_that_stops_running_ends_its_thread() {
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (r, l) = (Arc::clone(&running), Arc::clone(&log));
+        let pool: Pool<()> = Pool::spawn(1, TEST_STACK, |i| format!("L[{i}]"), move |_| Leaver {
+            running: Arc::clone(&r),
+            log: Arc::clone(&l),
+        })
+        .unwrap();
+        pool.handle().send(0, ()).unwrap();
+        wait_for(&log, |l| l.len() == 1);
+        running.store(false, std::sync::atomic::Ordering::Relaxed);
+        // the next wake ends it: the message that wakes it is not handled
+        pool.handle().send(0, ()).unwrap();
+        wait_for(&log, |l| l.len() == 2);
+        assert_eq!(*log.lock().unwrap(), ["message", "stop"]);
+        assert!(pool.handle().send(0, ()).is_err(), "its mailbox is gone");
+        pool.stop().unwrap();
+        assert_eq!(*log.lock().unwrap(), ["message", "stop"], "stop ran once");
     }
 
     #[test]
