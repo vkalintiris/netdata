@@ -122,6 +122,12 @@ impl StreamWorker {
     fn start_sender(&mut self, cx: &mut Context<'_>, connected: Connected) {
         let Connected { sender, mut link, capabilities, compressor, remote_ip, thread } = connected;
         let Some(host) = sender.host() else {
+            // freed between its connect and this dispatch: the pin goes back (review R43 N4), and the socket goes
+            // non-blocking first so a TLS link's close does not wait on the parent (R46 n5)
+            if let Some(conn) = link.socket() {
+                let _ = socket2::SockRef::from(conn).set_nonblocking(true);
+            }
+            self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(&sender.machine_guid);
             return;
         };
         let hostname = host.hostname();

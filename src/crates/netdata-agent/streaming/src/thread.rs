@@ -155,6 +155,9 @@ impl Worker for StreamWorker {
                 self.check_replication(cx, now);
             }
         }
+        // the POLLOUTs the tick's commits posted (a dequeued sender's hooks, retention changes) go out now, as C
+        // handles them inline (review R41 n7)
+        self.drain_inline(cx);
         self.tick = Some(cx.add_timer(Instant::now() + TICK));
     }
 

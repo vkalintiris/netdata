@@ -46,12 +46,7 @@ impl Sender {
         host.sender_flags_clear(sender_flags::READY_4_METRICS);
         self.on_connect_and_disconnect(host);
         // stream_path_parent_disconnected(): the entries after this agent's go (sent to a child with the proxy)
-        let me = self.connector.local().host_id;
-        let mut path = host.stream_path();
-        if let Some(at) = path.iter().position(|p| p.host_id == me) {
-            path.truncate(at + 1);
-            host.replace_stream_path(path);
-        }
+        host.cut_stream_path_after(self.connector.local().host_id);
     }
 
     /// `stream_sender_on_connect_and_disconnect()`: the pending replication requests flushed and the charts' state

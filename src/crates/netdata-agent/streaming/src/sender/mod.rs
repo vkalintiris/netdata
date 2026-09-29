@@ -147,6 +147,8 @@ impl std::fmt::Debug for Out {
 pub struct Sender {
     me: Weak<Sender>,
     host: Weak<Host>,
+    /// The host's machine GUID, which keys its stream thread's pin after the host is gone.
+    pub(crate) machine_guid: String,
     pub(crate) api_key: String,
     pub(crate) connector: Arc<Connector>,
     state: Mutex<State>,
@@ -201,6 +203,7 @@ impl Sender {
         let sender = Arc::new_cyclic(|me| Sender {
             me: Weak::clone(me),
             host: Arc::downgrade(host),
+            machine_guid: host.machine_guid().to_string(),
             api_key: send.api_key.clone(),
             connector: Arc::clone(connector),
             state: Mutex::new(State {

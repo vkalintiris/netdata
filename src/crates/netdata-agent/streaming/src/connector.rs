@@ -498,12 +498,10 @@ impl Connector {
 
     /// `stream_connect()`: a parent, the request, its answer and the compressor; the connection on success.
     fn stream_connect(&self, s: &Arc<Sender>, host: &Arc<Host>, th: &Thread<'_>) -> Option<Connected> {
-        // the parents stay locked for the attempt (C holds their read lock); the sender's state is only copied in
-        // and out, so nothing else waits on it across the attempt's I/O
+        // the sender's state is only copied in and out, so nothing waits on it across the attempt's I/O
         let mut attempt = {
             let st = s.lock();
             Attempt {
-                parents: s.parents(),
                 hops: host.ingestion_hops().wrapping_add(1),
                 status_reason: st.status_reason,
                 capabilities: st.capabilities,
@@ -520,14 +518,16 @@ impl Connector {
         connected
     }
 
-    fn attempt(&self, s: &Arc<Sender>, host: &Arc<Host>, st: &mut Attempt<'_>, th: &Thread<'_>) -> Option<Connected> {
+    /// The parents are locked while `connect_to_one` picks and connects one, as C holds their read lock
+    /// (`stream-parents.c:911-914`); the handshake's writes after it take the lock briefly, where C writes unlocked.
+    fn attempt(&self, s: &Arc<Sender>, host: &Arc<Host>, st: &mut Attempt, th: &Thread<'_>) -> Option<Connected> {
         let settings = &self.settings;
         // the context and the verification as they are now (stream-connector.c:278-280)
         let mut sock = NdSock::new(self.tls(), settings.ssl_validate_certificate);
         // nd_sock_close() of the previous socket clears errno
         sock.close(th);
         host.pulse_status(host_status::SND_PENDING);
-        let connected = st.parents.connect_to_one(
+        let connected = s.parents().connect_to_one(
             &mut sock,
             host,
             &self.local,
@@ -543,7 +543,7 @@ impl Connector {
             }
             return None;
         }
-        let destination = st.parents.current().map(|d| d.destination.clone()).unwrap_or_default();
+        let destination = s.parents().current().map(|d| d.destination.clone()).unwrap_or_default();
         st.remote_ip = crate::records::cut(&destination, CONNECTED_TO_SIZE).to_string();
         st.capabilities = caps::sender_ours(s.disabled.load(Ordering::Relaxed));
         let request = self.request(host, &s.api_key, st.hops, st.capabilities);
@@ -551,7 +551,7 @@ impl Connector {
         let remote = st.remote_ip.clone();
         if st.parent_using_h2o && !crate::h2o::upgrade_prelude(&mut sock, th) {
             sock.close(th);
-            st.parents.set_connect_failure_reason(host, &mut st.status_reason, Reason::SND_DISCONNECT_HTTP_UPGRADE_FAILED, 60);
+            s.parents().set_connect_failure_reason(host, &mut st.status_reason, Reason::SND_DISCONNECT_HTTP_UPGRADE_FAILED, 60);
             return None;
         }
         if sock.send_timeout(&request, settings.timeout_s, th) <= 0 {
@@ -562,7 +562,7 @@ impl Connector {
                 Priority::Err,
                 "STREAM CONNECT '{hostname}' [to {remote}]: failed to send HTTP header to remote netdata."
             );
-            st.parents.set_connect_failure_reason(host, &mut st.status_reason, Reason::CONNECT_SEND_TIMEOUT, 60);
+            s.parents().set_connect_failure_reason(host, &mut st.status_reason, Reason::CONNECT_SEND_TIMEOUT, 60);
             return None;
         }
         let mut response = [0u8; RESPONSE_SIZE];
@@ -571,10 +571,10 @@ impl Connector {
             sock.close(th);
             let _frame = push(vec![(Field::ResponseCode, Value::I64(Reason::CONNECT_RECEIVE_TIMEOUT.code()))]);
             log_errno!(th, Priority::Err, "STREAM CONNECT '{hostname}' [to {remote}]: remote netdata does not respond.");
-            st.parents.set_connect_failure_reason(host, &mut st.status_reason, Reason::CONNECT_RECEIVE_TIMEOUT, 30);
+            s.parents().set_connect_failure_reason(host, &mut st.status_reason, Reason::CONNECT_RECEIVE_TIMEOUT, 30);
             return None;
         }
-        if !self.validate_first_response(host, st, s.disabled.load(Ordering::Relaxed), &response[..bytes as usize], th) {
+        if !self.validate_first_response(s, host, st, &response[..bytes as usize], th) {
             sock.close(th);
             return None;
         }
@@ -602,18 +602,19 @@ impl Connector {
 
     /// `stream_connect_validate_first_response()`: a prompt negotiates the capabilities; a refusal postpones the
     /// parent and says when it is tried again.
-    fn validate_first_response(&self, host: &Host, st: &mut Attempt<'_>, disabled: u32, http: &[u8], th: &Thread<'_>) -> bool {
+    fn validate_first_response(&self, s: &Sender, host: &Host, st: &mut Attempt, http: &[u8], th: &Thread<'_>) -> bool {
         let (version, row) = response_version(http);
         if version >= 1 {
-            st.parents.set_reconnect_delay(Reason::SP_CONNECTED, self.settings.reconnect_delay_s);
-            st.capabilities = caps::negotiate(version, caps::sender_ours(disabled));
+            s.parents().set_reconnect_delay(Reason::SP_CONNECTED, self.settings.reconnect_delay_s);
+            st.capabilities = caps::negotiate(version, caps::sender_ours(s.disabled.load(Ordering::Relaxed)));
             st.status_reason = Reason(st.capabilities as i32);
             return true;
         }
         let reason = Reason(version);
-        st.parents.set_connect_failure_reason(host, &mut st.status_reason, reason, row.secs);
+        s.parents().set_connect_failure_reason(host, &mut st.status_reason, reason, row.secs);
         let _frame = push(vec![(Field::ResponseCode, Value::I64(reason.code()))]);
-        let at = netdata_agent_log::rfc3339_local(st.parents.current().map_or(0, |d| d.postpone_until_ut), 0);
+        let postponed_ut = s.parents().current().map_or(0, |d| d.postpone_until_ut);
+        let at = netdata_agent_log::rfc3339_local(postponed_ut, 0);
         log_errno!(
             th,
             row.priority,
@@ -627,9 +628,8 @@ impl Connector {
     }
 }
 
-/// What an attempt reads and writes of the sender's state, with the parents it holds.
-struct Attempt<'a> {
-    parents: MutexGuard<'a, crate::parents::Parents>,
+/// What an attempt reads and writes of the sender's state.
+struct Attempt {
     hops: i16,
     status_reason: Reason,
     capabilities: u32,

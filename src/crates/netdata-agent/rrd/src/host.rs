@@ -952,6 +952,22 @@ impl Host {
         changed
     }
 
+    /// `stream_path_parent_disconnected()`: the entries after `host_id`'s go, under one lock; true when some went (C
+    /// then sends the path to the child).
+    pub fn cut_stream_path_after(&self, host_id: [u8; 16]) -> bool {
+        let mut path = self
+            .stream_path
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        match path.iter().position(|p| p.host_id == host_id) {
+            Some(at) if at + 1 < path.len() => {
+                path.truncate(at + 1);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// `IS_VIRTUAL_HOST_OS()`: a virtual node, by its operating system.
     pub fn is_virtual_host_os(&self) -> bool {
         self.info().os == VIRTUAL_HOST_OS
@@ -1718,6 +1734,19 @@ impl Hosts {
 mod tests {
     use super::*;
     use crate::testutil::{backfill_dim, collected_chart, engine, info, store, tier_records};
+
+    /// `stream_path_parent_disconnected()`: the entries after this agent's go, and only a cut reports one.
+    #[test]
+    fn the_stream_path_is_cut_after_an_agent() {
+        let host = Host::with_storage("guid-p", false, info("p"), &Arc::default());
+        let entry = |id: u8| crate::stream_path::PathEntry { host_id: [id; 16], ..Default::default() };
+        host.replace_stream_path(vec![entry(1), entry(2), entry(3)]);
+        assert!(host.cut_stream_path_after([2; 16]));
+        assert_eq!(host.stream_path(), vec![entry(1), entry(2)]);
+        assert!(!host.cut_stream_path_after([2; 16]), "nothing after it any more");
+        assert!(!host.cut_stream_path_after([9; 16]), "not in the path");
+        assert_eq!(host.stream_path(), vec![entry(1), entry(2)]);
+    }
 
     /// `rrdhost_create()`'s tiers: every tier from the engine for a dbengine host, tier 0 from the RAM index for the
     /// other modes, the RAM index alone without the engine; hosts the index creates get the same.
