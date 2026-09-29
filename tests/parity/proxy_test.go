@@ -62,6 +62,8 @@ type proxyVariant struct {
 	extra []proxyChart
 	// ticks is how many seconds of data the body sends, each followed by its marker
 	ticks int
+	// function, when positive, is the tick after which the child registers a host function
+	function int
 	// gated variants run against the candidate only with PARITY_PROXY=1 (8c: all; 8d-8h flip the ones they pass)
 	gated bool
 }
@@ -84,11 +86,24 @@ var proxyVariants = map[string]proxyVariant{
 	"float-up": {caps: proxyPlainCaps &^ stream.CapFloatBaseline, ticks: 12, gated: true},
 	// a parent without IEEE754 nor float baselines: the float dimension as a truncated integer
 	"float-down": {caps: proxyPlainCaps, refused: stream.CapIEEE754 | stream.CapFloatBaseline, ticks: 12, gated: true},
+	// batches close at 101 blocks or 10,836 bytes (an 80-dimension chart), and a function's registration flushes
+	// one at the next gate
+	"batch": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 60, function: 40, gated: true,
+		extra: []proxyChart{proxyWide}},
 	// a chart the proxy's pattern excludes is never defined upstream and makes no commits
 	"pattern": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 12, gated: true,
 		section: "    proxy send charts matching = !proxy.excluded *\n",
 		extra:   []proxyChart{{"proxy.excluded", []proxyDim{{"e1", "absolute", ""}}}}},
 }
+
+// proxyWide is a chart of 80 dimensions: a few of its blocks pass the 10,836 bytes a batch holds.
+var proxyWide = func() proxyChart {
+	ch := proxyChart{id: "proxy.wide"}
+	for d := range 80 {
+		ch.dims = append(ch.dims, proxyDim{id: fmt.Sprintf("w%02d", d), algorithm: "absolute"})
+	}
+	return ch
+}()
 
 // charts are the variant's charts in the child's order: proxyCharts, then its extra ones.
 func (v proxyVariant) charts() []proxyChart {
@@ -227,6 +242,9 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 		all(func(c *stream.Conn) {
 			proxyTick(c, v, base, k)
 			c.Variable("HOST", "proxy_marker", strconv.Itoa(k))
+			if k == v.function {
+				c.FunctionGlobal("proxy-fn", "a proxied function")
+			}
 		})
 		time.Sleep(50 * time.Millisecond)
 	}
