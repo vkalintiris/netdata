@@ -89,11 +89,27 @@ type Answer struct {
 	// StartStreaming answers each chart's CHART_DEFINITION_END with `REPLAY_CHART "<id>" "true" 0 0`: nothing to
 	// replay, start streaming (a child with REPLICATION sends a chart's data only after its parent's request).
 	StartStreaming bool
+	// Replay, when set, decides instead what the parent sends at each chart's CHART_DEFINITION_END and at each
+	// replication answer's REND: the lines it returns.
+	Replay func(ReplayEvent) []string
 	// Silent writes no reply and keeps the connection until the child closes it (a parent that never answers).
 	Silent bool
 	// CloseNow closes the connection without a reply.
 	CloseNow bool
 }
+
+// ReplayEvent is a line an Answer's Replay reacts to: a chart's definition end, or its replication answer's end.
+type ReplayEvent struct {
+	// Chart is the chart whose definition or answer ends.
+	Chart string
+	// Answer is true for a REND, false for a CHART_DEFINITION_END.
+	Answer bool
+	// Line is the line itself.
+	Line string
+}
+
+// replayChartRe is a replication answer's first line, which names its chart (the steps' RBEGIN lines name none).
+var replayChartRe = regexp.MustCompile(`^RBEGIN (?:SLOT:\S+ )?'([^']+)'$`)
 
 // VCaps is the capabilities prompt with `caps`.
 func VCaps(caps uint32) string {
@@ -378,13 +394,14 @@ func (p *Parent) serve(c net.Conn) {
 	buf := make([]byte, 65536)
 	var partial []byte // the last line not complete yet
 	chart := ""        // the chart whose definition is being read
+	replayed := ""     // the chart whose replication answer is being read
 	for {
 		n, err := br.Read(buf)
 		if n > 0 {
 			s.mu.Lock()
 			s.chunks = append(s.chunks, Chunk{At: time.Now(), Data: append([]byte(nil), buf[:n]...)})
 			s.mu.Unlock()
-			if a.StartStreaming {
+			if a.StartStreaming || a.Replay != nil {
 				partial = append(partial, buf[:n]...)
 				for {
 					at := bytes.IndexByte(partial, '\n')
@@ -393,10 +410,19 @@ func (p *Parent) serve(c net.Conn) {
 					}
 					line := string(partial[:at])
 					partial = partial[at+1:]
-					if m := chartDefRe.FindStringSubmatch(line); m != nil {
+					switch m := chartDefRe.FindStringSubmatch(line); {
+					case m != nil:
 						chart = m[1]
-					} else if strings.HasPrefix(line, "CHART_DEFINITION_END ") {
-						_ = s.Send(`REPLAY_CHART "` + chart + `" "true" 0 0`)
+					case strings.HasPrefix(line, "CHART_DEFINITION_END "):
+						if a.Replay != nil {
+							_ = s.Send(a.Replay(ReplayEvent{Chart: chart, Line: line})...)
+						} else {
+							_ = s.Send(`REPLAY_CHART "` + chart + `" "true" 0 0`)
+						}
+					case replayChartRe.MatchString(line):
+						replayed = replayChartRe.FindStringSubmatch(line)[1]
+					case strings.HasPrefix(line, "REND ") && a.Replay != nil:
+						_ = s.Send(a.Replay(ReplayEvent{Chart: replayed, Answer: true, Line: line})...)
 					}
 				}
 			}

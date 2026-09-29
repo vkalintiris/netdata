@@ -427,15 +427,18 @@ var (
 	threadNRe = regexp.MustCompile(`(STREAM (?:SND|THREAD|RCV))\[\d+\]`)
 )
 
-// rchildRecords are a child's streaming records, each once: the connector's (SNDR-CN[0]) and its stream thread's
-// (STREAM[n]) about its parent, with the parent's port, the counts and the stream thread's number masked.
+// rchildRecords are a child's streaming records, each once: the connector's (SNDR-CN[0]), its stream thread's
+// (STREAM[n]) about its parent and its replication threads' (REPLAY[n]), with the parent's port, the counts and the
+// threads' numbers masked. The replication summary comes about 30 s after the last answer, so a stop may come first:
+// `stream.rchild-replication/edges` compares it.
 func rchildRecords(t *testing.T, d *daemon.Daemon) []string {
 	t.Helper()
 	seen := map[string]bool{}
 	var out []string
 	for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
 		th := threadOf(l)
-		if th != "SNDR-CN[0]" && !strings.HasPrefix(th, "STREAM[") || optionalRecordRe.MatchString(l) {
+		streaming := th == "SNDR-CN[0]" || strings.HasPrefix(th, "STREAM[") || strings.HasPrefix(th, "REPLAY[")
+		if !streaming || optionalRecordRe.MatchString(l) || strings.Contains(l, `msg="REPLICATION SEND SUMMARY`) {
 			continue
 		}
 		n := normalizeLog(l, d.Opts.RunDir, "")
@@ -443,6 +446,7 @@ func rchildRecords(t *testing.T, d *daemon.Daemon) []string {
 		n = anyDstPortRe.ReplaceAllString(n, " dst_port=P")
 		n = carriedRe.ReplaceAllString(n, "N bytes in N operations")
 		n = threadNRe.ReplaceAllString(n, "${1}[n]")
+		n = replayThreadRe.ReplaceAllString(n, "thread=REPLAY[n]")
 		n = fdRe.ReplaceAllString(n, ", fd N)")
 		n = postponedRe.ReplaceAllString(n, "POSTPONED FOR N SECS MORE")
 		// a parent's stream_info answer carries a random nonce
