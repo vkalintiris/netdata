@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -153,6 +154,11 @@ var tlsLogMasks = []logMask{
 	{regexp.MustCompile(`(on socket )\d+( client 'localhost' port ')\d+`), "${1}N${2}P"},
 	{responseBytesRe, "${1}N"},
 }
+
+// tlsReceptionsMask compares the web threads' receptions as their connects: a client hello arrives in one readable
+// event or two.
+var tlsReceptionsMask = logMask{regexp.MustCompile(`stopped after (\d+) connects, (\d+) disconnects \(max concurrent ` +
+	`(\d+)\), \d+ receptions`), "stopped after ${1} connects, ${2} disconnects (max concurrent ${3}), ${1} receptions"}
 
 // TestWebTLS (check `web.tls`, milestone 6, D96): the web server's TLS against C's.
 //   - serve (commit 5): a certificate and key at C's default paths, an optional, a default and a force listener:
@@ -299,11 +305,16 @@ func TestWebTLS(t *testing.T) {
 			})
 		}
 	})
-	// the first-request timeout still applies while a handshake stalls, and to a TLS client that sends nothing
+	// the first-request timeout closes a handshake stalled after 3 bytes and a TLS client idle after its handshake.
+	// C's poller checks it every `disconnect idle clients after seconds` / 3 + 1 (22 s at the default 60), in a phase
+	// of its own, so the four connections open at once and each waits past one period for the server's close. One
+	// web thread takes both of a side's clients in the order they came, so a pass closes them in that order and the
+	// second's record carries the errno the first's TLS close left.
 	t.Run("timeouts", func(t *testing.T) {
 		key, cert := selfSigned(t)
-		p, ls := tlsPair(t, "    timeout for first request = 2\n", map[string][]byte{"key.pem": key, "cert.pem": cert})
-		for name, open := range map[string]func(addr string) (net.Conn, error){
+		p, ls := tlsPair(t, "    timeout for first request = 2\n    web server threads = 1\n",
+			map[string][]byte{"key.pem": key, "cert.pem": cert})
+		opens := map[string]func(addr string) (net.Conn, error){
 			"stalled-handshake": func(addr string) (net.Conn, error) {
 				c, err := net.DialTimeout("tcp", addr, 5*time.Second)
 				if err == nil {
@@ -315,27 +326,70 @@ func TestWebTLS(t *testing.T) {
 				return tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr,
 					&tls.Config{InsecureSkipVerify: true})
 			},
-		} {
-			var got [2]string
+		}
+		var (
+			mu  sync.Mutex
+			wg  sync.WaitGroup
+			got = map[string]*[2]string{}
+		)
+		for name, open := range opens {
+			got[name] = &[2]string{}
 			for i := range p.Each() {
 				c, err := open(ls[i].standard)
 				if err != nil {
 					t.Fatalf("%s: %v", name, err)
 				}
-				got[i] = serverCloses(c, 8*time.Second)
-				c.Close()
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					r := serverCloses(c, 30*time.Second)
+					c.Close()
+					mu.Lock()
+					got[name][i] = r
+					mu.Unlock()
+				}()
 			}
-			if got[0] != got[1] {
-				t.Errorf("%s: oracle %q, candidate %q", name, got[0], got[1])
+		}
+		wg.Wait()
+		for name, g := range got {
+			if g[0] != "closed (0 bytes)" || g[1] != g[0] {
+				t.Errorf("%s: oracle %q, candidate %q", name, g[0], g[1])
 			}
-			t.Logf("%s: %s", name, got[0])
 		}
 		for _, side := range p.Each() {
 			if err := side.Daemon.Stop(); err != nil {
 				t.Fatalf("stop %s: %v", side.Role, err)
 			}
 		}
-		compareLogFilesWith(t, p, tlsLogMasks)
+		compareLogFilesWith(t, p, append(slices.Clone(tlsLogMasks), tlsReceptionsMask))
+	})
+	// a TLS client that sends its close_notify and hangs up a second later: C's receive of 0 bytes keeps the client,
+	// polled for nothing, until the hangup (its record "expecting  , having  ")
+	t.Run("close-notify", func(t *testing.T) {
+		key, cert := selfSigned(t)
+		p, ls := tlsPair(t, "", map[string][]byte{"key.pem": key, "cert.pem": cert})
+		for i := range p.Each() {
+			c, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", ls[i].standard,
+				&tls.Config{InsecureSkipVerify: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := c.CloseWrite(); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(time.Second)
+			c.Close()
+		}
+		time.Sleep(time.Second)
+		for _, side := range p.Each() {
+			if err := side.Daemon.Stop(); err != nil {
+				t.Fatalf("stop %s: %v", side.Role, err)
+			}
+		}
+		if !logContains(t, p.Oracle, "expecting  , having  ") {
+			t.Errorf("the oracle logged no hangup of a client polled for nothing")
+		}
+		compareLogFilesWith(t, p, append(slices.Clone(tlsLogMasks), tlsReceptionsMask))
 	})
 	t.Run("stream", func(t *testing.T) {
 		key, cert := selfSigned(t)
@@ -395,10 +449,7 @@ func TestWebTLS(t *testing.T) {
 				t.Fatalf("stop %s: %v", side.Role, err)
 			}
 		}
-		// a client hello arrives in one readable event or two: the receptions compare as the connects do
-		receptions := logMask{regexp.MustCompile(`stopped after (\d+) connects, (\d+) disconnects \(max concurrent ` +
-			`(\d+)\), \d+ receptions`), "stopped after ${1} connects, ${2} disconnects (max concurrent ${3}), ${1} receptions"}
-		compareLogFilesWith(t, p, append(slices.Clone(tlsLogMasks), receptions))
+		compareLogFilesWith(t, p, append(slices.Clone(tlsLogMasks), tlsReceptionsMask))
 	})
 	// a TLS client and a TLS child that go away without a close_notify (the client in the middle of its request)
 	t.Run("raw-close", func(t *testing.T) {
