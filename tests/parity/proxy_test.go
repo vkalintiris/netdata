@@ -74,6 +74,9 @@ type proxyVariant struct {
 	malformedAt int
 	// metadata sends the child's claim id and variables after tick 2, and the parent's NODE_ID down after tick 4
 	metadata bool
+	// v1in makes the child a v1 one (BEGIN/SET/END, no replication), collecting once a second: the proxy runs each
+	// collection through its own clock, so its blocks compare by shape, their times and values masked
+	v1in bool
 	// records, when set, replaces the ticks: the child writes these lines after its charts' replication, and the
 	// proxies' PLUGINSD records compare instead of the transcript
 	records func(c *stream.Conn, base int64)
@@ -110,6 +113,8 @@ var proxyVariants = map[string]proxyVariant{
 	// a BEGIN2 after a BEGIN2 without END2, of the same chart and of another: the parser unlocks the stale collection
 	// lock and says so (the records; D106.4, commit 8d)
 	"malformed-records": {caps: proxyPlainCaps, refused: stream.CapIEEE754, records: malformedLines},
+	// a v1 child: the proxy commits one block per chart per collection, and the 101st commit closes the first batch
+	"v1in": {caps: stream.CapsLiveV1, refused: stream.CapIEEE754, ticks: 34, v1in: true, gated: true},
 	// the child's metadata overtakes the batch (CLAIMED_ID, VARIABLE HOST) or rides the chart's next block (VARIABLE
 	// CHART); the parent's NODE_ID comes down to the child
 	"metadata": {caps: proxyPlainCaps | stream.CapClaim | stream.CapNodeID | stream.CapPaths, refused: stream.CapIEEE754,
@@ -131,6 +136,9 @@ var proxyWide = func() proxyChart {
 	}
 	return ch
 }()
+
+// replicates tells whether the child offers replication (it defines its charts' retention and answers requests).
+func (v proxyVariant) replicates() bool { return v.caps&stream.CapReplication != 0 }
 
 // charts are the variant's charts in the child's order: proxyCharts, then its extra ones.
 func (v proxyVariant) charts() []proxyChart {
@@ -241,12 +249,15 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 		}
 	})
 	for i, s := range sides {
+		if !v.replicates() {
+			break
+		}
 		if err := s.child.WaitGranted(ids(v.charts()), 30*time.Second); err != nil {
 			t.Fatalf("side %d: %v", i, err)
 		}
 	}
 	// P2: the first collection starts the proxied host's sender
-	all(func(c *stream.Conn) { pokeProxyCharts(c, v, v.charts(), base+1) })
+	all(func(c *stream.Conn) { pokeProxyCharts(c, v, v.charts(), base+1, true) })
 	sessions := [2]*stream.Session{}
 	// with PARITY_KEEP=1 each proxy's run directory keeps what its stub received, a failed run's too
 	t.Cleanup(func() {
@@ -266,7 +277,7 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 		}
 	}
 	// P3: the definitions go up, and the stub's plan replicates each chart in three windows
-	all(func(c *stream.Conn) { pokeProxyCharts(c, v, v.charts(), base+2) })
+	all(func(c *stream.Conn) { pokeProxyCharts(c, v, v.charts(), base+2, false) })
 	for i := range sides {
 		// without replication upstream the definitions are enough
 		done := func(b []byte) bool { return rendTrueCount(b) >= len(proxyCharts) }
@@ -281,9 +292,12 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 	// P4: the variant's ticks, each followed by its marker
 	for k := 1; k <= v.ticks; k++ {
 		all(func(c *stream.Conn) {
-			if k == v.malformedAt {
+			switch {
+			case v.v1in:
+				pokeProxyCharts(c, v, v.charts(), 0, false)
+			case k == v.malformedAt:
 				malformedTick(c, base, k)
-			} else {
+			default:
 				proxyTick(c, v, base, k)
 			}
 			c.Variable("HOST", "proxy_marker", strconv.Itoa(k))
@@ -305,17 +319,24 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 				}
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		if v.v1in {
+			time.Sleep(time.Second)
+		} else {
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 	// P5: a definition flushes the pending batch
 	flushSlot := 7 + len(v.charts())
 	all(func(c *stream.Conn) { defineProxyChart(c, v, flushSlot, proxyFlush, base) })
 	for i, s := range sides {
+		if !v.replicates() {
+			break
+		}
 		if err := s.child.WaitGranted(ids(charts), 30*time.Second); err != nil {
 			t.Fatalf("side %d: %v", i, err)
 		}
 	}
-	all(func(c *stream.Conn) { pokeProxyCharts(c, v, []proxyChart{proxyFlush}, base+2+int64(v.ticks)+1) })
+	all(func(c *stream.Conn) { pokeProxyCharts(c, v, []proxyChart{proxyFlush}, base+2+int64(v.ticks)+1, true) })
 	for i := range sides {
 		if !sessions[i].WaitData(func(b []byte) bool { return proxyFlushDefRe.Match(b) }, 30*time.Second) {
 			t.Fatalf("side %d: the flush chart never went up", i)
@@ -325,7 +346,15 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 	var out [2][]string
 	for i, s := range sides {
 		_ = s.proxy.Stop()
-		out[i] = append(requestLines(sessions[i].Request), proxyTranscript(string(sessions[i].Data()))...)
+		transcript := proxyTranscript(string(sessions[i].Data()))
+		if v.v1in {
+			for j, l := range transcript {
+				if proxyClockedRe.MatchString(l) {
+					transcript[j] = proxyNumberRe.ReplaceAllString(l, "N")
+				}
+			}
+		}
+		out[i] = append(requestLines(sessions[i].Request), transcript...)
 		out[i] = append(append(out[i], "== child"), proxyDownstream(s.child.Downstream())...)
 	}
 	return out
@@ -410,6 +439,10 @@ func startProxySide(t *testing.T, role Role, bin string, v proxyVariant, base in
 	t.Helper()
 	plan := map[string][]stream.ReplayWindow{}
 	for _, ch := range proxyCharts {
+		if v.v1in {
+			// the proxy stores a v1 child's points at its own clock, outside the fixed windows: start at once
+			break
+		}
 		plan[ch.id] = []stream.ReplayWindow{{After: base - 60, Before: base - 30}, {After: base - 30, Before: base - 1},
 			{Start: true, After: base - 1, Before: base + 2}}
 	}
@@ -479,14 +512,29 @@ func defineProxyChart(c *stream.Conn, v proxyVariant, slot int, ch proxyChart, b
 	}
 	c.CLabel("proxied", "yes")
 	c.CLabelCommit()
-	c.ChartDefinitionEnd(base-60, base, base)
+	if v.replicates() {
+		c.ChartDefinitionEnd(base-60, base, base)
+	}
 }
 
-// pokeProxyCharts is one collection of each chart at `at`, in the child's encodings and slots.
-func pokeProxyCharts(c *stream.Conn, v proxyVariant, charts []proxyChart, at int64) {
+// pokeProxyCharts is one collection of each chart at `at`, in the child's encodings and slots; a v1 child's is
+// BEGIN with the microseconds since its last (0 on its first) and its dimensions' values.
+func pokeProxyCharts(c *stream.Conn, v proxyVariant, charts []proxyChart, at int64, first bool) {
 	order := append(v.charts(), proxyFlush)
 	one := stream.EncodeI64(v.ints, 1)
 	for _, ch := range charts {
+		if v.v1in {
+			usec := int64(1_000_000)
+			if first {
+				usec = 0
+			}
+			c.Begin(ch.id, usec)
+			for j, d := range ch.dims {
+				c.Set(d.id, strconv.Itoa(10+j))
+			}
+			c.End()
+			continue
+		}
 		slot := 7 + slices.IndexFunc(order, func(o proxyChart) bool { return o.id == ch.id })
 		c.Begin2Raw(v.slot(slot), ch.id, one, stream.EncodeI64(v.ints, at), "#")
 		for j, d := range ch.dims {
@@ -497,7 +545,11 @@ func pokeProxyCharts(c *stream.Conn, v proxyVariant, charts []proxyChart, at int
 }
 
 var (
-	rendTrueRe       = regexp.MustCompile(`(?m)^REND .* true `)
+	rendTrueRe = regexp.MustCompile(`(?m)^REND .* true `)
+	// a v1 child's lines on the proxy: the lines its clock decides (times, collected values, retention) and their
+	// numbers (not a slot's or a flag's)
+	proxyClockedRe   = regexp.MustCompile(`^(BEGIN2|SET2|RDSTATE|RSSTATE|REND|RBEGIN|CHART_DEFINITION_END) `)
+	proxyNumberRe    = regexp.MustCompile(`\b\d+(\.\d+)?\b`)
 	proxyChartLineRe = regexp.MustCompile(`(?m)^CHART `)
 	proxyFlushDefRe  = regexp.MustCompile(`(?m)^CHART (?:SLOT:\S+ )?"proxy\.flush"`)
 )
@@ -526,8 +578,8 @@ var (
 // order the chart got them: the proxy's replication threads commit the answers of different charts in any order.
 // Then the stream in arrival order: the blocks, the markers, a `DEF <chart>` where each definition came, and every
 // other line. Last the last stream path (the sender's side sends one when its NODE_ID or retention changes, racing
-// the receiver's lines). The proxy's clocks and the path's times are masked, chart labels sorted within their run, FUNCTION
-// lines left out (D100.9).
+// the receiver's lines). The proxy's clocks and the path's times are masked, chart labels sorted within their run,
+// FUNCTION lines left out (D100.9).
 func proxyTranscript(data string) []string {
 	var hooks, labels, flow, lastPath []string
 	charts := map[string][]string{}
