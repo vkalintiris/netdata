@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,6 +84,8 @@ type proxyVariant struct {
 	// records, when set, replaces the ticks: the child writes these lines after its charts' replication, and the
 	// proxies' PLUGINSD records compare instead of the transcript
 	records func(c *stream.Conn, base int64)
+	// leave replaces the flush: after the ticks the child leaves and comes back (proxyLeaveRun)
+	leave bool
 	// gated variants run against the candidate only with PARITY_PROXY=1 (8f: v1in and metadata, which need 8h's
 	// relays: the path again when the retention changes, CLAIMED_ID up and NODE_ID down)
 	gated bool
@@ -114,6 +117,10 @@ var proxyVariants = map[string]proxyVariant{
 	// set, zeros (D106.3), still batched
 	"v1up": {caps: proxyPlainCaps, refused: stream.CapIEEE754 | stream.CapInterpolated | stream.CapReplication,
 		ticks: 12},
+	// the child leaves with 49 of its 150 blocks in the proxy's batch: C loses them with the host buffer when the
+	// receiver's end stops the sender (RECEIVER LEFT); on the child's return the sender starts again and the stub's
+	// second plan replicates the lost seconds (8g)
+	"receiver-left": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 50, leave: true, gated: true},
 	// a BEGIN2 after a BEGIN2 without END2, of the same chart and of another: the parser unlocks the stale collection
 	// lock and says so (the records; D106.4, commit 8d)
 	"malformed-records": {caps: proxyPlainCaps, refused: stream.CapIEEE754, records: malformedLines},
@@ -235,6 +242,36 @@ func TestProxyTranscript(t *testing.T) {
 	}
 }
 
+// proxyAll writes `f`'s lines to each side's child as one burst.
+func proxyAll(t *testing.T, sides [2]*proxySide, f func(c *stream.Conn)) {
+	t.Helper()
+	for _, s := range sides {
+		if err := s.child.Burst(func() { f(s.child) }); err != nil {
+			t.Fatalf("child write: %v", err)
+		}
+	}
+}
+
+func proxyIDs(cs []proxyChart) []string {
+	var out []string
+	for _, c := range cs {
+		out = append(out, c.id)
+	}
+	return out
+}
+
+// keepUpstream writes, with PARITY_KEEP=1, what each stub's session received into its proxy's run directory as
+// `name`, a failed run's too.
+func keepUpstream(t *testing.T, sides [2]*proxySide, sessions *[2]*stream.Session, name string) {
+	t.Cleanup(func() {
+		for i, s := range sessions {
+			if s != nil && os.Getenv("PARITY_KEEP") == "1" {
+				_ = os.WriteFile(filepath.Join(sides[i].proxy.Opts.RunDir, name), s.Data(), 0o644)
+			}
+		}
+	})
+}
+
 // proxyRun drives both sides through the phases and returns each stub's normalized transcript.
 func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]string {
 	t.Helper()
@@ -244,20 +281,8 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 	for i, role := range []Role{"proxy-oracle", "proxy-candidate"} {
 		sides[i] = startProxySide(t, Role(string(role)+"-"+name), bins[i], v, base)
 	}
-	all := func(f func(c *stream.Conn)) {
-		for _, s := range sides {
-			if err := s.child.Burst(func() { f(s.child) }); err != nil {
-				t.Fatalf("child write: %v", err)
-			}
-		}
-	}
-	ids := func(cs []proxyChart) []string {
-		var out []string
-		for _, c := range cs {
-			out = append(out, c.id)
-		}
-		return out
-	}
+	all := func(f func(c *stream.Conn)) { proxyAll(t, sides, f) }
+	ids := proxyIDs
 	// P1: the charts defined and replicated from the child
 	all(func(c *stream.Conn) {
 		for ci, ch := range v.charts() {
@@ -275,14 +300,7 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 	// P2: the first collection starts the proxied host's sender
 	all(func(c *stream.Conn) { pokeProxyCharts(c, v, v.charts(), base+1, true) })
 	sessions := [2]*stream.Session{}
-	// with PARITY_KEEP=1 each proxy's run directory keeps what its stub received, a failed run's too
-	t.Cleanup(func() {
-		for i, s := range sessions {
-			if s != nil && os.Getenv("PARITY_KEEP") == "1" {
-				_ = os.WriteFile(filepath.Join(sides[i].proxy.Opts.RunDir, "upstream.txt"), s.Data(), 0o644)
-			}
-		}
-	})
+	keepUpstream(t, sides, &sessions, "upstream.txt")
 	for i, s := range sides {
 		if sessions[i] = s.stub.WaitSession(1, 30*time.Second); sessions[i] == nil {
 			t.Fatalf("side %d: the proxy never connected upstream", i)
@@ -340,6 +358,9 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 		} else {
 			time.Sleep(50 * time.Millisecond)
 		}
+	}
+	if v.leave {
+		return proxyLeaveRun(t, v, base, sides, sessions)
 	}
 	// P5: a definition flushes the pending batch
 	flushSlot := 7 + len(v.charts())
@@ -531,10 +552,19 @@ func startProxySide(t *testing.T, role Role, bin string, v proxyVariant, base in
 		plan[ch.id] = []stream.ReplayWindow{{After: base - 60, Before: base - 30}, {After: base - 30, Before: base - 1},
 			{Start: true, After: base - 1, Before: base + 2}}
 	}
+	// after the child's return the second session replicates the seconds of the ticks and the return's collections
+	again := map[string][]stream.ReplayWindow{}
+	for _, ch := range proxyCharts {
+		again[ch.id] = []stream.ReplayWindow{{Start: true, After: base + 2, Before: base + 2 + int64(v.ticks) + 2}}
+	}
+	var sessions atomic.Int32
 	stub, err := stream.StartParent(func(r stream.Request) stream.Answer {
 		a := stream.Answer{Reply: stream.VCaps(r.Caps() &^ (stream.CapsCompression | v.refused))}
 		if v.refused&stream.CapReplication == 0 {
 			a.Replay = stream.ReplayPlan(plan)
+			if sessions.Add(1) > 1 && v.leave {
+				a.Replay = stream.ReplayPlan(again)
+			}
 		}
 		return a
 	})
@@ -551,11 +581,21 @@ func startProxySide(t *testing.T, role Role, bin string, v proxyVariant, base in
 		t.Fatalf("start %s: %v", role, err)
 	}
 	t.Cleanup(func() { _ = d.Stop() })
+	c, err := connectProxyChild(t, d, v, base)
+	if err != nil {
+		t.Fatalf("%s: the child's connection: %v", role, err)
+	}
+	return &proxySide{stub: stub, proxy: d, child: c}
+}
+
+// connectProxyChild connects the fake child to the proxy, serving its replication requests from a fixed retention.
+func connectProxyChild(t *testing.T, d *daemon.Daemon, v proxyVariant, base int64) (*stream.Conn, error) {
+	t.Helper()
 	host := proxiedHost
 	host.Hops = v.hops
 	c, err := stream.Connect(d.Addr, d.StreamKey, host, v.caps)
 	if err != nil {
-		t.Fatalf("%s: the child's connection: %v", role, err)
+		return nil, err
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	retention := map[string]stream.ReplayChart{}
@@ -565,7 +605,89 @@ func startProxySide(t *testing.T, role Role, bin string, v proxyVariant, base in
 	c.Serve(retention, base, func(chart string, after, before int64) []stream.ReplayRow {
 		return proxyRows(v, chart, after, before)
 	})
-	return &proxySide{stub: stub, proxy: d, child: c}
+	return c, nil
+}
+
+// proxyLeaveRun is receiver-left's end, after the ticks: each child leaves, which on C stops the proxy's sender
+// (the first session ends without the batch's last 49 blocks); a new child connects (retried while the proxy still
+// holds the first), defines and replicates its charts, and its collections start the sender again, whose second
+// session gets the stub's second plan. Compared: both sessions, the proxy's RECEIVER LEFT records and what each child
+// received.
+func proxyLeaveRun(t *testing.T, v proxyVariant, base int64, sides [2]*proxySide, first [2]*stream.Session) [2][]string {
+	t.Helper()
+	var left [2]*stream.Conn
+	for i, s := range sides {
+		left[i] = s.child
+		_ = s.child.Close()
+		deadline := time.Now().Add(30 * time.Second)
+		for !first[i].Closed() {
+			if time.Now().After(deadline) {
+				t.Fatalf("side %d: the proxy's sender kept its session after the child left", i)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	for i, s := range sides {
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			c, err := connectProxyChild(t, s.proxy, v, base)
+			if err == nil {
+				sides[i].child = c
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("side %d: the child's return: %v", i, err)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	proxyAll(t, sides, func(c *stream.Conn) {
+		for ci, ch := range v.charts() {
+			defineProxyChart(c, v, 7+ci, ch, base)
+		}
+	})
+	for i, s := range sides {
+		if err := s.child.WaitGranted(proxyIDs(v.charts()), 30*time.Second); err != nil {
+			t.Fatalf("side %d, the return: %v", i, err)
+		}
+	}
+	back := base + 2 + int64(v.ticks)
+	proxyAll(t, sides, func(c *stream.Conn) { pokeProxyCharts(c, v, v.charts(), back+1, false) })
+	second := [2]*stream.Session{}
+	keepUpstream(t, sides, &second, "upstream-2.txt")
+	for i, s := range sides {
+		if second[i] = s.stub.WaitSession(2, 30*time.Second); second[i] == nil {
+			t.Fatalf("side %d: the proxy never connected upstream again", i)
+		}
+		if !second[i].WaitData(func(b []byte) bool { return strings.Contains(string(b), "\nOVERWRITE labels\n") },
+			30*time.Second) {
+			t.Fatalf("side %d: no host labels in the second session", i)
+		}
+	}
+	proxyAll(t, sides, func(c *stream.Conn) { pokeProxyCharts(c, v, v.charts(), back+2, false) })
+	for i := range sides {
+		if !second[i].WaitData(func(b []byte) bool { return rendTrueCount(b) >= len(proxyCharts) }, 30*time.Second) {
+			t.Fatalf("side %d: the second session's replication never finished: %s", i, second[i].Data())
+		}
+	}
+	time.Sleep(2 * time.Second)
+	var out [2][]string
+	for i, s := range sides {
+		_ = s.proxy.Stop()
+		out[i] = append(requestLines(first[i].Request), proxyTranscript(string(first[i].Data()))...)
+		// the sender's thread and the connector's write them: a set
+		var records []string
+		for _, r := range parentRecords(t, s.proxy, "RECEIVER LEFT", nil) {
+			records = append(records, anyDstPortRe.ReplaceAllString(r, " dst_port=P"))
+		}
+		sort.Strings(records)
+		out[i] = append(append(out[i], "== left"), records...)
+		out[i] = append(append(out[i], "== the second session"), requestLines(second[i].Request)...)
+		out[i] = append(out[i], proxyTranscript(string(second[i].Data()))...)
+		out[i] = append(append(out[i], "== the child that left"), proxyDownstream(left[i].Downstream())...)
+		out[i] = append(append(out[i], "== the child's return"), proxyDownstream(s.child.Downstream())...)
+	}
+	return out
 }
 
 // proxyRows are the child's retained points: every second of the window, each dimension a small value of its time.
