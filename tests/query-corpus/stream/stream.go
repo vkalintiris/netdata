@@ -14,13 +14,14 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// Capability bits, mirroring src/streaming/stream-capabilities.h. Only the
-// bits the pusher negotiates are defined; the absence of compression and
-// IEEE754 caps keeps the wire plaintext with plain decimal numbers, and the
-// absence of SLOTS keeps chart/dimension references as string ids.
+// Capability bits, mirroring src/streaming/stream-capabilities.h: the pusher's own; the rest a parent answers with
+// are in parent.go. The absence of compression and IEEE754 caps keeps the wire plaintext with plain decimal numbers,
+// and the absence of SLOTS keeps chart/dimension references as string ids.
 const (
 	CapVCaps        uint32 = 1 << 6
 	CapHLabels      uint32 = 1 << 7
@@ -59,6 +60,7 @@ type HostInfo struct {
 	Hostname    string
 	MachineGUID string
 	UpdateEvery int // defaults to 1
+	Hops        int // defaults to 1: how far the child is from the host that collects its data
 }
 
 // Chart carries the metadata sent with the CHART line.
@@ -71,6 +73,7 @@ type Chart struct {
 	Type        string // line/area/stacked; defaults to line
 	Priority    int    // defaults to 1000
 	UpdateEvery int    // defaults to 1
+	Slot        string // the CHART line's `SLOT:<slot>` (the SLOTS capability), none when empty
 }
 
 // Conn is one streaming child connection. Writes are buffered; callers
@@ -82,6 +85,14 @@ type Conn struct {
 	w          *bufio.Writer
 	err        error
 	Negotiated uint32
+	// Serve's state (child.go): writes are Burst's under mu once it runs; the charts granted streaming; the lines
+	// the parent sent
+	mu      sync.Mutex
+	serving atomic.Bool
+	inBurst atomic.Bool
+	granted map[string]bool
+	downMu  sync.Mutex
+	down    []DownLine
 }
 
 // Connect dials the parent, performs the STREAM handshake and returns the
@@ -113,6 +124,9 @@ func ConnectTLS(addr, apiKey string, hi HostInfo, caps uint32, cfg *tls.Config) 
 // ConnectOn performs the STREAM handshake on a connected socket; a caller that keeps the socket can close it under
 // the connection (a TLS peer that goes away without a close_notify).
 func ConnectOn(nc net.Conn, apiKey string, hi HostInfo, caps uint32) (*Conn, error) {
+	if hi.Hops <= 0 {
+		hi.Hops = 1
+	}
 	// the large write buffer lets a caller emit a whole fixture burst as one
 	// write() syscall, keeping burst boundaries (Flush) meaningful
 	c := &Conn{conn: nc, r: bufio.NewReader(nc), w: bufio.NewWriterSize(nc, 2<<20)}
@@ -120,10 +134,10 @@ func ConnectOn(nc net.Conn, apiKey string, hi HostInfo, caps uint32) (*Conn, err
 	req := fmt.Sprintf(
 		"STREAM key=%s&hostname=%s&registry_hostname=%s&machine_guid=%s"+
 			"&update_every=%d&os=linux&timezone=Etc/UTC&abbrev_timezone=UTC"+
-			"&utc_offset=0&hops=1&ver=%d&NETDATA_PROTOCOL_VERSION=1.1 HTTP/1.1\r\n"+
+			"&utc_offset=0&hops=%d&ver=%d&NETDATA_PROTOCOL_VERSION=1.1 HTTP/1.1\r\n"+
 			"User-Agent: query-corpus-pusher/1.0\r\n"+
 			"Accept: */*\r\n\r\n",
-		apiKey, hi.Hostname, hi.Hostname, hi.MachineGUID, hi.UpdateEvery, caps)
+		apiKey, hi.Hostname, hi.Hostname, hi.MachineGUID, hi.UpdateEvery, hi.Hops, caps)
 
 	_ = nc.SetDeadline(time.Now().Add(10 * time.Second))
 	if _, err := nc.Write([]byte(req)); err != nil {
@@ -196,6 +210,9 @@ func (c *Conn) Flush() error {
 
 // Linef buffers one protocol line.
 func (c *Conn) Linef(format string, a ...any) {
+	if c.serving.Load() && !c.inBurst.Load() {
+		panic("stream: a line written outside a Burst while Serve runs")
+	}
 	if c.err != nil {
 		return
 	}
@@ -217,7 +234,11 @@ func (c *Conn) DefineChart(ch Chart) {
 	if ch.UpdateEvery <= 0 {
 		ch.UpdateEvery = 1
 	}
-	c.Linef("CHART %s '' %s %s %s %s %s %d %d '' fixture-pusher corpus",
+	slot := ""
+	if ch.Slot != "" {
+		slot = "SLOT:" + ch.Slot + " "
+	}
+	c.Linef("CHART %s%s '' %s %s %s %s %s %d %d '' fixture-pusher corpus", slot,
 		qw(ch.ID), qw(ch.Title), qw(ch.Units), qw(ch.Family), qw(ch.Context), ch.Type, ch.Priority, ch.UpdateEvery)
 }
 
@@ -344,6 +365,7 @@ type ReplayValue struct {
 	ID        string
 	Collected string // ignored for FlagEmpty
 	Flags     string
+	Slot      string // the RSET's `SLOT:<slot>` (the SLOTS capability), none when empty
 }
 
 // ReplayRow is one replicated sample: the per-dimension values at time T.
@@ -356,6 +378,7 @@ type ReplayRow struct {
 type ReplayChart struct {
 	FirstT, LastT int64
 	UpdateEvery   int
+	Slot          string // the RBEGIN lines' `SLOT:<slot>` (the SLOTS capability), none when empty
 }
 
 // ReplayHandler returns the fixture rows for chart in the window
@@ -399,35 +422,10 @@ func (c *Conn) ServeReplication(charts map[string]ReplayChart, childNow int64, h
 		if !known {
 			return served, fmt.Errorf("stream: parent requested replication of unknown chart %q", chart)
 		}
-		updateEvery := ret.UpdateEvery
-		if updateEvery <= 0 {
-			updateEvery = 1
-		}
-
-		// Scope the response even when this replication window has no rows.
-		c.Linef("RBEGIN %s", qw(chart))
-
-		if after != 0 && before != 0 {
-			for _, row := range handler(chart, after, before) {
-				c.Linef("RBEGIN %s %d %d %d", qw(chart), row.T-int64(updateEvery), row.T, childNow)
-				for _, dv := range row.Dims {
-					if dv.Flags == FlagEmpty {
-						c.Linef("RSET %s NAN E", qw(dv.ID))
-					} else {
-						c.Linef("RSET %s %s %s", qw(dv.ID), dv.Collected, dv.Flags)
-					}
-				}
-				served[chart]++
-			}
-		}
-
-		streamWord := "false"
+		served[chart] += c.writeReplayAnswer(chart, ret, wantStream, after, before, childNow, handler)
 		if wantStream {
-			streamWord = "true"
 			granted[chart] = true
 		}
-		c.Linef("REND %d %d %d %s %d %d %d",
-			updateEvery, ret.FirstT, ret.LastT, streamWord, after, before, childNow)
 		if err := c.Flush(); err != nil {
 			return served, err
 		}
@@ -435,4 +433,36 @@ func (c *Conn) ServeReplication(charts map[string]ReplayChart, childNow int64, h
 
 	_ = c.conn.SetReadDeadline(time.Time{})
 	return served, nil
+}
+
+// writeReplayAnswer buffers one REPLAY_CHART answer from handler (its RBEGIN scope, a row per point of (after,
+// before], REND) and returns the rows it wrote.
+func (c *Conn) writeReplayAnswer(chart string, ret ReplayChart, wantStream bool, after, before, childNow int64,
+	handler ReplayHandler) int {
+	updateEvery := ret.UpdateEvery
+	if updateEvery <= 0 {
+		updateEvery = 1
+	}
+	// Scope the response even when this replication window has no rows.
+	c.Linef("RBEGIN %s%s", slotted(ret.Slot), qw(chart))
+	rows := 0
+	if after != 0 && before != 0 {
+		for _, row := range handler(chart, after, before) {
+			c.Linef("RBEGIN %s%s %d %d %d", slotted(ret.Slot), qw(chart), row.T-int64(updateEvery), row.T, childNow)
+			for _, dv := range row.Dims {
+				if dv.Flags == FlagEmpty {
+					c.Linef("RSET %s%s NAN E", slotted(dv.Slot), qw(dv.ID))
+				} else {
+					c.Linef("RSET %s%s %s %s", slotted(dv.Slot), qw(dv.ID), dv.Collected, dv.Flags)
+				}
+			}
+			rows++
+		}
+	}
+	streamWord := "false"
+	if wantStream {
+		streamWord = "true"
+	}
+	c.Linef("REND %d %d %d %s %d %d %d", updateEvery, ret.FirstT, ret.LastT, streamWord, after, before, childNow)
+	return rows
 }

@@ -111,6 +111,39 @@ type ReplayEvent struct {
 	Line string
 }
 
+// ReplayWindow is one replication request a parent asks: whether to start streaming, and the (after, before]
+// window.
+type ReplayWindow struct {
+	Start         bool
+	After, Before int64
+}
+
+// ReplayPlan is an Answer.Replay asking each planned chart's windows in turn: the first at its first
+// CHART_DEFINITION_END, the next at each REND of its answers, nothing after the last. A chart without a plan starts
+// streaming at once (`"true" 0 0`). It keeps each chart's position: one per session.
+func ReplayPlan(plan map[string][]ReplayWindow) func(ReplayEvent) []string {
+	var mu sync.Mutex
+	next := map[string]int{}
+	return func(ev ReplayEvent) []string {
+		mu.Lock()
+		defer mu.Unlock()
+		windows, planned := plan[ev.Chart]
+		if !planned {
+			if ev.Answer {
+				return nil
+			}
+			return []string{`REPLAY_CHART "` + ev.Chart + `" "true" 0 0`}
+		}
+		i := next[ev.Chart]
+		if i >= len(windows) || (!ev.Answer && i > 0) {
+			return nil
+		}
+		next[ev.Chart] = i + 1
+		w := windows[i]
+		return []string{fmt.Sprintf(`REPLAY_CHART "%s" "%t" %d %d`, ev.Chart, w.Start, w.After, w.Before)}
+	}
+}
+
 // replayChartRe is a replication answer's first line, which names its chart (the steps' RBEGIN lines name none).
 var replayChartRe = regexp.MustCompile(`^RBEGIN (?:SLOT:\S+ )?'([^']+)'$`)
 
@@ -156,6 +189,18 @@ func (s *Session) Chunks() []Chunk {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Chunk(nil), s.chunks...)
+}
+
+// WaitData waits up to `timeout` until what the child sent satisfies `cond`.
+func (s *Session) WaitData(cond func(data []byte) bool, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for !cond(s.Data()) {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return true
 }
 
 // Closed tells whether the child closed the connection (or it failed).

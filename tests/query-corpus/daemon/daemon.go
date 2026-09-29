@@ -87,6 +87,9 @@ type Options struct {
 	StreamExtra string
 	// StreamTo, when set, makes the daemon a streaming child of that destination.
 	StreamTo *StreamTo
+	// StreamSection is appended to the [stream] section verbatim (one "key = value" per line) when StreamTo is nil:
+	// a proxy's connector settings (`reconnect delay`) and its children's sender defaults (`destination`, `api key`).
+	StreamSection string
 	// BindTo, when set, is the [web] bind to value, with {port} replaced by Port and {run} by RunDir. It must keep
 	// a listener on 127.0.0.1:{port}, which the readiness probe uses. Empty is 127.0.0.1:{port}.
 	BindTo string
@@ -231,7 +234,30 @@ func validateOptions(o Options) error {
 		return fmt.Errorf("daemon: invalid stream memory mode %q", o.StreamMemoryMode)
 	}
 
+	if o.StreamSection != "" && o.StreamTo != nil {
+		return errors.New("daemon: StreamSection with StreamTo: a child's [stream] lines go in StreamTo.Extra")
+	}
+
 	return nil
+}
+
+// renderStreamConf is stream.conf: the [stream] section (a child's with StreamTo, else disabled with the
+// StreamSection lines), the stream key's section unless NoStreamKey, then StreamExtra.
+func renderStreamConf(o Options, streamKey string) string {
+	const disabled = "[stream]\n    enabled = no\n"
+	streamConf := fmt.Sprintf(streamConfTemplate, streamKey, streamMemoryMode(o))
+	if o.NoStreamKey {
+		streamConf = disabled
+	}
+	switch {
+	case o.StreamTo != nil:
+		streamConf = strings.Replace(streamConf, disabled, fmt.Sprintf(
+			"[stream]\n    enabled = yes\n    destination = %s\n    api key = %s\n    enable compression = %s\n%s",
+			o.StreamTo.Destination, o.StreamTo.APIKey, yesNo(o.StreamTo.Compression), o.StreamTo.Extra), 1)
+	case o.StreamSection != "":
+		streamConf = strings.Replace(streamConf, disabled, disabled+o.StreamSection, 1)
+	}
+	return streamConf + o.StreamExtra
 }
 
 func streamMemoryMode(o Options) string {
@@ -332,16 +358,7 @@ func Start(o Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	streamConf := fmt.Sprintf(streamConfTemplate, streamKey, streamMemoryMode(o))
-	if o.NoStreamKey {
-		streamConf = "[stream]\n    enabled = no\n"
-	}
-	if o.StreamTo != nil {
-		streamConf = strings.Replace(streamConf, "[stream]\n    enabled = no\n", fmt.Sprintf(
-			"[stream]\n    enabled = yes\n    destination = %s\n    api key = %s\n    enable compression = %s\n%s",
-			o.StreamTo.Destination, o.StreamTo.APIKey, yesNo(o.StreamTo.Compression), o.StreamTo.Extra), 1)
-	}
-	streamConf += o.StreamExtra
+	streamConf := renderStreamConf(o, streamKey)
 	if err := os.WriteFile(filepath.Join(o.RunDir, "etc", "stream.conf"), []byte(streamConf), 0o644); err != nil {
 		return nil, fmt.Errorf("daemon: write stream.conf: %w", err)
 	}

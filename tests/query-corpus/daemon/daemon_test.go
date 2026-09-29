@@ -479,3 +479,43 @@ func TestStopIsCheckedAndBounded(t *testing.T) {
 		}
 	})
 }
+
+// stream.conf as the options render it: an empty StreamSection changes nothing, a StreamSection goes under the
+// disabled [stream] header, before the key's section, and StreamTo's child section excludes it.
+func TestStreamConfRendering(t *testing.T) {
+	const key = "5a1e0000-0000-4000-8000-0000000000aa"
+	keySection := "\n[" + key + "]\n    enabled = yes\n    type = api\n    default memory mode = dbengine\n" +
+		"    health enabled by default = no\n    replication period = 3650d\n"
+	to := &StreamTo{Destination: "127.0.0.1:1", APIKey: key, Extra: "    reconnect delay = 5\n"}
+	for name, tc := range map[string]struct {
+		o    Options
+		want string
+	}{
+		"parent": {o: Options{}, want: "[stream]\n    enabled = no\n" + keySection},
+		"no key": {o: Options{NoStreamKey: true}, want: "[stream]\n    enabled = no\n"},
+		"child": {
+			o: Options{NoStreamKey: true, StreamTo: to},
+			want: "[stream]\n    enabled = yes\n    destination = 127.0.0.1:1\n    api key = " + key +
+				"\n    enable compression = no\n    reconnect delay = 5\n",
+		},
+		"extra": {
+			o:    Options{NoStreamKey: true, StreamExtra: "[x]\n    a = b\n"},
+			want: "[stream]\n    enabled = no\n[x]\n    a = b\n",
+		},
+		"section": {
+			o:    Options{StreamSection: "    reconnect delay = 5\n"},
+			want: "[stream]\n    enabled = no\n    reconnect delay = 5\n" + keySection,
+		},
+		"section without a key": {
+			o:    Options{NoStreamKey: true, StreamSection: "    destination = h\n"},
+			want: "[stream]\n    enabled = no\n    destination = h\n",
+		},
+	} {
+		if got := renderStreamConf(tc.o, key); got != tc.want {
+			t.Errorf("%s:\n%q\nwant\n%q", name, got, tc.want)
+		}
+	}
+	if err := validateOptions(Options{StreamSection: "x", StreamTo: to}); err == nil {
+		t.Error("StreamSection with StreamTo is accepted")
+	}
+}
