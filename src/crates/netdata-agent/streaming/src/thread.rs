@@ -67,6 +67,8 @@ pub struct StreamWorker {
     check_every: Duration,
     last_check: Instant,
     last_replication_check: Instant,
+    /// The `errno` the last close left (a TLS close's EAGAIN); at the exit, what C's end record carries.
+    pub(crate) exit_errno: i32,
 }
 
 impl StreamWorker {
@@ -82,6 +84,7 @@ impl StreamWorker {
             check_every: Duration::from_secs(u64::try_from(update_every).unwrap_or(1).max(1)),
             last_check: now,
             last_replication_check: now,
+            exit_errno: 0,
         }
     }
 }
@@ -162,7 +165,13 @@ impl Worker for StreamWorker {
         for attached in std::mem::take(&mut self.exit_receivers) {
             self.attach(cx, attached);
         }
+        // records since the last close cleared C's errno: only the exit path's closes count
+        self.exit_errno = 0;
         self.stop_senders(cx);
         self.stop_children(cx);
+    }
+
+    fn exit_errno(&self) -> i32 {
+        self.exit_errno
     }
 }

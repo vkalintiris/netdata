@@ -278,9 +278,15 @@ pub fn thread_tag() -> String {
 
 /// `nd_thread_exit()`'s record, from the thread as it ends.
 pub fn thread_finished() {
+    thread_finished_errno(0);
+}
+
+/// `thread_finished()` with the `errno` C's thread holds as it ends (what its cleanup left).
+pub fn thread_finished_errno(errno: i32) {
     nd_log!(
         Source::Daemon,
         Priority::Debug,
+        errno = errno;
         "thread with task id {} finished",
         tid()
     );

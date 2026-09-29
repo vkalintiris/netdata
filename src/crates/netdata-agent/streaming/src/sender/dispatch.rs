@@ -649,7 +649,7 @@ impl StreamWorker {
         d.host.pulse_status(host_status::SND_OFFLINE);
         self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(d.host.machine_guid());
         let cmd = if reconnect && !d.sender.shutdown.load(Ordering::Relaxed) { Cmd::Connect } else { Cmd::Remove };
-        d.sender.connector.requeue_after_close(&d.sender, &d.host, cmd, errno);
+        self.exit_errno = d.sender.connector.requeue_after_close(&d.sender, &d.host, cmd, errno);
     }
 
     /// `stream_sender_cleanup()` at the thread's exit, after the queued senders started (their hooks run): every

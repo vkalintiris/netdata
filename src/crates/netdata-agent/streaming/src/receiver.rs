@@ -1026,7 +1026,10 @@ impl StreamWorker {
     /// `stream_receiver_remove_internal()`: the disconnect record, then the host lets go of the receiver. The
     /// parser's fields are the caller's: C has them only while reading (`stream_receiver_receive_data()`).
     fn disconnect(&mut self, cx: &mut Context<'_>, index: usize, reason: Reason) {
-        if let Some(mut child) = self.children[index].take() {
+        let Some(mut child) = self.children[index].take() else {
+            return;
+        };
+        {
             let attached = &mut child.attached;
             let _ = cx.registry().deregister(&mut attached.stream);
             let counters = Counters {
@@ -1053,6 +1056,10 @@ impl StreamWorker {
             attached.leave_host();
             self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
         }
+        // stream_receiver_free(): the socket closes after the records, and a TLS close leaves what its shutdown set
+        let tls = child.attached.stream.is_tls();
+        drop(child);
+        self.exit_errno = if tls { nix::errno::Errno::last_raw() } else { 0 };
     }
 
     /// `STREAM RCV[n] '<host>' [from [<ip>]:<port>]: ` of the stream thread's records.

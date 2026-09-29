@@ -72,6 +72,12 @@ pub trait Worker: Send + 'static {
 
     /// Called once on the worker's thread when the pool stops, before the thread exits.
     fn stop(&mut self, _cx: &mut Context<'_>) {}
+
+    /// The `errno` C's thread holds as it ends (what its cleanup's last close left), which the thread's end record
+    /// carries.
+    fn exit_errno(&self) -> i32 {
+        0
+    }
 }
 
 /// `nd_thread_create()`'s record of a thread that could not start, as the error's text: libuv reports the negated
@@ -516,7 +522,7 @@ enum Ended<M> {
 fn run_loop<W: Worker>(index: usize, poll: Poll, rx: Receiver<Envelope<W::Msg>>, mut worker: W) -> Ended<W::Msg> {
     netdata_agent_log::thread_created();
     let ended = run_worker(index, poll, rx, &mut worker);
-    netdata_agent_log::thread_finished();
+    netdata_agent_log::thread_finished_errno(worker.exit_errno());
     ended
 }
 

@@ -378,8 +378,9 @@ impl Connector {
         self.requeue_after_close(s, host, cmd, 0);
     }
 
-    /// [`Connector::requeue`], its record carrying `errno` (what a TLS close left, D107.5).
-    pub(crate) fn requeue_after_close(&self, s: &Arc<Sender>, host: &Host, cmd: Cmd, errno: i32) {
+    /// [`Connector::requeue`], its record carrying `errno` (what a TLS close left, D107.5); the `errno` after it, which
+    /// the record, when written, clears.
+    pub(crate) fn requeue_after_close(&self, s: &Arc<Sender>, host: &Host, cmd: Cmd, mut errno: i32) -> i32 {
         if cmd == Cmd::Connect {
             nd_log!(
                 Source::Daemon,
@@ -388,6 +389,9 @@ impl Connector {
                 "STREAM CONNECT '{}' [to parent]: adding host in connector queue...",
                 host.hostname()
             );
+            if !netdata_agent_log::filtered(Source::Daemon, Priority::Debug) {
+                errno = 0;
+            }
             host.pulse_status(host_status::SND_PENDING);
         }
         {
@@ -397,6 +401,7 @@ impl Connector {
             queue.insert(idx, (Arc::clone(s), cmd));
         }
         self.completion.mark();
+        errno
     }
 
     /// `stream_connector_thread()`: a pass over the queue at every new host or every second (250 ms while exiting).
