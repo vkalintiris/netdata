@@ -55,6 +55,12 @@ pub trait Worker: Send + 'static {
     /// A message sent to this thread through the pool's handle.
     fn message(&mut self, cx: &mut Context<'_>, msg: Self::Msg);
 
+    /// A message still queued when the loop ended itself ([`Worker::running`] false), before [`Worker::stop`]: C's
+    /// exit paths take the queued work and drop the rest. By default it is handled as any message.
+    fn exit_message(&mut self, cx: &mut Context<'_>, msg: Self::Msg) {
+        self.message(cx, msg);
+    }
+
     /// A timer armed with [`Context::add_timer`] expired.
     fn timer(&mut self, _cx: &mut Context<'_>, _timer: TimerId) {}
 
@@ -212,13 +218,11 @@ impl<M: Send + 'static> PoolHandle<M> {
         let Some(mailbox) = self.mailboxes.get(index) else {
             return Err(msg);
         };
-        if let Some(lazy) = &self.lazy {
-            let idle = mailbox
-                .idle
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
-            if let Some((poll, rx)) = idle {
+        // a lazy thread starts (again) here; the message is queued under the same lock, which an ended thread takes to
+        // give its queue back, so no message is left on a queue nobody runs
+        let _idle = if let Some(lazy) = &self.lazy {
+            let mut idle = mailbox.idle.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((poll, rx)) = idle.take() {
                 match (lazy.start)(index, poll, rx) {
                     Ok(join) => lazy
                         .started
@@ -229,7 +233,10 @@ impl<M: Send + 'static> PoolHandle<M> {
                     Err(err) => netdata_agent_log::netdata_log_error!("{err}"),
                 }
             }
-        }
+            Some(idle)
+        } else {
+            None
+        };
         mailbox.tx.send(Envelope::Msg(msg)).map_err(|e| match e.0 {
             Envelope::Msg(msg) => msg,
             Envelope::Stop => unreachable!("only Msg envelopes are sent here"),
@@ -295,7 +302,9 @@ impl<M: Send + 'static> Pool<M> {
             let spawned = std::thread::Builder::new()
                 .name(name(index))
                 .stack_size(stack_size)
-                .spawn(move || run_loop(index, poll, rx, worker));
+                .spawn(move || {
+                    let _ = run_loop(index, poll, rx, worker);
+                });
             match spawned {
                 Ok(join) => joins.push(join),
                 Err(err) => {
@@ -337,18 +346,35 @@ impl<M: Send + 'static> Pool<M> {
                 idle: Mutex::new(Some((poll, rx))),
             });
         }
+        let mailboxes: Arc<[Mailbox<M>]> = mailboxes.into();
         let make = Arc::new(make);
+        let parked = Arc::clone(&mailboxes);
         let start: Box<Starter<M>> = Box::new(move |index, poll, rx| {
-            let make = Arc::clone(&make);
+            let (make, parked) = (Arc::clone(&make), Arc::clone(&parked));
             std::thread::Builder::new()
                 .name(name(index))
                 .stack_size(stack_size)
-                .spawn(move || run_loop(index, poll, rx, make(index)))
+                .spawn(move || {
+                    let mut parts = Some((poll, rx));
+                    while let Some((poll, rx)) = parts.take() {
+                        let Ended::Itself(poll, rx) = run_loop(index, poll, rx, make(index)) else {
+                            break;
+                        };
+                        // back to idle for the next message to start it again (C starts an ended stream thread at
+                        // its next assignment), unless one came meanwhile: `send()` queues under this lock
+                        let mut idle = parked[index].idle.lock().unwrap_or_else(PoisonError::into_inner);
+                        if rx.is_empty() {
+                            *idle = Some((poll, rx));
+                        } else {
+                            parts = Some((poll, rx));
+                        }
+                    }
+                })
                 .map_err(|err| thread_create_failed(&name(index), &err))
         });
         Ok(Pool {
             handle: PoolHandle {
-                mailboxes: mailboxes.into(),
+                mailboxes,
                 lazy: Some(Arc::new(Lazy {
                     start,
                     started: Mutex::new(Vec::new()),
@@ -371,11 +397,39 @@ impl<M: Send + 'static> Pool<M> {
     /// Like [`Pool::stop`], waiting at most `limit` (C's service waits): threads still running then are left to the
     /// exiting process. A pool thread that asks is not waited for, as C's waits skip their caller.
     pub fn stop_within(self, limit: Option<std::time::Duration>) -> Result<(), PoolPanicked> {
+        self.ask_stop();
+        self.wait(limit)
+    }
+
+    /// `service_wait_exit()` of threads that leave on their own once the exit started ([`Worker::running`]): waits
+    /// at most `limit` without waking them, then asks the ones still running to stop and leaves them.
+    pub fn join_within(self, limit: std::time::Duration) -> Result<(), PoolPanicked> {
+        let deadline = Instant::now() + limit;
+        let me = std::thread::current().id();
+        let running = |pool: &Pool<M>| {
+            let lazy = pool.handle.lazy.as_ref().map(|l| l.started.lock().unwrap_or_else(PoisonError::into_inner));
+            pool.threads
+                .iter()
+                .chain(lazy.iter().flat_map(|l| l.iter()))
+                .any(|j| !j.is_finished() && j.thread().id() != me)
+        };
+        while Instant::now() < deadline && running(&self) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        self.ask_stop();
+        self.wait(Some(std::time::Duration::ZERO))
+    }
+
+    fn ask_stop(&self) {
         for mailbox in self.handle.mailboxes.iter() {
             if mailbox.tx.send(Envelope::Stop).is_ok() {
                 let _ = mailbox.waker.wake();
             }
         }
+    }
+
+    /// Joins the threads that end within `limit` (all of them without one); the others are left.
+    fn wait(self, limit: Option<std::time::Duration>) -> Result<(), PoolPanicked> {
         let mut threads = self.threads;
         if let Some(lazy) = &self.handle.lazy {
             threads.append(&mut lazy.started.lock().unwrap_or_else(PoisonError::into_inner));
@@ -386,6 +440,11 @@ impl<M: Send + 'static> Pool<M> {
             let deadline = Instant::now() + limit;
             while Instant::now() < deadline && !threads.iter().all(JoinHandle::is_finished) {
                 std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if !threads.iter().all(JoinHandle::is_finished) {
+                // the threads left to the exiting process keep their wakers: a waker dropped before its thread saw
+                // the stop's wake would leave it waiting for good
+                std::mem::forget(Arc::clone(&self.handle.mailboxes));
             }
             threads.retain(JoinHandle::is_finished);
         }
@@ -400,11 +459,19 @@ impl<M: Send + 'static> Pool<M> {
     }
 }
 
+/// How a thread's loop ended: stopped (by the pool or a failure), or by itself with its poller and queue, which a lazy
+/// pool keeps to start the thread again.
+enum Ended<M> {
+    Stopped,
+    Itself(Poll, Receiver<Envelope<M>>),
+}
+
 /// `nd_thread_starting_point()` / `nd_thread_exit()` around the loop: C's records of every thread.
-fn run_loop<W: Worker>(index: usize, poll: Poll, rx: Receiver<Envelope<W::Msg>>, mut worker: W) {
+fn run_loop<W: Worker>(index: usize, poll: Poll, rx: Receiver<Envelope<W::Msg>>, mut worker: W) -> Ended<W::Msg> {
     netdata_agent_log::thread_created();
-    run_worker(index, poll, rx, &mut worker);
+    let ended = run_worker(index, poll, rx, &mut worker);
     netdata_agent_log::thread_finished();
+    ended
 }
 
 fn run_worker<W: Worker>(
@@ -412,7 +479,7 @@ fn run_worker<W: Worker>(
     mut poll: Poll,
     rx: Receiver<Envelope<W::Msg>>,
     worker: &mut W,
-) {
+) -> Ended<W::Msg> {
     let mut timers = Timers::default();
     let mut events = Events::with_capacity(EVENTS_CAPACITY);
 
@@ -424,7 +491,7 @@ fn run_worker<W: Worker>(
         };
         if worker.start(&mut cx).is_err() {
             worker.stop(&mut cx);
-            return;
+            return Ended::Stopped;
         }
     }
 
@@ -440,7 +507,7 @@ fn run_worker<W: Worker>(
                     index,
                 };
                 worker.stop(&mut cx);
-                return;
+                return Ended::Stopped;
             }
         }
 
@@ -451,8 +518,17 @@ fn run_worker<W: Worker>(
         };
 
         if !worker.running() {
+            // the queued messages first, as C's exit paths dequeue before their cleanup
+            let mut stop_asked = false;
+            loop {
+                match rx.try_recv() {
+                    Ok(Envelope::Msg(msg)) => worker.exit_message(&mut cx, msg),
+                    Ok(Envelope::Stop) => stop_asked = true,
+                    Err(_) => break,
+                }
+            }
             worker.stop(&mut cx);
-            return;
+            return if stop_asked { Ended::Stopped } else { Ended::Itself(poll, rx) };
         }
 
         for event in events.iter() {
@@ -481,7 +557,7 @@ fn run_worker<W: Worker>(
 
         if stopping {
             worker.stop(&mut cx);
-            return;
+            return Ended::Stopped;
         }
     }
 }
@@ -772,8 +848,8 @@ mod tests {
         }
     }
 
-    /// A worker whose condition turned false (C's `service_running()`) at a wake of its loop: its stop runs and its
-    /// thread ends before the pool is stopped, without handling what woke it.
+    /// A worker whose condition turned false (C's `service_running()`) at a wake of its loop: what is queued goes to
+    /// its exit path, its stop runs and its thread ends before the pool is stopped.
     struct Leaver {
         running: Arc<std::sync::atomic::AtomicBool>,
         log: Arc<Mutex<Vec<&'static str>>>,
@@ -808,11 +884,75 @@ mod tests {
         running.store(false, std::sync::atomic::Ordering::Relaxed);
         // the next wake ends it: the message that wakes it is not handled
         pool.handle().send(0, ()).unwrap();
-        wait_for(&log, |l| l.len() == 2);
-        assert_eq!(*log.lock().unwrap(), ["message", "stop"]);
+        wait_for(&log, |l| l.len() == 3);
+        // the message that woke it went to the exit path (by default, handled), then the stop
+        assert_eq!(*log.lock().unwrap(), ["message", "message", "stop"]);
         assert!(pool.handle().send(0, ()).is_err(), "its mailbox is gone");
         pool.stop().unwrap();
-        assert_eq!(*log.lock().unwrap(), ["message", "stop"], "stop ran once");
+        assert_eq!(*log.lock().unwrap(), ["message", "message", "stop"], "stop ran once");
+    }
+
+    /// A lazy pool's worker that tests a shared condition, recording what it handles by thread generation.
+    struct Gen {
+        generation: usize,
+        running: Arc<std::sync::atomic::AtomicBool>,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Worker for Gen {
+        type Msg = u32;
+        fn running(&self) -> bool {
+            self.running.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        fn event(&mut self, _cx: &mut Context<'_>, _event: &Event) {}
+        fn message(&mut self, _cx: &mut Context<'_>, msg: u32) {
+            self.log.lock().unwrap().push(format!("{} message {msg}", self.generation));
+        }
+        fn exit_message(&mut self, _cx: &mut Context<'_>, msg: u32) {
+            self.log.lock().unwrap().push(format!("{} exit message {msg}", self.generation));
+        }
+        fn stop(&mut self, _cx: &mut Context<'_>) {
+            self.log.lock().unwrap().push(format!("{} stop", self.generation));
+        }
+    }
+
+    /// A lazy thread that ended itself hands what was queued to its worker's exit path, and the next message starts
+    /// it again with a new worker (C starts an ended stream thread at its next assignment).
+    #[test]
+    fn an_ended_lazy_thread_starts_again_at_its_next_message() {
+        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (r, l, g) = (Arc::clone(&running), Arc::clone(&log), Arc::clone(&generations));
+        let pool: Pool<u32> = Pool::spawn_lazy(1, TEST_STACK, |i| format!("G[{i}]"), move |_| Gen {
+            generation: g.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            running: Arc::clone(&r),
+            log: Arc::clone(&l),
+        })
+        .unwrap();
+        let handle = pool.handle();
+        handle.send(0, 1).unwrap();
+        wait_for(&log, |l| l.len() == 1);
+        running.store(false, std::sync::atomic::Ordering::Relaxed);
+        handle.send(0, 2).unwrap();
+        wait_for(&log, |l| l.len() == 3);
+        running.store(true, std::sync::atomic::Ordering::Relaxed);
+        // it gave its queue back, so this starts it again
+        wait_for(&log, |_| pool.handle.mailboxes[0].idle.lock().unwrap().is_some());
+        handle.send(0, 3).unwrap();
+        wait_for(&log, |l| l.len() == 4);
+        pool.stop().unwrap();
+        assert_eq!(*log.lock().unwrap(), ["0 message 1", "0 exit message 2", "0 stop", "1 message 3", "1 stop"]);
+    }
+
+    /// A join waits out its limit without waking threads that keep running, then asks them to stop.
+    #[test]
+    fn a_join_waits_without_waking() {
+        let (pool, log) = recorder_pool(2);
+        let started = Instant::now();
+        pool.join_within(Duration::from_millis(100)).unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        wait_for(&log, |l| l.iter().filter(|s| matches!(s, Seen::Stop(_))).count() == 2);
     }
 
     #[test]

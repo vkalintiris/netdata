@@ -198,6 +198,8 @@ pub struct Connector {
     /// The exit started: `service_running()` is false for every service from then (D110).
     exiting: fn() -> bool,
     started: Mutex<bool>,
+    /// The thread, for the shutdown's wait of every remaining thread (`[13/22]`).
+    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -232,6 +234,7 @@ impl Connector {
             exit: AtomicBool::new(false),
             exiting: netdata_agent_sys::exit::initiated,
             started: Mutex::new(false),
+            thread: Mutex::new(None),
         })
     }
 
@@ -289,7 +292,10 @@ impl Connector {
                 netdata_agent_log::thread_finished();
             });
         match spawned {
-            Ok(_) => *started = true,
+            Ok(join) => {
+                *started = true;
+                *self.thread.lock().unwrap_or_else(PoisonError::into_inner) = Some(join);
+            }
             Err(_) => nd_log!(
                 Source::Daemon,
                 Priority::Err,
@@ -297,6 +303,20 @@ impl Connector {
             ),
         }
         *started
+    }
+
+    /// `service_wait_exit(~0, limit)`'s wait for the thread, which ends six passes after the exit started.
+    pub fn join_within(&self, limit: Duration) {
+        let Some(join) = self.thread.lock().unwrap_or_else(PoisonError::into_inner).take() else {
+            return;
+        };
+        let deadline = std::time::Instant::now() + limit;
+        while std::time::Instant::now() < deadline && !join.is_finished() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if join.is_finished() {
+            let _ = join.join();
+        }
     }
 
     /// `stream_connector_add()`: once per session, the host waits for its parents' reset delay and is queued.

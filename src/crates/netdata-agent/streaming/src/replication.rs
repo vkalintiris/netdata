@@ -78,33 +78,34 @@ impl ReplicationThreads {
         Ok(ReplicationThreads { stop, main })
     }
 
-    /// `service_wait_exit(SERVICE_REPLICATION, limit)`: the threads end, and are waited for at most `limit` (not by
-    /// one of them).
-    pub fn stop_within(self, limit: Duration) {
+    /// `service_wait_exit(SERVICE_REPLICATION, limit)` once the exit started: the threads leave on their own and are
+    /// waited for at most `limit` without being woken (not by one of them); then they are asked to stop and left.
+    pub fn join_within(self, limit: Duration) {
+        if self.main.thread().id() != std::thread::current().id() {
+            let deadline = Instant::now() + limit;
+            while Instant::now() < deadline && !self.main.is_finished() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         self.stop.request();
-        if self.main.thread().id() == std::thread::current().id() {
-            return;
-        }
-        let deadline = Instant::now() + limit;
-        while Instant::now() < deadline && !self.main.is_finished() {
-            std::thread::sleep(Duration::from_millis(10));
-        }
         if self.main.is_finished() {
             let _ = self.main.join();
         }
     }
+
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Before the exit starts a join waits out its limit, then asks the threads to stop.
     #[test]
-    fn the_threads_stop_promptly() {
-        let threads = ReplicationThreads::spawn(3, 256 * 1024).unwrap();
+    fn a_join_waits_its_limit_then_asks() {
+        let threads = ReplicationThreads::spawn_with(3, 256 * 1024, || false).unwrap();
         let started = Instant::now();
-        threads.stop_within(Duration::from_secs(5));
-        assert!(started.elapsed() < Duration::from_secs(2));
+        threads.join_within(Duration::from_millis(200));
+        assert!(started.elapsed() >= Duration::from_millis(200));
     }
 
     /// The exit's start ends them within their second's wait, before any stop.

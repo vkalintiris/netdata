@@ -47,6 +47,7 @@ pub const STOP_WEB_SERVERS: usize = 3;
 pub const STOP_STREAMING: usize = 5;
 pub const STOP_REPLICATION: usize = 6;
 pub const STOP_CONTEXT: usize = 8;
+pub const STOP_REMAINING_THREADS: usize = 12;
 pub const CANCEL_MAIN_THREADS: usize = 13;
 pub const STOP_COLLECTION: usize = 14;
 pub const WAIT_DBENGINE_COLLECTORS: usize = 15;
@@ -65,6 +66,8 @@ pub const STREAMING_WAIT: Duration = Duration::from_secs(20);
 /// `service_wait_exit(SERVICE_REPLICATION, 5 * USEC_PER_SEC)`.
 pub const REPLICATION_WAIT: Duration = Duration::from_secs(5);
 pub const CONTEXT_WAIT: Duration = Duration::from_secs(5);
+/// `service_wait_exit(~0, 20 * USEC_PER_SEC)`: every thread still registered, the connector among them.
+pub const REMAINING_WAIT: Duration = Duration::from_secs(20);
 
 /// `netdata_cleanup_and_exit()`'s `run`: set by the first exit sequence.
 static RUN: AtomicBool = AtomicBool::new(false);

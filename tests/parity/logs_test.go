@@ -47,7 +47,9 @@ var portedRecords = regexp.MustCompile(`msg="ACLK: (proxy is|using |proxy is exp
 // The dbengine population's progress lines race its workers, so they drop too, as do the shutdown flush's progress
 // and the tier shutdown's wait, which depend on the extents in flight (D68.7.3), and the indexer meeting an extent
 // still being written.
-var timedRecords = regexp.MustCompile(`msg="Checking all hosts completed in |msg="METADATA: Progress of metadata storage: +[0-9.]+% completed"|msg="DBENGINE: tier \d+: MRG population completed: |msg="DBENGINE: flushing at |msg="DBENGINE: waiting for \d+ inflight queries to finish|needs to be indexed, but it has writers working on it`)
+// The shutdown's last flush (`[16/22]`) logs its pair only when some page is still hot or dirty at that instant, which
+// varies between runs of either agent under load.
+var timedRecords = regexp.MustCompile(`msg="Flushing DBENGINE hot & dirty pages\.\.\."|msg="DBENGINE: flushing completed!"|msg="Checking all hosts completed in |msg="METADATA: Progress of metadata storage: +[0-9.]+% completed"|msg="DBENGINE: tier \d+: MRG population completed: |msg="DBENGINE: flushing at |msg="DBENGINE: waiting for \d+ inflight queries to finish|needs to be indexed, but it has writers working on it`)
 
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
 var cOnlyThreads = map[string]string{

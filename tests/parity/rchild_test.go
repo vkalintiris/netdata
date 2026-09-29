@@ -76,10 +76,9 @@ func (s *stubs) destination() string {
 }
 
 var (
-	// optionalRecordRe are the records a shutdown may leave while an attempt runs (the map's §2 "Shutdown"), and the
-	// connector thread's end, which neither agent waits for
-	optionalRecordRe = regexp.MustCompile(`last error: thread cancelled|Thread is cancelled while connecting|` +
-		`thread=SNDR-CN\[0\] .*msg="thread with task id \d+ finished"`)
+	// optionalRecordRe are the records a shutdown may leave while an attempt runs (the map's §2 "Shutdown"); the
+	// connector thread's end is waited for by both agents since D110
+	optionalRecordRe = regexp.MustCompile(`last error: thread cancelled|Thread is cancelled while connecting`)
 	dstPortRe     = regexp.MustCompile(` dst_port=(\d+)`)
 	retryAtRe     = regexp.MustCompile(`will retry in (\d+) secs, at (\S+?)"`)
 	postponedRe   = regexp.MustCompile(`POSTPONED FOR \d+ SECS MORE`)

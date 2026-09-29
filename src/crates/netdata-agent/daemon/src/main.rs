@@ -1078,19 +1078,20 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             if let (Some(dbengine), true) = (&dbengine, normal) {
                 dbengine.flush_everything(false, false, true);
             }
-            // service_wait_exit(SERVICE_REPLICATION, 5 s)
+            // service_wait_exit(SERVICE_REPLICATION, 5 s): they left on their own when the exit started (D110)
             if let Some(threads) = replication.take() {
-                threads.stop_within(shutdown::REPLICATION_WAIT);
+                threads.join_within(shutdown::REPLICATION_WAIT);
             }
         }
-        // the exporters, HEALTH and the web servers under one service wait
+        // the exporters, HEALTH and the web servers under one service wait: each leaves on its own once the exit
+        // started (D110), so the wait only waits
         shutdown::STOP_WEB_SERVERS => {
             let deadline = std::time::Instant::now() + shutdown::WEB_SERVERS_WAIT;
             if let Some(thread) = health_thread.take() {
-                thread.stop_within(shutdown::WEB_SERVERS_WAIT);
+                thread.join_within(shutdown::WEB_SERVERS_WAIT);
             }
             if let Some(pool) = pool.take() {
-                let _ = pool.stop_within(Some(deadline.saturating_duration_since(std::time::Instant::now())));
+                let _ = pool.join_within(deadline.saturating_duration_since(std::time::Instant::now()));
             }
         }
         // PULSE, the stream threads and the BACKFILL threads under one service wait
@@ -1099,10 +1100,10 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             connector.cancel();
             let deadline = std::time::Instant::now() + shutdown::STREAMING_WAIT;
             if let Some(thread) = pulse_thread.take() {
-                thread.stop_within(deadline.saturating_duration_since(std::time::Instant::now()));
+                thread.join_within(deadline.saturating_duration_since(std::time::Instant::now()));
             }
             if let Some(pool) = stream_pool.take() {
-                let _ = pool.stop_within(Some(shutdown::STREAMING_WAIT));
+                let _ = pool.join_within(deadline.saturating_duration_since(std::time::Instant::now()));
             }
             backfill_thread = backfill_thread
                 .take()
@@ -1117,9 +1118,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
         shutdown::STOP_CONTEXT => {
             if let Some(worker) = contexts_worker.take() {
-                worker.stop_within(shutdown::CONTEXT_WAIT);
+                worker.join_within(shutdown::CONTEXT_WAIT);
             }
         }
+        // service_wait_exit(~0, 20 s): the connector, whose last passes follow the exit's start
+        shutdown::STOP_REMAINING_THREADS => connector.join_within(shutdown::REMAINING_WAIT),
         // rrd_finalize_collection_for_all_hosts(), which an abnormal exit skips
         shutdown::STOP_COLLECTION if normal => {
             for host in hosts.all() {

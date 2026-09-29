@@ -130,6 +130,16 @@ impl Worker for StreamWorker {
         self.drain_inline(cx);
     }
 
+    /// What `stream_thread_worker()`'s exit path does with its queues: the connections queued for it are dequeued
+    /// (and then disconnected by the cleanup), the opcodes and replication requests are dropped with the thread.
+    fn exit_message(&mut self, cx: &mut Context<'_>, msg: StreamMsg) {
+        match msg {
+            StreamMsg::Attach(attached) => self.attach(cx, *attached),
+            StreamMsg::AttachSender(connected) => self.queued_senders.push(*connected),
+            StreamMsg::Replay(..) | StreamMsg::SenderOps(..) => {}
+        }
+    }
+
     /// `stream_thread_worker()`'s periodic work: every tick, then every update every the checks, and every ten
     /// minutes the replication check.
     fn timer(&mut self, cx: &mut Context<'_>, _timer: TimerId) {

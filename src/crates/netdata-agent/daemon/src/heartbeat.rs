@@ -151,18 +151,16 @@ impl Thread {
         Ok(Thread { stop, thread })
     }
 
-    /// Stops the thread, waiting at most `limit` as C's service wait does.
-    pub fn stop_within(self, limit: Duration) {
+    /// `service_wait_exit()` of a thread that leaves on its own once the exit started: waits at most `limit` without
+    /// waking it, then asks it to stop and leaves it (not waited for by itself).
+    pub fn join_within(self, limit: Duration) {
+        if self.thread.thread().id() != std::thread::current().id() {
+            let deadline = Instant::now() + limit;
+            while Instant::now() < deadline && !self.thread.is_finished() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         self.stop.request();
-        // the exit running on this very thread (a fatal error in its loop) does not wait for itself, as C's waits skip
-        // their caller
-        if self.thread.thread().id() == std::thread::current().id() {
-            return;
-        }
-        let deadline = Instant::now() + limit;
-        while Instant::now() < deadline && !self.thread.is_finished() {
-            std::thread::sleep(Duration::from_millis(10));
-        }
         if self.thread.is_finished() {
             let _ = self.thread.join();
         }
@@ -237,25 +235,28 @@ mod tests {
         }
     }
 
-    /// A thread ticks until it is stopped, and the stop wakes it at once.
+    /// A join waits for a thread that leaves on its own, and waits out its limit without waking one that does not,
+    /// which it then asks to stop (C's service wait).
     #[test]
-    fn a_thread_ticks_until_it_is_stopped() {
-        let (sender, ticks) = std::sync::mpsc::channel();
-        let thread = Thread::spawn(
-            "TICKS",
-            64 * 1024,
-            Duration::from_millis(20),
-            Phase::OnTheTick,
-            move |t| {
-                while t.next() {
-                    let _ = sender.send(());
-                }
-            },
-        )
+    fn a_join_waits_without_waking_the_thread() {
+        let leaves = Thread::spawn("LEAVES", 64 * 1024, Duration::from_millis(20), Phase::OnTheTick, |t| {
+            for _ in 0..3 {
+                t.next();
+            }
+        })
         .unwrap();
-        ticks.recv_timeout(Duration::from_secs(5)).unwrap();
         let started = Instant::now();
-        thread.stop_within(Duration::from_secs(5));
-        assert!(started.elapsed() < Duration::from_secs(1));
+        leaves.join_within(Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(1), "it left on its own");
+        let (sender, stopped) = std::sync::mpsc::channel();
+        let stays = Thread::spawn("STAYS", 64 * 1024, Duration::from_millis(20), Phase::OnTheTick, move |t| {
+            while t.next() {}
+            let _ = sender.send(());
+        })
+        .unwrap();
+        let started = Instant::now();
+        stays.join_within(Duration::from_millis(200));
+        assert!(started.elapsed() >= Duration::from_millis(200), "not woken before the limit");
+        stopped.recv_timeout(Duration::from_secs(5)).expect("asked to stop at the limit");
     }
 }
