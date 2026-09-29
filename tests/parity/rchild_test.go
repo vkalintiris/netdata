@@ -462,12 +462,13 @@ func rchildRecords(t *testing.T, d *daemon.Daemon) []string {
 
 var probeNonceRe = regexp.MustCompile(`nonce\\":\d+`)
 
-// TestRChild (check `stream.rchild`, milestone 7 commit 4, D103): a C child and a Rust child with the same identity,
-// each streaming to its own C parent (the oracle on both sides, `ram`, one tier). Compared while connected: both
-// parents' `/api/v3/stream_path` (the child's entry and its capabilities), each child's own path once its parent's
-// came down, the parents' `stream_info` for the child with its retention masked (a Rust child sends no charts before
-// commit 5), and each child's `_net_default_iface`; after the children stop, their streaming records as sets.
-// Variants: compression off (the harness default) and on (the C parent decodes the Rust child's zstd).
+// TestRChild (check `stream.rchild`, milestone 7 commits 4-6, D103, D113.1): a C child and a Rust child with the same
+// identity, each streaming to its own C parent (the oracle on both sides, `ram`, one tier). Compared while connected:
+// both parents' `/api/v3/stream_path` (the child's entry and its capabilities), each child's own path once its
+// parent's came down, the parents' `stream_info` for the child with its retention masked, the parents' charts of the
+// child, and each child's `_net_default_iface`; within each side, the parent's series of the child equal the child's
+// own; after the children stop, their streaming records as sets. Variants: compression off (the harness default) and
+// on (the C parent decodes the Rust child's zstd).
 func TestRChild(t *testing.T) {
 	const hostname, guid = "parity-rchild", "5a1e0000-0000-4000-8000-00000000c0bb"
 	bins := binaries(t)
@@ -493,9 +494,12 @@ func TestRChild(t *testing.T) {
 				children[i] = d
 			}
 			parents := [2]string{p.Oracle.Addr, p.Candidate.Addr}
-			// a C parent calls a child online only once it holds data for it: a Rust child's charts come with commit 5
+			// a C parent calls a child online once it holds data for it
 			for _, addr := range parents {
 				waitReceiver(t, addr, guid)
+				if !ingestOnline(addr, guid, 60*time.Second) {
+					t.Fatalf("%s: the child never came online", addr)
+				}
 			}
 			compareStreamPath(t, "parents", parents, "/api/v3/stream_path", entryTimes, "_streams_to")
 			compareStreamPath(t, "children", [2]string{children[0].Addr, children[1].Addr}, "/api/v3/stream_path",
@@ -508,15 +512,13 @@ func TestRChild(t *testing.T) {
 					t.Fatal(err)
 				}
 				info[i] = streamInfoRetentionRe.ReplaceAll(httpBody(b), []byte(`"${1}":T`))
-				// what the parent's data for the child decide (commit 5)
-				info[i] = streamInfoDataRe.ReplaceAll(info[i], []byte(`"${1}":"D"`))
 				info[i] = streamInfoNonceRe.ReplaceAll(info[i], []byte(`"nonce":N`))
 			}
 			if !bytes.Equal(info[0], info[1]) {
 				t.Errorf("stream_info differs:\noracle:    %s\ncandidate: %s", info[0], info[1])
 			}
-			// the charts each parent holds for its child, as their definitions made them (commit 5): the data wait
-			// for the replication answers (commit 6), so retention and values are masked
+			// the charts each parent holds for its child, as their definitions made them: the two children's data
+			// differ, so retention and values are masked (the data are compared within each side below)
 			var defs [2][]byte
 			for i, addr := range parents {
 				b, err := rawExchange(addr, []byte("GET /host/"+hostname+"/api/v1/charts HTTP/1.1\r\n\r\n"),
@@ -532,6 +534,19 @@ func TestRChild(t *testing.T) {
 			if len(defs[0]) < 1000 || !bytes.Equal(defs[0], defs[1]) {
 				t.Errorf("the parents' charts of the child differ (%d, %d bytes; PARITY_KEEP=1 keeps them)",
 					len(defs[0]), len(defs[1]))
+			}
+			// within each side, the parent's series of its child equal the child's own over settled seconds (D113.1)
+			time.Sleep(2 * time.Second)
+			now := time.Now().Unix()
+			for i, side := range p.Each() {
+				own := seriesCSV(t, children[i].Addr, "", now-12, now-2)
+				streamed := seriesCSV(t, side.Daemon.Addr, "/host/"+hostname, now-12, now-2)
+				if rows := strings.Count(own, "\n"); rows < 8 {
+					t.Errorf("%s: the child's own series has %d rows: %q", side.Role, rows, own)
+				} else if own != streamed {
+					t.Errorf("%s: the parent's series of the child differ from the child's own:\nchild:  %s\nparent: %s",
+						side.Role, own, streamed)
+				}
 			}
 			for i, c := range children {
 				b, err := rawExchange(c.Addr, []byte("GET /api/v1/info HTTP/1.1\r\n\r\n"), 5*time.Second)
@@ -624,7 +639,8 @@ func hasReceiver(addr, guid string) (bool, []byte) {
 }
 
 // parentCharts is a parent's /api/v1/charts of a child as its definitions made it: each chart's retention, the
-// totals, and the chart of the points the child's replication answers generate (commit 6) are left out.
+// totals, and the chart of the points the child's replication answers generate (which each child creates a cycle
+// after its first answer) are left out.
 func parentCharts(t *testing.T, body []byte) []byte {
 	t.Helper()
 	var v map[string]any
@@ -646,7 +662,6 @@ func parentCharts(t *testing.T, body []byte) []byte {
 }
 
 var (
-	streamInfoDataRe      = regexp.MustCompile(`"(db_status|db_liveness|ingest_status)":"[^"]*"`)
 	streamInfoRetentionRe = regexp.MustCompile(`"(first_time_s|last_time_s)":\d+`)
 	streamInfoNonceRe     = regexp.MustCompile(`"nonce":\d+`)
 )
