@@ -1016,6 +1016,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let replication = match netdata_agent_streaming::replication::ReplicationThreads::spawn(
         replication_threads,
         conf.threads.thread_stack_size,
+        Arc::clone(connector.replication()),
+        std::time::Duration::from_secs(db.update_every.max(1) as u64),
     ) {
         Ok(threads) => Some(threads),
         Err(err) => {

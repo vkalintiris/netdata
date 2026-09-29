@@ -8,7 +8,8 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, Weak};
+use std::ops::Deref;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock, Weak};
 
 use netdata_agent_storage::dbengine::engine::collect::{Alignment, CollectHandle};
 use netdata_agent_storage::dbengine::engine::mrg::Handle;
@@ -269,6 +270,44 @@ pub struct ReceiverState {
     pub replication_empty_response_count: u32,
 }
 
+/// `st->data_collection_lock` (D105.1, D106.4, D111.2): a store of the chart's collected data and a replication
+/// answer that ends its replication exclude each other, so the answer's collection state is the data's own and the
+/// flip it ends with is seen by the next store. A plain flag and condition, since its holder is not one scope: the
+/// parser holds it from BEGIN2 to END2 (commit 8).
+#[derive(Debug, Default)]
+struct DataCollectionLock {
+    held: Mutex<bool>,
+    released: Condvar,
+}
+
+impl DataCollectionLock {
+    fn acquire(&self) {
+        let mut held = lock(&self.held);
+        while *held {
+            held = self.released.wait(held).unwrap_or_else(PoisonError::into_inner);
+        }
+        *held = true;
+    }
+
+    fn release(&self) {
+        *lock(&self.held) = false;
+        self.released.notify_one();
+    }
+}
+
+/// The chart's collection lock, held until dropped: `&Chart` for one scope, `Arc<Chart>` for a holder that keeps it
+/// across calls.
+#[derive(Debug)]
+pub struct CollectionGuard<C: Deref<Target = Chart>> {
+    chart: C,
+}
+
+impl<C: Deref<Target = Chart>> Drop for CollectionGuard<C> {
+    fn drop(&mut self) {
+        self.chart.data_collection.release();
+    }
+}
+
 /// `RRDSET`.
 #[derive(Debug)]
 pub struct Chart {
@@ -321,9 +360,16 @@ pub struct Chart {
     dim_last_slot: AtomicU32,
     /// `st->stream.snd.resync_time_s`: until then v1 data go out with no time since the last update.
     resync_time_s: AtomicI64,
+    data_collection: DataCollectionLock,
 }
 
 impl Chart {
+    /// `spinlock_lock(&st->data_collection_lock)`: waits while another holds it.
+    pub fn lock_collection<C: Deref<Target = Chart>>(chart: C) -> CollectionGuard<C> {
+        chart.data_collection.acquire();
+        CollectionGuard { chart }
+    }
+
     /// The daemon's storage (`host->db[]` and C's process globals).
     pub fn storage(&self) -> &Arc<StorageLayout> {
         &self.storage
@@ -1180,6 +1226,22 @@ impl Dim {
         self.sent_version.load(Ordering::Relaxed) == chart_version
     }
 
+    /// `rrddim_check_upstream_exposed()`: sent with some definition this session, the replication's test.
+    pub fn is_sent_upstream(&self) -> bool {
+        self.sent_version.load(Ordering::Relaxed) != 0
+    }
+
+    /// `storage_engine_query_init()` on one tier: the ram ring of a chart that is not dbengine, else the tier's
+    /// dbengine metric; none for a tier the dimension does not have.
+    pub fn tier_query(&self, tier: usize, after_s: i64, before_s: i64, priority: Priority) -> Option<StorageQuery<'_>> {
+        match self.tiers.get(tier)? {
+            TierMetric::Ram(ring) => Some(StorageQuery::Ram(ring.query(after_s, before_s))),
+            TierMetric::Dbengine(metric) => {
+                Some(StorageQuery::Dbengine(self.storage.dbengine()?.query(metric, after_s, before_s, priority)))
+            }
+        }
+    }
+
     /// Whether the dimension was freed (D94.1).
     pub fn is_freed(&self) -> bool {
         self.freed.load(Ordering::Acquire)
@@ -1292,9 +1354,7 @@ impl Dim {
     /// empty tier unless it is `full`, and not when less than one window is missing. Whether it read the tiers below.
     fn backfill(&self, store: &mut DimStore, tier: usize, now_s: i64) -> bool {
         let backfill = self.storage.backfill();
-        let (Some(engine), Some(TierMetric::Dbengine(metric))) =
-            (self.storage.dbengine(), self.tiers.get(tier))
-        else {
+        let (Some(_), Some(TierMetric::Dbengine(metric))) = (self.storage.dbengine(), self.tiers.get(tier)) else {
             return false;
         };
         if backfill == Backfill::None {
@@ -1316,14 +1376,8 @@ impl Dim {
                 continue;
             }
             let after_s = latest_s.max(first_s);
-            let mut q = match &self.tiers[read_tier] {
-                TierMetric::Ram(ring) => StorageQuery::Ram(ring.query(after_s, last_s)),
-                TierMetric::Dbengine(metric) => StorageQuery::Dbengine(engine.query(
-                    metric,
-                    after_s,
-                    last_s,
-                    Priority::SynchronousFirst,
-                )),
+            let Some(mut q) = self.tier_query(read_tier, after_s, last_s, Priority::SynchronousFirst) else {
+                continue;
             };
             let mut points_read = 0;
             while !q.is_finished() {
@@ -1746,6 +1800,7 @@ impl Charts {
                     chart_slot: AtomicU32::new(lock(&self.send_slots).assign()),
                     dim_last_slot: AtomicU32::new(0),
                     resync_time_s: AtomicI64::new(0),
+                    data_collection: DataCollectionLock::default(),
                 });
                 index.charts.insert(&full_id, Arc::clone(&chart));
                 (chart, true, false, false)

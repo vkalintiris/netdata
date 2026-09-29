@@ -1,6 +1,6 @@
 //! `stream_control` (`src/streaming/stream-control.c`): what the heavy work counts, so that the background threads
-//! yield to it. The tier backfills and the users' data queries are counted; replication and the weights queries are
-//! not ported yet, so they count none.
+//! yield to it. The tier backfills and the users' data queries are counted; the weights queries are not ported, so
+//! they count none, and the replication queries count only for ML, which is not ported either (D105.12).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -51,6 +51,11 @@ impl Drop for UserDataQuery {
 /// `stream_control_health_should_be_running()`: no backfill, and at most one user query.
 pub fn health_should_be_running() -> bool {
     backfill_runners() == 0 && USER_DATA_QUERY_RUNNERS.load(Ordering::Acquire) <= 1
+}
+
+/// `stream_control_replication_should_be_running()`: no backfill and no user query.
+pub fn replication_should_be_running() -> bool {
+    backfill_runners() == 0 && USER_DATA_QUERY_RUNNERS.load(Ordering::Acquire) == 0
 }
 
 /// `STREAM_CONTROL_SLEEP_UT`: what `stream_control_throttle()` sleeps, 10 ms plus up to 10 ms more.

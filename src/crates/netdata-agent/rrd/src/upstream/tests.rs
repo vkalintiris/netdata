@@ -457,3 +457,5 @@ fn chart_slots_are_reused_until_the_charts_all_go() {
     let d = charts.create(&ChartSpec { id: "d", ..chart_spec(DbMode::Ram) }).0;
     assert_eq!(d.chart_slot(), 3);
 }
+
+mod replay;

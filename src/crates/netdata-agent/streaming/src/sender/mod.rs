@@ -156,6 +156,8 @@ pub struct Sender {
     pub(crate) shutdown: AtomicBool,
     /// `s->capabilities` as the collectors read it, without the commit lock (C reads it unlocked).
     pub(crate) negotiated: std::sync::atomic::AtomicU32,
+    /// `s->replication`: its side of the connector's replication queue.
+    replication: Arc<crate::replication::SenderQueue>,
 }
 
 /// The connection the connector hands to the host's stream thread (`stream_sender_add_to_queue()`).
@@ -219,6 +221,7 @@ impl Sender {
             counter_out: std::sync::atomic::AtomicU32::new(0),
             shutdown: AtomicBool::new(false),
             negotiated: std::sync::atomic::AtomicU32::new(0),
+            replication: crate::replication::SenderQueue::new(),
         });
         host.set_upstream(Arc::clone(&sender) as Arc<dyn Upstream>);
         Some(sender)
@@ -226,6 +229,16 @@ impl Sender {
 
     pub fn host(&self) -> Option<Arc<Host>> {
         self.host.upgrade()
+    }
+
+    pub(crate) fn replication(&self) -> &Arc<crate::replication::SenderQueue> {
+        &self.replication
+    }
+
+    /// `stream_circular_buffer_flush_unsafe()` of the sender's buffer, its time mirrored for the replication queue.
+    pub(crate) fn flush_buffer(&self, out: &mut Out) {
+        out.buffer.flush(self.connector.settings.buffer_max_size, crate::receiver::now_monotonic_ut());
+        self.replication.last_flush_ut.store(out.buffer.last_flush_ut(), Ordering::Relaxed);
     }
 
     pub fn hostname(&self) -> String {

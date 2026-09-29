@@ -2,8 +2,6 @@
 //! child, line by line with C-string semantics, including the deferred bodies of `FUNCTION_PAYLOAD` and `JSON`.
 //! Map: `knowledge/map-m7-commit4-runtime.md` §5.
 
-use std::collections::HashMap;
-
 use netdata_agent_log::{Field, Priority, Source, Value, nd_log, push};
 use netdata_agent_pluginsd_proto::{MAX_DEFERRED_SIZE, Words};
 use netdata_agent_rrd::clock::now_realtime_s;
@@ -35,24 +33,10 @@ struct Deferred {
     action: Action,
 }
 
-/// `s->replication`'s requests until the replication sender (commit 6): one per chart, as C de-duplicates them.
-#[derive(Debug, Default)]
-struct ReplayQueue {
-    requests: HashMap<Vec<u8>, (i64, i64, bool)>,
-}
-
 /// The executor's state of a dispatched connection.
 #[derive(Debug, Default)]
 pub(crate) struct Executor {
     defer: Option<Deferred>,
-    replay: ReplayQueue,
-}
-
-impl Executor {
-    /// `stream_sender_pending_replication_requests()`.
-    pub fn pending_replication_requests(&self) -> bool {
-        !self.replay.requests.is_empty()
-    }
 }
 
 /// `stream_sender_defer_payload_append()`: false when the body passes 100 MiB, after C's record.
@@ -226,8 +210,8 @@ fn command(d: &mut Dispatched, line: &[u8]) {
                 _ => (0, 0),
             };
             let start = netdata_agent_ingest::parse_enable_streaming(Some(start));
-            // replication_sender_request_add(): answered by the replication sender (commit 6)
-            d.executor.replay.requests.insert(chart.to_vec(), (after, before, start));
+            let chart = String::from_utf8_lossy(chart).into_owned();
+            d.sender.connector.replication().request_add(&d.sender, chart, after, before, start);
         }
         Some(b"NODE_ID") => {
             let (claim, node, url) = (word(1), word(2), word(3));

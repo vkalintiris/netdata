@@ -154,6 +154,9 @@ pub fn timed_done(
     if netdata_agent_sys::exit::initiated() {
         return;
     }
+    // before the gate, where C takes it after (D111.3): a replication that finishes meanwhile is seen here, so the
+    // point stored now goes out live instead of in neither the answer nor the stream
+    let collecting = Chart::lock_collection(chart);
     let mut stream = upstream::metrics_init(host, chart, now.0);
     if pending_next {
         timed_next(chart, now, 0);
@@ -478,6 +481,7 @@ pub fn timed_done(
         });
         dim.update_meta(|m| m.flags &= !dim_flags::UPDATED);
     }
+    drop(collecting);
     if let Some(sb) = stream {
         sb.finish(chart);
     }

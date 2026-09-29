@@ -198,6 +198,8 @@ pub struct Connector {
     started: Mutex<bool>,
     /// The thread, for the shutdown's wait of every remaining thread (`[13/22]`).
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The replication requests of every sender, which the REPLAY threads answer (D111.1).
+    replication: Arc<crate::replication::Queue>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -232,7 +234,13 @@ impl Connector {
             exit: AtomicBool::new(false),
             started: Mutex::new(false),
             thread: Mutex::new(None),
+            replication: Arc::default(),
         })
+    }
+
+    /// The senders' replication requests, for the REPLAY threads.
+    pub fn replication(&self) -> &Arc<crate::replication::Queue> {
+        &self.replication
     }
 
     fn queue(&self) -> MutexGuard<'_, BTreeMap<u64, (Arc<Sender>, Cmd)>> {

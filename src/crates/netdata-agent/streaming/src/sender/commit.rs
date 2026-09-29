@@ -26,14 +26,28 @@ static COMPRESSION_RECORD: ErrorLimit = ErrorLimit::new(1, 0);
 impl Sender {
     /// `sender_buffer_commit()`: dropped without a dispatched connection (no session).
     pub fn commit(&self, src: &[u8], traffic: Traffic) {
+        self.commit_since(src, traffic, None);
+    }
+
+    /// A replication answer's commit: only into the session whose buffer flush it was asked after, whether it went
+    /// (D105.6; C commits it into a newer session too).
+    pub(crate) fn commit_replication(&self, src: &[u8], flush_ut: u64) -> bool {
+        self.commit_since(src, Traffic::Replication, Some(flush_ut))
+    }
+
+    /// The commit, when the buffer was last flushed at `flush_ut` if one is given; whether a session took it.
+    fn commit_since(&self, src: &[u8], traffic: Traffic, flush_ut: Option<u64>) -> bool {
         if src.is_empty() {
-            return;
+            return false;
         }
         // only the rare records name the host: no lookup on the hot path
         let hostname = || self.hostname();
         let mut out = self.out();
+        if flush_ut.is_some_and(|f| out.buffer.last_flush_ut() != f) {
+            return false;
+        }
         let Some(session) = out.session else {
-            return;
+            return false;
         };
         if out.buffer.set_max_size(src.len() * ADAPT_TO_TIMES_MAX_SIZE, false) {
             nd_log!(
@@ -60,6 +74,7 @@ impl Sender {
                 if enable_sending {
                     self.post(session, op::POLLOUT, Reason::NEVER);
                 }
+                true
             }
             Ended::Overflow => {
                 let stats = *out.buffer.stats();
@@ -77,6 +92,7 @@ impl Sender {
                     stats.bytes_max_size,
                     stats.bytes_available
                 );
+                false
             }
             Ended::CompressionFailed => {
                 self.deactivate_compression(&out, &hostname());
@@ -91,6 +107,7 @@ impl Sender {
                      restarting connection.",
                     hostname()
                 );
+                false
             }
         }
     }

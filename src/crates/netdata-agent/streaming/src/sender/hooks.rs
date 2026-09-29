@@ -14,7 +14,6 @@ use netdata_agent_text::parse::uuid_parse_flexi;
 use super::dispatch::Dispatched;
 use super::{Sender, Traffic, shown, text};
 use crate::caps;
-use crate::receiver::now_monotonic_ut;
 
 /// `OS_IFNAME_MAX`: the name is cut to one byte less.
 const IFNAME_MAX: usize = 32;
@@ -53,15 +52,16 @@ impl Sender {
         }
     }
 
-    /// `stream_sender_on_connect_and_disconnect()`: the charts' state reset (`stream_sender_charts_and_replication_
-    /// reset()`, whose pending replication requests come with commit 6), the counters zeroed and the buffer flushed
-    /// (the executor's state is the connection's own).
+    /// `stream_sender_on_connect_and_disconnect()`: the pending replication requests flushed and the charts' state
+    /// reset (`stream_sender_charts_and_replication_reset()`), the counters zeroed and the buffer flushed (the
+    /// executor's state is the connection's own).
     fn on_connect_and_disconnect(&self, host: &Host) {
+        self.connector.replication().delete_pending(&self.replication);
         upstream::reset_charts(host);
+        self.replication.replicating_zero();
         self.counter_in.store(0, Ordering::Relaxed);
         self.counter_out.store(0, Ordering::Relaxed);
-        let max = self.connector.settings.buffer_max_size;
-        self.out().buffer.flush(max, now_monotonic_ut());
+        self.flush_buffer(&mut self.out());
     }
 
     /// `stream_sender_on_ready_to_dispatch()`: ready, then the host's metadata, each its own commit.

@@ -44,10 +44,11 @@ type capture struct {
 }
 
 var (
-	slotRe          = regexp.MustCompile(`SLOT:\S+ `)
-	localPortRe     = regexp.MustCompile(`127\.0\.0\.1:\d+`)
-	replayRe        = regexp.MustCompile(`^(RBEGIN|RSET|RDSTATE|RSSTATE|REND)(?: SLOT:\S+)?(?: ('[^']*'|"[^"]*"))?`)
-	replayVerdictRe = regexp.MustCompile(` (true|false) `)
+	slotRe      = regexp.MustCompile(`SLOT:\S+ `)
+	localPortRe = regexp.MustCompile(`127\.0\.0\.1:\d+`)
+	replayRe    = regexp.MustCompile(`^(RBEGIN|RSET|RDSTATE|RSSTATE|REND)(?: SLOT:\S+)?(?: ('[^']*'|"[^"]*"))?`)
+	// C's REND writes two spaces after true
+	replayVerdictRe = regexp.MustCompile(` (true  |false )`)
 	chartLineRe     = regexp.MustCompile(`^CHART (?:SLOT:\S+ )?"([^"]*)"`)
 	begin2Re        = regexp.MustCompile(`^BEGIN2 (?:SLOT:\S+ )?'([^']*)' `)
 	set2Re          = regexp.MustCompile(`^SET2 (?:(SLOT:\S+) )?'([^']*)' \S+ \S+ (\S*)$`)
@@ -189,9 +190,8 @@ func parseCapture(req stream.Request, data []byte) capture {
 	return c
 }
 
-// compareCaptures reports how two captures differ; without `charts`, only the requests and the session starts
-// (a Rust child sends no charts before milestone 7 commit 5).
-func compareCaptures(t *testing.T, stage string, a, b capture, charts bool) {
+// compareCaptures reports how two captures differ.
+func compareCaptures(t *testing.T, stage string, a, b capture) {
 	t.Helper()
 	diff := func(what string, x, y []string) {
 		if !slices.Equal(x, y) {
@@ -201,9 +201,6 @@ func compareCaptures(t *testing.T, stage string, a, b capture, charts bool) {
 	}
 	diff("requests", a.request, b.request)
 	diff("session starts", a.start, b.start)
-	if !charts {
-		return
-	}
 	keys := func(m map[string][]string) []string {
 		var k []string
 		for id := range m {
@@ -283,8 +280,6 @@ type senderVariant struct {
 	refused uint32
 	// extra is the child's [stream] section lines
 	extra string
-	// gated variants compare a Rust child's charts and data only with PARITY_SENDER=1 (or C against C)
-	gated bool
 	// during runs while the first session streams
 	during func(t *testing.T, d *daemon.Daemon, s *stream.Session)
 	// sessions are the sessions captured and compared
@@ -292,8 +287,8 @@ type senderVariant struct {
 }
 
 var senderVariants = []senderVariant{
-	// the replication answers come with commit 6: a Rust child's charts stay claimed until then
-	{name: "replication", gated: true},
+	// each chart's replication answered (commit 6), then its live data
+	{name: "replication"},
 	{name: "norepl", refused: stream.CapReplication},
 	{name: "hex", refused: stream.CapReplication | stream.CapSlots | stream.CapIEEE754 | stream.CapFloatBaseline},
 	{name: "v1", refused: stream.CapReplication | stream.CapInterpolated,
@@ -331,7 +326,6 @@ func TestSenderCapture(t *testing.T) {
 	bins := binaries(t)
 	for _, v := range senderVariants {
 		t.Run(v.name, func(t *testing.T) {
-			charts := !v.gated || bins[0] == bins[1] || os.Getenv("PARITY_SENDER") == "1"
 			sessions := max(v.sessions, 1)
 			var caps [2][]capture
 			var records [2][]string
@@ -344,15 +338,13 @@ func TestSenderCapture(t *testing.T) {
 				return
 			}
 			for n := range sessions {
-				compareCaptures(t, "session "+strconv.Itoa(n+1), caps[0][n], caps[1][n], charts)
+				compareCaptures(t, "session "+strconv.Itoa(n+1), caps[0][n], caps[1][n])
 				if len(caps[0][n].charts) == 0 || len(caps[0][n].data) == 0 {
 					t.Errorf("session %d: the oracle's capture has %d charts and %d with data", n+1,
 						len(caps[0][n].charts), len(caps[0][n].data))
 				}
 			}
-			if charts {
-				diffLines(t, "gate and reset records", records[0], records[1])
-			}
+			diffLines(t, "gate and reset records", records[0], records[1])
 		})
 	}
 }

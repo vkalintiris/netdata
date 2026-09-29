@@ -171,7 +171,7 @@ impl StreamWorker {
             sender.negotiated.store(capabilities, Ordering::Relaxed);
             out.algorithm = compressor.as_ref().map(|c| c.algorithm());
             out.compressor = compressor;
-            out.buffer.flush(sender.connector.settings.buffer_max_size, now_monotonic_ut());
+            sender.flush_buffer(&mut out);
         }
         sender.status_connected();
         let index = self.senders.iter().position(Option::is_none).unwrap_or_else(|| {
@@ -475,7 +475,7 @@ impl StreamWorker {
             let timeout_s = d.sender.connector.settings.timeout_s;
             let idle = stats.bytes_outstanding != 0
                 && idle_ut > (timeout_s as u64).wrapping_mul(1_000_000)
-                && !d.executor.pending_replication_requests();
+                && !d.sender.replication().busy();
             if idle {
                 {
                     let _frame = d.frame();

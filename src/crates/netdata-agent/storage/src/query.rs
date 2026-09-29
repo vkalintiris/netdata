@@ -28,4 +28,13 @@ impl StorageQuery<'_> {
             StorageQuery::Dbengine(q) => q.is_finished(),
         }
     }
+
+    /// `storage_engine_align_to_optimal_before()`: the query's end, moved to the end of the last page a dbengine query
+    /// reads.
+    pub fn align_to_optimal_before(&mut self) -> i64 {
+        match self {
+            StorageQuery::Ram(q) => q.align_to_optimal_before(),
+            StorageQuery::Dbengine(q) => q.align_to_optimal_before(),
+        }
+    }
 }

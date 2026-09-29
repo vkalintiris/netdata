@@ -153,6 +153,20 @@ pub struct LastCollected {
     pub is_float: bool,
 }
 
+impl LastCollected {
+    /// As a baseline: a float one as a double with FLOAT_BASELINE, else as C's cast to an integer
+    /// (`rrddim_last_collected_as_double()`, `rrddim_last_collected_raw_int()`).
+    fn baseline(&self, capabilities: u32) -> Baseline {
+        if self.is_float && capabilities & caps::FLOAT_BASELINE != 0 {
+            Baseline::Float(self.float)
+        } else if self.is_float {
+            Baseline::Int(double_to_i64(self.float))
+        } else {
+            Baseline::Int(self.int)
+        }
+    }
+}
+
 impl StreamBuffer<'_> {
     /// `stream_send_rrddim_metrics_v2()` with INTERPOLATED: a stored point, with the dimension's previous collected value as baseline
     /// (a float one as a double with FLOAT_BASELINE, else as C's cast to an integer).
@@ -160,13 +174,7 @@ impl StreamBuffer<'_> {
         if !self.v2 {
             return;
         }
-        let baseline = if last.is_float && self.capabilities & caps::FLOAT_BASELINE != 0 {
-            Baseline::Float(last.float)
-        } else if last.is_float {
-            Baseline::Int(double_to_i64(last.float))
-        } else {
-            Baseline::Int(last.int)
-        };
+        let baseline = last.baseline(self.capabilities);
         self.block.set2(
             &mut self.out,
             (point_end_ut / 1_000_000) as i64,
@@ -508,6 +516,8 @@ fn render_global_functions(host: &Host, up: &dyn Upstream) {
     }
     up.commit(&out, Traffic::Metadata);
 }
+
+pub mod replay;
 
 #[cfg(test)]
 mod tests;
