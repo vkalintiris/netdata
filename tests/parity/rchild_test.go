@@ -568,8 +568,8 @@ func pluginsdRecords(t *testing.T, d *daemon.Daemon) []string {
 var (
 	// lastSampleRe is how long before a child's reconnect its last stored sample was
 	lastSampleRe = regexp.MustCompile(`last sample in the db [^"]* ago`)
-	// receivedRe is what a receiver got until it disconnected, which the session's length decides
-	receivedRe = regexp.MustCompile(` (msgs|bytes_in)=\d+`)
+	// receivedRe is what a receiver got and sent until it disconnected, which the session's length decides
+	receivedRe = regexp.MustCompile(` (msgs|bytes_in|bytes_out)=\d+`)
 )
 
 // parentRecords are a parent's records that contain `marker`, each once, normalized (ports, thread numbers, the
