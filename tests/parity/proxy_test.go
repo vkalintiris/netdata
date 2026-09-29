@@ -64,6 +64,9 @@ type proxyVariant struct {
 	ticks int
 	// function, when positive, is the tick after which the child registers a host function
 	function int
+	// records, when set, replaces the ticks: the child writes these lines after its charts' replication, and the
+	// proxies' PLUGINSD records compare instead of the transcript
+	records func(c *stream.Conn, base int64)
 	// gated variants run against the candidate only with PARITY_PROXY=1 (8c: all; 8d-8h flip the ones they pass)
 	gated bool
 }
@@ -94,6 +97,9 @@ var proxyVariants = map[string]proxyVariant{
 	// set, zeros (D106.3), still batched
 	"v1up": {caps: proxyPlainCaps, refused: stream.CapIEEE754 | stream.CapInterpolated | stream.CapReplication,
 		ticks: 12, gated: true},
+	// a BEGIN2 after a BEGIN2 without END2, of the same chart and of another: the parser unlocks the stale collection
+	// lock and says so (the records; D106.4, commit 8d)
+	"malformed-records": {caps: proxyPlainCaps, refused: stream.CapIEEE754, records: malformedLines, gated: true},
 	// a chart the proxy's pattern excludes is never defined upstream and makes no commits
 	"pattern": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 12, gated: true,
 		section: "    proxy send charts matching = !proxy.excluded *\n",
@@ -171,6 +177,15 @@ func TestProxyTranscript(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if v.gated && !oracleOnly && os.Getenv("PARITY_PROXY") != "1" {
 				t.Skip("gated until the Rust proxy passes it (PARITY_PROXY=1 runs it)")
+			}
+			if v.records != nil {
+				got := proxyRecordsRun(t, name, v, bins)
+				if !strings.Contains(strings.Join(got[0], "\n"), "stale data collection lock") {
+					t.Errorf("the oracle logged no stale lock: %v", got[0])
+				}
+				diffLines(t, "the proxies' parser records", got[0], got[1])
+				t.Logf("records:\n%s", strings.Join(got[0], "\n"))
+				return
 			}
 			got := proxyRun(t, name, v, bins)
 			diffLines(t, "the stubs' transcripts", got[0], got[1])
@@ -276,6 +291,63 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 	for i, s := range sides {
 		_ = s.proxy.Stop()
 		out[i] = append(requestLines(sessions[i].Request), proxyTranscript(string(sessions[i].Data()))...)
+	}
+	return out
+}
+
+// malformedLines are a BEGIN2 repeated without its END2, then a BEGIN2 of another chart without the first's END2.
+func malformedLines(c *stream.Conn, base int64) {
+	at := func(d int64) string { return strconv.FormatInt(base+d, 10) }
+	c.Begin2Raw("", "proxy.gauge", "1", at(1), "#")
+	c.Set2Raw("", "g1", "1", "1", stream.FlagNotAnomalous)
+	c.Begin2Raw("", "proxy.gauge", "1", at(2), "#")
+	c.Set2Raw("", "g1", "2", "2", stream.FlagNotAnomalous)
+	c.End2()
+	c.Begin2Raw("", "proxy.gauge", "1", at(3), "#")
+	c.Set2Raw("", "g1", "3", "3", stream.FlagNotAnomalous)
+	c.Begin2Raw("", "proxy.incr", "1", at(3), "#")
+	c.Set2Raw("", "i1", "1030", "10", stream.FlagNotAnomalous)
+	c.End2()
+}
+
+// proxyRecordsRun defines and replicates the charts on both sides, writes the variant's lines, and returns each
+// proxy's PLUGINSD records.
+func proxyRecordsRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]string {
+	t.Helper()
+	base := time.Now().Unix()/60*60 - 3600
+	var out [2][]string
+	var sides [2]*proxySide
+	for i, role := range []Role{"proxy-oracle", "proxy-candidate"} {
+		sides[i] = startProxySide(t, Role(string(role)+"-"+name), bins[i], v, base)
+	}
+	var ids []string
+	for _, ch := range v.charts() {
+		ids = append(ids, ch.id)
+	}
+	for i, s := range sides {
+		if err := s.child.Burst(func() {
+			for ci, ch := range v.charts() {
+				defineProxyChart(s.child, v, 7+ci, ch, base)
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.child.WaitGranted(ids, 30*time.Second); err != nil {
+			t.Fatalf("side %d: %v", i, err)
+		}
+		if err := s.child.Burst(func() { v.records(s.child, base) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(2 * time.Second)
+	for i, s := range sides {
+		_ = s.proxy.Stop()
+		// the receiver's records; the PLUGINSD thread's own (its shutdown) belong to plugins.d, not ported yet
+		for _, r := range pluginsdRecords(t, s.proxy) {
+			if strings.Contains(r, "thread=STREAM[n]") {
+				out[i] = append(out[i], r)
+			}
+		}
 	}
 	return out
 }
