@@ -99,7 +99,7 @@ var proxyVariants = map[string]proxyVariant{
 		ticks: 12, gated: true},
 	// a BEGIN2 after a BEGIN2 without END2, of the same chart and of another: the parser unlocks the stale collection
 	// lock and says so (the records; D106.4, commit 8d)
-	"malformed-records": {caps: proxyPlainCaps, refused: stream.CapIEEE754, records: malformedLines, gated: true},
+	"malformed-records": {caps: proxyPlainCaps, refused: stream.CapIEEE754, records: malformedLines},
 	// a chart the proxy's pattern excludes is never defined upstream and makes no commits
 	"pattern": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 12, gated: true,
 		section: "    proxy send charts matching = !proxy.excluded *\n",
