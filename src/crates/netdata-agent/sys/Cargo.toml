@@ -21,3 +21,8 @@ openssl-sys = { workspace = true }
 foreign-types = { workspace = true }
 # a TLS connection registers its socket with a poller without handing the socket out (SocketSsl)
 mio = { workspace = true }
+
+# default_dispositions() needs a single-threaded process, which the test harness is not
+[[test]]
+name = "dispositions"
+harness = false

@@ -19,7 +19,8 @@
 //!   its string arguments at init and is freed by finish, both inside the call.
 //! - `Alloc` (decisions D87 F5, D91.1), the process's `GlobalAlloc`, hands every call to `System` unchanged.
 //! - `install_deadly()` and `die_by()` (decision D91.1) call `sigaction()`; the handler's trampoline reads the
-//!   `siginfo_t` the kernel passes it.
+//!   `siginfo_t` the kernel passes it. `default_dispositions()` (decision D123) calls `sigaction()` with the default
+//!   action, only while the process has one thread and the signals are blocked.
 //! - `exit_now()` (review R34) calls `_exit()` with an integer: no atexit handler or flush runs, as C's fatal paths
 //!   want when another thread is already exiting.
 //! - `SocketSsl` (decisions D97.2, D99.1): `SSL_set_fd()`, `SSL_accept/read/peek/write/shutdown()` and
@@ -91,6 +92,24 @@ pub fn setenv(key: &str, value: &str) -> io::Result<()> {
     require_single_thread("setenv()")?;
     // SAFETY: no other thread exists that could read the environment concurrently.
     unsafe { std::env::set_var(key, value) };
+    Ok(())
+}
+
+/// The default action for each of `signals` (decision D123), as C's `sigaction()` handlers replace an ignore the
+/// launcher left: refused unless the process is single-threaded and each signal is blocked on this thread, so none can
+/// be delivered with its default action (which for most of them ends the process) until a thread waits for it.
+pub fn default_dispositions(signals: &[nix::sys::signal::Signal]) -> io::Result<()> {
+    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, sigaction};
+    require_single_thread("default_dispositions()")?;
+    let blocked = SigSet::thread_get_mask().map_err(io::Error::from)?;
+    if let Some(open) = signals.iter().find(|s| !blocked.contains(**s)) {
+        return Err(io::Error::other(format!("default_dispositions() needs {open} blocked")));
+    }
+    let action = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+    for &signal in signals {
+        // SAFETY: the default action installs no handler.
+        unsafe { sigaction(signal, &action) }.map_err(io::Error::from)?;
+    }
     Ok(())
 }
 
@@ -395,6 +414,14 @@ pub fn sqlite_recover(conn: &rusqlite::Connection, dst: &str) -> Option<(i32, i3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The test harness runs tests on threads of its own, so the reset is refused here (its effect is proven by the
+    /// single-threaded `dispositions` test).
+    #[test]
+    fn default_dispositions_needs_a_single_thread() {
+        let err = default_dispositions(&[nix::sys::signal::Signal::SIGHUP]).unwrap_err();
+        assert!(err.to_string().contains("single-threaded"), "{err}");
+    }
 
     /// The high-water mark covers what SQLite held since the last reading, and a reading resets it to the use then.
     #[test]

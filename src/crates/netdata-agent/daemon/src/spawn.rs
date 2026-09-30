@@ -180,8 +180,9 @@ mod tests {
         u64::from_str_radix(line["SigIgn:".len()..].trim(), 16).unwrap()
     }
 
-    /// The child starts with nothing blocked, SIGPIPE at its default (other ignored signals are inherited, as in C)
-    /// and this process's environment, whatever this process blocks; its exit code comes back and is logged.
+    /// The child starts with nothing blocked, SIGPIPE at its default (other ignored signals are inherited: C's
+    /// spawn server resets only SIGPIPE, the daemon's startup resets the ones C catches, D123) and this process's
+    /// environment, whatever this process blocks; its exit code comes back and is logged.
     #[test]
     fn children_start_clean() {
         let mut blocked = SigSet::empty();

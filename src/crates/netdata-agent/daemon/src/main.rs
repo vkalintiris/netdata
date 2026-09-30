@@ -368,6 +368,20 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             "SIGNALS: cannot apply the default mask for signals"
         );
     }
+    // nd_initialize_signals()'s sigaction() calls replace an ignore the launcher left (nohup, a shell's `&`), so the
+    // children get the default action for each, as C's (D123); SIGCHLD too, while this process reaps its own
+    for signal in [
+        Signal::SIGINT,
+        Signal::SIGQUIT,
+        Signal::SIGTERM,
+        Signal::SIGHUP,
+        Signal::SIGUSR2,
+        Signal::SIGCHLD,
+    ] {
+        if netdata_agent_sys::default_dispositions(&[signal]).is_err() {
+            nd_log!(Source::Daemon, Priority::Err, "SIGNAL: Failed to change signal handler for: {signal}");
+        }
+    }
     // nd_initialize_signals(): the deadly signals recorded in the status file (D91)
     if let Err(errno) = netdata_agent_sys::install_deadly(&DEADLY, status_file::deadly_signal) {
         nd_log!(Source::Daemon, Priority::Err, errno = errno as i32;
