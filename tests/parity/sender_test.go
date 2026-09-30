@@ -3,6 +3,8 @@
 package parity
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -241,14 +243,18 @@ func compareCaptures(t *testing.T, stage string, a, b capture) {
 }
 
 // senderChild boots a daemon streaming to `parent` as a child with its own identity, `extra` in its [stream]
-// section.
-func senderChild(t *testing.T, bin string, role Role, parent *stream.Parent, extra string) *daemon.Daemon {
+// section, and `adjust` applied to its options.
+func senderChild(t *testing.T, bin string, role Role, parent *stream.Parent, extra string,
+	adjust ...func(*daemon.Options)) *daemon.Daemon {
 	t.Helper()
 	id := daemon.Identity{Hostname: "sender-child", StreamKey: "5a1e0000-0000-4000-8000-0000000000c1",
 		MachineGUID: "5a1e0000-0000-4000-8000-0000000000cc"}
 	o := daemon.Options{Binary: bin, RunDir: runDir(t, role), Identity: &id, DBMode: "alloc", StorageTiers: 1,
 		NoStreamKey: true, StreamTo: &daemon.StreamTo{Destination: parent.Addr(), APIKey: parentIdentity.StreamKey,
 			Extra: "    reconnect delay = 5\n" + extra}}
+	for _, f := range adjust {
+		f(&o)
+	}
 	d, err := daemon.Start(o)
 	if err != nil {
 		t.Fatalf("parity: start %s: %v", role, err)
@@ -284,6 +290,12 @@ type senderVariant struct {
 	during func(t *testing.T, d *daemon.Daemon, s *stream.Session)
 	// sessions are the sessions captured and compared
 	sessions int
+	// long runs only with PARITY_LONG
+	long bool
+	// child adjusts the child's options
+	child func(*daemon.Options)
+	// paths, when set, is how many stream paths the first session's start must hold on each side
+	paths int
 }
 
 var senderVariants = []senderVariant{
@@ -316,6 +328,71 @@ var senderVariants = []senderVariant{
 				t.Errorf("reload-labels: exit %d: %s", r.Exit, r.Stderr)
 			}
 		}},
+	// localhost's first retention time rises after the sender is ready, so its path goes up again (D120.4): an
+	// alloc child keeping 60 points, and a grandchild's chart freed 10 s after it goes obsolete, which arms the full
+	// retention pass 120 s later
+	{name: "retention-change", long: true, refused: stream.CapReplication, paths: 2,
+		child: func(o *daemon.Options) {
+			o.NoStreamKey = false
+			o.StreamMemoryMode = "alloc"
+			o.DBExtra = "    retention = 60\n    cleanup obsolete charts after = 10s\n"
+			o.StreamExtra = "\n[" + senderGrandchild.MachineGUID + "]\n    type = machine\n    proxy enabled = no\n"
+		},
+		during: retentionChange},
+}
+
+// senderGrandchild is the live child of the retention-change variant's sender child.
+var senderGrandchild = stream.HostInfo{Hostname: "sender-grandchild",
+	MachineGUID: "5a1e0000-0000-4000-8000-0000000000cf"}
+
+// retentionChange connects a grandchild once the first session's labels are out (so the child's `_is_parent` in
+// them does not race it), obsoletes one of its charts, and waits for the second stream path: its localhost entry
+// carries the new first time, one retention (60 s) behind the moment it is seen.
+func retentionChange(t *testing.T, d *daemon.Daemon, s *stream.Session) {
+	if !s.WaitData(func(b []byte) bool { return bytes.Contains(b, []byte("OVERWRITE labels\n")) }, 30*time.Second) {
+		t.Errorf("%s: no host labels within 30 s", d.Opts.RunDir)
+		return
+	}
+	g := startLiveChild(t, d, senderGrandchild, nil, map[string][]string{"gc.live": {"d"}, "gc.gone": {"d"}})
+	time.Sleep(3 * time.Second)
+	g.obsolete("gc.gone", []string{"CHART 'gc.gone' '' 'title' 'units' 'family' 'gc.gone' line 1000 1 'obsolete' maint corpus"},
+		nil)
+	obsoleted := time.Now()
+	if !s.WaitData(func(b []byte) bool { return len(streamPathBlocks(b)) >= 2 }, 210*time.Second) {
+		t.Errorf("%s: no second JSON STREAM_PATH within 210 s of the obsolete chart", d.Opts.RunDir)
+		return
+	}
+	seen := time.Now()
+	type entry struct {
+		HostID string `json:"host_id"`
+		Hops   int    `json:"hops"`
+		Since  int64  `json:"since"`
+		First  int64  `json:"first_time_t"`
+	}
+	var paths [2]struct {
+		Path []entry `json:"streaming_path"`
+	}
+	for i, b := range streamPathBlocks(s.Data())[:2] {
+		if err := json.Unmarshal(b, &paths[i]); err != nil {
+			t.Fatalf("path %d: %v: %s", i+1, err, b)
+		}
+		if len(paths[i].Path) != 1 || paths[i].Path[0].HostID != d.Opts.Identity.MachineGUID || paths[i].Path[0].Hops != 0 {
+			t.Errorf("path %d: %s", i+1, b)
+			return
+		}
+	}
+	first, second := paths[0].Path[0], paths[1].Path[0]
+	t.Logf("%s: the second path %s after the obsolete chart, its first time %d s before that, %d s after the first path's",
+		d.Opts.RunDir, seen.Sub(obsoleted).Round(time.Second), seen.Unix()-second.First, second.First-first.First)
+	if second.Since != first.Since {
+		t.Errorf("since: %d then %d", first.Since, second.Since)
+	}
+	if second.First-first.First < 30 {
+		t.Errorf("first time: %d then %d", first.First, second.First)
+	}
+	if lag := seen.Unix() - second.First; lag < 57 || lag > 63 {
+		t.Errorf("the second path's first time is %d s before it was seen, not the 60 s of retention", lag)
+	}
 }
 
 // TestSenderCapture (checks `stream.sender-capture` and `stream.rchild-transcript`, milestone 7 commits 0, 4 and
@@ -326,6 +403,9 @@ func TestSenderCapture(t *testing.T) {
 	bins := binaries(t)
 	for _, v := range senderVariants {
 		t.Run(v.name, func(t *testing.T) {
+			if v.long && os.Getenv("PARITY_LONG") == "" {
+				t.Skip("set PARITY_LONG=1")
+			}
 			sessions := max(v.sessions, 1)
 			var caps [2][]capture
 			var records [2][]string
@@ -345,6 +425,19 @@ func TestSenderCapture(t *testing.T) {
 				}
 			}
 			diffLines(t, "gate and reset records", records[0], records[1])
+			if v.paths > 0 {
+				for i, role := range []Role{Oracle, Candidate} {
+					n := 0
+					for _, l := range caps[i][0].start {
+						if l == "JSON STREAM_PATH <payload>" {
+							n++
+						}
+					}
+					if n != v.paths {
+						t.Errorf("%s: the first session's start holds %d stream paths, not %d", role, n, v.paths)
+					}
+				}
+			}
 		})
 	}
 }
@@ -362,7 +455,11 @@ func senderRun(t *testing.T, bin string, role Role, v senderVariant, sessions in
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { parent.Close() })
-	d := senderChild(t, bin, role, parent, v.extra)
+	var adjust []func(*daemon.Options)
+	if v.child != nil {
+		adjust = append(adjust, v.child)
+	}
+	d := senderChild(t, bin, role, parent, v.extra, adjust...)
 	var out []capture
 	for n := 1; n <= sessions; n++ {
 		s := parent.WaitSession(n, 60*time.Second)
