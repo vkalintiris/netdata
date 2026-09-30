@@ -253,6 +253,15 @@ pub struct Receivers {
     last_accepted_s: Mutex<i64>,
 }
 
+/// The reason a stopped receiver leaves with: its stopper's (C forces it, `receiver_set_exit_reason(…, true)`), else
+/// SIGNALED TO STOP.
+fn stop_reason(slot: &ReceiverSlot) -> Reason {
+    match slot.stop_reason() {
+        0 => Reason::DISCONNECT_SIGNALED_TO_STOP,
+        code => Reason(code),
+    }
+}
+
 fn now_s() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -460,7 +469,7 @@ impl Receivers {
             }
         }
         if let (Some(slot), Some(host)) = (&stale, &existing) {
-            if host.stop_receiver_and_wait(slot) {
+            if host.stop_receiver_and_wait(slot, Reason::RCV_DISCONNECT_STALE_RECEIVER.0) {
                 stale = None;
                 nd_log!(
                     Source::Daemon,
@@ -1015,7 +1024,8 @@ impl StreamWorker {
         let _frame = records::child_event(&child.frame);
         // the shutdown that woke the socket is not a remote close
         if child.attached.slot.stop_requested.load(Ordering::Acquire) {
-            return self.disconnect(cx, index, Reason::DISCONNECT_SIGNALED_TO_STOP);
+            let reason = stop_reason(&child.attached.slot);
+            return self.disconnect(cx, index, reason);
         }
         let hangup = event.is_read_closed();
         if event.is_error() || (hangup && !event.is_readable()) {
@@ -1054,7 +1064,8 @@ impl StreamWorker {
             if child.attached.slot.stop_requested.load(Ordering::Acquire) {
                 let frame = Arc::clone(&child.frame);
                 let _frame = records::child_event(&frame);
-                self.disconnect(cx, index, Reason::DISCONNECT_SIGNALED_TO_STOP);
+                let reason = stop_reason(&child.attached.slot);
+                self.disconnect(cx, index, reason);
                 continue;
             }
             // stream_path_retention_updated() from the RRDCONTEXT thread: its messages go out on this tick (D46
