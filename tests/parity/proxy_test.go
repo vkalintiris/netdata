@@ -86,8 +86,6 @@ type proxyVariant struct {
 	records func(c *stream.Conn, base int64)
 	// leave replaces the flush: after the ticks the child leaves and comes back (proxyLeaveRun)
 	leave bool
-	// gated variants run against the candidate only with PARITY_PROXY=1 (none since 8h)
-	gated bool
 }
 
 // The child profiles (design §2.2): plain (decimal, no slots) and C-like (IEEE754 and slots in base64, two hops).
@@ -120,6 +118,11 @@ var proxyVariants = map[string]proxyVariant{
 	// receiver's end stops the sender (RECEIVER LEFT); on the child's return the sender starts again and the stub's
 	// second plan replicates the lost seconds
 	"receiver-left": {caps: proxyPlainCaps, refused: stream.CapIEEE754, ticks: 50, leave: true},
+	// the stub's NODE_ID (tick 4) gives the proxied host its node id, which it keeps across the leave while the
+	// sender's stop clears the parent's claim id: the returned child gets NODE_ID at attach with a zero claim
+	// (stream-receiver.c:662; D121.3)
+	"node-id-return": {caps: proxyPlainCaps | stream.CapClaim | stream.CapNodeID | stream.CapPaths,
+		refused: stream.CapIEEE754, ticks: 50, metadata: true, leave: true},
 	// a BEGIN2 after a BEGIN2 without END2, of the same chart and of another: the parser unlocks the stale collection
 	// lock and says so (the records; D106.4, commit 8d)
 	"malformed-records": {caps: proxyPlainCaps, refused: stream.CapIEEE754, records: malformedLines},
@@ -226,16 +229,12 @@ type proxySide struct {
 // timestamps an hour old, so replication windows and stored points are deterministic. Compared: what each stub
 // received (the request, the definitions, the replication answers, the blocks, each tick's marker), wall clocks
 // masked. A `VARIABLE HOST` marker after each tick counts, by its position, the blocks the proxy committed before it
-// (C commits it out of band). Variants for the candidate are gated (PARITY_PROXY=1) until commit 8's parts pass them.
+// (C commits it out of band).
 func TestProxyTranscript(t *testing.T) {
 	bins := binaries(t)
-	oracleOnly := bins[0] == bins[1]
 	for _, name := range slices.Sorted(maps.Keys(proxyVariants)) {
 		v := proxyVariants[name]
 		t.Run(name, func(t *testing.T) {
-			if v.gated && !oracleOnly && os.Getenv("PARITY_PROXY") != "1" {
-				t.Skip("gated until the Rust proxy passes it (PARITY_PROXY=1 runs it)")
-			}
 			if v.sections {
 				got := proxySectionsRun(t, name, bins)
 				if want := []string{"G1 -> A", "G2 -> B", "G3 -> C"}; !slices.Equal(got[0], want) {
@@ -254,6 +253,20 @@ func TestProxyTranscript(t *testing.T) {
 				return
 			}
 			got := proxyRun(t, name, v, bins)
+			if v.leave && v.metadata {
+				// the oracle must send NODE_ID to the returned child, or both could send nothing and compare equal
+				want := fmt.Sprintf("NODE_ID '00000000-0000-0000-0000-000000000000' '%s' 'https://nodeid.invalid'",
+					proxyNodeID)
+				n, ret := 0, slices.Index(got[0], "== the child's return")
+				for _, l := range got[0][max(ret, 0):] {
+					if l == want {
+						n++
+					}
+				}
+				if ret < 0 || n != 1 {
+					t.Errorf("the oracle's returned child got %q %d times", want, n)
+				}
+			}
 			diffLines(t, "the stubs' transcripts", got[0], got[1])
 			t.Logf("transcript:\n%s", strings.Join(got[0], "\n"))
 		})
