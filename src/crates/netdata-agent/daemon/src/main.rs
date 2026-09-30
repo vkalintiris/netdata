@@ -378,8 +378,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         Signal::SIGUSR2,
         Signal::SIGCHLD,
     ] {
-        if netdata_agent_sys::default_dispositions(&[signal]).is_err() {
-            nd_log!(Source::Daemon, Priority::Err, "SIGNAL: Failed to change signal handler for: {signal}");
+        if let Err(err) = netdata_agent_sys::default_dispositions(&[signal]) {
+            nd_log!(Source::Daemon, Priority::Err, errno = err.raw_os_error().unwrap_or(0);
+                "SIGNAL: Failed to change signal handler for: {signal}");
         }
     }
     // nd_initialize_signals(): the deadly signals recorded in the status file (D91)

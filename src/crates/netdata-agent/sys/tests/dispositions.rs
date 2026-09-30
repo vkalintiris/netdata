@@ -42,6 +42,11 @@ fn main() {
         child();
         return;
     }
+    // `env --ignore-signal` is GNU coreutils 8.31 or later
+    if !Command::new("env").args(["--ignore-signal=HUP", "true"]).status().is_ok_and(|s| s.success()) {
+        eprintln!("dispositions: skipped, `env --ignore-signal` is not supported here (GNU coreutils 8.31+)");
+        return;
+    }
     let exe = std::env::current_exe().unwrap();
     let out = Command::new("env")
         .arg("--ignore-signal=HUP,CHLD")

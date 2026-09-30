@@ -97,7 +97,8 @@ pub fn setenv(key: &str, value: &str) -> io::Result<()> {
 
 /// The default action for each of `signals` (decision D123), as C's `sigaction()` handlers replace an ignore the
 /// launcher left: refused unless the process is single-threaded and each signal is blocked on this thread, so none can
-/// be delivered with its default action (which for most of them ends the process) until a thread waits for it.
+/// be delivered with its default action (which for most of them ends the process) until a thread waits for it. A
+/// failure stops at its signal; the ones before it are reset.
 pub fn default_dispositions(signals: &[nix::sys::signal::Signal]) -> io::Result<()> {
     use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, sigaction};
     require_single_thread("default_dispositions()")?;
@@ -107,7 +108,7 @@ pub fn default_dispositions(signals: &[nix::sys::signal::Signal]) -> io::Result<
     }
     let action = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
     for &signal in signals {
-        // SAFETY: the default action installs no handler.
+        // SAFETY: the default action installs no handler, and the previous action returned is dropped unread.
         unsafe { sigaction(signal, &action) }.map_err(io::Error::from)?;
     }
     Ok(())

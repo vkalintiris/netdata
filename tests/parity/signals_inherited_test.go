@@ -1,8 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 package parity
 
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -76,6 +79,10 @@ func probeRecords(t *testing.T, d *daemon.Daemon) []string {
 // action for each; the Rust agent resets them after blocking them. The daemons still act on HUP, USR2 and INT or QUIT.
 // The daemon's own SigIgn is compared without SIGCHLD, which C leaves ignored and Rust resets (D123.2, DEFECTS).
 func TestInheritedSigIgn(t *testing.T) {
+	// `env --ignore-signal` is GNU coreutils 8.31 or later
+	if exec.Command("env", "--ignore-signal=HUP", "true").Run() != nil {
+		t.Skip("`env --ignore-signal` is not supported here (GNU coreutils 8.31+)")
+	}
 	caught := sigBit(syscall.SIGHUP) | sigBit(syscall.SIGINT) | sigBit(syscall.SIGQUIT) | sigBit(syscall.SIGTERM) |
 		sigBit(syscall.SIGUSR2)
 	chld := sigBit(syscall.SIGCHLD)
@@ -92,7 +99,8 @@ func TestInheritedSigIgn(t *testing.T) {
 			}
 			// the launcher's ignore took effect (C keeps SIGCHLD's), and C replaced the ones it catches
 			if masks[0]&chld == 0 || masks[0]&caught != 0 {
-				t.Fatalf("oracle SigIgn %016x: the wrapper did not apply", masks[0])
+				t.Fatalf("oracle SigIgn %016x: the wrapper did not ignore SIGCHLD, or C no longer replaces the ignores",
+					masks[0])
 			}
 			if masks[0]&^chld != masks[1]&^chld {
 				t.Errorf("daemon SigIgn (SIGCHLD aside): oracle %016x, candidate %016x", masks[0], masks[1])
@@ -139,13 +147,10 @@ func TestInheritedSigIgn(t *testing.T) {
 	}
 }
 
-// signalName is C's name of a signal (SIGINT, SIGQUIT).
+// signalName is C's name of the signals the check exits by.
 func signalName(sig syscall.Signal) string {
-	switch sig {
-	case syscall.SIGINT:
+	if sig == syscall.SIGINT {
 		return "SIGINT"
-	case syscall.SIGQUIT:
-		return "SIGQUIT"
 	}
-	return sig.String()
+	return "SIGQUIT"
 }
