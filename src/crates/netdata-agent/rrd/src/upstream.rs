@@ -48,7 +48,8 @@ pub trait Upstream: Send + Sync + std::fmt::Debug {
     /// was flushed again meanwhile (D106.11) or no connection is dispatched; whether a session took it.
     fn commit_since(&self, bytes: &[u8], traffic: Traffic, flush_ut: u64) -> bool;
     /// `stream_sender_signal_to_stop_and_wait(host, reason, false)` when the host's receiver left: a queued or
-    /// dispatched sender stops for good, `reason` (a `STREAM_HANDSHAKE` code) the receiver's.
+    /// dispatched sender stops (it starts again when the child returns), `reason` (a `STREAM_HANDSHAKE` code) the
+    /// receiver's.
     fn receiver_left(&self, reason: i32);
     /// `stream_parents_host_reset()`: every parent waits one reconnect delay, `reason` recorded on each.
     fn parents_reset(&self, reason: i32);

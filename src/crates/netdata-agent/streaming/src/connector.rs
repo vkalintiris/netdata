@@ -754,7 +754,10 @@ mod tests {
         assert!(!texts.iter().any(|t| t.contains("removed host") || t.contains("giving up")), "{texts:?}");
         assert!(s.parents().list.is_empty());
         host.update(&info("127.0.0.2:2", "key-b"), 1, 3600, false, 0, 0);
+        // a stop flag left from before cannot reach the revived sender
+        s.shutdown.store(true, Ordering::Relaxed);
         assert!(Sender::attach(&host, &c).is_none(), "set up again, not created");
+        assert!(!s.shutdown.load(Ordering::Relaxed));
         assert!(host.upstream().is_some());
         assert_eq!(s.lock().api_key, "key-b");
         let destinations: Vec<String> = s.parents().list.iter().map(|d| d.destination.clone()).collect();
@@ -788,6 +791,56 @@ mod tests {
         let slot = attach(0);
         crate::sender::send_node_and_claim_id_to_child(&host, &env);
         assert!(slot.take_to_child().is_empty(), "a child without NODE_ID");
+    }
+
+    /// `stream_sender_signal_to_stop_and_wait()`: a sender not ADDED is left as it is (nothing to stop); a queued one
+    /// is marked with the receiver's reason, which the connector's record then names, and its removal clears the mark.
+    #[test]
+    fn a_stop_marks_a_queued_sender_and_not_one_that_is_not_added() {
+        let (_pool, c) = connector();
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c4", false, info("127.0.0.1:1", "key")));
+        let s = Sender::attach(&host, &c).expect("created");
+        let reason = Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE;
+        s.signal_stop(reason, crate::sender::op::STOP_RECEIVER_LEFT);
+        assert!(!s.shutdown.load(Ordering::Relaxed));
+        assert_eq!(s.lock().exit_reason, Reason::NEVER);
+        host.sender_flags_set(sender_flags::ADDED);
+        c.requeue(&s, &host, Cmd::Connect);
+        s.signal_stop(reason, crate::sender::op::STOP_RECEIVER_LEFT);
+        assert!(s.shutdown.load(Ordering::Relaxed));
+        assert_eq!(s.lock().exit_reason, reason);
+        // the connector's pass takes the stop branch: its record names the receiver's reason
+        let ((), records) = netdata_agent_log::capture(|| s.connector_remove(&host));
+        let texts: Vec<String> = records.iter().filter_map(|r| r.message.clone()).collect();
+        let want = format!(
+            "STREAM CNT 'child' [to ]: streaming connector removed host: {} (signaled to stop)",
+            reason.text()
+        );
+        assert_eq!(texts, [want]);
+        assert_eq!(host.sender_flags() & sender_flags::ADDED, 0);
+        assert!(!s.shutdown.load(Ordering::Relaxed) && s.lock().exit_reason == Reason::NEVER);
+    }
+
+    /// A host whose sender was freed is refused at the connector with C's record, and nothing is queued.
+    #[test]
+    fn a_disabled_host_is_not_queued() {
+        let (_pool, c) = connector();
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c5", false, info("127.0.0.1:1", "key")));
+        let s = Sender::attach(&host, &c).expect("created");
+        host.cleanup_data_collection();
+        let ((), records) = netdata_agent_log::capture(|| c.add(&s, &host));
+        let texts: Vec<(netdata_agent_log::Priority, String)> =
+            records.iter().map(|r| (r.priority, r.message.clone().unwrap_or_default())).collect();
+        assert_eq!(
+            texts,
+            [(
+                netdata_agent_log::Priority::Err,
+                "STREAM CONNECT 'child' [disabled]: host has streaming disabled - not sending data to a parent."
+                    .to_string()
+            )]
+        );
+        assert!(c.queue().is_empty());
+        assert_eq!(host.sender_flags() & sender_flags::ADDED, 0);
     }
 
     /// A sender that stays queued elsewhere is given up after the free's 2 s (D118.2), with the record.

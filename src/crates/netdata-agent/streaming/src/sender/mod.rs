@@ -248,12 +248,14 @@ impl Sender {
     }
 
     /// `stream_sender_structures_free()`: signalled to stop with HOST CLEANUP, then, while still queued or
-    /// dispatched, taken off the connector every 10 ms, for at most 2 s where C waits for good (D118.2); then emptied
-    /// as a new sender.
+    /// dispatched, taken off the connector every 10 ms (and given the stop again once it is dispatched), for 200 waits
+    /// where C waits for good (D118.2; one `remove()` can still wait for the parents lock of an attempt in progress,
+    /// as C); then emptied as a new sender. A sender that is still live after the waits is left as it is.
     fn free_now(&self) {
         self.signal_stop(Reason::SND_DISCONNECT_HOST_CLEANUP, op::STOP_HOST_CLEANUP);
         if let (Some(me), Some(host)) = (self.me.upgrade(), self.host()) {
             let mut waits = 0;
+            let mut posted = self.out().session;
             while host.sender_flags() & sender_flags::ADDED != 0 {
                 if waits == 200 {
                     nd_log!(
@@ -262,10 +264,16 @@ impl Sender {
                         "STREAM SND '{}': sender takes too long to stop, giving up...",
                         host.hostname()
                     );
-                    break;
+                    return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 self.connector.remove_host(&me, &host);
+                // handed over to its stream thread after the signal: the stop goes to its session now
+                let now = self.out().session;
+                if let Some(session) = now.filter(|s| Some(*s) != posted) {
+                    self.post(session, op::STOP_HOST_CLEANUP, Reason::SND_DISCONNECT_HOST_CLEANUP);
+                    posted = now;
+                }
                 waits += 1;
             }
         }
@@ -285,18 +293,21 @@ impl Sender {
         *self.parents() = Parents::new(std::iter::empty());
     }
 
-    /// `stream_sender_structures_init()` of a freed sender: set up as a new one with the settings of now.
+    /// `stream_sender_structures_init()` of a freed sender: set up as a new one with the settings of now. A sender
+    /// still queued or dispatched after a free that gave up keeps what its session owns, and its stop.
     fn reinit_now(&self, send: &StreamSend) {
         let disabled = if self.connector.settings.compression_enabled { 0 } else { caps::COMPRESSIONS_AVAILABLE };
         self.disabled.store(disabled, Ordering::Relaxed);
         {
             let mut state = self.lock();
-            state.capabilities = caps::sender_ours(0, 0);
-            state.hops = 0;
-            state.remote_ip.clear();
-            state.parent_using_h2o = false;
-            state.exit_reason = Reason::NEVER;
-            state.status_reason = Reason::NEVER;
+            if !self.host().is_some_and(|h| h.sender_flags() & sender_flags::ADDED != 0) {
+                state.capabilities = caps::sender_ours(0, 0);
+                state.hops = 0;
+                state.remote_ip.clear();
+                state.parent_using_h2o = false;
+                // a stop flag left from before the free cannot reach the revived sender
+                self.shutdown.store(false, Ordering::Relaxed);
+            }
             state.api_key.clone_from(&send.api_key);
         }
         *self.parents() = Parents::new(send.parents());
@@ -389,10 +400,10 @@ impl Sender {
     /// marked to stop with `reason` (the connector's next pass removes a queued one), and a dispatched one gets `op`
     /// (a session gone meanwhile drops it where it is handled).
     pub(crate) fn signal_stop(&self, reason: Reason, op: u32) {
-        let added = self.host().is_some_and(|h| h.sender_flags() & sender_flags::ADDED != 0);
         {
+            // ADDED is read under the lock that add() and remove() set and clear it under, as C does
             let mut state = self.lock();
-            if added {
+            if self.host().is_some_and(|h| h.sender_flags() & sender_flags::ADDED != 0) {
                 self.shutdown.store(true, Ordering::Relaxed);
                 state.exit_reason = reason;
             }

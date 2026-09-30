@@ -299,6 +299,8 @@ pub mod sender_flags {
     pub const GLOBAL_FUNCTIONS_UPDATED: u32 = 1 << 4;
     /// `RRDHOST_OPTION_SENDER_ENABLED`: the host's sender is set up and not freed (`Host::upstream()` is it).
     pub const ENABLED: u32 = 1 << 5;
+    /// `RRDHOST_FLAG_STREAM_SENDER_INITIALIZED`: a setup of the host's sender was elected, until the end of its free.
+    pub const INITIALIZED: u32 = 1 << 6;
 }
 
 /// `struct rrdhost`.
@@ -1186,33 +1188,40 @@ impl Host {
         }
     }
 
-    /// Sets the host's sender (the first one set stays) and enables it.
-    pub fn set_upstream(&self, upstream: Arc<dyn Upstream>) {
+    /// Installs the host's sender (the first one installed stays) and enables it.
+    fn install_upstream(&self, upstream: Arc<dyn Upstream>) {
         let _ = self.upstream.set(upstream);
         self.sender_flags_set(sender_flags::ENABLED);
     }
 
+    /// A host's sender for a test, without the settings [`Host::init_upstream`] needs.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_upstream(&self, upstream: Arc<dyn Upstream>) {
+        self.install_upstream(upstream);
+    }
+
     /// `stream_sender_structures_init()`: a host whose settings stream it gets its sender, `create`d the first time
-    /// and set up again with the settings of now after a free (where C allocates a new one); nothing while one is
-    /// enabled or without settings.
+    /// and set up again with the settings of now after a free (where C allocates a new one). One caller is elected
+    /// to do it (INITIALIZED, set before the setup and cleared at the end of the free, as C's flag); nothing without
+    /// settings.
     pub fn init_upstream(&self, create: impl FnOnce(&StreamSend) -> Arc<dyn Upstream>) {
-        if self.sender_flags() & sender_flags::ENABLED != 0 {
-            return;
-        }
         let Some(send) = self.info.read().unwrap_or_else(PoisonError::into_inner).stream_send.clone() else {
             return;
         };
+        if self.sender_flags_set(sender_flags::INITIALIZED) & sender_flags::INITIALIZED != 0 {
+            return;
+        }
         match self.upstream.get() {
             Some(up) => {
                 up.reinit(&send);
                 self.sender_flags_set(sender_flags::ENABLED);
             }
-            None => self.set_upstream(create(&send)),
+            None => self.install_upstream(create(&send)),
         }
     }
 
     /// `stream_sender_structures_free()`: the sender stops and is emptied, and the host streams no more until a
-    /// revival sets it up with the settings of that time (D118).
+    /// revival sets it up with the settings of that time (D118). A setup waits for the end of it (INITIALIZED).
     fn free_upstream(&self) {
         let was = self.sender_flags_clear(sender_flags::ENABLED);
         if was & sender_flags::ENABLED != 0
@@ -1221,6 +1230,7 @@ impl Host {
             up.free();
         }
         self.info.write().unwrap_or_else(PoisonError::into_inner).stream_send = None;
+        self.sender_flags_clear(sender_flags::INITIALIZED);
     }
 
     /// `host->sender` when the host streams (`rrdhost_has_stream_sender_enabled()`).
@@ -2129,9 +2139,9 @@ mod tests {
         assert_eq!(*r.calls.lock().unwrap(), vec![("receiver_left", -19), ("parents_reset", -19)]);
     }
 
-    /// `stream_sender_structures_free()` at the host's cleanup: the sender freed once, before the host's functions
-    /// go; the host no longer streams and its settings go with it; the revival's update brings the settings of that
-    /// time back, and `init_upstream` sets the same sender up again.
+    /// `stream_sender_structures_free()` at the host's cleanup: the sender freed once; the host no longer streams and
+    /// its settings go with it; the revival's update brings the settings of that time back, and `init_upstream` sets
+    /// the same sender up again, once.
     #[test]
     fn a_cleaned_up_host_frees_its_sender_and_a_revival_sets_it_up_again() {
         let mut i = info("child");
@@ -2160,6 +2170,11 @@ mod tests {
         let created = Arc::new(crate::testing::Recorder::default());
         other.init_upstream(|_| Arc::clone(&created) as Arc<dyn Upstream>);
         assert!(other.upstream().is_some() && created.calls.lock().unwrap().is_empty());
+        // one setup is elected: a second caller, at once or while a free is under way, does nothing
+        other.init_upstream(|_| unreachable!("elected already"));
+        other.sender_flags_clear(sender_flags::ENABLED);
+        other.init_upstream(|_| unreachable!("a free has not ended"));
+        assert!(other.upstream().is_none());
     }
 
     /// `rrdhost_status_ingest()`: a host not online is archived until a receiver attached to it, offline after.
