@@ -1513,6 +1513,9 @@ impl Host {
             self.receiver_last_connected_s.store(0, Ordering::Relaxed);
             self.receiver_last_disconnected_s
                 .store(now_realtime_s(), Ordering::Relaxed);
+            // health stays off until the child returns (rrdhost_update() sets it again): the stale path entry has no
+            // HEALTH flag and a later metadata store writes it off
+            self.info.write().unwrap_or_else(PoisonError::into_inner).health_enabled = false;
             self.stamp_health_iteration();
             self.orphan
                 .store(true, std::sync::atomic::Ordering::Release);
@@ -2124,10 +2127,13 @@ mod tests {
     }
 
     /// `rrdhost_clear_receiver()`: the receiver's end tells the host's sender and resets its parents, both with the
-    /// receiver's reason and after the receiver lock is released; a slot not attached does nothing.
+    /// receiver's reason and after the receiver lock is released, and turns the host's health off; a slot not attached
+    /// does nothing.
     #[test]
     fn a_receivers_end_stops_the_hosts_sender() {
-        let host = Host::new("5a1e0000-0000-4000-8000-0000000000ca", false, info("child"));
+        let mut i = info("child");
+        i.health_enabled = true;
+        let host = Host::new("5a1e0000-0000-4000-8000-0000000000ca", false, i);
         let r = Arc::new(crate::testing::Recorder::default());
         host.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
         let slot = || Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
@@ -2135,8 +2141,10 @@ mod tests {
         assert_eq!(host.set_receiver(Arc::clone(&attached)), Attach::Attached);
         host.clear_receiver(&other, -5);
         assert!(r.calls.lock().unwrap().is_empty());
+        assert!(host.info().health_enabled);
         host.clear_receiver(&attached, -19);
         assert!(host.receiver().is_none());
+        assert!(!host.info().health_enabled);
         assert_eq!(*r.calls.lock().unwrap(), vec![("receiver_left", -19), ("parents_reset", -19)]);
     }
 
