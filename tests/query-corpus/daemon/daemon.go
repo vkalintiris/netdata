@@ -38,7 +38,7 @@ var errProcessNotReaped = errors.New("daemon: failed startup process is not reap
 type Options struct {
 	Binary           string // path to the stock netdata binary
 	RunDir           string // scratch directory for etc/cache/lib/log
-	Port             int    // 0 picks a free port
+	Port             int    // 0 picks a free port; a preset one taken by another process fails with ErrPortTaken
 	StorageTiers     int    // defaults to 3
 	DBEnginePageType string // empty keeps the stock Gorilla default; also accepts gorilla or raw
 	StreamMemoryMode string // empty defaults to dbengine; also accepts ram or alloc
@@ -383,6 +383,10 @@ func Start(o Options) (*Daemon, error) {
 	)
 }
 
+// ErrPortTaken is a start's error when its preset port was taken (Options.Port): the caller picks the ports again, in
+// a fresh run directory (the failed attempt's logs are set aside, as for an automatic retry).
+var ErrPortTaken = errors.New("daemon: preset port taken")
+
 func startWithPortRetries(
 	o Options,
 	start func(Options) (*Daemon, error),
@@ -390,7 +394,11 @@ func startWithPortRetries(
 	retryable func(error) bool,
 ) (*Daemon, error) {
 	if o.Port != 0 {
-		return start(o)
+		d, err := start(o)
+		if err != nil && retryable(err) {
+			return nil, fmt.Errorf("%w: %w", ErrPortTaken, err)
+		}
+		return d, err
 	}
 
 	var lastErr error

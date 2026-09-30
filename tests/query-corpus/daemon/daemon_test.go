@@ -317,8 +317,21 @@ func TestStartWithPortRetriesOnlyAutomaticCollisions(t *testing.T) {
 			},
 			func(err error) bool { return errors.Is(err, collision) },
 		)
-		if !errors.Is(err, collision) || attempts != 1 || picks != 0 {
-			t.Fatalf("err=%v attempts=%d picks=%d, want collision/1/0", err, attempts, picks)
+		if !errors.Is(err, collision) || !errors.Is(err, ErrPortTaken) || attempts != 1 || picks != 0 {
+			t.Fatalf("err=%v attempts=%d picks=%d, want a taken port's collision/1/0", err, attempts, picks)
+		}
+	})
+
+	t.Run("explicit port, other failure", func(t *testing.T) {
+		other := errors.New("no such binary")
+		_, err := startWithPortRetries(
+			Options{Port: 12004},
+			func(Options) (*Daemon, error) { return nil, other },
+			func() (int, error) { return 0, nil },
+			func(err error) bool { return errors.Is(err, collision) },
+		)
+		if !errors.Is(err, other) || errors.Is(err, ErrPortTaken) {
+			t.Fatalf("err=%v, want the failure, not a taken port", err)
 		}
 	})
 
