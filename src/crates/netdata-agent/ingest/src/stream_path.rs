@@ -298,6 +298,14 @@ pub fn send_to_parent(host: &Host, localhost: &Host, first_time_t: Option<i64>) 
     up.commit(&message(host, localhost, first_time_t), Traffic::Metadata);
 }
 
+/// `stream_path_retention_updated()` for localhost (its child half returns): each first time recorded while its
+/// sender is ready goes up in a path of its own, from the sender's stream thread (D120).
+pub fn send_retention_changes_to_parent(localhost: &Host) {
+    for first_time_s in localhost.contexts().take_first_time_changes() {
+        send_to_parent(localhost, localhost, Some(first_time_s));
+    }
+}
+
 /// `stream_path_send_to_child()` from outside the child's parser (whose own lines go out with its reads): into the
 /// receiver's outbox, when the child takes paths and is online.
 pub fn send_to_child(host: &Host, localhost: &Host) {

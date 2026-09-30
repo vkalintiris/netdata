@@ -1172,3 +1172,59 @@ fn a_proxied_hosts_metadata_goes_up() {
     assert!(r.take().is_empty(), "a parent without PATHS");
     assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(1_790_360_432));
 }
+
+/// Localhost's first-time changes go up from its sender's stream thread (D120): each in a path of its own with the
+/// value of its change, this agent's entry at hops 0; nothing before the sender is ready, nor to a parent without
+/// PATHS.
+#[test]
+fn localhosts_retention_changes_go_up() {
+    let h = named_host("parity-child", "5a1e0000-0000-4000-8000-0000000000c6", true);
+    let r = Arc::new(Recorder::with_capabilities(caps::PATHS));
+    h.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
+    h.contexts().record_first_time_changes(true);
+    let mut p = parser(&h);
+    assert!(feed_all(&mut p, &DEFINE).iter().all(|&ok| ok));
+    let collect = |p: &mut Parser, chart: &str, t: i64| {
+        let lines = [
+            format!("BEGIN2 '{chart}' 1 {t} #"),
+            "SET2 'd1' 5 5 A".to_string(),
+            "END2".to_string(),
+        ];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert!(feed_all(p, &refs).iter().all(|&ok| ok));
+        h.contexts().process_queued();
+    };
+    let t = NOW - 10;
+    collect(&mut p, "test.c1", t);
+    let first = h.contexts().retention().0;
+    assert!(first > 0);
+    stream_path::send_retention_changes_to_parent(&h);
+    assert!(r.take().is_empty(), "not ready");
+    h.sender_flags_set(sender_flags::READY_4_METRICS);
+    // a chart with an older first time widens localhost's
+    let define = |p: &mut Parser, chart: &str| {
+        let lines = [
+            format!("CHART '{chart}' '' 'title' 'units' 'family' 'ctx.{chart}' line 1000 1 '' fixture-pusher corpus"),
+            "DIMENSION 'd1' '' absolute 1 1 ''".to_string(),
+        ];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert!(feed_all(p, &refs).iter().all(|&ok| ok));
+    };
+    define(&mut p, "test.c2");
+    collect(&mut p, "test.c2", t - 5);
+    let widened = h.contexts().retention().0;
+    assert_eq!(widened, first - 5);
+    stream_path::send_retention_changes_to_parent(&h);
+    let sent = r.take();
+    assert_eq!(sent, vec![(Traffic::Metadata, String::from_utf8(stream_path::message(&h, &h, Some(widened))).unwrap())]);
+    assert!(sent[0].1.contains(r#""hops":0,"since":"#), "{}", sent[0].1);
+    assert!(sent[0].1.contains(&format!(r#""first_time_t":{widened},"#)), "{}", sent[0].1);
+    stream_path::send_retention_changes_to_parent(&h);
+    assert!(r.take().is_empty(), "each change once");
+    r.capabilities.store(0, std::sync::atomic::Ordering::Relaxed);
+    define(&mut p, "test.c3");
+    collect(&mut p, "test.c3", t - 8);
+    assert_eq!(h.contexts().retention().0, first - 8);
+    stream_path::send_retention_changes_to_parent(&h);
+    assert!(r.take().is_empty(), "a parent without PATHS");
+}

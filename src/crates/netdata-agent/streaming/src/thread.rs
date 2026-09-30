@@ -143,6 +143,7 @@ impl Worker for StreamWorker {
     fn timer(&mut self, cx: &mut Context<'_>, _timer: TimerId) {
         self.dequeue_senders(cx);
         self.tick_children(cx);
+        self.tick_senders();
         let now = Instant::now();
         if now.duration_since(self.last_check) >= self.check_every {
             self.last_check = now;

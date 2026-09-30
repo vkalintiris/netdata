@@ -821,6 +821,57 @@ mod tests {
         assert!(!s.shutdown.load(Ordering::Relaxed) && s.lock().exit_reason == Reason::NEVER);
     }
 
+    /// A chart of `host` whose first point ends at `t`, through the contexts' queue: the host's first time becomes
+    /// that point's start.
+    fn collect_first_at(host: &Host, id: &str, t: i64) {
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+        let (chart, _) = host.charts().create(&ChartSpec {
+            type_: "t",
+            id,
+            name: None,
+            family: Some("fam"),
+            context: Some(id),
+            title: "Title",
+            units: "u",
+            plugin: "p",
+            module: None,
+            priority: 1000,
+            update_every: 1,
+            chart_type: ChartType::Line,
+            mode: DbMode::Ram,
+            history_entries: 3600,
+            page_size: 4096,
+        });
+        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        for dim in chart.dims() {
+            dim.store_metric(t as u64 * 1_000_000, 1.0, 0);
+        }
+        netdata_agent_rrd::contexts::collected_rrdset(&chart);
+        host.contexts().process_queued();
+        assert_eq!(host.contexts().retention().0, t - 1);
+    }
+
+    /// `stream_sender_on_ready_to_dispatch()` opens C's gate for localhost's retention paths: its first-time changes
+    /// are recorded from then on (D120); a proxied host's recorder stays its receiver's, its pending changes kept.
+    #[test]
+    fn the_ready_hook_records_localhosts_first_time_changes() {
+        let (_pool, c) = connector();
+        let local = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c7", true, info("127.0.0.1:1", "key")));
+        let s = Sender::attach(&local, &c).expect("created");
+        collect_first_at(&local, "t.a", 1_790_000_000);
+        assert!(local.contexts().take_first_time_changes().is_empty(), "not ready");
+        s.on_ready_to_dispatch(&local, 0);
+        collect_first_at(&local, "t.b", 1_789_999_990);
+        assert_eq!(local.contexts().take_first_time_changes(), [1_789_999_989]);
+
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c8", false, info("127.0.0.1:1", "key")));
+        let s = Sender::attach(&host, &c).expect("created");
+        host.contexts().record_first_time_changes(true);
+        collect_first_at(&host, "t.a", 1_790_000_000);
+        s.on_ready_to_dispatch(&host, 0);
+        assert_eq!(host.contexts().take_first_time_changes(), [1_789_999_999], "kept for the receiver");
+    }
+
     /// A host whose sender was freed is refused at the connector with C's record, and nothing is queued.
     #[test]
     fn a_disabled_host_is_not_queued() {

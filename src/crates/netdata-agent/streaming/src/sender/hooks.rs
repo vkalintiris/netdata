@@ -74,6 +74,11 @@ impl Sender {
     pub(crate) fn on_ready_to_dispatch(&self, host: &Host, capabilities: u32) {
         nd_log!(Source::Daemon, Priority::Debug, "STREAM SND '{}': running ready-to-dispatch hooks...", host.hostname());
         host.sender_flags_set(sender_flags::READY_4_METRICS);
+        // C's gate is open from here: localhost's first-time changes owe its parent a path (D120; a proxied host's
+        // belong to its receiver); this hook's own path carries the retention of now
+        if host.is_localhost() {
+            host.contexts().record_first_time_changes(true);
+        }
         upstream::send_host_variables(host);
         if capabilities & caps::PATHS != 0
             && let Some(localhost) = self.connector.localhost()

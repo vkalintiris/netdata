@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use netdata_agent_evloop::conn::Conn;
 use netdata_agent_evloop::{Context, Event, Interest, Token};
+use netdata_agent_ingest::stream_path;
 use netdata_agent_log::{
     ErrorLimit, Field, FrameGuard, Priority, Source, Value, errno_of, msgid, nd_log, nd_log_limit, push,
 };
@@ -470,6 +471,17 @@ impl StreamWorker {
         }
     }
 
+    /// The 100 ms tick's sender part: `stream_path_retention_updated()` from the RRDCONTEXT thread for localhost,
+    /// whose paths go up now, up to a tick after C (D120, as the receivers' `tick_children`); the commits' POLLOUTs go
+    /// out with the tick's last `drain_inline`.
+    pub(crate) fn tick_senders(&self) {
+        for d in self.senders.iter().flatten() {
+            if d.host.is_localhost() {
+                stream_path::send_retention_changes_to_parent(&d.host);
+            }
+        }
+    }
+
     /// `stream_sender_check_all_nodes_from_poll()`: the idle timeout, and a send for anything outstanding (C's poll
     /// mask repair; with edge-triggered events it covers a missed edge).
     pub(crate) fn check_senders(&mut self, cx: &mut Context<'_>) {
@@ -609,6 +621,9 @@ impl StreamWorker {
             );
         }
         d.host.sender_flags_clear(sender_flags::CONNECTED | sender_flags::READY_4_METRICS);
+        if d.host.is_localhost() {
+            d.host.contexts().record_first_time_changes(false);
+        }
         let reason = {
             let mut state = d.sender.lock();
             let reason = if reason == Reason::DISCONNECT_SIGNALED_TO_STOP && state.exit_reason != Reason::NEVER {

@@ -1359,13 +1359,15 @@ pub fn collected_rrdset(chart: &Chart) {
 struct HostRetention {
     first_time_s: i64,
     last_time_s: i64,
-    /// Each new first time while a child's receiver runs, for the stream path messages C sends from
-    /// `rrdhost_update_cached_retention()` (`stream_path_retention_updated()`); `None` while nobody takes them.
+    /// Each new first time while a child's receiver runs or localhost's sender is ready (D120), for the stream path
+    /// messages C sends from `rrdhost_update_cached_retention()` (`stream_path_retention_updated()`); `None` while
+    /// nobody takes them.
     first_time_changes: Option<Vec<i64>>,
 }
 
 impl HostRetention {
-    /// The end of `rrdhost_update_cached_retention()`: a changed first time owes the child a stream path.
+    /// The end of `rrdhost_update_cached_retention()`: a changed first time owes the parent and the child a stream
+    /// path.
     fn note_first_time(&mut self, old_first_time_s: i64) {
         if self.first_time_s != old_first_time_s {
             if let Some(changes) = &mut self.first_time_changes {
@@ -1524,7 +1526,8 @@ impl Contexts {
         (r.first_time_s, r.last_time_s)
     }
 
-    /// Starts (a child's receiver runs) or stops recording the first-time changes a stream path is sent for.
+    /// Starts (a child's receiver runs, localhost's sender is ready) or stops recording the first-time changes a
+    /// stream path is sent for.
     pub fn record_first_time_changes(&self, record: bool) {
         lock(&self.retention).first_time_changes = record.then(Vec::new);
     }
