@@ -1221,7 +1221,8 @@ impl Host {
     }
 
     /// `stream_sender_structures_free()`: the sender stops and is emptied, and the host streams no more until a
-    /// revival sets it up with the settings of that time (D118). A setup waits for the end of it (INITIALIZED).
+    /// revival sets it up with the settings of that time (D118). A setup meanwhile does nothing (INITIALIZED): the
+    /// host waits for its next revival, as C sets up only an archived host.
     fn free_upstream(&self) {
         let was = self.sender_flags_clear(sender_flags::ENABLED);
         if was & sender_flags::ENABLED != 0
@@ -2163,7 +2164,7 @@ mod tests {
         assert!(host.info().stream_send.is_some(), "the revival's settings");
         host.init_upstream(|_| unreachable!("set up again, not created"));
         assert!(host.upstream().is_some());
-        host.init_upstream(|_| unreachable!("enabled already"));
+        host.init_upstream(|_| unreachable!("elected already"));
         assert_eq!(*r.calls.lock().unwrap(), vec![("free", 0), ("reinit", 0)]);
         // a host without a sender gets one created
         let other = Host::new("5a1e0000-0000-4000-8000-0000000000cc", false, i);

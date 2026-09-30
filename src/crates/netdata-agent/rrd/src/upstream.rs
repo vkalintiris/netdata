@@ -53,7 +53,8 @@ pub trait Upstream: Send + Sync + std::fmt::Debug {
     fn receiver_left(&self, reason: i32);
     /// `stream_parents_host_reset()`: every parent waits one reconnect delay, `reason` recorded on each.
     fn parents_reset(&self, reason: i32);
-    /// `stream_sender_structures_free()`'s sender side: stopped (a bounded wait, D118.2) and emptied.
+    /// `stream_sender_structures_free()`'s sender side: stopped and emptied; a sender still live after the bounded
+    /// wait (D118.2) is left as it is.
     fn free(&self);
     /// `stream_sender_structures_init()` of a freed sender: set up again as a new one, with `send`'s settings.
     fn reinit(&self, send: &StreamSend);

@@ -252,10 +252,9 @@ impl Sender {
     /// where C waits for good (D118.2; one `remove()` can still wait for the parents lock of an attempt in progress,
     /// as C); then emptied as a new sender. A sender that is still live after the waits is left as it is.
     fn free_now(&self) {
-        self.signal_stop(Reason::SND_DISCONNECT_HOST_CLEANUP, op::STOP_HOST_CLEANUP);
+        let mut posted = self.signal_stop(Reason::SND_DISCONNECT_HOST_CLEANUP, op::STOP_HOST_CLEANUP);
         if let (Some(me), Some(host)) = (self.me.upgrade(), self.host()) {
             let mut waits = 0;
-            let mut posted = self.out().session;
             while host.sender_flags() & sender_flags::ADDED != 0 {
                 if waits == 200 {
                     nd_log!(
@@ -268,11 +267,12 @@ impl Sender {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 self.connector.remove_host(&me, &host);
-                // handed over to its stream thread after the signal: the stop goes to its session now
+                // handed over to its stream thread after the signal: the stop goes to its session now (the out
+                // lock released first: a failed post reads it)
                 let now = self.out().session;
                 if let Some(session) = now.filter(|s| Some(*s) != posted) {
                     self.post(session, op::STOP_HOST_CLEANUP, Reason::SND_DISCONNECT_HOST_CLEANUP);
-                    posted = now;
+                    posted = Some(session);
                 }
                 waits += 1;
             }
@@ -294,7 +294,8 @@ impl Sender {
     }
 
     /// `stream_sender_structures_init()` of a freed sender: set up as a new one with the settings of now. A sender
-    /// still queued or dispatched after a free that gave up keeps what its session owns, and its stop.
+    /// still queued or dispatched after a free that gave up keeps its capabilities, hops, remote address and its stop;
+    /// its parents, key and disabled compressions are the new settings'.
     fn reinit_now(&self, send: &StreamSend) {
         let disabled = if self.connector.settings.compression_enabled { 0 } else { caps::COMPRESSIONS_AVAILABLE };
         self.disabled.store(disabled, Ordering::Relaxed);
@@ -398,8 +399,8 @@ impl Sender {
 
     /// `stream_sender_signal_to_stop_and_wait()` without its wait: a sender queued for its parents or dispatched is
     /// marked to stop with `reason` (the connector's next pass removes a queued one), and a dispatched one gets `op`
-    /// (a session gone meanwhile drops it where it is handled).
-    pub(crate) fn signal_stop(&self, reason: Reason, op: u32) {
+    /// (a session gone meanwhile drops it where it is handled). Returns the session `op` was posted to.
+    pub(crate) fn signal_stop(&self, reason: Reason, op: u32) -> Option<Session> {
         {
             // ADDED is read under the lock that add() and remove() set and clear it under, as C does
             let mut state = self.lock();
@@ -412,6 +413,7 @@ impl Sender {
         if let Some(session) = session {
             self.post(session, op, reason);
         }
+        session
     }
 
     /// The frame of the connector's records for this host.

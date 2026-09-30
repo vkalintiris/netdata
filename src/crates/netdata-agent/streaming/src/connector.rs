@@ -809,7 +809,7 @@ mod tests {
         s.signal_stop(reason, crate::sender::op::STOP_RECEIVER_LEFT);
         assert!(s.shutdown.load(Ordering::Relaxed));
         assert_eq!(s.lock().exit_reason, reason);
-        // the connector's pass takes the stop branch: its record names the receiver's reason
+        // the connector's removal of a stopped entry: its record names the receiver's reason
         let ((), records) = netdata_agent_log::capture(|| s.connector_remove(&host));
         let texts: Vec<String> = records.iter().filter_map(|r| r.message.clone()).collect();
         let want = format!(
@@ -894,20 +894,38 @@ mod tests {
         assert_eq!(host.sender_flags() & sender_flags::ADDED, 0);
     }
 
-    /// A sender that stays queued elsewhere is given up after the free's 2 s (D118.2), with the record.
+    /// A sender that stays queued elsewhere is given up after the free's 2 s (D118.2), with the record, and left as
+    /// it is; a session it gets meanwhile is given the stop.
     #[test]
     fn a_free_gives_up_on_a_sender_that_does_not_leave() {
         let (_pool, c) = connector();
         let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c2", false, info("127.0.0.1:1", "key")));
-        Sender::attach(&host, &c).expect("created");
+        let s = Sender::attach(&host, &c).expect("created");
         host.sender_flags_set(sender_flags::ADDED);
+        // handed over to a stream thread while the free waits (one the pool lacks, so the post fails with a record)
+        let late = {
+            let s = Arc::clone(&s);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                s.out().session = Some(crate::sender::Session { thread: 9, id: 1 });
+            })
+        };
         let started = Instant::now();
         let ((), records) = netdata_agent_log::capture(|| host.cleanup_data_collection());
+        late.join().unwrap();
         assert!(started.elapsed() >= Duration::from_secs(2));
         assert!(host.upstream().is_none());
         let texts: Vec<String> = records.iter().filter_map(|r| r.message.clone()).collect();
         let giving_up = "STREAM SND 'child': sender takes too long to stop, giving up...".to_string();
         assert!(texts.contains(&giving_up), "{texts:?}");
+        // the late session got the stop, once
+        let stop = format!(
+            "STREAM SND[x] 'child' [to ] the opcode ({}) message cannot be verified. Ignoring it.",
+            crate::sender::op::STOP_HOST_CLEANUP
+        );
+        assert_eq!(texts.iter().filter(|t| **t == stop).count(), 1, "{texts:?}");
+        // a sender still live is left as it is
+        assert!(!s.parents().list.is_empty());
     }
 
     #[test]
