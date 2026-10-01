@@ -208,6 +208,61 @@ fn chart_definition_end_asks_for_replication() {
     assert!(p.take_output().is_empty());
 }
 
+/// A SLOT over the cap is warned about, as C's `pluginsd_parse_rrd_slot()` (D126.5), and the chart is found by its
+/// id; `SLOT:0` is a slot like any other, with no record.
+#[test]
+fn an_over_cap_slot_is_warned_about_as_c() {
+    let h = host();
+    let mut p = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    let t = NOW - 10;
+    let (oks, records) = netdata_agent_log::capture(|| {
+        let mut oks = feed_all(&mut p, &[&format!("BEGIN2 SLOT:2000000 'test.c1' 1 {t} #"), "SET2 'd1' 5 5 A", "END2"]);
+        oks.extend(feed_all(&mut p, &[&format!("BEGIN2 SLOT:0 'test.c1' 1 {} #", t + 1), "SET2 'd1' 6 6 A", "END2"]));
+        oks
+    });
+    assert!(oks.iter().all(|&ok| ok));
+    assert_eq!(h.charts().find("test.c1", true).unwrap().dim("d1").unwrap().ring().unwrap().latest_time_s(), t + 1);
+    let records: Vec<_> = records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
+    assert_eq!(
+        records,
+        vec![(
+            Source::Collector,
+            Priority::Warning,
+            "PLUGINSD: ignoring invalid SLOT value '2000000' above the supported maximum 1000000".to_string()
+        )]
+    );
+}
+
+/// A `CHART_DEFINITION_END` whose first entry is after its last sends the empty request with C's NOTICE
+/// (`replicate_log_request()`, D126.4): the child's times, the issue, and the empty request C names.
+#[test]
+fn a_bad_replication_request_is_logged_as_c() {
+    let h = host();
+    let mut p = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    let (first, last) = (NOW - 50, NOW - 100);
+    let (ok, records) = netdata_agent_log::capture(|| {
+        p.feed(format!("CHART_DEFINITION_END {first} {last} {NOW}\n").as_bytes())
+    });
+    assert!(ok);
+    assert_eq!(String::from_utf8(p.take_output()).unwrap(), "REPLAY_CHART \"test.c1\" \"true\" 0 0\n");
+    let records: Vec<_> = records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
+    assert_eq!(
+        records,
+        vec![(
+            Source::Daemon,
+            Priority::Notice,
+            format!(
+                "STREAM SND REPLAY ERROR: 'host:{}/chart:test.c1' child sent: db from {first} to {last}, wall clock time \
+                 {NOW}, last request from 0 to 0, issue: sending empty replication request, child timings are invalid \
+                 (first entry > last entry) - sending replication request from 0 to 0, start streaming true",
+                h.hostname()
+            )
+        )]
+    );
+}
+
 /// On a parent with the BACKFILL pool running, the first `CHART_DEFINITION_END` of a chart queues its dimensions'
 /// backfill and sends nothing; the chart's last job hands the request to the stream thread's sink, which answers as
 /// the inline path does. The chart is never queued again: after a reconnect the request goes out at once.

@@ -51,6 +51,36 @@ use netdata_agent_text::parse::{
 /// `PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT`: seconds.
 const FUNCTIONS_TIMEOUT_DEFAULT: i32 = 10;
 
+/// `pluginsd_parse_rrd_slot()`'s limiters: a static of the header's inlined function, so each C file has its own; the
+/// parser's keywords share one, the replication's (RBEGIN, RSET, RDSTATE) the other.
+static PARSER_SLOTS: ErrorLimit = ErrorLimit::new(1, 0);
+static REPLICATION_SLOTS: ErrorLimit = ErrorLimit::new(1, 0);
+
+/// `pluginsd_parse_rrd_slot()`: a value over the cap is warned about, under the parser's frame, and reads as slot 0.
+fn slot_of(w: &Words, max_slot: u64, limit: &ErrorLimit) -> Option<u64> {
+    if let Some(value) = w.slot_over_cap(max_slot) {
+        nd_log_limit!(
+            limit,
+            Source::Collector,
+            Priority::Warning,
+            "PLUGINSD: ignoring invalid SLOT value '{}' above the supported maximum {max_slot}",
+            String::from_utf8_lossy(value)
+        );
+    }
+    w.slot(max_slot)
+}
+
+/// What a `CHART_DEFINITION_END` said, and the chart's last request: `replicate_log_request()`'s fields.
+struct ReplayView {
+    first: i64,
+    last: i64,
+    /// the last entry was clamped to the wall clock
+    fixed: bool,
+    wall: i64,
+    prev_after: i64,
+    prev_before: i64,
+}
+
 /// The fixed inputs of a parser.
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
@@ -614,7 +644,7 @@ impl Parser {
     }
 
     fn chart(&mut self, w: &Words) -> Rc {
-        let slot = w.slot(CHART_SLOT_MAX);
+        let slot = slot_of(w, CHART_SLOT_MAX, &PARSER_SLOTS);
         let mut idx = if slot.is_some() { 2 } else { 1 };
         let mut next = || {
             let word = w.get(idx);
@@ -722,7 +752,7 @@ impl Parser {
 
     /// `pluginsd_dimension()`.
     fn dimension(&mut self, w: &Words) -> Rc {
-        let slot = w.slot(DIMENSION_SLOT_MAX);
+        let slot = slot_of(w, DIMENSION_SLOT_MAX, &PARSER_SLOTS);
         let base = if slot.is_some() { 2 } else { 1 };
         let id = w.get(base);
         let name = w.get(base + 1);
@@ -1220,7 +1250,7 @@ impl Parser {
 
     /// `pluginsd_begin()`: the duration since the previous collection, trusted as streaming does.
     fn begin(&mut self, w: &Words) -> Rc {
-        let slot = w.slot(CHART_SLOT_MAX);
+        let slot = slot_of(w, CHART_SLOT_MAX, &PARSER_SLOTS);
         let base = if slot.is_some() { 2 } else { 1 };
         let id = w.get(base);
         let microseconds_s = w.get(base + 1);
@@ -1245,7 +1275,7 @@ impl Parser {
 
     /// `pluginsd_set()`: an empty value collects nothing.
     fn set(&mut self, w: &Words) -> Rc {
-        let slot = w.slot(DIMENSION_SLOT_MAX);
+        let slot = slot_of(w, DIMENSION_SLOT_MAX, &PARSER_SLOTS);
         let base = if slot.is_some() { 2 } else { 1 };
         let dimension = w.get(base);
         let value = w.get(base + 1);
@@ -1302,7 +1332,7 @@ impl Parser {
 
     /// `pluginsd_begin_v2()`.
     fn begin2(&mut self, w: &Words) -> Rc {
-        let slot = w.slot(CHART_SLOT_MAX);
+        let slot = slot_of(w, CHART_SLOT_MAX, &PARSER_SLOTS);
         let base = if slot.is_some() { 2 } else { 1 };
         let (Some(id), Some(ue), Some(end), Some(wall)) = (
             w.get(base),
@@ -1370,7 +1400,7 @@ impl Parser {
 
     /// `pluginsd_set_v2()`.
     fn set2(&mut self, w: &Words) -> Rc {
-        let slot = w.slot(DIMENSION_SLOT_MAX);
+        let slot = slot_of(w, DIMENSION_SLOT_MAX, &PARSER_SLOTS);
         let base = if slot.is_some() { 2 } else { 1 };
         let (Some(dimension), Some(collected_s), Some(value_s), Some(flags_s)) = (
             w.get(base),
@@ -1579,8 +1609,13 @@ impl Parser {
     ) {
         let now = self.now_s();
         let info = self.host.info();
+        let mut seen = ReplayView { first: child_first, last: child_last, fixed: false, wall: child_wall, prev_after,
+            prev_before };
         if child_last > child_wall {
+            self.log_replay_request(chart, &seen, "child's db last entry > child's wall clock time");
             child_last = child_wall;
+            seen.last = child_wall;
+            seen.fixed = true;
         }
         let (local_first, local_last) = chart.retention_for_collected(now);
         let gap_from = if prev_after == 0 || prev_before == 0 {
@@ -1596,16 +1631,28 @@ impl Parser {
         };
         let gap_to = now;
         let _ = local_first;
-        let empty = !info.replication_enabled
-            || chart.dim_count() == 0
-            || child_first == 0
-            || child_last == 0
-            || child_first < 0
-            || child_last < 0
-            || child_first > child_wall
-            || child_first > child_last
-            || local_last >= child_last;
-        let (after, before, start_streaming) = if empty {
+        // C's checks in C's order: the first that holds sends the empty request, and the invalid ones are logged
+        let empty = if !info.replication_enabled {
+            Some(("sending empty replication request, replication is disabled", false))
+        } else if chart.dim_count() == 0 {
+            Some(("sending empty replication request, chart has no dimensions", false))
+        } else if child_first == 0 || child_last == 0 {
+            Some(("sending empty replication request, child has no stored data", false))
+        } else if child_first < 0 || child_last < 0 {
+            Some(("sending empty replication request, child db timestamps are invalid", true))
+        } else if child_first > child_wall {
+            Some(("sending empty replication request, child db first entry is after its wall clock time", true))
+        } else if child_first > child_last {
+            Some(("sending empty replication request, child timings are invalid (first entry > last entry)", true))
+        } else if local_last >= child_last {
+            Some(("sending empty replication request, local last entry is at or later than the child one", false))
+        } else {
+            None
+        };
+        let (after, before, start_streaming) = if let Some((issue, log)) = empty {
+            if log {
+                self.log_replay_request(chart, &seen, issue);
+            }
             (0, 0, true)
         } else {
             let after = child_first.max(gap_from);
@@ -1616,6 +1663,11 @@ impl Parser {
             };
             before = before.min(child_last);
             if after > before {
+                self.log_replay_request(
+                    chart,
+                    &seen,
+                    "sending empty replication request, because wanted 'after' computed bigger than wanted 'before'",
+                );
                 (0, 0, true)
             } else {
                 let start = now - after <= info.replication_step
@@ -1646,6 +1698,28 @@ impl Parser {
         self.host.count_replication_request();
     }
 
+    /// `replicate_log_request()` in the production build: a NOTICE once a second across every host and chart. The
+    /// request it names is always the empty one: C writes these records before the wanted range is set, or after it
+    /// was reset to the empty request.
+    fn log_replay_request(&self, chart: &Chart, seen: &ReplayView, issue: &str) {
+        static LIMIT: ErrorLimit = ErrorLimit::new(1, 0);
+        nd_log_limit!(
+            &LIMIT,
+            Source::Daemon,
+            Priority::Notice,
+            "STREAM SND REPLAY ERROR: 'host:{}/chart:{}' child sent: db from {} to {}{}, wall clock time {}, last \
+             request from {} to {}, issue: {issue} - sending replication request from 0 to 0, start streaming true",
+            self.host.hostname(),
+            chart.id(),
+            seen.first,
+            seen.last,
+            if seen.fixed { " (fixed)" } else { "" },
+            seen.wall,
+            seen.prev_after,
+            seen.prev_before
+        );
+    }
+
     /// `stream_parse_enable_streaming()` under the parser's frame.
     fn parse_enable_streaming(&self, v: Option<&[u8]>) -> bool {
         let _frame = self.log_frame();
@@ -1654,7 +1728,7 @@ impl Parser {
 
     /// `pluginsd_replay_begin()`.
     fn replay_begin(&mut self, w: &Words) -> Rc {
-        let slot = w.slot(CHART_SLOT_MAX);
+        let slot = slot_of(w, CHART_SLOT_MAX, &REPLICATION_SLOTS);
         let base = if slot.is_some() { 2 } else { 1 };
         let id = w.get(base);
         let start_s = w.get(base + 1);
@@ -1728,7 +1802,7 @@ impl Parser {
 
     /// `pluginsd_replay_set()`.
     fn replay_set(&mut self, w: &Words) -> Rc {
-        let slot = w.slot(DIMENSION_SLOT_MAX);
+        let slot = slot_of(w, DIMENSION_SLOT_MAX, &REPLICATION_SLOTS);
         let base = if slot.is_some() { 2 } else { 1 };
         let dimension = w.get(base);
         let value_s = w.get(base + 1);
@@ -1780,7 +1854,7 @@ impl Parser {
         if !self.replay.rset_enabled {
             return Ok(());
         }
-        let slot = w.slot(DIMENSION_SLOT_MAX);
+        let slot = slot_of(w, DIMENSION_SLOT_MAX, &REPLICATION_SLOTS);
         let base = if slot.is_some() { 2 } else { 1 };
         let dimension = w.get(base);
         let last_collected_ut_s = w.get(base + 1);

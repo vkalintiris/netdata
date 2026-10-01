@@ -74,6 +74,12 @@ impl Words {
         Some(if parsed > max_slot { 0 } else { parsed })
     }
 
+    /// The text after `SLOT:` when its value exceeds `max_slot`: what `pluginsd_parse_rrd_slot()` warns about.
+    pub fn slot_over_cap(&self, max_slot: u64) -> Option<&[u8]> {
+        let value = self.get(1)?.strip_prefix(b"SLOT:")?;
+        (str2ull_encoded(value) > max_slot).then_some(value)
+    }
+
     /// `line_splitter_reconstruct_line()`: every word in single quotes, joined by spaces (used in error logs).
     pub fn reconstruct(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -237,6 +243,8 @@ mod tests {
             Words::split(b"BEGIN SLOT:2000000 x\n").slot(CHART_SLOT_MAX),
             Some(0)
         );
+        assert_eq!(Words::split(b"BEGIN SLOT:2000000 x\n").slot_over_cap(CHART_SLOT_MAX), Some(&b"2000000"[..]));
+        assert_eq!(Words::split(b"BEGIN SLOT:0 x\n").slot_over_cap(CHART_SLOT_MAX), None);
         assert_eq!(Words::split(b"BEGIN slot:2 x\n").slot(CHART_SLOT_MAX), None);
         assert_eq!(Words::split(b"\n").keyword(), None);
     }
