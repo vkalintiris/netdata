@@ -33,15 +33,14 @@ var (
 	errnoFieldRe = regexp.MustCompile(` errno="[^"]*"`)
 	// the gate records' block (not the web thread's STREAM URL, which starts with a slash)
 	requestFieldRe = regexp.MustCompile(` request="[^/"][^"]*"`)
-	// the refused probes of a parent that is down, in whichever order the chain's hosts try it
+	// the hosts in the quoted forms: the proxy's two senders (its own and the child's) log the same forms
 	refusedHostRe = regexp.MustCompile(`'parity-chain-(child|proxy|gp)'`)
-	// a down or reviving parent's probes: which of the proxy's senders meets the refusal and which the 404 is timing
-	downProbeRe = regexp.MustCompile(`Failed to connect to '|failed to connect for stream info|failed to extract fields from JSON stream info`)
-	probeNodeRe = regexp.MustCompile(` node=parity-chain-(child|proxy) `)
-	// what a kill may add or not, by timing: a write racing the close, a revived parent still loading its hosts or
-	// closing a stream info probe it accepted while starting
+	// what a kill may add or not, by timing: a write racing the close; a retry's probe of a parent that is down
+	// (refused) or reviving (404, still loading its hosts, closing a probe it accepted while starting), present only
+	// when the retry falls in that window
 	killRaceRe = regexp.MustCompile(`socket reports error while writing|remote server is initializing|` +
-		`host is initializing, retry later|socket receive error while querying stream info`)
+		`host is initializing, retry later|socket receive error while querying stream info|Failed to connect to '|` +
+		`failed to connect for stream info|failed to extract fields from JSON stream info`)
 	// entryKillTimes masks a path entry's times and its start-time median, which a restart moves; the shutdown-time
 	// median stays compared (0 after a SIGKILL)
 	entryKillTimes = regexp.MustCompile(`("since":)\d+(,\s*"first_time_t":)\d+,\s*"start_time":\d+`)
@@ -91,9 +90,6 @@ func killRecords(lines []string) []string {
 		l = killSendErrRe.ReplaceAllString(l, "PEER GONE restarting connection")
 		l = killRcvCloseRe.ReplaceAllString(l, "${1}PEER GONE")
 		l = killReasonRe.ReplaceAllString(l, `reason=\"R\"`)
-		if downProbeRe.MatchString(l) {
-			l = probeNodeRe.ReplaceAllString(l, " node=H ")
-		}
 		out = append(out, refusedHostRe.ReplaceAllString(l, "'H'"))
 	}
 	return lossRecords(out)
