@@ -918,6 +918,170 @@ fn function_del_without_global_and_without_a_name() {
     }
 }
 
+/// RSET (C `pluginsd_replay_set()`): `nan` and the `E` flag (alone or after `A`) store an empty slot; `NAN`, which
+/// str2ndd reads only in lower case, and a missing value (the literal "NAN") store 0 with their flags; a disabled RSET
+/// (an RBEGIN without timestamps) is accepted without looking its dimension up, stores nothing, and records C's ERR.
+#[test]
+fn rset_stores_empty_slots_zeroes_and_nothing_when_disabled() {
+    let h = host();
+    let mut p = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    let chart = h.charts().find("test.c1", true).unwrap();
+    let (ok, records) = netdata_agent_log::capture(|| {
+        feed_all(&mut p, &["RBEGIN 'test.c1'", "RSET 'd1' 7 A", "RSET 'nope' 7 A"])
+    });
+    let disabled = "PLUGINSD REPLAY ERROR: 'host:child/chart:test.c1' got a RSET but it is disabled by RBEGIN errors";
+    assert_eq!(ok, [true, true, true]);
+    assert_eq!(
+        records.iter().map(|r| (r.source, r.priority, r.message.clone().unwrap())).collect::<Vec<_>>(),
+        vec![(Source::Collector, Priority::Err, disabled.to_string()); 2]
+    );
+    let d1 = chart.dim("d1").unwrap();
+    assert_eq!((d1.ring().unwrap().latest_time_s(), d1.collection().counter, d1.collection().last_collected_time), (0, 0, (0, 0)));
+    let window = |n: i64| format!("RBEGIN 'test.c1' {} {} {NOW}", NOW - 21 + n, NOW - 20 + n);
+    let lines = [
+        window(1),
+        "RSET 'd1' nan A".to_string(),
+        "RSET 'd2' 5 E".to_string(),
+        window(2),
+        "RSET 'd1' 5 R".to_string(),
+        "RSET 'd2' 5 AE".to_string(),
+        window(3),
+        "RSET 'd1' NAN A".to_string(),
+        "RSET 'd2'".to_string(),
+    ];
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
+    let points = |id: &str| {
+        let dim = chart.dim(id).unwrap();
+        let ring = dim.ring().unwrap();
+        let mut q = ring.query(NOW - 19, NOW - 17);
+        let points: Vec<_> = (0..3)
+            .map(|_| {
+                let p = q.next_metric();
+                (p.end_time_s, (!p.is_gap()).then_some((p.sum, p.anomaly_count, p.flags)))
+            })
+            .collect();
+        (ring.oldest_time_s(), ring.latest_time_s(), dim.collection().counter, dim.collection().last_collected_time, points)
+    };
+    use netdata_agent_storage::storage_number::{SN_FLAG_NOT_ANOMALOUS, SN_FLAG_RESET};
+    assert_eq!(
+        points("d1"),
+        (NOW - 20, NOW - 17, 3, (NOW - 17, 0), vec![
+            (NOW - 19, None),
+            (NOW - 18, Some((5.0, 1, SN_FLAG_RESET))),
+            (NOW - 17, Some((0.0, 0, SN_FLAG_NOT_ANOMALOUS))),
+        ])
+    );
+    assert_eq!(
+        points("d2"),
+        (NOW - 20, NOW - 17, 3, (NOW - 17, 0), vec![(NOW - 19, None), (NOW - 18, None), (NOW - 17, Some((0.0, 1, 0)))])
+    );
+}
+
+/// RDSTATE (C `pluginsd_replay_rrddim_collection_state()`): nothing without an enabled RSET, not even the dimension's
+/// lookup; the last collected time only moves forward; an integer dimension parses its value as an integer, a float
+/// one as a double only with FLOAT_BASELINE (else as an integer); the last calculated and stored values are restored,
+/// 0 when missing.
+#[test]
+fn rdstate_restores_the_collection_state_as_c() {
+    for (capabilities, f1) in [(0, 11.0), (caps::FLOAT_BASELINE, 11.5)] {
+        let h = host();
+        let mut p = parser_with(&h, capabilities);
+        let define = [DEFINE[0], DEFINE[1], "DIMENSION 'f1' '' absolute 1 1 'type=float'"];
+        assert!(feed_all(&mut p, &define).iter().all(|&ok| ok));
+        let chart = h.charts().find("test.c1", true).unwrap();
+        let state = |id: &str| {
+            let c = chart.dim(id).unwrap().collection();
+            (c.last_collected_time, c.last_collected_value, c.last_collected_value_float, c.last_calculated_value, c.last_stored_value)
+        };
+        let (s, e) = (NOW - 20, NOW - 19);
+        let ut = e * 1_000_000 + 250_000;
+        let lines = ["RBEGIN 'test.c1'".to_string(), format!("RDSTATE 'd1' {ut} 9 2.5 3.25"), format!("RDSTATE 'nope' {ut} 9 2.5 3.25")];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(feed_all(&mut p, &refs), [true, true, true]);
+        assert_eq!(state("d1"), ((0, 0), 0, 0.0, 0.0, 0.0));
+        let lines = [
+            format!("RBEGIN 'test.c1' {s} {e} {NOW}"),
+            format!("RDSTATE 'd1' {ut} 1e3 2.5 3.25"),
+            format!("RDSTATE 'f1' {ut} 11.5 -1.5 1e3"),
+            format!("RDSTATE 'd1' {} 1e3", (e - 5) * 1_000_000),
+        ];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
+        assert_eq!(
+            (state("d1"), state("f1")),
+            (((e, 250_000), 1, 0.0, 0.0, 0.0), ((e, 250_000), 0, f1, -1.5, 1000.0)),
+            "capabilities {capabilities}"
+        );
+    }
+}
+
+/// The stuck loop's count (C `pluginsd_replay_end()`): an RSET-enabled REND zeroes it before counting itself, a REND
+/// that requested nothing zeroes it; the third suspicious REND in a row records C's INFO (WARNING when the parent's
+/// last entry is 300 s old or more), finishes the chart and sends one final empty request.
+#[test]
+fn a_stuck_replication_counts_three_in_a_row() {
+    for (age, priority) in [(19, Priority::Info), (299, Priority::Info), (300, Priority::Warning)] {
+        let h = host();
+        let mut p = parser(&h);
+        feed_all(&mut p, &DEFINE);
+        feed_all(&mut p, &[&format!("CHART_DEFINITION_END {} {NOW} {NOW}", NOW - 1000)]);
+        let (s, e) = (NOW - age - 1, NOW - age);
+        let rend = format!("REND 1 {} {e} false {s} {e} 0x{:x}", NOW - 1000, NOW);
+        let data = vec![
+            "RBEGIN 'test.c1'".to_string(),
+            format!("RBEGIN 'test.c1' {s} {e} {NOW}"),
+            "RSET 'd1' 7 A".to_string(),
+            rend.clone(),
+        ];
+        let empty = vec!["RBEGIN 'test.c1'".to_string(), rend];
+        let nothing = vec!["RBEGIN 'test.c1'".to_string(), format!("REND 1 {} {e} false 0 0 0x{:x}", NOW - 1000, NOW)];
+        let chart = h.charts().find("test.c1", true).unwrap();
+        let mut counts = Vec::new();
+        for step in [&data, &empty, &data, &empty, &nothing, &empty, &empty] {
+            feed_ok(&mut p, step);
+            counts.push(chart.receiver().replication_empty_response_count);
+        }
+        assert_eq!((counts, h.replicating_charts()), (vec![1, 2, 1, 2, 0, 1, 2], 1));
+        p.take_output();
+        let requests = h.replication_requests();
+        let (ok, records) = netdata_agent_log::capture(|| feed_all(&mut p, &["RBEGIN 'test.c1'", empty[1].as_str()]));
+        assert_eq!(ok, [true, true]);
+        assert_eq!(
+            records.iter().map(|r| (r.priority, r.message.clone().unwrap())).collect::<Vec<_>>(),
+            [(priority, format!("PLUGINSD REPLAY: 'host:child/chart:test.c1' detected stuck replication loop. Parent last entry: {e}, Child last entry: {e}, Gap: 0 seconds, Empty responses: 3. Forcing replication to finish."))]
+        );
+        assert_eq!(String::from_utf8(p.take_output()).unwrap(), "REPLAY_CHART \"test.c1\" \"true\" 0 0\n");
+        let f = chart.meta().flags & (flags::RECEIVER_REPLICATION_FINISHED | flags::RECEIVER_REPLICATION_IN_PROGRESS);
+        assert_eq!(
+            (chart.receiver().replication_empty_response_count, h.replicating_charts(), f, h.replication_requests() - requests),
+            (0, 0, flags::RECEIVER_REPLICATION_FINISHED, 1)
+        );
+    }
+}
+
+/// `rrdhost_stream_path_self()`'s flags: health while the host runs health, ephemeral while its `_is_ephemeral` label
+/// says so (OVERWRITE), in `STREAM_PATH_FLAGS`' order; neither once both are off.
+#[test]
+fn the_parents_entry_flags_health_and_ephemeral() {
+    let (h, mut p) = stream_path_parser(CAPTURED_CAPS);
+    h.update_info(|i| i.health_enabled = true);
+    feed_all(&mut p, &["LABEL '_is_ephemeral' 1 'yes'", "OVERWRITE"]);
+    p.take_output();
+    let body = format!(r#"{{"version":1,"streaming_path":[{CAPTURED_CHILD_ENTRY}]}}"#);
+    feed_strings(&mut p, &stream_path_block(&body));
+    let reply = |flags: &str| {
+        let parent = captured_parent_entry(0).replace(r#""flags":[]"#, &format!(r#""flags":[{flags}]"#));
+        format!("JSON STREAM_PATH\n{{\"version\":1,\"streaming_path\":[{CAPTURED_CHILD_ENTRY},{parent}]}}\nJSON_PAYLOAD_END\n")
+    };
+    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(r#""health","ephemeral""#));
+    h.update_info(|i| i.health_enabled = false);
+    feed_all(&mut p, &["LABEL '_is_ephemeral' 1 'no'", "OVERWRITE"]);
+    p.retention_updated(0);
+    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(""));
+}
+
 #[test]
 fn errors_disconnect() {
     let cases: [&[&str]; 6] = [

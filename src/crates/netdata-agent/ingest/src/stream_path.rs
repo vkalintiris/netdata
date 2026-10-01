@@ -324,6 +324,30 @@ pub fn send_to_child(host: &Host, localhost: &Host) {
 mod tests {
     use super::*;
 
+    /// `STREAM_PATH_FLAGS`' names in its map order, written by `STREAM_PATH_FLAGS_2json()` and read back by
+    /// `STREAM_PATH_FLAGS_2id_one()`.
+    #[test]
+    fn every_flag_is_written_and_read_by_its_c_name() {
+        let p = PathEntry {
+            hostname: "h".into(),
+            host_id: [1; 16],
+            since: 1,
+            first_time_t: 1,
+            capabilities: caps::V1,
+            flags: FLAG_ACLK | FLAG_HEALTH | FLAG_ML | FLAG_EPHEMERAL | FLAG_VIRTUAL,
+            ..PathEntry::default()
+        };
+        let mut w = JsonWriter::new(JsonOptions::MINIFY);
+        w.member_add_array(Some(b"p"));
+        entry_to_json(&mut w, &p);
+        w.array_close();
+        w.finalize();
+        let json = String::from_utf8(w.as_bytes().to_vec()).unwrap();
+        let tail = r#","capabilities":["V1"],"flags":["aclk","health","ml","ephemeral","virtual"]}]}"#;
+        assert!(json.ends_with(tail), "{json}");
+        assert_eq!(item(&json[6..json.len() - 2]), Ok(p));
+    }
+
     /// One item through `parse_single_path()` with a fresh error buffer.
     fn item(json: &str) -> Result<PathEntry, String> {
         let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(json) else {

@@ -2330,6 +2330,27 @@ mod tests {
         assert_eq!(host.info(), kept);
     }
 
+    /// `stream_receiver_replication_reset()` zeroes the child's replication replies (`counter_in`), the requests sent
+    /// to it (`counter_out`) and the pending backfills, on attach and on detach.
+    #[test]
+    fn a_reset_zeroes_the_replication_traffic_counters() {
+        let host = Host::new("guid-z", false, info("z"));
+        let counters = |h: &Host| (h.replication_replies(), h.replication_requests(), h.backfill_pending());
+        let bump = |h: &Host| {
+            h.count_replication_reply();
+            (0..2).for_each(|_| h.count_replication_request());
+            (0..3).for_each(|_| h.backfill_requested());
+        };
+        let slot = Arc::new(ReceiverSlot::new(0, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        bump(&host);
+        assert_eq!(counters(&host), (1, 2, 3));
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
+        assert_eq!(counters(&host), (0, 0, 0), "attach");
+        bump(&host);
+        host.clear_receiver(&slot, 0);
+        assert_eq!(counters(&host), (0, 0, 0), "detach");
+    }
+
     /// `foreach_entry_in_connection_string()`: destinations split at commas and at C's white space, empty ones
     /// skipped, kept in order and duplicates kept; `:SSL` marks TLS; an empty destination makes no sender.
     #[test]

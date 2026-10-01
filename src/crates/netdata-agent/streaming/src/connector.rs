@@ -774,6 +774,59 @@ pub(crate) mod tests {
         assert!(slot.take_to_child().is_empty(), "not queued: no hook runs");
     }
 
+    /// `stream_parents_host_reset()` at the connector's add (NEVER), at its removal (the exit reason) and at a
+    /// receiver's end through the sender's `parents_reset()` (the receiver's reason): every parent postponed to one
+    /// draw in [7, 20) s (the default 15 s delay), session bans lifted, the permanent ban kept.
+    #[test]
+    fn the_connectors_add_and_removal_and_a_receivers_end_reset_the_parents() {
+        use netdata_agent_rrd::clock::now_realtime_ut;
+        let (_pool, c) = connector();
+        let host = Arc::new(Host::new(
+            "5a1e0000-0000-4000-8000-0000000000c6",
+            false,
+            info("127.0.0.1:1 127.0.0.1:2", "key"),
+        ));
+        let s = Sender::attach(&host, &c).expect("created");
+        let dirty = |s: &Sender| {
+            let mut parents = s.parents();
+            for d in &mut parents.list {
+                d.reason = Reason::SP_CONNECTION_REFUSED;
+                d.postpone_until_ut = 0;
+            }
+            parents.list[0].banned_for_this_session = true;
+            parents.list[1].banned_permanently = true;
+        };
+        let check = |s: &Sender, before: u64, reason: Reason| {
+            let after = now_realtime_ut();
+            let parents = s.parents();
+            let until = parents.list[0].postpone_until_ut;
+            assert!(until >= before + 7_000_000 && until < after + 20_000_000, "{reason:?}");
+            let states: Vec<_> = parents
+                .list
+                .iter()
+                .map(|d| (d.postpone_until_ut, d.banned_for_this_session, d.banned_permanently, d.reason))
+                .collect();
+            assert_eq!(states, [(until, false, false, reason), (until, false, true, reason)]);
+        };
+        dirty(&s);
+        let before = now_realtime_ut();
+        c.add(&s, &host);
+        check(&s, before, Reason::NEVER);
+        assert_eq!(c.queue().len(), 1);
+        dirty(&s);
+        s.signal_stop(Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, crate::sender::op::STOP_RECEIVER_LEFT);
+        let before = now_realtime_ut();
+        c.remove_host(&s, &host);
+        check(&s, before, Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE);
+        assert!(c.queue().is_empty());
+        dirty(&s);
+        let slot = Arc::new(ReceiverSlot::new(0, Default::default(), Default::default(), Box::new(|| {})));
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
+        let before = now_realtime_ut();
+        host.clear_receiver(&slot, Reason::DISCONNECT_SOCKET_WRITE_FAILED.0);
+        check(&s, before, Reason::DISCONNECT_SOCKET_WRITE_FAILED);
+    }
+
     /// `stream_path_parent_disconnected()` at a sender's removal (not at a socket disconnect): the path is cut after
     /// this agent's entry and sent down to the child when something was cut; a second removal sends nothing.
     #[test]

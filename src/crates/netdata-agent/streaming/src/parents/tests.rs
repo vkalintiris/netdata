@@ -338,6 +338,62 @@ fn socket_errors_postpone_and_block_as_c() {
     }
 }
 
+/// `stream_parent_connect_to_one_unsafe()` on success: the connected parent leaves its place and is appended
+/// (`DOUBLE_LINKED_LIST_REMOVE_ITEM_UNSAFE` + `_APPEND_ITEM_UNSAFE`), and becomes the current one; parents postponed
+/// before the probe are skipped with C's record, the last one's reason left on the host until the connection.
+#[test]
+fn a_connected_parent_moves_to_the_end_of_the_list() {
+    let (addr, _stub) = parent(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+    let names = [addr.as_str(), "postponed-1", "postponed-2", "postponed-3"];
+    let mut parents = Parents::new(names.iter().map(|n| (*n, false)));
+    let until = now_realtime_ut() + 3_600_500_000;
+    for d in &mut parents.list[1..] {
+        d.postpone_until_ut = until;
+        d.reason = Reason::SP_CONNECTION_REFUSED;
+    }
+    let (ok, records, reason, error) = pass(&mut parents);
+    assert_eq!((ok, reason, error), (true, Reason::SP_CONNECTED, SockError::None));
+    let order: Vec<&str> = parents.list.iter().map(|d| d.destination.as_str()).collect();
+    assert_eq!(order, ["postponed-1", "postponed-2", "postponed-3", addr.as_str()]);
+    assert_eq!(parents.current, Some(3));
+    let fd = records.last().unwrap().1.rsplit("fd ").next().unwrap().to_string();
+    let skipped = |n: &str| {
+        format!("STREAM PARENTS 'child': skipping useful parent '{n}': POSTPONED FOR 3600 SECS MORE: CONNECTION REFUSED")
+    };
+    assert_eq!(
+        messages(&records),
+        [
+            format!("STREAM PARENTS 'child': fetching stream info from '{addr}'..."),
+            format!("STREAM PARENTS 'child': stream info response from '{addr}' has invalid Content-Length"),
+            skipped("postponed-1"),
+            skipped("postponed-2"),
+            skipped("postponed-3"),
+            format!("STREAM PARENTS 'child': only 1 parent is available: '{addr}'"),
+            format!("STREAM PARENTS 'child': connecting to '{addr}' (default port: 19999, parent 1 of 1)..."),
+            format!("STREAM PARENTS 'child': connected to '{addr}' (default port: 19999, fd {fd}"),
+        ]
+    );
+}
+
+/// `stream_parents_host_reset()` touches neither the block every node shares nor the parent's erroneous flag: right
+/// after a reset a blocked parent is still counted potential without the postponed record.
+#[test]
+fn a_reset_keeps_the_erroneous_ban() {
+    let mut parents = Parents::new([("reset-blocked", false)].into_iter());
+    block_for_all_nodes("reset-blocked", 300);
+    parents.list[0].banned_temporarily_erroneous = true;
+    parents.list[0].reason = Reason::SP_CONNECTION_REFUSED;
+    parents.reset(Reason::SP_PREPARING, 15);
+    assert!(parents.list[0].banned_temporarily_erroneous && is_blocked("reset-blocked"));
+    let (ok, records, reason, _) = pass(&mut parents);
+    assert!(!ok);
+    assert_eq!(
+        messages(&records),
+        ["STREAM PARENTS 'child': no parents available (0 skipped but useful, 0 skipped not useful, 1 potential)"]
+    );
+    assert_eq!(reason, Reason::SP_PREPARING);
+}
+
 #[test]
 fn the_path_before_us_is_the_agent_itself_or_a_closer_hop() {
     let entry = |id: u8, hops| PathEntry { host_id: [id; 16], hops, ..PathEntry::default() };

@@ -693,6 +693,35 @@ mod tests {
         threads.join_within(Duration::ZERO);
     }
 
+    /// A request asked before its sender's buffer was last flushed (a reconnect since) is dropped at its pick: not
+    /// answered and not counted, left picked until the sender's reset flushes it; one asked since is answered.
+    #[test]
+    fn a_request_from_before_the_last_flush_is_dropped_at_its_pick() {
+        use crate::connector::tests::{connector, info};
+        let (_pool, c) = connector();
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c7", false, info("127.0.0.1:1", "k")));
+        let s = Sender::attach(&host, &c).expect("created");
+        let q = Queue::default();
+        let counted = |q: &Queue| [&q.executed, &q.replied, &q.not_found, &q.flushed].map(|n| n.load(Ordering::Relaxed));
+        let held = |s: &Sender| {
+            let r = s.replication();
+            (r.pending_requests.load(Ordering::Relaxed), r.charts_replicating.load(Ordering::Relaxed))
+        };
+        q.request_add(&s, "c".into(), 10, 20, false);
+        s.replication().last_flush_ut.store(7, Ordering::Relaxed);
+        assert!(!q.execute_next(&mut Vec::new()));
+        assert!(requests(&q).is_empty());
+        assert_eq!(counted(&q), [0, 0, 0, 0]);
+        assert_eq!(held(&s), (0, 1), "picked, still the sender's");
+        q.request_add(&s, "d".into(), 30, 40, false);
+        assert!(q.execute_next(&mut Vec::new()));
+        assert_eq!(counted(&q), [0, 0, 1, 0], "answered: no chart d");
+        assert_eq!(held(&s), (0, 1));
+        q.delete_pending(s.replication());
+        assert_eq!(counted(&q), [0, 0, 1, 1]);
+        assert!(!s.replication().busy());
+    }
+
     fn requests(q: &Queue) -> Vec<(i64, String)> {
         let state = q.lock();
         state.order.index.iter().map(|((after, _), (_, chart))| (*after, chart.clone())).collect()

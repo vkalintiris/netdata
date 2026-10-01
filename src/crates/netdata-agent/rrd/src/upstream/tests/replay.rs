@@ -283,3 +283,72 @@ fn a_streaming_answer_ending_in_a_gap_keeps_the_resync_horizon() {
     assert_eq!(host.sender_replicating_charts(), 0);
     assert_eq!(chart.resync_time_s(), T + 8, "the horizon is kept");
 }
+
+/// Only tier 0 is queried: a three-tier dbengine host (windows of 5 and 15 s) answers one step per second with each
+/// stored value, and its REND carries tier 0's retention.
+#[test]
+fn a_multi_tier_host_answers_from_tier_0() {
+    use crate::storage::Backfill;
+    use crate::testutil::{backfill_fixture, store};
+    // a multiple of 15, a week before the tests' wall clock
+    const B: i64 = 1_790_179_995;
+    let f = backfill_fixture(Backfill::New, DbMode::Dbengine);
+    for t in B..=B + 18 {
+        store(&f.dim, t, (t - B) as f64);
+    }
+    f.dim.set_exposed_upstream(1);
+    let mut out = Vec::new();
+    let a = answer(&f.host, &request("t.c", B + 2, B + 12, false), PLAIN | caps::REPLICATION, 1 << 20, &mut out, |_| true);
+    assert_eq!(a, Answered::Executed);
+    let mut want = vec!["RBEGIN 't.c'".to_string()];
+    for t in B + 3..=B + 12 {
+        want.push(format!("RBEGIN '' {} {t} W", t - 1));
+        want.push(format!("RSET \"d\" {} A", t - B));
+    }
+    want.push(format!("REND 1 {B} {} false {} {} W", B + 18, B + 2, B + 12));
+    assert_eq!(lines(&out), want);
+}
+
+/// Past the size bound means strictly past it: an answer exactly at the bound takes one more step.
+#[test]
+fn an_answer_is_cut_only_once_past_its_bound() {
+    let (host, _, chart) = replicating_chart(&[10, 11, 12, 13, 14, 15, 16, 17]);
+    // the chart's line and one step
+    let one_step = "RBEGIN 't.c'\n".len()
+        + format!("RBEGIN '' {} {} {}\n", T + 2, T + 3, now_realtime_s()).len()
+        + "RSET \"d\" 13 A\n".len();
+    assert_eq!(one_step, 70);
+    let (_, at) = answered(&host, &request("t.c", T + 2, T + 7, true), one_step, true);
+    let (_, below) = answered(&host, &request("t.c", T + 2, T + 7, true), one_step - 1, true);
+    let (first, last) = chart.retention_for_collected(now_realtime_s());
+    let step = |t: i64| vec![format!("RBEGIN '' {} {t} W", t - 1), format!("RSET \"d\" {} A", t - T + 10)];
+    let mut want_at = vec!["RBEGIN 't.c'".to_string()];
+    want_at.extend(step(T + 3));
+    want_at.extend(step(T + 4));
+    want_at.push(format!("REND 1 {first} {last} false {} {} W", T + 2, T + 4));
+    assert_eq!(at, want_at);
+    let mut want_below = vec!["RBEGIN 't.c'".to_string()];
+    want_below.extend(step(T + 3));
+    want_below.push(format!("REND 1 {first} {last} false {} {} W", T + 2, T + 3));
+    assert_eq!(below, want_below);
+    assert_eq!(claim(&chart), flags::SENDER_REPLICATION_IN_PROGRESS);
+}
+
+/// A streaming answer whose walk ends more than an interval before its window's end (nothing after the parent's
+/// last point) finishes the replication but keeps the resync horizon.
+#[test]
+fn a_streaming_answer_ending_with_a_gap_keeps_the_resync() {
+    let (host, _, chart) = replicating_chart(&[10, 11, 12, 13, 14, 15]);
+    let resync = chart.resync_time_s();
+    assert_ne!(resync, 0);
+    let (_, got) = answered(&host, &request("t.c", T + 5, T + 5, true), 1 << 20, true);
+    let (first, last) = chart.retention_for_collected(now_realtime_s());
+    assert_eq!(got.len(), 4, "{got:?}");
+    assert_eq!(got[0], "RBEGIN 't.c'");
+    assert!(got[1].starts_with("RDSTATE 'd' ") && got[2].starts_with("RSSTATE "), "{got:?}");
+    assert_eq!(got[3], format!("REND 1 {first} {last} true  {} {} W", T + 5, T + 5));
+    assert_eq!(claim(&chart), flags::SENDER_REPLICATION_FINISHED);
+    assert_eq!(host.sender_replicating_charts(), 0);
+    assert_eq!(host.pulse_state() & host_status::SENDER, host_status::SND_RUNNING);
+    assert_eq!(chart.resync_time_s(), resync);
+}

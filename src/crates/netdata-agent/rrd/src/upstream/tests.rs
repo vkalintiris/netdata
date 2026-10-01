@@ -49,6 +49,50 @@ fn definitions(commits: &[(Traffic, String)]) -> usize {
     commits.iter().filter(|(t, s)| *t == Traffic::Metadata && s.starts_with("CHART ")).count()
 }
 
+/// A definition sent again while the chart's replication runs (a new dimension) finds the claim taken: its count
+/// is given back at once, the host still replicating.
+#[test]
+fn a_redefinition_while_replicating_keeps_one_claim() {
+    let (host, recorder) = streaming("*", PLAIN | caps::REPLICATION);
+    ready(&host);
+    let chart = host.charts().create(&chart_spec(DbMode::Ram)).0;
+    let (d1, _) = chart.dim_add("d1", None, 1, 1, Algorithm::Absolute);
+    collect(&host, &chart, &[(&d1, 1)], T);
+    assert_eq!(host.sender_replicating_charts(), 1);
+    let (d2, _) = chart.dim_add("d2", None, 1, 1, Algorithm::Absolute);
+    recorder.take();
+    collect(&host, &chart, &[(&d1, 1), (&d2, 1)], T + 1);
+    let commits = recorder.take();
+    assert_eq!((commits.len(), definitions(&commits)), (1, 1), "the definition alone: {commits:?}");
+    assert!(commits[0].1.contains("DIMENSION \"d2\" ") && commits[0].1.contains("\nCHART_DEFINITION_END "));
+    assert_eq!(host.sender_replicating_charts(), 1);
+    assert_eq!(host.pulse_state() & host_status::SENDER, host_status::SND_REPLICATING);
+    assert_eq!(
+        chart.flags() & (flags::SENDER_REPLICATION_FINISHED | flags::SENDER_REPLICATION_IN_PROGRESS),
+        flags::SENDER_REPLICATION_IN_PROGRESS
+    );
+}
+
+/// A claim found taken is not undone by the thread that lost it, even when the sender stopped meanwhile: the claim
+/// and its count stay with the thread that made them.
+#[test]
+fn a_lost_claim_is_not_undone_when_the_sender_stopped() {
+    let (host, recorder) = streaming("*", PLAIN | caps::REPLICATION);
+    let chart = host.charts().create(&chart_spec(DbMode::Ram)).0;
+    // another thread's claim, made before this sender stopped
+    host.sender_replicating_charts_plus_one();
+    chart.flags_set_and_clear(flags::SENDER_REPLICATION_IN_PROGRESS, flags::SENDER_REPLICATION_FINISHED);
+    let pulse = host.pulse_state();
+    let mut out = Vec::new();
+    assert!(!send_definition(&host, recorder.as_ref(), &chart, &mut out));
+    assert_eq!(host.sender_replicating_charts(), 1);
+    assert_eq!(host.pulse_state(), pulse);
+    assert_eq!(
+        chart.flags() & (flags::SENDER_REPLICATION_FINISHED | flags::SENDER_REPLICATION_IN_PROGRESS),
+        flags::SENDER_REPLICATION_IN_PROGRESS
+    );
+}
+
 /// The gate: until the sender is ready the host is queued once while its collection is online and says so once;
 /// the first collection after it is ready says that, once.
 #[test]
