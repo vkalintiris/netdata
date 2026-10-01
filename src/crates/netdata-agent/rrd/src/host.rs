@@ -2229,6 +2229,59 @@ mod tests {
         assert_eq!(*loaded.lock().unwrap(), ["c"]);
     }
 
+    /// `stream_receiver_signal_to_stop_and_wait()`: the connection shut down once, a receiver its stream thread lets go
+    /// waited for quietly, one still attached after 2000 waits of 1 ms given up on with C's record.
+    #[test]
+    fn a_receiver_still_attached_after_two_seconds_is_given_up_on() {
+        let host = Host::new("guid-w", false, info("w"));
+        let slot = |shutdowns: &Arc<AtomicU64>| {
+            let shutdowns = Arc::clone(shutdowns);
+            Arc::new(ReceiverSlot::new(
+                1,
+                ("127.0.0.1".into(), "4321".into()),
+                ReceiverLink::default(),
+                Box::new(move || {
+                    shutdowns.fetch_add(1, Ordering::Relaxed);
+                }),
+            ))
+        };
+        let shutdowns = Arc::new(AtomicU64::new(0));
+        let stuck = slot(&shutdowns);
+        assert_eq!(host.set_receiver(Arc::clone(&stuck)), Attach::Attached);
+        let started = std::time::Instant::now();
+        let (stopped, records) = netdata_agent_log::capture(|| host.stop_receiver_and_wait(&stuck));
+        assert!(started.elapsed() >= std::time::Duration::from_secs(2));
+        assert_eq!(
+            (stopped, texts(&records)),
+            (
+                false,
+                vec![(
+                    Priority::Err,
+                    "STREAM RCV[x] 'w' [from [127.0.0.1]:4321]: streaming thread takes too long to stop, giving up..."
+                        .to_string()
+                )]
+            )
+        );
+        stuck.stop();
+        assert_eq!(shutdowns.load(Ordering::Relaxed), 1);
+
+        host.clear_receiver(&stuck, 0);
+        let released = slot(&shutdowns);
+        assert_eq!(host.set_receiver(Arc::clone(&released)), Attach::Attached);
+        let (stopped, records) = std::thread::scope(|s| {
+            s.spawn(|| {
+                while !released.stop_requested.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                host.clear_receiver(&released, 0);
+            });
+            netdata_agent_log::capture(|| host.stop_receiver_and_wait(&released))
+        });
+        assert_eq!((stopped, texts(&records)), (true, vec![]));
+        assert_eq!(shutdowns.load(Ordering::Relaxed), 2);
+    }
+
     /// `stream_receiver_replication_reset()` on attach and on detach, each on its own.
     #[test]
     fn receivers_reset_replication_flags() {

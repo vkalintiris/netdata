@@ -222,6 +222,28 @@ fn delays_fall_within_c_s_bounds() {
 }
 
 #[test]
+fn a_reset_postpones_every_parent_alike_and_lifts_only_the_session_bans() {
+    let mut parents = Parents::new([("a", false), ("b", false)].into_iter());
+    parents.list[0].banned_for_this_session = true;
+    parents.list[1].banned_permanently = true;
+    parents.list[1].reason = Reason::SP_CONNECTION_REFUSED;
+    // C's window is [max(5, d / 2), d + 5) seconds: 15 gives [7, 20), 2 gives [5, 7)
+    for (delay, low, high) in [(15, 7, 20), (2, 5, 7)] {
+        let before = now_realtime_ut();
+        parents.reset(Reason::NEVER, delay);
+        let after = now_realtime_ut();
+        let until = parents.list[0].postpone_until_ut;
+        assert!(until >= before + low * 1_000_000 && until < after + high * 1_000_000, "{delay}");
+        let states: Vec<_> = parents
+            .list
+            .iter()
+            .map(|d| (d.postpone_until_ut, d.banned_for_this_session, d.banned_permanently, d.reason))
+            .collect();
+        assert_eq!(states, [(until, false, false, Reason::NEVER), (until, false, true, Reason::NEVER)]);
+    }
+}
+
+#[test]
 fn the_path_before_us_is_the_agent_itself_or_a_closer_hop() {
     let entry = |id: u8, hops| PathEntry { host_id: [id; 16], hops, ..PathEntry::default() };
     let path = [entry(1, 0), entry(2, 1)];
