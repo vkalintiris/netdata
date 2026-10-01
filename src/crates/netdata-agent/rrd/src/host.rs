@@ -1205,6 +1205,12 @@ impl Host {
         self.install_upstream(upstream);
     }
 
+    /// Holds the maintenance's obsolete-all pass as running, so a test's attach meets it.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_obsolete_all_busy(&self, busy: bool) {
+        self.obsolete_all_busy.store(busy, Ordering::Release);
+    }
+
     /// `stream_sender_structures_init()`: a host whose settings stream it gets its sender, `create`d the first time
     /// and set up again with the settings of now after a free (where C allocates a new one). One caller is elected
     /// to do it (INITIALIZED, set before the setup and cleared at the end of the free, as C's flag); nothing without
@@ -3167,6 +3173,28 @@ mod tests {
         assert_eq!(host.set_receiver(slot()), Attach::CleanupBusy, "busy first");
         host.obsolete_all_busy.store(false, Ordering::Release);
         assert_eq!(host.set_receiver(slot()), Attach::AlreadyServed);
+    }
+
+    /// `rrdhost_set_receiver()`'s `rrdcontext_host_child_connected()`: the charts' and dimensions' collected caches
+    /// clear, so the child's next collection reports the instance collected again.
+    #[test]
+    fn an_attach_clears_the_contexts_collected_caches() {
+        use crate::chart::Algorithm;
+        const T: i64 = 1_700_000_000;
+        let host = Host::new("guid-cc", false, info("cc"));
+        let chart = collected_chart(&host, DbMode::Ram);
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        // a collection without values sets the chart's cache: a later store collects the metric, not the instance
+        contexts::collected_rrdset(&chart);
+        store(&dim, T, 1.0);
+        contexts::collected_rrdset(&chart);
+        let ri = host.contexts().get("t.c").unwrap().instance("t.c").unwrap();
+        assert!(!ri.flags.is_collected());
+        let slot = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        assert_eq!(host.set_receiver(slot), Attach::Attached);
+        store(&dim, T + 1, 1.0);
+        contexts::collected_rrdset(&chart);
+        assert!(ri.flags.is_collected());
     }
 
     /// `rrdhost_free___while_having_rrd_wrlock()` after C's `host_check == host`: a host the index no longer holds (a

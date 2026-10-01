@@ -2049,6 +2049,53 @@ mod tests {
         );
     }
 
+    /// An attach while the maintenance marks the host's charts obsolete is refused as busy
+    /// (`stream_receiver_send_first_response()` on RRDHOST_SET_RECEIVER_CLEANUP_BUSY): the status records at INFO,
+    /// C's busy text, the host left without a receiver.
+    #[test]
+    fn an_attach_during_the_obsolete_all_walk_is_answered_busy() {
+        use std::io::Read;
+        let (r, _pool) = receivers();
+        let guid = "5a1e0000-0000-4000-8000-0000000000e2";
+        let host = r.hosts.add_archived(guid, crate::connector::tests::info("", ""), |_| {});
+        host.clear_pending_context_load();
+        host.set_obsolete_all_busy(true);
+        let (ours, mut theirs) = mio::net::UnixStream::pair().unwrap();
+        let (admitted, records) =
+            netdata_agent_log::capture(|| r.admit(pending(guid), Link::Plain(Conn::Unix(ours))));
+        assert!(!admitted);
+        let mut reply = String::new();
+        theirs.read_to_string(&mut reply).unwrap();
+        assert_eq!(reply, "The server is too busy now to accept this request. Try later.");
+        assert!(host.receiver().is_none());
+        // the host's update records (the reconnect's switches, the registry, no longer archived) come first
+        let records: Vec<_> = records
+            .into_iter()
+            .map(|r| (r.source, r.priority, r.message.unwrap_or_default()))
+            .filter(|(_, _, m)| m.contains("rejecting"))
+            .collect();
+        assert_eq!(
+            records,
+            [
+                (
+                    Source::Access,
+                    Priority::Info,
+                    format!(
+                        "api_key:'[REDACTED]' machine_guid:'{guid}' node:'child' msg:'rejecting streaming connection; \
+                         internal cleanup is in progress for this node, please retry shortly' reason:'BUSY TRY LATER'"
+                    )
+                ),
+                (
+                    Source::Daemon,
+                    Priority::Info,
+                    "STREAM RCV 'child' [from [127.0.0.1]:1]: rejecting streaming connection; internal cleanup is in \
+                     progress for this node, please retry shortly  (BUSY TRY LATER)"
+                        .to_string()
+                ),
+            ]
+        );
+    }
+
     /// A message decompressing past the chunk (zstd's 16385 bytes) ends the connection at its read: C's size record,
     /// "no bytes to decompress." and the disconnect with DECOMPRESSION FAILED.
     #[test]
@@ -2065,7 +2112,6 @@ mod tests {
         let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
         assert!(host.receiver().is_none());
         let texts: Vec<_> = texts(records).into_iter().filter(|t| t.to_uppercase().contains("DECOMPRESS")).collect();
-        println!("RECORDS {texts:?}");
         assert_eq!(texts[0], "STREAM_DECOMPRESS: decompressed data is 16385 bytes, which is bigger than the max msg size 16384");
         assert_eq!(texts[1], "STREAM RCV[x] 'child' [from []:]: no bytes to decompress.");
         assert!(texts[2].contains("receiver disconnected: reason=\"DISCONNECTED DECOMPRESSION FAILED\""), "{texts:?}");
