@@ -57,8 +57,11 @@ pub fn block() -> Vec<CString> {
 /// A variable as children see it.
 pub fn get(key: &str) -> Option<OsString> {
     let prefix = [key.as_bytes(), b"="].concat();
-    block()
-        .into_iter()
-        .find(|e| e.as_bytes().starts_with(&prefix))
-        .map(|e| OsString::from_vec(e.as_bytes()[prefix.len()..].to_vec()))
+    let value = |e: &CString| {
+        e.as_bytes().strip_prefix(prefix.as_slice()).map(|v| OsString::from_vec(v.to_vec()))
+    };
+    match FROZEN.get() {
+        Some(store) => lock(store).iter().find_map(value),
+        None => std::env::var_os(key),
+    }
 }

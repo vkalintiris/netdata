@@ -541,7 +541,11 @@ fn records(run: &Run) {
     let child = exec(&["/bin/sleep", "120"]).unwrap();
     let rt_pid = child.pid();
     assert!(Command::new("kill").args(["-34", &rt_pid.to_string()]).status().unwrap().success());
-    assert_eq!(child.wait(), 34);
+    // bounded: an unanswered request must fail the case, not hang it
+    match child.timedwait(5000, NEVER) {
+        Waited::Exited(raw) => assert_eq!(raw, 34),
+        _ => panic!("the real-time signal's death was never answered"),
+    }
     let (none, client) = capture(|| exec(&["/nonexistent/x"]).map(|c| c.pid()));
     assert_eq!(none, None);
     assert_eq!(
