@@ -17,11 +17,6 @@ fn clock_usec(clock: ClockId) -> u64 {
     })
 }
 
-/// `now_monotonic_usec()`.
-pub(crate) fn now_monotonic_usec() -> u64 {
-    clock_usec(ClockId::CLOCK_MONOTONIC)
-}
-
 /// `struct nd_log_limit`, plus the source's pending message, which C guards with the same spinlock.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Limits {

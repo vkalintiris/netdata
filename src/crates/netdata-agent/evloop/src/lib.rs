@@ -21,6 +21,7 @@ use std::time::Instant;
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use mio::{Events, Poll, Waker};
 
+pub mod completion;
 pub mod conn;
 pub mod work;
 

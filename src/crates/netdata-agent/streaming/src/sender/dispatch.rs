@@ -29,7 +29,8 @@ use crate::caps;
 use crate::connector::Cmd;
 use crate::random::os_random32;
 use crate::reason::Reason;
-use crate::receiver::{now_monotonic_ut, replication_progressed};
+use crate::receiver::replication_progressed;
+use netdata_agent_sys::now_monotonic_usec;
 use crate::thread::StreamWorker;
 
 /// The tokens of senders' sockets: above every receiver's.
@@ -208,7 +209,7 @@ impl StreamWorker {
             session,
             rbuf: vec![0; READ_BUFFER],
             read_len: 0,
-            last_traffic_ut: now_monotonic_ut(),
+            last_traffic_ut: now_monotonic_usec(),
             remote_ip,
             capabilities,
             peer_fd,
@@ -266,7 +267,7 @@ impl StreamWorker {
             let Some(d) = self.senders.get_mut(index).and_then(Option::as_mut) else {
                 return false;
             };
-            let now_ut = now_monotonic_ut();
+            let now_ut = now_monotonic_usec();
             let mut out = d.sender.out();
             let chunk = out.buffer.next();
             if chunk.is_empty() {
@@ -340,7 +341,7 @@ impl StreamWorker {
                     Ok(0) => (Status::Closed, 0),
                     Ok(n) => {
                         d.read_len += n;
-                        d.last_traffic_ut = now_monotonic_ut();
+                        d.last_traffic_ut = now_monotonic_usec();
                         d.host.storage().pulse().network.stream_received(n);
                         (Status::Continue, 0)
                     }
@@ -493,7 +494,7 @@ impl StreamWorker {
     /// `stream_sender_check_all_nodes_from_poll()`: the idle timeout, and a send for anything outstanding (C's poll
     /// mask repair; with edge-triggered events it covers a missed edge).
     pub(crate) fn check_senders(&mut self, cx: &mut Context<'_>) {
-        let now_ut = now_monotonic_ut();
+        let now_ut = now_monotonic_usec();
         for index in 0..self.senders.len() {
             let Some(d) = self.senders[index].as_mut() else {
                 continue;
@@ -707,7 +708,9 @@ fn opcode_ignored(thread: usize, bits: u32) {
 }
 
 impl Sender {
-    /// The dequeue's bookkeeping: the state's time (C keeps no count of the sender's connections).
+    /// The dequeue's bookkeeping: the state's time. C also counts the connections here
+    /// (`host->stream.snd.status.connections`, `stream-sender.c:364`), read only by the host status's stream part
+    /// (`rrdhost-status.c:247,284`, the streaming Function's out-connections), which is not ported yet.
     fn status_connected(&self) {
         self.lock().last_state_since_s = now_realtime_s();
     }

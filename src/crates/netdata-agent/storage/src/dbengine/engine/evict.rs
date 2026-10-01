@@ -4,9 +4,10 @@
 //! only in sanitizer builds): each ends, silently, once its engine is gone.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Weak};
+use std::time::Duration;
 
+use netdata_agent_evloop::completion::Completion;
 use netdata_agent_evloop::thread_create_failed;
 use netdata_agent_log::{netdata_log_error, thread_created};
 
@@ -16,31 +17,6 @@ use super::query::Dbengine;
 /// `completion_wait_for_a_job_with_timeout()`'s wait.
 const WAIT: Duration = Duration::from_secs(1);
 
-/// A cache's signal to its evictor (`cache->evictor.completion`): counted, so one sent during a pass is not lost.
-#[derive(Debug, Default)]
-pub(crate) struct Wakeup {
-    jobs: Mutex<u64>,
-    cv: Condvar,
-}
-
-impl Wakeup {
-    /// `completion_mark_complete_a_job()`.
-    pub fn signal(&self) {
-        *self.jobs.lock().unwrap_or_else(PoisonError::into_inner) += 1;
-        self.cv.notify_one();
-    }
-
-    /// Waits until a job after `seen` or `timeout`; the jobs so far.
-    pub fn wait(&self, seen: u64, timeout: Duration) -> u64 {
-        let jobs = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
-        let (jobs, _) = self
-            .cv
-            .wait_timeout_while(jobs, timeout, |jobs| *jobs <= seen)
-            .unwrap_or_else(PoisonError::into_inner);
-        *jobs
-    }
-}
-
 /// Which cache a thread evicts.
 #[derive(Debug, Clone, Copy)]
 enum Evicts {
@@ -48,13 +24,8 @@ enum Evicts {
     Extents,
 }
 
-/// When memory was last given back (`last_malloc_release_ut`), in microseconds since `EPOCH`; 0 for never.
+/// When memory was last given back (`last_malloc_release_ut`), monotonic microseconds; 0 for never.
 static LAST_RELEASE_UT: AtomicU64 = AtomicU64::new(0);
-
-fn epoch() -> Instant {
-    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    *EPOCH.get_or_init(Instant::now)
-}
 
 /// Whether a release at `now_ut` is due: none in the second after the last one.
 fn release_due(last_ut: u64, now_ut: u64) -> bool {
@@ -63,7 +34,7 @@ fn release_due(last_ut: u64, now_ut: u64) -> bool {
 
 /// `mallocz_release_as_much_memory_to_the_system()`, at most once a second.
 fn release_memory() {
-    let now_ut = epoch().elapsed().as_micros() as u64 + 1;
+    let now_ut = netdata_agent_sys::now_monotonic_usec();
     if release_due(LAST_RELEASE_UT.load(Ordering::Relaxed), now_ut) {
         LAST_RELEASE_UT.store(now_ut, Ordering::Relaxed);
         netdata_agent_sys::malloc_trim();
@@ -72,7 +43,6 @@ fn release_memory() {
 
 /// Starts the engine's evictor threads; one that cannot start is logged and the engine runs without it.
 pub(crate) fn spawn(engine: &Arc<Dbengine>, stack_size: usize) {
-    epoch();
     for (name, evicts) in [("MAIN_PGC", Evicts::Main), ("EXTENT_PGC", Evicts::Extents)] {
         let weak = Arc::downgrade(engine);
         let wakeup = Arc::clone(match evicts {
@@ -92,7 +62,7 @@ pub(crate) fn spawn(engine: &Arc<Dbengine>, stack_size: usize) {
     }
 }
 
-fn run(engine: Weak<Dbengine>, wakeup: &Wakeup, evicts: Evicts) {
+fn run(engine: Weak<Dbengine>, wakeup: &Completion, evicts: Evicts) {
     let mut seen = 0;
     loop {
         seen = wakeup.wait(seen, WAIT);
@@ -113,20 +83,6 @@ fn run(engine: Weak<Dbengine>, wakeup: &Wakeup, evicts: Evicts) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A signal sent before the wait, as during a pass, makes the next wait return at once.
-    #[test]
-    fn a_signal_is_counted() {
-        let w = Wakeup::default();
-        w.signal();
-        let started = Instant::now();
-        assert_eq!(w.wait(0, Duration::from_secs(5)), 1);
-        assert!(started.elapsed() < Duration::from_secs(1));
-        // nothing new: the wait times out
-        let started = Instant::now();
-        assert_eq!(w.wait(1, Duration::from_millis(50)), 1);
-        assert!(started.elapsed() >= Duration::from_millis(50));
-    }
 
     #[test]
     fn memory_goes_back_at_most_once_a_second() {

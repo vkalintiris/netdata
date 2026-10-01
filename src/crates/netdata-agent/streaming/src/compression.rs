@@ -4,9 +4,9 @@
 use crate::caps;
 
 /// `COMPRESSION_MAX_CHUNK`.
-pub const MAX_CHUNK: usize = 0x4000;
+pub const MAX_CHUNK: usize = netdata_agent_pluginsd_proto::COMPRESSION_MAX_CHUNK;
 /// `COMPRESSION_MAX_MSG_SIZE`: the largest piece of a commit, and the largest compressed message a receiver accepts.
-pub const MAX_MSG_SIZE: usize = MAX_CHUNK - 128 - 1;
+pub const MAX_MSG_SIZE: usize = netdata_agent_pluginsd_proto::COMPRESSION_MAX_MSG_SIZE;
 /// `STREAM_COMPRESSION_SIGNATURE_SIZE`.
 pub const SIGNATURE_SIZE: usize = 4;
 /// `STREAM_COMPRESSION_SIGNATURE_MAX_PAYLOAD_SIZE`: 14 bits of length.

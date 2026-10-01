@@ -335,7 +335,7 @@ impl Sender {
 
     /// `stream_circular_buffer_flush_unsafe()` of the sender's buffer, its time mirrored for the replication queue.
     pub(crate) fn flush_buffer(&self, out: &mut Out) {
-        out.buffer.flush(self.connector.settings.buffer_max_size, crate::receiver::now_monotonic_ut());
+        out.buffer.flush(self.connector.settings.buffer_max_size, netdata_agent_sys::now_monotonic_usec());
         self.replication.last_flush_ut.store(out.buffer.last_flush_ut(), Ordering::Relaxed);
     }
 

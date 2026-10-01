@@ -36,8 +36,6 @@ const DEFAULT_PORT: i64 = 19999;
 const DEFAULT_BIND_TO: &str = "*";
 /// `MAX_LISTEN_FDS`.
 const MAX_LISTEN_FDS: usize = 50;
-/// `LARGE_SOCK_SIZE` on Linux.
-const LARGE_SOCK_SIZE: usize = 32 * 1024 * 1024;
 /// `sizeof(sockaddr_un.sun_path) - 1`: what `strncpyz()` keeps of a unix path.
 const UNIX_PATH_MAX: usize = 107;
 
@@ -134,16 +132,6 @@ fn unix_address(path: &[u8]) -> std::io::Result<SockAddr> {
     SockAddr::unix(OsStr::from_bytes(&bytes))
 }
 
-/// `sock_enlarge_rcv_buf()`: 32 MiB when smaller (the kernel caps it at twice `rmem_max`); errors are ignored.
-fn enlarge_rcv_buf(socket: &socket2::Socket) {
-    if socket
-        .recv_buffer_size()
-        .is_ok_and(|size| size < LARGE_SOCK_SIZE)
-    {
-        let _ = socket.set_recv_buffer_size(LARGE_SOCK_SIZE);
-    }
-}
-
 /// `listen_sockets_setup()`'s state: the listeners, the `failed` count, and the errno C's next record would carry.
 #[derive(Default)]
 struct Setup {
@@ -212,7 +200,7 @@ impl Setup {
                 format_args!("{family} socket {at}{comma} failed to set non-blocking mode."),
             );
         }
-        enlarge_rcv_buf(&socket);
+        netdata_agent_streaming::sock::enlarge_rcv_buf(&socket2::SockRef::from(&socket));
         if v6 && let Err(e) = socket.set_only_v6(true) {
             self.log(
                 Priority::Err,
@@ -276,7 +264,7 @@ impl Setup {
                 format_args!("UNIX socket on path '{shown}' failed to set non-blocking mode."),
             );
         }
-        enlarge_rcv_buf(&socket);
+        netdata_agent_streaming::sock::enlarge_rcv_buf(&socket2::SockRef::from(&socket));
         let fs_path = OsStr::from_bytes(path);
         match std::fs::remove_file(fs_path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.errno = errno_of(&e),

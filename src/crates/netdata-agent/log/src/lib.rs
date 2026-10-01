@@ -522,7 +522,7 @@ fn write_record(
     }
     if limit
         && output::lock(&G.limits[source as usize])
-            .reached(limit::now_monotonic_usec(), program_name())
+            .reached(netdata_agent_sys::now_monotonic_usec(), program_name())
     {
         return;
     }

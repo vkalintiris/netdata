@@ -1,19 +1,30 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The socket options both directions of a stream set, as libnetdata's `socket.c`.
+//! The socket buffer sizes of libnetdata's `socket.c`: both directions of a stream set them, the web listeners the
+//! receive side.
 
-/// `LARGE_SOCK_SIZE`.
-pub(crate) const LARGE_SOCK_SIZE: usize = 32 * 1024 * 1024;
+/// `LARGE_SOCK_SIZE` on Linux.
+pub const LARGE_SOCK_SIZE: usize = 32 * 1024 * 1024;
 
-/// `sock_enlarge_rcv_buf()` and `sock_enlarge_snd_buf()`: each buffer raised to 32 MiB when it is smaller, errors
-/// ignored as their callers do.
-pub(crate) fn enlarge_buffers(socket: &socket2::SockRef<'_>) {
+/// `sock_enlarge_rcv_buf()`: 32 MiB when smaller (the kernel caps it at twice `rmem_max`); errors are ignored, as
+/// its callers do.
+pub fn enlarge_rcv_buf(socket: &socket2::SockRef<'_>) {
     if socket.recv_buffer_size().is_ok_and(|size| size < LARGE_SOCK_SIZE) {
         let _ = socket.set_recv_buffer_size(LARGE_SOCK_SIZE);
     }
+}
+
+/// `sock_enlarge_snd_buf()`, as [`enlarge_rcv_buf`].
+pub fn enlarge_snd_buf(socket: &socket2::SockRef<'_>) {
     if socket.send_buffer_size().is_ok_and(|size| size < LARGE_SOCK_SIZE) {
         let _ = socket.set_send_buffer_size(LARGE_SOCK_SIZE);
     }
+}
+
+/// Both, as a stream's sides set them.
+pub(crate) fn enlarge_buffers(socket: &socket2::SockRef<'_>) {
+    enlarge_rcv_buf(socket);
+    enlarge_snd_buf(socket);
 }
 
 #[cfg(test)]

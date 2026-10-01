@@ -82,7 +82,7 @@ fn give_back(b: Vec<u8>) {
 /// The DATA commits a child's receiver holds before the next one sends them (`sender_thread_commit()`'s `reused`).
 pub const BATCH_HELD: u32 = 100;
 /// The pending bytes that send a receiver's DATA at once (`COMPRESSION_MAX_MSG_SIZE * 2 / 3`).
-pub const BATCH_BYTES: usize = 16_255 * 2 / 3;
+pub const BATCH_BYTES: usize = netdata_agent_pluginsd_proto::COMPRESSION_MAX_MSG_SIZE * 2 / 3;
 
 /// The host buffer a child's receiver forwards through (`host->stream.snd.commit`), owned by its parser and passed
 /// down (D106.1): no lock, no thread identity. DATA commits are held until the 101st or until the pending bytes reach

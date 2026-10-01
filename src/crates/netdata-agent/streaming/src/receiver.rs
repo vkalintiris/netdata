@@ -8,7 +8,7 @@
 use std::io;
 use std::net::Shutdown;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::conn::Conn;
@@ -21,6 +21,7 @@ use netdata_agent_rrd::chart::flags;
 use netdata_agent_rrd::collection;
 use netdata_agent_rrd::host::{Attach, Host, HostInfo, Hosts, ReceiverLink, ReceiverSlot, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
+use netdata_agent_sys::now_monotonic_usec;
 use netdata_agent_text::duration::duration_to_string;
 use netdata_agent_text::size::size_to_string;
 
@@ -124,13 +125,6 @@ fn reconcile_keepalive(
 
 /// A receiver older than this without traffic is stale and may be replaced (`stream_receiver_accept_connection()`).
 const STALE_RECEIVER_S: u64 = 30;
-
-/// `now_monotonic_usec()`.
-pub fn now_monotonic_ut() -> u64 {
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    // Starts at 1 so that no real reading is the "never" value 0.
-    EPOCH.get_or_init(Instant::now).elapsed().as_micros() as u64 + 1
-}
 
 /// The complete lines of `bytes` through the parser; false at the first line it refuses.
 fn parse(reader: &mut LineReader, parser: &mut Parser, bytes: &[u8]) -> bool {
@@ -428,7 +422,7 @@ impl Receivers {
                 age_s = if last == 0 {
                     0
                 } else {
-                    now_monotonic_ut().saturating_sub(last) / 1_000_000
+                    now_monotonic_usec().saturating_sub(last) / 1_000_000
                 };
                 if age_s < STALE_RECEIVER_S {
                     working = true;
@@ -640,7 +634,7 @@ impl Receivers {
         // stream_receiver_signal_to_stop_and_wait()'s shutdown() of the socket, from another thread
         let shutdown_handle = link.socket().and_then(|c| socket2::SockRef::from(c).try_clone().ok());
         let slot = Arc::new(ReceiverSlot::new(
-            now_monotonic_ut(),
+            now_monotonic_usec(),
             (peer.ip.clone(), peer.port.clone()),
             ReceiverLink {
                 hops: request.hops,
@@ -914,7 +908,7 @@ impl StreamWorker {
         // the no-traffic timeout counts from the admission, not from the accept the waiting list held back
         a.slot
             .last_traffic_ut
-            .store(now_monotonic_ut(), std::sync::atomic::Ordering::Relaxed);
+            .store(now_monotonic_usec(), std::sync::atomic::Ordering::Relaxed);
         // sock_enlarge_rcv_buf() and sock_enlarge_snd_buf() at the move to running (the receive buffer came from the
         // listener already, D126.3)
         crate::sock::enlarge_buffers(&socket2::SockRef::from(
@@ -1127,7 +1121,7 @@ impl StreamWorker {
                 // C's idle time since the last read or write, 0 before any
                 idle_s: match attached.slot.last_traffic_ut.load(Ordering::Relaxed) {
                     0 => 0,
-                    last => (now_monotonic_ut().saturating_sub(last) / 1_000_000) as i64,
+                    last => (now_monotonic_usec().saturating_sub(last) / 1_000_000) as i64,
                 },
                 replication_percent: attached.host.replication_percent(),
             };
@@ -1358,7 +1352,7 @@ impl StreamWorker {
                         .attached
                         .slot
                         .last_traffic_ut
-                        .store(now_monotonic_ut(), Ordering::Relaxed);
+                        .store(now_monotonic_usec(), Ordering::Relaxed);
                     continue;
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return true,
@@ -1483,7 +1477,7 @@ impl StreamWorker {
             // only a receiver leaving (the exit, a stop) leaves fuller than a partial message
             let size = child.decompressor.as_ref().map_or(LINE_MAX, |d| buf.len().saturating_sub(d.held()));
             // C's now_ut, the dispatch's time, before the read
-            let read_ut = now_monotonic_ut();
+            let read_ut = now_monotonic_usec();
             let read = {
                 let _parser = child.attached.stream.is_tls().then(|| child.parser.log_frame());
                 child.attached.stream.read(&mut buf[..size])
@@ -2180,7 +2174,7 @@ mod tests {
         let (mut s, pool, hosts, connector) = stepper();
         let (attached, _host, slot, mut theirs) = child(0xd8, crate::caps::V2, &pool, &hosts, &connector);
         s.with(|w, cx| w.attach(cx, attached));
-        slot.last_traffic_ut.store(now_monotonic_ut(), Ordering::Relaxed);
+        slot.last_traffic_ut.store(now_monotonic_usec(), Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(1100));
         theirs.write_all(b"BOGUS\n").unwrap();
         let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
@@ -2303,7 +2297,7 @@ mod tests {
         let (attached, _, slot, _theirs) = child(0xd6, crate::caps::V2, &pool, &hosts, &connector);
         s.with(|w, cx| w.attach(cx, attached));
         slot.last_traffic_ut.store(1, Ordering::Relaxed);
-        let before = now_monotonic_ut();
+        let before = now_monotonic_usec();
         s.with(|w, cx| {
             w.children[0].as_mut().unwrap().pending_out.extend_from_slice(b"REPLAY_CHART x\n");
             assert!(w.flush(cx, 0, false));
@@ -2338,7 +2332,7 @@ mod tests {
         let (attached_c, closed, _, closed_peer) = child(0xda, crate::caps::V2, &pool, &hosts, &connector);
         s.with(|w, cx| w.attach(cx, attached_c));
         drop(closed_peer);
-        let (_, records) = netdata_agent_log::capture(|| s.with(|w, cx| w.check_all(cx, now_monotonic_ut())));
+        let (_, records) = netdata_agent_log::capture(|| s.with(|w, cx| w.check_all(cx, now_monotonic_usec())));
         assert!(closed.receiver().is_none());
         assert!(texts(records).iter().any(|t| t.contains("socket closed by remote - closing connection")));
     }
@@ -2411,7 +2405,7 @@ mod tests {
     fn queued_receivers_are_admitted_in_order_one_per_tick() {
         use netdata_agent_rrd::pulse::host_status::{RCV_RUNNING, RECEIVER};
         // the clock's epoch is its first reading
-        let start = now_monotonic_ut();
+        let start = now_monotonic_usec();
         let (pool, connector) = crate::connector::tests::connector();
         let hosts = Arc::new(Hosts::new(Host::new(
             "5a1e0000-0000-4000-8000-0000000000aa",
@@ -2681,7 +2675,7 @@ mod tests {
         s.with(|w, cx| w.attach(cx, with_stream(attached, Conn::Tcp(server))));
         socket2::SockRef::from(&client).set_linger(Some(Duration::ZERO)).unwrap();
         drop(client);
-        let (_, records) = netdata_agent_log::capture(|| s.with(|w, cx| w.check_all(cx, now_monotonic_ut())));
+        let (_, records) = netdata_agent_log::capture(|| s.with(|w, cx| w.check_all(cx, now_monotonic_usec())));
         assert!(host.receiver().is_none());
         let texts = texts(records);
         assert_eq!(texts.len(), 2, "{texts:?}");
@@ -2694,7 +2688,7 @@ mod tests {
         let (mut s, pool, hosts, connector) = stepper();
         let (attached, host, _, _unix) = child(0xe2, crate::caps::V2, &pool, &hosts, &connector);
         s.with(|w, cx| w.attach(cx, with_stream(attached, Conn::Tcp(unconnected_tcp()))));
-        let (_, records) = netdata_agent_log::capture(|| s.with(|w, cx| w.check_all(cx, now_monotonic_ut())));
+        let (_, records) = netdata_agent_log::capture(|| s.with(|w, cx| w.check_all(cx, now_monotonic_usec())));
         assert!(host.receiver().is_none());
         let texts = texts(records);
         assert_eq!(texts.len(), 2, "{texts:?}");

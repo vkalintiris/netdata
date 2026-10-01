@@ -9,7 +9,7 @@ use netdata_agent_text::duration::duration_parse_seconds;
 use netdata_agent_text::parse::{str2u, uuid_parse_flexi};
 use netdata_agent_text::print::print_uuid_lower_compact;
 
-use crate::limit::{DEFAULT_THROTTLE_PERIOD, Limits, now_monotonic_usec};
+use crate::limit::{DEFAULT_THROTTLE_PERIOD, Limits};
 use crate::model::{Format, Method, Priority, Source, facility_name, facility_parse};
 use crate::output::{
     AfterOpen, G, OpenErrors, SourceState, journal_direct_init, lock, open_resolved, read, stdin_init,
@@ -229,7 +229,7 @@ pub fn set_flood_protection(logs: u64, period: i64) {
 
 /// `nd_log_limits_reset()`: a new period for every source, with its configured logs per period.
 pub fn limits_reset() {
-    let now = now_monotonic_usec();
+    let now = netdata_agent_sys::now_monotonic_usec();
     for limits in &G.limits {
         lock(limits).reset(now);
     }

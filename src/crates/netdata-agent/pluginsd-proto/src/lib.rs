@@ -16,8 +16,13 @@ use netdata_agent_text::parse::str2ull_encoded;
 
 pub use keyword::{Keyword, Repertoire};
 
+/// `COMPRESSION_MAX_CHUNK`.
+pub const COMPRESSION_MAX_CHUNK: usize = 0x4000;
+/// `COMPRESSION_MAX_MSG_SIZE`: the largest piece of a stream commit, and the largest compressed message a receiver
+/// accepts.
+pub const COMPRESSION_MAX_MSG_SIZE: usize = COMPRESSION_MAX_CHUNK - 128 - 1;
 /// `PLUGINSD_LINE_MAX` (`COMPRESSION_MAX_MSG_SIZE - 768`): the size of each read from a plugin or a child.
-pub const LINE_MAX: usize = 15_487;
+pub const LINE_MAX: usize = COMPRESSION_MAX_MSG_SIZE - 768;
 /// `PLUGINSD_MAX_DEFERRED_SIZE`: the largest deferred body (`FUNCTION_RESULT_BEGIN`, `JSON`).
 pub const MAX_DEFERRED_SIZE: usize = 100 * 1024 * 1024;
 /// `PLUGINSD_CHART_SLOT_MAX`.

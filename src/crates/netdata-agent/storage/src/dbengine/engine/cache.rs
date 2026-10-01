@@ -11,7 +11,7 @@ use std::sync::atomic::{
 };
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 
-use super::evict::Wakeup;
+use netdata_agent_evloop::completion::Completion;
 use crate::dbengine::RRD_STORAGE_TIERS;
 use crate::dbengine::format::page::{Cursor, DiskPage, PageBuilder};
 use crate::storage_point::StoragePoint;
@@ -459,7 +459,7 @@ impl Published {
 
     /// An adder's computation (`cache_usage_per1000(cache, NULL)`): none while another runs; the evictor signalled
     /// under pressure.
-    fn note(&self, wakeup: &Wakeup, compute: impl FnOnce() -> Usage) {
+    fn note(&self, wakeup: &Completion, compute: impl FnOnce() -> Usage) {
         let _computing = match self.lock.try_lock() {
             Ok(guard) => guard,
             Err(TryLockError::Poisoned(p)) => p.into_inner(),
@@ -468,7 +468,7 @@ impl Published {
         let u = compute();
         self.store(&u);
         if u.pressure != Pressure::None {
-            wakeup.signal();
+            wakeup.mark();
         }
     }
 }
@@ -665,7 +665,7 @@ pub struct MainCache {
     /// `flushing_critical()`'s verdict, kept as the sizes change so that collectors and queries read it unlocked.
     critical: AtomicBool,
     usage: Published,
-    wakeup: Arc<Wakeup>,
+    wakeup: Arc<Completion>,
     /// Tests of other parts that want no clean pages kept: unheld ones leave whenever the usage is computed.
     #[cfg(test)]
     keep_no_clean: AtomicBool,
@@ -688,7 +688,7 @@ impl MainCache {
     }
 
     /// Its evictor's signal.
-    pub(crate) fn wakeup(&self) -> &Arc<Wakeup> {
+    pub(crate) fn wakeup(&self) -> &Arc<Completion> {
         &self.wakeup
     }
 
@@ -1147,7 +1147,7 @@ pub struct ExtentCache {
     inner: Mutex<ExtentInner>,
     limits: Limits,
     usage: Published,
-    wakeup: Arc<Wakeup>,
+    wakeup: Arc<Completion>,
 }
 
 impl ExtentCache {
@@ -1166,7 +1166,7 @@ impl ExtentCache {
     }
 
     /// Its evictor's signal.
-    pub(crate) fn wakeup(&self) -> &Arc<Wakeup> {
+    pub(crate) fn wakeup(&self) -> &Arc<Completion> {
         &self.wakeup
     }
 

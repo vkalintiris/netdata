@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use netdata_agent_evloop::PoolHandle;
@@ -145,28 +145,6 @@ fn key_value(wb: &mut Vec<u8>, key: &str, value: &str) {
     netdata_agent_text::url::url_encode(wb, value.as_bytes());
 }
 
-/// `completion`: jobs counted under a lock, waited for with a timeout.
-#[derive(Debug, Default)]
-struct Completion {
-    jobs: Mutex<u64>,
-    cv: Condvar,
-}
-
-impl Completion {
-    /// `completion_mark_complete_a_job()`.
-    fn mark(&self) {
-        *self.jobs.lock().unwrap_or_else(PoisonError::into_inner) += 1;
-        self.cv.notify_all();
-    }
-
-    /// `completion_wait_for_a_job_with_timeout()`: returns once a job completed after `seen`, or at the timeout.
-    fn wait(&self, seen: u64, timeout: Duration) -> u64 {
-        let jobs = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
-        let (jobs, _) = self.cv.wait_timeout_while(jobs, timeout, |jobs| *jobs == seen).unwrap_or_else(PoisonError::into_inner);
-        *jobs
-    }
-}
-
 /// What the sender needs of the daemon: its claim and Cloud state, and the Cloud URL a parent may hand down.
 pub struct Env {
     /// `is_agent_claimed()`.
@@ -203,7 +181,7 @@ pub struct Connector {
     /// `sc->queue.senders`, in the order hosts were queued.
     queue: Mutex<BTreeMap<u64, (Arc<Sender>, Cmd)>>,
     idx: AtomicU64,
-    completion: Completion,
+    completion: netdata_agent_evloop::completion::Completion,
     /// `nd_thread_signal_cancel()` of the thread.
     cancel: AtomicBool,
     /// `service_signal_exit(SERVICE_STREAMING_CONNECTOR)`.
@@ -244,7 +222,7 @@ impl Connector {
             stack_size,
             queue: Mutex::default(),
             idx: AtomicU64::new(0),
-            completion: Completion::default(),
+            completion: Default::default(),
             cancel: AtomicBool::new(false),
             exit: AtomicBool::new(false),
             started: Mutex::new(false),

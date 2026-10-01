@@ -14,7 +14,7 @@ workspace = true
 
 [dependencies]
 libc = { workspace = true }
-nix = { workspace = true, features = ["process", "fs", "signal", "poll", "resource"] }
+nix = { workspace = true, features = ["process", "fs", "signal", "poll", "resource", "time"] }
 rusqlite = { workspace = true }
 openssl = { workspace = true }
 openssl-sys = { workspace = true }

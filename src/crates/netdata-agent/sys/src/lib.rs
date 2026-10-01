@@ -198,6 +198,12 @@ pub fn disk_space(path: &std::path::Path) -> DiskSpace {
     }
 }
 
+/// `now_monotonic_usec()`: `CLOCK_MONOTONIC` in microseconds (never 0 on a running system).
+pub fn now_monotonic_usec() -> u64 {
+    use nix::time::{ClockId, clock_gettime};
+    clock_gettime(ClockId::CLOCK_MONOTONIC).map_or(0, |ts| ts.tv_sec() as u64 * 1_000_000 + ts.tv_nsec() as u64 / 1_000)
+}
+
 /// `_exit(code)`: the process ends now, without atexit handlers or buffer flushes.
 pub fn exit_now(code: i32) -> ! {
     // SAFETY: `_exit()` takes an integer and never returns.

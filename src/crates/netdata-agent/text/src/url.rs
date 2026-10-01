@@ -3,7 +3,7 @@
 /// `url_encode()`: ASCII letters, digits and `-_.~` stay, a space becomes `+`, every other byte `%` and two lowercase
 /// hex digits (C's "C" locale, so `isalnum` is ASCII only).
 pub fn url_encode(dst: &mut Vec<u8>, text: &[u8]) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
+    use crate::print::HEX_DIGITS_LOWER as HEX;
     for &b in text {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
             dst.push(b);

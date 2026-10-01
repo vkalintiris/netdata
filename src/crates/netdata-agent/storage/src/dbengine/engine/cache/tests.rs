@@ -29,7 +29,7 @@ impl MainCache {
 }
 
 /// The signals a cache's evictor got so far.
-fn signals(w: &Wakeup) -> u64 {
+fn signals(w: &Completion) -> u64 {
     w.wait(u64::MAX, Duration::ZERO)
 }
 
