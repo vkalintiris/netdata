@@ -132,21 +132,25 @@ pub struct Counters {
     pub replication_percent: f64,
 }
 
-/// `stream_receiver_remove_internal()`'s record: daemon, error, under the host's name, the peer, and the "streaming
-/// from child" message id.
-pub fn disconnected(
-    child: &Arc<[(Field, Value)]>,
-    peer: &Peer,
-    host: &str,
-    iface: Option<&str>,
-    reason: Reason,
-    c: &Counters,
-) {
-    let _child = push_shared(Arc::clone(child));
-    let _frame = push(vec![
+/// `stream_receiver_remove()`'s log stack: the child's fields, then the host's name and the "streaming from child"
+/// message id. The removal's record and everything the removal logs after it (the parser's cleanup) are under it.
+pub struct Removal {
+    // dropped first: the frames pop in the reverse of their pushes
+    _frame: FrameGuard,
+    _child: FrameGuard,
+}
+
+pub fn removal(child: &Arc<[(Field, Value)]>, host: &str) -> Removal {
+    let child = push_shared(Arc::clone(child));
+    let frame = push(vec![
         (Field::NidlNode, Value::Str(host.to_string())),
         (Field::MessageId, Value::Uuid(msgid::STREAMING_FROM_CHILD)),
     ]);
+    Removal { _frame: frame, _child: child }
+}
+
+/// `stream_receiver_remove_internal()`'s record: daemon, error, under [`removal`]'s fields.
+pub fn disconnected(peer: &Peer, iface: Option<&str>, reason: Reason, c: &Counters) {
     nd_log!(
         Source::Daemon,
         Priority::Err,
@@ -215,23 +219,9 @@ mod tests {
         };
         let long = "i".repeat(70);
         let ((), records) = netdata_agent_log::capture(|| {
-            disconnected(
-                &child,
-                &peer(),
-                "host",
-                Some("lo"),
-                Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE,
-                &counters,
-            );
-            let anonymous = Peer::default();
-            disconnected(
-                &child,
-                &anonymous,
-                "host",
-                Some(&long),
-                Reason::DISCONNECT_SOCKET_ERROR,
-                &counters,
-            );
+            let _removal = removal(&child, "host");
+            disconnected(&peer(), Some("lo"), Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, &counters);
+            disconnected(&Peer::default(), Some(&long), Reason::DISCONNECT_SOCKET_ERROR, &counters);
         });
         let texts: Vec<_> = records
             .iter()

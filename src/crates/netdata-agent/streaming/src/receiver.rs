@@ -1123,17 +1123,18 @@ impl StreamWorker {
     /// `stream_receiver_remove_internal()`: the disconnect record, then the host lets go of the receiver. The
     /// parser's fields are the caller's: C has them only while reading (`stream_receiver_receive_data()`).
     fn disconnect(&mut self, cx: &mut Context<'_>, index: usize, reason: Reason) {
-        let Some(mut child) = self.children[index].take() else {
+        let Some(child) = self.children[index].take() else {
             return;
         };
+        let Child { mut attached, parser, frame, bytes_in, bytes_out, .. } = child;
         {
-            let attached = &mut child.attached;
+            let attached = &mut attached;
             let _ = cx.registry().deregister(&mut attached.stream);
             let counters = Counters {
                 thread: attached.thread,
-                msgs: child.parser.data_collections_count,
-                bytes_in: child.bytes_in,
-                bytes_out: child.bytes_out,
+                msgs: parser.data_collections_count,
+                bytes_in,
+                bytes_out,
                 connected_s: (now_s() - attached.accepted_s).max(0),
                 // C's idle time since the last read or write, 0 before any
                 idle_s: match attached.slot.last_traffic_ut.load(Ordering::Relaxed) {
@@ -1146,20 +1147,17 @@ impl StreamWorker {
             let iface = labels
                 .get(b"_net_default_iface")
                 .map(|v| String::from_utf8_lossy(v).into_owned());
-            records::disconnected(
-                &child.frame,
-                &attached.peer,
-                &attached.host.hostname(),
-                iface.as_deref(),
-                reason,
-                &counters,
-            );
+            let _removal = records::removal(&frame, &attached.host.hostname());
+            records::disconnected(&attached.peer, iface.as_deref(), reason, &counters);
             attached.leave_host(reason);
             self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
+            // pluginsd_process_cleanup() at the end of rrdhost_clear_receiver(): its THREAD CLEANUP record is the
+            // removal's
+            drop(parser);
         }
         // stream_receiver_free(): the socket closes after the records, and a TLS close leaves what its shutdown set
-        let tls = child.attached.stream.is_tls();
-        drop(child);
+        let tls = attached.stream.is_tls();
+        drop(attached);
         self.exit_errno = if tls { nix::errno::Errno::last_raw() } else { 0 };
     }
 
@@ -1548,7 +1546,12 @@ impl StreamWorker {
                             let stop = || stop_requested.load(Ordering::Acquire);
                             while !netdata_agent_sys::exit::initiated() && !stop() {
                                 out.clear();
-                                match decompressor.next_message(&mut out) {
+                                // C decompresses under the parser's fields
+                                let next = {
+                                    let _parser = child.parser.log_frame();
+                                    decompressor.next_message(&mut out)
+                                };
+                                match next {
                                     Ok(false) => break,
                                     Ok(true) => {
                                         if !parse(&mut child.reader, &mut child.parser, &out) {
