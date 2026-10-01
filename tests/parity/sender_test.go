@@ -328,6 +328,14 @@ var senderVariants = []senderVariant{
 				t.Errorf("reload-labels: exit %d: %s", r.Exit, r.Stderr)
 			}
 		}},
+	// the claim goes up again after the command, as C's claim_reload_and_wait_online() sends it (D126.2)
+	{name: "reload-claiming-state", refused: stream.CapReplication,
+		during: func(t *testing.T, d *daemon.Daemon, _ *stream.Session) {
+			time.Sleep(6 * time.Second)
+			if r := runCLI(t, d, "reload-claiming-state"); r.Exit != 0 {
+				t.Errorf("reload-claiming-state: exit %d: %s", r.Exit, r.Stderr)
+			}
+		}},
 	// localhost's first retention time rises after the sender is ready, so its path goes up again (D120.4): an
 	// alloc child keeping 60 points, and a grandchild's chart freed 10 s after it goes obsolete, which arms the full
 	// retention pass 120 s later

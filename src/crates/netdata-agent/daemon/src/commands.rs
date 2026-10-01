@@ -336,6 +336,8 @@ fn run(idx: usize, args: &[u8]) -> (Status, Option<Vec<u8>>) {
                 if let Some(id) = meta_store::host_id(localhost) {
                     ctx.metaqueue.store_claim_id(meta, id);
                 }
+                // claim_reload_and_wait_online(): the claim, unchanged or not, goes upstream again
+                netdata_agent_rrd::upstream::send_claimed_id(localhost);
                 netdata_agent_log::limits_reset();
             }
             (
