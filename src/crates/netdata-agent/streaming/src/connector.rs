@@ -689,7 +689,7 @@ struct Attempt {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::Instant;
 
     use netdata_agent_evloop::Pool;
@@ -699,7 +699,7 @@ mod tests {
     use super::*;
     use crate::conf::Send;
 
-    fn info(destination: &str, key: &str) -> HostInfo {
+    pub(crate) fn info(destination: &str, key: &str) -> HostInfo {
         HostInfo {
             hostname: "child".into(),
             registry_hostname: "child".into(),
@@ -723,7 +723,7 @@ mod tests {
     }
 
     /// A connector with one stream thread, its own thread not started.
-    fn connector() -> (Pool<StreamMsg>, Arc<Connector>) {
+    pub(crate) fn connector() -> (Pool<StreamMsg>, Arc<Connector>) {
         let pins = Arc::new(Mutex::new(Pins::new(1)));
         let pool = Pool::spawn(1, 256 * 1024, |i| format!("TEST[{i}]"), |_| {
             crate::thread::StreamWorker::new(Arc::clone(&pins), 1)

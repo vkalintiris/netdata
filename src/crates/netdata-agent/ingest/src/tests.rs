@@ -590,6 +590,52 @@ fn an_invalid_rbegin_names_the_wall_clock_that_judged_it() {
     }
 }
 
+/// `stream_thread_received_metadata()` and `_replication()`: every scoped CHART_DEFINITION_END counts, and a REND
+/// only when it starts streaming; one asking for more, the stuck loop's forced finish and a malformed one do not.
+#[test]
+fn the_waiting_list_counts_ended_definitions_and_finished_replications() {
+    let counted = |p: &mut Parser, lines: &[String]| {
+        let before = crate::throttle();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        feed_all(p, &refs);
+        let after = crate::throttle();
+        (after.0 - before.0, after.1 - before.1)
+    };
+    let end = || vec![format!("CHART_DEFINITION_END {} {NOW} {NOW}", NOW - 100)];
+    let (s, e) = (NOW - 20, NOW - 19);
+    let rend = |streaming: &str| {
+        vec![
+            "RBEGIN 'test.c1'".to_string(),
+            format!("REND 1 {} {e} {streaming} {s} {e} 0x{:x}", NOW - 100, NOW),
+        ]
+    };
+    let h = host();
+    let mut p = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    assert_eq!(counted(&mut p, &end()), (1, 0));
+    let data = [
+        "RBEGIN 'test.c1'".to_string(),
+        format!("RBEGIN 'test.c1' {s} {e} {NOW}"),
+        "RSET 'd1' 7 A".to_string(),
+        format!("RSSTATE {0} {0}", e * 1_000_000),
+        rend("false")[1].clone(),
+    ];
+    assert_eq!(counted(&mut p, &data), (0, 0));
+    assert_eq!(counted(&mut p, &rend("false")), (0, 0));
+    assert_eq!(counted(&mut p, &rend("false")), (0, 0));
+    assert_eq!(h.replicating_charts(), 0, "the stuck loop finished it");
+    // REND left no chart in scope: a definition comes again first
+    assert_eq!(counted(&mut p, &end()), (0, 0));
+    assert_eq!(counted(&mut p, &[DEFINE[0].to_string(), end()[0].clone()]), (1, 0));
+    assert_eq!(counted(&mut p, &rend("true")), (0, 1));
+    // a CHART_DEFINITION_END out of scope and a malformed REND
+    let h = host();
+    let mut p = parser(&h);
+    assert_eq!(counted(&mut p, &end()), (0, 0));
+    feed_all(&mut p, &DEFINE);
+    assert_eq!(counted(&mut p, &["RBEGIN 'test.c1'".to_string(), "REND 1".to_string()]), (0, 0));
+}
+
 #[test]
 fn errors_disconnect() {
     let cases: [&[&str]; 6] = [

@@ -48,6 +48,12 @@ impl Drop for UserDataQuery {
     }
 }
 
+/// `stream_control_children_should_be_accepted()`: no backfill. Replication is not counted: it gains from merging the
+/// children's extents, and counting it would lock out the last children while all the others replicate.
+pub fn children_should_be_accepted() -> bool {
+    backfill_runners() == 0
+}
+
 /// `stream_control_health_should_be_running()`: no backfill, and at most one user query.
 pub fn health_should_be_running() -> bool {
     backfill_runners() == 0 && USER_DATA_QUERY_RUNNERS.load(Ordering::Acquire) <= 1
@@ -65,4 +71,18 @@ pub fn throttle_wait() -> Duration {
         .map_or(0, |d| u64::from(d.subsec_nanos()))
         % 10_000;
     Duration::from_micros(10_000 + jitter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A running backfill holds the waiting list's children back (the counter is shared with every test of the
+    /// crate, so only the refusal is asserted).
+    #[test]
+    fn a_running_backfill_holds_children_back() {
+        let running = BackfillRunning::start();
+        assert!(!children_should_be_accepted());
+        drop(running);
+    }
 }

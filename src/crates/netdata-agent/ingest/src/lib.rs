@@ -21,6 +21,22 @@ thread_local! {
     /// The line being parsed, for the log records written while it is (C's parser `request` callback reads the
     /// splitter's words). Empty between lines and for deferred payload lines.
     static LINE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// `throttle` (`stream-waiting-list.c`): the chart definitions ended and the replications finished on this thread.
+    static THROTTLE: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// The chart definitions ended and the replications finished on this thread, which a stream thread's waiting list
+/// compares between its dequeues.
+pub fn throttle() -> (usize, usize) {
+    THROTTLE.with(std::cell::Cell::get)
+}
+
+/// `stream_thread_received_metadata()` (`metadata`) or `stream_thread_received_replication()`.
+fn throttle_count(metadata: bool) {
+    THROTTLE.with(|t| {
+        let (m, r) = t.get();
+        t.set(if metadata { (m.wrapping_add(1), r) } else { (m, r.wrapping_add(1)) });
+    });
 }
 
 /// A record under the parser's frame.
@@ -1543,6 +1559,7 @@ impl Parser {
                 self.replay_backfilled(&request);
             }
         }
+        throttle_count(true);
         Ok(())
     }
 
@@ -2022,6 +2039,7 @@ impl Parser {
             }
             self.clear_scope("REND");
             self.host.set_replication_percent(100.0);
+            throttle_count(false);
             return Ok(());
         }
         let (_, local_last) = chart.retention_for_collected(self.now_s());

@@ -920,6 +920,10 @@ impl StreamWorker {
             );
         }
         let a = &mut attached;
+        // the no-traffic timeout counts from the admission, not from the accept the waiting list held back
+        a.slot
+            .last_traffic_ut
+            .store(now_monotonic_ut(), std::sync::atomic::Ordering::Relaxed);
         // sock_enlarge_rcv_buf() and sock_enlarge_snd_buf() at the move to running (the receive buffer came from the
         // listener already, D126.3)
         crate::sock::enlarge_buffers(&socket2::SockRef::from(
@@ -966,7 +970,7 @@ impl StreamWorker {
                     RCV_RUNNING
                 });
         }
-        // Bytes may have arrived before the registration.
+        // what the move to running sends, under the child's frame
         let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
         let _frame = frame.as_ref().map(records::child_event);
         // the end of the move to running: lines owed before it are dropped as C's (no buffer yet, D119.2), then the
@@ -1711,6 +1715,84 @@ mod tests {
         let mut initialized = false;
         reconcile_keepalive(server.as_fd(), &h, &peer, &fixed, 0, &mut initialized);
         assert_eq!(getsockopt(&server, sockopt::TcpKeepIdle).unwrap(), 45);
+    }
+
+    /// A child taken over by `admit()` and queued for stream thread 0, its peer end kept open.
+    fn queued(
+        n: u8,
+        pool: &netdata_agent_evloop::Pool<StreamMsg>,
+        hosts: &Arc<Hosts>,
+        connector: &Arc<Connector>,
+    ) -> (Arc<Host>, Arc<ReceiverSlot>, mio::net::UnixStream) {
+        let host = Arc::new(Host::new(
+            &format!("5a1e0000-0000-4000-8000-0000000000{n:02x}"),
+            false,
+            crate::connector::tests::info("", ""),
+        ));
+        let slot = Arc::new(ReceiverSlot::new(
+            1,
+            ("127.0.0.1".into(), "1".into()),
+            ReceiverLink::default(),
+            Box::new(|| {}),
+        ));
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), netdata_agent_rrd::host::Attach::Attached);
+        let (ours, theirs) = mio::net::UnixStream::pair().unwrap();
+        let attached = Attached {
+            host: Arc::clone(&host),
+            hosts: Arc::clone(hosts),
+            slot: Arc::clone(&slot),
+            stream: Link::Plain(Conn::Unix(ours)),
+            thread: 0,
+            parser: ingest::Config {
+                capabilities: crate::caps::V2,
+                update_every: 1,
+                page_size: 4096,
+                now: || (1_700_000_000, 0),
+                gap_when_lost_iterations_above: 3,
+            },
+            peer: Peer::default(),
+            accepted_s: 0,
+            keepalive: keepalive(),
+            handshake_update_every: 1,
+            keepalive_initialized: false,
+            pool: pool.handle(),
+            replication_wait: false,
+            connector: Arc::clone(connector),
+        };
+        pool.handle().send(0, StreamMsg::Attach(Box::new(attached))).unwrap();
+        (host, slot, theirs)
+    }
+
+    /// The waiting list (D127.4): a stream thread admits its queued receivers in order, one per tick at most, each
+    /// admission starting its no-traffic clock; the exit admits every one still queued, then removes them.
+    #[test]
+    fn queued_receivers_are_admitted_in_order_one_per_tick() {
+        use netdata_agent_rrd::pulse::host_status::{RCV_RUNNING, RECEIVER};
+        // the clock's epoch is its first reading
+        let start = now_monotonic_ut();
+        let (pool, connector) = crate::connector::tests::connector();
+        let hosts = Arc::new(Hosts::new(Host::new(
+            "5a1e0000-0000-4000-8000-0000000000aa",
+            true,
+            crate::connector::tests::info("", ""),
+        )));
+        let first = queued(0xc1, &pool, &hosts, &connector);
+        let second = queued(0xc2, &pool, &hosts, &connector);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while [&first.0, &second.0].iter().any(|h| h.pulse_state() & RECEIVER != RCV_RUNNING) {
+            assert!(Instant::now() < deadline, "not admitted");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let at = |slot: &Arc<ReceiverSlot>| slot.last_traffic_ut.load(std::sync::atomic::Ordering::Relaxed);
+        let (one, two) = (at(&first.1), at(&second.1));
+        assert!(one > start && two >= one + 100_000, "admitted at {one} and {two}, queued after {start}");
+        // queued at the exit: admitted without the checks, then removed
+        let third = queued(0xc3, &pool, &hosts, &connector);
+        let fourth = queued(0xc4, &pool, &hosts, &connector);
+        pool.stop().unwrap();
+        for (host, slot, _) in [&first, &second, &third, &fourth] {
+            assert!(host.receiver().is_none() && at(slot) > start, "{}", host.machine_guid());
+        }
     }
 
     #[test]

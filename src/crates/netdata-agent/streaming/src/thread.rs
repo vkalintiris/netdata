@@ -9,13 +9,15 @@ use std::time::{Duration, Instant};
 use netdata_agent_evloop::{Context, Event, TimerId, Token, Worker};
 use netdata_agent_ingest as ingest;
 use netdata_agent_rrd::host::ReceiverSlot;
+use netdata_agent_rrd::stream_control;
 
 use crate::pins::Pins;
 use crate::receiver::{Attached, Child, REPLICATION_STALL};
 use crate::sender::dispatch::{Dispatched, SENDER_TOKENS};
 use crate::sender::{Connected, Sender, Session};
+use crate::waiting_list::WaitingList;
 
-/// The stream threads' tick: stop requests, queued senders and opcodes are looked at this often.
+/// The stream threads' tick: queued receivers and senders, stop requests and opcodes are looked at this often.
 pub(crate) const TICK: Duration = Duration::from_millis(100);
 
 thread_local! {
@@ -59,8 +61,8 @@ pub struct StreamWorker {
     pub(crate) senders: Vec<Option<Dispatched>>,
     /// Senders queued by the connector, started at the next tick (`sth->queue.senders`, D103.6).
     pub(crate) queued_senders: Vec<Connected>,
-    /// Receivers still queued when the loop ended itself: dequeued after the senders, as C's exit path does.
-    exit_receivers: Vec<Attached>,
+    /// Receivers queued for this thread (`sth->queue.receivers`), admitted one per tick at most.
+    waiting: WaitingList<Attached>,
     pub(crate) pins: Arc<Mutex<Pins>>,
     tick: Option<TimerId>,
     /// `nd_profile.update_every`: how often every connection is probed and checked for idleness.
@@ -78,7 +80,7 @@ impl StreamWorker {
             children: Vec::new(),
             senders: Vec::new(),
             queued_senders: Vec::new(),
-            exit_receivers: Vec::new(),
+            waiting: WaitingList::default(),
             pins,
             tick: None,
             check_every: Duration::from_secs(u64::try_from(update_every).unwrap_or(1).max(1)),
@@ -124,7 +126,7 @@ impl Worker for StreamWorker {
 
     fn message(&mut self, cx: &mut Context<'_>, msg: StreamMsg) {
         match msg {
-            StreamMsg::Attach(attached) => self.attach(cx, *attached),
+            StreamMsg::Attach(attached) => self.waiting.push(*attached),
             StreamMsg::Replay(receiver, request) => self.replay(cx, &receiver, &request),
             StreamMsg::AttachSender(connected) => self.queued_senders.push(*connected),
             StreamMsg::SenderOps(sender, session) => {
@@ -140,15 +142,21 @@ impl Worker for StreamWorker {
     /// (and then disconnected by the cleanup), the opcodes and replication requests are dropped with the thread.
     fn exit_message(&mut self, _cx: &mut Context<'_>, msg: StreamMsg) {
         match msg {
-            StreamMsg::Attach(attached) => self.exit_receivers.push(*attached),
+            StreamMsg::Attach(attached) => self.waiting.push(*attached),
             StreamMsg::AttachSender(connected) => self.queued_senders.push(*connected),
             StreamMsg::Replay(..) | StreamMsg::SenderOps(..) => {}
         }
     }
 
-    /// `stream_thread_worker()`'s periodic work: every tick, then every update every the checks, and every ten
-    /// minutes the replication check.
+    /// `stream_thread_worker()`'s periodic work: every tick the waiting list and the queued senders, then every
+    /// update every the checks, and every ten minutes the replication check.
     fn timer(&mut self, cx: &mut Context<'_>, _timer: TimerId) {
+        if let Some(attached) = self
+            .waiting
+            .next(stream_control::children_should_be_accepted(), ingest::throttle())
+        {
+            self.attach(cx, attached);
+        }
         self.dequeue_senders(cx);
         self.tick_children(cx);
         self.tick_senders();
@@ -170,11 +178,12 @@ impl Worker for StreamWorker {
         self.tick = Some(cx.add_timer(Instant::now() + TICK));
     }
 
-    /// The thread's exit: the queued senders, then the queued receivers move to running, then the senders are
-    /// cleaned up before the receivers (`stream_sender_cleanup()` before `stream_receiver_cleanup()`).
+    /// The thread's exit: the queued senders, then every queued receiver moves to running, in order and without the
+    /// waiting list's checks, then the senders are cleaned up before the receivers (`stream_sender_cleanup()` before
+    /// `stream_receiver_cleanup()`).
     fn stop(&mut self, cx: &mut Context<'_>) {
         self.dequeue_senders(cx);
-        for attached in std::mem::take(&mut self.exit_receivers) {
+        for attached in self.waiting.take_all() {
             self.attach(cx, attached);
         }
         // records since the last close cleared C's errno: only the exit path's closes count
