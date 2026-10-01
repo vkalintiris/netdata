@@ -1,7 +1,7 @@
 //! Hosts, ported from `src/database/rrdhost.c`: localhost plus one host per child that ever streamed here, indexed
 //! by machine GUID and kept in creation order (localhost first).
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 
 use netdata_agent_log::{Priority, REDACTED, Source, nd_log, netdata_log_error};
@@ -200,8 +200,6 @@ pub struct ReceiverSlot {
     pub last_traffic_ut: AtomicU64,
     /// `rpt->exit.shutdown`.
     pub stop_requested: AtomicBool,
-    /// `rpt->exit.reason` as the first stop set it (a `STREAM_HANDSHAKE` code), 0 before.
-    stop_reason: AtomicI32,
     /// `rpt->remote_ip` and `rpt->remote_port`, for the records about this receiver.
     pub remote: (String, String),
     pub link: ReceiverLink,
@@ -230,7 +228,6 @@ impl ReceiverSlot {
         ReceiverSlot {
             last_traffic_ut: AtomicU64::new(now_ut),
             stop_requested: AtomicBool::new(false),
-            stop_reason: AtomicI32::new(0),
             remote,
             link,
             shutdown,
@@ -248,20 +245,14 @@ impl ReceiverSlot {
         std::mem::take(&mut *lock(&self.to_child))
     }
 
-    /// The first half of `stream_receiver_signal_to_stop_and_wait()`: the first stop's `reason` kept (C forces the
-    /// exit reason once, before the shutdown flag), then flag it and shut the socket down, once.
-    pub fn stop(&self, reason: i32) {
-        let _ = self
-            .stop_reason
-            .compare_exchange(0, reason, Ordering::AcqRel, Ordering::Acquire);
-        if !self.stop_requested.swap(true, Ordering::AcqRel) {
+    /// The first half of `stream_receiver_signal_to_stop_and_wait()`: flag it and shut the socket down, once.
+    pub fn stop(&self) {
+        if !self
+            .stop_requested
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
             (self.shutdown)();
         }
-    }
-
-    /// The reason of the stop the stream thread acts on, 0 when none was given.
-    pub fn stop_reason(&self) -> i32 {
-        self.stop_reason.load(Ordering::Acquire)
     }
 }
 
@@ -1131,8 +1122,7 @@ impl Host {
     /// freed, its stream path, variables and functions gone; archived and orphan, with C's record.
     pub fn cleanup_data_collection(&self) {
         if let Some(slot) = self.receiver() {
-            // STREAM_HANDSHAKE_SND_DISCONNECT_HOST_CLEANUP
-            self.stop_receiver_and_wait(&slot, -16);
+            self.stop_receiver_and_wait(&slot);
         }
         self.charts.flush();
         self.variables.clear();
@@ -1145,10 +1135,9 @@ impl Host {
         self.log_archive_mode();
     }
 
-    /// `stream_receiver_signal_to_stop_and_wait()`: the receiver stops with `reason` (a `STREAM_HANDSHAKE` code); true
-    /// when it let go within 2 s, else C's error record.
-    pub fn stop_receiver_and_wait(&self, slot: &Arc<ReceiverSlot>, reason: i32) -> bool {
-        slot.stop(reason);
+    /// `stream_receiver_signal_to_stop_and_wait()`: true when the receiver let go within 2 s, else C's error record.
+    pub fn stop_receiver_and_wait(&self, slot: &Arc<ReceiverSlot>) -> bool {
+        slot.stop();
         let attached = || self.receiver().is_some_and(|r| Arc::ptr_eq(&r, slot));
         for _ in 0..2000 {
             if !attached() {
@@ -2135,22 +2124,6 @@ mod tests {
             store(&dim, B + 7, 7.0);
             assert_eq!(tier_records(&e, &dim, 1), want, "{mode:?} {db:?}");
         }
-    }
-
-    /// `stream_receiver_signal_to_stop_and_wait()`: the first stop's reason is the one the receiver leaves with, and
-    /// the socket is shut down once.
-    #[test]
-    fn a_receivers_stop_keeps_the_first_reason() {
-        let shutdowns = Arc::new(AtomicU32::new(0));
-        let counted = Arc::clone(&shutdowns);
-        let slot = ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(move || {
-            counted.fetch_add(1, Ordering::Relaxed);
-        }));
-        assert_eq!(slot.stop_reason(), 0);
-        slot.stop(-14);
-        slot.stop(-16);
-        assert!(slot.stop_requested.load(Ordering::Acquire));
-        assert_eq!((slot.stop_reason(), shutdowns.load(Ordering::Relaxed)), (-14, 1));
     }
 
     /// `rrdhost_clear_receiver()`: the receiver's end tells the host's sender and resets its parents, both with the
