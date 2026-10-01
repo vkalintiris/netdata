@@ -39,6 +39,12 @@ impl Pins {
         pin.0
     }
 
+    /// Whether the host is pinned.
+    #[cfg(test)]
+    pub(crate) fn is_pinned(&self, host: &str) -> bool {
+        self.hosts.contains_key(host)
+    }
+
     /// One user less; the last one unpins the host.
     pub fn remove(&mut self, host: &str) {
         let Some(pin) = self.hosts.get_mut(host) else { return };

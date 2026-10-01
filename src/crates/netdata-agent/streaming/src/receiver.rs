@@ -866,8 +866,8 @@ impl StreamWorker {
             )
             .is_err()
         {
-            attached.leave_host(Reason::DISCONNECT_SOCKET_ERROR);
             self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
+            attached.leave_host(Reason::DISCONNECT_SOCKET_ERROR);
             return;
         }
         let mut parser = Parser::new(
@@ -1137,8 +1137,10 @@ impl StreamWorker {
                 .map(|v| String::from_utf8_lossy(v).into_owned());
             let _removal = records::removal(&frame, &attached.host.hostname());
             records::disconnected(&attached.peer, iface.as_deref(), reason, &counters);
-            attached.leave_host(reason);
+            // stream_thread_node_removed() first: a child that reconnects while its host is detached goes to the
+            // least loaded thread (R55 M6)
             self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
+            attached.leave_host(reason);
             // pluginsd_process_cleanup() at the end of rrdhost_clear_receiver(): its THREAD CLEANUP record is the
             // removal's
             drop(parser);
@@ -1867,6 +1869,68 @@ mod tests {
         assert!(host.receiver().is_none());
         let texts: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
         assert!(texts.iter().any(|t| t.contains("CLOSED BY REMOTE END")), "{texts:?}");
+    }
+
+    /// A sender that notes, when told its receiver left, whether the host is still pinned to its thread.
+    #[derive(Debug)]
+    struct PinProbe {
+        pins: Arc<Mutex<Pins>>,
+        guid: String,
+        pinned_when_left: Mutex<Option<bool>>,
+    }
+
+    impl netdata_agent_rrd::upstream::Upstream for PinProbe {
+        fn start(&self) {}
+        fn disabled_capabilities(&self) -> u32 {
+            0
+        }
+        fn capabilities(&self) -> u32 {
+            0
+        }
+        fn commit(&self, _: &[u8], _: netdata_agent_rrd::upstream::Traffic) {}
+        fn resync_iterations(&self) -> u16 {
+            3
+        }
+        fn flush_ut(&self) -> u64 {
+            0
+        }
+        fn commit_since(&self, _: &[u8], _: netdata_agent_rrd::upstream::Traffic, _: u64) -> bool {
+            false
+        }
+        fn receiver_left(&self, _: i32) {
+            let pinned = self.pins.lock().unwrap().is_pinned(&self.guid);
+            *self.pinned_when_left.lock().unwrap() = Some(pinned);
+        }
+        fn parents_reset(&self, _: i32) {}
+        fn free(&self) {}
+        fn reinit(&self, _: &StreamSend) {}
+    }
+
+    /// A removed child's host leaves its thread before the host is detached, as C's `stream_thread_node_removed()`
+    /// comes first (R55 M6): a child that reconnects meanwhile goes to the least loaded thread.
+    #[test]
+    fn a_removed_child_is_unpinned_before_its_host_detaches() {
+        let pins = Arc::new(Mutex::new(Pins::new(1)));
+        let mut s = netdata_agent_evloop::testing::Stepper::new(0, StreamWorker::new(Arc::clone(&pins), 1)).unwrap();
+        let (pool, connector) = crate::connector::tests::connector();
+        let hosts = Arc::new(Hosts::new(Host::new(
+            "5a1e0000-0000-4000-8000-0000000000aa",
+            true,
+            crate::connector::tests::info("", ""),
+        )));
+        let (attached, host, _, theirs) = child(0xd4, crate::caps::V2, &pool, &hosts, &connector);
+        pins.lock().unwrap().queue(host.machine_guid());
+        let probe = Arc::new(PinProbe {
+            pins: Arc::clone(&pins),
+            guid: host.machine_guid().to_string(),
+            pinned_when_left: Mutex::new(None),
+        });
+        host.set_upstream(Arc::clone(&probe) as Arc<dyn netdata_agent_rrd::upstream::Upstream>);
+        drop(theirs);
+        s.with(|w, cx| w.attach(cx, attached));
+        let _ = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        assert!(host.receiver().is_none());
+        assert_eq!(*probe.pinned_when_left.lock().unwrap(), Some(false));
     }
 
     const ADMIT_KEY: &str = "11111111-2222-3333-4444-555555555555";
