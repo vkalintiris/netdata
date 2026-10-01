@@ -400,7 +400,19 @@ impl Receivers {
                 }),
             );
         }
-        // Virtual nodes (step 14) come with vnodes.
+        // a vnode a plugin of this agent collects; the attach checks again under the receiver lock (a claim may come
+        // while this connection is being set up)
+        if self.hosts.find_by_guid(&guid).is_some_and(|host| host.is_virtual()) {
+            return PreAdmission::Refuse(
+                handshake::ERROR_LOCAL_VNODE,
+                Box::new(Refusal {
+                    peer,
+                    msg: "rejecting streaming connection; this is a locally collected vnode",
+                    reason: Reason::PARENT_VNODE_IS_LOCAL,
+                    priority: Priority::Debug,
+                }),
+            );
+        }
         if let Some(wait_s) = self.rate_limited() {
             peer.status(
                 &format!(
@@ -2166,6 +2178,81 @@ mod tests {
                     Priority::Info,
                     "STREAM RCV 'child' [from [127.0.0.1]:1]: rejecting streaming connection; internal cleanup is in \
                      progress for this node, please retry shortly  (BUSY TRY LATER)"
+                        .to_string()
+                ),
+            ]
+        );
+    }
+
+    /// A vnode a plugin of this agent collects is refused before the takeover (`stream-receiver-connection.c:624-653`),
+    /// at C's debug level; a host that is not one goes on.
+    #[test]
+    fn a_vnode_is_refused_before_the_takeover() {
+        let (r, _pool) = receivers();
+        r.conf.lock().unwrap().config.load_bytes(
+            format!("[{ADMIT_KEY}]\n  enabled = yes\n").as_bytes(),
+            "stream.conf",
+            false,
+            None,
+        );
+        let guid = "5a1e0000-0000-4000-8000-0000000000e3";
+        let query = format!("key={ADMIT_KEY}&hostname=child&machine_guid={guid}&ver=17088");
+        let host = r.hosts.add_archived(guid, crate::connector::tests::info("", ""), |_| {});
+        let first = r.pre_admit(query.as_bytes(), None, "127.0.0.1", "1");
+        assert!(matches!(first, PreAdmission::Proceed(_)), "{first:?}");
+        host.set_virtual();
+        let refused = r.pre_admit(query.as_bytes(), None, "127.0.0.1", "1");
+        let PreAdmission::Refuse(reply, refusal) = refused else { panic!("{refused:?}") };
+        assert_eq!(
+            (reply, refusal.msg, refusal.reason, refusal.priority),
+            (
+                handshake::ERROR_LOCAL_VNODE,
+                "rejecting streaming connection; this is a locally collected vnode",
+                Reason::PARENT_VNODE_IS_LOCAL,
+                Priority::Debug
+            )
+        );
+    }
+
+    /// A vnode claimed after the accept is refused at the attach, under the receiver lock, with C's warning and reply
+    /// (`stream-receiver-connection.c:234-242`).
+    #[test]
+    fn a_vnode_claimed_before_the_attach_is_refused() {
+        use std::io::Read;
+        let (r, _pool) = receivers();
+        let guid = "5a1e0000-0000-4000-8000-0000000000e4";
+        let host = r.hosts.add_archived(guid, crate::connector::tests::info("", ""), |_| {});
+        host.clear_pending_context_load();
+        host.set_virtual();
+        let (ours, mut theirs) = mio::net::UnixStream::pair().unwrap();
+        let (admitted, records) =
+            netdata_agent_log::capture(|| r.admit(pending(guid), Link::Plain(Conn::Unix(ours))));
+        assert!(!admitted);
+        let mut reply = String::new();
+        theirs.read_to_string(&mut reply).unwrap();
+        assert_eq!(reply, handshake::ERROR_LOCAL_VNODE);
+        assert!(host.receiver().is_none());
+        let records: Vec<_> = records
+            .into_iter()
+            .map(|r| (r.source, r.priority, r.message.unwrap_or_default()))
+            .filter(|(_, _, m)| m.contains("rejecting"))
+            .collect();
+        assert_eq!(
+            records,
+            [
+                (
+                    Source::Access,
+                    Priority::Warning,
+                    format!(
+                        "api_key:'[REDACTED]' machine_guid:'{guid}' node:'child' msg:'rejecting streaming connection; \
+                         this host was claimed as a locally collected vnode' reason:'LOCAL VNODE'"
+                    )
+                ),
+                (
+                    Source::Daemon,
+                    Priority::Warning,
+                    "STREAM RCV 'child' [from [127.0.0.1]:1]: rejecting streaming connection; this host was claimed as \
+                     a locally collected vnode  (LOCAL VNODE)"
                         .to_string()
                 ),
             ]
