@@ -54,12 +54,18 @@ func main() {
 	cwd, _ := os.Getwd()
 	pgid, _ := syscall.Getpgid(0)
 	sid, _ := getsid()
+	nice, policy := statFields()
 	rec.write(plugin.Record{Kind: "start", Args: os.Args[1:], Env: os.Environ(), Cwd: cwd, Pid: os.Getpid(),
-		Ppid: os.Getppid(), Pgid: pgid, Sid: sid, Fds: fds, Pre: string(pre)})
+		Ppid: os.Getppid(), Pgid: pgid, Sid: sid, Fds: fds, Pre: string(pre), ParentComm: readTrim(fmt.Sprintf("/proc/%d/comm", os.Getppid())),
+		StdioFlags: stdioFlags(), OomScoreAdj: readTrim("/proc/self/oom_score_adj"), Nice: nice, SchedPolicy: policy})
+	// one end: stdin's end, an exit step and a signal may race
+	var once sync.Once
 	end := func(how string, code int) {
-		rec.write(plugin.Record{Kind: "end", How: how})
-		_ = f.Sync()
-		os.Exit(code)
+		once.Do(func() {
+			rec.write(plugin.Record{Kind: "end", How: how})
+			_ = f.Sync()
+			os.Exit(code)
+		})
 	}
 
 	// SIGTERM is recorded, then kills as it would have (the agent reads death by SIGTERM as a clean exit)
@@ -67,11 +73,13 @@ func main() {
 	signal.Notify(signals, syscall.SIGTERM)
 	go func() {
 		s := <-signals
-		rec.write(plugin.Record{Kind: "signal", Signal: s.String()})
-		rec.write(plugin.Record{Kind: "end", How: "signal SIGTERM"})
-		_ = f.Sync()
-		signal.Reset(syscall.SIGTERM)
-		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		once.Do(func() {
+			rec.write(plugin.Record{Kind: "signal", Signal: s.String()})
+			rec.write(plugin.Record{Kind: "end", How: "signal SIGTERM"})
+			_ = f.Sync()
+			signal.Reset(syscall.SIGTERM)
+			_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		})
 	}()
 	time.AfterFunc(maxLife, func() { end("cap", 93) })
 
@@ -179,6 +187,40 @@ func openFds() []string {
 		out = append(out, e.Name()+" "+target)
 	}
 	return out
+}
+
+// readTrim is a small /proc file's content, trimmed.
+func readTrim(path string) string {
+	b, _ := os.ReadFile(path)
+	return strings.TrimSpace(string(b))
+}
+
+// stdioFlags are the open flags of fds 0-2 as fdinfo prints them (octal).
+func stdioFlags() []string {
+	var out []string
+	for fd := range 3 {
+		flags := ""
+		for _, line := range strings.Split(readTrim(fmt.Sprintf("/proc/self/fdinfo/%d", fd)), "\n") {
+			if v, ok := strings.CutPrefix(line, "flags:"); ok {
+				flags = strings.TrimSpace(v)
+			}
+		}
+		out = append(out, fmt.Sprintf("%d %s", fd, flags))
+	}
+	return out
+}
+
+// statFields are nice and the scheduling policy from /proc/self/stat (fields 19 and 41, counted after the comm).
+func statFields() (string, string) {
+	stat := readTrim("/proc/self/stat")
+	if i := strings.LastIndexByte(stat, ')'); i >= 0 {
+		f := strings.Fields(stat[i+1:])
+		// f[0] is field 3 (state)
+		if len(f) > 38 {
+			return f[16], f[38]
+		}
+	}
+	return "", ""
 }
 
 func getsid() (int, error) {

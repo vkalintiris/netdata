@@ -35,7 +35,7 @@ func pluginsOptions() daemon.Options {
 
 var (
 	pidRe     = regexp.MustCompile(`\bpid \d+`)
-	requestRe = regexp.MustCompile(`\brequest \d+`)
+	requestRe = regexp.MustCompile(`\brequest (?:No )?\d+`)
 )
 
 // pluginLogClasses are a daemon's records about the fake plugin, per class, each in file order (several processes
@@ -64,7 +64,11 @@ func pluginLogClasses(t *testing.T, d *daemon.Daemon) map[string][]string {
 		case strings.Contains(l, thread):
 			add("collector.log "+thread, l)
 		case strings.Contains(l, "comm=spawn-plugins") && strings.Contains(l, plugin.Name+".plugin"):
-			add("collector.log comm=spawn-plugins", l)
+			// whether the PD thread closes the status socket before the server reaps the killed plugin is a race
+			// (spawn_server_nofork.c:254-257, :1599, :1744)
+			if !strings.Contains(l, "Cannot send exit status") {
+				add("collector.log comm=spawn-plugins", l)
+			}
 		case !strings.HasPrefix(l, "time="):
 			add("collector.log raw", l)
 		}
@@ -131,7 +135,8 @@ func TestPluginsFakePlugin(t *testing.T) {
 	}
 	cases := map[string]pluginCase{
 		// five collections, held until released, then exit 0: the chart while held, gone after; a restart after one
-		// update every; the second start killed by the agent's stop
+		// update every; the second start killed by the agent's stop (QUIT, then SIGTERM and SIGKILL at once from the
+		// cancelled plugin thread: what the plugin records of them is a race, so views end at the stop)
 		"collect": {
 			sc: plugin.Scenario{Starts: []plugin.Start{
 				{Steps: []plugin.Step{{Collect: &plugin.Collect{Chart: "difftest.a", Dims: []string{"x"}, N: 5}},
@@ -142,7 +147,7 @@ func TestPluginsFakePlugin(t *testing.T) {
 				var charts, points [2][]string
 				for i, side := range p.Each() {
 					starts, ok := ls[i].WaitFor(30*time.Second, func(s [][]plugin.Record) bool {
-						return len(s) == 1 && plugin.Has(s[0], "waiting", "release-1")
+						return len(s) >= 1 && plugin.Has(s[0], "waiting", "release-1")
 					})
 					if !ok {
 						t.Fatalf("%s: the plugin did not collect and wait within 30 s: %d starts", side.Role, len(starts))
@@ -167,16 +172,29 @@ func TestPluginsFakePlugin(t *testing.T) {
 				}
 				diffLines(t, "charts while held", charts[0], charts[1])
 				diffLines(t, "points while held", points[0], points[1])
+				// C's label order follows its dictionary's: varies between runs
+				rules := Rules{Unordered: []string{"chart_labels"}, Masks: []Mask{
+					{Pattern: "last_updated", Reason: "each side's own collection time"},
+					{Pattern: "first_entry", Reason: "each side's own collection time"},
+					{Pattern: "last_entry", Reason: "each side's own collection time"},
+				}}
+				diffs, err := p.CompareJSON("/api/v1/chart?chart=difftest.a", nil, rules)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, d := range diffs {
+					t.Errorf("/api/v1/chart?chart=difftest.a: %s", d)
+				}
 				var gaps [2]time.Duration
 				for i, side := range p.Each() {
 					if err := ls[i].Release("release-1"); err != nil {
 						t.Fatal(err)
 					}
 					starts, ok := ls[i].WaitFor(30*time.Second, func(s [][]plugin.Record) bool {
-						return len(s) == 2 && plugin.Has(s[1], "step", "hang")
+						return len(s) >= 2 && plugin.Has(s[1], "step", "hang")
 					})
 					if !ok {
-						t.Fatalf("%s: no second start within 30 s of the exit", side.Role)
+						t.Fatalf("%s: no second start within 30 s of the exit: %d starts", side.Role, len(starts))
 					}
 					gaps[i] = plugin.Time(starts[1], "start").Sub(plugin.Time(starts[0], "end"))
 					ids, _, err := hostCharts(side.Daemon, "")
@@ -198,7 +216,8 @@ func TestPluginsFakePlugin(t *testing.T) {
 				diffLines(t, "charts after the exit", charts[0], charts[1])
 			},
 			guard: func(t *testing.T, starts [][]plugin.Record, classes map[string][]string) {
-				// the agent's stop kills the hanging second start
+				// the agent's stop kills the hanging second start (SIGKILL: the plugin's SIGTERM handler delays its
+				// death past the second kill)
 				if len(starts) != 2 || !slices.ContainsFunc(classes["collector.log comm=spawn-plugins"], func(l string) bool {
 					return strings.Contains(l, "killed by signal 9")
 				}) {
@@ -219,7 +238,7 @@ func TestPluginsFakePlugin(t *testing.T) {
 			play: func(t *testing.T, p *Pair, ls [2]plugin.Layout) {
 				for i, side := range p.Each() {
 					if _, ok := ls[i].WaitFor(30*time.Second, func(s [][]plugin.Record) bool {
-						return len(s) == 1 && plugin.Has(s[0], "end", "")
+						return len(s) >= 1 && plugin.Has(s[0], "end", "")
 					}); !ok {
 						t.Fatalf("%s: the plugin did not start and exit within 30 s", side.Role)
 					}
@@ -233,7 +252,7 @@ func TestPluginsFakePlugin(t *testing.T) {
 				}
 				for class, want := range map[string]string{
 					"daemon.log thread=PD[difftest]":   "exited with error code 3 and haven't collected any data. Disabling it.",
-					"collector.log comm=spawn-plugins": "difftest.plugin",
+					"collector.log comm=spawn-plugins": "exited with exit code 3",
 					"collector.log raw":                "difftest: failing early",
 				} {
 					if !slices.ContainsFunc(classes[class], func(l string) bool { return strings.Contains(l, want) }) {
@@ -254,14 +273,20 @@ func TestPluginsFakePlugin(t *testing.T) {
 				var gaps [2]time.Duration
 				for i, side := range p.Each() {
 					starts, ok := ls[i].WaitFor(30*time.Second, func(s [][]plugin.Record) bool {
-						return len(s) == 2 && plugin.Has(s[1], "step", "hang")
+						return len(s) >= 2 && plugin.Has(s[1], "step", "hang")
 					})
 					if !ok {
-						t.Fatalf("%s: no second start within 30 s", side.Role)
+						t.Fatalf("%s: no second start within 30 s: %d starts", side.Role, len(starts))
 					}
 					gaps[i] = plugin.Time(starts[1], "start").Sub(plugin.Time(starts[0], "end"))
 				}
 				t.Logf("restarts after the bad line's stop: oracle %v, candidate %v", gaps[0], gaps[1])
+				// C kills the plugin, then sleeps one update every (plugins_d.c:172-175)
+				for i, g := range gaps {
+					if g < time.Second || g > 2500*time.Millisecond {
+						t.Errorf("%s: restarted %v after the stop, C's band is one update every to 2.5 s", []Role{Oracle, Candidate}[i], g)
+					}
+				}
 			},
 			guard: func(t *testing.T, starts [][]plugin.Record, classes map[string][]string) {
 				if len(starts) != 2 || !strings.Contains(plugin.ViewOf(starts[0]).Stdin, "QUIT") {
@@ -297,20 +322,19 @@ func TestPluginsFakePlugin(t *testing.T) {
 			var classes [2]map[string][]string
 			var oracleStarts [][]plugin.Record
 			for i, side := range p.Each() {
+				// the stop's QUIT, SIGTERM and SIGKILL come from the cancelled plugin thread at once, so what the plugin
+				// records of them is a race: each start's view ends at the stop (the kill shows in the spawn server's
+				// records); the daemon reaps after the plugin is gone
+				stopAt := time.Now()
 				if err := side.Daemon.Stop(); err != nil {
 					t.Errorf("%s: stop: %v", side.Role, err)
 				}
-				// the spawn server stops the plugin after the daemon exits (a hanging one by SIGKILL, recording nothing):
-				// its last records are written once its process is gone
-				starts, _ := ls[i].WaitFor(5*time.Second, func(s [][]plugin.Record) bool {
-					if len(s) == 0 || len(s[len(s)-1]) == 0 {
-						return true
-					}
-					_, err := os.Stat(fmt.Sprintf("/proc/%d", s[len(s)-1][0].Pid))
-					return os.IsNotExist(err)
-				})
+				starts, err := ls[i].Starts()
+				if err != nil {
+					t.Fatal(err)
+				}
 				for _, s := range starts {
-					views[i] = append(views[i], plugin.ViewOf(s))
+					views[i] = append(views[i], plugin.ViewOf(plugin.Before(s, stopAt)))
 				}
 				if i == 0 {
 					oracleStarts = starts

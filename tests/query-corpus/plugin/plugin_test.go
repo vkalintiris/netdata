@@ -58,7 +58,7 @@ func TestInstallLaysOutThePlugin(t *testing.T) {
 		t.Fatalf("wrapper: %v %v", st, err)
 	}
 	b, _ := os.ReadFile(filepath.Join(l.PluginsDir, "difftest.plugin"))
-	if !strings.HasPrefix(string(b), "#!/bin/sh\nd="+l.Dir+"\n") || !strings.HasSuffix(string(b), "exec \"$d/engine\" \"$@\"\n") {
+	if !strings.HasPrefix(string(b), "#!/bin/sh\nd='"+l.Dir+"'\n") || !strings.HasSuffix(string(b), "exec \"$d/engine\" \"$@\"\n") {
 		t.Errorf("wrapper:\n%s", b)
 	}
 	if b, _ := os.ReadFile(filepath.Join(l.Dir, "engine")); string(b) != "engine" {
@@ -145,6 +145,11 @@ func TestTheEnginePlaysAScenario(t *testing.T) {
 	}
 	if !reflect.DeepEqual(views, want) {
 		t.Errorf("views %+v, want %+v", views, want)
+	}
+	// the spawn context the spawn commit compares: the parent (this test), stdio's open flags, the scheduling
+	first := starts[0][0]
+	if first.ParentComm == "" || len(first.StdioFlags) != 3 || first.OomScoreAdj == "" || first.Nice == "" || first.SchedPolicy == "" {
+		t.Errorf("spawn context: %+v", first)
 	}
 	// the wrapper wrote pre-$$ and the engine read pre-<its pid>: the exec kept the pid
 	pre := starts[0][0].Pre

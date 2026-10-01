@@ -253,6 +253,10 @@ func validateOptions(o Options) error {
 		return errors.New("daemon: StreamSection with StreamTo: a child's [stream] lines go in StreamTo.Extra")
 	}
 
+	if strings.Contains(o.ConfExtra, "[plugins]") || strings.Contains(o.ConfExtra, "[directories]") {
+		return errors.New("daemon: ConfExtra reopens [plugins] or [directories]: use PluginsExtra or PluginsDir")
+	}
+
 	for _, line := range strings.Split(o.PluginsExtra, "\n") {
 		key, _, _ := strings.Cut(line, "=")
 		if key = strings.TrimSpace(key); key != "" && slices.Contains(templatePluginKeys(), key) {

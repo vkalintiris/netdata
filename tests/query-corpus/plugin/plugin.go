@@ -11,9 +11,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,6 +78,13 @@ type Record struct {
 	Sid  int      `json:"sid,omitempty"`
 	Fds  []string `json:"fds,omitempty"`
 	Pre  string   `json:"pre,omitempty"` // the wrapper's snapshot: argv0, /proc/self/status lines, limits
+	// the parent's comm (the spawn server's or the daemon's), the open flags of fds 0-2 (`/proc/self/fdinfo`),
+	// `oom_score_adj`, nice and the scheduling policy (`/proc/self/stat` fields 19 and 41)
+	ParentComm  string   `json:"parentComm,omitempty"`
+	StdioFlags  []string `json:"stdioFlags,omitempty"`
+	OomScoreAdj string   `json:"oomScoreAdj,omitempty"`
+	Nice        string   `json:"nice,omitempty"`
+	SchedPolicy string   `json:"schedPolicy,omitempty"`
 	// stdin
 	Data string `json:"data,omitempty"`
 	// step, waiting
@@ -107,7 +112,7 @@ func LayoutOf(runDir string) Layout {
 // (inherited ignored signals, the soft open-files limit), then execs the engine under the same pid. dash builtins
 // only, so `$$` stays the plugin's pid.
 const wrapper = `#!/bin/sh
-d=%s
+d='%s'
 {
   echo "argv0 $0"
   while read -r k v; do
@@ -220,16 +225,18 @@ func readRecords(path string) ([]Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	// only whole lines: the last one may be in the writing, or cut by a kill
+	if i := bytes.LastIndexByte(b, '\n'); i >= 0 {
+		b = b[:i+1]
+	} else {
+		b = nil
+	}
 	var out []Record
 	sc := bufio.NewScanner(bytes.NewReader(b))
 	sc.Buffer(make([]byte, 0, 1<<16), 1<<24)
 	for sc.Scan() {
 		var r Record
 		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
-			// a line the engine is still writing
-			if errors.Is(err, io.ErrUnexpectedEOF) {
-				break
-			}
 			return nil, fmt.Errorf("plugin: %s: %w", path, err)
 		}
 		out = append(out, r)
@@ -257,6 +264,18 @@ func Has(start []Record, kind, name string) bool {
 	return slices.ContainsFunc(start, func(r Record) bool {
 		return r.Kind == kind && (name == "" || r.Step == name || r.File == name)
 	})
+}
+
+// Before is a start's records written before t: what the agent did before its stop, whose kill races the plugin's
+// last records.
+func Before(start []Record, t time.Time) []Record {
+	var out []Record
+	for _, r := range start {
+		if r.T.Before(t) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // View is what two agents must agree on about one start: its arguments, all it read on stdin (chunking dropped),
