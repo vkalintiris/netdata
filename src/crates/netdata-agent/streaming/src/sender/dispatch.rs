@@ -714,7 +714,7 @@ fn opcode_ignored(thread: usize, bits: u32) {
 }
 
 impl Sender {
-    /// The dequeue's bookkeeping: connections counted, the state's time.
+    /// The dequeue's bookkeeping: the state's time (C keeps no count of the sender's connections).
     fn status_connected(&self) {
         self.lock().last_state_since_s = now_realtime_s();
     }
