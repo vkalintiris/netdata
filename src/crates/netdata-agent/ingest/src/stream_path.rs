@@ -188,14 +188,15 @@ pub fn self_entry(host: &Host, localhost: &Host, first_time_t: Option<i64>) -> P
     if host.info().health_enabled {
         flags |= FLAG_HEALTH;
     }
-    // no claiming (ACLK), virtual hosts or ML here
+    if host.is_virtual() {
+        flags |= FLAG_VIRTUAL;
+    }
+    // no claiming (ACLK) or ML here
     let receiver = host.receiver();
     let (hops, since) = match &receiver {
         Some(slot) => (slot.link.hops, slot.link.connected_since_s),
-        None => (
-            if host.is_localhost() { 0 } else { -1 },
-            netdata_start_time(),
-        ),
+        // -1 for a host nothing collects
+        None => (if host.is_local() { 0 } else { -1 }, netdata_start_time()),
     };
     PathEntry {
         hostname: localhost.hostname(),
@@ -315,7 +316,7 @@ pub fn send_to_child(host: &Host, localhost: &Host) {
     let Some(slot) = host.receiver() else {
         return;
     };
-    if slot.link.capabilities & caps::PATHS != 0 && host.is_online() {
+    if slot.link.capabilities & caps::PATHS != 0 && host.collector_online() {
         slot.send_to_child(&message(host, localhost, None));
     }
 }

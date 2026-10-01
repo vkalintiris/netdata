@@ -1,7 +1,7 @@
 //! Hosts, ported from `src/database/rrdhost.c`: localhost plus one host per child that ever streamed here, indexed
 //! by machine GUID and kept in creation order (localhost first).
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 
 use netdata_agent_log::{Priority, REDACTED, Source, nd_log, netdata_log_error};
@@ -281,6 +281,8 @@ pub enum Attach {
     AlreadyServed,
     /// `RRDHOST_SET_RECEIVER_CLEANUP_BUSY`: the maintenance is marking the host's charts obsolete.
     CleanupBusy,
+    /// `RRDHOST_SET_RECEIVER_VNODE_IS_LOCAL`: a plugin of this agent claimed the host as its vnode.
+    VnodeIsLocal,
 }
 
 /// The host flags its maintenance reads (`RRDHOST_FLAG_PENDING_OBSOLETE_*`): some chart or dimension turned obsolete
@@ -292,6 +294,15 @@ pub mod pending_flags {
 
 /// `RRDHOST_FLAG_STREAM_SENDER_*` and `RRDHOST_FLAG_GLOBAL_FUNCTIONS_UPDATED`: the sender's state as the collectors
 /// read it.
+/// `RRDHOST_FLAG_VIRTUAL_HOST` and `RRDHOST_FLAG_COLLECTOR_ONLINE`, kept in one word: C clears them in one step, so a
+/// status read never sees one without the other.
+mod local_flags {
+    /// A vnode this agent's plugins collect.
+    pub const VIRTUAL: u8 = 1 << 0;
+    /// The host's collector (this agent, a receiver, a plugin) is collecting it.
+    pub const COLLECTOR_ONLINE: u8 = 1 << 1;
+}
+
 pub mod sender_flags {
     /// Queued for its parents (until the sender is removed).
     pub const ADDED: u32 = 1 << 0;
@@ -334,6 +345,8 @@ pub struct Host {
     obsolete_all_busy: AtomicBool,
     /// `RRDHOST_FLAG_ORPHAN`: a child whose receiver has gone.
     orphan: AtomicBool,
+    /// [`local_flags`].
+    local: AtomicU8,
     charts: Charts,
     /// `host->rrdctx`.
     contexts: Arc<Contexts>,
@@ -507,6 +520,8 @@ impl Host {
             health_last_iteration: AtomicU64::new(0),
             obsolete_all_busy: AtomicBool::new(false),
             orphan: AtomicBool::new(false),
+            // rrd_init(): localhost's collector is this agent
+            local: AtomicU8::new(if is_localhost { local_flags::COLLECTOR_ONLINE } else { 0 }),
             charts: Charts::new(
                 Arc::clone(&contexts),
                 Arc::clone(&meta_flags),
@@ -1062,6 +1077,10 @@ impl Host {
         if self.obsolete_all_busy.load(Ordering::Acquire) {
             return Attach::CleanupBusy;
         }
+        // a vnode has one writer, the plugin collecting it: a receiver that got here before the claim is refused
+        if self.is_virtual() {
+            return Attach::VnodeIsLocal;
+        }
         if receiver.is_some() {
             return Attach::AlreadyServed;
         }
@@ -1082,6 +1101,7 @@ impl Host {
             .store(u32::MAX, std::sync::atomic::Ordering::Release);
         self.min_update_every_applied
             .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
+        self.local.fetch_or(local_flags::COLLECTOR_ONLINE, Ordering::AcqRel);
         drop(receiver);
         // rrdcontext_host_child_connected(): every chart and dimension reports collection again.
         for chart in self.charts.all() {
@@ -1128,7 +1148,7 @@ impl Host {
             && self.sender_replicating_charts() == 0
             && self.is_orphan()
             && !self.is_pending_context_load()
-            && !self.is_online()
+            && !self.collector_online()
             && self.storage().health_iteration().saturating_sub(self.health_last_iteration()) > 10
             && disconnected != 0
             && disconnected.saturating_add(self.storage().cleanup_times().orphan_hosts_s) < now_s
@@ -1181,9 +1201,44 @@ impl Host {
         self.pulse_status(crate::pulse::host_status::DELETED);
     }
 
-    /// `rrdhost_is_online()`: localhost, or a child whose receiver is attached (no vnodes here).
+    /// `rrdhost_is_online()`: localhost or a vnode, or a host whose collector is online and that is not an orphan.
     pub fn is_online(&self) -> bool {
-        self.is_localhost || (self.receiver().is_some() && !self.is_orphan())
+        self.is_local() || (self.collector_online() && !self.is_orphan())
+    }
+
+    /// `rrdhost_is_virtual()`: a vnode this agent's plugins collect.
+    pub fn is_virtual(&self) -> bool {
+        self.local.load(Ordering::Acquire) & local_flags::VIRTUAL != 0
+    }
+
+    /// `rrdhost_is_local()`: localhost or a vnode.
+    pub fn is_local(&self) -> bool {
+        self.is_localhost || self.is_virtual()
+    }
+
+    /// `RRDHOST_FLAG_COLLECTOR_ONLINE`: the host's collector is collecting it.
+    pub fn collector_online(&self) -> bool {
+        self.local.load(Ordering::Acquire) & local_flags::COLLECTOR_ONLINE != 0
+    }
+
+    /// A plugin of this agent claims the host as its vnode (`RRDHOST_FLAG_VIRTUAL_HOST` set).
+    pub fn set_virtual(&self) {
+        self.local.fetch_or(local_flags::VIRTUAL, Ordering::AcqRel);
+    }
+
+    /// The vnode's claim failed.
+    pub fn clear_virtual(&self) {
+        self.local.fetch_and(!local_flags::VIRTUAL, Ordering::AcqRel);
+    }
+
+    /// The vnode's plugin collects it (`RRDHOST_FLAG_COLLECTOR_ONLINE` set).
+    pub fn set_collector_online(&self) {
+        self.local.fetch_or(local_flags::COLLECTOR_ONLINE, Ordering::AcqRel);
+    }
+
+    /// The vnode's plugin stopped collecting it: both flags cleared in one step.
+    pub fn virtual_offline(&self) {
+        self.local.fetch_and(!(local_flags::VIRTUAL | local_flags::COLLECTOR_ONLINE), Ordering::AcqRel);
     }
 
     /// `RRDHOST_FLAG_ORPHAN`.
@@ -1191,10 +1246,12 @@ impl Host {
         self.orphan.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// `rrdhost_ingestion_hops()`: 0 for localhost, else what the child reported.
+    /// `rrdhost_ingestion_hops()`: 0 for localhost, 1 for a vnode, else what the child reported.
     pub fn ingestion_hops(&self) -> i16 {
         if self.is_localhost {
             0
+        } else if self.is_virtual() {
+            1
         } else {
             self.info
                 .read()
@@ -1279,7 +1336,7 @@ impl Host {
     pub fn can_stream_metadata(&self) -> bool {
         self.upstream().is_some()
             && self.sender_flags() & sender_flags::READY_4_METRICS != 0
-            && self.is_online()
+            && self.collector_online()
     }
 
     /// `host->stream.snd.charts_matching`, none when the host does not stream.
@@ -1414,7 +1471,7 @@ impl Host {
         }
     }
 
-    /// `pulse_host_detect_receiver_status()`: the state the host's basic status gives (no vnodes).
+    /// `pulse_host_detect_receiver_status()`: the state the host's basic status gives.
     fn detect_receiver_status(&self, now_s: i64) -> u32 {
         use crate::pulse::host_status::*;
         use crate::status::{DbStatus, IngestStatus, IngestType};
@@ -1423,6 +1480,8 @@ impl Host {
             LOADING
         } else if s.ingest_type == IngestType::Localhost {
             LOCAL
+        } else if s.ingest_type == IngestType::Virtual {
+            VIRTUAL
         } else {
             match s.ingest_status {
                 IngestStatus::Archived => ARCHIVED,
@@ -1543,6 +1602,7 @@ impl Host {
             cleanup();
             return;
         }
+        self.local.fetch_and(!local_flags::COLLECTOR_ONLINE, Ordering::AcqRel);
         self.receiver_last_connected_s.store(0, Ordering::Relaxed);
         self.receiver_last_disconnected_s
             .store(now_realtime_s(), Ordering::Relaxed);
@@ -2320,6 +2380,35 @@ mod tests {
         assert!(host.receiver().is_none());
         assert_eq!(hosts.receivers_connected(), 0);
         assert_eq!(host.set_receiver(slot()), Attach::Attached);
+    }
+
+    /// C's local, online, ingest type and hops by host state (`rrdhost.h:455-470`, `rrdhost-status.c:103-105,
+    /// 210-232`): localhost; a child attached, then gone; a vnode claimed, collected, then let go; a receiver refused
+    /// while the host is a vnode.
+    #[test]
+    fn host_states_read_as_c() {
+        use crate::status::IngestType;
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let state = |h: &Host| (h.is_local(), h.is_online(), h.collector_online(), h.status_basic(0).ingest_type, h.ingestion_hops());
+        assert_eq!(state(hosts.localhost()), (true, true, true, IngestType::Localhost, 0));
+        let slot = || Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        let child = hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {}).expect("created");
+        let attached = slot();
+        assert_eq!(child.set_receiver(Arc::clone(&attached)), Attach::Attached);
+        assert_eq!(state(&child), (false, true, true, IngestType::Child, 0));
+        child.clear_receiver(&attached, 0);
+        assert_eq!(state(&child), (false, false, false, IngestType::Archived, 0));
+        let vnode = hosts.find_or_create("guid-v", DbMode::Ram, || info("v"), |_| {}).expect("created");
+        assert_eq!(state(&vnode), (false, false, false, IngestType::Archived, 0));
+        vnode.set_virtual();
+        assert_eq!(state(&vnode), (true, true, false, IngestType::Virtual, 1));
+        assert_eq!(vnode.set_receiver(slot()), Attach::VnodeIsLocal);
+        assert!(vnode.receiver().is_none());
+        vnode.set_collector_online();
+        assert_eq!(state(&vnode), (true, true, true, IngestType::Virtual, 1));
+        vnode.virtual_offline();
+        assert_eq!(state(&vnode), (false, false, false, IngestType::Archived, 0));
+        assert_eq!(vnode.set_receiver(slot()), Attach::Attached);
     }
 
     /// `rrdhost_clear_receiver()` cleans the receiver's parser up last, under the receiver lock (R58-2,

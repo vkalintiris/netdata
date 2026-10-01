@@ -135,10 +135,11 @@ pub struct HostStatus {
 }
 
 impl Host {
-    /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_BASIC)`, without vnodes: a host that is not online is archived
-    /// when no receiver attached to it since the agent started (one loaded from the metadata database), else offline.
+    /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_BASIC)`: a host that is not online is archived when no receiver
+    /// attached to it since the agent started (one loaded from the metadata database), else offline.
     pub fn status_basic(&self, now: i64) -> HostStatus {
-        let attached = self.receiver().is_some();
+        // has_receiver: a host that is not local, with a receiver while its collector is online
+        let attached = !self.is_local() && self.collector_online() && self.receiver().is_some();
         let online = self.is_online();
         let (first_time_s, mut last_time_s) = self.contexts().retention();
         if online {
@@ -161,7 +162,7 @@ impl Host {
             }
         } else if db_status == DbStatus::Initializing {
             IngestStatus::Initializing
-        } else if self.is_localhost() {
+        } else if self.is_local() {
             IngestStatus::Online
         } else if self.replicating_charts() > 0 || !self.contexts().any_metric_collected() {
             IngestStatus::Replicating
@@ -179,6 +180,8 @@ impl Host {
                 IngestType::Localhost
             } else if attached {
                 IngestType::Child
+            } else if self.is_virtual() {
+                IngestType::Virtual
             } else {
                 IngestType::Archived
             },

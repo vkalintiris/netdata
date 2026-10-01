@@ -93,8 +93,7 @@ impl Charts {
                 }
                 if let Some(state) = inbound_state(status) {
                     inbound[usize::from(status & EPHEMERAL != 0)][state] += 1;
-                    // rrdhost_is_local(): localhost, or a virtual host, which is not ported
-                    if gates.stream_is_parent && !host.is_localhost() {
+                    if gates.stream_is_parent && !host.is_local() {
                         child_charts(localhost, &host, state);
                     }
                 }

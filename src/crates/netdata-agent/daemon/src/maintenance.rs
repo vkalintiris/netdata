@@ -46,7 +46,7 @@ fn cleanup_obsolete_charts_from_all_hosts(hosts: &Hosts, now_s: i64) {
     let mut archived = 0;
     for host in hosts.all() {
         archived += cleanup_charts_marked_obsolete(&host, obsolete_s, now_s);
-        if host.is_localhost() || host.is_virtual_host_os() {
+        if host.is_local() || host.is_virtual_host_os() {
             continue;
         }
         host.obsolete_all_if_gone(now_s, obsolete_s);

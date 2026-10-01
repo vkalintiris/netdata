@@ -666,6 +666,16 @@ impl Receivers {
                 );
                 return false;
             }
+            // the same rejection the accept's gate sends, so the child backs off the same way
+            Attach::VnodeIsLocal => {
+                peer.status(
+                    "rejecting streaming connection; this host was claimed as a locally collected vnode",
+                    Reason::PARENT_VNODE_IS_LOCAL,
+                    Priority::Warning,
+                );
+                let _ = send_timeout(&mut link, handshake::ERROR_LOCAL_VNODE.as_bytes(), Duration::from_secs(5));
+                return false;
+            }
             Attach::CleanupBusy => {
                 peer.status(
                     "rejecting streaming connection; internal cleanup is in progress for this node, please retry \

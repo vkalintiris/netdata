@@ -155,11 +155,12 @@ fn node_add_v2_mcp(w: &mut JsonWriter, host: &Host) {
         w.member_add_uuid("node_id", &node_id);
     }
     w.member_add_string("hostname", host.hostname());
-    // no vnodes here
     w.member_add_string(
         "relationship",
         if host.is_localhost() {
             "localhost"
+        } else if host.is_virtual() {
+            "virtual"
         } else {
             "child"
         },

@@ -249,8 +249,7 @@ fn gate<'a>(host: &'a Host, chart: &Chart, src: &mut BufferSource<'_>) -> Option
     let up = host.upstream()?.as_ref();
     let host_flags = host.sender_flags();
     if host_flags & sender_flags::READY_4_METRICS == 0 {
-        // RRDHOST_FLAG_COLLECTOR_ONLINE
-        if host.is_online() && host_flags & sender_flags::ADDED == 0 {
+        if host.collector_online() && host_flags & sender_flags::ADDED == 0 {
             up.start();
         }
         // the snapshot first, as C: no shared write at every collection while the sender waits
