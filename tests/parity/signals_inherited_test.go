@@ -77,7 +77,7 @@ func probeRecords(t *testing.T, d *daemon.Daemon) []string {
 // TestInheritedSigIgn (`daemon.inherited-sig-ign`, D123): both agents start with HUP, INT, QUIT, TERM, USR2 and CHLD
 // ignored. C's handlers replace the ignore of the signals it catches, so the scripts it runs start with the default
 // action for each; the Rust agent resets them after blocking them. The daemons still act on HUP, USR2 and INT or QUIT.
-// The daemon's own SigIgn is compared without SIGCHLD, which C leaves ignored and Rust resets (D123.2, DEFECTS).
+// The daemon's own SigIgn is compared whole: both leave SIGCHLD as inherited (D140.1 reversed D123.2).
 func TestInheritedSigIgn(t *testing.T) {
 	// `env --ignore-signal` is GNU coreutils 8.31 or later
 	if exec.Command("env", "--ignore-signal=HUP", "true").Run() != nil {
@@ -102,11 +102,8 @@ func TestInheritedSigIgn(t *testing.T) {
 				t.Fatalf("oracle SigIgn %016x: the wrapper did not ignore SIGCHLD, or C no longer replaces the ignores",
 					masks[0])
 			}
-			if masks[0]&^chld != masks[1]&^chld {
-				t.Errorf("daemon SigIgn (SIGCHLD aside): oracle %016x, candidate %016x", masks[0], masks[1])
-			}
-			if bins := binaries(t); bins[0] != bins[1] && masks[1]&chld != 0 {
-				t.Errorf("candidate SigIgn %016x: SIGCHLD still ignored (D123.2)", masks[1])
+			if masks[0] != masks[1] {
+				t.Errorf("daemon SigIgn: oracle %016x, candidate %016x", masks[0], masks[1])
 			}
 			var probes [2][]string
 			for i, side := range p.Each() {

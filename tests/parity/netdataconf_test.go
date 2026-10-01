@@ -27,7 +27,6 @@ func pending(reason, section string, keys ...string) {
 }
 
 func init() {
-	pending("registry", "directories", "registry")
 	pending("cloud/ACLK", "cloud", "query threads")
 	pending("ml", "ml", "enabled", "training window", "min training window", "max training vectors",
 		"max samples to smooth", "train every", "number of models per dimension", "delete models older than",
@@ -37,10 +36,7 @@ func init() {
 		"dimension anomaly rate suppression window", "dimension anomaly rate suppression threshold",
 		"enable statistics charts", "hosts to skip from training", "charts to skip from training",
 		"stream anomaly detection charts")
-	pending("registry", "registry", "enabled", "registry db file", "registry log file",
-		"registry save db every new entries", "registry expire idle persons", "registry domain", "registry to announce",
-		"registry hostname", "verify browser cookies support", "enable cookies SameSite and Secure", "max URL length",
-		"max URL name length", "netdata management api key file")
+	pending("registry", "registry", "netdata management api key file")
 	// go.d is a file key C does not read either; its annotation depends on the section having a used key.
 	pending("plugins.d", "plugins", "enable running new plugins", "check for new plugins every", "cups", "xenstat",
 		"systemd-units", "nfacct", "scripts.d", "ebpf-go", "freeipmi", "otel", "apps", "go.d", "charts.d", "python.d",
