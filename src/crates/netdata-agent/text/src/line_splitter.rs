@@ -23,7 +23,8 @@ pub enum Separators {
 }
 
 impl Separators {
-    fn contains(self, c: u8) -> bool {
+    /// Whether `c` separates words.
+    pub fn contains(self, c: u8) -> bool {
         let whitespace = matches!(c, b' ' | b'\t' | b'\r' | b'\n' | 0x0c | 0x0b);
         match self {
             Separators::Whitespace => whitespace,

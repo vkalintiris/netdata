@@ -157,14 +157,16 @@ impl DeferredBody {
         }
     }
 
-    /// Feeds one raw line (newline included). The end line is recognized by its first word (same separators as the
-    /// tokenizer), compared on its first 99 bytes.
+    /// Feeds one raw line (newline included). The end line is recognized by its first keyword as
+    /// `find_first_keyword()` takes it: after leading separators, the bytes up to the next one (quotes kept), at most
+    /// 99.
     pub fn feed(&mut self, line: &[u8]) -> Deferred {
-        let first = quoted_strings_splitter(line, 1, Separators::Pluginsd);
-        if let Some(word) = first.first() {
-            if word[..word.len().min(99)] == self.end_keyword[..] {
-                return Deferred::Done(std::mem::take(&mut self.body));
-            }
+        let line_c = c_str(line);
+        let start = line_c.iter().position(|&c| !Separators::Pluginsd.contains(c)).unwrap_or(line_c.len());
+        let rest = &line_c[start..];
+        let len = rest.iter().position(|&c| Separators::Pluginsd.contains(c)).unwrap_or(rest.len()).min(99);
+        if len > 0 && rest[..len] == self.end_keyword[..] {
+            return Deferred::Done(std::mem::take(&mut self.body));
         }
         if !self.keep {
             return Deferred::Continue;
@@ -272,6 +274,19 @@ mod tests {
         let line = vec![b'x'; MAX_DEFERRED_SIZE + 1];
         assert_eq!(d.feed(&line), Deferred::Continue);
         assert_eq!(d.feed(b"FUNCTION_RESULT_END\n"), Deferred::Done(Vec::new()));
+    }
+
+    /// `find_first_keyword()` ends a deferred body: the bytes up to the first separator, quotes kept, so a quoted end
+    /// keyword is body; `=` separates as in every pluginsd word.
+    #[test]
+    fn a_quoted_end_keyword_stays_in_the_body_as_c() {
+        let mut d = DeferredBody::new("JSON_PAYLOAD_END");
+        assert_eq!(d.feed(b"'JSON_PAYLOAD_END'\n"), Deferred::Continue);
+        assert_eq!(d.feed(b"\"JSON_PAYLOAD_END\" x\n"), Deferred::Continue);
+        assert_eq!(
+            d.feed(b"JSON_PAYLOAD_END=x\n"),
+            Deferred::Done(b"'JSON_PAYLOAD_END'\n\"JSON_PAYLOAD_END\" x\n".to_vec())
+        );
     }
 
     #[test]
