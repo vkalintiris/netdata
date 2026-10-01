@@ -69,8 +69,9 @@ impl std::fmt::Display for Failure {
 /// A connection's decompressor: frames the received bytes into messages and decompresses them in order.
 pub struct Decompressor {
     engine: Engine,
-    /// Received bytes not yet part of a complete message.
+    /// Received bytes not yet decompressed, from `start`.
     pending: Vec<u8>,
+    start: usize,
     output: Vec<u8>,
 }
 
@@ -106,40 +107,50 @@ impl Decompressor {
         Some(Decompressor {
             engine,
             pending: Vec::new(),
+            start: 0,
             output: vec![0; output],
         })
     }
 
-    /// `receiver_feed_decompressor()` over everything received: appends every complete message's decompressed bytes
-    /// to `out` and keeps an incomplete one for later.
-    pub fn push(&mut self, received: &[u8], out: &mut Vec<u8>) -> Result<(), Failure> {
+    /// `receiver_read_compressed()`: received bytes join the ones not yet part of a complete message.
+    pub fn feed(&mut self, received: &[u8]) {
         self.pending.extend_from_slice(received);
-        let mut start = 0;
-        let result = loop {
-            let Some(header) = self.pending.get(start..start + SIGNATURE_SIZE) else {
-                break Ok(());
-            };
-            let Some(size) =
-                decode_signature([header[0], header[1], header[2], header[3]]).filter(|&s| s != 0)
-            else {
-                break Err(Failure::Multiplexed);
-            };
-            if size > MAX_MSG_SIZE {
-                break Err(Failure::TooBig(size));
-            }
-            let body = start + SIGNATURE_SIZE;
-            if body + size > self.pending.len() {
-                break Ok(());
-            }
-            let message = self.pending[body..body + size].to_vec();
-            match self.decompress(&message) {
-                Ok(0) | Err(_) => break Err(Failure::NoBytes),
-                Ok(n) => out.extend_from_slice(&self.output[..n]),
-            }
-            start = body + size;
+    }
+
+    /// `receiver_feed_decompressor()` and `receiver_get_decompressed()` of the next complete message: its
+    /// decompressed bytes appended to `out`, or false when no complete message is left (the rest is kept for the next
+    /// read). C parses each message's lines before it decompresses the next one.
+    pub fn next_message(&mut self, out: &mut Vec<u8>) -> Result<bool, Failure> {
+        let rest = &self.pending[self.start..];
+        let Some(header) = rest.get(..SIGNATURE_SIZE) else {
+            return Ok(self.keep_rest());
         };
-        self.pending.drain(..start);
-        result
+        let Some(size) = decode_signature([header[0], header[1], header[2], header[3]]).filter(|&s| s != 0) else {
+            return Err(Failure::Multiplexed);
+        };
+        if size > MAX_MSG_SIZE {
+            return Err(Failure::TooBig(size));
+        }
+        if SIGNATURE_SIZE + size > rest.len() {
+            return Ok(self.keep_rest());
+        }
+        let body = self.start + SIGNATURE_SIZE;
+        self.start = body + size;
+        let message = self.pending[body..self.start].to_vec();
+        match self.decompress(&message) {
+            Ok(0) | Err(_) => Err(Failure::NoBytes),
+            Ok(n) => {
+                out.extend_from_slice(&self.output[..n]);
+                Ok(true)
+            }
+        }
+    }
+
+    /// `receiver_move_compressed()`: an incomplete message moves to the front for the next read; false.
+    fn keep_rest(&mut self) -> bool {
+        self.pending.drain(..self.start);
+        self.start = 0;
+        false
     }
 
     /// `stream_decompress()`: one message into the output buffer; the decompressed length (0 is a failure too). A
@@ -318,9 +329,29 @@ mod tests {
         let mut d = Decompressor::for_capabilities(capabilities).unwrap();
         let mut out = Vec::new();
         for piece in stream.chunks(step) {
-            d.push(piece, &mut out)?;
+            d.feed(piece);
+            while d.next_message(&mut out)? {}
         }
         Ok(out)
+    }
+
+    /// A read holding several messages yields them one at a time: a broken one after a good one fails only when its
+    /// turn comes, after the good one's bytes were handed out.
+    #[test]
+    fn messages_come_out_one_at_a_time() {
+        let zstd = |text: &[u8]| frame(&zstd::bulk::compress(text, 1).unwrap());
+        let mut d = Decompressor::for_capabilities(caps::ZSTD).unwrap();
+        let read = [zstd(b"one\n"), zstd(b"two\n"), frame(b"not zstd")].concat();
+        d.feed(&read[..read.len() - 1]);
+        let mut out = Vec::new();
+        assert_eq!(d.next_message(&mut out), Ok(true));
+        assert_eq!(out, b"one\n");
+        assert_eq!(d.next_message(&mut out), Ok(true));
+        assert_eq!(out, b"one\ntwo\n");
+        // the third is not complete yet
+        assert_eq!(d.next_message(&mut out), Ok(false));
+        d.feed(&read[read.len() - 1..]);
+        assert_eq!(d.next_message(&mut out), Err(Failure::NoBytes));
     }
 
     #[test]

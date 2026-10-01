@@ -227,19 +227,27 @@ fn a_reset_postpones_every_parent_alike_and_lifts_only_the_session_bans() {
     parents.list[0].banned_for_this_session = true;
     parents.list[1].banned_permanently = true;
     parents.list[1].reason = Reason::SP_CONNECTION_REFUSED;
-    // C's window is [max(5, d / 2), d + 5) seconds: 15 gives [7, 20), 2 gives [5, 7)
+    // C's window is [max(5, d / 2), d + 5) seconds: 15 gives [7, 20), 2 gives [5, 7); 200 draws reach both ends'
+    // quarters
     for (delay, low, high) in [(15, 7, 20), (2, 5, 7)] {
-        let before = now_realtime_ut();
-        parents.reset(Reason::NEVER, delay);
-        let after = now_realtime_ut();
-        let until = parents.list[0].postpone_until_ut;
-        assert!(until >= before + low * 1_000_000 && until < after + high * 1_000_000, "{delay}");
-        let states: Vec<_> = parents
-            .list
-            .iter()
-            .map(|d| (d.postpone_until_ut, d.banned_for_this_session, d.banned_permanently, d.reason))
-            .collect();
-        assert_eq!(states, [(until, false, false, Reason::NEVER), (until, false, true, Reason::NEVER)]);
+        let (mut first, mut last) = (u64::MAX, 0);
+        for _ in 0..200 {
+            let before = now_realtime_ut();
+            parents.reset(Reason::NEVER, delay);
+            let after = now_realtime_ut();
+            let until = parents.list[0].postpone_until_ut;
+            assert!(until >= before + low * 1_000_000 && until < after + high * 1_000_000, "{delay}");
+            let states: Vec<_> = parents
+                .list
+                .iter()
+                .map(|d| (d.postpone_until_ut, d.banned_for_this_session, d.banned_permanently, d.reason))
+                .collect();
+            assert_eq!(states, [(until, false, false, Reason::NEVER), (until, false, true, Reason::NEVER)]);
+            first = first.min(until - before);
+            last = last.max(until - before);
+        }
+        let quarter = (high - low) * 250_000;
+        assert!(first < low * 1_000_000 + quarter && last > high * 1_000_000 - quarter, "{delay}: {first}..{last}");
     }
 }
 

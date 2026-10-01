@@ -393,7 +393,8 @@ mod tests {
                     framed.extend_from_slice(&message);
                     let step = [1, 7, framed.len()][i % 3];
                     for chunk in framed.chunks(step) {
-                        d.push(chunk, &mut plain).unwrap();
+                        d.feed(chunk);
+                        while d.next_message(&mut plain).unwrap() {}
                     }
                     total += n;
                     // nothing held back: the parent has every piece as soon as its message arrived
@@ -422,7 +423,8 @@ mod tests {
             let message = c.compress(&rest[..n]).unwrap().to_vec();
             let mut framed = encode_signature(message.len()).unwrap().to_vec();
             framed.extend_from_slice(&message);
-            d.push(&framed, &mut plain).unwrap();
+            d.feed(&framed);
+            while d.next_message(&mut plain).unwrap() {}
             rest = &rest[n..];
         }
         assert_eq!(plain, big);

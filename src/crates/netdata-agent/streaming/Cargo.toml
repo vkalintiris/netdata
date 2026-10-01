@@ -30,3 +30,7 @@ serde_json = { workspace = true }
 nix = { workspace = true, features = ["socket", "net", "poll"] }
 socket2 = { workspace = true }
 zstd = { workspace = true }
+
+[dev-dependencies]
+# a stream thread driven one turn at a time
+netdata-agent-evloop = { workspace = true, features = ["testing"] }

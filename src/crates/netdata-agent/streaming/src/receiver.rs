@@ -132,6 +132,11 @@ pub fn now_monotonic_ut() -> u64 {
     EPOCH.get_or_init(Instant::now).elapsed().as_micros() as u64 + 1
 }
 
+/// The complete lines of `bytes` through the parser; false at the first line it refuses.
+fn parse(reader: &mut LineReader, parser: &mut Parser, bytes: &[u8]) -> bool {
+    reader.push(bytes).into_iter().all(|line| parser.feed(&line))
+}
+
 /// Values admission takes from the rest of the daemon.
 #[derive(Debug, Clone)]
 pub struct Defaults {
@@ -1518,32 +1523,48 @@ impl StreamWorker {
                         .slot
                         .last_traffic_ut
                         .store(now_monotonic_ut(), Ordering::Relaxed);
-                    let plain;
-                    let received = match child.decompressor.as_mut() {
-                        None => &buf[..n],
-                        Some(decompressor) => {
-                            let mut out = Vec::new();
-                            if let Err(failure) = decompressor.push(&buf[..n], &mut out) {
+                    match child.decompressor.as_mut() {
+                        None => {
+                            if !parse(&mut child.reader, &mut child.parser, &buf[..n]) {
                                 let _parser = child.parser.log_frame();
-                                let a = &child.attached;
-                                nd_log!(
-                                    Source::Daemon,
-                                    Priority::Err,
-                                    "STREAM RCV[x] '{}' [from [{}]:{}]: {failure}",
-                                    a.host.hostname(),
-                                    a.peer.ip,
-                                    a.peer.port
-                                );
-                                return self.disconnect(cx, index, Reason::RCV_DECOMPRESSION_FAILED);
+                                return self.disconnect(cx, index, Reason::RCV_DISCONNECT_PARSER_FAILED);
                             }
-                            plain = out;
-                            &plain[..]
                         }
-                    };
-                    for line in child.reader.push(received) {
-                        if !child.parser.feed(&line) {
-                            let _parser = child.parser.log_frame();
-                            return self.disconnect(cx, index, Reason::RCV_DISCONNECT_PARSER_FAILED);
+                        Some(decompressor) => {
+                            // stream_receive_and_process(): a message at a time, its lines parsed before the next is
+                            // decompressed, while the streaming service runs and no stop is asked
+                            decompressor.feed(&buf[..n]);
+                            let mut out = Vec::new();
+                            let stop_requested = &child.attached.slot.stop_requested;
+                            let stop = || stop_requested.load(Ordering::Acquire);
+                            while !netdata_agent_sys::exit::initiated() && !stop() {
+                                out.clear();
+                                match decompressor.next_message(&mut out) {
+                                    Ok(false) => break,
+                                    Ok(true) => {
+                                        if !parse(&mut child.reader, &mut child.parser, &out) {
+                                            let _parser = child.parser.log_frame();
+                                            return self.disconnect(cx, index, Reason::RCV_DISCONNECT_PARSER_FAILED);
+                                        }
+                                    }
+                                    Err(failure) => {
+                                        let _parser = child.parser.log_frame();
+                                        let a = &child.attached;
+                                        nd_log!(
+                                            Source::Daemon,
+                                            Priority::Err,
+                                            "STREAM RCV[x] '{}' [from [{}]:{}]: {failure}",
+                                            a.host.hostname(),
+                                            a.peer.ip,
+                                            a.peer.port
+                                        );
+                                        return self.disconnect(cx, index, Reason::RCV_DECOMPRESSION_FAILED);
+                                    }
+                                }
+                            }
+                            if stop() {
+                                return self.disconnect(cx, index, Reason::DISCONNECT_SIGNALED_TO_STOP);
+                            }
                         }
                     }
                     // the charts just received may lower the update every the keepalive follows
@@ -1566,9 +1587,8 @@ impl StreamWorker {
                         return self.disconnect(cx, index, reason);
                     }
                     self.send_proxied(cx, index);
-                    // service_running(SERVICE_STREAMING) per chunk: once the exit started the rest waits for the
-                    // loop's exit path (D110)
-                    if self.children[index].is_some() && !netdata_agent_sys::exit::initiated() {
+                    // once the exit started, the next turn's running() ends the loop before this is served (D110)
+                    if self.children[index].is_some() {
                         cx.report_again(Token(index));
                     }
                 }
@@ -1724,6 +1744,19 @@ mod tests {
         hosts: &Arc<Hosts>,
         connector: &Arc<Connector>,
     ) -> (Arc<Host>, Arc<ReceiverSlot>, mio::net::UnixStream) {
+        let (attached, host, slot, theirs) = child(n, crate::caps::V2, pool, hosts, connector);
+        pool.handle().send(0, StreamMsg::Attach(Box::new(attached))).unwrap();
+        (host, slot, theirs)
+    }
+
+    /// A child taken over by `admit()` with `capabilities` negotiated, for stream thread 0, and its peer end.
+    fn child(
+        n: u8,
+        capabilities: u32,
+        pool: &netdata_agent_evloop::Pool<StreamMsg>,
+        hosts: &Arc<Hosts>,
+        connector: &Arc<Connector>,
+    ) -> (Attached, Arc<Host>, Arc<ReceiverSlot>, mio::net::UnixStream) {
         let host = Arc::new(Host::new(
             &format!("5a1e0000-0000-4000-8000-0000000000{n:02x}"),
             false,
@@ -1744,7 +1777,7 @@ mod tests {
             stream: Link::Plain(Conn::Unix(ours)),
             thread: 0,
             parser: ingest::Config {
-                capabilities: crate::caps::V2,
+                capabilities,
                 update_every: 1,
                 page_size: 4096,
                 now: || (1_700_000_000, 0),
@@ -1759,8 +1792,93 @@ mod tests {
             replication_wait: false,
             connector: Arc::clone(connector),
         };
-        pool.handle().send(0, StreamMsg::Attach(Box::new(attached))).unwrap();
-        (host, slot, theirs)
+        (attached, host, slot, theirs)
+    }
+
+    /// A stream thread driven one turn at a time, with the pool and connector its children's admission needs.
+    fn stepper() -> (
+        netdata_agent_evloop::testing::Stepper<StreamWorker>,
+        netdata_agent_evloop::Pool<StreamMsg>,
+        Arc<Hosts>,
+        Arc<Connector>,
+    ) {
+        let (pool, connector) = crate::connector::tests::connector();
+        let hosts = Arc::new(Hosts::new(Host::new(
+            "5a1e0000-0000-4000-8000-0000000000aa",
+            true,
+            crate::connector::tests::info("", ""),
+        )));
+        let worker = StreamWorker::new(Arc::new(Mutex::new(Pins::new(1))), 1);
+        (netdata_agent_evloop::testing::Stepper::new(0, worker).unwrap(), pool, hosts, connector)
+    }
+
+    /// What each attached child has read so far, in attach order.
+    fn read_so_far(s: &mut netdata_agent_evloop::testing::Stepper<StreamWorker>) -> Vec<u64> {
+        s.worker().children.iter().flatten().map(|c| c.bytes_in).collect()
+    }
+
+    /// C's one read of a host per turn (`count = 1`, D126.6): two children with 3 x 16384 bytes each are read 16384
+    /// bytes a turn each, the first read in the turn after the attach, until a read finds the socket empty.
+    #[test]
+    fn children_are_read_once_a_turn_each() {
+        use std::io::Write;
+        let (mut s, pool, hosts, connector) = stepper();
+        let mut peers = Vec::new();
+        for n in [0xd1, 0xd2] {
+            let (attached, _, _, mut theirs) = child(n, crate::caps::V2, &pool, &hosts, &connector);
+            theirs.write_all(&[b'\n'; 3 * 16384]).unwrap();
+            s.with(|w, cx| w.attach(cx, attached));
+            peers.push(theirs);
+        }
+        assert_eq!(read_so_far(&mut s), [0, 0]);
+        for read in [16384, 32768, 49152, 49152] {
+            assert!(s.turn(Duration::from_millis(50)));
+            assert_eq!(read_so_far(&mut s), [read, read]);
+        }
+        assert_eq!(s.owed(), []);
+    }
+
+    /// A child that sends 2 x 16384 bytes and closes is read twice, then removed at the third read.
+    #[test]
+    fn a_closed_child_is_removed_at_the_read_that_finds_the_end() {
+        use std::io::Write;
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, _, mut theirs) = child(0xd3, crate::caps::V2, &pool, &hosts, &connector);
+        theirs.write_all(&[b'\n'; 2 * 16384]).unwrap();
+        drop(theirs);
+        s.with(|w, cx| w.attach(cx, attached));
+        for read in [16384, 32768] {
+            assert!(s.turn(Duration::from_millis(50)));
+            assert_eq!(read_so_far(&mut s), [read]);
+        }
+        let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        assert!(read_so_far(&mut s).is_empty());
+        assert!(host.receiver().is_none());
+        let texts: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+        assert!(texts.iter().any(|t| t.contains("CLOSED BY REMOTE END")), "{texts:?}");
+    }
+
+    /// C decompresses and parses a read's messages one at a time: a message that fails after a good one in the same
+    /// read leaves the good one's lines parsed, and the connection ends with DECOMPRESSION FAILED.
+    #[test]
+    fn a_read_s_messages_are_parsed_before_the_next_is_decompressed() {
+        use std::io::Write;
+        let framed = |payload: &[u8]| {
+            let mut f = crate::compression::encode_signature(payload.len()).unwrap().to_vec();
+            f.extend_from_slice(payload);
+            f
+        };
+        let (mut s, pool, hosts, connector) = stepper();
+        let capabilities = crate::caps::V2 | crate::caps::ZSTD;
+        let (attached, host, _, mut theirs) = child(0xd4, capabilities, &pool, &hosts, &connector);
+        let good = zstd::bulk::compress(b"CHART 'x.y' '' t u f c line 1 1\nDIMENSION 'd' '' absolute 1 1\n", 1).unwrap();
+        theirs.write_all(&[framed(&good), framed(b"not zstd")].concat()).unwrap();
+        s.with(|w, cx| w.attach(cx, attached));
+        let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        assert!(host.charts().find("x.y", true).is_some());
+        assert!(host.receiver().is_none());
+        let texts: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+        assert!(texts.iter().any(|t| t.contains("no bytes to decompress.")), "{texts:?}");
     }
 
     /// The waiting list (D127.4): a stream thread admits its queued receivers in order, one per tick at most, each
