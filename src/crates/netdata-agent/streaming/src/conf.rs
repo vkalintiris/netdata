@@ -370,7 +370,7 @@ impl StreamConf {
         self.config.get_boolean(key, "enabled", enabled)
     }
 
-    /// `stream_conf_api_key_allows_client()`: `allow from` (default `*`) against the client IP, case-insensitive.
+    /// `stream_conf_api_key_allows_client()`: `allow from` (default `*`) against the client IP, case-sensitive.
     pub fn api_key_allows_client(&mut self, key: &str, client_ip: &str) -> bool {
         let allow = self
             .config
