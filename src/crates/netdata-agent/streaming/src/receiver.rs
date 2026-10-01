@@ -718,6 +718,8 @@ impl Receivers {
             );
         }
         let prompt = caps::prompt(capabilities);
+        // the negotiated capabilities are logged while the prompt is built, before the socket is set up
+        peer.established(&host.hostname(), capabilities);
         let mut keepalive_initialized = false;
         // web server sockets are non-blocking: C sends the prompt in blocking mode
         if let Some(conn) = link.socket() {
@@ -742,8 +744,6 @@ impl Receivers {
                 &mut keepalive_initialized,
             );
         }
-        // the negotiated capabilities are logged before the prompt goes out
-        peer.established(&host.hostname(), capabilities);
         if let Err(errno) = send_timeout(&mut link, prompt.as_bytes(), Duration::from_secs(60)) {
             peer.status_errno(
                 "cannot reply back, dropping connection",
@@ -1871,6 +1871,121 @@ mod tests {
         assert!(host.receiver().is_none());
         let texts: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
         assert!(texts.iter().any(|t| t.contains("CLOSED BY REMOTE END")), "{texts:?}");
+    }
+
+    const ADMIT_KEY: &str = "11111111-2222-3333-4444-555555555555";
+
+    /// Receivers over a host index of their own (default stream.conf, ram), and the pool their connector runs.
+    fn receivers() -> (Receivers, netdata_agent_evloop::Pool<StreamMsg>) {
+        let (pool, connector) = crate::connector::tests::connector();
+        let hosts = Arc::new(Hosts::new(Host::new(
+            "5a1e0000-0000-4000-8000-0000000000aa",
+            true,
+            crate::connector::tests::info("", ""),
+        )));
+        let defaults = Defaults {
+            db_mode: "ram".into(),
+            history: 3600,
+            health_enabled: false,
+            update_every: 1,
+            page_size: 4096,
+            gap_when_lost_iterations_above: 3,
+        };
+        let pins = Arc::new(Mutex::new(Pins::new(1)));
+        (Receivers::new(StreamConf::default(), hosts, pins, defaults, pool.handle(), connector), pool)
+    }
+
+    /// A request of `child` for `guid` that passed `pre_admit()`.
+    fn pending(guid: &str) -> Pending {
+        let q = format!("key={ADMIT_KEY}&hostname=child&machine_guid={guid}&ver=17088");
+        Pending {
+            request: StreamRequest::parse(q.as_bytes(), 1, None),
+            peer: Peer {
+                ip: "127.0.0.1".into(),
+                port: "1".into(),
+                hostname: Some("child".into()),
+                key: Some(ADMIT_KEY.into()),
+                machine_guid: Some(guid.into()),
+            },
+            accepted_s: 0,
+        }
+    }
+
+    /// `stream_receiver_send_first_response()` logs the negotiated capabilities while it builds the prompt, before the
+    /// socket is set up: a unix child's TCP option warnings follow it.
+    #[test]
+    fn the_capabilities_are_logged_before_the_socket_options() {
+        let (r, _pool) = receivers();
+        let guid = "5a1e0000-0000-4000-8000-0000000000e3";
+        let (ours, _theirs) = mio::net::UnixStream::pair().unwrap();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&ours);
+        let (admitted, records) =
+            netdata_agent_log::capture(|| r.admit(pending(guid), Link::Plain(Conn::Unix(ours))));
+        assert!(admitted);
+        let order: Vec<String> = texts(records)
+            .into_iter()
+            .filter(|t| t.contains("established link") || t.contains("cannot set TCP_"))
+            .map(|t| t.split_once("]: ").unwrap().1.split(": ").next().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "established link with negotiated capabilities".to_string(),
+                format!("cannot set TCP_KEEPIDLE on socket {fd}"),
+                format!("cannot set TCP_KEEPINTVL on socket {fd}"),
+                format!("cannot set TCP_KEEPCNT on socket {fd}"),
+            ]
+        );
+    }
+
+    /// `stream_receiver_send_first_response()`: a prompt the socket does not take whole (here EPIPE, the child gone)
+    /// is C's ERR status pair (SEND TIMEOUT, the send's errno on the access record), then the receiver is cleared.
+    #[test]
+    fn a_failed_prompt_drops_the_connection_and_clears_the_receiver() {
+        let (r, _pool) = receivers();
+        let guid = "5a1e0000-0000-4000-8000-0000000000e2";
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(theirs);
+        // a web server socket is non-blocking; a dup shares its status flags and options
+        ours.set_nonblocking(true).unwrap();
+        let probe = ours.try_clone().unwrap();
+        let ours = mio::net::UnixStream::from_std(ours);
+        let (admitted, records) =
+            netdata_agent_log::capture(|| r.admit(pending(guid), Link::Plain(Conn::Unix(ours))));
+        assert!(!admitted);
+        // the prompt went out on a blocking socket with a 600 s receive timeout
+        let fdinfo = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", std::os::fd::AsRawFd::as_raw_fd(&probe)))
+            .unwrap();
+        let flags = fdinfo.lines().find_map(|l| l.strip_prefix("flags:")).unwrap().trim();
+        assert_eq!(u32::from_str_radix(flags, 8).unwrap() & 0o4000, 0, "O_NONBLOCK");
+        assert_eq!(probe.read_timeout().unwrap(), Some(Duration::from_secs(600)));
+        let host = r.hosts.find_by_guid(guid).unwrap();
+        assert!(host.receiver().is_none() && host.is_orphan());
+        assert!(host.receiver_last_disconnected_s() > 0);
+        let failed: Vec<_> = records
+            .into_iter()
+            .filter(|r| r.priority == Priority::Err)
+            .map(|r| (r.source, r.errno, r.message.unwrap_or_default()))
+            .collect();
+        assert_eq!(
+            failed,
+            [
+                (
+                    Source::Access,
+                    nix::errno::Errno::EPIPE as i32,
+                    format!(
+                        "api_key:'[REDACTED]' machine_guid:'{guid}' node:'child' msg:'cannot reply back, dropping \
+                         connection' reason:'SEND TIMEOUT'"
+                    )
+                ),
+                (
+                    Source::Daemon,
+                    0,
+                    "STREAM RCV 'child' [from [127.0.0.1]:1]: cannot reply back, dropping connection  (SEND TIMEOUT)"
+                        .to_string()
+                ),
+            ]
+        );
     }
 
     /// The record texts a capture holds.
