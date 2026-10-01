@@ -286,7 +286,10 @@ impl Parser {
 
     /// The fields C's `pluginsd_process()` pushes for a plugin's whole run: every record written until the guard is
     /// dropped carries the line being parsed, the host, and the scope chart's name and context, read when it is
-    /// written.
+    /// written. For a plugin's parser only (a stream thread serves many parsers, so their scopes are not tracked),
+    /// which stays on the thread that started its run: a scope taken on one thread is another thread's to the next.
+    /// The values take the scope chart's metadata lock and the host's info lock as a record is written, so no record
+    /// may be written while this thread holds either.
     pub fn run_frame(&self) -> FrameGuard {
         let host = Arc::clone(&self.host);
         let scope = |field: fn(&Chart) -> String| {
@@ -306,8 +309,8 @@ impl Parser {
                 out.extend_from_slice(host.hostname().as_bytes());
                 true
             })),
-            (Field::NidlInstance, scope(|chart| chart.meta().name.unwrap_or_else(|| chart.id().to_string()))),
-            (Field::NidlContext, scope(|chart| chart.meta().context)),
+            (Field::NidlInstance, scope(|chart| chart.with_meta(|m| m.name.clone()).unwrap_or_else(|| chart.id().to_string()))),
+            (Field::NidlContext, scope(|chart| chart.with_meta(|m| m.context.clone()))),
         ])
     }
 
@@ -594,7 +597,9 @@ impl Parser {
     /// A plugin's run frame shows the new scope.
     fn scope_changed(&self) {
         if let Mode::Plugin { .. } = self.mode {
-            SCOPE.with(|s| *s.borrow_mut() = self.scope.clone());
+            // the old chart is dropped outside the borrow, which a record its drop wrote would take
+            let old = SCOPE.with(|s| s.replace(self.scope.clone()));
+            drop(old);
         }
     }
 
@@ -1234,13 +1239,21 @@ impl Parser {
         Ok(())
     }
 
-    /// `pluginsd_host()`: none, empty or `localhost` collects into localhost, as a plugin does from the start; a
-    /// machine GUID names a virtual node, which comes with commit 4 of milestone 8 (D142.10): until then the run ends.
+    /// `pluginsd_host()`: none, empty or `localhost` collects into localhost, as a plugin does from the start, and so
+    /// does localhost's own machine GUID; another host's names a virtual node, which comes with commit 4 of milestone 8
+    /// (D142.10): until then the run ends.
     fn host_scope(&mut self, w: &Words) -> Rc {
-        match w.get(1) {
-            None | Some(b"" | b"localhost") => Ok(()),
-            Some(_) => Err(Refused::Error),
+        let guid = match w.get(1) {
+            None | Some(b"" | b"localhost") => return Ok(()),
+            Some(guid) => guid,
+        };
+        let Some(uuid) = uuid_parse_flexi(guid) else {
+            return disable_with("HOST", "cannot parse MACHINE_GUID - is it a valid UUID?");
+        };
+        if uuid_parse_flexi(self.localhost.machine_guid().as_bytes()) == Some(uuid) {
+            return Ok(());
         }
+        Err(Refused::Error)
     }
 
     /// `pluginsd_config()`: `id action ...`, counted as a collection. What the actions do comes with DynCfg (commit 8

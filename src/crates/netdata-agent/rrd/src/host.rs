@@ -2322,6 +2322,45 @@ mod tests {
         assert_eq!(host.set_receiver(slot()), Attach::Attached);
     }
 
+    /// `rrdhost_clear_receiver()` cleans the receiver's parser up last, under the receiver lock (R58-2,
+    /// `stream-receiver.c:1510-1513`): a replacement attaches only after it, the slot already empty; a receiver that is
+    /// not the host's has its cleanup run too.
+    #[test]
+    fn a_receivers_cleanup_runs_before_a_replacement_attaches() {
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let host = hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {}).expect("created");
+        let slot = || Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        let old = slot();
+        assert_eq!(host.set_receiver(Arc::clone(&old)), Attach::Attached);
+        let (entered, release, attached) = (AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false));
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                host.clear_receiver_then(&old, -10, || {
+                    entered.store(true, Ordering::SeqCst);
+                    while !release.load(Ordering::SeqCst) {
+                        std::thread::yield_now();
+                    }
+                })
+            });
+            while !entered.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            let replacement = s.spawn(|| {
+                let attach = host.set_receiver(slot());
+                attached.store(true, Ordering::SeqCst);
+                attach
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let during = attached.load(Ordering::SeqCst);
+            release.store(true, Ordering::SeqCst);
+            assert!(!during, "a replacement attached during the cleanup");
+            assert_eq!(replacement.join().unwrap(), Attach::Attached);
+        });
+        let ran = AtomicBool::new(false);
+        host.clear_receiver_then(&old, -10, || ran.store(true, Ordering::SeqCst));
+        assert!(ran.load(Ordering::SeqCst), "the cleanup of a receiver that is not the host's");
+    }
+
     /// A receiver leaves while a walk that frees hosts holds the index (R55 M3): the count it updates is not under
     /// the index's lock, as C's atomic `streaming_connected_receivers`.
     #[test]

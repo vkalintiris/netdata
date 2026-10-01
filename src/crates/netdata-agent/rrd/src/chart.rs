@@ -1672,7 +1672,28 @@ impl Charts {
             }
         }
         lock(&self.send_slots).release(chart.chart_slot.swap(0, Ordering::Relaxed));
-        // rrdset_pluginsd_receive_unslot_and_cleanup(): no other thread can be using the cache behind its lock
+        // rrdset_pluginsd_receive_unslot_and_cleanup(): a chart still in a parser's scope is reported, and given up when
+        // the scope is this thread's; C then leaves another thread's cache as it is, which here no thread can be using
+        // behind its lock, so it is emptied all the same
+        let owner = chart.scope_tid();
+        if owner != 0 && owner != netdata_agent_log::tid() {
+            static ACTIVE: ErrorLimit = ErrorLimit::new(1, 0);
+            nd_log_limit!(
+                &ACTIVE,
+                netdata_agent_log::Source::Daemon,
+                netdata_agent_log::Priority::Warning,
+                "PLUGINSD: attempted cleanup while collector (tid {owner}) is still active on chart, skipping"
+            );
+        } else if owner != 0 {
+            static OWN: ErrorLimit = ErrorLimit::new(1, 0);
+            nd_log_limit!(
+                &OWN,
+                netdata_agent_log::Source::Daemon,
+                netdata_agent_log::Priority::Warning,
+                "PLUGINSD: cleanup called from collector thread (tid {owner}), forcing collector_tid=0"
+            );
+            chart.set_scope_tid(0);
+        }
         self.unslot(chart);
         chart.freed_contents();
         true
@@ -2073,6 +2094,30 @@ mod tests {
         .unwrap();
         assert_ne!(other, netdata_agent_log::tid());
         assert_eq!(chart.collector_tid(), other);
+    }
+
+    /// `rrdset_pluginsd_receive_unslot_and_cleanup()`: freeing a chart another thread still has in scope is reported;
+    /// freeing one this thread has in scope gives it up, reported too.
+    #[test]
+    fn freeing_a_chart_in_scope_is_reported_as_c() {
+        let charts = Charts::default();
+        let me = netdata_agent_log::tid();
+        let cases = [
+            (me + 1, format!("PLUGINSD: attempted cleanup while collector (tid {}) is still active on chart, skipping", me + 1), me + 1),
+            (me, format!("PLUGINSD: cleanup called from collector thread (tid {me}), forcing collector_tid=0"), 0),
+        ];
+        for (i, (owner, want, left)) in cases.into_iter().enumerate() {
+            let (chart, _) = charts.create(&spec("t", &format!("c{i}"), None));
+            chart.set_scope_tid(owner);
+            let (freed, records) = netdata_agent_log::capture(|| charts.free_if(&chart, |_| true));
+            assert!(freed);
+            let records: Vec<_> = records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
+            assert_eq!(records, [(netdata_agent_log::Source::Daemon, netdata_agent_log::Priority::Warning, want)]);
+            assert_eq!(chart.scope_tid(), left);
+        }
+        let (chart, _) = charts.create(&spec("t", "none", None));
+        let (_, records) = netdata_agent_log::capture(|| charts.free_if(&chart, |_| true));
+        assert!(records.is_empty());
     }
 
     /// `rrdset_pluginsd_receive_unslot()`: the dimension cache of a chart in another parser thread's scope stays, its

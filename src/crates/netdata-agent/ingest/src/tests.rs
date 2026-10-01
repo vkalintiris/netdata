@@ -1995,7 +1995,16 @@ fn plugin_run(lines: &[&str]) -> (bool, bool, Vec<(Priority, String)>) {
 /// `PARSER_INIT_PLUGINSD` (`gperf-hashtable.h`): what a plugin may send and a child may not, and the reverse.
 #[test]
 fn a_plugins_repertoire_is_cs() {
-    for line in ["FLUSH", "PLUGIN_KEEPALIVE", "TRUST_DURATIONS 1", "HOST", "HOST ''", "HOST localhost", "DYNCFG_ENABLE x"] {
+    for line in [
+        "FLUSH",
+        "PLUGIN_KEEPALIVE",
+        "TRUST_DURATIONS 1",
+        "HOST",
+        "HOST ''",
+        "HOST localhost",
+        "HOST 5A1E0000-0000-4000-8000-0000000000AA",
+        "DYNCFG_ENABLE x",
+    ] {
         assert_eq!(plugin_run(&[line]), (true, true, vec![]), "{line}");
         let h = host();
         let (results, _) = netdata_agent_log::capture(|| feed_all(&mut parser(&h), &[line]));
@@ -2020,7 +2029,7 @@ fn refusals_end_a_plugins_run_by_c_s_classes() {
     };
     let chart = "CHART 'test.c1' '' t u f c line 1 1";
     type Case<'a> = (&'a [&'a str], bool, Vec<(Priority, String)>);
-    let cases: [Case; 13] = [
+    let cases: [Case; 14] = [
         (&["NOT_A_KEYWORD x"], true, vec![action("NOT_A_KEYWORD", 1, "'NOT_A_KEYWORD' 'x'")]),
         (&["FUNCTION"], true, vec![
             (Priority::Err, "PLUGINSD: 'host:parent' got a FUNCTION, without providing the required data (global = 'no', name = '(unset)', timeout = '(unset)', priority = '(unset)', version = '(unset)', help = '(unset)'). Ignoring it.".into()),
@@ -2031,7 +2040,8 @@ fn refusals_end_a_plugins_run_by_c_s_classes() {
             action("FUNCTION_DEL", 1, "'FUNCTION_DEL'"),
         ]),
         (&["CONFIG x"], true, vec![action("CONFIG", 1, "'CONFIG' 'x'")]),
-        (&["HOST 5a1e0000-0000-4000-8000-0000000000aa"], true, vec![action("HOST", 1, "'HOST' '5a1e0000-0000-4000-8000-0000000000aa'")]),
+        (&["HOST 5a1e0000-0000-4000-8000-0000000000bb"], true, vec![action("HOST", 1, "'HOST' '5a1e0000-0000-4000-8000-0000000000bb'")]),
+        (&["HOST not-a-guid"], false, vec![action("HOST", 1, "'HOST' 'not-a-guid'")]),
         (&["HOST_DEFINE a b"], true, vec![action("HOST_DEFINE", 1, "'HOST_DEFINE' 'a' 'b'")]),
         (&["CHART 'nodot' '' t u f c line 1 1"], false, vec![action("CHART", 1, "'CHART' 'nodot' '' 't' 'u' 'f' 'c' 'line' '1' '1'")]),
         (&["BEGIN 'test.c1'"], false, vec![
@@ -2235,3 +2245,36 @@ fn a_plugins_run_frame_follows_its_scope() {
     drop(frame);
     assert_eq!(record(), []);
 }
+
+/// The run frame on records rrd writes: mid-line, the line and the host, the scope having ended at END as in C; between
+/// lines, the host and the scope chart (the non-owner record of a parser dropped holding another thread's chart).
+#[test]
+fn records_under_a_plugins_run_frame_carry_cs_fields() {
+    let lh = localhost();
+    let mut p = plugin_parser(&lh);
+    let frame = p.run_frame();
+    feed_ok(&mut p, &[
+        "CHART 'p.a' 'named' t u f ctx.a line 1000 1 obsolete".into(),
+        "DIMENSION 'd' '' absolute 1 1".into(),
+        "BEGIN 'p.a'".into(),
+        "SET 'd' = 1".into(),
+    ]);
+    let fields = |records: Vec<netdata_agent_log::Captured>, text: &str| {
+        records.into_iter().find(|r| r.message.as_deref().is_some_and(|m| m.contains(text))).map(|r| r.fields)
+    };
+    let (_, records) = netdata_agent_log::capture(|| feed_all(&mut p, &["END"]));
+    let node = (Field::NidlNode, "parent".to_string());
+    assert_eq!(
+        fields(records, "has the OBSOLETE flag set, but it is collected."),
+        Some(vec![node.clone(), (Field::Request, "'END'".to_string())])
+    );
+    feed_ok(&mut p, &["BEGIN 'p.a'".into()]);
+    lh.charts().find("p.a", true).unwrap().set_scope_tid(netdata_agent_log::tid() + 1);
+    let ((), records) = netdata_agent_log::capture(|| drop(p));
+    assert_eq!(
+        fields(records, "attempted to clear collector_tid"),
+        Some(vec![node, (Field::NidlInstance, "p.named".into()), (Field::NidlContext, "ctx.a".into())])
+    );
+    drop(frame);
+}
+
