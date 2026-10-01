@@ -283,8 +283,11 @@ impl BuildInfo {
         b.set(Packaging, "configure", CONFIGURE_COMMAND);
         b.yes(Feature, &["built-for"]);
         b.set(Feature, "built-for", "Linux");
-        // the receivers decompress every algorithm C's build has; sending waits for the stream sender (M7)
-        b.yes(Feature, &["back-filling", "stream-compression", "contexts", "tiering", "allocator"]);
+        // streaming both ways, with replication and every compression algorithm C's build has (M7, D126.1)
+        b.yes(
+            Feature,
+            &["streaming", "replication", "back-filling", "stream-compression", "contexts", "tiering", "allocator"],
+        );
         for algorithm in ["zstd", "lz4", "gzip", "brotli"] {
             b.append(Feature, "stream-compression", algorithm);
         }
@@ -294,9 +297,9 @@ impl BuildInfo {
         b.yes(Database, &["dbengine", "alloc", "ram", "none"]);
         b.append(Database, "dbengine", "zstd");
         b.append(Database, "dbengine", "lz4");
-        b.yes(Connectivity, &["static"]);
-        // brotli decodes only: every role the agent plays today (D87.8, Q2)
-        b.yes(Libs, &["lz4", "zstd", "brotli", "zlib", "jsonc"]);
+        // HTTPS served and spoken over OpenSSL (M6); host verification is the library's capability, as C reports it
+        b.yes(Connectivity, &["native-https", "tls-host-verify", "static"]);
+        b.yes(Libs, &["openssl", "lz4", "zstd", "brotli", "zlib", "jsonc", "libcrypto"]);
 
         // populate_packaging_info()
         let unknown = |v: &Option<String>| v.clone().unwrap_or_else(|| "unknown".to_string());

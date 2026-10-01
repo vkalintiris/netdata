@@ -52,6 +52,16 @@ fn the_text_as_c() {
     assert!(find("Kernel Version").ends_with("_ : "));
     assert!(find("Container Orchestrator").ends_with(" : none"));
     assert!(find("Streaming and Replication Compression").ends_with(" : YES (zstd lz4 gzip brotli)"));
+    for label in [
+        "Streaming (stream metrics to parent Netdata servers)",
+        "Replication (fill the gaps of parent Netdata servers)",
+        "Native HTTPS (TLS Support)",
+        "TLS Host Verification",
+        "OpenSSL (cryptography)",
+        "libcrypto (cryptographic functions)",
+    ] {
+        assert!(find(label).ends_with(" : YES"), "{label}");
+    }
     assert!(find("Tiering (multiple dbs with different metrics resolution)").ends_with(" : YES (5)"));
     assert!(find("Netdata Cloud").ends_with(" : NO"));
     assert!(find("stacktraces (library for getting stack traces)").ends_with(" : unknown"));
@@ -70,6 +80,9 @@ fn the_json_as_c() {
     assert!(json.contains("\"tiering\":\"5\""));
     assert!(json.contains("\"stream-compression\":\"zstd lz4 gzip brotli\""));
     assert!(json.contains("\"cloud\":false"));
+    for key in ["streaming", "replication", "native-https", "tls-host-verify", "openssl", "libcrypto"] {
+        assert!(json.contains(&format!("\"{key}\":true")), "{key}");
+    }
     assert!(json.contains("\"stacktraces\":false"));
     assert!(json.contains("\"kernel_version\":\"\""));
     let order: Vec<usize> = SECTIONS
@@ -95,13 +108,13 @@ fn the_analytics_join() {
     let (dirs, si) = (Dirs::default(), system_info());
     assert_eq!(
         BuildInfo::new(&inputs(&dirs, &si, MEMORY)).analytics(),
-        "Stream Compression|allocator|dbengine|zlib|JSON-C"
+        "Stream Compression|allocator|dbengine|Native HTTPS|TLS Host Verification|zlib|JSON-C|libcrypto"
     );
     let parent = Inputs {
         parent: true,
         ..inputs(&dirs, &si, MEMORY)
     };
-    assert!(BuildInfo::new(&parent).analytics().ends_with("|JSON-C|StreamParent"));
+    assert!(BuildInfo::new(&parent).analytics().ends_with("|libcrypto|StreamParent"));
 }
 
 /// Every slot is named once per category (the setters find them by JSON key).

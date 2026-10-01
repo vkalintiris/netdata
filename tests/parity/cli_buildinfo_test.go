@@ -26,12 +26,10 @@ var buildinfoDiffs = func() map[string]buildinfoDiff {
 		"libs.protobuf":    {`"system"`, "false", "NO", "M11 Cloud"},
 	}
 	for closes, keys := range map[string][]string{
-		"M6 TLS":           {"connectivity.native-https", "connectivity.tls-host-verify", "libs.openssl", "libs.libcrypto"},
-		"M7 stream sender": {"features.streaming", "features.replication"},
-		"M9 health":        {"features.health"},
-		"M11 Cloud":        {"features.cloud", "connectivity.aclk"},
-		"M14 ML":           {"features.ml"},
-		"M16 packaging":    {"libs.libyaml"},
+		"M9 health":     {"features.health"},
+		"M11 Cloud":     {"features.cloud", "connectivity.aclk"},
+		"M14 ML":        {"features.ml"},
+		"M16 packaging": {"libs.libyaml"},
 		"M12 internal collectors": {"plugins.cgroups", "plugins.cgroup-network", "plugins.proc", "plugins.tc",
 			"plugins.diskspace", "plugins.timex", "plugins.idlejitter"},
 		"M8 plugins.d": {"libs.libcap", "libs.libmnl", "plugins.apps", "plugins.charts.d", "plugins.debugfs",
