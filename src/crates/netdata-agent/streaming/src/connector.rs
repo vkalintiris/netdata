@@ -967,7 +967,7 @@ pub(crate) mod tests {
         let s = Sender::attach(&local, &c).expect("created");
         collect_first_at(&local, "t.a", 1_790_000_000);
         assert!(local.contexts().take_first_time_changes().is_empty(), "not ready");
-        s.on_ready_to_dispatch(&local, 0);
+        s.on_ready_to_dispatch(&local, 0, local.is_local());
         collect_first_at(&local, "t.b", 1_789_999_990);
         assert_eq!(local.contexts().take_first_time_changes(), [1_789_999_989]);
 
@@ -975,7 +975,7 @@ pub(crate) mod tests {
         let s = Sender::attach(&host, &c).expect("created");
         host.contexts().record_first_time_changes(true);
         collect_first_at(&host, "t.a", 1_790_000_000);
-        s.on_ready_to_dispatch(&host, 0);
+        s.on_ready_to_dispatch(&host, 0, host.is_local());
         assert_eq!(host.contexts().take_first_time_changes(), [1_789_999_999], "kept for the receiver");
     }
 

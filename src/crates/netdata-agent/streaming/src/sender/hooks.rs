@@ -70,13 +70,14 @@ impl Sender {
         self.flush_buffer(&mut self.out());
     }
 
-    /// `stream_sender_on_ready_to_dispatch()`: ready, then the host's metadata, each its own commit.
-    pub(crate) fn on_ready_to_dispatch(&self, host: &Host, capabilities: u32) {
+    /// `stream_sender_on_ready_to_dispatch()`: ready, then the host's metadata, each its own commit; `records_retention`
+    /// starts recording the host's first-time changes for its parent.
+    pub(crate) fn on_ready_to_dispatch(&self, host: &Host, capabilities: u32, records_retention: bool) {
         nd_log!(Source::Daemon, Priority::Debug, "STREAM SND '{}': running ready-to-dispatch hooks...", host.hostname());
         host.sender_flags_set(sender_flags::READY_4_METRICS);
-        // C's gate is open from here: localhost's first-time changes owe its parent a path (D120; a proxied host's
+        // C's gate is open from here: a local host's first-time changes owe its parent a path (D120; a proxied host's
         // belong to its receiver); this hook's own path carries the retention of now
-        if host.is_localhost() {
+        if records_retention {
             host.contexts().record_first_time_changes(true);
         }
         upstream::send_host_variables(host);

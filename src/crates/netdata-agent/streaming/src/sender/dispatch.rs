@@ -65,6 +65,9 @@ pub(crate) struct Dispatched {
     /// The link is over TLS: DST_TRANSPORT `https` until its close.
     tls: bool,
     pub executor: Executor,
+    /// The sender records its host's first-time changes for its parent (D120): a local host's, decided at READY (a
+    /// vnode's stays its sender's after its plugin lets it go, until the disconnect).
+    records_retention: bool,
     /// `s->replication.last_counter_sum`, `last_progress_ut` and `last_checked_ut`: the stall check's state.
     replication_commands: u64,
     replication_progress: Option<Instant>,
@@ -202,6 +205,7 @@ impl StreamWorker {
                 "STREAM SND[{thread}] '{hostname}' [to {remote_ip}]: failed to add sender socket to nd_poll()"
             );
         }
+        let records_retention = host.is_local();
         self.senders[index] = Some(Dispatched {
             sender: Arc::clone(&sender),
             host: Arc::clone(&host),
@@ -215,12 +219,13 @@ impl StreamWorker {
             peer_fd,
             tls,
             executor: Executor::default(),
+            records_retention,
             replication_commands: 0,
             // set at the dequeue, as C's
             replication_progress: Some(Instant::now()),
             replication_checked: None,
         });
-        sender.on_ready_to_dispatch(&host, capabilities);
+        sender.on_ready_to_dispatch(&host, capabilities, records_retention);
         self.drain_inline(cx);
         host.pulse_status(host_status::SND_RUNNING);
     }
@@ -480,13 +485,17 @@ impl StreamWorker {
         }
     }
 
-    /// The 100 ms tick's sender part: `stream_path_retention_updated()` from the RRDCONTEXT thread for localhost,
-    /// whose paths go up now, up to a tick after C (D120, as the receivers' `tick_children`); the commits' POLLOUTs go
-    /// out with the tick's last `drain_inline`.
+    /// The 100 ms tick's sender part: `stream_path_retention_updated()` from the RRDCONTEXT thread for a local host,
+    /// whose paths go up now, up to a tick after C (D120, as the receivers' `tick_children`); while a receiver serves
+    /// the host (a child that took a vnode's GUID after its plugin let it go) the receiver's tick drains them. The
+    /// commits' POLLOUTs go out with the tick's last `drain_inline`.
     pub(crate) fn tick_senders(&self) {
         for d in self.senders.iter().flatten() {
-            if d.host.is_localhost() {
-                stream_path::send_retention_changes_to_parent(&d.host);
+            if d.records_retention
+                && d.host.receiver().is_none()
+                && let Some(localhost) = d.sender.connector.localhost()
+            {
+                stream_path::send_retention_changes_to_parent(&d.host, &localhost);
             }
         }
     }
@@ -630,7 +639,7 @@ impl StreamWorker {
             );
         }
         d.host.sender_flags_clear(sender_flags::CONNECTED | sender_flags::READY_4_METRICS);
-        if d.host.is_localhost() {
+        if d.records_retention {
             d.host.contexts().record_first_time_changes(false);
         }
         let reason = {

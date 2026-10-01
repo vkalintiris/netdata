@@ -1844,6 +1844,50 @@ fn a_proxied_hosts_metadata_goes_up() {
     assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(1_790_360_432));
 }
 
+/// A vnode's first-time changes go up from its own sender (D120.1), in a path of the vnode with this agent's entry;
+/// once its plugin lets it go (its collector offline), they are drained and nothing goes up.
+#[test]
+fn a_vnodes_retention_changes_go_up_while_collected() {
+    let localhost = named_host("parity-child", "5a1e0000-0000-4000-8000-0000000000c6", true);
+    let v = named_host("vnode", "5a1e0000-0000-4000-8000-0000000000c9", false);
+    v.set_virtual();
+    v.set_collector_online();
+    let r = Arc::new(Recorder::with_capabilities(caps::PATHS));
+    v.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
+    v.sender_flags_set(sender_flags::READY_4_METRICS);
+    v.contexts().record_first_time_changes(true);
+    let mut p = parser(&v);
+    assert!(feed_all(&mut p, &DEFINE).iter().all(|&ok| ok));
+    let collect = |p: &mut Parser, t: i64| {
+        let lines = [format!("BEGIN2 'test.c1' 1 {t} #"), "SET2 'd1' 5 5 A".to_string(), "END2".to_string()];
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert!(feed_all(p, &refs).iter().all(|&ok| ok));
+        v.contexts().process_queued();
+    };
+    collect(&mut p, NOW - 10);
+    r.take();
+    let first = v.contexts().retention().0;
+    stream_path::send_retention_changes_to_parent(&v, &localhost);
+    let sent = r.take();
+    assert_eq!(sent, vec![(Traffic::Metadata, String::from_utf8(stream_path::message(&v, &localhost, Some(first))).unwrap())]);
+    assert!(sent[0].1.contains(r#""hops":0,"#) && sent[0].1.contains(r#""flags":["virtual"]"#), "{}", sent[0].1);
+    v.virtual_offline();
+    let define = [
+        "CHART 'test.c2' '' 'title' 'units' 'family' 'ctx.c2' line 1000 1 '' fixture-pusher corpus",
+        "DIMENSION 'd1' '' absolute 1 1 ''",
+    ];
+    assert!(feed_all(&mut p, &define).iter().all(|&ok| ok));
+    let lines = [format!("BEGIN2 'test.c2' 1 {} #", NOW - 20), "SET2 'd1' 5 5 A".to_string(), "END2".to_string()];
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    assert!(feed_all(&mut p, &refs).iter().all(|&ok| ok));
+    v.contexts().process_queued();
+    assert!(v.contexts().retention().0 < first);
+    r.take();
+    stream_path::send_retention_changes_to_parent(&v, &localhost);
+    assert!(r.take().is_empty(), "its collector is offline");
+    assert!(v.contexts().take_first_time_changes().is_empty(), "drained");
+}
+
 /// Localhost's first-time changes go up from its sender's stream thread (D120): each in a path of its own with the
 /// value of its change, this agent's entry at hops 0; nothing before the sender is ready, nor to a parent without
 /// PATHS.
@@ -1869,7 +1913,7 @@ fn localhosts_retention_changes_go_up() {
     collect(&mut p, "test.c1", t);
     let first = h.contexts().retention().0;
     assert!(first > 0);
-    stream_path::send_retention_changes_to_parent(&h);
+    stream_path::send_retention_changes_to_parent(&h, &h);
     assert!(r.take().is_empty(), "not ready");
     h.sender_flags_set(sender_flags::READY_4_METRICS);
     // a chart with an older first time widens localhost's
@@ -1885,18 +1929,18 @@ fn localhosts_retention_changes_go_up() {
     collect(&mut p, "test.c2", t - 5);
     let widened = h.contexts().retention().0;
     assert_eq!(widened, first - 5);
-    stream_path::send_retention_changes_to_parent(&h);
+    stream_path::send_retention_changes_to_parent(&h, &h);
     let sent = r.take();
     assert_eq!(sent, vec![(Traffic::Metadata, String::from_utf8(stream_path::message(&h, &h, Some(widened))).unwrap())]);
     assert!(sent[0].1.contains(r#""hops":0,"since":"#), "{}", sent[0].1);
     assert!(sent[0].1.contains(&format!(r#""first_time_t":{widened},"#)), "{}", sent[0].1);
-    stream_path::send_retention_changes_to_parent(&h);
+    stream_path::send_retention_changes_to_parent(&h, &h);
     assert!(r.take().is_empty(), "each change once");
     r.capabilities.store(0, std::sync::atomic::Ordering::Relaxed);
     define(&mut p, "test.c3");
     collect(&mut p, "test.c3", t - 8);
     assert_eq!(h.contexts().retention().0, first - 8);
-    stream_path::send_retention_changes_to_parent(&h);
+    stream_path::send_retention_changes_to_parent(&h, &h);
     assert!(r.take().is_empty(), "a parent without PATHS");
 }
 
