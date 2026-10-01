@@ -202,10 +202,11 @@ pub struct Parser {
 }
 
 /// `pluginsd_cleanup_v2()`'s `pluginsd_clear_scope_chart(…, "THREAD CLEANUP")`: a connection that ends inside a
-/// BEGIN2 lets its collection lock go, and says so.
+/// BEGIN2 lets its collection lock go, and says so under its caller's fields: the parser's inside a read or a
+/// plugin's loop (whose frame the caller holds), none at a stream thread's removal outside a read.
 impl Drop for Parser {
     fn drop(&mut self) {
-        self.clear_scope("THREAD CLEANUP");
+        self.clear_scope_with("THREAD CLEANUP", false);
     }
 }
 
@@ -345,11 +346,10 @@ impl Parser {
             }
         });
         let (instance, context) = match self.scope() {
-            Some(chart) => {
-                let meta = chart.meta();
-                let name = meta.name.unwrap_or_else(|| chart.id().to_string());
-                (Value::Str(name), Value::Str(meta.context))
-            }
+            Some(chart) => chart.with_meta(|meta| {
+                let name = meta.name.clone().unwrap_or_else(|| chart.id().to_string());
+                (Value::Str(name), Value::Str(meta.context.clone()))
+            }),
             None => (none(), none()),
         };
         push(vec![
@@ -423,11 +423,16 @@ impl Parser {
     /// reported (`rrdset_previous_scope_chart_unlock(…, stale = true)`); the scope chart is unslotted when
     /// `cleanup_slots` says so.
     fn clear_scope(&mut self, keyword: &str) {
+        self.clear_scope_with(keyword, true);
+    }
+
+    /// `pluginsd_clear_scope_chart()`; `framed`: under the parser's fields, which a keyword's records carry.
+    fn clear_scope_with(&mut self, keyword: &str, framed: bool) {
         if self.collecting.take().is_some()
             && let Some(chart) = &self.scope
         {
             // the parser's fields, the chart still the one the lock was taken for
-            let _frame = self.log_frame();
+            let _frame = framed.then(|| self.log_frame());
             netdata_log_error!(
                 "PLUGINSD: 'host:{}/chart:{}/' stale data collection lock found during {keyword}; it has been unlocked",
                 self.host.hostname(),

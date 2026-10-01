@@ -640,6 +640,49 @@ fn an_obsolete_chart_is_unslotted_when_its_scope_ends() {
     assert_eq!(d_values(&h, &["a", "b", "c"]), [0, 0, 1]);
 }
 
+/// A slotted DIMENSION marked obsolete sets the parser's `cleanup_slots` (`pluginsd_rrddim_put_to_slot()`): the next
+/// scope change unslots the chart in scope, so a later block with its slot finds the chart it names.
+#[test]
+fn an_obsolete_slotted_dimension_unslots_its_chart_at_the_next_scope() {
+    let h = host();
+    let mut p = parser(&h);
+    let mut lines = slotted_chart("a", Some(7), "x").to_vec();
+    lines.push("DIMENSION SLOT:2 'o' '' absolute 1 1 'obsolete'".to_string());
+    lines.extend(slotted_chart("b", Some(8), "x"));
+    lines.extend(slotted_chart("c", None, "x"));
+    feed_ok(&mut p, &lines);
+    feed_ok(&mut p, &slotted_block("c", 7, 1));
+    assert_eq!(d_values(&h, &["a", "b", "c"]), [0, 0, 1]);
+}
+
+/// A block whose empty slot finds an obsolete chart sets `cleanup_slots` (`pluginsd_rrdset_cache_get_from_slot()`),
+/// which its own scope change applies to the chart in scope before it: that chart leaves its slot.
+#[test]
+fn a_lookup_finding_an_obsolete_chart_unslots_the_previous_scope() {
+    let h = host();
+    let mut p = parser(&h);
+    let lines =
+        [slotted_chart("p", Some(7), "x"), slotted_chart("x", None, "obsolete"), slotted_chart("q", None, "x")].concat();
+    feed_ok(&mut p, &lines);
+    feed_ok(&mut p, &[slotted_block("p", 7, 1), slotted_block("x", 5, 2), slotted_block("q", 7, 3)].concat());
+    assert_eq!(d_values(&h, &["p", "x", "q"]), [1, 2, 3]);
+}
+
+/// The flush of an archived host frees its receive slot cache (`rrdhost_pluginsd_receive_chart_slots_free()`):
+/// after it, a slot is outside the cache, so blocks find their charts by id and none is cached.
+#[test]
+fn a_flush_frees_the_receive_slot_cache() {
+    let h = host();
+    let mut p = parser(&h);
+    feed_ok(&mut p, &slotted_chart("a", Some(1), "x"));
+    drop(p);
+    h.charts().flush();
+    let mut p = parser(&h);
+    feed_ok(&mut p, &[slotted_chart("b", None, "x"), slotted_chart("c", None, "x")].concat());
+    feed_ok(&mut p, &[slotted_block("b", 5, 1), slotted_block("c", 5, 2)].concat());
+    assert_eq!(d_values(&h, &["b", "c"]), [1, 2]);
+}
+
 /// A freed chart leaves its slot: the chart defined again under its id is found and cached.
 #[test]
 fn a_freed_chart_leaves_its_slot() {
@@ -1855,6 +1898,35 @@ fn localhosts_retention_changes_go_up() {
     assert_eq!(h.contexts().retention().0, first - 8);
     stream_path::send_retention_changes_to_parent(&h);
     assert!(r.take().is_empty(), "a parent without PATHS");
+}
+
+/// `pluginsd_process_cleanup()` writes under its caller's fields: none of the parser's at a stream thread's removal
+/// outside a read, the parser's inside a read or a plugin's loop, whose frame the caller holds.
+#[test]
+fn the_cleanup_record_takes_its_callers_fields() {
+    let h = host();
+    let open = || {
+        let mut p = parser(&h);
+        assert!(feed_all(&mut p, &DEFINE).iter().all(|&ok| ok));
+        assert!(feed_all(&mut p, &[&format!("BEGIN2 'test.c1' 1 {} #", NOW - 10), "SET2 'd1' 1 1 A"]).iter().all(|&ok| ok));
+        p
+    };
+    let p = open();
+    let ((), outside) = netdata_agent_log::capture(|| drop(p));
+    let p = open();
+    let ((), inside) = netdata_agent_log::capture(|| {
+        let frame = p.log_frame();
+        drop(p);
+        drop(frame);
+    });
+    let fields = |records: Vec<netdata_agent_log::Captured>| records.into_iter().map(|r| r.fields).collect::<Vec<_>>();
+    assert_eq!(fields(outside), [vec![]]);
+    let parsers = [
+        (Field::NidlNode, "child".to_string()),
+        (Field::NidlInstance, "test.c1".to_string()),
+        (Field::NidlContext, "ctx.c1".to_string()),
+    ];
+    assert_eq!(fields(inside), [parsers.to_vec()]);
 }
 
 /// `pluginsd_process_cleanup()`'s `pluginsd_cleanup_v2()`: a parser destroyed inside a BEGIN2 lets the collection lock go

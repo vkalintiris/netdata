@@ -1495,6 +1495,8 @@ impl StreamWorker {
             // receiver_read_compressed() fills the chunk buffer behind the partial message it holds (D129.1), which
             // only a receiver leaving (the exit, a stop) leaves fuller than a partial message
             let size = child.decompressor.as_ref().map_or(LINE_MAX, |d| buf.len().saturating_sub(d.held()));
+            // C's now_ut, the dispatch's time, before the read
+            let read_ut = now_monotonic_ut();
             let read = {
                 let _parser = child.attached.stream.is_tls().then(|| child.parser.log_frame());
                 child.attached.stream.read(&mut buf[..size])
@@ -1528,11 +1530,6 @@ impl StreamWorker {
                         .network
                         .stream_received(n);
                     child.attached.host.stream_bytes_received(n);
-                    child
-                        .attached
-                        .slot
-                        .last_traffic_ut
-                        .store(now_monotonic_ut(), Ordering::Relaxed);
                     match child.decompressor.as_mut() {
                         None => {
                             if !parse(&mut child.reader, &mut child.parser, &buf[..n]) {
@@ -1578,10 +1575,14 @@ impl StreamWorker {
                                 }
                             }
                             if stop() {
+                                // C's removal runs inside the read's parser stack
+                                let _parser = child.parser.log_frame();
                                 return self.disconnect(cx, index, Reason::DISCONNECT_SIGNALED_TO_STOP);
                             }
                         }
                     }
+                    // a read processed without a removal is traffic; a removal inside it logs the idle time before it
+                    child.attached.slot.last_traffic_ut.store(read_ut, Ordering::Relaxed);
                     // the charts just received may lower the update every the keepalive follows
                     let a = &mut child.attached;
                     reconcile_keepalive(
@@ -2118,6 +2119,61 @@ mod tests {
                         .to_string()
                 ),
             ]
+        );
+    }
+
+    /// The traffic time moves only once a read was processed without a removal (`stream_receiver_receive_data()`): a
+    /// line refused after a second of quiet logs `idle=1s`, the time since the previous traffic, as C.
+    #[test]
+    fn a_removal_inside_a_read_logs_the_idle_time_before_it() {
+        use std::io::Write;
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, _host, slot, mut theirs) = child(0xd8, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        slot.last_traffic_ut.store(now_monotonic_ut(), Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(1100));
+        theirs.write_all(b"BOGUS\n").unwrap();
+        let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        let texts: Vec<_> = texts(records).into_iter().filter(|t| t.contains("receiver disconnected")).collect();
+        assert_eq!(texts.len(), 1, "{texts:?}");
+        assert!(texts[0].contains("reason=\"DISCONNECTED PARSE ERROR\"") && texts[0].contains(" idle=1s "), "{texts:?}");
+    }
+
+    /// The THREAD CLEANUP record of a child removed inside a BEGIN2 carries the parser's fields only when the removal
+    /// is inside a read (`stream_receiver_receive_data()`'s stack): a refused line, not the shutdown.
+    #[test]
+    fn the_cleanup_record_has_the_parsers_fields_only_inside_a_read() {
+        use std::io::Write;
+        let cleanup = |refuse: bool| {
+            let (mut s, pool, hosts, connector) = stepper();
+            let (attached, _host, _, mut theirs) =
+                child(if refuse { 0xd9 } else { 0xda }, crate::caps::V2, &pool, &hosts, &connector);
+            s.with(|w, cx| w.attach(cx, attached));
+            theirs
+                .write_all(
+                    b"CHART 'x.c' '' 't' 'u' 'f' 'x.ctx' line 1 1 '' p m\nDIMENSION 'd' '' absolute 1 1 ''\n\
+                      BEGIN2 'x.c' 1 1700000000 #\nSET2 'd' 1 1 A\n",
+                )
+                .unwrap();
+            s.turn(Duration::from_millis(50));
+            let (_, records) = netdata_agent_log::capture(|| {
+                if refuse {
+                    theirs.write_all(b"BOGUS\n").unwrap();
+                    s.turn(Duration::from_millis(50));
+                } else {
+                    s.with(|w, cx| w.stop_children(cx));
+                }
+            });
+            let record = records
+                .into_iter()
+                .find(|r| r.message.as_deref().is_some_and(|m| m.contains("during THREAD CLEANUP")))
+                .expect("a cleanup record");
+            record.fields.into_iter().filter(|(f, _)| matches!(f, netdata_agent_log::Field::NidlInstance | netdata_agent_log::Field::NidlContext)).collect::<Vec<_>>()
+        };
+        assert_eq!(cleanup(false), []);
+        assert_eq!(
+            cleanup(true),
+            [(netdata_agent_log::Field::NidlInstance, "x.c".to_string()), (netdata_agent_log::Field::NidlContext, "x.ctx".to_string())]
         );
     }
 
