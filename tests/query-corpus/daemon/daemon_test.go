@@ -403,6 +403,33 @@ func testStoppingDaemon(process *fakeProcess, waitCh chan error) *Daemon {
 	}
 }
 
+func TestRestartReportsATakenPort(t *testing.T) {
+	tests := map[string]struct {
+		output string
+		taken  bool
+	}{
+		"bind collision": {output: "Cannot bind to ip 127.0.0.1 port 19999", taken: true},
+		"other failure":  {output: "invalid configuration", taken: false},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "log"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// a daemon that prints its startup failure and exits before it serves
+			binary := filepath.Join(dir, "netdata")
+			if err := os.WriteFile(binary, []byte("#!/bin/sh\necho '"+tc.output+"'\nexit 1\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			d := &Daemon{Opts: Options{Binary: binary, RunDir: dir}, BaseURL: "http://127.0.0.1:1"}
+			if err := d.Restart(); err == nil || errors.Is(err, ErrPortTaken) != tc.taken {
+				t.Fatalf("Restart() = %v, want a failure with a taken port %v", err, tc.taken)
+			}
+		})
+	}
+}
+
 func TestStopIsCheckedAndBounded(t *testing.T) {
 	t.Run("term and reap", func(t *testing.T) {
 		waitCh := make(chan error, 1)

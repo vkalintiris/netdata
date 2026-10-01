@@ -792,12 +792,18 @@ func (d *Daemon) WaitExit(timeout time.Duration) (int, error) {
 }
 
 // Restart stops the daemon and boots it again on the same run dir and port,
-// exercising the journal-replay read path.
+// exercising the journal-replay read path. A port another process took meanwhile fails with ErrPortTaken.
 func (d *Daemon) Restart() error {
 	if err := d.Stop(); err != nil {
 		return err
 	}
-	return d.launch()
+	if err := d.launch(); err != nil {
+		if startupLogShowsBindCollision(d.Opts.RunDir) {
+			return fmt.Errorf("%w: %w", ErrPortTaken, err)
+		}
+		return err
+	}
+	return nil
 }
 
 // queryClient bounds every corpus query: no legitimate corpus query takes

@@ -306,12 +306,14 @@ func forChains(cs []*chain, f func(c *chain)) {
 	wg.Wait()
 }
 
-// chainViews compares the stream path views of two chains' agents: each view is a node name and a request.
-func chainViews(t *testing.T, stage string, oracle, cand *chain, views [][2]string, times *regexp.Regexp) {
+// chainViews compares the stream path views of two chains' agents: each view is a node name and a request;
+// `_streams_to` and `maskLabels` are compared by presence only.
+func chainViews(t *testing.T, stage string, oracle, cand *chain, views [][2]string, times *regexp.Regexp,
+	maskLabels ...string) {
 	t.Helper()
 	for _, v := range views {
 		compareStreamPathWith(t, stage+" "+v[0], [2]string{oracle.addr(v[0]), cand.addr(v[0])},
-			[2]*strings.Replacer{}, v[1], times, "_streams_to")
+			[2]*strings.Replacer{}, v[1], times, append([]string{"_streams_to"}, maskLabels...)...)
 	}
 }
 
@@ -442,16 +444,11 @@ func chainRecords(t *testing.T, c *chain) map[string][]string {
 	}
 }
 
-// TestStreamChain (check `stream.chain`, milestone 7 commit 8i, D121.2, D122.1; plan
-// `evidence/2026-09-30-plan-m7-8i-3-stream-chain.md`): three child → proxy → grandparent chains run side by side,
-// c-c-c (the oracle everywhere), c-r-c (a Rust proxy) and r-c-r (a Rust child and grandparent); each candidate chain
-// is compared with c-c-c, and within each chain the hops' data with each other. The child starts only once the
-// proxy streams to the grandparent, so the proxy's `_is_parent` there is always false (it is sent once, at the
-// proxy's sender's ready). Phases: online, the child's view, steady-state views, data, the child's leave, its return
-// (the gap replicated through both hops), the records.
-func TestStreamChain(t *testing.T) {
+// startChains starts the three chains (`tweak`, when set, adjusting each one's rows), waits until each hop has its
+// host online (the child starting once the proxy is online at the grandparent) and the child's own path has the
+// three entries; a candidate chain that fails is marked down, the oracle's ends the test.
+func startChains(t *testing.T, g *stagger, tweak func(rows []topoNode)) []*chain {
 	bins := binaries(t)
-	g := &stagger{gap: 2 * time.Second}
 	forms := []string{"c-c-c", "c-r-c", "r-c-r"}
 	cs := make([]*chain, len(forms))
 	errs := make([]error, len(forms))
@@ -460,7 +457,11 @@ func TestStreamChain(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			tp, err := startTopology(t, g, "chain-"+form, bins, chainRows(form), func(tp *topology, stage int) error {
+			rows := chainRows(form)
+			if tweak != nil {
+				tweak(rows)
+			}
+			tp, err := startTopology(t, g, "chain-"+form, bins, rows, func(tp *topology, stage int) error {
 				if stage == 2 {
 					if _, b, ok := waitHop(tp.addr("gp"), chainProxy.MachineGUID, true, 120*time.Second); !ok {
 						return fmt.Errorf("%s: the grandparent never had the proxy online: %.300s", form, b)
@@ -482,10 +483,6 @@ func TestStreamChain(t *testing.T) {
 		t.Errorf("chain %s: %v", forms[i], err)
 		cs[i].down = true
 	}
-	oracle := cs[0]
-	full := []int{0, 1, 2}
-
-	// P1, P2: each hop online (timed from the child's launch), and the grandparent's path at the child
 	forChains(cs, func(c *chain) {
 		launched := c.d("c").LaunchStartedAt
 		for _, hop := range []struct{ at, guid string }{{"p", chainChild.MachineGUID}, {"gp", chainProxy.MachineGUID},
@@ -499,13 +496,31 @@ func TestStreamChain(t *testing.T) {
 				time.Since(launched).Round(time.Second))
 		}
 		c.online = time.Now().Unix()
-		if hops, ok := waitPathHops(c.addr("c"), "", full, 30*time.Second); !ok {
-			t.Errorf("%s: the child's own path has hops %v, not %v", c.form, hops, full)
+		if hops, ok := waitPathHops(c.addr("c"), "", fullPath, 30*time.Second); !ok {
+			t.Errorf("%s: the child's own path has hops %v, not %v", c.form, hops, fullPath)
 		}
 	})
-	if oracle.down {
+	if cs[0].down {
 		t.FailNow()
 	}
+	return cs
+}
+
+// fullPath are the hops of the child's path through the whole chain.
+var fullPath = []int{0, 1, 2}
+
+// TestStreamChain (check `stream.chain`, milestone 7 commit 8i, D121.2, D122.1; plan
+// `evidence/2026-09-30-plan-m7-8i-3-stream-chain.md`): three child → proxy → grandparent chains run side by side,
+// c-c-c (the oracle everywhere), c-r-c (a Rust proxy) and r-c-r (a Rust child and grandparent); each candidate chain
+// is compared with c-c-c, and within each chain the hops' data with each other. The child starts only once the
+// proxy streams to the grandparent, so the proxy's `_is_parent` there is always false (it is sent once, at the
+// proxy's sender's ready). Phases: online, the child's view, steady-state views, data, the child's leave, its return
+// (the gap replicated through both hops), the records.
+func TestStreamChain(t *testing.T) {
+	g := &stagger{gap: 2 * time.Second}
+	cs := startChains(t, g, nil)
+	oracle := cs[0]
+	full := fullPath
 	for _, v := range []string{"gp", "p"} {
 		if hops, ok := waitPathHops(oracle.addr(v), "&nodes=parity-chain-child", full, 10*time.Second); !ok {
 			t.Fatalf("the oracle's %s path of the child has hops %v", v, hops)
