@@ -13,15 +13,13 @@ use netdata_agent_evloop::conn::Conn;
 use netdata_agent_log::{Field, Priority, Source, Value, push};
 use netdata_agent_tls::{Link, OpenError, SslContext, TlsStream};
 use nix::errno::Errno as OsErrno;
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+use nix::poll::PollFlags;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 /// glibc's `EAI_SYSTEM`.
 const EAI_SYSTEM: i32 = -11;
 /// `NI_NUMERICHOST | NI_NUMERICSERV`.
 const NI_NUMERIC: i32 = 1 | 2;
-/// `ND_CHECK_CANCELLABILITY_WHILE_WAITING_EVERY_MS`.
-const CANCEL_CHECK_MS: i64 = 100;
 
 /// `ND_SOCK_ERROR`, with `ND_SOCK_ERROR_2str()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -180,37 +178,12 @@ pub fn effective_service(definition: &str, default_port: u16) -> String {
     }
 }
 
-/// `wait_on_socket_or_cancel_with_timeout()`: 0 when the socket has one of `events`, 1 on a timeout (ETIMEDOUT),
-/// -1 when the thread is cancelled (ECANCELED), 2 on a poll error or another event. A timeout of 0 or less waits
-/// forever; cancellation is checked every 100 ms.
+/// `wait_on_socket_or_cancel_with_timeout()` ([`netdata_agent_sys::wait_fd`]) for this thread: its cancellation, and
+/// the errno C leaves in its errno.
 fn wait_on_socket(fd: std::os::fd::BorrowedFd<'_>, timeout_ms: i64, events: PollFlags, th: &Thread<'_>) -> i32 {
-    let forever = timeout_ms <= 0;
-    let mut timeout_ms = timeout_ms;
-    while timeout_ms > 0 || forever {
-        if th.cancelled() {
-            th.errno.set(OsErrno::ECANCELED as i32);
-            return -1;
-        }
-        let wait_ms = if timeout_ms >= CANCEL_CHECK_MS || forever { CANCEL_CHECK_MS } else { timeout_ms };
-        th.errno.set(0);
-        let mut fds = [PollFd::new(fd, events)];
-        match poll(&mut fds, PollTimeout::try_from(wait_ms as i32).unwrap_or(PollTimeout::MAX)) {
-            Err(e @ (OsErrno::EINTR | OsErrno::EAGAIN)) => th.errno.set(e as i32),
-            Err(e) => {
-                th.errno.set(e as i32);
-                return 2;
-            }
-            Ok(0) => {
-                if !forever {
-                    timeout_ms -= wait_ms;
-                }
-            }
-            Ok(_) if fds[0].revents().is_some_and(|r| r.intersects(events)) => return 0,
-            Ok(_) => return 2,
-        }
-    }
-    th.errno.set(OsErrno::ETIMEDOUT as i32);
-    1
+    let (r, errno) = netdata_agent_sys::wait_fd(fd, timeout_ms, events, &|| th.cancelled());
+    th.errno.set(errno);
+    r
 }
 
 /// `connect_to_unix()`.

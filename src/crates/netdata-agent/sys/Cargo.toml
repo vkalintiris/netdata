@@ -14,13 +14,17 @@ workspace = true
 
 [dependencies]
 libc = { workspace = true }
-nix = { workspace = true, features = ["process", "fs", "signal"] }
+nix = { workspace = true, features = ["process", "fs", "signal", "poll", "resource"] }
 rusqlite = { workspace = true }
 openssl = { workspace = true }
 openssl-sys = { workspace = true }
 foreign-types = { workspace = true }
 # a TLS connection registers its socket with a poller without handing the socket out (SocketSsl)
 mio = { workspace = true }
+
+[dev-dependencies]
+# passing descriptors over a socket pair
+nix = { workspace = true, features = ["socket", "uio"] }
 
 # default_dispositions() needs a single-threaded process, which the test harness is not
 [[test]]

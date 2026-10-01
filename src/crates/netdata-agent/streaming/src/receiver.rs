@@ -292,28 +292,13 @@ fn send_timeout(link: &mut Link<Conn>, bytes: &[u8], timeout: Duration) -> Resul
     }
 }
 
-/// `wait_on_socket_or_cancel_with_timeout()` for `POLLOUT`: `Err` with C's errno on a timeout (ETIMEDOUT), a failed
-/// `poll()` (its errno) or an event other than writable (0, cleared before the poll).
+/// `wait_on_socket_or_cancel_with_timeout()` for `POLLOUT` ([`netdata_agent_sys::wait_fd`], never cancelled: a web
+/// worker): `Err` with C's errno on a timeout (ETIMEDOUT), a failed `poll()` (its errno) or an event other than writable
+/// (0).
 fn writable_within(fd: std::os::fd::BorrowedFd<'_>, timeout: Duration) -> Result<(), i32> {
-    use nix::errno::Errno;
-    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-    let deadline = Instant::now() + timeout;
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(Errno::ETIMEDOUT as i32);
-        }
-        // errno_clear(): what the send and the close leave is the next records' errno
-        Errno::clear();
-        let mut fds = [PollFd::new(fd, PollFlags::POLLOUT)];
-        // whole milliseconds, rounded up, so the last one does not spin
-        let ms = PollTimeout::try_from(left.as_micros().div_ceil(1000)).unwrap_or(PollTimeout::MAX);
-        match poll(&mut fds, ms) {
-            Ok(0) | Err(Errno::EINTR | Errno::EAGAIN) => {}
-            Ok(_) if fds[0].revents().is_some_and(|r| r.contains(PollFlags::POLLOUT)) => return Ok(()),
-            Ok(_) => return Err(0),
-            Err(e) => return Err(e as i32),
-        }
+    match netdata_agent_sys::wait_fd(fd, timeout.as_millis() as i64, nix::poll::PollFlags::POLLOUT, &|| false) {
+        (0, _) => Ok(()),
+        (_, errno) => Err(errno),
     }
 }
 
