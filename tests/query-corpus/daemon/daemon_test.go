@@ -450,6 +450,18 @@ func TestRestartReportsATakenPort(t *testing.T) {
 	}
 }
 
+func TestALongCommandPipeIsRefusedBeforeTheLaunch(t *testing.T) {
+	dir := t.TempDir()
+	long := filepath.Join(dir, strings.Repeat("p", maxPipePath-len(dir)-len("/")-len("/netdata.pipe")))
+	for run, ok := range map[string]bool{long: true, long + "p": false} {
+		d := &Daemon{Opts: Options{Binary: filepath.Join(dir, "missing"), RunDir: run}, BaseURL: "http://127.0.0.1:1"}
+		err := d.Restart()
+		if refused := err != nil && strings.Contains(err.Error(), "over a unix socket's 107"); refused == ok {
+			t.Fatalf("pipe of %d bytes: Restart() = %v", len(run)+len("/netdata.pipe"), err)
+		}
+	}
+}
+
 func TestStopIsCheckedAndBounded(t *testing.T) {
 	t.Run("term and reap", func(t *testing.T) {
 		waitCh := make(chan error, 1)

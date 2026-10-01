@@ -519,6 +519,9 @@ func (d *Daemon) reaped() {
 // PID is the daemon's process ID, 0 once it has exited.
 func (d *Daemon) PID() int { return d.processPID }
 
+// maxPipePath is sizeof(sockaddr_un.sun_path) - 1.
+const maxPipePath = 107
+
 func (d *Daemon) launch() error {
 	confPath := filepath.Join(d.Opts.RunDir, "etc", "netdata.conf")
 	cmd := exec.Command(d.Opts.Binary, "-D", "-c", confPath)
@@ -528,6 +531,12 @@ func (d *Daemon) launch() error {
 	d.PipeName = filepath.Join(d.Opts.RunDir, "netdata.pipe")
 	if d.Opts.PipeName != "" {
 		d.PipeName = strings.ReplaceAll(d.Opts.PipeName, "{run}", d.Opts.RunDir)
+	}
+	// a unix socket's path holds 107 bytes: C cuts a longer one and its client follows, the Rust agent refuses it
+	// (D57.4), so a comparison would fail on the harness's path rather than on the agents
+	if len(d.PipeName) > maxPipePath {
+		return fmt.Errorf("daemon: the command pipe %q is %d bytes, over a unix socket's %d: shorten the run directory",
+			d.PipeName, len(d.PipeName), maxPipePath)
 	}
 	// each daemon its own runtime directory (os_run_dir()): C's spawn server names its socket there, so two C daemons
 	// started together would otherwise take each other's (one then fails to run its system-info script); a short

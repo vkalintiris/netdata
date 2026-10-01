@@ -329,7 +329,8 @@ var senderVariants = []senderVariant{
 			}
 		}},
 	// the claim goes up again after the command, as C's claim_reload_and_wait_online() sends it (D126.2)
-	{name: "reload-claiming-state", refused: stream.CapReplication,
+	// (a short name: the role names the run directory, which holds the command pipe)
+	{name: "reload-claim", refused: stream.CapReplication,
 		during: func(t *testing.T, d *daemon.Daemon, _ *stream.Session) {
 			time.Sleep(6 * time.Second)
 			if r := runCLI(t, d, "reload-claiming-state"); r.Exit != 0 {
