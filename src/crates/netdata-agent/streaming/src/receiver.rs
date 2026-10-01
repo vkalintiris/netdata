@@ -906,6 +906,11 @@ impl StreamWorker {
             );
         }
         let a = &mut attached;
+        // sock_enlarge_rcv_buf() and sock_enlarge_snd_buf() at the move to running (the receive buffer came from the
+        // listener already, D126.3)
+        crate::sock::enlarge_buffers(&socket2::SockRef::from(
+            a.stream.socket().expect("a taken-over link has its socket"),
+        ));
         reconcile_keepalive(
             std::os::fd::AsFd::as_fd(a.stream.socket().expect("a taken-over link has its socket")),
             &a.host,

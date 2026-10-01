@@ -36,8 +36,6 @@ use crate::thread::StreamWorker;
 pub(crate) const SENDER_TOKENS: usize = 1 << (usize::BITS - 2);
 /// `PLUGINSD_LINE_MAX + 1`: the receive buffer.
 const READ_BUFFER: usize = netdata_agent_pluginsd_proto::LINE_MAX + 1;
-/// `sock_enlarge_rcv_buf()` and `sock_enlarge_snd_buf()`.
-const LARGE_SOCK_SIZE: usize = 32 * 1024 * 1024;
 
 /// `EVLOOP_STATUS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,13 +164,8 @@ impl StreamWorker {
                     "STREAM SND[{thread}] '{hostname}' [to {remote_ip}]: failed to set non-blocking mode on socket {fd}"
                 );
             }
-            // socket2 opened it close-on-exec; sock_enlarge_rcv_buf() and sock_enlarge_snd_buf(), errors ignored
-            if socket.recv_buffer_size().is_ok_and(|size| size < LARGE_SOCK_SIZE) {
-                let _ = socket.set_recv_buffer_size(LARGE_SOCK_SIZE);
-            }
-            if socket.send_buffer_size().is_ok_and(|size| size < LARGE_SOCK_SIZE) {
-                let _ = socket.set_send_buffer_size(LARGE_SOCK_SIZE);
-            }
+            // socket2 opened it close-on-exec
+            crate::sock::enlarge_buffers(&socket);
         }
         let session = Session { thread, id: loop {
             // a zero session means "no dispatcher"

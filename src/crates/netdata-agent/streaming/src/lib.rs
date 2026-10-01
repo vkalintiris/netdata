@@ -20,4 +20,5 @@ pub mod replication;
 pub mod receiver;
 pub mod records;
 pub mod sender;
+pub(crate) mod sock;
 pub mod thread;
