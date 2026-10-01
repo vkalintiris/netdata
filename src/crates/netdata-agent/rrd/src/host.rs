@@ -207,6 +207,9 @@ pub struct ReceiverSlot {
     shutdown: Box<dyn Fn() + Send + Sync>,
     /// `rpt->thread.send_to_child`: lines other threads owe the child (D119.1), taken by its stream thread.
     to_child: Mutex<Vec<u8>>,
+    /// Its host is detaching it (`rrdhost_clear_receiver()` past its first step): no longer the host's receiver for
+    /// the host's state, still in the slot until the detach ends.
+    detaching: AtomicBool,
 }
 
 impl std::fmt::Debug for ReceiverSlot {
@@ -232,6 +235,7 @@ impl ReceiverSlot {
             link,
             shutdown,
             to_child: Mutex::new(Vec::new()),
+            detaching: AtomicBool::new(false),
         }
     }
 
@@ -312,6 +316,9 @@ pub struct Host {
     node_id: RwLock<[u8; 16]>,
     info: RwLock<HostInfo>,
     receiver: Mutex<Option<Arc<ReceiverSlot>>>,
+    /// `streaming_connected_receivers`: the receivers attached to the hosts of the index this host is in, counted as
+    /// the slot fills and empties (set when the host joins an index; a host outside one counts nowhere).
+    receivers_connected: OnceLock<Arc<AtomicU32>>,
     /// `host->stream.rcv.status.replication.backfill_pending`: charts whose replication waits for a backfill.
     backfill_pending: AtomicU32,
     /// `host->stream.rcv.status.connections`: the receivers attached since the agent started.
@@ -492,6 +499,7 @@ impl Host {
             node_id: RwLock::new([0; 16]),
             info: RwLock::new(info),
             receiver: Mutex::new(None),
+            receivers_connected: OnceLock::new(),
             backfill_pending: AtomicU32::new(0),
             receiver_connections: AtomicU32::new(0),
             receiver_last_connected_s: AtomicI64::new(0),
@@ -1058,6 +1066,9 @@ impl Host {
             return Attach::AlreadyServed;
         }
         *receiver = Some(slot);
+        if let Some(count) = self.receivers_connected.get() {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
         self.receiver_connections.fetch_add(1, Ordering::Relaxed);
         self.receiver_last_connected_s
             .store(now_realtime_s(), Ordering::Relaxed);
@@ -1507,40 +1518,49 @@ impl Host {
         true
     }
 
-    /// Whether `receiver` is the attached one (C's host state id).
+    /// Whether `receiver` is the attached one (C's host state id, deactivated when the detach starts).
     pub fn is_receiver(&self, receiver: &Weak<ReceiverSlot>) -> bool {
-        lock(&self.receiver)
-            .as_ref()
-            .is_some_and(|r| std::ptr::eq(Arc::as_ptr(r), receiver.as_ptr()))
+        lock(&self.receiver).as_ref().is_some_and(|r| {
+            std::ptr::eq(Arc::as_ptr(r), receiver.as_ptr()) && !r.detaching.load(Ordering::Acquire)
+        })
     }
 
     /// `rrdhost_clear_receiver()`: detaches `slot` if it is still the attached one; then, the receiver lock released
     /// as C releases it, the host's sender is told the receiver left and its parents reset, with the receiver's
-    /// `reason` (a `STREAM_HANDSHAKE` code).
+    /// `reason` (a `STREAM_HANDSHAKE` code); the slot empties last, as C sets `host->receiver = NULL` last
+    /// (`stream-receiver.c:1507`), so whoever waits for it (a stale receiver's replacement, a free) waits for those
+    /// steps too.
     pub fn clear_receiver(&self, slot: &Arc<ReceiverSlot>, reason: i32) {
+        let receiver = lock(&self.receiver);
+        if !receiver.as_ref().is_some_and(|r| Arc::ptr_eq(r, slot)) || slot.detaching.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.receiver_last_connected_s.store(0, Ordering::Relaxed);
+        self.receiver_last_disconnected_s
+            .store(now_realtime_s(), Ordering::Relaxed);
+        // health stays off until the child returns (rrdhost_update() sets it again): the stale path entry has no
+        // HEALTH flag and a later metadata store writes it off
+        self.info.write().unwrap_or_else(PoisonError::into_inner).health_enabled = false;
+        self.stamp_health_iteration();
+        self.orphan
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.contexts.record_first_time_changes(false);
+        // stream_path_child_disconnected()
+        self.replace_stream_path(Vec::new());
+        self.replication_reset();
+        drop(receiver);
+        if let Some(up) = self.upstream() {
+            up.receiver_left(reason);
+        }
+        self.contexts.child_disconnected();
+        if let Some(up) = self.upstream() {
+            up.parents_reset(reason);
+        }
         let mut receiver = lock(&self.receiver);
         if receiver.as_ref().is_some_and(|r| Arc::ptr_eq(r, slot)) {
             *receiver = None;
-            self.receiver_last_connected_s.store(0, Ordering::Relaxed);
-            self.receiver_last_disconnected_s
-                .store(now_realtime_s(), Ordering::Relaxed);
-            // health stays off until the child returns (rrdhost_update() sets it again): the stale path entry has no
-            // HEALTH flag and a later metadata store writes it off
-            self.info.write().unwrap_or_else(PoisonError::into_inner).health_enabled = false;
-            self.stamp_health_iteration();
-            self.orphan
-                .store(true, std::sync::atomic::Ordering::Release);
-            self.contexts.record_first_time_changes(false);
-            // stream_path_child_disconnected()
-            self.replace_stream_path(Vec::new());
-            self.replication_reset();
-            drop(receiver);
-            if let Some(up) = self.upstream() {
-                up.receiver_left(reason);
-            }
-            self.contexts.child_disconnected();
-            if let Some(up) = self.upstream() {
-                up.parents_reset(reason);
+            if let Some(count) = self.receivers_connected.get() {
+                count.fetch_sub(1, Ordering::Relaxed);
             }
         }
     }
@@ -1580,6 +1600,8 @@ pub struct Hosts {
     version: std::sync::atomic::AtomicU32,
     /// `is_parent_label_cached_state` under its commit lock: whether localhost's `_is_parent` says a child is connected.
     is_parent: Mutex<bool>,
+    /// `streaming_connected_receivers`, which every host of the index counts into.
+    receivers: Arc<AtomicU32>,
     /// The storage every host it creates gets.
     storage: Arc<StorageLayout>,
     /// `rrdhost_load_rrdcontext_data()` over the daemon's databases, for the hosts it creates.
@@ -1639,6 +1661,8 @@ impl Hosts {
     /// The index of hosts with this storage; `localhost` was created with it.
     pub fn with_storage(localhost: Host, storage: Arc<StorageLayout>) -> Self {
         let localhost = localhost.into_shared();
+        let receivers = Arc::new(AtomicU32::new(0));
+        let _ = localhost.receivers_connected.set(Arc::clone(&receivers));
         // creation order, localhost first
         let mut index = Index::default();
         index.insert(&localhost.machine_guid, Arc::clone(&localhost));
@@ -1649,6 +1673,7 @@ impl Hosts {
             inner: RwLock::new(index),
             version: std::sync::atomic::AtomicU32::new(1),
             is_parent: Mutex::new(false),
+            receivers,
             storage,
             context_loader: OnceLock::new(),
         }
@@ -1670,9 +1695,10 @@ impl Hosts {
         }
     }
 
-    /// `stream_receivers_currently_connected()`: hosts with a receiver attached.
+    /// `stream_receivers_currently_connected()`: the receivers attached to the index's hosts, without its lock (a
+    /// receiver leaves while a walk that frees hosts holds it).
     pub fn receivers_connected(&self) -> usize {
-        self.all().iter().filter(|h| h.receiver().is_some()).count()
+        self.receivers.load(Ordering::Relaxed) as usize
     }
 
     /// The forced half of `rrdhost_update_is_parent_label()` (a labels reload): the `_is_parent` value to store now,
@@ -1772,6 +1798,7 @@ impl Hosts {
         host.pending_context_load.store(true, Ordering::Release);
         host.orphan.store(true, Ordering::Release);
         before_record(&host);
+        let _ = host.receivers_connected.set(Arc::clone(&self.receivers));
         index.insert(guid, Arc::clone(&host));
         self.version
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1852,6 +1879,7 @@ impl Hosts {
             return Err(NotCreated::IndexCollision);
         }
         host.created_connected();
+        let _ = host.receivers_connected.set(Arc::clone(&self.receivers));
         index.insert(key, Arc::clone(&host));
         self.version
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2208,6 +2236,106 @@ mod tests {
         assert!(host.receiver().is_none());
         assert!(!host.info().health_enabled);
         assert_eq!(*r.calls.lock().unwrap(), vec![("receiver_left", -19), ("parents_reset", -19)]);
+    }
+
+    /// A sender whose parents reset waits until released, as `Sender::parents_reset` waits for the parents lock an
+    /// attempt holds across its connect.
+    #[derive(Debug, Default)]
+    struct SlowReset {
+        entered: AtomicBool,
+        release: AtomicBool,
+    }
+
+    impl Upstream for SlowReset {
+        fn start(&self) {}
+        fn disabled_capabilities(&self) -> u32 {
+            0
+        }
+        fn capabilities(&self) -> u32 {
+            0
+        }
+        fn commit(&self, _: &[u8], _: crate::upstream::Traffic) {}
+        fn resync_iterations(&self) -> u16 {
+            3
+        }
+        fn flush_ut(&self) -> u64 {
+            0
+        }
+        fn commit_since(&self, _: &[u8], _: crate::upstream::Traffic, _: u64) -> bool {
+            false
+        }
+        fn receiver_left(&self, _: i32) {}
+        fn parents_reset(&self, _: i32) {
+            self.entered.store(true, Ordering::SeqCst);
+            while !self.release.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        fn free(&self) {}
+        fn reinit(&self, _: &StreamSend) {}
+    }
+
+    /// `rrdhost_clear_receiver()` empties the slot last (R55 M4): while the leaving receiver's parents reset waits,
+    /// the host is offline and no longer its receiver's, yet still served, so a replacement waits as C's
+    /// (`stream-receiver.c:1485`, `:1507`); the receivers' count drops with the slot.
+    #[test]
+    fn a_receivers_slot_empties_after_its_detach() {
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let host = hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {}).expect("created");
+        let slow = Arc::new(SlowReset::default());
+        host.set_upstream(Arc::clone(&slow) as Arc<dyn Upstream>);
+        let slot = || Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        let old = slot();
+        assert_eq!(host.set_receiver(Arc::clone(&old)), Attach::Attached);
+        assert_eq!(hosts.receivers_connected(), 1);
+        std::thread::scope(|s| {
+            s.spawn(|| host.clear_receiver(&old, -10));
+            while !slow.entered.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            let during = (
+                host.receiver().is_some_and(|r| Arc::ptr_eq(&r, &old)),
+                host.is_receiver(&Arc::downgrade(&old)),
+                host.is_online(),
+                hosts.receivers_connected(),
+                host.set_receiver(slot()),
+            );
+            // a second detach of the same receiver does nothing
+            host.clear_receiver(&old, -10);
+            slow.release.store(true, Ordering::SeqCst);
+            assert_eq!(during, (true, false, false, 1, Attach::AlreadyServed));
+        });
+        assert!(host.receiver().is_none());
+        assert_eq!(hosts.receivers_connected(), 0);
+        assert_eq!(host.set_receiver(slot()), Attach::Attached);
+    }
+
+    /// A receiver leaves while a walk that frees hosts holds the index (R55 M3): the count it updates is not under
+    /// the index's lock, as C's atomic `streaming_connected_receivers`.
+    #[test]
+    fn a_receiver_leaves_while_a_walk_holds_the_hosts() {
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let host = hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {}).expect("created");
+        let slot = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
+        hosts.update_is_parent_label();
+        let walk = hosts.write();
+        let finished = std::thread::scope(|s| {
+            let leave = s.spawn(|| {
+                host.clear_receiver(&slot, 0);
+                hosts.update_is_parent_label();
+                hosts.receivers_connected()
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !leave.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let finished = leave.is_finished();
+            drop(walk);
+            assert_eq!(leave.join().unwrap(), 0);
+            finished
+        });
+        assert!(finished, "the receiver's leave waited for the hosts' write lock");
     }
 
     /// `stream_sender_structures_free()` at the host's cleanup: the sender freed once; the host no longer streams and
