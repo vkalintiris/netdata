@@ -112,6 +112,11 @@ impl Decompressor {
         })
     }
 
+    /// The bytes of the incomplete message held for the next read.
+    pub fn held(&self) -> usize {
+        self.pending.len() - self.start
+    }
+
     /// `receiver_read_compressed()`: received bytes join the ones not yet part of a complete message.
     pub fn feed(&mut self, received: &[u8]) {
         self.pending.extend_from_slice(received);

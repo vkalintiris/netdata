@@ -16,7 +16,7 @@ use netdata_agent_tls::Link;
 use netdata_agent_evloop::{Context, Event, Interest, PoolHandle, Token};
 use netdata_agent_ingest::{self as ingest, Parser};
 use netdata_agent_log::{Priority, Source, nd_log};
-use netdata_agent_pluginsd_proto::LineReader;
+use netdata_agent_pluginsd_proto::{LINE_MAX, LineReader};
 use netdata_agent_rrd::chart::flags;
 use netdata_agent_rrd::collection;
 use netdata_agent_rrd::host::{Attach, Host, HostInfo, Hosts, ReceiverLink, ReceiverSlot, StreamSend};
@@ -1474,7 +1474,7 @@ impl StreamWorker {
     /// `stream_receiver_receive_data()`: reads what arrived and feeds every complete line to the parser; a refused
     /// line ends the connection. The caller has pushed the child's frame.
     fn receive(&mut self, cx: &mut Context<'_>, index: usize) {
-        let mut buf = [0u8; 16384];
+        let mut buf = [0u8; crate::compression::MAX_CHUNK];
         // C's one read per host before the next (`count = 1`): a read that returned data asks for its turn again,
         // after the thread's other sources (D126.6)
         {
@@ -1484,9 +1484,13 @@ impl StreamWorker {
             // C's parser frame of stream_receiver_receive_data() covers the read (a TLS read's records carry the
             // scope chart) and every record after it; the parser's fields are taken when a record is due, as C's
             // callbacks read them
+            // receiver_read_uncompressed() reads PLUGINSD_LINE_MAX bytes (the partial line moved out of its buffer);
+            // receiver_read_compressed() fills the chunk buffer behind the partial message it holds (D129.1), which
+            // only a receiver leaving (the exit, a stop) leaves fuller than a partial message
+            let size = child.decompressor.as_ref().map_or(LINE_MAX, |d| buf.len().saturating_sub(d.held()));
             let read = {
                 let _parser = child.attached.stream.is_tls().then(|| child.parser.log_frame());
-                child.attached.stream.read(&mut buf)
+                child.attached.stream.read(&mut buf[..size])
             };
             let failed = |child: &Child, reason: Reason, errno: i32| {
                 let _parser = child.parser.log_frame();
@@ -1817,8 +1821,9 @@ mod tests {
         s.worker().children.iter().flatten().map(|c| c.bytes_in).collect()
     }
 
-    /// C's one read of a host per turn (`count = 1`, D126.6): two children with 3 x 16384 bytes each are read 16384
-    /// bytes a turn each, the first read in the turn after the attach, until a read finds the socket empty.
+    /// C's one read of a host per turn (`count = 1`, D126.6) of `PLUGINSD_LINE_MAX` bytes (D129.1): two children with
+    /// 3 x 16384 bytes each are read one such read a turn each, the first in the turn after the attach, until a read
+    /// finds the socket empty.
     #[test]
     fn children_are_read_once_a_turn_each() {
         use std::io::Write;
@@ -1831,23 +1836,25 @@ mod tests {
             peers.push(theirs);
         }
         assert_eq!(read_so_far(&mut s), [0, 0]);
-        for read in [16384, 32768, 49152, 49152] {
+        let l = LINE_MAX as u64;
+        for read in [l, 2 * l, 3 * l, 3 * 16384, 3 * 16384] {
             assert!(s.turn(Duration::from_millis(50)));
             assert_eq!(read_so_far(&mut s), [read, read]);
         }
         assert_eq!(s.owed(), []);
     }
 
-    /// A child that sends 2 x 16384 bytes and closes is read twice, then removed at the third read.
+    /// A child that sends two reads' worth and closes is read twice, then removed at the third read.
     #[test]
     fn a_closed_child_is_removed_at_the_read_that_finds_the_end() {
         use std::io::Write;
         let (mut s, pool, hosts, connector) = stepper();
         let (attached, host, _, mut theirs) = child(0xd3, crate::caps::V2, &pool, &hosts, &connector);
-        theirs.write_all(&[b'\n'; 2 * 16384]).unwrap();
+        theirs.write_all(&[b'\n'; 2 * LINE_MAX]).unwrap();
         drop(theirs);
         s.with(|w, cx| w.attach(cx, attached));
-        for read in [16384, 32768] {
+        let l = LINE_MAX as u64;
+        for read in [l, 2 * l] {
             assert!(s.turn(Duration::from_millis(50)));
             assert_eq!(read_so_far(&mut s), [read]);
         }
@@ -1856,6 +1863,30 @@ mod tests {
         assert!(host.receiver().is_none());
         let texts: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
         assert!(texts.iter().any(|t| t.contains("CLOSED BY REMOTE END")), "{texts:?}");
+    }
+
+    /// A compressed stream is read into the 16384-byte chunk buffer behind the partial message it holds (D129.1): three
+    /// messages of 12013 bytes are read 16384 bytes, then 16384 less the 4371 bytes of the second message held.
+    #[test]
+    fn a_compressed_read_takes_the_chunk_less_the_message_held() {
+        use std::io::Write;
+        // a zstd frame of one raw block of 12000 newlines: magic, a window of 16 KiB, the block header, the bytes
+        let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x20];
+        let n = 12000u32;
+        frame.extend_from_slice(&((n << 3) | 1).to_le_bytes()[..3]);
+        frame.extend(std::iter::repeat_n(b'\n', n as usize));
+        let mut message = crate::compression::encode_signature(frame.len()).unwrap().to_vec();
+        message.extend_from_slice(&frame);
+        assert_eq!(message.len(), 12013);
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, _, _, mut theirs) =
+            child(0xd5, crate::caps::V2 | crate::caps::ZSTD, &pool, &hosts, &connector);
+        theirs.write_all(&message.repeat(3)).unwrap();
+        s.with(|w, cx| w.attach(cx, attached));
+        for read in [16384, 16384 + (16384 - 4371)] {
+            assert!(s.turn(Duration::from_millis(50)));
+            assert_eq!(read_so_far(&mut s), [read]);
+        }
     }
 
     /// C decompresses and parses a read's messages one at a time: a message that fails after a good one in the same
