@@ -40,6 +40,10 @@ const MODULE_MAX: usize = 99;
 const CONFIG_MAX_NAME: usize = 1024;
 /// `PLUGINSD_CMD_MAX` (`FILENAME_MAX * 2`): a command is cut to it.
 const CMD_MAX: usize = 8192;
+/// `FILENAME_MAX`: a plugin's path is cut to it.
+const FILENAME_MAX: usize = 4096;
+/// `NETDATA_THREAD_TAG_MAX`: the tag a failed thread creation names is cut to it.
+const TAG_BUFFER_MAX: usize = 99;
 /// The plugins this agent replaced (`is_obsolete_plugin()`).
 const OBSOLETE: [&[u8]; 1] = [b"otel-signal-viewer"];
 
@@ -82,15 +86,18 @@ pub struct Pluginsd {
 
 impl Pluginsd {
     /// The exit's `service_wait_exit(SERVICE_COLLECTORS | …)`: every collector thread cancelled, then `PLUGINSD`, which
-    /// stops and joins its plugin threads, waited for until `deadline`.
-    pub fn stop_by(self, deadline: Instant) {
+    /// stops and joins its plugin threads, waited for until `deadline`; still running, it is given back for the
+    /// remaining threads' wait.
+    pub fn stop_by(self, deadline: Instant) -> Option<Pluginsd> {
         self.collectors_cancelled.store(true, Ordering::Release);
         while Instant::now() < deadline && !self.thread.is_finished() {
             std::thread::sleep(Duration::from_millis(50));
         }
         if self.thread.is_finished() {
             let _ = self.thread.join();
+            return None;
         }
+        Some(self)
     }
 }
 
@@ -264,6 +271,7 @@ impl Scanner {
         let id = cut(format!("plugin:{name}"), CONFIG_MAX_NAME - 1);
         let mut fullfilename = format!("{directory}/").into_bytes();
         fullfilename.extend_from_slice(&filename);
+        fullfilename.truncate(FILENAME_MAX);
         let (update_every, options) = {
             let mut conf = self.conf();
             // C keeps it as an int
@@ -287,10 +295,10 @@ impl Scanner {
             state: Arc::clone(&state),
             collectors_cancelled: Arc::clone(&self.collectors_cancelled),
         };
-        // the thread's tag, PD[<name>], as C cuts it
-        let tag = cut(format!("PD[{name}]"), THREAD_TAG_MAX);
+        // the thread's tag, PD[<name>], as C cuts it for the thread and for its failure record
+        let tag = cut(format!("PD[{name}]"), TAG_BUFFER_MAX);
         let thread = std::thread::Builder::new()
-            .name(tag.clone())
+            .name(cut(tag.clone(), THREAD_TAG_MAX))
             .stack_size(self.settings.stack_size)
             .spawn(move || {
                 netdata_agent_log::thread_created();
@@ -522,36 +530,56 @@ fn read(input: &mut File, buffer: &mut [u8], cancelled: &dyn Fn() -> bool) -> Re
     }
 }
 
-/// `send_to_plugin()` on the plugin's stdin (`nd_sock_write_persist(…, 100)`): a short write is reported.
+/// `send_to_plugin()` on the plugin's stdin (`nd_sock_write_persist(…, 100)`): a short result is reported with the
+/// failed write's errno.
 fn send_to_plugin(output: &mut File, bytes: &[u8]) {
-    let mut sent = 0;
-    let mut retries = 100;
-    let result = loop {
-        match output.write(&bytes[sent..]) {
-            Ok(0) => break 0,
-            Ok(n) => {
-                sent += n;
-                if sent == bytes.len() || retries == 0 {
-                    break sent as isize;
-                }
-                retries -= 1;
-            }
-            Err(err)
-                if retries > 0 && matches!(Errno::from_raw(err.raw_os_error().unwrap_or(0)), Errno::EAGAIN | Errno::EINTR) =>
-            {
-                retries -= 1;
-            }
-            Err(_) => break -1,
-        }
-    };
-    if result < bytes.len() as isize {
+    let (sent, errno) = write_persist(output, bytes, SEND_RETRIES);
+    if sent < bytes.len() as isize {
         nd_log!(
             Source::Daemon,
             Priority::Warning,
-            "PLUGINSD: cannot send command to plugin (fd = {}, sent bytes = {result} out of {})",
+            errno = errno;
+            "PLUGINSD: cannot send command to plugin (fd = {}, sent bytes = {sent} out of {})",
             output.as_raw_fd(),
             bytes.len()
         );
+    }
+}
+
+/// `send_to_plugin()`'s retries.
+const SEND_RETRIES: u32 = 100;
+
+/// `nd_sock_write_persist()`: the bytes written, resuming after short writes at most `retries` more times, or a failed
+/// write's result, each with the errno C leaves.
+fn write_persist(output: &mut File, bytes: &[u8], retries: u32) -> (isize, i32) {
+    let (mut written, mut resumes) = (0, retries);
+    loop {
+        let (sent, errno) = write_retried(output, &bytes[written..], retries);
+        if sent <= 0 {
+            return (sent, errno);
+        }
+        written += sent as usize;
+        if written >= bytes.len() || resumes == 0 {
+            return (written as isize, 0);
+        }
+        resumes -= 1;
+    }
+}
+
+/// `nd_sock_write()` on a pipe: one write, again while it fails with EAGAIN (EWOULDBLOCK) or EINTR, at most `retries`
+/// more times.
+fn write_retried(output: &mut File, bytes: &[u8], mut retries: u32) -> (isize, i32) {
+    loop {
+        match output.write(bytes) {
+            Ok(n) => return (n as isize, 0),
+            Err(err) => {
+                let errno = err.raw_os_error().unwrap_or(0);
+                if retries == 0 || !matches!(Errno::from_raw(errno), Errno::EAGAIN | Errno::EINTR) {
+                    return (-1, errno);
+                }
+                retries -= 1;
+            }
+        }
     }
 }
 

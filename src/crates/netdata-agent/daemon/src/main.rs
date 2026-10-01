@@ -1159,9 +1159,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             connector.cancel();
             let deadline = std::time::Instant::now() + shutdown::STREAMING_WAIT;
             // every collector thread cancelled first; PLUGINSD stopped its plugins when the exit started
-            if let Some(pluginsd) = pluginsd.take() {
-                pluginsd.stop_by(deadline);
-            }
+            pluginsd = pluginsd.take().and_then(|pluginsd| pluginsd.stop_by(deadline));
             if let Some(thread) = pulse_thread.take() {
                 thread.join_within(deadline.saturating_duration_since(std::time::Instant::now()));
             }
@@ -1184,8 +1182,15 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 worker.join_within(shutdown::CONTEXT_WAIT);
             }
         }
-        // service_wait_exit(~0, 20 s): the connector, whose last passes follow the exit's start
-        shutdown::STOP_REMAINING_THREADS => connector.join_within(shutdown::REMAINING_WAIT),
+        // service_wait_exit(~0, 20 s): the connector, whose last passes follow the exit's start, and PLUGINSD when a
+        // plugin thread was still stopping at the streaming step
+        shutdown::STOP_REMAINING_THREADS => {
+            let deadline = std::time::Instant::now() + shutdown::REMAINING_WAIT;
+            connector.join_within(shutdown::REMAINING_WAIT);
+            if let Some(pluginsd) = pluginsd.take() {
+                let _ = pluginsd.stop_by(deadline);
+            }
+        }
         // rrd_finalize_collection_for_all_hosts(), which an abnormal exit skips
         shutdown::STOP_COLLECTION if normal => {
             for host in hosts.all() {

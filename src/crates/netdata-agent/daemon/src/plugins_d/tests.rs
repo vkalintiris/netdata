@@ -156,6 +156,24 @@ fn reads_end_as_cs() {
     );
 }
 
+/// `send_to_plugin()` to a plugin that is gone: C's warning with the failed write's errno.
+#[test]
+fn a_failed_send_is_reported_with_its_errno() {
+    let (plugin_in, mut output) = pipe();
+    drop(plugin_in);
+    let fd = output.as_raw_fd();
+    let logged = records(|| send_to_plugin(&mut output, b"QUIT"));
+    assert_eq!(
+        logged,
+        [(
+            Source::Daemon,
+            Priority::Warning,
+            Errno::EPIPE as i32,
+            format!("PLUGINSD: cannot send command to plugin (fd = {fd}, sent bytes = -1 out of 4)")
+        )]
+    );
+}
+
 fn localhost() -> Arc<Host> {
     Arc::new(Host::new(
         "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",

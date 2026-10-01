@@ -106,14 +106,18 @@ pub struct LineReader {
 }
 
 impl LineReader {
-    /// Appends received bytes and returns every complete line, newline included.
+    /// Appends received bytes and returns every complete line, newline included. Only the new bytes are searched: what
+    /// was pending holds no newline.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut searched = self.pending.len();
         self.pending.extend_from_slice(bytes);
         let mut lines = Vec::new();
         let mut start = 0;
-        while let Some(nl) = self.pending[start..].iter().position(|&c| c == b'\n') {
-            lines.push(self.pending[start..start + nl + 1].to_vec());
-            start += nl + 1;
+        while let Some(nl) = self.pending[searched..].iter().position(|&c| c == b'\n') {
+            let end = searched + nl + 1;
+            lines.push(self.pending[start..end].to_vec());
+            start = end;
+            searched = end;
         }
         self.pending.drain(..start);
         lines
@@ -235,6 +239,21 @@ pub mod emit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A long line read in LINE_MAX chunks costs its length, not its length squared (R59-2): each push searches only
+    /// the bytes it brought.
+    #[test]
+    fn a_long_line_is_read_in_linear_time() {
+        let mut r = LineReader::default();
+        let chunk = vec![b'x'; LINE_MAX];
+        let started = std::time::Instant::now();
+        for _ in 0..(32 << 20) / LINE_MAX {
+            assert!(r.push(&chunk).is_empty());
+        }
+        let lines = r.push(b"\n");
+        assert_eq!((lines.len(), lines[0].len()), (1, (32 << 20) / LINE_MAX * LINE_MAX + 1));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+    }
 
     #[test]
     fn words_slot_and_reconstruction() {
