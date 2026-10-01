@@ -3,7 +3,9 @@
 //! This crate holds no `unsafe` (D12): the system calls no safe crate wraps are `netdata-agent-sys`'s.
 #![forbid(unsafe_code)]
 
+pub mod client;
 pub mod env;
 pub mod exec;
+pub mod popen;
 pub mod server;
 pub mod wire;

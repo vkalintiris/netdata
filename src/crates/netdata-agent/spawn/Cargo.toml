@@ -12,4 +12,12 @@ workspace = true
 netdata-agent-log = { workspace = true }
 netdata-agent-sys = { workspace = true }
 libc = { workspace = true }
-nix = { workspace = true, features = ["process", "signal", "fs"] }
+nix = { workspace = true, features = ["process", "signal", "fs", "socket", "uio", "poll"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[test]]
+name = "spawn_tester"
+harness = false

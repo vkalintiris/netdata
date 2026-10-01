@@ -3185,6 +3185,8 @@ dependencies = [
  "netdata-agent-log",
  "netdata-agent-sys",
  "nix",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]
