@@ -358,7 +358,8 @@ impl Sender {
 
     /// `stream_sender_send_opcode()`: a POLLOUT posted on the session's own thread is handled there before it waits
     /// again; everything else waits in the sender's slot for one message to its thread. Opcodes of an earlier
-    /// session are dropped where they are handled (D103.5).
+    /// session are dropped where they are handled (D103.5), and never displace the current session's waiting ones
+    /// (R55 I4: a committer preempted across a whole reconnect).
     pub(crate) fn post(&self, session: Session, op: u32, reason: Reason) {
         let Some(me) = self.me.upgrade() else {
             return;
@@ -367,6 +368,7 @@ impl Sender {
             crate::thread::pollout_inline(&me, session);
             return;
         }
+        let current = self.out().session;
         let first = {
             let mut slot = self.ops.lock().unwrap_or_else(PoisonError::into_inner);
             match slot.as_mut() {
@@ -377,6 +379,7 @@ impl Sender {
                     }
                     false
                 }
+                Some(ops) if Some(ops.session) == current && current != Some(session) => return,
                 _ => {
                     *slot = Some(Ops { session, bits: op, reason });
                     true

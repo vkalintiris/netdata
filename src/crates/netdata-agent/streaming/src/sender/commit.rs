@@ -253,6 +253,19 @@ mod tests {
         (pool, c, host, s, session)
     }
 
+    /// A post of an earlier session never displaces the current session's waiting opcodes (R55 I4).
+    #[test]
+    fn a_stale_post_keeps_the_current_sessions_opcodes() {
+        let (_pool, _c, _host, s, session) = dispatched(0, 0xe1);
+        let stale = Session { thread: 9, id: 2 };
+        let _ = netdata_agent_log::capture(|| {
+            s.post(session, op::STOP_HOST_CLEANUP, Reason::SND_DISCONNECT_HOST_CLEANUP);
+            s.post(stale, op::BUFFER_OVERFLOW, Reason::DISCONNECT_BUFFER_OVERFLOW);
+        });
+        let slot = |s: &Sender| s.ops.lock().unwrap().map(|o| (o.session, o.bits, o.reason));
+        assert_eq!(slot(&s), Some((session, op::STOP_HOST_CLEANUP, Reason::SND_DISCONNECT_HOST_CLEANUP)));
+    }
+
     /// The messages in the sender's buffer, decompressed one at a time as the parent does.
     fn pieces(bytes: &[u8], capabilities: u32) -> Vec<Vec<u8>> {
         let mut rest = bytes;
