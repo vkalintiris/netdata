@@ -3,8 +3,8 @@
 //! `src/streaming/stream-replication-receiver.c` (`replicate_chart_request()`). Spec: `knowledge/spec-ingest.md` §2 and
 //! §3.6 in the status repository.
 //!
-//! One `Parser` per connection, driven by the stream thread that owns the connection (decisions D8). Every handler
-//! error disconnects, as on the C streaming parser.
+//! One `Parser` per connection, driven by the stream thread that owns the connection (decisions D8), or per run of a
+//! plugin (`pluginsd_process()`), driven by its `PD[]` thread. A refused line ends the connection or the run.
 
 #![forbid(unsafe_code)]
 
@@ -21,6 +21,8 @@ thread_local! {
     /// The line being parsed, for the log records written while it is (C's parser `request` callback reads the
     /// splitter's words). Empty between lines and for deferred payload lines.
     static LINE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// A plugin parser's chart in scope, for the fields of its run frame (C's instance and context callbacks).
+    static SCOPE: std::cell::RefCell<Option<Arc<Chart>>> = const { std::cell::RefCell::new(None) };
     /// `throttle` (`stream-waiting-list.c`): the chart definitions ended and the replications finished on this thread.
     static THROTTLE: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
@@ -125,22 +127,39 @@ struct Replay {
     rset_enabled: bool,
 }
 
-/// A handler refused the line: the connection ends. The text, when set, is what `PLUGINSD_DISABLE_PLUGIN` logs.
+/// How a handler refused the line (C's parser return codes): the connection or the plugin's run ends.
 #[derive(Debug)]
-struct Refused(Option<String>);
+enum Refused {
+    /// `PARSER_RC_ERROR`: logged.
+    Error,
+    /// `PLUGINSD_DISABLE_PLUGIN()`: logged, and the plugin is disabled; the text, when set, is logged first.
+    Disable(Option<String>),
+    /// `PARSER_RC_STOP`: the plugin asked for it; nothing is logged.
+    Stop,
+}
 
 type Rc = Result<(), Refused>;
 
-fn refuse() -> Rc {
-    Err(Refused(None))
+fn disable() -> Rc {
+    Err(Refused::Disable(None))
 }
 
-fn refuse_with(keyword: &str, why: &str) -> Rc {
-    Err(Refused(Some(format!("PLUGINSD: keyword {keyword}: {why}"))))
+fn disable_with(keyword: &str, why: &str) -> Rc {
+    Err(Refused::Disable(Some(format!("PLUGINSD: keyword {keyword}: {why}"))))
 }
 
 fn text(v: &[u8]) -> String {
     String::from_utf8_lossy(v).into_owned()
+}
+
+/// `line_splitter_reconstruct_line()`: the line's words, each quoted, appended to `out`; false for a line without any.
+fn reconstruct(line: &[u8], out: &mut Vec<u8>) -> bool {
+    let words = Words::split(line);
+    if words.get(0).is_none() {
+        return false;
+    }
+    out.extend_from_slice(&words.reconstruct());
+    true
 }
 
 /// What finishing a deferred body does.
@@ -166,8 +185,24 @@ pub struct ReplayRequest {
 /// Where a backfill's answer goes: the stream thread that owns the connection (false when it is gone).
 pub type ReplaySink = Arc<dyn Fn(ReplayRequest) -> bool + Send + Sync>;
 
-/// The receiver side of one connection.
+/// Whom a parser serves (`PARSER_REPERTOIRE`).
+#[derive(Debug)]
+enum Mode {
+    /// A child's stream (`PARSER_INIT_STREAMING`).
+    Stream,
+    /// A plugin of this agent (`PARSER_INIT_PLUGINSD`), by its file name.
+    Plugin { filename: Arc<str> },
+}
+
+/// The receiver side of one connection, or of one run of a plugin.
 pub struct Parser {
+    mode: Mode,
+    /// `parser->user.enabled`: a disabled plugin is not started again.
+    pub enabled: bool,
+    /// `parser->user.retry`: the run failed for a reason worth starting the plugin again soon.
+    pub retry: bool,
+    /// `parser->user.trust_durations`: BEGIN's microseconds are taken as they are.
+    trust_durations: bool,
     host: Arc<Host>,
     /// `localhost`, whose entry the stream path sent back to the child carries.
     localhost: Arc<Host>,
@@ -191,10 +226,10 @@ pub struct Parser {
     on_done: OnDone,
     /// `parser->user.new_host_labels`: collected by LABEL until OVERWRITE.
     new_host_labels: Option<Labels>,
-    /// Bytes for the child (`send_to_plugin`), drained by the caller.
+    /// Bytes for the child or the plugin (`send_to_plugin`), drained by the caller.
     out: Vec<u8>,
     /// `host->stream.snd.commit` while this parser is the host's receiver (`receiver_tid`): the batch its forwarded
-    /// blocks and collections go through (D106.1). A plugins.d parser would use the thread's buffer (C's
+    /// blocks and collections go through (D106.1). A plugin's parser uses the thread's buffer instead (C's
     /// `receiver_tid` is 0 for localhost).
     forward: ForwardBuffer,
     /// How a backfill hands its replication request back; none without a stream thread (no BACKFILL pool use).
@@ -206,13 +241,18 @@ pub struct Parser {
 /// plugin's loop (whose frame the caller holds), none at a stream thread's removal outside a read.
 impl Drop for Parser {
     fn drop(&mut self) {
-        self.clear_scope_with("THREAD CLEANUP", false);
+        self.clear_scope_with("THREAD CLEANUP", false, None);
     }
 }
 
 impl Parser {
+    /// A parser of a child's stream for `host`.
     pub fn new(host: Arc<Host>, localhost: Arc<Host>, config: Config) -> Self {
         Parser {
+            mode: Mode::Stream,
+            enabled: true,
+            retry: false,
+            trust_durations: true,
             host,
             localhost,
             config,
@@ -233,6 +273,42 @@ impl Parser {
             forward: ForwardBuffer::default(),
             replay_sink: None,
         }
+    }
+
+    /// A parser of one run of the plugin `filename` (`pluginsd_process()`), collecting into `localhost` with the
+    /// plugin's update every in `config`.
+    pub fn plugin(localhost: Arc<Host>, config: Config, filename: Arc<str>) -> Self {
+        let mut parser = Parser::new(Arc::clone(&localhost), localhost, config);
+        parser.mode = Mode::Plugin { filename };
+        parser.trust_durations = false;
+        parser
+    }
+
+    /// The fields C's `pluginsd_process()` pushes for a plugin's whole run: every record written until the guard is
+    /// dropped carries the line being parsed, the host, and the scope chart's name and context, read when it is
+    /// written.
+    pub fn run_frame(&self) -> FrameGuard {
+        let host = Arc::clone(&self.host);
+        let scope = |field: fn(&Chart) -> String| {
+            Value::lazy(move |out| {
+                SCOPE.with(|s| match s.borrow().as_ref().filter(|chart| !chart.is_freed()) {
+                    Some(chart) => {
+                        out.extend_from_slice(field(chart).as_bytes());
+                        true
+                    }
+                    None => false,
+                })
+            })
+        };
+        push(vec![
+            (Field::Request, Value::lazy(|out| LINE.with(|l| reconstruct(&l.borrow(), out)))),
+            (Field::NidlNode, Value::lazy(move |out| {
+                out.extend_from_slice(host.hostname().as_bytes());
+                true
+            })),
+            (Field::NidlInstance, scope(|chart| chart.meta().name.unwrap_or_else(|| chart.id().to_string()))),
+            (Field::NidlContext, scope(|chart| chart.meta().context)),
+        ])
     }
 
     /// Where backfilled charts' replication requests go (the stream thread that owns this parser).
@@ -274,13 +350,17 @@ impl Parser {
                     }
                     true
                 }
-                // Only JSON bodies are kept, and a receiver's plugin has no file name.
+                // Only JSON bodies are kept; a receiver's plugin has no file name.
                 Deferred::TooBig(size) => {
+                    let filename = match &self.mode {
+                        Mode::Plugin { filename } => filename,
+                        Mode::Stream => "",
+                    };
                     plog!(
                         self,
                         Source::Daemon,
                         Priority::Err,
-                        "PLUGINSD: deferred response is too big ({size} bytes, limit {MAX_DEFERRED_SIZE} bytes) while waiting for keyword 'JSON_PAYLOAD_END' from plugin '' (transaction 'none'). Stopping this plugin."
+                        "PLUGINSD: deferred response is too big ({size} bytes, limit {MAX_DEFERRED_SIZE} bytes) while waiting for keyword 'JSON_PAYLOAD_END' from plugin '{filename}' (transaction 'none'). Stopping this plugin."
                     );
                     false
                 }
@@ -300,22 +380,29 @@ impl Parser {
         ok
     }
 
-    /// `parser_action()`: the keyword's handler; a refused line is logged and ends the connection.
+    /// `parser_action()`: the keyword's handler, among the parser's repertoire; a refused line ends the connection or
+    /// the run, logged unless the plugin stopped it.
     fn act(&mut self, first: &[u8], words: &Words) -> bool {
+        let repertoire = match self.mode {
+            Mode::Stream => Repertoire::STREAMING,
+            Mode::Plugin { .. } => Repertoire::PLUGINSD,
+        };
         let result = match Keyword::lookup(first) {
-            Some(keyword) if keyword.repertoire().contains(Repertoire::STREAMING) => {
-                self.dispatch(keyword, words)
-            }
-            _ => Err(Refused(None)),
+            Some(keyword) if keyword.repertoire().contains(repertoire) => self.dispatch(keyword, words),
+            _ => Err(Refused::Error),
         };
         match result {
             Ok(()) => true,
-            Err(Refused(why)) => {
-                if let Some(why) = why {
-                    // PLUGINSD_DISABLE_PLUGIN(): one limiter shared by every keyword and parser
-                    static DISABLED: ErrorLimit = ErrorLimit::new(1, 0);
-                    let _frame = self.log_frame();
-                    nd_log_limit!(&DISABLED, Source::Collector, Priority::Info, "{why}");
+            Err(Refused::Stop) => false,
+            Err(refused) => {
+                if let Refused::Disable(why) = refused {
+                    self.enabled = false;
+                    if let Some(why) = why {
+                        // PLUGINSD_DISABLE_PLUGIN(): one limiter shared by every keyword and parser
+                        static DISABLED: ErrorLimit = ErrorLimit::new(1, 0);
+                        let _frame = self.log_frame();
+                        nd_log_limit!(&DISABLED, Source::Collector, Priority::Info, "{why}");
+                    }
                 }
                 let line_no = self.line;
                 let shown = text(&words.reconstruct());
@@ -337,13 +424,8 @@ impl Parser {
     pub fn log_frame(&self) -> FrameGuard {
         let none = || Value::lazy(|_| false);
         let request = LINE.with(|l| {
-            let l = l.borrow();
-            let words = Words::split(&l);
-            if words.get(0).is_some() {
-                Value::Txt(text(&words.reconstruct()))
-            } else {
-                none()
-            }
+            let mut shown = Vec::new();
+            if reconstruct(&l.borrow(), &mut shown) { Value::Txt(text(&shown)) } else { none() }
         });
         let (instance, context) = match self.scope() {
             Some(chart) => chart.with_meta(|meta| {
@@ -403,8 +485,25 @@ impl Parser {
             | Keyword::DyncfgReset
             | Keyword::ReportJobStatus
             | Keyword::DeleteJob => Ok(()),
-            // Outside the streaming repertoire: `feed()` never dispatches these.
-            _ => refuse(),
+            Keyword::Flush => {
+                self.flush();
+                Ok(())
+            }
+            Keyword::Disable => {
+                plog!(self, Source::Daemon, Priority::Info, "PLUGINSD: plugin called DISABLE. Disabling it.");
+                self.enabled = false;
+                Err(Refused::Stop)
+            }
+            Keyword::Exit => {
+                plog!(self, Source::Daemon, Priority::Info, "PLUGINSD: plugin called EXIT.");
+                Err(Refused::Stop)
+            }
+            Keyword::TrustDurations => self.trust_durations(w),
+            Keyword::PluginKeepalive => Ok(()),
+            Keyword::Host => self.host_scope(w),
+            // Virtual nodes come with commit 4 of milestone 8 (D142.10): until then they end the run, unknown.
+            Keyword::HostDefine | Keyword::HostDefineEnd | Keyword::HostLabel => Err(Refused::Error),
+            Keyword::Config => self.config_keyword(w),
         }
     }
 
@@ -421,17 +520,18 @@ impl Parser {
 
     /// `pluginsd_clear_scope_chart()`: a collection lock still held (a BEGIN2 without its END2) is released and
     /// reported (`rrdset_previous_scope_chart_unlock(…, stale = true)`); the scope chart is unslotted when
-    /// `cleanup_slots` says so.
+    /// `cleanup_slots` says so, and this thread gives it up.
     fn clear_scope(&mut self, keyword: &str) {
-        self.clear_scope_with(keyword, true);
+        self.clear_scope_with(keyword, true, None);
     }
 
-    /// `pluginsd_clear_scope_chart()`; `framed`: under the parser's fields, which a keyword's records carry.
-    fn clear_scope_with(&mut self, keyword: &str, framed: bool) {
+    /// `pluginsd_clear_scope_chart()`; `framed`: under the parser's fields, which a keyword's records carry; `keep`: a
+    /// chart this thread keeps holding (the scope set again to the same chart).
+    fn clear_scope_with(&mut self, keyword: &str, framed: bool, keep: Option<&Arc<Chart>>) {
         if self.collecting.take().is_some()
             && let Some(chart) = &self.scope
         {
-            // the parser's fields, the chart still the one the lock was taken for
+            // the parser's fields, the chart still the one in scope
             let _frame = framed.then(|| self.log_frame());
             netdata_log_error!(
                 "PLUGINSD: 'host:{}/chart:{}/' stale data collection lock found during {keyword}; it has been unlocked",
@@ -444,16 +544,58 @@ impl Parser {
         {
             self.host.charts().receive_unslot(chart);
         }
+        if let Some(chart) = &self.scope
+            && !keep.is_some_and(|k| Arc::ptr_eq(k, chart))
+        {
+            let (owner, me) = (chart.scope_tid(), netdata_agent_log::tid());
+            if owner == 0 || owner == me {
+                chart.set_scope_tid(0);
+            } else {
+                let _frame = framed.then(|| self.log_frame());
+                netdata_log_error!(
+                    "PLUGINSD: attempted to clear collector_tid {owner} for 'host:{}/chart:{}/' from non-owner thread {me} during {keyword}",
+                    self.host.hostname(),
+                    chart.id()
+                );
+            }
+        }
         self.scope = None;
+        self.scope_changed();
         self.clabel_count = 0;
         self.clabel_changed = false;
     }
 
-    /// `pluginsd_set_scope_chart()`.
-    fn set_scope(&mut self, chart: &Arc<Chart>, keyword: &str) {
-        self.clear_scope(keyword);
+    /// `pluginsd_set_scope_chart()`: false, the scope unchanged, when the chart in scope is another thread's (it is
+    /// collected twice); otherwise this thread holds `chart` from now on.
+    fn set_scope(&mut self, chart: &Arc<Chart>, keyword: &str) -> bool {
+        let me = netdata_agent_log::tid();
+        let other = self.scope.as_ref().map_or(0, |old| old.scope_tid());
+        if other != 0 && other != me {
+            static TWICE: ErrorLimit = ErrorLimit::new(1, 0);
+            let _frame = self.log_frame();
+            nd_log_limit!(
+                &TWICE,
+                Source::Collector,
+                Priority::Warning,
+                "PLUGINSD: keyword {keyword}: 'host:{}/chart:{}' is collected twice (my tid {me}, other collector tid {other})",
+                self.host.hostname(),
+                chart.id()
+            );
+            return false;
+        }
+        chart.set_scope_tid(me);
+        self.clear_scope_with(keyword, true, Some(chart));
         chart.receiver().pos = 0;
         self.scope = Some(Arc::clone(chart));
+        self.scope_changed();
+        true
+    }
+
+    /// A plugin's run frame shows the new scope.
+    fn scope_changed(&self) {
+        if let Mode::Plugin { .. } = self.mode {
+            SCOPE.with(|s| *s.borrow_mut() = self.scope.clone());
+        }
     }
 
     /// `pluginsd_require_scope_chart()`.
@@ -472,7 +614,7 @@ impl Parser {
                     Priority::Err,
                     "PLUGINSD: command {keyword} requires a chart defined via command {parent}, but is not set."
                 );
-                Err(Refused(None))
+                Err(Refused::Disable(None))
             }
         }
     }
@@ -682,7 +824,7 @@ impl Parser {
                 .map(|dot| (&t[..dot], &t[dot + 1..]))
         }) {
             Some((t, i)) if !t.is_empty() && !i.is_empty() => (text(t), text(i)),
-            _ => return refuse_with("CHART", "missing parameters"),
+            _ => return disable_with("CHART", "missing parameters"),
         };
         let mut name = name.map(|n| {
             let prefix = format!("{type_}.");
@@ -714,7 +856,10 @@ impl Parser {
         let context = non_empty(context);
         let title = title.map_or_else(String::new, text);
         let units = units.map_or_else(|| "unknown".to_string(), text);
-        let plugin = non_empty(plugin).unwrap_or_default();
+        let plugin = non_empty(plugin).unwrap_or_else(|| match &self.mode {
+            Mode::Plugin { filename } => filename.to_string(),
+            Mode::Stream => String::new(),
+        });
         let module = module.map(text);
         let info = self.host.info();
         let (chart, _) = self.host.charts().create(&ChartSpec {
@@ -759,9 +904,13 @@ impl Parser {
             }
             None => chart.update_meta(|m| m.flags &= !flags::STORE_FIRST),
         }
-        self.set_scope(&chart, "CHART");
+        if !self.set_scope(&chart, "CHART") {
+            return disable();
+        }
         self.chart_to_slot(&chart, slot, obsolete);
-        self.set_update_every(&chart, i64::from(chart.update_every()));
+        if let Mode::Stream = self.mode {
+            self.set_update_every(&chart, i64::from(chart.update_every()));
+        }
         Ok(())
     }
 
@@ -777,7 +926,7 @@ impl Parser {
         let options = w.get(base + 5);
         let chart = self.require_scope("DIMENSION", "CHART")?;
         let Some(id) = id.filter(|i| !i.is_empty()) else {
-            return refuse_with("DIMENSION", "missing dimension id");
+            return disable_with("DIMENSION", "missing dimension id");
         };
         let number = |v: Option<&[u8]>| match v.filter(|v| !v.is_empty()).map(str2ll_encoded) {
             Some(0) | None => 1,
@@ -837,10 +986,10 @@ impl Parser {
                 Priority::Err,
                 "Ignoring malformed or empty CHART LABEL command."
             );
-            return refuse();
+            return disable();
         };
         let Some(chart) = self.scope().cloned() else {
-            return refuse_with("CLABEL", "Got CHART LABEL without a chart");
+            return disable_with("CLABEL", "Got CHART LABEL without a chart");
         };
         let first = self.clabel_count == 0;
         self.clabel_count += 1;
@@ -870,7 +1019,7 @@ impl Parser {
                 Priority::Err,
                 "PLUGINSD: 'host:{hostname}' got CLABEL_COMMIT, without a CHART or BEGIN. Ignoring it."
             );
-            return refuse();
+            return disable();
         }
         let changed = chart.update_meta(|m| m.labels.remove_all_unmarked_and_changed())
             || self.clabel_changed;
@@ -904,7 +1053,7 @@ impl Parser {
             }
         }
         let Some(name) = name.filter(|n| !n.is_empty()).map(text) else {
-            return refuse_with("VARIABLE", "missing variable name");
+            return disable_with("VARIABLE", "missing variable name");
         };
         let hostname = self.host.hostname();
         let chart_id = chart
@@ -921,7 +1070,7 @@ impl Parser {
             return Ok(());
         };
         if !global && chart.is_none() {
-            return refuse_with("VARIABLE", "no chart is defined and no GLOBAL is given");
+            return disable_with("VARIABLE", "no chart is defined and no GLOBAL is given");
         }
         let (v, used) = str2ndd_encoded(value);
         if used < value.len() {
@@ -949,7 +1098,7 @@ impl Parser {
     /// `pluginsd_label()`: `name source value...`; extra words join the value with single spaces.
     fn label(&mut self, w: &Words) -> Rc {
         let (Some(name), Some(source), Some(first)) = (w.get(1), w.get(2), w.get(3)) else {
-            return refuse_with("LABEL", "missing parameters");
+            return disable_with("LABEL", "missing parameters");
         };
         let mut value = first.to_vec();
         if w.len() > 4 {
@@ -1018,7 +1167,7 @@ impl Parser {
                 w.get(1).map_or_else(|| "[unset]".to_string(), text),
                 w.get(2).map_or_else(|| "[unset]".to_string(), text)
             );
-            return refuse();
+            return Err(Refused::Error);
         };
         if uuid_parse_flexi(guid).is_none() {
             plog!(
@@ -1028,7 +1177,7 @@ impl Parser {
                 "PLUGINSD: parameter machine guid to CLAIMED_ID command is not valid UUID. Received: '{}'.",
                 text(guid)
             );
-            return refuse();
+            return Err(Refused::Error);
         }
         let claim_uuid = if claim == b"NULL" {
             [0; 16]
@@ -1043,7 +1192,7 @@ impl Parser {
                         "PLUGINSD: parameter claim id to CLAIMED_ID command is not valid UUID. Received: '{}'.",
                         text(claim)
                     );
-                    return refuse();
+                    return Err(Refused::Error);
                 }
             }
         };
@@ -1063,7 +1212,65 @@ impl Parser {
         Ok(())
     }
 
+    // ---- a plugin's own keywords ----
+
+    /// `pluginsd_flush()`: the scope ends and the replication window is forgotten; collected values stay.
+    fn flush(&mut self) {
+        self.clear_scope("FLUSH");
+        self.replay.start_time = 0;
+        self.replay.end_time = 0;
+    }
+
+    /// `pluginsd_trust_durations()`: `0` or `1`.
+    fn trust_durations(&mut self, w: &Words) -> Rc {
+        let Some(value) = w.get(1).filter(|v| !v.is_empty()) else {
+            return disable_with("TRUST_DURATIONS", "missing parameter");
+        };
+        match str2i(value) {
+            0 => self.trust_durations = false,
+            1 => self.trust_durations = true,
+            _ => return disable_with("TRUST_DURATIONS", "parameter must be 0 or 1"),
+        }
+        Ok(())
+    }
+
+    /// `pluginsd_host()`: none, empty or `localhost` collects into localhost, as a plugin does from the start; a
+    /// machine GUID names a virtual node, which comes with commit 4 of milestone 8 (D142.10): until then the run ends.
+    fn host_scope(&mut self, w: &Words) -> Rc {
+        match w.get(1) {
+            None | Some(b"" | b"localhost") => Ok(()),
+            Some(_) => Err(Refused::Error),
+        }
+    }
+
+    /// `pluginsd_config()`: `id action ...`, counted as a collection. What the actions do comes with DynCfg (commit 8
+    /// of milestone 8, D142.9); an unknown one is reported.
+    fn config_keyword(&mut self, w: &Words) -> Rc {
+        let Some(action) = w.get(2) else {
+            return Err(Refused::Error);
+        };
+        if !matches!(action, b"create" | b"delete" | b"status") {
+            plog!(
+                self,
+                Source::Collector,
+                Priority::Warning,
+                "DYNCFG: unknown action '{}' received from plugin",
+                text(action)
+            );
+        }
+        self.data_collections_count += 1;
+        Ok(())
+    }
+
     // ---- functions (pluginsd_functions.c) ----
+
+    /// Whom the functions this parser registers belong to (`from_streaming`).
+    fn function_source(&self) -> nrpc::Source {
+        match self.mode {
+            Mode::Stream => nrpc::Source::Stream,
+            Mode::Plugin { .. } => nrpc::Source::Plugin,
+        }
+    }
 
     /// `pluginsd_function()`: `[GLOBAL] name timeout help tags access priority version`, always host-wide.
     fn function(&mut self, w: &Words) -> Rc {
@@ -1091,7 +1298,7 @@ impl Parser {
                 shown(version),
                 shown(help)
             );
-            return refuse();
+            return Err(Refused::Error);
         };
         if !global && let Some(chart) = self.scope() {
             plog!(
@@ -1120,7 +1327,7 @@ impl Parser {
                     .map_or(nrpc::VERSION_DEFAULT, str2u),
                 access: nrpc::access::from_hex_mapping_old_roles(access.unwrap_or(b"")),
                 sync: false,
-                source: nrpc::Source::Stream,
+                source: self.function_source(),
             },
         );
         if let Err(warning) = registered {
@@ -1145,9 +1352,9 @@ impl Parser {
                 Priority::Err,
                 "PLUGINSD: 'host:{hostname}' got a FUNCTION_DEL without a name. Ignoring it."
             );
-            return refuse();
+            return Err(Refused::Error);
         };
-        match self.host.unregister_function(name, nrpc::Source::Stream) {
+        match self.host.unregister_function(name, self.function_source()) {
             nrpc::Unregistered::Removed => {}
             not_removed => {
                 if let nrpc::Unregistered::Refused(warning) = not_removed {
@@ -1265,26 +1472,29 @@ impl Parser {
         (self.config.now)().0
     }
 
-    /// `pluginsd_begin()`: the duration since the previous collection, trusted as streaming does.
+    /// `pluginsd_begin()`: the duration since the previous collection, taken as it is when durations are trusted (always
+    /// on streams), else filtered by the chart's clock.
     fn begin(&mut self, w: &Words) -> Rc {
         let slot = self.slot_of(w, CHART_SLOT_MAX, &PARSER_SLOTS);
         let base = if slot.is_some() { 2 } else { 1 };
         let id = w.get(base);
         let microseconds_s = w.get(base + 1);
         let Some(chart) = self.chart_from_slot(id, slot, "BEGIN") else {
-            return refuse();
+            return disable();
         };
-        self.set_scope(&chart, "BEGIN");
+        if !self.set_scope(&chart, "BEGIN") {
+            return disable();
+        }
         let microseconds = match microseconds_s.filter(|m| !m.is_empty()) {
             Some(m) => str2ll(m).0.max(0) as u64,
             None => 0,
         };
         if chart.collection().counter_done != 0 {
             let now = self.now_tv();
-            if microseconds != 0 {
+            if microseconds != 0 && self.trust_durations {
                 collection::next_usec_unfiltered(&chart, now, microseconds);
             } else {
-                collection::timed_next(&chart, now, 0);
+                collection::timed_next(&chart, now, microseconds);
             }
         }
         Ok(())
@@ -1298,7 +1508,7 @@ impl Parser {
         let value = w.get(base + 1);
         let chart = self.require_scope("SET", "CHART")?;
         let Some(dim) = self.acquire_dim(&chart, dimension, slot, "SET") else {
-            return refuse();
+            return disable();
         };
         chart.receiver().set = true;
         if let Some(value) = value.filter(|v| !v.is_empty()) {
@@ -1334,13 +1544,18 @@ impl Parser {
         if tv.0 == 0 {
             tv = self.now_tv();
         }
+        // a plugin's collections go out at once, from this thread's buffer (only a host's receiver uses its batch)
+        let buffer = match self.mode {
+            Mode::Stream => BufferSource::Forward(&mut self.forward),
+            Mode::Plugin { .. } => BufferSource::Thread,
+        };
         collection::timed_done(
             &self.host,
             &chart,
             tv,
             pending_next,
             self.config.gap_when_lost_iterations_above,
-            BufferSource::Forward(&mut self.forward),
+            buffer,
         );
         Ok(())
     }
@@ -1357,12 +1572,14 @@ impl Parser {
             w.get(base + 2),
             w.get(base + 3),
         ) else {
-            return refuse_with("BEGIN2", "missing parameters");
+            return disable_with("BEGIN2", "missing parameters");
         };
         let Some(chart) = self.chart_from_slot(Some(id), slot, "BEGIN2") else {
-            return refuse();
+            return disable();
         };
-        self.set_scope(&chart, "BEGIN2");
+        if !self.set_scope(&chart, "BEGIN2") {
+            return disable();
+        }
         chart.isnot_obsolete();
         let update_every = str2ull_encoded(ue) as i64;
         let end_time = str2ull_encoded(end) as i64;
@@ -1425,11 +1642,11 @@ impl Parser {
             w.get(base + 2),
             w.get(base + 3),
         ) else {
-            return refuse_with("SET2", "missing parameters");
+            return disable_with("SET2", "missing parameters");
         };
         let chart = self.require_scope("SET2", "BEGIN2")?;
         let Some(dim) = self.acquire_dim(&chart, Some(dimension), slot, "SET2") else {
-            return refuse();
+            return disable();
         };
         chart.receiver().set = true;
         chart.dim_isnot_obsolete(&dim);
@@ -1784,10 +2001,12 @@ impl Parser {
             None => self.require_scope("RBEGIN", "RBEGIN")?,
             Some(id) => match self.chart_from_slot(Some(id), slot, "RBEGIN") {
                 Some(chart) => chart,
-                None => return refuse(),
+                None => return disable(),
             },
         };
-        self.set_scope(&chart, "RBEGIN");
+        if !self.set_scope(&chart, "RBEGIN") {
+            return disable();
+        }
         if let (Some(start_s), Some(end_s)) = (start_s, end_s) {
             let start = str2ull_encoded(start_s) as i64;
             let end = str2ull_encoded(end_s) as i64;
@@ -1875,11 +2094,11 @@ impl Parser {
             return Ok(());
         }
         let Some(dim) = self.acquire_dim(&chart, dimension, slot, "RSET") else {
-            return refuse();
+            return disable();
         };
         chart.receiver().set = true;
         if self.replay.start_time == 0 || self.replay.end_time == 0 {
-            return refuse();
+            return disable();
         }
         let value_s = value_s.filter(|v| !v.is_empty()).unwrap_or(b"NAN");
         let mut value = str2ndd_encoded(value_s).0;
@@ -1918,7 +2137,7 @@ impl Parser {
             }
         }
         let Some(dim) = self.acquire_dim(&chart, dimension, slot, "RDSTATE") else {
-            return refuse();
+            return disable();
         };
         let is_float = dim.meta().flags & dim_flags::FLOAT != 0;
         let sender_sent_float = is_float && self.config.capabilities & caps::FLOAT_BASELINE != 0;
@@ -1979,7 +2198,7 @@ impl Parser {
             if let Some(chart) = self.scope() {
                 chart.receiver().replication_empty_response_count = 0;
             }
-            return refuse();
+            return Err(Refused::Error);
         }
         let number = |i: usize| w.get(i).map_or(0, |v| str2ull_encoded(v) as i64);
         let update_every_child = number(1);

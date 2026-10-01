@@ -553,41 +553,56 @@ pub fn signal_flag(
     Ok(&SIGNAL_FLAGS[signal as usize])
 }
 
+/// What [`wait_fd`] saw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FdWait {
+    /// 0 when the descriptor has one of the events, 1 on a timeout, -1 once cancelled, 2 on a failed poll or another
+    /// event.
+    pub rc: i32,
+    /// The errno C leaves: ETIMEDOUT, ECANCELED, the failed poll's, else 0.
+    pub errno: i32,
+    /// The last poll's revents (C's `*revents`).
+    pub revents: nix::poll::PollFlags,
+}
+
 /// `wait_on_socket_or_cancel_with_timeout()` without TLS (`libnetdata/socket/socket.c:438-490`), shared by the
-/// streaming connector and the spawn client: 0 when `fd` has one of `events`, 1 on a timeout (errno ETIMEDOUT), -1
-/// once `cancelled()` (ECANCELED), 2 on a failed poll (its errno) or another event (0); with the errno C leaves. A
-/// timeout of 0 or less waits forever; `cancelled` is asked every 100 ms.
+/// streaming connector, the spawn client and the plugins' readers. A timeout of 0 or less waits forever; `cancelled` is
+/// asked every 100 ms.
 pub fn wait_fd(
     fd: std::os::fd::BorrowedFd<'_>,
     timeout_ms: i64,
     events: nix::poll::PollFlags,
     cancelled: &dyn Fn() -> bool,
-) -> (i32, i32) {
+) -> FdWait {
     use nix::errno::Errno;
-    use nix::poll::{PollFd, PollTimeout, poll};
+    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
     const CHECK_MS: i64 = 100;
     let forever = timeout_ms <= 0;
     let mut timeout_ms = timeout_ms;
+    let mut revents = PollFlags::empty();
+    let end = |rc, errno: i32, revents| FdWait { rc, errno, revents };
     while timeout_ms > 0 || forever {
         if cancelled() {
-            return (-1, Errno::ECANCELED as i32);
+            return end(-1, Errno::ECANCELED as i32, revents);
         }
         let wait_ms = if timeout_ms >= CHECK_MS || forever { CHECK_MS } else { timeout_ms };
         // C clears errno before each poll: an interrupted one is retried, a successful one leaves 0
         let mut fds = [PollFd::new(fd, events)];
-        match poll(&mut fds, PollTimeout::try_from(wait_ms as i32).unwrap_or(PollTimeout::MAX)) {
+        let polled = poll(&mut fds, PollTimeout::try_from(wait_ms as i32).unwrap_or(PollTimeout::MAX));
+        revents = fds[0].revents().unwrap_or(PollFlags::empty());
+        match polled {
             Err(Errno::EINTR | Errno::EAGAIN) => {}
-            Err(e) => return (2, e as i32),
+            Err(e) => return end(2, e as i32, revents),
             Ok(0) => {
                 if !forever {
                     timeout_ms -= wait_ms;
                 }
             }
-            Ok(_) if fds[0].revents().is_some_and(|r| r.intersects(events)) => return (0, 0),
-            Ok(_) => return (2, 0),
+            Ok(_) if revents.intersects(events) => return end(0, 0, revents),
+            Ok(_) => return end(2, 0, revents),
         }
     }
-    (1, Errno::ETIMEDOUT as i32)
+    end(1, Errno::ETIMEDOUT as i32, revents)
 }
 
 /// `sqlite3_status64(SQLITE_STATUS_MEMORY_USED, &current, &highwater, 1)`: the most memory SQLite held since the
@@ -694,17 +709,26 @@ mod tests {
         }
     }
 
-    /// `wait_fd()`'s outcomes with C's errno: a timeout, the event, a cancellation.
+    /// `wait_fd()`'s outcomes with C's errno and revents: a timeout, a cancellation, the event, the event with the
+    /// peer gone, the peer gone alone.
     #[test]
     fn waits_end_as_c_s() {
         use nix::poll::PollFlags;
         use std::io::Write;
-        let (a, mut b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (a, mut b) = nix::unistd::pipe().map(|(r, w)| (r, std::fs::File::from(w))).unwrap();
         let never = || false;
-        assert_eq!(wait_fd(a.as_fd(), 150, PollFlags::POLLIN, &never), (1, libc::ETIMEDOUT));
-        assert_eq!(wait_fd(a.as_fd(), 150, PollFlags::POLLIN, &|| true), (-1, libc::ECANCELED));
+        let wait = |cancelled: &dyn Fn() -> bool| {
+            let w = wait_fd(a.as_fd(), 150, PollFlags::POLLIN, cancelled);
+            (w.rc, w.errno, w.revents)
+        };
+        assert_eq!(wait(&never), (1, libc::ETIMEDOUT, PollFlags::empty()));
+        assert_eq!(wait(&|| true), (-1, libc::ECANCELED, PollFlags::empty()));
         b.write_all(b"x").unwrap();
-        assert_eq!(wait_fd(a.as_fd(), 150, PollFlags::POLLIN, &never), (0, 0));
+        assert_eq!(wait(&never), (0, 0, PollFlags::POLLIN));
+        drop(b);
+        assert_eq!(wait(&never), (0, 0, PollFlags::POLLIN | PollFlags::POLLHUP));
+        nix::unistd::read(&a, &mut [0u8; 4]).unwrap();
+        assert_eq!(wait(&never), (2, 0, PollFlags::POLLHUP));
     }
 
     use super::*;

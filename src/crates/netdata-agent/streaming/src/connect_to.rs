@@ -181,9 +181,9 @@ pub fn effective_service(definition: &str, default_port: u16) -> String {
 /// `wait_on_socket_or_cancel_with_timeout()` ([`netdata_agent_sys::wait_fd`]) for this thread: its cancellation, and
 /// the errno C leaves in its errno.
 fn wait_on_socket(fd: std::os::fd::BorrowedFd<'_>, timeout_ms: i64, events: PollFlags, th: &Thread<'_>) -> i32 {
-    let (r, errno) = netdata_agent_sys::wait_fd(fd, timeout_ms, events, &|| th.cancelled());
-    th.errno.set(errno);
-    r
+    let waited = netdata_agent_sys::wait_fd(fd, timeout_ms, events, &|| th.cancelled());
+    th.errno.set(waited.errno);
+    waited.rc
 }
 
 /// `connect_to_unix()`.

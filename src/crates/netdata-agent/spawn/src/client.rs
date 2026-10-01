@@ -547,7 +547,8 @@ impl Instance {
 
     /// Waits up to `timeout_ms` for the report to be readable (`wait_on_socket_or_cancel_with_timeout()`).
     fn ready(&mut self, timeout_ms: i32, cancelled: &dyn Fn() -> bool) -> Ready {
-        match netdata_agent_sys::wait_fd(self.sock.as_fd(), i64::from(timeout_ms), PollFlags::POLLIN, cancelled) {
+        let waited = netdata_agent_sys::wait_fd(self.sock.as_fd(), i64::from(timeout_ms), PollFlags::POLLIN, cancelled);
+        match (waited.rc, waited.errno) {
             (0, _) => Ready::Yes,
             (2, errno) => {
                 nd_log!(Source::Collector, Priority::Err, errno = errno;

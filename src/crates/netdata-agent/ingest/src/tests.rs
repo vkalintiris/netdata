@@ -1950,3 +1950,288 @@ fn a_parser_destroyed_inside_a_block_unlocks_it_as_c() {
     let ((), records) = netdata_agent_log::capture(|| drop(p));
     assert!(records.is_empty(), "{:?}", records.iter().map(|r| r.message.clone()).collect::<Vec<_>>());
 }
+
+// ---- a plugin's parser (milestone 8 commit 3, D142) ----
+
+const PLUGIN_UPDATE_EVERY: i32 = 2;
+
+thread_local! {
+    /// The wall clock of a plugin's parser, in seconds, which a test may move.
+    static PLUGIN_NOW: std::cell::Cell<i64> = const { std::cell::Cell::new(NOW) };
+}
+
+fn localhost() -> Arc<Host> {
+    named_host("parent", "5a1e0000-0000-4000-8000-0000000000aa", true)
+}
+
+fn plugin_parser(localhost: &Arc<Host>) -> Parser {
+    Parser::plugin(
+        Arc::clone(localhost),
+        Config {
+            capabilities: 0,
+            update_every: PLUGIN_UPDATE_EVERY,
+            page_size: 4096,
+            now: || (PLUGIN_NOW.with(std::cell::Cell::get), 0),
+            gap_when_lost_iterations_above: 3,
+        },
+        "difftest.plugin".into(),
+    )
+}
+
+/// The records of `lines` fed to a fresh plugin parser, the daemon's only (the collectors' reasons share one limiter
+/// with every test): what feeding the last line returned, whether the plugin stays enabled, and the texts.
+fn plugin_run(lines: &[&str]) -> (bool, bool, Vec<(Priority, String)>) {
+    let lh = localhost();
+    let mut p = plugin_parser(&lh);
+    let (results, records) = netdata_agent_log::capture(|| feed_all(&mut p, lines));
+    let records = records
+        .into_iter()
+        .filter(|r| r.source == Source::Daemon)
+        .map(|r| (r.priority, r.message.unwrap_or_default()))
+        .collect();
+    (*results.last().unwrap(), p.enabled, records)
+}
+
+/// `PARSER_INIT_PLUGINSD` (`gperf-hashtable.h`): what a plugin may send and a child may not, and the reverse.
+#[test]
+fn a_plugins_repertoire_is_cs() {
+    for line in ["FLUSH", "PLUGIN_KEEPALIVE", "TRUST_DURATIONS 1", "HOST", "HOST ''", "HOST localhost", "DYNCFG_ENABLE x"] {
+        assert_eq!(plugin_run(&[line]), (true, true, vec![]), "{line}");
+        let h = host();
+        let (results, _) = netdata_agent_log::capture(|| feed_all(&mut parser(&h), &[line]));
+        assert_eq!(results, [line.starts_with("DYNCFG")], "a child's {line}");
+    }
+    for line in ["BEGIN2 'test.c1' 1 10 #", "SET2 'd1' 1 1 A", "END2", "CLAIMED_ID a b", "JSON STREAM_PATH", "RBEGIN x"] {
+        let (ok, enabled, records) = plugin_run(&[line]);
+        assert!(!ok && enabled, "{line}");
+        assert!(matches!(&records[..], [(Priority::Err, r)] if r.starts_with("PLUGINSD: parser_action(")), "{line}: {records:?}");
+    }
+}
+
+/// C's parser return classes: an error ends the run, a disable also disables the plugin, a stop ends the run with no
+/// parser record.
+#[test]
+fn refusals_end_a_plugins_run_by_c_s_classes() {
+    let action = |keyword: &str, n: usize, shown: &str| {
+        (
+            Priority::Err,
+            format!("PLUGINSD: parser_action('{keyword}') failed on line {n}: {{ {shown} }} (quotes added to show parsing)"),
+        )
+    };
+    let chart = "CHART 'test.c1' '' t u f c line 1 1";
+    type Case<'a> = (&'a [&'a str], bool, Vec<(Priority, String)>);
+    let cases: [Case; 13] = [
+        (&["NOT_A_KEYWORD x"], true, vec![action("NOT_A_KEYWORD", 1, "'NOT_A_KEYWORD' 'x'")]),
+        (&["FUNCTION"], true, vec![
+            (Priority::Err, "PLUGINSD: 'host:parent' got a FUNCTION, without providing the required data (global = 'no', name = '(unset)', timeout = '(unset)', priority = '(unset)', version = '(unset)', help = '(unset)'). Ignoring it.".into()),
+            action("FUNCTION", 1, "'FUNCTION'"),
+        ]),
+        (&["FUNCTION_DEL"], true, vec![
+            (Priority::Err, "PLUGINSD: 'host:parent' got a FUNCTION_DEL without a name. Ignoring it.".into()),
+            action("FUNCTION_DEL", 1, "'FUNCTION_DEL'"),
+        ]),
+        (&["CONFIG x"], true, vec![action("CONFIG", 1, "'CONFIG' 'x'")]),
+        (&["HOST 5a1e0000-0000-4000-8000-0000000000aa"], true, vec![action("HOST", 1, "'HOST' '5a1e0000-0000-4000-8000-0000000000aa'")]),
+        (&["HOST_DEFINE a b"], true, vec![action("HOST_DEFINE", 1, "'HOST_DEFINE' 'a' 'b'")]),
+        (&["CHART 'nodot' '' t u f c line 1 1"], false, vec![action("CHART", 1, "'CHART' 'nodot' '' 't' 'u' 'f' 'c' 'line' '1' '1'")]),
+        (&["BEGIN 'test.c1'"], false, vec![
+            (Priority::Err, "PLUGINSD: 'host:parent/chart:test.c1' got a BEGIN but chart does not exist.".into()),
+            action("BEGIN", 1, "'BEGIN' 'test.c1'"),
+        ]),
+        (&["SET 'd1' = 1"], false, vec![
+            (Priority::Err, "PLUGINSD: command SET requires a chart defined via command CHART, but is not set.".into()),
+            action("SET", 1, "'SET' 'd1' '1'"),
+        ]),
+        (&[chart, "TRUST_DURATIONS"], false, vec![action("TRUST_DURATIONS", 2, "'TRUST_DURATIONS'")]),
+        (&["TRUST_DURATIONS 2"], false, vec![action("TRUST_DURATIONS", 1, "'TRUST_DURATIONS' '2'")]),
+        (&[chart, "DISABLE"], false, vec![(Priority::Info, "PLUGINSD: plugin called DISABLE. Disabling it.".into())]),
+        (&[chart, "EXIT"], true, vec![(Priority::Info, "PLUGINSD: plugin called EXIT.".into())]),
+    ];
+    for (lines, enabled, records) in cases {
+        assert_eq!(plugin_run(lines), (false, enabled, records), "{lines:?}");
+    }
+}
+
+/// `pluginsd_chart()` for a plugin: its file name is the default plugin, its update every the default one, and the
+/// chart does not lower a receiver's minimum.
+#[test]
+fn a_plugins_chart_takes_its_defaults() {
+    let lh = localhost();
+    let before = lh.receiver_min_update_every();
+    let mut p = plugin_parser(&lh);
+    feed_ok(&mut p, &[
+        "CHART 'p.a' '' t u f c line 1000 '' '' '' corpus".into(),
+        "CHART 'p.b' '' t u f c line 1000 1 '' go.d corpus".into(),
+    ]);
+    let meta = |id: &str| {
+        let chart = lh.charts().find(id, true).unwrap();
+        (chart.meta().plugin, chart.update_every())
+    };
+    assert_eq!(meta("p.a"), ("difftest.plugin".to_string(), PLUGIN_UPDATE_EVERY));
+    assert_eq!(meta("p.b"), ("go.d".to_string(), 1));
+    assert_eq!(lh.receiver_min_update_every(), before);
+}
+
+/// `pluginsd_begin()`: a plugin's microseconds go through the chart's clock unless it trusts its durations: a gap
+/// over five intervals replaces them then.
+#[test]
+fn a_plugins_durations_are_filtered_until_trusted() {
+    let since_last = |trust: &str| {
+        let lh = localhost();
+        let mut p = plugin_parser(&lh);
+        let at = |t: i64, p: &mut Parser, lines: &[String]| {
+            PLUGIN_NOW.with(|now| now.set(t));
+            feed_ok(p, lines);
+        };
+        let collect = ["SET 'd' = 1".to_string(), "END".into()];
+        at(NOW - 20, &mut p, &[trust.into(), "CHART 'p.a' '' t u f c line 1000 1".into(), "DIMENSION 'd' '' absolute 1 1".into()]);
+        at(NOW - 20, &mut p, &["BEGIN 'p.a'".into()]);
+        at(NOW - 20, &mut p, &collect);
+        at(NOW - 19, &mut p, &["BEGIN 'p.a'".into()]);
+        at(NOW - 19, &mut p, &collect);
+        at(NOW, &mut p, &["BEGIN 'p.a' 1000000".into()]);
+        let chart = lh.charts().find("p.a", true).unwrap();
+        let c = chart.collection();
+        PLUGIN_NOW.with(|now| now.set(NOW));
+        (c.usec_since_last_update, NOW * 1_000_000 - (c.last_collected.0 * 1_000_000 + c.last_collected.1))
+    };
+    let (untrusted, gap) = since_last("TRUST_DURATIONS 0");
+    assert!(gap > 5_000_000, "{gap}");
+    assert_eq!(untrusted, gap as u64);
+    assert_eq!(since_last("PLUGIN_KEEPALIVE").0, gap as u64);
+    assert_eq!(since_last("TRUST_DURATIONS 1").0, 1_000_000);
+}
+
+/// `rrdset_timed_done()` outside a receiver: a plugin's collections go upstream one by one, not batched (R55 N8).
+#[test]
+fn a_plugins_collections_go_upstream_at_once() {
+    let mut info = localhost().info();
+    info.stream_send = StreamSend::new(true, "parent:19999", "key", "*");
+    let lh = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, info));
+    let r = Arc::new(Recorder::with_capabilities(PARENT));
+    lh.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
+    lh.sender_flags_set(sender_flags::ADDED | sender_flags::CONNECTED | sender_flags::READY_4_METRICS);
+    let mut p = plugin_parser(&lh);
+    feed_ok(&mut p, &["CHART 'p.a' '' t u f c line 1000 1".into(), "DIMENSION 'd' '' absolute 1 1".into()]);
+    assert_eq!(r.take(), []);
+    for i in 0..3 {
+        PLUGIN_NOW.with(|now| now.set(NOW + i));
+        feed_ok(&mut p, &["BEGIN 'p.a'".into(), "SET 'd' = 1".into(), "END".into()]);
+        let commits = r.take();
+        match i {
+            // the first collection stores nothing, and sends the definition
+            0 => assert!(
+                matches!(&commits[..], [(Traffic::Metadata, definition)] if definition.starts_with("CHART SLOT:0x1 \"p.a\" ")),
+                "{commits:?}"
+            ),
+            _ => assert!(
+                matches!(&commits[..], [(Traffic::Data, data)] if data.starts_with("BEGIN2 SLOT:0x1 'p.a' ")),
+                "{i}: {commits:?}"
+            ),
+        }
+    }
+    PLUGIN_NOW.with(|now| now.set(NOW));
+}
+
+/// `pluginsd_config()` before DynCfg: an action is counted as a collection, an unknown one reported.
+#[test]
+fn config_is_counted_and_unknown_actions_reported() {
+    let lh = localhost();
+    let mut p = plugin_parser(&lh);
+    let (results, records) = netdata_agent_log::capture(|| {
+        feed_all(&mut p, &["CONFIG x create accepted job /x internal internal update 0 0", "CONFIG x status running", "CONFIG x bogus"])
+    });
+    assert_eq!(results, [true; 3]);
+    assert_eq!(p.data_collections_count, 3);
+    let records: Vec<_> = records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
+    assert_eq!(records, [(Source::Collector, Priority::Warning, "DYNCFG: unknown action 'bogus' received from plugin".to_string())]);
+}
+
+/// `pluginsd_function()` from a plugin registers it as the plugin's: `config` is refused; FUNCTION_DEL removes it.
+#[test]
+fn a_plugins_functions_are_its_own() {
+    let lh = localhost();
+    let mut p = plugin_parser(&lh);
+    let (results, records) = netdata_agent_log::capture(|| {
+        feed_all(&mut p, &["FUNCTION GLOBAL 'f1' 10 'help' 'top' 'member' 100 3", "FUNCTION GLOBAL 'config' 10 'help'"])
+    });
+    assert_eq!(results, [true, true]);
+    assert_eq!(lh.functions().get(b"f1").map(|f| f.source), Some(nrpc::Source::Plugin));
+    assert!(lh.functions().get(b"config").is_none());
+    let records: Vec<_> = records.into_iter().map(|r| r.message.unwrap_or_default()).collect();
+    assert_eq!(records, ["NRPC: 'host:parent' attempted to register reserved dynamic-configuration method 'config' from a plugin. Ignoring it."]);
+    feed_ok(&mut p, &["FUNCTION_DEL GLOBAL 'f1'".into()]);
+    assert!(lh.functions().get(b"f1").is_none());
+    assert_eq!(p.data_collections_count, 3);
+}
+
+/// `pluginsd_set_scope_chart()` and `pluginsd_clear_scope_chart()`: a scope chart another thread took over is
+/// collected twice (the scope kept, the plugin disabled), and this thread does not give it up for the other.
+#[test]
+fn a_chart_another_thread_collects_is_collected_twice() {
+    let lh = localhost();
+    let mut p = plugin_parser(&lh);
+    feed_ok(&mut p, &["CHART 'p.a' '' t u f c line 1000 1".into(), "DIMENSION 'd' '' absolute 1 1".into()]);
+    let chart = lh.charts().find("p.a", true).unwrap();
+    let me = netdata_agent_log::tid();
+    assert_eq!(chart.scope_tid(), me);
+    feed_ok(&mut p, &["BEGIN 'p.a'".into(), "SET 'd' = 1".into(), "END".into()]);
+    assert_eq!(chart.scope_tid(), 0, "END gives the chart up");
+    feed_ok(&mut p, &["BEGIN 'p.a'".into()]);
+    let other = me + 1;
+    chart.set_scope_tid(other);
+    let (results, records) = netdata_agent_log::capture(|| feed_all(&mut p, &["BEGIN 'p.a'"]));
+    assert_eq!((results, p.enabled), (vec![false], false));
+    let records: Vec<_> = records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
+    assert_eq!(records, [
+        (Source::Collector, Priority::Warning, format!("PLUGINSD: keyword BEGIN: 'host:parent/chart:p.a' is collected twice (my tid {me}, other collector tid {other})")),
+        (Source::Daemon, Priority::Err, "PLUGINSD: parser_action('BEGIN') failed on line 7: { 'BEGIN' 'p.a' } (quotes added to show parsing)".to_string()),
+    ]);
+    let ((), records) = netdata_agent_log::capture(|| drop(p));
+    let records: Vec<_> = records.into_iter().map(|r| r.message.unwrap_or_default()).collect();
+    assert_eq!(records, [format!("PLUGINSD: attempted to clear collector_tid {other} for 'host:parent/chart:p.a/' from non-owner thread {me} during THREAD CLEANUP")]);
+    assert_eq!(chart.scope_tid(), other);
+}
+
+/// The exit sweep (`pluginsd_process()`): the charts this thread created or redefined last become obsolete, another
+/// thread's stay.
+#[test]
+fn a_plugins_charts_are_obsolete_after_its_run() {
+    let lh = localhost();
+    let mut p = plugin_parser(&lh);
+    feed_ok(&mut p, &["CHART 'p.a' '' t u f c line 1000 1".into(), "CHART 'p.b' '' t u f c line 1000 1".into()]);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let mut other = plugin_parser(&lh);
+            feed_ok(&mut other, &["CHART 'p.b' '' t u f c line 1000 1".into(), "CHART 'p.c' '' t u f c line 1000 1".into()]);
+        });
+    });
+    lh.charts().obsolete_created_by(&lh, netdata_agent_log::tid());
+    drop(p);
+    let obsolete = |id: &str| lh.charts().find(id, true).unwrap().flags() & flags::OBSOLETE != 0;
+    assert_eq!((obsolete("p.a"), obsolete("p.b"), obsolete("p.c")), (true, false, false));
+}
+
+/// The run frame: every record of the run carries the host and the scope chart's name and context as they are when it
+/// is written; between lines no request.
+#[test]
+fn a_plugins_run_frame_follows_its_scope() {
+    let lh = localhost();
+    let mut p = plugin_parser(&lh);
+    let frame = p.run_frame();
+    let record = || {
+        let ((), records) = netdata_agent_log::capture(|| nd_log!(Source::Daemon, Priority::Err, "x"));
+        records.into_iter().next().unwrap().fields
+    };
+    let node = (Field::NidlNode, "parent".to_string());
+    assert_eq!(record(), std::slice::from_ref(&node));
+    feed_ok(&mut p, &["CHART 'p.a' 'named' t u f ctx.a line 1000 1".into()]);
+    assert_eq!(record(), [node.clone(), (Field::NidlInstance, "p.named".into()), (Field::NidlContext, "ctx.a".into())]);
+    feed_ok(&mut p, &["FLUSH".into()]);
+    assert_eq!(record(), std::slice::from_ref(&node));
+    feed_ok(&mut p, &["BEGIN 'p.a'".into()]);
+    drop(p);
+    assert_eq!(record(), [node]);
+    drop(frame);
+    assert_eq!(record(), []);
+}

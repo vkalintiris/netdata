@@ -1531,8 +1531,16 @@ impl Host {
     /// (`stream-receiver.c:1507`), so whoever waits for it (a stale receiver's replacement, a free) waits for those
     /// steps too.
     pub fn clear_receiver(&self, slot: &Arc<ReceiverSlot>, reason: i32) {
+        self.clear_receiver_then(slot, reason, || {});
+    }
+
+    /// [`Host::clear_receiver`], then `cleanup` under the receiver lock, attached or not: C cleans the receiver's
+    /// parser up there (`stream-receiver.c:1510-1513`), so a new receiver collects into the host only after the old
+    /// parser let its charts go.
+    pub fn clear_receiver_then(&self, slot: &Arc<ReceiverSlot>, reason: i32, cleanup: impl FnOnce()) {
         let receiver = lock(&self.receiver);
         if !receiver.as_ref().is_some_and(|r| Arc::ptr_eq(r, slot)) || slot.detaching.swap(true, Ordering::AcqRel) {
+            cleanup();
             return;
         }
         self.receiver_last_connected_s.store(0, Ordering::Relaxed);
@@ -1563,6 +1571,7 @@ impl Host {
                 count.fetch_sub(1, Ordering::Relaxed);
             }
         }
+        cleanup();
     }
 }
 

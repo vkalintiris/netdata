@@ -134,6 +134,23 @@ mod tests {
         );
     }
 
+    /// `PARSER_INIT_PLUGINSD`: the keywords a plugin may not send.
+    #[test]
+    fn the_plugins_repertoire_is_cs() {
+        let outside: Vec<_> = Keyword::all()
+            .filter(|k| !k.repertoire().contains(Repertoire::PLUGINSD))
+            .map(Keyword::name)
+            .collect();
+        assert_eq!(
+            outside,
+            [
+                "BEGIN2", "CHART_DEFINITION_END", "CLAIMED_ID", "END2", "JSON", "RBEGIN", "RDSTATE", "REND", "RSET",
+                "RSSTATE", "SET2"
+            ]
+        );
+        assert_eq!(Keyword::all().count() - outside.len(), 30);
+    }
+
     #[test]
     fn lookups_are_exact() {
         assert_eq!(Keyword::lookup(b"BEGIN2"), Some(Keyword::Begin2));

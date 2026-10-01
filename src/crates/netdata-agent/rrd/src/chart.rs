@@ -7,10 +7,11 @@
 //! are held only for short, bounded steps.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::ops::Deref;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock, Weak};
 
+use netdata_agent_log::{ErrorLimit, nd_log_limit};
 use netdata_agent_storage::dbengine::engine::collect::{Alignment, CollectHandle};
 use netdata_agent_storage::dbengine::engine::mrg::Handle;
 use netdata_agent_storage::query::{Priority, StorageQuery};
@@ -373,6 +374,11 @@ pub struct Chart {
     /// `st->pluginsd.last_slot`: its index in the host's receive slot cache, -1 for none; written under that cache's
     /// lock.
     recv_last_slot: AtomicI32,
+    /// `st->collector_tid`: the thread that last created or redefined the chart; a plugin's run makes the charts it
+    /// still holds this way obsolete when it ends.
+    collector_tid: AtomicU64,
+    /// `st->pluginsd.collector_tid`: the parser thread whose scope the chart is in, 0 for none.
+    scope_tid: AtomicU64,
     /// `st->stream.snd.resync_time_s`: until then v1 data go out with no time since the last update.
     resync_time_s: AtomicI64,
     data_collection: DataCollectionLock,
@@ -786,6 +792,20 @@ impl Chart {
     /// The parser's state on this chart.
     pub fn receiver(&self) -> MutexGuard<'_, ReceiverState> {
         lock(&self.receiver)
+    }
+
+    /// `st->collector_tid`: the thread that last created or redefined the chart.
+    pub fn collector_tid(&self) -> u64 {
+        self.collector_tid.load(Ordering::Relaxed)
+    }
+
+    /// `st->pluginsd.collector_tid`: the parser thread whose scope the chart is in, 0 for none.
+    pub fn scope_tid(&self) -> u64 {
+        self.scope_tid.load(Ordering::Acquire)
+    }
+
+    pub fn set_scope_tid(&self, tid: u64) {
+        self.scope_tid.store(tid, Ordering::Release);
     }
 
     pub fn dim_count(&self) -> usize {
@@ -1652,26 +1672,58 @@ impl Charts {
             }
         }
         lock(&self.send_slots).release(chart.chart_slot.swap(0, Ordering::Relaxed));
-        // rrdset_pluginsd_receive_unslot_and_cleanup()
-        self.receive_unslot(chart);
+        // rrdset_pluginsd_receive_unslot_and_cleanup(): no other thread can be using the cache behind its lock
+        self.unslot(chart);
         chart.freed_contents();
         true
     }
 
     /// `rrdset_pluginsd_receive_unslot()`: the chart's dimension cache emptied (its size kept, by slot or by position)
-    /// and its entry in the receive slot cache cleared, when the entry still names it.
+    /// and its entry in the receive slot cache cleared, when the entry still names it. While another parser thread
+    /// has the chart in scope, only the entry is cleared: that thread's cache stays as it is.
     pub fn receive_unslot(&self, chart: &Chart) {
+        let owner = chart.scope_tid();
+        if owner != 0 && owner != netdata_agent_log::tid() {
+            static ACTIVE: ErrorLimit = ErrorLimit::new(1, 0);
+            nd_log_limit!(
+                &ACTIVE,
+                netdata_agent_log::Source::Daemon,
+                netdata_agent_log::Priority::Warning,
+                "PLUGINSD: rrdset_pluginsd_receive_unslot called while collector (tid {owner}) is active, skipping"
+            );
+            self.clear_recv_slot(chart, chart.recv_last_slot.load(Ordering::Relaxed));
+            return;
+        }
+        self.unslot(chart);
+    }
+
+    /// [`Charts::receive_unslot`] whoever has the chart in scope.
+    fn unslot(&self, chart: &Chart) {
         {
             let mut state = chart.receiver();
             state.prd.iter_mut().for_each(|entry| *entry = None);
             state.dims_with_slots = false;
         }
+        self.clear_recv_slot(chart, chart.recv_last_slot.swap(-1, Ordering::Relaxed));
+    }
+
+    /// `rrdset_clear_host_chart_slot_mapping()`: the receive slot cache's entry `last` cleared, when it names `chart`.
+    fn clear_recv_slot(&self, chart: &Chart, last: i32) {
         let mut slots = lock(&self.recv_slots);
-        let last = chart.recv_last_slot.swap(-1, Ordering::Relaxed);
         if let Some(entry) = usize::try_from(last).ok().and_then(|i| slots.get_mut(i))
             && entry.as_ref().is_some_and(|c| std::ptr::eq(Arc::as_ptr(c), chart))
         {
             *entry = None;
+        }
+    }
+
+    /// The exit sweep of a plugin's run (`pluginsd_process()`): every chart the thread `tid` created or redefined last
+    /// is obsolete.
+    pub fn obsolete_created_by(&self, host: &Host, tid: u64) {
+        for chart in self.all() {
+            if chart.collector_tid() == tid {
+                chart.is_obsolete(host);
+            }
         }
     }
 
@@ -1888,6 +1940,8 @@ impl Charts {
                     chart_slot: AtomicU32::new(lock(&self.send_slots).assign()),
                     dim_last_slot: AtomicU32::new(0),
                     recv_last_slot: AtomicI32::new(-1),
+                    collector_tid: AtomicU64::new(0),
+                    scope_tid: AtomicU64::new(0),
                     resync_time_s: AtomicI64::new(0),
                     data_collection: DataCollectionLock::default(),
                 });
@@ -1899,7 +1953,8 @@ impl Charts {
         if revived {
             chart.obsolete_cleared();
         }
-        // rrdset_react_callback(): created or updated, the chart is accessed
+        // rrdset_react_callback(): created or updated, the chart is this thread's and accessed
+        chart.collector_tid.store(netdata_agent_log::tid(), Ordering::Relaxed);
         chart.touch_last_accessed();
         if is_new || plugin_or_module {
             chart.set_metadata_update();
@@ -1999,6 +2054,51 @@ mod tests {
         assert!(!new && Arc::ptr_eq(&again, &a));
         assert_eq!(a.meta().title, "new title");
         assert!(charts.find_by_name("system.cpu").is_some());
+    }
+
+    /// `rrdset_react_callback()`: the thread that created or last redefined a chart holds it.
+    #[test]
+    fn a_chart_is_held_by_the_thread_that_last_defined_it() {
+        let charts = Arc::new(Charts::default());
+        let (chart, _) = charts.create(&spec("t", "c", None));
+        assert_eq!(chart.collector_tid(), netdata_agent_log::tid());
+        let other = std::thread::spawn({
+            let charts = Arc::clone(&charts);
+            move || {
+                charts.create(&spec("t", "c", None));
+                netdata_agent_log::tid()
+            }
+        })
+        .join()
+        .unwrap();
+        assert_ne!(other, netdata_agent_log::tid());
+        assert_eq!(chart.collector_tid(), other);
+    }
+
+    /// `rrdset_pluginsd_receive_unslot()`: the dimension cache of a chart in another parser thread's scope stays, its
+    /// slot entry goes; in no scope or this thread's, both go.
+    #[test]
+    fn unslot_leaves_another_collectors_cache_alone() {
+        let charts = Charts::default();
+        let (chart, _) = charts.create(&spec("t", "c", None));
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        let state = |chart: &Chart| {
+            let r = chart.receiver();
+            (r.prd.iter().filter(|d| d.is_some()).count(), r.dims_with_slots, chart.recv_last_slot.load(Ordering::Relaxed))
+        };
+        for (owner, kept) in [(netdata_agent_log::tid() + 1, true), (netdata_agent_log::tid(), false), (0, false)] {
+            charts.receive_put(&chart, Some(3));
+            {
+                let mut r = chart.receiver();
+                r.prd = vec![Some(Arc::clone(&dim))];
+                r.dims_with_slots = true;
+            }
+            chart.set_scope_tid(owner);
+            charts.receive_unslot(&chart);
+            chart.set_scope_tid(0);
+            assert_eq!(state(&chart), if kept { (1, true, 2) } else { (0, false, -1) }, "owner {owner}");
+            assert!(matches!(charts.receive_get(Some(3)), SlotLookup::Empty), "owner {owner}");
+        }
     }
 
     #[test]

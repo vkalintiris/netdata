@@ -203,12 +203,13 @@ pub struct Attached {
 
 impl Attached {
     /// `stream_receiver_remove()`'s release of the host: offline in pulse, the receiver slot freed with `reason` (the
-    /// one the host's sender stops with), the parent label updated. The caller gives back the host's stream thread
-    /// pin.
-    fn leave_host(&self, reason: Reason) {
+    /// one the host's sender stops with) and the connection's parser dropped before another receiver can attach
+    /// (`pluginsd_process_cleanup()` at the end of `rrdhost_clear_receiver()`: its THREAD CLEANUP record is the
+    /// removal's), the parent label updated. The caller gives back the host's stream thread pin.
+    fn leave_host(&self, reason: Reason, parser: Option<Parser>) {
         self.host
             .pulse_status(netdata_agent_rrd::pulse::host_status::RCV_OFFLINE);
-        self.host.clear_receiver(&self.slot, reason.0);
+        self.host.clear_receiver_then(&self.slot, reason.0, || drop(parser));
         self.hosts.update_is_parent_label();
     }
 }
@@ -290,10 +291,8 @@ fn send_timeout(link: &mut Link<Conn>, bytes: &[u8], timeout: Duration) -> Resul
 /// worker): `Err` with C's errno on a timeout (ETIMEDOUT), a failed `poll()` (its errno) or an event other than writable
 /// (0).
 fn writable_within(fd: std::os::fd::BorrowedFd<'_>, timeout: Duration) -> Result<(), i32> {
-    match netdata_agent_sys::wait_fd(fd, timeout.as_millis() as i64, nix::poll::PollFlags::POLLOUT, &|| false) {
-        (0, _) => Ok(()),
-        (_, errno) => Err(errno),
-    }
+    let waited = netdata_agent_sys::wait_fd(fd, timeout.as_millis() as i64, nix::poll::PollFlags::POLLOUT, &|| false);
+    if waited.rc == 0 { Ok(()) } else { Err(waited.errno) }
 }
 
 impl Receivers {
@@ -786,7 +785,7 @@ impl Receivers {
         {
             self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
             // the stream threads ended: the exit started
-            attached.leave_host(Reason::DISCONNECT_SHUTDOWN);
+            attached.leave_host(Reason::DISCONNECT_SHUTDOWN, None);
             return false;
         }
         true
@@ -861,7 +860,7 @@ impl StreamWorker {
             .is_err()
         {
             self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
-            attached.leave_host(Reason::DISCONNECT_SOCKET_ERROR);
+            attached.leave_host(Reason::DISCONNECT_SOCKET_ERROR, None);
             return;
         }
         let mut parser = Parser::new(
@@ -1134,10 +1133,7 @@ impl StreamWorker {
             // stream_thread_node_removed() first: a child that reconnects while its host is detached goes to the
             // least loaded thread (R55 M6)
             self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
-            attached.leave_host(reason);
-            // pluginsd_process_cleanup() at the end of rrdhost_clear_receiver(): its THREAD CLEANUP record is the
-            // removal's
-            drop(parser);
+            attached.leave_host(reason, Some(parser));
         }
         // stream_receiver_free(): the socket closes after the records, and a TLS close leaves what its shutdown set
         let tls = attached.stream.is_tls();
