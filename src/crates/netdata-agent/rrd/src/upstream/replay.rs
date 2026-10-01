@@ -78,31 +78,47 @@ pub(super) fn normalize(request: &Request, wall_s: i64, update_every: i64, db: (
     Window { after, before, streaming }
 }
 
+/// What the walk reads of a dimension's query: the storage engines' in the agent, crafted points in the units.
+pub(super) trait Points {
+    fn next_metric(&mut self) -> StoragePoint;
+    fn is_finished(&self) -> bool;
+}
+
+impl Points for StorageQuery<'_> {
+    fn next_metric(&mut self) -> StoragePoint {
+        StorageQuery::next_metric(self)
+    }
+    fn is_finished(&self) -> bool {
+        StorageQuery::is_finished(self)
+    }
+}
+
 /// One exposed dimension's tier 0 query (`struct replication_dimension`).
-struct DimQuery<'a> {
-    dim: &'a Dim,
-    query: StorageQuery<'a>,
-    sp: StoragePoint,
-    skip: bool,
+pub(super) struct DimQuery<'a, Q = StorageQuery<'a>> {
+    pub(super) dim: &'a Dim,
+    pub(super) query: Q,
+    pub(super) sp: StoragePoint,
+    pub(super) skip: bool,
 }
 
 /// What the walk did.
-struct Walk {
-    finished_with_gap: bool,
-    points_read: usize,
-    points_generated: usize,
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Walk {
+    pub(super) finished_with_gap: bool,
+    pub(super) points_read: usize,
+    pub(super) points_generated: usize,
 }
 
 /// `replication_query_execute()`: from `after + 1`, one step at a time over the dimensions' shortest point, each
 /// step an `RBEGIN ''` line and an `RSET` for every dimension that covers it; cut before a step once the answer
 /// passes `max_msg_size`, which turns it into a partial one (`window.before` lowered, not streaming).
 #[allow(clippy::too_many_arguments)]
-fn walk(
+pub(super) fn walk<Q: Points>(
     out: &mut Vec<u8>,
     enc: &Enc,
     host: &Host,
     chart: &Chart,
-    dims: &mut [DimQuery<'_>],
+    dims: &mut [DimQuery<'_, Q>],
     window: &mut Window,
     wall_s: i64,
     interpolated: bool,

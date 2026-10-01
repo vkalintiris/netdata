@@ -34,3 +34,5 @@ zstd = { workspace = true }
 [dev-dependencies]
 # a stream thread driven one turn at a time
 netdata-agent-evloop = { workspace = true, features = ["testing"] }
+# a recording upstream
+netdata-agent-rrd = { workspace = true, features = ["testing"] }

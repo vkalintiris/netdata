@@ -555,23 +555,33 @@ fn main_loop(queue: &Queue, stop: &Stop, exiting: fn() -> bool, update_every: Du
             }
         }
         if !queue.execute_next(&mut buffer) {
-            let (pending, sender_resets) = queue.pace();
-            let timeout = if slow {
+            if slow {
                 buffer = Vec::new();
-                Duration::from_secs(1)
-            } else if pending > 0 {
-                // an unpark since the last empty round: its requests wait again
-                let unparked = sender_resets != last_sender_resets;
-                last_sender_resets = sender_resets;
-                Duration::from_millis(if unparked { 100 } else { 1000 })
-            } else {
-                last_sender_resets = sender_resets;
-                Duration::from_millis(10)
-            };
+            }
+            let (pending, sender_resets) = queue.pace();
+            let timeout = idle_wait(slow, pending, sender_resets, &mut last_sender_resets);
             if !stop.wait(timeout) {
                 return;
             }
         }
+    }
+}
+
+/// The main thread's wait after an empty round (`replication_thread_main()`): a second while slow; while requests
+/// wait, 100 ms after an unpark since the last empty round, else a second; 10 ms when none waits. The unparks are
+/// remembered except while slow, as C's.
+fn idle_wait(slow: bool, pending: usize, sender_resets: usize, last_sender_resets: &mut usize) -> Duration {
+    if slow {
+        return Duration::from_secs(1);
+    }
+    let unparked = sender_resets != *last_sender_resets;
+    *last_sender_resets = sender_resets;
+    if pending == 0 {
+        Duration::from_millis(10)
+    } else if unparked {
+        Duration::from_millis(100)
+    } else {
+        Duration::from_secs(1)
     }
 }
 
@@ -720,6 +730,118 @@ mod tests {
         q.delete_pending(s.replication());
         assert_eq!(counted(&q), [0, 0, 1, 1]);
         assert!(!s.replication().busy());
+    }
+
+    /// The main thread's pace after an empty round: (slow, pending, sender resets, the resets last seen) to the wait
+    /// and the resets seen after it.
+    #[test]
+    fn the_main_threads_idle_wait_follows_its_pace() {
+        let ms = Duration::from_millis;
+        let cases = [
+            ("slow: a second, the unpark not taken", (true, 3, 5, 1), (ms(1000), 1)),
+            ("waiting, no unpark", (false, 3, 1, 1), (ms(1000), 1)),
+            ("waiting, an unpark", (false, 3, 2, 1), (ms(100), 2)),
+            ("none waiting", (false, 0, 4, 1), (ms(10), 4)),
+        ];
+        for (name, (slow, pending, resets, mut last), want) in cases {
+            let wait = idle_wait(slow, pending, resets, &mut last);
+            assert_eq!((wait, last), want, "{name}");
+        }
+    }
+
+    /// The answers' wall clock.
+    const T: i64 = 1_700_000_000;
+
+    /// An answer is cut once past a quarter of its sender's buffer maximum (`MAX_REPLICATION_MESSAGE_PERCENT_SENDER_
+    /// BUFFER`): at exactly a quarter it takes one more step.
+    #[test]
+    fn an_answer_is_cut_at_a_quarter_of_the_senders_buffer() {
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+        use netdata_agent_rrd::mode::DbMode;
+        let (_pool, c) = crate::connector::tests::connector();
+        let host = Arc::new(Host::new(
+            "5a1e0000-0000-4000-8000-0000000000d1",
+            false,
+            crate::connector::tests::info("127.0.0.1:1", "key"),
+        ));
+        let s = Sender::attach(&host, &c).expect("created");
+        let chart = host
+            .charts()
+            .create(&ChartSpec {
+                type_: "t",
+                id: "a",
+                name: None,
+                family: Some("fam"),
+                context: Some("t.a"),
+                title: "Title",
+                units: "u",
+                plugin: "p",
+                module: None,
+                priority: 1000,
+                update_every: 1,
+                chart_type: ChartType::Line,
+                mode: DbMode::Ram,
+                history_entries: 3600,
+                page_size: 4096,
+            })
+            .0;
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        for t in T..T + 10 {
+            dim.store_metric(t as u64 * 1_000_000, (t - T) as f64, 0);
+        }
+        dim.set_exposed_upstream(chart.version());
+        assert!(dim.is_sent_upstream());
+        let q = c.replication();
+        let answer = |max_size: usize| -> Vec<String> {
+            s.out().buffer.set_max_size(max_size, true);
+            q.request_add(&s, "t.a".into(), T + 2, T + 8, false);
+            let mut buf = Vec::new();
+            assert!(q.execute_next(&mut buf));
+            String::from_utf8(buf).unwrap().lines().map(str::to_string).collect()
+        };
+        // steps and the REND's verdict and window
+        let shape = |lines: &[String]| -> (usize, Vec<String>) {
+            let steps = lines.iter().filter(|l| l.starts_with("RBEGIN '' ")).count();
+            let rend: Vec<String> = lines.last().unwrap().split(' ').skip(4).take(3).map(str::to_string).collect();
+            (steps, rend)
+        };
+        let full = answer(1 << 30);
+        assert_eq!(full[1], format!("RBEGIN '' {} {} {}", T + 2, T + 3, full[1].rsplit(' ').next().unwrap()));
+        assert_eq!(full[2], "RSET \"d\" 3 ''");
+        assert_eq!(shape(&full), (6, vec!["false".to_string(), (T + 2).to_string(), (T + 8).to_string()]));
+        // the chart's line and one step
+        let one_step: usize = full[..3].iter().map(|l| l.len() + 1).sum();
+        let at = answer(4 * one_step);
+        assert_eq!(shape(&at), (2, vec!["false".to_string(), (T + 2).to_string(), (T + 4).to_string()]));
+        let below = answer(4 * one_step - 1);
+        assert_eq!(shape(&below), (1, vec!["false".to_string(), (T + 2).to_string(), (T + 3).to_string()]));
+    }
+
+    /// A replication answer goes only into the session it was asked in: once the sender's buffer was flushed since,
+    /// the commit refuses it (and the answer finishes nothing).
+    #[test]
+    fn an_answer_goes_only_into_the_session_it_was_asked_in() {
+        let (_pool, c) = crate::connector::tests::connector();
+        let host = Arc::new(Host::new(
+            "5a1e0000-0000-4000-8000-0000000000d2",
+            false,
+            crate::connector::tests::info("127.0.0.1:1", "key"),
+        ));
+        let s = Sender::attach(&host, &c).expect("created");
+        // a stream thread the pool lacks: the commit's wake-up fails with a record
+        s.out().session = Some(crate::sender::Session { thread: 9, id: 1 });
+        let asked = s.replication().last_flush_ut.load(Ordering::Relaxed);
+        {
+            let mut out = s.out();
+            s.flush_buffer(&mut out);
+        }
+        let flushed = s.replication().last_flush_ut.load(Ordering::Relaxed);
+        assert_ne!(asked, flushed);
+        let (committed, _) = netdata_agent_log::capture(|| {
+            (s.commit_replication(b"REND\n", asked), s.commit_replication(b"REND\n", flushed))
+        });
+        assert_eq!(committed, (false, true));
+        assert_eq!(s.out().buffer.stats().adds, 1);
     }
 
     fn requests(q: &Queue) -> Vec<(i64, String)> {

@@ -2072,6 +2072,47 @@ mod tests {
         assert_eq!(texts.len(), 3);
     }
 
+    /// `rrdhost_set_receiver()` (at the attach) and `stream_receiver_accept_connection()` (after the prompt) each
+    /// reset the host's parents with PREPARING; nothing else of the sender is called by an admission.
+    #[test]
+    fn an_admitted_child_resets_its_parents_at_the_attach_and_after_the_prompt() {
+        let (pool, connector) = crate::connector::tests::connector();
+        let hosts = Arc::new(Hosts::new(Host::new(
+            "5a1e0000-0000-4000-8000-0000000000aa",
+            true,
+            crate::connector::tests::info("", ""),
+        )));
+        let guid = "5a1e0000-0000-4000-8000-0000000000cd";
+        let host = hosts
+            .find_or_create(guid, DbMode::Ram, || crate::connector::tests::info("", ""), |_| {})
+            .unwrap();
+        let r = Arc::new(netdata_agent_rrd::testing::Recorder::default());
+        host.set_upstream(Arc::clone(&r) as Arc<dyn netdata_agent_rrd::upstream::Upstream>);
+        let defaults = Defaults {
+            db_mode: "ram".into(),
+            history: 4096,
+            health_enabled: false,
+            update_every: 1,
+            page_size: 4096,
+            gap_when_lost_iterations_above: 3,
+        };
+        let receivers = Receivers::new(
+            StreamConf::default(),
+            Arc::clone(&hosts),
+            Arc::new(Mutex::new(Pins::new(1))),
+            defaults,
+            pool.handle(),
+            connector,
+        );
+        let query = format!("key=k&hostname=child&machine_guid={guid}&ver=8");
+        let request = StreamRequest::parse(query.as_bytes(), 1, None);
+        let (ours, theirs) = mio::net::UnixStream::pair().unwrap();
+        let pending = Pending { request, peer: Peer::default(), accepted_s: 0 };
+        assert!(receivers.admit(pending, Link::Plain(Conn::Unix(ours))));
+        assert_eq!(*r.calls.lock().unwrap(), [("parents_reset", Reason::SP_PREPARING.0); 2]);
+        drop(theirs);
+    }
+
     /// The record texts a capture holds.
     fn texts(records: Vec<netdata_agent_log::Captured>) -> Vec<String> {
         records.into_iter().filter_map(|r| r.message).collect()

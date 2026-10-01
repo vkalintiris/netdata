@@ -352,3 +352,344 @@ fn a_streaming_answer_ending_with_a_gap_keeps_the_resync() {
     assert_eq!(host.pulse_state() & host_status::SENDER, host_status::SND_RUNNING);
     assert_eq!(chart.resync_time_s(), resync);
 }
+
+/// With start_streaming the end is raised to the last update when a collection came between the retention read and
+/// the lock: the answer waits for the lock, then walks to the new last update.
+#[test]
+fn a_streaming_answer_ends_at_the_last_update_it_finds_under_the_lock() {
+    use crate::testutil::store;
+    let (host, _, chart) = replicating_chart(&[10, 11, 12, 13, 14, 15]);
+    let dim = chart.dim("d").unwrap();
+    let guard = Chart::lock_collection(chart.as_ref());
+    let out = std::thread::scope(|s| {
+        let answering = s.spawn(|| {
+            let mut out = Vec::new();
+            answer(&host, &request("t.c", T + 3, T + 4, true), PLAIN | caps::REPLICATION, 1 << 20, &mut out, |_| true);
+            out
+        });
+        // the answer read the retention (to T + 5) and waits for the lock
+        std::thread::sleep(Duration::from_millis(200));
+        // a collection under the lock: two more points, the last update moved
+        store(&dim, T + 6, 16.0);
+        store(&dim, T + 7, 17.0);
+        chart.update_collection(|c| c.last_updated.0 = T + 7);
+        drop(guard);
+        answering.join().unwrap()
+    });
+    let got = lines(&out);
+    let (first, last) = chart.retention_for_collected(now_realtime_s());
+    let mut want = vec!["RBEGIN 't.c'".to_string()];
+    for t in T + 4..=T + 7 {
+        want.push(format!("RBEGIN '' {} {t} W", t - 1));
+        want.push(format!("RSET \"d\" {} A", t - T + 10));
+    }
+    want.extend(got.iter().filter(|l| l.starts_with("RDSTATE ") || l.starts_with("RSSTATE ")).cloned());
+    want.push(format!("REND 1 {first} {last} true  {} {} W", T + 3, T + 7));
+    assert_eq!(got, want);
+}
+
+/// A chart updated ahead of the wall clock: the raised end is bounded by now (`MIN(last_updated, wall clock)`).
+#[test]
+fn a_streaming_answer_ends_no_later_than_now() {
+    let (host, _) = streaming("*", PLAIN | caps::REPLICATION);
+    ready(&host);
+    let chart = host.charts().create(&chart_spec(DbMode::Ram)).0;
+    let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    let ahead = now_realtime_s() + 1000;
+    for i in 0..6 {
+        collect(&host, &chart, &[(&dim, 10 + i)], ahead + i);
+    }
+    for _ in 0..3 {
+        let w = now_realtime_s();
+        let mut out = Vec::new();
+        answer(&host, &request("t.c", w - 10, w - 5, false), PLAIN | caps::REPLICATION, 1 << 20, &mut out, |_| true);
+        if now_realtime_s() != w {
+            continue;
+        }
+        let got = lines(&out);
+        let state: Vec<String> =
+            got.iter().filter(|l| l.starts_with("RDSTATE ") || l.starts_with("RSSTATE ")).cloned().collect();
+        let mut want = vec!["RBEGIN 't.c'".to_string(), format!("RBEGIN '' {} {w} W", w - 1)];
+        want.extend(state);
+        want.push(format!("REND 1 {} {w} true  {} {w} W", w - 1, w - 1));
+        assert_eq!(got, want);
+        return;
+    }
+    panic!("no answer within one second of the wall clock");
+}
+
+/// The collection lock: a streaming answer holds it through its commit and releases it after the finish; an answer
+/// that does not stream, one with an empty window and one with no exposed dimension hold none at their commit.
+#[test]
+fn a_streaming_answer_holds_the_collection_lock_through_its_commit() {
+    let (host, _, chart) = replicating_chart(&[10, 11, 12, 13, 14, 15]);
+    let (bare, _) = streaming("*", PLAIN | caps::REPLICATION);
+    let unexposed = bare.charts().create(&chart_spec(DbMode::Ram)).0;
+    let (d, _) = unexposed.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    for i in 0..5 {
+        collect(&bare, &unexposed, &[(&d, 10 + i)], T + i);
+    }
+    let cases = [
+        ("streaming", &host, &chart, request("t.c", T + 3, T + 5, true), true),
+        ("not streaming", &host, &chart, request("t.c", T + 1, T + 2, false), false),
+        ("empty window", &host, &chart, request("t.c", 0, T + 5, true), false),
+        ("no exposed dimension", &bare, &unexposed, request("t.c", T + 1, T + 4, true), false),
+    ];
+    for (name, host, chart, req, held) in cases {
+        let (locked, at) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            let mut out = Vec::new();
+            answer(host, &req, PLAIN | caps::REPLICATION, 1 << 20, &mut out, |_| {
+                let locked = locked.clone();
+                s.spawn(move || {
+                    let _g = Chart::lock_collection(chart.as_ref());
+                    let _ = locked.send(claim(chart));
+                });
+                let free = at.recv_timeout(Duration::from_millis(200)).is_ok();
+                assert_eq!(free, !held, "{name}: lock free at the commit");
+                true
+            });
+            if held {
+                let flags = at.recv_timeout(Duration::from_secs(5)).expect("released after the answer");
+                assert_eq!(flags, flags::SENDER_REPLICATION_FINISHED, "{name}: released after the finish");
+            }
+        });
+    }
+}
+
+mod crafted {
+    use std::collections::VecDeque;
+
+    use netdata_agent_storage::storage_number::SN_DEFAULT_FLAGS;
+    use netdata_agent_storage::storage_point::StoragePoint;
+
+    use super::*;
+    use crate::upstream::replay::{DimQuery, Points, Walk, walk};
+
+    const W: i64 = 1_800_000_000;
+
+    struct Crafted(VecDeque<StoragePoint>);
+
+    impl Points for Crafted {
+        fn next_metric(&mut self) -> StoragePoint {
+            self.0.pop_front().expect("read past the end")
+        }
+        fn is_finished(&self) -> bool {
+            self.0.is_empty()
+        }
+    }
+
+    fn p(start: i64, end: i64, v: f64) -> StoragePoint {
+        StoragePoint {
+            min: v,
+            max: v,
+            sum: v,
+            start_time_s: start,
+            end_time_s: end,
+            count: 1,
+            anomaly_count: 0,
+            flags: SN_DEFAULT_FLAGS,
+        }
+    }
+
+    /// A chart of update every 2 s with dimensions d and e (not exposed: the walk does not look).
+    fn chart() -> (Host, Arc<Chart>, Arc<Dim>, Arc<Dim>) {
+        let (host, _) = streaming("*", PLAIN | caps::REPLICATION);
+        let chart = host.charts().create(&ChartSpec { update_every: 2, ..chart_spec(DbMode::Ram) }).0;
+        let (d, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        let (e, _) = chart.dim_add("e", None, 1, 1, Algorithm::Absolute);
+        (host, chart, d, e)
+    }
+
+    /// The walk over `points` per dimension from `after` to `before` (not streaming): its lines, the window it
+    /// leaves and what it counted.
+    fn walked(
+        host: &Host,
+        chart: &Chart,
+        points: Vec<(&Arc<Dim>, Vec<StoragePoint>)>,
+        after: i64,
+        before: i64,
+    ) -> (Vec<String>, Window, Walk) {
+        let mut dims: Vec<DimQuery<'_, Crafted>> = points
+            .into_iter()
+            .map(|(dim, pts)| DimQuery {
+                dim: dim.as_ref(),
+                query: Crafted(pts.into()),
+                sp: StoragePoint::default(),
+                skip: false,
+            })
+            .collect();
+        let mut window = Window { after, before, streaming: false };
+        let mut out = Vec::new();
+        let enc = emit::Enc::replication(PLAIN | caps::REPLICATION);
+        let w = walk(&mut out, &enc, host, chart, &mut dims, &mut window, W, true, 1 << 20);
+        let lines = String::from_utf8(out).unwrap().lines().map(str::to_string).collect();
+        (lines, window, w)
+    }
+
+    fn rbegin(start: i64, end: i64) -> String {
+        format!("RBEGIN '' {start} {end} {W}")
+    }
+
+    fn rset(dim: &str, v: i64) -> String {
+        format!("RSET \"{dim}\" {v} A")
+    }
+
+    fn e_steps() -> Vec<StoragePoint> {
+        vec![p(T, T + 1, 20.0), p(T + 1, T + 2, 21.0), p(T + 2, T + 3, 22.0)]
+    }
+
+    /// `max_skip-- >= 0`: a dimension 1001 points behind is read 1001 times and left out with one record; exactly
+    /// 1000 reads trip it too, even ending on a good point, which still goes out in that step (C emits every enabled
+    /// dimension); 999 reads do not.
+    #[test]
+    fn a_dimension_that_does_not_advance_is_left_out() {
+        let (host, chart, d, e) = chart();
+        let stale = |n: i64| (0..n).map(|i| p(T - n + i, T - n + i + 1, 1.0)).collect::<Vec<_>>();
+        let ((a, b, c), records) = netdata_agent_log::capture(|| {
+            let mut d_a = stale(1001);
+            d_a.push(p(T, T + 1, 7.0));
+            let a = walked(&host, &chart, vec![(&d, d_a), (&e, e_steps())], T, T + 3);
+            let mut d_b = stale(999);
+            d_b.extend([p(T, T + 1, 7.0), p(T + 1, T + 2, 8.0)]);
+            let b = walked(&host, &chart, vec![(&d, d_b), (&e, e_steps())], T, T + 3);
+            let mut d_c = stale(998);
+            d_c.extend([p(T, T + 1, 7.0), p(T + 1, T + 2, 8.0)]);
+            let c = walked(&host, &chart, vec![(&d, d_c), (&e, e_steps())], T, T + 3);
+            (a, b, c)
+        });
+        let window = Window { after: T, before: T + 3, streaming: false };
+        assert_eq!(
+            a,
+            (
+                vec![rbegin(T, T + 1), rset("e", 20), rbegin(T + 1, T + 2), rset("e", 21), rbegin(T + 2, T + 3), rset("e", 22)],
+                window,
+                Walk { finished_with_gap: false, points_read: 1004, points_generated: 3 }
+            )
+        );
+        assert_eq!(
+            b,
+            (
+                vec![
+                    rbegin(T, T + 1),
+                    rset("d", 7),
+                    rset("e", 20),
+                    rbegin(T + 1, T + 2),
+                    rset("e", 21),
+                    rbegin(T + 2, T + 3),
+                    rset("e", 22)
+                ],
+                window,
+                Walk { finished_with_gap: false, points_read: 1003, points_generated: 4 }
+            )
+        );
+        assert_eq!(
+            c,
+            (
+                vec![
+                    rbegin(T, T + 1),
+                    rset("d", 7),
+                    rset("e", 20),
+                    rbegin(T + 1, T + 2),
+                    rset("d", 8),
+                    rset("e", 21),
+                    rbegin(T + 2, T + 3),
+                    rset("e", 22)
+                ],
+                window,
+                Walk { finished_with_gap: false, points_read: 1003, points_generated: 5 }
+            )
+        );
+        // the capture takes every call, before the one-a-second limit
+        let record = (
+            Priority::Err,
+            format!(
+                "STREAM SND REPLAY: 'host:child/chart:t.c/dim:d': db does not advance the query beyond time {} \
+                 (tried 1000 times to get the next point and always got back a point in the past)",
+                T + 1
+            ),
+        );
+        assert_eq!(texts(&records), vec![record.clone(), record]);
+    }
+
+    /// Misaligned dimensions: the step starts at the minimum end less the minimum interval, or where the last step
+    /// ended when that lies among their starts; a step can then start before the last one ended.
+    #[test]
+    fn misaligned_dimensions_start_where_the_last_step_ended() {
+        let (host, chart, d, e) = chart();
+        let got = walked(
+            &host,
+            &chart,
+            vec![(&d, vec![p(T, T + 10, 100.0)]), (&e, vec![p(T + 2, T + 3, 20.0), p(T + 5, T + 6, 21.0)])],
+            T + 2,
+            T + 10,
+        );
+        assert_eq!(
+            got,
+            (
+                vec![
+                    rbegin(T + 2, T + 3),
+                    rset("d", 100),
+                    rset("e", 20),
+                    rbegin(T + 3, T + 6),
+                    rset("d", 100),
+                    rset("e", 21),
+                    rbegin(T, T + 10),
+                    rset("d", 100)
+                ],
+                Window { after: T + 2, before: T + 10, streaming: false },
+                Walk { finished_with_gap: false, points_read: 3, points_generated: 5 }
+            )
+        );
+    }
+
+    /// A point of no length starts one chart interval before its end.
+    #[test]
+    fn a_zero_length_point_spans_the_charts_interval() {
+        let (host, chart, d, _) = chart();
+        let got = walked(&host, &chart, vec![(&d, vec![p(T + 3, T + 3, 30.0), p(T + 4, T + 4, 31.0)])], T + 2, T + 4);
+        assert_eq!(
+            got,
+            (
+                vec![rbegin(T + 1, T + 3), rset("d", 30), rbegin(T + 2, T + 4), rset("d", 31)],
+                Window { after: T + 2, before: T + 4, streaming: false },
+                Walk { finished_with_gap: false, points_read: 2, points_generated: 2 }
+            )
+        );
+    }
+
+    /// With every next point in the future the walk jumps to it; past the window's end with nothing sent, the
+    /// window ends just before it, with a gap; with something sent it stays and the walk ends with a gap.
+    #[test]
+    fn a_gap_jumps_ahead_and_past_the_end_moves_it() {
+        let (host, chart, d, _) = chart();
+        let jump = walked(&host, &chart, vec![(&d, vec![p(T + 2, T + 3, 1.0), p(T + 7, T + 8, 2.0)])], T + 2, T + 9);
+        assert_eq!(
+            jump,
+            (
+                vec![rbegin(T + 2, T + 3), rset("d", 1), rbegin(T + 7, T + 8), rset("d", 2)],
+                Window { after: T + 2, before: T + 9, streaming: false },
+                Walk { finished_with_gap: false, points_read: 2, points_generated: 2 }
+            )
+        );
+        let nothing = walked(&host, &chart, vec![(&d, vec![p(T + 20, T + 21, 5.0)])], T + 2, T + 9);
+        assert_eq!(
+            nothing,
+            (
+                vec![],
+                Window { after: T + 2, before: T + 19, streaming: false },
+                Walk { finished_with_gap: true, points_read: 1, points_generated: 0 }
+            )
+        );
+        let after_one =
+            walked(&host, &chart, vec![(&d, vec![p(T + 2, T + 3, 1.0), p(T + 20, T + 21, 5.0)])], T + 2, T + 9);
+        assert_eq!(
+            after_one,
+            (
+                vec![rbegin(T + 2, T + 3), rset("d", 1)],
+                Window { after: T + 2, before: T + 9, streaming: false },
+                Walk { finished_with_gap: true, points_read: 2, points_generated: 1 }
+            )
+        );
+    }
+}
