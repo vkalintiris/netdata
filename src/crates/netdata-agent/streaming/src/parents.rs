@@ -195,6 +195,11 @@ impl Parents {
         Parents { list: entries.map(|(d, ssl)| Parent::new(d, ssl)).collect(), current: None }
     }
 
+    /// Whether one of them is reached over TLS.
+    pub fn any_ssl(&self) -> bool {
+        self.list.iter().any(|d| d.ssl)
+    }
+
     /// `stream_parents_host_reset()`: every parent waits one draw of `[max(5, delay / 2), delay + 5)` seconds.
     pub fn reset(&mut self, reason: Reason, reconnect_delay_s: i64) {
         let until_ut = randomize_wait_ut(reconnect_delay_s / 2, reconnect_delay_s + 5);

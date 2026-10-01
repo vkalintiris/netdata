@@ -156,6 +156,9 @@ pub struct Sender {
     state: Mutex<State>,
     /// `host->stream.snd.parents`: held by the connector for an attempt, briefly by everyone else.
     parents: Mutex<Parents>,
+    /// Whether one of the parents is reached over TLS: what the collectors' gate needs of them, without the lock an
+    /// attempt holds for its whole connect (C's gate takes only a read lock, which the connector's does not exclude).
+    ssl_parent: AtomicBool,
     out: Mutex<Out>,
     ops: Mutex<Option<Ops>>,
     /// `s->disabled_capabilities`: every compression when `enable compression = no`, and an algorithm that failed.
@@ -211,6 +214,7 @@ impl Sender {
 
     fn new(host: &Arc<Host>, connector: &Arc<Connector>, send: &StreamSend) -> Arc<Sender> {
         let disabled = if connector.settings.compression_enabled { 0 } else { caps::COMPRESSIONS_AVAILABLE };
+        let parents = Parents::new(send.parents());
         Arc::new_cyclic(|me| Sender {
             me: Weak::clone(me),
             host: Arc::downgrade(host),
@@ -227,7 +231,8 @@ impl Sender {
                 last_state_since_s: 0,
                 api_key: send.api_key.clone(),
             }),
-            parents: Mutex::new(Parents::new(send.parents())),
+            ssl_parent: AtomicBool::new(parents.any_ssl()),
+            parents: Mutex::new(parents),
             out: Mutex::new(Out {
                 buffer: buffer::CircularBuffer::default(),
                 compressor: None,
@@ -290,7 +295,13 @@ impl Sender {
         self.replication.replicating_zero();
         self.counter_in.store(0, Ordering::Relaxed);
         self.counter_out.store(0, Ordering::Relaxed);
-        *self.parents() = Parents::new(std::iter::empty());
+        self.set_parents(Parents::new(std::iter::empty()));
+    }
+
+    /// Replaces the parents, and the TLS flag beside them.
+    fn set_parents(&self, parents: Parents) {
+        self.ssl_parent.store(parents.any_ssl(), Ordering::Relaxed);
+        *self.parents() = parents;
     }
 
     /// `stream_sender_structures_init()` of a freed sender: set up as a new one with the settings of now. A sender
@@ -311,7 +322,7 @@ impl Sender {
             }
             state.api_key.clone_from(&send.api_key);
         }
-        *self.parents() = Parents::new(send.parents());
+        self.set_parents(Parents::new(send.parents()));
     }
 
     pub fn host(&self) -> Option<Arc<Host>> {
@@ -524,7 +535,7 @@ impl Upstream for Sender {
         let _frame = self.frame();
         // C queues the host even when its connector thread could not start
         self.connector.init(&host.hostname());
-        self.connector.ssl_init(&self.parents());
+        self.connector.ssl_init(self.ssl_parent.load(Ordering::Relaxed));
         self.connector.add(&me, &host);
     }
 }

@@ -19,7 +19,7 @@ use crate::compress::Compressor;
 use crate::compression::Algorithm;
 use crate::connect_to::{NdSock, SockError, Thread, log_errno};
 use crate::handshake;
-use crate::parents::{Local, Parents};
+use crate::parents::Local;
 use crate::pins::Pins;
 use crate::reason::Reason;
 use crate::thread::StreamMsg;
@@ -257,9 +257,9 @@ impl Connector {
     /// `rrdhost_stream_parent_ssl_init()`: the sender's TLS context, built once some host's parents include an
     /// `:SSL` one, with the configured CA locations (C's records carry the host's frame, which the caller pushed).
     /// A context OpenSSL could not make is tried again at the next host's start, as C's.
-    pub(crate) fn ssl_init(&self, parents: &Parents) {
+    pub(crate) fn ssl_init(&self, ssl_parent: bool) {
         let mut tls = self.tls.lock().unwrap_or_else(PoisonError::into_inner);
-        if tls.is_some() || !parents.list.iter().any(|d| d.ssl) {
+        if tls.is_some() || !ssl_parent {
             return;
         }
         let s = &self.settings;
@@ -1077,5 +1077,26 @@ pub(crate) mod tests {
         assert_eq!(version(&format!("{}{}", caps::PROMPT_VN, "1".repeat(30))), -1);
         // under 75 bytes, what follows the prompt's number is ignored: the number ends at its first non-digit
         assert_eq!(version(&format!("{}32\nREPLAY_CHART", caps::PROMPT_VN)), 32);
+    }
+
+    /// The collectors' gate starts a sender without the parents lock, which an attempt holds across its whole connect
+    /// (R55 M2): C's gate takes a read lock the connector's does not exclude.
+    #[test]
+    fn a_start_does_not_wait_for_an_attempt() {
+        use netdata_agent_rrd::upstream::Upstream;
+        let (_pool, c) = connector();
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c6", false, info("127.0.0.1:1:SSL", "key")));
+        let s = Sender::attach(&host, &c).expect("created");
+        host.sender_flags_set(sender_flags::ADDED);
+        let attempt = s.parents();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let s2 = Arc::clone(&s);
+        std::thread::spawn(move || {
+            Upstream::start(&*s2);
+            tx.send(()).unwrap();
+        });
+        let returned = rx.recv_timeout(std::time::Duration::from_millis(500));
+        drop(attempt);
+        assert!(returned.is_ok(), "start() waited for the parents lock an attempt holds");
     }
 }
