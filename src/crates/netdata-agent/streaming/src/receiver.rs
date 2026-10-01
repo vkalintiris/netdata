@@ -843,8 +843,12 @@ pub(crate) fn replication_progressed(
 
 /// `stream_receiver_connected_msg()`: how old the host's last sample is.
 fn connected_msg(host: &Host) -> String {
-    let now = now_s();
-    let last = host.contexts().retention().1.min(now);
+    connected_msg_at(host.contexts().retention().1, now_s())
+}
+
+/// The connected record for a last sample at `last`, one in the future read as now.
+fn connected_msg_at(last: i64, now: i64) -> String {
+    let last = last.min(now);
     if last == 0 {
         "connected and ready to receive data, new node".to_string()
     } else if last == now {
@@ -2045,6 +2049,27 @@ mod tests {
                      retry later  (REMOTE IS INITIALIZING)"
                         .to_string()
                 ),
+            ]
+        );
+    }
+
+    /// `stream_receiver_connected_msg()`'s forms: no sample, a sample now or in the future (read as now), and an age
+    /// in C's duration text.
+    #[test]
+    fn the_connected_record_names_the_last_samples_age_as_c() {
+        const NOW: i64 = 1_700_000_000;
+        assert_eq!(
+            [
+                connected_msg_at(0, NOW),
+                connected_msg_at(NOW, NOW),
+                connected_msg_at(NOW + 5, NOW),
+                connected_msg_at(NOW - 3725, NOW),
+            ],
+            [
+                "connected and ready to receive data, new node",
+                "connected and ready to receive data, last sample in the db just now",
+                "connected and ready to receive data, last sample in the db just now",
+                "connected and ready to receive data, last sample in the db 1h 2m 5s ago",
             ]
         );
     }
