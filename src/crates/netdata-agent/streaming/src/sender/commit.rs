@@ -25,6 +25,17 @@ enum Ended {
     CompressionFailed,
 }
 
+/// What became of a commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Committed {
+    /// A session's buffer took it.
+    Taken,
+    /// The buffer was flushed since the caller's flush time (D105.6).
+    Flushed,
+    /// Dropped: nothing to commit, no session, or a buffer that overflowed or failed to compress (its session restarts).
+    Dropped,
+}
+
 /// `nd_log_limit_static_global_var(erl, 1, 0)`: one record a second, for all hosts.
 static OVERFLOW_RECORD: ErrorLimit = ErrorLimit::new(1, 0);
 static COMPRESSION_RECORD: ErrorLimit = ErrorLimit::new(1, 0);
@@ -35,25 +46,32 @@ impl Sender {
         self.commit_into(src, traffic, None);
     }
 
-    /// A replication answer's commit: only into the session whose buffer flush it was asked after, whether it went
-    /// (D105.6; C commits it into a newer session too).
+    /// A replication answer's commit, only into the session whose buffer flush it was asked after (D105.6; C commits
+    /// it into a newer session too): whether it counts as sent, for the host's counters and the chart's finish. It
+    /// does unless the buffer was flushed since; without a session (the reconnect's delay) or with a session being
+    /// restarted, C drops the bytes and still counts it (`stream-replication-sender.c:697-716`, R55 M5).
     pub(crate) fn commit_replication(&self, src: &[u8], flush_ut: u64) -> bool {
-        self.commit_into(src, Traffic::Replication, Some(flush_ut))
+        self.commit_checked(src, Traffic::Replication, Some(flush_ut)) != Committed::Flushed
     }
 
     /// The commit, when the buffer was last flushed at `flush_ut` if one is given; whether a session took it.
     pub(crate) fn commit_into(&self, src: &[u8], traffic: Traffic, flush_ut: Option<u64>) -> bool {
+        self.commit_checked(src, traffic, flush_ut) == Committed::Taken
+    }
+
+    fn commit_checked(&self, src: &[u8], traffic: Traffic, flush_ut: Option<u64>) -> Committed {
         if src.is_empty() {
-            return false;
+            return Committed::Dropped;
         }
         // only the rare records name the host: no lookup on the hot path
         let hostname = || self.hostname();
         let mut out = self.out();
         if flush_ut.is_some_and(|f| out.buffer.last_flush_ut() != f) {
-            return false;
+            return Committed::Flushed;
         }
+        // "the dispatcher is not there anymore - ignore these data"
         let Some(session) = out.session else {
-            return false;
+            return Committed::Dropped;
         };
         if out.buffer.set_max_size(src.len() * ADAPT_TO_TIMES_MAX_SIZE, false) {
             nd_log!(
@@ -81,7 +99,7 @@ impl Sender {
                 if enable_sending {
                     self.post(session, op::POLLOUT, Reason::NEVER);
                 }
-                true
+                Committed::Taken
             }
             Ended::Overflow => {
                 let stats = *out.buffer.stats();
@@ -99,7 +117,7 @@ impl Sender {
                     stats.bytes_max_size,
                     stats.bytes_available
                 );
-                false
+                Committed::Dropped
             }
             Ended::CompressionFailed => {
                 self.deactivate_compression(&out, &hostname());
@@ -114,7 +132,7 @@ impl Sender {
                      restarting connection.",
                     hostname()
                 );
-                false
+                Committed::Dropped
             }
         }
     }

@@ -818,7 +818,7 @@ mod tests {
     }
 
     /// A replication answer goes only into the session it was asked in: once the sender's buffer was flushed since,
-    /// the commit refuses it (and the answer finishes nothing).
+    /// the commit refuses it (and the answer finishes nothing); with no session at all it goes nowhere but counts.
     #[test]
     fn an_answer_goes_only_into_the_session_it_was_asked_in() {
         let (_pool, c) = crate::connector::tests::connector();
@@ -841,6 +841,10 @@ mod tests {
             (s.commit_replication(b"REND\n", asked), s.commit_replication(b"REND\n", flushed))
         });
         assert_eq!(committed, (false, true));
+        assert_eq!(s.out().buffer.stats().adds, 1);
+        // without a session (a reconnect's delay) the bytes go nowhere, yet the answer counts, as C's (R55 M5)
+        s.out().session = None;
+        assert!(s.commit_replication(b"REND\n", flushed));
         assert_eq!(s.out().buffer.stats().adds, 1);
     }
 

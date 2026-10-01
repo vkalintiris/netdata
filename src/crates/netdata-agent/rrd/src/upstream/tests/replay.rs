@@ -139,7 +139,7 @@ fn a_streaming_answer_carries_the_state_and_finishes() {
     assert_eq!(chart.resync_time_s(), 0);
 }
 
-/// An answer that did not go into the request's session (a reconnect since) leaves the replication claimed.
+/// An answer that does not count (its buffer flushed since the request, D105.6) leaves the replication claimed.
 #[test]
 fn an_answer_for_a_gone_session_finishes_nothing() {
     let (host, _, chart) = replicating_chart(&[10, 11, 12, 13, 14, 15]);
