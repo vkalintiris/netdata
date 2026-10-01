@@ -8,6 +8,10 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# a worker driven one turn at a time, for other crates' tests
+testing = []
+
 [dependencies]
 crossbeam-channel = { workspace = true }
 netdata-agent-log = { workspace = true }
