@@ -755,6 +755,104 @@ mod tests {
         String::from_utf8_lossy(&all).into_owned()
     }
 
+    /// A builtin of this host for the calls below: the command, the caller's source and the payload, echoed.
+    fn echo(
+        reply: &mut netdata_agent_nrpc::reply::Reply,
+        function: &[u8],
+        payload: Option<&netdata_agent_nrpc::reply::Payload>,
+        source: &[u8],
+    ) -> u16 {
+        reply.content_type = netdata_agent_nrpc::reply::ContentType::ApplicationJson;
+        reply.body = [function, b" from ", source].concat();
+        if let Some(p) = payload {
+            reply.body.extend_from_slice(format!(" {} ", p.content_type.name()).as_bytes());
+            reply.body.extend_from_slice(&p.body);
+        }
+        200
+    }
+
+    /// `execute_commands_function()` (D147.1): a parent's FUNCTION and FUNCTION_PAYLOAD run on this host's methods and
+    /// their answers go up as the parent's transactions; an unknown one gets C's 404.
+    #[test]
+    fn a_parents_call_is_run_and_answered() {
+        use std::io::Write;
+        let pins = Arc::new(Mutex::new(Pins::new(1)));
+        let pool = Pool::spawn(1, 256 * 1024, |i| format!("TEST[{i}]"), |_| StreamWorker::new(Arc::clone(&pins), 1))
+            .unwrap();
+        let localhost = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, info("", "")));
+        let local = Local { host_id: [0xaa; 16], user_agent: "t/1".into(), update_every: 1 };
+        let c = Connector::new(Settings::of(&Send::default()), local, &localhost, pool.handle(), Arc::clone(&pins), 256 * 1024);
+        let mut s = Stepper::new(0, StreamWorker::new(Arc::clone(&pins), 1)).unwrap();
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000ca", false, info("127.0.0.1:1", "key")));
+        host.set_collector_online();
+        host.functions()
+            .register(
+                "child",
+                &netdata_agent_nrpc::MethodDesc {
+                    name: b"echo",
+                    help: b"help",
+                    tags: b"",
+                    timeout_s: 10,
+                    priority: 0,
+                    version: 0,
+                    access: 0,
+                    sync: true,
+                    source: netdata_agent_nrpc::Source::Daemon,
+                    handler: netdata_agent_nrpc::Handler::Builtin(echo),
+                },
+            )
+            .unwrap();
+        let sender = Sender::attach(&host, &c).expect("created");
+        let (ours, mut theirs) = mio::net::UnixStream::pair().unwrap();
+        let connected = Connected {
+            sender,
+            link: Link::Plain(Conn::Unix(ours)),
+            capabilities: caps::FUNCTIONS,
+            compressor: None,
+            remote_ip: "127.0.0.1".into(),
+            thread: 0,
+        };
+        s.with(|w, cx| {
+            w.queued_senders.push(connected);
+            w.dequeue_senders(cx);
+        });
+        let exchange = |s: &mut Stepper<StreamWorker>, theirs: &mut mio::net::UnixStream, down: &str| {
+            theirs.write_all(down.as_bytes()).unwrap();
+            let mut got = String::new();
+            for _ in 0..20 {
+                let _ = netdata_agent_log::capture(|| s.turn(Duration::from_millis(10)));
+                s.with(|w, cx| w.drain_inline(cx));
+                got.push_str(&received(theirs));
+                if got.contains("FUNCTION_RESULT_END") {
+                    break;
+                }
+            }
+            got
+        };
+        let _ = exchange(&mut s, &mut theirs, "");
+        let tx = "5a1e00000000400080000000000000f5";
+        let got = exchange(&mut s, &mut theirs, &format!("FUNCTION {tx} 10 \"echo  now\" \"0x13\" \"method=api\"\n"));
+        assert!(
+            got.starts_with(&format!("FUNCTION_RESULT_BEGIN \"{tx}\" 200 \"application/json\" 0\necho now from method=api\nFUNCTION_RESULT_END\n")),
+            "{got:?}"
+        );
+        let got = exchange(
+            &mut s,
+            &mut theirs,
+            &format!("FUNCTION_PAYLOAD {tx} 10 \"echo\" \"0x0\" \"src\" \"application/json\"\n{{\"a\":1}}\nFUNCTION_PAYLOAD_END\n"),
+        );
+        assert!(
+            got.contains("\necho from src application/json {\"a\":1}\n\nFUNCTION_RESULT_END\n"),
+            "{got:?}"
+        );
+        let got = exchange(&mut s, &mut theirs, &format!("FUNCTION {tx} 10 \"nothing\" \"0x0\" \"src\"\n"));
+        assert!(
+            got.contains(r#" 404 "application/json" "#)
+                && got.contains(r#"{"status":404,"errorMessage":"This feature is not available on this host at this time."}"#),
+            "{got:?}"
+        );
+    }
+
     /// D146.3 at the tick: a dispatched sender sends its host's first-time changes, each in a path of its own, while
     /// no receiver takes them (a vnode defined after the sender's READY included); none once a receiver does, which
     /// sends both halves itself.

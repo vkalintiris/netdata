@@ -1481,6 +1481,9 @@ impl Parser {
             return Err(Refused::Error);
         }
         host.set_collector_online();
+        // object_state_activate_if_not_activated(): what the vnode's earlier definition registered is unavailable until
+        // registered again
+        host.functions().activate();
         // the receiver status detected before the labels give its ephemerality, as C
         host.pulse_status(0);
         let collector = self.localhost.machine_guid().to_string();

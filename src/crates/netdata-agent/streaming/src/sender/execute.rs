@@ -2,25 +2,34 @@
 //! child, line by line with C-string semantics, including the deferred bodies of `FUNCTION_PAYLOAD` and `JSON`.
 //! Map: `knowledge/map-m7-commit4-runtime.md` §5.
 
+use std::sync::Arc;
+
 use netdata_agent_log::{Field, Priority, Source, Value, nd_log, push};
+use netdata_agent_nrpc::call::{CallSpec, Calls, Done, ProgressCb};
+use netdata_agent_nrpc::reply::{ContentType, Payload, Reply};
 use netdata_agent_pluginsd_proto::{MAX_DEFERRED_SIZE, Words};
-use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_text::c::c_str;
-use netdata_agent_text::json::{JsonOptions, JsonWriter};
+use netdata_agent_text::print::print_uuid_lower_compact;
 
 use super::dispatch::Dispatched;
 use super::{Traffic, shown, text};
+use crate::caps;
 
-/// `PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT`.
-const FUNCTIONS_TIMEOUT_DEFAULT: i32 = 10;
 const FUNCTION_PAYLOAD_END: &str = "FUNCTION_PAYLOAD_END";
 const JSON_PAYLOAD_END: &str = "JSON_PAYLOAD_END";
 
 /// What a deferred body runs at its end keyword.
 #[derive(Debug)]
 enum Action {
-    /// `execute_deferred_function()`: missing words are empty.
-    Function { transaction: Vec<u8>, timeout: Vec<u8>, function: Vec<u8> },
+    /// `execute_deferred_function()`: missing words are empty; the body's content type is its sixth word's.
+    Function {
+        transaction: Vec<u8>,
+        timeout: Vec<u8>,
+        function: Vec<u8>,
+        access: Vec<u8>,
+        source: Vec<u8>,
+        content_type: ContentType,
+    },
     /// `execute_deferred_json()`.
     Json { keyword: Vec<u8> },
 }
@@ -133,8 +142,16 @@ fn request_field(words: Option<Vec<u8>>) -> netdata_agent_log::FrameGuard {
 fn run_deferred(d: &mut Dispatched, defer: Deferred) {
     let _request = request_field(None);
     match defer.action {
-        Action::Function { transaction, timeout, function } => {
-            execute_function(d, FUNCTION_PAYLOAD_END, Some(&transaction), Some(&timeout), Some(&function));
+        Action::Function { transaction, timeout, function, access, source, content_type } => {
+            let call = Call {
+                command: FUNCTION_PAYLOAD_END,
+                transaction: Some(&transaction),
+                timeout: Some(&timeout),
+                function: Some(&function),
+                access: Some(&access),
+                source: Some(&source),
+            };
+            execute_function(d, &call, Some(Payload { body: defer.payload, content_type }));
         }
         Action::Json { keyword } => {
             if keyword == b"STREAM_PATH" {
@@ -167,7 +184,15 @@ fn command(d: &mut Dispatched, line: &[u8]) {
     let hostname = d.host.hostname();
     match words.get(0) {
         Some(b"FUNCTION") => {
-            execute_function(d, "FUNCTION", word(1).as_deref(), word(2).as_deref(), word(3).as_deref());
+            let call = Call {
+                command: "FUNCTION",
+                transaction: words.get(1),
+                timeout: words.get(2),
+                function: words.get(3),
+                access: words.get(4),
+                source: words.get(5),
+            };
+            execute_function(d, &call, None);
         }
         Some(b"FUNCTION_PAYLOAD") => {
             d.executor.defer = Some(Deferred {
@@ -177,20 +202,21 @@ fn command(d: &mut Dispatched, line: &[u8]) {
                     transaction: word(1).unwrap_or_default(),
                     timeout: word(2).unwrap_or_default(),
                     function: word(3).unwrap_or_default(),
+                    access: word(4).unwrap_or_default(),
+                    source: word(5).unwrap_or_default(),
+                    content_type: ContentType::from_name(words.get(6).unwrap_or_default()),
                 },
             });
         }
         Some(b"FUNCTION_CANCEL") | Some(b"FUNCTION_PROGRESS") => {
             netdata_agent_log::logger(Source::Access, Priority::Debug, 0, &netdata_agent_log::here!(), None);
-            let kind = if words.get(0) == Some(b"FUNCTION_CANCEL") { "CANCEL" } else { "PROGRESS" };
             if let Some(transaction) = words.get(1).filter(|t| !t.is_empty()) {
-                // nrpc_call_cancel() and nrpc_call_progress(): no call runs before the functions milestone (M8)
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Debug,
-                    "NRPC: received a {kind} request for call_id '{}', but the call_id is not running.",
-                    text(transaction)
-                );
+                let transaction = String::from_utf8_lossy(transaction);
+                if words.get(0) == Some(b"FUNCTION_CANCEL") {
+                    Calls::process().cancel(&transaction);
+                } else {
+                    Calls::process().progress(&transaction);
+                }
             }
         }
         Some(b"REPLAY_CHART") => {
@@ -250,50 +276,90 @@ fn replay_endpoint(value: &[u8]) -> Option<i64> {
     (!erange && used == value.len() && v <= i64::MAX as u64).then_some(v as i64)
 }
 
-/// `execute_commands_function()`: an access record, then the call, which before the functions milestone (M8) is
-/// always C's answer for a function the host does not have (D100.9).
-fn execute_function(
-    d: &mut Dispatched,
-    command: &str,
-    transaction: Option<&[u8]>,
-    timeout: Option<&[u8]>,
-    function: Option<&[u8]>,
-) {
+/// A parent's call as its words came.
+struct Call<'a> {
+    /// The keyword the incomplete record names (`FUNCTION`, or the payload's end keyword).
+    command: &'a str,
+    transaction: Option<&'a [u8]>,
+    timeout: Option<&'a [u8]>,
+    function: Option<&'a [u8]>,
+    access: Option<&'a [u8]>,
+    source: Option<&'a [u8]>,
+}
+
+/// `execute_commands_function()`: an access record, then the call on this host's methods, without waiting (a parent
+/// may call restricted ones; a timeout that is not positive is 10 s); the answer goes up as the parent's transaction,
+/// and the plugin's progress with PROGRESS, each while the host's metadata may stream.
+fn execute_function(d: &mut Dispatched, call: &Call<'_>, payload: Option<Payload>) {
     netdata_agent_log::logger(Source::Access, Priority::Info, 0, &netdata_agent_log::here!(), None);
     let set = |w: Option<&[u8]>| w.is_some_and(|w| !w.is_empty());
-    if !set(transaction) || !set(timeout) || !set(function) {
+    if !set(call.transaction) || !set(call.timeout) || !set(call.function) {
         let shown = |w: Option<&[u8]>| w.map_or_else(|| "(unset)".to_string(), text);
         nd_log!(
             Source::Daemon,
             Priority::Err,
-            "STREAM SND '{}' [to {}]: {command} execution command is incomplete (transaction = '{}', timeout = '{}', \
+            "STREAM SND '{}' [to {}]: {} execution command is incomplete (transaction = '{}', timeout = '{}', \
              function = '{}'). Ignoring it.",
             d.host.hostname(),
             d.remote_ip,
-            shown(transaction),
-            shown(timeout),
-            shown(function)
+            call.command,
+            shown(call.transaction),
+            shown(call.timeout),
+            shown(call.function)
         );
         return;
     }
-    let _timeout = match netdata_agent_text::parse::str2i(timeout.unwrap_or_default()) {
-        t if t <= 0 => FUNCTIONS_TIMEOUT_DEFAULT,
+    let transaction = call.transaction.unwrap_or_default();
+    let timeout_s = match netdata_agent_text::parse::str2i(call.timeout.unwrap_or_default()) {
+        t if t <= 0 => netdata_agent_nrpc::TIMEOUT_DEFAULT,
         t => t,
     };
-    // nrpc_call_error(): the answer's body and expiry
-    let mut w = JsonWriter::new(JsonOptions::MINIFY);
-    w.member_add_int64("status", 404);
-    w.member_add_string("errorMessage", "This feature is not available on this host at this time.");
-    w.finalize();
-    if d.host.can_stream_metadata() {
-        // the transaction's bytes as they came
-        let mut out = b"FUNCTION_RESULT_BEGIN \"".to_vec();
-        out.extend_from_slice(transaction.unwrap_or_default());
-        out.extend_from_slice(format!("\" 404 \"application/json\" {}\n", now_realtime_s() + 1).as_bytes());
-        out.extend_from_slice(w.as_bytes());
-        out.extend_from_slice(b"\nFUNCTION_RESULT_END\n");
-        d.sender.commit(&out, Traffic::Functions);
-    }
+    // stream_execute_function_callback(): the transaction as it came
+    let done: Done = {
+        let (sender, host, transaction) = (Arc::clone(&d.sender), Arc::clone(&d.host), transaction.to_vec());
+        Box::new(move |reply: Reply, code| {
+            if !host.can_stream_metadata() {
+                return;
+            }
+            let mut out = b"FUNCTION_RESULT_BEGIN \"".to_vec();
+            out.extend_from_slice(&transaction);
+            out.extend_from_slice(
+                format!("\" {code} \"{}\" {}\n", reply.content_type.name(), reply.expires).as_bytes(),
+            );
+            out.extend_from_slice(&reply.body);
+            out.extend_from_slice(b"\nFUNCTION_RESULT_END\n");
+            sender.commit(&out, Traffic::Functions);
+        })
+    };
+    // stream_execute_function_progress_callback(), a pair with its data: only to a parent that takes PROGRESS
+    let progress: Option<ProgressCb> = (d.capabilities & caps::PROGRESS != 0).then(|| {
+        let (sender, host) = (Arc::clone(&d.sender), Arc::clone(&d.host));
+        Arc::new(move |call_id: &[u8; 16], done: usize, all: usize| {
+            if !host.can_stream_metadata() {
+                return;
+            }
+            let mut out = b"FUNCTION_PROGRESS '".to_vec();
+            print_uuid_lower_compact(&mut out, call_id);
+            out.extend_from_slice(format!("' {done} {all}\n").as_bytes());
+            sender.commit(&out, Traffic::Functions);
+        }) as ProgressCb
+    });
+    let hostname = d.host.hostname();
+    Calls::process().call(CallSpec {
+        owner: Some((d.host.functions(), &hostname)),
+        cmd: call.function.unwrap_or_default(),
+        source: call.source.unwrap_or_default(),
+        user_access: netdata_agent_nrpc::access::from_hex_mapping_old_roles(call.access.unwrap_or_default()),
+        timeout_s,
+        wait: false,
+        allow_restricted: true,
+        call_id: Some(transaction),
+        payload,
+        reply: Reply::new(ContentType::TextPlain),
+        done: Some(done),
+        progress,
+        is_cancelled: None,
+    });
 }
 
 #[cfg(test)]

@@ -2837,3 +2837,20 @@ fn an_answer_too_big_ends_the_run() {
     assert_eq!((code, reply.body.len()), (503, size));
 }
 
+/// `pluginsd_host_define_end()`'s new epoch (`pluginsd_parser.c:313`): a vnode's methods from its earlier definition
+/// are unavailable once it is defined again, until registered again.
+#[test]
+fn a_vnodes_definition_starts_a_new_epoch() {
+    let hosts = plugin_hosts();
+    let mut p = plugin_parser(&hosts);
+    let define = [format!("HOST_DEFINE {VNODE} v1"), "HOST_DEFINE_END".into()];
+    feed_ok(&mut p, &define);
+    feed_ok(&mut p, &["FUNCTION GLOBAL \"vfn\" 10 \"help\" \"top\" \"0x0\" 100 0".into()]);
+    let v = hosts.find_by_guid(VNODE).unwrap();
+    assert!(v.functions().available(b"vfn"));
+    feed_ok(&mut p, &define);
+    assert!(!v.functions().available(b"vfn"), "the earlier definition's");
+    feed_ok(&mut p, &["FUNCTION GLOBAL \"vfn\" 10 \"help\" \"top\" \"0x0\" 100 0".into()]);
+    assert!(v.functions().available(b"vfn"));
+}
+
