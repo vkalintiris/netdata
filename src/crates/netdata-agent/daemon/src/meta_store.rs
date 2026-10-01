@@ -575,7 +575,7 @@ mod tests {
                 info
             },
             |_| {},
-        );
+        ).expect("created");
         let (chart, _) = child.charts().create(&spec("c"));
         chart.update_meta(|m| m.labels.add(b"role", b"db", 2));
         let (_d1, _) = chart.dim_add(

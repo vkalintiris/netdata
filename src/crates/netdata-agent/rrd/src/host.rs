@@ -652,13 +652,18 @@ impl Host {
         self.log_created_with(true);
     }
 
-    /// The records of `rrdhost_create()`; an archived host gets no function registry, so no NRPC record.
-    fn log_created_with(&self, registry: bool) {
-        let info = self.info();
-        log_stream_parents(&info);
+    /// The records of `rrdhost_create()` before its index add: the sender's parents and an invalid machine GUID.
+    fn log_created_before_index(&self) {
+        log_stream_parents(&self.info());
         if uuid_parse_flexi(self.machine_guid.as_bytes()).is_none() {
             netdata_log_error!("Host machine GUID {} is not valid", self.machine_guid);
         }
+    }
+
+    /// The records of `rrdhost_create()`; an archived host gets no function registry, so no NRPC record.
+    fn log_created_with(&self, registry: bool) {
+        let info = self.info();
+        self.log_created_before_index();
         if registry {
             self.log_registry_created(&info.hostname);
         }
@@ -1535,6 +1540,31 @@ impl Host {
     }
 }
 
+/// Why `rrdhost_find_or_create()` returned NULL: the receiver answers busy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotCreated {
+    /// `rrdhost_create()`'s index add met a host under the same key (a GUID longer than the key, D126.7).
+    IndexCollision,
+    /// An archived host of another memory mode is being stored by the metadata writer (D95.7).
+    MetadataBusy,
+}
+
+/// `GUID_LEN + 1`: how much of a machine GUID `rrdhost_create()` keeps.
+const GUID_KEPT: usize = 37;
+
+/// `strncpyz(host->machine_guid, guid, GUID_LEN + 1)`: the first 37 bytes of a machine GUID, at a character boundary
+/// (C then writes the terminator past its array, which is not reproduced).
+pub fn guid_key(guid: &str) -> &str {
+    if guid.len() <= GUID_KEPT {
+        return guid;
+    }
+    let mut end = GUID_KEPT;
+    while !guid.is_char_boundary(end) {
+        end -= 1;
+    }
+    &guid[..end]
+}
+
 /// The host index (`rrdhost_root_index` and the `localhost` list).
 #[derive(Debug)]
 pub struct Hosts {
@@ -1748,22 +1778,28 @@ impl Hosts {
     /// the new one, appended after the others, and its records follow once the index is unlocked. The whole step
     /// holds the index lock, as `rrd_wrlock()` does in C, so two connections for one GUID cannot both create it.
     ///
-    /// An archived host still loading its contexts is returned untouched (the receiver refuses it); one of another
-    /// memory mode is discarded and created again.
+    /// The lookup takes the GUID whole, the new host keeps its first 37 characters ([`guid_key`]): a longer GUID
+    /// never finds the host it made, and its next creation meets that host in the index, which C answers with NULL
+    /// (D126.7). An archived host still loading its contexts is returned untouched (the receiver refuses it); one of
+    /// another memory mode is discarded and created again, unless the metadata writer holds it (NULL too, D95.7).
     pub fn find_or_create(
         &self,
         guid: &str,
         mode: DbMode,
         create: impl FnOnce() -> HostInfo,
         update: impl FnOnce(&Host),
-    ) -> Arc<Host> {
+    ) -> Result<Arc<Host>, NotCreated> {
         let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         let found = index.get(guid);
         let found = match found {
             Some(host) if host.is_archived() && host.info().db_mode != mode => {
                 if host.is_pending_context_load() {
-                    return host;
+                    return Ok(host);
                 }
+                // rw_spinlock_trywrite_lock(&host->metadata_lifetime_lock): a host being stored is not freed now
+                let Some(mut freed) = host.metadata_try_write() else {
+                    return Err(NotCreated::MetadataBusy);
+                };
                 nd_log!(
                     Source::Daemon,
                     Priority::Info,
@@ -1772,6 +1808,8 @@ impl Hosts {
                     host.info().db_mode.name(),
                     mode.name()
                 );
+                *freed = true;
+                drop(freed);
                 index.remove(guid);
                 self.version
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1786,18 +1824,36 @@ impl Hosts {
             if !host.is_pending_context_load() {
                 update(&host);
             }
-            return host;
+            return Ok(host);
         }
-        let host = Host::with_storage(guid, false, create(), &self.storage).into_shared();
+        let key = guid_key(guid);
+        let host = Host::with_storage(key, false, create(), &self.storage).into_shared();
+        if let Some(existing) = index.get(key) {
+            // rrdhost_index_add_by_guid() met it: C logs what it built so far, the collision, and frees the new host
+            drop(index);
+            host.log_created_before_index();
+            nd_log!(
+                Source::Daemon,
+                Priority::Notice,
+                "Host '{}': cannot add host with machine guid '{}' to index. It already exists as host '{}' with \
+                 machine guid '{}'.",
+                host.hostname(),
+                host.machine_guid(),
+                existing.hostname(),
+                existing.machine_guid()
+            );
+            host.freed_unlinked();
+            return Err(NotCreated::IndexCollision);
+        }
         host.created_connected();
-        index.insert(guid, Arc::clone(&host));
+        index.insert(key, Arc::clone(&host));
         self.version
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         drop(index);
         host.log_created();
         // rrdhost_create() of a host that is not archived: its contexts load here (a dbengine host's from SQL)
         self.load_contexts(&host);
-        host
+        Ok(host)
     }
 }
 
@@ -2224,7 +2280,7 @@ mod tests {
         let seen = Arc::clone(&loaded);
         hosts.set_context_loader(move |host| seen.lock().unwrap().push(host.hostname()));
         for _ in 0..2 {
-            hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {});
+            hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {}).expect("created");
         }
         assert_eq!(*loaded.lock().unwrap(), ["c"]);
     }
@@ -2528,17 +2584,65 @@ mod tests {
         assert_eq!(host.replicating_charts_minus_one(), u32::MAX, "it wraps");
     }
 
+    /// A longer machine GUID is cut to 37 characters at creation, so its next creation meets that host and fails, as
+    /// C's NULL, with C's NOTICE (D126.7); the 37-character GUID itself finds it; the parent's own GUID plus a suffix
+    /// is a child host.
+    #[test]
+    fn a_longer_guid_is_cut_at_creation_and_collides_as_c() {
+        const G: &str = "5a1e0000-0000-4000-8000-0000000000c9";
+        let hosts = Hosts::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, info("parent")));
+        let long = format!("{G}xyz");
+        let made = hosts.find_or_create(&long, DbMode::Ram, || info("c"), |_| panic!("new host")).expect("created");
+        assert_eq!(made.machine_guid(), format!("{G}x"));
+        let (again, records) = netdata_agent_log::capture(|| {
+            hosts.find_or_create(&long, DbMode::Ram, || info("c"), |_| panic!("not found by the whole GUID"))
+        });
+        assert_eq!(again.err(), Some(NotCreated::IndexCollision));
+        assert!(records.iter().any(|r| r.priority == Priority::Notice
+            && r.message.as_deref()
+                == Some(&*format!(
+                    "Host 'c': cannot add host with machine guid '{G}x' to index. It already exists as host 'c' with \
+                     machine guid '{G}x'."
+                ))));
+        assert_eq!(hosts.all().len(), 2);
+        let found = hosts.find_or_create(&format!("{G}x"), DbMode::Ram, || panic!("exists"), |_| {}).expect("found");
+        assert!(Arc::ptr_eq(&made, &found));
+        let own = hosts
+            .find_or_create("5a1e0000-0000-4000-8000-0000000000aaxyz", DbMode::Ram, || info("own"), |_| {})
+            .expect("created");
+        assert_eq!(own.machine_guid(), "5a1e0000-0000-4000-8000-0000000000aax");
+        assert_eq!(hosts.all().len(), 3);
+    }
+
+    /// An archived host of another memory mode is not discarded while the metadata writer holds it: C's NULL (D95.7);
+    /// once released, it is discarded and created again.
+    #[test]
+    fn a_discard_waits_for_the_metadata_writer() {
+        let hosts = Hosts::new(Host::new("local-guid", true, info("parent")));
+        let archived = hosts.add_archived("guid-a", info("a"), |_| {});
+        archived.clear_pending_context_load();
+        let other = if archived.info().db_mode == DbMode::Alloc { DbMode::Ram } else { DbMode::Alloc };
+        let held = archived.metadata_try_read().unwrap();
+        let busy = hosts.find_or_create("guid-a", other, || info("a"), |_| {});
+        assert_eq!(busy.err(), Some(NotCreated::MetadataBusy));
+        assert!(Arc::ptr_eq(&hosts.find_by_guid("guid-a").unwrap(), &archived));
+        drop(held);
+        let new = hosts.find_or_create("guid-a", other, || info("a"), |_| {}).expect("created");
+        assert!(!Arc::ptr_eq(&new, &archived));
+        assert!(archived.metadata_try_read().is_none(), "the discarded host reads freed");
+    }
+
     #[test]
     fn index_keeps_creation_order_and_single_receivers() {
         let hosts = Hosts::new(Host::new("local-guid", true, info("parent")));
-        let a = hosts.find_or_create("guid-a", DbMode::Ram, || info("a"), |_| panic!("new host"));
-        hosts.find_or_create("guid-b", DbMode::Ram, || info("b"), |_| panic!("new host"));
+        let a = hosts.find_or_create("guid-a", DbMode::Ram, || info("a"), |_| panic!("new host")).expect("created");
+        hosts.find_or_create("guid-b", DbMode::Ram, || info("b"), |_| panic!("new host")).expect("created");
         let again = hosts.find_or_create(
             "guid-a",
             DbMode::Ram,
             || panic!("exists"),
             |h| h.update_info(|i| i.hostname = "a2".into()),
-        );
+        ).expect("created");
         assert!(Arc::ptr_eq(&a, &again));
         let names: Vec<_> = hosts.all().iter().map(|h| h.hostname()).collect();
         assert_eq!(names, ["parent", "a2", "b"]);
@@ -2625,7 +2729,7 @@ mod tests {
         child.timezone = "Etc/UTC".into();
         child.program_version = "v2.11.0-458-g1e97a0fc9e".into();
         let (host, records) = netdata_agent_log::capture(|| {
-            hosts.find_or_create(guid, DbMode::Ram, || child, |_| panic!("new host"))
+            hosts.find_or_create(guid, DbMode::Ram, || child, |_| panic!("new host")).expect("created")
         });
         assert_eq!(
             texts(&records)[1..],
@@ -2646,7 +2750,7 @@ mod tests {
                 DbMode::Ram,
                 || info(""),
                 |_| panic!("new host"),
-            )
+            ).expect("created")
         });
         let texts = texts(&records);
         assert_eq!(
@@ -2669,7 +2773,7 @@ mod tests {
     fn an_update_logs_what_changed_as_c() {
         let hosts = Hosts::new(Host::new("local-guid", true, info("parent")));
         let host =
-            hosts.find_or_create("guid-a", DbMode::Ram, || info("a"), |_| panic!("new host"));
+            hosts.find_or_create("guid-a", DbMode::Ram, || info("a"), |_| panic!("new host")).expect("created");
         let mut wanted = info("renamed");
         wanted.program_name = "other".into();
         wanted.program_version = "v1".into();
@@ -2758,7 +2862,7 @@ mod tests {
             DbMode::Ram,
             || panic!("created"),
             |_| panic!("updated"),
-        );
+        ).expect("created");
         assert!(Arc::ptr_eq(&same, &host));
         host.clear_pending_context_load();
         // the same memory mode: updated and no longer archived
@@ -2768,7 +2872,7 @@ mod tests {
                 DbMode::Alloc,
                 || panic!("created"),
                 |h| h.update(&alloc, 1, 3600, true, 86400, 3600),
-            )
+            ).expect("created")
         });
         assert!(Arc::ptr_eq(&again, &host) && !again.is_archived());
         assert_eq!(
@@ -2791,7 +2895,7 @@ mod tests {
                 DbMode::Ram,
                 || info("other"),
                 |_| panic!("updated"),
-            )
+            ).expect("created")
         });
         assert!(!Arc::ptr_eq(&created, &archived) && !created.is_archived());
         let records = messages(records);
@@ -2835,7 +2939,7 @@ mod tests {
                 DbMode::Alloc,
                 || panic!("created"),
                 |h| h.update(&wanted, 1, 3600, true, 86400, 3600),
-            )
+            ).expect("created")
         });
         let info = host.info();
         assert_eq!(
@@ -2869,7 +2973,7 @@ mod tests {
         );
         assert!(localhost.last_connected_s() > 0);
         let child =
-            hosts.find_or_create("guid-a", DbMode::Ram, || info("a"), |_| panic!("new host"));
+            hosts.find_or_create("guid-a", DbMode::Ram, || info("a"), |_| panic!("new host")).expect("created");
         assert_eq!(child.meta_flags(), meta_flags::INFO | meta_flags::UPDATE);
         assert!(child.last_connected_s() > 0);
         assert!(
@@ -2935,7 +3039,7 @@ mod tests {
         let old = hosts.add_archived("guid-a", info("a"), |_| {});
         old.clear_pending_context_load();
         // the discard of an archived host of another memory mode
-        let new = hosts.find_or_create("guid-a", DbMode::Alloc, || info("a"), |_| {});
+        let new = hosts.find_or_create("guid-a", DbMode::Alloc, || info("a"), |_| {}).expect("created");
         assert!(!Arc::ptr_eq(&old, &new));
         assert!(hosts.free(&old).is_none());
         assert!(hosts.find_by_guid("guid-a").is_some_and(|h| Arc::ptr_eq(&h, &new)));

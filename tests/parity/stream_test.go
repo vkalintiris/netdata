@@ -85,4 +85,49 @@ func TestStreamHandshake(t *testing.T) {
 			t.Errorf("responses differ\noracle:    %q\ncandidate: %q", got[0], got[1])
 		}
 	})
+	// the request's GUID is kept whole until the host is created with its first 37 characters (D126.7): a longer one
+	// is accepted once, then meets the host it made in the index (busy); a 37-character one behaves as any other; the
+	// parent's own GUID with a suffix is a child
+	t.Run("suffixed-guid", func(t *testing.T) {
+		var got [2][]byte
+		for i, side := range p.Each() {
+			var parts [][]byte
+			for _, g := range []string{guid(13) + "xyz", guid(13) + "xyz"} {
+				b, err := rawExchange(side.Daemon.Addr, streamRequest(fmt.Sprintf(
+					"key=%s&hostname=hs-13&machine_guid=%s&update_every=1&ver=17088", key, g)), time.Second)
+				if err != nil {
+					t.Fatalf("%s: %v", side.Role, err)
+				}
+				parts = append(parts, b)
+			}
+			held, err := net.Dial("tcp", side.Daemon.Addr)
+			if err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			defer held.Close()
+			q37 := fmt.Sprintf("key=%s&hostname=hs-14&machine_guid=%sx&update_every=1&ver=17088", key, guid(14))
+			if _, err := held.Write(streamRequest(q37)); err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			prompt := make([]byte, 128)
+			_ = held.SetReadDeadline(time.Now().Add(2 * time.Second))
+			n, _ := held.Read(prompt)
+			second, err := rawExchange(side.Daemon.Addr, streamRequest(q37), time.Second)
+			if err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			own, err := rawExchange(side.Daemon.Addr, streamRequest(fmt.Sprintf(
+				"key=%s&hostname=hs-15&machine_guid=%sxyz&update_every=1&ver=17088", key, parentIdentity.MachineGUID)),
+				time.Second)
+			if err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			parts = append(parts, prompt[:n:n], second, own)
+			got[i] = bytes.Join(parts, []byte("|"))
+		}
+		t.Logf("oracle: %q", got[0])
+		if !bytes.Equal(got[0], got[1]) {
+			t.Errorf("responses differ\noracle:    %q\ncandidate: %q", got[0], got[1])
+		}
+	})
 }

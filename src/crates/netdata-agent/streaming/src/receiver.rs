@@ -613,6 +613,20 @@ impl Receivers {
                 )
             },
         );
+        // rrdhost_find_or_create() returned NULL: an index collision or a host being stored (D126.7, D95.7)
+        let Ok(host) = host else {
+            peer.status(
+                "rejecting streaming connection; host creation is busy, retry later",
+                Reason::PARENT_BUSY_TRY_LATER,
+                Priority::Notice,
+            );
+            let _ = send_timeout(
+                &mut link,
+                handshake::ERROR_BUSY_TRY_LATER.as_bytes(),
+                Duration::from_secs(5),
+            );
+            return false;
+        };
         if host.is_pending_context_load() {
             peer.status(
                 "rejecting streaming connection; host is initializing, retry later",

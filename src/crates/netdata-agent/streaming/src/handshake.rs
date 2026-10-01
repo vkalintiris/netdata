@@ -27,9 +27,6 @@ pub const ERROR_INTERNAL_ERROR: &str = "The server encountered an internal error
 /// `START_STREAMING_ERROR_INITIALIZATION`.
 pub const ERROR_INITIALIZATION: &str = "The server is initializing. Try later.";
 
-/// `GUID_LEN`: longer machine GUIDs are truncated.
-const GUID_LEN: usize = 36;
-
 /// What a child sent in its `STREAM` request line and `User-Agent` header.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StreamRequest {
@@ -95,13 +92,8 @@ impl StreamRequest {
                 "registry_hostname" if r.registry_hostname.is_none() => {
                     r.registry_hostname = Some(value)
                 }
-                "machine_guid" if r.machine_guid.is_none() => {
-                    let end = value
-                        .char_indices()
-                        .nth(GUID_LEN)
-                        .map_or(value.len(), |(i, _)| i);
-                    r.machine_guid = Some(value[..end].to_string());
-                }
+                // whole, as C keeps it: only the host created for it keeps 37 characters (D126.7)
+                "machine_guid" if r.machine_guid.is_none() => r.machine_guid = Some(value),
                 "update_every" => {
                     r.update_every = strtoul0(value.as_bytes()).0 as i32;
                     r.handshake_update_every = r.update_every;
@@ -278,7 +270,7 @@ mod tests {
         );
         let r = StreamRequest::parse(q.as_bytes(), 1, Some(b"query-corpus-pusher/1.0"));
         assert_eq!(r.key.as_deref(), Some(KEY));
-        assert_eq!(r.machine_guid.as_deref(), Some(GUID));
+        assert_eq!(r.machine_guid.as_deref(), Some(format!("{GUID}xyz").as_str()));
         assert_eq!(
             (r.update_every, r.handshake_update_every, r.hops),
             (8, 8, 2)

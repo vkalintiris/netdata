@@ -255,7 +255,7 @@ mod tests {
             orphan_hosts_s: 10,
             ephemeral_hosts_s: 0,
         });
-        let child = hosts.find_or_create(CHILD, DbMode::Ram, || info("child"), |_| {});
+        let child = hosts.find_or_create(CHILD, DbMode::Ram, || info("child"), |_| {}).expect("created");
         (hosts, child)
     }
 
@@ -316,7 +316,7 @@ mod tests {
                 ..info("vnode")
             },
             |_| {},
-        );
+        ).expect("created");
         let (chart, _) = vnode.charts().create(&spec("c"));
         let slot = Arc::new(ReceiverSlot::new(0, Default::default(), ReceiverLink::default(), Box::new(|| {})));
         assert_eq!(vnode.set_receiver(Arc::clone(&slot)), Attach::Attached);
