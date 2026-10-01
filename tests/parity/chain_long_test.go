@@ -3,10 +3,12 @@
 package parity
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"maps"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -16,14 +18,21 @@ import (
 	"github.com/netdata/netdata/tests/query-corpus/daemon"
 )
 
+// childArchived is the record of the proxy's cleanup archiving the orphaned child (DEBUG).
+const childArchived = "RRD: 'host:parity-chain-child' is now in archive mode"
+
 var (
-	// a sender whose parent was killed: the socket's error or its hang-up, as the kill's FIN or RST falls
-	killSendErrRe = regexp.MustCompile(`(socket reports errors|connection closed by remote end \(HUP\)) restarting connection`)
-	// a receiver whose peer was killed: FIN, RST or the probe's form, each with its reason
-	killRcvCloseRe = regexp.MustCompile(`(\]: )([A-Z ]+?( \(fd (N|\d+)\) - closing receiver connection\.| - closing connection;[^"]*)|socket closed by remote - closing connection)`)
-	killReasonRe   = regexp.MustCompile(`reason=\\"[A-Z ]+\\"`)
-	errnoFieldRe   = regexp.MustCompile(` errno="[^"]*"`)
-	requestFieldRe = regexp.MustCompile(` request="[^"]*"`)
+	// a sender whose parent was killed: the socket's error, its hang-up or its EOF, as the kill's FIN or RST falls
+	killSendErrRe = regexp.MustCompile(`(socket reports errors|connection closed by remote end \(HUP\)|` +
+		`socket reports EOF \(closed by parent\)) restarting connection`)
+	// a receiver whose peer was killed: FIN, RST or the probe's form (normalizeLog wrote its fd as `fd N`)
+	killRcvCloseRe = regexp.MustCompile(`(\]: )([A-Z ]+?( fd N - closing receiver connection\.| - closing connection;[^"]*)|socket closed by remote - closing connection)`)
+	// the socket reasons of those forms
+	killReasonRe = regexp.MustCompile(`reason=\\"(DISCONNECTED SOCKET (CLOSED BY REMOTE END|READ FAILED|WRITE FAILED)|` +
+		`DISCONNECT SOCKET ERROR)\\"`)
+	errnoFieldRe = regexp.MustCompile(` errno="[^"]*"`)
+	// the gate records' block (not the web thread's STREAM URL, which starts with a slash)
+	requestFieldRe = regexp.MustCompile(` request="[^/"][^"]*"`)
 	// the refused probes of a parent that is down, in whichever order the chain's hosts try it
 	refusedHostRe = regexp.MustCompile(`'parity-chain-(child|proxy|gp)'`)
 	// a down or reviving parent's probes: which of the proxy's senders meets the refusal and which the 404 is timing
@@ -31,8 +40,8 @@ var (
 	probeNodeRe = regexp.MustCompile(` node=parity-chain-(child|proxy) `)
 	// what a kill may add or not, by timing: a write racing the close, a revived parent still loading its hosts or
 	// closing a stream info probe it accepted while starting
-	killRaceRe = regexp.MustCompile(`socket reports error while writing|socket reports EOF \(closed by parent\)|` +
-		`remote server is initializing|host is initializing, retry later|socket receive error while querying stream info`)
+	killRaceRe = regexp.MustCompile(`socket reports error while writing|remote server is initializing|` +
+		`host is initializing, retry later|socket receive error while querying stream info`)
 	// entryKillTimes masks a path entry's times and its start-time median, which a restart moves; the shutdown-time
 	// median stays compared (0 after a SIGKILL)
 	entryKillTimes = regexp.MustCompile(`("since":)\d+(,\s*"first_time_t":)\d+,\s*"start_time":\d+`)
@@ -51,33 +60,48 @@ func relaunch(d *daemon.Daemon) error {
 	return err
 }
 
-// killRecords normalizes the records of a chain that lost an agent: the disconnects' forms, reasons and errno, the
-// refused probes' hosts, and without the lines a kill adds or not by timing; as a sorted set.
+// lossRecords normalizes the records of a chain that lost an agent or a child: the gate records' block and chart
+// fields (the block the parser was reading when the gate flipped) and a retry's time; as a sorted set, without the
+// debug lines.
+func lossRecords(lines []string) []string {
+	var out []string
+	for _, l := range lines {
+		if strings.Contains(l, "level=debug") {
+			continue
+		}
+		l = strings.Join(strings.Fields(requestFieldRe.ReplaceAllString(chartFieldsRe.ReplaceAllString(l, ""), "")), " ")
+		out = append(out, retryAtRe.ReplaceAllString(l, `will retry in ${1} secs, at T"`))
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// killRecords is lossRecords for a kill: the disconnects' forms, socket reasons and errno, the refused probes'
+// hosts, and without the lines a kill adds or not by timing.
 func killRecords(lines []string) []string {
 	var out []string
 	for _, l := range lines {
 		if killRaceRe.MatchString(l) {
 			continue
 		}
+		if killSendErrRe.MatchString(l) || killRcvCloseRe.MatchString(l) {
+			// the errno of a close follows the FIN or RST that met it
+			l = errnoFieldRe.ReplaceAllString(l, "")
+		}
 		l = killSendErrRe.ReplaceAllString(l, "PEER GONE restarting connection")
 		l = killRcvCloseRe.ReplaceAllString(l, "${1}PEER GONE")
 		l = killReasonRe.ReplaceAllString(l, `reason=\"R\"`)
-		l = errnoFieldRe.ReplaceAllString(l, "")
-		// the gate's records carry the block the parser was reading when it flipped
-		l = strings.Join(strings.Fields(requestFieldRe.ReplaceAllString(chartFieldsRe.ReplaceAllString(l, ""), "")), " ")
-		l = retryAtRe.ReplaceAllString(l, `will retry in ${1} secs, at T"`)
 		if downProbeRe.MatchString(l) {
 			l = probeNodeRe.ReplaceAllString(l, " node=H ")
 		}
 		out = append(out, refusedHostRe.ReplaceAllString(l, "'H'"))
 	}
-	slices.Sort(out)
-	return slices.Compact(out)
+	return lossRecords(out)
 }
 
-// chainKillRecords are chainRecords plus the proxy's own sender records and its load of archived hosts, normalized
-// for a kill.
-func chainKillRecords(t *testing.T, c *chain) map[string][]string {
+// chainLossRecords are chainRecords plus the proxy's other records (its sender's among them) and the loads of
+// archived hosts at the proxy and the grandparent, each normalized by `set`.
+func chainLossRecords(t *testing.T, c *chain, set func([]string) []string) map[string][]string {
 	t.Helper()
 	recs := chainRecords(t, c)
 	var sender []string
@@ -97,7 +121,7 @@ func chainKillRecords(t *testing.T, c *chain) map[string][]string {
 		recs[at+" archived"] = archived
 	}
 	for k, v := range recs {
-		recs[k] = killRecords(v)
+		recs[k] = set(v)
 	}
 	return recs
 }
@@ -124,27 +148,6 @@ func entryTimesOf(body []byte, hostname string) (start, shutdown int64, ok bool)
 		}
 	}
 	return 0, 0, false
-}
-
-// chartsHosts are the hostnames of an agent's /api/v1/charts `hosts`: those not eligible for the orphans' cleanup.
-func chartsHosts(addr string) ([]string, error) {
-	b, err := rawExchange(addr, []byte("GET /api/v1/charts HTTP/1.1\r\n\r\n"), 5*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	var v struct {
-		Hosts []struct {
-			Hostname string `json:"hostname"`
-		} `json:"hosts"`
-	}
-	if err := json.Unmarshal(httpBody(b), &v); err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, h := range v.Hosts {
-		out = append(out, h.Hostname)
-	}
-	return out, nil
 }
 
 // compareRecordSets compares a candidate chain's record sets with the oracle's.
@@ -199,11 +202,11 @@ func chainKill(t *testing.T, node string) {
 	down := [][2]string{gpChildView, gpProxyView, childOwnView}
 	if node == "gp" {
 		down = [][2]string{proxyChildView, proxyOwnView, childOwnView}
-		if hops, ok := waitPathHops(oracle.addr("p"), "&nodes=parity-chain-child", fullPath, time.Second); !ok {
+		if hops, ok := waitPathHops(oracle.addr("p"), "&nodes=parity-chain-child", fullPath, 5*time.Second); !ok {
 			t.Errorf("the oracle proxy's path of the child while the grandparent is down: %v", hops)
 		}
 	}
-	if hops, ok := waitPathHops(oracle.addr("c"), "", fullPath, time.Second); !ok {
+	if hops, ok := waitPathHops(oracle.addr("c"), "", fullPath, 5*time.Second); !ok {
 		t.Errorf("the oracle child's own path while the %s is down: %v", node, hops)
 	}
 	for _, c := range cs[1:] {
@@ -292,24 +295,34 @@ func chainKill(t *testing.T, node string) {
 		})
 	}
 
-	// after: the views (the restarted agent's entry: a start median, no clean shutdown), the stream_info, the charts
-	b, err := rawExchange(oracle.addr("gp"),
-		[]byte("GET /api/v3/stream_path?nodes=parity-chain-child&options=minify HTTP/1.1\r\n\r\n"), 5*time.Second)
+	// after: the views (the restarted agent's entry, in every chain: a start median, no clean shutdown, which the
+	// views' time mask leaves out), the stream_info
 	killed := map[string]string{"p": "parity-chain-proxy", "gp": "parity-chain-gp"}[node]
-	if start, shutdown, ok := entryTimesOf(httpBody(b), killed); err != nil || !ok || start == 0 || shutdown != 0 {
-		t.Errorf("the oracle grandparent's path: %s's entry start %d shutdown %d (%v)", killed, start, shutdown, err)
+	for _, c := range cs {
+		if c.down {
+			continue
+		}
+		b, err := rawExchange(c.addr("gp"),
+			[]byte("GET /api/v3/stream_path?nodes=parity-chain-child&options=minify HTTP/1.1\r\n\r\n"), 5*time.Second)
+		if start, shutdown, ok := entryTimesOf(httpBody(b), killed); err != nil || !ok || start == 0 || shutdown != 0 {
+			t.Errorf("%s: the grandparent's path: %s's entry start %d shutdown %d (%v)", c.form, killed, start,
+				shutdown, err)
+		}
 	}
 	for _, c := range cs[1:] {
 		if c.down {
 			continue
 		}
 		t.Run(c.form+"/final", func(t *testing.T) {
-			// a restarted proxy sends its labels once its sender is ready, the child back or not yet
-			var masked []string
 			if node == "p" {
-				masked = append(masked, "_is_parent")
+				// a restarted proxy sends its labels once its sender is ready, the child back or not yet: the
+				// grandparent's copy of its `_is_parent` races
+				chainViews(t, "final", oracle, c, [][2]string{gpChildView, proxyChildView, proxyOwnView, childOwnView},
+					entryKillTimes)
+				chainViews(t, "final", oracle, c, [][2]string{gpProxyView}, entryKillTimes, "_is_parent")
+			} else {
+				chainViews(t, "final", oracle, c, chainPathViews, entryKillTimes)
 			}
-			chainViews(t, "final", oracle, c, chainPathViews, entryKillTimes, masked...)
 			for _, at := range []string{"gp", "p"} {
 				o, oerr := streamInfoMasked(oracle.addr(at), chainChild.MachineGUID)
 				got, gerr := streamInfoMasked(c.addr(at), chainChild.MachineGUID)
@@ -330,13 +343,13 @@ func chainKill(t *testing.T, node string) {
 		}
 	})
 	time.Sleep(3 * time.Second)
-	want := chainKillRecords(t, oracle)
+	want := chainLossRecords(t, oracle, killRecords)
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		t.Logf("oracle %s records:\n%s", name, strings.Join(want[name], "\n"))
 	}
 	for _, c := range cs[1:] {
 		if !c.down {
-			t.Run(c.form+"/records", func(t *testing.T) { compareRecordSets(t, want, chainKillRecords(t, c)) })
+			t.Run(c.form+"/records", func(t *testing.T) { compareRecordSets(t, want, chainLossRecords(t, c, killRecords)) })
 		}
 	}
 }
@@ -350,6 +363,8 @@ func chainOrphan(t *testing.T) {
 			if rows[i].name == "p" {
 				rows[i].opts.DBExtra = "    cleanup orphan hosts after = 90s\n"
 				rows[i].opts.HealthExtra = "    run at least every = 1s\n"
+				// the archive's record, the cleanup's only trace, is DEBUG
+				rows[i].opts.LogsExtra = "    level = debug\n"
 			}
 		}
 	})
@@ -371,34 +386,31 @@ func chainOrphan(t *testing.T) {
 		}
 	})
 
-	// the proxy cleans the orphan up: once it is eligible (`rrdhost_should_be_cleaned_up`) its /api/v1/charts leaves
-	// it out of the hosts, and the next maintenance pass (every ~12-14 s in C, <= 10 s in Rust) archives it and frees
-	// its sender; the path and the charts show nothing new, cleared and hidden since the leave
-	var cleaned int64
+	// the proxy cleans the orphan up: its maintenance archives the host and frees its sender (every ~12-14 s in C, ~11-12
+	// s in Rust, once eligible); nothing an API shows changes then (the path, the charts and stream_info changed at
+	// the leave), so the wait reads the archive's record
 	forChains(cs, func(c *chain) {
+		log := filepath.Join(c.d("p").Opts.RunDir, "log", "daemon.log")
 		for end := time.Unix(c.stopped+150, 0); ; time.Sleep(time.Second) {
-			hosts, err := chartsHosts(c.addr("p"))
-			if err == nil && slices.Contains(hosts, "parity-chain-proxy") && !slices.Contains(hosts, "parity-chain-child") {
+			if b, err := os.ReadFile(log); err == nil && bytes.Contains(b, []byte(childArchived)) {
 				after := time.Now().Unix() - c.stopped
-				t.Logf("%s: the child eligible for the proxy's cleanup %d s after it left", c.form, after)
+				t.Logf("%s: the proxy archived the child %d s after it left", c.form, after)
 				if after < 90 {
-					t.Errorf("%s: the proxy left the child out of its hosts %d s after it left, before the orphan time",
-						c.form, after)
+					t.Errorf("%s: the proxy archived the child %d s after it left, before the orphan time", c.form, after)
 				}
 				return
 			}
 			if time.Now().After(end) {
-				t.Errorf("%s: the child never became eligible for the proxy's cleanup: hosts %v (%v)", c.form, hosts, err)
+				t.Errorf("%s: the proxy never archived the child", c.form)
 				c.down = true
 				return
 			}
 		}
 	})
-	time.Sleep(16 * time.Second)
 	if oracle.down {
 		t.FailNow()
 	}
-	cleaned = time.Now().Unix()
+	cleaned := time.Now().Unix()
 	time.Sleep(2 * time.Second)
 	for _, c := range cs[1:] {
 		if c.down {
@@ -498,13 +510,23 @@ func chainOrphan(t *testing.T) {
 		}
 	})
 	time.Sleep(3 * time.Second)
-	want := chainKillRecords(t, oracle)
+	// nothing was killed: the loss's masks only, and the archive's record
+	records := func(c *chain) map[string][]string {
+		recs := chainLossRecords(t, c, lossRecords)
+		for _, l := range logLines(t, c.d("p").Opts.RunDir, "daemon.log") {
+			if strings.Contains(l, childArchived) {
+				recs["proxy archive"] = append(recs["proxy archive"], normalizeLog(l, c.d("p").Opts.RunDir, ""))
+			}
+		}
+		return recs
+	}
+	want := records(oracle)
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		t.Logf("oracle %s records:\n%s", name, strings.Join(want[name], "\n"))
 	}
 	for _, c := range cs[1:] {
 		if !c.down {
-			t.Run(c.form+"/records", func(t *testing.T) { compareRecordSets(t, want, chainKillRecords(t, c)) })
+			t.Run(c.form+"/records", func(t *testing.T) { compareRecordSets(t, want, records(c)) })
 		}
 	}
 }

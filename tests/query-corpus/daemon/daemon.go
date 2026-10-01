@@ -34,6 +34,9 @@ const (
 
 var errProcessNotReaped = errors.New("daemon: failed startup process is not reaped")
 
+// errBindCollision marks a launch whose daemon exited because its port was taken.
+var errBindCollision = errors.New("daemon: port taken")
+
 // Options configures the daemon under test.
 type Options struct {
 	Binary           string // path to the stock netdata binary
@@ -374,7 +377,7 @@ func Start(o Options) (*Daemon, error) {
 		},
 		freePort,
 		func(err error) bool {
-			retry := !errors.Is(err, errProcessNotReaped) && startupLogShowsBindCollision(o.RunDir)
+			retry := !errors.Is(err, errProcessNotReaped) && errors.Is(err, errBindCollision)
 			if retry {
 				forgetFailedAttempt(o.RunDir)
 			}
@@ -535,6 +538,11 @@ func (d *Daemon) launch() error {
 	}
 	d.runtime = runtime
 	cmd.Env = append(append(os.Environ(), "NETDATA_PIPENAME="+d.PipeName, "NETDATA_RUN_DIR="+runtime), d.Opts.Env...)
+	// the daemon log is appended across launches: only what this one writes tells its failure
+	var logOffset int64
+	if fi, err := os.Stat(filepath.Join(d.Opts.RunDir, "log", "daemon.log")); err == nil {
+		logOffset = fi.Size()
+	}
 	stdout, err := os.Create(filepath.Join(d.Opts.RunDir, "log", "stdout.log"))
 	if err != nil {
 		return fmt.Errorf("daemon: stdout log: %w", err)
@@ -584,9 +592,13 @@ func (d *Daemon) launch() error {
 			// the process is already reaped; make a later Stop() a no-op
 			// instead of blocking forever on the drained wait channel
 			d.reaped()
-			return fmt.Errorf(
+			err := fmt.Errorf(
 				"daemon: exited during startup: %v; last readiness probe: %v (see %s/log/stdout.log)",
 				werr, lastProbeErr, d.Opts.RunDir)
+			if startupLogShowsBindCollision(d.Opts.RunDir, logOffset) {
+				err = fmt.Errorf("%w: %w", errBindCollision, err)
+			}
+			return err
 		default:
 		}
 		if time.Now().After(deadline) {
@@ -653,27 +665,35 @@ func infoHasDaemonIdentity(doc map[string]any, hostname string) error {
 	return nil
 }
 
-// forgetFailedAttempt removes what a start that lost its port left for the next attempt to read: the daemon status
-// file and its report dedup file (the next start would report an "already running" exit), and the logs, which are
-// kept aside.
-func forgetFailedAttempt(runDir string) {
+// forgetFailedStatus removes what a launch that lost its port left for the next one to read: the daemon status file
+// and its report dedup file (the next launch would report an "already running" exit).
+func forgetFailedStatus(runDir string) {
 	for _, name := range []string{"status-netdata.json", "dedup-netdata.dat"} {
 		_ = os.Remove(filepath.Join(runDir, "lib", name))
 	}
+}
+
+// forgetFailedAttempt is forgetFailedStatus with the logs kept aside, for a first start.
+func forgetFailedAttempt(runDir string) {
+	forgetFailedStatus(runDir)
 	logs, _ := filepath.Glob(filepath.Join(runDir, "log", "*.log"))
 	for _, log := range logs {
 		_ = os.Rename(log, log+".failed-attempt")
 	}
 }
 
-func startupLogShowsBindCollision(runDir string) bool {
-	log, err := os.ReadFile(filepath.Join(runDir, "log", "stdout.log"))
-	if err != nil {
-		return false
+// startupLogShowsBindCollision tells whether a launch's output, or what it added to the daemon log after
+// `daemonLogOffset` (where both agents log it), says its port was taken.
+func startupLogShowsBindCollision(runDir string, daemonLogOffset int64) bool {
+	var text strings.Builder
+	if b, err := os.ReadFile(filepath.Join(runDir, "log", "stdout.log")); err == nil {
+		text.Write(b)
 	}
-	text := string(log)
-	return strings.Contains(text, "Cannot bind to ip") ||
-		(strings.Contains(text, "bind() on ip") && strings.Contains(text, "failed"))
+	if b, err := os.ReadFile(filepath.Join(runDir, "log", "daemon.log")); err == nil && int64(len(b)) >= daemonLogOffset {
+		text.Write(b[daemonLogOffset:])
+	}
+	return strings.Contains(text.String(), "Cannot bind to ip") ||
+		(strings.Contains(text.String(), "bind() on ip") && strings.Contains(text.String(), "failed"))
 }
 
 // Stop terminates the daemon gracefully, escalating to SIGKILL.
@@ -798,7 +818,8 @@ func (d *Daemon) Restart() error {
 		return err
 	}
 	if err := d.launch(); err != nil {
-		if startupLogShowsBindCollision(d.Opts.RunDir) {
+		if errors.Is(err, errBindCollision) {
+			forgetFailedStatus(d.Opts.RunDir)
 			return fmt.Errorf("%w: %w", ErrPortTaken, err)
 		}
 		return err

@@ -404,27 +404,47 @@ func testStoppingDaemon(process *fakeProcess, waitCh chan error) *Daemon {
 }
 
 func TestRestartReportsATakenPort(t *testing.T) {
+	collision := "LISTENER: Cannot bind to ip '127.0.0.1', port 19999"
 	tests := map[string]struct {
-		output string
-		taken  bool
+		earlier, stdout, log string
+		taken                bool
 	}{
-		"bind collision": {output: "Cannot bind to ip 127.0.0.1 port 19999", taken: true},
-		"other failure":  {output: "invalid configuration", taken: false},
+		"in the daemon log":   {log: collision, taken: true},
+		"on stdout":           {stdout: collision, taken: true},
+		"an earlier launch's": {earlier: collision, log: "invalid configuration", taken: false},
+		"another failure":     {log: "invalid configuration", taken: false},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			if err := os.MkdirAll(filepath.Join(dir, "log"), 0o755); err != nil {
+			for _, sub := range []string{"log", "lib"} {
+				if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(dir, "log", "daemon.log"), []byte(tc.earlier+"\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			// a daemon that prints its startup failure and exits before it serves
+			status := filepath.Join(dir, "lib", "status-netdata.json")
+			if err := os.WriteFile(status, []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// a daemon that reports its startup failure where the agents do and exits before it serves; its
+			// run directory is the parent of the -c file's directory
+			script := "#!/bin/sh\nrun=$(dirname \"$(dirname \"$3\")\")\necho '" + tc.stdout + "'\necho '" + tc.log +
+				"' >> \"$run/log/daemon.log\"\nexit 1\n"
 			binary := filepath.Join(dir, "netdata")
-			if err := os.WriteFile(binary, []byte("#!/bin/sh\necho '"+tc.output+"'\nexit 1\n"), 0o755); err != nil {
+			if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			d := &Daemon{Opts: Options{Binary: binary, RunDir: dir}, BaseURL: "http://127.0.0.1:1"}
-			if err := d.Restart(); err == nil || errors.Is(err, ErrPortTaken) != tc.taken {
+			err := d.Restart()
+			if err == nil || errors.Is(err, ErrPortTaken) != tc.taken {
 				t.Fatalf("Restart() = %v, want a failure with a taken port %v", err, tc.taken)
+			}
+			// a taken port's attempt leaves no status for the next launch to report
+			if _, serr := os.Stat(status); (serr == nil) == tc.taken {
+				t.Fatalf("the status file after the attempt: %v, taken port %v", serr, tc.taken)
 			}
 		})
 	}

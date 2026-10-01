@@ -159,7 +159,11 @@ func (tp *topology) start(t *testing.T, g *stagger, bins [2]string, attempt int,
 				return fmt.Errorf("%s %s: %w", tp.label, r.name, err)
 			}
 			tp.nodes[r.name] = d
-			t.Cleanup(func() { _ = d.Stop() })
+			t.Cleanup(func() {
+				if err := d.Stop(); err != nil {
+					t.Errorf("%s %s: stop: %v", tp.label, r.name, err)
+				}
+			})
 		}
 	}
 	return nil
@@ -454,6 +458,8 @@ func startChains(t *testing.T, g *stagger, tweak func(rows []topoNode)) []*chain
 	errs := make([]error, len(forms))
 	var wg sync.WaitGroup
 	for i, form := range forms {
+		// what a goroutine that ends early (a helper's Fatal) leaves: a chain that is down
+		cs[i], errs[i] = &chain{form: form, down: true}, fmt.Errorf("%s did not start", form)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -543,7 +549,7 @@ func TestStreamChain(t *testing.T) {
 	}
 	var oracleCharts []byte
 	var oracleInfo [2][]byte
-	t.Run("c-c-c/steady", func(t *testing.T) {
+	if !t.Run("c-c-c/steady", func(t *testing.T) {
 		settle(t, oracle)
 		oracleCharts = hopCharts(t, oracle.d("gp"), true)
 		if len(oracleCharts) < 1000 {
@@ -556,7 +562,9 @@ func TestStreamChain(t *testing.T) {
 			}
 			oracleInfo[i] = b
 		}
-	})
+	}) {
+		t.FailNow()
+	}
 	for _, c := range cs[1:] {
 		if c.down {
 			continue
