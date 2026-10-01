@@ -52,7 +52,9 @@ use netdata_agent_pluginsd_proto::{
     CHART_SLOT_MAX, DIMENSION_SLOT_MAX, Deferred, DeferredBody, Keyword, MAX_DEFERRED_SIZE,
     Repertoire, Words, caps,
 };
-use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType, CollectionGuard, Dim, dim_flags, flags};
+use netdata_agent_rrd::chart::{
+    Algorithm, Chart, ChartSpec, ChartType, CollectionGuard, Dim, SlotLookup, dim_flags, flags,
+};
 use netdata_agent_rrd::collection;
 use netdata_agent_rrd::contexts;
 use netdata_agent_rrd::host::{Host, meta_flags};
@@ -180,8 +182,9 @@ pub struct Parser {
     replay: Replay,
     /// `rpt->replication.first_time_s`: the oldest `after` this connection requested.
     replication_first_s: i64,
-    /// `host->stream.rcv.pluginsd_chart_slots`.
-    chart_slots: Vec<Option<Arc<Chart>>>,
+    /// `parser->user.cleanup_slots`: the scope chart is unslotted when the scope ends (an obsolete chart or dimension
+    /// was cached).
+    cleanup_slots: bool,
     /// `parser->user.data_collections_count`.
     pub data_collections_count: u64,
     deferred: Option<DeferredBody>,
@@ -220,7 +223,7 @@ impl Parser {
             v2: V2::default(),
             replay: Replay::default(),
             replication_first_s: 0,
-            chart_slots: Vec::new(),
+            cleanup_slots: false,
             data_collections_count: 0,
             deferred: None,
             on_done: OnDone::Nothing,
@@ -417,7 +420,8 @@ impl Parser {
     }
 
     /// `pluginsd_clear_scope_chart()`: a collection lock still held (a BEGIN2 without its END2) is released and
-    /// reported (`rrdset_previous_scope_chart_unlock(…, stale = true)`).
+    /// reported (`rrdset_previous_scope_chart_unlock(…, stale = true)`); the scope chart is unslotted when
+    /// `cleanup_slots` says so.
     fn clear_scope(&mut self, keyword: &str) {
         if self.collecting.take().is_some()
             && let Some(chart) = &self.scope
@@ -429,6 +433,11 @@ impl Parser {
                 self.host.hostname(),
                 chart.id()
             );
+        }
+        if std::mem::take(&mut self.cleanup_slots)
+            && let Some(chart) = &self.scope
+        {
+            self.host.charts().receive_unslot(chart);
         }
         self.scope = None;
         self.clabel_count = 0;
@@ -488,47 +497,38 @@ impl Parser {
         chart
     }
 
-    /// `pluginsd_rrdset_cache_put_to_slot()`.
-    fn chart_to_slot(&mut self, chart: &Arc<Chart>, slot: Option<u64>) {
-        for entry in &mut self.chart_slots {
-            if entry.as_ref().is_some_and(|c| Arc::ptr_eq(c, chart)) {
-                *entry = None;
-            }
+    /// `pluginsd_rrdset_cache_put_to_slot()` in the host's receive slot cache (D128.2); an obsolete chart's scope ends
+    /// with its unslot.
+    fn chart_to_slot(&mut self, chart: &Arc<Chart>, slot: Option<u64>, obsolete: bool) {
+        self.host.charts().receive_put(chart, slot);
+        if slot.is_some_and(|s| s >= 1 && s < i32::MAX as u64) {
+            self.cleanup_slots = obsolete;
         }
-        let Some(slot) = slot.filter(|&s| s >= 1 && s < i32::MAX as u64) else {
-            return;
-        };
-        let slot = slot as usize;
-        if slot > self.chart_slots.len() {
-            self.chart_slots
-                .resize(slot.max(self.chart_slots.len() * 2), None);
-        }
-        self.chart_slots[slot - 1] = Some(Arc::clone(chart));
     }
 
-    /// `pluginsd_rrdset_cache_get_from_slot()`: a cached slot wins over the id.
+    /// `pluginsd_rrdset_cache_get_from_slot()`: a cached slot wins over the id, as a release build's. A chart found
+    /// by id for an empty slot is cached, and whether it is obsolete becomes the parser's `cleanup_slots`, which the
+    /// next scope change applies to the chart in scope before it.
     fn chart_from_slot(
         &mut self,
         id: Option<&[u8]>,
         slot: Option<u64>,
         keyword: &str,
     ) -> Option<Arc<Chart>> {
-        match slot {
-            Some(s) if s >= 1 && (s as usize) <= self.chart_slots.len() => {
-                // a chart the maintenance sweep freed stays in the slot until it is looked up again (D94.1)
-                if let Some(chart) = self.chart_slots[s as usize - 1].as_ref().filter(|c| !c.is_freed()) {
-                    return Some(Arc::clone(chart));
-                }
+        match self.host.charts().receive_get(slot) {
+            SlotLookup::Hit(chart) => Some(chart),
+            SlotLookup::Range => self.find_chart(id, keyword),
+            SlotLookup::Empty => {
                 let chart = self.find_chart(id, keyword)?;
-                self.chart_to_slot(&chart, Some(s));
+                let obsolete = chart.flags() & flags::OBSOLETE != 0;
+                self.chart_to_slot(&chart, slot, obsolete);
                 Some(chart)
             }
-            _ => self.find_chart(id, keyword),
         }
     }
 
-    /// `pluginsd_rrddim_put_to_slot()`.
-    fn dim_to_slot(chart: &Chart, dim: &Arc<Dim>, slot: Option<u64>) {
+    /// `pluginsd_rrddim_put_to_slot()`: whether the dimension was cached by its slot.
+    fn dim_to_slot(chart: &Chart, dim: &Arc<Dim>, slot: Option<u64>) -> bool {
         let count = chart.dim_count();
         let mut state = chart.receiver();
         let wanted = match slot.filter(|&s| s >= 1) {
@@ -551,7 +551,9 @@ impl Parser {
             if !entry.as_ref().is_some_and(|d| Arc::ptr_eq(d, dim)) {
                 *entry = Some(Arc::clone(dim));
             }
+            return true;
         }
+        false
     }
 
     /// `pluginsd_acquire_dimension()`.
@@ -724,10 +726,12 @@ impl Parser {
             history_entries: info.history_entries,
             page_size: self.config.page_size,
         });
-        match options.filter(|o| !o.is_empty()) {
+        let options = options.filter(|o| !o.is_empty());
+        let obsolete = options.is_some_and(|o| o.windows(8).any(|x| x == b"obsolete"));
+        match options {
             Some(o) => {
                 let has = |what: &[u8]| o.windows(what.len()).any(|x| x == what);
-                if has(b"obsolete") {
+                if obsolete {
                     chart.is_obsolete(&self.host);
                 } else {
                     chart.isnot_obsolete();
@@ -748,7 +752,7 @@ impl Parser {
             None => chart.update_meta(|m| m.flags &= !flags::STORE_FIRST),
         }
         self.set_scope(&chart, "CHART");
-        self.chart_to_slot(&chart, slot);
+        self.chart_to_slot(&chart, slot, obsolete);
         self.set_update_every(&chart, i64::from(chart.update_every()));
         Ok(())
     }
@@ -810,7 +814,9 @@ impl Parser {
             }
         });
         chart.dim_set_hidden(&dim, has(b"hidden"));
-        Self::dim_to_slot(&chart, &dim, slot);
+        if Self::dim_to_slot(&chart, &dim, slot) && has(b"obsolete") {
+            self.cleanup_slots = true;
+        }
         Ok(())
     }
 

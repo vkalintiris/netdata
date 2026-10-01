@@ -7,7 +7,7 @@
 //! are held only for short, bounded steps.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, Ordering};
 use std::ops::Deref;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock, Weak};
 
@@ -370,6 +370,9 @@ pub struct Chart {
     chart_slot: AtomicU32,
     /// `st->stream.snd.dim_last_slot_used`.
     dim_last_slot: AtomicU32,
+    /// `st->pluginsd.last_slot`: its index in the host's receive slot cache, -1 for none; written under that cache's
+    /// lock.
+    recv_last_slot: AtomicI32,
     /// `st->stream.snd.resync_time_s`: until then v1 data go out with no time since the last update.
     resync_time_s: AtomicI64,
     data_collection: DataCollectionLock,
@@ -544,6 +547,7 @@ impl Chart {
     /// `rrdset_is_obsolete___safe_from_collector_thread()` of a chart of `host`: a replication it claimed from the
     /// parent is given back, and, since the chart will not be collected again, its definition goes upstream now.
     pub fn is_obsolete(&self, host: &Host) {
+        host.charts().receive_unslot(self);
         let was = self.update_meta(|m| {
             let was = m.flags;
             m.flags |= flags::OBSOLETE;
@@ -1513,7 +1517,24 @@ pub struct Charts {
     host_guid: String,
     /// `host->stream.snd.pluginsd_chart_slots`.
     send_slots: Mutex<SendSlots>,
+    /// `host->stream.rcv.pluginsd_chart_slots`: the charts a child's `SLOT:` numbers named, kept across its
+    /// connections until the host's data collection is cleaned up.
+    recv_slots: Mutex<Vec<Option<Arc<Chart>>>>,
 }
+
+/// What the receive slot cache holds for a slot (`pluginsd_rrdset_cache_get_from_slot()`).
+#[derive(Debug)]
+pub enum SlotLookup {
+    /// Outside the cache: the chart is found by id and not cached.
+    Range,
+    /// No chart there: the chart is found by id and cached.
+    Empty,
+    /// The chart there, whatever id the line names (a release build compares none).
+    Hit(Arc<Chart>),
+}
+
+/// `PLUGINSD_MIN_RRDSET_POINTERS_CACHE`.
+const MIN_RECV_SLOTS: usize = 1024;
 
 /// `host->stream.snd.pluginsd_chart_slots`: the chart slots of the stream a host sends, reused last-freed first.
 #[derive(Debug, Default)]
@@ -1595,6 +1616,7 @@ impl Charts {
             storage,
             host_guid: host_guid.to_string(),
             send_slots: Mutex::default(),
+            recv_slots: Mutex::default(),
         }
     }
 
@@ -1630,8 +1652,60 @@ impl Charts {
             }
         }
         lock(&self.send_slots).release(chart.chart_slot.swap(0, Ordering::Relaxed));
+        // rrdset_pluginsd_receive_unslot_and_cleanup()
+        self.receive_unslot(chart);
         chart.freed_contents();
         true
+    }
+
+    /// `rrdset_pluginsd_receive_unslot()`: the chart's dimension cache emptied (its size kept, by slot or by position)
+    /// and its entry in the receive slot cache cleared, when the entry still names it.
+    pub fn receive_unslot(&self, chart: &Chart) {
+        {
+            let mut state = chart.receiver();
+            state.prd.iter_mut().for_each(|entry| *entry = None);
+            state.dims_with_slots = false;
+        }
+        let mut slots = lock(&self.recv_slots);
+        let last = chart.recv_last_slot.swap(-1, Ordering::Relaxed);
+        if let Some(entry) = usize::try_from(last).ok().and_then(|i| slots.get_mut(i))
+            && entry.as_ref().is_some_and(|c| std::ptr::eq(Arc::as_ptr(c), chart))
+        {
+            *entry = None;
+        }
+    }
+
+    /// `pluginsd_rrdset_cache_put_to_slot()`: the chart unslotted, then cached at `slot` when it is in [1, INT32_MAX),
+    /// the cache grown to 1024 entries, then doubled, or to the slot.
+    pub fn receive_put(&self, chart: &Arc<Chart>, slot: Option<u64>) {
+        self.receive_unslot(chart);
+        let Some(slot) = slot.filter(|&s| s >= 1 && s < i32::MAX as u64) else {
+            return;
+        };
+        let slot = slot as usize;
+        let mut slots = lock(&self.recv_slots);
+        // a chart the maintenance freed meanwhile is not cached again
+        if chart.is_freed() {
+            return;
+        }
+        if slot > slots.len() {
+            let grown = if slots.len() < MIN_RECV_SLOTS { MIN_RECV_SLOTS } else { slots.len() * 2 };
+            slots.resize(grown.max(slot), None);
+        }
+        slots[slot - 1] = Some(Arc::clone(chart));
+        chart.recv_last_slot.store(slot as i32 - 1, Ordering::Relaxed);
+    }
+
+    /// What the receive slot cache holds for `slot` (none when it is outside the cache).
+    pub fn receive_get(&self, slot: Option<u64>) -> SlotLookup {
+        let slots = lock(&self.recv_slots);
+        match slot.filter(|&s| s >= 1 && s as usize <= slots.len()) {
+            None => SlotLookup::Range,
+            Some(s) => match &slots[s as usize - 1] {
+                Some(chart) if !chart.is_freed() => SlotLookup::Hit(Arc::clone(chart)),
+                _ => SlotLookup::Empty,
+            },
+        }
     }
 
     /// `rrdset_index_flush()` after `rrdhost_pluginsd_send_chart_slots_free()`: every chart freed (a host archived or
@@ -1642,6 +1716,8 @@ impl Charts {
             slots.ignore = true;
             slots.available = Vec::new();
         }
+        // rrdhost_pluginsd_receive_chart_slots_free()
+        *lock(&self.recv_slots) = Vec::new();
         let index = std::mem::take(&mut *self.inner.write().unwrap_or_else(PoisonError::into_inner));
         for chart in index.charts.items() {
             chart.freed.store(true, Ordering::Release);
@@ -1811,6 +1887,7 @@ impl Charts {
                     // rrdset_insert_callback(): every chart takes a slot, whether the host streams or not
                     chart_slot: AtomicU32::new(lock(&self.send_slots).assign()),
                     dim_last_slot: AtomicU32::new(0),
+                    recv_last_slot: AtomicI32::new(-1),
                     resync_time_s: AtomicI64::new(0),
                     data_collection: DataCollectionLock::default(),
                 });

@@ -565,6 +565,95 @@ fn a_stuck_replication_is_taken_back() {
     );
 }
 
+/// A chart `t.<id>` with dimension 'd', with a slot or options when given.
+fn slotted_chart(id: &str, slot: Option<u32>, options: &str) -> [String; 2] {
+    let slot = slot.map_or(String::new(), |s| format!("SLOT:{s} "));
+    [
+        format!("CHART {slot}'t.{id}' '' 'title' 'units' 'family' 'ctx.{id}' line 1000 1 '{options}' p m"),
+        "DIMENSION 'd' '' absolute 1 1 ''".to_string(),
+    ]
+}
+
+/// One block for `t.<id>` with a slot, collecting `value` into 'd'.
+fn slotted_block(id: &str, slot: u32, value: i64) -> [String; 3] {
+    [
+        format!("BEGIN2 SLOT:{slot} 't.{id}' 1 {} #", NOW - 10 + value),
+        format!("SET2 'd' {value} {value} A"),
+        "END2".to_string(),
+    ]
+}
+
+/// The value 'd' of each chart last collected.
+fn d_values(h: &Host, ids: &[&str]) -> Vec<i64> {
+    ids.iter()
+        .map(|id| {
+            let chart = h.charts().find(&format!("t.{id}"), true).unwrap();
+            chart.dim("d").unwrap().collection().last_collected_value
+        })
+        .collect()
+}
+
+/// The receive slot cache is the host's, as C's (D128.2): it grows to 1024 entries at its first slot, a slot inside
+/// it that holds no chart caches the one found by id, and a later block with that slot lands on that chart whatever
+/// id it names (a release build compares none); within one connection and across a reconnect.
+#[test]
+fn a_cached_slot_wins_over_the_id_it_names() {
+    let h = host();
+    let mut p = parser(&h);
+    let charts = [slotted_chart("a", Some(1), "x"), slotted_chart("b", None, "x"), slotted_chart("c", None, "x")];
+    feed_ok(&mut p, &charts.concat());
+    feed_ok(&mut p, &[slotted_block("b", 5, 1), slotted_block("c", 5, 2)].concat());
+    assert_eq!(d_values(&h, &["a", "b", "c"]), [0, 2, 0]);
+    // the next connection: the accept marks every chart obsolete (each unslotted), the cache keeps its size
+    drop(p);
+    h.obsolete_all_charts();
+    let mut p = parser(&h);
+    feed_ok(&mut p, &[slotted_block("c", 9, 3), slotted_block("b", 9, 4)].concat());
+    assert_eq!(d_values(&h, &["a", "b", "c"]), [0, 2, 4]);
+}
+
+/// An accept's obsolete-all clears every chart's slot: a slot from the last connection names nothing in the next.
+#[test]
+fn obsolete_charts_leave_their_slots() {
+    let h = host();
+    let mut p = parser(&h);
+    feed_ok(&mut p, &[slotted_chart("a", Some(7), "x"), slotted_chart("b", None, "x")].concat());
+    drop(p);
+    h.obsolete_all_charts();
+    let mut p = parser(&h);
+    feed_ok(&mut p, &slotted_block("b", 7, 1));
+    assert_eq!(d_values(&h, &["a", "b"]), [0, 1]);
+}
+
+/// An obsolete chart cached by its CHART line is unslotted when the scope moves on (`cleanup_slots`).
+#[test]
+fn an_obsolete_chart_is_unslotted_when_its_scope_ends() {
+    let h = host();
+    let mut p = parser(&h);
+    let lines = [
+        slotted_chart("a", Some(7), "obsolete"),
+        slotted_chart("b", Some(8), "x"),
+        slotted_chart("c", None, "x"),
+    ];
+    feed_ok(&mut p, &lines.concat());
+    feed_ok(&mut p, &slotted_block("c", 7, 1));
+    assert_eq!(d_values(&h, &["a", "b", "c"]), [0, 0, 1]);
+}
+
+/// A freed chart leaves its slot: the chart defined again under its id is found and cached.
+#[test]
+fn a_freed_chart_leaves_its_slot() {
+    let h = host();
+    let mut p = parser(&h);
+    feed_ok(&mut p, &[slotted_chart("a", Some(7), "x"), slotted_chart("b", None, "x")].concat());
+    let old = h.charts().find("t.a", true).unwrap();
+    assert!(h.charts().free_if(&old, |_| true));
+    feed_ok(&mut p, &[slotted_chart("a", None, "x").to_vec(), slotted_block("a", 7, 1).to_vec()].concat());
+    let new = h.charts().find("t.a", true).unwrap();
+    assert!(!Arc::ptr_eq(&old, &new));
+    assert_eq!(new.dim("d").unwrap().collection().last_collected_value, 1);
+}
+
 /// `pluginsd_replay_begin()`'s invalid timestamps record names the wall clock that judged them: the child's when it
 /// sent one above 0, the parent's otherwise (none, or 0), each with its tolerance.
 #[test]
