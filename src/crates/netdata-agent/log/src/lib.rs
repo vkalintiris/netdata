@@ -306,6 +306,8 @@ pub struct Captured {
     pub priority: Priority,
     pub errno: i32,
     pub message: Option<String>,
+    /// The fields the thread's log stack set when the record was written.
+    pub fields: Vec<(Field, String)>,
 }
 
 /// Runs `f` with this thread's records captured instead of written (any priority, any source).
@@ -331,6 +333,7 @@ fn captured(
         priority,
         errno,
         message: message.map(|m| m.to_string()),
+        fields: frame::applied_fields(),
     };
     CAPTURE.with(|c| {
         if let Some(records) = c.borrow_mut().as_mut() {
@@ -670,6 +673,22 @@ mod tests {
         assert_eq!(tags, ("BACKFILL".to_string(), "BACKFILL[0]".to_string()));
     }
 
+    /// A captured record keeps the stack's fields as text: a later entry wins, and a lazy value writing nothing hides
+    /// the field.
+    #[test]
+    fn capture_keeps_the_stacks_fields() {
+        let ((), records) = capture(|| {
+            let _outer = push(vec![
+                (Field::NidlNode, Value::Str("a".into())),
+                (Field::NidlInstance, Value::Str("i".into())),
+                (Field::SrcPort, Value::U64(7)),
+            ]);
+            let _inner = push(vec![(Field::NidlNode, Value::txt("b")), (Field::NidlInstance, Value::lazy(|_| false))]);
+            netdata_log_error!("x");
+        });
+        assert_eq!(records[0].fields, [(Field::NidlNode, "b".to_string()), (Field::SrcPort, "7".to_string())]);
+    }
+
     #[test]
     fn capture_keeps_records_away_from_the_outputs() {
         let ((), records) = capture(|| {
@@ -684,12 +703,14 @@ mod tests {
                     priority: Priority::Err,
                     errno: 2,
                     message: Some("cannot open 'x'".to_string()),
+                    fields: vec![],
                 },
                 Captured {
                     source: Source::Access,
                     priority: Priority::Debug,
                     errno: 0,
                     message: Some("hidden by default".to_string()),
+                    fields: vec![],
                 },
             ]
         );

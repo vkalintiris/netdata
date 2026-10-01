@@ -164,6 +164,40 @@ pub(crate) fn with_fields<R>(f: impl FnOnce(&[Option<&Value>; crate::model::FIEL
     })
 }
 
+/// The fields the stack sets, as text, in field order: what a test's capture keeps with each record. A later entry
+/// wins, and a lazy value that writes nothing hides the field, as when a record is written.
+pub(crate) fn applied_fields() -> Vec<(Field, String)> {
+    STACK.with(|stack| {
+        let Ok(stack) = stack.try_borrow() else {
+            return Vec::new();
+        };
+        let mut fields = std::collections::BTreeMap::new();
+        for (_, frame) in &stack.frames {
+            for (field, value) in frame.as_slice() {
+                if !value.applies() {
+                    continue;
+                }
+                let text = match value {
+                    Value::Txt(text) | Value::Str(text) => Some(text.clone()),
+                    Value::U64(v) => Some(v.to_string()),
+                    Value::I64(v) => Some(v.to_string()),
+                    Value::Dbl(v) => Some(v.to_string()),
+                    Value::Uuid(uuid) => Some(uuid.iter().map(|b| format!("{b:02x}")).collect()),
+                    Value::Lazy(write) => {
+                        let mut out = Vec::new();
+                        write(&mut out).then(|| String::from_utf8_lossy(&out).into_owned())
+                    }
+                };
+                match text {
+                    Some(text) => fields.insert(*field, text),
+                    None => fields.remove(field),
+                };
+            }
+        }
+        fields.into_iter().collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
