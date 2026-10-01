@@ -21,6 +21,113 @@ func TestNetdataConfigDisablesUnlistedPlugins(t *testing.T) {
 	}
 }
 
+// defaultNetdataConf is renderNetdataConf's text for RunDir /r, port 1, one tier and hostname h.
+const defaultNetdataConf = `[global]
+    hostname = h
+
+[directories]
+    config = /r/etc
+    cache = /r/cache
+    lib = /r/lib
+    log = /r/log
+    home = /r/lib
+
+[web]
+    bind to = 127.0.0.1:1
+
+[db]
+    db = dbengine
+    update every = 1
+    storage tiers = 1
+    replication period = 3650d
+    replication step = 3650d
+    dbengine tier 0 retention time = 0
+    dbengine tier 1 retention time = 0
+    dbengine tier 2 retention time = 0
+
+[ml]
+    enabled = no
+
+[health]
+    enabled = no
+
+[registry]
+    enabled = no
+
+[plugins]
+    enable running new plugins = no
+    proc = no
+    diskspace = no
+    cgroups = no
+    tc = no
+    idlejitter = no
+    statsd = no
+    apps = no
+    go.d = no
+    charts.d = no
+    python.d = no
+    debugfs = no
+    perf = no
+    slabinfo = no
+    ioping = no
+    ebpf = no
+    systemd-journal = no
+    network-viewer = no
+    timex = no
+    profile = no
+`
+
+func TestNetdataConfRendering(t *testing.T) {
+	base := Options{RunDir: "/r", Port: 1, StorageTiers: 1}
+	cases := map[string]struct {
+		edit func(*Options)
+		want string
+	}{
+		"default": {func(*Options) {}, defaultNetdataConf},
+		"plugins dir with run": {
+			func(o *Options) { o.PluginsDir = `"/stock" "{run}/plugins.d"` },
+			strings.Replace(defaultNetdataConf, "    home = /r/lib\n", "    home = /r/lib\n    plugins = \"/stock\" \"/r/plugins.d\"\n", 1),
+		},
+		"plugins extra after pulse": {
+			func(o *Options) {
+				o.PulseOff = true
+				o.PluginsExtra = "    difftest = yes\n    check for new plugins every = 1\n"
+			},
+			defaultNetdataConf + "    netdata pulse = no\n    difftest = yes\n    check for new plugins every = 1\n",
+		},
+		"conf extra last": {
+			func(o *Options) {
+				o.HostLabels = "    a = b\n"
+				o.ConfExtra = "[plugin:difftest]\n    update every = 1\n"
+			},
+			defaultNetdataConf + "\n[host labels]\n    a = b\n\n[plugin:difftest]\n    update every = 1\n",
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			o := base
+			c.edit(&o)
+			if got := renderNetdataConf(o, "h"); got != c.want {
+				t.Errorf("got:\n%s\nwant:\n%s", got, c.want)
+			}
+		})
+	}
+}
+
+// PluginsExtra may not set a key the template sets: every installed plugin stays off.
+func TestPluginsExtraCannotEnableTemplatePlugins(t *testing.T) {
+	got := map[string]bool{}
+	for _, extra := range []string{"    proc = yes\n", "enable running new plugins = yes", "    netdata pulse = yes\n",
+		"    difftest = yes\n    check for new plugins every = 1\n"} {
+		got[extra] = validateOptions(Options{PluginsExtra: extra}) == nil
+	}
+	want := map[string]bool{"    proc = yes\n": false, "enable running new plugins = yes": false,
+		"    netdata pulse = yes\n": false, "    difftest = yes\n    check for new plugins every = 1\n": true}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("accepted: %v, want %v", got, want)
+	}
+}
+
 func TestStorageOptionsAreStrictAndRenderExactly(t *testing.T) {
 	for _, tc := range []struct {
 		name string

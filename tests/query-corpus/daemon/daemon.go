@@ -84,8 +84,14 @@ type Options struct {
 	// HostLabels, when set, is written as a [host labels] section at the end of netdata.conf (one "key = value"
 	// per line).
 	HostLabels string
-	// PluginsDir, when set, is the [directories] plugins path (e.g. an empty directory: no system-info.sh).
+	// PluginsDir, when set, is the [directories] plugins path (e.g. an empty directory: no system-info.sh), with
+	// {run} replaced by RunDir; a quoted list names several directories, the first the primary one.
 	PluginsDir string
+	// PluginsExtra is appended to the [plugins] section (one "key = value" per line), e.g. `difftest = yes`; it may
+	// not set a key the template sets (every installed plugin stays off).
+	PluginsExtra string
+	// ConfExtra is appended to netdata.conf as whole sections, e.g. `[plugin:difftest]` with its keys.
+	ConfExtra string
 	// StreamExtra is appended to stream.conf verbatim (e.g. per-child [<machine guid>] sections of a parent).
 	StreamExtra string
 	// StreamTo, when set, makes the daemon a streaming child of that destination.
@@ -247,7 +253,26 @@ func validateOptions(o Options) error {
 		return errors.New("daemon: StreamSection with StreamTo: a child's [stream] lines go in StreamTo.Extra")
 	}
 
+	for _, line := range strings.Split(o.PluginsExtra, "\n") {
+		key, _, _ := strings.Cut(line, "=")
+		if key = strings.TrimSpace(key); key != "" && slices.Contains(templatePluginKeys(), key) {
+			return fmt.Errorf("daemon: PluginsExtra sets %q, which the template sets", key)
+		}
+	}
+
 	return nil
+}
+
+// templatePluginKeys are the keys netdataConfTemplate sets in [plugins], `netdata pulse` (PulseOff's) included.
+func templatePluginKeys() []string {
+	_, section, _ := strings.Cut(netdataConfTemplate, "[plugins]\n")
+	keys := []string{"netdata pulse"}
+	for _, line := range strings.Split(section, "\n") {
+		if key, _, ok := strings.Cut(line, "="); ok {
+			keys = append(keys, strings.TrimSpace(key))
+		}
+	}
+	return keys
 }
 
 // renderStreamConf is stream.conf: the [stream] section (a child's with StreamTo, else disabled with the
@@ -438,7 +463,8 @@ func startWithPortRetries(
 		autoPortAttempts, lastErr)
 }
 
-func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
+// renderNetdataConf is netdata.conf for the options and the daemon's hostname.
+func renderNetdataConf(o Options, hostname string) string {
 	step := "3650d"
 	if o.ReplicationStepSeconds > 0 {
 		step = fmt.Sprintf("%ds", o.ReplicationStepSeconds)
@@ -477,7 +503,7 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 		extraDirs += fmt.Sprintf("    stock config = %s\n", strings.ReplaceAll(o.StockConfigDir, "{run}", o.RunDir))
 	}
 	if o.PluginsDir != "" {
-		extraDirs += fmt.Sprintf("    plugins = %s\n", o.PluginsDir)
+		extraDirs += fmt.Sprintf("    plugins = %s\n", strings.ReplaceAll(o.PluginsDir, "{run}", o.RunDir))
 	}
 	bindTo := o.BindTo
 	if bindTo == "" {
@@ -492,6 +518,7 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	if o.PulseOff {
 		pulse = "    netdata pulse = no\n"
 	}
+	pulse += o.PluginsExtra
 	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs, o.WebExtra,
 		o.GlobalExtra, bindTo, dbMode, pulse, retentionTime, o.HealthExtra)
 	if o.LogsExtra != "" {
@@ -500,6 +527,14 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	if o.HostLabels != "" {
 		conf += "\n[host labels]\n" + o.HostLabels
 	}
+	if o.ConfExtra != "" {
+		conf += "\n" + o.ConfExtra
+	}
+	return conf
+}
+
+func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
+	conf := renderNetdataConf(o, hostname)
 	confPath := filepath.Join(o.RunDir, "etc", "netdata.conf")
 	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {
 		return nil, fmt.Errorf("daemon: write netdata.conf: %w", err)

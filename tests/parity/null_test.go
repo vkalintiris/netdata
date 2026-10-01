@@ -11,6 +11,7 @@ import (
 
 	"github.com/netdata/netdata/tests/query-corpus/daemon"
 	"github.com/netdata/netdata/tests/query-corpus/fixture"
+	"github.com/netdata/netdata/tests/query-corpus/plugin"
 	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
@@ -18,6 +19,7 @@ func TestMain(m *testing.M) {
 	ScrubEnvironment()
 	startReportGuard()
 	code := m.Run()
+	plugin.Cleanup()
 	if reportGuardFailed() && code == 0 {
 		code = 1
 	}
