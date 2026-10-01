@@ -242,6 +242,19 @@ func (s *Session) CloseRaw() error {
 	return s.conn.Close()
 }
 
+// Reset ends the session's TCP connection with a reset (SO_LINGER 0, no TLS close_notify): the child's socket loses
+// its peer at once.
+func (s *Session) Reset() error {
+	nc := s.conn
+	if tc, ok := nc.(*tls.Conn); ok {
+		nc = tc.NetConn()
+	}
+	if tcp, ok := nc.(*net.TCPConn); ok {
+		_ = tcp.SetLinger(0)
+	}
+	return nc.Close()
+}
+
 // Hello is a TLS client's ClientHello as a TLS parent read it, and when.
 type Hello struct {
 	At                time.Time

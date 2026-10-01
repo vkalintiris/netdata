@@ -5,6 +5,7 @@ package parity
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +32,8 @@ type failoverCase struct {
 	want map[string]string
 	// logs is the child's [logs] section, beyond the harness's
 	logs string
+	// sender: the child's stream thread's records compare too (its sender's, with the parent's address)
+	sender bool
 }
 
 var failoverCases = map[string]failoverCase{
@@ -39,6 +42,13 @@ var failoverCases = map[string]failoverCase{
 	"disconnect": {
 		fail:   func(_ *stream.Parent, s *stream.Session) { _ = s.Close() },
 		within: 3 * time.Second,
+	},
+	// ACTIVE resets the session (an RST): the child goes to STANDBY at once, and its sender's records read the reset
+	// parent's address as unknown, from the socket when written (review R50 m1, D125)
+	"reset": {
+		fail:   func(_ *stream.Parent, s *stream.Session) { _ = s.Reset() },
+		within: 3 * time.Second,
+		sender: true,
 	},
 	// `disconnect` at `level = debug`: the connector's debug records compare too, so a pass that tried the postponed
 	// ACTIVE again would show its "connecting to" record (the map's §7.5 mutant 2)
@@ -123,6 +133,13 @@ func TestStreamFailover(t *testing.T) {
 				t.Logf("%s: STANDBY after %v", role, took)
 				_ = d.Stop()
 				records[i] = handshakeRecords(t, d, s)
+				if tc.sender {
+					for _, l := range rchildRecords(t, d) {
+						if strings.Contains(l, "thread=STREAM[") {
+							records[i] = append(records[i], l)
+						}
+					}
+				}
 				requests[i] = requestLines(second.Request)
 			})
 			diffLines(t, "records", records[0], records[1])
@@ -134,6 +151,11 @@ func TestStreamFailover(t *testing.T) {
 			// the oracle's system-info script ran (an empty one would compare equal between two C children)
 			if !strings.Contains(joined, "NETDATA_SYSTEM_KERNEL_NAME=Linux") {
 				t.Errorf("the oracle's request has no system info: %v", requests[0])
+			}
+			if tc.sender && !slices.ContainsFunc(records[0], func(l string) bool {
+				return strings.Contains(l, "thread=STREAM[") && strings.Contains(l, "dst_ip=unknown")
+			}) {
+				t.Errorf("the oracle's sender records never read the reset parent's address as unknown")
 			}
 			t.Logf("records:\n%s", strings.Join(records[0], "\n"))
 		})

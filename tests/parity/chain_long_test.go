@@ -26,7 +26,9 @@ var (
 	// the socket reasons of those forms
 	killReasonRe = regexp.MustCompile(`reason=\\"(DISCONNECTED SOCKET (CLOSED BY REMOTE END|READ FAILED|WRITE FAILED)|` +
 		`DISCONNECT SOCKET ERROR)\\"`)
-	errnoFieldRe = regexp.MustCompile(` errno="[^"]*"`)
+	// a queued proxy removed with its receiver, whose removal reason is the close form that met it
+	killRemovedRe = regexp.MustCompile(`removed host: (DISCONNECTED SOCKET [A-Z ]+?|DISCONNECT SOCKET ERROR) \(signaled`)
+	errnoFieldRe  = regexp.MustCompile(` errno="[^"]*"`)
 	// a sender's parent address, read from the socket when the record is written: unknown once the kill's RST came
 	killDstIPRe = regexp.MustCompile(` dst_ip=(unknown|127\.0\.0\.1) `)
 	// the gate records' block (not the web thread's STREAM URL, which starts with a slash)
@@ -75,6 +77,7 @@ func killRecords(lines []string) []string {
 		l = killSendErrRe.ReplaceAllString(l, "PEER GONE restarting connection")
 		l = killRcvCloseRe.ReplaceAllString(l, "${1}PEER GONE")
 		l = killReasonRe.ReplaceAllString(l, `reason=\"R\"`)
+		l = killRemovedRe.ReplaceAllString(l, "removed host: R (signaled")
 		l = killDstIPRe.ReplaceAllString(l, " dst_ip=IP ")
 		out = append(out, refusedHostRe.ReplaceAllString(l, "'H'"))
 	}

@@ -309,14 +309,24 @@ func forEach[T downer](xs []T, f func(T)) {
 	wg.Wait()
 }
 
-// topoViews compares the stream path views of two topologies' agents: each view is a node name and a request;
-// `_streams_to` and `maskLabels` are compared by presence only.
+// portNames rewrites the topology's local addresses to its nodes' names, so records that name a destination compare
+// across topologies.
+func (tp *topology) portNames() *strings.Replacer {
+	var pairs []string
+	for name, port := range tp.port {
+		pairs = append(pairs, "127.0.0.1:"+strconv.Itoa(port), name)
+	}
+	return strings.NewReplacer(pairs...)
+}
+
+// topoViews compares the stream path views of two topologies' agents, their addresses by node name (`_streams_to`
+// among them): each view is a node name and a request; `maskLabels` are compared by presence only.
 func topoViews(t *testing.T, stage string, oracle, cand *topology, views [][2]string, times *regexp.Regexp,
 	maskLabels ...string) {
 	t.Helper()
 	for _, v := range views {
 		compareStreamPathWith(t, stage+" "+v[0], [2]string{oracle.addr(v[0]), cand.addr(v[0])},
-			[2]*strings.Replacer{}, v[1], times, append([]string{"_streams_to"}, maskLabels...)...)
+			[2]*strings.Replacer{oracle.portNames(), cand.portNames()}, v[1], times, maskLabels...)
 	}
 }
 

@@ -131,6 +131,7 @@ func startActiveActive(t *testing.T, g *stagger, shared bool, forms []string) []
 			{"b", "&nodes=" + aaChild.Hostname}, {"c", ""}} {
 			if got, ok := waitPath(a.addr(at.node), at.query, want, 30*time.Second); !ok {
 				t.Errorf("%s: %s's path of the child is %v, not %v", a.form, at.node, got, want)
+				a.down = true
 			}
 		}
 		for _, w := range []struct {
@@ -139,6 +140,7 @@ func startActiveActive(t *testing.T, g *stagger, shared bool, forms []string) []
 		}{{"a", aaOutboundA}, {"b", aaOutboundB}} {
 			if err := waitCounts(a.d(w.node), "netdata.streaming_outbound", w.want, 60*time.Second); err != nil {
 				t.Errorf("%s: %s's outbound states: %v", a.form, w.node, err)
+				a.down = true
 			}
 		}
 		a.settled = time.Now().Unix()
@@ -248,16 +250,6 @@ func logCount(d *daemon.Daemon, substr string) (int, error) {
 	return bytes.Count(b, []byte(substr)), nil
 }
 
-// portNames rewrites the topology's local addresses to its nodes' names, so records that name a destination compare
-// across topologies.
-func (tp *topology) portNames() *strings.Replacer {
-	var pairs []string
-	for name, port := range tp.port {
-		pairs = append(pairs, "127.0.0.1:"+strconv.Itoa(port), name)
-	}
-	return strings.NewReplacer(pairs...)
-}
-
 // topoRecords are an agent's records that contain `marker`, with the topology's addresses as node names, masked
 // (maskRecordSet).
 func topoRecords(t *testing.T, tp *topology, node, marker string) []string {
@@ -356,6 +348,17 @@ func aaCompareViews(t *testing.T, ts []*aaTopo) {
 func aaCompareStates(t *testing.T, ts []*aaTopo) {
 	oracle := ts[0]
 	now := time.Now().Unix()
+	// each parent receives its peer's localhost and the child (one directly, the other through its peer): two
+	// running, and a third host C counts as loading (the oracle's values; the candidates compare below)
+	for _, node := range []string{"a", "b"} {
+		csv, err := localDataErr(oracle.d(node), "netdata.netdata.streaming_inbound_permanent", now-3, now-1, "average")
+		if err == nil {
+			err = wantCounts(csv, map[string]int{"loading": 1, "running": 2})
+		}
+		if err != nil {
+			t.Errorf("the oracle %s's inbound states: %v", node, err)
+		}
+	}
 	for _, a := range ts[1:] {
 		if a.down {
 			continue
@@ -415,12 +418,16 @@ func aaCompareData(t *testing.T, ts []*aaTopo) {
 		t.Helper()
 		return []byte(a.portNames().Replace(string(hopCharts(t, a.d(node), host, false))))
 	}
-	settle := func(t *testing.T, a *aaTopo, at [2]string, host string) []byte {
+	settle := func(t *testing.T, a *aaTopo, at [2]string, host string) [2][]byte {
 		t.Helper()
 		for end := time.Now().Add(15 * time.Second); ; time.Sleep(time.Second) {
 			x, y := charts(t, a, at[0], host), charts(t, a, at[1], host)
-			if bytes.Equal(x, y) || time.Now().After(end) {
-				return y
+			if bytes.Equal(x, y) {
+				return [2][]byte{x, y}
+			}
+			if time.Now().After(end) {
+				t.Errorf("%s's and %s's charts of %s: %s", at[0], at[1], host, firstDifference(x, y))
+				return [2][]byte{x, y}
 			}
 		}
 	}
@@ -430,8 +437,11 @@ func aaCompareData(t *testing.T, ts []*aaTopo) {
 		}
 		t.Run(a.form+"/charts", func(t *testing.T) {
 			o := settle(t, oracle, [2]string{"a", "b"}, aaChild.Hostname)
-			if got := settle(t, a, [2]string{"a", "b"}, aaChild.Hostname); !bytes.Equal(o, got) {
-				t.Errorf("B's charts of the child: %s", firstDifference(o, got))
+			got := settle(t, a, [2]string{"a", "b"}, aaChild.Hostname)
+			for i, node := range []string{"A", "B"} {
+				if !bytes.Equal(o[i], got[i]) {
+					t.Errorf("%s's charts of the child: %s", node, firstDifference(o[i], got[i]))
+				}
 			}
 			for _, peer := range []struct{ at, host string }{{"a", aaB.Hostname}, {"b", aaA.Hostname}} {
 				o := charts(t, oracle, peer.at, peer.host)
@@ -523,6 +533,12 @@ func testActiveActiveKillDirect(t *testing.T) {
 	}
 	k += 20
 	time.Sleep(time.Until(time.Unix(k, 0)))
+	before := map[*aaTopo]int{}
+	for _, a := range ts {
+		if !a.down {
+			before[a], _ = logCount(a.d("b"), "multiple connections for the same host")
+		}
+	}
 	forEach(ts, func(a *aaTopo) {
 		if err := a.d("a").Kill(); err != nil {
 			t.Errorf("%s: kill A: %v", a.form, err)
@@ -543,7 +559,7 @@ func testActiveActiveKillDirect(t *testing.T) {
 		a.onPeer = time.Now().Unix()
 		n, _ := logCount(a.d("b"), "multiple connections for the same host")
 		t.Logf("%s: the child on B %d s after the kill; B refused it as a second connection %d times", a.form,
-			a.onPeer-k, n)
+			a.onPeer-k, n-before[a])
 	})
 	if oracle.down {
 		t.FailNow()
@@ -556,8 +572,15 @@ func testActiveActiveKillDirect(t *testing.T) {
 	}
 	r += 5
 
-	// while A is down: B's views of the child and of A's host, and the child's own
+	// while A is down: no path past two hops, B's views of the child and of A's host, and the child's own
 	time.Sleep(time.Until(time.Unix(r-1, 0)))
+	forEach(ts, func(a *aaTopo) {
+		for _, node := range []string{"b", "c"} {
+			if most, err := maxPathHops(a.addr(node)); err != nil || most > 2 {
+				t.Errorf("%s: %s's paths reach %d hops while A is down (%v)", a.form, node, most, err)
+			}
+		}
+	})
 	down := [][2]string{aaChildViews[1], aaChildViews[2], aaPeerViews[2]}
 	for _, a := range ts[1:] {
 		if !a.down {
@@ -617,11 +640,11 @@ func testActiveActiveKillDirect(t *testing.T) {
 			continue
 		}
 		t.Run(a.form+"/final", func(t *testing.T) {
-			topoViews(t, "final", oracle.topology, a.topology, append(slices.Clone(aaChildViews), aaPeerViews[:2]...),
-				entryKillTimes)
-			// each parent's labels at the other go up at its READY, racing its children's arrival
-			topoViews(t, "final", oracle.topology, a.topology, [][2]string{aaBAtAView, aaPeerViews[2]}, entryKillTimes,
-				"_is_parent")
+			topoViews(t, "final", oracle.topology, a.topology, append(slices.Clone(aaChildViews), aaPeerViews[0],
+				aaPeerViews[1], aaBAtAView), entryKillTimes)
+			// the restarted A's labels go up at its READY, racing the child's arrival through B (B has had the child
+			// directly since the move, so its own label at A is settled)
+			topoViews(t, "final", oracle.topology, a.topology, [][2]string{aaPeerViews[2]}, entryKillTimes, "_is_parent")
 			for _, at := range []string{"a", "b"} {
 				o, oerr := streamInfoMasked(oracle.addr(at), aaChild.MachineGUID)
 				got, gerr := streamInfoMasked(a.addr(at), aaChild.MachineGUID)
