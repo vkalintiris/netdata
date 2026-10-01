@@ -13,7 +13,7 @@ pub fn threads_for(cpus: u64) -> usize {
     cpus.saturating_sub(1).clamp(4, MAX_THREADS as u64) as usize
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Pins {
     /// Each thread's `nodes_count`: the hosts pinned to it.
     nodes: Vec<usize>,

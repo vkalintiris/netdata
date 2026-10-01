@@ -2602,7 +2602,7 @@ mod tests {
         let receivers = Receivers::new(
             conf,
             Arc::clone(&hosts),
-            Arc::default(),
+            Arc::new(Mutex::new(Pins::new(1))),
             defaults,
             hold.handle(),
             connector,

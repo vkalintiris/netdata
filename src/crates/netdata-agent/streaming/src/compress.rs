@@ -65,10 +65,6 @@ pub struct Compressor {
     output: Vec<u8>,
     /// The size of C's output ring, for its records.
     output_room: usize,
-    /// `sender_locked.total_compressions`, `total_uncompressed`, `total_compressed`.
-    pub compressions: u64,
-    pub uncompressed: u64,
-    pub compressed: u64,
 }
 
 impl Compressor {
@@ -109,9 +105,6 @@ impl Compressor {
             engine,
             output: Vec::new(),
             output_room: 0,
-            compressions: 0,
-            uncompressed: 0,
-            compressed: 0,
         })
     }
 
@@ -181,9 +174,6 @@ impl Compressor {
             ));
             return None;
         }
-        self.compressions += 1;
-        self.uncompressed += piece.len() as u64;
-        self.compressed += size as u64;
         Some(&self.output[..size])
     }
 }
@@ -453,11 +443,13 @@ mod tests {
             let mut d = Decompressor::for_capabilities(cap).unwrap();
             let mut plain = Vec::new();
             let mut total = 0usize;
+            let mut compressed = 0usize;
             for (i, commit) in commits(1500).iter().enumerate() {
                 let mut rest = &commit[..];
                 while !rest.is_empty() {
                     let n = next_piece(rest, false);
                     let message = c.compress(&rest[..n]).unwrap().to_vec();
+                    compressed += message.len();
                     let mut framed = encode_signature(message.len()).unwrap().to_vec();
                     framed.extend_from_slice(&message);
                     let step = [1, 7, framed.len()][i % 3];
@@ -472,8 +464,7 @@ mod tests {
                 }
             }
             assert_eq!(plain, commits(1500).concat(), "{algorithm:?}");
-            assert_eq!(c.uncompressed, total as u64);
-            assert!(c.compressed < c.uncompressed, "{algorithm:?} compresses");
+            assert!(compressed < total, "{algorithm:?} compresses");
         }
     }
 
