@@ -234,6 +234,40 @@ fn an_over_cap_slot_is_warned_about_as_c() {
     );
 }
 
+/// A child's last entry after its wall clock is logged before the clamp, with the original value; a later check that
+/// fails then logs the clamped one, " (fixed)" (R51 m1).
+#[test]
+fn the_clamp_is_logged_before_and_after_as_c() {
+    let h = host();
+    let mut p = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    let (first, last) = (NOW + 10, NOW + 50);
+    let (ok, records) = netdata_agent_log::capture(|| {
+        p.feed(format!("CHART_DEFINITION_END {first} {last} {NOW}\n").as_bytes())
+    });
+    assert!(ok);
+    assert_eq!(String::from_utf8(p.take_output()).unwrap(), "REPLAY_CHART \"test.c1\" \"true\" 0 0\n");
+    let messages: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+    let head = |last: String, issue: &str| {
+        format!(
+            "STREAM SND REPLAY ERROR: 'host:{}/chart:test.c1' child sent: db from {first} to {last}, wall clock time \
+             {NOW}, last request from 0 to 0, issue: {issue} - sending replication request from 0 to 0, start \
+             streaming true",
+            h.hostname()
+        )
+    };
+    assert_eq!(
+        messages,
+        vec![
+            head(last.to_string(), "child's db last entry > child's wall clock time"),
+            head(
+                format!("{NOW} (fixed)"),
+                "sending empty replication request, child db first entry is after its wall clock time"
+            ),
+        ]
+    );
+}
+
 /// A `CHART_DEFINITION_END` whose first entry is after its last sends the empty request with C's NOTICE
 /// (`replicate_log_request()`, D126.4): the child's times, the issue, and the empty request C names.
 #[test]

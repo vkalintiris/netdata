@@ -68,16 +68,15 @@ impl Words {
     /// `pluginsd_parse_rrd_slot()`: `None` when word 1 is not `SLOT:<n>`; `Some(0)` when `n` exceeds `max_slot`
     /// (the word is present but unusable as a cache index); otherwise `Some(n)`.
     pub fn slot(&self, max_slot: u64) -> Option<u64> {
-        let id = self.get(1)?;
-        let value = id.strip_prefix(b"SLOT:")?;
-        let parsed = str2ull_encoded(value);
-        Some(if parsed > max_slot { 0 } else { parsed })
+        self.slot_checked(max_slot).map(|s| s.unwrap_or(0))
     }
 
-    /// The text after `SLOT:` when its value exceeds `max_slot`: what `pluginsd_parse_rrd_slot()` warns about.
-    pub fn slot_over_cap(&self, max_slot: u64) -> Option<&[u8]> {
+    /// `pluginsd_parse_rrd_slot()` in one parse: `None` without a `SLOT:` word, `Some(Ok(n))` within the cap, and
+    /// `Some(Err(text))` over it, with the text after `SLOT:` that C's warning prints.
+    pub fn slot_checked(&self, max_slot: u64) -> Option<Result<u64, &[u8]>> {
         let value = self.get(1)?.strip_prefix(b"SLOT:")?;
-        (str2ull_encoded(value) > max_slot).then_some(value)
+        let parsed = str2ull_encoded(value);
+        Some(if parsed > max_slot { Err(value) } else { Ok(parsed) })
     }
 
     /// `line_splitter_reconstruct_line()`: every word in single quotes, joined by spaces (used in error logs).
@@ -243,8 +242,8 @@ mod tests {
             Words::split(b"BEGIN SLOT:2000000 x\n").slot(CHART_SLOT_MAX),
             Some(0)
         );
-        assert_eq!(Words::split(b"BEGIN SLOT:2000000 x\n").slot_over_cap(CHART_SLOT_MAX), Some(&b"2000000"[..]));
-        assert_eq!(Words::split(b"BEGIN SLOT:0 x\n").slot_over_cap(CHART_SLOT_MAX), None);
+        assert_eq!(Words::split(b"BEGIN SLOT:2000000 x\n").slot_checked(CHART_SLOT_MAX), Some(Err(&b"2000000"[..])));
+        assert_eq!(Words::split(b"BEGIN SLOT:0 x\n").slot_checked(CHART_SLOT_MAX), Some(Ok(0)));
         assert_eq!(Words::split(b"BEGIN slot:2 x\n").slot(CHART_SLOT_MAX), None);
         assert_eq!(Words::split(b"\n").keyword(), None);
     }
