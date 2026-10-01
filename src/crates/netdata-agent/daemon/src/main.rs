@@ -967,7 +967,6 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     };
     // PLUGINSD, after PULSE in C's table; C carries on without it
     let pluginsd = match plugins_d::spawn(
-        Arc::clone(hosts.localhost()),
         Arc::clone(&shared),
         plugins_d::Settings {
             dirs: conf.dirs.plugins.clone(),
@@ -979,6 +978,18 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 page_size: system.page_size,
                 now: netdata_agent_rrd::collection::now_realtime_timeval,
                 gap_when_lost_iterations_above: db.gap_when_lost_iterations_above,
+            },
+            hosts: netdata_agent_ingest::PluginHosts {
+                hosts: Arc::clone(&hosts),
+                update_every: i64::from(db.update_every),
+                history: db.history_entries,
+                // a vnode streams through the connector localhost uses, as a receiver's host does
+                attach_sender: {
+                    let connector = Arc::clone(&connector);
+                    Arc::new(move |host| {
+                        let _ = netdata_agent_streaming::sender::Sender::attach(host, &connector);
+                    })
+                },
             },
         },
     ) {

@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use netdata_agent_rrd::chart::flags;
-use netdata_agent_rrd::host::HostInfo;
+use netdata_agent_rrd::host::{HostInfo, Hosts};
 
 use super::*;
 
@@ -174,8 +174,9 @@ fn a_failed_send_is_reported_with_its_errno() {
     );
 }
 
-fn localhost() -> Arc<Host> {
-    Arc::new(Host::new(
+/// Localhost, the plugins' host.
+fn hosts() -> Arc<Hosts> {
+    Arc::new(Hosts::new(Host::new(
         "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e",
         true,
         HostInfo {
@@ -198,12 +199,17 @@ fn localhost() -> Arc<Host> {
             stream_send: None,
             cache_dir: None,
         },
-    ))
+    )))
 }
 
-fn worker(host: &Arc<Host>) -> Worker {
+fn worker(hosts: &Arc<Hosts>) -> Worker {
     Worker {
-        host: Arc::clone(host),
+        hosts: PluginHosts {
+            hosts: Arc::clone(hosts),
+            update_every: 1,
+            history: 4096,
+            attach_sender: Arc::new(|_| {}),
+        },
         filename: "x.plugin".into(),
         fullfilename: "/p/x.plugin".into(),
         module: "plugins.d[x.plugin]".into(),
@@ -254,12 +260,12 @@ const COLLECT: &[u8] = b"CHART 'x.a' '' t u f c line 1000 1\nDIMENSION 'd' '' ab
 /// obsolete.
 #[test]
 fn a_run_ending_in_a_hang_up_sends_no_quit() {
-    let host = localhost();
-    let mut w = worker(&host);
+    let hosts = hosts();
+    let mut w = worker(&hosts);
     let ((count, retry), sent) = run(&mut w, COLLECT, true);
     assert_eq!((count, retry, sent.as_slice()), (1, false, &b""[..]));
     assert_eq!((w.successful_collections, w.serial_failures), (1, 0));
-    assert_ne!(host.charts().find("x.a", true).unwrap().flags() & flags::OBSOLETE, 0);
+    assert_ne!(hosts.localhost().charts().find("x.a", true).unwrap().flags() & flags::OBSOLETE, 0);
     // a run without data counts a failure
     let ((count, _), _) = run(&mut w, b"", true);
     assert_eq!((count, w.successful_collections, w.serial_failures), (0, 1, 1));
@@ -268,11 +274,11 @@ fn a_run_ending_in_a_hang_up_sends_no_quit() {
 /// A refused line ends the run with QUIT (4 bytes, no newline); so does the thread's cancellation, after C's record.
 #[test]
 fn a_refused_line_or_a_cancellation_sends_quit() {
-    let host = localhost();
-    let mut w = worker(&host);
+    let hosts = hosts();
+    let mut w = worker(&hosts);
     let ((count, _), sent) = run(&mut w, b"DISABLE\n", true);
     assert_eq!((count, sent.as_slice(), w.state.enabled.load(Ordering::Acquire)), (0, &b"QUIT"[..], false));
-    let mut w = worker(&host);
+    let mut w = worker(&hosts);
     let mut outcome = ((0, false), Vec::new());
     let logged = records(|| outcome = run(&mut w, COLLECT, false));
     assert_eq!(outcome, ((1, false), b"QUIT".to_vec()));

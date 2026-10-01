@@ -2008,9 +2008,20 @@ fn localhost() -> Arc<Host> {
     named_host("parent", "5a1e0000-0000-4000-8000-0000000000aa", true)
 }
 
-fn plugin_parser(localhost: &Arc<Host>) -> Parser {
+/// A parent's hosts for a plugin's parser: its localhost as `localhost()` makes it.
+fn plugin_hosts() -> Arc<Hosts> {
+    let lh = localhost();
+    Arc::new(Hosts::new(Host::new(lh.machine_guid(), true, lh.info())))
+}
+
+fn plugin_parser(hosts: &Arc<Hosts>) -> Parser {
     Parser::plugin(
-        Arc::clone(localhost),
+        PluginHosts {
+            hosts: Arc::clone(hosts),
+            update_every: 1,
+            history: 4096,
+            attach_sender: Arc::new(|_| {}),
+        },
         Config {
             capabilities: 0,
             update_every: PLUGIN_UPDATE_EVERY,
@@ -2025,8 +2036,8 @@ fn plugin_parser(localhost: &Arc<Host>) -> Parser {
 /// The records of `lines` fed to a fresh plugin parser, the daemon's only (the collectors' reasons share one limiter
 /// with every test): what feeding the last line returned, whether the plugin stays enabled, and the texts.
 fn plugin_run(lines: &[&str]) -> (bool, bool, Vec<(Priority, String)>) {
-    let lh = localhost();
-    let mut p = plugin_parser(&lh);
+    let hosts = plugin_hosts();
+    let mut p = plugin_parser(&hosts);
     let (results, records) = netdata_agent_log::capture(|| feed_all(&mut p, lines));
     let records = records
         .into_iter()
@@ -2084,9 +2095,9 @@ fn refusals_end_a_plugins_run_by_c_s_classes() {
             action("FUNCTION_DEL", 1, "'FUNCTION_DEL'"),
         ]),
         (&["CONFIG x"], true, vec![action("CONFIG", 1, "'CONFIG' 'x'")]),
-        (&["HOST 5a1e0000-0000-4000-8000-0000000000bb"], true, vec![action("HOST", 1, "'HOST' '5a1e0000-0000-4000-8000-0000000000bb'")]),
+        (&["HOST 5a1e0000-0000-4000-8000-0000000000bb"], false, vec![action("HOST", 1, "'HOST' '5a1e0000-0000-4000-8000-0000000000bb'")]),
         (&["HOST not-a-guid"], false, vec![action("HOST", 1, "'HOST' 'not-a-guid'")]),
-        (&["HOST_DEFINE a b"], true, vec![action("HOST_DEFINE", 1, "'HOST_DEFINE' 'a' 'b'")]),
+        (&["HOST_DEFINE a b"], false, vec![action("HOST_DEFINE", 1, "'HOST_DEFINE' 'a' 'b'")]),
         (&["CHART 'nodot' '' t u f c line 1 1"], false, vec![action("CHART", 1, "'CHART' 'nodot' '' 't' 'u' 'f' 'c' 'line' '1' '1'")]),
         (&["BEGIN 'test.c1'"], false, vec![
             (Priority::Err, "PLUGINSD: 'host:parent/chart:test.c1' got a BEGIN but chart does not exist.".into()),
@@ -2110,9 +2121,10 @@ fn refusals_end_a_plugins_run_by_c_s_classes() {
 /// chart does not lower a receiver's minimum.
 #[test]
 fn a_plugins_chart_takes_its_defaults() {
-    let lh = localhost();
+    let hosts = plugin_hosts();
+    let lh = Arc::clone(hosts.localhost());
     let before = lh.receiver_min_update_every();
-    let mut p = plugin_parser(&lh);
+    let mut p = plugin_parser(&hosts);
     feed_ok(&mut p, &[
         "CHART 'p.a' '' t u f c line 1000 '' '' '' corpus".into(),
         "CHART 'p.b' '' t u f c line 1000 1 '' go.d corpus".into(),
@@ -2131,8 +2143,9 @@ fn a_plugins_chart_takes_its_defaults() {
 #[test]
 fn a_plugins_durations_are_filtered_until_trusted() {
     let since_last = |trust: &str| {
-        let lh = localhost();
-        let mut p = plugin_parser(&lh);
+        let hosts = plugin_hosts();
+        let lh = Arc::clone(hosts.localhost());
+        let mut p = plugin_parser(&hosts);
         let at = |t: i64, p: &mut Parser, lines: &[String]| {
             PLUGIN_NOW.with(|now| now.set(t));
             feed_ok(p, lines);
@@ -2161,11 +2174,12 @@ fn a_plugins_durations_are_filtered_until_trusted() {
 fn a_plugins_collections_go_upstream_at_once() {
     let mut info = localhost().info();
     info.stream_send = StreamSend::new(true, "parent:19999", "key", "*");
-    let lh = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, info));
+    let hosts = Arc::new(Hosts::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, info)));
+    let lh = Arc::clone(hosts.localhost());
     let r = Arc::new(Recorder::with_capabilities(PARENT));
     lh.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
     lh.sender_flags_set(sender_flags::ADDED | sender_flags::CONNECTED | sender_flags::READY_4_METRICS);
-    let mut p = plugin_parser(&lh);
+    let mut p = plugin_parser(&hosts);
     feed_ok(&mut p, &["CHART 'p.a' '' t u f c line 1000 1".into(), "DIMENSION 'd' '' absolute 1 1".into()]);
     assert_eq!(r.take(), []);
     for i in 0..3 {
@@ -2190,8 +2204,8 @@ fn a_plugins_collections_go_upstream_at_once() {
 /// `pluginsd_config()` before DynCfg: an action is counted as a collection, an unknown one reported.
 #[test]
 fn config_is_counted_and_unknown_actions_reported() {
-    let lh = localhost();
-    let mut p = plugin_parser(&lh);
+    let hosts = plugin_hosts();
+    let mut p = plugin_parser(&hosts);
     let (results, records) = netdata_agent_log::capture(|| {
         feed_all(&mut p, &["CONFIG x create accepted job /x internal internal update 0 0", "CONFIG x status running", "CONFIG x bogus"])
     });
@@ -2204,8 +2218,9 @@ fn config_is_counted_and_unknown_actions_reported() {
 /// `pluginsd_function()` from a plugin registers it as the plugin's: `config` is refused; FUNCTION_DEL removes it.
 #[test]
 fn a_plugins_functions_are_its_own() {
-    let lh = localhost();
-    let mut p = plugin_parser(&lh);
+    let hosts = plugin_hosts();
+    let lh = Arc::clone(hosts.localhost());
+    let mut p = plugin_parser(&hosts);
     let (results, records) = netdata_agent_log::capture(|| {
         feed_all(&mut p, &["FUNCTION GLOBAL 'f1' 10 'help' 'top' 'member' 100 3", "FUNCTION GLOBAL 'config' 10 'help'"])
     });
@@ -2223,8 +2238,9 @@ fn a_plugins_functions_are_its_own() {
 /// collected twice (the scope kept, the plugin disabled), and this thread does not give it up for the other.
 #[test]
 fn a_chart_another_thread_collects_is_collected_twice() {
-    let lh = localhost();
-    let mut p = plugin_parser(&lh);
+    let hosts = plugin_hosts();
+    let lh = Arc::clone(hosts.localhost());
+    let mut p = plugin_parser(&hosts);
     feed_ok(&mut p, &["CHART 'p.a' '' t u f c line 1000 1".into(), "DIMENSION 'd' '' absolute 1 1".into()]);
     let chart = lh.charts().find("p.a", true).unwrap();
     let me = netdata_agent_log::tid();
@@ -2251,12 +2267,13 @@ fn a_chart_another_thread_collects_is_collected_twice() {
 /// thread's stay.
 #[test]
 fn a_plugins_charts_are_obsolete_after_its_run() {
-    let lh = localhost();
-    let mut p = plugin_parser(&lh);
+    let hosts = plugin_hosts();
+    let lh = Arc::clone(hosts.localhost());
+    let mut p = plugin_parser(&hosts);
     feed_ok(&mut p, &["CHART 'p.a' '' t u f c line 1000 1".into(), "CHART 'p.b' '' t u f c line 1000 1".into()]);
     std::thread::scope(|s| {
         s.spawn(|| {
-            let mut other = plugin_parser(&lh);
+            let mut other = plugin_parser(&hosts);
             feed_ok(&mut other, &["CHART 'p.b' '' t u f c line 1000 1".into(), "CHART 'p.c' '' t u f c line 1000 1".into()]);
         });
     });
@@ -2270,8 +2287,8 @@ fn a_plugins_charts_are_obsolete_after_its_run() {
 /// is written; between lines no request.
 #[test]
 fn a_plugins_run_frame_follows_its_scope() {
-    let lh = localhost();
-    let mut p = plugin_parser(&lh);
+    let hosts = plugin_hosts();
+    let mut p = plugin_parser(&hosts);
     let frame = p.run_frame();
     let record = || {
         let ((), records) = netdata_agent_log::capture(|| nd_log!(Source::Daemon, Priority::Err, "x"));
@@ -2284,8 +2301,9 @@ fn a_plugins_run_frame_follows_its_scope() {
     feed_ok(&mut p, &["FLUSH".into()]);
     assert_eq!(record(), std::slice::from_ref(&node));
     feed_ok(&mut p, &["BEGIN 'p.a'".into()]);
+    // the parser's end takes its node and scope with it
     drop(p);
-    assert_eq!(record(), [node]);
+    assert_eq!(record(), []);
     drop(frame);
     assert_eq!(record(), []);
 }
@@ -2294,8 +2312,9 @@ fn a_plugins_run_frame_follows_its_scope() {
 /// lines, the host and the scope chart (the non-owner record of a parser dropped holding another thread's chart).
 #[test]
 fn records_under_a_plugins_run_frame_carry_cs_fields() {
-    let lh = localhost();
-    let mut p = plugin_parser(&lh);
+    let hosts = plugin_hosts();
+    let lh = Arc::clone(hosts.localhost());
+    let mut p = plugin_parser(&hosts);
     let frame = p.run_frame();
     feed_ok(&mut p, &[
         "CHART 'p.a' 'named' t u f ctx.a line 1000 1 obsolete".into(),
@@ -2322,3 +2341,177 @@ fn records_under_a_plugins_run_frame_carry_cs_fields() {
     drop(frame);
 }
 
+
+// ---- a plugin's vnodes (milestone 8 commit 4, D145) ----
+
+const VNODE: &str = "5a1e0000-0000-4000-8000-0000000000d1";
+
+fn vnode_parser(hosts: &Arc<Hosts>, attached: &Arc<std::sync::atomic::AtomicUsize>) -> Parser {
+    let attached = Arc::clone(attached);
+    Parser::plugin(
+        PluginHosts {
+            hosts: Arc::clone(hosts),
+            update_every: 1,
+            history: 4096,
+            attach_sender: Arc::new(move |_| {
+                attached.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }),
+        },
+        Config {
+            capabilities: 0,
+            update_every: PLUGIN_UPDATE_EVERY,
+            page_size: 4096,
+            now: || (PLUGIN_NOW.with(std::cell::Cell::get), 0),
+            gap_when_lost_iterations_above: 3,
+        },
+        "difftest.plugin".into(),
+    )
+}
+
+/// `pluginsd_host_define()` … `pluginsd_host_define_end()`: the vnode created with localhost's settings, its labels'
+/// system info, the virtual OS and its labels (with `_collector_machine_guid` and `_is_ephemeral` normalized), flagged
+/// and collected, a sender attached, and the scope host: its charts land in it, until `HOST localhost`.
+#[test]
+fn a_plugin_defines_and_collects_a_vnode() {
+    let hosts = plugin_hosts();
+    let attached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut p = vnode_parser(&hosts, &attached);
+    let (results, records) = netdata_agent_log::capture(|| {
+        feed_all(&mut p, &[
+            &format!("HOST_DEFINE {} 'v1'", VNODE.to_uppercase()),
+            "HOST_LABEL _os_name 'Linux'",
+            "HOST_LABEL role web",
+            "HOST_LABEL _node_stale_after_seconds 60",
+            "HOST_DEFINE_END",
+            "CHART 'v.a' '' t u f c line 1000 1",
+        ])
+    });
+    assert!(results.iter().all(|&ok| ok), "{results:?}");
+    let v = hosts.find_by_guid(VNODE).expect("defined");
+    let info = v.info();
+    assert_eq!(
+        (info.hostname.as_str(), info.os.as_str(), info.system_info.hops, info.system_info.host_os_name.as_deref()),
+        ("v1", "Netdata Virtual Host 1.0", 1, Some("Linux"))
+    );
+    assert_eq!((v.is_virtual(), v.collector_online(), v.is_online(), v.is_orphan()), (true, true, true, false));
+    let labels = v.labels();
+    assert_eq!(
+        (labels.get(b"role"), labels.get(b"_collector_machine_guid"), labels.get(b"_is_ephemeral")),
+        (Some(&b"web"[..]), Some(hosts.localhost().machine_guid().as_bytes()), Some(&b"false"[..]))
+    );
+    assert_eq!(attached.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert!(v.charts().find("v.a", true).is_some() && hosts.localhost().charts().find("v.a", true).is_none());
+    let records: Vec<_> = records.into_iter().filter(|r| r.message.as_deref().is_some_and(|m| m.starts_with("VNODE"))).map(|r| (r.priority, r.message.unwrap())).collect();
+    assert_eq!(records, [(Priority::Info, "VNODE: Configuring node stale after 0 seconds for host \"v1\"".to_string())]);
+    feed_ok(&mut p, &["HOST localhost".into(), "CHART 'l.a' '' t u f c line 1000 1".into()]);
+    assert!(hosts.localhost().charts().find("l.a", true).is_some() && v.charts().find("l.a", true).is_none());
+    feed_ok(&mut p, &[format!("HOST {VNODE}"), "CHART 'v.b' '' t u f c line 1000 1".into()]);
+    assert!(v.charts().find("v.b", true).is_some());
+    // the run's end lets it go
+    let ((), records) = netdata_agent_log::capture(|| p.vnodes_offline());
+    let records: Vec<_> = records.into_iter().map(|r| (r.priority, r.message.unwrap_or_default())).collect();
+    assert_eq!(
+        records,
+        [
+            (Priority::Info, "PLUGINSD: Checking virtual status for v1".to_string()),
+            (Priority::Info, "PLUGINSD: Reseting virtual host status for v1".to_string()),
+        ]
+    );
+    assert_eq!((v.is_virtual(), v.collector_online(), v.is_online()), (false, false, false));
+}
+
+/// C's quirk: HOST keeps the chart in scope, so a SET after it collects into the previous host's chart.
+#[test]
+fn host_keeps_the_chart_in_scope_as_c() {
+    let hosts = plugin_hosts();
+    let attached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut p = vnode_parser(&hosts, &attached);
+    feed_ok(&mut p, &[
+        format!("HOST_DEFINE {VNODE} v1"),
+        "HOST_DEFINE_END".into(),
+        "HOST localhost".into(),
+        "CHART 'l.a' '' t u f c line 1000 1".into(),
+        "DIMENSION 'd' '' absolute 1 1".into(),
+        "BEGIN 'l.a'".into(),
+        format!("HOST {VNODE}"),
+        "SET 'd' = 7".into(),
+    ]);
+    let chart = hosts.localhost().charts().find("l.a", true).unwrap();
+    assert_eq!(chart.dim("d").unwrap().collection().collected_value, 7);
+    feed_ok(&mut p, &["END".into()]);
+}
+
+/// A vnode its run let go and another plugin's `HOST` re-enables: claimed again (C's record), collected again.
+#[test]
+fn a_vnode_let_go_is_reenabled_by_host() {
+    let hosts = plugin_hosts();
+    let attached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut p = vnode_parser(&hosts, &attached);
+    feed_ok(&mut p, &[format!("HOST_DEFINE {VNODE} v1"), "HOST_DEFINE_END".into()]);
+    let v = hosts.find_by_guid(VNODE).unwrap();
+    // another plugin's run end, which defined it too
+    v.virtual_offline();
+    let (results, records) = netdata_agent_log::capture(|| feed_all(&mut p, &[&format!("HOST {VNODE}")]));
+    assert_eq!(results, [true]);
+    let records: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+    assert_eq!(records, ["VNODE: Re-enabling virtual host \"v1\""]);
+    assert_eq!((v.is_virtual(), v.collector_online()), (true, true));
+}
+
+/// `pluginsd_host_claim_as_local_vnode()`: a child streaming the vnode's GUID is evicted, with C's warning; the
+/// vnode is collected.
+#[test]
+fn a_definition_evicts_a_child_streaming_its_guid() {
+    use netdata_agent_rrd::host::{Attach, ReceiverLink, ReceiverSlot};
+    let hosts = plugin_hosts();
+    let attached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut p = vnode_parser(&hosts, &attached);
+    let child = hosts.find_or_create(VNODE, DbMode::Ram, || named_host("v1", VNODE, false).info(), |_| {}).unwrap();
+    let slot = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+    assert_eq!(child.set_receiver(Arc::clone(&slot)), Attach::Attached);
+    let (results, records) = std::thread::scope(|s| {
+        s.spawn(|| {
+            while !slot.stop_requested.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            child.clear_receiver(&slot, 0);
+        });
+        netdata_agent_log::capture(|| feed_all(&mut p, &[&format!("HOST_DEFINE {VNODE} v1"), "HOST_DEFINE_END"]))
+    });
+    assert_eq!(results, [true, true]);
+    let warnings: Vec<_> = records.into_iter().filter(|r| r.priority == Priority::Warning).filter_map(|r| r.message).collect();
+    assert_eq!(
+        warnings,
+        [format!(
+            "PLUGINSD: HOST_DEFINE_END: host 'v1' (machine guid {VNODE}) was receiving a stream while it is collected locally \
+             as a vnode - the stream has been disconnected. If this is a real child node, its machine guid conflicts \
+             with the guid of a locally collected vnode."
+        )]
+    );
+    assert_eq!((child.is_virtual(), child.collector_online(), child.receiver().is_none()), (true, true, true));
+}
+
+/// The vnode keywords' refusals, each C's disable: the plugin is not started again.
+#[test]
+fn vnode_keywords_refuse_as_c() {
+    let action = |keyword: &str, n: usize, shown: &str| {
+        (
+            Priority::Err,
+            format!("PLUGINSD: parser_action('{keyword}') failed on line {n}: {{ {shown} }} (quotes added to show parsing)"),
+        )
+    };
+    let define = format!("HOST_DEFINE {VNODE} v1");
+    type Case<'a> = (Vec<&'a str>, (Priority, String));
+    let cases: [Case; 7] = [
+        (vec!["HOST_DEFINE"], action("HOST_DEFINE", 1, "'HOST_DEFINE'")),
+        (vec!["HOST_DEFINE g ''"], action("HOST_DEFINE", 1, "'HOST_DEFINE' 'g' ''")),
+        (vec![&define, &define], action("HOST_DEFINE", 2, &format!("'HOST_DEFINE' '{VNODE}' 'v1'"))),
+        (vec!["HOST_DEFINE zz v1"], action("HOST_DEFINE", 1, "'HOST_DEFINE' 'zz' 'v1'")),
+        (vec!["HOST_LABEL k v"], action("HOST_LABEL", 1, "'HOST_LABEL' 'k' 'v'")),
+        (vec![&define, "HOST_LABEL k"], action("HOST_LABEL", 2, "'HOST_LABEL' 'k'")),
+        (vec!["HOST_DEFINE_END"], action("HOST_DEFINE_END", 1, "'HOST_DEFINE_END'")),
+    ];
+    for (lines, record) in cases {
+        assert_eq!(plugin_run(&lines), (false, false, vec![record]), "{lines:?}");
+    }
+}

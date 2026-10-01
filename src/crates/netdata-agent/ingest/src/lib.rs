@@ -23,6 +23,8 @@ thread_local! {
     static LINE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
     /// A plugin parser's chart in scope, for the fields of its run frame (C's instance and context callbacks).
     static SCOPE: std::cell::RefCell<Option<Arc<Chart>>> = const { std::cell::RefCell::new(None) };
+    /// A plugin parser's scope host, for its run frame's node (C's node callback); none after a failed claim.
+    static NODE: std::cell::RefCell<Option<Arc<Host>>> = const { std::cell::RefCell::new(None) };
     /// `throttle` (`stream-waiting-list.c`): the chart definitions ended and the replications finished on this thread.
     static THROTTLE: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
@@ -59,7 +61,8 @@ use netdata_agent_rrd::chart::{
 };
 use netdata_agent_rrd::collection;
 use netdata_agent_rrd::contexts;
-use netdata_agent_rrd::host::{Host, meta_flags};
+use netdata_agent_rrd::host::{Claim, Host, HostInfo, Hosts, meta_flags};
+use netdata_agent_rrd::system_info::SystemInfo;
 use netdata_agent_rrd::labels::{self, Labels};
 use netdata_agent_rrd::upstream::{self, BufferSource, ForwardBuffer, ProxyBlock};
 use netdata_agent_storage::storage_number::{self, SN_EMPTY_SLOT};
@@ -152,6 +155,25 @@ fn text(v: &[u8]) -> String {
     String::from_utf8_lossy(v).into_owned()
 }
 
+/// `uuid_unparse_lower()`.
+fn uuid_text(uuid: &[u8; 16]) -> String {
+    let mut out = Vec::with_capacity(36);
+    netdata_agent_text::print::print_uuid_lower(&mut out, uuid);
+    text(&out)
+}
+
+/// `pluginsd_update_host_ephemerality()`: `_is_ephemeral` normalized to true or false, and the host's option with it.
+fn update_host_ephemerality(host: &Host) {
+    let ephemeral = host.update_labels(|labels| {
+        let ephemeral = labels
+            .get(b"_is_ephemeral")
+            .is_some_and(|v| !v.is_empty() && netdata_agent_inicfg::test_boolean_value(v));
+        labels.add(b"_is_ephemeral", if ephemeral { b"true" } else { b"false" }, labels::SRC_CONFIG);
+        ephemeral
+    });
+    host.set_ephemeral(ephemeral);
+}
+
 /// `line_splitter_reconstruct_line()`: the line's words, each quoted, appended to `out`; false for a line without any.
 fn reconstruct(line: &[u8], out: &mut Vec<u8>) -> bool {
     let words = Words::split(line);
@@ -186,12 +208,33 @@ pub struct ReplayRequest {
 pub type ReplaySink = Arc<dyn Fn(ReplayRequest) -> bool + Send + Sync>;
 
 /// Whom a parser serves (`PARSER_REPERTOIRE`).
-#[derive(Debug)]
 enum Mode {
     /// A child's stream (`PARSER_INIT_STREAMING`).
     Stream,
     /// A plugin of this agent (`PARSER_INIT_PLUGINSD`), by its file name.
-    Plugin { filename: Arc<str> },
+    Plugin { filename: Arc<str>, hosts: PluginHosts },
+}
+
+/// What a plugin's parser needs to define vnodes (`pluginsd_host_define_end()`): the hosts, the configured `[db]
+/// update every` and history a host's update compares, and how a new vnode gets its sender (the daemon's connector,
+/// which this crate does not know).
+#[derive(Clone)]
+pub struct PluginHosts {
+    pub hosts: Arc<Hosts>,
+    pub update_every: i64,
+    pub history: i64,
+    pub attach_sender: AttachSender,
+}
+
+/// How a vnode gets its sender: `Sender::attach()` on the agent's connector.
+pub type AttachSender = Arc<dyn Fn(&Arc<Host>) + Send + Sync>;
+
+/// `parser->user.host_define`: a vnode being defined, from HOST_DEFINE to HOST_DEFINE_END.
+struct HostDefine {
+    /// The machine GUID, as `uuid_unparse_lower()` writes it.
+    guid: String,
+    hostname: String,
+    labels: Labels,
 }
 
 /// The receiver side of one connection, or of one run of a plugin.
@@ -203,6 +246,16 @@ pub struct Parser {
     pub retry: bool,
     /// `parser->user.trust_durations`: BEGIN's microseconds are taken as they are.
     trust_durations: bool,
+    /// The vnode a plugin is defining.
+    host_define: Option<HostDefine>,
+    /// `parser->user.vnodes`: the vnodes this plugin's run defined or collected (a vnode's period before it is stale is
+    /// always 0 in C, D145.1, so their last-seen times are not kept).
+    vnodes: Vec<Arc<Host>>,
+    /// The host the chart in scope belongs to: a plugin's scope host may move while its scope chart stays (C's
+    /// `st->rrdhost`).
+    scope_host: Option<Arc<Host>>,
+    /// `parser->user.host` is NULL: a claim of a vnode by HOST failed (the line ends the run).
+    host_lost: bool,
     host: Arc<Host>,
     /// `localhost`, whose entry the stream path sent back to the child carries.
     localhost: Arc<Host>,
@@ -242,6 +295,10 @@ pub struct Parser {
 impl Drop for Parser {
     fn drop(&mut self) {
         self.clear_scope_with("THREAD CLEANUP", false, None);
+        if let Mode::Plugin { .. } = self.mode {
+            let old = NODE.with(|n| n.take());
+            drop(old);
+        }
     }
 }
 
@@ -253,6 +310,10 @@ impl Parser {
             enabled: true,
             retry: false,
             trust_durations: true,
+            host_define: None,
+            vnodes: Vec::new(),
+            scope_host: None,
+            host_lost: false,
             host,
             localhost,
             config,
@@ -275,13 +336,31 @@ impl Parser {
         }
     }
 
-    /// A parser of one run of the plugin `filename` (`pluginsd_process()`), collecting into `localhost` with the
-    /// plugin's update every in `config`.
-    pub fn plugin(localhost: Arc<Host>, config: Config, filename: Arc<str>) -> Self {
+    /// A parser of one run of the plugin `filename` (`pluginsd_process()`), collecting into localhost, and the vnodes
+    /// it defines, with the plugin's update every in `config`.
+    pub fn plugin(hosts: PluginHosts, config: Config, filename: Arc<str>) -> Self {
+        let localhost = Arc::clone(hosts.hosts.localhost());
         let mut parser = Parser::new(Arc::clone(&localhost), localhost, config);
-        parser.mode = Mode::Plugin { filename };
+        parser.mode = Mode::Plugin { filename, hosts };
         parser.trust_durations = false;
+        parser.node_changed();
         parser
+    }
+
+    /// A plugin's run frame shows the new scope host.
+    fn node_changed(&self) {
+        if let Mode::Plugin { .. } = self.mode {
+            let node = (!self.host_lost).then(|| Arc::clone(&self.host));
+            let old = NODE.with(|n| n.replace(node));
+            drop(old);
+        }
+    }
+
+    /// The parser's scope host is `host`: `parser->user.host`.
+    fn switch_host(&mut self, host: Arc<Host>) {
+        self.host = host;
+        self.host_lost = false;
+        self.node_changed();
     }
 
     /// The fields C's `pluginsd_process()` pushes for a plugin's whole run: every record written until the guard is
@@ -291,7 +370,6 @@ impl Parser {
     /// The values take the scope chart's metadata lock and the host's info lock as a record is written, so no record
     /// may be written while this thread holds either.
     pub fn run_frame(&self) -> FrameGuard {
-        let host = Arc::clone(&self.host);
         let scope = |field: fn(&Chart) -> String| {
             Value::lazy(move |out| {
                 SCOPE.with(|s| match s.borrow().as_ref().filter(|chart| !chart.is_freed()) {
@@ -305,9 +383,14 @@ impl Parser {
         };
         push(vec![
             (Field::Request, Value::lazy(|out| LINE.with(|l| reconstruct(&l.borrow(), out)))),
-            (Field::NidlNode, Value::lazy(move |out| {
-                out.extend_from_slice(host.hostname().as_bytes());
-                true
+            (Field::NidlNode, Value::lazy(|out| {
+                NODE.with(|n| match n.borrow().as_ref() {
+                    Some(host) => {
+                        out.extend_from_slice(host.hostname().as_bytes());
+                        true
+                    }
+                    None => false,
+                })
             })),
             (Field::NidlInstance, scope(|chart| chart.with_meta(|m| m.name.clone()).unwrap_or_else(|| chart.id().to_string()))),
             (Field::NidlContext, scope(|chart| chart.with_meta(|m| m.context.clone()))),
@@ -356,7 +439,7 @@ impl Parser {
                 // Only JSON bodies are kept; a receiver's plugin has no file name.
                 Deferred::TooBig(size) => {
                     let filename = match &self.mode {
-                        Mode::Plugin { filename } => filename,
+                        Mode::Plugin { filename, .. } => filename,
                         Mode::Stream => "",
                     };
                     plog!(
@@ -439,7 +522,7 @@ impl Parser {
         };
         push(vec![
             (Field::Request, request),
-            (Field::NidlNode, Value::Str(self.host.hostname())),
+            (Field::NidlNode, if self.host_lost { none() } else { Value::Str(self.host.hostname()) }),
             (Field::NidlInstance, instance),
             (Field::NidlContext, context),
         ])
@@ -504,8 +587,9 @@ impl Parser {
             Keyword::TrustDurations => self.trust_durations(w),
             Keyword::PluginKeepalive => Ok(()),
             Keyword::Host => self.host_scope(w),
-            // Virtual nodes come with commit 4 of milestone 8 (D142.10): until then they end the run, unknown.
-            Keyword::HostDefine | Keyword::HostDefineEnd | Keyword::HostLabel => Err(Refused::Error),
+            Keyword::HostDefine => self.host_define(w),
+            Keyword::HostLabel => self.host_label(w),
+            Keyword::HostDefineEnd => self.host_define_end(),
             Keyword::Config => self.config_keyword(w),
         }
     }
@@ -538,14 +622,14 @@ impl Parser {
             let _frame = framed.then(|| self.log_frame());
             netdata_log_error!(
                 "PLUGINSD: 'host:{}/chart:{}/' stale data collection lock found during {keyword}; it has been unlocked",
-                self.host.hostname(),
+                self.scope_host().hostname(),
                 chart.id()
             );
         }
         if std::mem::take(&mut self.cleanup_slots)
             && let Some(chart) = &self.scope
         {
-            self.host.charts().receive_unslot(chart);
+            self.scope_host().charts().receive_unslot(chart);
         }
         if let Some(chart) = &self.scope
             && !keep.is_some_and(|k| Arc::ptr_eq(k, chart))
@@ -557,15 +641,21 @@ impl Parser {
                 let _frame = framed.then(|| self.log_frame());
                 netdata_log_error!(
                     "PLUGINSD: attempted to clear collector_tid {owner} for 'host:{}/chart:{}/' from non-owner thread {me} during {keyword}",
-                    self.host.hostname(),
+                    self.scope_host().hostname(),
                     chart.id()
                 );
             }
         }
         self.scope = None;
+        self.scope_host = None;
         self.scope_changed();
         self.clabel_count = 0;
         self.clabel_changed = false;
+    }
+
+    /// The host of the chart in scope (`st->rrdhost`).
+    fn scope_host(&self) -> &Arc<Host> {
+        self.scope_host.as_ref().unwrap_or(&self.host)
     }
 
     /// `pluginsd_set_scope_chart()`: false, the scope unchanged, when the chart in scope is another thread's (it is
@@ -590,6 +680,7 @@ impl Parser {
         self.clear_scope_with(keyword, true, Some(chart));
         chart.receiver().pos = 0;
         self.scope = Some(Arc::clone(chart));
+        self.scope_host = Some(Arc::clone(&self.host));
         self.scope_changed();
         true
     }
@@ -862,7 +953,7 @@ impl Parser {
         let title = title.map_or_else(String::new, text);
         let units = units.map_or_else(|| "unknown".to_string(), text);
         let plugin = non_empty(plugin).unwrap_or_else(|| match &self.mode {
-            Mode::Plugin { filename } => filename.to_string(),
+            Mode::Plugin { filename, .. } => filename.to_string(),
             Mode::Stream => String::new(),
         });
         let module = module.map(text);
@@ -1134,30 +1225,20 @@ impl Parser {
     fn overwrite(&mut self) -> Rc {
         let new = self.new_host_labels.take();
         let info = self.host.info();
-        let ephemeral = self.host.update_labels(|labels| {
-            if let Some(new) = &new {
-                labels.migrate_to_these(new);
-            }
-            // pluginsd_update_host_ephemerality()
-            let ephemeral = labels
-                .get(b"_is_ephemeral")
-                .is_some_and(|v| !v.is_empty() && netdata_agent_inicfg::test_boolean_value(v));
-            labels.add(
-                b"_is_ephemeral",
-                if ephemeral { b"true" } else { b"false" },
-                labels::SRC_CONFIG,
-            );
+        if let Some(new) = &new {
+            self.host.update_labels(|labels| labels.migrate_to_these(new));
+        }
+        update_host_ephemerality(&self.host);
+        self.host.update_labels(|labels| {
             if !labels.exists(b"_os") {
                 labels.add(b"_os", info.os.as_bytes(), labels::SRC_AUTO);
             }
             if !labels.exists(b"_hostname") {
                 labels.add(b"_hostname", info.hostname.as_bytes(), labels::SRC_AUTO);
             }
-            ephemeral
         });
         self.host
             .set_meta_flags(meta_flags::LABELS | meta_flags::UPDATE);
-        self.host.set_ephemeral(ephemeral);
         Ok(())
     }
 
@@ -1239,21 +1320,184 @@ impl Parser {
         Ok(())
     }
 
-    /// `pluginsd_host()`: none, empty or `localhost` collects into localhost, as a plugin does from the start, and so
-    /// does localhost's own machine GUID; another host's names a virtual node, which comes with commit 4 of milestone 8
-    /// (D142.10): until then the run ends.
+    /// `pluginsd_host()`: none, empty or `localhost` collects into localhost; a machine GUID into the host that has it
+    /// (any host, as C), keeping the chart in scope; a vnode of this run that its plugin's end let go is claimed again.
     fn host_scope(&mut self, w: &Words) -> Rc {
         let guid = match w.get(1) {
-            None | Some(b"" | b"localhost") => return Ok(()),
+            None | Some(b"" | b"localhost") => {
+                self.switch_host(Arc::clone(&self.localhost));
+                // the vnodes' stale walk acts on none: their periods are 0 (D145.1)
+                return Ok(());
+            }
             Some(guid) => guid,
         };
         let Some(uuid) = uuid_parse_flexi(guid) else {
             return disable_with("HOST", "cannot parse MACHINE_GUID - is it a valid UUID?");
         };
-        if uuid_parse_flexi(self.localhost.machine_guid().as_bytes()) == Some(uuid) {
-            return Ok(());
+        let Some(host) = self.plugin_hosts().hosts.find_by_guid(&uuid_text(&uuid)) else {
+            return disable_with("HOST", "cannot find a host with this machine guid - have you created it?");
+        };
+        self.switch_host(Arc::clone(&host));
+        if self.vnodes.iter().any(|v| Arc::ptr_eq(v, &host)) && !host.is_virtual() {
+            host.set_virtual();
+            if !self.claim(&host, "HOST") {
+                self.host_lost = true;
+                self.node_changed();
+                self.retry = true;
+                return Err(Refused::Error);
+            }
+            host.set_collector_online();
+            plog!(self, Source::Daemon, Priority::Info, "VNODE: Re-enabling virtual host \"{}\"", host.hostname());
         }
-        Err(Refused::Error)
+        Ok(())
+    }
+
+    /// The plugin parser's hosts (the vnode keywords are a plugin's only).
+    fn plugin_hosts(&self) -> PluginHosts {
+        match &self.mode {
+            Mode::Plugin { hosts, .. } => hosts.clone(),
+            Mode::Stream => unreachable!("a vnode keyword outside a plugin's repertoire"),
+        }
+    }
+
+    /// `pluginsd_host_define()`: `HOST_DEFINE guid hostname` opens a vnode's definition.
+    fn host_define(&mut self, w: &Words) -> Rc {
+        let (Some(guid), Some(hostname)) = (w.get(1).filter(|g| !g.is_empty()), w.get(2).filter(|h| !h.is_empty()))
+        else {
+            return disable_with("HOST_DEFINE", "missing parameters");
+        };
+        if self.host_define.is_some() {
+            return disable_with("HOST_DEFINE", "another host definition is already open - did you send HOST_DEFINE_END?");
+        }
+        let Some(uuid) = uuid_parse_flexi(guid) else {
+            return disable_with("HOST_DEFINE", "cannot parse MACHINE_GUID - is it a valid UUID?");
+        };
+        self.host_define = Some(HostDefine { guid: uuid_text(&uuid), hostname: text(hostname), labels: Labels::default() });
+        Ok(())
+    }
+
+    /// `pluginsd_host_labels()`: `HOST_LABEL name value` inside a definition (its `_node_stale_after_seconds` is
+    /// reset before C reads it, D145.1).
+    fn host_label(&mut self, w: &Words) -> Rc {
+        let (Some(name), Some(value)) = (w.get(1).filter(|n| !n.is_empty()), w.get(2)) else {
+            return disable_with("HOST_LABEL", "missing parameters");
+        };
+        let Some(define) = &mut self.host_define else {
+            return disable_with("HOST_LABEL", "host is not defined, send HOST_DEFINE before this");
+        };
+        define.labels.add(name, value, labels::SRC_CONFIG);
+        Ok(())
+    }
+
+    /// `pluginsd_host_define_end()`: the vnode found or created with localhost's settings and its labels' system
+    /// info, claimed (a receiver streaming its GUID evicted), collected from now on, and the parser's scope host.
+    fn host_define_end(&mut self) -> Rc {
+        let Some(define) = self.host_define.take() else {
+            return disable_with("HOST_DEFINE_END", "missing initialization, send HOST_DEFINE before this");
+        };
+        let hosts = self.plugin_hosts();
+        let system_info = SystemInfo::from_host_labels(&define.labels);
+        let wanted = HostInfo::for_vnode(&self.localhost.info(), &define.hostname, system_info);
+        let found = hosts.hosts.find_or_create(
+            &define.guid,
+            wanted.db_mode,
+            || wanted.clone(),
+            |host| {
+                host.update(
+                    &wanted,
+                    hosts.update_every,
+                    hosts.history,
+                    wanted.replication_enabled,
+                    wanted.replication_period,
+                    wanted.replication_step,
+                )
+            },
+        );
+        let Ok(host) = found else {
+            self.retry = true;
+            return Err(Refused::Error);
+        };
+        if host.upstream().is_none() {
+            (hosts.attach_sender)(&host);
+        }
+        host.set_virtual();
+        if !self.claim(&host, "HOST_DEFINE_END") {
+            host.clear_virtual();
+            self.retry = true;
+            return Err(Refused::Error);
+        }
+        host.set_collector_online();
+        // the receiver status detected before the labels give its ephemerality, as C
+        host.pulse_status(0);
+        let collector = self.localhost.machine_guid().to_string();
+        host.update_labels(|labels| {
+            labels.migrate_to_these(&define.labels);
+            labels.add(b"_collector_machine_guid", collector.as_bytes(), labels::SRC_AUTO);
+        });
+        update_host_ephemerality(&host);
+        self.switch_host(Arc::clone(&host));
+        self.clear_scope("HOST_DEFINE_END");
+        host.clear_orphan();
+        host.contexts_child_connected();
+        host.set_meta_flags(meta_flags::LABELS | meta_flags::UPDATE);
+        if !self.vnodes.iter().any(|v| Arc::ptr_eq(v, &host)) {
+            self.vnodes.push(Arc::clone(&host));
+        }
+        plog!(
+            self,
+            Source::Daemon,
+            Priority::Info,
+            "VNODE: Configuring node stale after 0 seconds for host \"{}\"",
+            host.hostname()
+        );
+        Ok(())
+    }
+
+    /// `pluginsd_host_claim_as_local_vnode()` with its records: false when the receiver streaming the host's GUID did
+    /// not stop.
+    fn claim(&self, host: &Host, keyword: &str) -> bool {
+        match host.claim_as_local_vnode() {
+            Claim::Free => true,
+            Claim::Evicted => {
+                plog!(
+                    self,
+                    Source::Daemon,
+                    Priority::Warning,
+                    "PLUGINSD: {keyword}: host '{}' (machine guid {}) was receiving a stream while it is collected locally \
+                     as a vnode - the stream has been disconnected. If this is a real child node, its machine guid \
+                     conflicts with the guid of a locally collected vnode.",
+                    host.hostname(),
+                    host.machine_guid()
+                );
+                true
+            }
+            Claim::Stuck => {
+                plog!(
+                    self,
+                    Source::Daemon,
+                    Priority::Err,
+                    "PLUGINSD: {keyword}: host '{}' (machine guid {}) is collected locally as a vnode, but its streaming \
+                     receiver could not be stopped - not collecting into it",
+                    host.hostname(),
+                    host.machine_guid()
+                );
+                false
+            }
+        }
+    }
+
+    /// The end of a plugin's run (`pluginsd_process()`): each vnode it defined or collected, in C's order (by
+    /// address), is checked, and the ones still flagged are let go, both flags cleared at once.
+    pub fn vnodes_offline(&mut self) {
+        let mut vnodes = std::mem::take(&mut self.vnodes);
+        vnodes.sort_by_key(|host| Arc::as_ptr(host) as usize);
+        for host in vnodes {
+            nd_log!(Source::Daemon, Priority::Info, "PLUGINSD: Checking virtual status for {}", host.hostname());
+            if host.is_virtual() {
+                nd_log!(Source::Daemon, Priority::Info, "PLUGINSD: Reseting virtual host status for {}", host.hostname());
+                host.virtual_offline();
+            }
+        }
     }
 
     /// `pluginsd_config()`: `id action ...`, counted as a collection. What the actions do comes with DynCfg (commit 8

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use netdata_agent_ingest::{Config as ParserConfig, Parser};
+use netdata_agent_ingest::{Config as ParserConfig, Parser, PluginHosts};
 use netdata_agent_inicfg::{Config, SECTION_PLUGINS};
 
 use crate::server::Shared;
@@ -57,6 +57,8 @@ pub struct Settings {
     pub update_every: i32,
     /// The plugins' parser settings but the update every, which is each plugin's.
     pub parser: ParserConfig,
+    /// Localhost and the vnodes the plugins define.
+    pub hosts: PluginHosts,
 }
 
 /// `cd->unsafe`: what a plugin's thread shares with the scanner and its cleanup.
@@ -102,7 +104,7 @@ impl Pluginsd {
 }
 
 /// Starts `PLUGINSD` (`pluginsd_main()`), which reads its settings from `netdata.conf` on the thread, as C does.
-pub fn spawn(localhost: Arc<Host>, shared: Arc<Shared>, settings: Settings) -> std::io::Result<Pluginsd> {
+pub fn spawn(shared: Arc<Shared>, settings: Settings) -> std::io::Result<Pluginsd> {
     let collectors_cancelled = Arc::new(AtomicBool::new(false));
     let thread = {
         let collectors_cancelled = Arc::clone(&collectors_cancelled);
@@ -111,6 +113,7 @@ pub fn spawn(localhost: Arc<Host>, shared: Arc<Shared>, settings: Settings) -> s
             .stack_size(settings.stack_size)
             .spawn(move || {
                 netdata_agent_log::thread_created();
+                let localhost = Arc::clone(settings.hosts.hosts.localhost());
                 let mut scanner = Scanner { localhost, shared, settings, collectors_cancelled, plugins: Vec::new() };
                 scanner.main();
                 scanner.cleanup();
@@ -282,7 +285,7 @@ impl Scanner {
         };
         let state = Arc::new(State { enabled: AtomicBool::new(true), ..State::default() });
         let worker = Worker {
-            host: Arc::clone(&self.localhost),
+            hosts: self.settings.hosts.clone(),
             filename: text(&filename).into(),
             fullfilename: text(&fullfilename),
             module: cut(format!("plugins.d[{}]", text(&filename)), MODULE_MAX),
@@ -335,7 +338,8 @@ impl Scanner {
 
 /// A `PD[<name>]` thread (`pluginsd_worker_thread()`) and its plugin's settings and counters.
 struct Worker {
-    host: Arc<Host>,
+    /// Localhost (the plugin's records' host) and the vnodes it may define.
+    hosts: PluginHosts,
     filename: Arc<str>,
     fullfilename: String,
     /// The log's module field: `plugins.d[<file>]`.
@@ -363,7 +367,7 @@ impl Worker {
 
     fn main(mut self) {
         self.state.running.store(true, Ordering::Release);
-        let hostname = self.host.hostname();
+        let hostname = self.hosts.hosts.localhost().hostname();
         while self.running() {
             let Some(mut popen) = Popen::run_argv(&[b"/bin/sh".as_slice(), b"-c", &self.cmd]) else {
                 netdata_log_error!("PLUGINSD: 'host:{hostname}', cannot popen(\"{}\", \"r\").", text(&self.cmd));
@@ -432,7 +436,7 @@ impl Worker {
         if !self.state.enabled.load(Ordering::Acquire) {
             return (0, false);
         }
-        let mut parser = Parser::plugin(Arc::clone(&self.host), self.parser, Arc::clone(&self.filename));
+        let mut parser = Parser::plugin(self.hosts.clone(), self.parser, Arc::clone(&self.filename));
         let run = parser.run_frame();
         let mut reader = LineReader::default();
         let mut lines = std::collections::VecDeque::<Vec<u8>>::new();
@@ -473,8 +477,10 @@ impl Worker {
         } else if !retry {
             self.serial_failures += 1;
         }
+        parser.vnodes_offline();
         // every chart of this plugin is obsolete
-        self.host.charts().obsolete_created_by(&self.host, netdata_agent_log::tid());
+        let localhost = self.hosts.hosts.localhost();
+        localhost.charts().obsolete_created_by(localhost, netdata_agent_log::tid());
         drop(parser);
         drop(run);
         (count, retry)
