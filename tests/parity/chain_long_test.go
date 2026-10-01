@@ -4,8 +4,6 @@ package parity
 
 import (
 	"bytes"
-	"encoding/json"
-	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -14,8 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/netdata/netdata/tests/query-corpus/daemon"
 )
 
 // childArchived is the record of the proxy's cleanup archiving the orphaned child (DEBUG).
@@ -45,19 +41,6 @@ var (
 	// median stays compared (0 after a SIGKILL)
 	entryKillTimes = regexp.MustCompile(`("since":)\d+(,\s*"first_time_t":)\d+,\s*"start_time":\d+`)
 )
-
-// relaunch boots a stopped or killed daemon again on its run directory and port, trying again while another
-// process holds the port.
-func relaunch(d *daemon.Daemon) error {
-	var err error
-	for range 5 {
-		if err = d.Restart(); err == nil || !errors.Is(err, daemon.ErrPortTaken) {
-			return err
-		}
-		time.Sleep(3 * time.Second)
-	}
-	return err
-}
 
 // lossRecords normalizes the records of a chain that lost an agent or a child: the gate records' block and chart
 // fields (the block the parser was reading when the gate flipped) and a retry's time; as a sorted set, without the
@@ -122,38 +105,6 @@ func chainLossRecords(t *testing.T, c *chain, set func([]string) []string) map[s
 	return recs
 }
 
-// entryTimesOf are the start and shutdown medians of a host's entry in a path answer.
-func entryTimesOf(body []byte, hostname string) (start, shutdown int64, ok bool) {
-	var v struct {
-		Nodes []struct {
-			Path []struct {
-				Hostname string `json:"hostname"`
-				Start    int64  `json:"start_time"`
-				Shutdown int64  `json:"shutdown_time"`
-			} `json:"streaming_path"`
-		} `json:"nodes"`
-	}
-	if json.Unmarshal(body, &v) != nil {
-		return 0, 0, false
-	}
-	for _, n := range v.Nodes {
-		for _, e := range n.Path {
-			if e.Hostname == hostname {
-				return e.Start, e.Shutdown, true
-			}
-		}
-	}
-	return 0, 0, false
-}
-
-// compareRecordSets compares a candidate chain's record sets with the oracle's.
-func compareRecordSets(t *testing.T, want, got map[string][]string) {
-	t.Helper()
-	for _, name := range slices.Sorted(maps.Keys(want)) {
-		diffLines(t, name, want[name], got[name])
-	}
-}
-
 // TestStreamChainLong (check `stream.chain-long`, PARITY_LONG; milestone 7 commit 8i, D121.1, D121.5; plan
 // `evidence/2026-09-30-plan-m7-8i-4-chain-long.md`): the chains of `stream.chain` losing an agent. `kill-proxy` and
 // `kill-gp` SIGKILL the proxy or the grandparent of every chain at once and restart it on its run directory 20 s
@@ -183,7 +134,7 @@ func chainKill(t *testing.T, node string) {
 	}
 	k := steady + 25
 	time.Sleep(time.Until(time.Unix(k, 0)))
-	forChains(cs, func(c *chain) {
+	forEach(cs, func(c *chain) {
 		if err := c.d(node).Kill(); err != nil {
 			t.Errorf("%s: kill %s: %v", c.form, node, err)
 			c.down = true
@@ -208,14 +159,14 @@ func chainKill(t *testing.T, node string) {
 	for _, c := range cs[1:] {
 		if !c.down {
 			t.Run(c.form+"/down", func(t *testing.T) {
-				chainViews(t, "down", oracle, c, down, entryTimes)
+				topoViews(t, "down", oracle.topology, c.topology, down, entryTimes)
 			})
 		}
 	}
 
 	// back 20 s after the kill: the child, and the proxy, online again at the grandparent
 	time.Sleep(time.Until(time.Unix(k+20, 0)))
-	forChains(cs, func(c *chain) {
+	forEach(cs, func(c *chain) {
 		g.wait()
 		if err := relaunch(c.d(node)); err != nil {
 			t.Errorf("%s: relaunch %s: %v", c.form, node, err)
@@ -250,42 +201,17 @@ func chainKill(t *testing.T, node string) {
 			continue
 		}
 		t.Run(c.form+"/data", func(t *testing.T) {
-			for end := time.Now().Add(30 * time.Second); ; time.Sleep(time.Second) {
-				settled := true
-				for _, chart := range chainDataCharts {
-					settled = settled && chainLast(t, c, chart) >= c.returned+10
-				}
-				if settled {
-					break
-				}
-				if time.Now().After(end) {
-					t.Errorf("the hops' data did not reach 10 s after the return within 30 s")
-					break
-				}
-			}
+			waitHopsReach(t, c.topology, chainChild.Hostname, chainHops, chainDataCharts, c.returned+10, 30*time.Second)
 			for _, chart := range chainDataCharts {
-				s := chainSeries(t, c, chart, k-20, c.returned+10)
+				s := hopSeries(t, c.topology, chainChild.Hostname, chainHops, chart, k-20, c.returned+10)
 				if _, rows := csvRows(s[0]); len(rows) < 40 || slices.ContainsFunc(rows, nullRow) {
 					t.Errorf("%s: the child's own series has %d rows, some null", chart, len(rows))
 				}
-				for j, pair := range [][2]int{{0, 1}, {1, 2}} {
-					tolerated, diff := seriesExtraNulls(s[pair[0]], s[pair[1]], 1)
-					if diff != "" {
-						t.Errorf("%s, hop %d: %s", chart, j+1, diff)
-					}
-					if len(tolerated) > 0 {
-						t.Logf("%s, hop %d: tolerated %q", chart, j+1, tolerated)
-					}
-				}
+				compareHops(t, chart, s)
 				if node == "gp" {
 					// the proxy never stopped: the grandparent has its own series too
-					own := seriesOf(t, c.d("p"), "", chart, k-20, c.returned+10)
-					up := seriesOf(t, c.d("gp"), "/host/parity-chain-proxy", chart, k-20, c.returned+10)
-					if tolerated, diff := seriesExtraNulls(own, up, 1); diff != "" {
-						t.Errorf("%s, the proxy's own at the grandparent: %s", chart, diff)
-					} else if len(tolerated) > 0 {
-						t.Logf("%s, the proxy's own at the grandparent: tolerated %q", chart, tolerated)
-					}
+					compareHops(t, chart+", the proxy's own", hopSeries(t, c.topology, chainProxy.Hostname,
+						[]string{"p", "gp"}, chart, k-20, c.returned+10))
 				}
 			}
 		})
@@ -313,11 +239,11 @@ func chainKill(t *testing.T, node string) {
 			if node == "p" {
 				// a restarted proxy sends its labels once its sender is ready, the child back or not yet: the
 				// grandparent's copy of its `_is_parent` races
-				chainViews(t, "final", oracle, c, [][2]string{gpChildView, proxyChildView, proxyOwnView, childOwnView},
+				topoViews(t, "final", oracle.topology, c.topology, [][2]string{gpChildView, proxyChildView, proxyOwnView, childOwnView},
 					entryKillTimes)
-				chainViews(t, "final", oracle, c, [][2]string{gpProxyView}, entryKillTimes, "_is_parent")
+				topoViews(t, "final", oracle.topology, c.topology, [][2]string{gpProxyView}, entryKillTimes, "_is_parent")
 			} else {
-				chainViews(t, "final", oracle, c, chainPathViews, entryKillTimes)
+				topoViews(t, "final", oracle.topology, c.topology, chainPathViews, entryKillTimes)
 			}
 			for _, at := range []string{"gp", "p"} {
 				o, oerr := streamInfoMasked(oracle.addr(at), chainChild.MachineGUID)
@@ -330,7 +256,7 @@ func chainKill(t *testing.T, node string) {
 	}
 
 	// the records of the loss and both sessions, as sets
-	forChains(cs, func(c *chain) {
+	forEach(cs, func(c *chain) {
 		if err := c.d("c").Stop(); err != nil {
 			t.Errorf("%s: stop the child: %v", c.form, err)
 		}
@@ -372,7 +298,7 @@ func chainOrphan(t *testing.T) {
 		}
 	}
 	time.Sleep(time.Until(time.Unix(steady+25, 0)))
-	forChains(cs, func(c *chain) {
+	forEach(cs, func(c *chain) {
 		c.stopped = time.Now().Unix()
 		if err := c.d("c").Stop(); err != nil {
 			t.Errorf("%s: stop the child: %v", c.form, err)
@@ -385,7 +311,7 @@ func chainOrphan(t *testing.T) {
 	// the proxy cleans the orphan up: its maintenance archives the host and frees its sender (every ~12-14 s in C, ~11-12
 	// s in Rust, once eligible); nothing an API shows changes then (the path, the charts and stream_info changed at
 	// the leave), so the wait reads the archive's record
-	forChains(cs, func(c *chain) {
+	forEach(cs, func(c *chain) {
 		log := filepath.Join(c.d("p").Opts.RunDir, "log", "daemon.log")
 		for end := time.Unix(c.stopped+150, 0); ; time.Sleep(time.Second) {
 			if b, err := os.ReadFile(log); err == nil && bytes.Contains(b, []byte(childArchived)) {
@@ -413,7 +339,7 @@ func chainOrphan(t *testing.T) {
 			continue
 		}
 		t.Run(c.form+"/archived", func(t *testing.T) {
-			chainViews(t, "archived", oracle, c, [][2]string{gpChildView, proxyChildView}, entryTimes)
+			topoViews(t, "archived", oracle.topology, c.topology, [][2]string{gpChildView, proxyChildView}, entryTimes)
 			o, oerr := streamInfoMasked(oracle.addr("p"), chainChild.MachineGUID)
 			got, gerr := streamInfoMasked(c.addr("p"), chainChild.MachineGUID)
 			if oerr != nil || gerr != nil || string(o) != string(got) {
@@ -424,7 +350,7 @@ func chainOrphan(t *testing.T) {
 
 	// the child returns: the revival sets the proxy's sender up again
 	time.Sleep(time.Until(time.Unix(cleaned+5, 0)))
-	forChains(cs, func(c *chain) {
+	forEach(cs, func(c *chain) {
 		g.wait()
 		c.returned = time.Now().Unix()
 		if err := c.d("c").Restart(); err != nil {
@@ -451,21 +377,9 @@ func chainOrphan(t *testing.T) {
 			continue
 		}
 		t.Run(c.form+"/return", func(t *testing.T) {
-			for end := time.Now().Add(30 * time.Second); ; time.Sleep(time.Second) {
-				settled := true
-				for _, chart := range chainDataCharts {
-					settled = settled && chainLast(t, c, chart) >= c.returned+10
-				}
-				if settled {
-					break
-				}
-				if time.Now().After(end) {
-					t.Errorf("the hops' data did not reach 10 s after the return within 30 s")
-					break
-				}
-			}
+			waitHopsReach(t, c.topology, chainChild.Hostname, chainHops, chainDataCharts, c.returned+10, 30*time.Second)
 			for _, chart := range chainDataCharts {
-				s := chainSeries(t, c, chart, c.stopped-20, c.returned+10)
+				s := hopSeries(t, c.topology, chainChild.Hostname, chainHops, chart, c.stopped-20, c.returned+10)
 				// the premise: the child's own series has the gap, and values around it
 				if _, rows := csvRows(s[0]); slices.ContainsFunc(rows, nullRow) {
 					nulls := 0
@@ -480,24 +394,16 @@ func chainOrphan(t *testing.T) {
 				} else {
 					t.Errorf("%s: the child's own series has no gap in %d rows", chart, len(rows))
 				}
-				for j, pair := range [][2]int{{0, 1}, {1, 2}} {
-					tolerated, diff := seriesExtraNulls(s[pair[0]], s[pair[1]], 1)
-					if diff != "" {
-						t.Errorf("%s, hop %d: %s", chart, j+1, diff)
-					}
-					if len(tolerated) > 0 {
-						t.Logf("%s, hop %d: tolerated %q", chart, j+1, tolerated)
-					}
-				}
+				compareHops(t, chart, s)
 			}
 			if c != oracle {
-				chainViews(t, "return", oracle, c, chainPathViews, entryRestartTimes)
+				topoViews(t, "return", oracle.topology, c.topology, chainPathViews, entryRestartTimes)
 			}
 		})
 	}
 
 	// the records, as sets
-	forChains(cs, func(c *chain) {
+	forEach(cs, func(c *chain) {
 		if err := c.d("c").Stop(); err != nil {
 			t.Errorf("%s: stop the child: %v", c.form, err)
 		}
