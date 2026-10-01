@@ -18,7 +18,6 @@ use netdata_agent_sys::{self as sys, CloseMode};
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::signal::{SaFlags, SigSet, Signal, kill};
-use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::Pid;
 
 use crate::{exec, wire};
@@ -157,9 +156,14 @@ struct Request {
     cmdline: String,
 }
 
-/// `write()` of a report on a request's socket: whether all of it went.
-fn send_report(mut sock: &UnixStream, report: wire::Report) -> bool {
-    matches!(sock.write(&report.encode()), Ok(wire::Report::LEN))
+/// `write()` of a report on a request's socket; when not all of it went, the errno C's record then carries (EPIPE once
+/// the client is gone; 0 for a short write).
+fn send_report(mut sock: &UnixStream, report: wire::Report) -> Result<(), i32> {
+    match sock.write(&report.encode()) {
+        Ok(wire::Report::LEN) => Ok(()),
+        Ok(_) => Err(0),
+        Err(e) => Err(netdata_agent_log::errno_of(&e)),
+    }
 }
 
 /// `spawn_server_event_loop()` (`spawn_server_nofork.c:1236-1340`): the server's exit code.
@@ -189,8 +193,10 @@ fn event_loop(listener: &UnixListener, status: BorrowedFd<'_>, magic: &[u8; 16],
     let _ = mask.thread_set_mask();
 
     let handshake = wire::Report::handshake(std::process::id() as i32).encode();
-    if !matches!(nix::unistd::write(status, &handshake), Ok(wire::Report::LEN)) {
-        nd_log!(Source::Collector, Priority::Err, "SPAWN SERVER: failed to write initial status report.");
+    let written = nix::unistd::write(status, &handshake);
+    if !matches!(written, Ok(wire::Report::LEN)) {
+        nd_log!(Source::Collector, Priority::Err, errno = written.err().map_or(0, |e| e as i32);
+            "SPAWN SERVER: failed to write initial status report.");
         return 1;
     }
 
@@ -248,23 +254,17 @@ fn event_loop(listener: &UnixListener, status: BorrowedFd<'_>, magic: &[u8; 16],
 /// answers its request with EXITED.
 fn process_sigchld(requests: &mut Vec<Request>, chld: &AtomicBool) {
     chld.store(false, Ordering::SeqCst);
-    loop {
-        let status = match waitpid(None::<Pid>, Some(WaitPidFlag::WNOHANG)) {
-            Ok(WaitStatus::StillAlive) | Err(_) => break,
-            Ok(status) => status,
-        };
-        let Some(pid) = status.pid() else {
-            break;
-        };
-        let raw = wire::raw_wait_status(status);
+    // the kernel's status as it is: a real-time signal's death included (R56 B1)
+    while let Ok(Some((pid, raw))) = sys::waitpid_raw(-1, true) {
+        let pid = Pid::from_raw(pid);
         let at = requests.iter().position(|rq| rq.pid == pid);
         let (request_id, cmdline) = at.map_or((0, None), |i| (requests[i].request_id, Some(requests[i].cmdline.as_str())));
         if log_reaped(pid.as_raw(), request_id, raw, cmdline)
             && let Some(i) = at
         {
             let rq = requests.remove(i);
-            if !send_report(&rq.sock, wire::Report::exited(raw)) {
-                nd_log!(Source::Collector, Priority::Err,
+            if let Err(errno) = send_report(&rq.sock, wire::Report::exited(raw)) {
+                nd_log!(Source::Collector, Priority::Err, errno = errno;
                     "SPAWN SERVER: Cannot send exit status ({raw}) report for pid {}, request {}: {}",
                     rq.pid, rq.request_id, rq.cmdline);
             }
@@ -355,8 +355,8 @@ fn receive_request(sock: UnixStream, magic: &[u8; 16], requests: &mut Vec<Reques
     };
     if h.msg_type == wire::MSG_PING {
         drop(control);
-        if !send_report(&sock, wire::Report::ping()) {
-            nd_log!(Source::Collector, Priority::Err, "SPAWN SERVER: Cannot send ping reply.");
+        if let Err(errno) = send_report(&sock, wire::Report::ping()) {
+            nd_log!(Source::Collector, Priority::Err, errno = errno; "SPAWN SERVER: Cannot send ping reply.");
         }
         return;
     }
@@ -419,16 +419,16 @@ fn receive_request(sock: UnixStream, magic: &[u8; 16], requests: &mut Vec<Reques
     };
     match started {
         Ok((pid, cmdline)) => {
-            if !send_report(&sock, wire::Report::started(pid.as_raw())) {
-                nd_log!(Source::Collector, Priority::Err,
+            if let Err(errno) = send_report(&sock, wire::Report::started(pid.as_raw())) {
+                nd_log!(Source::Collector, Priority::Err, errno = errno;
                     "SPAWN SERVER: Cannot send success status report for pid {pid}, request {}: {cmdline}",
                     h.request_id);
             }
             requests.push(Request { pid, request_id: h.request_id, sock, cmdline });
         }
         Err((errno, cmdline)) => {
-            if !send_report(&sock, wire::Report::failed(errno)) {
-                nd_log!(Source::Collector, Priority::Err,
+            if let Err(errno) = send_report(&sock, wire::Report::failed(errno)) {
+                nd_log!(Source::Collector, Priority::Err, errno = errno;
                     "SPAWN SERVER: Cannot send failure status report for request {}: {}",
                     h.request_id, cmdline.as_deref().unwrap_or("(null)"));
             }
@@ -636,6 +636,8 @@ mod tests {
             (0x300, Some((Priority::Warning, "exited with exit code 3: cmd")), true),
             (0, None, true),
             (libc::SIGTERM, Some((Priority::Debug, "killed by signal 15: cmd")), true),
+            (libc::SIGPIPE, Some((Priority::Debug, "killed by signal 13: cmd")), true),
+            (34, Some((Priority::Warning, "killed by signal 34: cmd")), true),
             (libc::SIGKILL, Some((Priority::Warning, "killed by signal 9: cmd")), true),
             (libc::SIGSEGV | 0x80, Some((Priority::Warning, "coredump'd due to signal 11: cmd")), true),
             (libc::SIGSTOP << 8 | 0x7f, Some((Priority::Warning, "stopped due to signal 19: cmd")), false),

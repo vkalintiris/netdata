@@ -198,6 +198,20 @@ pub fn disk_space(path: &std::path::Path) -> DiskSpace {
     }
 }
 
+/// `waitpid(pid, &status, nohang ? WNOHANG : 0)`: the child reaped and the `int` status the kernel filled, or `None`
+/// when `nohang` found none ended. nix decodes the status after the kernel reaped the child and has no signal for
+/// 32-64, so a child killed by a real-time signal would come back as an error, its pid and status lost (R56 B1).
+pub fn waitpid_raw(pid: i32, nohang: bool) -> io::Result<Option<(i32, i32)>> {
+    let mut status: libc::c_int = 0;
+    let flags = if nohang { libc::WNOHANG } else { 0 };
+    // SAFETY: `status` is a local the call writes once; the other arguments are integers.
+    match unsafe { libc::waitpid(pid, &raw mut status, flags) } {
+        -1 => Err(io::Error::last_os_error()),
+        0 => Ok(None),
+        reaped => Ok(Some((reaped, status))),
+    }
+}
+
 /// `now_monotonic_usec()`: `CLOCK_MONOTONIC` in microseconds (never 0 on a running system).
 pub fn now_monotonic_usec() -> u64 {
     use nix::time::{ClockId, clock_gettime};

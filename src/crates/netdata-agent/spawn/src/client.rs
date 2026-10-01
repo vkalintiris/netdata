@@ -607,8 +607,9 @@ impl Instance {
     /// accepted race.
     pub fn kill(mut self, timeout_ms: i32, cancelled: &dyn Fn() -> bool) -> i32 {
         self.close_pipes();
+        // the pre-kill grace, silent whatever it finds (C ignores its result)
         if timeout_ms > 0 {
-            let _ = self.ready(timeout_ms, cancelled);
+            let _ = netdata_agent_sys::wait_fd(self.sock.as_fd(), i64::from(timeout_ms), PollFlags::POLLIN, cancelled);
         }
         if self.pid == 0 {
             return self.wait();

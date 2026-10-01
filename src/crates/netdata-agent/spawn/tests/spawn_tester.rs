@@ -209,17 +209,70 @@ fn runs(pid: i32, comm: &str) -> bool {
     })
 }
 
+/// A process reaped: no `/proc` entry left.
+fn gone(pid: i32) -> bool {
+    !Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Waits until `pid` sleeps in `poll()`: a signal then interrupts the wait it is meant to.
+fn in_poll(pid: i32) -> bool {
+    eventually(Duration::from_secs(2), || {
+        std::fs::read_to_string(format!("/proc/{pid}/wchan")).is_ok_and(|w| w.contains("poll"))
+    })
+}
+
 /// A process that exists and is not a zombie.
 fn alive(pid: i32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat"))
         .is_ok_and(|s| s.rsplit_once(") ").is_some_and(|(_, rest)| !rest.starts_with('Z')))
 }
 
-/// SIGKILL to `pid` if it is still the process this run started (its environment carries the run's tag).
-fn kill_stray(pid: i32, tag: &str) {
+/// Whether `pid` is a process this run started: its environment carries the run's tag (every child), or it is a child
+/// of the driver running this binary (a server, a helper).
+fn is_stray(pid: i32, tag: &str) -> bool {
     let environ = std::fs::read(format!("/proc/{pid}/environ")).unwrap_or_default();
-    if environ.split(|&c| c == 0).any(|e| e == format!("{RUN_TAG}={tag}").as_bytes()) {
+    let tagged = environ.split(|&c| c == 0).any(|e| e == format!("{RUN_TAG}={tag}").as_bytes());
+    let me = std::process::id().to_string();
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+    let child = stat.rsplit_once(") ").is_some_and(|(_, rest)| rest.split(' ').nth(1) == Some(me.as_str()));
+    let ours = child && std::fs::read_link(format!("/proc/{pid}/exe")).ok() == std::env::current_exe().ok();
+    tagged || ours
+}
+
+/// SIGKILL to `pid` if it is still one this run started.
+fn kill_stray(pid: i32, tag: &str) {
+    if is_stray(pid, tag) {
         let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+    }
+}
+
+/// The processes this run left, killed by their verified pids; `(pid, stat)` of each.
+fn kill_strays(tag: &str) -> Vec<String> {
+    let me = std::process::id() as i32;
+    let mut strays = Vec::new();
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else { continue };
+        if pid != me && is_stray(pid, tag) {
+            let stat = std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default();
+            strays.push(format!("{pid}: {}", stat.trim()));
+            kill_stray(pid, tag);
+        }
+    }
+    strays
+}
+
+/// A failed case panics past the end-of-run check: its strays are killed on the way out, or their copies of the
+/// driver's stderr would keep `cargo test` waiting (R56 I2).
+struct StrayGuard(String);
+
+impl Drop for StrayGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let strays = kill_strays(&self.0);
+            if !strays.is_empty() {
+                eprintln!("spawn-tester: killed after the failure: {strays:#?}");
+            }
+        }
     }
 }
 
@@ -484,17 +537,23 @@ fn records(run: &Run) {
     let kill_pid = child.pid();
     kill(Pid::from_raw(kill_pid), Signal::SIGKILL).unwrap();
     assert_eq!(child.wait(), libc::SIGKILL);
+    // a real-time signal's death is reaped and answered as any other (R56 B1: nix cannot decode it)
+    let child = exec(&["/bin/sleep", "120"]).unwrap();
+    let rt_pid = child.pid();
+    assert!(Command::new("kill").args(["-34", &rt_pid.to_string()]).status().unwrap().success());
+    assert_eq!(child.wait(), 34);
     let (none, client) = capture(|| exec(&["/nonexistent/x"]).map(|c| c.pid()));
     assert_eq!(none, None);
     assert_eq!(
         messages(&client),
-        [(Priority::Err, 0, "SPAWN PARENT: Failed to exec spawn request 4 (server reports failure, errno is updated)".into())]
+        [(Priority::Err, 0, "SPAWN PARENT: Failed to exec spawn request 5 (server reports failure, errno is updated)".into())]
     );
     for (level, text) in [
         ("debug", format!("SPAWN SERVER: process created with pid {pid}: /bin/false")),
         ("warning", format!("SPAWN SERVER: child with pid {pid} (request 1) exited with exit code 1: /bin/false")),
         ("debug", format!("SPAWN SERVER: child with pid {term_pid} (request 2) killed by signal 15: /bin/sleep 120")),
         ("warning", format!("SPAWN SERVER: child with pid {kill_pid} (request 3) killed by signal 9: /bin/sleep 120")),
+        ("warning", format!("SPAWN SERVER: child with pid {rt_pid} (request 4) killed by signal 34: /bin/sleep 120")),
         ("err", "SPAWN SERVER: posix_spawn() failed: /nonexistent/x".to_string()),
     ] {
         assert!(logged(&log, level, &text), "{level} {text}:\n{}", std::fs::read_to_string(&log).unwrap());
@@ -540,8 +599,8 @@ fn ladder() {
 
     let child = exec("exit 0");
     let pid = child.pid();
-    // the server reaps it at once; its report waits on the socket
-    std::thread::sleep(Duration::from_millis(300));
+    // reaped (on SIGCHLD, or at the server's 500 ms poll timeout); its report waits on the socket
+    assert!(eventually(Duration::from_secs(2), || gone(pid)));
     let (code, records) = capture(|| child.kill(0, NEVER));
     assert_eq!(code, 0);
     let cmdline = wire::cmdline(&["/bin/sh", "-c", "exit 0"]);
@@ -553,6 +612,29 @@ fn ladder() {
             format!("SPAWN PARENT: cannot send signal 15 to child pid {pid} (request 3): No such process: {cmdline}")
         )]
     );
+
+    // a child that ends within the caller's grace is not signalled
+    let child = exec("sleep 0.3; exit 7");
+    assert_eq!(child.kill(2000, NEVER), 7 << 8);
+
+    // an instance dropped unwaited sends its child SIGTERM (`spawn_server_exec_destroy()`)
+    let child = exec("exec /bin/sleep 120");
+    let pid = child.pid();
+    assert!(runs(pid, "sleep"));
+    drop(child);
+    assert!(eventually(Duration::from_secs(2), || !alive(pid)), "the dropped instance's child lives");
+
+    // a zero timeout is a minimal bounded wait, never "forever" (`spawn_server.h`)
+    let child = exec("exec /bin/sleep 120");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(match child.timedwait(0, NEVER) {
+            Waited::Running(c) => Some(c),
+            _ => None,
+        });
+    });
+    let running = rx.recv_timeout(Duration::from_secs(2)).expect("timedwait(0) did not return");
+    assert_eq!(running.expect("not running").kill(0, NEVER), libc::SIGTERM);
     server.destroy();
 }
 
@@ -563,6 +645,8 @@ fn server_deaths(run: &Run) {
     let server = server_logging_to("term", &log);
     let stderr = std::io::stderr();
     let child = server.exec(stderr.as_fd(), std::io::stdin().as_fd(), &["/bin/sleep", "120"]).unwrap();
+    // a SIGTERM met outside poll() ends the loop without the record, in C too
+    assert!(in_poll(server.pid()));
     kill(Pid::from_raw(server.pid()), Signal::SIGTERM).unwrap();
     assert_eq!(child.wait(), libc::SIGTERM);
     assert!(eventually(Duration::from_secs(2), || !server.path().exists()));
@@ -581,6 +665,8 @@ fn server_deaths(run: &Run) {
     );
     assert!(alive(pid), "the orphan should outlive its server");
     kill_stray(pid, &run.tag);
+    // its listener goes with it: the request socket can be released first
+    assert!(eventually(Duration::from_secs(2), || !alive(server.pid())));
     let (none, records) = capture(|| server.exec(stderr.as_fd(), std::io::stdin().as_fd(), &["/bin/true"]).is_none());
     assert!(none);
     assert_eq!(
@@ -644,7 +730,7 @@ fn parent_death(run: &Run) {
         }
         assert!(eventually(Duration::from_secs(3), || !alive(child)), "{name}: the child outlived its server");
         if deaf {
-            assert!(killed.elapsed() < Duration::from_millis(3000), "{name}: {:?}", killed.elapsed());
+            assert!(killed.elapsed() < Duration::from_millis(2600), "{name}: {:?}", killed.elapsed());
         } else {
             assert_eq!(std::fs::read_to_string(&termed).unwrap(), "TERM\n", "{name}");
         }
@@ -666,23 +752,7 @@ fn environment() {
 /// Nothing this run started is left: no process carrying its tag, no child of the driver.
 fn no_strays(run: &Run) {
     step("no strays");
-    let me = std::process::id().to_string();
-    let mut strays = Vec::new();
-    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Ok(pid) = name.parse::<i32>() else { continue };
-        if name == me {
-            continue;
-        }
-        let environ = std::fs::read(entry.path().join("environ")).unwrap_or_default();
-        let tagged = environ.split(|&c| c == 0).any(|e| e == format!("{RUN_TAG}={}", run.tag).as_bytes());
-        let stat = std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default();
-        let ours = stat.rsplit_once(") ").is_some_and(|(_, rest)| rest.split(' ').nth(1) == Some(me.as_str()));
-        if tagged || ours {
-            strays.push(format!("{pid}: {}", stat.trim()));
-            kill_stray(pid, &run.tag);
-        }
-    }
+    let strays = kill_strays(&run.tag);
     assert!(strays.is_empty(), "strays: {strays:#?}");
 }
 
@@ -693,6 +763,7 @@ fn driver() {
         run_dir: run_dir.path().to_path_buf(),
         tag: format!("{}-{}", std::process::id(), std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()),
     };
+    let _guard = StrayGuard(run.tag.clone());
     for (key, value) in [
         (ENV_KEY, ENV_VALUE),
         (DRIVER, "1"),
@@ -709,8 +780,11 @@ fn driver() {
     lazy_unnamed(&run);
     backlog();
     step("fds");
+    // inheritable, as a launcher's descriptor: the server closes it at its start
+    let inheritable = nix::unistd::pipe().unwrap();
     let server = Server::create(Some("test"), true, &Start::default()).unwrap();
     server_process(&server);
+    drop(inheritable);
     fds(&run, &server);
     server.destroy();
     sigpipe();

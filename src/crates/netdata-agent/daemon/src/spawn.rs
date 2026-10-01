@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use netdata_agent_spawn::{env, exec, server, wire};
 use nix::fcntl::OFlag;
-use nix::sys::wait::{WaitStatus, waitpid};
 use nix::unistd::{Pid, pipe2};
 
 /// The spawn server's request counter: every child gets the next number (`server->request_id`).
@@ -76,14 +75,13 @@ impl Popen {
         drop(self.stdout);
         let (pid, id, cmd) = (self.pid, self.request_id, &self.cmdline);
         loop {
-            match waitpid(pid, None) {
-                Ok(status @ (WaitStatus::Exited(..) | WaitStatus::Signaled(..))) => {
-                    let raw = wire::raw_wait_status(status);
-                    server::log_reaped(pid.as_raw(), id, raw, Some(cmd));
+            match netdata_agent_sys::waitpid_raw(pid.as_raw(), false) {
+                Ok(Some((_, raw))) if server::log_reaped(pid.as_raw(), id, raw, Some(cmd)) => {
                     return Ok(wire::status_rc(raw));
                 }
-                Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-                Err(e) => return Err(e.into()),
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
             }
         }
     }

@@ -220,19 +220,6 @@ pub fn cmdline<S: AsRef<[u8]>>(argv: &[S]) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The `int` `waitpid()` fills, rebuilt from nix's reading of it: `exit << 8`, the signal with the core bit 0x80,
-/// `signal << 8 | 0x7f` stopped, `0xffff` continued.
-pub fn raw_wait_status(status: nix::sys::wait::WaitStatus) -> i32 {
-    use nix::sys::wait::WaitStatus;
-    match status {
-        WaitStatus::Exited(_, code) => (code & 0xff) << 8,
-        WaitStatus::Signaled(_, signal, core) => signal as i32 | if core { 0x80 } else { 0 },
-        WaitStatus::Stopped(_, signal) => (signal as i32) << 8 | 0x7f,
-        WaitStatus::Continued(_) => 0xffff,
-        _ => 0,
-    }
-}
-
 /// `spawn_popen_status_rc()` (`spawn_popen.c:144-161`): the exit code; 0 when killed by SIGTERM or SIGPIPE (how
 /// children are stopped on purpose); else -1.
 pub fn status_rc(raw: i32) -> i32 {
@@ -363,19 +350,10 @@ mod tests {
     /// The raw status round trip through libc's macros, and the exit code a caller gets.
     #[test]
     fn wait_statuses_read_as_c_s() {
-        use nix::sys::signal::Signal;
-        use nix::sys::wait::WaitStatus;
-        use nix::unistd::Pid;
-        let p = Pid::from_raw(1);
-        let raws = [
-            raw_wait_status(WaitStatus::Exited(p, 3)),
-            raw_wait_status(WaitStatus::Signaled(p, Signal::SIGTERM, false)),
-            raw_wait_status(WaitStatus::Signaled(p, Signal::SIGPIPE, false)),
-            raw_wait_status(WaitStatus::Signaled(p, Signal::SIGKILL, true)),
-        ];
-        assert_eq!(raws, [0x300, 15, 13, 9 | 0x80]);
+        // exit 3, SIGTERM, SIGPIPE, SIGKILL with a core, real-time signal 34
+        let raws = [0x300, 15, 13, 9 | 0x80, 34];
         assert!(libc::WIFSIGNALED(raws[3]) && libc::WCOREDUMP(raws[3]) && libc::WTERMSIG(raws[3]) == 9);
-        assert_eq!(raws.map(status_rc), [3, 0, 0, -1]);
+        assert_eq!(raws.map(status_rc), [3, 0, 0, -1, -1]);
     }
 
     #[test]
