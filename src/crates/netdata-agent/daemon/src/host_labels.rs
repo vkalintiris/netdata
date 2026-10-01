@@ -2,7 +2,6 @@
 //! from netdata.conf with `${VAR}` expansion, the Kubernetes script's labels, then the automatic `_*` labels.
 //! Decisions D49 in the status repository.
 
-use std::ffi::OsStr;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -11,11 +10,11 @@ use netdata_agent_inicfg::{Config, SECTION_GLOBAL, SECTION_HOST_LABEL};
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_rrd::host::{Hosts, meta_flags};
 use netdata_agent_rrd::labels::{self, MAX_VALUE_LENGTH};
+use netdata_agent_spawn::popen::Popen;
 use netdata_agent_text::c::fgets_chunks;
 
 use crate::build;
 use crate::cloud_proxy;
-use crate::spawn::Popen;
 
 /// `env_expand_labels_value()` into a buffer of `size` bytes: `${VAR}` and `${VAR:-default}` (an empty variable is an
 /// unset one), the first `}` closing; no closing brace copies the rest; nothing is expanded twice.
@@ -59,9 +58,9 @@ fn expand(value: &[u8], size: usize, lookup: &dyn Fn(&[u8]) -> Option<Vec<u8>>) 
     out
 }
 
-/// `getenv()`.
+/// `getenv()`, as the children see the environment (what `nd_setenv()` changed included, D140).
 fn getenv(name: &[u8]) -> Option<Vec<u8>> {
-    std::env::var_os(OsStr::from_bytes(name)).map(|v| v.as_bytes().to_vec())
+    netdata_agent_spawn::env::get(std::str::from_utf8(name).ok()?).map(|v| v.as_bytes().to_vec())
 }
 
 /// `rrdhost_load_kubernetes_labels()`: the script's lines (added even when it fails), and whether it ran cleanly.
@@ -72,13 +71,15 @@ fn kubernetes_labels(plugins_dir: &str) -> (Vec<Vec<u8>>, bool) {
             "Kubernetes pod label fetching script {script} not found.");
         return (Vec::new(), false);
     }
-    let Ok(mut child) = Popen::run(&script) else {
+    let Some(mut child) = Popen::run_shell(&script) else {
         return (Vec::new(), false);
     };
     let mut stdout = Vec::new();
-    let _ = child.stdout().read_to_end(&mut stdout);
+    if let Some(out) = child.stdout() {
+        let _ = out.read_to_end(&mut stdout);
+    }
     let lines = fgets_chunks(&stdout, 1000).map(<[u8]>::to_vec).collect();
-    if child.wait().map_or(true, |rc| rc != 0) {
+    if child.wait() != 0 {
         nd_log!(
             Source::Daemon,
             Priority::Err,

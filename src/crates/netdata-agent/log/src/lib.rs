@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 pub use config::{
     chown_log_files, chown_open_file, init_invocation_id, initialize, initialize_for_external_plugins, invocation_id,
-    limits_reset, limits_unlimited, reopen_log_files, set_facility, set_flood_protection, set_host_prefix,
-    set_priority_level, set_user_settings,
+    limits_reset, limits_unlimited, reopen_log_files, set_env_writer, set_facility, set_flood_protection,
+    set_host_prefix, set_priority_level, set_user_settings,
 };
 pub use encode::{rfc3339_local, strerror, uv_strerror};
 pub use frame::{FrameGuard, Lazy, Value, push, push_shared};

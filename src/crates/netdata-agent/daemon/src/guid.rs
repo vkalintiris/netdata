@@ -307,7 +307,7 @@ static GUID: OnceLock<MachineGuid> = OnceLock::new();
 pub fn machine_guid_get(varlib: &str, previous: &[u8; 16]) -> &'static MachineGuid {
     GUID.get_or_init(|| {
         let guid = get_or_create(varlib, previous);
-        let _ = netdata_agent_sys::setenv("NETDATA_REGISTRY_UNIQUE_ID", &guid.txt);
+        let _ = netdata_agent_spawn::env::set("NETDATA_REGISTRY_UNIQUE_ID", &guid.txt);
         guid
     })
 }

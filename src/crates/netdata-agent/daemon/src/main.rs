@@ -40,7 +40,6 @@ mod router;
 mod rrdcontext;
 mod server;
 mod shutdown;
-mod spawn;
 mod startup;
 mod static_file;
 mod status_file;
@@ -81,6 +80,13 @@ fn out(stream: &mut dyn Write, bytes: &[u8]) {
 }
 
 fn run(argv: Vec<Vec<u8>>) -> i32 {
+    // every spawn server this process creates (`-W buildinfo`'s included) re-executes it, its socket in C's run dir
+    netdata_agent_spawn::popen::configure(netdata_agent_spawn::client::Start {
+        exe: "/proc/self/exe".into(),
+        run_dir: || system::run_dir(true),
+    });
+    // the log's exports go where every other one does
+    netdata_agent_log::set_env_writer(netdata_agent_spawn::env::set);
     netdata_agent_rrd::host::set_netdata_start_time(
         netdata_agent_rrd::collection::now_realtime_timeval().0,
     );
@@ -369,15 +375,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         );
     }
     // nd_initialize_signals()'s sigaction() calls replace an ignore the launcher left (nohup, a shell's `&`), so the
-    // children get the default action for each, as C's (D123); SIGCHLD too, while this process reaps its own
-    for signal in [
-        Signal::SIGINT,
-        Signal::SIGQUIT,
-        Signal::SIGTERM,
-        Signal::SIGHUP,
-        Signal::SIGUSR2,
-        Signal::SIGCHLD,
-    ] {
+    // children get the default action for each, as C's (D123); SIGCHLD stays as inherited, as C's (the spawn server
+    // reaps the children, D140)
+    for signal in [Signal::SIGINT, Signal::SIGQUIT, Signal::SIGTERM, Signal::SIGHUP, Signal::SIGUSR2] {
         if let Err(err) = netdata_agent_sys::default_dispositions(&[signal]) {
             nd_log!(Source::Daemon, Priority::Err, errno = err.raw_os_error().unwrap_or(0);
                 "SIGNAL: Failed to change signal handler for: {signal}");
@@ -401,7 +401,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
 
     // netdata_conf_section_global(): the hostname, nd_profile_setup() (the profile detected once more, then its
-    // malloc settings) and [db]. registry_init() follows in C (D42).
+    // malloc settings) and [db]; then registry_init()'s configuration
     conf.section_global_hostname();
     status_file::set_host_prefix(&conf.host_prefix);
     let profile = profile::detect(
@@ -418,6 +418,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     status_file::set_db_tiers(3);
     let db = conf::section_db(&mut conf.netdata, system.page_size, &conf.dirs.cache);
     status_file::set_db_mode(db.mode as u8);
+    // registry_init()'s configuration: the registry itself is not ported
+    let registry_hostname = conf.section_registry();
 
     startup.step("run dir");
     match system::run_dir(true) {
@@ -439,6 +441,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     startup.step("crash reports");
     status_file::check_crash(&mut conf.netdata, startup::analytics_enabled(&conf.dirs.user_config));
     startup.step("temp spawn server");
+    // C's "init" server takes id 1 here (D134.3: not ported), so the plugins server keeps C's id
+    netdata_agent_spawn::client::skip_server_id();
     startup.step("ssl");
     netdata_agent_tls::init();
     startup.step("environment for plugins");
@@ -516,6 +520,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         daemon::Outcome::ExitParent => return 0,
     }
     startup.step("plugins spawn server");
+    // a failure is retried by the first spawn, unnamed (netdata_main_spawn_server_init()'s result is ignored)
+    let _ = netdata_agent_spawn::popen::main_server_init(Some("plugins"), true);
     startup.step("home");
     // After the user switch, while there is still one thread.
     let home = conf.section_home();
@@ -542,6 +548,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     });
     startup.step("RRD structures");
     startup.step("commands liveness support");
+    // the last single-threaded point: children get this environment and what `env::set` changes later (D134.4)
+    netdata_agent_spawn::env::freeze();
     // libuv's thread pool, which runs the netdatacli commands
     let uv_pool = netdata_agent_evloop::work::WorkPool::new(
         conf.threads.libuv_worker_threads as usize,
@@ -633,7 +641,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         true,
         HostInfo {
             hostname: conf.hostname.clone(),
-            registry_hostname: conf.hostname.clone(),
+            registry_hostname: registry_hostname.clone(),
             os: "linux".to_string(),
             timezone: tz.current().name.clone(),
             abbrev_timezone: tz.current().abbrev.clone(),
@@ -1414,6 +1422,8 @@ fn load_stream_conf(conf: &mut Conf, system: &system::Resources) -> StreamConf {
 static ALLOC: netdata_agent_sys::Alloc = netdata_agent_sys::Alloc;
 
 fn main() -> ExitCode {
+    // this binary is also its spawn server: re-executed with the marker, it serves and exits here (D12, D140)
+    netdata_agent_spawn::server::run_if_requested();
     use std::os::unix::ffi::OsStringExt;
     ExitCode::from(run(std::env::args_os().map(OsStringExt::into_vec).collect()) as u8)
 }

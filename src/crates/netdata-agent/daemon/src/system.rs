@@ -415,7 +415,7 @@ fn detect_run_dir(rw: bool) -> Option<String> {
         };
     if rw {
         // Still single-threaded at the "run dir" startup step; the plugins inherit it.
-        let _ = netdata_agent_sys::setenv("NETDATA_RUN_DIR", &path);
+        let _ = netdata_agent_spawn::env::set("NETDATA_RUN_DIR", &path);
     }
     Some(path)
 }

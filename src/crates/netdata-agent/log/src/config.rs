@@ -18,10 +18,23 @@ use crate::output::{
 
 type Env = Vec<(&'static str, String)>;
 
-/// `nd_setenv(key, value, 1)`. Refused once other threads run; every export happens during startup.
+/// Where `nd_setenv()` writes the variables the plugins read: the process environment until an owner installs its
+/// own (the daemon's frozen environment for its children, D140).
+static ENV_WRITER: std::sync::OnceLock<fn(&str, &str) -> std::io::Result<()>> = std::sync::OnceLock::new();
+
+/// Installs the writer of the exported variables, once.
+pub fn set_env_writer(writer: fn(&str, &str) -> std::io::Result<()>) {
+    let _ = ENV_WRITER.set(writer);
+}
+
+/// `nd_setenv(key, value, 1)` through the writer.
+pub(crate) fn setenv(key: &str, value: &str) -> std::io::Result<()> {
+    (ENV_WRITER.get().copied().unwrap_or(netdata_agent_sys::setenv))(key, value)
+}
+
 fn export(env: Env) {
     for (key, value) in env {
-        let _ = netdata_agent_sys::setenv(key, &value);
+        let _ = setenv(key, &value);
     }
 }
 

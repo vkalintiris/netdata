@@ -6,9 +6,8 @@ use std::io::Read;
 
 use netdata_agent_log::{Priority, Source, nd_log, netdata_log_error};
 use netdata_agent_rrd::system_info::SystemInfo;
+use netdata_agent_spawn::popen::{self, Popen};
 use netdata_agent_text::c::fgets_chunks;
-
-use crate::spawn::Popen;
 
 /// `rrdhost_system_info_detect()`: `<plugins>/system-info.sh`'s pairs, each exported to the environment the
 /// plugins inherit. The script's exit code does not matter.
@@ -31,15 +30,17 @@ fn detect(si: &mut SystemInfo, plugins_dir: &str) {
             "SYSTEM INFO: System info script {script} not found or not readable.");
         return;
     }
-    let Ok(mut child) = Popen::run(&script) else {
+    let Some(mut child) = Popen::run_shell(&script) else {
         netdata_log_error!("SYSTEM INFO: Failed to execute system info script {script}.");
         return;
     };
     let mut stdout = Vec::new();
-    let _ = child.stdout().read_to_end(&mut stdout);
+    if let Some(out) = child.stdout() {
+        let _ = out.read_to_end(&mut stdout);
+    }
     for (name, value) in si.apply_script_output(&stdout) {
-        // nd_setenv(); the daemon is still single-threaded here
-        if let Err(err) = netdata_agent_sys::setenv(&name, &value) {
+        // nd_setenv()
+        if let Err(err) = netdata_agent_spawn::env::set(&name, &value) {
             nd_log!(
                 Source::Daemon,
                 Priority::Err,
@@ -104,11 +105,19 @@ pub fn startup(plugins_dir: &str, user_config_dir: &str) -> (SystemInfo, SystemI
 }
 
 /// What the build info detects (`populate_packaging_info()`, `populate_system_info()` without localhost): the install
-/// type and one detection.
+/// type and one detection, through the main spawn server, or a temporary unnamed one when there is none
+/// (`-W buildinfo`, `buildinfo.c:1423-1434`).
 pub fn for_build_info(plugins_dir: &str, user_config_dir: &str) -> SystemInfo {
     let mut si = SystemInfo::default();
     install_type(&mut si, user_config_dir);
+    let started = popen::main_server_pid().is_none();
+    if started {
+        popen::main_server_init(None, false);
+    }
     detect(&mut si, plugins_dir);
+    if started {
+        popen::main_server_cleanup();
+    }
     si
 }
 

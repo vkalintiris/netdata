@@ -39,6 +39,8 @@ const PLUGINSD_MAX_DIRECTORIES: usize = 20;
 
 /// `DEFAULT_CLOUD_BASE_URL`.
 pub const DEFAULT_CLOUD_BASE_URL: &str = "https://app.netdata.cloud";
+/// `[registry] registry to announce`'s default.
+const REGISTRY_TO_ANNOUNCE: &str = "https://registry.my-netdata.io";
 
 /// The `netdata_configured_*` directories.
 #[derive(Debug, Clone)]
@@ -1256,6 +1258,36 @@ impl Conf {
 
     /// The "home" startup step: `[directories] home`, the running user's home unless the key is set, exported as
     /// `HOME` (root's would be inherited otherwise).
+    /// `netdata_conf_section_registry()` (`src/registry/registry_init.c:48-104`): the `[registry]` keys and
+    /// `[directories] registry` in C's order, and the three exports the plugins read (D135.5, D140.4); returns the
+    /// registry hostname (localhost's record, D42). The registry itself is not ported: its directory and database go
+    /// with it. C reads this before `[web] mode`, so `enabled` is always read, never forced off.
+    pub fn section_registry(&mut self) -> String {
+        let _enabled = self.netdata.get_boolean(SECTION_REGISTRY, "enabled", false);
+        let default = format!("{}/registry", self.dirs.varlib);
+        let path = text(self.netdata.get_path(SECTION_DIRECTORIES, "registry", Some(&default)));
+        self.netdata.get_filename(SECTION_REGISTRY, "registry db file", Some(&format!("{path}/registry.db")));
+        self.netdata.get_filename(SECTION_REGISTRY, "registry log file", Some(&format!("{path}/registry-log.db")));
+        self.netdata.get_number(SECTION_REGISTRY, "registry save db every new entries", 1_000_000);
+        self.netdata.get_duration_days_to_seconds(SECTION_REGISTRY, "registry expire idle persons", 365 * 86400);
+        self.netdata.get(SECTION_REGISTRY, "registry domain", Some(""));
+        let announce = text(self.netdata.get(SECTION_REGISTRY, "registry to announce", Some(REGISTRY_TO_ANNOUNCE)));
+        let hostname = text(self.netdata.get(SECTION_REGISTRY, "registry hostname", Some(&self.hostname.clone())));
+        self.netdata.get_boolean(SECTION_REGISTRY, "verify browser cookies support", true);
+        self.netdata.get_boolean(SECTION_REGISTRY, "enable cookies SameSite and Secure", true);
+        // registry_update_cloud_base_url()
+        let cloud = String::from_utf8_lossy(&crate::cloud::url(&mut self.cloud)).into_owned();
+        export("NETDATA_REGISTRY_CLOUD_BASE_URL", &cloud);
+        export("NETDATA_REGISTRY_HOSTNAME", &hostname);
+        export("NETDATA_REGISTRY_URL", &announce);
+        for (name, default) in [("max URL length", 1024), ("max URL name length", 50)] {
+            if self.netdata.get_number(SECTION_REGISTRY, name, default) < 10 {
+                self.netdata.set_number(SECTION_REGISTRY, name, 10);
+            }
+        }
+        hostname
+    }
+
     pub fn section_home(&mut self) -> String {
         let pw_dir = nix::unistd::User::from_uid(nix::unistd::getuid())
             .ok()
@@ -1570,9 +1602,9 @@ fn uv_thread_stack_size(page_size: u64) -> usize {
     size as usize
 }
 
-/// `setenv()` for the plugins; the daemon is still single-threaded when it runs.
+/// `nd_setenv()` for the plugins.
 pub(crate) fn export(key: &str, value: &str) {
-    if let Err(err) = netdata_agent_sys::setenv(key, value) {
+    if let Err(err) = netdata_agent_spawn::env::set(key, value) {
         nd_log!(Source::Daemon, Priority::Err, "cannot export {key}: {err}");
     }
 }
@@ -1761,7 +1793,7 @@ pub fn set_timezone_env(netdata: &mut Config) -> std::io::Result<()> {
     let tz = netdata
         .get(SECTION_ENV_VARS, "TZ", Some(":/etc/localtime"))
         .unwrap_or_default();
-    netdata_agent_sys::setenv("TZ", &String::from_utf8_lossy(&tz))
+    netdata_agent_spawn::env::set("TZ", &String::from_utf8_lossy(&tz))
 }
 
 /// The "pulse" step of `netdata_main()`: `[pulse] extended` (default no), the extended pulse charts' switch.

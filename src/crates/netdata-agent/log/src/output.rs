@@ -337,8 +337,8 @@ fn journal_find_and_open() -> Option<(UnixDatagram, String)> {
 /// `nd_log_journal_direct_set_env()`: plugins inherit the socket when the collector source logs to the journal.
 fn journal_set_env(collector_journal: bool, filename: &str) {
     if collector_journal {
-        // Refused once threads run (a reopen); the value is the one exported at startup.
-        let _ = netdata_agent_sys::setenv("NETDATA_SYSTEMD_JOURNAL_PATH", filename);
+        // at a reopen too, as C: the children started after it get the new path
+        let _ = crate::config::setenv("NETDATA_SYSTEMD_JOURNAL_PATH", filename);
     }
 }
 
