@@ -49,6 +49,25 @@ func digits(v uint64, base uint64, alphabet string) string {
 	return string(b)
 }
 
+// DecodeU64 reads a number as C's `buffer_print_uint64_encoded()` writes it: EncodeU64's inverse.
+func DecodeU64(s string) (uint64, error) {
+	switch {
+	case strings.HasPrefix(s, "#") && len(s) > 1:
+		var v uint64
+		for i := 1; i < len(s); i++ {
+			d := strings.IndexByte(base64Digits, s[i])
+			if d < 0 {
+				return 0, fmt.Errorf("stream: %q is no base64 number", s)
+			}
+			v = v<<6 | uint64(d)
+		}
+		return v, nil
+	case strings.HasPrefix(s, "0x"):
+		return strconv.ParseUint(s[2:], 16, 64)
+	}
+	return strconv.ParseUint(s, 10, 64)
+}
+
 // EncodeU64 writes v as C's `buffer_print_uint64_encoded()`.
 func EncodeU64(e Encoding, v uint64) string {
 	switch e {

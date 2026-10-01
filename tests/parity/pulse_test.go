@@ -347,7 +347,8 @@ func TestPulseLocalhostCharts(t *testing.T) {
 		}
 
 		// a child: the inbound nodes, and its state, one-hot, over settled seconds
-		var conns []interface{ Close() error }
+		var conns []*stream.Conn
+		tb := time.Now().Unix()
 		for _, side := range p.Each() {
 			conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, childHost, stream.CapsLive)
 			if err != nil {
@@ -357,6 +358,7 @@ func TestPulseLocalhostCharts(t *testing.T) {
 			conns = append(conns, conn)
 			streamDataFixture(t, conn, time.Now().Unix()/60*60-120)
 		}
+		ta := time.Now().Unix()
 		time.Sleep(5 * time.Second)
 		now := time.Now().Unix()
 		states := []string{"netdata.netdata.streaming_inbound_permanent",
@@ -365,6 +367,7 @@ func TestPulseLocalhostCharts(t *testing.T) {
 			compareLocalData(t, p, chart, now-3, now-1, "average")
 		}
 		compareLazyDefinitions(t, p, childHost.MachineGUID, true)
+		checkChildAge(t, p, childHost.MachineGUID, now, tb, ta)
 
 		// the uptime counts the seconds since each side's first stored point: the stored span, as C's (R29 M5)
 		for _, side := range p.Each() {
@@ -376,15 +379,98 @@ func TestPulseLocalhostCharts(t *testing.T) {
 			}
 		}
 
+		// traffic (10e): 12500 empty lines (a no-op to both parsers) on the idle connection, whole in the window;
+		// nothing goes back (CapsLive)
+		time.Sleep(2 * time.Second)
+		from = time.Now().Unix()
+		for _, conn := range conns {
+			if err := conn.WriteRaw(bytes.Repeat([]byte("\n"), 12500)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		time.Sleep(3 * time.Second)
+		to = time.Now().Unix()
+		time.Sleep(2 * time.Second)
+		traffic := "netdata.streaming.in.traffic." + childHost.MachineGUID
+		compareSums(t, p, from-1, to, map[string]int{traffic + "&dimensions=in": 12500, traffic + "&dimensions=out": 0,
+			"netdata.network_streaming&dimensions=in": 100, "netdata.network_streaming&dimensions=out": 0})
+
 		// the child gone: its state and the inbound nodes as each side counts them then (4g)
+		tb = time.Now().Unix()
 		for _, conn := range conns {
 			_ = conn.Close()
 		}
+		ta = time.Now().Unix()
 		time.Sleep(5 * time.Second)
 		now = time.Now().Unix()
 		for _, chart := range states {
 			compareLocalData(t, p, chart, now-3, now-1, "average")
 		}
+		checkChildAge(t, p, childHost.MachineGUID, now, tb, ta)
+
+		// back (10e): one reconnect, the age restarted
+		tb = time.Now().Unix()
+		for _, side := range p.Each() {
+			conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, childHost, stream.CapsLive)
+			if err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+		}
+		ta = time.Now().Unix()
+		time.Sleep(5 * time.Second)
+		now = time.Now().Unix()
+		compareSums(t, p, tb-1, now-1, map[string]int{"netdata.streaming.in.reconnects." + childHost.MachineGUID: 1})
+		checkChildAge(t, p, childHost.MachineGUID, now, tb, ta)
+
+		// the parent's writes (10e): a replicating child defines 100 charts with nothing stored; each side answers each
+		// with an empty REPLAY_CHART, read back here; the child answers none, so it stays replicating
+		repl := stream.HostInfo{Hostname: "parity-child-repl", MachineGUID: "5a1e0000-0000-4000-8000-0000000000dd"}
+		var rconns [2]*stream.Conn
+		for i, side := range p.Each() {
+			conn, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, repl, stream.CapsReplication)
+			if err != nil {
+				t.Fatalf("%s: %v", side.Role, err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			rconns[i] = conn
+		}
+		time.Sleep(3 * time.Second)
+		from = time.Now().Unix()
+		var defs bytes.Buffer
+		for c := range 100 {
+			fmt.Fprintf(&defs, "CHART 'r.c%03d' '' 't' 'u' 'f' 'r.ctx' line 1 1 '' p m\n"+
+				"DIMENSION 'a' '' absolute 1 1 ''\nCHART_DEFINITION_END 0 0 %d\n", c, from)
+		}
+		var replies [2]string
+		for i, side := range p.Each() {
+			if err := rconns[i].WriteRaw(defs.Bytes()); err != nil {
+				t.Fatal(err)
+			}
+			var b strings.Builder
+			for range 100 {
+				line, err := rconns[i].ReadLine(time.Now().Add(10 * time.Second))
+				if err != nil {
+					t.Fatalf("%s: %v after %q", side.Role, err, b.String())
+				}
+				b.WriteString(line + "\n")
+			}
+			replies[i] = b.String()
+		}
+		// C's requests come in no fixed order: as sets
+		sorted := func(r string) string { l := strings.Split(r, "\n"); slices.Sort(l); return strings.Join(l, "\n") }
+		if !strings.Contains(replies[0], `REPLAY_CHART "r.c000" "true" 0 0`+"\n") || sorted(replies[0]) != sorted(replies[1]) {
+			t.Errorf("replication requests:\noracle:    %q\ncandidate: %q", replies[0], replies[1])
+		}
+		time.Sleep(3 * time.Second)
+		to = time.Now().Unix()
+		time.Sleep(2 * time.Second)
+		out := len(replies[0])
+		t.Logf("replies: %d bytes, first %q", out, strings.SplitN(replies[0], "\n", 2)[0])
+		compareSums(t, p, from-1, to, map[string]int{
+			"netdata.streaming.in.traffic." + repl.MachineGUID + "&dimensions=out": -out,
+			"netdata.network_streaming&dimensions=out":                             -int(math.Round(float64(out) * 8 / 1000))})
+		compareOneHot(t, p, "netdata.streaming.in.state."+repl.MachineGUID, "replicating")
 	})
 	t.Run("dbengine", func(t *testing.T) {
 		p := definitions(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 2})
@@ -497,10 +583,22 @@ func TestPulseLocalhostCharts(t *testing.T) {
 			childDefinitions(t, p, true)
 			time.Sleep(5 * time.Second)
 			compareOutbound(t, p, "running")
+			// what each child sends is its own collection: some every second, not equal across the sides (10e)
+			now := time.Now().Unix()
+			for _, side := range p.Each() {
+				if v := lastValue(t, localData(t, side.Daemon, "netdata.network_streaming&dimensions=out",
+					now-3, now-1, "sum")); v >= 0 {
+					t.Errorf("%s: no streaming out while running: %d", side.Role, v)
+				}
+			}
 			// the closed port postpones the parent for 30 to 60 s
 			_ = stub.Close()
 			time.Sleep(5 * time.Second)
 			compareOutbound(t, p, "pending")
+			// the session gone, nothing moves (10e)
+			now = time.Now().Unix()
+			compareSums(t, p, now-2, now-1, map[string]int{"netdata.network_streaming&dimensions=in": 0,
+				"netdata.network_streaming&dimensions=out": 0})
 		})
 	}
 	t.Run("child-no-dst", func(t *testing.T) {
@@ -519,6 +617,43 @@ func TestPulseLocalhostCharts(t *testing.T) {
 			t.Errorf("%d sessions with a parent that is the child itself", n)
 		}
 	})
+	// `[stream] enabled = yes` without a destination or an API key is no child (10e): C's ERR, no sender, no outbound
+	// chart (stream-conf.c:400-407, pulse-parents.c:601)
+	for name, keyless := range map[string]bool{"child-no-destination": false, "child-no-key": true} {
+		t.Run(name, func(t *testing.T) {
+			stub, err := stream.StartParent(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { stub.Close() })
+			to, want := &daemon.StreamTo{APIKey: parentIdentity.StreamKey}, "(destination: missing, api key: present)"
+			if keyless {
+				to, want = &daemon.StreamTo{Destination: stub.Addr()}, "(destination: present, api key: missing)"
+			}
+			p := definitions(t, daemon.Options{DBMode: "alloc", StreamMemoryMode: "alloc", StorageTiers: 1,
+				NoStreamKey: true, StreamTo: to})
+			if slices.Contains(localCharts(t, p.Oracle), "netdata.streaming_outbound") {
+				t.Fatal("the oracle has an outbound chart")
+			}
+			var recs [2][]string
+			for i, side := range p.Each() {
+				for _, l := range logLines(t, side.Daemon.Opts.RunDir, "daemon.log") {
+					if strings.Contains(l, "STREAM [send]: cannot enable sending thread - missing required fields "+want) {
+						recs[i] = append(recs[i], normalizeLog(l, side.Daemon.Opts.RunDir, strconv.Itoa(side.Daemon.Opts.Port)))
+					}
+				}
+			}
+			if len(recs[0]) != 1 {
+				t.Errorf("oracle: %d records %s", len(recs[0]), want)
+			}
+			if d := diffSequences(recs[0], recs[1]); d != "" {
+				t.Errorf("records differ:\n%s", d)
+			}
+			if n := len(stub.Sessions()) + len(stub.Probes()); n != 0 {
+				t.Errorf("%d connections from agents that are no children", n)
+			}
+		})
+	}
 	t.Run("pulse-off", func(t *testing.T) {
 		p := StartPair(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1, PulseOff: true}, parentIdentity)
 		time.Sleep(3 * time.Second)
@@ -579,9 +714,16 @@ func pulseChildOptions(stub *stream.Parent, noKey bool) daemon.Options {
 // oracle's localhost counted under `state` alone in each of them.
 func compareOutbound(t *testing.T, p *Pair, state string) {
 	t.Helper()
+	compareOneHot(t, p, "netdata.streaming_outbound", state)
+}
+
+// compareOneHot compares a one-hot state chart's last three seconds between the sides, and checks the oracle's
+// count under `state` alone in each of them.
+func compareOneHot(t *testing.T, p *Pair, chart, state string) {
+	t.Helper()
 	now := time.Now().Unix()
-	compareLocalData(t, p, "netdata.streaming_outbound", now-3, now-1, "average")
-	lines := strings.Split(localData(t, p.Oracle, "netdata.streaming_outbound", now-3, now-1, "average"), "\n")
+	compareLocalData(t, p, chart, now-3, now-1, "average")
+	lines := strings.Split(localData(t, p.Oracle, chart, now-3, now-1, "average"), "\n")
 	header := strings.Split(lines[0], ",")
 	want := make([]string, len(header))
 	for i, name := range header {
@@ -596,6 +738,38 @@ func compareOutbound(t *testing.T, p *Pair, state string) {
 	for _, l := range lines[1:] {
 		if cells := strings.Split(l, ","); !slices.Equal(cells[1:], want[1:]) {
 			t.Errorf("%s: the oracle's outbound states %q (header %q)", state, l, lines[0])
+		}
+	}
+}
+
+// compareSums compares each chart's sum over [after, before] between the sides and checks it on each side.
+func compareSums(t *testing.T, p *Pair, after, before int64, want map[string]int) {
+	t.Helper()
+	for chart, w := range want {
+		compareLocalData(t, p, chart, after, before, "sum")
+		for _, side := range p.Each() {
+			if got := localData(t, side.Daemon, chart, after, before, "sum"); lastValue(t, got) != int64(w) {
+				t.Errorf("%s: %s over [%d, %d]: %s, expected %d", side.Role, chart, after, before, got, w)
+			}
+		}
+	}
+}
+
+// checkChildAge: a child's state age on each side at now-3 and now-1 is the seconds since its state changed, which
+// happened in [tb, ta+1] (the receiver moves on after the handshake's reply), one more each second.
+func checkChildAge(t *testing.T, p *Pair, guid string, now, tb, ta int64) {
+	t.Helper()
+	chart := "netdata.streaming.in.age." + guid
+	for _, side := range p.Each() {
+		var v [2]int64
+		for i, s := range []int64{now - 3, now - 1} {
+			v[i] = lastValue(t, localData(t, side.Daemon, chart, s, s, "average"))
+			if v[i] < s-ta-1 || v[i] > s-tb {
+				t.Errorf("%s: %s at %d is %d; the state changed in [%d, %d]", side.Role, chart, s, v[i], tb, ta+1)
+			}
+		}
+		if v[1]-v[0] != 2 {
+			t.Errorf("%s: %s went %d -> %d in 2 s", side.Role, chart, v[0], v[1])
 		}
 	}
 }

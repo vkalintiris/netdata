@@ -95,3 +95,98 @@ func logContains(t *testing.T, d *daemon.Daemon, text string) bool {
 	}
 	return false
 }
+
+// rstallHost is the raw child of `stream.receiver-stall`.
+var rstallHost = stream.HostInfo{Hostname: "parity-rstall", MachineGUID: "5a1e0000-0000-4000-8000-00000000c5a1"}
+
+// rstallRecordRe are the receiver's stall records and its disconnect.
+var rstallRecordRe = regexp.MustCompile(`REPLICATION EXCEPTIONS|reason=\\"REPLICATION STALLED\\"|REPLICATION STALLED`)
+
+// TestReceiverReplicationStall (check `stream.receiver-stall`, PARITY_LONG; M7 10f, D122.11): a raw child with
+// REPLICATION defines two charts in each parent of a pair (`level = debug`) and answers the request of one; the
+// other's is never answered, so it stays in progress while nothing is pending (backfill_pending counts only requests
+// not sent yet). The stream thread's ten-minute check sees the counters move at its first pass and still at its
+// second, about 20 minutes after the connection (no key shortens it): it lists the unfinished chart, logs the summary
+// (2 requested, 3 replies: 2 definitions and one REND), disconnects with REPLICATION STALLED and closes the socket.
+// Compared: those records, as sets, and the child seeing the close.
+func TestReceiverReplicationStall(t *testing.T) {
+	if os.Getenv("PARITY_LONG") != "1" {
+		t.Skip("PARITY_LONG=1 runs the receiver's replication stall check (about 21 minutes)")
+	}
+	t.Parallel()
+	p := StartPair(t, daemon.Options{StorageTiers: 1, StreamMemoryMode: "ram", PulseOff: true,
+		LogsExtra: "    level = debug\n"}, parentIdentity)
+	var conns [2]*stream.Conn
+	for i, side := range p.Each() {
+		c, err := stream.Connect(side.Daemon.Addr, side.Daemon.StreamKey, rstallHost, stream.CapsReplication)
+		if err != nil {
+			t.Fatalf("%s: %v", side.Role, err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		now := time.Now().Unix()
+		for _, id := range []string{"rstall.open", "rstall.done"} {
+			c.Linef("CHART '%s' '' 't' 'u' 'f' '%s' line 1000 1 '' rstall corpus", id, id)
+			c.Linef("DIMENSION 'd' '' absolute 1 1 ''")
+			c.ChartDefinitionEnd(0, 0, now)
+		}
+		if err := c.Flush(); err != nil {
+			t.Fatalf("%s: %v", side.Role, err)
+		}
+		// answer rstall.done's request as a C child with nothing to replicate does
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			l, err := c.ReadLine(deadline)
+			if err != nil {
+				t.Fatalf("%s: no request for rstall.done: %v", side.Role, err)
+			}
+			if strings.HasPrefix(l, `REPLAY_CHART "rstall.done"`) {
+				break
+			}
+		}
+		c.Linef("RBEGIN 'rstall.done'")
+		c.Linef("REND 1 0 0 true 0 0 %d", time.Now().Unix())
+		if err := c.Flush(); err != nil {
+			t.Fatalf("%s: %v", side.Role, err)
+		}
+		conns[i] = c
+	}
+	deadline := time.Now().Add(25 * time.Minute)
+	for _, side := range p.Each() {
+		for !logContains(t, side.Daemon, "REPLICATION EXCEPTIONS SUMMARY") {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: no stall within 25 minutes", side.Role)
+			}
+			time.Sleep(5 * time.Second)
+		}
+	}
+	var closed [2]bool
+	for i, c := range conns {
+		for {
+			_, err := c.ReadLine(time.Now().Add(10 * time.Second))
+			if err != nil {
+				closed[i] = !strings.Contains(err.Error(), "timeout")
+				break
+			}
+		}
+	}
+	if !closed[0] || closed[1] != closed[0] {
+		t.Errorf("the child saw the close: oracle %v, candidate %v", closed[0], closed[1])
+	}
+	time.Sleep(2 * time.Second)
+	var recs [2][]string
+	for i, side := range p.Each() {
+		for _, l := range parentRecords(t, side.Daemon, "STREAM RCV", nil) {
+			if rstallRecordRe.MatchString(l) {
+				// C's first record after the stream thread's last non-blocking read carries that read's EAGAIN
+				// (nd_log() takes errno, then clears it: nd_log.c:341, :410): stale, ignored as D36's
+				recs[i] = append(recs[i], errnoRe.ReplaceAllString(l, ""))
+			}
+		}
+	}
+	want := "node has 1 stalled replication requests (1 finished). We have requested 2 and got replies for 3"
+	if !strings.Contains(strings.Join(recs[0], "\n"), want) {
+		t.Errorf("the oracle's summary is not %q:\n%s", want, strings.Join(recs[0], "\n"))
+	}
+	diffLines(t, "the receiver's stall records", recs[0], recs[1])
+	t.Logf("records:\n%s", strings.Join(recs[0], "\n"))
+}

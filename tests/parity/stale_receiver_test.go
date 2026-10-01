@@ -84,6 +84,28 @@ func TestStreamStaleReceiver(t *testing.T) {
 	}
 	compare("another hostname", stream.RejectNotPermitted, got)
 
+	// svc_rrdhost_obsolete_all_charts() at the accept (stream-receiver-connection.c:773): every chart turns obsolete
+	// and /api/v1/charts hides it until the child defines it again, which this stub never does
+	charts := func(stage string) [2][]string {
+		t.Helper()
+		var ids [2][]string
+		for i, side := range p.Each() {
+			got, _, err := hostCharts(side.Daemon, staleHost.Hostname)
+			if err != nil {
+				t.Fatalf("%s: %s: %v", stage, side.Role, err)
+			}
+			slices.Sort(got)
+			ids[i] = got
+		}
+		if !slices.Equal(ids[0], ids[1]) {
+			t.Errorf("%s: the host's charts\noracle:    %v\ncandidate: %v", stage, ids[0], ids[1])
+		}
+		return ids
+	}
+	if ids := charts("before the accept"); !slices.Contains(ids[0], "stale.c1") {
+		t.Errorf("the oracle hides stale.c1 before the accept: %v", ids[0])
+	}
+
 	// the same hostname: the stale receiver stopped, the new connection accepted, the old one closed
 	var closed [2]bool
 	for i, side := range p.Each() {
@@ -100,6 +122,9 @@ func TestStreamStaleReceiver(t *testing.T) {
 		t.Errorf("the stale connection closed: oracle %v, candidate %v", closed[0], closed[1])
 	}
 	time.Sleep(2 * time.Second)
+	if ids := charts("after the accept"); slices.Contains(ids[0], "stale.c1") {
+		t.Errorf("the oracle still shows stale.c1 after the accept: %v", ids[0])
+	}
 
 	// the records of the host's connections, as sets
 	var recs [2][]string
@@ -116,7 +141,9 @@ func TestStreamStaleReceiver(t *testing.T) {
 		recs[i] = slices.Compact(recs[i])
 	}
 	t.Logf("oracle records:\n%s", strings.Join(recs[0], "\n"))
-	for _, want := range []string{`reason=\"DISCONNECTED SIGNALED TO STOP\"`, "stopped previous stale receiver"} {
+	for _, want := range []string{`reason=\"DISCONNECTED SIGNALED TO STOP\"`, "stopped previous stale receiver",
+		"connected and ready to receive data, new node NEVER CONNECTED",
+		"connected and ready to receive data, last sample in the db D ago NEVER CONNECTED"} {
 		if !slices.ContainsFunc(recs[0], func(l string) bool { return strings.Contains(l, want) }) {
 			t.Errorf("the oracle has no record with %s", want)
 		}

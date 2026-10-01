@@ -135,6 +135,20 @@ func TestNetdataConfStandaloneProfile(t *testing.T) {
 	compareNetdataConf(t, daemon.Options{GlobalExtra: "    profile = standalone\n"})
 }
 
+// TestNetdataConfProfiles: `[global] profile = child` and `iot` while stream.conf enables an API key (which the
+// detection would make a parent): each dump shows the profile's defaults (M7 10f, D122.11).
+func TestNetdataConfProfiles(t *testing.T) {
+	for _, profile := range []string{"child", "iot"} {
+		t.Run(profile, func(t *testing.T) {
+			p := compareNetdataConf(t, daemon.Options{GlobalExtra: "    profile = " + profile + "\n"})
+			b, err := rawExchange(p.Oracle.Addr, []byte("GET /netdata.conf HTTP/1.1\r\n\r\n"), 5*time.Second)
+			if err != nil || !bytes.Contains(b, []byte("\tprofile = "+profile+"\n")) {
+				t.Errorf("the oracle's dump does not hold its profile %s: %v", profile, err)
+			}
+		})
+	}
+}
+
 // dbClampRecords are the main thread's records about the [db] keys.
 var dbClampRecords = regexp.MustCompile(`(?i)msg="[^"]*(dbengine|dbegnine|tier|page cache|extent|pages per|backfill|storage|disk space)`)
 
@@ -207,6 +221,9 @@ func compareNetdataConf(t *testing.T, opts daemon.Options) *Pair {
 	}
 
 	seen := map[string]bool{}
+	// the reminder is for a candidate that is still porting the keys; the oracle against itself reads them all
+	bins := binaries(t)
+	selfRun := bins[0] == bins[1]
 	strip := func(d confDump, side Role) []confSection {
 		var out []confSection
 		for _, s := range d.sections {
@@ -216,7 +233,7 @@ func compareNetdataConf(t *testing.T, opts daemon.Options) *Pair {
 				if _, isPending := confPending[id]; isPending {
 					if side == Oracle {
 						seen[id] = true
-					} else if !e.unused {
+					} else if !e.unused && !selfRun {
 						t.Errorf("%s is read by the candidate now: remove it from confPending", id)
 					}
 					continue

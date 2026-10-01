@@ -167,10 +167,12 @@ type Chunk struct {
 // Session is one accepted STREAM connection.
 type Session struct {
 	Request Request
-	mu      sync.Mutex
-	chunks  []Chunk
-	closed  bool
-	conn    net.Conn
+	// At is when the parent read the request.
+	At     time.Time
+	mu     sync.Mutex
+	chunks []Chunk
+	closed bool
+	conn   net.Conn
 }
 
 // Data is every byte the child sent after the handshake so far.
@@ -298,6 +300,7 @@ type Parent struct {
 	mu              sync.Mutex
 	sessions        []*Session
 	probes          []string
+	probeAt         []time.Time
 	probeRaw        []string
 	upgrades        []string
 	hellos          []Hello
@@ -309,9 +312,19 @@ func StartParent(script func(Request) Answer) (*Parent, error) {
 	return StartParentTLS(script, nil)
 }
 
+// StartParentOn is StartParent listening on `addr` (host:port), e.g. a loopback address of its own at the agents'
+// default port.
+func StartParentOn(addr string, script func(Request) Answer) (*Parent, error) {
+	return startParent(addr, script, nil)
+}
+
 // StartParentTLS is StartParent over TLS with `config` (its certificates), plain text when nil.
 func StartParentTLS(script func(Request) Answer, config *tls.Config) (*Parent, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	return startParent("127.0.0.1:0", script, config)
+}
+
+func startParent(addr string, script func(Request) Answer, config *tls.Config) (*Parent, error) {
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -410,6 +423,13 @@ func (p *Parent) Sessions() []*Session {
 	return append([]*Session(nil), p.sessions...)
 }
 
+// ProbeTimes are when the parent read each `stream_info` probe so far.
+func (p *Parent) ProbeTimes() []time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]time.Time(nil), p.probeAt...)
+}
+
 // Probes are the request lines of the `stream_info` probes so far.
 func (p *Parent) Probes() []string {
 	p.mu.Lock()
@@ -492,6 +512,7 @@ func (p *Parent) serve(c net.Conn) {
 	if !strings.HasPrefix(req.Line, "STREAM ") {
 		p.mu.Lock()
 		p.probes = append(p.probes, req.Line)
+		p.probeAt = append(p.probeAt, time.Now())
 		p.probeRaw = append(p.probeRaw, req.Raw)
 		probe := p.Probe
 		p.mu.Unlock()
@@ -505,6 +526,7 @@ func (p *Parent) serve(c net.Conn) {
 		_ = c.Close()
 		return
 	}
+	at := time.Now()
 	query := strings.TrimSuffix(strings.TrimPrefix(req.Line, "STREAM "), " HTTP/1.1")
 	req.Params, _ = url.ParseQuery(query)
 	p.mu.Lock()
@@ -514,7 +536,7 @@ func (p *Parent) serve(c net.Conn) {
 		script = PlaintextAnswer
 	}
 	a := script(req)
-	s := &Session{Request: req, conn: c}
+	s := &Session{Request: req, At: at, conn: c}
 	p.mu.Lock()
 	p.sessions = append(p.sessions, s)
 	p.mu.Unlock()

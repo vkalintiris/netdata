@@ -114,6 +114,10 @@ type Options struct {
 	// NoStreamKey leaves out the stream key's `[<key>] type = api` section, so the daemon is no parent: its profile
 	// is a child's or a standalone's (their compression levels and replication threads).
 	NoStreamKey bool
+	// NoStreamConf writes no stream.conf into the config directory: the daemon reads the stock one, else none.
+	NoStreamConf bool
+	// StockConfigDir, when set, is the [directories] stock config path, with {run} replaced by RunDir.
+	StockConfigDir string
 	// Wrap, when set, is a command that execs the daemon in place, so its PID stays the daemon's (e.g. `unshare` into
 	// namespaces); the daemon's own command line follows it.
 	Wrap []string
@@ -124,6 +128,8 @@ type StreamTo struct {
 	Destination string // host:port
 	APIKey      string
 	Compression bool // enable compression (the parent picks the algorithm)
+	// CompressionUnset leaves `enable compression` out, so the agent's default applies (Compression is ignored).
+	CompressionUnset bool
 	// Extra is appended to the [stream] section verbatim (one "key = value" per line), e.g. `reconnect delay = 5`.
 	Extra string
 }
@@ -254,9 +260,13 @@ func renderStreamConf(o Options, streamKey string) string {
 	}
 	switch {
 	case o.StreamTo != nil:
+		compression := "    enable compression = " + yesNo(o.StreamTo.Compression) + "\n"
+		if o.StreamTo.CompressionUnset {
+			compression = ""
+		}
 		streamConf = strings.Replace(streamConf, disabled, fmt.Sprintf(
-			"[stream]\n    enabled = yes\n    destination = %s\n    api key = %s\n    enable compression = %s\n%s",
-			o.StreamTo.Destination, o.StreamTo.APIKey, yesNo(o.StreamTo.Compression), o.StreamTo.Extra), 1)
+			"[stream]\n    enabled = yes\n    destination = %s\n    api key = %s\n%s%s",
+			o.StreamTo.Destination, o.StreamTo.APIKey, compression, o.StreamTo.Extra), 1)
 	case o.StreamSection != "":
 		streamConf = strings.Replace(streamConf, disabled, disabled+o.StreamSection, 1)
 	}
@@ -361,9 +371,11 @@ func Start(o Options) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	streamConf := renderStreamConf(o, streamKey)
-	if err := os.WriteFile(filepath.Join(o.RunDir, "etc", "stream.conf"), []byte(streamConf), 0o644); err != nil {
-		return nil, fmt.Errorf("daemon: write stream.conf: %w", err)
+	if !o.NoStreamConf {
+		streamConf := renderStreamConf(o, streamKey)
+		if err := os.WriteFile(filepath.Join(o.RunDir, "etc", "stream.conf"), []byte(streamConf), 0o644); err != nil {
+			return nil, fmt.Errorf("daemon: write stream.conf: %w", err)
+		}
 	}
 	// Opt out of anonymous statistics before first boot.
 	if err := os.WriteFile(filepath.Join(o.RunDir, "etc", ".opt-out-from-anonymous-statistics"), nil, 0o644); err != nil {
@@ -460,6 +472,9 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 	extraDirs := ""
 	if o.WebDir != "" {
 		extraDirs = fmt.Sprintf("    web = %s\n", o.WebDir)
+	}
+	if o.StockConfigDir != "" {
+		extraDirs += fmt.Sprintf("    stock config = %s\n", strings.ReplaceAll(o.StockConfigDir, "{run}", o.RunDir))
 	}
 	if o.PluginsDir != "" {
 		extraDirs += fmt.Sprintf("    plugins = %s\n", o.PluginsDir)

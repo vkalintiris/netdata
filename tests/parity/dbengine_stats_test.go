@@ -54,6 +54,19 @@ func TestDbengineStats(t *testing.T) {
 		compare(t, StartPair(t, daemon.Options{DBMode: "alloc", StreamMemoryMode: "dbengine", StorageTiers: 1,
 			TierRetentionMB: [3]int{10}, PulseOff: true}, parentIdentity), "200")
 	})
+	// strm.conf.needs_dbengine (10e): each section asks for dbengine and C skips each: [stream] by name (enabled, not
+	// sending: no destination), `enabled = no`, a db not exactly "dbengine". (No `enabled`: TestDbengineReceiverFallback.)
+	t.Run("needs-none", func(t *testing.T) {
+		compare(t, StartPair(t, daemon.Options{DBMode: "alloc", StreamMemoryMode: "ram", StorageTiers: 1, PulseOff: true,
+			StreamTo: &daemon.StreamTo{APIKey: parentIdentity.StreamKey, Extra: "    db = dbengine\n"},
+			StreamExtra: "\n[" + childHost.MachineGUID + "]\n    enabled = no\n    db = dbengine\n" +
+				"\n[5a1e0000-0000-4000-8000-0000000000cc]\n    enabled = yes\n    db = DBENGINE\n"}, parentIdentity), "404")
+	})
+	t.Run("guid-section", func(t *testing.T) {
+		compare(t, StartPair(t, daemon.Options{DBMode: "alloc", StreamMemoryMode: "ram", StorageTiers: 1,
+			TierRetentionMB: [3]int{10}, PulseOff: true,
+			StreamExtra: "\n[" + childHost.MachineGUID + "]\n    enabled = yes\n    db = dbengine\n"}, parentIdentity), "200")
+	})
 	t.Run("before-ready", func(t *testing.T) {
 		compareBeforeReady(t, path)
 	})

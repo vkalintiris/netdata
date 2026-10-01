@@ -257,7 +257,7 @@ func streamInfo(hostID, ingestType, ingestStatus string) []byte {
 // battery runs `scripts` as one child's parents on both sides, until each side logged `want` (or `timeout`), and
 // compares the connector's records.
 func battery(t *testing.T, scripts map[string]func(*stream.Parent), extraDest []string, names map[string]string,
-	want map[string]string, timeout time.Duration) {
+	want map[string]string, timeout time.Duration, guard func(*testing.T, Role, *daemon.Daemon, *stubs)) {
 	var records [2][]string
 	runBoth(t, func(i int, bin string, role Role) {
 		s := startStubs(t, scripts)
@@ -267,6 +267,9 @@ func battery(t *testing.T, scripts map[string]func(*stream.Parent), extraDest []
 		dest := strings.Join(append([]string{s.destination()}, extraDest...), " ")
 		d := handshakeChild(t, bin, role, dest, "", "")
 		waitRecords(t, d, s, want, timeout)
+		if guard != nil {
+			guard(t, role, d, s)
+		}
 		_ = d.Stop()
 		records[i] = handshakeRecords(t, d, s)
 	})
@@ -370,13 +373,21 @@ func TestRChildHandshake(t *testing.T) {
 			"R-close": func(p *stream.Parent) {
 				p.Script = func(stream.Request) stream.Answer { return stream.Answer{CloseNow: true} }
 			},
+			// strm.hs.rsp.single_read_risk: the first receive is the whole answer (stream-connector.c:217-234): a
+			// fixed answer only at its exact length, the VN prompt only below 45+30 bytes; each written at once
+			"R-extra-fixed": rejecting(stream.RejectBusy + "\n"),
+			"R-extra-vn":    rejecting(stream.VCaps(stream.CapVN) + "\nREPLAY_CHART \"system.cpu\" \"true\" 0 0\n"),
+			"R-vn74":        rejecting(stream.VCaps(0) + strings.Repeat("0", 28)),
+			"R-vn75":        rejecting(stream.VCaps(0) + strings.Repeat("0", 29)),
 		}
 		want := map[string]string{
 			"R-denied": "will retry", "R-busy": "will retry", "R-internal": "will retry", "R-init": "will retry",
 			"R-garbage": "will retry", "R-version0": "will retry", "R-silent": "does not respond",
-			"R-close": "does not respond",
+			"R-close":       "does not respond",
+			"R-extra-fixed": "not understood", "R-extra-vn": "not understood", "R-vn74": "will retry in 0 secs",
+			"R-vn75": "not understood",
 		}
-		battery(t, scripts, nil, nil, want, 90*time.Second)
+		battery(t, scripts, nil, nil, want, 120*time.Second, receiveTimeouts)
 	})
 	t.Run("probes", func(t *testing.T) {
 		const child, other = "5a1e0000-0000-4000-8000-0000000000c4", "11111111-2222-3333-4444-555555555555"
@@ -402,7 +413,7 @@ func TestRChildHandshake(t *testing.T) {
 			"Q-refused": "connection refused", "nonexistent.invalid": "cannot resolve hostname",
 		}
 		battery(t, scripts, []string{refused, "nonexistent.invalid:1"}, map[string]string{refused: "Q-refused"},
-			want, 90*time.Second)
+			want, 90*time.Second, nil)
 	})
 }
 
@@ -689,6 +700,9 @@ var (
 var runtimeScript = []string{
 	`FUNCTION tx-1 10 "no-such-function" 0x13 "method=api"`,
 	`FUNCTION tx-2`,
+	// strm.frame.tokenizer_sender: whitespace words only (stream-sender-execute.c:276), so `=` stays in its word;
+	// with the parser's splitter these would be "tx", "FOO" and "GARBAGE"
+	`FUNCTION tx=4 10 "no-such-function" 0x13 "method=api"`,
 	`FUNCTION_PAYLOAD tx-3 10 "no-such-function" 0x13 "method=api" application/json`,
 	`{"a":1}`,
 	`{"b":2}`,
@@ -708,6 +722,10 @@ var runtimeScript = []string{
 	`JSON FOO`,
 	`some payload`,
 	`JSON_PAYLOAD_END`,
+	`JSON FOO=BAR`,
+	`p`,
+	`JSON_PAYLOAD_END`,
+	`GARBAGE=1 x`,
 	`GARBAGE x "y z"`,
 	``,
 }
@@ -740,8 +758,10 @@ func TestRChildRuntime(t *testing.T) {
 		// later are sent after the child read the first lines and went quiet: C's first record then carries
 		// the errno its last read left (review R41 m2)
 		later []string
+		want  []string // texts the oracle's upstream lines or records must hold
 	}{
-		"executor": {down: runtimeScript},
+		"executor": {down: runtimeScript, want: []string{`FUNCTION_RESULT_BEGIN "tx=4" 404 `,
+			`unknown JSON keyword 'FOO=BAR'`, `over connection: GARBAGE=1"`}},
 		"executor-later": {down: []string{`GARBAGE a`},
 			later: []string{`GARBAGE b`, `FUNCTION tx-2`, `NODE_ID 'not-a-uuid' 'x' 'https://example.invalid'`}},
 		// the line fills the child's 15488-byte buffer before its newline arrives
@@ -784,9 +804,73 @@ func TestRChildRuntime(t *testing.T) {
 				up[i] = runtimeUpstream(parseCapture(s.Request, s.Data()))
 				records[i] = rchildRecords(t, d)
 			})
+			all := slices.Concat(up[0], records[0])
+			for _, w := range tc.want {
+				if !slices.ContainsFunc(all, func(l string) bool { return strings.Contains(l, w) }) {
+					t.Errorf("oracle: no upstream line or record holds %q", w)
+				}
+			}
 			diffLines(t, "upstream lines", up[0], up[1])
 			diffLines(t, "records", records[0], records[1])
 			t.Logf("upstream:\n%s\nrecords:\n%s", strings.Join(up[0], "\n"), strings.Join(records[0], "\n"))
 		})
+	}
+}
+
+// receiveTimeouts (strm.hs.child.timeouts): "does not respond" comes `[stream] timeout` (3 s) after the request
+// for R-silent and at once for R-close (stream-connector.c:358-377); each parent is postponed randomize(5, 30)
+// (stream-parents.c:111-136), so its next probe comes 5-30 s after the record, give or take the 1 s pass.
+func receiveTimeouts(t *testing.T, role Role, d *daemon.Daemon, s *stubs) {
+	t.Helper()
+	answers := map[string][2]time.Duration{
+		"R-silent": {2500 * time.Millisecond, 3900 * time.Millisecond}, "R-close": {-10 * time.Millisecond, time.Second}} // records carry milliseconds
+	for name, within := range answers {
+		p := s.parents[name]
+		sessions := p.Sessions()
+		if len(sessions) == 0 {
+			t.Errorf("%s: %s: no STREAM request", role, name)
+			continue
+		}
+		var logged time.Time
+		for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
+			if threadOf(l) == "SNDR-CN[0]" &&
+				strings.Contains(l, "[to "+p.Addr()+"]: remote netdata does not respond.") {
+				if m := recordTimeRe.FindStringSubmatch(l); m != nil {
+					logged, _ = time.Parse(time.RFC3339Nano, m[1])
+				}
+				break
+			}
+		}
+		if logged.IsZero() {
+			t.Errorf("%s: %s: no timed \"does not respond\" record", role, name)
+			continue
+		}
+		if took := logged.Sub(sessions[0].At); took < within[0] || took > within[1] {
+			t.Errorf("%s: %s: \"does not respond\" %v after the request, want %v to %v", role, name, took,
+				within[0], within[1])
+		} else {
+			t.Logf("%s: %s: \"does not respond\" %v after the request", role, name, took)
+		}
+		var next time.Time
+		for deadline := logged.Add(40 * time.Second); next.IsZero() && time.Now().Before(deadline); {
+			// the first probe after the request is the next attempt's: the record's time carries milliseconds only,
+			// and a closing parent's probe, request and record can share one
+			for _, at := range p.ProbeTimes() {
+				if at.After(sessions[0].At) {
+					next = at
+					break
+				}
+			}
+			if next.IsZero() {
+				time.Sleep(250 * time.Millisecond)
+			}
+		}
+		if next.IsZero() {
+			t.Errorf("%s: %s: not probed again within 40 s of its record", role, name)
+		} else if gap := next.Sub(logged); gap < 4500*time.Millisecond || gap > 33*time.Second {
+			t.Errorf("%s: %s: probed again %v after its record, want 5-30 s", role, name, gap)
+		} else {
+			t.Logf("%s: %s: probed again %v after its record", role, name, gap)
+		}
 	}
 }

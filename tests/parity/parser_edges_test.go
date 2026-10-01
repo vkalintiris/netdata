@@ -1,7 +1,10 @@
 package parity
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -395,9 +398,10 @@ func TestStreamParserEdges(t *testing.T) {
 	// F: the first `after` a connection requests sets the completion's start; an empty request resets it
 	t.Run("replication-first-time", func(t *testing.T) {
 		k := next()
+		// one clock for both sides: the requests' times follow the child's
+		fn := time.Now().Unix()
+		at := func(d int64) string { return strconv.FormatInt(fn+d, 10) }
 		edgeCaseDown(t, p, k, stream.CapsReplication, true, func(c *stream.Conn, down *[]string) error {
-			fn := time.Now().Unix()
-			at := func(d int64) string { return strconv.FormatInt(fn+d, 10) }
 			for _, id := range []string{"e.fa", "e.fb", "e.fc"} {
 				c.Linef("CHART '%s' '' 't' 'u' 'f' '%s' line 1 1 '' p m", id, id)
 				c.Linef("DIMENSION 'x' '' absolute 1 1 ''")
@@ -466,6 +470,70 @@ func TestStreamParserEdges(t *testing.T) {
 					t.Errorf("the oracle did not refuse 16385 bytes:\n%s", strings.Join(got[0], "\n"))
 				}
 			})
+		}
+	})
+
+	// U-stale (D128.2, D131.3): the receive slot cache is the host's and outlives a connection. The first connection
+	// grows it with u.a at slot 1; the second defines u.b and u.c again (the option word clears the accept's
+	// obsolete mark) but not u.a, which the accept's obsolete-all unslots. Slot 5 caches u.b and then takes u.c's
+	// block (no id check); slot 1, freed, finds u.c by id.
+	t.Run("slot-cache-reconnect", func(t *testing.T) {
+		k := next()
+		at := time.Now().Unix() - 30
+		chart := func(slot, id string) []string {
+			return []string{fmt.Sprintf("CHART %s'%s' '' 't' 'u' 'f' '%s' line 1 1 'x' p m", slot, id, id),
+				"DIMENSION 'd' '' absolute 1 1 ''"}
+		}
+		block := func(slot int, id string, t, v int64) []string {
+			return []string{fmt.Sprintf("BEGIN2 SLOT:%d '%s' 1 %d #", slot, id, t), fmt.Sprintf("SET2 'd' %d %d A", v, v),
+				"END2"}
+		}
+		first := append(append(chart("SLOT:1 ", "u.a"), chart("", "u.b")...), chart("", "u.c")...)
+		edgeCaseDown(t, p, k, stream.CapsLive, false, func(c *stream.Conn, _ *[]string) error { return lines(c, first...) })
+		second := append(chart("", "u.b"), chart("", "u.c")...)
+		second = append(second, block(5, "u.b", at, 20)...)
+		second = append(second, block(5, "u.c", at+1, 30)...)
+		second = append(second, block(1, "u.c", at+2, 40)...)
+		edgeCaseDown(t, p, k, stream.CapsLive, false, func(c *stream.Conn, _ *[]string) error { return lines(c, second...) })
+		// each chart's points over the blocks' seconds (the data API, which both agents serve)
+		values := map[string][]string{}
+		for _, id := range []string{"u.a", "u.b", "u.c"} {
+			path := fmt.Sprintf("/host/%s/api/v1/data?chart=%s&after=%d&before=%d&format=json&options=unaligned",
+				edgeHost(k).Hostname, id, at-1, at+2)
+			var bodies [2][]byte
+			for i, side := range p.Each() {
+				b, err := rawExchange(side.Daemon.Addr, []byte("GET "+path+" HTTP/1.1\r\n\r\n"), 5*time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, bodies[i], _ = bytes.Cut(b, []byte("\r\n\r\n"))
+			}
+			// u.a, obsolete, is no query's chart: C answers with a text, compared as bytes
+			var data struct{ Data [][]any }
+			if json.Unmarshal(bodies[0], &data) != nil {
+				if !bytes.Equal(bodies[0], bodies[1]) {
+					t.Errorf("%s:\noracle:    %q\ncandidate: %q", path, bodies[0], bodies[1])
+				}
+				continue
+			}
+			diffs, err := p.CompareJSON(path, nil, Rules{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, d := range diffs {
+				t.Errorf("%s: %s", path, d)
+			}
+			for _, row := range data.Data {
+				if len(row) == 2 && row[1] != nil {
+					values[id] = append(values[id], fmt.Sprintf("%v@%v", row[1], int64(row[0].(float64))-at))
+				}
+			}
+			slices.Sort(values[id])
+		}
+		// C: slot 5 cached u.b, which then took u.c's block; slot 1, freed with u.a's obsolete mark, found u.c
+		want := map[string][]string{"u.b": {"20@0", "30@1"}, "u.c": {"40@2"}}
+		if !maps.EqualFunc(values, want, slices.Equal) {
+			t.Errorf("the oracle's points are %v, not C's %v", values, want)
 		}
 	})
 }

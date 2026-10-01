@@ -267,10 +267,28 @@ func TestStreamChain(t *testing.T) {
 	if len(parentRecords(t, oracle.d("p"), "RECEIVER LEFT", nil)) == 0 {
 		t.Fatalf("the oracle proxy wrote no RECEIVER LEFT record")
 	}
+	// rrdhost_set_receiver()'s connections++ (stream-receiver.c:1407): a host a receiver attached to and left is
+	// offline, not archived (rrdhost-status.c:186-190); the oracle must say so at both hops
+	var leftInfo [2][]byte
+	for i, at := range []string{"gp", "p"} {
+		b, err := streamInfoMasked(oracle.addr(at), chainChild.MachineGUID)
+		if err != nil || !bytes.Contains(b, []byte(`"ingest_type":"archived"`)) ||
+			!bytes.Contains(b, []byte(`"ingest_status":"offline"`)) {
+			t.Fatalf("the oracle %s's stream_info of the child after the leave: %v %.300s", at, err, b)
+		}
+		leftInfo[i] = b
+	}
 	for _, c := range cs[1:] {
 		if !c.down {
 			t.Run(c.form+"/leave", func(t *testing.T) {
 				topoViews(t, "leave", oracle.topology, c.topology, [][2]string{gpChildView, proxyChildView}, entryTimes)
+				for i, at := range []string{"gp", "p"} {
+					b, err := streamInfoMasked(c.addr(at), chainChild.MachineGUID)
+					if err != nil || !bytes.Equal(leftInfo[i], b) {
+						t.Errorf("%s stream_info of the child after the leave: %v %s", at, err,
+							firstDifference(leftInfo[i], b))
+					}
+				}
 			})
 		}
 	}
@@ -346,6 +364,14 @@ func TestStreamChain(t *testing.T) {
 	})
 	time.Sleep(3 * time.Second)
 	want := chainRecords(t, oracle)
+	for _, set := range []string{"proxy receiver", "grandparent receiver"} {
+		for _, form := range []string{"connected and ready to receive data, new node NEVER CONNECTED",
+			"connected and ready to receive data, last sample in the db D ago NEVER CONNECTED"} {
+			if !slices.ContainsFunc(want[set], func(l string) bool { return strings.Contains(l, form) }) {
+				t.Errorf("the oracle's %s records have no %q", set, form)
+			}
+		}
+	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		t.Logf("oracle %s records:\n%s", name, strings.Join(want[name], "\n"))
 	}

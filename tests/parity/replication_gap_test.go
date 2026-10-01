@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/netdata/netdata/tests/query-corpus/daemon"
+	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
 // relaySession is one STREAM connection through a relay: what the child sent up and what the parent sent down.
@@ -222,7 +223,7 @@ func TestReplicationGap(t *testing.T) {
 		if waitSession(0, 120*time.Second) == nil {
 			t.Fatalf("%s: session 1: not every chart streams within 120 s", role)
 		}
-		time.Sleep(150 * time.Second)
+		time.Sleep(200 * time.Second)
 		// the parent's last point of each compared chart before the gap
 		last := map[string]int64{}
 		for _, chart := range gapCharts {
@@ -253,8 +254,18 @@ func TestReplicationGap(t *testing.T) {
 					role, chart, after, before, firstDifference([]byte(own), []byte(replicated)))
 			}
 		}
-		up, _ := s.data()
+		up, down := s.data()
 		runs[i].verdicts = replayVerdicts(up)
+		// repl.snd.align: a false answer may end at its storage page's end; each side moves some (on the oracle, the
+		// proof the guard is not vacuous), within C's bounds
+		moved, falses, broken := replayAlignment(up, down)
+		t.Logf("%s: %d of %d false answers moved to their page's end", role, moved, falses)
+		if moved == 0 {
+			t.Errorf("%s: none of %d false answers moved its before to its page's end", role, falses)
+		}
+		for _, b := range broken {
+			t.Errorf("%s: %s", role, b)
+		}
 		// the summary after the second session's answers, about 30 s after the last
 		deadline := time.Now().Add(60 * time.Second)
 		for time.Now().Before(deadline) {
@@ -295,4 +306,59 @@ func TestReplicationGap(t *testing.T) {
 	}
 	t.Logf("oracle rounds:\n%s", strings.Join(charts[0], "\n"))
 	t.Logf("oracle summary: %s", runs[0].summary)
+}
+
+var (
+	replayRequestRe = regexp.MustCompile(`^REPLAY_CHART "([^"]*)" "(true|false)" (\d+) (\d+)$`)
+	replayStepEndRe = regexp.MustCompile(`^RBEGIN (?:SLOT:\S+ )?'' \S+ (\S+) \S+$`)
+)
+
+// replayAlignment pairs a session's false requests with their false answers (stream-replication-sender.c:311-331):
+// REND's before is the request's or later, at the end of the page the window ends in: by less than 1024 intervals,
+// before the chart's last point and before now, the steps running to it.
+func replayAlignment(up, down []byte) (moved, falses int, broken []string) {
+	num := func(s string) uint64 { v, _ := stream.DecodeU64(s); return v }
+	asked := map[string][]uint64{}
+	for _, l := range strings.Split(string(down), "\n") {
+		if m := replayRequestRe.FindStringSubmatch(l); m != nil {
+			b := num(m[4])
+			if m[2] == "true" {
+				b = 0
+			}
+			asked[m[1]] = append(asked[m[1]], b)
+		}
+	}
+	answered := map[string]int{}
+	chart, stepEnd := "", uint64(0)
+	for _, l := range strings.Split(string(up), "\n") {
+		switch {
+		case replayStartRe.MatchString(l):
+			chart, stepEnd = replayStartRe.FindStringSubmatch(l)[1], 0
+		case chart == "":
+		case replayStepEndRe.MatchString(l):
+			stepEnd = num(replayStepEndRe.FindStringSubmatch(l)[1])
+		case replayEndRe.MatchString(l):
+			m := replayEndRe.FindStringSubmatch(l)
+			n := answered[chart]
+			answered[chart]++
+			if n >= len(asked[chart]) {
+				broken = append(broken, fmt.Sprintf("%s: answer %d has no request", chart, n+1))
+			} else if req := asked[chart][n]; req != 0 && m[4] == "false " {
+				falses++
+				ue, last, before, wall := num(m[1]), num(m[3]), num(m[6]), num(m[7])
+				switch {
+				case before < req:
+					broken = append(broken, fmt.Sprintf("%s: answer %d ends at %d, before the asked %d", chart, n+1, before, req))
+				case before > req:
+					moved++
+					if ue == 0 || (before-req)/ue >= 1024 || before >= last || before >= wall || stepEnd != before {
+						broken = append(broken, fmt.Sprintf("%s: answer %d moved %d to %d (interval %d, last %d, now %d, steps to %d)",
+							chart, n+1, req, before, ue, last, wall, stepEnd))
+					}
+				}
+			}
+			chart = ""
+		}
+	}
+	return moved, falses, broken
 }

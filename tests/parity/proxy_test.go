@@ -725,6 +725,13 @@ func proxyLeaveRun(t *testing.T, v proxyVariant, base int64, sides [2]*proxySide
 		out[i] = append(append(out[i], "== left"), records...)
 		out[i] = append(append(out[i], "== the second session"), requestLines(second[i].Request)...)
 		out[i] = append(out[i], proxyTranscript(string(second[i].Data()))...)
+		// the ready hook's order (strm.up.ready_order): only the second session finds host variables, kept by the
+		// proxied host across the leave, and they go first, before the path
+		starts := [2][]string{proxyStartKinds(string(first[i].Data())), proxyStartKinds(string(second[i].Data()))}
+		out[i] = append(out[i], "== the sessions' starts", strings.Join(starts[0], ", "), strings.Join(starts[1], ", "))
+		if i == 0 && (len(starts[1]) < 2 || starts[1][0] != "VARIABLE HOST" || starts[1][1] != "JSON STREAM_PATH") {
+			t.Errorf("the oracle's second session does not start with the host's variables, then its path: %v", starts[1])
+		}
 		out[i] = append(append(out[i], "== the child that left"), proxyDownstream(left[i].Downstream())...)
 		out[i] = append(append(out[i], "== the child's return"), proxyDownstream(s.child.Downstream())...)
 	}
@@ -998,4 +1005,38 @@ func TestProxyTranscriptParse(t *testing.T) {
 	if got := proxyTranscript(moved); slices.Equal(got, base) {
 		t.Error("a block moved across a marker compares equal")
 	}
+}
+
+// proxyStartKinds are the kinds of a session's lines before its first definition, each at its first appearance,
+// then CHART: the ready hook's order (stream-sender.c:165-179), which proxyTranscript loses (labels sorted to the
+// front, only the last path kept). FUNCTION lines are left out (D100.9).
+func proxyStartKinds(data string) []string {
+	var out []string
+	add := func(k string) {
+		if !slices.Contains(out, k) {
+			out = append(out, k)
+		}
+	}
+	inPath := false
+	for _, l := range strings.Split(data, "\n") {
+		switch {
+		case inPath:
+			inPath = l != "JSON_PAYLOAD_END"
+		case proxyChartRe.MatchString(l):
+			return append(out, "CHART")
+		case l == "JSON STREAM_PATH":
+			inPath = true
+			add(l)
+		case strings.HasPrefix(l, "FUNCTION"):
+		case strings.HasPrefix(l, "VARIABLE HOST "):
+			add("VARIABLE HOST")
+		case l == "OVERWRITE labels":
+			add(l)
+		default:
+			if f := strings.Fields(l); len(f) > 0 {
+				add(f[0])
+			}
+		}
+	}
+	return out
 }

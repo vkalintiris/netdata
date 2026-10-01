@@ -296,6 +296,8 @@ type senderVariant struct {
 	child func(*daemon.Options)
 	// paths, when set, is how many stream paths the first session's start must hold on each side
 	paths int
+	// startHas, when set, is a pattern a line of the oracle's first session's start must match
+	startHas string
 }
 
 var senderVariants = []senderVariant{
@@ -314,6 +316,12 @@ var senderVariants = []senderVariant{
 		}},
 	{name: "nolabels",
 		refused: stream.CapReplication | stream.CapCLabels | stream.CapHLabels | stream.CapClaim | stream.CapPaths},
+	// `[global] is ephemeral node`, and the legacy `[health] is ephemeral` moved to it, set the `_is_ephemeral` host
+	// label (M7 10f, D122.11; the harness's children send it "false")
+	{name: "ephemeral", refused: stream.CapReplication, startHas: `^LABEL "_is_ephemeral" = \d+ "true"$`,
+		child: func(o *daemon.Options) { o.GlobalExtra = "    is ephemeral node = yes\n" }},
+	{name: "ephemeral-legacy", refused: stream.CapReplication, startHas: `^LABEL "_is_ephemeral" = \d+ "true"$`,
+		child: func(o *daemon.Options) { o.HealthExtra = "    is ephemeral = yes\n" }},
 	{name: "pattern", refused: stream.CapReplication,
 		extra: "    send charts matching = !netdata.http_api_* !netdata.network_streaming *\n"},
 	{name: "reconnect", refused: stream.CapReplication, sessions: 2,
@@ -434,6 +442,9 @@ func TestSenderCapture(t *testing.T) {
 				}
 			}
 			diffLines(t, "gate and reset records", records[0], records[1])
+			if v.startHas != "" && !slices.ContainsFunc(caps[0][0].start, regexp.MustCompile(v.startHas).MatchString) {
+				t.Errorf("the oracle's first session's start lacks %s:\n%s", v.startHas, strings.Join(caps[0][0].start, "\n"))
+			}
 			if v.paths > 0 {
 				for i, role := range []Role{Oracle, Candidate} {
 					n := 0
