@@ -534,9 +534,10 @@ thread_local! {
     static SSL_STATES: ErrorLimit = const { ErrorLimit::new(1, 0) };
 }
 
-/// `socket_peers()` at the time of a record: the socket's addresses, `unknown`:0 for one the kernel no longer has (a
-/// peer that reset), `not connected`:0 without a socket. The calls leave their errno, which the record reports.
-fn peers(fd: Option<RawFd>) -> [(String, u16); 2] {
+/// `socket_peers()` at the time of a record (these TLS records' and the stream sender's): the socket's local and
+/// remote addresses, `unknown`:0 for one the kernel no longer has (a peer that reset), `not connected`:0 without a
+/// socket. The calls leave their errno, which a record reports.
+pub fn socket_peers(fd: Option<RawFd>) -> [(String, u16); 2] {
     use nix::sys::socket::{SockaddrStorage, getpeername, getsockname};
     let Some(fd) = fd else {
         return [("not connected".into(), 0), ("not connected".into(), 0)];
@@ -561,7 +562,7 @@ fn incomplete(op: &str, state: State, fd: RawFd) {
         State::Failed => "a failed",
         State::Complete => return,
     };
-    let [(local_ip, local_port), (remote_ip, remote_port)] = peers(Some(fd));
+    let [(local_ip, local_port), (remote_ip, remote_port)] = socket_peers(Some(fd));
     let errno = Errno::last_raw();
     SSL_STATES.with(|limit| {
         nd_log_limit!(
@@ -650,7 +651,7 @@ pub fn log_error_queue(call: &str, ssl: Option<&SslRef>, fd: Option<RawFd>, code
     if code == 0 && queue.is_empty() {
         return;
     }
-    let [(local_ip, local_port), (remote_ip, remote_port)] = peers(fd);
+    let [(local_ip, local_port), (remote_ip, remote_port)] = socket_peers(fd);
     let errno = Errno::last_raw();
     let state = ssl.map_or("No SSL connection", SslRef::state_string_long);
     let cipher = ssl.map_or("Unknown", |s| s.current_cipher().map_or("(NONE)", |c| c.name()));

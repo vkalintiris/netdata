@@ -5,7 +5,7 @@
 
 use std::io;
 use std::os::fd::AsRawFd;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, PoisonError};
 use std::time::Instant;
 
@@ -21,7 +21,7 @@ use netdata_agent_rrd::host::{Host, sender_flags};
 use netdata_agent_rrd::pulse::host_status;
 use netdata_agent_text::duration::duration_to_string;
 use netdata_agent_text::size::size_to_string;
-use netdata_agent_tls::Link;
+use netdata_agent_tls::{Link, socket_peers};
 
 use super::execute::Executor;
 use super::{Connected, Sender, Session, op};
@@ -60,8 +60,9 @@ pub(crate) struct Dispatched {
     last_traffic_ut: u64,
     pub remote_ip: String,
     pub capabilities: u32,
-    /// The parent's address as `socket_peers()` gives it, for DST_IP and DST_PORT.
-    peer: Option<(String, u16)>,
+    /// The socket's descriptor while the link is open, -1 once it closed (`state->sock.fd`): what the frames' DST_IP and
+    /// DST_PORT read when a record is written.
+    peer_fd: Arc<AtomicI32>,
     /// The link is over TLS: DST_TRANSPORT `https` until its close.
     tls: bool,
     pub executor: Executor,
@@ -79,33 +80,47 @@ impl Dispatched {
     /// The sender's frame (`stream_sender_log_*()` callbacks): the host, the parent while the socket is open, the
     /// transport and the capabilities.
     pub(crate) fn frame(&self) -> FrameGuard {
-        sender_frame(&self.host.hostname(), self.peer.as_ref(), self.capabilities, self.tls)
+        sender_frame(&self.host.hostname(), Some(&self.peer_fd), self.capabilities, self.tls)
     }
 }
 
-/// With no peer (the socket closed) the DST_IP and DST_PORT callbacks return false, and C's logfmt keeps their
-/// separators; DST_TRANSPORT is `https` while a TLS link is open (`nd_sock_is_ssl()`).
-fn sender_frame(hostname: &str, peer: Option<&(String, u16)>, capabilities: u32, tls: bool) -> FrameGuard {
+/// DST_IP and DST_PORT ask the socket when a record is written (`stream_sender_log_dst_ip()`, `_port()`); with no
+/// socket (closed) they return false, and C's logfmt keeps their separators; DST_TRANSPORT is `https` while a TLS link
+/// is open (`nd_sock_is_ssl()`).
+fn sender_frame(hostname: &str, peer_fd: Option<&Arc<AtomicI32>>, capabilities: u32, tls: bool) -> FrameGuard {
     let mut fields = vec![(Field::NidlNode, Value::Str(hostname.to_string()))];
-    match peer {
-        Some((ip, port)) => {
-            fields.push((Field::DstIp, Value::Str(ip.clone())));
-            fields.push((Field::DstPort, Value::Str(port.to_string())));
-        }
-        None => {
-            fields.push((Field::DstIp, Value::lazy(|_| false)));
-            fields.push((Field::DstPort, Value::lazy(|_| false)));
-        }
-    }
+    let (ip_fd, port_fd) = (peer_fd.cloned(), peer_fd.cloned());
+    fields.push((
+        Field::DstIp,
+        Value::lazy(move |out| {
+            peer(ip_fd.as_deref()).is_some_and(|(ip, _)| {
+                out.extend_from_slice(ip.as_bytes());
+                true
+            })
+        }),
+    ));
+    fields.push((
+        Field::DstPort,
+        Value::lazy(move |out| {
+            peer(port_fd.as_deref()).is_some_and(|(_, port)| {
+                out.extend_from_slice(port.to_string().as_bytes());
+                true
+            })
+        }),
+    ));
     fields.push((Field::DstTransport, Value::txt(if tls { "https" } else { "http" })));
     fields.push((Field::DstCapabilities, Value::Str(caps::to_string(capabilities))));
     push(fields)
 }
 
-/// `socket_peers()` of an inet socket.
-fn peer_of(socket: &socket2::SockRef<'_>) -> Option<(String, u16)> {
-    let addr = socket.peer_addr().ok()?.as_socket()?;
-    Some((addr.ip().to_string(), addr.port()))
+/// The parent's address when a record is written: nothing once the socket closed, else `socket_peers()`'s remote
+/// (`unknown`:0 once the parent reset the connection, or for a unix socket, D107.10).
+fn peer(peer_fd: Option<&AtomicI32>) -> Option<(String, u16)> {
+    let fd = peer_fd?.load(Ordering::Acquire);
+    (fd >= 0).then(|| {
+        let [_, remote] = socket_peers(Some(fd));
+        remote
+    })
 }
 
 impl StreamWorker {
@@ -133,8 +148,8 @@ impl StreamWorker {
         };
         let hostname = host.hostname();
         let tls = link.is_tls();
-        let peer = link.socket().and_then(|c| peer_of(&socket2::SockRef::from(c)));
-        let _frame = sender_frame(&hostname, peer.as_ref(), capabilities, tls);
+        let peer_fd = Arc::new(AtomicI32::new(link.socket().map_or(-1, AsRawFd::as_raw_fd)));
+        let _frame = sender_frame(&hostname, Some(&peer_fd), capabilities, tls);
         nd_log!(
             Source::Daemon,
             Priority::Debug,
@@ -203,7 +218,7 @@ impl StreamWorker {
             last_traffic_ut: now_monotonic_ut(),
             remote_ip,
             capabilities,
-            peer,
+            peer_fd,
             tls,
             executor: Executor::default(),
             replication_commands: 0,
@@ -657,6 +672,7 @@ impl StreamWorker {
                 );
             }
         }
+        d.peer_fd.store(-1, Ordering::Release);
         drop(d.link);
         // a TLS close leaves what its shutdown set (EAGAIN on the non-blocking socket), which C's next record carries
         let mut errno = if d.tls { nix::errno::Errno::last_raw() } else { 0 };
@@ -701,5 +717,35 @@ impl Sender {
     /// The dequeue's bookkeeping: connections counted, the state's time.
     fn status_connected(&self) {
         self.lock().last_state_since_s = now_realtime_s();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn a_records_parent_address_is_the_sockets_when_written() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (parent, _) = listener.accept().unwrap();
+        let fd = AtomicI32::new(client.as_raw_fd());
+        assert_eq!(peer(Some(&fd)), Some(("127.0.0.1".to_string(), port)));
+
+        // the parent resets the connection: the kernel no longer has its address
+        socket2::SockRef::from(&parent).set_linger(Some(Duration::ZERO)).unwrap();
+        drop(parent);
+        let _ = (&client).read(&mut [0; 1]);
+        assert_eq!(peer(Some(&fd)), Some(("unknown".to_string(), 0)));
+
+        // the socket closed: no fields at all
+        fd.store(-1, Ordering::Release);
+        assert_eq!(peer(Some(&fd)), None);
+        assert_eq!(peer(None), None);
     }
 }
