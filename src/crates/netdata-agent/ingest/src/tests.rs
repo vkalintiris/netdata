@@ -2019,8 +2019,28 @@ fn plugin_parser(hosts: &Arc<Hosts>) -> Parser {
     plugin_parser_attaching(hosts, Arc::new(|_| {}))
 }
 
+/// A plugin's stdin: what its parser's transport wrote.
+#[derive(Default)]
+struct TestWire(std::sync::Mutex<Vec<u8>>);
+
+impl crate::functions::Wire for TestWire {
+    fn send(&self, text: &[u8]) -> isize {
+        self.0.lock().unwrap().extend_from_slice(text);
+        text.len() as isize
+    }
+}
+
+/// A plugin's parser writing to `wire`.
+fn plugin_parser_with_wire(hosts: &Arc<Hosts>, wire: &Arc<TestWire>) -> Parser {
+    plugin_parser_on(hosts, Arc::new(|_| {}), Arc::clone(wire) as Arc<dyn crate::functions::Wire>)
+}
+
 /// A plugin's parser whose vnodes get their senders from `attach_sender`.
 fn plugin_parser_attaching(hosts: &Arc<Hosts>, attach_sender: AttachSender) -> Parser {
+    plugin_parser_on(hosts, attach_sender, Arc::new(TestWire::default()))
+}
+
+fn plugin_parser_on(hosts: &Arc<Hosts>, attach_sender: AttachSender, wire: Arc<dyn crate::functions::Wire>) -> Parser {
     Parser::plugin(
         PluginHosts {
             hosts: Arc::clone(hosts),
@@ -2039,6 +2059,7 @@ fn plugin_parser_attaching(hosts: &Arc<Hosts>, attach_sender: AttachSender) -> P
             gap_when_lost_iterations_above: 3,
         },
         "difftest.plugin".into(),
+        wire,
     )
 }
 
@@ -2671,5 +2692,148 @@ fn the_run_frame_follows_the_parsers_host() {
     assert!(record.message.unwrap().contains("'host:parent/chart:l.a/'"));
     assert_eq!(record.fields.iter().find(|(f, _)| *f == Field::NidlNode).map(|(_, v)| v.as_str()), Some("v1"));
     drop(frame);
+}
+
+// ---- a plugin's functions (milestone 8 commit 5, D147) ----
+
+/// A parent's no-wait call on localhost (as a child runs it), and where its answer arrives.
+fn call_plugin(hosts: &Arc<Hosts>, cmd: &[u8], tx: &[u8]) -> std::sync::mpsc::Receiver<(nrpc::reply::Reply, u16)> {
+    let (send, answers) = std::sync::mpsc::channel();
+    let lh = hosts.localhost();
+    let called = nrpc::call::Calls::process().call(nrpc::call::CallSpec {
+        owner: Some((lh.functions(), "parent")),
+        cmd,
+        source: b"from-parent",
+        user_access: 0,
+        timeout_s: 0,
+        wait: false,
+        allow_restricted: true,
+        call_id: Some(tx),
+        payload: None,
+        reply: nrpc::reply::Reply::new(nrpc::reply::ContentType::TextPlain),
+        done: Some(Box::new(move |reply, code| send.send((reply, code)).unwrap())),
+        progress: None,
+        is_cancelled: None,
+    });
+    assert_eq!(called.code, 200);
+    answers
+}
+
+/// A plugin's FUNCTION is its transport's: a call goes to its stdin, its result span answers it, the span's END
+/// counts as a collection; its FUNCTION_PROGRESS for an unknown call and a result for an unknown one are C's records.
+#[test]
+fn a_plugin_answers_a_call_through_its_parser() {
+    let hosts = plugin_hosts();
+    let wire = Arc::new(TestWire::default());
+    let mut p = plugin_parser_with_wire(&hosts, &wire);
+    feed_ok(&mut p, &["FUNCTION GLOBAL \"answer\" 10 \"help\" \"top\" \"0x0\" 100 0".into()]);
+    let tx = "5a1e00000000400080000000000000f1";
+    let answers = call_plugin(&hosts, b"answer now", tx.as_bytes());
+    assert_eq!(
+        String::from_utf8(std::mem::take(&mut *wire.0.lock().unwrap())).unwrap(),
+        format!("FUNCTION {tx} 10 \"answer now\" \"0x0\" \"from-parent\"\n")
+    );
+    let before = p.data_collections_count;
+    let lines = [
+        format!("FUNCTION_RESULT_BEGIN {tx} 200 application/json {}", netdata_agent_rrd::clock::now_realtime_s() + 60),
+        "{\"rows\":[1]}".into(),
+        "FUNCTION_RESULT_END".into(),
+    ];
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let (results, records) = netdata_agent_log::capture(|| feed_all(&mut p, &refs));
+    assert!(results.iter().all(|&ok| ok) && records.is_empty(), "{records:?}");
+    let (reply, code) = answers.recv().unwrap();
+    assert_eq!((code, reply.body.as_slice()), (200, &b"{\"rows\":[1]}\n"[..]));
+    assert_eq!(p.data_collections_count, before + 1);
+    let (_, records) = netdata_agent_log::capture(|| {
+        feed_all(&mut p, &[&format!("FUNCTION_PROGRESS {tx} 1 2"), "FUNCTION_RESULT_BEGIN other 200 x 0", "late", "FUNCTION_RESULT_END"])
+    });
+    let texts: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+    assert_eq!(
+        texts,
+        [
+            format!("got a FUNCTION_PROGRESS for transaction '{tx}', but the transaction is not found."),
+            "got a FUNCTION_RESULT_BEGIN for transaction 'other', but the transaction is not found.".to_string(),
+        ]
+    );
+}
+
+/// The run's end: a span cut short answers 503 with what came; another pending call C's "exited" 503; the
+/// parser's methods answer as a transport that is gone.
+#[test]
+fn a_plugins_end_answers_its_pending_calls() {
+    let hosts = plugin_hosts();
+    let wire = Arc::new(TestWire::default());
+    let mut p = plugin_parser_with_wire(&hosts, &wire);
+    feed_ok(&mut p, &["FUNCTION GLOBAL \"answer\" 10 \"help\" \"top\" \"0x0\" 100 0".into()]);
+    let (cut, waiting) = ("5a1e00000000400080000000000000f2", "5a1e00000000400080000000000000f3");
+    let cut_rx = call_plugin(&hosts, b"answer", cut.as_bytes());
+    let waiting_rx = call_plugin(&hosts, b"answer", waiting.as_bytes());
+    feed_ok(&mut p, &[format!("FUNCTION_RESULT_BEGIN {cut} 200 text/plain 0"), "half".into()]);
+    drop(p);
+    let (reply, code) = cut_rx.recv().unwrap();
+    assert_eq!((code, reply.body.as_slice()), (503, &b"half\n"[..]));
+    let (reply, code) = waiting_rx.recv().unwrap();
+    assert_eq!(
+        (code, String::from_utf8(reply.body).unwrap()),
+        (503, r#"{"status":503,"errorMessage":"The plugin that was servicing this request, exited before responding."}"#.into())
+    );
+    let (send, after) = std::sync::mpsc::channel();
+    let lh = hosts.localhost();
+    nrpc::call::Calls::process().call(nrpc::call::CallSpec {
+        owner: Some((lh.functions(), "parent")),
+        cmd: b"answer",
+        source: b"",
+        user_access: 0,
+        timeout_s: 0,
+        wait: false,
+        allow_restricted: true,
+        call_id: None,
+        payload: None,
+        reply: nrpc::reply::Reply::new(nrpc::reply::ContentType::TextPlain),
+        done: Some(Box::new(move |reply, code| send.send((reply, code)).unwrap())),
+        progress: None,
+        is_cancelled: None,
+    });
+    let (reply, code) = after.recv().unwrap();
+    assert_eq!(
+        (code, String::from_utf8(reply.body).unwrap()),
+        (503, r#"{"status":503,"errorMessage":"The plugin that offered this function is not available."}"#.into())
+    );
+}
+
+/// C's limit on an answer: past it the run ends with C's record naming the end keyword, the plugin and the call.
+#[test]
+fn an_answer_too_big_ends_the_run() {
+    let hosts = plugin_hosts();
+    let wire = Arc::new(TestWire::default());
+    let mut p = plugin_parser_with_wire(&hosts, &wire);
+    feed_ok(&mut p, &["FUNCTION GLOBAL \"answer\" 10 \"help\" \"top\" \"0x0\" 100 0".into()]);
+    let tx = "5a1e00000000400080000000000000f4";
+    let rx = call_plugin(&hosts, b"answer", tx.as_bytes());
+    feed_ok(&mut p, &[format!("FUNCTION_RESULT_BEGIN {tx} 200 text/plain 0")]);
+    let line = vec![b'x'; 1 << 20];
+    let mut line = line;
+    line.push(b'\n');
+    let mut ok = true;
+    let mut fed = 0;
+    let (_, records) = netdata_agent_log::capture(|| {
+        while ok {
+            ok = p.feed(&line);
+            fed += 1;
+        }
+    });
+    assert_eq!(fed, MAX_DEFERRED_SIZE / line.len() + 1);
+    let texts: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+    let size = fed * line.len();
+    assert_eq!(
+        texts,
+        [format!(
+            "PLUGINSD: deferred response is too big ({size} bytes, limit {MAX_DEFERRED_SIZE} bytes) while waiting for keyword 'FUNCTION_RESULT_END' from plugin 'difftest.plugin' (transaction '{tx}'). Stopping this plugin."
+        )]
+    );
+    drop(p);
+    let (reply, code) = rx.recv().unwrap();
+    assert_eq!((code, reply.body.len()), (503, size));
 }
 

@@ -8,7 +8,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod functions;
 pub mod jsonc;
+
+use functions::{PluginTransport, Wire};
+use netdata_agent_nrpc::call::Calls;
 pub mod stream_path;
 
 use std::sync::Arc;
@@ -209,8 +213,16 @@ pub type ReplaySink = Arc<dyn Fn(ReplayRequest) -> bool + Send + Sync>;
 enum Mode {
     /// A child's stream (`PARSER_INIT_STREAMING`).
     Stream,
-    /// A plugin of this agent (`PARSER_INIT_PLUGINSD`), by its file name.
-    Plugin { filename: Arc<str>, hosts: PluginHosts },
+    /// A plugin of this agent (`PARSER_INIT_PLUGINSD`), by its file name, with the transport its functions are
+    /// called through (`parser->inflight`).
+    Plugin { filename: Arc<str>, hosts: PluginHosts, transport: Arc<PluginTransport> },
+}
+
+/// A `FUNCTION_RESULT_BEGIN` ... `FUNCTION_RESULT_END` span of a plugin: the transaction as it came, and whether a
+/// pending call answers to it (`parser->defer.item`).
+struct ResultSpan {
+    key: Vec<u8>,
+    known: bool,
 }
 
 /// What a plugin's parser needs to define vnodes (`pluginsd_host_define_end()`): the hosts, the configured `[db]
@@ -279,6 +291,8 @@ pub struct Parser {
     pub data_collections_count: u64,
     deferred: Option<DeferredBody>,
     on_done: OnDone,
+    /// A plugin's open result span.
+    result_span: Option<ResultSpan>,
     /// `parser->user.new_host_labels`: collected by LABEL until OVERWRITE.
     new_host_labels: Option<Labels>,
     /// Bytes for the child or the plugin (`send_to_plugin`), drained by the caller.
@@ -297,9 +311,15 @@ pub struct Parser {
 impl Drop for Parser {
     fn drop(&mut self) {
         self.clear_scope_with("THREAD CLEANUP", false, None);
-        if let Mode::Plugin { .. } = self.mode {
+        if let Mode::Plugin { transport, .. } = &self.mode {
             let old = NODE.with(|n| n.take());
             drop(old);
+            // parser_destroy(): a span cut short lets its call go, then the transport ends (every pending call
+            // answered)
+            if let Some(span) = self.result_span.take() {
+                transport.release_span(&span.key);
+            }
+            transport.shutdown();
         }
     }
 }
@@ -330,6 +350,7 @@ impl Parser {
             cleanup_slots: false,
             data_collections_count: 0,
             deferred: None,
+            result_span: None,
             on_done: OnDone::Nothing,
             new_host_labels: None,
             out: Vec::new(),
@@ -340,10 +361,11 @@ impl Parser {
 
     /// A parser of one run of the plugin `filename` (`pluginsd_process()`), collecting into localhost, and the vnodes
     /// it defines, with the plugin's update every in `config`.
-    pub fn plugin(hosts: PluginHosts, config: Config, filename: Arc<str>) -> Self {
+    pub fn plugin(hosts: PluginHosts, config: Config, filename: Arc<str>, wire: Arc<dyn Wire>) -> Self {
         let localhost = Arc::clone(hosts.hosts.localhost());
         let mut parser = Parser::new(Arc::clone(&localhost), localhost, config);
-        parser.mode = Mode::Plugin { filename, hosts };
+        let transport = PluginTransport::new(wire, Arc::clone(Calls::process()));
+        parser.mode = Mode::Plugin { filename, hosts, transport };
         parser.trust_durations = false;
         parser.node_changed();
         parser
@@ -417,6 +439,30 @@ impl Parser {
         );
     }
 
+    /// One line of a plugin's result span (`parser->defer.response`): to its pending call, within C's limit, past
+    /// which the run ends (its caller then gets 503 with what came). `false` ends the run.
+    fn result_line(&mut self, line: &[u8]) -> bool {
+        let (Some(span), Mode::Plugin { transport, filename, .. }) = (&self.result_span, &self.mode) else {
+            return true;
+        };
+        if !span.known {
+            return true;
+        }
+        let size = transport.result_line(&span.key, netdata_agent_text::c::c_str(line));
+        if size <= MAX_DEFERRED_SIZE {
+            return true;
+        }
+        let filename = Arc::clone(filename);
+        let key = text(&span.key);
+        plog!(
+            self,
+            Source::Daemon,
+            Priority::Err,
+            "PLUGINSD: deferred response is too big ({size} bytes, limit {MAX_DEFERRED_SIZE} bytes) while waiting for keyword 'FUNCTION_RESULT_END' from plugin '{filename}' (transaction '{key}'). Stopping this plugin."
+        );
+        false
+    }
+
     /// What must be written to the child.
     pub fn take_output(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.out)
@@ -427,10 +473,13 @@ impl Parser {
         self.line += 1;
         if let Some(body) = &mut self.deferred {
             return match body.feed(line) {
-                Deferred::Continue => true,
+                Deferred::Continue => self.result_line(line),
                 // ML_MODEL payloads come with ML.
                 Deferred::Done(body) => {
                     self.deferred = None;
+                    if let (Some(span), Mode::Plugin { transport, .. }) = (self.result_span.take(), &self.mode) {
+                        transport.result_end(&span.key);
+                    }
                     match self.on_done {
                         OnDone::Nothing => {}
                         OnDone::CountCollection => self.data_collections_count += 1,
@@ -1590,8 +1639,7 @@ impl Parser {
                 access: nrpc::access::from_hex_mapping_old_roles(access.unwrap_or(b"")),
                 sync: false,
                 source: self.function_source(),
-                // a plugin's transport comes with milestone 8 commit 5e, a child's with commit 7
-                handler: nrpc::Handler::Unwired,
+                handler: self.function_handler(),
             },
         );
         if let Err(warning) = registered {
@@ -1637,7 +1685,17 @@ impl Parser {
         Ok(())
     }
 
-    /// `pluginsd_call_acquire()`: this parent never calls a child's functions yet, so no transaction is known.
+    /// The handler a FUNCTION registers: the plugin's transport; a child's methods answer as a transport that is gone
+    /// until the receiver is one (milestone 8 commit 7).
+    fn function_handler(&self) -> nrpc::Handler {
+        match &self.mode {
+            Mode::Plugin { transport, .. } => nrpc::Handler::Transport(Arc::clone(transport) as Arc<dyn nrpc::Transport>),
+            Mode::Stream => nrpc::Handler::Unwired,
+        }
+    }
+
+    /// `pluginsd_call_acquire()`'s record: no pending call answers to the transaction (a parent never calls a child's
+    /// functions before milestone 8 commit 7).
     fn call_not_found(&mut self, keyword: &str, transaction: Option<&[u8]>) {
         plog!(
             self,
@@ -1666,14 +1724,41 @@ impl Parser {
                 shown(fields[3])
             );
         }
-        self.call_not_found("FUNCTION_RESULT_BEGIN", transaction);
+        // a status that is not a positive number is C's 591 (HTTP_RESP_BACKEND_RESPONSE_INVALID)
+        let code = match w.get(2).filter(|s| !s.is_empty()).map_or(0, str2i) {
+            c if c <= 0 => 591,
+            c => u16::try_from(c).unwrap_or(u16::MAX),
+        };
+        let expires = w.get(4).filter(|e| !e.is_empty()).map_or(0, |e| str2ll(e).0);
+        // a child's results come with the parent's calls (milestone 8 commit 7)
+        let known = match (&self.mode, transaction.filter(|t| !t.is_empty())) {
+            (Mode::Plugin { transport, .. }, Some(key)) => {
+                transport.result_begin(key, code, w.get(3), expires, netdata_agent_rrd::clock::now_realtime_s())
+            }
+            _ => false,
+        };
+        if !known {
+            self.call_not_found("FUNCTION_RESULT_BEGIN", transaction);
+        }
+        if let Mode::Plugin { .. } = self.mode {
+            self.result_span = Some(ResultSpan { key: transaction.unwrap_or_default().to_vec(), known });
+        }
         self.deferred = Some(DeferredBody::discarding("FUNCTION_RESULT_END"));
         self.on_done = OnDone::CountCollection;
     }
 
-    /// `pluginsd_function_progress()`: `transaction done all`.
+    /// `pluginsd_function_progress()`: `transaction done all`, to the caller's progress callback.
     fn function_progress(&mut self, w: &Words) {
-        self.call_not_found("FUNCTION_PROGRESS", w.get(1));
+        let number = |v: Option<&[u8]>| v.filter(|v| !v.is_empty()).map_or(0, str2u) as usize;
+        let known = match (&self.mode, w.get(1).filter(|t| !t.is_empty())) {
+            (Mode::Plugin { transport, .. }, Some(key)) => {
+                transport.progress_from_plugin(key, number(w.get(2)), number(w.get(3)))
+            }
+            _ => false,
+        };
+        if !known {
+            self.call_not_found("FUNCTION_PROGRESS", w.get(1));
+        }
     }
 
     /// `pluginsd_json()`: `JSON keyword`, then the payload up to `JSON_PAYLOAD_END`.

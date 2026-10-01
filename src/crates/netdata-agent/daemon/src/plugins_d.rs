@@ -7,10 +7,11 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use netdata_agent_ingest::functions::Wire;
 use netdata_agent_ingest::{Config as ParserConfig, Parser, PluginHosts};
 use netdata_agent_inicfg::{Config, SECTION_PLUGINS};
 
@@ -388,8 +389,11 @@ impl Worker {
                 (Field::NidlNode, Value::Txt(hostname.clone())),
                 (Field::SrcTransport, Value::txt("pluginsd")),
             ]);
-            let (count, retry) = match popen.pipes() {
-                (Some(output), Some(input)) => self.process(input, output),
+            // the plugin's stdin, shared with its functions' callers until it is closed before the kill
+            let wire = PluginWire::new(popen.take_stdin());
+            let closing = WireClose(Arc::clone(&wire));
+            let (count, retry) = match (wire.is_open(), popen.stdout()) {
+                (true, Some(input)) => self.process(input, &wire),
                 // pluginsd_process() of a missing descriptor
                 _ => {
                     self.state.enabled.store(false, Ordering::Release);
@@ -404,6 +408,8 @@ impl Worker {
                 self.fullfilename,
                 self.pid
             );
+            // spawn_popen_kill() closes the plugin's stdin first
+            drop(closing);
             let rc = popen.kill(KILL_TIMEOUT_MS, &|| self.cancelled());
             let verdict = verdict(&Run {
                 rc,
@@ -435,11 +441,14 @@ impl Worker {
     /// `pluginsd_process()`: the plugin's output parsed line by line until it ends, fails, refuses a line or the
     /// thread stops; then QUIT unless the plugin hung up, the counters, and the charts this thread still holds made
     /// obsolete. Returns the run's data collections and whether to retry.
-    fn process(&mut self, input: &mut File, output: &mut File) -> (u64, bool) {
+    fn process(&mut self, input: &mut File, output: &Arc<PluginWire>) -> (u64, bool) {
         if !self.state.enabled.load(Ordering::Acquire) {
             return (0, false);
         }
-        let mut parser = Parser::plugin(self.hosts.clone(), self.parser, Arc::clone(&self.filename));
+        let mut parser =
+            Parser::plugin(self.hosts.clone(), self.parser, Arc::clone(&self.filename), Arc::clone(output) as Arc<dyn Wire>);
+        // what the plugin registers from now on is available while this run lasts
+        netdata_agent_nrpc::serving::started();
         let run = parser.run_frame();
         let mut reader = LineReader::default();
         let mut lines = std::collections::VecDeque::<Vec<u8>>::new();
@@ -450,7 +459,7 @@ impl Worker {
                 let ok = parser.feed(&line);
                 let out = parser.take_output();
                 if !out.is_empty() {
-                    send_to_plugin(output, &out);
+                    output.send(&out);
                 }
                 if !ok {
                     break;
@@ -470,7 +479,7 @@ impl Worker {
         }
         if send_quit {
             nd_log!(Source::Collector, Priority::Debug, "PLUGINSD: sending 'QUIT'  to plugin: {}", self.filename);
-            send_to_plugin(output, b"QUIT");
+            output.send(b"QUIT");
         }
         self.state.enabled.store(parser.enabled, Ordering::Release);
         let (count, retry) = (parser.data_collections_count, parser.retry);
@@ -484,6 +493,8 @@ impl Worker {
         // every chart of this plugin is obsolete
         let localhost = self.hosts.hosts.localhost();
         localhost.charts().obsolete_created_by(localhost, netdata_agent_log::tid());
+        // nrpc_serving_finished(): the run's methods unavailable, then the parser's end answers its pending calls
+        netdata_agent_nrpc::serving::finished();
         drop(parser);
         drop(run);
         (count, retry)
@@ -539,9 +550,53 @@ fn read(input: &mut File, buffer: &mut [u8], cancelled: &dyn Fn() -> bool) -> Re
     }
 }
 
-/// `send_to_plugin()` on the plugin's stdin (`nd_sock_write_persist(…, 100)`): a short result is reported with the
-/// failed write's errno.
-fn send_to_plugin(output: &mut File, bytes: &[u8]) {
+/// The plugin's stdin (`parser->fd_output` under `parser->writer.spinlock`): the run's QUIT and the writes of its
+/// functions' callers, each piece whole under the lock; closed when the run ends, before the kill, so the plugin
+/// reads its end.
+pub(crate) struct PluginWire(Mutex<Option<File>>);
+
+impl PluginWire {
+    fn new(stdin: Option<File>) -> Arc<Self> {
+        Arc::new(PluginWire(Mutex::new(stdin)))
+    }
+
+    fn is_open(&self) -> bool {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).is_some()
+    }
+}
+
+impl Wire for PluginWire {
+    /// `send_to_plugin()`.
+    fn send(&self, text: &[u8]) -> isize {
+        let mut stdin = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match stdin.as_mut() {
+            Some(output) => send_to_plugin(output, text),
+            None => {
+                drop(stdin);
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Warning,
+                    "PLUGINSD: cannot send command to plugin (probably the receiver got disconnected, since no output descriptor is available)"
+                );
+                -4
+            }
+        }
+    }
+}
+
+/// Closes the run's wire however the run ends.
+struct WireClose(Arc<PluginWire>);
+
+impl Drop for WireClose {
+    fn drop(&mut self) {
+        let stdin = self.0.0.lock().unwrap_or_else(PoisonError::into_inner).take();
+        drop(stdin);
+    }
+}
+
+/// `send_to_plugin()` on the plugin's stdin (`nd_sock_write_persist(…, 100)`): the bytes written, or -3 after the
+/// warning, with the failed write's errno, for a short result.
+fn send_to_plugin(output: &mut File, bytes: &[u8]) -> isize {
     let (sent, errno) = write_persist(output, bytes, SEND_RETRIES);
     if sent < bytes.len() as isize {
         nd_log!(
@@ -552,7 +607,9 @@ fn send_to_plugin(output: &mut File, bytes: &[u8]) {
             output.as_raw_fd(),
             bytes.len()
         );
+        return -3;
     }
+    sent
 }
 
 /// `send_to_plugin()`'s retries.

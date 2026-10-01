@@ -469,6 +469,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let _pulse_extended = conf::pulse_extended(&mut conf.netdata);
     startup.step("replication");
     startup.step("inflight functions");
+    netdata_agent_nrpc::call::Calls::process();
     startup.step("silencers");
     conf.health_silencers_filename();
 

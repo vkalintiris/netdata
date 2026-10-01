@@ -162,7 +162,9 @@ fn a_failed_send_is_reported_with_its_errno() {
     let (plugin_in, mut output) = pipe();
     drop(plugin_in);
     let fd = output.as_raw_fd();
-    let logged = records(|| send_to_plugin(&mut output, b"QUIT"));
+    let mut sent = 0;
+    let logged = records(|| sent = send_to_plugin(&mut output, b"QUIT"));
+    assert_eq!(sent, -3);
     assert_eq!(
         logged,
         [(
@@ -236,7 +238,8 @@ fn worker(hosts: &Arc<Hosts>) -> Worker {
 /// What the plugin wrote, a run over it, and what the run sent back.
 fn run(w: &mut Worker, plugin_says: &[u8], hang_up: bool) -> ((u64, bool), Vec<u8>) {
     let (mut input, mut plugin_out) = pipe();
-    let (mut plugin_in, mut output) = pipe();
+    let (mut plugin_in, output) = pipe();
+    let output = PluginWire::new(Some(output));
     plugin_out.write_all(plugin_says).unwrap();
     let plugin_out = if hang_up {
         drop(plugin_out);
@@ -250,8 +253,9 @@ fn run(w: &mut Worker, plugin_says: &[u8], hang_up: bool) -> ((u64, bool), Vec<u
         });
         Some(plugin_out)
     };
-    let result = w.process(&mut input, &mut output);
-    drop((output, plugin_out));
+    let result = w.process(&mut input, &output);
+    drop(WireClose(output));
+    drop(plugin_out);
     let mut sent = Vec::new();
     std::io::Read::read_to_end(&mut plugin_in, &mut sent).unwrap();
     (result, sent)

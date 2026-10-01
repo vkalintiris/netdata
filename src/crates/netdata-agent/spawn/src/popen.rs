@@ -88,9 +88,9 @@ impl Popen {
         self.instance.stdout()
     }
 
-    /// The child's stdin and stdout together (`spawn_popen_write_fd()`, `spawn_popen_read_fd()`).
-    pub fn pipes(&mut self) -> (Option<&mut File>, Option<&mut File>) {
-        self.instance.pipes()
+    /// The child's stdin (`spawn_popen_write_fd()`), out of the instance for its taker to write and close.
+    pub fn take_stdin(&mut self) -> Option<File> {
+        self.instance.take_stdin()
     }
 
     /// `spawn_popen_wait()`: closes the pipes and blocks until the child ends; its exit code, 0 when it was killed by

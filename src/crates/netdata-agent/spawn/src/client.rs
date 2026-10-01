@@ -525,9 +525,10 @@ impl Instance {
         self.read.as_mut()
     }
 
-    /// The child's stdin and stdout together.
-    pub fn pipes(&mut self) -> (Option<&mut File>, Option<&mut File>) {
-        (self.write.as_mut(), self.read.as_mut())
+    /// The child's stdin, out of the instance: its taker writes it from any thread and closes it (a wait or a kill
+    /// closes only the pipes the instance still holds).
+    pub fn take_stdin(&mut self) -> Option<File> {
+        self.write.take()
     }
 
     fn close_pipes(&mut self) {
