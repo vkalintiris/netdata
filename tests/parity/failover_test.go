@@ -73,6 +73,7 @@ var failoverCases = map[string]failoverCase{
 // child's real parents fail over instead (testFailoverParents).
 func TestStreamFailover(t *testing.T) {
 	t.Run("rust-parents", testFailoverParents)
+	t.Run("real", testFailoverReal)
 	for name, tc := range failoverCases {
 		t.Run(name, func(t *testing.T) {
 			var records, requests [2][]string
@@ -148,6 +149,7 @@ var failoverParents = [2]daemon.Identity{
 // failoverSide is one side of the case `rust-parents`: its two parents, its child, which parent got the child first
 // and when it was killed.
 type failoverSide struct {
+	label   string
 	parents [2]*daemon.Daemon
 	child   *daemon.Daemon
 	holder  int
@@ -179,9 +181,107 @@ func testFailoverParents(t *testing.T) {
 		for j := range pairs {
 			s.parents[j] = pairs[j].Each()[i].Daemon
 		}
+		s.label = string([2]Role{Oracle, Candidate}[i]) + " parents"
 		s.child = startCChild(t, Role("failover-child-"+strconv.Itoa(i)), hostname, guid,
 			s.parents[0].Addr+" "+s.parents[1].Addr, false)
 	}
+	if failOverBoth(t, &sides, hostname, guid) {
+		compareFailoverRecords(t, &sides, func(lines []string) []string { return lines })
+	}
+}
+
+// failoverRealChild is the case `real`'s child: a C child on one side, a Rust child on the other.
+var failoverRealChild = daemon.Identity{Hostname: "parity-failover-real", StreamKey: "5a1e0000-0000-4000-8000-00000000fa22",
+	MachineGUID: "5a1e0000-0000-4000-8000-00000000fa21"}
+
+// testFailoverReal (case `real` of `stream.failover`, D122.4, milestone 7 commit 9e): a C child on one side and a Rust
+// child on the other, each with two real C parents (`ram`, one tier) listed in the same order, which both answer its
+// probes 404, so it picks one by chance. The parent that got the child is killed, as in `rust-parents`; 30 s after the
+// kill it is relaunched, and for 70 s the child stays with the new parent. Compared between the sides, each parent
+// named by its part: `rust-parents`' views and records (a kill's forms as one in the children's), and after the
+// restart the child's own path (the killed parent's entry stays, as C cuts a path only at a removal) and the restarted
+// parent's stream_info of the child.
+func testFailoverReal(t *testing.T) {
+	bins := binaries(t)
+	g := &stagger{gap: 2 * time.Second}
+	var tps [2]*topology
+	var errs [2]error
+	var wg sync.WaitGroup
+	for i, form := range []string{"real-c", "real-r"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			popts := daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1}
+			tps[i], errs[i] = startTopology(t, g, "failover-"+form, bins, []topoNode{
+				{name: "p0", impl: 0, id: failoverParents[0], stage: 0, opts: popts},
+				{name: "p1", impl: 0, id: failoverParents[1], stage: 0, opts: popts},
+				{name: "c", impl: i, id: failoverRealChild, stage: 1, to: []string{"p0", "p1"},
+					send: &daemon.StreamTo{Extra: "    reconnect delay = 5\n"},
+					opts: daemon.Options{StorageTiers: 1, NoStreamKey: true}},
+			}, nil)
+		}()
+	}
+	wg.Wait()
+	var sides [2]failoverSide
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("side %d: %v", i, err)
+		}
+		sides[i] = failoverSide{label: [2]string{"C child", "Rust child"}[i],
+			parents: [2]*daemon.Daemon{tps[i].d("p0"), tps[i].d("p1")}, child: tps[i].d("c")}
+	}
+	hostname, guid := failoverRealChild.Hostname, failoverRealChild.MachineGUID
+	if !failOverBoth(t, &sides, hostname, guid) {
+		return
+	}
+	b, err := rawExchange(sides[0].child.Addr, []byte("GET /api/v3/stream_path HTTP/1.1\r\n\r\n"), 5*time.Second)
+	if err != nil || !strings.Contains(sides[0].rewrite.Replace(string(httpBody(b))), "HOLDER-GUID") {
+		t.Errorf("the oracle child's own path does not list the killed parent (%v): %.400s", err, httpBody(b))
+	}
+
+	// the killed parent relaunched 30 s after the kill: the child stays with the new one
+	for i := range sides {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s := &sides[i]
+			time.Sleep(time.Until(time.Unix(s.killed+30, 0)))
+			if err := relaunch(s.parents[s.holder]); err != nil {
+				t.Errorf("%s: relaunch the killed parent: %v", s.label, err)
+				return
+			}
+			for end := time.Now().Add(70 * time.Second); time.Now().Before(end); time.Sleep(time.Second) {
+				back, _ := hasReceiver(s.parents[s.holder].Addr, guid)
+				stays, _ := hasReceiver(s.successor().Addr, guid)
+				if back || !stays {
+					t.Errorf("%s: the child moved after the restart: restarted parent %v, new parent %v", s.label,
+						back, stays)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	rewrites := [2]*strings.Replacer{sides[0].rewrite, sides[1].rewrite}
+	compareStreamPathWith(t, "children after the restart", [2]string{sides[0].child.Addr, sides[1].child.Addr},
+		rewrites, "/api/v3/stream_path", entryTimes, "_streams_to")
+	var info [2][]byte
+	for i, s := range sides {
+		info[i], err = streamInfoMasked(s.parents[s.holder].Addr, guid)
+		if err != nil {
+			t.Fatalf("%s: the restarted parent's stream_info: %v", s.label, err)
+		}
+		info[i] = []byte(s.rewrite.Replace(string(info[i])))
+	}
+	if !bytes.Equal(info[0], info[1]) {
+		t.Errorf("the restarted parents' stream_info of the child: %s", firstDifference(info[0], info[1]))
+	}
+	compareFailoverRecords(t, &sides, killRecords)
+}
+
+// failOverBoth fails both sides over at once (failOver), then compares them, each parent named by its part: the new
+// parent's stream_info and path of the child, and the child's own path. It tells whether both failed over.
+func failOverBoth(t *testing.T, sides *[2]failoverSide, hostname, guid string) bool {
 	var wg sync.WaitGroup
 	for i := range sides {
 		wg.Add(1)
@@ -192,7 +292,7 @@ func testFailoverParents(t *testing.T) {
 	}
 	wg.Wait()
 	if t.Failed() {
-		return
+		return false
 	}
 	var info [2][]byte
 	for i, s := range sides {
@@ -212,11 +312,18 @@ func testFailoverParents(t *testing.T) {
 		"/api/v3/stream_path", entryTimes, "_streams_to")
 	compareStreamPathWith(t, "children", [2]string{sides[0].child.Addr, sides[1].child.Addr}, rewrites,
 		"/api/v3/stream_path", entryTimes, "_streams_to")
+	return true
+}
+
+// compareFailoverRecords stops the children and compares the new parents' receiver records (parts named) and the
+// children's records, normalized by `set`.
+func compareFailoverRecords(t *testing.T, sides *[2]failoverSide, set func([]string) []string) {
 	var received, records [2][]string
 	for i, s := range sides {
 		_ = s.child.Stop()
-		records[i] = rchildRecords(t, s.child)
-		received[i] = parentRecords(t, s.successor(), "STREAM RCV", s.rewrite)
+		records[i] = set(rchildRecords(t, s.child))
+		// ml_capable masked: no ML here (D101.5)
+		received[i] = maskRecordSet(parentRecords(t, s.successor(), "STREAM RCV", s.rewrite))
 	}
 	diffLines(t, "the new parents' receiver records", received[0], received[1])
 	diffLines(t, "children's records", records[0], records[1])
@@ -224,10 +331,10 @@ func testFailoverParents(t *testing.T) {
 	t.Logf("child's records:\n%s", strings.Join(records[0], "\n"))
 }
 
-// failOver runs one side of the case `rust-parents` until its child streams to the second parent with the killed
+// failOver runs one side of a real-parents case until its child streams to the second parent with the killed
 // window's data replicated.
 func failOver(t *testing.T, s *failoverSide, hostname, guid string) {
-	name := s.parents[0].Opts.Binary
+	name := s.label
 	deadline := time.Now().Add(60 * time.Second)
 	s.holder = -1
 	for s.holder < 0 {
