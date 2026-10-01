@@ -606,24 +606,137 @@ mod tests {
             automatic: false,
             idle_s: s,
         };
-        let cases: [(&[u8], Keepalive); 9] = [
+        // stream_conf_unittest()'s 16 rows and a few more
+        let cases: &[(&[u8], Keepalive)] = &[
             (b"auto", auto),
             (b"AUTO", auto),
             (b"garbage", auto),
+            (b"invalid", auto),
             (b"-5", auto),
+            (b"-0.1ns", auto),
+            (b"0.1ns ago", auto),
+            (b"0.1nsago", auto),
+            (b"1e-400ns ago", auto),
             (b"0", off),
             (b"off", off),
+            (b"never", off),
+            (b"0ms", off),
+            (b"0e-400ns", off),
             (b"5", idle(30)),
-            (b"2h", idle(3600)),
+            (b"0.1ns", idle(30)),
+            (b"1e-400ns", idle(30)),
+            (b"1ms", idle(30)),
+            (b"2m", idle(120)),
+            (b"90", idle(90)),
             (b"90s", idle(90)),
+            (b"90.5s", idle(91)),
+            (b"2h", idle(3600)),
         ];
-        for (value, expected) in cases {
+        for &(value, expected) in cases {
             assert_eq!(
                 parse_keepalive(value),
                 expected,
                 "{}",
                 String::from_utf8_lossy(value)
             );
+        }
+    }
+
+    /// `stream_conf_load_internal()`'s renames: two in `[stream]` only, seventeen in every section; a rename whose new
+    /// key exists already moves nothing, so of two old spellings the first listed wins and the other stays.
+    #[test]
+    fn legacy_keys_move_as_c() {
+        let dir = std::env::temp_dir().join(format!("netdata-stream-conf-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = "[stream]\n\
+            timeout seconds = 60\n\
+            reconnect delay seconds = 7\n\
+            buffer size bytes = 1048576\n\
+            [key]\n\
+            default memory mode = alloc\n\
+            memory mode = ram\n\
+            default history = 100\n\
+            history = 50\n\
+            default proxy enabled = yes\n\
+            default proxy destination = p:1\n\
+            default proxy api key = k\n\
+            default proxy send charts matching = *\n\
+            default health log history = 3600\n\
+            health log history = 1800\n\
+            seconds to replicate = 600\n\
+            seconds per replication step = 60\n\
+            default postpone alarms on connect seconds = 30\n\
+            postpone alarms on connect seconds = 20\n\
+            health enabled by default = no\n\
+            timeout seconds = 9\n\
+            [guid]\n\
+            reconnect delay seconds = 3\n\
+            [third]\n\
+            retention = 5\n\
+            history = 6\n";
+        std::fs::write(dir.join("stream.conf"), text).unwrap();
+        let mut conf = StreamConf::default();
+        conf.load_file(dir.to_str().unwrap(), "/nonexistent");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut all = Vec::new();
+        for section in [SECTION_STREAM, "key", "guid", "third"] {
+            conf.config.foreach_value_in_section(section, |name, value| {
+                all.push(format!("{section}: {} = {}", String::from_utf8_lossy(name), String::from_utf8_lossy(value)));
+                false
+            });
+        }
+        all.sort();
+        let mut want = vec![
+            "stream: timeout = 60",
+            "stream: reconnect delay = 7",
+            "stream: buffer size = 1048576",
+            "key: db = alloc",
+            "key: memory mode = ram",
+            "key: retention = 100",
+            "key: history = 50",
+            "key: proxy enabled = yes",
+            "key: proxy destination = p:1",
+            "key: proxy api key = k",
+            "key: proxy send charts matching = *",
+            "key: health log retention = 3600",
+            "key: health log history = 1800",
+            "key: replication period = 600",
+            "key: replication step = 60",
+            "key: postpone alerts on connect = 30",
+            "key: postpone alarms on connect seconds = 20",
+            "key: health enabled = no",
+            "key: timeout seconds = 9",
+            "guid: reconnect delay seconds = 3",
+            "third: retention = 5",
+            "third: history = 6",
+        ];
+        want.sort();
+        assert_eq!(all, want);
+    }
+
+    /// `stream_conf_resolve_receiver_keepalive()`: the machine GUID's section wins only when it has the key, the API
+    /// key's otherwise, automatic when neither has it; the lookup creates nothing.
+    #[test]
+    fn keepalive_guid_overrides_key_only_when_set() {
+        let idle = |s| Keepalive { enabled: true, automatic: false, idle_s: s };
+        let auto = Keepalive { enabled: true, automatic: true, idle_s: 0 };
+        let cases = [
+            (Some("2m"), Some("3m"), idle(180)),
+            (Some("2m"), None, idle(120)),
+            (None, Some("3m"), idle(180)),
+            (None, None, auto),
+        ];
+        for (key_value, guid_value, want) in cases {
+            let mut conf = StreamConf::default();
+            for (section, value) in [("key", key_value), ("machine", guid_value)] {
+                conf.config.set(section, "enabled", "yes");
+                if let Some(v) = value {
+                    conf.config.set(section, "tcp keepalive idle", v);
+                }
+            }
+            assert_eq!(conf.receiver_keepalive("key", "machine"), want, "{key_value:?} {guid_value:?}");
+            assert_eq!(conf.config.exists("machine", "tcp keepalive idle"), guid_value.is_some());
         }
     }
 

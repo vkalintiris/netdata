@@ -327,6 +327,58 @@ mod tests {
     use crate::compression::encode_signature;
     use crate::decompress::Decompressor;
 
+    /// `stream_compress()` refuses a message whose compressed size reaches 16384 bytes (the chunk, one past the
+    /// signature's capacity), with C's record: on incompressible input each engine accepts up to 16383 and refuses the
+    /// next size; zstd and lz4 grow a byte at a time, so they meet 16384 exactly.
+    #[test]
+    fn a_message_of_a_whole_chunk_is_refused() {
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        let noise: Vec<u8> = (0..16_500)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        for (algorithm, exact) in [(Algorithm::Zstd, true), (Algorithm::Lz4, true), (Algorithm::Brotli, false)] {
+            let mut accepted = 0;
+            let mut refused = None;
+            for n in 16_200..16_500 {
+                let mut c = Compressor::new(algorithm, &CompressionLevels::of_profile(false)).unwrap();
+                let (out, records) = netdata_agent_log::capture(|| c.compress(&noise[..n]).map(<[u8]>::len));
+                match out {
+                    Some(size) => accepted = accepted.max(size),
+                    None => {
+                        let messages: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+                        refused = Some(messages);
+                        break;
+                    }
+                }
+            }
+            let refused = refused.unwrap_or_else(|| panic!("{algorithm:?}: never refused"));
+            assert!(accepted < MAX_CHUNK, "{algorithm:?}: accepted {accepted}");
+            assert_eq!(refused.len(), 1, "{algorithm:?}: {refused:?}");
+            let size: usize = refused[0]
+                .strip_prefix("STREAM_COMPRESS: compressed data is ")
+                .and_then(|r| r.split(' ').next())
+                .and_then(|n| n.parse().ok())
+                .unwrap();
+            assert_eq!(
+                refused[0],
+                format!(
+                    "STREAM_COMPRESS: compressed data is {size} bytes, exceeding max chunk size 16384 or signature \
+                     capacity 16383"
+                )
+            );
+            if exact {
+                assert_eq!((accepted, size), (MAX_CHUNK - 1, MAX_CHUNK), "{algorithm:?}");
+            } else {
+                assert!(size >= MAX_CHUNK, "{algorithm:?}: {size}");
+            }
+        }
+    }
+
     #[test]
     fn pieces_cut_as_c() {
         let mut a = vec![b'x'; MAX_MSG_SIZE];
