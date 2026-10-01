@@ -744,7 +744,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     }
     // each started when a node is first assigned to it
     let stream_threads = netdata_agent_streaming::pins::threads_for(conf.threads.cpus);
-    let stream_pins: Arc<std::sync::Mutex<netdata_agent_streaming::pins::Pins>> = Arc::default();
+    let stream_pins = Arc::new(std::sync::Mutex::new(netdata_agent_streaming::pins::Pins::new(stream_threads)));
     let stream_pool = {
         let pins = Arc::clone(&stream_pins);
         match Pool::spawn_lazy(
