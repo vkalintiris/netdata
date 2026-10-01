@@ -337,12 +337,15 @@ mod tests {
                 cmdline(&["/bin/sh", "-c", "a \"b\""]),
                 cmdline(&["a b"]),
                 cmdline(&["a", "", "b"]),
+                // tab, newline and vertical tab quote an argument too (`spawn_library.c:15-22`)
+                cmdline(&["x", "a\tb", "c\nd", "e\x0bf"]),
             ],
             [
                 "/bin/sh -c /x/system-info.sh".to_string(),
                 r#"/bin/sh -c "a \"b\"""#.to_string(),
                 "a b\"".to_string(),
-                "a  b".to_string()
+                "a  b".to_string(),
+                "x \"a\tb\" \"c\nd\" \"e\x0bf\"".to_string(),
             ]
         );
     }
@@ -350,10 +353,10 @@ mod tests {
     /// The raw status round trip through libc's macros, and the exit code a caller gets.
     #[test]
     fn wait_statuses_read_as_c_s() {
-        // exit 3, SIGTERM, SIGPIPE, SIGKILL with a core, real-time signal 34
-        let raws = [0x300, 15, 13, 9 | 0x80, 34];
+        // exit 3, SIGTERM, SIGPIPE, SIGKILL with a core, real-time signal 34, a failed wait (-1), stopped by SIGSTOP
+        let raws = [0x300, 15, 13, 9 | 0x80, 34, -1, 0x137f];
         assert!(libc::WIFSIGNALED(raws[3]) && libc::WCOREDUMP(raws[3]) && libc::WTERMSIG(raws[3]) == 9);
-        assert_eq!(raws.map(status_rc), [3, 0, 0, -1, -1]);
+        assert_eq!(raws.map(status_rc), [3, 0, 0, -1, -1, -1, -1]);
     }
 
     #[test]

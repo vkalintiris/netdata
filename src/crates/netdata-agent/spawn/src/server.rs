@@ -590,7 +590,7 @@ mod tests {
         let env = wire::encode_list(&["A=1"]);
         let argv = wire::encode_list(&["/bin/true"]);
         let valid = request(wire::MSG_REQUEST, MAGIC, wire::TYPE_EXEC, &env, &argv);
-        let cases: [(&str, Vec<u8>, usize, &str); 9] = [
+        let cases: [(&str, Vec<u8>, usize, &str); 12] = [
             ("no descriptors", valid.clone(), 0,
                 "SPAWN SERVER: Received invalid control message (expected 32 bytes, received 0 bytes)"),
             ("three descriptors", valid.clone(), 3,
@@ -610,6 +610,15 @@ mod tests {
                 "SPAWN SERVER: peer closed socket while receiving the first part of the request."),
             ("cut short", valid[..valid.len() - 1].to_vec(), 4,
                 "SPAWN SERVER: peer closed socket while receiving the second part of the request."),
+            // more descriptors than the control buffer holds
+            ("five descriptors", valid.clone(), 5,
+                "SPAWN SERVER: received truncated control message while receiving the first part of the request."),
+            // the key is checked before the instance type, which is checked before the sizes (`:1003-1048`)
+            ("wrong key, callback", request(wire::MSG_REQUEST, [1; 16], wire::TYPE_CALLBACK, &env, &argv), 4,
+                "SPAWN SERVER: Invalid authorization key for request 7. Rejecting request."),
+            ("callback, no environment", request(wire::MSG_REQUEST, MAGIC, wire::TYPE_CALLBACK, b"", &argv), 4,
+                "SPAWN SERVER: Request 7 wants to run a callback, but callbacks are not allowed for this spawn server. \
+                 Rejecting request."),
         ];
         for (name, bytes, fds, record) in cases {
             let got = serve_one(&bytes, fds);
@@ -642,6 +651,8 @@ mod tests {
             (libc::SIGSEGV | 0x80, Some((Priority::Warning, "coredump'd due to signal 11: cmd")), true),
             (libc::SIGSTOP << 8 | 0x7f, Some((Priority::Warning, "stopped due to signal 19: cmd")), false),
             (0xffff, Some((Priority::Warning, "continued due to signal 18: cmd")), false),
+            // none of the macros' cases: the request stays
+            (0xff, Some((Priority::Warning, "reports unhandled status: cmd")), false),
         ];
         for (raw, record, ended) in cases {
             let (got, records) = netdata_agent_log::capture(|| log_reaped(42, 7, raw, Some("cmd")));
