@@ -12,7 +12,7 @@ use netdata_agent_text::print::print_uuid_lower_compact;
 use crate::limit::{DEFAULT_THROTTLE_PERIOD, Limits, now_monotonic_usec};
 use crate::model::{Format, Method, Priority, Source, facility_name, facility_parse};
 use crate::output::{
-    AfterOpen, G, OpenErrors, SourceState, journal_direct_init, lock, open_resolved, stdin_init,
+    AfterOpen, G, OpenErrors, SourceState, journal_direct_init, lock, open_resolved, read, stdin_init,
     sync_priorities, syslog_init, write,
 };
 
@@ -269,6 +269,66 @@ fn open_source(source: Source) {
         }
     }
     log_errors(open_errors);
+}
+
+/// `nd_log_reopen_log_files_for_spawn_server()` then `nd_log_initialize_for_external_plugins()`
+/// (`libnetdata/log/nd_log-init.c:315-360`, `:50-166`) in a process the daemon started fresh (its spawn server, D136.2:
+/// no log state to reopen): every record logged as COLLECTORS under `name`, with the level, facility, flood
+/// protection, host prefix, method and format the daemon exported, read through `env`.
+pub fn initialize_for_external_plugins(name: &'static str, env: &dyn Fn(&str) -> Option<String>) {
+    crate::overwrite_source(Source::Collector);
+    crate::set_program_name(name);
+    for e in write(&G.sources).iter_mut() {
+        e.method = Method::Default;
+        e.fd = crate::output::Fd::Unset;
+    }
+    set_priority_level(&env("NETDATA_LOG_LEVEL").unwrap_or_default());
+    set_facility(&env("NETDATA_SYSLOG_FACILITY").unwrap_or_default());
+    // str2l()/str2u() of a value starting with a digit, else the defaults
+    let number = |key: &str| {
+        env(key).filter(|v| v.starts_with(|c: char| c.is_ascii_digit())).map(|v| {
+            let digits: String = v.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u64>().unwrap_or(u64::MAX)
+        })
+    };
+    let period = number("NETDATA_ERRORS_THROTTLE_PERIOD").map_or(1200, |p| p.min(i64::MAX as u64) as i64);
+    let logs = number("NETDATA_ERRORS_PER_PERIOD").map_or(200, |l| l.min(u64::from(u32::MAX)));
+    set_flood_protection(logs, period);
+    // verify_netdata_host_prefix()'s rule: no format specifier
+    if read(&G.host_prefix).is_none()
+        && let Some(prefix) = env("NETDATA_HOST_PREFIX").filter(|p| !p.is_empty() && !p.contains('%'))
+    {
+        set_host_prefix(&prefix);
+    }
+    // nd_setenv(..., 0): unset ones read as stderr and logfmt
+    let mut method = Method::from_name(&env("NETDATA_LOG_METHOD").unwrap_or_else(|| "stderr".into()));
+    let format = Format::from_name(&env("NETDATA_LOG_FORMAT").unwrap_or_else(|| "logfmt".into()));
+    if !method.valid_for_external_plugins() {
+        if crate::output::is_stderr_connected_to_journal() {
+            crate::nd_log!(Source::Collector, Priority::Warning, "NETDATA_LOG_METHOD is not set. Using journal.");
+            method = Method::Journal;
+        } else {
+            crate::nd_log!(Source::Collector, Priority::Warning, "NETDATA_LOG_METHOD is not set. Using stderr.");
+            method = Method::Stderr;
+        }
+    }
+    match method {
+        // no libsystemd fallback (D27.6)
+        Method::Journal => {
+            let path = env("NETDATA_SYSTEMD_JOURNAL_PATH");
+            if !journal_direct_init(path.as_deref()) && !journal_direct_init(None) {
+                crate::nd_log!(Source::Collector, Priority::Warning, "Failed to initialize journal. Using stderr.");
+                method = Method::Stderr;
+            }
+        }
+        Method::Syslog => syslog_init(),
+        _ => method = Method::Stderr,
+    }
+    let mut sources = write(&G.sources);
+    let e = &mut sources[Source::Collector as usize];
+    e.method = method;
+    e.format = format;
+    e.fd = crate::output::Fd::Unset;
 }
 
 /// `nd_log_initialize()`: stdin on `/dev/null`, then every source in id order.

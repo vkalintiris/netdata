@@ -17,11 +17,11 @@ mod output;
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 pub use config::{
-    chown_log_files, chown_open_file, init_invocation_id, initialize, invocation_id, limits_reset,
-    limits_unlimited, reopen_log_files, set_facility, set_flood_protection, set_host_prefix,
+    chown_log_files, chown_open_file, init_invocation_id, initialize, initialize_for_external_plugins, invocation_id,
+    limits_reset, limits_unlimited, reopen_log_files, set_facility, set_flood_protection, set_host_prefix,
     set_priority_level, set_user_settings,
 };
 pub use encode::{rfc3339_local, strerror, uv_strerror};
@@ -146,6 +146,22 @@ macro_rules! fatal {
 }
 
 static PROGRAM_NAME: OnceLock<&'static str> = OnceLock::new();
+
+/// `nd_log.overwrite_process_source`: 0, or one more than the source every record of this process is logged as.
+static OVERWRITE_SOURCE: AtomicU8 = AtomicU8::new(0);
+
+/// `nd_log_validate_source()`: the source a record is logged as.
+fn validate_source(source: Source) -> Source {
+    match OVERWRITE_SOURCE.load(Ordering::Relaxed) {
+        0 => source,
+        n => Source::from_id(u64::from(n - 1)).unwrap_or(source),
+    }
+}
+
+/// Logs every record of this process as `source` (`nd_log.overwrite_process_source`, an external plugin's).
+pub(crate) fn overwrite_source(source: Source) {
+    OVERWRITE_SOURCE.store(source as u8 + 1, Ordering::Relaxed);
+}
 
 /// `program_name`, the `comm=` / `SYSLOG_IDENTIFIER=` of every record; empty until set.
 pub fn set_program_name(name: &'static str) {
@@ -346,7 +362,7 @@ fn captured(
 /// Whether `netdata_logger()` drops a record of this source and priority. C clears `errno` after every record it
 /// writes, and only then, so callers that carry C's `errno` across records need it.
 pub fn filtered(source: Source, priority: Priority) -> bool {
-    CAPTURE.with(|c| c.borrow().is_none()) && output::filtered(source, priority)
+    CAPTURE.with(|c| c.borrow().is_none()) && output::filtered(validate_source(source), priority)
 }
 
 /// `netdata_logger()`: filtered by the source's minimum priority (except debug); daemon and collector records count
@@ -358,6 +374,7 @@ pub fn logger(
     location: &Location,
     message: Option<fmt::Arguments<'_>>,
 ) {
+    let source = validate_source(source);
     if captured(source, priority, errno, message) || output::filtered(source, priority) {
         return;
     }
@@ -374,6 +391,7 @@ pub fn logger_with_limit(
     location: &Location,
     message: fmt::Arguments<'_>,
 ) {
+    let source = validate_source(source);
     if captured(source, priority, errno, Some(message)) || output::filtered(source, priority) {
         return;
     }
@@ -577,7 +595,8 @@ fn fatal_with(errno: i32, location: &Location, code: Option<(&str, u32, &str)>, 
         std::thread::sleep(std::time::Duration::from_secs(2));
         netdata_agent_sys::exit_now(1);
     }
-    if !captured(Source::Daemon, Priority::Alert, errno, Some(message)) {
+    let source = validate_source(Source::Daemon);
+    if !captured(source, Priority::Alert, errno, Some(message)) {
         let mut fields = vec![(Field::MessageId, Value::Uuid(msgid::FATAL))];
         if let Some((file, line, function)) = code {
             fields.push((Field::File, Value::Txt(file.to_string())));
@@ -587,7 +606,7 @@ fn fatal_with(errno: i32, location: &Location, code: Option<(&str, u32, &str)>, 
         let _frame = push(fields);
         FATAL_EVENT.with(|f| f.set(true));
         log_record(
-            Source::Daemon,
+            source,
             Priority::Alert,
             true,
             errno,

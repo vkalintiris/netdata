@@ -139,6 +139,26 @@ impl Method {
     }
 
     /// `IS_VALID_LOG_METHOD_FOR_EXTERNAL_PLUGINS()` on Linux.
+    /// `nd_log_method2id()`: empty is the default, an unknown name a file.
+    pub(crate) fn from_name(name: &str) -> Method {
+        if name.is_empty() {
+            return Method::Default;
+        }
+        [
+            Method::Disabled,
+            Method::DevNull,
+            Method::Default,
+            Method::Journal,
+            Method::Syslog,
+            Method::Stdout,
+            Method::Stderr,
+            Method::File,
+        ]
+        .into_iter()
+        .find(|m| m.name() == name)
+        .unwrap_or(Method::File)
+    }
+
     pub(crate) fn valid_for_external_plugins(self) -> bool {
         matches!(self, Method::Journal | Method::Syslog | Method::Stderr)
     }
@@ -153,6 +173,11 @@ pub(crate) enum Format {
 }
 
 impl Format {
+    /// `nd_log_format2id()`: an unknown or empty name is logfmt.
+    pub(crate) fn from_name(name: &str) -> Format {
+        [Format::Journal, Format::Logfmt, Format::Json].into_iter().find(|f| f.name() == name).unwrap_or(Format::Logfmt)
+    }
+
     /// `nd_log_id2format()`.
     pub(crate) fn name(self) -> &'static str {
         match self {
