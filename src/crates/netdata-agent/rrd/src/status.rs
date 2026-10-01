@@ -138,7 +138,8 @@ impl Host {
     /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_BASIC)`: a host that is not online is archived when no receiver
     /// attached to it since the agent started (one loaded from the metadata database), else offline.
     pub fn status_basic(&self, now: i64) -> HostStatus {
-        // C's one `flags` load: the type and the online state agree while a vnode's run ends
+        // one load of the local flags, as C's `flags` snapshot: the type and the online state agree while a vnode's
+        // run ends (ORPHAN, a word of its own here, is read apart)
         let flags = self.local_flags();
         let is_virtual = flags & local_flags::VIRTUAL != 0;
         let is_local = self.is_localhost() || is_virtual;

@@ -485,10 +485,13 @@ impl StreamWorker {
     /// now, up to a tick after C (D120, as the receivers' `tick_children`); while a receiver serves the host its tick
     /// sends them (D146.3). The commits' POLLOUTs go out with the tick's last `drain_inline`.
     pub(crate) fn tick_senders(&self) {
-        for d in self.senders.iter().flatten() {
-            if let Some(localhost) = d.sender.connector.localhost() {
-                stream_path::send_retention_changes_to_parent(&d.host, &localhost);
-            }
+        // every sender shares the agent's connector: localhost once a tick, not once a sender (R62-1)
+        let mut senders = self.senders.iter().flatten().peekable();
+        let Some(localhost) = senders.peek().and_then(|d| d.sender.connector.localhost()) else {
+            return;
+        };
+        for d in senders {
+            stream_path::send_retention_changes_to_parent(&d.host, &localhost);
         }
     }
 
@@ -719,9 +722,101 @@ impl Sender {
 mod tests {
     use std::io::Read;
     use std::net::{TcpListener, TcpStream};
+    use std::sync::Mutex;
     use std::time::Duration;
 
+    use netdata_agent_evloop::Pool;
+    use netdata_agent_evloop::conn::Conn;
+    use netdata_agent_evloop::testing::Stepper;
+    use netdata_agent_rrd::host::{Attach, ReceiverSlot};
+    use netdata_agent_tls::Link;
+
     use super::*;
+    use crate::conf::Send;
+    use crate::connector::tests::{collect_first_at, info};
+    use crate::connector::Connector;
+    use crate::parents::Local;
+    use crate::sender::Settings;
+    use crate::pins::Pins;
+    use crate::sender::Connected;
+
+    /// What reached the parent's end of the link so far.
+    fn received(theirs: &mut mio::net::UnixStream) -> String {
+        let mut all = Vec::new();
+        let mut buf = [0; 65536];
+        loop {
+            match theirs.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => all.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("{e}"),
+            }
+        }
+        String::from_utf8_lossy(&all).into_owned()
+    }
+
+    /// D146.3 at the tick: a dispatched sender sends its host's first-time changes, each in a path of its own, while
+    /// no receiver takes them (a vnode defined after the sender's READY included); none once a receiver does, which
+    /// sends both halves itself.
+    #[test]
+    fn the_tick_sends_a_hosts_paths_while_no_receiver_takes_them() {
+        let pins = Arc::new(Mutex::new(Pins::new(1)));
+        let pool = Pool::spawn(1, 256 * 1024, |i| format!("TEST[{i}]"), |_| StreamWorker::new(Arc::clone(&pins), 1))
+            .unwrap();
+        // the connector holds localhost weakly: the test keeps it
+        let localhost = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, info("", "")));
+        let local = Local { host_id: [0xaa; 16], user_agent: "t/1".into(), update_every: 1 };
+        let c = Connector::new(Settings::of(&Send::default()), local, &localhost, pool.handle(), Arc::clone(&pins), 256 * 1024);
+        let mut s = Stepper::new(0, StreamWorker::new(Arc::clone(&pins), 1)).unwrap();
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c9", false, info("127.0.0.1:1", "key")));
+        let sender = Sender::attach(&host, &c).expect("created");
+        let (ours, mut theirs) = mio::net::UnixStream::pair().unwrap();
+        let connected = Connected {
+            sender,
+            link: Link::Plain(Conn::Unix(ours)),
+            capabilities: caps::PATHS,
+            compressor: None,
+            remote_ip: "127.0.0.1".into(),
+            thread: 0,
+        };
+        s.with(|w, cx| {
+            w.queued_senders.push(connected);
+            w.dequeue_senders(cx);
+        });
+        let tick = |s: &mut Stepper<StreamWorker>, theirs: &mut mio::net::UnixStream| {
+            s.with(|w, cx| {
+                w.tick_senders();
+                w.drain_inline(cx);
+            });
+            let _ = netdata_agent_log::capture(|| s.turn(Duration::from_millis(20)));
+            received(theirs)
+        };
+        let _ = tick(&mut s, &mut theirs);
+        // a vnode its plugin defines once the sender is ready
+        host.set_virtual();
+        host.set_collector_online();
+        collect_first_at(&host, "t.a", 1_790_000_000);
+        let sent = tick(&mut s, &mut theirs);
+        assert!(sent.contains("JSON STREAM_PATH\n") && sent.contains(r#""first_time_t":1789999999,"#), "{sent:?}");
+        assert!(tick(&mut s, &mut theirs).is_empty(), "each change once");
+        // the plugin's run ends: its changes owe nothing while it is offline
+        host.virtual_offline();
+        collect_first_at(&host, "t.b", 1_789_999_990);
+        assert!(!tick(&mut s, &mut theirs).contains("STREAM_PATH"), "offline");
+        // a child streaming its GUID: attached and online before its stream thread takes the changes, when C sends
+        // the parent's half (the child's has no parser yet)
+        let slot = Arc::new(ReceiverSlot::new(0, Default::default(), Default::default(), Box::new(|| {})));
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
+        collect_first_at(&host, "t.c", 1_789_999_980);
+        let sent = tick(&mut s, &mut theirs);
+        assert!(sent.contains(r#""first_time_t":1789999979,"#), "{sent:?}");
+        // then its thread takes them, both halves
+        host.contexts().record_first_time_changes(Taker::Receiver, true);
+        collect_first_at(&host, "t.d", 1_789_999_970);
+        assert!(!tick(&mut s, &mut theirs).contains("STREAM_PATH"), "the receiver's to send");
+        assert_eq!(host.contexts().take_first_time_changes(Taker::Receiver), [1_789_999_969]);
+        host.clear_receiver(&slot, 0);
+    }
 
     #[test]
     fn a_records_parent_address_is_the_sockets_when_written() {

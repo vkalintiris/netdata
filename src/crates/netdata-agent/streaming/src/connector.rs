@@ -899,6 +899,12 @@ pub(crate) mod tests {
         let slot = attach(0);
         crate::sender::send_node_and_claim_id_to_child(&host, &env);
         assert!(slot.take_to_child().is_empty(), "a child without NODE_ID");
+        host.clear_receiver(&slot, 0);
+        // a plugin claims its GUID as a local vnode: its receiver, still attached, gets none (`rrdhost_is_local()`)
+        let slot = attach(caps::NODE_ID);
+        host.set_virtual();
+        crate::sender::send_node_and_claim_id_to_child(&host, &env);
+        assert!(slot.take_to_child().is_empty(), "a local host");
     }
 
     /// `stream_sender_signal_to_stop_and_wait()`: a sender not ADDED is left as it is (nothing to stop); a queued one
@@ -931,7 +937,7 @@ pub(crate) mod tests {
 
     /// A chart of `host` whose first point ends at `t`, through the contexts' queue: the host's first time becomes
     /// that point's start.
-    fn collect_first_at(host: &Host, id: &str, t: i64) {
+    pub(crate) fn collect_first_at(host: &Host, id: &str, t: i64) {
         use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
         let (chart, _) = host.charts().create(&ChartSpec {
             type_: "t",
