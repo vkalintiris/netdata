@@ -1692,3 +1692,25 @@ fn localhosts_retention_changes_go_up() {
     stream_path::send_retention_changes_to_parent(&h);
     assert!(r.take().is_empty(), "a parent without PATHS");
 }
+
+/// `pluginsd_process_cleanup()`'s `pluginsd_cleanup_v2()`: a parser destroyed inside a BEGIN2 lets the collection lock go
+/// with C's record; one destroyed after its END2 says nothing.
+#[test]
+fn a_parser_destroyed_inside_a_block_unlocks_it_as_c() {
+    let h = host();
+    let mut p = parser(&h);
+    assert!(feed_all(&mut p, &DEFINE).iter().all(|&ok| ok));
+    assert!(feed_all(&mut p, &[&format!("BEGIN2 'test.c1' 1 {} #", NOW - 10), "SET2 'd1' 1 1 A"]).iter().all(|&ok| ok));
+    let ((), records) = netdata_agent_log::capture(|| drop(p));
+    let texts: Vec<String> = records.into_iter().filter_map(|r| r.message).collect();
+    assert_eq!(
+        texts,
+        ["PLUGINSD: 'host:child/chart:test.c1/' stale data collection lock found during THREAD CLEANUP; it has been \
+          unlocked"]
+    );
+    let mut p = parser(&h);
+    let block = [format!("BEGIN2 'test.c1' 1 {} #", NOW - 9), "SET2 'd1' 2 2 A".into(), "END2".into()];
+    feed_ok(&mut p, &block);
+    let ((), records) = netdata_agent_log::capture(|| drop(p));
+    assert!(records.is_empty(), "{:?}", records.iter().map(|r| r.message.clone()).collect::<Vec<_>>());
+}

@@ -813,6 +813,85 @@ mod tests {
         assert_eq!(peer.join().unwrap(), b"answer");
     }
 
+    /// `netdata_ssl_peek()`: nothing yet is EAGAIN, a peek leaves the bytes for the read; then the end: the peer's
+    /// close_notify is 0; a peer gone with our tickets unread resets the socket (SSL_ERROR_SYSCALL, the errno kept);
+    /// a TLS 1.2 peer gone without close_notify is an error that is neither EAGAIN nor a reset; both after C's record.
+    #[test]
+    fn a_peek_leaves_the_data_and_reports_the_end_as_c() {
+        use openssl::ssl::{SslConnector, SslVerifyMode, SslVersion};
+        use std::os::unix::net::UnixStream;
+        init();
+        let dir = tempfile::tempdir().unwrap();
+        let k = key();
+        let (key_file, cert_file) = files(&dir, &k, &certificate(&k));
+        let context = server_context(&config(&key_file, &cert_file, "none")).unwrap();
+        let until = |t: &mut TlsStream<UnixStream>, buf: &mut [u8]| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                match t.peek(buf) {
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(2))
+                    }
+                    r => break r,
+                }
+            }
+        };
+        for case in ["close_notify", "reset", "eof"] {
+            let (server, client) = UnixStream::pair().unwrap();
+            server.set_nonblocking(true).unwrap();
+            let mut t = TlsStream::new(&context, server).unwrap();
+            let (go, wait) = std::sync::mpsc::channel::<()>();
+            let peer = std::thread::spawn(move || {
+                let mut b = SslConnector::builder(SslMethod::tls_client()).unwrap();
+                b.set_verify(SslVerifyMode::NONE);
+                if case == "eof" {
+                    // no tickets after the handshake to leave unread
+                    b.set_max_proto_version(Some(SslVersion::TLS1_2)).unwrap();
+                }
+                let mut s = b.build().connect("localhost", client).unwrap();
+                wait.recv().unwrap();
+                s.write_all(b"ab").unwrap();
+                wait.recv().unwrap();
+                if case == "close_notify" {
+                    s.shutdown().unwrap();
+                }
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !matches!(t.accept(), Handshake::Complete) {
+                assert!(std::time::Instant::now() < deadline, "the handshake completes");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            let mut one = [0u8; 1];
+            assert_eq!(t.peek(&mut one).unwrap_err().raw_os_error(), Some(Errno::EAGAIN as i32), "{case}");
+            go.send(()).unwrap();
+            assert_eq!(until(&mut t, &mut one).unwrap(), 1, "{case}");
+            assert_eq!(&one, b"a");
+            let mut buf = [0u8; 8];
+            assert_eq!(t.read(&mut buf).unwrap(), 2, "{case}: the peek left both bytes");
+            go.send(()).unwrap();
+            peer.join().unwrap();
+            let (end, records) = netdata_agent_log::capture(|| until(&mut t, &mut one));
+            let texts: Vec<String> = records.iter().filter_map(|r| r.message.clone()).collect();
+            eprintln!("{case}: {end:?}; {texts:?}");
+            match case {
+                "close_notify" => {
+                    assert_eq!(end.unwrap(), 0);
+                    assert!(texts.is_empty(), "{texts:?}");
+                }
+                "reset" => {
+                    assert_eq!(end.unwrap_err().raw_os_error(), Some(Errno::ECONNRESET as i32));
+                    assert!(texts[0].starts_with("SSL ERROR: SSL_peek() on socket "), "{texts:?}");
+                    assert!(texts[0].contains("Error [5, SSL_ERROR_SYSCALL, "), "{texts:?}");
+                }
+                _ => {
+                    let e = end.unwrap_err();
+                    assert!(e.kind() != io::ErrorKind::WouldBlock && e.raw_os_error() != Some(Errno::ECONNRESET as i32), "{e:?}");
+                    assert!(texts[0].starts_with("SSL ERROR: SSL_peek() on socket "), "{texts:?}");
+                }
+            }
+        }
+    }
+
     /// What a test server saw: the client's server name, its ALPN list, and the bytes it read.
     type Seen = (Option<String>, Vec<u8>, usize);
 

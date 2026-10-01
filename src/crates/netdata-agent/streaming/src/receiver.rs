@@ -2235,4 +2235,286 @@ mod tests {
                 .map(|o| format!("STREAM RCV 'child' [from []:]: cannot set {o} on socket {fd}"))
         );
     }
+
+    // ---- 10d probe / poll-error / cadence units (scratch) ----
+
+    fn with_stream(mut attached: Attached, stream: Conn) -> Attached {
+        attached.stream = Link::Plain(stream);
+        attached
+    }
+
+    fn tcp_pair() -> (std::net::TcpStream, mio::net::TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+        (client, mio::net::TcpStream::from_std(server))
+    }
+
+    fn unconnected_tcp() -> mio::net::TcpStream {
+        let s = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        s.set_nonblocking(true).unwrap();
+        mio::net::TcpStream::from_std(s.into())
+    }
+
+    #[test]
+    fn the_probe_takes_a_reset_for_the_remote_closing() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, _, _unix) = child(0xe1, crate::caps::V2, &pool, &hosts, &connector);
+        let (client, server) = tcp_pair();
+        s.with(|w, cx| w.attach(cx, with_stream(attached, Conn::Tcp(server))));
+        socket2::SockRef::from(&client).set_linger(Some(Duration::ZERO)).unwrap();
+        drop(client);
+        let (_, records) = netdata_agent_log::capture(|| s.with(|w, cx| w.check_all(cx, now_monotonic_ut())));
+        assert!(host.receiver().is_none());
+        let texts = texts(records);
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert_eq!(texts[0], "STREAM RCV[0] 'child' [from ]: socket closed by remote - closing connection");
+        assert!(texts[1].contains("reason=\"DISCONNECTED SOCKET CLOSED BY REMOTE END\""), "{texts:?}");
+    }
+
+    #[test]
+    fn the_probe_takes_other_errors_for_a_socket_error() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, _, _unix) = child(0xe2, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, with_stream(attached, Conn::Tcp(unconnected_tcp()))));
+        let (_, records) = netdata_agent_log::capture(|| s.with(|w, cx| w.check_all(cx, now_monotonic_ut())));
+        assert!(host.receiver().is_none());
+        let texts = texts(records);
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert_eq!(
+            texts[0],
+            "STREAM RCV[0] 'child' [from ]: socket error detected: Transport endpoint is not connected - closing connection"
+        );
+        assert!(texts[1].contains("reason=\"DISCONNECT SOCKET ERROR\""), "{texts:?}");
+    }
+
+    #[test]
+    fn a_poll_error_logs_so_error_and_the_keepalive() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, _, theirs) = child(0xe3, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| {
+            w.attach(cx, attached);
+            w.children[0].as_mut().unwrap().pending_out.extend_from_slice(b"x\n");
+            assert!(w.flush(cx, 0, false));
+        });
+        drop(theirs);
+        let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        assert!(host.receiver().is_none());
+        let all: Vec<_> = records.iter().map(|r| (r.errno, r.message.clone().unwrap_or_default())).collect();
+        assert_eq!(
+            all[0],
+            (
+                104,
+                "STREAM RCV[0] 'child' [from []:]: DISCONNECTED SOCKET CLOSED BY REMOTE END - closing connection; \
+                 SO_ERROR=104 (Connection reset by peer); TCP keepalive: enabled policy=automatic idle=30s interval=10s \
+                 probes=3"
+                    .to_string()
+            ),
+            "{all:?}"
+        );
+        assert_eq!(all.len(), 2, "{all:?}");
+    }
+
+    #[test]
+    fn a_poll_error_without_a_hangup_is_a_socket_error() {
+        use nix::sys::socket::{TimestampingFlag, setsockopt, sockopt};
+        let (mut s, pool, hosts, connector) = stepper();
+        let (mut attached, host, _, _unix) = child(0xe4, crate::caps::V2, &pool, &hosts, &connector);
+        attached.keepalive = Keepalive { enabled: false, ..keepalive() };
+        let (_client, server) = tcp_pair();
+        setsockopt(
+            &server,
+            sockopt::Timestamping,
+            &(TimestampingFlag::SOF_TIMESTAMPING_SOFTWARE | TimestampingFlag::SOF_TIMESTAMPING_TX_SOFTWARE),
+        )
+        .unwrap();
+        s.with(|w, cx| {
+            w.attach(cx, with_stream(attached, Conn::Tcp(server)));
+            w.children[0].as_mut().unwrap().pending_out.extend_from_slice(b"x\n");
+            assert!(w.flush(cx, 0, false));
+        });
+        let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        assert!(host.receiver().is_none());
+        let all: Vec<_> = records.iter().map(|r| (r.errno, r.message.clone().unwrap_or_default())).collect();
+        assert_eq!(
+            all[0],
+            (
+                0,
+                "STREAM RCV[0] 'child' [from []:]: DISCONNECT SOCKET ERROR - closing connection; SO_ERROR=0 (no pending \
+                 socket error); TCP keepalive: disabled"
+                    .to_string()
+            ),
+            "{all:?}"
+        );
+    }
+
+    #[test]
+    fn a_poll_error_on_a_descriptor_without_so_error_says_so() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (mut attached, host, _, _unix) = child(0xe5, crate::caps::V2, &pool, &hosts, &connector);
+        attached.keepalive = Keepalive { automatic: false, idle_s: 45, ..keepalive() };
+        let (read_end, write_end) = std::io::pipe().unwrap();
+        let fd: std::os::fd::OwnedFd = write_end.into();
+        let stream = mio::net::UnixStream::from_std(std::os::unix::net::UnixStream::from(fd));
+        s.with(|w, cx| w.attach(cx, with_stream(attached, Conn::Unix(stream))));
+        drop(read_end);
+        let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        assert!(host.receiver().is_none());
+        let all: Vec<_> = records.iter().map(|r| (r.errno, r.message.clone().unwrap_or_default())).collect();
+        assert_eq!(
+            all[0],
+            (
+                88,
+                "STREAM RCV[0] 'child' [from []:]: DISCONNECT SOCKET ERROR - closing connection; SO_ERROR is \
+                 unavailable: Socket operation on non-socket (errno=88); TCP keepalive: enabled policy=configured \
+                 idle=45s interval=10s probes=3"
+                    .to_string()
+            ),
+            "{all:?}"
+        );
+    }
+
+    #[test]
+    fn a_hangup_with_nothing_to_read_disconnects_at_the_poll() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, _, _unix) = child(0xe6, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, with_stream(attached, Conn::Tcp(unconnected_tcp()))));
+        let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        assert!(host.receiver().is_none());
+        let texts = texts(records);
+        assert_eq!(
+            texts[0],
+            "STREAM RCV[0] 'child' [from []:]: DISCONNECTED SOCKET CLOSED BY REMOTE END - closing connection",
+            "{texts:?}"
+        );
+        assert_eq!(texts.len(), 2, "{texts:?}");
+    }
+
+    #[test]
+    fn the_periodic_check_runs_every_update_every_not_every_tick() {
+        let t0 = Instant::now();
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, _, peer) = child(0xe7, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        // the attach's read, then the socket off the poll: only the periodic probe can find the end
+        assert!(s.turn(Duration::from_millis(50)));
+        s.with(|w, cx| {
+            let c = w.children[0].as_mut().unwrap();
+            cx.registry().deregister(&mut c.attached.stream).unwrap();
+        });
+        drop(peer);
+        let mut seen = Vec::new();
+        while host.receiver().is_some() {
+            assert!(t0.elapsed() < Duration::from_secs(5), "never checked");
+            let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(200)));
+            seen.extend(texts(records));
+        }
+        let at = t0.elapsed();
+        eprintln!("removed after {at:?}");
+        assert!(at >= Duration::from_secs(1) && at < Duration::from_millis(1500), "{at:?}");
+        assert_eq!(seen[0], "STREAM RCV[0] 'child' [from ]: socket closed by remote - closing connection", "{seen:?}");
+    }
+
+    #[test]
+    fn the_stall_checks_run_every_ten_minutes_senders_first() {
+        use netdata_agent_rrd::chart::{ChartSpec, ChartType};
+        let (mut s, pool, hosts, connector) = stepper();
+        let chart = |host: &Host, id: &str, set: u32| {
+            let (c, _) = host.charts().create(&ChartSpec {
+                type_: "t",
+                id,
+                name: None,
+                family: None,
+                context: None,
+                title: "t",
+                units: "u",
+                plugin: "p",
+                module: None,
+                priority: 1,
+                update_every: 1,
+                chart_type: ChartType::Line,
+                mode: DbMode::Ram,
+                history_entries: 60,
+                page_size: 4096,
+            });
+            c.update_meta(|m| {
+                m.flags &= !(flags::SENDER_REPLICATION_FINISHED
+                    | flags::SENDER_REPLICATION_IN_PROGRESS
+                    | flags::RECEIVER_REPLICATION_FINISHED
+                    | flags::RECEIVER_REPLICATION_IN_PROGRESS);
+                m.flags |= set;
+            });
+        };
+        let sending = Arc::new(Host::new(
+            "5a1e0000-0000-4000-8000-0000000000e8",
+            false,
+            crate::connector::tests::info("127.0.0.1:1", "key"),
+        ));
+        let sender = Sender::attach(&sending, &connector).expect("created");
+        let (ours, _parent) = mio::net::UnixStream::pair().unwrap();
+        s.with(|w, cx| {
+            w.queued_senders.push(crate::sender::Connected {
+                sender: Arc::clone(&sender),
+                link: Link::Plain(Conn::Unix(ours)),
+                capabilities: crate::caps::V2,
+                compressor: None,
+                remote_ip: "p".into(),
+                thread: 0,
+            });
+            w.dequeue_senders(cx);
+        });
+        for (id, set) in [
+            ("obs", flags::OBSOLETE),
+            ("ign", flags::UPSTREAM_IGNORE),
+            ("fin", flags::SENDER_REPLICATION_FINISHED),
+            ("run", flags::SENDER_REPLICATION_IN_PROGRESS),
+            ("new", 0),
+        ] {
+            chart(&sending, id, set);
+        }
+        sender.counter_in.store(1, Ordering::Relaxed);
+        let (attached, child_host, _, _peer) = child(0xe9, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        chart(&child_host, "r", 0);
+        child_host.count_replication_request();
+        let past = Instant::now().checked_sub(Duration::from_secs(601)).unwrap();
+        s.with(|w, cx| {
+            w.check_sender_replication(cx, past);
+            w.check_replication(cx, past);
+        });
+        let stall = |t: &String| t.contains("REPLICATION EXCEPTIONS") || t.contains("REPLICATION STALLED: instance");
+        let tick = |s: &mut netdata_agent_evloop::testing::Stepper<StreamWorker>| {
+            let mut seen = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while s.worker().last_check == past {
+                assert!(Instant::now() < deadline, "no tick");
+                let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(200)));
+                seen.extend(texts(records).into_iter().filter(|t| stall(t)));
+            }
+            seen
+        };
+        // an update every since the last check, not ten minutes since the last stall check: none runs
+        s.worker().last_check = past;
+        s.worker().last_replication_check = Instant::now();
+        assert_eq!(tick(&mut s), Vec::<String>::new());
+        assert!(child_host.receiver().is_some());
+        // both due: the senders' check, then the receivers'
+        s.worker().last_check = past;
+        s.worker().last_replication_check = past;
+        assert_eq!(
+            tick(&mut s),
+            [
+                "STREAM SND[0] 'child' [to p]: REPLICATION STALLED: instance 't.run' has not finished replication yet.",
+                "STREAM SND[0] 'child' [to p]: REPLICATION STALLED: instance 't.new' has not started replication yet.",
+                "STREAM SND[0] 'child' [to p]: REPLICATION EXCEPTIONS SUMMARY: node has 2 stalled replication requests (1 \
+                 completed).We have received 1 and sent 0 replication commands. Disconnecting node to restore streaming.",
+                "STREAM RCV[0] 'child' [from ]: REPLICATION EXCEPTIONS: instance 't.r' has not started replication yet.",
+                "STREAM RCV[0] 'child' [from ]: REPLICATION EXCEPTIONS SUMMARY: node has 1 stalled replication requests \
+                 (0 finished). We have requested 1 and got replies for 0 replication commands. Disconnecting node to \
+                 restore streaming.",
+            ]
+        );
+        assert!(child_host.receiver().is_none());
+    }
 }

@@ -2401,6 +2401,36 @@ mod tests {
         assert_eq!(shutdowns.load(Ordering::Relaxed), 2);
     }
 
+    /// `rrdhost_clear_receiver()`'s bookkeeping: the host orphaned, its replication counters zeroed, last connected 0
+    /// and last disconnected now, and its contexts' retention recomputed for the disconnect on the next cycle.
+    #[test]
+    fn a_detach_orphans_the_host_and_resets_its_bookkeeping() {
+        use crate::chart::Algorithm;
+        let host = Host::new("guid-d", false, info("d"));
+        let slot = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
+        let chart = collected_chart(&host, DbMode::Ram);
+        let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        store(&dim, T0, 1.0);
+        store(&dim, T0 + 1, 1.0);
+        crate::contexts::collected_rrdset(&chart);
+        host.contexts().worker_cycle();
+        let ctx = host.contexts().get("t.c").expect("the chart's context");
+        assert!(ctx.flags.is_collected() && !host.is_orphan());
+        host.count_replication_request();
+        host.count_replication_reply();
+        host.backfill_requested();
+        let before = crate::clock::now_realtime_s();
+        host.clear_receiver(&slot, 0);
+        let after = crate::clock::now_realtime_s();
+        assert!(host.is_orphan());
+        assert_eq!((host.replication_requests(), host.replication_replies(), host.backfill_pending()), (0, 0, 0));
+        assert_eq!(host.receiver_last_connected_s(), 0);
+        assert!((before..=after).contains(&host.receiver_last_disconnected_s()));
+        host.contexts().worker_cycle();
+        assert!(ctx.flags.is_archived() && !ctx.flags.is_collected(), "{:#x}", ctx.flags.get());
+    }
+
     /// `stream_receiver_replication_reset()` on attach and on detach, each on its own.
     #[test]
     fn receivers_reset_replication_flags() {

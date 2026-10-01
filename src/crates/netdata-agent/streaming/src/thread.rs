@@ -67,8 +67,8 @@ pub struct StreamWorker {
     tick: Option<TimerId>,
     /// `nd_profile.update_every`: how often every connection is probed and checked for idleness.
     check_every: Duration,
-    last_check: Instant,
-    last_replication_check: Instant,
+    pub(crate) last_check: Instant,
+    pub(crate) last_replication_check: Instant,
     /// The `errno` the last close left (a TLS close's EAGAIN); at the exit, what C's end record carries.
     pub(crate) exit_errno: i32,
 }
