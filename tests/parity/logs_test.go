@@ -31,7 +31,6 @@ var cOnlyRecords = []struct {
 	{regexp.MustCompile(`msg="SQL: (suppressing SQLite teardown|skipping )`), "SQLite teardown"},
 	{regexp.MustCompile(`msg="CLAIM: `), "claiming"},
 	{regexp.MustCompile(`msg="SERVICE CONTROL: waiting for the following|msg="SERVICE: Signal to stop : `), "service registry of C's static threads (D44)"},
-	{regexp.MustCompile(`msg="PLUGINSD: cleaning up\.\.\."|msg="PLUGINSD: cleanup completed\."`), "plugins.d"},
 	{regexp.MustCompile(`msg="Failed to delete socket \d+ from nd_poll\(\) - called from poll_events_cleanup\(\)`), "D43 (shared listening sockets)"},
 }
 
@@ -53,7 +52,7 @@ var timedRecords = regexp.MustCompile(`msg="Flushing DBENGINE hot & dirty pages\
 
 // cOnlyThreads are threads of subsystems the candidate does not have: all their records are the oracle's alone.
 var cOnlyThreads = map[string]string{
-	"ACLKSYNC": "ACLK", "SDBUSWATCHER": "systemd bus watcher", "PLUGINSD": "plugins.d",
+	"ACLKSYNC": "ACLK", "SDBUSWATCHER": "systemd bus watcher",
 	"SERVICE": "service thread", "ANALYTICS": "analytics",
 	"EXPORTING": "exporting engine", "STATSD_FLUSH": "statsd",
 	"ACLK_MAIN": "ACLK", "OPEN_PGC": "the open cache's evictor (no open cache, D84.4)",

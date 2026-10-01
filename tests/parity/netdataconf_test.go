@@ -37,10 +37,6 @@ func init() {
 		"enable statistics charts", "hosts to skip from training", "charts to skip from training",
 		"stream anomaly detection charts")
 	pending("registry", "registry", "netdata management api key file")
-	// go.d is a file key C does not read either; its annotation depends on the section having a used key.
-	pending("plugins.d", "plugins", "enable running new plugins", "check for new plugins every", "cups", "xenstat",
-		"systemd-units", "nfacct", "scripts.d", "ebpf-go", "freeipmi", "otel", "apps", "go.d", "charts.d", "python.d",
-		"debugfs", "perf", "slabinfo", "ioping", "ebpf", "systemd-journal", "network-viewer")
 	pending("internal collectors", "plugins", "proc", "diskspace", "cgroups", "tc", "idlejitter", "timex", "profile")
 	pending("statsd", "plugins", "statsd")
 	pending("statsd", "statsd", "update every (flushInterval)", "udp messages to process at once",

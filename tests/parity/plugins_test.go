@@ -125,8 +125,7 @@ type pluginCase struct {
 // (package plugin): a dash wrapper exec'ing a Go engine that plays a scenario and records its argv, its stdin and how
 // it ended. Per case: what the agents show while it runs, then (both stopped) each start's view, the number of starts
 // and the plugin's log records in five classes. Every guard runs on the oracle, so no case passes with two sides that
-// never ran the plugin; neither side may start an installed plugin. Against a candidate the cases skip unless
-// PARITY_PLUGINS=1 (no plugins.d orchestration in Rust before M8's orchestration commit).
+// never ran the plugin; neither side may start an installed plugin.
 func TestPluginsFakePlugin(t *testing.T) {
 	bins := binaries(t)
 	engine, err := plugin.Engine()
@@ -303,9 +302,6 @@ func TestPluginsFakePlugin(t *testing.T) {
 	for _, name := range slices.Sorted(maps.Keys(cases)) {
 		c := cases[name]
 		t.Run(name, func(t *testing.T) {
-			if bins[0] != bins[1] && os.Getenv("PARITY_PLUGINS") != "1" {
-				t.Skip("PARITY_PLUGINS=1 runs the fake plugin under the candidate (no plugins.d orchestration in Rust yet)")
-			}
 			var ls [2]plugin.Layout
 			side := 0
 			p := startPairWith(t, pluginsOptions(), parentIdentity, bins, [2]string{}, [2]Role{Oracle, Candidate},

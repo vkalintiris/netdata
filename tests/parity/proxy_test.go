@@ -597,7 +597,7 @@ func proxyRecordsRun(t *testing.T, name string, v proxyVariant, bins [2]string) 
 	time.Sleep(2 * time.Second)
 	for i, s := range sides {
 		_ = s.proxy.Stop()
-		// the receiver's records; the PLUGINSD thread's own (its shutdown) belong to plugins.d, not ported yet
+		// the receiver's records, not the PLUGINSD thread's own (its shutdown)
 		for _, r := range pluginsdRecords(t, s.proxy) {
 			if strings.Contains(r, "thread=STREAM[n]") {
 				out[i] = append(out[i], r)
