@@ -145,6 +145,19 @@ impl Decompressor {
     /// `stream_decompress()`: one message into the output buffer; the decompressed length (0 is a failure too). A
     /// failing engine logs C's line first.
     fn decompress(&mut self, data: &[u8]) -> Result<usize, ()> {
+        let n = self.run_engine(data)?;
+        // C checks the decompressed size, not the compressed one's limit: old children may send messages this big
+        if n > MAX_CHUNK {
+            failed(format_args!(
+                "decompressed data is {n} bytes, which is bigger than the max msg size {MAX_CHUNK}"
+            ));
+            return Err(());
+        }
+        Ok(n)
+    }
+
+    /// The negotiated engine's decompression of one message into the output buffer.
+    fn run_engine(&mut self, data: &[u8]) -> Result<usize, ()> {
         let output = &mut self.output;
         let size = output.len();
         match &mut self.engine {
@@ -434,5 +447,29 @@ mod tests {
             line(caps::LZ4, &frame(&[0xf0, 1, 2])),
             "STREAM_DECOMPRESS: LZ4_decompress_safe_continue() returned negative value: -1 (compressed chunk is 3 bytes)"
         );
+    }
+
+    #[test]
+    fn a_message_decompressing_past_the_chunk_is_refused() {
+        let zstd = |n: usize| frame(&zstd::bulk::compress(&vec![b'x'; n], 1).unwrap());
+        let lz4 = |n: usize| frame(&lz4_flex::block::compress(&vec![b'x'; n]));
+        for (capabilities, stream) in [(caps::ZSTD, zstd as fn(usize) -> Vec<u8>), (caps::LZ4, lz4)] {
+            assert_eq!(
+                run(capabilities, &stream(MAX_CHUNK), 1 << 20).map(|out| out.len()),
+                Ok(MAX_CHUNK)
+            );
+            let (result, records) =
+                netdata_agent_log::capture(|| run(capabilities, &stream(MAX_CHUNK + 1), 1 << 20));
+            assert_eq!(result, Err(Failure::NoBytes));
+            let messages: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+            assert_eq!(
+                messages,
+                [format!(
+                    "STREAM_DECOMPRESS: decompressed data is {} bytes, which is bigger than the max msg size \
+                     {MAX_CHUNK}",
+                    MAX_CHUNK + 1
+                )]
+            );
+        }
     }
 }
