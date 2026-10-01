@@ -5,6 +5,14 @@
 
 use std::collections::HashMap;
 
+/// `STREAM_MAX_THREADS`.
+pub const MAX_THREADS: usize = 2048;
+
+/// `stream_thread_get_unsafe()`'s `assign.cores`: one stream thread per CPU but one, 4..=`MAX_THREADS`.
+pub fn threads_for(cpus: u64) -> usize {
+    cpus.saturating_sub(1).clamp(4, MAX_THREADS as u64) as usize
+}
+
 #[derive(Debug, Default)]
 pub struct Pins {
     /// Each thread's `nodes_count`: the hosts pinned to it.
@@ -49,6 +57,13 @@ mod tests {
 
     /// A host keeps its thread while its receiver or sender is queued; new hosts go to the least loaded thread, the
     /// first of equals.
+    /// `netdata_conf_cpus()` - 1, at least 4 and at most 2048; a negative `[global] cpu cores` wraps to the most.
+    #[test]
+    fn stream_threads_follow_the_cpus_as_c() {
+        let got: Vec<_> = [1, 4, 5, 6, 17, 2049, 2050, u64::MAX].map(threads_for).into();
+        assert_eq!(got, [4, 4, 4, 5, 16, 2048, 2048, 2048]);
+    }
+
     #[test]
     fn hosts_pin_as_c() {
         let mut p = Pins::new(3);

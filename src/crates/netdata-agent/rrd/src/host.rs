@@ -3002,6 +3002,30 @@ mod tests {
         assert_eq!(hosts.all().len(), 3);
     }
 
+    /// `rrdhost_set_replication_parameters()`: every mode but dbengine caps the period at history x update every;
+    /// the switch and the step are kept as given.
+    #[test]
+    fn the_replication_period_is_capped_by_the_ring_as_c() {
+        let cases = [
+            (DbMode::Ram, 4096, 1, 86400, 4096),
+            (DbMode::Ram, 4096, 2, 86400, 8192),
+            (DbMode::Ram, 4096, 3, 3600, 3600),
+            (DbMode::Alloc, 3600, 5, 86400, 18000),
+            (DbMode::Alloc, 3600, 5, 18000, 18000),
+            (DbMode::None, 5, 10, 86400, 50),
+            (DbMode::Dbengine, 0, 1, 86400, 86400),
+        ];
+        for (db_mode, history_entries, update_every, period, want) in cases {
+            let mut h = HostInfo { db_mode, history_entries, update_every, ..info("h") };
+            h.set_replication(false, period, 600);
+            assert_eq!(
+                (h.replication_enabled, h.replication_period, h.replication_step),
+                (false, want, 600),
+                "{db_mode:?} {history_entries} x {update_every}, {period}"
+            );
+        }
+    }
+
     /// An archived host is loaded without replication or a sender; when it connects again it takes the receiver's,
     /// as `rrdhost_update()` does: the configured period capped for the host's own ring (not the receiver's), its
     /// progress back at 100%.

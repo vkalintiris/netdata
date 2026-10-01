@@ -118,6 +118,22 @@ impl Keyword {
 mod tests {
     use super::*;
 
+    /// `PARSER_INIT_STREAMING` (`gperf-hashtable.h`): the keywords a streaming child may not send.
+    #[test]
+    fn the_streaming_repertoire_is_cs() {
+        let outside: Vec<_> = Keyword::all()
+            .filter(|k| !k.repertoire().contains(Repertoire::STREAMING))
+            .map(Keyword::name)
+            .collect();
+        assert_eq!(
+            outside,
+            [
+                "CONFIG", "DISABLE", "EXIT", "FLUSH", "HOST", "HOST_DEFINE", "HOST_DEFINE_END", "HOST_LABEL",
+                "PLUGIN_KEEPALIVE", "TRUST_DURATIONS"
+            ]
+        );
+    }
+
     #[test]
     fn lookups_are_exact() {
         assert_eq!(Keyword::lookup(b"BEGIN2"), Some(Keyword::Begin2));

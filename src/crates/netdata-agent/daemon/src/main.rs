@@ -742,9 +742,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         ),
         None => archived::load_without_database(&hosts, Some(&metasync)),
     }
-    // stream_thread_get_unsafe(): one thread per core but one, 4..=2048, each started when a node is first assigned
-    // to it.
-    let stream_threads = (conf.threads.cpus - 1).clamp(4, 2048) as usize;
+    // each started when a node is first assigned to it
+    let stream_threads = netdata_agent_streaming::pins::threads_for(conf.threads.cpus);
     let stream_pins: Arc<std::sync::Mutex<netdata_agent_streaming::pins::Pins>> = Arc::default();
     let stream_pool = {
         let pins = Arc::clone(&stream_pins);

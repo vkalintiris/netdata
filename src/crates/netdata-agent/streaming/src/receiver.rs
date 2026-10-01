@@ -2236,6 +2236,204 @@ mod tests {
         );
     }
 
+    /// `stream_receiver_reconcile_keepalive()` with the keepalive off: SO_KEEPALIVE, which the web server turned on,
+    /// goes off and no TCP option is set; a configured policy is not reconciled again. Automatic: the handshake's
+    /// update every until a chart reports one, applied again only when the observed minimum changes.
+    #[test]
+    fn keepalive_off_turns_it_off_and_only_a_new_minimum_reapplies() {
+        use nix::sys::socket::{getsockopt, setsockopt, sockopt};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        // as the web server accepts it (static-threaded.c:48-50, daemon/src/server.rs:494)
+        setsockopt(&server, sockopt::KeepAlive, &true).unwrap();
+        let idle = || getsockopt(&server, sockopt::TcpKeepIdle).unwrap();
+        let kernel_idle = idle();
+        let on = || getsockopt(&server, sockopt::KeepAlive).unwrap();
+        let (h, peer) = (host(), Peer::default());
+        let off = Keepalive { enabled: false, automatic: false, idle_s: 0 };
+        let mut initialized = false;
+        reconcile_keepalive(server.as_fd(), &h, &peer, &off, 5, &mut initialized);
+        assert_eq!((initialized, on(), idle()), (true, false, kernel_idle));
+        setsockopt(&server, sockopt::KeepAlive, &true).unwrap();
+        h.observe_receiver_update_every(200);
+        reconcile_keepalive(server.as_fd(), &h, &peer, &off, 5, &mut initialized);
+        assert!(on(), "a configured policy is applied once");
+        let h = host();
+        let mut initialized = false;
+        reconcile_keepalive(server.as_fd(), &h, &peer, &keepalive(), 121, &mut initialized);
+        assert_eq!((on(), idle()), (true, 61));
+        setsockopt(&server, sockopt::TcpKeepIdle, &77).unwrap();
+        reconcile_keepalive(server.as_fd(), &h, &peer, &keepalive(), 121, &mut initialized);
+        assert_eq!(idle(), 77, "the same minimum: not applied again");
+        h.observe_receiver_update_every(300);
+        reconcile_keepalive(server.as_fd(), &h, &peer, &keepalive(), 121, &mut initialized);
+        assert_eq!(idle(), 150);
+    }
+
+    /// A failed SO_KEEPALIVE is C's one warning, and the TCP options are not tried.
+    #[test]
+    fn a_failed_so_keepalive_ends_the_reconcile() {
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&file);
+        let (h, peer) = (host(), Peer::default());
+        let off = Keepalive { enabled: false, automatic: false, idle_s: 0 };
+        for (policy, word) in [(keepalive(), "enable"), (off, "disable")] {
+            let mut initialized = false;
+            let ((), records) = netdata_agent_log::capture(|| {
+                reconcile_keepalive(file.as_fd(), &h, &peer, &policy, 1, &mut initialized);
+            });
+            assert!(initialized);
+            assert_eq!(
+                texts(records),
+                [format!("STREAM RCV 'child' [from []:]: cannot {word} SO_KEEPALIVE on socket {fd}")]
+            );
+        }
+    }
+
+    /// `stream_receiver_move_to_running_unsafe()`: the admission enlarges both socket buffers (as a socket asked for
+    /// `LARGE_SOCK_SIZE` directly), applies the keepalive, and starts the receiver waiting for replication when
+    /// `[db] enable replication` is on, else running.
+    #[test]
+    fn the_move_to_running_sets_the_socket_and_the_state_up_as_cs() {
+        use netdata_agent_rrd::pulse::host_status::{RCV_REPLICATION_WAIT, RCV_RUNNING, RECEIVER};
+        use nix::sys::socket::{getsockopt, sockopt};
+        let (control, _control_peer) = mio::net::UnixStream::pair().unwrap();
+        let control = socket2::SockRef::from(&control);
+        control.set_recv_buffer_size(crate::sock::LARGE_SOCK_SIZE).unwrap();
+        control.set_send_buffer_size(crate::sock::LARGE_SOCK_SIZE).unwrap();
+        let want = (control.recv_buffer_size().unwrap(), control.send_buffer_size().unwrap());
+        let buffers = |c: &Conn| {
+            let r = socket2::SockRef::from(c);
+            (r.recv_buffer_size().unwrap(), r.send_buffer_size().unwrap())
+        };
+        let (mut s, pool, hosts, connector) = stepper();
+        let mut peers = Vec::new();
+        for (i, (n, wait, state)) in [(0xda, true, RCV_REPLICATION_WAIT), (0xdb, false, RCV_RUNNING)]
+            .into_iter()
+            .enumerate()
+        {
+            let (mut attached, host, slot, theirs) = child(n, crate::caps::V2, &pool, &hosts, &connector);
+            peers.push(theirs);
+            attached.replication_wait = wait;
+            // owed before the child has a buffer: C's send_to_child() drops it
+            slot.send_to_child(b"FUNCTION_PAYLOAD x\n");
+            assert_ne!(buffers(attached.stream.socket().unwrap()), want, "smaller by default");
+            s.with(|w, cx| w.attach(cx, attached));
+            let a = &s.worker().children[i].as_ref().unwrap().attached;
+            let sock = a.stream.socket().unwrap();
+            assert_eq!(
+                (buffers(sock), getsockopt(sock, sockopt::KeepAlive).unwrap(), a.keepalive_initialized),
+                (want, true, true)
+            );
+            assert_eq!(host.pulse_state() & RECEIVER, state);
+        }
+        for mut peer in peers {
+            let mut buf = [0; 64];
+            let read = std::io::Read::read(&mut peer, &mut buf);
+            assert_eq!(read.map_err(|e| e.kind()), Err(std::io::ErrorKind::WouldBlock), "nothing reached the child");
+        }
+    }
+
+    /// Keeps the connections handed to a stream thread, untouched: the queue a child waits in until its admission.
+    struct Hold(Arc<Mutex<Vec<Attached>>>);
+
+    impl netdata_agent_evloop::Worker for Hold {
+        type Msg = StreamMsg;
+        fn event(&mut self, _cx: &mut Context<'_>, _event: &Event) {}
+        fn message(&mut self, _cx: &mut Context<'_>, msg: StreamMsg) {
+            if let StreamMsg::Attach(attached) = msg {
+                self.0.lock().unwrap().push(*attached);
+            }
+        }
+    }
+
+    /// `stream_receiver_accept_connection()`: the web worker writes the prompt, then queues the child with its host
+    /// waiting (RCV_WAITING) and its socket non-blocking; what the child sends next stays unread until the admission,
+    /// which starts it as `[db] enable replication` says (not the key's). The created host's replication period is
+    /// capped by its ring: ram rounds 3600 entries up to 4096, every 2 s.
+    #[test]
+    fn admission_prompts_then_queues_the_child_waiting() {
+        use netdata_agent_rrd::pulse::host_status::{RCV_REPLICATION_WAIT, RCV_WAITING, RECEIVER};
+        use std::io::{Read, Write};
+        const KEY: &str = "11111111-2222-3333-4444-555555555555";
+        const GUID: &str = "5a1e0000-0000-4000-8000-0000000000e1";
+        let held = Arc::new(Mutex::new(Vec::new()));
+        let hold = {
+            let held = Arc::clone(&held);
+            netdata_agent_evloop::Pool::spawn(1, 256 * 1024, |i| format!("HOLD[{i}]"), move |_| {
+                Hold(Arc::clone(&held))
+            })
+            .unwrap()
+        };
+        let (_pool, connector) = crate::connector::tests::connector();
+        let hosts = Arc::new(Hosts::new(Host::new(
+            "5a1e0000-0000-4000-8000-0000000000aa",
+            true,
+            crate::connector::tests::info("", ""),
+        )));
+        let mut conf = StreamConf::default();
+        conf.config.load_bytes(
+            format!("[{KEY}]\n  enabled = yes\n  enable replication = no\n").as_bytes(),
+            "stream.conf",
+            false,
+            None,
+        );
+        let defaults = Defaults {
+            db_mode: "ram".into(),
+            history: 3600,
+            health_enabled: false,
+            update_every: 1,
+            page_size: 4096,
+            gap_when_lost_iterations_above: 3,
+        };
+        let receivers = Receivers::new(
+            conf,
+            Arc::clone(&hosts),
+            Arc::default(),
+            defaults,
+            hold.handle(),
+            connector,
+        );
+        let query = format!("key={KEY}&hostname=c1&machine_guid={GUID}&ver=2&update_every=2");
+        let PreAdmission::Proceed(pending) = receivers.pre_admit(query.as_bytes(), None, "127.0.0.1", "1") else {
+            panic!("refused");
+        };
+        let (ours, mut theirs) = mio::net::UnixStream::pair().unwrap();
+        assert!(receivers.admit(*pending, Link::Plain(Conn::Unix(ours))));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while held.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "not queued");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut prompt = [0; 128];
+        let n = theirs.read(&mut prompt).unwrap();
+        assert_eq!(&prompt[..n], crate::caps::PROMPT_V2.as_bytes());
+        let host = hosts.find_by_guid(GUID).unwrap();
+        let attached = held.lock().unwrap().pop().unwrap();
+        let flags = nix::fcntl::fcntl(attached.stream.socket().unwrap(), nix::fcntl::FcntlArg::F_GETFL).unwrap();
+        let info = host.info();
+        assert_eq!(
+            (
+                host.pulse_state() & RECEIVER,
+                nix::fcntl::OFlag::from_bits_truncate(flags).contains(nix::fcntl::OFlag::O_NONBLOCK),
+                attached.replication_wait,
+                info.replication_enabled,
+                info.replication_period,
+            ),
+            (RCV_WAITING, true, true, false, 8192)
+        );
+        theirs.write_all(b"CHART 'q.r' '' t u f c line 1 1\n").unwrap();
+        assert!(host.charts().find("q.r", true).is_none());
+        let worker = StreamWorker::new(Arc::new(Mutex::new(Pins::new(1))), 1);
+        let mut s = netdata_agent_evloop::testing::Stepper::new(0, worker).unwrap();
+        s.with(|w, cx| w.attach(cx, attached));
+        assert_eq!(host.pulse_state() & RECEIVER, RCV_REPLICATION_WAIT);
+        assert!(s.turn(Duration::from_millis(50)));
+        assert!(host.charts().find("q.r", true).is_some());
+        hold.stop().unwrap();
+    }
+
     // ---- 10d probe / poll-error / cadence units (scratch) ----
 
     fn with_stream(mut attached: Attached, stream: Conn) -> Attached {
