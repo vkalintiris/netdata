@@ -614,13 +614,14 @@ func parentRecords(t *testing.T, d *daemon.Daemon, marker string, rewrite *strin
 			continue
 		}
 		n := normalizeLog(l, d.Opts.RunDir, "")
+		// first, so a rewrite may name the local addresses before their ports are masked
+		if rewrite != nil {
+			n = rewrite.Replace(n)
+		}
 		n = anyLocalPortRe.ReplaceAllString(n, "127.0.0.1${1}P")
 		n = threadNRe.ReplaceAllString(n, "${1}[n]")
 		n = lastSampleRe.ReplaceAllString(n, "last sample in the db D ago")
 		n = receivedRe.ReplaceAllString(n, " ${1}=N")
-		if rewrite != nil {
-			n = rewrite.Replace(n)
-		}
 		if !seen[n] {
 			seen[n] = true
 			out = append(out, n)

@@ -41,6 +41,15 @@ var pulseChartsRules = Rules{
 // parameters.
 func localData(t *testing.T, d *daemon.Daemon, chart string, after, before int64, group string) string {
 	t.Helper()
+	out, err := localDataErr(d, chart, after, before, group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// localDataErr is localData returning its failure, for goroutines.
+func localDataErr(d *daemon.Daemon, chart string, after, before int64, group string) (string, error) {
 	points, options := before-after+1, ""
 	if group == "sum" || group == "max" {
 		// one point for the whole window, not aligned to its length (which could move it past the last point)
@@ -50,12 +59,15 @@ func localData(t *testing.T, d *daemon.Daemon, chart string, after, before int64
 		"HTTP/1.1\r\nConnection: close\r\n\r\n", chart, after, before, points, group, options)
 	b, err := rawExchange(d.Addr, []byte(req), 10*time.Second)
 	if err != nil {
-		t.Fatalf("%s: %v", d.Opts.Binary, err)
+		return "", fmt.Errorf("%s: %w", d.Opts.Binary, err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(httpBody(b))), "\n")
 	if !bytes.HasPrefix(b, []byte("HTTP/1.1 200 ")) || len(lines) < 2 {
-		t.Fatalf("%s: %s [%d, %d] %s: no points: %q", d.Opts.Binary, chart, after, before, group, truncateBytes(b))
+		return "", fmt.Errorf("%s: %s [%d, %d] %s: no points: %q", d.Opts.Binary, chart, after, before, group,
+			truncateBytes(b))
 	}
+	// C ends each line with CRLF
+	lines[0] = strings.TrimSpace(lines[0])
 	for i := 1; i < len(lines); i++ {
 		cells := strings.Split(strings.TrimSpace(lines[i]), ",")
 		for j := 1; j < len(cells); j++ {
@@ -65,7 +77,7 @@ func localData(t *testing.T, d *daemon.Daemon, chart string, after, before int64
 		}
 		lines[i] = strings.Join(cells, ",")
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), nil
 }
 
 // compareLocalData compares a localhost chart's values over the same seconds on both sides.
