@@ -2285,6 +2285,51 @@ mod tests {
         assert_eq!(*loaded.lock().unwrap(), ["c"]);
     }
 
+    /// `rrdhost_update()` of a host that is not archived: the descriptive fields follow the child, while its update
+    /// every, memory mode, history, replication and sender settings stay (C only warns about the first three, history
+    /// as an `else if` after the memory mode, and re-applies the others only to an archived host).
+    #[test]
+    fn a_reconnecting_host_keeps_what_c_does_not_reapply() {
+        let host = Host::new("guid-k", false, info("a"));
+        let before = host.info();
+        let wanted = HostInfo {
+            hostname: "b".into(),
+            registry_hostname: "b".into(),
+            os: "other-os".into(),
+            timezone: "Europe/Athens".into(),
+            abbrev_timezone: "EEST".into(),
+            utc_offset: 10800,
+            program_name: "other".into(),
+            program_version: "v9".into(),
+            update_every: 2,
+            db_mode: DbMode::Alloc,
+            history_entries: 8192,
+            replication_enabled: false,
+            replication_period: 600,
+            replication_step: 60,
+            stream_send: StreamSend::new(true, "p:1", "key", "*"),
+            ..before.clone()
+        };
+        let ((), records) = netdata_agent_log::capture(|| host.update(&wanted, 2, 8192, false, 600, 60));
+        let warnings: Vec<_> = texts(&records)
+            .into_iter()
+            .filter(|(_, t)| t.contains("Restart netdata here"))
+            .map(|(_, t)| t.split(" has ").nth(1).unwrap_or_default().split(',').next().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(warnings, ["an update frequency of 1 seconds", "memory mode 'ram'"]);
+        let kept = HostInfo {
+            update_every: before.update_every,
+            db_mode: before.db_mode,
+            history_entries: before.history_entries,
+            replication_enabled: before.replication_enabled,
+            replication_period: before.replication_period,
+            replication_step: before.replication_step,
+            stream_send: before.stream_send.clone(),
+            ..wanted.clone()
+        };
+        assert_eq!(host.info(), kept);
+    }
+
     /// `foreach_entry_in_connection_string()`: destinations split at commas and at C's white space, empty ones
     /// skipped, kept in order and duplicates kept; `:SSL` marks TLS; an empty destination makes no sender.
     #[test]

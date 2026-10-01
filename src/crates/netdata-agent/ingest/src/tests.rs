@@ -1220,6 +1220,28 @@ fn block(t: i64) -> Vec<String> {
     vec![format!("BEGIN2 'proxy.gauge' 1 {t} #"), "SET2 'g1' 1 1 A".into(), "SET2 'g2' 2 # RA".into(), "END2".into()]
 }
 
+/// `should_send_rrdset_matching()`: a proxied child's chart is not forwarded while its replication runs (from its
+/// CHART_DEFINITION_END to the REND that starts streaming); blocks and the REND send nothing up, and the next block
+/// sends the definition, then itself.
+#[test]
+fn a_proxied_chart_is_defined_upstream_after_its_replication() {
+    let t = NOW - 10;
+    let (_h, r, mut p) = proxied("*", CHILD, PARENT);
+    let marker = vec![(Traffic::Metadata, "M\n".to_string())];
+    feed_ok(&mut p, &[format!("CHART_DEFINITION_END {} {t} {NOW}", t - 100)]);
+    feed_ok(&mut p, &block(t));
+    assert_eq!(upstream_bytes(&mut p, &r), marker, "a block while replicating");
+    feed_ok(&mut p, &["RBEGIN 'proxy.gauge'".to_string(), format!("REND 1 {} {t} true 0 0 {NOW}", t - 100)]);
+    assert_eq!(upstream_bytes(&mut p, &r), marker, "the REND");
+    feed_ok(&mut p, &block(t + 1));
+    let commits = r.take();
+    assert_eq!(commits.len(), 1, "{commits:?}");
+    assert!(commits[0].1.starts_with("CHART SLOT:0x1 \"proxy.gauge\" "), "{commits:?}");
+    assert_eq!(commits[0].1.matches("\nDIMENSION ").count(), 2, "{commits:?}");
+    let sent = upstream_bytes(&mut p, &r);
+    assert!(sent[0].1.starts_with(&format!("BEGIN2 SLOT:0x1 'proxy.gauge' 1 {} #\n", t + 1)), "{sent:?}");
+}
+
 /// A child's block goes on in the parent's slots, the words copied when both links read numbers alike, else
 /// re-encoded; the definition goes first and the block waits in the batch.
 #[test]

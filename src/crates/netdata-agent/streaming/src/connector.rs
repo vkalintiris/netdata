@@ -735,6 +735,43 @@ pub(crate) mod tests {
         (pool, c)
     }
 
+    /// `stream_path_parent_disconnected()` at a sender's removal (not at a socket disconnect): the path is cut after
+    /// this agent's entry and sent down to the child when something was cut; a second removal sends nothing.
+    #[test]
+    fn a_removal_cuts_the_path_after_this_agent_and_sends_it_down() {
+        use netdata_agent_rrd::host::ReceiverLink;
+        use netdata_agent_rrd::stream_path::PathEntry;
+        // the connector holds localhost weakly: the test keeps it (the helper's would be gone)
+        let pins = Arc::new(Mutex::new(Pins::new(1)));
+        let pool = Pool::spawn(1, 256 * 1024, |i| format!("TEST[{i}]"), |_| {
+            crate::thread::StreamWorker::new(Arc::clone(&pins), 1)
+        })
+        .unwrap();
+        let localhost = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, info("", "")));
+        let local = Local { host_id: [0xaa; 16], user_agent: "t/1".into(), update_every: 1 };
+        let c = Connector::new(Settings::of(&Send::default()), local, &localhost, pool.handle(), pins, 256 * 1024);
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c9", false, info("127.0.0.1:1", "key-a")));
+        let s = Sender::attach(&host, &c).expect("created");
+        let link = ReceiverLink { capabilities: caps::PATHS, ..ReceiverLink::default() };
+        let slot = Arc::new(ReceiverSlot::new(1, Default::default(), link, Box::new(|| {})));
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
+        let us = c.local().host_id;
+        let entry = |host_id: [u8; 16], hops| PathEntry { host_id, hops, ..PathEntry::default() };
+        host.replace_stream_path(vec![entry([0xc9; 16], 0), entry(us, 1), entry([0xbb; 16], 2), entry([0xcc; 16], 3)]);
+        let path = |host: &Host| host.stream_path().iter().map(|e| (e.host_id, e.hops)).collect::<Vec<_>>();
+        host.sender_flags_set(sender_flags::ADDED);
+        c.requeue(&s, &host, Cmd::Connect);
+        c.remove_host(&s, &host);
+        assert_eq!(path(&host), [([0xc9; 16], 0), (us, 1)]);
+        let sent = slot.take_to_child();
+        assert!(sent.starts_with(b"JSON STREAM_PATH\n"));
+        assert_eq!(sent, netdata_agent_ingest::stream_path::message(&host, &localhost, None));
+        c.requeue(&s, &host, Cmd::Connect);
+        c.remove_host(&s, &host);
+        assert_eq!(path(&host), [([0xc9; 16], 0), (us, 1)]);
+        assert!(slot.take_to_child().is_empty());
+    }
+
     /// The free at a host's cleanup (HOST CLEANUP) takes a queued sender off the connector at once, without the
     /// connector's record, and the host streams no more; the revival sets the same sender up with its new key and
     /// parents (D118).
