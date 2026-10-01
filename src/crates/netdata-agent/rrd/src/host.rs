@@ -2285,6 +2285,24 @@ mod tests {
         assert_eq!(*loaded.lock().unwrap(), ["c"]);
     }
 
+    /// `foreach_entry_in_connection_string()`: destinations split at commas and at C's white space, empty ones
+    /// skipped, kept in order and duplicates kept; `:SSL` marks TLS; an empty destination makes no sender.
+    #[test]
+    fn destinations_split_as_c() {
+        let parents = |destination: &str| {
+            StreamSend::new(true, destination, "key", "*")
+                .map(|s| s.parents().map(|(d, tls)| (d.to_string(), tls)).collect::<Vec<_>>())
+        };
+        let want = |list: &[(&str, bool)]| Some(list.iter().map(|&(d, t)| (d.to_string(), t)).collect::<Vec<_>>());
+        assert_eq!(
+            parents(" a:1, b:2\tc:3 ,,d \n\x0b\x0ce:5:SSL,a:1\r"),
+            want(&[("a:1", false), ("b:2", false), ("c:3", false), ("d", false), ("e:5", true), ("a:1", false)])
+        );
+        assert_eq!(parents(" ,\t,\n"), want(&[]));
+        assert_eq!(parents("a\u{a0}b;c|d"), want(&[("a\u{a0}b;c|d", false)]));
+        assert!(StreamSend::new(true, "", "key", "*").is_none());
+    }
+
     /// `stream_receiver_signal_to_stop_and_wait()`: the connection shut down once, a receiver its stream thread lets go
     /// waited for quietly, one still attached after 2000 waits of 1 ms given up on with C's record.
     #[test]

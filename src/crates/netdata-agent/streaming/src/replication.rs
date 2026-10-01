@@ -672,6 +672,27 @@ mod tests {
         assert!(threads.main.is_finished() && started.elapsed() < Duration::from_millis(1500));
     }
 
+    /// `stream_control_replication_should_be_running()` gates every pass of REPLAY[1] and of each worker: a request
+    /// waits while a user data query runs and is executed once it ends.
+    #[test]
+    fn replication_waits_while_a_user_query_runs() {
+        let q = Arc::new(Queue::default());
+        let sender = SenderQueue::new();
+        q.add(Weak::new(), &sender, "c".into(), 10, 20, false);
+        let query = netdata_agent_rrd::stream_control::UserDataQuery::start();
+        let threads =
+            ReplicationThreads::spawn_with(2, 256 * 1024, Arc::clone(&q), SECOND, no_hosts(), || false).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(requests(&q), [(10, "c".into())]);
+        drop(query);
+        let started = Instant::now();
+        while !(q.idle() && requests(&q).is_empty()) && started.elapsed() < 3 * SECOND {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(q.idle() && requests(&q).is_empty());
+        threads.join_within(Duration::ZERO);
+    }
+
     fn requests(q: &Queue) -> Vec<(i64, String)> {
         let state = q.lock();
         state.order.index.iter().map(|((after, _), (_, chart))| (*after, chart.clone())).collect()

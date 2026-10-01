@@ -651,6 +651,50 @@ mod tests {
         str2ndd_encoded(s.as_bytes()).0
     }
 
+    /// C writes ids, names, titles and label values between quotes as they are (`"%s"`): a quote or a newline in a
+    /// value goes out unescaped and corrupts the line, as C's.
+    #[test]
+    fn values_go_unescaped_as_c() {
+        let e = Enc::live(0);
+        let def = ChartDef {
+            slot: 0,
+            id: "a.b",
+            name: "",
+            title: "say \"hi\"",
+            units: "u",
+            family: "f",
+            context: "a.ctx",
+            chart_type: "line",
+            priority: 1,
+            update_every: 1,
+            obsolete: false,
+            store_first: false,
+            hidden: false,
+            plugin: "p",
+            module: "m",
+        };
+        assert_eq!(
+            text(|o| chart(o, &e, &def)),
+            "CHART \"a.b\" \"\" \"say \"hi\"\" \"u\" \"f\" \"a.ctx\" \"line\" 1 1 \"  \" \"p\" \"m\"\n"
+        );
+        let dim = DimDef {
+            slot: 0,
+            id: "d",
+            name: "d\"x",
+            algorithm: "absolute",
+            multiplier: 1,
+            divisor: 1,
+            obsolete: false,
+            hidden: false,
+            noreset: false,
+            float: false,
+        };
+        assert_eq!(text(|o| dimension(o, &e, &dim)), "DIMENSION \"d\" \"d\"x\" \"absolute\" 1 1 \"   type=int\"\n");
+        assert_eq!(text(|o| clabel(o, b"k", b"v\"1", 1)), "CLABEL \"k\" \"v\"1\" 1\n");
+        assert_eq!(text(|o| clabel(o, b"k", b"v\n2", 1)), "CLABEL \"k\" \"v\n2\" 1\n");
+        assert_eq!(text(|o| label(o, b"k", 1, b"v\"1")), "LABEL \"k\" = 1 \"v\"1\"\n");
+    }
+
     /// Lines of a C child's capture (SLOTS and IEEE754), rebuilt from their values.
     #[test]
     fn definitions_as_a_c_child() {

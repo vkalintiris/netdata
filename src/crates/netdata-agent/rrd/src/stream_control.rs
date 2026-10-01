@@ -99,4 +99,13 @@ mod tests {
         assert!(!replication_should_be_running() && !health_should_be_running());
         drop(running);
     }
+
+    /// `STREAM_CONTROL_SLEEP_UT`: 10 ms plus up to 10 ms more.
+    #[test]
+    fn the_throttle_waits_10_to_20_ms() {
+        for _ in 0..1000 {
+            let wait = throttle_wait();
+            assert!((10_000..20_000).contains(&wait.as_micros()), "{wait:?}");
+        }
+    }
 }

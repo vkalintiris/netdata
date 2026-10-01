@@ -210,6 +210,52 @@ fn parents_rank_by_newest_data_and_shuffle_within_120_seconds() {
     assert_eq!(parents.list[0].selection.batch, 2);
 }
 
+/// `stream_parent_connect_to_one_unsafe()`'s ranking: newest data first, then the oldest `since`, then the fewest
+/// attempts; runs within 120 s (inclusive) of a run's first parent share a batch and are shuffled by `nonce|random`
+/// (moving only on strictly greater: with every nonce all ones the order stays); a lone parent is not random.
+#[test]
+fn parents_rank_ties_and_runs_as_c() {
+    let names = ["a", "b", "c", "d", "e", "f", "g"];
+    let mut parents = Parents::new(names.iter().map(|n| (*n, false)));
+    let values = [(1000, 30, 0), (1000, 10, 5), (1000, 10, 2), (880, 0, 0), (879, 0, 0), (500, 0, 0), (760, 0, 0)];
+    for (d, (last, since, attempts)) in parents.list.iter_mut().zip(values) {
+        d.remote.db_last_time_s = last;
+        d.since_ut = since;
+        d.attempts = attempts;
+        d.remote.nonce = u32::MAX;
+    }
+    let cancel = AtomicBool::new(false);
+    let th = Thread::new(&cancel);
+    let mut array: Vec<usize> = (0..names.len()).collect();
+    parents.rank(&mut array, "child", &th);
+    assert_eq!(array, [2, 1, 0, 3, 4, 6, 5]);
+    let selections: Vec<_> =
+        parents.list.iter().map(|d| (d.selection.order, d.selection.batch, d.selection.random)).collect();
+    assert_eq!(
+        selections,
+        [(3, 1, true), (2, 1, true), (1, 1, true), (4, 1, true), (5, 2, true), (7, 3, false), (6, 2, true)]
+    );
+}
+
+/// A run's shuffle draws both orders over enough rounds (fresh nonces each time).
+#[test]
+fn a_runs_coin_flips_draw_both_orders() {
+    let mut firsts = std::collections::HashSet::new();
+    for _ in 0..64 {
+        let mut parents = Parents::new([("x", false), ("y", false)].into_iter());
+        for (d, last) in parents.list.iter_mut().zip([1000, 990]) {
+            d.remote.db_last_time_s = last;
+            d.remote.nonce = crate::random::os_random32();
+        }
+        let cancel = AtomicBool::new(false);
+        let th = Thread::new(&cancel);
+        let mut array = vec![0, 1];
+        parents.rank(&mut array, "child", &th);
+        firsts.insert(array[0]);
+    }
+    assert_eq!(firsts.len(), 2);
+}
+
 #[test]
 fn delays_fall_within_c_s_bounds() {
     for (min, max, low, high) in [(5, 60, 5, 60), (0, 0, 5, 5), (30, 10, 30, 30), (3600, 7200, 3600, 7200)] {
