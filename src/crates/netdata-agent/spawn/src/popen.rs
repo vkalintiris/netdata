@@ -17,8 +17,10 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Sets what the main server is started from; [`Start::default`] until then.
+/// Sets what the main server is started from ([`Start::default`] until then), and takes the exec-time environment
+/// every server shows while it can still be read (before a user switch).
 pub fn configure(start: Start) {
+    let _ = crate::client::exec_time_environment();
     *lock(&START) = Some(start);
 }
 

@@ -1256,8 +1256,6 @@ impl Conf {
         Ok(())
     }
 
-    /// The "home" startup step: `[directories] home`, the running user's home unless the key is set, exported as
-    /// `HOME` (root's would be inherited otherwise).
     /// `netdata_conf_section_registry()` (`src/registry/registry_init.c:48-104`): the `[registry]` keys and
     /// `[directories] registry` in C's order, and the three exports the plugins read (D135.5, D140.4); returns the
     /// registry hostname (localhost's record, D42). The registry itself is not ported: its directory and database go
@@ -1280,14 +1278,17 @@ impl Conf {
         export("NETDATA_REGISTRY_CLOUD_BASE_URL", &cloud);
         export("NETDATA_REGISTRY_HOSTNAME", &hostname);
         export("NETDATA_REGISTRY_URL", &announce);
+        // C compares the size_t it casts to: a negative value is huge and stays
         for (name, default) in [("max URL length", 1024), ("max URL name length", 50)] {
-            if self.netdata.get_number(SECTION_REGISTRY, name, default) < 10 {
+            if (self.netdata.get_number(SECTION_REGISTRY, name, default) as u64) < 10 {
                 self.netdata.set_number(SECTION_REGISTRY, name, 10);
             }
         }
         hostname
     }
 
+    /// The "home" startup step: `[directories] home`, the running user's home unless the key is set, exported as
+    /// `HOME` (root's would be inherited otherwise).
     pub fn section_home(&mut self) -> String {
         let pw_dir = nix::unistd::User::from_uid(nix::unistd::getuid())
             .ok()
@@ -2382,6 +2383,52 @@ mod tests {
             conf.backwards_compatibility();
             assert_eq!(conf.legacy_multihost_db_space, want, "{file}");
         }
+    }
+
+    /// `netdata_conf_section_registry()`'s keys in C's order and defaults, and its lengths' reset as C's `size_t`
+    /// compare (R57 M1): below 10 becomes 10, a negative value stays.
+    #[test]
+    fn registry_section_reads_as_c() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("netdata.conf");
+        std::fs::write(&path, "[registry]\nmax URL length = -5\nmax URL name length = 3\nregistry hostname = r1\n")
+            .unwrap();
+        let mut conf = Conf::default();
+        conf.dirs.varlib = "/var/lib/netdata".into();
+        conf.hostname = "box".into();
+        assert!(conf.netdata.load(&path, false, None).is_ok());
+        assert_eq!(conf.section_registry(), "r1");
+        let dump = String::from_utf8(conf.netdata.generate(false, true)).unwrap();
+        let registry: Vec<&str> = dump
+            .split("\n[registry]\n")
+            .nth(1)
+            .unwrap()
+            .split("\n[")
+            .next()
+            .unwrap()
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("#|"))
+            .collect();
+        // the keys the file set come first: they exist from the load on, as C's
+        assert_eq!(
+            registry,
+            [
+                "max URL length = -5",
+                "max URL name length = 10",
+                "registry hostname = r1",
+                "# enabled = no",
+                "# registry db file = /var/lib/netdata/registry/registry.db",
+                "# registry log file = /var/lib/netdata/registry/registry-log.db",
+                "# registry save db every new entries = 1000000",
+                "# registry expire idle persons = 1y",
+                "# registry domain =",
+                "# registry to announce = https://registry.my-netdata.io",
+                "# verify browser cookies support = yes",
+                "# enable cookies SameSite and Secure = yes",
+            ]
+        );
+        assert!(dump.contains("# registry = /var/lib/netdata/registry\n"), "{dump}");
     }
 
     /// `netdata_conf_dbengine_init()`'s keys: clamps with their write-backs and records, profile defaults, the new

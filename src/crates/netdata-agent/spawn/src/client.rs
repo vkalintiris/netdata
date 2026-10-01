@@ -233,12 +233,14 @@ fn retitled(title: &str, argv: &[OsString]) -> Vec<Vec<u8>> {
 }
 
 /// The environment this binary was executed with (`/proc/self/environ`), what C's forked server shows in its
-/// `/proc`; the current one without it.
-fn exec_time_environment() -> Vec<Vec<u8>> {
-    match std::fs::read("/proc/self/environ") {
+/// `/proc`; the current one when it cannot be read. Read once: a later user switch makes the process non-dumpable and
+/// `/proc/self/environ` unreadable (R57 M2), so [`crate::popen::configure`] reads it at the start.
+pub(crate) fn exec_time_environment() -> &'static [Vec<u8>] {
+    static AT_EXEC: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
+    AT_EXEC.get_or_init(|| match std::fs::read("/proc/self/environ") {
         Ok(block) => block.split(|&c| c == 0).filter(|e| !e.is_empty()).map(<[u8]>::to_vec).collect(),
         Err(_) => env::block().into_iter().map(CString::into_bytes).collect(),
-    }
+    })
 }
 
 fn c_strings(items: impl IntoIterator<Item = Vec<u8>>) -> Option<Vec<CString>> {
@@ -335,7 +337,7 @@ impl Server {
         } else {
             args.into_iter().map(OsString::into_vec).collect()
         };
-        let mut environment = exec_time_environment();
+        let mut environment = exec_time_environment().to_vec();
         environment.push(format!("{MARKER}=1").into_bytes());
         let (Some(args), Some(environment), Ok(exe)) =
             (c_strings(args), c_strings(environment), CString::new(start.exe.as_os_str().as_bytes()))
