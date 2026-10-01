@@ -34,6 +34,7 @@ mod listen;
 mod maintenance;
 mod meta_store;
 mod metasync;
+mod plugins_d;
 mod profile;
 mod pulse;
 mod router;
@@ -964,6 +965,29 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     } else {
         None
     };
+    // PLUGINSD, after PULSE in C's table; C carries on without it
+    let pluginsd = match plugins_d::spawn(
+        Arc::clone(hosts.localhost()),
+        Arc::clone(&shared),
+        plugins_d::Settings {
+            dirs: conf.dirs.plugins.clone(),
+            stack_size: conf.threads.thread_stack_size,
+            update_every: db.update_every,
+            parser: netdata_agent_ingest::Config {
+                capabilities: 0,
+                update_every: db.update_every,
+                page_size: system.page_size,
+                now: netdata_agent_rrd::collection::now_realtime_timeval,
+                gap_when_lost_iterations_above: db.gap_when_lost_iterations_above,
+            },
+        },
+    ) {
+        Ok(thread) => Some(thread),
+        Err(err) => {
+            nd_log!(Source::Daemon, Priority::Err, "{err}");
+            None
+        }
+    };
     // One descriptor per listener, shared by every web worker.
     let listeners: Arc<[server::WebListener]> = listeners
         .into_iter()
@@ -1089,6 +1113,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let mut stream_pool = Some(stream_pool);
     let mut contexts_worker = Some(contexts_worker);
     let mut pulse_thread = pulse_thread;
+    let mut pluginsd = pluginsd;
     let mut health_thread = health_thread;
     let mut backfill_thread = backfill_thread;
     let mut replication = replication;
@@ -1127,11 +1152,16 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 let _ = pool.join_within(deadline.saturating_duration_since(std::time::Instant::now()));
             }
         }
-        // PULSE, the stream threads and the BACKFILL threads under one service wait
+        // the collectors (PULSE, PLUGINSD and its plugin threads), the stream threads and the BACKFILL threads under one
+        // service wait
         shutdown::STOP_STREAMING => {
             // stream_threads_cancel(): the connector's attempt in progress stops
             connector.cancel();
             let deadline = std::time::Instant::now() + shutdown::STREAMING_WAIT;
+            // every collector thread cancelled first; PLUGINSD stopped its plugins when the exit started
+            if let Some(pluginsd) = pluginsd.take() {
+                pluginsd.stop_by(deadline);
+            }
             if let Some(thread) = pulse_thread.take() {
                 thread.join_within(deadline.saturating_duration_since(std::time::Instant::now()));
             }

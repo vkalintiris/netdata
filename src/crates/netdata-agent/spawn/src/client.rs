@@ -525,6 +525,11 @@ impl Instance {
         self.read.as_mut()
     }
 
+    /// The child's stdin and stdout together.
+    pub fn pipes(&mut self) -> (Option<&mut File>, Option<&mut File>) {
+        (self.write.as_mut(), self.read.as_mut())
+    }
+
     fn close_pipes(&mut self) {
         self.write.take();
         self.read.take();

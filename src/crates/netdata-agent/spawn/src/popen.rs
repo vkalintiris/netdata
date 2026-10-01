@@ -88,6 +88,11 @@ impl Popen {
         self.instance.stdout()
     }
 
+    /// The child's stdin and stdout together (`spawn_popen_write_fd()`, `spawn_popen_read_fd()`).
+    pub fn pipes(&mut self) -> (Option<&mut File>, Option<&mut File>) {
+        self.instance.pipes()
+    }
+
     /// `spawn_popen_wait()`: closes the pipes and blocks until the child ends; its exit code, 0 when it was killed by
     /// SIGTERM or SIGPIPE, else -1.
     pub fn wait(self) -> i32 {

@@ -3050,6 +3050,7 @@ dependencies = [
  "netdata-agent-log",
  "netdata-agent-metadata",
  "netdata-agent-nrpc",
+ "netdata-agent-pluginsd-proto",
  "netdata-agent-pulse",
  "netdata-agent-query",
  "netdata-agent-rrd",
