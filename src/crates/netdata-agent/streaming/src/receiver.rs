@@ -556,8 +556,7 @@ impl Receivers {
         } else {
             config.update_every as i32
         };
-        // rrdhost_create() and rrdhost_update(): no health without a database
-        let health_enabled = config.health_enabled != 0 && mode != DbMode::None;
+        let health_enabled = host_health_enabled(config.health_enabled, mode);
         let text =
             |v: &Option<String>, default: &str| v.clone().unwrap_or_else(|| default.to_string());
         // set_host_properties() and rrdhost_init_timezone(): an empty value is a missing one
@@ -1622,6 +1621,12 @@ impl StreamWorker {
     }
 }
 
+/// The host's health from `health enabled`: `rrdhost_find_or_create(..., health.enabled != CONFIG_BOOLEAN_NO, ...)`
+/// (yes and auto alike), and `rrdhost_create()`/`rrdhost_update()`'s none without a database.
+fn host_health_enabled(health_enabled: i32, mode: DbMode) -> bool {
+    health_enabled != netdata_agent_inicfg::BOOLEAN_NO && mode != DbMode::None
+}
+
 /// `stream_conf_receiver_config()`'s memory mode: a child configured for dbengine gets the default when the dbengine
 /// does not run, which C logs (N7); whether it fell back.
 fn receiver_mode(configured: &str, default: &str, dbengine: bool) -> (DbMode, bool) {
@@ -1986,6 +1991,85 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// Yes and auto both run health on the host; no, or a host without a database, does not.
+    #[test]
+    fn health_runs_for_yes_and_auto_with_a_database() {
+        use netdata_agent_inicfg::{BOOLEAN_AUTO, BOOLEAN_NO, BOOLEAN_YES};
+        let cases = [
+            (BOOLEAN_YES, DbMode::Ram, true),
+            (BOOLEAN_AUTO, DbMode::Ram, true),
+            (BOOLEAN_NO, DbMode::Ram, false),
+            (BOOLEAN_YES, DbMode::Dbengine, true),
+            (BOOLEAN_AUTO, DbMode::None, false),
+            (BOOLEAN_YES, DbMode::None, false),
+        ];
+        for (health, mode, want) in cases {
+            assert_eq!(host_health_enabled(health, mode), want, "{health} {mode:?}");
+        }
+    }
+
+    /// `stream_receiver_send_first_response()`: a host still loading its contexts (an archived one) is refused with
+    /// C's NOTICE status pair (REMOTE IS INITIALIZING) and the initialization reply, and is never attached.
+    #[test]
+    fn a_host_pending_its_context_load_is_refused_as_initializing() {
+        use std::io::Read;
+        let (r, _pool) = receivers();
+        let guid = "5a1e0000-0000-4000-8000-0000000000e1";
+        let host = r.hosts.add_archived(guid, crate::connector::tests::info("", ""), |_| {});
+        let (ours, mut theirs) = mio::net::UnixStream::pair().unwrap();
+        let (admitted, records) =
+            netdata_agent_log::capture(|| r.admit(pending(guid), Link::Plain(Conn::Unix(ours))));
+        assert!(!admitted);
+        let mut reply = String::new();
+        theirs.read_to_string(&mut reply).unwrap();
+        assert_eq!(reply, "The server is initializing. Try later.");
+        assert!(host.receiver().is_none() && host.is_pending_context_load());
+        let records: Vec<_> = records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
+        assert_eq!(
+            records,
+            [
+                (
+                    Source::Access,
+                    Priority::Notice,
+                    format!(
+                        "api_key:'[REDACTED]' machine_guid:'{guid}' node:'child' msg:'rejecting streaming connection; \
+                         host is initializing, retry later' reason:'REMOTE IS INITIALIZING'"
+                    )
+                ),
+                (
+                    Source::Daemon,
+                    Priority::Notice,
+                    "STREAM RCV 'child' [from [127.0.0.1]:1]: rejecting streaming connection; host is initializing, \
+                     retry later  (REMOTE IS INITIALIZING)"
+                        .to_string()
+                ),
+            ]
+        );
+    }
+
+    /// A message decompressing past the chunk (zstd's 16385 bytes) ends the connection at its read: C's size record,
+    /// "no bytes to decompress." and the disconnect with DECOMPRESSION FAILED.
+    #[test]
+    fn a_message_past_the_chunk_ends_the_connection_with_decompression_failed() {
+        use std::io::Write;
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, _, mut theirs) =
+            child(0xd6, crate::caps::V2 | crate::caps::ZSTD, &pool, &hosts, &connector);
+        let big = zstd::bulk::compress(&vec![b'\n'; 16385], 1).unwrap();
+        let mut f = crate::compression::encode_signature(big.len()).unwrap().to_vec();
+        f.extend_from_slice(&big);
+        theirs.write_all(&f).unwrap();
+        s.with(|w, cx| w.attach(cx, attached));
+        let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        assert!(host.receiver().is_none());
+        let texts: Vec<_> = texts(records).into_iter().filter(|t| t.to_uppercase().contains("DECOMPRESS")).collect();
+        println!("RECORDS {texts:?}");
+        assert_eq!(texts[0], "STREAM_DECOMPRESS: decompressed data is 16385 bytes, which is bigger than the max msg size 16384");
+        assert_eq!(texts[1], "STREAM RCV[x] 'child' [from []:]: no bytes to decompress.");
+        assert!(texts[2].contains("receiver disconnected: reason=\"DISCONNECTED DECOMPRESSION FAILED\""), "{texts:?}");
+        assert_eq!(texts.len(), 3);
     }
 
     /// The record texts a capture holds.

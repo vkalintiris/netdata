@@ -485,6 +485,43 @@ mod tests {
         );
     }
 
+    /// gzip and brotli decompress into C's 16385-byte buffer: 16384 bytes go, a frame filling the buffer is refused by
+    /// the engine's own check (gzip past 16385 by its unused-input check first), never by the size check zstd and lz4
+    /// meet; C's libz 1.3.1 and libbrotlidec 1.1.0 give the same records for the same bytes.
+    #[test]
+    fn gzip_and_brotli_stop_at_16385() {
+        use crate::compress::Compressor;
+        use crate::conf::CompressionLevels;
+        let message = |algorithm, n: usize| {
+            let mut c = Compressor::new(algorithm, &CompressionLevels::of_profile(false)).unwrap();
+            c.compress(&vec![b'x'; n]).unwrap().to_vec()
+        };
+        let gzip = |n| message(Algorithm::Gzip, n);
+        let brotli = |n| message(Algorithm::Brotli, n);
+        for (capabilities, m) in [(caps::GZIP, gzip(16384)), (caps::BROTLI, brotli(16384))] {
+            assert_eq!(run(capabilities, &frame(&m), 1 << 20).map(|out| out.len()), Ok(MAX_CHUNK));
+        }
+        let produced = "produced at least 16385 bytes, exceeding the max supported size of 16384 bytes (compressed \
+                        payload {} bytes)";
+        for (capabilities, m, want) in [
+            (caps::GZIP, gzip(16385), format!("inflate() {produced}")),
+            (
+                caps::GZIP,
+                gzip(16386),
+                "inflate() did not use all compressed data we provided (compressed payload {} bytes, remaining to be \
+                 uncompressed 4)"
+                    .to_string(),
+            ),
+            (caps::BROTLI, brotli(16385), format!("BrotliDecoderDecompressStream() {produced}")),
+            (caps::BROTLI, brotli(20000), format!("BrotliDecoderDecompressStream() {produced}")),
+        ] {
+            let (result, records) = netdata_agent_log::capture(|| run(capabilities, &frame(&m), 1 << 20));
+            assert_eq!(result, Err(Failure::NoBytes));
+            let messages: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+            assert_eq!(messages, [format!("STREAM_DECOMPRESS: {}", want.replace("{}", &m.len().to_string()))]);
+        }
+    }
+
     #[test]
     fn a_message_decompressing_past_the_chunk_is_refused() {
         let zstd = |n: usize| frame(&zstd::bulk::compress(&vec![b'x'; n], 1).unwrap());

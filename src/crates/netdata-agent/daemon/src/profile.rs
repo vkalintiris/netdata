@@ -37,6 +37,11 @@ impl Profile {
         }
     }
 
+    /// `nd_profile.stream_sender_compression`: `ND_COMPRESSION_FASTEST` for iot and parent, else the default.
+    pub fn stream_compression_fastest(self) -> bool {
+        matches!(self, Profile::Parent | Profile::Iot)
+    }
+
     /// Its `ND_PROFILE` bit, as the status file keeps it.
     pub fn bits(self) -> u32 {
         use crate::status_file::profile;
@@ -167,6 +172,25 @@ fn arena_option(c: &mut Config, name: &str, default: i64, system_cpus: i64) -> i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `nd_profile_setup()`'s sender compression by profile, into the levels it sets.
+    #[test]
+    fn stream_compression_by_profile_as_c() {
+        use netdata_agent_streaming::conf::{CompressionLevels, StreamConf};
+        let fastest = CompressionLevels { zstd: 1, lz4: 9, brotli: 1, gzip: 1 };
+        let default = CompressionLevels { zstd: 3, lz4: 1, brotli: 3, gzip: 3 };
+        let cases = [
+            (Profile::Iot, fastest),
+            (Profile::Parent, fastest),
+            (Profile::Child, default),
+            (Profile::Standalone, default),
+        ];
+        for (profile, want) in cases {
+            let mut conf = StreamConf::default();
+            conf.set_sender_compression_levels(profile.stream_compression_fastest());
+            assert_eq!(conf.send.compression_levels, want, "{profile:?}");
+        }
+    }
 
     #[test]
     fn arena_values_are_a_size_t_as_in_c() {

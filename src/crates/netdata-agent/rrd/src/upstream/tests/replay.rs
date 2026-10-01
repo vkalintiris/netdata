@@ -249,3 +249,37 @@ fn a_dimension_not_sent_yet_is_left_out() {
     assert!(got.iter().any(|l| l.starts_with("RDSTATE 'd' ")), "{got:?}");
     assert!(!got.iter().any(|l| l.contains("\"e\"") || l.contains("'e'")), "{got:?}");
 }
+
+/// An answer that starts streaming but ends in a gap ends the replication and keeps the resync horizon: after a
+/// reconnect's reset the chart is defined again at T + 6 (horizon T + 5 + 3), and the parent asks from the chart's
+/// last point, so no step is walked and the last point sent (none) is short of the window's end.
+#[test]
+fn a_streaming_answer_ending_in_a_gap_keeps_the_resync_horizon() {
+    let (host, recorder, chart) = replicating_chart(&[10, 11, 12, 13, 14, 15]);
+    reset_charts(&host);
+    let dim = chart.dim("d").unwrap();
+    collect(&host, &chart, &[(&dim, 16)], T + 6);
+    recorder.take();
+    assert_eq!((chart.resync_time_s(), claim(&chart)), (T + 8, flags::SENDER_REPLICATION_IN_PROGRESS));
+    let (_, got) = answered(&host, &request("t.c", T + 6, T + 6, true), 1 << 20, true);
+    let (first, last) = chart.retention_for_collected(now_realtime_s());
+    let d = dim.collection();
+    let c = chart.collection();
+    assert_eq!(
+        got,
+        vec![
+            "RBEGIN 't.c'".to_string(),
+            format!("RDSTATE 'd' {} 16 16 16", d.last_collected_time.0 * 1_000_000 + d.last_collected_time.1),
+            format!(
+                "RSSTATE {} {}",
+                c.last_collected.0 * 1_000_000 + c.last_collected.1,
+                c.last_updated.0 * 1_000_000 + c.last_updated.1
+            ),
+            format!("REND 1 {first} {last} true  {} {} W", T + 6, T + 6),
+        ]
+    );
+    assert_eq!(last, T + 6);
+    assert_eq!(claim(&chart), flags::SENDER_REPLICATION_FINISHED);
+    assert_eq!(host.sender_replicating_charts(), 0);
+    assert_eq!(chart.resync_time_s(), T + 8, "the horizon is kept");
+}

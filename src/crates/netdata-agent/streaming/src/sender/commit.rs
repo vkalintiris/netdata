@@ -12,6 +12,12 @@ use crate::compress::{Compressor, next_piece};
 use crate::compression::{Algorithm, encode_signature};
 use crate::reason::Reason;
 
+#[cfg(test)]
+thread_local! {
+    /// How many of this thread's next compressions fail: the failure path's units.
+    static FAILS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// How a commit ended, for the opcode posted after the lock is released.
 enum Ended {
     Added { enable_sending: bool },
@@ -149,7 +155,13 @@ fn compressed(out: &mut Out, hostname: &dyn Fn() -> String, src: &[u8], traffic:
     let mut rest = src;
     while !rest.is_empty() {
         let piece = &rest[..next_piece(rest, binary)];
-        let compress = |out: &mut Out| out.compressor.as_mut().and_then(|c| c.compress(piece)).map(<[u8]>::len);
+        let compress = |out: &mut Out| {
+            #[cfg(test)]
+            if FAILS.with(|f| f.get().checked_sub(1).inspect(|&n| f.set(n)).is_some()) {
+                return None;
+            }
+            out.compressor.as_mut().and_then(|c| c.compress(piece)).map(<[u8]>::len)
+        };
         let mut len = compress(out);
         if len.is_none() {
             nd_log!(
@@ -180,4 +192,155 @@ fn compressed(out: &mut Out, hostname: &dyn Fn() -> String, src: &[u8], traffic:
         rest = &rest[piece.len()..];
     }
     Ended::Added { enable_sending }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    use netdata_agent_evloop::Pool;
+    use netdata_agent_log::{Priority, capture};
+    use netdata_agent_rrd::host::Host;
+
+    use super::*;
+    use crate::compression::decode_signature;
+    use crate::connector::Connector;
+    use crate::connector::tests::{connector, info};
+    use crate::decompress::Decompressor;
+    use crate::sender::{Ops, Session};
+    use crate::thread::StreamMsg;
+
+    /// A sender dispatched with `capabilities` and their compressor, its opcodes gathered in its slot (no message to a
+    /// stream thread).
+    fn dispatched(capabilities: u32, n: u8) -> (Pool<StreamMsg>, Arc<Connector>, Arc<Host>, Arc<Sender>, Session) {
+        let (pool, c) = connector();
+        let host = Arc::new(Host::new(
+            &format!("5a1e0000-0000-4000-8000-0000000000{n:02x}"),
+            false,
+            info("127.0.0.1:1", "key"),
+        ));
+        let s = Sender::attach(&host, &c).expect("created");
+        let session = Session { thread: 9, id: 1 };
+        {
+            let mut out = s.out();
+            out.session = Some(session);
+            out.remote_ip = "parent".into();
+            out.capabilities = capabilities;
+            out.algorithm = Algorithm::for_capabilities(capabilities);
+            let levels = out.levels;
+            out.compressor = out.algorithm.and_then(|a| Compressor::new(a, &levels));
+        }
+        *s.ops.lock().unwrap() = Some(Ops { session, bits: 0, reason: Reason::NEVER });
+        (pool, c, host, s, session)
+    }
+
+    /// The messages in the sender's buffer, decompressed one at a time as the parent does.
+    fn pieces(bytes: &[u8], capabilities: u32) -> Vec<Vec<u8>> {
+        let mut rest = bytes;
+        let mut all = Vec::new();
+        let mut d = Decompressor::for_capabilities(capabilities).unwrap();
+        while !rest.is_empty() {
+            let len = decode_signature([rest[0], rest[1], rest[2], rest[3]]).unwrap();
+            d.feed(&rest[..4 + len]);
+            let mut plain = Vec::new();
+            assert_eq!(d.next_message(&mut plain), Ok(true));
+            all.push(plain);
+            rest = &rest[4 + len..];
+        }
+        all
+    }
+
+    fn texts(records: Vec<netdata_agent_log::Captured>) -> Vec<(Priority, String)> {
+        records.into_iter().map(|r| (r.priority, r.message.unwrap_or_default())).collect()
+    }
+
+    /// `sender_buffer_commit()`'s loop: a commit is compressed in pieces cut at the last newline before 16255 bytes,
+    /// at 16255 when there is none or only the first byte is one, and the rest whole; with BINARY at 16255 always.
+    /// Every piece is one message after its signature, counted with its plain size.
+    #[test]
+    fn a_commit_is_compressed_in_c_s_pieces() {
+        let mut src = Vec::new();
+        for (byte, n) in [(b'a', 9999), (b'\n', 1), (b'b', 9999), (b'\n', 1), (b'c', 16255), (b'\n', 1), (b'd', 16300), (b'e', 100), (b'\n', 1)] {
+            src.extend(std::iter::repeat_n(byte, n));
+        }
+        assert_eq!(src.len(), 52_657);
+        for (n, binary, want) in [
+            (0xe1, 0, vec![10_000, 10_000, 16_255, 16_255, 147]),
+            (0xe2, caps::BINARY, vec![16_255, 16_255, 16_255, 3_892]),
+        ] {
+            let (_pool, _c, _host, s, session) = dispatched(caps::ZSTD | binary, n);
+            s.commit(&src, Traffic::Data);
+            let out = s.out();
+            let got = pieces(out.buffer.next(), caps::ZSTD);
+            assert_eq!(got.iter().map(Vec::len).collect::<Vec<_>>(), want, "binary {binary}");
+            assert_eq!(got.concat(), src);
+            let stats = out.buffer.stats();
+            assert_eq!((stats.adds, stats.bytes_uncompressed), (2 * want.len(), src.len() + 4 * want.len()));
+            drop(out);
+            let ops = s.take_ops(session).unwrap();
+            assert_eq!((ops.bits, ops.reason), (op::POLLOUT, Reason::NEVER));
+        }
+    }
+
+    /// A failed compression sets the compressor up again and retries the piece once; a second failure disables the
+    /// algorithm for the host's next connections and restarts this one without compression (C's records, the
+    /// disabled bit, RECONNECT_WITHOUT_COMPRESSION with SND COMPRESSION FAILED).
+    #[test]
+    fn a_failing_compressor_is_set_up_again_once_then_its_algorithm_disabled() {
+        let retrying = (
+            Priority::Err,
+            "STREAM SND 'child' [to parent]: COMPRESSION failed. Resetting compressor and re-trying".to_string(),
+        );
+        // one failure: the piece goes in a new zstd frame of a compressor set up again
+        let (_pool, _c, _host, s, session) = dispatched(caps::ZSTD | caps::LZ4, 0xe3);
+        s.commit(b"a\n", Traffic::Data);
+        FAILS.with(|f| f.set(1));
+        let ((), records) = capture(|| s.commit(b"x\n", Traffic::Data));
+        assert_eq!(texts(records), std::slice::from_ref(&retrying));
+        let bytes = s.out().buffer.next().to_vec();
+        let second = 4 + decode_signature([bytes[0], bytes[1], bytes[2], bytes[3]]).unwrap();
+        assert_eq!(pieces(&bytes[..second], caps::ZSTD), [b"a\n".to_vec()]);
+        assert_eq!(pieces(&bytes[second..], caps::ZSTD), [b"x\n".to_vec()]);
+        assert_eq!(bytes[second + 4..second + 8], [0x28, 0xb5, 0x2f, 0xfd], "a new frame");
+        assert_eq!(s.disabled.load(Ordering::Relaxed), 0);
+        let ops = s.take_ops(session).unwrap();
+        assert_eq!((ops.bits, ops.reason), (op::POLLOUT, Reason::NEVER));
+
+        // two failures
+        let (_pool, _c, _host, s, session) = dispatched(caps::ZSTD | caps::LZ4, 0xe4);
+        FAILS.with(|f| f.set(2));
+        let ((), records) = capture(|| s.commit(b"x\n", Traffic::Data));
+        assert_eq!(
+            texts(records),
+            [
+                retrying,
+                (Priority::Err, "STREAM_COMPRESSION: ZSTD compression error on 'host:child'. Disabling ZSTD for this node.".to_string()),
+                (Priority::Err, "STREAM SND 'child' [to parent]: COMPRESSION failed (twice). Deactivating compression and restarting connection.".to_string()),
+            ]
+        );
+        assert_eq!(s.out().buffer.stats().adds, 0);
+        assert_eq!(s.disabled.load(Ordering::Relaxed), caps::ZSTD);
+        let ops = s.take_ops(session).unwrap();
+        assert_eq!((ops.bits, ops.reason), (op::RECONNECT_WITHOUT_COMPRESSION, Reason::SND_DISCONNECT_COMPRESSION_FAILED));
+        // the next connection offers every compression but zstd
+        assert_eq!(
+            caps::sender_ours(s.disabled.load(Ordering::Relaxed), 0) & caps::COMPRESSIONS_AVAILABLE,
+            caps::COMPRESSIONS_AVAILABLE & !caps::ZSTD
+        );
+
+        // each algorithm's record and bit; C names ZSTD in lz4's
+        for (n, cap, want) in [
+            (0xe5, caps::LZ4, "STREAM_COMPRESSION: LZ4 compression error on 'host:child'. Disabling ZSTD for this node."),
+            (0xe6, caps::BROTLI, "STREAM_COMPRESSION: BROTLI compression error on 'host:child'. Disabling BROTLI for this node."),
+            (0xe7, caps::GZIP, "STREAM_COMPRESSION: GZIP compression error on 'host:child'. Disabling GZIP for this node."),
+        ] {
+            let (_pool, _c, _host, s, _) = dispatched(cap, n);
+            FAILS.with(|f| f.set(2));
+            let ((), records) = capture(|| s.commit(b"x\n", Traffic::Data));
+            let deactivated: Vec<_> = texts(records).into_iter().filter(|(_, t)| t.starts_with("STREAM_COMPRESSION:")).collect();
+            assert_eq!(deactivated, [(Priority::Err, want.to_string())]);
+            assert_eq!(s.disabled.load(Ordering::Relaxed), cap);
+        }
+    }
 }

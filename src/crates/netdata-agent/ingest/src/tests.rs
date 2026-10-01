@@ -725,6 +725,199 @@ fn the_waiting_list_counts_ended_definitions_and_finished_replications() {
     assert_eq!(counted(&mut p, &["RBEGIN 'test.c1'".to_string(), "REND 1".to_string()]), (0, 0));
 }
 
+/// `pluginsd_require_scope_chart()`, `pluginsd_find_chart()` and `pluginsd_acquire_dimension()`: each refusal is its
+/// daemon error, then parser_action()'s with the line re-quoted, and the line ends the connection. REND counts the
+/// reply before it requires the chart.
+#[test]
+fn scope_and_lookup_errors_are_logged_as_c() {
+    let slotted = [
+        "CHART 'test.s' '' t u f c line 1 1",
+        "DIMENSION SLOT:1 'd1' '' absolute 1 1 ''",
+        "DIMENSION SLOT:2 'd2' '' absolute 1 1 ''",
+        "BEGIN2 'test.s' 1 10 #",
+    ];
+    let with_slots = |last: &'static str| [&slotted[..], &[last]].concat();
+    let cases: Vec<(Vec<&str>, &str, &str)> = vec![
+        (vec!["SET 'd1' 1"], "command SET requires a chart defined via command CHART, but is not set.", "'SET' 'd1' '1'"),
+        (vec!["END"], "command END requires a chart defined via command BEGIN, but is not set.", "'END'"),
+        (vec!["END2"], "command END2 requires a chart defined via command BEGIN2, but is not set.", "'END2'"),
+        (
+            vec!["DIMENSION 'd1' '' absolute 1 1 ''"],
+            "command DIMENSION requires a chart defined via command CHART, but is not set.",
+            "'DIMENSION' 'd1' '' 'absolute' '1' '1' ''",
+        ),
+        (
+            vec!["REND 1 0 0 true 0 0"],
+            "command REND requires a chart defined via command RBEGIN, but is not set.",
+            "'REND' '1' '0' '0' 'true' '0' '0'",
+        ),
+        (
+            vec!["BEGIN2 'test.nope' 1 10 #"],
+            "'host:child/chart:test.nope' got a BEGIN2 but chart does not exist.",
+            "'BEGIN2' 'test.nope' '1' '10' '#'",
+        ),
+        (
+            with_slots("SET2 SLOT:3 'd1' 1 1 A"),
+            "'host:child/chart:test.s' got a SET2 with slot 3, but slots in the range [1 - 2] are expected.",
+            "'SET2' 'SLOT:3' 'd1' '1' '1' 'A'",
+        ),
+        (
+            with_slots("SET2 'd1' 1 1 A"),
+            "'host:child/chart:test.s' got a SET2 with slot -1, but slots in the range [1 - 2] are expected.",
+            "'SET2' 'd1' '1' '1' 'A'",
+        ),
+    ];
+    for (lines, error, shown) in cases {
+        let h = host();
+        let mut p = parser(&h);
+        let (results, records) = netdata_agent_log::capture(|| feed_all(&mut p, &lines));
+        let n = lines.len();
+        assert_eq!(results, [vec![true; n - 1], vec![false]].concat(), "{lines:?}");
+        let keyword = lines[n - 1].split(' ').next().unwrap();
+        let records: Vec<_> =
+            records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
+        assert_eq!(
+            records[records.len() - 2..],
+            [
+                (Source::Daemon, Priority::Err, format!("PLUGINSD: {error}")),
+                (
+                    Source::Daemon,
+                    Priority::Err,
+                    format!(
+                        "PLUGINSD: parser_action('{keyword}') failed on line {n}: {{ {shown} }} (quotes added to show \
+                         parsing)"
+                    )
+                ),
+            ],
+            "{lines:?}"
+        );
+        assert_eq!(h.replication_replies(), u32::from(keyword == "REND"), "{lines:?}");
+    }
+}
+
+/// `pluginsd_rrdset_cache_get_from_slot()`: a chart slot above the host's cache finds the chart by its id and caches
+/// nothing, so the same slot names another chart in the next block.
+#[test]
+fn a_chart_slot_above_the_cache_is_found_by_id_and_not_cached() {
+    let h = host();
+    let mut p = parser(&h);
+    let charts = [slotted_chart("a", Some(1), "x"), slotted_chart("b", None, "x"), slotted_chart("c", None, "x")];
+    feed_ok(&mut p, &charts.concat());
+    feed_ok(&mut p, &[slotted_block("b", 1025, 1), slotted_block("c", 1025, 2)].concat());
+    assert_eq!(d_values(&h, &["a", "b", "c"]), [0, 1, 2]);
+}
+
+/// `pluginsd_function()`: source STREAM; the timeout and priority are str2i() (decimal only), a value below 1 the
+/// default (10 s, 100); the version str2u(); the access the old role names, else hex bits under HTTP_ACCESS_ALL.
+#[test]
+fn a_streamed_function_takes_cs_defaults_and_roles() {
+    let h = host();
+    let mut p = parser(&h);
+    let lines = [
+        "FUNCTION GLOBAL \"t0\" 0 \"h\" \"\" \"member\" 0",
+        "FUNCTION GLOBAL \"tneg\" -5 \"h\" \"\" \"admins\" -1 7",
+        "FUNCTION GLOBAL \"thex\" 0x20 \"h\" \"\" \"any\" 0x20 0x7",
+        "FUNCTION \"bare\" 30 \"h\" \"\" \"fff\"",
+    ];
+    assert!(feed_all(&mut p, &lines).iter().all(|&ok| ok));
+    let got: Vec<_> = ["t0", "tneg", "thex", "bare"]
+        .iter()
+        .map(|n| {
+            let f = h.functions().get(n.as_bytes()).unwrap();
+            (f.timeout_s, f.priority, f.version, f.access, f.source)
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (10, 100, 0, 0x1b, nrpc::Source::Stream),
+            (10, 100, 7, 0x7b, nrpc::Source::Stream),
+            (10, 100, 0, 0x8, nrpc::Source::Stream),
+            (30, 100, 0, 0x7ff, nrpc::Source::Stream),
+        ]
+    );
+}
+
+/// `pluginsd_function()`: a FUNCTION without GLOBAL inside a chart scope is registered host-wide with a NOTICE; with
+/// GLOBAL, or outside a scope, silently.
+#[test]
+fn a_function_in_a_chart_scope_is_registered_host_wide_with_a_notice() {
+    let h = host();
+    let mut p = parser(&h);
+    feed_all(&mut p, &["CHART 'test.c1' '' t u f c line 1 1"]);
+    let (results, records) = netdata_agent_log::capture(|| {
+        feed_all(&mut p, &["FUNCTION \"inside\" 10 \"h\"", "FUNCTION GLOBAL \"global\" 10 \"h\""])
+    });
+    assert_eq!(results, [true, true]);
+    let records: Vec<_> = records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
+    assert_eq!(
+        records,
+        [(
+            Source::Daemon,
+            Priority::Notice,
+            "PLUGINSD: 'host:child' got a FUNCTION 'inside' within chart 'test.c1' scope - chart-scoped functions are \
+             no longer supported, registering it host-wide"
+                .to_string()
+        )]
+    );
+    assert!(h.functions().get(b"inside").is_some() && h.functions().get(b"global").is_some());
+}
+
+/// `pluginsd_function_del()`: the bare form removes by name and an unknown name is a debug record, both counted;
+/// no name, or an empty one, also after GLOBAL, is an error that ends the connection.
+#[test]
+fn function_del_without_global_and_without_a_name() {
+    let h = host();
+    let mut p = parser(&h);
+    feed_all(&mut p, &["FUNCTION GLOBAL \"a\" 10 \"h\"", "FUNCTION GLOBAL \"b\" 10 \"h\""]);
+    let (results, records) =
+        netdata_agent_log::capture(|| feed_all(&mut p, &["FUNCTION_DEL \"a\"", "FUNCTION_DEL \"nope\""]));
+    assert_eq!(results, [true, true]);
+    let names: Vec<_> = h.functions().all().into_iter().map(|(k, _)| k).collect();
+    assert_eq!(names, [b"b".to_vec()]);
+    let records: Vec<_> = records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
+    assert_eq!(
+        records,
+        [(
+            Source::Daemon,
+            Priority::Debug,
+            "PLUGINSD: 'host:child' FUNCTION_DEL 'nope' - function not found or ownership mismatch".to_string()
+        )]
+    );
+    assert_eq!(p.data_collections_count, 4);
+    for (line, shown) in [
+        ("FUNCTION_DEL", "'FUNCTION_DEL'"),
+        ("FUNCTION_DEL GLOBAL", "'FUNCTION_DEL' 'GLOBAL'"),
+        ("FUNCTION_DEL ''", "'FUNCTION_DEL' ''"),
+    ] {
+        let mut p = parser(&h);
+        let (results, records) = netdata_agent_log::capture(|| feed_all(&mut p, &[line]));
+        assert_eq!(results, [false], "{line}");
+        let records: Vec<_> =
+            records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
+        assert_eq!(
+            records,
+            [
+                (
+                    Source::Daemon,
+                    Priority::Err,
+                    "PLUGINSD: 'host:child' got a FUNCTION_DEL without a name. Ignoring it.".to_string()
+                ),
+                (
+                    Source::Daemon,
+                    Priority::Err,
+                    format!(
+                        "PLUGINSD: parser_action('FUNCTION_DEL') failed on line 1: {{ {shown} }} (quotes added to \
+                         show parsing)"
+                    )
+                ),
+            ],
+            "{line}"
+        );
+        assert_eq!(p.data_collections_count, 0, "{line}");
+    }
+}
+
 #[test]
 fn errors_disconnect() {
     let cases: [&[&str]; 6] = [

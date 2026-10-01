@@ -642,6 +642,99 @@ mod tests {
         }
     }
 
+    /// `stream_conf_load()` with the file's keys already in `stream_config` (a missing user and stock file keep them):
+    /// no `[stream] enabled` reads no, even with a destination and an API key, and writes that default; the profile
+    /// detection sees the flag as read.
+    #[test]
+    fn stream_enabled_defaults_to_no_as_c() {
+        let defaults = LoadDefaults { conf_cpus: 4, libuv_worker_threads: 16, ssl_validate_certificate: true };
+        for (enabled, want) in [(None, false), (Some("yes"), true)] {
+            let mut sc = StreamConf::default();
+            let line = enabled.map(|v| format!("  enabled = {v}\n")).unwrap_or_default();
+            let text = format!("[stream]\n{line}  destination = p:1\n  api key = k\n");
+            sc.config.load_bytes(text.as_bytes(), "stream.conf", false, None);
+            let mut child = None;
+            let missing = "/nonexistent-netdata-stream-conf";
+            netdata_agent_log::capture(|| {
+                sc.load(&mut Config::default(), missing, missing, defaults, |_, _, is_child| {
+                    child = Some(is_child);
+                    false
+                })
+            });
+            assert_eq!((sc.send.enabled, child), (want, Some(want)), "{enabled:?}");
+            let value = sc.config.get(SECTION_STREAM, "enabled", None).unwrap_or_default();
+            assert_eq!(value, enabled.unwrap_or("no").as_bytes(), "{enabled:?}");
+        }
+    }
+
+    /// Each `[stream]` level key over each profile's default, alone: strtoll() base 0, cut to an int as C's `(int)`.
+    #[test]
+    fn compression_level_overrides_as_c() {
+        let l = |zstd, lz4, brotli, gzip| CompressionLevels { zstd, lz4, brotli, gzip };
+        let cases = [
+            ("brotli compression level", "7", false, l(3, 1, 7, 3)),
+            ("brotli compression level", "7", true, l(1, 9, 7, 1)),
+            ("lz4 compression acceleration", "5", false, l(3, 5, 3, 3)),
+            ("lz4 compression acceleration", "5", true, l(1, 5, 1, 1)),
+            ("gzip compression level", "6", false, l(3, 1, 3, 6)),
+            ("gzip compression level", "6", true, l(1, 9, 1, 6)),
+            ("gzip compression level", "0x9", false, l(3, 1, 3, 9)),
+            ("lz4 compression acceleration", "4294967298", true, l(1, 2, 1, 1)),
+        ];
+        for (key, value, fastest, want) in cases {
+            let mut conf = StreamConf::default();
+            conf.config.set(SECTION_STREAM, key, value);
+            conf.set_sender_compression_levels(fastest);
+            assert_eq!(conf.send.compression_levels, want, "{key} = {value}, fastest {fastest}");
+        }
+    }
+
+    /// `health enabled` as `inicfg_get_boolean_ondemand()` reads it, `[guid]` over `[key]` over
+    /// `health_plugin_enabled()`: yes/true/on 1, no/false/off 0, auto/on demand 2; other text (case counts) keeps
+    /// the fallback.
+    #[test]
+    fn health_enabled_maps_yes_auto_no_as_c() {
+        let key = "11111111-2222-3333-4444-555555555555";
+        let guid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        // ([key], [guid], health_plugin_enabled()) -> CONFIG_BOOLEAN_*
+        let cases = [
+            (None, None, true, 1),
+            (None, None, false, 0),
+            (Some("yes"), None, false, 1),
+            (Some("true"), None, false, 1),
+            (Some("on"), None, false, 1),
+            (Some("no"), None, true, 0),
+            (Some("false"), None, true, 0),
+            (Some("off"), None, true, 0),
+            (Some("auto"), None, false, 2),
+            (Some("on demand"), None, false, 2),
+            (Some("YES"), None, false, 0),
+            (Some("1"), None, true, 1),
+            (Some("auto"), Some("no"), true, 0),
+            (Some("no"), Some("auto"), true, 2),
+            (Some("auto"), Some("Auto"), false, 2),
+        ];
+        for (k, g, plugin, want) in cases {
+            let mut sc = StreamConf::default();
+            let mut text = String::new();
+            if let Some(v) = k {
+                text += &format!("[{key}]\n  health enabled = {v}\n");
+            }
+            if let Some(v) = g {
+                text += &format!("[{guid}]\n  health enabled = {v}\n");
+            }
+            sc.config.load_bytes(text.as_bytes(), "stream.conf", false, None);
+            let defaults = ReceiverDefaults {
+                db_mode: "ram".into(),
+                history: 3600,
+                health_enabled: plugin,
+                update_every: 1,
+            };
+            let got = sc.receiver_config(key, guid, &defaults).health_enabled;
+            assert_eq!(got, want, "{k:?} {g:?} {plugin}");
+        }
+    }
+
     /// `stream_conf_load_internal()`'s renames: two in `[stream]` only, seventeen in every section; a rename whose new
     /// key exists already moves nothing, so of two old spellings the first listed wins and the other stays.
     #[test]

@@ -342,6 +342,23 @@ mod tests {
         );
     }
 
+    /// `ver` is `strtoul(…, 0)` (hex and octal, cut to `int32_t`); `ml_capable`, `ml_enabled` and `mc_version` are
+    /// `str2i()` (decimal only, a sign, stops at the first non-digit).
+    #[test]
+    fn ver_is_base_0_and_the_ml_fields_are_str2i() {
+        let caps_of = |q: &str| StreamRequest::parse(q.as_bytes(), 1, None).capabilities;
+        assert_eq!(
+            [caps_of("ver=0x42C0"), caps_of("ver=041300"), caps_of("ver=4294967298"), caps_of("ver=-1")],
+            [17088, 17088, caps::V2 | caps::HLABELS, caps::V1]
+        );
+        let ml = |q: &str| {
+            let si = StreamRequest::parse(q.as_bytes(), 1, None).system_info;
+            (si.ml_capable, si.ml_enabled, si.mc_version)
+        };
+        assert_eq!(ml("ml_capable=0x1&ml_enabled=+2&mc_version=010"), (false, true, 10));
+        assert_eq!(ml("ml_capable= 3&ml_enabled=-0&mc_version=-7x"), (true, false, -7));
+    }
+
     #[test]
     fn validation_order() {
         let conf = || {

@@ -588,3 +588,51 @@ fn a_forwarded_block_goes_as_v1_without_interpolated() {
     metadata(&*r, &mut fwd, "M\n");
     assert_eq!(r.take(), vec![(Traffic::Metadata, "BEGIN \"t.c\" 0\nSET \"d\" = 0\nEND\nM\n".to_string())]);
 }
+
+/// C's free list is a stack (`rrdset-slots.c:10-14`, `:38-39`): the slot freed last is taken first, then the counter
+/// goes on; a flush (`rrdhost_pluginsd_send_chart_slots_free()`) empties the list and gives no slot back, then or
+/// later.
+#[test]
+fn chart_slots_are_reused_last_freed_first_and_never_after_a_flush() {
+    let (host, _) = streaming("*", PLAIN);
+    let charts = host.charts();
+    let create = |id: &str| charts.create(&ChartSpec { id, ..chart_spec(DbMode::Ram) }).0;
+    let (a, b, c) = (create("a"), create("b"), create("c"));
+    assert_eq!((a.chart_slot(), b.chart_slot(), c.chart_slot()), (1, 2, 3));
+    assert!(charts.free_if(&a, |_| true));
+    assert!(charts.free_if(&c, |_| true));
+    let (d, e, f) = (create("d"), create("e"), create("f"));
+    assert_eq!((d.chart_slot(), e.chart_slot(), f.chart_slot()), (3, 1, 4));
+    assert!(charts.free_if(&d, |_| true));
+    charts.flush();
+    let g = create("g");
+    assert_eq!(g.chart_slot(), 5, "the free list went with the flush");
+    assert!(charts.free_if(&g, |_| true));
+    assert_eq!(create("h").chart_slot(), 6, "no slot given back after a flush");
+}
+
+/// A collection that stores several points sends one BEGIN2 block per point, in one commit: 2.5 s after the last one,
+/// the step at T + 2 interpolated (10 + 25 / 2.5) and T + 3 the value, each SET2 against the previous collection's
+/// value; a step stored as a gap (3 iterations, not under C's default 3) opens no block.
+#[test]
+fn a_collection_storing_several_points_sends_a_block_per_point_in_one_commit() {
+    let (host, recorder) = streaming("*", PLAIN);
+    ready(&host);
+    let chart = host.charts().create(&chart_spec(DbMode::Ram)).0;
+    let (dim, _) = chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    collect(&host, &chart, &[(&dim, 7)], T);
+    collect(&host, &chart, &[(&dim, 10)], T + 1);
+    recorder.take();
+    set_value(&dim, (T + 3, 500_000), 35);
+    timed_done(&host, &chart, (T + 3, 500_000), true, 3, BufferSource::Thread);
+    let (t2, t3, t5) = (format!("0x{:X}", T + 2), format!("0x{:X}", T + 3), format!("0x{:X}", T + 5));
+    assert_eq!(
+        recorder.take(),
+        vec![(
+            Traffic::Data,
+            format!("BEGIN2 't.c' 0x1 {t2} {t3}\nSET2 'd' 0xA 20 A\nEND2\nBEGIN2 't.c' 0x1 {t3} #\nSET2 'd' 0xA 35 A\nEND2\n")
+        )]
+    );
+    collect(&host, &chart, &[(&dim, 50)], T + 5);
+    assert_eq!(recorder.take(), vec![(Traffic::Data, format!("BEGIN2 't.c' 0x1 {t5} #\nSET2 'd' 0x23 50 A\nEND2\n"))]);
+}

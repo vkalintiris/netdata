@@ -412,7 +412,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         stream_conf.send.enabled,
     );
     profile::setup_malloc(&mut conf.netdata, profile, system.system_cpus);
-    stream_conf.set_sender_compression_levels(matches!(profile, profile::Profile::Parent | profile::Profile::Iot));
+    stream_conf.set_sender_compression_levels(profile.stream_compression_fastest());
     // nd_profile_setup(): every profile starts with 3 tiers, until the dbengine reads [db]
     status_file::set_profile(profile.bits());
     status_file::set_db_tiers(3);

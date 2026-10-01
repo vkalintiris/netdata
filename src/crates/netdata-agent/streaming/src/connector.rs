@@ -735,6 +735,45 @@ pub(crate) mod tests {
         (pool, c)
     }
 
+    /// `stream_sender_charts_and_replication_reset()`'s last two stores (`stream-sender.c:116-117`): a removal's
+    /// disconnect hooks zero the replication commands received and answered, which the stall check sums.
+    #[test]
+    fn a_removal_zeroes_the_replication_counters() {
+        let (_pool, c) = connector();
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c6", false, info("127.0.0.1:1", "key")));
+        let s = Sender::attach(&host, &c).expect("created");
+        host.sender_flags_set(sender_flags::ADDED);
+        c.requeue(&s, &host, Cmd::Connect);
+        s.counter_in.store(3, Ordering::Relaxed);
+        s.counter_out.store(4, Ordering::Relaxed);
+        c.remove_host(&s, &host);
+        assert_eq!((s.counter_in.load(Ordering::Relaxed), s.counter_out.load(Ordering::Relaxed)), (0, 0));
+    }
+
+    /// `stream_sender_on_disconnect()` (`stream-sender.c:202`): the connector's removal sends the host's node id down
+    /// to its child; a second removal, the sender no longer queued, runs no hook.
+    #[test]
+    fn a_removal_sends_the_node_id_down_to_the_child() {
+        let (_pool, c) = connector();
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000ca", false, info("127.0.0.1:1", "key")));
+        let s = Sender::attach(&host, &c).expect("created");
+        let link = netdata_agent_rrd::host::ReceiverLink { capabilities: caps::NODE_ID, ..Default::default() };
+        let slot = Arc::new(ReceiverSlot::new(0, Default::default(), link, Box::new(|| {})));
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
+        host.set_node_id([0x33; 16]);
+        host.update_claim_id_of_parent([0x22; 16]);
+        host.sender_flags_set(sender_flags::ADDED);
+        c.requeue(&s, &host, Cmd::Connect);
+        c.remove_host(&s, &host);
+        assert_eq!(
+            String::from_utf8(slot.take_to_child()).unwrap(),
+            "NODE_ID '22222222-2222-2222-2222-222222222222' '33333333-3333-3333-3333-333333333333' \
+             'https://app.netdata.cloud'\n"
+        );
+        c.remove_host(&s, &host);
+        assert!(slot.take_to_child().is_empty(), "not queued: no hook runs");
+    }
+
     /// `stream_path_parent_disconnected()` at a sender's removal (not at a socket disconnect): the path is cut after
     /// this agent's entry and sent down to the child when something was cut; a second removal sends nothing.
     #[test]

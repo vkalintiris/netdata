@@ -327,6 +327,23 @@ mod tests {
     use crate::compression::encode_signature;
     use crate::decompress::Decompressor;
 
+    /// BINARY cuts at 16255 even where a newline would end the piece earlier; the edges of the newline search: a
+    /// commit of 16255 bytes goes whole, a newline at 16255 is past the search, one at 1 counts.
+    #[test]
+    fn binary_pieces_split_mid_line() {
+        let mut a = vec![b'x'; MAX_MSG_SIZE + 1];
+        a[100] = b'\n';
+        assert_eq!(next_piece(&a, false), 101);
+        assert_eq!(next_piece(&a, true), MAX_MSG_SIZE, "mid-line");
+        assert_eq!(next_piece(&a[..MAX_MSG_SIZE], false), MAX_MSG_SIZE, "whole");
+        a[100] = b'x';
+        a[MAX_MSG_SIZE] = b'\n';
+        assert_eq!(next_piece(&a, false), MAX_MSG_SIZE, "a newline at 16255 is not searched");
+        a[1] = b'\n';
+        assert_eq!(next_piece(&a, false), 2);
+        assert_eq!(next_piece(b"ab\ncd", true), 6 - 1);
+    }
+
     /// `stream_compress()` refuses a message whose compressed size reaches 16384 bytes (the chunk, one past the
     /// signature's capacity), with C's record: on incompressible input each engine accepts up to 16383 and refuses the
     /// next size; zstd and lz4 grow a byte at a time, so they meet 16384 exactly.

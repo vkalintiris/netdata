@@ -568,6 +568,55 @@ mod tests {
         assert_eq!(parse_definition("[]:80"), None);
     }
 
+    /// `connect_to_this()` past the parse: `udp:` reaches socket() as SOCK_DGRAM/IPPROTO_UDP (a UDP connect needs no
+    /// listener, so the peer is the address tried), a missing port is the default one, a service name goes to
+    /// getaddrinfo() as C's (compared with the resolver: /etc/services may lack it), and `%iface` after `]` becomes
+    /// the link-local address's scope id through if_nametoindex() (a link-local connect fails EINVAL without one).
+    #[test]
+    fn definitions_reach_the_socket_as_c() {
+        let cancel = AtomicBool::new(false);
+        let th = Thread::new(&cancel);
+        let peer = |s: &Socket| s.peer_addr().unwrap().as_socket().unwrap();
+        let s = connect_to_this("udp:127.0.0.1:9", 19999, 1, &th).unwrap();
+        assert_eq!(s.r#type().unwrap(), Type::DGRAM);
+        assert_eq!(peer(&s), "127.0.0.1:9".parse().unwrap());
+        assert_eq!(peer(&connect_to_this("udp:127.0.0.1", 19999, 1, &th).unwrap()), "127.0.0.1:19999".parse().unwrap());
+        let hints = dns_lookup::AddrInfoHints { flags: 0, address: 0, socktype: 2, protocol: 17 };
+        let tftp = dns_lookup::getaddrinfo(Some("127.0.0.1"), Some("tftp"), Some(hints))
+            .ok()
+            .and_then(|mut r| r.next())
+            .and_then(Result::ok)
+            .map(|a| a.sockaddr);
+        let (got, records) = netdata_agent_log::capture(|| connect_to_this("udp:127.0.0.1:tftp", 19999, 1, &th));
+        match tftp {
+            Some(addr) => assert_eq!(peer(&got.unwrap()), addr),
+            None => {
+                assert_eq!(got.err(), Some(SockError::CannotResolveHostname));
+                assert_eq!(records.len(), 1);
+            }
+        }
+        // the scope shows in getnameinfo()'s text; lo routes no fe80::/64, so the connect itself fails
+        let texts = |records: Vec<netdata_agent_log::Captured>| -> Vec<_> {
+            records.into_iter().map(|r| (r.errno, r.message.unwrap())).collect()
+        };
+        let (got, records) = netdata_agent_log::capture(|| connect_to_this("udp:[fe80::1]%lo:9", 19999, 1, &th));
+        assert_eq!(got.err(), Some(SockError::ConnectionRefused));
+        let texts_lo = texts(records);
+        assert_eq!(texts_lo.len(), 1);
+        assert_eq!(texts_lo[0].1, "Failed to connect to 'fe80::1%lo', port '9'");
+        assert_ne!(texts_lo[0].0, 22, "EINVAL: no scope id");
+        let (got, records) =
+            netdata_agent_log::capture(|| connect_to_this("udp:[fe80::1]%nosuchif0:9", 19999, 1, &th));
+        assert_eq!(got.err(), Some(SockError::ConnectionRefused));
+        assert_eq!(
+            texts(records),
+            [
+                (19, "Cannot find a network interface named 'nosuchif0'. Continuing without limiting the network interface".to_string()),
+                (22, "Failed to connect to 'fe80::1', port '9'".to_string()),
+            ]
+        );
+    }
+
     #[test]
     fn effective_services_as_c() {
         assert_eq!(effective_service("parent", 19999), "19999");
