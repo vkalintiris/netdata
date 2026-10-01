@@ -568,6 +568,9 @@ mod tests {
         drop(pipe_write);
         let mut requests = Vec::new();
         let ((), records) = netdata_agent_log::capture(|| receive_request(server, &MAGIC, &mut requests));
+        // a kept request holds its socket open: the client reads to its end only once it is gone
+        let kept = requests.len();
+        drop(requests);
         let mut report = Vec::new();
         // a server that closes with the request unread resets the connection: no report either way
         if let Err(e) = (&client).read_to_end(&mut report) {
@@ -578,7 +581,7 @@ mod tests {
         let closed = poll(&mut fd, PollTimeout::ZERO).unwrap() == 1
             && fd[0].revents().is_some_and(|r| r.contains(PollFlags::POLLHUP));
         let records = records.into_iter().map(|r| (r.priority, r.message.unwrap_or_default())).collect();
-        (records, report, requests.len(), closed)
+        (records, report, kept, closed)
     }
 
     /// Every way C's server refuses a request, each with C's record, no report and the descriptors closed.
