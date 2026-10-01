@@ -58,12 +58,58 @@ pub struct SystemInfo {
     pub hw_product_type: Option<String>,
 }
 
+use crate::labels::Labels;
+
 /// A field as the JSON writers take it.
 fn v(field: &Option<String>) -> Option<&[u8]> {
     field.as_deref().map(str::as_bytes)
 }
 
 impl SystemInfo {
+    /// `rrdhost_system_info_from_host_labels()`: a vnode's system info, from the labels its plugin defined it with,
+    /// one hop away; a `_os` of "windows" in any case names the OS "Microsoft Windows".
+    pub fn from_host_labels(labels: &Labels) -> SystemInfo {
+        let get = |name: &str| labels.get(name.as_bytes()).map(|v| String::from_utf8_lossy(v).into_owned());
+        let windows = labels.get(b"_os").is_some_and(|os| os.eq_ignore_ascii_case(b"windows"));
+        SystemInfo {
+            hops: 1,
+            cloud_provider_type: get("_cloud_provider_type"),
+            cloud_instance_type: get("_cloud_instance_type"),
+            cloud_instance_region: get("_cloud_instance_region"),
+            host_os_name: if windows { Some("Microsoft Windows".to_string()) } else { get("_os_name") },
+            host_os_version: get("_os_version"),
+            host_os_label_name: get("_os_name"),
+            host_os_label_version: get("_os_marketing_version"),
+            host_os_label_release: get("_os_release"),
+            host_os_label_codename: get("_os_codename"),
+            host_os_label_edition: get("_os_edition"),
+            host_os_label_build: get("_os_build"),
+            kernel_version: get("_kernel_version"),
+            host_cores: get("_system_cores"),
+            host_cpu_freq: get("_system_cpu_freq"),
+            host_cpu_model: get("_system_cpu_model"),
+            host_ram_total: get("_system_ram_total"),
+            host_disk_space: get("_system_disk_space"),
+            architecture: get("_architecture"),
+            virtualization: get("_virtualization"),
+            container: get("_container"),
+            container_detection: get("_container_detection"),
+            virt_detection: get("_virt_detection"),
+            is_k8s_node: get("_is_k8s_node"),
+            install_type: get("_install_type"),
+            prebuilt_arch: get("_prebuilt_arch"),
+            prebuilt_dist: get("_prebuilt_dist"),
+            network_default_iface: get("_net_default_iface"),
+            network_default_iface_ip: get("_net_default_iface_ip"),
+            network_default_iface_detection: get("_net_default_iface_detection"),
+            hw_product_id: get("_hw_product_id"),
+            hw_product_name: get("_hw_product_name"),
+            hw_sys_vendor: get("_hw_sys_vendor"),
+            hw_product_type: get("_hw_product_type"),
+            ..SystemInfo::default()
+        }
+    }
+
     /// `rrdhost_system_info_to_url_encode_stream()`: the STREAM request's query parameters after `ver`, in C's order,
     /// each value url-encoded (`key=` for none, `buffer_key_value_urlencode()`).
     pub fn to_url_encode_stream(&self, dst: &mut Vec<u8>) {
@@ -422,6 +468,67 @@ mod tests {
     }
 
     use super::*;
+
+    /// `rrdhost_system_info_from_host_labels()`: C's label for each field, hops 1, the rest unset; `_os` windows in any
+    /// case names the OS.
+    #[test]
+    fn a_vnodes_system_info_comes_from_its_labels() {
+        let names = [
+            "_cloud_provider_type", "_cloud_instance_type", "_cloud_instance_region", "_os_name", "_os_version",
+            "_os_marketing_version", "_os_release", "_os_codename", "_os_edition", "_os_build", "_kernel_version",
+            "_system_cores", "_system_cpu_freq", "_system_cpu_model", "_system_ram_total", "_system_disk_space",
+            "_architecture", "_virtualization", "_container", "_container_detection", "_virt_detection", "_is_k8s_node",
+            "_install_type", "_prebuilt_arch", "_prebuilt_dist", "_net_default_iface", "_net_default_iface_ip",
+            "_net_default_iface_detection", "_hw_product_id", "_hw_product_name", "_hw_sys_vendor", "_hw_product_type",
+            "role",
+        ];
+        let mut labels = Labels::default();
+        for name in names {
+            labels.add(name.as_bytes(), name.trim_start_matches('_').as_bytes(), crate::labels::SRC_CONFIG);
+        }
+        let v = |name: &str| Some(name.to_string());
+        let want = SystemInfo {
+            hops: 1,
+            cloud_provider_type: v("cloud_provider_type"),
+            cloud_instance_type: v("cloud_instance_type"),
+            cloud_instance_region: v("cloud_instance_region"),
+            host_os_name: v("os_name"),
+            host_os_version: v("os_version"),
+            host_os_label_name: v("os_name"),
+            host_os_label_version: v("os_marketing_version"),
+            host_os_label_release: v("os_release"),
+            host_os_label_codename: v("os_codename"),
+            host_os_label_edition: v("os_edition"),
+            host_os_label_build: v("os_build"),
+            kernel_version: v("kernel_version"),
+            host_cores: v("system_cores"),
+            host_cpu_freq: v("system_cpu_freq"),
+            host_cpu_model: v("system_cpu_model"),
+            host_ram_total: v("system_ram_total"),
+            host_disk_space: v("system_disk_space"),
+            architecture: v("architecture"),
+            virtualization: v("virtualization"),
+            container: v("container"),
+            container_detection: v("container_detection"),
+            virt_detection: v("virt_detection"),
+            is_k8s_node: v("is_k8s_node"),
+            install_type: v("install_type"),
+            prebuilt_arch: v("prebuilt_arch"),
+            prebuilt_dist: v("prebuilt_dist"),
+            network_default_iface: v("net_default_iface"),
+            network_default_iface_ip: v("net_default_iface_ip"),
+            network_default_iface_detection: v("net_default_iface_detection"),
+            hw_product_id: v("hw_product_id"),
+            hw_product_name: v("hw_product_name"),
+            hw_sys_vendor: v("hw_sys_vendor"),
+            hw_product_type: v("hw_product_type"),
+            ..SystemInfo::default()
+        };
+        assert_eq!(SystemInfo::from_host_labels(&labels), want);
+        labels.add(b"_os", b"WINDOWS", crate::labels::SRC_CONFIG);
+        assert_eq!(SystemInfo::from_host_labels(&labels), SystemInfo { host_os_name: v("Microsoft Windows"), ..want });
+        assert_eq!(SystemInfo::from_host_labels(&Labels::default()), SystemInfo { hops: 1, ..SystemInfo::default() });
+    }
 
     /// `system-info.sh`'s output on the development box (brief `knowledge/brief-localhost-identity.md` §4 in the
     /// status repository; the interface address redacted).

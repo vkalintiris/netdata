@@ -49,6 +49,21 @@ pub struct HostInfo {
     pub cache_dir: Option<String>,
 }
 
+impl HostInfo {
+    /// What a vnode a plugin defines is created with (`pluginsd_host_define_end()`'s `rrdhost_find_or_create()`):
+    /// localhost's settings under the vnode's name and system info, with the virtual OS and no cache directory.
+    pub fn for_vnode(localhost: &HostInfo, hostname: &str, system_info: SystemInfo) -> HostInfo {
+        HostInfo {
+            hostname: hostname.to_string(),
+            registry_hostname: hostname.to_string(),
+            os: VIRTUAL_HOST_OS.to_string(),
+            system_info,
+            cache_dir: None,
+            ..localhost.clone()
+        }
+    }
+}
+
 /// `host->stream.snd.destination`, `api_key` and `charts_matching`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamSend {
@@ -283,6 +298,17 @@ pub enum Attach {
     CleanupBusy,
     /// `RRDHOST_SET_RECEIVER_VNODE_IS_LOCAL`: a plugin of this agent claimed the host as its vnode.
     VnodeIsLocal,
+}
+
+/// What claiming a host as a local vnode found (`pluginsd_host_claim_as_local_vnode()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claim {
+    /// No receiver: nothing to do.
+    Free,
+    /// A receiver was streaming the host and was stopped.
+    Evicted,
+    /// A receiver was streaming the host and did not stop within 2 s.
+    Stuck,
 }
 
 /// The host flags its maintenance reads (`RRDHOST_FLAG_PENDING_OBSOLETE_*`): some chart or dimension turned obsolete
@@ -1103,11 +1129,30 @@ impl Host {
             .store(u32::MAX, std::sync::atomic::Ordering::Relaxed);
         self.local.fetch_or(local_flags::COLLECTOR_ONLINE, Ordering::AcqRel);
         drop(receiver);
-        // rrdcontext_host_child_connected(): every chart and dimension reports collection again.
+        self.contexts_child_connected();
+        Attach::Attached
+    }
+
+    /// `rrdcontext_host_child_connected()`: every chart and dimension reports collection again.
+    pub fn contexts_child_connected(&self) {
         for chart in self.charts.all() {
             contexts::rrdset_not_collected(&chart);
         }
-        Attach::Attached
+    }
+
+    /// `pluginsd_host_claim_as_local_vnode()`'s eviction, with VIRTUAL already set so that no receiver attaches after
+    /// it: a receiver still attached is stopped and waited for (`stream_receiver_signal_to_stop_and_wait()`).
+    pub fn claim_as_local_vnode(&self) -> Claim {
+        match self.receiver() {
+            None => Claim::Free,
+            Some(slot) if self.stop_receiver_and_wait(&slot) => Claim::Evicted,
+            Some(_) => Claim::Stuck,
+        }
+    }
+
+    /// The host is collected again (`RRDHOST_FLAG_ORPHAN` cleared), as a vnode's definition does.
+    pub fn clear_orphan(&self) {
+        self.orphan.store(false, Ordering::Release);
     }
 
     /// `svc_rrdhost_obsolete_all_charts()`: every chart is marked obsolete, so the charts a child does not define again
@@ -2380,6 +2425,53 @@ mod tests {
         assert!(host.receiver().is_none());
         assert_eq!(hosts.receivers_connected(), 0);
         assert_eq!(host.set_receiver(slot()), Attach::Attached);
+    }
+
+    /// A vnode is created with localhost's settings under its own name and system info, the virtual OS and no cache
+    /// directory.
+    #[test]
+    fn a_vnode_takes_localhosts_settings() {
+        let localhost = HostInfo { cache_dir: Some("/var/cache/netdata".into()), ..info("l") };
+        let system_info = SystemInfo { hops: 1, kernel_version: Some("6.1".into()), ..SystemInfo::default() };
+        assert_eq!(
+            HostInfo::for_vnode(&localhost, "v", system_info.clone()),
+            HostInfo {
+                hostname: "v".into(),
+                registry_hostname: "v".into(),
+                os: VIRTUAL_HOST_OS.into(),
+                system_info,
+                cache_dir: None,
+                ..localhost
+            }
+        );
+    }
+
+    /// `pluginsd_host_claim_as_local_vnode()`: no receiver, a receiver that leaves when told, one that does not (C's
+    /// record after 2 s).
+    #[test]
+    fn a_claim_evicts_a_receiver_as_c() {
+        let hosts = Hosts::new(Host::new("guid-l", true, info("l")));
+        let host = hosts.find_or_create("guid-v", DbMode::Ram, || info("v"), |_| {}).expect("created");
+        assert_eq!(host.claim_as_local_vnode(), Claim::Free);
+        let leaving = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        assert_eq!(host.set_receiver(Arc::clone(&leaving)), Attach::Attached);
+        let claim = std::thread::scope(|s| {
+            s.spawn(|| {
+                while !leaving.stop_requested.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                host.clear_receiver(&leaving, 0);
+            });
+            host.claim_as_local_vnode()
+        });
+        assert_eq!(claim, Claim::Evicted);
+        let stuck = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        assert_eq!(host.set_receiver(Arc::clone(&stuck)), Attach::Attached);
+        let (claim, records) = netdata_agent_log::capture(|| host.claim_as_local_vnode());
+        assert_eq!(claim, Claim::Stuck);
+        let records: Vec<_> = records.into_iter().map(|r| r.message.unwrap_or_default()).collect();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert!(records[0].ends_with("streaming thread takes too long to stop, giving up..."), "{records:?}");
     }
 
     /// C's local, online, ingest type and hops by host state (`rrdhost.h:455-470`, `rrdhost-status.c:103-105,
