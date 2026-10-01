@@ -71,12 +71,14 @@ var (
 	aaOutboundB = map[string]int{"running": 1, "no dst": 2}
 )
 
-// startActiveActive starts the four forms (`shared` giving every agent both parents), B once A has the child online,
+// aaForms are the four forms of A and B, the oracle first.
+var aaForms = []string{"c-c", "c-r", "r-c", "r-r"}
+
+// startActiveActive starts the forms (`shared` giving every agent both parents), B once A has the child online,
 // and waits until B has the child, each parent has the other, the child's path is child, A, B at every agent and the
 // outbound states settle; a candidate topology that fails is marked down, the oracle's ends the test.
-func startActiveActive(t *testing.T, g *stagger, shared bool) []*aaTopo {
+func startActiveActive(t *testing.T, g *stagger, shared bool, forms []string) []*aaTopo {
 	bins := binaries(t)
-	forms := []string{"c-c", "c-r", "r-c", "r-r"}
 	label := "aa"
 	if shared {
 		label = "aa-shared"
@@ -288,13 +290,33 @@ var (
 // parents, each parent's view of the other, the records.
 func TestStreamActiveActive(t *testing.T) {
 	t.Run("default", testActiveActiveDefault)
+	t.Run("shared-list", testActiveActiveSharedList)
+}
+
+// testActiveActiveSharedList (case `shared-list`, 9c): every agent has the list [A B], c-c and r-r. Each parent's
+// localhost bans itself as the origin; its proxies ban whichever destination the path has before it, the origin of
+// the host they relay, and themselves: A four bans, B five. Compared as `default`'s paths, states and records.
+func testActiveActiveSharedList(t *testing.T) {
+	g := &stagger{gap: 2 * time.Second}
+	ts := startActiveActive(t, g, true, []string{"c-c", "r-r"})
+	aaCompareViews(t, ts)
+	aaCompareStates(t, ts)
+	aaCompareRecords(t, ts, map[string]int{"a bans": 4, "b bans": 5})
 }
 
 func testActiveActiveDefault(t *testing.T) {
 	g := &stagger{gap: 2 * time.Second}
-	ts := startActiveActive(t, g, false)
-	oracle := ts[0]
+	ts := startActiveActive(t, g, false, aaForms)
+	aaCompareViews(t, ts)
+	aaCompareStates(t, ts)
+	aaCompareData(t, ts)
+	aaCompareRecords(t, ts, map[string]int{"a bans": 1, "b bans": 2})
+}
 
+// aaCompareViews compares the topologies' paths and stream_info with the oracle's (the first); no path anywhere
+// reaches three hops.
+func aaCompareViews(t *testing.T, ts []*aaTopo) {
+	oracle := ts[0]
 	// the paths: no entry farther than two hops anywhere
 	forEach(ts, func(a *aaTopo) {
 		for _, node := range []string{"a", "b", "c"} {
@@ -327,7 +349,11 @@ func testActiveActiveDefault(t *testing.T) {
 		})
 	}
 
-	// the outbound and inbound states, over the same three seconds
+}
+
+// aaCompareStates compares the parents' outbound and inbound states with the oracle's over the same three seconds.
+func aaCompareStates(t *testing.T, ts []*aaTopo) {
+	oracle := ts[0]
 	now := time.Now().Unix()
 	for _, a := range ts[1:] {
 		if a.down {
@@ -346,7 +372,13 @@ func testActiveActiveDefault(t *testing.T) {
 		})
 	}
 
-	// the child's data within each topology: exact over the live window at B, tolerant from its first point
+}
+
+// aaCompareData compares, within each topology, the child's series at the child, A and B (exact over the live window
+// from B's online, tolerant from the child's first point), then the child's charts at B and each parent's of its peer
+// with the oracle's.
+func aaCompareData(t *testing.T, ts []*aaTopo) {
+	oracle := ts[0]
 	settled := oracle.settled
 	for _, a := range ts {
 		if !a.down {
@@ -409,7 +441,12 @@ func testActiveActiveDefault(t *testing.T) {
 		})
 	}
 
-	// the records, as sets: the bans, both parents' receivers, the child's; no second connection of a host anywhere
+}
+
+// aaCompareRecords compares the records with the oracle's as sets: the bans (the oracle's counted as `bans`), both
+// parents' receivers, the child's; no agent logs a second connection of a host.
+func aaCompareRecords(t *testing.T, ts []*aaTopo, bans map[string]int) {
+	oracle := ts[0]
 	records := func(a *aaTopo) map[string][]string {
 		return map[string][]string{
 			"a bans":     topoRecords(t, a.topology, "a", "is banned"),
@@ -433,9 +470,9 @@ func testActiveActiveDefault(t *testing.T) {
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		t.Logf("oracle %s records:\n%s", name, strings.Join(want[name], "\n"))
 	}
-	for _, name := range []string{"a bans", "b bans"} {
-		if len(want[name]) == 0 {
-			t.Errorf("the oracle's %s: none", name)
+	for name, n := range bans {
+		if len(want[name]) != n {
+			t.Errorf("the oracle's %s: %d, want %d", name, len(want[name]), n)
 		}
 	}
 	for _, a := range ts[1:] {
