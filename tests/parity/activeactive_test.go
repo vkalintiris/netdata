@@ -55,8 +55,8 @@ func aaRows(form string, shared bool) []topoNode {
 type aaTopo struct {
 	form string
 	*topology
-	down             bool
-	onlineB, settled int64
+	down                           bool
+	onlineB, settled, onPeer, back int64
 }
 
 func (a *aaTopo) isDown() bool { return a.down }
@@ -291,6 +291,7 @@ var (
 func TestStreamActiveActive(t *testing.T) {
 	t.Run("default", testActiveActiveDefault)
 	t.Run("shared-list", testActiveActiveSharedList)
+	t.Run("kill-direct", testActiveActiveKillDirect)
 }
 
 // testActiveActiveSharedList (case `shared-list`, 9c): every agent has the list [A B], c-c and r-r. Each parent's
@@ -481,3 +482,207 @@ func aaCompareRecords(t *testing.T, ts []*aaTopo, bans map[string]int) {
 		}
 	}
 }
+
+// waitEntryHops polls once a second until the first node of an agent's /api/v3/stream_path (with `query`) has the
+// host at these hops.
+func waitEntryHops(addr, query, hostname string, hops int, limit time.Duration) bool {
+	for end := time.Now().Add(limit); time.Now().Before(end); time.Sleep(time.Second) {
+		b, err := rawExchange(addr, []byte("GET /api/v3/stream_path?options=minify"+query+" HTTP/1.1\r\n\r\n"),
+			5*time.Second)
+		if err != nil {
+			continue
+		}
+		nodes, err := pathEntries(httpBody(b))
+		if err != nil || len(nodes) == 0 {
+			continue
+		}
+		if slices.ContainsFunc(nodes[0], func(e pathEntry) bool { return e.Hostname == hostname && e.Hops == hops }) {
+			return true
+		}
+	}
+	return false
+}
+
+// testActiveActiveKillDirect (case `kill-direct`, 9d, PARITY_LONG, D109.6, D109.7): A, the child's parent, is
+// SIGKILLed in every topology once steady; the child moves to B; A, relaunched once the child is on B in every
+// topology, gets the child back through B. The roles swap: B sends its localhost and the child to A, and A has no
+// destination for either. Compared with c-c: B's views while A is down, then the paths, stream_info and states, the
+// child's series at B over the move and at A after its return, and the records with a kill's forms masked.
+func testActiveActiveKillDirect(t *testing.T) {
+	if os.Getenv("PARITY_LONG") == "" {
+		t.Skip("PARITY_LONG unset (a kill and a relaunch run for minutes)")
+	}
+	g := &stagger{gap: 2 * time.Second}
+	ts := startActiveActive(t, g, false, aaForms)
+	oracle := ts[0]
+	k := oracle.settled
+	for _, a := range ts {
+		if !a.down {
+			k = max(k, a.settled)
+		}
+	}
+	k += 20
+	time.Sleep(time.Until(time.Unix(k, 0)))
+	forEach(ts, func(a *aaTopo) {
+		if err := a.d("a").Kill(); err != nil {
+			t.Errorf("%s: kill A: %v", a.form, err)
+			a.down = true
+		}
+	})
+	if oracle.down {
+		t.FailNow()
+	}
+
+	// the child moves to B: B at one hop in its own path
+	forEach(ts, func(a *aaTopo) {
+		if !waitEntryHops(a.addr("c"), "", aaB.Hostname, 1, 125*time.Second) {
+			t.Errorf("%s: the child never moved to B", a.form)
+			a.down = true
+			return
+		}
+		a.onPeer = time.Now().Unix()
+		n, _ := logCount(a.d("b"), "multiple connections for the same host")
+		t.Logf("%s: the child on B %d s after the kill; B refused it as a second connection %d times", a.form,
+			a.onPeer-k, n)
+	})
+	if oracle.down {
+		t.FailNow()
+	}
+	r := oracle.onPeer
+	for _, a := range ts {
+		if !a.down {
+			r = max(r, a.onPeer)
+		}
+	}
+	r += 5
+
+	// while A is down: B's views of the child and of A's host, and the child's own
+	time.Sleep(time.Until(time.Unix(r-1, 0)))
+	down := [][2]string{aaChildViews[1], aaChildViews[2], aaPeerViews[2]}
+	for _, a := range ts[1:] {
+		if !a.down {
+			t.Run(a.form+"/down", func(t *testing.T) {
+				topoViews(t, "down", oracle.topology, a.topology, down, entryKillTimes)
+			})
+		}
+	}
+
+	// A back, after the child is on B everywhere: it gets the child through B, and the roles swap
+	time.Sleep(time.Until(time.Unix(r, 0)))
+	want := []string{aaChild.Hostname, aaB.Hostname, aaA.Hostname}
+	forEach(ts, func(a *aaTopo) {
+		g.wait()
+		if err := relaunch(a.d("a")); err != nil {
+			t.Errorf("%s: relaunch A: %v", a.form, err)
+			a.down = true
+			return
+		}
+		if _, b, ok := waitHop(a.addr("a"), aaChild.MachineGUID, true, 200*time.Second); !ok {
+			t.Errorf("%s: A never had the child back: %.300s", a.form, b)
+			a.down = true
+			return
+		}
+		a.back = time.Now().Unix()
+		t.Logf("%s: A has the child back %d s after the kill", a.form, a.back-k)
+		// B's and the child's own; the restarted A keeps the child's entries it loaded (C: child, A, B), which the
+		// views compare (D109.6)
+		for _, at := range []struct{ node, query string }{{"b", "&nodes=" + aaChild.Hostname}, {"c", ""}} {
+			if got, ok := waitPath(a.addr(at.node), at.query, want, 60*time.Second); !ok {
+				t.Errorf("%s: %s's path of the child is %v, not %v", a.form, at.node, got, want)
+			}
+		}
+		for _, w := range []struct {
+			node string
+			want map[string]int
+		}{{"b", aaOutboundA}, {"a", aaOutboundB}} {
+			if err := waitCounts(a.d(w.node), "netdata.streaming_outbound", w.want, 90*time.Second); err != nil {
+				t.Errorf("%s: %s's outbound states: %v", a.form, w.node, err)
+			}
+		}
+	})
+	if oracle.down {
+		t.FailNow()
+	}
+
+	// after: the paths (A's start median masked: it restarted), stream_info and states as `default`'s
+	forEach(ts, func(a *aaTopo) {
+		for _, node := range []string{"a", "b", "c"} {
+			if most, err := maxPathHops(a.addr(node)); err != nil || most > 2 {
+				t.Errorf("%s: %s's paths reach %d hops (%v)", a.form, node, most, err)
+			}
+		}
+	})
+	for _, a := range ts[1:] {
+		if a.down {
+			continue
+		}
+		t.Run(a.form+"/final", func(t *testing.T) {
+			topoViews(t, "final", oracle.topology, a.topology, append(slices.Clone(aaChildViews), aaPeerViews[:2]...),
+				entryKillTimes)
+			// each parent's labels at the other go up at its READY, racing its children's arrival
+			topoViews(t, "final", oracle.topology, a.topology, [][2]string{aaBAtAView, aaPeerViews[2]}, entryKillTimes,
+				"_is_parent")
+			for _, at := range []string{"a", "b"} {
+				o, oerr := streamInfoMasked(oracle.addr(at), aaChild.MachineGUID)
+				got, gerr := streamInfoMasked(a.addr(at), aaChild.MachineGUID)
+				if oerr != nil || gerr != nil || !bytes.Equal(o, got) {
+					t.Errorf("%s stream_info of the child: %v %v %s", at, oerr, gerr, firstDifference(o, got))
+				}
+			}
+		})
+	}
+	aaCompareStates(t, ts)
+
+	// the child's data within each topology: at B over the move (the child never stopped), at A after its return
+	for _, a := range ts {
+		if a.down {
+			continue
+		}
+		t.Run(a.form+"/data", func(t *testing.T) {
+			waitHopsReach(t, a.topology, aaChild.Hostname, aaHopsBack, chainDataCharts, a.back+10, 30*time.Second)
+			for _, chart := range chainDataCharts {
+				move := hopSeries(t, a.topology, aaChild.Hostname, []string{"c", "b"}, chart, k-20, a.onPeer+10)
+				if _, rows := csvRows(move[0]); len(rows) < 25 || slices.ContainsFunc(rows, nullRow) {
+					t.Errorf("%s: the child's own series over [%d, %d] has %d rows, nulls %q", chart, k-20,
+						a.onPeer+10, len(rows), slices.DeleteFunc(slices.Clone(rows), func(r string) bool { return !nullRow(r) }))
+				}
+				compareHops(t, chart+" over the move", move)
+				last := hopLast(t, a.topology, aaChild.Hostname, aaHopsBack, chart) - 1
+				compareHops(t, chart+" back", hopSeries(t, a.topology, aaChild.Hostname, aaHopsBack, chart,
+					a.back+5, last))
+			}
+		})
+	}
+
+	// the records of the kill, as sets: the bans, B's removal of the hosts A had sent, the receivers, the child's;
+	// a second connection the child meets at B while B still has it through A is timing (D109.7): dropped
+	records := func(a *aaTopo) map[string][]string {
+		recs := map[string][]string{
+			"a bans":     topoRecords(t, a.topology, "a", "is banned"),
+			"b bans":     topoRecords(t, a.topology, "b", "is banned"),
+			"b removed":  topoRecords(t, a.topology, "b", "streaming connector removed host"),
+			"a receiver": topoRecords(t, a.topology, "a", "STREAM RCV"),
+			"b receiver": topoRecords(t, a.topology, "b", "STREAM RCV"),
+			"child":      rchildRecords(t, a.d("c")),
+		}
+		for name, lines := range recs {
+			lines = slices.DeleteFunc(lines, func(l string) bool {
+				return strings.Contains(l, "multiple connections for the same host")
+			})
+			recs[name] = killRecords(lines)
+		}
+		return recs
+	}
+	wantRecs := records(oracle)
+	for _, name := range slices.Sorted(maps.Keys(wantRecs)) {
+		t.Logf("oracle %s records:\n%s", name, strings.Join(wantRecs[name], "\n"))
+	}
+	for _, a := range ts[1:] {
+		if !a.down {
+			t.Run(a.form+"/records", func(t *testing.T) { compareRecordSets(t, wantRecs, records(a)) })
+		}
+	}
+}
+
+// aaHopsBack are the agents that hold the child once A is back: itself, B, then A through B.
+var aaHopsBack = []string{"c", "b", "a"}

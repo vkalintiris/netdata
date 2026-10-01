@@ -31,8 +31,8 @@ var (
 	killDstIPRe = regexp.MustCompile(` dst_ip=(unknown|127\.0\.0\.1) `)
 	// the gate records' block (not the web thread's STREAM URL, which starts with a slash)
 	requestFieldRe = regexp.MustCompile(` request="[^/"][^"]*"`)
-	// the hosts in the quoted forms: the proxy's two senders (its own and the child's) log the same forms
-	refusedHostRe = regexp.MustCompile(`'parity-chain-(child|proxy|gp)'`)
+	// the hosts in the quoted forms: an agent's senders (its own and its proxies') log the same forms
+	refusedHostRe = regexp.MustCompile(`'parity-(chain|aa)-[a-z]+'`)
 	// what a kill may add or not, by timing: a write racing the close; a retry's probe of a parent that is down
 	// (refused) or reviving (404, still loading its hosts, closing a probe it accepted while starting), present only
 	// when the retry falls in that window
