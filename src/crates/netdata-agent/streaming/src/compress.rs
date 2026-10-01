@@ -488,6 +488,9 @@ mod tests {
             rest = &rest[n..];
         }
         assert_eq!(plain, big);
+        // the dictionary is the window, not the stream so far
+        let Engine::Lz4 { history } = &c.engine else { unreachable!() };
+        assert_eq!(history.len(), LZ4_WINDOW);
     }
 
     #[test]

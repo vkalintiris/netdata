@@ -752,8 +752,13 @@ mod tests {
         let got = text(|o| chart(o, &Enc::live(caps::SLOTS), &hidden));
         assert!(got.starts_with("CHART SLOT:0x1A \"netdata.clients\" \"b.c\" "), "{got}");
         assert!(got.ends_with(" 130200 1 \"obsolete  hidden\" \"netdata\" \"pulse\"\n"), "{got}");
+        let all = ChartDef { store_first: true, ..hidden };
+        let got = text(|o| chart(o, &Enc::live(caps::SLOTS), &all));
+        assert!(got.ends_with(" 130200 1 \"obsolete store_first hidden\" \"netdata\" \"pulse\"\n"), "{got}");
         let float = DimDef { float: true, noreset: true, ..dim };
         assert!(text(|o| dimension(o, &Enc::live(0), &float)).ends_with(" 1 1 \"  noreset type=float\"\n"));
+        let gone = DimDef { obsolete: true, hidden: true, ..dim };
+        assert!(text(|o| dimension(o, &Enc::live(0), &gone)).ends_with(" 1 1 \"obsolete hidden  type=int\"\n"));
         assert_eq!(chart_name("a.b", None), "");
         assert_eq!(chart_name("a.b", Some("nodot")), "");
     }
@@ -886,6 +891,8 @@ mod tests {
         assert_eq!(set2(&f, 1, "f1", true, true, "0", "NAN", "E"), "SET2 SLOT:0x1 'f1' 0x0 null E\n");
         assert_eq!(set2(&f, 1, "f1", true, true, "1.75", "#", "A"), "SET2 SLOT:0x1 'f1' 0x1 1.75 A\n");
         assert_eq!(set2(&f, 1, "f1", true, true, "-1.75", "#", "A"), "SET2 SLOT:0x1 'f1' -0x1 -1.75 A\n");
+        // C's (int64_t) of what does not fit is x86-64's cvttsd2si: INT64_MIN, never Rust's saturating `as`
+        assert_eq!(set2(&f, 1, "f1", true, true, "1e300", "#", "A"), "SET2 SLOT:0x1 'f1' -0x8000000000000000 1e+300 A\n");
 
         // an open block closes first; an update every the chart did not take is the chart's; no slots without SLOTS
         let f = Forward::new(PLAIN, caps::FLOAT_BASELINE);
