@@ -464,7 +464,7 @@ mod crafted {
     use netdata_agent_storage::storage_point::StoragePoint;
 
     use super::*;
-    use crate::upstream::replay::{DimQuery, Points, Walk, walk};
+    use crate::upstream::replay::{DimQuery, Points, Walk, expanded_before, moves_before, walk};
 
     const W: i64 = 1_800_000_000;
 
@@ -690,6 +690,39 @@ mod crafted {
                 Window { after: T + 2, before: T + 9, streaming: false },
                 Walk { finished_with_gap: true, points_read: 2, points_generated: 1 }
             )
+        );
+    }
+
+    /// The end moves to the earliest page end only when later, by fewer than 1024 intervals (the division
+    /// truncates), and before both the chart's last update and now; a dimension answering 0 restarts the minimum.
+    #[test]
+    fn the_end_moves_to_the_pages_end_within_cs_bounds() {
+        let before = T + 10;
+        let moves = |expanded: i64, last_updated: i64, wall: i64| moves_before(expanded, before, 2, last_updated, wall);
+        let far = T + 10_000;
+        assert_eq!(
+            [
+                moves(T + 12, far, far),
+                moves(before, far, far),
+                moves(before - 2, far, far),
+                moves(before + 2 * 1023, far, far),
+                moves(before + 2 * 1024 - 1, far, far),
+                moves(before + 2 * 1024, far, far),
+                moves(T + 12, T + 12, far),
+                moves(T + 12, T + 13, far),
+                moves(T + 12, far, T + 12),
+                moves(T + 12, far, T + 13),
+            ],
+            [true, false, false, true, true, false, false, true, false, true]
+        );
+        assert_eq!(
+            [
+                expanded_before([T + 20, T + 12, T + 30].into_iter()),
+                expanded_before([T + 20, 0, T + 30].into_iter()),
+                expanded_before([T + 20, 0].into_iter()),
+                expanded_before([].into_iter()),
+            ],
+            [T + 12, T + 30, 0, 0]
         );
     }
 }

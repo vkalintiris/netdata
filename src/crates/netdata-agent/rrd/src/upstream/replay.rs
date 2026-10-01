@@ -231,8 +231,7 @@ pub(super) fn walk<Q: Points>(
 }
 
 /// `replication_query_align_to_optimal_before()`: a query that does not start streaming ends where the pages it
-/// reads end, when that is later but within 1024 intervals, before the chart's last update and before now. C's
-/// minimum restarts at a dimension that answers 0.
+/// reads end, when that is later but within 1024 intervals, before the chart's last update and before now.
 fn align_to_optimal_before(
     dims: &mut [DimQuery<'_>],
     window: &mut Window,
@@ -240,21 +239,28 @@ fn align_to_optimal_before(
     last_updated_s: i64,
     wall_s: i64,
 ) {
+    let expanded = expanded_before(dims.iter_mut().map(|d| d.query.align_to_optimal_before()));
+    let update_every = i64::from(chart.update_every());
+    if moves_before(expanded, window.before, update_every, last_updated_s, wall_s) {
+        window.before = expanded;
+    }
+}
+
+/// The earliest of the dimensions' page ends; C's minimum restarts at a dimension that answers 0.
+pub(super) fn expanded_before(ends: impl Iterator<Item = i64>) -> i64 {
     let mut expanded = 0;
-    for d in dims.iter_mut() {
-        let new_before = d.query.align_to_optimal_before();
+    for new_before in ends {
         if expanded == 0 || new_before < expanded {
             expanded = new_before;
         }
     }
-    let update_every = i64::from(chart.update_every());
-    if expanded > window.before
-        && (expanded - window.before) / update_every < 1024
-        && expanded < last_updated_s
-        && expanded < wall_s
-    {
-        window.before = expanded;
-    }
+    expanded
+}
+
+/// Whether `before` moves to `expanded`: later, by fewer than 1024 intervals, before the chart's last update and
+/// before now.
+pub(super) fn moves_before(expanded: i64, before: i64, update_every: i64, last_updated_s: i64, wall_s: i64) -> bool {
+    expanded > before && (expanded - before) / update_every < 1024 && expanded < last_updated_s && expanded < wall_s
 }
 
 /// `replication_send_chart_collection_state()`: each exposed dimension's collection state, then the chart's.
