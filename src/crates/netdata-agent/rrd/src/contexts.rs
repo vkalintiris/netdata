@@ -1359,20 +1359,27 @@ pub fn collected_rrdset(chart: &Chart) {
 struct HostRetention {
     first_time_s: i64,
     last_time_s: i64,
-    /// Each new first time while a child's receiver runs or localhost's sender is ready (D120), for the stream path
-    /// messages C sends from `rrdhost_update_cached_retention()` (`stream_path_retention_updated()`); `None` while
-    /// nobody takes them.
-    first_time_changes: Option<Vec<i64>>,
+    /// Each new first time while a receiver or a ready sender takes them (D120, D146.3), for the stream path messages
+    /// C sends from `rrdhost_update_cached_retention()` (`stream_path_retention_updated()`).
+    first_time_changes: Vec<i64>,
+    /// The `Taker`s of them, as bits; none records nothing.
+    takers: u8,
+}
+
+/// Who takes a host's first-time changes to send their stream paths (D146.3): the child's receiver sends both halves
+/// from its tick, a ready sender the parent's half from its tick while no receiver does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Taker {
+    Receiver = 1 << 0,
+    Sender = 1 << 1,
 }
 
 impl HostRetention {
     /// The end of `rrdhost_update_cached_retention()`: a changed first time owes the parent and the child a stream
     /// path.
     fn note_first_time(&mut self, old_first_time_s: i64) {
-        if self.first_time_s != old_first_time_s {
-            if let Some(changes) = &mut self.first_time_changes {
-                changes.push(self.first_time_s);
-            }
+        if self.first_time_s != old_first_time_s && self.takers != 0 {
+            self.first_time_changes.push(self.first_time_s);
         }
     }
 }
@@ -1526,19 +1533,31 @@ impl Contexts {
         (r.first_time_s, r.last_time_s)
     }
 
-    /// Starts (a child's receiver runs, localhost's sender is ready) or stops recording the first-time changes a
-    /// stream path is sent for.
-    pub fn record_first_time_changes(&self, record: bool) {
-        lock(&self.retention).first_time_changes = record.then(Vec::new);
+    /// `by` starts or stops taking the first-time changes a stream path is sent for; they are recorded while anyone
+    /// takes them. A receiver starts from none: before it the host was offline, and C owed nothing for them.
+    pub fn record_first_time_changes(&self, by: Taker, record: bool) {
+        let mut r = lock(&self.retention);
+        if record {
+            r.takers |= by as u8;
+            if by == Taker::Receiver {
+                r.first_time_changes.clear();
+            }
+        } else {
+            r.takers &= !(by as u8);
+            if r.takers == 0 {
+                r.first_time_changes = Vec::new();
+            }
+        }
     }
 
-    /// The first times recorded since the last call, oldest first.
-    pub fn take_first_time_changes(&self) -> Vec<i64> {
-        lock(&self.retention)
-            .first_time_changes
-            .as_mut()
-            .map(std::mem::take)
-            .unwrap_or_default()
+    /// The first times recorded since the last take, oldest first, for `by`: none for a sender while a receiver takes
+    /// them (it sends both halves).
+    pub fn take_first_time_changes(&self, by: Taker) -> Vec<i64> {
+        let mut r = lock(&self.retention);
+        if by == Taker::Sender && r.takers & Taker::Receiver as u8 != 0 {
+            return Vec::new();
+        }
+        std::mem::take(&mut r.first_time_changes)
     }
 
     /// This host's `rrdctx.{contexts,instances,metrics}_count` and `collected.*_count`, which C keeps as counters of

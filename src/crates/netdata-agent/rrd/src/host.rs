@@ -12,7 +12,7 @@ use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatter
 use crate::chart::{self, Charts};
 use crate::clock::now_realtime_s;
 use crate::contexts::Metric;
-use crate::contexts::{self, Contexts};
+use crate::contexts::{self, Contexts, Taker};
 use crate::index::Index;
 use crate::labels::Labels;
 use crate::mode::DbMode;
@@ -322,7 +322,7 @@ pub mod pending_flags {
 /// read it.
 /// `RRDHOST_FLAG_VIRTUAL_HOST` and `RRDHOST_FLAG_COLLECTOR_ONLINE`, kept in one word: C clears them in one step, so a
 /// status read never sees one without the other.
-mod local_flags {
+pub(crate) mod local_flags {
     /// A vnode this agent's plugins collect.
     pub const VIRTUAL: u8 = 1 << 0;
     /// The host's collector (this agent, a receiver, a plugin) is collecting it.
@@ -1251,6 +1251,11 @@ impl Host {
         self.is_local() || (self.collector_online() && !self.is_orphan())
     }
 
+    /// The `local_flags` in one load, as C's status reads its `flags` once.
+    pub(crate) fn local_flags(&self) -> u8 {
+        self.local.load(Ordering::Acquire)
+    }
+
     /// `rrdhost_is_virtual()`: a vnode this agent's plugins collect.
     pub fn is_virtual(&self) -> bool {
         self.local.load(Ordering::Acquire) & local_flags::VIRTUAL != 0
@@ -1657,7 +1662,7 @@ impl Host {
         self.stamp_health_iteration();
         self.orphan
             .store(true, std::sync::atomic::Ordering::Release);
-        self.contexts.record_first_time_changes(false);
+        self.contexts.record_first_time_changes(Taker::Receiver, false);
         // stream_path_child_disconnected()
         self.replace_stream_path(Vec::new());
         self.replication_reset();

@@ -208,6 +208,9 @@ fn worker(hosts: &Arc<Hosts>) -> Worker {
             hosts: Arc::clone(hosts),
             update_every: 1,
             history: 4096,
+            replication: true,
+            replication_period: 86400,
+            replication_step: 3600,
             attach_sender: Arc::new(|_| {}),
         },
         filename: "x.plugin".into(),
@@ -269,6 +272,19 @@ fn a_run_ending_in_a_hang_up_sends_no_quit() {
     // a run without data counts a failure
     let ((count, _), _) = run(&mut w, b"", true);
     assert_eq!((count, w.successful_collections, w.serial_failures), (0, 1, 1));
+}
+
+/// The run's end lets the vnodes it defined go (C's `pluginsd_process()` after its counters): both flags cleared.
+#[test]
+fn a_runs_end_takes_its_vnodes_offline() {
+    const VNODE: &str = "5a1e0000-0000-4000-8000-0000000000d1";
+    let hosts = hosts();
+    let mut w = worker(&hosts);
+    let says = format!("HOST_DEFINE {VNODE} v1\nHOST_DEFINE_END\n");
+    let ((count, _), _) = run(&mut w, says.as_bytes(), true);
+    assert_eq!(count, 0);
+    let v = hosts.find_by_guid(VNODE).expect("defined");
+    assert_eq!((v.is_virtual(), v.collector_online(), v.is_online()), (false, false, false));
 }
 
 /// A refused line ends the run with QUIT (4 bytes, no newline); so does the thread's cancellation, after C's record.

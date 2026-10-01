@@ -216,13 +216,17 @@ enum Mode {
 }
 
 /// What a plugin's parser needs to define vnodes (`pluginsd_host_define_end()`): the hosts, the configured `[db]
-/// update every` and history a host's update compares, and how a new vnode gets its sender (the daemon's connector,
-/// which this crate does not know).
+/// update every` and history a host's update compares and the replication settings (`stream_receive.replication`) an
+/// archived vnode takes back, and how a new vnode gets its sender (the daemon's connector, which this crate does not
+/// know).
 #[derive(Clone)]
 pub struct PluginHosts {
     pub hosts: Arc<Hosts>,
     pub update_every: i64,
     pub history: i64,
+    pub replication: bool,
+    pub replication_period: i64,
+    pub replication_step: i64,
     pub attach_sender: AttachSender,
 }
 
@@ -251,8 +255,8 @@ pub struct Parser {
     /// `parser->user.vnodes`: the vnodes this plugin's run defined or collected (a vnode's period before it is stale is
     /// always 0 in C, D145.1, so their last-seen times are not kept).
     vnodes: Vec<Arc<Host>>,
-    /// The host the chart in scope belongs to: a plugin's scope host may move while its scope chart stays (C's
-    /// `st->rrdhost`).
+    /// The host the chart in scope belongs to, kept by a plugin's parser only: its HOST may move the parser's host
+    /// while its scope chart stays (C's `st->rrdhost`).
     scope_host: Option<Arc<Host>>,
     /// `parser->user.host` is NULL: a claim of a vnode by HOST failed (the line ends the run).
     host_lost: bool,
@@ -653,7 +657,7 @@ impl Parser {
         self.clabel_changed = false;
     }
 
-    /// The host of the chart in scope (`st->rrdhost`).
+    /// The host of the chart in scope (`st->rrdhost`); for a stream, the parser's host.
     fn scope_host(&self) -> &Arc<Host> {
         self.scope_host.as_ref().unwrap_or(&self.host)
     }
@@ -680,7 +684,10 @@ impl Parser {
         self.clear_scope_with(keyword, true, Some(chart));
         chart.receiver().pos = 0;
         self.scope = Some(Arc::clone(chart));
-        self.scope_host = Some(Arc::clone(&self.host));
+        // only a plugin's HOST switches the parser's host under a chart (a stream's host is its chart's)
+        if let Mode::Plugin { .. } = self.mode {
+            self.scope_host = Some(Arc::clone(&self.host));
+        }
         self.scope_changed();
         true
     }
@@ -1407,9 +1414,9 @@ impl Parser {
                     &wanted,
                     hosts.update_every,
                     hosts.history,
-                    wanted.replication_enabled,
-                    wanted.replication_period,
-                    wanted.replication_step,
+                    hosts.replication,
+                    hosts.replication_period,
+                    hosts.replication_step,
                 )
             },
         );
@@ -1785,6 +1792,8 @@ impl Parser {
         let tv_usec = w.get(2);
         let pending_next = w.get(3).is_some_and(|p| !p.is_empty());
         let chart = self.require_scope("END", "BEGIN")?;
+        // the chart is done on its own host (`st->rrdhost`), which a plugin's HOST may have switched away from
+        let chart_host = self.scope_host.clone();
         self.clear_scope("END");
         self.data_collections_count += 1;
         // D116.2: C fatal()s on a collection inside an open forwarded block; the block is closed and committed first,
@@ -1807,7 +1816,7 @@ impl Parser {
             Mode::Plugin { .. } => BufferSource::Thread,
         };
         collection::timed_done(
-            &self.host,
+            chart_host.as_ref().unwrap_or(&self.host),
             &chart,
             tv,
             pending_next,

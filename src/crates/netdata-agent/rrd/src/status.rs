@@ -1,7 +1,7 @@
 //! A host's status (`rrdhost_status()` with `RRDHOST_STATUS_BASIC`, `src/database/rrdhost-status.c`): whether its
 //! database is queryable, whether it is live, and what feeds it. Only the fields this agent reports so far.
 
-use crate::host::Host;
+use crate::host::{Host, local_flags};
 
 /// `RRDHOST_DB_STATUS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,9 +138,14 @@ impl Host {
     /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_BASIC)`: a host that is not online is archived when no receiver
     /// attached to it since the agent started (one loaded from the metadata database), else offline.
     pub fn status_basic(&self, now: i64) -> HostStatus {
+        // C's one `flags` load: the type and the online state agree while a vnode's run ends
+        let flags = self.local_flags();
+        let is_virtual = flags & local_flags::VIRTUAL != 0;
+        let is_local = self.is_localhost() || is_virtual;
+        let collector_online = flags & local_flags::COLLECTOR_ONLINE != 0;
         // has_receiver: a host that is not local, with a receiver while its collector is online
-        let attached = !self.is_local() && self.collector_online() && self.receiver().is_some();
-        let online = self.is_online();
+        let attached = !is_local && collector_online && self.receiver().is_some();
+        let online = is_local || (collector_online && !self.is_orphan());
         let (first_time_s, mut last_time_s) = self.contexts().retention();
         if online {
             last_time_s = now;
@@ -162,7 +167,7 @@ impl Host {
             }
         } else if db_status == DbStatus::Initializing {
             IngestStatus::Initializing
-        } else if self.is_local() {
+        } else if is_local {
             IngestStatus::Online
         } else if self.replicating_charts() > 0 || !self.contexts().any_metric_collected() {
             IngestStatus::Replicating
@@ -180,7 +185,7 @@ impl Host {
                 IngestType::Localhost
             } else if attached {
                 IngestType::Child
-            } else if self.is_virtual() {
+            } else if is_virtual {
                 IngestType::Virtual
             } else {
                 IngestType::Archived

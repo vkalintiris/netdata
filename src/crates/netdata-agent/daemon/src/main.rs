@@ -637,41 +637,39 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         .with_db_rotation(db_rotation)
         .with_backfill(backfill),
     );
-    let localhost = Host::with_storage(
-        &machine_guid,
-        true,
-        HostInfo {
-            hostname: conf.hostname.clone(),
-            registry_hostname: registry_hostname.clone(),
-            os: "linux".to_string(),
-            timezone: tz.current().name.clone(),
-            abbrev_timezone: tz.current().abbrev.clone(),
-            utc_offset: tz.current().utc_offset,
-            program_name: "netdata".to_string(),
-            program_version: build::NETDATA_VERSION.to_string(),
-            update_every: db.update_every,
-            db_mode: db.mode,
-            history_entries: align_entries_to_pagesize(
-                db.mode,
-                db.history_entries,
-                system.page_size,
-            ),
-            // no health without a database
-            health_enabled: health_enabled && db.mode != DbMode::None,
-            system_info,
-            replication_enabled: false,
-            replication_period: 0,
-            replication_step: 0,
-            stream_send: StreamSend::new(
-                stream_conf.send.enabled,
-                &stream_conf.send.destination,
-                &stream_conf.send.api_key,
-                &stream_conf.send.send_charts_matching,
-            ),
-            cache_dir: Some(conf.dirs.cache.clone()),
-        },
-        &storage,
-    );
+    let mut localhost_info = HostInfo {
+        hostname: conf.hostname.clone(),
+        registry_hostname: registry_hostname.clone(),
+        os: "linux".to_string(),
+        timezone: tz.current().name.clone(),
+        abbrev_timezone: tz.current().abbrev.clone(),
+        utc_offset: tz.current().utc_offset,
+        program_name: "netdata".to_string(),
+        program_version: build::NETDATA_VERSION.to_string(),
+        update_every: db.update_every,
+        db_mode: db.mode,
+        history_entries: align_entries_to_pagesize(
+            db.mode,
+            db.history_entries,
+            system.page_size,
+        ),
+        // no health without a database
+        health_enabled: health_enabled && db.mode != DbMode::None,
+        system_info,
+        replication_enabled: false,
+        replication_period: 0,
+        replication_step: 0,
+        stream_send: StreamSend::new(
+            stream_conf.send.enabled,
+            &stream_conf.send.destination,
+            &stream_conf.send.api_key,
+            &stream_conf.send.send_charts_matching,
+        ),
+        cache_dir: Some(conf.dirs.cache.clone()),
+    };
+    // rrd_init() creates localhost with the children's replication settings too, which its vnodes copy (D146.1)
+    localhost_info.set_replication(stream_conf.receive.enabled, stream_conf.receive.period, stream_conf.receive.step);
+    let localhost = Host::with_storage(&machine_guid, true, localhost_info, &storage);
     // sql_load_node_id() in rrdhost_create(), before the host's record
     let host_id = netdata_agent_text::parse::uuid_parse_flexi(machine_guid.as_bytes());
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
@@ -790,6 +788,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     netdata_agent_streaming::sender::Sender::attach(hosts.localhost(), &connector);
     // stream_conf_is_parent() and stream_conf_is_child(), which PULSE reads
     let (stream_is_parent, stream_is_child) = (stream_conf.is_parent, stream_conf.send.enabled);
+    // stream_receive.replication, which a vnode revived from its archived state takes
+    let receive_replication = stream_conf.receive;
     // [db] replication threads, which REPLAY[1] starts
     let replication_threads = stream_conf.send.replication_threads.max(1) as usize;
     // netdata_ssl_validate_certificate_sender, which the web server's thread reads
@@ -983,6 +983,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 hosts: Arc::clone(&hosts),
                 update_every: i64::from(db.update_every),
                 history: db.history_entries,
+                replication: receive_replication.enabled,
+                replication_period: receive_replication.period,
+                replication_step: receive_replication.step,
                 // a vnode streams through the connector localhost uses, as a receiver's host does
                 attach_sender: {
                     let connector = Arc::clone(&connector);

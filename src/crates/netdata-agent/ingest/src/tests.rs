@@ -1574,6 +1574,7 @@ fn the_collection_lock_spans_a_block() {
 // ---- the proxy (milestone 7 commit 8f, D117) ----
 
 use netdata_agent_rrd::host::{StreamSend, sender_flags};
+use netdata_agent_rrd::contexts::Taker;
 use netdata_agent_rrd::testing::Recorder;
 use netdata_agent_rrd::upstream::{Traffic, Upstream};
 
@@ -1855,7 +1856,7 @@ fn a_vnodes_retention_changes_go_up_while_collected() {
     let r = Arc::new(Recorder::with_capabilities(caps::PATHS));
     v.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
     v.sender_flags_set(sender_flags::READY_4_METRICS);
-    v.contexts().record_first_time_changes(true);
+    v.contexts().record_first_time_changes(Taker::Sender, true);
     let mut p = parser(&v);
     assert!(feed_all(&mut p, &DEFINE).iter().all(|&ok| ok));
     let collect = |p: &mut Parser, t: i64| {
@@ -1885,7 +1886,7 @@ fn a_vnodes_retention_changes_go_up_while_collected() {
     r.take();
     stream_path::send_retention_changes_to_parent(&v, &localhost);
     assert!(r.take().is_empty(), "its collector is offline");
-    assert!(v.contexts().take_first_time_changes().is_empty(), "drained");
+    assert!(v.contexts().take_first_time_changes(Taker::Sender).is_empty(), "drained");
 }
 
 /// Localhost's first-time changes go up from its sender's stream thread (D120): each in a path of its own with the
@@ -1896,7 +1897,7 @@ fn localhosts_retention_changes_go_up() {
     let h = named_host("parity-child", "5a1e0000-0000-4000-8000-0000000000c6", true);
     let r = Arc::new(Recorder::with_capabilities(caps::PATHS));
     h.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
-    h.contexts().record_first_time_changes(true);
+    h.contexts().record_first_time_changes(Taker::Sender, true);
     let mut p = parser(&h);
     assert!(feed_all(&mut p, &DEFINE).iter().all(|&ok| ok));
     let collect = |p: &mut Parser, chart: &str, t: i64| {
@@ -2015,12 +2016,20 @@ fn plugin_hosts() -> Arc<Hosts> {
 }
 
 fn plugin_parser(hosts: &Arc<Hosts>) -> Parser {
+    plugin_parser_attaching(hosts, Arc::new(|_| {}))
+}
+
+/// A plugin's parser whose vnodes get their senders from `attach_sender`.
+fn plugin_parser_attaching(hosts: &Arc<Hosts>, attach_sender: AttachSender) -> Parser {
     Parser::plugin(
         PluginHosts {
             hosts: Arc::clone(hosts),
             update_every: 1,
             history: 4096,
-            attach_sender: Arc::new(|_| {}),
+            replication: true,
+            replication_period: 86400,
+            replication_step: 3600,
+            attach_sender,
         },
         Config {
             capabilities: 0,
@@ -2348,23 +2357,11 @@ const VNODE: &str = "5a1e0000-0000-4000-8000-0000000000d1";
 
 fn vnode_parser(hosts: &Arc<Hosts>, attached: &Arc<std::sync::atomic::AtomicUsize>) -> Parser {
     let attached = Arc::clone(attached);
-    Parser::plugin(
-        PluginHosts {
-            hosts: Arc::clone(hosts),
-            update_every: 1,
-            history: 4096,
-            attach_sender: Arc::new(move |_| {
-                attached.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }),
-        },
-        Config {
-            capabilities: 0,
-            update_every: PLUGIN_UPDATE_EVERY,
-            page_size: 4096,
-            now: || (PLUGIN_NOW.with(std::cell::Cell::get), 0),
-            gap_when_lost_iterations_above: 3,
-        },
-        "difftest.plugin".into(),
+    plugin_parser_attaching(
+        hosts,
+        Arc::new(move |_| {
+            attached.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }),
     )
 }
 
@@ -2489,6 +2486,7 @@ fn a_definition_evicts_a_child_streaming_its_guid() {
         )]
     );
     assert_eq!((child.is_virtual(), child.collector_online(), child.receiver().is_none()), (true, true, true));
+    assert_eq!((child.is_orphan(), child.is_online()), (false, true));
 }
 
 /// The vnode keywords' refusals, each C's disable: the plugin is not started again.
@@ -2515,3 +2513,163 @@ fn vnode_keywords_refuse_as_c() {
         assert_eq!(plugin_run(&lines), (false, false, vec![record]), "{lines:?}");
     }
 }
+
+/// D146.1: a vnode is created with localhost's replication settings (C passes both `stream_receive.replication`), and
+/// one revived from its archived state takes the configured ones, capped for its own ring (`rrdhost_update()`).
+#[test]
+fn a_vnodes_replication_is_cs() {
+    const ARCHIVED: &str = "5a1e0000-0000-4000-8000-0000000000d2";
+    let hosts = plugin_hosts();
+    let archived = HostInfo {
+        history_entries: 100_000,
+        replication_enabled: false,
+        replication_period: 0,
+        replication_step: 0,
+        ..named_host("a1", ARCHIVED, false).info()
+    };
+    hosts.add_archived(ARCHIVED, archived, |_| {}).clear_pending_context_load();
+    let attached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut p = vnode_parser(&hosts, &attached);
+    feed_ok(&mut p, &[
+        format!("HOST_DEFINE {VNODE} v1"),
+        "HOST_DEFINE_END".into(),
+        format!("HOST_DEFINE {ARCHIVED} a1"),
+        "HOST_DEFINE_END".into(),
+    ]);
+    let replication = |host: &Host| {
+        let info = host.info();
+        (info.replication_enabled, info.replication_period, info.replication_step)
+    };
+    // localhost's: the configured period capped for its ring of 4096 entries a second
+    assert_eq!(replication(hosts.localhost()), (true, 4096, 3600));
+    assert_eq!(replication(&hosts.find_by_guid(VNODE).unwrap()), (true, 4096, 3600));
+    assert_eq!(replication(&hosts.find_by_guid(ARCHIVED).unwrap()), (true, 86400, 3600));
+}
+
+/// R60-2: END completes the chart in scope on its own host (`st->rrdhost`), after a HOST moved the parser's: its
+/// definition goes up through localhost's sender, not the vnode's.
+#[test]
+fn end_completes_the_chart_on_its_own_host() {
+    let mut info = localhost().info();
+    info.stream_send = StreamSend::new(true, "parent:19999", "key", "*");
+    let hosts = Arc::new(Hosts::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, info)));
+    let up = |host: &Host| {
+        let r = Arc::new(Recorder::with_capabilities(PARENT));
+        host.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
+        host.sender_flags_set(sender_flags::ADDED | sender_flags::CONNECTED | sender_flags::READY_4_METRICS);
+        r
+    };
+    let lh = up(hosts.localhost());
+    let mut p = plugin_parser(&hosts);
+    feed_ok(&mut p, &[format!("HOST_DEFINE {VNODE} v1"), "HOST_DEFINE_END".into()]);
+    let v = up(&hosts.find_by_guid(VNODE).unwrap());
+    feed_ok(&mut p, &[
+        "HOST localhost".into(),
+        "CHART 'l.a' '' t u f c line 1000 1".into(),
+        "DIMENSION 'd' '' absolute 1 1".into(),
+    ]);
+    lh.take();
+    feed_ok(&mut p, &["BEGIN 'l.a'".into(), format!("HOST {VNODE}"), "SET 'd' = 7".into(), "END".into()]);
+    let commits = lh.take();
+    assert!(
+        matches!(&commits[..], [(Traffic::Metadata, definition)] if definition.starts_with("CHART SLOT:0x1 \"l.a\" ")),
+        "{commits:?}"
+    );
+    assert_eq!(v.take(), []);
+}
+
+/// `pluginsd_host_claim_as_local_vnode()` failing (a receiver that does not leave): at HOST_DEFINE_END the vnode is
+/// let go, at a re-enabling HOST it stays flagged and the parser has no host (the run frame shows no node); both
+/// retry the plugin, with C's record.
+#[test]
+fn a_claim_that_fails_retries_the_plugin() {
+    use netdata_agent_rrd::host::{Attach, ReceiverLink, ReceiverSlot};
+    let stuck = || Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+    let refusal = |keyword: &str| {
+        (
+            Priority::Err,
+            format!(
+                "PLUGINSD: {keyword}: host 'v1' (machine guid {VNODE}) is collected locally as a vnode, but its \
+                 streaming receiver could not be stopped - not collecting into it"
+            ),
+        )
+    };
+    // the parser's records (the receiver's own "takes too long to stop" comes first, as C's)
+    let errors = |records: Vec<netdata_agent_log::Captured>| -> Vec<(Priority, String)> {
+        records
+            .into_iter()
+            .filter(|r| r.priority == Priority::Err && r.source == Source::Daemon)
+            .map(|r| (r.priority, r.message.unwrap_or_default()))
+            .filter(|(_, m)| m.starts_with("PLUGINSD: ") && !m.starts_with("PLUGINSD: parser_action"))
+            .collect()
+    };
+
+    let hosts = plugin_hosts();
+    let child = hosts.find_or_create(VNODE, DbMode::Ram, || named_host("v1", VNODE, false).info(), |_| {}).unwrap();
+    let slot = stuck();
+    assert_eq!(child.set_receiver(Arc::clone(&slot)), Attach::Attached);
+    let mut p = plugin_parser(&hosts);
+    let (results, records) =
+        netdata_agent_log::capture(|| feed_all(&mut p, &[&format!("HOST_DEFINE {VNODE} v1"), "HOST_DEFINE_END"]));
+    assert_eq!(results, [true, false]);
+    assert_eq!(errors(records), [refusal("HOST_DEFINE_END")]);
+    assert_eq!((p.retry, p.enabled), (true, true));
+    assert_eq!((child.is_virtual(), child.receiver().is_some()), (false, true));
+    child.clear_receiver(&slot, 0);
+
+    let hosts = plugin_hosts();
+    let mut p = plugin_parser(&hosts);
+    let frame = p.run_frame();
+    feed_ok(&mut p, &[format!("HOST_DEFINE {VNODE} v1"), "HOST_DEFINE_END".into()]);
+    let v = hosts.find_by_guid(VNODE).unwrap();
+    // another plugin's run end, then a child streams its GUID
+    v.virtual_offline();
+    let slot = stuck();
+    assert_eq!(v.set_receiver(Arc::clone(&slot)), Attach::Attached);
+    let (results, records) = netdata_agent_log::capture(|| feed_all(&mut p, &[&format!("HOST {VNODE}")]));
+    assert_eq!(results, [false]);
+    assert_eq!(errors(records), [refusal("HOST")]);
+    assert_eq!((p.retry, p.enabled), (true, true));
+    // flagged, as C leaves it; online is the receiver's
+    assert_eq!((v.is_virtual(), v.collector_online(), v.receiver().is_some()), (true, true, true));
+    let ((), records) = netdata_agent_log::capture(|| nd_log!(Source::Daemon, Priority::Err, "x"));
+    assert_eq!(records.into_iter().next().unwrap().fields, []);
+    drop(p);
+    drop(frame);
+    v.clear_receiver(&slot, 0);
+}
+
+/// The run frame names the parser's host as HOST_DEFINE_END and HOST move it; a scope clear names the chart's own
+/// host in its text while the frame names the parser's (C's `st->rrdhost` and `parser->user.host`).
+#[test]
+fn the_run_frame_follows_the_parsers_host() {
+    let hosts = plugin_hosts();
+    let mut p = plugin_parser(&hosts);
+    let frame = p.run_frame();
+    let node = || {
+        let ((), records) = netdata_agent_log::capture(|| nd_log!(Source::Daemon, Priority::Err, "x"));
+        records.into_iter().next().unwrap().fields.into_iter().find(|(f, _)| *f == Field::NidlNode).map(|(_, v)| v)
+    };
+    assert_eq!(node().as_deref(), Some("parent"));
+    feed_ok(&mut p, &[format!("HOST_DEFINE {VNODE} v1"), "HOST_DEFINE_END".into()]);
+    assert_eq!(node().as_deref(), Some("v1"));
+    feed_ok(&mut p, &[
+        "HOST localhost".into(),
+        "CHART 'l.a' '' t u f c line 1000 1".into(),
+        "DIMENSION 'd' '' absolute 1 1".into(),
+        "BEGIN 'l.a'".into(),
+    ]);
+    assert_eq!(node().as_deref(), Some("parent"));
+    feed_ok(&mut p, &[format!("HOST {VNODE}")]);
+    assert_eq!(node().as_deref(), Some("v1"));
+    hosts.localhost().charts().find("l.a", true).unwrap().set_scope_tid(netdata_agent_log::tid() + 1);
+    let ((), records) = netdata_agent_log::capture(|| drop(p));
+    let record = records
+        .into_iter()
+        .find(|r| r.message.as_deref().is_some_and(|m| m.contains("attempted to clear collector_tid")))
+        .expect("the non-owner record");
+    assert!(record.message.unwrap().contains("'host:parent/chart:l.a/'"));
+    assert_eq!(record.fields.iter().find(|(f, _)| *f == Field::NidlNode).map(|(_, v)| v.as_str()), Some("v1"));
+    drop(frame);
+}
+

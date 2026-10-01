@@ -10,6 +10,7 @@ use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_tls::Link;
 use netdata_agent_ingest::stream_path;
 use netdata_agent_pluginsd_proto::emit::stream as emit;
+use netdata_agent_rrd::contexts::Taker;
 use netdata_agent_rrd::host::{Host, sender_flags};
 use netdata_agent_rrd::labels::SRC_AUTO;
 use netdata_agent_rrd::upstream;
@@ -70,16 +71,14 @@ impl Sender {
         self.flush_buffer(&mut self.out());
     }
 
-    /// `stream_sender_on_ready_to_dispatch()`: ready, then the host's metadata, each its own commit; `records_retention`
-    /// starts recording the host's first-time changes for its parent.
-    pub(crate) fn on_ready_to_dispatch(&self, host: &Host, capabilities: u32, records_retention: bool) {
+    /// `stream_sender_on_ready_to_dispatch()`: ready, then the host's metadata, each its own commit; the sender takes
+    /// the host's first-time changes for its parent from now on.
+    pub(crate) fn on_ready_to_dispatch(&self, host: &Host, capabilities: u32) {
         nd_log!(Source::Daemon, Priority::Debug, "STREAM SND '{}': running ready-to-dispatch hooks...", host.hostname());
         host.sender_flags_set(sender_flags::READY_4_METRICS);
-        // C's gate is open from here: a local host's first-time changes owe its parent a path (D120; a proxied host's
-        // belong to its receiver); this hook's own path carries the retention of now
-        if records_retention {
-            host.contexts().record_first_time_changes(true);
-        }
+        // C's gate is open from here: the host's first-time changes may owe its parent a path (D120, D146.3; the
+        // drain's gates decide, as C's at the change); this hook's own path carries the retention of now
+        host.contexts().record_first_time_changes(Taker::Sender, true);
         upstream::send_host_variables(host);
         if capabilities & caps::PATHS != 0
             && let Some(localhost) = self.connector.localhost()
@@ -98,7 +97,7 @@ impl Sender {
 /// The receiver is checked before the URL is read.
 pub(crate) fn send_node_and_claim_id_to_child(host: &Host, env: &Env) {
     let node_id = host.node_id();
-    if host.is_localhost() || node_id == [0; 16] {
+    if host.is_local() || node_id == [0; 16] {
         return;
     }
     let Some(slot) = host.receiver() else {

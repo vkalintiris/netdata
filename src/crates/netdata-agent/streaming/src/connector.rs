@@ -671,6 +671,7 @@ pub(crate) mod tests {
     use std::time::Instant;
 
     use netdata_agent_evloop::Pool;
+    use netdata_agent_rrd::contexts::Taker;
     use netdata_agent_rrd::host::{Attach, HostInfo, ReceiverSlot, StreamSend};
     use netdata_agent_rrd::mode::DbMode;
 
@@ -958,25 +959,35 @@ pub(crate) mod tests {
         assert_eq!(host.contexts().retention().0, t - 1);
     }
 
-    /// `stream_sender_on_ready_to_dispatch()` opens C's gate for localhost's retention paths: its first-time changes
-    /// are recorded from then on (D120); a proxied host's recorder stays its receiver's, its pending changes kept.
+    /// `stream_sender_on_ready_to_dispatch()` opens C's gate for a host's retention paths: its first-time changes
+    /// are taken from then on (D120, D146.3), localhost's or a vnode's even when it was defined after the READY; a
+    /// proxied host's stay its receiver's, its pending changes kept.
     #[test]
-    fn the_ready_hook_records_localhosts_first_time_changes() {
+    fn the_ready_hook_records_a_hosts_first_time_changes() {
         let (_pool, c) = connector();
         let local = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c7", true, info("127.0.0.1:1", "key")));
         let s = Sender::attach(&local, &c).expect("created");
         collect_first_at(&local, "t.a", 1_790_000_000);
-        assert!(local.contexts().take_first_time_changes().is_empty(), "not ready");
-        s.on_ready_to_dispatch(&local, 0, local.is_local());
+        assert!(local.contexts().take_first_time_changes(Taker::Sender).is_empty(), "not ready");
+        s.on_ready_to_dispatch(&local, 0);
         collect_first_at(&local, "t.b", 1_789_999_990);
-        assert_eq!(local.contexts().take_first_time_changes(), [1_789_999_989]);
+        assert_eq!(local.contexts().take_first_time_changes(Taker::Sender), [1_789_999_989]);
+
+        // a vnode its plugin defines once the sender is ready
+        let vnode = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c9", false, info("127.0.0.1:1", "key")));
+        let s = Sender::attach(&vnode, &c).expect("created");
+        s.on_ready_to_dispatch(&vnode, 0);
+        vnode.set_virtual();
+        collect_first_at(&vnode, "t.a", 1_790_000_000);
+        assert_eq!(vnode.contexts().take_first_time_changes(Taker::Sender), [1_789_999_999]);
 
         let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c8", false, info("127.0.0.1:1", "key")));
         let s = Sender::attach(&host, &c).expect("created");
-        host.contexts().record_first_time_changes(true);
+        host.contexts().record_first_time_changes(Taker::Receiver, true);
         collect_first_at(&host, "t.a", 1_790_000_000);
-        s.on_ready_to_dispatch(&host, 0, host.is_local());
-        assert_eq!(host.contexts().take_first_time_changes(), [1_789_999_999], "kept for the receiver");
+        s.on_ready_to_dispatch(&host, 0);
+        assert!(host.contexts().take_first_time_changes(Taker::Sender).is_empty(), "the receiver's");
+        assert_eq!(host.contexts().take_first_time_changes(Taker::Receiver), [1_789_999_999], "kept for the receiver");
     }
 
     /// A host whose sender was freed is refused at the connector with C's record, and nothing is queued.

@@ -5,6 +5,7 @@
 
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_pluginsd_proto::caps;
+use netdata_agent_rrd::contexts::Taker;
 use netdata_agent_rrd::host::{Host, agent_event_medians_us, netdata_start_time};
 use netdata_agent_rrd::upstream::Traffic;
 use netdata_agent_rrd::stream_path::{
@@ -299,10 +300,10 @@ pub fn send_to_parent(host: &Host, localhost: &Host, first_time_t: Option<i64>) 
     up.commit(&message(host, localhost, first_time_t), Traffic::Metadata);
 }
 
-/// `stream_path_retention_updated()` for a local host (its child half returns): each first time recorded while its
-/// sender is ready goes up in a path of its own, from the sender's stream thread (D120).
+/// `stream_path_retention_updated()` without a receiver (its child half returns): each first time recorded while the
+/// host's sender is ready goes up in a path of its own, from the sender's stream thread (D120, D146.3).
 pub fn send_retention_changes_to_parent(host: &Host, localhost: &Host) {
-    for first_time_s in host.contexts().take_first_time_changes() {
+    for first_time_s in host.contexts().take_first_time_changes(Taker::Sender) {
         send_to_parent(host, localhost, Some(first_time_s));
     }
 }

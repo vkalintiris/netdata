@@ -19,6 +19,7 @@ use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_pluginsd_proto::{LINE_MAX, LineReader};
 use netdata_agent_rrd::chart::flags;
 use netdata_agent_rrd::collection;
+use netdata_agent_rrd::contexts::Taker;
 use netdata_agent_rrd::host::{Attach, Host, HostInfo, Hosts, ReceiverLink, ReceiverSlot, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 use netdata_agent_sys::now_monotonic_usec;
@@ -964,7 +965,7 @@ impl StreamWorker {
                 .attached
                 .host
                 .contexts()
-                .record_first_time_changes(true);
+                .record_first_time_changes(Taker::Receiver, true);
             use netdata_agent_rrd::pulse::host_status::{RCV_REPLICATION_WAIT, RCV_RUNNING};
             child
                 .attached
@@ -1101,7 +1102,7 @@ impl StreamWorker {
             }
             // stream_path_retention_updated() from the RRDCONTEXT thread: its messages go out on this tick (D46
             // point 4), each with the retention start of its change
-            let changes = child.attached.host.contexts().take_first_time_changes();
+            let changes = child.attached.host.contexts().take_first_time_changes(Taker::Receiver);
             // and what the connector thread owed the child (D106.5)
             let owed = child.attached.slot.take_to_child();
             if !changes.is_empty() || !owed.is_empty() {

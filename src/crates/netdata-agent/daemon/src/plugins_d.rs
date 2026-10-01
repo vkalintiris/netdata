@@ -367,8 +367,10 @@ impl Worker {
 
     fn main(mut self) {
         self.state.running.store(true, Ordering::Release);
-        let hostname = self.hosts.hosts.localhost().hostname();
+        // read at each use, as C's rrdhost_hostname(cd->host): a plugin defining localhost's GUID renames it
+        let localhost = Arc::clone(self.hosts.hosts.localhost());
         while self.running() {
+            let hostname = localhost.hostname();
             let Some(mut popen) = Popen::run_argv(&[b"/bin/sh".as_slice(), b"-c", &self.cmd]) else {
                 netdata_log_error!("PLUGINSD: 'host:{hostname}', cannot popen(\"{}\", \"r\").", text(&self.cmd));
                 break;
@@ -394,6 +396,7 @@ impl Worker {
                     (0, false)
                 }
             };
+            let hostname = localhost.hostname();
             nd_log!(
                 Source::Collector,
                 Priority::Warning,

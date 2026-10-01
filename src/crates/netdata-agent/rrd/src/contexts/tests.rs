@@ -253,11 +253,11 @@ fn first_time_changes_are_recorded_while_asked() {
     collect(&chart, T);
     contexts.process_queued();
     assert!(
-        contexts.take_first_time_changes().is_empty(),
+        contexts.take_first_time_changes(Taker::Receiver).is_empty(),
         "nothing recorded before asked"
     );
     let first = contexts.retention().0;
-    contexts.record_first_time_changes(true);
+    contexts.record_first_time_changes(Taker::Receiver, true);
     // a second chart with an older first time widens the host's
     let (older, _) = charts.create(&spec("b", "ctx.b", "Title", 1000));
     older.dim_add("d", None, 1, 1, Algorithm::Absolute);
@@ -265,13 +265,48 @@ fn first_time_changes_are_recorded_while_asked() {
     contexts.process_queued();
     let widened = contexts.retention().0;
     assert!(widened < first, "{widened} < {first}");
-    assert_eq!(contexts.take_first_time_changes(), [widened]);
+    assert_eq!(contexts.take_first_time_changes(Taker::Receiver), [widened]);
     contexts.recalculate_host_retention(flags::REASON_DISCONNECTED_CHILD);
     assert_eq!(contexts.retention().0, widened);
-    assert!(contexts.take_first_time_changes().is_empty());
-    contexts.record_first_time_changes(false);
+    assert!(contexts.take_first_time_changes(Taker::Receiver).is_empty());
+    contexts.record_first_time_changes(Taker::Receiver, false);
     contexts.recalculate_host_retention(flags::REASON_DISCONNECTED_CHILD);
-    assert!(contexts.take_first_time_changes().is_empty());
+    assert!(contexts.take_first_time_changes(Taker::Receiver).is_empty());
+}
+
+/// D146.3: a receiver and a ready sender take the changes independently, each stopping only its own taking; the
+/// sender takes none while a receiver does (it sends both halves), and a receiver starts from none (the host was
+/// offline before it, so C owed nothing).
+#[test]
+fn first_time_changes_have_two_takers() {
+    let (contexts, charts) = setup();
+    let widen = |id: &str, t: i64| {
+        let (chart, _) = charts.create(&spec(id, &format!("ctx.{id}"), "Title", 1000));
+        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        collect(&chart, t);
+        contexts.process_queued();
+        contexts.retention().0
+    };
+    widen("a", T);
+    contexts.record_first_time_changes(Taker::Sender, true);
+    let before_receiver = widen("b", T - 10);
+    assert!(contexts.take_first_time_changes(Taker::Sender) == [before_receiver]);
+    widen("c", T - 20);
+    contexts.record_first_time_changes(Taker::Receiver, true);
+    let with_both = widen("d", T - 30);
+    assert!(contexts.take_first_time_changes(Taker::Sender).is_empty(), "the receiver's");
+    // the sender's disconnect leaves the receiver's taking
+    contexts.record_first_time_changes(Taker::Sender, false);
+    let receiver_only = widen("e", T - 40);
+    assert_eq!(contexts.take_first_time_changes(Taker::Receiver), [with_both, receiver_only]);
+    // the receiver's detach leaves a ready sender's
+    contexts.record_first_time_changes(Taker::Sender, true);
+    contexts.record_first_time_changes(Taker::Receiver, false);
+    let sender_only = widen("f", T - 50);
+    assert_eq!(contexts.take_first_time_changes(Taker::Sender), [sender_only]);
+    contexts.record_first_time_changes(Taker::Sender, false);
+    widen("g", T - 60);
+    assert!(contexts.take_first_time_changes(Taker::Receiver).is_empty(), "nobody takes them");
 }
 
 // ---- loading from SQL (rrdcontext-loading.c) ----
