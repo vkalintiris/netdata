@@ -633,7 +633,10 @@ impl Parser {
             );
             return None;
         };
-        chart.receiver().prd[position] = Some(Arc::clone(&dim));
+        // the lock was dropped for the lookup: a chart freed meanwhile has no slots left (R55 I5)
+        if let Some(slot) = chart.receiver().prd.get_mut(position) {
+            *slot = Some(Arc::clone(&dim));
+        }
         Some(dim)
     }
 

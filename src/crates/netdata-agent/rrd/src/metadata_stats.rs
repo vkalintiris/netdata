@@ -40,7 +40,7 @@ pub struct TreeCounts {
 pub struct MetadataStats {
     pub nodes_total: u64,
     pub nodes_receiving: u64,
-    /// `RRDHOST_FLAG_STREAM_SENDER_CONNECTED`: the Rust agent has no stream sender yet.
+    /// `RRDHOST_FLAG_STREAM_SENDER_CONNECTED`: hosts whose sender is connected to a parent, online or not.
     pub nodes_sending: u64,
     pub nodes_archived: u64,
     pub metrics: Counts,
@@ -52,12 +52,15 @@ pub struct MetadataStats {
 
 impl Hosts {
     /// `rrdstats_metadata_collect()`: every host counts; the collected counts only of online hosts; a host online
-    /// but localhost receives, one offline is archived.
+    /// but localhost receives, one offline is archived; one whose sender is connected sends.
     pub fn metadata_stats(&self) -> MetadataStats {
         let mut stats = MetadataStats::default();
         let mut ids = HashSet::new();
         for host in self.all() {
             stats.nodes_total += 1;
+            if host.sender_flags() & crate::host::sender_flags::CONNECTED != 0 {
+                stats.nodes_sending += 1;
+            }
             let tree = host.contexts().counts(|id| {
                 if !ids.contains(id) {
                     ids.insert(id.to_string());

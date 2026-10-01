@@ -1949,7 +1949,8 @@ mod tests {
     }
 
     /// `rrdstats_metadata_collect()`: every host is a node, an offline one archived; the collected counts only of
-    /// online hosts; a context id shared by two hosts is one unique context.
+    /// online hosts; a context id shared by two hosts is one unique context; a connected sender sends, whether its
+    /// host is online or not (R55 M1).
     #[test]
     fn counts_the_hosts_as_c() {
         use crate::chart::Algorithm;
@@ -1966,13 +1967,15 @@ mod tests {
             }
             host.contexts().worker_cycle();
         }
+        hosts.localhost().sender_flags_set(sender_flags::CONNECTED);
+        archived.sender_flags_set(sender_flags::CONNECTED | sender_flags::ADDED);
         let one = Counts { collected: 1, available: 2 };
         assert_eq!(
             hosts.metadata_stats(),
             MetadataStats {
                 nodes_total: 2,
                 nodes_receiving: 0,
-                nodes_sending: 0,
+                nodes_sending: 2,
                 nodes_archived: 1,
                 metrics: one,
                 instances: one,
