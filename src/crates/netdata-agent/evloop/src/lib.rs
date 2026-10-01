@@ -70,6 +70,9 @@ pub trait Worker: Send + 'static {
     /// A timer armed with [`Context::add_timer`] expired.
     fn timer(&mut self, _cx: &mut Context<'_>, _timer: TimerId) {}
 
+    /// A token reported with [`Context::report_again`] is due: the worker serves it as the readable source it was.
+    fn reported_again(&mut self, _cx: &mut Context<'_>, _token: Token) {}
+
     /// Called once on the worker's thread when the pool stops, before the thread exits.
     fn stop(&mut self, _cx: &mut Context<'_>) {}
 
@@ -100,7 +103,15 @@ pub struct TimerId(u64);
 pub struct Context<'a> {
     registry: &'a Registry,
     timers: &'a mut Timers,
+    again: &'a mut Again,
     index: usize,
+}
+
+/// The tokens a worker asked to be served again ([`Context::report_again`]), in the order it asked.
+#[derive(Default)]
+struct Again {
+    next: Vec<Token>,
+    queued: HashSet<Token>,
 }
 
 impl Context<'_> {
@@ -122,6 +133,16 @@ impl Context<'_> {
     /// Disarms a timer; a timer that already fired or was cancelled is ignored.
     pub fn cancel_timer(&mut self, timer: TimerId) {
         self.timers.cancel(timer);
+    }
+
+    /// Serves the token again in the next turn ([`Worker::reported_again`]), after that turn's polled events and
+    /// before its messages and timers, unless the poll reports it readable itself; the next poll does not wait. A
+    /// worker that reads once per event and asks again for a source with data left gets C's level-triggered round
+    /// robin (`nd_poll`) on mio's edge-triggered poller (D126.6).
+    pub fn report_again(&mut self, token: Token) {
+        if self.again.queued.insert(token) {
+            self.again.next.push(token);
+        }
     }
 }
 
@@ -533,12 +554,14 @@ fn run_worker<W: Worker>(
     worker: &mut W,
 ) -> Ended<W::Msg> {
     let mut timers = Timers::default();
+    let mut again = Again::default();
     let mut events = Events::with_capacity(EVENTS_CAPACITY);
 
     {
         let mut cx = Context {
             registry: poll.registry(),
             timers: &mut timers,
+            again: &mut again,
             index,
         };
         if worker.start(&mut cx).is_err() {
@@ -552,19 +575,26 @@ fn run_worker<W: Worker>(
             let mut cx = Context {
                 registry: poll.registry(),
                 timers: &mut timers,
+                again: &mut again,
                 index,
             };
             let stop_asked = end_itself(worker, &mut cx, &rx);
             return if stop_asked { Ended::Stopped } else { Ended::Itself(poll, rx) };
         }
-        let timeout = timers
-            .next_deadline()
-            .map(|at| at.saturating_duration_since(Instant::now()));
+        // a token owed a turn: the poll does not wait
+        let timeout = if again.next.is_empty() {
+            timers
+                .next_deadline()
+                .map(|at| at.saturating_duration_since(Instant::now()))
+        } else {
+            Some(std::time::Duration::ZERO)
+        };
         if let Err(err) = poll.poll(&mut events, timeout) {
             if err.kind() != io::ErrorKind::Interrupted {
                 let mut cx = Context {
                     registry: poll.registry(),
                     timers: &mut timers,
+                    again: &mut again,
                     index,
                 };
                 worker.stop(&mut cx);
@@ -575,6 +605,7 @@ fn run_worker<W: Worker>(
         let mut cx = Context {
             registry: poll.registry(),
             timers: &mut timers,
+            again: &mut again,
             index,
         };
 
@@ -583,9 +614,20 @@ fn run_worker<W: Worker>(
             return if stop_asked { Ended::Stopped } else { Ended::Itself(poll, rx) };
         }
 
+        // the tokens owed this turn, served after the polled events; one the poll reports readable is served there
+        let due = std::mem::take(&mut cx.again.next);
+        let mut due_set = std::mem::take(&mut cx.again.queued);
         for event in events.iter() {
             if event.token() != WAKER_TOKEN {
+                if !due_set.is_empty() && (event.is_readable() || event.is_read_closed()) {
+                    due_set.remove(&event.token());
+                }
                 worker.event(&mut cx, event);
+            }
+        }
+        for token in due {
+            if due_set.remove(&token) {
+                worker.reported_again(&mut cx, token);
             }
         }
 
@@ -801,6 +843,74 @@ mod tests {
                 Seen::Timer(0, 103)
             ]
         );
+    }
+
+    /// Reads four bytes per turn and asks for its token again while a read returned data: what it has read so far,
+    /// and the order of what it served (the message last in a turn).
+    struct Sipper {
+        stream: mio::net::UnixStream,
+        read: Arc<Mutex<Vec<u8>>>,
+        served: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    const SOURCE: Token = Token(7);
+
+    impl Sipper {
+        fn sip(&mut self, cx: &mut Context<'_>) {
+            let mut buf = [0u8; 4];
+            match self.stream.read(&mut buf) {
+                Ok(0) => {}
+                Ok(n) => {
+                    self.read.lock().unwrap().extend_from_slice(&buf[..n]);
+                    cx.report_again(SOURCE);
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("read: {e}"),
+            }
+        }
+    }
+
+    impl Worker for Sipper {
+        type Msg = ();
+
+        fn start(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+            cx.registry().register(&mut self.stream, SOURCE, Interest::READABLE)
+        }
+
+        fn event(&mut self, cx: &mut Context<'_>, _event: &Event) {
+            self.served.lock().unwrap().push("event");
+            self.sip(cx);
+        }
+
+        fn reported_again(&mut self, cx: &mut Context<'_>, token: Token) {
+            assert_eq!(token, SOURCE);
+            self.served.lock().unwrap().push("again");
+            self.sip(cx);
+        }
+
+        fn message(&mut self, _cx: &mut Context<'_>, _msg: ()) {
+            self.served.lock().unwrap().push("message");
+        }
+    }
+
+    /// An edge-triggered source read a little at a time is served again until it is empty (one readiness edge, 12
+    /// bytes, three reads), each time after the turn's events and before its messages (D126.6).
+    #[test]
+    fn a_token_reported_again_is_served_until_its_source_is_empty() {
+        let (ours, mut theirs) = mio::net::UnixStream::pair().unwrap();
+        let read = Arc::new(Mutex::new(Vec::new()));
+        let served = Arc::new(Mutex::new(Vec::new()));
+        let mut worker = Some(Sipper { stream: ours, read: Arc::clone(&read), served: Arc::clone(&served) });
+        let pool = Pool::spawn(1, TEST_STACK, |i| format!("SIP[{i}]"), move |_| worker.take().unwrap()).unwrap();
+        theirs.write_all(b"abcdefghijkl").unwrap();
+        wait_for(&read, |r| r.len() == 12);
+        assert_eq!(&*read.lock().unwrap(), b"abcdefghijkl");
+        pool.handle().send(0, ()).unwrap();
+        wait_for(&served, |s| s.contains(&"message"));
+        pool.stop().unwrap();
+        let served = served.lock().unwrap();
+        assert_eq!(served[0], "event");
+        assert!(served[1..].iter().take_while(|s| **s == "again").count() >= 3, "{served:?}");
     }
 
     /// Every thread polls a clone of the same listener, as C web workers do; each connection is accepted by

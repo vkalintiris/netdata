@@ -962,6 +962,20 @@ impl StreamWorker {
             crate::sender::send_node_and_claim_id_to_child(&child.attached.host, child.attached.connector.env());
         }
         self.deliver_owed(cx, index);
+        // C only adds the socket to the poll: the first read is the next turn's (D126.6)
+        cx.report_again(Token(index));
+    }
+
+    /// A child whose last read returned data, served again in a later turn (D126.6): its next read, as a readable
+    /// event's.
+    pub(crate) fn child_again(&mut self, cx: &mut Context<'_>, index: usize) {
+        let Some(child) = self.children.get(index).and_then(Option::as_ref) else {
+            return;
+        };
+        let _frame = records::child_event(&child.frame);
+        if child.attached.slot.stop_requested.load(Ordering::Acquire) {
+            return self.disconnect(cx, index, Reason::DISCONNECT_SIGNALED_TO_STOP);
+        }
         self.receive(cx, index);
     }
 
@@ -1438,7 +1452,9 @@ impl StreamWorker {
     /// line ends the connection. The caller has pushed the child's frame.
     fn receive(&mut self, cx: &mut Context<'_>, index: usize) {
         let mut buf = [0u8; 16384];
-        loop {
+        // C's one read per host before the next (`count = 1`): a read that returned data asks for its turn again,
+        // after the thread's other sources (D126.6)
+        {
             let Some(child) = self.children[index].as_mut() else {
                 return;
             };
@@ -1466,7 +1482,7 @@ impl StreamWorker {
                 Ok(0) => {
                     let reason = failed(child, Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, 0);
                     let _parser = child.parser.log_frame();
-                    return self.disconnect(cx, index, reason);
+                    self.disconnect(cx, index, reason);
                 }
                 Ok(n) => {
                     child.bytes_in += n as u64;
@@ -1534,12 +1550,13 @@ impl StreamWorker {
                     self.send_proxied(cx, index);
                     // service_running(SERVICE_STREAMING) per chunk: once the exit started the rest waits for the
                     // loop's exit path (D110)
-                    if netdata_agent_sys::exit::initiated() {
-                        return;
+                    if self.children[index].is_some() && !netdata_agent_sys::exit::initiated() {
+                        cx.report_again(Token(index));
                     }
                 }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                // C's SOCKET_FULL: another turn
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => cx.report_again(Token(index)),
                 Err(e) => {
                     let reason = if e.kind() == io::ErrorKind::ConnectionReset {
                         Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE
@@ -1548,7 +1565,7 @@ impl StreamWorker {
                     };
                     let reason = failed(child, reason, netdata_agent_log::errno_of(&e));
                     let _parser = child.parser.log_frame();
-                    return self.disconnect(cx, index, reason);
+                    self.disconnect(cx, index, reason);
                 }
             }
         }

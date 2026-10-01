@@ -6,7 +6,7 @@ use std::io;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use netdata_agent_evloop::{Context, Event, TimerId, Worker};
+use netdata_agent_evloop::{Context, Event, TimerId, Token, Worker};
 use netdata_agent_ingest as ingest;
 use netdata_agent_rrd::host::ReceiverSlot;
 
@@ -110,6 +110,14 @@ impl Worker for StreamWorker {
             self.sender_event(cx, token - SENDER_TOKENS, event);
         } else {
             self.child_event(cx, token, event);
+        }
+        self.drain_inline(cx);
+    }
+
+    /// A child token due again (D126.6): its next read; senders drain to WouldBlock and never ask.
+    fn reported_again(&mut self, cx: &mut Context<'_>, token: Token) {
+        if token.0 < SENDER_TOKENS {
+            self.child_again(cx, token.0);
         }
         self.drain_inline(cx);
     }
