@@ -565,6 +565,31 @@ fn a_stuck_replication_is_taken_back() {
     );
 }
 
+/// `pluginsd_replay_begin()`'s invalid timestamps record names the wall clock that judged them: the child's when it
+/// sent one above 0, the parent's otherwise (none, or 0), each with its tolerance.
+#[test]
+fn an_invalid_rbegin_names_the_wall_clock_that_judged_it() {
+    let h = host();
+    let hostname = h.hostname();
+    let mut p = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    for (line, clock, tolerance) in [
+        (format!("RBEGIN 'test.c1' 100 50 {NOW}"), "child", 2),
+        ("RBEGIN 'test.c1' 100 50 0".to_string(), "parent", 6),
+        ("RBEGIN 'test.c1' 100 50".to_string(), "parent", 6),
+    ] {
+        let (_, logs) = feed_logged(&mut p, &[&line]);
+        assert_eq!(
+            logs,
+            [format!(
+                "PLUGINSD REPLAY ERROR: 'host:{hostname}/chart:test.c1' got a RBEGIN from 100 to 50, but timestamps \
+                 are invalid (now is {NOW} [{clock} wall clock], tolerance {tolerance}). Ignoring RSET"
+            )],
+            "{line}"
+        );
+    }
+}
+
 #[test]
 fn errors_disconnect() {
     let cases: [&[&str]; 6] = [

@@ -1761,14 +1761,16 @@ impl Parser {
             let start = str2ull_encoded(start_s) as i64;
             let end = str2ull_encoded(end_s) as i64;
             let update_every = i64::from(chart.update_every());
-            let (mut wall, mut tolerance) = (0, 0);
+            let (mut wall, mut tolerance, mut from_child) = (0, 0, false);
             if let Some(c) = child_now_s {
                 wall = str2ull_encoded(c) as i64;
                 tolerance = update_every + 1;
+                from_child = true;
             }
             if wall <= 0 {
                 wall = self.now_s();
                 tolerance = update_every + 5;
+                from_child = false;
             }
             if start != 0
                 && end != 0
@@ -1804,7 +1806,7 @@ impl Parser {
                 Priority::Err,
                 "PLUGINSD REPLAY ERROR: 'host:{hostname}/chart:{}' got a RBEGIN from {start} to {end}, but timestamps are invalid (now is {wall} [{}], tolerance {tolerance}). Ignoring RSET",
                 chart.id(),
-                if child_now_s.is_some() && wall > 0 {
+                if from_child {
                     "child wall clock"
                 } else {
                     "parent wall clock"
