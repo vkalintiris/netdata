@@ -1075,5 +1075,7 @@ pub(crate) mod tests {
         assert_eq!((v, row.error, row.secs, row.priority), (0, None, 0, Priority::Info));
         // 30 bytes past the prompt is too long for a version
         assert_eq!(version(&format!("{}{}", caps::PROMPT_VN, "1".repeat(30))), -1);
+        // under 75 bytes, what follows the prompt's number is ignored: the number ends at its first non-digit
+        assert_eq!(version(&format!("{}32\nREPLAY_CHART", caps::PROMPT_VN)), 32);
     }
 }

@@ -645,6 +645,43 @@ mod tests {
     /// `stream_conf_load()` with the file's keys already in `stream_config` (a missing user and stock file keep them):
     /// no `[stream] enabled` reads no, even with a destination and an API key, and writes that default; the profile
     /// detection sees the flag as read.
+    /// `stream_conf_load()`'s required fields: a destination or an API key absent or empty (`string_strdupz("")` is
+    /// NULL) logs which is missing and turns sending off; the profile was detected before, with sending still on.
+    #[test]
+    fn a_child_without_a_destination_or_a_key_does_not_send_as_c() {
+        let defaults = LoadDefaults { conf_cpus: 4, libuv_worker_threads: 16, ssl_validate_certificate: true };
+        let cases = [
+            ("  api key = k\n", "destination: missing, api key: present"),
+            ("  destination = \n  api key = k\n", "destination: missing, api key: present"),
+            ("  destination = p:1\n", "destination: present, api key: missing"),
+            ("  destination = p:1\n  api key = \n", "destination: present, api key: missing"),
+            ("", "destination: missing, api key: missing"),
+        ];
+        for (lines, want) in cases {
+            let mut sc = StreamConf::default();
+            let text = format!("[stream]\n  enabled = yes\n{lines}");
+            sc.config.load_bytes(text.as_bytes(), "stream.conf", false, None);
+            let mut child = None;
+            let missing = "/nonexistent-netdata-stream-conf";
+            let ((), records) = netdata_agent_log::capture(|| {
+                sc.load(&mut Config::default(), missing, missing, defaults, |_, _, is_child| {
+                    child = Some(is_child);
+                    false
+                })
+            });
+            let errors: Vec<_> = records.into_iter().filter(|r| r.priority == Priority::Err).filter_map(|r| r.message).collect();
+            assert_eq!(
+                (sc.send.enabled, child, errors),
+                (
+                    false,
+                    Some(true),
+                    vec![format!("STREAM [send]: cannot enable sending thread - missing required fields ({want})")]
+                ),
+                "{lines:?}"
+            );
+        }
+    }
+
     #[test]
     fn stream_enabled_defaults_to_no_as_c() {
         let defaults = LoadDefaults { conf_cpus: 4, libuv_worker_threads: 16, ssl_validate_certificate: true };
@@ -863,5 +900,25 @@ mod tests {
         assert_eq!(rc.replication, Replication::default());
         assert!(rc.compression_enabled);
         assert!(rc.keepalive.automatic);
+    }
+
+    /// A GUID's `update every` is read from its section only, the request's value its default: the first connection
+    /// creates the option (`inicfg_get()`), so a later connection asking for another one gets the first; a duration's
+    /// absolute value, and `-2147483648` (the only value the `(int)` cast makes negative) reads 1.
+    #[test]
+    fn a_guids_update_every_is_pinned_by_its_first_connection_as_c() {
+        let key = "11111111-2222-3333-4444-555555555555";
+        let rc = |sc: &mut StreamConf, guid: &str, update_every: i64| {
+            let defaults =
+                ReceiverDefaults { db_mode: "ram".into(), history: 3600, health_enabled: false, update_every };
+            sc.receiver_config(key, guid, &defaults).update_every
+        };
+        let mut sc = StreamConf::default();
+        let text = "[g-neg]\n  update every = -7\n[g-min]\n  update every = -2147483648\n";
+        sc.config.load_bytes(text.as_bytes(), "stream.conf", false, None);
+        assert_eq!(
+            [rc(&mut sc, "g-new", 2), rc(&mut sc, "g-new", 4), rc(&mut sc, "g-neg", 1), rc(&mut sc, "g-min", 1)],
+            [2, 2, 7, 1]
+        );
     }
 }

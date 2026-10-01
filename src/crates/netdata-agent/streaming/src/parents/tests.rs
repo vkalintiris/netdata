@@ -267,6 +267,32 @@ fn delays_fall_within_c_s_bounds() {
     }
 }
 
+/// `stream_parent_set_host_reconnect_delay()` after a handshake: only the current parent waits, `[5, d)` seconds, with
+/// the reason given (C's connector after a prompt, `reconnect delay` as `d`).
+#[test]
+fn a_handshake_postpones_the_current_parent_from_5_s_to_the_delay() {
+    let mut parents = Parents::new([("a", false), ("b", false)].into_iter());
+    parents.set_reconnect_delay(Reason::SP_CONNECTED, 15);
+    assert_eq!(parents.list[0].postpone_until_ut, 0, "no current parent, none postponed");
+    parents.current = Some(1);
+    let (mut first, mut last) = (u64::MAX, 0);
+    for _ in 0..200 {
+        let before = now_realtime_ut();
+        parents.set_reconnect_delay(Reason::SP_CONNECTED, 15);
+        let after = now_realtime_ut();
+        let until = parents.list[1].postpone_until_ut;
+        assert!(until >= before + 5_000_000 && until < after + 15_000_000);
+        first = first.min(until - before);
+        last = last.max(until - before);
+    }
+    assert_eq!(
+        [(parents.list[0].postpone_until_ut, parents.list[0].reason), (0, parents.list[1].reason)],
+        [(0, Reason::NEVER), (0, Reason::SP_CONNECTED)]
+    );
+    // 200 draws reach both ends' quarters
+    assert!(first < 7_500_000 && last > 12_500_000, "{first}..{last}");
+}
+
 #[test]
 fn a_reset_postpones_every_parent_alike_and_lifts_only_the_session_bans() {
     let mut parents = Parents::new([("a", false), ("b", false)].into_iter());

@@ -558,6 +558,23 @@ fn a_parent_charts_its_children() {
             (b"hops".to_vec(), b"2".to_vec()),
         ]
     );
+    // the identity labels are the agent's own (AUTO), the child's keep their source
+    let sources: Vec<(Vec<u8>, bool)> = m
+        .labels
+        .iter()
+        .filter(|l| !l.name.starts_with(b"_collect"))
+        .map(|l| (l.name.clone(), l.flags & netdata_agent_rrd::labels::SRC_AUTO != 0))
+        .collect();
+    assert_eq!(
+        sources,
+        [
+            (b"env".to_vec(), false),
+            (b"machine_guid".to_vec(), true),
+            (b"hostname".to_vec(), true),
+            (b"node_id".to_vec(), true),
+            (b"hops".to_vec(), true),
+        ]
+    );
     assert_eq!(
         (
             m.family.as_str(),
@@ -617,6 +634,22 @@ fn a_parent_charts_its_children() {
     for id in per_child(CHILD) {
         let chart = host.charts().find(&id, true).unwrap();
         assert_eq!(chart.meta().labels.get(b"rack"), Some(&b"r1"[..]), "{id}");
+    }
+
+    // each inbound state of a child is one dimension of its state chart (replicating before it ever ran: a running
+    // child's replication is latched to running); loading is none of them
+    for (status, on) in [
+        (ARCHIVED, "archived"),
+        (RCV_OFFLINE, "offline"),
+        (RCV_WAITING, "waiting"),
+        (RCV_REPLICATION_WAIT, "waiting replication"),
+        (RCV_REPLICATING, "replicating"),
+        (RCV_RUNNING, "running"),
+        (LOADING, ""),
+    ] {
+        child.pulse_status(status);
+        pulse.cycle();
+        assert_eq!(values(host, &state), one_hot(on), "{on}");
     }
 }
 

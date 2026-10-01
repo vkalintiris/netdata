@@ -1648,22 +1648,23 @@ mod tests {
     use netdata_agent_rrd::host::HostInfo;
     use std::os::fd::AsFd;
 
-    /// A child configured for dbengine falls back to the default only when the dbengine does not run; other names
-    /// are C's modes (an unknown one is ram).
     /// Replication stalls after ten minutes without new requests, unless charts wait for their backfill (C's
     /// `backfill_pending` check); new requests restart the clock.
     #[test]
     fn replication_progress_waits_for_backfills() {
         let t0 = Instant::now();
-        let later = t0 + REPLICATION_STALL + Duration::from_secs(1);
+        let later = t0 + Duration::from_secs(601);
         let (mut requests, mut since) = (0, None);
         assert!(replication_progressed((&mut requests, &mut since), 3, false, t0));
+        assert!(replication_progressed((&mut requests, &mut since), 3, false, t0 + Duration::from_secs(599)));
         assert!(!replication_progressed((&mut requests, &mut since), 3, false, later));
         assert!(replication_progressed((&mut requests, &mut since), 3, true, later), "work waits");
         assert!(replication_progressed((&mut requests, &mut since), 4, false, later));
         assert!(replication_progressed((&mut requests, &mut since), 0, false, later), "not started");
     }
 
+    /// A child configured for dbengine falls back to the default only when the dbengine does not run; other names
+    /// are C's modes (an unknown one is ram).
     #[test]
     fn dbengine_children_fall_back_only_without_the_engine() {
         let cases = [
@@ -2777,9 +2778,54 @@ mod tests {
             seen.extend(texts(records));
         }
         let at = t0.elapsed();
-        eprintln!("removed after {at:?}");
         assert!(at >= Duration::from_secs(1) && at < Duration::from_millis(1500), "{at:?}");
         assert_eq!(seen[0], "STREAM RCV[0] 'child' [from ]: socket closed by remote - closing connection", "{seen:?}");
+    }
+
+    /// A sender whose parent closes the link is requeued to connect again without a reset of its parents
+    /// (`stream_sender_remove()`): the current parent keeps its postponement and its session ban, and takes the
+    /// disconnect's reason.
+    #[test]
+    fn a_dropped_link_requeues_without_resetting_the_parents() {
+        let (mut s, _pool, _hosts, connector) = stepper();
+        let sending = Arc::new(Host::new(
+            "5a1e0000-0000-4000-8000-0000000000ea",
+            false,
+            crate::connector::tests::info("127.0.0.1:1", "key"),
+        ));
+        let sender = Sender::attach(&sending, &connector).expect("created");
+        let until = {
+            let mut parents = sender.parents();
+            parents.current = Some(0);
+            parents.list[0].banned_for_this_session = true;
+            parents.list[0].postpone_until_ut = 4_000_000_000_000_000;
+            parents.list[0].postpone_until_ut
+        };
+        let (ours, parent) = mio::net::UnixStream::pair().unwrap();
+        s.with(|w, cx| {
+            w.queued_senders.push(crate::sender::Connected {
+                sender: Arc::clone(&sender),
+                link: Link::Plain(Conn::Unix(ours)),
+                capabilities: crate::caps::V2,
+                compressor: None,
+                remote_ip: "p".into(),
+                thread: 0,
+            });
+            w.dequeue_senders(cx);
+        });
+        assert!(s.worker().senders.iter().any(Option::is_some), "the sender runs here");
+        drop(parent);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while s.worker().senders.iter().any(Option::is_some) {
+            assert!(Instant::now() < deadline, "the sender stayed");
+            let _ = netdata_agent_log::capture(|| s.turn(Duration::from_millis(100)));
+        }
+        let parents = sender.parents();
+        let d = &parents.list[0];
+        assert_eq!(
+            (d.postpone_until_ut, d.banned_for_this_session, d.reason),
+            (until, true, Reason::DISCONNECT_SOCKET_ERROR)
+        );
     }
 
     #[test]
@@ -2864,6 +2910,9 @@ mod tests {
         s.worker().last_check = past;
         s.worker().last_replication_check = Instant::now();
         assert_eq!(tick(&mut s), Vec::<String>::new());
+        s.worker().last_check = past;
+        s.worker().last_replication_check = Instant::now().checked_sub(Duration::from_secs(599)).unwrap();
+        assert_eq!(tick(&mut s), Vec::<String>::new(), "599 s is not ten minutes");
         assert!(child_host.receiver().is_some());
         // both due: the senders' check, then the receivers'
         s.worker().last_check = past;
