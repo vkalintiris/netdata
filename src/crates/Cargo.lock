@@ -3053,6 +3053,7 @@ dependencies = [
  "netdata-agent-pulse",
  "netdata-agent-query",
  "netdata-agent-rrd",
+ "netdata-agent-spawn",
  "netdata-agent-storage",
  "netdata-agent-streaming",
  "netdata-agent-sys",
@@ -3174,6 +3175,16 @@ dependencies = [
  "nix",
  "tempfile",
  "uuid",
+]
+
+[[package]]
+name = "netdata-agent-spawn"
+version = "0.1.3"
+dependencies = [
+ "libc",
+ "netdata-agent-log",
+ "netdata-agent-sys",
+ "nix",
 ]
 
 [[package]]
