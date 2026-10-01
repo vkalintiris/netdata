@@ -181,6 +181,17 @@ func (v proxyVariant) charts() []proxyChart {
 	return append(slices.Clone(proxyCharts), v.extra...)
 }
 
+// upstream is how many of the child's charts the proxy sends up: one its `send charts matching` excludes stays.
+func (v proxyVariant) upstream() int {
+	n := 0
+	for _, c := range v.charts() {
+		if !strings.Contains(v.section, "!"+c.id+" ") {
+			n++
+		}
+	}
+	return n
+}
+
 // slot is a chart's or a dimension's slot word in the child's encoding, none without slots.
 func (v proxyVariant) slot(n int) string {
 	if !v.slots {
@@ -345,9 +356,9 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 	all(func(c *stream.Conn) { pokeProxyCharts(c, v, v.charts(), base+2, false) })
 	for i := range sides {
 		// without replication upstream the definitions are enough
-		done := func(b []byte) bool { return rendTrueCount(b) >= len(proxyCharts) }
+		done := func(b []byte) bool { return rendTrueCount(b) >= v.upstream() }
 		if v.refused&stream.CapReplication != 0 {
-			done = func(b []byte) bool { return len(proxyChartLineRe.FindAll(b, -1)) >= len(proxyCharts) }
+			done = func(b []byte) bool { return len(proxyChartLineRe.FindAll(b, -1)) >= v.upstream() }
 		}
 		if !sessions[i].WaitData(done, 30*time.Second) {
 			t.Fatalf("side %d: the definitions or their replication upstream never finished: %s", i, sessions[i].Data())
@@ -426,16 +437,31 @@ func proxyRun(t *testing.T, name string, v proxyVariant, bins [2]string) [2][]st
 		_ = s.proxy.Stop()
 		transcript := proxyTranscript(string(sessions[i].Data()))
 		if v.v1in {
-			for j, l := range transcript {
-				if proxyClockedRe.MatchString(l) {
-					transcript[j] = proxyNumberRe.ReplaceAllString(l, "N")
-				}
-			}
+			transcript = maskV1Clocks(transcript)
 		}
 		out[i] = append(requestLines(sessions[i].Request), transcript...)
 		out[i] = append(append(out[i], "== child"), proxyDownstream(s.child.Downstream())...)
 	}
+	requireProxyTicks(t, v, out[0])
 	return out
+}
+
+// requireProxyTicks fails a transcript without a data block or without each tick's marker: two such transcripts
+// would compare equal while proving nothing.
+func requireProxyTicks(t *testing.T, v proxyVariant, transcript []string) {
+	t.Helper()
+	blocks, markers := 0, 0
+	for _, l := range transcript {
+		if strings.HasPrefix(l, "BEGIN2 ") || strings.HasPrefix(l, "BEGIN ") {
+			blocks++
+		}
+		if strings.HasPrefix(l, "VARIABLE HOST proxy_marker = ") {
+			markers++
+		}
+	}
+	if blocks == 0 || markers < v.ticks {
+		t.Errorf("the oracle's transcript has %d blocks and %d of %d markers", blocks, markers, v.ticks)
+	}
 }
 
 // proxySectionsRun starts, on each side, three stubs (A, B, C), a proxy whose stream.conf spreads the proxy settings
@@ -804,12 +830,34 @@ var (
 	// a v1 child's lines on the proxy: the lines its clock decides (times, collected values, retention) and their
 	// numbers (not a slot's or a flag's)
 	proxyClockedRe   = regexp.MustCompile(`^(BEGIN2|SET2|RDSTATE|RSSTATE|REND|RBEGIN|CHART_DEFINITION_END) `)
-	proxyNumberRe    = regexp.MustCompile(`\b\d+(\.\d+)?\b`)
+	proxyFirstTimeRe = regexp.MustCompile(`"first_time_t":\d+`)
+	// a number word in any of the agents' encodings: decimal, hex, base64 (`#`) or IEEE754 (`@`)
+	proxyNumberRe    = regexp.MustCompile(`^-?(\d+(\.\d+)?(e[+-]\d+)?|0x[0-9A-Fa-f]+|[#@][A-Za-z0-9+/]+)$`)
 	proxyChartLineRe = regexp.MustCompile(`(?m)^CHART `)
 	proxyFlushDefRe  = regexp.MustCompile(`(?m)^CHART (?:SLOT:\S+ )?"proxy\.flush"`)
 )
 
 func rendTrueCount(b []byte) int { return len(rendTrueRe.FindAll(b, -1)) }
+
+// maskV1Clocks masks every number word of the lines a v1 child's clock decides, and the proxied host's first time in
+// the stream path (its first collection on the proxy's clock); a slot's word, an id and a flag stay.
+func maskV1Clocks(transcript []string) []string {
+	out := slices.Clone(transcript)
+	for j, l := range out {
+		out[j] = proxyFirstTimeRe.ReplaceAllString(out[j], `"first_time_t":T`)
+		if !proxyClockedRe.MatchString(l) {
+			continue
+		}
+		words := strings.Split(l, " ")
+		for k, w := range words {
+			if k > 0 && proxyNumberRe.MatchString(w) {
+				words[k] = "N"
+			}
+		}
+		out[j] = strings.Join(words, " ")
+	}
+	return out
+}
 
 var (
 	// a definition's end carries the proxy's own clock
@@ -945,6 +993,33 @@ func proxyMask(l string) string {
 	l = proxyStepRe.ReplaceAllString(l, "$1 T")
 	l = proxyRendRe.ReplaceAllString(l, "$1 T")
 	return proxyTimesRe.ReplaceAllString(l, `"$1":T`)
+}
+
+// TestProxyV1ClockMask (daemon-free): a v1 child's clocked lines lose every number word in any encoding (review R55
+// I1: hex words were left, so two collections straddling a second compared different); slots, ids, flags and other
+// lines stay.
+func TestProxyV1ClockMask(t *testing.T) {
+	got := maskV1Clocks([]string{
+		`BEGIN2 SLOT:0x1 'proxy.gauge' 0x1 0x6ABC1C33 0x6ABC1C34`,
+		`BEGIN2 SLOT:#B 'proxy.gauge' #B #Bqu8Sf #`,
+		`SET2 SLOT:0x2 'g2' -0x1 1.25 AR`,
+		`SET2 SLOT:#B 'f1' @D/wAAAAAAAA @H/4AAAAAAAA E`,
+		`REND 1 1790690343 1790690400 true  10 20 1e+300`,
+		`VARIABLE HOST proxy_marker = 1.0000000`,
+		`{"version":1,"streaming_path":[{"first_time_t":1790878869,"start_time":T}]}`,
+	})
+	want := []string{
+		`BEGIN2 SLOT:0x1 'proxy.gauge' N N N`,
+		`BEGIN2 SLOT:#B 'proxy.gauge' N N #`,
+		`SET2 SLOT:0x2 'g2' N N AR`,
+		`SET2 SLOT:#B 'f1' N N E`,
+		`REND N N N true  N N N`,
+		`VARIABLE HOST proxy_marker = 1.0000000`,
+		`{"version":1,"streaming_path":[{"first_time_t":T,"start_time":T}]}`,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("masked:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
 }
 
 // TestProxyTranscriptParse (daemon-free): two captures that differ only in the proxy's clocks, the path's times, the

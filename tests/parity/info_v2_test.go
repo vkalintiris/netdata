@@ -303,4 +303,33 @@ func TestInfoV2(t *testing.T) {
 		compareInfoV2(t, p, "", [][2]string{{"/api/v2/info", "200"},
 			{fmt.Sprintf("/host/%s/api/v2/info", childHost.Hostname), "200"}}, infoV2Since)
 	})
+	// a child whose sender is connected counts itself sending (review R55 M1: the rows above count 0 on both sides)
+	t.Run("sender", func(t *testing.T) {
+		bins := binaries(t)
+		var nodes [2]string
+		for i, role := range []Role{Oracle, Candidate} {
+			parent, err := stream.StartParent(stream.PlaintextAnswer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { parent.Close() })
+			d := senderChild(t, bins[i], Role(string(role)+"-sending"), parent, "")
+			if parent.WaitSession(1, 60*time.Second) == nil {
+				t.Fatalf("%s: no STREAM connection within 60 s", role)
+			}
+			// the sender is connected once the parent answered
+			time.Sleep(2 * time.Second)
+			body := infoV2Get(t, role, d.Addr, "", "/api/v2/info")
+			nodes[i] = strings.Join(strings.Fields(infoV2NodesRe.FindString(string(body))), "")
+		}
+		if nodes[0] != `"nodes":{"total":1,"receiving":0,"sending":1,"archived":0}` {
+			t.Errorf("the oracle's sending child: %s", nodes[0])
+		}
+		if nodes[0] != nodes[1] {
+			t.Errorf("nodes: oracle %s, candidate %s", nodes[0], nodes[1])
+		}
+	})
 }
+
+// infoV2NodesRe is the first agent's node counts.
+var infoV2NodesRe = regexp.MustCompile(`"nodes"\s*:\s*\{[^}]*\}`)
