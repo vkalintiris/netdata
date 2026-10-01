@@ -1,0 +1,186 @@
+//! The registry's contracts (C's `nrpc-unittest.c` registry, deletion and catalog suites, where they apply).
+
+use super::*;
+
+fn desc(name: &'static [u8], source: Source) -> MethodDesc<'static> {
+    MethodDesc {
+        name,
+        help: b"help",
+        tags: b"",
+        timeout_s: 10,
+        priority: 0,
+        version: 0,
+        access: 0,
+        sync: false,
+        source,
+        handler: Handler::Unwired,
+    }
+}
+
+/// The names of what a filter shows, and its DynCfg count.
+fn shown(r: &Registry, filter: Filter) -> (Vec<String>, usize) {
+    let (methods, dyncfg) = r.visible(filter);
+    (methods.into_iter().map(|(k, _)| String::from_utf8(k).unwrap()).collect(), dyncfg)
+}
+
+#[test]
+fn registration_normalizes_and_replaces_in_place() {
+    let r = Registry::default();
+    r.register("h", &desc(b"processes", Source::Stream)).unwrap();
+    r.register("h", &MethodDesc { tags: b"top,hidden", ..desc(b"b", Source::Stream) }).unwrap();
+    r.register("h", &MethodDesc { priority: 5, ..desc(b"processes", Source::Stream) }).unwrap();
+    let names: Vec<_> = r.all().into_iter().map(|(k, _)| k).collect();
+    assert_eq!(names, [b"processes".to_vec(), b"b".to_vec()]);
+    let p = r.get(b"processes").unwrap();
+    assert_eq!((p.tags.as_slice(), p.priority, p.flags), (&b"top"[..], 5, 0));
+    let b = r.get(b"b").unwrap();
+    assert_eq!((b.flags, b.priority), (FLAG_RESTRICTED, PRIORITY_DEFAULT), "priority 0 is the default");
+    // a name C would fatal() on is refused (D135.4)
+    let long = vec![b'x'; NAME_MAX + 1];
+    assert!(r.register("h", &MethodDesc { name: &long, ..desc(b"", Source::Stream) }).is_err());
+}
+
+/// A re-registration with changes is C's debug record; an identical one (same thread, epoch, handler) is silent.
+#[test]
+fn a_changed_reregistration_is_recorded() {
+    let r = Registry::default();
+    r.register("h", &desc(b"f", Source::Stream)).unwrap();
+    let ((), same) = netdata_agent_log::capture(|| r.register("h", &desc(b"f", Source::Stream)).unwrap());
+    assert!(same.is_empty(), "{same:?}");
+    let ((), changed) = netdata_agent_log::capture(|| {
+        r.register("h", &MethodDesc { timeout_s: 20, ..desc(b"f", Source::Stream) }).unwrap()
+    });
+    let texts: Vec<_> = changed.into_iter().filter_map(|r| r.message).collect();
+    assert_eq!(texts, ["NRPC: method 'f' of host h re-registered with changes"]);
+}
+
+#[test]
+fn dyncfg_names_are_reserved() {
+    assert!(name_is_dyncfg(b"config"));
+    assert!(name_is_dyncfg(b"config go.d:nginx"));
+    assert!(!name_is_dyncfg(b"configure"));
+    let r = Registry::default();
+    assert_eq!(
+        r.register("h", &desc(b"config", Source::Plugin)),
+        Err("NRPC: 'host:h' attempted to register reserved dynamic-configuration method 'config' from a plugin. \
+             Ignoring it."
+            .into())
+    );
+    r.register("h", &desc(b"config", Source::Stream)).unwrap();
+    assert_eq!(r.get(b"config").unwrap().flags, FLAG_DYNCFG);
+    assert_eq!(
+        r.unregister(b"config", Source::Stream, true),
+        Unregistered::Refused("NRPC: refusing to unregister dyncfg method 'config' via FUNCTION_DEL".into())
+    );
+    assert_eq!(r.unregister(b"config", Source::Daemon, true), Unregistered::Removed { manifest: false });
+    assert_eq!(r.unregister(b"config", Source::Daemon, true), Unregistered::NotFound);
+    assert!(r.take_pending_dels().is_empty(), "DynCfg is never queued");
+    // A name of underscores sanitizes to nothing.
+    assert_eq!(
+        r.register("h", &desc(b"__", Source::Stream)),
+        Err("NRPC: refusing to register method '__' on host 'h': the name sanitizes to an empty string".into())
+    );
+}
+
+/// A plugin removes only what its own serving thread registered (a restarted run cannot delete its previous run's
+/// leftovers); the stream and the daemon remove anything.
+#[test]
+fn a_plugin_removes_only_its_threads_methods() {
+    let r = std::sync::Arc::new(Registry::default());
+    {
+        let r = std::sync::Arc::clone(&r);
+        std::thread::spawn(move || r.register("h", &desc(b"other", Source::Plugin)).unwrap()).join().unwrap();
+    }
+    let refusal = |by: &str| {
+        Unregistered::Refused(format!(
+            "NRPC: refusing to unregister method 'other' - serving-thread mismatch (registered by another serving \
+             thread, unregister requested by {by})"
+        ))
+    };
+    let r2 = std::sync::Arc::clone(&r);
+    let no_handle = std::thread::spawn(move || r2.unregister(b"other", Source::Plugin, false)).join().unwrap();
+    assert_eq!(no_handle, refusal("a thread with no serving handle"));
+    r.register("h", &desc(b"mine", Source::Plugin)).unwrap();
+    assert_eq!(r.unregister(b"other", Source::Plugin, false), refusal("current serving thread"));
+    assert_eq!(r.unregister(b"mine", Source::Plugin, false), Unregistered::Removed { manifest: true });
+    assert_eq!(r.unregister(b"other", Source::Stream, false), Unregistered::Removed { manifest: true });
+}
+
+/// The FUNCTION_DEL journal: a removal is queued while the host has a sender, once per name, in order; a re-add keeps
+/// a queued removal; a re-list takes them all.
+#[test]
+fn removals_are_queued_for_the_parent() {
+    let r = Registry::default();
+    for name in [&b"a"[..], b"b", b"__hidden"] {
+        r.register("h", &MethodDesc { name, ..desc(b"", Source::Stream) }).unwrap();
+    }
+    assert_eq!(r.unregister(b"b", Source::Stream, true), Unregistered::Removed { manifest: true });
+    assert_eq!(r.unregister(b"__hidden", Source::Stream, true), Unregistered::Removed { manifest: false });
+    r.register("h", &desc(b"b", Source::Stream)).unwrap();
+    assert_eq!(r.unregister(b"b", Source::Stream, true), Unregistered::Removed { manifest: true });
+    assert_eq!(r.unregister(b"a", Source::Stream, false), Unregistered::Removed { manifest: true });
+    assert_eq!(r.take_pending_dels(), [b"b".to_vec(), b"__hidden".to_vec()]);
+    r.register("h", &desc(b"c", Source::Stream)).unwrap();
+    assert_eq!(r.unregister(b"c", Source::Stream, true), Unregistered::Removed { manifest: true });
+    r.register("h", &desc(b"c", Source::Stream)).unwrap();
+    assert_eq!(r.take_pending_dels(), [b"c".to_vec()], "a re-add keeps the queued removal");
+    assert!(r.take_pending_dels().is_empty());
+}
+
+/// `nrpc_registry_find()`: the whole command, then without its last word; the first available match wins over a
+/// longer unavailable one; C's 503 and 404 texts.
+#[test]
+fn a_command_finds_its_method_as_c() {
+    let r = std::sync::Arc::new(Registry::default());
+    r.register("h", &desc(b"processes", Source::Stream)).unwrap();
+    {
+        let r = std::sync::Arc::clone(&r);
+        // its thread ends at once: its method is unavailable
+        std::thread::spawn(move || r.register("h", &desc(b"processes full", Source::Stream)).unwrap()).join().unwrap();
+    }
+    let found = |cmd: &[u8]| r.find("h", cmd).map(|m| m.timeout_s);
+    let (ok, records) = netdata_agent_log::capture(|| found(b"processes full  info=1"));
+    assert_eq!(ok, Ok(10));
+    let records: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+    assert_eq!(records.len(), 1);
+    assert!(
+        records[0].starts_with("NRPC: method 'processes full  info=1' is not available. host 'h', serving = { tid: ")
+            && records[0].ends_with(", running: no }, epoch { owner: 0, stamped: 0 }"),
+        "{records:?}"
+    );
+    assert_eq!(found(b"nothing here"), Err((404, "This feature is not available on this host at this time.")));
+    assert_eq!(found(b"processes full"), Ok(10));
+    assert!(r.available(b"processes") && !r.available(b"processes full") && !r.available(b"processes x"));
+    // a new epoch retires everything registered before it
+    r.activate();
+    assert_eq!(found(b"processes"), Err((503, "The plugin that registered this feature, is not currently running.")));
+    assert!(!r.available(b"processes"));
+    r.register("h", &desc(b"processes", Source::Stream)).unwrap();
+    assert_eq!(found(b"processes"), Ok(10));
+}
+
+/// A command is sanitized with room for hex expansions and a name with none: an invalid byte registers under one key
+/// and is called under another, as in C (`nrpc_sanitize_name_dupz()` against the registration's `len + 1`).
+#[test]
+fn names_and_commands_are_sanitized_with_cs_sizes() {
+    assert_eq!(key(b"a\xff"), b"a");
+    assert_eq!(sanitize_command(b"a\xff"), b"aff");
+    // spaces collapse, double quotes become single ones
+    assert_eq!(sanitize_command(b"top  \"x\""), b"top 'x'");
+}
+
+/// The catalogs: every filter skips what is unavailable; users see no DynCfg and nothing restricted; a parent sees
+/// restricted methods and gets the DynCfg count; registration order.
+#[test]
+fn the_catalogs_filter_as_c() {
+    let r = std::sync::Arc::new(Registry::default());
+    for name in [&b"plain"[..], b"__restricted", b"config", b"config go.d:x"] {
+        r.register("h", &MethodDesc { name, ..desc(b"", Source::Stream) }).unwrap();
+    }
+    {
+        let r = std::sync::Arc::clone(&r);
+        std::thread::spawn(move || r.register("h", &desc(b"gone", Source::Stream)).unwrap()).join().unwrap();
+    }
+    assert_eq!(shown(&r, Filter::User), (vec!["plain".to_string()], 0));
+    assert_eq!(shown(&r, Filter::StreamGlobal), (vec!["plain".to_string(), "__restricted".to_string()], 2));
+}

@@ -98,6 +98,11 @@ pub mod role {
     }
 }
 
+/// `HTTP_ACCESS_PERMISSION_DENIED_HTTP_CODE()`: 403 for a signed-in caller, else 412.
+pub fn denied_code(user: u32) -> u16 {
+    if user & SIGNED_ID != 0 { 403 } else { 412 }
+}
+
 /// `http_access_from_hex_mapping_old_roles()`: the old role names, else hex bits.
 pub fn from_hex_mapping_old_roles(s: &[u8]) -> u32 {
     match s {

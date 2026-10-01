@@ -71,8 +71,6 @@ use netdata_agent_text::parse::{
     uuid_parse_flexi,
 };
 
-/// `PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT`: seconds.
-const FUNCTIONS_TIMEOUT_DEFAULT: i32 = 10;
 
 /// `pluginsd_parse_rrd_slot()`'s limiters: a static of the header's inlined function, so each C file has its own; the
 /// parser's keywords share one, the replication's (RBEGIN, RSET, RDSTATE) the other.
@@ -1584,7 +1582,7 @@ impl Parser {
                 name,
                 help,
                 tags: tags.unwrap_or(b""),
-                timeout_s: positive_or(Some(timeout_s), FUNCTIONS_TIMEOUT_DEFAULT),
+                timeout_s: positive_or(Some(timeout_s), nrpc::TIMEOUT_DEFAULT),
                 priority: positive_or(priority, nrpc::PRIORITY_DEFAULT),
                 version: version
                     .filter(|v| !v.is_empty())
@@ -1592,6 +1590,8 @@ impl Parser {
                 access: nrpc::access::from_hex_mapping_old_roles(access.unwrap_or(b"")),
                 sync: false,
                 source: self.function_source(),
+                // a plugin's transport comes with milestone 8 commit 5e, a child's with commit 7
+                handler: nrpc::Handler::Unwired,
             },
         );
         if let Err(warning) = registered {
@@ -1619,7 +1619,7 @@ impl Parser {
             return Err(Refused::Error);
         };
         match self.host.unregister_function(name, self.function_source()) {
-            nrpc::Unregistered::Removed => {}
+            nrpc::Unregistered::Removed { .. } => {}
             not_removed => {
                 if let nrpc::Unregistered::Refused(warning) = not_removed {
                     plog!(self, Source::Daemon, Priority::Warning, "{}", warning);

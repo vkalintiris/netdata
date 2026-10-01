@@ -411,6 +411,7 @@ fn the_host_metadata_goes_when_the_sender_can_take_it() {
         access: 0,
         sync: false,
         source: NrpcSource::Stream,
+        handler: netdata_agent_nrpc::Handler::Unwired,
     };
     host.register_function(&desc).unwrap();
     host.register_function(&MethodDesc { name: b"config", ..desc }).unwrap();
@@ -569,6 +570,7 @@ fn the_forward_gate_commits_its_metadata_through_the_batch() {
         access: 0,
         sync: false,
         source: NrpcSource::Stream,
+        handler: netdata_agent_nrpc::Handler::Unwired,
     };
     host.register_function(&desc).unwrap();
     let b = forward_gate(&host, &chart, &mut fwd).unwrap();

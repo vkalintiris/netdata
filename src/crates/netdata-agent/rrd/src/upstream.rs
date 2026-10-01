@@ -685,17 +685,23 @@ pub fn send_global_functions(host: &Host) {
 }
 
 /// The render and commit both call sites share, under the host's lock (`global_functions_spinlock`) so neither
-/// interleaves with the other: the flag is cleared first, so a change after the render is sent again. Dynamic
-/// configuration methods are left out (`NRPC_CATALOG_FILTER_STREAM_GLOBAL`); the FUNCTION_DEL queue and DynCfg's own
-/// line, which stands for them, come with the functions milestone, M8 (D100.9).
+/// interleaves with the other: the flag is cleared first, so a removal queued after the render is sent again
+/// (`nrpc_catalog_render_global_functions()`). The queued removals go first, when the parent takes FUNCTION_DEL, and
+/// are dropped either way; then the available methods but DynCfg's, whose own line comes with DynCfg (milestone 8
+/// commit 8).
 fn render_global_functions(host: &Host, up: &dyn Upstream, src: &mut BufferSource<'_>) {
     let _serialized = host.lock_global_functions();
     host.sender_flags_clear(sender_flags::GLOBAL_FUNCTIONS_UPDATED);
+    let can_del = up.capabilities() & caps::FUNCTION_DEL != 0 && host.can_stream_metadata();
     commit_metadata(up, src, |out| {
-        for (name, m) in host.functions().all() {
-            if m.flags & netdata_agent_nrpc::FLAG_DYNCFG != 0 {
-                continue;
+        let removed = host.functions().take_pending_dels();
+        if can_del {
+            for name in removed {
+                emit::function_del_global(out, &String::from_utf8_lossy(&name));
             }
+        }
+        let (methods, _dyncfg) = host.functions().visible(netdata_agent_nrpc::Filter::StreamGlobal);
+        for (name, m) in methods {
             emit::function_global(out, &name, m.timeout_s, &m.help, &m.tags, m.access, m.priority, m.version);
         }
     });

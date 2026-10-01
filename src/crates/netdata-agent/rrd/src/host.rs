@@ -457,6 +457,10 @@ impl Host {
     ) -> Self {
         let mode = info.db_mode;
         let host = Host::build(machine_guid, is_localhost, info, storage);
+        if is_localhost {
+            // rrd_init()'s object_state_activate(): localhost's functions belong to its first epoch
+            host.functions.activate();
+        }
         let tiers = storage.tiers_for(mode, host.contexts.ram_index());
         if !tiers.is_empty() {
             host.contexts.set_tiers(tiers);
@@ -1110,6 +1114,8 @@ impl Host {
         if receiver.is_some() {
             return Attach::AlreadyServed;
         }
+        // object_state_activate_if_not_activated(): what an earlier connection registered is no longer available
+        self.functions.activate();
         *receiver = Some(slot);
         if let Some(count) = self.receivers_connected.get() {
             count.fetch_add(1, Ordering::Relaxed);
@@ -1423,10 +1429,11 @@ impl Host {
         Ok(())
     }
 
-    /// `nrpc_method_unregister()` on the host's registry, then `rrdhost_nrpc_changed()` for a removal.
+    /// `nrpc_method_unregister()` on the host's registry, queued for the parent while the host has a sender
+    /// (`rrdhost_nrpc_wants_del_journal()`), then `rrdhost_nrpc_changed()` for a removal.
     pub fn unregister_function(&self, name: &[u8], source: nrpc::Source) -> Unregistered {
-        let r = self.functions.unregister(name, source);
-        if r == Unregistered::Removed {
+        let r = self.functions.unregister(name, source, self.upstream().is_some());
+        if matches!(r, Unregistered::Removed { .. }) {
             self.sender_flags_set(sender_flags::GLOBAL_FUNCTIONS_UPDATED);
         }
         r
@@ -1653,6 +1660,8 @@ impl Host {
             return;
         }
         self.local.fetch_and(!local_flags::COLLECTOR_ONLINE, Ordering::AcqRel);
+        // object_state_deactivate(): the child's functions unavailable, still registered
+        self.functions.activate();
         self.receiver_last_connected_s.store(0, Ordering::Relaxed);
         self.receiver_last_disconnected_s
             .store(now_realtime_s(), Ordering::Relaxed);
