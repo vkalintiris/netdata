@@ -304,6 +304,44 @@ mod tests {
         assert_eq!(StreamRequest::parse(b"", 1, None).capabilities, caps::V1);
     }
 
+    /// `stream_receiver_accept_connection()`: `key`, `hostname`, `registry_hostname`, `machine_guid`, `os`, `timezone`
+    /// and `abbrev_timezone` keep their first value (a repeat falls through to the system-info names, unused);
+    /// `update_every`, `utc_offset`, `hops`, `ml_capable`, `ml_enabled` and `mc_version` keep their last.
+    #[test]
+    fn repeated_parameters_keep_the_first_or_the_last_as_c() {
+        let first = ["key", "hostname", "registry_hostname", "machine_guid", "os", "timezone", "abbrev_timezone"];
+        let mut q: Vec<String> = first.iter().flat_map(|n| [format!("{n}={n}1"), format!("{n}={n}2")]).collect();
+        q.extend(
+            ["update_every=3", "update_every=4", "utc_offset=5", "utc_offset=6", "hops=1", "hops=2"]
+                .map(String::from),
+        );
+        q.extend(
+            ["ml_capable=1", "ml_capable=0", "ml_enabled=1", "ml_enabled=0", "mc_version=7", "mc_version=8"]
+                .map(String::from),
+        );
+        q.push("ver=17088".into());
+        let r = StreamRequest::parse(q.join("&").as_bytes(), 1, None);
+        let kept = [
+            &r.key,
+            &r.hostname,
+            &r.registry_hostname,
+            &r.machine_guid,
+            &r.os,
+            &r.timezone,
+            &r.abbrev_timezone,
+        ]
+        .map(|v| v.as_deref().unwrap_or_default().to_string());
+        assert_eq!(kept, first.map(|n| format!("{n}1")));
+        let unused: Vec<_> = r.unused.iter().map(|(_, n, v)| (n.as_str(), v.as_str())).collect();
+        let repeats: Vec<_> = first.iter().map(|n| format!("{n}2")).collect();
+        assert_eq!(unused, first.iter().zip(&repeats).map(|(n, v)| (*n, v.as_str())).collect::<Vec<_>>());
+        let si = &r.system_info;
+        assert_eq!(
+            (r.update_every, r.utc_offset, r.hops, si.ml_capable, si.ml_enabled, si.mc_version),
+            (4, 6, 2, false, false, 8)
+        );
+    }
+
     #[test]
     fn validation_order() {
         let conf = || {

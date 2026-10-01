@@ -85,4 +85,18 @@ mod tests {
         assert!(!children_should_be_accepted());
         drop(running);
     }
+
+    /// Replication runs with no backfill and no user data query; health with no backfill and at most one user query
+    /// (the counters are shared too: only the refusals are asserted).
+    #[test]
+    fn backfills_and_user_queries_hold_replication_and_health_back() {
+        let one = UserDataQuery::start();
+        assert!(!replication_should_be_running());
+        let two = UserDataQuery::start();
+        assert!(!health_should_be_running());
+        drop((one, two));
+        let running = BackfillRunning::start();
+        assert!(!replication_should_be_running() && !health_should_be_running());
+        drop(running);
+    }
 }

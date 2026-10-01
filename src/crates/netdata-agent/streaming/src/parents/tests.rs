@@ -251,6 +251,47 @@ fn a_reset_postpones_every_parent_alike_and_lifts_only_the_session_bans() {
     }
 }
 
+/// `stream_parent_nd_sock_error_to_reason()`: each socket error's reason, postponement window (a timeout's longer for a
+/// parent with 10 nodes or more), session ban and block of the parent for every node, as C's table.
+#[test]
+fn socket_errors_postpone_and_block_as_c() {
+    use SockError as E;
+    let cases = [
+        (E::ConnectionRefused, 0, Reason::SP_CONNECTION_REFUSED, (30, 60), false, Some(30)),
+        (E::CannotResolveHostname, 0, Reason::SP_CANT_RESOLVE_HOSTNAME, (30, 60), false, Some(30)),
+        (E::NoHostInDefinition, 0, Reason::SP_NO_HOST_IN_DESTINATION, (30, 60), true, Some(30)),
+        (E::Timeout, 9, Reason::SP_CONNECT_TIMEOUT, (300, 600), false, Some(300)),
+        (E::Timeout, 10, Reason::SP_CONNECT_TIMEOUT, (300, 900), false, Some(300)),
+        (E::SslInvalidCertificate, 0, Reason::CONNECT_INVALID_CERTIFICATE, (300, 600), false, Some(300)),
+        (E::SslCantEstablishSslConnection, 0, Reason::CONNECT_SSL_ERROR, (60, 180), false, Some(60)),
+        (E::SslFailedToOpen, 0, Reason::CONNECT_SSL_ERROR, (60, 180), false, Some(60)),
+        (E::PollError, 0, Reason::PARENT_INTERNAL_ERROR, (30, 60), false, None),
+        (E::FailedToCreateSocket, 0, Reason::PARENT_INTERNAL_ERROR, (30, 60), false, None),
+        (E::UnknownError, 0, Reason::PARENT_INTERNAL_ERROR, (30, 60), false, None),
+        (E::ThreadCancelled, 0, Reason::PARENT_INTERNAL_ERROR, (30, 60), false, None),
+        (E::NoDestinationAvailable, 0, Reason::PARENT_INTERNAL_ERROR, (30, 60), false, None),
+    ];
+    for (i, (error, nodes, reason, (low, high), banned, block)) in cases.into_iter().enumerate() {
+        let destination = format!("socket-error-{i}");
+        let mut d = Parent::new(&destination, false);
+        d.remote.nodes = nodes;
+        let before = now_realtime_ut();
+        d.sock_error_to_reason(error);
+        let after = now_realtime_ut();
+        let blocked = BLOCKED
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|b| b.get(&destination))
+            .map(|&(_, duration)| duration.as_secs());
+        assert_eq!((d.reason, d.banned_for_this_session, blocked), (reason, banned, block), "{error:?}");
+        assert!(
+            d.postpone_until_ut >= before + low * 1_000_000 && d.postpone_until_ut <= after + high * 1_000_000,
+            "{error:?}"
+        );
+    }
+}
+
 #[test]
 fn the_path_before_us_is_the_agent_itself_or_a_closer_hop() {
     let entry = |id: u8, hops| PathEntry { host_id: [id; 16], hops, ..PathEntry::default() };
