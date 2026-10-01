@@ -234,8 +234,6 @@ pub(crate) struct Child {
     bytes_out: u64,
     /// Successful writes (`stats->sends`).
     sends: u64,
-    /// The last read or write, for the disconnect record's `idle=` and the idle timeout.
-    last_io: Instant,
     /// `rpt->replication`: the request count last seen, when it last moved, and the progress time last checked.
     replication_requests: u64,
     replication_progress: Option<Instant>,
@@ -952,7 +950,6 @@ impl StreamWorker {
             bytes_in: 0,
             bytes_out: 0,
             sends: 0,
-            last_io: Instant::now(),
             replication_requests: 0,
             replication_progress: None,
             replication_checked: None,
@@ -1138,7 +1135,11 @@ impl StreamWorker {
                 bytes_in: child.bytes_in,
                 bytes_out: child.bytes_out,
                 connected_s: (now_s() - attached.accepted_s).max(0),
-                idle_s: child.last_io.elapsed().as_secs() as i64,
+                // C's idle time since the last read or write, 0 before any
+                idle_s: match attached.slot.last_traffic_ut.load(Ordering::Relaxed) {
+                    0 => 0,
+                    last => (now_monotonic_ut().saturating_sub(last) / 1_000_000) as i64,
+                },
                 replication_percent: attached.host.replication_percent(),
             };
             let labels = attached.host.labels();
@@ -1165,7 +1166,7 @@ impl StreamWorker {
     /// `STREAM RCV[n] '<host>' [from [<ip>]:<port>]: ` of the stream thread's records.
     /// `stream_receiver_check_all_nodes_from_poll()`: a probe finds a connection the child closed or that failed,
     /// and a child silent for longer than its timeout, while none of its charts replicates, is disconnected.
-    pub(crate) fn check_all(&mut self, cx: &mut Context<'_>, now: Instant) {
+    pub(crate) fn check_all(&mut self, cx: &mut Context<'_>, now_ut: u64) {
         for index in 0..self.children.len() {
             let Some(child) = self.children[index].as_mut() else {
                 continue;
@@ -1229,7 +1230,7 @@ impl StreamWorker {
             }
             let timeout_s = IDLE_TIMEOUT_MIN_S
                 .max(receiver_update_every(&a.host, a.handshake_update_every) * 2);
-            let idle = now.saturating_duration_since(child.last_io);
+            let idle = Duration::from_micros(now_ut.saturating_sub(a.slot.last_traffic_ut.load(Ordering::Relaxed)));
             if idle > Duration::from_secs(timeout_s) && a.host.replicating_charts() == 0 {
                 let _frame = records::child_event(&frame);
                 let idle_us = i64::try_from(idle.as_micros()).unwrap_or(i64::MAX);
@@ -1364,7 +1365,12 @@ impl StreamWorker {
                         .stream_sent(n);
                     child.attached.host.stream_bytes_sent(n);
                     child.sends += 1;
-                    child.last_io = Instant::now();
+                    // a write is traffic too (C's last_traffic_ut), for the idle timeout and the stale check at accept
+                    child
+                        .attached
+                        .slot
+                        .last_traffic_ut
+                        .store(now_monotonic_ut(), Ordering::Relaxed);
                     continue;
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return true,
@@ -1521,7 +1527,6 @@ impl StreamWorker {
                         .network
                         .stream_received(n);
                     child.attached.host.stream_bytes_received(n);
-                    child.last_io = Instant::now();
                     child
                         .attached
                         .slot
@@ -1863,6 +1868,74 @@ mod tests {
         assert!(host.receiver().is_none());
         let texts: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
         assert!(texts.iter().any(|t| t.contains("CLOSED BY REMOTE END")), "{texts:?}");
+    }
+
+    /// The record texts a capture holds.
+    fn texts(records: Vec<netdata_agent_log::Captured>) -> Vec<String> {
+        records.into_iter().filter_map(|r| r.message).collect()
+    }
+
+    /// C's `last_traffic_ut` moves with every write to the child too: the idle timeout and the stale check at accept
+    /// count it.
+    #[test]
+    fn a_write_to_the_child_is_traffic() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, _, slot, _theirs) = child(0xd6, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        slot.last_traffic_ut.store(1, Ordering::Relaxed);
+        let before = now_monotonic_ut();
+        s.with(|w, cx| {
+            w.children[0].as_mut().unwrap().pending_out.extend_from_slice(b"REPLAY_CHART x\n");
+            assert!(w.flush(cx, 0, false));
+        });
+        assert!(slot.last_traffic_ut.load(Ordering::Relaxed) >= before);
+    }
+
+    /// `stream_receiver_check_all_nodes_from_poll()`: a child quiet for longer than max(600 s, twice its smallest
+    /// update every) is disconnected (TIMEOUT), unless its charts replicate; a probe finding the end removes it.
+    #[test]
+    fn quiet_and_closed_children_are_disconnected_by_the_periodic_check() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, plain, plain_slot, _plain_peer) = child(0xd7, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        let (attached, slow, _, _slow_peer) = child(0xd8, crate::caps::V2, &pool, &hosts, &connector);
+        slow.observe_receiver_update_every(400);
+        s.with(|w, cx| w.attach(cx, attached));
+        let (attached, replicating, _, _replicating_peer) = child(0xd9, crate::caps::V2, &pool, &hosts, &connector);
+        replicating.replicating_charts_plus_one();
+        s.with(|w, cx| w.attach(cx, attached));
+        let last = plain_slot.last_traffic_ut.load(Ordering::Relaxed);
+        let attached = |hosts: &[&Arc<Host>]| hosts.iter().map(|h| h.receiver().is_some()).collect::<Vec<_>>();
+        let all = [&plain, &slow, &replicating];
+        // every child was attached within a second of the first
+        s.with(|w, cx| w.check_all(cx, last + 600_000_000));
+        assert_eq!(attached(&all), [true, true, true]);
+        let (_, records) = netdata_agent_log::capture(|| s.with(|w, cx| w.check_all(cx, last + 602_000_000)));
+        assert_eq!(attached(&all), [false, true, true]);
+        assert!(texts(records).iter().any(|t| t.contains("there was not traffic for 600 seconds - closing connection")));
+        s.with(|w, cx| w.check_all(cx, last + 802_000_000));
+        assert_eq!(attached(&all), [false, false, true]);
+        let (attached_c, closed, _, closed_peer) = child(0xda, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached_c));
+        drop(closed_peer);
+        let (_, records) = netdata_agent_log::capture(|| s.with(|w, cx| w.check_all(cx, now_monotonic_ut())));
+        assert!(closed.receiver().is_none());
+        assert!(texts(records).iter().any(|t| t.contains("socket closed by remote - closing connection")));
+    }
+
+    /// A line the parser refuses removes the child at the read that brought it (PARSE ERROR).
+    #[test]
+    fn a_refused_line_removes_the_child_at_its_read() {
+        use std::io::Write;
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, _, mut theirs) = child(0xdb, crate::caps::V2, &pool, &hosts, &connector);
+        theirs.write_all(b"BOGUS\n").unwrap();
+        s.with(|w, cx| w.attach(cx, attached));
+        let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        assert!(host.receiver().is_none());
+        let texts = texts(records);
+        assert!(texts.iter().any(|t| t.contains("parser_action('BOGUS') failed on line 1")), "{texts:?}");
+        assert!(texts.iter().any(|t| t.contains("PARSE ERROR")), "{texts:?}");
     }
 
     /// A compressed stream is read into the 16384-byte chunk buffer behind the partial message it holds (D129.1): three

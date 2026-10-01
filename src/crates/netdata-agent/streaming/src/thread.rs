@@ -164,7 +164,7 @@ impl Worker for StreamWorker {
         if now.duration_since(self.last_check) >= self.check_every {
             self.last_check = now;
             self.check_senders(cx);
-            self.check_all(cx, now);
+            self.check_all(cx, crate::receiver::now_monotonic_ut());
             if now.duration_since(self.last_replication_check) >= REPLICATION_STALL {
                 self.last_replication_check = now;
                 // the senders before the receivers, as C's
