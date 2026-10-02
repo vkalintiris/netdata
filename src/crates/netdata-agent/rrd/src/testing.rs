@@ -87,3 +87,25 @@ impl Recorder {
         std::mem::take(&mut *self.commits.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }
+
+/// A receiver's buffer opened as at the move to running, with no stream thread to wake.
+pub fn open_buffer(slot: &crate::host::ReceiverSlot) {
+    slot.open_buffer(Box::new(|_| {}));
+}
+
+/// What a receiver's buffer holds for its child, taken (as its stream thread's writes would).
+pub fn take_queued(slot: &crate::host::ReceiverSlot) -> Vec<u8> {
+    let mut out = Vec::new();
+    if let Some(buffer) = slot.buffer().as_mut() {
+        loop {
+            let chunk = buffer.next();
+            if chunk.is_empty() {
+                break;
+            }
+            let n = chunk.len();
+            out.extend_from_slice(chunk);
+            buffer.del(n, 0);
+        }
+    }
+    out
+}

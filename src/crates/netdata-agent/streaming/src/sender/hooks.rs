@@ -93,7 +93,7 @@ impl Sender {
 }
 
 /// `stream_receiver_send_node_and_claim_id_to_child()`: the host's node id to a child that takes NODE_ID, with the
-/// parent's claim id (this agent is never claimed before M11, D61.3) and the Cloud URL, into the receiver's outbox.
+/// parent's claim id (this agent is never claimed before M11, D61.3) and the Cloud URL, into the receiver's buffer.
 /// The receiver is checked before the URL is read.
 pub(crate) fn send_node_and_claim_id_to_child(host: &Host, env: &Env) {
     let node_id = host.node_id();
@@ -108,7 +108,7 @@ pub(crate) fn send_node_and_claim_id_to_child(host: &Host, env: &Env) {
     }
     let mut line = Vec::new();
     emit::node_id(&mut line, &host.claim_id_of_parent(), &node_id, &(env.cloud_url)());
-    slot.send_to_child(&line);
+    slot.send_to_child(&line, upstream::Traffic::Metadata);
 }
 
 /// `os_socket_egress_interface()`: the first interface whose address is the socket's local one (a v4-mapped address

@@ -18,7 +18,7 @@ use netdata_agent_log::{
 use netdata_agent_rrd::chart::flags;
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::contexts::Taker;
-use netdata_agent_rrd::host::{Host, sender_flags};
+use netdata_agent_rrd::host::{Host, receiver_op, sender_flags};
 use netdata_agent_rrd::pulse::host_status;
 use netdata_agent_text::duration::duration_to_string;
 use netdata_agent_text::size::size_to_string;
@@ -492,7 +492,7 @@ impl StreamWorker {
             }
         }
         for slot in crate::thread::take_inline_children() {
-            self.child_pollout(cx, &slot, false);
+            self.child_ops(cx, &slot, receiver_op::POLLOUT, false);
         }
     }
 

@@ -7,7 +7,7 @@
 
 use std::io;
 use std::net::Shutdown;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
@@ -20,7 +20,7 @@ use netdata_agent_pluginsd_proto::{LINE_MAX, LineReader};
 use netdata_agent_rrd::chart::flags;
 use netdata_agent_rrd::collection;
 use netdata_agent_rrd::contexts::Taker;
-use netdata_agent_rrd::host::{Attach, Host, HostInfo, Hosts, ReceiverLink, ReceiverSlot, StreamSend};
+use netdata_agent_rrd::host::{Attach, Host, HostInfo, Hosts, ReceiverLink, ReceiverSlot, StreamSend, receiver_op};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
 use netdata_agent_rrd::upstream::Traffic;
 use netdata_agent_sys::now_monotonic_usec;
@@ -38,25 +38,16 @@ use crate::records::{self, Counters, Peer};
 use crate::sender::Sender;
 use crate::thread::{StreamMsg, StreamWorker};
 
-/// `STREAM_OPCODE_RECEIVER_POLLOUT`: lines are owed to a receiver's child.
-const RECEIVER_POLLOUT: u32 = 1 << 1;
-
-/// `send_to_child()` as the wire of a receiver's parser: a call goes into the connection's outbox, which its stream
-/// thread writes; once the connection is gone, 0 (C's "no buffer"). The slot is held weakly, so the socket still
-/// closes with the connection.
+/// `send_to_child()` as the wire of a receiver's parser: its lines and calls go into the connection's buffer, which
+/// its stream thread writes; once the connection is gone, 0 (C's "no buffer"). The slot is held weakly, so the socket
+/// still closes with the connection.
 struct ChildWire {
     slot: Weak<ReceiverSlot>,
 }
 
 impl ingest::functions::Wire for ChildWire {
-    fn send(&self, text: &[u8], _: Traffic) -> isize {
-        match self.slot.upgrade() {
-            Some(slot) => {
-                slot.send_to_child(text);
-                text.len() as isize
-            }
-            None => 0,
-        }
+    fn send(&self, text: &[u8], traffic: Traffic) -> isize {
+        self.slot.upgrade().map_or(0, |slot| slot.send_to_child(text, traffic))
     }
 }
 
@@ -84,8 +75,6 @@ fn receiver_update_every(host: &Host, handshake_update_every: i64) -> u64 {
 
 /// `STREAM_RECEIVER_IDLE_TIMEOUT_MIN_SECONDS`: a child quiet this long (or twice its update every) is disconnected.
 const IDLE_TIMEOUT_MIN_S: u64 = 600;
-/// `CBUFFER_INITIAL_MAX_SIZE`: the buffer C queues data for a child in; its fill is in the timeout record.
-const SEND_BUFFER_MAX: usize = 10 * 1024 * 1024;
 /// How long replication may make no progress before a child is checked for stalled charts.
 pub(crate) const REPLICATION_STALL: Duration = Duration::from_secs(600);
 
@@ -245,14 +234,9 @@ pub(crate) struct Child {
     decompressor: Option<Decompressor>,
     reader: LineReader,
     parser: Parser,
-    /// Bytes for the child that did not fit in the socket yet.
-    pending_out: Vec<u8>,
     /// The fields every record of this child carries, shared by every event.
     frame: Arc<[(netdata_agent_log::Field, netdata_agent_log::Value)]>,
     bytes_in: u64,
-    bytes_out: u64,
-    /// Successful writes (`stats->sends`).
-    sends: u64,
     /// `rpt->replication`: the request count last seen, when it last moved, and the progress time last checked.
     replication_requests: u64,
     replication_progress: Option<Instant>,
@@ -973,11 +957,8 @@ impl StreamWorker {
             decompressor,
             reader: LineReader::default(),
             parser,
-            pending_out: Vec::new(),
             frame,
             bytes_in: 0,
-            bytes_out: 0,
-            sends: 0,
             replication_requests: 0,
             replication_progress: None,
             replication_checked: None,
@@ -1003,35 +984,39 @@ impl StreamWorker {
         // what the move to running sends, under the child's frame
         let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
         let _frame = frame.as_ref().map(records::child_event);
-        // the end of the move to running: lines owed before it are dropped as C's (no buffer yet, D119.2), then the
-        // host's node id goes down (D106.9)
+        // the end of the move to running: the child's buffer exists from here (before it a send is 0 and nothing is
+        // queued, D119.2), then the host's node id goes down (D106.9)
         if let Some(child) = &self.children[index] {
             let a = &child.attached;
-            a.slot.take_to_child();
-            // the buffer exists from here: an owed line wakes this thread (RECEIVER_POLLOUT, D164.B2)
             let (pool, thread, slot) = (a.pool.clone(), a.thread, Arc::downgrade(&a.slot));
             let (hostname, (ip, port)) = (a.host.hostname(), a.slot.remote.clone());
-            a.slot.set_waker(Box::new(move || {
-                // on its own thread a wake is only queued, never written here: a failed write would disconnect the
+            // the opcodes posted and not yet taken: one message carries them all (C's message slot)
+            let ops = Arc::new(AtomicU32::new(0));
+            a.slot.open_buffer(Box::new(move |op| {
+                // on its own thread a POLLOUT is only queued, never written here: a failed write would disconnect the
                 // child and drop its parser, which a caller up this stack may be inside (a proxied call's dispatch:
                 // the transport's retire would wait for that call's own pass); C's inline POLLOUT carries the same
                 // warning (stream-thread.c:111-117)
-                if crate::thread::current() == Some(thread) {
+                if op == receiver_op::POLLOUT && crate::thread::current() == Some(thread) {
                     return crate::thread::child_pollout_inline(slot.clone());
                 }
-                if pool.send_if_running(thread, StreamMsg::ChildPollout(slot.clone())).is_err() {
+                if ops.fetch_or(op, Ordering::AcqRel) != 0 {
+                    return;
+                }
+                if pool.send_if_running(thread, StreamMsg::ChildOps(slot.clone(), Arc::clone(&ops))).is_err() {
+                    ops.store(0, Ordering::Release);
                     // the thread ended (the exit started): C's stream_thread_by_slot_id() finds no thread
                     nd_log!(
                         Source::Daemon,
                         Priority::Err,
-                        "STREAM RCV '{hostname}' [from [{ip}]:{port}]: the opcode ({RECEIVER_POLLOUT}) message cannot \
-                         be verified. Ignoring it."
+                        "STREAM RCV '{hostname}' [from [{ip}]:{port}]: the opcode ({op}) message cannot be verified. \
+                         Ignoring it."
                     );
                 }
             }));
             crate::sender::send_node_and_claim_id_to_child(&a.host, a.connector.env());
         }
-        self.deliver_owed(cx, index);
+        self.send_data(cx, index, true);
         // C only adds the socket to the poll: the first read is the next turn's (D126.6)
         cx.report_again(Token(index));
     }
@@ -1049,33 +1034,45 @@ impl StreamWorker {
         self.receive(cx, index);
     }
 
-    /// `stream_thread_handle_op()` with RECEIVER_POLLOUT: the lines owed to the child of this connection, written
-    /// to it now. A connection no longer here gets C's "ignored" record when the opcode was `posted` through the
-    /// thread's queue; inline, C runs it while the receiver is in its thread, so it cannot miss.
-    pub(crate) fn child_pollout(&mut self, cx: &mut Context<'_>, slot: &Weak<ReceiverSlot>, posted: bool) {
+    /// `stream_thread_handle_op()` for a receiver: POLLOUT writes what is owed to the child of this connection, then
+    /// BUFFER_OVERFLOW restarts it (`stream_receiver_handle_op()`). A connection no longer here gets C's "ignored"
+    /// record when the opcodes were `posted` through the thread's queue; an inline POLLOUT runs in C while the
+    /// receiver is in its thread, so it cannot miss.
+    pub(crate) fn child_ops(&mut self, cx: &mut Context<'_>, slot: &Weak<ReceiverSlot>, ops: u32, posted: bool) {
         let index = slot.upgrade().and_then(|slot| {
             self.children.iter().position(|c| c.as_ref().is_some_and(|c| Arc::ptr_eq(&c.attached.slot, &slot)))
         });
         let Some(index) = index else {
             if posted {
-                crate::sender::dispatch::opcode_ignored(cx.index(), RECEIVER_POLLOUT);
+                crate::sender::dispatch::opcode_ignored(cx.index(), ops);
             }
             return;
         };
         let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
         let _frame = frame.as_ref().map(records::child_event);
-        self.deliver_owed(cx, index);
-    }
-
-    /// The child's owed lines, flushed with whatever else waits for it.
-    fn deliver_owed(&mut self, cx: &mut Context<'_>, index: usize) {
-        let Some(child) = self.children[index].as_mut() else {
+        if ops & receiver_op::POLLOUT != 0 && !self.send_data(cx, index, true) {
             return;
-        };
-        let owed = child.attached.slot.take_to_child();
-        if !owed.is_empty() {
-            child.pending_out.extend_from_slice(&owed);
-            self.flush(cx, index, true);
+        }
+        let ops = ops & !receiver_op::POLLOUT;
+        if ops & receiver_op::BUFFER_OVERFLOW != 0 {
+            let Some(child) = self.children[index].as_ref() else {
+                return;
+            };
+            let stats = child.attached.slot.buffer().as_ref().map(|b| *b.stats()).unwrap_or_default();
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "{}send buffer is full (buffer size {}, max {}, used {}, available {}). Restarting connection.",
+                Self::prefix(child),
+                stats.bytes_size,
+                stats.bytes_max_size,
+                stats.bytes_outstanding,
+                stats.bytes_available
+            );
+            return self.disconnect(cx, index, Reason::DISCONNECT_BUFFER_OVERFLOW);
+        }
+        if ops != 0 {
+            nd_log!(Source::Daemon, Priority::Err, "STREAM RCV[{}]: invalid msg id {ops}", cx.index());
         }
     }
 
@@ -1083,7 +1080,6 @@ impl StreamWorker {
     /// child's frame; dropped when the connection is gone (C's bytes go with the buffer they were added to).
     pub(crate) fn replay(
         &mut self,
-        cx: &mut Context<'_>,
         receiver: &Weak<ReceiverSlot>,
         request: &ingest::ReplayRequest,
     ) {
@@ -1098,9 +1094,9 @@ impl StreamWorker {
         };
         let frame = Arc::clone(&child.frame);
         let _frame = records::child_event(&frame);
-        // a request that could not be sent is logged there; the buffer reports its overflow itself
+        // its line wakes this thread inline, so the message's drain writes it; one the buffer refused is logged there,
+        // and the overflow opcode restarts the connection
         child.parser.replay_backfilled(request);
-        self.flush(cx, index, true);
     }
 
     /// `stream_receive_process_poll_events()`: under the child's frame, the stop flag, then socket errors (or a
@@ -1134,7 +1130,7 @@ impl StreamWorker {
             }
             return self.disconnect(cx, index, reason);
         }
-        if event.is_writable() && !self.flush(cx, index, true) {
+        if event.is_writable() && !self.send_data(cx, index, true) {
             return;
         }
         if event.is_readable() || hangup {
@@ -1157,16 +1153,15 @@ impl StreamWorker {
             // stream_path_retention_updated() from the RRDCONTEXT thread: its messages go out on this tick (D46
             // point 4), each with the retention start of its change
             let changes = child.attached.host.contexts().take_first_time_changes(Taker::Receiver);
-            // and what the connector thread owed the child (D106.5)
-            let owed = child.attached.slot.take_to_child();
-            if !changes.is_empty() || !owed.is_empty() {
-                child.pending_out.extend_from_slice(&owed);
-                for first_time_s in changes {
-                    child.parser.retention_updated(first_time_s);
-                }
+            for first_time_s in changes {
+                child.parser.retention_updated(first_time_s);
+            }
+            // what is still owed is written again (C's tick enables output while the buffer holds any, SR:1224)
+            let owed = child.attached.slot.buffer().as_ref().is_some_and(|b| b.stats().bytes_outstanding != 0);
+            if owed {
                 let frame = Arc::clone(&child.frame);
                 let _frame = records::child_event(&frame);
-                self.flush(cx, index, true);
+                self.send_data(cx, index, true);
             }
         }
     }
@@ -1184,15 +1179,16 @@ impl StreamWorker {
         let Some(child) = self.children[index].take() else {
             return;
         };
-        let Child { mut attached, parser, frame, bytes_in, bytes_out, .. } = child;
+        let Child { mut attached, parser, frame, bytes_in, .. } = child;
         {
             let attached = &mut attached;
             let _ = cx.registry().deregister(&mut attached.stream);
+            let bytes_out = attached.slot.buffer().as_ref().map_or(0, |b| b.stats().bytes_sent);
             let counters = Counters {
                 thread: attached.thread,
                 msgs: parser.data_collections_count,
                 bytes_in,
-                bytes_out,
+                bytes_out: bytes_out as u64,
                 connected_s: (now_s() - attached.accepted_s).max(0),
                 // C's idle time since the last read or write, 0 before any
                 idle_s: match attached.slot.last_traffic_ut.load(Ordering::Relaxed) {
@@ -1212,7 +1208,9 @@ impl StreamWorker {
             self.pins.lock().unwrap_or_else(PoisonError::into_inner).remove(attached.host.machine_guid());
             attached.leave_host(reason, Some(parser));
         }
-        // stream_receiver_free(): the socket closes after the records, and a TLS close leaves what its shutdown set
+        // stream_receiver_free(): the buffer goes (a late send gets 0), the socket closes after the records, and a TLS
+        // close leaves what its shutdown set
+        attached.slot.close_buffer();
         let tls = attached.stream.is_tls();
         drop(attached);
         self.exit_errno = if tls { nix::errno::Errno::last_raw() } else { 0 };
@@ -1290,21 +1288,22 @@ impl StreamWorker {
                 let _frame = records::child_event(&frame);
                 let idle_us = i64::try_from(idle.as_micros()).unwrap_or(i64::MAX);
                 let duration = duration_to_string(idle_us, "us", true).unwrap_or_default();
-                let outstanding = child.pending_out.len();
-                let pending = if outstanding == 0 {
+                // the buffer's: the first contiguous chunk pending, the fill of the grown maximum
+                let stats = a.slot.buffer().as_ref().map(|b| *b.stats()).unwrap_or_default();
+                let pending = if stats.bytes_outstanding == 0 {
                     "0".to_string()
                 } else {
-                    size_to_string(outstanding as u64, "B", false).unwrap_or_default()
+                    size_to_string(stats.bytes_outstanding as u64, "B", false).unwrap_or_default()
                 };
-                let ratio = outstanding as f64 * 100.0 / SEND_BUFFER_MAX as f64;
                 nd_log!(
                     Source::Daemon,
                     Priority::Err,
                     "{at}there was not traffic for {timeout_s} seconds - closing connection - we have sent {} bytes in \
                      {} operations, it is idle for {duration}, and we have {pending} pending to send (buffer is used \
-                     {ratio:.2}%).",
-                    child.bytes_out,
-                    child.sends
+                     {:.2}%).",
+                    stats.bytes_sent,
+                    stats.sends,
+                    stats.buffer_ratio
                 );
                 self.disconnect(cx, index, Reason::DISCONNECT_TIMEOUT);
             }
@@ -1397,66 +1396,64 @@ impl StreamWorker {
         )
     }
 
-    /// `stream_receiver_send_data()`: writes what the parser produced; a full socket keeps the rest for the next
-    /// writable event. False when the connection failed: from the poller (`remove`) it is disconnected here; after a
+    /// `stream_receiver_send_data()`: what is owed to the child, written from its buffer one contiguous chunk at a time
+    /// under the buffer's lock, until the buffer drains (a grown ring then shrinks back, at most every 5 minutes) or the
+    /// socket is full. False when the connection failed: from the poller (`remove`) it is disconnected here; after a
     /// read (`stream_receiver_dequeue_senders()`) the caller ends it, as a read failure, as C does.
-    fn flush(&mut self, cx: &mut Context<'_>, index: usize, remove: bool) -> bool {
+    fn send_data(&mut self, cx: &mut Context<'_>, index: usize, remove: bool) -> bool {
         let Some(child) = self.children[index].as_mut() else {
             return false;
         };
-        // what the parser and other threads owe the child, as one queue (C's buffer, filled by send_to_plugin())
-        let owed = child.attached.slot.take_to_child();
-        child.pending_out.extend_from_slice(&owed);
-        while !child.pending_out.is_empty() {
-            let failure = match child.attached.stream.write(&child.pending_out) {
+        let slot = Arc::clone(&child.attached.slot);
+        let mut buffer = slot.buffer();
+        let failure = loop {
+            let Some(b) = buffer.as_mut() else {
+                return true;
+            };
+            let chunk = b.next();
+            if chunk.is_empty() {
+                return true;
+            }
+            match child.attached.stream.write(chunk) {
                 Ok(n) if n > 0 => {
-                    child.pending_out.drain(..n);
-                    child.bytes_out += n as u64;
-                    child
-                        .attached
-                        .hosts
-                        .storage()
-                        .pulse()
-                        .network
-                        .stream_sent(n);
+                    let now_ut = now_monotonic_usec();
+                    b.del(n, now_ut);
+                    child.attached.hosts.storage().pulse().network.stream_sent(n);
                     child.attached.host.stream_bytes_sent(n);
-                    child.sends += 1;
                     // a write is traffic too (C's last_traffic_ut), for the idle timeout and the stale check at accept
-                    child
-                        .attached
-                        .slot
-                        .last_traffic_ut
-                        .store(now_monotonic_usec(), Ordering::Relaxed);
-                    continue;
+                    slot.last_traffic_ut.store(now_ut, Ordering::Relaxed);
+                    if b.stats().bytes_outstanding == 0 {
+                        b.recreate_timed(now_ut, false);
+                        return true;
+                    }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return true,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 // only a zero write or a reset is the remote end closing; EPIPE is a write failure
-                Ok(_) => (Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, 0, 0),
+                Ok(_) => break (Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, 0, 0),
                 Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
-                    (Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, -1, netdata_agent_log::errno_of(&e))
+                    break (Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, -1, netdata_agent_log::errno_of(&e));
                 }
-                Err(e) => (Reason::DISCONNECT_SOCKET_WRITE_FAILED, -1, netdata_agent_log::errno_of(&e)),
-            };
-            let (reason, rc, errno) = failure;
-            let _parser = (!remove).then(|| child.parser.log_frame());
-            nd_log!(
-                Source::Daemon,
-                Priority::Err,
-                errno = errno;
-                "{}{} ({rc}, on fd {}) - closing receiver connection - we have sent {} bytes in {} operations.",
-                Self::prefix(child),
-                reason.text(),
-                raw_fd(&child.attached.stream),
-                child.bytes_out,
-                child.sends
-            );
-            if remove {
-                self.disconnect(cx, index, reason);
+                Err(e) => break (Reason::DISCONNECT_SOCKET_WRITE_FAILED, -1, netdata_agent_log::errno_of(&e)),
             }
-            return false;
+        };
+        let (sent, sends) = buffer.as_ref().map_or((0, 0), |b| (b.stats().bytes_sent, b.stats().sends));
+        drop(buffer);
+        let (reason, rc, errno) = failure;
+        let _parser = (!remove).then(|| child.parser.log_frame());
+        nd_log!(
+            Source::Daemon,
+            Priority::Err,
+            errno = errno;
+            "{}{} ({rc}, on fd {}) - closing receiver connection - we have sent {sent} bytes in {sends} operations.",
+            Self::prefix(child),
+            reason.text(),
+            raw_fd(&child.attached.stream)
+        );
+        if remove {
+            self.disconnect(cx, index, reason);
         }
-        true
+        false
     }
 
     /// `stream_receiver_log_poll_error()`: the socket's pending error and the keepalive policy.
@@ -1649,7 +1646,7 @@ impl StreamWorker {
                         &mut a.keepalive_initialized,
                     );
                     // stream_receiver_dequeue_senders(): a failed write here ends the connection as a read failure
-                    if !self.flush(cx, index, false) {
+                    if !self.send_data(cx, index, false) {
                         let Some(child) = self.children[index].as_ref() else {
                             return;
                         };
@@ -1702,6 +1699,7 @@ mod tests {
     use super::*;
     use netdata_agent_nrpc::testing::inert;
     use netdata_agent_rrd::host::HostInfo;
+    use netdata_agent_rrd::stream_buffer::INITIAL_MAX_SIZE;
     use std::os::fd::AsFd;
 
     /// Replication stalls after ten minutes without new requests, unless charts wait for their backfill (C's
@@ -2500,8 +2498,8 @@ mod tests {
         slot.last_traffic_ut.store(1, Ordering::Relaxed);
         let before = now_monotonic_usec();
         s.with(|w, cx| {
-            w.children[0].as_mut().unwrap().pending_out.extend_from_slice(b"REPLAY_CHART x\n");
-            assert!(w.flush(cx, 0, false));
+            assert_eq!(slot.send_to_child(b"REPLAY_CHART x\n", Traffic::Replication), 15);
+            assert!(w.send_data(cx, 0, false));
         });
         assert!(slot.last_traffic_ut.load(Ordering::Relaxed) >= before);
     }
@@ -2729,8 +2727,8 @@ mod tests {
             let (mut attached, host, slot, theirs) = child(n, crate::caps::V2, &pool, &hosts, &connector);
             peers.push(theirs);
             attached.replication_wait = wait;
-            // owed before the child has a buffer: C's send_to_child() drops it
-            slot.send_to_child(b"FUNCTION_PAYLOAD x\n");
+            // owed before the child has a buffer: C's send_to_child() takes nothing
+            assert_eq!(slot.send_to_child(b"FUNCTION_PAYLOAD x\n", Traffic::Functions), 0);
             assert_ne!(buffers(attached.stream.socket().unwrap()), want, "smaller by default");
             s.with(|w, cx| w.attach(cx, attached));
             let a = &s.worker().children[i].as_ref().unwrap().attached;
@@ -2770,16 +2768,16 @@ mod tests {
         read_all(&mut peer);
         let gone = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
         s.with(|w, cx| {
-            slot.send_to_child(b"FUNCTION_CANCEL abc\n");
+            slot.send_to_child(b"FUNCTION_CANCEL abc\n", Traffic::Functions);
             assert_eq!(read_all(&mut peer), b"", "the step has not ended");
-            let ((), records) = netdata_agent_log::capture(|| w.child_pollout(cx, &Arc::downgrade(&gone), false));
+            let ((), records) = netdata_agent_log::capture(|| w.child_ops(cx, &Arc::downgrade(&gone), receiver_op::POLLOUT, false));
             assert_eq!(read_all(&mut peer), b"", "another connection's POLLOUT");
             assert_eq!(texts(records), Vec::<String>::new());
             w.drain_inline(cx);
         });
         assert_eq!(read_all(&mut peer), b"FUNCTION_CANCEL abc\n");
         let ((), records) =
-            netdata_agent_log::capture(|| s.with(|w, cx| w.child_pollout(cx, &Arc::downgrade(&gone), true)));
+            netdata_agent_log::capture(|| s.with(|w, cx| w.child_ops(cx, &Arc::downgrade(&gone), receiver_op::POLLOUT, true)));
         assert_eq!(texts(records), ["STREAM THREAD[0]: OPCODE 2 ignored."]);
         assert_eq!(read_all(&mut peer), b"");
         drop(host);
@@ -2794,11 +2792,12 @@ mod tests {
         s.with(|w, cx| w.attach(cx, attached));
         read_all(&mut peer);
         std::thread::scope(|t| {
-            t.spawn(|| slot.send_to_child(b"FUNCTION_CANCEL abc\n"));
+            t.spawn(|| slot.send_to_child(b"FUNCTION_CANCEL abc\n", Traffic::Functions));
         });
         assert_eq!(read_all(&mut peer), b"", "posted, not written by the caller");
         s.with(|w, cx| {
-            netdata_agent_evloop::Worker::message(w, cx, StreamMsg::ChildPollout(Arc::downgrade(&slot)));
+            let ops = Arc::new(AtomicU32::new(receiver_op::POLLOUT));
+            netdata_agent_evloop::Worker::message(w, cx, StreamMsg::ChildOps(Arc::downgrade(&slot), ops));
         });
         assert_eq!(read_all(&mut peer), b"FUNCTION_CANCEL abc\n");
         drop(host);
@@ -2812,14 +2811,189 @@ mod tests {
         let (mut attached, host, slot, _peer) = child(0xe4, crate::caps::V2, &pool, &hosts, &connector);
         attached.thread = 9;
         s.with(|w, cx| w.attach(cx, attached));
-        let ((), records) = netdata_agent_log::capture(|| slot.send_to_child(b"x\n"));
+        let (sent, records) = netdata_agent_log::capture(|| slot.send_to_child(b"x\n", Traffic::Functions));
+        assert_eq!(sent, 2, "queued, the wake lost");
+        let lost = |op: u32| {
+            format!(
+                "STREAM RCV '{}' [from [127.0.0.1]:1]: the opcode ({op}) message cannot be verified. Ignoring it.",
+                host.hostname()
+            )
+        };
+        assert_eq!(texts(records), [lost(receiver_op::POLLOUT)]);
+        // a refusal's opcode is lost the same way, with its own number
+        let free = slot.buffer().as_ref().unwrap().stats().bytes_available;
+        let (sent, records) = netdata_agent_log::capture(|| slot.send_to_child(&vec![b'x'; free], Traffic::Functions));
+        assert_eq!((sent, texts(records)), (-1, vec![lost(receiver_op::BUFFER_OVERFLOW)]));
+    }
+
+    /// D166: an add of exactly the buffer's free space is refused, -1 through the child's wire (a call then answers
+    /// 503), and the overflow opcode restarts the connection with C's record of the buffer's sizes and NOT
+    /// SUFFICIENT SEND BUFFER (`stream-receiver.c:364-378`).
+    #[test]
+    fn an_exact_fit_restarts_the_connection_as_cs() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, slot, _peer) = child(0xe5, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        let fill = INITIAL_MAX_SIZE - 4096;
+        assert!(slot.buffer().as_mut().unwrap().add(&vec![b'x'; fill], fill, Traffic::Functions, true));
+        let wire = ChildWire { slot: Arc::downgrade(&slot) };
+        assert_eq!(ingest::functions::Wire::send(&wire, &[b'y'; 4096], Traffic::Functions), -1);
+        let ops = Arc::new(AtomicU32::new(receiver_op::BUFFER_OVERFLOW));
+        let ((), records) = netdata_agent_log::capture(|| {
+            s.with(|w, cx| netdata_agent_evloop::Worker::message(w, cx, StreamMsg::ChildOps(Arc::downgrade(&slot), ops)))
+        });
+        let texts = texts(records);
+        assert_eq!(
+            texts[0],
+            format!(
+                "STREAM RCV[0] '{}' [from []:]: send buffer is full (buffer size {INITIAL_MAX_SIZE}, max \
+                 {INITIAL_MAX_SIZE}, used {fill}, available 4096). Restarting connection.",
+                host.hostname()
+            )
+        );
+        assert!(texts[1].contains("reason=\"DISCONNECTED NOT SUFFICIENT SEND BUFFER\""), "{texts:?}");
+        assert!(host.receiver().is_none());
+        assert_eq!(slot.send_to_child(b"x\n", Traffic::Functions), 0, "the buffer went with the connection");
+    }
+
+    /// One message carries a receiver's opcodes (C's message slot): POLLOUT writes first, then the overflow restarts
+    /// the connection, its record reading the buffer after the write (`stream-thread.c:51-68`).
+    #[test]
+    fn coalesced_opcodes_write_before_the_overflow_restarts() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, slot, mut peer) = child(0xe6, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        assert!(slot.buffer().as_mut().unwrap().add(&[b'z'; 1000], 1000, Traffic::Functions, true));
+        let ops = Arc::new(AtomicU32::new(receiver_op::POLLOUT | receiver_op::BUFFER_OVERFLOW));
+        let ((), records) = netdata_agent_log::capture(|| {
+            s.with(|w, cx| netdata_agent_evloop::Worker::message(w, cx, StreamMsg::ChildOps(Arc::downgrade(&slot), ops)))
+        });
+        assert_eq!(read_all(&mut peer), [b'z'; 1000]);
+        assert!(
+            texts(records)[0].ends_with(&format!(
+                "send buffer is full (buffer size 16384, max {INITIAL_MAX_SIZE}, used 0, available \
+                 {INITIAL_MAX_SIZE}). Restarting connection."
+            )),
+            "after the write"
+        );
+        assert!(host.receiver().is_none());
+    }
+
+    /// A backfilled chart's request the buffer refuses (`backfill_callback()` on the backfill thread,
+    /// `pluginsd_replication.c:25-34`): the send's record and the backfill's, the connection kept until the overflow
+    /// opcode restarts it; an opcode posted for it after that is C's "ignored" DEBUG with its number.
+    #[test]
+    fn a_refused_backfilled_request_restarts_the_connection() {
+        use std::io::Write;
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, slot, mut peer) = child(0xe7, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        peer.write_all(b"CHART 'x.c' '' 't' 'u' 'f' 'x.ctx' line 1 1 '' p m\nDIMENSION 'd' '' absolute 1 1 ''\n").unwrap();
+        s.turn(Duration::from_millis(50));
+        let chart = host.charts().find("x.c", true).expect("defined");
+        let line = "REPLAY_CHART \"x.c\" \"true\" 0 0\n";
+        let fill = INITIAL_MAX_SIZE - line.len();
+        assert!(slot.buffer().as_mut().unwrap().add(&vec![b'x'; fill], fill, Traffic::Functions, true));
+        let request = ingest::ReplayRequest { chart, first_entry_child: 0, last_entry_child: 0, child_wall_clock_time: 0 };
+        let ((), records) = netdata_agent_log::capture(|| {
+            s.with(|w, cx| netdata_agent_evloop::Worker::message(w, cx, StreamMsg::Replay(Arc::downgrade(&slot), request)))
+        });
         assert_eq!(
             texts(records),
-            [format!(
-                "STREAM RCV '{}' [from [127.0.0.1]:1]: the opcode (2) message cannot be verified. Ignoring it.",
-                host.hostname()
-            )]
+            [
+                format!(
+                    "STREAM SND REPLAY ERROR: 'host:{}/chart:x.c' failed to send replication request to child (error -1)",
+                    host.hostname()
+                ),
+                format!(
+                    "PLUGINSD REPLAY ERROR: 'host:{}' failed to initiate replication for 'chart:x.c' - replication may \
+                     not proceed for this instance.",
+                    host.hostname()
+                ),
+            ]
         );
+        assert!(host.receiver().is_some(), "until the overflow opcode");
+        let mut overflow = || {
+            let ops = Arc::new(AtomicU32::new(receiver_op::BUFFER_OVERFLOW));
+            netdata_agent_log::capture(|| {
+                s.with(|w, cx| {
+                    netdata_agent_evloop::Worker::message(w, cx, StreamMsg::ChildOps(Arc::downgrade(&slot), ops))
+                })
+            })
+            .1
+        };
+        let texts_now = texts(overflow());
+        assert!(texts_now[0].contains("send buffer is full"), "{texts_now:?}");
+        assert!(texts_now[1].contains("NOT SUFFICIENT SEND BUFFER"), "{texts_now:?}");
+        assert_eq!(texts(overflow()), ["STREAM THREAD[0]: OPCODE 8 ignored."]);
+    }
+
+    /// C's writes are the ring's contiguous chunks: a queue that wraps goes out in two writes, in order, both counted
+    /// (`stream_receiver_send_data()`'s loop).
+    #[test]
+    fn a_wrapped_buffer_is_written_in_two_chunks() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, _host, slot, mut peer) = child(0xe8, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        {
+            let mut buffer = slot.buffer();
+            let b = buffer.as_mut().unwrap();
+            assert!(b.add(&[0; 10_000], 10_000, Traffic::Functions, true));
+            b.del(10_000, 1);
+        }
+        let data: Vec<u8> = (0..10_000).map(|i| (i % 251) as u8).collect();
+        assert_eq!(slot.send_to_child(&data, Traffic::Functions), 10_000);
+        assert_eq!(slot.buffer().as_ref().unwrap().stats().bytes_outstanding, 16_384 - 10_000, "wrapped");
+        s.with(|w, cx| assert!(w.send_data(cx, 0, true)));
+        assert_eq!(read_all(&mut peer), data);
+        let stats = *slot.buffer().as_ref().unwrap().stats();
+        assert_eq!((stats.sends, stats.bytes_sent, stats.bytes_outstanding), (3, 20_000, 0));
+    }
+
+    /// A drained buffer shrinks its grown ring back to 16 KiB, at most every 5 minutes, and keeps its maximum
+    /// (`stream_circular_buffer_recreate_timed_unsafe()` after a send that drained it).
+    #[test]
+    fn a_drained_buffer_shrinks_its_ring() {
+        // the first recreate is due once the monotonic clock passed 5 minutes
+        assert!(now_monotonic_usec() >= 300_000_000, "the host has been up for 5 minutes");
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, _host, slot, mut peer) = child(0xe9, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        assert_eq!(slot.send_to_child(&[b'a'; 20_000], Traffic::Functions), 20_000);
+        assert_eq!(slot.buffer().as_ref().unwrap().stats().bytes_size, 32_768);
+        s.with(|w, cx| assert!(w.send_data(cx, 0, true)));
+        assert_eq!(read_all(&mut peer).len(), 20_000);
+        assert_eq!(slot.send_to_child(b"b\n", Traffic::Functions), 2);
+        let stats = *slot.buffer().as_ref().unwrap().stats();
+        assert_eq!((stats.bytes_size, stats.bytes_max_size, stats.recreates), (16_384, INITIAL_MAX_SIZE, 1));
+    }
+
+    /// The idle-timeout record reads the buffer (`stream-receiver.c:1179-1218`): the bytes and writes it counted, the
+    /// first contiguous chunk pending, and the fill of the grown maximum (D166; Rust printed the whole queue over 10
+    /// MiB).
+    #[test]
+    fn the_idle_record_reads_the_buffer() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, slot, _peer) = child(0xea, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        {
+            let mut buffer = slot.buffer();
+            let b = buffer.as_mut().unwrap();
+            let mut add = |n: usize| b.add(&vec![0; n], n, Traffic::Replication, true);
+            assert!(add(8_388_608));
+            b.del(8_388_608, 1);
+            let mut add = |n: usize| b.add(&vec![0; n], n, Traffic::Replication, true);
+            assert!(add(4_194_304) && add(6_291_457));
+            b.del(10_485_761, 2);
+            assert!(b.add(&vec![0; 12_000_000], 12_000_000, Traffic::Replication, true));
+        }
+        let last = slot.last_traffic_ut.load(Ordering::Relaxed);
+        let (_, records) = netdata_agent_log::capture(|| s.with(|w, cx| w.check_all(cx, last + 602_000_000)));
+        assert!(host.receiver().is_none());
+        let record = texts(records).into_iter().find(|t| t.contains("there was not traffic")).expect("the record");
+        let pending = size_to_string(10_485_759, "B", false).unwrap();
+        assert!(record.contains(" - we have sent 18874369 bytes in 2 operations, it is idle for "), "{record}");
+        assert!(record.ends_with(&format!("and we have {pending} pending to send (buffer is used 57.22%).")), "{record}");
     }
 
     /// A child's method is called through its own socket: the FUNCTION line and, the child having PROGRESS, a
@@ -3037,11 +3211,11 @@ mod tests {
     #[test]
     fn a_poll_error_logs_so_error_and_the_keepalive() {
         let (mut s, pool, hosts, connector) = stepper();
-        let (attached, host, _, theirs) = child(0xe3, crate::caps::V2, &pool, &hosts, &connector);
+        let (attached, host, slot, theirs) = child(0xe3, crate::caps::V2, &pool, &hosts, &connector);
         s.with(|w, cx| {
             w.attach(cx, attached);
-            w.children[0].as_mut().unwrap().pending_out.extend_from_slice(b"x\n");
-            assert!(w.flush(cx, 0, false));
+            assert_eq!(slot.send_to_child(b"x\n", Traffic::Functions), 2);
+            assert!(w.send_data(cx, 0, false));
         });
         drop(theirs);
         let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
@@ -3065,7 +3239,7 @@ mod tests {
     fn a_poll_error_without_a_hangup_is_a_socket_error() {
         use nix::sys::socket::{TimestampingFlag, setsockopt, sockopt};
         let (mut s, pool, hosts, connector) = stepper();
-        let (mut attached, host, _, _unix) = child(0xe4, crate::caps::V2, &pool, &hosts, &connector);
+        let (mut attached, host, slot, _unix) = child(0xe4, crate::caps::V2, &pool, &hosts, &connector);
         attached.keepalive = Keepalive { enabled: false, ..keepalive() };
         let (_client, server) = tcp_pair();
         setsockopt(
@@ -3076,8 +3250,8 @@ mod tests {
         .unwrap();
         s.with(|w, cx| {
             w.attach(cx, with_stream(attached, Conn::Tcp(server)));
-            w.children[0].as_mut().unwrap().pending_out.extend_from_slice(b"x\n");
-            assert!(w.flush(cx, 0, false));
+            assert_eq!(slot.send_to_child(b"x\n", Traffic::Functions), 2);
+            assert!(w.send_data(cx, 0, false));
         });
         let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
         assert!(host.receiver().is_none());

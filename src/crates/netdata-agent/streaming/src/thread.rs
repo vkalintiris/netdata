@@ -3,6 +3,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::io;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -53,7 +54,7 @@ pub(crate) fn take_inline_children() -> Vec<Weak<ReceiverSlot>> {
 }
 
 /// What a stream thread is sent: a connection to take over, a backfilled chart's replication request for the
-/// connection of `receiver`, a sender's connection to its parent, a sender's opcodes, or a POLLOUT for a child.
+/// connection of `receiver`, a sender's connection to its parent, a sender's opcodes, or a receiver's.
 #[derive(Debug)]
 pub enum StreamMsg {
     Attach(Box<Attached>),
@@ -62,8 +63,9 @@ pub enum StreamMsg {
     AttachSender(Box<Connected>),
     /// A sender's opcodes for a session are waiting in its slot (`stream_sender_send_opcode()`).
     SenderOps(Weak<Sender>, Session),
-    /// Lines are owed to a receiver's child (`stream_receiver_send_opcode()` with RECEIVER_POLLOUT).
-    ChildPollout(Weak<ReceiverSlot>),
+    /// A receiver's opcodes (`stream_receiver_send_opcode()`, `receiver_op`): the bits gathered until the thread takes
+    /// them, one message for them all (C's message slot of the receiver).
+    ChildOps(Weak<ReceiverSlot>, Arc<AtomicU32>),
 }
 
 /// A stream thread: owns the connections of the children assigned to it, and parses what they send inline, and the
@@ -140,14 +142,14 @@ impl Worker for StreamWorker {
     fn message(&mut self, cx: &mut Context<'_>, msg: StreamMsg) {
         match msg {
             StreamMsg::Attach(attached) => self.waiting.push(*attached),
-            StreamMsg::Replay(receiver, request) => self.replay(cx, &receiver, &request),
+            StreamMsg::Replay(receiver, request) => self.replay(&receiver, &request),
             StreamMsg::AttachSender(connected) => self.queued_senders.push(*connected),
             StreamMsg::SenderOps(sender, session) => {
                 if let Some(sender) = sender.upgrade() {
                     self.sender_ops(cx, &sender, session);
                 }
             }
-            StreamMsg::ChildPollout(slot) => self.child_pollout(cx, &slot, true),
+            StreamMsg::ChildOps(slot, ops) => self.child_ops(cx, &slot, ops.swap(0, Ordering::AcqRel), true),
         }
         self.drain_inline(cx);
     }
@@ -158,7 +160,7 @@ impl Worker for StreamWorker {
         match msg {
             StreamMsg::Attach(attached) => self.waiting.push(*attached),
             StreamMsg::AttachSender(connected) => self.queued_senders.push(*connected),
-            StreamMsg::Replay(..) | StreamMsg::SenderOps(..) | StreamMsg::ChildPollout(..) => {}
+            StreamMsg::Replay(..) | StreamMsg::SenderOps(..) | StreamMsg::ChildOps(..) => {}
         }
     }
 

@@ -674,6 +674,7 @@ pub(crate) mod tests {
     use netdata_agent_rrd::contexts::Taker;
     use netdata_agent_rrd::host::{Attach, HostInfo, ReceiverSlot, StreamSend};
     use netdata_agent_rrd::mode::DbMode;
+    use netdata_agent_rrd::testing::{open_buffer, take_queued};
 
     use super::*;
     use crate::conf::Send;
@@ -738,6 +739,7 @@ pub(crate) mod tests {
         let s = Sender::attach(&host, &c).expect("created");
         let link = netdata_agent_rrd::host::ReceiverLink { capabilities: caps::NODE_ID, ..Default::default() };
         let slot = Arc::new(ReceiverSlot::new(0, Default::default(), link, Box::new(|| {})));
+        open_buffer(&slot);
         assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
         host.set_node_id([0x33; 16]);
         host.update_claim_id_of_parent([0x22; 16]);
@@ -745,12 +747,12 @@ pub(crate) mod tests {
         c.requeue(&s, &host, Cmd::Connect);
         c.remove_host(&s, &host);
         assert_eq!(
-            String::from_utf8(slot.take_to_child()).unwrap(),
+            String::from_utf8(take_queued(&slot)).unwrap(),
             "NODE_ID '22222222-2222-2222-2222-222222222222' '33333333-3333-3333-3333-333333333333' \
              'https://app.netdata.cloud'\n"
         );
         c.remove_host(&s, &host);
-        assert!(slot.take_to_child().is_empty(), "not queued: no hook runs");
+        assert!(take_queued(&slot).is_empty(), "not queued: no hook runs");
     }
 
     /// `stream_parents_host_reset()` at the connector's add (NEVER), at its removal (the exit reason) and at a
@@ -825,6 +827,7 @@ pub(crate) mod tests {
         let s = Sender::attach(&host, &c).expect("created");
         let link = ReceiverLink { capabilities: caps::PATHS, ..ReceiverLink::default() };
         let slot = Arc::new(ReceiverSlot::new(1, Default::default(), link, Box::new(|| {})));
+        open_buffer(&slot);
         assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
         let us = c.local().host_id;
         let entry = |host_id: [u8; 16], hops| PathEntry { host_id, hops, ..PathEntry::default() };
@@ -834,13 +837,13 @@ pub(crate) mod tests {
         c.requeue(&s, &host, Cmd::Connect);
         c.remove_host(&s, &host);
         assert_eq!(path(&host), [([0xc9; 16], 0), (us, 1)]);
-        let sent = slot.take_to_child();
+        let sent = take_queued(&slot);
         assert!(sent.starts_with(b"JSON STREAM_PATH\n"));
         assert_eq!(sent, netdata_agent_ingest::stream_path::message(&host, &localhost, None));
         c.requeue(&s, &host, Cmd::Connect);
         c.remove_host(&s, &host);
         assert_eq!(path(&host), [([0xc9; 16], 0), (us, 1)]);
-        assert!(slot.take_to_child().is_empty());
+        assert!(take_queued(&slot).is_empty());
     }
 
     /// The free at a host's cleanup (HOST CLEANUP) takes a queued sender off the connector at once, without the
@@ -873,7 +876,7 @@ pub(crate) mod tests {
     }
 
     /// `stream_receiver_send_node_and_claim_id_to_child()`: the host's node id with the parent's claim id and the
-    /// Cloud URL, into the receiver's outbox; nothing for a zero node id or a child without NODE_ID.
+    /// Cloud URL, into the receiver's buffer; nothing for a zero node id or a child without NODE_ID.
     #[test]
     fn a_node_id_goes_down_to_a_child_that_takes_it() {
         let env = Env { cloud_url: Box::new(|| "https://nodeid.invalid".to_string()), ..Env::default() };
@@ -881,30 +884,31 @@ pub(crate) mod tests {
         let attach = |caps: u32| {
             let link = netdata_agent_rrd::host::ReceiverLink { capabilities: caps, ..Default::default() };
             let slot = Arc::new(ReceiverSlot::new(0, Default::default(), link, Box::new(|| {})));
+            open_buffer(&slot);
             assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
             slot
         };
         let slot = attach(caps::NODE_ID);
         crate::sender::send_node_and_claim_id_to_child(&host, &env);
-        assert!(slot.take_to_child().is_empty(), "no node id yet");
+        assert!(take_queued(&slot).is_empty(), "no node id yet");
         host.set_node_id([0x33; 16]);
         host.update_claim_id_of_parent([0x22; 16]);
         crate::sender::send_node_and_claim_id_to_child(&host, &env);
         assert_eq!(
-            String::from_utf8(slot.take_to_child()).unwrap(),
+            String::from_utf8(take_queued(&slot)).unwrap(),
             "NODE_ID '22222222-2222-2222-2222-222222222222' '33333333-3333-3333-3333-333333333333' \
              'https://nodeid.invalid'\n"
         );
         host.clear_receiver(&slot, 0);
         let slot = attach(0);
         crate::sender::send_node_and_claim_id_to_child(&host, &env);
-        assert!(slot.take_to_child().is_empty(), "a child without NODE_ID");
+        assert!(take_queued(&slot).is_empty(), "a child without NODE_ID");
         host.clear_receiver(&slot, 0);
         // a plugin claims its GUID as a local vnode: its receiver, still attached, gets none (`rrdhost_is_local()`)
         let slot = attach(caps::NODE_ID);
         host.set_virtual();
         crate::sender::send_node_and_claim_id_to_child(&host, &env);
-        assert!(slot.take_to_child().is_empty(), "a local host");
+        assert!(take_queued(&slot).is_empty(), "a local host");
     }
 
     /// `stream_sender_signal_to_stop_and_wait()`: a sender not ADDED is left as it is (nothing to stop); a queued one

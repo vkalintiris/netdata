@@ -308,8 +308,8 @@ pub fn send_retention_changes_to_parent(host: &Host, localhost: &Host) {
     }
 }
 
-/// `stream_path_send_to_child()` from outside the child's parser (whose own lines go out with its reads): into the
-/// receiver's outbox, when the child takes paths and is online.
+/// `stream_path_send_to_child()` from outside the child's parser: into the receiver's buffer, when the child takes
+/// paths and is online.
 pub fn send_to_child(host: &Host, localhost: &Host) {
     if host.is_localhost() {
         return;
@@ -318,7 +318,7 @@ pub fn send_to_child(host: &Host, localhost: &Host) {
         return;
     };
     if slot.link.capabilities & caps::PATHS != 0 && host.collector_online() {
-        slot.send_to_child(&message(host, localhost, None));
+        slot.send_to_child(&message(host, localhost, None), Traffic::Metadata);
     }
 }
 

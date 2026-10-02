@@ -17,9 +17,10 @@ use crate::index::Index;
 use crate::labels::Labels;
 use crate::mode::DbMode;
 use crate::storage::{StorageLayout, TierHandle};
+use crate::stream_buffer::CircularBuffer;
 use crate::stream_path::PathEntry;
 use crate::system_info::SystemInfo;
-use crate::upstream::{self, Upstream};
+use crate::upstream::{self, Traffic, Upstream};
 use crate::variables::Variables;
 
 /// What a host is and how it is stored; the mutable part of `struct rrdhost`.
@@ -209,6 +210,14 @@ pub struct ReceiverLink {
     pub capabilities: u32,
 }
 
+/// `STREAM_OPCODE_RECEIVER_*` (`stream-thread.h`): what a send to a child asks of the child's stream thread.
+pub mod receiver_op {
+    /// Bytes wait in a buffer that was empty: write them.
+    pub const POLLOUT: u32 = 1 << 1;
+    /// The buffer refused an add: the connection restarts.
+    pub const BUFFER_OVERFLOW: u32 = 1 << 3;
+}
+
 /// The receiver attached to a host (`host->receiver`): what admission needs to judge a second connection.
 pub struct ReceiverSlot {
     /// `rpt->thread.last_traffic_ut`, monotonic microseconds.
@@ -220,12 +229,12 @@ pub struct ReceiverSlot {
     pub link: ReceiverLink,
     /// Shuts the connection down so its stream thread notices at once.
     shutdown: Box<dyn Fn() + Send + Sync>,
-    /// `rpt->thread.send_to_child`: lines owed to the child (D119.1) by its parser's calls and by other threads, taken
-    /// by its stream thread.
-    to_child: Mutex<Vec<u8>>,
-    /// Set when the connection reaches its stream thread (C's send buffer is created): tells that thread lines are
-    /// owed (`STREAM_OPCODE_RECEIVER_POLLOUT`, D164.B2).
-    waker: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    /// `rpt->thread.send_to_child.scb` under its spinlock: what is owed to the child (D166), from the move to running
+    /// to the removal; `None` outside them, as C's NULL buffer.
+    to_child: Mutex<Option<CircularBuffer>>,
+    /// Set when the connection reaches its stream thread: given the opcode each send owes that thread
+    /// (`stream_receiver_send_opcode()`, `receiver_op`).
+    waker: OnceLock<Box<dyn Fn(u32) + Send + Sync>>,
     /// Its host is detaching it (`rrdhost_clear_receiver()` past its first step): no longer the host's receiver for
     /// the host's state, still in the slot until the detach ends.
     detaching: AtomicBool,
@@ -253,38 +262,56 @@ impl ReceiverSlot {
             remote,
             link,
             shutdown,
-            to_child: Mutex::new(Vec::new()),
+            to_child: Mutex::new(None),
             waker: OnceLock::new(),
             detaching: AtomicBool::new(false),
         }
     }
 
-    /// `send_to_child()` of a line for the child: queued, and its stream thread woken when nothing was owed before
-    /// (C's POLLOUT when the buffer was empty); queued unwoken before the connection reached its thread, which drops it
-    /// then (D119.2).
-    pub fn send_to_child(&self, bytes: &[u8]) {
-        let was_empty = {
+    /// `send_to_child()`: `bytes` for the child added to its buffer as `traffic`, the buffer autoscaled; their length,
+    /// 0 without bytes or before the move to running (nothing is queued, D119.2), -1 when the buffer refuses them.
+    /// After the lock its stream thread gets POLLOUT when the buffer was empty, BUFFER_OVERFLOW on a refusal.
+    pub fn send_to_child(&self, bytes: &[u8], traffic: Traffic) -> isize {
+        if bytes.is_empty() {
+            return 0;
+        }
+        let (sent, op) = {
             let mut to_child = lock(&self.to_child);
-            let was_empty = to_child.is_empty();
-            to_child.extend_from_slice(bytes);
-            was_empty
+            let Some(buffer) = to_child.as_mut() else {
+                return 0;
+            };
+            let was_empty = buffer.stats().bytes_outstanding == 0;
+            if !buffer.add(bytes, bytes.len(), traffic, true) {
+                (-1, receiver_op::BUFFER_OVERFLOW)
+            } else if was_empty {
+                (bytes.len() as isize, receiver_op::POLLOUT)
+            } else {
+                (bytes.len() as isize, 0)
+            }
         };
-        if was_empty
-            && !bytes.is_empty()
+        if op != 0
             && let Some(wake) = self.waker.get()
         {
-            wake();
+            wake(op);
         }
+        sent
     }
 
-    /// The connection reached its stream thread: from now on an owed line wakes it with `wake`.
-    pub fn set_waker(&self, wake: Box<dyn Fn() + Send + Sync>) {
+    /// `stream_circular_buffer_create()` at the move to running, with the thread's `wake`: from here a send is
+    /// queued.
+    pub fn open_buffer(&self, wake: Box<dyn Fn(u32) + Send + Sync>) {
         let _ = self.waker.set(wake);
+        *lock(&self.to_child) = Some(CircularBuffer::default());
     }
 
-    /// What is owed to the child so far, taken.
-    pub fn take_to_child(&self) -> Vec<u8> {
-        std::mem::take(&mut *lock(&self.to_child))
+    /// `stream_receiver_free()`'s destroy: a send after it gets 0.
+    pub fn close_buffer(&self) {
+        *lock(&self.to_child) = None;
+    }
+
+    /// The child's buffer under its lock: its stream thread writes from it and its records read it.
+    pub fn buffer(&self) -> MutexGuard<'_, Option<CircularBuffer>> {
+        lock(&self.to_child)
     }
 
     /// The first half of `stream_receiver_signal_to_stop_and_wait()`: flag it and shut the socket down, once.
@@ -2372,29 +2399,31 @@ mod tests {
         }
     }
 
-    /// `send_to_child()`: a line owed before the connection reached its thread wakes nothing (it is dropped there,
-    /// D119.2); afterwards only an append to an empty queue wakes the thread (C's POLLOUT when its buffer was empty).
+    /// `send_to_child()`: before the move to running and after the removal there is no buffer, so 0 and nothing
+    /// queued; with it, the length, POLLOUT only when the buffer was empty, nothing for no bytes, and an add of exactly
+    /// the free space refused with -1 and BUFFER_OVERFLOW, the buffer as it was (D166).
     #[test]
-    fn an_owed_line_wakes_the_childs_thread_once() {
-        use std::sync::atomic::AtomicUsize;
+    fn a_send_to_a_child_is_cs() {
+        use crate::stream_buffer::INITIAL_MAX_SIZE;
         let slot = ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {}));
-        slot.send_to_child(b"early\n");
-        let wakes = Arc::new(AtomicUsize::new(0));
-        let counted = Arc::clone(&wakes);
-        slot.set_waker(Box::new(move || {
-            counted.fetch_add(1, Ordering::Relaxed);
-        }));
-        slot.send_to_child(b"a\n");
-        assert_eq!(wakes.load(Ordering::Relaxed), 0, "the queue held the early line");
-        assert_eq!(slot.take_to_child(), b"early\na\n");
-        slot.send_to_child(b"b\n");
-        slot.send_to_child(b"c\n");
-        slot.send_to_child(b"");
-        assert_eq!(wakes.load(Ordering::Relaxed), 1);
-        assert_eq!(slot.take_to_child(), b"b\nc\n");
-        slot.send_to_child(b"");
-        slot.send_to_child(b"d\n");
-        assert_eq!(wakes.load(Ordering::Relaxed), 2);
+        assert_eq!(slot.send_to_child(b"early\n", Traffic::Metadata), 0);
+        let ops = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&ops);
+        slot.open_buffer(Box::new(move |op| seen.lock().unwrap().push(op)));
+        let queued = |slot: &ReceiverSlot| slot.buffer().as_ref().unwrap().stats().bytes_outstanding;
+        assert_eq!(queued(&slot), 0, "the early line was not queued");
+        let sends = [b"a\n" as &[u8], b"b\n", b""].map(|line| slot.send_to_child(line, Traffic::Functions));
+        assert_eq!((sends, queued(&slot)), ([2, 2, 0], 4));
+        assert_eq!(*ops.lock().unwrap(), [receiver_op::POLLOUT]);
+        let free = INITIAL_MAX_SIZE - 4;
+        assert_eq!(slot.send_to_child(&vec![b'x'; free], Traffic::Functions), -1);
+        assert_eq!(queued(&slot), 4);
+        assert_eq!(*ops.lock().unwrap(), [receiver_op::POLLOUT, receiver_op::BUFFER_OVERFLOW]);
+        slot.buffer().as_mut().unwrap().del(4, 1);
+        assert_eq!(slot.send_to_child(b"c\n", Traffic::Functions), 2);
+        assert_eq!(ops.lock().unwrap().last(), Some(&receiver_op::POLLOUT), "drained, so empty again");
+        slot.close_buffer();
+        assert_eq!(slot.send_to_child(b"d\n", Traffic::Functions), 0);
     }
 
     /// `rrdhost_clear_receiver()`: the receiver's end tells the host's sender and resets its parents, both with the
