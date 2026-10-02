@@ -325,6 +325,23 @@ func maskStopWalk(classes map[string][]string) {
 	}
 }
 
+// maskStopWalkAfterFirst is maskStopWalk keeping the walk's first record: the newest plugin, which the walk reaches
+// before the collectors' cancel can (it starts within 100 ms of the stop, the cancel later; I10's 60 stops).
+func maskStopWalkAfterFirst(classes map[string][]string) {
+	slices.Sort(classes["collector.log comm=spawn-plugins"])
+	if lines, ok := classes["daemon.log thread=PLUGINSD"]; ok {
+		first := true
+		classes["daemon.log thread=PLUGINSD"] = slices.DeleteFunc(lines, func(l string) bool {
+			if !strings.Contains(l, "stopping plugin thread") {
+				return false
+			}
+			keep := first
+			first = false
+			return !keep
+		})
+	}
+}
+
 // TestPluginsFakePlugin (check `plugins.fake-plugin`, M8 commit 0, D134): both agents run `difftest.plugin`
 // (package plugin): a dash wrapper exec'ing a Go engine that plays a scenario and records its argv, its stdin and how
 // it ended. Per case: what the agents show while it runs, then (both stopped) each start's view, the number of starts
@@ -700,14 +717,17 @@ func TestPluginsFakePlugin(t *testing.T) {
 					}
 				}
 			},
+			// the walk starts with the newest plugin, which it always names; whether it still names the older one
+			// races the collectors' cancel, in C too (D163)
 			guard: func(t *testing.T, starts [][]plugin.Record, classes map[string][]string) {
 				stopping := slices.DeleteFunc(slices.Clone(classes["daemon.log thread=PLUGINSD"]), func(l string) bool {
 					return !strings.Contains(l, "stopping plugin thread")
 				})
-				if len(stopping) != 2 || !strings.Contains(stopping[0], "plugin:difftestlate") {
+				if len(stopping) == 0 || len(stopping) > 2 || !strings.Contains(stopping[0], "plugin:difftestlate") {
 					t.Errorf("oracle: the stopping records, newest first: %q", stopping)
 				}
 			},
+			mask: maskStopWalkAfterFirst,
 		},
 		// which files are plugins: the three suffixes, a plugin in a later directory, the same file in two (the first
 		// wins), a name too long for a thread's tag, files that are not plugins, an obsolete plugin and a missing

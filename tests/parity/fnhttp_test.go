@@ -256,6 +256,9 @@ func runFnHTTPCases(t *testing.T, cases map[string]fnHTTPCase) {
 				}
 				oracleClasses = classes
 			},
+			// the stop's walk races the collectors' cancel when two plugins hang at the stop (errors' second starts),
+			// in C too (D163); these cases do not own the walk's records
+			mask: maskStopWalk,
 			after: func(t *testing.T, p *Pair) {
 				var access, calls [2][]string
 				for i, side := range p.Each() {
@@ -848,6 +851,8 @@ func TestFnHTTPCatalog(t *testing.T) {
 			fnGuardV2(t, p)
 		},
 		guard: func(t *testing.T, starts [][]plugin.Record, classes map[string][]string) {},
+		// difftest and difftestb's second start hang at the stop: the walk races the collectors' cancel (D163)
+		mask: maskStopWalk,
 	}})
 }
 
