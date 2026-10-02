@@ -170,7 +170,10 @@ impl Worker for StreamWorker {
         match msg {
             StreamMsg::Attach(attached) => self.waiting.push(*attached),
             StreamMsg::AttachSender(connected) => self.queued_senders.push(*connected),
-            StreamMsg::Replay(..) | StreamMsg::SenderOps(..) | StreamMsg::ChildOps(..) => {}
+            // a receiver's opcodes are dropped with their bits, so a later wake posts again and, once the thread is
+            // gone, logs C's "cannot be verified" as every call does there
+            StreamMsg::ChildOps(_, ops) => ops.store(0, Ordering::Release),
+            StreamMsg::Replay(..) | StreamMsg::SenderOps(..) => {}
         }
     }
 

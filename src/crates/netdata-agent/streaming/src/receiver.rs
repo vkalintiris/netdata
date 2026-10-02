@@ -3220,6 +3220,21 @@ mod tests {
         assert_eq!(read_all(&mut peer), b"FUNCTION_CANCEL abc\n");
     }
 
+    /// The thread's exit drops a receiver's opcodes with their bits, so a later wake posts again (and, the thread gone,
+    /// logs C's "cannot be verified") instead of finding its message pending (R70-6).
+    #[test]
+    fn the_exit_drops_a_receivers_opcodes_with_their_bits() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, _host, slot, _peer) = child(0xf9, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        let ops = Arc::new(AtomicU32::new(receiver_op::POLLOUT));
+        s.with(|w, cx| {
+            let msg = StreamMsg::ChildOps(Arc::downgrade(&slot), Arc::clone(&ops));
+            netdata_agent_evloop::Worker::exit_message(w, cx, msg);
+        });
+        assert_eq!(ops.load(Ordering::Acquire), 0);
+    }
+
     /// A child that sends a REND whose REPLAY_CHART cannot be written (its peer stopped reading): the error records of
     /// the turn that reads it.
     fn an_inline_write_failure() -> (Vec<netdata_agent_log::Captured>, Arc<Host>) {
