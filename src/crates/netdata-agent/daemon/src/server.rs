@@ -637,6 +637,45 @@ impl WebWorker {
         }
     }
 
+    /// `poll_process_error()`: the record of what the poller reported against what it polled for, then the close.
+    fn hang_up(
+        &mut self,
+        cx: &mut Context<'_>,
+        slot: usize,
+        error: bool,
+        hangup: bool,
+        readable: bool,
+        writable: bool,
+    ) {
+        let Some(client) = self.clients[slot].as_ref() else {
+            return;
+        };
+        let flag = |set: bool, name: &'static str| if set { name } else { "" };
+        // C polls for writing only while a response is pending, and for nothing after a receive of 0 bytes; its
+        // poller reports only the events it polls for
+        let sending = !client.output.is_empty();
+        let (expects_read, expects_write) = (!client.awaits_hangup && !sending, !client.awaits_hangup && sending);
+        {
+            let _frame = client.log.hangup_frame();
+            nd_log!(
+                Source::Daemon,
+                Priority::Debug,
+                "POLLFD: LISTENER: received {} {} {} on socket {} client '{}' port '{}' expecting {} {}, having {} {}",
+                flag(error, "ERROR"),
+                flag(hangup, "HUP"),
+                "",
+                link_fd(&client.stream),
+                client.log.accept_ip,
+                client.log.port,
+                flag(expects_read, "READ"),
+                flag(expects_write, "WRITE"),
+                flag(readable && expects_read, "READ"),
+                flag(writable && expects_write, "WRITE")
+            );
+        }
+        self.close(cx, slot, true);
+    }
+
     fn serve(&mut self, cx: &mut Context<'_>, slot: usize, event: &Event) {
         let shared = Arc::clone(&self.shared);
         let receivers = Arc::clone(&self.receivers);
@@ -647,31 +686,8 @@ impl WebWorker {
         // poll_process_error(): a hangup or a half-close (EPOLLRDHUP, even with the request in the same read) closes
         // the client before anything it sent is served.
         if event.is_read_closed() || event.is_error() {
-            let flag = |set: bool, name: &'static str| if set { name } else { "" };
             let hangup = event.is_read_closed() || event.is_write_closed();
-            // C polls for writing only while a response is pending, and for nothing after a receive of 0 bytes; its
-            // poller reports only the events it polls for
-            let sending = !client.output.is_empty();
-            let (expects_read, expects_write) = (!client.awaits_hangup && !sending, !client.awaits_hangup && sending);
-            {
-                let _frame = client.log.hangup_frame();
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Debug,
-                    "POLLFD: LISTENER: received {} {} {} on socket {} client '{}' port '{}' expecting {} {}, having {} {}",
-                    flag(event.is_error(), "ERROR"),
-                    flag(hangup, "HUP"),
-                    "",
-                    link_fd(&client.stream),
-                    client.log.accept_ip,
-                    client.log.port,
-                    flag(expects_read, "READ"),
-                    flag(expects_write, "WRITE"),
-                    flag(event.is_readable() && expects_read, "READ"),
-                    flag(event.is_writable() && expects_write, "WRITE")
-                );
-            }
-            self.close(cx, slot, true);
+            self.hang_up(cx, slot, event.is_error(), hangup, event.is_readable(), event.is_writable());
             return;
         }
         if client.awaits_hangup {
@@ -784,8 +800,16 @@ impl WebWorker {
         let Some(client) = self.clients[slot].as_mut() else {
             return;
         };
-        // web_server_snd_callback(): a response this event's read queued goes out now, where C's poller reports the
-        // socket writable next
+        // A response this event's read queued goes out now, where C's poller reports the socket writable next, unless
+        // that poll would report the client gone: the header C sent while answering is all it gets.
+        if reads
+            && client.written < client.output.len()
+            && let Some((error, hangup, writable)) = client.stream.socket().and_then(hung_up)
+        {
+            self.hang_up(cx, slot, error, hangup, false, writable);
+            return;
+        }
+        // web_server_snd_callback()
         if reads && client.written < client.output.len() && !event.is_writable() {
             self.stats.sends += 1;
         }
@@ -1256,6 +1280,19 @@ pub fn permission_denied_acl() -> Reply {
     )
 }
 
+/// What C's next poll reports for a client with a response to send, as `(error, hangup, writable)`, when the client
+/// hung up or failed: its poller always polls for EPOLLRDHUP and serves a hangup before POLLOUT, so no byte of a
+/// queued body goes out after the client's FIN. A poll, not a peek: a peek misses a FIN behind pipelined bytes.
+fn hung_up(stream: &Conn) -> Option<(bool, bool, bool)> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let mut fds = [PollFd::new(stream, PollFlags::OUT | PollFlags::RDHUP)];
+    poll(&mut fds, Some(&Timespec::default())).ok()?;
+    let got = fds[0].revents();
+    let error = got.contains(PollFlags::ERR);
+    let hangup = got.intersects(PollFlags::HUP | PollFlags::RDHUP);
+    (error || hangup).then_some((error, hangup, got.contains(PollFlags::OUT)))
+}
+
 /// `is_socket_closed()`: a peek that finds the end of the stream or an error other than "no data yet"; a failed peek
 /// leaves its errno, as `recv()` does.
 fn is_socket_closed(stream: &Conn, errno: &mut i32) -> bool {
@@ -1459,6 +1496,27 @@ impl Worker for WebWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_half_close_is_seen_behind_unread_bytes() {
+        use std::io::Write as _;
+        use std::net::{Shutdown, TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        accepted.set_nonblocking(true).unwrap();
+        let conn = Conn::Tcp(mio::net::TcpStream::from_std(accepted));
+        assert_eq!(hung_up(&conn), None);
+        // a pipelined request ahead of the FIN: the peek finds data, the poll the hangup
+        peer.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        peer.shutdown(Shutdown::Write).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while hung_up(&conn).is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(hung_up(&conn), Some((false, true, true)));
+        assert!(!is_socket_closed(&conn, &mut 0));
+    }
 
     #[test]
     fn gzip_bodies_go_out_in_cs_chunks() {

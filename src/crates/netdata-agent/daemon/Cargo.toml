@@ -37,6 +37,7 @@ netdata-agent-tls = { workspace = true }
 netdata-agent-text = { workspace = true }
 netdata-agent-web = { workspace = true }
 nix = { workspace = true, features = ["signal", "user", "hostname", "fs", "process", "time", "resource", "net", "poll"] }
+rustix = { workspace = true }
 serde_json = { workspace = true }
 socket2 = { workspace = true, features = ["all"] }
 twox-hash = { workspace = true, features = ["xxhash3_64"] }

@@ -3062,6 +3062,7 @@ dependencies = [
  "netdata-agent-tls",
  "netdata-agent-web",
  "nix",
+ "rustix",
  "serde_json",
  "socket2",
  "tempfile",
