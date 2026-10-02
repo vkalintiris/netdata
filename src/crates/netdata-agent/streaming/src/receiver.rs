@@ -139,9 +139,90 @@ fn reconcile_keepalive(
 /// A receiver older than this without traffic is stale and may be replaced (`stream_receiver_accept_connection()`).
 const STALE_RECEIVER_S: u64 = 30;
 
-/// The complete lines of `bytes` through the parser; false at the first line it refuses.
-fn parse(reader: &mut LineReader, parser: &mut Parser, bytes: &[u8]) -> bool {
-    reader.push(bytes).into_iter().all(|line| parser.feed(&line))
+/// The complete lines of `bytes` through the child's parser; false at the first line it refuses. A line that left
+/// bytes in the child's empty buffer has them written before the next line, as C's inline POLLOUT writes inside the
+/// add; a failed write is only logged there (the read's end removes the child).
+fn parse(reader: &mut LineReader, parser: &mut Parser, attached: &mut Attached, bytes: &[u8]) -> bool {
+    for line in reader.push(bytes) {
+        if !parser.feed(&line) {
+            return false;
+        }
+        if parser.take_sent() && crate::thread::take_inline_child(&attached.slot) {
+            let _ = write_buffer(attached, Some(parser));
+        }
+    }
+    true
+}
+
+/// `STREAM RCV[n] '<host>' [from [<ip>]:<port>]: ` of the stream thread's records.
+fn prefix(a: &Attached) -> String {
+    format!("STREAM RCV[{}] '{}' [from [{}]:{}]: ", a.thread, a.host.hostname(), a.peer.ip, a.peer.port)
+}
+
+/// Who writes a child's buffer: what a failed write does (C's `process_opcodes_and_enable_removal`) and under which
+/// fields its record is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Writer {
+    /// The poller's writable event (and the tick that stands for it): a failure removes the child.
+    Poll,
+    /// After a read (`stream_receiver_dequeue_senders()`): under the parser's fields; the caller ends the child.
+    Read,
+    /// An opcode (POLLOUT, inline or posted): a failure is logged and nothing more, as C's handler must not remove
+    /// a receiver whose parser a caller may be inside; the next event or the periodic check removes it.
+    Opcode,
+}
+
+/// `stream_receiver_send_data()`'s loop: the child's buffer written one contiguous chunk at a time under its lock,
+/// until it drains (a grown ring then shrinks back, at most every 5 minutes) or the socket is full. The failure's
+/// reason, after C's record (under the fields of `parser`, given inside or after a read), when the connection failed.
+fn write_buffer(attached: &mut Attached, parser: Option<&Parser>) -> Result<(), Reason> {
+    let slot = Arc::clone(&attached.slot);
+    let mut buffer = slot.buffer();
+    let failure = loop {
+        let Some(b) = buffer.as_mut() else {
+            return Ok(());
+        };
+        let chunk = b.next();
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        match attached.stream.write(chunk) {
+            Ok(n) if n > 0 => {
+                let now_ut = now_monotonic_usec();
+                b.del(n, now_ut);
+                attached.hosts.storage().pulse().network.stream_sent(n);
+                attached.host.stream_bytes_sent(n);
+                // a write is traffic too (C's last_traffic_ut), for the idle timeout and the stale check at accept
+                slot.last_traffic_ut.store(now_ut, Ordering::Relaxed);
+                if b.stats().bytes_outstanding == 0 {
+                    b.recreate_timed(now_ut, false);
+                    return Ok(());
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            // only a zero write or a reset is the remote end closing; EPIPE is a write failure
+            Ok(_) => break (Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, 0, 0),
+            Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
+                break (Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, -1, netdata_agent_log::errno_of(&e));
+            }
+            Err(e) => break (Reason::DISCONNECT_SOCKET_WRITE_FAILED, -1, netdata_agent_log::errno_of(&e)),
+        }
+    };
+    let (sent, sends) = buffer.as_ref().map_or((0, 0), |b| (b.stats().bytes_sent, b.stats().sends));
+    drop(buffer);
+    let (reason, rc, errno) = failure;
+    let _parser = parser.map(Parser::log_frame);
+    nd_log!(
+        Source::Daemon,
+        Priority::Err,
+        errno = errno;
+        "{}{} ({rc}, on fd {}) - closing receiver connection - we have sent {sent} bytes in {sends} operations.",
+        prefix(attached),
+        reason.text(),
+        raw_fd(&attached.stream)
+    );
+    Err(reason)
 }
 
 /// Values admission takes from the rest of the daemon.
@@ -993,10 +1074,9 @@ impl StreamWorker {
             // the opcodes posted and not yet taken: one message carries them all (C's message slot)
             let ops = Arc::new(AtomicU32::new(0));
             a.slot.open_buffer(Box::new(move |op| {
-                // on its own thread a POLLOUT is only queued, never written here: a failed write would disconnect the
-                // child and drop its parser, which a caller up this stack may be inside (a proxied call's dispatch:
-                // the transport's retire would wait for that call's own pass); C's inline POLLOUT carries the same
-                // warning (stream-thread.c:111-117)
+                // on its own thread a POLLOUT is C's inline one: the child's own parser writes it after the line that
+                // added it, anything else at the step's end (the socket is the thread's, not this caller's); either
+                // write only logs a failure, as C's (stream-thread.c:111-117), so no caller's parser is dropped
                 if op == receiver_op::POLLOUT && crate::thread::current() == Some(thread) {
                     return crate::thread::child_pollout_inline(slot.clone());
                 }
@@ -1016,7 +1096,7 @@ impl StreamWorker {
             }));
             crate::sender::send_node_and_claim_id_to_child(&a.host, a.connector.env());
         }
-        self.send_data(cx, index, true);
+        self.send_data(cx, index, Writer::Opcode);
         // C only adds the socket to the poll: the first read is the next turn's (D126.6)
         cx.report_again(Token(index));
     }
@@ -1050,7 +1130,8 @@ impl StreamWorker {
         };
         let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
         let _frame = frame.as_ref().map(records::child_event);
-        if ops & receiver_op::POLLOUT != 0 && !self.send_data(cx, index, true) {
+        // a failed write leaves the rest to the next event (C's handler returns: the receiver is "removed")
+        if ops & receiver_op::POLLOUT != 0 && !self.send_data(cx, index, Writer::Opcode) {
             return;
         }
         let ops = ops & !receiver_op::POLLOUT;
@@ -1130,7 +1211,7 @@ impl StreamWorker {
             }
             return self.disconnect(cx, index, reason);
         }
-        if event.is_writable() && !self.send_data(cx, index, true) {
+        if event.is_writable() && !self.send_data(cx, index, Writer::Poll) {
             return;
         }
         if event.is_readable() || hangup {
@@ -1161,7 +1242,7 @@ impl StreamWorker {
             if owed {
                 let frame = Arc::clone(&child.frame);
                 let _frame = records::child_event(&frame);
-                self.send_data(cx, index, true);
+                self.send_data(cx, index, Writer::Poll);
             }
         }
     }
@@ -1386,71 +1467,20 @@ impl StreamWorker {
     }
 
     fn prefix(child: &Child) -> String {
-        let a = &child.attached;
-        format!(
-            "STREAM RCV[{}] '{}' [from [{}]:{}]: ",
-            a.thread,
-            a.host.hostname(),
-            a.peer.ip,
-            a.peer.port
-        )
+        prefix(&child.attached)
     }
 
-    /// `stream_receiver_send_data()`: what is owed to the child, written from its buffer one contiguous chunk at a time
-    /// under the buffer's lock, until the buffer drains (a grown ring then shrinks back, at most every 5 minutes) or the
-    /// socket is full. False when the connection failed: from the poller (`remove`) it is disconnected here; after a
-    /// read (`stream_receiver_dequeue_senders()`) the caller ends it, as a read failure, as C does.
-    fn send_data(&mut self, cx: &mut Context<'_>, index: usize, remove: bool) -> bool {
+    /// `stream_receiver_send_data()`: what is owed to the child written from its buffer (`write_buffer()`), the
+    /// failure handled as `writer` asks. False when the connection failed.
+    pub(crate) fn send_data(&mut self, cx: &mut Context<'_>, index: usize, writer: Writer) -> bool {
         let Some(child) = self.children[index].as_mut() else {
             return false;
         };
-        let slot = Arc::clone(&child.attached.slot);
-        let mut buffer = slot.buffer();
-        let failure = loop {
-            let Some(b) = buffer.as_mut() else {
-                return true;
-            };
-            let chunk = b.next();
-            if chunk.is_empty() {
-                return true;
-            }
-            match child.attached.stream.write(chunk) {
-                Ok(n) if n > 0 => {
-                    let now_ut = now_monotonic_usec();
-                    b.del(n, now_ut);
-                    child.attached.hosts.storage().pulse().network.stream_sent(n);
-                    child.attached.host.stream_bytes_sent(n);
-                    // a write is traffic too (C's last_traffic_ut), for the idle timeout and the stale check at accept
-                    slot.last_traffic_ut.store(now_ut, Ordering::Relaxed);
-                    if b.stats().bytes_outstanding == 0 {
-                        b.recreate_timed(now_ut, false);
-                        return true;
-                    }
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return true,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                // only a zero write or a reset is the remote end closing; EPIPE is a write failure
-                Ok(_) => break (Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, 0, 0),
-                Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
-                    break (Reason::DISCONNECT_SOCKET_CLOSED_BY_REMOTE, -1, netdata_agent_log::errno_of(&e));
-                }
-                Err(e) => break (Reason::DISCONNECT_SOCKET_WRITE_FAILED, -1, netdata_agent_log::errno_of(&e)),
-            }
+        let parser = (writer == Writer::Read).then_some(&child.parser);
+        let Err(reason) = write_buffer(&mut child.attached, parser) else {
+            return true;
         };
-        let (sent, sends) = buffer.as_ref().map_or((0, 0), |b| (b.stats().bytes_sent, b.stats().sends));
-        drop(buffer);
-        let (reason, rc, errno) = failure;
-        let _parser = (!remove).then(|| child.parser.log_frame());
-        nd_log!(
-            Source::Daemon,
-            Priority::Err,
-            errno = errno;
-            "{}{} ({rc}, on fd {}) - closing receiver connection - we have sent {sent} bytes in {sends} operations.",
-            Self::prefix(child),
-            reason.text(),
-            raw_fd(&child.attached.stream)
-        );
-        if remove {
+        if writer == Writer::Poll {
             self.disconnect(cx, index, reason);
         }
         false
@@ -1584,7 +1614,7 @@ impl StreamWorker {
                     child.attached.host.stream_bytes_received(n);
                     match child.decompressor.as_mut() {
                         None => {
-                            if !parse(&mut child.reader, &mut child.parser, &buf[..n]) {
+                            if !parse(&mut child.reader, &mut child.parser, &mut child.attached, &buf[..n]) {
                                 let _parser = child.parser.log_frame();
                                 return self.disconnect(cx, index, Reason::RCV_DISCONNECT_PARSER_FAILED);
                             }
@@ -1594,8 +1624,8 @@ impl StreamWorker {
                             // decompressed, while the streaming service runs and no stop is asked
                             decompressor.feed(&buf[..n]);
                             let mut out = Vec::new();
-                            let stop_requested = &child.attached.slot.stop_requested;
-                            let stop = || stop_requested.load(Ordering::Acquire);
+                            let slot = Arc::clone(&child.attached.slot);
+                            let stop = || slot.stop_requested.load(Ordering::Acquire);
                             while !netdata_agent_sys::exit::initiated() && !stop() {
                                 out.clear();
                                 // C decompresses under the parser's fields
@@ -1606,7 +1636,7 @@ impl StreamWorker {
                                 match next {
                                     Ok(false) => break,
                                     Ok(true) => {
-                                        if !parse(&mut child.reader, &mut child.parser, &out) {
+                                        if !parse(&mut child.reader, &mut child.parser, &mut child.attached, &out) {
                                             let _parser = child.parser.log_frame();
                                             return self.disconnect(cx, index, Reason::RCV_DISCONNECT_PARSER_FAILED);
                                         }
@@ -1646,7 +1676,7 @@ impl StreamWorker {
                         &mut a.keepalive_initialized,
                     );
                     // stream_receiver_dequeue_senders(): a failed write here ends the connection as a read failure
-                    if !self.send_data(cx, index, false) {
+                    if !self.send_data(cx, index, Writer::Read) {
                         let Some(child) = self.children[index].as_ref() else {
                             return;
                         };
@@ -2499,7 +2529,7 @@ mod tests {
         let before = now_monotonic_usec();
         s.with(|w, cx| {
             assert_eq!(slot.send_to_child(b"REPLAY_CHART x\n", Traffic::Replication), 15);
-            assert!(w.send_data(cx, 0, false));
+            assert!(w.send_data(cx, 0, Writer::Read));
         });
         assert!(slot.last_traffic_ut.load(Ordering::Relaxed) >= before);
     }
@@ -2944,7 +2974,7 @@ mod tests {
         let data: Vec<u8> = (0..10_000).map(|i| (i % 251) as u8).collect();
         assert_eq!(slot.send_to_child(&data, Traffic::Functions), 10_000);
         assert_eq!(slot.buffer().as_ref().unwrap().stats().bytes_outstanding, 16_384 - 10_000, "wrapped");
-        s.with(|w, cx| assert!(w.send_data(cx, 0, true)));
+        s.with(|w, cx| assert!(w.send_data(cx, 0, Writer::Poll)));
         assert_eq!(read_all(&mut peer), data);
         let stats = *slot.buffer().as_ref().unwrap().stats();
         assert_eq!((stats.sends, stats.bytes_sent, stats.bytes_outstanding), (3, 20_000, 0));
@@ -2961,11 +2991,59 @@ mod tests {
         s.with(|w, cx| w.attach(cx, attached));
         assert_eq!(slot.send_to_child(&[b'a'; 20_000], Traffic::Functions), 20_000);
         assert_eq!(slot.buffer().as_ref().unwrap().stats().bytes_size, 32_768);
-        s.with(|w, cx| assert!(w.send_data(cx, 0, true)));
+        s.with(|w, cx| assert!(w.send_data(cx, 0, Writer::Poll)));
         assert_eq!(read_all(&mut peer).len(), 20_000);
         assert_eq!(slot.send_to_child(b"b\n", Traffic::Functions), 2);
         let stats = *slot.buffer().as_ref().unwrap().stats();
         assert_eq!((stats.bytes_size, stats.bytes_max_size, stats.recreates), (16_384, INITIAL_MAX_SIZE, 1));
+    }
+
+    /// C's inline POLLOUT writes each add that finds the buffer empty inside the add (D168.1): a read with two REPLAY_END
+    /// lines is two writes, each line's request out before the next line is parsed.
+    #[test]
+    fn each_request_of_a_read_is_its_own_write() {
+        use std::io::Write;
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, _host, slot, mut peer) = child(0xeb, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        peer.write_all(b"CHART 'x.c' '' 't' 'u' 'f' 'x.ctx' line 1 1 '' p m\nDIMENSION 'd' '' absolute 1 1 ''\n").unwrap();
+        s.turn(Duration::from_millis(50));
+        let rend = "RBEGIN 'x.c'\nREND 1 0 0 false 0 0 0x6553f100\n";
+        peer.write_all(format!("{rend}{rend}").as_bytes()).unwrap();
+        let _ = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        let line = "REPLAY_CHART \"x.c\" \"true\" 0 0\n";
+        assert_eq!(String::from_utf8(read_all(&mut peer)).unwrap(), format!("{line}{line}"));
+        let stats = *slot.buffer().as_ref().unwrap().stats();
+        assert_eq!((stats.sends, stats.bytes_sent), (2, 2 * line.len()));
+    }
+
+    /// An opcode's failed write is C's record and nothing more (`process_opcodes_and_enable_removal` false, D168.3):
+    /// the child stays until the next event removes it.
+    #[test]
+    fn an_opcodes_failed_write_leaves_the_removal_to_the_next_event() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, slot, peer) = child(0xec, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        drop(peer);
+        std::thread::scope(|t| {
+            t.spawn(|| slot.send_to_child(b"FUNCTION_CANCEL abc\n", Traffic::Functions));
+        });
+        let ops = Arc::new(AtomicU32::new(receiver_op::POLLOUT));
+        let ((), records) = netdata_agent_log::capture(|| {
+            s.with(|w, cx| netdata_agent_evloop::Worker::message(w, cx, StreamMsg::ChildOps(Arc::downgrade(&slot), ops)))
+        });
+        assert_eq!(
+            texts(records),
+            [format!(
+                "STREAM RCV[0] '{}' [from []:]: DISCONNECTED SOCKET WRITE FAILED (-1, on fd {}) - closing receiver \
+                 connection - we have sent 0 bytes in 0 operations.",
+                host.hostname(),
+                s.worker().children[0].as_ref().map(|c| raw_fd(&c.attached.stream)).unwrap()
+            )]
+        );
+        assert!(host.receiver().is_some(), "not removed by the opcode");
+        let _ = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        assert!(host.receiver().is_none(), "removed by the next event");
     }
 
     /// The idle-timeout record reads the buffer (`stream-receiver.c:1179-1218`): the bytes and writes it counted, the
@@ -3215,7 +3293,7 @@ mod tests {
         s.with(|w, cx| {
             w.attach(cx, attached);
             assert_eq!(slot.send_to_child(b"x\n", Traffic::Functions), 2);
-            assert!(w.send_data(cx, 0, false));
+            assert!(w.send_data(cx, 0, Writer::Read));
         });
         drop(theirs);
         let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
@@ -3251,7 +3329,7 @@ mod tests {
         s.with(|w, cx| {
             w.attach(cx, with_stream(attached, Conn::Tcp(server)));
             assert_eq!(slot.send_to_child(b"x\n", Traffic::Functions), 2);
-            assert!(w.send_data(cx, 0, false));
+            assert!(w.send_data(cx, 0, Writer::Read));
         });
         let (_, records) = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
         assert!(host.receiver().is_none());

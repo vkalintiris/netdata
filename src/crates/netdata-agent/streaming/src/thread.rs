@@ -53,6 +53,16 @@ pub(crate) fn take_inline_children() -> Vec<Weak<ReceiverSlot>> {
     INLINE_CHILDREN.with(|i| std::mem::take(&mut *i.borrow_mut()))
 }
 
+/// The inline POLLOUTs of `slot`, taken: true when there were any.
+pub(crate) fn take_inline_child(slot: &Arc<ReceiverSlot>) -> bool {
+    INLINE_CHILDREN.with(|i| {
+        let mut inline = i.borrow_mut();
+        let before = inline.len();
+        inline.retain(|s| !std::ptr::eq(s.as_ptr(), Arc::as_ptr(slot)));
+        inline.len() != before
+    })
+}
+
 /// What a stream thread is sent: a connection to take over, a backfilled chart's replication request for the
 /// connection of `receiver`, a sender's connection to its parent, a sender's opcodes, or a receiver's.
 #[derive(Debug)]

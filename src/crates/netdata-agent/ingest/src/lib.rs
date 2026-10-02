@@ -302,6 +302,8 @@ pub struct Parser {
     forward: ForwardBuffer,
     /// How a backfill hands its replication request back; none without a stream thread (no BACKFILL pool use).
     replay_sink: Option<ReplaySink>,
+    /// A line of the parser's own went to the other end since `take_sent()`.
+    sent: bool,
 }
 
 /// `pluginsd_cleanup_v2()`'s `pluginsd_clear_scope_chart(…, "THREAD CLEANUP")`: a connection that ends inside a
@@ -366,6 +368,7 @@ impl Parser {
             new_host_labels: None,
             forward: ForwardBuffer::default(),
             replay_sink: None,
+            sent: false,
         }
     }
 
@@ -493,11 +496,18 @@ impl Parser {
     }
 
     /// `send_to_plugin()`: a line of this parser's own for the other end, down its transport's wire; 0 for no text.
-    fn send_to_plugin(&self, text: &[u8], traffic: Traffic) -> isize {
+    fn send_to_plugin(&mut self, text: &[u8], traffic: Traffic) -> isize {
         if text.is_empty() {
             return 0;
         }
+        self.sent = true;
         self.transport.send(text, traffic)
+    }
+
+    /// Whether the lines fed since the last call sent anything to the other end (a child's stream thread then writes
+    /// them before the next line, as C's inline POLLOUT).
+    pub fn take_sent(&mut self) -> bool {
+        std::mem::take(&mut self.sent)
     }
 
     /// Processes one line (newline included). `false` ends the connection.
