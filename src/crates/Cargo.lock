@@ -3044,6 +3044,7 @@ dependencies = [
  "dns-lookup",
  "flate2",
  "mio",
+ "netdata-agent-dyncfg",
  "netdata-agent-evloop",
  "netdata-agent-ingest",
  "netdata-agent-inicfg",

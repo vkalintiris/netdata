@@ -19,6 +19,7 @@ mod cloud_proxy;
 mod command_server;
 mod commands;
 mod conf;
+mod config;
 mod contexts_v2;
 mod ctxload;
 mod daemon;

@@ -32,6 +32,13 @@ pub fn call(route: &Route<'_>, host: &Host, query: &[u8]) -> Reply {
         let code = reply.error("No function given to execute.", status::BAD_REQUEST);
         return reply_of(reply, code);
     };
+    wait_call(route, host, function, timeout_s)
+}
+
+/// A web request's call of one of the host's methods, as `api_v1_function()` and `api_v1_config()` make it: the
+/// caller's access and source, the request's transaction as the call id, waiting for the answer until `timeout_s`,
+/// unless the client goes away; restricted methods refused.
+pub(crate) fn wait_call(route: &Route<'_>, host: &Host, cmd: &[u8], timeout_s: i32) -> Reply {
     let mut transaction = Vec::with_capacity(32);
     print_uuid_lower_compact(&mut transaction, &route.ctx.transaction);
     let source = source(route.ctx, route.forwarded_for);
@@ -40,7 +47,7 @@ pub fn call(route: &Route<'_>, host: &Host, query: &[u8]) -> Reply {
     let gone = || (route.interrupted)(&mut 0);
     let called = Calls::process().call(CallSpec {
         owner: Some((host.functions(), &hostname)),
-        cmd: function,
+        cmd,
         source: &source,
         user_access: route.ctx.auth.access(),
         timeout_s,
@@ -113,7 +120,7 @@ pub fn source(ctx: &RequestContext, forwarded_for: &[u8]) -> Vec<u8> {
 
 /// The call's answer as the web server sends it: a cacheable one keeps its expiry, one that is not has none
 /// (`buffer_no_cacheable()` zeroes it, so `Expires` is the date); the header makes any code but 200 no-cache.
-fn reply_of(reply: NrpcReply, code: u16) -> Reply {
+pub(crate) fn reply_of(reply: NrpcReply, code: u16) -> Reply {
     Reply {
         code,
         content_type: reply.content_type,

@@ -23,6 +23,7 @@ use netdata_agent_nrpc::access;
 
 use crate::acl;
 use crate::auth;
+use crate::config;
 use crate::contexts_v2;
 use crate::data;
 use crate::dbengine_stats;
@@ -130,6 +131,14 @@ const API_V1: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: functions::list,
+    },
+    // dyncfg APIs
+    Command {
+        name: "config",
+        acl: acl::bits::DYNCFG,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: config::call,
     },
 ];
 
@@ -267,6 +276,14 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |route, _, query| contexts_v2::functions(route, query),
+    },
+    // dyncfg APIs
+    Command {
+        name: "config",
+        acl: acl::bits::DYNCFG,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: config::call,
     },
     CLOUD_ONLY[0],
     CLOUD_ONLY[1],
