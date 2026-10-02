@@ -76,8 +76,8 @@ var logMasks = []logMask{
 	{regexp.MustCompile(`\]:\d+`), "]:P"},
 	{regexp.MustCompile(` ([a-z_]+_ut)=\d+`), " ${1}=U"},
 	{regexp.MustCompile(`thread=(WEB|STREAM|UV_WORKER)\[\d+\]`), "thread=${1}[n]"},
-	// each daemon's own runtime directory (the harness's NETDATA_RUN_DIR)
-	{regexp.MustCompile(`/tmp/ndrun-\d+`), "RUNTIME"},
+	// each daemon's own runtime directory (the harness's NETDATA_RUN_DIR), made by os.MkdirTemp under $TMPDIR
+	{regexp.MustCompile(regexp.QuoteMeta(filepath.Join(os.TempDir(), "ndrun-")) + `\d+`), "RUNTIME"},
 	// whichever tier thread takes the spawn lock first logs the registry's pre-population (D63.2)
 	{regexp.MustCompile(`thread=DBENGINIT\[\d+\] (msg="MRG: Loaded )`), "thread=DBENGINIT[n] ${1}"},
 	{regexp.MustCompile(`STREAM RCV\[\d+\]`), "STREAM RCV[n]"},
