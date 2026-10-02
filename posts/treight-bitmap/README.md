@@ -100,30 +100,63 @@ python3 posts/treight-bitmap/evidence/corpora/corpus_stats.py \
 
 ## 3. Derive posting lists
 
-Posting lists are derived from each corpus the same way the production indexer derives them
-(following the verified production flatten path — {{PLACEHOLDER: bench-eng#flatten-path-note}}).
+Posting lists are derived from each corpus the way the production indexer derives them — the
+verified production flatten path is documented in `posts/treight-bitmap/evidence/bench/TRACE.md`.
+The derivation lives in the `treight-bench` dev crate (`src/crates/treight-bench`); the
+derived-cache format is documented in its `src/lib.rs` and version-tagged in each cache's
+`meta.json`. Run from the repo root:
 
-{{PLACEHOLDER: bench-eng#derivation-command — tool name + invocation producing per-corpus posting
-lists and the density/cardinality histograms under evidence/bench/.}}
+```sh
+for c in certstream jetstream mixed; do
+  CCACHE_DIR=/tmp/nd-bp-ccache cargo run -q -p treight-bench --bin treight-derive -- \
+      --corpus data/corpus/$c-250k.jsonl.gz --out data/derived/$c-250k
+done
+```
 
-## 4. Run the benchmarks
+Derived caches are gitignored under `data/derived/<corpus>/`.
 
-Criterion suite in `src/crates/treight/benches/` ({{PLACEHOLDER: bench-eng#bench-target-name}}),
-following the env-var corpus pattern of `src/crates/sfst/benches/decode.rs` — the suite skips
-quietly when the env var is unset:
+## 4. Index-footprint totals and CPU benchmarks
+
+Footprint totals — treight vs roaring serialized bytes over all posting lists, per density
+bucket, plus allocative in-memory sizes — come from `treight-footprint`:
+
+```sh
+for c in certstream jetstream mixed; do
+  CCACHE_DIR=/tmp/nd-bp-ccache cargo run -q -p treight-bench --bin treight-footprint -- \
+      --derived data/derived/$c-250k \
+      --json posts/treight-bitmap/evidence/bench/totals-$c-250k.json \
+      --md   posts/treight-bitmap/evidence/bench/totals-$c-250k.md
+done
+```
+
+CPU benches are the criterion suite `vs_roaring` in `src/crates/treight/benches/`, following the
+env-var corpus pattern of `src/crates/sfst/benches/decode.rs` — it skips quietly when the env var
+is unset:
 
 ```sh
 CCACHE_DIR=/tmp/nd-bp-ccache \
-{{PLACEHOLDER: bench-eng#bench-env-and-command — env var name + cargo bench invocation}} \
-    > evidence/bench/<corpus>.txt
+TREIGHT_BENCH_DERIVED=$PWD/data/derived \
+  cargo bench -p treight --features roaring --bench vs_roaring
 ```
 
-The roaring side of every bench is the workspace's pinned `netdata/roaring-rs` fork (branch
-`allocative`, `src/crates/Cargo.toml`) — the same implementation the differential fuzzer uses.
+Harvest criterion medians into the evidence files:
 
-Methodology constants for the published numbers: AMD Ryzen 9 5900X, 31 GB RAM;
-rustc {{PLACEHOLDER: bench/environment.txt#rustc-version}}. Raw criterion output is committed as
-JSON + markdown under `evidence/bench/` per `evidence/bench/schema.md`.
+```sh
+python3 posts/treight-bitmap/evidence/bench/harvest.py \
+    --derived data/derived \
+    --criterion src/crates/target/criterion \
+    --out posts/treight-bitmap/evidence/bench
+```
+
+The roaring side of every measurement is the workspace's pinned `netdata/roaring-rs` fork
+(branch `allocative`, commit `3ee69b1db5a2a4fc909076962c0159ddae893f8c` per `Cargo.lock`) — the
+same implementation the differential fuzzer uses; roaring's `allocative` feature is enabled for
+the in-memory deep-size numbers.
+
+Methodology constants for the published numbers: AMD Ryzen 9 5900X (a shared machine — timings
+are criterion medians over 50 samples with 1 s warm-up + 2 s measurement; compare orderings, not
+sub-percent deltas), 31 GB RAM, rustc 1.95.0 (59807616e 2026-04-14), criterion 0.5.1. Full
+disclosure in `evidence/bench/environment.txt`.
 
 ## 5. Correctness checks behind the post's claims
 
@@ -157,7 +190,10 @@ posts/treight-bitmap/
     │   ├── stats.{json,md}  aggregate statistics (no personal data)
     │   └── corpus_stats.py  the tool that computes them
     └── bench/               benchmark evidence
-        ├── schema.md        the data contract for the files below (bench-eng)
-        └── …                stats.json / totals.json / results.json / environment.txt
-                             ({{PLACEHOLDER: bench-eng#evidence-file-names — as landed}})
+        ├── environment.txt  hardware, toolchain, roaring pin, exact commands
+        ├── TRACE.md         the verified production flatten path the derivation mirrors
+        ├── schema.md        the data contract for the JSON files here
+        ├── harvest.py       criterion-median harvester (step 4)
+        ├── totals-<corpus>-250k.{json,md}   footprint totals + per-density buckets
+        └── results.json     criterion CPU medians (per corpus × bucket × op × impl)
 ```

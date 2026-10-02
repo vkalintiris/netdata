@@ -1,6 +1,6 @@
 # treight: an 8-way bit-tree bitmap for immutable indexes
 
-*First in a series on the SFST indexing behind Netdata's OTel logs and traces.*
+*First in a series on the SFST indexing behind Netdata's OpenTelemetry (OTel) logs and traces.*
 
 ## A query, start to finish
 
@@ -68,9 +68,10 @@ excellent to store and query, and mediocre to mutate — because nothing mutates
 
 First, the credit. Roaring bitmaps (Chambi, Lemire, Kaser, Godin — [arXiv:1402.6407][1], [DOI
 10.1002/spe.2325][2]) are the state of the art for compressed integer sets, and they are
-everywhere — we all rely on them. A roaring bitmap partitions the u32 space into 65,536 containers
+everywhere. A roaring bitmap partitions the u32 space into 65,536 containers
 by the top 16 bits of each value; each container stores its low-16-bit members as a sorted array,
-an 8 KiB bitset, or a run-length encoding ([RoaringBitmap format spec][3]). Membership is two
+an 8 KiB bitset, or a run container — run-length encoding ([RoaringBitmap format spec][3]).
+Membership is two
 probes. Cardinality is a sum of per-container counts. Intersections run machine-word-parallel over
 bitset containers. For mutable, in-memory sets over an unbounded u32 range, nothing else is close —
 which is why our *write path uses roaring*
@@ -84,29 +85,28 @@ For the storage-and-query slot, three things bite:
    measurements. Six members scattered across six 16-bit pages therefore cost 60 bytes of
    container overhead — six containers × (8 + 2) — plus the file cookie. In treight, an isolated
    member costs exactly one byte per tree level — 6 over this universe; members that share
-   prefixes share bytes — and across thousands of real posting lists, that difference compounds
+   prefixes share bytes — and across millions of real posting lists that compounds
    (benchmarks below).
 2. **Deserialize-to-query.** A roaring bitmap read from disk is a portable byte stream that must be
    decoded into owned containers before the first `contains`. We wanted the bytes on disk to *be*
    the query-ready structure: no decode step per query, no per-query allocations, and a handle you
-   can hold across an mmap. (Our chunks are zstd-framed, so sfst does decode each chunk once on
-   file open — the point is that no decoding or allocation happens *per query or per set
-   operation* after that.)
-3. **A known universe is a resource.** Roaring's machinery exists to manage an unbounded u32 space.
-   When the universe is one file's row count, every bitmap in the file can share it: descriptors
-   shrink to almost nothing, and set operations can *assert* operand compatibility instead of
+   can hold across an mmap. (sfst's chunks are zstd-framed and decoded once on file open; nothing
+   decodes or allocates *per query or per set op* after that.)
+3. **A known universe is a resource.** Roaring's machinery manages an unbounded u32 space; ours is
+   one file's row count. Every bitmap in the file shares it: the descriptor — the two-integer
+   handle [The Rust API](#the-rust-api-a-copy-descriptor-over-someone-elses-bytes) defines —
+   shrinks to almost nothing, and set operations can *assert* operand compatibility instead of
    negotiating it.
 
-None of this is a case against roaring. It is a case for using each structure in the phase it
-dominates: roaring accumulates, treight stores and queries. To keep ourselves honest, treight
-carries a differential fuzzer that uses roaring as the oracle
+None of this is a case against roaring: each structure dominates the phase it is used in —
+roaring accumulates, treight stores and queries. And treight carries a differential fuzzer that
+uses roaring as the oracle
 ([Correctness](#correctness-differential-fuzzing-against-roaring)).
 
 ## treight, from the bottom up
 
-This section builds treight from the bottom up: where the layout comes from, what a node byte is,
-how the tree serializes, and what the four set operations share. Everything after it — the
-lifecycle, the scoreboard, the numbers — is consequences.
+This section builds treight from the bottom up: lineage, node bytes, serialization, and what the
+four set operations share. Everything after — lifecycle, scoreboard, numbers — is consequences.
 
 ### Lineage: GNU idutils
 
@@ -125,9 +125,9 @@ A universe maps to a fixed tree depth: `ceil_log8(universe_size)` levels
 until nothing is left, counting the shifts — each tree level consumes 3 bits of the value, one
 base-8 digit, so a value's root-to-leaf path *is* its base-8 representation, most significant
 digit first. A 262,144-value universe needs exactly 6 levels; every non-empty universe needs at
-least one. A full u32 universe tops out at 11 — the root's digit shift is 3 × 11 = 33 bits, one
-past u32, which is why the builder uses `checked_shr` and the root digit is always 0 there.
-Levels are derived from the universe, never stored: two integers fix the whole geometry.
+least one. A full u32 universe tops out at 11 (the root's digit shift, 3 × 11 = 33 bits, is one
+past u32 — hence `checked_shr` in the builder, and a root digit that is always 0 there). Levels
+are derived from the universe, never stored: two integers fix the whole geometry.
 
 ```
              one node byte (any level ≥ 1)
@@ -229,15 +229,15 @@ consequences:
 - `estimate_data_size(universe, sorted_values)` (`src/crates/treight/src/lib.rs`) predicts the
   exact tree-byte length without building anything — it counts distinct `(level, node index)`
   pairs on the values' paths. That lets you weigh a roaring→treight conversion before paying for
-  it: compare the prediction with the roaring serialized size and convert when treight wins (the
-  crate's docs pitch exactly this use; sfst's seal path currently decides by cardinality and
-  density instead — see [Where it lives](#where-it-lives-the-sfst-index-lifecycle)).
+  it: compare the prediction with the roaring serialized size and convert when treight wins
+  (sfst's seal path currently decides by cardinality and density instead — see
+  [Where it lives](#where-it-lives-the-sfst-index-lifecycle)).
 - `is_empty` is a length check on the tree bytes. A non-empty tree always holds at least one
   value, so emptiness is O(1).
 - Every mutation path — bulk build, `insert`, `remove`, `remove_range`, all four set ops —
-  preserves canonicality. That is not a convention; it is asserted. The fuzz target's final check
-  re-derives `estimate_data_size` for whatever random op sequence it just replayed and requires
-  the tree bytes to still match exactly.
+  preserves canonicality — asserted, not conventional: the fuzz target's closing check re-derives
+  `estimate_data_size` after arbitrary op sequences and requires the tree bytes to still match
+  exactly.
 
 ### The Rust API: a `Copy` descriptor over someone else's bytes
 
@@ -253,16 +253,16 @@ pub struct RawBitmap {
 
 The tree bytes are *not* in the descriptor. Every method takes them as an argument — `&[u8]` for
 queries, `&mut Vec<u8>` for builds and mutations (set operations take operand slices plus an
-output buffer) — and zero tree bytes is a valid, empty bitmap. This has
-consequences Rust programmers will recognize on sight:
+output buffer) — and zero tree bytes is a valid, empty bitmap. Consequences Rust programmers
+will recognize:
 
-- Handing a bitmap around is handing two integers around. Descriptors of the same universe are
-  interchangeable, which is why set operations return either operand's descriptor.
+- Handing a bitmap around is handing two integers around; descriptors of the same universe are
+  interchangeable, so set operations return either operand's.
 - There is no owned buffer to fight over: the tree bytes can live in a `Vec`, an arena, or a slice
   of an mmap. Queries allocate nothing.
-- Set operations append the result's tree bytes to a caller-provided `out` buffer — so callers
-  reuse one buffer across a whole query plan, swapping `self.data = out` after each step (exactly
-  what sfst's `PosSet` does).
+- Set operations append the result's tree bytes to a caller-provided `out` buffer, so callers
+  reuse one buffer across a query plan (exactly what sfst's `PosSet` — the read-path set handle,
+  [Where it lives](#where-it-lives-the-sfst-index-lifecycle) — does).
 
 The bulk builder is a single pass with per-level scratch — no staging bitset, no sort if you
 already have one:
@@ -300,9 +300,8 @@ The `Bitmap` wrapper pairs the raw tree with an `inverted` flag
 `full` stores *zero bytes* (an inverted descriptor over an empty tree), and `complement()` is a
 flag flip — free, sharing the same tree bytes.
 
-The interesting part is what happens to `and`/`or` when either side may be inverted. Rather than
-materializing complements, the wrapper dispatches on the flag pair and computes over the stored
-trees, De Morgan-style:
+When either side of an `and`/`or` may be inverted, the wrapper never materializes a complement:
+it dispatches on the flag pair and computes over the stored trees, De Morgan-style:
 
 | `a.and(b)` | B normal | B inverted |
 |---|---|---|
@@ -320,8 +319,8 @@ Every cell runs a raw op over stored bytes and returns the result in whichever f
 universe equality, while every dispatched path asserts it — the raw ops assert unconditionally, so
 a mismatched-universe bug panics in release builds too, rather than silently mis-answering.
 
-A concrete taste of the density trade: a 60-of-64 dense set stores its four holes — 9, 25, 26, 60 —
-as a four-byte tree (root `8a`, leaves `02 06 10`) plus an `inverted` descriptor over it.
+A taste of the density trade: a 60-of-64 set stores its four holes — 9, 25, 26, 60 — as a
+four-byte tree (root `8a`, leaves `02 06 10`) under an `inverted` descriptor.
 
 ![The Bitmap layer: the inverted flag flipping between members and holes, the De Morgan dispatch
 tables for and/or, the empty/full short-circuits, and the read-side flips for contains, len, and
@@ -348,11 +347,11 @@ the surviving child bits, and pop it if nothing survived — so the output is ca
 construction. An `intersect` on disjoint trees never writes a byte and returns the empty
 descriptor; you cannot store a zero byte even by accident.
 
-On a two-level universe of 64 values the whole mechanic is visible in four bytes per operand:
-A = {0..7} ∪ {16} ∪ {40} serializes to `25 ff 01 01`, B = {1, 5, 16, 17} to `05 22 03`. Their
-intersection back-patches the root to the two surviving children and skips A's exclusive subtree
-(`05 22 01` = {1, 5, 16}); the difference prunes the leaf that ANDs to zero, copies A's exclusive
-subtree verbatim, and keeps the rest (`21 dd 01`).
+On a two-level universe of 64 values the mechanic is visible in four bytes per operand:
+A = {0..7} ∪ {16} ∪ {40} is `25 ff 01 01`, B = {1, 5, 16, 17} is `05 22 03`. The intersection
+back-patches the root to the surviving children and skips A's exclusive subtree
+(`05 22 01` = {1, 5, 16}); the difference prunes the zero leaf, copies A's exclusive subtree,
+keeps the rest (`21 dd 01`).
 
 ![The lockstep walk on a two-level tree: intersect and difference side by side, showing the
 reserved node byte, the back-patch, the zero-leaf prune, and skip-versus-copy for A-only
@@ -363,9 +362,9 @@ children](figures/fig-setops/fig-setops.svg)
 treight is a small crate — about 1,900 lines across six source files — with exactly one production
 consumer, sfst, our split-FST logs-and-traces index format (the container described in
 `src/crates/sfst/src/lib.rs`). The lifecycle is a clean handoff between the two bitmap libraries —
-a three-row toy (`service=x` on rows arriving at t=37 and t=95) travels from a roaring bitmap
-over insertion-order positions, through the time remap and the two encode decisions, to an
-inverted one-byte tree on disk:
+a three-row toy (`service=x`, arriving at t=37 and t=95) travels from a roaring bitmap over
+insertion-order positions, through the time remap and both encode decisions, to an inverted
+one-byte tree on disk:
 
 ![The index lifecycle in three stages: roaring accumulating arbitrary-order inserts, the seal-time
 time remap with the density and cardinality encode decisions, and the mmap read path running
@@ -397,7 +396,8 @@ In compressed form:
  BitmapValue { desc, data } → PRIM / MF{i} chunks
 ```
 
-**Accumulate as roaring.** While the indexer reads the write-ahead log, every `key=value` slot owns
+**Accumulate as roaring.** While the indexer reads the write-ahead log (WAL), every `key=value`
+slot owns
 a `RoaringBitmap`, and `row()` inserts the current position into each pair's bitmap
 (`src/crates/sfst/src/row_index.rs`). Rows arrive in ingest order, values arrive unsorted — this
 is roaring's home turf, and it is where roaring stays.
@@ -426,18 +426,19 @@ let desc = if card > half {
   (`Bitset` in `src/crates/sfst/src/bitset.rs` is scratch only; it is not stored).
 
 **Store as treight.** Each entry becomes a `BitmapValue { desc: treight::Bitmap, data: Vec<u8> }`
-in the primary FST chunk (`PRIM`) or a per-field chunk (`MF{i}`, M for mid-cardinality)
+in the primary FST chunk (`PRIM` — the finite-state map the opening query decoded) or a
+per-field chunk (`MF{i}`, M for mid-cardinality)
 (`src/crates/sfst/FORMAT.md`). The descriptor rides in the chunk schema beside its tree bytes.
-One tier opts out of bitmaps entirely: high-cardinality fields store no per-value bitmaps —
-thousands of near-empty posting lists would explode the index. At the default thresholds that
-means 1,000-plus distinct values per field (`DEFAULT_CARDINALITY_THRESHOLD = 100`, high tier
-≥ 10·T; `src/crates/sfst/src/kv_interner.rs`). Their `HF{i}` chunks (H for high-cardinality) are
-a columnar string arena instead: sorted `key=value` keys plus one bitmask per key over the file's
-stream batches, so a scan can skip whole batches a value never appears in (`FORMAT.md`,
+Fields are tiered at interning time by distinct-value count — low under `T`, mid in `[T, 10·T)`,
+high at or above, `T = DEFAULT_CARDINALITY_THRESHOLD = 100` (`src/crates/sfst/src/kv_interner.rs`)
+— and only the low and mid tiers store bitmaps. The high tier opts out entirely: thousands of
+near-empty posting lists would explode the index. Its `HF{i}` chunks (H for high-cardinality)
+are a columnar string arena instead: sorted `key=value` keys plus one bitmask per key over the
+file's stream batches, so a scan can skip whole batches a value never appears in (`FORMAT.md`,
 `src/crates/sfst/src/schema.rs`).
 
-The whole file, then, routes `key=value` pairs by tier into bitmap homes or arena homes — chunk
-framing, CRCs, the hot prefix the reader decodes on open, and the cold span it mmaps lazily:
+The file as a whole: chunk framing and CRCs, the hot prefix decoded on open, the cold span
+mmap'd lazily — and the tier routing that decides which `key=value` pairs get bitmaps:
 
 ![The SFST file top to bottom: header, TOC, CRC-framed chunk bodies with a hot prefix and a cold
 region, the low/mid/high tier routing, one BitmapValue's anatomy, and the read-side query
@@ -464,8 +465,8 @@ asserts make a violating file panic rather than mis-answer.
 
 ## treight vs roaring, honestly
 
-The benchmark section carries the numbers; this section is the mechanism-level accounting of who
-wins where, and why.
+The benchmarks carry the numbers; this section is the mechanism-level accounting of who wins
+where.
 
 | axis | roaring | treight |
 |---|---|---|
@@ -481,34 +482,33 @@ wins where, and why.
 
 **Where roaring wins.** Cardinality: roaring stores per-container counts, so `len()` touches one
 stored count per container; treight's `len()` walks every stored byte — a gap the benchmarks
-quantify on real lists. Bulk operations on large operands:
-roaring's bitset containers let AND/OR run 64 bits at a time, while treight walks a byte at a time
-through the same territory — vector-width parallelism versus a scalar byte stream. It also wins
-anything mutation-heavy, and anything that needs the full u32 range without declaring a universe.
-If your bitmaps live in mutable memory and get queried in place, you want roaring — we do too, on
-the write path.
+quantify on real lists. Bulk operations on large operands: roaring's bitset containers AND/OR
+64 bits at a time while treight walks a byte at a time — vector-width parallelism versus a
+scalar byte stream. It also wins anything mutation-heavy, and anything that needs the full u32
+range without declaring a universe. If your bitmaps live in mutable memory and get queried in
+place, you want roaring — we do too, on the write path.
 
 **Where treight wins.** Footprint of small lists: no per-page overhead exists at all, and the six
 members of the running example cost 18 bytes against roughly 60 of container overhead. Dense
 sets via complement. The read path: no deserialization after file open, no allocation per query,
-`Copy` handles, append-only operations that reuse caller buffers, O(1) emptiness, and a byte
-stream that scans linearly — sequential access, which hardware prefetchers handle well. And the
-exact-size property (`estimate_data_size`) turns storage decisions into cheap predictions: you can
-know the on-disk cost of a conversion before paying for it.
+`Copy` handles, append-only ops that reuse caller buffers, O(1) emptiness, and linear byte scans
+that hardware prefetchers handle well. And the exact-size property (`estimate_data_size`) turns
+storage decisions into cheap predictions: you can know the on-disk cost of a conversion before
+paying for it.
 
-**Where they tie.** Membership point-queries are a few probes either way at this universe size
-(six for treight, two for roaring); range counting prunes in both (roaring sums container
-counts, treight skips subtrees outside the range). The measured deltas for all of these are in the
-next section.
+**Where they tie.** Membership point-queries are a few probes either way (six for treight, two
+for roaring) and range counting prunes in both (roaring sums container counts, treight skips
+subtrees outside the range); the measured deltas are in the next section. One measured loss
+also belongs here: mid-density serialized size, where roaring's array containers win outright
+(density slices below).
 
 ## Correctness: differential fuzzing against roaring
 
 Every operation treight offers is replayed on a `RoaringBitmap` built from the same values, and
 the two must agree — roaring is the oracle. The fuzz target
 (`src/crates/treight/fuzz/fuzz_targets/against_roaring.rs`) generates a universe, two seed sets,
-and a random op sequence
-(insert, remove, clear, contains, len, min/max, iterate, range cardinality, remove-range, the four
-set ops, swap sides, serialize round-trip), applies it to both sides, and asserts after every
+and a random op sequence (mutations, queries, the four set ops, serialize round-trip, swap
+sides), applies it to both sides, and asserts after every
 query op:
 
 ```rust
@@ -536,80 +536,96 @@ Run it yourself from `src/crates/treight/fuzz`:
 cargo fuzz run against_roaring
 ```
 
-The fuzz workspace pins the same roaring fork as the main workspace (`netdata/roaring-rs`, branch
-`allocative` — `src/crates/Cargo.toml`), so the oracle and the production dependency are the same
-roaring implementation. An in-crate proptest twin (`src/crates/treight/src/tests_roaring.rs`)
+The fuzz workspace pins the same roaring fork as the main workspace (`src/crates/Cargo.toml`),
+so the oracle and the production dependency are one roaring implementation. An in-crate proptest twin (`src/crates/treight/src/tests_roaring.rs`)
 covers the same ground with exhaustive membership checks over universes up to 4,096, including
 all four inverted-flag combinations of `Bitmap::and`/`or` against a per-value oracle.
 
 ## Benchmarks
 
-All measurements were taken on a single AMD Ryzen 9 5900X with 31 GB RAM. Tools: rustc
-{{PLACEHOLDER: bench/environment.txt#rustc-version}}, criterion
-{{PLACEHOLDER: bench/environment.txt#criterion-version}}, {{PLACEHOLDER:
-bench/environment.txt#runs-and-samples}} per case with a single warm reader. The roaring side is
-the pinned `netdata/roaring-rs` fork (branch `allocative`) the workspace already uses — the same
+All measurements were taken on a single AMD Ryzen 9 5900X with 31 GB RAM — a shared machine, so
+timings are criterion medians and we compare relative orderings, not sub-percent deltas
+(`bench/environment.txt`). Tools: rustc 1.95.0 (59807616e 2026-04-14), criterion 0.5.1 (the
+benchmark harness), 50
+samples per case with 1 s warm-up and 2 s measurement, a single warm reader. The roaring side is
+the pinned `netdata/roaring-rs` fork (branch `allocative`, commit `3ee69b1`) — the same
 implementation the fuzzer checks against.
 
 *Every number in this section comes from a saved artifact under `posts/treight-bitmap/evidence/`;
-the placeholders below are filled from those files. Structural constants (thresholds, level
-counts, header sizes) are source-verifiable and cited inline.*
+structural constants (thresholds, level counts, header sizes) are source-verifiable and cited
+inline.*
 
 **Corpora.** Three frozen captures of real public event streams, 250,000 events each —
 `certstream-250k` (Certificate Transparency log entries), `jetstream-250k` (Bluesky Jetstream
-firehose events), `mixed-250k` (both interleaved by arrival, 125,000 each). The capture commands,
-SHA256 fingerprints, and aggregate-only statistics are committed under `evidence/corpora/`
-(`manifest.md`, `sha256sums.txt`, `stats.md` — line counts, size percentiles, event-kind
-distributions, no handles or DIDs). Posting lists are derived from each corpus the same way the
-production indexer derives them, over a universe equal to each corpus's exact derived row count
-({{PLACEHOLDER: bench/stats.json#universe:per-corpus}}); the derivation tooling and exact
-commands are in the README.
+firehose events), `mixed-250k` (both interleaved by arrival, 125,000 each). Capture commands,
+SHA256 fingerprints, and aggregate-only statistics (no handles or DIDs anywhere) are committed
+under `evidence/corpora/`. Posting lists are derived the way the production indexer derives
+them, over a universe of 250,000 rows per corpus (the derived row count; `bench/totals-*.md`
+headers); derivation tooling and exact commands are in the README.
 
 The bench covers both lifecycle phases plus footprint, matching how the structures divide the
 work:
 
 - **Build:** bulk encode from sorted positions (the seal path) and incremental insertion (roaring's
-  strength) — `bulk_build`, `insert_arrival`, `insert_shuffled` in
-  {{PLACEHOLDER: bench/results.json#ops}}.
-- **Query:** `contains` hit/miss, `len`/min/max, full iteration, `and`/`or`/`and_not` on
-  realistic pairs, range counting — the `ops` block of {{PLACEHOLDER:
-  bench/results.json#ops}}.
-- **Size:** per corpus, the exact summed bytes of every posting list as treight vs serialized
-  roaring — the whole-index footprint — plus in-memory heap (allocative) during queries:
-  {{PLACEHOLDER: bench/totals.json#sfst_materialized}}, heap fields of the same block.
+  strength) — `bulk_build`, `insert_arrival`, `insert_shuffled`, per corpus × density bucket in
+  `results.json` ({{PLACEHOLDER: bench/results.json#build-ops}}).
+- **Query:** `contains` hit/miss, `len()`/min/max, full iteration, `and`/`or`/`and_not` on
+  realistic pairs, range counting — same file, `ops` block ({{PLACEHOLDER:
+  bench/results.json#query-ops}}).
+- **Size:** summed bytes of every posting list, treight vs serialized roaring, plus allocative
+  in-memory heap — `bench/totals-<corpus>-250k.{json,md}` (full per-list rows in the JSONs).
 
-**Results.**
+**Results — footprint** (scoped to what a real SFST file stores, the low+mid tiers; from
+`bench/totals-<corpus>-250k.md`):
 
 | metric (per corpus) | certstream-250k | jetstream-250k | mixed-250k |
 |---|---|---|---|
-| posting lists (stored low+mid tier) | {{P: bench/totals.json#sfst_materialized.lists:certstream-250k}} | {{P: bench/totals.json#sfst_materialized.lists:jetstream-250k}} | {{P: bench/totals.json#sfst_materialized.lists:mixed-250k}} |
-| total treight bytes (blob + descriptor) | {{P: bench/totals.json#sfst_materialized.treight_with_desc_bytes:certstream-250k}} | {{P: bench/totals.json#sfst_materialized.treight_with_desc_bytes:jetstream-250k}} | {{P: bench/totals.json#sfst_materialized.treight_with_desc_bytes:mixed-250k}} |
-| total roaring serialized bytes | {{P: bench/totals.json#sfst_materialized.roaring_serialized_bytes:certstream-250k}} | {{P: bench/totals.json#sfst_materialized.roaring_serialized_bytes:jetstream-250k}} | {{P: bench/totals.json#sfst_materialized.roaring_serialized_bytes:mixed-250k}} |
-| footprint ratio (derived from the two rows above) | {{P: derived#ratio:certstream-250k}} | {{P: derived#ratio:jetstream-250k}} | {{P: derived#ratio:mixed-250k}} |
+| posting lists (stored low+mid tier) | 1,152 | 24,034 | 20,316 |
+| total treight bytes (tree + 5 B descriptor) | 1,797,922 | 1,115,004 | 2,212,840 |
+| total roaring serialized bytes | 3,514,248 | 1,538,624 | 3,353,048 |
+| footprint ratio (treight / roaring) | 0.510 | 0.647 | 0.630 |
+| in-memory heap, treight vs roaring | 1,797,922 vs 4,184,992 | 1,115,004 vs 5,905,000 | 2,212,840 vs 7,409,080 |
+
+Over *all* lists (including the high-cardinality tier a real file stores as arenas), the heap
+gap widens: treight's whole-corpus in-memory size is a consistent 0.068 of roaring's
+(17,799,801 vs 262,065,816 bytes on jetstream) — treight's memory form is the flat bytes,
+roaring materializes containers.
+
+**Results — CPU** (criterion medians; per corpus × density bucket, `results.json` — harvesting
+in progress):
+
+| metric (per corpus) | certstream-250k | jetstream-250k | mixed-250k |
+|---|---|---|---|
 | bulk build, treight vs roaring | {{P: bench/results.json#bulk_build:certstream-250k}} | {{P: bench/results.json#bulk_build:jetstream-250k}} | {{P: bench/results.json#bulk_build:mixed-250k}} |
 | `and` on realistic pairs | {{P: bench/results.json#ops.and:certstream-250k}} | {{P: bench/results.json#ops.and:jetstream-250k}} | {{P: bench/results.json#ops.and:mixed-250k}} |
 | `len()` | {{P: bench/results.json#ops.len_min_max:certstream-250k}} | {{P: bench/results.json#ops.len_min_max:jetstream-250k}} | {{P: bench/results.json#ops.len_min_max:mixed-250k}} |
 
-The size rows are scoped to what a real SFST file stores — the low- and mid-cardinality tiers;
-`totals.json` also carries an `all_lists` scope including the high-cardinality tier for
-completeness. CPU rows are per corpus × density bucket in `results.json` (`lt1pct`, `1to50pct`,
-`gt50pct`); the cells above summarize across buckets and the density-slice paragraph carries the
-per-band split.
+**Density-sliced interpretation.** The posting lists of a real corpus are not uniformly dense,
+and neither structure wins everywhere. Slicing by density band (treight/roaring serialized-byte
+ratio; list counts certstream/jetstream/mixed — `per density bucket` tables in the totals files):
 
-**Density-sliced interpretation.** The posting lists of a real corpus are not uniformly dense, and
-neither structure wins everywhere: the density histogram (`bench/stats.json` →
-`posting_density_histogram`) slices the lists into bands, and the per-band size and speed winners
-are reported there and in `bench/totals.json` → `per_density_bucket` — {{PLACEHOLDER:
-bench/totals.json#per_density_bucket}}. The headline expectation from the mechanics: sparse bands
-favor treight (no container overhead, no complement needed), dense bands are contested (complement
-vs run containers), and cardinality/`len()` strongly favors roaring. The evidence files say which
-of those expectations hold on real data and by how much.
+| density band | t/r ratio (cert / jet / mix) | lists (cert / jet / mix) |
+|---|---|---|
+| ≤0.001% | 0.347 / 0.342 / 0.345 | 2,237,404 / 1,281,602 / 1,846,968 |
+| 0.001–0.01% | 0.512 / 0.683 / 0.551 | 195,307 / 65,263 / 120,089 |
+| 0.01–0.1% | 0.980 / 1.275 / 1.021 | 4,903 / 3,664 / 3,991 |
+| 0.1–1% | 1.028 / 1.118 / 1.062 | 182 / 181 / 317 |
+| 1–10% | 0.390 / 0.763 / 0.434 | 87 / 13 / 101 |
+| 10–50% | 0.689 / 0.709 / 0.792 | 34 / 6 / 26 |
+| >50% | 0.193 / 0.258 / 0.625 | 23 / 10 / 12 |
+
+Predictions held for two bands and flipped for one. Ultra-sparse lists (≤0.001% — the
+overwhelming majority) favor treight ~3×: per-container headers dominate roaring while treight
+pays a byte per level. Dense lists (≥1%) favor treight more strongly the denser the list
+(complement encoding; 23/10/3 lists per corpus). But the 0.01–1% middle band is roaring's on
+serialized bytes: treight's members × levels outweighs sharing there, while roaring's packed
+arrays are near optimal — a real roaring size win in a band where many real posting lists live;
+the CPU rows above say whether it carries a speed trade.
 
 **What this does not capture.** The footprint totals count structure bytes before zstd and chunk
-framing — both sides get identical treatment, but the on-disk delta after compression is not what
-these tables show. The bench is also one machine with one warm reader: no cold-page,
-memory-pressure, or concurrent-reader behavior. We report it because it is what we can reproduce
-exactly, not because it is the whole story.
+framing — identical treatment on both sides, but the post-compression delta is not shown. One
+shared machine, one warm reader: no cold-page, memory-pressure, or concurrent-reader behavior.
+We report what we can reproduce exactly, not the whole story.
 
 ## Limitations: when not to use treight
 
@@ -637,11 +653,10 @@ place, or span an unbounded universe.
 ## What's next
 
 This bitmap is the ground floor. The series continues with the container around it — the SFST
-chunk format, CRC-framed and zstd-packed — then the tiered key=value dictionaries and the FST
-layer that resolves a filter into these posting lists, the WAL-to-index seal lifecycle that makes
-files immutable in the first place, and how the same machinery indexes traces: span-id arenas,
-per-file trace-id blooms, and rollups. Same organizing idea throughout: the bytes you store are
-the structure you query.
+chunk format, CRC-framed and zstd-packed — then the tiered key=value dictionaries and FST layer
+behind these posting lists, the WAL-to-index seal lifecycle, and how the same machinery indexes
+traces: span-id arenas, per-file trace-id blooms, and rollups. Same organizing idea throughout:
+the bytes you store are the structure you query.
 
 ---
 
