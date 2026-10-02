@@ -163,7 +163,10 @@ impl PluginTransport {
             return 0;
         };
         match &mut p.replaced {
-            Some(_) => 0,
+            Some(len) => {
+                *len += line.len();
+                *len
+            }
             None => {
                 p.reply.body.extend_from_slice(line);
                 p.reply.body.len()
