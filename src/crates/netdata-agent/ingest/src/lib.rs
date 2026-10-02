@@ -598,11 +598,17 @@ impl Parser {
     /// (re-quoted word by word), the host, and the scope chart's name and context. The missing ones are set but
     /// print nothing, as a callback returning false.
     pub fn log_frame(&self) -> FrameGuard {
+        LINE.with(|l| self.log_frame_of(&l.borrow()))
+    }
+
+    /// `log_frame()` while `line` is the line being parsed: a record of the line's own work written after `feed()`
+    /// returned, which C writes inside the line's action (its line splitter is reset only after it).
+    pub fn log_frame_of(&self, line: &[u8]) -> FrameGuard {
         let none = || Value::lazy(|_| false);
-        let request = LINE.with(|l| {
+        let request = {
             let mut shown = Vec::new();
-            if reconstruct(&l.borrow(), &mut shown) { Value::Txt(text(&shown)) } else { none() }
-        });
+            if reconstruct(line, &mut shown) { Value::Txt(text(&shown)) } else { none() }
+        };
         let (instance, context) = match self.scope() {
             Some(chart) => chart.with_meta(|meta| {
                 let name = meta.name.clone().unwrap_or_else(|| chart.id().to_string());

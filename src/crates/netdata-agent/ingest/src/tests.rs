@@ -272,6 +272,32 @@ fn a_replication_request_that_cannot_be_sent_fails_its_line() {
     assert_eq!((oks, h.replication_requests()), (vec![true, true], 1));
 }
 
+/// REPLAY_END's stuck-loop site (`pluginsd_replication.c:583-587`) fails its line when its final request cannot be
+/// sent, as the other site does; nothing is counted (R70).
+#[test]
+fn a_stuck_loops_final_request_that_cannot_be_sent_fails_its_line() {
+    let h = host();
+    let (mut p, wire) = parser_wired(&h, 0);
+    feed_all(&mut p, &DEFINE);
+    feed_all(&mut p, &[&format!("CHART_DEFINITION_END {} {NOW} {NOW}", NOW - 1000)]);
+    let (s, e) = (NOW - 20, NOW - 19);
+    let rend = format!("REND 1 {} {e} false {s} {e} 0x{:x}", NOW - 1000, NOW);
+    let data = [&format!("RBEGIN 'test.c1' {s} {e} {NOW}"), "RSET 'd1' 7 A", rend.as_str()];
+    feed_ok(&mut p, &["RBEGIN 'test.c1'".to_string(), data[0].to_string(), data[1].to_string(), rend.clone()]);
+    feed_ok(&mut p, &["RBEGIN 'test.c1'".to_string(), rend.clone()]);
+    let chart = h.charts().find("test.c1", true).unwrap();
+    assert_eq!(chart.receiver().replication_empty_response_count, 2);
+    wire.take();
+    let requests = h.replication_requests();
+    *wire.1.lock().unwrap() = Some(-1);
+    let (ok, _) = netdata_agent_log::capture(|| feed_all(&mut p, &["RBEGIN 'test.c1'", rend.as_str()]));
+    assert_eq!(ok, [true, false], "the stuck loop's refused request fails REND");
+    assert_eq!(
+        (wire.take(), h.replication_requests() - requests),
+        ("REPLAY_CHART \"test.c1\" \"true\" 0 0\n".to_string(), 0)
+    );
+}
+
 /// A SLOT over the cap is warned about, as C's `pluginsd_parse_rrd_slot()` (D126.5), and the chart is found by its
 /// id; `SLOT:0` is a slot like any other, with no record.
 #[test]

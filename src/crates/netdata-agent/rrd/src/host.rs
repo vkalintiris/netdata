@@ -2426,6 +2426,19 @@ mod tests {
         assert_eq!(slot.send_to_child(b"d\n", Traffic::Functions), 0);
     }
 
+    /// A receiver's buffer autoscales (`send_to_child()` adds with autoscale, `stream-receiver.c:401`): data more than
+    /// its free space, but less than the doubled maximum's, are taken and the maximum doubles (R70).
+    #[test]
+    fn a_send_larger_than_the_free_space_doubles_the_maximum() {
+        use crate::stream_buffer::INITIAL_MAX_SIZE;
+        let slot = ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {}));
+        slot.open_buffer(Box::new(|_| {}));
+        let fill = INITIAL_MAX_SIZE - 10;
+        assert_eq!(slot.send_to_child(&vec![b'x'; fill], Traffic::Functions), fill as isize);
+        assert_eq!(slot.send_to_child(&[b'y'; 11], Traffic::Functions), 11);
+        assert_eq!(slot.buffer().as_ref().unwrap().stats().bytes_max_size, 2 * INITIAL_MAX_SIZE);
+    }
+
     /// `rrdhost_clear_receiver()`: the receiver's end tells the host's sender and resets its parents, both with the
     /// receiver's reason and after the receiver lock is released, and turns the host's health off; a slot not attached
     /// does nothing.

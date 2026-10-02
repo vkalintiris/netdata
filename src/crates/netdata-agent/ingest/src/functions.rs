@@ -18,8 +18,8 @@ use netdata_agent_rrd::upstream::Traffic;
 
 /// Where a parser's lines go (`send_to_plugin()`, the parser's `send_to_plugin_cb`): the plugin's stdin, `text`
 /// written in one piece under the writer's lock, or the child's connection, `text` queued for its stream thread
-/// (`send_to_child()`), as `traffic`. The bytes taken, 0 when there is nowhere to send, or C's negative code after its
-/// warning.
+/// (`send_to_child()`), as `traffic`. The bytes taken, 0 when there is nowhere to send, or a negative code: the pipe's
+/// after C's warning, a child's -1 when its buffer refuses the line.
 pub trait Wire: Send + Sync {
     fn send(&self, text: &[u8], traffic: Traffic) -> isize;
 }
