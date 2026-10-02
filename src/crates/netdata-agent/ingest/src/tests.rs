@@ -2660,6 +2660,43 @@ fn a_claim_that_fails_retries_the_plugin() {
     v.clear_receiver(&slot, 0);
 }
 
+/// `pluginsd_host_define_end()` when `rrdhost_find_or_create()` returns NULL (`pluginsd_parser.c:291-295`): an archived
+/// host of another memory mode that the metadata writer holds is not discarded (`rrdhost.c:873-876`, rrd's
+/// `MetadataBusy`, D95.7), so the line fails with `parser_action()`'s record only (`pluginsd_parser.h:260-264`) and the
+/// plugin is retried, still enabled.
+#[test]
+fn a_definition_over_a_host_the_metadata_writer_holds_retries_the_plugin() {
+    const ARCHIVED: &str = "5a1e0000-0000-4000-8000-0000000000d2";
+    let hosts = plugin_hosts();
+    let archived = HostInfo { db_mode: DbMode::Alloc, ..named_host("a1", ARCHIVED, false).info() };
+    assert_ne!(archived.db_mode, hosts.localhost().info().db_mode);
+    let archived = hosts.add_archived(ARCHIVED, archived, |_| {});
+    archived.clear_pending_context_load();
+    let held = archived.metadata_try_read().expect("not freed");
+    let mut p = plugin_parser(&hosts);
+    let (results, records) =
+        netdata_agent_log::capture(|| feed_all(&mut p, &[&format!("HOST_DEFINE {ARCHIVED} a1"), "HOST_DEFINE_END"]));
+    let records: Vec<_> = records
+        .into_iter()
+        .filter(|r| r.source == Source::Daemon)
+        .map(|r| (r.priority, r.message.unwrap_or_default()))
+        .collect();
+    assert_eq!(results, [true, false]);
+    assert_eq!(
+        records,
+        [(
+            Priority::Err,
+            "PLUGINSD: parser_action('HOST_DEFINE_END') failed on line 2: { 'HOST_DEFINE_END' } (quotes added to show \
+             parsing)"
+                .to_string()
+        )]
+    );
+    assert_eq!((p.retry, p.enabled), (true, true));
+    assert!(Arc::ptr_eq(&hosts.find_by_guid(ARCHIVED).unwrap(), &archived));
+    assert_eq!((archived.is_virtual(), archived.collector_online()), (false, false));
+    drop(held);
+}
+
 /// The run frame names the parser's host as HOST_DEFINE_END and HOST move it; a scope clear names the chart's own
 /// host in its text while the frame names the parser's (C's `st->rrdhost` and `parser->user.host`).
 #[test]

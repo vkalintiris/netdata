@@ -483,9 +483,7 @@ impl Worker {
                 Ok(n) => lines.extend(reader.push(&buffer[..n])),
                 Err(ret) => {
                     nd_log!(Source::Collector, Priority::Info, "PLUGINSD: buffered reader not OK ({ret})");
-                    if ret == READ_POLLERR || ret == READ_POLLHUP {
-                        send_quit = false;
-                    }
+                    send_quit = quits_after(ret);
                     break;
                 }
             }
@@ -546,21 +544,30 @@ fn read(input: &mut File, buffer: &mut [u8], cancelled: &dyn Fn() -> bool) -> Re
             Err(READ_POLL_CANCELLED)
         }
         _ => {
-            let (ret, what) = if waited.revents.contains(PollFlags::POLLERR) {
-                (READ_POLLERR, "POLLERR")
-            } else if waited.revents.contains(PollFlags::POLLHUP) {
-                (READ_POLLHUP, "POLLHUP")
-            } else if waited.revents.contains(PollFlags::POLLNVAL) {
-                (READ_POLLNVAL, "POLLNVAL")
-            } else {
-                nd_log!(Source::Daemon, Priority::Err, errno = waited.errno;
-                    "PARSER: poll() returned positive number, but POLLIN|POLLERR|POLLHUP|POLLNVAL are not set.");
-                return Err(READ_POLL_UNKNOWN);
-            };
-            nd_log!(Source::Daemon, Priority::Err, errno = waited.errno; "PARSER: read failed: {what}.");
+            let (ret, message) = poll_failure(waited.revents);
+            nd_log!(Source::Daemon, Priority::Err, errno = waited.errno; "{message}");
             Err(ret)
         }
     }
+}
+
+/// `buffered_reader_read_timeout()` after a wait that ended without POLLIN: the code and its record, by the first of
+/// POLLERR, POLLHUP and POLLNVAL set.
+fn poll_failure(revents: PollFlags) -> (i32, &'static str) {
+    if revents.contains(PollFlags::POLLERR) {
+        (READ_POLLERR, "PARSER: read failed: POLLERR.")
+    } else if revents.contains(PollFlags::POLLHUP) {
+        (READ_POLLHUP, "PARSER: read failed: POLLHUP.")
+    } else if revents.contains(PollFlags::POLLNVAL) {
+        (READ_POLLNVAL, "PARSER: read failed: POLLNVAL.")
+    } else {
+        (READ_POLL_UNKNOWN, "PARSER: poll() returned positive number, but POLLIN|POLLERR|POLLHUP|POLLNVAL are not set.")
+    }
+}
+
+/// `pluginsd_process()`: a read that failed ends the run with QUIT, unless the plugin's end failed or hung up.
+fn quits_after(ret: i32) -> bool {
+    ret != READ_POLLERR && ret != READ_POLLHUP
 }
 
 /// The plugin's stdin (`parser->fd_output` under `parser->writer.spinlock`): the run's QUIT and the writes of its

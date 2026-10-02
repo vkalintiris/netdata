@@ -156,6 +156,84 @@ fn reads_end_as_cs() {
     );
 }
 
+/// `wait_on_socket_or_cancel_with_timeout()`'s 2, a wait that ended without POLLIN (`socket.c:483-487`), in
+/// `buffered_reader_read_timeout()` (`buffered_reader.h:21-29,77-98`): the first of POLLERR, POLLHUP and POLLNVAL names
+/// the code and its record, none of them -6; `pluginsd_process()` sends QUIT after every code but -3 and -4
+/// (`pluginsd_parser.c:1456-1460`).
+#[test]
+fn poll_failures_map_as_cs() {
+    use PollFlags as F;
+    let failed = |what: &str| format!("PARSER: read failed: {what}.");
+    let unknown = || "PARSER: poll() returned positive number, but POLLIN|POLLERR|POLLHUP|POLLNVAL are not set.".to_string();
+    let cases = [
+        (F::POLLERR, (-3, failed("POLLERR"), false)),
+        (F::POLLERR | F::POLLHUP | F::POLLNVAL, (-3, failed("POLLERR"), false)),
+        (F::POLLHUP, (-4, failed("POLLHUP"), false)),
+        (F::POLLHUP | F::POLLNVAL, (-4, failed("POLLHUP"), false)),
+        (F::POLLNVAL, (-5, failed("POLLNVAL"), true)),
+        (F::POLLNVAL | F::POLLPRI, (-5, failed("POLLNVAL"), true)),
+        (F::empty(), (-6, unknown(), true)),
+        (F::POLLPRI | F::POLLOUT, (-6, unknown(), true)),
+    ];
+    for (revents, want) in cases {
+        let (code, record) = poll_failure(revents);
+        assert_eq!((code, record.to_string(), quits_after(code)), want, "{revents:?}");
+    }
+    // the codes outside the poll's failure: a failed read, the timeout, the cancellation
+    for code in [-1, -7, -8] {
+        assert!(quits_after(code), "{code}");
+    }
+}
+
+/// A plugin that shut down writing: its end polls POLLIN and reads 0, `buffered_reader_read()`'s -1 with no record
+/// (`buffered_reader.h:46-51,65-66`), after the bytes before it; so is a read that fails (ECONNRESET: the plugin closed
+/// with bytes it never read). The run then ends with C's record and QUIT, which the plugin still reads
+/// (`pluginsd_parser.c:1456-1460,1473-1479`).
+#[test]
+fn a_plugin_that_shut_down_writing_reads_as_cs() {
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+    let file = |end: UnixStream| File::from(std::os::fd::OwnedFd::from(end));
+    let mut buffer = [0; 16];
+    let mut got = Ok(0);
+    let (ours, mut plugin) = UnixStream::pair().unwrap();
+    let mut input = file(ours);
+    plugin.write_all(b"x\n").unwrap();
+    plugin.shutdown(Shutdown::Write).unwrap();
+    assert_eq!(read(&mut input, &mut buffer, &|| false), Ok(2));
+    let logged = records(|| got = read(&mut input, &mut buffer, &|| false));
+    assert_eq!((got, logged), (Err(-1), vec![]));
+    let (ours, plugin) = UnixStream::pair().unwrap();
+    let mut input = file(ours);
+    input.write_all(b"QUIT").unwrap();
+    drop(plugin);
+    let logged = records(|| got = read(&mut input, &mut buffer, &|| false));
+    assert_eq!((got, logged), (Err(-1), vec![]));
+
+    let hosts = hosts();
+    let mut w = worker(&hosts);
+    let (ours, mut plugin) = UnixStream::pair().unwrap();
+    let mut input = file(ours.try_clone().unwrap());
+    let output = PluginWire::new(Some(file(ours)));
+    plugin.write_all(COLLECT).unwrap();
+    plugin.shutdown(Shutdown::Write).unwrap();
+    let mut outcome = (0, false);
+    let logged = records(|| outcome = w.process(&mut input, &output));
+    drop(WireClose(output));
+    drop(input);
+    let mut sent = Vec::new();
+    std::io::Read::read_to_end(&mut plugin, &mut sent).unwrap();
+    assert_eq!((outcome, sent.as_slice()), ((1, false), &b"QUIT"[..]));
+    let logged: Vec<_> = logged.into_iter().filter(|r| r.1 != Priority::Debug || r.3.contains("QUIT")).collect();
+    assert_eq!(
+        logged,
+        [
+            (Source::Collector, Priority::Info, 0, "PLUGINSD: buffered reader not OK (-1)".to_string()),
+            (Source::Collector, Priority::Debug, 0, "PLUGINSD: sending 'QUIT'  to plugin: x.plugin".to_string()),
+        ]
+    );
+}
+
 /// `send_to_plugin()` to a plugin that is gone: C's warning with the failed write's errno.
 #[test]
 fn a_failed_send_is_reported_with_its_errno() {
