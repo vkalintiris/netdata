@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -24,6 +26,78 @@ const maxLife = 10 * time.Minute
 type recorder struct {
 	mu  sync.Mutex
 	enc *json.Encoder
+}
+
+// stdout is held for each write to stdout: a background collection's blocks and the steps' emits never interleave.
+var stdout sync.Mutex
+
+func emit(s string) {
+	stdout.Lock()
+	defer stdout.Unlock()
+	_, _ = os.Stdout.WriteString(s)
+}
+
+// input is what stdin carried so far, which Expect steps match in order: each from the end of the previous match.
+type input struct {
+	mu      sync.Mutex
+	data    []byte
+	pos     int
+	eof     bool
+	changed chan struct{} // closed and replaced at each read and at stdin's end
+}
+
+func newInput() *input { return &input{changed: make(chan struct{})} }
+
+func (in *input) add(b []byte, eof bool) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.data = append(in.data, b...)
+	in.eof = in.eof || eof
+	close(in.changed)
+	in.changed = make(chan struct{})
+}
+
+// expect waits until re matches after the previous match: the matched text and named groups, or how it failed
+// ("expect-timeout" at the deadline, "expect-eof" at stdin's end without a match).
+func (in *input) expect(re *regexp.Regexp, deadline <-chan time.Time) (string, map[string]string, string) {
+	for {
+		in.mu.Lock()
+		data, pos, eof, changed := in.data, in.pos, in.eof, in.changed
+		loc := re.FindSubmatchIndex(data[pos:])
+		if loc != nil {
+			in.pos = pos + loc[1]
+		}
+		in.mu.Unlock()
+		if loc != nil {
+			groups := map[string]string{}
+			for i, name := range re.SubexpNames() {
+				if name != "" && loc[2*i] >= 0 {
+					groups[name] = string(data[pos+loc[2*i] : pos+loc[2*i+1]])
+				}
+			}
+			return string(data[pos+loc[0] : pos+loc[1]]), groups, "matched"
+		}
+		if eof {
+			return "", nil, "expect-eof"
+		}
+		select {
+		case <-changed:
+		case <-deadline:
+			return "", nil, "expect-timeout"
+		}
+	}
+}
+
+// expand replaces each `{{name}}` of a captured group with its value; anything else stays as written.
+func expand(s string, vars map[string]string) string {
+	if len(vars) == 0 || !strings.Contains(s, "{{") {
+		return s
+	}
+	pairs := make([]string, 0, 2*len(vars))
+	for k, v := range vars {
+		pairs = append(pairs, "{{"+k+"}}", v)
+	}
+	return strings.NewReplacer(pairs...).Replace(s)
 }
 
 func (r *recorder) write(rec plugin.Record) {
@@ -83,42 +157,70 @@ func main() {
 	}()
 	time.AfterFunc(maxLife, func() { end("cap", 93) })
 
+	var stayOnEOF atomic.Bool
 	eof := make(chan struct{})
+	in := newInput()
 	go func() {
 		buf := make([]byte, 64*1024)
 		for {
 			k, err := os.Stdin.Read(buf)
 			if k > 0 {
 				rec.write(plugin.Record{Kind: "stdin", Data: string(buf[:k])})
+				in.add(buf[:k], false)
 			}
 			if err != nil {
 				rec.write(plugin.Record{Kind: "eof"})
+				in.add(nil, true)
 				close(eof)
 				return
 			}
 		}
 	}()
-	// stdin's end (the agent stopping) ends any step
+	// stdin's end (the agent stopping) ends any step, unless a step said to stay
 	go func() {
 		<-eof
-		end("eof-exit 0", 0)
+		if !stayOnEOF.Load() {
+			end("eof-exit 0", 0)
+		}
 	}()
 
+	// the groups the Expect steps captured, for `{{name}}` in later emits
+	vars := map[string]string{}
 	start := sc.Starts[min(n-1, len(sc.Starts)-1)]
 	for _, step := range start.Steps {
 		switch {
 		case step.Emit != "":
 			rec.write(plugin.Record{Kind: "step", Step: "emit"})
-			_, _ = os.Stdout.WriteString(step.Emit)
+			emit(expand(step.Emit, vars))
 		case step.Stderr != "":
 			rec.write(plugin.Record{Kind: "step", Step: "stderr"})
-			_, _ = os.Stderr.WriteString(step.Stderr + "\n")
+			_, _ = os.Stderr.WriteString(expand(step.Stderr, vars) + "\n")
 		case step.SleepMs > 0:
 			rec.write(plugin.Record{Kind: "step", Step: "sleep"})
 			time.Sleep(time.Duration(step.SleepMs) * time.Millisecond)
 		case step.Collect != nil:
 			rec.write(plugin.Record{Kind: "step", Step: "collect"})
-			collect(rec, step.Collect)
+			if step.Collect.Background {
+				go collect(rec, step.Collect)
+			} else {
+				collect(rec, step.Collect)
+			}
+		case step.Expect != nil:
+			e := step.Expect
+			re, err := regexp.Compile(e.Re)
+			if err != nil {
+				end("bad expect "+e.Name, 95)
+			}
+			rec.write(plugin.Record{Kind: "expect", Step: e.Name})
+			var deadline <-chan time.Time
+			if e.TimeoutMs > 0 {
+				deadline = time.After(time.Duration(e.TimeoutMs) * time.Millisecond)
+			}
+			text, groups, how := in.expect(re, deadline)
+			rec.write(plugin.Record{Kind: how, Step: e.Name, Data: text, Groups: groups})
+			for k, v := range groups {
+				vars[k] = v
+			}
 		case step.WaitFile != "":
 			rec.write(plugin.Record{Kind: "waiting", Step: "wait", File: step.WaitFile})
 			for {
@@ -132,11 +234,36 @@ func main() {
 		case step.Hang:
 			rec.write(plugin.Record{Kind: "step", Step: "hang"})
 			select {}
+		case step.Raise != "":
+			rec.write(plugin.Record{Kind: "step", Step: "raise"})
+			sig, ok := raisable[step.Raise]
+			if !ok {
+				end("unknown signal "+step.Raise, 94)
+			}
+			once.Do(func() {
+				rec.write(plugin.Record{Kind: "end", How: "raise " + step.Raise})
+				_ = f.Sync()
+				// Go catches SIGUSR1 and its like and ignores them, signal.Reset included: a shell exec'd in this
+				// process's place takes the signal with its default action, so the plugin's pid dies by it
+				_ = syscall.Exec("/bin/sh", []string{"sh", "-c", "kill -s " + strings.TrimPrefix(step.Raise, "SIG") + " $$"}, os.Environ())
+				signal.Reset(sig)
+				_ = syscall.Kill(os.Getpid(), sig)
+			})
+			select {}
+		case step.IgnoreTerm:
+			rec.write(plugin.Record{Kind: "step", Step: "ignore-term"})
+			signal.Ignore(syscall.SIGTERM)
+		case step.StayOnEOF:
+			rec.write(plugin.Record{Kind: "step", Step: "stay-on-eof"})
+			stayOnEOF.Store(true)
 		}
 	}
 	// the steps ran out: wait for the agent to stop us
 	select {}
 }
+
+// raisable are the signals a Raise step may name.
+var raisable = map[string]syscall.Signal{"SIGUSR1": syscall.SIGUSR1, "SIGUSR2": syscall.SIGUSR2, "SIGSEGV": syscall.SIGSEGV}
 
 // collect writes the chart's definition, then one block per whole wall-clock second.
 func collect(rec *recorder, c *plugin.Collect) {
@@ -145,17 +272,23 @@ func collect(rec *recorder, c *plugin.Collect) {
 	for _, d := range c.Dims {
 		fmt.Fprintf(&def, "DIMENSION %s '' absolute 1 1\n", d)
 	}
-	_, _ = os.Stdout.WriteString(def.String())
+	emit(def.String())
 	for i := 1; i <= c.N; i++ {
 		next := time.Now().Truncate(time.Second).Add(time.Second)
 		time.Sleep(time.Until(next))
 		var b strings.Builder
 		fmt.Fprintf(&b, "BEGIN %s\n", c.Chart)
+		if c.InBlock != "" {
+			b.WriteString(c.InBlock + "\n")
+		}
 		for _, d := range c.Dims {
 			fmt.Fprintf(&b, "SET %s = %d\n", d, i)
 		}
 		fmt.Fprintf(&b, "END %d 0\n", next.Unix())
-		_, _ = os.Stdout.WriteString(b.String())
+		if c.AfterBlock != "" {
+			b.WriteString(c.AfterBlock + "\n")
+		}
+		emit(b.String())
 		rec.write(plugin.Record{Kind: "collected", Sec: next.Unix()})
 	}
 }

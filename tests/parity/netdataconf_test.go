@@ -127,6 +127,17 @@ func TestNetdataConfStandaloneProfile(t *testing.T) {
 	compareNetdataConf(t, daemon.Options{GlobalExtra: "    profile = standalone\n"})
 }
 
+// TestNetdataConfListenerPort: with NETDATA_LISTENER_PORT set (as in container images) the plugins thread seeds
+// `[plugins] freeipmi = no` before its first scan (`plugins_d.c:309-310`), so the key comes before the plugins found.
+func TestNetdataConfListenerPort(t *testing.T) {
+	p := compareNetdataConf(t, daemon.Options{Env: []string{"NETDATA_LISTENER_PORT=19999"}})
+	b, err := rawExchange(p.Oracle.Addr, []byte("GET /netdata.conf HTTP/1.1\r\n\r\n"), 5*time.Second)
+	// read with a default, neither loaded nor changed: C dumps it commented (`inicfg_conf_file.c:444-450`)
+	if err != nil || !bytes.Contains(b, []byte("\t# freeipmi = no\n")) {
+		t.Errorf("the oracle's dump has no freeipmi key: %v", err)
+	}
+}
+
 // TestNetdataConfProfiles: `[global] profile = child` and `iot` while stream.conf enables an API key (which the
 // detection would make a parent): each dump shows the profile's defaults (M7 10f, D122.11).
 func TestNetdataConfProfiles(t *testing.T) {

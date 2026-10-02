@@ -421,8 +421,13 @@ func failOver(t *testing.T, s *failoverSide, hostname, guid string) {
 
 // seriesCSV is `netdata.server_cpu` over [after, before], one point a second, from a daemon's host at `prefix`.
 func seriesCSV(t *testing.T, addr, prefix string, after, before int64) string {
-	req := fmt.Sprintf("GET %s/api/v1/data?chart=netdata.server_cpu&after=%d&before=%d&points=%d&group=average"+
-		"&format=csv HTTP/1.1\r\nConnection: close\r\n\r\n", prefix, after, before, before-after+1)
+	return chartCSV(t, addr, prefix, "netdata.server_cpu", after, before)
+}
+
+// chartCSV is a chart over [after, before], one point a second, from a daemon's host at `prefix`.
+func chartCSV(t *testing.T, addr, prefix, chart string, after, before int64) string {
+	req := fmt.Sprintf("GET %s/api/v1/data?chart=%s&after=%d&before=%d&points=%d&group=average"+
+		"&format=csv HTTP/1.1\r\nConnection: close\r\n\r\n", prefix, chart, after, before, before-after+1)
 	b, err := rawExchange(addr, []byte(req), 10*time.Second)
 	if err != nil {
 		t.Errorf("%s%s: %v", addr, prefix, err)

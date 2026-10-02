@@ -94,12 +94,19 @@ var (
 // time is printed in) and masked.
 func handshakeRecords(t *testing.T, d *daemon.Daemon, s *stubs) []string {
 	t.Helper()
+	return handshakeRecordsWith(t, d, s, "PULSE")
+}
+
+// handshakeRecordsWith is handshakeRecords with the start trigger's records taken from the collector threads named
+// (PULSE for localhost; a vnode's sender starts on the thread that collects it, e.g. PD[difftest]).
+func handshakeRecordsWith(t *testing.T, d *daemon.Daemon, s *stubs, collectors ...string) []string {
+	t.Helper()
 	seen := map[string]bool{}
 	var out []string
 	for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
 		th := threadOf(l)
-		// the start trigger's records and the connector's calls from the collector (PULSE)
-		collector := th == "PULSE" && (strings.Contains(l, "STREAM SND") || strings.Contains(l, "STREAM CONNECT"))
+		// the start trigger's records and the connector's calls from the collector
+		collector := slices.Contains(collectors, th) && (strings.Contains(l, "STREAM SND") || strings.Contains(l, "STREAM CONNECT"))
 		if th != "SNDR-CN[0]" && !collector || optionalRecordRe.MatchString(l) {
 			continue
 		}
@@ -444,11 +451,19 @@ var (
 // `stream.rchild-replication/edges` compares it.
 func rchildRecords(t *testing.T, d *daemon.Daemon) []string {
 	t.Helper()
+	return rchildRecordsWith(t, d, nil)
+}
+
+// rchildRecordsWith is rchildRecords with the records `also` keeps from other threads (thread, record), normalized
+// alike.
+func rchildRecordsWith(t *testing.T, d *daemon.Daemon, also func(th, l string) bool) []string {
+	t.Helper()
 	seen := map[string]bool{}
 	var out []string
 	for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
 		th := threadOf(l)
-		streaming := th == "SNDR-CN[0]" || strings.HasPrefix(th, "STREAM[") || strings.HasPrefix(th, "REPLAY[")
+		streaming := th == "SNDR-CN[0]" || strings.HasPrefix(th, "STREAM[") || strings.HasPrefix(th, "REPLAY[") ||
+			also != nil && also(th, l)
 		if !streaming || optionalRecordRe.MatchString(l) || strings.Contains(l, `msg="REPLICATION SEND SUMMARY`) {
 			continue
 		}
@@ -662,8 +677,15 @@ func waitReceiver(t *testing.T, addr, guid string) {
 
 // hasReceiver tells whether the parent's stream_info names the child's host and counts its receiver, with the answer.
 func hasReceiver(addr, guid string) (bool, []byte) {
+	return hasReceivers(addr, guid, 1)
+}
+
+// hasReceivers tells whether the parent's stream_info names the host as a child and counts n receivers (the
+// parent's total, stream-parents.c:336: a child and its vnode are two), with the answer.
+func hasReceivers(addr, guid string, n int) (bool, []byte) {
 	b, err := rawExchange(addr, []byte("GET /api/v3/stream_info?machine_guid="+guid+" HTTP/1.1\r\n\r\n"), 5*time.Second)
-	return err == nil && bytes.Contains(b, []byte(`"receivers":1`)) && bytes.Contains(b, []byte(`"ingest_type":"child"`)), b
+	return err == nil && bytes.Contains(b, []byte(`"receivers":`+strconv.Itoa(n)+`,`)) &&
+		bytes.Contains(b, []byte(`"ingest_type":"child"`)), b
 }
 
 // parentCharts is a parent's /api/v1/charts of a child as its definitions made it: each chart's retention, the

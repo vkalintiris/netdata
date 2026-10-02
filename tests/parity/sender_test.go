@@ -5,6 +5,7 @@ package parity
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,10 +13,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/netdata/netdata/tests/query-corpus/daemon"
+	"github.com/netdata/netdata/tests/query-corpus/plugin"
 	"github.com/netdata/netdata/tests/query-corpus/stream"
 )
 
@@ -39,7 +42,12 @@ type capture struct {
 	dimSlots map[string]map[string]string
 	// replays are each chart's replication answers: their lines' kinds and dimensions
 	replays map[string][]string
-	other   []string
+	// relists are the session's function re-lists in order, each its `FUNCTION_DEL GLOBAL` and `FUNCTION GLOBAL`
+	// lines (one commit, so they come together) without cOnlyFunctionRe's, joined; a re-list left empty is dropped
+	relists []string
+	// excluded counts the bytes of the re-list lines cOnlyFunctionRe left out, each with its newline
+	excluded int
+	other    []string
 	// slots are each chart's slot in its definition, which its blocks must use (the numbers follow the charts'
 	// creation order, which varies)
 	slots map[string]string
@@ -56,6 +64,11 @@ var (
 	set2Re          = regexp.MustCompile(`^SET2 (?:(SLOT:\S+) )?'([^']*)' \S+ \S+ (\S*)$`)
 	dimensionRe     = regexp.MustCompile(`^DIMENSION (?:(SLOT:\S+) )?"([^"]*)"`)
 	definitionEndRe = regexp.MustCompile(`^CHART_DEFINITION_END .*`)
+	// cOnlyFunctionRe are the re-list lines of C's own localhost methods, which the candidate registers later: the
+	// five built-ins (web/api/functions/functions.c, M8 commit 9) and DynCfg's `config` line (unquoted,
+	// dyncfg.c:521-528, M8 commit 8). It hides a deviation, not C's run-to-run variation: what the Rust agent lacks
+	// until M8's DynCfg (the `config` line) and built-in Functions (C's five names) land, and it comes out with them.
+	cOnlyFunctionRe = regexp.MustCompile(`^FUNCTION GLOBAL ("(netdata-streaming|topology:streaming|netdata-api-calls|bearer_get_token|netdata-metrics-cardinality)" |config )`)
 	v1BeginRe       = regexp.MustCompile(`^BEGIN "([^"]*)" (\d+)$`)
 	v1SetRe         = regexp.MustCompile(`^SET "([^"]*)" = \S+$`)
 )
@@ -86,7 +99,27 @@ func parseCapture(req stream.Request, data []byte) capture {
 	var block []string
 	v1Time := "" // the open v1 block's time: 0, or N for any other
 	inPath := false
+	var relist []string
+	inRelist := false
+	endRelist := func() {
+		if len(relist) > 0 {
+			c.relists = append(c.relists, strings.Join(relist, "\n"))
+		}
+		relist, inRelist = nil, false
+	}
 	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "FUNCTION GLOBAL ") || strings.HasPrefix(line, "FUNCTION_DEL GLOBAL ") {
+			inRelist = true
+			if cOnlyFunctionRe.MatchString(line) {
+				c.excluded += len(line) + 1
+			} else {
+				relist = append(relist, line)
+			}
+			continue
+		}
+		if inRelist && line != "" {
+			endRelist()
+		}
 		switch {
 		case line == "":
 		case inPath:
@@ -103,8 +136,6 @@ func parseCapture(req stream.Request, data []byte) capture {
 			sort.Strings(labels)
 			c.start = append(append(c.start, labels...), line)
 			labels = nil
-		case strings.HasPrefix(line, "FUNCTION "), strings.HasPrefix(line, "FUNCTION_DEL "):
-			// the functions' catalogue comes with the functions milestone, M8 (D100.9)
 		case strings.HasPrefix(line, "CLAIMED_ID "), strings.HasPrefix(line, "VARIABLE HOST "):
 			c.start = append(c.start, line)
 		case chartLineRe.MatchString(line):
@@ -186,6 +217,7 @@ func parseCapture(req stream.Request, data []byte) capture {
 			c.other = append(c.other, line)
 		}
 	}
+	endRelist()
 	for id := range c.data {
 		sort.Strings(c.data[id])
 	}
@@ -239,6 +271,7 @@ func compareCaptures(t *testing.T, stage string, a, b capture) {
 			diff("replication of "+id, a.replays[id], y)
 		}
 	}
+	diff("function re-lists", a.relists, b.relists)
 	diff("other lines", a.other, b.other)
 }
 
@@ -298,6 +331,13 @@ type senderVariant struct {
 	paths int
 	// startHas, when set, is a pattern a line of the oracle's first session's start must match
 	startHas string
+	// plugin, when set, is the fake plugin's scenario: installed in the child's run directory and enabled
+	plugin *plugin.Scenario
+	// relists, when set, are the oracle's function re-lists per session (capture.relists), checked exactly
+	relists [][]string
+	// hold, when set, runs before the parent answers each STREAM request after the first: the child's handshake
+	// waits for it (C's `[stream] timeout` defaults to 300 s, stream-conf.c:52)
+	hold func(t *testing.T, d *daemon.Daemon)
 }
 
 var senderVariants = []senderVariant{
@@ -356,6 +396,120 @@ var senderVariants = []senderVariant{
 			o.StreamExtra = "\n[" + senderGrandchild.MachineGUID + "]\n    type = machine\n    proxy enabled = no\n"
 		},
 		during: retentionChange},
+	// the function re-list (fn-relist, M8 commit 5, D147.14 R61-3): the fake plugin's methods as the parent sees
+	// them, with the parent taking FUNCTION_DEL, refusing it, and refusing FUNCTIONS
+	fnRelistVariant("fn-relist", 0, [][]string{fnRelistBursts(true), nil}),
+	fnRelistVariant("fn-nodel", stream.CapFunctionDel, [][]string{fnRelistBursts(false), nil}),
+	fnRelistVariant("fn-nofn", stream.CapFunctions, [][]string{fnRelistBursts(true), nil}),
+}
+
+// fnRelistLine is a method's re-list line as C renders it (nrpc-catalog.c `FUNCTION GLOBAL "%s" %d "%s" "%s" 0x%x
+// %d %u`) for the fake plugin's registrations.
+func fnRelistLine(name, help string) string {
+	return fmt.Sprintf(`FUNCTION GLOBAL "%s" 10 "%s" "top" 0x13 100 1`, name, help)
+}
+
+// fnRelistBursts are the re-lists of fnRelistScenario's first start, in order, as C sends them: the connect-time one
+// (or, when the parent refused FUNCTIONS, the first collection's: command-function.c:9 returns before clearing the
+// flag, command-begin-set-end-init.c:49-67 does not check FUNCTIONS); the queued FUNCTION_DEL lines first, when
+// the parent takes them (nrpc-catalog.c:150-160, dropped otherwise); a DEL and a re-add between two renders give
+// both (fn.registry.readd_keeps_del); a re-added method goes last (registration order); an unchanged re-send
+// re-lists too. The exit re-lists nothing, and the next session's re-list leaves the exited run's methods out
+// (unavailable), so it is empty once C's own are left out.
+func fnRelistBursts(del bool) []string {
+	a, b := fnRelistLine("difftest-a", "a"), fnRelistLine("difftest-b", "b")
+	a2, b2 := fnRelistLine("difftest-a", "a2"), fnRelistLine("difftest-b", "b2")
+	delA, delB := `FUNCTION_DEL GLOBAL "difftest-a"`, `FUNCTION_DEL GLOBAL "difftest-b"`
+	join := func(l ...string) string { return strings.Join(l, "\n") }
+	if !del {
+		return []string{join(a, b), join(b), join(b2), join(b2, a2), join(b2, a2)}
+	}
+	return []string{join(a, b), join(delA, b), join(delB, b2), join(b2, a2), join(b2, a2)}
+}
+
+// fnRelistScenario: the plugin collects in the background from its start (PULSE is off, so its blocks are the only
+// collections on localhost and each re-list renders at one of them, on its own thread: a write's lines are never
+// split by a render); start 1 registers two methods, and once released, 2.5 s apart (two blocks or more, so each
+// change re-lists alone, R61-3): deletes difftest-a; deletes and re-adds difftest-b in one write; re-adds
+// difftest-a; re-sends difftest-b unchanged; then waits for the second release to exit (the parent has closed the
+// session by then: the run end's obsolete charts, pd.orch.exit.obsolete_charts, are not pushed into a captured
+// session). Start 2 collects the same chart, without registering, before the child connects again.
+func fnRelistScenario() *plugin.Scenario {
+	reg := func(name, help string) string {
+		return fmt.Sprintf(`FUNCTION GLOBAL "%s" 10 "%s" "top" "0x13" 100 1`+"\n", name, help)
+	}
+	del := func(name string) string { return `FUNCTION_DEL GLOBAL "` + name + `"` + "\n" }
+	collect := func(background bool) plugin.Step {
+		return plugin.Step{Collect: &plugin.Collect{Chart: "difftest.relist", Dims: []string{"x"}, N: 300, Background: background}}
+	}
+	pause := plugin.Step{SleepMs: 2500}
+	return &plugin.Scenario{Starts: []plugin.Start{
+		{Steps: []plugin.Step{
+			{Emit: reg("difftest-a", "a") + reg("difftest-b", "b")}, collect(true), {WaitFile: "r1"}, pause,
+			{Emit: del("difftest-a")}, pause,
+			{Emit: del("difftest-b") + reg("difftest-b", "b2")}, pause,
+			{Emit: reg("difftest-a", "a2")}, pause,
+			{Emit: reg("difftest-b", "b2")}, pause,
+			{WaitFile: "r2"}, {Exit: plugin.ExitCode(0)},
+		}},
+		{Steps: []plugin.Step{collect(false)}},
+	}}
+}
+
+// fnRelistHold waits until the plugin's second start collected (its first start's run end is over: the methods are
+// unavailable and the chart obsolete), then half a second for the daemon to read the block (the chart revived). A
+// child that connects again early (before the plugin's changes end) waits here too, up to a minute.
+func fnRelistHold(t *testing.T, d *daemon.Daemon) {
+	l := plugin.LayoutOf(d.Opts.RunDir)
+	if _, ok := l.WaitFor(60*time.Second, func(s [][]plugin.Record) bool {
+		return len(s) >= 2 && plugin.Has(s[1], "collected", "")
+	}); !ok {
+		t.Errorf("%s: the plugin's second start did not collect within 60 s of the child's STREAM request", d.Opts.RunDir)
+	}
+	time.Sleep(500 * time.Millisecond)
+}
+
+// fnRelistVariant is a re-list variant: the parent refuses REPLICATION and `refused`, the child runs the fake plugin
+// with PULSE off; the plugin is released once the session's start is out; once its changes are done the parent
+// closes the session and the plugin exits. The parent answers the child's next STREAM request only once the plugin's
+// second start collects (fnRelistHold), so the second session starts without the exited run's methods and with its
+// chart revived. Run 15 (rl2, fn-nodel) showed a C child connecting again before the exit's run end without it:
+// session 2 re-listed difftest-b and difftest-a, then carried the chart's obsolete definition.
+func fnRelistVariant(name string, refused uint32, relists [][]string) senderVariant {
+	return senderVariant{name: name, refused: stream.CapReplication | refused, sessions: 2, plugin: fnRelistScenario(),
+		relists: relists,
+		hold:    fnRelistHold,
+		child:   func(o *daemon.Options) { o.PulseOff = true },
+		during: func(t *testing.T, d *daemon.Daemon, s *stream.Session) {
+			l := plugin.LayoutOf(d.Opts.RunDir)
+			if !s.WaitData(func(b []byte) bool { return bytes.Contains(b, []byte("OVERWRITE labels\n")) }, 30*time.Second) {
+				t.Errorf("%s: no host labels within 30 s", d.Opts.RunDir)
+				return
+			}
+			// the connect-time re-list follows the labels (stream-sender.c:174-179)
+			time.Sleep(time.Second)
+			if err := l.Release("r1"); err != nil {
+				t.Error(err)
+				return
+			}
+			if _, ok := l.WaitFor(40*time.Second, func(s [][]plugin.Record) bool {
+				return len(s) >= 1 && plugin.Has(s[0], "waiting", "r2")
+			}); !ok {
+				t.Errorf("%s: the plugin's changes did not end within 40 s", d.Opts.RunDir)
+				return
+			}
+			time.Sleep(time.Second)
+			_ = s.Close()
+			if err := l.Release("r2"); err != nil {
+				t.Error(err)
+				return
+			}
+			if _, ok := l.WaitFor(10*time.Second, func(s [][]plugin.Record) bool {
+				return len(s) >= 2 && plugin.Has(s[1], "collected", "")
+			}); !ok {
+				t.Errorf("%s: the plugin's second start did not collect within 10 s", d.Opts.RunDir)
+			}
+		}}
 }
 
 // senderGrandchild is the live child of the retention-change variant's sender child.
@@ -374,42 +528,62 @@ func retentionChange(t *testing.T, d *daemon.Daemon, s *stream.Session) {
 	time.Sleep(3 * time.Second)
 	g.obsolete("gc.gone", []string{"CHART 'gc.gone' '' 'title' 'units' 'family' 'gc.gone' line 1000 1 'obsolete' maint corpus"},
 		nil)
-	obsoleted := time.Now()
-	if !s.WaitData(func(b []byte) bool { return len(streamPathBlocks(b)) >= 2 }, 210*time.Second) {
-		t.Errorf("%s: no second JSON STREAM_PATH within 210 s of the obsolete chart", d.Opts.RunDir)
-		return
+	retentionPaths(t, d.Opts.RunDir, s, d.Opts.Identity.MachineGUID, time.Now(), 0)
+}
+
+// streamPathEntry is a stream path entry as the checks read it.
+type streamPathEntry struct {
+	HostID string   `json:"host_id"`
+	Hops   int      `json:"hops"`
+	Since  int64    `json:"since"`
+	First  int64    `json:"first_time_t"`
+	Flags  []string `json:"flags"`
+}
+
+// retentionPaths waits up to 210 s after a chart went obsolete (`obsoleted`) for the session's stream path `from`+2
+// (the one after path `from`, the last sent before the chart went obsolete) and checks the two: one entry each (the
+// agent `guid`, hops 0, the same since), the second's first time at least 30 s above the first's and one retention
+// (60 s) behind the moment it was seen. It returns the two entries, ok false when it found them wrong or missing.
+// Errors only: the vnode's variant runs it off the test's goroutine.
+func retentionPaths(t *testing.T, who string, s *stream.Session, guid string, obsoleted time.Time,
+	from int) (first, second streamPathEntry, ok bool) {
+	t.Helper()
+	if !s.WaitData(func(b []byte) bool { return len(streamPathBlocks(b)) >= from+2 }, 210*time.Second) {
+		// the text checks.md quotes for the localhost variant's teeth
+		t.Errorf("%s: no second JSON STREAM_PATH within 210 s of the obsolete chart (after path %d)", who, from+1)
+		return first, second, false
 	}
 	seen := time.Now()
-	type entry struct {
-		HostID string `json:"host_id"`
-		Hops   int    `json:"hops"`
-		Since  int64  `json:"since"`
-		First  int64  `json:"first_time_t"`
-	}
 	var paths [2]struct {
-		Path []entry `json:"streaming_path"`
+		Path []streamPathEntry `json:"streaming_path"`
 	}
-	for i, b := range streamPathBlocks(s.Data())[:2] {
+	for i, b := range streamPathBlocks(s.Data())[from : from+2] {
 		if err := json.Unmarshal(b, &paths[i]); err != nil {
-			t.Fatalf("path %d: %v: %s", i+1, err, b)
+			t.Errorf("%s: path %d: %v: %s", who, from+i+1, err, b)
+			return first, second, false
 		}
-		if len(paths[i].Path) != 1 || paths[i].Path[0].HostID != d.Opts.Identity.MachineGUID || paths[i].Path[0].Hops != 0 {
-			t.Errorf("path %d: %s", i+1, b)
-			return
+		if len(paths[i].Path) != 1 || paths[i].Path[0].HostID != guid || paths[i].Path[0].Hops != 0 {
+			t.Errorf("%s: path %d: %s", who, from+i+1, b)
+			return first, second, false
 		}
 	}
-	first, second := paths[0].Path[0], paths[1].Path[0]
-	t.Logf("%s: the second path %s after the obsolete chart, its first time %d s before that, %d s after the first path's",
-		d.Opts.RunDir, seen.Sub(obsoleted).Round(time.Second), seen.Unix()-second.First, second.First-first.First)
+	first, second = paths[0].Path[0], paths[1].Path[0]
+	t.Logf("%s: path %d %s after the obsolete chart, its first time %d s before that, %d s after path %d's",
+		who, from+2, seen.Sub(obsoleted).Round(time.Second), seen.Unix()-second.First, second.First-first.First, from+1)
+	ok = true
 	if second.Since != first.Since {
-		t.Errorf("since: %d then %d", first.Since, second.Since)
+		t.Errorf("%s: since: %d then %d", who, first.Since, second.Since)
+		ok = false
 	}
 	if second.First-first.First < 30 {
-		t.Errorf("first time: %d then %d", first.First, second.First)
+		t.Errorf("%s: first time: %d then %d", who, first.First, second.First)
+		ok = false
 	}
 	if lag := seen.Unix() - second.First; lag < 57 || lag > 63 {
-		t.Errorf("the second path's first time is %d s before it was seen, not the 60 s of retention", lag)
+		t.Errorf("%s: path %d's first time is %d s before it was seen, not the 60 s of retention", who, from+2, lag)
+		ok = false
 	}
+	return first, second, ok
 }
 
 // TestSenderCapture (checks `stream.sender-capture` and `stream.rchild-transcript`, milestone 7 commits 0, 4 and
@@ -442,6 +616,12 @@ func TestSenderCapture(t *testing.T) {
 				}
 			}
 			diffLines(t, "gate and reset records", records[0], records[1])
+			for n, want := range v.relists {
+				if n < len(caps[0]) && !slices.Equal(caps[0][n].relists, want) {
+					t.Errorf("oracle: session %d's function re-lists:\n%s\nwant:\n%s", n+1,
+						strings.Join(caps[0][n].relists, "\n--\n"), strings.Join(want, "\n--\n"))
+				}
+			}
 			if v.startHas != "" && !slices.ContainsFunc(caps[0][0].start, regexp.MustCompile(v.startHas).MatchString) {
 				t.Errorf("the oracle's first session's start lacks %s:\n%s", v.startHas, strings.Join(caps[0][0].start, "\n"))
 			}
@@ -465,7 +645,14 @@ func TestSenderCapture(t *testing.T) {
 // senderRun runs one child against a recording parent for the variant and returns its sessions' captures and its
 // gate and reset records.
 func senderRun(t *testing.T, bin string, role Role, v senderVariant, sessions int) ([]capture, []string) {
+	var child atomic.Pointer[daemon.Daemon]
+	var requests atomic.Int32
 	script := func(r stream.Request) stream.Answer {
+		if n := requests.Add(1); n > 1 && v.hold != nil {
+			if d := child.Load(); d != nil {
+				v.hold(t, d)
+			}
+		}
 		a := stream.PlaintextAnswer(r)
 		a.Reply = stream.VCaps(r.Caps() &^ (stream.CapsCompression | v.refused))
 		return a
@@ -479,7 +666,20 @@ func senderRun(t *testing.T, bin string, role Role, v senderVariant, sessions in
 	if v.child != nil {
 		adjust = append(adjust, v.child)
 	}
+	if v.plugin != nil {
+		engine, err := plugin.Engine()
+		if err != nil {
+			t.Fatal(err)
+		}
+		adjust = append(adjust, func(o *daemon.Options) {
+			fnPluginOptions(o, nil, "")
+			if _, err := plugin.Install(o.RunDir, engine, *v.plugin); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 	d := senderChild(t, bin, role, parent, v.extra, adjust...)
+	child.Store(d)
 	var out []capture
 	for n := 1; n <= sessions; n++ {
 		s := parent.WaitSession(n, 60*time.Second)
@@ -501,8 +701,8 @@ func senderRun(t *testing.T, bin string, role Role, v senderVariant, sessions in
 		if os.Getenv("PARITY_KEEP") == "1" {
 			_ = os.WriteFile(filepath.Join(d.Opts.RunDir, "capture-"+strconv.Itoa(n+1)+".txt"), s.Data(), 0o644)
 		}
-		t.Logf("%s session %d: %d bytes, %d charts, %d with data, %d other lines", role, n+1, len(s.Data()),
-			len(c.charts), len(c.data), len(c.other))
+		t.Logf("%s session %d: %d bytes (%d without C's own re-list lines), %d charts, %d with data, %d other lines",
+			role, n+1, len(s.Data()), len(s.Data())-c.excluded, len(c.charts), len(c.data), len(c.other))
 		out = append(out, c)
 	}
 	return out, senderRecords(t, d)

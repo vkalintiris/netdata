@@ -158,3 +158,117 @@ func TestTheEnginePlaysAScenario(t *testing.T) {
 		t.Errorf("pre:\n%s", pre)
 	}
 }
+
+// The engine's Expect steps: a call's lines written in pieces are matched once and in order, the captured transaction
+// answers in later emits, a payload block is matched whole, a timeout and stdin's end are recorded; a background
+// collection goes on while the steps play, and none of its lines lands inside an answer's span.
+func TestTheEngineAnswersCalls(t *testing.T) {
+	engine, err := Engine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const a, p = "5a1e00000000400080000000000000a1", "5a1e00000000400080000000000000a2"
+	sc := Scenario{Starts: []Start{{Steps: []Step{
+		// stdin's end then ends only the last Expect, which the exit follows
+		{StayOnEOF: true},
+		{Emit: "FUNCTION GLOBAL 'difftest-fn' 10 'help' 'top' '0x13' 100 3\n"},
+		{Collect: &Collect{Chart: "difftest.bg", Dims: []string{"x"}, N: 30, Background: true}},
+		ExpectFunction("a"),
+		{Emit: Result("{{a}}", "200", "application/json", "0", "{\"a\":1}\n")},
+		ExpectPayload("p"),
+		{Emit: Result("{{p}}", "200", "text/plain", "0", "") + "{{nope}} $1\n"},
+		{Expect: &Expect{Name: "never", Re: `(?m)^NEVER\n`, TimeoutMs: 100}},
+		ExpectCancel("x"),
+		{Emit: Progress("{{x}}", 1, 2)},
+		ExpectProgress("last"),
+		{Exit: ExitCode(0)},
+	}}}}
+	l, err := Install(t.TempDir(), engine, sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", "exec "+filepath.Join(l.PluginsDir, "difftest.plugin")+" 1")
+	in, _ := cmd.StdinPipe()
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	lines := make(chan string, 1000)
+	go func() {
+		r := bufio.NewReader(stdout)
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				close(lines)
+				return
+			}
+			lines <- line
+		}
+	}()
+	// next is the next line on stdout
+	next := func(want string) string {
+		t.Helper()
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				t.Fatalf("stdout ended before %q", want)
+			}
+			return line
+		case <-time.After(10 * time.Second):
+			t.Fatalf("no %q within 10 s", want)
+		}
+		return ""
+	}
+	// waitLine waits for a line, skipping the background collection's
+	waitLine := func(want string) {
+		t.Helper()
+		for next(want) != want {
+		}
+	}
+	// waitSpan waits for a span's first line, then takes the rest as the very next lines: a background block's line
+	// among them fails (each emit is one write under the engine's stdout lock)
+	waitSpan := func(span ...string) {
+		t.Helper()
+		waitLine(span[0])
+		for _, want := range span[1:] {
+			if got := next(want); got != want {
+				t.Errorf("inside the span %q: %q, want %q", span[0], got, want)
+			}
+		}
+	}
+	// the FUNCTION line in two writes: matched only once whole
+	_, _ = in.Write([]byte("FUNCTION " + a + " 10 \"difftest-fn x\" \"0x13\" \"src\""))
+	time.Sleep(200 * time.Millisecond)
+	_, _ = in.Write([]byte("\n"))
+	waitSpan("FUNCTION_RESULT_BEGIN "+a+" 200 application/json 0\n", "{\"a\":1}\n", "FUNCTION_RESULT_END\n")
+	block := "FUNCTION_PAYLOAD " + p + " 10 \"difftest-fn y\" \"0x13\" \"src\" \"application/json\"\n{\"b\":2}\nFUNCTION_PAYLOAD_END x\n\nFUNCTION_PAYLOAD_END\n"
+	_, _ = in.Write([]byte(block))
+	// an unknown name and `$` stay as written, in the same write
+	waitSpan("FUNCTION_RESULT_BEGIN "+p+" 200 text/plain 0\n", "FUNCTION_RESULT_END\n", "{{nope}} $1\n")
+	_, _ = in.Write([]byte("FUNCTION_CANCEL " + a + "\n"))
+	waitLine("FUNCTION_PROGRESS " + a + " 1 2\n")
+	if _, ok := l.WaitFor(5*time.Second, func(s [][]Record) bool { return len(s) == 1 && Has(s[0], "collected", "") }); !ok {
+		t.Error("the background collection wrote nothing while the steps played")
+	}
+	_ = in.Close()
+	if err := cmd.Wait(); err != nil {
+		t.Errorf("the engine ended %v", err)
+	}
+
+	starts, err := l.Starts()
+	if err != nil || len(starts) != 1 {
+		t.Fatalf("starts %d: %v", len(starts), err)
+	}
+	v := ViewOf(starts[0])
+	want := []string{"stay-on-eof", "emit", "collect", "matched:a", "emit", "matched:p", "emit", "expect-timeout:never",
+		"matched:x", "emit", "expect-eof:last"}
+	if !reflect.DeepEqual(v.Steps, want) {
+		t.Errorf("steps %q, want %q", v.Steps, want)
+	}
+	if r, ok := Matched(starts[0], "p"); !ok || r.Data != block || r.Groups["p"] != p {
+		t.Errorf("the payload's match: %+v", r)
+	}
+	if r, ok := Matched(starts[0], "a"); !ok || r.Groups["a"] != a {
+		t.Errorf("the call's match: %+v", r)
+	}
+}

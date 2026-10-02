@@ -481,6 +481,32 @@ func (p *Parent) WaitSession(n int, timeout time.Duration) *Session {
 	}
 }
 
+// SessionsFor are the STREAM connections so far whose request names the machine GUID `guid`, in arrival order: one
+// child streams each of its hosts (localhost, each vnode) on a connection of its own.
+func (p *Parent) SessionsFor(guid string) []*Session {
+	var out []*Session
+	for _, s := range p.Sessions() {
+		if s.Request.Params.Get("machine_guid") == guid {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// WaitSessionFor waits up to `timeout` for the n-th session (1-based) of the machine GUID `guid`.
+func (p *Parent) WaitSessionFor(guid string, n int, timeout time.Duration) *Session {
+	deadline := time.Now().Add(timeout)
+	for {
+		if s := p.SessionsFor(guid); len(s) >= n {
+			return s[n-1]
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func (p *Parent) serve(c net.Conn) {
 	br := bufio.NewReader(c)
 	req, ok := readRequest(c, br)
