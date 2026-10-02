@@ -8,8 +8,9 @@ filled blue circles, complemented (holes stored) = open vermillion
 triangles; the parity line (ratio = 1) and the >50%-density complement
 region are marked.
 
-Input: evidence/bench/totals.json → corpora.<name>.per_list (schema.md §2).
-Synthetic fallback otherwise.
+Input: evidence/bench/per-list-<corpus>.csv.gz (schema.md §2; stride-sampled
+to ≤ 200,000 rows — the totals aggregates stay exact). Synthetic fallback
+otherwise.
 
 Usage:
   MPLCONFIGDIR=/tmp/nd-bp-mpl python3 scripts/chart-size-vs-density.py [--strict]
@@ -22,8 +23,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from chartlib import (
-    BLUE, CORPORA, VERMIL, die_synth, evidence_dir, iter_per_list,
-    load_totals_summary, save_both, style_setup, synthetic_stamp,
+    BLUE, CORPORA, VERMIL, PER_LIST_SAMPLE_INFO, die_synth, evidence_dir,
+    iter_per_list, load_totals_summary, save_both, style_setup,
+    synthetic_stamp,
 )
 
 
@@ -62,8 +64,10 @@ def main() -> int:
         for c in corpora:
             rows = list(iter_per_list(edir, c))
             per_list[c] = rows
-            print(f"  {c}: {len(rows)} plottable lists "
-                  f"({sum(1 for r in rows if r['complemented'])} complemented)")
+            info = PER_LIST_SAMPLE_INFO.get(c, "")
+            print(f"  {c}: {len(rows)} sampled lists "
+                  f"({sum(1 for r in rows if r['complemented'])} complemented)"
+                  + (f" [{info}]" if info else ""))
 
     style_setup()
     fig, axes = plt.subplots(1, len(corpora), figsize=(10.4, 3.8), sharey=True)
@@ -89,14 +93,15 @@ def main() -> int:
     axes[0].set_ylabel("treight / roaring serialized size (log)")
     axes[0].annotate("parity", xy=(0.02, 1.0), xycoords=("axes fraction", "data"),
                      xytext=(2, 3), textcoords="offset points", fontsize=7)
-    axes[0].annotate(">50%: complemented", xy=(0.86, 0.03),
+    axes[0].annotate("strictly >50%: complemented", xy=(0.80, 0.03),
                      xycoords="axes fraction", fontsize=7, color=VERMIL)
     axes[0].legend(loc="lower left", fontsize=7)
     fig.suptitle("Per-posting-list size: treight vs roaring serialized bytes",
                  fontsize=10, weight="bold")
     fig.text(0.5, 0.005,
-             "below the dashed line treight is smaller; counts in parentheses; "
-             "complemented lists store holes (their blob excludes descriptor bytes)",
+             "below the dashed line treight is smaller; dots are bench-eng's deterministic "
+             "stride sample per corpus (totals stay exact); counts in parentheses; "
+             "complemented lists store holes (ratio uses blob bytes, no descriptor)",
              ha="center", fontsize=7, color="#9a9a9a")
     if synthetic:
         synthetic_stamp(fig)

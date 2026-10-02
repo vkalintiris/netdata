@@ -123,8 +123,8 @@ how `len()` and range counting get their numbers.
 A universe maps to a fixed tree depth: `ceil_log8(universe_size)` levels
 (`src/crates/treight/src/lib.rs`). `ceil_log8` shifts the largest index right by 3 bits at a time
 until nothing is left, counting the shifts — each tree level consumes 3 bits of the value, one
-base-8 digit, so a value's root-to-leaf path *is* its base-8 representation, most significant
-digit first. A 262,144-value universe needs exactly 6 levels; every non-empty universe needs at
+base-8 digit (level `dl`: `levels − 1` at the root, 0 at the leaves), so a value's root-to-leaf
+path *is* its base-8 representation, most significant digit first. A 262,144-value universe needs exactly 6 levels; every non-empty universe needs at
 least one. A full u32 universe tops out at 11 (the root's digit shift, 3 × 11 = 33 bits, is one
 past u32 — hence `checked_shr` in the builder, and a root digit that is always 0 there). Levels
 are derived from the universe, never stored: two integers fix the whole geometry.
@@ -173,7 +173,7 @@ value     dl5  dl4  dl3  dl2  dl1  dl0(leaf bits)
 ```
 
 The serialized tree is exactly 18 bytes — hex first, then the same bytes read as a tree
-(`dl` = tree level, offset in the blob — the crate's name for the tree bytes):
+(offset in the blob — the crate's name for the tree bytes):
 
 ```
 81 03 01 03 81 a0 20 01 01 01 01 01 02 80 80 80 80 80
@@ -374,7 +374,7 @@ In compressed form:
 ```
  WRITE PATH                                READ PATH
  ──────────                                ─────────
- WAL frames                                open file
+ WAL (write-ahead log) frames              open file
    │                                         ├─ mmap container, verify CRCs
    ▼                                         └─ decode PRIM chunk once (zstd + bincode)
  RowIndex  (insertion order)                            │
@@ -500,8 +500,8 @@ sets via complement. The read path: no deserialization after file open, no alloc
 storage decisions into cheap predictions: you can know the on-disk cost of a conversion before
 paying for it.
 
-**Where they tie.** Both prune range counting — roaring by summing container counts, treight by
-skipping subtrees outside the range.
+**Where they tie.** Both prune range counting: roaring sums container counts, treight skips
+subtrees outside the range.
 
 ## Correctness: differential fuzzing against roaring
 
@@ -546,7 +546,7 @@ included.
 
 All measurements come from a single shared AMD Ryzen 9 5900X (31 GB RAM): timings are criterion
 medians, compared as relative orderings rather than sub-percent deltas. Tools: rustc 1.95.0 (59807616e 2026-04-14), criterion 0.5.1, 50
-samples per case (1 s warm-up, 2 s measurement), a single warm reader. The roaring side is
+samples per case (1 s warm-up, 2 s measurement), one warm reader. The roaring side is
 the pinned `netdata/roaring-rs` fork (branch `allocative`, commit `3ee69b1`) — the same
 implementation the fuzzer checks against.
 
@@ -561,7 +561,7 @@ aggregate — counts, densities, byte sizes — never content. Posting lists
 are derived the way the production indexer derives them, over a universe of 250,000 rows per
 corpus; the derivation is in the README.
 
-The bench covers both lifecycle phases plus footprint:
+The bench covers both phases plus footprint:
 
 - **Build and query** per corpus × density bucket, plus operand pairs; **size** as summed
   bytes and allocative heap.
@@ -577,8 +577,8 @@ The bench covers both lifecycle phases plus footprint:
 | in-memory heap, treight vs roaring | 1,797,922 vs 4,184,992 | 1,115,004 vs 5,905,000 | 2,212,840 vs 7,409,080 |
 
 Over *all* lists (high-cardinality tier included, though a real file stores it as arenas),
-treight's whole-corpus heap is a consistent 0.068 of roaring's (17,799,801 vs 262,065,816 on
-jetstream) — flat bytes versus materialized containers.
+treight's whole-corpus heap is 0.068 of roaring's on all three corpora (17,799,801 vs
+262,065,816 on jetstream) — flat bytes versus materialized containers.
 
 **Results — CPU** (criterion medians; bucketed rows read ≤1% / 1–50% / >50%):
 
@@ -595,8 +595,8 @@ jetstream) — flat bytes versus materialized containers.
 
 Mechanisms first. Bulk build loses sparse (the seal path sorts and remaps per list — timed
 identically for both sides) and wins dense on two of three corpora (0.89 / 0.71; mixed 1.13);
-since the harness does not credit production's scratch-bitset route for dense lists, dense is
-if anything understated. Iteration approaches parity as lists densify (1.07–1.19). Membership
+the harness does not credit production's scratch-bitset route, so dense is if anything
+understated. Iteration approaches parity as lists densify (1.07–1.19). Membership
 is roaring's by three to four orders — ≈3–11 ns vs 5–28 µs per probe — and `range_count`
 (35–288×) and `len()` (up to 19,844×) follow the same stored-counts-versus-walk split. The
 pairs cut both ways, as the layout predicts: disjoint `and` hurts treight (2.6–52× — skipping
@@ -621,9 +621,9 @@ ratio; list counts certstream/jetstream/mixed):
 
 Predictions held for two bands and flipped for one. Ultra-sparse lists (≤0.001% — the
 overwhelming majority) favor treight ~3×: per-container headers dominate roaring while treight
-pays a byte per level. Dense lists (≥1%) favor treight more strongly the denser the list
-(complement encoding; 23/10/3 lists per corpus — the encoder complements strictly above half, so
-exactly-half lists stay direct: in mixed-250k, 9 of the ≥50% bucket's 12). At the limit, a
+pays a byte per level. Dense lists (≥1%) favor treight, strongest past half the universe where
+complement encoding pays only for holes (23/10/3 lists per corpus complemented, strictly above
+half — exactly-half lists stay direct: in mixed-250k, 9 of the ≥50% bucket's 12). At the limit, a
 100%-density list costs treight zero bytes against roaring's 32,808 — `full` really is free.
 But the 0.01–1% middle band is roaring's on size: treight's members × levels outweighs sharing
 exactly where roaring's packed arrays are near optimal — and per-list slices near 44% density

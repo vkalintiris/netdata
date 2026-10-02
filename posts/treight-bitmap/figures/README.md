@@ -33,7 +33,7 @@ for c in chart-density chart-footprint chart-ops chart-size-vs-density; do
 |---|---|---|
 | `chart-density` | Posting-list density histogram per corpus (log-x buckets incl. the >50% complement band). | `evidence/bench/stats.json` per corpus |
 | `chart-footprint` | Per-corpus total bytes, treight vs roaring serialized (both scopes: SFST-materialized low+mid, and all lists). | `evidence/bench/totals.json` |
-| `chart-ops` | Per-op CPU comparison, treight vs roaring (grouped bars; per-position/per-list normalizations from the bench). | `evidence/bench/results.json` |
+| `chart-ops` | Per-op CPU comparison, treight vs roaring (grouped bars; per-position/per-list normalizations from the bench) + the three set-op pair groups on a separate per-operation axis. | `evidence/bench/results.json` (bucket ops + `buckets.pairs.ops` flat pair keys) |
 | `chart-size-vs-density` | Scatter of per-posting-list size ratio (treight/roaring) vs density, colored by complement choice. | `evidence/bench/totals.json` → `per_list` |
 
 Charts read real evidence when present and fall back to clearly-marked
@@ -46,16 +46,26 @@ Input locations (as shipped 2026-10-02):
 - per-corpus stats: `data/derived/<corpus>/stats.json` (gitignored data/;
   probed by `chartlib.find_stats`).
 - totals evidence: `evidence/bench/totals-<corpus>.json` — one file per
-  corpus, per-corpus object at the root (0.4–0.8 GB each: full per-list
-  rows). Extracted/streamed via jq (`load_totals_summary`,
-  `iter_per_list`); a single `totals.json` with a `corpora` root, as
-  schema.md originally described, is also supported.
+  corpus, per-corpus object at the root; small summaries since the 22:26
+  regeneration (exact aggregates over all lists; top density bucket
+  labeled ">=50%" — the encoder complements only strictly-above-half).
+  A single `totals.json` with a `corpora` root, as schema.md originally
+  described, is also supported.
+- per-list scatter source: `evidence/bench/per-list-<corpus>.csv.gz`
+  (chart-size-vs-density) — deterministic stride sample ≤ 200,000 rows;
+  stride + full count in the gzip comment.
 - results (chart-ops): `evidence/bench/results.json` — still pending as of
   2026-10-02; chart-ops remains in synthetic mode until it lands.
 
-Status: chart-density, chart-footprint, chart-size-vs-density ran REAL on
-2026-10-02 (cross-checks vs derived stats.json passed exactly — see each
-DESCRIPTION); chart-ops synthetic pending results.json.
+Status (final, 2026-10-02 post-freeze): ALL FOUR charts ran REAL against
+the certified evidence under `--strict` and re-verified (bucket sums,
+tier splits, complement counts — see each DESCRIPTION). Coverage notes:
+chart-ops shows the eight per-list bucket ops plus the three set-op pair
+groups (timings under `buckets.pairs.ops`, flat `pairs/<op>/<kind>/<impl>`
+keys — the sibling `pairs.pairs` array holds operand descriptions only);
+the per-list stride sample misses most of the rare complemented lists
+(2/1/0 of 23/10/3) — the exact dense-band sizes live in totals'
+per_density_bucket, charted by chart-footprint.
 
 Chart layout convention: the SCRIPT lives in `scripts/<chart>.py`; the
 exports (`<chart>.svg` + `<chart>.png`) and `DESCRIPTION.md` (placement,

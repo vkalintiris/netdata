@@ -43,17 +43,21 @@ synthetic numbers are plausible shapes, NOT measurements.
 2. Re-run the invocation above; outputs land in this directory as
    `chart-density.svg` (primary; text kept as text via
    `svg.fonttype = "none"`) and `chart-density.png` (150 dpi fallback).
-3. The annotation text ("density strictly > 50%") mirrors build.rs's
-   density rule (`card > universe/2`, STRICT) — keep it in sync if the
-   threshold ever changes. Note the histogram's ">50%" BUCKET includes
-   lists at exactly 50% density (verified on mixed-250k: 9 lists at
-   density exactly 0.5 sit in that bucket but stay direct; only 3 lists
-   at density 1.0 were complemented), hence the annotation's wording.
+3. The annotation text ("bucket \[0.5, 1.0] … strictly > 50%") mirrors
+   build.rs's density rule (`card > universe/2`, STRICT). The histogram's
+   top bucket is labeled ">=50%" in the regenerated stats.json (bench-eng
+   relabeled after we verified mixed-250k held 9 lists at density exactly
+   0.5 in it that stay direct; only strictly-above-half lists complement).
+   `chartlib.DENSITY_BUCKETS` keeps the shipped label verbatim — do not
+   edit it independently of harvest.py.
 
 ## Verification performed
 
 - REAL-DATA run 2026-10-02 against data/derived/*/stats.json (all three
-  corpora); bucket sums equal distinct_kvs exactly per corpus.
+  corpora); bucket sums equal distinct_kvs exactly per corpus. NOTE: the
+  22:21 regeneration renamed the top bucket to ">=50%"; the final
+  post-freeze --strict pass regenerated the exports against it (bucket
+  sums re-verified: they equal distinct_kvs exactly per corpus).
 - Earlier synthetic-mode run compiled and rendered; `verify_layout.py`: no edge
   clipping, no region collisions; ASCII preview confirmed grouped bars,
   log axis, annotation, legend.

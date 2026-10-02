@@ -55,9 +55,12 @@ DENSITY_BUCKETS = [
     "0.1-1%",
     "1-10%",
     "10-50%",
-    ">50%",
+    ">=50%",   # bucket is [0.5, 1.0]; the ENCODER complements only
+               # strictly-above-half lists (card > universe/2) — exactly-50%
+               # lists sit in this bucket but encode direct (schema.md §1
+               # note; per-list `complemented` flag is authoritative)
 ]
-OPS_ORDER = [
+OPS_ORDER = [  # ops under buckets.<b>.ops (certified results.json)
     "bulk_build",
     "insert_arrival",
     "insert_shuffled",
@@ -65,10 +68,15 @@ OPS_ORDER = [
     "contains_miss",
     "len_min_max",
     "iterate",
-    "and",
-    "or",
-    "and_not",
     "range_count",
+]
+# Set-op pair groups under buckets.pairs.ops — flat keys
+# "pairs/<op>/<kind>/<impl>", one measured operand pair per group (n = 1):
+# per-OPERATION medians, not per-position/per-list normalized.
+PAIR_GROUPS = [
+    ("and", "same-field-disjoint"),
+    ("or", "cross-field"),
+    ("and_not", "dense-vs-sparse"),
 ]
 BUCKETS = ["lt1pct", "1to50pct", "gt50pct"]
 
@@ -127,78 +135,100 @@ def totals_files(edir: Path, corpus: str) -> list[Path]:
     return [p for p in per_corpus if p.is_file()] + ([single] if single.is_file() else [])
 
 
-def _jq_extract(path: Path, program: str):
-    """Run jq over `path`; return parsed JSON or None if jq unavailable."""
-    import subprocess
-
-    try:
-        out = subprocess.run(
-            ["jq", "-c", program, str(path)],
-            capture_output=True, text=True, check=True,
-        )
-        return json.loads(out.stdout)
-    except (FileNotFoundError, subprocess.CalledProcessError, json.JSONDecodeError):
-        return None
-
-
 def load_totals_summary(edir: Path, corpus: str) -> dict | None:
-    """Per-corpus totals WITHOUT per_list (small): bitsets, complement,
-    lists_total, per_density_bucket. Uses jq to avoid loading the 0.4–0.8 GB
-    per-corpus files whole; falls back to json.load."""
+    """Per-corpus totals summary (small since the 22:26 regen dropped the
+    per-list rows): bitsets, complement, lists_total, per_density_bucket.
+    Accepts the shipped per-corpus shape (per-corpus object at the root)
+    and the schema.md single-file shape (`corpora` root)."""
     for path in totals_files(edir, corpus):
-        slim = _jq_extract(path, "{bitsets, complement, lists_total, per_density_bucket}")
-        if slim is not None:
-            if "bitsets" not in slim and "corpora" in slim:  # single-file shape
-                slim = slim.get("corpora", {}).get(corpus, {})
-            if slim.get("bitsets"):
-                return slim
-        else:
-            data = load_json(path)
-            if "corpora" in data:
-                data = data["corpora"].get(corpus, {})
-            if data.get("bitsets"):
-                return {k: data[k] for k in
-                        ("bitsets", "complement", "lists_total", "per_density_bucket")
-                        if k in data}
-    return None
-
-
-def iter_per_list(edir: Path, corpus: str):
-    """Yield {density, complemented, ratio} per posting list.
-
-    ratio = treight_blob_bytes / roaring_serialized_bytes (skips rows with
-    roaring_serialized_bytes == 0). Streams via jq when available (the
-    per-list arrays are the bulk of the ~1 GB evidence); falls back to a
-    whole-file json.load.
-    """
-    import subprocess
-
-    for path in totals_files(edir, corpus):
-        prog = (".per_list[]? | select(.roaring_serialized_bytes > 0) | "
-                "{density: .density, complemented: .complemented, "
-                "ratio: (.treight_blob_bytes / .roaring_serialized_bytes)}")
-        try:
-            proc = subprocess.Popen(
-                ["jq", "-c", prog, str(path)],
-                stdout=subprocess.PIPE, text=True,
-            )
-            for line in proc.stdout:
-                yield json.loads(line)
-            proc.stdout.close()
-            rc = proc.wait()
-            if rc == 0:
-                return
-        except FileNotFoundError:
-            pass
-        # fallback: load whole file (heavy but correct)
         data = load_json(path)
         if "corpora" in data:
             data = data["corpora"].get(corpus, {})
-        for r in data.get("per_list", []):
-            if r.get("roaring_serialized_bytes", 0) > 0:
-                yield dict(density=r["density"], complemented=r["complemented"],
-                           ratio=r["treight_blob_bytes"] / r["roaring_serialized_bytes"])
+        if data.get("bitsets"):
+            return {k: data[k] for k in
+                    ("bitsets", "complement", "lists_total", "per_density_bucket",
+                     "universe", "notes")
+                    if k in data}
+    return None
+
+
+# Provenance of the last-read per-list CSV (gzip comment: stride/full count).
+PER_LIST_SAMPLE_INFO: dict[str, str] = {}
+
+
+def per_list_csv(edir: Path, corpus: str) -> Path | None:
+    """The per-list scatter source: per-list-<corpus>.csv.gz (schema.md §2).
+
+    Stride-sampled by bench-eng to ≤ 200,000 rows (stride + full count ride
+    in the gzip comment); the totals aggregates stay exact over ALL lists.
+    """
+    for cand in (edir / f"per-list-{corpus}.csv.gz",
+                 edir / "per-list" / f"{corpus}.csv.gz"):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def gzip_comment(path: Path) -> str:
+    """Read a gzip member's FCOMMENT header field (zero-terminated string).
+
+    Python's gzip module parses past it without exposing it; we walk the
+    header by hand: magic(2) CM(1) FLG(1) MTIME(4) XFL(1) OS(1), then the
+    optional fields in flag order — FEXTRA, FNAME, FCOMMENT.
+    """
+    with open(path, "rb") as f:
+        head = f.read(10)
+        if len(head) < 10 or head[:2] != b"\x1f\x8b":
+            return ""
+        flg = head[3]
+
+        def read_cstr() -> bytes:
+            buf = bytearray()
+            while True:
+                c = f.read(1)
+                if not c or c == b"\x00":
+                    break
+                buf += c
+            return bytes(buf)
+
+        if flg & 0x04:  # FEXTRA
+            xlen = int.from_bytes(f.read(2), "little")
+            f.seek(xlen, 1)
+        if flg & 0x08:  # FNAME
+            read_cstr()
+        if flg & 0x10:  # FCOMMENT
+            return read_cstr().decode("utf-8", "replace").strip()
+    return ""
+
+
+def iter_per_list(edir: Path, corpus: str):
+    """Yield {density, complemented, ratio, tier} per sampled posting list.
+
+    ratio = treight_blob_bytes / roaring_serialized_bytes; rows with
+    roaring_serialized_bytes == 0 are skipped. After iteration,
+    PER_LIST_SAMPLE_INFO[corpus] holds the gzip comment (stride + full
+    count) for provenance printing.
+    """
+    import csv
+    import gzip
+    import io
+
+    path = per_list_csv(edir, corpus)
+    if path is None:
         return
+    PER_LIST_SAMPLE_INFO[corpus] = gzip_comment(path)
+    with gzip.GzipFile(path, "rb") as gz:
+        with io.TextIOWrapper(gz, newline="") as f:
+            for row in csv.DictReader(f):
+                roaring = int(row["roaring_serialized_bytes"])
+                if roaring <= 0:
+                    continue
+                yield dict(
+                    density=float(row["density"]),
+                    complemented=row["complemented"] == "true",
+                    ratio=int(row["treight_blob_bytes"]) / roaring,
+                    tier=row.get("tier", ""),
+                )
 
 
 def available_corpora(edir: Path) -> list[str]:
