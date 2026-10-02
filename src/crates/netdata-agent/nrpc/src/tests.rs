@@ -188,23 +188,28 @@ fn the_catalogs_filter_as_c() {
     assert_eq!(shown(&r, Filter::StreamGlobal), (vec!["plain".to_string(), "__restricted".to_string()], 2));
 }
 
-/// C's catalog suite (`nrpc-unittest.c:1578-1708`): the JSON list holds what users see, each with `["GLOBAL"]`; the
-/// export keys each by `"<version>|<name>"` with its help, tags, priority, version and access; a host without a registry
-/// omits the `functions` key and exports nothing.
+/// C's catalog suite (`nrpc-unittest.c:1428-1708`, its fixtures): the JSON list holds what users see, each with
+/// `["GLOBAL"]` (C asserts substrings; the whole string here is C's writer order, `nrpc-catalog.c:183-226`); the export
+/// keys each by `"<version>|<name>"` with its help, tags, priority, version and access; the absent-registry block: a
+/// host without a registry omits the `functions` key, exports nothing and re-lists nothing.
 #[test]
 fn the_user_catalogs_render_as_c() {
     use netdata_agent_text::json::{JsonOptions, JsonWriter};
     let r = Registry::default();
-    let global = MethodDesc {
-        help: b"c4 global help",
-        priority: 42,
-        version: 3,
-        access: access::ANONYMOUS_DATA,
-        ..desc(b"c4-global-fn", Source::Plugin)
+    let c = |name, help, tags, timeout_s, priority, version, access| MethodDesc {
+        help,
+        tags,
+        timeout_s,
+        priority,
+        version,
+        access,
+        sync: true,
+        ..desc(name, Source::Daemon)
     };
-    r.register("h", &global).unwrap();
-    r.register("h", &MethodDesc { version: 4, ..desc(b"__c4-restricted-fn", Source::Plugin) }).unwrap();
-    r.register("h", &MethodDesc { version: 1, ..desc(b"config c4test:job", Source::Daemon) }).unwrap();
+    r.register("h", &c(b"c4-global-fn", b"c4 global help", b"top", 11, 42, 3, access::ANONYMOUS_DATA)).unwrap();
+    r.register("h", &c(b"__c4-restricted-fn", b"c4 restricted", b"top", 12, 43, 4, 0)).unwrap();
+    let dyncfg = c(b"config c4test:job", b"Dynamic configuration", b"config", 120, 1000, 1, access::ANONYMOUS_DATA);
+    r.register("h", &dyncfg).unwrap();
     let rendered = |r: &Registry| {
         let mut w = JsonWriter::new(JsonOptions::MINIFY);
         catalog::to_json(r, &mut w);
@@ -213,7 +218,10 @@ fn the_user_catalogs_render_as_c() {
     };
     assert_eq!(
         rendered(&r),
-        r#"{"functions":{"c4-global-fn":{"help":"c4 global help","timeout":10,"version":3,"options":["GLOBAL"],"tags":"top","access":["anonymous-data"],"priority":42}}}"#
+        concat!(
+            r#"{"functions":{"c4-global-fn":{"help":"c4 global help","timeout":11,"version":3,"options":["GLOBAL"],"#,
+            r#""tags":"top","access":["anonymous-data"],"priority":42}}}"#
+        )
     );
     let exported = catalog::to_dict(&r);
     assert_eq!(exported.len(), 1);
@@ -226,6 +234,28 @@ fn the_user_catalogs_render_as_c() {
     r.destroy();
     assert_eq!(rendered(&r), "{}");
     assert!(catalog::to_dict(&r).is_empty() && !r.exists());
+    assert_eq!(r.visible(Filter::StreamGlobal).1, 0);
     r.init();
     assert_eq!(rendered(&r), r#"{"functions":{}}"#);
+}
+
+/// Without a registry (`nrpc_registry_acquire()` failing, `nrpc-registry.c:525-531`, `nrpc-calls.c:513-517`): a
+/// registration is dropped, a call finds nothing (404), and nothing is shown or queued for deletion; `init()` keeps a
+/// live registry and gives a destroyed one back empty.
+#[test]
+fn a_destroyed_registry_registers_nothing() {
+    let r = Registry::default();
+    r.register("h", &desc(b"kept", Source::Stream)).unwrap();
+    r.init();
+    assert_eq!(shown(&r, Filter::User), (vec!["kept".to_string()], 0));
+    r.destroy();
+    r.register("h", &desc(b"late", Source::Stream)).unwrap();
+    assert_eq!(r.find("h", b"late").unwrap_err(), (404, "This feature is not available on this host at this time."));
+    assert!(!r.available(b"late") && r.all().is_empty());
+    assert_eq!(r.unregister(b"late", Source::Daemon, true), Unregistered::NotFound);
+    assert!(r.take_pending_dels().is_empty());
+    r.init();
+    assert_eq!(shown(&r, Filter::User), (Vec::new(), 0));
+    r.register("h", &desc(b"again", Source::Stream)).unwrap();
+    assert_eq!(shown(&r, Filter::User), (vec!["again".to_string()], 0));
 }

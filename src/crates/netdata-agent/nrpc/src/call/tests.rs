@@ -170,6 +170,26 @@ fn a_sync_builtin_answers_and_leaves() {
     assert_eq!(asked.load(Ordering::SeqCst), 2, "before and after the handler");
 }
 
+/// A sync built-in reads only its caller's check (`nrpc-builtin.c:13-21`): a cancel of its record while it runs (a
+/// Cloud CANCEL by call id) does not make it 499; its caller's check does.
+#[test]
+fn a_sync_builtin_reads_only_its_callers_check() {
+    static CALLS: std::sync::OnceLock<Arc<Calls>> = std::sync::OnceLock::new();
+    fn cancels_itself(reply: &mut Reply, function: &[u8], payload: Option<&Payload>, source: &[u8]) -> u16 {
+        CALLS.get().unwrap().cancel("5a1e000000004000800000000000ca11");
+        ok_builtin(reply, function, payload, source)
+    }
+    let (calls, _) = calls();
+    CALLS.set(Arc::clone(&calls)).ok().unwrap();
+    let r = Registry::default();
+    register(&r, b"self", Handler::Builtin(cancels_itself), |_| {});
+    let id = b"5a1e0000-0000-4000-8000-00000000ca11";
+    let called = calls.call(CallSpec { call_id: Some(id), is_cancelled: Some(&|| false), ..spec(&r, b"self") });
+    assert_eq!(called.code, 200);
+    let called = calls.call(CallSpec { call_id: Some(id), is_cancelled: Some(&|| true), ..spec(&r, b"self") });
+    assert_eq!(called.code, 499);
+}
+
 /// No-wait: the caller's callback gets the answer whenever the transport gives it, then the record leaves; ids are
 /// parsed as C's flexible UUIDs and keyed compact and lowercase; a second call with an id in flight is a duplicate.
 #[test]

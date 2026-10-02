@@ -2625,6 +2625,24 @@ mod tests {
         assert!(finished, "the receiver's leave waited for the hosts' write lock");
     }
 
+    /// The function registry at C's three sites: none for a host created archived (`rrdhost.c:1020`'s destroy), one
+    /// again when it connects (`:803`'s init), none once it is archived
+    /// (`rrdhost_cleanup_data_collection_and_health()`).
+    #[test]
+    fn the_function_registry_follows_the_archive() {
+        let storage = Arc::<StorageLayout>::default();
+        let hosts = Hosts::with_storage(Host::with_storage("guid-l", true, info("l"), &storage), Arc::clone(&storage));
+        assert!(hosts.localhost().functions().exists());
+        let host = hosts.add_archived("guid-x", info("x"), |_| {});
+        assert!(!host.functions().exists());
+        host.update(&info("x"), 1, 3600, false, 0, 0);
+        assert!(host.functions().exists());
+        host.cleanup_data_collection();
+        assert!(!host.functions().exists());
+        host.update(&info("x"), 1, 3600, false, 0, 0);
+        assert!(host.functions().exists());
+    }
+
     /// `stream_sender_structures_free()` at the host's cleanup: the sender freed once; the host no longer streams and
     /// its settings go with it; the revival's update brings the settings of that time back, and `init_upstream` sets
     /// the same sender up again, once.

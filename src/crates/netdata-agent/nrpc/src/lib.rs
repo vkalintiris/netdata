@@ -145,8 +145,8 @@ impl Method {
             && Arc::ptr_eq(&self.serving, &other.serving)
     }
 
-    /// `nrpc_method_is_available_at()`: its thread serves it and the host's epoch is the one it was registered in (a
-    /// registry is never disarmed here: an archived host's is emptied instead).
+    /// `nrpc_method_is_available_at()`: its thread serves it and the host's epoch is the one it was registered in (an
+    /// archived host's registry is not disarmed but emptied, and refuses registrations: `Registry::destroy()`).
     fn available_at(&self, epoch: u32) -> bool {
         self.serving.running() && self.epoch == epoch
     }
@@ -221,8 +221,19 @@ pub struct Registry {
     /// `pending_dels`: a set, in insertion order.
     pending_dels: Mutex<Vec<Vec<u8>>>,
     /// `nrpc_registry_destroy()` ran and no `nrpc_registry_init()` since: the host has no registry (an archived host),
-    /// so the catalogs omit it, as C's `nrpc_registry_acquire()` failing.
+    /// as C's `nrpc_registry_acquire()` failing. Changed only under the methods' lock, which a registration holds, so
+    /// a destroyed registry stays empty: lookups answer C's 404, the views and the deletion queue are empty.
     destroyed: AtomicBool,
+}
+
+/// `nrpc_method_register()` on a host without a registry (unknown or archived): C's record, and nothing registered.
+fn not_registering(name: &[u8]) {
+    nd_log!(
+        LogSource::Daemon,
+        Priority::Debug,
+        "NRPC: not registering method '{}': the given host has no function registry",
+        String::from_utf8_lossy(name)
+    );
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -247,15 +258,24 @@ impl Registry {
     /// `nrpc_registry_destroy()` of a host archived: every function gone, the queue too, and no registry until
     /// `init()`.
     pub fn destroy(&self) {
-        let methods = std::mem::take(&mut *self.methods());
+        let methods = {
+            let mut methods = self.methods();
+            self.destroyed.store(true, Ordering::Release);
+            std::mem::take(&mut *methods)
+        };
         lock(&self.pending_dels).clear();
         drop(methods);
-        self.destroyed.store(true, Ordering::Release);
     }
 
-    /// `nrpc_registry_init()`: a host created live, or an archived one connected again.
+    /// `nrpc_registry_init()`: a host created live, or an archived one connected again; a registry still there is
+    /// kept, a destroyed one starts empty.
     pub fn init(&self) {
-        self.destroyed.store(false, Ordering::Release);
+        let mut methods = self.methods();
+        if self.destroyed.load(Ordering::Acquire) {
+            methods.clear();
+            lock(&self.pending_dels).clear();
+            self.destroyed.store(false, Ordering::Release);
+        }
     }
 
     /// Whether `nrpc_registry_acquire()` would find the host's registry.
@@ -266,6 +286,10 @@ impl Registry {
     /// `nrpc_method_register()` from the registering thread (its serving handle, the host's epoch). `Err` carries
     /// C's warning for the caller to write when it refuses; `host` names the owner there.
     pub fn register(&self, host: &str, desc: &MethodDesc) -> Result<(), String> {
+        if !self.exists() {
+            not_registering(desc.name);
+            return Ok(());
+        }
         let tags = if desc.tags.is_empty() { &b"top"[..] } else { desc.tags };
         if desc.name.len() > NAME_MAX {
             // C fatal()s here (D135.4)
@@ -304,6 +328,12 @@ impl Registry {
         });
         let displaced = {
             let mut methods = self.methods();
+            if !self.exists() {
+                // destroyed since the check above
+                drop(methods);
+                not_registering(desc.name);
+                return Ok(());
+            }
             match methods.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, slot)) => Some(std::mem::replace(slot, Arc::clone(&method))),
                 None => {
@@ -432,9 +462,11 @@ impl Registry {
         (shown, dyncfg)
     }
 
-    /// The `FUNCTION_DEL` queue, emptied: the names removed since the last re-list.
+    /// The `FUNCTION_DEL` queue, emptied: the names removed since the last re-list (none without a registry, which
+    /// an unregistration racing the destroy may have queued after it).
     pub fn take_pending_dels(&self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut *lock(&self.pending_dels))
+        let dels = std::mem::take(&mut *lock(&self.pending_dels));
+        if self.exists() { dels } else { Vec::new() }
     }
 
     /// The function registered under a name, available or not.
