@@ -19,7 +19,7 @@ use crate::jsonwrap::query_timings;
 use crate::keys::Keys;
 use crate::rrdr::Rrdr;
 use crate::tables::{group_by, group_by_names, options, options_to_json_array};
-use crate::target::{Counts, QueryTarget, metric_status};
+use crate::target::{Counts, QueryTarget, Versions, metric_status};
 use crate::window::Window;
 
 /// `MCP_QUERY_INFO_SUMMARY_SECTION`, `_DATABASE_SECTION`, `_VIEW_SECTION` (`src/web/mcp/mcp.h`).
@@ -988,15 +988,7 @@ pub fn begin_v2(qt: &QueryTarget, window: &Window) -> (JsonWriter, usize) {
         w.object_close();
     }
     if opts & options::MINIMAL_STATS == 0 {
-        w.member_add_object(b"versions");
-        w.member_add_uint64("routing_hard_hash", 1);
-        let v = &qt.versions;
-        w.member_add_uint64("nodes_hard_hash", v.nodes_hard_hash);
-        w.member_add_uint64("contexts_hard_hash", v.contexts_hard_hash);
-        w.member_add_uint64("contexts_soft_hash", v.contexts_soft_hash);
-        w.member_add_uint64("alerts_hard_hash", 0);
-        w.member_add_uint64("alerts_soft_hash", 0);
-        w.object_close();
+        version_hashes_v2(&mut w, &qt.versions);
     }
     let mut totals: [Totals; 6] = Default::default();
     w.member_add_object(b"summary");
@@ -1179,6 +1171,19 @@ pub fn end_v2(
         cloud_timings(w, "timings", received, finished);
     }
     w.finalize();
+}
+
+/// `version_hashes_api_v2()`: the routing, nodes, contexts and alerts versions (health is not ported: its hashes are
+/// 0, as in C with health off).
+pub fn version_hashes_v2(w: &mut JsonWriter, v: &Versions) {
+    w.member_add_object(b"versions");
+    w.member_add_uint64("routing_hard_hash", 1);
+    w.member_add_uint64("nodes_hard_hash", v.nodes_hard_hash);
+    w.member_add_uint64("contexts_hard_hash", v.contexts_hard_hash);
+    w.member_add_uint64("contexts_soft_hash", v.contexts_soft_hash);
+    w.member_add_uint64("alerts_hard_hash", 0);
+    w.member_add_uint64("alerts_soft_hash", 0);
+    w.object_close();
 }
 
 /// `buffer_json_agents_v2()` in its array form: the agent's identity at `now_s`, then what `rest` writes (the info

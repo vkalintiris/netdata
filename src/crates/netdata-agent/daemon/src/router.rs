@@ -3,7 +3,7 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: bearer checks, `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`,
-//! `context`, `contexts`, `data`, `dbengine_stats`, `function`, `functions` (v1), `progress`, `stream_info` and
+//! `context`, `contexts`, `data`, `dbengine_stats`, `function`, `functions`, `progress`, `stream_info` and
 //! `stream_path`.
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
@@ -166,6 +166,13 @@ const API_V2: &[Command] = &[
         allow_subpaths: false,
         callback: functions::progress,
     },
+    Command {
+        name: "functions",
+        acl: acl::bits::FUNCTIONS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::functions(route, query),
+    },
     CLOUD_ONLY[0],
     CLOUD_ONLY[1],
     CLOUD_ONLY[2],
@@ -254,6 +261,13 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: functions::call,
+    },
+    Command {
+        name: "functions",
+        acl: acl::bits::FUNCTIONS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: |route, _, query| contexts_v2::functions(route, query),
     },
     CLOUD_ONLY[0],
     CLOUD_ONLY[1],
@@ -588,6 +602,8 @@ mod tests {
             &b"/api/v1/info"[..],
             b"/host/box/api/v1/info",
             b"/api/v1/dbengine_stats",
+            b"/api/v1/function",
+            b"/api/v1/functions",
         ] {
             let mut req = Request::default();
             req.path = path.to_vec();
@@ -611,6 +627,13 @@ mod tests {
             );
         }
         assert_eq!(route(&s, b"/api/v1/charts").code, status::OK);
+        // the v2 and v3 functions and progress answer at once
+        for path in [&b"/api/v2/functions"[..], b"/api/v3/functions"] {
+            assert_eq!(route(&s, path).code, status::OK);
+        }
+        for path in [&b"/api/v2/progress"[..], b"/api/v3/progress"] {
+            assert_eq!(route(&s, path).code, status::NOT_FOUND);
+        }
     }
 
     /// Once the exit started every request answers C's 503, static files and the netdata.conf page included.
@@ -702,7 +725,7 @@ mod tests {
     #[test]
     fn api_routing_matches_c() {
         let s = shared();
-        let cases: [(&[u8], u16, &[u8]); 9] = [
+        let cases: [(&[u8], u16, &[u8]); 10] = [
             (b"/api", status::BAD_REQUEST, b"Which API version?"),
             (
                 b"/api/v9",
@@ -730,6 +753,11 @@ mod tests {
                 b"/api/v3/stream_path/x",
                 status::BAD_REQUEST,
                 b"API command 'stream_path' does not support subpaths.",
+            ),
+            (
+                b"/api/v3/functions/x",
+                status::BAD_REQUEST,
+                b"API command 'functions' does not support subpaths.",
             ),
             (
                 b"/v1/v2/",

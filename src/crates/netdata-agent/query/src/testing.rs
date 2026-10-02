@@ -17,7 +17,8 @@ use crate::window::{Window, calculate};
 pub const T0: i64 = 1_700_000_000;
 pub const E: f64 = f64::NAN;
 
-fn info(hostname: &str, update_every: i32, db_mode: DbMode) -> HostInfo {
+/// A host's info: `hostname` collected every `update_every` seconds into `db_mode`.
+pub fn info(hostname: &str, update_every: i32, db_mode: DbMode) -> HostInfo {
     HostInfo {
         hostname: hostname.into(),
         registry_hostname: hostname.into(),

@@ -1,20 +1,24 @@
 //! The contexts v2 engine, ported from `api_v2_contexts_internal()` (`src/web/api/v2/api_v2_contexts.c`),
 //! `rrdcontext_to_json_v2()` and its host walk (`src/database/contexts/api_v2_contexts.c`, `query_scope.c`) for the
-//! modes the agent serves so far: `/api/v3/stream_path` and `/api/v2/info` (`/api/v3/info`). Decisions D51 and D92
-//! in the status repository.
+//! modes the agent serves so far: `/api/v3/stream_path`, `/api/v2/info` (`/api/v3/info`) and `/api/v2/functions`
+//! (`/api/v3/functions`). Decisions D51, D92 and D160 in the status repository.
 
+use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Instant;
 
+use netdata_agent_nrpc::{Method, access, catalog};
+
 use netdata_agent_query::jsonwrap::timings;
-use netdata_agent_query::jsonwrap_v2::{Agent, agents_v2, cloud_timings, node_add_v2};
+use netdata_agent_query::jsonwrap_v2::{Agent, agents_v2, cloud_timings, node_add_v2, version_hashes_v2};
 use netdata_agent_query::keys::Keys;
 use netdata_agent_query::request::pairs;
 use netdata_agent_query::tables::{
     contexts_options::{DEBUG, JSON_LONG_KEYS, MCP, MINIFY, RFC3339},
     contexts_options_to_json_array, parse_contexts_options,
 };
-use netdata_agent_query::target::{host_matches, matches_retention};
+use netdata_agent_query::target::{Versions, foreach_host, matches_retention};
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::retention::retention_stats;
@@ -248,6 +252,58 @@ fn request_to_json(w: &mut JsonWriter, req: &Request, mode: u32) {
     w.object_close();
 }
 
+/// The functions dictionary of `rrdcontext_to_json_v2()`: one entry per `"<version>|<name>"` in the order first seen,
+/// with the attributes of the first host that has it and the `ni` of every host that does.
+#[derive(Default)]
+struct Functions {
+    entries: Vec<(Vec<u8>, Arc<Method>, Vec<usize>)>,
+    by_key: HashMap<Vec<u8>, usize>,
+}
+
+impl Functions {
+    /// A host's `nrpc_catalog_host_to_dict()` entries merged by C's insert and conflict callbacks.
+    fn add(&mut self, host: Vec<(Vec<u8>, Arc<Method>)>, ni: usize) {
+        for (key, method) in host {
+            match self.by_key.get(&key) {
+                Some(&i) => self.entries[i].2.push(ni),
+                None => {
+                    self.by_key.insert(key.clone(), self.entries.len());
+                    self.entries.push((key, method, vec![ni]));
+                }
+            }
+        }
+    }
+
+    /// The `functions` array: each entry named after its key's first `|`; `mcp` leaves out `ni`, the priority (C's
+    /// `int` printed as `uint64`) and the version.
+    fn to_json(&self, w: &mut JsonWriter, mcp: bool) {
+        w.member_add_array(Some(b"functions"));
+        for (key, method, ni) in &self.entries {
+            let name = key.iter().position(|&b| b == b'|').map_or(&key[..], |i| &key[i + 1..]);
+            w.add_array_item_object();
+            w.member_add_string("name", name);
+            w.member_add_string("help", &method.help);
+            if !mcp {
+                w.member_add_array(Some(b"ni"));
+                for &n in ni {
+                    w.add_array_item_uint64(n as u64);
+                }
+                w.array_close();
+                w.member_add_uint64("priority", method.priority as u64);
+                w.member_add_uint64("version", u64::from(method.version));
+            }
+            w.member_add_string("tags", &method.tags);
+            w.member_add_array(Some(b"access"));
+            for name in access::names(method.access) {
+                w.add_array_item_string(name);
+            }
+            w.array_close();
+            w.object_close();
+        }
+        w.array_close();
+    }
+}
+
 /// `rrdcontext_to_json_v2()` for the modes served.
 fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     let received = Instant::now();
@@ -271,29 +327,21 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
     };
     // query_scope_foreach_host() with rrdcontext_to_json_v2_add_host()
     let mut selected = Vec::new();
-    for host in &hosts {
-        if scope_nodes
-            .as_ref()
-            .is_some_and(|sp| !host_matches(sp, host))
-            || nodes.as_ref().is_some_and(|sp| !host_matches(sp, host))
-        {
-            continue;
+    let mut functions = Functions::default();
+    let mut versions = Versions::default();
+    let walked = foreach_host(&hosts, scope_nodes.as_ref(), nodes.as_ref(), &mut versions, |host, queryable| {
+        if !queryable {
+            return ControlFlow::Continue(());
         }
         if let Some((after, before)) = window.range {
             let (first, last) = host.contexts().retention();
             let last = if host.is_online() { window.now } else { last };
             if !matches_retention(after, before, first, last, 0) {
-                continue;
+                return ControlFlow::Continue(());
             }
         }
         if timed_out(startup::now_ut(), received_ut, req.timeout_ms) {
-            // the buffer is flushed but keeps its JSON content type
-            return Reply {
-                code: status::GATEWAY_TIMEOUT,
-                content_type: ContentType::ApplicationJson,
-                body: b"query timeout".to_vec(),
-                ..Reply::default()
-            };
+            return ControlFlow::Break(());
         }
         let patterns = contexts.is_some() || scope_contexts.is_some();
         let mut matched = mode & (mode::NODES | mode::FUNCTIONS | mode::ALERTS) != 0
@@ -311,8 +359,21 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
             matched = true;
         }
         if matched {
+            if mode & mode::FUNCTIONS != 0 {
+                functions.add(catalog::to_dict(host.functions()), selected.len());
+            }
             selected.push(Arc::clone(host));
         }
+        ControlFlow::Continue(())
+    });
+    if walked.is_break() {
+        // the buffer is flushed but keeps its JSON content type
+        return Reply {
+            code: status::GATEWAY_TIMEOUT,
+            content_type: ContentType::ApplicationJson,
+            body: b"query timeout".to_vec(),
+            ..Reply::default()
+        };
     }
     let executed = Instant::now();
     let debug = req.options & DEBUG != 0;
@@ -335,6 +396,14 @@ fn render(shared: &Shared, req: &Request, mode: u32, wall_s: i64) -> Reply {
             node_to_json(&mut w, host, localhost, ni, k, req, mode);
         }
         w.array_close();
+    }
+    if mode & mode::FUNCTIONS != 0 {
+        functions.to_json(&mut w, mcp);
+    }
+    if mode & mode::VERSIONS != 0 {
+        // the host index's version as the answer is written
+        versions.nodes_hard_hash = u64::from(shared.hosts.version());
+        version_hashes_v2(&mut w, &versions);
     }
     // the agents' timings end the query; the cloud timings end there too
     let finished = (mode & mode::AGENTS != 0)
@@ -475,9 +544,73 @@ pub fn info(route: &Route<'_>, query: &[u8]) -> Reply {
     render(route.shared, &req, info_mode, now_realtime_s())
 }
 
+/// `api_v2_functions()` (`/api/v2/functions`, `/api/v3/functions`): the methods of every host selected, merged by
+/// version and name, with the nodes, the versions and the agent; the host in the URL does not matter.
+pub fn functions(route: &Route<'_>, query: &[u8]) -> Reply {
+    let functions_mode = mode::FUNCTIONS | mode::NODES | mode::AGENTS | mode::VERSIONS;
+    let req = parse(query, functions_mode, 0);
+    render(route.shared, &req, functions_mode, now_realtime_s())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// C's functions dictionary (`api_v2_contexts.c:779-806`) and writer (`:1481-1516`): a name and version two hosts
+    /// share keeps the first host's attributes and lists both; another version is its own entry; the bytes are C's
+    /// (H9's oracle body).
+    #[test]
+    fn functions_merge_and_print_as_cs() {
+        use netdata_agent_nrpc::{Handler, MethodDesc, Registry, Source};
+        let desc = |name: &'static [u8], help: &'static [u8], version| MethodDesc {
+            name,
+            help,
+            tags: b"",
+            timeout_s: 10,
+            priority: 0,
+            version,
+            access: access::ANONYMOUS_DATA,
+            sync: false,
+            source: Source::Stream,
+            handler: Handler::Unwired,
+        };
+        let (local, vnode) = (Registry::default(), Registry::default());
+        local.register("l", &desc(b"difftest-same", b"same on localhost", 1)).unwrap();
+        local.register("l", &desc(b"difftest-ver", b"version 1", 1)).unwrap();
+        vnode.register("v", &desc(b"difftest-same", b"same on the vnode", 1)).unwrap();
+        vnode.register("v", &desc(b"difftest-ver", b"version 2", 2)).unwrap();
+        let mut functions = Functions::default();
+        functions.add(catalog::to_dict(&local), 0);
+        functions.add(catalog::to_dict(&vnode), 1);
+        let printed = |mcp| {
+            let mut w = JsonWriter::new(JsonOptions::MINIFY);
+            functions.to_json(&mut w, mcp);
+            w.finalize();
+            String::from_utf8(w.into_bytes()).unwrap()
+        };
+        let entry = |name: &str, help: &str, ni: &str, version| {
+            format!(
+                concat!(
+                    r#"{{"name":"{}","help":"{}","ni":[{}],"priority":100,"version":{},"#,
+                    r#""tags":"top","access":["anonymous-data"]}}"#
+                ),
+                name, help, ni, version
+            )
+        };
+        assert_eq!(
+            printed(false),
+            format!(
+                r#"{{"functions":[{},{},{}]}}"#,
+                entry("difftest-same", "same on localhost", "0,1", 1),
+                entry("difftest-ver", "version 1", "0", 1),
+                entry("difftest-ver", "version 2", "1", 2)
+            )
+        );
+        assert!(printed(true).starts_with(concat!(
+            r#"{"functions":[{"name":"difftest-same","help":"same on localhost","tags":"top","#,
+            r#""access":["anonymous-data"]},"#
+        )));
+    }
 
     #[test]
     fn parameters_as_c_reads_them() {

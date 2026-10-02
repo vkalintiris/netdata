@@ -3,6 +3,7 @@
 //!
 //! The window is converted here only for admission; `query_target_calculate_window()` (spec §4.1) is `window.rs`'s.
 
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -735,6 +736,26 @@ pub fn host_matches(sp: &SimplePattern, host: &Host) -> bool {
     r == SimplePatternResult::MatchedPositive
 }
 
+/// `query_scope_foreach_host()`: each host `scope_nodes` selects, in the index's order, adds its contexts' version
+/// to `versions` before `f` sees it with whether `nodes` selects it too (the sums ignore `nodes`). `f` may stop the
+/// walk.
+pub fn foreach_host<B>(
+    hosts: &[Arc<Host>],
+    scope_nodes: Option<&SimplePattern>,
+    nodes: Option<&SimplePattern>,
+    versions: &mut Versions,
+    mut f: impl FnMut(&Arc<Host>, bool) -> ControlFlow<B>,
+) -> ControlFlow<B> {
+    for host in hosts {
+        if scope_nodes.is_some_and(|sp| !host_matches(sp, host)) {
+            continue;
+        }
+        versions.contexts_hard_hash += u64::from(host.contexts().version());
+        f(host, nodes.is_none_or(|sp| host_matches(sp, host)))?;
+    }
+    ControlFlow::Continue(())
+}
+
 /// `query_target_create()` up to the window calculation. `now_s` is the wall clock (`now_realtime_sec()`).
 pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
     if req.nodes.is_some() && req.scope_nodes.is_none() {
@@ -829,17 +850,13 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
         } => {
             let scope_nodes = pattern(&req.scope_nodes);
             let nodes = pattern(&req.nodes);
-            walk.qt.versions.nodes_hard_hash = nodes_hard_hash;
-            for host in &hosts {
-                if let Some(sp) = &scope_nodes
-                    && !host_matches(sp, host)
-                {
-                    continue;
-                }
-                walk.qt.versions.contexts_hard_hash += u64::from(host.contexts().version());
-                let queryable = nodes.as_ref().is_none_or(|sp| host_matches(sp, host));
-                walk.node(host, queryable, None);
-            }
+            let mut versions = Versions { nodes_hard_hash, ..Versions::default() };
+            let _: ControlFlow<()> =
+                foreach_host(&hosts, scope_nodes.as_ref(), nodes.as_ref(), &mut versions, |host, queryable| {
+                    walk.node(host, queryable, None);
+                    ControlFlow::Continue(())
+                });
+            walk.qt.versions = versions;
             (None, None)
         }
     };
@@ -869,6 +886,32 @@ mod tests {
     use netdata_agent_rrd::mode::DbMode;
 
     const T: i64 = 1_700_000_000;
+
+    /// `query_scope_foreach_host()`: the hosts in scope add their contexts' versions whether `nodes` selects them or
+    /// not; a stop ends the walk.
+    #[test]
+    fn the_walk_sums_versions_before_the_nodes_filter() {
+        let parent = Arc::new(Host::new("guid-0", false, crate::testing::info("parent", 1, DbMode::Ram)));
+        let hosts = [parent, crate::testing::host()];
+        let (v0, v1) = (u64::from(hosts[0].contexts().version()), u64::from(hosts[1].contexts().version()));
+        assert!(v1 > v0);
+        let walk = |scope: &[u8], nodes: &[u8], stop: bool| {
+            let (scope, nodes) = (SimplePattern::from_web(scope), SimplePattern::from_web(nodes));
+            let mut versions = Versions::default();
+            let mut seen = Vec::new();
+            let flow = foreach_host(&hosts, scope.as_ref(), nodes.as_ref(), &mut versions, |host, queryable| {
+                seen.push((host.hostname(), queryable));
+                if stop { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+            });
+            (flow.is_break(), versions.contexts_hard_hash, seen)
+        };
+        let both = |q0, q1| vec![("parent".to_string(), q0), ("child".to_string(), q1)];
+        assert_eq!(walk(b"", b"", false), (false, v0 + v1, both(true, true)));
+        assert_eq!(walk(b"", b"parent", false), (false, v0 + v1, both(true, false)));
+        assert_eq!(walk(b"", b"nomatch", false), (false, v0 + v1, both(false, false)));
+        assert_eq!(walk(b"guid-1", b"", false), (false, v1, vec![("child".to_string(), true)]));
+        assert_eq!(walk(b"", b"", true), (true, v0, vec![("parent".to_string(), true)]));
+    }
 
     fn host() -> Arc<Host> {
         let info = HostInfo {
