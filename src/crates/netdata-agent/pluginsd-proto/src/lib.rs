@@ -255,6 +255,15 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
     }
 
+    /// `PLUGINSD_MAX_WORDS`: a line of 32 words keeps the first 30, the 30th whole (C's splitter stops at the 31st
+    /// word's start, after cutting the 30th at its separator, `line_splitter.h:106-109`).
+    #[test]
+    fn a_line_keeps_thirty_words() {
+        let line = (1..=32).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ");
+        let w = Words::split(line.as_bytes());
+        assert_eq!((w.len(), w.get(29), w.get(30)), (30, Some(&b"w30"[..]), None));
+    }
+
     #[test]
     fn words_slot_and_reconstruction() {
         let w = Words::split(b"SET SLOT:12 user = 5\n");
