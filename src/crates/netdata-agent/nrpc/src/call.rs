@@ -75,6 +75,8 @@ pub struct Record {
     stop_ut: AtomicU64,
     asynchronous: bool,
     hooks: Mutex<HookSlots>,
+    /// `CallSpec::tag`.
+    tag: Option<&'static str>,
 }
 
 impl Record {
@@ -147,6 +149,9 @@ pub struct CallSpec<'a> {
     pub done: Option<Done>,
     pub progress: Option<ProgressCb>,
     pub is_cancelled: Option<IsCancelled<'a>>,
+    /// The caller's mark on the call while it is in flight (`Calls::has_tag()`): C tells its own calls apart by their
+    /// result callback (`nrpc_call_has_result_cb()`).
+    pub tag: Option<&'static str>,
 }
 
 /// What `Calls::call()` returned: the code, and the answer when no `done` took it (a wait, a sync call or a refusal
@@ -235,7 +240,8 @@ impl Calls {
 
     /// `nrpc_call()`.
     pub fn call(self: &Arc<Self>, spec: CallSpec) -> Called {
-        let CallSpec { owner, cmd, source, user_access, timeout_s, wait, allow_restricted, call_id, payload, .. } = spec;
+        let CallSpec { owner, cmd, source, user_access, timeout_s, wait, allow_restricted, call_id, payload, tag, .. } =
+            spec;
         let (mut reply, done, progress, is_cancelled) = (spec.reply, spec.done, spec.progress, spec.is_cancelled);
         let source = nrpc_sanitize_name(&source[..source.len().min(NAME_MAX)], source.len().min(NAME_MAX) + 1);
         let function = sanitize_command(cmd);
@@ -267,6 +273,7 @@ impl Calls {
             stop_ut: AtomicU64::new(stop_ut),
             asynchronous: !method.sync,
             hooks: Mutex::default(),
+            tag,
         });
         {
             let mut table = lock(&self.table);
@@ -441,6 +448,13 @@ impl Calls {
         if let Some(hook) = hook {
             hook.progress(key);
         }
+    }
+
+    /// `nrpc_call_has_result_cb()`: whether the call in flight with `call_id` carries `tag`.
+    pub fn has_tag(&self, call_id: &[u8; 16], tag: &str) -> bool {
+        let mut compact = Vec::with_capacity(32);
+        print_uuid_lower_compact(&mut compact, call_id);
+        self.get(&String::from_utf8_lossy(&compact)).is_some_and(|r| r.tag == Some(tag))
     }
 
     /// `nrpc_call_request_progress()`.

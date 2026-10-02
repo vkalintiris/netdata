@@ -185,15 +185,7 @@ impl Store {
         let client_name = jsonc::txt(obj, ".", "client_name", Required, e)?.unwrap_or_default();
         let access = jsonc::bitmap(obj, ".", "access", access::id_one, Required, e)?;
         let role = match jsonc::enum_text(obj, ".", "user_role", Required, e)? {
-            Some(name) => access::role::from_name(name).unwrap_or_else(|| {
-                nd_log!(
-                    Source::Daemon,
-                    Priority::Warning,
-                    "HTTP user role '{}' is not valid",
-                    String::from_utf8_lossy(name)
-                );
-                access::role::NONE
-            }),
+            Some(name) => access::role::to_id(name),
             None => access::role::NONE,
         };
         let created_s = jsonc::uint64(obj, ".", "created_s", Required, e)? as i64;

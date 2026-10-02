@@ -1167,7 +1167,7 @@ pub fn end_v2(
 
     if opts & options::MINIMAL_STATS == 0 {
         let finished = Instant::now();
-        agents_v2(w, *agent, crate::now_s(), rfc3339, |w| {
+        agents_v2(w, *agent, crate::now_s(), rfc3339, true, |w| {
             query_timings(w, "timings", received, finished, qt)
         });
         cloud_timings(w, "timings", received, finished);
@@ -1188,25 +1188,34 @@ pub fn version_hashes_v2(w: &mut JsonWriter, v: &Versions) {
     w.object_close();
 }
 
-/// `buffer_json_agents_v2()` in its array form: the agent's identity at `now_s`, then what `rest` writes (the info
-/// members, the timings).
+/// `buffer_json_agents_v2()`: the agent's identity at `now_s`, then what `rest` writes (the info members, the
+/// timings); as `array`, an `agents` array of one with its `ai`, else an `agent` object without it.
 pub fn agents_v2(
     w: &mut JsonWriter,
     agent: Agent<'_>,
     now_s: i64,
     rfc3339: bool,
+    array: bool,
     rest: impl FnOnce(&mut JsonWriter),
 ) {
-    w.member_add_array(Some(b"agents"));
-    w.add_array_item_object();
+    if array {
+        w.member_add_array(Some(b"agents"));
+        w.add_array_item_object();
+    } else {
+        w.member_add_object(b"agent");
+    }
     w.member_add_string("mg", agent.machine_guid);
     w.member_add_uuid("nd", &agent.node_id);
     w.member_add_string("nm", agent.hostname);
     w.member_add_time_t_formatted("now", now_s, rfc3339);
-    w.member_add_uint64("ai", 0);
+    if array {
+        w.member_add_uint64("ai", 0);
+    }
     rest(w);
     w.object_close();
-    w.array_close();
+    if array {
+        w.array_close();
+    }
 }
 
 /// `buffer_json_node_add_v2()` with its status (`buffer_json_agent_status_id()`): a node's identity in v2 answers.
@@ -1247,4 +1256,25 @@ pub fn cloud_timings(w: &mut JsonWriter, key: &str, received: Instant, finished:
         finished.saturating_duration_since(received).as_micros() as f64 / 1000.0,
     );
     w.object_close();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `buffer_json_agents_v2()`'s two forms: the `agents` array of one with `ai`, and the `agent` object without it
+    /// (DynCfg's tree trailer).
+    #[test]
+    fn agents_are_written_in_cs_two_forms() {
+        let hash = || 3;
+        let agent = Agent { machine_guid: "mg-1", node_id: [0; 16], hostname: "h", nodes_hard_hash: &hash };
+        let render = |array: bool| {
+            let mut w = JsonWriter::new(JsonOptions::MINIFY);
+            agents_v2(&mut w, agent, 1_790_000_000, false, array, |w| w.member_add_uint64("x", 1));
+            w.finalize();
+            String::from_utf8(w.into_bytes()).unwrap()
+        };
+        assert_eq!(render(true), r#"{"agents":[{"mg":"mg-1","nd":null,"nm":"h","now":1790000000,"ai":0,"x":1}]}"#);
+        assert_eq!(render(false), r#"{"agent":{"mg":"mg-1","nd":null,"nm":"h","now":1790000000,"x":1}}"#);
+    }
 }

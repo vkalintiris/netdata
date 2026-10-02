@@ -1,7 +1,8 @@
 //! `HTTP_ACCESS`, ported from `src/libnetdata/user-auth/http-access.{h,c}`: the permissions a caller holds and a
 //! function requires.
 
-use netdata_agent_text::parse::strtoull16;
+use netdata_agent_text::c::c_str;
+use netdata_agent_text::parse::{strtoull16, uuid_parse_flexi};
 
 pub const NONE: u32 = 0;
 pub const SIGNED_ID: u32 = 1 << 0;
@@ -96,6 +97,15 @@ pub mod role {
             _ => return None,
         })
     }
+
+    /// `http_user_role2id()`: `from_name()`, an unknown name `NONE` after C's WARNING.
+    pub fn to_id(name: &[u8]) -> u8 {
+        from_name(name).unwrap_or_else(|| {
+            use netdata_agent_log::{Priority, Source, nd_log};
+            nd_log!(Source::Daemon, Priority::Warning, "HTTP user role '{}' is not valid", String::from_utf8_lossy(name));
+            NONE
+        })
+    }
 }
 
 /// `HTTP_ACCESS_PERMISSION_DENIED_HTTP_CODE()`: 403 for a signed-in caller, else 412.
@@ -115,9 +125,121 @@ pub fn from_hex_mapping_old_roles(s: &[u8]) -> u32 {
     }
 }
 
+/// `http_access_from_hex_str()`: hex bits, none for no text.
+pub fn from_hex_str(s: &[u8]) -> u32 {
+    if s.is_empty() { NONE } else { strtoull16(s).0 as u32 & ALL }
+}
+
+/// `USER_AUTH_METHOD`, with C's names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Method {
+    #[default]
+    None,
+    Cloud,
+    Bearer,
+    God,
+}
+
+impl Method {
+    const NAMES: [(Method, &'static str); 4] =
+        [(Method::None, "none"), (Method::Cloud, "NC"), (Method::Bearer, "api-bearer"), (Method::God, "god")];
+
+    /// `USER_AUTH_METHOD_2id()`: an unknown name is `none`.
+    pub fn from_name(name: &[u8]) -> Self {
+        Self::NAMES.iter().find(|(_, n)| n.as_bytes() == name).map_or(Method::None, |&(m, _)| m)
+    }
+
+    /// `USER_AUTH_METHOD_2str()`.
+    pub fn name(self) -> &'static str {
+        Self::NAMES.iter().find(|(m, _)| *m == self).map_or("none", |&(_, n)| n)
+    }
+}
+
+/// `CLOUD_CLIENT_NAME_LENGTH`: a user name keeps one byte less.
+const CLIENT_NAME_LENGTH: usize = 64;
+/// `INET6_ADDRSTRLEN`: an address keeps one byte less.
+const ADDRESS_LENGTH: usize = 46;
+
+/// `USER_AUTH`: a caller as a call's source string describes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserAuth {
+    pub method: Method,
+    pub role: u8,
+    pub access: u32,
+    pub client_name: Vec<u8>,
+    pub account: [u8; 16],
+    pub client_ip: Vec<u8>,
+    pub forwarded_for: Vec<u8>,
+}
+
+impl UserAuth {
+    /// `user_auth_from_source()`, the inverse of `user_auth_to_source_buffer()`: `key=value` tokens between commas
+    /// (empty ones and ones without `=` skipped, the last of a key kept, unknown keys ignored); `role=god` sets the
+    /// method; the user name and the addresses are cut to C's buffers; an account that is not a UUID is zeros.
+    pub fn from_source(src: &[u8]) -> Self {
+        let cut = |value: &[u8], size: usize| value[..value.len().min(size - 1)].to_vec();
+        let mut parsed = UserAuth::default();
+        for token in c_str(src).split(|&c| c == b',') {
+            let Some(eq) = token.iter().position(|&c| c == b'=') else {
+                continue;
+            };
+            let value = &token[eq + 1..];
+            match &token[..eq] {
+                b"method" => parsed.method = Method::from_name(value),
+                b"role" if value == b"god" => parsed.method = Method::God,
+                b"role" => parsed.role = role::to_id(value),
+                b"permissions" => parsed.access = from_hex_str(value),
+                b"user" => parsed.client_name = cut(value, CLIENT_NAME_LENGTH),
+                b"account" => parsed.account = uuid_parse_flexi(value).unwrap_or([0; 16]),
+                b"ip" => parsed.client_ip = cut(value, ADDRESS_LENGTH),
+                b"forwarded_for" => parsed.forwarded_for = cut(value, ADDRESS_LENGTH),
+                _ => {}
+            }
+        }
+        parsed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `user_auth_from_source()` over the strings `user_auth_to_source_buffer()` writes and C's edges: empty and
+    /// `=`-less tokens, a forwarded list cut at its comma, `role=god`, an empty role (member) and an unknown one (none,
+    /// after the WARNING), the hex permissions masked, the cuts, a bad account.
+    #[test]
+    fn sources_parse_as_c() {
+        let account = *b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xab";
+        let (parsed, logged) = netdata_agent_log::capture(|| {
+            UserAuth::from_source(
+                b"method=api-bearer,role=admin,permissions=0x7ff,user=fnhttp-admin,\
+                  account=000000000000000000000000000000ab,ip=localhost,forwarded_for=a, b",
+            )
+        });
+        assert!(logged.is_empty());
+        assert_eq!(
+            parsed,
+            UserAuth {
+                method: Method::Bearer,
+                role: role::ADMIN,
+                access: ALL,
+                client_name: b"fnhttp-admin".to_vec(),
+                account,
+                client_ip: b"localhost".to_vec(),
+                forwarded_for: b"a".to_vec(),
+            }
+        );
+        let (parsed, logged) =
+            netdata_agent_log::capture(|| UserAuth::from_source(b",,noequals,role=god,role=,permissions=fffff,x=y"));
+        assert!(logged.is_empty());
+        assert_eq!(parsed, UserAuth { method: Method::God, role: role::MEMBER, access: ALL, ..UserAuth::default() });
+        let (parsed, logged) = netdata_agent_log::capture(|| UserAuth::from_source(b"role=king,account=nope,method=x"));
+        assert_eq!(parsed, UserAuth::default());
+        assert_eq!(logged.into_iter().filter_map(|r| r.message).collect::<Vec<_>>(), ["HTTP user role 'king' is not valid"]);
+        let long = UserAuth::from_source(format!("user={},ip={}", "u".repeat(70), "1".repeat(50)).as_bytes());
+        assert_eq!((long.client_name.len(), long.client_ip.len()), (63, 45));
+        assert_eq!([Method::None, Method::Cloud, Method::Bearer, Method::God].map(Method::name), ["none", "NC", "api-bearer", "god"]);
+    }
 
     #[test]
     fn names_in_bit_order() {

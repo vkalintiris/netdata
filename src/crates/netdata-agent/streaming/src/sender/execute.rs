@@ -359,6 +359,7 @@ fn execute_function(d: &mut Dispatched, call: &Call<'_>, payload: Option<Payload
         done: Some(done),
         progress,
         is_cancelled: None,
+        tag: None,
     });
 }
 

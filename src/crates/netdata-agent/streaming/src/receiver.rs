@@ -3391,6 +3391,7 @@ mod tests {
             })),
             progress: None,
             is_cancelled: None,
+            tag: None,
         });
         assert_eq!(called.code, 200);
         let ((), records) = netdata_agent_log::capture(|| Calls::process().progress(tx));

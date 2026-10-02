@@ -107,6 +107,7 @@ impl Fixture {
             })),
             progress: None,
             is_cancelled: None,
+            tag: None,
         });
         let written = self.wire.take();
         lock(&self.wire.written).extend(before.into_iter().chain(written.clone()));
@@ -231,6 +232,7 @@ fn the_gc_answers_in_reverse() {
             done: Some(Box::new(move |reply, _| lock(&delivered).push(reply.body))),
             progress: None,
             is_cancelled: None,
+            tag: None,
         });
         assert_eq!(called.code, 200);
         let line = f.wire.take().pop().unwrap();
@@ -382,6 +384,7 @@ fn the_plugins_progress_reaches_the_caller() {
         })),
         progress: Some(progress),
         is_cancelled: None,
+        tag: None,
     });
     assert_eq!(called.code, 200);
     assert!(f.transport.progress_from_plugin(b"0a0b0c0d0e0f40118213141516171819", 3, 10));
@@ -544,6 +547,7 @@ fn the_runs_end_waits_for_a_dispatch_in_flight() {
                     })),
                     progress: None,
                     is_cancelled: None,
+                    tag: None,
                 })
                 .code
         })

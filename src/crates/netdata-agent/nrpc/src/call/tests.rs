@@ -85,6 +85,7 @@ fn spec<'a>(r: &'a Registry, cmd: &'a [u8]) -> CallSpec<'a> {
         done: None,
         progress: None,
         is_cancelled: None,
+        tag: None,
     }
 }
 
@@ -227,6 +228,27 @@ fn a_nowait_call_answers_through_its_callback() {
     let req = lock(&held.requests).pop().unwrap();
     assert!(req.call.key().len() == 32 && req.call.key().bytes().all(|c| c.is_ascii_hexdigit()));
     (req.done)(req.reply, 200);
+}
+
+/// `nrpc_call_has_result_cb()`: a call carries its caller's tag while it is in flight, and only that one; an untagged
+/// call carries none, and a call answered is gone.
+#[test]
+fn a_calls_tag_is_found_while_it_is_in_flight() {
+    let (calls, _) = calls();
+    let r = Registry::default();
+    let held = Arc::new(Held::default());
+    register(&r, b"slow", Handler::Transport(Arc::clone(&held) as Arc<dyn Transport>), |_| {});
+    let id = [0x5a; 16];
+    let tagged = calls.call(CallSpec { call_id: Some(b"5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"), tag: Some("echo"), ..spec(&r, b"slow") });
+    assert_eq!(tagged.code, 200);
+    assert_eq!((calls.has_tag(&id, "echo"), calls.has_tag(&id, "other")), (true, false));
+    let untagged = [0x5b; 16];
+    calls.call(CallSpec { call_id: Some(b"5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b"), ..spec(&r, b"slow") });
+    assert!(!calls.has_tag(&untagged, "echo"));
+    for req in std::mem::take(&mut *lock(&held.requests)) {
+        (req.done)(req.reply, 200);
+    }
+    assert!(!calls.has_tag(&id, "echo"), "answered, no longer in flight");
 }
 
 /// Wait: the answer comes back with its code, cacheable when it expires; past the deadline and its grace the caller

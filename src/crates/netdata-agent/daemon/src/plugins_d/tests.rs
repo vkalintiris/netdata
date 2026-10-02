@@ -431,6 +431,7 @@ fn a_runs_end_retires_its_functions_before_answering_their_calls() {
                 })),
                 progress: None,
                 is_cancelled: None,
+                tag: None,
             });
             state.cancelled.store(true, Ordering::Release);
             called.code

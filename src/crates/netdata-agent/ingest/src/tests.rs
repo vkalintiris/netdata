@@ -2853,6 +2853,7 @@ fn call_plugin(hosts: &Arc<Hosts>, cmd: &[u8], tx: &[u8]) -> std::sync::mpsc::Re
         })),
         progress: None,
         is_cancelled: None,
+        tag: None,
     });
     assert_eq!(called.code, 200);
     answers
@@ -2882,6 +2883,7 @@ fn call_child(
         })),
         progress: Some(Arc::new(move |_: &[u8; 16], done, all| progress.lock().unwrap().push((done, all)))),
         is_cancelled: None,
+        tag: None,
     });
     assert_eq!(called.code, 200);
     answers
@@ -3034,6 +3036,7 @@ fn a_plugins_end_answers_its_pending_calls() {
         })),
         progress: None,
         is_cancelled: None,
+        tag: None,
     });
     let (reply, code) = after.recv().unwrap();
     assert_eq!(

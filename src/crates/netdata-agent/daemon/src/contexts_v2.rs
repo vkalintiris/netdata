@@ -447,7 +447,7 @@ fn agents(
     };
     let rfc3339 = req.options & RFC3339 != 0;
     let mut finished = executed;
-    agents_v2(w, agent, now_s, rfc3339, |w| {
+    agents_v2(w, agent, now_s, rfc3339, true, |w| {
         if mode & mode::AGENTS_INFO != 0 {
             agent_info(w, shared, now_s, rfc3339);
         }

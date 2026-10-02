@@ -53,6 +53,7 @@ pub fn call(route: &Route<'_>, host: &Host, query: &[u8]) -> Reply {
         // query_progress_functions_update(): the plugin's totals on the request's row
         progress: Some(Arc::new(|id, done, all| Table::process().functions_update(id, done, all))),
         is_cancelled: Some(&gone),
+        tag: None,
     });
     let reply = called.reply.unwrap_or_else(|| NrpcReply::new(ContentType::ApplicationJson));
     reply_of(reply, called.code)
