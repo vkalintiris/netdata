@@ -68,7 +68,7 @@ impl std::fmt::Debug for Handler {
 
 impl Handler {
     /// The same handler and data (`handler` and `handler_data` compared).
-    fn same(&self, other: &Handler) -> bool {
+    pub fn same(&self, other: &Handler) -> bool {
         match (self, other) {
             (Handler::Transport(a), Handler::Transport(b)) => Arc::ptr_eq(a, b),
             (Handler::Builtin(a), Handler::Builtin(b)) => std::ptr::fn_addr_eq(*a, *b),

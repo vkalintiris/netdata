@@ -14,3 +14,9 @@ netdata-agent-nrpc = { workspace = true }
 netdata-agent-pluginsd-proto = { workspace = true }
 netdata-agent-rrd = { workspace = true }
 netdata-agent-text = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+# a handler no test calls
+netdata-agent-nrpc = { workspace = true, features = ["testing"] }
+tempfile = { workspace = true }
