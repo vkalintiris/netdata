@@ -749,8 +749,6 @@ func forgetFailedAttempt(runDir string) {
 	}
 }
 
-// startupLogShowsBindCollision tells whether a launch's output, or what it added to the daemon log after
-// `daemonLogOffset` (where both agents log it), says its port was taken.
 // startupLogShowsReady: this launch's daemon.log has the startup step that follows `netdata_ready_store(true)` (the
 // completion record precedes it).
 func startupLogShowsReady(runDir string, daemonLogOffset int64) bool {
@@ -759,6 +757,8 @@ func startupLogShowsReady(runDir string, daemonLogOffset int64) bool {
 		strings.Contains(string(b[daemonLogOffset:]), "agent start timings - next: anonymous analytics")
 }
 
+// startupLogShowsBindCollision tells whether a launch's output, or what it added to the daemon log after
+// `daemonLogOffset` (where both agents log it), says its port was taken.
 func startupLogShowsBindCollision(runDir string, daemonLogOffset int64) bool {
 	var text strings.Builder
 	if b, err := os.ReadFile(filepath.Join(runDir, "log", "stdout.log")); err == nil {
