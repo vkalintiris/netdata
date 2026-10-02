@@ -61,8 +61,8 @@ Our universe has three properties that shape everything else:
   posting list from sorted data exactly once; the read path only intersects, unions, iterates, and
   counts range cardinalities. There is no such thing as an in-place posting-list edit.
 
-That last property is the license for the whole design: we can afford a representation that is
-excellent to store and query, and mediocre to mutate — because nothing mutates it.
+That last property is the license for the whole design: a representation excellent to store and
+query can afford to be mediocre to mutate — nothing mutates it.
 
 ## Why not just roaring?
 
@@ -155,7 +155,7 @@ eight value bits, a pruned ghost subtree, and the level-to-digit mapping](figure
 ### Pre-order serialization, by hand
 
 The tree bytes are a depth-first **pre-order** walk: emit the node byte, then each present child's
-subtree in ascending child order. There are no child offsets anywhere in the format. Skipping a
+subtree in ascending child order. No child offsets exist in the format. Skipping a
 sibling's subtree means *walking* it — each node byte is self-delimiting because its bits say how
 many child subtrees follow. You pay bytes, not pointers.
 
@@ -388,7 +388,7 @@ In compressed form:
         │                                              │
         ▼                                              ▼
  remap_one_bitmap per key=value            PosSet { treight::Bitmap, Vec<u8> }
-   ├─ dense (>50%)? → store complement      every set op native on tree bytes
+   ├─ dense (> universe/2)? → complement    every set op native on tree bytes
    ├─ big (≥ max(universe/64, 256))?        no roaring on the read path
    │    → Bitset scratch, not a sort
    └─ encode: treight bytes
@@ -537,9 +537,9 @@ cargo fuzz run against_roaring
 ```
 
 The fuzz workspace pins the same roaring fork as the main workspace (`src/crates/Cargo.toml`),
-so the oracle and the production dependency are one roaring implementation. An in-crate proptest twin (`src/crates/treight/src/tests_roaring.rs`)
-covers the same ground with exhaustive membership checks over universes up to 4,096, including
-all four inverted-flag combinations of `Bitmap::and`/`or` against a per-value oracle.
+so the oracle and the production dependency are one roaring implementation. An in-crate proptest twin (`src/crates/treight/src/tests_roaring.rs`) covers the same ground
+with exhaustive membership checks up to 4,096-element universes, all inverted-flag combinations
+included.
 
 ## Benchmarks
 
@@ -566,12 +566,10 @@ headers); derivation tooling and exact commands are in the README.
 The bench covers both lifecycle phases plus footprint, matching how the structures divide the
 work:
 
-- **Build:** bulk encode from sorted positions (the seal path) and incremental insertion (roaring's
-  strength) — `bulk_build`, `insert_arrival`, `insert_shuffled`, per corpus × density bucket in
-  `results.json` ({{PLACEHOLDER: bench/results.json#build-ops}}).
-- **Query:** `contains` hit/miss, `len()`/min/max, full iteration, `and`/`or`/`and_not` on
-  realistic pairs, range counting — same file, `ops` block ({{PLACEHOLDER:
-  bench/results.json#query-ops}}).
+- **Build and query:** bulk encode from sorted positions (the seal path), incremental insertion
+  (roaring's strength), `contains` hit/miss, `len()`/min/max, full iteration, `and`/`or`/
+  `and_not` on realistic pairs, range counting — per corpus × density bucket in `results.json`
+  ({{PLACEHOLDER: bench/results.json#cpu-ops}}).
 - **Size:** summed bytes of every posting list, treight vs serialized roaring, plus allocative
   in-memory heap — `bench/totals-<corpus>-250k.{json,md}` (full per-list rows in the JSONs).
 
@@ -591,8 +589,7 @@ gap widens: treight's whole-corpus in-memory size is a consistent 0.068 of roari
 (17,799,801 vs 262,065,816 bytes on jetstream) — treight's memory form is the flat bytes,
 roaring materializes containers.
 
-**Results — CPU** (criterion medians; per corpus × density bucket, `results.json` — harvesting
-in progress):
+**Results — CPU** (criterion medians per corpus × density bucket; `results.json`):
 
 | metric (per corpus) | certstream-250k | jetstream-250k | mixed-250k |
 |---|---|---|---|
@@ -612,12 +609,13 @@ ratio; list counts certstream/jetstream/mixed — `per density bucket` tables in
 | 0.1–1% | 1.028 / 1.118 / 1.062 | 182 / 181 / 317 |
 | 1–10% | 0.390 / 0.763 / 0.434 | 87 / 13 / 101 |
 | 10–50% | 0.689 / 0.709 / 0.792 | 34 / 6 / 26 |
-| >50% | 0.193 / 0.258 / 0.625 | 23 / 10 / 12 |
+| ≥50% | 0.193 / 0.258 / 0.625 | 23 / 10 / 12 |
 
 Predictions held for two bands and flipped for one. Ultra-sparse lists (≤0.001% — the
 overwhelming majority) favor treight ~3×: per-container headers dominate roaring while treight
 pays a byte per level. Dense lists (≥1%) favor treight more strongly the denser the list
-(complement encoding; 23/10/3 lists per corpus). But the 0.01–1% middle band is roaring's on
+(complement encoding; 23/10/3 lists per corpus — the encoder complements strictly above half, so
+exactly-half lists stay direct: in mixed-250k, 9 of the ≥50% bucket's 12). But the 0.01–1% middle band is roaring's on
 serialized bytes: treight's members × levels outweighs sharing there, while roaring's packed
 arrays are near optimal — a real roaring size win in a band where many real posting lists live;
 the CPU rows above say whether it carries a speed trade.
