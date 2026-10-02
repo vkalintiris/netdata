@@ -5,6 +5,8 @@
 - RAM: 31 GiB
 - OS/kernel: Ubuntu (Linux 6.8.0-139-generic), x86_64
 - rustc: 1.95.0 (59807616e 2026-04-14); cargo 1.95.0 (f2d3ce0bd 2026-03-21)
+- criterion: 0.5.1 (registry, pinned in src/crates/Cargo.lock; the
+  workspace table pins `criterion = "0.5"` — src/crates/Cargo.toml)
 - roaring: workspace pin `netdata/roaring-rs` branch `allocative`,
   commit 3ee69b1db5a2a4fc909076962c0159ddae893f8c (Cargo.lock) — the same
   crate sfst accumulates with; never overridden. roaring's `allocative`

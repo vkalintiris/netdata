@@ -412,3 +412,187 @@ but register-mixed and easy to mis-scan. Naming beats counting: "(see
 
 **Top-priority order for the writer**: B1, B2 (rendering, mechanical), B3 (hook claim),
 B4 (checkpoint label), B5+B6 (universe/isolated consistency), then S1–S16 in order.
+
+---
+
+# PASS 2 — the filled draft (numbers and figures in)
+
+Date: 2026-10-02, late evening. Draft reviewed: 687 lines, 4,471 prose words by my
+counting method (fences/tables/headings excluded; the Lead's method says 4,495 — both
+under the 4,500 ceiling). Zero placeholders remain. PASS-1 findings: all seven BLOCKERs
+applied correctly, plus the SHOULDs and CONSIDERs I re-checked individually. Every
+number below was verified directly against the certified artifacts
+(`evidence/bench/results.json`, `totals-*.md`, `environment.txt`, `per-list-*.csv.gz`,
+`evidence/corpora/stats.md`).
+
+One correction to my own PASS 1: the draft then said "64 joins the top three bytes,"
+which I verified as correct — it was not. 64 = 0o100 shares root + 0x01 + 0x02 + 0x03
+(four bytes) before its own 0x07/0x08. The current draft says "top four bytes," which
+is right; I re-derived the full 18-byte example from scratch this pass and it is
+correct as published.
+
+## Verdict update
+
+With results visible the post delivers what §3 and §6 promise: the footprint story
+(0.51–0.65 of roaring on stored tiers) pays off "that difference compounds," the
+mid-density concession is made in §6 before the reader reaches the band table, and the
+pair rows are striking AND mechanistically explained. The honesty framing mostly
+survives contact with the numbers — point queries were correctly reclassified from
+"tie" to "roaring wins," matching 387–6,973×. Two residues break that standard: the
+footprint-ratio row is not derivable from the table's own visible cells (P1), and
+range counting still sits under "Where they tie" while the table shows 35–288× in
+roaring's favor (P2). Both are line-level fixes. The abstract-level flow is sound;
+the one place the 4,500-word ceiling shows is the bench-coverage bullet (P8), which
+reads as compressed noun phrases rather than prose.
+
+## Verified clean against the artifacts (so the writer doesn't re-check these)
+
+- All 21 CPU-table cells and all three pair rows reproduce from `results.json`
+  (recomputed ratios match to rounding: bulk build 2.48/1.71/0.89…, iteration, contains
+  387–6,973×, range_count 44–234/35–264/80–288, len() 686–16,637/828–19,844/753–10,039,
+  and-pairs 43/52/2.6, and_not 0.049/0.051/0.053, or-pairs 4.9/4.6/4.8 ns vs
+  2,931/2,987/2,814 ns — all verbatim).
+- All 42 density-table cells and all footprint cells match `totals-*.md` exactly.
+- "consistent 0.068": 0.0678 / 0.0683 / 0.0680 across the three corpora — true; the
+  quoted jetstream pair 17,799,801 vs 262,065,816 is verbatim.
+- 32,808: verified structurally (4 bitset containers × 8,192 + 32 B headers + 8 B
+  cookie) and by artifact (jetstream ≥50% roaring 328,080 / 10 lists).
+- "per-list slices near 44% flip to roaring (1.07×)": exact — certstream list at
+  density 0.440, 35,020 vs 32,808 bytes = 1.067.
+- "9 of the ≥50% bucket's 12" exactly-half in mixed: consistent with 12 lists − 3
+  complemented; per-list rows confirm density-0.500 card-125,000 lists encoded direct.
+- Environment claims: rustc 1.95.0 (59807616e 2026-04-14) ✓, 50 samples / 1 s warm-up
+  / 2 s measurement ✓, roaring pin branch `allocative` commit `3ee69b1` ✓, "relative
+  orderings, not sub-percent deltas" mirrors environment.txt's own guidance ✓.
+- Corpora: 250,000 lines each ✓, mixed 125,000 + 125,000 ✓, no kv strings quoted in
+  the post (the per-list CSVs deliberately exclude them — the "aggregate only" claim
+  holds).
+- Figures: all six referenced SVGs exist on disk; every alt text is descriptive; every
+  figure sits between standalone prose that does not duplicate the alt text.
+- Mechanics: 0 placeholders, all 22 anchor links resolve, ops-table pipes correctly
+  escaped (`a \| b`), no code-span wraps remain, blob/tree-bytes now bridged once
+  (L176) with two licensed later uses.
+
+## Findings — PASS 2
+
+**P1. BLOCKER — draft.md:574–576 — the footprint-ratio row is not derivable from the
+table's own cells.** The shown ratios 0.510 / 0.647 / 0.630 are the artifact's
+tree-bytes-only ratios (`totals-*.md`, "serialized bytes" rows: 1,792,162/3,514,248,
+994,834/1,538,624, 2,111,260/3,353,048), but the treight row above them is tree + 5 B
+descriptor (1,797,922 / 1,115,004 / 2,212,840). A reader dividing the visible cells
+gets 0.512 / 0.725 / 0.660 — jetstream is 12% off the shown 0.647. Fix (policy-clean,
+verbatim from the artifact): split the treight row the way `totals-*.md` does —
+"serialized tree bytes | 1,792,162 | 994,834 | 2,111,260" and "+ 5 B descriptor per
+list | 1,797,922 | 1,115,004 | 2,212,840" — and keep the ratio row on tree bytes; or
+at minimum relabel the ratio row "(tree bytes / roaring serialized, descriptors
+excluded)". Writer + bench-eng should pick the shape; the current one fails
+self-consistency.
+
+**P2. BLOCKER — draft.md:503–504 — "Where they tie" now contradicts the visible
+numbers.** Range counting stays under the tie heading, but the table row (L590) shows
+`range_count` at 35–288× in roaring's favor. With results visible, the tie label reads
+as spin — the one place in the filled draft that does. Fix: move the sentence into
+"Where roaring wins" with the mechanism as caveat — "Range counting: both structures
+prune (roaring sums container counts, treight skips subtrees outside the range), but
+the constants differ — 35–288× measured — so it wins there too." — or keep a tie
+heading only if the sentence states the measured delta.
+
+**P3. SHOULD — draft.md:600 — "≈3–11 ns vs 5–28 µs per probe" mixes bases.** The
+roaring range (3–11 ns) spans all corpora; the treight range (5–28 µs) is
+mixed-corpus-only (its lt1 hit 4.95 µs to gt50 miss 28.0 µs). The full artifact
+ranges: treight hits 3.9–18.8 µs, misses 4.9–39.8 µs (certstream's gt50 miss is
+39.8 µs — above the stated top). Suggested: "≈3–11 ns vs ~4–19 µs on hits, up to
+~40 µs on misses" — or scope the sentence to the table's basis (hits) explicitly.
+
+**P4. SHOULD — draft.md:604–606 — the or/cross-field mechanism under-discloses the
+measured pair.** The numbers and the stated condition are accurate, but in all three
+measured pairs BOTH operands are density-1.0, card 250,000 (e.g. mixed's
+`scope.version=0.1.3` over `severity_number=9`); "when one operand is
+complement-stored full" is true of the pair but incomplete. A reader may generalize
+~5 ns to arbitrary cross-field ORs. Suggested addition: "— and in the measured pairs
+both operands are full everywhere-fields, so the short-circuit fires before any byte
+is read." This is the post's most striking number; it deserves the extra clause.
+
+**P5. SHOULD — insert benches are in the artifact but absent from the post.**
+`results.json` carries `insert_arrival`/`insert_shuffled`: treight measures 129–690×
+slower per position than roaring. The post's coverage line says "Build and query" and
+the limitations section concedes mutation, but the measured insertion gap is never
+cited. As silence it is pro-treight spin; as a sentence it becomes evidence for the
+design: "Incremental insertion measures 129–690× roaring's per-position cost — the
+number the seal path exists to avoid." Writer/Lead call under the word ceiling; the
+artifact supports it verbatim (recomputable from results.json).
+
+**P6. SHOULD — draft.md:625 — "23/10/3 lists per corpus" cross-checks badly against
+the density table.** Those are the complemented-list counts (correct per totals), but
+the reader who checks the ≥50% row sees 23/10/12 and finds mixed mismatched with no
+explanation for the first two corpora. Suggested: "(complement encoding — 23/10/3
+lists complemented per corpus; strictly above half only, so exactly-half lists stay
+direct: 9 of mixed's 12 in the ≥50% band)".
+
+**P7. SHOULD — draft.md:548 — "criterion 0.5.1" appears in no evidence artifact.**
+environment.txt records rustc, allocative, and the roaring pin, but not the criterion
+version. Under the post's own "every number here is reproducible" banner, get
+bench-eng to add it to environment.txt, or cite `Cargo.lock` inline.
+
+**P8. SHOULD — draft.md:564–567 — the bench-coverage bullet reads as cut-to-fit.**
+"Build and query per corpus × density bucket, plus operand pairs; size as summed
+bytes and allocative heap." is a verbless noun-phrase pileup — the one place the
+4,500 ceiling visibly pinches. Restore three short bullets or one flowing sentence,
+and gloss "allocative" ("deep-size via the allocative crate") — engineers outside the
+Rust ecosystem won't know it. (Lead owns the ceiling call; the three-bullet form adds
+~8 words.)
+
+**P9. CONSIDER — draft.md:349–350 — "in four bytes per operand": B is three bytes
+(`05 22 03`).** "in three or four bytes per operand" — the A/B asymmetry is part of
+the point (B is smaller).
+
+**P10. CONSIDER — draft.md:600 — "by three to four orders" — the measured ratios are
+387–6,973× (2.6–3.8 orders); the floor undershoots "three orders."** Echo the table
+instead: "by 387–6,973×," or "by up to nearly four orders."
+
+**P11. CONSIDER — draft.md:579 — "though a real file stores it as arenas" — it/they
+mismatch (the high tier's lists → them).** "though real files store that tier as
+arenas."
+
+**P12. CONSIDER — draft.md:547 — "31 GB RAM" vs environment.txt's "31 GiB".** Use
+GiB; the post is otherwise exact about units.
+
+**P13. CONSIDER — draft.md:677–680 — reference list order: [5] (Transducers) is
+listed above [4] (idutils).** First-citation order is correct ([4] in §4.1, [5] in
+§5); the list is just out of numeric order. Reorder.
+
+**P14. CONSIDER — em-dash density rose from 83 to 110.** The §8 mechanism paragraph
+(L596–606) carries five across three sentences; two could become parentheses or
+colons at zero word cost.
+
+**P15. CONSIDER — draft.md:497 — "against roughly 60 of container overhead" — §3
+(L85–86) now states the exact 60; §6's "roughly" re-hedges it.** "against 60 of
+container overhead" (the cookie already accounted in §3).
+
+**P16. CONSIDER — method-paren style is mixed: `is_empty` (L234) vs `len()`
+(L476+).** Pick one convention for zero-arg methods and apply it.
+
+**P17. CONSIDER — draft.md:549 — "a single warm reader" has no backing sentence in
+environment.txt** (which covers sharing and noise, not reader warmth). Ask bench-eng
+for one clause there, or drop "warm" — "What this does not capture" already concedes
+cold-page behavior is unmeasured.
+
+## Cut-to-fit sweep (Lead's request)
+
+1. L564–567 coverage bullet — the clear pinch point (P8).
+2. L499 — "linear byte scans" lost its prefetcher justification from the PASS-1 text;
+   acceptable loss, restore only if words free up.
+3. L541–543 — "…all inverted-flag combinations included" tail reads clipped; two more
+   words ("included, per flag pair") would smooth it.
+4. L503–504 — the tie section shrank to one sentence while its sibling claims moved
+   to roaring-wins; range_count was left behind (that is P2 — arguably a trim artifact
+   rather than a judgment).
+
+## PASS 2 bottom line
+
+Thirty-nine of forty-two number-adjacent claims verified verbatim; the three that
+fail are P1 (ratio basis), P3 (mixed bases in one sentence), and the P2 labeling
+residue — all repairable in under an hour of writing. After P1, P2, and the P3–P8
+SHOULDs, I have no further objections to publication on prose, number-integrity, or
+honesty grounds. This review pass found no reason to reopen structure, figures, or
+the §4 core.

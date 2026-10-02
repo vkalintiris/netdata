@@ -82,8 +82,8 @@ For the storage-and-query slot, three things bite:
 1. **Per-container overhead on tiny lists.** In the portable serialization, every occupied
    container costs a 4-byte `(key, cardinality)` entry plus a 4-byte offset-table entry before
    any payload, plus 2 bytes per array member ([spec][3]) — structural facts of the format, not
-   measurements. Six members scattered across six 16-bit pages therefore cost 60 bytes of
-   container overhead — six containers × (8 + 2) — plus the file cookie. In treight, an isolated
+   measurements. Six members scattered across six 16-bit pages cost 60 bytes of
+   container overhead (6 containers × 10) plus the file cookie. In treight, an isolated
    member costs exactly one byte per tree level — 6 over this universe; members that share
    prefixes share bytes — and across millions of real posting lists that compounds
    (benchmarks below).
@@ -229,8 +229,7 @@ consequences:
 - `estimate_data_size(universe, sorted_values)` (`src/crates/treight/src/lib.rs`) predicts the
   exact tree-byte length without building anything — it counts distinct `(level, node index)`
   pairs on the values' paths. Weigh a roaring→treight conversion before paying for it: compare
-  the prediction with the roaring serialized size (sfst's seal path decides by cardinality and
-  density instead — see [Where it lives](#where-it-lives-the-sfst-index-lifecycle)).
+  the prediction with the roaring serialized size (sfst's seal path decides by cardinality and density instead).
 - `is_empty` is a length check on the tree bytes. A non-empty tree always holds at least one
   value, so emptiness is O(1).
 - Every mutation path — bulk build, `insert`, `remove`, `remove_range`, all four set ops —
@@ -346,7 +345,7 @@ the surviving child bits, and pop it if nothing survived — so the output is ca
 construction. An `intersect` on disjoint trees never writes a byte and returns the empty
 descriptor; you cannot store a zero byte even by accident.
 
-On a two-level universe of 64 values the mechanic is visible in four bytes per operand:
+On a two-level universe of 64 values the mechanic is visible in a handful of bytes:
 A = {0..7} ∪ {16} ∪ {40} is `25 ff 01 01`, B = {1, 5, 16, 17} is `05 22 03`. The intersection
 back-patches the root to the surviving children and skips A's exclusive subtree
 (`05 22 01` = {1, 5, 16}); the difference prunes the zero leaf, copies A's exclusive subtree,
@@ -484,24 +483,20 @@ where.
 **Where roaring wins.** Cardinality: roaring stores per-container counts, so `len()` touches one
 stored count per container; treight's `len()` walks every stored byte — a gap the benchmarks
 quantify on real lists. Point queries: a roaring probe is two indexed lookups; treight's
-`contains` descends the path but skips every serialized sibling subtree before it, so cost
-tracks the bytes preceding the path, not just depth (`src/crates/treight/src/raw.rs`). Bulk operations
+`contains` descends the path but skips every serialized sibling subtree before it, so cost tracks the bytes before the
+path, not just depth (`src/crates/treight/src/raw.rs`). Bulk operations
 on large operands: roaring's bitset containers AND/OR 64 bits at a time while treight walks a
-byte at a time — vector-width parallelism versus a scalar byte stream. It also wins anything
-mutation-heavy, anything needing the full u32 range, and — measured below — mid-density
-serialized size. If your bitmaps
-live in mutable memory and get queried in place, you want roaring — we do too, on the write
-path.
+byte at a time — vector-width parallelism versus a scalar byte stream. Range counting: both
+prune, but the constants differ — roaring's stored counts against treight's walk (35–288×). It also wins mutation-heavy work, full-u32-range sets, and — measured below — mid-density
+serialized size. If your bitmaps live in mutable memory and
+get queried in place, you want roaring — we do too, on the write path.
 
 **Where treight wins.** Footprint of small lists: no per-page overhead exists at all, and the six
-members of the running example cost 18 bytes against roughly 60 of container overhead. Dense
+members of the running example cost 18 bytes against 60 of container overhead. Dense
 sets via complement. The read path: no deserialization after file open, no allocation per query,
 `Copy` handles, buffer-reusing append-only ops, O(1) emptiness, linear byte scans. And the exact-size property (`estimate_data_size`) turns
 storage decisions into cheap predictions: you can know the on-disk cost of a conversion before
 paying for it.
-
-**Where they tie.** Both prune range counting: roaring sums container counts, treight skips
-subtrees outside the range.
 
 ## Correctness: differential fuzzing against roaring
 
@@ -544,8 +539,8 @@ included.
 
 ## Benchmarks
 
-All measurements come from a single shared AMD Ryzen 9 5900X (31 GB RAM): timings are criterion
-medians, compared as relative orderings rather than sub-percent deltas. Tools: rustc 1.95.0 (59807616e 2026-04-14), criterion 0.5.1, 50
+All measurements come from a single shared AMD Ryzen 9 5900X (31 GiB RAM): timings are criterion
+medians, compared as orderings rather than sub-percent deltas. Tools: rustc 1.95.0 (59807616e 2026-04-14), criterion 0.5.1, 50
 samples per case (1 s warm-up, 2 s measurement), one warm reader. The roaring side is
 the pinned `netdata/roaring-rs` fork (branch `allocative`, commit `3ee69b1`) — the same
 implementation the fuzzer checks against.
@@ -556,29 +551,30 @@ fingerprints, and raw outputs; structural constants are source-verifiable and ci
 **Corpora.** Three frozen captures of real public event streams, 250,000 events each —
 `certstream-250k` (Certificate Transparency log entries), `jetstream-250k` (Bluesky Jetstream
 firehose events), `mixed-250k` (both interleaved by arrival, 125,000 each). These public-internet
-streams contain personal data (certificate subjects, DIDs, handles); everything quoted here is
+streams contain personal data (certificate subjects, DIDs, handles); everything quoted is
 aggregate — counts, densities, byte sizes — never content. Posting lists
 are derived the way the production indexer derives them, over a universe of 250,000 rows per
 corpus; the derivation is in the README.
 
-The bench covers both phases plus footprint:
+Bench coverage:
 
-- **Build and query** per corpus × density bucket, plus operand pairs; **size** as summed
-  bytes and allocative heap.
+The bench covers both lifecycle phases plus footprint — build and query per corpus × density
+bucket plus operand pairs; size as summed posting-list bytes and heap.
 
 **Results — footprint** (scoped to what a real SFST file stores, the low+mid tiers):
 
 | metric (per corpus) | certstream-250k | jetstream-250k | mixed-250k |
 |---|---|---|---|
 | posting lists (stored low+mid tier) | 1,152 | 24,034 | 20,316 |
-| total treight bytes (tree + 5 B descriptor) | 1,797,922 | 1,115,004 | 2,212,840 |
-| total roaring serialized bytes | 3,514,248 | 1,538,624 | 3,353,048 |
-| footprint ratio (treight / roaring) | 0.510 | 0.647 | 0.630 |
+| treight serialized tree bytes | 1,792,162 | 994,834 | 2,111,260 |
+| treight + 5 B descriptor per list | 1,797,922 | 1,115,004 | 2,212,840 |
+| roaring serialized bytes | 3,514,248 | 1,538,624 | 3,353,048 |
+| footprint ratio (tree bytes / roaring) | 0.510 | 0.647 | 0.630 |
 | in-memory heap, treight vs roaring | 1,797,922 vs 4,184,992 | 1,115,004 vs 5,905,000 | 2,212,840 vs 7,409,080 |
 
 Over *all* lists (high-cardinality tier included, though a real file stores it as arenas),
 treight's whole-corpus heap is 0.068 of roaring's on all three corpora (17,799,801 vs
-262,065,816 on jetstream) — flat bytes versus materialized containers.
+262,065,816 on jetstream): flat bytes versus materialized containers.
 
 **Results — CPU** (criterion medians; bucketed rows read ≤1% / 1–50% / >50%):
 
@@ -596,14 +592,15 @@ treight's whole-corpus heap is 0.068 of roaring's on all three corpora (17,799,8
 Mechanisms first. Bulk build loses sparse (the seal path sorts and remaps per list — timed
 identically for both sides) and wins dense on two of three corpora (0.89 / 0.71; mixed 1.13);
 the harness does not credit production's scratch-bitset route, so dense is if anything
-understated. Iteration approaches parity as lists densify (1.07–1.19). Membership
-is roaring's by three to four orders — ≈3–11 ns vs 5–28 µs per probe — and `range_count`
+understated. Incremental insertion: 129–690× slower per position — the accumulate phase in
+one number. Iteration nears parity as lists densify (1.07–1.19). Membership
+is roaring's by three to four orders — ≈3–11 ns vs 3.9–39.8 µs per probe — and `range_count`
 (35–288×) and `len()` (up to 19,844×) follow the same stored-counts-versus-walk split. The
-pairs cut both ways, as the layout predicts: disjoint `and` hurts treight (2.6–52× — skipping
+pairs cut both ways, as predicted: disjoint `and` hurts treight (2.6–52× — skipping
 exclusive subtrees means walking their bytes; roaring compares container keys), dense−sparse
 `and_not` is a ~20× treight win (De Morgan runs it over the sparse operand's bytes), and
-cross-field `or` returns in ~5 ns when one operand is complement-stored full — zero tree bytes,
-the union resolves without touching the other operand.
+cross-field `or` returns in ~5 ns when both operands are complement-stored full — the measured pairs
+both are (fields present in every row): two empty trees, the dispatch alone decides.
 
 **Density-sliced interpretation.** Real posting lists are not uniformly dense, and
 neither structure wins everywhere — sliced by density band (treight/roaring serialized-byte
@@ -623,8 +620,8 @@ Predictions held for two bands and flipped for one. Ultra-sparse lists (≤0.001
 overwhelming majority) favor treight ~3×: per-container headers dominate roaring while treight
 pays a byte per level. Dense lists (≥1%) favor treight, strongest past half the universe where
 complement encoding pays only for holes (23/10/3 lists per corpus complemented, strictly above
-half — exactly-half lists stay direct: in mixed-250k, 9 of the ≥50% bucket's 12). At the limit, a
-100%-density list costs treight zero bytes against roaring's 32,808 — `full` really is free.
+half — exactly-half lists stay direct: in mixed-250k, 9 of the ≥50% bucket's 12). At the limit a
+100%-density list costs treight zero bytes against roaring's 32,808: `full` really is free.
 But the 0.01–1% middle band is roaring's on size: treight's members × levels outweighs sharing
 exactly where roaring's packed arrays are near optimal — and per-list slices near 44% density
 flip to roaring too (1.07×) as bitset containers take over.
@@ -674,10 +671,10 @@ the bytes you store are the structure you query.
 - [2] Same, Software: Practice & Experience 46(5), 2016: https://doi.org/10.1002/spe.2325
 - [3] RoaringBitmap portable format specification:
   https://github.com/RoaringBitmap/RoaringFormatSpec
-- [5] Andrew Gallant, *Transducers: the rarest and most beautiful of data structures*:
-  https://burntsushi.net/transducers/
 - [4] GNU idutils `fid.c` — the bit-tree that treight ports, by Greg McGary (Savannah cgit,
   blob 8fb6ca4c): https://cgit.git.savannah.gnu.org/cgit/idutils.git/tree/src/fid.c
+- [5] Andrew Gallant, *Transducers: the rarest and most beautiful of data structures*:
+  https://burntsushi.net/transducers/
 
 **Source pointers.** treight: `src/crates/treight/src/{lib,raw,node,ops,bitmap,roaring}.rs`;
 differential tests `src/crates/treight/src/tests_roaring.rs`; fuzz target
