@@ -85,12 +85,14 @@ pub fn rfc7231_date(t: i64) -> String {
 
 /// `web_client_build_http_header()`; `now` is the wall clock in seconds.
 pub fn build(head: &Head<'_>, now: i64) -> Built {
+    // buffer_no_cacheable() for anything but a 200, which zeroes its expiry too
     let no_cacheable = head.no_cacheable || head.code != status::OK;
+    let expires = if head.code == status::OK { head.expires } else { 0 };
     let date = if head.date == 0 { now } else { head.date };
-    let expires = if head.expires == 0 {
+    let expires = if expires == 0 {
         date + if no_cacheable { 0 } else { 86400 }
     } else {
-        head.expires
+        expires
     };
     let reason = status::reason(head.code);
     let mut out = Vec::with_capacity(512);
@@ -250,6 +252,18 @@ mod tests {
             X-Transaction-ID: abababababababababababababababab\r\n\r\n";
         assert_eq!(String::from_utf8(built.bytes).unwrap(), want);
         assert!(built.keepalive);
+    }
+
+    /// `buffer_no_cacheable()` for anything but a 200 zeroes the expiry a handler set: it expires at the date.
+    #[test]
+    fn an_error_keeps_no_expiry() {
+        let expires = |code| {
+            let built = build(&Head { code, expires: 1_700_086_400, ..head() }, 1_700_000_000);
+            let text = String::from_utf8(built.bytes).unwrap();
+            text.lines().find(|l| l.starts_with("Expires: ")).unwrap().to_string()
+        };
+        assert_eq!(expires(200), "Expires: Wed, 15 Nov 2023 22:13:20 GMT");
+        assert_eq!(expires(404), "Expires: Tue, 14 Nov 2023 22:13:20 GMT");
     }
 
     #[test]

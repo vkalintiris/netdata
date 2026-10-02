@@ -2,9 +2,8 @@
 //! `web_client_switch_host()` and `web_client_api_request()` in `src/web/server/web_client.c`, and
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
-//! Not ported yet: bearer checks, `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`,
-//! `context`, `contexts`, `data`, `dbengine_stats`, `function`, `functions`, `progress`, `stream_info` and
-//! `stream_path`.
+//! Not ported yet: `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`, `context`,
+//! `contexts`, `data`, `dbengine_stats`, `function`, `functions`, `me`, `progress`, `stream_info` and `stream_path`.
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -687,6 +686,58 @@ mod tests {
     }
 
     /// `/api/v2/info` and `/api/v3/info` need no listener ACL (NOCHECK) and answer the agent in C's member order.
+    /// `/api/v2/functions` (`rrdcontext_to_json_v2()` in FUNCTIONS mode): C's member order (`debug` adds the request
+    /// after `api`, `mcp` drops `api` and the top-level timings), the node's `ni` its match order and a function's the
+    /// `ni` of the hosts that have it; a client without the FUNCTIONS ACL gets the ACL's 451.
+    #[test]
+    fn functions_v2_answer_as_c() {
+        use netdata_agent_nrpc::{Handler, MethodDesc, Source};
+        let s = shared();
+        let desc = MethodDesc {
+            name: b"top",
+            help: b"processes",
+            tags: b"",
+            timeout_s: 10,
+            priority: 0,
+            version: 1,
+            access: access::ANONYMOUS_DATA,
+            sync: false,
+            source: Source::Stream,
+            handler: Handler::Unwired,
+        };
+        s.hosts.localhost().functions().register("box", &desc).unwrap();
+        let request = |path: &[u8], query: &str, client_acl: u32| {
+            let mut req = Request::default();
+            req.path = path.to_vec();
+            req.url_as_received = path.to_vec();
+            req.query = query.as_bytes().to_vec();
+            let ctx = crate::access_log::RequestContext::default();
+            process_request(&req, b"", client_acl, &s, Instant::now(), &ctx, &|_| false)
+        };
+        let all = acl::bits::TRANSPORTS | acl::bits::ALL_LISTENER_FEATURES;
+        let body = |query: &str| {
+            let r = request(b"/api/v2/functions", query, all);
+            assert_eq!(r.code, status::OK);
+            String::from_utf8(r.body).unwrap()
+        };
+        let at = |b: &str, key: &str| b.find(&format!("\"{key}\":")).unwrap_or(usize::MAX);
+        let b = body("options=minify");
+        assert!(b.starts_with(r#"{"api":2,"nodes":[{"#), "{b}");
+        assert!(b.contains(r#""ni":0,"#), "{b}");
+        assert!(b.contains(r#""functions":[{"name":"top","help":"processes","ni":[0],"priority":100,"version":1,"#));
+        assert!(at(&b, "nodes") < at(&b, "functions") && at(&b, "functions") < at(&b, "versions"));
+        assert!(at(&b, "versions") < at(&b, "agents") && at(&b, "agents") < b.rfind(r#""timings":"#).unwrap());
+        assert!(b.ends_with("}}"), "the top-level timings close the answer: {b}");
+        let b = body("options=debug");
+        assert!(at(&b, "api") < at(&b, "request") && at(&b, "request") < at(&b, "nodes"));
+        let b = body("options=minify,mcp");
+        assert!(!b.contains(r#""api":"#) && b.ends_with("}]}"), "no api, the agents last: {b}");
+        for path in [&b"/api/v2/functions"[..], b"/api/v3/functions"] {
+            let r = request(path, "", all & !acl::bits::FUNCTIONS);
+            assert_eq!(r.code, status::UNAVAILABLE_FOR_LEGAL_REASONS);
+        }
+    }
+
     #[test]
     fn info_v2_and_v3_answer_the_agent() {
         let s = shared();

@@ -412,6 +412,15 @@ impl Completed {
         }
     }
 
+    /// A gzip response whose client went away before any send callback: C deflates a chunk only in its send callback
+    /// (`web_client_send_deflate()`), so it reports none.
+    pub fn none_deflated(&mut self) {
+        if !self.gzip_blocks.is_empty() {
+            self.gzip_blocks.clear();
+            self.sent = 0;
+        }
+    }
+
     /// `web_client_log_completed_request()`: written only when a URL was received, at a priority from the code,
     /// without a message, and outside any request frame; the request then counts in the pulse charts.
     pub fn log(&self, client: &ClientLog, web: &Web) {
@@ -497,6 +506,10 @@ mod tests {
         assert_eq!(done.sent, 16_384);
         done.sent_when(20_000);
         assert_eq!(done.sent, 30_000);
+        // the client gone before any send callback, with only the header out: no chunk was deflated
+        done.none_deflated();
+        done.sent_when(300);
+        assert_eq!(done.sent, 0);
     }
 
     #[test]

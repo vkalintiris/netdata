@@ -55,3 +55,29 @@ fn sources_are_cs() {
             .to_vec()
     );
 }
+
+/// `api_v2_progress()`'s loop (`api_v2_progress.c:8-23`): empty values skipped, the last `transaction` winning, any
+/// spelling `uuid_parse_flexi()` takes, zeros otherwise.
+#[test]
+fn the_progress_transaction_reads_as_c() {
+    let a = [0xaa; 16];
+    let b: [u8; 16] = *b"\x5a\x1e\x00\x00\x00\x00\x40\x00\x80\x00\x00\x00\x00\x00\x00\xb1";
+    let cases: [(&[u8], [u8; 16]); 6] = [
+        (
+            concat!(
+                "transaction=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&transaction=&",
+                "transaction=5A1E0000-0000-4000-8000-0000000000B1"
+            )
+            .as_bytes(),
+            b,
+        ),
+        (b"transaction=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&transaction=", a),
+        (b"transaction=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", a),
+        (b"transaction=xyz", [0; 16]),
+        (b"Transaction=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", [0; 16]),
+        (b"", [0; 16]),
+    ];
+    for (query, want) in cases {
+        assert_eq!(progress_transaction(query), want, "{}", String::from_utf8_lossy(query));
+    }
+}

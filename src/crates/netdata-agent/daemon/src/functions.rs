@@ -1,6 +1,6 @@
-//! The Functions endpoints (`src/web/api/v1/api_v1_function.c`, `api_v1_functions.c`, `api_v2/api_v2_progress.c`):
-//! a call of one of a host's methods that waits for its answer, the list of the methods users see, and a request's
-//! progress.
+//! The Functions endpoints (`src/web/api/v1/api_v1_function.c`, `api_v1_functions.c`,
+//! `src/web/api/v2/api_v2_progress.c`): a call of one of a host's methods that waits for its answer, the list of the
+//! methods users see, and a request's progress.
 
 use std::sync::Arc;
 
@@ -110,16 +110,15 @@ pub fn source(ctx: &RequestContext, forwarded_for: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The call's answer as the web server sends it: a cacheable 200 keeps its expiry, anything else is no-cache with
-/// none (`buffer_no_cacheable()` zeroes it, so `Expires` is the date).
+/// The call's answer as the web server sends it: a cacheable one keeps its expiry, one that is not has none
+/// (`buffer_no_cacheable()` zeroes it, so `Expires` is the date); the header makes any code but 200 no-cache.
 fn reply_of(reply: NrpcReply, code: u16) -> Reply {
-    let cacheable = code == status::OK && reply.cacheable;
     Reply {
         code,
         content_type: reply.content_type,
         body: reply.body,
-        no_cacheable: !cacheable,
-        expires: if cacheable { reply.expires } else { 0 },
+        no_cacheable: !reply.cacheable,
+        expires: if reply.cacheable { reply.expires } else { 0 },
         ..Reply::default()
     }
 }
@@ -144,8 +143,7 @@ pub fn list(route: &Route<'_>, host: &Host, _query: &[u8]) -> Reply {
 /// `api_v2_progress()`: the request named by `transaction=` (the last non-empty one; zeros when it does not parse),
 /// its function's plugin asked for progress first, then the row's report.
 pub fn progress(_route: &Route<'_>, _host: &Host, query: &[u8]) -> Reply {
-    let transaction = pairs(query).filter(|(name, _)| *name == b"transaction").last().map(|(_, value)| value);
-    let transaction = transaction.and_then(uuid_parse_flexi).unwrap_or([0; 16]);
+    let transaction = progress_transaction(query);
     Calls::process().request_progress(&transaction);
     let mut w = JsonWriter::new(JsonOptions::MINIFY);
     let code = Table::process().report(&transaction, &mut w);
@@ -156,6 +154,13 @@ pub fn progress(_route: &Route<'_>, _host: &Host, query: &[u8]) -> Reply {
         body: w.into_bytes(),
         ..Reply::default()
     }
+}
+
+/// `api_v2_progress()`'s parameter: the last non-empty `transaction=`, as `uuid_parse_flexi()` reads it (zeros when it
+/// does not parse or is missing).
+fn progress_transaction(query: &[u8]) -> [u8; 16] {
+    let transaction = pairs(query).filter(|(name, _)| *name == b"transaction").last().map(|(_, value)| value);
+    transaction.and_then(uuid_parse_flexi).unwrap_or([0; 16])
 }
 
 #[cfg(test)]

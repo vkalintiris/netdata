@@ -734,6 +734,7 @@ impl WebWorker {
         // response is written, so later bytes wait in the kernel (backpressure) and are reported again when
         // reading is re-armed.
         let reads = client.output.is_empty() && event.is_readable();
+        let mut refusal = false;
         if reads {
             // web_server_rcv_callback()
             loop {
@@ -762,6 +763,12 @@ impl WebWorker {
                             Some(Outcome::Reply(bytes, sent)) => {
                                 client.output = bytes;
                                 client.written = sent;
+                                break;
+                            }
+                            Some(Outcome::Refusal(bytes)) => {
+                                client.output = bytes;
+                                client.written = 0;
+                                refusal = true;
                                 break;
                             }
                             Some(Outcome::Stream(pre, ctx)) => {
@@ -802,11 +809,16 @@ impl WebWorker {
             return;
         };
         // A response this event's read queued goes out now, where C's poller reports the socket writable next, unless
-        // that poll would report the client gone: the header C sent while answering is all it gets.
+        // that poll would report the client gone: the header C sent while answering is all it gets, and no send
+        // callback deflates a gzip chunk.
         if reads
+            && !refusal
             && client.written < client.output.len()
             && let Some((error, hangup, writable)) = client.stream.socket().and_then(hung_up)
         {
+            if let Some(done) = client.pending.as_mut() {
+                done.none_deflated();
+            }
             self.hang_up(cx, slot, error, hangup, false, writable);
             return;
         }
@@ -869,9 +881,11 @@ fn client_ip(peer: &std::net::SocketAddr) -> String {
 
 /// What a complete request turned into.
 enum Outcome {
-    /// Bytes to send (a whole HTTP response, or a raw streaming refusal that closes the connection), and how many of
-    /// them already went out.
+    /// A whole HTTP response to send, and how many of its bytes already went out.
     Reply(Vec<u8>, usize),
+    /// A raw streaming refusal that closes the connection: still in STREAM mode, which C's read callback sends at
+    /// once (`web_server_rcv_callback()`), with no poll for a hangup first.
+    Refusal(Vec<u8>),
     /// A `STREAM` request past the checks made on the web connection: the connection is taken over, under the
     /// request's frame.
     Stream(PreAdmission, Box<RequestContext>),
@@ -953,13 +967,10 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
     }
     let _request = ctx.request_frame();
     // A validated request's query progress row, before anything routes it; its completed record finishes it.
-    let progress = matches!(validation, Validation::Ok);
-    if progress {
-        let source: &[u8] = match client.log.forwarded_for.as_slice() {
-            [] => client.log.ip.as_bytes(),
-            forwarded_for => forwarded_for,
-        };
-        let start = Start { mode, acl: client.acl, query: &client.request.url_as_received, client: source };
+    let (url, log) = (&client.request.url_as_received, &client.log);
+    let start = progress_start(validation, mode, client.acl, url, &log.forwarded_for, &log.ip);
+    let progress = start.is_some();
+    if let Some(start) = start {
         progress::Table::process().start(&client.transaction, 0, start);
     }
     let completed = |client: &Client, code: u16, sent: usize, size: usize| Completed {
@@ -1008,7 +1019,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
             client.close_after_write = true;
             client.request = Request::default();
             client.received.clear();
-            return Some(Outcome::Reply(body, 0));
+            return Some(Outcome::Refusal(body));
         }
         Validation::Ok if client.request.mode == Some(Mode::Stream) => {
             // stream_receiver_accept_connection(): rpt->remote_ip is w->user_auth.client_ip, which a previous
@@ -1029,7 +1040,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
             return Some(match pre {
                 PreAdmission::Reply(bytes, _code) => {
                     client.close_after_write = true;
-                    Outcome::Reply(bytes.as_bytes().to_vec(), 0)
+                    Outcome::Refusal(bytes.as_bytes().to_vec())
                 }
                 other => Outcome::Stream(other, Box::new(ctx)),
             });
@@ -1292,6 +1303,20 @@ pub fn permission_denied_acl() -> Reply {
     )
 }
 
+/// The query progress row a request starts (`web_client_process_request_from_web_server()`): only a validated one,
+/// with its URL as received and `X-Forwarded-For`, else the client's address.
+fn progress_start<'a>(
+    validation: Validation,
+    mode: Option<Mode>,
+    acl: u32,
+    url: &'a [u8],
+    forwarded_for: &'a [u8],
+    ip: &'a str,
+) -> Option<Start<'a>> {
+    let client = if forwarded_for.is_empty() { ip.as_bytes() } else { forwarded_for };
+    (validation == Validation::Ok).then_some(Start { mode, acl, query: url, client })
+}
+
 /// What C's next poll reports for a client with a response to send, as `(error, hangup, writable)`, when the client
 /// hung up or failed: its poller always polls for EPOLLRDHUP and serves a hangup before POLLOUT, so no byte of a
 /// queued body goes out after the client's FIN. A poll, not a peek: a peek misses a FIN behind pipelined bytes.
@@ -1508,6 +1533,28 @@ impl Worker for WebWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a validated request starts a progress row, which keeps the raw URL and the forwarded address over the
+    /// client's.
+    #[test]
+    fn a_validated_request_starts_its_progress() {
+        let start = |v, forwarded: &'static [u8]| {
+            progress_start(v, Some(Mode::Get), 7, b"/api/v1/data?x=1", forwarded, "localhost")
+                .map(|s| (s.mode, s.acl, s.query, s.client))
+        };
+        let get = Some(Mode::Get);
+        assert_eq!(start(Validation::Ok, b""), Some((get, 7, &b"/api/v1/data?x=1"[..], &b"localhost"[..])));
+        assert_eq!(start(Validation::Ok, b"10.9.9.9"), Some((get, 7, &b"/api/v1/data?x=1"[..], &b"10.9.9.9"[..])));
+        for v in [
+            Validation::Incomplete,
+            Validation::NotSupported,
+            Validation::TooManyReadRetries(3),
+            Validation::UriTooLong,
+            Validation::Redirect,
+        ] {
+            assert_eq!(start(v, b"10.9.9.9"), None);
+        }
+    }
 
     #[test]
     fn a_half_close_is_seen_behind_unread_bytes() {
