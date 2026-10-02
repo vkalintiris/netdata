@@ -33,11 +33,13 @@ dimension returned, it contains the minimum, maximum, and average values, the an
 total samples) and contribution percentages, across all points.";
 
 /// The agent answering (`localhost`): the `agents` member describes it.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Agent<'a> {
     pub machine_guid: &'a str,
     pub node_id: [u8; 16],
     pub hostname: &'a str,
+    /// The host index's version (`dictionary_version(rrdhost_root_index)`), read as `versions` is written.
+    pub nodes_hard_hash: &'a dyn Fn() -> u64,
 }
 
 /// `struct summary_total_counts`.
@@ -902,8 +904,8 @@ impl Ctx<'_> {
 }
 
 /// `rrdr_json_wrapper_begin2()`: a new writer holding every member before `result`, and the number of unique
-/// contexts (`r->internal.contexts`) the end needs.
-pub fn begin_v2(qt: &QueryTarget, window: &Window) -> (JsonWriter, usize) {
+/// contexts (`r->internal.contexts`) the end needs; `nodes_hard_hash` is the host index's version now.
+pub fn begin_v2(qt: &QueryTarget, window: &Window, nodes_hard_hash: u64) -> (JsonWriter, usize) {
     let opts = window.options;
     let (kq, sq): (&[u8], &[u8]) = if opts & options::GOOGLE_JSON != 0 {
         (b"", b"'")
@@ -988,7 +990,7 @@ pub fn begin_v2(qt: &QueryTarget, window: &Window) -> (JsonWriter, usize) {
         w.object_close();
     }
     if opts & options::MINIMAL_STATS == 0 {
-        version_hashes_v2(&mut w, &qt.versions);
+        version_hashes_v2(&mut w, &Versions { nodes_hard_hash, ..qt.versions });
     }
     let mut totals: [Totals; 6] = Default::default();
     w.member_add_object(b"summary");

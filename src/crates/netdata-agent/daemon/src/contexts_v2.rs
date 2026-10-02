@@ -438,10 +438,12 @@ fn agents(
 ) -> Instant {
     let localhost = shared.hosts.localhost();
     let hostname = localhost.hostname();
+    let nodes_hard_hash = || u64::from(shared.hosts.version());
     let agent = Agent {
         machine_guid: localhost.machine_guid(),
         node_id: localhost.node_id(),
         hostname: &hostname,
+        nodes_hard_hash: &nodes_hard_hash,
     };
     let rfc3339 = req.options & RFC3339 != 0;
     let mut finished = executed;

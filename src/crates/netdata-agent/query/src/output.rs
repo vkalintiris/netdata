@@ -94,7 +94,7 @@ pub fn data_query_execute(
     let wrapped =
         |r: &mut Rrdr, qt: &QueryTarget, render: &mut dyn FnMut(&mut JsonWriter, &mut Rrdr)| {
             if v2 {
-                let (mut w, contexts) = begin_v2(qt, window);
+                let (mut w, contexts) = begin_v2(qt, window, (agent.nodes_hard_hash)());
                 render(&mut w, r);
                 end_v2(&mut w, r, qt, window, contexts, received, agent);
                 w.into_bytes()
@@ -269,6 +269,7 @@ mod tests {
             machine_guid: "guid-0",
             node_id: [0; 16],
             hostname: "parent",
+            nodes_hard_hash: &|| 1,
         };
         data_query_execute(&mut qt, &mut window, &control, &agent)
     }

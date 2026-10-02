@@ -79,10 +79,7 @@ pub fn v23(route: &Route<'_>, query: &[u8], version: u8) -> Reply {
     let hosts = &route.shared.hosts;
     let qt = create(
         req,
-        Source::V2 {
-            hosts: hosts.all(),
-            nodes_hard_hash: u64::from(hosts.version()),
-        },
+        Source::V2 { hosts: hosts.all() },
         now_s,
     );
     let Some(window) = calculate(&qt, now_s) else {
@@ -148,10 +145,12 @@ fn execute(
 
     let localhost = route.shared.hosts.localhost();
     let hostname = localhost.hostname();
+    let nodes_hard_hash = || u64::from(route.shared.hosts.version());
     let agent = Agent {
         machine_guid: localhost.machine_guid(),
         node_id: localhost.node_id(),
         hostname: &hostname,
+        nodes_hard_hash: &nodes_hard_hash,
     };
     let control = Control {
         received,

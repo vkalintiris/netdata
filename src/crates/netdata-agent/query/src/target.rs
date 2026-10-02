@@ -219,11 +219,7 @@ pub enum Source<'a> {
         host: &'a Arc<Host>,
         chart: Option<Arc<Chart>>,
     },
-    /// `nodes_hard_hash` is the host index's version (`dictionary_version(rrdhost_root_index)`).
-    V2 {
-        hosts: Vec<Arc<Host>>,
-        nodes_hard_hash: u64,
-    },
+    V2 { hosts: Vec<Arc<Host>> },
 }
 
 /// `pattern_array` for labels (`src/libnetdata/simple_pattern/pattern_array.c`): per label key, the exact `key:value`
@@ -844,13 +840,10 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
             walk.node(host, true, instance.as_ref());
             (Some(host.hostname()), chart_name)
         }
-        Source::V2 {
-            hosts,
-            nodes_hard_hash,
-        } => {
+        Source::V2 { hosts } => {
             let scope_nodes = pattern(&req.scope_nodes);
             let nodes = pattern(&req.nodes);
-            let mut versions = Versions { nodes_hard_hash, ..Versions::default() };
+            let mut versions = Versions::default();
             let _: ControlFlow<()> =
                 foreach_host(&hosts, scope_nodes.as_ref(), nodes.as_ref(), &mut versions, |host, queryable| {
                     walk.node(host, queryable, None);
@@ -971,10 +964,7 @@ mod tests {
     fn v2(h: &Arc<Host>, query: &str) -> QueryTarget {
         create(
             parse_v2(query.as_bytes(), 2, &crate::request::Profile::default()),
-            Source::V2 {
-                hosts: vec![Arc::clone(h)],
-                nodes_hard_hash: 1,
-            },
+            Source::V2 { hosts: vec![Arc::clone(h)] },
             T + 1,
         )
     }

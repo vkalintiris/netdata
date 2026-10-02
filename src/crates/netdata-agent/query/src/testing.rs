@@ -100,10 +100,7 @@ pub fn v1_target(h: &Arc<Host>, query: &str) -> (QueryTarget, Window) {
 pub fn v2_target(h: &Arc<Host>, query: &str) -> (QueryTarget, Window) {
     let qt = create(
         parse_v2(query.as_bytes(), 2, &crate::request::Profile::default()),
-        Source::V2 {
-            hosts: vec![Arc::clone(h)],
-            nodes_hard_hash: 1,
-        },
+        Source::V2 { hosts: vec![Arc::clone(h)] },
         T0 + 7,
     );
     let window = calculate(&qt, T0 + 7).expect("window");
