@@ -37,6 +37,12 @@ path = "src/bin/wikimedia.rs"
 name = "synth-traces"
 path = "src/bin/synth-traces.rs"
 
+# Development/benchmarking tool: freeze raw certstream/jetstream events to
+# gzipped JSONL for offline replay (see src/bin/capture.rs).
+[[bin]]
+name = "capture"
+path = "src/bin/capture.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }

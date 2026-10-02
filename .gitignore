@@ -257,3 +257,6 @@ TODO-*.md
 
 corrosion/
 _deps/
+
+# Blog-post benchmark corpora and derived data (local-only, see posts/treight-bitmap/evidence/corpora/)
+/data/

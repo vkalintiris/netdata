@@ -1,0 +1,268 @@
+{
+  "certstream-250k": {
+    "label": "certstream-250k",
+    "input": "certstream-250k.jsonl.gz",
+    "per_source": {
+      "certstream": {
+        "lines": 250000,
+        "uncompressed_bytes": 413067184,
+        "size_histogram": {
+          "1024-2048": 238545,
+          "2048-4096": 10739,
+          "4096-8192": 629,
+          "8192-16384": 87
+        },
+        "size_bytes": {
+          "min": 1305,
+          "p50": 1576,
+          "p95": 1974,
+          "p99": 2607,
+          "max": 15140
+        },
+        "top_level_key_frequency": {
+          "cert_index": 250000,
+          "cert_link": 250000,
+          "leaf_cert": 250000,
+          "seen": 250000,
+          "source": 250000,
+          "update_type": 250000
+        },
+        "certstream": {
+          "update_type": {
+            "X509LogEntry": 115752,
+            "PrecertLogEntry": 134248
+          },
+          "leaf_cert_key_frequency": {
+            "all_domains": 250000,
+            "extensions": 250000,
+            "fingerprint": 250000,
+            "is_ca": 250000,
+            "issuer": 250000,
+            "not_after": 250000,
+            "not_before": 250000,
+            "serial_number": 250000,
+            "sha1": 250000,
+            "sha256": 250000,
+            "signature_algorithm": 250000,
+            "subject": 250000
+          }
+        }
+      }
+    }
+  },
+  "jetstream-250k": {
+    "label": "jetstream-250k",
+    "input": "jetstream-250k.jsonl.gz",
+    "per_source": {
+      "jetstream": {
+        "lines": 250000,
+        "uncompressed_bytes": 150391274,
+        "size_histogram": {
+          "<256": 7440,
+          "256-512": 174933,
+          "512-1024": 59640,
+          "1024-2048": 5721,
+          "2048-4096": 796,
+          "4096-8192": 1312,
+          "8192-16384": 25,
+          "16384-32768": 124,
+          "32768-65536": 9
+        },
+        "size_bytes": {
+          "min": 191,
+          "p50": 503,
+          "p95": 851,
+          "p99": 1854,
+          "max": 54151
+        },
+        "top_level_key_frequency": {
+          "did": 250000,
+          "kind": 250000,
+          "time_us": 250000,
+          "commit": 249711,
+          "account": 159,
+          "identity": 130
+        },
+        "jetstream": {
+          "kind": {
+            "commit": 249711,
+            "identity": 130,
+            "account": 159
+          },
+          "commit_key_frequency": {
+            "collection": 249711,
+            "operation": 249711,
+            "rev": 249711,
+            "rkey": 249711,
+            "cid": 242560,
+            "record": 242560
+          },
+          "commit_operation": {
+            "create": 239676,
+            "delete": 7151,
+            "update": 2884
+          },
+          "commit_collection_top20": {
+            "app.bsky.feed.like": 156012,
+            "app.bsky.graph.follow": 31197,
+            "app.bsky.feed.repost": 27072,
+            "app.bsky.feed.post": 26917,
+            "dev.sensorthings.observationBatch": 1602,
+            "app.bsky.graph.block": 1566,
+            "app.bsky.feed.threadgate": 1463,
+            "app.bsky.feed.postgate": 785,
+            "app.bsky.actor.profile": 684,
+            "app.bsky.graph.listitem": 506,
+            "site.standard.document": 278,
+            "app.bsky.actor.status": 165,
+            "is.currents.feed.save": 157,
+            "at.podping.records.podping": 136,
+            "app.bsky.feed.generator": 121,
+            "fm.teal.actor.status": 66,
+            "cloud.substratum.place.joinPackage": 56,
+            "buzz.bookhive.book": 54,
+            "fm.teal.feed.play": 52,
+            "link.bridgebeats.lookup": 49
+          },
+          "account_status": {
+            "None": 121,
+            "deactivated": 18,
+            "deleted": 20
+          }
+        }
+      }
+    }
+  },
+  "mixed-250k": {
+    "label": "mixed-250k",
+    "input": "mixed-250k.jsonl.gz",
+    "per_source": {
+      "certstream": {
+        "lines": 125000,
+        "uncompressed_bytes": 213902250,
+        "size_histogram": {
+          "1024-2048": 118030,
+          "2048-4096": 6577,
+          "4096-8192": 323,
+          "8192-16384": 70
+        },
+        "size_bytes": {
+          "min": 1343,
+          "p50": 1626,
+          "p95": 2098,
+          "p99": 2652,
+          "max": 15180
+        },
+        "top_level_key_frequency": {
+          "cert_index": 125000,
+          "cert_link": 125000,
+          "leaf_cert": 125000,
+          "seen": 125000,
+          "source": 125000,
+          "update_type": 125000
+        },
+        "certstream": {
+          "update_type": {
+            "X509LogEntry": 42804,
+            "PrecertLogEntry": 82196
+          },
+          "leaf_cert_key_frequency": {
+            "all_domains": 125000,
+            "extensions": 125000,
+            "fingerprint": 125000,
+            "is_ca": 125000,
+            "issuer": 125000,
+            "not_after": 125000,
+            "not_before": 125000,
+            "serial_number": 125000,
+            "sha1": 125000,
+            "sha256": 125000,
+            "signature_algorithm": 125000,
+            "subject": 125000
+          }
+        }
+      },
+      "jetstream": {
+        "lines": 125000,
+        "uncompressed_bytes": 80975197,
+        "size_histogram": {
+          "<256": 4561,
+          "256-512": 15107,
+          "512-1024": 100726,
+          "1024-2048": 3382,
+          "2048-4096": 324,
+          "4096-8192": 798,
+          "8192-16384": 18,
+          "16384-32768": 80,
+          "32768-65536": 4
+        },
+        "size_bytes": {
+          "min": 228,
+          "p50": 540,
+          "p95": 899,
+          "p99": 2002,
+          "max": 51506
+        },
+        "top_level_key_frequency": {
+          "did": 125000,
+          "kind": 125000,
+          "time_us": 125000,
+          "commit": 124864,
+          "account": 75,
+          "identity": 61
+        },
+        "jetstream": {
+          "kind": {
+            "commit": 124864,
+            "account": 75,
+            "identity": 61
+          },
+          "commit_key_frequency": {
+            "collection": 124864,
+            "operation": 124864,
+            "rev": 124864,
+            "rkey": 124864,
+            "cid": 120423,
+            "record": 120423
+          },
+          "commit_operation": {
+            "create": 118936,
+            "delete": 4441,
+            "update": 1487
+          },
+          "commit_collection_top20": {
+            "app.bsky.feed.like": 78383,
+            "app.bsky.graph.follow": 15488,
+            "app.bsky.feed.post": 13567,
+            "app.bsky.feed.repost": 13300,
+            "dev.sensorthings.observationBatch": 835,
+            "app.bsky.graph.block": 766,
+            "app.bsky.feed.threadgate": 685,
+            "app.bsky.feed.postgate": 367,
+            "app.bsky.actor.profile": 362,
+            "app.bsky.graph.listitem": 200,
+            "site.standard.document": 142,
+            "app.bsky.actor.status": 86,
+            "is.currents.feed.save": 83,
+            "link.bridgebeats.lookup": 70,
+            "at.podping.records.podping": 68,
+            "fm.teal.actor.status": 39,
+            "buzz.bookhive.book": 28,
+            "cloud.substratum.place.joinPackage": 28,
+            "fm.teal.feed.play": 25,
+            "social.coves.community.acceptance": 22
+          },
+          "account_status": {
+            "deleted": 9,
+            "None": 59,
+            "deactivated": 7
+          }
+        }
+      }
+    },
+    "mixed_envelope_key_frequency": {
+      "_capture_src": 250000,
+      "event": 250000
+    }
+  }
+}
