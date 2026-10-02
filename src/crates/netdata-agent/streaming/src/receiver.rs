@@ -1011,6 +1011,10 @@ impl StreamWorker {
             let (pool, thread, slot) = (a.pool.clone(), a.thread, Arc::downgrade(&a.slot));
             let (hostname, (ip, port)) = (a.host.hostname(), a.slot.remote.clone());
             a.slot.set_waker(Box::new(move || {
+                // on its own thread a wake is only queued, never written here: a failed write would disconnect the
+                // child and drop its parser, which a caller up this stack may be inside (a proxied call's dispatch:
+                // the transport's retire would wait for that call's own pass); C's inline POLLOUT carries the same
+                // warning (stream-thread.c:111-117)
                 if crate::thread::current() == Some(thread) {
                     return crate::thread::child_pollout_inline(slot.clone());
                 }
@@ -1044,18 +1048,22 @@ impl StreamWorker {
         self.receive(cx, index);
     }
 
-    /// `stream_receiver_handle_op()` with RECEIVER_POLLOUT: the lines owed to the child of this connection, written
-    /// to it now; nothing for a connection no longer here.
-    pub(crate) fn child_pollout(&mut self, cx: &mut Context<'_>, slot: &Weak<ReceiverSlot>) {
-        let Some(slot) = slot.upgrade() else {
+    /// `stream_thread_handle_op()` with RECEIVER_POLLOUT: the lines owed to the child of this connection, written
+    /// to it now. A connection no longer here gets C's "ignored" record when the opcode was `posted` through the
+    /// thread's queue; inline, C runs it while the receiver is in its thread, so it cannot miss.
+    pub(crate) fn child_pollout(&mut self, cx: &mut Context<'_>, slot: &Weak<ReceiverSlot>, posted: bool) {
+        let index = slot.upgrade().and_then(|slot| {
+            self.children.iter().position(|c| c.as_ref().is_some_and(|c| Arc::ptr_eq(&c.attached.slot, &slot)))
+        });
+        let Some(index) = index else {
+            if posted {
+                crate::sender::dispatch::opcode_ignored(cx.index(), RECEIVER_POLLOUT);
+            }
             return;
         };
-        let index = self.children.iter().position(|c| c.as_ref().is_some_and(|c| Arc::ptr_eq(&c.attached.slot, &slot)));
-        if let Some(index) = index {
-            let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
-            let _frame = frame.as_ref().map(records::child_event);
-            self.deliver_owed(cx, index);
-        }
+        let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
+        let _frame = frame.as_ref().map(records::child_event);
+        self.deliver_owed(cx, index);
     }
 
     /// The child's owed lines, flushed with whatever else waits for it.
@@ -1689,16 +1697,7 @@ fn receiver_mode(configured: &str, default: &str, dbengine: bool) -> (DbMode, bo
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A handler for registrations no test calls.
-    fn inert(
-        _: &mut netdata_agent_nrpc::reply::Reply,
-        _: &[u8],
-        _: Option<&netdata_agent_nrpc::reply::Payload>,
-        _: &[u8],
-    ) -> u16 {
-        200
-    }
+    use netdata_agent_nrpc::testing::inert;
     use netdata_agent_rrd::host::HostInfo;
     use std::os::fd::AsFd;
 
@@ -2746,37 +2745,138 @@ mod tests {
         }
     }
 
+    /// What a child's end can read now, without waiting.
+    fn read_all(peer: &mut mio::net::UnixStream) -> Vec<u8> {
+        use std::io::Read;
+        let (mut out, mut buf) = (Vec::new(), [0; 4096]);
+        while let Ok(n @ 1..) = peer.read(&mut buf) {
+            out.extend_from_slice(&buf[..n]);
+        }
+        out
+    }
+
     /// RECEIVER_POLLOUT (D164.B2): a line owed to an attached child by a step of its own thread goes out when the step
-    /// ends (C's inline opcode), not at the tick; a POLLOUT for a connection no longer here does nothing.
+    /// ends (C's inline opcode), not at the tick, and not for another connection's POLLOUT. A POLLOUT for a connection
+    /// no longer here writes nothing; posted, it is C's "ignored" record (`stream-thread.c:71-75`); inline, C runs it
+    /// while the receiver is in its thread, so it cannot miss and logs nothing.
     #[test]
     fn an_owed_line_reaches_the_child_when_the_step_ends() {
-        use std::io::Read;
         let (mut s, pool, hosts, connector) = stepper();
         let (attached, host, slot, mut peer) = child(0xd5, crate::caps::V2, &pool, &hosts, &connector);
         s.with(|w, cx| w.attach(cx, attached));
-        let read = |peer: &mut mio::net::UnixStream| {
-            let (mut out, mut buf) = (Vec::new(), [0; 4096]);
-            while let Ok(n @ 1..) = peer.read(&mut buf) {
-                out.extend_from_slice(&buf[..n]);
-            }
-            out
-        };
-        read(&mut peer);
+        read_all(&mut peer);
+        let gone = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
         s.with(|w, cx| {
             slot.send_to_child(b"FUNCTION_CANCEL abc\n");
-            assert_eq!(read(&mut peer), b"", "the step has not ended");
+            assert_eq!(read_all(&mut peer), b"", "the step has not ended");
+            let ((), records) = netdata_agent_log::capture(|| w.child_pollout(cx, &Arc::downgrade(&gone), false));
+            assert_eq!(read_all(&mut peer), b"", "another connection's POLLOUT");
+            assert_eq!(texts(records), Vec::<String>::new());
             w.drain_inline(cx);
         });
-        assert_eq!(read(&mut peer), b"FUNCTION_CANCEL abc\n");
-        let gone = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
-        gone.set_waker(Box::new(|| crate::thread::child_pollout_inline(Weak::new())));
-        s.with(|w, cx| {
-            gone.send_to_child(b"x\n");
-            w.child_pollout(cx, &Arc::downgrade(&gone));
-            w.drain_inline(cx);
-        });
-        assert_eq!(read(&mut peer), b"");
+        assert_eq!(read_all(&mut peer), b"FUNCTION_CANCEL abc\n");
+        let ((), records) =
+            netdata_agent_log::capture(|| s.with(|w, cx| w.child_pollout(cx, &Arc::downgrade(&gone), true)));
+        assert_eq!(texts(records), ["STREAM THREAD[0]: OPCODE 2 ignored."]);
+        assert_eq!(read_all(&mut peer), b"");
         drop(host);
+    }
+
+    /// A line another thread owes a child posts RECEIVER_POLLOUT to the child's thread, which writes it when the
+    /// message arrives (`stream_receiver_send_opcode()` off the owner thread).
+    #[test]
+    fn a_posted_pollout_writes_what_another_thread_owed() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, slot, mut peer) = child(0xe2, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        read_all(&mut peer);
+        std::thread::scope(|t| {
+            t.spawn(|| slot.send_to_child(b"FUNCTION_CANCEL abc\n"));
+        });
+        assert_eq!(read_all(&mut peer), b"", "posted, not written by the caller");
+        s.with(|w, cx| {
+            netdata_agent_evloop::Worker::message(w, cx, StreamMsg::ChildPollout(Arc::downgrade(&slot)));
+        });
+        assert_eq!(read_all(&mut peer), b"FUNCTION_CANCEL abc\n");
+        drop(host);
+    }
+
+    /// A wake for a child whose thread is not running is C's ERR when `stream_thread_by_slot_id()` finds no thread
+    /// (`stream-thread.c:103-107`), and the line stays owed.
+    #[test]
+    fn a_wake_for_a_thread_not_running_is_cs_err() {
+        let (mut s, pool, hosts, connector) = stepper();
+        let (mut attached, host, slot, _peer) = child(0xe4, crate::caps::V2, &pool, &hosts, &connector);
+        attached.thread = 9;
+        s.with(|w, cx| w.attach(cx, attached));
+        let ((), records) = netdata_agent_log::capture(|| slot.send_to_child(b"x\n"));
+        assert_eq!(
+            texts(records),
+            [format!(
+                "STREAM RCV '{}' [from [127.0.0.1]:1]: the opcode (2) message cannot be verified. Ignoring it.",
+                host.hostname()
+            )]
+        );
+    }
+
+    /// A child's method is called through its own socket: the FUNCTION line and, the child having PROGRESS, a
+    /// progress request go down with the full length sent (no "failed to send" record); the child's end answers the
+    /// call 503 (`pluginsd_inflight_functions_cleanup()`).
+    #[test]
+    fn a_childs_method_is_called_through_its_socket() {
+        use netdata_agent_nrpc::call::{CallSpec, Calls};
+        use std::io::Write;
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, _slot, mut peer) =
+            child(0xe3, crate::caps::V2 | crate::caps::PROGRESS, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        read_all(&mut peer);
+        peer.write_all(b"FUNCTION GLOBAL \"r69\" 10 \"h\" \"top\" \"0x0\" 100 0\n").unwrap();
+        assert!(s.turn(Duration::from_millis(50)));
+        let (send, answers) = std::sync::mpsc::channel();
+        let tx = "5a1e000000004000800000000000e369";
+        let called = Calls::process().call(CallSpec {
+            owner: Some((host.functions(), "child")),
+            cmd: b"r69",
+            source: b"src",
+            user_access: 0,
+            timeout_s: 0,
+            wait: false,
+            allow_restricted: true,
+            call_id: Some(tx.as_bytes()),
+            payload: None,
+            reply: netdata_agent_nrpc::reply::Reply::new(netdata_agent_nrpc::reply::ContentType::TextPlain),
+            done: Some(Box::new(move |reply, code| {
+                let _ = send.send((reply, code));
+            })),
+            progress: None,
+            is_cancelled: None,
+        });
+        assert_eq!(called.code, 200);
+        let ((), records) = netdata_agent_log::capture(|| Calls::process().progress(tx));
+        assert_eq!(texts(records), ["Extending function timeout due to PROGRESS update..."]);
+        s.with(|w, cx| w.drain_inline(cx));
+        assert_eq!(
+            String::from_utf8(read_all(&mut peer)).unwrap(),
+            format!("FUNCTION {tx} 10 \"r69\" \"0x0\" \"src\"\nFUNCTION_PROGRESS {tx}\n")
+        );
+        drop(peer);
+        let _ = netdata_agent_log::capture(|| {
+            for _ in 0..3 {
+                s.turn(Duration::from_millis(50));
+            }
+        });
+        let (reply, code) = answers.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(code, 503);
+        assert!(String::from_utf8_lossy(&reply.body).contains("exited before responding"));
+    }
+
+    /// Once its connection is gone, a child's wire sends nothing and says so with 0 (C's `send_to_child()` without a
+    /// buffer).
+    #[test]
+    fn a_wire_without_its_connection_sends_nothing() {
+        let wire = ChildWire { slot: Weak::new() };
+        assert_eq!(ingest::functions::Wire::send(&wire, b"x\n"), 0);
     }
 
     /// Keeps the connections handed to a stream thread, untouched: the queue a child waits in until its admission.

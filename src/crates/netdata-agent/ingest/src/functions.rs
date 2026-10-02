@@ -15,18 +15,19 @@ use netdata_agent_nrpc::lifetime::Gate;
 use netdata_agent_nrpc::reply::{ContentType, Reply};
 use netdata_agent_pluginsd_proto::emit;
 
-/// The plugin's stdin or the child's socket (`send_to_plugin()`): `text` written in one piece under the writer's lock;
-/// the bytes written, or C's negative code after its warning.
+/// Where a parser's calls go (`send_to_plugin()`): the plugin's stdin, `text` written in one piece under the writer's
+/// lock, or the child's connection, `text` queued for its stream thread (`send_to_child()`). The bytes taken, 0 when
+/// there is nowhere to send, or C's negative code after its warning.
 pub trait Wire: Send + Sync {
     fn send(&self, text: &[u8]) -> isize;
 }
 
-/// `struct pluginsd_call`: a call written to the plugin and not answered yet.
+/// `struct pluginsd_call`: a call sent to the plugin or child and not answered yet.
 struct Pending {
     /// The compact call id (`transaction`).
     key: Arc<str>,
     call_id: [u8; 16],
-    /// 503 until the plugin answers.
+    /// 503 until the plugin or child answers.
     code: u16,
     reply: Reply,
     done: Option<Done>,

@@ -37,3 +37,5 @@ zstd = { workspace = true }
 netdata-agent-evloop = { workspace = true, features = ["testing"] }
 # a recording upstream
 netdata-agent-rrd = { workspace = true, features = ["testing"] }
+# a handler no test calls
+netdata-agent-nrpc = { workspace = true, features = ["testing"] }

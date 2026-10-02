@@ -483,16 +483,7 @@ impl<'a> Route<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A handler for registrations no test calls.
-    fn inert(
-        _: &mut netdata_agent_nrpc::reply::Reply,
-        _: &[u8],
-        _: Option<&netdata_agent_nrpc::reply::Payload>,
-        _: &[u8],
-    ) -> u16 {
-        200
-    }
+    use netdata_agent_nrpc::testing::inert;
 
     fn shared() -> Shared {
         Shared {

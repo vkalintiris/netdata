@@ -53,7 +53,7 @@ pub(crate) fn take_inline_children() -> Vec<Weak<ReceiverSlot>> {
 }
 
 /// What a stream thread is sent: a connection to take over, a backfilled chart's replication request for the
-/// connection of `receiver`, or a sender's connection to its parent.
+/// connection of `receiver`, a sender's connection to its parent, a sender's opcodes, or a POLLOUT for a child.
 #[derive(Debug)]
 pub enum StreamMsg {
     Attach(Box<Attached>),
@@ -147,7 +147,7 @@ impl Worker for StreamWorker {
                     self.sender_ops(cx, &sender, session);
                 }
             }
-            StreamMsg::ChildPollout(slot) => self.child_pollout(cx, &slot),
+            StreamMsg::ChildPollout(slot) => self.child_pollout(cx, &slot, true),
         }
         self.drain_inline(cx);
     }

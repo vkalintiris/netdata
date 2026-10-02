@@ -409,15 +409,28 @@ impl StreamWorker {
         let Some(ops) = sender.take_ops(session) else {
             return;
         };
-        self.handle_ops(cx, sender, ops.session, ops.bits, ops.reason);
+        self.handle_ops(cx, sender, ops.session, ops.bits, ops.reason, true);
     }
 
-    fn handle_ops(&mut self, cx: &mut Context<'_>, sender: &Arc<Sender>, session: Session, bits: u32, reason: Reason) {
+    /// `posted`: the opcode came through the thread's queue. One handled inline cannot miss its sender in C (it runs
+    /// while the sender is in its thread); here it waits for the step's end, so a sender gone meanwhile is skipped
+    /// without C's "ignored" record.
+    fn handle_ops(
+        &mut self,
+        cx: &mut Context<'_>,
+        sender: &Arc<Sender>,
+        session: Session,
+        bits: u32,
+        reason: Reason,
+        posted: bool,
+    ) {
         let found = self.senders.iter().position(|d| {
             d.as_ref().is_some_and(|d| Arc::ptr_eq(&d.sender, sender) && d.session == session)
         });
         let Some(index) = found else {
-            opcode_ignored(cx.index(), bits);
+            if posted {
+                opcode_ignored(cx.index(), bits);
+            }
             return;
         };
         let mut bits = bits;
@@ -475,11 +488,11 @@ impl StreamWorker {
     pub(crate) fn drain_inline(&mut self, cx: &mut Context<'_>) {
         for (sender, session) in crate::thread::take_inline() {
             if let Some(sender) = sender.upgrade() {
-                self.handle_ops(cx, &sender, session, op::POLLOUT, Reason::NEVER);
+                self.handle_ops(cx, &sender, session, op::POLLOUT, Reason::NEVER, false);
             }
         }
         for slot in crate::thread::take_inline_children() {
-            self.child_pollout(cx, &slot);
+            self.child_pollout(cx, &slot, false);
         }
     }
 
@@ -705,8 +718,8 @@ impl StreamWorker {
     }
 }
 
-/// "STREAM THREAD[%zu]: OPCODE %u ignored.", once a second.
-fn opcode_ignored(thread: usize, bits: u32) {
+/// "STREAM THREAD[%zu]: OPCODE %u ignored.", once a second for senders and receivers together (one limiter, as C's).
+pub(crate) fn opcode_ignored(thread: usize, bits: u32) {
     static LIMIT: ErrorLimit = ErrorLimit::new(1, 0);
     nd_log_limit!(&LIMIT, Source::Daemon, Priority::Debug, "STREAM THREAD[{thread}]: OPCODE {bits} ignored.");
 }

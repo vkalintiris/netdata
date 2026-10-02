@@ -220,7 +220,8 @@ pub struct ReceiverSlot {
     pub link: ReceiverLink,
     /// Shuts the connection down so its stream thread notices at once.
     shutdown: Box<dyn Fn() + Send + Sync>,
-    /// `rpt->thread.send_to_child`: lines other threads owe the child (D119.1), taken by its stream thread.
+    /// `rpt->thread.send_to_child`: lines owed to the child (D119.1) by its parser's calls and by other threads, taken
+    /// by its stream thread.
     to_child: Mutex<Vec<u8>>,
     /// Set when the connection reaches its stream thread (C's send buffer is created): tells that thread lines are
     /// owed (`STREAM_OPCODE_RECEIVER_POLLOUT`, D164.B2).
@@ -258,9 +259,9 @@ impl ReceiverSlot {
         }
     }
 
-    /// `send_to_child()` of a line for the child from outside its parser: queued, and its stream thread woken when
-    /// nothing was owed before (C's POLLOUT when the buffer was empty); queued unwoken before the connection reached
-    /// its thread, which drops it then (D119.2).
+    /// `send_to_child()` of a line for the child: queued, and its stream thread woken when nothing was owed before
+    /// (C's POLLOUT when the buffer was empty); queued unwoken before the connection reached its thread, which drops it
+    /// then (D119.2).
     pub fn send_to_child(&self, bytes: &[u8]) {
         let was_empty = {
             let mut to_child = lock(&self.to_child);
@@ -2045,12 +2046,8 @@ impl Hosts {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A handler for registrations no test calls.
-    fn inert(_: &mut nrpc::reply::Reply, _: &[u8], _: Option<&nrpc::reply::Payload>, _: &[u8]) -> u16 {
-        200
-    }
     use crate::testutil::{backfill_dim, collected_chart, engine, info, store, tier_records};
+    use nrpc::testing::inert;
 
     /// `stream_path_parent_disconnected()`: the entries after this agent's go, and only a cut reports one.
     #[test]

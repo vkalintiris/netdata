@@ -14,3 +14,7 @@ netdata-agent-sys = { workspace = true }
 netdata-agent-text = { workspace = true }
 netdata-agent-web = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+
+[features]
+# `testing::inert` for other crates' tests.
+testing = []

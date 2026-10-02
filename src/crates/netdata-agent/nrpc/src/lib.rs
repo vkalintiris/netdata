@@ -17,6 +17,8 @@ pub mod catalog;
 pub mod lifetime;
 pub mod reply;
 pub mod serving;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 use call::Request;
 use reply::{Payload, Reply};

@@ -557,16 +557,7 @@ pub fn functions(route: &Route<'_>, query: &[u8]) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A handler for registrations no test calls.
-    fn inert(
-        _: &mut netdata_agent_nrpc::reply::Reply,
-        _: &[u8],
-        _: Option<&netdata_agent_nrpc::reply::Payload>,
-        _: &[u8],
-    ) -> u16 {
-        200
-    }
+    use netdata_agent_nrpc::testing::inert;
 
     /// C's functions dictionary (`api_v2_contexts.c:779-806`) and writer (`:1481-1516`): a name and version two hosts
     /// share keeps the first host's attributes and lists both; another version is its own entry; the bytes are C's

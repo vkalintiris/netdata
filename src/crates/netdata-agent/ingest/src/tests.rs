@@ -2949,21 +2949,12 @@ fn a_plugins_end_answers_its_pending_calls() {
     );
 }
 
-/// C's limit on an answer: past it the run ends with C's record naming the end keyword, the plugin and the call.
-#[test]
-fn an_answer_too_big_ends_the_run() {
-    let hosts = plugin_hosts();
-    let wire = Arc::new(TestWire::default());
-    let mut p = plugin_parser_with_wire(&hosts, &wire);
-    feed_ok(&mut p, &["FUNCTION GLOBAL \"answer\" 10 \"help\" \"top\" \"0x0\" 100 0".into()]);
-    let tx = "5a1e00000000400080000000000000f4";
-    let rx = call_plugin(&hosts, b"answer", tx.as_bytes());
-    feed_ok(&mut p, &[format!("FUNCTION_RESULT_BEGIN {tx} 200 text/plain 0")]);
-    let line = vec![b'x'; 1 << 20];
-    let mut line = line;
+/// Feeds `tx`'s answer in 1 MiB lines until the parser ends the run: the bytes fed and the records.
+fn answer_past_the_cap(p: &mut Parser, tx: &str) -> (usize, Vec<String>) {
+    feed_ok(p, &[format!("FUNCTION_RESULT_BEGIN {tx} 200 text/plain 0")]);
+    let mut line = vec![b'x'; 1 << 20];
     line.push(b'\n');
-    let mut ok = true;
-    let mut fed = 0;
+    let (mut ok, mut fed) = (true, 0);
     let cut = MAX_DEFERRED_SIZE / line.len() + 1;
     let (_, records) = netdata_agent_log::capture(|| {
         // bounded: without the cap the parser buffers every line, and an unbounded loop exhausts memory
@@ -2973,14 +2964,43 @@ fn an_answer_too_big_ends_the_run() {
         }
     });
     assert_eq!(fed, cut);
-    let texts: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
-    let size = fed * line.len();
-    assert_eq!(
-        texts,
-        [format!(
-            "PLUGINSD: deferred response is too big ({size} bytes, limit {MAX_DEFERRED_SIZE} bytes) while waiting for keyword 'FUNCTION_RESULT_END' from plugin 'difftest.plugin' (transaction '{tx}'). Stopping this plugin."
-        )]
-    );
+    (fed * line.len(), records.into_iter().filter_map(|r| r.message).collect())
+}
+
+/// C's record of an answer past the cap, from `plugin`.
+fn too_big(size: usize, plugin: &str, tx: &str) -> String {
+    format!(
+        "PLUGINSD: deferred response is too big ({size} bytes, limit {MAX_DEFERRED_SIZE} bytes) while waiting for keyword 'FUNCTION_RESULT_END' from plugin '{plugin}' (transaction '{tx}'). Stopping this plugin."
+    )
+}
+
+/// C's limit on an answer: past it the run ends with C's record naming the end keyword, the plugin and the call.
+#[test]
+fn an_answer_too_big_ends_the_run() {
+    let hosts = plugin_hosts();
+    let wire = Arc::new(TestWire::default());
+    let mut p = plugin_parser_with_wire(&hosts, &wire);
+    feed_ok(&mut p, &["FUNCTION GLOBAL \"answer\" 10 \"help\" \"top\" \"0x0\" 100 0".into()]);
+    let tx = "5a1e00000000400080000000000000f4";
+    let rx = call_plugin(&hosts, b"answer", tx.as_bytes());
+    let (size, texts) = answer_past_the_cap(&mut p, tx);
+    assert_eq!(texts, [too_big(size, "difftest.plugin", tx)]);
+    drop(p);
+    let (reply, code) = rx.recv().unwrap();
+    assert_eq!((code, reply.body.len()), (503, size));
+}
+
+/// The same cap on a child's connection: the record names no plugin (`cd.filename = NULL`), and the connection's end
+/// answers the call 503 with what it had.
+#[test]
+fn a_childs_answer_too_big_ends_the_connection() {
+    let h = host();
+    let mut p = stream_parser_on(&h, 0, Arc::new(TestWire::default()));
+    feed_ok(&mut p, &["FUNCTION GLOBAL \"answer\" 10 \"help\" \"top\" \"0x0\" 100 0".into()]);
+    let tx = "5a1e00000000400080000000000069b5";
+    let rx = call_child(&h, b"answer", tx.as_bytes(), Arc::default());
+    let (size, texts) = answer_past_the_cap(&mut p, tx);
+    assert_eq!(texts, [too_big(size, "", tx)]);
     drop(p);
     let (reply, code) = rx.recv().unwrap();
     assert_eq!((code, reply.body.len()), (503, size));

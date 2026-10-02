@@ -1,11 +1,7 @@
 //! The registry's contracts (C's `nrpc-unittest.c` registry, deletion and catalog suites, where they apply).
 
 use super::*;
-
-/// A handler for registrations no test calls.
-fn inert(_: &mut reply::Reply, _: &[u8], _: Option<&reply::Payload>, _: &[u8]) -> u16 {
-    200
-}
+use crate::testing::inert;
 
 fn desc(name: &'static [u8], source: Source) -> MethodDesc<'static> {
     MethodDesc {

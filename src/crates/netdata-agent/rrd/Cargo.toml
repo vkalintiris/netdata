@@ -24,4 +24,6 @@ testing = []
 
 [dev-dependencies]
 netdata-agent-evloop = { workspace = true }
+# a handler no test calls
+netdata-agent-nrpc = { workspace = true, features = ["testing"] }
 tempfile = { workspace = true }

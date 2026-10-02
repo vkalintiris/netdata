@@ -2,19 +2,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use netdata_agent_log::{Captured, Priority};
+use netdata_agent_nrpc::testing::inert;
 use netdata_agent_nrpc::{MethodDesc, Source as NrpcSource};
 
 use super::*;
-
-/// A handler for registrations no test calls.
-fn inert(
-    _: &mut netdata_agent_nrpc::reply::Reply,
-    _: &[u8],
-    _: Option<&netdata_agent_nrpc::reply::Payload>,
-    _: &[u8],
-) -> u16 {
-    200
-}
 use crate::chart::{Algorithm, ChartSpec};
 use crate::collection::{set_value, set_value_float, timed_done};
 use crate::host::StreamSend;
