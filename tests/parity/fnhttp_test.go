@@ -970,22 +970,26 @@ func fnGuardV2(t *testing.T, p *Pair) {
 }
 
 // fnCompareInfoFunctions compares the `functions` member of `/api/v1/info` (localhost's and the vnode's) by value,
-// without C's built-ins, and its place among the members (api_v1_info.c:132-134: after host_labels).
+// without C's built-ins, and its place among the members both sides write (api_v1_info.c:132-134: after host_labels,
+// before collectors). Members the candidate does not write yet (D84.2) are left out of the place, not masked, so the
+// check tightens by itself as they are ported.
 func fnCompareInfoFunctions(t *testing.T, p *Pair) {
 	t.Helper()
 	for _, target := range []string{"/api/v1/info", "/host/" + vnodeName + "/api/v1/info"} {
-		var fns [2]Value
-		var place [2]string
+		var docs [2]Value
 		for i, side := range p.Each() {
 			b, err := rawExchange(side.Daemon.Addr, fnHTTPGet(target, ""), fnWait)
 			if err != nil {
 				t.Fatalf("%s: %s: %v", side.Role, target, err)
 			}
-			v, err := ParseJSON(fnWithoutBuiltins(httpBody(b)))
-			if err != nil {
+			if docs[i], err = ParseJSON(fnWithoutBuiltins(httpBody(b))); err != nil {
 				t.Fatalf("%s: %s: %v: %s", side.Role, target, err, truncateBytes(b))
 			}
-			m, before, after, ok := fnMember(v, "functions")
+		}
+		var fns [2]Value
+		var place [2]string
+		for i, side := range p.Each() {
+			m, before, after, ok := fnMember(fnCommonMembers(docs[i], docs[1-i]), "functions")
 			if !ok {
 				t.Errorf("%s: %s has no functions member", side.Role, target)
 				continue
@@ -1000,6 +1004,21 @@ func fnCompareInfoFunctions(t *testing.T, p *Pair) {
 		}
 		t.Logf("oracle %s: %s; functions %s", target, place[0], fns[0])
 	}
+}
+
+// fnCommonMembers is the object v with only the members other has too, in v's order.
+func fnCommonMembers(v, other Value) Value {
+	has := map[string]bool{}
+	for _, m := range other.Members {
+		has[m.Key] = true
+	}
+	common := Value{Kind: v.Kind}
+	for _, m := range v.Members {
+		if has[m.Key] {
+			common.Members = append(common.Members, m)
+		}
+	}
+	return common
 }
 
 // ---------------------------------------------------------------------------------------------------------------
