@@ -37,6 +37,9 @@ use crate::records::{self, Counters, Peer};
 use crate::sender::Sender;
 use crate::thread::{StreamMsg, StreamWorker};
 
+/// `STREAM_OPCODE_RECEIVER_POLLOUT`: lines are owed to a receiver's child.
+const RECEIVER_POLLOUT: u32 = 1 << 1;
+
 /// `CONNECTION_PROBE_INTERVAL_SECONDS` and `CONNECTION_PROBE_COUNT` of the receiver's TCP keepalive.
 const KEEPALIVE_PROBE_INTERVAL_S: u32 = 10;
 const KEEPALIVE_PROBES: u32 = 3;
@@ -982,8 +985,26 @@ impl StreamWorker {
         // the end of the move to running: lines owed before it are dropped as C's (no buffer yet, D119.2), then the
         // host's node id goes down (D106.9)
         if let Some(child) = &self.children[index] {
-            child.attached.slot.take_to_child();
-            crate::sender::send_node_and_claim_id_to_child(&child.attached.host, child.attached.connector.env());
+            let a = &child.attached;
+            a.slot.take_to_child();
+            // the buffer exists from here: an owed line wakes this thread (RECEIVER_POLLOUT, D164.B2)
+            let (pool, thread, slot) = (a.pool.clone(), a.thread, Arc::downgrade(&a.slot));
+            let (hostname, (ip, port)) = (a.host.hostname(), a.slot.remote.clone());
+            a.slot.set_waker(Box::new(move || {
+                if crate::thread::current() == Some(thread) {
+                    return crate::thread::child_pollout_inline(slot.clone());
+                }
+                if pool.send_if_running(thread, StreamMsg::ChildPollout(slot.clone())).is_err() {
+                    // the thread ended (the exit started): C's stream_thread_by_slot_id() finds no thread
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Err,
+                        "STREAM RCV '{hostname}' [from [{ip}]:{port}]: the opcode ({RECEIVER_POLLOUT}) message cannot \
+                         be verified. Ignoring it."
+                    );
+                }
+            }));
+            crate::sender::send_node_and_claim_id_to_child(&a.host, a.connector.env());
         }
         self.deliver_owed(cx, index);
         // C only adds the socket to the poll: the first read is the next turn's (D126.6)
@@ -1003,10 +1024,13 @@ impl StreamWorker {
         self.receive(cx, index);
     }
 
-    /// The lines other threads owed a host's child (`send_to_child`), written to it now: after the host's sender
-    /// executed its parent's commands.
-    pub(crate) fn deliver_to_child(&mut self, cx: &mut Context<'_>, host: &Arc<Host>) {
-        let index = self.children.iter().position(|c| c.as_ref().is_some_and(|c| Arc::ptr_eq(&c.attached.host, host)));
+    /// `stream_receiver_handle_op()` with RECEIVER_POLLOUT: the lines owed to the child of this connection, written
+    /// to it now; nothing for a connection no longer here.
+    pub(crate) fn child_pollout(&mut self, cx: &mut Context<'_>, slot: &Weak<ReceiverSlot>) {
+        let Some(slot) = slot.upgrade() else {
+            return;
+        };
+        let index = self.children.iter().position(|c| c.as_ref().is_some_and(|c| Arc::ptr_eq(&c.attached.slot, &slot)));
         if let Some(index) = index {
             let frame = self.children[index].as_ref().map(|c| Arc::clone(&c.frame));
             let _frame = frame.as_ref().map(records::child_event);
@@ -2690,6 +2714,39 @@ mod tests {
             let read = std::io::Read::read(&mut peer, &mut buf);
             assert_eq!(read.map_err(|e| e.kind()), Err(std::io::ErrorKind::WouldBlock), "nothing reached the child");
         }
+    }
+
+    /// RECEIVER_POLLOUT (D164.B2): a line owed to an attached child by a step of its own thread goes out when the step
+    /// ends (C's inline opcode), not at the tick; a POLLOUT for a connection no longer here does nothing.
+    #[test]
+    fn an_owed_line_reaches_the_child_when_the_step_ends() {
+        use std::io::Read;
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, slot, mut peer) = child(0xd5, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        let read = |peer: &mut mio::net::UnixStream| {
+            let (mut out, mut buf) = (Vec::new(), [0; 4096]);
+            while let Ok(n @ 1..) = peer.read(&mut buf) {
+                out.extend_from_slice(&buf[..n]);
+            }
+            out
+        };
+        read(&mut peer);
+        s.with(|w, cx| {
+            slot.send_to_child(b"FUNCTION_CANCEL abc\n");
+            assert_eq!(read(&mut peer), b"", "the step has not ended");
+            w.drain_inline(cx);
+        });
+        assert_eq!(read(&mut peer), b"FUNCTION_CANCEL abc\n");
+        let gone = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        gone.set_waker(Box::new(|| crate::thread::child_pollout_inline(Weak::new())));
+        s.with(|w, cx| {
+            gone.send_to_child(b"x\n");
+            w.child_pollout(cx, &Arc::downgrade(&gone));
+            w.drain_inline(cx);
+        });
+        assert_eq!(read(&mut peer), b"");
+        drop(host);
     }
 
     /// Keeps the connections handed to a stream thread, untouched: the queue a child waits in until its admission.

@@ -398,10 +398,8 @@ impl StreamWorker {
             return false;
         };
         let ok = super::execute::execute(d);
-        let host = Arc::clone(&d.host);
+        // what the commands owe (a POLLOUT, the host's child's NODE_ID and path) goes out now, as C's inline opcodes
         self.drain_inline(cx);
-        // what the commands owe the host's child (NODE_ID, the path) goes out now, as C's send_to_child
-        self.deliver_to_child(cx, &host);
         ok
     }
 
@@ -472,12 +470,16 @@ impl StreamWorker {
         nd_log!(Source::Daemon, Priority::Err, "STREAM SND[{thread}]: invalid msg id {bits}");
     }
 
-    /// The POLLOUTs posted on this thread while it ran a sender's hooks or commands (C handles them inline).
+    /// The POLLOUTs posted on this thread while it ran a step (C handles them inline): the senders', then the
+    /// receivers' (lines owed to a child).
     pub(crate) fn drain_inline(&mut self, cx: &mut Context<'_>) {
         for (sender, session) in crate::thread::take_inline() {
             if let Some(sender) = sender.upgrade() {
                 self.handle_ops(cx, &sender, session, op::POLLOUT, Reason::NEVER);
             }
+        }
+        for slot in crate::thread::take_inline_children() {
+            self.child_pollout(cx, &slot);
         }
     }
 

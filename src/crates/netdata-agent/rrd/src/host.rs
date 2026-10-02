@@ -222,6 +222,9 @@ pub struct ReceiverSlot {
     shutdown: Box<dyn Fn() + Send + Sync>,
     /// `rpt->thread.send_to_child`: lines other threads owe the child (D119.1), taken by its stream thread.
     to_child: Mutex<Vec<u8>>,
+    /// Set when the connection reaches its stream thread (C's send buffer is created): tells that thread lines are
+    /// owed (`STREAM_OPCODE_RECEIVER_POLLOUT`, D164.B2).
+    waker: OnceLock<Box<dyn Fn() + Send + Sync>>,
     /// Its host is detaching it (`rrdhost_clear_receiver()` past its first step): no longer the host's receiver for
     /// the host's state, still in the slot until the detach ends.
     detaching: AtomicBool,
@@ -250,13 +253,32 @@ impl ReceiverSlot {
             link,
             shutdown,
             to_child: Mutex::new(Vec::new()),
+            waker: OnceLock::new(),
             detaching: AtomicBool::new(false),
         }
     }
 
-    /// `send_to_plugin()` of a line for the child from outside its parser.
+    /// `send_to_child()` of a line for the child from outside its parser: queued, and its stream thread woken when
+    /// nothing was owed before (C's POLLOUT when the buffer was empty); queued unwoken before the connection reached
+    /// its thread, which drops it then (D119.2).
     pub fn send_to_child(&self, bytes: &[u8]) {
-        lock(&self.to_child).extend_from_slice(bytes);
+        let was_empty = {
+            let mut to_child = lock(&self.to_child);
+            let was_empty = to_child.is_empty();
+            to_child.extend_from_slice(bytes);
+            was_empty
+        };
+        if was_empty
+            && !bytes.is_empty()
+            && let Some(wake) = self.waker.get()
+        {
+            wake();
+        }
+    }
+
+    /// The connection reached its stream thread: from now on an owed line wakes it with `wake`.
+    pub fn set_waker(&self, wake: Box<dyn Fn() + Send + Sync>) {
+        let _ = self.waker.set(wake);
     }
 
     /// What is owed to the child so far, taken.
@@ -2348,6 +2370,31 @@ mod tests {
             store(&dim, B + 7, 7.0);
             assert_eq!(tier_records(&e, &dim, 1), want, "{mode:?} {db:?}");
         }
+    }
+
+    /// `send_to_child()`: a line owed before the connection reached its thread wakes nothing (it is dropped there,
+    /// D119.2); afterwards only an append to an empty queue wakes the thread (C's POLLOUT when its buffer was empty).
+    #[test]
+    fn an_owed_line_wakes_the_childs_thread_once() {
+        use std::sync::atomic::AtomicUsize;
+        let slot = ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {}));
+        slot.send_to_child(b"early\n");
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        slot.set_waker(Box::new(move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+        }));
+        slot.send_to_child(b"a\n");
+        assert_eq!(wakes.load(Ordering::Relaxed), 0, "the queue held the early line");
+        assert_eq!(slot.take_to_child(), b"early\na\n");
+        slot.send_to_child(b"b\n");
+        slot.send_to_child(b"c\n");
+        slot.send_to_child(b"");
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+        assert_eq!(slot.take_to_child(), b"b\nc\n");
+        slot.send_to_child(b"");
+        slot.send_to_child(b"d\n");
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
     }
 
     /// `rrdhost_clear_receiver()`: the receiver's end tells the host's sender and resets its parents, both with the

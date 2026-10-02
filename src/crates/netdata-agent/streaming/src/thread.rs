@@ -25,6 +25,8 @@ thread_local! {
     static CURRENT: Cell<Option<usize>> = const { Cell::new(None) };
     /// POLLOUTs posted on this stream thread, handled after the step that posted them.
     static INLINE: RefCell<Vec<(Weak<Sender>, Session)>> = const { RefCell::new(Vec::new()) };
+    /// Receivers of this thread owed lines by a step of this thread (C's inline RECEIVER_POLLOUT).
+    static INLINE_CHILDREN: RefCell<Vec<Weak<ReceiverSlot>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The stream thread running here.
@@ -41,6 +43,15 @@ pub(crate) fn take_inline() -> Vec<(Weak<Sender>, Session)> {
     INLINE.with(|i| std::mem::take(&mut *i.borrow_mut()))
 }
 
+/// A RECEIVER_POLLOUT for a receiver of this thread: C handles it synchronously (`stream_receiver_send_opcode()`).
+pub(crate) fn child_pollout_inline(slot: Weak<ReceiverSlot>) {
+    INLINE_CHILDREN.with(|i| i.borrow_mut().push(slot));
+}
+
+pub(crate) fn take_inline_children() -> Vec<Weak<ReceiverSlot>> {
+    INLINE_CHILDREN.with(|i| std::mem::take(&mut *i.borrow_mut()))
+}
+
 /// What a stream thread is sent: a connection to take over, a backfilled chart's replication request for the
 /// connection of `receiver`, or a sender's connection to its parent.
 #[derive(Debug)]
@@ -51,6 +62,8 @@ pub enum StreamMsg {
     AttachSender(Box<Connected>),
     /// A sender's opcodes for a session are waiting in its slot (`stream_sender_send_opcode()`).
     SenderOps(Weak<Sender>, Session),
+    /// Lines are owed to a receiver's child (`stream_receiver_send_opcode()` with RECEIVER_POLLOUT).
+    ChildPollout(Weak<ReceiverSlot>),
 }
 
 /// A stream thread: owns the connections of the children assigned to it, and parses what they send inline, and the
@@ -134,6 +147,7 @@ impl Worker for StreamWorker {
                     self.sender_ops(cx, &sender, session);
                 }
             }
+            StreamMsg::ChildPollout(slot) => self.child_pollout(cx, &slot),
         }
         self.drain_inline(cx);
     }
@@ -144,7 +158,7 @@ impl Worker for StreamWorker {
         match msg {
             StreamMsg::Attach(attached) => self.waiting.push(*attached),
             StreamMsg::AttachSender(connected) => self.queued_senders.push(*connected),
-            StreamMsg::Replay(..) | StreamMsg::SenderOps(..) => {}
+            StreamMsg::Replay(..) | StreamMsg::SenderOps(..) | StreamMsg::ChildPollout(..) => {}
         }
     }
 
