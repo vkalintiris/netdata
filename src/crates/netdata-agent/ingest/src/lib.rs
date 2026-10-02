@@ -11,7 +11,7 @@
 pub mod functions;
 pub mod jsonc;
 
-use functions::{PluginTransport, Wire};
+use functions::{PluginsdTransport, Wire};
 use netdata_agent_nrpc::call::Calls;
 pub mod stream_path;
 
@@ -213,13 +213,12 @@ pub type ReplaySink = Arc<dyn Fn(ReplayRequest) -> bool + Send + Sync>;
 enum Mode {
     /// A child's stream (`PARSER_INIT_STREAMING`).
     Stream,
-    /// A plugin of this agent (`PARSER_INIT_PLUGINSD`), by its file name, with the transport its functions are
-    /// called through (`parser->inflight`).
-    Plugin { filename: Arc<str>, hosts: PluginHosts, transport: Arc<PluginTransport> },
+    /// A plugin of this agent (`PARSER_INIT_PLUGINSD`), by its file name.
+    Plugin { filename: Arc<str>, hosts: PluginHosts },
 }
 
-/// A `FUNCTION_RESULT_BEGIN` ... `FUNCTION_RESULT_END` span of a plugin: the transaction as it came, and whether a
-/// pending call answers to it (`parser->defer.item`).
+/// A `FUNCTION_RESULT_BEGIN` ... `FUNCTION_RESULT_END` span: the transaction as it came, and whether a pending call
+/// answers to it (`parser->defer.item`).
 struct ResultSpan {
     key: Vec<u8>,
     known: bool,
@@ -254,6 +253,8 @@ struct HostDefine {
 /// The receiver side of one connection, or of one run of a plugin.
 pub struct Parser {
     mode: Mode,
+    /// `parser->inflight`: the calls of the methods registered here, written to the plugin or the child.
+    transport: Arc<PluginsdTransport>,
     /// `parser->user.enabled`: a disabled plugin is not started again.
     pub enabled: bool,
     /// `parser->user.retry`: the run failed for a reason worth starting the plugin again soon.
@@ -311,24 +312,36 @@ pub struct Parser {
 impl Drop for Parser {
     fn drop(&mut self) {
         self.clear_scope_with("THREAD CLEANUP", false, None);
-        if let Mode::Plugin { transport, .. } = &self.mode {
+        if let Mode::Plugin { .. } = &self.mode {
             let old = NODE.with(|n| n.take());
             drop(old);
-            // parser_destroy(): a span cut short lets its call go, then the transport ends (every pending call
-            // answered)
-            if let Some(span) = self.result_span.take() {
-                transport.release_span(&span.key);
-            }
-            transport.shutdown();
         }
+        // parser_destroy(): a span cut short lets its call go, then the transport ends (every pending call answered)
+        if let Some(span) = self.result_span.take() {
+            self.transport.release_span(&span.key);
+        }
+        self.transport.shutdown();
     }
 }
 
 impl Parser {
-    /// A parser of a child's stream for `host`.
-    pub fn new(host: Arc<Host>, localhost: Arc<Host>, config: Config) -> Self {
+    /// A parser of a child's stream for `host`, whose calls go to the child through `wire` (`send_to_child()`).
+    pub fn new(host: Arc<Host>, localhost: Arc<Host>, config: Config, wire: Arc<dyn Wire>) -> Self {
+        // a child takes progress requests only with PROGRESS (pluginsd_functions.c:472-475)
+        let progress = config.capabilities & caps::PROGRESS != 0;
+        let transport = PluginsdTransport::new(wire, Arc::clone(Calls::process()), progress);
+        Parser::with_transport(host, localhost, config, transport)
+    }
+
+    fn with_transport(
+        host: Arc<Host>,
+        localhost: Arc<Host>,
+        config: Config,
+        transport: Arc<PluginsdTransport>,
+    ) -> Self {
         Parser {
             mode: Mode::Stream,
+            transport,
             enabled: true,
             retry: false,
             trust_durations: true,
@@ -363,9 +376,9 @@ impl Parser {
     /// it defines, with the plugin's update every in `config`.
     pub fn plugin(hosts: PluginHosts, config: Config, filename: Arc<str>, wire: Arc<dyn Wire>) -> Self {
         let localhost = Arc::clone(hosts.hosts.localhost());
-        let mut parser = Parser::new(Arc::clone(&localhost), localhost, config);
-        let transport = PluginTransport::new(wire, Arc::clone(Calls::process()));
-        parser.mode = Mode::Plugin { filename, hosts, transport };
+        let transport = PluginsdTransport::new(wire, Arc::clone(Calls::process()), true);
+        let mut parser = Parser::with_transport(Arc::clone(&localhost), localhost, config, transport);
+        parser.mode = Mode::Plugin { filename, hosts };
         parser.trust_durations = false;
         parser.node_changed();
         parser
@@ -439,20 +452,20 @@ impl Parser {
         );
     }
 
-    /// One line of a plugin's result span (`parser->defer.response`): to its pending call, within C's limit, past
-    /// which the run ends (its caller then gets 503 with what came). `false` ends the run.
+    /// One line of a result span (`parser->defer.response`): to its pending call, within C's limit, past which the
+    /// run or the connection ends (its caller then gets 503 with what came). `false` ends it.
     fn result_line(&mut self, line: &[u8]) -> bool {
-        let (Some(span), Mode::Plugin { transport, filename, .. }) = (&self.result_span, &self.mode) else {
+        let Some(span) = &self.result_span else {
             return true;
         };
         if !span.known {
             return true;
         }
-        let size = transport.result_line(&span.key, netdata_agent_text::c::c_str(line));
+        let size = self.transport.result_line(&span.key, netdata_agent_text::c::c_str(line));
         if size <= MAX_DEFERRED_SIZE {
             return true;
         }
-        let filename = Arc::clone(filename);
+        let filename = self.plugin_filename();
         let key = text(&span.key);
         plog!(
             self,
@@ -461,6 +474,14 @@ impl Parser {
             "PLUGINSD: deferred response is too big ({size} bytes, limit {MAX_DEFERRED_SIZE} bytes) while waiting for keyword 'FUNCTION_RESULT_END' from plugin '{filename}' (transaction '{key}'). Stopping this plugin."
         );
         false
+    }
+
+    /// The plugin's file name in C's records, empty for a receiver (`cd.filename = NULL`).
+    fn plugin_filename(&self) -> Arc<str> {
+        match &self.mode {
+            Mode::Plugin { filename, .. } => Arc::clone(filename),
+            Mode::Stream => Arc::from(""),
+        }
     }
 
     /// What must be written to the child.
@@ -477,8 +498,8 @@ impl Parser {
                 // ML_MODEL payloads come with ML.
                 Deferred::Done(body) => {
                     self.deferred = None;
-                    if let (Some(span), Mode::Plugin { transport, .. }) = (self.result_span.take(), &self.mode) {
-                        transport.result_end(&span.key);
+                    if let Some(span) = self.result_span.take() {
+                        self.transport.result_end(&span.key);
                     }
                     match self.on_done {
                         OnDone::Nothing => {}
@@ -489,10 +510,7 @@ impl Parser {
                 }
                 // Only JSON bodies are kept; a receiver's plugin has no file name.
                 Deferred::TooBig(size) => {
-                    let filename = match &self.mode {
-                        Mode::Plugin { filename, .. } => filename,
-                        Mode::Stream => "",
-                    };
+                    let filename = self.plugin_filename();
                     plog!(
                         self,
                         Source::Daemon,
@@ -1629,6 +1647,9 @@ impl Parser {
                 Some(n) if n > 0 => n,
                 _ => default,
             };
+        // C's receiver reads under a frame with the line, the node and the scope (stream-receiver.c:991-998), as a
+        // plugin's run: the registration's own records carry them
+        let _frame = matches!(self.mode, Mode::Stream).then(|| self.log_frame());
         let registered = self.host.register_function(
             &nrpc::MethodDesc {
                 name,
@@ -1688,17 +1709,12 @@ impl Parser {
         Ok(())
     }
 
-    /// The handler a FUNCTION registers: the plugin's transport; a child's methods answer as a transport that is gone
-    /// until the receiver is one (milestone 8 commit 7).
+    /// The handler a FUNCTION registers: this parser's transport, to the plugin or the child (F:573-586).
     fn function_handler(&self) -> nrpc::Handler {
-        match &self.mode {
-            Mode::Plugin { transport, .. } => nrpc::Handler::Transport(Arc::clone(transport) as Arc<dyn nrpc::Transport>),
-            Mode::Stream => nrpc::Handler::Unwired,
-        }
+        nrpc::Handler::Transport(Arc::clone(&self.transport) as Arc<dyn nrpc::Transport>)
     }
 
-    /// `pluginsd_call_acquire()`'s record: no pending call answers to the transaction (a parent never calls a child's
-    /// functions before milestone 8 commit 7).
+    /// `pluginsd_call_acquire()`'s record: no pending call answers to the transaction.
     fn call_not_found(&mut self, keyword: &str, transaction: Option<&[u8]>) {
         plog!(
             self,
@@ -1733,19 +1749,13 @@ impl Parser {
             c => u16::try_from(c).unwrap_or(u16::MAX),
         };
         let expires = w.get(4).filter(|e| !e.is_empty()).map_or(0, |e| str2ll(e).0);
-        // a child's results come with the parent's calls (milestone 8 commit 7)
-        let known = match (&self.mode, transaction.filter(|t| !t.is_empty())) {
-            (Mode::Plugin { transport, .. }, Some(key)) => {
-                transport.result_begin(key, code, w.get(3), expires, netdata_agent_rrd::clock::now_realtime_s())
-            }
-            _ => false,
-        };
+        let known = transaction.filter(|t| !t.is_empty()).is_some_and(|key| {
+            self.transport.result_begin(key, code, w.get(3), expires, netdata_agent_rrd::clock::now_realtime_s())
+        });
         if !known {
             self.call_not_found("FUNCTION_RESULT_BEGIN", transaction);
         }
-        if let Mode::Plugin { .. } = self.mode {
-            self.result_span = Some(ResultSpan { key: transaction.unwrap_or_default().to_vec(), known });
-        }
+        self.result_span = Some(ResultSpan { key: transaction.unwrap_or_default().to_vec(), known });
         self.deferred = Some(DeferredBody::discarding("FUNCTION_RESULT_END"));
         self.on_done = OnDone::CountCollection;
     }
@@ -1753,12 +1763,10 @@ impl Parser {
     /// `pluginsd_function_progress()`: `transaction done all`, to the caller's progress callback.
     fn function_progress(&mut self, w: &Words) {
         let number = |v: Option<&[u8]>| v.filter(|v| !v.is_empty()).map_or(0, str2u) as usize;
-        let known = match (&self.mode, w.get(1).filter(|t| !t.is_empty())) {
-            (Mode::Plugin { transport, .. }, Some(key)) => {
-                transport.progress_from_plugin(key, number(w.get(2)), number(w.get(3)))
-            }
-            _ => false,
-        };
+        let known = w
+            .get(1)
+            .filter(|t| !t.is_empty())
+            .is_some_and(|key| self.transport.progress_from_plugin(key, number(w.get(2)), number(w.get(3))));
         if !known {
             self.call_not_found("FUNCTION_PROGRESS", w.get(1));
         }

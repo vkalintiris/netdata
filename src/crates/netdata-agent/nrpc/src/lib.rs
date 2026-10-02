@@ -6,7 +6,7 @@
 #![forbid(unsafe_code)]
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use netdata_agent_log::{Priority, Source as LogSource, nd_log};
 use netdata_agent_text::sanitize::nrpc_sanitize_name;
@@ -49,13 +49,10 @@ pub enum Source {
 /// `nrpc_handler_cb_t` with its data: what executes a method.
 #[derive(Clone)]
 pub enum Handler {
-    /// A transport to the method's plugin (or, from milestone 8 commit 7, child).
+    /// A transport to the method's plugin or child (`pluginsd_nrpc_handler()`).
     Transport(Arc<dyn Transport>),
     /// `nrpc_method_register_builtin()`: a daemon-implemented synchronous method.
     Builtin(Builtin),
-    /// A child's method on this parent before the receiver is a transport (milestone 8 commit 7): C's answer of a
-    /// transport that is gone.
-    Unwired,
 }
 
 impl std::fmt::Debug for Handler {
@@ -63,7 +60,6 @@ impl std::fmt::Debug for Handler {
         f.write_str(match self {
             Handler::Transport(_) => "Transport",
             Handler::Builtin(_) => "Builtin",
-            Handler::Unwired => "Unwired",
         })
     }
 }
@@ -74,7 +70,6 @@ impl Handler {
         match (self, other) {
             (Handler::Transport(a), Handler::Transport(b)) => Arc::ptr_eq(a, b),
             (Handler::Builtin(a), Handler::Builtin(b)) => std::ptr::fn_addr_eq(*a, *b),
-            (Handler::Unwired, Handler::Unwired) => true,
             _ => false,
         }
     }
@@ -220,6 +215,8 @@ pub struct Registry {
     epoch: AtomicU32,
     /// `pending_dels`: a set, in insertion order.
     pending_dels: Mutex<Vec<Vec<u8>>>,
+    /// The label C's records give the registry (`nrpc_owner_str()`: its host's handle in hex), set by its host.
+    owner: OnceLock<String>,
     /// `nrpc_registry_destroy()` ran and no `nrpc_registry_init()` since: the host has no registry (an archived host),
     /// as C's `nrpc_registry_acquire()` failing. Changed only under the methods' lock, which a registration holds, so
     /// a destroyed registry stays empty: lookups answer C's 404, the views and the deletion queue are empty.
@@ -276,6 +273,11 @@ impl Registry {
             lock(&self.pending_dels).clear();
             self.destroyed.store(false, Ordering::Release);
         }
+    }
+
+    /// The registry's label in C's records (`nrpc_owner_str()`), once its host is placed.
+    pub fn set_owner(&self, key: String) {
+        let _ = self.owner.set(key);
     }
 
     /// Whether `nrpc_registry_acquire()` would find the host's registry.
@@ -343,10 +345,12 @@ impl Registry {
             }
         };
         if displaced.is_some_and(|old| !old.same_as(&method)) {
+            // C names the registry by its owner's handle here, the host by name elsewhere
+            let owner = self.owner.get().map_or(host, String::as_str);
             nd_log!(
                 LogSource::Daemon,
                 Priority::Debug,
-                "NRPC: method '{}' of host {host} re-registered with changes",
+                "NRPC: method '{}' of host {owner} re-registered with changes",
                 String::from_utf8_lossy(&key)
             );
         }

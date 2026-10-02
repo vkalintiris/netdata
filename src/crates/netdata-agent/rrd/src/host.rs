@@ -751,12 +751,10 @@ impl Host {
     }
 
     fn log_registry_created(&self, hostname: &str) {
-        nd_log!(
-            Source::Daemon,
-            Priority::Debug,
-            "NRPC: function registry 0x{:016X} created for host '{hostname}'",
-            std::ptr::from_ref(self) as usize
-        );
+        // nrpc_owner_str(): the host's handle in hex, the registry's label in C's records
+        let key = format!("0x{:016X}", std::ptr::from_ref(self) as usize);
+        nd_log!(Source::Daemon, Priority::Debug, "NRPC: function registry {key} created for host '{hostname}'");
+        self.functions.set_owner(key);
     }
 
     /// `RRDHOST_FLAG_ARCHIVED`.
@@ -2047,6 +2045,11 @@ impl Hosts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A handler for registrations no test calls.
+    fn inert(_: &mut nrpc::reply::Reply, _: &[u8], _: Option<&nrpc::reply::Payload>, _: &[u8]) -> u16 {
+        200
+    }
     use crate::testutil::{backfill_dim, collected_chart, engine, info, store, tier_records};
 
     /// `stream_path_parent_disconnected()`: the entries after this agent's go, and only a cut reports one.
@@ -2437,7 +2440,7 @@ mod tests {
                 access: 0,
                 sync: false,
                 source: nrpc::Source::Stream,
-                handler: nrpc::Handler::Unwired,
+                handler: nrpc::Handler::Builtin(inert),
             };
             host.register_function(&desc).unwrap();
         };
@@ -2688,6 +2691,34 @@ mod tests {
         assert!(!host.functions().exists());
         host.update(&info("x"), 1, 3600, false, 0, 0);
         assert!(host.functions().exists());
+    }
+
+    /// `nrpc_owner_str()`: the registry's records name it by its host's handle, the one its creation record printed;
+    /// the refusals name the host.
+    #[test]
+    fn a_reregistration_names_the_registry_by_its_handle() {
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000ce", false, info("child")));
+        let ((), created) = netdata_agent_log::capture(|| host.log_registry_created("child"));
+        let created = created[0].message.clone().unwrap();
+        let key = created.strip_prefix("NRPC: function registry ").and_then(|r| r.split(' ').next()).unwrap();
+        assert_eq!(created, format!("NRPC: function registry {key} created for host 'child'"));
+        let desc = |timeout_s| MethodDesc {
+            name: b"x",
+            help: b"h",
+            tags: b"",
+            timeout_s,
+            priority: 0,
+            version: 0,
+            access: 0,
+            sync: false,
+            source: nrpc::Source::Stream,
+            handler: nrpc::Handler::Builtin(inert),
+        };
+        host.register_function(&desc(10)).unwrap();
+        let (_, records) = netdata_agent_log::capture(|| host.register_function(&desc(20)).unwrap());
+        let texts: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
+        assert_eq!(texts, [format!("NRPC: method 'x' of host {key} re-registered with changes")]);
+        assert!(key.starts_with("0x") && key.len() == 18);
     }
 
     /// `stream_sender_structures_free()` at the host's cleanup: the sender freed once; the host no longer streams and

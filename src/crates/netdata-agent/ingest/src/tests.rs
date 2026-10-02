@@ -42,6 +42,11 @@ fn parser(host: &Arc<Host>) -> Parser {
 }
 
 fn parser_with(host: &Arc<Host>, capabilities: u32) -> Parser {
+    stream_parser_on(host, capabilities, Arc::new(TestWire::default()))
+}
+
+/// A child's stream parser on `host`, whose calls go to the child through `wire`.
+fn stream_parser_on(host: &Arc<Host>, capabilities: u32, wire: Arc<TestWire>) -> Parser {
     Parser::new(
         Arc::clone(host),
         named_host("parent", "5a1e0000-0000-4000-8000-0000000000aa", true),
@@ -52,6 +57,7 @@ fn parser_with(host: &Arc<Host>, capabilities: u32) -> Parser {
             now: || (NOW, 0),
             gap_when_lost_iterations_above: 3,
         },
+        wire,
     )
 }
 
@@ -1380,6 +1386,7 @@ fn stream_path_parser(capabilities: u32) -> (Arc<Host>, Parser) {
             now: || (NOW, 0),
             gap_when_lost_iterations_above: 3,
         },
+        Arc::new(TestWire::default()),
     );
     p.take_output();
     (h, p)
@@ -2756,6 +2763,105 @@ fn call_plugin(hosts: &Arc<Hosts>, cmd: &[u8], tx: &[u8]) -> std::sync::mpsc::Re
     });
     assert_eq!(called.code, 200);
     answers
+}
+
+/// A call of a child's method, from the parent's web (wait off, the answer to `answers`, the progress to `progress`).
+fn call_child(
+    h: &Arc<Host>,
+    cmd: &[u8],
+    tx: &[u8],
+    progress: Arc<std::sync::Mutex<Vec<(usize, usize)>>>,
+) -> std::sync::mpsc::Receiver<(nrpc::reply::Reply, u16)> {
+    let (send, answers) = std::sync::mpsc::channel();
+    let called = nrpc::call::Calls::process().call(nrpc::call::CallSpec {
+        owner: Some((h.functions(), "child")),
+        cmd,
+        source: b"from-web",
+        user_access: 0,
+        timeout_s: 0,
+        wait: false,
+        allow_restricted: true,
+        call_id: Some(tx),
+        payload: None,
+        reply: nrpc::reply::Reply::new(nrpc::reply::ContentType::TextPlain),
+        done: Some(Box::new(move |reply, code| {
+            let _ = send.send((reply, code));
+        })),
+        progress: Some(Arc::new(move |_: &[u8; 16], done, all| progress.lock().unwrap().push((done, all)))),
+        is_cancelled: None,
+    });
+    assert_eq!(called.code, 200);
+    answers
+}
+
+/// A child's FUNCTION is its connection's (`send_to_child`, D164.B1): a call goes down the wire, a progress request
+/// only with PROGRESS negotiated (pluginsd_functions.c:469-475), the child's FUNCTION_PROGRESS reaches the caller
+/// (missing numbers as 0, :715-736) and its result span answers the call.
+#[test]
+fn a_childs_function_is_called_through_its_connection() {
+    for (caps, tx, progress_goes_down) in
+        [(caps::PROGRESS, "5a1e00000000400080000000000000f7", true), (0, "5a1e00000000400080000000000000f8", false)]
+    {
+        let h = host();
+        let wire = Arc::new(TestWire::default());
+        let mut p = stream_parser_on(&h, caps, Arc::clone(&wire));
+        feed_ok(&mut p, &["FUNCTION GLOBAL \"answer\" 10 \"help\" \"top\" \"0x0\" 100 0".into()]);
+        let progress = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let answers = call_child(&h, b"answer now", tx.as_bytes(), Arc::clone(&progress));
+        nrpc::call::Calls::process().progress(tx);
+        let mut down = format!("FUNCTION {tx} 10 \"answer now\" \"0x0\" \"from-web\"\n");
+        if progress_goes_down {
+            down += &format!("FUNCTION_PROGRESS {tx}\n");
+        }
+        assert_eq!(String::from_utf8(std::mem::take(&mut *wire.0.lock().unwrap())).unwrap(), down);
+        feed_ok(&mut p, &[format!("FUNCTION_PROGRESS '{tx}'"), format!("FUNCTION_PROGRESS '{tx}' 5 10")]);
+        assert_eq!(*progress.lock().unwrap(), [(0, 0), (5, 10)]);
+        let expires = netdata_agent_rrd::clock::now_realtime_s() + 60;
+        let span = format!("FUNCTION_RESULT_BEGIN '{tx}' 200 application/json {expires}");
+        feed_ok(&mut p, &[span, "{}".into(), "FUNCTION_RESULT_END".into()]);
+        let (reply, code) = answers.recv().unwrap();
+        assert_eq!((code, reply.body.as_slice()), (200, &b"{}\n"[..]));
+    }
+}
+
+/// A child's FUNCTION sent again with changes (every reconnect, R:137-172): its record carries the line being read, as
+/// C's receiver frame gives every record written during a read (stream-receiver.c:991-998).
+#[test]
+fn a_childs_reregistration_is_recorded_with_its_line() {
+    let h = host();
+    let mut p = parser(&h);
+    feed_ok(&mut p, &["FUNCTION GLOBAL \"x\" 10 \"h\" \"top\" \"0x0\" 100 0".into()]);
+    let (_, records) =
+        netdata_agent_log::capture(|| feed_all(&mut p, &["FUNCTION GLOBAL \"x\" 20 \"h\" \"top\" \"0x0\" 100 0"]));
+    let changed = records
+        .into_iter()
+        .find(|r| r.message.as_deref().is_some_and(|m| m.contains("re-registered with changes")))
+        .unwrap();
+    let line = "'FUNCTION' 'GLOBAL' 'x' '20' 'h' 'top' '0x0' '100' '0'".to_string();
+    assert!(changed.fields.contains(&(Field::Request, line)), "{:?}", changed.fields);
+}
+
+/// The connection's end (`parser_destroy()`): a span cut short answers 503 with what came, another pending call C's
+/// "exited before responding" 503, and the methods answer as a transport that is gone.
+#[test]
+fn a_childs_end_answers_its_pending_calls() {
+    let h = host();
+    let wire = Arc::new(TestWire::default());
+    let mut p = stream_parser_on(&h, caps::PROGRESS, Arc::clone(&wire));
+    feed_ok(&mut p, &["FUNCTION GLOBAL \"answer\" 10 \"help\" \"top\" \"0x0\" 100 0".into()]);
+    let (cut, waiting) = ("5a1e00000000400080000000000000f9", "5a1e00000000400080000000000000fa");
+    let cut_rx = call_child(&h, b"answer", cut.as_bytes(), Arc::default());
+    let waiting_rx = call_child(&h, b"answer", waiting.as_bytes(), Arc::default());
+    feed_ok(&mut p, &[format!("FUNCTION_RESULT_BEGIN {cut} 200 text/plain 0"), "half".into()]);
+    drop(p);
+    let (reply, code) = cut_rx.recv().unwrap();
+    assert_eq!((code, reply.body.as_slice()), (503, &b"half\n"[..]));
+    let (reply, code) = waiting_rx.recv().unwrap();
+    let exited = concat!(
+        r#"{"status":503,"errorMessage":"#,
+        r#""The plugin that was servicing this request, exited before responding."}"#
+    );
+    assert_eq!((code, String::from_utf8(reply.body).unwrap()), (503, exited.to_string()));
 }
 
 /// A plugin's FUNCTION is its transport's: a call goes to its stdin, its result span answers it, the span's END

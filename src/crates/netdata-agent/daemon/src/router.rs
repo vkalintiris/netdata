@@ -484,6 +484,16 @@ impl<'a> Route<'a> {
 mod tests {
     use super::*;
 
+    /// A handler for registrations no test calls.
+    fn inert(
+        _: &mut netdata_agent_nrpc::reply::Reply,
+        _: &[u8],
+        _: Option<&netdata_agent_nrpc::reply::Payload>,
+        _: &[u8],
+    ) -> u16 {
+        200
+    }
+
     fn shared() -> Shared {
         Shared {
             settings: netdata_agent_web::request::Settings {
@@ -703,7 +713,7 @@ mod tests {
             access: access::ANONYMOUS_DATA,
             sync: false,
             source: Source::Stream,
-            handler: Handler::Unwired,
+            handler: Handler::Builtin(inert),
         };
         s.hosts.localhost().functions().register("box", &desc).unwrap();
         let request = |path: &[u8], query: &str, client_acl: u32| {

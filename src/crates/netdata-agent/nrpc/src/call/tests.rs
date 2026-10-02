@@ -447,19 +447,3 @@ fn cancel_and_progress_as_c() {
         (req.done)(req.reply, 200);
     }
 }
-
-/// A child's method on a parent before milestone 8 commit 7: C's answer of a transport that is gone.
-#[test]
-fn an_unwired_method_answers_503() {
-    let (calls, _) = calls();
-    let r = Registry::default();
-    register(&r, b"child-fn", Handler::Unwired, |d| d.source = Source::Stream);
-    let (done, rx) = done_channel();
-    assert_eq!(calls.call(CallSpec { done: Some(done), ..spec(&r, b"child-fn") }).code, 503);
-    let (reply, code) = rx.recv().unwrap();
-    assert_eq!(
-        (code, error_text(&reply)),
-        (503, r#"{"status":503,"errorMessage":"The plugin that offered this function is not available."}"#.into())
-    );
-    assert!(lock(&calls.table).is_empty());
-}

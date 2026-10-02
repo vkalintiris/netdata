@@ -1,8 +1,8 @@
-//! A plugin's function calls (`src/plugins.d/pluginsd_functions.c`, its parser's half of `pluginsd_internals.c`):
-//! the transport the plugin's methods are registered with. A call is written to the plugin's stdin as `FUNCTION` or
-//! `FUNCTION_PAYLOAD`, kept pending until the plugin's `FUNCTION_RESULT_BEGIN` ... `FUNCTION_RESULT_END` answers it,
-//! cancelled when its deadline passes (checked when another call comes or a send fails, as C), and answered 503 when
-//! the run ends first.
+//! The function calls of a parser (`src/plugins.d/pluginsd_functions.c`, its half of `pluginsd_internals.c`): the
+//! transport the methods of a plugin, or of a child streaming to this parent, are registered with. A call is written
+//! to the plugin's stdin or the child's socket as `FUNCTION` or `FUNCTION_PAYLOAD`, kept pending until the
+//! `FUNCTION_RESULT_BEGIN` ... `FUNCTION_RESULT_END` that answers it, cancelled when its deadline passes (checked when
+//! another call comes or a send fails, as C), and answered 503 when the run or the connection ends first.
 //!
 //! Locking (D147): the pending calls' lock is never held across a write to the plugin or a delivery; the dispatch
 //! gate fails new dispatches once the run ends and never blocks one.
@@ -15,8 +15,8 @@ use netdata_agent_nrpc::lifetime::Gate;
 use netdata_agent_nrpc::reply::{ContentType, Reply};
 use netdata_agent_pluginsd_proto::emit;
 
-/// The plugin's stdin (`send_to_plugin()`): `text` written in one piece under the writer's lock; the bytes written,
-/// or C's negative code after its warning.
+/// The plugin's stdin or the child's socket (`send_to_plugin()`): `text` written in one piece under the writer's lock;
+/// the bytes written, or C's negative code after its warning.
 pub trait Wire: Send + Sync {
     fn send(&self, text: &[u8]) -> isize;
 }
@@ -61,11 +61,13 @@ struct Table {
     smaller_deadline_ut: u64,
 }
 
-/// `parser->inflight`: one plugin run's transport.
-pub struct PluginTransport {
-    me: Weak<PluginTransport>,
+/// `parser->inflight`: the transport of one plugin run or one child connection.
+pub struct PluginsdTransport {
+    me: Weak<PluginsdTransport>,
     gate: Gate,
     wire: Arc<dyn Wire>,
+    /// Progress requests go down: always to a plugin, to a child only with PROGRESS negotiated.
+    progress: bool,
     calls: Arc<Calls>,
     table: Mutex<Table>,
 }
@@ -74,13 +76,15 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-impl PluginTransport {
-    /// `pluginsd_calls_init()`: writes to `wire`, reads the deadlines of `calls`.
-    pub fn new(wire: Arc<dyn Wire>, calls: Arc<Calls>) -> Arc<Self> {
-        Arc::new_cyclic(|me| PluginTransport {
+impl PluginsdTransport {
+    /// `pluginsd_calls_init()`: writes to `wire`, reads the deadlines of `calls`; `progress`: whether the other end
+    /// takes progress requests.
+    pub fn new(wire: Arc<dyn Wire>, calls: Arc<Calls>, progress: bool) -> Arc<Self> {
+        Arc::new_cyclic(|me| PluginsdTransport {
             me: me.clone(),
             gate: Gate::default(),
             wire,
+            progress,
             calls,
             table: Mutex::new(Table::default()),
         })
@@ -232,7 +236,7 @@ impl PluginTransport {
     }
 }
 
-impl netdata_agent_nrpc::Transport for PluginTransport {
+impl netdata_agent_nrpc::Transport for PluginsdTransport {
     /// `pluginsd_nrpc_handler()`.
     fn dispatch(&self, req: Request) -> u16 {
         let Some(_pass) = self.gate.try_acquire() else {
@@ -288,9 +292,11 @@ impl netdata_agent_nrpc::Transport for PluginTransport {
             return 503;
         }
         if let Some(hooks) = self.hooks() {
-            // a plugin's progress pings always go to it (a child's only with PROGRESS, milestone 8 commit 7)
+            // a plugin's progress pings always go to it, a child's only with PROGRESS (pluginsd_functions.c:469-475)
             req.call.set_cancel_hook(Arc::clone(&hooks));
-            req.call.set_progress_hook(hooks);
+            if self.progress {
+                req.call.set_progress_hook(hooks);
+            }
         }
         let collect = {
             let mut t = lock(&self.table);
@@ -307,7 +313,7 @@ impl netdata_agent_nrpc::Transport for PluginTransport {
     }
 }
 
-impl Hooks for PluginTransport {
+impl Hooks for PluginsdTransport {
     /// `pluginsd_function_cancel_to_plugin()`.
     fn cancel(&self, key: &str) {
         let Some(_pass) = self.gate.try_acquire() else {

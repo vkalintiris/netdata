@@ -498,11 +498,6 @@ fn dispatch(method: &Method, mut req: Request, is_cancelled: Option<IsCancelled<
             (req.done)(req.reply, code);
             code
         }
-        Handler::Unwired => {
-            let code = req.reply.error("The plugin that offered this function is not available.", 503);
-            (req.done)(req.reply, code);
-            code
-        }
     }
 }
 

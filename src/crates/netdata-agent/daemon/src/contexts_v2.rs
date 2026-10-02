@@ -558,6 +558,16 @@ pub fn functions(route: &Route<'_>, query: &[u8]) -> Reply {
 mod tests {
     use super::*;
 
+    /// A handler for registrations no test calls.
+    fn inert(
+        _: &mut netdata_agent_nrpc::reply::Reply,
+        _: &[u8],
+        _: Option<&netdata_agent_nrpc::reply::Payload>,
+        _: &[u8],
+    ) -> u16 {
+        200
+    }
+
     /// C's functions dictionary (`api_v2_contexts.c:779-806`) and writer (`:1481-1516`): a name and version two hosts
     /// share keeps the first host's attributes and lists both; another version is its own entry; the bytes are C's
     /// (H9's oracle body).
@@ -574,7 +584,7 @@ mod tests {
             access: access::ANONYMOUS_DATA,
             sync: false,
             source: Source::Stream,
-            handler: Handler::Unwired,
+            handler: Handler::Builtin(inert),
         };
         let (local, vnode) = (Registry::default(), Registry::default());
         local.register("l", &desc(b"difftest-same", b"same on localhost", 1)).unwrap();

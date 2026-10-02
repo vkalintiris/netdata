@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// A handler for registrations no test calls.
+fn inert(_: &mut reply::Reply, _: &[u8], _: Option<&reply::Payload>, _: &[u8]) -> u16 {
+    200
+}
+
 fn desc(name: &'static [u8], source: Source) -> MethodDesc<'static> {
     MethodDesc {
         name,
@@ -13,7 +18,7 @@ fn desc(name: &'static [u8], source: Source) -> MethodDesc<'static> {
         access: 0,
         sync: false,
         source,
-        handler: Handler::Unwired,
+        handler: Handler::Builtin(inert),
     }
 }
 

@@ -45,7 +45,7 @@ struct Fixture {
     now: Arc<AtomicU64>,
     calls: Arc<Calls>,
     wire: Arc<TestWire>,
-    transport: Arc<PluginTransport>,
+    transport: Arc<PluginsdTransport>,
     registry: Registry,
 }
 
@@ -55,7 +55,7 @@ fn fixture() -> Fixture {
     let now = Arc::new(AtomicU64::new(T0));
     let calls = Calls::new(Box::new(TestClock(Arc::clone(&now))));
     let wire = Arc::new(TestWire::default());
-    let transport = PluginTransport::new(Arc::clone(&wire) as Arc<dyn Wire>, Arc::clone(&calls));
+    let transport = PluginsdTransport::new(Arc::clone(&wire) as Arc<dyn Wire>, Arc::clone(&calls), true);
     let registry = Registry::default();
     for (name, timeout_s) in [(&b"slow"[..], 1), (b"top", 10)] {
         registry
@@ -504,7 +504,7 @@ fn the_runs_end_waits_for_a_dispatch_in_flight() {
     let (release_tx, release_rx) = mpsc::channel();
     let wire = Arc::new(BlockingWire { entered: Mutex::new(Some(entered_tx)), release: Mutex::new(Some(release_rx)) });
     let calls = Calls::new(Box::new(TestClock(Arc::new(AtomicU64::new(T0)))));
-    let transport = PluginTransport::new(wire as Arc<dyn Wire>, Arc::clone(&calls));
+    let transport = PluginsdTransport::new(wire as Arc<dyn Wire>, Arc::clone(&calls), true);
     let registry = Arc::new(Registry::default());
     registry
         .register(

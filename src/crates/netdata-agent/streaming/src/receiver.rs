@@ -40,6 +40,25 @@ use crate::thread::{StreamMsg, StreamWorker};
 /// `STREAM_OPCODE_RECEIVER_POLLOUT`: lines are owed to a receiver's child.
 const RECEIVER_POLLOUT: u32 = 1 << 1;
 
+/// `send_to_child()` as the wire of a receiver's parser: a call goes into the connection's outbox, which its stream
+/// thread writes; once the connection is gone, 0 (C's "no buffer"). The slot is held weakly, so the socket still
+/// closes with the connection.
+struct ChildWire {
+    slot: Weak<ReceiverSlot>,
+}
+
+impl ingest::functions::Wire for ChildWire {
+    fn send(&self, text: &[u8]) -> isize {
+        match self.slot.upgrade() {
+            Some(slot) => {
+                slot.send_to_child(text);
+                text.len() as isize
+            }
+            None => 0,
+        }
+    }
+}
+
 /// `CONNECTION_PROBE_INTERVAL_SECONDS` and `CONNECTION_PROBE_COUNT` of the receiver's TCP keepalive.
 const KEEPALIVE_PROBE_INTERVAL_S: u32 = 10;
 const KEEPALIVE_PROBES: u32 = 3;
@@ -893,6 +912,7 @@ impl StreamWorker {
             Arc::clone(&attached.host),
             Arc::clone(attached.hosts.localhost()),
             attached.parser,
+            Arc::new(ChildWire { slot: Arc::downgrade(&attached.slot) }),
         );
         // a backfilled chart's request comes back to this thread for this connection
         let (pool, thread, receiver) = (
@@ -1669,6 +1689,16 @@ fn receiver_mode(configured: &str, default: &str, dbengine: bool) -> (DbMode, bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A handler for registrations no test calls.
+    fn inert(
+        _: &mut netdata_agent_nrpc::reply::Reply,
+        _: &[u8],
+        _: Option<&netdata_agent_nrpc::reply::Payload>,
+        _: &[u8],
+    ) -> u16 {
+        200
+    }
     use netdata_agent_rrd::host::HostInfo;
     use std::os::fd::AsFd;
 
@@ -1949,7 +1979,7 @@ mod tests {
             access: 0,
             sync: false,
             source: netdata_agent_nrpc::Source::Stream,
-            handler: netdata_agent_nrpc::Handler::Unwired,
+            handler: netdata_agent_nrpc::Handler::Builtin(inert),
         };
         host.register_function(&desc).unwrap();
         assert!(available());

@@ -31,7 +31,8 @@ pub const NODE_INSTANCE: [Capability; 9] = [
     // metric_correlations_version: the weights API (M10)
     capa("mc", 1, false),
     capa("ctx", 1, true),
-    // Functions: localhost's (children with FUNCTIONS come with M8 commit 7; aclk_capas.c:41,49)
+    // Functions: localhost's; a child's (FUNCTIONS negotiated, aclk_capas.c:41,49) is shown only where its
+    // consumers are, /api/v2/nodes and node_instances (M10) and the ACLK (M11), D164.B4
     capa("funcs", 1, true),
     capa("http_api_v2", HTTP_API_V2_VERSION, true),
     // host->health.enabled: no health engine (M9)
