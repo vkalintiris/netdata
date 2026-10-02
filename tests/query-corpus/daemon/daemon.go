@@ -633,11 +633,14 @@ func (d *Daemon) launch() error {
 	for {
 		info, err := getJSONWithClient(client, d.BaseURL+"/api/v1/info")
 		if err != nil && strings.Contains(err.Error(), "HTTP 412") {
-			// [web] bearer token protection: /api/v3/info alone stays open to an anonymous client
+			// [web] bearer token protection: /api/v3/info alone stays open to an anonymous client, and answers
+			// before the startup completes, so the record logged once the agent is ready stands in for the 200
 			if info3, err3 := getJSONWithClient(client, d.BaseURL+"/api/v3/info"); err3 == nil {
 				info, err = nil, infoV3HasDaemonIdentity(info3, d.Hostname)
-				if err == nil {
+				if err == nil && startupLogShowsReady(d.Opts.RunDir, logOffset) {
 					return nil
+				} else if err == nil {
+					err = errors.New("daemon: /api/v3/info answers, but the startup has not completed")
 				}
 			}
 		}
@@ -747,6 +750,14 @@ func forgetFailedAttempt(runDir string) {
 
 // startupLogShowsBindCollision tells whether a launch's output, or what it added to the daemon log after
 // `daemonLogOffset` (where both agents log it), says its port was taken.
+// startupLogShowsReady: this launch's daemon.log has the startup step that follows `netdata_ready_store(true)` (the
+// completion record precedes it).
+func startupLogShowsReady(runDir string, daemonLogOffset int64) bool {
+	b, err := os.ReadFile(filepath.Join(runDir, "log", "daemon.log"))
+	return err == nil && int64(len(b)) >= daemonLogOffset &&
+		strings.Contains(string(b[daemonLogOffset:]), "agent start timings - next: anonymous analytics")
+}
+
 func startupLogShowsBindCollision(runDir string, daemonLogOffset int64) bool {
 	var text strings.Builder
 	if b, err := os.ReadFile(filepath.Join(runDir, "log", "stdout.log")); err == nil {
