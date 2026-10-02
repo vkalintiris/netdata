@@ -1,0 +1,448 @@
+{
+  "at_bitset_threshold": {
+    "lists": 125,
+    "threshold": 3906
+  },
+  "avg_entries_per_row": 46.304656,
+  "cardinality_threshold": 100,
+  "complement_candidates_gt50pct": 23,
+  "derive_seconds": 12.225553134,
+  "distinct_fields": 47,
+  "distinct_kvs": 2437940,
+  "fields": [
+    {
+      "distinct_values": 250000,
+      "field": "body.data.cert_index",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 250000,
+      "field": "body.data.cert_link",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 1,
+      "field": "body.data.leaf_cert.all_domains",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 324536,
+      "field": "body.data.leaf_cert.all_domains[]",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 190,
+      "field": "body.data.leaf_cert.extensions.authorityInfoAccess",
+      "tier": "mid"
+    },
+    {
+      "distinct_values": 180,
+      "field": "body.data.leaf_cert.extensions.authorityKeyIdentifier",
+      "tier": "mid"
+    },
+    {
+      "distinct_values": 1,
+      "field": "body.data.leaf_cert.extensions.basicConstraints",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 32,
+      "field": "body.data.leaf_cert.extensions.certificatePolicies",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 1,
+      "field": "body.data.leaf_cert.extensions.ctlPoisonByte",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 3,
+      "field": "body.data.leaf_cert.extensions.keyUsage",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 183484,
+      "field": "body.data.leaf_cert.extensions.subjectAltName",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 177394,
+      "field": "body.data.leaf_cert.extensions.subjectKeyIdentifier",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 206979,
+      "field": "body.data.leaf_cert.fingerprint",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 1,
+      "field": "body.data.leaf_cert.is_ca",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 18,
+      "field": "body.data.leaf_cert.issuer.C",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 180,
+      "field": "body.data.leaf_cert.issuer.CN",
+      "tier": "mid"
+    },
+    {
+      "distinct_values": 4,
+      "field": "body.data.leaf_cert.issuer.L",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 46,
+      "field": "body.data.leaf_cert.issuer.O",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 8,
+      "field": "body.data.leaf_cert.issuer.OU",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 1,
+      "field": "body.data.leaf_cert.issuer.ST",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 180,
+      "field": "body.data.leaf_cert.issuer.aggregated",
+      "tier": "mid"
+    },
+    {
+      "distinct_values": 1,
+      "field": "body.data.leaf_cert.issuer.email_address",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 28083,
+      "field": "body.data.leaf_cert.not_after",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 15052,
+      "field": "body.data.leaf_cert.not_before",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 193882,
+      "field": "body.data.leaf_cert.serial_number",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 206979,
+      "field": "body.data.leaf_cert.sha1",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 206979,
+      "field": "body.data.leaf_cert.sha256",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 5,
+      "field": "body.data.leaf_cert.signature_algorithm",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 22,
+      "field": "body.data.leaf_cert.subject.C",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 168248,
+      "field": "body.data.leaf_cert.subject.CN",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 84,
+      "field": "body.data.leaf_cert.subject.L",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 149,
+      "field": "body.data.leaf_cert.subject.O",
+      "tier": "mid"
+    },
+    {
+      "distinct_values": 2,
+      "field": "body.data.leaf_cert.subject.OU",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 1,
+      "field": "body.data.leaf_cert.subject.ST",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 168251,
+      "field": "body.data.leaf_cert.subject.aggregated",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 1,
+      "field": "body.data.leaf_cert.subject.email_address",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 56921,
+      "field": "body.data.seen",
+      "tier": "high"
+    },
+    {
+      "distinct_values": 16,
+      "field": "body.data.source.name",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 16,
+      "field": "body.data.source.url",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 2,
+      "field": "body.data.update_type",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 1,
+      "field": "body.message_type",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 1,
+      "field": "event_name",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 1,
+      "field": "resource.attributes.service.name",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 1,
+      "field": "scope.name",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 1,
+      "field": "scope.version",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 1,
+      "field": "severity_number",
+      "tier": "low"
+    },
+    {
+      "distinct_values": 1,
+      "field": "severity_text",
+      "tier": "low"
+    }
+  ],
+  "lines_seen": 250000,
+  "posting_cardinality_histogram": [
+    {
+      "bucket": "1",
+      "lists": 2019175
+    },
+    {
+      "bucket": "2-4",
+      "lists": 355479
+    },
+    {
+      "bucket": "5-16",
+      "lists": 56094
+    },
+    {
+      "bucket": "17-64",
+      "lists": 4770
+    },
+    {
+      "bucket": "65-256",
+      "lists": 2097
+    },
+    {
+      "bucket": "257-1k",
+      "lists": 114
+    },
+    {
+      "bucket": "1k-4k",
+      "lists": 86
+    },
+    {
+      "bucket": "4k-16k",
+      "lists": 55
+    },
+    {
+      "bucket": "16k-64k",
+      "lists": 39
+    },
+    {
+      "bucket": ">64k",
+      "lists": 31
+    }
+  ],
+  "posting_density_histogram": [
+    {
+      "bucket": "<=0.001%",
+      "lists": 2237404
+    },
+    {
+      "bucket": "0.001-0.01%",
+      "lists": 195307
+    },
+    {
+      "bucket": "0.01-0.1%",
+      "lists": 4903
+    },
+    {
+      "bucket": "0.1-1%",
+      "lists": 182
+    },
+    {
+      "bucket": "1-10%",
+      "lists": 87
+    },
+    {
+      "bucket": "10-50%",
+      "lists": 34
+    },
+    {
+      "bucket": ">=50%",
+      "lists": 23
+    }
+  ],
+  "rows": 250000,
+  "rows_per_source": {
+    "certstream": 250000,
+    "jetstream": 0
+  },
+  "tier_summary": {
+    "high": {
+      "fields": 14,
+      "lists": 2436788,
+      "postings": 3688977
+    },
+    "low": {
+      "fields": 28,
+      "lists": 273,
+      "postings": 6637188
+    },
+    "mid": {
+      "fields": 5,
+      "lists": 879,
+      "postings": 1249999
+    }
+  },
+  "top20_by_cardinality": [
+    {
+      "cardinality": 250000,
+      "density": 1.0,
+      "kv": "resource.attributes.service.name=certstream"
+    },
+    {
+      "cardinality": 250000,
+      "density": 1.0,
+      "kv": "scope.name=certstream-otel-bridge"
+    },
+    {
+      "cardinality": 250000,
+      "density": 1.0,
+      "kv": "scope.version=0.1.3"
+    },
+    {
+      "cardinality": 250000,
+      "density": 1.0,
+      "kv": "severity_number=9"
+    },
+    {
+      "cardinality": 250000,
+      "density": 1.0,
+      "kv": "severity_text=INFO"
+    },
+    {
+      "cardinality": 250000,
+      "density": 1.0,
+      "kv": "event_name=certificate_update"
+    },
+    {
+      "cardinality": 250000,
+      "density": 1.0,
+      "kv": "body.data.leaf_cert.is_ca=false"
+    },
+    {
+      "cardinality": 250000,
+      "density": 1.0,
+      "kv": "body.data.leaf_cert.issuer.ST="
+    },
+    {
+      "cardinality": 250000,
+      "density": 1.0,
+      "kv": "body.data.leaf_cert.issuer.email_address="
+    },
+    {
+      "cardinality": 250000,
+      "density": 1.0,
+      "kv": "body.data.leaf_cert.subject.ST="
+    },
+    {
+      "cardinality": 250000,
+      "density": 1.0,
+      "kv": "body.data.leaf_cert.subject.email_address="
+    },
+    {
+      "cardinality": 250000,
+      "density": 1.0,
+      "kv": "body.message_type=certificate_update"
+    },
+    {
+      "cardinality": 249999,
+      "density": 0.999996,
+      "kv": "body.data.leaf_cert.subject.OU="
+    },
+    {
+      "cardinality": 249920,
+      "density": 0.99968,
+      "kv": "body.data.leaf_cert.issuer.L="
+    },
+    {
+      "cardinality": 249122,
+      "density": 0.996488,
+      "kv": "body.data.leaf_cert.extensions.basicConstraints=CA:FALSE"
+    },
+    {
+      "cardinality": 247991,
+      "density": 0.991964,
+      "kv": "body.data.leaf_cert.issuer.OU="
+    },
+    {
+      "cardinality": 239349,
+      "density": 0.957396,
+      "kv": "body.data.leaf_cert.issuer.C=US"
+    },
+    {
+      "cardinality": 237168,
+      "density": 0.948672,
+      "kv": "body.data.leaf_cert.subject.L="
+    },
+    {
+      "cardinality": 236928,
+      "density": 0.947712,
+      "kv": "body.data.leaf_cert.subject.C="
+    },
+    {
+      "cardinality": 236928,
+      "density": 0.947712,
+      "kv": "body.data.leaf_cert.subject.O="
+    }
+  ],
+  "total_postings": 11576164,
+  "universe": 250000
+}

@@ -1,0 +1,107 @@
+# Benchmark environment
+
+- Date: 2026-10-02 (all runs this evidence directory reports)
+- CPU: AMD Ryzen 9 5900X 12-Core/24-Thread (max 4951.5 MHz)
+- RAM: 31 GiB
+- OS/kernel: Ubuntu (Linux 6.8.0-139-generic), x86_64
+- rustc: 1.95.0 (59807616e 2026-04-14); cargo 1.95.0 (f2d3ce0bd 2026-03-21)
+- roaring: workspace pin `netdata/roaring-rs` branch `allocative`,
+  commit 3ee69b1db5a2a4fc909076962c0159ddae893f8c (Cargo.lock) — the same
+  crate sfst accumulates with; never overridden. roaring's `allocative`
+  feature is enabled for the in-memory deep-size measurement
+  (`allocative::size_of_unique`, allocative 0.3.6).
+- treight: workspace member at src/crates/treight (benches run with
+  `--features roaring`).
+
+## Machine sharing / noise
+
+The box is SHARED with other agents on the same blog task (corpus capture,
+writing, diagrams) and other builds during the runs. Timings are criterion
+medians over 50 samples (1s warmup, 2s measurement per bench); medians are
+robust to transient load but absolute numbers carry shared-machine noise —
+compare relative orderings, not sub-percent deltas. RAM was ~17/31 GiB used
+at run time.
+
+## Build note
+
+This host wraps `cc` as ccache with a read-only default cache dir, so every
+cargo invocation in the evidence commands below ran with
+`CCACHE_DIR=/tmp/nd-bp-ccache`. This affects BUILD times only, never bench
+timings (cargo bench rebuilds happen before timing starts).
+
+## Corpora (inputs, from task-1 / corpus-eng)
+
+- data/corpus/certstream-250k.jsonl.gz — 250,000 lines, Certificate
+  Transparency certificate_update messages via the local certstream docker.
+- data/corpus/jetstream-250k.jsonl.gz — 250,000 lines, Bluesky Jetstream
+  events (jetstream2.us-east.bsky.network).
+- data/corpus/mixed-250k.jsonl.gz — 250,000 lines (125K + 125K
+  arrival-interleaved, `{"_capture_src":...,"event":{...}}` envelope).
+Full capture provenance, exact capture commands, and SHA256s:
+posts/treight-bitmap/evidence/corpora/ (committed by corpus-eng).
+
+## Exact commands (reproduce from the repo root)
+
+```bash
+export CCACHE_DIR=/tmp/nd-bp-ccache
+
+# 1. Derive posting lists (production flatten path — see TRACE.md)
+for c in certstream jetstream mixed; do
+  cargo run -q -p treight-bench --bin treight-derive -- \
+      --corpus data/corpus/$c-250k.jsonl.gz --out data/derived/$c-250k
+done
+
+# 2. Index-footprint totals (treight vs roaring bytes over all posting lists)
+for c in certstream jetstream mixed; do
+  cargo run -q -p treight-bench --bin treight-footprint -- \
+      --derived data/derived/$c-250k \
+      --json posts/treight-bitmap/evidence/bench/totals-$c-250k.json \
+      --md   posts/treight-bitmap/evidence/bench/totals-$c-250k.md
+done
+
+# 3. CPU benches (criterion; per-corpus runs write bench-fixtures.json into
+#    the derived dir; raw criterion output under src/crates/target/criterion)
+TREIGHT_BENCH_DERIVED=$PWD/data/derived \
+  cargo bench -p treight --features roaring --bench vs_roaring
+
+# 4. Harvest medians into evidence
+python3 posts/treight-bitmap/evidence/bench/harvest.py \
+    --derived data/derived \
+    --criterion src/crates/target/criterion \
+    --out posts/treight-bitmap/evidence/bench
+
+# 5. (stretch) real .sfst build + derivation cross-check — see sfst-stretch.md
+cargo run -q -p treight-bench --bin treight-sfst -- \
+    --derived data/derived/certstream-250k --out data/derived/sfst-stretch
+```
+
+Derived caches live under gitignored data/derived/<corpus>/ (format
+documented in src/crates/treight-bench/src/lib.rs; version-tagged in
+meta.json). Corpora are public internet data but contain personal data
+(DIDs, handles, cert subjects); only aggregates are committed.
+
+## PUBLISHED vs validation runs
+
+The numbers in results.json/md are from the FINAL EXCLUSIVE PASS
+(2026-10-02 22:29–22:44 +03): all blog-team teammates frozen (no chart
+generation, no typst compiles, no cargo builds by others; the Lead limited
+itself to sub-second git operations). The earlier full run (~21:50–22:10)
+is disclosed as SUITE VALIDATION only — during that window concurrent CPU
+work WAS present, including this agent's own clippy compiles and
+stats/totals regeneration (details in TRACE.md).
+
+Ambient non-blog load during the exclusive pass (disclosed, not hidden):
+loadavg was ~2.5 at start, ~3.5 steady-state, peaking 5.9 transiently —
+from work OUTSIDE the blog team (verified: nothing of ours was running
+beyond the benches themselves). Snapshots (1-min/5-min/15-min):
+
+    before (22:29:40): 2.46 3.67 4.09
+    during (steady):   ~3.5-4.5 typical, max 5.9 (transient)
+    after  (22:44:16): 3.56 3.74 3.85
+
+The ambient load was roughly constant across the whole pass, so RELATIVE
+treight-vs-roaring comparisons (same machine, same window, interleaved
+corpora) remain meaningful; absolute nanoseconds carry shared-machine
+noise as always. Full 5-second-cadence log:
+data/derived/bench-logs/exclusive-loadavg.log (local, gitignored; sampled
+snapshots above are the committed record).

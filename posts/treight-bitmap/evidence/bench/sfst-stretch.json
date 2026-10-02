@@ -1,0 +1,30 @@
+{
+  "all_ok": true,
+  "corpus": "../../data/corpus/certstream-250k.jsonl.gz",
+  "derived": "../../data/derived/certstream-250k",
+  "rows": 250000,
+  "sfst_path": "../../data/derived/sfst-stretch/index.sfst",
+  "sfst_size_bytes": 55443918,
+  "verification": {
+    "field_table": {
+      "mismatches": 0,
+      "ok": true,
+      "reader_fields": 47
+    },
+    "primary_fst": {
+      "derived_low_tier_lists": 273,
+      "entries_checked": 273,
+      "exact_matches": 273,
+      "ok": true,
+      "treight_blob_bytes_mirror": 694392,
+      "treight_blob_bytes_reader": 694392
+    },
+    "universe_matches": {
+      "derived_rows": 250000,
+      "ok": true,
+      "reader_total_logs": 250000
+    }
+  },
+  "wal_path": "../../data/derived/sfst-stretch/ec94ba22c03d4e27bc6c1709269525cb-77855e34e5614355ab9addd852142aee-00000-0000000001-0000000000000000.wal",
+  "wal_size_bytes": 143423392
+}

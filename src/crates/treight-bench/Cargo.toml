@@ -1,0 +1,39 @@
+[package]
+name = "treight-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Posting-list derivation + treight-vs-roaring measurement tooling for the treight blog"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The production event→LogRecord conversion (otel-streams sources) and the
+# production flatten path (ng-flatten), reused — not mirrored.
+otel-streams = { path = "../otel-streams" }
+ng-flatten = { path = "../ng-flatten" }
+opentelemetry-proto = { workspace = true }
+
+# The .sfst stretch: real WAL writes via the ng-ingest entry, the
+# otel-ledger seal entry, and the reader for verification.
+ng-ingest = { path = "../ng-ingest" }
+ng-index = { path = "../ng-index" }
+wal = { path = "../wal" }
+sfst = { path = "../sfst" }
+file-registry = { path = "../file-registry" }
+journal-common = { path = "../journal-common" }
+
+# Footprint + SFST-stretch measurement.
+treight = { path = "../treight" }
+roaring = { workspace = true, features = ["allocative"] }
+allocative = { workspace = true }
+
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+# Corpus fingerprinting. Pinned directly (not via the workspace table): 0.10
+# is already in the lockfile via other crates, so this adds no new source.
+sha2 = "0.10"

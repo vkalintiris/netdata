@@ -5789,9 +5789,35 @@ name = "treight"
 version = "0.1.0"
 dependencies = [
  "allocative",
+ "criterion",
  "proptest",
  "roaring 0.11.2",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "treight-bench"
+version = "0.1.3"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "clap",
+ "file-registry",
+ "flate2",
+ "journal-common",
+ "ng-flatten",
+ "ng-index",
+ "ng-ingest",
+ "opentelemetry-proto",
+ "otel-streams",
+ "roaring 0.11.2",
+ "serde",
+ "serde_json",
+ "sfst",
+ "sha2 0.10.9",
+ "treight",
+ "wal",
 ]
 
 [[package]]

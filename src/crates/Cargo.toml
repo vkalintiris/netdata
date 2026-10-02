@@ -9,6 +9,9 @@ members = [
     "chunk-file",
     "treight",
     "sfst",
+    # Blog-bench tooling: posting-list derivation + treight-vs-roaring
+    # measurement (dev tool, not shipped agent surface).
+    "treight-bench",
     "journal-log-writer",
     "journal-engine",
     "journal-registry",

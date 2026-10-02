@@ -1,0 +1,90 @@
+{
+  "bitsets": {
+    "all_lists": {
+      "lists": 1350739,
+      "roaring_heap_bytes": 262065816,
+      "roaring_serialized_bytes": 27392778,
+      "treight_blob_bytes": 11046106,
+      "treight_heap_bytes": 17799801,
+      "treight_with_desc_bytes": 17799801
+    },
+    "sfst_materialized": {
+      "lists": 24034,
+      "roaring_heap_bytes": 5905000,
+      "roaring_serialized_bytes": 1538624,
+      "treight_blob_bytes": 994834,
+      "treight_heap_bytes": 1115004,
+      "treight_with_desc_bytes": 1115004
+    }
+  },
+  "complement": {
+    "complemented_lists": 10,
+    "direct_lists": 1350729
+  },
+  "lists_total": 1350739,
+  "notes": [
+    "treight bytes mirror sfst::build::remap_one_bitmap exactly (time-order remap, complement >50% density)",
+    "roaring is the workspace pin (netdata/roaring-rs branch allocative); serialized_size on time-ordered values",
+    "roaring_heap_bytes = allocative::size_of_unique deep size of the same bitmap (containers + Vec)",
+    "sfst_materialized = low+mid tier (threshold 100); production stores NO per-value bitmap for high-card fields"
+  ],
+  "per_density_bucket": [
+    {
+      "avg_cardinality": 5.842345586319967,
+      "avg_density": 0.000023369382345262103,
+      "bucket": "0.001-0.01%",
+      "lists": 65263,
+      "roaring_serialized_bytes": 2450530,
+      "treight_blob_bytes": 1674461
+    },
+    {
+      "avg_cardinality": 50.84798034934498,
+      "avg_density": 0.00020339192139738128,
+      "bucket": "0.01-0.1%",
+      "lists": 3664,
+      "roaring_serialized_bytes": 507478,
+      "treight_blob_bytes": 647245
+    },
+    {
+      "avg_cardinality": 933.5027624309392,
+      "avg_density": 0.0037340110497237544,
+      "bucket": "0.1-1%",
+      "lists": 181,
+      "roaring_serialized_bytes": 344800,
+      "treight_blob_bytes": 385382
+    },
+    {
+      "avg_cardinality": 5005.923076923077,
+      "avg_density": 0.020023692307692305,
+      "bucket": "1-10%",
+      "lists": 13,
+      "roaring_serialized_bytes": 129644,
+      "treight_blob_bytes": 98956
+    },
+    {
+      "avg_cardinality": 27763.333333333332,
+      "avg_density": 0.11105333333333332,
+      "bucket": "10-50%",
+      "lists": 6,
+      "roaring_serialized_bytes": 196848,
+      "treight_blob_bytes": 139564
+    },
+    {
+      "avg_cardinality": 1.0718077843199372,
+      "avg_density": 4.2872311372148795e-6,
+      "bucket": "<=0.001%",
+      "lists": 1281602,
+      "roaring_serialized_bytes": 23435398,
+      "treight_blob_bytes": 8015961
+    },
+    {
+      "avg_cardinality": 229807.6,
+      "avg_density": 0.9192304,
+      "bucket": ">=50%",
+      "lists": 10,
+      "roaring_serialized_bytes": 328080,
+      "treight_blob_bytes": 84537
+    }
+  ],
+  "universe": 250000
+}

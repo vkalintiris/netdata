@@ -1,0 +1,52 @@
+# treight vs roaring — criterion medians
+
+| corpus | bucket | op/impl | median ns | per-position ns | per-list ns | n |
+|---|---|---|---|---|---|---|
+| mixed-250k | 1to50pct | bulk_build/treight | 6,196,896.9 | 20.20 | — | 306811 |
+| mixed-250k | 1to50pct | bulk_build/roaring | 3,505,926.8 | 11.43 | — | 306811 |
+| mixed-250k | 1to50pct | insert_arrival/treight | 424,439,974.5 | 4,798.70 | — | 88449 |
+| mixed-250k | 1to50pct | insert_arrival/roaring | 1,299,503.2 | 14.69 | — | 88449 |
+| mixed-250k | 1to50pct | insert_shuffled/treight | 322,771,469.5 | 3,649.24 | — | 88449 |
+| mixed-250k | 1to50pct | insert_shuffled/roaring | 3,660,925.6 | 41.39 | — | 88449 |
+| mixed-250k | 1to50pct | contains_hit/treight | 9,074,380.9 | — | 11,618.93 | 781 |
+| mixed-250k | 1to50pct | contains_hit/roaring | 7,830.2 | — | 10.03 | 781 |
+| mixed-250k | 1to50pct | contains_miss/treight | 5,128,252.1 | — | 11,655.12 | 440 |
+| mixed-250k | 1to50pct | contains_miss/roaring | 5,025.9 | — | 11.42 | 440 |
+| mixed-250k | 1to50pct | len_min_max/treight | 792,702.0 | — | 66,058.50 | 12 |
+| mixed-250k | 1to50pct | len_min_max/roaring | 94.7 | — | 7.89 | 12 |
+| mixed-250k | 1to50pct | iterate/treight | 1,439,503.0 | 4.69 | — | 306811 |
+| mixed-250k | 1to50pct | iterate/roaring | 947,350.8 | 3.09 | — | 306811 |
+| mixed-250k | 1to50pct | range_count/treight | 1,203,624.9 | — | 100,302.07 | 12 |
+| mixed-250k | 1to50pct | range_count/roaring | 6,320.7 | — | 526.73 | 12 |
+| mixed-250k | gt50pct | bulk_build/treight | 28,580,793.2 | 15.24 | — | 1875000 |
+| mixed-250k | gt50pct | bulk_build/roaring | 25,264,108.0 | 13.47 | — | 1875000 |
+| mixed-250k | gt50pct | insert_arrival/treight | 154,414,590.0 | 1,286.79 | — | 120000 |
+| mixed-250k | gt50pct | insert_arrival/roaring | 1,200,408.4 | 10.00 | — | 120000 |
+| mixed-250k | gt50pct | insert_shuffled/treight | 150,958,511.0 | 1,257.99 | — | 120000 |
+| mixed-250k | gt50pct | insert_shuffled/roaring | 2,894,407.3 | 24.12 | — | 120000 |
+| mixed-250k | gt50pct | contains_hit/treight | 14,633,154.3 | — | 18,760.45 | 780 |
+| mixed-250k | gt50pct | contains_hit/roaring | 2,098.5 | — | 2.69 | 780 |
+| mixed-250k | gt50pct | contains_miss/treight | 3,281,744.8 | — | 28,049.10 | 117 |
+| mixed-250k | gt50pct | contains_miss/roaring | 319.8 | — | 2.73 | 117 |
+| mixed-250k | gt50pct | len_min_max/treight | 2,708,423.9 | — | 225,701.99 | 12 |
+| mixed-250k | gt50pct | len_min_max/roaring | 269.8 | — | 22.48 | 12 |
+| mixed-250k | gt50pct | iterate/treight | 5,605,080.4 | 2.99 | — | 1875000 |
+| mixed-250k | gt50pct | iterate/roaring | 5,156,309.3 | 2.75 | — | 1875000 |
+| mixed-250k | gt50pct | range_count/treight | 1,380,189.8 | — | 115,015.82 | 12 |
+| mixed-250k | gt50pct | range_count/roaring | 17,228.5 | — | 1,435.71 | 12 |
+| mixed-250k | lt1pct | bulk_build/treight | 27,075.4 | 12.78 | — | 2119 |
+| mixed-250k | lt1pct | bulk_build/roaring | 10,608.4 | 5.01 | — | 2119 |
+| mixed-250k | lt1pct | insert_arrival/treight | 11,202,474.2 | 5,286.68 | — | 2119 |
+| mixed-250k | lt1pct | insert_arrival/roaring | 33,003.0 | 15.57 | — | 2119 |
+| mixed-250k | lt1pct | insert_shuffled/treight | 6,899,300.1 | 3,255.92 | — | 2119 |
+| mixed-250k | lt1pct | insert_shuffled/roaring | 66,095.4 | 31.19 | — | 2119 |
+| mixed-250k | lt1pct | contains_hit/treight | 386,376.0 | — | 4,953.54 | 78 |
+| mixed-250k | lt1pct | contains_hit/roaring | 769.3 | — | 9.86 | 78 |
+| mixed-250k | lt1pct | contains_miss/treight | 385,356.1 | — | 4,940.46 | 78 |
+| mixed-250k | lt1pct | contains_miss/roaring | 786.8 | — | 10.09 | 78 |
+| mixed-250k | lt1pct | len_min_max/treight | 24,015.5 | — | 2,001.29 | 12 |
+| mixed-250k | lt1pct | len_min_max/roaring | 31.9 | — | 2.66 | 12 |
+| mixed-250k | lt1pct | iterate/treight | 15,208.1 | 7.18 | — | 2119 |
+| mixed-250k | lt1pct | iterate/roaring | 6,878.4 | 3.25 | — | 2119 |
+| mixed-250k | lt1pct | range_count/treight | 37,054.9 | — | 3,087.90 | 12 |
+| mixed-250k | lt1pct | range_count/roaring | 128.5 | — | 10.70 | 12 |

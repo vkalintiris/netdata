@@ -16,3 +16,20 @@ serde = { workspace = true, features = ["derive"], optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+criterion = { workspace = true }
+# The vs_roaring bench reads the derived-cache format produced by
+# `treight-bench`'s derive bin. The cache files — not the crate — are the
+# contract (keeps treight's bench surface free of the OTel flatten stack);
+# `format_version` in meta.json pins the two ends.
+serde_json = { workspace = true }
+# roaring heap-size measurement in the bench (roaring's own `allocative`
+# feature enables its impl; the crate itself is needed to call it).
+roaring = { workspace = true, features = ["allocative"] }
+allocative = { workspace = true }
+
+[[bench]]
+name = "vs_roaring"
+harness = false
+# Differential benches need the roaring bridges; quiet-skip without
+# TREIGHT_BENCH_DERIVED so a plain `cargo bench` still works.
+required-features = ["roaring"]
