@@ -190,3 +190,86 @@ mechanical battery:
 6. Confirm no `{{PLACEHOLDER}}` remains unfilled in the shipped version — expected during
    drafting, but an unfilled one in the final reads exactly like the template artifact class the
    reference page describes (not flagged now, per instructions).
+
+## 5. Re-verify after the numbers-fill (run at frozen HEAD `991caafd5e`)
+
+State checked: 687 lines, 5,902 words, **zero `{{PLACEHOLDER}}` markers** (confirmed). All line
+refs in this section are HEAD-relative. The two lead-flagged changes (de-self-referential sweep,
+transducers link) are covered in 5.3 and 5.5.
+
+### 5.1 Mechanical battery vs the §4 baseline
+
+- AI-vocabulary words-to-watch: zero hits (baseline zero). No comparative-puffery vocabulary
+  entered with the numbers — no "significant(ly)/substantial/dramatic" anywhere; the only
+  "significant" in the file is "most significant digit first" (base-8 phrasing).
+- Signposts: the single legitimate "Notably," at 317 (flags a real assert-asymmetry subtlety).
+  "The interesting part is…" is gone — A1 resolved.
+- Copulative avoidance, curly quotes: zero / zero (baseline zero / zero).
+- `honest*`: TOC mirror (39) + section heading (467) only — exactly the recommended end state;
+  "To keep ourselves honest" was removed. A2 resolved.
+- Negative parallelisms: the substantive set, plus two new members from the trim/fill passes,
+  both legitimate — 488 "tracks the bytes preceding the path, not just depth" (mechanism + source
+  cite) and 548 "compared as relative orderings rather than sub-percent deltas" (methodology).
+- Em dashes: 100 spaced (was 84; the new bench prose added some). Same register, still house
+  voice, still rated weak-standing-alone per the reference page. No action.
+
+### 5.2 Open first-use rows — resolution status
+
+| Row (was open) | Status at HEAD |
+|---|---|
+| `descriptor` bare | **RESOLVED** — 96–97: "the descriptor — the two-integer handle [The Rust API](#…) defines — shrinks…" (apposition + anchor at first use) |
+| `PosSet` bare forward | **RESOLVED** — 263–264: "sfst's `PosSet` — the read-path set handle, [Where it lives](#…) — does" (disciplined forward reference) |
+| tier scheme unnamed | **RESOLVED** — 433–435: tiers named as a scheme with boundaries ("low under `T`, mid in `[T, 10·T)`, high at or above") before the results table leans on them |
+| FST unexpanded | **RESOLVED** — 428: "`PRIM` — the finite-state map the opening query decoded"; transducers link at 431–432 is a concrete attributed pointer, no puffery, ref [5] present |
+| run container unnamed | **RESOLVED** — 73: "a run container — run-length encoding" names the kind at list time |
+| OTel unexpanded | **RESOLVED** — 3: "OpenTelemetry (OTel)" |
+| criterion bare | **RESOLVED by context** — 547–548: used as "criterion medians" and listed under "Tools:" with its version; the two-word gloss remains optional polish |
+| WAL diagram-first | **STILL OPEN (micro)** — diagram 377 "WAL frames" still precedes the expansion "write-ahead log (WAL)" at 398; fix unchanged (expand in the diagram) or accept |
+| `dl` gloss placement | **STILL OPEN (micro)** — first formula use 145, gloss still at 176 |
+
+### 5.3 Benchmarks number-adjacent prose (the §4 item 1 re-sweep)
+
+Verdict: exemplary. Every comparative in the "Mechanisms first" paragraph and the density
+interpretation is backed by table cells and carries its mechanism ("skipping exclusive subtrees
+means walking their bytes; roaring compares container keys"; "De Morgan runs it over the sparse
+operand's bytes"; "the union resolves without touching the other operand"; "per-container
+headers dominate roaring while treight pays a byte per level"). Two advisory micros:
+
+- "treight's whole-corpus heap is a **consistent** 0.068 of roaring's (… on jetstream)" — the
+  adverb asserts a three-corpus pattern; one corpus pair is shown in-post (the README carries the
+  rest). Vacuous-certainty family; wording-only fix: drop "consistent". No numbers proposed.
+- "Dense lists (≥1%) favor treight more strongly the denser the list" — the shown table is
+  non-monotonic in the 10–50% band on two of three corpora, and the draft's own
+  complement-strictly-above-half note explains that dip. Consider scoping the "denser →
+  stronger" claim to the ≥50% band. Cross-lane note: this rides table interpretation, so the
+  bench reviewer should confirm intent before any rewording.
+- "Mechanisms first." (two-word frame after two tables) judged legitimate: terse orientation, not
+  padding.
+
+### 5.4 Figure captions (six embeds at 152, 221, 324, 355, 368, 444)
+
+All six alt-texts are factual descriptions of figure content; the complement and SFST-overview
+captions introduce their in-figure terms by description (inverted flag, De Morgan tables,
+hot/cold regions, tier routing). No tells. Clean.
+
+### 5.5 De-self-referential sweep (referent-loss check)
+
+No `posts/` paths, no `evidence/` mentions, and no `*.json`/`*.txt` artifact remnants survive in
+prose. Every README reference resolves the same way — "the README beside this post" (553, 562,
+687) — and the reproducibility sentence ("Every number here is reproducible — the README beside
+this post carries the commands, fingerprints, and raw outputs…") survived the path removal
+intact. No sentence in the swept sections lost its referent: the numbers the placeholders
+pointed at are now inline, and artifact pointers consolidated into the README anchor. One
+observation, no action: "beside this post" reads repo-relative on a published page — that is the
+deliberate de-self-referential trade-off, noted for the writer only.
+
+### 5.6 What's next
+
+Unchanged in substance; still concrete named topics with the thesis punchline; no future-outlook
+formula. Clean.
+
+### 5.7 Re-verify verdict
+
+**PASS** for both lenses at `991caafd5e`. All §2 findings and all load-bearing §3 rows are
+resolved; residuals are four advisory micros — WAL diagram expansion, `dl` gloss placement, the
+"consistent" adverb, the dense-band scoping — none blocking, writer's call on each.
