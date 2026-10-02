@@ -46,6 +46,15 @@ pub fn is_print(c: u8) -> bool {
     (0x20..0x7f).contains(&c)
 }
 
+/// `trim()` (`libnetdata/inlined.h`): the C string of `s` without its leading and trailing `isspace()`; `None` when
+/// nothing remains.
+pub fn trim(s: &[u8]) -> Option<&[u8]> {
+    let s = c_str(s);
+    let start = s.iter().position(|&c| !is_space(c))?;
+    let end = s.iter().rposition(|&c| !is_space(c)).map_or(start, |e| e + 1);
+    Some(&s[start..end])
+}
+
 /// Index of the first byte of `s` at or after `i` that is not `isspace()`.
 #[inline]
 pub fn skip_spaces(s: &[u8], mut i: usize) -> usize {

@@ -14,7 +14,7 @@ use std::path::Path;
 
 use netdata_agent_log::{Priority, Source, errno_of, nd_log, netdata_log_error};
 
-use netdata_agent_text::c::{c_str, eq_ignore_case, is_space};
+use netdata_agent_text::c::{eq_ignore_case, trim};
 use netdata_agent_text::duration::{duration_parse, duration_parse_seconds, duration_to_string};
 use netdata_agent_text::parse::{str2ndd, strtoll0, uuid_parse_flexi};
 use netdata_agent_text::print::print_fixed;
@@ -209,17 +209,6 @@ fn valid_connector(name: &[u8]) -> Option<usize> {
     }
     let separator = name.iter().rposition(|&c| c == b':')?;
     (separator > 0 && CONNECTOR_TYPES.contains(&&name[..separator])).then_some(separator)
-}
-
-/// `trim()`: leading and trailing `isspace()` removed; `None` when nothing remains.
-fn trim(s: &[u8]) -> Option<&[u8]> {
-    let s = c_str(s);
-    let start = s.iter().position(|&c| !is_space(c))?;
-    let end = s
-        .iter()
-        .rposition(|&c| !is_space(c))
-        .map_or(start, |e| e + 1);
-    Some(&s[start..end])
 }
 
 /// `inicfg_test_boolean_value()`.
