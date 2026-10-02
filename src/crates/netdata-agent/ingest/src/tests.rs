@@ -45,6 +45,12 @@ fn parser_with(host: &Arc<Host>, capabilities: u32) -> Parser {
     stream_parser_on(host, capabilities, Arc::new(TestWire::default()))
 }
 
+/// A child's stream parser on `host`, and what it sends to the child.
+fn parser_wired(host: &Arc<Host>, capabilities: u32) -> (Parser, Arc<TestWire>) {
+    let wire = Arc::new(TestWire::default());
+    (stream_parser_on(host, capabilities, Arc::clone(&wire)), wire)
+}
+
 /// A child's stream parser on `host`, whose calls go to the child through `wire`.
 fn stream_parser_on(host: &Arc<Host>, capabilities: u32, wire: Arc<TestWire>) -> Parser {
     Parser::new(
@@ -199,19 +205,71 @@ fn the_senders_lines_round_trip() {
 #[test]
 fn chart_definition_end_asks_for_replication() {
     let h = host();
-    let mut p = parser(&h);
+    let (mut p, wire) = parser_wired(&h, 0);
     feed_all(&mut p, &DEFINE);
     // The child has the last 100 seconds; this host has nothing, so it asks from now - 3600 (step) onwards.
     let first = NOW - 100;
     assert!(p.feed(format!("CHART_DEFINITION_END {first} {NOW} {NOW}\n").as_bytes()));
-    let out = String::from_utf8(p.take_output()).unwrap();
+    let out = wire.take();
     assert_eq!(
         out,
         format!("REPLAY_CHART \"test.c1\" \"true\" {first} {NOW}\n")
     );
     // A second one in the same round asks nothing.
     assert!(p.feed(format!("CHART_DEFINITION_END {first} {NOW} {NOW}\n").as_bytes()));
-    assert!(p.take_output().is_empty());
+    assert!(wire.take().is_empty());
+}
+
+/// A REPLAY_CHART the child cannot be sent fails its line (`stream-replication-receiver.c:118-122`,
+/// `pluginsd_replication.c:29-34,109,603`): the send's record, the inline backfill's at CHART_DEFINITION_END, then the
+/// parser's; nothing is counted. Nowhere to send (0) is a send, as C's.
+#[test]
+fn a_replication_request_that_cannot_be_sent_fails_its_line() {
+    let h = host();
+    let (mut p, wire) = parser_wired(&h, 0);
+    feed_all(&mut p, &DEFINE);
+    let send_error = format!(
+        "STREAM SND REPLAY ERROR: 'host:{}/chart:test.c1' failed to send replication request to child (error -1)",
+        h.hostname()
+    );
+    let action = |keyword: &str, n: usize, shown: &str| {
+        format!("PLUGINSD: parser_action('{keyword}') failed on line {n}: {{ {shown} }} (quotes added to show parsing)")
+    };
+    *wire.1.lock().unwrap() = Some(-1);
+    let first = NOW - 1000;
+    let (ok, records) =
+        netdata_agent_log::capture(|| p.feed(format!("CHART_DEFINITION_END {first} {NOW} {NOW}\n").as_bytes()));
+    assert!(!ok);
+    assert_eq!(
+        records.into_iter().filter_map(|r| r.message).collect::<Vec<_>>(),
+        [
+            send_error.clone(),
+            format!(
+                "PLUGINSD REPLAY ERROR: 'host:{}' failed to initiate replication for 'chart:test.c1' - replication \
+                 may not proceed for this instance.",
+                h.hostname()
+            ),
+            action("CHART_DEFINITION_END", 6, &format!("'CHART_DEFINITION_END' '{first}' '{NOW}' '{NOW}'")),
+        ]
+    );
+    assert_eq!((wire.take(), h.replication_requests()), (format!("REPLAY_CHART \"test.c1\" \"true\" {first} {NOW}\n"), 0));
+    // REPLAY_END's request: the child is caught up, so the empty one, refused the same way
+    let (s, e) = (NOW - 20, NOW - 19);
+    let rend = format!("REND 1 {first} {e} false {s} {e} 0x{:x}", NOW);
+    let (oks, records) = netdata_agent_log::capture(|| {
+        feed_all(&mut p, &["RBEGIN 'test.c1'", &format!("RBEGIN 'test.c1' {s} {e} {NOW}"), "RSET 'd1' 7 A", &rend])
+    });
+    assert_eq!(oks, [true, true, true, false]);
+    let shown = format!("'REND' '1' '{first}' '{e}' 'false' '{s}' '{e}' '0x{NOW:x}'");
+    assert_eq!(
+        records.into_iter().filter_map(|r| r.message).collect::<Vec<_>>(),
+        [send_error, action("REND", 10, &shown)]
+    );
+    assert_eq!((wire.take(), h.replication_requests()), ("REPLAY_CHART \"test.c1\" \"true\" 0 0\n".to_string(), 0));
+    // nowhere to send is not a failure
+    *wire.1.lock().unwrap() = Some(0);
+    let (oks, _) = netdata_agent_log::capture(|| feed_all(&mut p, &["RBEGIN 'test.c1'", &rend]));
+    assert_eq!((oks, h.replication_requests()), (vec![true, true], 1));
 }
 
 /// A SLOT over the cap is warned about, as C's `pluginsd_parse_rrd_slot()` (D126.5), and the chart is found by its
@@ -245,14 +303,14 @@ fn an_over_cap_slot_is_warned_about_as_c() {
 #[test]
 fn the_clamp_is_logged_before_and_after_as_c() {
     let h = host();
-    let mut p = parser(&h);
+    let (mut p, wire) = parser_wired(&h, 0);
     feed_all(&mut p, &DEFINE);
     let (first, last) = (NOW + 10, NOW + 50);
     let (ok, records) = netdata_agent_log::capture(|| {
         p.feed(format!("CHART_DEFINITION_END {first} {last} {NOW}\n").as_bytes())
     });
     assert!(ok);
-    assert_eq!(String::from_utf8(p.take_output()).unwrap(), "REPLAY_CHART \"test.c1\" \"true\" 0 0\n");
+    assert_eq!(wire.take(), "REPLAY_CHART \"test.c1\" \"true\" 0 0\n");
     let messages: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
     let head = |last: String, issue: &str| {
         format!(
@@ -279,14 +337,14 @@ fn the_clamp_is_logged_before_and_after_as_c() {
 #[test]
 fn a_bad_replication_request_is_logged_as_c() {
     let h = host();
-    let mut p = parser(&h);
+    let (mut p, wire) = parser_wired(&h, 0);
     feed_all(&mut p, &DEFINE);
     let (first, last) = (NOW - 50, NOW - 100);
     let (ok, records) = netdata_agent_log::capture(|| {
         p.feed(format!("CHART_DEFINITION_END {first} {last} {NOW}\n").as_bytes())
     });
     assert!(ok);
-    assert_eq!(String::from_utf8(p.take_output()).unwrap(), "REPLAY_CHART \"test.c1\" \"true\" 0 0\n");
+    assert_eq!(wire.take(), "REPLAY_CHART \"test.c1\" \"true\" 0 0\n");
     let records: Vec<_> = records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
     assert_eq!(
         records,
@@ -319,7 +377,7 @@ fn chart_definition_end_waits_for_the_backfill() {
     let queue = h.storage().backfill_queue();
     queue.start();
     let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut p = parser(&h);
+    let (mut p, wire) = parser_wired(&h, 0);
     let sink = Arc::clone(&asked);
     p.set_replay_sink(Arc::new(move |r: ReplayRequest| {
         sink.lock().unwrap().push(r);
@@ -329,7 +387,7 @@ fn chart_definition_end_waits_for_the_backfill() {
     let first = NOW - 100;
     assert!(p.feed(format!("CHART_DEFINITION_END {first} {NOW} {NOW}\n").as_bytes()));
     let chart = h.charts().find("test.c1", true).unwrap();
-    assert!(p.take_output().is_empty());
+    assert!(wire.take().is_empty());
     assert_eq!(
         (
             chart.flags() & flags::BACKFILLED_HIGH_TIERS != 0,
@@ -344,7 +402,7 @@ fn chart_definition_end_waits_for_the_backfill() {
     assert_eq!(h.backfill_pending(), 0);
     p.replay_backfilled(&requests[0]);
     let want = format!("REPLAY_CHART \"test.c1\" \"true\" {first} {NOW}\n");
-    assert_eq!(String::from_utf8(p.take_output()).unwrap(), want);
+    assert_eq!(wire.take(), want);
     // the child comes back: the chart was queued once, so the new round asks at once
     h.clear_receiver(&slot, 0);
     assert_eq!(
@@ -356,10 +414,10 @@ fn chart_definition_end_waits_for_the_backfill() {
         ))),
         netdata_agent_rrd::host::Attach::Attached
     );
-    let mut p = parser(&h);
+    let (mut p, wire) = parser_wired(&h, 0);
     feed_all(&mut p, &DEFINE);
     assert!(p.feed(format!("CHART_DEFINITION_END {first} {NOW} {NOW}\n").as_bytes()));
-    assert_eq!(String::from_utf8(p.take_output()).unwrap(), want);
+    assert_eq!(wire.take(), want);
     assert_eq!(
         (
             queue.queued(),
@@ -420,18 +478,18 @@ fn replication_is_asked_again_after_a_reconnect() {
     let first = NOW - 100;
     let end = format!("CHART_DEFINITION_END {first} {NOW} {NOW}");
     let slot = attach(&h);
-    let mut p = parser(&h);
+    let (mut p, wire) = parser_wired(&h, 0);
     feed_all(&mut p, &DEFINE);
     feed_all(&mut p, &[&end]);
-    assert!(!p.take_output().is_empty());
+    assert!(!wire.take().is_empty());
     // the child goes away mid-replication and comes back
     h.clear_receiver(&slot, 0);
     attach(&h);
-    let mut p = parser(&h);
+    let (mut p, wire) = parser_wired(&h, 0);
     feed_all(&mut p, &DEFINE);
     feed_all(&mut p, &[&end]);
     assert_eq!(
-        String::from_utf8(p.take_output()).unwrap(),
+        wire.take(),
         format!("REPLAY_CHART \"test.c1\" \"true\" {first} {NOW}\n")
     );
 }
@@ -1073,7 +1131,7 @@ fn rdstate_restores_the_collection_state_as_c() {
 fn a_stuck_replication_counts_three_in_a_row() {
     for (age, priority) in [(19, Priority::Info), (299, Priority::Info), (300, Priority::Warning)] {
         let h = host();
-        let mut p = parser(&h);
+        let (mut p, wire) = parser_wired(&h, 0);
         feed_all(&mut p, &DEFINE);
         feed_all(&mut p, &[&format!("CHART_DEFINITION_END {} {NOW} {NOW}", NOW - 1000)]);
         let (s, e) = (NOW - age - 1, NOW - age);
@@ -1093,7 +1151,7 @@ fn a_stuck_replication_counts_three_in_a_row() {
             counts.push(chart.receiver().replication_empty_response_count);
         }
         assert_eq!((counts, h.replicating_charts()), (vec![1, 2, 1, 2, 0, 1, 2], 1));
-        p.take_output();
+        wire.take();
         let requests = h.replication_requests();
         let (ok, records) = netdata_agent_log::capture(|| feed_all(&mut p, &["RBEGIN 'test.c1'", empty[1].as_str()]));
         assert_eq!(ok, [true, true]);
@@ -1101,7 +1159,7 @@ fn a_stuck_replication_counts_three_in_a_row() {
             records.iter().map(|r| (r.priority, r.message.clone().unwrap())).collect::<Vec<_>>(),
             [(priority, format!("PLUGINSD REPLAY: 'host:child/chart:test.c1' detected stuck replication loop. Parent last entry: {e}, Child last entry: {e}, Gap: 0 seconds, Empty responses: 3. Forcing replication to finish."))]
         );
-        assert_eq!(String::from_utf8(p.take_output()).unwrap(), "REPLAY_CHART \"test.c1\" \"true\" 0 0\n");
+        assert_eq!(wire.take(), "REPLAY_CHART \"test.c1\" \"true\" 0 0\n");
         let f = chart.meta().flags & (flags::RECEIVER_REPLICATION_FINISHED | flags::RECEIVER_REPLICATION_IN_PROGRESS);
         assert_eq!(
             (chart.receiver().replication_empty_response_count, h.replicating_charts(), f, h.replication_requests() - requests),
@@ -1114,21 +1172,21 @@ fn a_stuck_replication_counts_three_in_a_row() {
 /// says so (OVERWRITE), in `STREAM_PATH_FLAGS`' order; neither once both are off.
 #[test]
 fn the_parents_entry_flags_health_and_ephemeral() {
-    let (h, mut p) = stream_path_parser(CAPTURED_CAPS);
+    let (h, mut p, wire) = stream_path_parser(CAPTURED_CAPS);
     h.update_info(|i| i.health_enabled = true);
     feed_all(&mut p, &["LABEL '_is_ephemeral' 1 'yes'", "OVERWRITE"]);
-    p.take_output();
+    wire.take();
     let body = format!(r#"{{"version":1,"streaming_path":[{CAPTURED_CHILD_ENTRY}]}}"#);
     feed_strings(&mut p, &stream_path_block(&body));
     let reply = |flags: &str| {
         let parent = captured_parent_entry(0).replace(r#""flags":[]"#, &format!(r#""flags":[{flags}]"#));
         format!("JSON STREAM_PATH\n{{\"version\":1,\"streaming_path\":[{CAPTURED_CHILD_ENTRY},{parent}]}}\nJSON_PAYLOAD_END\n")
     };
-    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(r#""health","ephemeral""#));
+    assert_eq!(wire.take(), reply(r#""health","ephemeral""#));
     h.update_info(|i| i.health_enabled = false);
     feed_all(&mut p, &["LABEL '_is_ephemeral' 1 'no'", "OVERWRITE"]);
     p.retention_updated(0);
-    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(""));
+    assert_eq!(wire.take(), reply(""));
 }
 
 #[test]
@@ -1352,7 +1410,7 @@ fn captured_parent_entry(first_time_t: i64) -> String {
 }
 
 /// A child host with a receiver that negotiated `capabilities`, and its parser.
-fn stream_path_parser(capabilities: u32) -> (Arc<Host>, Parser) {
+fn stream_path_parser(capabilities: u32) -> (Arc<Host>, Parser, Arc<TestWire>) {
     let h = named_host(
         "parity-cchild-none",
         "5a1e0000-0000-4000-8000-00000000c004",
@@ -1372,7 +1430,8 @@ fn stream_path_parser(capabilities: u32) -> (Arc<Host>, Parser) {
         ))),
         netdata_agent_rrd::host::Attach::Attached
     );
-    let mut p = Parser::new(
+    let wire = Arc::new(TestWire::default());
+    let p = Parser::new(
         Arc::clone(&h),
         named_host(
             "parity-parent",
@@ -1386,10 +1445,10 @@ fn stream_path_parser(capabilities: u32) -> (Arc<Host>, Parser) {
             now: || (NOW, 0),
             gap_when_lost_iterations_above: 3,
         },
-        Arc::new(TestWire::default()),
+        Arc::clone(&wire) as Arc<dyn crate::functions::Wire>,
     );
-    p.take_output();
-    (h, p)
+    wire.take();
+    (h, p, wire)
 }
 
 fn stream_path_block(body: &str) -> Vec<String> {
@@ -1430,7 +1489,7 @@ const CAPTURED_CAPS: u32 = caps::V1
 /// the same with the new retention start.
 #[test]
 fn a_changed_stream_path_goes_back_with_this_agent_appended() {
-    let (h, mut p) = stream_path_parser(CAPTURED_CAPS);
+    let (h, mut p, wire) = stream_path_parser(CAPTURED_CAPS);
     let body = format!(r#"{{"version":1,"streaming_path":[{CAPTURED_CHILD_ENTRY}]}}"#);
     assert_eq!(feed_strings(&mut p, &stream_path_block(&body)), [true; 3]);
     let reply = |first: i64| {
@@ -1439,14 +1498,14 @@ fn a_changed_stream_path_goes_back_with_this_agent_appended() {
             captured_parent_entry(first)
         )
     };
-    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(0));
+    assert_eq!(wire.take(), reply(0));
     assert_eq!(h.stream_path().len(), 1);
     // the same path again changes nothing and sends nothing
     feed_strings(&mut p, &stream_path_block(&body));
-    assert!(p.take_output().is_empty());
+    assert!(wire.take().is_empty());
     p.retention_updated(1_790_360_431);
     assert_eq!(
-        String::from_utf8(p.take_output()).unwrap(),
+        wire.take(),
         reply(1_790_360_431)
     );
     // the child's copy of this agent's entry is stored but replaced by the current one when sent
@@ -1457,29 +1516,29 @@ fn a_changed_stream_path_goes_back_with_this_agent_appended() {
     feed_strings(&mut p, &stream_path_block(&with_parent));
     assert_eq!(h.stream_path().len(), 2);
     assert_eq!(h.stream_path()[0].hops, 0, "sorted by hops");
-    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(0));
+    assert_eq!(wire.take(), reply(0));
 }
 
 /// A child that did not negotiate paths gets nothing back; the path is stored all the same.
 #[test]
 fn no_stream_path_goes_to_a_child_without_paths() {
-    let (h, mut p) = stream_path_parser(CAPTURED_CAPS & !caps::PATHS);
+    let (h, mut p, wire) = stream_path_parser(CAPTURED_CAPS & !caps::PATHS);
     let body = format!(r#"{{"version":1,"streaming_path":[{CAPTURED_CHILD_ENTRY}]}}"#);
     feed_strings(&mut p, &stream_path_block(&body));
-    assert!(p.take_output().is_empty());
+    assert!(wire.take().is_empty());
     assert_eq!(h.stream_path().len(), 1);
     p.retention_updated(1);
-    assert!(p.take_output().is_empty());
+    assert!(wire.take().is_empty());
 }
 
 /// Text that is not JSON keeps the stored path; JSON without the member clears it (a change); an empty body does
 /// nothing and logs nothing.
 #[test]
 fn stream_path_bodies_that_are_not_paths() {
-    let (h, mut p) = stream_path_parser(CAPTURED_CAPS);
+    let (h, mut p, wire) = stream_path_parser(CAPTURED_CAPS);
     let body = format!(r#"{{"version":1,"streaming_path":[{CAPTURED_CHILD_ENTRY}]}}"#);
     feed_strings(&mut p, &stream_path_block(&body));
-    p.take_output();
+    wire.take();
     let (_, logged) = feed_logged(
         &mut p,
         &[
@@ -1492,18 +1551,18 @@ fn stream_path_bodies_that_are_not_paths() {
         logged,
         ["STREAM PATH 'parity-cchild-none': Cannot parse json: {\"streaming_path\":[\n"]
     );
-    assert!(p.take_output().is_empty());
+    assert!(wire.take().is_empty());
     assert_eq!(h.stream_path().len(), 1);
     let (_, logged) = feed_logged(&mut p, &["JSON STREAM_PATH", "JSON_PAYLOAD_END"]);
     assert!(logged.is_empty(), "{logged:?}");
-    assert!(p.take_output().is_empty());
+    assert!(wire.take().is_empty());
     feed_all(
         &mut p,
         &["JSON STREAM_PATH", "{\"other\":1}", "JSON_PAYLOAD_END"],
     );
     assert!(h.stream_path().is_empty());
     assert_eq!(
-        String::from_utf8(p.take_output()).unwrap(),
+        wire.take(),
         format!(
             "JSON STREAM_PATH\n{{\"version\":1,\"streaming_path\":[{}]}}\nJSON_PAYLOAD_END\n",
             captured_parent_entry(0)
@@ -1519,7 +1578,7 @@ fn stream_path_bodies_that_are_not_paths() {
 /// OVERWRITE keeps the ephemeral option in step with the `_is_ephemeral` label; the stream path entry shows it.
 #[test]
 fn overwrite_sets_the_ephemeral_option() {
-    let (h, mut p) = stream_path_parser(CAPTURED_CAPS);
+    let (h, mut p, _wire) = stream_path_parser(CAPTURED_CAPS);
     feed_all(&mut p, &["LABEL '_is_ephemeral' 1 'yes'", "OVERWRITE"]);
     assert!(h.is_ephemeral());
     feed_all(&mut p, &["LABEL '_is_ephemeral' 1 'no'", "OVERWRITE"]);
@@ -1823,7 +1882,7 @@ fn filtered_and_unproxied_charts_forward_nothing() {
 /// up before the sender can take metadata, nor a path to a parent without PATHS.
 #[test]
 fn a_proxied_hosts_metadata_goes_up() {
-    let (h, mut p) = stream_path_parser(CAPTURED_CAPS);
+    let (h, mut p, wire) = stream_path_parser(CAPTURED_CAPS);
     let r = Arc::new(Recorder::with_capabilities(caps::CLAIM | caps::PATHS));
     h.set_upstream(Arc::clone(&r) as Arc<dyn Upstream>);
     let claim = "5a1e0000-0000-4000-8000-0000000000e1";
@@ -1842,14 +1901,14 @@ fn a_proxied_hosts_metadata_goes_up() {
     let body = format!(r#"{{"version":1,"streaming_path":[{CAPTURED_CHILD_ENTRY}]}}"#);
     feed_ok(&mut p, &stream_path_block(&body));
     assert_eq!(r.take(), vec![(Traffic::Metadata, reply(0))]);
-    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(0));
+    assert_eq!(wire.take(), reply(0));
     p.retention_updated(1_790_360_431);
     assert_eq!(r.take(), vec![(Traffic::Metadata, reply(1_790_360_431))]);
-    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(1_790_360_431));
+    assert_eq!(wire.take(), reply(1_790_360_431));
     r.capabilities.store(caps::CLAIM, std::sync::atomic::Ordering::Relaxed);
     p.retention_updated(1_790_360_432);
     assert!(r.take().is_empty(), "a parent without PATHS");
-    assert_eq!(String::from_utf8(p.take_output()).unwrap(), reply(1_790_360_432));
+    assert_eq!(wire.take(), reply(1_790_360_432));
 }
 
 /// A vnode's first-time changes go up from its own sender (D120.1), in a path of the vnode with this agent's entry;
@@ -2026,14 +2085,22 @@ fn plugin_parser(hosts: &Arc<Hosts>) -> Parser {
     plugin_parser_attaching(hosts, Arc::new(|_| {}))
 }
 
-/// A plugin's stdin: what its parser's transport wrote.
+/// A plugin's stdin or a child's connection: what its parser wrote, and what the writes return when set (else their
+/// length).
 #[derive(Default)]
-struct TestWire(std::sync::Mutex<Vec<u8>>);
+struct TestWire(std::sync::Mutex<Vec<u8>>, std::sync::Mutex<Option<isize>>);
 
 impl crate::functions::Wire for TestWire {
-    fn send(&self, text: &[u8]) -> isize {
+    fn send(&self, text: &[u8], _: Traffic) -> isize {
         self.0.lock().unwrap().extend_from_slice(text);
-        text.len() as isize
+        self.1.lock().unwrap().unwrap_or(text.len() as isize)
+    }
+}
+
+impl TestWire {
+    /// What was written so far, taken.
+    fn take(&self) -> String {
+        String::from_utf8(std::mem::take(&mut *self.0.lock().unwrap())).unwrap()
     }
 }
 

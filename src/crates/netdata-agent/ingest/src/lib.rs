@@ -68,7 +68,7 @@ use netdata_agent_rrd::contexts;
 use netdata_agent_rrd::host::{Claim, Host, HostInfo, Hosts, meta_flags};
 use netdata_agent_rrd::system_info::SystemInfo;
 use netdata_agent_rrd::labels::{self, Labels};
-use netdata_agent_rrd::upstream::{self, BufferSource, ForwardBuffer, ProxyBlock};
+use netdata_agent_rrd::upstream::{self, BufferSource, ForwardBuffer, ProxyBlock, Traffic};
 use netdata_agent_storage::storage_number::{self, SN_EMPTY_SLOT};
 use netdata_agent_text::parse::{
     str2i, str2ll, str2ll_encoded, str2ndd_encoded, str2u, str2ul, str2ull_encoded,
@@ -296,8 +296,6 @@ pub struct Parser {
     result_span: Option<ResultSpan>,
     /// `parser->user.new_host_labels`: collected by LABEL until OVERWRITE.
     new_host_labels: Option<Labels>,
-    /// Bytes for the child or the plugin (`send_to_plugin`), drained by the caller.
-    out: Vec<u8>,
     /// `host->stream.snd.commit` while this parser is the host's receiver (`receiver_tid`): the batch its forwarded
     /// blocks and collections go through (D106.1). A plugin's parser uses the thread's buffer instead (C's
     /// `receiver_tid` is 0 for localhost).
@@ -366,7 +364,6 @@ impl Parser {
             result_span: None,
             on_done: OnDone::Nothing,
             new_host_labels: None,
-            out: Vec::new(),
             forward: ForwardBuffer::default(),
             replay_sink: None,
         }
@@ -440,9 +437,9 @@ impl Parser {
     }
 
     /// The replication request of a chart whose backfill finished (`backfill_callback()`'s send, on the stream
-    /// thread).
-    pub fn replay_backfilled(&mut self, r: &ReplayRequest) {
-        self.replicate_chart_request(
+    /// thread): false, after C's record, when it could not be sent.
+    pub fn replay_backfilled(&mut self, r: &ReplayRequest) -> bool {
+        let sent = self.replicate_chart_request(
             &r.chart,
             r.first_entry_child,
             r.last_entry_child,
@@ -450,6 +447,17 @@ impl Parser {
             0,
             0,
         );
+        if !sent {
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD REPLAY ERROR: 'host:{}' failed to initiate replication for 'chart:{}' - replication may not \
+                 proceed for this instance.",
+                self.host.hostname(),
+                r.chart.id()
+            );
+        }
+        sent
     }
 
     /// One line of a result span (`parser->defer.response`): to its pending call, within C's limit, past which the
@@ -484,9 +492,12 @@ impl Parser {
         }
     }
 
-    /// What must be written to the child.
-    pub fn take_output(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.out)
+    /// `send_to_plugin()`: a line of this parser's own for the other end, down its transport's wire; 0 for no text.
+    fn send_to_plugin(&self, text: &[u8], traffic: Traffic) -> isize {
+        if text.is_empty() {
+            return 0;
+        }
+        self.transport.send(text, traffic)
     }
 
     /// Processes one line (newline included). `false` ends the connection.
@@ -1816,7 +1827,8 @@ impl Parser {
     fn send_stream_path(&mut self, first_time_t: Option<i64>) {
         if self.config.capabilities & caps::PATHS != 0 {
             let message = stream_path::message(&self.host, &self.localhost, first_time_t);
-            self.out.extend_from_slice(&message);
+            // a failure is the buffer's to report (C ignores the result, stream-path.c:246)
+            self.send_to_plugin(&message, Traffic::Metadata);
         }
     }
 
@@ -2127,6 +2139,7 @@ impl Parser {
             m.flags &= !flags::RECEIVER_REPLICATION_FINISHED;
             old & flags::RECEIVER_REPLICATION_IN_PROGRESS != 0
         });
+        let mut sent = true;
         if !was_in_progress {
             if self.host.replicating_charts_plus_one() == 1 {
                 self.host
@@ -2149,11 +2162,12 @@ impl Parser {
                 // the inline backfill_callback() runs under the parser's frame (a backfilled one, from the stream
                 // thread between lines, under none of the parser's)
                 let _frame = self.log_frame();
-                self.replay_backfilled(&request);
+                sent = self.replay_backfilled(&request);
             }
         }
         throttle_count(true);
-        Ok(())
+        // a request the child could not be sent fails the line (pluginsd_replication.c:109)
+        if sent { Ok(()) } else { Err(Refused::Error) }
     }
 
     /// `backfill_request_add()` of the chart with `backfill_callback()`: its last job hands the request to the
@@ -2197,7 +2211,8 @@ impl Parser {
     }
 
     /// `replicate_chart_request()`: sends `REPLAY_CHART` for what the child has and this host lacks, one step at a
-    /// time; an empty request (`"true" 0 0`) ends replication for the chart.
+    /// time; an empty request (`"true" 0 0`) ends replication for the chart. False, after C's record, when the
+    /// request could not be sent.
     fn replicate_chart_request(
         &mut self,
         chart: &Chart,
@@ -2206,7 +2221,7 @@ impl Parser {
         child_wall: i64,
         prev_after: i64,
         prev_before: i64,
-    ) {
+    ) -> bool {
         let now = self.now_s();
         let info = self.host.info();
         let mut seen = ReplayView {
@@ -2293,15 +2308,22 @@ impl Parser {
         if self.replication_first_s == 0 || after < self.replication_first_s {
             self.replication_first_s = after;
         }
-        self.out.extend_from_slice(
-            format!(
-                "REPLAY_CHART \"{}\" \"{}\" {after} {before}\n",
-                chart.id(),
-                if start_streaming { "true" } else { "false" }
-            )
-            .as_bytes(),
+        let line = format!(
+            "REPLAY_CHART \"{}\" \"{}\" {after} {before}\n",
+            chart.id(),
+            if start_streaming { "true" } else { "false" }
         );
+        let rc = self.send_to_plugin(line.as_bytes(), Traffic::Replication);
+        if rc < 0 {
+            netdata_log_error!(
+                "STREAM SND REPLAY ERROR: 'host:{}/chart:{}' failed to send replication request to child (error {rc})",
+                self.host.hostname(),
+                chart.id()
+            );
+            return false;
+        }
         self.host.count_replication_request();
+        true
     }
 
     /// `pluginsd_parse_rrd_slot()`: a value over the cap is warned about, under the parser's frame, and reads as
@@ -2679,7 +2701,7 @@ impl Parser {
             self.clear_scope("REND");
             self.host.set_replication_percent(100.0);
             let _frame = self.log_frame();
-            self.replicate_chart_request(
+            let sent = self.replicate_chart_request(
                 &chart,
                 first_entry_child,
                 last_entry_child,
@@ -2687,12 +2709,12 @@ impl Parser {
                 0,
                 0,
             );
-            return Ok(());
+            return if sent { Ok(()) } else { Err(Refused::Error) };
         }
         self.clear_scope("REND");
         contexts::updated_retention_rrdset(&chart);
         let _frame = self.log_frame();
-        self.replicate_chart_request(
+        let sent = self.replicate_chart_request(
             &chart,
             first_entry_child,
             last_entry_child,
@@ -2700,7 +2722,7 @@ impl Parser {
             first_requested,
             last_requested,
         );
-        Ok(())
+        if sent { Ok(()) } else { Err(Refused::Error) }
     }
 }
 

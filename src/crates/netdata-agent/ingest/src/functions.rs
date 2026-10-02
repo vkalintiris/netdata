@@ -14,12 +14,14 @@ use netdata_agent_nrpc::call::{Calls, Done, Hooks, ProgressCb, Request, effectiv
 use netdata_agent_nrpc::lifetime::Gate;
 use netdata_agent_nrpc::reply::{ContentType, Reply};
 use netdata_agent_pluginsd_proto::emit;
+use netdata_agent_rrd::upstream::Traffic;
 
-/// Where a parser's calls go (`send_to_plugin()`): the plugin's stdin, `text` written in one piece under the writer's
-/// lock, or the child's connection, `text` queued for its stream thread (`send_to_child()`). The bytes taken, 0 when
-/// there is nowhere to send, or C's negative code after its warning.
+/// Where a parser's lines go (`send_to_plugin()`, the parser's `send_to_plugin_cb`): the plugin's stdin, `text`
+/// written in one piece under the writer's lock, or the child's connection, `text` queued for its stream thread
+/// (`send_to_child()`), as `traffic`. The bytes taken, 0 when there is nowhere to send, or C's negative code after its
+/// warning.
 pub trait Wire: Send + Sync {
-    fn send(&self, text: &[u8]) -> isize;
+    fn send(&self, text: &[u8], traffic: Traffic) -> isize;
 }
 
 /// `struct pluginsd_call`: a call sent to the plugin or child and not answered yet.
@@ -91,6 +93,11 @@ impl PluginsdTransport {
         })
     }
 
+    /// The parser's own lines (`send_to_plugin()`), down the same wire as the calls.
+    pub(crate) fn send(&self, text: &[u8], traffic: Traffic) -> isize {
+        self.wire.send(text, traffic)
+    }
+
     fn hooks(&self) -> Option<Arc<dyn Hooks>> {
         self.me.upgrade().map(|me| me as Arc<dyn Hooks>)
     }
@@ -138,7 +145,7 @@ impl PluginsdTransport {
             }
         }
         for key in cancels {
-            self.wire.send(emit::function_cancel(&key).as_bytes());
+            self.wire.send(emit::function_cancel(&key).as_bytes(), Traffic::Functions);
         }
         for victim in victims.into_iter().rev() {
             victim.deliver();
@@ -277,7 +284,7 @@ impl netdata_agent_nrpc::Transport for PluginsdTransport {
             removed: false,
             replaced: None,
         });
-        let sent = self.wire.send(&line);
+        let sent = self.wire.send(&line, Traffic::Functions);
         if sent < 0 {
             netdata_log_error!("PLUGINSD: FUNCTION '{function}': failed to send it to the plugin, error {sent}");
             let failed = {
@@ -327,7 +334,7 @@ impl Hooks for PluginsdTransport {
         };
         let pending = !key.is_empty() && lock(&self.table).calls.iter().any(|p| &*p.key == key && !p.removed);
         if pending {
-            self.wire.send(emit::function_cancel(key).as_bytes());
+            self.wire.send(emit::function_cancel(key).as_bytes(), Traffic::Functions);
         } else {
             nd_log!(
                 Source::Daemon,
@@ -360,7 +367,7 @@ impl Hooks for PluginsdTransport {
             return;
         }
         let line = emit::function_progress(key);
-        if self.wire.send(line.as_bytes()) != line.len() as isize {
+        if self.wire.send(line.as_bytes(), Traffic::Functions) != line.len() as isize {
             nd_log!(
                 Source::Daemon,
                 Priority::Err,

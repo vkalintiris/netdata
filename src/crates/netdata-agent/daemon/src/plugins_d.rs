@@ -19,6 +19,7 @@ use crate::server::Shared;
 use netdata_agent_log::{Field, Priority, Source, Value, nd_log, netdata_log_error, netdata_log_info, push};
 use netdata_agent_pluginsd_proto::{LINE_MAX, LineReader};
 use netdata_agent_rrd::host::Host;
+use netdata_agent_rrd::upstream::Traffic;
 use netdata_agent_spawn::popen::Popen;
 use nix::errno::Errno;
 use nix::poll::PollFlags;
@@ -470,10 +471,6 @@ impl Worker {
         while self.running() {
             if let Some(line) = lines.pop_front() {
                 let ok = parser.feed(&line);
-                let out = parser.take_output();
-                if !out.is_empty() {
-                    output.send(&out);
-                }
                 if !ok {
                     break;
                 }
@@ -490,7 +487,7 @@ impl Worker {
         }
         if send_quit {
             nd_log!(Source::Collector, Priority::Debug, "PLUGINSD: sending 'QUIT'  to plugin: {}", self.filename);
-            output.send(b"QUIT");
+            output.send(b"QUIT", Traffic::Metadata);
         }
         self.state.enabled.store(parser.enabled, Ordering::Release);
         let (count, retry) = (parser.data_collections_count, parser.retry);
@@ -586,8 +583,8 @@ impl PluginWire {
 }
 
 impl Wire for PluginWire {
-    /// `send_to_plugin()`.
-    fn send(&self, text: &[u8]) -> isize {
+    /// `send_to_plugin()`; the pipe ignores the traffic type, as C's.
+    fn send(&self, text: &[u8], _: Traffic) -> isize {
         let mut stdin = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         match stdin.as_mut() {
             Some(output) => send_to_plugin(output, text),

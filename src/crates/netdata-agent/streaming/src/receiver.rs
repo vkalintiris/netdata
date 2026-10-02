@@ -22,6 +22,7 @@ use netdata_agent_rrd::collection;
 use netdata_agent_rrd::contexts::Taker;
 use netdata_agent_rrd::host::{Attach, Host, HostInfo, Hosts, ReceiverLink, ReceiverSlot, StreamSend};
 use netdata_agent_rrd::mode::{DbMode, align_entries_to_pagesize};
+use netdata_agent_rrd::upstream::Traffic;
 use netdata_agent_sys::now_monotonic_usec;
 use netdata_agent_text::duration::duration_to_string;
 use netdata_agent_text::size::size_to_string;
@@ -48,7 +49,7 @@ struct ChildWire {
 }
 
 impl ingest::functions::Wire for ChildWire {
-    fn send(&self, text: &[u8]) -> isize {
+    fn send(&self, text: &[u8], _: Traffic) -> isize {
         match self.slot.upgrade() {
             Some(slot) => {
                 slot.send_to_child(text);
@@ -1097,6 +1098,7 @@ impl StreamWorker {
         };
         let frame = Arc::clone(&child.frame);
         let _frame = records::child_event(&frame);
+        // a request that could not be sent is logged there; the buffer reports its overflow itself
         child.parser.replay_backfilled(request);
         self.flush(cx, index, true);
     }
@@ -1402,8 +1404,9 @@ impl StreamWorker {
         let Some(child) = self.children[index].as_mut() else {
             return false;
         };
-        let out = child.parser.take_output();
-        child.pending_out.extend_from_slice(&out);
+        // what the parser and other threads owe the child, as one queue (C's buffer, filled by send_to_plugin())
+        let owed = child.attached.slot.take_to_child();
+        child.pending_out.extend_from_slice(&owed);
         while !child.pending_out.is_empty() {
             let failure = match child.attached.stream.write(&child.pending_out) {
                 Ok(n) if n > 0 => {
@@ -2876,7 +2879,7 @@ mod tests {
     #[test]
     fn a_wire_without_its_connection_sends_nothing() {
         let wire = ChildWire { slot: Weak::new() };
-        assert_eq!(ingest::functions::Wire::send(&wire, b"x\n"), 0);
+        assert_eq!(ingest::functions::Wire::send(&wire, b"x\n", Traffic::Functions), 0);
     }
 
     /// Keeps the connections handed to a stream thread, untouched: the queue a child waits in until its admission.

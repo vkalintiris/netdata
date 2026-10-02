@@ -26,7 +26,7 @@ struct TestWire {
 }
 
 impl Wire for TestWire {
-    fn send(&self, text: &[u8]) -> isize {
+    fn send(&self, text: &[u8], _: Traffic) -> isize {
         lock(&self.written).push(String::from_utf8_lossy(text).into_owned());
         match self.fail.load(Ordering::Relaxed) {
             0 => text.len() as isize,
@@ -485,7 +485,7 @@ struct BlockingWire {
 }
 
 impl Wire for BlockingWire {
-    fn send(&self, text: &[u8]) -> isize {
+    fn send(&self, text: &[u8], _: Traffic) -> isize {
         let entered = lock(&self.entered).take();
         if let Some(entered) = entered {
             entered.send(()).unwrap();
