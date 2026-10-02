@@ -2711,7 +2711,9 @@ fn call_plugin(hosts: &Arc<Hosts>, cmd: &[u8], tx: &[u8]) -> std::sync::mpsc::Re
         call_id: Some(tx),
         payload: None,
         reply: nrpc::reply::Reply::new(nrpc::reply::ContentType::TextPlain),
-        done: Some(Box::new(move |reply, code| send.send((reply, code)).unwrap())),
+        done: Some(Box::new(move |reply, code| {
+            let _ = send.send((reply, code));
+        })),
         progress: None,
         is_cancelled: None,
     });
@@ -2791,7 +2793,9 @@ fn a_plugins_end_answers_its_pending_calls() {
         call_id: None,
         payload: None,
         reply: nrpc::reply::Reply::new(nrpc::reply::ContentType::TextPlain),
-        done: Some(Box::new(move |reply, code| send.send((reply, code)).unwrap())),
+        done: Some(Box::new(move |reply, code| {
+            let _ = send.send((reply, code));
+        })),
         progress: None,
         is_cancelled: None,
     });

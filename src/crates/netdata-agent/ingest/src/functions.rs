@@ -34,11 +34,11 @@ struct Pending {
     gc_collected: bool,
     /// The parser's RESULT span holds it (`parser->defer.item`): its removal waits for the span's end.
     held: bool,
-    /// Removed while held: delivered when the span lets it go.
+    /// Removed while held: delivered when the span lets it go. C's GC has unlinked it, so only the span reaches it.
     removed: bool,
     /// Its deadline passed during the span and the GC answered 504 in its place: the span's later lines go nowhere
-    /// (C appends them to the 504 body, a race, D147.6).
-    replaced: bool,
+    /// (C appends them to the 504 body, a race, D147.6), but they count: C's buffer length, which its cap reads.
+    replaced: Option<usize>,
 }
 
 impl Pending {
@@ -121,7 +121,7 @@ impl PluginTransport {
                 p.gc_collected = true;
                 if p.reply.body.is_empty() || p.code == 200 {
                     p.code = p.reply.error("Timeout waiting for a response.", 504);
-                    p.replaced = p.held;
+                    p.replaced = p.held.then_some(p.reply.body.len());
                 }
                 cancels.push(Arc::clone(&p.key));
                 if p.held {
@@ -156,15 +156,18 @@ impl PluginTransport {
         true
     }
 
-    /// One line of the answer, newline included: the body's length after it (C's limit is the parser's).
+    /// One line of the answer, newline included: the length of C's buffer after it (C's limit is the parser's).
     pub fn result_line(&self, key: &[u8], line: &[u8]) -> usize {
         let mut t = lock(&self.table);
-        match t.calls.iter_mut().find(|p| p.key.as_bytes() == key) {
-            Some(p) if !p.replaced => {
+        let Some(p) = t.calls.iter_mut().find(|p| p.key.as_bytes() == key) else {
+            return 0;
+        };
+        match &mut p.replaced {
+            Some(_) => 0,
+            None => {
                 p.reply.body.extend_from_slice(line);
                 p.reply.body.len()
             }
-            _ => 0,
         }
     }
 
@@ -204,7 +207,7 @@ impl PluginTransport {
         let found = lock(&self.table)
             .calls
             .iter()
-            .find(|p| p.key.as_bytes() == key)
+            .find(|p| p.key.as_bytes() == key && !p.removed)
             .map(|p| (p.call_id, p.progress.clone()));
         let Some((call_id, progress)) = found else {
             return false;
@@ -264,7 +267,7 @@ impl netdata_agent_nrpc::Transport for PluginTransport {
             gc_collected: false,
             held: false,
             removed: false,
-            replaced: false,
+            replaced: None,
         });
         let sent = self.wire.send(&line);
         if sent < 0 {
@@ -312,7 +315,7 @@ impl Hooks for PluginTransport {
             );
             return;
         };
-        let pending = !key.is_empty() && lock(&self.table).calls.iter().any(|p| &*p.key == key);
+        let pending = !key.is_empty() && lock(&self.table).calls.iter().any(|p| &*p.key == key && !p.removed);
         if pending {
             self.wire.send(emit::function_cancel(key).as_bytes());
         } else {
@@ -338,7 +341,7 @@ impl Hooks for PluginTransport {
             );
             return;
         };
-        if !lock(&self.table).calls.iter().any(|p| &*p.key == key) {
+        if !lock(&self.table).calls.iter().any(|p| &*p.key == key && !p.removed) {
             nd_log!(
                 Source::Daemon,
                 Priority::Debug,

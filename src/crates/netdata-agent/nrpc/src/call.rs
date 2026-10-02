@@ -379,6 +379,13 @@ impl Calls {
                 break;
             }
         }
+        // C holds the wait's mutex from the cancel to this check, so no answer beats its 499: one that came meanwhile
+        // is dropped, and its record removed here, as its signal saw the waiter still waiting
+        if cancelled && w.answer.take().is_some() {
+            drop(w);
+            self.remove(&record.key);
+            return Called { code: caller.error("Request cancelled", 499), reply: Some(caller) };
+        }
         if let Some((answer, code)) = w.answer.take() {
             drop(w);
             caller.body = answer.body;

@@ -84,6 +84,11 @@ type Answers = mpsc::Receiver<(Reply, u16)>;
 impl Fixture {
     /// A no-wait call (a parent's, as a child runs it): its key and where its answer arrives.
     fn call(&self, cmd: &[u8], payload: Option<Payload>) -> (String, Answers) {
+        self.call_with(cmd, payload, 0)
+    }
+
+    /// `call()` with the caller's timeout (0: the method's).
+    fn call_with(&self, cmd: &[u8], payload: Option<Payload>, timeout_s: i32) -> (String, Answers) {
         let (tx, rx) = mpsc::channel();
         let before = self.wire.take();
         let called = self.calls.call(CallSpec {
@@ -91,13 +96,15 @@ impl Fixture {
             cmd,
             source: b"method=api,user=x",
             user_access: 0x13,
-            timeout_s: 0,
+            timeout_s,
             wait: false,
             allow_restricted: true,
             call_id: None,
             payload,
             reply: Reply::new(ContentType::TextPlain),
-            done: Some(Box::new(move |reply, code| tx.send((reply, code)).unwrap())),
+            done: Some(Box::new(move |reply, code| {
+                let _ = tx.send((reply, code));
+            })),
             progress: None,
             is_cancelled: None,
         });
@@ -338,7 +345,8 @@ fn a_call_expiring_in_its_span_is_answered_at_its_end() {
     let cancels: Vec<_> = f.wire.take().into_iter().filter(|l| l.starts_with("FUNCTION_CANCEL")).collect();
     assert_eq!(cancels, [format!("FUNCTION_CANCEL {ok}\n"), format!("FUNCTION_CANCEL {failed}\n")]);
     assert!(ok_rx.try_recv().is_err() && failed_rx.try_recv().is_err(), "both spans hold their calls");
-    assert_eq!(f.transport.result_line(ok.as_bytes(), b"2]\n"), 0);
+    let timeout = r#"{"status":504,"errorMessage":"Timeout waiting for a response."}"#;
+    assert_eq!(f.transport.result_line(ok.as_bytes(), b"2]\n"), timeout.len() + 3, "dropped, counted as C's buffer");
     f.transport.result_end(ok.as_bytes());
     f.transport.result_line(failed.as_bytes(), b"more\n");
     f.transport.result_end(failed.as_bytes());
@@ -369,7 +377,9 @@ fn the_plugins_progress_reaches_the_caller() {
         call_id: Some(b"0a0b0c0d0e0f40118213141516171819"),
         payload: None,
         reply: Reply::new(ContentType::TextPlain),
-        done: Some(Box::new(move |reply, code| tx.send((reply, code)).unwrap())),
+        done: Some(Box::new(move |reply, code| {
+            let _ = tx.send((reply, code));
+        })),
         progress: Some(progress),
         is_cancelled: None,
     });
@@ -379,4 +389,181 @@ fn the_plugins_progress_reaches_the_caller() {
     let id = [0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x40, 0x11, 0x82, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19];
     assert_eq!(*lock(&seen), [(id, 3, 10)]);
     f.transport.shutdown();
+}
+
+/// R63-1: a call the GC collects inside its answer's span is unlinked in C (`dictionary_del` under the span's hold),
+/// so the caller's cancel and progress pings and the plugin's own progress miss it: nothing reaches stdin.
+#[test]
+fn a_call_the_gc_took_from_its_span_is_beyond_the_hooks() {
+    let f = fixture();
+    let (a, _a_rx) = f.call(b"slow", None);
+    assert!(f.transport.result_begin(a.as_bytes(), 200, None, 0, now_s()));
+    f.advance(2_000_001);
+    f.call(b"top", None);
+    let lines = f.wire.take();
+    assert!(lines.contains(&format!("FUNCTION_CANCEL {a}\n")), "{lines:?}");
+    f.calls.cancel(&a);
+    f.calls.progress(&a);
+    assert_eq!(f.wire.take(), Vec::<String>::new());
+    assert!(!f.transport.progress_from_plugin(a.as_bytes(), 1, 2));
+    f.transport.shutdown();
+}
+
+/// R63 M7: a span-held call the GC collected is not collected again by a later GC: one CANCEL.
+#[test]
+fn a_call_the_gc_took_from_its_span_is_cancelled_once() {
+    let f = fixture();
+    let (a, _a_rx) = f.call(b"slow", None);
+    assert!(f.transport.result_begin(a.as_bytes(), 200, None, 0, now_s()));
+    f.advance(2_000_001);
+    let (d, _d_rx) = f.call(b"slow", None);
+    f.wire.take();
+    f.advance(2_000_001);
+    f.call(b"top", None);
+    let cancels: Vec<_> = f.wire.take().into_iter().filter(|l| l.starts_with("FUNCTION_CANCEL")).collect();
+    assert_eq!(cancels, [format!("FUNCTION_CANCEL {d}\n")]);
+    f.transport.shutdown();
+}
+
+/// R63-2: once the GC's 504 replaced a held answer, the span's later lines are dropped but counted as C's buffer
+/// holds them (the 504 body, then the lines), so the parser's 100 MiB cap stops the plugin as C's does.
+#[test]
+fn a_replaced_answer_still_counts_its_lines() {
+    let f = fixture();
+    let (a, a_rx) = f.call(b"slow", None);
+    assert!(f.transport.result_begin(a.as_bytes(), 200, None, 0, now_s()));
+    assert_eq!(f.transport.result_line(a.as_bytes(), b"abc\n"), 4);
+    f.advance(2_000_001);
+    f.call(b"top", None);
+    let body = r#"{"status":504,"errorMessage":"Timeout waiting for a response."}"#;
+    assert_eq!(f.transport.result_line(a.as_bytes(), b"defgh\n"), body.len() + 6);
+    assert_eq!(f.transport.result_line(a.as_bytes(), b"ij\n"), body.len() + 9);
+    f.transport.result_end(a.as_bytes());
+    let (reply, code) = a_rx.try_recv().unwrap();
+    assert_eq!((code, json(&reply)), (504, body.into()));
+    f.transport.shutdown();
+}
+
+/// R63 M5, FT 13's boundary: a call whose deadline plus grace equals now is not expired; a microsecond later it is.
+#[test]
+fn the_gc_boundary_is_strict() {
+    let f = fixture();
+    let (_b, _b_rx) = f.call(b"slow", None);
+    let (a, a_rx) = f.call_with(b"slow", None, 2);
+    f.advance(3_000_000);
+    f.call(b"top", None);
+    assert!(a_rx.try_recv().is_err(), "deadline + grace == now: not expired");
+    f.wire.take();
+    f.advance(1);
+    f.call(b"top", None);
+    assert!(f.wire.take().contains(&format!("FUNCTION_CANCEL {a}\n")));
+    assert_eq!(a_rx.try_recv().map(|(_, code)| code).ok(), Some(504));
+    f.transport.shutdown();
+}
+
+/// R63 M27: the GC keeps the earliest deadline of the calls it leaves, so a survivor that expires before the next
+/// call's own deadline is collected at that call (the GC's smaller-timeout update in C).
+#[test]
+fn the_gc_remembers_the_survivors_deadlines() {
+    let f = fixture();
+    let (_a, _a_rx) = f.call_with(b"slow", None, 1);
+    let (b, b_rx) = f.call_with(b"slow", None, 5);
+    f.advance(2_500_000);
+    f.call_with(b"top", None, 10);
+    f.wire.take();
+    f.advance(4_000_000);
+    f.call_with(b"top", None, 10);
+    assert!(f.wire.take().contains(&format!("FUNCTION_CANCEL {b}\n")));
+    assert_eq!(b_rx.try_recv().map(|(_, code)| code).ok(), Some(504));
+    f.transport.shutdown();
+}
+
+/// The plugin's stdin for the next test: its first write waits for the test's release, then fails.
+struct BlockingWire {
+    entered: Mutex<Option<mpsc::Sender<()>>>,
+    release: Mutex<Option<mpsc::Receiver<()>>>,
+}
+
+impl Wire for BlockingWire {
+    fn send(&self, text: &[u8]) -> isize {
+        let entered = lock(&self.entered).take();
+        if let Some(entered) = entered {
+            entered.send(()).unwrap();
+            lock(&self.release).take().unwrap().recv().unwrap();
+            return -3;
+        }
+        text.len() as isize
+    }
+}
+
+/// R63 M23: the run's end waits for a dispatch in flight before it sweeps, so a send that fails meanwhile answers its
+/// own call ("Failed to send", under C's dispatcher ref), not the sweep's "exited".
+#[test]
+fn the_runs_end_waits_for_a_dispatch_in_flight() {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let wire = Arc::new(BlockingWire { entered: Mutex::new(Some(entered_tx)), release: Mutex::new(Some(release_rx)) });
+    let calls = Calls::new(Box::new(TestClock(Arc::new(AtomicU64::new(T0)))));
+    let transport = PluginTransport::new(wire as Arc<dyn Wire>, Arc::clone(&calls));
+    let registry = Arc::new(Registry::default());
+    registry
+        .register(
+            "h",
+            &MethodDesc {
+                name: b"top",
+                help: b"help",
+                tags: b"",
+                timeout_s: 10,
+                priority: 0,
+                version: 0,
+                access: 0,
+                sync: false,
+                source: NrpcSource::Plugin,
+                handler: Handler::Transport(Arc::clone(&transport) as Arc<dyn Transport>),
+            },
+        )
+        .unwrap();
+    let (answer_tx, answer_rx) = mpsc::channel();
+    let caller = {
+        let (calls, registry) = (Arc::clone(&calls), Arc::clone(&registry));
+        std::thread::spawn(move || {
+            calls
+                .call(CallSpec {
+                    owner: Some((&registry, "h")),
+                    cmd: b"top",
+                    source: b"",
+                    user_access: 0,
+                    timeout_s: 0,
+                    wait: false,
+                    allow_restricted: true,
+                    call_id: None,
+                    payload: None,
+                    reply: Reply::new(ContentType::TextPlain),
+                    done: Some(Box::new(move |reply, code| {
+                        let _ = answer_tx.send((reply, code));
+                    })),
+                    progress: None,
+                    is_cancelled: None,
+                })
+                .code
+        })
+    };
+    entered_rx.recv().unwrap();
+    let ending = {
+        let transport = Arc::clone(&transport);
+        std::thread::spawn(move || transport.shutdown())
+    };
+    while transport.gate.is_alive() {
+        std::thread::yield_now();
+    }
+    // the run's end now waits in the gate's retire for the dispatch's pass
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    release_tx.send(()).unwrap();
+    assert_eq!(caller.join().unwrap(), 503);
+    ending.join().unwrap();
+    let (reply, code) = answer_rx.recv().unwrap();
+    assert_eq!(
+        (code, json(&reply)),
+        (503, r#"{"status":503,"errorMessage":"Failed to send this request to the plugin that offered it."}"#.into())
+    );
 }

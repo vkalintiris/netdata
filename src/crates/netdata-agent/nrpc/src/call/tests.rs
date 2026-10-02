@@ -269,6 +269,50 @@ fn a_wait_answers_times_out_or_is_cancelled() {
     assert!(lock(&calls.table).is_empty());
 }
 
+/// A transport whose cancel hook answers the call it holds: the answer lands while the waiter cancels.
+struct AnswersOnCancel {
+    me: std::sync::Weak<AnswersOnCancel>,
+    held: Mutex<Option<Request>>,
+}
+
+impl Hooks for AnswersOnCancel {
+    fn cancel(&self, _: &str) {
+        if let Some(req) = lock(&self.held).take() {
+            let mut reply = req.reply;
+            reply.body = b"late".to_vec();
+            (req.done)(reply, 200);
+        }
+    }
+    fn progress(&self, _: &str) {}
+}
+
+impl Transport for AnswersOnCancel {
+    fn dispatch(&self, req: Request) -> u16 {
+        if let Some(me) = self.me.upgrade() {
+            req.call.set_cancel_hook(me as Arc<dyn Hooks>);
+        }
+        *lock(&self.held) = Some(req);
+        200
+    }
+}
+
+/// R63-4: C holds the wait's mutex from the cancel to its answer check, so a cancelled wait answers 499 even when the
+/// plugin's answer arrives during the cancel; that answer is dropped and the call leaves the table.
+#[test]
+fn a_cancelled_wait_answers_499_even_if_the_answer_comes_meanwhile() {
+    let (calls, _now) = calls();
+    let r = Registry::default();
+    let t = Arc::new_cyclic(|me| AnswersOnCancel { me: me.clone(), held: Mutex::new(None) });
+    register(&r, b"slow", Handler::Transport(Arc::clone(&t) as Arc<dyn Transport>), |_| {});
+    let called = calls.call(CallSpec { wait: true, is_cancelled: Some(Arc::new(|| true)), ..spec(&r, b"slow") });
+    assert_eq!(
+        (called.code, error_text(called.reply.as_ref().unwrap())),
+        (499, r#"{"status":499,"errorMessage":"Request cancelled"}"#.into())
+    );
+    assert!(lock(&t.held).is_none(), "the hook answered");
+    assert!(lock(&calls.table).is_empty());
+}
+
 /// Cancel and progress: C's records for an unknown call, a repeated cancel, and a call whose serving thread has
 /// finished; a progress pushes the deadline to 10 s from now when that is later.
 #[test]
