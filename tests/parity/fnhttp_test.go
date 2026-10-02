@@ -980,14 +980,23 @@ func fnGuardV2(t *testing.T, p *Pair) {
 // check tightens by itself as they are ported.
 func fnCompareInfoFunctions(t *testing.T, p *Pair) {
 	t.Helper()
-	for _, target := range []string{"/api/v1/info", "/host/" + vnodeName + "/api/v1/info"} {
+	fnCompareInfoFunctionsAt(t, p, []string{"/api/v1/info", "/host/" + vnodeName + "/api/v1/info"}, fnWithoutBuiltins)
+}
+
+// fnCompareInfoFunctionsAt is fnCompareInfoFunctions of the targets, each body through edit when set.
+func fnCompareInfoFunctionsAt(t *testing.T, p *Pair, targets []string, edit func([]byte) []byte) {
+	t.Helper()
+	if edit == nil {
+		edit = func(b []byte) []byte { return b }
+	}
+	for _, target := range targets {
 		var docs [2]Value
 		for i, side := range p.Each() {
 			b, err := rawExchange(side.Daemon.Addr, fnHTTPGet(target, ""), fnWait)
 			if err != nil {
 				t.Fatalf("%s: %s: %v", side.Role, target, err)
 			}
-			if docs[i], err = ParseJSON(fnWithoutBuiltins(httpBody(b))); err != nil {
+			if docs[i], err = ParseJSON(edit(httpBody(b))); err != nil {
 				t.Fatalf("%s: %s: %v: %s", side.Role, target, err, truncateBytes(b))
 			}
 		}

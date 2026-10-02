@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/netdata/netdata/tests/query-corpus/daemon"
+	"github.com/netdata/netdata/tests/query-corpus/plugin"
 )
 
 // The chain's identities, the same in every chain (separate processes and ports).
@@ -149,16 +150,85 @@ func startChains(t *testing.T, g *stagger, tweak func(rows []topoNode)) []*chain
 // fullPath are the hops of the child's path through the whole chain.
 var fullPath = []int{0, 1, 2}
 
+// chainFnTx is the transaction of `stream.chain`'s call, the same in every chain (separate processes).
+var chainFnTx = fnTx(0x6001)
+
+// chainFnLeaf installs the fake plugin in each chain's child (the plugin checks' directories, scan and update every;
+// its PULSE stays on): it registers difftest-open and answers one call, each start (the child's return starts it
+// again).
+func chainFnLeaf(rows []topoNode) {
+	for i := range rows {
+		if rows[i].name != "c" {
+			continue
+		}
+		rows[i].prepare = func(o *daemon.Options) error {
+			po := pluginsOptions(1, nil, nil, "")
+			o.PluginsDir, o.PluginsExtra, o.ConfExtra = po.PluginsDir, po.PluginsExtra, po.ConfExtra
+			engine, err := plugin.Engine()
+			if err != nil {
+				return err
+			}
+			_, err = plugin.Install(o.RunDir, engine, fnScenario(plugin.Step{Emit: fnOpenRegister},
+				plugin.ExpectFunction("a"), plugin.Step{Emit: plugin.Result("{{a}}", "200", "text/plain", "0", "chain\n")}))
+			return err
+		}
+	}
+}
+
+// chainFn is `stream.chain`'s call (M8 commit 7, D164 B6): the grandparent's `/host/<child>/api/v1/function` runs the
+// child's plugin method through the proxy (each hop's receiver transport, the proxy's no-wait call). Per chain, once
+// the grandparent lists the method: the exchange (fnHTTPMask) and the leaf plugin's stdin; each candidate chain's
+// compared with c-c-c's, whose guards hold C's answer.
+func chainFn(t *testing.T, cs []*chain) {
+	exchanges := make([]string, len(cs))
+	stdins := make([]string, len(cs))
+	forEach(cs, func(c *chain) {
+		k := slices.Index(cs, c)
+		x := &fnHTTPSide{role: Role(c.form), d: c.d("gp"), l: plugin.LayoutOf(c.d("c").Opts.RunDir)}
+		if !x.listed(t, []fnListed{{"/host/" + chainChild.Hostname, "difftest-open"}}, "") {
+			return
+		}
+		exchanges[k] = x.do(t, "call", fnHTTPGet("/host/"+chainChild.Hostname+"/api/v1/function?function=difftest-open%20chain",
+			chainFnTx))
+		x.step(t, x.l, "the leaf's plugin did not get the call", fnMatched(1, "a"))
+		stdins[k] = fnStdin(x.l, 1)
+	})
+	// three hops: the plugin's line, then one `\n` per hop above it (P1)
+	for _, w := range []string{fnQ("HTTP/1.1 200 OK\r\n"), fnQ("X-Transaction-ID: " + chainFnTx + "\r\n\r\nchain\n\n\n")} {
+		if !strings.Contains(exchanges[0], w) {
+			t.Errorf("oracle: the grandparent's answer has no %q: %s", w, exchanges[0])
+		}
+	}
+	if want := fnHTTPLine(chainFnTx, 10, "difftest-open chain"); stdins[0] != want {
+		t.Errorf("oracle: the leaf's plugin read %q, want %q", stdins[0], want)
+	}
+	t.Logf("c-c-c: %s\nthe leaf's stdin: %q", exchanges[0], stdins[0])
+	for k, c := range cs[1:] {
+		if c.down {
+			continue
+		}
+		t.Run(c.form+"/fn", func(t *testing.T) {
+			if exchanges[k+1] != exchanges[0] {
+				t.Errorf("the grandparent's answer:\noracle:    %s\ncandidate: %s", exchanges[0], exchanges[k+1])
+			}
+			if stdins[k+1] != stdins[0] {
+				t.Errorf("the leaf's stdin:\noracle:    %q\ncandidate: %q", stdins[0], stdins[k+1])
+			}
+		})
+	}
+}
+
 // TestStreamChain (check `stream.chain`, milestone 7 commit 8i, D121.2, D122.1; plan
 // `evidence/2026-09-30-plan-m7-8i-3-stream-chain.md`): three child → proxy → grandparent chains run side by side,
 // c-c-c (the oracle everywhere), c-r-c (a Rust proxy) and r-c-r (a Rust child and grandparent); each candidate chain
 // is compared with c-c-c, and within each chain the hops' data with each other. The child starts only once the
 // proxy streams to the grandparent, so the proxy's `_is_parent` there is always false (it is sent once, at the
-// proxy's sender's ready). Phases: online, the child's view, steady-state views, data, the child's leave, its return
-// (the gap replicated through both hops), the records.
+// proxy's sender's ready). Phases: online, the child's view, steady-state views, data, a call from the grandparent to
+// the child's fake plugin (chainFn, M8 commit 7), the child's leave, its return (the gap replicated through both
+// hops), the records.
 func TestStreamChain(t *testing.T) {
 	g := &stagger{gap: 2 * time.Second}
-	cs := startChains(t, g, nil)
+	cs := startChains(t, g, chainFnLeaf)
 	oracle := cs[0]
 	full := fullPath
 	for _, v := range []string{"gp", "p"} {
@@ -252,6 +322,9 @@ func TestStreamChain(t *testing.T) {
 			}
 		})
 	}
+
+	// P4b: one call from the grandparent to the child's plugin through the proxy
+	chainFn(t, cs)
 
 	// P5: the child leaves; the proxy and the grandparent keep its stale path
 	forEach(cs, func(c *chain) {

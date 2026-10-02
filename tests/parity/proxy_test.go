@@ -278,6 +278,13 @@ func TestProxyTranscript(t *testing.T) {
 					t.Errorf("the oracle's returned child got %q %d times", want, n)
 				}
 			}
+			if v.function > 0 && !slices.ContainsFunc(got[0], func(l string) bool {
+				return strings.HasPrefix(l, `FUNCTION GLOBAL "proxy-fn" `)
+			}) {
+				// the proxy re-lists the child's method upward (D104.6): with D100.9's drop lifted, the oracle must
+				// carry it, or the transcripts compare equal without it
+				t.Errorf("the oracle's transcript has no re-list of proxy-fn")
+			}
 			diffLines(t, "the stubs' transcripts", got[0], got[1])
 			t.Logf("transcript:\n%s", strings.Join(got[0], "\n"))
 		})
@@ -882,7 +889,8 @@ var (
 // Then the stream in arrival order: the blocks, the markers, a `DEF <chart>` where each definition came, and every
 // other line. Last the last stream path (the sender's side sends one when its NODE_ID or retention changes, racing
 // the receiver's lines). The proxy's clocks and the path's times are masked, chart labels sorted within their run,
-// FUNCTION lines left out (D100.9).
+// the re-list lines of C's own methods left out (cOnlyFunctionRe's labelled deviation; D164 B6 lifted D100.9's drop of
+// every FUNCTION line).
 func proxyTranscript(data string) []string {
 	var hooks, labels, flow, lastPath []string
 	charts := map[string][]string{}
@@ -927,7 +935,7 @@ func proxyTranscript(data string) []string {
 			continue
 		}
 		switch {
-		case strings.HasPrefix(l, "FUNCTION "):
+		case cOnlyFunctionRe.MatchString(l):
 		case !defined && strings.HasPrefix(l, "LABEL "):
 			labels = append(labels, l)
 		case !defined:
@@ -1084,7 +1092,7 @@ func TestProxyTranscriptParse(t *testing.T) {
 
 // proxyStartKinds are the kinds of a session's lines before its first definition, each at its first appearance,
 // then CHART: the ready hook's order (stream-sender.c:165-179), which proxyTranscript loses (labels sorted to the
-// front, only the last path kept). FUNCTION lines are left out (D100.9).
+// front, only the last path kept). The re-list lines of C's own methods are left out (cOnlyFunctionRe, D164 B6).
 func proxyStartKinds(data string) []string {
 	var out []string
 	add := func(k string) {
@@ -1102,7 +1110,7 @@ func proxyStartKinds(data string) []string {
 		case l == "JSON STREAM_PATH":
 			inPath = true
 			add(l)
-		case strings.HasPrefix(l, "FUNCTION"):
+		case cOnlyFunctionRe.MatchString(l):
 		case strings.HasPrefix(l, "VARIABLE HOST "):
 			add("VARIABLE HOST")
 		case l == "OVERWRITE labels":

@@ -29,6 +29,9 @@ type topoNode struct {
 	to    []string
 	send  *daemon.StreamTo
 	opts  daemon.Options
+	// prepare, when set, completes the options once the run directory is known, before the start (e.g. a fake
+	// plugin installed there)
+	prepare func(o *daemon.Options) error
 }
 
 // topology is a set of agents started from a node table, each on a port picked before any starts, so destinations
@@ -152,6 +155,11 @@ func (tp *topology) start(t *testing.T, g *stagger, bins [2]string, attempt int,
 				send.Destination = strings.Join(dests, " ")
 				send.APIKey = tp.row(r.to[0]).id.StreamKey
 				o.StreamTo = &send
+			}
+			if r.prepare != nil {
+				if err := r.prepare(&o); err != nil {
+					return fmt.Errorf("%s %s: %w", tp.label, r.name, err)
+				}
 			}
 			g.wait()
 			d, err := daemon.Start(o)
