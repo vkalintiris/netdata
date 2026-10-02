@@ -36,23 +36,31 @@ for c in chart-density chart-footprint chart-ops chart-size-vs-density; do
 | `chart-ops` | Per-op CPU comparison, treight vs roaring (grouped bars; per-position/per-list normalizations from the bench). | `evidence/bench/results.json` |
 | `chart-size-vs-density` | Scatter of per-posting-list size ratio (treight/roaring) vs density, colored by complement choice. | `evidence/bench/totals.json` → `per_list` |
 
-Charts read `posts/treight-bitmap/evidence/bench/` when present and fall
-back to clearly-marked synthetic sample data otherwise (the scripts print
-which mode they ran in; synthetic mode also stamps the plot title). Pass
-`--strict` to make missing evidence an error (final pre-publish run).
-Schemas: `evidence/bench/schema.md` (authored by bench-eng).
+Charts read real evidence when present and fall back to clearly-marked
+synthetic sample data otherwise (the scripts print which mode they ran in;
+synthetic mode also stamps the plot title). Pass `--strict` to make missing
+evidence an error (final pre-publish run). Schemas:
+`evidence/bench/schema.md` (authored by bench-eng).
+
+Input locations (as shipped 2026-10-02):
+- per-corpus stats: `data/derived/<corpus>/stats.json` (gitignored data/;
+  probed by `chartlib.find_stats`).
+- totals evidence: `evidence/bench/totals-<corpus>.json` — one file per
+  corpus, per-corpus object at the root (0.4–0.8 GB each: full per-list
+  rows). Extracted/streamed via jq (`load_totals_summary`,
+  `iter_per_list`); a single `totals.json` with a `corpora` root, as
+  schema.md originally described, is also supported.
+- results (chart-ops): `evidence/bench/results.json` — still pending as of
+  2026-10-02; chart-ops remains in synthetic mode until it lands.
+
+Status: chart-density, chart-footprint, chart-size-vs-density ran REAL on
+2026-10-02 (cross-checks vs derived stats.json passed exactly — see each
+DESCRIPTION); chart-ops synthetic pending results.json.
 
 Chart layout convention: the SCRIPT lives in `scripts/<chart>.py`; the
 exports (`<chart>.svg` + `<chart>.png`) and `DESCRIPTION.md` (placement,
 data transform, invocation, manual-recreation notes) live in
 `<chart>/`. Shared palette/IO/style helpers: `scripts/chartlib.py`.
-
-Open item for bench-eng (via the Lead): the exact on-disk location of the
-per-corpus `stats.json` is not pinned by schema.md — `chartlib.find_stats`
-probes `<corpus>/stats.json`, `stats/<corpus>.json`,
-`stats/<corpus>/stats.json`, `<corpus>-stats.json`, `stats-<corpus>.json`,
-`derived/<corpus>/stats.json`. Tell me which one ships and I'll collapse
-the probe to it.
 
 ## Conventions
 

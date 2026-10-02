@@ -13,10 +13,9 @@ is wild" claim made visible before the size/CPU numbers are read.
 
 ## Data + transform
 
-- Input: `posts/treight-bitmap/evidence/bench/<corpus>/stats.json` →
-  `posting_density_histogram` (schema.md §1; the resolver in
-  `scripts/chartlib.py::find_stats` also tries `stats/<corpus>.json` and
-  sibling layouts — bench-eng to pin the final path once evidence lands).
+- Input: `data/derived/<corpus>/stats.json` → `posting_density_histogram`
+  (schema.md §1; path pinned by bench-eng via the Lead, observed for all
+  six derived dirs; `scripts/chartlib.py::find_stats` probes it first).
 - Transform: bucket counts plotted as-is (log y); bars grouped per corpus,
   colored per corpus with distinct hatches (greyscale-safe); the >50%
   bucket is outlined with a vermillion band + annotation pointing at the
@@ -44,12 +43,18 @@ synthetic numbers are plausible shapes, NOT measurements.
 2. Re-run the invocation above; outputs land in this directory as
    `chart-density.svg` (primary; text kept as text via
    `svg.fonttype = "none"`) and `chart-density.png` (150 dpi fallback).
-3. The annotation text ("encoder stores the holes") mirrors build.rs's
-   density rule (> 50%) — keep it in sync if the threshold ever changes.
+3. The annotation text ("density strictly > 50%") mirrors build.rs's
+   density rule (`card > universe/2`, STRICT) — keep it in sync if the
+   threshold ever changes. Note the histogram's ">50%" BUCKET includes
+   lists at exactly 50% density (verified on mixed-250k: 9 lists at
+   density exactly 0.5 sit in that bucket but stay direct; only 3 lists
+   at density 1.0 were complemented), hence the annotation's wording.
 
 ## Verification performed
 
-- Synthetic-mode run compiled and rendered; `verify_layout.py`: no edge
+- REAL-DATA run 2026-10-02 against data/derived/*/stats.json (all three
+  corpora); bucket sums equal distinct_kvs exactly per corpus.
+- Earlier synthetic-mode run compiled and rendered; `verify_layout.py`: no edge
   clipping, no region collisions; ASCII preview confirmed grouped bars,
   log axis, annotation, legend.
 - Bucket strings cross-checked against schema.md §1.

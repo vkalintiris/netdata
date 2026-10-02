@@ -75,10 +75,11 @@ def main() -> int:
         comp = [r for r in rows if r["complemented"]]
         ax.scatter([r["density"] for r in direct], [r["ratio"] for r in direct],
                    s=7, c=BLUE, marker="o", edgecolors="none", alpha=0.45,
-                   label=f"direct ({len(direct)})")
+                   rasterized=True, label=f"direct ({len(direct)})")
         ax.scatter([r["density"] for r in comp], [r["ratio"] for r in comp],
                    s=12, facecolors="none", edgecolors=VERMIL, marker="^",
-                   linewidths=0.8, alpha=0.8, label=f"complemented ({len(comp)})")
+                   linewidths=0.8, alpha=0.8, rasterized=True,
+                   label=f"complemented ({len(comp)})")
         ax.axhline(1.0, color="#1a1a1a", linewidth=0.9, linestyle="--")
         ax.axvspan(0.5, 1.0, color=VERMIL, alpha=0.08, zorder=0)
         ax.set_xscale("log")

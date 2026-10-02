@@ -12,8 +12,13 @@ like-for-like data-structure comparison the blog is careful to label).
 
 ## Data + transform
 
-- Input: `posts/treight-bitmap/evidence/bench/totals.json` →
-  `corpora.<name>.bitsets.{sfst_materialized,all_lists}` (schema.md §2).
+- Input: `posts/treight-bitmap/evidence/bench/totals-<corpus>.json` →
+  `bitsets.{sfst_materialized,all_lists}` (schema.md §2 semantics; the
+  shipped shape is one file per corpus with the per-corpus object at the
+  root — a single `totals.json` with a `corpora` root is also supported
+  by `chartlib.load_totals_summary`). The files are 0.4–0.8 GB (full
+  per-list rows), so the loader extracts the summary via jq and falls
+  back to json.load when jq is absent.
 - Series per corpus and scope:
   - treight = `treight_with_desc_bytes` (blob + 5-B descriptor per list —
     the BitmapValue accounting bench-eng uses);
@@ -45,6 +50,10 @@ banner, `--strict` to fail).
 
 ## Verification performed
 
-- Synthetic-mode run rendered; `verify_layout.py` clean (no clipping, no
+- REAL-DATA run 2026-10-02 against the three landed totals-*.json:
+  sfst_materialized.lists == tier low+mid lists from stats.json exactly
+  (1152 / 24034 / 20316); all_lists.lists == distinct_kvs; complemented
+  lists == stats.complement_candidates_gt50pct (23 / 10 / 3).
+- Earlier synthetic-mode run rendered; `verify_layout.py` clean (no clipping, no
   collisions); panels, annotations, and legend confirmed in preview.
 - Field names cross-checked against schema.md §2.

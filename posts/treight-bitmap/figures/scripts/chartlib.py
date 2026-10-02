@@ -175,8 +175,8 @@ def iter_per_list(edir: Path, corpus: str):
 
     for path in totals_files(edir, corpus):
         prog = (".per_list[]? | select(.roaring_serialized_bytes > 0) | "
-                "{d: .density, c: .complemented, "
-                "r: (.treight_blob_bytes / .roaring_serialized_bytes)}")
+                "{density: .density, complemented: .complemented, "
+                "ratio: (.treight_blob_bytes / .roaring_serialized_bytes)}")
         try:
             proc = subprocess.Popen(
                 ["jq", "-c", prog, str(path)],
