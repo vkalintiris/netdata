@@ -634,8 +634,9 @@ func (d *Daemon) launch() error {
 		info, err := getJSONWithClient(client, d.BaseURL+"/api/v1/info")
 		if err != nil && strings.Contains(err.Error(), "HTTP 412") {
 			// [web] bearer token protection: /api/v3/info alone stays open to an anonymous client, and answers
-			// before the startup completes, so the record logged once the agent is ready stands in for the 200
-			if info3, err3 := getJSONWithClient(client, d.BaseURL+"/api/v3/info"); err3 == nil {
+			// before the startup completes, so the record logged once the agent is ready stands in for the 200.
+			// Tagged as a wait: how many polls there are depends on each side's timing (the log checks drop them).
+			if info3, err3 := getJSONWithClient(client, d.BaseURL+"/api/v3/info?harness=wait"); err3 == nil {
 				info, err = nil, infoV3HasDaemonIdentity(info3, d.Hostname)
 				if err == nil && startupLogShowsReady(d.Opts.RunDir, logOffset) {
 					return nil

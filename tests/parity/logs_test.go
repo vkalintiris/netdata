@@ -181,8 +181,8 @@ func webTotals(lines []string) [3]int {
 
 // probeRe is the harness's readiness probe: its body is the `/api/v1/info` answer, which the candidate does not
 // produce byte for byte yet, and C answers it 503 until it is ready, so its connections (found by their client
-// port) are left out on both sides. The polls of waitChartsLast (tagged `harness=wait`) go too: how many there are
-// depends on each side's timing.
+// port) are left out on both sides. The polls tagged `harness=wait` go too (waitChartsLast's, and the start-up probe's
+// `/api/v3/info` under bearer token protection): how many there are depends on each side's timing.
 var (
 	probeRe = regexp.MustCompile(` src_port=(\d+) .* request="?(/api/v1/info|[^" ]+[?&]harness=wait)"?$`)
 	portRe  = regexp.MustCompile(` src_port=(\d+) `)
