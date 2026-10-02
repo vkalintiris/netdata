@@ -2817,13 +2817,15 @@ fn an_answer_too_big_ends_the_run() {
     line.push(b'\n');
     let mut ok = true;
     let mut fed = 0;
+    let cut = MAX_DEFERRED_SIZE / line.len() + 1;
     let (_, records) = netdata_agent_log::capture(|| {
-        while ok {
+        // bounded: without the cap the parser buffers every line, and an unbounded loop exhausts memory
+        while ok && fed <= cut {
             ok = p.feed(&line);
             fed += 1;
         }
     });
-    assert_eq!(fed, MAX_DEFERRED_SIZE / line.len() + 1);
+    assert_eq!(fed, cut);
     let texts: Vec<_> = records.into_iter().filter_map(|r| r.message).collect();
     let size = fed * line.len();
     assert_eq!(
