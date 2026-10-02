@@ -10,6 +10,7 @@ use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use indexmap::IndexMap;
@@ -63,6 +64,9 @@ pub struct Node {
     pub sync: bool,
     /// The plugin's handler (C's `handler`, `handler_data` and the transport it pins); none for a loaded orphan.
     pub handler: Option<Handler>,
+    /// Which insertion of the id this is: C's echo holds the node it was sent for, so its answer changes nothing once
+    /// the id was deleted and set again.
+    pub(crate) serial: u64,
 }
 
 impl Node {
@@ -77,6 +81,14 @@ impl Node {
         if self.stored.modified_ut > self.current.modified_ut {
             self.current.modified_ut = self.stored.modified_ut;
         }
+    }
+
+    /// `dyncfg_update_status_on_successful_add_or_update()`: accepted by the plugin, a restart required on 299, the
+    /// stored state current.
+    pub fn on_successful_add_or_update(&mut self, code: u16) {
+        self.stored.plugin_rejected = false;
+        self.stored.restart_required = code == crate::model::RESP_ACCEPTED_RESTART_REQUIRED;
+        self.set_current_from_stored();
     }
 
     /// The part of the node its file holds.
@@ -127,6 +139,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub struct Nodes {
     dir: PathBuf,
     map: Mutex<IndexMap<Vec<u8>, Node>>,
+    /// The last insertion's serial.
+    serial: AtomicU64,
 }
 
 impl Nodes {
@@ -144,7 +158,7 @@ impl Nodes {
                 dir.display()
             );
         }
-        let nodes = Nodes { dir, map: Mutex::new(IndexMap::new()) };
+        let nodes = Nodes { dir, map: Mutex::new(IndexMap::new()), serial: AtomicU64::new(0) };
         if load_saved {
             nodes.load_all();
         }
@@ -168,7 +182,9 @@ impl Nodes {
         let mut map = self.lock();
         match map.get_mut(id) {
             None => {
-                map.insert(id.to_vec(), inserted(id, node, now_ut));
+                let mut node = inserted(id, node, now_ut);
+                node.serial = self.serial.fetch_add(1, Ordering::Relaxed) + 1;
+                map.insert(id.to_vec(), node);
                 Set::Inserted
             }
             Some(old) => Set::Merged(merge(id, old, node, overwrite_handler, now_ut)),

@@ -311,7 +311,7 @@ impl Calls {
                     Box::new(move |reply, _| *lock(&kept) = Some(reply))
                 }
             };
-            let code = dispatch(&method, request(reply, sync_done), is_cancelled);
+            let code = dispatch(&method.handler, request(reply, sync_done), is_cancelled);
             self.remove(&key);
             return Called { code, reply: lock(&kept).take() };
         }
@@ -324,7 +324,7 @@ impl Calls {
                 }
                 calls.remove(&key);
             });
-            let code = dispatch(&method, request(reply, finished), None);
+            let code = dispatch(&method.handler, request(reply, finished), None);
             return Called { code, reply: None };
         }
         self.wait(&method, &record, reply, is_cancelled, request)
@@ -361,7 +361,7 @@ impl Calls {
         };
         let content_type = reply.content_type;
         let mut caller = reply;
-        let code = dispatch(method, request(Reply::new(content_type), signal), None);
+        let code = dispatch(&method.handler, request(Reply::new(content_type), signal), None);
         let mut w = lock(&state.0);
         if code != 200 && w.answer.is_none() {
             w.gave_up = true;
@@ -494,9 +494,10 @@ fn cancel_record(record: &Record) {
     }
 }
 
-/// The method's handler on a request; `is_cancelled` is a sync call's caller check.
-fn dispatch(method: &Method, mut req: Request, is_cancelled: Option<IsCancelled<'_>>) -> u16 {
-    match &method.handler {
+/// A handler on a request, as a call runs its method's and DynCfg's intercept its node's; `is_cancelled` is a sync
+/// call's caller check.
+pub fn dispatch(handler: &Handler, mut req: Request, is_cancelled: Option<IsCancelled<'_>>) -> u16 {
+    match handler {
         Handler::Transport(transport) => transport.dispatch(req),
         Handler::Builtin(builtin) => {
             // nrpc_builtin_handler(): a cancelled call answers 499 with an empty body

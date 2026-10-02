@@ -58,9 +58,11 @@ use netdata_agent_metadata::read::{EventKind, NodeId};
 
 use netdata_agent_log::{Priority, Source, fatal, nd_log, netdata_log_info};
 use std::io::Write;
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Arc, Weak};
 
+use netdata_agent_dyncfg::{Dyncfg, Init as DyncfgInit};
 use netdata_agent_evloop::Pool;
 use netdata_agent_inicfg::{SECTION_GLOBAL, SECTION_LOGS, SECTION_WEB};
 use netdata_agent_rrd::contexts::DbRotation;
@@ -531,6 +533,15 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let home = conf.section_home();
 
     startup.step("dyncfg");
+    // dyncfg_init(true): every caller's calls table, so an echo is told apart wherever it lands
+    let dyncfg = Dyncfg::new(DyncfgInit {
+        varlib: Path::new(&conf.dirs.varlib),
+        user_config_dir: Path::new(&conf.dirs.user_config),
+        stock_config_dir: Path::new(&conf.dirs.stock_config),
+        load_saved: true,
+        calls: Arc::clone(netdata_agent_nrpc::call::Calls::process()),
+    })
+    .install();
     startup.step("threads after fork");
     // netdata_conf_reset_stack_size()
     conf::threads_set_stack_size(conf.threads.pthread_stack_size);
@@ -683,6 +694,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         }
     }
     let hosts = Arc::new(Hosts::with_storage(localhost, storage));
+    dyncfg.set_hosts(Arc::clone(&hosts));
     // rrdset_free_obsolete_time_s and the host cleanup times, which the maintenance and its readers share
     hosts.storage().set_cleanup_times(db.cleanup);
     // what the status file refreshes from localhost's creation on
@@ -726,8 +738,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         });
         hosts.load_contexts(hosts.localhost());
     }
-    // rrd_init(): localhost's pulse state, once its contexts are loaded
+    // rrd_init(): localhost's pulse state, once its contexts are loaded, then its `config` function
     hosts.localhost().pulse_status(0);
+    dyncfg.host_init(hosts.localhost());
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
         meta.detect_machine_guid_change(host_id);
     }

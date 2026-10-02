@@ -3079,6 +3079,7 @@ dependencies = [
  "netdata-agent-log",
  "netdata-agent-nrpc",
  "netdata-agent-pluginsd-proto",
+ "netdata-agent-query",
  "netdata-agent-rrd",
  "netdata-agent-text",
  "tempfile",
@@ -3097,6 +3098,7 @@ dependencies = [
 name = "netdata-agent-ingest"
 version = "0.1.3"
 dependencies = [
+ "netdata-agent-dyncfg",
  "netdata-agent-inicfg",
  "netdata-agent-log",
  "netdata-agent-nrpc",

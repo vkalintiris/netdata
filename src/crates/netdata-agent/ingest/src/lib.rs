@@ -54,6 +54,8 @@ macro_rules! plog {
         nd_log!($($arg)+)
     }};
 }
+use netdata_agent_dyncfg::model::{Cmds, SourceType, Status, Type};
+use netdata_agent_dyncfg::{AddSpec, Dyncfg};
 use netdata_agent_nrpc as nrpc;
 use netdata_agent_pluginsd_proto::emit::stream::{self as emit, Baseline, Forward, Sent};
 use netdata_agent_pluginsd_proto::{
@@ -1602,20 +1604,64 @@ impl Parser {
         }
     }
 
-    /// `pluginsd_config()`: `id action ...`, counted as a collection. What the actions do comes with DynCfg (commit 8
-    /// of milestone 8, D142.9); an unknown one is reported.
+    /// `pluginsd_config()`: `id action ...` on localhost whatever the scope, counted as a collection: `create status
+    /// type path source_type source cmds view edit` declares a configuration this parser's transport runs (a refusal
+    /// ends the run), `delete` and `status <status>` change one; an unknown action is reported.
     fn config_keyword(&mut self, w: &Words) -> Rc {
+        let id = w.get(1).unwrap_or_default();
         let Some(action) = w.get(2) else {
             return Err(Refused::Error);
         };
-        if !matches!(action, b"create" | b"delete" | b"status") {
-            plog!(
+        let word = |i: usize| w.get(i).unwrap_or_default();
+        // C's receiver reads under a frame with the line, the node and the scope, as a plugin's run
+        let _frame = matches!(self.mode, Mode::Stream).then(|| self.log_frame());
+        let dyncfg = Dyncfg::process();
+        match action {
+            b"create" => {
+                let Some(dyncfg) = dyncfg else {
+                    nd_log!(
+                        Source::Daemon,
+                        Priority::Notice,
+                        "DYNCFG: cannot add configuration '{}' - the dyncfg registry is not available",
+                        text(id)
+                    );
+                    return Err(Refused::Error);
+                };
+                let added = dyncfg.add_low_level(AddSpec {
+                    host: &self.localhost,
+                    id,
+                    path: word(5),
+                    status: Status::from_name(word(3)),
+                    kind: Type::from_name(word(4)),
+                    source_type: SourceType::from_name(word(6)),
+                    source: word(7),
+                    cmds: Cmds::parse(word(8)),
+                    sync: false,
+                    view_access: nrpc::access::from_hex_str(word(9)),
+                    edit_access: nrpc::access::from_hex_str(word(10)),
+                    handler: self.function_handler(),
+                });
+                if !added {
+                    return Err(Refused::Error);
+                }
+            }
+            b"delete" => {
+                if let Some(dyncfg) = dyncfg {
+                    dyncfg.del_low_level(&self.localhost, id);
+                }
+            }
+            b"status" => {
+                if let Some(dyncfg) = dyncfg {
+                    dyncfg.status_low_level(id, Status::from_name(word(3)));
+                }
+            }
+            _ => plog!(
                 self,
                 Source::Collector,
                 Priority::Warning,
                 "DYNCFG: unknown action '{}' received from plugin",
                 text(action)
-            );
+            ),
         }
         self.data_collections_count += 1;
         Ok(())

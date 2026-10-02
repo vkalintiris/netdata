@@ -39,8 +39,9 @@ pub const NODE_INSTANCE: [Capability; 9] = [
     capa("health", 2, false),
     // ACLK's request cancellation (M11)
     capa("req_cancel", 1, false),
-    // DynCfg (M8)
-    capa("dyncfg", 2, false),
+    // DynCfg: localhost's; a child's (dyncfg_available_for_rrdhost(), aclk_capas.c:42,53) is shown only where its
+    // consumers are, as funcs'
+    capa("dyncfg", 2, true),
 ];
 
 /// `agent_capabilities_to_json()`.

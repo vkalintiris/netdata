@@ -1,6 +1,12 @@
 //! DynCfg's saved configurations (`src/daemon/dyncfg/dyncfg-files.c`): `<varlib>/config/<escaped id>.dyncfg`, C's
 //! `key=value` lines, then `---` and the payload's bytes. Rendering and parsing are pure; the caller reads, writes,
-//! renames and deletes the files.
+//! renames and deletes the files. The schemas the plugins ship are read here.
+
+use std::ffi::OsStr;
+use std::fs;
+use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_nrpc::reply::ContentType;
@@ -44,6 +50,34 @@ pub fn file_name(id: &[u8]) -> Vec<u8> {
     let mut name = escape_id_for_filename(id);
     name.extend_from_slice(b".dyncfg");
     name
+}
+
+/// `dyncfg_get_schema()`: `schema.d/<id>.json` of the user's configuration directory, then of the stock one, each by
+/// the id's file-name form first and then as it is.
+pub fn schema(user_config_dir: &Path, stock_config_dir: &Path, id: &[u8]) -> Option<Vec<u8>> {
+    let escaped = escape_id_for_filename(id);
+    [user_config_dir, stock_config_dir].into_iter().find_map(|dir| {
+        [escaped.as_slice(), id].into_iter().find_map(|name| {
+            let mut file = [name, b".json"].concat();
+            file.splice(0..0, b"schema.d/".iter().copied());
+            read_regular(&dir.join(OsStr::from_bytes(&file)))
+        })
+    })
+}
+
+/// `dyncfg_read_file_to_buffer()`: a regular file's bytes, read to its size at open (a short read fails it).
+fn read_regular(filename: &Path) -> Option<Vec<u8>> {
+    if !fs::metadata(filename).ok()?.is_file() {
+        return None;
+    }
+    let file = fs::File::open(filename).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > u64::from(u32::MAX - 2) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(meta.len()).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 == meta.len()).then_some(bytes)
 }
 
 /// `dyncfg_file_save()`'s contents: the save is stamped (`modified` now, `created` when it had none) and counted

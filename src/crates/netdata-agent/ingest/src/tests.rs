@@ -2331,18 +2331,45 @@ fn a_plugins_collections_go_upstream_at_once() {
     PLUGIN_NOW.with(|now| now.set(NOW));
 }
 
-/// `pluginsd_config()` before DynCfg: an action is counted as a collection, an unknown one reported.
+/// `pluginsd_config()` without DynCfg (C's after its shutdown; these tests never install one): a create is refused with
+/// C's NOTICE, ending the run; a status or delete changes nothing; an unknown action is reported; each counted as a
+/// collection but the refusal.
 #[test]
-fn config_is_counted_and_unknown_actions_reported() {
+fn config_without_dyncfg_refuses_creates_and_reports_unknown_actions() {
     let hosts = plugin_hosts();
     let mut p = plugin_parser(&hosts);
     let (results, records) = netdata_agent_log::capture(|| {
-        feed_all(&mut p, &["CONFIG x create accepted job /x internal internal update 0 0", "CONFIG x status running", "CONFIG x bogus"])
+        feed_all(
+            &mut p,
+            &[
+                "CONFIG x create accepted job /x internal internal update 0 0",
+                "CONFIG x status running",
+                "CONFIG x delete",
+                "CONFIG x bogus",
+            ],
+        )
     });
-    assert_eq!(results, [true; 3]);
+    assert_eq!(results, [false, true, true, true]);
     assert_eq!(p.data_collections_count, 3);
     let records: Vec<_> = records.into_iter().map(|r| (r.source, r.priority, r.message.unwrap_or_default())).collect();
-    assert_eq!(records, [(Source::Collector, Priority::Warning, "DYNCFG: unknown action 'bogus' received from plugin".to_string())]);
+    assert_eq!(
+        records,
+        [
+            (
+                Source::Daemon,
+                Priority::Notice,
+                "DYNCFG: cannot add configuration 'x' - the dyncfg registry is not available".to_string()
+            ),
+            (
+                Source::Daemon,
+                Priority::Err,
+                "PLUGINSD: parser_action('CONFIG') failed on line 1: { 'CONFIG' 'x' 'create' 'accepted' 'job' '/x' \
+                 'internal' 'internal' 'update' '0' '0' } (quotes added to show parsing)"
+                    .to_string()
+            ),
+            (Source::Collector, Priority::Warning, "DYNCFG: unknown action 'bogus' received from plugin".to_string()),
+        ]
+    );
 }
 
 /// `pluginsd_function()` from a plugin registers it as the plugin's: `config` is refused; FUNCTION_DEL removes it.
