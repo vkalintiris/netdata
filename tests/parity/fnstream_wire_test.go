@@ -174,10 +174,15 @@ type fnWireCase struct {
 // case: the HTTP exchanges and every line the parent sent the child; after all, the parents' access records and call
 // records per thread (fn.stream's).
 func TestFnStreamWire(t *testing.T) {
-	cases := fnWireCases()
+	runFnWireCases(t, fnWireCases(), [2]Role{"fnw-p-oracle", "fnw-p-candidate"}, fnWireHost)
+}
+
+// runFnWireCases is TestFnStreamWire's runner: the parents (debug level, bearer tokens) run in directories named
+// after roles, each case's scripted child on host(case name, case index).
+func runFnWireCases(t *testing.T, cases []fnWireCase, roles [2]Role, host func(name string, n int) stream.HostInfo) {
 	bins := binaries(t)
 	p := startPairWith(t, daemon.Options{StreamMemoryMode: "ram", StorageTiers: 1, LogsExtra: "    level = debug\n",
-		PulseOff: true}, parentIdentity, bins, [2]string{}, [2]Role{"fnw-p-oracle", "fnw-p-candidate"}, fnWriteTokens)
+		PulseOff: true}, parentIdentity, bins, [2]string{}, roles, fnWriteTokens)
 	long := os.Getenv("PARITY_LONG") == "1"
 	var obs [2][][]string
 	var wg sync.WaitGroup
@@ -190,7 +195,7 @@ func TestFnStreamWire(t *testing.T) {
 					obs[i] = append(obs[i], nil)
 					continue
 				}
-				x := &fnWireSide{fnHTTPSide: &fnHTTPSide{role: side.Role, d: side.Daemon}, host: fnWireHost(c.name, n)}
+				x := &fnWireSide{fnHTTPSide: &fnHTTPSide{role: side.Role, d: side.Daemon}, host: host(c.name, n)}
 				obs[i] = append(obs[i], c.play(t, x))
 			}
 		}()

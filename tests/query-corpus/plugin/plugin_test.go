@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -270,5 +271,92 @@ func TestTheEngineAnswersCalls(t *testing.T) {
 	}
 	if r, ok := Matched(starts[0], "a"); !ok || r.Groups["a"] != a {
 		t.Errorf("the call's match: %+v", r)
+	}
+}
+
+// The engine's Serve step: every call from the start's first byte gets the first matching rule's answer, with the
+// call's parts in its body and a line after it; a payload block is taken whole; a silent rule and an unmatched call
+// are recorded and left unanswered; an Expect step still matches the same bytes.
+func TestTheEngineServes(t *testing.T) {
+	engine, err := Engine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const a, p, s, u = "5a1e00000000400080000000000000b1", "5a1e00000000400080000000000000b2",
+		"5a1e00000000400080000000000000b3", "5a1e00000000400080000000000000b4"
+	sc := Scenario{Starts: []Start{{Steps: []Step{
+		{Serve: &Serve{Rules: []ServeRule{
+			{Name: "quiet", Re: `^config x restart$`, Silent: true},
+			{Name: "update", Re: `^config \S+ update$`, Code: "202", Body: "{{id}} {{type}} [{{payload}}] {{source}}\n",
+				Then: "CONFIG {{id}} status accepted\n"},
+			{Name: "any", Re: `^config `, Code: "200", Type: "text/plain", Expires: "7",
+				Body: "{{tx}} {{action}} {{name}} {{access}}\n"},
+		}}},
+		{Emit: ConfigCreate("x", "running", "single", "/p", "internal", "internal", "get update", 0x8, 0)},
+		{Expect: &Expect{Name: "last", Re: `(?m)^FUNCTION (?P<last>\S+) \d+ "config x add j"[^\n]*\n`}},
+		{Emit: "LAST {{last}}\n"},
+	}}}}
+	l, err := Install(t.TempDir(), engine, sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", "exec "+filepath.Join(l.PluginsDir, "difftest.plugin")+" 1")
+	in, _ := cmd.StdinPipe()
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	r := bufio.NewReader(stdout)
+	next := func() string {
+		t.Helper()
+		line, err := r.ReadString('\n')
+		if err != nil {
+			t.Fatalf("stdout: %v", err)
+		}
+		return line
+	}
+	if got := next(); got != "CONFIG 'x' create 'running' 'single' '/p' 'internal' 'internal' 'get update' 0x8 0x0\n" {
+		t.Errorf("create %q", got)
+	}
+	// a call in two writes, a payload block, a silent call, other lines, an unmatched call, then one Expect matches
+	_, _ = in.Write([]byte("FUNCTION " + a + " 10 \"config x get\" \"0x7ff\" \"\""))
+	time.Sleep(100 * time.Millisecond)
+	_, _ = in.Write([]byte("\nFUNCTION_PAYLOAD " + p + " 120 \"config x update\" \"0x8\" \"ip=localhost\" \"application/json\"\n" +
+		"{\"a\":1}\nb\nFUNCTION_PAYLOAD_END\n"))
+	_, _ = in.Write([]byte("FUNCTION " + s + " 10 \"config x restart\" \"0x8\" \"\"\nFUNCTION_CANCEL " + s + "\nQUIT\n" +
+		"FUNCTION " + u + " 10 \"other y\" \"0x8\" \"\"\nFUNCTION " + u + " 10 \"config x add j\" \"0x8\" \"\"\n"))
+	want := []string{
+		"FUNCTION_RESULT_BEGIN " + a + " 200 text/plain 7\n", a + " get  0x7ff\n", "FUNCTION_RESULT_END\n",
+		"FUNCTION_RESULT_BEGIN " + p + " 202 application/json 0\n", "x application/json [{\"a\":1}\n", "b] ip=localhost\n",
+		"FUNCTION_RESULT_END\n", "CONFIG x status accepted\n",
+		"FUNCTION_RESULT_BEGIN " + u + " 200 text/plain 7\n", u + " add j 0x8\n", "FUNCTION_RESULT_END\n",
+	}
+	// the Expect's line and the Serve's answer to the same call come in either order
+	var got []string
+	for range len(want) + 1 {
+		got = append(got, next())
+	}
+	if i := slices.Index(got, "LAST "+u+"\n"); i < 0 {
+		t.Errorf("no Expect line in %q", got)
+	} else {
+		got = slices.Delete(got, i, i+1)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("answers %q, want %q", got, want)
+	}
+	_ = in.Close()
+	if err := cmd.Wait(); err != nil {
+		t.Errorf("the engine ended %v", err)
+	}
+	starts, err := l.Starts()
+	if err != nil || len(starts) != 1 {
+		t.Fatalf("starts %d: %v", len(starts), err)
+	}
+	v := ViewOf(starts[0])
+	if w := []string{"any", "update", "quiet", "-", "any"}; !reflect.DeepEqual(v.Served, w) {
+		t.Errorf("served %q, want %q", v.Served, w)
+	}
+	if w := []string{"serve", "emit", "matched:last", "emit"}; !reflect.DeepEqual(v.Steps, w) {
+		t.Errorf("steps %q, want %q", v.Steps, w)
 	}
 }

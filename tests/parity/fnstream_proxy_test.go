@@ -65,13 +65,9 @@ func fnProxyStart(t *testing.T, bin, cbin string, role Role, sc plugin.Scenario)
 // fnProxyRelistRe are a session's re-list lines.
 var fnProxyRelistRe = regexp.MustCompile(`^FUNCTION(?:_DEL)? GLOBAL `)
 
-// fnProxyConfigRe is a re-list's synthetic `config` line (dyncfg.c:521-528, appended by a C sender when DYNCFG is
-// common and the host has DynCfg methods, command-function.c:38-39): a DEVIATION mask until M8 commit 8 (DynCfg), not
-// C's variation. The grandchild's `config` reaches the middle; C's middle re-lists it for the proxied host.
-var fnProxyConfigRe = regexp.MustCompile(`^FUNCTION GLOBAL config `)
-
 // fnProxyRelists are a session's re-lists before stop, in order: each run of `FUNCTION GLOBAL` and `FUNCTION_DEL
-// GLOBAL` lines (one commit) joined, the `config` line left out (fnProxyConfigRe).
+// GLOBAL` lines (one commit) joined, DynCfg's `config` line included (dcConfigLine: the grandchild's `config` reaches
+// the middle, whose re-lists for the proxied host end with it, command-function.c:38-40).
 func fnProxyRelists(s *stream.Session, stop time.Time) []string {
 	var out, run []string
 	end := func() {
@@ -82,7 +78,6 @@ func fnProxyRelists(s *stream.Session, stop time.Time) []string {
 	}
 	for _, l := range fnLines(s.Chunks(), stop) {
 		switch {
-		case fnProxyConfigRe.MatchString(l.text):
 		case fnProxyRelistRe.MatchString(l.text):
 			run = append(run, l.text)
 		default:
@@ -138,7 +133,6 @@ func TestFnStreamProxy(t *testing.T) {
 	}
 	type result struct {
 		answers, vanswers, relists, vrelists, views, stdin, middle, gc []string
-		configs                                                        int
 	}
 	var res [2]result
 	for i, x := range sides {
@@ -149,13 +143,9 @@ func TestFnStreamProxy(t *testing.T) {
 		lo, hi := x.begin.Unix()-5, stop.Unix()+5
 		r := &res[i]
 		if x.s != nil {
-			r.answers = fnUpstream(fnLines(x.s.Chunks(), stop), lo, hi)
+			// the grandchild's tree answer carries its clock (dcClock)
+			r.answers = dcStreamClock(fnUpstream(fnLines(x.s.Chunks(), stop), lo, hi))
 			r.relists = fnProxyRelists(x.s, stop)
-			for _, l := range fnLines(x.s.Chunks(), stop) {
-				if fnProxyConfigRe.MatchString(l.text) {
-					r.configs++
-				}
-			}
 		}
 		if x.vs != nil {
 			r.vanswers = fnUpstream(fnLines(x.vs.Chunks(), stop), lo, hi)
@@ -187,9 +177,15 @@ func TestFnStreamProxy(t *testing.T) {
 			t.Errorf("oracle: %q holds %q", hay[k], w)
 		}
 	}
-	// the deviation mask is not stale: C's middle re-lists the grandchild's `config` (its DynCfg methods)
-	if o.configs == 0 {
-		t.Errorf("oracle: no `config` line on the grandchild's session: fnProxyConfigRe is stale")
+	// C's middle re-lists the grandchild's `config` at the end of each re-list of the proxied host (a check that
+	// dropped it would compare two sides without it)
+	for _, r := range o.relists {
+		if !strings.HasSuffix(r, dcConfigLine) {
+			t.Errorf("oracle: a re-list of the grandchild without its `config` line: %q", r)
+		}
+	}
+	if len(o.relists) == 0 {
+		t.Errorf("oracle: no re-list on the grandchild's session")
 	}
 	diffLines(t, "the grandchild's answers", o.answers, res[1].answers)
 	diffLines(t, "the vnode's answers", o.vanswers, res[1].vanswers)
@@ -238,7 +234,7 @@ func fnProxyScenario() (plugin.Scenario, func(t *testing.T, x *fnProxySide) []st
 		plugin.Step{WaitFile: "del"}, emit(`FUNCTION_DEL GLOBAL "difftest-x"`+"\n"),
 		expect("d"), plugin.Step{Hang: true},
 	)
-	a, p, r, k, q, v, g, h, n, d := tx(1), tx(2), tx(6), tx(7), tx(8), tx(9), tx(10), tx(11), tx(12), tx(13)
+	a, p, r, k, q, v, g, h, n, d, cfgTree := tx(1), tx(2), tx(6), tx(7), tx(8), tx(9), tx(10), tx(11), tx(12), tx(13), tx(14)
 	c := func(i int) string { return tx(3 + i) }
 	play := func(t *testing.T, x *fnProxySide) []string {
 		var out []string
@@ -296,6 +292,10 @@ func fnProxyScenario() (plugin.Scenario, func(t *testing.T, x *fnProxySide) []st
 		// an unknown method: the middle's 404
 		x.send(t, fnCall(n, 2, "nope", "0x13", "src"))
 		x.answered(t, n, 1)
+		// DynCfg through both hops (M8 commit 8): the middle sends the grandchild's `config` call down, the grandchild's
+		// own tree answers (no nodes: its plugin has none), its `agent` the grandchild's
+		x.send(t, fnCall(cfgTree, 2, "config tree '/' ''", "0x8", "src"))
+		x.answered(t, cfgTree, 1)
 		// the plugin deletes the vnode's method (its scope is the vnode): the grandchild's FUNCTION_DEL reaches the
 		// middle, whose re-list for the proxied vnode carries it up (D104.6, D106.7)
 		x.release(t, x.l, "del")
@@ -329,6 +329,8 @@ func fnProxyScenario() (plugin.Scenario, func(t *testing.T, x *fnProxySide) []st
 		fnError(g, 504, "Timeout waiting for a response."),
 		"FUNCTION " + h + ` 2 "difftest-fn h" "0x13" "src"` + "\nFUNCTION_CANCEL " + g + "\n",
 		fnError(n, 404, "This feature is not available on this host at this time."),
+		cfgTree + `: RESULT 200 "application/json" `,
+		`{\"version\":1,\"tree\":{},\"attention\":{\"degraded\":false,`,
 		"the grandparent got the delete: true", `FUNCTION_DEL GLOBAL "difftest-x" | FUNCTION GLOBAL "difftest-vfn" `,
 		"the proxied session closed: true", "answers for D: 0",
 	}

@@ -65,10 +65,10 @@ var (
 	dimensionRe     = regexp.MustCompile(`^DIMENSION (?:(SLOT:\S+) )?"([^"]*)"`)
 	definitionEndRe = regexp.MustCompile(`^CHART_DEFINITION_END .*`)
 	// cOnlyFunctionRe are the re-list lines of C's own localhost methods, which the candidate registers later: the
-	// five built-ins (web/api/functions/functions.c, M8 commit 9) and DynCfg's `config` line (unquoted,
-	// dyncfg.c:521-528, M8 commit 8). It hides a deviation, not C's run-to-run variation: what the Rust agent lacks
-	// until M8's DynCfg (the `config` line) and built-in Functions (C's five names) land, and it comes out with them.
-	cOnlyFunctionRe = regexp.MustCompile(`^FUNCTION GLOBAL ("(netdata-streaming|topology:streaming|netdata-api-calls|bearer_get_token|netdata-metrics-cardinality)" |config )`)
+	// five built-ins (web/api/functions/functions.c, M8 commit 9). It hides a deviation, not C's run-to-run variation:
+	// what the Rust agent lacks until M8's built-in Functions land, and it comes out with them. DynCfg's `config` line
+	// (dcConfigLine) is compared since M8 commit 8.
+	cOnlyFunctionRe = regexp.MustCompile(`^FUNCTION GLOBAL "(netdata-streaming|topology:streaming|netdata-api-calls|bearer_get_token|netdata-metrics-cardinality)" `)
 	v1BeginRe       = regexp.MustCompile(`^BEGIN "([^"]*)" (\d+)$`)
 	v1SetRe         = regexp.MustCompile(`^SET "([^"]*)" = \S+$`)
 )
@@ -398,9 +398,15 @@ var senderVariants = []senderVariant{
 		during: retentionChange},
 	// the function re-list (fn-relist, M8 commit 5, D147.14 R61-3): the fake plugin's methods as the parent sees
 	// them, with the parent taking FUNCTION_DEL, refusing it, and refusing FUNCTIONS
-	fnRelistVariant("fn-relist", 0, [][]string{fnRelistBursts(true), nil}),
-	fnRelistVariant("fn-nodel", stream.CapFunctionDel, [][]string{fnRelistBursts(false), nil}),
+	fnRelistVariant("fn-relist", 0, [][]string{fnRelistBursts(true), {dcConfigLine}}),
+	fnRelistVariant("fn-nodel", stream.CapFunctionDel, [][]string{fnRelistBursts(false), {dcConfigLine}}),
+	// without FUNCTIONS the second session has no re-list at all (no connect-time send, no change after it)
 	fnRelistVariant("fn-nofn", stream.CapFunctions, [][]string{fnRelistBursts(true), nil}),
+	// DynCfg nodes (M8 commit 8, plan §5.4): each registration and delete of a `config <id>` method re-lists at the next
+	// collection, and the re-list holds only `config` (DynCfg methods are never listed, nrpc-catalog.c:50-53; their
+	// deletes never queue FUNCTION_DEL, nrpc-registry.c:699-703); with DYNCFG refused, no `config` line at all
+	dcRelistVariant("dc-relist", 0, [][]string{{dcConfigLine, dcConfigLine, dcConfigLine, dcConfigLine, dcConfigLine}}),
+	dcRelistVariant("dc-nodyncfg", stream.CapDynCfg, [][]string{nil}),
 }
 
 // fnRelistLine is a method's re-list line as C renders it (nrpc-catalog.c `FUNCTION GLOBAL "%s" %d "%s" "%s" 0x%x
@@ -414,13 +420,14 @@ func fnRelistLine(name, help string) string {
 // flag, command-begin-set-end-init.c:49-67 does not check FUNCTIONS); the queued FUNCTION_DEL lines first, when
 // the parent takes them (nrpc-catalog.c:150-160, dropped otherwise); a DEL and a re-add between two renders give
 // both (fn.registry.readd_keeps_del); a re-added method goes last (registration order); an unchanged re-send
-// re-lists too. The exit re-lists nothing, and the next session's re-list leaves the exited run's methods out
-// (unavailable), so it is empty once C's own are left out.
+// re-lists too; each ends with DynCfg's `config` line (dcConfigLine: localhost's `config`). The exit re-lists nothing,
+// and the next session's re-list leaves the exited run's methods out (unavailable), so it holds only `config` once
+// C's own are left out.
 func fnRelistBursts(del bool) []string {
 	a, b := fnRelistLine("difftest-a", "a"), fnRelistLine("difftest-b", "b")
 	a2, b2 := fnRelistLine("difftest-a", "a2"), fnRelistLine("difftest-b", "b2")
 	delA, delB := `FUNCTION_DEL GLOBAL "difftest-a"`, `FUNCTION_DEL GLOBAL "difftest-b"`
-	join := func(l ...string) string { return strings.Join(l, "\n") }
+	join := func(l ...string) string { return strings.Join(append(l, dcConfigLine), "\n") }
 	if !del {
 		return []string{join(a, b), join(b), join(b2), join(b2, a2), join(b2, a2)}
 	}
@@ -508,6 +515,46 @@ func fnRelistVariant(name string, refused uint32, relists [][]string) senderVari
 				return len(s) >= 2 && plugin.Has(s[1], "collected", "")
 			}); !ok {
 				t.Errorf("%s: the plugin's second start did not collect within 10 s", d.Opts.RunDir)
+			}
+		}}
+}
+
+// dcRelistScenario: the plugin collects in the background from its start (fnRelistScenario's pacing: each change
+// re-lists alone, at a collection of its own) and answers DynCfg's calls (dcServe); once released it registers a
+// template, a stock job of it (an `enable` echo), a single (another), 2.5 s apart, then deletes the job (never saved:
+// the node goes, its method is unregistered), and waits for the stop.
+func dcRelistScenario() *plugin.Scenario {
+	collect := plugin.Step{Collect: &plugin.Collect{Chart: "difftest.dcrelist", Dims: []string{"x"}, N: 300, Background: true}}
+	pause := plugin.Step{SleepMs: 2500}
+	return &plugin.Scenario{Starts: []plugin.Start{{Steps: []plugin.Step{
+		dcServe(), collect, {WaitFile: "r1"}, pause,
+		{Emit: dcCreateT}, pause, {Emit: dcCreateJ1}, pause, {Emit: dcCreateS}, pause,
+		{Emit: "CONFIG " + dcJ1 + " delete\n"}, pause, {WaitFile: "r2"},
+	}}}}
+}
+
+// dcRelistVariant is a DynCfg re-list variant: one session; the parent refuses REPLICATION and `refused`; the child
+// runs dcRelistScenario with PULSE off, released once the session's start is out; the session runs until the
+// plugin's changes are done, then senderRun's 15 s.
+func dcRelistVariant(name string, refused uint32, relists [][]string) senderVariant {
+	return senderVariant{name: name, refused: stream.CapReplication | refused, plugin: dcRelistScenario(), relists: relists,
+		child: func(o *daemon.Options) { o.PulseOff = true },
+		during: func(t *testing.T, d *daemon.Daemon, s *stream.Session) {
+			l := plugin.LayoutOf(d.Opts.RunDir)
+			if !s.WaitData(func(b []byte) bool { return bytes.Contains(b, []byte("OVERWRITE labels\n")) }, 30*time.Second) {
+				t.Errorf("%s: no host labels within 30 s", d.Opts.RunDir)
+				return
+			}
+			// the connect-time re-list follows the labels (stream-sender.c:174-179)
+			time.Sleep(time.Second)
+			if err := l.Release("r1"); err != nil {
+				t.Error(err)
+				return
+			}
+			if _, ok := l.WaitFor(40*time.Second, func(s [][]plugin.Record) bool {
+				return len(s) >= 1 && plugin.Has(s[0], "waiting", "r2")
+			}); !ok {
+				t.Errorf("%s: the plugin's changes did not end within 40 s", d.Opts.RunDir)
 			}
 		}}
 }

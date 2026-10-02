@@ -5,6 +5,8 @@
 package main
 
 import (
+	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -256,10 +258,139 @@ func main() {
 		case step.StayOnEOF:
 			rec.write(plugin.Record{Kind: "step", Step: "stay-on-eof"})
 			stayOnEOF.Store(true)
+		case step.Serve != nil:
+			rec.write(plugin.Record{Kind: "step", Step: "serve"})
+			var rules []rule
+			for _, r := range step.Serve.Rules {
+				re, err := regexp.Compile(r.Re)
+				if err != nil {
+					end("bad serve rule "+r.Name, 95)
+				}
+				rules = append(rules, rule{ServeRule: r, re: re})
+			}
+			go serve(rec, in, rules)
 		}
 	}
 	// the steps ran out: wait for the agent to stop us
 	select {}
+}
+
+// rule is a Serve step's rule with its pattern compiled.
+type rule struct {
+	plugin.ServeRule
+	re   *regexp.Regexp
+	used int
+}
+
+// call is one call the agent wrote: its header's words and, for a FUNCTION_PAYLOAD block, the payload and its type.
+type call struct {
+	tx, cmd, access, source, ctype, payload string
+}
+
+// serve answers the calls on stdin from its first byte, in order, with a cursor of its own (plugin.Serve).
+func serve(rec *recorder, in *input, rules []rule) {
+	pos := 0
+	for {
+		in.mu.Lock()
+		// in.add only appends: the bytes up to this length stay as they are
+		data, eof, changed := in.data, in.eof, in.changed
+		in.mu.Unlock()
+		for {
+			c, next, ok := nextCall(data, pos)
+			if !ok {
+				break
+			}
+			pos = next
+			if c != nil {
+				answer(rec, rules, *c)
+			}
+		}
+		if eof {
+			return
+		}
+		<-changed
+	}
+}
+
+// nextCall reads the line (or a FUNCTION_PAYLOAD block) at pos: the call it holds (nil for any other line) and where
+// the next one starts; ok is false while it is not whole yet.
+func nextCall(data []byte, pos int) (*call, int, bool) {
+	nl := bytes.IndexByte(data[pos:], '\n')
+	if nl < 0 {
+		return nil, pos, false
+	}
+	line, next := string(data[pos:pos+nl]), pos+nl+1
+	w := quotedWords(line)
+	switch {
+	case strings.HasPrefix(line, "FUNCTION_PAYLOAD ") && len(w) >= 7:
+		// the payload, then the agent's newline and the end line (pluginsd_functions.c:24-38)
+		const term = "\nFUNCTION_PAYLOAD_END\n"
+		k := bytes.Index(data[next:], []byte(term))
+		if k < 0 {
+			return nil, pos, false
+		}
+		return &call{tx: w[1], cmd: w[3], access: w[4], source: w[5], ctype: w[6], payload: string(data[next : next+k])},
+			next + k + len(term), true
+	case strings.HasPrefix(line, "FUNCTION ") && len(w) >= 6:
+		return &call{tx: w[1], cmd: w[3], access: w[4], source: w[5]}, next, true
+	}
+	return nil, next, true
+}
+
+// quotedWords splits a line the agent wrote on spaces, a double-quoted word whole (the agent never writes a `"`
+// inside one).
+func quotedWords(line string) []string {
+	var out []string
+	for i := 0; i < len(line); {
+		if line[i] == ' ' {
+			i++
+			continue
+		}
+		if line[i] == '"' {
+			j := strings.IndexByte(line[i+1:], '"')
+			if j < 0 {
+				return append(out, line[i+1:])
+			}
+			out = append(out, line[i+1:i+1+j])
+			i += j + 2
+			continue
+		}
+		j := strings.IndexByte(line[i:], ' ')
+		if j < 0 {
+			return append(out, line[i:])
+		}
+		out = append(out, line[i:i+j])
+		i += j
+	}
+	return out
+}
+
+// answer records a call with the first rule matching its command and writes that rule's answer, or records "-" and
+// leaves it unanswered.
+func answer(rec *recorder, rules []rule, c call) {
+	vars := map[string]string{"tx": c.tx, "cmd": c.cmd, "access": c.access, "source": c.source, "payload": c.payload,
+		"type": c.ctype}
+	f := strings.Fields(c.cmd)
+	for i, k := range []string{"id", "action", "name"} {
+		vars[k] = ""
+		if len(f) > i+1 {
+			vars[k] = f[i+1]
+		}
+	}
+	for i := range rules {
+		r := &rules[i]
+		if !r.re.MatchString(c.cmd) || r.Times > 0 && r.used >= r.Times {
+			continue
+		}
+		r.used++
+		rec.write(plugin.Record{Kind: "served", Step: r.Name, Data: c.cmd})
+		if !r.Silent {
+			emit(plugin.Result(c.tx, r.Code, cmp.Or(r.Type, "application/json"), cmp.Or(r.Expires, "0"),
+				expand(r.Body, vars)) + expand(r.Then, vars))
+		}
+		return
+	}
+	rec.write(plugin.Record{Kind: "served", Step: "-", Data: c.cmd})
 }
 
 // raisable are the signals a Raise step may name.

@@ -161,8 +161,9 @@ type pluginCase struct {
 	// guard checks the oracle's records and log classes after the stop
 	guard func(t *testing.T, starts [][]plugin.Record, classes map[string][]string)
 	// mask, when set, rewrites each side's log classes after the guard, before they are compared: C's run-to-run
-	// variation only
-	mask func(classes map[string][]string)
+	// variation only; views, when set, rewrites each side's difftest start views (maskedViews') the same way
+	mask  func(classes map[string][]string)
+	views func(vs []plugin.View)
 	// adjust, when set, changes both sides' options (e.g. a [web] setting); prepare, when set, lays out more files in
 	// each run directory before its daemon starts (e.g. bearer token files)
 	adjust  func(o *daemon.Options)
@@ -859,9 +860,28 @@ func TestPluginsFakePlugin(t *testing.T) {
 	runPluginCases(t, cases)
 }
 
+// pluginCallIDRe is a call's transaction where the agent writes it to a plugin (pluginsd_functions.c:24-50, :255-257,
+// :323-327): an id the agent made itself (a DynCfg echo's, dyncfg-echo.c:94-107, nrpc-calls.c:657-660) differs run to
+// run; one a case sent (fnTxPrefix) is kept.
+var pluginCallIDRe = regexp.MustCompile(`(?m)^FUNCTION(?:_PAYLOAD|_CANCEL|_PROGRESS)? [0-9a-f]{32}\b`)
+
+// maskedViews are views with the agent's own call ids on stdin masked RANDOM (pluginCallIDRe).
+func maskedViews(vs []plugin.View) []plugin.View {
+	out := slices.Clone(vs)
+	for i := range out {
+		out[i].Stdin = pluginCallIDRe.ReplaceAllStringFunc(out[i].Stdin, func(m string) string {
+			if id := m[len(m)-32:]; !strings.HasPrefix(id, fnTxPrefix) {
+				return m[:len(m)-32] + "RANDOM"
+			}
+			return m
+		})
+	}
+	return out
+}
+
 // runPluginCases plays each case on a pair (the fake plugin installed in each run directory), then stops both and
-// compares the starts' views, the other fake plugins' and the log classes, after the oracle's guards; a case's after
-// hook comes last.
+// compares the starts' views (maskedViews), the other fake plugins' and the log classes, after the oracle's guards; a
+// case's after hook comes last.
 func runPluginCases(t *testing.T, cases map[string]pluginCase) {
 	bins := binaries(t)
 	engine, err := plugin.Engine()
@@ -946,6 +966,15 @@ func runPluginCases(t *testing.T, cases map[string]pluginCase) {
 			if c.mask != nil {
 				for i := range classes {
 					c.mask(classes[i])
+				}
+			}
+			for i := range views {
+				views[i] = maskedViews(views[i])
+				if c.views != nil {
+					c.views(views[i])
+				}
+				for k, v := range more[i] {
+					more[i][k] = maskedViews(v)
 				}
 			}
 			if fmt.Sprintf("%+v", views[0]) != fmt.Sprintf("%+v", views[1]) {

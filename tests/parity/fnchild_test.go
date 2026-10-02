@@ -65,6 +65,8 @@ type fnCase struct {
 	// settle, when set, runs on the test goroutine once both sides played, before this side's stop: what must have
 	// happened before the stop cut
 	settle func(t *testing.T, x *fnSide)
+	// clock renders the answers' wall-clock values (dcClock: DynCfg's trees carry `*_ut` and `agent.now`)
+	clock bool
 }
 
 // fnSide is one agent's run of a case: its child, its parent, the session the case calls through (localhost's
@@ -307,7 +309,8 @@ func fnUpstream(lines []fnLine, lo, hi int64) []string {
 }
 
 // fnViews are a fake plugin's starts up to the stop, one line per item: the arguments, each line read on stdin
-// (quoted, random ids masked), the steps and how it ended; and each start's stdin whole, for the oracle's guards.
+// (quoted, random ids masked), the steps and how it ended, the rules a Serve step answered with; and each start's stdin
+// whole, for the oracle's guards.
 func fnViews(name string, starts [][]plugin.Record, stop time.Time) (lines, stdin []string) {
 	for i, s := range starts {
 		v := plugin.ViewOf(plugin.Before(s, stop))
@@ -320,6 +323,9 @@ func fnViews(name string, starts [][]plugin.Record, stop time.Time) (lines, stdi
 			}
 		}
 		lines = append(lines, fmt.Sprintf("%s steps %q eof %t end %q", head, v.Steps, v.EOF, v.End))
+		if len(v.Served) > 0 {
+			lines = append(lines, fmt.Sprintf("%s served %q", head, v.Served))
+		}
 		stdin = append(stdin, in)
 	}
 	return lines, stdin
@@ -495,6 +501,10 @@ func runFnCases(t *testing.T, cases map[string]fnCase) {
 				}
 				res[i] = fnCollect(t, x)
 				res[i].obs, res[i].ran = obs[i], ran[i]
+				if c.clock {
+					now := time.Now()
+					res[i].answers = dcClock(res[i].answers, now.Add(-10*time.Minute), now.Add(time.Minute))
+				}
 			}
 			if !res[0].ran {
 				t.Fatal("oracle: the case did not play")

@@ -59,6 +59,39 @@ type Step struct {
 	StayOnEOF bool `json:"stayOnEOF,omitempty"`
 	// Expect waits until stdin, after the previous match, matches a pattern (see Expect).
 	Expect *Expect `json:"expect,omitempty"`
+	// Serve answers every call on stdin in the background from here on (see Serve); the next step follows at once.
+	Serve *Serve `json:"serve,omitempty"`
+}
+
+// Serve answers the calls the agent writes on stdin, read from the start's first byte with a cursor of its own (Expect
+// steps still match the same bytes): each `FUNCTION <tx> <timeout> "<cmd>" "<access>" "<source>"` line and each whole
+// `FUNCTION_PAYLOAD ... FUNCTION_PAYLOAD_END` block, in stdin order, gets the answer of the first rule whose Re matches
+// its command; other lines (FUNCTION_CANCEL, QUIT) are skipped. Each call is recorded `served` (the rule's name and the
+// command; "-" when no rule matched, which leaves the call unanswered). DynCfg's echoes depend on saved state in count
+// and order, so a script of Expect steps cannot predict them; the stdin views still compare every byte.
+type Serve struct {
+	Rules []ServeRule `json:"rules"`
+}
+
+// ServeRule is one answer. Body and Then may name the call's parts: {{tx}}, {{cmd}}, {{access}}, {{source}},
+// {{payload}} (empty for a FUNCTION line), {{type}} (the payload's content type), and the command's words after the
+// first: {{id}}, {{action}}, {{name}} (`config <id> <action> <name>`).
+type ServeRule struct {
+	Name string `json:"name"`
+	// Re (RE2) is matched against the command
+	Re string `json:"re"`
+	// Code, Type and Expires are FUNCTION_RESULT_BEGIN's words (Type application/json and Expires 0 when empty);
+	// Body is the result's body with its newlines
+	Code    string `json:"code"`
+	Type    string `json:"type,omitempty"`
+	Expires string `json:"expires,omitempty"`
+	Body    string `json:"body,omitempty"`
+	// Then is written right after the result, in the same write (e.g. a CONFIG line the answer causes)
+	Then string `json:"then,omitempty"`
+	// Silent records the call and leaves it unanswered
+	Silent bool `json:"silent,omitempty"`
+	// Times, when set, lets the rule answer only its first Times matches; later calls go on to the next rules
+	Times int `json:"times,omitempty"`
 }
 
 // Expect is a step that waits for the agent to write something on the plugin's stdin: Re (RE2) is matched against
@@ -94,7 +127,7 @@ func ExitCode(code int) *int { return &code }
 // Record is one line the engine writes; Kind says which fields are set.
 type Record struct {
 	T    time.Time `json:"t"`
-	Kind string    `json:"kind"` // start, stdin, eof, step, collected, waiting, expect, matched, expect-timeout, expect-eof, signal, end
+	Kind string    `json:"kind"` // start, stdin, eof, step, collected, waiting, expect, matched, expect-timeout, expect-eof, served, signal, end
 	// start
 	Args []string `json:"args,omitempty"`
 	Env  []string `json:"env,omitempty"`
@@ -112,11 +145,11 @@ type Record struct {
 	OomScoreAdj string   `json:"oomScoreAdj,omitempty"`
 	Nice        string   `json:"nice,omitempty"`
 	SchedPolicy string   `json:"schedPolicy,omitempty"`
-	// stdin; matched (the matched text)
+	// stdin; matched (the matched text); served (the call's command)
 	Data string `json:"data,omitempty"`
 	// matched: the named groups
 	Groups map[string]string `json:"groups,omitempty"`
-	// step, waiting; expect, matched, expect-timeout, expect-eof (the Expect's name)
+	// step, waiting; expect, matched, expect-timeout, expect-eof (the Expect's name); served (the rule's name)
 	Step string `json:"step,omitempty"`
 	File string `json:"file,omitempty"`
 	// collected
@@ -328,13 +361,15 @@ func Before(start []Record, t time.Time) []Record {
 
 // View is what two agents must agree on about one start: its arguments, all it read on stdin (chunking dropped),
 // whether it saw stdin's end, its steps (an Expect's outcome as `matched:<name>`, `expect-timeout:<name>` or
-// `expect-eof:<name>`), and how it ended.
+// `expect-eof:<name>`), how it ended, and the rules a Serve step answered with, in stdin order (apart from the steps:
+// the background answers interleave with them by timing).
 type View struct {
-	Args  []string
-	Stdin string
-	EOF   bool
-	Steps []string
-	End   string
+	Args   []string
+	Stdin  string
+	EOF    bool
+	Steps  []string
+	End    string
+	Served []string
 }
 
 // ViewOf is a start's view.
@@ -353,6 +388,8 @@ func ViewOf(start []Record) View {
 			v.Steps = append(v.Steps, r.Step)
 		case "matched", "expect-timeout", "expect-eof":
 			v.Steps = append(v.Steps, r.Kind+":"+r.Step)
+		case "served":
+			v.Served = append(v.Served, r.Step)
 		case "end":
 			v.End = r.How
 		}
@@ -416,4 +453,11 @@ func Result(tx, code, format, expires, body string) string {
 // Progress is a plugin's progress report for a call (src/plugins.d/pluginsd_functions.c:715-736).
 func Progress(tx string, done, all int) string {
 	return fmt.Sprintf("FUNCTION_PROGRESS %s %d %d\n", tx, done, all)
+}
+
+// ConfigCreate is a DynCfg registration as libnetdata's plugins write it (functions_evloop.c:456-466): every word
+// single-quoted but the two access masks, `0x<hex>`.
+func ConfigCreate(id, status, typ, path, sourceType, source, cmds string, view, edit uint32) string {
+	return fmt.Sprintf("CONFIG '%s' create '%s' '%s' '%s' '%s' '%s' '%s' 0x%x 0x%x\n", id, status, typ, path, sourceType,
+		source, cmds, view, edit)
 }
