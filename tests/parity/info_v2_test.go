@@ -199,12 +199,22 @@ func compareCapabilities(t *testing.T, where string, o, c Value) {
 // info slot by slot and its capabilities by name; any other body byte for byte.
 func compareInfoV2(t *testing.T, p *Pair, from string, requests [][2]string, masks ...Mask) {
 	t.Helper()
+	compareInfoV2With(t, p, from, requests, nil, masks...)
+}
+
+// compareInfoV2With is compareInfoV2 with edit, when set, applied to each raw answer first: a check's deviation mask
+// (`fn.http-catalog`'s fnWithoutBuiltins).
+func compareInfoV2With(t *testing.T, p *Pair, from string, requests [][2]string, edit func([]byte) []byte, masks ...Mask) {
+	t.Helper()
 	masks = append(append([]Mask{}, infoV2Volatile...), masks...)
 	for _, r := range requests {
 		path, status := r[0], r[1]
 		var raw [2][]byte
 		for i, side := range p.Each() {
 			raw[i] = infoV2Get(t, side.Role, side.Daemon.Addr, from, path)
+			if edit != nil {
+				raw[i] = edit(raw[i])
+			}
 		}
 		if !bytes.HasPrefix(raw[0], []byte("HTTP/1.1 "+status+" ")) {
 			t.Errorf("%s: the oracle answers %q, expected %s", path, truncateBytes(raw[0]), status)

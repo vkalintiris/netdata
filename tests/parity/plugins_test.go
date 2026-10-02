@@ -163,6 +163,13 @@ type pluginCase struct {
 	// mask, when set, rewrites each side's log classes after the guard, before they are compared: C's run-to-run
 	// variation only
 	mask func(classes map[string][]string)
+	// adjust, when set, changes both sides' options (e.g. a [web] setting); prepare, when set, lays out more files in
+	// each run directory before its daemon starts (e.g. bearer token files)
+	adjust  func(o *daemon.Options)
+	prepare func(t *testing.T, runDir string)
+	// after, when set, runs once both daemons stopped and the starts and log classes were compared: a check's own
+	// comparisons of what the daemons logged
+	after func(t *testing.T, p *Pair)
 }
 
 // morePlugin is another fake plugin: its file in a directory under the run directory, and its scenario.
@@ -833,7 +840,8 @@ func TestPluginsFakePlugin(t *testing.T) {
 }
 
 // runPluginCases plays each case on a pair (the fake plugin installed in each run directory), then stops both and
-// compares the starts' views, the other fake plugins' and the log classes, after the oracle's guards.
+// compares the starts' views, the other fake plugins' and the log classes, after the oracle's guards; a case's after
+// hook comes last.
 func runPluginCases(t *testing.T, cases map[string]pluginCase) {
 	bins := binaries(t)
 	engine, err := plugin.Engine()
@@ -846,8 +854,15 @@ func runPluginCases(t *testing.T, cases map[string]pluginCase) {
 			var ls [2]plugin.Layout
 			side := 0
 			ue := max(c.ue, 1)
-			p := startPairWith(t, pluginsOptions(ue, c.dirs, c.enable, c.logs), parentIdentity, bins, [2]string{}, [2]Role{Oracle, Candidate},
+			opts := pluginsOptions(ue, c.dirs, c.enable, c.logs)
+			if c.adjust != nil {
+				c.adjust(&opts)
+			}
+			p := startPairWith(t, opts, parentIdentity, bins, [2]string{}, [2]Role{Oracle, Candidate},
 				func(t *testing.T, runDir string) {
+					if c.prepare != nil {
+						c.prepare(t, runDir)
+					}
 					l, err := plugin.Install(runDir, engine, c.sc)
 					if err != nil {
 						t.Fatal(err)
@@ -927,6 +942,9 @@ func runPluginCases(t *testing.T, cases map[string]pluginCase) {
 				if _, ok := classes[0][class]; !ok {
 					t.Errorf("candidate only: %s: %q", class, classes[1][class])
 				}
+			}
+			if c.after != nil {
+				c.after(t, p)
 			}
 		})
 	}

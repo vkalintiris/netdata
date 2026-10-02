@@ -57,6 +57,109 @@ func rawExchangeFrom(localIP, addr string, request []byte, timeout time.Duration
 	}
 }
 
+// rawRequest is an HTTP/1.1 request: the method, the target, the header lines, then the body with its
+// Content-Length (no body and no length when body is nil; `Content-Length: 0` when it is empty).
+func rawRequest(method, target string, headers []string, body []byte) []byte {
+	var b bytes.Buffer
+	b.WriteString(method + " " + target + " HTTP/1.1\r\n")
+	for _, h := range headers {
+		b.WriteString(h + "\r\n")
+	}
+	if body != nil {
+		fmt.Fprintf(&b, "Content-Length: %d\r\n", len(body))
+	}
+	b.WriteString("\r\n")
+	b.Write(body)
+	return b.Bytes()
+}
+
+// contentLengthOf is a response head's Content-Length (-1 when it has none).
+func contentLengthOf(head []byte) int {
+	m := contentLengthRe.Find(head)
+	if m == nil {
+		return -1
+	}
+	n, err := strconv.Atoi(string(bytes.TrimPrefix(m, []byte("Content-Length: "))))
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+// readResponse reads one response from conn after the bytes already read (pending): its head, then the
+// Content-Length's bytes, or everything until the server closes or stays silent for timeout when the head has no
+// length (C drops keep-alive then). A silence before the response ends appends "<timeout>"; closed tells whether the
+// connection ended. rest are the bytes read past the response.
+func readResponse(conn net.Conn, pending []byte, timeout time.Duration) (resp, rest []byte, closed bool) {
+	buf := make([]byte, 64*1024)
+	out := pending
+	for {
+		if i := bytes.Index(out, []byte("\r\n\r\n")); i >= 0 {
+			if n := contentLengthOf(out[:i]); n >= 0 && len(out) >= i+4+n {
+				return out[:i+4+n], out[i+4+n:], false
+			}
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+		n, err := conn.Read(buf)
+		out = append(out, buf[:n]...)
+		if err != nil {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				out = append(out, "<timeout>"...)
+			}
+			return out, nil, true
+		}
+	}
+}
+
+// rawExchanges sends the requests on one connection, each after the previous response came whole (keep-alive), and
+// returns the responses; the exchange ends early when the server closes the connection.
+func rawExchanges(addr string, requests [][]byte, timeout time.Duration) ([][]byte, error) {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	var out [][]byte
+	var rest []byte
+	for _, req := range requests {
+		if _, err := conn.Write(req); err != nil {
+			return out, err
+		}
+		var resp []byte
+		var closed bool
+		resp, rest, closed = readResponse(conn, rest, timeout)
+		out = append(out, resp)
+		if closed {
+			break
+		}
+	}
+	return out, nil
+}
+
+// rawHoldAndClose sends request, runs wait (until the server reached a point, e.g. a plugin got the call), then
+// closes the connection: whole (the client is gone, nothing is read) or, with half, only its writing side, reading
+// what the server sends back until it closes or stays silent for timeout.
+func rawHoldAndClose(addr string, request []byte, wait func(), half bool, timeout time.Duration) ([]byte, error) {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	if _, err := conn.Write(request); err != nil {
+		return nil, err
+	}
+	wait()
+	if !half {
+		return nil, conn.Close()
+	}
+	if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+		return nil, err
+	}
+	resp, _, _ := readResponse(conn, nil, timeout)
+	return resp, nil
+}
+
 // rawMasks hide the header values that differ between any two responses (clock and random transaction ids).
 var rawMasks = []*regexp.Regexp{
 	regexp.MustCompile(`(?m)^(Date|Expires): [^\r]*`),
@@ -312,9 +415,91 @@ func TestStaticEdgeFiles(t *testing.T) {
 // TestInfoBeforeReady polls /api/v1/info from the moment each daemon starts. Until startup completes C answers 503
 // with the request as the body (api_v1_info() returns before flushing the buffer the request was read into); the
 // candidate must answer the same (check api.info-ready). The window can be a few milliseconds, so each side gets a
-// few starts to show it.
+// few starts to show it. M8 commit 6 (D157) adds the Functions endpoints C gates the same way (api_v1_function.c:6-7,
+// api_v1_functions.c:6-7) and v2's list, which it does not gate (contexts v2): never a 503 while startup runs.
 func TestInfoBeforeReady(t *testing.T) {
-	compareBeforeReady(t, "/api/v1/info")
+	for _, c := range [][2]string{{"info", "/api/v1/info"}, {"fn-v1", "/api/v1/function?function=x"},
+		{"fn-v3", "/api/v3/function?function=x"}, {"fns-v1", "/api/v1/functions"}} {
+		t.Run(c[0], func(t *testing.T) { compareBeforeReady(t, c[1]) })
+	}
+	t.Run("fns-v2", func(t *testing.T) { neverBeforeReady(t, "/api/v1/functions", "/api/v2/functions") })
+}
+
+// neverBeforeReady polls a gated path and a free one in turn while each binary starts (up to 10 starts per side, until
+// a free request follows a 503 of the gated path at once, inside the window or just past it: C vs C, about 5 starts in
+// 8): the free path must never answer 503.
+func neverBeforeReady(t *testing.T, gated, free string) {
+	t.Helper()
+	bins := binaries(t)
+	for i, role := range []Role{Oracle, Candidate} {
+		var after []string
+		for attempt := 1; attempt <= 10 && len(after) == 0; attempt++ {
+			r := beforeReadyFree(t, bins[i], Role(fmt.Sprintf("%s-%d", role, attempt)), gated, free)
+			for _, s := range r.free {
+				if strings.HasPrefix(s, "HTTP/1.1 503 ") {
+					t.Errorf("%s: %s answered %q while startup ran", role, free, s)
+					break
+				}
+			}
+			after = r.after
+			t.Logf("%s start %d: %d answers of %s, %d right after a 503 of %s: %q", role, attempt, len(r.free), free,
+				len(r.after), gated, r.after)
+		}
+		if len(after) == 0 {
+			t.Errorf("%s: no request of %s right after a 503 of %s in 10 starts", role, free, gated)
+		}
+	}
+}
+
+// beforeReadyAnswers are the status lines of a free path's answers while a daemon started, and of those requested
+// right after a 503 of the gated path.
+type beforeReadyAnswers struct{ free, after []string }
+
+// beforeReadyFree starts the binary while polling gated and free in turn, until the daemon is ready.
+func beforeReadyFree(t *testing.T, bin string, role Role, gated, free string) beforeReadyAnswers {
+	t.Helper()
+	request := func(path string) []byte {
+		return []byte("GET " + path + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+	}
+	status := func(b []byte) string {
+		l, _, _ := bytes.Cut(b, []byte("\r\n"))
+		return string(l)
+	}
+	port := freePorts(t, 1)[0]
+	addr := "127.0.0.1:" + strconv.Itoa(port)
+	stop, done := make(chan struct{}), make(chan struct{})
+	var r beforeReadyAnswers
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			after503 := false
+			if b, err := rawExchange(addr, request(gated), time.Second); err == nil {
+				after503 = bytes.HasPrefix(b, []byte("HTTP/1.1 503 "))
+			}
+			if b, err := rawExchange(addr, request(free), time.Second); err == nil {
+				r.free = append(r.free, status(b))
+				if after503 {
+					r.after = append(r.after, status(b))
+				}
+			}
+			time.Sleep(500 * time.Microsecond)
+		}
+	}()
+	d, err := daemon.Start(daemon.Options{Binary: bin, Port: port, RunDir: runDir(t, role), Identity: &parentIdentity})
+	close(stop)
+	<-done
+	if err != nil {
+		t.Fatalf("start %s: %v", role, err)
+	}
+	if err := d.Stop(); err != nil {
+		t.Errorf("stop %s: %v", role, err)
+	}
+	return r
 }
 
 // compareBeforeReady compares the first 503 each binary answers for path while its startup runs.
