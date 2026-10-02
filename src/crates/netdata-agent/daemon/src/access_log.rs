@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use netdata_agent_log::{Field, FrameGuard, Priority, REDACTED, Source, Value, nd_log, push};
 use netdata_agent_nrpc::access;
+use netdata_agent_web::progress::{self, Finish};
 use netdata_agent_web::request::Mode;
 
 /// The part of C's `web_clients_cache` that shows in `conn=`: fresh structs get the next id, reused ones are zeroed
@@ -391,6 +392,8 @@ pub struct Completed {
     pub transaction: [u8; 16],
     pub forwarded_for: Vec<u8>,
     pub auth: Arc<Auth>,
+    /// `WEB_CLIENT_FLAG_PROGRESS_TRACKING`: the request started a query progress row, which this record finishes.
+    pub progress: bool,
 }
 
 /// `dt_usec()`: an absolute difference.
@@ -412,10 +415,15 @@ impl Completed {
     /// `web_client_log_completed_request()`: written only when a URL was received, at a priority from the code,
     /// without a message, and outside any request frame; the request then counts in the pulse charts.
     pub fn log(&self, client: &ClientLog, web: &Web) {
+        let now = Instant::now();
+        if self.progress {
+            let duration_ut = dt_usec(now, self.tv_in);
+            let finish = Finish { code: self.code, duration_ut, response_size: self.size, sent_size: self.sent };
+            progress::Table::process().finished(&self.transaction, 0, finish);
+        }
         if self.url.is_empty() {
             return;
         }
-        let now = Instant::now();
         web.request_completed(dt_usec(now, self.tv_in), self.size, self.sent);
         let (prep_ut, sent_ut) = match client.tv_ready {
             Some(ready) => (dt_usec(ready, self.tv_in), dt_usec(now, ready)),
@@ -481,6 +489,7 @@ mod tests {
             transaction: [0; 16],
             forwarded_for: Vec::new(),
             auth: Arc::default(),
+            progress: false,
         };
         done.sent_when(200);
         assert_eq!(done.sent, 0, "the header was not out: nothing was deflated");

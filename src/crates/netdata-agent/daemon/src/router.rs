@@ -3,7 +3,8 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: bearer checks, `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`,
-//! `context`, `contexts`, `data`, `dbengine_stats`, `function`, `functions` (v1), `stream_info` and `stream_path`.
+//! `context`, `contexts`, `data`, `dbengine_stats`, `function`, `functions` (v1), `progress`, `stream_info` and
+//! `stream_path`.
 //! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
@@ -158,6 +159,13 @@ const API_V2: &[Command] = &[
         allow_subpaths: false,
         callback: |route, _, query| contexts_v2::info(route, query),
     },
+    Command {
+        name: "progress",
+        acl: acl::bits::NOCHECK,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: functions::progress,
+    },
     CLOUD_ONLY[0],
     CLOUD_ONLY[1],
     CLOUD_ONLY[2],
@@ -218,6 +226,13 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |route, _, query| contexts_v2::stream_path(route, query),
+    },
+    Command {
+        name: "progress",
+        acl: acl::bits::NOCHECK,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: functions::progress,
     },
     Command {
         name: "stream_info",

@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod content_type;
+pub mod progress;
 pub mod request;
 pub mod response;
 pub mod status;

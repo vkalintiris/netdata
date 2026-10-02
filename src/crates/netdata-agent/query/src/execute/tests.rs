@@ -14,6 +14,7 @@ fn run(h: &Arc<Host>, query: &str) -> (QueryTarget, Window, Rrdr) {
         interrupted: &|_| false,
         windows: Windows::default(),
         pulse: None,
+        progress: None,
     };
     let r = run_v1(&mut qt, &mut window, &control);
     (qt, window, r)
@@ -218,6 +219,7 @@ fn v2_groups_the_metric_and_averages_its_rows() {
         interrupted: &|_| false,
         windows: Windows::default(),
         pulse: None,
+        progress: None,
     };
     let r = run_v2(&mut qt, &mut window, &control).unwrap();
     let thirty = unpack(pack(30.0, 0));
@@ -270,6 +272,7 @@ fn planned(h: &Arc<Host>, query: &str, now: i64) -> (QueryTarget, Rrdr, Planned)
         interrupted: &|_| false,
         windows: Windows::default(),
         pulse: None,
+        progress: None,
     };
     let bounds = (window.after, window.before);
     let r = run_v1(&mut qt, &mut window, &control);
@@ -683,6 +686,7 @@ fn counted_queries_add_their_points_to_their_source() {
         interrupted: &|_| false,
         windows: Windows::default(),
         pulse: Some((&queries, QuerySource::ApiData)),
+        progress: None,
     };
     let (mut qt, mut window) = v1_target(&h, &format!("after={T0}&before={}", T0 + 6));
     let r = run_v1(&mut qt, &mut window, &control);
@@ -705,4 +709,49 @@ fn counted_queries_add_their_points_to_their_source() {
     assert_eq!(both.queries, v1.queries + qt.query.len() as u64);
     assert!(both.points_read > v1.points_read && both.points_generated > v1.points_generated);
     assert_eq!(queries.source(QuerySource::Health).queries, 0);
+}
+
+/// The request's progress (`rrd2rrdr()`, `query.c:159,332-333`): the finish line is the metrics admitted, once the
+/// grouping exists; a step is a metric run that did not cancel the query, so a failed metric and the one that
+/// cancels count none.
+#[test]
+fn progress_counts_the_metrics_run() {
+    use netdata_agent_web::progress::{Start, Table};
+    let tracked = |h: &Arc<Host>, query: &str, v2: bool| {
+        let table = Table::new();
+        table.start(&[7; 16], 0, Start::default());
+        let control = Control {
+            received: Instant::now(),
+            interrupted: &|_| false,
+            windows: Windows::default(),
+            pulse: None,
+            progress: Some(table.tracker([7; 16])),
+        };
+        let ran = if v2 {
+            let (mut qt, mut window) = v2_target(h, query);
+            run_v2(&mut qt, &mut window, &control).is_some()
+        } else {
+            let (mut qt, mut window) = v1_target(h, query);
+            run_v1(&mut qt, &mut window, &control);
+            true
+        };
+        let mut steps = None;
+        table.visit(|_, row| steps = Some((row.all, row.done)));
+        (ran, steps.unwrap())
+    };
+    let h = host();
+    let window = format!("after={T0}&before={}", T0 + 6);
+    assert_eq!(tracked(&h, &window, false), (true, (1, 1)));
+    assert_eq!(tracked(&h, &format!("{window}&timeout=-1"), false), (true, (1, 0)));
+    let v2 = format!("scope_contexts=ctx.a&{window}&points=6");
+    assert_eq!(tracked(&h, &v2, true), (true, (1, 1)));
+    // `e` fails its plan: two admitted, one run
+    let chart = h.charts().find("t.a", true).unwrap();
+    let (e, _) = chart.dim_add("e", None, 1, 1, Algorithm::Absolute);
+    for t in T0 + 1..=T0 + 4 {
+        e.store_metric(t as u64 * 1_000_000, 1.0, SN_FLAG_NOT_ANOMALOUS);
+    }
+    h.contexts().process_queued();
+    let late = format!("after={}&before={}", T0 + 6, T0 + 6);
+    assert_eq!(tracked(&h, &late, false), (true, (2, 1)));
 }

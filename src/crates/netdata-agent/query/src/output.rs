@@ -263,6 +263,7 @@ mod tests {
             interrupted: &|_| false,
             windows: crate::grouping::Windows::default(),
             pulse: None,
+            progress: None,
         };
         let agent = Agent {
             machine_guid: "guid-0",

@@ -1,13 +1,18 @@
-//! The Functions endpoints (`src/web/api/v1/api_v1_function.c`, `api_v1_functions.c`): a call of one of a host's
-//! methods that waits for its answer, and the list of the methods users see.
+//! The Functions endpoints (`src/web/api/v1/api_v1_function.c`, `api_v1_functions.c`, `api_v2/api_v2_progress.c`):
+//! a call of one of a host's methods that waits for its answer, the list of the methods users see, and a request's
+//! progress.
+
+use std::sync::Arc;
 
 use netdata_agent_nrpc::call::{CallSpec, Calls};
 use netdata_agent_nrpc::catalog;
 use netdata_agent_nrpc::reply::{ContentType, Reply as NrpcReply};
+use netdata_agent_query::request::pairs;
 use netdata_agent_text::c::strsep_skip;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
-use netdata_agent_text::parse::strtoul0;
+use netdata_agent_text::parse::{strtoul0, uuid_parse_flexi};
 use netdata_agent_text::print::print_uuid_lower_compact;
+use netdata_agent_web::progress::Table;
 use netdata_agent_web::status;
 
 use crate::access_log::RequestContext;
@@ -45,7 +50,8 @@ pub fn call(route: &Route<'_>, host: &Host, query: &[u8]) -> Reply {
         payload: route.payload.cloned(),
         reply: NrpcReply::new(ContentType::ApplicationJson),
         done: None,
-        progress: None,
+        // query_progress_functions_update(): the plugin's totals on the request's row
+        progress: Some(Arc::new(|id, done, all| Table::process().functions_update(id, done, all))),
         is_cancelled: Some(&gone),
     });
     let reply = called.reply.unwrap_or_else(|| NrpcReply::new(ContentType::ApplicationJson));
@@ -129,6 +135,23 @@ pub fn list(route: &Route<'_>, host: &Host, _query: &[u8]) -> Reply {
     w.finalize();
     Reply {
         code: status::OK,
+        content_type: ContentType::ApplicationJson,
+        body: w.into_bytes(),
+        ..Reply::default()
+    }
+}
+
+/// `api_v2_progress()`: the request named by `transaction=` (the last non-empty one; zeros when it does not parse),
+/// its function's plugin asked for progress first, then the row's report.
+pub fn progress(_route: &Route<'_>, _host: &Host, query: &[u8]) -> Reply {
+    let transaction = pairs(query).filter(|(name, _)| *name == b"transaction").last().map(|(_, value)| value);
+    let transaction = transaction.and_then(uuid_parse_flexi).unwrap_or([0; 16]);
+    Calls::process().request_progress(&transaction);
+    let mut w = JsonWriter::new(JsonOptions::MINIFY);
+    let code = Table::process().report(&transaction, &mut w);
+    w.finalize();
+    Reply {
+        code,
         content_type: ContentType::ApplicationJson,
         body: w.into_bytes(),
         ..Reply::default()

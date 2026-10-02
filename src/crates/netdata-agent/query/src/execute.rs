@@ -12,6 +12,7 @@ use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::query::StorageQuery;
 use netdata_agent_storage::storage_number::SN_FLAG_RESET;
 use netdata_agent_storage::storage_point::StoragePoint;
+use netdata_agent_web::progress::Tracker;
 
 use crate::finalize::{cardinality_limit, percentage_of_total};
 use crate::groupby::{AddMode, add_metric, finalize, initialize};
@@ -743,9 +744,25 @@ pub struct Control<'a> {
     pub windows: Windows,
     /// The pulse counters and the query's source (`qt->request.query_source`), when the query counts.
     pub pulse: Option<(&'a Queries, QuerySource)>,
+    /// The request's progress row (`qt->request.transaction`), when the query has one.
+    pub progress: Option<Tracker<'a>>,
 }
 
 impl Control<'_> {
+    /// `query_progress_set_finish_line()`: the metrics the query will run.
+    fn finish_line(&self, all: usize) {
+        if let Some(progress) = &self.progress {
+            progress.finish_line(all);
+        }
+    }
+
+    /// `query_progress_done_step()`: a metric run without cancelling the query.
+    fn step(&self) {
+        if let Some(progress) = &self.progress {
+            progress.step();
+        }
+    }
+
     /// `pulse_queries_rrdr_query_completed()` of a queried metric: one query, and the points `r` read and generated
     /// since `last`, which it then holds.
     fn metric_queried(&self, r: &Rrdr, last: &mut (u64, u64)) {
@@ -929,6 +946,7 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
     }
     r.view.flags |= time_flags(window);
     let mut grouping = new_grouping(qt, window, control.windows);
+    control.finish_line(qt.query.len());
     let (mut used, mut nonzero) = (0, 0);
     let mut timer = NodeTimer::new();
     // C's errno as the loop leaves it
@@ -950,6 +968,7 @@ pub fn run_v1(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> R
             r.view.flags |= result_flags::CANCEL;
             break;
         }
+        control.step();
     }
     percentage_of_total(&mut r, window.options);
     let r = cardinality_limit(r, qt.request.cardinality_limit);
@@ -970,6 +989,7 @@ pub fn run_v2(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> O
         last.view.flags |= flags;
     }
     let mut grouping = new_grouping(qt, window, control.windows);
+    control.finish_line(qt.query.len());
     let (mut used, mut nonzero) = (0, 0);
     let mut timer = NodeTimer::new();
     // C's errno as the loop leaves it
@@ -1019,6 +1039,7 @@ pub fn run_v2(qt: &mut QueryTarget, window: &mut Window, control: &Control) -> O
             grouped.passes[0].view.flags |= result_flags::CANCEL;
             break;
         }
+        control.step();
     }
     let r = finalize(qt, window, grouped);
     let r = cardinality_limit(r, qt.request.cardinality_limit);

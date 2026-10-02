@@ -10,6 +10,7 @@ use netdata_agent_evloop::conn::Conn;
 use netdata_agent_tls::{Handshake, Link, SslContext, State, TlsStream};
 use netdata_agent_evloop::{Context, Event, Interest, TimerId, Token, Worker};
 use netdata_agent_web::content_type::ContentType;
+use netdata_agent_web::progress::{self, Start};
 use netdata_agent_web::request::{
     self, Connection, Mode, Request, Settings, Transport, Validation,
 };
@@ -951,6 +952,16 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         }
     }
     let _request = ctx.request_frame();
+    // A validated request's query progress row, before anything routes it; its completed record finishes it.
+    let progress = matches!(validation, Validation::Ok);
+    if progress {
+        let source: &[u8] = match client.log.forwarded_for.as_slice() {
+            [] => client.log.ip.as_bytes(),
+            forwarded_for => forwarded_for,
+        };
+        let start = Start { mode, acl: client.acl, query: &client.request.url_as_received, client: source };
+        progress::Table::process().start(&client.transaction, 0, start);
+    }
     let completed = |client: &Client, code: u16, sent: usize, size: usize| Completed {
         url: logged_url(&client.request.url_as_received, mode),
         mode,
@@ -962,6 +973,7 @@ fn respond(client: &mut Client, shared: &Shared, receivers: &Receivers) -> Optio
         transaction: client.transaction,
         forwarded_for: client.log.forwarded_for.clone(),
         auth: Arc::clone(&client.auth),
+        progress,
     };
 
     // tv_ready: set once the response is ready, except for an incomplete request, a STREAM and a mode the ACL denies.

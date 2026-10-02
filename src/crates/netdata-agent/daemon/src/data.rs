@@ -16,6 +16,7 @@ use netdata_agent_query::window::{Window, calculate};
 use netdata_agent_rrd::chart::Chart;
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::Host;
+use netdata_agent_web::progress::Table;
 use netdata_agent_web::status;
 
 use crate::router::Route;
@@ -160,6 +161,7 @@ fn execute(
             &route.shared.hosts.storage().pulse().queries,
             QuerySource::ApiData,
         )),
+        progress: Some(Table::process().tracker(route.ctx.transaction)),
     };
     let response = data_query_execute(&mut qt, &mut window, &control, &agent);
     body.extend_from_slice(&response.body);
