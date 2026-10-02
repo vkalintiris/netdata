@@ -16,34 +16,33 @@ dump.
 - Wire form (26 = 8-byte header + tree):
   `00 00 04 00 | 12 00 00 00 | 81 03 01 03 81 a0 20 01 01 01 01 01 02 80 80 80 80 80`
   (header: universe_size = 262,144 u32 LE; tree_len = 18 u32 LE)
-- Tree shape (indentation = depth; ordinals match the wire order):
+- Tree shape (offset · dl · indentation = depth; offsets match the wire order):
 
 ```
-#1  81 root            children {0, 7}
-#2  03 ├─0             children {0, 1}          dl4
-#3  01 │  ├─0          child {0}                dl3
-#4  03 │  │  └─0       children {0, 1}          dl2
-#5  81 │  │     ├─0    children {0, 7}          dl1
-#6  a0 │  │     │  ├─0 leaf [0, 8)      → 5, 7
-#7  20 │  │     │  └─7 leaf [56, 64)    → 61
-#8  01 │  │     └─1    child {0}                dl1
-#9  01 │  │        └─0 leaf [64, 72)    → 64
-#10 01 │  └─1          child {0}                dl3
-#11 01 │     └─0       child {0}                dl2
-#12 01 │        └─0    child {0}                dl1
-#13 02 │           └─0 leaf [4096, 4104) → 4097
-#14 80 └─7             child {7}                dl4
-#15 80    └─7          child {7}                dl3
-#16 80       └─7       child {7}                dl2
-#17 80          └─7    child {7}                dl1
-#18 80             └─7 leaf [262136, 262144) → 262143
+0x00 5 81 root            children {0, 7}
+0x01 4 03 ├─0             children {0, 1}          dl4
+0x02 3 01 │  ├─0          child {0}                dl3
+0x03 2 03 │  │  └─0       children {0, 1}          dl2
+0x04 1 81 │  │     ├─0    children {0, 7}          dl1
+0x05 0 a0 │  │     │  ├─0 leaf [0, 8)      → 5, 7
+0x06 0 20 │  │     │  └─7 leaf [56, 64)    → 61
+0x07 1 01 │  │     └─1    child {0}                dl1
+0x08 0 01 │  │        └─0 leaf [64, 72)    → 64
+0x09 3 01 │  └─1          child {0}                dl3
+0x0A 2 01 │     └─0       child {0}                dl2
+0x0B 1 01 │        └─0    child {0}                dl1
+0x0C 0 02 │           └─0 leaf [4096, 4104) → 4097
+0x0D 4 80 └─7             child {7}                dl4
+0x0E 3 80    └─7          child {7}                dl3
+0x0F 2 80       └─7       child {7}                dl2
+0x10 1 80          └─7    child {7}                dl1
+0x11 0 80             └─7 leaf [262136, 262144) → 262143
 ```
 
-NOTE (accuracy trail): the draft's ASCII dump currently renders FOUR `01`
-nodes in the 4097 branch (19 lines); the flat bytes, the draft's own digit
-table, and two independent derivations all give THREE (18 nodes) — this
-figure shows the 18-node tree. Flagged to the Lead on 2026-10-02; the
-writer was asked to drop the extra line.
+Accuracy trail: the row labels (blob offset + dl level) and the 18-row shape
+match the COMMITTED draft dump (verified by the Lead at commit 9b744ee5ec;
+an earlier read of a torn mid-edit state suggested 19 rows — that was a
+red herring, re-checked and correct at HEAD).
 
 ## Source provenance
 
@@ -69,21 +68,24 @@ cd posts/treight-bitmap/figures/fig-serialization
 
 1. Fixed canvas 940 × 800 pt, margin 0; everything absolutely placed.
 2. Branch colors (Okabe-Ito) carry the tree↔wire mapping, and every byte
-   ALSO prints its ordinal (#1..#18) so the mapping survives greyscale
-   printing: root `81` orange #e69f00 · left-cluster inner #0072b2 blue ·
-   leaves #009e73 green · 64-branch #56b4e9 sky · 4097-branch #d55e00
-   vermillion · 262143 chain #cc79a7 reddish purple. Light fills (sky,
-   rpurple, orange) get dark text; dark fills get white text.
+   ALSO prints its blob offset (0x00..0x11) so the mapping survives
+   greyscale printing: root `81` orange #e69f00 · left-cluster inner
+   #0072b2 blue · leaves #009e73 green · 64-branch #56b4e9 sky ·
+   4097-branch #d55e00 vermillion · 262143 chain #cc79a7 reddish purple.
+   Light fills (sky, rpurple, orange) get dark text; dark fills get white
+   text. The row label scheme (offset + dl) matches the draft's committed
+   dump so figure and prose read identically.
 3. The tree is a `#stack` of `row(...)` grids: column 1 = ordinal,
    column 2 = byte chip (`bchip`: rounded mono box), column 3 = connector
    art in mono (`├─0`, `│  └─7` …), column 4 = annotation. Depth is faked
    by the connector string's leading spaces — to add a node, extend its
    connector and insert the row in stack order (pre-order = the order the
    bytes appear).
-4. Wire cells (`wcell`): 25 pt-wide boxes, hex on top / ordinal below;
-   header cells white. The strip is a `#stack(dir: ltr)` — 4 + 4 header
-   cells, 10pt spacer, 18 tree cells, another spacer, 5 purple cells; the
-   labels grid underneath names each group.
+4. Wire cells (`wcell`): 25 pt-wide boxes, hex on top / blob offset below
+   (mono 7 pt); header cells white with no offset. The strip is a
+   `#stack(dir: ltr)` — 4 + 4 header cells, 10pt spacer, 18 tree cells,
+   another spacer, 5 purple cells; the labels grid underneath names each
+   group.
 5. Literal `[` in prose must be escaped `\[` (e.g. `leaf \[0, 8)`) or typst
    opens a nested content block and the file breaks.
 6. If you change the example set, regenerate: the digit table, the 18 rows,

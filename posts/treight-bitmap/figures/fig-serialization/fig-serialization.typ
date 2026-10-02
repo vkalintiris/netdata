@@ -31,26 +31,27 @@
     fill: if fillc == sky or fillc == rpurple or fillc == orange { ink } else { white })[#hexbyte],
 )
 
-// one tree row: ordinal, chip, mono connector art, annotation
-#let row(n, hexbyte, fillc, art, note) = grid(
-  columns: (22pt, auto, auto, 1fr),
+// one tree row: blob offset, dl level, chip, mono connector art, annotation
+#let row(off, dl, hexbyte, fillc, art, note) = grid(
+  columns: (26pt, 16pt, auto, auto, 1fr),
   column-gutter: 5pt,
-  align: (right + horizon, center + horizon, left + horizon, left + horizon),
-  text(size: 8.5pt, fill: ink.lighten(25%))[#n],
+  align: (right + horizon, center + horizon, center + horizon, left + horizon, left + horizon),
+  text(size: 8.5pt, font: "DejaVu Sans Mono", fill: ink.lighten(25%))[#off],
+  text(size: 8.5pt, fill: ink.lighten(25%))[#dl],
   bchip(hexbyte, fillc),
   text(size: 9.5pt, font: "DejaVu Sans Mono", fill: ink.lighten(15%))[#art],
   text(size: 8.6pt)[#note],
 )
 
 // flat wire byte cell
-#let wcell(hexbyte, fillc, n) = box(
+#let wcell(hexbyte, fillc, off) = box(
   stroke: 0.8pt + ink, inset: 0pt, radius: 2pt, width: 25pt,
   {
     box(width: 25pt, inset: (y: 3pt), fill: fillc, align(center)[
       #text(size: 10.5pt, weight: "bold", font: "DejaVu Sans Mono",
         fill: if fillc == sky or fillc == rpurple or fillc == orange or fillc == white { ink } else { white })[#hexbyte]
     ])
-    box(width: 25pt, inset: (y: 1pt), align(center)[#text(size: 7.5pt, fill: ink.lighten(25%))[#n]]
+    box(width: 25pt, inset: (y: 1pt), align(center)[#text(size: 7pt, font: "DejaVu Sans Mono", fill: ink.lighten(25%))[#off]]
     )
   },
 )
@@ -68,27 +69,27 @@
   #box(
     radius: 6pt, stroke: 0.8pt + gray, inset: (x: 10pt, y: 9pt), width: 566pt, fill: pale,
   )[
-    #text(size: 10pt, weight: "bold")[THE TREE — 18 node bytes, pre-order]
+    #text(size: 10pt, weight: "bold")[THE TREE — 18 node bytes, pre-order (offset · dl)]
     #v(5pt)
     #stack(spacing: 3.2pt,
-      row("#1",  "81", orange,  "",               "root · children {0, 7}"),
-      row("#2",  "03", blue,    "├─0",            "dl4 · children {0, 1}"),
-      row("#3",  "01", blue,    "│  ├─0",         "dl3 · child {0}"),
-      row("#4",  "03", blue,    "│  │  └─0",      "dl2 · children {0, 1}"),
-      row("#5",  "81", blue,    "│  │     ├─0",   "dl1 · children {0, 7}"),
-      row("#6",  "a0", green,   "│  │     │  ├─0","leaf \[0, 8) · bits 5, 7 → values 5, 7"),
-      row("#7",  "20", green,   "│  │     │  └─7","leaf \[56, 64) · bit 5 → 61"),
-      row("#8",  "01", sky,     "│  │     └─1",   "dl1 · child {0}"),
-      row("#9",  "01", green,   "│  │        └─0","leaf \[64, 72) · bit 0 → 64"),
-      row("#10", "01", vermil,  "│  └─1",         "dl3 · child {0}"),
-      row("#11", "01", vermil,  "│     └─0",      "dl2 · child {0}"),
-      row("#12", "01", vermil,  "│        └─0",   "dl1 · child {0}"),
-      row("#13", "02", vermil,  "│           └─0","leaf \[4096, 4104) · bit 1 → 4097"),
-      row("#14", "80", rpurple, "└─7",            "dl4 · child {7}"),
-      row("#15", "80", rpurple, "   └─7",         "dl3 · child {7}"),
-      row("#16", "80", rpurple, "      └─7",      "dl2 · child {7}"),
-      row("#17", "80", rpurple, "         └─7",   "dl1 · child {7}"),
-      row("#18", "80", rpurple, "            └─7","leaf \[262136, 262144) · bit 7 → 262143"),
+      row("0x00", "5", "81", orange,  "",               "root · children {0, 7}"),
+      row("0x01", "4", "03", blue,    "├─0",            "dl4 · children {0, 1}"),
+      row("0x02", "3", "01", blue,    "│  ├─0",         "dl3 · child {0}"),
+      row("0x03", "2", "03", blue,    "│  │  └─0",      "dl2 · children {0, 1}"),
+      row("0x04", "1", "81", blue,    "│  │     ├─0",   "dl1 · children {0, 7}"),
+      row("0x05", "0", "a0", green,   "│  │     │  ├─0","leaf \[0, 8) · bits 5, 7 → values 5, 7"),
+      row("0x06", "0", "20", green,   "│  │     │  └─7","leaf \[56, 64) · bit 5 → 61"),
+      row("0x07", "1", "01", sky,     "│  │     └─1",   "dl1 · child {0}"),
+      row("0x08", "0", "01", green,   "│  │        └─0","leaf \[64, 72) · bit 0 → 64"),
+      row("0x09", "3", "01", vermil,  "│  └─1",         "dl3 · child {0}"),
+      row("0x0A", "2", "01", vermil,  "│     └─0",      "dl2 · child {0}"),
+      row("0x0B", "1", "01", vermil,  "│        └─0",   "dl1 · child {0}"),
+      row("0x0C", "0", "02", vermil,  "│           └─0","leaf \[4096, 4104) · bit 1 → 4097"),
+      row("0x0D", "4", "80", rpurple, "└─7",            "dl4 · child {7}"),
+      row("0x0E", "3", "80", rpurple, "   └─7",         "dl3 · child {7}"),
+      row("0x0F", "2", "80", rpurple, "      └─7",      "dl2 · child {7}"),
+      row("0x10", "1", "80", rpurple, "         └─7",   "dl1 · child {7}"),
+      row("0x11", "0", "80", rpurple, "            └─7","leaf \[262136, 262144) · bit 7 → 262143"),
     )
     #v(4pt)
     #text(size: 8.4pt, fill: ink.lighten(15%))[
@@ -129,13 +130,13 @@
     #text(size: 10pt, weight: "bold")[WHY 18 BYTES FOR 6 VALUES]
     #v(4pt)
     #text(size: 8.6pt)[
+      • count the nodes level by level: 1 root + 2 dl4 + 3 dl3 + 3 dl2 + 4 dl1 + 5 leaves = *18* \
       • an isolated value costs exactly `levels` bytes — its root-to-leaf chain (6 here) \
-      • 5 pays the first chain: 6 bytes; 7 shares all of it, even the leaf (bits 5, 7 of `a0`): +0 \
-      • 61 joins the existing dl1 node (sets its child-7 bit → `81`) and adds one leaf: +1 \
-      • 64 reuses dl5..dl2 digits, adds a dl1 node + leaf: +2 \
-      • 4097 adds three chain nodes + leaf `02`: +4 \
-      • 262143 is the all-sevens rightmost path, every byte `80`: +5 \
-      • *6 + 0 + 1 + 2 + 4 + 5 = 18* — exactly `estimate_data_size`
+      • 5, 7, 61 share the five-byte root-to-parent path and split only at the leaf \
+      • 64 joins four shared nodes, adds a dl1 node + leaf (+2) \
+      • 4097 joins root + dl4, adds three chain nodes + leaf `02` (+4) \
+      • 262143 joins only the root: the all-sevens rightmost path, every byte `80` (+5) \
+      • same 18 as `estimate_data_size`: one byte per distinct (level, node index) pair
     ]
   ]
 ]
@@ -167,15 +168,15 @@
       box(width: 6pt)[],
       wcell("12", white, ""), wcell("00", white, ""), wcell("00", white, ""), wcell("00", white, ""),
       box(width: 10pt)[],
-      // tree bytes #1..#18
-      wcell("81", orange, "#1"), wcell("03", blue, "#2"), wcell("01", blue, "#3"),
-      wcell("03", blue, "#4"), wcell("81", blue, "#5"), wcell("a0", green, "#6"),
-      wcell("20", green, "#7"), wcell("01", sky, "#8"), wcell("01", green, "#9"),
-      wcell("01", vermil, "#10"), wcell("01", vermil, "#11"), wcell("01", vermil, "#12"),
-      wcell("02", vermil, "#13"),
+      // tree bytes 0x00..0x11
+      wcell("81", orange, "0x00"), wcell("03", blue, "0x01"), wcell("01", blue, "0x02"),
+      wcell("03", blue, "0x03"), wcell("81", blue, "0x04"), wcell("a0", green, "0x05"),
+      wcell("20", green, "0x06"), wcell("01", sky, "0x07"), wcell("01", green, "0x08"),
+      wcell("01", vermil, "0x09"), wcell("01", vermil, "0x0A"), wcell("01", vermil, "0x0B"),
+      wcell("02", vermil, "0x0C"),
       box(width: 10pt)[],
-      wcell("80", rpurple, "#14"), wcell("80", rpurple, "#15"), wcell("80", rpurple, "#16"),
-      wcell("80", rpurple, "#17"), wcell("80", rpurple, "#18"),
+      wcell("80", rpurple, "0x0D"), wcell("80", rpurple, "0x0E"), wcell("80", rpurple, "0x0F"),
+      wcell("80", rpurple, "0x10"), wcell("80", rpurple, "0x11"),
     )
     #v(6pt)
     #grid(
@@ -183,15 +184,17 @@
       column-gutter: 10pt,
       box(width: 102pt)[#text(size: 8pt)[universe_size = 262,144 (u32 LE)]],
       box(width: 102pt)[#text(size: 8pt)[tree_len = 18 (u32 LE)]],
-      box(width: 330pt)[#text(size: 8pt)[tree bytes in pre-order — ordinals match the tree above]],
+      box(width: 330pt)[#text(size: 8pt)[tree bytes in pre-order — blob offsets match the tree above]],
       [],
     )
   ]
 ]
 
 // ---- footer -----------------------------------------------------------------
-#place(dx: 20pt, dy: 762pt)[
-  #text(size: 8.4pt, fill: ink.lighten(20%))[
-    *Sources:* `src/crates/treight/src/raw.rs` (`from_sorted_iter`, `serialize_into`, `deserialize_from`, `serialized_size`) · `src/crates/treight/src/node.rs` (pre-order layout, `skip_subtree`) · example verified against the crate's writer (Lead + independent re-derivation; flat bytes = 18).
+#place(dx: 20pt, dy: 756pt)[
+  #box(width: 900pt)[
+    #text(size: 8.4pt, fill: ink.lighten(20%))[
+      *Sources:* `src/crates/treight/src/raw.rs` (`from_sorted_iter`, `serialize_into`, `deserialize_from`, `serialized_size`) · `src/crates/treight/src/node.rs` (pre-order layout, `skip_subtree`) · example matches the draft's committed dump (18 rows, offsets 0x00–0x11) and the Lead-verified flat bytes.
+    ]
   ]
 ]

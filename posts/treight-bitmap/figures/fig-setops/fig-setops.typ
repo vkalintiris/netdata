@@ -212,8 +212,10 @@
 ]
 
 // ---- footer -------------------------------------------------------------------
-#place(dx: 20pt, dy: 668pt)[
-  #text(size: 8.4pt, fill: ink.lighten(20%))[
-    *Sources:* `src/crates/treight/src/ops.rs` (`intersect_subtree`/`difference_subtree`, the four-walker table at the `// The four set-op walkers` comment, `copy_subtree`) · `src/crates/treight/src/raw.rs` (`intersect`, `difference`: empty-blob short-circuits + universe `assert_eq!`).
+#place(dx: 20pt, dy: 660pt)[
+  #box(width: 900pt)[
+    #text(size: 8.4pt, fill: ink.lighten(20%))[
+      *Sources:* `src/crates/treight/src/ops.rs` (`intersect_subtree`/`difference_subtree`, the four-walker table at the `// The four set-op walkers` comment, `copy_subtree`) · `src/crates/treight/src/raw.rs` (`intersect`, `difference`: empty-blob short-circuits + universe `assert_eq!`).
+    ]
   ]
 ]
