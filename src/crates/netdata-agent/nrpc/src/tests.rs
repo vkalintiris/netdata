@@ -187,3 +187,45 @@ fn the_catalogs_filter_as_c() {
     assert_eq!(shown(&r, Filter::User), (vec!["plain".to_string()], 0));
     assert_eq!(shown(&r, Filter::StreamGlobal), (vec!["plain".to_string(), "__restricted".to_string()], 2));
 }
+
+/// C's catalog suite (`nrpc-unittest.c:1578-1708`): the JSON list holds what users see, each with `["GLOBAL"]`; the
+/// export keys each by `"<version>|<name>"` with its help, tags, priority, version and access; a host without a registry
+/// omits the `functions` key and exports nothing.
+#[test]
+fn the_user_catalogs_render_as_c() {
+    use netdata_agent_text::json::{JsonOptions, JsonWriter};
+    let r = Registry::default();
+    let global = MethodDesc {
+        help: b"c4 global help",
+        priority: 42,
+        version: 3,
+        access: access::ANONYMOUS_DATA,
+        ..desc(b"c4-global-fn", Source::Plugin)
+    };
+    r.register("h", &global).unwrap();
+    r.register("h", &MethodDesc { version: 4, ..desc(b"__c4-restricted-fn", Source::Plugin) }).unwrap();
+    r.register("h", &MethodDesc { version: 1, ..desc(b"config c4test:job", Source::Daemon) }).unwrap();
+    let rendered = |r: &Registry| {
+        let mut w = JsonWriter::new(JsonOptions::MINIFY);
+        catalog::to_json(r, &mut w);
+        w.finalize();
+        String::from_utf8(w.into_bytes()).unwrap()
+    };
+    assert_eq!(
+        rendered(&r),
+        r#"{"functions":{"c4-global-fn":{"help":"c4 global help","timeout":10,"version":3,"options":["GLOBAL"],"tags":"top","access":["anonymous-data"],"priority":42}}}"#
+    );
+    let exported = catalog::to_dict(&r);
+    assert_eq!(exported.len(), 1);
+    let (key, m) = &exported[0];
+    assert_eq!(
+        (key.as_slice(), m.help.as_slice(), m.tags.as_slice(), m.priority, m.version, m.access),
+        (&b"3|c4-global-fn"[..], &b"c4 global help"[..], &b"top"[..], 42, 3, access::ANONYMOUS_DATA)
+    );
+    // an archived host: no registry, then one again (rrdhost.c:1020, :803)
+    r.destroy();
+    assert_eq!(rendered(&r), "{}");
+    assert!(catalog::to_dict(&r).is_empty() && !r.exists());
+    r.init();
+    assert_eq!(rendered(&r), r#"{"functions":{}}"#);
+}

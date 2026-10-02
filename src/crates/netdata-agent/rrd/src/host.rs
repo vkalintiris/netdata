@@ -869,6 +869,7 @@ impl Host {
         // the host connected again: it gets back its function registry, and the sender and replication settings
         // it was archived without
         if self.archived.swap(false, Ordering::AcqRel) {
+            self.functions.init();
             let hostname = self.hostname();
             self.log_registry_created(&hostname);
             let sender_initialized = {
@@ -1216,7 +1217,7 @@ impl Host {
         self.replace_stream_path(Vec::new());
         // before the functions go (C frees the sender before the function registry)
         self.free_upstream();
-        self.functions.clear();
+        self.functions.destroy();
         self.archived.store(true, Ordering::Release);
         self.orphan.store(true, Ordering::Release);
         self.log_archive_mode();
@@ -1923,6 +1924,8 @@ impl Hosts {
         }
         let host = Host::with_storage(guid, false, info, &self.storage).into_shared();
         host.archived.store(true, Ordering::Release);
+        // created archived: no function registry until it connects (rrdhost.c:636-640)
+        host.functions.destroy();
         host.pending_context_load.store(true, Ordering::Release);
         host.orphan.store(true, Ordering::Release);
         before_record(&host);

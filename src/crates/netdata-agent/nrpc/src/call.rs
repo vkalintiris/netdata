@@ -28,8 +28,9 @@ const WAIT_POLL: Duration = Duration::from_millis(10);
 pub type Done = Box<dyn FnOnce(Reply, u16) + Send>;
 /// `nrpc_progress_cb_t`: the call id, done and all.
 pub type ProgressCb = Arc<dyn Fn(&[u8; 16], usize, usize) + Send + Sync>;
-/// `nrpc_is_cancelled_cb_t`.
-pub type IsCancelled = Arc<dyn Fn() -> bool + Send + Sync>;
+/// `nrpc_is_cancelled_cb_t` with its data: the caller's check, borrowed for the call (C's `void *` to the caller's
+/// state, consulted only while `nrpc_call()` runs).
+pub type IsCancelled<'a> = &'a (dyn Fn() -> bool + Sync);
 
 /// `nrpc_effective_deadline_ut()`.
 pub fn effective_deadline_ut(stop_ut: u64) -> u64 {
@@ -72,8 +73,6 @@ pub struct Record {
     method: Arc<Method>,
     cancelled: AtomicBool,
     stop_ut: AtomicU64,
-    /// A sync call's cancellation is its caller's; an async one's is this record's flag.
-    caller_is_cancelled: Option<IsCancelled>,
     asynchronous: bool,
     hooks: Mutex<HookSlots>,
 }
@@ -83,13 +82,10 @@ impl Record {
         &self.key
     }
 
-    /// `nrpc_call_is_cancelled()` for an async call, the caller's check for a sync one.
+    /// `nrpc_call_is_cancelled()` of an async call: its record's flag (a sync call's is its caller's check, which only
+    /// the call itself holds).
     pub fn is_cancelled(&self) -> bool {
-        if self.asynchronous {
-            self.cancelled.load(Ordering::Relaxed)
-        } else {
-            self.caller_is_cancelled.as_ref().is_some_and(|f| f())
-        }
+        self.cancelled.load(Ordering::Relaxed)
     }
 
     /// The deadline (`*req->stop_monotonic_ut`).
@@ -150,7 +146,7 @@ pub struct CallSpec<'a> {
     pub reply: Reply,
     pub done: Option<Done>,
     pub progress: Option<ProgressCb>,
-    pub is_cancelled: Option<IsCancelled>,
+    pub is_cancelled: Option<IsCancelled<'a>>,
 }
 
 /// What `Calls::call()` returned: the code, and the answer when no `done` took it (a wait, a sync call or a refusal
@@ -269,7 +265,6 @@ impl Calls {
             method: Arc::clone(&method),
             cancelled: AtomicBool::new(false),
             stop_ut: AtomicU64::new(stop_ut),
-            caller_is_cancelled: is_cancelled.clone(),
             asynchronous: !method.sync,
             hooks: Mutex::default(),
         });
@@ -309,7 +304,7 @@ impl Calls {
                     Box::new(move |reply, _| *lock(&kept) = Some(reply))
                 }
             };
-            let code = dispatch(&method, request(reply, sync_done));
+            let code = dispatch(&method, request(reply, sync_done), is_cancelled);
             self.remove(&key);
             return Called { code, reply: lock(&kept).take() };
         }
@@ -322,7 +317,7 @@ impl Calls {
                 }
                 calls.remove(&key);
             });
-            let code = dispatch(&method, request(reply, finished));
+            let code = dispatch(&method, request(reply, finished), None);
             return Called { code, reply: None };
         }
         self.wait(&method, &record, reply, is_cancelled, request)
@@ -335,7 +330,7 @@ impl Calls {
         method: &Arc<Method>,
         record: &Arc<Record>,
         reply: Reply,
-        is_cancelled: Option<IsCancelled>,
+        is_cancelled: Option<IsCancelled<'_>>,
         request: impl Fn(Reply, Done) -> Request,
     ) -> Called {
         struct Waiting {
@@ -359,7 +354,7 @@ impl Calls {
         };
         let content_type = reply.content_type;
         let mut caller = reply;
-        let code = dispatch(method, request(Reply::new(content_type), signal));
+        let code = dispatch(method, request(Reply::new(content_type), signal), None);
         let mut w = lock(&state.0);
         if code != 200 && w.answer.is_none() {
             w.gave_up = true;
@@ -371,7 +366,7 @@ impl Calls {
                 break;
             }
             w = state.1.wait_timeout(w, WAIT_POLL).unwrap_or_else(std::sync::PoisonError::into_inner).0;
-            if w.answer.is_none() && is_cancelled.as_ref().is_some_and(|f| f()) {
+            if w.answer.is_none() && is_cancelled.is_some_and(|f| f()) {
                 cancelled = true;
                 drop(w);
                 cancel_record(record);
@@ -485,18 +480,18 @@ fn cancel_record(record: &Record) {
     }
 }
 
-/// The method's handler on a request.
-fn dispatch(method: &Method, mut req: Request) -> u16 {
+/// The method's handler on a request; `is_cancelled` is a sync call's caller check.
+fn dispatch(method: &Method, mut req: Request, is_cancelled: Option<IsCancelled<'_>>) -> u16 {
     match &method.handler {
         Handler::Transport(transport) => transport.dispatch(req),
         Handler::Builtin(builtin) => {
             // nrpc_builtin_handler(): a cancelled call answers 499 with an empty body
-            let mut code = if req.call.is_cancelled() {
-                499
-            } else {
-                builtin(&mut req.reply, &req.function, req.payload.as_ref(), &req.source)
+            let cancelled = || {
+                if req.call.asynchronous { req.call.is_cancelled() } else { is_cancelled.is_some_and(|f| f()) }
             };
-            if code == 499 || req.call.is_cancelled() {
+            let mut code =
+                if cancelled() { 499 } else { builtin(&mut req.reply, &req.function, req.payload.as_ref(), &req.source) };
+            if code == 499 || cancelled() {
                 req.reply.body.clear();
                 code = 499;
             }

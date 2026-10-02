@@ -35,12 +35,8 @@ impl Reply {
     }
 }
 
-/// A call's payload (`FUNCTION_PAYLOAD`'s body) and its content type.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Payload {
-    pub body: Vec<u8>,
-    pub content_type: ContentType,
-}
+/// A call's payload (`FUNCTION_PAYLOAD`'s body) and its content type: the request body the web server received.
+pub use netdata_agent_web::url::Payload;
 
 /// `now_realtime_sec()`.
 pub(crate) fn now_realtime_s() -> i64 {

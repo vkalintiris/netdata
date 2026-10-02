@@ -5,7 +5,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use netdata_agent_log::{Priority, Source as LogSource, nd_log};
@@ -13,6 +13,7 @@ use netdata_agent_text::sanitize::nrpc_sanitize_name;
 
 pub mod access;
 pub mod call;
+pub mod catalog;
 pub mod lifetime;
 pub mod reply;
 pub mod serving;
@@ -219,6 +220,9 @@ pub struct Registry {
     epoch: AtomicU32,
     /// `pending_dels`: a set, in insertion order.
     pending_dels: Mutex<Vec<Vec<u8>>>,
+    /// `nrpc_registry_destroy()` ran and no `nrpc_registry_init()` since: the host has no registry (an archived host),
+    /// so the catalogs omit it, as C's `nrpc_registry_acquire()` failing.
+    destroyed: AtomicBool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -240,12 +244,23 @@ impl Registry {
         self.epoch.load(Ordering::Acquire)
     }
 
-    /// `nrpc_registry_destroy()` then `nrpc_registry_init()` of a host archived and found again: every function gone,
-    /// the queue too.
-    pub fn clear(&self) {
+    /// `nrpc_registry_destroy()` of a host archived: every function gone, the queue too, and no registry until
+    /// `init()`.
+    pub fn destroy(&self) {
         let methods = std::mem::take(&mut *self.methods());
         lock(&self.pending_dels).clear();
         drop(methods);
+        self.destroyed.store(true, Ordering::Release);
+    }
+
+    /// `nrpc_registry_init()`: a host created live, or an archived one connected again.
+    pub fn init(&self) {
+        self.destroyed.store(false, Ordering::Release);
+    }
+
+    /// Whether `nrpc_registry_acquire()` would find the host's registry.
+    pub fn exists(&self) -> bool {
+        !self.destroyed.load(Ordering::Acquire)
     }
 
     /// `nrpc_method_register()` from the registering thread (its serving handle, the host's epoch). `Err` carries

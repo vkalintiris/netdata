@@ -157,10 +157,17 @@ fn a_sync_builtin_answers_and_leaves() {
     assert_eq!((called.code, called.reply.map(|r| r.body)), (200, Some(b"echo now from test".to_vec())));
     assert!(lock(&calls.table).is_empty());
     let (done, rx) = done_channel();
-    let called = calls.call(CallSpec { done: Some(done), is_cancelled: Some(Arc::new(|| true)), ..spec(&r, b"echo") });
+    let called = calls.call(CallSpec { done: Some(done), is_cancelled: Some(&|| true), ..spec(&r, b"echo") });
     assert_eq!((called.code, called.reply.is_none()), (499, true));
     let (reply, code) = rx.recv().unwrap();
     assert_eq!((code, reply.body), (499, Vec::new()));
+    // the caller went away while the handler ran: its answer is dropped for 499 (nrpc-builtin.c:13-21, the check
+    // after the handler)
+    let asked = AtomicU64::new(0);
+    let gone_during = || asked.fetch_add(1, Ordering::SeqCst) > 0;
+    let called = calls.call(CallSpec { is_cancelled: Some(&gone_during), ..spec(&r, b"echo") });
+    assert_eq!((called.code, called.reply.map(|r| r.body)), (499, Some(Vec::new())));
+    assert_eq!(asked.load(Ordering::SeqCst), 2, "before and after the handler");
 }
 
 /// No-wait: the caller's callback gets the answer whenever the transport gives it, then the record leaves; ids are
@@ -261,7 +268,7 @@ fn a_wait_answers_times_out_or_is_cancelled() {
     assert!(lock(&calls.table).is_empty(), "the late answer retires it");
 
     // the caller goes away
-    let called = calls.call(CallSpec { wait: true, is_cancelled: Some(Arc::new(|| true)), ..spec(&r, b"slow") });
+    let called = calls.call(CallSpec { wait: true, is_cancelled: Some(&|| true), ..spec(&r, b"slow") });
     assert_eq!((called.code, error_text(called.reply.as_ref().unwrap())), (499, r#"{"status":499,"errorMessage":"Request cancelled"}"#.into()));
     let key = lock(&held.requests)[0].call.key().to_string();
     assert_eq!(*lock(&held.hooked.0), [format!("cancel {key}")]);
@@ -305,11 +312,11 @@ fn a_waits_deadline_follows_its_progress() {
         }
     });
     let counted = Arc::clone(&passes);
-    let is_cancelled: IsCancelled = Arc::new(move || {
+    let is_cancelled = move || {
         counted.fetch_add(1, Ordering::SeqCst);
         false
-    });
-    let called = calls.call(CallSpec { wait: true, is_cancelled: Some(is_cancelled), ..spec(&r, b"slow") });
+    };
+    let called = calls.call(CallSpec { wait: true, is_cancelled: Some(&is_cancelled), ..spec(&r, b"slow") });
     returned.store(true, Ordering::SeqCst);
     answering.join().unwrap();
     assert_eq!((called.code, called.reply.map(|r| r.body)), (200, Some(b"rows".to_vec())));
@@ -351,7 +358,7 @@ fn a_cancelled_wait_answers_499_even_if_the_answer_comes_meanwhile() {
     let r = Registry::default();
     let t = Arc::new_cyclic(|me| AnswersOnCancel { me: me.clone(), held: Mutex::new(None) });
     register(&r, b"slow", Handler::Transport(Arc::clone(&t) as Arc<dyn Transport>), |_| {});
-    let called = calls.call(CallSpec { wait: true, is_cancelled: Some(Arc::new(|| true)), ..spec(&r, b"slow") });
+    let called = calls.call(CallSpec { wait: true, is_cancelled: Some(&|| true), ..spec(&r, b"slow") });
     assert_eq!(
         (called.code, error_text(called.reply.as_ref().unwrap())),
         (499, r#"{"status":499,"errorMessage":"Request cancelled"}"#.into())
