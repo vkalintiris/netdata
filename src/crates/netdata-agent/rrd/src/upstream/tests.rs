@@ -459,6 +459,39 @@ fn the_functions_go_again_with_the_removals_the_parent_takes() {
     assert_eq!(recorder.take(), [(Traffic::Metadata, "FUNCTION_DEL GLOBAL \"f\"\n".to_string())]);
 }
 
+/// DynCfg's methods go as one `config` line after the others (`stream_send_global_functions()`,
+/// `command-function.c:37-42`): only when the host has one and the parent takes DYNCFG.
+#[test]
+fn the_dyncfg_methods_go_as_one_config_line_to_a_parent_that_takes_dyncfg() {
+    let (host, recorder) = streaming("*", PLAIN);
+    ready(&host);
+    let desc = |name: &'static [u8]| MethodDesc {
+        name,
+        help: b"h",
+        tags: b"",
+        timeout_s: 10,
+        priority: 0,
+        version: 3,
+        access: 0,
+        sync: false,
+        source: NrpcSource::Stream,
+        handler: netdata_agent_nrpc::Handler::Builtin(inert),
+    };
+    host.register_function(&desc(b"f")).unwrap();
+    let f = "FUNCTION GLOBAL \"f\" 10 \"h\" \"top\" 0x0 100 3\n";
+    recorder.capabilities.store(PLAIN | caps::DYNCFG, Ordering::Relaxed);
+    send_global_functions(&host);
+    assert_eq!(recorder.take(), [(Traffic::Metadata, f.to_string())], "no DynCfg method, no config line");
+    host.register_function(&desc(b"config go.d:x")).unwrap();
+    host.register_function(&desc(b"config go.d:y")).unwrap();
+    send_global_functions(&host);
+    let config = "FUNCTION GLOBAL config 120 \"Dynamic configuration\" \"config\" 0x8 1000\n";
+    assert_eq!(recorder.take(), [(Traffic::Metadata, format!("{f}{config}"))]);
+    recorder.capabilities.store(PLAIN, Ordering::Relaxed);
+    send_global_functions(&host);
+    assert_eq!(recorder.take(), [(Traffic::Metadata, f.to_string())], "a parent without DYNCFG");
+}
+
 /// A chart variable that changed goes with the chart's next data, after its points.
 #[test]
 fn a_changed_chart_variable_goes_with_the_next_data() {
