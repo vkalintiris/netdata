@@ -189,7 +189,14 @@ impl Dyncfg {
             nd_log!(Source::Daemon, Priority::Notice, "{}", String::from_utf8_lossy(&text));
         }
         let (host, sync) = (spec.host, spec.sync);
-        self.add_internal(&AddSpec { cmds, view_access, edit_access, ..spec }, true);
+        if !self.add_internal(&AddSpec { cmds, view_access, edit_access, ..spec }, true) {
+            nd_log!(
+                Source::Daemon,
+                Priority::Notice,
+                "DYNCFG: cannot add configuration '{shown}' - the dyncfg registry is not available"
+            );
+            return false;
+        }
 
         // the node as the set left it (merged into an existing one, maybe)
         let (function, kind, cmds, disabled, template, dyncfg_job) = {
@@ -233,8 +240,8 @@ impl Dyncfg {
     }
 
     /// `dyncfg_add_internal()`: the spec as a node, set with its current state (times stamped by the set), its
-    /// handler replacing a different one only with `overwrite_handler`.
-    fn add_internal(&self, spec: &AddSpec<'_>, overwrite_handler: bool) {
+    /// handler replacing a different one only with `overwrite_handler`; false when the set refused it.
+    fn add_internal(&self, spec: &AddSpec<'_>, overwrite_handler: bool) -> bool {
         let node = Node {
             host_uuid: host_uuid(spec.host),
             path: spec.path.to_vec(),
@@ -252,7 +259,7 @@ impl Dyncfg {
             handler: Some(spec.handler.clone()),
             ..Node::default()
         };
-        self.nodes.set(spec.id, node, overwrite_handler);
+        self.nodes.set(spec.id, node, overwrite_handler).is_some()
     }
 
     /// `dyncfg_del_low_level()`: the node's method unregistered, the node gone when it was never saved.

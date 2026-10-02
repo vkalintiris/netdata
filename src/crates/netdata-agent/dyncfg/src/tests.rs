@@ -252,7 +252,8 @@ fn a_single_is_registered_and_told_to_enable() {
     assert!(texts(&records).is_empty(), "{records:?}");
 }
 
-/// A template (UT U2): its commands sanitized with C's NOTICE, no echo; the id checks' ERRs.
+/// A template (UT U2): its commands sanitized with C's NOTICE, no echo; the id checks' ERRs; an empty id refused by
+/// the dictionary, as C's NOTICE says.
 #[test]
 fn a_template_is_sanitized_and_not_echoed_and_bad_ids_are_refused() {
     let (fx, records) = within(|| {
@@ -260,6 +261,7 @@ fn a_template_is_sanitized_and_not_echoed_and_bad_ids_are_refused() {
         assert!(fx.add("go.d:T", Type::Template, "get schema enable disable", SourceType::Stock));
         assert!(!fx.add("go.d:a b", Type::Single, "get", SourceType::Stock));
         assert!(!fx.add("go.d:U:j", Type::Job, "get", SourceType::Stock));
+        assert!(!fx.add("", Type::Single, "get schema", SourceType::Stock));
         fx
     });
     assert!(fx.plugin.seen().is_empty());
@@ -279,8 +281,10 @@ fn a_template_is_sanitized_and_not_echoed_and_bad_ids_are_refused() {
                 "DYNCFG: job id 'go.d:U:j' does not have a registered template. Ignoring dynamic configuration for it."
                     .into()
             ),
+            (Priority::Notice, "DYNCFG: cannot add configuration '' - the dyncfg registry is not available".into()),
         ]
     );
+    assert!(fx.node("").is_none(), "no node of an empty id (P10)");
 }
 
 /// A user's `add` (UT U4): the job is made, saved and current, with the template's commands as a job's, but no method

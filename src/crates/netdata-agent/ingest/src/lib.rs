@@ -314,15 +314,16 @@ pub struct Parser {
 impl Drop for Parser {
     fn drop(&mut self) {
         self.clear_scope_with("THREAD CLEANUP", false, None);
-        if let Mode::Plugin { .. } = &self.mode {
-            let old = NODE.with(|n| n.take());
-            drop(old);
-        }
-        // parser_destroy(): a span cut short lets its call go, then the transport ends (every pending call answered)
+        // parser_destroy(): a span cut short lets its call go, then the transport ends (every pending call answered,
+        // its records still naming the parser's node), then the parser is freed
         if let Some(span) = self.result_span.take() {
             self.transport.release_span(&span.key);
         }
         self.transport.shutdown();
+        if let Mode::Plugin { .. } = &self.mode {
+            let old = NODE.with(|n| n.take());
+            drop(old);
+        }
     }
 }
 

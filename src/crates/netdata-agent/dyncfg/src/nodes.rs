@@ -176,11 +176,14 @@ impl Nodes {
 
     /// `dictionary_set()` with DynCfg's callbacks: a new id is inserted (`dyncfg_insert_cb()`), an existing one takes
     /// the new node's values (`dyncfg_conflict_cb()`; its handler only when it has none, or with `overwrite_handler`
-    /// when the new one differs).
-    pub fn set(&self, id: &[u8], node: Node, overwrite_handler: bool) -> Set {
+    /// when the new one differs). `None` for an empty id, which C's dictionary refuses.
+    pub fn set(&self, id: &[u8], node: Node, overwrite_handler: bool) -> Option<Set> {
+        if id.is_empty() {
+            return None;
+        }
         let now_ut = now_realtime_ut();
         let mut map = self.lock();
-        match map.get_mut(id) {
+        Some(match map.get_mut(id) {
             None => {
                 let mut node = inserted(id, node, now_ut);
                 node.serial = self.serial.fetch_add(1, Ordering::Relaxed) + 1;
@@ -188,7 +191,7 @@ impl Nodes {
                 Set::Inserted
             }
             Some(old) => Set::Merged(merge(id, old, node, overwrite_handler, now_ut)),
-        }
+        })
     }
 
     /// `dyncfg_load_all()`: every regular file or link of the directory ending `.dyncfg`, in the directory's order (P2).
@@ -242,7 +245,9 @@ impl Nodes {
             ..Node::default()
         };
         node.set_current_from_stored();
-        self.set(&id, node, false);
+        if self.set(&id, node, false).is_none() {
+            return;
+        }
         let fixed = self.dir.join(std::ffi::OsStr::from_bytes(&files::file_name(&id)));
         if fixed != filename && fs::rename(&filename, &fixed).is_err() {
             nd_log!(
@@ -445,7 +450,8 @@ mod tests {
     fn an_insert_is_cs() {
         let (_dir, nodes) = nodes();
         let job = Node { kind: Type::Job, ..Node::default() };
-        assert_eq!(nodes.set(b"go.d:nginx:local", job.clone(), true), Set::Inserted);
+        assert_eq!(nodes.set(b"go.d:nginx:local", job.clone(), true), Some(Set::Inserted));
+        assert_eq!(nodes.set(b"", job.clone(), true), None, "C's dictionary takes no empty name");
         let ((), logged) = capture(|| {
             nodes.set(b"lonely", job, true);
         });
@@ -486,7 +492,7 @@ mod tests {
             ..Node::default()
         };
         let (set, logged) = capture(|| nodes.set(b"s", second, false));
-        assert_eq!(set, Set::Merged(true));
+        assert_eq!(set, Some(Set::Merged(true)));
         assert_eq!(
             texts(logged),
             [
@@ -510,7 +516,7 @@ mod tests {
             let node = Node { host_uuid: [1; 16], path: b"/b".to_vec(), cmds: Cmds::GET, edit_access: 0x47, handler: Some(handler), ..Node::default() };
             // times that do not widen, so only the handler can change (a zero time is stamped now, which widens)
             let current = Current { status: Status::Running, created_ut: 5, modified_ut: 15, ..Current::default() };
-            let set = nodes.set(b"s", Node { current, ..node }, overwrite);
+            let set = nodes.set(b"s", Node { current, ..node }, overwrite).unwrap();
             (set, nodes.lock()[b"s".as_slice()].handler.as_ref().is_some_and(|h| h.same(&Handler::Builtin(other))))
         };
         assert_eq!(held(Handler::Builtin(other), false), (Set::Merged(false), false), "kept without overwrite");

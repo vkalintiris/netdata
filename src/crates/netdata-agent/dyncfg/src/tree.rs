@@ -240,8 +240,11 @@ impl Dyncfg {
             agents_v2(&mut w, agent, now_realtime_s(), false, false, |_| {});
         }
         w.finalize();
+        // buffer_json_initialize(): JSON, not cacheable
         reply.body = w.into_bytes();
         reply.content_type = ContentType::ApplicationJson;
+        reply.expires = 0;
+        reply.cacheable = false;
     }
 }
 

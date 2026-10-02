@@ -3,7 +3,6 @@
 //! node type supports, and the default response body.
 
 use netdata_agent_nrpc::reply::{ContentType, Reply};
-use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_text::c::{is_print, is_space};
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 
@@ -273,7 +272,8 @@ pub fn escape_id_for_filename(id: &[u8]) -> Vec<u8> {
     escaped
 }
 
-/// `dyncfg_default_response()`: the reply becomes `{"status":code,"message":msg}`, JSON, expiring now.
+/// `dyncfg_default_response()`: the reply becomes `{"status":code,"message":msg}`, JSON and not cacheable: C sets it to
+/// expire now, but its `buffer_json_initialize()` then makes it no-cache, which clears the expiry (`buffer.c:350`).
 pub fn default_response(reply: &mut Reply, code: u16, msg: &str) -> u16 {
     let mut w = JsonWriter::new(JsonOptions::MINIFY);
     w.member_add_uint64("status", u64::from(code));
@@ -281,7 +281,8 @@ pub fn default_response(reply: &mut Reply, code: u16, msg: &str) -> u16 {
     w.finalize();
     reply.body = w.into_bytes();
     reply.content_type = ContentType::ApplicationJson;
-    reply.expires = now_realtime_s();
+    reply.expires = 0;
+    reply.cacheable = false;
     code
 }
 
@@ -373,10 +374,10 @@ mod tests {
     #[test]
     fn the_default_response_is_cs() {
         let mut reply = Reply::new(ContentType::TextPlain);
-        let before = now_realtime_s();
+        (reply.expires, reply.cacheable) = (5, true);
         assert_eq!(default_response(&mut reply, 404, "Unknown config id given."), 404);
         assert_eq!(reply.body, br#"{"status":404,"message":"Unknown config id given."}"#);
         assert_eq!(reply.content_type, ContentType::ApplicationJson);
-        assert!((before..=before + 1).contains(&reply.expires));
+        assert_eq!((reply.expires, reply.cacheable), (0, false), "no-cache, as buffer_json_initialize() leaves it");
     }
 }

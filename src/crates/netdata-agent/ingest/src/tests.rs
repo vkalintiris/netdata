@@ -3025,6 +3025,37 @@ fn a_plugin_answers_a_call_through_its_parser() {
     );
 }
 
+/// The run's end answers the pending calls before the parser goes (`parser_destroy()`): a record their callbacks
+/// write still names the parser's node, as DynCfg's echo failures do in C.
+#[test]
+fn a_plugins_end_answers_under_its_node() {
+    let hosts = plugin_hosts();
+    let mut p = plugin_parser(&hosts);
+    feed_ok(&mut p, &["FUNCTION GLOBAL \"answer\" 10 \"help\" \"top\" \"0x0\" 100 0".into()]);
+    let lh = hosts.localhost();
+    nrpc::call::Calls::process().call(nrpc::call::CallSpec {
+        owner: Some((lh.functions(), "parent")),
+        cmd: b"answer",
+        source: b"",
+        user_access: 0,
+        timeout_s: 0,
+        wait: false,
+        allow_restricted: true,
+        call_id: Some(b"5a1e00000000400080000000000000f4"),
+        payload: None,
+        reply: nrpc::reply::Reply::new(nrpc::reply::ContentType::TextPlain),
+        done: Some(Box::new(|_, code| nd_log!(Source::Daemon, Priority::Err, "answered {code}"))),
+        progress: None,
+        is_cancelled: None,
+        tag: None,
+    });
+    let frame = p.run_frame();
+    let ((), records) = netdata_agent_log::capture(|| drop(p));
+    drop(frame);
+    let record = records.iter().find(|r| r.message.as_deref() == Some("answered 503")).expect("the answer's record");
+    assert_eq!(record.fields.iter().find(|(f, _)| *f == Field::NidlNode).map(|(_, v)| v.as_str()), Some("parent"));
+}
+
 /// The run's end: a span cut short answers 503 with what came; another pending call C's "exited" 503; the
 /// parser's methods answer as a transport that is gone.
 #[test]

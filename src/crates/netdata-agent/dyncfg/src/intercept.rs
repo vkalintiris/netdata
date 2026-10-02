@@ -368,7 +368,7 @@ impl Dyncfg {
             return;
         };
         let status = Status::from_successful_response(code);
-        self.add_internal(
+        let added = self.add_internal(
             &AddSpec {
                 host: &host,
                 id: &id,
@@ -391,6 +391,10 @@ impl Dyncfg {
             },
             false,
         );
+        if !added {
+            nd_log!(Source::Daemon, Priority::Notice, "DYNCFG: cannot add job '{shown}' - the dyncfg registry is not available");
+            return;
+        }
         let mut map = self.nodes.lock();
         if let Some(job) = map.get_mut(&id) {
             job.stored.payload = call.payload.take().map(saved_payload);
