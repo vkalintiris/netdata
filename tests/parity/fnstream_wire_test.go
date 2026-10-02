@@ -311,7 +311,8 @@ func fnWireCases() []fnWireCase {
 
 	// progress through the hop (pluginsd_functions.c:469-475, :715-736): the child's FUNCTION_PROGRESS reaches the
 	// parent's table; a progress request extends the parent's deadline and goes down only when the child has PROGRESS
-	// (`progress-off`: it has not); `progress-bare`: a FUNCTION_PROGRESS without numbers reads 0 and 0 (P8)
+	// (`progress-off`: it has not); `progress-bare`: a FUNCTION_PROGRESS without numbers reads 0 and 0, which keep the
+	// table's 5 of 10 (P8)
 	for _, v := range []struct {
 		name  string
 		caps  uint32
