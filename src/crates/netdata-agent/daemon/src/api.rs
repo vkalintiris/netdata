@@ -69,6 +69,8 @@ pub fn info_json(host: &Host, shared: &Shared) -> Vec<u8> {
     w.member_add_object("host_labels");
     host.labels().to_json_members(&mut w);
     w.object_close();
+    // nrpc_catalog_host2json(): omitted for a host without a registry
+    netdata_agent_nrpc::catalog::to_json(host.functions(), &mut w);
     w.member_add_string("memory-mode", info.db_mode.name());
     w.member_add_uint64("multidb-disk-quota", shared.multidb_disk_quota_mb);
     w.member_add_uint64("page-cache-size", shared.page_cache_mb);

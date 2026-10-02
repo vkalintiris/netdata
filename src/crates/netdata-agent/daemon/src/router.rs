@@ -3,7 +3,8 @@
 //! `web_client_api_request_vX()` in `src/web/api/web_api.c`.
 //!
 //! Not ported yet: bearer checks, `/mcp` and `/sse`, and the API commands other than `info`, `chart`, `charts`,
-//! `context`, `contexts`, `data`, `dbengine_stats`, `stream_info` and `stream_path`. `/netdata.conf` shows only the keys of the subsystems ported so far.
+//! `context`, `contexts`, `data`, `dbengine_stats`, `function`, `functions` (v1), `stream_info` and `stream_path`.
+//! `/netdata.conf` shows only the keys of the subsystems ported so far.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -13,6 +14,7 @@ use netdata_agent_text::parse::uuid_parse_flexi;
 use netdata_agent_text::print::print_uuid_lower;
 use netdata_agent_web::content_type::ContentType;
 use netdata_agent_web::request::Request;
+use netdata_agent_web::url::Payload;
 use netdata_agent_web::status;
 
 use crate::access_log::RequestContext;
@@ -24,6 +26,7 @@ use crate::auth;
 use crate::contexts_v2;
 use crate::data;
 use crate::dbengine_stats;
+use crate::functions;
 use crate::server::{self, Reply, Shared};
 use crate::static_file;
 use crate::stream_info;
@@ -114,11 +117,25 @@ const API_V1: &[Command] = &[
             not_ready(route).unwrap_or_else(|| dbengine_stats::reply(route.shared.hosts.storage()))
         },
     },
+    Command {
+        name: "function",
+        acl: acl::bits::FUNCTIONS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: functions::call,
+    },
+    Command {
+        name: "functions",
+        acl: acl::bits::FUNCTIONS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: functions::list,
+    },
 ];
 
 /// `api_v1_info()` and `api_v1_dbengine_stats()` until startup completes: 503, the response buffer unflushed (the
 /// request).
-fn not_ready(route: &Route<'_>) -> Option<Reply> {
+pub(crate) fn not_ready(route: &Route<'_>) -> Option<Reply> {
     (!(route.shared.ready)()).then(|| Reply {
         code: status::SERVICE_UNAVAILABLE,
         content_type: ContentType::TextPlain,
@@ -216,6 +233,13 @@ const API_V3: &[Command] = &[
         allow_subpaths: false,
         callback: |route, _, _| auth::me(&route.ctx.auth),
     },
+    Command {
+        name: "function",
+        acl: acl::bits::FUNCTIONS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: functions::call,
+    },
     CLOUD_ONLY[0],
     CLOUD_ONLY[1],
     CLOUD_ONLY[2],
@@ -234,6 +258,10 @@ pub struct Route<'a> {
     pub ctx: &'a RequestContext,
     pub url_as_received: &'a [u8],
     pub query: &'a [u8],
+    /// `w->payload`: a POST or PUT body.
+    pub payload: Option<&'a Payload>,
+    /// `X-Forwarded-For` as received (cut at 45 bytes), for a call's source.
+    pub forwarded_for: &'a [u8],
     /// `w->response.data` as the request left it: what was received, which a callback that returns before
     /// flushing it sends back.
     pub input: &'a [u8],
@@ -277,6 +305,8 @@ pub fn process_request(
         ctx,
         url_as_received: &req.url_as_received,
         query: &req.query,
+        payload: req.payload.as_ref(),
+        forwarded_for: &req.headers.forwarded_for,
         input,
         version: None,
         trailing_slash: end == 0 || path[end - 1] == b'/',
@@ -598,10 +628,11 @@ mod tests {
         );
     }
 
-    /// `/api/v1/info` ends with the routed host's memory mode and the dbengine's quota and page cache size, as
-    /// `api_v1_info()` writes them after the flags (the members between are not ported yet, D84.2).
+    /// `/api/v1/info` ends with the host's functions after its labels (`api_v1_info.c:132-134`), then the routed host's
+    /// memory mode and the dbengine's quota and page cache size, as `api_v1_info()` writes them after the flags (the
+    /// members between are not ported yet, D84.2).
     #[test]
-    fn info_ends_with_the_dbengine_members() {
+    fn info_ends_with_the_functions_and_the_dbengine_members() {
         let s = Shared {
             multidb_disk_quota_mb: 25,
             page_cache_mb: 8,
@@ -612,7 +643,8 @@ mod tests {
         let tail = &tail[tail.find('}').unwrap() + 1..];
         assert_eq!(
             tail.trim_end(),
-            ",\n    \"memory-mode\":\"ram\",\n    \"multidb-disk-quota\":25,\n    \"page-cache-size\":8\n}"
+            ",\n    \"functions\":{\n    },\n    \"memory-mode\":\"ram\",\n    \"multidb-disk-quota\":25,\n    \
+             \"page-cache-size\":8\n}"
         );
     }
 

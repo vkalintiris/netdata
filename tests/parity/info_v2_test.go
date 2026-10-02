@@ -27,7 +27,6 @@ var capabilityDiffs = map[string]capabilityDiff{
 	"proto":      {"1/true", "1/false", "M11 Cloud"},
 	"ml":         {"1/false", "0/false", "M14 ML"},
 	"mc":         {"1/true", "1/false", "M10 weights"},
-	"funcs":      {"1/true", "0/false", "M8 plugins.d"},
 	"req_cancel": {"1/true", "1/false", "M11 Cloud"},
 	"dyncfg":     {"2/true", "2/false", "M8 plugins.d"},
 }

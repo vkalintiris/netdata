@@ -26,6 +26,7 @@ mod data;
 mod dbengine;
 mod dbengine_stats;
 mod exit_reason;
+mod functions;
 mod guid;
 mod health;
 mod heartbeat;

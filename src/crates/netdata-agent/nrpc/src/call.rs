@@ -30,7 +30,7 @@ pub type Done = Box<dyn FnOnce(Reply, u16) + Send>;
 pub type ProgressCb = Arc<dyn Fn(&[u8; 16], usize, usize) + Send + Sync>;
 /// `nrpc_is_cancelled_cb_t` with its data: the caller's check, borrowed for the call (C's `void *` to the caller's
 /// state, consulted only while `nrpc_call()` runs).
-pub type IsCancelled<'a> = &'a (dyn Fn() -> bool + Sync);
+pub type IsCancelled<'a> = &'a dyn Fn() -> bool;
 
 /// `nrpc_effective_deadline_ut()`.
 pub fn effective_deadline_ut(stop_ut: u64) -> u64 {
