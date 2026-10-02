@@ -377,3 +377,26 @@ fn a_runs_end_retires_its_functions_before_answering_their_calls() {
     );
     assert!(!localhost.functions().available(b"f"));
 }
+
+/// R66: the same plugin file in a later directory of the same scan, found again before its new thread ran, is a
+/// running plugin, not one that gave up (C sets `running` in the thread and loses this race: DEFECTS, D155).
+#[test]
+fn a_plugin_found_again_before_its_thread_runs_is_kept() {
+    let state = Arc::new(State { enabled: AtomicBool::new(true), ..State::default() });
+    let (go, held) = std::sync::mpsc::channel::<()>();
+    let st = Arc::clone(&state);
+    // held where Worker::main would begin: a thread the scheduler has not run yet
+    let thread = start(&state, "PD[x]", 1 << 20, move || {
+        while !st.cancelled.load(Ordering::Acquire) {
+            if held.recv_timeout(Duration::from_millis(10)).is_ok() {
+                break;
+            }
+        }
+    });
+    let mut cd = Plugind { id: "plugin:x".into(), filename: b"x.plugin".to_vec(), state: Arc::clone(&state), thread };
+    cd.found_again();
+    assert!(!state.cancelled.load(Ordering::Acquire), "taken for a plugin that gave up");
+    assert!(cd.thread.is_some());
+    go.send(()).unwrap();
+    cd.thread.take().unwrap().join().unwrap();
+}

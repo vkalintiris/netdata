@@ -79,6 +79,36 @@ struct Plugind {
     thread: Option<JoinHandle<()>>,
 }
 
+impl Plugind {
+    /// The plugin's file found again (a later scan, or a later directory of this one): a thread that gave up is
+    /// joined, and the plugin is not started again.
+    fn found_again(&mut self) {
+        if !self.state.running.load(Ordering::Acquire)
+            && let Some(thread) = self.thread.take()
+        {
+            // it gave up
+            self.state.cancelled.store(true, Ordering::Release);
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A plugin's thread, `tag` its name, running `body`. The plugin counts as running from before the thread exists, so
+/// the same file found again before the thread ran (the next directory of this scan) is not taken for one that gave
+/// up; C sets it in the thread (`plugins_d.c:128`) and loses that race when the thread starts late (DEFECTS, D155).
+fn start(state: &State, tag: &str, stack_size: usize, body: impl FnOnce() + Send + 'static) -> Option<JoinHandle<()>> {
+    state.running.store(true, Ordering::Release);
+    match std::thread::Builder::new().name(cut(tag.to_owned(), THREAD_TAG_MAX)).stack_size(stack_size).spawn(body) {
+        Ok(thread) => Some(thread),
+        Err(err) => {
+            // as C's after a failed nd_thread_create(): not running, no thread
+            state.running.store(false, Ordering::Release);
+            netdata_log_error!("{}", netdata_agent_evloop::thread_create_failed(tag, &err));
+            None
+        }
+    }
+}
+
 /// A started `PLUGINSD` thread.
 pub struct Pluginsd {
     thread: JoinHandle<()>,
@@ -262,13 +292,7 @@ impl Scanner {
     /// A plugin file found enabled: a new one is started; one that runs, or that ran and ended, is not again.
     fn found(&mut self, directory: &str, filename: Vec<u8>, name: &str) {
         if let Some(cd) = self.plugins.iter_mut().find(|cd| cd.filename == filename) {
-            if !cd.state.running.load(Ordering::Acquire)
-                && let Some(thread) = cd.thread.take()
-            {
-                // it gave up
-                cd.state.cancelled.store(true, Ordering::Release);
-                let _ = thread.join();
-            }
+            cd.found_again();
             return;
         }
         // char buf[CONFIG_MAX_NAME]
@@ -301,21 +325,11 @@ impl Scanner {
         };
         // the thread's tag, PD[<name>], as C cuts it for the thread and for its failure record
         let tag = cut(format!("PD[{name}]"), TAG_BUFFER_MAX);
-        let thread = std::thread::Builder::new()
-            .name(cut(tag.clone(), THREAD_TAG_MAX))
-            .stack_size(self.settings.stack_size)
-            .spawn(move || {
-                netdata_agent_log::thread_created();
-                worker.main();
-                netdata_agent_log::thread_finished();
-            });
-        let thread = match thread {
-            Ok(thread) => Some(thread),
-            Err(err) => {
-                netdata_log_error!("{}", netdata_agent_evloop::thread_create_failed(&tag, &err));
-                None
-            }
-        };
+        let thread = start(&state, &tag, self.settings.stack_size, move || {
+            netdata_agent_log::thread_created();
+            worker.main();
+            netdata_agent_log::thread_finished();
+        });
         self.plugins.insert(0, Plugind { id, filename, state, thread });
     }
 
@@ -367,7 +381,6 @@ impl Worker {
     }
 
     fn main(mut self) {
-        self.state.running.store(true, Ordering::Release);
         // read at each use, as C's rrdhost_hostname(cd->host): a plugin defining localhost's GUID renames it
         let localhost = Arc::clone(self.hosts.hosts.localhost());
         while self.running() {
