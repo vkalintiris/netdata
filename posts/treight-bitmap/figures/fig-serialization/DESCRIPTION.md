@@ -5,9 +5,11 @@
 The blog's §"Pre-order serialization, by hand": walks the Lead-verified
 example — posting list {5, 7, 61, 64, 4097, 262143} over universe 262,144
 (= 8⁶, 6 levels) — showing the tree WITH its node bytes AND the flat wire
-form aligned under it (byte ordinals #1..#18 map every tree row to every
+form aligned under it (blob offsets 0x00–0x11 tie every tree row to every
 wire cell). The figure is the visual companion to the draft's hand-worked
 dump.
+
+Placement: draft §4.3 (Pre-order serialization, by hand).
 
 ## The verified data (do not change)
 
@@ -39,10 +41,9 @@ dump.
 0x11 0 80             └─7 leaf [262136, 262144) → 262143
 ```
 
-Accuracy trail: the row labels (blob offset + dl level) and the 18-row shape
-match the COMMITTED draft dump (verified by the Lead at commit 9b744ee5ec;
-an earlier read of a torn mid-edit state suggested 19 rows — that was a
-red herring, re-checked and correct at HEAD).
+Row labels (blob offset + dl level) and the 18-row shape match the
+committed draft dump exactly (writer's dump at commit 9b744ee5ec;
+independently re-derived against the flat bytes).
 
 ## Source provenance
 

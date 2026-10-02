@@ -320,6 +320,13 @@ Every cell runs a raw op over stored bytes and returns the result in whichever f
 universe equality, while every dispatched path asserts it — the raw ops assert unconditionally, so
 a mismatched-universe bug panics in release builds too, rather than silently mis-answering.
 
+A concrete taste of the density trade: a 60-of-64 dense set stores its four holes — 9, 25, 26, 60 —
+as a four-byte tree (root `8a`, leaves `02 06 10`) plus an `inverted` descriptor over it.
+
+![The Bitmap layer: the inverted flag flipping between members and holes, the De Morgan dispatch
+tables for and/or, the empty/full short-circuits, and the read-side flips for contains, len, and
+iteration](figures/fig-complement/fig-complement.svg)
+
 ### One walker, four operations
 
 All four raw set operations are the *same* recursive walker: two readers advance in lockstep, one
@@ -341,11 +348,30 @@ the surviving child bits, and pop it if nothing survived — so the output is ca
 construction. An `intersect` on disjoint trees never writes a byte and returns the empty
 descriptor; you cannot store a zero byte even by accident.
 
+On a two-level universe of 64 values the whole mechanic is visible in four bytes per operand:
+A = {0..7} ∪ {16} ∪ {40} serializes to `25 ff 01 01`, B = {1, 5, 16, 17} to `05 22 03`. Their
+intersection back-patches the root to the two surviving children and skips A's exclusive subtree
+(`05 22 01` = {1, 5, 16}); the difference prunes the leaf that ANDs to zero, copies A's exclusive
+subtree verbatim, and keeps the rest (`21 dd 01`).
+
+![The lockstep walk on a two-level tree: intersect and difference side by side, showing the
+reserved node byte, the back-patch, the zero-leaf prune, and skip-versus-copy for A-only
+children](figures/fig-setops/fig-setops.svg)
+
 ## Where it lives: the SFST index lifecycle
 
 treight is a small crate — about 1,900 lines across six source files — with exactly one production
 consumer, sfst, our split-FST logs-and-traces index format (the container described in
-`src/crates/sfst/src/lib.rs`). The lifecycle is a clean handoff between the two bitmap libraries:
+`src/crates/sfst/src/lib.rs`). The lifecycle is a clean handoff between the two bitmap libraries —
+a three-row toy (`service=x` on rows arriving at t=37 and t=95) travels from a roaring bitmap
+over insertion-order positions, through the time remap and the two encode decisions, to an
+inverted one-byte tree on disk:
+
+![The index lifecycle in three stages: roaring accumulating arbitrary-order inserts, the seal-time
+time remap with the density and cardinality encode decisions, and the mmap read path running
+native PosSet operations](figures/fig-lifecycle/fig-lifecycle.svg)
+
+In compressed form:
 
 ```
  WRITE PATH                                READ PATH
@@ -409,6 +435,13 @@ means 1,000-plus distinct values per field (`DEFAULT_CARDINALITY_THRESHOLD = 100
 a columnar string arena instead: sorted `key=value` keys plus one bitmask per key over the file's
 stream batches, so a scan can skip whole batches a value never appears in (`FORMAT.md`,
 `src/crates/sfst/src/schema.rs`).
+
+The whole file, then, routes `key=value` pairs by tier into bitmap homes or arena homes — chunk
+framing, CRCs, the hot prefix the reader decodes on open, and the cold span it mmaps lazily:
+
+![The SFST file top to bottom: header, TOC, CRC-framed chunk bodies with a hot prefix and a cold
+region, the low/mid/high tier routing, one BitmapValue's anatomy, and the read-side query
+loop](figures/fig-sfst-overview/fig-sfst-overview.svg)
 
 **Query as treight.** On the read path, every intermediate result is a `PosSet` — a treight
 descriptor plus owned tree bytes. Pulling a value's bitmap clones its tree bytes once; from there

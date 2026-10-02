@@ -79,9 +79,9 @@ def main() -> int:
     ax.axvspan(len(DENSITY_BUCKETS) - 1.5, len(DENSITY_BUCKETS) - 0.5,
                color=VERMIL, alpha=0.10, zorder=0)
     ax.annotate(
-        "density > 50%:\nencoder stores the holes\n(from_sorted_iter_complemented)",
+        "density strictly > 50%:\nencoder stores the holes\n(from_sorted_iter_complemented);\n= 50% stays direct",
         xy=(len(DENSITY_BUCKETS) - 1, max(max(h) for h in hists.values())),
-        xytext=(-165, -8), textcoords="offset points",
+        xytext=(-175, -8), textcoords="offset points",
         fontsize=7.6, color=VERMIL,
         arrowprops=dict(arrowstyle="->", color=VERMIL, lw=1.0),
     )

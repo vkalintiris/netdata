@@ -8,6 +8,8 @@ B-only column). Shows the mechanics the prose names — reserve node byte,
 back-patch surviving child bits, prune empty results — on a universe small
 enough to draw every byte (64 = 8², 2 levels: root + leaves).
 
+Placement: draft §4.7 (One walker, four operations).
+
 ## The verified data (do not change)
 
 - A = {0..7} ∪ {16} ∪ {40} → root `25` (children {0, 2, 5}), leaves

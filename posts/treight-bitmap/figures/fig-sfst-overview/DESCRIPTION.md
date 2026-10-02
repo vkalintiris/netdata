@@ -9,6 +9,8 @@ laid out top-to-bottom (header, TOC, chunk bodies + CRC, hot prefix vs
 cold region). Right: the tier routing, one FST entry's anatomy
 (`BitmapValue`), and the read-side query loop.
 
+Placement: draft §5 (Where it lives: the SFST index lifecycle) — opens the section; also the user-requested overview.
+
 ## Accuracy notes (verified against sources — do not "fix" without them)
 
 - ONLY low and mid tiers store treight bitmaps. `HF{i}` (high card, ≥ 1000

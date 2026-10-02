@@ -21,8 +21,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from chartlib import (
-    BLUE, CORPORA, GREEN, GRAY, VERMIL, die_synth, evidence_dir, load_json,
-    save_both, style_setup, synthetic_stamp,
+    BLUE, CORPORA, GREEN, GRAY, VERMIL, die_synth, evidence_dir,
+    load_totals_summary, save_both, style_setup, synthetic_stamp,
 )
 
 SYNTH = {
@@ -56,19 +56,20 @@ SCOPE_TITLES = {
 def main() -> int:
     strict = "--strict" in sys.argv
     edir = evidence_dir()
-    totals_path = edir / "totals.json"
-    synthetic = not totals_path.is_file()
+    data = {}
+    for c in CORPORA:
+        t = load_totals_summary(edir, c)
+        if t:
+            data[c] = t
+    synthetic = not data
     if synthetic and strict:
         print("chart-footprint: --strict and no evidence found", file=sys.stderr)
         return 1
     if synthetic:
         die_synth("chart-footprint")
-        corpora = CORPORA
         data = SYNTH
-    else:
-        totals = load_json(totals_path)
-        corpora = [c for c in CORPORA if c in totals.get("corpora", {})]
-        data = {c: totals["corpora"][c]["bitsets"] for c in corpora}
+    corpora = [c for c in CORPORA if c in data]
+    bitsets = {c: data[c]["bitsets"] for c in corpora}
 
     style_setup()
     fig, axes = plt.subplots(1, 2, figsize=(9.6, 4.2), sharey=True)
@@ -83,7 +84,7 @@ def main() -> int:
 
     for ax, scope in zip(axes, SCOPES):
         for i, (label, key, color, hatch, face) in enumerate(series):
-            vals = [data[c][scope][key] / 1e6 for c in corpora]
+            vals = [bitsets[c][scope][key] / 1e6 for c in corpora]
             ax.bar(
                 x + (i - 1) * 0.26, vals, width=0.25,
                 color=color if face != "none" else "white",
@@ -94,7 +95,6 @@ def main() -> int:
             for xi, v in zip(x + (i - 1) * 0.26, vals):
                 ax.annotate(f"{v:.1f}", (xi, v), textcoords="offset points",
                             xytext=(0, 2), ha="center", fontsize=6.6)
-        t = data[corpora[0]][scope] if corpora else {}
         ax.set_title(SCOPE_TITLES[scope], fontsize=8.6)
         ax.set_xticks(x)
         ax.set_xticklabels([c.replace("-250k", "") for c in corpora], fontsize=8)

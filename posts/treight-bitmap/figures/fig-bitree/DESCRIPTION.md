@@ -10,6 +10,8 @@ bytes are leaves holding 8 value bits each, and empty subtrees are pruned
 the whole tree is drawable; the blog's real corpora use 262,144 = 8⁶ → the
 same shape, 6 levels deep.
 
+Placement: draft §4.2 (Node bytes and the tree shape).
+
 ## What it shows
 
 - A worked example set {5, 9, 173} over universe 512; the serialized tree is

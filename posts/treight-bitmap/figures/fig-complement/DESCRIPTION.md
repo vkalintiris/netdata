@@ -7,6 +7,8 @@ The blog's §"Dense sets: store the holes, dispatch by De Morgan": the
 between "stored tree = members" (N) and "stored tree = holes" (I) — and the
 match-arm tables that turn every `and`/`or` into ONE raw walker call.
 
+Placement: draft §4.6 (Dense sets: store the holes, dispatch by De Morgan).
+
 ## The verified data
 
 Worked example (universe 64): a dense set with 60 members whose holes are

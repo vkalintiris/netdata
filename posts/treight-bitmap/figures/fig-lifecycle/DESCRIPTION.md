@@ -9,6 +9,8 @@ decisions; READ = mmap + native `PosSet` ops. A 3-row toy (`service=x` on
 rows 0 and 2) is carried through all three stages, including its byte form
 at the end.
 
+Placement: draft §5 (Where it lives: the SFST index lifecycle) — after the build-side steps, as the section's pipeline summary.
+
 ## The verified data (toy example — keep consistent if edited)
 
 - Arrival: row 0 (t=37, `service=x`), row 1 (t=12, `env=y`), row 2 (t=95,

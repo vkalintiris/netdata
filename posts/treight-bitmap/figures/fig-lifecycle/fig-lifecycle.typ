@@ -127,9 +127,10 @@
     )
     #v(5pt)
     #text(size: 8.4pt)[
-      no roaring round-trip, no deserialization step, no allocation for
-      contains/len/min/max over the mapped file — `service=x AND level=error`
-      is one lockstep walk over stored bytes.
+      no roaring round-trip anywhere on the read path; the tree bytes are
+      never decoded into another structure — contains/len/min/max walk them
+      as-is, and `service=x AND level=error` is one lockstep walk over
+      stored bytes.
     ]
   ]
 ]

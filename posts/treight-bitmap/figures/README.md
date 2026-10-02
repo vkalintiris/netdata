@@ -12,7 +12,8 @@ manual-recreation instructions for hand-refinement.
 cd posts/treight-bitmap/figures
 for d in fig-*; do (cd "$d" && ~/.cargo/bin/typst compile --format svg "$d.typ" "$d.svg" \
   && ~/.cargo/bin/typst compile --format png --ppi 144 "$d.typ" "$d.png"); done
-MPLCONFIGDIR=/tmp/nd-bp-mpl python3 scripts/chart-density.py     # etc. per chart
+for c in chart-density chart-footprint chart-ops chart-size-vs-density; do
+  MPLCONFIGDIR=/tmp/nd-bp-mpl python3 "scripts/$c.py"; done
 ```
 
 ## Static figures (typst 0.14.1)
@@ -37,8 +38,21 @@ MPLCONFIGDIR=/tmp/nd-bp-mpl python3 scripts/chart-density.py     # etc. per char
 
 Charts read `posts/treight-bitmap/evidence/bench/` when present and fall
 back to clearly-marked synthetic sample data otherwise (the scripts print
-which mode they ran in; synthetic mode also stamps the plot title).
+which mode they ran in; synthetic mode also stamps the plot title). Pass
+`--strict` to make missing evidence an error (final pre-publish run).
 Schemas: `evidence/bench/schema.md` (authored by bench-eng).
+
+Chart layout convention: the SCRIPT lives in `scripts/<chart>.py`; the
+exports (`<chart>.svg` + `<chart>.png`) and `DESCRIPTION.md` (placement,
+data transform, invocation, manual-recreation notes) live in
+`<chart>/`. Shared palette/IO/style helpers: `scripts/chartlib.py`.
+
+Open item for bench-eng (via the Lead): the exact on-disk location of the
+per-corpus `stats.json` is not pinned by schema.md — `chartlib.find_stats`
+probes `<corpus>/stats.json`, `stats/<corpus>.json`,
+`stats/<corpus>/stats.json`, `<corpus>-stats.json`, `stats-<corpus>.json`,
+`derived/<corpus>/stats.json`. Tell me which one ships and I'll collapse
+the probe to it.
 
 ## Conventions
 
