@@ -87,7 +87,7 @@ impl Sender {
         let enable_sending = out.buffer.stats().bytes_outstanding == 0;
         let ended = if out.compressor.is_some() {
             compressed(&mut out, &hostname, src, traffic, enable_sending)
-        } else if out.buffer.add(src, src.len(), traffic) {
+        } else if out.buffer.add(src, src.len(), traffic, false) {
             Ended::Added { enable_sending }
         } else {
             Ended::Overflow
@@ -204,7 +204,9 @@ fn compressed(out: &mut Out, hostname: &dyn Fn() -> String, src: &[u8], traffic:
         let Some(signature) = encode_signature(compressed.len()) else {
             return Ended::CompressionFailed;
         };
-        if !out.buffer.add(&signature, signature.len(), traffic) || !out.buffer.add(compressed, piece.len(), traffic) {
+        if !out.buffer.add(&signature, signature.len(), traffic, false)
+            || !out.buffer.add(compressed, piece.len(), traffic, false)
+        {
             return Ended::Overflow;
         }
         rest = &rest[piece.len()..];

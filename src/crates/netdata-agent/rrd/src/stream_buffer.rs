@@ -232,14 +232,22 @@ impl CircularBuffer {
         }
     }
 
-    /// `stream_circular_buffer_add_unsafe()` without autoscale (the sender's): the counters go up even when the data
-    /// do not fit, the sizes only when they do.
-    pub fn add(&mut self, data: &[u8], uncompressed: usize, traffic: Traffic) -> bool {
+    /// `stream_circular_buffer_add_unsafe()`: the counters go up even when the data do not fit, the sizes only when
+    /// they do. With `autoscale` (a receiver's, for its child; the sender's has none) the maximum first doubles when
+    /// the free space is less than the data, and stays doubled whatever the add does; data of exactly the free space
+    /// do not fit (the ring keeps one byte), so they are refused unscaled.
+    pub fn add(&mut self, data: &[u8], uncompressed: usize, traffic: Traffic, autoscale: bool) -> bool {
         let s = &mut self.stats;
         s.adds += 1;
         s.bytes_added += data.len();
         s.bytes_uncompressed += uncompressed;
         s.bytes_sent_by_type[traffic as usize] += data.len();
+        if autoscale && self.ring.available() < data.len() {
+            let max_size = self.ring.max_size.saturating_mul(2);
+            if max_size > self.ring.max_size {
+                self.set_max_size(max_size, true);
+            }
+        }
         if !self.ring.add(data) {
             return false;
         }
@@ -310,8 +318,8 @@ mod tests {
     fn stats_count_failed_adds_and_the_contiguous_outstanding() {
         let mut b = CircularBuffer::default();
         b.set_max_size(32, true);
-        assert!(b.add(&[1; 20], 40, Traffic::Data));
-        assert!(!b.add(&[2; 20], 20, Traffic::Metadata));
+        assert!(b.add(&[1; 20], 40, Traffic::Data, false));
+        assert!(!b.add(&[2; 20], 20, Traffic::Metadata, false));
         let s = *b.stats();
         assert_eq!((s.adds, s.bytes_added, s.bytes_uncompressed), (2, 40, 60));
         assert_eq!(s.bytes_sent_by_type, [0, 0, 20, 20]);
@@ -326,13 +334,13 @@ mod tests {
     fn flush_zeroes_and_shrinks() {
         let mut b = CircularBuffer::default();
         b.set_max_size(1 << 20, true);
-        assert!(b.add(&vec![7; 100_000], 100_000, Traffic::Data));
+        assert!(b.add(&vec![7; 100_000], 100_000, Traffic::Data, false));
         assert!(b.stats().bytes_size > INITIAL_SIZE);
         b.flush(INITIAL_MAX_SIZE, 10);
         let s = *b.stats();
         // as C's: the statistics were taken before the ring shrank
         assert_eq!((s.bytes_size, s.bytes_max_size, s.recreates, s.adds, s.bytes_outstanding), (131_072, INITIAL_MAX_SIZE, 1, 0, 0));
-        assert!(b.add(b"x", 1, Traffic::Data));
+        assert!(b.add(b"x", 1, Traffic::Data, false));
         assert_eq!(b.stats().bytes_size, INITIAL_SIZE);
         b.del(1, 11);
         assert_eq!(b.last_flush_ut(), 10);
@@ -341,5 +349,88 @@ mod tests {
         assert_eq!(b.stats().recreates, 1);
         b.recreate_timed(10 + RECREATE_EVERY_UT, false);
         assert_eq!(b.stats().recreates, 2);
+    }
+
+    /// A receiver's buffer after `adds` of `added` bytes: what its statistics say.
+    fn stats(adds: usize, added: usize, size: usize, max: usize, outstanding: usize, available: usize) -> Stats {
+        Stats {
+            adds,
+            bytes_added: added,
+            bytes_uncompressed: added,
+            bytes_size: size,
+            bytes_max_size: max,
+            bytes_outstanding: outstanding,
+            bytes_available: available,
+            buffer_ratio: (max - available) as f64 * 100.0 / max as f64,
+            bytes_sent_by_type: [0, 0, added, 0],
+            ..Stats::default()
+        }
+    }
+
+    /// `stream_circular_buffer_add_unsafe()` with autoscale against `cbuffer_add_unsafe()`: data of exactly the free
+    /// space are refused with the maximum unscaled, one byte less fits, one byte more doubles the maximum first.
+    #[test]
+    fn autoscale_doubles_the_maximum_but_not_for_an_exact_fit() {
+        let fill = INITIAL_MAX_SIZE - 4096;
+        let filled = || {
+            let mut b = CircularBuffer::default();
+            assert!(b.add(&vec![0; fill], fill, Traffic::Metadata, true));
+            assert_eq!(*b.stats(), stats(1, fill, INITIAL_MAX_SIZE, INITIAL_MAX_SIZE, fill, 4096));
+            b
+        };
+        let mut b = filled();
+        assert!(!b.add(&[0; 4096], 4096, Traffic::Metadata, true));
+        // counted, but the sizes are the first add's
+        let counted = stats(2, fill + 4096, INITIAL_MAX_SIZE, INITIAL_MAX_SIZE, fill, 4096);
+        assert_eq!(*b.stats(), counted);
+        assert!(b.add(&[0; 4095], 4095, Traffic::Metadata, true));
+        assert_eq!(*b.stats(), stats(3, fill + 8191, INITIAL_MAX_SIZE, INITIAL_MAX_SIZE, fill + 4095, 1));
+        let mut b = filled();
+        assert!(b.add(&[0; 4097], 4097, Traffic::Metadata, true));
+        let doubled = 2 * INITIAL_MAX_SIZE;
+        assert_eq!(*b.stats(), stats(2, fill + 4097, doubled, doubled, 10_485_761, 10_485_759));
+        assert_eq!(b.used_percent(), 50);
+    }
+
+    /// The doubling runs before the add: data of twice the maximum are refused, the maximum stays doubled, and the
+    /// next add fits under it. Without autoscale (the sender's) nothing grows.
+    #[test]
+    fn a_refused_autoscaled_add_keeps_its_doubled_maximum() {
+        let doubled = 2 * INITIAL_MAX_SIZE;
+        let mut b = CircularBuffer::default();
+        assert!(!b.add(&vec![0; doubled], doubled, Traffic::Metadata, true));
+        assert_eq!(*b.stats(), stats(1, doubled, INITIAL_SIZE, doubled, 0, doubled));
+        assert!(b.add(&vec![0; doubled - 1], doubled - 1, Traffic::Metadata, true));
+        assert_eq!(b.stats().bytes_max_size, doubled);
+        let mut b = CircularBuffer::default();
+        assert!(!b.add(&vec![0; INITIAL_MAX_SIZE], INITIAL_MAX_SIZE, Traffic::Data, false));
+        assert_eq!(b.stats().bytes_max_size, INITIAL_MAX_SIZE);
+    }
+
+    /// The numbers C's receiver records read off a wrapped, grown ring: the first contiguous chunk as "used" or
+    /// "pending", the free space and the percentage under the grown maximum, the sends.
+    #[test]
+    fn a_wrapped_grown_ring_reports_as_cs() {
+        let mut b = CircularBuffer::default();
+        let add = |b: &mut CircularBuffer, n: usize| b.add(&vec![0; n], n, Traffic::Replication, true);
+        assert!(add(&mut b, 8_388_608));
+        b.del(8_388_608, 1);
+        assert!(add(&mut b, 4_194_304));
+        let sizes = |s: &Stats| (s.bytes_size, s.bytes_max_size, s.bytes_outstanding, s.bytes_available);
+        let wrapped = (INITIAL_MAX_SIZE, INITIAL_MAX_SIZE, 2_097_152, 6_291_456);
+        assert_eq!(sizes(b.stats()), wrapped);
+        // the exact fit: what the overflow record prints
+        assert!(!add(&mut b, 6_291_456));
+        assert_eq!(sizes(b.stats()), wrapped);
+        assert!(add(&mut b, 6_291_457));
+        assert_eq!(b.stats().bytes_outstanding, 10_485_761);
+        b.del(10_485_761, 2);
+        assert!(add(&mut b, 12_000_000));
+        let s = *b.stats();
+        assert_eq!(
+            (s.bytes_size, s.bytes_max_size, s.bytes_outstanding, s.bytes_available, s.bytes_sent, s.sends),
+            (2 * INITIAL_MAX_SIZE, 2 * INITIAL_MAX_SIZE, 10_485_759, 8_971_520, 18_874_369, 2)
+        );
+        assert_eq!(format!("{:.2}", s.buffer_ratio), "57.22");
     }
 }
