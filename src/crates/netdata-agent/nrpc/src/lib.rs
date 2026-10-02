@@ -202,10 +202,12 @@ fn key(name: &[u8]) -> Vec<u8> {
     nrpc_sanitize_name(name, name.len() + 1)
 }
 
-/// `nrpc_sanitize_name_dupz()`: a command sanitized with room for hex expansions, within `FUNCTION_MAX`.
+/// `nrpc_sanitize_name_dupz()`: a command sanitized with room for hex expansions, within `FUNCTION_MAX`. As C's, only
+/// the output is bounded (by the first `FUNCTION_MAX` bytes' length): the input is read until the output is full, so
+/// a run of spaces past `FUNCTION_MAX` collapses and what follows it still counts.
 pub fn sanitize_command(cmd: &[u8]) -> Vec<u8> {
-    let cmd = &cmd[..cmd.len().min(FUNCTION_MAX)];
-    nrpc_sanitize_name(cmd, (cmd.len() * 2).min(FUNCTION_MAX) + 1)
+    let len = cmd.len().min(FUNCTION_MAX);
+    nrpc_sanitize_name(cmd, (len * 2).min(FUNCTION_MAX) + 1)
 }
 
 /// `struct nrpc_registry`: the functions of one host in registration order (a re-registration keeps its place), the

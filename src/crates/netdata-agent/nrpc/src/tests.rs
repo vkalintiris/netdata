@@ -167,6 +167,9 @@ fn names_and_commands_are_sanitized_with_cs_sizes() {
     assert_eq!(sanitize_command(b"a\xff"), b"aff");
     // spaces collapse, double quotes become single ones
     assert_eq!(sanitize_command(b"top  \"x\""), b"top 'x'");
+    // only the output is bounded: what follows a long run of spaces still counts (nrpc-internals.h:275-284)
+    let long = [&b"fn"[..], &[b' '; FUNCTION_MAX + 4][..], b"arg"].concat();
+    assert_eq!(sanitize_command(&long), b"fn arg");
 }
 
 /// The catalogs: every filter skips what is unavailable; users see no DynCfg and nothing restricted; a parent sees
