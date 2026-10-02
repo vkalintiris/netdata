@@ -1,6 +1,7 @@
-//! The sender's output buffer (`src/streaming/stream-circular-buffer.c`) over libnetdata's ring
-//! (`src/libnetdata/circular_buffer/circular_buffer.c`), with C's growth, capacity, contiguous chunks and statistics:
-//! the sizes appear in records. Map: `knowledge/map-m7-commit4-runtime.md` §1.
+//! A stream connection's output buffer (`src/streaming/stream-circular-buffer.c`), a sender's to its parent and a
+//! receiver's to its child, over libnetdata's ring (`src/libnetdata/circular_buffer/circular_buffer.c`), with C's
+//! growth, capacity, contiguous chunks and statistics: the sizes appear in records. Map:
+//! `knowledge/map-m7-commit4-runtime.md` §1.
 
 /// `CBUFFER_INITIAL_SIZE`.
 pub const INITIAL_SIZE: usize = 16 * 1024;
@@ -11,7 +12,7 @@ pub const ADAPT_TO_TIMES_MAX_SIZE: usize = 3;
 /// How long a drained buffer keeps a grown ring before it shrinks back (`recreate_timed`).
 const RECREATE_EVERY_UT: u64 = 300 * 1_000_000;
 
-pub use netdata_agent_rrd::upstream::Traffic;
+pub use crate::upstream::Traffic;
 
 /// `STREAM_CIRCULAR_BUFFER_STATS`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

@@ -4,8 +4,8 @@
 //! `knowledge/map-m7-commit4-runtime.md` §2.
 
 use netdata_agent_log::{ErrorLimit, Priority, Source, nd_log, nd_log_limit};
+use netdata_agent_rrd::stream_buffer::{ADAPT_TO_TIMES_MAX_SIZE, Traffic};
 
-use super::buffer::{ADAPT_TO_TIMES_MAX_SIZE, Traffic};
 use super::{Out, Sender, op};
 use crate::caps;
 use crate::compress::{Compressor, next_piece};

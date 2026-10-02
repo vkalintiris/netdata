@@ -18,6 +18,7 @@ pub mod retention;
 pub mod status;
 pub mod storage;
 pub mod stream_control;
+pub mod stream_buffer;
 pub mod stream_path;
 pub mod system_info;
 #[cfg(any(test, feature = "testing"))]

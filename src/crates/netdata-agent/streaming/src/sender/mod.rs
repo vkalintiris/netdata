@@ -11,15 +11,15 @@ use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::{Host, StreamSend, sender_flags};
 use netdata_agent_rrd::upstream::Upstream;
 use netdata_agent_rrd::pulse::host_status;
+use netdata_agent_rrd::stream_buffer::CircularBuffer;
 
-pub mod buffer;
 mod commit;
 pub(crate) mod dispatch;
 mod execute;
 mod hooks;
 pub(crate) use hooks::send_node_and_claim_id_to_child;
 
-pub use buffer::Traffic;
+pub use netdata_agent_rrd::upstream::Traffic;
 
 use crate::caps;
 use crate::compress::Compressor;
@@ -122,7 +122,7 @@ pub(crate) struct Ops {
 
 /// What the commit lock guards (`stream_sender_lock()` around `s->scb`, `s->thread.compressor` and `s->thread.msg`).
 pub(crate) struct Out {
-    pub buffer: buffer::CircularBuffer,
+    pub buffer: CircularBuffer,
     pub compressor: Option<Compressor>,
     /// `s->thread.compressor.algorithm`, which stays when a set up fails.
     pub algorithm: Option<Algorithm>,
@@ -234,7 +234,7 @@ impl Sender {
             ssl_parent: AtomicBool::new(parents.any_ssl()),
             parents: Mutex::new(parents),
             out: Mutex::new(Out {
-                buffer: buffer::CircularBuffer::default(),
+                buffer: CircularBuffer::default(),
                 compressor: None,
                 algorithm: None,
                 levels: connector.settings.compression_levels,

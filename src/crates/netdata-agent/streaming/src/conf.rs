@@ -7,6 +7,7 @@ use std::path::Path;
 
 use netdata_agent_inicfg::{Config, load_errno};
 use netdata_agent_log::{Priority, Source, nd_log};
+use netdata_agent_rrd::stream_buffer::INITIAL_MAX_SIZE;
 use netdata_agent_text::duration::duration_parse;
 use netdata_agent_text::parse::str2ndd;
 use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatternMode};
@@ -16,8 +17,6 @@ use crate::caps;
 const SECTION_STREAM: &str = "stream";
 const SECTION_DB: &str = "db";
 
-/// `CBUFFER_INITIAL_MAX_SIZE`.
-const CBUFFER_INITIAL_MAX_SIZE: u64 = 10 * 1024 * 1024;
 /// `SENDER_MIN_RECONNECT_DELAY`.
 const SENDER_MIN_RECONNECT_DELAY: i64 = 5;
 /// `MAX_REPLICATION_THREADS` and `MAX_REPLICATION_PREFETCH`.
@@ -95,7 +94,7 @@ impl Default for Send {
             api_key: String::new(),
             send_charts_matching: String::new(),
             initial_clock_resync_iterations: 60,
-            buffer_max_size: CBUFFER_INITIAL_MAX_SIZE,
+            buffer_max_size: INITIAL_MAX_SIZE as u64,
             replication_threads: 0,
             replication_prefetch: 0,
             default_port: 19999,
