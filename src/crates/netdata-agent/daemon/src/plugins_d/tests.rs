@@ -311,3 +311,69 @@ fn a_refused_line_or_a_cancellation_sends_quit() {
         ]
     );
 }
+
+/// C's run end (`pluginsd_process()`, `pluginsd_parser.c:1551-1552`): `nrpc_serving_finished()` before the parser's
+/// cleanup, so a call still pending, answered by the cleanup's 503, finds its method already unavailable; the run's
+/// methods stay so.
+#[test]
+fn a_runs_end_retires_its_functions_before_answering_their_calls() {
+    use netdata_agent_nrpc::call::{CallSpec, Calls};
+    use netdata_agent_nrpc::reply::{ContentType, Reply};
+    let hosts = hosts();
+    let mut w = worker(&hosts);
+    let (mut input, mut plugin_out) = pipe();
+    let (mut plugin_in, output) = pipe();
+    let output = PluginWire::new(Some(output));
+    plugin_out.write_all(b"FUNCTION GLOBAL \"f\" 10 \"help\" \"top\" \"0x0\" 100 0\n").unwrap();
+    let localhost = Arc::clone(hosts.localhost());
+    let (answered, answer) = std::sync::mpsc::channel();
+    // a call while the run lasts, still pending when the thread is cancelled
+    let caller = {
+        let (localhost, state) = (Arc::clone(&localhost), Arc::clone(&w.state));
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            while !localhost.functions().available(b"f") && started.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let (host, hostname) = (Arc::clone(&localhost), localhost.hostname());
+            let called = Calls::process().call(CallSpec {
+                owner: Some((localhost.functions(), &hostname)),
+                cmd: b"f",
+                source: b"test",
+                user_access: 0,
+                timeout_s: 0,
+                wait: false,
+                allow_restricted: false,
+                call_id: None,
+                payload: None,
+                reply: Reply::new(ContentType::TextPlain),
+                done: Some(Box::new(move |reply, code| {
+                    let body = String::from_utf8_lossy(&reply.body).into_owned();
+                    let _ = answered.send((code, host.functions().available(b"f"), body));
+                })),
+                progress: None,
+                is_cancelled: None,
+            });
+            state.cancelled.store(true, Ordering::Release);
+            called.code
+        })
+    };
+    let _ = w.process(&mut input, &output);
+    let accepted = caller.join().unwrap();
+    drop(WireClose(output));
+    drop(plugin_out);
+    let mut sent = Vec::new();
+    std::io::Read::read_to_end(&mut plugin_in, &mut sent).unwrap();
+    assert_eq!(accepted, 200);
+    assert!(sent.starts_with(b"FUNCTION ") && sent.ends_with(b"QUIT"), "{}", String::from_utf8_lossy(&sent));
+    assert_eq!(
+        answer.recv_timeout(Duration::from_secs(10)).unwrap(),
+        (
+            503,
+            false,
+            r#"{"status":503,"errorMessage":"The plugin that was servicing this request, exited before responding."}"#
+                .to_string()
+        )
+    );
+    assert!(!localhost.functions().available(b"f"));
+}

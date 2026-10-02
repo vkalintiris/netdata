@@ -2369,6 +2369,44 @@ mod tests {
         assert_eq!(*r.calls.lock().unwrap(), vec![("receiver_left", -19), ("parents_reset", -19)]);
     }
 
+    /// The receiver epochs (`stream-receiver.c:1400`, `:1472`): an attach retires what the host registered before it
+    /// (`object_state_activate_if_not_activated()`), the attached receiver's detach retires what its child registered
+    /// (`object_state_deactivate()`), and the detach of a receiver that is not the attached one changes nothing
+    /// (R61-12); a retired method stays registered.
+    #[test]
+    fn a_receivers_attach_and_detach_retire_the_hosts_functions() {
+        let host = Host::new("5a1e0000-0000-4000-8000-0000000000cb", false, info("child"));
+        let register = |name: &'static [u8]| {
+            let desc = MethodDesc {
+                name,
+                help: b"h",
+                tags: b"",
+                timeout_s: 10,
+                priority: 0,
+                version: 0,
+                access: 0,
+                sync: false,
+                source: nrpc::Source::Stream,
+                handler: nrpc::Handler::Unwired,
+            };
+            host.register_function(&desc).unwrap();
+        };
+        let available = |name: &[u8]| host.functions().available(name);
+        let slot = || Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        register(b"before");
+        assert!(available(b"before"));
+        let attached = slot();
+        assert_eq!(host.set_receiver(Arc::clone(&attached)), Attach::Attached);
+        assert!(!available(b"before"), "the attach starts a new epoch");
+        register(b"child");
+        assert!(available(b"child"));
+        host.clear_receiver(&slot(), 0);
+        assert!(available(b"child"), "a receiver that is not the attached one");
+        host.clear_receiver(&attached, 0);
+        assert!(!available(b"child"), "the attached receiver's detach");
+        assert!(host.functions().get(b"child").is_some() && host.functions().get(b"before").is_some());
+    }
+
     /// A sender whose parents reset waits until released, as `Sender::parents_reset` waits for the parents lock an
     /// attempt holds across its connect.
     #[derive(Debug, Default)]

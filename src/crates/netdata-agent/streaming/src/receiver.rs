@@ -1884,6 +1884,57 @@ mod tests {
         assert!(texts.iter().any(|t| t.contains("CLOSED BY REMOTE END")), "{texts:?}");
     }
 
+    /// A child's functions follow its receiver (`stream-receiver.c:1400`, `:1472`): what the child registers over its
+    /// connection is available while the connection lasts and unavailable once it ends; a receiver that is not the
+    /// attached one leaving changes nothing (R61-12); the next attach retires what the host registered before it.
+    #[test]
+    fn a_childs_functions_follow_its_receiver() {
+        use std::io::Write;
+        let (mut s, pool, hosts, connector) = stepper();
+        let (attached, host, _, mut theirs) = child(0xd5, crate::caps::V2, &pool, &hosts, &connector);
+        s.with(|w, cx| w.attach(cx, attached));
+        theirs.write_all(b"FUNCTION GLOBAL \"f\" 10 \"help\" \"top\" \"0x0\" 100 0\n").unwrap();
+        for _ in 0..20 {
+            if host.functions().get(b"f").is_some() {
+                break;
+            }
+            s.turn(Duration::from_millis(50));
+        }
+        let available = || host.functions().available(b"f");
+        assert!(available(), "registered by the child");
+        let slot = || Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        host.clear_receiver(&slot(), 0);
+        assert!(available(), "a receiver that is not the attached one left");
+        drop(theirs);
+        for _ in 0..20 {
+            if host.receiver().is_none() {
+                break;
+            }
+            let _ = netdata_agent_log::capture(|| s.turn(Duration::from_millis(50)));
+        }
+        assert!(host.receiver().is_none());
+        assert!(!available(), "the child's connection ended");
+        // registered while no receiver is attached
+        let desc = netdata_agent_nrpc::MethodDesc {
+            name: b"f",
+            help: b"help",
+            tags: b"",
+            timeout_s: 10,
+            priority: 0,
+            version: 0,
+            access: 0,
+            sync: false,
+            source: netdata_agent_nrpc::Source::Stream,
+            handler: netdata_agent_nrpc::Handler::Unwired,
+        };
+        host.register_function(&desc).unwrap();
+        assert!(available());
+        let again = slot();
+        assert_eq!(host.set_receiver(Arc::clone(&again)), Attach::Attached);
+        assert!(!available(), "the attach starts a new epoch");
+        host.clear_receiver(&again, 0);
+    }
+
     /// A sender that notes, when told its receiver left, whether the host is still pinned to its thread.
     #[derive(Debug)]
     struct PinProbe {

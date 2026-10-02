@@ -423,6 +423,41 @@ fn the_host_metadata_goes_when_the_sender_can_take_it() {
     assert!(recorder.take().iter().all(|(t, _)| *t == Traffic::Data));
 }
 
+/// The functions' re-list (`stream_send_global_functions()`, `nrpc_catalog_render_global_functions()`,
+/// `nrpc-catalog.c:159-171`): the queued removals go as FUNCTION_DEL only to a parent that takes it, and the queue is
+/// emptied either way, so a later parent that takes it gets no stale removal; only the available methods go, not one
+/// whose serving thread finished.
+#[test]
+fn the_functions_go_again_with_the_removals_the_parent_takes() {
+    let (host, recorder) = streaming("*", PLAIN);
+    ready(&host);
+    let desc = |name: &'static [u8]| MethodDesc {
+        name,
+        help: b"h",
+        tags: b"",
+        timeout_s: 10,
+        priority: 0,
+        version: 3,
+        access: 0,
+        sync: false,
+        source: NrpcSource::Stream,
+        handler: netdata_agent_nrpc::Handler::Unwired,
+    };
+    host.register_function(&desc(b"f")).unwrap();
+    host.register_function(&desc(b"gone")).unwrap();
+    std::thread::scope(|s| s.spawn(|| host.register_function(&desc(b"ended")).unwrap()).join().unwrap());
+    assert!(matches!(host.unregister_function(b"gone", NrpcSource::Stream), netdata_agent_nrpc::Unregistered::Removed { .. }));
+    let f = (Traffic::Metadata, "FUNCTION GLOBAL \"f\" 10 \"h\" \"top\" 0x0 100 3\n".to_string());
+    send_global_functions(&host);
+    assert_eq!(recorder.take(), std::slice::from_ref(&f), "the available methods, no FUNCTION_DEL without the capability");
+    recorder.capabilities.store(PLAIN | caps::FUNCTION_DEL, Ordering::Relaxed);
+    send_global_functions(&host);
+    assert_eq!(recorder.take(), [f], "the removal was dropped with the first re-list");
+    host.unregister_function(b"f", NrpcSource::Stream);
+    send_global_functions(&host);
+    assert_eq!(recorder.take(), [(Traffic::Metadata, "FUNCTION_DEL GLOBAL \"f\"\n".to_string())]);
+}
+
 /// A chart variable that changed goes with the chart's next data, after its points.
 #[test]
 fn a_changed_chart_variable_goes_with_the_next_data() {

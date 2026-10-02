@@ -269,6 +269,53 @@ fn a_wait_answers_times_out_or_is_cancelled() {
     assert!(lock(&calls.table).is_empty());
 }
 
+/// A wait reads its deadline again at each pass (`nrpc-calls.c:392-393`): a progress at 0.5 s moves a 1 s call's
+/// deadline to 10.5 s, so an answer at 3 s is the caller's, not a timeout.
+#[test]
+fn a_waits_deadline_follows_its_progress() {
+    let (calls, now) = calls();
+    let r = Registry::default();
+    let held = Arc::new(Held::default());
+    register(&r, b"slow", Handler::Transport(Arc::clone(&held) as Arc<dyn Transport>), |d| d.timeout_s = 1);
+    // the waiter's passes, counted where it asks whether its caller left
+    let passes = Arc::new(AtomicU64::new(0));
+    let returned = Arc::new(AtomicBool::new(false));
+    let answering = std::thread::spawn({
+        let (calls, now, held, passes, returned) =
+            (Arc::clone(&calls), Arc::clone(&now), Arc::clone(&held), Arc::clone(&passes), Arc::clone(&returned));
+        move || {
+            let req = loop {
+                if let Some(req) = lock(&held.requests).pop() {
+                    break req;
+                }
+                std::thread::yield_now();
+            };
+            let start = now.load(Ordering::Relaxed);
+            now.store(start + 500_000, Ordering::Relaxed);
+            calls.progress(req.call.key());
+            now.store(start + 3_000_000, Ordering::Relaxed);
+            // past the first deadline and its grace: the waiter looks at the clock again before the answer comes
+            let seen = passes.load(Ordering::SeqCst);
+            while passes.load(Ordering::SeqCst) == seen && !returned.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            let mut reply = req.reply;
+            reply.body = b"rows".to_vec();
+            (req.done)(reply, 200);
+        }
+    });
+    let counted = Arc::clone(&passes);
+    let is_cancelled: IsCancelled = Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        false
+    });
+    let called = calls.call(CallSpec { wait: true, is_cancelled: Some(is_cancelled), ..spec(&r, b"slow") });
+    returned.store(true, Ordering::SeqCst);
+    answering.join().unwrap();
+    assert_eq!((called.code, called.reply.map(|r| r.body)), (200, Some(b"rows".to_vec())));
+    assert!(lock(&calls.table).is_empty());
+}
+
 /// A transport whose cancel hook answers the call it holds: the answer lands while the waiter cancels.
 struct AnswersOnCancel {
     me: std::sync::Weak<AnswersOnCancel>,

@@ -771,11 +771,15 @@ mod tests {
         200
     }
 
-    /// `execute_commands_function()` (D147.1): a parent's FUNCTION and FUNCTION_PAYLOAD run on this host's methods and
-    /// their answers go up as the parent's transactions; an unknown one gets C's 404.
-    #[test]
-    fn a_parents_call_is_run_and_answered() {
-        use std::io::Write;
+    /// A sender of `host` dispatched on a stream thread driven one turn at a time, with `capabilities` negotiated, and
+    /// its parent's end of the link; the connector, localhost (which the connector holds weakly) and the pool are kept.
+    struct Linked {
+        s: Stepper<StreamWorker>,
+        theirs: mio::net::UnixStream,
+        _kept: (Arc<Connector>, Arc<Host>, Pool<crate::thread::StreamMsg>),
+    }
+
+    fn linked(host: &Arc<Host>, capabilities: u32) -> Linked {
         let pins = Arc::new(Mutex::new(Pins::new(1)));
         let pool = Pool::spawn(1, 256 * 1024, |i| format!("TEST[{i}]"), |_| StreamWorker::new(Arc::clone(&pins), 1))
             .unwrap();
@@ -783,31 +787,12 @@ mod tests {
         let local = Local { host_id: [0xaa; 16], user_agent: "t/1".into(), update_every: 1 };
         let c = Connector::new(Settings::of(&Send::default()), local, &localhost, pool.handle(), Arc::clone(&pins), 256 * 1024);
         let mut s = Stepper::new(0, StreamWorker::new(Arc::clone(&pins), 1)).unwrap();
-        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000ca", false, info("127.0.0.1:1", "key")));
-        host.set_collector_online();
-        host.functions()
-            .register(
-                "child",
-                &netdata_agent_nrpc::MethodDesc {
-                    name: b"echo",
-                    help: b"help",
-                    tags: b"",
-                    timeout_s: 10,
-                    priority: 0,
-                    version: 0,
-                    access: 0,
-                    sync: true,
-                    source: netdata_agent_nrpc::Source::Daemon,
-                    handler: netdata_agent_nrpc::Handler::Builtin(echo),
-                },
-            )
-            .unwrap();
-        let sender = Sender::attach(&host, &c).expect("created");
-        let (ours, mut theirs) = mio::net::UnixStream::pair().unwrap();
+        let sender = Sender::attach(host, &c).expect("created");
+        let (ours, theirs) = mio::net::UnixStream::pair().unwrap();
         let connected = Connected {
             sender,
             link: Link::Plain(Conn::Unix(ours)),
-            capabilities: caps::FUNCTIONS,
+            capabilities,
             compressor: None,
             remote_ip: "127.0.0.1".into(),
             thread: 0,
@@ -816,39 +801,167 @@ mod tests {
             w.queued_senders.push(connected);
             w.dequeue_senders(cx);
         });
-        let exchange = |s: &mut Stepper<StreamWorker>, theirs: &mut mio::net::UnixStream, down: &str| {
-            theirs.write_all(down.as_bytes()).unwrap();
+        Linked { s, theirs, _kept: (c, localhost, pool) }
+    }
+
+    impl Linked {
+        /// What came up in up to 20 turns after the parent sent `down`, until an answer ends.
+        fn exchange(&mut self, down: &str) -> String {
+            use std::io::Write;
+            self.theirs.write_all(down.as_bytes()).unwrap();
             let mut got = String::new();
             for _ in 0..20 {
-                let _ = netdata_agent_log::capture(|| s.turn(Duration::from_millis(10)));
-                s.with(|w, cx| w.drain_inline(cx));
-                got.push_str(&received(theirs));
+                let _ = netdata_agent_log::capture(|| self.s.turn(Duration::from_millis(10)));
+                self.s.with(|w, cx| w.drain_inline(cx));
+                got.push_str(&received(&mut self.theirs));
                 if got.contains("FUNCTION_RESULT_END") {
                     break;
                 }
             }
             got
+        }
+    }
+
+    /// A method of this host for the calls below.
+    fn register(host: &Host, name: &'static [u8], timeout_s: i32, handler: netdata_agent_nrpc::Handler) {
+        let sync = matches!(handler, netdata_agent_nrpc::Handler::Builtin(_));
+        let desc = netdata_agent_nrpc::MethodDesc {
+            name,
+            help: b"help",
+            tags: b"",
+            timeout_s,
+            priority: 0,
+            version: 0,
+            access: 0,
+            sync,
+            source: netdata_agent_nrpc::Source::Daemon,
+            handler,
         };
-        let _ = exchange(&mut s, &mut theirs, "");
+        host.functions().register("child", &desc).unwrap();
+    }
+
+    /// A transport of this host that holds its calls for the test to answer.
+    #[derive(Default)]
+    struct Held(Mutex<Vec<netdata_agent_nrpc::call::Request>>);
+
+    impl netdata_agent_nrpc::Transport for Held {
+        fn dispatch(&self, req: netdata_agent_nrpc::call::Request) -> u16 {
+            self.0.lock().unwrap().push(req);
+            200
+        }
+    }
+
+    impl Held {
+        fn take(&self) -> netdata_agent_nrpc::call::Request {
+            self.0.lock().unwrap().pop().expect("a call")
+        }
+    }
+
+    /// `execute_commands_function()` (D147.1): a parent's FUNCTION and FUNCTION_PAYLOAD run on this host's methods and
+    /// their answers go up as the parent's transactions; an unknown one gets C's 404.
+    #[test]
+    fn a_parents_call_is_run_and_answered() {
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000ca", false, info("127.0.0.1:1", "key")));
+        host.set_collector_online();
+        register(&host, b"echo", 10, netdata_agent_nrpc::Handler::Builtin(echo));
+        let mut l = linked(&host, caps::FUNCTIONS);
+        let _ = l.exchange("");
         let tx = "5a1e00000000400080000000000000f5";
-        let got = exchange(&mut s, &mut theirs, &format!("FUNCTION {tx} 10 \"echo  now\" \"0x13\" \"method=api\"\n"));
+        let got = l.exchange(&format!("FUNCTION {tx} 10 \"echo  now\" \"0x13\" \"method=api\"\n"));
         assert!(
             got.starts_with(&format!("FUNCTION_RESULT_BEGIN \"{tx}\" 200 \"application/json\" 0\necho now from method=api\nFUNCTION_RESULT_END\n")),
             "{got:?}"
         );
-        let got = exchange(
-            &mut s,
-            &mut theirs,
-            &format!("FUNCTION_PAYLOAD {tx} 10 \"echo\" \"0x0\" \"src\" \"application/json\"\n{{\"a\":1}}\nFUNCTION_PAYLOAD_END\n"),
-        );
+        let got = l.exchange(&format!(
+            "FUNCTION_PAYLOAD {tx} 10 \"echo\" \"0x0\" \"src\" \"application/json\"\n{{\"a\":1}}\nFUNCTION_PAYLOAD_END\n"
+        ));
         assert!(
             got.contains("\necho from src application/json {\"a\":1}\n\nFUNCTION_RESULT_END\n"),
             "{got:?}"
         );
-        let got = exchange(&mut s, &mut theirs, &format!("FUNCTION {tx} 10 \"nothing\" \"0x0\" \"src\"\n"));
+        let got = l.exchange(&format!("FUNCTION {tx} 10 \"nothing\" \"0x0\" \"src\"\n"));
         assert!(
             got.contains(r#" 404 "application/json" "#)
                 && got.contains(r#"{"status":404,"errorMessage":"This feature is not available on this host at this time."}"#),
+            "{got:?}"
+        );
+    }
+
+    /// `execute_commands_function()`'s call (`stream-sender-execute.c:68-91`): a parent may call a restricted method;
+    /// a timeout that is not positive is 10 s, not the method's; the answer goes up under the transaction exactly as the
+    /// parent sent it (`:20-22`), its call id parsed from it.
+    #[test]
+    fn a_parents_call_may_be_restricted_and_is_answered_as_sent() {
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000cc", false, info("127.0.0.1:1", "key")));
+        host.set_collector_online();
+        let held = Arc::new(Held::default());
+        register(&host, b"__hidden", 10, netdata_agent_nrpc::Handler::Builtin(echo));
+        register(&host, b"slow", 30, netdata_agent_nrpc::Handler::Transport(Arc::clone(&held) as _));
+        let mut l = linked(&host, caps::FUNCTIONS);
+        let _ = l.exchange("");
+        let tx = "5A1E0000-0000-4000-8000-0000000000F6";
+        let got = l.exchange(&format!("FUNCTION {tx} 10 \"__hidden\" \"0x0\" \"src\"\n"));
+        assert_eq!(got, format!("FUNCTION_RESULT_BEGIN \"{tx}\" 200 \"application/json\" 0\n__hidden from src\nFUNCTION_RESULT_END\n"));
+        let before = now_monotonic_usec();
+        let _ = l.exchange("FUNCTION 5a1e00000000400080000000000000f9 0 \"slow\" \"0x0\" \"src\"\n");
+        let after = now_monotonic_usec();
+        let req = held.take();
+        assert_eq!(req.call.key(), "5a1e00000000400080000000000000f9");
+        let deadline = req.call.deadline_ut();
+        assert!((before + 10_000_000..=after + 10_000_000).contains(&deadline), "{before} {deadline} {after}");
+        (req.done)(req.reply, 200);
+    }
+
+    /// The plugin's progress goes up only to a parent that takes PROGRESS (`stream-sender-execute.c:93-97`), as
+    /// `FUNCTION_PROGRESS '<call id, compact>' <done> <all>` (`:41-52`), ahead of the answer.
+    #[test]
+    fn a_calls_progress_goes_up_only_to_a_parent_that_takes_it() {
+        let held = Arc::new(Held::default());
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000cd", false, info("127.0.0.1:1", "key")));
+        host.set_collector_online();
+        register(&host, b"slow", 10, netdata_agent_nrpc::Handler::Transport(Arc::clone(&held) as _));
+        let mut l = linked(&host, caps::FUNCTIONS | caps::PROGRESS);
+        let _ = l.exchange("");
+        let tx = "5A1E0000-0000-4000-8000-0000000000F7";
+        let _ = l.exchange(&format!("FUNCTION {tx} 10 \"slow\" \"0x0\" \"src\"\n"));
+        let req = held.take();
+        (req.progress.as_ref().expect("the parent takes PROGRESS"))(&req.call_id, 5, 10);
+        let mut reply = req.reply;
+        reply.body = b"rows".to_vec();
+        (req.done)(reply, 200);
+        assert_eq!(
+            l.exchange(""),
+            format!(
+                "FUNCTION_PROGRESS '5a1e00000000400080000000000000f7' 5 10\nFUNCTION_RESULT_BEGIN \"{tx}\" 200 \"text/plain\" 0\nrows\nFUNCTION_RESULT_END\n"
+            )
+        );
+        let other = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000ce", false, info("127.0.0.1:1", "key")));
+        other.set_collector_online();
+        register(&other, b"slow", 10, netdata_agent_nrpc::Handler::Transport(Arc::clone(&held) as _));
+        let mut l = linked(&other, caps::FUNCTIONS);
+        let _ = l.exchange("");
+        let _ = l.exchange("FUNCTION 5a1e00000000400080000000000000f8 10 \"slow\" \"0x0\" \"src\"\n");
+        let req = held.take();
+        assert!(req.progress.is_none(), "a parent without PROGRESS");
+        (req.done)(req.reply, 200);
+    }
+
+    /// An answer goes up only while the host's metadata may stream (`stream-sender-execute.c:17`): none while its
+    /// collector is offline, the sender connected.
+    #[test]
+    fn a_parents_call_is_answered_only_while_the_hosts_metadata_may_stream() {
+        let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000cf", false, info("127.0.0.1:1", "key")));
+        register(&host, b"echo", 10, netdata_agent_nrpc::Handler::Builtin(echo));
+        let mut l = linked(&host, caps::FUNCTIONS);
+        let _ = l.exchange("");
+        let got = l.exchange("FUNCTION 5a1e00000000400080000000000000fa 10 \"echo\" \"0x0\" \"src\"\n");
+        assert!(!got.contains("FUNCTION_RESULT"), "{got:?}");
+        host.set_collector_online();
+        let got = l.exchange("FUNCTION 5a1e00000000400080000000000000fb 10 \"echo\" \"0x0\" \"src\"\n");
+        assert!(
+            got.starts_with(
+                "FUNCTION_RESULT_BEGIN \"5a1e00000000400080000000000000fb\" 200 \"application/json\" 0\necho from src\nFUNCTION_RESULT_END\n"
+            ),
             "{got:?}"
         );
     }
@@ -858,60 +971,39 @@ mod tests {
     /// sends both halves itself.
     #[test]
     fn the_tick_sends_a_hosts_paths_while_no_receiver_takes_them() {
-        let pins = Arc::new(Mutex::new(Pins::new(1)));
-        let pool = Pool::spawn(1, 256 * 1024, |i| format!("TEST[{i}]"), |_| StreamWorker::new(Arc::clone(&pins), 1))
-            .unwrap();
-        // the connector holds localhost weakly: the test keeps it
-        let localhost = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, info("", "")));
-        let local = Local { host_id: [0xaa; 16], user_agent: "t/1".into(), update_every: 1 };
-        let c = Connector::new(Settings::of(&Send::default()), local, &localhost, pool.handle(), Arc::clone(&pins), 256 * 1024);
-        let mut s = Stepper::new(0, StreamWorker::new(Arc::clone(&pins), 1)).unwrap();
         let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000c9", false, info("127.0.0.1:1", "key")));
-        let sender = Sender::attach(&host, &c).expect("created");
-        let (ours, mut theirs) = mio::net::UnixStream::pair().unwrap();
-        let connected = Connected {
-            sender,
-            link: Link::Plain(Conn::Unix(ours)),
-            capabilities: caps::PATHS,
-            compressor: None,
-            remote_ip: "127.0.0.1".into(),
-            thread: 0,
-        };
-        s.with(|w, cx| {
-            w.queued_senders.push(connected);
-            w.dequeue_senders(cx);
-        });
-        let tick = |s: &mut Stepper<StreamWorker>, theirs: &mut mio::net::UnixStream| {
-            s.with(|w, cx| {
+        let mut l = linked(&host, caps::PATHS);
+        let tick = |l: &mut Linked| {
+            l.s.with(|w, cx| {
                 w.tick_senders();
                 w.drain_inline(cx);
             });
-            let _ = netdata_agent_log::capture(|| s.turn(Duration::from_millis(20)));
-            received(theirs)
+            let _ = netdata_agent_log::capture(|| l.s.turn(Duration::from_millis(20)));
+            received(&mut l.theirs)
         };
-        let _ = tick(&mut s, &mut theirs);
+        let _ = tick(&mut l);
         // a vnode its plugin defines once the sender is ready
         host.set_virtual();
         host.set_collector_online();
         collect_first_at(&host, "t.a", 1_790_000_000);
-        let sent = tick(&mut s, &mut theirs);
+        let sent = tick(&mut l);
         assert!(sent.contains("JSON STREAM_PATH\n") && sent.contains(r#""first_time_t":1789999999,"#), "{sent:?}");
-        assert!(tick(&mut s, &mut theirs).is_empty(), "each change once");
+        assert!(tick(&mut l).is_empty(), "each change once");
         // the plugin's run ends: its changes owe nothing while it is offline
         host.virtual_offline();
         collect_first_at(&host, "t.b", 1_789_999_990);
-        assert!(!tick(&mut s, &mut theirs).contains("STREAM_PATH"), "offline");
+        assert!(!tick(&mut l).contains("STREAM_PATH"), "offline");
         // a child streaming its GUID: attached and online before its stream thread takes the changes, when C sends
         // the parent's half (the child's has no parser yet)
         let slot = Arc::new(ReceiverSlot::new(0, Default::default(), Default::default(), Box::new(|| {})));
         assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
         collect_first_at(&host, "t.c", 1_789_999_980);
-        let sent = tick(&mut s, &mut theirs);
+        let sent = tick(&mut l);
         assert!(sent.contains(r#""first_time_t":1789999979,"#), "{sent:?}");
         // then its thread takes them, both halves
         host.contexts().record_first_time_changes(Taker::Receiver, true);
         collect_first_at(&host, "t.d", 1_789_999_970);
-        assert!(!tick(&mut s, &mut theirs).contains("STREAM_PATH"), "the receiver's to send");
+        assert!(!tick(&mut l).contains("STREAM_PATH"), "the receiver's to send");
         assert_eq!(host.contexts().take_first_time_changes(Taker::Receiver), [1_789_999_969]);
         host.clear_receiver(&slot, 0);
     }
