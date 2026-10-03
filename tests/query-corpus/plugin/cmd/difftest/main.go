@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -207,6 +208,9 @@ func main() {
 			} else {
 				collect(rec, step.Collect)
 			}
+		case step.Values != nil:
+			rec.write(plugin.Record{Kind: "step", Step: "values"})
+			values(rec, dir, step.Values)
 		case step.Expect != nil:
 			e := step.Expect
 			re, err := regexp.Compile(e.Re)
@@ -420,6 +424,45 @@ func collect(rec *recorder, c *plugin.Collect) {
 			b.WriteString(c.AfterBlock + "\n")
 		}
 		emit(b.String())
+		rec.write(plugin.Record{Kind: "collected", Sec: next.Unix()})
+	}
+}
+
+// values writes the chart's definition, then one block per whole wall-clock second with the current phase's values,
+// until the process ends (plugin.Values).
+func values(rec *recorder, dir string, v *plugin.Values) {
+	var def strings.Builder
+	fmt.Fprintf(&def, "CHART %s '' 'title' 'units' 'family' '%s' line 1000 1 '' '' ''\n", v.Chart, v.Context)
+	for _, d := range v.Dims {
+		fmt.Fprintf(&def, "DIMENSION %s '' absolute 1 %d\n", d, max(v.Div, 1))
+	}
+	emit(def.String())
+	if len(v.Phases) == 0 {
+		return
+	}
+	phase, first := 0, true
+	for {
+		next := time.Now().Truncate(time.Second).Add(time.Second)
+		time.Sleep(time.Until(next))
+		for phase < len(v.Phases)-1 && v.Phases[phase].Until != "" {
+			if _, err := os.Stat(filepath.Join(dir, v.Phases[phase].Until)); err != nil {
+				break
+			}
+			phase, first = phase+1, true
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "BEGIN %s\n", v.Chart)
+		for _, d := range v.Dims {
+			if value, ok := v.Phases[phase].Set[d]; ok {
+				fmt.Fprintf(&b, "SET %s = %d\n", d, value)
+			}
+		}
+		fmt.Fprintf(&b, "END %d 0\n", next.Unix())
+		emit(b.String())
+		if first {
+			rec.write(plugin.Record{Kind: "phase", Step: strconv.Itoa(phase), Sec: next.Unix()})
+			first = false
+		}
 		rec.write(plugin.Record{Kind: "collected", Sec: next.Unix()})
 	}
 }

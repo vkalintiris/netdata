@@ -115,6 +115,19 @@ func TestNetdataConfRendering(t *testing.T) {
 			strings.Replace(strings.Replace(defaultNetdataConf, "    home = /r/lib\n",
 				"    stock config = /r/sc\n    stock data = /r/sd\n", 1), "    update every = 1\n", "    update every = 2\n", 1),
 		},
+		"health on, the script under the run directory": {
+			func(o *Options) {
+				o.HealthOn = true
+				o.HealthExtra = "    script to execute on alarm = {run}/notify/stub\n    run at least every = 1s\n"
+			},
+			strings.Replace(defaultNetdataConf, "[health]\n    enabled = no\n",
+				"[health]\n    enabled = yes\n    script to execute on alarm = /r/notify/stub\n    run at least every = 1s\n", 1),
+		},
+		"health extra with run, health off": {
+			func(o *Options) { o.HealthExtra = "    script to execute on alarm = {run}/x\n" },
+			strings.Replace(defaultNetdataConf, "[health]\n    enabled = no\n",
+				"[health]\n    enabled = no\n    script to execute on alarm = /r/x\n", 1),
+		},
 		"conf extra last": {
 			func(o *Options) {
 				o.HostLabels = "    a = b\n"
@@ -145,6 +158,37 @@ func TestPluginsExtraCannotEnableTemplatePlugins(t *testing.T) {
 		"    netdata pulse = yes\n": false, "    difftest = yes\n    check for new plugins every = 1\n": true}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("accepted: %v, want %v", got, want)
+	}
+}
+
+// Health's rails: HealthOn is the only switch (no `enabled` in HealthExtra, no [health] in ConfExtra), and it is refused
+// without a notifier script, whose default is the installed alarm-notify.sh.
+func TestHealthOnRails(t *testing.T) {
+	const script = "    script to execute on alarm = {run}/notify/stub\n"
+	cases := map[string]struct {
+		o    Options
+		want string // a part of the error; empty: accepted
+	}{
+		"off, no extra":             {Options{}, ""},
+		"off, other keys":           {Options{HealthExtra: "    run at least every = 1s\n    enabled alarms = a b\n"}, ""},
+		"on with a script":          {Options{HealthOn: true, HealthExtra: script + "    run at least every = 1s\n"}, ""},
+		"on without a script":       {Options{HealthOn: true, HealthExtra: "    run at least every = 1s\n"}, "HealthOn without"},
+		"on, no extra":              {Options{HealthOn: true}, "HealthOn without"},
+		"on, an empty script":       {Options{HealthOn: true, HealthExtra: "    script to execute on alarm =\n"}, "HealthOn without"},
+		"enabled yes in the extra":  {Options{HealthExtra: "    enabled = yes\n" + script}, "HealthExtra sets `enabled`"},
+		"enabled no in the extra":   {Options{HealthOn: true, HealthExtra: script + "enabled=no"}, "HealthExtra sets `enabled`"},
+		"conf extra reopens health": {Options{ConfExtra: "[health]\n    enabled = yes\n"}, "ConfExtra reopens [health]"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := validateOptions(c.o)
+			switch {
+			case c.want == "" && err != nil:
+				t.Errorf("refused: %v", err)
+			case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+				t.Errorf("got %v, want an error naming %q", err, c.want)
+			}
+		})
 	}
 }
 

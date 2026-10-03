@@ -5,6 +5,7 @@ package plugin
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -358,5 +359,139 @@ func TestTheEngineServes(t *testing.T) {
 	}
 	if w := []string{"serve", "emit", "matched:last", "emit"}; !reflect.DeepEqual(v.Steps, w) {
 		t.Errorf("steps %q, want %q", v.Steps, w)
+	}
+}
+
+// The engine's Values step: the chart with its context and divisor, one block per whole second with the current
+// phase's values (a dimension the phase leaves out gets no SET), a phase switched by its Until file at the next whole
+// second, the last phase held, and each phase's first second recorded as the second its first block names.
+func TestTheEngineCollectsValues(t *testing.T) {
+	engine, err := Engine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := Scenario{Starts: []Start{{Steps: []Step{{WaitFile: "create"}, {Values: &Values{
+		Chart: "difftest.v", Context: "difftest.ctx", Dims: []string{"a", "b"}, Div: 10,
+		Phases: []Phase{
+			{Set: map[string]int64{"a": 10, "b": 1}, Until: "p1"},
+			{Set: map[string]int64{"a": 70}, Until: "p2"},
+			{Set: map[string]int64{"a": -95, "b": 3}, Until: "never-read"},
+		},
+	}}}}}}
+	l, err := Install(t.TempDir(), engine, sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", "exec "+filepath.Join(l.PluginsDir, "difftest.plugin")+" 1")
+	in, _ := cmd.StdinPipe()
+	pipe, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	out := bufio.NewReader(pipe)
+	line := func() string {
+		s, err := out.ReadString('\n')
+		if err != nil {
+			t.Fatalf("stdout: %v", err)
+		}
+		return s
+	}
+	// block reads one block: its lines between BEGIN and END, and the second END names
+	block := func() (string, int64) {
+		if got := line(); got != "BEGIN difftest.v\n" {
+			t.Fatalf("a block starts %q", got)
+		}
+		var sets strings.Builder
+		for {
+			l := line()
+			if sec, ok := strings.CutPrefix(l, "END "); ok {
+				var s int64
+				if _, err := fmt.Sscanf(sec, "%d 0\n", &s); err != nil {
+					t.Fatalf("END line %q", l)
+				}
+				return sets.String(), s
+			}
+			sets.WriteString(l)
+		}
+	}
+	// midSecond releases a file at the middle of a second, as a check does, and returns that second
+	midSecond := func(name string) int64 {
+		now := time.Now()
+		time.Sleep(now.Truncate(time.Second).Add(1500 * time.Millisecond).Sub(now))
+		if err := l.Release(name); err != nil {
+			t.Fatal(err)
+		}
+		return time.Now().Unix()
+	}
+
+	if _, ok := l.WaitFor(5*time.Second, func(s [][]Record) bool { return len(s) == 1 && Has(s[0], "waiting", "create") }); !ok {
+		t.Fatal("the start did not wait for the chart's release")
+	}
+	if err := l.Release("create"); err != nil {
+		t.Fatal(err)
+	}
+	def := []string{line(), line(), line()}
+	wantDef := []string{"CHART difftest.v '' 'title' 'units' 'family' 'difftest.ctx' line 1000 1 '' '' ''\n",
+		"DIMENSION a '' absolute 1 10\n", "DIMENSION b '' absolute 1 10\n"}
+	if !slices.Equal(def, wantDef) {
+		t.Errorf("definition %q, want %q", def, wantDef)
+	}
+
+	// phase 0 until p1 is released, then phase 1 from the next whole second, then phase 2, which holds though its
+	// Until file exists
+	want := []string{"SET a = 10\nSET b = 1\n", "SET a = 70\n", "SET a = -95\nSET b = 3\n"}
+	firstSec := map[string]int64{}
+	var last int64
+	var released [2]int64
+	phase := 0
+	for i := 0; phase < 3; i++ {
+		sets, sec := block()
+		if last != 0 && sec != last+1 {
+			t.Errorf("block %d names second %d after %d", i, sec, last)
+		}
+		last = sec
+		if phase+1 < len(want) && sets == want[phase+1] {
+			phase++
+		}
+		if sets != want[phase] {
+			t.Fatalf("block %d: %q, in phase %d", i, sets, phase)
+		}
+		if _, seen := firstSec[fmt.Sprint(phase)]; !seen {
+			firstSec[fmt.Sprint(phase)] = sec
+			switch phase {
+			case 0:
+				released[0] = midSecond("p1")
+			case 1:
+				released[1] = midSecond("p2")
+			case 2:
+				if err := l.Release("never-read"); err != nil {
+					t.Fatal(err)
+				}
+				for range 2 {
+					if sets, _ := block(); sets != want[2] {
+						t.Errorf("the last phase did not hold: %q", sets)
+					}
+				}
+				phase++
+			}
+		}
+	}
+	// a release at mid-second switches at the very next whole second
+	if firstSec["1"] != released[0]+1 || firstSec["2"] != released[1]+1 {
+		t.Errorf("phases began at %v, released during %v: not the next whole second", firstSec, released)
+	}
+	_ = in.Close()
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("the start ended %v", err)
+	}
+	starts, err := l.Starts()
+	if err != nil || len(starts) != 1 {
+		t.Fatalf("starts: %d %v", len(starts), err)
+	}
+	if got := PhaseSeconds(starts[0]); !reflect.DeepEqual(got, firstSec) {
+		t.Errorf("phase records %v, the blocks' first seconds %v", got, firstSec)
+	}
+	if v := ViewOf(starts[0]); !slices.Equal(v.Steps, []string{"wait", "values"}) || v.End != "eof-exit 0" {
+		t.Errorf("view %+v", v)
 	}
 }

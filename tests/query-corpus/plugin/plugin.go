@@ -13,13 +13,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/netdata/netdata/tests/query-corpus/gobuild"
 )
 
 // Name is the plugin's name: the file `difftest.plugin` in the run directory's `plugins.d`.
@@ -45,6 +44,8 @@ type Step struct {
 	SleepMs int `json:"sleepMs,omitempty"`
 	// Collect defines a chart and collects it on whole seconds.
 	Collect *Collect `json:"collect,omitempty"`
+	// Values defines a chart and collects it on whole seconds until stdin's end, with values the check switches.
+	Values *Values `json:"values,omitempty"`
 	// WaitFile waits until the check creates this file in the engine's directory (see Release).
 	WaitFile string `json:"waitFile,omitempty"`
 	// Exit ends the process with this code.
@@ -121,13 +122,34 @@ type Collect struct {
 	Background bool `json:"background,omitempty"`
 }
 
+// Values is CHART and DIMENSION lines for Chart (type.id; Context empty: the agent names it after the chart; each
+// dimension absolute, multiplier 1, divisor Div, 1 when 0), then one block per whole wall-clock second until stdin's
+// end: `BEGIN`, a `SET` per dimension the current phase gives a value, `END <sec> 0`, so the agent stores the second
+// the block names. The phases play in order: one ends at the first whole second that finds its Until file in the
+// engine's directory (Release; released at mid-second, two engines switch at the same second), the last one, or one
+// without Until, holds. Each phase's first second is recorded (`phase`, Step its index), and every second (`collected`).
+type Values struct {
+	Chart   string   `json:"chart"`
+	Context string   `json:"context,omitempty"`
+	Dims    []string `json:"dims"`
+	Div     int      `json:"div,omitempty"`
+	Phases  []Phase  `json:"phases"`
+}
+
+// Phase is one span of a Values step: the collected value of each dimension it sets (one left out gets no SET), and
+// the file that ends it.
+type Phase struct {
+	Set   map[string]int64 `json:"set"`
+	Until string           `json:"until,omitempty"`
+}
+
 // ExitCode is a step's exit code.
 func ExitCode(code int) *int { return &code }
 
 // Record is one line the engine writes; Kind says which fields are set.
 type Record struct {
 	T    time.Time `json:"t"`
-	Kind string    `json:"kind"` // start, stdin, eof, step, collected, waiting, expect, matched, expect-timeout, expect-eof, served, signal, end
+	Kind string    `json:"kind"` // start, stdin, eof, step, collected, phase, waiting, expect, matched, expect-timeout, expect-eof, served, signal, end
 	// start
 	Args []string `json:"args,omitempty"`
 	Env  []string `json:"env,omitempty"`
@@ -149,10 +171,11 @@ type Record struct {
 	Data string `json:"data,omitempty"`
 	// matched: the named groups
 	Groups map[string]string `json:"groups,omitempty"`
-	// step, waiting; expect, matched, expect-timeout, expect-eof (the Expect's name); served (the rule's name)
+	// step, waiting; expect, matched, expect-timeout, expect-eof (the Expect's name); served (the rule's name); phase
+	// (a Values phase's index)
 	Step string `json:"step,omitempty"`
 	File string `json:"file,omitempty"`
-	// collected
+	// collected; phase (the phase's first second)
 	Sec int64 `json:"sec,omitempty"`
 	// signal, end
 	Signal string `json:"signal,omitempty"`
@@ -242,45 +265,14 @@ func (l Layout) Release(name string) error {
 	return os.WriteFile(filepath.Join(l.Dir, name), nil, 0o644)
 }
 
-var engine struct {
-	once sync.Once
-	path string
-	err  error
-}
-
 // Engine builds the engine once per process (stdlib only, offline) and returns its path; Cleanup removes it.
 func Engine() (string, error) {
-	engine.once.Do(func() {
-		goBin, err := exec.LookPath("go")
-		if err != nil {
-			engine.err = fmt.Errorf("plugin: the engine needs go on PATH: %w", err)
-			return
-		}
-		_, self, _, _ := runtime.Caller(0)
-		module := filepath.Dir(filepath.Dir(self))
-		dir, err := os.MkdirTemp("", "difftest-engine-")
-		if err != nil {
-			engine.err = err
-			return
-		}
-		out := filepath.Join(dir, "engine")
-		cmd := exec.Command(goBin, "build", "-trimpath", "-o", out, "./plugin/cmd/difftest")
-		cmd.Dir = module
-		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOPROXY=off", "GOTOOLCHAIN=local", "GOWORK=off")
-		if b, err := cmd.CombinedOutput(); err != nil {
-			engine.err = fmt.Errorf("plugin: building the engine: %v: %s", err, b)
-			return
-		}
-		engine.path = out
-	})
-	return engine.path, engine.err
+	return gobuild.Build("./plugin/cmd/difftest")
 }
 
-// Cleanup removes the built engine (the run directories keep their links).
+// Cleanup removes the built engine and the harness's other built programs (the run directories keep their links).
 func Cleanup() {
-	if engine.path != "" {
-		_ = os.RemoveAll(filepath.Dir(engine.path))
-	}
+	gobuild.Cleanup()
 }
 
 // Starts reads every start's records, in start order.
@@ -338,6 +330,17 @@ func (l Layout) WaitFor(timeout time.Duration, ok func([][]Record) bool) ([][]Re
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// PhaseSeconds are the first seconds of a start's Values phases, by phase index (a phase not reached yet is absent).
+func PhaseSeconds(start []Record) map[string]int64 {
+	out := map[string]int64{}
+	for _, r := range start {
+		if r.Kind == "phase" {
+			out[r.Step] = r.Sec
+		}
+	}
+	return out
 }
 
 // Has reports whether a start holds a record of this kind (and, when given, step or file).

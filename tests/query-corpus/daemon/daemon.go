@@ -79,8 +79,12 @@ type Options struct {
 	GlobalExtra string
 	// LogsExtra, when set, is written as a [logs] section at the end of netdata.conf (one "key = value" per line).
 	LogsExtra string
-	// HealthExtra is appended to the [health] section verbatim (one "key = value" per line).
+	// HealthExtra is appended to the [health] section (one "key = value" per line), with {run} replaced by RunDir. It
+	// may not set `enabled`: HealthOn is the switch.
 	HealthExtra string
+	// HealthOn renders `[health] enabled = yes`. HealthExtra must then name `script to execute on alarm`: the default
+	// is the primary plugins directory's alarm-notify.sh (health/health.c:76-78), which may send mail.
+	HealthOn bool
 	// HostLabels, when set, is written as a [host labels] section at the end of netdata.conf (one "key = value"
 	// per line).
 	HostLabels string
@@ -205,7 +209,7 @@ const netdataConfTemplate = `[global]
     enabled = no
 
 [health]
-    enabled = no
+    enabled = %[17]s
 %[14]s
 [registry]
     enabled = no
@@ -257,6 +261,9 @@ const streamConfTemplate = `[stream]
     replication period = 3650d
 `
 
+// healthScriptKey is the [health] key naming the notifier (health/health.c:76-78).
+const healthScriptKey = "script to execute on alarm"
+
 func validateOptions(o Options) error {
 	switch o.DBEnginePageType {
 	case "", "gorilla", "raw":
@@ -276,6 +283,24 @@ func validateOptions(o Options) error {
 
 	if strings.Contains(o.ConfExtra, "[plugins]") || strings.Contains(o.ConfExtra, "[directories]") {
 		return errors.New("daemon: ConfExtra reopens [plugins] or [directories]: use PluginsExtra or PluginsDir")
+	}
+
+	// health runs the notifier it is configured with: the switch and its script stay where they can be checked
+	if strings.Contains(o.ConfExtra, "[health]") {
+		return errors.New("daemon: ConfExtra reopens [health]: use HealthOn and HealthExtra")
+	}
+	script := false
+	for _, line := range strings.Split(o.HealthExtra, "\n") {
+		key, value, _ := strings.Cut(line, "=")
+		switch strings.TrimSpace(key) {
+		case "enabled":
+			return errors.New("daemon: HealthExtra sets `enabled`: use HealthOn")
+		case healthScriptKey:
+			script = strings.TrimSpace(value) != ""
+		}
+	}
+	if o.HealthOn && !script {
+		return fmt.Errorf("daemon: HealthOn without `%s` in HealthExtra: the default notifier may send mail", healthScriptKey)
 	}
 
 	for _, line := range strings.Split(o.PluginsExtra, "\n") {
@@ -565,7 +590,8 @@ func renderNetdataConf(o Options, hostname string) string {
 		updateEvery = "1"
 	}
 	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs, o.WebExtra,
-		o.GlobalExtra, bindTo, dbMode, pulse, retentionTime, o.HealthExtra, home, updateEvery)
+		o.GlobalExtra, bindTo, dbMode, pulse, retentionTime, strings.ReplaceAll(o.HealthExtra, "{run}", o.RunDir), home,
+		updateEvery, yesNo(o.HealthOn))
 	if o.PluginsStock {
 		conf = strings.Replace(conf, "[plugins]\n"+pluginsBlock(false), "[plugins]\n"+pluginsStock, 1)
 	}
