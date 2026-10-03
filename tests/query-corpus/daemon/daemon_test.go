@@ -95,6 +95,16 @@ func TestNetdataConfRendering(t *testing.T) {
 			},
 			defaultNetdataConf + "    netdata pulse = no\n    difftest = yes\n    check for new plugins every = 1\n",
 		},
+		"plugins stock": {
+			func(o *Options) {
+				o.PluginsStock = true
+				o.PulseOff = true
+				o.PluginsExtra = "    apps = yes\n"
+			},
+			defaultNetdataConf[:strings.Index(defaultNetdataConf, "    enable running new plugins")] +
+				"    enable running new plugins = yes\n    proc = no\n    diskspace = no\n    cgroups = no\n    tc = no\n    idlejitter = no\n    statsd = no\n" +
+				"    timex = no\n    profile = no\n    netdata pulse = no\n    apps = yes\n",
+		},
 		"conf extra last": {
 			func(o *Options) {
 				o.HostLabels = "    a = b\n"
@@ -125,6 +135,29 @@ func TestPluginsExtraCannotEnableTemplatePlugins(t *testing.T) {
 		"    netdata pulse = yes\n": false, "    difftest = yes\n    check for new plugins every = 1\n": true}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("accepted: %v, want %v", got, want)
+	}
+}
+
+// In PluginsStock mode PluginsExtra may name installed plugins, never the internal collectors or the mode's own keys.
+func TestPluginsStockMayNameInstalledPlugins(t *testing.T) {
+	got := map[string]bool{}
+	for _, extra := range []string{"    apps = no\n", "    slabinfo = yes\n", "    proc = yes\n", "    netdata pulse = yes\n",
+		"enable running new plugins = no"} {
+		got[extra] = validateOptions(Options{PluginsStock: true, PluginsExtra: extra}) == nil
+	}
+	want := map[string]bool{"    apps = no\n": true, "    slabinfo = yes\n": true, "    proc = yes\n": false,
+		"    netdata pulse = yes\n": false, "enable running new plugins = no": false}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("accepted: %v, want %v", got, want)
+	}
+}
+
+// Env's {run} is the run directory; entries without it pass as they are.
+func TestEnvExpandsRun(t *testing.T) {
+	got := expandEnv(Options{RunDir: "/r", Env: []string{"A={run}/otel", "B=x", "C={run}:{run}"}})
+	want := []string{"A=/r/otel", "B=x", "C=/r:/r"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 

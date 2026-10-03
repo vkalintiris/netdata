@@ -88,8 +88,11 @@ type Options struct {
 	// {run} replaced by RunDir; a quoted list names several directories, the first the primary one.
 	PluginsDir string
 	// PluginsExtra is appended to the [plugins] section (one "key = value" per line), e.g. `difftest = yes`; it may
-	// not set a key the template sets (every installed plugin stays off).
+	// not set a key the template sets (every installed plugin stays off, unless PluginsStock).
 	PluginsExtra string
+	// PluginsStock runs the installed plugins with their own defaults: [plugins] keeps only `enable running new
+	// plugins = yes` and the internal collectors' `no` keys (pluginsStock), so PluginsExtra may name external plugins.
+	PluginsStock bool
 	// ConfExtra is appended to netdata.conf as whole sections, e.g. `[plugin:difftest]` with its keys.
 	ConfExtra string
 	// StreamExtra is appended to stream.conf verbatim (e.g. per-child [<machine guid>] sections of a parent).
@@ -115,7 +118,7 @@ type Options struct {
 	// PulseOff sets `[plugins] netdata pulse = no`: the C agent's own charts stop writing into its database.
 	PulseOff bool
 	// Env is appended to the daemon's environment, after the harness's own, so an entry here wins (os/exec keeps the
-	// last of duplicates).
+	// last of duplicates); {run} is replaced by RunDir.
 	Env []string
 	// NoStreamKey leaves out the stream key's `[<key>] type = api` section, so the daemon is no parent: its profile
 	// is a child's or a standalone's (their compression levels and replication threads).
@@ -225,6 +228,19 @@ const netdataConfTemplate = `[global]
     profile = no
 %[12]s`
 
+// pluginsStock is PluginsStock's [plugins] block: every installed plugin with its own default (plugins_d.c:299-310),
+// the internal collectors off.
+const pluginsStock = `    enable running new plugins = yes
+    proc = no
+    diskspace = no
+    cgroups = no
+    tc = no
+    idlejitter = no
+    statsd = no
+    timex = no
+    profile = no
+`
+
 const streamConfTemplate = `[stream]
     enabled = no
 
@@ -259,7 +275,7 @@ func validateOptions(o Options) error {
 
 	for _, line := range strings.Split(o.PluginsExtra, "\n") {
 		key, _, _ := strings.Cut(line, "=")
-		if key = strings.TrimSpace(key); key != "" && slices.Contains(templatePluginKeys(), key) {
+		if key = strings.TrimSpace(key); key != "" && slices.Contains(templatePluginKeys(o.PluginsStock), key) {
 			return fmt.Errorf("daemon: PluginsExtra sets %q, which the template sets", key)
 		}
 	}
@@ -267,11 +283,20 @@ func validateOptions(o Options) error {
 	return nil
 }
 
-// templatePluginKeys are the keys netdataConfTemplate sets in [plugins], `netdata pulse` (PulseOff's) included.
-func templatePluginKeys() []string {
+// pluginsBlock is the template's [plugins] block for the mode: netdataConfTemplate's own (every installed plugin and
+// internal collector off), or pluginsStock.
+func pluginsBlock(stock bool) string {
+	if stock {
+		return pluginsStock
+	}
 	_, section, _ := strings.Cut(netdataConfTemplate, "[plugins]\n")
+	return strings.TrimSuffix(section, "%[12]s")
+}
+
+// templatePluginKeys are the keys the template sets in [plugins] for the mode, `netdata pulse` (PulseOff's) included.
+func templatePluginKeys(stock bool) []string {
 	keys := []string{"netdata pulse"}
-	for _, line := range strings.Split(section, "\n") {
+	for _, line := range strings.Split(pluginsBlock(stock), "\n") {
 		if key, _, ok := strings.Cut(line, "="); ok {
 			keys = append(keys, strings.TrimSpace(key))
 		}
@@ -525,6 +550,9 @@ func renderNetdataConf(o Options, hostname string) string {
 	pulse += o.PluginsExtra
 	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs, o.WebExtra,
 		o.GlobalExtra, bindTo, dbMode, pulse, retentionTime, o.HealthExtra)
+	if o.PluginsStock {
+		conf = strings.Replace(conf, "[plugins]\n"+pluginsBlock(false), "[plugins]\n"+pluginsStock, 1)
+	}
 	if o.LogsExtra != "" {
 		conf += "\n[logs]\n" + o.LogsExtra
 	}
@@ -558,6 +586,15 @@ func startAttempt(o Options, hostname, streamKey string) (*Daemon, error) {
 		return nil, err
 	}
 	return d, nil
+}
+
+// expandEnv is Options.Env with {run} replaced by RunDir.
+func expandEnv(o Options) []string {
+	out := make([]string, len(o.Env))
+	for i, e := range o.Env {
+		out[i] = strings.ReplaceAll(e, "{run}", o.RunDir)
+	}
+	return out
 }
 
 // reaped forgets the process once its exit was collected, and its runtime directory.
@@ -600,7 +637,7 @@ func (d *Daemon) launch() error {
 		return fmt.Errorf("daemon: runtime directory: %w", err)
 	}
 	d.runtime = runtime
-	cmd.Env = append(append(os.Environ(), "NETDATA_PIPENAME="+d.PipeName, "NETDATA_RUN_DIR="+runtime), d.Opts.Env...)
+	cmd.Env = append(append(os.Environ(), "NETDATA_PIPENAME="+d.PipeName, "NETDATA_RUN_DIR="+runtime), expandEnv(d.Opts)...)
 	// the daemon log is appended across launches: only what this one writes tells its failure
 	var logOffset int64
 	if fi, err := os.Stat(filepath.Join(d.Opts.RunDir, "log", "daemon.log")); err == nil {

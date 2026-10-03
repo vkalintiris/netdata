@@ -200,6 +200,13 @@ func TestNetdataConfDbClamps(t *testing.T) {
 
 func compareNetdataConf(t *testing.T, opts daemon.Options) *Pair {
 	p := StartPair(t, opts, parentIdentity)
+	compareNetdataConfOn(t, p)
+	return p
+}
+
+// compareNetdataConfOn compares a running pair's /netdata.conf dumps (compareNetdataConf's rules).
+func compareNetdataConfOn(t *testing.T, p *Pair) {
+	t.Helper()
 	var dumps [2]confDump
 	var heads [2][]byte
 	for i, side := range p.Each() {
@@ -277,7 +284,6 @@ func compareNetdataConf(t *testing.T, opts daemon.Options) *Pair {
 		pendingBySubsystem[reason]++
 	}
 	t.Logf("compared %d sections; %d keys pending: %v", len(want), len(confPending), pendingBySubsystem)
-	return p
 }
 
 // firstLineDifference shows the first differing line of two texts, with the section it belongs to.

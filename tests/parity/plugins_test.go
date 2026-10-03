@@ -64,6 +64,17 @@ func pluginLogClasses(t *testing.T, d *daemon.Daemon) map[string][]string {
 // without a time, such as a plugin's raw stderr, is kept): what a daemon logged before its stop began.
 func pluginLogClassesBefore(t *testing.T, d *daemon.Daemon, stop time.Time) map[string][]string {
 	t.Helper()
+	return pluginLogClassesOf(t, d, stop, fakePluginThread, plugin.Name)
+}
+
+// fakePluginThread holds for a fake plugin's thread (`PD[difftest…`).
+func fakePluginThread(th string) bool { return strings.HasPrefix(th, "PD["+plugin.Name) }
+
+// pluginLogClassesOf is pluginLogClassesBefore of the plugin threads `thread` holds for, with the spawn server's
+// records naming `spawned` (the fake plugin's name, or the real plugins' directory).
+func pluginLogClassesOf(t *testing.T, d *daemon.Daemon, stop time.Time, thread func(string) bool,
+	spawned string) map[string][]string {
+	t.Helper()
 	classes := map[string][]string{}
 	add := func(class, line string) {
 		line = normalizeLog(line, d.Opts.RunDir, "")
@@ -71,8 +82,8 @@ func pluginLogClassesBefore(t *testing.T, d *daemon.Daemon, stop time.Time) map[
 		line = msgTidRe.ReplaceAllString(line, "$1 N")
 		classes[class] = append(classes[class], requestRe.ReplaceAllString(line, "request R"))
 	}
-	fake := func(l string) string {
-		if th := threadOf(l); strings.HasPrefix(th, "PD["+plugin.Name) {
+	pluginThread := func(l string) string {
+		if th := threadOf(l); thread(th) {
 			return "thread=" + th
 		}
 		return ""
@@ -82,8 +93,8 @@ func pluginLogClassesBefore(t *testing.T, d *daemon.Daemon, stop time.Time) map[
 			continue
 		}
 		switch {
-		case fake(l) != "":
-			add("daemon.log "+fake(l), l)
+		case pluginThread(l) != "":
+			add("daemon.log "+pluginThread(l), l)
 		case strings.Contains(l, "thread=PLUGINSD"):
 			add("daemon.log thread=PLUGINSD", l)
 		}
@@ -93,9 +104,9 @@ func pluginLogClassesBefore(t *testing.T, d *daemon.Daemon, stop time.Time) map[
 			continue
 		}
 		switch {
-		case fake(l) != "":
-			add("collector.log "+fake(l), l)
-		case strings.Contains(l, "comm=spawn-plugins") && strings.Contains(l, plugin.Name):
+		case pluginThread(l) != "":
+			add("collector.log "+pluginThread(l), l)
+		case strings.Contains(l, "comm=spawn-plugins") && strings.Contains(l, spawned):
 			// whether the PD thread closes the status socket before the server reaps the killed plugin is a race
 			// (spawn_server_nofork.c:254-257, :1599, :1744)
 			if !strings.Contains(l, "Cannot send exit status") {
