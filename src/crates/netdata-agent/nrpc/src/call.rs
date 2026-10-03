@@ -505,7 +505,7 @@ pub fn dispatch(handler: &Handler, mut req: Request, is_cancelled: Option<IsCanc
                 if req.call.asynchronous { req.call.is_cancelled() } else { is_cancelled.is_some_and(|f| f()) }
             };
             let mut code =
-                if cancelled() { 499 } else { builtin(&mut req.reply, &req.function, req.payload.as_ref(), &req.source) };
+                if cancelled() { 499 } else { builtin.call(&mut req.reply, &req.function, req.payload.as_ref(), &req.source) };
             if code == 499 || cancelled() {
                 req.reply.body.clear();
                 code = 499;

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, O
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak};
 
 use netdata_agent_log::{Priority, REDACTED, Source, nd_log, netdata_log_error};
-use netdata_agent_nrpc::{self as nrpc, MethodDesc, Registry, Unregistered};
+use netdata_agent_nrpc::{self as nrpc, BuiltinDesc, MethodDesc, Registry, Unregistered};
 use netdata_agent_text::parse::uuid_parse_flexi;
 use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatternMode};
 
@@ -1478,6 +1478,13 @@ impl Host {
         Ok(())
     }
 
+    /// `nrpc_method_register_builtin()` on the host's registry, which the parent hears of as any registration.
+    pub fn register_builtin(&self, desc: &BuiltinDesc<'_>) -> Result<(), String> {
+        self.functions.register_builtin(&self.hostname(), desc)?;
+        self.sender_flags_set(sender_flags::GLOBAL_FUNCTIONS_UPDATED);
+        Ok(())
+    }
+
     /// `nrpc_method_unregister()` on the host's registry, queued for the parent while the host has a sender
     /// (`rrdhost_nrpc_wants_del_journal()`), then `rrdhost_nrpc_changed()` for a removal.
     pub fn unregister_function(&self, name: &[u8], source: nrpc::Source) -> Unregistered {
@@ -2479,7 +2486,7 @@ mod tests {
                 access: 0,
                 sync: false,
                 source: nrpc::Source::Stream,
-                handler: nrpc::Handler::Builtin(inert),
+                handler: inert(),
             };
             host.register_function(&desc).unwrap();
         };
@@ -2751,7 +2758,7 @@ mod tests {
             access: 0,
             sync: false,
             source: nrpc::Source::Stream,
-            handler: nrpc::Handler::Builtin(inert),
+            handler: inert(),
         };
         host.register_function(&desc(10)).unwrap();
         let (_, records) = netdata_agent_log::capture(|| host.register_function(&desc(20)).unwrap());

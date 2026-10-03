@@ -2032,7 +2032,7 @@ mod tests {
             access: 0,
             sync: false,
             source: netdata_agent_nrpc::Source::Stream,
-            handler: netdata_agent_nrpc::Handler::Builtin(inert),
+            handler: inert(),
         };
         host.register_function(&desc).unwrap();
         assert!(available());

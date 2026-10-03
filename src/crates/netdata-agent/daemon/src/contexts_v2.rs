@@ -564,7 +564,7 @@ mod tests {
     /// (H9's oracle body).
     #[test]
     fn functions_merge_and_print_as_cs() {
-        use netdata_agent_nrpc::{Handler, MethodDesc, Registry, Source};
+        use netdata_agent_nrpc::{MethodDesc, Registry, Source};
         let desc = |name: &'static [u8], help: &'static [u8], version| MethodDesc {
             name,
             help,
@@ -575,7 +575,7 @@ mod tests {
             access: access::ANONYMOUS_DATA,
             sync: false,
             source: Source::Stream,
-            handler: Handler::Builtin(inert),
+            handler: inert(),
         };
         let (local, vnode) = (Registry::default(), Registry::default());
         local.register("l", &desc(b"difftest-same", b"same on localhost", 1)).unwrap();

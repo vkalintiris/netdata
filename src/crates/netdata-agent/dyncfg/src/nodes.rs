@@ -490,7 +490,7 @@ mod tests {
             edit_access: 0x47,
             current: Current { status: Status::Running, created_ut: 5, modified_ut: 15, ..Current::default() },
             sync: true,
-            handler: Some(Handler::Builtin(inert)),
+            handler: Some(inert()),
             ..Node::default()
         };
         let (set, logged) = capture(|| nodes.set(b"s", second, false));
@@ -512,18 +512,20 @@ mod tests {
             let node = &map[b"s".as_slice()];
             assert_eq!((node.cmds, node.edit_access, node.current.status), (Cmds::GET, 0x47, Status::Running));
             assert_eq!((node.current.created_ut, node.current.modified_ut, node.stored.saves), (5, 20, 3));
-            assert!(node.sync && node.handler.as_ref().is_some_and(|h| h.same(&Handler::Builtin(inert))));
+            assert!(node.sync && node.handler.as_ref().is_some_and(|h| h.same(&inert())));
         }
+        // one handler-plus-data pair, as C's other function pointer
+        let other = Handler::Builtin(std::sync::Arc::new(other));
         let held = |handler: Handler, overwrite: bool| {
             let node = Node { host_uuid: [1; 16], path: b"/b".to_vec(), cmds: Cmds::GET, edit_access: 0x47, handler: Some(handler), ..Node::default() };
             // times that do not widen, so only the handler can change (a zero time is stamped now, which widens)
             let current = Current { status: Status::Running, created_ut: 5, modified_ut: 15, ..Current::default() };
             let set = nodes.set(b"s", Node { current, ..node }, overwrite).unwrap();
-            (set, nodes.lock()[b"s".as_slice()].handler.as_ref().is_some_and(|h| h.same(&Handler::Builtin(other))))
+            (set, nodes.lock()[b"s".as_slice()].handler.as_ref().is_some_and(|h| h.same(&other)))
         };
-        assert_eq!(held(Handler::Builtin(other), false), (Set::Merged(false), false), "kept without overwrite");
-        assert_eq!(held(Handler::Builtin(inert), true), (Set::Merged(false), false), "the same one");
-        assert_eq!(held(Handler::Builtin(other), true), (Set::Merged(true), true), "moved");
+        assert_eq!(held(other.clone(), false), (Set::Merged(false), false), "kept without overwrite");
+        assert_eq!(held(inert(), true), (Set::Merged(false), false), "the same one");
+        assert_eq!(held(other.clone(), true), (Set::Merged(true), true), "moved");
     }
 
     /// `dyncfg_file_load()` through `dyncfg_load_all()`: files in the directory's order, each an orphan of its saved

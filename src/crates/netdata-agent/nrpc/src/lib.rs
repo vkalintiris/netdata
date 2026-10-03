@@ -53,7 +53,8 @@ pub enum Source {
 pub enum Handler {
     /// A transport to the method's plugin or child (`pluginsd_nrpc_handler()`).
     Transport(Arc<dyn Transport>),
-    /// `nrpc_method_register_builtin()`: a daemon-implemented synchronous method.
+    /// `nrpc_method_register_builtin()`: a daemon-implemented synchronous method, with what it captured (C's handler
+    /// data).
     Builtin(Builtin),
 }
 
@@ -71,7 +72,7 @@ impl Handler {
     pub fn same(&self, other: &Handler) -> bool {
         match (self, other) {
             (Handler::Transport(a), Handler::Transport(b)) => Arc::ptr_eq(a, b),
-            (Handler::Builtin(a), Handler::Builtin(b)) => std::ptr::fn_addr_eq(*a, *b),
+            (Handler::Builtin(a), Handler::Builtin(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -84,8 +85,35 @@ pub trait Transport: Send + Sync {
     fn dispatch(&self, req: Request) -> u16;
 }
 
-/// `nrpc_builtin_handler_cb_t`: writes the answer, returns its code.
-pub type Builtin = fn(reply: &mut Reply, function: &[u8], payload: Option<&Payload>, source: &[u8]) -> u16;
+/// `nrpc_builtin_handler_cb_t` with its data: writes the answer, returns its code.
+pub trait BuiltinFn: Send + Sync {
+    fn call(&self, reply: &mut Reply, function: &[u8], payload: Option<&Payload>, source: &[u8]) -> u16;
+}
+
+impl<F> BuiltinFn for F
+where
+    F: Fn(&mut Reply, &[u8], Option<&Payload>, &[u8]) -> u16 + Send + Sync,
+{
+    fn call(&self, reply: &mut Reply, function: &[u8], payload: Option<&Payload>, source: &[u8]) -> u16 {
+        self(reply, function, payload, source)
+    }
+}
+
+/// A built-in's handler; one `Arc` is one handler-plus-data pair, so a re-registration with a clone is the same.
+pub type Builtin = Arc<dyn BuiltinFn>;
+
+/// `struct nrpc_builtin_desc`: a daemon method's registration.
+#[derive(Clone)]
+pub struct BuiltinDesc<'a> {
+    pub name: &'a [u8],
+    pub help: &'a [u8],
+    pub tags: &'a [u8],
+    pub timeout_s: i32,
+    pub priority: i32,
+    pub version: u32,
+    pub access: u32,
+    pub handler: Builtin,
+}
 
 /// `struct nrpc_method_desc`: a registration.
 #[derive(Debug, Clone)]
@@ -289,6 +317,27 @@ impl Registry {
 
     /// `nrpc_method_register()` from the registering thread (its serving handle, the host's epoch). `Err` carries
     /// C's warning for the caller to write when it refuses; `host` names the owner there.
+    /// `nrpc_method_register_builtin()`: a synchronous daemon method, served by the calling thread's handle (C's
+    /// main thread never ends it).
+    pub fn register_builtin(&self, host: &str, desc: &BuiltinDesc) -> Result<(), String> {
+        serving::started();
+        self.register(
+            host,
+            &MethodDesc {
+                name: desc.name,
+                help: desc.help,
+                tags: desc.tags,
+                timeout_s: desc.timeout_s,
+                priority: desc.priority,
+                version: desc.version,
+                access: desc.access,
+                sync: true,
+                source: Source::Daemon,
+                handler: Handler::Builtin(Arc::clone(&desc.handler)),
+            },
+        )
+    }
+
     pub fn register(&self, host: &str, desc: &MethodDesc) -> Result<(), String> {
         if !self.exists() {
             not_registering(desc.name);

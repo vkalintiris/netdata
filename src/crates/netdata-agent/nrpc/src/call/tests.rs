@@ -108,11 +108,11 @@ fn ok_builtin(reply: &mut Reply, function: &[u8], _: Option<&Payload>, source: &
 #[test]
 fn authorization_answers_as_c() {
     let r = Registry::default();
-    register(&r, b"__hidden", Handler::Builtin(ok_builtin), |_| {});
-    register(&r, b"sso", Handler::Builtin(ok_builtin), |d| d.access = access::SIGNED_ID | access::VIEW_AGENT_CONFIG);
-    register(&r, b"space", Handler::Builtin(ok_builtin), |d| d.access = access::SAME_SPACE);
-    register(&r, b"paid", Handler::Builtin(ok_builtin), |d| d.access = access::COMMERCIAL_SPACE);
-    register(&r, b"config-only", Handler::Builtin(ok_builtin), |d| {
+    register(&r, b"__hidden", Handler::Builtin(std::sync::Arc::new(ok_builtin)), |_| {});
+    register(&r, b"sso", Handler::Builtin(std::sync::Arc::new(ok_builtin)), |d| d.access = access::SIGNED_ID | access::VIEW_AGENT_CONFIG);
+    register(&r, b"space", Handler::Builtin(std::sync::Arc::new(ok_builtin)), |d| d.access = access::SAME_SPACE);
+    register(&r, b"paid", Handler::Builtin(std::sync::Arc::new(ok_builtin)), |d| d.access = access::COMMERCIAL_SPACE);
+    register(&r, b"config-only", Handler::Builtin(std::sync::Arc::new(ok_builtin)), |d| {
         d.access = access::VIEW_AGENT_CONFIG | access::EDIT_AGENT_CONFIG | access::ANONYMOUS_DATA
     });
     let refused = |owner, cmd: &[u8], user, restricted| {
@@ -153,7 +153,7 @@ fn authorization_answers_as_c() {
 fn a_sync_builtin_answers_and_leaves() {
     let (calls, _) = calls();
     let r = Registry::default();
-    register(&r, b"echo", Handler::Builtin(ok_builtin), |_| {});
+    register(&r, b"echo", Handler::Builtin(std::sync::Arc::new(ok_builtin)), |_| {});
     let called = calls.call(spec(&r, b"echo  now"));
     assert_eq!((called.code, called.reply.map(|r| r.body)), (200, Some(b"echo now from test".to_vec())));
     assert!(lock(&calls.table).is_empty());
@@ -171,6 +171,21 @@ fn a_sync_builtin_answers_and_leaves() {
     assert_eq!(asked.load(Ordering::SeqCst), 2, "before and after the handler");
 }
 
+/// A sync method runs to its end on the caller's thread whatever its deadline (`nrpc-calls.c`'s sync mode sets no
+/// deadline check): a handler that outlives its timeout still answers its code.
+#[test]
+fn a_sync_builtin_runs_past_its_deadline() {
+    let (calls, now) = calls();
+    let r = Registry::default();
+    let slow: crate::Builtin = Arc::new(move |reply: &mut Reply, f: &[u8], p: Option<&Payload>, s: &[u8]| {
+        now.fetch_add(60_000_000, Ordering::Relaxed);
+        ok_builtin(reply, f, p, s)
+    });
+    register(&r, b"slow", Handler::Builtin(slow), |d| d.timeout_s = 1);
+    let called = calls.call(spec(&r, b"slow"));
+    assert_eq!((called.code, called.reply.map(|r| r.body)), (200, Some(b"slow from test".to_vec())));
+}
+
 /// A sync built-in reads only its caller's check (`nrpc-builtin.c:13-21`): a cancel of its record while it runs (a
 /// Cloud CANCEL by call id) does not make it 499; its caller's check does.
 #[test]
@@ -183,7 +198,7 @@ fn a_sync_builtin_reads_only_its_callers_check() {
     let (calls, _) = calls();
     CALLS.set(Arc::clone(&calls)).ok().unwrap();
     let r = Registry::default();
-    register(&r, b"self", Handler::Builtin(cancels_itself), |_| {});
+    register(&r, b"self", Handler::Builtin(std::sync::Arc::new(cancels_itself)), |_| {});
     let id = b"5a1e0000-0000-4000-8000-00000000ca11";
     let called = calls.call(CallSpec { call_id: Some(id), is_cancelled: Some(&|| false), ..spec(&r, b"self") });
     assert_eq!(called.code, 200);

@@ -878,7 +878,7 @@ mod tests {
     fn a_parents_call_is_run_and_answered() {
         let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000ca", false, info("127.0.0.1:1", "key")));
         host.set_collector_online();
-        register(&host, b"echo", 10, netdata_agent_nrpc::Handler::Builtin(echo));
+        register(&host, b"echo", 10, netdata_agent_nrpc::Handler::Builtin(std::sync::Arc::new(echo)));
         let mut l = linked(&host, caps::FUNCTIONS);
         let _ = l.exchange("");
         let tx = "5a1e00000000400080000000000000f5";
@@ -910,7 +910,7 @@ mod tests {
         let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000cc", false, info("127.0.0.1:1", "key")));
         host.set_collector_online();
         let held = Arc::new(Held::default());
-        register(&host, b"__hidden", 10, netdata_agent_nrpc::Handler::Builtin(echo));
+        register(&host, b"__hidden", 10, netdata_agent_nrpc::Handler::Builtin(std::sync::Arc::new(echo)));
         register(&host, b"slow", 30, netdata_agent_nrpc::Handler::Transport(Arc::clone(&held) as _));
         let mut l = linked(&host, caps::FUNCTIONS);
         let _ = l.exchange("");
@@ -966,7 +966,7 @@ mod tests {
     #[test]
     fn a_parents_call_is_answered_only_while_the_hosts_metadata_may_stream() {
         let host = Arc::new(Host::new("5a1e0000-0000-4000-8000-0000000000cf", false, info("127.0.0.1:1", "key")));
-        register(&host, b"echo", 10, netdata_agent_nrpc::Handler::Builtin(echo));
+        register(&host, b"echo", 10, netdata_agent_nrpc::Handler::Builtin(std::sync::Arc::new(echo)));
         let mut l = linked(&host, caps::FUNCTIONS);
         let _ = l.exchange("");
         let got = l.exchange("FUNCTION 5a1e00000000400080000000000000fa 10 \"echo\" \"0x0\" \"src\"\n");

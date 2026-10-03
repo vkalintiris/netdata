@@ -412,7 +412,7 @@ fn the_host_metadata_goes_when_the_sender_can_take_it() {
         access: 0,
         sync: false,
         source: NrpcSource::Stream,
-        handler: netdata_agent_nrpc::Handler::Builtin(inert),
+        handler: inert(),
     };
     host.register_function(&desc).unwrap();
     host.register_function(&MethodDesc { name: b"config", ..desc }).unwrap();
@@ -442,7 +442,7 @@ fn the_functions_go_again_with_the_removals_the_parent_takes() {
         access: 0,
         sync: false,
         source: NrpcSource::Stream,
-        handler: netdata_agent_nrpc::Handler::Builtin(inert),
+        handler: inert(),
     };
     host.register_function(&desc(b"f")).unwrap();
     host.register_function(&desc(b"gone")).unwrap();
@@ -475,7 +475,7 @@ fn the_dyncfg_methods_go_as_one_config_line_to_a_parent_that_takes_dyncfg() {
         access: 0,
         sync: false,
         source: NrpcSource::Stream,
-        handler: netdata_agent_nrpc::Handler::Builtin(inert),
+        handler: inert(),
     };
     host.register_function(&desc(b"f")).unwrap();
     let f = "FUNCTION GLOBAL \"f\" 10 \"h\" \"top\" 0x0 100 3\n";
@@ -639,7 +639,7 @@ fn the_forward_gate_commits_its_metadata_through_the_batch() {
         access: 0,
         sync: false,
         source: NrpcSource::Stream,
-        handler: netdata_agent_nrpc::Handler::Builtin(inert),
+        handler: inert(),
     };
     host.register_function(&desc).unwrap();
     let b = forward_gate(&host, &chart, &mut fwd).unwrap();

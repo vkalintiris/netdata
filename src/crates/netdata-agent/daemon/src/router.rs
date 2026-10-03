@@ -709,7 +709,7 @@ mod tests {
     /// `ni` of the hosts that have it; a client without the FUNCTIONS ACL gets the ACL's 451.
     #[test]
     fn functions_v2_answer_as_c() {
-        use netdata_agent_nrpc::{Handler, MethodDesc, Source};
+        use netdata_agent_nrpc::{MethodDesc, Source};
         let s = shared();
         let desc = MethodDesc {
             name: b"top",
@@ -721,7 +721,7 @@ mod tests {
             access: access::ANONYMOUS_DATA,
             sync: false,
             source: Source::Stream,
-            handler: Handler::Builtin(inert),
+            handler: inert(),
         };
         s.hosts.localhost().functions().register("box", &desc).unwrap();
         let request = |path: &[u8], query: &str, client_acl: u32| {

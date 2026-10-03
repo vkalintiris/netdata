@@ -14,7 +14,7 @@ fn desc(name: &'static [u8], source: Source) -> MethodDesc<'static> {
         access: 0,
         sync: false,
         source,
-        handler: Handler::Builtin(inert),
+        handler: inert(),
     }
 }
 
@@ -259,4 +259,35 @@ fn a_destroyed_registry_registers_nothing() {
     assert_eq!(shown(&r, Filter::User), (Vec::new(), 0));
     r.register("h", &desc(b"again", Source::Stream)).unwrap();
     assert_eq!(shown(&r, Filter::User), (vec!["again".to_string()], 0));
+}
+
+/// `nrpc_method_register_builtin()` (`nrpc-builtin.c:29-48`): a daemon method run synchronously by its handler and
+/// data, whatever the caller asks, served by the registering thread; `hidden` in its tags makes it RESTRICTED; the same
+/// handler registered again is the same method.
+#[test]
+fn a_builtin_registers_sync_from_the_daemon() {
+    let r = Registry::default();
+    let handler: Builtin = Arc::new(|_: &mut Reply, _: &[u8], _: Option<&Payload>, _: &[u8]| 200);
+    let desc = BuiltinDesc {
+        name: b"bearer_get_token",
+        help: b"help",
+        tags: b"hidden",
+        timeout_s: 10,
+        priority: 103,
+        version: 0,
+        access: 0x13,
+        handler: Arc::clone(&handler),
+    };
+    r.register_builtin("h", &desc).unwrap();
+    let m = r.get(b"bearer_get_token").unwrap();
+    assert_eq!(
+        (m.sync, m.source, m.flags, m.access, m.priority, m.timeout_s),
+        (true, Source::Daemon, FLAG_RESTRICTED, 0x13, 103, 10)
+    );
+    assert!(m.handler.same(&Handler::Builtin(Arc::clone(&handler))));
+    assert!(r.available(b"bearer_get_token"), "served by this thread");
+    let (_, records) = netdata_agent_log::capture(|| r.register_builtin("h", &desc).unwrap());
+    assert!(records.iter().all(|c| !c.message.as_deref().unwrap_or_default().contains("changes")), "{records:?}");
+    let other: Builtin = Arc::new(|_: &mut Reply, _: &[u8], _: Option<&Payload>, _: &[u8]| 200);
+    assert!(!m.handler.same(&Handler::Builtin(other)), "another handler is another pair");
 }
