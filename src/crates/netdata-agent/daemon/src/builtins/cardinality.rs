@@ -2,14 +2,14 @@
 //! time-series of every context of every host, counted collected or archived, grouped by context or by hostname.
 
 use indexmap::IndexMap;
-use netdata_agent_nrpc::reply::{ContentType, Reply};
+use netdata_agent_nrpc::reply::Reply;
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_rrd::host::Hosts;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 use netdata_agent_text::line_splitter::{Separators, quoted_strings_splitter};
 use netdata_agent_text::rrdf::{self, Field, FieldType, Filter, Summary, Transform, Visual, opts, sort};
 
-use super::METRICS_CARDINALITY_HELP;
+use super::{METRICS_CARDINALITY_HELP, json_reply};
 
 /// `struct counts`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -169,7 +169,7 @@ pub(super) fn render(hosts: &Hosts, reply: &mut Reply, function: &[u8]) -> u16 {
         match word.as_slice() {
             b"group:by-node" => by_node = true,
             b"group:by-context" => by_node = false,
-            b"info" => return finish(w, reply),
+            b"info" => return json_reply(w, reply),
             _ => {}
         }
     }
@@ -328,15 +328,5 @@ pub(super) fn render(hosts: &Hosts, reply: &mut Reply, function: &[u8]) -> u16 {
     }
     w.array_close();
     w.member_add_time_t("expires", now_realtime_s() + 1);
-    finish(w, reply)
-}
-
-/// `buffer_json_finalize()` into the reply: JSON, not cacheable (`buffer_json_initialize()`).
-fn finish(mut w: JsonWriter, reply: &mut Reply) -> u16 {
-    w.finalize();
-    reply.body = w.into_bytes();
-    reply.content_type = ContentType::ApplicationJson;
-    reply.expires = 0;
-    reply.cacheable = false;
-    200
+    json_reply(w, reply)
 }

@@ -5,11 +5,13 @@
 use std::sync::{Arc, Weak};
 
 use netdata_agent_log::{Priority, Source, nd_log};
-use netdata_agent_nrpc::reply::Reply;
+use netdata_agent_nrpc::reply::{ContentType, Reply};
 use netdata_agent_nrpc::{Builtin, BuiltinDesc, access};
 use netdata_agent_rrd::host::Hosts;
+use netdata_agent_text::json::JsonWriter;
 
 mod api_calls;
+mod bearer_get_token;
 mod cardinality;
 mod streaming;
 
@@ -31,16 +33,21 @@ const METRICS_CARDINALITY_HELP: &str = "Displays metrics cardinality statistics 
                                         function name: 'netdata-metrics-cardinality' (default, group by context) or \
                                         'netdata-metrics-cardinality group:by-node' (group by node).";
 
-/// What a built-in whose handler lands with a later step or milestone answers (D176.3): nRPC's error shape.
+/// What a built-in whose data lands with a later milestone answers (D176.3): nRPC's error shape.
 pub(crate) const NOT_IMPLEMENTED: &str = "This feature is not implemented yet on this agent.";
 
 fn not_implemented(reply: &mut Reply) -> u16 {
     reply.error(NOT_IMPLEMENTED, 501)
 }
 
-/// A handler that answers D176.3's placeholder.
-fn placeholder() -> Builtin {
-    Arc::new(|reply: &mut Reply, _: &[u8], _: Option<&_>, _: &[u8]| not_implemented(reply))
+/// `buffer_json_finalize()` into the reply: JSON, not cacheable, no expiry (`buffer_json_initialize()` clears it).
+fn json_reply(mut w: JsonWriter, reply: &mut Reply) -> u16 {
+    w.finalize();
+    reply.body = w.into_bytes();
+    reply.content_type = ContentType::ApplicationJson;
+    reply.expires = 0;
+    reply.cacheable = false;
+    200
 }
 
 /// `function_progress()`: localhost's progress table.
@@ -48,6 +55,14 @@ fn api_calls(hosts: Weak<Hosts>) -> Builtin {
     Arc::new(move |reply: &mut Reply, _: &[u8], _: Option<&_>, _: &[u8]| {
         let hostname = hosts.upgrade().map(|hosts| hosts.localhost().hostname()).unwrap_or_default();
         api_calls::render(netdata_agent_web::progress::Table::process(), reply, &hostname)
+    })
+}
+
+/// `function_bearer_get_token()`: on localhost.
+fn bearer_get_token(hosts: Weak<Hosts>) -> Builtin {
+    Arc::new(move |reply: &mut Reply, _: &[u8], payload: Option<&_>, source: &[u8]| match hosts.upgrade() {
+        Some(hosts) => bearer_get_token::call(hosts.localhost(), reply, payload, source),
+        None => not_implemented(reply),
     })
 }
 
@@ -75,7 +90,14 @@ fn descriptors(hosts: &Weak<Hosts>) -> [BuiltinDesc<'static>; 5] {
         desc("netdata-streaming", STREAMING_HELP, "top", PRIORITY, SENSITIVE, Arc::new(streaming::netdata_streaming)),
         desc("topology:streaming", STREAMING_TOPOLOGY_HELP, "top", PRIORITY, SENSITIVE, Arc::new(streaming::topology)),
         desc("netdata-api-calls", PROGRESS_HELP, "top", PRIORITY, SENSITIVE, api_calls(hosts.clone())),
-        desc("bearer_get_token", BEARER_GET_TOKEN_HELP, "hidden", BEARER_PRIORITY, SENSITIVE, placeholder()),
+        desc(
+            "bearer_get_token",
+            BEARER_GET_TOKEN_HELP,
+            "hidden",
+            BEARER_PRIORITY,
+            SENSITIVE,
+            bearer_get_token(hosts.clone()),
+        ),
         desc(
             "netdata-metrics-cardinality",
             METRICS_CARDINALITY_HELP,

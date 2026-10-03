@@ -1,7 +1,9 @@
 //! Bearer tokens, ported from `src/web/api/http_auth.c`: the files under `<varlib>/bearer_tokens` the agent loads at
-//! start and on demand, and the `X-Netdata-Auth` / `Authorization: Bearer` values that present one. Only the Cloud
-//! creates tokens (M11). Spec `knowledge/spec-m6-token-store.md`, decisions D96 in the status repository.
+//! start and on demand, the tokens `bearer_get_token` creates, and the `X-Netdata-Auth` / `Authorization: Bearer`
+//! values that present one. Spec `knowledge/spec-m6-token-store.md`, decisions D96 and D176.4 in the status
+//! repository.
 
+use std::io::Write;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -11,7 +13,8 @@ use netdata_agent_ingest::jsonc::{self, Presence::Required};
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_nrpc::access;
 use netdata_agent_rrd::clock::now_realtime_s;
-use netdata_agent_text::c::filename_from_path_entry;
+use netdata_agent_text::c::{c_str, filename_from_path_entry};
+use netdata_agent_text::json::{JsonOptions, JsonWriter};
 use netdata_agent_text::parse::uuid_parse_flexi;
 use netdata_agent_text::print::print_uuid_lower;
 use serde_json::{Map, Value};
@@ -22,6 +25,8 @@ use crate::status_file::io::read_text;
 
 /// `CLOUD_CLIENT_NAME_LENGTH` less its NUL: what a token keeps of its client's name.
 const CLIENT_NAME_MAX: usize = 63;
+/// `BEARER_TOKEN_EXPIRATION`: a new token lives a day.
+const EXPIRATION_S: i64 = 86400;
 
 /// `struct bearer_token`.
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +59,12 @@ pub fn init(varlib: &str, host: [u8; 16]) {
 /// `web_client_bearer_token_auth()` of one header's token: whether it authenticated the request.
 pub fn authenticate(auth: &Auth, value: &[u8]) -> bool {
     STORE.get().is_some_and(|store| store.authenticate(auth, value))
+}
+
+/// `bearer_create_token()`: the token for the role, access, account and client name, with its expiry; `None` without
+/// the store (C's dictionary being destroyed).
+pub fn create(role: u8, access: u32, account: [u8; 16], client_name: &[u8]) -> Option<([u8; 16], i64)> {
+    STORE.get().map(|store| store.create(role, access, account, client_name, now_realtime_s()))
 }
 
 impl Store {
@@ -204,6 +215,76 @@ impl Store {
                 expires_s,
             },
         ))
+    }
+
+    /// `bearer_create_token()` at `now_s`: the first token, in insertion order, for the same role, access, account and
+    /// client name (its first 63 bytes) that lives more than two more hours, else a new one for a day, saved.
+    fn create(&self, role: u8, access: u32, account: [u8; 16], client_name: &[u8], now_s: i64) -> ([u8; 16], i64) {
+        // strncpyz(): the name up to its NUL, cut
+        let name = c_str(client_name);
+        let name = &name[..name.len().min(CLIENT_NAME_MAX)];
+        let mut tokens = self.tokens();
+        let reuse = tokens.iter().find(|(_, t)| {
+            t.expires_s > now_s + 2 * 3600
+                && t.role == role
+                && t.access == access
+                && t.account == account
+                && t.client_name == name
+        });
+        if let Some((token, t)) = reuse {
+            return (*token, t.expires_s);
+        }
+        let token = *uuid::Uuid::new_v4().as_bytes();
+        let t = Token {
+            account,
+            client_name: name.to_vec(),
+            access,
+            role,
+            created_s: now_s,
+            expires_s: now_s + EXPIRATION_S,
+        };
+        // DICT_OPTION_DONT_OVERWRITE_VALUE: a token already known keeps its value, unsaved
+        let known = tokens.iter().find(|(id, _)| *id == token).map(|(_, known)| known.expires_s);
+        if known.is_none() {
+            tokens.push((token, t.clone()));
+        }
+        drop(tokens);
+        let expires_s = known.unwrap_or_else(|| {
+            self.save(&token, &t);
+            t.expires_s
+        });
+        self.cleanup(false);
+        (token, expires_s)
+    }
+
+    /// `bearer_token_save_to_file()`: the token's JSON, minified; a file not written whole is removed.
+    fn save(&self, token: &[u8; 16], t: &Token) {
+        let mut w = JsonWriter::new(JsonOptions::MINIFY);
+        w.member_add_uint64("version", 1);
+        w.member_add_uuid("host_uuid", &self.host);
+        w.member_add_uuid("token", token);
+        w.member_add_uuid("cloud_account_id", &t.account);
+        w.member_add_string("client_name", &t.client_name);
+        w.member_add_array(Some(b"access"));
+        for name in access::names(t.access) {
+            w.add_array_item_string(name);
+        }
+        w.array_close();
+        w.member_add_string("user_role", access::role::name(t.role));
+        w.member_add_uint64("created_s", t.created_s as u64);
+        w.member_add_uint64("expires_s", t.expires_s as u64);
+        w.member_add_uint64("signature", self.signature(token, t));
+        w.finalize();
+        let filename = self.filename(token);
+        let Ok(mut file) = std::fs::File::create(&filename) else {
+            nd_log!(Source::Daemon, Priority::Err, "Cannot create file '{filename}'");
+            return;
+        };
+        if file.write_all(w.as_bytes()).is_err() {
+            drop(file);
+            let _ = std::fs::remove_file(&filename);
+            nd_log!(Source::Daemon, Priority::Err, "Cannot save file '{filename}'");
+        }
     }
 
     /// `bearer_token_signature()` as the production build computes it: XXH3-64 of the 136-byte `struct` of the host,
@@ -390,5 +471,82 @@ mod tests {
         std::fs::write(store.filename(&token()), "123").unwrap();
         assert!(!store.load_token(&token()));
         assert!(!std::path::Path::new(&store.filename(&token())).exists(), "deleted: no version");
+    }
+
+    /// `bearer_create_token()` (`http_auth.c:208-237`): the first token, in insertion order, of the same role, access,
+    /// account and client name (its first 63 bytes) that lives more than two more hours; else a new one for a day,
+    /// saved as `bearer_token_save_to_file()` writes it, which a restart loads and authenticates. Each new token counts
+    /// towards the thousandth cleanup.
+    #[test]
+    fn tokens_are_reused_as_c() {
+        use access::role::{ADMIN, MEMBER, OBSERVER};
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let account = uuid_parse_flexi(ACCOUNT.as_bytes()).unwrap();
+        let now = now_realtime_s();
+        let (token, expires) = store.create(ADMIN, access::ALL, account, b"probe", now);
+        assert_eq!(expires, now + 86400);
+        assert_eq!(store.create(ADMIN, access::ALL, account, b"probe", now + 3600), (token, expires));
+        for (role, bits, account, name) in [
+            (MEMBER, access::ALL, account, &b"probe"[..]),
+            (ADMIN, access::SIGNED_ID, account, b"probe"),
+            (ADMIN, access::ALL, [0; 16], b"probe"),
+            (ADMIN, access::ALL, account, b"probe2"),
+            (ADMIN, access::ALL, account, b"prob"),
+        ] {
+            assert_ne!(store.create(role, bits, account, name, now).0, token, "{}", String::from_utf8_lossy(name));
+        }
+        // two hours left: a new token, which later requests get only once the first is too old
+        let late = expires - 2 * 3600;
+        let (renewed, renewed_expires) = store.create(ADMIN, access::ALL, account, b"probe", late);
+        assert!(renewed != token && renewed_expires == late + 86400);
+        assert_eq!(store.create(ADMIN, access::ALL, account, b"probe", late - 1), (token, expires));
+        assert_eq!(store.create(ADMIN, access::ALL, account, b"probe", late).0, renewed);
+        // a name is kept as its first 63 bytes, up to a NUL
+        let long = [b'n'; 70];
+        let cut = store.create(ADMIN, access::ALL, account, &long, now).0;
+        let mut other = long;
+        other[69] = b'x';
+        assert_eq!(store.create(ADMIN, access::ALL, account, &other, now).0, cut);
+        assert_eq!(store.create(ADMIN, access::ALL, account, &long[..63], now).0, cut);
+        assert_ne!(store.create(ADMIN, access::ALL, account, &long[..62], now).0, cut);
+        assert_eq!(store.create(ADMIN, access::ALL, account, b"probe\0x", now).0, token);
+
+        let mut text = Vec::new();
+        print_uuid_lower(&mut text, &token);
+        let token_text = String::from_utf8(text).unwrap();
+        let names: Vec<String> = access::names(access::ALL).map(|n| format!("\"{n}\"")).collect();
+        let t = store.tokens().iter().find(|(id, _)| *id == token).unwrap().1.clone();
+        assert_eq!(
+            std::fs::read_to_string(store.filename(&token)).unwrap(),
+            format!(
+                r#"{{"version":1,"host_uuid":"{}","token":"{token_text}","cloud_account_id":"{ACCOUNT}","client_name":"probe","access":[{}],"user_role":"admin","created_s":{now},"expires_s":{expires},"signature":{}}}"#,
+                host_text(),
+                names.join(","),
+                store.signature(&token, &t)
+            )
+        );
+        let restarted = Store::new(dir.path().to_str().unwrap(), HOST);
+        restarted.load_from_disk();
+        let mut saved = store.tokens().clone();
+        let mut loaded = restarted.tokens().clone();
+        saved.sort_by_key(|(id, _)| *id);
+        loaded.sort_by_key(|(id, _)| *id);
+        assert_eq!(loaded, saved);
+        let auth = Auth::default();
+        assert!(restarted.authenticate(&auth, token_text.as_bytes()));
+        assert_eq!(auth.identity(), ("probe".to_string(), account));
+
+        // the thousandth new token's cleanup removes the expired ones
+        let stale = store.create(OBSERVER, 0, [0; 16], b"stale", now - 200_000).0;
+        let kept = |token: &[u8; 16]| std::path::Path::new(&store.filename(token)).exists();
+        let mut i = 0;
+        while store.cleanups.load(Ordering::Relaxed) < 999 {
+            store.create(OBSERVER, 0, [0; 16], format!("n{i}").as_bytes(), now);
+            i += 1;
+        }
+        assert!(kept(&stale));
+        store.create(OBSERVER, 0, [0; 16], b"last", now);
+        assert!(!kept(&stale) && !store.tokens().iter().any(|(id, _)| *id == stale) && kept(&token));
     }
 }

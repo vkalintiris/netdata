@@ -22,7 +22,7 @@ impl Reply {
     }
 
     /// `nrpc_call_error()`: the buffer becomes `{"status":code,"errorMessage":msg}`, expiring in a second.
-    pub fn error(&mut self, msg: &str, code: u16) -> u16 {
+    pub fn error(&mut self, msg: impl AsRef<[u8]>, code: u16) -> u16 {
         let mut w = JsonWriter::new(JsonOptions::MINIFY);
         w.member_add_int64("status", i64::from(code));
         w.member_add_string("errorMessage", msg);

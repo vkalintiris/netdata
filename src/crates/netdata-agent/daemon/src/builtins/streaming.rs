@@ -2,12 +2,12 @@
 //! host's status, which comes with M10; until then `topology:streaming info` is C's, and every other call answers
 //! D176.3's placeholder.
 
-use netdata_agent_nrpc::reply::{ContentType, Payload, Reply};
+use netdata_agent_nrpc::reply::{Payload, Reply};
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 use netdata_agent_text::line_splitter::{Separators, quoted_strings_splitter};
 
-use super::{STREAMING_TOPOLOGY_HELP, not_implemented};
+use super::{STREAMING_TOPOLOGY_HELP, json_reply, not_implemented};
 
 /// `STREAMING_FUNCTION_UPDATE_EVERY`.
 const UPDATE_EVERY: i64 = 10;
@@ -36,11 +36,5 @@ pub(super) fn topology(reply: &mut Reply, function: &[u8], _: Option<&Payload>, 
     w.member_add_array(Some(b"required_params"));
     w.array_close();
     w.member_add_time_t("expires", now_realtime_s() + UPDATE_EVERY);
-    w.finalize();
-    // buffer_json_initialize(): JSON, not cacheable
-    reply.body = w.into_bytes();
-    reply.content_type = ContentType::ApplicationJson;
-    reply.expires = 0;
-    reply.cacheable = false;
-    200
+    json_reply(w, reply)
 }

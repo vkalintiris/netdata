@@ -91,18 +91,26 @@ fn builtin_handlers_hold_no_strong_hosts() {
 
 /// A call as the web server makes it, waiting for its answer.
 fn call(hosts: &Arc<Hosts>, cmd: &str) -> (u16, Reply) {
+    call_with(hosts, cmd, b"test", None)
+}
+
+/// [`call`] from `source` with `payload`.
+fn call_with(hosts: &Arc<Hosts>, cmd: &str, source: &[u8], payload: Option<&[u8]>) -> (u16, Reply) {
     let calls = Calls::new(Box::new(SystemClock));
     let localhost = hosts.localhost();
     let called = calls.call(CallSpec {
         owner: Some((localhost.functions(), &localhost.hostname())),
         cmd: cmd.as_bytes(),
-        source: b"test",
+        source,
         user_access: access::ALL,
         timeout_s: 10,
         wait: true,
         allow_restricted: true,
         call_id: None,
-        payload: None,
+        payload: payload.map(|body| netdata_agent_nrpc::reply::Payload {
+            body: body.to_vec(),
+            content_type: ContentType::ApplicationJson,
+        }),
         reply: Reply::new(ContentType::ApplicationJson),
         done: None,
         progress: None,
@@ -113,8 +121,7 @@ fn call(hosts: &Arc<Hosts>, cmd: &str) -> (u16, Reply) {
 }
 
 /// D176.3: until M10 the streaming two answer nRPC's 501 but for `topology:streaming info`, which is C's
-/// (`function-topology-streaming.c:2949-2958`: `info` as any word after the name, pretty, not cacheable); the
-/// handlers of later steps answer the same placeholder.
+/// (`function-topology-streaming.c:2949-2958`: `info` as any word after the name, pretty, not cacheable).
 #[test]
 fn the_streaming_placeholder_answers_as_decided() {
     let hosts = hosts();
@@ -276,4 +283,141 @@ fn cardinality_counts_are_cs() {
     assert!(by_node["columns"]["All Nodes"].is_null());
     let info = render("netdata-metrics-cardinality group:by-node info");
     assert!(info["data"].is_null() && info["expires"].is_null() && info["required_params"].is_array());
+}
+
+fn unhex(s: &str) -> Vec<u8> {
+    if s == "-" {
+        return Vec::new();
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+}
+
+fn uuid_text(uuid: &[u8; 16]) -> String {
+    let mut out = Vec::new();
+    netdata_agent_text::print::print_uuid_lower(&mut out, uuid);
+    String::from_utf8(out).unwrap()
+}
+
+/// The payload as C reads it (`tests/oracle/gen-bearer-payload.c`): json-c's texts (D176.5) and the member readers'
+/// in C's order, each cut to C's 255 bytes, or the request read. Input json-c accepts and serde refuses is D46.1's
+/// divergence: Rust refuses it with a json-c text.
+#[test]
+fn payload_errors_are_cs() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/bearer_payload.txt");
+    let vectors = std::fs::read_to_string(path).unwrap();
+    let divergent: &[&[u8]] = &[
+        b"{\"a\":True}\n",
+        b"{\"a\":\"\\ud800\"}\n",
+        b"{\"a\":\"\\ud800x\"}\n",
+        b"{\"a\":\"\\udc00\"}\n",
+        b"{\"a\":1.}\n",
+        b"{\"a\":1.5e+}\n",
+        b"{\"a\":01}\n",
+        b"{\"a\":1e}\n",
+        b"{\"a\":1e999}\n",
+        b"{\"a\":NaN}\n",
+        b"{\"a\":Infinity}\n",
+        b"{\"a\":-Infinity}\n",
+        b"{\"a\":nan}\n",
+        b"{'a':1}\n",
+        b"/*c*/{}\n",
+        b"//c\n{}\n",
+        b"123x\n",
+        b"truex\n",
+        b"{\"a\":1,}\n",
+        b"[1,]\n",
+    ];
+    let (mut compared, mut diverged) = (0, Vec::new());
+    for line in vectors.lines() {
+        let mut words = line.split(' ');
+        let (input, code, output) = (words.next().unwrap(), words.next().unwrap(), words.next().unwrap());
+        let (input, code, output) = (unhex(input), code.parse::<u16>().unwrap(), unhex(output));
+        let mut reply = Reply::new(ContentType::TextPlain);
+        let payload = (!input.is_empty()).then_some(input.as_slice());
+        let actual = match netdata_agent_ingest::jsonc::function_payload_or_error(
+            &mut reply,
+            payload,
+            bearer_get_token::parse,
+        ) {
+            Ok(rq) => {
+                let name = rq.client_name.unwrap_or_else(|| "-".into());
+                let dump = format!(
+                    "{} {} {} {} {:x} {} {name}",
+                    uuid_text(&rq.claim_id),
+                    uuid_text(&rq.machine_guid),
+                    uuid_text(&rq.node_id),
+                    access::role::name(rq.role),
+                    rq.access,
+                    uuid_text(&rq.account)
+                );
+                (200, dump.into_bytes())
+            }
+            Err(code) => (code, reply.body),
+        };
+        let shown = String::from_utf8_lossy(&input).into_owned();
+        if divergent.contains(&input.as_slice()) {
+            assert!(code != 500 && actual.0 == 500, "{shown:?}: C {code}, Rust {actual:?}");
+            diverged.push(shown);
+            continue;
+        }
+        assert_eq!(
+            (actual.0, String::from_utf8_lossy(&actual.1)),
+            (code, String::from_utf8_lossy(&output)),
+            "{shown:?}"
+        );
+        compared += 1;
+    }
+    assert_eq!((compared, diverged.len()), (115, divergent.len()));
+}
+
+/// `claim_id_matches_any()` and `verify_host_uuids()` (`api_v2_bearer.c:5-19`, `claim.c:130-148`): the parent's claim
+/// id after `NODE_ID`, or the origin's; the host's machine GUID and a node id it has. Past them the token store
+/// answers; without one, C's 500.
+#[test]
+fn claims_match_as_c() {
+    const CLAIM: &str = "5a1e0000-0000-4000-8000-0000000000cc";
+    const NODE: &str = "5a1e0000-0000-4000-8000-0000000000bb";
+    const GUID: &str = "0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e";
+    const NC: &[u8] = b"method=NC,role=admin,permissions=0x7ff";
+    let uuid = |text: &str| netdata_agent_text::parse::uuid_parse_flexi(text.as_bytes()).unwrap();
+    let hosts = hosts();
+    global_functions_add(&hosts);
+    let localhost = hosts.localhost();
+    let ask = |source: &[u8], claim: &str, guid: &str, node: &str| {
+        let payload = format!(
+            r#"{{"claim_id":{claim},"machine_guid":"{guid}","node_id":"{node}","user_role":"admin","access":[],"cloud_account_id":null,"client_name":"c"}}"#
+        ) + "\n";
+        let (code, reply) = call_with(&hosts, "bearer_get_token", source, Some(payload.as_bytes()));
+        let body = String::from_utf8_lossy(&reply.body).into_owned();
+        (code, body.split("\"errorMessage\":\"").nth(1).unwrap_or(&body).trim_end_matches("\"}").to_string())
+    };
+    let quoted = format!("\"{CLAIM}\"");
+    let other = |text: &str| (400, text.to_string());
+    let different = other("The request is for a different agent");
+    let not_matching = other("The request is missing or not matching local node UUIDs");
+    let no_store = (500, "Failed to create a bearer token".to_string());
+
+    let not_nc = other("Bearer tokens can only be provided via NC.");
+    assert_eq!(ask(b"method=api-bearer,role=admin", &quoted, GUID, NODE), not_nc);
+    assert_eq!(ask(b"method=NC", &quoted, GUID, NODE), not_nc);
+    assert_eq!(call_with(&hosts, "bearer_get_token", NC, None).0, 400, "no payload");
+    assert_eq!(ask(NC, &quoted, GUID, NODE), different, "no parent claim id");
+    assert!(localhost.update_claim_id_of_parent(uuid(CLAIM)).is_some());
+    assert_eq!(ask(NC, "null", GUID, NODE), different, "a zero claim id");
+    assert_eq!(ask(NC, &quoted, GUID, NODE), not_matching, "no node id");
+    localhost.set_node_id(uuid(NODE));
+    for claim in [quoted.clone(), quoted.to_uppercase(), quoted.replace('-', ""), format!("\"{CLAIM}junk\"")] {
+        assert_eq!(ask(NC, &claim, GUID, NODE), no_store, "{claim}");
+    }
+    assert_eq!(ask(NC, &quoted, &GUID.to_uppercase(), NODE), no_store, "the GUID read as a UUID");
+    assert_eq!(ask(NC, &quoted, CLAIM, NODE), not_matching, "another machine GUID");
+    assert_eq!(ask(NC, &quoted, GUID, CLAIM), not_matching, "another node id");
+    // the origin's claim id
+    let origin = "5a1e0000-0000-4000-8000-0000000000dd";
+    assert_eq!(ask(NC, &format!("\"{origin}\""), GUID, NODE), different);
+    localhost.set_claim_id_of_origin(uuid(origin));
+    assert_eq!(ask(NC, &format!("\"{origin}\""), GUID, NODE), no_store);
+    // a zero parent id (a disconnect clears it) matches nothing
+    localhost.update_claim_id_of_parent([0; 16]);
+    assert_eq!(ask(NC, &quoted, GUID, NODE), different);
 }

@@ -1,12 +1,12 @@
 //! `netdata-api-calls` (`src/libnetdata/query_progress/progress.c` `progress_function_result()`): the progress
 //! table's rows in C's order, rendered under its lock, then their columns.
 
-use netdata_agent_nrpc::reply::{ContentType, Reply};
+use netdata_agent_nrpc::reply::Reply;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 use netdata_agent_text::rrdf::{self, Field, FieldType, Filter, Summary, Transform, Visual, opts, sort};
 use netdata_agent_web::progress::{RowView, Table, Transaction};
 
-use super::PROGRESS_HELP;
+use super::{PROGRESS_HELP, json_reply};
 use crate::access_log::{logged_url, mode_name};
 use crate::acl;
 
@@ -179,11 +179,5 @@ pub(super) fn render(table: &Table, reply: &mut Reply, hostname: &str) -> u16 {
     w.object_close();
     w.member_add_string("default_sort_column", "Started");
     w.member_add_time_t("expires", (now_ut / 1_000_000) as i64 + 1);
-    w.finalize();
-    // buffer_json_initialize(): JSON, not cacheable
-    reply.body = w.into_bytes();
-    reply.content_type = ContentType::ApplicationJson;
-    reply.expires = 0;
-    reply.cacheable = false;
-    200
+    json_reply(w, reply)
 }
