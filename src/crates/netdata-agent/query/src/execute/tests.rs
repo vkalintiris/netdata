@@ -736,7 +736,11 @@ fn progress_counts_the_metrics_run() {
             true
         };
         let mut steps = None;
-        table.visit(|_, row| steps = Some((row.all, row.done)));
+        table.visit(|_, rows| {
+            for (_, row) in rows {
+                steps = Some((row.all, row.done));
+            }
+        });
         (ran, steps.unwrap())
     };
     let h = host();

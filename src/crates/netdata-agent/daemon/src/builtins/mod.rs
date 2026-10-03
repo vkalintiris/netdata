@@ -9,6 +9,8 @@ use netdata_agent_nrpc::reply::Reply;
 use netdata_agent_nrpc::{Builtin, BuiltinDesc, access};
 use netdata_agent_rrd::host::Hosts;
 
+mod api_calls;
+mod cardinality;
 mod streaming;
 
 /// `NRPC_PRIORITY_DEFAULT + 1`, and `bearer_get_token`'s `+ 3`.
@@ -41,8 +43,24 @@ fn placeholder() -> Builtin {
     Arc::new(|reply: &mut Reply, _: &[u8], _: Option<&_>, _: &[u8]| not_implemented(reply))
 }
 
+/// `function_progress()`: localhost's progress table.
+fn api_calls(hosts: Weak<Hosts>) -> Builtin {
+    Arc::new(move |reply: &mut Reply, _: &[u8], _: Option<&_>, _: &[u8]| {
+        let hostname = hosts.upgrade().map(|hosts| hosts.localhost().hostname()).unwrap_or_default();
+        api_calls::render(netdata_agent_web::progress::Table::process(), reply, &hostname)
+    })
+}
+
+/// `function_metrics_cardinality()`: every host's contexts.
+fn cardinality(hosts: Weak<Hosts>) -> Builtin {
+    Arc::new(move |reply: &mut Reply, function: &[u8], _: Option<&_>, _: &[u8]| match hosts.upgrade() {
+        Some(hosts) => cardinality::render(&hosts, reply, function),
+        None => not_implemented(reply),
+    })
+}
+
 /// The five, in C's order.
-fn descriptors(_hosts: &Weak<Hosts>) -> [BuiltinDesc<'static>; 5] {
+fn descriptors(hosts: &Weak<Hosts>) -> [BuiltinDesc<'static>; 5] {
     let desc = |name: &'static str, help: &'static str, tags: &'static str, priority, access, handler| BuiltinDesc {
         name: name.as_bytes(),
         help: help.as_bytes(),
@@ -56,9 +74,16 @@ fn descriptors(_hosts: &Weak<Hosts>) -> [BuiltinDesc<'static>; 5] {
     [
         desc("netdata-streaming", STREAMING_HELP, "top", PRIORITY, SENSITIVE, Arc::new(streaming::netdata_streaming)),
         desc("topology:streaming", STREAMING_TOPOLOGY_HELP, "top", PRIORITY, SENSITIVE, Arc::new(streaming::topology)),
-        desc("netdata-api-calls", PROGRESS_HELP, "top", PRIORITY, SENSITIVE, placeholder()),
+        desc("netdata-api-calls", PROGRESS_HELP, "top", PRIORITY, SENSITIVE, api_calls(hosts.clone())),
         desc("bearer_get_token", BEARER_GET_TOKEN_HELP, "hidden", BEARER_PRIORITY, SENSITIVE, placeholder()),
-        desc("netdata-metrics-cardinality", METRICS_CARDINALITY_HELP, "top", PRIORITY, access::ANONYMOUS_DATA, placeholder()),
+        desc(
+            "netdata-metrics-cardinality",
+            METRICS_CARDINALITY_HELP,
+            "top",
+            PRIORITY,
+            access::ANONYMOUS_DATA,
+            cardinality(hosts.clone()),
+        ),
     ]
 }
 

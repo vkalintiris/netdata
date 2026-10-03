@@ -9,5 +9,6 @@ pub mod content_type;
 pub mod progress;
 pub mod request;
 pub mod response;
+mod simple_hashtable;
 pub mod status;
 pub mod url;

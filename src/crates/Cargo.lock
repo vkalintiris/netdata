@@ -3043,6 +3043,7 @@ dependencies = [
  "curl",
  "dns-lookup",
  "flate2",
+ "indexmap",
  "mio",
  "netdata-agent-dyncfg",
  "netdata-agent-evloop",
@@ -3291,6 +3292,7 @@ name = "netdata-agent-web"
 version = "0.1.3"
 dependencies = [
  "netdata-agent-text",
+ "twox-hash",
 ]
 
 [[package]]

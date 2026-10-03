@@ -10,3 +10,4 @@ workspace = true
 
 [dependencies]
 netdata-agent-text = { workspace = true }
+twox-hash = { workspace = true, features = ["xxhash3_64"] }

@@ -4,14 +4,19 @@
 //!
 //! The finished rows are kept, oldest first, up to [`CACHE_SIZE`]: a start of an unknown transaction then takes the
 //! oldest one over, so a finished request stays visible for the next 199 requests. Rows in flight are never evicted.
+//!
+//! The rows are indexed as C indexes them (an open-addressing table keyed by the transaction's XXH3, every lookup able
+//! to grow it), so a walk of its slots lists them in C's order.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use netdata_agent_text::json::JsonWriter;
+use twox_hash::XxHash3_64;
 
 use crate::request::Mode;
+use crate::simple_hashtable::SimpleHashtable;
 use crate::status;
 
 /// `PROGRESS_CACHE_SIZE`: the finished rows kept.
@@ -124,11 +129,29 @@ impl Row {
     }
 }
 
-#[derive(Debug, Default)]
+/// `PROGRESS_CACHE_SIZE * 4`: the index's first size.
+const INDEX_SIZE: usize = CACHE_SIZE * 4;
+
+/// `query_hash()`.
+fn hash(tx: &Transaction) -> u64 {
+    XxHash3_64::oneshot(tx)
+}
+
+#[derive(Debug)]
 struct Inner {
-    rows: HashMap<Transaction, Row>,
+    /// C's `progress.hashtable`: the transaction's row.
+    index: SimpleHashtable<Transaction, usize>,
+    /// The rows the index points to (C's allocations); a freed one is reused.
+    rows: Vec<Row>,
+    free: Vec<usize>,
     /// The finished rows' transactions, oldest first.
     finished: VecDeque<Transaction>,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Inner { index: SimpleHashtable::new(INDEX_SIZE), rows: Vec::new(), free: Vec::new(), finished: VecDeque::new() }
+    }
 }
 
 impl Inner {
@@ -136,6 +159,49 @@ impl Inner {
         if let Some(i) = self.finished.iter().position(|t| t == tx) {
             self.finished.remove(i);
         }
+    }
+
+    /// `query_progress_find_in_hashtable_unsafe()`: a lookup, which may grow the index.
+    fn find(&mut self, tx: &Transaction) -> Option<usize> {
+        let slot = self.index.get_slot(hash(tx), tx, true);
+        self.index.value(slot).copied()
+    }
+
+    fn row(&mut self, tx: &Transaction) -> Option<&mut Row> {
+        let at = self.find(tx)?;
+        Some(&mut self.rows[at])
+    }
+
+    /// `query_progress_add_to_hashtable_unsafe()`.
+    fn add(&mut self, tx: &Transaction, at: usize) {
+        let h = hash(tx);
+        let slot = self.index.get_slot(h, tx, true);
+        self.index.set_slot(slot, h, *tx, at);
+    }
+
+    /// `query_progress_remove_from_hashtable_unsafe()`: the row out of the index (it stays allocated).
+    fn remove(&mut self, tx: &Transaction) -> Option<usize> {
+        let slot = self.index.get_slot(hash(tx), tx, true);
+        let at = self.index.value(slot).copied()?;
+        self.index.del_slot(slot);
+        Some(at)
+    }
+
+    /// `query_progress_alloc()`.
+    fn alloc(&mut self) -> usize {
+        match self.free.pop() {
+            Some(at) => at,
+            None => {
+                self.rows.push(Row::default());
+                self.rows.len() - 1
+            }
+        }
+    }
+
+    /// `query_progress_free()`.
+    fn release(&mut self, at: usize) {
+        self.rows[at].clean();
+        self.free.push(at);
     }
 }
 
@@ -184,42 +250,50 @@ impl Table {
     pub fn start(&self, tx: &Transaction, started_ut: u64, s: Start<'_>) {
         let started_ut = if started_ut == 0 { (self.now_ut)() } else { started_ut };
         let mut inner = self.lock();
-        if !inner.rows.contains_key(tx)
-            && inner.finished.len() >= CACHE_SIZE
-            && let Some(oldest) = inner.finished.pop_front()
-        {
-            let mut row = inner.rows.remove(&oldest).unwrap_or_default();
-            row.clean();
-            inner.rows.insert(*tx, row);
-        }
-        let listed = inner.rows.get(tx).is_some_and(|r| r.listed);
-        if listed {
-            inner.unlist(tx);
-        }
-        let row = inner.rows.entry(*tx).or_default();
-        if listed {
-            row.clean();
-        }
-        row.update(started_ut, &s);
+        let at = match inner.find(tx) {
+            Some(at) => {
+                // reusing a finished transaction
+                if inner.rows[at].listed {
+                    inner.unlist(tx);
+                    inner.rows[at].clean();
+                }
+                at
+            }
+            None => {
+                let at = match inner.finished.front().copied() {
+                    // the oldest finished row taken over, out of the index under its old transaction
+                    Some(oldest) if inner.finished.len() >= CACHE_SIZE => {
+                        inner.finished.pop_front();
+                        let at = inner.remove(&oldest).unwrap_or_else(|| inner.alloc());
+                        inner.rows[at].clean();
+                        at
+                    }
+                    _ => inner.alloc(),
+                };
+                inner.add(tx, at);
+                at
+            }
+        };
+        inner.rows[at].update(started_ut, &s);
     }
 
     /// `query_progress_set_finish_line()`: the steps a query will take, the largest announced.
     pub fn set_finish_line(&self, tx: &Transaction, all: usize) {
-        if let Some(row) = self.lock().rows.get_mut(tx) {
+        if let Some(row) = self.lock().row(tx) {
             row.all = row.all.max(all);
         }
     }
 
     /// `query_progress_done_step()`: `done` more steps taken.
     pub fn done_step(&self, tx: &Transaction, done: usize) {
-        if let Some(row) = self.lock().rows.get_mut(tx) {
+        if let Some(row) = self.lock().row(tx) {
             row.done += done;
         }
     }
 
     /// `query_progress_functions_update()`: a plugin's totals, each replacing the row's when not 0.
     pub fn functions_update(&self, tx: &Transaction, done: usize, all: usize) {
-        if let Some(row) = self.lock().rows.get_mut(tx) {
+        if let Some(row) = self.lock().row(tx) {
             if all != 0 {
                 row.all = all;
             }
@@ -234,7 +308,7 @@ impl Table {
     pub fn finished(&self, tx: &Transaction, finished_ut: u64, f: Finish) {
         let finished_ut = if finished_ut == 0 { (self.now_ut)() } else { finished_ut };
         let mut inner = self.lock();
-        let listed = match inner.rows.get_mut(tx) {
+        let listed = match inner.row(tx) {
             Some(row) => {
                 row.sent_size = f.sent_size as u32;
                 row.response_size = f.response_size as u32;
@@ -253,15 +327,16 @@ impl Table {
         }
         if inner.finished.len() > CACHE_SIZE
             && let Some(oldest) = inner.finished.pop_front()
+            && let Some(at) = inner.remove(&oldest)
         {
-            inner.rows.remove(&oldest);
+            inner.release(at);
         }
     }
 
     /// `web_api_v2_report_progress()`'s members: a finished request at 100%, one in flight with its age and its
     /// steps' share (or the steps taken, when it announced none); the HTTP status, 404 for an unknown transaction.
     pub fn report(&self, tx: &Transaction, w: &mut JsonWriter) -> u16 {
-        let found = self.lock().rows.get(tx).map(|r| (r.started_ut, r.finished_ut, r.all, r.done));
+        let found = self.lock().row(tx).map(|r| (r.started_ut, r.finished_ut, r.all, r.done));
         let Some((started_ut, finished_ut, all, done)) = found else {
             w.member_add_uint64("status", u64::from(status::NOT_FOUND));
             w.member_add_string("message", "Transaction not found");
@@ -291,11 +366,13 @@ impl Table {
         Tracker { table: self, tx }
     }
 
-    /// Every row, in no order.
-    pub fn visit(&self, mut f: impl FnMut(&Transaction, RowView<'_>)) {
-        for (tx, row) in &self.lock().rows {
-            f(tx, row.view());
-        }
+    /// Every row in C's order (the index's slots), with the clock read under the lock, so a row started meanwhile
+    /// cannot be younger than that clock (`progress_function_result()`).
+    pub fn visit<R>(&self, f: impl FnOnce(u64, &mut dyn Iterator<Item = (&Transaction, RowView<'_>)>) -> R) -> R {
+        let inner = self.lock();
+        let now_ut = (self.now_ut)();
+        let mut rows = inner.index.values().map(|(tx, &at)| (tx, inner.rows[at].view()));
+        f(now_ut, &mut rows)
     }
 }
 
@@ -368,16 +445,18 @@ mod tests {
             t.finished(&tx(n), 0, Finish { code: 200, duration_ut: 1234, response_size: 123, sent_size: 12 });
         }
         let mut running = 0;
-        t.visit(|id, row| {
-            if row.finished_ut == 0 {
-                running += 1;
-                assert!(u32::from_be_bytes(id[..4].try_into().unwrap()) < 100);
-                assert_eq!(row.query, b"permanent");
+        t.visit(|_, rows| {
+            for (id, row) in rows {
+                if row.finished_ut == 0 {
+                    running += 1;
+                    assert!(u32::from_be_bytes(id[..4].try_into().unwrap()) < 100);
+                    assert_eq!(row.query, b"permanent");
+                }
             }
         });
         assert_eq!(running, 100);
         assert_eq!(listed(&t).len(), CACHE_SIZE);
-        assert_eq!(t.lock().rows.len(), 100 + CACHE_SIZE);
+        assert_eq!(t.lock().index.values().count(), 100 + CACHE_SIZE);
     }
 
     /// An unknown transaction takes the oldest finished row over at its start once 200 are listed; a finish that
@@ -418,14 +497,22 @@ mod tests {
         t.functions_update(&tx(1), 5, 10);
         t.start(&tx(1), 200, Start { query: b"/other", client: b"10.0.0.2", ..get(Start::default()) });
         let mut seen = None;
-        t.visit(|_, row| seen = Some((row.started_ut, row.mode, row.acl, row.query.to_vec(), row.client.to_vec())));
+        t.visit(|_, rows| {
+            for (_, row) in rows {
+                seen = Some((row.started_ut, row.mode, row.acl, row.query.to_vec(), row.client.to_vec()));
+            }
+        });
         let first = (b"/api/v1/function?function=a".to_vec(), b"10.0.0.1".to_vec());
         assert_eq!(seen, Some((200, Some(Mode::Get), 0, first.0, first.1)));
         assert_eq!(report(&t, &tx(1)).1, running(200, r#""progress":50"#));
 
         t.finished(&tx(1), 300, Finish { code: 200, duration_ut: 9, response_size: 1 << 33, sent_size: 3 });
         let mut sizes = None;
-        t.visit(|_, row| sizes = Some((row.response_code, row.duration_ut, row.response_size, row.sent_size)));
+        t.visit(|_, rows| {
+            for (_, row) in rows {
+                sizes = Some((row.response_code, row.duration_ut, row.response_size, row.sent_size));
+            }
+        });
         assert_eq!(sizes, Some((200, 9, 0, 3)));
         t.start(&tx(1), 400, a);
         assert!(listed(&t).is_empty());
@@ -446,7 +533,7 @@ mod tests {
         t.set_finish_line(&tx(9), 5);
         t.done_step(&tx(9), 1);
         t.functions_update(&tx(9), 1, 2);
-        assert!(t.lock().rows.is_empty());
+        assert_eq!(t.lock().index.values().count(), 0);
 
         t.start(&tx(1), NOW, Start::default());
         let tracker = t.tracker(tx(1));
