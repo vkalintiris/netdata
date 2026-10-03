@@ -198,20 +198,8 @@ impl Dyncfg {
             return false;
         }
 
-        // the node as the set left it (merged into an existing one, maybe)
-        let (function, kind, cmds, disabled, template, dyncfg_job) = {
-            let map = self.nodes.lock();
-            let Some(node) = map.get(id) else {
-                return true;
-            };
-            (
-                node.function.clone(),
-                node.kind,
-                node.cmds,
-                node.stored.user_disabled || node.current.status == Status::Disabled,
-                node.template.clone(),
-                node.current.source_type == SourceType::Dyncfg && node.kind == Type::Job,
-            )
+        let Some(function) = self.nodes.lock().get(id).map(|node| node.function.clone()) else {
+            return true;
         };
         let registered = host.register_function(&MethodDesc {
             name: &function,
@@ -228,6 +216,18 @@ impl Dyncfg {
         if let Err(warning) = registered {
             nd_log!(Source::Daemon, Priority::Warning, "{warning}");
         }
+        // the node as the set left it (merged into an existing one, maybe), read after the registration as C reads it
+        let Some((kind, cmds, disabled, template, dyncfg_job)) = self.nodes.lock().get(id).map(|node| {
+            (
+                node.kind,
+                node.cmds,
+                node.stored.user_disabled || node.current.status == Status::Disabled,
+                node.template.clone(),
+                node.current.source_type == SourceType::Dyncfg && node.kind == Type::Job,
+            )
+        }) else {
+            return true;
+        };
         if kind != Type::Template && cmds.intersects(Cmds::ENABLE | Cmds::DISABLE) {
             let disable =
                 disabled || template.as_deref().is_some_and(|template| self.nodes.is_user_disabled(template));
@@ -273,9 +273,12 @@ impl Dyncfg {
             );
             return;
         }
-        if let Some(function) = self.nodes.delete(id) {
-            host.unregister_function(&function, NrpcSource::Daemon);
-        }
+        // C unregisters the method, then deletes a node never saved
+        let Some(function) = self.nodes.lock().get(id).map(|node| node.function.clone()) else {
+            return;
+        };
+        host.unregister_function(&function, NrpcSource::Daemon);
+        self.nodes.delete(id);
     }
 
     /// `dyncfg_status_low_level()`.

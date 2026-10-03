@@ -3082,6 +3082,7 @@ dependencies = [
  "netdata-agent-query",
  "netdata-agent-rrd",
  "netdata-agent-text",
+ "rustix",
  "tempfile",
 ]
 

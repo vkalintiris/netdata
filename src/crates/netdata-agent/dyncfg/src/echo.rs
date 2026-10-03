@@ -23,7 +23,8 @@ struct Target {
     id: Vec<u8>,
     serial: u64,
     cmd: Cmds,
-    cmd_str: String,
+    /// The command's words after the function (`add <name>` keeps the name's bytes).
+    cmd_str: Vec<u8>,
 }
 
 /// A saved payload as a call's: C sends `CT_NONE` as `text/plain`.
@@ -52,7 +53,7 @@ impl Dyncfg {
             nd_log!(Source::Daemon, Priority::Err, "DYNCFG: command given does not resolve to a known command");
             return;
         };
-        let target = Target { id: id.to_vec(), serial, cmd, cmd_str: cmd_str.to_string() };
+        let target = Target { id: id.to_vec(), serial, cmd, cmd_str: cmd_str.as_bytes().to_vec() };
         self.send(&host, &function, target, &source, None);
     }
 
@@ -78,7 +79,7 @@ impl Dyncfg {
             );
             return;
         };
-        let target = Target { id: id.to_vec(), serial, cmd: Cmds::UPDATE, cmd_str: "update".to_string() };
+        let target = Target { id: id.to_vec(), serial, cmd: Cmds::UPDATE, cmd_str: b"update".to_vec() };
         self.send(&host, &function, target, &source, Some(payload));
     }
 
@@ -100,12 +101,13 @@ impl Dyncfg {
             nd_log!(Source::Daemon, Priority::Err, "DYNCFG: cannot find host of configuration id '{shown}'");
             return;
         };
-        let cmd_str = format!("add {}", String::from_utf8_lossy(name));
+        let cmd_str = [b"add ".as_slice(), name].concat();
         let Some(payload) = payload else {
             nd_log!(
                 Source::Daemon,
                 Priority::Err,
-                "DYNCFG: requested to send a '{cmd_str}' to '{shown}', but there is no payload"
+                "DYNCFG: requested to send a '{}' to '{shown}', but there is no payload",
+                String::from_utf8_lossy(&cmd_str)
             );
             return;
         };
@@ -173,7 +175,7 @@ impl Dyncfg {
     fn send(&self, host: &Host, function: &[u8], target: Target, source: &[u8], payload: Option<CallPayload>) {
         let mut cmd = function.to_vec();
         cmd.push(b' ');
-        cmd.extend_from_slice(target.cmd_str.as_bytes());
+        cmd.extend_from_slice(&target.cmd_str);
         let me: Weak<Dyncfg> = self.me.clone();
         let hostname = host.hostname();
         let _ = Arc::clone(&self.calls).call(CallSpec {
@@ -205,7 +207,7 @@ fn answered(me: &Weak<Dyncfg>, target: &Target, code: u16) {
             Priority::Err,
             "DYNCFG: received response code {code} on request to id '{}', cmd: {}",
             String::from_utf8_lossy(&target.id),
-            target.cmd_str
+            String::from_utf8_lossy(&target.cmd_str)
         );
     }
     let Some(dyncfg) = me.upgrade() else {

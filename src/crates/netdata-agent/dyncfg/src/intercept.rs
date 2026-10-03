@@ -364,6 +364,7 @@ impl Dyncfg {
             nd_log!(Source::Daemon, Priority::Err, "DYNCFG: cannot add job '{shown}' because host is missing");
             return;
         };
+        // a template reaches the intercept's add only through its method, which its plugin registered with a handler
         let Some(handler) = template.handler else {
             return;
         };

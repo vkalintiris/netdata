@@ -16,6 +16,7 @@ netdata-agent-query = { workspace = true }
 netdata-agent-rrd = { workspace = true }
 netdata-agent-text = { workspace = true }
 indexmap = { workspace = true }
+rustix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 # a handler no test calls

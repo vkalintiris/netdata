@@ -18,6 +18,7 @@ use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_nrpc::Handler;
 use netdata_agent_rrd::clock::now_realtime_ut;
 use netdata_agent_text::print::print_uuid_lower;
+use rustix::fs::{Dir, FileType, Mode, OFlags};
 
 use crate::files::{self, Payload, Saved};
 use crate::model::{Cmds, SourceType, Status, Type};
@@ -194,20 +195,21 @@ impl Nodes {
         })
     }
 
-    /// `dyncfg_load_all()`: every regular file or link of the directory ending `.dyncfg`, in the directory's order (P2).
+    /// `dyncfg_load_all()`: every entry of the directory ending `.dyncfg` whose `d_type` says a regular file or a link
+    /// (a filesystem that reports none loads nothing, as C), in the directory's order (P2).
     pub fn load_all(&self) {
-        let entries = match fs::read_dir(&self.dir) {
-            Ok(entries) => entries,
-            Err(_) => {
-                nd_log!(Source::Daemon, Priority::Err, "DYNCFG: cannot open directory '{}'", self.dir.display());
-                return;
-            }
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+        let Ok(dir) = rustix::fs::open(&self.dir, flags, Mode::empty()).and_then(Dir::read_from) else {
+            nd_log!(Source::Daemon, Priority::Err, "DYNCFG: cannot open directory '{}'", self.dir.display());
+            return;
         };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let kind = entry.file_type().ok();
-            if kind.is_some_and(|k| k.is_file() || k.is_symlink()) && name.as_bytes().ends_with(b".dyncfg") {
-                self.load_file(&name);
+        for entry in dir {
+            let Ok(entry) = entry else {
+                break;
+            };
+            let name = entry.file_name().to_bytes();
+            if matches!(entry.file_type(), FileType::RegularFile | FileType::Symlink) && name.ends_with(b".dyncfg") {
+                self.load_file(std::ffi::OsStr::from_bytes(name));
             }
         }
     }
@@ -217,11 +219,11 @@ impl Nodes {
     pub fn load_file(&self, d_name: &std::ffi::OsStr) {
         let filename = self.dir.join(d_name);
         let shown = filename.display().to_string();
-        let Ok(data) = fs::read(&filename) else {
+        let Ok(file) = fs::File::open(&filename) else {
             nd_log!(Source::Daemon, Priority::Err, "DYNCFG: cannot open file '{shown}'");
             return;
         };
-        let Some((id, saved)) = files::parse(&data, &shown) else {
+        let Some((id, saved)) = files::load(file, &shown) else {
             return;
         };
         let mut node = Node {
@@ -536,8 +538,13 @@ mod tests {
         fs::write(config.join("noid.dyncfg"), b"path=/p\n").unwrap();
         fs::write(config.join("note.txt"), b"id=t\n").unwrap();
         fs::create_dir(config.join("d.dyncfg")).unwrap();
+        // a link is loaded by its d_type; to a directory, it opens and fails its first read
+        std::os::unix::fs::symlink(config.join("d.dyncfg"), config.join("l.dyncfg")).unwrap();
         let (nodes, logged) = capture(|| Nodes::init(dir.path(), true));
-        assert!(texts(logged).iter().any(|(p, t)| *p == Priority::Err && t.ends_with("noid.dyncfg' does not include a unique id. Ignoring it.")));
+        let logged = texts(logged);
+        assert!(logged.iter().any(|(p, t)| *p == Priority::Err && t.ends_with("noid.dyncfg' does not include a unique id. Ignoring it.")));
+        let unreadable = format!("DYNCFG: failed while reading metadata from file '{}'. Ignoring it.", config.join("l.dyncfg").display());
+        assert!(logged.contains(&(Priority::Err, unreadable)), "{logged:?}");
         let map = nodes.lock();
         assert_eq!(map.keys().collect::<Vec<_>>(), [&b"go.d:j".to_vec()]);
         let node = &map[b"go.d:j".as_slice()];

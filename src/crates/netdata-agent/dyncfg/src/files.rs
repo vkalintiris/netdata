@@ -4,16 +4,18 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_nrpc::reply::ContentType;
 use netdata_agent_pluginsd_proto::LINE_MAX;
-use netdata_agent_text::c::{c_str, fgets_chunks, trim};
+use netdata_agent_text::c::{c_str, trim};
 use netdata_agent_text::parse::{strtoull10, uuid_parse_flexi};
 use netdata_agent_text::print::print_uuid_lower_compact;
+use rustix::fs::OFlags;
 
 use crate::model::{Cmds, SourceType, Type, VERSION, escape_id_for_filename};
 
@@ -65,12 +67,13 @@ pub fn schema(user_config_dir: &Path, stock_config_dir: &Path, id: &[u8]) -> Opt
     })
 }
 
-/// `dyncfg_read_file_to_buffer()`: a regular file's bytes, read to its size at open (a short read fails it).
+/// `dyncfg_read_file_to_buffer()`: a regular file's bytes (opened non-blocking, as C), read to its size at open (a
+/// short read fails it).
 fn read_regular(filename: &Path) -> Option<Vec<u8>> {
     if !fs::metadata(filename).ok()?.is_file() {
         return None;
     }
-    let file = fs::File::open(filename).ok()?;
+    let file = fs::OpenOptions::new().read(true).custom_flags(OFlags::NONBLOCK.bits() as i32).open(filename).ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.len() > u64::from(u32::MAX - 2) {
         return None;
@@ -125,22 +128,46 @@ pub fn render(id: &[u8], saved: &mut Saved, now_ut: u64) -> Vec<u8> {
     out
 }
 
-/// `dyncfg_file_load()`'s parse of `data`, read from `filename` (for the records): the id and what the file saved,
-/// its commands sanitized for its type and saved source type, or `None` after C's record. Lines are read as C's
-/// `fgets()` reads them (`PLUGINSD_LINE_MAX`), keys and values trimmed, empty values and unknown keys skipped, the last
-/// of a repeated key kept; the payload is every byte after a `---` line, whatever `content_length` says.
+/// [`load`] of bytes in memory.
 pub fn parse(data: &[u8], filename: &str) -> Option<(Vec<u8>, Saved)> {
+    load(std::io::Cursor::new(data), filename)
+}
+
+/// `fgets()`: the next line of at most `size - 1` bytes, its newline kept; empty at the end.
+fn fgets(reader: &mut impl BufRead, size: usize) -> std::io::Result<Vec<u8>> {
+    let mut line = Vec::new();
+    reader.take(size.saturating_sub(1).max(1) as u64).read_until(b'\n', &mut line)?;
+    Ok(line)
+}
+
+/// `dyncfg_file_load()` of an open file, `filename` for the records: the id and what the file saved, its commands
+/// sanitized for its type and saved source type, or `None` after C's record. Lines are read as C's `fgets()` reads
+/// them (`PLUGINSD_LINE_MAX`), keys and values trimmed, empty values and unknown keys skipped, the last of a repeated
+/// key kept; the payload is every byte after a `---` line, whatever `content_length` says, sized by seeking to the
+/// end and refused over 20 MiB before it is read.
+pub fn load(reader: impl Read + Seek, filename: &str) -> Option<(Vec<u8>, Saved)> {
+    let mut reader = BufReader::new(reader);
     let mut saved = Saved::default();
     let mut id = None;
     let mut content_type = None;
     let mut content_length = 0;
-    let mut payload_at = None;
-    let mut offset = 0;
-    for chunk in fgets_chunks(data, LINE_MAX) {
-        offset += chunk.len();
-        let line = c_str(chunk);
+    let mut read_payload = false;
+    loop {
+        let chunk = match fgets(&mut reader, LINE_MAX) {
+            Ok(chunk) if chunk.is_empty() => break,
+            Ok(chunk) => chunk,
+            Err(_) => {
+                nd_log!(
+                    Source::Daemon,
+                    Priority::Err,
+                    "DYNCFG: failed while reading metadata from file '{filename}'. Ignoring it."
+                );
+                return None;
+            }
+        };
+        let line = c_str(&chunk);
         if line == b"---\n" {
-            payload_at = Some(offset);
+            read_payload = true;
             break;
         }
         let Some(eq) = line.iter().position(|&c| c == b'=') else {
@@ -185,15 +212,47 @@ pub fn parse(data: &[u8], filename: &str) -> Option<(Vec<u8>, Saved)> {
             _ => {}
         }
     }
-    if let Some(at) = payload_at {
-        let bytes = &data[at..];
-        if bytes.len() > MAX_PAYLOAD_SIZE {
+    if read_payload {
+        // ftell(), then fseek() to the end and back
+        let position = reader.stream_position();
+        let total = position.as_ref().ok().map(|&at| (reader.seek(SeekFrom::End(0)), reader.seek(SeekFrom::Start(at))));
+        let (at, total) = match (position, total) {
+            (Ok(at), Some((Ok(total), Ok(_)))) => (at, total),
+            (position, _) => {
+                let what = if position.is_err() { "payload position" } else { "file size" };
+                nd_log!(Source::Daemon, Priority::Err, "DYNCFG: error while accessing '{filename}' to calculate the {what}.");
+                return None;
+            }
+        };
+        if total < at {
             nd_log!(
                 Source::Daemon,
                 Priority::Err,
-                "DYNCFG: payload size {} exceeds the maximum allowed {MAX_PAYLOAD_SIZE} for file '{filename}'. Ignoring \
-                 it.",
-                bytes.len()
+                "DYNCFG: payload position {at} is beyond file size {total} for file '{filename}'. Ignoring it."
+            );
+            return None;
+        }
+        let size = total - at;
+        if size > MAX_PAYLOAD_SIZE as u64 {
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "DYNCFG: payload size {size} exceeds the maximum allowed {MAX_PAYLOAD_SIZE} for file '{filename}'. \
+                 Ignoring it."
+            );
+            return None;
+        }
+        // dyncfg_file_read_payload(): fread() of the size, short or failed refused
+        let mut bytes = Vec::with_capacity(size as usize);
+        let read = (&mut reader).take(size).read_to_end(&mut bytes);
+        if read.is_err() || bytes.len() as u64 != size {
+            nd_log!(
+                Source::Daemon,
+                Priority::Err,
+                "DYNCFG: failed to read the complete payload from file '{filename}': expected {size} bytes, read {}, \
+                 stream error: {}. Ignoring it.",
+                bytes.len(),
+                if read.is_err() { "yes" } else { "no" }
             );
             return None;
         }
@@ -205,7 +264,7 @@ pub fn parse(data: &[u8], filename: &str) -> Option<(Vec<u8>, Saved)> {
                 bytes.len()
             );
         }
-        saved.payload = Some(Payload { bytes: bytes.to_vec(), content_type });
+        saved.payload = Some(Payload { bytes, content_type });
     }
     let Some(id) = id else {
         nd_log!(
@@ -401,6 +460,49 @@ mod tests {
                     MAX_PAYLOAD_SIZE + 1
                 )
             )
+        );
+    }
+
+    /// A reader whose end is past what it can read, or that fails at once.
+    struct Short {
+        data: std::io::Cursor<Vec<u8>>,
+        missing: u64,
+        failing: bool,
+    }
+
+    impl Read for Short {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.failing { Err(std::io::Error::other("unreadable")) } else { self.data.read(buf) }
+        }
+    }
+
+    impl Seek for Short {
+        fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+            match to {
+                SeekFrom::End(0) => Ok(self.data.get_ref().len() as u64 + self.missing),
+                other => self.data.seek(other),
+            }
+        }
+    }
+
+    /// C's other refusals of a file (`dyncfg-files.c:160-224`): a metadata read that fails, and a payload shorter than
+    /// the file's end says.
+    #[test]
+    fn unreadable_files_are_refused_as_c() {
+        let short = |failing| Short { data: std::io::Cursor::new(b"id=x\n---\nab".to_vec()), missing: 3, failing };
+        let (loaded, captured) = capture(|| load(short(true), "f"));
+        assert_eq!(loaded, None);
+        assert_eq!(records(captured), [(Priority::Err, "DYNCFG: failed while reading metadata from file 'f'. Ignoring it.".into())]);
+        let (loaded, captured) = capture(|| load(short(false), "f"));
+        assert_eq!(loaded, None);
+        assert_eq!(
+            records(captured),
+            [(
+                Priority::Err,
+                "DYNCFG: failed to read the complete payload from file 'f': expected 5 bytes, read 2, stream error: no. \
+                 Ignoring it."
+                    .into()
+            )]
         );
     }
 
