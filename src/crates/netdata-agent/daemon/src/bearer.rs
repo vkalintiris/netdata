@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use netdata_agent_ingest::jsonc::{self, Presence::Required};
-use netdata_agent_log::{Priority, Source, nd_log};
+use netdata_agent_log::{Priority, Source, errno_of, nd_log};
 use netdata_agent_nrpc::access;
 use netdata_agent_rrd::clock::now_realtime_s;
 use netdata_agent_text::c::{c_str, filename_from_path_entry};
@@ -97,10 +97,11 @@ impl Store {
         }
         let entries = match std::fs::read_dir(&self.dir) {
             Ok(entries) => entries,
-            Err(_) => {
+            Err(e) => {
                 nd_log!(
                     Source::Daemon,
                     Priority::Err,
+                    errno = errno_of(&e);
                     "Cannot open directory '{}' to read saved bearer tokens",
                     self.dir
                 );
@@ -276,14 +277,18 @@ impl Store {
         w.member_add_uint64("signature", self.signature(token, t));
         w.finalize();
         let filename = self.filename(token);
-        let Ok(mut file) = std::fs::File::create(&filename) else {
-            nd_log!(Source::Daemon, Priority::Err, "Cannot create file '{filename}'");
-            return;
+        let mut file = match std::fs::File::create(&filename) {
+            Ok(file) => file,
+            Err(e) => {
+                nd_log!(Source::Daemon, Priority::Err, errno = errno_of(&e); "Cannot create file '{filename}'");
+                return;
+            }
         };
-        if file.write_all(w.as_bytes()).is_err() {
+        // the write's errno, kept across the unlink
+        if let Err(e) = file.write_all(w.as_bytes()) {
             drop(file);
             let _ = std::fs::remove_file(&filename);
-            nd_log!(Source::Daemon, Priority::Err, "Cannot save file '{filename}'");
+            nd_log!(Source::Daemon, Priority::Err, errno = errno_of(&e); "Cannot save file '{filename}'");
         }
     }
 
@@ -315,8 +320,8 @@ impl Store {
                 return true;
             }
             let filename = self.filename(token);
-            if std::fs::remove_file(&filename).is_err() {
-                nd_log!(Source::Daemon, Priority::Err, "Failed to unlink() file '{filename}'");
+            if let Err(e) = std::fs::remove_file(&filename) {
+                nd_log!(Source::Daemon, Priority::Err, errno = errno_of(&e); "Failed to unlink() file '{filename}'");
             }
             false
         });

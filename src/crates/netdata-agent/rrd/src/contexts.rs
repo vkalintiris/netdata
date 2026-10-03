@@ -640,6 +640,11 @@ impl Instance {
         lock(&self.metrics).items().to_vec()
     }
 
+    /// `dictionary_entries()` of the instance's metrics, without copying them.
+    pub fn metrics_len(&self) -> usize {
+        lock(&self.metrics).items().len()
+    }
+
     pub fn metric(&self, id: &str) -> Option<Arc<Metric>> {
         lock(&self.metrics).get(id)
     }

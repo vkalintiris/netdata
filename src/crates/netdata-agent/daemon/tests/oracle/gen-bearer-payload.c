@@ -151,6 +151,23 @@ int main(int argc, char **argv) {
     nested(31, "{\"a\":", false);
     nested(130, "", true);
 
+    // json-c's depth checked while parsing: a repeated key's earlier, deeper value still counts
+    run_str("{\"x\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]],\"x\":1}\n");
+    // a raw NUL: json-c stops there as at the end of the data
+    const struct { const char *s; size_t len; } nul[] = {
+        { "\0{}\n", 4 }, { "{\"a\":1,\0}\n", 10 }, { "123\0\n", 5 }, { "{\"a\":1}\0x\n", 10 },
+        { "{\"a\":\"x\0\"}\n", 11 }, { "{\"a\":tr\0\n", 9 }, { "\0", 1 },
+    };
+    for(size_t i = 0; i < sizeof(nul) / sizeof(*nul); i++)
+        run(nul[i].s, nul[i].len);
+    // comments and literals json-c reads past
+    const char *extensions[] = {
+        "{\"a\":1 /x}\n", "{\"a\":/x}\n", "{\"a\":1 /*c*/}\n", "{\"a\":1 /", "{\"a\":True\n", "{\"a\":NULL]\n",
+        "{\"a\":[1,]\n",
+    };
+    for(size_t i = 0; i < sizeof(extensions) / sizeof(*extensions); i++)
+        run_str(extensions[i]);
+
     // the member readers' texts, in C's order
     const char *members[] = {
         "{}\n",
@@ -211,6 +228,13 @@ int main(int argc, char **argv) {
     };
     for(size_t i = 0; i < sizeof(rests) / sizeof(*rests); i++)
         request("\"" CLAIM "\"", rests[i]);
+    // json-c cuts an object's key at a NUL: a later member of the cut name replaces the earlier one
+    char rest[1024];
+    snprintf(rest, sizeof(rest), "%s,\"claim_id\\u0000\":\"x\"", whole);
+    request("\"" CLAIM "\"", rest);
+    request("\"" CLAIM "\"",
+            "\"user_role\":\"admin\",\"user_role\\u0000x\":\"observer\",\"access\":[],\"cloud_account_id\":null,"
+            "\"client_name\":\"c\"");
 
     if(fclose(out) != 0) {
         perror(argv[1]);

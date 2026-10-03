@@ -3,9 +3,14 @@
 // Golden vectors of the query progress table's row order (netdata-agent-web, `progress.rs`): a fixed-seed script of
 // starts and finishes run through the production query_progress_*() functions, then the transactions in the order
 // progress_function_result() lists them. Phase 1 churns a pool of 300 transactions (evictions past the 200 finished
-// kept, tombstones in the index); phase 2 starts 500 more that never finish (the index grows past 400 live rows).
+// kept, tombstones in the index); phase 2 starts 500 more that never finish (the index grows past 400 live rows);
+// phase 3 finishes those 500 (a burst of evictions); phase 4 starts and finishes 40000 new ids, as a long-running
+// agent does: each eviction leaves a tombstone, new ids take most of them back, and when the slots fill up the probes
+// grow long enough that the index is rebuilt at its size (six times here).
 //
-// Output lines: `S <tx>` a start, `F <tx> <code>` a finish, `R <tx> <tx> ...` a render's order.
+// Output lines: `S <tx>` a start, `F <tx> <code>` a finish, `R <tx> <tx> ...` a render's order, and
+// `L <first> <count> <every>`: tx_of(first + i) started and finished (200) for each i < count, the next `R` line after
+// every `every` of them.
 
 #include "libnetdata/libnetdata.h"
 
@@ -80,6 +85,23 @@ int main(int argc, char **argv) {
         fputs("S ", f); print_tx(f, &tx); fputc('\n', f);
     }
     render(f, wb);
+
+    for(int i = 0; i < 500; i++) {
+        tx_of(&tx, 1000 + (uint64_t)i);
+        query_progress_finished(&tx, ++t, 200, 10, 1, 1);
+        fputs("F ", f); print_tx(f, &tx); fputs(" 200\n", f);
+    }
+    render(f, wb);
+
+    // a long-running agent: unique ids, each finished, written as one line (its expansion in the Rust test)
+    fprintf(f, "L %d %d %d\n", 100000, 40000, 10000);
+    for(int i = 0; i < 40000; i++) {
+        tx_of(&tx, 100000 + (uint64_t)i);
+        query_progress_start_or_update(&tx, ++t, HTTP_REQUEST_MODE_GET, 0, "q", NULL, "c");
+        query_progress_finished(&tx, ++t, 200, 10, 1, 1);
+        if(i % 10000 == 9999)
+            render(f, wb);
+    }
 
     buffer_free(wb);
     fclose(f);

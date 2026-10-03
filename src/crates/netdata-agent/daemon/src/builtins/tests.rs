@@ -326,8 +326,11 @@ fn payload_errors_are_cs() {
         b"truex\n",
         b"{\"a\":1,}\n",
         b"[1,]\n",
+        b"{\"a\":1 /*c*/}\n",
     ];
-    let (mut compared, mut diverged) = (0, Vec::new());
+    // both refuse, with other texts: json-c reads past an extension serde refuses, then fails later (D179)
+    let partial: &[&[u8]] = &[b"{\"a\":True\n", b"{\"a\":NULL]\n", b"{\"a\":[1,]\n"];
+    let (mut compared, mut diverged, mut mismatched) = (0, Vec::new(), Vec::new());
     for line in vectors.lines() {
         let mut words = line.split(' ');
         let (input, code, output) = (words.next().unwrap(), words.next().unwrap(), words.next().unwrap());
@@ -355,19 +358,31 @@ fn payload_errors_are_cs() {
             Err(code) => (code, reply.body),
         };
         let shown = String::from_utf8_lossy(&input).into_owned();
-        if divergent.contains(&input.as_slice()) {
+        // a key with a NUL: json-c cuts it, Rust refuses the text (D46.1)
+        let has = |key: &[u8]| input.windows(key.len()).any(|w| w == key);
+        let nul_key = has(b"\\u0000\":") || has(b"\\u0000x\":");
+        if partial.contains(&input.as_slice()) {
+            assert!(code == 500 && actual.0 == 500, "{shown:?}: C {code}, Rust {actual:?}");
+            diverged.push(shown);
+            continue;
+        }
+        if divergent.contains(&input.as_slice()) || nul_key {
             assert!(code != 500 && actual.0 == 500, "{shown:?}: C {code}, Rust {actual:?}");
             diverged.push(shown);
             continue;
         }
-        assert_eq!(
-            (actual.0, String::from_utf8_lossy(&actual.1)),
-            (code, String::from_utf8_lossy(&output)),
-            "{shown:?}"
-        );
+        if (actual.0, actual.1.as_slice()) != (code, output.as_slice()) {
+            mismatched.push(format!(
+                "{shown:?}: C {code} {}, Rust {} {}",
+                String::from_utf8_lossy(&output),
+                actual.0,
+                String::from_utf8_lossy(&actual.1)
+            ));
+        }
         compared += 1;
     }
-    assert_eq!((compared, diverged.len()), (115, divergent.len()));
+    assert!(mismatched.is_empty(), "{}", mismatched.join("\n"));
+    assert_eq!((compared, diverged.len()), (126, divergent.len() + partial.len() + 2));
 }
 
 /// `claim_id_matches_any()` and `verify_host_uuids()` (`api_v2_bearer.c:5-19`, `claim.c:130-148`): the parent's claim

@@ -17,15 +17,6 @@ use serde_json::{Map, Number, Value};
 /// `JSON_TOKENER_DEFAULT_DEPTH`: json-c refuses values nested deeper (serde_json allows 127).
 const TOKENER_DEPTH: usize = 32;
 
-/// How deep values nest, the root counting as 1 (keys do not count).
-fn depth(value: &Value) -> usize {
-    1 + match value {
-        Value::Array(items) => items.iter().map(depth).max().unwrap_or(0),
-        Value::Object(members) => members.values().map(depth).max().unwrap_or(0),
-        _ => 0,
-    }
-}
-
 /// The text json-c's tokener reads, as serde reads it: up to its first NUL, with U+FFFD in place of each invalid UTF-8
 /// sequence (D89), and the control bytes json-c takes raw inside a string escaped.
 fn prepare(text: &[u8]) -> Cow<'_, [u8]> {
@@ -53,14 +44,30 @@ fn prepare(text: &[u8]) -> Cow<'_, [u8]> {
     out.map_or(text, Cow::Owned)
 }
 
+/// Whether an object key of `value` holds a NUL. json-c cuts such a key there, and a later member of the cut name
+/// replaces an earlier one; serde's map no longer knows the members' order, so such a text is refused (D46.1). A key
+/// gets a NUL only from a `\u0000` escape (`text`).
+fn has_nul_key(text: &[u8], value: &Value) -> bool {
+    fn walk(value: &Value) -> bool {
+        match value {
+            Value::Object(members) => members.iter().any(|(key, v)| key.contains('\0') || walk(v)),
+            Value::Array(items) => items.iter().any(walk),
+            _ => false,
+        }
+    }
+    text.windows(6).any(|w| w == b"\\u0000") && walk(value)
+}
+
 /// `json_tokener_parse()`: the first JSON value of `text` up to its first NUL; what follows the value is ignored, and
 /// the text is read as [`prepare`] gives it. Input json-c tolerates and serde_json does not (comments, single quotes,
-/// trailing commas, NaN, a number or literal root followed by text) is refused: Rust only ever refuses more than C
-/// (D46.1).
+/// trailing commas, NaN, a number or literal root followed by text, a NUL in a key) is refused: Rust only ever refuses
+/// more than C (D46.1).
 pub fn tokener_parse(text: &[u8]) -> Option<Value> {
     let text = prepare(text);
-    let value = serde_json::Deserializer::from_slice(&text).into_iter::<Value>().next()?.ok()?;
-    (depth(&value) <= TOKENER_DEPTH).then_some(value)
+    let mut values = serde_json::Deserializer::from_slice(&text).into_iter::<Value>();
+    let value = values.next()?.ok()?;
+    let consumed = &text[..values.byte_offset()];
+    (!too_deep(consumed) && !has_nul_key(consumed, &value)).then_some(value)
 }
 
 /// `json_tokener_error_desc()`: json-c 0.18's texts for the errors [`tokener_parse_ex`] reports.
@@ -76,22 +83,31 @@ pub mod tokener_error {
     pub const OBJECT_KEY_SEP: &str = "object property name separator ':' expected";
     pub const OBJECT_VALUE_SEP: &str = "object value separator ',' expected";
     pub const STRING: &str = "invalid string sequence";
+    pub const COMMENT: &str = "expected comment";
+    pub const EOF: &str = "unexpected end of data";
 }
 
 /// `json_tokener_parse_ex()` of a whole text, as a caller passing its length runs it: the first value of `text` (read
 /// as [`prepare`] gives it), or json-c's error text. Unlike [`tokener_parse`], json-c then reads one byte past a root
-/// number or literal, so a text that ends in one is `continue`. The texts map serde's refusals onto json-c's (D176.5);
-/// input json-c accepts and serde refuses (D46.1) gets the text of serde's refusal.
+/// number or literal, so a text that ends in one is `continue`; a NUL ends the data as the text's end does, but with
+/// its own text. The texts map serde's refusals onto json-c's (D176.5, D179); input json-c accepts and serde refuses
+/// (D46.1) gets the text of serde's refusal.
 pub fn tokener_parse_ex(text: &[u8]) -> Result<Value, &'static str> {
+    let at_nul = c_str(text).len() < text.len();
+    let end = if at_nul { tokener_error::EOF } else { tokener_error::CONTINUE };
     let text = prepare(text);
     let text = text.as_ref();
     let mut values = serde_json::Deserializer::from_slice(text).into_iter::<Value>();
     match values.next() {
-        None => Err(tokener_error::CONTINUE),
+        None => Err(end),
         Some(Ok(value)) => {
-            if depth(&value) > TOKENER_DEPTH {
+            let consumed = &text[..values.byte_offset()];
+            if too_deep(consumed) {
                 Err(tokener_error::DEPTH)
-            } else if values.byte_offset() == text.len()
+            } else if has_nul_key(consumed, &value) {
+                Err(tokener_error::UNEXPECTED)
+            } else if !at_nul
+                && consumed.len() == text.len()
                 && matches!(value, Value::Null | Value::Bool(_) | Value::Number(_))
             {
                 Err(tokener_error::CONTINUE)
@@ -99,12 +115,12 @@ pub fn tokener_parse_ex(text: &[u8]) -> Result<Value, &'static str> {
                 Ok(value)
             }
         }
-        Some(Err(e)) => Err(refusal(text, &e)),
+        Some(Err(e)) => Err(refusal(text, &e, end)),
     }
 }
 
-/// json-c's text for serde's refusal `e` of `text`.
-fn refusal(text: &[u8], e: &serde_json::Error) -> &'static str {
+/// json-c's text for serde's refusal `e` of `text`, `end` when json-c runs out of data.
+fn refusal(text: &[u8], e: &serde_json::Error, end: &'static str) -> &'static str {
     use tokener_error::*;
     // serde places a refusal one byte past the byte it refused, an end of text at the end
     let at = offset(text, e.line(), e.column());
@@ -113,9 +129,17 @@ fn refusal(text: &[u8], e: &serde_json::Error) -> &'static str {
         return DEPTH;
     }
     if e.classify() == serde_json::error::Category::Eof {
-        return CONTINUE;
+        return end;
     }
     let refused = at.checked_sub(1).map(|i| text[i]);
+    // json-c reads a comment wherever whitespace may be
+    if refused == Some(b'/') {
+        match text.get(at) {
+            None => return end,
+            Some(b'*' | b'/') => {}
+            Some(_) => return COMMENT,
+        }
+    }
     let message = e.to_string();
     match message.split(" at line ").next().unwrap_or_default() {
         "expected `:`" => OBJECT_KEY_SEP,
@@ -151,7 +175,8 @@ fn offset(text: &[u8], line: usize, column: usize) -> usize {
 }
 
 /// Whether json-c meets a value nested deeper than it allows in `prefix`, a text serde read up to its last byte:
-/// json-c checks as an array's item or an object's value starts.
+/// json-c checks as an array's item or an object's value starts (the root counts as 1), so a value serde's map later
+/// drops for a repeated key counts too.
 fn too_deep(prefix: &[u8]) -> bool {
     let (mut open, mut value_next, mut in_string, mut escaped) = (Vec::new(), true, false, false);
     for &c in prefix {
@@ -683,6 +708,12 @@ mod tests {
         let nested = |n: usize| format!("{}1{}", "[".repeat(n), "]".repeat(n));
         assert!(tokener_parse(nested(31).as_bytes()).is_some());
         assert_eq!(tokener_parse(nested(32).as_bytes()), None);
+        // a repeated key's earlier value still counts (the object is level 1); a NUL in a key is refused
+        let repeated = |n: usize| format!(r#"{{"x":{},"x":1}}"#, nested(n));
+        assert_eq!(tokener_parse(repeated(31).as_bytes()), None);
+        assert_eq!(tokener_parse(repeated(30).as_bytes()), Some(serde_json::json!({"x": 1})));
+        assert_eq!(tokener_parse(br#"{"a\u0000b":1}"#), None);
+        assert_eq!(tokener_parse(br#"{"a":"b\u0000"}"#), Some(serde_json::json!({"a": "b\u{0}"})));
     }
 
     /// `json_parser_format_error()`: 235 bytes fit after the prefix, a longer text keeps 232 and `...`.

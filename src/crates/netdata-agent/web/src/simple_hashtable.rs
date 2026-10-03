@@ -1,8 +1,8 @@
 //! `src/libnetdata/simple_hashtable/simple_hashtable.h`: open addressing over a slot array, as C lays it out, so a
 //! walk of the slots gives C's order. A key's slot is its hash modulo the size, then the hash's high half plus one,
 //! then the next slots; a deleted slot is a tombstone, reused only when the probe ends on an empty one; a lookup may
-//! grow the table (half full) or rebuild it (too many tombstones). Keys are kept beside the values (C reads them
-//! through its value).
+//! grow the table (half of it live, or every slot used) or rebuild it at its size (a probe longer than half the table
+//! while a third of it is tombstones). Keys are kept beside the values (C reads them through its value).
 
 /// `SIMPLE_HASHTABLE_HASH_SECOND_HASH_SHIFTS`.
 const SECOND_HASH_SHIFTS: u32 = 32;

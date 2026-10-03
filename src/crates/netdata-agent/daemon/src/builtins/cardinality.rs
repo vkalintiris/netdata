@@ -114,13 +114,18 @@ fn count(hosts: &Hosts, by_node: bool) -> (IndexMap<String, Counts>, Counts) {
                     }
                 } else {
                     c.offline_instances += 1;
-                    let metrics = ri.metrics().len() as u64;
+                    let metrics = ri.metrics_len() as u64;
                     c.metrics += metrics;
                     c.offline_metrics += metrics;
                 }
             }
-            let key = if by_node { hostname.clone() } else { rc.id().to_string() };
-            rows.entry(key).or_default().add(&c);
+            let key = if by_node { hostname.as_str() } else { rc.id() };
+            match rows.get_mut(key) {
+                Some(row) => row.add(&c),
+                None => {
+                    rows.insert(key.to_string(), c);
+                }
+            }
             all.add(&c);
         }
     }

@@ -315,8 +315,6 @@ impl Registry {
         !self.destroyed.load(Ordering::Acquire)
     }
 
-    /// `nrpc_method_register()` from the registering thread (its serving handle, the host's epoch). `Err` carries
-    /// C's warning for the caller to write when it refuses; `host` names the owner there.
     /// `nrpc_method_register_builtin()`: a synchronous daemon method, served by the calling thread's handle (C's
     /// main thread never ends it).
     pub fn register_builtin(&self, host: &str, desc: &BuiltinDesc) -> Result<(), String> {
@@ -338,6 +336,8 @@ impl Registry {
         )
     }
 
+    /// `nrpc_method_register()` from the registering thread (its serving handle, the host's epoch). `Err` carries
+    /// C's warning for the caller to write when it refuses; `host` names the owner there.
     pub fn register(&self, host: &str, desc: &MethodDesc) -> Result<(), String> {
         if !self.exists() {
             not_registering(desc.name);
