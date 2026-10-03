@@ -67,7 +67,7 @@ pub(crate) fn evaluate(nodes: &[Node], root: NodeId, vars: &mut dyn Resolver, er
 
     while let Some(step) = steps.pop() {
         match step {
-            Step::Enter(id) => match &nodes[id as usize] {
+            Step::Enter(id) => match &nodes[id] {
                 Node::Number(n) => values.push(*n),
                 Node::Variable(name) => values.push(variable(name, vars, &mut error, error_msg)),
                 // eval_nop()

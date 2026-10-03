@@ -100,32 +100,30 @@ pub(crate) fn parse(input: &[u8]) -> Result<(Vec<Node>, NodeId), usize> {
 impl Parser {
     fn node(&mut self, node: Node) -> NodeId {
         self.nodes.push(node);
-        (self.nodes.len() - 1) as NodeId
+        self.nodes.len() - 1
     }
 
-    fn handle(&self) -> Option<Handle> {
+    /// The rule complete on top of the stack: its kind, the node it builds and the symbols it replaces. A binary
+    /// operator and a colon are only ever shifted onto their left sides.
+    fn handle(&self) -> Option<(Handle, Node, usize)> {
         match self.stack[..] {
-            [.., Symbol::Unary(_), Symbol::Expr(_)] => Some(Handle::Unary),
-            [.., Symbol::Binary(op), Symbol::Expr(_)] => Some(Handle::Binary(op)),
-            [.., Symbol::Colon, Symbol::Expr(_)] => Some(Handle::Ternary),
+            [.., Symbol::Unary(op), Symbol::Expr(operand)] => Some((Handle::Unary, Node::Unary(op, operand), 2)),
+            [.., Symbol::Expr(left), Symbol::Binary(op), Symbol::Expr(right)] => {
+                Some((Handle::Binary(op), Node::Binary(op, left, right), 3))
+            }
+            [.., Symbol::Expr(condition), Symbol::QMark, Symbol::Expr(then), Symbol::Colon, Symbol::Expr(otherwise)] => {
+                Some((Handle::Ternary, Node::Ternary(condition, then, otherwise), 5))
+            }
             _ => None,
         }
     }
 
     /// Reduces the handles on top of the stack for as long as Lemon reduces them before `lookahead`.
     fn reduce(&mut self, lookahead: Lookahead) {
-        while let Some(handle) = self.handle() {
+        while let Some((handle, node, symbols)) = self.handle() {
             if !reduces(handle, lookahead) {
                 break;
             }
-            let (node, symbols) = match self.stack[..] {
-                [.., Symbol::Unary(op), Symbol::Expr(operand)] => (Node::Unary(op, operand), 2),
-                [.., Symbol::Expr(left), Symbol::Binary(op), Symbol::Expr(right)] => (Node::Binary(op, left, right), 3),
-                [.., Symbol::Expr(condition), Symbol::QMark, Symbol::Expr(then), Symbol::Colon, Symbol::Expr(otherwise)] => {
-                    (Node::Ternary(condition, then, otherwise), 5)
-                }
-                _ => unreachable!("a binary operator and a colon are only shifted onto their left sides"),
-            };
             self.stack.truncate(self.stack.len() - symbols);
             let id = self.node(node);
             self.stack.push(Symbol::Expr(id));

@@ -48,7 +48,9 @@ pub(crate) enum Lexed {
     Token(Token, usize),
     /// The NUL that ends the input.
     End,
-    /// `${}`, an unclosed `${`, or a byte that starts no token.
+    /// What no rule but the last matches: `${}`, an unclosed `${`, a `$` before a byte no name can hold, a lone `&`,
+    /// `|` or `.`, the start of a keyword that is not completed (`nul`, `an`, `i`), or any other byte that starts no
+    /// token.
     Error,
 }
 
@@ -157,7 +159,8 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        // C converts from the token's first byte through the rest of the string, not the token alone
+        // C converts from the token's first byte through the rest of the string, not the token alone. The two differ
+        // only when digits follow whitespace after the dot (`1. 5`), and a number after a number never parses.
         Some((Token::Number(str2ndd(&s[start..]).0), end - start))
     }
 

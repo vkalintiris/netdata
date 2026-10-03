@@ -9,7 +9,7 @@
 //
 //   bindings.tsv  set, name, value bits: the variables of binding sets 1 and 2; every other name is unknown, and
 //                 set 0 is an expression with no lookup callback
-//   corpus.tsv    family, input, outcome, code, failed_at, source, parsed_as, then for sets 0, 1 and 2 in turn, on
+//   corpus.tsv    input, family, outcome, code, failed_at, source, parsed_as, then for sets 0, 1 and 2 in turn, on
 //                 the same expression: return value, error code, result bits, error_msg
 //   hardcode.tsv  input, count, name1, bits1, name2, bits2, source, parsed_as, return value, error code, result
 //                 bits, error_msg: one or two expression_hardcode_variable() calls, then one evaluation under set 1
@@ -232,9 +232,9 @@ static void eval_fields(FILE *f, EVAL_EXPRESSION *exp, int set) {
 }
 
 static void corpus_row(const char *family, const char *input) {
-    fputs(family, corpus);
-    fputc('\t', corpus);
     esc_str(corpus, input);
+    fputc('\t', corpus);
+    fputs(family, corpus);
 
     const char *failed_at = &untouched_at;
     int error = UNTOUCHED_ERROR;
@@ -623,7 +623,7 @@ static void depth_family(SB *b, const char *open, const char *close, size_t per_
 static void family_depth(void) {
     SB b = { 0 };
 
-    static const size_t singles[] = { 97, 98, 99, 100, 101, 150, 198, 199, 200, 250 };
+    static const size_t singles[] = { 97, 98, 99, 100, 101, 150, 198, 199, 200, 250, 297, 298, 299, 300 };
     depth_family(&b, "(", ")", 1, singles, COUNT(singles));
     depth_family(&b, "!", "", 1, singles, COUNT(singles));
     depth_family(&b, "-", "", 1, singles, COUNT(singles));
@@ -639,6 +639,14 @@ static void family_depth(void) {
     static const size_t pairs[] = { 47, 48, 49, 50, 51, 52, 98, 99, 100 };
     depth_family(&b, "abs(", ")", 2, pairs, COUNT(pairs));
     depth_family(&b, "-(", ")", 2, pairs, COUNT(pairs));
+
+    // the shift that overflows, on each kind of token: `?`, `:`, `abs` and its parenthesis among them
+    static const char *const tails[] = { "1 ? 2", "1 ? 2 : 3", "abs(1)", "abs(-3) ? 4 : 5", "$a ? $b : $c", "1 + abs(2) * 3" };
+    static const char *const prefixes[] = { "(", "!" };
+    for(size_t p = 0; p < COUNT(prefixes); p++)
+        for(size_t n = 94; n <= 100; n++)
+            for(size_t t = 0; t < COUNT(tails); t++)
+                depth_row(&b, prefixes[p], n, tails[t], "", 0);
 
     // chains that never grow the stack
     static const char *const chains[] = { "+1", " * 1", " - $a", " && 1", " == 1" };
@@ -699,6 +707,16 @@ static void family_eval(void) {
         "1 / (1 / 0)", "(nan / 1) / 1", "1 / nan", "nan % 1", "1 % nan", "inf / 1", "1 / inf", "inf % 2", "2 % inf", "$c / 1",
         "1 / $c", "0 / 0", "-1 / 0", "1 / -0", "-1 / -0", "0 % 0", "$zero / $zero", "1 / $zero", "-1 / $zero", "$a / $zero",
         "$a / $b", "$b / $a", "$a % $b", "$b % $a",
+        // the value / and % return beside their error: seen when a later unknown variable replaces that error and
+        // the finite result clears it
+        "(0/0 < 1) + ($u > 0)", "(0/0 > 0) + ($u > 0)", "(0.5/0 < 1) + ($u > 0)", "(1/0 < 1) + ($u > 0)",
+        "(1/0 > 1) + ($u > 0)", "(-1/0 < 1) + ($u > 0)", "(-1/0 > -1) + ($u > 0)", "(-0/0 < 0) + ($u > 0)",
+        "($neg / $zero < 0) + ($u > 0)", "($a / $zero > 0) + ($u > 0)", "((1 % 0) == nan) + ($u > 0)",
+        "((1 % 0) > 0) + ($u > 0)", "((-1 % 0) == nan) + ($u > 0)", "($c / 1 > 0) + ($u > 0)", "(1 / $c > 0) + ($u > 0)",
+        "(inf % 2 > 0) + ($u > 0)", "(2 % $c > 0) + ($u > 0)", "($c % 2 > 0) + ($u > 0)", "(inf / inf > 0) + ($u > 0)",
+        "(nan / 1 == nan) + ($u > 0)", "(1 % nan == nan) + ($u > 0)",
+        // an infinity's sign through the unary operators
+        "-inf < 0", "-inf > 0", "-$c > 0", "-$c < 0", "abs($c) > 0", "+$c < 0", "--$c > 0", "!$c", "-(-inf) > 0",
         // == and its epsilon
         "1 == 1.0000001", "1 == 1.00000009", "1 == 1.0000002", "0.1 + 0.2 == 0.3", "1 != 1.00000005", "1 != 1.0000002",
         "0 == 0.0000001", "0 == 0.00000009", "1e308 == 1e308", "1e308 == 9e307", "0 == -0", "$tiny == 0", "$big == $big",
@@ -934,6 +952,22 @@ static void family_hardcode(void) {
         hardcode_row(b.s, "x", 5, NULL, 0);
         hardcode_row(b.s, "x", 123456789, NULL, 0);
     }
+
+    // a name cut at 299 bytes: the node matches the cut name, and so does the start of the text
+    char *cut = repeated('n', 299);
+    char *whole = repeated('n', 300);
+    static const char *const forms[][2] = { { "$", " + 1" }, { "${", "} + 1" } };
+    for(size_t i = 0; i < COUNT(forms); i++) {
+        sb_reset(&b);
+        sb_add(&b, forms[i][0]);
+        sb_add(&b, whole);
+        sb_add(&b, forms[i][1]);
+        hardcode_row(b.s, cut, 5, NULL, 0);
+        hardcode_row(b.s, cut, 123456789, NULL, 0);
+        hardcode_row(b.s, whole, 5, NULL, 0);
+    }
+    freez(whole);
+    freez(cut);
     freez(b.s);
 }
 
@@ -949,7 +983,7 @@ int main(int argc, char **argv) {
     bindings_init(argv[1]);
 
     corpus = out_open(argv[1], "corpus.tsv",
-                      "family, input, outcome (E/F/K), code, failed_at, source, parsed_as, then for binding sets 0, 1, 2: "
+                      "input, family, outcome (E/F/K), code, failed_at, source, parsed_as, then for binding sets 0, 1, 2: "
                       "return value, error code, result bits, error_msg");
     family_seq();
     family_pair();

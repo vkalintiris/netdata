@@ -2,7 +2,7 @@
 //! `operators[]`; the precedence declarations of `re2c_lemon/parser.y`).
 
 /// Index of a node in its expression's arena.
-pub(crate) type NodeId = u32;
+pub(crate) type NodeId = usize;
 
 /// C wraps every leaf in a one-operand `EVAL_OPERATOR_NOP` node that prints and evaluates as its operand
 /// (`parser.y`'s `expr ::= NUMBER` and `expr ::= VARIABLE`); the leaves are stored directly here.

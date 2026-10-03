@@ -34,7 +34,7 @@ fn parse_matches_c() {
         "corpus.tsv",
         |row| fields(row, 2, 5),
         |row| {
-            let parsed = Expression::parse(row.bytes(1));
+            let parsed = Expression::parse(row.bytes(0));
             let mut actual = parse_fields(&parsed);
             match &parsed {
                 Ok(expression) => actual.extend([bytes(expression.source()), bytes(expression.parsed_as())]),
@@ -43,18 +43,11 @@ fn parse_matches_c() {
             actual
         },
     );
-    assert_eq!(count, 37463);
+    assert_eq!(count, 37737);
 
-    let families: BTreeSet<String> = rows("corpus.tsv").iter().map(|row| row.str(0).to_owned()).collect();
+    let families: BTreeSet<String> = rows("corpus.tsv").iter().map(|row| row.str(1).to_owned()).collect();
     let expected = ["depth", "err", "eval", "kw", "mut", "num", "pair", "rand", "seq", "spell", "var", "ws"];
     assert_eq!(families, expected.iter().map(|family| family.to_string()).collect());
-}
-
-#[test]
-fn parse_failures_all_report_code_5() {
-    for row in rows("corpus.tsv").iter().filter(|row| row.str(2) == "F") {
-        assert_eq!(row.str(3), "5", "corpus.tsv:{}", row.line);
-    }
 }
 
 #[test]
@@ -64,7 +57,7 @@ fn evaluation_matches_c() {
     check(
         "corpus.tsv",
         |row| fields(row, 7, 12),
-        |row| match Expression::parse(row.bytes(1)) {
+        |row| match Expression::parse(row.bytes(0)) {
             Ok(mut expression) => {
                 let mut actual = evaluation_fields(&mut expression, &mut NoVariables);
                 actual.extend(evaluation_fields(&mut expression, &mut &finite));
@@ -98,5 +91,5 @@ fn hardcode_matches_c() {
             actual
         },
     );
-    assert_eq!(count, 593);
+    assert_eq!(count, 599);
 }

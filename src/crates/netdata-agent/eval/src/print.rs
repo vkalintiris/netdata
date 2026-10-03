@@ -36,7 +36,7 @@ pub(crate) fn parsed_as(nodes: &[Node], root: NodeId) -> Vec<u8> {
         };
 
         // each node's pieces are pushed in reverse
-        match &nodes[id as usize] {
+        match &nodes[id] {
             Node::Number(n) => print_constant(&mut out, *n),
             Node::Variable(name) => {
                 out.extend_from_slice(b"${");
