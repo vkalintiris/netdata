@@ -11,6 +11,7 @@ mod auth;
 mod backfill;
 mod bearer;
 mod build;
+mod builtins;
 mod buildinfo;
 mod capas;
 mod cli;
@@ -741,6 +742,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     // rrd_init(): localhost's pulse state, once its contexts are loaded, then its `config` function
     hosts.localhost().pulse_status(0);
     dyncfg.host_init(hosts.localhost());
+    builtins::global_functions_add(&hosts);
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
         meta.detect_machine_guid_change(host_id);
     }

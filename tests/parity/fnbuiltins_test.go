@@ -147,9 +147,9 @@ const (
 	fnBuiltinsRestricted = "This feature is not available via this API."
 )
 
-// fnBuiltins501Re is the answer of a streaming built-in until M10 (D176.3: nRPC's error shape with 501; its text is
-// fixed in 9d).
-var fnBuiltins501Re = regexp.MustCompile(`^\{"status":501,"errorMessage":"[^"]+"\}$`)
+// fnBuiltins501Re is the answer of a streaming built-in until M10 (D176.3: nRPC's error shape with 501 and the text
+// `daemon/src/builtins/mod.rs` NOT_IMPLEMENTED).
+var fnBuiltins501Re = regexp.MustCompile(`^\{"status":501,"errorMessage":"This feature is not implemented yet on this agent\."\}$`)
 
 // fnBuiltinsPending is an admin's call of one of the two streaming built-ins, whose handlers read the host status of
 // every host (function-netdata-streaming.c:77, function-topology-streaming.c:810): M10. A DEVIATION guard, not a
