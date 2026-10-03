@@ -1356,6 +1356,69 @@ static void gen_splitter(const char *dir) {
     fclose(f);
 }
 
+// ------------------------------------------------------------------------------------------------
+// buffer_rrdf_table_add_field(): a Function table's column, every enum and option, a NaN, a 0 and real maxima,
+// NULL and empty strings. A NULL string is written as kind 0 with an empty value, a real one as kind 1.
+
+static void opt_str(FILE *f, const char *s) {
+    fputs(s ? "1" : "0", f); tab(f);
+    esc_str(f, s ? s : ""); tab(f);
+}
+
+static void gen_rrdf(const char *dir) {
+    FILE *f = out_open(dir, "rrdf.tsv",
+        "minify | id | key | name | type | visual | transform | decimal_points | units kind | units | max bits | sort | "
+        "pointer_to kind | pointer_to | summary | filter | options | default kind | default | output");
+    BUFFER *wb = buffer_create(0, NULL);
+    static const char *const keys[] = { "Key", "a\"b", "\xc3\xa9t\xc3\xa9", "x y" };
+    static const char *const units[] = { NULL, "", "%", "ms" };
+    static const char *const pointers[] = { NULL, "", "Key" };
+    static const char *const defaults[] = { NULL, "", "-", "n/a" };
+    static const double maxima[] = { NAN, 0.0, 12.5, -3.25, 1e300, 0.1, 100.0 };
+    static const uint8_t sorts[] = { 1, 2, 1 | 128, 2 | 128, 0, 3 };
+
+    for(int i = 0; i < 600; i++) {
+        bool minify = rnd_below(2);
+        size_t id = rnd_below(40);
+        const char *key = PICK(keys);
+        const char *name = PICK(keys);
+        RRDF_FIELD_TYPE type = (RRDF_FIELD_TYPE)rnd_below(9);
+        RRDF_FIELD_VISUAL visual = (RRDF_FIELD_VISUAL)rnd_below(5);
+        RRDF_FIELD_TRANSFORM transform = (RRDF_FIELD_TRANSFORM)rnd_below(6);
+        size_t decimal_points = rnd_below(5);
+        const char *u = PICK(units);
+        double max = maxima[rnd_below(COUNT(maxima))];
+        RRDF_FIELD_SORT sort = (RRDF_FIELD_SORT)sorts[rnd_below(COUNT(sorts))];
+        const char *pointer_to = PICK(pointers);
+        RRDF_FIELD_SUMMARY summary = (RRDF_FIELD_SUMMARY)rnd_below(7);
+        RRDF_FIELD_FILTER filter = (RRDF_FIELD_FILTER)rnd_below(4);
+        RRDF_FIELD_OPTIONS options = (RRDF_FIELD_OPTIONS)rnd_below(128);
+        const char *def = PICK(defaults);
+
+        buffer_flush(wb);
+        buffer_json_initialize(wb, "\"", "\"", 0, true, minify ? BUFFER_JSON_OPTIONS_MINIFY : BUFFER_JSON_OPTIONS_DEFAULT);
+        buffer_rrdf_table_add_field(wb, id, key, name, type, visual, transform, decimal_points, u, max, sort,
+                                    pointer_to, summary, filter, options, def);
+        buffer_json_finalize(wb);
+
+        uint64_t bits;
+        memcpy(&bits, &max, sizeof(bits));
+        fprintf(f, "%d\t%zu\t", minify ? 1 : 0, id);
+        esc_str(f, key); tab(f);
+        esc_str(f, name); tab(f);
+        fprintf(f, "%d\t%d\t%d\t%zu\t", (int)type, (int)visual, (int)transform, decimal_points);
+        opt_str(f, u);
+        fprintf(f, "%016" PRIx64 "\t%d\t", bits, (int)sort);
+        opt_str(f, pointer_to);
+        fprintf(f, "%d\t%d\t%d\t", (int)summary, (int)filter, (int)options);
+        opt_str(f, def);
+        esc_str(f, buffer_tostring(wb)); eol(f);
+    }
+
+    buffer_free(wb);
+    fclose(f);
+}
+
 int main(int argc, char **argv) {
     if(argc != 2) {
         fprintf(stderr, "usage: %s <output directory>\n", argv[0]);
@@ -1374,6 +1437,7 @@ int main(int argc, char **argv) {
     gen_json_escape(dir);
     gen_json(dir);
     gen_splitter(dir);
+    gen_rrdf(dir);
 
     buffer_free(wb);
     return 0;

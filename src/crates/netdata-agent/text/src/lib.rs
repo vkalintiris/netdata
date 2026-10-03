@@ -30,6 +30,7 @@ pub mod json;
 pub mod line_splitter;
 pub mod parse;
 pub mod print;
+pub mod rrdf;
 pub mod sanitize;
 pub mod simple_pattern;
 pub mod size;
