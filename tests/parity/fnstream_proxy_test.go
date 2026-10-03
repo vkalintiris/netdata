@@ -92,8 +92,8 @@ func fnProxyRelists(s *stream.Session, stop time.Time) []string {
 // (the oracle's or the candidate's) and an identical C grandchild running the fake plugin; the grandparent calls on
 // the grandchild's proxied session and on its vnode's (the grandparent refuses PROGRESS there). Compared: the answers
 // per transaction on each session (fnUpstream: spans whole, an error's expiry NOW+1), the re-lists on the grandchild's
-// session, the grandchild plugin's starts (stdin byte for byte), the middle's and the grandchild's stream-thread call
-// records, the observations.
+// session and on the middle's own (its built-ins, M8 commit 9), the grandchild plugin's starts (stdin byte for byte),
+// the middle's and the grandchild's stream-thread call records, the observations.
 func TestFnStreamProxy(t *testing.T) {
 	bins := binaries(t)
 	sc, play, want, wantNot := fnProxyScenario()
@@ -132,7 +132,7 @@ func TestFnStreamProxy(t *testing.T) {
 		t.Fatal("oracle: the cases did not play")
 	}
 	type result struct {
-		answers, vanswers, relists, vrelists, views, stdin, middle, gc []string
+		answers, vanswers, relists, vrelists, own, views, stdin, middle, gc []string
 	}
 	var res [2]result
 	for i, x := range sides {
@@ -150,6 +150,11 @@ func TestFnStreamProxy(t *testing.T) {
 		if x.vs != nil {
 			r.vanswers = fnUpstream(fnLines(x.vs.Chunks(), stop), lo, hi)
 			r.vrelists = fnProxyRelists(x.vs, stop)
+		}
+		// the middle's own localhost session: its re-lists carry the middle's built-ins (M8 commit 9), which the
+		// proxied sessions do not
+		for _, s := range x.parent.SessionsFor(x.d.Opts.Identity.MachineGUID) {
+			r.own = append(r.own, fnProxyRelists(s, stop)...)
 		}
 		starts, err := x.l.Starts()
 		if err != nil {
@@ -187,17 +192,23 @@ func TestFnStreamProxy(t *testing.T) {
 	if len(o.relists) == 0 {
 		t.Errorf("oracle: no re-list on the grandchild's session")
 	}
+	// C's middle opens its own session's re-list with its five built-ins (registered at rrd_init, before DynCfg's
+	// `config` line closes it, command-function.c:32-40)
+	if len(o.own) == 0 || !strings.HasPrefix(o.own[0], strings.Join(fnBuiltinRelist(), " | ")+" | ") {
+		t.Errorf("oracle: the middle's own re-lists do not open with its built-ins: %q", o.own)
+	}
 	diffLines(t, "the grandchild's answers", o.answers, res[1].answers)
 	diffLines(t, "the vnode's answers", o.vanswers, res[1].vanswers)
 	diffLines(t, "the grandchild's re-lists", o.relists, res[1].relists)
 	diffLines(t, "the vnode's re-lists", o.vrelists, res[1].vrelists)
+	diffLines(t, "the middle's own re-lists", o.own, res[1].own)
 	diffLines(t, "observations", obs[0], obs[1])
 	diffLines(t, "the grandchild plugin's starts", o.views, res[1].views)
 	diffLines(t, "the middle's stream-thread call records", o.middle, res[1].middle)
 	diffLines(t, "the grandchild's stream-thread call records", o.gc, res[1].gc)
-	t.Logf("oracle answers:\n%s\nvnode answers:\n%s\nre-lists:\n%s\nvnode re-lists:\n%s\nobservations:\n%s\nplugin starts:\n%s\n"+
-		"middle records:\n%s\ngrandchild records:\n%s", strings.Join(o.answers, "\n"), strings.Join(o.vanswers, "\n"),
-		strings.Join(o.relists, "\n"), strings.Join(o.vrelists, "\n"),
+	t.Logf("oracle answers:\n%s\nvnode answers:\n%s\nre-lists:\n%s\nvnode re-lists:\n%s\nthe middle's own re-lists:\n%s\n"+
+		"observations:\n%s\nplugin starts:\n%s\nmiddle records:\n%s\ngrandchild records:\n%s", strings.Join(o.answers, "\n"),
+		strings.Join(o.vanswers, "\n"), strings.Join(o.relists, "\n"), strings.Join(o.vrelists, "\n"), strings.Join(o.own, "\n"),
 		strings.Join(obs[0], "\n"), strings.Join(o.views, "\n"), strings.Join(o.middle, "\n"), strings.Join(o.gc, "\n"))
 }
 

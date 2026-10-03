@@ -584,8 +584,8 @@ func fnStreamCalls() fnStreamTopo {
 
 // fnStreamCatalog compares the parents' lists of the child's and its vnode's methods: `/host/<host>/api/v1/functions`
 // byte for byte (the head's clock and transaction masked), the `functions` member of `/host/<host>/api/v1/info` by
-// value and by place, and `/api/v2|v3/functions` through the v2 envelope (compareInfoV2With) with B9's deviation mask
-// (fnWithoutLocalBuiltins); the oracle's guards.
+// value and by place, and `/api/v2|v3/functions` through the v2 envelope (compareInfoV2), where each parent's own
+// built-ins merge with the child's (since M8 commit 9); the oracle's guards.
 func fnStreamCatalog(t *testing.T, p *Pair, _ [2]*fnStreamSide) {
 	t.Helper()
 	for _, target := range []string{fnChildHost + "/api/v1/functions", "/host/" + rvName + "/api/v1/functions"} {
@@ -627,26 +627,30 @@ func fnStreamCatalog(t *testing.T, p *Pair, _ [2]*fnStreamSide) {
 		}
 		t.Logf("oracle %s:\n%s", target, body[0])
 	}
-	fnCompareInfoFunctionsAt(t, p, []string{fnChildHost + "/api/v1/info", "/host/" + rvName + "/api/v1/info"}, nil)
+	fnCompareInfoFunctionsAt(t, p, []string{fnChildHost + "/api/v1/info", "/host/" + rvName + "/api/v1/info"})
 	var requests [][2]string
 	for _, target := range []string{"/api/v2/functions?options=minify", "/api/v2/functions?options=minify&scope_nodes=" +
 		rchildHostname, "/api/v2/functions?options=minify&nodes=" + rvName, fnChildHost + "/api/v2/functions?options=minify",
 		"/api/v3/functions?options=minify"} {
 		requests = append(requests, [2]string{target, "200"})
 	}
-	compareInfoV2With(t, p, "", requests, fnWithoutLocalBuiltins)
+	compareInfoV2(t, p, "", requests)
 	b, err := rawExchange(p.Oracle.Addr, fnHTTPGet("/api/v2/functions?options=minify", ""), fnWait)
 	if err != nil {
 		t.Fatalf("oracle: %v", err)
 	}
 	body := string(httpBody(b))
 	t.Logf("oracle /api/v2/functions?options=minify: %s", body)
-	// the deviation mask is not stale: each built-in lists localhost (0, created first) beside the child (1)
+	// the merge (api_v2_contexts.c:688-700, keyed `<version>|<name>`): each user-visible built-in is one item with the
+	// parent's localhost (0, created first) beside the child (1), in C's order before the child's plugin methods
+	at := -1
 	for _, n := range fnBuiltinNames {
-		if !strings.Contains(body, `{"name":"`+n+`","help":`) || !regexp.MustCompile(`\{"name":"`+regexp.QuoteMeta(n)+
-			`"[^{}]*"ni":\[0,1\]`).MatchString(body) {
-			t.Errorf("oracle: /api/v2/functions has no %q of localhost and the child: the deviation mask is stale", n)
+		k := regexp.MustCompile(`\{"name":"` + regexp.QuoteMeta(n) + `","help":"[^"]*","ni":\[0,1\],`).FindStringIndex(body)
+		if k == nil || k[0] <= at {
+			t.Errorf("oracle: /api/v2/functions has no %q of localhost and the child after %d: %v", n, at, k)
+			continue
 		}
+		at = k[0]
 	}
 	for _, w := range []string{`"nm":"parity-parent","ni":0,`, `"nm":"` + rchildHostname + `","ni":1,`, `"nm":"` + rvName + `","ni":2,`,
 		`{"name":"difftest-open","help":"open fn","ni":[1],`, `{"name":"difftest-vfn","help":"vnode fn","ni":[2],`} {
@@ -654,30 +658,6 @@ func fnStreamCatalog(t *testing.T, p *Pair, _ [2]*fnStreamSide) {
 			t.Errorf("oracle: /api/v2/functions has no %s", w)
 		}
 	}
-}
-
-// fnV2BuiltinRe is a v2 functions item of one of C's localhost built-ins (minified), its `ni` array the submatch.
-var fnV2BuiltinRe = regexp.MustCompile(`\{"name":"(?:` + strings.Join(fnBuiltinNames, "|") + `)","[^{}]*?"ni":\[([0-9,]*)\][^{}]*\},?`)
-
-// fnWithoutLocalBuiltins is B9's narrow DEVIATION mask (D164, closed by M8 commit 9): a minified v2 functions answer
-// with the answering agent's own localhost (`parity-parent`'s `ni`) taken out of the `ni` of C's built-ins
-// (fnBuiltinNames), an item left without one dropped. The child's built-ins of the same name and version are one item
-// with localhost's on a C parent (api_v2_contexts.c:688-700); the Rust agent has no built-ins until commit 9. Both
-// sides go through it; the oracle must show localhost in each (fnStreamCatalog's guard).
-func fnWithoutLocalBuiltins(b []byte) []byte {
-	m := regexp.MustCompile(`"nm":"` + parentIdentity.Hostname + `","ni":(\d+)`).FindSubmatch(b)
-	if m == nil {
-		return b
-	}
-	local := string(m[1])
-	return fnV2BuiltinRe.ReplaceAllFunc(b, func(item []byte) []byte {
-		sm := fnV2BuiltinRe.FindSubmatchIndex(item)
-		ids := slices.DeleteFunc(strings.Split(string(item[sm[2]:sm[3]]), ","), func(s string) bool { return s == local })
-		if len(ids) == 0 {
-			return nil
-		}
-		return slices.Concat(item[:sm[2]], []byte(strings.Join(ids, ",")), item[sm[3]:])
-	})
 }
 
 // fnStreamTiming is the `timing` topology (debug level): a parent's wait timeout and GC, a client's cancel, progress.

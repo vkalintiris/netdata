@@ -887,10 +887,9 @@ var (
 // host labels sorted: C prints them in heap order). Then each chart's definitions and replication answers, in the
 // order the chart got them: the proxy's replication threads commit the answers of different charts in any order.
 // Then the stream in arrival order: the blocks, the markers, a `DEF <chart>` where each definition came, and every
-// other line. Last the last stream path (the sender's side sends one when its NODE_ID or retention changes, racing
-// the receiver's lines). The proxy's clocks and the path's times are masked, chart labels sorted within their run,
-// the re-list lines of C's own methods left out (cOnlyFunctionRe's labelled deviation; D164 B6 lifted D100.9's drop of
-// every FUNCTION line).
+// other line, re-list lines included (D164 B6 lifted D100.9's drop of every FUNCTION line). Last the last stream path
+// (the sender's side sends one when its NODE_ID or retention changes, racing the receiver's lines). The proxy's clocks
+// and the path's times are masked, chart labels sorted within their run.
 func proxyTranscript(data string) []string {
 	var hooks, labels, flow, lastPath []string
 	charts := map[string][]string{}
@@ -935,7 +934,6 @@ func proxyTranscript(data string) []string {
 			continue
 		}
 		switch {
-		case cOnlyFunctionRe.MatchString(l):
 		case !defined && strings.HasPrefix(l, "LABEL "):
 			labels = append(labels, l)
 		case !defined:
@@ -1092,7 +1090,7 @@ func TestProxyTranscriptParse(t *testing.T) {
 
 // proxyStartKinds are the kinds of a session's lines before its first definition, each at its first appearance,
 // then CHART: the ready hook's order (stream-sender.c:165-179), which proxyTranscript loses (labels sorted to the
-// front, only the last path kept). The re-list lines of C's own methods are left out (cOnlyFunctionRe, D164 B6).
+// front, only the last path kept).
 func proxyStartKinds(data string) []string {
 	var out []string
 	add := func(k string) {
@@ -1110,7 +1108,6 @@ func proxyStartKinds(data string) []string {
 		case l == "JSON STREAM_PATH":
 			inPath = true
 			add(l)
-		case cOnlyFunctionRe.MatchString(l):
 		case strings.HasPrefix(l, "VARIABLE HOST "):
 			add("VARIABLE HOST")
 		case l == "OVERWRITE labels":

@@ -67,6 +67,10 @@ type fnCase struct {
 	settle func(t *testing.T, x *fnSide)
 	// clock renders the answers' wall-clock values (dcClock: DynCfg's trees carry `*_ut` and `agent.now`)
 	clock bool
+	// records, when set, are more stream-thread records the case compares (besides fnStreamRecordRe's)
+	records *regexp.Regexp
+	// mask, when set, renders each side's answers and observations before they are compared (the case's own masks)
+	mask func([]string) []string
 }
 
 // fnSide is one agent's run of a case: its child, its parent, the session the case calls through (localhost's
@@ -335,9 +339,16 @@ func fnViews(name string, starts [][]plugin.Record, stop time.Time) (lines, stdi
 // the stop, in file order, normalized.
 func fnStreamRecords(t *testing.T, d *daemon.Daemon, stop time.Time) []string {
 	t.Helper()
+	return fnStreamRecordsWith(t, d, stop, nil)
+}
+
+// fnStreamRecordsWith is fnStreamRecords with the stream thread's records matching extra too (when set).
+func fnStreamRecordsWith(t *testing.T, d *daemon.Daemon, stop time.Time, extra *regexp.Regexp) []string {
+	t.Helper()
 	var out []string
 	for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
-		if strings.HasPrefix(threadOf(l), "STREAM[") && fnStreamRecordRe.MatchString(l) && recordBefore(l, stop) {
+		if strings.HasPrefix(threadOf(l), "STREAM[") && (fnStreamRecordRe.MatchString(l) || extra != nil && extra.MatchString(l)) &&
+			recordBefore(l, stop) {
 			out = append(out, fnMaskRecord(normalizeLog(l, d.Opts.RunDir, "")))
 		}
 	}
@@ -423,8 +434,9 @@ func fnPlay(t *testing.T, x *fnSide, c fnCase) ([]string, bool) {
 
 // fnCollect stops a side and takes what it left, on the test goroutine: what reaches the parent once the stop began
 // is a race (C stops collectors and streaming together, daemon-shutdown.c:227), as are the plugin thread's records
-// of its kill, so the answers, the plugin starts and the records end at the stop (R61-4).
-func fnCollect(t *testing.T, x *fnSide) fnResult {
+// of its kill, so the answers, the plugin starts and the records end at the stop (R61-4); records are the case's more
+// stream-thread records.
+func fnCollect(t *testing.T, x *fnSide, records *regexp.Regexp) fnResult {
 	var res fnResult
 	stop := time.Now()
 	if err := x.d.Stop(); err != nil {
@@ -455,7 +467,7 @@ func fnCollect(t *testing.T, x *fnSide) fnResult {
 			}
 		}
 	}
-	res.stream = fnStreamRecords(t, x.d, stop)
+	res.stream = fnStreamRecordsWith(t, x.d, stop, records)
 	return res
 }
 
@@ -499,11 +511,14 @@ func runFnCases(t *testing.T, cases map[string]fnCase) {
 				if ran[i] && c.settle != nil {
 					c.settle(t, x)
 				}
-				res[i] = fnCollect(t, x)
+				res[i] = fnCollect(t, x, c.records)
 				res[i].obs, res[i].ran = obs[i], ran[i]
 				if c.clock {
 					now := time.Now()
 					res[i].answers = dcClock(res[i].answers, now.Add(-10*time.Minute), now.Add(time.Minute))
+				}
+				if c.mask != nil {
+					res[i].answers, res[i].obs = c.mask(res[i].answers), c.mask(res[i].obs)
 				}
 			}
 			if !res[0].ran {
@@ -539,8 +554,8 @@ func runFnCases(t *testing.T, cases map[string]fnCase) {
 					t.Errorf("candidate only: %s: %q", class, res[1].classes[class])
 				}
 			}
-			t.Logf("oracle answers:\n%s\nplugin starts:\n%s\nstream thread records:\n%s", strings.Join(o.answers, "\n"),
-				strings.Join(o.views, "\n"), strings.Join(o.stream, "\n"))
+			t.Logf("oracle answers:\n%s\nobservations:\n%s\nplugin starts:\n%s\nstream thread records:\n%s",
+				strings.Join(o.answers, "\n"), strings.Join(o.obs, "\n"), strings.Join(o.views, "\n"), strings.Join(o.stream, "\n"))
 		})
 	}
 }
@@ -1046,5 +1061,6 @@ func fnCases() map[string]fnCase {
 				vnodeReady},
 		}
 	}
+	cases["bearer"] = fnBearerCase()
 	return cases
 }

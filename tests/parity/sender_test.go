@@ -43,11 +43,9 @@ type capture struct {
 	// replays are each chart's replication answers: their lines' kinds and dimensions
 	replays map[string][]string
 	// relists are the session's function re-lists in order, each its `FUNCTION_DEL GLOBAL` and `FUNCTION GLOBAL`
-	// lines (one commit, so they come together) without cOnlyFunctionRe's, joined; a re-list left empty is dropped
+	// lines (one commit, so they come together), joined
 	relists []string
-	// excluded counts the bytes of the re-list lines cOnlyFunctionRe left out, each with its newline
-	excluded int
-	other    []string
+	other   []string
 	// slots are each chart's slot in its definition, which its blocks must use (the numbers follow the charts'
 	// creation order, which varies)
 	slots map[string]string
@@ -64,11 +62,6 @@ var (
 	set2Re          = regexp.MustCompile(`^SET2 (?:(SLOT:\S+) )?'([^']*)' \S+ \S+ (\S*)$`)
 	dimensionRe     = regexp.MustCompile(`^DIMENSION (?:(SLOT:\S+) )?"([^"]*)"`)
 	definitionEndRe = regexp.MustCompile(`^CHART_DEFINITION_END .*`)
-	// cOnlyFunctionRe are the re-list lines of C's own localhost methods, which the candidate registers later: the
-	// five built-ins (web/api/functions/functions.c, M8 commit 9). It hides a deviation, not C's run-to-run variation:
-	// what the Rust agent lacks until M8's built-in Functions land, and it comes out with them. DynCfg's `config` line
-	// (dcConfigLine) is compared since M8 commit 8.
-	cOnlyFunctionRe = regexp.MustCompile(`^FUNCTION GLOBAL "(netdata-streaming|topology:streaming|netdata-api-calls|bearer_get_token|netdata-metrics-cardinality)" `)
 	v1BeginRe       = regexp.MustCompile(`^BEGIN "([^"]*)" (\d+)$`)
 	v1SetRe         = regexp.MustCompile(`^SET "([^"]*)" = \S+$`)
 )
@@ -110,11 +103,7 @@ func parseCapture(req stream.Request, data []byte) capture {
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasPrefix(line, "FUNCTION GLOBAL ") || strings.HasPrefix(line, "FUNCTION_DEL GLOBAL ") {
 			inRelist = true
-			if cOnlyFunctionRe.MatchString(line) {
-				c.excluded += len(line) + 1
-			} else {
-				relist = append(relist, line)
-			}
+			relist = append(relist, line)
 			continue
 		}
 		if inRelist && line != "" {
@@ -398,15 +387,16 @@ var senderVariants = []senderVariant{
 		during: retentionChange},
 	// the function re-list (fn-relist, M8 commit 5, D147.14 R61-3): the fake plugin's methods as the parent sees
 	// them, with the parent taking FUNCTION_DEL, refusing it, and refusing FUNCTIONS
-	fnRelistVariant("fn-relist", 0, [][]string{fnRelistBursts(true), {dcConfigLine}}),
-	fnRelistVariant("fn-nodel", stream.CapFunctionDel, [][]string{fnRelistBursts(false), {dcConfigLine}}),
+	fnRelistVariant("fn-relist", 0, [][]string{fnRelistBursts(true), {fnRelistJoin(nil)}}),
+	fnRelistVariant("fn-nodel", stream.CapFunctionDel, [][]string{fnRelistBursts(false), {fnRelistJoin(nil)}}),
 	// without FUNCTIONS the second session has no re-list at all (no connect-time send, no change after it)
 	fnRelistVariant("fn-nofn", stream.CapFunctions, [][]string{fnRelistBursts(true), nil}),
 	// DynCfg nodes (M8 commit 8, plan §5.4): each registration and delete of a `config <id>` method re-lists at the next
-	// collection, and the re-list holds only `config` (DynCfg methods are never listed, nrpc-catalog.c:50-53; their
-	// deletes never queue FUNCTION_DEL, nrpc-registry.c:699-703); with DYNCFG refused, no `config` line at all
-	dcRelistVariant("dc-relist", 0, [][]string{{dcConfigLine, dcConfigLine, dcConfigLine, dcConfigLine, dcConfigLine}}),
-	dcRelistVariant("dc-nodyncfg", stream.CapDynCfg, [][]string{nil}),
+	// collection (rrdhost_nrpc_changed sets the flag for any registry change, rrdhost.c:353-360), and the re-list holds
+	// the built-ins and `config` (DynCfg methods are never listed, nrpc-catalog.c:50-53; their deletes never queue
+	// FUNCTION_DEL, nrpc-registry.c:699-703); with DYNCFG refused, the same re-lists without the `config` line
+	dcRelistVariant("dc-relist", 0, [][]string{slices.Repeat([]string{fnRelistJoin(nil)}, 5)}),
+	dcRelistVariant("dc-nodyncfg", stream.CapDynCfg, [][]string{slices.Repeat([]string{strings.Join(fnBuiltinRelist(), "\n")}, 5)}),
 }
 
 // fnRelistLine is a method's re-list line as C renders it (nrpc-catalog.c `FUNCTION GLOBAL "%s" %d "%s" "%s" 0x%x
@@ -418,20 +408,26 @@ func fnRelistLine(name, help string) string {
 // fnRelistBursts are the re-lists of fnRelistScenario's first start, in order, as C sends them: the connect-time one
 // (or, when the parent refused FUNCTIONS, the first collection's: command-function.c:9 returns before clearing the
 // flag, command-begin-set-end-init.c:49-67 does not check FUNCTIONS); the queued FUNCTION_DEL lines first, when
-// the parent takes them (nrpc-catalog.c:150-160, dropped otherwise); a DEL and a re-add between two renders give
-// both (fn.registry.readd_keeps_del); a re-added method goes last (registration order); an unchanged re-send
-// re-lists too; each ends with DynCfg's `config` line (dcConfigLine: localhost's `config`). The exit re-lists nothing,
-// and the next session's re-list leaves the exited run's methods out (unavailable), so it holds only `config` once
-// C's own are left out.
+// the parent takes them (nrpc-catalog.c:150-160, dropped otherwise), then C's five built-ins (fnBuiltinRelist:
+// registered first, at rrd_init) and the plugin's methods in registration order; a DEL and a re-add between two
+// renders give both (fn.registry.readd_keeps_del); a re-added method goes last; an unchanged re-send re-lists too;
+// each ends with DynCfg's `config` line (dcConfigLine: localhost's `config`). The exit re-lists nothing, and the next
+// session's re-list leaves the exited run's methods out (unavailable): fnRelistJoin(nil) alone.
 func fnRelistBursts(del bool) []string {
 	a, b := fnRelistLine("difftest-a", "a"), fnRelistLine("difftest-b", "b")
 	a2, b2 := fnRelistLine("difftest-a", "a2"), fnRelistLine("difftest-b", "b2")
-	delA, delB := `FUNCTION_DEL GLOBAL "difftest-a"`, `FUNCTION_DEL GLOBAL "difftest-b"`
-	join := func(l ...string) string { return strings.Join(append(l, dcConfigLine), "\n") }
+	delA, delB := []string{`FUNCTION_DEL GLOBAL "difftest-a"`}, []string{`FUNCTION_DEL GLOBAL "difftest-b"`}
 	if !del {
-		return []string{join(a, b), join(b), join(b2), join(b2, a2), join(b2, a2)}
+		delA, delB = nil, nil
 	}
-	return []string{join(a, b), join(delA, b), join(delB, b2), join(b2, a2), join(b2, a2)}
+	return []string{fnRelistJoin(nil, a, b), fnRelistJoin(delA, b), fnRelistJoin(delB, b2), fnRelistJoin(nil, b2, a2),
+		fnRelistJoin(nil, b2, a2)}
+}
+
+// fnRelistJoin is one re-list of a C child (nrpc_catalog_render_global_functions, command-function.c:32-40): the
+// queued deletes, the five built-ins, the plugin's methods, then DynCfg's `config` line.
+func fnRelistJoin(dels []string, methods ...string) string {
+	return strings.Join(slices.Concat(dels, fnBuiltinRelist(), methods, []string{dcConfigLine}), "\n")
 }
 
 // fnRelistScenario: the plugin collects in the background from its start (PULSE is off, so its blocks are the only
@@ -663,6 +659,22 @@ func TestSenderCapture(t *testing.T) {
 				}
 			}
 			diffLines(t, "gate and reset records", records[0], records[1])
+			// C's built-ins open every re-list after its deletes (registered first, at rrd_init): each session's first
+			// re-list on either side, and session 1 has one whenever the parent takes FUNCTIONS
+			for i, role := range []Role{Oracle, Candidate} {
+				for n := range sessions {
+					rl := caps[i][n].relists
+					if len(rl) == 0 {
+						if n == 0 && v.refused&stream.CapFunctions == 0 {
+							t.Errorf("%s: session 1 has no function re-list", role)
+						}
+						continue
+					}
+					if !fnBuiltinsLead(rl[0]) {
+						t.Errorf("%s: session %d's first re-list does not start with C's built-ins:\n%s", role, n+1, rl[0])
+					}
+				}
+			}
 			for n, want := range v.relists {
 				if n < len(caps[0]) && !slices.Equal(caps[0][n].relists, want) {
 					t.Errorf("oracle: session %d's function re-lists:\n%s\nwant:\n%s", n+1,
@@ -748,8 +760,8 @@ func senderRun(t *testing.T, bin string, role Role, v senderVariant, sessions in
 		if os.Getenv("PARITY_KEEP") == "1" {
 			_ = os.WriteFile(filepath.Join(d.Opts.RunDir, "capture-"+strconv.Itoa(n+1)+".txt"), s.Data(), 0o644)
 		}
-		t.Logf("%s session %d: %d bytes (%d without C's own re-list lines), %d charts, %d with data, %d other lines",
-			role, n+1, len(s.Data()), len(s.Data())-c.excluded, len(c.charts), len(c.data), len(c.other))
+		t.Logf("%s session %d: %d bytes, %d charts, %d with data, %d re-lists, %d other lines", role, n+1, len(s.Data()),
+			len(c.charts), len(c.data), len(c.relists), len(c.other))
 		out = append(out, c)
 	}
 	return out, senderRecords(t, d)

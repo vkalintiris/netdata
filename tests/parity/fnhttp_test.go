@@ -93,12 +93,18 @@ type fnHTTPSide struct {
 // do sends one request on a connection of its own and returns `<label>: <response masked, quoted>`.
 func (x *fnHTTPSide) do(t *testing.T, label string, req []byte) string {
 	t.Helper()
+	return x.doMasked(t, label, req, fnHTTPMask)
+}
+
+// doMasked is do with the response rendered by mask.
+func (x *fnHTTPSide) doMasked(t *testing.T, label string, req []byte, mask func([]byte) string) string {
+	t.Helper()
 	b, err := rawExchange(x.d.Addr, req, fnWait)
 	if err != nil {
 		t.Errorf("%s: %s: %v", x.role, label, err)
 		return label + ": " + err.Error()
 	}
-	return label + ": " + strconv.Quote(fnHTTPMask(b))
+	return label + ": " + strconv.Quote(mask(b))
 }
 
 // step waits until a fake plugin's starts satisfy ok.
@@ -219,6 +225,8 @@ type fnHTTPCase struct {
 	want, wantNot []string
 	// starts is how many starts of difftest the oracle must show (1 when 0)
 	starts int
+	// records, when set, rewrites each side's access and call records before they are compared (the case's masks)
+	records func(l string) string
 }
 
 // runFnHTTPCases plays each case through runPluginCases: both sides list the case's methods, then play at once; their
@@ -277,6 +285,14 @@ func runFnHTTPCases(t *testing.T, cases map[string]fnHTTPCase) {
 				for i, side := range p.Each() {
 					access[i] = fnHTTPAccess(t, side.Daemon)
 					calls[i] = fnHTTPCallRecords(t, side.Daemon)
+					if c.records != nil {
+						for k := range access[i] {
+							access[i][k] = c.records(access[i][k])
+						}
+						for k := range calls[i] {
+							calls[i][k] = c.records(calls[i][k])
+						}
+					}
 				}
 				diffLines(t, "access records", access[0], access[1])
 				diffLines(t, "web workers' call records", calls[0], calls[1])
@@ -768,19 +784,6 @@ func fnHTTPBareTimeout(t *testing.T) {
 // ---------------------------------------------------------------------------------------------------------------
 // fn.http-catalog
 
-// fnBuiltinRe finds C's user-visible localhost built-ins in a functions list (a v1 member or a v2 item, with its
-// comma): a DEVIATION mask, not a C variation. The Rust agent has no built-in methods until M8 commit 9
-// (web/api/functions/functions.c), which removes this mask; C's other two, bearer_get_token and config, are never
-// listed (restricted, DynCfg). Both sides go through it, so C against C passes; the oracle must list all four.
-var (
-	fnBuiltinNames = []string{"netdata-streaming", "topology:streaming", "netdata-api-calls", "netdata-metrics-cardinality"}
-	fnBuiltinRe    = regexp.MustCompile(`\s*"(?:` + strings.Join(fnBuiltinNames, "|") + `)":\{[^{}]*\},?|` +
-		`\{\s*"name":"(?:` + strings.Join(fnBuiltinNames, "|") + `)"[^{}]*\},?`)
-)
-
-// fnWithoutBuiltins is a body with fnBuiltinRe's entries removed.
-func fnWithoutBuiltins(b []byte) []byte { return fnBuiltinRe.ReplaceAll(b, nil) }
-
 // fnCatalogRegister is what difftest registers, on localhost then on the vnode: methods listed in registration order
 // with their access names in table order (difftest-all has every bit); restricted ones (a `__` name, a `hidden` tag,
 // nrpc-registry.c:486-488) and `config` (refused at registration, the DynCfg names) are not listed; difftest-same has
@@ -797,11 +800,10 @@ var fnCatalogRegister = fnOpenRegister + fnRegister + fnHiddenRegister +
 	`FUNCTION GLOBAL "difftest-ver" 10 "version 2" "top" "0x8" 100 2` + "\n" +
 	`FUNCTION GLOBAL "difftest-vonly" 10 "vnode only" "top" "0x8" 100 1` + "\n"
 
-// fnCatalogHead is a response's head with the clock, the random transaction and the length masked (the deviation
-// mask changes the length).
+// fnCatalogHead is a response's head with the clock and the random transaction masked.
 func fnCatalogHead(b []byte) string {
 	h, _, _ := bytes.Cut(b, []byte("\r\n\r\n"))
-	return string(contentLengthRe.ReplaceAll(maskRaw(h), []byte("Content-Length: <masked>")))
+	return string(maskRaw(h))
 }
 
 // fnMember is the top-level member key of a JSON object, with the keys before and after it ("" at the ends).
@@ -824,8 +826,8 @@ func fnMember(v Value, key string) (Value, string, string, bool) {
 // TestFnHTTPCatalog (check `fn.http-catalog`, M8 commit 6, D157): the lists of methods. `/api/v1/functions` of
 // localhost and of the vnode byte for byte (nrpc-catalog.c:182-226, the USER filter :38-48), the `functions` member of
 // `/api/v1/info` by value and by place, and `/api/v2|v3/functions` (contexts v2's FUNCTIONS, NODES, AGENTS and VERSIONS,
-// api_v2_contexts.c:688-806, :1481-1516) through the v2 envelope (compareInfoV2). C's built-ins go through the
-// labelled deviation mask fnBuiltinRe.
+// api_v2_contexts.c:688-806, :1481-1516) through the v2 envelope (compareInfoV2). C's built-ins (fnBuiltins) are
+// compared with the rest since M8 commit 9.
 func TestFnHTTPCatalog(t *testing.T) {
 	runPluginCases(t, map[string]pluginCase{"lists": {
 		enable: []string{"difftestb"},
@@ -860,7 +862,7 @@ func TestFnHTTPCatalog(t *testing.T) {
 			}
 			requests = append(requests, [2]string{"/api/v3/functions", "200"}, [2]string{"/api/v3/functions?options=minify", "200"},
 				[2]string{"/host/" + vnodeName + "/api/v2/functions", "200"})
-			compareInfoV2With(t, p, "", requests, fnWithoutBuiltins)
+			compareInfoV2(t, p, "", requests)
 			fnGuardV2(t, p)
 		},
 		guard: func(t *testing.T, starts [][]plugin.Record, classes map[string][]string) {},
@@ -869,9 +871,9 @@ func TestFnHTTPCatalog(t *testing.T) {
 	}})
 }
 
-// fnCompareV1Lists compares `/api/v1/functions` of localhost and of the vnode: the head (clock, transaction and length
-// masked) and the body without C's built-ins, byte for byte; the oracle must list its four built-ins, the methods it
-// accepts and none it refuses.
+// fnCompareV1Lists compares `/api/v1/functions` of localhost and of the vnode: the head (clock and transaction masked)
+// and the body, byte for byte; the oracle must list its four user-visible built-ins first, then the methods it accepts,
+// and none it refuses.
 func fnCompareV1Lists(t *testing.T, p *Pair) {
 	t.Helper()
 	for _, target := range []string{"/api/v1/functions", "/host/" + vnodeName + "/api/v1/functions"} {
@@ -881,9 +883,9 @@ func fnCompareV1Lists(t *testing.T, p *Pair) {
 			if err != nil {
 				t.Fatalf("%s: %s: %v", side.Role, target, err)
 			}
-			head[i], body[i] = fnCatalogHead(b), string(fnWithoutBuiltins(httpBody(b)))
+			head[i], body[i] = fnCatalogHead(b), string(httpBody(b))
 			if i == 0 {
-				fnGuardList(t, target, string(httpBody(b)), target == "/api/v1/functions")
+				fnGuardList(t, target, body[i], target == "/api/v1/functions")
 			}
 		}
 		if head[0] != head[1] {
@@ -892,21 +894,28 @@ func fnCompareV1Lists(t *testing.T, p *Pair) {
 		if body[0] != body[1] {
 			t.Errorf("%s: bodies differ\n%s", target, firstDifference([]byte("\r\n\r\n"+body[0]), []byte("\r\n\r\n"+body[1])))
 		}
-		t.Logf("oracle %s (built-ins removed):\n%s", target, body[0])
+		t.Logf("oracle %s:\n%s", target, body[0])
 	}
 }
 
-// fnGuardList checks the oracle's list: localhost's holds the four built-ins (the deviation mask is not stale) and
-// its accepted methods in registration order; neither holds a restricted, refused or unavailable one.
+// fnGuardList checks the oracle's list in registration order (nrpc-catalog.c:33, the registry's insertion order):
+// localhost's starts with the four user-visible built-ins (registered at rrd_init, before any plugin, rrd.c:185-190;
+// bearer_get_token is restricted), then its accepted methods; neither list holds a restricted, refused or unavailable
+// one, and the vnode's holds no built-in (localhost only, functions.c:9).
 func fnGuardList(t *testing.T, target, body string, localhost bool) {
 	t.Helper()
 	listed := []string{`"difftest-same":{`, `"difftest-ver":{`, `"difftest-vonly":{`}
+	absent := []string{"__difftest-hidden", "difftest-tagged", `"config"`, "difftest-gone", `"bearer_get_token"`}
 	if localhost {
 		listed = []string{`"difftest-open":{`, `"difftest-fn":{`, `"difftest-all":{`, `"difftest-same":{`, `"difftest-ver":{`}
+		var builtins []string
 		for _, n := range fnBuiltinNames {
-			if !strings.Contains(body, `"`+n+`":{`) {
-				t.Errorf("oracle: %s does not list the built-in %q: the deviation mask is stale", target, n)
-			}
+			builtins = append(builtins, `"`+n+`":{`)
+		}
+		listed = append(builtins, listed...)
+	} else {
+		for _, n := range fnBuiltinNames {
+			absent = append(absent, `"`+n+`"`)
 		}
 	}
 	at := -1
@@ -917,7 +926,7 @@ func fnGuardList(t *testing.T, target, body string, localhost bool) {
 		}
 		at = i
 	}
-	for _, n := range []string{"__difftest-hidden", "difftest-tagged", `"config"`, "difftest-gone"} {
+	for _, n := range absent {
 		if strings.Contains(body, n) {
 			t.Errorf("oracle: %s lists %s", target, n)
 		}
@@ -935,12 +944,13 @@ func fnCollected(n int) func([][]plugin.Record) bool {
 var fnContextsHashRe = regexp.MustCompile(`"contexts_hard_hash":(\d+)`)
 
 // fnContextsSettled waits until the summed contexts version is non-zero (the vnode's chart made its context) and
-// the same on two reads a second apart (its first collections update it).
+// the same on two reads a second apart (its first collections update it); the polls are left out of the access
+// records (harness=wait: their number is timing).
 func fnContextsSettled(t *testing.T, x *fnHTTPSide) bool {
 	t.Helper()
 	last := ""
 	if pollUntil(30*time.Second, func() bool {
-		b, err := rawExchange(x.d.Addr, fnHTTPGet("/api/v2/functions?options=minify", ""), fnWait)
+		b, err := rawExchange(x.d.Addr, fnHTTPGet("/api/v2/functions?options=minify&harness=wait", ""), fnWait)
 		m := fnContextsHashRe.FindSubmatch(b)
 		if err != nil || m == nil || string(m[1]) == "0" {
 			return false
@@ -965,8 +975,27 @@ func fnGuardV2(t *testing.T, p *Pair) {
 	if err != nil {
 		t.Fatalf("oracle: %v", err)
 	}
-	body := string(fnWithoutBuiltins(httpBody(b)))
-	t.Logf("oracle /api/v2/functions?options=minify (built-ins removed): %s", body)
+	body := string(httpBody(b))
+	t.Logf("oracle /api/v2/functions?options=minify: %s", body)
+	// the built-ins are localhost's alone (ni 0), in C's order before the plugin's methods, with their descriptors
+	var builtins []string
+	for _, f := range fnBuiltins {
+		if f.tags != "hidden" {
+			builtins = append(builtins, fmt.Sprintf(`{"name":"%s","help":"%s","ni":[0],"priority":%d,"version":0,"tags":"%s","access":[`,
+				f.name, f.help, f.priority, f.tags))
+		}
+	}
+	at := -1
+	for _, w := range append(builtins, `{"name":"difftest-open",`) {
+		k := strings.Index(body, w)
+		if k <= at {
+			t.Errorf("oracle: /api/v2/functions has %s at %d (after %d, in C's order)", w, k, at)
+		}
+		at = k
+	}
+	if strings.Contains(body, "bearer_get_token") {
+		t.Errorf("oracle: /api/v2/functions lists bearer_get_token")
+	}
 	for _, w := range []string{
 		`{"name":"difftest-same","help":"same on localhost","ni":[0,1],"priority":100,"version":1,"tags":"top","access":["anonymous-data"]}`,
 		`{"name":"difftest-ver","help":"version 1","ni":[0],`, `{"name":"difftest-ver","help":"version 2","ni":[1],"priority":100,"version":2,`,
@@ -987,21 +1016,18 @@ func fnGuardV2(t *testing.T, p *Pair) {
 	}
 }
 
-// fnCompareInfoFunctions compares the `functions` member of `/api/v1/info` (localhost's and the vnode's) by value,
-// without C's built-ins, and its place among the members both sides write (api_v1_info.c:132-134: after host_labels,
-// before collectors). Members the candidate does not write yet (D84.2) are left out of the place, not masked, so the
-// check tightens by itself as they are ported.
+// fnCompareInfoFunctions compares the `functions` member of `/api/v1/info` (localhost's and the vnode's) by value
+// and its place among the members both sides write (api_v1_info.c:132-134: after host_labels, before collectors).
+// Members the candidate does not write yet (D84.2) are left out of the place, not masked, so the check tightens by
+// itself as they are ported.
 func fnCompareInfoFunctions(t *testing.T, p *Pair) {
 	t.Helper()
-	fnCompareInfoFunctionsAt(t, p, []string{"/api/v1/info", "/host/" + vnodeName + "/api/v1/info"}, fnWithoutBuiltins)
+	fnCompareInfoFunctionsAt(t, p, []string{"/api/v1/info", "/host/" + vnodeName + "/api/v1/info"})
 }
 
-// fnCompareInfoFunctionsAt is fnCompareInfoFunctions of the targets, each body through edit when set.
-func fnCompareInfoFunctionsAt(t *testing.T, p *Pair, targets []string, edit func([]byte) []byte) {
+// fnCompareInfoFunctionsAt is fnCompareInfoFunctions of the targets.
+func fnCompareInfoFunctionsAt(t *testing.T, p *Pair, targets []string) {
 	t.Helper()
-	if edit == nil {
-		edit = func(b []byte) []byte { return b }
-	}
 	for _, target := range targets {
 		var docs [2]Value
 		for i, side := range p.Each() {
@@ -1009,7 +1035,7 @@ func fnCompareInfoFunctionsAt(t *testing.T, p *Pair, targets []string, edit func
 			if err != nil {
 				t.Fatalf("%s: %s: %v", side.Role, target, err)
 			}
-			if docs[i], err = ParseJSON(edit(httpBody(b))); err != nil {
+			if docs[i], err = ParseJSON(httpBody(b)); err != nil {
 				t.Fatalf("%s: %s: %v: %s", side.Role, target, err, truncateBytes(b))
 			}
 		}
