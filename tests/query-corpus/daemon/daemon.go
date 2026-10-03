@@ -112,6 +112,10 @@ type Options struct {
 	DBMode string
 	// DBExtra is appended to the [db] section verbatim (one "key = value" per line), e.g. `dbengine tier backfill`.
 	DBExtra string
+	// UpdateEvery is the [db] update every value; empty is 1.
+	UpdateEvery string
+	// NoHomeDir leaves `[directories] home` out, so the daemon takes its home from the password database.
+	NoHomeDir bool
 	// SeedCache, when set, is a directory copied into the cache directory before the first start (writable, as the
 	// daemon's own would be): the databases and dbengine files of an earlier run.
 	SeedCache string
@@ -127,6 +131,8 @@ type Options struct {
 	NoStreamConf bool
 	// StockConfigDir, when set, is the [directories] stock config path, with {run} replaced by RunDir.
 	StockConfigDir string
+	// StockDataDir, when set, is the [directories] stock data path, with {run} replaced by RunDir.
+	StockDataDir string
 	// Wrap, when set, is a command that execs the daemon in place, so its PID stays the daemon's (e.g. `unshare` into
 	// namespaces); the daemon's own command line follows it.
 	Wrap []string
@@ -184,14 +190,13 @@ const netdataConfTemplate = `[global]
     cache = %[1]s/cache
     lib = %[1]s/lib
     log = %[1]s/log
-    home = %[1]s/lib
-%[7]s
+%[15]s%[7]s
 [web]
     bind to = %[10]s
 %[8]s
 [db]
     db = %[11]s
-    update every = 1
+    update every = %[16]s
     storage tiers = %[4]d
     replication period = 3650d
     replication step = %[5]s
@@ -531,6 +536,9 @@ func renderNetdataConf(o Options, hostname string) string {
 	if o.StockConfigDir != "" {
 		extraDirs += fmt.Sprintf("    stock config = %s\n", strings.ReplaceAll(o.StockConfigDir, "{run}", o.RunDir))
 	}
+	if o.StockDataDir != "" {
+		extraDirs += fmt.Sprintf("    stock data = %s\n", strings.ReplaceAll(o.StockDataDir, "{run}", o.RunDir))
+	}
 	if o.PluginsDir != "" {
 		extraDirs += fmt.Sprintf("    plugins = %s\n", strings.ReplaceAll(o.PluginsDir, "{run}", o.RunDir))
 	}
@@ -548,8 +556,16 @@ func renderNetdataConf(o Options, hostname string) string {
 		pulse = "    netdata pulse = no\n"
 	}
 	pulse += o.PluginsExtra
+	home := fmt.Sprintf("    home = %s/lib\n", o.RunDir)
+	if o.NoHomeDir {
+		home = ""
+	}
+	updateEvery := o.UpdateEvery
+	if updateEvery == "" {
+		updateEvery = "1"
+	}
 	conf := fmt.Sprintf(netdataConfTemplate, o.RunDir, hostname, o.Port, o.StorageTiers, step, extraDB, extraDirs, o.WebExtra,
-		o.GlobalExtra, bindTo, dbMode, pulse, retentionTime, o.HealthExtra)
+		o.GlobalExtra, bindTo, dbMode, pulse, retentionTime, o.HealthExtra, home, updateEvery)
 	if o.PluginsStock {
 		conf = strings.Replace(conf, "[plugins]\n"+pluginsBlock(false), "[plugins]\n"+pluginsStock, 1)
 	}

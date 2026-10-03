@@ -105,6 +105,16 @@ func TestNetdataConfRendering(t *testing.T) {
 				"    enable running new plugins = yes\n    proc = no\n    diskspace = no\n    cgroups = no\n    tc = no\n    idlejitter = no\n    statsd = no\n" +
 				"    timex = no\n    profile = no\n    netdata pulse = no\n    apps = yes\n",
 		},
+		"update every, no home, stock dirs": {
+			func(o *Options) {
+				o.UpdateEvery = "2"
+				o.NoHomeDir = true
+				o.StockConfigDir = "{run}/sc"
+				o.StockDataDir = "{run}/sd"
+			},
+			strings.Replace(strings.Replace(defaultNetdataConf, "    home = /r/lib\n",
+				"    stock config = /r/sc\n    stock data = /r/sd\n", 1), "    update every = 1\n", "    update every = 2\n", 1),
+		},
 		"conf extra last": {
 			func(o *Options) {
 				o.HostLabels = "    a = b\n"

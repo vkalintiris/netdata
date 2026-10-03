@@ -354,6 +354,9 @@ func maskStopWalkAfterFirst(classes map[string][]string) {
 	}
 }
 
+// fnRegisterChanged is fnRegister with another help text (`reregister`).
+const fnRegisterChanged = `FUNCTION GLOBAL "difftest-fn" 10 "parity fn changed" "top" "0x13" 100 1` + "\n"
+
 // TestPluginsFakePlugin (check `plugins.fake-plugin`, M8 commit 0, D134): both agents run `difftest.plugin`
 // (package plugin): a dash wrapper exec'ing a Go engine that plays a scenario and records its argv, its stdin and how
 // it ended. Per case: what the agents show while it runs, then (both stopped) each start's view, the number of starts
@@ -694,6 +697,31 @@ func TestPluginsFakePlugin(t *testing.T) {
 			guard: func(t *testing.T, starts [][]plugin.Record, classes map[string][]string) {
 				hasRecord(t, classes, "daemon.log thread=PD[difftest]", "PLUGINSD: 'host:parity-parent' connected to '<RUN>/plugins.d/difftest.plugin' running on pid P")
 				hasRecord(t, classes, "collector.log thread=PD[difftest]", "PLUGINSD: sending 'QUIT'  to plugin: difftest.plugin")
+			},
+		},
+		// M8 commit 11 (D182.4): a method registered again, at the debug level. The same line again logs nothing; a
+		// changed help logs nRPC's "re-registered with changes" (nrpc_registry_conflict_cb, nrpc-registry.c:137-176),
+		// once, and its repeat nothing again. difftest-open's registration comes last: listed, every line before it was
+		// read
+		"reregister": {
+			logs: "    level = debug\n",
+			sc: plugin.Scenario{Starts: []plugin.Start{{Steps: []plugin.Step{
+				{Emit: fnRegister + fnRegister + fnRegisterChanged + fnRegisterChanged + fnOpenRegister}, {Hang: true}}}}},
+			play: func(t *testing.T, p *Pair, ls [2]plugin.Layout) {
+				waitPlugin(t, p, ls, "the plugin did not hang", startHangs(1))
+				for i, side := range p.Each() {
+					x := &fnHTTPSide{role: side.Role, d: side.Daemon, l: ls[i]}
+					x.listed(t, []fnListed{{"", "difftest-open"}}, "")
+				}
+			},
+			guard: func(t *testing.T, starts [][]plugin.Record, classes map[string][]string) {
+				const class = "daemon.log thread=PD[difftest]"
+				hasRecord(t, classes, class, "NRPC: method 'difftest-fn' of host 0xPTR re-registered with changes")
+				if n := len(slices.DeleteFunc(slices.Clone(classes[class]), func(l string) bool {
+					return !strings.Contains(l, "re-registered")
+				})); n != 1 {
+					t.Errorf("oracle: %d re-registration records, want 1: %q", n, classes[class])
+				}
 			},
 		},
 		// the context a plugin starts in (startContext), against C's

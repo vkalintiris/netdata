@@ -5,10 +5,13 @@ package parity
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -21,10 +24,11 @@ import (
 	"github.com/netdata/netdata/tests/query-corpus/daemon"
 )
 
-// spawnProbeScript records the context the spawn server gave the shell running a script, in the agent's cache
-// directory, then execs the oracle's stock script. The script runs under the server's `/bin/sh -c`, so the server is
-// its grandparent; dash moves its stdout to fd 11 while a redirected command runs, and holds the script on fd 10.
-const spawnProbeScript = `#!/bin/sh
+// spawnProbeRecord records the context the spawn server gave the shell running a script, in the agent's cache
+// directory; the probe then execs the oracle's stock script (spawnProbeDirWith). The script runs under the server's
+// `/bin/sh -c`, so the server is its grandparent; dash moves its stdout to fd 11 while a redirected command runs, and
+// holds the script on fd 10.
+const spawnProbeRecord = `#!/bin/sh
 f="$NETDATA_CACHE_DIR/spawn-probe.${0##*/}.$$"
 echo "== fds" >> "$f"
 ls -l /proc/$$/fd/ >> "$f"
@@ -39,11 +43,27 @@ echo "== ids" >> "$f"
 cut -d' ' -f5,6 /proc/$$/stat >> "$f"
 echo "== env" >> "$f"
 tr '\0' '\n' < /proc/$$/environ >> "$f"
-exec '%s' "$@"
+`
+
+// spawnProbeParent records the environment the spawn server executed the script's shell with (`/bin/sh -c`, the
+// probe's parent) in its order, and that shell's command line: dash hands the script an environment rebuilt from its
+// own table (its hash order, PWD added), so only the parent's shows the order of the spawn's.
+const spawnProbeParent = `echo "== penv" >> "$f"
+tr '\0' '\n' < /proc/$PPID/environ >> "$f"
+echo "== pcmd" >> "$f"
+tr '\0' ' ' < /proc/$PPID/cmdline >> "$f"
+echo >> "$f"
 `
 
 // spawnProbeDir is a plugins directory whose system-info.sh and get-kubernetes-labels.sh are probes.
 func spawnProbeDir(t *testing.T) string {
+	t.Helper()
+	return spawnProbeDirWith(t, "", "")
+}
+
+// spawnProbeDirWith is spawnProbeDir with more recording after spawnProbeRecord's and, with a tail, a system-info.sh
+// that runs the stock script, then prints the tail (its exit code kept).
+func spawnProbeDirWith(t *testing.T, more, tail string) string {
 	t.Helper()
 	stock := filepath.Join(filepath.Dir(os.Getenv("PARITY_ORACLE")), "..", "libexec", "netdata", "plugins.d")
 	dir := filepath.Join(t.TempDir(), "plugins.d")
@@ -55,8 +75,15 @@ func spawnProbeDir(t *testing.T) string {
 		if _, err := os.Stat(target); err != nil {
 			t.Fatalf("parity: the oracle's %s: %v", script, err)
 		}
-		probe := fmt.Sprintf(spawnProbeScript, target)
-		if err := os.WriteFile(filepath.Join(dir, script), []byte(probe), 0o755); err != nil {
+		run := fmt.Sprintf("exec '%s' \"$@\"\n", target)
+		if script == "system-info.sh" && tail != "" {
+			file := filepath.Join(dir, "system-info.tail")
+			if err := os.WriteFile(file, []byte(tail), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			run = fmt.Sprintf("'%s' \"$@\"\nrc=$?\ncat '%s'\nexit $rc\n", target, file)
+		}
+		if err := os.WriteFile(filepath.Join(dir, script), []byte(spawnProbeRecord+more+run), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -75,6 +102,13 @@ type spawnSide struct {
 // launcher deletes its own when it reaps a daemon, before a server could be watched unlinking its socket).
 func startSpawnAgents(t *testing.T, probes, logs string) [2]spawnSide {
 	t.Helper()
+	return startSpawnAgentsWith(t, func(t *testing.T, o *daemon.Options) { o.PluginsDir, o.LogsExtra = probes, logs })
+}
+
+// startSpawnAgentsWith is startSpawnAgents with adjust setting each side's inputs (its options, files in its run
+// directory) before its start: RunDir, the identity and the run directory's NETDATA_RUN_DIR are set when it runs.
+func startSpawnAgentsWith(t *testing.T, adjust func(t *testing.T, o *daemon.Options)) [2]spawnSide {
+	t.Helper()
 	bins := binaries(t)
 	var sides [2]spawnSide
 	for i, role := range []Role{Oracle, Candidate} {
@@ -85,8 +119,8 @@ func startSpawnAgents(t *testing.T, probes, logs string) [2]spawnSide {
 		t.Cleanup(func() { _ = os.RemoveAll(runtime) })
 		id := parentIdentity
 		o := daemon.Options{Binary: bins[i], RunDir: runDir(t, role), Identity: &id, DBMode: "ram",
-			StreamMemoryMode: "ram", StorageTiers: 1, PulseOff: true, PluginsDir: probes, LogsExtra: logs,
-			Env: []string{"NETDATA_RUN_DIR=" + runtime}}
+			StreamMemoryMode: "ram", StorageTiers: 1, PulseOff: true, Env: []string{"NETDATA_RUN_DIR=" + runtime}}
+		adjust(t, &o)
 		d, err := daemon.Start(o)
 		if err != nil {
 			t.Fatalf("parity: start %s: %v", role, err)
@@ -302,7 +336,7 @@ func probeRuns(t *testing.T, s spawnSide, script string) []map[string][]string {
 				}
 				fields := strings.Fields(num)
 				l = fields[len(fields)-1] + " " + fdKind(target, masks...)
-			case "env", "cwd":
+			case "env", "cwd", "penv", "pcmd":
 				for _, m := range masks {
 					l = strings.ReplaceAll(l, m, "<RUN>")
 				}
@@ -336,7 +370,8 @@ func maskEnv(env []string) []string {
 
 // TestPluginsSpawn (`plugins.spawn`, M8 commit 2, D140): the spawn server each agent starts at "plugins spawn server",
 // as /proc shows it; the context of the scripts it starts (probes recording themselves, then the stock scripts); its
-// records; its answers to a client on its socket; and its end with the daemon's.
+// records; its answers to a client on its socket; its end with the daemon's; and the environment the scripts get from
+// non-default inputs (env, env-edge: M8 commit 11, D182.3).
 func TestPluginsSpawn(t *testing.T) {
 	probes := spawnProbeDir(t)
 
@@ -580,6 +615,459 @@ func TestPluginsSpawn(t *testing.T) {
 		}
 		diffLines(t, "the records after the daemon's death", recs[0], recs[1])
 	})
+
+	// M8 commit 11 (D182.3): every input the agent exports to its children away from the defaults the subtests above
+	// share (env), each conditional export's other arm with every exported name preset (env-edge), and the arms
+	// neither takes (env-path)
+	t.Run("env", func(t *testing.T) { runSpawnEnv(t, spawnEnvMain()) })
+	t.Run("env-edge", func(t *testing.T) { runSpawnEnv(t, spawnEnvEdge(t)) })
+	t.Run("env-path", func(t *testing.T) { runSpawnEnv(t, spawnEnvPath()) })
+}
+
+// spawnEnvVariant is an environment variant of plugins.spawn: inputs away from the defaults both agents share
+// elsewhere, so an agent exporting a default where C exports its input fails. Each child's environment is compared
+// sorted and, as the spawn server executed it, in order (spawn.env.order).
+type spawnEnvVariant struct {
+	// adjust sets a side's inputs: its options and files in its run directory (probes: the variant's primary plugins
+	// directory, holding the probes)
+	adjust func(t *testing.T, o *daemon.Options, probes string)
+	// tail, when set, follows the stock system-info.sh's output: lines for the parser's other branches
+	tail string
+	// want are lines every child's environment holds on the oracle (spawnEnvView's masks); late are lines the children
+	// started after system-info.sh's output was read hold (get-kubernetes-labels.sh's runs); wantNot are texts no
+	// child's environment holds
+	want, late, wantNot []string
+	// records, when set, picks daemon.log records compared in file order; wantRecords are texts the oracle's records
+	// or its collector.log and stdout.log hold
+	records     *regexp.Regexp
+	wantRecords []string
+	// created are directories under the run directory the agent creates (verify_required_directory, environment.c
+	// :17-22): each one's mode is compared, and the oracle's must be wantModes'
+	created   []string
+	wantModes []string
+	// charts are the oracle's /api/v1/charts `timezone` and `update_every` (the daemon's own use of TZ and [db]
+	// update every, charts2json.c:71-76), compared on both; the timezone masked while PULSE runs
+	charts string
+}
+
+// spawnExported are the names the agent exports to its children (environment.c, nd_log-config.c, netdata-conf-*.c,
+// registry_init.c, registry.c, machine-guid.c, main.c, analytics.c, nd_log-init.c, run_dir.c): spawnEnvView shows
+// their values, env-edge presets those that are no input (spawnInputs).
+var spawnExported = map[string]bool{}
+
+func init() {
+	for _, k := range strings.Fields(`NETDATA_UPDATE_EVERY NETDATA_VERSION NETDATA_HOSTNAME NETDATA_HOST_PREFIX
+		NETDATA_CONFIG_DIR NETDATA_USER_CONFIG_DIR NETDATA_STOCK_CONFIG_DIR NETDATA_STOCK_DATA_DIR NETDATA_PLUGINS_DIR
+		NETDATA_WEB_DIR NETDATA_CACHE_DIR NETDATA_LIB_DIR NETDATA_LOG_DIR CLAIMING_DIR NETDATA_USER_PLUGINS_DIRS
+		NETDATA_LISTEN_PORT PATH PYTHONPATH PYTHONUNBUFFERED LC_ALL NETDATA_CONF_CPUS MALLOC_ARENA_MAX
+		UV_THREADPOOL_SIZE TZ HOME NETDATA_INTERNALS_MONITORING NETDATA_REGISTRY_HOSTNAME NETDATA_REGISTRY_URL
+		NETDATA_REGISTRY_CLOUD_BASE_URL NETDATA_REGISTRY_UNIQUE_ID NETDATA_LOG_METHOD NETDATA_LOG_FORMAT
+		NETDATA_LOG_LEVEL NETDATA_SYSLOG_FACILITY NETDATA_ERRORS_THROTTLE_PERIOD NETDATA_ERRORS_PER_PERIOD
+		NETDATA_DEBUG_FLAGS NETDATA_INVOCATION_ID NETDATA_RUN_DIR`) {
+		spawnExported[k] = true
+	}
+}
+
+// spawnEnvView is a child's environment as compared: probeRuns' masks, the variant's probe directory as <PROBES>,
+// and a variable the harness passed down unchanged shown as `<inherited>` (the box's environment holds secrets)
+// unless the agent exports it.
+func spawnEnvView(env []string, probes string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if own, ok := os.LookupEnv(k); ok && own == v && !spawnExported[k] {
+			kv = k + "=<inherited>"
+		}
+		out = append(out, strings.ReplaceAll(kv, filepath.Dir(probes), "<PROBES>"))
+	}
+	return out
+}
+
+// spawnEnvRecordRe is a logfmt record's level and message.
+var spawnEnvRecordRe = regexp.MustCompile(`level=(\S+) .*msg="((?:[^"\\]|\\.)*)"`)
+
+// runSpawnEnv starts both agents with the variant's inputs, has each run get-kubernetes-labels.sh again after the
+// freeze (reload-labels, as `children`), and compares per script and run: the environment sorted and in the spawn's
+// order, and the shell's command line; then /api/v1/charts' timezone and update_every, the created directories'
+// modes, collector.log but the daemon's own records and stdout.log whole (C's temporary "init" server left out,
+// D134.3), and the variant's daemon.log records. The oracle's guards: every want, late and wantNot, the shell
+// `/bin/sh -c`, charts, wantModes, every wantRecords text (in the records or the two files).
+func runSpawnEnv(t *testing.T, v spawnEnvVariant) {
+	probes := spawnProbeDirWith(t, spawnProbeParent, v.tail)
+	sides := startSpawnAgentsWith(t, func(t *testing.T, o *daemon.Options) { v.adjust(t, o, probes) })
+	for _, s := range sides {
+		if r := runCLI(t, s.d, "reload-labels"); r.Exit != 0 {
+			t.Fatalf("%s: reload-labels: exit %d: %s", s.role, r.Exit, r.Stderr)
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for _, s := range sides {
+		for len(probeRuns(t, s, "get-kubernetes-labels.sh")) < 2 && time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	for _, script := range []string{"system-info.sh", "get-kubernetes-labels.sh"} {
+		var runs [2][]map[string][]string
+		for i, s := range sides {
+			runs[i] = probeRuns(t, s, script)
+		}
+		if len(runs[0]) != len(runs[1]) || len(runs[0]) == 0 {
+			t.Errorf("%s runs: oracle %d, candidate %d", script, len(runs[0]), len(runs[1]))
+			continue
+		}
+		for j := range runs[0] {
+			var env, order [2][]string
+			for i := range sides {
+				env[i] = spawnEnvView(runs[i][j]["env"], probes)
+				order[i] = spawnEnvView(runs[i][j]["penv"], probes)
+			}
+			what := fmt.Sprintf("%s run %d", script, j+1)
+			want := v.want
+			if script == "get-kubernetes-labels.sh" {
+				want = slices.Concat(want, v.late)
+			}
+			for _, w := range want {
+				if !slices.Contains(env[0], w) {
+					t.Errorf("oracle: %s: no %q in its environment", what, w)
+				}
+			}
+			for _, w := range v.wantNot {
+				if i := slices.IndexFunc(env[0], func(l string) bool { return strings.Contains(l, w) }); i >= 0 {
+					t.Errorf("oracle: %s: %q holds %q", what, env[0][i], w)
+				}
+			}
+			if pcmd := strings.Join(runs[0][j]["pcmd"], ""); !strings.HasPrefix(pcmd, "/bin/sh -c ") {
+				t.Errorf("oracle: %s: its shell is %q", what, pcmd)
+			}
+			diffLines(t, what+" environment", env[0], env[1])
+			diffLines(t, what+" environment in the spawn's order", order[0], order[1])
+			diffLines(t, what+" shell", runs[0][j]["pcmd"], runs[1][j]["pcmd"])
+			if j == 0 {
+				t.Logf("%s of %d, the oracle's spawn environment in order (its shell %q):\n%s", what, len(runs[0]),
+					runs[0][j]["pcmd"], strings.Join(order[0], "\n"))
+			}
+		}
+	}
+	var recs, outputs [2][]string
+	for i, s := range sides {
+		mask := func(m string) string {
+			for _, re := range spawnMasks {
+				m = re.ReplaceAllStringFunc(m, func(w string) string { return regexp.MustCompile(`\d+`).ReplaceAllString(w, "N") })
+			}
+			for _, d := range []string{s.d.Opts.RunDir, s.runtime} {
+				m = strings.ReplaceAll(m, d, "<RUN>")
+			}
+			return strings.ReplaceAll(m, filepath.Dir(probes), "<PROBES>")
+		}
+		// collector.log but the daemon's own records (its threads' are other checks', statsd's unported: log.parity),
+		// so the spawn server's records and what the children and the loader write; stdout.log whole (the daemon's
+		// stderr before its logs open, and the loader's): a logfmt or json record as its comm, level and message, any
+		// other line whole
+		for _, name := range []string{"collector.log", "stdout.log"} {
+			var lines []string
+			for _, l := range logLines(t, s.d.Opts.RunDir, name) {
+				var rec struct {
+					Comm  string          `json:"comm"`
+					Level json.RawMessage `json:"level"`
+					Msg   string          `json:"msg"`
+				}
+				if m := spawnEnvRecordRe.FindStringSubmatch(l); m != nil {
+					l = logField(l, "comm") + " " + m[1] + " " + m[2]
+				} else if strings.HasPrefix(l, "{") && json.Unmarshal([]byte(l), &rec) == nil {
+					l = "comm=" + rec.Comm + " " + string(rec.Level) + " " + rec.Msg
+				}
+				if name == "collector.log" && strings.HasPrefix(l, "comm=netdata ") {
+					continue
+				}
+				lines = append(lines, mask(l))
+			}
+			for _, l := range withoutInitServer(lines) {
+				outputs[i] = append(outputs[i], name+": "+l)
+			}
+		}
+		if v.records == nil {
+			continue
+		}
+		for _, l := range logLines(t, s.d.Opts.RunDir, "daemon.log") {
+			if m := spawnEnvRecordRe.FindStringSubmatch(l); m != nil && v.records.MatchString(m[2]) {
+				recs[i] = append(recs[i], threadOf(l)+" "+m[1]+" "+mask(m[2]))
+			}
+		}
+	}
+	var modes [2][]string
+	for i, s := range sides {
+		for _, rel := range v.created {
+			mode := "missing"
+			if fi, err := os.Stat(filepath.Join(s.d.Opts.RunDir, rel)); err == nil {
+				mode = fi.Mode().String()
+			}
+			modes[i] = append(modes[i], rel+" "+mode)
+		}
+	}
+	var charts [2]string
+	for i, s := range sides {
+		r, err := Get(s.d, "/api/v1/charts", nil)
+		var doc struct {
+			Timezone    string `json:"timezone"`
+			UpdateEvery int    `json:"update_every"`
+		}
+		if err == nil {
+			err = json.Unmarshal(r.Body, &doc)
+		}
+		if err != nil {
+			t.Errorf("%s: /api/v1/charts: %v", s.role, err)
+		}
+		// with PULSE on, its first pass re-detects the system's timezone over one TZ named (pulse-daemon.c:75-120):
+		// whether it ran before this read varies C against C (h14 e4)
+		if !s.d.Opts.PulseOff {
+			doc.Timezone = "<PULSE>"
+		}
+		charts[i] = fmt.Sprintf("timezone %s, update_every %d", doc.Timezone, doc.UpdateEvery)
+	}
+	if charts[0] != charts[1] {
+		t.Errorf("/api/v1/charts: oracle %s, candidate %s", charts[0], charts[1])
+	}
+	if v.charts != "" && charts[0] != v.charts {
+		t.Errorf("oracle: /api/v1/charts %s, want %s", charts[0], v.charts)
+	}
+	diffLines(t, "the created directories' modes", modes[0], modes[1])
+	if !slices.Equal(modes[0], v.wantModes) {
+		t.Errorf("oracle: the created directories' modes %q, want %q", modes[0], v.wantModes)
+	}
+	diffLines(t, "collector.log and stdout.log", outputs[0], outputs[1])
+	diffLines(t, "the variant's daemon.log records", recs[0], recs[1])
+	for _, w := range v.wantRecords {
+		if !slices.ContainsFunc(slices.Concat(recs[0], outputs[0]), func(l string) bool { return strings.Contains(l, w) }) {
+			t.Errorf("oracle: no record holds %q", w)
+		}
+	}
+	t.Logf("collector.log and stdout.log:\n%s\ndaemon.log records:\n%s", strings.Join(outputs[0], "\n"),
+		strings.Join(recs[0], "\n"))
+}
+
+// spawnEnvMain is `env`: the exported values from netdata.conf ([db], [global], [web], [logs], [registry],
+// [environment variables], a second and third plugins directory, the stock config, stock data and web directories by
+// other names, PULSE on), cloud.conf's url, an upper-case machine GUID in its file; in the environment, an upper-case
+// dashed NETDATA_INVOCATION_ID (C exports its compact lower-case form), an empty TZ (C sets [environment variables]
+// TZ, analytics.c:891-895), and LC_ALL and PYTHONPATH that C replaces. The collector log is a file in json with a
+// level C does not know: C exports stderr, logfmt and that level read as info (nd_log-config.c:146-162,
+// nd_log-internals.c:186-194), after [logs] level's notice.
+func spawnEnvMain() spawnEnvVariant {
+	return spawnEnvVariant{
+		adjust: func(t *testing.T, o *daemon.Options, probes string) {
+			users := []string{filepath.Join(filepath.Dir(probes), "user-a.d"), filepath.Join(filepath.Dir(probes), "user-b.d")}
+			for _, d := range users {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			o.PluginsDir = fmt.Sprintf("%q %q %q", probes, users[0], users[1])
+			// the stock directories by other names: links to the oracle's (each must exist, environment.c:77-80)
+			usr := filepath.Dir(filepath.Dir(os.Getenv("PARITY_ORACLE")))
+			for link, target := range map[*string]string{
+				&o.StockConfigDir: filepath.Join(usr, "lib", "netdata", "conf.d"),
+				&o.StockDataDir:   filepath.Join(usr, "share", "netdata"),
+				&o.WebDir:         filepath.Join(usr, "share", "netdata", "web"),
+			} {
+				*link = filepath.Join(filepath.Dir(probes), "stock-"+filepath.Base(target))
+				if err := os.Symlink(target, *link); err != nil && !os.IsExist(err) {
+					t.Fatal(err)
+				}
+			}
+			o.UpdateEvery = "2"
+			o.PulseOff = false
+			o.GlobalExtra = "    host access prefix = /\n    cpu cores = 3\n    glibc malloc arena max for plugins = 3\n"
+			o.WebExtra = "    default port = 29999\n"
+			o.LogsExtra = "    level = notice\n    facility = local3\n    logs flood protection period = 2m\n" +
+				"    logs to trigger flood protection = 333\n    debug flags = 0x100\n" +
+				"    collector = json,level=parity-level@" + filepath.Join(o.RunDir, "log", "collector.log") + "\n"
+			o.ConfExtra = "[registry]\n    registry hostname = parity-registry\n" +
+				"    registry to announce = https://registry.parity.invalid\n\n" +
+				"[environment variables]\n    PATH = /usr/bin:/bin:/usr/sbin:/sbin:/parity/bin\n" +
+				"    PYTHONPATH = /parity/python\n    TZ = Europe/Athens\n"
+			id := *o.Identity
+			id.MachineGUID = strings.ToUpper(id.MachineGUID)
+			o.Identity = &id
+			o.Env = append(o.Env, "NETDATA_INVOCATION_ID=5A1E0000-0000-4000-8000-0000000000BB", "LC_ALL=C.UTF-8", "TZ=",
+				"PYTHONPATH=/parity/inherited")
+			cloud := filepath.Join(o.RunDir, "lib", "cloud.d")
+			if err := os.MkdirAll(cloud, 0o770); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cloud, "cloud.conf"), []byte("[global]\n    url = https://cloud.parity.invalid\n"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+		},
+		want: []string{
+			"NETDATA_UPDATE_EVERY=2", "NETDATA_HOSTNAME=parity-parent", "NETDATA_HOST_PREFIX=/",
+			"NETDATA_CONFIG_DIR=<RUN>/etc", "NETDATA_USER_CONFIG_DIR=<RUN>/etc", "NETDATA_PLUGINS_DIR=<PROBES>/plugins.d",
+			"NETDATA_STOCK_CONFIG_DIR=<PROBES>/stock-conf.d", "NETDATA_STOCK_DATA_DIR=<PROBES>/stock-netdata",
+			"NETDATA_WEB_DIR=<PROBES>/stock-web",
+			"NETDATA_CACHE_DIR=<RUN>/cache", "NETDATA_LIB_DIR=<RUN>/lib", "NETDATA_LOG_DIR=<RUN>/log",
+			"CLAIMING_DIR=<RUN>/lib/cloud.d", "NETDATA_USER_PLUGINS_DIRS=<PROBES>/user-a.d <PROBES>/user-b.d",
+			"NETDATA_LISTEN_PORT=29999", "PATH=/usr/bin:/bin:/usr/sbin:/sbin:/parity/bin", "PYTHONPATH=/parity/python",
+			"PYTHONUNBUFFERED=1", "LC_ALL=C", "TZ=Europe/Athens", "NETDATA_CONF_CPUS=3", "MALLOC_ARENA_MAX=3",
+			"UV_THREADPOOL_SIZE=18", "HOME=<RUN>/lib", "NETDATA_INTERNALS_MONITORING=YES",
+			"NETDATA_REGISTRY_HOSTNAME=parity-registry", "NETDATA_REGISTRY_URL=https://registry.parity.invalid",
+			"NETDATA_REGISTRY_CLOUD_BASE_URL=https://cloud.parity.invalid",
+			"NETDATA_REGISTRY_UNIQUE_ID=5a1e0000-0000-4000-8000-0000000000aa",
+			"NETDATA_LOG_METHOD=stderr", "NETDATA_LOG_FORMAT=logfmt", "NETDATA_LOG_LEVEL=info",
+			"NETDATA_SYSLOG_FACILITY=local3", "NETDATA_ERRORS_THROTTLE_PERIOD=120", "NETDATA_ERRORS_PER_PERIOD=333",
+			"NETDATA_DEBUG_FLAGS=0x100", "NETDATA_INVOCATION_ID=5a1e00000000400080000000000000bb",
+		},
+		wantNot: []string{"parity/inherited", "C.UTF-8"},
+		charts:  "timezone <PULSE>, update_every 2",
+	}
+}
+
+// spawnJunk is env-edge's preset of every name the agent exports and does not read as an input (spawnInputs): C
+// overwrites each in place. MALLOC_ARENA_MAX gets a valid value instead (spawnValidPresets).
+const spawnJunk = "parity-junk"
+
+// spawnValidPresets are env-edge's presets that must stay valid: glibc's loader reads MALLOC_ARENA_MAX at every exec
+// (the glibc.malloc.arena_max tunable) and warns on stderr about an invalid one, which the Rust spawn server's own exec
+// writes to collector.log where C's forked server writes nothing (D184, a recorded deviation, not compared here).
+var spawnValidPresets = map[string]string{"MALLOC_ARENA_MAX": "7"}
+
+// spawnInputs are the exported names C also reads (environment.c:113-121, analytics.c:891, netdata-conf-logs.c:40,
+// nd_log-init.c:9, run_dir.c:45): env-edge sets them as inputs, not presets.
+var spawnInputs = []string{"PATH", "PYTHONPATH", "TZ", "NETDATA_LOG_LEVEL", "NETDATA_INVOCATION_ID", "NETDATA_RUN_DIR"}
+
+// spawnEnvEdge is `env-edge`: each conditional export's other arm. No `[directories] home` (HOME from the password
+// database, main.c:1287-1295), an invalid host prefix (exported empty, paths.c:91-145), `cpu cores = 0` (1),
+// `libuv worker threads` set, a malloc arena count past the CPUs (clamped, with C's NOTICE), `facility = security`
+// (exported as its first name, auth); in the environment, no PATH (C's fallback, environment.c:113-115), a TZ C
+// keeps over [environment variables] TZ, an invalid NETDATA_INVOCATION_ID with a compact upper-case INVOCATION_ID
+// (its lower-case form exported, nd_log-init.c:7-20), NETDATA_LOG_LEVEL as [logs] level's default
+// (netdata-conf-logs.c:40-43), an inherited PYTHONPATH, and every other exported name preset (spawnJunk;
+// MALLOC_ARENA_MAX valid, spawnValidPresets).
+// system-info.sh's output ends with lines for the parser's other branches (rrdhost-system-info.c:417-462): no `=`,
+// an empty name, an empty value, an unknown name, a later value for a name, names this host's script never prints, a
+// value ending in CR, a line past fgets()'s 1,022 bytes (read as two, the rest skipped for its missing `=`). The cloud
+// directory is left for the agent to create (0770 under the inherited umask, environment.c:84).
+func spawnEnvEdge(t *testing.T) spawnEnvVariant {
+	u, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env []string
+	for _, k := range slices.Sorted(maps.Keys(spawnExported)) {
+		if v, ok := spawnValidPresets[k]; ok {
+			env = append(env, k+"="+v)
+		} else if !slices.Contains(spawnInputs, k) {
+			env = append(env, k+"="+spawnJunk)
+		}
+	}
+	// the umask the agents inherit (cloud.d is created 0770 under it)
+	umask := syscall.Umask(0)
+	syscall.Umask(umask)
+	env = append(env, "NETDATA_LOG_LEVEL=notice", "TZ=Europe/Paris", "NETDATA_INVOCATION_ID=parity-not-a-uuid",
+		"INVOCATION_ID=5A1E00000000400080000000000000CC", "PYTHONPATH=/parity/inherited")
+	return spawnEnvVariant{
+		adjust: func(t *testing.T, o *daemon.Options, probes string) {
+			if _, err := os.Stat("/usr/bin/env"); err != nil {
+				t.Fatalf("parity: env-edge unsets PATH with /usr/bin/env: %v", err)
+			}
+			o.PluginsDir = fmt.Sprintf("%q", probes)
+			o.NoHomeDir = true
+			o.GlobalExtra = "    host access prefix = /nonexistent-parity\n    cpu cores = 0\n    libuv worker threads = 20\n" +
+				"    glibc malloc arena max for plugins = 999\n"
+			o.LogsExtra = "    facility = security\n"
+			o.ConfExtra = "[environment variables]\n    TZ = Europe/Athens\n"
+			o.Wrap = []string{"/usr/bin/env", "-u", "PATH"}
+			o.Env = append(o.Env, env...)
+		},
+		tail: "parity line without an equals sign\n=parity-empty-name\nNETDATA_SYSTEM_CPU_VENDOR=\nNETDATA_PARITY_UNKNOWN=1\n" +
+			"NETDATA_SYSTEM_CPU_MODEL=Parity CPU\nNETDATA_HOST_OS_LABEL_EDITION=parity-edition\n" +
+			"NETDATA_HOST_OS_LABEL_BUILD=parity-build\nNETDATA_PROTOCOL_VERSION=parity-protocol\n" +
+			"NETDATA_CONTAINER_IS_OFFICIAL_IMAGE=parity-official\nNETDATA_HOST_IS_K8S_NODE=parity-k8s\n" +
+			"NETDATA_SYSTEM_CONTAINER=parity-container\r\n" +
+			"NETDATA_SYSTEM_DISK_DETECTION=" + strings.Repeat("d", 1100) + "\n",
+		want: []string{
+			"NETDATA_UPDATE_EVERY=1", "NETDATA_HOSTNAME=parity-parent", "NETDATA_HOST_PREFIX=",
+			"NETDATA_CONFIG_DIR=<RUN>/etc", "NETDATA_USER_CONFIG_DIR=<RUN>/etc", "NETDATA_PLUGINS_DIR=<PROBES>/plugins.d",
+			"NETDATA_CACHE_DIR=<RUN>/cache", "NETDATA_LIB_DIR=<RUN>/lib", "NETDATA_LOG_DIR=<RUN>/log",
+			"CLAIMING_DIR=<RUN>/lib/cloud.d", "NETDATA_USER_PLUGINS_DIRS=", "NETDATA_LISTEN_PORT=19999",
+			"PATH=/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin", "PYTHONPATH=/parity/inherited",
+			"PYTHONUNBUFFERED=1", "LC_ALL=C", "TZ=Europe/Paris", "NETDATA_CONF_CPUS=1",
+			"MALLOC_ARENA_MAX=" + strconv.Itoa(onlineCPUs(t)), "UV_THREADPOOL_SIZE=20", "HOME=" + u.HomeDir,
+			"NETDATA_INTERNALS_MONITORING=NO", "NETDATA_REGISTRY_HOSTNAME=parity-parent",
+			"NETDATA_REGISTRY_URL=https://registry.my-netdata.io", "NETDATA_REGISTRY_CLOUD_BASE_URL=https://app.netdata.cloud",
+			"NETDATA_REGISTRY_UNIQUE_ID=5a1e0000-0000-4000-8000-0000000000aa",
+			"NETDATA_LOG_METHOD=stderr", "NETDATA_LOG_FORMAT=logfmt", "NETDATA_LOG_LEVEL=notice",
+			"NETDATA_SYSLOG_FACILITY=auth", "NETDATA_ERRORS_THROTTLE_PERIOD=60", "NETDATA_ERRORS_PER_PERIOD=1000",
+			"NETDATA_DEBUG_FLAGS=0x0000000000000000", "NETDATA_INVOCATION_ID=5a1e00000000400080000000000000cc",
+			"INVOCATION_ID=5A1E00000000400080000000000000CC",
+		},
+		late: []string{
+			"NETDATA_SYSTEM_CPU_MODEL=Parity CPU", "NETDATA_HOST_OS_LABEL_EDITION=parity-edition",
+			"NETDATA_HOST_OS_LABEL_BUILD=parity-build", "NETDATA_PROTOCOL_VERSION=parity-protocol",
+			"NETDATA_CONTAINER_IS_OFFICIAL_IMAGE=parity-official", "NETDATA_HOST_IS_K8S_NODE=parity-k8s",
+			"NETDATA_SYSTEM_CONTAINER=parity-container",
+			"NETDATA_SYSTEM_DISK_DETECTION=" + strings.Repeat("d", 992),
+		},
+		wantNot:   []string{spawnJunk, "NETDATA_PARITY_UNKNOWN", "parity-empty-name", "Europe/Athens"},
+		created:   []string{"lib/cloud.d"},
+		wantModes: []string{"lib/cloud.d " + (os.ModeDir | os.FileMode(0o770&^umask)).String()},
+		records:   regexp.MustCompile(`^SYSTEM INFO: |host prefix|malloc arenas`),
+		charts:    "timezone Europe/Paris, update_every 1",
+		wantRecords: []string{
+			"SYSTEM INFO: Skipping malformed line from system-info.sh (no '=' found)",
+			"SYSTEM INFO: Skipping empty name or value from system-info.sh: '=parity-empty-name'",
+			"SYSTEM INFO: Skipping empty name or value from system-info.sh: 'NETDATA_SYSTEM_CPU_VENDOR='",
+			"SYSTEM INFO: Unexpected variable 'NETDATA_PARITY_UNKNOWN=1'",
+			"SYSTEM INFO: Skipping malformed line from system-info.sh (no '=' found): '" + strings.Repeat("d", 108) + `\n'`,
+			"Ignoring host prefix '/nonexistent-parity'",
+			"malloc arenas can be from 1 to " + strconv.Itoa(onlineCPUs(t)),
+		},
+	}
+}
+
+// spawnEnvPath is `env-path`: the arms the other two leave. An inherited PATH past 4,095 bytes and no [environment
+// variables] PATH (C's snprintfz cuts the default at 4,095 bytes, environment.c:112-116); `[logs] level` alone, an
+// alias (exported as its first name, warning); an unknown facility (daemon); malloc arenas below 1 (1) and `libuv
+// worker threads` below the minimum (16, with C's ERR, inicfg_get_number_range).
+func spawnEnvPath() spawnEnvVariant {
+	path := "/usr/bin:/bin" + strings.Repeat(":/parity/long", 400)
+	return spawnEnvVariant{
+		adjust: func(t *testing.T, o *daemon.Options, probes string) {
+			o.PluginsDir = fmt.Sprintf("%q", probes)
+			o.GlobalExtra = "    glibc malloc arena max for plugins = 0\n    libuv worker threads = 5\n"
+			o.LogsExtra = "    level = warn\n    facility = parity-facility\n"
+			o.Env = append(o.Env, "PATH="+path)
+		},
+		want: []string{"PATH=" + (path + ":/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin")[:4095],
+			"NETDATA_LOG_LEVEL=warning", "NETDATA_SYSLOG_FACILITY=daemon", "MALLOC_ARENA_MAX=1", "UV_THREADPOOL_SIZE=16"},
+		records: regexp.MustCompile(`out of range|malloc arenas`),
+		wantRecords: []string{
+			"CONFIG: out of range [global].libuv worker threads = 5. Acceptable values: 16 to 1024 inclusive. Setting it to 16",
+		},
+	}
+}
+
+// onlineCPUs counts /sys/devices/system/cpu/online's ranges: sysconf(_SC_NPROCESSORS_ONLN), C's count of the system's
+// CPUs (get_system_cpus.c).
+func onlineCPUs(t *testing.T) int {
+	t.Helper()
+	b, err := os.ReadFile("/sys/devices/system/cpu/online")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, r := range strings.Split(strings.TrimSpace(string(b)), ",") {
+		lo, hi, ok := strings.Cut(r, "-")
+		a, err1 := strconv.Atoi(lo)
+		z := a
+		var err2 error
+		if ok {
+			z, err2 = strconv.Atoi(hi)
+		}
+		if err1 != nil || err2 != nil {
+			t.Fatalf("parity: /sys/devices/system/cpu/online %q", b)
+		}
+		n += z - a + 1
+	}
+	return n
 }
 
 // daemonIDs is a process's `pgid sid`.

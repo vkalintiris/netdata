@@ -536,6 +536,30 @@ func fnHTTPCases() map[string]fnHTTPCase {
 		}
 	}
 
+	// a command past nRPC's 14,975-byte bound (MAX_FUNCTION_LENGTH, nrpc-internals.h:243-248), M8 commit 11 (D182.4):
+	// only its sanitized copy is bounded (nrpc_sanitize_name_dupz, nrpc-internals.h:275-284), so the double spaces the
+	// sanitizer folds to one (text_sanitize) do not count against it: an 18,013-byte command reaches the plugin whole,
+	// folded to 12,013 bytes, where a cut of the raw command would pass under 10,000; a 16,013-byte one the sanitizer
+	// keeps is cut at 14,975. Each resolves to its method by stripping its trailing words (nrpc_registry_find)
+	{
+		folded := "difftest-open" + strings.Repeat("  x", 6000)
+		kept := "difftest-open" + strings.Repeat(" y", 8000)
+		query := func(cmd string) string { return "function=" + strings.ReplaceAll(cmd, " ", "+") + "&timeout=3" }
+		cases["long-command"] = fnHTTPCase{
+			sc: fnEcho(fnOpenRegister, 2),
+			play: func(t *testing.T, x *fnHTTPSide) []string {
+				return []string{
+					x.do(t, "folded", fnHTTPGet(call(query(folded)), tx(61))),
+					x.do(t, "kept", fnHTTPGet(call(query(kept)), tx(62))),
+				}
+			},
+			want: []string{
+				fnHTTPLine(tx(61), 3, "difftest-open"+strings.Repeat(" x", 6000)),
+				fnHTTPLine(tx(62), 3, kept[:14975]),
+			},
+		}
+	}
+
 	// authorization (nrpc-calls.c:504-579) with bearer tokens: anonymous gets the SSO 412, a signed-in member lacking
 	// same-space the 403, an admin runs with the bearer's source (user-auth.c:23-44); a restricted method is refused on
 	// this API whatever the access (412 anonymous, 403 signed-in); the member runs the open method
