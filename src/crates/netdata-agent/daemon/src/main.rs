@@ -621,8 +621,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
             netdata_agent_evloop::thread_create_failed("METASYNC", &err)
         ),
     };
-    let health_defaults = conf.health_load_config_defaults();
-    let health_enabled = health_defaults.enabled;
+    let health_config = conf.health_load_config_defaults();
+    let health_enabled = health_config.enabled;
     // nd_profile.storage_tiers and multidb_ctx: every host's tiers
     let (dbengine, grouping, backfill, out_of_memory_protection, multidb_disk_quota_mb) =
         match dbengine {
@@ -742,6 +742,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     // rrd_init(): localhost's pulse state, once its contexts are loaded, then its `config` function
     hosts.localhost().pulse_status(0);
     dyncfg.host_init(hosts.localhost());
+    let health = health::plugin_init(&mut conf, health_config, meta.is_some(), metasync.queue());
     builtins::global_functions_add(&hosts);
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
         meta.detect_machine_guid_change(host_id);
@@ -934,8 +935,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let health_thread = match health::spawn(
         Arc::clone(hosts.storage()),
         conf.threads.thread_stack_size,
-        health_defaults.run_at_least_every_s,
-        health_defaults.postpone_s,
+        i64::from(health.config().run_at_least_every_s),
+        i64::from(health.config().postpone_s),
     ) {
         Ok(thread) => Some(thread),
         Err(err) => {

@@ -15,6 +15,7 @@ use netdata_agent_evloop::work::WorkPool;
 use netdata_agent_log::{Priority, Source, nd_log, netdata_log_info};
 use netdata_agent_metadata::Connection;
 use netdata_agent_metadata::cleanup::{CleanupCycle, CycleEnv, CycleKind};
+use netdata_agent_metadata::health::AlertHashRow;
 use netdata_agent_metadata::open::{ContextDb, MetaDb};
 use netdata_agent_metadata::read;
 use netdata_agent_rrd::clock::now_realtime_s;
@@ -126,6 +127,26 @@ fn store_ctx_cleanup(writer: &Writer, shared: &Shared, pending: Vec<([u8; 16], S
 struct Pending {
     ctx_cleanup: Option<Vec<([u8; 16], String)>>,
     deletions: Option<Vec<[u8; 16]>>,
+    /// `pending_sql_statement`: statements bound elsewhere and stepped by the next job, in queue order.
+    statements: Option<Vec<AlertHashRow>>,
+}
+
+/// `store_sql_statements()`: each queued statement stepped on its own, in queue order, with no transaction; at the
+/// shutdown (`only_finalize`) they are dropped unstepped, and the record is the same.
+fn store_sql_statements(writer: Option<&Writer>, statements: Vec<AlertHashRow>) {
+    let started = now_ut();
+    if let Some(writer) = writer {
+        for row in &statements {
+            writer.meta.store_alert_config(row);
+        }
+    }
+    nd_log!(
+        Source::Daemon,
+        Priority::Debug,
+        "Stored and processed {} sql statements in {}",
+        statements.len(),
+        duration(now_ut().saturating_sub(started))
+    );
 }
 
 fn cleanup_cycles() -> [CleanupCycle; 3] {
@@ -197,12 +218,15 @@ fn run_metadata_cleanup(writer: &Writer, shared: &Shared) {
 }
 
 /// `start_metadata_hosts()`, on a pool thread: the maintenance at most every 10 s (`run_maintenace()`, whose freed
-/// dimensions reach the next job), the context cleanups, the freed dimensions, the hosts' pending metadata, then the
-/// metadata cleanup, and the next store no sooner than 5 s from now.
+/// dimensions reach the next job), the queued statements, the context cleanups, the freed dimensions, the hosts'
+/// pending metadata, then the metadata cleanup, and the next store no sooner than 5 s from now.
 fn store_job(writer: &Writer, shared: &Shared, pending: Pending) {
     shared
         .maintenance
         .run_if_due(&writer.hosts, Some(&writer.meta), now_realtime_s());
+    if let Some(statements) = pending.statements {
+        store_sql_statements(Some(writer), statements);
+    }
     if let Some(cleanup) = pending.ctx_cleanup {
         store_ctx_cleanup(writer, shared, cleanup);
     }
@@ -246,6 +270,8 @@ enum Cmd {
     DelDimension([u8; 16]),
     /// `METADATA_ADD_CTX_CLEANUP`: a host's context for the metadata cleanup, stored by the next job.
     AddCtxCleanup([u8; 16], String),
+    /// `METADATA_EXECUTE_STORE_STATEMENT`: a statement bound by its caller, stepped by the next job.
+    ExecuteStore(Box<AlertHashRow>),
     Shutdown,
 }
 
@@ -267,6 +293,36 @@ impl MetaQueue {
     /// `metadata_queue_ctx_host_cleanup()`: stored by the next job (a failed queue drops it).
     pub fn ctx_host_cleanup(&self, host_id: [u8; 16], context: String) {
         let _ = self.0.send(Cmd::AddCtxCleanup(host_id, context));
+    }
+
+    /// `metadata_execute_store_statement()` of an alert configuration's row: stored by the next job, lost when the
+    /// agent stops before it (a failed queue drops it).
+    pub fn execute_store_statement(&self, row: AlertHashRow) {
+        let _ = self.0.send(Cmd::ExecuteStore(Box::new(row)));
+    }
+}
+
+/// A queue no thread reads, for tests of what queues on it.
+#[cfg(test)]
+pub(crate) struct Unread(mpsc::Receiver<Cmd>);
+
+#[cfg(test)]
+impl Unread {
+    /// The rows `execute_store_statement()` queued since the last call, in order.
+    pub(crate) fn statements(&self) -> Vec<AlertHashRow> {
+        let rows = self.0.try_iter().filter_map(|cmd| match cmd {
+            Cmd::ExecuteStore(row) => Some(*row),
+            _ => None,
+        });
+        rows.collect()
+    }
+}
+
+#[cfg(test)]
+impl MetaQueue {
+    pub(crate) fn unread() -> (MetaQueue, Unread) {
+        let (tx, rx) = mpsc::channel();
+        (MetaQueue(tx), Unread(rx))
     }
 }
 
@@ -310,8 +366,8 @@ impl MetaSync {
                 });
                 let _ = done_tx.send(());
                 let mut writer: Option<Writer> = None;
-                // pending_ctx_cleanup_list, pending_uuid_deletion: handed to the next job; dropped at shutdown, as C
-                // frees them
+                // pending_ctx_cleanup_list, pending_uuid_deletion, pending_sql_statement: handed to the next job;
+                // dropped at shutdown, as C frees them
                 let mut pending = Pending::default();
                 let (mut store_metadata, mut running) = (false, false);
                 let mut next_tick = Instant::now() + TIMER_PERIOD;
@@ -363,6 +419,9 @@ impl MetaSync {
                                 .get_or_insert_with(Vec::new)
                                 .push((host_id, context));
                         }
+                        Some(Cmd::ExecuteStore(row)) => {
+                            pending.statements.get_or_insert_with(Vec::new).push(*row);
+                        }
                         Some(Cmd::Shutdown) => {
                             shared.shutdown.store(true, Ordering::Release);
                             break;
@@ -397,6 +456,10 @@ impl MetaSync {
                     if let Ok(Cmd::StoreDone) = rx.recv_timeout(SHUTDOWN_POLL) {
                         running = false;
                     }
+                }
+                // what no job took is finalized without a step: rows queued and not stored yet are lost
+                if let Some(statements) = pending.statements.take() {
+                    store_sql_statements(None, statements);
                 }
                 if running {
                     nd_log!(
@@ -974,6 +1037,7 @@ mod tests {
                 Pending {
                     ctx_cleanup: Some(vec![([0xaa; 16], "ctx.a".into())]),
                     deletions: Some(vec![[1; 16]]),
+                    statements: None,
                 },
             )
         });
@@ -991,5 +1055,72 @@ mod tests {
         shared.shutdown.store(true, Ordering::Release);
         store_ctx_cleanup(&writer, &shared, vec![([0xbb; 16], "ctx.b".into())]);
         assert_eq!(cleanups(&meta), 1, "skipped during a shutdown");
+    }
+    /// An alert configuration's row, told from the others by the byte its hash is made of.
+    fn row(n: u8) -> AlertHashRow {
+        let mut rule = netdata_agent_health::prototype::Rule::default();
+        rule.config.hash_id = [n; 16];
+        rule.config.name = Some(format!("alert{n}").into_bytes());
+        netdata_agent_health::store::alert_hash_row(&rule)
+    }
+
+    /// The hashes' bytes of the `alert_hash` rows, in rowid order.
+    fn stored_rows(meta: &MetaDb) -> Vec<u8> {
+        let c = meta.lock();
+        let mut stmt = c.prepare("SELECT hash_id FROM alert_hash ORDER BY rowid").unwrap();
+        let hashes = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0)).unwrap();
+        hashes.map(|hash| hash.unwrap()[0]).collect()
+    }
+
+    /// `start_metadata_hosts()` steps the queued statements before anything else it stores, each on its own and
+    /// in queue order; what a shutdown finds queued is dropped, with the same record.
+    #[test]
+    fn a_job_steps_the_queued_statements_first_and_a_shutdown_drops_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = meta_with_dimensions(dir.path());
+        let writer = Writer {
+            meta: Arc::clone(&meta),
+            context_db: Weak::new(),
+            hosts: hosts(),
+            datafiles_present: false,
+        };
+        let stored = |records: Vec<netdata_agent_log::Captured>| -> Vec<String> {
+            records
+                .into_iter()
+                .filter_map(|r| r.message)
+                .filter(|m| m.starts_with("Stored "))
+                .map(|m| m.split(" in ").next().unwrap().to_string())
+                .collect()
+        };
+        let ((), records) = netdata_agent_log::capture(|| {
+            store_job(
+                &writer,
+                &shared(),
+                Pending {
+                    ctx_cleanup: Some(vec![([0xaa; 16], "ctx.a".into())]),
+                    deletions: None,
+                    // the second hash again: its row is replaced and takes a new rowid
+                    statements: Some(vec![row(3), row(1), row(2), row(1)]),
+                },
+            )
+        });
+        assert_eq!(
+            stored(records),
+            ["Stored and processed 4 sql statements", "Stored 1 host context cleanup items"]
+        );
+        assert_eq!(stored_rows(&meta), [3, 2, 1]);
+
+        let ((), records) = netdata_agent_log::capture(|| store_sql_statements(None, vec![row(8), row(9)]));
+        assert_eq!(stored(records), ["Stored and processed 2 sql statements"]);
+        assert_eq!(stored_rows(&meta), [3, 2, 1]);
+    }
+
+    #[test]
+    fn a_queued_statement_waits_in_the_queue_for_a_job() {
+        let (queue, unread) = MetaQueue::unread();
+        queue.execute_store_statement(row(5));
+        queue.execute_store_statement(row(4));
+        let hashes: Vec<u8> = unread.statements().iter().map(|row| row.hash_id[0]).collect();
+        assert_eq!(hashes, [5, 4]);
     }
 }

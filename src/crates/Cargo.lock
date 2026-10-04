@@ -3047,6 +3047,7 @@ dependencies = [
  "mio",
  "netdata-agent-dyncfg",
  "netdata-agent-evloop",
+ "netdata-agent-health",
  "netdata-agent-ingest",
  "netdata-agent-inicfg",
  "netdata-agent-log",

@@ -2,6 +2,8 @@
 //! in `src/libnetdata/runtime-paths/runtime-paths.c`. Each function mirrors the C function of the same name and is
 //! called from the same point of the startup sequence, because `/netdata.conf` lists options in first-read order.
 
+use netdata_agent_health::ConfigDirs;
+use netdata_agent_health::config::HealthConfig;
 use netdata_agent_log::{Priority, Source, nd_log};
 use std::path::Path;
 
@@ -1324,19 +1326,20 @@ impl Conf {
             .get_filename(SECTION_HEALTH, "silencers file", Some(&default));
     }
 
-    /// `health_load_config_defaults()`, in `rrd_init()` before localhost is created: every `[health]` default with
-    /// C's corrections and records. Health is not ported; `enabled` and the HEALTH loop's pacing have readers.
-    pub fn health_load_config_defaults(&mut self) -> HealthDefaults {
+    /// `health_load_config_defaults()`, in `rrd_init()` before localhost is created: every `[health]` value with C's
+    /// corrections and records.
+    pub fn health_load_config_defaults(&mut self) -> HealthConfig {
         let alarm_notify = format!("{}/alarm-notify.sh", self.primary_plugins_dir());
         let c = &mut self.netdata;
         let h = SECTION_HEALTH;
         let enabled = c.get_boolean(h, "enabled", true);
-        c.get_boolean(h, "enable stock health configuration", true);
-        c.get_boolean(h, "use summary for notifications", true);
-        c.get_duration_seconds(h, "default repeat warning", 0);
-        c.get_duration_seconds(h, "default repeat critical", 0);
+        let stock_enabled = c.get_boolean(h, "enable stock health configuration", true);
+        let use_summary_for_notifications = c.get_boolean(h, "use summary for notifications", true);
+        // uint32_t in C
+        let default_warn_repeat_every = c.get_duration_seconds(h, "default repeat warning", 0) as u32;
+        let default_crit_repeat_every = c.get_duration_seconds(h, "default repeat critical", 0) as u32;
         // unsigned int and uint32_t in C
-        let entries = c.get_number(
+        let mut entries = c.get_number(
             h,
             "in memory max health log entries",
             i64::from(HEALTH_LOG_ENTRIES_DEFAULT),
@@ -1346,12 +1349,15 @@ impl Conf {
             "health log retention",
             netdata_agent_streaming::conf::HEALTH_LOG_RETENTION_DEFAULT,
         ) as u32;
-        c.get_filename(h, "script to execute on alarm", Some(&alarm_notify));
-        c.get(h, "enabled alarms", Some("*"));
-        // at least 1
-        let run_at_least_every_s = c.get_duration_seconds(h, "run at least every", 10).max(1);
-        let postpone_s = c.get_duration_seconds(h, "postpone alarms during hibernation for", 60);
-        c.get_duration_seconds(h, "notification execution timeout", 120);
+        // an empty text is C's NULL string
+        let default_exec = c.get_filename(h, "script to execute on alarm", Some(&alarm_notify)).unwrap_or_default();
+        let enabled_alerts = c.get(h, "enabled alarms", Some("*")).unwrap_or_default();
+        // int32_t in C, and at least 1
+        let run_at_least_every_s = (c.get_duration_seconds(h, "run at least every", 10) as i32).max(1);
+        let postpone_s = c.get_duration_seconds(h, "postpone alarms during hibernation for", 60) as i32;
+        // 0 waits for ever
+        let notification_execution_timeout_s =
+            c.get_duration_seconds(h, "notification execution timeout", 120).clamp(0, i64::from(i32::MAX)) as i32;
         let bound = if entries < HEALTH_LOG_ENTRIES_MIN {
             Some(("minimum", HEALTH_LOG_ENTRIES_MIN))
         } else if entries > HEALTH_LOG_ENTRIES_MAX {
@@ -1365,6 +1371,7 @@ impl Conf {
                 Priority::Warning,
                 "Health configuration has invalid max log entries {entries}, using {which} of {bound}"
             );
+            entries = bound;
             c.set_number(h, "in memory max health log entries", i64::from(bound));
         }
         if retention < HEALTH_LOG_MINIMUM_HISTORY {
@@ -1382,22 +1389,37 @@ impl Conf {
             "Health log history is set to {retention} seconds ({} days)",
             retention / 86400
         );
-        HealthDefaults {
+        HealthConfig {
             enabled,
+            stock_enabled,
+            use_summary_for_notifications,
+            health_log_entries_max: entries,
+            health_log_retention_s: retention,
+            default_exec,
+            default_recipient: b"root".to_vec(),
+            enabled_alerts: HealthConfig::enabled_alerts_pattern(&enabled_alerts),
+            default_warn_repeat_every,
+            default_crit_repeat_every,
             run_at_least_every_s,
             postpone_s,
+            notification_execution_timeout_s,
         }
     }
-}
 
-/// The `[health]` values the Rust agent reads so far.
-#[derive(Debug, Clone, Copy)]
-pub struct HealthDefaults {
-    pub enabled: bool,
-    /// `run at least every`: the HEALTH loop's pass interval.
-    pub run_at_least_every_s: i64,
-    /// `postpone alarms during hibernation for`, which the HEALTH loop's resume record names.
-    pub postpone_s: i64,
+    /// `health_user_config_dir()` and `health_stock_config_dir()` as `health_reload_prototypes()` reads them, each
+    /// time it loads: the stock key first (C evaluates the two arguments of its walk from the right), and only with
+    /// the stock rules on. Neither key is read with health off.
+    pub fn health_config_dirs(&mut self, stock_enabled: bool) -> ConfigDirs {
+        let stock = stock_enabled.then(|| {
+            let default = format!("{}/health.d", self.dirs.stock_config);
+            self.netdata
+                .get_path(SECTION_DIRECTORIES, "stock health config", Some(&default))
+                .unwrap_or_default()
+        });
+        let default = format!("{}/health.d", self.dirs.user_config);
+        let user = self.netdata.get_path(SECTION_DIRECTORIES, "health config", Some(&default)).unwrap_or_default();
+        ConfigDirs { user, stock }
+    }
 }
 
 /// `health_internals.h` and `health.h` (the retention default is streaming's).
