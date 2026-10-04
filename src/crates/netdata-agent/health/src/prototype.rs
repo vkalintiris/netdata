@@ -5,11 +5,11 @@ use indexmap::IndexMap;
 use netdata_agent_dyncfg::model::SourceType;
 use netdata_agent_eval::Expression;
 use netdata_agent_query::tables::TimeGrouping;
+use netdata_agent_rrd::labels::PatternArray;
 
 use crate::tables::{DataSource, DimsGrouping, GroupCondition};
 
-/// `struct rrd_alert_match`: which charts a rule is for. C's label pattern arrays are compiled when rules are
-/// matched against charts.
+/// `struct rrd_alert_match`: which charts a rule is for.
 #[derive(Debug, Default)]
 pub struct AlertMatch {
     pub enabled: bool,
@@ -18,6 +18,10 @@ pub struct AlertMatch {
     pub on: Option<Vec<u8>>,
     pub host_labels: Option<Vec<u8>>,
     pub chart_labels: Option<Vec<u8>>,
+    /// The two label texts compiled when the rule is added (`health_prototype_activate_match_patterns()`); `None`
+    /// for a text that holds no value, which matches every label set.
+    pub host_labels_pattern: Option<PatternArray>,
+    pub chart_labels_pattern: Option<PatternArray>,
 }
 
 /// `struct rrd_alert_config`. A text is `None` where C's `STRING` is NULL. C never holds an empty one (an empty

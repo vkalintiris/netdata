@@ -11,6 +11,12 @@
 extern FILE *oracle_rules;
 extern const char *oracle_item;
 
+// the vector file the stubbed rrdcalc_add_from_prototype() writes a row to, the fields its rows start with (already
+// escaped), and how many rows it wrote
+extern FILE *oracle_links;
+extern const char *oracle_link_prefix;
+extern size_t oracle_link_count;
+
 // Field encoding (netdata-agent-text's, decoded by its tests/common/mod.rs): bytes 0x20..0x7e except '\' and '#'
 // are written as-is, '\' as "\\", every other byte as "\xHH". A NULL string is "\x00", which no C string can hold.
 void oracle_esc(FILE *f, const char *s);

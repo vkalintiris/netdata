@@ -10,7 +10,7 @@ use std::time::Instant;
 use netdata_agent_rrd::chart::{Chart, dim_flags};
 use netdata_agent_rrd::contexts::{self, Context, Instance, Metric, flags};
 use netdata_agent_rrd::host::Host;
-use netdata_agent_rrd::labels::Labels;
+use netdata_agent_rrd::labels::PatternArray;
 use netdata_agent_rrd::storage::TierHandle;
 use netdata_agent_storage::dbengine::RRD_STORAGE_TIERS;
 use netdata_agent_storage::storage_point::StoragePoint;
@@ -222,41 +222,24 @@ pub enum Source<'a> {
     V2 { hosts: Vec<Arc<Host>> },
 }
 
-/// `pattern_array` for labels (`src/libnetdata/simple_pattern/pattern_array.c`): per label key, the exact `key:value`
-/// patterns; the words stop at the first lone `*` or at the first word without `:`.
-struct PatternArray(Vec<(Vec<u8>, Vec<SimplePattern>)>);
-
-impl PatternArray {
-    fn new(sp: &SimplePattern) -> Self {
-        let mut keys: Vec<(Vec<u8>, Vec<SimplePattern>)> = Vec::new();
-        for word in sp.words() {
-            let Some(word) = word else { break };
-            let Some(colon) = word.iter().position(|&c| c == b':') else {
-                break;
-            };
-            let key = word[..colon.min(200)].to_vec();
-            let pattern = SimplePattern::new(
-                word,
-                netdata_agent_text::simple_pattern::Separators::None,
-                netdata_agent_text::simple_pattern::SimplePatternMode::Exact,
-                true,
-            );
-            match keys.iter_mut().find(|(k, _)| *k == key) {
-                Some((_, patterns)) => patterns.push(pattern),
-                None => keys.push((key, vec![pattern])),
-            }
-        }
-        PatternArray(keys)
+/// `pattern_array_add_simple_pattern()` for labels (`database/pattern-array.c`): per label key, the exact
+/// `key:value` patterns; the words stop at the first lone `*` or at the first word without `:`.
+fn label_pattern_array(sp: &SimplePattern) -> PatternArray {
+    let mut array = PatternArray::default();
+    for word in sp.words() {
+        let Some(word) = word else { break };
+        let Some(colon) = word.iter().position(|&c| c == b':') else {
+            break;
+        };
+        let pattern = SimplePattern::new(
+            word,
+            netdata_agent_text::simple_pattern::Separators::None,
+            netdata_agent_text::simple_pattern::SimplePatternMode::Exact,
+            true,
+        );
+        array.add(&word[..colon.min(200)], pattern);
     }
-
-    /// AND across keys, OR within a key.
-    fn matches(&self, labels: &Labels) -> bool {
-        self.0.iter().all(|(_, patterns)| {
-            patterns
-                .iter()
-                .any(|p| labels.match_simple_pattern_parsed(p, b':').is_positive())
-        })
-    }
+    array
 }
 
 /// `query_matches_retention()`.
@@ -533,7 +516,7 @@ impl Walk<'_> {
         } else {
             &self.labels
         };
-        key_ok && array.as_ref().is_none_or(|a| a.matches(&labels))
+        key_ok && array.as_ref().is_none_or(|a| a.label_match(&labels, b':'))
     }
 
     /// One instance: scope checks, queryability, its dimensions, pruning.
@@ -575,7 +558,7 @@ impl Walk<'_> {
             });
         let queryable = context_queryable
             && instances_ok
-            && self.labels.as_ref().is_none_or(|a| a.matches(&ri.labels()))
+            && self.labels.as_ref().is_none_or(|a| a.label_match(&ri.labels(), b':'))
             && !(self.req.version >= 2 && self.alerts);
         // query_target_eval_instance_rrdcalc() acquires the chart of a v2 query's queryable instance, which touches it
         if queryable
@@ -784,7 +767,7 @@ pub fn create(mut req: DataRequest, source: Source, now_s: i64) -> QueryTarget {
         match_names = true;
     }
     let needs_all_dimensions = req.options & options::PERCENTAGE != 0 || percentage_of_group;
-    let label_array = |v: &Option<Vec<u8>>| pattern(v).map(|sp| PatternArray::new(&sp));
+    let label_array = |v: &Option<Vec<u8>>| pattern(v).map(|sp| label_pattern_array(&sp));
     let mut walk = Walk {
         req: &req,
         window,

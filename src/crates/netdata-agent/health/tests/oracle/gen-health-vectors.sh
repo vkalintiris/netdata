@@ -35,6 +35,7 @@ trap 'rm -rf -- "${WORK}"' EXIT
 SOURCES=(
     health/health_config.c health/health_prototypes.c health/health_dyncfg.c
     web/api/queries/query-group-over-time.c web/api/maps/rrdr_options.c database/pattern-array.c
+    database/rrdlabels.c database/rrdlabels-aggregated.c
 )
 OBJECTS=()
 for source in "${SOURCES[@]}"; do
@@ -47,6 +48,7 @@ run cc "${CFLAGS[@]}" -c "${SCRIPT_DIR}/health-oracle-stubs.c" -o "${WORK}/healt
 OBJECTS+=("${WORK}/health-oracle-stubs.o")
 
 run cc "${CFLAGS[@]}" "${SCRIPT_DIR}/gen-health-vectors.c" "${OBJECTS[@]}" -o "${WORK}/gen-health-vectors" "${LIBS[@]}"
+run cc "${CFLAGS[@]}" "${SCRIPT_DIR}/gen-link-vectors.c" "${OBJECTS[@]}" -o "${WORK}/gen-link-vectors" "${LIBS[@]}"
 
 # the items, with paths relative to the crate's directory: the stock files, then each family of the corpus. A
 # directory named *.group is one item whose files are read one after the other into the same store.
@@ -73,6 +75,12 @@ run cc "${CFLAGS[@]}" "${SCRIPT_DIR}/gen-health-vectors.c" "${OBJECTS[@]}" -o "$
 
 (cd -- "${CRATE_DIR}" && run "${WORK}/gen-health-vectors" tests/vectors "${WORK}/items.list" 2>"${WORK}/gen.log") \
     || die "the generator failed: $(tail -n 5 "${WORK}/gen.log")"
+
+# the matching of rules against hosts and charts, as the scenario file of the corpus sets them up
+SCENARIOS=tests/corpus/match/scenarios.txt
+[[ -f "${CRATE_DIR}/${SCENARIOS}" ]] || die "missing ${CRATE_DIR}/${SCENARIOS}"
+(cd -- "${CRATE_DIR}" && run "${WORK}/gen-link-vectors" tests/vectors "${SCENARIOS}" 2>"${WORK}/link.log") \
+    || die "the link generator failed: $(tail -n 5 "${WORK}/link.log")"
 
 # C's unit vectors, dumped while C's own test runs: the dump's wrappers go in right after the test's includes
 UNITTEST="${SRC}/src/health/health-config-unittest.c"

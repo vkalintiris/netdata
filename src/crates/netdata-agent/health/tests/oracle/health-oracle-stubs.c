@@ -2,12 +2,20 @@
 //
 // Link stubs so the real health configuration path (src/health/health_config.c, health_prototypes.c,
 // health_dyncfg.c, compiled from the reference tree) runs outside the netdata daemon: the reader, the sub-parsers,
-// the prototype store and the hash need no host, no database and no DynCfg.
+// the prototype store, the hash and the matching of a rule against a host and a chart need no database, no DynCfg
+// and no real host: the matcher reads a chart's id, name, context and labels and its host's labels, which the
+// programs build by hand around the real label code (src/database/rrdlabels.c, compiled from the tree too).
 //
 //   - health_globals: the initializer of src/health/health.c:6-30; the programs set the default exec and recipient;
 //   - health_user_config_dir / health_stock_config_dir: only health_reload_prototypes() calls them (not run here);
-//   - localhost, rrdhost_root_index, rrdcalc_*, rrdlabels_match_simple_pattern_parsed, service_running: linking and
-//     matching (health_prototypes.c:525-647), reached only with hosts;
+//   - localhost, rrdhost_root_index, rrdcalc_delete_all, rrdcalc_unlink_and_delete*, service_running: the alert
+//     instances and the walks over hosts (health_prototypes.c:651-749), not run here;
+//   - rrdcalc_add_from_prototype: the second dumper. C calls it once per rule that passed every test of a chart, in
+//     its own order (health_prototypes.c:620-647); the real one creates the alert (src/health/rrdcalc.c). Here it
+//     writes the rule as a vector row;
+//   - dictionary_stats_category_rrdlabels, pulse_aral_register_statistics, pulse_aral_unregister_statistics,
+//     rrdset_metadata_updated: what rrdlabels.c takes from the daemon (upstream's own standalone build of it stubs
+//     the same: src/collectors/cgroups.plugin/tests/test_cgroups_plugin_stubs.c);
 //   - dyncfg_add / dyncfg_del / dyncfg_status: the DynCfg nodes of health_dyncfg.c, registered only on reload;
 //   - aclk_send_alert_configuration / alert_hash_has_transitioned: the Cloud push of a DYNCFG rule's hash
 //     (health_prototypes.c:404-410);
@@ -62,11 +70,19 @@ bool service_running(SERVICE_TYPE service) {
     return true;
 }
 
-bool rrdcalc_add_from_prototype(RRDHOST *host, RRDSET *st, RRD_ALERT_PROTOTYPE *ap) {
-    (void)host;
+struct dictionary_stats dictionary_stats_category_rrdlabels = { .name = "labels" };
+
+void pulse_aral_register_statistics(struct aral_statistics *stats, const char *name) {
+    (void)stats;
+    (void)name;
+}
+
+void pulse_aral_unregister_statistics(struct aral_statistics *stats) {
+    (void)stats;
+}
+
+void rrdset_metadata_updated(RRDSET *st) {
     (void)st;
-    (void)ap;
-    return false;
 }
 
 void rrdcalc_delete_all(RRDHOST *host) {
@@ -81,14 +97,6 @@ void rrdcalc_unlink_and_delete(RRDHOST *host, RRDCALC *rc, bool having_ll_wrlock
 
 void rrdcalc_unlink_and_delete_all_rrdset_alerts(RRDSET *st) {
     (void)st;
-}
-
-SIMPLE_PATTERN_RESULT rrdlabels_match_simple_pattern_parsed(RRDLABELS *labels, SIMPLE_PATTERN *pattern, char equal, size_t *searches) {
-    (void)labels;
-    (void)pattern;
-    (void)equal;
-    (void)searches;
-    return SP_NOT_MATCHED;
 }
 
 bool dyncfg_add(const struct dyncfg_add_inline_spec *spec) {
@@ -156,10 +164,13 @@ void rrd_alert_config_cleanup(struct rrd_alert_config *ac) {
 }
 
 // ------------------------------------------------------------------------------------------------
-// the dumper
+// the dumpers
 
 FILE *oracle_rules = NULL;
 const char *oracle_item = "";
+FILE *oracle_links = NULL;
+const char *oracle_link_prefix = "";
+size_t oracle_link_count = 0;
 
 void oracle_esc_bytes(FILE *f, const void *data, size_t len) {
     const unsigned char *s = data;
@@ -254,4 +265,29 @@ void sql_alert_store_config(RRD_ALERT_PROTOTYPE *ap) {
     fputc('\t', f);
     oracle_esc_bytes(f, buffer_tostring(wb), buffer_strlen(wb));
     fputc('\n', f);
+}
+
+
+// One rule C would link to the chart: its name, its place in the chain of its name, its kind and its hash.
+bool rrdcalc_add_from_prototype(RRDHOST *host, RRDSET *st, RRD_ALERT_PROTOTYPE *ap) {
+    (void)host;
+    (void)st;
+    FILE *f = oracle_links;
+    if(!f)
+        return false;
+
+    size_t index = 0;
+    RRD_ALERT_PROTOTYPE *head = dictionary_get(health_globals.prototypes.dict, string2str(ap->config.name));
+    for(RRD_ALERT_PROTOTYPE *t = head; t && t != ap; t = t->_internal.next)
+        index++;
+
+    fputs(oracle_link_prefix, f);
+    fputs("\tlink", f);
+    field_string(f, ap->config.name);
+    fprintf(f, "\t%zu\t%d\t", index, ap->match.is_template ? 1 : 0);
+    for(size_t i = 0; i < sizeof(ap->config.hash_id); i++)
+        fprintf(f, "%02x", (unsigned)ap->config.hash_id[i]);
+    fputc('\n', f);
+    oracle_link_count++;
+    return true;
 }

@@ -3115,6 +3115,7 @@ dependencies = [
  "netdata-agent-log",
  "netdata-agent-metadata",
  "netdata-agent-query",
+ "netdata-agent-rrd",
  "netdata-agent-text",
  "tempfile",
  "twox-hash",

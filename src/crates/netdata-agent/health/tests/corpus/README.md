@@ -13,6 +13,7 @@ directory named `*.group` is one item whose files are read one after the other i
 | `expr` | expressions that fail to parse, `green` and `red` replaced inside expressions, numbers that overflow inside one |
 | `validate` | each reason a rule is refused, chains of rules under one name, the same name in two files |
 | `smoke` | a first small file |
+| `match` | rules for the matching of hosts and charts (`basic.conf`: alarms by id and by name, templates, chains mixing both, disabled rules, each label key), and `scenarios.txt`, which the link generator plays: label sets, pattern texts, and per scenario its files, `enabled alarms`, hosts and charts (the stock rules among them) |
 | `files` | paths the reader cannot read: a dangling link, a directory, then a file whose record shows the `errno` left behind |
 
 The files hold bytes on purpose (a NUL, bytes above 0x7F, CRLF, a missing final newline): do not reformat them.

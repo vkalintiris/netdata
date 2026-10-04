@@ -2,12 +2,17 @@
 
 The vectors under `../vectors/` are produced by the C implementation itself. Health's objects are in no static
 library, so the configuration path is compiled from the reference tree (`health_config.c`, `health_prototypes.c`,
-`health_dyncfg.c` and three sources they call) with the flags of a production build, and linked with
-`health-oracle-stubs.c` and the production `libnetdata`:
+`health_dyncfg.c`, three sources they call, and the label code `rrdlabels.c` with `rrdlabels-aggregated.c`) with the
+flags of a production build, and linked with `health-oracle-stubs.c` and the production `libnetdata`:
 
 - `gen-health-vectors.c` runs C's `health_readfile()` over the stock `src/health/health.d` of this tree and over
   `../corpus/`, and writes `rules.tsv` (each rule C accepted, with the JSON C hashes and the hash, as C stores it;
-  the prototype store after each item) and `records.tsv` (every record C logged, in order);
+  the prototype store after each item), `records.tsv` (every record C logged, in order) and `copy.tsv` (each stored
+  rule's three expressions as an alert would hold them after `health_prototype_copy_config()`, and what that logs);
+- `gen-link-vectors.c` plays `../corpus/match/scenarios.txt`: `labels.tsv` (label sets as C holds them, and C's
+  verdict on each pattern text against each set) and `link.tsv` (for each chart of each scenario, the rules C would
+  link to it, in C's order: the stub of `rrdcalc_add_from_prototype()` writes them). It first runs C's own
+  `rrdlabels_unittest()`, which must find no error;
 - `health-unittest-dump.inc` and `health-unittest-main.inc` are spliced into a copy of
   `src/health/health-config-unittest.c`, so that C's own unit test runs, must pass, and leaves each call it makes to
   the ported functions, with what C returned, in `c_unittest.tsv`.

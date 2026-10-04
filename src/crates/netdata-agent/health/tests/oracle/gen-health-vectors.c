@@ -14,6 +14,11 @@
 //                                    <hash>   the prototype store after the item, in its order
 //   records.tsv  <item> <level> <errno> <message>: every record C logged while reading the item, in order; the
 //                errno and the message as C's logfmt printed them (without their quotes), "-" for no errno
+//   copy.tsv     for each rule in the store after an item, in the store's order:
+//                  <item> copy <name> <index in the chain> then, for calc, warn and crit, the source and what it was
+//                                    parsed as after health_prototype_copy_config() (what an alert gets when the
+//                                    rule is linked: each expression is parsed again from its source text);
+//                  <item> record <level> <errno> <message>   what that copy logged, with errno cleared before it
 //
 // The second argument is the list of items, one per line: <stock: 0 or 1> <path>. A path is a file, or a directory
 // whose files are read in the order given by the lines that follow it with the same item (see the script). Paths
@@ -25,6 +30,7 @@
 #include "health-oracle.h"
 
 static FILE *records;
+static FILE *copies;
 static char capture_path[4096];
 static int saved_stderr = -1;
 
@@ -63,7 +69,8 @@ static char *quoted_field(char *line, const char *name, bool to_line_end) {
     return start;
 }
 
-static void capture_end(const char *item) {
+// writes each captured record to `out` as: the item, `kind` when given, level, errno, message
+static void capture_end(FILE *out, const char *item, const char *kind) {
     fflush(stderr);
     dup2(saved_stderr, STDERR_FILENO);
     close(saved_stderr);
@@ -101,14 +108,18 @@ static void capture_end(const char *item) {
         level += strlen(" level=");
         level[strcspn(level, " ")] = '\0';
 
-        oracle_esc(records, item);
-        fputc('\t', records);
-        oracle_esc(records, level);
-        fputc('\t', records);
-        oracle_esc(records, errno_text ? errno_text : "-");
-        fputc('\t', records);
-        oracle_esc(records, msg);
-        fputc('\n', records);
+        oracle_esc(out, item);
+        fputc('\t', out);
+        if(kind) {
+            fputs(kind, out);
+            fputc('\t', out);
+        }
+        oracle_esc(out, level);
+        fputc('\t', out);
+        oracle_esc(out, errno_text ? errno_text : "-");
+        fputc('\t', out);
+        oracle_esc(out, msg);
+        fputc('\n', out);
     }
     free(line);
     fclose(fp);
@@ -141,6 +152,45 @@ static void dump_store(const char *item) {
         }
     }
     dfe_done(ap);
+}
+
+static void copy_expression(EVAL_EXPRESSION *e) {
+    fputc('\t', copies);
+    oracle_esc(copies, e ? expression_source(e) : NULL);
+    fputc('\t', copies);
+    oracle_esc(copies, e ? expression_parsed_as(e) : NULL);
+}
+
+// What an alert of each stored rule would hold: C copies the rule's configuration when it links it to a chart.
+static void dump_copies(const char *item) {
+    // the reader's records of the next item must see the errno this item left, as they do without this dump
+    int errno_of_the_reader = errno;
+
+    RRD_ALERT_PROTOTYPE *ap;
+    dfe_start_read(health_globals.prototypes.dict, ap) {
+        size_t index = 0;
+        for(RRD_ALERT_PROTOTYPE *t = ap; t; t = t->_internal.next, index++) {
+            struct rrd_alert_config copy = { 0 };
+            capture_begin();
+            errno = 0;
+            health_prototype_copy_config(&copy, &t->config);
+            fflush(stderr);
+
+            oracle_esc(copies, item);
+            fputs("\tcopy\t", copies);
+            oracle_esc(copies, ap_dfe.name);
+            fprintf(copies, "\t%zu", index);
+            copy_expression(copy.calculation);
+            copy_expression(copy.warning);
+            copy_expression(copy.critical);
+            fputc('\n', copies);
+            capture_end(copies, item, "record");
+            rrd_alert_config_cleanup(&copy);
+        }
+    }
+    dfe_done(ap);
+
+    errno = errno_of_the_reader;
 }
 
 static FILE *out_open(const char *dir, const char *name, const char *columns) {
@@ -184,6 +234,9 @@ int main(int argc, char **argv) {
                             "hashed JSON | file, path, stock, return value | entry, name, index in the chain, prototype "
                             "enabled, rule enabled, exec, recipient, hash (NULL strings are \\x00)");
     records = out_open(argv[1], "records.tsv", "item, level, errno (- for none), message (as logfmt printed them)");
+    copies = out_open(argv[1], "copy.tsv",
+                      "item, then by kind: copy, name, index in the chain, calc source, calc parsed_as, warn source, "
+                      "warn parsed_as, crit source, crit parsed_as | record, level, errno (- for none), message");
     snprintf(capture_path, sizeof(capture_path), "%s/.stderr-capture", argv[1]);
 
     FILE *list = fopen(argv[2], "r");
@@ -205,7 +258,8 @@ int main(int argc, char **argv) {
         if(!member) {
             if(open_item) {
                 dump_store(item);
-                capture_end(item);
+                capture_end(records, item, NULL);
+                dump_copies(item);
             }
             open_item = true;
             dictionary_flush(health_globals.prototypes.dict);
@@ -225,11 +279,13 @@ int main(int argc, char **argv) {
     }
     if(open_item) {
         dump_store(item);
-        capture_end(item);
+        capture_end(records, item, NULL);
+        dump_copies(item);
     }
 
     fclose(list);
     fclose(records);
+    fclose(copies);
     fclose(oracle_rules);
     unlink(capture_path);
     return 0;

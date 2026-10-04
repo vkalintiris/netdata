@@ -78,6 +78,38 @@ impl LabelsMatch {
     }
 }
 
+/// `struct pattern_array` (`database/pattern-array.c`): for each label key, its patterns in the order they were
+/// added.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PatternArray(Vec<(Vec<u8>, Vec<SimplePattern>)>);
+
+impl PatternArray {
+    /// `pattern_array_add_key_simple_pattern()`.
+    pub fn add(&mut self, key: &[u8], pattern: SimplePattern) {
+        match self.0.iter_mut().find(|(known, _)| known == key) {
+            Some((_, patterns)) => patterns.push(pattern),
+            None => self.0.push((key.to_vec(), vec![pattern])),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// `pattern_array_label_match()`: every key must end in a positive match. A key's patterns are tried in the
+    /// order they were added and the first that says anything decides: a negative match fails the key, and so does
+    /// a pattern that matches a label's name alone.
+    pub fn label_match(&self, labels: &Labels, equal: u8) -> bool {
+        self.0.iter().all(|(_, patterns)| {
+            patterns
+                .iter()
+                .map(|pattern| labels.match_simple_pattern_parsed(pattern, equal))
+                .find(|result| *result != LabelsMatch::Pattern(SimplePatternResult::NotMatched))
+                .is_some_and(LabelsMatch::is_positive)
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Label {
     pub name: Vec<u8>,

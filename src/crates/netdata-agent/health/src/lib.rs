@@ -8,11 +8,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod alert;
 pub mod config;
 pub mod expr;
 pub mod hash;
 pub mod json;
 pub mod keywords;
+pub mod matching;
 pub mod prototype;
 pub mod readfile;
 pub mod store;
@@ -77,7 +79,8 @@ impl Health {
 
     /// `health_prototype_add()`: the rules of one name, as one file entity or one DynCfg payload gives them. Every
     /// rule is validated first; the error is C's reason for the first one that cannot stand, and nothing is added.
-    /// Each rule is then hashed and stored alone, and only afterwards takes the default exec and recipient.
+    /// Each rule is then hashed and stored alone; its label texts are compiled; and only afterwards it takes the
+    /// default exec and recipient.
     pub fn add(&self, mut rules: Vec<Rule>) -> Result<(), &'static str> {
         let name = rules.first().and_then(|rule| rule.config.name.clone());
         for (index, rule) in rules.iter().enumerate() {
@@ -101,6 +104,10 @@ impl Health {
             let json = json::prototype_to_json(rule.config.name.as_deref().unwrap_or(b""), &[rule], true);
             rule.config.hash_id = hash::hash_id(&json);
             (self.store)(rule);
+
+            // health_prototype_activate_match_patterns()
+            rule.r#match.host_labels_pattern = rule.r#match.host_labels.as_deref().and_then(matching::label_patterns);
+            rule.r#match.chart_labels_pattern = rule.r#match.chart_labels.as_deref().and_then(matching::label_patterns);
 
             if rule.config.exec.is_none() && !self.config.default_exec.is_empty() {
                 rule.config.exec = Some(self.config.default_exec.clone());
