@@ -335,6 +335,48 @@ func validateHealthConf(conf string, on bool) error {
 	return nil
 }
 
+// ValidateHealthRules checks a health.d text a check is about to lay out: a rule's own `exec` line replaces, for that
+// rule, the notifier the [health] section names (health/health_notifications.c:453), so the rails on netdata.conf do
+// not cover it. Each `exec` value must begin with one of `allowed` (the side's own notifier directory, where only the
+// recording stub lives; a path nothing can be executed under), after the quotes C strips. A line is read as C reads
+// it (health_config.c:658-690: the key is what precedes the first colon, trimmed, in any case). Every line of the
+// text is judged, and so is every line as C joins it (a line that ends in a backslash goes on in the next one, the
+// backslash a space): `exec\` before `: /bin/true` is an `exec` to C, and a value continued from the line before
+// is refused whatever follows it.
+func ValidateHealthRules(text string, allowed ...string) error {
+	judge := func(n int, line string) error {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok || strings.HasPrefix(key, "#") || !strings.EqualFold(strings.Join(strings.Fields(key), " "), "exec") {
+			return nil
+		}
+		value = strings.TrimLeft(strings.TrimSpace(value), "\"' \t")
+		if !slices.ContainsFunc(allowed, func(prefix string) bool { return prefix != "" && strings.HasPrefix(value, prefix) }) {
+			return fmt.Errorf("daemon: health rule line %d: `exec` names %q, which is not under %q: a rule's notifier may send mail",
+				n, value, allowed)
+		}
+		return nil
+	}
+	pending := ""
+	for i, line := range strings.Split(text, "\n") {
+		if err := judge(i+1, line); err != nil {
+			return err
+		}
+		joined := strings.TrimSpace(pending + line)
+		if joined == "" || joined[0] == '#' {
+			continue
+		}
+		if strings.HasSuffix(joined, "\\") {
+			pending = joined[:len(joined)-1] + " "
+			continue
+		}
+		pending = ""
+		if err := judge(i+1, joined); err != nil {
+			return err
+		}
+	}
+	return judge(strings.Count(text, "\n")+1, pending)
+}
+
 // pluginsBlock is the template's [plugins] block for the mode: netdataConfTemplate's own (every installed plugin and
 // internal collector off), or pluginsStock.
 func pluginsBlock(stock bool) string {

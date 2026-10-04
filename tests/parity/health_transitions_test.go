@@ -72,9 +72,16 @@ func healthAll(status string, names ...string) func(string) error {
 // phase's values are being collected (phase 0: the chart exists).
 func healthPlaySig(t *testing.T, h *healthPair, hold time.Duration, phase func(k int)) {
 	t.Helper()
+	healthPlayPhases(t, h, len(healthSigPhases), hold, phase)
+}
+
+// healthPlayPhases plays the n phases of a scenario's collected chart (healthValues): the chart, then each further
+// value once the one before it was held `hold`; `phase` runs once the phase's values are being collected.
+func healthPlayPhases(t *testing.T, h *healthPair, n int, hold time.Duration, phase func(k int)) {
+	t.Helper()
 	h.create(t)
 	phase(0)
-	for k := 1; k < len(healthSigPhases); k++ {
+	for k := 1; k < n; k++ {
 		h.release(t, fmt.Sprintf("p%d", k), k, hold)
 		phase(k)
 	}

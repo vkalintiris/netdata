@@ -2,9 +2,11 @@
 
 // Package notify is the harness's recording notifier: a static Go program (cmd/notifystub) an agent runs in place of
 // alarm-notify.sh (`[health] script to execute on alarm`). Each call writes one record file beside the program: the
-// arguments, the environment, the directory, the parent, and how the call ended. What a call does (its exit code, a
-// sleep, ignoring SIGTERM) comes from rules in a control file, matched by the alert's name and new status, so a check
-// can drive a failing notification and the agent's timeout. The program writes nothing to stdout or stderr.
+// arguments, the environment, the directory, the parent, the descriptors it started with, and how the call ended.
+// What a call does (its exit code, a sleep, ignoring SIGTERM, a line on stdout) comes from rules in a control file,
+// matched by the alert's name and new status, so a check can drive a failing notification, the agent's timeout and a
+// script that writes after the agent stopped listening. Without such a rule the program writes nothing to stdout or
+// stderr.
 package notify
 
 import (
@@ -41,6 +43,11 @@ type Rule struct {
 	SleepMs int `json:"sleepMs,omitempty"`
 	// IgnoreTerm ignores SIGTERM (the agent's kill must escalate to SIGKILL)
 	IgnoreTerm bool `json:"ignoreTerm,omitempty"`
+	// StdoutAfterMs writes one line to stdout that long after the start, before the sleep and the exit. The agent
+	// never reads a notification's stdout and closes its end at its first wait
+	// (libnetdata/spawn_server/spawn_popen.c:164-190): a write after that is a write to a broken pipe, which kills a
+	// script as SIGPIPE kills any program that did not ask for it
+	StdoutAfterMs int `json:"stdoutAfterMs,omitempty"`
 }
 
 // Matches reports whether the rule applies to a call's arguments.
@@ -54,8 +61,9 @@ func (r Rule) Matches(argv []string) bool {
 	return (r.Alert == "" || r.Alert == arg(ArgName)) && (r.Status == "" || r.Status == arg(ArgStatus))
 }
 
-// Call is one call's record. The program writes it in two parts: what it was given, when it starts; End, when it
-// ends by itself or by SIGTERM. A call without End was killed (SIGKILL), or still runs.
+// Call is one call's record. The program writes it in parts: what it was given, when it starts; Stdout, around a
+// rule's write to stdout; End, when it ends by itself or by SIGTERM. A call without End was killed (SIGKILL, or
+// SIGPIPE in its write to stdout), or still runs.
 type Call struct {
 	// Seq is the call's number on its side, from 1, in the order the calls started. C spawns a pass's notifications
 	// newest entry first and waits afterwards (health_notifications.c:516-519, :562), so that order follows each
@@ -71,6 +79,15 @@ type Call struct {
 	StartUt    int64  `json:"start_ut"`
 	// Rule is the index of the rule that matched, -1 for none
 	Rule int `json:"rule"`
+	// Fds are the descriptors the call started with, in number order, each `<number> <target>` as /proc/self/fd names
+	// it (`pipe:[inode]`, `socket:[inode]`, a path): what the agent gave the script as stdin, stdout and stderr, and
+	// whatever else it left open. StdioFlags are the open flags of 0, 1 and 2, `<number> <flags>` as
+	// /proc/self/fdinfo prints them (octal): which end of a pipe, blocking or not, appending or not
+	Fds        []string `json:"fds"`
+	StdioFlags []string `json:"stdioFlags"`
+	// Stdout is what a rule's write to stdout came to (Rule.StdoutAfterMs): `before` while the write has not
+	// returned, which is how the record of a call the write killed is left; `written`; or `error: …`
+	Stdout string `json:"stdout,omitempty"`
 	// End is `exit N` or `signal SIGTERM`; EndUt when
 	End   string `json:"end,omitempty"`
 	EndUt int64  `json:"end_ut,omitempty"`
@@ -138,7 +155,7 @@ func Calls(runDir string) ([]Call, error) {
 		dec := json.NewDecoder(fh)
 		parts := 0
 		for {
-			// the second part sets only End and EndUt
+			// a later part sets only its own members (Stdout; End and EndUt)
 			if err := dec.Decode(&c); err != nil {
 				if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 					fh.Close()

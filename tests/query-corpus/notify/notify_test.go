@@ -57,7 +57,8 @@ func install(t *testing.T, ctl Control) string {
 	return run
 }
 
-// A call records what it was given and how it ended, numbered in call order; it writes nothing to stdout or stderr.
+// A call records what it was given, the descriptors it started with and how it ended, numbered in call order; it
+// writes nothing to stdout or stderr.
 func TestTheStubRecordsACall(t *testing.T) {
 	run := install(t, Control{})
 	for i := range 3 {
@@ -88,9 +89,82 @@ func TestTheStubRecordsACall(t *testing.T) {
 			t.Errorf("call %d: env %q, want %q", i, c.Env, want)
 		}
 		if c.Cwd != run || c.Ppid != os.Getpid() || c.Pid == 0 || c.ParentComm == "" || c.StartUt == 0 || c.Rule != -1 ||
-			c.End != "exit 0" || c.EndUt < c.StartUt {
+			c.End != "exit 0" || c.EndUt < c.StartUt || c.Stdout != "" {
 			t.Errorf("call %d: %+v", i, c)
 		}
+		// what it started with: the null device, two pipes, and nothing the program opened itself
+		if len(c.Fds) != 3 || c.Fds[0] != "0 /dev/null" || !strings.HasPrefix(c.Fds[1], "1 pipe:[") || !strings.HasPrefix(c.Fds[2], "2 pipe:[") {
+			t.Errorf("call %d: descriptors %q", i, c.Fds)
+		}
+		if len(c.StdioFlags) != 3 || !strings.HasPrefix(c.StdioFlags[0], "0 0") || !strings.HasPrefix(c.StdioFlags[1], "1 0") ||
+			!strings.HasPrefix(c.StdioFlags[2], "2 0") {
+			t.Errorf("call %d: stdio flags %q", i, c.StdioFlags)
+		}
+	}
+}
+
+// A descriptor the caller left open is recorded with its target, in number order.
+func TestTheStubRecordsItsDescriptors(t *testing.T) {
+	run := install(t, Control{})
+	extra, err := os.Open(filepath.Join(Dir(run), "control.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer extra.Close()
+	cmd := command(Path(run), "an alert", "WARNING")
+	cmd.Stdin = extra
+	cmd.ExtraFiles = []*os.File{extra}
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := Calls(run)
+	if err != nil || len(calls) != 1 {
+		t.Fatalf("calls: %d %v", len(calls), err)
+	}
+	file := filepath.Join(Dir(run), "control.json")
+	if want := []string{"0 " + file, "1 /dev/null", "2 /dev/null", "3 " + file}; !slices.Equal(calls[0].Fds, want) {
+		t.Errorf("descriptors %q, want %q", calls[0].Fds, want)
+	}
+}
+
+// A rule's line on stdout: read by a caller that listens, and the end of a call whose caller closed its end, as
+// SIGPIPE ends a script (the record then stops at `before`, with no end).
+func TestTheStubWritesToStdout(t *testing.T) {
+	run := install(t, Control{Rules: []Rule{{Alert: "a", StdoutAfterMs: 200, Exit: 4}}})
+
+	listening := command(Path(run), "a", "WARNING")
+	out, err := listening.Output()
+	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 4 {
+		t.Fatalf("the call a caller listens to ended %v, want exit 4", err)
+	}
+	if string(out) != "a line nobody reads\n" {
+		t.Errorf("stdout %q", out)
+	}
+
+	closed := command(Path(run), "a", "WARNING")
+	pipe, err := closed.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pipe.Close()
+	err = closed.Wait()
+	ee, _ := err.(*exec.ExitError)
+	if ee == nil {
+		t.Fatalf("the call whose stdout was closed ended %v, want SIGPIPE", err)
+	}
+	if ws, ok := ee.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() || ws.Signal() != syscall.SIGPIPE {
+		t.Errorf("the call whose stdout was closed ended %v, want SIGPIPE", err)
+	}
+
+	calls, err := Calls(run)
+	if err != nil || len(calls) != 2 {
+		t.Fatalf("calls: %d %v", len(calls), err)
+	}
+	if calls[0].Stdout != "written" || calls[0].End != "exit 4" || calls[1].Stdout != "before" || calls[1].End != "" {
+		t.Errorf("stdout %q then %q, ends %q then %q", calls[0].Stdout, calls[1].Stdout, calls[0].End, calls[1].End)
 	}
 }
 

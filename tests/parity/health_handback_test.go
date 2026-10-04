@@ -43,6 +43,105 @@ func healthLoaded(n int) func(string) error {
 	}
 }
 
+// A load's entry for an alert whose last entry was notified, in a rendered alert log: the REMOVED row a start injects
+// copies that entry's flags and the second its notifier ran (sqlite_health.c:447-452), so the alert log shows a
+// REMOVED entry that was "executed". Between the two members an entry holds no closing brace but the `{run}/` of a
+// path.
+var healthLoadedNotifiedRe = regexp.MustCompile(`"exec_run":T,(?:[^}]|\}/)*?"status":"REMOVED",\s*"old_status":"WARNING",`)
+
+// healthNotifiedCase is a hand-back case with a notified alert (M9 commit 6, D208): hs_calc alone. The first run
+// ends in WARNING, with one call; the second finds the value still at 70, then 10. At its first pass C logs a REMOVED
+// entry for the alert, with the flags of the WARNING entry it replaces, and asks the table for the alert's last
+// executed entry when the alert's first status comes: that is now the REMOVED one, which is not WARNING, so the
+// WARNING is notified a second time (health_notifications.c:414-425, sqlite_health.c:1016-1061); its CLEAR is the
+// third call. Compared: the transcripts of both runs, the alert log whole and `/api/v1/alarms?all`, and, both
+// stopped, the health tables, the unclaimed queue's records and the store jobs' records summed, and each load's
+// record. The values are held as the quiet cases hold theirs: no transition near a second at which a row of the
+// unclaimed queue is due.
+func healthNotifiedCase(bins [2][2]Role) healthCase {
+	const chart, context = "hsig.values", "hsig.ctx"
+	sc := healthValues(chart, context, []string{"a"}, map[string]int64{"a": 10}, map[string]int64{"a": 70})
+	sc.Starts = append(sc.Starts, plugin.Start{Steps: []plugin.Step{{WaitFile: "again"},
+		{Values: &plugin.Values{Chart: chart, Context: context, Dims: []string{"a"},
+			Phases: []plugin.Phase{{Set: map[string]int64{"a": 70}, Until: "again1"}, {Set: map[string]int64{"a": 10}}}}}}})
+	// the first run's entries: the three links, the first CLEAR, the WARNING; the second's: the load's, the three
+	// links, the WARNING again; then the CLEAR
+	const first, second = 5, 5
+	return healthCase{
+		conf:   healthCalcConf,
+		dbMode: "alloc",
+		logs:   healthLogsDebug,
+		sc:     sc,
+		bins:   bins,
+		play: func(t *testing.T, h *healthPair) {
+			h.create(t)
+			h.processed(t, "the first run, CLEAR", "hs_calc", "CLEAR")
+			h.release(t, "p1", 1, healthQuietMoved)
+			h.compareNow(t, "the first run: the notifier's calls", h.transcript(t), healthCallsWant(1,
+				healthCallFor("hs_calc", "WARNING", 1, map[int]string{10: "CLEAR"}), healthCallsEnded(0)))
+			h.compareNow(t, "the first run: the alert log's notification state", h.execView, healthBoth(healthLogLines(first),
+				healthHas("hs_calc: CLEAR->WARNING exec_run=T exec_code=0 exec_failed=false processed=true updated=false")))
+			// the WARNING's row of the queue is moved on before the stop
+			time.Sleep(healthQueueHold)
+		},
+		again: func(t *testing.T, h *healthPair) {
+			time.Sleep(2 * time.Second)
+			h.release(t, "again", 0, 0)
+			h.settle(t, h.n, "")
+			log := func(i int) string { return h.get(i, "/api/v1/alarm_log") }
+			h.processed(t, "after the second start", "hs_calc", "WARNING")
+			// the same status as the first run's last, notified again: the call's old status is the link's
+			h.compareNow(t, "after the second start: the notifier's calls", h.transcript(t), healthCallsWant(2,
+				healthCallFor("hs_calc", "WARNING", 2, map[int]string{10: "UNINITIALIZED"}), healthCallsEnded(0)))
+			h.compareNow(t, "after the second start: /api/v1/alarm_log", log, healthBoth(healthLogEntries(first+second),
+				func(view string) error {
+					if n := len(healthLoadedNotifiedRe.FindAllString(view, -1)); n != 1 {
+						return fmt.Errorf("%d entries from WARNING to REMOVED with `exec_run` set, want the load's one", n)
+					}
+					return nil
+				}))
+			h.compareNow(t, "after the second start: /api/v1/alarms?all", func(i int) string { return h.get(i, "/api/v1/alarms?all") },
+				healthBoth(healthAll("WARNING", "hs_calc"), healthLatest(first+second)))
+			h.release(t, "again1", 1, healthCalcHold)
+			h.compareNow(t, "CLEAR: the notifier's calls", h.transcript(t), healthCallsWant(3,
+				healthCallFor("hs_calc", "CLEAR", 1, map[int]string{10: "WARNING"}), healthCallsEnded(0)))
+			h.compareNow(t, "CLEAR: /api/v1/alarm_log", log, healthLogEntries(first+second+1))
+			// the CLEAR's row of the queue is due 10 s after it
+			time.Sleep(healthQueueHold)
+		},
+		after: func(t *testing.T, h *healthPair) {
+			healthQuietTables(map[string]int{"alert_hash": 1, "health_log": 1, "health_log_detail": first + second + 1,
+				"alert_queue": 0, "aclk_queue": 1, "alert_version": 0, "alert_hash_cloud": 0}, healthNotifiedMoves, healthNotifiedStored)(t, h)
+			h.compareLines(t, "HEALTH's records of the load", func(i int) []string {
+				return h.threadRecords(t, i, "HEALTH", "["+h.p.Each()[i].Daemon.Hostname+"]: Table health_log, loaded ")
+			}, func(oracle []string) error {
+				if len(oracle) != 2 || !strings.Contains(oracle[0], ", loaded 0 alarm entries, errors in 0 entries.") ||
+					!strings.Contains(oracle[1], ", loaded 1 alarm entries, errors in 0 entries.") {
+					return fmt.Errorf("want a load of no entry, then one of 1")
+				}
+				return nil
+			})
+		},
+	}
+}
+
+// What a notified hand-back case leaves in its logs, summed over both runs: the rows of the unclaimed queue the
+// passes took and moved on, and the queued saves the store jobs took (healthQueueMoves, healthStored).
+const (
+	healthNotifiedMoves  = "processed 4, queued 4"
+	healthNotifiedStored = 2 * (5 + 6)
+)
+
+// healthLogLines is a guard on a view of one line per entry (execView): it holds n entries.
+func healthLogLines(n int) func(string) error {
+	return func(view string) error {
+		if got := len(strings.Split(view, "\n")); got != n {
+			return fmt.Errorf("%d entries, want %d", got, n)
+		}
+		return nil
+	}
+}
+
 // TestHealthHandBack (check `health.handback`, M9 commit 5, D205 F1): what an agent that starts on a cache with an
 // alert log does with it. The quiet rule set (healthQuietConf: no notification) plays its three phases, the unclaimed
 // queue's delay passes and both agents stop; then each side's run directory is started again, in `alloc` mode, so
@@ -56,8 +155,14 @@ func healthLoaded(n int) func(string) error {
 //   - `restart`: the oracle and the candidate, each again on the cache it wrote;
 //   - `c-after-rust`: the second run is C's on both sides: C on the candidate's cache beside C on its own;
 //   - `rust-after-c`: the first run is C's on both sides: the candidate on a C cache beside C on one.
+//
+// Two more cases have an alert that was notified before the stop (healthNotifiedCase; M9 commit 6, D208):
+// `notified` (each side again on its own cache) and `c-after-rust-notified` (the second run is C's on both sides).
 func TestHealthHandBack(t *testing.T) {
-	cases := map[string]healthCase{}
+	cases := map[string]healthCase{
+		"notified":              healthNotifiedCase([2][2]Role{{Oracle, Candidate}, {Oracle, Candidate}}),
+		"c-after-rust-notified": healthNotifiedCase([2][2]Role{{Oracle, Candidate}, {Oracle, Oracle}}),
+	}
 	for name, bins := range map[string][2][2]Role{
 		"restart":      {{Oracle, Candidate}, {Oracle, Candidate}},
 		"c-after-rust": {{Oracle, Candidate}, {Oracle, Oracle}},

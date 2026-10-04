@@ -31,7 +31,8 @@ import (
 //     a health.log's ids by the rank of their first appearance in the file (`t#k`, healthLogRanked);
 //   - every time field is a wall-clock second: `T` when set, 0 kept (set or not is compared), a lookup's window as its
 //     length (`db_before` as `T+<n>`). A notification's clock arguments print the name of the member of their own
-//     alert log entry they equal (`when`, `duration`, `non_clear_duration`);
+//     alert log entry they equal (`when`, `duration`, `non_clear_duration`), and the seconds in its lists of the
+//     other raised alerts the entry of the alert log that was logged for that alert at that second (`when(u+k)`);
 //   - each side's run directory and runtime directory: `{run}`, `{rt}`.
 //
 // A hand-back case (healthCase.again; M9 commit 5, D205 F1) starts each side's run directory a second time and keeps
@@ -226,13 +227,20 @@ const (
 	healthArgWhen     = 6
 	healthArgDuration = 14
 	healthArgNonClear = 15
-	healthArgGUID     = 28
-	healthArgTid      = 29
+	// the other alerts of the host that are WARNING, and CRITICAL, when the notification is sent: how many, then
+	// which (`name=<the second of its last change of status>`, comma separated; :337-352)
+	healthArgWarnCount = 22
+	healthArgCritCount = 23
+	healthArgWarnList  = 24
+	healthArgCritList  = 25
+	healthArgGUID      = 28
+	healthArgTid       = 29
 )
 
 // call renders one notifier call as two agents must agree on it: its arguments (args), the environment (the side's
-// directories replaced, then maskEnv: each agent's invocation id), the directory, the parent's name, the rule it
-// matched and how it ended. The call's number is its position in the transcript.
+// directories replaced, then maskEnv: each agent's invocation id), the directory, the parent's name, the descriptors
+// it started with (fds), the rule it matched, what its write to stdout came to when its rule has one, and how it
+// ended. The call's number is its position in the transcript.
 func (n *healthNorm) call(c notify.Call) []string {
 	out := []string{}
 	for i, a := range n.args(c.Argv) {
@@ -245,18 +253,52 @@ func (n *healthNorm) call(c notify.Call) []string {
 	for _, e := range maskEnv(env) {
 		out = append(out, "env "+e)
 	}
+	out = append(out, "cwd "+n.paths(c.Cwd), "parent "+c.ParentComm)
+	out = append(out, n.fds(c)...)
+	out = append(out, fmt.Sprintf("rule %d", c.Rule))
+	if c.Stdout != "" {
+		out = append(out, "stdout "+c.Stdout)
+	}
 	// no end record: the call was killed, or still runs
 	end := c.End
 	if end == "" {
 		end = "none"
 	}
-	return append(out, "cwd "+n.paths(c.Cwd), "parent "+c.ParentComm, fmt.Sprintf("rule %d", c.Rule), "end "+end)
+	return append(out, "end "+end)
+}
+
+// fds renders the descriptors a call started with, one per line in number order: `fd <n> <what>`, a pipe and a socket
+// by their kind (each has its own inode), a file by its path with the side's directories replaced; for 0, 1 and 2
+// also the open flags (`flags <octal>`: the end of a pipe, blocking or not, appending or not). A descriptor above 2 is
+// one the agent left open in the script. A record without them (the stub could not read /proc) says so.
+func (n *healthNorm) fds(c notify.Call) []string {
+	if len(c.Fds) == 0 {
+		return []string{"fd unknown"}
+	}
+	flags := map[string]string{}
+	for _, f := range c.StdioFlags {
+		num, v, _ := strings.Cut(f, " ")
+		flags[num] = v
+	}
+	var out []string
+	for _, f := range c.Fds {
+		num, target, _ := strings.Cut(f, " ")
+		l := "fd " + num + " " + n.paths(fdKind(target))
+		if v, ok := flags[num]; ok {
+			l += " flags " + v
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 // args renders a notification's arguments (the first is the script): the ids rebased, the transition id named
 // (tid), the side's directories replaced, and the three clock arguments (the transition's time and its two durations,
 // health_notifications.c:107-150) by the name of the member they equal in the alert log's entry of the call's unique
-// id: `when`, `duration`, `non_clear_duration`. 0, and a value that is not the entry's, print as they are.
+// id: `when`, `duration`, `non_clear_duration`. 0, and a value that is not the entry's, print as they are. Argument 15
+// is the entry's non-clear duration, but its duration for a raised entry of an alert that repeats (:487-489): it
+// prints `duration` when it equals that member and not the non-clear one, so which of the two the agent passed shows
+// whenever they differ. The two lists of the other raised alerts go through raised.
 func (n *healthNorm) args(argv []string) []string {
 	var e healthEntry
 	known := false
@@ -287,13 +329,52 @@ func (n *healthNorm) args(argv []string) []string {
 		case healthArgDuration:
 			a = own(a, e.Duration, "duration")
 		case healthArgNonClear:
-			a = own(a, e.NonClear, "non_clear_duration")
+			if named := own(a, e.NonClear, "non_clear_duration"); named != a {
+				a = named
+			} else {
+				a = own(a, e.Duration, "duration")
+			}
+		case healthArgWarnList, healthArgCritList:
+			a = n.raised(a)
 		case healthArgTid:
 			a = n.tid(a)
 		}
 		out[i] = n.paths(a)
 	}
 	return out
+}
+
+// raised renders a list of the other raised alerts (arguments 24 and 25): each item is `name=<second>`, the second
+// the alert last changed its status (health_notifications.c:337-352), which is the `when` of the entry that change
+// logged. An item prints `name=when(u+k)` when the host's alert log holds an entry of that name with that `when` (the
+// newest one, should the alert have logged two in one second), else as it is. The items' order is the agent's and is
+// compared: alerts that changed in the same second come in the order the agent's sort left them.
+func (n *healthNorm) raised(list string) string {
+	if list == "" {
+		return list
+	}
+	items := strings.Split(list, ",")
+	for i, item := range items {
+		eq := strings.LastIndexByte(item, '=')
+		if eq < 0 {
+			continue
+		}
+		name := item[:eq]
+		when, err := strconv.ParseInt(item[eq+1:], 10, 64)
+		if err != nil {
+			continue
+		}
+		newest := int64(0)
+		for id, e := range n.entries {
+			if e.Name == name && e.When == when && id > newest {
+				newest = id
+			}
+		}
+		if newest != 0 {
+			items[i] = name + "=when(" + n.unique(newest) + ")"
+		}
+	}
+	return strings.Join(items, ",")
 }
 
 // healthCommandRe is a notification's command in a record (the spawn server's, about a call that failed or was
@@ -480,7 +561,8 @@ func (n *healthNorm) healthRows(dump string) []string {
 // prints its unique ids by its alarm ids' base and a health.log's transition ids by their rank; the bases' bound
 // holds the oracle to one base for both. The alert members of a v2 data answer are taken as they are. The health
 // tables print their ids by the same bases and alert_queue's due second as a clock; the unclaimed queue's records are
-// summed.
+// summed. A notification's lists of the other raised alerts print each alert by its entry, its fifteenth argument by
+// the member it equals, a call its descriptors by their kind; the guards on a transcript read it back call by call.
 func TestHealthNorm(t *testing.T) {
 	run := filepath.Join(t.TempDir(), "oracle")
 	blank := func() *healthNorm {
@@ -562,6 +644,157 @@ func TestHealthNorm(t *testing.T) {
 		t.Errorf("command:\n got %s\nwant %s", got, wantRecord)
 	}
 
+	// the lists of the other raised alerts: an item prints by the entry of that alert the log holds at that second (the
+	// newest of two), in the agent's order; an item no entry stands for, and a text that is no item, as they are
+	lists := blank()
+	lists.observe(`[{"unique_id":2000,"alarm_id":600,"name":"x","when":1790000100,"duration":0,"non_clear_duration":0},` +
+		`{"unique_id":2001,"alarm_id":601,"name":"b","when":1790000103,"duration":9,"non_clear_duration":0},` +
+		`{"unique_id":2002,"alarm_id":602,"name":"c","when":1790000103,"duration":4,"non_clear_duration":4},` +
+		`{"unique_id":2003,"alarm_id":601,"name":"b","when":1790000103,"duration":0,"non_clear_duration":0},` +
+		`{"unique_id":2004,"alarm_id":603,"name":"d=e","when":1790000104,"duration":0,"non_clear_duration":0}]`)
+	for name, c := range map[string]struct{ list, want string }{
+		"two in the agent's order":          {"c=1790000103,b=1790000103", "c=when(u+3),b=when(u+4)"},
+		"the other order":                   {"b=1790000103,c=1790000103", "b=when(u+4),c=when(u+3)"},
+		"a second no entry of it has":       {"b=1790000104,x=1790000100", "b=1790000104,x=when(u+1)"},
+		"an alert the log does not hold":    {"zz=1790000103", "zz=1790000103"},
+		"a name with the separator":         {"d=e=1790000104", "d=e=when(u+5)"},
+		"none":                              {"", ""},
+		"no item":                           {"garbage,b=,=1790000103", "garbage,b=,=1790000103"},
+		"a second that is another's member": {"c=1790000100", "c=1790000100"},
+	} {
+		for _, i := range []int{healthArgWarnList, healthArgCritList} {
+			if got := lists.args(argv(map[int]string{healthArgUnique: "2000", i: c.list}))[i]; got != c.want {
+				t.Errorf("a list of raised alerts, %s: argument %d prints %q, want %q", name, i, got, c.want)
+			}
+		}
+	}
+	// argument 15 by the member it equals: the non-clear duration, else the duration (a raised entry of an alert that
+	// repeats); both 0, or neither, as it is
+	for name, c := range map[string]struct{ unique, arg, want string }{
+		"the duration alone":       {"2001", "9", "duration"},
+		"both members are one":     {"2002", "4", "non_clear_duration"},
+		"neither":                  {"2001", "5", "5"},
+		"zero":                     {"2001", "0", "0"},
+		"an entry nobody showed":   {"2009", "9", "9"},
+		"the non-clear one, alone": {"1001", "7", "non_clear_duration"},
+	} {
+		side := lists
+		if c.unique == "1001" {
+			side = n
+		}
+		if got := side.args(argv(map[int]string{healthArgUnique: c.unique, healthArgNonClear: c.arg}))[healthArgNonClear]; got != c.want {
+			t.Errorf("argument 15, %s: prints %q, want %q", name, got, c.want)
+		}
+	}
+
+	// a call: its arguments, its environment, then the directory, the parent, the descriptors it started with (a
+	// pipe and a socket by their kind, a file by its path, the first three with their flags), the rule, what a write to
+	// stdout came to, the end
+	call := notify.Call{Argv: []string{run + "/notify/stub", "root"}, Env: []string{"B=" + run, "A=1"}, Cwd: run + "/etc",
+		ParentComm: "spawn-plugins", Rule: 0, Stdout: "before", StdioFlags: []string{"0 0", "1 01", "2 0102001"},
+		Fds: []string{"0 pipe:[111]", "1 pipe:[222]", "2 " + run + "/log/collector.log", "7 socket:[333]", "9 /dev/null"}}
+	wantCall := []string{"argv[0]={run}/notify/stub", "argv[1]=root", "env A=1", "env B={run}", "cwd {run}/etc", "parent spawn-plugins",
+		"fd 0 pipe flags 0", "fd 1 pipe flags 01", "fd 2 {run}/log/collector.log flags 0102001", "fd 7 socket", "fd 9 /dev/null",
+		"rule 0", "stdout before", "end none"}
+	if got := n.call(call); !slices.Equal(got, wantCall) {
+		t.Errorf("a call:\n got %q\nwant %q", got, wantCall)
+	}
+	call.Fds, call.StdioFlags, call.Stdout, call.End, call.Rule = nil, nil, "", "exit 3", -1
+	if got, want := n.call(call)[4:], []string{"cwd {run}/etc", "parent spawn-plugins", "fd unknown", "rule -1", "end exit 3"}; !slices.Equal(got, want) {
+		t.Errorf("a call without descriptors and without a write:\n got %q\nwant %q", got, want)
+	}
+
+	// a transcript read back for the guards: the calls in its order, each with its arguments and its other lines
+	read := "call 1: argv[0]=x\ncall 1: argv[7]=a\ncall 1: argv[9]=WARNING\ncall 1: argv[15]=0\ncall 1: env A=1\ncall 1: rule -1\n" +
+		"call 1: end exit 0\ncall 2: argv[7]=a\ncall 2: argv[9]=WARNING\ncall 2: argv[15]=duration\ncall 2: env end exit 0\ncall 2: end none"
+	for name, c := range map[string]struct {
+		guard func(string) error
+		ok    bool
+	}{
+		"two calls":                 {healthCallsWant(2), true},
+		"one wanted":                {healthCallsWant(1), false},
+		"three wanted":              {healthCallsWant(3), false},
+		"the second for the status": {healthCallsWant(2, healthCallFor("a", "WARNING", 2, map[int]string{15: "duration"}, "end none")), true},
+		"the first":                 {healthCallsWant(2, healthCallFor("a", "WARNING", 1, map[int]string{15: "0", 0: "x"}, "rule -1", "end exit 0")), true},
+		"another argument":          {healthCallsWant(2, healthCallFor("a", "WARNING", 1, map[int]string{15: "duration"})), false},
+		"an argument it lacks":      {healthCallsWant(2, healthCallFor("a", "WARNING", 2, map[int]string{0: "x"})), false},
+		"a line it lacks":           {healthCallsWant(2, healthCallFor("a", "WARNING", 2, nil, "end exit 0")), false},
+		"a third for the status":    {healthCallsWant(2, healthCallFor("a", "WARNING", 3, nil)), false},
+		"another status":            {healthCallsWant(2, healthCallFor("a", "CLEAR", 1, nil)), false},
+		"another alert":             {healthCallsWant(2, healthCallFor("b", "WARNING", 1, nil)), false},
+		"all ended":                 {healthCallsWant(2, healthCallsEnded(0)), false},
+	} {
+		if err := c.guard(read); (err == nil) != c.ok {
+			t.Errorf("the guard on a transcript, %s: %v", name, err)
+		}
+	}
+	if err := healthCallsWant(1, healthCallsEnded(0))(strings.SplitN(read, "\ncall 2", 2)[0]); err != nil {
+		t.Errorf("the guard on a transcript whose call ended: %v", err)
+	}
+	if none, one := healthCallsWant(0)(""), healthCallsWant(0)(read); none != nil || one == nil {
+		t.Errorf("the guard on a transcript without a call: %v for none, %v for two", none, one)
+	}
+
+	// HEALTH's records about a notification: the wait's, a command that was not run, what was decided for an entry;
+	// not the transition's own record, nor another thread's
+	for record, want := range map[string]bool{
+		`msg="HEALTH: alert notification 'a' (pid 5) is still running past its execution timeout - killing it"`:              true,
+		`msg="HEALTH: alert notification 'a' (pid 5) could not be waited for (status channel error) - killing it"`:           true,
+		`msg="attempted to wait for the execution of alert that has not an execution in progress"`:                           true,
+		`msg="Failed to execute alarm notification"`:                                                                         true,
+		`msg="Failed to format command arguments"`:                                                                           true,
+		`msg="[h]: Sending notification for alarm 'c.a' status WARNING."`:                                                    true,
+		`msg="[h]: Health not sending again notification for alarm 'c.a' status WARNING"`:                                    true,
+		`msg="[h]: Health not sending notification for alarm 'c.a' status CLEAR (it has no-clear-notification enabled)"`:     true,
+		`msg="[h]: Health not sending notification for alarm 'c.a' status WARNING (command API has disabled notifications)"`: true,
+		`msg="[h]: Alert event for [c.a], value [70 things], status [WARNING]."`:                                             false,
+		`msg="Stored and processed 6 sql statements in 207us"`:                                                               false,
+		`msg="a text about Sending notification for alarm"`:                                                                  false,
+	} {
+		if got := healthNotifyRecordRe.MatchString("time=T level=debug thread=HEALTH " + record); got != want {
+			t.Errorf("a record about a notification: %s taken: %v, want %v", record, got, want)
+		}
+	}
+	kept := []string{"daemon.log x " + healthSent + "c.a' status WARNING.", "daemon.log x " + healthSent + "c.b' status CLEAR.",
+		"collector.log child killed by signal 13: /bin/sh"}
+	for name, c := range map[string]struct {
+		want map[string]int
+		ok   bool
+	}{
+		"exact counts":       {map[string]int{healthSent: 2, "killed by signal 13: ": 1, healthNotAgain: 0}, true},
+		"one or more":        {map[string]int{healthSent: -1, "collector.log ": -1}, true},
+		"one too few":        {map[string]int{healthSent: 3}, false},
+		"one that is absent": {map[string]int{healthNotAgain: -1}, false},
+		"one that must not":  {map[string]int{"killed by signal": 0}, false},
+	} {
+		if err := healthRecordsWant(c.want)(kept); (err == nil) != c.ok {
+			t.Errorf("the guard on the records, %s: %v", name, err)
+		}
+	}
+
+	// the entry a load logs for an alert that was notified, in a rendered alert log; a view of one line per entry
+	logged := func(unique, run, status, old string) string {
+		return "{\n\"unique_id\":u+" + unique + ",\n\"processed\":true,\n\"exec_run\":" + run + ",\n\"exec_failed\":false,\n" +
+			"\"exec\":\"{run}/notify/stub\",\n\"source\":\"line=2,file={run}/etc/health.d/parity.conf\",\n\"status\":\"" + status + "\",\n" +
+			"\"old_status\":\"" + old + "\",\n\"delay\":0\n}"
+	}
+	for name, c := range map[string]struct {
+		log  string
+		want int
+	}{
+		"the load's entry":             {"[" + logged("6", "T", "REMOVED", "WARNING") + "," + logged("5", "T", "WARNING", "CLEAR") + "]", 1},
+		"never notified":               {"[" + logged("6", "0", "REMOVED", "WARNING") + "]", 0},
+		"another entry's notification": {"[" + logged("6", "T", "WARNING", "CLEAR") + "," + logged("3", "0", "REMOVED", "WARNING") + "]", 0},
+		"two":                          {"[" + logged("9", "T", "REMOVED", "WARNING") + "," + logged("6", "T", "REMOVED", "WARNING") + "]", 2},
+	} {
+		if got := len(healthLoadedNotifiedRe.FindAllString(c.log, -1)); got != c.want {
+			t.Errorf("the entries a load logged for a notified alert, %s: %d, want %d", name, got, c.want)
+		}
+	}
+	if two, three := healthLogLines(2)("a: x\nb: y"), healthLogLines(3)("a: x\nb: y"); two != nil || three == nil {
+		t.Errorf("the guard on a view's lines: %v for 2, %v for 3", two, three)
+	}
+
 	// an id belongs to the entry that showed it first, and an entry keeps the id it showed first
 	if got, want := n.json("["+entry(1002, tid)+"]"), "["+rendered("u+3", "t+2")+"]"; got != want {
 		t.Errorf("another entry with the first one's id:\n got %s\nwant %s", got, want)
@@ -594,6 +827,40 @@ func TestHealthNorm(t *testing.T) {
 	}
 	if got := n.healthLog(t, d); !slices.Equal(got, wantLog) {
 		t.Errorf("health.log:\n got %q\nwant %q", got, wantLog)
+	}
+
+	// the records about the notifications: HEALTH's of daemon.log, then collector.log's lines that name the side's
+	// notifier directory, with the command rendered; for a case that stops the agents, without the errno and without
+	// the spawn server's
+	killing := `time=2026-10-04T00:00:01.000Z comm=netdata source=daemon level=error errno="110, Connection timed out" tid=7 thread=HEALTH ` +
+		`msg="HEALTH: alert notification 'a' (pid 41) is still running past its execution timeout - killing it"`
+	event := `time=2026-10-04T00:00:01.000Z comm=netdata source=daemon level=debug tid=7 thread=HEALTH msg="[h]: Alert event for [c.a], value [70 things], status [WARNING]."`
+	command := `/bin/sh -c \"exec '` + run + `/notify/stub' 'root' 'h' '1001' '501' '2' '1790000000' 'a'\""`
+	gaveUp := `time=2026-10-04T00:00:01.000Z comm=netdata source=collector level=error errno="125, Operation canceled" tid=7 thread=HEALTH ` +
+		`msg="SPAWN PARENT: giving up waiting for pid 41 after SIGKILL (request No 9) - reclaiming, the child is left running: ` + command
+	reaped := `time=2026-10-04T00:00:01.000Z comm=spawn-plugins source=collector level=warning tid=8  ` +
+		`msg="SPAWN SERVER: child with pid 41 (request 9) killed by signal 9: ` + command
+	shell := "/bin/sh: 1: exec: " + run + "/notify/absent: not found"
+	for file, lines := range map[string][]string{"daemon.log": {event, killing}, "collector.log": {
+		reaped, `time=2026-10-04T00:00:01.000Z comm=spawn-plugins source=collector level=info tid=8  msg="another plugin's record"`, shell, gaveUp}} {
+		if err := os.WriteFile(filepath.Join(run, "log", file), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shown := `/bin/sh -c \"exec '<RUN>/notify/stub' 'root' 'h' 'u+2' 'a+1' '2' 'when' 'a'\""`
+	head := `time=T comm=netdata source=daemon level=error`
+	wantKilling := ` tid=N thread=HEALTH msg="HEALTH: alert notification 'a' (pid P) is still running past its execution timeout - killing it"`
+	wantReaped := `collector.log time=T comm=spawn-plugins source=collector level=warning tid=N  msg="SPAWN SERVER: child with pid P (request R) killed by signal 9: ` + shown
+	wantGaveUp := ` tid=N thread=HEALTH msg="SPAWN PARENT: giving up waiting for pid P after SIGKILL (request R) - reclaiming, the child is left running: ` + shown
+	wantRecords := []string{"daemon.log " + head + ` errno="110, Connection timed out"` + wantKilling, wantReaped,
+		"collector.log /bin/sh: 1: exec: <RUN>/notify/absent: not found",
+		`collector.log time=T comm=netdata source=collector level=error errno="125, Operation canceled"` + wantGaveUp}
+	if got := healthNotifyRecords(t, n, d, false); !slices.Equal(got, wantRecords) {
+		t.Errorf("the records about the notifications:\n got %q\nwant %q", got, wantRecords)
+	}
+	wantRecords = []string{"daemon.log " + head + wantKilling, "collector.log time=T comm=netdata source=collector level=error" + wantGaveUp}
+	if got := healthNotifyRecords(t, n, d, true); !slices.Equal(got, wantRecords) {
+		t.Errorf("the records about the notifications of a case that stops the agents:\n got %q\nwant %q", got, wantRecords)
 	}
 
 	// a transcript: the record files, then the alert log (the ids' names), in the order of the unique ids

@@ -66,7 +66,8 @@ const (
 
 // healthCase is one case of a health check.
 type healthCase struct {
-	// conf is the text of the user health.d file; empty: none
+	// conf is the text of the user health.d file; empty: none. `{run}` in it is each side's run directory (a rule's
+	// `exec` under the side's notifier directory)
 	conf string
 	// files are more files, by path under the run directory: the value is the file's content, healthLink and a target
 	// (relative to the link's directory) for a symbolic link, or healthUnreadable. They are made in path order, the same
@@ -176,16 +177,24 @@ func healthScenario(emit, chart, context string, dims []string, phases ...map[st
 	return &plugin.Scenario{Starts: []plugin.Start{{Steps: append(steps, plugin.Step{Values: v})}}}
 }
 
-// healthPrepare lays out a side's run directory before its agent starts: the health.d file, the case's other files,
-// the notifier with its rules and the management key.
+// healthPrepare lays out a side's run directory before its agent starts: the health.d file (`{run}` in it is the
+// side's run directory), the case's other files, the notifier with its rules and the management key. A rule that
+// names a notifier of its own (`exec`) is refused unless it stays under the side's notifier directory or names a
+// path nothing can be executed under: the rails on netdata.conf do not see a rule's line.
 func healthPrepare(t *testing.T, runDir string, c healthCase, stub string) {
 	t.Helper()
 	dir := filepath.Join(runDir, "etc", "health.d")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if c.conf != "" {
-		if err := os.WriteFile(filepath.Join(dir, healthConfFile), []byte(c.conf), 0o644); err != nil {
+	conf := strings.ReplaceAll(c.conf, "{run}", runDir)
+	for _, text := range append([]string{conf}, slices.Collect(maps.Values(c.files))...) {
+		if err := daemon.ValidateHealthRules(text, notify.Dir(runDir)+"/", "/dev/null/"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if conf != "" {
+		if err := os.WriteFile(filepath.Join(dir, healthConfFile), []byte(conf), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -943,6 +952,9 @@ type healthEntry struct {
 	When     int64  `json:"when"`
 	Duration int64  `json:"duration"`
 	NonClear int64  `json:"non_clear_duration"`
+	// the entry was made while its alert was silenced; the second of the repeat the entry is (0: a change of status)
+	Silenced   bool  `json:"silenced"`
+	LastRepeat int64 `json:"last_repeat"`
 }
 
 // healthBody is a view's body (after the status line).

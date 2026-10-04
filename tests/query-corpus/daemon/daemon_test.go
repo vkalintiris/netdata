@@ -163,7 +163,7 @@ func TestPluginsExtraCannotEnableTemplatePlugins(t *testing.T) {
 
 // Health's rails: HealthOn is the only switch, and it is refused without a notifier script. The netdata.conf an agent
 // would read is what is checked, so no option's text can reopen [health] (C takes a later duplicate of the section and
-// of a key).
+// of a key). A rule's own `exec` may only name a path under the side's notifier directory or one nothing can run.
 func TestHealthOnRails(t *testing.T) {
 	const script = "    script to execute on alarm = {run}/notify/stub\n"
 	const reopen = "[health]\n    enabled = yes\n"
@@ -204,6 +204,44 @@ func TestHealthOnRails(t *testing.T) {
 				t.Errorf("got %v, want an error naming %q", err, c.want)
 			}
 		})
+	}
+
+	// a rule's own notifier: only under the side's notifier directory, or where nothing can be executed
+	rule := func(lines ...string) string {
+		return " alarm: a\n    on: c.a\n  calc: $a\n" + strings.Join(lines, "\n") + "\n  warn: $this > 1\n"
+	}
+	for name, c := range map[string]struct {
+		text string
+		ok   bool
+	}{
+		"no exec":                          {rule(), true},
+		"the stub":                         {rule("  exec: /r/notify/stub"), true},
+		"a name that does not exist":       {rule("  exec: /r/notify/absent"), true},
+		"under the null device":            {rule(`  exec: "/dev/null/x" 'arg'`), true},
+		"the installed notifier":           {rule("  exec: /usr/libexec/netdata/plugins.d/alarm-notify.sh"), false},
+		"another program":                  {rule("  exec: /bin/true"), false},
+		"the key in upper case":            {rule("  EXEC : /bin/true"), false},
+		"quoted":                           {rule(`  exec: "/bin/true"`), false},
+		"a sibling of the directory":       {rule("  exec: /r/notify-other/stub"), false},
+		"a relative name":                  {rule("  exec: notify/stub"), false},
+		"continued on the next line":       {rule("  exec: \\", "/r/notify/stub"), false},
+		"the key before a continued colon": {rule("  exec\\", "  : /bin/true"), false},
+		"a comment ends a continued key":   {rule("  exec\\", "# a comment", "  : /bin/true"), true},
+		"continued at the text's end":      {" alarm: a\n  exec\\\n  : /bin/true", false},
+		"continued under the directory":    {rule("  exec\\", "  : /r/notify/stub"), true},
+		"a key cut in two is another key":  {rule("  ex\\", "ec: /bin/true"), true},
+		"the second rule's":                {rule("  exec: /r/notify/stub") + rule("  exec: /bin/true"), false},
+		"in a comment":                     {rule("# exec: /bin/true"), true},
+		"another key that holds it":        {rule("  info: exec: /bin/true"), true},
+		"another key ending in it":         {rule("  noexec: /bin/true"), true},
+	} {
+		err := ValidateHealthRules(c.text, "/r/notify/", "/dev/null/")
+		if (err == nil) != c.ok {
+			t.Errorf("a rule's exec, %s: %v, want accepted: %v", name, err, c.ok)
+		}
+	}
+	if err := ValidateHealthRules(rule("  exec: /bin/true"), ""); err == nil {
+		t.Errorf("an empty prefix allows every exec")
 	}
 }
 
