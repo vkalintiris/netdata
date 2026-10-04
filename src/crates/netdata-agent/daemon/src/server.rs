@@ -50,6 +50,11 @@ pub struct Shared {
     pub hosts: Arc<Hosts>,
     /// The health plugin's state: the rules and each host's alerts.
     pub health: Arc<netdata_agent_health::Health>,
+    /// The metadata database, for the alert log's endpoints; none when the agent has none. Weak: the exit closes
+    /// the database by letting go of it.
+    pub meta: Option<std::sync::Weak<netdata_agent_metadata::open::MetaDb>>,
+    /// `netdata_configured_user_config_dir`: an alert's edit command names it.
+    pub user_config_dir: String,
     /// The time-grouping SES/DES window limits.
     pub grouping_windows: netdata_agent_query::grouping::Windows,
     /// `get_release_channel()`, reported by `/api/v1/charts`.

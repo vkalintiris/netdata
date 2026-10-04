@@ -1,13 +1,17 @@
-//! The web API's alert endpoints (`src/web/api/v1/api_v1_alarms.c`): the host's alarms, their values and their
-//! count, what an alert on a chart could name, and the trace of one name's lookup. None looks at whether health
-//! is on: a host without alerts answers too.
+//! The web API's alert endpoints (`src/web/api/v1/api_v1_alarms.c`, `src/web/api/v2/api_v2_alert_config.c`): the
+//! host's alarms, their values and their count, its alert log, a rule's configuration, what an alert on a chart
+//! could name, and the trace of one name's lookup. None looks at whether health is on: a host without alerts
+//! answers too.
 
 use netdata_agent_health::api::{
     alarm_count as count_alarms, alarm_count_request, alarm_variables_json, alarms_json, alarms_select,
     alarms_values_json,
 };
+use netdata_agent_health::sql::{ConfigAnswer, LogView, alarm_log_json, alert_config_json};
 use netdata_agent_health::variable::trace_json;
+use netdata_agent_log::netdata_log_error;
 use netdata_agent_rrd::clock::now_realtime_s;
+use netdata_agent_text::parse::strtoul0;
 use netdata_agent_web::status;
 
 use crate::router::{Host, Route};
@@ -19,6 +23,59 @@ pub fn alarms(route: &Route<'_>, host: &Host, query: &[u8]) -> Reply {
     let health = &route.shared.health;
     let alerts = health.host(host);
     json_reply(alarms_json(host, health.config(), alerts.as_deref(), alarms_select(query), now_realtime_s()))
+}
+
+/// `api_v1_alarm_log()`: the host's alert log as the table has it: the entries above the unique id `after` (read as
+/// `strtoul(value, NULL, 0)` reads it; the last one given counts), of the chart `chart` when one is named, at most
+/// the host's limit, which is 0 before its first health pass. Always 200: without a database, or when the
+/// statement cannot be prepared, the body is empty.
+pub fn alarm_log(route: &Route<'_>, host: &Host, query: &[u8]) -> Reply {
+    let (mut after, mut chart) = (0, None);
+    for (name, value) in parameters(query) {
+        match name {
+            b"after" => after = strtoul0(value).0 as i64,
+            b"chart" => chart = Some(value),
+            _ => {}
+        }
+    }
+    let shared = route.shared;
+    let Some(meta) = &shared.meta else {
+        crate::meta_store::no_database("sql_health_alarm_log2json");
+        netdata_log_error!("Failed to prepare statement SQL_SELECT_HEALTH_LOG");
+        return json_reply(Vec::new());
+    };
+    let (Some(meta), Some(host_id)) = (meta.upgrade(), crate::meta_store::host_id(host)) else {
+        return json_reply(Vec::new());
+    };
+    let (info, localhost) = (host.info(), shared.hosts.localhost().info());
+    let (default_exec, default_recipient) = shared.health.host_defaults(host);
+    let view = LogView {
+        hostname: info.hostname.as_bytes(),
+        utc_offset: info.utc_offset,
+        abbrev_timezone: info.abbrev_timezone.as_bytes(),
+        default_exec,
+        default_recipient,
+        user_config_dir: shared.user_config_dir.as_bytes(),
+        registry_hostname: localhost.registry_hostname.as_bytes(),
+    };
+    let limit = shared.health.host(host).map_or(0, |alerts| alerts.log_max());
+    json_reply(alarm_log_json(&meta, &host_id, &view, after, chart, limit))
+}
+
+/// `api_v2_alert_config()`, also `/api/v3/alert_config`: the rule whose hash `config` names (the last one given),
+/// as its row of `alert_hash` has it, with localhost's default recipient where the rule names none.
+pub fn alert_config(route: &Route<'_>, _: &Host, query: &[u8]) -> Reply {
+    let Some((_, config)) = parameters(query).filter(|(name, _)| *name == b"config").last() else {
+        return Reply::text(status::BAD_REQUEST, "A config hash ID is required. Add ?config=UUID query param");
+    };
+    let shared = route.shared;
+    let meta = shared.meta.as_ref().and_then(std::sync::Weak::upgrade);
+    let recipient = shared.health.host_defaults(shared.hosts.localhost()).1;
+    match alert_config_json(meta.as_deref(), config, recipient) {
+        ConfigAnswer::Found(body) => json_reply(body),
+        ConfigAnswer::NotFound => Reply::text(status::NOT_FOUND, "Config is not found."),
+        ConfigAnswer::Failed => Reply::text(status::INTERNAL_SERVER_ERROR, "Failed to execute SQL query."),
+    }
 }
 
 /// `api_v1_alarms_values()`.

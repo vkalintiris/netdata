@@ -134,7 +134,14 @@ const API_V1: &[Command] = &[
         allow_subpaths: false,
         callback: functions::list,
     },
-    // alerts: the alert log's endpoints come with its tables
+    // alerts
+    Command {
+        name: "alarm_log",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: health_api::alarm_log,
+    },
     Command {
         name: "alarms",
         acl: acl::bits::ALERTS,
@@ -197,6 +204,13 @@ const API_V2: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |route, _, query| data::v23(route, query, 2),
+    },
+    Command {
+        name: "alert_config",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: health_api::alert_config,
     },
     Command {
         name: "info",
@@ -265,6 +279,13 @@ const API_V3: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: |route, _, query| data::v23(route, query, 3),
+    },
+    Command {
+        name: "alert_config",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: health_api::alert_config,
     },
     Command {
         name: "context",
@@ -562,6 +583,8 @@ mod tests {
             first_request_timeout_s: 60,
             idle_timeout_s: 60,
             health: netdata_agent_health::Health::init(Default::default(), Box::new(|_| {})),
+            meta: None,
+            user_config_dir: "/etc/netdata".into(),
             grouping_windows: Default::default(),
             release_channel: "nightly",
             netdata_conf: Default::default(),
@@ -1001,6 +1024,135 @@ mod tests {
         assert!(host.charts().free_if(&chart, |_| true));
         assert!(s.health.host(host).unwrap().alerts().is_empty());
         assert!(body("/api/v1/charts", "").contains("\"alarms_count\":0,"));
+    }
+
+    /// `/api/v1/alarm_log` and `/api/v2|v3/alert_config` over the metadata database. The alert log: always 200; an
+    /// empty body without a database; the empty array for a host whose health never ran (its limit is 0); then the
+    /// host's entries above `after`, which is read as C's `strtoul(.., 0)` reads it and of which the last one given
+    /// counts, and of the chart named. A rule's configuration: 400 without `config`, 500 without a database, 404
+    /// for a hash no rule has and for a text that is no hash, else the rule, by its hash in any case and without
+    /// dashes too; the last `config` counts, and the name is case-sensitive.
+    #[test]
+    fn the_alert_log_and_a_rule_s_configuration_come_from_the_table() {
+        use netdata_agent_metadata::health_log::EntryRow;
+        use netdata_agent_metadata::open::MetaDb;
+        let ask = |s: &Shared, path: &str, query: &str| {
+            let mut req = Request::default();
+            req.path = path.as_bytes().to_vec();
+            req.url_as_received = path.as_bytes().to_vec();
+            req.query = query.as_bytes().to_vec();
+            let ctx = crate::access_log::RequestContext::default();
+            let all = acl::bits::TRANSPORTS | acl::bits::ALL_LISTENER_FEATURES;
+            let reply = process_request(&req, b"", all, s, Instant::now(), &ctx, &|_| false);
+            (reply.code, reply.content_type, String::from_utf8(reply.body).unwrap())
+        };
+        let (json, text) = (ContentType::ApplicationJson, ContentType::TextPlain);
+        let no_config = "A config hash ID is required. Add ?config=UUID query param";
+
+        // no database
+        let s = shared();
+        assert_eq!(ask(&s, "/api/v1/alarm_log", ""), (status::OK, json, String::new()));
+        assert_eq!(ask(&s, "/api/v2/alert_config", ""), (status::BAD_REQUEST, text, no_config.to_owned()));
+        let failed = (status::INTERNAL_SERVER_ERROR, text, "Failed to execute SQL query.".to_owned());
+        assert_eq!(ask(&s, "/api/v2/alert_config", "?config=aa"), failed);
+
+        // a database with one rule and one entry of localhost's
+        let dir = tempfile::tempdir().unwrap();
+        let meta = Arc::new(MetaDb::open(dir.path(), &Default::default()).unwrap());
+        let s = Shared { meta: Some(Arc::downgrade(&meta)), ..shared() };
+        let host = s.hosts.localhost();
+        let host_id = crate::meta_store::host_id(host).unwrap();
+        let mut rule = netdata_agent_health::prototype::Rule::default();
+        rule.config.hash_id = [0xab; 16];
+        rule.config.name = Some(b"an_alarm".to_vec());
+        assert!(meta.store_alert_config(&netdata_agent_health::store::alert_hash_row(&rule)));
+        let entry = EntryRow {
+            unique_id: 5,
+            alarm_id: 7,
+            alarm_event_id: 1,
+            config_hash_id: &[0xab; 16],
+            transition_id: &[0x11; 16],
+            updated_by_id: 0,
+            updates_id: 0,
+            when: 1_700_000_000,
+            duration: 0,
+            non_clear_duration: 0,
+            flags: 1,
+            exec_run_timestamp: 0,
+            delay_up_to_timestamp: 1_700_000_000,
+            name: Some(b"an_alarm"),
+            chart: Some(b"t.c"),
+            chart_context: Some(b"t.ctx"),
+            chart_name: Some(b"t.c"),
+            exec: None,
+            recipient: None,
+            units: Some(b"things"),
+            info: None,
+            summary: None,
+            exec_code: 0,
+            new_status: 1,
+            old_status: 0,
+            delay: 0,
+            new_value: 12.0,
+            old_value: f64::NAN,
+            last_repeat: 0,
+            global_id: 5,
+        };
+        assert!(meta.health_alarm_log_insert(&host.hostname(), &host_id, &entry, false));
+
+        // health never ran for the host: its limit is 0
+        assert_eq!(ask(&s, "/api/v1/alarm_log", ""), (status::OK, json, "\n    []\n".to_owned()));
+        // its first pass sets the limit
+        s.health.host_link(host, &|| 1_700_000_100, &|| true);
+        let log = |query: &str| {
+            let (code, content_type, body) = ask(&s, "/api/v1/alarm_log", query);
+            assert_eq!((code, content_type), (status::OK, json), "{query}");
+            body
+        };
+        let whole = log("");
+        for member in ["\"unique_id\":5,", "\"name\":\"an_alarm\",", "\"status\":\"CLEAR\",", "\"value\":12,"] {
+            assert!(whole.contains(member), "{member} in {whole}");
+        }
+        assert!(whole.contains("\"old_value_string\":\"-\",") && whole.contains("\"old_value\":null"), "{whole}");
+        let empty = "\n    []\n";
+        for (query, has_it) in [
+            ("?after=4", true),
+            ("?after=5", false),
+            ("?after=0x4", true),
+            ("?after=0x5", false),
+            ("?after=04", true),
+            ("?after=010", false),
+            ("?after=9&after=4", true),
+            ("?after=4&after=", true),
+            ("?chart=t.c", true),
+            ("?chart=t.other", false),
+            ("?chart=t.c&after=5", false),
+            ("?AFTER=5", true),
+        ] {
+            assert_eq!(log(query) != empty, has_it, "{query}");
+        }
+
+        let config = |version: &str, query: &str| ask(&s, &format!("/api/{version}/alert_config"), query);
+        let missing = (status::NOT_FOUND, text, "Config is not found.".to_owned());
+        assert_eq!(config("v2", "?config=5a1e0000-0000-4000-8000-00000000dead"), missing);
+        assert_eq!(config("v3", "?config=nonsense"), missing);
+        let hash = "abababab-abab-abab-abab-abababababab";
+        let (upper, undashed) = (hash.to_uppercase(), hash.replace('-', ""));
+        for (version, query) in [
+            ("v2", format!("?config={hash}")),
+            ("v3", format!("?config={upper}")),
+            ("v2", format!("?config={undashed}")),
+            ("v2", format!("?config=nonsense&config={hash}")),
+            ("v3", format!("?config={hash}&config=")),
+        ] {
+            let (code, content_type, body) = config(version, &query);
+            assert_eq!((code, content_type), (status::OK, json), "{query}: {body}");
+            assert!(body.contains(&format!("\"config_hash_id\":\"{hash}\"")), "{query}: {body}");
+            assert!(body.contains("\"name\":\"an_alarm\",") && body.contains("\"to\":\"root\","), "{body}");
+        }
+        for query in ["", "?config=", &format!("?CONFIG={hash}")] {
+            assert_eq!(config("v2", query), (status::BAD_REQUEST, text, no_config.to_owned()), "{query}");
+        }
     }
 
     #[test]

@@ -179,6 +179,29 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 MetaDb::check(std::path::Path::new(&conf.dirs.cache), check);
                 return 0;
             }
+            // sql_alert_cleanup(): the metadata database is opened as the agent opens it (in the cache directory
+            // known so far), then every host of its table `host` loses the alarms of charts it no longer has; 0
+            // whatever happened
+            Opt::WithArg(b'W', v) if v == b"sqlite-alert-cleanup" => {
+                use netdata_agent_log::netdata_log_error;
+                use netdata_agent_metadata::open::MetaDb;
+                let sqlite = conf::sqlite_settings(&mut conf.netdata);
+                let Some(meta) = MetaDb::open(std::path::Path::new(&conf.dirs.cache), &sqlite) else {
+                    netdata_log_error!("Failed to open database");
+                    return 0;
+                };
+                netdata_log_info!("Alert cleanup running ...");
+                let checking = |host_id: &[u8; 16], hostname: &str| {
+                    let guid = uuid::Uuid::from_bytes(*host_id).hyphenated();
+                    netdata_log_info!("Checking host {guid} ({hostname})");
+                };
+                if meta.alert_cleanup(checking) {
+                    netdata_log_info!("Alert cleanup done");
+                } else {
+                    netdata_log_error!("Failed to check host alerts");
+                }
+                return 0;
+            }
             Opt::WithArg(b'W', v) if v == b"simple-pattern" => {
                 let Some(words) = options.take_words(2) else {
                     out(&mut std::io::stderr(), cli::SIMPLE_PATTERN_USAGE.as_bytes());
@@ -910,6 +933,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         web_dir: conf.dirs.web.clone(),
         hosts: Arc::clone(&hosts),
         health: Arc::clone(&health),
+        meta: meta.as_ref().map(Arc::downgrade),
+        user_config_dir: conf.dirs.user_config.clone(),
         grouping_windows,
         release_channel,
         // Every startup read is done: from here on netdata.conf is read and dumped under its lock.
