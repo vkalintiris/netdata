@@ -317,6 +317,11 @@ impl Labels {
         LabelsMatch::Pattern(SimplePatternResult::NotMatched)
     }
 
+    /// `rrdlabels_common_count(self, other)`: the labels of `other` this set holds with the same name and value.
+    pub fn common_count(&self, other: &Labels) -> usize {
+        other.labels.iter().filter(|label| self.get(&label.name) == Some(&label.value[..])).count()
+    }
+
     /// `rrdlabels_to_buffer_json_members()`.
     pub fn to_json_members(&self, w: &mut JsonWriter) {
         for label in &self.labels {
@@ -343,7 +348,67 @@ impl Labels {
 
 #[cfg(test)]
 mod tests {
+    use netdata_agent_text::simple_pattern::{Separators, SimplePatternMode};
+
     use super::*;
+
+    fn exact(pattern: &str) -> SimplePattern {
+        SimplePattern::new(pattern.as_bytes(), Separators::Whitespace, SimplePatternMode::Exact, true)
+    }
+
+    /// `pattern_array_label_match()`: every key needs a positive match, and per key the first pattern that says
+    /// anything decides.
+    #[test]
+    fn a_pattern_array_goes_by_the_first_decisive_pattern_of_each_key() {
+        let mut labels = Labels::default();
+        labels.add(b"a", b"b", SRC_CONFIG);
+        labels.add(b"c", b"d", SRC_CONFIG);
+        let array = |patterns: &[(&str, &str)]| {
+            let mut array = PatternArray::default();
+            for (key, pattern) in patterns {
+                array.add(key.as_bytes(), exact(pattern));
+            }
+            array
+        };
+        let cases: [(&[(&str, &str)], bool); 9] = [
+            (&[], true),
+            (&[("a", "a=b")], true),
+            (&[("a", "a=x")], false),
+            // a miss, then a hit
+            (&[("a", "a=x"), ("a", "a=b")], true),
+            // the negative one comes first and decides; after a positive one it is not reached
+            (&[("a", "!a=b"), ("a", "a=b")], false),
+            (&[("a", "a=b"), ("a", "!a=b")], true),
+            // every key must match
+            (&[("a", "a=b"), ("c", "c=x")], false),
+            (&[("a", "a=b"), ("c", "c=d")], true),
+            // a pattern that matches a label's name alone is no positive match
+            (&[("a", "a")], false),
+        ];
+        for (patterns, expected) in cases {
+            assert_eq!(array(patterns).label_match(&labels, b'='), expected, "{patterns:?}");
+        }
+        assert!(array(&[]).is_empty() && !array(&[("a", "a=b")]).is_empty());
+    }
+
+    /// `rrdlabels_common_count()`: the labels of the other set this one holds with the same name and value.
+    #[test]
+    fn common_count_counts_equal_pairs() {
+        let set = |pairs: &[(&str, &str)]| {
+            let mut labels = Labels::default();
+            for (name, value) in pairs {
+                labels.add(name.as_bytes(), value.as_bytes(), SRC_CONFIG);
+            }
+            labels
+        };
+        let a = set(&[("os", "linux"), ("disk", "sda"), ("only_a", "1")]);
+        let b = set(&[("os", "linux"), ("disk", "sdb"), ("only_b", "1")]);
+        assert_eq!(a.common_count(&b), 1);
+        assert_eq!(b.common_count(&a), 1);
+        assert_eq!(a.common_count(&a), 3);
+        assert_eq!(a.common_count(&Labels::default()), 0);
+        assert_eq!(Labels::default().common_count(&a), 0);
+    }
 
     /// `rrdlabels_copy()`: the source's labels join this set with their sources, replacing the ones of the same
     /// name and keeping the others; a pair already here is only re-marked.

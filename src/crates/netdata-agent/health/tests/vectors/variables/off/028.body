@@ -1,0 +1,13 @@
+{
+    "variable":"cv",
+    "instance":"hv.a",
+    "context":"hv.ctx",
+    "found":true,
+    "value":55,
+    "source":{
+        "description":"host variable",
+        "instance":"hv.a",
+        "context":"hv.ctx",
+        "candidates":1
+    }
+}

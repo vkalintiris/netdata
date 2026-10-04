@@ -23,6 +23,13 @@ Rebuild them from a netdata checkout that has a CMake build (gcc, glibc, x86-64)
 NETDATA_SRC=/path/to/netdata NETDATA_BUILD=/path/to/netdata/build tests/oracle/gen-health-vectors.sh
 ```
 
+`../vectors/variables/` is not made by these programs: it holds answers of the running C agent, recorded by the
+parity harness's check `health.variables` (`tests/parity/health_variables_test.go`), once with health off and once
+with two linked rules. Each case has its `index.tsv` (file, HTTP status, content type, request), the bodies as C sent
+them, and under `inputs/` what the agent was fed (the plugin's lines, the rules, the `[health]` section). The wall
+clock is in some bodies (`after`, `before`, `now`, a collected chart's `last_collected_t`); the unit tests of
+`src/variable.rs` and `src/api.rs` build the same host and read those seconds from each body.
+
 `NETDATA_BUILD` defaults to `$NETDATA_SRC/build`. The program runs in the crate's directory and names every file by a
 path relative to it, as `cargo test` does: a path is part of each rule's source and of the records. The columns of
 each file are in its header and at the top of the program that writes it; the field encoding is

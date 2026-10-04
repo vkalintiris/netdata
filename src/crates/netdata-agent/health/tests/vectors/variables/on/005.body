@@ -1,0 +1,13 @@
+{
+    "variable":"hv_same",
+    "instance":"hv.c",
+    "context":"hv.ctx",
+    "found":true,
+    "value":null,
+    "source":{
+        "description":"alarm value",
+        "instance":"hv.c",
+        "context":"hv.ctx",
+        "candidates":3
+    }
+}

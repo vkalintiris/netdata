@@ -1,0 +1,13 @@
+{
+    "variable":"a",
+    "instance":"hv.a",
+    "context":"hv.ctx",
+    "found":true,
+    "value":10,
+    "source":{
+        "description":"last stored value of dimension",
+        "instance":"hv.a",
+        "context":"hv.ctx",
+        "candidates":1
+    }
+}

@@ -271,18 +271,21 @@ mod tests {
         let (d1, _) = chart.dim_add("d1", None, 1, 1, Algorithm::Absolute);
         chart.dim_add("d2", None, 1, 1, Algorithm::Absolute);
         let now = now_realtime_s();
+        // the sweep's bits of the host's pending word: the chart's definition left health's there
+        let pending = || child.pending_flags() & pending_flags::OBSOLETE;
         chart.dim_is_obsolete(&d1);
         run(&hosts, None, now);
         assert!(d1.is_freed() && chart.dim("d1").is_none() && chart.dim("d2").is_some());
-        assert_eq!(child.pending_flags(), 0, "all done");
+        assert_eq!(pending(), 0, "all done");
+        assert_ne!(child.pending_flags() & pending_flags::HEALTH, 0, "the sweep leaves health's bits");
         assert!(hosts.storage().db_rotation().due(u64::MAX).is_some(), "a deep pass asked for");
         chart.is_obsolete(&child);
         run(&hosts, None, now);
         assert!(!chart.is_freed(), "accessed within the time");
-        assert_eq!(child.pending_flags(), pending_flags::OBSOLETE_CHARTS, "kept for the next sweep");
+        assert_eq!(pending(), pending_flags::OBSOLETE_CHARTS, "kept for the next sweep");
         run(&hosts, None, now + 11);
         assert!(chart.is_freed() && child.charts().find("t.c", true).is_none());
-        assert_eq!(child.pending_flags(), 0);
+        assert_eq!(pending(), 0);
     }
 
     /// A sweep that found the chart obsolete frees none of its dimensions once a revive cleared the flag (a CHART

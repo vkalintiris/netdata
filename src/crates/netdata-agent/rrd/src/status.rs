@@ -135,6 +135,15 @@ pub struct HostStatus {
 }
 
 impl Host {
+    /// `rrdhost_should_run_health()`: health is enabled for the host, its collector is online, it is no orphan and
+    /// it ingests data now. A host without a metric is not online in that sense, so an empty one has no pass.
+    pub fn should_run_health(&self, now: i64) -> bool {
+        self.info().health_enabled
+            && self.collector_online()
+            && !self.is_orphan()
+            && self.status_basic(now).ingest_status == IngestStatus::Online
+    }
+
     /// `rrdhost_status(host, now, &s, RRDHOST_STATUS_BASIC)`: a host that is not online is archived when no receiver
     /// attached to it since the agent started (one loaded from the metadata database), else offline.
     pub fn status_basic(&self, now: i64) -> HostStatus {

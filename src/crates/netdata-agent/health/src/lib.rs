@@ -1,30 +1,47 @@
 //! Health: alerts (C: `src/health/`).
 //!
-//! The crate grows with milestone 9. So far it holds the configuration path: the `health.d` reader
-//! (`health_config.c`), the prototype store and its validation (`health_prototypes.c`), the JSON a rule's hash is
-//! made of (`health_dyncfg.c`) and the hash. `tests/oracle/` runs C's own reader, store and hash over
-//! `tests/corpus/` and the stock files, and C's unit tables, into the vectors under `tests/vectors/` that this
-//! code is written against.
+//! The crate grows with milestone 9. So far it holds:
+//! - the configuration path: the `health.d` reader (`health_config.c`), the prototype store and its validation
+//!   (`health_prototypes.c`), the JSON a rule's hash is made of (`health_dyncfg.c`) and the hash;
+//! - linking: which rule goes to which chart ([`matching`]), a host's alerts ([`alerts`], `rrdcalc.c`), and the
+//!   steps of a host's health pass that link them ([`link`]);
+//! - the variables an alert can name ([`variable`], `health_variable.c`) and what the web API shows of both
+//!   ([`api`]).
+//!
+//! Alerts are linked and not evaluated yet: the loop, the alert log and the notifications follow.
+//!
+//! `tests/oracle/` runs C's own reader, store, hash and matcher over `tests/corpus/` and the stock files, and C's
+//! unit tables, into the vectors under `tests/vectors/` that this code is written against;
+//! `tests/vectors/variables/` holds answers recorded from the running C agent.
 
 #![forbid(unsafe_code)]
 
 pub mod alert;
+pub mod alerts;
+pub mod api;
 pub mod config;
 pub mod expr;
 pub mod hash;
 pub mod json;
 pub mod keywords;
+pub mod link;
 pub mod matching;
 pub mod prototype;
 pub mod readfile;
 pub mod store;
+pub mod template;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod tables;
+pub mod variable;
 
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard};
 
 use netdata_agent_inicfg::paths::recursive_config_double_dir_load;
 use netdata_agent_log::netdata_log_error_errno;
 
+use alerts::HostAlerts;
 use config::HealthConfig;
 use keywords::lossy;
 use prototype::{Prototypes, Rule};
@@ -46,16 +63,23 @@ pub struct Health {
     config: HealthConfig,
     prototypes: RwLock<Prototypes>,
     store: StoreSink,
+    /// Each host's alerts, by machine GUID, from the host's first health pass on.
+    hosts: Mutex<HashMap<String, Arc<HostAlerts>>>,
 }
 
 impl Health {
     /// `health_plugin_init()` up to the load: an empty store.
     pub fn init(config: HealthConfig, store: StoreSink) -> Arc<Health> {
-        Arc::new(Health { config, prototypes: RwLock::new(Prototypes::default()), store })
+        Arc::new(Health { config, prototypes: RwLock::new(Prototypes::default()), store, hosts: Mutex::default() })
     }
 
     pub fn config(&self) -> &HealthConfig {
         &self.config
+    }
+
+    /// Taken to find or insert a host's alerts, never held across anything else.
+    fn hosts(&self) -> MutexGuard<'_, HashMap<String, Arc<HostAlerts>>> {
+        self.hosts.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub fn prototypes(&self) -> RwLockReadGuard<'_, Prototypes> {

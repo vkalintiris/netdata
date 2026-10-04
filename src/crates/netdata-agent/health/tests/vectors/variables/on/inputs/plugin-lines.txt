@@ -1,0 +1,29 @@
+CHART hv.b bname 'title' 'units' 'family' 'hv.ctx' line 1000 5 '' '' ''
+DIMENSION a '' absolute 1 1
+CLABEL kind x 1
+CLABEL_COMMIT
+VARIABLE CHART cv = 7
+VARIABLE CHART cv_raw = 8
+VARIABLE CHART hv.b.dv = 9
+VARIABLE CHART a = 6
+VARIABLE CHART c+v = 4
+CHART hv.c '' 'title' 'units' 'family' 'hv.ctx' line 1000 1 '' '' ''
+DIMENSION a aname absolute 1 1
+DIMENSION p.q '' absolute 1 1
+CLABEL kind y 1
+CLABEL_COMMIT
+CHART hv.d '' 'title' 'units' 'family' '' line 1000 1 '' '' ''
+DIMENSION a '' absolute 1 1
+CHART hv.e '' 'title' 'units' 'family' 'hvflat' line 1000 1 '' '' ''
+DIMENSION a '' absolute 1 1
+VARIABLE HOST hvh = 5
+VARIABLE HOST cv = 55
+VARIABLE HOST status = 77
+CHART hv.a '' 'title' 'units' 'family' 'hv.ctx' line 1000 1 '' '' ''
+DIMENSION a '' absolute 1 1
+DIMENSION b '' absolute 1 1
+# then, once per whole second S until the stop:
+BEGIN hv.a
+SET a = 10
+SET b = 20
+END S 0

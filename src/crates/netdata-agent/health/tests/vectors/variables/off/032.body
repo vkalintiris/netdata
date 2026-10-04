@@ -1,0 +1,13 @@
+{
+    "variable":"cv_raw",
+    "instance":"hv.b",
+    "context":"hv.ctx",
+    "found":true,
+    "value":8,
+    "source":{
+        "description":"chart variable",
+        "instance":"hv.b",
+        "context":"hv.ctx",
+        "candidates":1
+    }
+}

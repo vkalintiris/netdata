@@ -361,11 +361,21 @@ pub enum Claim {
     Stuck,
 }
 
-/// The host flags its maintenance reads (`RRDHOST_FLAG_PENDING_OBSOLETE_*`): some chart or dimension turned obsolete
-/// since the last sweep.
+/// The host's `RRDHOST_FLAG_PENDING_*`: what its maintenance sweep reads (some chart or dimension turned obsolete
+/// since the last one) and what its health pass reads (charts to give their alerts).
 pub mod pending_flags {
     pub const OBSOLETE_CHARTS: u32 = 1 << 0;
     pub const OBSOLETE_DIMENSIONS: u32 = 1 << 1;
+    /// `RRDHOST_FLAG_PENDING_HEALTH_INITIALIZATION`: some chart of the host carries a pending health flag.
+    pub const HEALTH_INITIALIZATION: u32 = 1 << 2;
+    /// `RRDHOST_FLAG_PENDING_LABEL_RECHECK`: the host's labels changed (or were loaded again): every chart's alerts
+    /// are matched again.
+    pub const LABEL_RECHECK: u32 = 1 << 3;
+
+    /// The maintenance sweep's bits.
+    pub const OBSOLETE: u32 = OBSOLETE_CHARTS | OBSOLETE_DIMENSIONS;
+    /// The health pass's bits.
+    pub const HEALTH: u32 = HEALTH_INITIALIZATION | LABEL_RECHECK;
 }
 
 /// `RRDHOST_FLAG_STREAM_SENDER_*` and `RRDHOST_FLAG_GLOBAL_FUNCTIONS_UPDATED`: the sender's state as the collectors
@@ -1024,6 +1034,11 @@ impl Host {
         self.variables.all()
     }
 
+    /// `rrdvar_get_custom_host_variable_value()`.
+    pub fn variable(&self, name: &[u8]) -> Option<f64> {
+        self.variables.get(name)
+    }
+
     /// `host->rrdset_root_index`.
     pub fn charts(&self) -> &Charts {
         &self.charts
@@ -1118,7 +1133,18 @@ impl Host {
 
     /// Takes the `pending_flags` its charts raised, for a maintenance sweep.
     pub fn take_pending_flags(&self) -> u32 {
-        self.pending_flags.swap(0, Ordering::AcqRel)
+        self.pending_flags.fetch_and(!pending_flags::OBSOLETE, Ordering::AcqRel) & pending_flags::OBSOLETE
+    }
+
+    /// Takes the host's two health flags in one step (`rrdhost_flag_set_and_clear()` in
+    /// `health_execute_delayed_initializations()`), so that one raised meanwhile is kept for the next pass.
+    pub fn take_health_pending(&self) -> u32 {
+        self.pending_flags.fetch_and(!pending_flags::HEALTH, Ordering::AcqRel) & pending_flags::HEALTH
+    }
+
+    /// `rrdhost_flag_set(host, RRDHOST_FLAG_PENDING_LABEL_RECHECK)`: the host's labels were set again.
+    pub fn raise_label_recheck(&self) {
+        self.pending_flags.fetch_or(pending_flags::LABEL_RECHECK, Ordering::AcqRel);
     }
 
     /// Raises `pending_flags` again: a sweep left work for the next one.
@@ -1127,7 +1153,7 @@ impl Host {
     }
 
     /// `rrdhost_set_health_evloop_iteration()`.
-    fn stamp_health_iteration(&self) {
+    pub fn stamp_health_iteration(&self) {
         self.health_last_iteration
             .store(self.storage().health_iteration(), Ordering::Relaxed);
     }
@@ -3191,6 +3217,44 @@ mod tests {
         assert_eq!(db_status(&host), DbStatus::Initializing);
         host.clear_pending_context_load();
         assert_eq!(db_status(&host), DbStatus::Queryable);
+    }
+
+    /// `rrdhost_should_run_health()`: health enabled for the host, its collector online, no orphan, and its ingestion
+    /// online, which a host without a stored metric is not.
+    #[test]
+    fn health_runs_for_an_enabled_host_that_is_collected() {
+        let enabled = |name: &str| HostInfo { health_enabled: true, ..info(name) };
+        let collect = |host: &Host| {
+            let chart = collected_chart(host, DbMode::Ram);
+            let (dim, _) = chart.dim_add("d", None, 1, 1, crate::chart::Algorithm::Absolute);
+            store(&dim, T0, 1.0);
+            crate::contexts::collected_rrdset(&chart);
+            host.contexts().worker_cycle();
+        };
+
+        let localhost = Host::new("guid-l", true, enabled("l"));
+        assert!(!localhost.should_run_health(T0), "an empty database is initializing");
+        collect(&localhost);
+        assert!(localhost.should_run_health(T0));
+
+        let off = Host::new("guid-o", true, info("o"));
+        collect(&off);
+        assert!(!off.should_run_health(T0), "health is off for the host");
+
+        // a vnode is local, so its ingestion is online whatever its two flags say: they are asked for themselves
+        let vnode = Host::new("guid-v", false, enabled("v"));
+        vnode.set_virtual();
+        collect(&vnode);
+        assert!(!vnode.should_run_health(T0), "its collector is not online");
+        vnode.set_collector_online();
+        assert!(vnode.should_run_health(T0));
+        vnode.orphan.store(true, Ordering::Release);
+        assert!(!vnode.should_run_health(T0), "an orphan");
+
+        // a child whose collector is not online is not ingesting
+        let child = Host::new("guid-c", false, enabled("c"));
+        collect(&child);
+        assert!(!child.should_run_health(T0));
     }
 
     /// `pulse_rrd_memory_size`: a ram dimension's ring counts from its creation until the dimension is dropped with its

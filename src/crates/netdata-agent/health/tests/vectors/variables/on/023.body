@@ -1,0 +1,13 @@
+{
+    "variable":"CRITICAL",
+    "instance":"hv.a",
+    "context":"hv.ctx",
+    "found":true,
+    "value":4,
+    "source":{
+        "description":"critical status constant",
+        "instance":"hv.a",
+        "context":"hv.ctx",
+        "candidates":1
+    }
+}

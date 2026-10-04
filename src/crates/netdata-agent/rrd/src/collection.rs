@@ -131,13 +131,6 @@ fn collected_as_double(d: &DimCollection, is_float: bool) -> f64 {
     }
 }
 
-fn last_collected_as_double(d: &DimCollection, is_float: bool) -> f64 {
-    if is_float {
-        d.last_collected_value_float
-    } else {
-        d.last_collected_value as f64
-    }
-}
 
 /// `rrdset_timed_done()`: turns the values collected since the last call into stored points on the update grid,
 /// interpolating between collections, and streams them when the host streams (the gate first, before the clock
@@ -268,7 +261,7 @@ pub fn timed_done(
         let is_float = m.flags & dim_flags::FLOAT != 0;
         dim.update_collection(|d| {
             if m.algorithm == Algorithm::PcentOverDiffTotal
-                && last_collected_as_double(d, is_float) > collected_as_double(d, is_float)
+                && d.last_collected_as_double(is_float) > collected_as_double(d, is_float)
             {
                 if m.flags & dim_flags::DONT_DETECT_RESETS_OR_OVERFLOWS == 0 {
                     reset_or_overflow[i] = true;
@@ -279,7 +272,7 @@ pub fn timed_done(
                     d.last_collected_value = d.collected_value;
                 }
             }
-            last_collected_total += last_collected_as_double(d, is_float);
+            last_collected_total += d.last_collected_as_double(is_float);
             collected_total += collected_as_double(d, is_float);
         });
         if m.flags & dim_flags::OBSOLETE != 0 {
@@ -339,7 +332,7 @@ pub fn timed_done(
                                 (new.wrapping_sub(last) as i64) as f64 * mul / div;
                         }
                     } else {
-                        let last = last_collected_as_double(d, true);
+                        let last = d.last_collected_as_double(true);
                         let cur = collected_as_double(d, true);
                         if cur < last {
                             if m.flags & dim_flags::DONT_DETECT_RESETS_OR_OVERFLOWS == 0 {
@@ -360,7 +353,7 @@ pub fn timed_done(
                     } else {
                         100.0
                             * (collected_as_double(d, is_float)
-                                - last_collected_as_double(d, is_float))
+                                - d.last_collected_as_double(is_float))
                             / (collected_total - last_collected_total)
                     };
                 }

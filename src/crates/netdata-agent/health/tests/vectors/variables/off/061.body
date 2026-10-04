@@ -1,0 +1,38 @@
+{
+    "id":"hv.a",
+    "name":"hv.a",
+    "type":"hv",
+    "family":"family",
+    "context":"hv.ctx",
+    "title":"title (hv.a)",
+    "priority":1000,
+    "plugin":"difftest.plugin",
+    "module":"",
+    "units":"units",
+    "data_url":"/api/v1/data?chart=hv.a",
+    "chart_type":"line",
+    "duration":1,
+    "first_entry":1791085057,
+    "last_entry":1791085057,
+    "update_every":1,
+    "dimensions":{
+        "a":{
+            "name":"a"
+        },
+        "b":{
+            "name":"b"
+        }
+    },
+    "chart_variables":{
+    },
+    "green":null,
+    "red":null,
+    "alarms":{
+    },
+    "chart_labels":{
+        "_collect_plugin":"difftest.plugin",
+        "_collect_module":"[none]"
+    },
+    "functions":{
+    }
+}

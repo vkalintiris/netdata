@@ -1,0 +1,33 @@
+{
+  "starts": [
+    {
+      "steps": [
+        {
+          "waitFile": "create"
+        },
+        {
+          "emit": "CHART hv.b bname 'title' 'units' 'family' 'hv.ctx' line 1000 5 '' '' ''\nDIMENSION a '' absolute 1 1\nCLABEL kind x 1\nCLABEL_COMMIT\nVARIABLE CHART cv = 7\nVARIABLE CHART cv_raw = 8\nVARIABLE CHART hv.b.dv = 9\nVARIABLE CHART a = 6\nVARIABLE CHART c+v = 4\nCHART hv.c '' 'title' 'units' 'family' 'hv.ctx' line 1000 1 '' '' ''\nDIMENSION a aname absolute 1 1\nDIMENSION p.q '' absolute 1 1\nCLABEL kind y 1\nCLABEL_COMMIT\nCHART hv.d '' 'title' 'units' 'family' '' line 1000 1 '' '' ''\nDIMENSION a '' absolute 1 1\nCHART hv.e '' 'title' 'units' 'family' 'hvflat' line 1000 1 '' '' ''\nDIMENSION a '' absolute 1 1\nVARIABLE HOST hvh = 5\nVARIABLE HOST cv = 55\nVARIABLE HOST status = 77\n"
+        },
+        {
+          "values": {
+            "chart": "hv.a",
+            "context": "hv.ctx",
+            "dims": [
+              "a",
+              "b"
+            ],
+            "phases": [
+              {
+                "set": {
+                  "a": 10,
+                  "b": 20
+                },
+                "until": "p1"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

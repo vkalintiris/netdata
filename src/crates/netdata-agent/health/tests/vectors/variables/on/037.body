@@ -1,0 +1,13 @@
+{
+    "variable":"aname_raw",
+    "instance":"hv.c",
+    "context":"hv.ctx",
+    "found":true,
+    "value":0,
+    "source":{
+        "description":"last collected value of dimension",
+        "instance":"hv.c",
+        "context":"hv.ctx",
+        "candidates":1
+    }
+}

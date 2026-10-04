@@ -189,6 +189,10 @@ pub mod flags {
     pub const UPSTREAM_IGNORE: u32 = 1 << 14;
     /// `RRDSET_FLAG_UPSTREAM_SEND_VARIABLES`: a chart variable changed since the chart's variables were last sent.
     pub const UPSTREAM_SEND_VARIABLES: u32 = 1 << 15;
+    /// `RRDSET_FLAG_PENDING_HEALTH_INITIALIZATION`: a new or changed chart that health has not given its alerts.
+    pub const PENDING_HEALTH_INITIALIZATION: u32 = 1 << 16;
+    /// `RRDSET_FLAG_PENDING_LABEL_RECHECK`: the chart's name or labels changed: its alerts are matched again.
+    pub const PENDING_LABEL_RECHECK: u32 = 1 << 17;
 
     /// `rrdset_is_replicating()`: a replication in progress, either way, and none finished.
     pub fn is_replicating(flags: u32) -> bool {
@@ -459,6 +463,26 @@ impl Chart {
             m.flags = (old | set) & !clear;
             old
         })
+    }
+
+    /// A new chart, or one defined again with a change: the chart's flag, then its host's, in C's order (the pass
+    /// takes the host's first, so the other order could leave a chart flagged with nothing to make the pass look).
+    pub fn raise_health_init(&self) {
+        self.flags_set_and_clear(flags::PENDING_HEALTH_INITIALIZATION, 0);
+        self.host_pending.fetch_or(pending_flags::HEALTH_INITIALIZATION, Ordering::AcqRel);
+    }
+
+    /// The chart's name or labels changed. The host's flag is the initialization one: only the flagged charts are
+    /// done again, not every chart of the host.
+    pub fn raise_label_recheck(&self) {
+        self.flags_set_and_clear(flags::PENDING_LABEL_RECHECK, 0);
+        self.host_pending.fetch_or(pending_flags::HEALTH_INITIALIZATION, Ordering::AcqRel);
+    }
+
+    /// Takes the chart's two health flags in one step.
+    pub fn take_health_pending(&self) -> u32 {
+        let both = flags::PENDING_HEALTH_INITIALIZATION | flags::PENDING_LABEL_RECHECK;
+        self.flags_set_and_clear(0, both) & both
     }
 
     /// `rrdset_touch_last_accessed_time_s()`.
@@ -787,6 +811,11 @@ impl Chart {
     /// The chart variables, in insertion order.
     pub fn variables(&self) -> Vec<(String, f64)> {
         self.variables.all()
+    }
+
+    /// `rrdvar_get_custom_chart_variable_value()`.
+    pub fn variable(&self, name: &[u8]) -> Option<f64> {
+        self.variables.get(name)
     }
 
     /// The parser's state on this chart.
@@ -1139,6 +1168,13 @@ pub struct DimCollection {
     pub calculated_value: f64,
 }
 
+impl DimCollection {
+    /// `rrddim_last_collected_as_double()`: the lane the dimension's FLOAT option names.
+    pub fn last_collected_as_double(&self, is_float: bool) -> f64 {
+        if is_float { self.last_collected_value_float } else { self.last_collected_value as f64 }
+    }
+}
+
 /// `rd->tiers[t].smh`: a dimension's storage on one tier, fixed at insert.
 #[derive(Debug)]
 enum TierMetric {
@@ -1300,6 +1336,11 @@ impl Dim {
 
     pub fn update_meta<T>(&self, update: impl FnOnce(&mut DimMeta) -> T) -> T {
         update(&mut self.meta.write().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// `rrddim_is_float()`.
+    pub fn is_float(&self) -> bool {
+        self.meta.read().unwrap_or_else(PoisonError::into_inner).flags & dim_flags::FLOAT != 0
     }
 
     pub fn collection(&self) -> DimCollection {
@@ -1982,6 +2023,8 @@ impl Charts {
         }
         if is_new || changed {
             chart.metadata_updated();
+            // rrdset_insert_callback() and, for a definition that changed something, rrdset_conflict_callback()
+            chart.raise_health_init();
         }
         // Naming, under the index lock as C's name index is.
         let mut index = self.inner.write().unwrap_or_else(PoisonError::into_inner);
@@ -2009,6 +2052,8 @@ impl Charts {
                 chart.update_meta(|m| m.flags &= !(flags::UPSTREAM_SEND | flags::UPSTREAM_IGNORE));
                 chart.metadata_updated();
                 contexts::updated_rrdset_name(&chart);
+                // an alarm is matched by the chart's name too
+                chart.raise_label_recheck();
             }
             chart.metadata_updated();
         }
@@ -2188,6 +2233,48 @@ mod tests {
         assert_ne!(chart.meta().flags & flags::HETEROGENEOUS, 0);
     }
 
+    /// What a definition asks of health: a new chart and one defined again with a change (any of C's nine fields)
+    /// ask for their alerts; an unchanged definition asks for nothing; a real rename asks for a recheck, the first
+    /// name does not. Each raise reaches the host as "some chart is pending".
+    #[test]
+    fn definitions_raise_the_health_flags() {
+        let pending = Arc::new(AtomicU32::new(0));
+        let charts = Charts::new(Arc::default(), Arc::default(), Arc::clone(&pending), Arc::default(), "");
+        let host = || pending.swap(0, Ordering::AcqRel) & pending_flags::HEALTH;
+
+        let (chart, _) = charts.create(&spec("t", "c", None));
+        assert_eq!(chart.take_health_pending(), flags::PENDING_HEALTH_INITIALIZATION, "new");
+        assert_eq!(host(), pending_flags::HEALTH_INITIALIZATION);
+        assert_eq!(chart.take_health_pending(), 0, "taken");
+
+        charts.create(&spec("t", "c", None));
+        assert_eq!((chart.take_health_pending(), host()), (0, 0), "unchanged");
+
+        for (what, changed) in [
+            ("title", ChartSpec { title: "another title", ..spec("t", "c", None) }),
+            ("units", ChartSpec { title: "another title", units: "other units", ..spec("t", "c", None) }),
+            ("priority", ChartSpec { title: "another title", units: "other units", priority: 7, ..spec("t", "c", None) }),
+        ] {
+            charts.create(&changed);
+            assert_eq!(chart.take_health_pending(), flags::PENDING_HEALTH_INITIALIZATION, "{what}");
+            assert_eq!(host(), pending_flags::HEALTH_INITIALIZATION, "{what}");
+        }
+
+        // a rename: the chart's recheck, and the host's initialization (only this chart is done again)
+        let renamed = ChartSpec { title: "another title", units: "other units", priority: 7, ..spec("t", "c", Some("renamed")) };
+        charts.create(&renamed);
+        assert_eq!(chart.take_health_pending(), flags::PENDING_LABEL_RECHECK, "renamed");
+        assert_eq!(host(), pending_flags::HEALTH_INITIALIZATION);
+        charts.create(&renamed);
+        assert_eq!((chart.take_health_pending(), host()), (0, 0), "the same name again");
+
+        // a raise while the other is pending: both are taken at once
+        chart.raise_health_init();
+        chart.raise_label_recheck();
+        assert_eq!(chart.take_health_pending(), flags::PENDING_HEALTH_INITIALIZATION | flags::PENDING_LABEL_RECHECK);
+        assert_eq!(chart.flags() & (flags::PENDING_HEALTH_INITIALIZATION | flags::PENDING_LABEL_RECHECK), 0);
+    }
+
     /// The obsolete transitions as the maintenance sweep reads them: a chart raises the host's pending charts bit
     /// and touches its last accessed time, a dimension raises its chart's and host's obsolete dimensions bits; an
     /// obsolete chart is found only when obsolete ones are asked for, by id, and a lookup touches it.
@@ -2201,11 +2288,11 @@ mod tests {
         chart.last_accessed_s.store(1, Ordering::Relaxed);
         chart.dim_is_obsolete(&dim);
         assert_ne!(chart.flags() & flags::OBSOLETE_DIMENSIONS, 0);
-        assert_eq!(pending.swap(0, Ordering::AcqRel), pending_flags::OBSOLETE_DIMENSIONS);
+        assert_eq!(pending.swap(0, Ordering::AcqRel) & pending_flags::OBSOLETE, pending_flags::OBSOLETE_DIMENSIONS);
         assert_eq!(chart.last_accessed_s(), 1, "a dimension's transition does not touch");
         let host = crate::testutil::bare_host();
         chart.is_obsolete(&host);
-        assert_eq!(pending.swap(0, Ordering::AcqRel), pending_flags::OBSOLETE_CHARTS);
+        assert_eq!(pending.swap(0, Ordering::AcqRel) & pending_flags::OBSOLETE, pending_flags::OBSOLETE_CHARTS);
         assert!(chart.last_accessed_s() > 1, "obsolete: touched");
         chart.is_obsolete(&host);
         assert_eq!(pending.load(Ordering::Acquire), 0, "only the transition raises it");

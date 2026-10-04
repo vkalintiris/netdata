@@ -1,0 +1,13 @@
+{
+    "variable":"hv_one",
+    "instance":"hv.b",
+    "context":"hv.ctx",
+    "found":true,
+    "value":null,
+    "source":{
+        "description":"alarm value",
+        "instance":"hv.a",
+        "context":"hv.ctx",
+        "candidates":1
+    }
+}

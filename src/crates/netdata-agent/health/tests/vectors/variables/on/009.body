@@ -1,0 +1,13 @@
+{
+    "variable":"a_last_collected_t",
+    "instance":"hv.a",
+    "context":"hv.ctx",
+    "found":true,
+    "value":1791085069,
+    "source":{
+        "description":"last collected time of dimension",
+        "instance":"hv.a",
+        "context":"hv.ctx",
+        "candidates":1
+    }
+}

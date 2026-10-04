@@ -1,0 +1,13 @@
+{
+    "variable":"hv.b.dv",
+    "instance":"hv.a",
+    "context":"hv.ctx",
+    "found":true,
+    "value":9,
+    "source":{
+        "description":"chart variable",
+        "instance":"hv.b",
+        "context":"hv.ctx",
+        "candidates":1
+    }
+}

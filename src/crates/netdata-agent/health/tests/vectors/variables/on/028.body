@@ -1,0 +1,13 @@
+{
+    "variable":"last_collected_t",
+    "instance":"hv.b",
+    "context":"hv.ctx",
+    "found":true,
+    "value":0,
+    "source":{
+        "description":"current instance last_collected_t",
+        "instance":"hv.b",
+        "context":"hv.ctx",
+        "candidates":1
+    }
+}

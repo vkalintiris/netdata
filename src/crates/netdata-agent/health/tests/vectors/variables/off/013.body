@@ -1,0 +1,13 @@
+{
+    "variable":"after",
+    "instance":"hv.a",
+    "context":"hv.ctx",
+    "found":true,
+    "value":0,
+    "source":{
+        "description":"current alert query start time",
+        "instance":"hv.a",
+        "context":"hv.ctx",
+        "candidates":1
+    }
+}

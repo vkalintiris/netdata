@@ -1,0 +1,13 @@
+{
+    "variable":"now",
+    "instance":"hv.a",
+    "context":"hv.ctx",
+    "found":true,
+    "value":1791085057,
+    "source":{
+        "description":"current wall-time clock timestamp",
+        "instance":"hv.a",
+        "context":"hv.ctx",
+        "candidates":1
+    }
+}

@@ -1,0 +1,5 @@
+[health]
+    enabled = yes
+    script to execute on alarm = {run}/notify/stub
+    run at least every = 1s
+    enable stock health configuration = no
