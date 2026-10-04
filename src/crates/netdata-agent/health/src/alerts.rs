@@ -2,7 +2,7 @@
 //! `rrdcalc.c`, `health_log.c`.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use netdata_agent_rrd::chart::Chart;
@@ -12,6 +12,10 @@ use crate::alert::{Alert, Run, Status, run_flags};
 use crate::entry::{Entry, Transition, entry_flags};
 use crate::log::AlarmLog;
 use crate::pass::{Env, PassCounts, elapsed, hysteresis};
+
+/// The saves an entry's addition owes, in C's order, each with whether it is asynchronous: the older entry the new
+/// one replaced, then the new one. They are made once the store's lock and the alert's are released.
+type Saves = Vec<(u32, bool)>;
 use crate::prototype::Rule;
 use crate::tables::ACTION_OPTION_NO_CLEAR_NOTIFICATION;
 use crate::{Clock, journal};
@@ -41,7 +45,8 @@ struct Store {
 
 impl Store {
     /// `health_create_alarm_entry()` and `health_alarm_log_add_entry()`: the entry of a status change, in the log.
-    /// C makes the transition id before it reads the clock for the entry's `global_id`.
+    /// C makes the transition id before it reads the clock for the entry's `global_id`. The saves it owes (the
+    /// entry it replaced, then itself) are added to `saves`.
     fn log_transition(
         &mut self,
         alert: &Alert,
@@ -49,28 +54,33 @@ impl Store {
         transition: &Transition,
         is_async: bool,
         env: &dyn Env,
+        saves: &mut Saves,
     ) -> Entry {
         let transition_id = env.transition_id();
         let entry = Entry::create(alert, run, transition, env.now_usec(), transition_id);
-        self.log.add(entry, is_async, env)
+        let (entry, replaced) = self.log.add(entry);
+        saves.extend(replaced.map(|older| (older, is_async)));
+        saves.push((entry.unique_id, is_async));
+        entry
     }
 
-    /// `rrdcalc_get_unique_id()`: the alarm id of a rule on a chart and the event id its next entry takes. The
-    /// newest entry of the log with that name, chart and rule hash gives both; else the alarm is new. (The
-    /// database's row of the name and chart comes between the two with the alert log's tables.)
-    fn alarm_id_for(&mut self, chart_id: &[u8], name: Option<&[u8]>, hash_id: &[u8; 16], clock: Clock) -> (u32, u32) {
+    /// `rrdcalc_find_alarm_entry()`: the alarm id and the next event id of a rule on a chart, from the newest entry
+    /// of the memory log with that name, chart and rule hash.
+    fn alarm_id_in_log(&self, chart_id: &[u8], name: Option<&[u8]>, hash_id: &[u8; 16]) -> Option<(u32, u32)> {
         let known = self.log.entries.iter().find(|entry| {
             entry.name.as_deref() == name && entry.chart == chart_id && entry.config_hash_id == *hash_id
         });
-        if let Some(entry) = known {
-            return (entry.alarm_id, entry.alarm_event_id.wrapping_add(1));
-        }
+        known.map(|entry| (entry.alarm_id, entry.alarm_event_id.wrapping_add(1)))
+    }
+
+    /// A new alarm's id: the host's counter, seeded with the clock at its first use.
+    fn new_alarm_id(&mut self, clock: Clock) -> u32 {
         if self.next_alarm_id == 0 {
             self.next_alarm_id = clock() as u32;
         }
         let id = self.next_alarm_id;
         self.next_alarm_id = self.next_alarm_id.wrapping_add(1);
-        (id, 1)
+        id
     }
 
     /// Whether the alert is the one the store holds under its key.
@@ -113,9 +123,17 @@ pub struct HostAlerts {
     /// again, or one that lost the index to this one and is freed at once; what happens to that one is not this
     /// one's business.
     owner: Weak<Host>,
+    /// These alerts themselves, for the metadata queue: a queued save names the host's alerts and the entry.
+    me: Weak<HostAlerts>,
     /// `RRDHOST_FLAG_INITIALIZED_HEALTH`: set by the host's first pass and never cleared.
     initialized: AtomicBool,
     inner: Mutex<Store>,
+    /// Held while one entry is read, saved and marked as saved, by HEALTH or by the metadata thread's store job:
+    /// C has nothing here, and both can find an entry unsaved and insert it twice. Taken before the database and
+    /// before the store, never after either.
+    saving: Mutex<()>,
+    /// `host->health.pending_transitions`: the saves the metadata queue holds; a pass is postponed while any is.
+    pending_transitions: AtomicI32,
     /// `host->health.alert_status_snapshot`: the counts of the last complete pass, and how often counts were
     /// published, times two (C's generation is odd while a writer is at it).
     counts: Mutex<(u64, Option<PassCounts>)>,
@@ -130,8 +148,8 @@ fn key(chart_id: &str, name: &[u8]) -> Vec<u8> {
 
 impl HostAlerts {
     /// The alerts of `host`, none yet.
-    pub(crate) fn of(host: &Arc<Host>) -> HostAlerts {
-        HostAlerts { owner: Arc::downgrade(host), ..HostAlerts::default() }
+    pub(crate) fn new(host: &Arc<Host>) -> Arc<HostAlerts> {
+        Arc::new_cyclic(|me| HostAlerts { owner: Arc::downgrade(host), me: me.clone(), ..HostAlerts::default() })
     }
 
     /// Whether these are the alerts of that very host object.
@@ -151,6 +169,62 @@ impl HostAlerts {
         let hostname = self.owner.upgrade().map(|host| host.hostname()).unwrap_or_default();
         for entry in entries {
             journal::log_alert(&hostname, entry);
+        }
+    }
+
+    /// `health_alarm_log_save()`: an entry's save. An asynchronous one (a link's, an unlink's) is offered to the
+    /// metadata queue, which counts it on the host and on the entry before it answers; refused, it is made at once
+    /// only on the HEALTH thread while the service runs, else not at all. A synchronous one is made at once.
+    fn save(&self, env: &dyn Env, unique_id: u32, is_async: bool) {
+        if is_async {
+            // metadata_queue_ae_save(): both counters go up before the queue is asked, and back when it refuses
+            self.pending_transitions.fetch_add(1, Ordering::Relaxed);
+            self.with_entry(unique_id, |entry| entry.pending_save_count = entry.pending_save_count.saturating_add(1));
+            if self.me.upgrade().is_some_and(|me| env.queue_save(&me, unique_id)) {
+                return;
+            }
+            self.pending_transitions.fetch_sub(1, Ordering::Relaxed);
+            self.with_entry(unique_id, |entry| entry.pending_save_count = entry.pending_save_count.saturating_sub(1));
+            if !(env.is_health_thread() && env.service_running()) {
+                return;
+            }
+        }
+        self.save_now(unique_id, &|entry| env.sql_save(entry));
+    }
+
+    /// `sql_health_alarm_log_save()` of the entry as it stands now, in the log or among those that left it with a
+    /// save queued: `sql` inserts or updates its row and says whether it inserted, which marks the entry as saved.
+    fn save_now(&self, unique_id: u32, sql: &dyn Fn(&Entry) -> bool) {
+        let _saving = self.saving.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(copy) = self.with_entry(unique_id, |entry| entry.clone()) else {
+            return;
+        };
+        if sql(&copy) {
+            self.with_entry(unique_id, |entry| entry.flags |= entry_flags::SAVED);
+        }
+    }
+
+    /// The metadata thread's store job, for one queued save (`store_alert_transitions()`): the entry is saved as
+    /// it stands by now, and the two counters are taken back, whatever the save did.
+    pub fn save_queued(&self, unique_id: u32, sql: &dyn Fn(&Entry) -> bool) {
+        self.save_now(unique_id, sql);
+        self.store().log.save_done(unique_id);
+        self.pending_transitions.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// `host->health.pending_transitions`.
+    pub fn pending_transitions(&self) -> i32 {
+        self.pending_transitions.load(Ordering::Relaxed)
+    }
+
+    fn with_entry<T>(&self, unique_id: u32, f: impl FnOnce(&mut Entry) -> T) -> Option<T> {
+        self.store().log.entry_mut(unique_id).map(f)
+    }
+
+    /// The saves of entries made under the store's lock, once it is released, in the order made.
+    fn run_saves(&self, env: &dyn Env, saves: &Saves) {
+        for &(unique_id, is_async) in saves {
+            self.save(env, unique_id, is_async);
         }
     }
 
@@ -247,7 +321,7 @@ impl HostAlerts {
     /// the old one is still referenced; here that alert goes now, as its chart's free would take it.
     pub(crate) fn add(&self, chart: &Arc<Chart>, rule: &Rule, env: &dyn Env, clock: Clock) -> bool {
         let key = key(chart.id(), rule.config.name.as_deref().unwrap_or(b""));
-        let mut entries = Vec::new();
+        let (mut entries, mut saves) = (Vec::new(), Saves::new());
         {
             let mut store = self.store();
             if chart.is_freed() {
@@ -257,14 +331,35 @@ impl HostAlerts {
                 if Arc::ptr_eq(&existing.chart, chart) || !existing.chart.is_freed() {
                     return false;
                 }
-                Self::unlink(&mut store, &existing, env, clock, &mut entries);
+                Self::unlink(&mut store, &existing, env, clock, &mut entries, &mut saves);
             }
 
             // C reads the clock for the alert's last status change, then for the alarm id's seed when it has none
             // yet, then for the link's entry
             let last_status_change = clock();
             let name = rule.config.name.as_deref();
-            let (id, next_event_id) = store.alarm_id_for(chart.id().as_bytes(), name, &rule.config.hash_id, clock);
+            let (chart_id, hash_id) = (chart.id().as_bytes(), &rule.config.hash_id);
+            // rrdcalc_get_unique_id(): the memory log; else the table is asked with no lock held, then the
+            // memory log again, then the table's answer, then the host's counter
+            let (id, next_event_id) = match store.alarm_id_in_log(chart_id, name, hash_id) {
+                Some(known) => known,
+                None => {
+                    drop(store);
+                    let in_table = self.owner.upgrade().and_then(|host| env.sql_alarm_id(&host, chart_id, name));
+                    store = self.store();
+                    // nothing else links, but the chart can have been freed meanwhile
+                    if chart.is_freed() || store.by_key.contains_key(&key) {
+                        drop(store);
+                        self.run_saves(env, &saves);
+                        self.log_records(&entries);
+                        return false;
+                    }
+                    match store.alarm_id_in_log(chart_id, name, hash_id) {
+                        Some(known) => known,
+                        None => in_table.unwrap_or_else(|| (store.new_alarm_id(clock), 1)),
+                    }
+                }
+            };
 
             let alert = Alert::new(key.clone(), chart, &rule.config, id, next_event_id, last_status_change);
             let alert = Arc::new(alert);
@@ -289,17 +384,25 @@ impl HostAlerts {
                 delay: 0,
                 flags: if alert.is_repeating() { entry_flags::IS_REPEATING } else { 0 },
             };
-            let entry = store.log_transition(&alert, &mut run, &transition, true, env);
+            let entry = store.log_transition(&alert, &mut run, &transition, true, env, &mut saves);
             alert.publish(&run, Some((entry.global_id, entry.transition_id)));
             entries.push(entry);
         }
+        self.run_saves(env, &saves);
         self.log_records(&entries);
         true
     }
 
     /// `rrdcalc_unlink_and_delete()` of one alert, the store locked: out of the name index, its REMOVED entry
     /// unless it is REMOVED already or the agent is exiting, off its chart's list, out of the dictionary.
-    fn unlink(store: &mut Store, alert: &Arc<Alert>, env: &dyn Env, clock: Clock, entries: &mut Vec<Entry>) {
+    fn unlink(
+        store: &mut Store,
+        alert: &Arc<Alert>,
+        env: &dyn Env,
+        clock: Clock,
+        entries: &mut Vec<Entry>,
+        saves: &mut Saves,
+    ) {
         if let Some(named) = store.by_name.get_mut(alert.name()) {
             named.retain(|other| !Arc::ptr_eq(other, alert));
             if named.is_empty() {
@@ -322,7 +425,7 @@ impl HostAlerts {
                     delay: 0,
                     flags: 0,
                 };
-                entries.push(store.log_transition(alert, &mut run, &transition, true, env));
+                entries.push(store.log_transition(alert, &mut run, &transition, true, env, saves));
             }
         }
 
@@ -341,27 +444,29 @@ impl HostAlerts {
     /// `rrdcalc_unlink_and_delete_all_rrdset_alerts()`: the alerts of that chart object go, in link order. Alerts
     /// on another chart object of its id (the chart defined again after this one was freed) stay.
     pub(crate) fn unlink_chart(&self, chart: &Chart, env: &dyn Env, clock: Clock) {
-        let mut entries = Vec::new();
+        let (mut entries, mut saves) = (Vec::new(), Saves::new());
         {
             let mut store = self.store();
             for alert in store.by_chart.get(chart.id()).cloned().unwrap_or_default() {
                 if std::ptr::eq(Arc::as_ptr(&alert.chart), chart) {
-                    Self::unlink(&mut store, &alert, env, clock, &mut entries);
+                    Self::unlink(&mut store, &alert, env, clock, &mut entries, &mut saves);
                 }
             }
         }
+        self.run_saves(env, &saves);
         self.log_records(&entries);
     }
 
     /// `rrdcalc_delete_all()`: every alert of the host goes, in the dictionary's order.
     pub(crate) fn delete_all(&self, env: &dyn Env, clock: Clock) {
-        let mut entries = Vec::new();
+        let (mut entries, mut saves) = (Vec::new(), Saves::new());
         {
             let mut store = self.store();
             for alert in store.order.values().cloned().collect::<Vec<_>>() {
-                Self::unlink(&mut store, &alert, env, clock, &mut entries);
+                Self::unlink(&mut store, &alert, env, clock, &mut entries, &mut saves);
             }
         }
+        self.run_saves(env, &saves);
         self.log_records(&entries);
     }
 
@@ -382,31 +487,36 @@ impl HostAlerts {
         env: &dyn Env,
         clock: Clock,
     ) -> Option<(Entry, Status)> {
-        let mut store = self.store();
-        if !store.linked(host, alert) {
-            return None;
-        }
-        let mut run = alert.run();
-        let when = clock();
-        let old_status = run.status;
-        let transition = Transition {
-            when,
-            duration: elapsed(when, run.last_status_change),
-            old_value: run.value,
-            new_value: f64::NAN,
-            old_status,
-            new_status: Status::Removed,
-            delay: 0,
-            flags: 0,
+        let mut saves = Saves::new();
+        let removed = {
+            let mut store = self.store();
+            if !store.linked(host, alert) {
+                return None;
+            }
+            let mut run = alert.run();
+            let when = clock();
+            let old_status = run.status;
+            let transition = Transition {
+                when,
+                duration: elapsed(when, run.last_status_change),
+                old_value: run.value,
+                new_value: f64::NAN,
+                old_status,
+                new_status: Status::Removed,
+                delay: 0,
+                flags: 0,
+            };
+            let entry = store.log_transition(alert, &mut run, &transition, false, env, &mut saves);
+            run.old_status = run.status;
+            run.status = Status::Removed;
+            run.last_status_change = when;
+            run.last_status_change_value = run.value;
+            run.last_updated = when;
+            run.value = f64::NAN;
+            (entry, old_status)
         };
-        let entry = store.log_transition(alert, &mut run, &transition, false, env);
-        run.old_status = run.status;
-        run.status = Status::Removed;
-        run.last_status_change = when;
-        run.last_status_change_value = run.value;
-        run.last_updated = when;
-        run.value = f64::NAN;
-        Some((entry, old_status))
+        self.run_saves(env, &saves);
+        Some(removed)
     }
 
     /// A status change of the pass's second walk: the hysteresis, the entry, then the alert's new status. Nothing
@@ -419,33 +529,38 @@ impl HostAlerts {
         now: i64,
         env: &dyn Env,
     ) -> Option<Entry> {
-        let mut store = self.store();
-        if !store.linked(host, alert) {
-            return None;
-        }
-        let mut run = alert.run();
-        let delay = hysteresis(&mut run, &alert.config, status, now);
-        let transition = Transition {
-            when: now,
-            duration: elapsed(now, run.last_status_change),
-            old_value: run.old_value,
-            new_value: run.value,
-            old_status: run.status,
-            new_status: status,
-            delay,
-            flags: entry_flags_of(alert, &run),
-        };
-        let entry = store.log_transition(alert, &mut run, &transition, false, env);
-        run.last_status_change_value = run.value;
-        run.last_status_change = now;
-        run.old_status = run.status;
-        run.status = status;
-        if alert.is_repeating() {
-            run.last_repeat = now;
-            if status == Status::Clear {
-                run.run_flags |= run_flags::RUN_ONCE;
+        let mut saves = Saves::new();
+        let entry = {
+            let mut store = self.store();
+            if !store.linked(host, alert) {
+                return None;
             }
-        }
+            let mut run = alert.run();
+            let delay = hysteresis(&mut run, &alert.config, status, now);
+            let transition = Transition {
+                when: now,
+                duration: elapsed(now, run.last_status_change),
+                old_value: run.old_value,
+                new_value: run.value,
+                old_status: run.status,
+                new_status: status,
+                delay,
+                flags: entry_flags_of(alert, &run),
+            };
+            let entry = store.log_transition(alert, &mut run, &transition, false, env, &mut saves);
+            run.last_status_change_value = run.value;
+            run.last_status_change = now;
+            run.old_status = run.status;
+            run.status = status;
+            if alert.is_repeating() {
+                run.last_repeat = now;
+                if status == Status::Clear {
+                    run.run_flags |= run_flags::RUN_ONCE;
+                }
+            }
+            entry
+        };
+        self.run_saves(env, &saves);
         Some(entry)
     }
 
@@ -481,14 +596,44 @@ impl HostAlerts {
         Some(entry)
     }
 
-    /// The pass's last step: the notifications that are due, and the log's trim.
+    /// `health_send_notification()` as far as the log goes, for a repeat's entry, which is in no log: it is offered
+    /// for a notification, marked as processed and saved at once (never queued). What a notification is comes with
+    /// its own commit.
+    pub(crate) fn notify_repeat(&self, entry: &mut Entry, env: &dyn Env) {
+        env.notify(entry);
+        entry.flags |= entry_flags::PROCESSED;
+        let _saving = self.saving.lock().unwrap_or_else(PoisonError::into_inner);
+        if env.sql_save(entry) {
+            entry.flags |= entry_flags::SAVED;
+        }
+    }
+
+    /// The pass's last step (`health_alarm_log_process_to_send_notifications()`): every entry that is due gets its
+    /// notification, is marked as processed and saved; then the log is trimmed. The due entries are found under
+    /// the store's lock; each is notified and saved with no lock held, where C holds the log's read lock: an entry
+    /// that another thread takes out of the log in between is skipped.
     pub(crate) fn process_log(&self, env: &dyn Env, clock: Clock) {
-        self.store().log.process(env, clock);
+        let due = self.store().log.scan(clock);
+        for unique_id in due {
+            let Some(mut copy) = self.with_entry(unique_id, |entry| entry.clone()) else {
+                continue;
+            };
+            env.notify(&mut copy);
+            self.with_entry(unique_id, |entry| entry.flags |= entry_flags::PROCESSED);
+            self.save(env, unique_id, false);
+        }
+        self.store().log.trim(clock);
     }
 
     /// `health_apply_prototypes_to_host()`'s walk of the log, between its delete of every alert and its relink.
     pub(crate) fn mark_log_updated(&self) {
         self.store().log.mark_updated();
+    }
+
+    /// `health_alarm_log_cleanup()`: the memory log's retention cleanup, asked after the table's cleanup and after
+    /// a load.
+    pub fn log_cleanup(&self, retention_s: u32, now: i64) {
+        self.store().log.cleanup(retention_s, now);
     }
 
     /// `rrdhost_cleanup_data_collection_and_health()` once the host's charts are gone: C destroys the alert
@@ -497,7 +642,7 @@ impl HostAlerts {
     pub(crate) fn charts_flushed(&self) {
         let mut store = self.store();
         store.version = 0;
-        store.log.entries.clear();
+        store.log.clear();
     }
 }
 

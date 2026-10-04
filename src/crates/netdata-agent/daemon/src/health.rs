@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use netdata_agent_health::alert::Status;
+use netdata_agent_health::alerts::HostAlerts;
 use netdata_agent_health::config::HealthConfig;
 use netdata_agent_health::entry::Entry;
 use netdata_agent_health::pass::{ChartFacts, Env, Pass};
@@ -125,7 +126,33 @@ impl Env for LiveEnv {
         netdata_agent_sys::exit::initiated()
     }
 
-    fn save(&self, _: &mut Entry, _: bool) {}
+    // the alert log's tables come with the wiring of their commit: until then no thread is HEALTH's for a save,
+    // the queue refuses, and nothing is saved, looked up or moved
+    fn is_health_thread(&self) -> bool {
+        false
+    }
+
+    fn service_running(&self) -> bool {
+        !shutdown::exiting()
+    }
+
+    fn sql_alarm_id(&self, _: &Host, _: &[u8], _: Option<&[u8]>) -> Option<(u32, u32)> {
+        None
+    }
+
+    fn queue_save(&self, _: &Arc<HostAlerts>, _: u32) -> bool {
+        false
+    }
+
+    fn sql_save(&self, _: &Entry) -> bool {
+        false
+    }
+
+    fn commit_transitions(&self) {}
+
+    fn process_pending_queue(&self, _: &Host) -> bool {
+        false
+    }
 
     fn notify(&self, _: &mut Entry) {}
 }

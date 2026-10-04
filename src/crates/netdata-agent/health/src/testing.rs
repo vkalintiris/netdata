@@ -12,8 +12,9 @@ use netdata_agent_query::value::{ValueRequest, ValueResult};
 
 use crate::Health;
 use crate::alert::Alert;
+use crate::alerts::HostAlerts;
 use crate::config::HealthConfig;
-use crate::entry::{Entry, entry_flags};
+use crate::entry::Entry;
 use crate::pass::{ChartFacts, Env, Idle};
 use crate::readfile::health_readfile;
 
@@ -244,10 +245,30 @@ impl Env for Scripted {
         self.exiting
     }
 
-    fn save(&self, entry: &mut Entry, _: bool) {
-        if self.saves {
-            entry.flags |= entry_flags::SAVED;
-        }
+    fn is_health_thread(&self) -> bool {
+        true
+    }
+
+    fn service_running(&self) -> bool {
+        true
+    }
+
+    fn sql_alarm_id(&self, _: &Host, _: &[u8], _: Option<&[u8]>) -> Option<(u32, u32)> {
+        None
+    }
+
+    fn queue_save(&self, _: &Arc<HostAlerts>, _: u32) -> bool {
+        false
+    }
+
+    fn sql_save(&self, _: &Entry) -> bool {
+        self.saves
+    }
+
+    fn commit_transitions(&self) {}
+
+    fn process_pending_queue(&self, _: &Host) -> bool {
+        false
     }
 
     fn notify(&self, _: &mut Entry) {}

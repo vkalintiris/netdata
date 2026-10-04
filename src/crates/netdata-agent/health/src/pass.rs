@@ -13,7 +13,6 @@ use crate::alert::{Alert, Run, Status, run_flags};
 use crate::alerts::HostAlerts;
 use crate::entry::Entry;
 use crate::keywords::lossy;
-use crate::log::AlarmLog;
 use crate::prototype::AlertConfig;
 use crate::variable::{AlertResolver, This};
 use crate::{Clock, Health, journal, lookup};
@@ -46,9 +45,26 @@ pub trait Env {
     fn transition_id(&self) -> [u8; 16];
     /// `exit_initiated_get()`: once the agent's exit has begun an unlink logs nothing.
     fn exiting(&self) -> bool;
-    /// `health_alarm_log_save()`: the entry goes to the database. C's insert marks it as saved.
-    fn save(&self, entry: &mut Entry, is_async: bool);
+    /// C's `is_health_thread`: a save the metadata queue refuses is made at once only on the HEALTH thread.
+    fn is_health_thread(&self) -> bool;
+    /// `service_running(SERVICE_HEALTH)`, as the pass's `running` looks at it.
+    fn service_running(&self) -> bool;
+    /// `sql_get_alarm_id()`: the alarm id and the next event id the alert log's table has for a chart and a rule's
+    /// name, whatever the rule's hash. No lock of health is held while it runs.
+    fn sql_alarm_id(&self, host: &Host, chart: &[u8], name: Option<&[u8]>) -> Option<(u32, u32)>;
+    /// `metadata_queue_ae_save()`: the metadata thread is asked to save the entry of that unique id, as it will
+    /// stand when its store job runs (`HostAlerts::save_queued()`). False when the queue refuses.
+    fn queue_save(&self, alerts: &Arc<HostAlerts>, unique_id: u32) -> bool;
+    /// `sql_health_alarm_log_save()`: the entry's row is inserted, or updated when the entry is marked as saved.
+    /// True when a row was inserted: the caller marks the entry as saved. No lock of health but the host's save
+    /// lock is held while it runs.
+    fn sql_save(&self, entry: &Entry) -> bool;
+    /// `commit_alert_transitions()`: the metadata thread is asked for a store job now.
+    fn commit_transitions(&self);
+    /// `process_alert_pending_queue()`: the host's due rows of `alert_queue` move toward the Cloud's queue.
+    fn process_pending_queue(&self, host: &Host) -> bool;
     /// The entry is due: its notification (`health_send_notification()` before it marks the entry as processed).
+    /// No lock of health is held while it runs.
     fn notify(&self, entry: &mut Entry);
 }
 
@@ -81,7 +97,31 @@ impl Env for Idle {
         false
     }
 
-    fn save(&self, _: &mut Entry, _: bool) {}
+    fn is_health_thread(&self) -> bool {
+        true
+    }
+
+    fn service_running(&self) -> bool {
+        true
+    }
+
+    fn sql_alarm_id(&self, _: &Host, _: &[u8], _: Option<&[u8]>) -> Option<(u32, u32)> {
+        None
+    }
+
+    fn queue_save(&self, _: &Arc<HostAlerts>, _: u32) -> bool {
+        false
+    }
+
+    fn sql_save(&self, _: &Entry) -> bool {
+        false
+    }
+
+    fn commit_transitions(&self) {}
+
+    fn process_pending_queue(&self, _: &Host) -> bool {
+        false
+    }
 
     fn notify(&self, _: &mut Entry) {}
 }
@@ -495,7 +535,7 @@ impl Health {
                 if let Some(mut entry) = alerts.repeat(host, &alert, now, env) {
                     journal::log_alert(&hostname, &entry);
                     // the wait for the notification's execution comes with the notifications
-                    AlarmLog::send_notification(&mut entry, env);
+                    alerts.notify_repeat(&mut entry, env);
                 }
             }
         }
@@ -507,6 +547,15 @@ impl Health {
             return;
         }
         alerts.process_log(env, clock);
+
+        // saves the metadata queue took: a store job is asked for now. With none pending the host's due rows of
+        // the pending queue move on (the ACLK's snapshot branch comes with the Cloud)
+        if alerts.pending_transitions() != 0 {
+            env.commit_transitions();
+        }
+        if alerts.pending_transitions() == 0 {
+            env.process_pending_queue(host);
+        }
     }
 }
 

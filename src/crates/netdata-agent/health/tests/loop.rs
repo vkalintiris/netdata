@@ -60,7 +60,8 @@ mod replay {
     use std::sync::Arc;
 
     use netdata_agent_health::Health;
-    use netdata_agent_health::entry::{Entry, entry_flags};
+    use netdata_agent_health::alerts::HostAlerts;
+    use netdata_agent_health::entry::Entry;
     use netdata_agent_health::pass::{ChartFacts, Env, Pass};
     use netdata_agent_health::readfile::health_readfile;
     use netdata_agent_log::{Captured, Field, Priority, Source};
@@ -249,19 +250,41 @@ mod replay {
             self.exiting.get()
         }
 
-        /// `health_alarm_log_save()` over the stubs: the metadata queue never takes an entry, so an asynchronous
-        /// save is made at once while the service runs; the SQL save marks the entry when the scenario says so.
-        fn save(&self, entry: &mut Entry, is_async: bool) {
-            if is_async {
-                self.calls.borrow_mut().push(vec![b"queue".to_vec(), text(entry.unique_id), b"0".to_vec()]);
-                if !self.is_running() {
-                    return;
-                }
-            }
+        fn is_health_thread(&self) -> bool {
+            true
+        }
+
+        fn service_running(&self) -> bool {
+            self.is_running()
+        }
+
+        /// The stub of `sql_get_alarm_id()`: the table knows no alarm.
+        fn sql_alarm_id(&self, _: &Host, chart: &[u8], name: Option<&[u8]>) -> Option<(u32, u32)> {
+            let call = [&b"sql_get_alarm_id"[..], chart, name.unwrap_or(b""), b"0", b"0"];
+            self.calls.borrow_mut().push(call.map(<[u8]>::to_vec).to_vec());
+            None
+        }
+
+        /// The stub of `metadata_queue_ae_save()`: the queue never takes a save.
+        fn queue_save(&self, _: &Arc<HostAlerts>, unique_id: u32) -> bool {
+            self.calls.borrow_mut().push(vec![b"queue".to_vec(), text(unique_id), b"0".to_vec()]);
+            false
+        }
+
+        /// The stub of `sql_health_alarm_log_save()`: it records the entry as it stands, and marks it as saved
+        /// when the scenario says so.
+        fn sql_save(&self, entry: &Entry) -> bool {
             self.calls.borrow_mut().push(vec![b"save".to_vec(), text(entry.unique_id), hex8(entry.flags)]);
-            if self.saved.get() {
-                entry.flags |= entry_flags::SAVED;
-            }
+            self.saved.get()
+        }
+
+        fn commit_transitions(&self) {
+            self.calls.borrow_mut().push(vec![b"commit_alert_transitions".to_vec()]);
+        }
+
+        fn process_pending_queue(&self, _: &Host) -> bool {
+            self.calls.borrow_mut().push(vec![b"process_alert_pending_queue".to_vec()]);
+            false
         }
 
         fn notify(&self, entry: &mut Entry) {
@@ -730,8 +753,7 @@ mod replay {
                     text(last_processed_id),
                     text(next_log_id),
                     text(next_alarm_id),
-                    // the pending transitions come with the alert log's tables
-                    b"0".to_vec(),
+                    text(alerts.as_ref().map_or(0, |alerts| alerts.pending_transitions())),
                     text(self.host.health_delay_up_to()),
                     text(u8::from(counts.is_some())),
                     text(published.clear),
@@ -811,10 +833,11 @@ mod replay {
             let mut expected = self.expected.remove(&self.step).unwrap_or_default();
             if let Some(calls) = expected.get_mut("call") {
                 calls.retain(|call| match &call[0][..] {
-                    b"queue" | b"save" | b"lookup" | b"notify" => true,
-                    // what the stubs record of the database and the cloud, which come with their own commits
-                    b"load" | b"sql_get_alarm_id" | b"queue_deletion" | b"commit_alert_transitions" => false,
-                    b"process_alert_pending_queue" => false,
+                    b"queue" | b"save" | b"lookup" | b"notify" | b"sql_get_alarm_id" => true,
+                    b"commit_alert_transitions" | b"process_alert_pending_queue" => true,
+                    // the load comes with the tables' own step; an entry freed with a save still queued is kept
+                    // aside inside the host's alerts: it shows in the store job's saves
+                    b"load" | b"queue_deletion" => false,
                     other => panic!("{}: a call row of kind {}", self.name, String::from_utf8_lossy(other)),
                 });
                 if calls.is_empty() {
@@ -905,9 +928,7 @@ mod replay {
             nullable(&entry.source),
             config_hash.into_bytes(),
             uuid_rank(&entry.transition_id),
-            // the saves a queue holds of the entry: none while every save is made at once (the queue refuses in
-            // these scenarios; those where it accepts are `tests/corpus/queue/`, with the alert log's tables)
-            b"0".to_vec(),
+            text(entry.pending_save_count),
         ]
     }
 

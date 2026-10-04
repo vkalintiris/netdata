@@ -75,6 +75,8 @@ pub struct Entry {
     pub updated_by_id: u32,
     pub updates_id: u32,
     pub last_repeat: i64,
+    /// `ae->pending_save_count`: the saves of this entry the metadata queue holds.
+    pub pending_save_count: u32,
 }
 
 impl Entry {
@@ -133,6 +135,7 @@ impl Entry {
             updated_by_id: 0,
             updates_id: 0,
             last_repeat: 0,
+            pending_save_count: 0,
         }
     }
 }

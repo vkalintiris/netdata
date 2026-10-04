@@ -35,7 +35,7 @@ impl Health {
         match hosts.get(host.machine_guid()) {
             Some(alerts) if alerts.is_of(host) => Arc::clone(alerts),
             _ => {
-                let alerts = Arc::new(HostAlerts::of(host));
+                let alerts = HostAlerts::new(host);
                 hosts.insert(host.machine_guid().to_owned(), Arc::clone(&alerts));
                 alerts
             }
@@ -167,9 +167,17 @@ impl Health {
             return;
         }
         host.stamp_health_iteration();
-        // a host with alert transitions still to be saved is left for the next pass: with the alert log's tables
 
         let alerts = self.host_alerts(host);
+        if alerts.pending_transitions() != 0 {
+            nd_log!(
+                Source::Daemon,
+                Priority::Debug,
+                "Host \"{}\" has pending alert transitions to save, postponing health checks",
+                host.hostname()
+            );
+            return;
+        }
         self.link(host, &alerts, env, clock, running);
 
         let hostname = host.hostname();
