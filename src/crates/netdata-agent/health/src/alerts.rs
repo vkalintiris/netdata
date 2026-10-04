@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use netdata_agent_rrd::chart::Chart;
 use netdata_agent_rrd::host::Host;
@@ -45,11 +45,29 @@ struct Store {
     version: u64,
     /// `host->health_log.next_alarm_id`: seeded with the wall clock's seconds when first asked.
     next_alarm_id: u32,
+    /// What links and unlinks logged, for the tests: the alert's key and the entry.
+    #[cfg(test)]
+    transitions: Vec<(Vec<u8>, Transition)>,
+}
+
+impl Store {
+    /// The entry a link or an unlink writes (`health_create_alarm_entry()`, `health_alarm_log_add_entry()`,
+    /// `health_log_alert()`). The alert log comes with the health loop: until then a transition only takes the
+    /// alert's next event id, as the entry would.
+    fn log_transition(&mut self, _alert: &Alert, run: &mut Run, _transition: &Transition) {
+        run.next_event_id = run.next_event_id.wrapping_add(1);
+        #[cfg(test)]
+        self.transitions.push((_alert.key.clone(), *_transition));
+    }
 }
 
 /// A host's alerts.
 #[derive(Default)]
 pub struct HostAlerts {
+    /// The host object these are the alerts of. A machine GUID can name another object: a host freed and created
+    /// again, or one that lost the index to this one and is freed at once; what happens to that one is not this
+    /// one's business.
+    owner: Weak<Host>,
     /// `RRDHOST_FLAG_INITIALIZED_HEALTH`: set by the host's first pass and never cleared.
     initialized: AtomicBool,
     inner: Mutex<Store>,
@@ -63,6 +81,16 @@ fn key(chart_id: &str, name: &[u8]) -> Vec<u8> {
 }
 
 impl HostAlerts {
+    /// The alerts of `host`, none yet.
+    pub(crate) fn of(host: &Arc<Host>) -> HostAlerts {
+        HostAlerts { owner: Arc::downgrade(host), ..HostAlerts::default() }
+    }
+
+    /// Whether these are the alerts of that very host object.
+    pub(crate) fn is_of(&self, host: &Host) -> bool {
+        std::ptr::eq(self.owner.as_ptr(), host)
+    }
+
     fn store(&self) -> MutexGuard<'_, Store> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -77,9 +105,12 @@ impl HostAlerts {
         self.store().order.values().cloned().collect()
     }
 
-    /// The chart's alerts, in link order.
+    /// The chart's alerts, in link order: those on that very chart object (C's list hangs on the chart), not on
+    /// another one of its id.
     pub fn chart_alerts(&self, chart: &Chart) -> Vec<Arc<Alert>> {
-        self.store().by_chart.get(chart.id()).cloned().unwrap_or_default()
+        let mut alerts = self.store().by_chart.get(chart.id()).cloned().unwrap_or_default();
+        alerts.retain(|alert| std::ptr::eq(Arc::as_ptr(&alert.chart), chart));
+        alerts
     }
 
     /// The alerts of a name, in link order.
@@ -99,12 +130,26 @@ impl HostAlerts {
 
     /// `rrdcalc_add_from_prototype()`: the alert of `rule` on `chart`, created and linked, unless the chart has an
     /// alert of that name already (the first rule to give a key keeps it) or was freed meanwhile. True when linked.
+    ///
+    /// A key can still be held by an alert of an earlier chart object of that id, freed, whose free has not reached
+    /// health yet. C's dictionary runs a chart's delete callback before a chart of that id can exist again, unless
+    /// the old one is still referenced; here that alert goes now, as its chart's free would take it.
     pub(crate) fn add(&self, chart: &Arc<Chart>, rule: &Rule, clock: Clock) -> bool {
         let key = key(chart.id(), rule.config.name.as_deref().unwrap_or(b""));
         let mut store = self.store();
-        if store.by_key.contains_key(&key) || chart.is_freed() {
+        if chart.is_freed() {
             return false;
         }
+        if let Some(existing) = store.by_key.get(&key).and_then(|seq| store.order.get(seq)).cloned() {
+            if Arc::ptr_eq(&existing.chart, chart) || !existing.chart.is_freed() {
+                return false;
+            }
+            Self::unlink(&mut store, &existing, clock, false);
+        }
+
+        // C reads the clock for the alert's last status change, then for the alarm id's seed (below), then for
+        // the link's entry
+        let last_status_change = clock();
 
         // rrdcalc_get_unique_id(): the counter. The memory log's entry of this alert and the database's row go in
         // front of it with the loop and with SQLite.
@@ -114,7 +159,7 @@ impl HostAlerts {
         let id = store.next_alarm_id;
         store.next_alarm_id = store.next_alarm_id.wrapping_add(1);
 
-        let alert = Arc::new(Alert::new(key.clone(), chart, &rule.config, id, clock()));
+        let alert = Arc::new(Alert::new(key.clone(), chart, &rule.config, id, last_status_change));
         let seq = store.next_seq;
         store.next_seq += 1;
         store.order.insert(seq, Arc::clone(&alert));
@@ -138,7 +183,7 @@ impl HostAlerts {
             delay: 0,
             flags,
         };
-        log_transition(&mut run, &transition);
+        store.log_transition(&alert, &mut run, &transition);
         true
     }
 
@@ -166,7 +211,7 @@ impl HostAlerts {
                     delay: 0,
                     flags: 0,
                 };
-                log_transition(&mut run, &transition);
+                store.log_transition(alert, &mut run, &transition);
             }
         }
 
@@ -182,11 +227,14 @@ impl HostAlerts {
         }
     }
 
-    /// `rrdcalc_unlink_and_delete_all_rrdset_alerts()`: the chart's alerts go, in link order.
+    /// `rrdcalc_unlink_and_delete_all_rrdset_alerts()`: the alerts of that chart object go, in link order. Alerts
+    /// on another chart object of its id (the chart defined again after this one was freed) stay.
     pub(crate) fn unlink_chart(&self, chart: &Chart, clock: Clock, exiting: bool) {
         let mut store = self.store();
         for alert in store.by_chart.get(chart.id()).cloned().unwrap_or_default() {
-            Self::unlink(&mut store, &alert, clock, exiting);
+            if std::ptr::eq(Arc::as_ptr(&alert.chart), chart) {
+                Self::unlink(&mut store, &alert, clock, exiting);
+            }
         }
     }
 
@@ -210,13 +258,6 @@ impl HostAlerts {
             && !alert.chart.is_freed()
             && host.charts().find(alert.chart.id(), true).is_some_and(|chart| Arc::ptr_eq(&chart, &alert.chart))
     }
-}
-
-/// The entry a link or an unlink writes (`health_create_alarm_entry()`, `health_alarm_log_add_entry()`,
-/// `health_log_alert()`). The alert log comes with the health loop: until then a transition only takes the
-/// alert's next event id, as the entry would.
-fn log_transition(run: &mut Run, _transition: &Transition) {
-    run.next_event_id = run.next_event_id.wrapping_add(1);
 }
 
 #[cfg(test)]
@@ -243,6 +284,18 @@ mod tests {
         assert_eq!(linked[0].key, b"a,on[t.c]");
         assert_eq!(linked[0].config.units.as_deref(), Some(&b"first"[..]));
         assert_eq!(alerts.version(), 1);
+    }
+
+    /// The key names the chart by its id, also for an alarm that matched it by its name.
+    #[test]
+    fn the_key_holds_the_chart_s_id() {
+        let health = health_with(&rule_text("alarm", "by_name", "t.named", &[]));
+        let host = host(&[]);
+        let c = chart(&host, "t.c", Some("named"), "t.ctx", &[]);
+        let alerts = HostAlerts::default();
+        let prototypes = health.prototypes();
+        assert!(alerts.add(&c, &prototypes.get(b"by_name").unwrap().rules()[0], &|| NOW));
+        assert_eq!(alerts.chart_alerts(&c)[0].key, b"by_name,on[t.c]");
     }
 
     #[test]
@@ -356,6 +409,84 @@ mod tests {
         assert_eq!(event_id_after_unlink(false, false), 3, "the link's entry and the unlink's");
         assert_eq!(event_id_after_unlink(true, false), 2, "exiting");
         assert_eq!(event_id_after_unlink(false, true), 2, "already REMOVED");
+    }
+
+    /// A transition's when, duration, old and new value, old and new status, delay and flags.
+    type Fields = (i64, i64, Option<f64>, Option<f64>, Status, Status, i32, u32);
+
+    /// What a transition holds, with a NaN as `None`.
+    fn fields(t: &Transition) -> Fields {
+        let value = |v: f64| (!v.is_nan()).then_some(v);
+        (t.when, t.duration, value(t.old_value), value(t.new_value), t.old_status, t.new_status, t.delay, t.flags)
+    }
+
+    /// The entry of a link (from REMOVED to the alert's status, flagged when the rule repeats) and of an unlink (to
+    /// REMOVED), and the three clock reads of a host's first link in C's order: the alert's last status change,
+    /// the alarm id's seed, the entry.
+    #[test]
+    fn a_link_and_an_unlink_log_their_entries() {
+        let rules = rule_text("template", "plain", "t.ctx", &[])
+            + &rule_text("template", "repeating", "t.ctx", &["repeat: warning 7s critical 11s"]);
+        let health = health_with(&rules);
+        let host = host(&[]);
+        let c = chart(&host, "t.c", None, "t.ctx", &[]);
+        let alerts = HostAlerts::default();
+        let prototypes = health.prototypes();
+        let reads = std::cell::Cell::new(0);
+        let clock = || {
+            reads.set(reads.get() + 1);
+            NOW + reads.get() - 1
+        };
+
+        assert!(alerts.add(&c, &prototypes.get(b"plain").unwrap().rules()[0], &clock));
+        let plain = Arc::clone(&alerts.chart_alerts(&c)[0]);
+        assert_eq!((plain.run().last_status_change, i64::from(plain.id)), (NOW, NOW + 1));
+        // two reads for the second alert: the seed is set
+        assert!(alerts.add(&c, &prototypes.get(b"repeating").unwrap().rules()[0], &clock));
+        alerts.unlink_chart(&c, &|| NOW + 60, false);
+
+        let logged: Vec<_> = alerts.store().transitions.iter().map(|(key, t)| (key.clone(), fields(t))).collect();
+        let (uninitialized, removed, repeats) = (Status::Uninitialized, Status::Removed, ENTRY_FLAG_IS_REPEATING);
+        let (plain_key, repeating_key) = (b"plain,on[t.c]".to_vec(), b"repeating,on[t.c]".to_vec());
+        assert_eq!(
+            logged,
+            [
+                (plain_key.clone(), (NOW + 2, 2, None, None, removed, uninitialized, 0, 0)),
+                (repeating_key.clone(), (NOW + 4, 1, None, None, removed, uninitialized, 0, repeats)),
+                (plain_key, (NOW + 60, 60, None, None, uninitialized, removed, 0, 0)),
+                (repeating_key, (NOW + 60, 57, None, None, uninitialized, removed, 0, 0)),
+            ]
+        );
+    }
+
+    /// A key still held by an alert of a freed chart (the chart was defined again before its free reached health)
+    /// is given to the new chart; the old chart's free then finds nothing of its own to unlink.
+    #[test]
+    fn a_new_chart_of_a_freed_chart_s_id_takes_its_key() {
+        let health = health_with(&rule_text("template", "a", "t.ctx", &[]));
+        let host = host(&[]);
+        let old = chart(&host, "t.c", None, "t.ctx", &[]);
+        let alerts = HostAlerts::default();
+        let prototypes = health.prototypes();
+        let rule = &prototypes.get(b"a").unwrap().rules()[0];
+        assert!(alerts.add(&old, rule, &|| NOW));
+        let old_alert = Arc::clone(&alerts.chart_alerts(&old)[0]);
+
+        assert!(host.charts().free_if(&old, |_| true));
+        let new = chart(&host, "t.c", None, "t.ctx", &[]);
+        assert!(!Arc::ptr_eq(&old, &new));
+        assert!(alerts.add(&new, rule, &|| NOW + 1));
+        let new_alert = Arc::clone(&alerts.chart_alerts(&new)[0]);
+        assert!(!Arc::ptr_eq(&old_alert, &new_alert) && Arc::ptr_eq(&new_alert.chart, &new));
+        assert!(alerts.chart_alerts(&old).is_empty(), "a chart's alerts are those on that chart object");
+        assert_eq!(old_alert.run().next_event_id, 3, "the old alert was unlinked, with its entry");
+        assert_eq!(alerts.count(), 1);
+
+        alerts.unlink_chart(&old, &|| NOW + 2, false);
+        assert_eq!(named(&alerts.alerts()), [pair("a", "t.c")]);
+        assert!(alerts.is_linked(&host, &new_alert));
+        // a live chart keeps its key against a second rule, as before
+        assert!(!alerts.add(&new, rule, &|| NOW + 3));
     }
 
     #[test]

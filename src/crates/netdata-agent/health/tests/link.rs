@@ -175,7 +175,7 @@ fn links_match_c() {
 
     assert!(expected.next().is_none(), "link.tsv holds more charts than the scenario file");
     assert!(failures.is_empty(), "{} of {charts} charts differ:\n{}", failures.len(), failures[..failures.len().min(10)].join("\n"));
-    assert_eq!((charts, links), (4760, 6595));
+    assert_eq!((charts, links), (5020, 8196));
 }
 
 /// Every stored rule of every corpus item, copied as an alert copies it: the three expressions parsed again, and

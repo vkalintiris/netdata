@@ -11,6 +11,7 @@ use netdata_agent_storage::dbengine::engine::query::Dbengine;
 use netdata_agent_storage::query::{Priority, StorageQuery};
 
 use crate::chart::{Chart, Dim};
+use crate::host::Host;
 use crate::contexts::{DbRotation, ExtremeCardinality, RamIndex, TierRetention};
 use crate::mode::DbMode;
 use crate::pulse::Pulse;
@@ -88,16 +89,18 @@ impl std::fmt::Debug for DimensionRowHook {
     }
 }
 
-/// What health hears from the database. C calls `rrdcalc.c` from these places directly; here health is above this
-/// crate, so the daemon installs what answers. Hosts are named by machine GUID.
+/// What health hears from the database. C calls `rrdcalc.c` from these places directly, on the object being
+/// freed; here health is above this crate, so the daemon installs what answers. A chart index knows its host by
+/// machine GUID only.
 #[derive(Debug, Clone, Copy)]
 pub enum HealthEvent<'a> {
     /// `rrdset_delete_callback()`: this chart of that host was freed.
     ChartFreed(&'a str, &'a Chart),
-    /// `rrdhost_cleanup_data_collection_and_health()`: the host's charts are about to be freed.
-    HostCleanup(&'a str),
-    /// `rrdhost_free_unlinked()`: the host left the index and its data collection was cleaned up.
-    HostFreed(&'a str),
+    /// `rrdhost_cleanup_data_collection_and_health()`: this host's charts are about to be freed.
+    HostCleanup(&'a Host),
+    /// `rrdhost_free_unlinked()`: this host is gone and its data collection was cleaned up. It need not be the host
+    /// its GUID names in the index: a host that found its GUID taken there is freed the same way.
+    HostFreed(&'a Host),
 }
 
 struct HealthHook(Box<dyn Fn(HealthEvent<'_>) + Send + Sync>);

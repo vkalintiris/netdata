@@ -1287,7 +1287,7 @@ impl Host {
             self.stop_receiver_and_wait(&slot);
         }
         // rrdcalc_delete_all(), before the charts go
-        self.storage().health_event(HealthEvent::HostCleanup(self.machine_guid()));
+        self.storage().health_event(HealthEvent::HostCleanup(self));
         self.charts.flush();
         self.variables.clear();
         self.replace_stream_path(Vec::new());
@@ -1326,7 +1326,7 @@ impl Host {
     /// `rrdhost_free_unlinked()` of a host out of the index: its data collection cleaned up, then marked deleted.
     fn freed_unlinked(&self) {
         self.cleanup_data_collection();
-        self.storage().health_event(HealthEvent::HostFreed(self.machine_guid()));
+        self.storage().health_event(HealthEvent::HostFreed(self));
         self.pulse_status(crate::pulse::host_status::DELETED);
     }
 
@@ -2736,17 +2736,25 @@ mod tests {
         let host = hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {}).expect("created");
         let slot = Arc::new(ReceiverSlot::new(1, Default::default(), ReceiverLink::default(), Box::new(|| {})));
         let label = || localhost.labels().get(b"_is_parent").map(<[u8]>::to_vec);
+        let pending = |what: &str| (label().map(|v| v == b"true"), localhost.take_health_pending(), what.to_owned());
+        let asked = |is_parent: bool, flags: u32, what: &str| (Some(is_parent), flags, what.to_owned());
+        // the label already says "true" (as a labels reload writes it): the answer moves, the label does not
+        localhost.update_labels(|labels| labels.add(b"_is_parent", b"true", crate::labels::SRC_AUTO));
         localhost.take_health_pending();
-
         assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
         hosts.update_is_parent_label();
-        assert_eq!((label(), localhost.take_health_pending()), (Some(b"true".to_vec()), pending_flags::LABEL_RECHECK));
-        hosts.update_is_parent_label();
-        assert_eq!(localhost.take_health_pending(), 0, "the same answer again");
+        assert_eq!(pending("the label was there"), asked(true, 0, "the label was there"));
 
         host.clear_receiver(&slot, 0);
         hosts.update_is_parent_label();
-        assert_eq!((label(), localhost.take_health_pending()), (Some(b"false".to_vec()), pending_flags::LABEL_RECHECK));
+        assert_eq!(pending("detached"), asked(false, pending_flags::LABEL_RECHECK, "detached"));
+        hosts.update_is_parent_label();
+        assert_eq!(pending("the same answer"), asked(false, 0, "the same answer"));
+
+        let slot = Arc::new(ReceiverSlot::new(2, Default::default(), ReceiverLink::default(), Box::new(|| {})));
+        assert_eq!(host.set_receiver(Arc::clone(&slot)), Attach::Attached);
+        hosts.update_is_parent_label();
+        assert_eq!(pending("attached"), asked(true, pending_flags::LABEL_RECHECK, "attached"));
         assert_eq!(host.take_health_pending(), 0, "the child's own labels did not change");
     }
 
@@ -3264,8 +3272,8 @@ mod tests {
                     HealthEvent::ChartFreed(host, chart) => {
                         format!("chart {host} {} freed={}", chart.id(), chart.is_freed())
                     }
-                    HealthEvent::HostCleanup(host) => format!("cleanup {host}"),
-                    HealthEvent::HostFreed(host) => format!("freed {host}"),
+                    HealthEvent::HostCleanup(host) => format!("cleanup {}", host.machine_guid()),
+                    HealthEvent::HostFreed(host) => format!("freed {}", host.machine_guid()),
                 });
             }
         });

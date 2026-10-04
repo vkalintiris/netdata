@@ -283,8 +283,8 @@ impl Timezone {
     }
 
     /// `refresh_system_timezone()` once localhost exists: the triplet now, and localhost's (its info, then its
-    /// `_timezone` and `_abbrev_timezone` labels, sent to the parent) when any of the three changed. Health's label
-    /// recheck and the cloud's node info it also updates are not ported.
+    /// `_timezone` and `_abbrev_timezone` labels, sent to the parent) when any of the three changed; health rechecks
+    /// localhost's labels when one of the two labels changed. The cloud's node info it also updates is not ported.
     fn refresh_system(&mut self, name: &str, tzdb: bool, localhost: &Host, now_s: i64) {
         // a tzdb name makes the flag sticky
         if tzdb {
@@ -518,6 +518,11 @@ mod tests {
         tz.pulse_refresh(&localhost, 59 * MINUTE_UT, now_s);
         tz.pulse_refresh(&localhost, 60 * MINUTE_UT, now_s);
         assert!(!changed(&localhost), "nothing changed");
+        assert_eq!(localhost.take_health_pending(), 0);
+        // only the offset moved: the info follows, the two labels are what they were, and health is not asked
+        localhost.update_info(|info| info.utc_offset = 3600);
+        tz.refresh_system("Etc/UTC", true, &localhost, now_s);
+        assert_eq!((localhost.info().utc_offset, changed(&localhost)), (0, true));
         assert_eq!(localhost.take_health_pending(), 0);
 
         // a configured zone stays, and its difference from the system's is told once

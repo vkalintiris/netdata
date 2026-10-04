@@ -2254,18 +2254,31 @@ mod tests {
         charts.create(&spec("t", "c", None));
         assert_eq!((chart.take_health_pending(), host()), (0, 0), "unchanged");
 
-        for (what, changed) in [
-            ("title", ChartSpec { title: "another title", ..spec("t", "c", None) }),
-            ("units", ChartSpec { title: "another title", units: "other units", ..spec("t", "c", None) }),
-            ("priority", ChartSpec { title: "another title", units: "other units", priority: 7, ..spec("t", "c", None) }),
-        ] {
+        // each of C's nine fields, changed one after the other
+        let mut changed = spec("t", "c", None);
+        type Change = fn(&mut ChartSpec);
+        let steps: [(&str, Change); 9] = [
+            ("title", |s| s.title = "another title"),
+            ("units", |s| s.units = "other units"),
+            ("priority", |s| s.priority = 7),
+            ("update every", |s| s.update_every = 5),
+            ("plugin", |s| s.plugin = "another plugin"),
+            ("module", |s| s.module = Some("another module")),
+            ("family", |s| s.family = Some("another family")),
+            ("context", |s| s.context = Some("another.context")),
+            ("chart type", |s| s.chart_type = ChartType::Area),
+        ];
+        for (what, change) in steps {
+            change(&mut changed);
             charts.create(&changed);
             assert_eq!(chart.take_health_pending(), flags::PENDING_HEALTH_INITIALIZATION, "{what}");
             assert_eq!(host(), pending_flags::HEALTH_INITIALIZATION, "{what}");
+            charts.create(&changed);
+            assert_eq!((chart.take_health_pending(), host()), (0, 0), "{what} again");
         }
 
         // a rename: the chart's recheck, and the host's initialization (only this chart is done again)
-        let renamed = ChartSpec { title: "another title", units: "other units", priority: 7, ..spec("t", "c", Some("renamed")) };
+        let renamed = ChartSpec { name: Some("renamed"), ..changed };
         charts.create(&renamed);
         assert_eq!(chart.take_health_pending(), flags::PENDING_LABEL_RECHECK, "renamed");
         assert_eq!(host(), pending_flags::HEALTH_INITIALIZATION);

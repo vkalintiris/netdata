@@ -16,17 +16,28 @@ use crate::alerts::HostAlerts;
 use crate::matching::{ChartKey, rules_for_chart};
 
 impl Health {
-    /// The host's alerts; `None` until its first health pass.
+    /// The host's alerts; `None` until its first health pass, and for a host object that only shares its GUID
+    /// with the one the alerts are of.
     pub fn host(&self, host: &Host) -> Option<Arc<HostAlerts>> {
-        self.host_by_guid(host.machine_guid())
+        self.host_by_guid(host.machine_guid()).filter(|alerts| alerts.is_of(host))
     }
 
     fn host_by_guid(&self, guid: &str) -> Option<Arc<HostAlerts>> {
         self.hosts().get(guid).cloned()
     }
 
-    fn host_alerts(&self, host: &Host) -> Arc<HostAlerts> {
-        Arc::clone(self.hosts().entry(host.machine_guid().to_owned()).or_default())
+    /// The host's alerts, made at its first pass. Alerts another host object of this GUID left behind are dropped:
+    /// this one starts with its first pass.
+    fn host_alerts(&self, host: &Arc<Host>) -> Arc<HostAlerts> {
+        let mut hosts = self.hosts();
+        match hosts.get(host.machine_guid()) {
+            Some(alerts) if alerts.is_of(host) => Arc::clone(alerts),
+            _ => {
+                let alerts = Arc::new(HostAlerts::of(host));
+                hosts.insert(host.machine_guid().to_owned(), Arc::clone(&alerts));
+                alerts
+            }
+        }
     }
 
     /// `health_prototype_alerts_for_rrdset_incrementally()`: every stored rule that matches the chart is linked to
@@ -96,7 +107,7 @@ impl Health {
     /// The first steps of `health_event_loop_for_host()`, for a host the gate let through: its first pass links
     /// every chart (`health_initialize_rrdhost()`), and every pass takes the pending flags. A stopping service is
     /// looked for where C looks: before the host is marked initialized, and again before its charts are linked.
-    pub fn host_pass(&self, host: &Host, clock: Clock, running: &dyn Fn() -> bool) {
+    pub fn host_pass(&self, host: &Arc<Host>, clock: Clock, running: &dyn Fn() -> bool) {
         let alerts = self.host_alerts(host);
         if running() && !alerts.initialize() && running() {
             self.apply_prototypes_to_host(host, clock, running);
@@ -104,26 +115,30 @@ impl Health {
         self.delayed_initializations(host, &alerts, clock, running);
     }
 
-    /// `rrdset_delete_callback()`: a freed chart's alerts go, on the thread that frees it. The host is named by its
-    /// machine GUID, as the three calls from the database name it.
+    /// `rrdset_delete_callback()`: the alerts on a freed chart go, on the thread that frees it. A chart index knows
+    /// its host by machine GUID only; the alerts are found by the chart object, so another host object of that
+    /// GUID, or another chart of that id, loses nothing.
     pub fn chart_freed(&self, host_guid: &str, chart: &Chart, clock: Clock, exiting: bool) {
         if let Some(alerts) = self.host_by_guid(host_guid) {
             alerts.unlink_chart(chart, clock, exiting);
         }
     }
 
-    /// `rrdhost_cleanup_data_collection_and_health()`: every alert of the host goes, before its charts do. The host
-    /// stays initialized, as C never clears that flag.
-    pub fn host_cleanup(&self, host_guid: &str, clock: Clock, exiting: bool) {
-        if let Some(alerts) = self.host_by_guid(host_guid) {
+    /// `rrdhost_cleanup_data_collection_and_health()`: every alert of that host object goes, before its charts do.
+    /// The host stays initialized, as C never clears that flag.
+    pub fn host_cleanup(&self, host: &Host, clock: Clock, exiting: bool) {
+        if let Some(alerts) = self.host(host) {
             alerts.delete_all(clock, exiting);
         }
     }
 
-    /// `rrdhost_free_unlinked()`, after the cleanup: the host is forgotten, so that a new host of that GUID starts
-    /// with its first pass.
-    pub fn host_freed(&self, host_guid: &str) {
-        self.hosts().remove(host_guid);
+    /// `rrdhost_free_unlinked()`, after the cleanup: that host object is forgotten, so that a new host of its GUID
+    /// starts with its first pass.
+    pub fn host_freed(&self, host: &Host) {
+        let mut hosts = self.hosts();
+        if hosts.get(host.machine_guid()).is_some_and(|alerts| alerts.is_of(host)) {
+            hosts.remove(host.machine_guid());
+        }
     }
 }
 
@@ -239,6 +254,74 @@ mod tests {
         );
     }
 
+    /// A flag raised while a pass works on its chart is kept for the next pass: the flags are taken in one step,
+    /// before the work.
+    #[test]
+    fn a_flag_raised_during_a_pass_is_kept_for_the_next() {
+        use netdata_agent_rrd::host::pending_flags;
+        let health = health_with(&rules());
+        let host = host(&[("region", "eu")]);
+        let a1 = chart(&host, "t.a1", None, "ctx.a", &[]);
+        health.host_pass(&host, &|| NOW, &running);
+
+        a1.raise_label_recheck();
+        // the collector raises both again while the pass makes the chart's alerts again (the clock is read there)
+        let raised = std::cell::Cell::new(false);
+        let clock = || {
+            if !raised.replace(true) {
+                a1.raise_label_recheck();
+                host.raise_label_recheck();
+            }
+            NOW + 1
+        };
+        health.host_pass(&host, &clock, &running);
+        assert!(raised.get());
+        assert_eq!(a1.take_health_pending(), flags::PENDING_LABEL_RECHECK);
+        assert_eq!(host.take_health_pending(), pending_flags::HEALTH_INITIALIZATION | pending_flags::LABEL_RECHECK);
+    }
+
+    /// Alerts belong to a host object. Another object of the same machine GUID (one that found the GUID taken in
+    /// the index and is freed at once) has none, and its cleanup and its free leave the owner's alone. Two hosts
+    /// with a chart of one id each keep their own.
+    #[test]
+    fn a_host_s_alerts_are_its_own() {
+        use crate::testing::host_of;
+        let health = health_with(&rules());
+        let owner = host(&[("region", "eu")]);
+        let a1 = chart(&owner, "t.a1", None, "ctx.a", &[]);
+        health.host_pass(&owner, &|| NOW, &running);
+        let one = [pair("on_a", "t.a1")];
+        assert_eq!(linked(&health, &owner), one);
+
+        let twin = host(&[("region", "eu")]);
+        assert_eq!(twin.machine_guid(), owner.machine_guid());
+        assert!(health.host(&twin).is_none());
+        health.host_cleanup(&twin, &|| NOW + 1, false);
+        health.host_freed(&twin);
+        assert_eq!(linked(&health, &owner), one);
+
+        // another host with a chart of the same id
+        let other = host_of("99999999-2222-4333-8444-555555555555", &[("region", "eu")]);
+        let other_a1 = chart(&other, "t.a1", None, "ctx.a", &[]);
+        health.host_pass(&other, &|| NOW + 2, &running);
+        assert_eq!(linked(&health, &other), one);
+        // a chart's free names its host by GUID and the chart by its object
+        health.chart_freed(other.machine_guid(), &a1, &|| NOW + 3, false);
+        assert_eq!((linked(&health, &owner), linked(&health, &other)), (one.to_vec(), one.to_vec()));
+        health.chart_freed(owner.machine_guid(), &a1, &|| NOW + 3, false);
+        assert!(linked(&health, &owner).is_empty());
+        assert_eq!(linked(&health, &other), one);
+        health.chart_freed(other.machine_guid(), &other_a1, &|| NOW + 4, false);
+        assert!(linked(&health, &other).is_empty());
+
+        // a host object that takes over a GUID starts with its first pass
+        chart(&twin, "t.a1", None, "ctx.a", &[]);
+        twin.take_health_pending();
+        health.host_pass(&twin, &|| NOW + 5, &running);
+        assert_eq!(linked(&health, &twin), one);
+        assert!(health.host(&owner).is_none());
+    }
+
     /// A new chart is linked by the pass after its definition; a freed one loses its alerts where it is freed.
     #[test]
     fn a_new_chart_is_linked_and_a_freed_one_unlinked() {
@@ -258,14 +341,14 @@ mod tests {
         assert_eq!(linked(&health, &host), [pair("on_a", "t.a1")]);
         assert_eq!(alert.run().next_event_id, 3, "the unlink logged");
 
-        health.host_cleanup(host.machine_guid(), &|| NOW + 3, false);
+        health.host_cleanup(&host, &|| NOW + 3, false);
         assert!(linked(&health, &host).is_empty());
         // cleaned, and still initialized: a pass with nothing pending links nothing
         health.host_pass(&host, &|| NOW + 4, &running);
         assert!(linked(&health, &host).is_empty());
 
         // freed: forgotten, and a host of that GUID starts with its first pass
-        health.host_freed(host.machine_guid());
+        health.host_freed(&host);
         assert!(health.host(&host).is_none());
         health.host_pass(&host, &|| NOW + 5, &running);
         assert_eq!(linked(&health, &host), [pair("on_a", "t.a1")]);

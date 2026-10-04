@@ -404,13 +404,48 @@ mod tests {
         // and another alert's is read from that alert
         assert_eq!(value(&this, b"hv_one", false), hv(42.0, "hv.a"));
 
-        // an alert that is not linked any more finds nothing, not even its own values
-        health.chart_freed(host.machine_guid(), &chart("hv.c"), &|| NOW, false);
+        // an alert whose chart is gone is not linked, whether its free reached health or not: it finds nothing, not
+        // even its own values, and is no candidate for the others
+        let candidates = |this: &This| {
+            lookup(&host, Some(&alerts), this, b"hv_same", false, &|| NOW).map(|found| found.candidates)
+        };
+        assert_eq!(candidates(&This::of(&one, &one.run())), Some(3));
+        assert!(host.charts().free_if(&chart("hv.c"), |_| true));
+        assert_eq!(alerts.by_name(b"hv_same").len(), 3, "still in the name index");
         assert_eq!(value(&this, b"this", false), None);
         assert_eq!(value(&this, b"hv_one", false), None);
-        // and it is no candidate for the others
-        let this = This::of(&one, &one.run());
-        assert_eq!(lookup(&host, Some(&alerts), &this, b"hv_same", false, &|| NOW).map(|found| found.candidates), Some(2));
+        assert_eq!(candidates(&This::of(&one, &one.run())), Some(2));
+        health.chart_freed(host.machine_guid(), &same.chart, &|| NOW, false);
+        assert_eq!(alerts.by_name(b"hv_same").len(), 2);
+        assert_eq!(candidates(&This::of(&one, &one.run())), Some(2));
+    }
+
+    /// What the recorded case has no object for: a float dimension's raw value is its float lane; a dimension's
+    /// time is its own, not its chart's; `CHART.DIM` does not find an obsolete chart by its id.
+    #[test]
+    fn a_float_dimension_its_own_time_and_an_obsolete_chart() {
+        use netdata_agent_rrd::chart::dim_flags;
+        let host = variables_case_host();
+        variables_case_collect(&host, NOW);
+        let a = find_chart(&host, "hv.a");
+        let found = |name: &[u8]| {
+            lookup(&host, None, &This::blank(&a), name, true, &|| NOW).map(|found| (found.value, found.candidates))
+        };
+
+        let b = a.dim("b").expect("the dimension");
+        b.update_meta(|meta| meta.flags |= dim_flags::FLOAT);
+        b.update_collection(|collection| {
+            collection.last_collected_value_float = 1.5;
+            collection.last_collected_time = (NOW - 7, 0);
+        });
+        assert_eq!(found(b"b_raw"), Some((1.5, 1)));
+        assert_eq!(found(b"a_raw"), Some((10.0, 1)), "an integer dimension keeps its integer lane");
+        assert_eq!(found(b"b_last_collected_t"), Some(((NOW - 7) as f64, 1)));
+        assert_eq!(found(b"last_collected_t"), Some((NOW as f64, 1)));
+
+        assert_eq!(found(b"hv.e.a"), Some((0.0, 1)));
+        find_chart(&host, "hv.e").is_obsolete(&host);
+        assert_eq!(found(b"hv.e.a"), None);
     }
 
     /// A blank alert is linked while the host's chart of that id is the chart it names.

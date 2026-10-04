@@ -221,3 +221,68 @@ impl Alert {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::{chart, health_with, host};
+
+    /// An alert holds every field of its rule but the expressions, which it parses for itself.
+    #[test]
+    fn the_copy_holds_every_field_of_the_rule() {
+        let text = "template: full\n on: t.ctx\n class: Errors\n type: System\n component: Disk\n \
+                    lookup: sum -5m at -1m unaligned percentage of a,b\n every: 13s\n units: things\n \
+                    summary: a summary\n info: an info\n delay: up 2m down 3m multiplier 1.5 max 1h\n \
+                    repeat: warning 7s critical 11s\n options: no-clear-notification\n exec: /bin/true\n \
+                    to: someone\n\n";
+        let health = health_with(text);
+        let prototypes = health.prototypes();
+        let rule = &prototypes.get(b"full").unwrap().rules()[0].config;
+        let stated = format!("{rule:?}");
+        // a value of its own in each field that has a neighbour of its type
+        for field in [
+            "update_every: 13",
+            "before: -60",
+            "after: -300",
+            "delay_up_duration: 120",
+            "delay_down_duration: 180",
+            "delay_max_duration: 3600",
+            "delay_multiplier: 1.5",
+            "warn_repeat_every: 7",
+            "crit_repeat_every: 11",
+        ] {
+            assert!(stated.contains(field), "{field} in {stated}");
+        }
+        assert!(rule.calculation.is_none() && rule.warning.is_none() && rule.critical.is_none());
+        assert_eq!(format!("{:?}", copy_config(rule).0), stated);
+    }
+
+    /// The runtime summary and info are made when the alert is: the family and the labels of its chart filled in;
+    /// a text that comes out empty falls back to the configured one; a rule without them has none.
+    #[test]
+    fn an_alert_s_texts_are_made_at_its_creation() {
+        let text = "template: texts\n on: t.ctx\n every: 10s\n calc: 1\n \
+                    summary: ${family} of ${label:kind}\n info: ${family}\n\n\
+                    template: bare\n on: t.ctx\n every: 10s\n calc: 1\n\n";
+        let health = health_with(text);
+        let prototypes = health.prototypes();
+        let host = host(&[]);
+        let c = chart(&host, "t.c", None, "t.ctx", &[("kind", "x")]);
+        let alert = |name: &[u8], chart: &Arc<Chart>| {
+            Alert::new(b"key".to_vec(), chart, &prototypes.get(name).unwrap().rules()[0].config, 1, 0).snapshot()
+        };
+
+        let texts = alert(b"texts", &c);
+        assert_eq!(texts.summary.as_deref(), Some(&b"family of x"[..]));
+        assert_eq!(texts.info.as_deref(), Some(&b"family"[..]));
+        let bare = alert(b"bare", &c);
+        assert_eq!((bare.summary, bare.info), (None, None));
+
+        // a chart without a family: the info comes out empty, and the configured text stands
+        let d = chart(&host, "t.d", None, "t.ctx", &[("kind", "y")]);
+        d.update_meta(|meta| meta.family.clear());
+        let texts = alert(b"texts", &d);
+        assert_eq!(texts.summary.as_deref(), Some(&b" of y"[..]));
+        assert_eq!(texts.info.as_deref(), Some(&b"${family}"[..]));
+    }
+}

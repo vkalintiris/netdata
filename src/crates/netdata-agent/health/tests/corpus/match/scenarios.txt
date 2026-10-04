@@ -555,6 +555,302 @@ chart x.one x.one x.ctx c_sda
 chart m.ctx m.ctx y.ctx nolabels
 chart y.one m.one y.ctx nolabels
 
+scenario enabled-empty
+load 0 tests/corpus/match/basic.conf
+enabled 
+host eu h_eu
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host us h_us
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host win h_win
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host empty h_empty
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host bare nolabels
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+
+scenario enabled-bang
+load 0 tests/corpus/match/basic.conf
+enabled !
+host eu h_eu
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host us h_us
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host win h_win
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host empty h_empty
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host bare nolabels
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+
+scenario enabled-blanks
+load 0 tests/corpus/match/basic.conf
+enabled   
+host eu h_eu
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host us h_us
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host win h_win
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host empty h_empty
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host bare nolabels
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+
+scenario enabled-bang-then-word
+load 0 tests/corpus/match/basic.conf
+enabled ! m_tmpl
+host eu h_eu
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host us h_us
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host win h_win
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host empty h_empty
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+host bare nolabels
+chart m.one m_one_name m.ctx nolabels
+chart m.two m.two m.ctx nolabels
+chart m.one m_one_name m.ctx c_sda
+chart m.two m.two m.ctx c_sda
+chart m.one m_one_name m.ctx c_sdb
+chart m.two m.two m.ctx c_sdb
+chart m.one m_one_name m.ctx c_other
+chart m.two m.two m.ctx c_other
+chart m.one m_one_name m.ctx c_empty
+chart m.two m.two m.ctx c_empty
+chart x.one x.one x.ctx c_sda
+chart m.ctx m.ctx y.ctx nolabels
+chart y.one m.one y.ctx nolabels
+
 # the stock rules
 labelset s_linux _os=linux|_hostname=box1
 labelset s_freebsd _os=freebsd|_hostname=box2

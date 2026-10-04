@@ -219,6 +219,21 @@ mod tests {
         }
     }
 
+    /// A float dimension's last collected value is printed from its float lane, as a double; an integer one as an
+    /// integer.
+    #[test]
+    fn a_float_dimension_s_raw_value_is_a_double() {
+        use netdata_agent_rrd::chart::dim_flags;
+        let host = variables_case_host();
+        variables_case_collect(&host, NOW);
+        let a = find_chart(&host, "hv.a");
+        let b = a.dim("b").expect("the dimension");
+        b.update_meta(|meta| meta.flags |= dim_flags::FLOAT);
+        b.update_collection(|collection| collection.last_collected_value_float = 1.5);
+        let body = String::from_utf8(alarm_variables_json(&host, None, &a, NOW)).expect("text");
+        assert!(body.contains("\"a_raw\":10,\n        \"b_raw\":1.5\n"), "{body}");
+    }
+
     /// A chart's `alarms` member and the two counts, before the host's first pass and after it.
     #[test]
     fn a_chart_shows_its_alerts_and_the_host_counts_them() {

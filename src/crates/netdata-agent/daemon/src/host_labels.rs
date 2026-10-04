@@ -247,4 +247,40 @@ mod tests {
             ["RRDLABEL: environment variable 'ND_TEST_UNSET' is not set and no default provided"]
         );
     }
+
+    /// `reload_host_labels()` asks health to match localhost's alerts again every time, changed or not.
+    #[test]
+    fn a_reload_asks_health_for_a_recheck() {
+        use netdata_agent_rrd::host::{Host, HostInfo, pending_flags};
+        let info = HostInfo {
+            hostname: "box".into(),
+            registry_hostname: "box".into(),
+            os: "linux".into(),
+            timezone: "UTC".into(),
+            abbrev_timezone: "UTC".into(),
+            utc_offset: 0,
+            program_name: "netdata".into(),
+            program_version: "v0".into(),
+            update_every: 1,
+            db_mode: netdata_agent_rrd::mode::DbMode::Ram,
+            history_entries: 4096,
+            health_enabled: true,
+            system_info: Default::default(),
+            replication_enabled: false,
+            replication_period: 0,
+            replication_step: 0,
+            stream_send: None,
+            cache_dir: None,
+        };
+        let hosts = Hosts::new(Host::new("0f4b6e5c-1d2a-4b3c-9d8e-7f6a5b4c3d2e", true, info));
+        let localhost = hosts.localhost();
+        // no Kubernetes script there
+        let plugins = tempfile::tempdir().unwrap();
+        let (mut netdata, mut cloud) = (Config::default(), Config::default());
+        for _ in 0..2 {
+            localhost.take_health_pending();
+            reload(&mut netdata, &mut cloud, &plugins.path().to_string_lossy(), &hosts);
+            assert_eq!(localhost.take_health_pending(), pending_flags::LABEL_RECHECK);
+        }
+    }
 }

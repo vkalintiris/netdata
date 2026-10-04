@@ -852,6 +852,23 @@ mod tests {
             assert_eq!(r.body, std::fs::read(recorded.join(file)).unwrap(), "{path}{query}");
         }
 
+        // the commands are for clients with the alerts ACL, whatever else they hold
+        let with_acl = |path: &str, client_acl: u32| {
+            let mut req = Request::default();
+            req.path = path.as_bytes().to_vec();
+            req.url_as_received = path.as_bytes().to_vec();
+            let ctx = crate::access_log::RequestContext::default();
+            process_request(&req, b"", client_acl, &s, Instant::now(), &ctx, &|_| false)
+        };
+        let all = acl::bits::TRANSPORTS | acl::bits::ALL_LISTENER_FEATURES;
+        let denied = server::permission_denied_acl();
+        for path in ["/api/v1/alarm_variables", "/api/v1/variable", "/api/v3/variable"] {
+            let r = with_acl(path, all & !acl::bits::ALERTS);
+            assert_eq!((r.code, &r.body), (denied.code, &denied.body), "{path} without the alerts ACL");
+            let r = with_acl(path, all & !acl::bits::METRICS);
+            assert_eq!(r.code, status::BAD_REQUEST, "{path} without the metrics ACL");
+        }
+
         // a chart with a variable, on a host without alerts
         let host = s.hosts.localhost();
         let (chart, _) = host.charts().create(&ChartSpec {

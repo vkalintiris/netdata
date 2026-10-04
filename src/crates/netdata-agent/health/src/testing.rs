@@ -15,6 +15,11 @@ use crate::readfile::health_readfile;
 
 /// A localhost with health enabled and the given labels.
 pub(crate) fn host(labels: &[(&str, &str)]) -> Arc<Host> {
+    host_of("11111111-2222-4333-8444-555555555555", labels)
+}
+
+/// A host of that machine GUID with health enabled and the given labels.
+pub(crate) fn host_of(guid: &str, labels: &[(&str, &str)]) -> Arc<Host> {
     let info = HostInfo {
         hostname: "testhost".into(),
         registry_hostname: "testhost".into(),
@@ -35,7 +40,7 @@ pub(crate) fn host(labels: &[(&str, &str)]) -> Arc<Host> {
         stream_send: None,
         cache_dir: None,
     };
-    let host = Arc::new(Host::new("11111111-2222-4333-8444-555555555555", true, info));
+    let host = Arc::new(Host::new(guid, true, info));
     host.update_labels(|set| {
         for (name, value) in labels {
             set.add(name.as_bytes(), value.as_bytes(), SRC_CONFIG);

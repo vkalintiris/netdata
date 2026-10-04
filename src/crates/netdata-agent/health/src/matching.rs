@@ -73,10 +73,11 @@ pub fn label_patterns(text: &[u8]) -> Option<PatternArray> {
     (!array.is_empty()).then_some(array)
 }
 
-/// `prototype_matches_host()`: `[health] enabled alarms` on the rule's name, then the rule's host labels. A host
-/// without a label set (`None`) passes any pattern.
+/// `prototype_matches_host()`: `[health] enabled alarms` on the rule's name, then the rule's host labels. A list
+/// without a word (empty, blanks, a lone `!`) is C's NULL pattern, which lets every rule through. A host without a
+/// label set (`None`) passes any pattern.
 pub fn matches_host(enabled_alerts: &SimplePattern, host_labels: Option<&Labels>, rule: &Rule) -> bool {
-    if !enabled_alerts.matches(rule.config.name.as_deref().unwrap_or(b"")) {
+    if !enabled_alerts.is_empty() && !enabled_alerts.matches(rule.config.name.as_deref().unwrap_or(b"")) {
         return false;
     }
     match (host_labels, &rule.r#match.host_labels_pattern) {
