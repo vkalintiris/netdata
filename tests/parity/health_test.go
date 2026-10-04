@@ -24,16 +24,18 @@ import (
 )
 
 // The health checks' runner (M9 commit 0, D183; plan evidence/2026-10-03-plan-m9-commit0.md §5). Each case boots both
-// agents with health on (`Options.HealthOn`), the stock alerts off, one user health.d file (a case may lay out more
-// files and a stock tree of its own: healthCase.files, stockDir), the recording notifier
-// (package notify) as `script to execute on alarm`, a health pass every second, a fixed management key and the fake
-// plugin, whose one chart both plugins create at the same second once both agents are ready, and whose values the
-// case switches at the middle of a second: both agents store the same series, second for second. Every comparison
-// checks the oracle first: a guard names the health state it must have reached, so two agents without health never
-// pass; then the candidate gets a bounded wait to show the same view. The views mask each side's clock and id seeds
-// (health_norm_test.go); beside the masks, two equal views must hold their events' times within healthBound of each
-// other (near), and the ids' seeds are bound to the chart's first second (bases). While a case runs a watch samples
-// /proc: the installed notifier must never run (healthWatch).
+// agents with health on (`Options.HealthOn`; healthCase.off: off, for what C serves without health), the stock alerts
+// off, one user health.d file (a case may lay out more files and a stock tree of its own: healthCase.files, stockDir),
+// the recording notifier (package notify) as `script to execute on alarm`, a health pass every second, a fixed
+// management key and the fake plugin, whose charts both plugins create at the same second once both agents are ready
+// (one collected chart, and before it the charts a case defines with lines of its own: healthScenario), and whose
+// values the case switches at the middle of a second: both agents store the same series, second for second. Every
+// comparison checks the oracle first: a guard names the health state it must have reached, so two agents without
+// health never pass; then the candidate gets a bounded wait to show the same view. The views mask each side's clock
+// and id seeds (health_norm_test.go); beside the masks, two equal views must hold their events' times, and the
+// seconds a view of the variables' endpoints masked, within healthBound of each other (near), and the ids' seeds are
+// bound to the chart's first second (bases). While a case runs a watch samples /proc: the installed notifier must
+// never run (healthWatch).
 
 const (
 	// healthConfFile is a case's one file under <run>/etc/health.d (one file: no readdir order)
@@ -76,6 +78,11 @@ type healthCase struct {
 	extra  string
 	stock  bool
 	stream string
+	// off runs the case with health off: what C serves without it (the variables' endpoints, the chart's variables).
+	// The rails then want the oracle's health off.
+	off bool
+	// hostLabels are the lines of netdata.conf's [host labels] section
+	hostLabels string
 	// grid, when set, is the length in seconds of the case's aligned lookup window: the chart is created and each
 	// value switched at the window's healthGridSecond, so the windows hold the same mix of values in every run
 	grid int64
@@ -99,15 +106,18 @@ type healthPair struct {
 	released time.Time
 	// raw are each side's answers by the view they were rendered as (near reads their event times)
 	raw [2]map[string]string
+	// clocks are, by view, the seconds the view's clock masks replaced (near bounds them side to side)
+	clocks [2]map[string][]int64
 	// watch looks for the installed notifier while the case runs
 	watch *healthWatch
 }
 
-// healthOptions are a case's options: the fake plugin's (one tier, ram children, pulse off), health on with the rails'
-// notifier, a pass every second.
+// healthOptions are a case's options: the fake plugin's (one tier, ram children, pulse off), health on (off for a case
+// that says so) with the rails' notifier, a pass every second.
 func healthOptions(c healthCase) daemon.Options {
 	o := pluginsOptions(1, nil, nil, "")
-	o.HealthOn = true
+	o.HealthOn = !c.off
+	o.HostLabels = c.hostLabels
 	o.HealthExtra = "    script to execute on alarm = {run}/notify/stub\n    run at least every = 1s\n"
 	if !c.stock {
 		o.HealthExtra += "    enable stock health configuration = no\n"
@@ -126,11 +136,23 @@ var healthIdle = plugin.Scenario{Starts: []plugin.Start{{Steps: []plugin.Step{{H
 // healthValues is the fake plugin's scenario of a case with a chart: the chart is created at the `create` release,
 // then each phase's values are collected until the release `p<n>` (n the next phase's index); the last phase holds.
 func healthValues(chart, context string, dims []string, phases ...map[string]int64) *plugin.Scenario {
+	return healthScenario("", chart, context, dims, phases...)
+}
+
+// healthScenario is healthValues with lines of the case's own, written in one piece at the `create` release, before
+// the collected chart's definition: more charts (a name that is not the id, labels, a module), which exist and are
+// never collected, and VARIABLE lines. The agent reads the lines in the order they were written, so both sides create
+// the charts in one order: the lines' charts, then the collected one.
+func healthScenario(emit, chart, context string, dims []string, phases ...map[string]int64) *plugin.Scenario {
 	v := &plugin.Values{Chart: chart, Context: context, Dims: dims}
 	for i, set := range phases {
 		v.Phases = append(v.Phases, plugin.Phase{Set: set, Until: fmt.Sprintf("p%d", i+1)})
 	}
-	return &plugin.Scenario{Starts: []plugin.Start{{Steps: []plugin.Step{{WaitFile: "create"}, {Values: v}}}}}
+	steps := []plugin.Step{{WaitFile: "create"}}
+	if emit != "" {
+		steps = append(steps, plugin.Step{Emit: emit})
+	}
+	return &plugin.Scenario{Starts: []plugin.Start{{Steps: append(steps, plugin.Step{Values: v})}}}
 }
 
 // healthPrepare lays out a side's run directory before its agent starts: the health.d file, the case's other files,
@@ -199,7 +221,8 @@ func runHealthCases(t *testing.T, cases map[string]healthCase) {
 	for _, name := range slices.Sorted(maps.Keys(cases)) {
 		c := cases[name]
 		t.Run(name, func(t *testing.T) {
-			h := &healthPair{c: c, raw: [2]map[string]string{{}, {}}, watch: watchRealNotifier()}
+			h := &healthPair{c: c, raw: [2]map[string]string{{}, {}}, clocks: [2]map[string][]int64{{}, {}},
+				watch: watchRealNotifier()}
 			// a case that ends early still says what the watch saw
 			t.Cleanup(func() {
 				h.watch.end()
@@ -241,7 +264,8 @@ func runHealthCases(t *testing.T, cases map[string]healthCase) {
 var healthScriptRe = regexp.MustCompile(`(?m)^\s*script to execute on alarm = (.*)$`)
 
 // rails checks what every case stands on, before it plays: each agent's configuration names the side's stub as the
-// notifier (the default is the installed alarm-notify.sh, which may send mail), and the oracle runs health.
+// notifier (the default is the installed alarm-notify.sh, which may send mail), and the oracle runs health (a case
+// with health off: the oracle answers, and says its health is off).
 func (h *healthPair) rails(t *testing.T) {
 	t.Helper()
 	for _, s := range h.p.Each() {
@@ -254,11 +278,17 @@ func (h *healthPair) rails(t *testing.T) {
 			t.Fatalf("%s: the notifier is not the stub: /netdata.conf has %q, want %q", s.Role, m, notify.Path(s.Daemon.Opts.RunDir))
 		}
 	}
-	if a, status, _ := healthState(h.p.Oracle, "/api/v1/alarms"); !status {
+	switch a, status, _ := healthState(h.p.Oracle, "/api/v1/alarms"); {
+	case h.c.off && (status || !healthOffRe.Match(a.Body)):
+		t.Fatalf("oracle: health is not off: /api/v1/alarms answered %d %q", a.Status, a.Body)
+	case !h.c.off && !status:
 		t.Fatalf("oracle: health is not running: /api/v1/alarms answered %d %q", a.Status, a.Body)
 	}
 	h.noRealNotifier(t)
 }
+
+// the top of an /api/v1/alarms answer of a host whose health is off (health/health_json.c:278-291)
+var healthOffRe = regexp.MustCompile(`^\{\n\t"hostname": "[^"]*",\n\t"latest_alarm_log_unique_id": 0,\n\t"status": false,`)
 
 // healthState reads the top of an /api/v1/alarms answer: whether the host's health runs, and the last unique id its
 // alert log gave (health/health_json.c:278-291).
@@ -391,6 +421,12 @@ func (h *healthPair) keep(i int, view, raw string) string {
 	return view
 }
 
+// keepClocks remembers the seconds a view of side i masked (healthVars, healthTrace), for near.
+func (h *healthPair) keepClocks(i int, view string, clocks []int64) string {
+	h.clocks[i][view] = clocks
+	return view
+}
+
 // plain is side i's view of an answer compared as it is, but the side's directories.
 func (h *healthPair) plain(i int, path string, headers ...string) string {
 	r := healthGet(h.p.Each()[i].Daemon, path, headers...)
@@ -465,11 +501,18 @@ func (h *healthPair) release(t *testing.T, file string, phase int, hold time.Dur
 // which unlinks and links them again (:211-256): three entries per alert.
 func (h *healthPair) create(t *testing.T) int64 {
 	t.Helper()
-	time.Sleep(2 * time.Second)
-	sec := h.release(t, "create", 0, 0)
+	sec := h.createChart(t)
 	h.settle(t, h.n, "")
 	h.bases(t, h.n, sec)
 	return sec
+}
+
+// createChart is create without the alert logs: for a case with health off, whose hosts have no alert log to wait for
+// and no ids to bound. It returns the collected chart's first second.
+func (h *healthPair) createChart(t *testing.T) int64 {
+	t.Helper()
+	time.Sleep(2 * time.Second)
+	return h.release(t, "create", 0, 0)
 }
 
 // bases is the bound beside the id masks (D187 point 4): a host's unique ids and alarm ids count from the second its
@@ -516,8 +559,28 @@ func healthNear(oracle, candidate string) error {
 	return nil
 }
 
-// near applies healthNear to the answers two equal views were rendered from (a view no answer was kept for has none).
+// healthClocksNear is the bound beside the masks of the variables' endpoints: the seconds two equal views masked (the
+// clock at the read, the last collection's second), paired in the answers' order, are within healthBound of each
+// other. Both sides are read within a poll of each other and collect at the same second.
+func healthClocksNear(oracle, candidate []int64) error {
+	if len(oracle) != len(candidate) {
+		return fmt.Errorf("%d masked seconds on the oracle, %d on the candidate", len(oracle), len(candidate))
+	}
+	for k := range oracle {
+		if d := candidate[k] - oracle[k]; d > healthBound || -d > healthBound {
+			return fmt.Errorf("masked second %d is %d on the oracle, %d on the candidate: more than %d s apart", k+1, oracle[k],
+				candidate[k], healthBound)
+		}
+	}
+	return nil
+}
+
+// near applies healthClocksNear to the seconds two equal views masked, and healthNear to the answers they were
+// rendered from (a view no answer was kept for has none).
 func (h *healthPair) near(oracle, candidate string) error {
+	if err := healthClocksNear(h.clocks[0][oracle], h.clocks[1][candidate]); err != nil {
+		return err
+	}
 	ro, ok := h.raw[0][oracle]
 	rc, also := h.raw[1][candidate]
 	if !ok || !also {
@@ -669,6 +732,20 @@ func (h *healthPair) compareLines(t *testing.T, what string, lines func(i int) [
 		t.Fatalf("%s differ\noracle:\n%s\ncandidate:\n%s", what, o, c)
 	}
 	t.Logf("%s, both sides:\n%s", what, healthBrief(strings.Join(oracle, "\n")))
+}
+
+// threadRecords are side i's daemon.log records of one thread whose message starts with prefix, in file order, with
+// the log masks (normalizeLog). The `errno` field is compared: no C record of these carried one in any run observed.
+func (h *healthPair) threadRecords(t *testing.T, i int, thread, prefix string) []string {
+	t.Helper()
+	d := h.p.Each()[i].Daemon
+	var out []string
+	for _, l := range logLines(t, d.Opts.RunDir, "daemon.log") {
+		if threadOf(l) == thread && strings.Contains(l, ` msg="`+prefix) {
+			out = append(out, normalizeLog(l, d.Opts.RunDir, ""))
+		}
+	}
+	return out
 }
 
 // healthEntry is an entry of /api/v1/alarm_log, as the guards and the per-alert views read it.

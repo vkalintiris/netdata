@@ -664,7 +664,7 @@ func healthRowNames(rows []string) []string {
 // order (healthConfigRecords), then the alert_hash rows in rowid order, which is the order the rules were read in:
 // every column, the hash too (it covers the rule but its source, health_dyncfg.c:359-363); `date_updated` is a clock
 // and each side's run directory is `{run}`. The DynCfg nodes of the same rules are `health.dyncfg`'s, the alerts
-// linked to a chart `health.link`'s.
+// linked to a chart `health.api` `linked`'s (which rule is linked to which chart: `health.link`).
 func TestHealthConfig(t *testing.T) {
 	// the records comparison, with its guard on the oracle: exactly `count` records, each of `want` in one of them
 	records := func(count int, want ...string) func(t *testing.T, h *healthPair) {

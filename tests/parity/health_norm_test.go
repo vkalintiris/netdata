@@ -408,7 +408,7 @@ func (n *healthNorm) healthDump(t *testing.T, d *daemon.Daemon, more ...string) 
 // their distance from the side's base (0 kept), a set time as T (0 kept), a lookup's window by its length. A
 // transition id is named only by the alert log: a notifier's argument, a health.log record or a spawn record that
 // carries another id does not print as the entry's. The bounds beside the masks fail clocks more than healthBound
-// apart.
+// apart: the events' times, and the seconds the variables' endpoints' masks replaced.
 func TestHealthNorm(t *testing.T) {
 	run := filepath.Join(t.TempDir(), "oracle")
 	blank := func() *healthNorm {
@@ -568,6 +568,52 @@ func TestHealthNorm(t *testing.T) {
 		err := healthNear(body(1790000000, 1790000000), c.candidate)
 		if (err == nil) != (c.want == "") || (err != nil && !strings.Contains(err.Error(), c.want)) {
 			t.Errorf("near, %s: %v, want %q", name, err, c.want)
+		}
+	}
+
+	// the variables' endpoints: the read's second and a set collection second print T (0, never collected, is kept),
+	// and the masked seconds come back for the bound
+	vars := "{\n\"after\":1790000000,\n\"before\":1790000001,\n\"now\":1790000001,\n\"a_last_collected_t\":1789999999,\n" +
+		"\"p.q_last_collected_t\":0,\n\"last_collected_t\":1789999998,\n\"a_raw\":10\n}"
+	wantVars := "{\n\"after\":T,\n\"before\":T+1,\n\"now\":T+1,\n\"a_last_collected_t\":T,\n" +
+		"\"p.q_last_collected_t\":0,\n\"last_collected_t\":T,\n\"a_raw\":10\n}"
+	if got, clocks := healthVars(vars); got != wantVars || !slices.Equal(clocks, []int64{1790000000, 1789999999, 1789999998}) {
+		t.Errorf("alarm_variables:\n got %q %v\nwant %q", got, clocks, wantVars)
+	}
+	trace := func(variable, value string) string {
+		return "{\n\"variable\":\"" + variable + "\",\n\"instance\":\"c.a\",\n\"context\":\"c\",\n\"found\":true,\n\"value\":" + value +
+			",\n\"source\":{\n\"candidates\":1\n}\n}"
+	}
+	for name, c := range map[string]struct {
+		variable, value, want string
+		clocks                []int64
+	}{
+		"the wall clock":                {"now", "1790000001", "T", []int64{1790000001}},
+		"the chart's last collection":   {"last_collected_t", "1790000000", "T", []int64{1790000000}},
+		"a dimension's":                 {"c.a.a_last_collected_t", "1790000000", "T", []int64{1790000000}},
+		"never collected":               {"a_last_collected_t", "0", "0", nil},
+		"a value":                       {"a", "1790000001", "1790000001", nil},
+		"a name that only ends like it": {"is_now", "1790000001", "1790000001", nil},
+		"no value":                      {"now", "null", "null", nil},
+	} {
+		if got, clocks := healthTrace(trace(c.variable, c.value)); got != trace(c.variable, c.want) || !slices.Equal(clocks, c.clocks) {
+			t.Errorf("a trace, %s: %q %v, want the value %s and %v", name, got, clocks, c.want, c.clocks)
+		}
+	}
+	for name, c := range map[string]struct {
+		oracle, candidate []int64
+		want              string
+	}{
+		"the same":            {[]int64{1790000000, 1790000001}, []int64{1790000000, 1790000001}, ""},
+		"two seconds later":   {[]int64{1790000000}, []int64{1790000002}, ""},
+		"three seconds later": {[]int64{1790000000}, []int64{1790000003}, "masked second 1 is 1790000000 on the oracle"},
+		"not a clock":         {[]int64{1790000000}, []int64{1}, "masked second 1"},
+		"one less":            {[]int64{1790000000, 1790000001}, []int64{1790000000}, "2 masked seconds on the oracle, 1 on the candidate"},
+		"none":                {nil, nil, ""},
+	} {
+		err := healthClocksNear(c.oracle, c.candidate)
+		if (err == nil) != (c.want == "") || (err != nil && !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("the masked seconds, %s: %v, want %q", name, err, c.want)
 		}
 	}
 
