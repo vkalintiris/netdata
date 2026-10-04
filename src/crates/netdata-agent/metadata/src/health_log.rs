@@ -78,6 +78,50 @@ const SQL_GET_EVENT_ID: &str = "SELECT MAX(alarm_event_id)+1 FROM health_log_det
 const SQL_GET_ALARM_ID: &str =
     "SELECT alarm_id, health_log_id FROM health_log WHERE host_id = @host_id AND chart = @chart AND name = @name";
 
+const SQL_SELECT_HEALTH_LOG: &str = "SELECT hld.unique_id, hld.alarm_id, hld.alarm_event_id, hl.config_hash_id, \
+     hld.updated_by_id, hld.updates_id, hld.when_key, hld.duration, hld.non_clear_duration, hld.flags, \
+     hld.exec_run_timestamp, hld.delay_up_to_timestamp, hl.name, hl.chart, hl.exec, hl.recipient, ah.source, \
+     hl.units, hld.info, hld.exec_code, hld.new_status, hld.old_status, hld.delay, hld.new_value, hld.old_value, \
+     hld.last_repeat, ah.class, ah.component, ah.type, hl.chart_context, hld.transition_id, hld.summary FROM \
+     health_log hl, alert_hash ah, health_log_detail hld WHERE hl.config_hash_id = ah.hash_id and hl.health_log_id \
+     = hld.health_log_id and hl.host_id = @host_id AND hld.unique_id > @after ";
+
+const SQL_DELETE_ORPHAN_HEALTH_LOG: &str = "DELETE FROM health_log WHERE host_id NOT IN (SELECT host_id FROM host)";
+const SQL_DELETE_ORPHAN_HEALTH_LOG_DETAIL: &str =
+    "DELETE FROM health_log_detail WHERE health_log_id NOT IN (SELECT health_log_id FROM health_log)";
+const SQL_DELETE_ORPHAN_ALERT_VERSION: &str =
+    "DELETE FROM alert_version WHERE health_log_id NOT IN (SELECT health_log_id FROM health_log)";
+
+const SQL_DELETE_MISSING_CHART_ALERT: &str = "DELETE FROM health_log WHERE host_id = @host_id AND chart NOT IN \
+     (SELECT type||'.'||id FROM chart WHERE host_id = @host_id)";
+const SQL_HEALTH_CHECK_ALL_HOSTS: &str = "SELECT host_id, hostname FROM host";
+
+// C selects through a temporary table `c_<pointer>` that holds the request's hash; no client can tell
+const SQL_SEARCH_CONFIG_LIST: &str = "SELECT ah.hash_id, alarm, template, on_key, class, component, type, lookup, \
+     every,  units, calc, families, green, red, warn, crit,  exec, to_key, info, delay, options, repeat, \
+     host_labels, p_db_lookup_dimensions, p_db_lookup_method,  p_db_lookup_options, p_db_lookup_after, \
+     p_db_lookup_before, p_update_every, source, chart_labels, summary,   time_group_condition, time_group_value, \
+     dims_group, data_source  FROM alert_hash ah where ah.hash_id = @hash_id";
+
+// sqlite_aclk_alert.c
+const SQL_SELECT_VARIABLE_ALERT_BY_UNIQUE_ID: &str = "SELECT hld.unique_id FROM health_log hl, alert_hash ah, \
+     health_log_detail hld WHERE hld.unique_id = @unique_id AND hl.config_hash_id = ah.hash_id AND \
+     hld.health_log_id = hl.health_log_id AND hl.host_id = @host_id AND ah.warn IS NULL AND ah.crit IS NULL";
+const SQL_UPDATE_ALERT_VERSION_TRANSITION: &str =
+    "UPDATE alert_version SET unique_id = @unique_id WHERE health_log_id = @health_log_id";
+const SQL_SELECT_LAST_ALERT_STATUS: &str = "SELECT status FROM alert_version WHERE health_log_id = @health_log_id ";
+// C: `date_created` is `UNIXEPOCH()`
+const SQL_QUEUE_ALERT_TO_CLOUD: &str = "INSERT INTO aclk_queue (host_id, health_log_id, unique_id, date_created) \
+     VALUES (@host_id, @health_log_id, @unique_id, @now) ON CONFLICT(host_id, health_log_id) DO UPDATE SET \
+     unique_id=excluded.unique_id,  date_created=excluded.date_created";
+const SQL_DELETE_PROCESSED_ROWS: &str =
+    "DELETE FROM alert_queue WHERE host_id = @host_id AND rowid = @row AND unique_id = @unique_id";
+// C: `date_scheduled <= UNIXEPOCH()`
+const SQL_PROCESS_ALERT_PENDING_QUEUE: &str = "SELECT health_log_id, unique_id, status, rowid FROM alert_queue WHERE \
+     host_id = @host_id AND date_scheduled <= @now ORDER BY rowid ASC";
+const SQL_ALERT_VERSION_CALC: &str = "SELECT SUM(version) FROM health_log hl, alert_version av WHERE hl.host_id = \
+     @host_uuid AND hl.health_log_id = av.health_log_id AND av.status <> -2";
+
 /// `HEALTH_ENTRY_FLAG_UPDATED`.
 const ENTRY_FLAG_UPDATED: i64 = 0x0000_0002;
 /// `RRDCALC_STATUS_REMOVED`.
@@ -197,6 +241,85 @@ pub struct LoadedRow {
     pub summary: Option<Vec<u8>>,
 }
 
+/// A row of `/api/v1/alarm_log`'s query (`SQL_SELECT_HEALTH_LOG`), as its columns are. A `None` is a NULL.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlarmLogRow {
+    pub unique_id: i64,
+    pub alarm_id: i64,
+    pub alarm_event_id: i64,
+    pub config_hash_id: Uuid,
+    pub updated_by_id: i64,
+    pub updates_id: i64,
+    pub when: i64,
+    pub duration: i64,
+    pub non_clear_duration: i64,
+    pub flags: i64,
+    pub exec_run_timestamp: i64,
+    pub delay_up_to_timestamp: i64,
+    pub name: Option<Vec<u8>>,
+    pub chart: Option<Vec<u8>>,
+    pub exec: Option<Vec<u8>>,
+    pub recipient: Option<Vec<u8>>,
+    pub source: Option<Vec<u8>>,
+    pub units: Option<Vec<u8>>,
+    pub info: Option<Vec<u8>>,
+    pub exec_code: i32,
+    pub new_status: i32,
+    pub old_status: i32,
+    pub delay: i32,
+    pub new_value: Option<f64>,
+    pub old_value: Option<f64>,
+    pub last_repeat: i64,
+    pub classification: Option<Vec<u8>>,
+    pub component: Option<Vec<u8>>,
+    pub r#type: Option<Vec<u8>>,
+    pub chart_context: Option<Vec<u8>>,
+    pub transition_id: Uuid,
+    pub summary: Option<Vec<u8>>,
+}
+
+/// A rule's row of `alert_hash` as `sql_get_alert_configuration()` hands it on. A `None` is a NULL.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlertConfigRow {
+    pub hash_id: [u8; 16],
+    /// An alarm's name; NULL for a template, whose name is in `template`.
+    pub alarm: Option<Vec<u8>>,
+    pub template: Option<Vec<u8>>,
+    pub on_key: Option<Vec<u8>>,
+    pub classification: Option<Vec<u8>>,
+    pub component: Option<Vec<u8>>,
+    pub r#type: Option<Vec<u8>>,
+    pub lookup: Option<Vec<u8>>,
+    pub every: Option<Vec<u8>>,
+    pub units: Option<Vec<u8>>,
+    pub calc: Option<Vec<u8>>,
+    pub families: Option<Vec<u8>>,
+    pub green: Option<Vec<u8>>,
+    pub red: Option<Vec<u8>>,
+    pub warn: Option<Vec<u8>>,
+    pub crit: Option<Vec<u8>>,
+    pub exec: Option<Vec<u8>>,
+    pub to_key: Option<Vec<u8>>,
+    pub info: Option<Vec<u8>>,
+    pub delay: Option<Vec<u8>>,
+    pub options: Option<Vec<u8>>,
+    pub repeat: Option<Vec<u8>>,
+    pub host_labels: Option<Vec<u8>>,
+    pub db_dimensions: Option<Vec<u8>>,
+    pub db_method: Option<Vec<u8>>,
+    pub db_options: u32,
+    pub db_after: i32,
+    pub db_before: i32,
+    pub update_every: i32,
+    pub source: Option<Vec<u8>>,
+    pub chart_labels: Option<Vec<u8>>,
+    pub summary: Option<Vec<u8>>,
+    pub time_group_condition: i32,
+    pub time_group_value: f64,
+    pub dims_group: i32,
+    pub data_source: i32,
+}
+
 /// A UUID column as C's readers tell them apart: NULL, a blob of 16 bytes, or anything else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Uuid {
@@ -241,6 +364,14 @@ fn double(row: &Row<'_>, i: usize) -> f64 {
         Ok(ValueRef::Real(v)) => v,
         Ok(ValueRef::Text(t)) => String::from_utf8_lossy(t).trim().parse().unwrap_or(0.0),
         _ => 0.0,
+    }
+}
+
+/// A value column: `None` for a NULL (`sqlite3_column_type() == SQLITE_NULL`), else `sqlite3_column_double()`.
+fn double_or_null(row: &Row<'_>, i: usize) -> Option<f64> {
+    match row.get_ref(i) {
+        Ok(ValueRef::Null) | Err(_) => None,
+        _ => Some(double(row, i)),
     }
 }
 
@@ -610,6 +741,317 @@ impl MetaDb {
     }
 }
 
+impl MetaDb {
+    /// `sql_health_alarm_log2json()`'s query: the host's entries with a unique id above `after`, of `chart` only
+    /// when one is given, newest first, at most `limit`, each with its alarm's and its rule's columns (an alarm
+    /// whose rule is not in `alert_hash` has no row). False when the statement cannot be prepared, with C's two
+    /// records: the body is then empty.
+    pub fn alarm_log(
+        &self,
+        host_id: &[u8; 16],
+        after: i64,
+        chart: Option<&[u8]>,
+        limit: u32,
+        mut each: impl FnMut(AlarmLogRow),
+    ) -> bool {
+        let mut sql = SQL_SELECT_HEALTH_LOG.to_owned();
+        if chart.is_some() {
+            sql.push_str(" AND hl.chart = @chart ");
+        }
+        sql.push_str(" ORDER BY hld.unique_id DESC LIMIT @limit");
+
+        let c = self.lock();
+        let mut stmt = match c.prepare(&sql) {
+            Ok(stmt) => stmt,
+            Err(err) => {
+                prepare_failed(&err, "sql_health_alarm_log2json");
+                netdata_log_error!("Failed to prepare statement SQL_SELECT_HEALTH_LOG");
+                return false;
+            }
+        };
+        let (host, limit) = (&host_id[..], i64::from(limit));
+        let chart = chart.map(text);
+        let mut params: Vec<&dyn ToSql> = vec![&host, &after];
+        if let Some(chart) = &chart {
+            params.push(chart);
+        }
+        params.push(&limit);
+        let Ok(mut rows) = stmt.query(&params[..]) else {
+            return true;
+        };
+        while let Ok(Some(row)) = rows.next() {
+            each(AlarmLogRow {
+                unique_id: int(row, 0),
+                alarm_id: int(row, 1),
+                alarm_event_id: int(row, 2),
+                config_hash_id: uuid_column(row, 3),
+                updated_by_id: int(row, 4),
+                updates_id: int(row, 5),
+                when: int(row, 6),
+                duration: int(row, 7),
+                non_clear_duration: int(row, 8),
+                flags: int(row, 9),
+                exec_run_timestamp: int(row, 10),
+                delay_up_to_timestamp: int(row, 11),
+                name: bytes_or_null(row, 12),
+                chart: bytes_or_null(row, 13),
+                exec: bytes_or_null(row, 14),
+                recipient: bytes_or_null(row, 15),
+                source: bytes_or_null(row, 16),
+                units: bytes_or_null(row, 17),
+                info: bytes_or_null(row, 18),
+                exec_code: int(row, 19) as i32,
+                new_status: double(row, 20) as i32,
+                old_status: double(row, 21) as i32,
+                delay: int(row, 22) as i32,
+                new_value: double_or_null(row, 23),
+                old_value: double_or_null(row, 24),
+                last_repeat: int(row, 25),
+                classification: bytes_or_null(row, 26),
+                component: bytes_or_null(row, 27),
+                r#type: bytes_or_null(row, 28),
+                chart_context: bytes_or_null(row, 29),
+                transition_id: uuid_column(row, 30),
+                summary: bytes_or_null(row, 31),
+            });
+        }
+        true
+    }
+
+    /// The end of `cleanup_health_log()`: the alarms of hosts the table `host` no longer has, the entries of alarms
+    /// that are gone, and their `alert_version` rows (`db_execute()`: retried while busy, each failure recorded).
+    pub fn delete_orphan_health_rows(&self) {
+        let c = self.lock();
+        let markers = self.markers();
+        let orphans =
+            [SQL_DELETE_ORPHAN_HEALTH_LOG, SQL_DELETE_ORPHAN_HEALTH_LOG_DETAIL, SQL_DELETE_ORPHAN_ALERT_VERSION];
+        for sql in orphans {
+            let _ = conn::db_execute(&c, sql, &markers);
+        }
+    }
+
+    /// `sql_alert_cleanup()` after the database is open (`-W sqlite-alert-cleanup`): for every host of the table
+    /// `host`, the alarms of charts the table `chart` no longer has go from `health_log` (their entries stay until
+    /// an hourly cleanup). `checking` is told each host (its GUID as text and its hostname, `unknown` for a NULL)
+    /// before its delete. False when the walk failed: C's record is then `Failed to check host alerts`.
+    pub fn alert_cleanup(&self, mut checking: impl FnMut(&[u8; 16], &str)) -> bool {
+        let c = self.lock();
+        let mut stmt = match c.prepare(SQL_HEALTH_CHECK_ALL_HOSTS) {
+            Ok(stmt) => stmt,
+            Err(err) => {
+                prepare_failed(&err, "sql_alert_cleanup");
+                return false;
+            }
+        };
+        let Ok(mut rows) = stmt.query([]) else {
+            return false;
+        };
+        loop {
+            let row = match rows.next() {
+                Ok(Some(row)) => row,
+                Ok(None) => return true,
+                Err(_) => return false,
+            };
+            let Uuid::Valid(host_id) = uuid_column(row, 0) else {
+                netdata_log_error!("Alert cleanup: skipping host with invalid host_id");
+                continue;
+            };
+            let hostname = bytes_or_null(row, 1).map(|name| String::from_utf8_lossy(&name).into_owned());
+            checking(&host_id, hostname.as_deref().unwrap_or("unknown"));
+            // sql_remove_alerts_from_deleted_charts()
+            let function = "sql_remove_alerts_from_deleted_charts";
+            let params: &[(&str, &dyn ToSql)] = &[("@host_id", &&host_id[..])];
+            match c.prepare(SQL_DELETE_MISSING_CHART_ALERT) {
+                Ok(mut delete) => {
+                    if conn::retry(|| delete.execute(params)).is_err() {
+                        netdata_log_error!("Failed to execute command to delete missing charts from health_log");
+                    }
+                }
+                Err(err) => prepare_failed(&err, function),
+            }
+        }
+    }
+}
+
+impl MetaDb {
+    /// `sql_get_alert_configuration()` for one hash: the rule's row, `Ok(None)` when `alert_hash` has none (also
+    /// for a row whose hash is no 16-byte blob, which C skips with a record), `Err` when the statement cannot be
+    /// prepared.
+    #[allow(clippy::result_unit_err)]
+    pub fn alert_config(&self, hash_id: &[u8; 16]) -> Result<Option<AlertConfigRow>, ()> {
+        let c = self.lock();
+        let mut stmt = c.prepare(SQL_SEARCH_CONFIG_LIST).map_err(|_| {
+            netdata_log_error!("Failed to prepare statement sql_get_alert_configuration");
+        })?;
+        let params: &[(&str, &dyn ToSql)] = &[("@hash_id", &&hash_id[..])];
+        let Ok(mut rows) = stmt.query(params) else {
+            return Ok(None);
+        };
+        let (mut found, mut invalid) = (None, 0usize);
+        while let Ok(Some(row)) = rows.next() {
+            let Uuid::Valid(hash_id) = uuid_column(row, 0) else {
+                invalid += 1;
+                continue;
+            };
+            let text = |i| bytes_or_null(row, i);
+            // one hash, one row: the last one stands, as each row reaches C's callback
+            found = Some(AlertConfigRow {
+                hash_id,
+                alarm: text(1),
+                template: text(2),
+                on_key: text(3),
+                classification: text(4),
+                component: text(5),
+                r#type: text(6),
+                lookup: text(7),
+                every: text(8),
+                units: text(9),
+                calc: text(10),
+                families: text(11),
+                green: text(12),
+                red: text(13),
+                warn: text(14),
+                crit: text(15),
+                exec: text(16),
+                to_key: text(17),
+                info: text(18),
+                delay: text(19),
+                options: text(20),
+                repeat: text(21),
+                host_labels: text(22),
+                db_dimensions: text(23),
+                db_method: text(24),
+                db_options: int(row, 25) as u32,
+                db_after: int(row, 26) as i32,
+                db_before: int(row, 27) as i32,
+                update_every: int(row, 28) as i32,
+                source: text(29),
+                chart_labels: text(30),
+                summary: text(31),
+                time_group_condition: int(row, 32) as i32,
+                time_group_value: double(row, 33),
+                dims_group: int(row, 34) as i32,
+                data_source: int(row, 35) as i32,
+            });
+        }
+        if invalid != 0 {
+            netdata_log_error!("HEALTH: Ignored {invalid} alert configuration rows with invalid config_hash_id.");
+        }
+        Ok(found)
+    }
+
+    /// `process_alert_pending_queue()`'s statements: every row of the host's `alert_queue` that is due at `now`,
+    /// in rowid order, leaves it; with `has_config` (the host has its ACLK sync configuration) it first goes
+    /// toward the Cloud's queue (`insert_alert_to_submit_queue()`): not when `alert_version` already holds that
+    /// status for the alarm (the version row then takes the entry's unique id; also when its statement cannot be
+    /// prepared), not when the entry's rule is a variable (no warning, no critical expression), else the alarm's
+    /// row of `aclk_queue` is made or pointed at the entry. Returns how many rows were processed and how many were
+    /// queued; `None` when the walk's statement cannot be prepared. C's NOTICE is the caller's.
+    pub fn process_alert_pending_queue(&self, host_id: &[u8; 16], has_config: bool, now: i64) -> Option<(u32, u32)> {
+        let c = self.lock();
+        let mut due: Vec<(i64, u32, i32, i64)> = Vec::new();
+        let params: &[(&str, &dyn ToSql)] = &[("@host_id", &&host_id[..]), ("@now", &now)];
+        let mut stmt = match c.prepare(SQL_PROCESS_ALERT_PENDING_QUEUE) {
+            Ok(stmt) => stmt,
+            Err(err) => {
+                prepare_failed(&err, "process_alert_pending_queue");
+                return None;
+            }
+        };
+        if let Ok(mut rows) = stmt.query(params) {
+            while let Ok(Some(row)) = rows.next() {
+                due.push((int(row, 0), int(row, 1) as u32, double(row, 2) as i32, int(row, 3)));
+            }
+        }
+        drop(stmt);
+
+        let (mut count, mut added) = (0, 0);
+        for (health_log_id, unique_id, status, rowid) in due {
+            if has_config && insert_alert_to_submit_queue(&c, host_id, health_log_id, unique_id, status, now) == 0 {
+                added += 1;
+            }
+            // delete_alert_from_pending_queue()
+            let processed: [&dyn ToSql; 3] = [&&host_id[..], &rowid, &i64::from(unique_id)];
+            let function = "delete_alert_from_pending_queue";
+            if let Err(Step::Failed(rc)) = execute(&c, SQL_DELETE_PROCESSED_ROWS, function, &processed) {
+                netdata_log_error!("Failed to delete processed rows, rc = {rc}");
+            }
+            count += 1;
+        }
+        Some((count, added))
+    }
+
+    /// `calculate_node_alert_version()`: the sum of the versions of the host's alarms the Cloud was told of and
+    /// that are not REMOVED; 0 without any.
+    pub fn node_alert_version(&self, host_id: &[u8; 16]) -> u64 {
+        let c = self.lock();
+        let mut version = 0u64;
+        let host: [&dyn ToSql; 1] = [&&host_id[..]];
+        rows(&c, SQL_ALERT_VERSION_CALC, "calculate_node_alert_version", &host, |row| {
+            version = int(row, 0) as u64;
+            true
+        });
+        version
+    }
+}
+
+/// `insert_alert_to_submit_queue()`: 1 when the Cloud knows the status already, 2 for a variable's entry, 0 when
+/// the entry was queued (also when the insert's step failed), -1 when the insert cannot be prepared.
+fn insert_alert_to_submit_queue(
+    c: &Connection,
+    host_id: &[u8; 16],
+    health_log_id: i64,
+    unique_id: u32,
+    status: i32,
+    now: i64,
+) -> i32 {
+    // cloud_status_matches(): true when its statement cannot be prepared
+    let matches = match c.prepare(SQL_SELECT_LAST_ALERT_STATUS) {
+        Ok(mut stmt) => {
+            let known = stmt.query_row([health_log_id], |row| Ok(double(row, 0) as i32));
+            known.is_ok_and(|known| known == status)
+        }
+        Err(err) => {
+            prepare_failed(&err, "cloud_status_matches");
+            true
+        }
+    };
+    if matches {
+        // update_alert_version_transition()
+        let params: [&dyn ToSql; 2] = [&i64::from(unique_id), &health_log_id];
+        let function = "update_alert_version_transition";
+        if let Err(Step::Failed(_)) = execute(c, SQL_UPDATE_ALERT_VERSION_TRANSITION, function, &params) {
+            netdata_log_error!("Failed to update alert_version to latest transition");
+        }
+        return 1;
+    }
+
+    // is_event_from_alert_variable_config(): false when its statement cannot be prepared
+    let variable = match c.prepare(SQL_SELECT_VARIABLE_ALERT_BY_UNIQUE_ID) {
+        Ok(mut stmt) => {
+            let params: [&dyn ToSql; 2] = [&i64::from(unique_id), &&host_id[..]];
+            stmt.exists(&params[..]).unwrap_or(false)
+        }
+        Err(err) => {
+            prepare_failed(&err, "is_event_from_alert_variable_config");
+            false
+        }
+    };
+    if variable {
+        return 2;
+    }
+
+    let params: [&dyn ToSql; 4] = [&&host_id[..], &health_log_id, &i64::from(unique_id), &now];
+    match execute(c, SQL_QUEUE_ALERT_TO_CLOUD, "insert_alert_to_submit_queue", &params) {
+        Ok(()) => 0,
+        Err(Step::Prepare) => -1,
+        Err(Step::Failed(rc)) => {
+            netdata_log_error!("Failed to insert alert in the submit queue {unique_id}, rc = {rc}");
+            0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -816,6 +1258,139 @@ mod tests {
             true
         }));
         assert_eq!(other, 0);
+    }
+
+    /// The alarm log's rows: newest first, above `after`, of one chart, at most the limit, with NULLs kept apart;
+    /// an alarm whose rule is unknown has none.
+    #[test]
+    fn the_alarm_log_gives_the_entries_newest_first() {
+        let (_dir, meta) = db();
+        rule(&meta);
+        let ids = [[1u8; 16], [2u8; 16], [3u8; 16]];
+        for (i, new) in [0, 3, 1].into_iter().enumerate() {
+            let row = entry(i as u32 + 1, i as u32 + 1, 0, new, 0, &ids[i]);
+            assert!(meta.health_alarm_log_insert("h", &HOST, &row, false));
+        }
+        let listed = |after: i64, chart: Option<&[u8]>, limit: u32| {
+            let mut rows = Vec::new();
+            assert!(meta.alarm_log(&HOST, after, chart, limit, |row| rows.push(row)));
+            rows
+        };
+        let ids_of = |rows: &[AlarmLogRow]| rows.iter().map(|row| row.unique_id).collect::<Vec<_>>();
+        assert_eq!(ids_of(&listed(0, None, 10)), [3, 2, 1]);
+        assert_eq!(ids_of(&listed(1, None, 10)), [3, 2], "above `after`");
+        assert_eq!(ids_of(&listed(0, None, 2)), [3, 2]);
+        assert!(listed(0, None, 0).is_empty(), "a host whose health never ran has a limit of 0");
+        assert_eq!(ids_of(&listed(0, Some(b"t.c"), 10)), [3, 2, 1]);
+        assert!(listed(0, Some(b"t.other"), 10).is_empty());
+
+        let rows = listed(0, None, 10);
+        let warning = &rows[1];
+        assert_eq!((warning.new_value, warning.old_value), (Some(70.0), None));
+        assert_eq!((warning.new_status, warning.old_status, warning.flags), (3, 0, 0x80));
+        assert_eq!((warning.exec.as_deref(), warning.recipient.as_deref()), (None, Some(&b"root"[..])));
+        assert_eq!(warning.source.as_deref(), Some(&b"line=3,file=/etc/a.conf"[..]));
+        assert_eq!((warning.classification.as_deref(), warning.r#type.as_deref()), (Some(&b"Errors"[..]), None));
+        assert_eq!((warning.config_hash_id, warning.transition_id), (Uuid::Valid(HASH), Uuid::Valid([2; 16])));
+        assert_eq!((warning.info.as_deref(), warning.summary.as_deref()), (None, Some(&b"s"[..])));
+
+        assert!(listed(0, None, 10).len() == 3 && meta.lock().execute("DELETE FROM alert_hash", []).is_ok());
+        assert!(listed(0, None, 10).is_empty());
+    }
+
+    /// The hourly cleanup's last step drops the alarms of hosts the host table does not have, and their entries;
+    /// the command-line cleanup drops the alarms of charts the chart table does not have, and leaves their entries.
+    #[test]
+    fn orphans_go_by_host_and_by_chart() {
+        let (_dir, meta) = db();
+        let t = [1u8; 16];
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, 0, 3, 0, &t), false));
+        let counts = |meta: &MetaDb| {
+            let log = dump(meta, "SELECT count(*) FROM health_log");
+            let detail = dump(meta, "SELECT count(*) FROM health_log_detail");
+            (log[0].clone(), detail[0].clone())
+        };
+        let host = |meta: &MetaDb| {
+            let c = meta.lock();
+            c.execute("INSERT INTO host (host_id, hostname) VALUES (?, 'known')", [&HOST[..]]).unwrap();
+        };
+
+        // the host is in the host table, its chart is not in the chart table
+        host(&meta);
+        meta.delete_orphan_health_rows();
+        assert_eq!(counts(&meta), ("1".to_owned(), "1".to_owned()));
+        let mut seen = Vec::new();
+        assert!(meta.alert_cleanup(|id, hostname| seen.push((*id, hostname.to_owned()))));
+        assert_eq!(seen, [(HOST, "known".to_owned())]);
+        assert_eq!(counts(&meta), ("0".to_owned(), "1".to_owned()), "the entries stay");
+        meta.delete_orphan_health_rows();
+        assert_eq!(counts(&meta), ("0".to_owned(), "0".to_owned()));
+
+        // an alarm of a host the host table does not have
+        assert!(meta.health_alarm_log_insert("h", &[0x22; 16], &entry(1, 1, 0, 3, 0, &t), false));
+        meta.delete_orphan_health_rows();
+        assert_eq!(counts(&meta), ("0".to_owned(), "0".to_owned()));
+    }
+
+    /// A rule's row by its hash, and nothing for a hash the table does not have.
+    #[test]
+    fn a_rule_is_found_by_its_hash() {
+        let (_dir, meta) = db();
+        rule(&meta);
+        let row = meta.alert_config(&HASH).unwrap().expect("the rule");
+        assert_eq!((row.hash_id, row.alarm, row.template.as_deref()), (HASH, None, Some(&b"a"[..])));
+        assert_eq!((row.on_key.as_deref(), row.classification.as_deref()), (Some(&b"t.ctx"[..]), Some(&b"Errors"[..])));
+        assert_eq!((row.update_every, row.db_after, row.every.as_deref()), (1, 0, Some(&b"1"[..])));
+        assert_eq!((row.green, row.warn, row.db_method), (None, None, None));
+        assert_eq!(row.delay.as_deref(), Some(&b"multiplier 1.0 "[..]));
+        assert_eq!(meta.alert_config(&[0x55; 16]), Ok(None));
+    }
+
+    /// The pending queue: a row that is due leaves `alert_queue`; with the host's configuration it goes to
+    /// `aclk_queue`, unless the Cloud holds that status for the alarm already (the version row then takes the
+    /// entry's unique id) or the rule is a variable; without the configuration it is lost; a row that is not due
+    /// stays.
+    #[test]
+    fn a_due_row_leaves_the_queue_for_the_cloud_s() {
+        let (_dir, meta) = db();
+        rule(&meta);
+        let t = [1u8; 16];
+        let queue = |meta: &MetaDb| dump(meta, QUEUE).len();
+        let cloud = |meta: &MetaDb| dump(meta, "SELECT health_log_id, unique_id, date_created FROM aclk_queue");
+        let exec = |meta: &MetaDb, sql: &str| {
+            meta.lock().execute(sql, []).unwrap();
+        };
+
+        // WARNING at T: due at once. The rule has no warning and no critical expression: a variable, not queued
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, 0, 3, 0, &t), true));
+        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T - 1), Some((0, 0)), "not due yet");
+        assert_eq!(queue(&meta), 1);
+        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T), Some((1, 0)));
+        assert_eq!((queue(&meta), cloud(&meta).len()), (0, 0));
+
+        // with a warning expression the entry is queued, the alarm's row pointed at the newest
+        exec(&meta, "UPDATE alert_hash SET warn = '$this > 1'");
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(1, 1, 0, 3, 0, &t), true));
+        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T + 7), Some((1, 1)));
+        assert_eq!(cloud(&meta), [format!("1 1 {}", T + 7)]);
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(2, 2, 3, 4, 0, &t), true));
+        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T + 9), Some((1, 1)));
+        assert_eq!(cloud(&meta), [format!("1 2 {}", T + 9)]);
+
+        // the Cloud holds CRITICAL (4) for the alarm: nothing is queued, its version row takes the unique id
+        exec(&meta, "INSERT INTO alert_version (health_log_id, unique_id, status, version) VALUES (1, 2, 4, 50)");
+        exec(&meta, "DELETE FROM aclk_queue");
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(3, 3, 3, 4, 0, &t), true));
+        assert_eq!(meta.process_alert_pending_queue(&HOST, true, T + 9), Some((1, 0)));
+        assert!(cloud(&meta).is_empty());
+        assert_eq!(dump(&meta, "SELECT unique_id, status FROM alert_version"), ["3 4"]);
+        assert_eq!(meta.node_alert_version(&HOST), 50);
+        assert_eq!(meta.node_alert_version(&[0x22; 16]), 0);
+
+        // a host without the configuration: the due row is deleted and nothing is queued
+        assert!(meta.health_alarm_log_insert("h", &HOST, &entry(4, 4, 4, 3, 0, &t), true));
+        assert_eq!(meta.process_alert_pending_queue(&HOST, false, T + 9), Some((1, 0)));
+        assert_eq!((queue(&meta), cloud(&meta).len()), (0, 0));
     }
 
     /// The alarm id of a chart and a name, whatever the rule's hash, with the next event id; nothing for a chart
