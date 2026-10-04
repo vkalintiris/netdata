@@ -323,15 +323,22 @@ impl Alert {
     /// `rrdcalc_update_info_using_rrdset_labels()`: the runtime `info` and `summary`, made again when the chart's
     /// label version is not the one they were made for; an empty result leaves the configured text.
     pub fn update_info_using_labels(&self, run: &mut Run) {
-        let meta = self.chart.meta();
-        let labels_version = meta.labels.version();
+        // every alert of every pass comes here: the chart's metadata is read in place, its labels only when
+        // their version moved
+        let replaced = self.chart.with_meta(|meta| {
+            let labels_version = meta.labels.version();
+            (run.labels_version != labels_version).then(|| {
+                let replace = |text: &Option<Vec<u8>>| {
+                    let text = text.as_deref().unwrap_or(b"");
+                    replace_variables_with_labels(text, meta.family.as_bytes(), Some(&meta.labels))
+                };
+                (labels_version, replace(&self.config.info), replace(&self.config.summary))
+            })
+        });
         let mut snapshot = self.snapshot.write().unwrap_or_else(PoisonError::into_inner);
-        if run.labels_version != labels_version {
-            let replace = |text: &Option<Vec<u8>>| {
-                replace_variables_with_labels(text.as_deref().unwrap_or(b""), meta.family.as_bytes(), Some(&meta.labels))
-            };
-            snapshot.info = replace(&self.config.info);
-            snapshot.summary = replace(&self.config.summary);
+        if let Some((labels_version, info, summary)) = replaced {
+            snapshot.info = info;
+            snapshot.summary = summary;
             run.labels_version = labels_version;
         }
         if snapshot.summary.is_none() {

@@ -970,8 +970,22 @@ mod tests {
         host.storage().set_alert_view(Arc::new(crate::health::View(Arc::clone(&s.health))));
         let view = host.storage().alert_view().expect("the view");
         let seen = view.chart_alerts(host, &chart);
-        let seen: Vec<_> = seen.into_iter().map(|alert| (alert.name, alert.class, alert.status_name)).collect();
-        assert_eq!(seen, [(b"a".to_vec(), netdata_agent_rrd::storage::AlertClass::Other, "UNINITIALIZED")]);
+        // not evaluated yet: below CLEAR, without a value, with the units its chart gave it
+        assert!(seen.len() == 1 && seen[0].value.is_nan() && !seen[0].at_least_clear);
+        let seen: Vec<_> = seen.into_iter().map(|a| (a.name, a.class, a.status_name, a.units)).collect();
+        let other = netdata_agent_rrd::storage::AlertClass::Other;
+        assert_eq!(seen, [(b"a".to_vec(), other, "UNINITIALIZED", b"u".to_vec())]);
+        // evaluated to CLEAR: shown from that status up, with the value the alert published
+        {
+            let alert = s.health.host(host).unwrap().chart_alerts(&chart).pop().expect("the alert");
+            let mut run = alert.run();
+            run.status = netdata_agent_health::alert::Status::Clear;
+            (run.value, run.last_status_change_value) = (7.0, 3.0);
+            alert.publish(&run, None);
+        }
+        let seen = view.chart_alerts(host, &chart).pop().expect("the alert");
+        let clear = netdata_agent_rrd::storage::AlertClass::Clear;
+        assert_eq!((seen.at_least_clear, seen.value, seen.class, seen.status_name), (true, 7.0, clear, "CLEAR"));
         // one alert inserted, one entry logged (its link)
         let data = body("/api/v2/data", "?contexts=t.ctx&options=minify");
         assert!(data.contains("\"alerts_hard_hash\":1,\"alerts_soft_hash\":1"), "{data}");

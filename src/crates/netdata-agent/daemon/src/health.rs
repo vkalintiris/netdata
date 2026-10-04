@@ -88,15 +88,16 @@ impl LiveEnv {
 impl Env for LiveEnv {
     fn facts(&self, chart: &Chart) -> ChartFacts {
         let collection = chart.collection();
-        let (first_entry_s, last_entry_s) = chart.retention();
         ChartFacts {
             obsolete: chart.flags() & flags::OBSOLETE != 0,
             last_collected_s: collection.last_collected.0,
             counter_done: collection.counter_done,
             update_every: chart.update_every(),
-            first_entry_s,
-            last_entry_s,
         }
+    }
+
+    fn retention(&self, chart: &Chart) -> (i64, i64) {
+        chart.retention()
     }
 
     /// `rrdset2value_api_v1_with_owa()` as health calls it: a query of the health source, never interrupted.
@@ -143,14 +144,24 @@ impl AlertView for View {
         alerts
             .iter()
             .map(|alert| {
-                let status = alert.snapshot().status;
+                let (status, value) = {
+                    let snapshot = alert.snapshot();
+                    (snapshot.status, snapshot.value)
+                };
                 let class = match status {
                     Status::Clear => AlertClass::Clear,
                     Status::Warning => AlertClass::Warning,
                     Status::Critical => AlertClass::Critical,
                     _ => AlertClass::Other,
                 };
-                ChartAlert { name: alert.name().to_vec(), class, status_name: status.name() }
+                ChartAlert {
+                    name: alert.name().to_vec(),
+                    class,
+                    status_name: status.name(),
+                    at_least_clear: status as i32 >= Status::Clear as i32,
+                    value,
+                    units: alert.config.units.clone().unwrap_or_default(),
+                }
             })
             .collect()
     }
@@ -162,6 +173,7 @@ pub fn database_event(health: &Health, env: &LiveEnv, event: HealthEvent<'_>) {
     match event {
         HealthEvent::ChartFreed(host, chart) => health.chart_freed(host, chart, env, &now_realtime_s),
         HealthEvent::HostCleanup(host) => health.host_cleanup(host, env, &now_realtime_s),
+        HealthEvent::HostChartsFlushed(host) => health.host_charts_flushed(host),
         HealthEvent::HostFreed(host) => health.host_freed(host),
     }
 }
@@ -196,7 +208,8 @@ pub fn spawn(
                     nd_log!(
                         Source::Daemon,
                         Priority::Notice,
-                        "Postponing alarm checks for {postpone_s} seconds, because it seems that the system was just resumed from suspension."
+                        "Postponing alarm checks for {postpone_s} seconds, because it seems that the system was \
+                         just resumed from suspension."
                     );
                 }
                 hosts.storage().next_health_iteration();
@@ -298,6 +311,119 @@ mod tests {
         assert_eq!(names(&health), ["user_a"]);
         assert_eq!(templates(&unread.statements()), ["user_a"]);
         assert_eq!(directory_keys(&mut conf), ["health config"]);
+    }
+
+    /// What the loop reads of a chart through the daemon: its collection as it stands, the span of its stored
+    /// data over its dimensions, and a lookup's value, read from the database at the wall clock and counted as a
+    /// query of health.
+    #[test]
+    fn the_live_env_reads_the_chart_and_its_database() {
+        use netdata_agent_query::tables::{TimeGrouping, options};
+        use netdata_agent_query::value::Priority as QueryPriority;
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+        use netdata_agent_rrd::host::HostInfo;
+        use netdata_agent_rrd::mode::DbMode;
+        use netdata_agent_storage::storage_number::SN_FLAG_NOT_ANOMALOUS;
+
+        let info = HostInfo {
+            hostname: "live".into(),
+            registry_hostname: "live".into(),
+            os: "linux".into(),
+            timezone: "UTC".into(),
+            abbrev_timezone: "UTC".into(),
+            utc_offset: 0,
+            program_name: "netdata".into(),
+            program_version: "v0".into(),
+            update_every: 1,
+            db_mode: DbMode::Ram,
+            history_entries: 3600,
+            health_enabled: true,
+            system_info: Default::default(),
+            replication_enabled: false,
+            replication_period: 0,
+            replication_step: 0,
+            stream_send: None,
+            cache_dir: None,
+        };
+        let hosts = Arc::new(Hosts::new(Host::new("11ee0000-0000-4000-8000-0000000000aa", true, info)));
+        let host = Arc::clone(hosts.localhost());
+        let spec = |id: &'static str, update_every: i32| ChartSpec {
+            type_: "t",
+            id,
+            name: None,
+            family: Some("f"),
+            context: Some("t.ctx"),
+            title: "T",
+            units: "u",
+            plugin: "p",
+            module: None,
+            priority: 1000,
+            update_every,
+            chart_type: ChartType::Line,
+            mode: DbMode::Ram,
+            history_entries: 3600,
+            page_size: 4096,
+        };
+        let env = LiveEnv::new(Arc::clone(&hosts), Windows::default());
+
+        // a new chart, collected every 3 seconds on a host of 1: never collected, no data
+        let (slow, _) = host.charts().create(&spec("slow", 3));
+        let never = ChartFacts { obsolete: false, last_collected_s: 0, counter_done: 0, update_every: 3 };
+        assert_eq!((env.facts(&slow), env.retention(&slow)), (never, (0, 0)));
+        let (chart, _) = host.charts().create(&spec("c", 1));
+
+        // two dimensions: one with data at three seconds that end 3 seconds ago, one without any
+        let now = now_realtime_s();
+        let (stored, _) = chart.dim_add("stored", None, 1, 1, Algorithm::Absolute);
+        chart.dim_add("empty", None, 1, 1, Algorithm::Absolute);
+        for (second, value) in [(now - 5, 10.0), (now - 4, 40.0), (now - 3, 20.0)] {
+            stored.store_metric(second as u64 * 1_000_000, value, SN_FLAG_NOT_ANOMALOUS);
+        }
+        chart.update_collection(|collection| {
+            collection.counter_done = 3;
+            collection.last_collected = (now - 3, 250_000);
+            collection.last_updated = (now - 2, 0);
+        });
+        host.contexts().process_queued();
+        let collected = ChartFacts { obsolete: false, last_collected_s: now - 3, counter_done: 3, update_every: 1 };
+        assert_eq!(env.facts(&chart), collected);
+        let (first, last) = env.retention(&chart);
+        assert!(first != 0 && first <= now - 5 && last == now - 3, "{first} {last} at {now}");
+
+        chart.update_meta(|meta| meta.flags |= flags::OBSOLETE);
+        assert_eq!(env.facts(&chart), ChartFacts { obsolete: true, ..collected });
+        chart.update_meta(|meta| meta.flags &= !flags::OBSOLETE);
+
+        // the highest value of the last 20 seconds, whatever second it is by now
+        let request = ValueRequest {
+            dimensions: None,
+            points: 1,
+            after: -20,
+            before: 0,
+            time_group: TimeGrouping::Max,
+            time_group_options: None,
+            resampling_time: 0,
+            options: options::SELECTED_TIER | options::NOT_ALIGNED,
+            timeout_ms: 0,
+            tier: 0,
+            priority: QueryPriority::Synchronous,
+        };
+        let health_queries = || hosts.storage().pulse().queries.source(QuerySource::Health).queries;
+        assert_eq!(health_queries(), 0);
+        let result = env.lookup(&host, &chart, &request);
+        assert_eq!((result.code, result.value, result.value_is_null), (200, 40.0, false));
+        // the window is the wall clock's, not a pass's second
+        let (after, before) = result.window.expect("the window");
+        assert!(after < before && (now - 5..=now_realtime_s()).contains(&before), "{after} {before} at {now}");
+        assert_eq!(health_queries(), 1);
+        // of the dimension without data alone: no value
+        let empty = ValueRequest { dimensions: Some(b"empty".to_vec()), ..request };
+        let result = env.lookup(&host, &chart, &empty);
+        assert!(result.value.is_nan() && result.code == 200, "{result:?}");
+
+        // each entry gets its own transition id
+        assert_ne!(env.transition_id(), [0; 16]);
+        assert_ne!(env.transition_id(), env.transition_id());
     }
 
     /// With health off the store exists and nothing else happens.

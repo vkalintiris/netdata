@@ -1,0 +1,54 @@
+# The host may no longer run health inside a pass that evaluates (a child that disconnects during its pass): among
+# the alerts of the first walk, at the second walk's first and second alert, at the third walk's first and last
+# alert, and before the notifications. A pass looks at the gate once when it starts, once before each alert of each
+# walk, and once before the notifications. The value flips at every pass. The rules are those of `stop-eval`.
+rules tests/corpus/loop/stop-eval.conf
+chart loop.v loop.v_name loop.stopeval - things 1
+var loop.v v 10
+clock 0
+pass 0
+# closed at the first walk's first alert
+var loop.v v 70
+clock 1
+gate-for 1
+pass 1
+gate 1
+# closed at the first walk's second alert
+var loop.v v 10
+clock 2
+gate-for 2
+pass 2
+gate 1
+# closed at the second walk's first alert
+var loop.v v 70
+clock 3
+gate-for 4
+pass 3
+gate 1
+# closed at the second walk's second alert
+var loop.v v 10
+clock 4
+gate-for 5
+pass 4
+gate 1
+# closed at the third walk's first alert
+var loop.v v 70
+clock 5
+gate-for 7
+pass 5
+gate 1
+# closed at the third walk's last alert, the one that repeats
+var loop.v v 10
+clock 6
+gate-for 9
+pass 6
+gate 1
+# closed before the notifications
+var loop.v v 70
+clock 7
+gate-for 10
+pass 7
+gate 1
+var loop.v v 10
+clock 8
+pass 8

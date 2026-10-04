@@ -1596,12 +1596,19 @@ impl Contexts {
         self.any_metric_where(|rm| rm.flags.is_collected())
     }
 
+    /// One context at a time, without a copy of the host's list: health asks before every alert of a pass (C
+    /// reads a counter), and the first context usually answers.
     fn any_metric_where(&self, wanted: impl Fn(&Metric) -> bool) -> bool {
-        self.all().iter().any(|rc| {
-            rc.instances()
-                .iter()
-                .any(|ri| ri.metrics().iter().any(|rm| wanted(rm)))
-        })
+        let mut at = 0;
+        loop {
+            let Some(rc) = lock(&self.index).items().get(at).cloned() else {
+                return false;
+            };
+            if rc.instances().iter().any(|ri| ri.metrics().iter().any(|rm| wanted(rm))) {
+                return true;
+            }
+            at += 1;
+        }
     }
 
     /// Contexts waiting for post-processing.

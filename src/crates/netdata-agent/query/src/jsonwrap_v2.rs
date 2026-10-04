@@ -655,6 +655,26 @@ impl Ctx<'_> {
         w.object_close();
     }
 
+    /// `rrdset_rrdcalc_entries_v2()`: the alerts linked to the instance's chart, by name, each with its published
+    /// status and value and its rule's units. An alert whose status is below CLEAR is left out, so the object can
+    /// be empty; a chart without an alert has no such member.
+    fn instance_alerts(&self, w: &mut JsonWriter, host: &Host, ri: &netdata_agent_rrd::contexts::Instance) {
+        let alerts = chart_alerts(host, ri);
+        if alerts.is_empty() {
+            return;
+        }
+        let k = self.k;
+        w.member_add_object(b"alerts");
+        for alert in alerts.iter().filter(|alert| alert.at_least_clear) {
+            w.member_add_object(&alert.name);
+            w.member_add_string(k.status(), alert.status_name);
+            w.member_add_double(k.value(), alert.value);
+            w.member_add_string(k.units(), &alert.units);
+            w.object_close();
+        }
+        w.object_close();
+    }
+
     /// `query_target_detailed_objects_tree()`: node → context → instance → dimension, the queried dimensions
     /// only unless `all-dimensions`.
     fn detailed(&self, w: &mut JsonWriter, now_s: i64) {
@@ -729,6 +749,7 @@ impl Ctx<'_> {
                 w.member_add_object(b"labels");
                 ri.labels().to_json_members(w);
                 w.object_close();
+                self.instance_alerts(w, &qt.nodes[n].host, ri);
                 w.member_add_object(b"dimensions");
                 last_instance = Some(i);
             }

@@ -1300,9 +1300,10 @@ impl Host {
         if let Some(slot) = self.receiver() {
             self.stop_receiver_and_wait(&slot);
         }
-        // rrdcalc_delete_all(), before the charts go
+        // rrdcalc_delete_all(), before the charts go; the alert index and the alert log after them
         self.storage().health_event(HealthEvent::HostCleanup(self));
         self.charts.flush();
+        self.storage().health_event(HealthEvent::HostChartsFlushed(self));
         self.variables.clear();
         self.replace_stream_path(Vec::new());
         // before the functions go (C frees the sender before the function registry)
@@ -3272,8 +3273,8 @@ mod tests {
         assert_eq!(db_status(&host), DbStatus::Queryable);
     }
 
-    /// What health hears: a freed chart; at a host's cleanup the host first, then each of its charts; and a freed
-    /// host after its cleanup.
+    /// What health hears: a freed chart; at a host's cleanup the host first, then each of its charts, then that
+    /// they are gone; and a freed host after its cleanup.
     #[test]
     fn health_hears_of_freed_charts_and_hosts() {
         use crate::storage::HealthEvent;
@@ -3287,6 +3288,7 @@ mod tests {
                         format!("chart {host} {} freed={}", chart.id(), chart.is_freed())
                     }
                     HealthEvent::HostCleanup(host) => format!("cleanup {}", host.machine_guid()),
+                    HealthEvent::HostChartsFlushed(host) => format!("flushed {}", host.machine_guid()),
                     HealthEvent::HostFreed(host) => format!("freed {}", host.machine_guid()),
                 });
             }
@@ -3307,10 +3309,11 @@ mod tests {
         assert!(heard().is_empty());
 
         child.cleanup_data_collection();
-        assert_eq!(heard(), ["cleanup guid-c", "chart guid-c t.b freed=true", "chart guid-c t.c freed=true"]);
+        let charts = ["chart guid-c t.b freed=true", "chart guid-c t.c freed=true"];
+        assert_eq!(heard(), ["cleanup guid-c", charts[0], charts[1], "flushed guid-c"]);
 
         assert!(hosts.free(&child).is_some());
-        assert_eq!(heard(), ["cleanup guid-c", "freed guid-c"]);
+        assert_eq!(heard(), ["cleanup guid-c", "flushed guid-c", "freed guid-c"]);
     }
 
     /// `rrdhost_should_run_health()`: health enabled for the host, its collector online, no orphan, and its ingestion

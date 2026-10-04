@@ -198,12 +198,18 @@ impl Health {
         }
     }
 
-    /// `rrdhost_cleanup_data_collection_and_health()`: every alert of that host object goes, before its charts do,
-    /// and then the host's log; its id counters stay. The host stays initialized, as C never clears that flag.
+    /// `rrdhost_cleanup_data_collection_and_health()`: every alert of that host object goes, before its charts do.
+    /// The host stays initialized, as C never clears that flag.
     pub fn host_cleanup(&self, host: &Host, env: &dyn Env, clock: Clock) {
         if let Some(alerts) = self.host(host) {
             alerts.delete_all(env, clock);
-            alerts.clear_log();
+        }
+    }
+
+    /// The same cleanup after the host's charts were freed: its alert index and its log go; its id counters stay.
+    pub fn host_charts_flushed(&self, host: &Host) {
+        if let Some(alerts) = self.host(host) {
+            alerts.charts_flushed();
         }
     }
 
@@ -494,22 +500,26 @@ mod tests {
         assert!(linked(&health, &host).is_empty(), "initialized already: no first pass, and nothing pending");
     }
 
-    /// `rrdhost_cleanup_data_collection_and_health()`: the host's alerts go, with their REMOVED entries, and then
-    /// its log; the ids go on from where they were, and the host stays initialized.
+    /// `rrdhost_cleanup_data_collection_and_health()`: the host's alerts go, with their REMOVED entries; once its
+    /// charts are gone the alert index starts over (a data answer's hard hash counts from 0 again) and the log is
+    /// emptied. The ids and the count of transitions go on from where they were, and the host stays initialized.
     #[test]
-    fn a_cleanup_empties_the_log_and_keeps_its_counters() {
+    fn a_cleanup_empties_the_index_and_the_log_and_keeps_the_counters() {
         let health = health_with(&rules());
         let host = host(&[("region", "eu")]);
         chart(&host, "t.a1", None, "ctx.a", &[]);
         health.host_link(&host, &|| NOW, &running);
         let alerts = health.host(&host).expect("the host's alerts");
-        assert_eq!((alerts.log_entries().len(), alerts.transitions()), (1, 1));
+        assert_eq!((alerts.log_entries().len(), alerts.transitions(), alerts.version()), (1, 1, 1));
         let (next_log_id, next_alarm_id, _) = alerts.log_counters();
 
         health.host_cleanup(&host, &Idle, &|| NOW + 1);
-        assert!(alerts.alerts().is_empty() && alerts.log_entries().is_empty());
+        assert!(alerts.alerts().is_empty());
+        assert_eq!((alerts.log_entries().len(), alerts.transitions(), alerts.version()), (2, 2, 2));
+
+        health.host_charts_flushed(&host);
+        assert_eq!((alerts.log_entries().len(), alerts.transitions(), alerts.version()), (0, 2, 0));
         assert_eq!(alerts.log_counters(), (next_log_id + 1, next_alarm_id, 0));
-        assert_eq!(alerts.transitions(), 2);
         assert!(alerts.is_initialized());
     }
 }

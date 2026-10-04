@@ -94,6 +94,11 @@ mod replay {
         format!("{value:08x}").into_bytes()
     }
 
+    /// A transition id as the generator prints one: the count its stub of the random UUID gave it, 0 for none.
+    fn uuid_rank(id: &[u8; 16]) -> Vec<u8> {
+        text(u128::from_be_bytes(*id))
+    }
+
     /// What a scenario says of one chart, beside the chart's own state.
     struct ChartScript {
         chart: Arc<Chart>,
@@ -102,13 +107,19 @@ mod replay {
         last_entry_s: i64,
         /// The lookup's code, value and null flag.
         lookup: (u16, f64, bool),
+        /// When not 0: the chart leaves the host's index at that many more looks at the gate.
+        free_at_gate: usize,
+        /// The chart leaves the host's index when its lookup is asked for.
+        free_at_lookup: bool,
     }
 
     /// The stubbed world of the C generator.
     struct World {
+        host: Arc<Host>,
         clock_s: Cell<i64>,
         clock_usec: Cell<u64>,
         gate: Cell<bool>,
+        gate_for: Cell<usize>,
         running: Cell<bool>,
         running_for: Cell<usize>,
         exiting: Cell<bool>,
@@ -136,6 +147,30 @@ mod replay {
             self.running.get()
         }
 
+        /// C's `rrdhost_should_run_health()` as the generator stubs it: a chart whose countdown ends leaves the
+        /// host's index; the gate is open for the looks the scenario counts down, then closed.
+        fn may_run_health(&self) -> bool {
+            for script in self.charts.borrow_mut().iter_mut().filter(|script| script.free_at_gate > 0) {
+                script.free_at_gate -= 1;
+                if script.free_at_gate == 0 {
+                    self.free(&script.chart);
+                }
+            }
+            if self.gate_for.get() > 0 {
+                self.gate_for.set(self.gate_for.get() - 1);
+                if self.gate_for.get() == 0 {
+                    self.gate.set(false);
+                }
+                return true;
+            }
+            self.gate.get()
+        }
+
+        /// The chart leaves the host's index; health hears of it only with the scenario's `unlink`.
+        fn free(&self, chart: &Arc<Chart>) {
+            assert!(self.host.charts().free_if(chart, |_| true), "{} was freed already", chart.id());
+        }
+
         fn clock(&self) -> i64 {
             self.clock_s.get()
         }
@@ -150,22 +185,25 @@ mod replay {
     impl Env for World {
         fn facts(&self, chart: &Chart) -> ChartFacts {
             let collection = chart.collection();
-            let entries = |script: &mut ChartScript| (script.first_entry_s, script.last_entry_s);
-            let (first_entry_s, last_entry_s) = self.script(chart, entries);
             ChartFacts {
                 obsolete: chart.flags() & flags::OBSOLETE != 0,
                 last_collected_s: collection.last_collected.0,
                 counter_done: collection.counter_done,
                 update_every: chart.update_every(),
-                first_entry_s,
-                last_entry_s,
             }
+        }
+
+        fn retention(&self, chart: &Chart) -> (i64, i64) {
+            self.script(chart, |script| (script.first_entry_s, script.last_entry_s))
         }
 
         /// The stub of `rrdset2value_api_v1_with_owa()`: it records its arguments and answers what the scenario
         /// says, with a window made of the clock and the two ends.
         fn lookup(&self, _: &Arc<Host>, chart: &Arc<Chart>, request: &ValueRequest) -> ValueResult {
             let (code, value, null) = self.script(chart, |script| script.lookup);
+            if self.script(chart, |script| std::mem::take(&mut script.free_at_lookup)) {
+                self.free(chart);
+            }
             // C's numbers of QUERY_SOURCE_HEALTH and of the priority the lookup asks for
             let priority = match request.priority {
                 QueryPriority::Synchronous => 7,
@@ -243,6 +281,7 @@ mod replay {
                 text(entry.last_repeat),
                 double(entry.old_value),
                 double(entry.new_value),
+                uuid_rank(&entry.transition_id),
             ]);
         }
     }
@@ -343,7 +382,7 @@ mod replay {
             };
             let as_text = String::from_utf8_lossy(&value).into_owned();
             match key.as_str() {
-                "time" | "tid" | "alert_transition_id" => {}
+                "time" | "tid" => {}
                 "source" => source = as_text,
                 "level" => level = as_text,
                 "msg" => message = value,
@@ -405,8 +444,9 @@ mod replay {
                 Field::AlertSummary => "alert_summary",
                 Field::AlertInfo => "alert_info",
                 Field::AlertNotificationRealtimeUsec => "alert_notification_timestamp",
-                // a random id on C's side; the source has no key in C's table
-                Field::AlertTransitionId | Field::AlertSource => continue,
+                Field::AlertTransitionId => "alert_transition_id",
+                // the source has no key in C's table
+                Field::AlertSource => continue,
                 other => panic!("a record with the field {other:?}"),
             };
             let value = match field {
@@ -458,8 +498,11 @@ mod replay {
             Arc::clone(self.health.as_ref().expect("made above"))
         }
 
+        /// A chart of the scenario, also one that left the host's index.
         fn chart(&self, id: &str) -> Arc<Chart> {
-            self.host.charts().find(id, true).unwrap_or_else(|| panic!("{}: no chart {id}", self.name))
+            let charts = self.world.charts.borrow();
+            let script = charts.iter().find(|script| script.chart.id() == id);
+            Arc::clone(&script.unwrap_or_else(|| panic!("{}: no chart {id}", self.name)).chart)
         }
 
         fn directive(&mut self, line: &str) {
@@ -467,6 +510,8 @@ mod replay {
             let (directive, rest) = (words.next().expect("a directive"), words.next().unwrap_or(""));
             let args: Vec<&str> = rest.split(' ').collect();
             let flag = |text: &str| text != "0";
+            // the generator reads both at once; here they make the plugin, at the first step
+            assert!(self.health.is_none() || !matches!(directive, "rules" | "database"), "{}: {line}", self.name);
             match directive {
                 "rules" => self.rules.push(args[0].to_owned()),
                 "database" => self.database = flag(args[0]),
@@ -520,6 +565,8 @@ mod replay {
                         first_entry_s: T0 - 2 * 86400,
                         last_entry_s: clock,
                         lookup: (200, f64::NAN, true),
+                        free_at_gate: 0,
+                        free_at_lookup: false,
                     });
                 }
                 "label" => {
@@ -570,6 +617,12 @@ mod replay {
                     self.world.script(&self.chart(args[0]), |script| script.lookup = lookup);
                 }
                 "gate" => self.world.gate.set(flag(args[0])),
+                "gate-for" => self.world.gate_for.set(args[0].parse().expect("a count")),
+                "free-at-gate" => {
+                    let looks = args[1].parse().expect("a count");
+                    self.world.script(&self.chart(args[0]), |script| script.free_at_gate = looks);
+                }
+                "free-at-lookup" => self.world.script(&self.chart(args[0]), |script| script.free_at_lookup = true),
                 "running" => self.world.running.set(flag(args[0])),
                 "running-for" => self.world.running_for.set(args[0].parse().expect("a count")),
                 "saved" => self.world.saved.set(flag(args[0])),
@@ -606,7 +659,7 @@ mod replay {
                             now,
                             apply_hibernation_delay: hibernate,
                             next_run: &mut next_run,
-                            gate: &|| world.gate.get(),
+                            gate: &|| world.may_run_health(),
                         };
                         health.host_pass(&self.host, pass, world, &|| world.clock(), &|| world.is_running());
                     });
@@ -739,6 +792,7 @@ mod replay {
                         text(snapshot.delay_last),
                         text(snapshot.last_repeat),
                         text(snapshot.times_repeat),
+                        uuid_rank(&snapshot.last_transition_id),
                     ],
                 );
             }
@@ -755,9 +809,14 @@ mod replay {
             }
 
             let mut expected = self.expected.remove(&self.step).unwrap_or_default();
-            // what the stubs record of the database and the cloud, which come with their own commits
             if let Some(calls) = expected.get_mut("call") {
-                calls.retain(|call| matches!(&call[0][..], b"queue" | b"save" | b"lookup" | b"notify"));
+                calls.retain(|call| match &call[0][..] {
+                    b"queue" | b"save" | b"lookup" | b"notify" => true,
+                    // what the stubs record of the database and the cloud, which come with their own commits
+                    b"load" | b"sql_get_alarm_id" | b"queue_deletion" | b"commit_alert_transitions" => false,
+                    b"process_alert_pending_queue" => false,
+                    other => panic!("{}: a call row of kind {}", self.name, String::from_utf8_lossy(other)),
+                });
                 if calls.is_empty() {
                     expected.remove("call");
                 }
@@ -845,6 +904,7 @@ mod replay {
             nullable(&entry.recipient),
             nullable(&entry.source),
             config_hash.into_bytes(),
+            uuid_rank(&entry.transition_id),
         ]
     }
 
@@ -887,10 +947,13 @@ mod replay {
         for path in scenarios {
             let name = path.file_stem().expect("a name").to_string_lossy().into_owned();
             let script = std::fs::read_to_string(&path).expect("a scenario");
+            let host = host();
             let world = World {
+                host: Arc::clone(&host),
                 clock_s: Cell::new(T0),
                 clock_usec: Cell::new(123_456),
                 gate: Cell::new(true),
+                gate_for: Cell::new(0),
                 running: Cell::new(true),
                 running_for: Cell::new(0),
                 exiting: Cell::new(false),
@@ -905,7 +968,7 @@ mod replay {
                 health: None,
                 rules: Vec::new(),
                 database: true,
-                host: host(),
+                host,
                 world,
                 step: 0,
                 entry_rows: HashMap::new(),
@@ -931,5 +994,5 @@ fn loop_matches_c() {
     let (steps, failures) = replay::run();
     let shown = failures[..failures.len().min(12)].join("\n");
     assert!(failures.is_empty(), "{} differences over {steps} steps:\n{shown}", failures.len());
-    assert_eq!(steps, 198);
+    assert_eq!(steps, 215);
 }

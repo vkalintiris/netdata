@@ -78,7 +78,8 @@ pub fn host() -> Arc<Host> {
     h
 }
 
-/// What health would show of [`host`]'s chart: three alerts, one in each of three classes, in link order.
+/// What health would show of [`host`]'s chart: three alerts, one in each of three classes, in link order, with
+/// the values 12.5, 0 and none.
 struct ThreeAlerts;
 
 impl netdata_agent_rrd::storage::AlertView for ThreeAlerts {
@@ -91,14 +92,19 @@ impl netdata_agent_rrd::storage::AlertView for ThreeAlerts {
             return Vec::new();
         }
         let alerts = [
-            ("a_warn", AlertClass::Warning, "WARNING"),
-            ("a_clear", AlertClass::Clear, "CLEAR"),
-            ("a_undef", AlertClass::Other, "UNDEFINED"),
+            ("a_warn", AlertClass::Warning, "WARNING", 12.5),
+            ("a_clear", AlertClass::Clear, "CLEAR", 0.0),
+            ("a_undef", AlertClass::Other, "UNDEFINED", f64::NAN),
         ];
-        alerts
-            .into_iter()
-            .map(|(name, class, status_name)| ChartAlert { name: name.into(), class, status_name })
-            .collect()
+        let alert = |(name, class, status_name, value): (&str, AlertClass, &'static str, f64)| ChartAlert {
+            name: name.into(),
+            class,
+            status_name,
+            at_least_clear: class != AlertClass::Other,
+            value,
+            units: b"things".to_vec(),
+        };
+        alerts.into_iter().map(alert).collect()
     }
 }
 

@@ -491,9 +491,13 @@ impl HostAlerts {
         self.store().log.mark_updated();
     }
 
-    /// `rrdhost_cleanup_data_collection_and_health()` frees the host's log after its alerts; the id counters stay.
-    pub(crate) fn clear_log(&self) {
-        self.store().log.entries.clear();
+    /// `rrdhost_cleanup_data_collection_and_health()` once the host's charts are gone: C destroys the alert
+    /// dictionary, so its version starts from 0 again when the host comes back, and frees the log; the id counters
+    /// and the count of transitions stay.
+    pub(crate) fn charts_flushed(&self) {
+        let mut store = self.store();
+        store.version = 0;
+        store.log.entries.clear();
     }
 }
 
@@ -507,7 +511,8 @@ mod tests {
 
     #[test]
     fn the_first_rule_to_give_a_key_keeps_it() {
-        let rules = [("a", "units: first"), ("a", "units: second")].map(|(name, units)| rule_text("template", name, "t.ctx", &[units]));
+        let rules = [("a", "units: first"), ("a", "units: second")]
+            .map(|(name, units)| rule_text("template", name, "t.ctx", &[units]));
         let health = health_with(&rules.concat());
         let host = host(&[]);
         let c = chart(&host, "t.c", None, "t.ctx", &[]);
@@ -593,7 +598,8 @@ mod tests {
 
     #[test]
     fn the_three_indexes_follow_links_and_unlinks() {
-        let health = health_with(&(rule_text("template", "a", "t.ctx", &[]) + &rule_text("template", "b", "t.ctx", &[])));
+        let rules = rule_text("template", "a", "t.ctx", &[]) + &rule_text("template", "b", "t.ctx", &[]);
+        let health = health_with(&rules);
         let host = host(&[]);
         let (c1, c2) = (chart(&host, "t.c1", None, "t.ctx", &[]), chart(&host, "t.c2", None, "t.ctx", &[]));
         let alerts = HostAlerts::default();

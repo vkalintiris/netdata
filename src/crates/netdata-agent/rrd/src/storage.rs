@@ -99,6 +99,8 @@ pub enum HealthEvent<'a> {
     ChartFreed(&'a str, &'a Chart),
     /// `rrdhost_cleanup_data_collection_and_health()`: this host's charts are about to be freed.
     HostCleanup(&'a Host),
+    /// The same cleanup, once the charts are gone: C destroys the host's alert index and frees its alert log then.
+    HostChartsFlushed(&'a Host),
     /// `rrdhost_free_unlinked()`: this host is gone and its data collection was cleaned up. It need not be the host
     /// its GUID names in the index: a host that found its GUID taken there is freed the same way.
     HostFreed(&'a Host),
@@ -122,14 +124,19 @@ pub trait AlertView: Send + Sync {
     fn chart_alerts(&self, host: &Host, chart: &Chart) -> Vec<ChartAlert>;
 }
 
-/// One alert of a chart as a query sees it: its rule's name and its published status.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One alert of a chart as a query sees it: its rule's name and units, and its published status and value.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChartAlert {
     pub name: Vec<u8>,
     /// How a data answer counts the status.
     pub class: AlertClass,
     /// `rrdcalc_status2string()` of the status, which the `alerts=` filter matches as `NAME:STATUS`.
     pub status_name: &'static str,
+    /// The status is CLEAR or above: the detailed tree of a data answer shows the alert.
+    pub at_least_clear: bool,
+    pub value: f64,
+    /// The rule's units, empty for none.
+    pub units: Vec<u8>,
 }
 
 /// The four counters of `QUERY_ALERTS_COUNTS`: every status that is not CLEAR, WARNING or CRITICAL is `Other`.
@@ -429,7 +436,14 @@ mod tests {
                 (self.0, self.0 + 1)
             }
             fn chart_alerts(&self, _: &Host, _: &Chart) -> Vec<ChartAlert> {
-                vec![ChartAlert { name: b"a".to_vec(), class: AlertClass::Clear, status_name: "CLEAR" }]
+                vec![ChartAlert {
+                    name: b"a".to_vec(),
+                    class: AlertClass::Clear,
+                    status_name: "CLEAR",
+                    at_least_clear: true,
+                    value: 1.5,
+                    units: b"things".to_vec(),
+                }]
             }
         }
         let host = Host::new("guid-view", false, crate::testutil::info("view"));
@@ -438,6 +452,9 @@ mod tests {
         host.storage().set_alert_view(Arc::new(Fixed(50)));
         let view = host.storage().alert_view().expect("the view");
         assert_eq!(view.versions(&host), (5, 6));
+        let chart = host.charts().create(&crate::testutil::chart_spec(crate::mode::DbMode::Ram)).0;
+        let alerts = view.chart_alerts(&host, &chart);
+        assert_eq!((alerts.len(), &alerts[0].name[..], alerts[0].status_name), (1, &b"a"[..], "CLEAR"));
 
         assert_eq!(host.health_delay_up_to(), 0);
         host.set_health_delay_up_to(1_700_000_060);

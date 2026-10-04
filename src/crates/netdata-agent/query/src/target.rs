@@ -1193,6 +1193,10 @@ mod tests {
             // the first alert's name matches `*` before the second alert could be refused
             ("!a_clear|*", true),
             ("!*:WARNING|*", true),
+            // no name matches until the first alert's `NAME:STATUS` is refused
+            ("!*:WARNING|a_clear", false),
+            ("!*:CLEAR|a_undef", false),
+            ("!*:CRITICAL|a_undef", true),
         ];
         for (filter, kept) in cases {
             let (qt, _) = crate::testing::v2_target(&h, &format!("contexts=ctx.a&alerts={filter}"));

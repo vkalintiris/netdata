@@ -10,7 +10,9 @@
 //
 // Stubbed here, each with what the scenario scripts of it:
 //   - the gate (rrdhost_should_run_health) and service_running, which is also false once the exit began, as C's;
-//   - the chart index: a plain dictionary whose values are the hand-built RRDSETs;
+//   - the chart index: a plain dictionary whose values are the hand-built RRDSETs. A chart the scenario freed is
+//     not found in it any more, while its alerts stay: the state between the daemon's delete of a chart from its
+//     index and the delete callback that unlinks the chart's alerts, which waits while a pass walks the alerts;
 //   - a chart's first and last entry, and the database lookup (rrdset2value_api_v1_with_owa), which records its
 //     arguments and answers what the scenario says;
 //   - the silencers (never disabled, never silenced: they come with their own commit);
@@ -26,6 +28,8 @@
 //     entry no command was started for, logs an error and marks the entry as failed, which a daemon that runs its
 //     notifications does not do;
 //   - the walk over a context's charts for the variable lookup;
+//   - an entry's transition id, by a #define for health_log.c: instead of a random UUID, the count of the UUIDs
+//     given out so far, so that the trace shows which entry got which and what an alert publishes of it;
 //   - the wall clock: the program defines clock_gettime(), so every reader of CLOCK_REALTIME, in the health objects
 //     and in libnetdata alike, gets the scenario's clock. (A --wrap of now_realtime_sec does nothing here: the
 //     function is inlined by the LTO link.)
@@ -41,7 +45,7 @@
 //   lookup <chart> <dimensions> <points> <after> <before> <method> <group options> <resampling> <options>
 //          <timeout> <tier> <query source> <priority> <the scripted code>
 //   notify <unique id> <alarm id> <event id> <old status> <new status> <when> <delay up to> <flags> <duration>
-//          <non-clear duration> <delay> <last repeat> <old value> <new value>
+//          <non-clear duration> <delay> <last repeat> <old value> <new value> <transition id, as its count>
 //   commit_alert_transitions
 //   process_alert_pending_queue
 
@@ -91,6 +95,14 @@ struct oracle_chart *oracle_chart(RRDSET *st) {
 // C: src/database/rrdhost.c, rrdhost_should_run_health()
 bool rrdhost_should_run_health(RRDHOST *host) {
     (void)host;
+    for(size_t i = 0; i < oracle.charts_used; i++)
+        if(oracle.charts[i].free_at_gate && --oracle.charts[i].free_at_gate == 0)
+            oracle.charts[i].freed = true;
+    if(oracle.gate_for) {
+        if(--oracle.gate_for == 0)
+            oracle.gate = false;
+        return true;
+    }
     return oracle.gate;
 }
 
@@ -114,14 +126,15 @@ void health_plugin_init(void) {
 // ------------------------------------------------------------------------------------------------
 // charts
 
-// C: src/database/rrdset-index-id.c. C leaves an obsolete chart out when include_obsolete is false.
+// C: src/database/rrdset-index-id.c. C leaves an obsolete chart out when include_obsolete is false. A chart the
+// scenario freed is not in the index.
 RRDSET_ACQUIRED *rrdset_find_and_acquire(RRDHOST *host, const char *id, bool include_obsolete) {
     if(!host->rrdset_root_index)
         return NULL;
     const DICTIONARY_ITEM *item = dictionary_get_and_acquire_item(host->rrdset_root_index, id);
-    if(item && !include_obsolete) {
+    if(item) {
         RRDSET *st = dictionary_acquired_item_value(item);
-        if(rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE)) {
+        if(oracle_chart(st)->freed || (!include_obsolete && rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE))) {
             dictionary_acquired_item_release(host->rrdset_root_index, item);
             return NULL;
         }
@@ -193,6 +206,11 @@ int rrdset2value_api_v1_with_owa(
                 string2str(st->id), dimensions ? dimensions : "\\x00", points, (long)after, (long)before,
                 time_grouping_id2txt(group_method), group_options ? group_options : "\\x00", (long)resampling_time,
                 (unsigned)options, (long)timeout, tier, (int)query_source, (int)priority, script->lookup_code);
+
+    if(script->free_at_lookup) {
+        script->free_at_lookup = false;
+        script->freed = true;
+    }
 
     if(script->lookup_code == 500) {
         if(value_is_null) *value_is_null = 1;
@@ -309,11 +327,11 @@ void oracle_health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct heal
     char old_value[32], new_value[32];
     oracle_double(old_value, sizeof(old_value), ae->old_value);
     oracle_double(new_value, sizeof(new_value), ae->new_value);
-    oracle_call("notify\t%u\t%u\t%u\t%s\t%s\t%ld\t%ld\t%08x\t%ld\t%ld\t%d\t%ld\t%s\t%s", ae->unique_id,
+    oracle_call("notify\t%u\t%u\t%u\t%s\t%s\t%ld\t%ld\t%08x\t%ld\t%ld\t%d\t%ld\t%s\t%s\t%llu", ae->unique_id,
                 ae->alarm_id, ae->alarm_event_id, rrdcalc_status2string(ae->old_status),
                 rrdcalc_status2string(ae->new_status), (long)ae->when, (long)ae->delay_up_to_timestamp,
                 (unsigned)ae->flags, (long)ae->duration, (long)ae->non_clear_duration, ae->delay,
-                (long)ae->last_repeat, old_value, new_value);
+                (long)ae->last_repeat, old_value, new_value, oracle_uuid_rank(ae->transition_id));
 
     ae->flags |= HEALTH_ENTRY_FLAG_PROCESSED;
     health_alarm_log_save(host, ae, false);
@@ -322,6 +340,23 @@ void oracle_health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct heal
 // C: src/health/health_notifications.c. See the top of this file.
 void oracle_health_alarm_wait_for_execution(ALARM_ENTRY *ae) {
     (void)ae;
+}
+
+// ------------------------------------------------------------------------------------------------
+// an entry's transition id
+
+void oracle_uuid_generate_random(nd_uuid_t out) {
+    uint64_t n = ++oracle.uuids;
+    memset(out, 0, sizeof(nd_uuid_t));
+    for(size_t i = 0; i < 8; i++)
+        ((unsigned char *)out)[15 - i] = (unsigned char)(n >> (8 * i));
+}
+
+unsigned long long oracle_uuid_rank(const nd_uuid_t id) {
+    unsigned long long n = 0;
+    for(size_t i = 8; i < 16; i++)
+        n = (n << 8) | ((const unsigned char *)id)[i];
+    return n;
 }
 
 // ------------------------------------------------------------------------------------------------

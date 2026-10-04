@@ -2172,7 +2172,8 @@ mod tests {
 
     /// `rrdhost_set_receiver()`: a child that attaches with health on and a positive `postpone alerts on connect`
     /// has its health postponed until that many seconds from now; with health off, or without a delay, the host's
-    /// delay is left alone and nothing is logged.
+    /// delay is left as it was (here what an earlier connection or a resume from suspension set) and nothing is
+    /// logged.
     #[test]
     fn an_attach_postpones_the_child_s_health() {
         let cases = [
@@ -2190,6 +2191,10 @@ mod tests {
                 None,
             );
             let guid = format!("5a1e0000-0000-4000-8000-0000000000f{i}");
+            // the host is known already, with its health postponed until a second long past
+            const EARLIER: i64 = 1_600_000_000;
+            let known = r.hosts.find_or_create(&guid, DbMode::Ram, || crate::connector::tests::info("", ""), |_| {});
+            known.expect("the host").set_health_delay_up_to(EARLIER);
             let (ours, _theirs) = mio::net::UnixStream::pair().unwrap();
             let before = now_s();
             let (admitted, records) =
@@ -2208,7 +2213,7 @@ mod tests {
                     )));
                 }
                 None => {
-                    assert_eq!(host.health_delay_up_to(), 0, "{settings}");
+                    assert_eq!(host.health_delay_up_to(), EARLIER, "{settings}");
                     assert!(postponed.is_empty(), "{settings}");
                 }
             }

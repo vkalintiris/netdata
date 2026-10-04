@@ -379,11 +379,12 @@ mod tests {
     }
 
     /// The alert members of a v2 answer: the counts where C prints them (node, context, instance), the summary by
-    /// name in the order first seen, and the two versions. `minimal-stats` drops the counts and the summary.
+    /// name in the order first seen, and the two versions. `minimal-stats` drops the counts and the summary. The
+    /// detailed tree gives each instance its chart's alerts between its labels and its dimensions, without those
+    /// below CLEAR; a chart without alerts has no such member.
     #[test]
     fn a_v2_answer_holds_the_alerts_as_c() {
-        let respond = |query: &str| {
-            let h = crate::testing::host_with_alerts();
+        let respond_of = |h: std::sync::Arc<netdata_agent_rrd::host::Host>, query: &str| {
             let (mut qt, mut window) = crate::testing::v2_target(&h, query);
             let control = Control {
                 received: Instant::now(),
@@ -396,6 +397,7 @@ mod tests {
             let r = data_query_execute(&mut qt, &mut window, &control, &agent);
             String::from_utf8(r.body).unwrap()
         };
+        let respond = |query: &str| respond_of(crate::testing::host_with_alerts(), query);
         let body = respond("contexts=ctx.a&options=minify");
         let counts = r#""al":{"cl":1,"wr":1,"ot":1}"#;
         assert_eq!(body.matches(counts).count(), 3, "{body}");
@@ -409,5 +411,18 @@ mod tests {
 
         let minimal = respond("contexts=ctx.a&options=minify,minimal-stats");
         assert!(!minimal.contains(r#""al":"#) && !minimal.contains(r#""alerts":["#), "{minimal}");
+
+        let tree = r#""alerts":{"a_warn":{"st":"WARNING","vl":12.5,"un":"things"},"#.to_owned()
+            + r#""a_clear":{"st":"CLEAR","vl":0,"un":"things"}},"dimensions":{"#;
+        let detailed = respond("contexts=ctx.a&options=minify,details");
+        assert_eq!(detailed.matches(&tree).count(), 1, "{detailed}");
+        // the instance's labels close right before it
+        assert!(detailed.contains(&format!("}},{tree}")), "{detailed}");
+        let long = respond("contexts=ctx.a&options=minify,details,long-json-keys");
+        assert!(long.contains(r#""a_warn":{"status":"WARNING","value":12.5,"units":"things"}"#), "{long}");
+        // without the option the summary's list is the only member of that name; without health the tree has none
+        assert!(!body.contains(r#""alerts":{"#), "{body}");
+        let plain = respond_of(crate::testing::host(), "contexts=ctx.a&options=minify,details");
+        assert!(plain.contains(r#""dimensions":{"#) && !plain.contains(r#""alerts":{"#), "{plain}");
     }
 }

@@ -26,17 +26,18 @@
 //                    delay_down_current, last_repeat, times_repeat, summary, info
 //         published  the same alert's published snapshot: key, status, value, run_flags, last_updated,
 //                    next_update, last_status_change, last_status_change_value, global_id, db_after, db_before,
-//                    delay_up_to_timestamp, delay_last, last_repeat, times_repeat
+//                    delay_up_to_timestamp, delay_last, last_repeat, times_repeat, last_transition_id (as the
+//                    count the stubs gave it, 0 for none)
 //         log        the unique ids of the memory log's entries, newest first, separated by spaces (`-` for none)
 //         entry      per entry of the memory log that is new or differs from its last row: unique_id, alarm_id,
 //                    alarm_event_id, old_status, new_status, when, duration, non_clear_duration, delay,
 //                    delay_up_to_timestamp, flags, updated_by_id, updates_id, old_value, new_value,
 //                    old_value_string, new_value_string, global_id, exec_run_timestamp, exec_code, last_repeat,
 //                    name, chart, chart_context, chart_name, units, summary, info, classification, component,
-//                    type, exec, recipient, source, config hash
+//                    type, exec, recipient, source, config hash, transition_id (as its count)
 //         call       what the step called of what is stubbed, in call order (health-loop-stubs.c writes them)
-//         record     each log record the step wrote, as C's logfmt line with the record's time, the thread id and
-//                    the transition id (a random UUID) blanked; the dates in it are UTC
+//         record     each log record the step wrote, as C's logfmt line with the record's time and the thread id
+//                    blanked; the dates in it are UTC, and a transition id is the UUID the stubs counted out
 //
 // A scenario file holds a directive per line (`#` starts a comment). Seconds are offsets from T0 = 2000000000.
 //   rules <path>                       reads a health.d file (relative to the crate's directory, where this runs)
@@ -55,6 +56,10 @@
 //   obsolete <chart> <0|1>
 //   lookup <chart> <code> <value|nan> <null 0|1>
 //   gate <0|1>                         the host may run health (rrdhost_should_run_health())
+//   gate-for <n>                       the host may run health for n more looks at it, then it may not
+//   free-at-gate <chart> <n>           at the n-th look at the gate from here the chart leaves the host's index;
+//   free-at-lookup <chart>             or when its lookup is asked for. Its alerts stay, as in the daemon while
+//                                      the chart's delete callback waits for the pass; an `unlink` is that callback
 //   running <0|1>                      the health service runs, or is stopping
 //   saved <0|1>                        the SQL save marks an entry as saved, as C's insert does (default: not)
 //   running-for <n>                    the service runs for n more looks at it, then it is stopping
@@ -213,8 +218,7 @@ static RRDSET *chart_find(const char *id) {
     return st;
 }
 
-// the log records written since the last step: every line of the capture file, the thread id and the transition id
-// blanked
+// the log records written since the last step: every line of the capture file, its time and the thread id blanked
 static void records(void) {
     fflush(stderr);
     off_t end = lseek(records_fd, 0, SEEK_END);
@@ -228,9 +232,9 @@ static void records(void) {
 
     char *save = NULL;
     for(char *line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
-        // blank the value of `time=` (the line starts with it), of ` tid=` and of ` alert_transition_id=`
-        static const char *blanked[] = { "time=", " tid=", " alert_transition_id=" };
-        for(size_t b = 0; b < 3; b++) {
+        // blank the value of `time=` (the line starts with it) and of ` tid=`
+        static const char *blanked[] = { "time=", " tid=" };
+        for(size_t b = 0; b < 2; b++) {
             char *at = (b == 0) ? ((strncmp(line, blanked[0], 5) == 0) ? line : NULL) : strstr(line, blanked[b]);
             if(!at)
                 continue;
@@ -319,9 +323,9 @@ static void dump(const char *directive) {
             fprintf(out, "\t%08x\t%ld\t%ld\t%ld", (unsigned)snap.run_flags, (long)snap.last_updated,
                     (long)snap.next_update, (long)snap.last_status_change);
             field_double(out, snap.last_status_change_value);
-            fprintf(out, "\t%llu\t%ld\t%ld\t%ld\t%d\t%ld\t%u\n", (unsigned long long)snap.global_id,
+            fprintf(out, "\t%llu\t%ld\t%ld\t%ld\t%d\t%ld\t%u\t%llu\n", (unsigned long long)snap.global_id,
                     (long)snap.db_after, (long)snap.db_before, (long)snap.delay_up_to_timestamp, snap.delay_last,
-                    (long)snap.last_repeat, snap.times_repeat);
+                    (long)snap.last_repeat, snap.times_repeat, oracle_uuid_rank(snap.last_transition_id));
         }
         foreach_rrdcalc_in_rrdhost_done(rc);
     }
@@ -364,6 +368,7 @@ static void dump(const char *directive) {
         fputc('\t', f);
         for(size_t i = 0; i < sizeof(ae->config_hash_id); i++)
             fprintf(f, "%02x", (unsigned)((const unsigned char *)&ae->config_hash_id)[i]);
+        fprintf(f, "\t%llu", oracle_uuid_rank(ae->transition_id));
         fclose(f);
 
         // the text is the row's fields, each led by its tab
@@ -562,6 +567,14 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
         }
         else if(strcmp(directive, "gate") == 0)
             oracle.gate = atoi(word(&rest, whole)) != 0;
+        else if(strcmp(directive, "gate-for") == 0)
+            oracle.gate_for = (size_t)atoi(word(&rest, whole));
+        else if(strcmp(directive, "free-at-gate") == 0) {
+            struct oracle_chart *script = oracle_chart(chart_find(word(&rest, whole)));
+            script->free_at_gate = (size_t)atoi(word(&rest, whole));
+        }
+        else if(strcmp(directive, "free-at-lookup") == 0)
+            oracle_chart(chart_find(word(&rest, whole)))->free_at_lookup = true;
         else if(strcmp(directive, "running") == 0)
             oracle.running = atoi(word(&rest, whole)) != 0;
         else if(strcmp(directive, "running-for") == 0)

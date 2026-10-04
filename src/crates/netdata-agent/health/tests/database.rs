@@ -123,6 +123,7 @@ fn a_host_that_lost_the_index_collision_leaves_the_indexed_host_s_alerts() {
         move |event| match event {
             HealthEvent::ChartFreed(host, chart) => health.chart_freed(host, chart, &Idle, &|| NOW),
             HealthEvent::HostCleanup(host) => health.host_cleanup(host, &Idle, &|| NOW),
+            HealthEvent::HostChartsFlushed(host) => health.host_charts_flushed(host),
             HealthEvent::HostFreed(host) => health.host_freed(host),
         }
     });
@@ -162,6 +163,7 @@ fn four_threads_define_free_pass_and_read() {
         move |event| match event {
             HealthEvent::ChartFreed(host, chart) => health.chart_freed(host, chart, &Idle, &|| NOW),
             HealthEvent::HostCleanup(host) => health.host_cleanup(host, &Idle, &|| NOW),
+            HealthEvent::HostChartsFlushed(host) => health.host_charts_flushed(host),
             HealthEvent::HostFreed(host) => health.host_freed(host),
         }
     });

@@ -18,7 +18,7 @@ use crate::prototype::AlertConfig;
 use crate::variable::{AlertResolver, This};
 use crate::{Clock, Health, journal, lookup};
 
-/// What the runnable test reads of a chart (`rrdcalc_isrunnable()`).
+/// What the obsolete rule and the runnable test (`rrdcalc_isrunnable()`) read of a chart's collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChartFacts {
     /// `RRDSET_FLAG_OBSOLETE`.
@@ -29,15 +29,15 @@ pub struct ChartFacts {
     pub counter_done: usize,
     /// `st->update_every`.
     pub update_every: i32,
-    /// `rrdset_first_entry_s()` and `rrdset_last_entry_s()`.
-    pub first_entry_s: i64,
-    pub last_entry_s: i64,
 }
 
 /// What the daemon gives the pass; a test's is scripted.
 pub trait Env {
-    /// The chart as the runnable test and the obsolete rule see it.
+    /// The chart as the obsolete rule and the runnable test see it.
     fn facts(&self, chart: &Chart) -> ChartFacts;
+    /// `rrdset_first_entry_s()` and `rrdset_last_entry_s()`: the span of the chart's data, which the runnable test
+    /// asks for only once an alert is due on a collected chart. The alert's live fields are held meanwhile.
+    fn retention(&self, chart: &Chart) -> (i64, i64);
     /// The database lookup of an alert (`rrdset2value_api_v1_with_owa()`). Nothing is locked while it runs.
     fn lookup(&self, host: &Arc<Host>, chart: &Arc<Chart>, request: &ValueRequest) -> ValueResult;
     /// `now_realtime_usec()`: an entry's `global_id`.
@@ -58,14 +58,11 @@ pub struct Idle;
 
 impl Env for Idle {
     fn facts(&self, _: &Chart) -> ChartFacts {
-        ChartFacts {
-            obsolete: false,
-            last_collected_s: 0,
-            counter_done: 0,
-            update_every: 0,
-            first_entry_s: 0,
-            last_entry_s: 0,
-        }
+        ChartFacts { obsolete: false, last_collected_s: 0, counter_done: 0, update_every: 0 }
+    }
+
+    fn retention(&self, _: &Chart) -> (i64, i64) {
+        (0, 0)
     }
 
     fn lookup(&self, _: &Arc<Host>, _: &Arc<Chart>, _: &ValueRequest) -> ValueResult {
@@ -149,8 +146,16 @@ pub(crate) fn elapsed(now: i64, then: i64) -> i64 {
 }
 
 /// `rrdcalc_isrunnable()`: whether the alert is evaluated in a pass at `now`. An alert that is not due yet lowers
-/// `next_run` to its next update.
-pub fn is_runnable(run: &Run, config: &AlertConfig, facts: &ChartFacts, now: i64, next_run: &mut i64) -> bool {
+/// `next_run` to its next update. `retention` gives the first and the last second of the chart's data; as in C it
+/// is asked only when every other reason not to run is ruled out.
+pub fn is_runnable(
+    run: &Run,
+    config: &AlertConfig,
+    facts: &ChartFacts,
+    retention: impl FnOnce() -> (i64, i64),
+    now: i64,
+    next_run: &mut i64,
+) -> bool {
     if run.next_update > now {
         if *next_run > run.next_update {
             *next_run = run.next_update;
@@ -163,13 +168,14 @@ pub fn is_runnable(run: &Run, config: &AlertConfig, facts: &ChartFacts, now: i64
 
     // the chart's update every, also for the lookup's window
     let update_every = i64::from(facts.update_every);
-    if add_compare(now, update_every, facts.first_entry_s).is_lt() {
+    let (first_entry_s, last_entry_s) = retention();
+    if add_compare(now, update_every, first_entry_s).is_lt() {
         return false;
     }
     if config.after != 0 {
         let offset = i64::from(config.before) + i64::from(config.after);
-        if add_compare(now, offset + update_every, facts.first_entry_s).is_lt()
-            || add_compare(now, offset - update_every, facts.last_entry_s).is_gt()
+        if add_compare(now, offset + update_every, first_entry_s).is_lt()
+            || add_compare(now, offset - update_every, last_entry_s).is_gt()
         {
             return false;
         }
@@ -349,6 +355,8 @@ impl Health {
                 continue;
             }
 
+            // one read serves the obsolete rule and the runnable test; C reads the flag and the collection time
+            // for each, so a collection that lands between its two reads shows a pass earlier there
             let facts = env.facts(&alert.chart);
             let remove = {
                 let mut run = alert.run();
@@ -372,7 +380,7 @@ impl Health {
             }
 
             let mut run = alert.run();
-            if !is_runnable(&run, &alert.config, &facts, now, pass.next_run) {
+            if !is_runnable(&run, &alert.config, &facts, || env.retention(&alert.chart), now, pass.next_run) {
                 run.run_flags &= !run_flags::RUNNABLE;
                 match &removed {
                     Some((entry, _)) => alert.publish(&run, Some((entry.global_id, entry.transition_id))),
@@ -564,40 +572,82 @@ mod tests {
             crate::alert::copy_config(&prototypes.get(b"r").unwrap().rules()[0].config).0
         };
         let (plain, lookup) = (rule(""), rule("lookup: average -10s at -5s\n "));
-        let facts = ChartFacts {
-            obsolete: false,
-            last_collected_s: NOW,
-            counter_done: 2,
-            update_every: 2,
-            first_entry_s: NOW - 100,
-            last_entry_s: NOW,
+        let facts = ChartFacts { obsolete: false, last_collected_s: NOW, counter_done: 2, update_every: 2 };
+        let span = (NOW - 100, NOW);
+        // the answer, the pass's next run, and whether the chart's span was asked for
+        let runnable = |run: &Run, config: &AlertConfig, facts: ChartFacts, span: (i64, i64)| {
+            let (mut next_run, mut asked) = (NOW + 10, false);
+            let retention = || {
+                asked = true;
+                span
+            };
+            (is_runnable(run, config, &facts, retention, NOW, &mut next_run), next_run, asked)
         };
-        let runnable = |run: &Run, config: &AlertConfig, facts: ChartFacts| {
-            let mut next_run = NOW + 10;
-            (is_runnable(run, config, &facts, NOW, &mut next_run), next_run)
-        };
-        assert_eq!(runnable(&idle_run(0), &plain, facts), (true, NOW + 10));
+        assert_eq!(runnable(&idle_run(0), &plain, facts, span), (true, NOW + 10, true));
         // due now, and due a second later: the pass is asked to come back then
-        assert_eq!(runnable(&idle_run(NOW), &plain, facts), (true, NOW + 10));
-        assert_eq!(runnable(&idle_run(NOW + 1), &plain, facts), (false, NOW + 1));
-        assert_eq!(runnable(&idle_run(NOW + 20), &plain, facts), (false, NOW + 10));
+        assert_eq!(runnable(&idle_run(NOW), &plain, facts, span), (true, NOW + 10, true));
+        assert_eq!(runnable(&idle_run(NOW + 1), &plain, facts, span), (false, NOW + 1, false));
+        assert_eq!(runnable(&idle_run(NOW + 20), &plain, facts, span), (false, NOW + 10, false));
 
-        let not = |facts: ChartFacts, config: &AlertConfig| !runnable(&idle_run(0), config, facts).0;
-        assert!(not(ChartFacts { obsolete: true, ..facts }, &plain));
-        assert!(not(ChartFacts { last_collected_s: 0, ..facts }, &plain));
-        assert!(not(ChartFacts { counter_done: 1, ..facts }, &plain));
+        // what the chart's collection rules out costs no read of its span
+        let not_collected = |facts: ChartFacts| runnable(&idle_run(0), &plain, facts, span) == (false, NOW + 10, false);
+        assert!(not_collected(ChartFacts { obsolete: true, ..facts }));
+        assert!(not_collected(ChartFacts { last_collected_s: 0, ..facts }));
+        assert!(not_collected(ChartFacts { counter_done: 1, ..facts }));
+
+        let not = |span: (i64, i64), config: &AlertConfig| !runnable(&idle_run(0), config, facts, span).0;
         // the first entry is ahead by more than the chart's update every, then by exactly that
-        assert!(not(ChartFacts { first_entry_s: NOW + 3, ..facts }, &plain));
-        assert!(!not(ChartFacts { first_entry_s: NOW + 2, ..facts }, &plain));
+        assert!(not((NOW + 3, NOW), &plain));
+        assert!(!not((NOW + 2, NOW), &plain));
         // the lookup's window starts 15 seconds back: the chart's update every on both sides of it
-        assert!(not(ChartFacts { first_entry_s: NOW - 12, ..facts }, &lookup));
-        assert!(!not(ChartFacts { first_entry_s: NOW - 13, ..facts }, &lookup));
-        assert!(not(ChartFacts { last_entry_s: NOW - 18, ..facts }, &lookup));
-        assert!(!not(ChartFacts { last_entry_s: NOW - 17, ..facts }, &lookup));
+        assert!(not((NOW - 12, NOW), &lookup));
+        assert!(!not((NOW - 13, NOW), &lookup));
+        assert!(not((NOW - 100, NOW - 18), &lookup));
+        assert!(!not((NOW - 100, NOW - 17), &lookup));
         // a rule without a period
         let mut never = rule("");
         never.update_every = 0;
-        assert!(not(facts, &never));
+        assert_eq!(runnable(&idle_run(0), &never, facts, span), (false, NOW + 10, false));
+    }
+
+    /// A chart that leaves the host's index between its alert's evaluation and the status change that follows
+    /// (the clock is read in between, for `$now`), while its free has not reached health: the change is not made,
+    /// nothing is logged, and the alert is no longer marked as runnable. The four other places where a pass finds
+    /// an alert without its chart are C's to judge (`tests/corpus/loop/free.scn`).
+    #[test]
+    fn a_status_change_of_an_alert_whose_chart_just_left_is_not_made() {
+        use crate::testing::{Scripted, chart, health_with, host, rule_text};
+        const NOW: i64 = 1_700_000_000;
+        let health = health_with(&rule_text("template", "a", "t.ctx", &["warn: $now > 0"]));
+        let host = host(&[]);
+        let c = chart(&host, "t.c", None, "t.ctx", &[]);
+        health.host_link(&host, &|| NOW, &|| true);
+        let alerts = health.host(&host).expect("the host's alerts");
+        let alert = Arc::clone(&alerts.chart_alerts(&c)[0]);
+        assert_eq!((alerts.log_entries().len(), alerts.transitions()), (1, 1), "the link's entry");
+
+        let env = Scripted { collected: Some(NOW), ..Scripted::default() };
+        // the pass's first read of the clock is the warning expression's
+        let reads = std::cell::Cell::new(0);
+        let clock = || {
+            if reads.replace(reads.get() + 1) == 0 {
+                assert_eq!(alert.run().run_flags & run_flags::RUNNABLE, run_flags::RUNNABLE);
+                assert!(host.charts().free_if(&c, |_| true));
+            }
+            NOW
+        };
+        let mut next_run = NOW + 100;
+        let mut pass = Pass { now: NOW, apply_hibernation_delay: false, next_run: &mut next_run, gate: &|| true };
+        health.evaluate_host(&host, &alerts, &mut pass, &env, &clock, &|| true);
+
+        assert!(reads.get() >= 1);
+        let run = alert.run();
+        assert_eq!((run.status, run.last_updated, run.next_update), (Status::Uninitialized, 0, 0));
+        assert_eq!((run.run_flags, alert.snapshot().run_flags), (0, 0));
+        assert_eq!(run.value, 1.0, "the calculation ran, in the first walk");
+        assert_eq!((alerts.log_entries().len(), alerts.transitions()), (1, 1));
+        assert_eq!(alerts.pass_counts(), Some(PassCounts { uninitialized: 1, ..PassCounts::default() }));
+        assert_eq!(next_run, NOW + 100);
     }
 
     /// The hysteresis: past the last delay's end the rule's delays apply again; at its last second and before, the

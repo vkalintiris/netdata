@@ -204,18 +204,27 @@ pub(crate) fn rule_text(kind: &str, name: &str, on: &str, lines: &[&str]) -> Str
     text
 }
 
-/// An [`Env`] a test sets: the exit flag, and whether a save marks an entry as saved. It counts what it gave out,
-/// so every entry has its own ids.
+/// An [`Env`] a test sets: the exit flag, whether a save marks an entry as saved, and the second every chart was
+/// last collected at, with data from 100 seconds before it (none: no chart is collected). It counts what it gave
+/// out, so every entry has its own ids.
 #[derive(Default)]
 pub struct Scripted {
     pub exiting: bool,
     pub saves: bool,
+    pub collected: Option<i64>,
     pub ids: std::cell::Cell<u64>,
 }
 
 impl Env for Scripted {
     fn facts(&self, chart: &Chart) -> ChartFacts {
-        Idle.facts(chart)
+        match self.collected {
+            Some(second) => ChartFacts { obsolete: false, last_collected_s: second, counter_done: 2, update_every: 1 },
+            None => Idle.facts(chart),
+        }
+    }
+
+    fn retention(&self, chart: &Chart) -> (i64, i64) {
+        self.collected.map_or_else(|| Idle.retention(chart), |second| (second - 100, second))
     }
 
     fn lookup(&self, host: &Arc<Host>, chart: &Arc<Chart>, request: &ValueRequest) -> ValueResult {

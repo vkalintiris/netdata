@@ -20,8 +20,10 @@ define themselves):
   the per-host pass itself (`health_event_loop.c`, compiled as a copy with `health-loop-splice.inc` appended, because
   the pass is static), with what the daemon gives them stubbed in `health-loop-stubs.c`: the charts, the database
   lookup (scripted results; its arguments are recorded), SQLite, the queues, the notification (recorded, the entry
-  marked as processed) and the wall clock (the program defines `clock_gettime()`, so every id and time is a fixed
-  number). It writes `delay.tsv` (the delay multiplier over a grid), `units.tsv` (a value with its unit, as an
+  marked as processed), the wall clock (the program defines `clock_gettime()`, so every id and time is a fixed
+  number) and an entry's transition id (counted out instead of random, so the trace shows which entry got which). A
+  scenario can also close the host's gate or take a chart out of the index in the middle of a pass. It writes
+  `delay.tsv` (the delay multiplier over a grid), `units.tsv` (a value with its unit, as an
   entry's value texts are made) and `loop.tsv`: each scenario under `../corpus/loop/` played step by step, with the
   alerts, their published snapshots, the log's entries, the stubs' calls and C's log records after every step. One
   process per scenario;

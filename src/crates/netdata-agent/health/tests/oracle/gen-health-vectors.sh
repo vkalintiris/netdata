@@ -63,7 +63,10 @@ LOOP_SOURCES=(
 for source in "${LOOP_SOURCES[@]}"; do
     [[ -f "${SRC}/src/${source}" ]] || die "missing ${SRC}/src/${source}"
     object="${WORK}/$(basename -- "${source}" .c).o"
-    run cc "${CFLAGS[@]}" -c "${SRC}/src/${source}" -o "${object}"
+    # an entry's transition id is a random UUID: health_log.c gets the stubs' counted one instead
+    defines=()
+    [[ "${source}" == health/health_log.c ]] && defines=(-Dos_uuid_generate_random=oracle_uuid_generate_random)
+    run cc "${CFLAGS[@]}" "${defines[@]}" -c "${SRC}/src/${source}" -o "${object}"
     LOOP_OBJECTS+=("${object}")
 done
 

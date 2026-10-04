@@ -2593,6 +2593,8 @@ tests/corpus/loop/durations.conf	copy	u_chain	0	$v	${v}	$this > 50	(${this} > 50
 tests/corpus/loop/durations.conf	copy	u_no_clear	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/durations.conf	copy	u_percent	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/exit.conf	copy	e_one	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/free.conf	copy	f_calc	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/free.conf	copy	f_lookup	0	$this * 2	(${this} * 2)	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/gate.conf	copy	g_one	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/loop/lookup.conf	copy	l_avg	0	\x00	\x00	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
 tests/corpus/loop/lookup.conf	copy	l_p95	0	\x00	\x00	\x00	\x00	\x00	\x00

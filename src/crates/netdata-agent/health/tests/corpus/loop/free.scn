@@ -1,0 +1,50 @@
+# A chart that leaves the host's index while a pass is under way, its alerts still linked: the daemon's delete
+# callback, which unlinks them, waits for the pass (here it is the `unlink` that follows). The pass finds each such
+# alert not linked: in the first walk, in the calculation after the lookup, in the second walk, at a repeat.
+rules tests/corpus/loop/free.conf
+chart loop.f1 loop.f1_name loop.free - things 1
+chart loop.f2 loop.f2_name loop.free - things 1
+chart loop.f3 loop.f3_name loop.free - things 1
+chart loop.f4 loop.f4_name loop.free - things 1
+dim loop.f1 value value 7
+dim loop.f2 value value 7
+dim loop.f3 value value 7
+dim loop.f4 value value 7
+var loop.f1 v 70
+var loop.f2 v 70
+var loop.f3 v 70
+var loop.f4 v 70
+lookup loop.f1 200 40 0
+lookup loop.f2 200 40 0
+lookup loop.f3 200 40 0
+lookup loop.f4 200 40 0
+clock 0
+pass 0
+# loop.f1 goes before the first walk's first alert: its alerts are not linked in the first walk, and its repeat
+# finds no chart
+var loop.f1 v 10
+clock 1
+free-at-gate loop.f1 2
+pass 1
+clock 2
+unlink loop.f1
+# loop.f2 goes inside its lookup: the calculation that follows finds no chart, and so does the second walk
+var loop.f2 v 10
+lookup loop.f2 200 10 0
+clock 3
+free-at-lookup loop.f2
+pass 3
+clock 4
+unlink loop.f2
+# loop.f3 goes before the second walk's first alert, evaluated by the first walk: no status change is logged
+var loop.f3 v 10
+lookup loop.f3 200 10 0
+clock 5
+free-at-gate loop.f3 6
+pass 5
+clock 6
+unlink loop.f3
+# what is left runs as before
+var loop.f4 v 10
+clock 7
+pass 7
