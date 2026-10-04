@@ -1262,6 +1262,9 @@ mod tests {
             health: Arc<crate::Health>,
             host: Arc<Host>,
             looks: Cell<usize>,
+            /// How many of the saves found their entry waiting in memory for them (a save owed since the entry
+            /// was logged), and how many did not.
+            owed: Cell<(usize, usize)>,
         }
         impl Watching {
             fn look(&self) {
@@ -1313,6 +1316,8 @@ mod tests {
             }
             fn sql_save(&self, host: &Host, entry: &Entry) -> bool {
                 self.look();
+                let (owed, others) = self.owed.get();
+                self.owed.set(if entry.owed_saves > 0 { (owed + 1, others) } else { (owed, others + 1) });
                 self.inner.sql_save(host, entry)
             }
             fn commit_transitions(&self) {
@@ -1359,6 +1364,7 @@ mod tests {
             health: Arc::clone(&health),
             host: Arc::clone(&host),
             looks: Cell::new(0),
+            owed: Cell::new((0, 0)),
         };
         let mut spawned = 0;
         for now in [NOW, NOW + 10, NOW + 20] {
@@ -1374,6 +1380,11 @@ mod tests {
         let alerts = health.host(&host).expect("the host's alerts");
         let statuses: Vec<Status> = alerts.alerts().iter().map(|alert| alert.run().status).collect();
         assert_eq!(statuses, [Status::Warning, Status::Warning]);
+        // an entry a status change logs, and the one it replaces, wait in memory until the save they were logged
+        // with is made; once it is made nothing is owed any more
+        let (owed, _) = env.owed.get();
+        assert!(owed >= 2, "{owed} saves found their entry waiting for them");
+        assert!(alerts.log_entries().iter().all(|entry| entry.owed_saves == 0));
         health.chart_freed(host.machine_guid(), &c, &env, &|| NOW + 30);
         assert!(alerts.alerts().is_empty());
         // a load, two alarm ids, the links' and the changes' saves, the notifications, a repeat, the unlinks
