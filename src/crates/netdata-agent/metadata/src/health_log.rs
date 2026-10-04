@@ -1558,6 +1558,10 @@ mod tests {
         assert_eq!(dump(&meta, "SELECT unique_id, status FROM alert_version"), ["3 4"]);
         assert_eq!(meta.node_alert_version(&HOST), 50);
         assert_eq!(meta.node_alert_version(&[0x22; 16]), 0);
+        // an alarm the Cloud was told is REMOVED (-2) does not count
+        exec(&meta, "UPDATE alert_version SET status = -2");
+        assert_eq!(meta.node_alert_version(&HOST), 0);
+        exec(&meta, "UPDATE alert_version SET status = 4");
 
         // a host without the configuration: the due row is deleted and nothing is queued
         assert!(meta.health_alarm_log_insert("h", &HOST, &entry(4, 4, 4, 3, 0, &t), true, true));
