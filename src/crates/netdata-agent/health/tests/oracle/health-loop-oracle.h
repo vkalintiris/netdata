@@ -38,6 +38,22 @@ struct oracle_chart {
 };
 
 #define ORACLE_CHARTS_MAX 32
+#define ORACLE_QUEUE_MAX 256
+#define ORACLE_SQL_ALARMS_MAX 8
+
+// a save the metadata queue took: C keeps the host and a pointer to the live entry
+struct oracle_queued {
+    RRDHOST *host;
+    ALARM_ENTRY *ae;
+};
+
+// what the alert log's table knows of one alarm: sql_get_alarm_id() asks by chart and name, whatever the rule's hash
+struct oracle_sql_alarm {
+    char chart[128];
+    char name[128];
+    uint32_t alarm_id;
+    uint32_t next_event_id;
+};
 
 struct oracle_script {
     time_t clock_s;                 // the wall clock every reader of CLOCK_REALTIME in the process gets
@@ -47,10 +63,14 @@ struct oracle_script {
     bool running;                   // service_running()
     size_t running_for;             // when not 0: that many more looks find the service running, then it is stopping
     bool database;                  // sql_health_alarm_log_load(): C's result on an empty table, or no database
-    bool queue_accepts;             // metadata_queue_ae_save(): queued, or not (no scenario sets it yet)
+    bool queue_accepts;             // metadata_queue_ae_save(): the queue takes the save, or refuses it
+    struct oracle_queued queued[ORACLE_QUEUE_MAX];  // the saves the queue took, in arrival order, until a store
+    size_t queued_used;
+    ALARM_ENTRY *deferred[ORACLE_QUEUE_MAX];        // entries freed while a save of theirs was queued
+    size_t deferred_used;
     bool save_sets_saved;           // sql_health_alarm_log_save(): the entry is marked SAVED, as C's insert does
-    uint32_t sql_alarm_id;          // sql_get_alarm_id(): 0 is "not in the table" (no scenario sets it yet)
-    uint32_t sql_next_event_id;
+    struct oracle_sql_alarm sql_alarms[ORACLE_SQL_ALARMS_MAX];  // sql_get_alarm_id(): the alarms the table knows
+    size_t sql_alarms_used;
     uint64_t uuids;                 // the random UUIDs given out so far: the next one is this count, plus one
     struct oracle_chart charts[ORACLE_CHARTS_MAX];
     size_t charts_used;
@@ -60,6 +80,9 @@ extern struct oracle_script oracle;
 
 // the chart's script (it must have been added by the scenario)
 struct oracle_chart *oracle_chart(RRDSET *st);
+
+// the metadata thread's store job, as far as the alert log goes: every queued save, in arrival order
+void oracle_store(void);
 
 // a double as the vectors hold it: `nan`, or its bits in hex
 void oracle_double(char *dst, size_t size, NETDATA_DOUBLE v);

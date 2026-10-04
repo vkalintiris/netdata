@@ -1,0 +1,20 @@
+# An alert whose alarm the alert log's table knows (by chart and name, whatever its rule's hash) takes that alarm
+# id and continues its event ids; one the table does not know takes the next alarm id. The memory log is asked
+# first: an alert linked again in the same life is found there, and the table is not asked.
+rules tests/corpus/queue/sql-id.conf
+saved 1
+sql-alarm loop.s s_known 777 42
+sql-alarm loop.s s_other_hash 12 5
+sql-alarm loop.other s_new 99 9
+chart loop.s loop.s_name loop.sqlid - things 1
+var loop.s v 10
+clock 0
+pass 0
+clock 1
+pass 1
+pending chart-recheck loop.s
+pending host-init
+clock 2
+pass 2
+clock 3
+unlink loop.s

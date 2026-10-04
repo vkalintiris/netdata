@@ -905,6 +905,9 @@ mod replay {
             nullable(&entry.source),
             config_hash.into_bytes(),
             uuid_rank(&entry.transition_id),
+            // the saves a queue holds of the entry: none while every save is made at once (the queue refuses in
+            // these scenarios; those where it accepts are `tests/corpus/queue/`, with the alert log's tables)
+            b"0".to_vec(),
         ]
     }
 

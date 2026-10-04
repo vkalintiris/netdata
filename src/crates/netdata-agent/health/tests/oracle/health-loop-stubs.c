@@ -18,8 +18,13 @@
 //   - the silencers (never disabled, never silenced: they come with their own commit);
 //   - SQLite: the load of the alert log (C's ids for an empty table, or none; C's load also looks at the running
 //     service once and logs a record, which come with the alert log's tables), the save (it marks the entry SAVED
-//     or not), the alarm id lookup; the metadata queue (it never takes an entry, so an asynchronous save is made at
-//     once, as on the HEALTH thread); the ACLK queue; the sending of a host variable to a parent;
+//     or not), the alarm id lookup (the alarms a scenario says the table knows); the ACLK queue; the sending of a
+//     host variable to a parent;
+//   - the metadata queue and its thread's store job: the queue refuses a save (it is then made at once, on the
+//     HEALTH thread only) or takes it, keeping the host and the live entry as C does; a scenario's `store` plays
+//     the job's step for the alert log (src/database/sqlite/sqlite_metadata.c, store_alert_transitions(): each
+//     queued entry saved as it stands by then, both pending counters taken back whatever the save did), not on the
+//     HEALTH thread; an entry freed while a save of its is queued is kept until a store finds it without one;
 //   - health_send_notification, by a #define in the copies of health_notifications.c and health_event_loop.c: it
 //     records the entry, marks it PROCESSED and saves it. C's function marks the entry on every path and saves it
 //     on every path but one (a command too long to prepare); what it does beside (the flags and times of an
@@ -38,9 +43,9 @@
 // The `call` rows of the trace, written here in call order (seconds and ids as numbers, flags as 8 hex digits, a
 // double as `nan` or its bits):
 //   load <database 0|1>
-//   sql_get_alarm_id <chart> <name> <the scripted alarm id>
+//   sql_get_alarm_id <chart> <name> <the alarm id the table has, 0 for none> <its next event id>
 //   queue <unique id> <accepted 0|1>            the metadata queue was offered an entry's save
-//   queue_deletion <unique id>
+//   queue_deletion <unique id>                  an entry was freed with a save of its still queued
 //   save <unique id> <the entry's flags>        the SQL save, before it marks the entry
 //   lookup <chart> <dimensions> <points> <after> <before> <method> <group options> <resampling> <options>
 //          <timeout> <tier> <query source> <priority> <the scripted code>
@@ -270,28 +275,78 @@ void sql_health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
         ae->flags |= HEALTH_ENTRY_FLAG_SAVED;
 }
 
-// C: sqlite_health.c, sql_get_alarm_id(): the alarm id and the next event id of (host, chart, name) in the table.
+// C: sqlite_health.c, sql_get_alarm_id(): the alarm id and the next event id of (host, chart, name) in the table,
+// whatever the rule's hash.
 uint32_t sql_get_alarm_id(RRDHOST *host, STRING *chart, STRING *name, uint32_t *next_event_id) {
     (void)host;
-    oracle_call("sql_get_alarm_id\t%s\t%s\t%u", string2str(chart), string2str(name), oracle.sql_alarm_id);
-    if(oracle.sql_alarm_id)
-        *next_event_id = oracle.sql_next_event_id;
-    return oracle.sql_alarm_id;
+    uint32_t alarm_id = 0, next = 0;
+    for(size_t i = 0; i < oracle.sql_alarms_used; i++)
+        if(strcmp(oracle.sql_alarms[i].chart, string2str(chart)) == 0 &&
+           strcmp(oracle.sql_alarms[i].name, string2str(name)) == 0) {
+            alarm_id = oracle.sql_alarms[i].alarm_id;
+            next = oracle.sql_alarms[i].next_event_id;
+        }
+    oracle_call("sql_get_alarm_id\t%s\t%s\t%u\t%u", string2str(chart), string2str(name), alarm_id, next);
+    if(alarm_id)
+        *next_event_id = next;
+    return alarm_id;
 }
 
-// C: src/database/sqlite/sqlite_metadata.c, metadata_queue_ae_save(). Queued: the host's pending transitions and the
-// entry's pending saves go up by one. Not queued: health_alarm_log_save() saves at once on the health thread.
+// C: src/database/sqlite/sqlite_metadata.c, metadata_queue_ae_save(): the host's pending transitions and the entry's
+// pending saves go up by one, then the command is queued; a refusal takes both back, and health_alarm_log_save()
+// then saves at once on the health thread.
 bool metadata_queue_ae_save(RRDHOST *host, ALARM_ENTRY *ae) {
-    oracle_call("queue\t%u\t%d", ae->unique_id, oracle.queue_accepts ? 1 : 0);
-    if(!oracle.queue_accepts)
-        return false;
     __atomic_add_fetch(&host->health.pending_transitions, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&ae->pending_save_count, 1, __ATOMIC_RELAXED);
+    oracle_call("queue\t%u\t%d", ae->unique_id, oracle.queue_accepts ? 1 : 0);
+    if(!oracle.queue_accepts || oracle.queued_used == ORACLE_QUEUE_MAX) {
+        __atomic_sub_fetch(&host->health.pending_transitions, 1, __ATOMIC_RELAXED);
+        __atomic_sub_fetch(&ae->pending_save_count, 1, __ATOMIC_RELAXED);
+        return false;
+    }
+    oracle.queued[oracle.queued_used++] = (struct oracle_queued){ .host = host, .ae = ae };
     return true;
 }
 
+// C: sqlite_metadata.c, metadata_queue_ae_deletion(): health_alarm_log_free_one_nochecks_nounlink() hands over an
+// entry it cannot free yet; the metadata thread frees it after a store job that leaves it without a pending save.
 void metadata_queue_ae_deletion(ALARM_ENTRY *ae) {
     oracle_call("queue_deletion\t%u", ae->unique_id);
+    if(oracle.deferred_used == ORACLE_QUEUE_MAX) {
+        fprintf(stdout, "too many deferred entries\n");
+        exit(1);
+    }
+    oracle.deferred[oracle.deferred_used++] = ae;
+}
+
+// C: sqlite_metadata.c, store_alert_transitions(), the store job's step for the alert log, on a worker of the
+// metadata thread: per queued pair, in arrival order, the live entry is saved and both counters are taken back,
+// whatever the save did. Then what was handed over for freeing and has no pending save is freed.
+void oracle_store(void) {
+    bool health_thread = is_health_thread;
+    is_health_thread = false;
+
+    size_t queued = oracle.queued_used;
+    oracle.queued_used = 0;
+    for(size_t i = 0; i < queued; i++) {
+        RRDHOST *host = oracle.queued[i].host;
+        ALARM_ENTRY *ae = oracle.queued[i].ae;
+        sql_health_alarm_log_save(host, ae);
+        __atomic_add_fetch(&ae->pending_save_count, -1, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&host->health.pending_transitions, -1, __ATOMIC_RELAXED);
+    }
+
+    size_t kept = 0;
+    for(size_t i = 0; i < oracle.deferred_used; i++) {
+        ALARM_ENTRY *ae = oracle.deferred[i];
+        if(__atomic_load_n(&ae->pending_save_count, __ATOMIC_RELAXED))
+            oracle.deferred[kept++] = ae;
+        else
+            health_alarm_log_free_one_nochecks_nounlink(ae);
+    }
+    oracle.deferred_used = kept;
+
+    is_health_thread = health_thread;
 }
 
 void commit_alert_transitions(RRDHOST *host) {

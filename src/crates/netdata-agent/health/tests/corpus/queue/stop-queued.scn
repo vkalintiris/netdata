@@ -1,0 +1,31 @@
+# The service stops with saves queued: the passes that follow are skipped at the pending gate, a store job run
+# during the shutdown saves what was queued, and what is unlinked after the exit began logs and saves nothing.
+rules tests/corpus/queue/queue.conf
+saved 1
+queue 1
+chart loop.q loop.q_name loop.queue - things 1
+dim loop.q value value 7
+var loop.q v 70
+lookup loop.q 200 70 0
+clock 0
+pass 0
+clock 1
+store
+clock 2
+pass 2
+# the chart is freed while the service runs, then the service stops before a store
+clock 3
+thread other
+unlink loop.q
+thread health
+running 0
+clock 4
+pass 4
+clock 5
+store
+clock 6
+pass 6
+exiting
+chart loop.x loop.x_name loop.queue - things 1
+clock 7
+pass 7

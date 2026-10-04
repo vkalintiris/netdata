@@ -1,0 +1,31 @@
+# An entry that leaves the memory log while a save of its is queued: a link's entry is replaced by the first status
+# change of its alert in the same pass, saved by HEALTH with that change, and trimmed at the pass's end; the store
+# job still saves it, as it stands by then, and only then is it freed. Then a host whose alerts are all deleted
+# (the prototypes applied anew) with saves queued.
+rules tests/corpus/queue/queue.conf
+saved 1
+queue 1
+chart loop.q loop.q_name loop.queue - things 1
+dim loop.q value value 7
+var loop.q v 10
+lookup loop.q 200 10 0
+clock 0
+pass 0
+clock 1
+store
+clock 2
+pass 2
+var loop.q v 70
+lookup loop.q 200 70 0
+clock 3
+pass 3
+clock 4
+apply
+clock 5
+store
+clock 6
+pass 6
+clock 7
+store
+clock 8
+pass 8

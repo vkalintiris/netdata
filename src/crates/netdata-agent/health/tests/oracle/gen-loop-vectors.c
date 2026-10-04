@@ -11,8 +11,8 @@
 //                    calls it for an entry's value texts (a 100-byte buffer, precision -1)
 //
 //   gen-loop-vectors scenario <loop.tsv to append to> <scenario file> <a file for the records>
-//       One process per scenario. Rows are <scenario> <step> <kind> ..., a step being one `pass`, `unlink` or
-//       `apply` directive:
+//       One process per scenario. Rows are <scenario> <step> <kind> ..., a step being one `pass`, `unlink`,
+//       `apply` or `store` directive:
 //         do         the directive
 //         next_run   after a pass: the pass's next_run
 //         host       pending flags (i = initialization, r = label recheck), health_transitions,
@@ -34,7 +34,7 @@
 //                    delay_up_to_timestamp, flags, updated_by_id, updates_id, old_value, new_value,
 //                    old_value_string, new_value_string, global_id, exec_run_timestamp, exec_code, last_repeat,
 //                    name, chart, chart_context, chart_name, units, summary, info, classification, component,
-//                    type, exec, recipient, source, config hash, transition_id (as its count)
+//                    type, exec, recipient, source, config hash, transition_id (as its count), pending_save_count
 //         call       what the step called of what is stubbed, in call order (health-loop-stubs.c writes them)
 //         record     each log record the step wrote, as C's logfmt line with the record's time and the thread id
 //                    blanked; the dates in it are UTC, and a transition id is the UUID the stubs counted out
@@ -62,6 +62,11 @@
 //                                      the chart's delete callback waits for the pass; an `unlink` is that callback
 //   running <0|1>                      the health service runs, or is stopping
 //   saved <0|1>                        the SQL save marks an entry as saved, as C's insert does (default: not)
+//   queue <0|1>                        the metadata queue takes an asynchronous save (default: it refuses, and the
+//                                      save is made at once on the HEALTH thread)
+//   thread health|other                the thread the following steps run on (default: HEALTH)
+//   sql-alarm <chart> <name> <id> <next event id>   the alert log's table knows this alarm
+//   store                              the metadata thread's store job: every queued save, in arrival order
 //   running-for <n>                    the service runs for n more looks at it, then it is stopping
 //   exiting                            the agent's exit has begun (it cannot be undone)
 //   delay-up-to <second|0>             the host's health is postponed until then (what a connecting child gets)
@@ -70,8 +75,7 @@
 //   pass <now> [hibernate]             one call of the pass
 //   unlink <chart>                     rrdcalc_unlink_and_delete_all_rrdset_alerts()
 //   apply                              health_apply_prototypes_to_host()
-// The metadata queue never takes an entry and the SQL table knows no alarm: both come with the alert log's own
-// commit, and so do their directives.
+// `unlink`, `apply` and `store` are steps too.
 //
 // Field encoding: see health-oracle.h. A double is `nan` or its bits in hex.
 
@@ -368,7 +372,8 @@ static void dump(const char *directive) {
         fputc('\t', f);
         for(size_t i = 0; i < sizeof(ae->config_hash_id); i++)
             fprintf(f, "%02x", (unsigned)((const unsigned char *)&ae->config_hash_id)[i]);
-        fprintf(f, "\t%llu", oracle_uuid_rank(ae->transition_id));
+        fprintf(f, "\t%llu\t%d", oracle_uuid_rank(ae->transition_id),
+                (int)__atomic_load_n(&ae->pending_save_count, __ATOMIC_RELAXED));
         fclose(f);
 
         // the text is the row's fields, each led by its tab
@@ -585,6 +590,21 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
             host.health.delay_up_to = second(word(&rest, whole));
         else if(strcmp(directive, "saved") == 0)
             oracle.save_sets_saved = atoi(word(&rest, whole)) != 0;
+        else if(strcmp(directive, "queue") == 0)
+            oracle.queue_accepts = atoi(word(&rest, whole)) != 0;
+        else if(strcmp(directive, "thread") == 0) {
+            char *which = word(&rest, whole);
+            if(strcmp(which, "health") != 0 && strcmp(which, "other") != 0) die("an unknown thread", whole);
+            is_health_thread = strcmp(which, "health") == 0;
+        }
+        else if(strcmp(directive, "sql-alarm") == 0) {
+            if(oracle.sql_alarms_used == ORACLE_SQL_ALARMS_MAX) die("too many alarms in the table", whole);
+            struct oracle_sql_alarm *known = &oracle.sql_alarms[oracle.sql_alarms_used++];
+            snprintf(known->chart, sizeof(known->chart), "%s", word(&rest, whole));
+            snprintf(known->name, sizeof(known->name), "%s", word(&rest, whole));
+            known->alarm_id = (uint32_t)strtoul(word(&rest, whole), NULL, 10);
+            known->next_event_id = (uint32_t)strtoul(word(&rest, whole), NULL, 10);
+        }
         else if(strcmp(directive, "pending") == 0) {
             char *what = word(&rest, whole);
             if(strcmp(what, "host-init") == 0)
@@ -623,6 +643,10 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
         }
         else if(strcmp(directive, "apply") == 0) {
             health_apply_prototypes_to_host(&host);
+            dump(whole);
+        }
+        else if(strcmp(directive, "store") == 0) {
+            oracle_store();
             dump(whole);
         }
         else

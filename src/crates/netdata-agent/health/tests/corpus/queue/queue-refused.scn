@@ -1,0 +1,40 @@
+# The metadata queue refuses every save (its thread is not up, or its command pool is closed). On the HEALTH thread
+# the save is then made at once; on any other thread (a chart freed by its collector, the prototypes applied by a
+# reload) it is not made at all, and the entry stays unsaved in memory.
+rules tests/corpus/queue/queue.conf
+saved 1
+chart loop.q loop.q_name loop.queue - things 1
+dim loop.q value value 7
+var loop.q v 70
+lookup loop.q 200 70 0
+clock 0
+pass 0
+clock 1
+pass 1
+# the prototypes applied on another thread: every alert unlinked and linked again, nothing saved
+clock 2
+thread other
+apply
+thread health
+clock 3
+pass 3
+# the chart freed on another thread
+clock 4
+thread other
+unlink loop.q
+thread health
+clock 5
+pass 5
+# and on HEALTH, with the service stopping: not saved either
+chart loop.r loop.r_name loop.queue - things 1
+dim loop.r value value 7
+var loop.r v 70
+lookup loop.r 200 70 0
+clock 6
+pass 6
+running 0
+clock 7
+unlink loop.r
+running 1
+clock 8
+pass 8

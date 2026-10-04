@@ -2672,6 +2672,12 @@ tests/corpus/match/basic.conf	copy	m_module	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/match/basic.conf	copy	m_both	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/match/basic.conf	copy	m_alarm_ctx	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/match/basic.conf	copy	m_tmpl_id	0	1	1	\x00	\x00	\x00	\x00
+tests/corpus/queue/queue.conf	copy	q_now	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/queue/queue.conf	copy	q_wait	0	\x00	\x00	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/queue/queue.conf	copy	q_repeat	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/queue/sql-id.conf	copy	s_known	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/queue/sql-id.conf	copy	s_other_hash	0	$v	${v}	$this > 60	(${this} > 60)	\x00	\x00
+tests/corpus/queue/sql-id.conf	copy	s_new	0	$v	${v}	\x00	\x00	\x00	\x00
 tests/corpus/smoke/first.conf	copy	smoke_tmpl	0	\x00	\x00	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/smoke/first.conf	copy	smoke_alarm	0	$load1 * 2	(${load1} * 2)	\x00	\x00	\x00	\x00
 tests/corpus/validate/chains.conf	copy	chain	0	1	1	\x00	\x00	\x00	\x00

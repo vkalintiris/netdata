@@ -1,0 +1,39 @@
+# The metadata queue takes the saves of links and unlinks, as in a daemon. A first pass as localhost's: every alert
+# linked, unlinked by the startup's label recheck and linked again, all queued, while the pass's own saves (a status
+# change, the notifications' scan) are made at once; the commit asked at the pass's end; the next pass skipped
+# while saves are pending; the store job, which saves each queued entry as it stands by then; the pass after it.
+rules tests/corpus/queue/queue.conf
+saved 1
+queue 1
+chart loop.q loop.q_name loop.queue - things 1
+dim loop.q value value 7
+var loop.q v 10
+lookup loop.q 200 10 0
+# the lookup's window is not covered before the sixth second
+entries loop.q -5 0
+pending host-recheck
+pending chart-recheck loop.q
+clock 0
+pass 0
+# saves are pending: nothing is linked, evaluated or scanned, and no commit is asked again
+var loop.q v 70
+clock 1
+pass 1
+clock 2
+store
+# nothing is pending: the pass runs, with its status changes
+clock 3
+pass 3
+clock 4
+pass 4
+# a chart's free on another thread: its unlinks are queued
+clock 5
+thread other
+unlink loop.q
+thread health
+clock 6
+pass 6
+clock 7
+store
+clock 8
+pass 8

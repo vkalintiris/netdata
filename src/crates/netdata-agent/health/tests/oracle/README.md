@@ -26,7 +26,9 @@ define themselves):
   `delay.tsv` (the delay multiplier over a grid), `units.tsv` (a value with its unit, as an
   entry's value texts are made) and `loop.tsv`: each scenario under `../corpus/loop/` played step by step, with the
   alerts, their published snapshots, the log's entries, the stubs' calls and C's log records after every step. One
-  process per scenario;
+  process per scenario. `queue.tsv` is the same over `../corpus/queue/`: the scenarios in which the metadata queue
+  and its thread's store job are in play (the queue takes or refuses a save, the thread a step runs on, the job
+  that saves each queued entry as it stands by then, the alarm ids the alert log's table knows);
 - `health-unittest-dump.inc` and `health-unittest-main.inc` are spliced into a copy of
   `src/health/health-config-unittest.c`, so that C's own unit test runs, must pass, and leaves each call it makes to
   the ported functions, with what C returned, in `c_unittest.tsv`.
