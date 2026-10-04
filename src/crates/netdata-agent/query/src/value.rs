@@ -163,7 +163,8 @@ mod tests {
         let got = value(&aligned, None);
         assert_eq!((got.code, got.value, got.window), (200, 20.0, Some((T0 - 1, T0 + 4))));
 
-        // reversed: the first row is the one
+        // reversed: the first row is the one. Health asks for one point, so both are the same row here: which row
+        // of several C would take is not drawn
         let mut reversed = request(-6, 0);
         reversed.options |= options::REVERSED;
         assert_eq!(value(&reversed, None).value, 25.0);
