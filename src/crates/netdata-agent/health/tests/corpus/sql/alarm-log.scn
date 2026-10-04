@@ -24,3 +24,9 @@ clock 4
 alarm-log 0 loop.nope
 clock 5
 alarm-log 0x77359404
+# rows as another life or another hand left them: an alarm without exec and recipient shows the host's defaults, and
+# a rule without a source shows Unknown and the command of no file
+sql UPDATE health_log SET exec = NULL, recipient = NULL
+sql UPDATE alert_hash SET source = NULL
+clock 60
+alarm-log 0

@@ -1719,7 +1719,7 @@ fn queue_matches_c() {
 /// trigger refuses each of the statements in turn: C's two records per failed step, and what is left behind.
 #[test]
 fn sql_matches_c() {
-    assert_eq!(replayed("sql"), 107);
+    assert_eq!(replayed("sql"), 108);
 }
 
 /// Every scenario of `tests/corpus/notify/` against C's own `health_send_notification()` and its waits, over a
