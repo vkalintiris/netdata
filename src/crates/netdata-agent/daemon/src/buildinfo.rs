@@ -286,7 +286,16 @@ impl BuildInfo {
         // streaming both ways, with replication and every compression algorithm C's build has (M7, D126.1)
         b.yes(
             Feature,
-            &["streaming", "replication", "back-filling", "stream-compression", "contexts", "tiering", "allocator"],
+            &[
+                "health",
+                "streaming",
+                "replication",
+                "back-filling",
+                "stream-compression",
+                "contexts",
+                "tiering",
+                "allocator",
+            ],
         );
         for algorithm in ["zstd", "lz4", "gzip", "brotli"] {
             b.append(Feature, "stream-compression", algorithm);

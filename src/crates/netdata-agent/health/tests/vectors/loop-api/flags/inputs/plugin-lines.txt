@@ -1,0 +1,11 @@
+# then the collected chart's definition:
+CHART hf.values '' 'title' 'units' 'family' 'hf.ctx' line 1000 1 '' '' ''
+DIMENSION a '' absolute 1 1
+# phase 0: once per whole second S, until the release `p1`:
+BEGIN hf.values
+SET a = 10
+END S 0
+# phase 1: once per whole second S, until the stop:
+BEGIN hf.values
+SET a = 70
+END S 0

@@ -1,0 +1,7 @@
+file	status	content_type	request
+002.body	200	application/json; charset=utf-8	/api/v1/alarms?all
+003.body	200	application/json; charset=utf-8	/api/v1/alarms
+009.body	200	application/json; charset=utf-8	/api/v1/alarms_values?all=true
+010.body	200	application/json; charset=utf-8	/api/v1/alarms_values?all=yes
+011.body	200	application/json; charset=utf-8	/api/v1/alarm_count
+012.body	200	application/json; charset=utf-8	/api/v1/alarm_count?status=UNDEFINED

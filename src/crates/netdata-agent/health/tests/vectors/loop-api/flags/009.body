@@ -1,0 +1,89 @@
+{
+	"hostname": "parity-parent",
+	"alarms": {
+		"hf.values.hf_before": {
+			"id": 1791095593,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "WARNING"
+		},
+		"hf.values.hf_base": {
+			"id": 1791095594,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "WARNING"
+		},
+		"hf.values.hf_after": {
+			"id": 1791095595,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "WARNING"
+		},
+		"hf.values.hf_ping": {
+			"id": 1791095596,
+			"value":null,
+			"last_updated":1791095598,
+			"status": "CLEAR"
+		},
+		"hf.values.hf_pong": {
+			"id": 1791095597,
+			"value":null,
+			"last_updated":1791095598,
+			"status": "CLEAR"
+		},
+		"hf.values.hf_self": {
+			"id": 1791095598,
+			"value":null,
+			"last_updated":1791095598,
+			"status": "CLEAR"
+		},
+		"hf.values.hf_calc_only": {
+			"id": 1791095599,
+			"value":140,
+			"last_updated":1791095598,
+			"status": "UNDEFINED"
+		},
+		"hf.values.hf_unknown": {
+			"id": 1791095600,
+			"value":null,
+			"last_updated":1791095598,
+			"status": "CLEAR"
+		},
+		"hf.values.hf_warn_unknown": {
+			"id": 1791095601,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "CLEAR"
+		},
+		"hf.values.hf_warn_fails": {
+			"id": 1791095602,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "UNDEFINED"
+		},
+		"hf.values.hf_crit_only": {
+			"id": 1791095603,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "CRITICAL"
+		},
+		"hf.values.hf_crit_fails": {
+			"id": 1791095604,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "CLEAR"
+		},
+		"hf.values.hf_nope": {
+			"id": 1791095605,
+			"value":null,
+			"last_updated":1791095598,
+			"status": "CLEAR"
+		},
+		"hf.values.hf_no_clear": {
+			"id": 1791095606,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "WARNING"
+		}
+	}
+}

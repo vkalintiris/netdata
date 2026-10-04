@@ -484,7 +484,8 @@ fn agent_info(w: &mut JsonWriter, shared: &Shared, now_s: i64, rfc3339: bool) {
     w.member_add_uint64("available", m.contexts.available);
     w.member_add_uint64("unique", m.contexts_unique);
     w.object_close();
-    capas::to_json(w, b"capabilities");
+    // C writes localhost's capabilities here
+    capas::to_json(w, b"capabilities", shared.hosts.localhost().info().health_enabled);
     w.member_add_object("api");
     w.member_add_uint64("version", capas::HTTP_API_V2_VERSION);
     w.member_add_boolean("bearer_protection", crate::auth::bearer_protection());

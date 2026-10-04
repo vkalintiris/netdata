@@ -22,7 +22,8 @@ const fn capa(name: &'static str, version: u64, enabled: bool) -> Capability {
     }
 }
 
-/// `aclk_get_node_instance_capas()`, the same for every host until the subsystems that vary it are ported.
+/// `aclk_get_node_instance_capas()`, the same for every host until the subsystems that vary it are ported; health
+/// is the host's own setting, see [`to_json`].
 pub const NODE_INSTANCE: [Capability; 9] = [
     // ACLK's protocol (M11)
     capa("proto", 1, false),
@@ -35,7 +36,7 @@ pub const NODE_INSTANCE: [Capability; 9] = [
     // consumers are, /api/v2/nodes and node_instances (M10) and the ACLK (M11), D164.B4
     capa("funcs", 1, true),
     capa("http_api_v2", HTTP_API_V2_VERSION, true),
-    // host->health.enabled: no health engine (M9)
+    // host->health.enabled, set where the capabilities are written
     capa("health", 2, false),
     // ACLK's request cancellation (M11)
     capa("req_cancel", 1, false),
@@ -44,15 +45,38 @@ pub const NODE_INSTANCE: [Capability; 9] = [
     capa("dyncfg", 2, true),
 ];
 
-/// `agent_capabilities_to_json()`.
-pub fn to_json(w: &mut JsonWriter, key: &[u8]) {
+/// `agent_capabilities_to_json()`: the capabilities of a host for which health is enabled or not.
+pub fn to_json(w: &mut JsonWriter, key: &[u8], health_enabled: bool) {
     w.member_add_array(Some(key));
     for c in NODE_INSTANCE {
         w.add_array_item_object();
         w.member_add_string("name", c.name);
         w.member_add_uint64("version", c.version);
-        w.member_add_boolean("enabled", c.enabled);
+        w.member_add_boolean("enabled", if c.name == "health" { health_enabled } else { c.enabled });
         w.object_close();
     }
     w.array_close();
+}
+
+#[cfg(test)]
+mod tests {
+    use netdata_agent_text::json::JsonOptions;
+
+    use super::*;
+
+    /// The health capability is the host's own setting; the others are the agent's.
+    #[test]
+    fn the_health_capability_follows_the_host() {
+        let render = |health_enabled: bool| {
+            let mut w = JsonWriter::new(JsonOptions::MINIFY);
+            to_json(&mut w, b"capabilities", health_enabled);
+            w.finalize();
+            String::from_utf8(w.into_bytes()).unwrap()
+        };
+        let (on, off) = (render(true), render(false));
+        assert!(on.contains(r#"{"name":"health","version":2,"enabled":true}"#), "{on}");
+        assert!(off.contains(r#"{"name":"health","version":2,"enabled":false}"#), "{off}");
+        let (enabled, disabled) = (r#""health","version":2,"enabled":true"#, r#""health","version":2,"enabled":false"#);
+        assert_eq!(on.replace(enabled, disabled), off);
+    }
 }

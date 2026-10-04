@@ -246,6 +246,11 @@ fn names_of(
         .map(|&(name, _)| name)
 }
 
+/// `rrdr_options_to_buffer()`: the options' names with a space between them.
+pub fn options_to_text(bits: u64) -> String {
+    names_of(&OPTIONS, bits).collect::<Vec<_>>().join(" ")
+}
+
 fn names_to_json_array(w: &mut JsonWriter, key: &[u8], names: impl Iterator<Item = &'static str>) {
     w.member_add_array(Some(key));
     for name in names {

@@ -746,6 +746,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let health = health::plugin_init(&mut conf, health_config, meta.is_some(), metasync.queue());
     // a freed chart's alerts and a cleaned host's go where the database lets go of them
     let health_env = Arc::new(health::LiveEnv::new(Arc::clone(&hosts), grouping_windows));
+    // a data query counts, filters by and lists the alerts of the charts it selects
+    hosts.storage().set_alert_view(Arc::new(health::View(Arc::clone(&health))));
     hosts.storage().set_health_hook({
         let (health, env) = (Arc::clone(&health), Arc::clone(&health_env));
         move |event| health::database_event(&health, &env, event)

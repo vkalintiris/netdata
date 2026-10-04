@@ -134,7 +134,28 @@ const API_V1: &[Command] = &[
         allow_subpaths: false,
         callback: functions::list,
     },
-    // alerts: the alert endpoints themselves come with the health loop
+    // alerts: the alert log's endpoints come with its tables
+    Command {
+        name: "alarms",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: health_api::alarms,
+    },
+    Command {
+        name: "alarms_values",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: health_api::alarms_values,
+    },
+    Command {
+        name: "alarm_count",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: health_api::alarm_count,
+    },
     Command {
         name: "alarm_variables",
         acl: acl::bits::ALERTS,
@@ -930,8 +951,30 @@ mod tests {
         assert!(variables.contains("\"alerts\":{\n        \"a\":{\n            \"value\":null,"), "{variables}");
         // counted once its chart was collected
         assert!(body("/api/v1/info", "").contains("\"normal\":0,"));
+        // the three alarm endpoints answer before the chart has data too, with no alarm
+        assert!(body("/api/v1/alarms", "?all").ends_with("\"alarms\": {\n\n\t}\n}\n"));
+        assert_eq!(body("/api/v1/alarm_count", "?status=uninitialized"), "[0]\n");
         chart.update_collection(|collection| collection.last_collected = (5, 0));
         assert!(body("/api/v1/info", "").contains("\"normal\":1,\n        \"warning\":0,\n        \"critical\":0"));
+        // and once it has: the alarm is listed among all, not among the raised, and counted by its status
+        let all = body("/api/v1/alarms", "?all");
+        assert!(all.contains("\n\t\t\"t.c.a\": {\n\t\t\t\"id\": 1700000000,\n"), "{all}");
+        assert!(all.contains("\t\t\t\"status\": \"UNINITIALIZED\",\n"), "{all}");
+        assert!(body("/api/v1/alarms", "").ends_with("\"alarms\": {\n\n\t}\n}\n"));
+        let values = body("/api/v1/alarms_values", "?all=true");
+        assert!(values.contains("\t\t\"t.c.a\": {\n\t\t\t\"id\": 1700000000,\n\t\t\t\"value\":null,"), "{values}");
+        assert_eq!(body("/api/v1/alarm_count", "?status=uninitialized"), "[1]\n");
+        assert_eq!(body("/api/v1/alarm_count", "?status=uninitialized&context=t.ctx|t.ctx"), "[2]\n");
+        assert_eq!(body("/api/v1/alarm_count", ""), "[0]\n");
+        // the query engine sees the host's alerts through the view the daemon installs
+        host.storage().set_alert_view(Arc::new(crate::health::View(Arc::clone(&s.health))));
+        let view = host.storage().alert_view().expect("the view");
+        let seen = view.chart_alerts(host, &chart);
+        let seen: Vec<_> = seen.into_iter().map(|alert| (alert.name, alert.class, alert.status_name)).collect();
+        assert_eq!(seen, [(b"a".to_vec(), netdata_agent_rrd::storage::AlertClass::Other, "UNINITIALIZED")]);
+        // one alert inserted, one entry logged (its link)
+        let data = body("/api/v2/data", "?contexts=t.ctx&options=minify");
+        assert!(data.contains("\"alerts_hard_hash\":1,\"alerts_soft_hash\":1"), "{data}");
 
         // the chart's free reaches health through the database's hook (this fixture's localhost has a storage of its
         // own; the daemon's hosts share one)

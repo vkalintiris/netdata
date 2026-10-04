@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use netdata_agent_health::alert::Status;
 use netdata_agent_health::config::HealthConfig;
 use netdata_agent_health::entry::Entry;
 use netdata_agent_health::pass::{ChartFacts, Env, Pass};
@@ -22,7 +23,7 @@ use netdata_agent_rrd::chart::{Chart, flags};
 use netdata_agent_rrd::clock::{now_realtime_s, now_realtime_ut};
 use netdata_agent_rrd::host::{Host, Hosts};
 use netdata_agent_rrd::pulse::QuerySource;
-use netdata_agent_rrd::storage::HealthEvent;
+use netdata_agent_rrd::storage::{AlertClass, AlertView, ChartAlert, HealthEvent};
 use netdata_agent_rrd::stream_control;
 
 use crate::conf::Conf;
@@ -126,6 +127,33 @@ impl Env for LiveEnv {
     fn save(&self, _: &mut Entry, _: bool) {}
 
     fn notify(&self, _: &mut Entry) {}
+}
+
+/// What a query sees of health (C's query target reads the host's alert dictionary and each chart's alert list):
+/// the versions a data answer prints, and a chart's alerts with their published statuses.
+pub struct View(pub Arc<Health>);
+
+impl AlertView for View {
+    fn versions(&self, host: &Host) -> (u64, u64) {
+        self.0.host(host).map_or((0, 0), |alerts| (alerts.version(), alerts.transitions()))
+    }
+
+    fn chart_alerts(&self, host: &Host, chart: &Chart) -> Vec<ChartAlert> {
+        let alerts = self.0.host(host).map(|alerts| alerts.chart_alerts(chart)).unwrap_or_default();
+        alerts
+            .iter()
+            .map(|alert| {
+                let status = alert.snapshot().status;
+                let class = match status {
+                    Status::Clear => AlertClass::Clear,
+                    Status::Warning => AlertClass::Warning,
+                    Status::Critical => AlertClass::Critical,
+                    _ => AlertClass::Other,
+                };
+                ChartAlert { name: alert.name().to_vec(), class, status_name: status.name() }
+            })
+            .collect()
+    }
 }
 
 /// What the database tells health as it lets go of a chart or a host: C calls `rrdcalc.c` from the chart's delete

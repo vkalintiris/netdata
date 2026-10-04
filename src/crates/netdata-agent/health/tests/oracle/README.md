@@ -42,6 +42,12 @@ them, and under `inputs/` what the agent was fed (the plugin's lines, the rules,
 clock is in some bodies (`after`, `before`, `now`, a collected chart's `last_collected_t`); the unit tests of
 `src/variable.rs` and `src/api.rs` build the same host and read those seconds from each body.
 
+`../vectors/loop-api/flags/` is recorded the same way, by the check `health.loop` (`tests/parity/health_loop_test.go`,
+case `flags`): six answers of the three alarm endpoints at one moment of the running C agent (the listing of all
+alerts and of the raised ones, their values, two counts), with the rules and the plugin's lines. The run's directory
+in them is written `{run}`. The unit test of `src/api.rs` links the case's rules, sets each alert's published state
+to what the recorded listing of all alerts shows of it, and must write every one of the six bodies byte for byte.
+
 `NETDATA_BUILD` defaults to `$NETDATA_SRC/build`. The program runs in the crate's directory and names every file by a
 path relative to it, as `cargo test` does: a path is part of each rule's source and of the records. The columns of
 each file are in its header and at the top of the program that writes it; the field encoding is

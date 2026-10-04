@@ -26,7 +26,6 @@ var buildinfoDiffs = func() map[string]buildinfoDiff {
 		"libs.protobuf":    {`"system"`, "false", "NO", "M11 Cloud"},
 	}
 	for closes, keys := range map[string][]string{
-		"M9 health":     {"features.health"},
 		"M11 Cloud":     {"features.cloud", "connectivity.aclk"},
 		"M14 ML":        {"features.ml"},
 		"M16 packaging": {"libs.libyaml"},

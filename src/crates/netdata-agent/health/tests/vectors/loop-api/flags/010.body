@@ -1,0 +1,35 @@
+{
+	"hostname": "parity-parent",
+	"alarms": {
+		"hf.values.hf_before": {
+			"id": 1791095593,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "WARNING"
+		},
+		"hf.values.hf_base": {
+			"id": 1791095594,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "WARNING"
+		},
+		"hf.values.hf_after": {
+			"id": 1791095595,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "WARNING"
+		},
+		"hf.values.hf_crit_only": {
+			"id": 1791095603,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "CRITICAL"
+		},
+		"hf.values.hf_no_clear": {
+			"id": 1791095606,
+			"value":70,
+			"last_updated":1791095598,
+			"status": "WARNING"
+		}
+	}
+}
