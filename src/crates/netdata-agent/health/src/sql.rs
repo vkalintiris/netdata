@@ -6,6 +6,7 @@ use netdata_agent_metadata::health_log::{EntryRow, LoadedRow, Uuid};
 use netdata_agent_metadata::open::MetaDb;
 use netdata_agent_text::c::c_str;
 use netdata_agent_query::tables::options_to_json_array;
+use netdata_agent_rrd::host::Host;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 use netdata_agent_text::parse::{str2ndd, uuid_parse_flexi};
 use netdata_agent_text::print::print_uuid_lower;
@@ -61,14 +62,15 @@ pub fn save(meta: &MetaDb, hostname: &str, host_id: &[u8; 16], entry: &Entry, qu
 }
 
 /// `sql_health_alarm_log_cleanup()`: the host's entries older than its retention that a newer one replaced go from
-/// the table (but for the one its alarm points at), then from memory. A host health never ran for has no alerts
-/// here and a retention of 0. When the statement cannot be prepared the memory log is left alone, as in C.
-pub fn cleanup(meta: &MetaDb, host_id: &[u8; 16], alerts: Option<&HostAlerts>, clock: Clock) {
-    let retention_s = alerts.map_or(0, HostAlerts::log_retention_s);
+/// the table (but for the one its alarm points at), then from memory. A host whose health never ran and that no
+/// child attached to has a retention of 0, and no alerts here. When the statement cannot be prepared the memory
+/// log is left alone, as in C.
+pub fn cleanup(meta: &MetaDb, host: &Host, host_id: &[u8; 16], alerts: Option<&HostAlerts>, clock: Clock) {
+    let retention_s = host.health_log_retention_s();
     if meta.health_alarm_log_cleanup(host_id, retention_s, clock())
         && let Some(alerts) = alerts
     {
-        alerts.log_cleanup(clock);
+        alerts.log_cleanup(retention_s, clock);
     }
 }
 

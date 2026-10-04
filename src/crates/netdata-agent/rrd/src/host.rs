@@ -430,6 +430,10 @@ pub struct Host {
     /// `host->health.delay_up_to`: until when the HEALTH loop leaves the host alone, 0 for no delay. A child's
     /// receiver sets it at the attach and the loop at a resume from suspension; the loop clears it.
     health_delay_up_to: AtomicI64,
+    /// `host->health_log.health_log_retention_s`: how long a replaced entry of the host's alert log is kept, in
+    /// the table and in memory. A child's attach sets its own, the host's first health pass the configuration's; 0
+    /// until either.
+    health_log_retention_s: AtomicU32,
     /// Whether the host has its ACLK sync configuration (`host->aclk_host_config`): C makes it when the ACLK sync
     /// thread first handles the host's node info or node state, and never drops it. With it, a saved alert log
     /// entry writes its alarm's row of the queue toward the Cloud.
@@ -616,6 +620,7 @@ impl Host {
             receiver_last_disconnected_s: AtomicI64::new(0),
             health_last_iteration: AtomicU64::new(0),
             health_delay_up_to: AtomicI64::new(0),
+            health_log_retention_s: AtomicU32::new(0),
             aclk_sync_config: AtomicBool::new(false),
             obsolete_all_busy: AtomicBool::new(false),
             orphan: AtomicBool::new(false),
@@ -1180,6 +1185,16 @@ impl Host {
     /// Postpones the host's health until `second`, or lifts the delay with 0.
     pub fn set_health_delay_up_to(&self, second: i64) {
         self.health_delay_up_to.store(second, Ordering::Relaxed);
+    }
+
+    /// `host->health_log.health_log_retention_s`.
+    pub fn health_log_retention_s(&self) -> u32 {
+        self.health_log_retention_s.load(Ordering::Relaxed)
+    }
+
+    /// The retention of the host's alert log, in seconds.
+    pub fn set_health_log_retention_s(&self, seconds: u32) {
+        self.health_log_retention_s.store(seconds, Ordering::Relaxed);
     }
 
     /// Whether the host has its ACLK sync configuration.
@@ -1966,9 +1981,11 @@ impl Hosts {
         let value: &[u8] = if desired { b"true" } else { b"false" };
         let changed =
             self.localhost.update_labels(|labels| labels.add_changed(b"_is_parent", value, crate::labels::SRC_AUTO));
-        // a rule's `host labels` may name it: localhost's alerts are matched again
+        // a rule's `host labels` may name it: localhost's alerts are matched again; and its node info is queued
+        // for the Cloud, which gives it its ACLK sync configuration
         if changed.unwrap_or(false) {
             self.localhost.raise_label_recheck();
+            self.localhost.set_aclk_sync_config();
         }
     }
 

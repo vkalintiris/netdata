@@ -963,10 +963,11 @@ mod replay {
                     let alerts = health.host(&self.host);
                     let ((), records) = netdata_agent_log::capture(|| {
                         if let Some(real) = world.real.borrow().as_ref() {
-                            sql::cleanup(&real.meta, &host_id(&self.host), alerts.as_deref(), &|| world.clock());
+                            let (host, id) = (&self.host, host_id(&self.host));
+                            sql::cleanup(&real.meta, host, &id, alerts.as_deref(), &|| world.clock());
                         }
                         if let Some(alerts) = &alerts {
-                            alerts.log_cleanup(&|| world.clock());
+                            alerts.log_cleanup(self.host.health_log_retention_s(), &|| world.clock());
                         }
                     });
                     self.dump(line, None, records);

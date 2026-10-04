@@ -429,6 +429,8 @@ fn reload_labels() -> (Status, Option<Vec<u8>>) {
         let mut cloud = ctx.shared.cloud_conf();
         host_labels::reload(&mut netdata, &mut cloud, &ctx.plugins_dir, hosts);
     }
+    // aclk_queue_node_info(localhost, 1)
+    hosts.localhost().set_aclk_sync_config();
     // rrdlabels_log_to_buffer()
     let mut out = Vec::new();
     for label in hosts.localhost().labels().iter() {
@@ -616,8 +618,22 @@ fn jsonc_string(out: &mut Vec<u8>, text: &[u8]) {
     out.push(b'"');
 }
 
-/// `aclk_state_json()` of an agent that is not claimed and not connected, with its node instances. Every host has
-/// ACLK's alert sync state, all zeros without claiming and health.
+/// `fill_alert_status_for_host_json()` of an agent that is not connected: an empty object for a host without its
+/// ACLK sync configuration; else the counters, zeros without a connection, and the version of the host's alerts the
+/// Cloud was told of.
+fn alert_sync_status(has_config: bool, alert_version: u64) -> String {
+    if !has_config {
+        return "{}".to_owned();
+    }
+    format!(
+        "{{\"updates\":0,\"checkpoint-count\":0,\"alert-count\":0,\"alert-snapshot-count\":0,\"alert-version\":\
+         {alert_version}}}"
+    )
+}
+
+/// `aclk_state_json()` of an agent that is not claimed and not connected, with its node instances. A host that has
+/// its ACLK sync configuration shows its alert sync state: zeros without a connection, and the version of its
+/// alerts the Cloud was told of, from the table; a host without it shows an empty object.
 fn aclk_state_json(ctx: &Ctx) -> Vec<u8> {
     let (url, proxy) = {
         let mut netdata = ctx.shared.conf();
@@ -644,6 +660,7 @@ fn aclk_state_json(ctx: &Ctx) -> Vec<u8> {
           \"next-connection-attempt-utc\":null,\"last-backoff-value\":null,\"banned-by-cloud\":false,\
           \"node-instances\":[",
     );
+    let meta = ctx.meta.upgrade();
     for (i, host) in ctx.shared.hosts.all().iter().enumerate() {
         if i > 0 {
             out.push(b',');
@@ -665,12 +682,17 @@ fn aclk_state_json(ctx: &Ctx) -> Vec<u8> {
             id => jsonc_string(&mut out, uuid(id).as_bytes()),
         }
         let online = host.is_localhost() || host.receiver().is_some();
+        let version = match (meta.as_ref(), crate::meta_store::host_id(host)) {
+            (Some(meta), Some(host_id)) if host.aclk_sync_config() => meta.node_alert_version(&host_id),
+            _ => 0,
+        };
         out.extend_from_slice(
             format!(
                 ",\"streaming-hops\":{},\"relationship\":\"{}\",\"streaming-online\":{online},\"alert-sync-status\":\
-                 {{\"updates\":0,\"checkpoint-count\":0,\"alert-count\":0,\"alert-snapshot-count\":0,\"alert-version\":0}}}}",
+                 {}}}",
                 host.ingestion_hops(),
                 if host.is_localhost() { "self" } else { "child" },
+                alert_sync_status(host.aclk_sync_config(), version),
             )
             .as_bytes(),
         );
@@ -745,6 +767,14 @@ mod tests {
     type ReplyCase = (Option<usize>, Status, Option<&'static [u8]>, &'static [u8]);
     /// Arguments, separators wanted, and the parts.
     type SplitCase = (&'static [u8], usize, Option<Vec<&'static str>>);
+
+    #[test]
+    fn a_host_without_its_aclk_sync_configuration_has_an_empty_alert_sync_status() {
+        assert_eq!(alert_sync_status(false, 7), "{}");
+        let with = "{\"updates\":0,\"checkpoint-count\":0,\"alert-count\":0,\"alert-snapshot-count\":0,\
+                    \"alert-version\":7}";
+        assert_eq!(alert_sync_status(true, 7), with);
+    }
 
     #[test]
     fn requests_parse_as_cs_prefix_match() {

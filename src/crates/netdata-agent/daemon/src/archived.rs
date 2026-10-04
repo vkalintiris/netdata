@@ -41,6 +41,11 @@ pub fn load(meta: &MetaDb, hosts: &Arc<Hosts>, defaults: &Defaults, metasync: Op
     let loaded = queue_context_load(hosts, metasync);
     // what the ACLKSYNC thread does first, on every start
     meta.drop_legacy_aclk_tables();
+    // localhost's node info is queued, which gives it its ACLK sync configuration, only when no archived host
+    // was created
+    if children + vnodes == 0 {
+        hosts.localhost().set_aclk_sync_config();
+    }
     if let Some(loaded) = loaded {
         wait_for_vnodes(&loaded, vnodes);
     }
@@ -110,6 +115,8 @@ pub fn load_without_database(hosts: &Arc<Hosts>, metasync: Option<&MetaSync>) {
         Priority::Err,
         "SQLite error when preparing statement to configure host ACLK synchronization parameters: out of memory"
     );
+    // no archived host was created: localhost's node info is queued
+    hosts.localhost().set_aclk_sync_config();
     netdata_log_info!("ACLK sync initialization completed");
 }
 
@@ -182,7 +189,12 @@ fn load_row(meta: &MetaDb, hosts: &Hosts, row: HostRow, defaults: &Defaults) -> 
         cache_dir: None,
     };
     let host = hosts.add_archived(&guid, info, |host| match meta.node_id(&row.host_id) {
-        NodeId::Set(id) => host.set_node_id(id),
+        // set_host_node_id(): a host that is given a node id gets its ACLK sync configuration (the node
+        // instances' pass of aclk_synchronization_init() would give it too)
+        NodeId::Set(id) => {
+            host.set_node_id(id);
+            host.set_aclk_sync_config();
+        }
         NodeId::Cleared => host.set_node_id([0; 16]),
         NodeId::Absent => {}
     });

@@ -713,7 +713,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let host_id = netdata_agent_text::parse::uuid_parse_flexi(machine_guid.as_bytes());
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
         match meta.node_id(host_id) {
-            NodeId::Set(id) => localhost.set_node_id(id),
+            // set_host_node_id(): with a node id the host gets its ACLK sync configuration
+            NodeId::Set(id) => {
+                localhost.set_node_id(id);
+                localhost.set_aclk_sync_config();
+            }
             NodeId::Cleared => localhost.set_node_id([0; 16]),
             NodeId::Absent => {}
         }

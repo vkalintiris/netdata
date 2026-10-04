@@ -198,7 +198,7 @@ fn cleanup_health_log(writer: &Writer, shared: &Shared) {
     for host in writer.hosts.all() {
         if let Some(host_id) = crate::meta_store::host_id(&host) {
             let alerts = writer.health.host(&host);
-            netdata_agent_health::sql::cleanup(&writer.meta, &host_id, alerts.as_deref(), &now_realtime_s);
+            netdata_agent_health::sql::cleanup(&writer.meta, &host, &host_id, alerts.as_deref(), &now_realtime_s);
         }
         if shutting_down() {
             return;
@@ -689,6 +689,8 @@ fn restore_host_context(host: &Host, load: &CtxLoad, dbs: &mut ThreadDbs) {
     );
     host.clear_pending_context_load();
     host.pulse_status(0);
+    // aclk_queue_node_info(): the host gets its ACLK sync configuration
+    host.set_aclk_sync_config();
     if host.is_virtual_host_os() {
         let _ = load.vnodes.send(());
     }
@@ -1215,9 +1217,12 @@ mod tests {
             health: Arc::clone(&health),
         };
         let saves = queued.len();
-        let ((), records) = netdata_agent_log::capture(|| store_alert_transitions(&writer, queued));
-        let record = records[0].message.clone().unwrap();
-        assert!(record.starts_with(&format!("Stored and processed {} alert transitions in ", saves * 2)), "{record}");
+        let pending = Pending { statements: Some(vec![row(3)]), alerts: Some(queued), ..Pending::default() };
+        let ((), records) = netdata_agent_log::capture(|| store_job(&writer, &shared(), pending));
+        let stored = records.into_iter().filter_map(|record| record.message).filter(|m| m.starts_with("Stored "));
+        let stored: Vec<String> = stored.map(|m| m.split(" in ").next().unwrap().to_owned()).collect();
+        let transitions = format!("Stored and processed {} alert transitions", saves * 2);
+        assert_eq!(stored, ["Stored and processed 1 sql statements".to_owned(), transitions]);
         assert_eq!(alerts.pending_transitions(), 0);
         assert_eq!((rows("health_log_detail"), rows("health_log"), rows("alert_queue")), (logged, 1, 1));
 
@@ -1230,6 +1235,107 @@ mod tests {
         let loaded = "[parent]: Table health_log, loaded 1 alarm entries, errors in 0 entries.";
         assert!(records.iter().any(|record| record == loaded), "{records:?}");
         assert_eq!(health.host(&host).unwrap().alerts()[0].id, alarm_id);
+    }
+
+    /// `commit_alert_transitions()`: a store asked for by command starts a job at once, where the timer's first store
+    /// comes 5 s after the thread's start.
+    #[test]
+    fn a_store_command_starts_a_job_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = meta_with_dimensions(dir.path());
+        let pool = WorkPool::new(1, 256 * 1024);
+        let sync = MetaSync::start(&pool, 1, 256 * 1024).unwrap();
+        sync.set_writer(Arc::clone(&meta), Weak::new(), hosts(), false, health());
+        let queue = sync.queue();
+        queue.execute_store_statement(row(7));
+        queue.store();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while stored_rows(&meta).is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(stored_rows(&meta), [7]);
+        sync.shutdown();
+    }
+
+    /// `cleanup_health_log()`: the first job that reaches it arms it 1800 s ahead and does nothing. When it is due,
+    /// each host's alert log loses the entries older than the host's retention that a newer entry replaced (a host
+    /// whose health never ran has a retention of 0), then the alarms of hosts the table `host` does not have go,
+    /// with their entries; and it is armed 3600 s ahead.
+    #[test]
+    fn the_health_log_cleanup_runs_after_1800_s_then_every_3600_s() {
+        use netdata_agent_metadata::health_log::EntryRow;
+        let dir = tempfile::tempdir().unwrap();
+        let meta = Arc::new(MetaDb::open(dir.path(), &Default::default()).unwrap());
+        let hosts = hosts();
+        let host = Arc::clone(hosts.localhost());
+        let host_id = crate::meta_store::host_id(&host).unwrap();
+        meta.lock()
+            .execute("INSERT INTO host (host_id, hostname) VALUES (?1, 'parent')", [&host_id[..]])
+            .unwrap();
+        let (now, hash) = (now_realtime_s(), [0xab; 16]);
+        let transitions = [[1u8; 16], [2; 16], [3; 16]];
+        let entry = |unique_id: u32, alarm_id: u32, updated_by_id: u32| EntryRow {
+            unique_id,
+            alarm_id,
+            alarm_event_id: unique_id,
+            config_hash_id: &hash,
+            transition_id: &transitions[unique_id as usize - 1],
+            updated_by_id,
+            updates_id: 0,
+            when: now - 100,
+            duration: 0,
+            non_clear_duration: 0,
+            flags: 0,
+            exec_run_timestamp: 0,
+            delay_up_to_timestamp: now - 100,
+            name: Some(b"an_alarm"),
+            chart: Some(b"t.c"),
+            chart_context: Some(b"t.ctx"),
+            chart_name: Some(b"t.c"),
+            exec: None,
+            recipient: None,
+            units: None,
+            info: None,
+            summary: None,
+            exec_code: 0,
+            new_status: 1,
+            old_status: 0,
+            delay: 0,
+            new_value: 1.0,
+            old_value: f64::NAN,
+            last_repeat: 0,
+            global_id: u64::from(unique_id),
+        };
+        // localhost's alarm 7: entry 1, which entry 2 replaced, and entry 2, its last; alarm 8 of a host the table
+        // `host` does not have
+        assert!(meta.health_alarm_log_insert("parent", &host_id, &entry(1, 7, 0), false));
+        assert!(meta.health_alarm_log_insert("parent", &host_id, &entry(2, 7, 0), false));
+        meta.health_alarm_log_update("parent", &entry(1, 7, 2));
+        assert!(meta.health_alarm_log_insert("gone", &[0xee; 16], &entry(3, 8, 0), false));
+        let rows = |table: &str| -> i64 {
+            meta.lock().query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap()
+        };
+        let writer = Writer {
+            meta: Arc::clone(&meta),
+            context_db: Weak::new(),
+            hosts,
+            datafiles_present: false,
+            health: health(),
+        };
+        let shared = shared();
+
+        cleanup_health_log(&writer, &shared);
+        let armed = shared.next_health_log_cleanup.load(Ordering::Acquire);
+        assert!((now + 1800..=now + 1802).contains(&armed), "{armed} at {now}");
+        assert_eq!((rows("health_log"), rows("health_log_detail")), (2, 3));
+
+        shared.next_health_log_cleanup.store(now - 1, Ordering::Release);
+        cleanup_health_log(&writer, &shared);
+        let armed = shared.next_health_log_cleanup.load(Ordering::Acquire);
+        assert!((now + 3600..=now + 3602).contains(&armed), "{armed} at {now}");
+        assert_eq!((rows("health_log"), rows("health_log_detail")), (1, 1));
+        let left: i64 = meta.lock().query_row("SELECT unique_id FROM health_log_detail", [], |row| row.get(0)).unwrap();
+        assert_eq!(left, 2);
     }
 
     /// A job stores the context cleanups before it deletes the freed dimensions, each list with C's record; the items

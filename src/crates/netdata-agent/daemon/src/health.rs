@@ -318,6 +318,8 @@ pub fn spawn(
                         "Postponing alarm checks for {postpone_s} seconds, because it seems that the system was \
                          just resumed from suspension."
                     );
+                    // schedule_node_state_update(localhost, 10)
+                    hosts.localhost().set_aclk_sync_config();
                 }
                 hosts.storage().next_health_iteration();
                 for host in hosts.all() {

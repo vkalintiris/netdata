@@ -319,6 +319,8 @@ impl Timezone {
             localhost.raise_label_recheck();
         }
         netdata_agent_rrd::upstream::send_host_labels(localhost);
+        // aclk_queue_node_info(localhost, false)
+        localhost.set_aclk_sync_config();
     }
 }
 

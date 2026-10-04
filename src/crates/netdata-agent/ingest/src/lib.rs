@@ -1560,6 +1560,9 @@ impl Parser {
         self.clear_scope("HOST_DEFINE_END");
         host.clear_orphan();
         host.contexts_child_connected();
+        // aclk_queue_node_info() or schedule_node_state_update(): either gives the vnode its ACLK sync
+        // configuration (a vnode re-enabled, or reset when its plugin ends, has been through here)
+        host.set_aclk_sync_config();
         host.set_meta_flags(meta_flags::LABELS | meta_flags::UPDATE);
         if !self.vnodes.iter().any(|v| Arc::ptr_eq(v, &host)) {
             self.vnodes.push(Arc::clone(&host));

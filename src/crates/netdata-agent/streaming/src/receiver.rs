@@ -755,8 +755,11 @@ impl Receivers {
             }),
         ));
         match host.set_receiver(Arc::clone(&slot)) {
-            // rrdhost_set_receiver()'s stream_parents_host_reset(), outside the receiver lock here (D118.3)
+            // rrdhost_set_receiver()'s stream_parents_host_reset(), outside the receiver lock here (D118.3), and its
+            // aclk_queue_node_info(), which gives the host its ACLK sync configuration (the connect's and the
+            // disconnect's node state updates would give it too: both follow an attach)
             Attach::Attached => {
+                host.set_aclk_sync_config();
                 if let Some(up) = host.upstream() {
                     up.parents_reset(Reason::SP_PREPARING.0);
                 }
@@ -799,7 +802,8 @@ impl Receivers {
                 return false;
             }
         }
-        // rrdhost_set_receiver(): a child that was just connected gets its health postponed
+        // rrdhost_set_receiver(): a child that was just connected gets its health postponed, and its alert log the
+        // retention of its stream configuration
         if config.health_enabled != 0 && config.health_delay > 0 {
             host.set_health_delay_up_to(now_s().saturating_add(config.health_delay));
             nd_log!(
@@ -813,6 +817,8 @@ impl Receivers {
                 config.health_delay
             );
         }
+        // C stores the 64-bit duration in a 32-bit field
+        host.set_health_log_retention_s(config.health_history as u32);
         let prompt = caps::prompt(capabilities);
         // the negotiated capabilities are logged while the prompt is built, before the socket is set up
         peer.established(&host.hostname(), capabilities);

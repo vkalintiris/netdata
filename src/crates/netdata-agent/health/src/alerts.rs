@@ -139,9 +139,6 @@ pub struct HostAlerts {
     pending_transitions: AtomicI32,
     /// `host->health_log.max`: how many entries the alert log's query answers, 0 until the host's first pass.
     log_max: AtomicU32,
-    /// `host->health_log.health_log_retention_s`: how long a replaced entry is kept, in the table and in memory. 0
-    /// until the host's first pass or a child's attach sets it.
-    log_retention_s: AtomicU32,
     /// `host->health.alert_status_snapshot`: the counts of the last complete pass, and how often counts were
     /// published, times two (C's generation is odd while a writer is at it).
     counts: Mutex<(u64, Option<PassCounts>)>,
@@ -260,7 +257,7 @@ impl HostAlerts {
         running: &dyn Fn() -> bool,
     ) {
         self.log_max.store(config.health_log_entries_max, Ordering::Relaxed);
-        self.log_retention_s.store(config.health_log_retention_s, Ordering::Relaxed);
+        host.set_health_log_retention_s(config.health_log_retention_s);
         {
             let mut store = self.store();
             store.log.next_log_id = clock() as u32;
@@ -319,7 +316,7 @@ impl HostAlerts {
         let priority = if errored != 0 { Priority::Warning } else { Priority::Debug };
         let text = format_args!("loaded {loaded} alarm entries, errors in {errored} entries.");
         nd_log!(Source::Daemon, priority, "[{hostname}]: Table health_log, {text}");
-        self.log_cleanup(clock);
+        self.log_cleanup(host.health_log_retention_s(), clock);
     }
 
     /// `host->health_log.max`.
@@ -327,16 +324,6 @@ impl HostAlerts {
         self.log_max.load(Ordering::Relaxed)
     }
 
-    /// `host->health_log.health_log_retention_s`.
-    pub fn log_retention_s(&self) -> u32 {
-        self.log_retention_s.load(Ordering::Relaxed)
-    }
-
-    /// A child's attach gives the host its own retention (`stream-receiver.c`); the host's first pass, when it
-    /// comes later, puts the configuration's back.
-    pub fn set_log_retention_s(&self, retention_s: u32) {
-        self.log_retention_s.store(retention_s, Ordering::Relaxed);
-    }
 
     /// The host's alerts in the dictionary's order: the order the loop evaluates them in.
     pub fn alerts(&self) -> Vec<Arc<Alert>> {
@@ -720,13 +707,14 @@ impl HostAlerts {
         self.store().log.mark_updated();
     }
 
-    /// `health_alarm_log_cleanup()`: the memory log's retention cleanup, after a load and after the table's hourly
-    /// cleanup. An empty log reads no clock. C gives up when the log's lock is taken; here the store's lock is
-    /// waited for: nothing is held while it is asked for, and what the cleanup leaves shows nowhere but in memory.
-    pub fn log_cleanup(&self, clock: Clock) {
+    /// `health_alarm_log_cleanup()`: the memory log's cleanup by the host's retention, after a load and after the
+    /// table's hourly cleanup. An empty log reads no clock. C gives up when the log's lock is taken; here the
+    /// store's lock is waited for: nothing is held while it is asked for, and what the cleanup leaves shows nowhere
+    /// but in memory.
+    pub fn log_cleanup(&self, retention_s: u32, clock: Clock) {
         let mut store = self.store();
         if !store.log.entries.is_empty() {
-            store.log.cleanup(self.log_retention_s(), clock());
+            store.log.cleanup(retention_s, clock());
         }
     }
 
@@ -1024,14 +1012,14 @@ mod tests {
         let alerts = HostAlerts::default();
         assert!(!alerts.is_initialized());
         assert_eq!(alerts.latest_log_unique_id(), 0);
-        assert_eq!((alerts.log_max(), alerts.log_retention_s()), (0, 0));
+        assert_eq!((alerts.log_max(), host.health_log_retention_s()), (0, 0));
         let empty = Scripted { table: Some(Vec::new()), ..Scripted::default() };
         alerts.initialize(&host, &config, &empty, &counting(&reads), &|| true);
         assert!(alerts.is_initialized());
         assert_eq!(reads.get(), 3);
         assert_eq!(alerts.log_counters(), ((NOW + 2) as u32, (NOW + 3) as u32, 0));
         assert_eq!(alerts.latest_log_unique_id(), (NOW + 1) as u32);
-        assert_eq!((alerts.log_max(), alerts.log_retention_s()), (1000, 5 * 86400));
+        assert_eq!((alerts.log_max(), host.health_log_retention_s()), (1000, 5 * 86400));
 
         let reads = std::cell::Cell::new(0);
         let alerts = HostAlerts::default();
