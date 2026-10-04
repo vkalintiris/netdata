@@ -6,7 +6,7 @@
 //! selector's: selectors only say which alerts, and without a type they have no effect.
 
 use std::collections::VecDeque;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -19,7 +19,7 @@ use crate::alert::run_flags;
 use crate::keywords::lossy;
 
 /// `HEALTH_SILENCERS_MAX_FILE_LEN`: a file of this size or more is not read, though a request writes it.
-const MAX_FILE_LEN: u64 = 10000;
+const MAX_FILE_LEN: i64 = 10000;
 
 const MSG_AUTHERROR: &[u8] = b"Auth Error\n";
 const MSG_SILENCEALL: &[u8] = b"All alarm notifications are silenced\n";
@@ -226,7 +226,7 @@ impl Silencers {
     /// element of every array is a selector, which goes to the list's head: the file's order is reversed.
     pub fn init(&self) {
         let name = lossy(&self.filename);
-        let file = match std::fs::File::open(self.path()) {
+        let mut file = match std::fs::File::open(self.path()) {
             Ok(file) => file,
             Err(e) => {
                 // C's record carries the errno the failed fopen() left, as every record of a thread carries the
@@ -243,9 +243,10 @@ impl Silencers {
                 return;
             }
         };
-        // C's ftell() at the file's end
-        let length = file.metadata().map_or(0, |metadata| metadata.len());
-        if length == 0 || length >= MAX_FILE_LEN {
+        // C's fseek() to the end and ftell(): the file's size, or what the seek gives for what is no regular file
+        let length = file.seek(SeekFrom::End(0)).map_or(-1, |end| i64::try_from(end).unwrap_or(i64::MAX));
+        let _ = file.seek(SeekFrom::Start(0));
+        if length <= 0 || length >= MAX_FILE_LEN {
             netdata_log_error_errno!(
                 "Health silencers file {name} has the size {length} that is out of range[ 1 , {MAX_FILE_LEN} ]. \
                  Aborting read."
@@ -253,8 +254,11 @@ impl Silencers {
             return;
         }
         let mut text = Vec::with_capacity(length as usize);
-        let read = (&file).take(length).read_to_end(&mut text);
-        if read.ok() != Some(length as usize) {
+        let read = (&file).take(length as u64).read_to_end(&mut text);
+        if read.as_ref().ok() != Some(&(length as usize)) {
+            if let Err(e) = &read {
+                set_errno(errno_of(e));
+            }
             netdata_log_error_errno!("Cannot read the data from health silencers file {name}");
             return;
         }
@@ -365,7 +369,8 @@ impl Silencers {
     }
 
     /// `health_silencers2file()`: after the lock, not atomically, a link followed; two requests are not serialized
-    /// against each other. A write that fails once the file is open leaves no record.
+    /// against each other. A write that fails once the file is open leaves no record here. C writes through stdio
+    /// and records the change once the text is in its buffer: on a full disk C says "written" and this does not.
     fn to_file(&self, text: &[u8]) {
         let name = lossy(&self.filename);
         match std::fs::File::create(self.path()) {
@@ -447,5 +452,34 @@ mod tests {
         assert!(!after(b"cmd=RESET"));
         // a selector is not `all`
         assert!(!after(b"cmd=DISABLE&alarm=*"));
+    }
+
+    /// The chart's context is read under the silencers' lock, so it is asked for only by a selector that tests
+    /// one, once the alarm's name passed, and not at all while `all` is on.
+    #[test]
+    fn the_context_is_asked_for_only_by_a_selector_that_tests_it() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let silencers = Silencers::new(dir.path().join("silencers.json").into_os_string().into_encoded_bytes());
+        let request = |query: &[u8]| {
+            netdata_agent_log::capture(|| silencers.request(Some(b"key"), b"key", query));
+        };
+        let asked = std::cell::Cell::new(0);
+        let context = |pattern: &SimplePattern| {
+            asked.set(asked.get() + 1);
+            pattern.matches(b"context")
+        };
+        let update = |name: &[u8]| {
+            let subject = Subject { name, chart: b"chart", context: &context, hostname: b"host" };
+            (silencers.update(&subject, 0), asked.replace(0))
+        };
+
+        request(b"cmd=SILENCE&alarm=a&chart=chart");
+        assert_eq!(update(b"a"), (run_flags::SILENCED, 0), "no selector tests a context");
+        request(b"alarm=b&context=context");
+        assert_eq!(update(b"b"), (run_flags::SILENCED, 1));
+        assert_eq!(update(b"a"), (run_flags::SILENCED, 0), "the selector's alarm is another: its context is not read");
+        assert_eq!(update(b"c"), (0, 0));
+        request(b"cmd=DISABLE ALL");
+        assert_eq!(update(b"b"), (run_flags::DISABLED, 0), "all is on: no selector is tried");
     }
 }

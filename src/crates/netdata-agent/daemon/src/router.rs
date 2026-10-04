@@ -378,7 +378,9 @@ pub struct Route<'a> {
     /// The request as its log frames and records see it.
     pub ctx: &'a RequestContext,
     pub url_as_received: &'a [u8],
-    /// `w->url_path_decoded`: the request's path, decoded, without its query.
+    /// The request's path, decoded, without its query. C's `w->url_path_decoded` is this without a `/host/<name>`
+    /// prefix, which C cuts off as it switches hosts; the one reader, the management route, finds the same either
+    /// way.
     pub path_decoded: &'a [u8],
     pub query: &'a [u8],
     /// `w->auth_bearer_token` as `X-Auth-Token` sets it: the management API's key.
@@ -1332,5 +1334,36 @@ mod tests {
         // not a command of the later versions
         assert_eq!(ask(b"/api/v2/manage/health", Some(&key), all).0, status::NOT_FOUND);
         assert_eq!(ask(b"/api/v3/manage/health", Some(&key), all).0, status::NOT_FOUND);
+        // under a host's prefix the route is the same, and the host is not looked at
+        assert_eq!(ask(b"/host/box/api/v1/manage/health", Some(&key), all), listed);
+    }
+
+    /// A request that changes the state, through the route: the reply is text, and the silencers' file is written.
+    #[test]
+    fn a_management_request_through_the_route_saves_the_silencers() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let file = dir.path().join("health.silencers.json");
+        let config = netdata_agent_health::config::HealthConfig {
+            silencers_filename: file.clone().into_os_string().into_encoded_bytes(),
+            ..Default::default()
+        };
+        let s = Shared { health: netdata_agent_health::Health::init(config, Box::new(|_| {})), ..shared() };
+        let mut req = Request::default();
+        req.path = b"/api/v1/manage/health".to_vec();
+        req.url_as_received = req.path.clone();
+        req.query = b"?cmd=SILENCE ALL&alarm=a".to_vec();
+        req.headers.auth_token = Some(s.management_key.clone());
+        let all = acl::bits::TRANSPORTS | acl::bits::ALL_LISTENER_FEATURES;
+        let context = crate::access_log::RequestContext::default();
+        let (reply, records) = netdata_agent_log::capture(|| {
+            process_request(&req, &req.path, all, &s, Instant::now(), &context, &|_| false)
+        });
+        assert_eq!((reply.code, reply.content_type), (status::OK, ContentType::TextPlain));
+        assert_eq!(reply.body, b"All alarm notifications are silenced\nAlarm selector added\n");
+        let written = "{\n\t\"all\": true,\n\t\"type\": \"SILENCE\",\n\t\"silencers\": [\
+                       \n\t\t{\n\t\t\t\"alarm\": \"a\"\n\t\t}\n\t]\n}\n";
+        assert_eq!(std::fs::read_to_string(&file).expect("the file"), written);
+        let messages: Vec<String> = records.into_iter().filter_map(|record| record.message).collect();
+        assert_eq!(messages, [format!("Silencer changes written to {}", file.display())]);
     }
 }

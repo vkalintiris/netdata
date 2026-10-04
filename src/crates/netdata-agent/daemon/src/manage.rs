@@ -24,30 +24,30 @@ const GUID_LEN: usize = 36;
 /// `HLT_MGM`.
 const MANAGE_HEALTH: &[u8] = b"manage/health";
 
-/// `regenerate_guid()`: a GUID in lower case, or C's record of a text that is none.
-fn regenerate_guid(guid: &[u8]) -> Option<Vec<u8>> {
-    let Some(uuid) = uuid_parse_flexi(guid) else {
-        netdata_log_info!("Registry: GUID '{}' is not a valid GUID.", String::from_utf8_lossy(c_str(guid)));
-        return None;
-    };
-    let mut text = Vec::with_capacity(GUID_LEN);
-    print_uuid_lower(&mut text, &uuid);
-    Some(text)
+/// What the key file gives.
+enum FileKey {
+    /// Its first 36 bytes are a GUID: the key, in lower case.
+    Key(Vec<u8>),
+    /// No regular file, a read that failed, or a text that begins with a NUL: a new key is made and saved.
+    None,
+    /// A text that is no GUID: see [`management_init`].
+    NoGuid,
 }
 
-/// The key as its file holds it: the file's first 36 bytes, when the file is a regular one (a link is not followed)
-/// and they are a GUID. The file is not rewritten: a key in upper case stays so in the file and is answered to in
-/// lower case.
-fn read_key(filename: &str) -> Option<Vec<u8>> {
+/// The key as its file holds it: the file's first 36 bytes, when the file is a regular one (a link is not followed).
+/// The file is not rewritten: a key in upper case stays so in the file and is answered to in lower case.
+fn read_key(filename: &str) -> FileKey {
     let is_regular = std::fs::symlink_metadata(filename).is_ok_and(|metadata| metadata.is_file());
     if !is_regular {
-        return None;
+        return FileKey::None;
     }
     let flags = (OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW).bits();
-    let mut file = std::fs::OpenOptions::new().read(true).custom_flags(flags).open(filename).ok()?;
+    let Ok(mut file) = std::fs::OpenOptions::new().read(true).custom_flags(flags).open(filename) else {
+        return FileKey::None;
+    };
     if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
         netdata_log_error_errno!("Management API key file '{filename}' is not a regular file, regenerating.");
-        return None;
+        return FileKey::None;
     }
     let mut buf = [0u8; GUID_LEN];
     match file.read(&mut buf) {
@@ -57,15 +57,24 @@ fn read_key(filename: &str) -> Option<Vec<u8>> {
                 set_errno(errno_of(&e));
             }
             netdata_log_error_errno!("Failed to read management API key from '{filename}'");
-            return None;
+            return FileKey::None;
         }
     }
-    let key = regenerate_guid(&buf);
-    if key.is_none() {
-        let text = String::from_utf8_lossy(c_str(&buf));
-        netdata_log_error_errno!("Failed to validate management API key '{text}' from '{filename}'.");
+    // regenerate_guid(): C's parser answers -1 for an empty text alone, and -1 is the one failure its caller tests
+    // for: the two records are written for a text that begins with a NUL, and for no other
+    if c_str(&buf).is_empty() {
+        netdata_log_info!("Registry: GUID '' is not a valid GUID.");
+        netdata_log_error_errno!("Failed to validate management API key '' from '{filename}'.");
+        return FileKey::None;
     }
-    key
+    match uuid_parse_flexi(&buf) {
+        Some(uuid) => {
+            let mut key = Vec::with_capacity(GUID_LEN);
+            print_uuid_lower(&mut key, &uuid);
+            FileKey::Key(key)
+        }
+        None => FileKey::NoGuid,
+    }
 }
 
 /// A new key's save: false with C's record when the file cannot hold it.
@@ -114,25 +123,34 @@ fn save_key(filename: &str, key: &[u8]) -> bool {
 }
 
 /// `api_v1_management_init()`: the management key. `[registry] netdata management api key file` (default
-/// `<varlib>/netdata.api.key`) is read; without a valid key in it a random one is made and saved there, with mode
-/// 0600. A key that cannot be saved is good for this run only, and C tells it to the log.
+/// `<varlib>/netdata.api.key`) is read; without a key in it a random one is made and saved there, with mode 0600. A
+/// key that cannot be saved is good for this run only, and C tells it to the log.
+///
+/// Not reproduced: for a file whose text is no GUID, C's parser fails with a code its caller does not test for, and C
+/// takes as the key the text of 16 bytes of its stack that it never set. It leaves the file alone and writes no
+/// record. Nobody knows that key; here it is a random one for this run, the file left alone and no record
+/// written either (D211).
 pub fn management_init(conf: &mut Conf) -> Vec<u8> {
     let default = format!("{}/netdata.api.key", conf.dirs.varlib);
     let filename = conf.netdata.get_filename(SECTION_REGISTRY, "netdata management api key file", Some(&default));
     let filename = String::from_utf8_lossy(&filename.unwrap_or_default()).into_owned();
 
-    if let Some(key) = read_key(&filename) {
-        return key;
+    let new_key = || uuid::Uuid::new_v4().hyphenated().to_string().into_bytes();
+    match read_key(&filename) {
+        FileKey::Key(key) => key,
+        FileKey::NoGuid => new_key(),
+        FileKey::None => {
+            let key = new_key();
+            if !save_key(&filename, &key) {
+                netdata_log_info!(
+                    "You can still continue to use the alarm management API using the authorization token {} during \
+                     this Netdata session only.",
+                    String::from_utf8_lossy(&key)
+                );
+            }
+            key
+        }
     }
-    let key = uuid::Uuid::new_v4().hyphenated().to_string().into_bytes();
-    if !save_key(&filename, &key) {
-        netdata_log_info!(
-            "You can still continue to use the alarm management API using the authorization token {} during this \
-             Netdata session only.",
-            String::from_utf8_lossy(&key)
-        );
-    }
-    key
 }
 
 /// `api_v1_manage()`: the first `manage/health` of the decoded path must end it; then the request is the
@@ -173,7 +191,11 @@ mod tests {
     }
 
     fn is_guid(key: &[u8]) -> bool {
-        key.len() == GUID_LEN && regenerate_guid(key).as_deref() == Some(key)
+        let mut lower = Vec::new();
+        uuid_parse_flexi(key).is_some_and(|uuid| {
+            print_uuid_lower(&mut lower, &uuid);
+            lower == key
+        })
     }
 
     #[test]
@@ -197,23 +219,46 @@ mod tests {
         assert_eq!(init(&file), (KEY.to_vec(), Vec::new()));
         assert_eq!(std::fs::read(&file).expect("the file"), KEY.to_ascii_uppercase());
 
-        // a short file, and a text that is no GUID: C's records, and a new key in the file
+        // a short file: C's record, and a new key in the file
         std::fs::write(&file, &KEY[..35]).expect("the file");
         let (key, records) = init(&file);
         assert_eq!(records, [format!("Failed to read management API key from '{name}'")]);
         assert!(is_guid(&key) && key != KEY);
         assert_eq!(std::fs::read(&file).expect("the file"), key);
-        let text = "this is not a key, whatever it holds!";
-        std::fs::write(&file, text).expect("the file");
+
+        // a text that begins with a NUL is the one text C's validation refuses: its two records, a new key saved
+        std::fs::write(&file, [&b"\0"[..], &KEY[1..]].concat()).expect("the file");
         let (key, records) = init(&file);
         assert_eq!(
             records,
             [
-                format!("Registry: GUID '{}' is not a valid GUID.", &text[..36]),
-                format!("Failed to validate management API key '{}' from '{name}'.", &text[..36]),
+                "Registry: GUID '' is not a valid GUID.".to_owned(),
+                format!("Failed to validate management API key '' from '{name}'."),
             ]
         );
+        assert!(is_guid(&key));
         assert_eq!(std::fs::read(&file).expect("the file"), key);
+    }
+
+    /// C takes bytes it never set as the key then, with no record and the file left alone: a key nobody knows.
+    #[test]
+    fn a_text_that_is_no_guid_gives_a_key_for_this_run_and_leaves_the_file() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let file = dir.path().join("netdata.api.key");
+        let texts = [
+            "this is not a key, whatever it holds!",
+            "5a1e0000-0000-4000-8000-00000000c0d",
+            "zzzzzzzz-0000-4000-8000-00000000c0de",
+        ];
+        for text in texts {
+            let text = format!("{text:<36}");
+            std::fs::write(&file, &text).expect("the file");
+            let (key, records) = init(&file);
+            assert!(is_guid(&key) && records.is_empty(), "{text}: {records:?}");
+            assert_eq!(std::fs::read(&file).expect("the file"), text.as_bytes(), "{text}");
+            // another start, another key: nothing was kept
+            assert_ne!(init(&file).0, key, "{text}");
+        }
     }
 
     #[test]

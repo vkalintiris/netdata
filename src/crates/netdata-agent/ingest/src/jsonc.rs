@@ -687,7 +687,9 @@ pub fn object<'a>(
 
 /// A parsed value whose objects keep their members in the document's order, as json-c's do: `serde_json`'s map is
 /// sorted by key unless a feature other packages of the workspace turn on is unified in (D210 F3). A repeated name
-/// keeps its first place and takes its last value, as json-c's `json_object_object_add()` leaves it.
+/// keeps its first place and takes its last value, as json-c's `json_object_object_add()` leaves it. A number is
+/// a number here because no package of the workspace turns on serde_json's `arbitrary_precision`, which hands a
+/// number over as an object of one member: the walk's unit would show it.
 enum Ordered {
     Null,
     Bool(bool),

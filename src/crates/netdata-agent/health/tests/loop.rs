@@ -1784,7 +1784,7 @@ fn notify_matches_c() {
 /// disabled alert that repeats, is obsolete, or lost its chart, and an entry made before or during a silence.
 #[test]
 fn silencers_match_c() {
-    assert_eq!(replayed("silencers"), 98);
+    assert_eq!(replayed("silencers"), 99);
 }
 
 /// The management key of the generator's world (`api_secret` of its stubs).
@@ -1821,10 +1821,10 @@ fn messages_of<T>(path: &std::path::Path, f: impl FnOnce() -> T) -> (T, Vec<u8>)
     (result, name_file(joined.as_bytes(), path.as_os_str().as_encoded_bytes()))
 }
 
-/// C's `health_silencers_init()` over 93 file texts: the state it leaves, as the list prints it, and its records.
-/// Five texts kill C (an element of the list that is no object): Rust skips such an element (D210 F4). Six more are
-/// read differently by decision: what json-c takes and `serde_json` refuses is refused (D46.1), and a byte that is
-/// not UTF-8 is read as U+FFFD (D89).
+/// C's `health_silencers_init()` over 98 file texts: the state it leaves, as the list prints it, and its records.
+/// Five texts kill C (an element of the list that is no object): Rust skips such an element (D210 F4). Seven more
+/// are read differently by decision: what json-c takes and `serde_json` refuses is refused (D46.1), and a byte that
+/// is not UTF-8 is read as U+FFFD (D89).
 #[test]
 fn the_silencers_file_is_read_as_c() {
     use netdata_agent_health::silencers::Silencers;
@@ -1834,7 +1834,7 @@ fn the_silencers_file_is_read_as_c() {
     const PARSED: &[u8] = b"Parsed health silencers file {file}";
     const REFUSED: &[u8] = b"JSON: Invalid json string. | Parsed health silencers file {file}";
     // the texts Rust reads otherwise than C, with what it makes of each
-    let decided: [(&[u8], &[u8], &[u8]); 11] = [
+    let decided: [(&[u8], &[u8], &[u8]); 12] = [
         (b"{\"silencers\":[\"x\"]}", NONE, PARSED),
         (b"{\"silencers\":[5]}", NONE, PARSED),
         (b"{\"silencers\":[true]}", NONE, PARSED),
@@ -1845,6 +1845,7 @@ fn the_silencers_file_is_read_as_c() {
         (b"/* a comment */ {\"all\":true}", NONE, REFUSED),
         (b"{\"all\":TRUE}", NONE, REFUSED),
         (b"{\"silencers\":[{\"alarm\\u0000x\":\"a\"}]}", NONE, REFUSED),
+        (b"{\"silencers\":[{\"alarm\":\"a\\ud800b\"}]}", NONE, REFUSED),
         (
             b"{\"silencers\":[{\"alarm\":\"\xff\"}]}",
             b"{\n\t\"all\": false,\n\t\"type\": \"None\",\n\t\"silencers\": [\
@@ -1892,7 +1893,7 @@ fn the_silencers_file_is_read_as_c() {
     }
     let shown = failures[..failures.len().min(12)].join("\n");
     assert!(failures.is_empty(), "{} of {checked} differ:\n{shown}", failures.len());
-    assert_eq!((checked, crashes, differing), (93, 5, decided.len()));
+    assert_eq!((checked, crashes, differing), (98, 5, decided.len()));
 }
 
 /// C's request handler over 33 sequences of requests (C's own test script's among them): each reply's code, content

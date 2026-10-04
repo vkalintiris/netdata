@@ -1540,6 +1540,13 @@ static void silencers_tables(const char *dir, const char *records_path) {
         "/* a comment */ {\"all\":true}",
         "{\"all\":TRUE}",
         "\xef\xbb\xbf{\"all\":true}",
+        // deeper shapes: an array in an object in an element; 32 levels, and 33
+        "{\"silencers\":[{\"o\":{\"in\":[{\"alarm\":\"deep\"}]},\"chart\":\"c\"}]}",
+        "{\"a\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[true]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+        "{\"a\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[true]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+        // a control byte as it is in a string; half of a surrogate pair
+        "{\"silencers\":[{\"alarm\":\"a\x01" "b\"}]}",
+        "{\"silencers\":[{\"alarm\":\"a\\ud800b\"}]}",
     };
     for(size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
         struct file_case c = { files[i], strlen(files[i]) };
