@@ -1,0 +1,27 @@
+# The service stops while the pass links charts that arrived after the host's first pass: after four looks at it.
+# The next pass finds it stopped from its first look; then it runs again, and what was left waiting is linked once
+# the host is told again that a chart waits.
+rules tests/corpus/loop/stop.conf
+chart loop.s1 loop.s1_name loop.stop - things 1
+var loop.s1 v 1
+clock 0
+pass 0
+chart loop.s2 loop.s2_name loop.stop - things 1
+chart loop.s3 loop.s3_name loop.stop - things 1
+var loop.s2 v 1
+var loop.s3 v 1
+clock 1
+running-for 4
+pass 1
+clock 2
+pass 2
+running 1
+clock 3
+pass 3
+pending host-init
+clock 4
+pass 4
+pending chart-init loop.s2
+pending host-init
+clock 5
+pass 5

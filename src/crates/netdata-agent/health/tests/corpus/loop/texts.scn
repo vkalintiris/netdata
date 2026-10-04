@@ -1,0 +1,18 @@
+# The runtime texts of eight rules on a chart with a family and labels, and on one without a family and without
+# labels; then a label changes, and the texts follow at the next pass.
+rules tests/corpus/loop/texts.conf
+chart loop.x1 loop.x1_name loop.texts disks things 1
+label loop.x1 kind ssd
+label loop.x1 role db
+label loop.x1 tricky a/b c $ {x}
+chart loop.x2 loop.x2_name loop.texts - things 1
+var loop.x1 v 1
+var loop.x2 v 1
+clock 0
+pass 0
+label loop.x1 kind nvme
+label loop.x2 kind late
+clock 1
+pass 1
+clock 2
+pass 2

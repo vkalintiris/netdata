@@ -14,6 +14,7 @@ directory named `*.group` is one item whose files are read one after the other i
 | `validate` | each reason a rule is refused, chains of rules under one name, the same name in two files |
 | `smoke` | a first small file |
 | `match` | rules for the matching of hosts and charts (`basic.conf`: alarms by id and by name, templates, chains mixing both, disabled rules, each label key), and `scenarios.txt`, which the link generator plays: label sets, pattern texts, and per scenario its files, `enabled alarms`, hosts and charts (the stock rules among them) |
+| `loop` | the evaluation loop's scenarios: a rule file (`*.conf`, also an item of the configuration vectors) and a script (`*.scn`) of charts, values, clock and passes, which `../oracle/gen-loop-vectors.c` plays through C's own pass; the directives are at the top of that program. Statuses and their combinations, calculations, the lookup's outcomes, each reason an alert is not run, delays, repeats, obsolete charts, linking again after label changes, a stopping service, a postponed host, ids without a database, the trim, durations, names between alerts, the runtime texts, several charts |
 | `files` | paths the reader cannot read: a dangling link, a directory, then a file whose record shows the `errno` left behind |
 
 The files hold bytes on purpose (a NUL, bytes above 0x7F, CRLF, a missing final newline): do not reformat them.

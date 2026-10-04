@@ -1,0 +1,10 @@
+# Without a database the alert log is not loaded: the ids start at the second of the host's initialization.
+rules tests/corpus/loop/gate.conf
+database 0
+chart loop.g loop.g_name loop.gate - things 1
+var loop.g v 10
+clock 7
+pass 5
+var loop.g v 70
+clock 8
+pass 6

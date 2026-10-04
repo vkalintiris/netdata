@@ -1,0 +1,39 @@
+# The delays of five alerts over a value that flips inside and outside the delay windows. The wall clock is each
+# pass's `now`, so an entry is due exactly when its delay ends.
+rules tests/corpus/loop/delay.conf
+chart loop.d loop.d_name loop.delay - things 1
+var loop.d v 10
+clock 0
+pass 0
+# up, inside the first window: the delays are multiplied
+var loop.d v 70
+clock 1
+pass 1
+# down, inside the window: multiplied again, the down delay reaches its maximum
+var loop.d v 10
+clock 2
+pass 2
+var loop.d v 95
+clock 3
+pass 3
+# nothing changes while the window runs; at its last second the entry is due
+clock 22
+pass 22
+clock 23
+pass 23
+# one second past the window: the delays are reset
+var loop.d v 10
+clock 24
+pass 24
+# exactly at the window's end: not reset
+var loop.d v 70
+clock 30
+pass 30
+var loop.d v 10
+clock 31
+pass 31
+clock 60
+pass 60
+var loop.d v 70
+clock 100
+pass 100

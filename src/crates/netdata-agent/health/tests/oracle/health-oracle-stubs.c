@@ -24,6 +24,10 @@
 //     before the default exec and recipient are filled (health_prototypes.c:396-402, :477-483); the real one binds
 //     the alert_hash row (src/database/sqlite/sqlite_health.c). Here it writes the rule as a vector row.
 
+//
+// The loop's program (gen-loop-vectors.c) links C's real rrdcalc.c and health_event_loop.c, which define some of
+// these themselves: it compiles this file with HEALTH_ORACLE_LOOP, and takes the rest from health-loop-stubs.c.
+
 #include "health-oracle.h"
 
 struct health_plugin_globals health_globals = {
@@ -54,7 +58,10 @@ struct health_plugin_globals health_globals = {
 
 RRDHOST *localhost = NULL;
 DICTIONARY *rrdhost_root_index = NULL;
+#ifndef HEALTH_ORACLE_LOOP
 __thread bool is_health_thread = false;
+#endif
+
 struct dictionary_stats dictionary_stats_category_rrdhealth = { .name = "health" };
 
 const char *health_user_config_dir(void) {
@@ -65,10 +72,12 @@ const char *health_stock_config_dir(void) {
     return "/oracle/lib/health.d";
 }
 
+#ifndef HEALTH_ORACLE_LOOP
 bool service_running(SERVICE_TYPE service) {
     (void)service;
     return true;
 }
+#endif
 
 struct dictionary_stats dictionary_stats_category_rrdlabels = { .name = "labels" };
 
@@ -85,6 +94,7 @@ void rrdset_metadata_updated(RRDSET *st) {
     (void)st;
 }
 
+#ifndef HEALTH_ORACLE_LOOP
 void rrdcalc_delete_all(RRDHOST *host) {
     (void)host;
 }
@@ -98,6 +108,7 @@ void rrdcalc_unlink_and_delete(RRDHOST *host, RRDCALC *rc, bool having_ll_wrlock
 void rrdcalc_unlink_and_delete_all_rrdset_alerts(RRDSET *st) {
     (void)st;
 }
+#endif
 
 bool dyncfg_add(const struct dyncfg_add_inline_spec *spec) {
     (void)spec;
@@ -124,6 +135,7 @@ bool alert_hash_has_transitioned(nd_uuid_t *hash_id) {
     return true;
 }
 
+#ifndef HEALTH_ORACLE_LOOP
 void rrd_alert_match_cleanup(struct rrd_alert_match *am) {
     if(am->is_template)
         string_freez(am->on.context);
@@ -162,6 +174,7 @@ void rrd_alert_config_cleanup(struct rrd_alert_config *ac) {
 
     memset(ac, 0, sizeof(*ac));
 }
+#endif
 
 // ------------------------------------------------------------------------------------------------
 // the dumpers
@@ -268,6 +281,7 @@ void sql_alert_store_config(RRD_ALERT_PROTOTYPE *ap) {
 }
 
 
+#ifndef HEALTH_ORACLE_LOOP
 // One rule C would link to the chart: its name, its place in the chain of its name, its kind and its hash.
 bool rrdcalc_add_from_prototype(RRDHOST *host, RRDSET *st, RRD_ALERT_PROTOTYPE *ap) {
     (void)host;
@@ -291,3 +305,4 @@ bool rrdcalc_add_from_prototype(RRDHOST *host, RRDSET *st, RRD_ALERT_PROTOTYPE *
     oracle_link_count++;
     return true;
 }
+#endif

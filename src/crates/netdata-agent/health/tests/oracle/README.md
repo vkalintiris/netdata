@@ -3,7 +3,9 @@
 The vectors under `../vectors/` are produced by the C implementation itself. Health's objects are in no static
 library, so the configuration path is compiled from the reference tree (`health_config.c`, `health_prototypes.c`,
 `health_dyncfg.c`, three sources they call, and the label code `rrdlabels.c` with `rrdlabels-aggregated.c`) with the
-flags of a production build, and linked with `health-oracle-stubs.c` and the production `libnetdata`:
+flags of a production build, and linked with `health-oracle-stubs.c` and the production `libnetdata` (the loop's
+program compiles that file with `HEALTH_ORACLE_LOOP`, which leaves out what `rrdcalc.c` and `health_event_loop.c`
+define themselves):
 
 - `gen-health-vectors.c` runs C's `health_readfile()` over the stock `src/health/health.d` of this tree and over
   `../corpus/`, and writes `rules.tsv` (each rule C accepted, with the JSON C hashes and the hash, as C stores it;
@@ -13,6 +15,16 @@ flags of a production build, and linked with `health-oracle-stubs.c` and the pro
   verdict on each pattern text against each set) and `link.tsv` (for each chart of each scenario, the rules C would
   link to it, in C's order: the stub of `rrdcalc_add_from_prototype()` writes them). It first runs C's own
   `rrdlabels_unittest()`, which must find no error;
+- `gen-loop-vectors.c` is the evaluation loop's: it links C's alert instances (`rrdcalc.c`), alert log
+  (`health_log.c`), variable lookup (`health_variable.c`, `rrdvar.c`), the log's scan (`health_notifications.c`) and
+  the per-host pass itself (`health_event_loop.c`, compiled as a copy with `health-loop-splice.inc` appended, because
+  the pass is static), with what the daemon gives them stubbed in `health-loop-stubs.c`: the charts, the database
+  lookup (scripted results; its arguments are recorded), SQLite, the queues, the notification (recorded, the entry
+  marked as processed) and the wall clock (the program defines `clock_gettime()`, so every id and time is a fixed
+  number). It writes `delay.tsv` (the delay multiplier over a grid), `units.tsv` (a value with its unit, as an
+  entry's value texts are made) and `loop.tsv`: each scenario under `../corpus/loop/` played step by step, with the
+  alerts, their published snapshots, the log's entries, the stubs' calls and C's log records after every step. One
+  process per scenario;
 - `health-unittest-dump.inc` and `health-unittest-main.inc` are spliced into a copy of
   `src/health/health-config-unittest.c`, so that C's own unit test runs, must pass, and leaves each call it makes to
   the ported functions, with what C returned, in `c_unittest.tsv`.

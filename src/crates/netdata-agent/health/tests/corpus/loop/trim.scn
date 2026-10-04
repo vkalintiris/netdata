@@ -1,0 +1,23 @@
+# With entries that the save marks as saved, the pass's last step drops from memory an entry that a newer one
+# replaced (unless its alert repeats), and a REMOVED entry more than a day old.
+rules tests/corpus/loop/trim.conf
+saved 1
+chart loop.t loop.t_name loop.trim - things 1
+chart loop.t2 loop.t2_name loop.trim.other - things 1
+var loop.t v 10
+clock 0
+pass 0
+var loop.t v 70
+clock 1
+pass 1
+var loop.t v 10
+clock 2
+pass 2
+clock 3
+unlink loop.t
+clock 4
+pass 4
+clock 86403
+pass 86403
+clock 86404
+pass 86404

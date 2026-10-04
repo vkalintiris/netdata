@@ -1,0 +1,27 @@
+# One alert through CLEAR, WARNING, CRITICAL and CLEAR; then its chart's alerts are unlinked and linked again.
+# The wall clock is 5 seconds ahead of each pass's `now`, so every field shows which of the two it took.
+rules tests/corpus/loop/statuses.conf
+chart loop.level loop.level_name loop.level disks % 1
+label loop.level kind disk
+dim loop.level value value 10
+clock 5
+lookup loop.level 200 10 0
+pass 0
+clock 6
+lookup loop.level 200 70 0
+pass 1
+clock 7
+lookup loop.level 200 95 0
+pass 2
+clock 8
+lookup loop.level 200 10 0
+pass 3
+clock 9
+unlink loop.level
+clock 10
+pending chart-init loop.level
+pending host-init
+pass 5
+clock 11
+lookup loop.level 200 70 0
+pass 6

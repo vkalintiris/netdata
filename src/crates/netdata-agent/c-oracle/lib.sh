@@ -18,11 +18,12 @@ run() {
     printf >&2 "%s" "${YELLOW}"
     printf >&2 "%q " "$@"
     printf >&2 "%s\n" "${NC}"
-    if ! "$@"; then
+    # not `if ! "$@"`: the status after the negation is 0, and a failed command would go unnoticed by the caller
+    "$@" || {
         local exit_code=$?
         printf >&2 "%s[ERROR]%s command failed with exit code %s: %s\n" "${RED}" "${NC}" "${exit_code}" "$*"
         return "${exit_code}"
-    fi
+    }
 }
 
 die() {

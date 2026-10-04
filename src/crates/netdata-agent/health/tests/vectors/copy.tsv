@@ -2557,6 +2557,91 @@ tests/corpus/lookup/unit-table.conf	copy	ut_lookup_140	0	\x00	\x00	$this > 0	(${
 tests/corpus/lookup/unit-table.conf	copy	ut_lookup_141	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
 tests/corpus/lookup/unit-table.conf	copy	ut_lookup_142	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
 tests/corpus/lookup/unit-table.conf	copy	ut_lookup_143	0	\x00	\x00	$this > 0	(${this} > 0)	\x00	\x00
+tests/corpus/loop/calc.conf	copy	k_ok	0	$v * 2	(${v} * 2)	$this > 100	(${this} > 100)	\x00	\x00
+tests/corpus/loop/calc.conf	copy	k_unknown	0	$nothing	${nothing}	$this > 100	(${this} > 100)	\x00	\x00
+tests/corpus/loop/calc.conf	copy	k_unknown_plus	0	$nothing + 1	(${nothing} + 1)	\x00	\x00	\x00	\x00
+tests/corpus/loop/calc.conf	copy	k_unknown_cmp	0	$nothing > 1	(${nothing} > 1)	\x00	\x00	\x00	\x00
+tests/corpus/loop/calc.conf	copy	k_known_nan	0	$knan	${knan}	\x00	\x00	\x00	\x00
+tests/corpus/loop/calc.conf	copy	k_known_nan_plus	0	$knan + 1	(${knan} + 1)	\x00	\x00	\x00	\x00
+tests/corpus/loop/calc.conf	copy	k_inf	0	1 / 0	(1 / 0)	\x00	\x00	\x00	\x00
+tests/corpus/loop/calc.conf	copy	k_const	0	5	5	$this > 1	(${this} > 1)	\x00	\x00
+tests/corpus/loop/calc.conf	copy	k_status	0	$status	${status}	$status == $CLEAR	(${status} == ${CLEAR})	\x00	\x00
+tests/corpus/loop/calc.conf	copy	k_lookup_calc	0	$this * 3	(${this} * 3)	$this > 100	(${this} > 100)	\x00	\x00
+tests/corpus/loop/calc.conf	copy	k_lookup_calc_fails	0	$nothing + $this	(${nothing} + ${this})	\x00	\x00	\x00	\x00
+tests/corpus/loop/combine.conf	copy	c_warn	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/combine.conf	copy	c_crit	0	$v	${v}	\x00	\x00	$this > 90	(${this} > 90)
+tests/corpus/loop/combine.conf	copy	c_both	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
+tests/corpus/loop/combine.conf	copy	c_none	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/combine.conf	copy	c_warn_fails	0	$v	${v}	$nothing + 1	(${nothing} + 1)	\x00	\x00
+tests/corpus/loop/combine.conf	copy	c_crit_fails	0	$v	${v}	\x00	\x00	$nothing + 1	(${nothing} + 1)
+tests/corpus/loop/combine.conf	copy	c_both_fail	0	$v	${v}	$nothing + 1	(${nothing} + 1)	$nothing + 2	(${nothing} + 2)
+tests/corpus/loop/combine.conf	copy	c_warn_crit_fails	0	$v	${v}	$this > 50	(${this} > 50)	$nothing + 1	(${nothing} + 1)
+tests/corpus/loop/combine.conf	copy	c_warn_fails_crit	0	$v	${v}	$nothing + 1	(${nothing} + 1)	$this > 90	(${this} > 90)
+tests/corpus/loop/combine.conf	copy	c_ne	0	$v	${v}	$this != 50	(${this} != 50)	\x00	\x00
+tests/corpus/loop/combine.conf	copy	c_not	0	$v	${v}	!($this > 50)	!(((${this} > 50)))	\x00	\x00
+tests/corpus/loop/combine.conf	copy	c_div	0	$v	${v}	$this / 2 > 40	((${this} / 2) > 40)	\x00	\x00
+tests/corpus/loop/combine.conf	copy	c_unknown_cmp	0	$v	${v}	$nothing > 1	(${nothing} > 1)	\x00	\x00
+tests/corpus/loop/combine.conf	copy	c_unknown_or	0	$v	${v}	$nothing > 0 || 1 / 1 > 0	((${nothing} > 0) || ((1 / 1) > 0))	\x00	\x00
+tests/corpus/loop/combine.conf	copy	c_known_or	0	$v	${v}	$knan > 0 || 1 / 1 > 0	((${knan} > 0) || ((1 / 1) > 0))	\x00	\x00
+tests/corpus/loop/combine.conf	copy	c_known_cmp	0	$v	${v}	$knan > 1	(${knan} > 1)	$knan + 1	(${knan} + 1)
+tests/corpus/loop/delay.conf	copy	d_both	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
+tests/corpus/loop/delay.conf	copy	d_frac	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/delay.conf	copy	d_up_only	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/delay.conf	copy	d_undefined	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/delay.conf	copy	d_none	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/durations.conf	copy	u_chain	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
+tests/corpus/loop/durations.conf	copy	u_no_clear	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/durations.conf	copy	u_percent	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/exit.conf	copy	e_one	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/gate.conf	copy	g_one	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/lookup.conf	copy	l_avg	0	\x00	\x00	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
+tests/corpus/loop/lookup.conf	copy	l_p95	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup.conf	copy	l_p90	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup.conf	copy	l_percentile	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup.conf	copy	l_tmean	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup.conf	copy	l_tmedian	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup.conf	copy	l_countif	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup.conf	copy	l_countif_ne	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup.conf	copy	l_opts	0	\x00	\x00	\x00	\x00	\x00	\x00
+tests/corpus/loop/lookup.conf	copy	l_every	0	\x00	\x00	$this != 10	(${this} != 10)	\x00	\x00
+tests/corpus/loop/lookup.conf	copy	l_calc	0	$this + 1	(${this} + 1)	\x00	\x00	\x00	\x00
+tests/corpus/loop/multi.conf	copy	m_fast	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/multi.conf	copy	m_slow	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/multi.conf	copy	m_one	0	$v	${v}	\x00	\x00	$this > 50	(${this} > 50)
+tests/corpus/loop/multi.conf	copy	m_other	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/names.conf	copy	a_first	0	$z_last + 1	(${z_last} + 1)	\x00	\x00	\x00	\x00
+tests/corpus/loop/names.conf	copy	m_dim	0	$in + $out_name	(${in} + ${out_name})	$this > $hv	(${this} > ${hv})	\x00	\x00
+tests/corpus/loop/names.conf	copy	s_self	0	$v	${v}	$s_self > 50 && $this > 50	((${s_self} > 50) && (${this} > 50))	$status == $WARNING && $this > 90	((${status} == ${WARNING}) && (${this} > 90))
+tests/corpus/loop/names.conf	copy	t_times	0	$now - $last_collected_t	(${now} - ${last_collected_t})	$update_every != 1	(${update_every} != 1)	\x00	\x00
+tests/corpus/loop/names.conf	copy	z_last	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/names.conf	copy	zz_after	0	$z_last + $a_first	(${z_last} + ${a_first})	\x00	\x00	\x00	\x00
+tests/corpus/loop/obsolete.conf	copy	o_plain	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/obsolete.conf	copy	o_repeat	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/obsolete.conf	copy	o_live	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/obsolete.conf	copy	o_never	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/relink.conf	copy	x_tier	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/relink.conf	copy	x_tier	1	$v	${v}	$this > 60	(${this} > 60)	\x00	\x00
+tests/corpus/loop/relink.conf	copy	x_kind	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/repeat.conf	copy	p_both	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
+tests/corpus/loop/repeat.conf	copy	p_warn	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
+tests/corpus/loop/repeat.conf	copy	p_delay	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/repeat.conf	copy	p_plain	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/runnable.conf	copy	r_calc	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/runnable.conf	copy	r_lookup	0	\x00	\x00	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/statuses.conf	copy	level	0	\x00	\x00	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
+tests/corpus/loop/stop.conf	copy	s_one	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/stop.conf	copy	s_two	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/stop.conf	copy	s_three	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/texts.conf	copy	x_family	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/texts.conf	copy	x_dollar	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/texts.conf	copy	x_long	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/texts.conf	copy	x_twice	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/texts.conf	copy	x_open	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/texts.conf	copy	x_case	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/texts.conf	copy	x_plain	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/texts.conf	copy	x_only_summary	0	$v	${v}	\x00	\x00	\x00	\x00
+tests/corpus/loop/trim.conf	copy	t_one	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/loop/trim.conf	copy	t_repeat	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/match/basic.conf	copy	m_by_id	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/match/basic.conf	copy	m_by_name	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/match/basic.conf	copy	m_tmpl	0	1	1	\x00	\x00	\x00	\x00

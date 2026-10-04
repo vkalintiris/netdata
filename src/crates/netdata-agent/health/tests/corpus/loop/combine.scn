@@ -1,0 +1,20 @@
+# Sixteen alerts on one chart, each a combination of warning and critical expressions, over the values 10, 70, 95,
+# no value, 10.
+rules tests/corpus/loop/combine.conf
+chart loop.c loop.c_name loop.combine - things 1
+var loop.c v 10
+var loop.c knan nan
+clock 0
+pass 0
+clock 1
+var loop.c v 70
+pass 1
+clock 2
+var loop.c v 95
+pass 2
+clock 3
+var loop.c v nan
+pass 3
+clock 4
+var loop.c v 10
+pass 4

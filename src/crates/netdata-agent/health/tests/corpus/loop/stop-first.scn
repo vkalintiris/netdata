@@ -1,0 +1,20 @@
+# The service stops during the host's first pass, which applies every rule to every chart: after six looks at it.
+# Then it runs again.
+rules tests/corpus/loop/stop.conf
+chart loop.s1 loop.s1_name loop.stop - things 1
+chart loop.s2 loop.s2_name loop.stop - things 1
+var loop.s1 v 1
+var loop.s2 v 1
+clock 0
+running-for 6
+pass 0
+running 1
+clock 1
+pass 1
+pending host-init
+clock 2
+pass 2
+pending chart-init loop.s1
+pending host-init
+clock 3
+pass 3

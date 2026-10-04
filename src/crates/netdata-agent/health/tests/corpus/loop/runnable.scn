@@ -1,0 +1,60 @@
+# Each reason an alert is not run in a pass, alone and at its boundary. The chart is collected by hand; passes are
+# 10 seconds apart, so `next update` never stands in the way but where it is the subject.
+rules tests/corpus/loop/runnable.conf
+chart loop.r loop.r_name loop.runnable - things 2
+live loop.r 0
+var loop.r v 10
+lookup loop.r 200 10 0
+# collected once only
+collected loop.r 1 100
+entries loop.r 1 100
+clock 100
+pass 100
+# collected twice, but no time of a last collection
+collected loop.r 2 0
+clock 110
+pass 110
+# collected: both run
+collected loop.r 2 120
+entries loop.r 1 120
+clock 120
+pass 120
+# 2 seconds later: the next update is 3 seconds ahead
+clock 122
+pass 122
+# the chart's first entry is ahead of now by more than its update every (2), then by exactly that
+collected loop.r 2 130
+entries loop.r 133 133
+clock 130
+pass 130
+entries loop.r 142 142
+clock 140
+pass 140
+# the lookup's window ends 15 seconds back: the first entry is later than that by more than the chart's update
+# every, then by exactly that
+entries loop.r 138 150
+clock 150
+pass 150
+entries loop.r 147 160
+clock 160
+pass 160
+# the last entry is earlier than that by more than the chart's update every, then by exactly that
+entries loop.r 1 152
+clock 170
+pass 170
+entries loop.r 1 163
+clock 180
+pass 180
+# no entry at all
+entries loop.r 0 0
+clock 190
+pass 190
+# an obsolete chart, collected a moment ago
+entries loop.r 1 200
+collected loop.r 2 200
+obsolete loop.r 1
+clock 200
+pass 200
+obsolete loop.r 0
+clock 210
+pass 210

@@ -1,0 +1,30 @@
+# The lookup's outcomes on one chart: a value; no result (500); a result without rows (400); rows without a column
+# (200, a NaN, the null flag left alone); nothing in the row (200, the null flag); the same with a number in the
+# value (as with null2zero); a value again.
+rules tests/corpus/loop/lookup.conf
+chart loop.l loop.l_name loop.lookup - things 1
+dim loop.l value value 7
+clock 0
+lookup loop.l 200 70 0
+pass 0
+clock 1
+lookup loop.l 500 0 0
+pass 1
+clock 2
+lookup loop.l 400 0 0
+pass 2
+clock 3
+lookup loop.l 200 nan 0
+pass 3
+clock 4
+lookup loop.l 200 nan 1
+pass 4
+clock 5
+lookup loop.l 200 5 1
+pass 5
+clock 6
+lookup loop.l 200 10 0
+pass 6
+clock 10
+lookup loop.l 200 95 0
+pass 10

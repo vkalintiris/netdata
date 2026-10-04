@@ -1,0 +1,21 @@
+# Calculations: a product, names nothing knows, a known name without a value, an infinite result, a constant, the
+# status before the pass, a calculation on top of a lookup.
+rules tests/corpus/loop/calc.conf
+chart loop.k loop.k_name loop.calc - things 1
+dim loop.k value value 7
+var loop.k v 10
+var loop.k knan nan
+lookup loop.k 200 20 0
+clock 0
+pass 0
+clock 1
+var loop.k v 70
+lookup loop.k 200 50 0
+pass 1
+clock 2
+lookup loop.k 500 0 0
+pass 2
+clock 3
+lookup loop.k 200 nan 1
+var loop.k v nan
+pass 3

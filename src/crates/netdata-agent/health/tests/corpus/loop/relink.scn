@@ -1,0 +1,42 @@
+# Alerts linked again after label changes: the same rule keeps its alarm id and continues its event ids; another
+# rule of the same name takes a new id. Then every prototype is applied to the host anew.
+rules tests/corpus/loop/relink.conf
+hostlabel tier a
+chart loop.x loop.x_name loop.relink disks things 1
+label loop.x kind disk
+label loop.x mount /
+var loop.x v 70
+clock 0
+pass 0
+clock 1
+pass 1
+# the host's label changes: every chart's alerts are unlinked and linked again
+hostlabel tier b
+pending host-recheck
+clock 2
+pass 2
+clock 3
+pass 3
+# the chart's label changes: its second alert goes
+label loop.x kind net
+pending chart-recheck loop.x
+pending host-init
+clock 4
+pass 4
+# a label that the unlinked rule's texts name changes: the alert has it when it is linked again
+label loop.x mount /home
+clock 5
+pass 5
+# and comes back
+label loop.x kind disk
+pending chart-recheck loop.x
+pending host-init
+clock 6
+pass 6
+clock 7
+pass 7
+hostlabel tier a
+clock 8
+apply
+clock 9
+pass 9

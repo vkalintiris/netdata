@@ -1,0 +1,322 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Link stubs so that C's per-host health pass runs outside the netdata daemon, over hand-built hosts and charts.
+//
+// Real, compiled from the reference tree: what health-oracle-stubs.c lists, plus src/health/health_log.c,
+// rrdcalc.c, health_notifications.c, health_variable.c, rrdvar.c, src/web/api/v1/api_v1_badge/web_buffer_svg.c
+// (health_log.c formats an entry's value texts with it) and a copy of health_event_loop.c with
+// health-loop-splice.inc appended. health-oracle-stubs.c is compiled with HEALTH_ORACLE_LOOP: what rrdcalc.c and
+// health_event_loop.c define themselves is left out of it.
+//
+// Stubbed here, each with what the scenario scripts of it:
+//   - the gate (rrdhost_should_run_health) and service_running;
+//   - the chart index: a plain dictionary whose values are the hand-built RRDSETs;
+//   - a chart's first and last entry, and the database lookup (rrdset2value_api_v1_with_owa), which records its
+//     arguments and answers what the scenario says;
+//   - the silencers (never disabled, never silenced: they come with their own commit);
+//   - SQLite: the load of the alert log (C's result on an empty table, or none), the save (it marks the entry SAVED
+//     or not), the alarm id lookup; the metadata queue; the ACLK queue; the sending of a host variable to a parent;
+//   - health_send_notification, by a #define in the copies of health_notifications.c and health_event_loop.c: it
+//     records the entry, marks it PROCESSED and saves it, which is what every path of C's function does;
+//   - the walk over a context's charts for the variable lookup;
+//   - the wall clock: the program defines clock_gettime(), so every reader of CLOCK_REALTIME, in the health objects
+//     and in libnetdata alike, gets the scenario's clock. (A --wrap of now_realtime_sec does nothing here: the
+//     function is inlined by the LTO link.)
+
+//
+// The `call` rows of the trace, written here in call order (seconds and ids as numbers, flags as 8 hex digits, a
+// double as `nan` or its bits):
+//   load <database 0|1>
+//   sql_get_alarm_id <chart> <name> <the scripted alarm id>
+//   queue <unique id> <accepted 0|1>            the metadata queue was offered an entry's save
+//   queue_deletion <unique id>
+//   save <unique id> <the entry's flags>        the SQL save, before it marks the entry
+//   lookup <chart> <dimensions> <points> <after> <before> <method> <group options> <resampling> <options>
+//          <timeout> <tier> <query source> <priority> <the scripted code>
+//   notify <unique id> <alarm id> <event id> <old status> <new status> <when> <delay up to> <flags> <duration>
+//          <non-clear duration> <delay> <last repeat> <old value> <new value>
+//   commit_alert_transitions
+//   process_alert_pending_queue
+
+#include "health-loop-oracle.h"
+#include <sys/syscall.h>
+
+struct oracle_script oracle = {
+    .gate = true,
+    .running = true,
+    .database = true,
+};
+
+FILE *oracle_calls = NULL;
+
+void oracle_call(const char *fmt, ...) {
+    if(!oracle_calls)
+        return;
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(oracle_calls, fmt, args);
+    fputc('\n', oracle_calls);
+    va_end(args);
+}
+
+void oracle_double(char *dst, size_t size, NETDATA_DOUBLE v) {
+    if(isnan(v)) {
+        snprintf(dst, size, "nan");
+        return;
+    }
+    double d = (double)v;
+    uint64_t bits;
+    memcpy(&bits, &d, sizeof(bits));
+    snprintf(dst, size, "%016llx", (unsigned long long)bits);
+}
+
+struct oracle_chart *oracle_chart(RRDSET *st) {
+    for(size_t i = 0; i < oracle.charts_used; i++)
+        if(oracle.charts[i].st == st)
+            return &oracle.charts[i];
+    fprintf(stdout, "a chart without a script: %s\n", string2str(st->id));
+    exit(1);
+}
+
+// ------------------------------------------------------------------------------------------------
+// the gate, the service, the plugin's init
+
+// C: src/database/rrdhost.c, rrdhost_should_run_health()
+bool rrdhost_should_run_health(RRDHOST *host) {
+    (void)host;
+    return oracle.gate;
+}
+
+bool service_running(SERVICE_TYPE service) {
+    (void)service;
+    if(oracle.running_for) {
+        if(--oracle.running_for == 0)
+            oracle.running = false;
+        return true;
+    }
+    return oracle.running;
+}
+
+// C: src/health/health.c. The program does its two relevant steps itself (the entry ARAL, the prototype store).
+void health_plugin_init(void) {
+}
+
+// ------------------------------------------------------------------------------------------------
+// charts
+
+// C: src/database/rrdset-index-id.c. C leaves an obsolete chart out when include_obsolete is false.
+RRDSET_ACQUIRED *rrdset_find_and_acquire(RRDHOST *host, const char *id, bool include_obsolete) {
+    if(!host->rrdset_root_index)
+        return NULL;
+    const DICTIONARY_ITEM *item = dictionary_get_and_acquire_item(host->rrdset_root_index, id);
+    if(item && !include_obsolete) {
+        RRDSET *st = dictionary_acquired_item_value(item);
+        if(rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE)) {
+            dictionary_acquired_item_release(host->rrdset_root_index, item);
+            return NULL;
+        }
+    }
+    return (RRDSET_ACQUIRED *)item;
+}
+
+RRDSET *rrdset_acquired_to_rrdset(RRDSET_ACQUIRED *rsa) {
+    if(!rsa)
+        return NULL;
+    return (RRDSET *)dictionary_acquired_item_value((const DICTIONARY_ITEM *)rsa);
+}
+
+void rrdset_acquired_release(RRDSET_ACQUIRED *rsa) {
+    if(!rsa)
+        return;
+    RRDSET *st = rrdset_acquired_to_rrdset(rsa);
+    dictionary_acquired_item_release(st->rrdhost->rrdset_root_index, (const DICTIONARY_ITEM *)rsa);
+}
+
+time_t rrdset_first_entry_s(RRDSET *st) {
+    return oracle_chart(st)->first_entry_s;
+}
+
+time_t rrdset_last_entry_s(RRDSET *st) {
+    return oracle_chart(st)->last_entry_s;
+}
+
+// C: src/database/contexts/rrdcontext.c. Every chart of the host with that context, in the chart index's order.
+int rrdcontext_foreach_instance_with_rrdset_in_context(RRDHOST *host, const char *context, int (*callback)(RRDSET *st, void *data), void *data) {
+    if(!host || !context || !*context || !callback || !host->rrdset_root_index)
+        return -1;
+
+    int ret = 0, found = 0;
+    RRDSET *st;
+    dfe_start_read(host->rrdset_root_index, st) {
+        if(strcmp(string2str(st->context), context) != 0)
+            continue;
+        found = 1;
+        int r = callback(st, data);
+        if(r >= 0)
+            ret += r;
+        else {
+            ret = r;
+            break;
+        }
+    }
+    dfe_done(st);
+    return found ? ret : -1;
+}
+
+// ------------------------------------------------------------------------------------------------
+// the lookup
+
+// C: src/web/api/formatters/rrd2json.c. 500 leaves the value and the window untouched and sets the null flag; 400
+// zeroes the window and sets the null flag; 200 writes the window, the value and the null flag. The window of a 200
+// is the one an aligned query of a chart collected every second reports at the scenario's clock.
+int rrdset2value_api_v1_with_owa(
+    ONEWAYALLOC *owa, RRDSET *st, BUFFER *wb, NETDATA_DOUBLE *n, const char *dimensions, size_t points,
+    time_t after, time_t before, RRDR_TIME_GROUPING group_method, const char *group_options,
+    time_t resampling_time, uint32_t options, time_t *db_after, time_t *db_before, size_t *db_points_read,
+    size_t *db_points_per_tier, size_t *result_points_generated, int *value_is_null, NETDATA_DOUBLE *anomaly_rate,
+    time_t timeout, size_t tier, QUERY_SOURCE query_source, STORAGE_PRIORITY priority) {
+    (void)owa; (void)wb; (void)db_points_read; (void)db_points_per_tier; (void)result_points_generated;
+    (void)anomaly_rate;
+    struct oracle_chart *script = oracle_chart(st);
+
+    oracle_call("lookup\t%s\t%s\t%zu\t%ld\t%ld\t%s\t%s\t%ld\t%08x\t%ld\t%zu\t%d\t%d\t%d",
+                string2str(st->id), dimensions ? dimensions : "\\x00", points, (long)after, (long)before,
+                time_grouping_id2txt(group_method), group_options ? group_options : "\\x00", (long)resampling_time,
+                (unsigned)options, (long)timeout, tier, (int)query_source, (int)priority, script->lookup_code);
+
+    if(script->lookup_code == 500) {
+        if(value_is_null) *value_is_null = 1;
+        return 500;
+    }
+    if(script->lookup_code == 400) {
+        if(db_after) *db_after = 0;
+        if(db_before) *db_before = 0;
+        if(value_is_null) *value_is_null = 1;
+        return 400;
+    }
+
+    if(db_after) *db_after = oracle.clock_s + after + before;
+    if(db_before) *db_before = oracle.clock_s + before;
+    *n = script->lookup_value;
+    if(value_is_null) *value_is_null = script->lookup_null;
+    return 200;
+}
+
+// ------------------------------------------------------------------------------------------------
+// the silencers
+
+// C: src/health/health_silencers.c. Clears DISABLED and SILENCED, sets one when a silencer matches, returns 1 when
+// DISABLED.
+int health_silencers_update_disabled_silenced(RRDHOST *host, RRDCALC *rc) {
+    (void)host;
+    rc->run_flags &= ~(RRDCALC_FLAG_DISABLED | RRDCALC_FLAG_SILENCED);
+    return 0;
+}
+
+// ------------------------------------------------------------------------------------------------
+// SQLite, the metadata queue, ACLK, pulse
+
+// C: src/database/sqlite/sqlite_health.c, sql_health_alarm_log_load(). Without a database it returns at once. With
+// one, on an empty table: both maxima are get_uint32_id() when 0; next_log_id = max_unique + 1; next_alarm_id =
+// max_alarm + 1 when it is 0 or not above the maximum.
+void sql_health_alarm_log_load(RRDHOST *host) {
+    oracle_call("load\t%d", oracle.database ? 1 : 0);
+    if(!oracle.database)
+        return;
+
+    if(!host->health_max_unique_id)
+        host->health_max_unique_id = get_uint32_id();
+    if(!host->health_max_alarm_id)
+        host->health_max_alarm_id = get_uint32_id();
+
+    host->health_log.next_log_id = host->health_max_unique_id + 1;
+    if(!host->health_log.next_alarm_id || host->health_log.next_alarm_id <= host->health_max_alarm_id)
+        host->health_log.next_alarm_id = host->health_max_alarm_id + 1;
+}
+
+// C: sqlite_health.c, sql_health_alarm_log_save(): insert or update; the insert marks the entry SAVED.
+void sql_health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
+    (void)host;
+    oracle_call("save\t%u\t%08x", ae->unique_id, (unsigned)ae->flags);
+    if(oracle.save_sets_saved)
+        ae->flags |= HEALTH_ENTRY_FLAG_SAVED;
+}
+
+// C: sqlite_health.c, sql_get_alarm_id(): the alarm id and the next event id of (host, chart, name) in the table.
+uint32_t sql_get_alarm_id(RRDHOST *host, STRING *chart, STRING *name, uint32_t *next_event_id) {
+    (void)host;
+    oracle_call("sql_get_alarm_id\t%s\t%s\t%u", string2str(chart), string2str(name), oracle.sql_alarm_id);
+    if(oracle.sql_alarm_id)
+        *next_event_id = oracle.sql_next_event_id;
+    return oracle.sql_alarm_id;
+}
+
+// C: src/database/sqlite/sqlite_metadata.c, metadata_queue_ae_save(). Queued: the host's pending transitions and the
+// entry's pending saves go up by one. Not queued: health_alarm_log_save() saves at once on the health thread.
+bool metadata_queue_ae_save(RRDHOST *host, ALARM_ENTRY *ae) {
+    oracle_call("queue\t%u\t%d", ae->unique_id, oracle.queue_accepts ? 1 : 0);
+    if(!oracle.queue_accepts)
+        return false;
+    __atomic_add_fetch(&host->health.pending_transitions, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&ae->pending_save_count, 1, __ATOMIC_RELAXED);
+    return true;
+}
+
+void metadata_queue_ae_deletion(ALARM_ENTRY *ae) {
+    oracle_call("queue_deletion\t%u", ae->unique_id);
+}
+
+void commit_alert_transitions(RRDHOST *host) {
+    (void)host;
+    oracle_call("commit_alert_transitions");
+}
+
+// C: src/database/sqlite/sqlite_aclk_alert.c. Called at the end of a pass without pending transitions.
+bool process_alert_pending_queue(RRDHOST *host) {
+    (void)host;
+    oracle_call("process_alert_pending_queue");
+    return false;
+}
+
+// C: src/streaming/protocol/command-host-variables.c. rrdvar.c sends a changed host variable to the parent.
+void stream_sender_send_this_host_variable_now(RRDHOST *host, const RRDVAR_ACQUIRED *rva) {
+    (void)host;
+    (void)rva;
+}
+
+void pulse_aral_register(ARAL *ar, const char *name) {
+    (void)ar;
+    (void)name;
+}
+
+// ------------------------------------------------------------------------------------------------
+// notifications: both callers of health_send_notification() (the log's scan in health_notifications.c and pass 3 in
+// health_event_loop.c) are compiled to call this
+
+void oracle_health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct health_raised_summary *hrm) {
+    (void)hrm;
+    // a repeat's entry is in no log: this row is all the trace has of it
+    char old_value[32], new_value[32];
+    oracle_double(old_value, sizeof(old_value), ae->old_value);
+    oracle_double(new_value, sizeof(new_value), ae->new_value);
+    oracle_call("notify\t%u\t%u\t%u\t%s\t%s\t%ld\t%ld\t%08x\t%ld\t%ld\t%d\t%ld\t%s\t%s", ae->unique_id,
+                ae->alarm_id, ae->alarm_event_id, rrdcalc_status2string(ae->old_status),
+                rrdcalc_status2string(ae->new_status), (long)ae->when, (long)ae->delay_up_to_timestamp,
+                (unsigned)ae->flags, (long)ae->duration, (long)ae->non_clear_duration, ae->delay,
+                (long)ae->last_repeat, old_value, new_value);
+
+    ae->flags |= HEALTH_ENTRY_FLAG_PROCESSED;
+    health_alarm_log_save(host, ae, false);
+}
+
+// ------------------------------------------------------------------------------------------------
+// the clock
+
+int clock_gettime(clockid_t clk_id, struct timespec *ts) {
+    if(clk_id == CLOCK_REALTIME && oracle.clock_s) {
+        ts->tv_sec = oracle.clock_s;
+        ts->tv_nsec = (long)(oracle.clock_usec * 1000);
+        return 0;
+    }
+    return (int)syscall(SYS_clock_gettime, clk_id, ts);
+}

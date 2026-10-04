@@ -1,0 +1,13 @@
+# The service is stopping before the host's first pass.
+rules tests/corpus/loop/stop.conf
+chart loop.s1 loop.s1_name loop.stop - things 1
+var loop.s1 v 1
+running 0
+clock 0
+pass 0
+running 1
+clock 1
+pass 1
+pending host-init
+clock 2
+pass 2

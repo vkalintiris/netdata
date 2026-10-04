@@ -1,0 +1,28 @@
+# A value that stays raised over several transitions, with uneven gaps between the passes; the chart's units are
+# `seconds`, which the first two rules take.
+rules tests/corpus/loop/durations.conf
+chart loop.u loop.u_name loop.durations - seconds 1
+var loop.u v 10
+clock 0
+pass 0
+var loop.u v 70
+clock 3
+pass 3
+var loop.u v 95
+clock 7
+pass 7
+var loop.u v 3700.5
+clock 12
+pass 12
+var loop.u v 70
+clock 20
+pass 20
+var loop.u v 10
+clock 31
+pass 31
+var loop.u v 95
+clock 40
+pass 40
+var loop.u v 10
+clock 41
+pass 41

@@ -1,0 +1,21 @@
+# A host that may not run health yet; a pass that carries the hibernation flag; a host whose health is postponed.
+rules tests/corpus/loop/gate.conf
+chart loop.g loop.g_name loop.gate - things 1
+var loop.g v 70
+gate 0
+clock 0
+pass 0
+gate 1
+clock 1
+pass 1 hibernate
+clock 60
+pass 60
+clock 61
+pass 61
+clock 62
+pass 62
+delay-up-to 70
+clock 69
+pass 69
+clock 70
+pass 70
