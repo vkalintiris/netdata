@@ -57,6 +57,10 @@ const SQL_INJECT_REMOVED: &str = "INSERT INTO health_log_detail (health_log_id, 
      new_value, 0, @transition_id, @now_usec, summary FROM health_log_detail  WHERE unique_id = @unique_id AND \
      transition_id = @last_transition_id RETURNING health_log_id, old_status";
 
+const SQL_SELECT_HEALTH_LAST_EXECUTED_EVENT: &str = "SELECT hld.new_status FROM health_log hl, health_log_detail hld \
+     WHERE hl.host_id = @host_id AND hl.alarm_id = @alarm_id AND hld.unique_id != @unique_id AND hld.flags & @flags \
+     AND hl.health_log_id = hld.health_log_id ORDER BY hld.unique_id DESC LIMIT 1";
+
 const SQL_SELECT_MAX_UNIQUE_ID: &str = "SELECT MAX(hld.unique_id) FROM health_log_detail hld, health_log hl WHERE \
      hl.host_id = @host_id AND hl.health_log_id = hld.health_log_id";
 
@@ -124,6 +128,8 @@ const SQL_ALERT_VERSION_CALC: &str = "SELECT SUM(version) FROM health_log hl, al
 
 /// `HEALTH_ENTRY_FLAG_UPDATED`.
 const ENTRY_FLAG_UPDATED: i64 = 0x0000_0002;
+/// `HEALTH_ENTRY_FLAG_EXEC_RUN`.
+const ENTRY_FLAG_EXEC_RUN: i32 = 0x0000_0004;
 /// `RRDCALC_STATUS_REMOVED`.
 const STATUS_REMOVED: i32 = -2;
 
@@ -395,7 +401,19 @@ fn busy(err: &rusqlite::Error) -> bool {
 /// function's name). A step that fails ends the rows, as C's `while (step == SQLITE_ROW)`, and the finalize that
 /// follows it is recorded; a busy or locked database is waited for before the first row (rusqlite cannot step
 /// again a statement whose step failed, so the query starts over, which it can only do while `f` saw nothing).
-fn rows(c: &Connection, sql: &str, function: &str, params: &[&dyn ToSql], mut f: impl FnMut(&Row<'_>) -> bool) -> bool {
+fn rows(c: &Connection, sql: &str, function: &str, params: &[&dyn ToSql], f: impl FnMut(&Row<'_>) -> bool) -> bool {
+    rows_ended(c, sql, function, params, End::Finalize, f)
+}
+
+/// [`rows`] for a statement C lets go of with `end`.
+fn rows_ended(
+    c: &Connection,
+    sql: &str,
+    function: &str,
+    params: &[&dyn ToSql],
+    end: End,
+    mut f: impl FnMut(&Row<'_>) -> bool,
+) -> bool {
     let mut stmt = match c.prepare(sql) {
         Ok(stmt) => stmt,
         Err(err) => {
@@ -420,7 +438,7 @@ fn rows(c: &Connection, sql: &str, function: &str, params: &[&dyn ToSql], mut f:
                 Ok(None) => return true,
                 Err(err) if !seen && busy(&err) && attempt < conn::MAX_RETRY => break,
                 Err(err) => {
-                    End::Finalize.failed(conn::result_code(&err), function);
+                    end.failed(conn::result_code(&err), function);
                     return true;
                 }
             }
@@ -794,6 +812,28 @@ impl MetaDb {
             Err(_) => netdata_log_error!("Failed to prepare statement when trying to get an event id"),
         }
         Some((alarm_id, next_event_id))
+    }
+
+    /// `sql_health_get_last_executed_event()`: the status of the alarm's newest entry whose notification command
+    /// was run (its row has the run mark), the entry `unique_id` aside. `None` when the statement cannot be
+    /// prepared (C's -1), `Some(None)` without such an entry (C's 0). `health_thread` as for an entry's insert.
+    pub fn get_last_executed_event(
+        &self,
+        host_id: &[u8; 16],
+        alarm_id: u32,
+        unique_id: u32,
+        health_thread: bool,
+    ) -> Option<Option<i32>> {
+        let c = self.lock();
+        let mut status = None;
+        // C binds the two ids with sqlite3_bind_int(): an id above 2^31 is a negative number to the statement
+        let params: [&dyn ToSql; 4] = [&&host_id[..], &(alarm_id as i32), &(unique_id as i32), &ENTRY_FLAG_EXEC_RUN];
+        let (function, end) = ("sql_health_get_last_executed_event", End::of_health_statement(health_thread));
+        let prepared = rows_ended(&c, SQL_SELECT_HEALTH_LAST_EXECUTED_EVENT, function, &params, end, |row| {
+            status = Some(int(row, 0) as i32);
+            true
+        });
+        prepared.then_some(status)
     }
 
     /// `sql_health_alarm_log_cleanup()`'s statement: the host's rows older than `retention_s` at `now` that a
@@ -1527,6 +1567,51 @@ mod tests {
 
     /// The alarm id of a chart and a name, whatever the rule's hash, with the next event id; nothing for a chart
     /// or a name the table does not have.
+    /// The newest row of the alarm that has the run mark answers, the asking entry's own row aside; rows of another
+    /// alarm or another host do not count; C binds the ids as ints.
+    #[test]
+    fn the_last_executed_event_is_the_alarm_s_newest_row_with_the_run_mark() {
+        let (_dir, meta) = db();
+        let insert = |unique_id: u32, alarm_id: u32, status: i32, flags: u32, host: &[u8; 16]| {
+            let transition = unique_id.to_be_bytes().repeat(4);
+            let transition: &[u8; 16] = transition[..].try_into().unwrap();
+            let mut row = entry(unique_id, unique_id, 0, status, i64::from(unique_id), transition);
+            (row.alarm_id, row.flags) = (alarm_id, flags);
+            assert!(meta.health_alarm_log_insert("h", host, &row, false, true));
+        };
+        let asked = |alarm_id: u32, unique_id: u32| meta.get_last_executed_event(&HOST, alarm_id, unique_id, true);
+        assert_eq!(asked(7, 1), Some(None), "an empty table");
+
+        insert(1, 7, 3, 0x0000_0045, &HOST);
+        insert(2, 7, 4, 0x0000_0001, &HOST);
+        insert(3, 7, 1, 0x0000_0005, &HOST);
+        insert(4, 8, 4, 0x0000_0005, &HOST);
+        insert(5, 7, 4, 0x0000_0005, &[0x22; 16]);
+        // the newest executed row of alarm 7 on this host is entry 3 (CLEAR); entry 2 was not executed
+        assert_eq!(asked(7, 9), Some(Some(1)));
+        // the asking entry's own row does not count
+        assert_eq!(asked(7, 3), Some(Some(3)));
+        assert_eq!(asked(7, 1), Some(Some(1)));
+        assert_eq!(asked(8, 9), Some(Some(4)));
+        assert_eq!(asked(9, 9), Some(None), "an alarm without a row");
+        assert_eq!(meta.get_last_executed_event(&[0x33; 16], 7, 9, true), Some(None), "a host without a row");
+
+        // C binds the ids as ints: an entry whose id is above 2^31 does not find its own row to leave it out, and
+        // an alarm id above 2^31 matches no row
+        let high = 0x8000_0001u32;
+        insert(high, 7, 2, 0x0000_0005, &HOST);
+        assert_eq!(asked(7, high), Some(Some(2)));
+        insert(6, high, 4, 0x0000_0005, &HOST);
+        assert_eq!(asked(high, 9), Some(None));
+
+        // a statement that cannot be prepared: C's record, and its -1
+        meta.lock().execute_batch("ALTER TABLE health_log_detail RENAME TO gone").unwrap();
+        let (answer, records) = netdata_agent_log::capture(|| asked(7, 9));
+        assert_eq!(answer, None);
+        let messages: Vec<String> = records.into_iter().filter_map(|record| record.message).collect();
+        assert_eq!(messages, ["Failed to prepare statement, rc=1 in sql_health_get_last_executed_event"]);
+    }
+
     #[test]
     fn an_alarm_s_id_is_found_by_chart_and_name() {
         let (_dir, meta) = db();

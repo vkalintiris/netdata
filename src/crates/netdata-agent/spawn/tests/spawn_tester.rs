@@ -398,7 +398,7 @@ fn sigpipe() {
                 raw = Some(status);
                 break;
             }
-            Waited::Running(c) => child = c,
+            Waited::Running(c, _) => child = c,
             Waited::Error(_) => panic!("timedwait() returned ERROR"),
         }
     }
@@ -436,7 +436,7 @@ fn popen_tests(run: &Run) {
         let code = loop {
             match child.timedwait(100, NEVER) {
                 Waited::Exited(code) => break code,
-                Waited::Running(c) => child = c,
+                Waited::Running(c, _) => child = c,
                 Waited::Error(_) => panic!("timedwait() returned ERROR for a child that should exit cleanly"),
             }
             slices += 1;
@@ -449,7 +449,7 @@ fn popen_tests(run: &Run) {
         let mut child = shell("plugin-sleep-to-stop");
         for _ in 0..5 {
             match child.timedwait(200, NEVER) {
-                Waited::Running(c) => child = c,
+                Waited::Running(c, _) => child = c,
                 _ => panic!("timedwait() did not report RUNNING for a sleeping child"),
             }
         }
@@ -628,17 +628,28 @@ fn ladder() {
     drop(child);
     assert!(eventually(Duration::from_secs(2), || !alive(pid)), "the dropped instance's child lives");
 
-    // a zero timeout is a minimal bounded wait, never "forever" (`spawn_server.h`)
+    // a zero timeout is a minimal bounded wait, never "forever" (`spawn_server.h`); it leaves ETIMEDOUT for the
+    // caller's record
     let child = exec("exec /bin/sleep 120");
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(match child.timedwait(0, NEVER) {
-            Waited::Running(c) => Some(c),
+            Waited::Running(c, errno) => Some((c, errno)),
             _ => None,
         });
     });
-    let running = rx.recv_timeout(Duration::from_secs(2)).expect("timedwait(0) did not return");
-    assert_eq!(running.expect("not running").kill(0, NEVER), libc::SIGTERM);
+    let waited = rx.recv_timeout(Duration::from_secs(2)).expect("timedwait(0) did not return");
+    let (running, errno) = waited.expect("not running");
+    assert_eq!(errno, libc::ETIMEDOUT);
+    // a cancelled wait returns at its next look, with ECANCELED
+    let started = Instant::now();
+    let (running, errno) = match running.timedwait(5000, &|| true) {
+        Waited::Running(c, errno) => (c, errno),
+        _ => panic!("a cancelled timedwait() did not report RUNNING"),
+    };
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(errno, libc::ECANCELED);
+    assert_eq!(running.kill(0, NEVER), libc::SIGTERM);
     server.destroy();
 }
 

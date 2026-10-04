@@ -480,8 +480,9 @@ impl Drop for Server {
 pub enum Waited<T> {
     /// The report came (the instance is gone): the raw wait status, or -1 when the report was unreadable.
     Exited(i32),
-    /// No report within the timeout, or the wait was cancelled; not proof that the child lives.
-    Running(T),
+    /// No report within the timeout, or the wait was cancelled; not proof that the child lives. With the errno C's
+    /// wait leaves for the caller's next log record: `ETIMEDOUT`, or `ECANCELED` for a cancelled wait.
+    Running(T, i32),
     /// The report channel failed (the server died): the caller reclaims the instance, typically with `kill`.
     Error(T),
 }
@@ -605,7 +606,7 @@ impl Instance {
         self.close_pipes();
         match self.ready(timeout_ms.max(1), cancelled) {
             Ready::Yes => Waited::Exited(self.wait()),
-            Ready::No(_) => Waited::Running(self),
+            Ready::No(errno) => Waited::Running(self, errno),
             Ready::Broken => Waited::Error(self),
         }
     }

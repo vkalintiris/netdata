@@ -103,7 +103,7 @@ impl Popen {
     pub fn timedwait(self, timeout_ms: i32, cancelled: &dyn Fn() -> bool) -> Waited<Popen> {
         match self.instance.timedwait(timeout_ms, cancelled) {
             Waited::Exited(raw) => Waited::Exited(wire::status_rc(raw)),
-            Waited::Running(instance) => Waited::Running(Popen { instance }),
+            Waited::Running(instance, errno) => Waited::Running(Popen { instance }, errno),
             Waited::Error(instance) => Waited::Error(Popen { instance }),
         }
     }
