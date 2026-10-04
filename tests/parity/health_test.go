@@ -36,7 +36,8 @@ import (
 // seconds a view of the variables' endpoints masked, within healthBound of each other (near), and the ids' seeds are
 // bound to the chart's first second (bases). A candidate that serves no alert log has its ids read by its alarm ids'
 // base (settleNoLog; D198 F1). While a case runs a watch samples /proc: the installed notifier must never run
-// (healthWatch).
+// (healthWatch). A hand-back case (healthCase.again; D205 F1) stops both agents and starts each side's run directory a
+// second time, with the binary the case names for the side: what an agent does with an alert log it finds.
 
 const (
 	// healthConfFile is a case's one file under <run>/etc/health.d (one file: no readdir order)
@@ -93,10 +94,20 @@ type healthCase struct {
 	ctl notify.Control
 	// sc is the fake plugin's scenario; nil: no chart (the plugin waits for the stop)
 	sc *plugin.Scenario
+	// dbMode is localhost's `[db] db`; empty: dbengine. A hand-back case runs in `alloc`: the host's database is then
+	// empty at every start, so HEALTH's first pass waits for the chart's data in the second run as in the first
+	// (healthPair.create), on both sides at the same second.
+	dbMode string
 	// play drives the case while both agents run and compares what is visible; after, when set, runs once both stopped
 	// (the files and the logs)
 	play  func(t *testing.T, h *healthPair)
 	after func(t *testing.T, h *healthPair)
+	// again, when set, makes the case a hand-back: once play ended both agents stop, each side's run directory is
+	// started again (the same directories, so the same paths in the rules' sources and in the rows) and `again` drives
+	// the second run; `after` then runs once that one stopped. bins names each side's binary in the first run and in the
+	// second; a zero value is the oracle's and the candidate's.
+	again func(t *testing.T, h *healthPair)
+	bins  [2][2]Role
 }
 
 // healthPair is a case's two agents with what the helpers keep per side.
@@ -113,6 +124,9 @@ type healthPair struct {
 	clocks [2]map[string][]int64
 	// watch looks for the installed notifier while the case runs
 	watch *healthWatch
+	// run counts the case's runs: 1, then 2 once a hand-back case started its agents again. The fake plugin's start of
+	// that number is the one a release waits on.
+	run int
 }
 
 // healthOptions are a case's options: the fake plugin's (one tier, ram children, pulse off), health on (off for a case
@@ -120,6 +134,7 @@ type healthPair struct {
 func healthOptions(c healthCase) daemon.Options {
 	o := pluginsOptions(1, nil, nil, c.logs)
 	o.HealthOn = !c.off
+	o.DBMode = c.dbMode
 	o.HostLabels = c.hostLabels
 	o.HealthExtra = "    script to execute on alarm = {run}/notify/stub\n    run at least every = 1s\n"
 	if !c.stock {
@@ -240,9 +255,17 @@ func runHealthCases(t *testing.T, cases map[string]healthCase) {
 			if c.sc != nil {
 				sc = *c.sc
 			}
+			// each side's binary, per run: the oracle's and the candidate's unless the case says otherwise
+			binOf := func(run, i int) string {
+				if c.bins[run][i] == Oracle || (c.bins[run][i] == "" && i == 0) {
+					return bins[0]
+				}
+				return bins[1]
+			}
 			side := 0
-			h.p = startPairWith(t, healthOptions(c), parentIdentity, bins, [2]string{}, [2]Role{Oracle, Candidate},
-				func(t *testing.T, runDir string) {
+			h.run = 1
+			h.p = startPairWith(t, healthOptions(c), parentIdentity, [2]string{binOf(0, 0), binOf(0, 1)}, [2]string{},
+				[2]Role{Oracle, Candidate}, func(t *testing.T, runDir string) {
 					healthPrepare(t, runDir, c, stub)
 					l, err := plugin.Install(runDir, engine, sc)
 					if err != nil {
@@ -257,6 +280,13 @@ func runHealthCases(t *testing.T, cases map[string]healthCase) {
 			h.rails(t)
 			c.play(t, h)
 			stopBoth(t, h.p)
+			if c.again != nil {
+				h.noRealNotifier(t)
+				h.restart(t, [2]string{binOf(1, 0), binOf(1, 1)})
+				h.rails(t)
+				c.again(t, h)
+				stopBoth(t, h.p)
+			}
 			h.watch.end()
 			h.noRealNotifier(t)
 			if c.after != nil {
@@ -264,6 +294,32 @@ func runHealthCases(t *testing.T, cases map[string]healthCase) {
 			}
 		})
 	}
+}
+
+// restart starts both sides again, each in its own run directory with the binary given (a hand-back case's second
+// run: the configuration, the cache and the fake plugin's directory are the first run's), both at once, so the two
+// second runs begin within a start-up of each other. The fake plugin plays its next start, and each side's
+// normalizer goes on: the second run's ids print by the first run's bases, so ids that do not continue show.
+func (h *healthPair) restart(t *testing.T, bins [2]string) {
+	t.Helper()
+	var wg sync.WaitGroup
+	var errs [2]error
+	for i, s := range h.p.Each() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.Daemon.Opts.Binary = bins[i]
+			errs[i] = s.Daemon.Restart()
+		}()
+	}
+	wg.Wait()
+	for i, s := range h.p.Each() {
+		if errs[i] != nil {
+			t.Fatalf("parity: start %s again (%s): %v", s.Role, bins[i], errs[i])
+		}
+	}
+	h.run++
+	h.released = time.Time{}
 }
 
 // the notifier in a /netdata.conf dump: a commented line would be the default, which the stub never is
@@ -546,7 +602,8 @@ func (h *healthPair) release(t *testing.T, file string, phase int, hold time.Dur
 	for i, s := range h.p.Each() {
 		key := strconv.Itoa(phase)
 		starts, ok := h.ls[i].WaitFor(5*time.Second, func(starts [][]plugin.Record) bool {
-			if len(starts) == 0 {
+			// the plugin's start of this run (a hand-back's second run has a second one)
+			if len(starts) < max(h.run, 1) {
 				return false
 			}
 			_, ok := plugin.PhaseSeconds(starts[len(starts)-1])[key]
@@ -879,6 +936,8 @@ type healthEntry struct {
 	ExecFailed bool   `json:"exec_failed"`
 	Processed  bool   `json:"processed"`
 	Updated    bool   `json:"updated"`
+	// the rule's hash, by which `/api/v2/alert_config` is asked
+	Hash string `json:"config_hash_id"`
 	// what a notification's arguments are read against (healthNorm.args, tid)
 	Tid      string `json:"transition_id"`
 	When     int64  `json:"when"`

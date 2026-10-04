@@ -34,6 +34,10 @@ import (
 //     alert log entry they equal (`when`, `duration`, `non_clear_duration`);
 //   - each side's run directory and runtime directory: `{run}`, `{rt}`.
 //
+// A hand-back case (healthCase.again; M9 commit 5, D205 F1) starts each side's run directory a second time and keeps
+// the side's normalizer: the second run's ids print by the first run's bases and its transition ids by the entries
+// that first showed them, so an agent that did not go on from what the cache holds shows ids that do not continue.
+//
 // The masks are wider than C's variation (a second or two side to side), so two bounds stand beside them
 // (healthPair.near, healthPair.bases; D187 point 4): the times of events within healthBound side to side, and each
 // side's id bases within it and not before the chart's first second.
@@ -420,7 +424,9 @@ var (
 	// integer ids and clocks in a metadata-dump row (`name=value`)
 	healthSQLUniqueRe = regexp.MustCompile(` (unique_id|updated_by_id|updates_id)=(\d+)`)
 	healthSQLAlarmRe  = regexp.MustCompile(` (alarm_id)=(\d+)`)
-	healthSQLTimeRe   = regexp.MustCompile(` (when_key|duration|non_clear_duration|exec_run_timestamp|delay_up_to_timestamp|last_repeat|date_updated)=(\d+)`)
+	// date_scheduled is alert_queue's: the second a queued transition is due, its `when` plus the delay of its two
+	// statuses (sqlite_health.c:83-190: 0, 10 or 600 s), so a wall-clock second as the others
+	healthSQLTimeRe = regexp.MustCompile(` (when_key|duration|non_clear_duration|exec_run_timestamp|delay_up_to_timestamp|last_repeat|date_updated|date_scheduled)=(\d+)`)
 )
 
 // healthDump prints a side's health tables with metadata-dump (the transition ids aliased by first appearance, the
@@ -433,7 +439,12 @@ func (n *healthNorm) healthDump(t *testing.T, d *daemon.Daemon, more ...string) 
 	for _, table := range healthTables {
 		args = append(args, "--table", table)
 	}
-	dump := dumpDB(t, filepath.Join(d.Opts.RunDir, "cache", "netdata-meta.db"), append(args, more...)...)
+	return n.healthRows(dumpDB(t, filepath.Join(d.Opts.RunDir, "cache", "netdata-meta.db"), append(args, more...)...))
+}
+
+// healthRows renders metadata-dump's output of the health tables (healthDump): its rows, the integer ids rebased, the
+// clock columns as `T` when set (0 and NULL kept), the side's directories replaced.
+func (n *healthNorm) healthRows(dump string) []string {
 	var out []string
 	for _, l := range strings.Split(strings.TrimRight(dump, "\n"), "\n") {
 		if !strings.HasPrefix(l, "row ") && !strings.HasPrefix(l, "missing ") {
@@ -467,7 +478,9 @@ func (n *healthNorm) healthDump(t *testing.T, d *daemon.Daemon, more ...string) 
 // carries another id does not print as the entry's. The bounds beside the masks fail clocks more than healthBound
 // apart: the events' times, and the seconds the variables' endpoints' masks replaced. A side without an alert log
 // prints its unique ids by its alarm ids' base and a health.log's transition ids by their rank; the bases' bound
-// holds the oracle to one base for both. The alert members of a v2 data answer are taken as they are.
+// holds the oracle to one base for both. The alert members of a v2 data answer are taken as they are. The health
+// tables print their ids by the same bases and alert_queue's due second as a clock; the unclaimed queue's records are
+// summed.
 func TestHealthNorm(t *testing.T) {
 	run := filepath.Join(t.TempDir(), "oracle")
 	blank := func() *healthNorm {
@@ -819,6 +832,130 @@ func TestHealthNorm(t *testing.T) {
 	}
 	if err := healthValuesWant(map[string]string{})("HTTP 404, text/plain\nUnsupported API command: alarms_values"); err == nil {
 		t.Errorf("the guard on alarms_values passes a 404")
+	}
+
+	// the health tables (healthRows): the rows of metadata-dump's output, the integer ids by the side's bases, a set
+	// clock column as T (0 and NULL kept: alert_queue's due second too), the side's directories; a status, a row id and
+	// a masked column as they are
+	dump := "header page_size=4096\npragma user_version=18\nschema \"table\" \"alert_queue\"\n" +
+		"row health_log health_log_id=1 host_id=x'aa' alarm_id=501 name=\"a\" exec=\"" + run + "/notify/stub\" last_transition_id=u1\n" +
+		"row health_log_detail health_log_id=1 unique_id=1001 alarm_id=501 alarm_event_id=2 updated_by_id=0 updates_id=1000 when_key=1790000000 " +
+		"duration=0 non_clear_duration=7 flags=268435457 exec_run_timestamp=0 delay_up_to_timestamp=1790000006 new_status=1.0 " +
+		"new_value=NULL last_repeat=0 transition_id=u1 global_id=<masked>\n" +
+		"row alert_queue host_id=x'aa' health_log_id=1 unique_id=1001 alarm_id=501 status=-2 date_scheduled=1790000600\n" +
+		"row alert_queue host_id=x'aa' health_log_id=2 unique_id=1002 alarm_id=502 status=1 date_scheduled=0\n" +
+		"row aclk_queue sequence_id=1 host_id=x'aa' health_log_id=1 unique_id=1001 date_created=<masked>\n" +
+		"missing alert_version\n"
+	wantRows := []string{
+		`row health_log health_log_id=1 host_id=x'aa' alarm_id=a+1 name="a" exec="{run}/notify/stub" last_transition_id=u1`,
+		"row health_log_detail health_log_id=1 unique_id=u+2 alarm_id=a+1 alarm_event_id=2 updated_by_id=0 updates_id=u+1 when_key=T " +
+			"duration=0 non_clear_duration=T flags=268435457 exec_run_timestamp=0 delay_up_to_timestamp=T new_status=1.0 " +
+			"new_value=NULL last_repeat=0 transition_id=u1 global_id=<masked>",
+		"row alert_queue host_id=x'aa' health_log_id=1 unique_id=u+2 alarm_id=a+1 status=-2 date_scheduled=T",
+		"row alert_queue host_id=x'aa' health_log_id=2 unique_id=u+3 alarm_id=a+2 status=1 date_scheduled=0",
+		"row aclk_queue sequence_id=1 host_id=x'aa' health_log_id=1 unique_id=u+2 date_created=<masked>",
+		"missing alert_version",
+	}
+	rows := n.healthRows(dump)
+	if !slices.Equal(rows, wantRows) {
+		t.Errorf("the health tables:\n got %q\nwant %q", rows, wantRows)
+	}
+	// the guard on the tables' row counts: each table named, exactly
+	for name, c := range map[string]struct {
+		want map[string]int
+		ok   bool
+	}{
+		"as they are":           {map[string]int{"health_log": 1, "health_log_detail": 1, "alert_queue": 2, "aclk_queue": 1, "alert_version": 0}, true},
+		"only the tables named": {map[string]int{"alert_queue": 2}, true},
+		"one row less":          {map[string]int{"health_log": 1, "alert_queue": 1}, false},
+		"a table with rows":     {map[string]int{"aclk_queue": 0}, false},
+	} {
+		if err := healthRowsWant(c.want)(rows); (err == nil) != c.ok {
+			t.Errorf("the guard on the tables' rows, %s: %v", name, err)
+		}
+	}
+
+	// the unclaimed queue's records of an access log: the rows taken and the rows moved on, summed over the records,
+	// whatever their count; another host's record and another message are not this log's
+	access := []string{
+		`time=T comm=netdata source=access level=notice tid=7 thread=HEALTH msg="ACLK STA [parity-parent (N/A)]: Processed 3 entries, queued 2"`,
+		`time=T comm=netdata source=access level=info tid=9 thread=WEB[1] msg="transaction" request="/api/v1/alarms"`,
+		`time=T comm=netdata source=access level=notice tid=7 thread=HEALTH msg="ACLK STA [parity-parent (N/A)]: Processed 1 entries, queued 1"`,
+	}
+	if moves, records := healthQueueMoves(access); moves != "processed 4, queued 3" || records != 2 {
+		t.Errorf("the queue's records: %q in %d records, want processed 4, queued 3 in 2", moves, records)
+	}
+	if moves, records := healthQueueMoves(access[:1]); moves != "processed 3, queued 2" || records != 1 {
+		t.Errorf("the queue's records, one pass for the same rows: %q in %d", moves, records)
+	}
+	if moves, records := healthQueueMoves(access[1:2]); moves != "processed 0, queued 0" || records != 0 {
+		t.Errorf("an access log without the queue's record: %q in %d", moves, records)
+	}
+
+	// the store jobs' records of a daemon.log: the queued saves stored, summed, on whichever thread and in however
+	// many records; the record of the rule statements is another one
+	jobs := []string{
+		`time=T comm=netdata source=daemon level=debug tid=5 thread=UV_WORKER[2] msg="Stored and processed 6 sql statements in 207us"`,
+		`time=T comm=netdata source=daemon level=debug tid=5 thread=UV_WORKER[2] msg="Stored and processed 40 alert transitions in 0.43 ms"`,
+		`time=T comm=netdata source=daemon level=debug tid=6 thread=METASYNC msg="Stored and processed 20 alert transitions in 12.01 ms"`,
+	}
+	if got := healthStored(jobs); got != "stored 60 alert transitions" {
+		t.Errorf("the store jobs' records: %q, want stored 60 alert transitions", got)
+	}
+	if got := healthStored(jobs[:1]); got != "stored 0 alert transitions" {
+		t.Errorf("a daemon.log without the record: %q", got)
+	}
+
+	// the guards of the alert log's comparisons: the count of entries of a 200 answer, parts an answer must not hold,
+	// an answer that is no 200 by its status, type and text; the hash an alert's first entry names
+	logView := "HTTP 200, application/json; charset=utf-8\n[\n{\"unique_id\":u+2,\"name\":\"a\",\"updated_by_id\":0,\"updates_id\":u+1},\n" +
+		"{\"unique_id\":u+1,\"name\":\"a\",\"updated_by_id\":u+2,\"updates_id\":0}\n]\n"
+	for name, c := range map[string]struct {
+		view string
+		n    int
+		ok   bool
+	}{
+		"two entries":       {logView, 2, true},
+		"one wanted":        {logView, 1, false},
+		"three wanted":      {logView, 3, false},
+		"an empty log":      {"HTTP 200, application/json; charset=utf-8\n" + healthLogEmpty, 0, true},
+		"no log":            {"HTTP 404, text/plain; charset=utf-8\nUnsupported API command: alarm_log", 0, false},
+		"no log, two asked": {"HTTP 404, text/plain; charset=utf-8\n\"unique_id\":1,\"unique_id\":2", 2, false},
+	} {
+		if err := healthLogEntries(c.n)(c.view); (err == nil) != c.ok {
+			t.Errorf("the guard on the log's entries, %s: %v", name, err)
+		}
+	}
+	if err := healthIs(healthLogEmpty)("HTTP 200, application/json; charset=utf-8\n\n    []\n"); err != nil {
+		t.Errorf("the guard on an empty log: %v", err)
+	}
+	if two, three := healthTimes(`"name":"a"`, 2)(logView), healthTimes(`"name":"a"`, 3)(logView); two != nil || three == nil {
+		t.Errorf("the guard on a part's count: %v for 2, %v for 3", two, three)
+	}
+	if err := healthLacks(`"status":"WARNING"`, `"exec_run":T`)(logView); err != nil {
+		t.Errorf("the guard on what a view lacks: %v", err)
+	}
+	if err := healthLacks(`"name":"b"`, `"updates_id":u+1`)(logView); err == nil {
+		t.Errorf("the guard on what a view lacks passes a view that holds a part")
+	}
+	notFound := "HTTP 404, text/plain; charset=utf-8\nConfig is not found."
+	for name, c := range map[string]struct {
+		view string
+		ok   bool
+	}{
+		"the answer":       {notFound, true},
+		"another status":   {strings.Replace(notFound, "404", "500", 1), false},
+		"another type":     {strings.Replace(notFound, "text/plain", "application/json", 1), false},
+		"another text":     {notFound + "\n", false},
+		"a 200 that holds": {"HTTP 200, text/plain; charset=utf-8\nConfig is not found.", false},
+	} {
+		if err := healthAnswer(http.StatusNotFound, "Config is not found.")(c.view); (err == nil) != c.ok {
+			t.Errorf("the guard on an answer that is no 200, %s: %v", name, err)
+		}
+	}
+	hashes := []healthEntry{{UniqueID: 1, Name: "a", Hash: "h-a"}, {UniqueID: 2, Name: "b", Hash: "h-b"}, {UniqueID: 3, Name: "a", Hash: "h-a2"}}
+	if got := healthHashOf(hashes, "a") + " " + healthHashOf(hashes, "b") + " [" + healthHashOf(hashes, "c") + "]"; got != "h-a h-b []" {
+		t.Errorf("an alert's hash in the log: %q", got)
 	}
 
 	// a passing comparison logs a transcript without its environment; a failing one keeps the lines that differ

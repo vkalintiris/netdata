@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+package parity
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/netdata/netdata/tests/query-corpus/plugin"
+)
+
+// healthAgainEntries is what the second run of a hand-back case adds to the 26 entries of the first
+// (healthQuietEntries + 2), on a C agent:
+//   - at the load, a REMOVED entry for each alert whose last saved transition is not REMOVED
+//     (sqlite_health.c:528-615): two, hq_undef's and hq_look's. The four others' rows name, as their alert's last
+//     transition, the REMOVED entry of the first pass's unlink: the three link entries of HEALTH's first pass are
+//     stored by the metadata thread after the pass's own entries, and each insert takes the alert's row
+//     (sqlite_health.c:281-287, sqlite_metadata.c:2526-2536); only a later transition names itself again;
+//   - the three links of each of the six alerts at HEALTH's first pass: 18;
+//   - hq_gone's removal and the first status of the four alerts on a value: 5; then hq_look's first CLEAR: 1.
+const healthAgainEntries = 2 + 18 + 5 + 1
+
+// healthAgainStored is what the second run's store jobs' records sum to (healthStored): 30 queued saves, as in the
+// first run, and one more for each of the two entries the load logged, which the alert's first link replaces (the entries
+// the four other alerts loaded were replaced in the first run: a link marks, and saves, only an entry no other one
+// replaced yet, health_log.c:277-293).
+const healthAgainStored = healthQuietStored + 2*2
+
+// an entry of the alert log that takes an alert from CLEAR to REMOVED: none of the quiet alerts is removed while it
+// is CLEAR, so these are the entries a load logs
+var healthLoadedRe = regexp.MustCompile(`"status":"REMOVED",\s*"old_status":"CLEAR",`)
+
+// healthLoaded is a guard on a view of `/api/v1/alarm_log`: n entries were logged by a load.
+func healthLoaded(n int) func(string) error {
+	return func(view string) error {
+		if got := len(healthLoadedRe.FindAllString(view, -1)); got != n {
+			return fmt.Errorf("%d entries from CLEAR to REMOVED, want %d", got, n)
+		}
+		return nil
+	}
+}
+
+// TestHealthHandBack (check `health.handback`, M9 commit 5, D205 F1): what an agent that starts on a cache with an
+// alert log does with it. The quiet rule set (healthQuietConf: no notification) plays its three phases, the unclaimed
+// queue's delay passes and both agents stop; then each side's run directory is started again, in `alloc` mode, so
+// HEALTH's first pass waits for the chart's data in both runs. At that pass C loads each alert's last saved entry,
+// after it logged a REMOVED entry for those that were not removed, and the alerts linked afterwards go on with their
+// alarm ids and their event ids, and the log with its unique ids (sqlite_health.c:700-882). Compared once the second
+// run settled: `/api/v1/alarm_log` whole (the first run's entries, the load's, the second run's), `/api/v1/alarms?all`,
+// both again after hq_undef changed once more, and, both stopped, the health tables, the unclaimed queue's records
+// and the store jobs' records summed, and HEALTH's record of each load. Every id prints by the first run's bases: ids
+// that do not continue show. Cases, by each side's binary in the two runs:
+//   - `restart`: the oracle and the candidate, each again on the cache it wrote;
+//   - `c-after-rust`: the second run is C's on both sides: C on the candidate's cache beside C on its own;
+//   - `rust-after-c`: the first run is C's on both sides: the candidate on a C cache beside C on one.
+func TestHealthHandBack(t *testing.T) {
+	cases := map[string]healthCase{}
+	for name, bins := range map[string][2][2]Role{
+		"restart":      {{Oracle, Candidate}, {Oracle, Candidate}},
+		"c-after-rust": {{Oracle, Candidate}, {Oracle, Oracle}},
+		"rust-after-c": {{Oracle, Oracle}, {Oracle, Candidate}},
+	} {
+		// the second start of the fake plugin: the same two charts, created at the `again` release, then 10 and 70
+		sc := healthQuietScenario()
+		sc.Starts = append(sc.Starts, plugin.Start{Steps: []plugin.Step{{WaitFile: "again"}, {Emit: healthQuietEmit},
+			{Values: &plugin.Values{Chart: healthQuietChart, Context: "hq.ctx", Dims: []string{"a"},
+				Phases: []plugin.Phase{{Set: map[string]int64{"a": 10}, Until: "again1"}, {Set: map[string]int64{"a": 70}}}}}}})
+		cases[name] = healthCase{
+			conf:   healthQuietConf,
+			dbMode: "alloc",
+			logs:   healthLogsDebug,
+			sc:     sc,
+			bins:   bins,
+			play: func(t *testing.T, h *healthPair) {
+				healthPlayQuiet(t, h)
+				// each side's log holds its last entries, and every due row of the queue was moved on, before the stop
+				h.waitCandidate("/api/v1/alarm_log", func(i int) string { return h.transitions(i, "") })
+				time.Sleep(healthQueueHold)
+			},
+			again: func(t *testing.T, h *healthPair) {
+				// the charts again, at the same second on both sides: HEALTH's first pass loads the log and links the alerts
+				time.Sleep(2 * time.Second)
+				h.release(t, "again", 0, 0)
+				h.settle(t, h.n, "")
+				const first = healthQuietEntries + 2
+				all := func(i int) string { return h.get(i, "/api/v1/alarms?all") }
+				log := func(i int) string { return h.get(i, "/api/v1/alarm_log") }
+				// The alert log first: a candidate that serves none, or that did not go on from the cache, fails here.
+				// Settled: of the first run's entries nine are processed (healthLogAsks), the two the load logged took
+				// their flags from the entries they replace, and of the second run's hq_look's third link and the six
+				// statuses (hq_delay's 6 s after it was logged).
+				h.compareNow(t, "after the second start: /api/v1/alarm_log", log, healthBoth(healthLogEntries(first+healthAgainEntries),
+					healthTimes(`"processed":true,`, 9+2+7), healthLoaded(2),
+					healthLacks(`"status":"WARNING"`, `"status":"CRITICAL"`, `"exec_run":T`)))
+				h.compareNow(t, "after the second start: /api/v1/alarms?all", all,
+					healthBoth(healthWant(healthQuietWant("CLEAR")), healthLatest(first+healthAgainEntries)))
+				// hq_undef changes once more, after every due row of the queue was moved on (healthQuietMoved): its event
+				// ids go on from the entry the load logged, and its transition makes a row of the queue again
+				h.release(t, "again1", 1, healthQuietMoved)
+				h.compareNow(t, "hq_undef UNDEFINED again: /api/v1/alarms?all", all,
+					healthBoth(healthWant(healthQuietWant("UNDEFINED")), healthLatest(first+healthAgainEntries+1)))
+				h.compareNow(t, "hq_undef UNDEFINED again: /api/v1/alarm_log", log,
+					healthBoth(healthLogEntries(first+healthAgainEntries+1), healthTimes(`"processed":true,`, 9+2+8)))
+			},
+			// In alert_queue the rows that are not due for ten minutes: hq_gone's, hq_var's and hq_undef's last change; in
+			// aclk_queue the rows of hq_tmpl, hq_undef, hq_delay and hq_look, as after the first run, with the second run's
+			// entries. The queue's records: the first run's five rows, then the three first CLEARs of the second run and
+			// hq_look's.
+			after: func(t *testing.T, h *healthPair) {
+				healthQuietTables(map[string]int{"alert_hash": 6, "health_log": 6,
+					"health_log_detail": healthQuietEntries + 2 + healthAgainEntries + 1, "alert_queue": 3, "aclk_queue": 4,
+					"alert_version": 0, "alert_hash_cloud": 0}, "processed 9, queued 9", healthQuietStored+healthAgainStored)(t, h)
+				// what each start's load found (a debug record, sqlite_health.c:873-875): nothing, then an entry per alert
+				h.compareLines(t, "HEALTH's records of the load", func(i int) []string {
+					return h.threadRecords(t, i, "HEALTH", "["+h.p.Each()[i].Daemon.Hostname+"]: Table health_log, loaded ")
+				}, func(oracle []string) error {
+					if len(oracle) != 2 || !strings.Contains(oracle[0], ", loaded 0 alarm entries, errors in 0 entries.") ||
+						!strings.Contains(oracle[1], fmt.Sprintf(", loaded %d alarm entries, errors in 0 entries.", len(healthQuietNames))) {
+						return fmt.Errorf("want a load of no entry, then one of %d", len(healthQuietNames))
+					}
+					return nil
+				})
+			},
+		}
+	}
+	runHealthCases(t, cases)
+}

@@ -295,6 +295,7 @@ func TestSQLiteFiles(t *testing.T) {
 		compareFiles(t, StartPair(t, o, parentIdentity),
 			append([]string{"--table", "agent_event_log"}, writer...)...)
 	})
+	t.Run("alert-cleanup", func(t *testing.T) { alertCleanup(t, seed) })
 	old := map[string]string{
 		"v0": `CREATE TABLE host(host_id BLOB PRIMARY KEY, hostname TEXT NOT NULL, registry_hostname TEXT NOT NULL
 			default 'unknown', update_every INT NOT NULL default 1, os TEXT NOT NULL default 'unknown', timezone TEXT
@@ -331,6 +332,110 @@ func TestSQLiteFiles(t *testing.T) {
 				writerArgs(false)...)...)
 		})
 	}
+}
+
+// alertCleanupSeed adds alert log rows to the seeded cache (seedFromOracle: the child's charts seed.one and seed.two
+// are stored): for the child an alert on a chart it has and one on a chart it does not have, for the parent one on a
+// chart it does not have, and one of a host the host table does not hold; each with one entry.
+const alertCleanupSeed = `
+INSERT INTO health_log (health_log_id, host_id, alarm_id, config_hash_id, name, chart, recipient, units, chart_context,
+  last_transition_id, chart_name)
+  SELECT 1, host_id, 11, x'a0000000000040008000000000000001', 'kept', 'seed.one', 'root', 'u', 'seed.one',
+    x'b0000000000040008000000000000001', 'seed.one' FROM host WHERE hostname = '%[1]s';
+INSERT INTO health_log (health_log_id, host_id, alarm_id, config_hash_id, name, chart, recipient, units, chart_context,
+  last_transition_id, chart_name)
+  SELECT 2, host_id, 12, x'a0000000000040008000000000000002', 'gone', 'seed.gone', 'root', 'u', 'seed.gone',
+    x'b0000000000040008000000000000002', 'seed.gone' FROM host WHERE hostname = '%[1]s';
+INSERT INTO health_log (health_log_id, host_id, alarm_id, config_hash_id, name, chart, recipient, units, chart_context,
+  last_transition_id, chart_name)
+  SELECT 3, host_id, 13, x'a0000000000040008000000000000003', 'parent_gone', 'seed.one', 'root', 'u', 'seed.one',
+    x'b0000000000040008000000000000003', 'seed.one' FROM host WHERE hostname = '%[2]s';
+INSERT INTO health_log (health_log_id, host_id, alarm_id, config_hash_id, name, chart, recipient, units, chart_context,
+  last_transition_id, chart_name)
+  VALUES (4, x'f0000000000040008000000000000004', 14, x'a0000000000040008000000000000004', 'no_host', 'nosuch.chart',
+    'root', 'u', 'nosuch', x'b0000000000040008000000000000004', 'nosuch.chart');
+INSERT INTO health_log_detail (health_log_id, unique_id, alarm_id, alarm_event_id, updated_by_id, updates_id, when_key,
+  duration, non_clear_duration, flags, exec_run_timestamp, delay_up_to_timestamp, info, exec_code, new_status,
+  old_status, delay, new_value, old_value, last_repeat, transition_id, global_id, summary)
+  SELECT health_log_id, 100 + health_log_id, alarm_id, 1, 0, 0, 1700000000, 0, 0, 1, 0, 1700000000, 'info', 0, 1, 0, 0,
+    1.5, NULL, 0, last_transition_id, 1700000000000000 + health_log_id, NULL FROM health_log;
+`
+
+// alertCleanup compares `-W sqlite-alert-cleanup` (M9 commit 5; sqlite_health.c:617-687, daemon/main.c:452-455): each
+// binary runs it on its own copy of the seeded cache with alertCleanupSeed's rows, named by a netdata.conf given
+// before the option (C sets its directories when it loads `-c`, netdata-conf.c:6-40; the option alone would open the
+// compiled-in cache directory). C opens the database as an agent does (migrations, the start's cleanup batch), then,
+// per row of the host table, deletes the alert log rows of charts the host does not have. Compared: the alert log's
+// tables after, what was written to stderr, the exit status and what was written to stdout.
+func alertCleanup(t *testing.T, seed string) {
+	var tables, records [2]string
+	var codes [2]int
+	for i, bin := range binaries(t) {
+		dir := filepath.Join(t.TempDir(), string([]Role{Oracle, Candidate}[i]))
+		cache := filepath.Join(dir, "cache")
+		for _, sub := range []string{"cache", "lib", "log", "etc"} {
+			if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, f := range []string{"netdata-meta.db", "context-meta.db"} {
+			b, err := os.ReadFile(filepath.Join(seed, f))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cache, f), b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		execDB(t, filepath.Join(cache, "netdata-meta.db"), fmt.Sprintf(alertCleanupSeed, childHost.Hostname, parentIdentity.Hostname))
+		conf := filepath.Join(dir, "etc", "netdata.conf")
+		text := fmt.Sprintf("[directories]\n    config = %[1]s/etc\n    cache = %[1]s/cache\n    lib = %[1]s/lib\n    log = %[1]s/log\n"+
+			"    home = %[1]s/lib\n", dir)
+		if err := os.WriteFile(conf, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, code := runPrint(t, bin, "-c", conf, "-W", "sqlite-alert-cleanup")
+		tables[i] = strings.Join(alertCleanupRows(dumpDB(t, filepath.Join(cache, "netdata-meta.db"), "--table", "health_log",
+			"--table", "health_log_detail", "--table", "alert_queue", "--table", "aclk_queue")), "\n")
+		records[i] = "stdout: " + stdout + "\nstderr:\n" + errnoRe.ReplaceAllString(strings.ReplaceAll(stderr, dir, "<RUN>"), "")
+		codes[i] = code
+	}
+	// the oracle did the work: the two alerts on charts their host does not have are gone, the child's alert on its
+	// own chart and the unknown host's stay, and every entry stays (the entries of a deleted alert go at an agent's
+	// hourly cleanup)
+	for _, want := range []struct {
+		part string
+		n    int
+	}{{`row health_log `, 2}, {` name="kept" `, 1}, {` name="no_host" `, 1}, {`row health_log_detail `, 4}} {
+		if got := strings.Count(tables[0], want.part); got != want.n {
+			t.Fatalf("oracle: %d rows with %q after the cleanup, want %d:\n%s", got, want.part, want.n, tables[0])
+		}
+	}
+	if codes[0] != 0 || !strings.Contains(records[0], `msg="Alert cleanup done"`) {
+		t.Fatalf("oracle: exit %d, records:\n%s", codes[0], records[0])
+	}
+	if tables[0] != tables[1] {
+		t.Fatalf("the alert log's tables differ after the cleanup\noracle:\n%s\ncandidate:\n%s", tables[0], tables[1])
+	}
+	if records[0] != records[1] {
+		t.Errorf("the output differs\noracle:\n%s\ncandidate:\n%s", records[0], records[1])
+	}
+	if codes[0] != codes[1] {
+		t.Errorf("exit status: oracle %d, candidate %d", codes[0], codes[1])
+	}
+	t.Logf("both sides: exit %d\n%s\n%s", codes[0], tables[0], records[0])
+}
+
+// alertCleanupRows are the rows of a metadata-dump output (the header, the pragmas and the schema are `sqlite.files`'
+// other subtests').
+func alertCleanupRows(dump string) []string {
+	var out []string
+	for _, l := range strings.Split(strings.TrimRight(dump, "\n"), "\n") {
+		if strings.HasPrefix(l, "row ") || strings.HasPrefix(l, "missing ") {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // TestSQLiteHandBack gives C a cache the Rust agent ran on (check `sqlite.handback`): a C-written cache with a
