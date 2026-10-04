@@ -683,6 +683,120 @@ mod tests {
         assert_eq!(summary.my_expression(a.id), (Vec::new(), Vec::new()));
     }
 
+    /// The words of a command, as the shell would hand them to the script.
+    fn words(command: &[u8]) -> Vec<String> {
+        let text = String::from_utf8_lossy(command).into_owned();
+        let arguments = text.strip_prefix("exec '").and_then(|rest| rest.strip_suffix('\'')).expect("a command");
+        arguments.split("' '").map(str::to_owned).collect()
+    }
+
+    /// What goes where in a command: the alert's host gives its registry hostname and its GUID; the edit command
+    /// is made of the user configuration directory and localhost's registry hostname; an entry without a source
+    /// or a class gets C's two spellings of "unknown".
+    #[test]
+    fn a_command_s_words_come_from_the_alert_s_host_and_from_localhost() {
+        let env = raising();
+        let (health, hosts) = two_raised(&env);
+        let commands: Vec<Vec<String>> = env.commands.borrow().iter().map(|command| words(command)).collect();
+        assert_eq!(commands.len(), 2);
+        let guids = ["11111111-2222-4333-8444-555555555555", "22222222-2222-4333-8444-555555555555"];
+        for (command, guid) in commands.iter().zip(guids) {
+            assert_eq!(command.len(), 34, "{command:?}");
+            let recipient = String::from_utf8_lossy(&health.config().default_recipient).into_owned();
+            assert_eq!(command[..3], [String::new(), recipient, "testregistry".to_owned()]);
+            assert_eq!(command[7..11], ["a", "t.c", "WARNING", "UNINITIALIZED"]);
+            assert_eq!((command[26].as_str(), command[28].as_str()), ("Unknown", guid));
+            // the rule's file has an absolute path here: its edit command is not empty
+            let edit = edit_command_from_source(command[13].as_bytes(), b"/etc/netdata", b"localregistry");
+            assert!(command[13].starts_with("line=1,file=/") && edit.ends_with(b"=localregistry"), "{command:?}");
+            assert_eq!(command[27].as_bytes(), edit);
+        }
+
+        // an entry as a row without a source loads it
+        let alerts = health.host(&hosts[0]).expect("the host's alerts");
+        let mut entry = alerts.log_entries().into_iter().find(|entry| entry.new_status == Status::Warning).unwrap();
+        (entry.source, entry.flags) = (None, 0);
+        let sent = send(&hosts[0], &alerts, &entry, &mut RaisedSummary::default(), &health, &env, &|| NOW + 7);
+        assert_eq!((sent.exec_run_timestamp, sent.save, sent.execution.is_some()), (Some(NOW + 7), true, true));
+        let command = words(env.commands.borrow().last().expect("a command"));
+        assert_eq!((command[13].as_str(), command[27].as_str()), ("UNKNOWN", "UNKNOWN=0=UNKNOWN"));
+    }
+
+    /// C's `health_send_notification()` over its decision table, through `send`: whether the table is asked and a
+    /// command is spawned, the marks and the time the entry gets, that it is saved, and the record.
+    #[test]
+    fn the_decision_table_through_the_send() {
+        let env = raising();
+        let (health, hosts) = two_raised(&env);
+        let (host, alerts) = (&hosts[0], health.host(&hosts[0]).expect("the host's alerts"));
+        let mut template = alerts.log_entries().into_iter().next().expect("an entry");
+        (template.chart, template.name) = (b"d.chart".to_vec(), Some(b"d_alert".to_vec()));
+        let statuses = [
+            Status::Removed,
+            Status::Undefined,
+            Status::Uninitialized,
+            Status::Clear,
+            Status::Raised,
+            Status::Warning,
+            Status::Critical,
+        ];
+        let status = |name: &str| *statuses.iter().find(|status| status.name() == name).expect("a status");
+
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/decide.tsv");
+        let table = std::fs::read_to_string(path).expect("decide.tsv");
+        let (mut checked, mut failures) = (0, Vec::new());
+        for (n, line) in table.lines().enumerate().filter(|(_, line)| !line.starts_with('#')) {
+            let row: Vec<&str> = line.split('\t').collect();
+            let flags = u32::from_str_radix(row[2], 16).expect("the flags");
+            let entry = Entry { new_status: status(row[0]), old_status: status(row[1]), flags, ..template.clone() };
+            let last_executed = match row[3] {
+                "fail" | "none" => None,
+                name => Some(status(name) as i32),
+            };
+            let env = Scripted { command: Some(0), last_executed, ..Scripted::default() };
+            let (sent, records) = netdata_agent_log::capture(|| {
+                send(host, &alerts, &entry, &mut RaisedSummary::default(), &health, &env, &|| NOW)
+            });
+            let trace = env.take_trace();
+            let messages: Vec<String> = records.into_iter().filter_map(|record| record.message).collect();
+            let message = if messages.is_empty() { "-".to_owned() } else { messages.join(" | ") };
+            let actual = (
+                trace.iter().any(|what| what.starts_with("asked ")),
+                trace.iter().any(|what| what.starts_with("spawn ")),
+                // C's function sets the processed mark itself; here the caller does, before the send
+                flags | entry_flags::PROCESSED | sent.flags,
+                sent.exec_run_timestamp.is_some(),
+                usize::from(sent.save),
+                message,
+            );
+            let expected = (
+                row[4] == "1",
+                row[5] == "1",
+                u32::from_str_radix(row[6], 16).expect("the flags after"),
+                row[7] == "1",
+                row[8].parse::<usize>().expect("the saves"),
+                row[9].replace("[oracle-host]", "[testhost]"),
+            );
+            if actual != expected {
+                failures.push(format!("decide.tsv:{}: {line}\n  C    {expected:?}\n  Rust {actual:?}", n + 1));
+            }
+            checked += 1;
+        }
+        let shown = failures[..failures.len().min(8)].join("\n");
+        assert!(failures.is_empty(), "{} of {checked} differ:\n{shown}", failures.len());
+        assert_eq!(checked, 7056);
+    }
+
+    /// The record of a kill carries the errno the last slice's wait left: ECANCELED when the thread was cancelled.
+    #[test]
+    fn the_kill_s_record_has_the_errno_of_the_wait() {
+        let env = Scripted { command: Some(usize::MAX), wait_errno: 125, ..Scripted::default() };
+        env.running_for.set(Some(0));
+        let command = env.exec(b"x").expect("a command");
+        let (code, records) = netdata_agent_log::capture(|| wait_for_execution(b"a", command, 120, &env));
+        assert_eq!((code, records.len(), records[0].errno), (128, 1, 125));
+    }
+
     #[test]
     fn a_duration_saturates_as_c() {
         let cases = [(-5, 0), (0, 0), (7, 7), (i64::from(u32::MAX), u32::MAX), (i64::from(u32::MAX) + 1, u32::MAX)];

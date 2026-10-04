@@ -105,6 +105,12 @@ impl Health {
         self.executing.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Whether no thread holds the queue of running notifications now.
+    #[cfg(test)]
+    pub(crate) fn executing_is_free(&self) -> bool {
+        self.executing.try_lock().is_ok()
+    }
+
     /// `wait_for_all_notifications_to_finish_before_allowing_health_to_be_cleaned_up()`, which HEALTH calls after
     /// the hosts of an iteration: each running notification is waited for, oldest first, and its entry gets what
     /// the wait found. It stops, with the rest left running, as soon as the service does.

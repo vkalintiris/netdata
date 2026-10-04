@@ -99,36 +99,30 @@ impl AlarmLog {
     /// wait (not processed, not replaced) and whose delay is over, in the log's order; the lowest waiting id is
     /// remembered for the next call. The caller notifies each, marks it as processed and saves it.
     ///
-    /// C reads the clock when it starts. At the first due entry it builds the summary of raised alerts, unless
-    /// the pass has built it already, reads the clock again and starts over: the second answer says whether the
-    /// caller is to build the summary now.
+    /// C reads the clock when it starts. At the first due entry of a pass that has not built the summary of raised
+    /// alerts yet, C lets go of the log, builds the summary and starts over, with a new read of the clock: here the
+    /// scan then ends with nothing and `true`, and the caller builds the summary and scans again.
     pub fn scan(&mut self, clock: Clock, summary_is_built: bool) -> (Vec<u32>, bool) {
-        let mut now = clock();
-        let mut summary_built = summary_is_built;
-        let (first_waiting, due) = 'scan: loop {
-            let mut first_waiting = self.entries.front().map_or(0, |entry| entry.unique_id);
-            let mut due = Vec::new();
-            for entry in &self.entries {
-                if entry.unique_id < self.last_processed_id {
-                    break;
-                }
-                if entry.flags & (entry_flags::PROCESSED | entry_flags::UPDATED) != 0 {
-                    continue;
-                }
-                first_waiting = first_waiting.min(entry.unique_id);
-                if now >= entry.delay_up_to_timestamp {
-                    if !summary_built {
-                        summary_built = true;
-                        now = clock();
-                        continue 'scan;
-                    }
-                    due.push(entry.unique_id);
-                }
+        let now = clock();
+        let mut first_waiting = self.entries.front().map_or(0, |entry| entry.unique_id);
+        let mut due = Vec::new();
+        for entry in &self.entries {
+            if entry.unique_id < self.last_processed_id {
+                break;
             }
-            break (first_waiting, due);
-        };
+            if entry.flags & (entry_flags::PROCESSED | entry_flags::UPDATED) != 0 {
+                continue;
+            }
+            first_waiting = first_waiting.min(entry.unique_id);
+            if now >= entry.delay_up_to_timestamp {
+                if !summary_is_built {
+                    return (Vec::new(), true);
+                }
+                due.push(entry.unique_id);
+            }
+        }
         self.last_processed_id = first_waiting;
-        (due, summary_built && !summary_is_built)
+        (due, false)
     }
 
     /// The end of that function: entries memory needs no longer are dropped: one a newer entry replaced, once
@@ -301,15 +295,18 @@ mod tests {
         let mut two = log(1);
         two.add(entry(1, Status::Warning, NOW));
         two.add(entry(2, Status::Warning, NOW + 1));
-        assert_eq!((two.scan(&clock, false), reads.get()), ((vec![2, 1], true), 2));
+        // the first scan ends at the due entry, for the summary, and remembers nothing; the one after it reads
+        // the clock again
+        assert_eq!((two.scan(&clock, false), reads.get(), two.last_processed_id), ((vec![], true), 1, 0));
+        assert_eq!((two.scan(&clock, true), reads.get()), ((vec![2, 1], false), 2));
         // the lowest id that waited when the scan came to it is remembered; the next scan, which finds nothing
         // waiting, moves on to the newest
         assert_eq!(two.last_processed_id, 1);
         mark_all(&mut two, entry_flags::PROCESSED);
         assert_eq!((two.scan(&clock, false), reads.get(), two.last_processed_id), ((vec![], false), 3, 2));
 
-        // a pass whose repeats built the summary already does not start over: one read, and the entry that is
-        // due only at a second read waits
+        // a pass whose repeats built the summary already does not start over: one read, and the entry that
+        // would be due only at a second read waits
         reads.set(0);
         let mut built = log(1);
         built.add(entry(1, Status::Warning, NOW));

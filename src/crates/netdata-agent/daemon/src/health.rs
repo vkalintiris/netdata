@@ -613,6 +613,41 @@ mod tests {
         assert!(health.host(&host).unwrap().log_entries().iter().all(|entry| entry.flags & entry_flags::SAVED == 0));
     }
 
+    /// What a notification's edit command is made of: the user configuration directory the daemon was given and
+    /// localhost's registry hostname. The flag that cancels HEALTH's waits is one, shared with the exit.
+    #[test]
+    fn the_live_env_gives_the_edit_command_its_two_texts() {
+        use netdata_agent_rrd::host::HostInfo;
+        use netdata_agent_rrd::mode::DbMode;
+        let info = HostInfo {
+            hostname: "live".into(),
+            registry_hostname: "live-registry".into(),
+            os: "linux".into(),
+            timezone: "UTC".into(),
+            abbrev_timezone: "UTC".into(),
+            utc_offset: 0,
+            program_name: "netdata".into(),
+            program_version: "v0".into(),
+            update_every: 1,
+            db_mode: DbMode::Ram,
+            history_entries: 3600,
+            health_enabled: true,
+            system_info: Default::default(),
+            replication_enabled: false,
+            replication_period: 0,
+            replication_step: 0,
+            stream_send: None,
+            cache_dir: None,
+        };
+        let hosts = Arc::new(Hosts::new(Host::new("11ee0000-0000-4000-8000-0000000000ac", true, info)));
+        let env = LiveEnv::new(hosts, Windows::default(), None, MetaQueue::unread().0);
+        assert_eq!(env.edit_context(), (Vec::new(), b"live-registry".to_vec()));
+        let env = env.with_user_config_dir("/etc/netdata");
+        assert_eq!(env.edit_context(), (b"/etc/netdata".to_vec(), b"live-registry".to_vec()));
+        let cancel = env.cancel_flag();
+        assert!(!cancel.load(Ordering::Acquire) && Arc::ptr_eq(&cancel, &env.cancel));
+    }
+
     /// What the loop reads of a chart through the daemon: its collection as it stands, the span of its stored
     /// data over its dimensions, and a lookup's value, read from the database at the wall clock and counted as a
     /// query of health.

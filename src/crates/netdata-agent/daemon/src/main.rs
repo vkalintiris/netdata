@@ -1210,6 +1210,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
                 dbengine.flush_everything(false, false, true);
             }
         }
+        // service_signal_exit(SERVICE_HEALTH): HEALTH is cancelled, so its wait for a notification's command ends
+        // at its next look
+        shutdown::SIGNAL_SERVICES => health_cancel.store(true, std::sync::atomic::Ordering::Release),
         // the dirty pages again once the collectors and streams stopped
         shutdown::STOP_REPLICATION => {
             if let (Some(dbengine), true) = (&dbengine, normal) {
@@ -1224,8 +1227,6 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         // started (D110), so the wait only waits
         shutdown::STOP_WEB_SERVERS => {
             let deadline = std::time::Instant::now() + shutdown::WEB_SERVERS_WAIT;
-            // service_signal_exit(): HEALTH is cancelled, so a wait for a notification's command ends now
-            health_cancel.store(true, std::sync::atomic::Ordering::Release);
             if let Some(thread) = health_thread.take() {
                 thread.join_within(shutdown::WEB_SERVERS_WAIT);
             }

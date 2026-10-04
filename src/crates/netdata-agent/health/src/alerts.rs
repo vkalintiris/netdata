@@ -740,8 +740,11 @@ impl HostAlerts {
 
     /// The pass's last step (`health_alarm_log_process_to_send_notifications()`): every entry that is due gets its
     /// notification, is marked as processed and saved; then the log is trimmed. The due entries are found under
-    /// the store's lock; each is notified and saved with no lock held, where C holds the log's read lock: an entry
-    /// that another thread takes out of the log in between is skipped.
+    /// the store's lock; each is notified and saved with no lock held, where C holds the log's read lock. An entry
+    /// that another thread takes out of the log in between is skipped, unless it was kept aside for a save: that
+    /// one is still notified, as C would have before it let the entry go. A host's cleanup kills the commands
+    /// that are in the queue when it comes: one HEALTH is waiting for, or has started and not queued yet, runs to
+    /// its end, and what the wait would write finds no entry.
     pub(crate) fn process_log(
         &self,
         host: &Host,
@@ -750,9 +753,11 @@ impl HostAlerts {
         env: &dyn Env,
         clock: Clock,
     ) {
-        let (due, build) = self.store().log.scan(clock, summary.is_built());
+        let (mut due, build) = self.store().log.scan(clock, summary.is_built());
         if build {
+            // C's order: the log let go of, the summary built, the clock read again, the scan started over
             summary.build(self, env);
+            due = self.store().log.scan(clock, true).0;
         }
         for unique_id in due {
             // C marks the entry first
@@ -1264,6 +1269,7 @@ mod tests {
                 if let Some(alerts) = self.health.host(&self.host) {
                     assert!(alerts.store_is_free(), "the daemon was called under the store's lock");
                 }
+                assert!(self.health.executing_is_free(), "the daemon was called under the queue's lock");
             }
         }
         impl Env for Watching {
@@ -1290,6 +1296,7 @@ mod tests {
                 true
             }
             fn service_running(&self) -> bool {
+                self.look();
                 true
             }
             fn load(&self, host: &Host) -> Option<Vec<LoadedRow>> {
@@ -1341,16 +1348,29 @@ mod tests {
         let host = host(&[]);
         let c = chart(&host, "t.c", None, "t.ctx", &[]);
         let env = Watching {
-            inner: Scripted { collected: Some(NOW), saves: true, table: Some(Vec::new()), ..Scripted::default() },
+            // a command that runs for two slices of its wait
+            inner: Scripted {
+                collected: Some(NOW),
+                saves: true,
+                table: Some(Vec::new()),
+                command: Some(2),
+                ..Scripted::default()
+            },
             health: Arc::clone(&health),
             host: Arc::clone(&host),
             looks: Cell::new(0),
         };
+        let mut spawned = 0;
         for now in [NOW, NOW + 10, NOW + 20] {
             let mut next_run = now + 100;
             let pass = Pass { now, apply_hibernation_delay: false, next_run: &mut next_run, gate: &|| true };
             health.host_pass(&host, pass, &env, &|| now, &|| true);
+            // the notifications the pass started are waited for as HEALTH does after its hosts
+            health.wait_for_notifications(&env);
+            spawned += env.inner.take_trace().iter().filter(|what| what.starts_with("spawn ")).count();
         }
+        // the two first statuses and the repeats: each asked the table, spawned and was waited for under watch
+        assert!(spawned >= 3, "{spawned} commands");
         let alerts = health.host(&host).expect("the host's alerts");
         let statuses: Vec<Status> = alerts.alerts().iter().map(|alert| alert.run().status).collect();
         assert_eq!(statuses, [Status::Warning, Status::Warning]);

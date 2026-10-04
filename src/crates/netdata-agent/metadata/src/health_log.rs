@@ -1582,9 +1582,10 @@ mod tests {
         let asked = |alarm_id: u32, unique_id: u32| meta.get_last_executed_event(&HOST, alarm_id, unique_id, true);
         assert_eq!(asked(7, 1), Some(None), "an empty table");
 
+        // not in the order of their ids: the newest is the highest id, not the last row
+        insert(3, 7, 1, 0x0000_0005, &HOST);
         insert(1, 7, 3, 0x0000_0045, &HOST);
         insert(2, 7, 4, 0x0000_0001, &HOST);
-        insert(3, 7, 1, 0x0000_0005, &HOST);
         insert(4, 8, 4, 0x0000_0005, &HOST);
         insert(5, 7, 4, 0x0000_0005, &[0x22; 16]);
         // the newest executed row of alarm 7 on this host is entry 3 (CLEAR); entry 2 was not executed

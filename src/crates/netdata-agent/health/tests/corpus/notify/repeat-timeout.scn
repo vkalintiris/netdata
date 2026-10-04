@@ -1,0 +1,22 @@
+# A repeating alert whose commands never exit: the transition's command is killed at its deadline by the wait after
+# the pass, a repeat's by the wait inside the pass that made it, and the pass goes on.
+database real
+timeout 2
+rules tests/corpus/notify/repeat.conf
+exec * WARNING hang
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 10
+clock 0
+pass 0
+var loop.n v 70
+clock 1
+pass 1
+clock 2
+pass 2
+clock 3
+pass 3
+var loop.n v 10
+clock 4
+pass 4
+clock 5
+alarm-log 0

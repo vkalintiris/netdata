@@ -733,7 +733,7 @@ mod replay {
 
         /// The generator's user configuration directory and its localhost's registry hostname.
         fn edit_context(&self) -> (Vec<u8>, Vec<u8>) {
-            (b"/oracle/etc".to_vec(), b"oracle-host".to_vec())
+            (b"/oracle/etc".to_vec(), b"oracle-registry".to_vec())
         }
     }
 
@@ -760,7 +760,7 @@ mod replay {
     fn host() -> Arc<Host> {
         let info = HostInfo {
             hostname: "oracle-host".into(),
-            registry_hostname: "oracle-host".into(),
+            registry_hostname: "oracle-registry".into(),
             os: "linux".into(),
             timezone: "UTC".into(),
             abbrev_timezone: "UTC".into(),
@@ -1728,7 +1728,7 @@ fn sql_matches_c() {
 /// memory and, later, in the row.
 #[test]
 fn notify_matches_c() {
-    assert_eq!(replayed("notify"), 104);
+    assert_eq!(replayed("notify"), 111);
 }
 
 /// The steps a family's replay compared; any difference from C's rows fails.

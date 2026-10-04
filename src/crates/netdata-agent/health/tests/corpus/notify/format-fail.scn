@@ -1,5 +1,6 @@
 # A command that cannot be prepared (an argument too long): the record, the entry is processed in memory and never
-# saved by the notification; nothing is spawned.
+# saved by the notification; nothing is spawned. A repeat's entry alike, and the wait that follows it finds no
+# execution.
 database real
 rules tests/corpus/notify/format-fail.conf
 chart loop.n loop.n_name loop.notify disks things 1
@@ -11,8 +12,10 @@ clock 1
 pass 1
 clock 2
 pass 2
-var loop.n v 10
 clock 3
 pass 3
+var loop.n v 10
 clock 4
+pass 4
+clock 5
 alarm-log 0

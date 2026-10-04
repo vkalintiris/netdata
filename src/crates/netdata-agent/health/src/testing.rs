@@ -30,7 +30,7 @@ pub(crate) fn host(labels: &[(&str, &str)]) -> Arc<Host> {
 pub(crate) fn host_of(guid: &str, labels: &[(&str, &str)]) -> Arc<Host> {
     let info = HostInfo {
         hostname: "testhost".into(),
-        registry_hostname: "testhost".into(),
+        registry_hostname: "testregistry".into(),
         os: "linux".into(),
         timezone: "UTC".into(),
         abbrev_timezone: "UTC".into(),
@@ -218,7 +218,8 @@ pub(crate) fn rule_text(kind: &str, name: &str, on: &str, lines: &[&str]) -> Str
 /// never exits); how many more looks find the service running (none: it always runs). `trace` has what was asked
 /// of it, in order: `asked <unique id>`, `spawn <pid>` (pids count from 100) or `spawn failed`, `monotonic`,
 /// `look`, and each command's `timedwait <pid>` and `kill <pid>`. A slice that ends with the command running
-/// moves `monotonic` on by its length.
+/// moves `monotonic` on by its length and leaves `wait_errno` (0: ETIMEDOUT). `commands` has every command line
+/// it was asked to start.
 #[derive(Default)]
 pub struct Scripted {
     pub exiting: bool,
@@ -232,6 +233,8 @@ pub struct Scripted {
     pub trace: Arc<Mutex<Vec<String>>>,
     pub monotonic: Arc<AtomicU64>,
     pub pids: std::cell::Cell<i32>,
+    pub wait_errno: i32,
+    pub commands: std::cell::RefCell<Vec<Vec<u8>>>,
 }
 
 impl Scripted {
@@ -249,6 +252,7 @@ impl Scripted {
 struct Started {
     pid: i32,
     slices: usize,
+    wait_errno: i32,
     trace: Arc<Mutex<Vec<String>>>,
     monotonic: Arc<AtomicU64>,
 }
@@ -267,7 +271,8 @@ impl Execution for Started {
             self.slices -= 1;
         }
         self.monotonic.fetch_add(timeout_ms as u64 * 1000, Ordering::Relaxed);
-        Waiting::Running(self, 110)
+        let errno = if self.wait_errno == 0 { 110 } else { self.wait_errno };
+        Waiting::Running(self, errno)
     }
 
     fn kill(self: Box<Self>, _: i32) -> i32 {
@@ -348,7 +353,8 @@ impl Env for Scripted {
         self.last_executed
     }
 
-    fn exec(&self, _: &[u8]) -> Option<Box<dyn Execution>> {
+    fn exec(&self, command: &[u8]) -> Option<Box<dyn Execution>> {
+        self.commands.borrow_mut().push(command.to_vec());
         let Some(slices) = self.command else {
             self.traced("spawn failed".to_owned());
             return None;
@@ -356,7 +362,7 @@ impl Env for Scripted {
         let pid = 100 + self.pids.replace(self.pids.get() + 1);
         self.traced(format!("spawn {pid}"));
         let (trace, monotonic) = (Arc::clone(&self.trace), Arc::clone(&self.monotonic));
-        Some(Box::new(Started { pid, slices, trace, monotonic }))
+        Some(Box::new(Started { pid, slices, wait_errno: self.wait_errno, trace, monotonic }))
     }
 
     fn monotonic_usec(&self) -> u64 {
@@ -365,6 +371,7 @@ impl Env for Scripted {
     }
 
     fn edit_context(&self) -> (Vec<u8>, Vec<u8>) {
-        (b"/etc/netdata".to_vec(), b"testhost".to_vec())
+        // not the test host's own registry hostname: the edit command is localhost's
+        (b"/etc/netdata".to_vec(), b"localregistry".to_vec())
     }
 }

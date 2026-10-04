@@ -43,6 +43,7 @@ pub const STEPS: [&str; 22] = [
 ];
 
 /// The steps the Rust agent has work in (indices into [`STEPS`]).
+pub const SIGNAL_SERVICES: usize = 1;
 pub const STOP_WEB_SERVERS: usize = 3;
 pub const STOP_STREAMING: usize = 5;
 pub const STOP_REPLICATION: usize = 6;

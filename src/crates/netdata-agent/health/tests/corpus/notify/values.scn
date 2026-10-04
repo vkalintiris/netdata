@@ -1,5 +1,5 @@
-# What the command shows of odd numbers: a value that is not a number before a raise, huge and negative values, a
-# time past 32 bits, and a clock that went back between two statuses (a negative duration: the CLEAR at the end).
+# What the command shows of odd numbers: a value that is not a number before a raise, huge and negative values, and
+# a time past 32 bits. At the end the clock goes back: the alert is not due, so nothing is evaluated or sent.
 rules tests/corpus/notify/values.conf
 chart loop.n loop.n_name loop.notify disks things 1
 var loop.n v nan

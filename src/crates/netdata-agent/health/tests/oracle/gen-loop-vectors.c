@@ -666,7 +666,8 @@ static void world_init(const char *records_path) {
     is_health_thread = true;
 
     host.hostname = string_strdupz("oracle-host");
-    host.registry_hostname = string_strdupz("oracle-host");
+    // not the hostname: a notification's third word is this one
+    host.registry_hostname = string_strdupz("oracle-registry");
     snprintf(host.machine_guid, sizeof(host.machine_guid), "11111111-2222-4333-8444-555555555555");
     if(uuid_parse(host.machine_guid, host.host_id.uuid) != 0) die("cannot parse", host.machine_guid);
     host.health.enabled = true;
