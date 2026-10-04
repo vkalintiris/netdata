@@ -48,6 +48,8 @@ pub struct Shared {
     /// `netdata_configured_web_dir`.
     pub web_dir: String,
     pub hosts: Arc<Hosts>,
+    /// The health plugin's state: the rules and each host's alerts.
+    pub health: Arc<netdata_agent_health::Health>,
     /// The time-grouping SES/DES window limits.
     pub grouping_windows: netdata_agent_query::grouping::Windows,
     /// `get_release_channel()`, reported by `/api/v1/charts`.

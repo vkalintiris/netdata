@@ -14,6 +14,7 @@ use netdata_agent_rrd::host::Host;
 use netdata_agent_rrd::labels::Labels;
 use netdata_agent_text::json::{JsonOptions, JsonWriter};
 
+use crate::Clock;
 use crate::alert::{Alert, Run, Status};
 use crate::alerts::HostAlerts;
 
@@ -188,7 +189,7 @@ pub fn lookup(
     this: &This,
     name: &[u8],
     snapshot_values: bool,
-    clock: &dyn Fn() -> i64,
+    clock: Clock,
 ) -> Option<Found> {
     let chart = this.chart;
     let linked = match this.alert {
@@ -277,7 +278,7 @@ pub fn trace_json(
     alerts: Option<&HostAlerts>,
     chart: &Arc<Chart>,
     name: &[u8],
-    clock: &dyn Fn() -> i64,
+    clock: Clock,
 ) -> Vec<u8> {
     let found = lookup(host, alerts, &This::blank(chart), name, true, clock);
     let mut w = JsonWriter::new(JsonOptions::DEFAULT);
@@ -314,7 +315,7 @@ mod tests {
         let health = health_with(&variables_case_rules());
         let host = variables_case_host();
         variables_case_collect(&host, NOW);
-        health.host_pass(&host, NOW, &|| true);
+        health.host_pass(&host, &|| NOW, &|| true);
         (health, host)
     }
 
@@ -404,7 +405,7 @@ mod tests {
         assert_eq!(value(&this, b"hv_one", false), hv(42.0, "hv.a"));
 
         // an alert that is not linked any more finds nothing, not even its own values
-        health.chart_freed(&host, &chart("hv.c"), NOW, false);
+        health.chart_freed(host.machine_guid(), &chart("hv.c"), &|| NOW, false);
         assert_eq!(value(&this, b"this", false), None);
         assert_eq!(value(&this, b"hv_one", false), None);
         // and it is no candidate for the others

@@ -25,7 +25,7 @@ use crate::index::Index;
 use crate::labels::{FLAG_DONT_DELETE, Labels, SRC_AUTO};
 use crate::mode::{DbMode, align_entries_to_pagesize};
 use crate::pulse;
-use crate::storage::{Backfill, StorageLayout};
+use crate::storage::{Backfill, HealthEvent, StorageLayout};
 use crate::stream_control::BackfillRunning;
 use crate::tiers::{self, Rollup, TierRecord};
 use crate::upstream;
@@ -1713,6 +1713,8 @@ impl Charts {
             }
         }
         lock(&self.send_slots).release(chart.chart_slot.swap(0, Ordering::Relaxed));
+        // rrdcalc_unlink_and_delete_all_rrdset_alerts()
+        self.storage.health_event(HealthEvent::ChartFreed(&self.host_guid, chart));
         // rrdset_pluginsd_receive_unslot_and_cleanup(): a chart still in a parser's scope is reported, and given up when
         // the scope is this thread's; C then leaves another thread's cache as it is, which here no thread can be using
         // behind its lock, so it is emptied all the same
@@ -1837,6 +1839,8 @@ impl Charts {
             chart.freed.store(true, Ordering::Release);
         }
         for chart in index.charts.items() {
+            // rrdcalc_unlink_and_delete_all_rrdset_alerts(), in each chart's delete callback
+            self.storage.health_event(HealthEvent::ChartFreed(&self.host_guid, chart));
             chart.freed_contents();
         }
     }

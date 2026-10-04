@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use netdata_agent_rrd::chart::Chart;
 use netdata_agent_rrd::host::Host;
 
+use crate::Clock;
 use crate::alert::{Alert, Run, Status};
 use crate::prototype::Rule;
 
@@ -98,7 +99,7 @@ impl HostAlerts {
 
     /// `rrdcalc_add_from_prototype()`: the alert of `rule` on `chart`, created and linked, unless the chart has an
     /// alert of that name already (the first rule to give a key keeps it) or was freed meanwhile. True when linked.
-    pub(crate) fn add(&self, chart: &Arc<Chart>, rule: &Rule, now: i64) -> bool {
+    pub(crate) fn add(&self, chart: &Arc<Chart>, rule: &Rule, clock: Clock) -> bool {
         let key = key(chart.id(), rule.config.name.as_deref().unwrap_or(b""));
         let mut store = self.store();
         if store.by_key.contains_key(&key) || chart.is_freed() {
@@ -108,12 +109,12 @@ impl HostAlerts {
         // rrdcalc_get_unique_id(): the counter. The memory log's entry of this alert and the database's row go in
         // front of it with the loop and with SQLite.
         if store.next_alarm_id == 0 {
-            store.next_alarm_id = now as u32;
+            store.next_alarm_id = clock() as u32;
         }
         let id = store.next_alarm_id;
         store.next_alarm_id = store.next_alarm_id.wrapping_add(1);
 
-        let alert = Arc::new(Alert::new(key.clone(), chart, &rule.config, id, now));
+        let alert = Arc::new(Alert::new(key.clone(), chart, &rule.config, id, clock()));
         let seq = store.next_seq;
         store.next_seq += 1;
         store.order.insert(seq, Arc::clone(&alert));
@@ -124,6 +125,7 @@ impl HostAlerts {
         // rrdcalc_link_to_rrdset()
         store.by_chart.entry(chart.id().to_owned()).or_default().push(Arc::clone(&alert));
         let mut run = alert.run();
+        let now = clock();
         let repeating = alert.config.warn_repeat_every > 0 || alert.config.crit_repeat_every > 0;
         let flags = if repeating { ENTRY_FLAG_IS_REPEATING } else { 0 };
         let transition = Transition {
@@ -142,7 +144,7 @@ impl HostAlerts {
 
     /// `rrdcalc_unlink_and_delete()` of one alert, the store locked: out of the name index, its REMOVED entry
     /// unless it is REMOVED already or the agent is exiting, off its chart's list, out of the dictionary.
-    fn unlink(store: &mut Store, alert: &Arc<Alert>, now: i64, exiting: bool) {
+    fn unlink(store: &mut Store, alert: &Arc<Alert>, clock: Clock, exiting: bool) {
         if let Some(named) = store.by_name.get_mut(alert.name()) {
             named.retain(|other| !Arc::ptr_eq(other, alert));
             if named.is_empty() {
@@ -153,6 +155,7 @@ impl HostAlerts {
         if !exiting {
             let mut run = alert.run();
             if run.status != Status::Removed {
+                let now = clock();
                 let transition = Transition {
                     when: now,
                     duration: now.saturating_sub(run.last_status_change).max(0),
@@ -180,18 +183,18 @@ impl HostAlerts {
     }
 
     /// `rrdcalc_unlink_and_delete_all_rrdset_alerts()`: the chart's alerts go, in link order.
-    pub(crate) fn unlink_chart(&self, chart: &Chart, now: i64, exiting: bool) {
+    pub(crate) fn unlink_chart(&self, chart: &Chart, clock: Clock, exiting: bool) {
         let mut store = self.store();
         for alert in store.by_chart.get(chart.id()).cloned().unwrap_or_default() {
-            Self::unlink(&mut store, &alert, now, exiting);
+            Self::unlink(&mut store, &alert, clock, exiting);
         }
     }
 
     /// `rrdcalc_delete_all()`: every alert of the host goes, in the dictionary's order.
-    pub(crate) fn delete_all(&self, now: i64, exiting: bool) {
+    pub(crate) fn delete_all(&self, clock: Clock, exiting: bool) {
         let mut store = self.store();
         for alert in store.order.values().cloned().collect::<Vec<_>>() {
-            Self::unlink(&mut store, &alert, now, exiting);
+            Self::unlink(&mut store, &alert, clock, exiting);
         }
     }
 
@@ -233,8 +236,8 @@ mod tests {
         let prototypes = health.prototypes();
         let rules = prototypes.get(b"a").unwrap().rules();
 
-        assert!(alerts.add(&c, &rules[0], NOW));
-        assert!(!alerts.add(&c, &rules[1], NOW), "the chart has an alert of that name");
+        assert!(alerts.add(&c, &rules[0], &|| NOW));
+        assert!(!alerts.add(&c, &rules[1], &|| NOW), "the chart has an alert of that name");
         let linked = alerts.chart_alerts(&c);
         assert_eq!(linked.len(), 1);
         assert_eq!(linked[0].key, b"a,on[t.c]");
@@ -251,7 +254,7 @@ mod tests {
         let alerts = HostAlerts::default();
         let prototypes = health.prototypes();
         for (name, _) in [("with_units", 0), ("bare", 1)] {
-            assert!(alerts.add(&c, &prototypes.get(name.as_bytes()).unwrap().rules()[0], NOW));
+            assert!(alerts.add(&c, &prototypes.get(name.as_bytes()).unwrap().rules()[0], &|| NOW));
         }
         let linked = alerts.chart_alerts(&c);
 
@@ -288,7 +291,7 @@ mod tests {
         let alerts = HostAlerts::default();
         let prototypes = health.prototypes();
         let (stored_name, prototype) = prototypes.iter().next().unwrap();
-        assert!(alerts.add(&c, &prototype.rules()[0], NOW));
+        assert!(alerts.add(&c, &prototype.rules()[0], &|| NOW));
         let key = &alerts.chart_alerts(&c)[0].key;
         assert_eq!(key.len(), 1023);
         assert!(key.starts_with(&stored_name[..1000]));
@@ -303,7 +306,7 @@ mod tests {
         let prototypes = health.prototypes();
         let (a, b) = (&prototypes.get(b"a").unwrap().rules()[0], &prototypes.get(b"b").unwrap().rules()[0]);
         for (chart, rule) in [(&c1, a), (&c1, b), (&c2, a)] {
-            assert!(alerts.add(chart, rule, NOW));
+            assert!(alerts.add(chart, rule, &|| NOW));
         }
         assert_eq!(named(&alerts.alerts()), [pair("a", "t.c1"), pair("b", "t.c1"), pair("a", "t.c2")]);
         assert_eq!(named(&alerts.chart_alerts(&c1)), [pair("a", "t.c1"), pair("b", "t.c1")]);
@@ -312,7 +315,7 @@ mod tests {
         let first = Arc::clone(&alerts.chart_alerts(&c1)[0]);
         assert!(alerts.is_linked(&host, &first));
 
-        alerts.unlink_chart(&c1, NOW + 5, false);
+        alerts.unlink_chart(&c1, &|| NOW + 5, false);
         assert_eq!(named(&alerts.alerts()), [pair("a", "t.c2")]);
         assert!(alerts.chart_alerts(&c1).is_empty());
         assert_eq!(named(&alerts.by_name(b"a")), [pair("a", "t.c2")]);
@@ -321,13 +324,13 @@ mod tests {
         assert!(!alerts.is_linked(&host, &first));
 
         // linked again, an alert goes to the end: of the dictionary and of its name's list
-        assert!(alerts.add(&c1, a, NOW + 6));
+        assert!(alerts.add(&c1, a, &|| NOW + 6));
         assert_eq!(named(&alerts.alerts()), [pair("a", "t.c2"), pair("a", "t.c1")]);
         assert_eq!(named(&alerts.by_name(b"a")), [pair("a", "t.c2"), pair("a", "t.c1")]);
         // a new alert with the next alarm id (the memory log would give the old one back: the loop's commit)
         assert_eq!(alerts.chart_alerts(&c1)[0].id, first.id + 3);
 
-        alerts.delete_all(NOW + 7, false);
+        alerts.delete_all(&|| NOW + 7, false);
         assert!(alerts.alerts().is_empty() && alerts.by_name(b"a").is_empty() && alerts.chart_alerts(&c2).is_empty());
     }
 
@@ -341,12 +344,12 @@ mod tests {
         let rule = &prototypes.get(b"a").unwrap().rules()[0];
         let event_id_after_unlink = |exiting: bool, removed: bool| {
             let alerts = HostAlerts::default();
-            assert!(alerts.add(&c, rule, NOW));
+            assert!(alerts.add(&c, rule, &|| NOW));
             let alert = Arc::clone(&alerts.chart_alerts(&c)[0]);
             if removed {
                 alert.run().status = Status::Removed;
             }
-            alerts.unlink_chart(&c, NOW + 1, exiting);
+            alerts.unlink_chart(&c, &|| NOW + 1, exiting);
             assert!(alerts.alerts().is_empty());
             alert.run().next_event_id
         };
@@ -363,7 +366,7 @@ mod tests {
         let alerts = HostAlerts::default();
         let prototypes = health.prototypes();
         assert!(host.charts().free_if(&c, |_| true));
-        assert!(!alerts.add(&c, &prototypes.get(b"a").unwrap().rules()[0], NOW));
+        assert!(!alerts.add(&c, &prototypes.get(b"a").unwrap().rules()[0], &|| NOW));
         assert!(alerts.alerts().is_empty());
         assert_eq!(alerts.version(), 0);
     }

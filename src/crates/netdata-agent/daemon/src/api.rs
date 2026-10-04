@@ -58,11 +58,12 @@ pub fn info_json(host: &Host, shared: &Shared) -> Vec<u8> {
         mirrored_host_status(&mut w, host);
     }
     w.array_close();
-    // web_client_api_request_v1_info_summary_alarm_statuses(): no alert runs without the health engine
+    // web_client_api_request_v1_info_summary_alarm_statuses()
+    let counts = netdata_agent_health::api::status_counts(shared.health.host(host).as_deref());
     w.member_add_object("alarms");
-    for status in ["normal", "warning", "critical"] {
-        w.member_add_uint64(status, 0);
-    }
+    w.member_add_uint64("normal", counts.normal);
+    w.member_add_uint64("warning", counts.warning);
+    w.member_add_uint64("critical", counts.critical);
     w.object_close();
     info.system_info.to_json_v1(&mut w);
     // host_labels2json()

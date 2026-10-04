@@ -26,6 +26,13 @@ pub fn chart_alarms_json(w: &mut JsonWriter, alerts: Option<&HostAlerts>, chart:
     }
 }
 
+/// `rrdvar_to_json_members()`: custom variables in insertion order, each a double.
+pub fn variables_json(w: &mut JsonWriter, variables: &[(String, f64)]) {
+    for (name, value) in variables {
+        w.member_add_double(name, *value);
+    }
+}
+
 /// `charts2json()`'s `alarms_count`: the host's alerts that have a chart, which every linked alert has.
 pub fn linked_count(alerts: Option<&HostAlerts>) -> usize {
     alerts.map_or(0, HostAlerts::count)
@@ -132,15 +139,11 @@ pub fn alarm_variables_json(host: &Host, alerts: Option<&HostAlerts>, chart: &Ch
     w.member_add_object("chart_variables");
     w.member_add_int64("update_every", i64::from(meta.update_every));
     w.member_add_uint64("last_collected_t", chart.collection().last_collected.0 as u64);
-    for (name, value) in chart.variables() {
-        w.member_add_double(&name, value);
-    }
+    variables_json(&mut w, &chart.variables());
     w.object_close();
 
     w.member_add_object("host_variables");
-    for (name, value) in host.variables() {
-        w.member_add_double(&name, value);
-    }
+    variables_json(&mut w, &host.variables());
     w.object_close();
 
     // per name, the alert whose chart shares the most labels with this chart; the first on a tie
@@ -193,7 +196,7 @@ mod tests {
             let host = variables_case_host();
             variables_case_collect(&host, NOW);
             if case == "on" {
-                health.host_pass(&host, NOW, &|| true);
+                health.host_pass(&host, &|| NOW, &|| true);
             }
             let alerts = health.host(&host);
 
@@ -237,7 +240,7 @@ mod tests {
         assert_eq!(linked_count(health.host(&host).as_deref()), 0);
         assert_eq!(counts(), StatusCounts::default());
 
-        health.host_pass(&host, NOW, &|| true);
+        health.host_pass(&host, &|| NOW, &|| true);
         // link order; the duration is the rule's `every`, on a chart collected every 5 seconds too
         assert_eq!(
             alarms("hv.a"),

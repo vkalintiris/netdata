@@ -167,15 +167,17 @@ fn uuid_text(uuid: &[u8; 16]) -> String {
 }
 
 /// `pluginsd_update_host_ephemerality()`: `_is_ephemeral` normalized to true or false, and the host's option with it.
-fn update_host_ephemerality(host: &Host) {
-    let ephemeral = host.update_labels(|labels| {
+/// Whether the label changed.
+fn update_host_ephemerality(host: &Host) -> bool {
+    let (ephemeral, changed) = host.update_labels(|labels| {
         let ephemeral = labels
             .get(b"_is_ephemeral")
             .is_some_and(|v| !v.is_empty() && netdata_agent_inicfg::test_boolean_value(v));
-        labels.add(b"_is_ephemeral", if ephemeral { b"true" } else { b"false" }, labels::SRC_CONFIG);
-        ephemeral
+        let value: &[u8] = if ephemeral { b"true" } else { b"false" };
+        (ephemeral, labels.add_changed(b"_is_ephemeral", value, labels::SRC_CONFIG).unwrap_or(false))
     });
     host.set_ephemeral(ephemeral);
+    changed
 }
 
 /// `line_splitter_reconstruct_line()`: the line's words, each quoted, appended to `out`; false for a line without any.
@@ -1224,6 +1226,8 @@ impl Parser {
         if changed {
             chart.set_metadata_update();
             chart.metadata_updated();
+            // the chart's labels are what a rule's `chart labels` is matched against
+            chart.raise_label_recheck();
         }
         self.clabel_count = 0;
         self.clabel_changed = false;
@@ -1327,20 +1331,28 @@ impl Parser {
     fn overwrite(&mut self) -> Rc {
         let new = self.new_host_labels.take();
         let info = self.host.info();
-        if let Some(new) = &new {
-            self.host.update_labels(|labels| labels.migrate_to_these(new));
-        }
-        update_host_ephemerality(&self.host);
-        self.host.update_labels(|labels| {
+        let mut changed = match &new {
+            Some(new) => self.host.update_labels(|labels| labels.migrate_to_these(new)),
+            None => false,
+        };
+        changed |= update_host_ephemerality(&self.host);
+        changed |= self.host.update_labels(|labels| {
+            let mut changed = false;
             if !labels.exists(b"_os") {
-                labels.add(b"_os", info.os.as_bytes(), labels::SRC_AUTO);
+                changed |= labels.add_changed(b"_os", info.os.as_bytes(), labels::SRC_AUTO).unwrap_or(false);
             }
             if !labels.exists(b"_hostname") {
-                labels.add(b"_hostname", info.hostname.as_bytes(), labels::SRC_AUTO);
+                let hostname = info.hostname.as_bytes();
+                changed |= labels.add_changed(b"_hostname", hostname, labels::SRC_AUTO).unwrap_or(false);
             }
+            changed
         });
         self.host
             .set_meta_flags(meta_flags::LABELS | meta_flags::UPDATE);
+        // the host's labels are what a rule's `host labels` is matched against
+        if changed {
+            self.host.raise_label_recheck();
+        }
         Ok(())
     }
 
@@ -1535,11 +1547,15 @@ impl Parser {
         // the receiver status detected before the labels give its ephemerality, as C
         host.pulse_status(0);
         let collector = self.localhost.machine_guid().to_string();
-        host.update_labels(|labels| {
-            labels.migrate_to_these(&define.labels);
-            labels.add(b"_collector_machine_guid", collector.as_bytes(), labels::SRC_AUTO);
+        let mut labels_changed = host.update_labels(|labels| {
+            let migrated = labels.migrate_to_these(&define.labels);
+            let guid = collector.as_bytes();
+            migrated | labels.add_changed(b"_collector_machine_guid", guid, labels::SRC_AUTO).unwrap_or(false)
         });
-        update_host_ephemerality(&host);
+        labels_changed |= update_host_ephemerality(&host);
+        if labels_changed {
+            host.raise_label_recheck();
+        }
         self.switch_host(Arc::clone(&host));
         self.clear_scope("HOST_DEFINE_END");
         host.clear_orphan();

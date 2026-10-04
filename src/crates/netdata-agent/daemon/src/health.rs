@@ -1,9 +1,10 @@
 //! Health in the daemon: the plugin's start (`health_plugin_init()`, `src/health/health.c`), which loads the alert
 //! configuration, and the `HEALTH` thread, ported from `health_main()` and `health_event_loop()`
-//! (`src/health/health_event_loop.c`) without alerts yet (M9): C runs the loop with health off too, and a
-//! disconnected child is archived only after more than 10 of its passes (D93.2). It keeps C's pacing: a pass at
-//! most every `[health] run at least every` seconds, waited in 1 s sleeps, and none while a backfill or more than
-//! one user query runs.
+//! (`src/health/health_event_loop.c`). A pass visits every host and gives the charts of those health runs for
+//! their alerts; the alerts are not evaluated yet (M9). C runs the loop with health off too, and a disconnected
+//! child is archived only after more than 10 of its passes (D93.2). It keeps C's pacing: a pass at most every
+//! `[health] run at least every` seconds, waited in 1 s sleeps, and none while a backfill or more than one user
+//! query runs.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -13,7 +14,8 @@ use netdata_agent_health::store::alert_hash_row;
 use netdata_agent_health::{Health, StoreSink};
 use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_rrd::clock::{now_realtime_s, now_realtime_ut};
-use netdata_agent_rrd::storage::StorageLayout;
+use netdata_agent_rrd::host::Hosts;
+use netdata_agent_rrd::storage::HealthEvent;
 use netdata_agent_rrd::stream_control;
 
 use crate::conf::Conf;
@@ -61,9 +63,21 @@ impl Suspension {
     }
 }
 
-/// Starts `HEALTH`, whose passes `storage` counts; `run_at_least_every_s` and `postpone_s` are `[health]`'s.
+/// What the database tells health as it lets go of a chart or a host: C calls `rrdcalc.c` from the chart's delete
+/// callback and from the host's cleanup. An unlink is logged unless the agent is exiting.
+pub fn database_event(health: &Health, event: HealthEvent<'_>) {
+    let exiting = netdata_agent_sys::exit::initiated();
+    match event {
+        HealthEvent::ChartFreed(host, chart) => health.chart_freed(host, chart, &now_realtime_s, exiting),
+        HealthEvent::HostCleanup(host) => health.host_cleanup(host, &now_realtime_s, exiting),
+        HealthEvent::HostFreed(host) => health.host_freed(host),
+    }
+}
+
+/// Starts `HEALTH`, which passes over `hosts`; `run_at_least_every_s` and `postpone_s` are `[health]`'s.
 pub fn spawn(
-    storage: Arc<StorageLayout>,
+    hosts: Arc<Hosts>,
+    health: Arc<Health>,
     stack_size: usize,
     run_at_least_every_s: i64,
     postpone_s: i64,
@@ -76,12 +90,14 @@ pub fn spawn(
         move |ticker| {
             let mut suspension = Suspension { last: None };
             // service_running(SERVICE_HEALTH): false once the exit starts (D110)
-            while ticker.running() && !shutdown::exiting() {
+            let running = || ticker.running() && !shutdown::exiting();
+            while running() {
                 if !stream_control::health_should_be_running() {
                     ticker.sleep(stream_control::throttle_wait());
                     continue;
                 }
-                let next_run = now_realtime_s().saturating_add(run_at_least_every_s);
+                let now = now_realtime_s();
+                let next_run = now.saturating_add(run_at_least_every_s);
                 if suspension.resumed(now_realtime_ut(), Instant::now()) {
                     nd_log!(
                         Source::Daemon,
@@ -89,8 +105,18 @@ pub fn spawn(
                         "Postponing alarm checks for {postpone_s} seconds, because it seems that the system was just resumed from suspension."
                     );
                 }
-                // health_event_loop_for_host(): with health off no host runs its alerts
-                storage.next_health_iteration();
+                hosts.storage().next_health_iteration();
+                for host in hosts.all() {
+                    if !running() {
+                        break;
+                    }
+                    // health_event_loop_for_host(): a host health does not run for is not stamped either
+                    if !host.should_run_health(now) {
+                        continue;
+                    }
+                    host.stamp_health_iteration();
+                    health.host_pass(&host, &now_realtime_s, &running);
+                }
                 // health_sleep()
                 while now_realtime_s() < next_run && !shutdown::exiting() && ticker.sleep(Duration::from_secs(1)) {}
             }

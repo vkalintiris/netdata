@@ -1,9 +1,12 @@
 //! `/api/v1/charts` and `/api/v1/chart`, ported from `src/web/api/v1/api_v1_charts.c`,
-//! `src/web/api/formatters/charts2json.c` and `rrdset2json.c`. Health is not ported: chart variables and alarms are
-//! empty, `alarms_count` is 0 and `green`/`red` are unset (null).
+//! `src/web/api/formatters/charts2json.c` and `rrdset2json.c`. `green` and `red` are unset (null): only internal
+//! collectors, which are not ported, set them.
 
 use std::sync::Arc;
 
+use netdata_agent_health::Health;
+use netdata_agent_health::alerts::HostAlerts;
+use netdata_agent_health::api::{chart_alarms_json, linked_count, variables_json};
 use netdata_agent_rrd::chart::{Chart, ID_LENGTH_MAX, dim_flags, flags as chart_flags};
 use netdata_agent_rrd::host::{Host, Hosts};
 use netdata_agent_rrd::mode::DbMode;
@@ -47,8 +50,8 @@ fn available_for_viewers(st: &Chart) -> bool {
         && st.mode() != DbMode::None
 }
 
-/// `rrdset2json()`: adds the chart's members; returns its visible dimensions.
-fn chart_json(w: &mut JsonWriter, st: &Chart) -> usize {
+/// `rrdset2json()`: adds the chart's members; returns its visible dimensions. `alerts` are its host's.
+fn chart_json(w: &mut JsonWriter, st: &Chart, alerts: Option<&HostAlerts>) -> usize {
     let meta = st.meta();
     let name = meta.name.clone().unwrap_or_else(|| st.id().to_string());
     // rrdset_first_entry_s() and rrdset_last_entry_s(): every tier
@@ -95,10 +98,12 @@ fn chart_json(w: &mut JsonWriter, st: &Chart) -> usize {
     }
     w.object_close();
     w.member_add_object(b"chart_variables");
+    variables_json(w, &st.variables());
     w.object_close();
     w.member_add_double("green", f64::NAN);
     w.member_add_double("red", f64::NAN);
     w.member_add_object(b"alarms");
+    chart_alarms_json(w, alerts, st);
     w.object_close();
     w.member_add_object(b"chart_labels");
     for label in meta.labels.iter() {
@@ -112,8 +117,9 @@ fn chart_json(w: &mut JsonWriter, st: &Chart) -> usize {
 }
 
 /// `charts2json()`. `rrd_memory_bytes` counts this implementation's chart and ring memory, not C's structures.
-pub fn charts(host: &Host, hosts: &Hosts, release_channel: &str, custom_info: &str) -> Reply {
+pub fn charts(host: &Host, hosts: &Hosts, health: &Health, release_channel: &str, custom_info: &str) -> Reply {
     let hi = host.info();
+    let alerts = health.host(host);
     let mut w = JsonWriter::new(JsonOptions::DEFAULT);
     w.member_add_string("hostname", host.hostname());
     w.member_add_string("version", &hi.program_version);
@@ -131,7 +137,7 @@ pub fn charts(host: &Host, hosts: &Hosts, release_channel: &str, custom_info: &s
             continue;
         }
         w.member_add_object(st.id());
-        dimensions += chart_json(&mut w, &st) as i64;
+        dimensions += chart_json(&mut w, &st, alerts.as_deref()) as i64;
         w.object_close();
         memory += st
             .dims()
@@ -143,7 +149,7 @@ pub fn charts(host: &Host, hosts: &Hosts, release_channel: &str, custom_info: &s
     w.object_close();
     w.member_add_int64("charts_count", count);
     w.member_add_int64("dimensions_count", dimensions);
-    w.member_add_int64("alarms_count", 0);
+    w.member_add_int64("alarms_count", linked_count(alerts.as_deref()) as i64);
     w.member_add_int64("rrd_memory_bytes", memory);
     let all = hosts.all();
     w.member_add_int64("hosts_count", all.len() as i64);
@@ -157,45 +163,57 @@ pub fn charts(host: &Host, hosts: &Hosts, release_channel: &str, custom_info: &s
     }
     w.array_close();
     w.finalize();
-    Reply {
-        code: status::OK,
-        content_type: ContentType::ApplicationJson,
-        body: w.into_bytes(),
-        ..Reply::default()
+    json_reply(w.into_bytes())
+}
+
+/// The request's `name=value` parameters as C's one-chart handlers walk them: a pair with an empty name or an empty
+/// value is skipped.
+pub fn parameters(query: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
+    let mut rest = Some(query);
+    std::iter::from_fn(move || {
+        while rest.is_some() {
+            let mut value = Some(strsep_skip(&mut rest, b"&"));
+            let name = strsep_skip(&mut value, b"=");
+            let value = value.unwrap_or(b"");
+            if !name.is_empty() && !value.is_empty() {
+                return Some((name, value));
+            }
+        }
+        None
+    })
+}
+
+/// The chart a request names, by id then by name, or C's 404: the name HTML-escaped, in a body that stays text/plain.
+pub fn named_chart(host: &Arc<Host>, chart: &[u8]) -> Result<Arc<Chart>, Reply> {
+    crate::data::find_chart(host, chart).ok_or_else(|| {
+        let mut reply = Reply::text(status::NOT_FOUND, "Chart is not found: ");
+        html_escape(&mut reply.body, chart);
+        reply
+    })
+}
+
+/// A JSON body, answered 200.
+pub fn json_reply(body: Vec<u8>) -> Reply {
+    Reply { code: status::OK, content_type: ContentType::ApplicationJson, body, ..Reply::default() }
+}
+
+/// `api_v1_single_chart_helper()`: the JSON `body` makes of the chart the `chart` parameter names.
+pub fn single_chart(host: &Arc<Host>, query: &[u8], body: impl FnOnce(&Arc<Chart>) -> Vec<u8>) -> Reply {
+    let Some((_, chart)) = parameters(query).filter(|(name, _)| *name == b"chart").last() else {
+        return Reply::text(status::BAD_REQUEST, "No chart id is given at the request.");
+    };
+    match named_chart(host, chart) {
+        Ok(st) => json_reply(body(&st)),
+        Err(not_found) => not_found,
     }
 }
 
-/// `api_v1_single_chart_helper()` with `rrd_stats_api_v1_chart()`.
-pub fn chart(host: &Arc<Host>, query: &[u8]) -> Reply {
-    let mut chart = None;
-    let mut rest = Some(query);
-    while rest.is_some() {
-        let mut value = Some(strsep_skip(&mut rest, b"&"));
-        let name = strsep_skip(&mut value, b"=");
-        let value = value.unwrap_or(b"");
-        if name.is_empty() || value.is_empty() {
-            continue;
-        }
-        if name == b"chart" {
-            chart = Some(value);
-        }
-    }
-    let Some(chart) = chart else {
-        return Reply::text(status::BAD_REQUEST, "No chart id is given at the request.");
-    };
-    let Some(st) = crate::data::find_chart(host, chart) else {
-        // The body is HTML-escaped but stays text/plain.
-        let mut reply = Reply::text(status::NOT_FOUND, "Chart is not found: ");
-        html_escape(&mut reply.body, chart);
-        return reply;
-    };
-    let mut w = JsonWriter::new(JsonOptions::DEFAULT);
-    chart_json(&mut w, &st);
-    w.finalize();
-    Reply {
-        code: status::OK,
-        content_type: ContentType::ApplicationJson,
-        body: w.into_bytes(),
-        ..Reply::default()
-    }
+/// `api_v1_chart()`: `api_v1_single_chart_helper()` with `rrd_stats_api_v1_chart()`.
+pub fn chart(host: &Arc<Host>, health: &Health, query: &[u8]) -> Reply {
+    single_chart(host, query, |st| {
+        let mut w = JsonWriter::new(JsonOptions::DEFAULT);
+        chart_json(&mut w, st, health.host(host).as_deref());
+        w.finalize();
+        w.into_bytes()
+    })
 }

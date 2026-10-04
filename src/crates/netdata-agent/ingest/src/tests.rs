@@ -3177,3 +3177,60 @@ fn a_vnodes_definition_starts_a_new_epoch() {
     assert!(v.functions().available(b"vfn"));
 }
 
+
+/// What a label change asks of health. A chart's CLABEL_COMMIT that changed a label flags the chart for a recheck
+/// and tells its host that a chart is pending (not that the host's labels changed: only this chart is done again);
+/// a commit that changed nothing flags nothing.
+#[test]
+fn a_chart_label_commit_asks_health_for_a_recheck() {
+    use netdata_agent_rrd::chart::flags;
+    use netdata_agent_rrd::host::pending_flags;
+    const CHART: &str = "CHART 'test.c1' '' 'title' 'units' 'family' 'ctx.c1' line 1000 1 '' fixture-pusher corpus";
+    let h = host();
+    let mut p = parser(&h);
+    feed_all(&mut p, &DEFINE);
+    let chart = h.charts().find("test.c1", true).unwrap();
+    let commit = |p: &mut Parser, value: &str| {
+        let label = format!("CLABEL 'k' '{value}' 2");
+        assert!(feed_all(p, &[CHART, &label, "CLABEL_COMMIT"]).iter().all(|&ok| ok));
+        (chart.take_health_pending(), h.take_health_pending())
+    };
+    commit(&mut p, "v1");
+    assert_eq!(commit(&mut p, "v2"), (flags::PENDING_LABEL_RECHECK, pending_flags::HEALTH_INITIALIZATION));
+    assert_eq!(commit(&mut p, "v2"), (0, 0), "the same labels again");
+    assert_eq!(commit(&mut p, "v3"), (flags::PENDING_LABEL_RECHECK, pending_flags::HEALTH_INITIALIZATION));
+}
+
+/// OVERWRITE flags the host's label recheck when its labels changed, and not when the same labels come again.
+#[test]
+fn overwrite_asks_health_for_a_recheck_when_the_labels_changed() {
+    use netdata_agent_rrd::host::pending_flags;
+    let (h, mut p, _wire) = stream_path_parser(CAPTURED_CAPS);
+    let overwrite = |p: &mut Parser, region: &str| {
+        let info = h.info();
+        let lines = [
+            format!("LABEL '_os' 1 '{}'", info.os),
+            format!("LABEL '_hostname' 1 '{}'", info.hostname),
+            "LABEL '_is_ephemeral' 4 'false'".to_owned(),
+            format!("LABEL 'region' 4 '{region}'"),
+            "OVERWRITE".to_owned(),
+        ];
+        assert!(feed_all(p, &lines.iter().map(String::as_str).collect::<Vec<_>>()).iter().all(|&ok| ok));
+        h.take_health_pending()
+    };
+    assert_eq!(overwrite(&mut p, "eu"), pending_flags::LABEL_RECHECK);
+    assert_eq!(overwrite(&mut p, "eu"), 0, "the same labels again");
+    assert_eq!(overwrite(&mut p, "us"), pending_flags::LABEL_RECHECK);
+}
+
+/// A vnode's definition gives it labels (its collector's machine GUID at least): its labels are rechecked.
+#[test]
+fn a_vnode_definition_asks_health_for_a_recheck() {
+    use netdata_agent_rrd::host::pending_flags;
+    let hosts = plugin_hosts();
+    let attached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut p = vnode_parser(&hosts, &attached);
+    feed_ok(&mut p, &[format!("HOST_DEFINE {VNODE} v1"), "HOST_DEFINE_END".into()]);
+    let v = hosts.find_by_guid(VNODE).unwrap();
+    assert_eq!(v.take_health_pending() & pending_flags::LABEL_RECHECK, pending_flags::LABEL_RECHECK);
+}

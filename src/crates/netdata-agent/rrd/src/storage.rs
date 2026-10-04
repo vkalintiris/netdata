@@ -10,7 +10,7 @@ use netdata_agent_storage::dbengine::engine::mrg::{Handle, Mrg};
 use netdata_agent_storage::dbengine::engine::query::Dbengine;
 use netdata_agent_storage::query::{Priority, StorageQuery};
 
-use crate::chart::Dim;
+use crate::chart::{Chart, Dim};
 use crate::contexts::{DbRotation, ExtremeCardinality, RamIndex, TierRetention};
 use crate::mode::DbMode;
 use crate::pulse::Pulse;
@@ -50,6 +50,8 @@ pub struct StorageLayout {
     pulse: Pulse,
     /// `metaqueue_delete_dimension_uuid()`: what removes a freed dimension's metadata row, installed by the daemon.
     freed_dimension_row: OnceLock<DimensionRowHook>,
+    /// What health does when a chart or a host goes, installed by the daemon.
+    health_hook: OnceLock<HealthHook>,
     /// `health_evloop_iteration`: the passes of the HEALTH loop.
     health_iteration: AtomicU64,
     /// The `[db]` cleanup times the maintenance and its readers share.
@@ -86,6 +88,26 @@ impl std::fmt::Debug for DimensionRowHook {
     }
 }
 
+/// What health hears from the database. C calls `rrdcalc.c` from these places directly; here health is above this
+/// crate, so the daemon installs what answers. Hosts are named by machine GUID.
+#[derive(Debug, Clone, Copy)]
+pub enum HealthEvent<'a> {
+    /// `rrdset_delete_callback()`: this chart of that host was freed.
+    ChartFreed(&'a str, &'a Chart),
+    /// `rrdhost_cleanup_data_collection_and_health()`: the host's charts are about to be freed.
+    HostCleanup(&'a str),
+    /// `rrdhost_free_unlinked()`: the host left the index and its data collection was cleaned up.
+    HostFreed(&'a str),
+}
+
+struct HealthHook(Box<dyn Fn(HealthEvent<'_>) + Send + Sync>);
+
+impl std::fmt::Debug for HealthHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HealthHook")
+    }
+}
+
 impl Default for StorageLayout {
     fn default() -> Self {
         StorageLayout::new(None)
@@ -106,6 +128,7 @@ impl StorageLayout {
             extreme_cardinality: ExtremeCardinality::default(),
             pulse: Pulse::default(),
             freed_dimension_row: OnceLock::new(),
+            health_hook: OnceLock::new(),
             health_iteration: AtomicU64::new(0),
             cleanup: OnceLock::new(),
         }
@@ -129,6 +152,18 @@ impl StorageLayout {
     /// A pass of the HEALTH loop begins; its number.
     pub fn next_health_iteration(&self) -> u64 {
         self.health_iteration.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Installs what health does when a chart or a host goes; once.
+    pub fn set_health_hook(&self, hook: impl Fn(HealthEvent<'_>) + Send + Sync + 'static) {
+        let _ = self.health_hook.set(HealthHook(Box::new(hook)));
+    }
+
+    /// Tells health, when it listens. The caller holds no index lock.
+    pub(crate) fn health_event(&self, event: HealthEvent<'_>) {
+        if let Some(hook) = self.health_hook.get() {
+            (hook.0)(event);
+        }
     }
 
     /// Installs what removes a freed dimension's metadata row; once.

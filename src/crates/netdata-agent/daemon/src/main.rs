@@ -31,6 +31,7 @@ mod exit_reason;
 mod functions;
 mod guid;
 mod health;
+mod health_api;
 mod heartbeat;
 mod host_labels;
 mod listen;
@@ -743,6 +744,11 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     hosts.localhost().pulse_status(0);
     dyncfg.host_init(hosts.localhost());
     let health = health::plugin_init(&mut conf, health_config, meta.is_some(), metasync.queue());
+    // a freed chart's alerts and a cleaned host's go where the database lets go of them
+    hosts.storage().set_health_hook({
+        let health = Arc::clone(&health);
+        move |event| health::database_event(&health, event)
+    });
     builtins::global_functions_add(&hosts);
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
         meta.detect_machine_guid_change(host_id);
@@ -898,6 +904,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         idle_timeout_s: web.disconnect_idle_after_s.max(0) as u64,
         web_dir: conf.dirs.web.clone(),
         hosts: Arc::clone(&hosts),
+        health: Arc::clone(&health),
         grouping_windows,
         release_channel,
         // Every startup read is done: from here on netdata.conf is read and dumped under its lock.
@@ -933,7 +940,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     });
     // HEALTH, before PULSE in C's table, which starts it with health off too (D93.2); C carries on without it
     let health_thread = match health::spawn(
-        Arc::clone(hosts.storage()),
+        Arc::clone(&hosts),
+        Arc::clone(&health),
         conf.threads.thread_stack_size,
         i64::from(health.config().run_at_least_every_s),
         i64::from(health.config().postpone_s),

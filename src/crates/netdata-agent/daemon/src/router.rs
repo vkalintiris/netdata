@@ -28,6 +28,7 @@ use crate::contexts_v2;
 use crate::data;
 use crate::dbengine_stats;
 use crate::functions;
+use crate::health_api;
 use crate::server::{self, Reply, Shared};
 use crate::static_file;
 use crate::stream_info;
@@ -72,7 +73,7 @@ const API_V1: &[Command] = &[
         acl: acl::bits::METRICS,
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
-        callback: |_, host, query| v1_charts::chart(host, query),
+        callback: |route, host, query| v1_charts::chart(host, &route.shared.health, query),
     },
     Command {
         name: "charts",
@@ -83,6 +84,7 @@ const API_V1: &[Command] = &[
             v1_charts::charts(
                 host,
                 &route.shared.hosts,
+                &route.shared.health,
                 route.shared.release_channel,
                 route.shared.custom_dashboard_info(),
             )
@@ -131,6 +133,21 @@ const API_V1: &[Command] = &[
         access: access::ANONYMOUS_DATA,
         allow_subpaths: false,
         callback: functions::list,
+    },
+    // alerts: the alert endpoints themselves come with the health loop
+    Command {
+        name: "alarm_variables",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: health_api::alarm_variables,
+    },
+    Command {
+        name: "variable",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: health_api::variable,
     },
     // dyncfg APIs
     Command {
@@ -214,6 +231,13 @@ const CLOUD_ONLY: [Command; 3] = [
     },
 ];
 const API_V3: &[Command] = &[
+    Command {
+        name: "variable",
+        acl: acl::bits::ALERTS,
+        access: access::ANONYMOUS_DATA,
+        allow_subpaths: false,
+        callback: health_api::variable,
+    },
     Command {
         name: "data",
         acl: acl::bits::METRICS,
@@ -516,6 +540,7 @@ mod tests {
             acl: test_acl(),
             first_request_timeout_s: 60,
             idle_timeout_s: 60,
+            health: netdata_agent_health::Health::init(Default::default(), Box::new(|_| {})),
             grouping_windows: Default::default(),
             release_channel: "nightly",
             netdata_conf: Default::default(),
@@ -789,6 +814,117 @@ mod tests {
             let nodes: String = nodes[..nodes.find('}').unwrap()].split_whitespace().collect();
             assert_eq!(nodes, "\"nodes\":{\"total\":1,\"receiving\":0,\"sending\":0,\"archived\":0");
         }
+    }
+
+    /// `/api/v1/alarm_variables`, `/api/v1/variable` and `/api/v3/variable`, and the alert members of the chart JSON,
+    /// `/api/v1/charts` and `/api/v1/info`: C's error answers (as the C agent sent them), a host without alerts,
+    /// then with one linked; a freed chart's alert goes where the database frees it.
+    #[test]
+    fn the_variable_endpoints_and_the_alert_members() {
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType};
+        let s = shared();
+        let request = |path: &str, query: &str| {
+            let mut req = Request::default();
+            req.path = path.as_bytes().to_vec();
+            req.url_as_received = path.as_bytes().to_vec();
+            req.query = query.as_bytes().to_vec();
+            let ctx = crate::access_log::RequestContext::default();
+            let all = acl::bits::TRANSPORTS | acl::bits::ALL_LISTENER_FEATURES;
+            process_request(&req, b"", all, &s, Instant::now(), &ctx, &|_| false)
+        };
+        let body = |path: &str, query: &str| {
+            let r = request(path, query);
+            assert_eq!((r.code, r.content_type), (status::OK, ContentType::ApplicationJson), "{path}{query}");
+            String::from_utf8(r.body).unwrap()
+        };
+
+        let recorded = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../health/tests/vectors/variables/off");
+        for (file, path, query, code) in [
+            ("055.body", "/api/v1/alarm_variables", "", status::BAD_REQUEST),
+            ("056.body", "/api/v1/alarm_variables", "?chart=no<chart", status::NOT_FOUND),
+            ("057.body", "/api/v1/variable", "?chart=hv.a", status::BAD_REQUEST),
+            ("058.body", "/api/v1/variable", "?variable=a", status::BAD_REQUEST),
+            ("059.body", "/api/v1/variable", "?chart=no<chart&variable=a", status::NOT_FOUND),
+            ("059.body", "/api/v3/variable", "?chart=no<chart&variable=a", status::NOT_FOUND),
+        ] {
+            let r = request(path, query);
+            assert_eq!((r.code, r.content_type), (code, ContentType::TextPlain), "{path}{query}");
+            assert_eq!(r.body, std::fs::read(recorded.join(file)).unwrap(), "{path}{query}");
+        }
+
+        // a chart with a variable, on a host without alerts
+        let host = s.hosts.localhost();
+        let (chart, _) = host.charts().create(&ChartSpec {
+            type_: "t",
+            id: "c",
+            name: None,
+            family: Some("f"),
+            context: Some("t.ctx"),
+            title: "T",
+            units: "u",
+            plugin: "p",
+            module: None,
+            priority: 1000,
+            update_every: 1,
+            chart_type: ChartType::Line,
+            mode: netdata_agent_rrd::mode::DbMode::Ram,
+            history_entries: 5,
+            page_size: 4096,
+        });
+        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        chart.set_variable("cv", 7.0);
+        let variables = body("/api/v1/alarm_variables", "?chart=t.c");
+        assert!(variables.contains("\"last_collected_t\":0,\n        \"cv\":7\n    }"), "{variables}");
+        assert!(variables.contains("\"alerts\":{\n    }"), "{variables}");
+        for path in ["/api/v1/variable", "/api/v3/variable"] {
+            let trace = body(path, "?chart=t.c&variable=cv");
+            assert!(trace.contains("\"found\":true,\n    \"value\":7,"), "{trace}");
+            assert!(trace.contains("\"description\":\"chart variable\""), "{trace}");
+        }
+        let json = body("/api/v1/chart", "?chart=t.c");
+        assert!(json.contains("\"chart_variables\":{\n        \"cv\":7\n    }"), "{json}");
+        assert!(json.contains("\"alarms\":{\n    }"), "{json}");
+        assert!(body("/api/v1/charts", "").contains("\"alarms_count\":0,"));
+        assert!(body("/api/v1/info", "").contains("\"normal\":0,\n        \"warning\":0,\n        \"critical\":0"));
+
+        // a rule, linked by the host's first pass
+        let dir = tempfile::tempdir().unwrap();
+        let rules = dir.path().join("a.conf");
+        std::fs::write(&rules, "template: a\n on: t.ctx\n every: 10s\n calc: $cv\n").unwrap();
+        {
+            use std::os::unix::ffi::OsStrExt;
+            assert!(netdata_agent_health::readfile::health_readfile(&s.health, rules.as_os_str().as_bytes(), false));
+        }
+        s.health.host_pass(host, &|| 1_700_000_000, &|| true);
+        let json = body("/api/v1/chart", "?chart=t.c");
+        let alarm = [
+            "\"alarms\":{",
+            "        \"a\":{",
+            "            \"id\":\"a\",",
+            "            \"status\":\"UNINITIALIZED\",",
+            "            \"units\":\"u\",",
+            "            \"duration\":10",
+            "        }",
+            "    }",
+        ];
+        assert!(json.contains(&alarm.join("\n")), "{json}");
+        assert!(body("/api/v1/charts", "").contains("\"alarms_count\":1,"));
+        let variables = body("/api/v1/alarm_variables", "?chart=t.c");
+        assert!(variables.contains("\"alerts\":{\n        \"a\":{\n            \"value\":null,"), "{variables}");
+        // counted once its chart was collected
+        assert!(body("/api/v1/info", "").contains("\"normal\":0,"));
+        chart.update_collection(|collection| collection.last_collected = (5, 0));
+        assert!(body("/api/v1/info", "").contains("\"normal\":1,\n        \"warning\":0,\n        \"critical\":0"));
+
+        // the chart's free reaches health through the database's hook (this fixture's localhost has a storage of its
+        // own; the daemon's hosts share one)
+        host.storage().set_health_hook({
+            let health = Arc::clone(&s.health);
+            move |event| crate::health::database_event(&health, event)
+        });
+        assert!(host.charts().free_if(&chart, |_| true));
+        assert!(s.health.host(host).unwrap().alerts().is_empty());
+        assert!(body("/api/v1/charts", "").contains("\"alarms_count\":0,"));
     }
 
     #[test]

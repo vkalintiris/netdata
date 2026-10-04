@@ -16,7 +16,7 @@ use crate::contexts::{self, Contexts, Taker};
 use crate::index::Index;
 use crate::labels::Labels;
 use crate::mode::DbMode;
-use crate::storage::{StorageLayout, TierHandle};
+use crate::storage::{HealthEvent, StorageLayout, TierHandle};
 use crate::stream_buffer::CircularBuffer;
 use crate::stream_path::PathEntry;
 use crate::system_info::SystemInfo;
@@ -1286,6 +1286,8 @@ impl Host {
         if let Some(slot) = self.receiver() {
             self.stop_receiver_and_wait(&slot);
         }
+        // rrdcalc_delete_all(), before the charts go
+        self.storage().health_event(HealthEvent::HostCleanup(self.machine_guid()));
         self.charts.flush();
         self.variables.clear();
         self.replace_stream_path(Vec::new());
@@ -1324,6 +1326,7 @@ impl Host {
     /// `rrdhost_free_unlinked()` of a host out of the index: its data collection cleaned up, then marked deleted.
     fn freed_unlinked(&self) {
         self.cleanup_data_collection();
+        self.storage().health_event(HealthEvent::HostFreed(self.machine_guid()));
         self.pulse_status(crate::pulse::host_status::DELETED);
     }
 
@@ -1921,6 +1924,7 @@ impl Hosts {
 
     /// `rrdhost_set_is_parent_label()`: after a receiver attached or detached, the label follows when the answer
     /// changed; decided and written under one lock, as C's commit lock, so the last writer writes the current state.
+    /// A label that changed asks health to recheck localhost's labels.
     pub fn update_is_parent_label(&self) {
         let mut cached = lock(&self.is_parent);
         let desired = self.receivers_connected() > 0;
@@ -1929,8 +1933,12 @@ impl Hosts {
         }
         *cached = desired;
         let value: &[u8] = if desired { b"true" } else { b"false" };
-        self.localhost
-            .update_labels(|labels| labels.add(b"_is_parent", value, crate::labels::SRC_AUTO));
+        let changed =
+            self.localhost.update_labels(|labels| labels.add_changed(b"_is_parent", value, crate::labels::SRC_AUTO));
+        // a rule's `host labels` may name it: localhost's alerts are matched again
+        if changed.unwrap_or(false) {
+            self.localhost.raise_label_recheck();
+        }
     }
 
     /// `dictionary_version(rrdhost_root_index)`.
@@ -3217,6 +3225,47 @@ mod tests {
         assert_eq!(db_status(&host), DbStatus::Initializing);
         host.clear_pending_context_load();
         assert_eq!(db_status(&host), DbStatus::Queryable);
+    }
+
+    /// What health hears: a freed chart; at a host's cleanup the host first, then each of its charts; and a freed
+    /// host after its cleanup.
+    #[test]
+    fn health_hears_of_freed_charts_and_hosts() {
+        use crate::storage::HealthEvent;
+        let storage = Arc::new(StorageLayout::default());
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        storage.set_health_hook({
+            let heard = Arc::clone(&heard);
+            move |event| {
+                lock(&heard).push(match event {
+                    HealthEvent::ChartFreed(host, chart) => {
+                        format!("chart {host} {} freed={}", chart.id(), chart.is_freed())
+                    }
+                    HealthEvent::HostCleanup(host) => format!("cleanup {host}"),
+                    HealthEvent::HostFreed(host) => format!("freed {host}"),
+                });
+            }
+        });
+        let heard = || std::mem::take(&mut *lock(&heard));
+        let hosts = Hosts::with_storage(Host::with_storage("guid-l", true, info("l"), &storage), Arc::clone(&storage));
+        let child = hosts.find_or_create("guid-c", DbMode::Ram, || info("c"), |_| {}).unwrap();
+        let chart = |id| {
+            let spec = crate::chart::ChartSpec { id, ..crate::testutil::chart_spec(DbMode::Ram) };
+            child.charts().create(&spec).0
+        };
+        let (a, _b, _c) = (chart("a"), chart("b"), chart("c"));
+        assert!(heard().is_empty());
+
+        assert!(child.charts().free_if(&a, |_| true));
+        assert_eq!(heard(), ["chart guid-c t.a freed=true"]);
+        assert!(!child.charts().free_if(&a, |_| true), "freed already");
+        assert!(heard().is_empty());
+
+        child.cleanup_data_collection();
+        assert_eq!(heard(), ["cleanup guid-c", "chart guid-c t.b freed=true", "chart guid-c t.c freed=true"]);
+
+        assert!(hosts.free(&child).is_some());
+        assert_eq!(heard(), ["cleanup guid-c", "freed guid-c"]);
     }
 
     /// `rrdhost_should_run_health()`: health enabled for the host, its collector online, no orphan, and its ingestion

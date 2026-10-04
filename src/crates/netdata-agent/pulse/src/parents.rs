@@ -170,8 +170,8 @@ fn child_dim(chart: &Chart, id: &str, multiplier: i32, algorithm: Algorithm) -> 
     }
 }
 
-/// `pulse_child_chart_labels()`: the child's labels, then its identity over them. C also asks health, which is not
-/// ported, to recheck the chart's labels.
+/// `pulse_child_chart_labels()`: the child's labels, then its identity over them; health is asked to match the
+/// chart's alerts again.
 fn child_labels(chart: &Chart, host: &Host) {
     let labels = host.labels();
     let hostname = host.hostname();
@@ -189,6 +189,7 @@ fn child_labels(chart: &Chart, host: &Host) {
         }
         m.labels.add(b"hops", hops.as_bytes(), SRC_AUTO);
     });
+    chart.raise_label_recheck();
 }
 
 /// `pulse_child_charts_update()`: found or created by id on every pass, the labels applied only when the child's

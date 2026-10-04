@@ -46,6 +46,9 @@ use config::HealthConfig;
 use keywords::lossy;
 use prototype::{Prototypes, Rule};
 
+/// The wall clock in seconds, read where C reads it (`now_realtime_sec()`); tests pass their own.
+pub type Clock<'a> = &'a dyn Fn() -> i64;
+
 /// Where an accepted rule goes to be stored: C's `sql_alert_store_config()`, called once per rule right after
 /// its hash is made and before the default exec and recipient are filled.
 pub type StoreSink = Box<dyn Fn(&Rule) + Send + Sync>;

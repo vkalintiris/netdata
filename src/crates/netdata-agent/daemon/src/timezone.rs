@@ -310,11 +310,14 @@ impl Timezone {
             return;
         }
         localhost.set_meta_flags(meta_flags::INFO | meta_flags::UPDATE);
-        localhost.update_labels(|labels| {
-            let _ = labels.add_changed(b"_timezone", tz.name.as_bytes(), SRC_AUTO);
-            let _ = labels.add_changed(b"_abbrev_timezone", tz.abbrev.as_bytes(), SRC_AUTO);
+        let labels_changed = localhost.update_labels(|labels| {
+            let name = labels.add_changed(b"_timezone", tz.name.as_bytes(), SRC_AUTO).unwrap_or(false);
+            name | labels.add_changed(b"_abbrev_timezone", tz.abbrev.as_bytes(), SRC_AUTO).unwrap_or(false)
         });
         localhost.set_meta_flags(meta_flags::LABELS | meta_flags::UPDATE);
+        if labels_changed {
+            localhost.raise_label_recheck();
+        }
         netdata_agent_rrd::upstream::send_host_labels(localhost);
     }
 }
