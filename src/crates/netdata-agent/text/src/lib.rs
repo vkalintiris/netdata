@@ -18,6 +18,7 @@
 //! - [`simple_pattern`]: Netdata simple patterns.
 //! - [`sanitize`]: `text_sanitize()` and the chart, label and function sanitizers.
 //! - [`json`]: the `buffer_json_*()` streaming JSON writer.
+//! - [`units`]: a value with its units as text (`format_value_and_unit()`).
 //! - [`datetime`]: RFC 3339 timestamps (UTC).
 
 #![forbid(unsafe_code)]
@@ -35,4 +36,5 @@ pub mod sanitize;
 pub mod simple_pattern;
 pub mod size;
 pub mod time_window;
+pub mod units;
 pub mod url;
