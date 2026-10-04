@@ -6,6 +6,9 @@
 //! `(value, consumed)`, where `consumed` is `endptr - input` in bytes. Integer
 //! accumulation wraps on overflow exactly like the unsigned C arithmetic.
 
+use std::cmp::Ordering;
+use std::iter::repeat;
+
 use crate::c::{self, at, skip_spaces};
 use crate::print::{DOUBLE_B64_PREFIX, DOUBLE_HEX_PREFIX, UINT64_B64_PREFIX};
 
@@ -165,6 +168,16 @@ fn decimal_digits_as_double(s: &[u8]) -> (f64, usize) {
     (n, i - start)
 }
 
+/// `pow(10.0, x)` as `str2ndd()` calls it: glibc's `pow()` sets `errno` to `ERANGE` when its result overflows or
+/// underflows to zero (a subnormal result sets nothing).
+fn pow10(x: f64) -> f64 {
+    let power = 10f64.powf(x);
+    if power == 0.0 || power.is_infinite() {
+        c::set_errno(c::ERANGE);
+    }
+    power
+}
+
 /// `str2ndd()`: the Agent's fast decimal parser (not correctly rounded).
 ///
 /// Quirks kept from C: `nan`, `null` and `inf` are recognized only as the
@@ -172,6 +185,8 @@ fn decimal_digits_as_double(s: &[u8]) -> (f64, usize) {
 /// consumed. Spaces after the sign, the dot or the exponent marker are
 /// skipped but not counted, so the parse resumes inside the number and later
 /// parts are dropped: `"- 1.5"` is -1 (2 bytes), `"1. 5e3"` is 1.5 (3 bytes).
+/// An exponent or a fraction too long for `pow()` leaves `ERANGE` in the C
+/// `errno` ([`c::set_errno`]).
 pub fn str2ndd(s: &[u8]) -> (f64, usize) {
     let mut i = skip_spaces(s, 0);
     let mut sign = 1.0f64;
@@ -232,15 +247,15 @@ pub fn str2ndd(s: &[u8]) -> (f64, usize) {
     }
 
     if exponent_digits != 0 {
-        result *= 10f64.powf(exponent);
+        result *= pow10(exponent);
     }
     if fractional_digits != 0 {
         let scale = if exponent_digits != 0 {
-            10f64.powf(exponent)
+            pow10(exponent)
         } else {
             1.0
         };
-        result += fractional / 10f64.powf(fractional_digits as f64) * scale;
+        result += fractional / pow10(fractional_digits as f64) * scale;
     }
 
     (sign * result, i)
@@ -370,12 +385,18 @@ struct Format {
 const DOUBLE: Format = Format { precision: 53, emax: 1023 };
 const FLOAT: Format = Format { precision: 24, emax: 127 };
 
+/// glibc's `TININESS_AFTER_ROUNDING`: x86 finds a result tiny after rounding
+/// it to the type's full precision, so a number that rounds up to the
+/// smallest normal value is not tiny there; ARM finds it before rounding.
+const TININESS_AFTER_ROUNDING: bool = cfg!(any(target_arch = "x86", target_arch = "x86_64"));
+
 /// Rounds `mantissa * 2^exp2` (plus a sticky bit for discarded non-zero
 /// digits) to the nearest value of `format`, ties to even, with gradual
-/// underflow; the value's bits.
-fn hex_to_bits(mut mantissa: u64, mut exp2: i64, sticky: bool, format: Format) -> u64 {
+/// underflow: the value's bits, and whether glibc reports a range error for
+/// it (an overflow, or a tiny result that is not exact).
+fn hex_to_bits(mut mantissa: u64, mut exp2: i64, sticky: bool, format: Format) -> (u64, bool) {
     if mantissa == 0 {
-        return 0;
+        return (0, false);
     }
     let lz = mantissa.leading_zeros();
     mantissa <<= lz;
@@ -385,16 +406,10 @@ fn hex_to_bits(mut mantissa: u64, mut exp2: i64, sticky: bool, format: Format) -
     let emin = 1 - format.emax;
     let infinity = ((2 * format.emax + 1) as u64) << (format.precision - 1);
     if e > format.emax {
-        return infinity;
+        return (infinity, true);
     }
-    // significant bits available at this magnitude
-    let bits = if e >= emin { format.precision } else { e - emin + format.precision };
-    if bits < 0 {
-        return 0;
-    }
-    let (keep, round_up) = if bits == 0 {
-        (0u64, mantissa > 1 << 63 || (mantissa == 1 << 63 && sticky))
-    } else {
+    // the mantissa's top `bits` bits, whether they round up, and whether the rest is not zero
+    let round = |bits: i64| {
         let drop = 64 - bits as u32;
         let keep = mantissa >> drop;
         let rest = mantissa & ((1u64 << drop) - 1);
@@ -402,8 +417,24 @@ fn hex_to_bits(mut mantissa: u64, mut exp2: i64, sticky: bool, format: Format) -
         (
             keep,
             rest > half || (rest == half && (sticky || keep & 1 == 1)),
+            rest != 0 || sticky,
         )
     };
+    // significant bits available at this magnitude
+    let bits = if e >= emin { format.precision } else { e - emin + format.precision };
+    if bits < 0 {
+        return (0, true);
+    }
+    let (keep, round_up, inexact) = if bits == 0 {
+        (0u64, mantissa > 1 << 63 || (mantissa == 1 << 63 && sticky), true)
+    } else {
+        round(bits)
+    };
+    let tiny = e < emin
+        && !(TININESS_AFTER_ROUNDING && e == emin - 1 && {
+            let (keep, round_up, _) = round(format.precision);
+            round_up && keep == (1u64 << format.precision) - 1
+        });
     let keep = keep + u64::from(round_up);
     let raw = if e >= emin {
         // the implicit leading bit of `keep` carries into the exponent field
@@ -411,7 +442,7 @@ fn hex_to_bits(mut mantissa: u64, mut exp2: i64, sticky: bool, format: Format) -
     } else {
         keep
     };
-    raw.min(infinity)
+    (raw.min(infinity), raw >= infinity || (tiny && inexact))
 }
 
 /// The hex float mantissa `s` (hex digits and at most one dot) with binary
@@ -451,18 +482,84 @@ fn hex_mantissa(s: &[u8], exp2: i64) -> (u64, i64, bool) {
 }
 
 /// The decimal mantissa `s` (digits and at most one dot) times `10^exp10`.
-enum Decimal {
+enum Decimal<'a> {
     Zero,
+    /// Too small for any exponent.
+    Underflow,
     Infinity,
+    Number(Digits<'a>),
+}
+
+/// A decimal number: its significant digits (ASCII; neither the first nor
+/// the last is a zero) and the power of ten the first one weighs.
+struct Digits<'a> {
+    digits: &'a [u8],
+    exponent: i64,
+}
+
+impl Digits<'_> {
     /// As text std's parsers round correctly, like glibc's: std caps the
     /// exponent it reads, so the digits are normalized to `d.ddd` with the
     /// (saturated) decimal exponent of the leading significant digit.
-    Text(String),
+    fn text(&self) -> String {
+        let mut text = String::with_capacity(self.digits.len() + 24);
+        text.push(char::from(self.digits[0]));
+        text.push('.');
+        text.extend(self.digits[1..].iter().map(|&d| char::from(d)));
+        text.push_str(&format!("e{}", self.exponent));
+        text
+    }
+
+    /// The number compared with `mantissa / 2^shift` (`mantissa` not zero).
+    fn cmp_dyadic(&self, mantissa: u32, shift: u32) -> Ordering {
+        // mantissa / 2^shift is mantissa * 5^shift / 10^shift: its digits, the least significant first
+        let mut product: Vec<u8> = mantissa.to_string().bytes().rev().map(|d| d - b'0').collect();
+        for _ in 0..shift {
+            let mut carry = 0;
+            for digit in &mut product {
+                let times_five = *digit * 5 + carry;
+                *digit = times_five % 10;
+                carry = times_five / 10;
+            }
+            if carry != 0 {
+                product.push(carry);
+            }
+        }
+        let exponent = product.len() as i64 - 1 - i64::from(shift);
+        self.exponent.cmp(&exponent).then_with(|| {
+            let len = self.digits.len().max(product.len());
+            let ours = self.digits.iter().map(|d| d - b'0').chain(repeat(0));
+            let theirs = product.iter().rev().copied().chain(repeat(0));
+            ours.take(len).cmp(theirs.take(len))
+        })
+    }
+
+    /// Whether glibc's `strtof()` reports a range error for this number,
+    /// which rounds to `value`: an overflow, or a tiny result that is not
+    /// exact.
+    fn float_range_error(&self, value: f32) -> bool {
+        if value.is_infinite() || value == 0.0 {
+            return true;
+        }
+        match value.partial_cmp(&f32::MIN_POSITIVE) {
+            // a subnormal value's bits count units of 2^-149
+            Some(Ordering::Less) => self.cmp_dyadic(value.to_bits(), 149) != Ordering::Equal,
+            // rounded up to the smallest normal value, 2^-126, the number is not exact; it is tiny when
+            // below it, or (x86) below 2^-126 - 2^-151, where rounding to 24 bits reaches 2^-126 too
+            Some(Ordering::Equal) => {
+                let (mantissa, shift) = if TININESS_AFTER_ROUNDING { ((1 << 25) - 1, 151) } else { (1, 126) };
+                self.cmp_dyadic(mantissa, shift) == Ordering::Less
+            }
+            _ => false,
+        }
+    }
 }
 
-fn decimal_mantissa(s: &[u8], exp10: i64) -> Decimal {
+/// `digits` is the caller's buffer for the mantissa without its dot.
+fn decimal_mantissa<'a>(s: &[u8], exp10: i64, digits: &'a mut Vec<u8>) -> Decimal<'a> {
     let point = s.iter().position(|&b| b == b'.').unwrap_or(s.len());
-    let digits: Vec<u8> = s.iter().copied().filter(|&b| b != b'.').collect();
+    digits.clear();
+    digits.extend(s.iter().copied().filter(|&b| b != b'.'));
     let Some(first) = digits.iter().position(|&d| d != b'0') else {
         return Decimal::Zero;
     };
@@ -474,15 +571,10 @@ fn decimal_mantissa(s: &[u8], exp10: i64) -> Decimal {
         return Decimal::Infinity;
     }
     if exponent < -400 {
-        return Decimal::Zero;
+        return Decimal::Underflow;
     }
 
-    let mut text = String::with_capacity(last - first + 24);
-    text.push(char::from(digits[first]));
-    text.push('.');
-    text.extend(digits[first + 1..=last].iter().map(|&d| char::from(d)));
-    text.push_str(&format!("e{exponent}"));
-    Decimal::Text(text)
+    Decimal::Number(Digits { digits: &digits[first..=last], exponent })
 }
 
 /// What `strtod()` and `strtof()` read, before it is rounded to their type.
@@ -571,12 +663,12 @@ pub fn strtod(s: &[u8]) -> (f64, usize) {
         }
         Scanned::Hex(mantissa, exp2) => {
             let (mantissa, exp, sticky) = hex_mantissa(mantissa, exp2);
-            f64::from_bits(hex_to_bits(mantissa, exp, sticky, DOUBLE))
+            f64::from_bits(hex_to_bits(mantissa, exp, sticky, DOUBLE).0)
         }
-        Scanned::Decimal(mantissa, exp10) => match decimal_mantissa(mantissa, exp10) {
-            Decimal::Zero => 0.0,
+        Scanned::Decimal(mantissa, exp10) => match decimal_mantissa(mantissa, exp10, &mut Vec::new()) {
+            Decimal::Zero | Decimal::Underflow => 0.0,
             Decimal::Infinity => f64::INFINITY,
-            Decimal::Text(text) => text.parse().unwrap_or(0.0),
+            Decimal::Number(number) => number.text().parse().unwrap_or(0.0),
         },
     };
     (if negative { -value } else { value }, len)
@@ -584,24 +676,37 @@ pub fn strtod(s: &[u8]) -> (f64, usize) {
 
 /// glibc `strtof()` in the "C" locale: [`strtod`]'s grammar, rounded to
 /// `f32` once (converting through a double would round twice).
+///
+/// As glibc, it leaves `ERANGE` in the C `errno` ([`c::set_errno`]) when a
+/// number overflows, and when its result is tiny (below the smallest normal
+/// value) and not exact.
 pub fn strtof(s: &[u8]) -> (f32, usize) {
     let (negative, scanned, len) = scan_float(c::c_str(s));
-    let value = match scanned {
-        Scanned::Nothing | Scanned::Zero => 0.0,
-        Scanned::Infinity => f32::INFINITY,
-        Scanned::Nan(payload) => {
-            f32::from_bits(f32::NAN.to_bits() | (payload.unwrap_or(0) & ((1 << 22) - 1)) as u32)
-        }
+    let (value, range_error) = match scanned {
+        Scanned::Nothing | Scanned::Zero => (0.0, false),
+        Scanned::Infinity => (f32::INFINITY, false),
+        Scanned::Nan(payload) => (
+            f32::from_bits(f32::NAN.to_bits() | (payload.unwrap_or(0) & ((1 << 22) - 1)) as u32),
+            false,
+        ),
         Scanned::Hex(mantissa, exp2) => {
             let (mantissa, exp, sticky) = hex_mantissa(mantissa, exp2);
-            f32::from_bits(hex_to_bits(mantissa, exp, sticky, FLOAT) as u32)
+            let (bits, range_error) = hex_to_bits(mantissa, exp, sticky, FLOAT);
+            (f32::from_bits(bits as u32), range_error)
         }
-        Scanned::Decimal(mantissa, exp10) => match decimal_mantissa(mantissa, exp10) {
-            Decimal::Zero => 0.0,
-            Decimal::Infinity => f32::INFINITY,
-            Decimal::Text(text) => text.parse().unwrap_or(0.0),
+        Scanned::Decimal(mantissa, exp10) => match decimal_mantissa(mantissa, exp10, &mut Vec::new()) {
+            Decimal::Zero => (0.0, false),
+            Decimal::Underflow => (0.0, true),
+            Decimal::Infinity => (f32::INFINITY, true),
+            Decimal::Number(number) => {
+                let value: f32 = number.text().parse().unwrap_or(0.0);
+                (value, number.float_range_error(value))
+            }
         },
     };
+    if range_error {
+        c::set_errno(c::ERANGE);
+    }
     (if negative { -value } else { value }, len)
 }
 
@@ -849,6 +954,93 @@ pub fn uuid_parse_flexi(s: &[u8]) -> Option<[u8; 16]> {
 #[cfg(test)]
 mod uuid_and_strtoull_tests {
     use super::*;
+
+    /// What C's records showed after each number (`health/tests/corpus/keys/errno.conf`, a `delay: multiplier`).
+    #[test]
+    fn strtof_range_errors_match_glibc() {
+        // 2^-149, the smallest float, in all its digits, and one unit more in the last of them
+        const SMALLEST: &str = "1.40129846432481707092372958328991613128026194187651577175706828388979108268586060148663818836212158203125e-45";
+        let inexact = SMALLEST.replace("125e-45", "126e-45");
+        let cases: [(&str, bool); 38] = [
+            ("1e39", true),
+            ("3e38", false),
+            ("4e38", true),
+            ("3.5e38", true),
+            ("1e-37", false),
+            ("1e-38", true),
+            ("1e-40", true),
+            ("1e-45", true),
+            ("1e-46", true),
+            ("0x1p-149", false),
+            ("0x1p-150", true),
+            ("0x1p-126", false),
+            ("0x1.000002p-126", false),
+            ("0x1p128", true),
+            ("inf", false),
+            ("nan", false),
+            ("1e400", true),
+            ("-1e39", true),
+            ("0", false),
+            ("2", false),
+            // below the smallest normal float and rounded up to it: tiny, unless 24 bits round to it as well
+            ("1.17549430e-38", true),
+            ("1.17549431e-38", true),
+            ("1.17549432e-38", false),
+            ("1.17549435e-38", false),
+            (SMALLEST, false),
+            (&inexact, true),
+            ("0x0.ffffffp-126", true),
+            ("0x0.ffffff4p-126", true),
+            ("0x0.ffffff8p-126", false),
+            ("0x0.fffffep-126", false),
+            ("0x0.000002p-126", false),
+            ("0x0.000003p-126", true),
+            ("0x1.fffffep127", false),
+            ("0x1.fffffe7p127", false),
+            ("0x1.fffffe8p127", false),
+            ("0x1.ffffffp127", true),
+            ("3.4028235e38", false),
+            ("3.4028236e38", true),
+        ];
+        for (input, range_error) in cases {
+            c::take_errno();
+            strtof(input.as_bytes());
+            assert_eq!(c::take_errno(), if range_error { c::ERANGE } else { 0 }, "{input}");
+        }
+    }
+
+    /// What C's records showed after each number (the same file, `green`): `pow()` overflowing or reaching zero.
+    #[test]
+    fn str2ndd_range_errors_match_glibc() {
+        let fraction = format!("0.{}", "1".repeat(400));
+        let integer = "1".repeat(400);
+        let cases: [(&str, bool); 14] = [
+            ("1e400", true),
+            ("1e309", true),
+            ("1e308", false),
+            ("1e-307", false),
+            ("1e-308", false),
+            ("1e-320", false),
+            ("1e-323", false),
+            ("1e-324", true),
+            ("1e-400", true),
+            (&fraction, true),
+            (&integer, false),
+            ("1e99999999999999999999", true),
+            ("1e-99999999999999999999", true),
+            ("5", false),
+        ];
+        for (input, range_error) in cases {
+            c::take_errno();
+            str2ndd(input.as_bytes());
+            assert_eq!(c::take_errno(), if range_error { c::ERANGE } else { 0 }, "{input}");
+        }
+        // the errno stays until it is taken
+        str2ndd(b"1e400");
+        str2ndd(b"5");
+        assert_eq!(c::take_errno(), c::ERANGE);
+        assert_eq!(c::take_errno(), 0);
+    }
 
     #[test]
     fn strtoull10_matches_glibc() {

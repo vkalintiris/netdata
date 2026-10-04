@@ -28,6 +28,8 @@ pub use encode::{rfc3339_local, strerror, uv_strerror};
 pub use frame::{FrameGuard, Lazy, Value, push, push_shared};
 pub use limit::{DEFAULT_THROTTLE_LOGS, DEFAULT_THROTTLE_PERIOD, ErrorLimit};
 pub use model::{Field, Priority, Source, msgid};
+#[doc(hidden)]
+pub use netdata_agent_text::c::take_errno;
 pub use output::{collectors_fd, is_stderr_connected_to_journal, set_default_log_dir};
 
 /// What records print in place of a stream API key (D31, D34): in URLs, the receiver's records and the host record.
@@ -113,6 +115,16 @@ macro_rules! netdata_log_info {
 #[macro_export]
 macro_rules! netdata_log_error {
     ($($arg:tt)+) => { $crate::nd_log!($crate::Source::Daemon, $crate::Priority::Err, $($arg)+) };
+}
+
+/// `netdata_log_error(...)` with the `errno` C's thread holds when it writes the record: what the ported calls left
+/// behind (`netdata_agent_text::c::set_errno`: a number that overflowed in a parser, a failed `stat()`), however
+/// unrelated to the record. The record clears it, as C's logger does.
+#[macro_export]
+macro_rules! netdata_log_error_errno {
+    ($($arg:tt)+) => {
+        $crate::nd_log!($crate::Source::Daemon, $crate::Priority::Err, errno = $crate::take_errno(); $($arg)+)
+    };
 }
 
 /// `collector_info(...)`: collector, info.

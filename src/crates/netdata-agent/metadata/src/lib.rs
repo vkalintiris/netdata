@@ -7,6 +7,7 @@
 pub mod cleanup;
 pub mod conn;
 pub mod functions;
+pub mod health;
 pub mod library;
 pub mod migrate;
 pub mod open;

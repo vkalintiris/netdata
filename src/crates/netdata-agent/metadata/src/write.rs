@@ -174,7 +174,7 @@ fn uuid_or_null(id: Option<&[u8; 16]>) -> ToSqlOutput<'_> {
 
 /// Prepares `sql` and runs it with `params`, retried while busy: the step's error code, or the prepare failure
 /// already reported.
-fn execute(c: &Connection, sql: &str, function: &str, params: &[&dyn ToSql]) -> Result<(), Step> {
+pub(crate) fn execute(c: &Connection, sql: &str, function: &str, params: &[&dyn ToSql]) -> Result<(), Step> {
     let mut stmt = c.prepare(sql).map_err(|err| {
         prepare_failed(&err, function);
         Step::Prepare
@@ -197,7 +197,7 @@ pub(crate) fn delete_dimension_uuid(c: &Connection, dim_id: &[u8; 16]) {
 }
 
 /// Why a statement did not run.
-enum Step {
+pub(crate) enum Step {
     /// Its prepare failed (reported).
     Prepare,
     /// Its step failed with this code.

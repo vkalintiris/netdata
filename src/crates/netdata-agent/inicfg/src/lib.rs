@@ -10,6 +10,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod paths;
+
 use std::path::Path;
 
 use netdata_agent_log::{Priority, Source, errno_of, nd_log, netdata_log_error};

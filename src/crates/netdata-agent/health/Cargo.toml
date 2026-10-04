@@ -11,6 +11,13 @@ workspace = true
 [dependencies]
 netdata-agent-dyncfg = { workspace = true }
 netdata-agent-eval = { workspace = true }
+netdata-agent-inicfg = { workspace = true }
 netdata-agent-log = { workspace = true }
+netdata-agent-metadata = { workspace = true }
 netdata-agent-query = { workspace = true }
 netdata-agent-text = { workspace = true }
+indexmap = { workspace = true }
+twox-hash = { workspace = true, features = ["xxhash3_128"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

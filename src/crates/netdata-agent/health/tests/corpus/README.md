@@ -6,13 +6,14 @@ directory named `*.group` is one item whose files are read one after the other i
 | Family | What it holds |
 |---|---|
 | `lines` | continuations, comments, reads around the 4,096-byte buffer, CRLF, tabs, a NUL, lines without a key or a value |
-| `keys` | every keyword, repeated keys, quotes, names, durations, `green` and `red`, `options`, `repeat`, unknown keys |
+| `keys` | every keyword, repeated keys, quotes, names, durations, `green` and `red`, `options`, `repeat`, unknown keys; `errno.conf` holds the numbers that leave a range error behind, each followed by a line whose record shows it |
 | `labels` | `os`, `hosts`, `plugin`, `module`, `host labels`, `chart labels` and their special values |
 | `lookup` | the 149 inputs of C's unit table as rules, each option, method and duration; `*-every.conf` repeats them with an `every` after the lookup, so the rule is kept whatever the lookup did |
 | `delay` | the inputs of C's delay unit table, bad durations, multipliers |
 | `expr` | expressions that fail to parse, `green` and `red` replaced inside expressions |
 | `validate` | each reason a rule is refused, chains of rules under one name, the same name in two files |
 | `smoke` | a first small file |
+| `files` | paths the reader cannot read: a dangling link, a directory, then a file whose record shows the `errno` left behind |
 
 The files hold bytes on purpose (a NUL, bytes above 0x7F, CRLF, a missing final newline): do not reformat them.
 `../vectors/` is what C made of them; regenerate it with `../oracle/gen-health-vectors.sh` after any change here.

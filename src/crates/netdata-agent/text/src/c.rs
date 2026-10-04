@@ -6,6 +6,28 @@
 //! x86-64 (SSE2), including the results of out-of-range conversions that are
 //! undefined in ISO C but deterministic on that target.
 
+thread_local! {
+    static ERRNO: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+}
+
+/// `ERANGE`.
+pub const ERANGE: i32 = 34;
+
+/// Sets the thread's C `errno`, as the ported call's libc or libm function would.
+///
+/// C's records print whatever `errno` their thread holds and clear it afterwards, so a number that overflowed in
+/// a parser shows as `errno="34, Numerical result out of range"` on the next record that thread writes, however
+/// unrelated. The ported calls that leave an `errno` behind in C set this one; code that writes C's records takes
+/// it with [`take_errno`].
+pub fn set_errno(errno: i32) {
+    ERRNO.set(errno);
+}
+
+/// The thread's C `errno`, cleared: what a record written now carries in C.
+pub fn take_errno() -> i32 {
+    ERRNO.replace(0)
+}
+
 /// The C string view of `s`: everything before the first NUL byte.
 ///
 /// Inputs are byte slices; the C functions they mirror stop at the terminator.
@@ -134,21 +156,28 @@ pub fn strsep_skip<'a>(rest: &mut Option<&'a [u8]>, separators: &[u8]) -> &'a [u
 /// `filename_from_path_entry()`: `path` and `entry` joined by one slash (trailing slashes of `path` and leading ones of
 /// `entry` collapse; an empty `path` is `.`), with `.extension` when one is given.
 pub fn filename_from_path_entry(path: &str, entry: &str, extension: Option<&str>) -> String {
-    let path = if path.is_empty() { "." } else { path };
-    let trimmed = path.trim_end_matches('/');
-    let entry = entry.trim_start_matches('/');
-    let (head, slash) = if trimmed.len() < path.len() && (!entry.is_empty() || trimmed.is_empty()) {
+    let joined = filename_from_path_entry_bytes(path.as_bytes(), entry.as_bytes(), extension.map(str::as_bytes));
+    // the pieces are text and they are cut and joined at slashes only
+    String::from_utf8_lossy(&joined).into_owned()
+}
+
+/// [`filename_from_path_entry`] for the bytes of a directory entry's name, which need not be text.
+pub fn filename_from_path_entry_bytes(path: &[u8], entry: &[u8], extension: Option<&[u8]>) -> Vec<u8> {
+    let path = if path.is_empty() { b"." } else { path };
+    let trimmed = path.len() - path.iter().rev().take_while(|&&c| c == b'/').count();
+    let entry = &entry[entry.iter().take_while(|&&c| c == b'/').count()..];
+    let (head, slash): (&[u8], &[u8]) = if trimmed < path.len() && (!entry.is_empty() || trimmed == 0) {
         // keep one of the trailing slashes instead of adding one
-        (&path[..trimmed.len() + 1], "")
+        (&path[..trimmed + 1], b"")
     } else if entry.is_empty() {
-        (trimmed, "")
+        (&path[..trimmed], b"")
     } else {
-        (trimmed, "/")
+        (&path[..trimmed], b"/")
     };
-    let mut out = format!("{head}{slash}{entry}");
+    let mut out = [head, slash, entry].concat();
     if let Some(extension) = extension.filter(|e| !e.is_empty()) {
-        out.push('.');
-        out.push_str(extension);
+        out.push(b'.');
+        out.extend_from_slice(extension);
     }
     out
 }

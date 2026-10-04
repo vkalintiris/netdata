@@ -11,3 +11,7 @@ workspace = true
 [dependencies]
 netdata-agent-log = { workspace = true }
 netdata-agent-text = { workspace = true }
+rustix = { workspace = true, features = ["fs"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -201,6 +201,214 @@ tests/corpus/expr/green-red.conf	error	-	Health configuration at line 905 of fil
 tests/corpus/expr/green-red.conf	error	-	Health configuration at line 906 of file 'tests/corpus/expr/green-red.conf' for alarm 'gr_16_4' at key 'red' leaves this string unmatched: 'x'.
 tests/corpus/expr/green-red.conf	error	-	Health configuration at line 959 of file 'tests/corpus/expr/green-red.conf' for alarm 'gr_17_4' at key 'green' leaves this string unmatched: 'abc'.
 tests/corpus/expr/green-red.conf	error	-	Health configuration at line 960 of file 'tests/corpus/expr/green-red.conf' for alarm 'gr_17_4' at key 'red' leaves this string unmatched: 'x'.
+tests/corpus/files/a-dangling.conf	error	2, No such file or directory	Health configuration cannot read file 'tests/corpus/files/a-dangling.conf'.
+tests/corpus/files/c-after.conf	error	21, Is a directory	Health configuration at line 5 of file 'tests/corpus/files/c-after.conf' for alarm/template 'after_unreadable' has unknown key 'zz'.
+tests/corpus/files/c-after.conf	error	-	Health configuration at line 6 of file 'tests/corpus/files/c-after.conf' for alarm/template 'after_unreadable' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 6 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_000' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 13 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_001' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 20 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_002' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 27 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_003' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 34 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_004' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 41 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_005' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 48 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_006' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 55 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_007' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 62 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_008' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 69 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_009' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 76 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_010' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 83 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_011' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 90 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_012' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 97 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_013' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 104 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_014' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 111 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_015' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 118 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_016' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 124 of file 'tests/corpus/keys/errno.conf' for alarm 'errno_017' at key 'every' cannot parse duration: '1e400'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 125 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_017' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 131 of file 'tests/corpus/keys/errno.conf' for alarm 'errno_018' at key 'every' cannot parse duration: '1e309'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 132 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_018' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 138 of file 'tests/corpus/keys/errno.conf' for alarm 'errno_019' at key 'every' cannot parse duration: '1e308'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 139 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_019' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 146 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_020' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_020' rule 0 is invalid: missing update frequency. Source: line=141,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 153 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_021' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_021' rule 0 is invalid: missing update frequency. Source: line=148,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 160 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_022' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_022' rule 0 is invalid: missing update frequency. Source: line=155,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 167 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_023' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_023' rule 0 is invalid: missing update frequency. Source: line=162,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 174 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_024' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_024' rule 0 is invalid: missing update frequency. Source: line=169,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 181 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_025' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_025' rule 0 is invalid: missing update frequency. Source: line=176,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 187 of file 'tests/corpus/keys/errno.conf' for alarm 'errno_026' at key 'every' cannot parse duration: '0.1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 188 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_026' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 194 of file 'tests/corpus/keys/errno.conf' for alarm 'errno_027' at key 'every' cannot parse duration: '1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 195 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_027' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 201 of file 'tests/corpus/keys/errno.conf' for alarm 'errno_028' at key 'every' cannot parse duration: '1e99999999999999999999'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 202 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_028' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 209 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_029' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_029' rule 0 is invalid: missing update frequency. Source: line=204,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 216 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_030' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 222 of file 'tests/corpus/keys/errno.conf': invalid value '1e400' for 'up' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 223 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_031' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 229 of file 'tests/corpus/keys/errno.conf': invalid value '1e309' for 'up' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 230 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_032' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 236 of file 'tests/corpus/keys/errno.conf': invalid value '1e308' for 'up' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 237 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_033' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 244 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_034' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 251 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_035' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 258 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_036' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 265 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_037' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 272 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_038' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 279 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_039' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 285 of file 'tests/corpus/keys/errno.conf': invalid value '0.1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111' for 'up' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 286 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_040' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 292 of file 'tests/corpus/keys/errno.conf': invalid value '1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111' for 'up' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 293 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_041' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 299 of file 'tests/corpus/keys/errno.conf': invalid value '1e99999999999999999999' for 'up' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 300 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_042' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 307 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_043' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 314 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_044' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 320 of file 'tests/corpus/keys/errno.conf': invalid value '1e400' for 'warning' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 321 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_045' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 327 of file 'tests/corpus/keys/errno.conf': invalid value '1e309' for 'warning' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 328 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_046' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 334 of file 'tests/corpus/keys/errno.conf': invalid value '1e308' for 'warning' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 335 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_047' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 342 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_048' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 349 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_049' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 356 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_050' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 363 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_051' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 370 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_052' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 377 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_053' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 383 of file 'tests/corpus/keys/errno.conf': invalid value '0.1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111' for 'warning' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 384 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_054' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 390 of file 'tests/corpus/keys/errno.conf': invalid value '1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111' for 'warning' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 391 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_055' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 397 of file 'tests/corpus/keys/errno.conf': invalid value '1e99999999999999999999' for 'warning' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 398 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_056' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 405 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_057' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 412 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_058' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 418 of file 'tests/corpus/keys/errno.conf': invalid duration '1e400' for 'at' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 419 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_059' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 425 of file 'tests/corpus/keys/errno.conf': invalid duration '1e309' for 'at' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 426 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_060' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 432 of file 'tests/corpus/keys/errno.conf': invalid duration '1e308' for 'at' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 433 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_061' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 440 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_062' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 447 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_063' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 454 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_064' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 461 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_065' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 468 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_066' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 475 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_067' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 481 of file 'tests/corpus/keys/errno.conf': invalid duration '0.1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111' for 'at' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 482 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_068' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 488 of file 'tests/corpus/keys/errno.conf': invalid duration '1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111' for 'at' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 489 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_069' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 495 of file 'tests/corpus/keys/errno.conf': invalid duration '1e99999999999999999999' for 'at' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 496 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_070' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 503 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_071' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 510 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_072' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 517 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_073' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 524 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_074' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 531 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_075' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 538 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_076' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 545 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_077' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 552 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_078' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 559 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_079' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 566 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_080' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 573 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_081' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 580 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_082' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 587 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_083' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 594 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_084' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 601 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_085' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 608 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_086' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 614 of file 'tests/corpus/keys/errno.conf': invalid duration '1e400' after group method
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 615 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_087' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_087' rule 0 is invalid: missing update frequency. Source: line=610,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 621 of file 'tests/corpus/keys/errno.conf': invalid duration '1e309' after group method
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 622 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_088' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_088' rule 0 is invalid: missing update frequency. Source: line=617,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 628 of file 'tests/corpus/keys/errno.conf': invalid duration '1e308' after group method
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 629 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_089' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_089' rule 0 is invalid: missing update frequency. Source: line=624,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 636 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_090' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_090' rule 0 is invalid: missing update frequency. Source: line=631,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 643 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_091' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_091' rule 0 is invalid: missing update frequency. Source: line=638,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 650 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_092' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_092' rule 0 is invalid: missing update frequency. Source: line=645,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 657 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_093' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_093' rule 0 is invalid: missing update frequency. Source: line=652,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 664 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_094' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_094' rule 0 is invalid: missing update frequency. Source: line=659,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 671 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_095' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_095' rule 0 is invalid: missing update frequency. Source: line=666,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 677 of file 'tests/corpus/keys/errno.conf': invalid duration '0.1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111' after group method
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 678 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_096' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_096' rule 0 is invalid: missing update frequency. Source: line=673,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 684 of file 'tests/corpus/keys/errno.conf': invalid duration '1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111' after group method
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 685 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_097' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_097' rule 0 is invalid: missing update frequency. Source: line=680,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 691 of file 'tests/corpus/keys/errno.conf': invalid duration '1e99999999999999999999' after group method
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 692 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_098' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_098' rule 0 is invalid: missing update frequency. Source: line=687,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 699 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_099' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	HEALTH: alert 'errno_099' rule 0 is invalid: missing update frequency. Source: line=694,file=tests/corpus/keys/errno.conf
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 706 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_100' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 712 of file 'tests/corpus/keys/errno.conf': invalid value '1e39' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 713 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_101' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 720 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_102' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 726 of file 'tests/corpus/keys/errno.conf': invalid value '4e38' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 727 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_103' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 733 of file 'tests/corpus/keys/errno.conf': invalid value '3.5e38' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 734 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_104' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 741 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_105' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 748 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_106' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 755 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_107' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 762 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_108' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 768 of file 'tests/corpus/keys/errno.conf': invalid value '1e-46' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 769 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_109' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 776 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_110' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 782 of file 'tests/corpus/keys/errno.conf': invalid value '0x1p-150' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 783 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_111' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 790 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_112' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 797 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_113' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 803 of file 'tests/corpus/keys/errno.conf': invalid value '0x1p128' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 804 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_114' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 810 of file 'tests/corpus/keys/errno.conf': invalid value 'inf' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 811 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_115' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 817 of file 'tests/corpus/keys/errno.conf': invalid value 'nan' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 818 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_116' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 824 of file 'tests/corpus/keys/errno.conf': invalid value '1e400' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 825 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_117' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 831 of file 'tests/corpus/keys/errno.conf': invalid value '-1e39' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 832 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_118' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 838 of file 'tests/corpus/keys/errno.conf': invalid value '0' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 839 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_119' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 846 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_120' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 853 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_121' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 860 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_122' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 867 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_123' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 874 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_124' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 881 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_125' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 888 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_126' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 895 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_127' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 902 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_128' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 909 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_129' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 916 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_130' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 923 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_131' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 930 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_132' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 937 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_133' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 944 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_134' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 951 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_135' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 957 of file 'tests/corpus/keys/errno.conf': invalid value '0x1.ffffffp127' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 958 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_136' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 965 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_137' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 971 of file 'tests/corpus/keys/errno.conf': invalid value '3.4028236e38' for 'multiplier' keyword
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 972 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_138' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 981 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_two_lines' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	34, Numerical result out of range	Health configuration at line 988 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_then_clean_record' has unknown key 'zz'.
+tests/corpus/keys/errno.conf	error	-	Health configuration at line 989 of file 'tests/corpus/keys/errno.conf' for alarm/template 'errno_then_clean_record' has unknown key 'zz'.
 tests/corpus/keys/every.conf	error	-	HEALTH: alert 'every_000' rule 0 is invalid: missing update frequency. Source: line=1,file=tests/corpus/keys/every.conf
 tests/corpus/keys/every.conf	error	-	Health configuration at line 79 of file 'tests/corpus/keys/every.conf' for alarm 'every_015' at key 'every' cannot parse duration: '-1m'.
 tests/corpus/keys/every.conf	error	-	HEALTH: alert 'every_015' rule 0 is invalid: missing update frequency. Source: line=76,file=tests/corpus/keys/every.conf

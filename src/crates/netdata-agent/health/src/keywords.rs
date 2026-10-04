@@ -6,7 +6,7 @@
 
 use std::borrow::Cow;
 
-use netdata_agent_log::netdata_log_error;
+use netdata_agent_log::netdata_log_error_errno;
 use netdata_agent_query::tables::{TIME_GROUPINGS, TimeGrouping, options};
 use netdata_agent_text::c::{self, at, c_str, is_space};
 use netdata_agent_text::duration::duration_parse_seconds;
@@ -96,7 +96,7 @@ pub fn parse_delay(
     multiplier: &mut f32,
 ) -> bool {
     let invalid = |value: &[u8], key: &[u8]| {
-        netdata_log_error!(
+        netdata_log_error_errno!(
             "Health configuration at line {line} of file '{}': invalid value '{}' for '{}' keyword",
             lossy(filename),
             lossy(value),
@@ -136,7 +136,7 @@ pub fn parse_delay(
                 None => invalid(value, key),
             }
         } else {
-            netdata_log_error!(
+            netdata_log_error_errno!(
                 "Health configuration at line {line} of file '{}': unknown keyword '{}'",
                 lossy(filename),
                 lossy(key)
@@ -184,7 +184,7 @@ pub fn parse_options(value: &[u8]) -> u8 {
         if option.eq_ignore_ascii_case(b"no-clear-notification") || option.eq_ignore_ascii_case(b"no-clear") {
             bits |= ACTION_OPTION_NO_CLEAR_NOTIFICATION;
         } else {
-            netdata_log_error!("Ignoring unknown alarm option '{}'", lossy(option));
+            netdata_log_error_errno!("Ignoring unknown alarm option '{}'", lossy(option));
         }
     }
     bits
@@ -219,13 +219,13 @@ pub fn parse_repeat(line: usize, filename: &[u8], value: &[u8], warn_repeat_ever
             continue;
         };
         match duration_parse_seconds(value) {
-            None => netdata_log_error!(
+            None => netdata_log_error_errno!(
                 "Health configuration at line {line} of file '{}': invalid value '{}' for '{}' keyword",
                 lossy(filename),
                 lossy(value),
                 lossy(key)
             ),
-            Some(seconds) if seconds < 0 => netdata_log_error!(
+            Some(seconds) if seconds < 0 => netdata_log_error_errno!(
                 "Health configuration at line {line} of file '{}': negative value '{}' for '{}' keyword",
                 lossy(filename),
                 lossy(value),
@@ -266,7 +266,7 @@ pub fn parse_db_lookup(line: usize, filename: &[u8], value: &[u8], ac: &mut Aler
         i += 1;
     }
     if i == s.len() {
-        netdata_log_error!(
+        netdata_log_error_errno!(
             "Health configuration invalid chart calculation at line {line} of file '{file}': expected group method followed by the 'after' time, but got '{}'",
             lossy(method)
         );
@@ -280,7 +280,7 @@ pub fn parse_db_lookup(line: usize, filename: &[u8], value: &[u8], ac: &mut Aler
 
     ac.time_group = time_grouping(method);
     let Some(grouping) = ac.time_group else {
-        netdata_log_error!(
+        netdata_log_error_errno!(
             "Health configuration at line {line} of file '{file}': invalid group method '{}'",
             lossy(method)
         );
@@ -351,21 +351,21 @@ pub fn parse_db_lookup(line: usize, filename: &[u8], value: &[u8], ac: &mut Aler
             ac.time_group_value = number;
             i = skip_spaces(i + used);
             if at(s, i) != b')' {
-                netdata_log_error!(
+                netdata_log_error_errno!(
                     "Health configuration at line {line} of file '{file}': missing closing parenthesis after number in aggregation method on '{}'",
                     lossy(method)
                 );
                 return false;
             }
         } else if first != 0 {
-            netdata_log_error!(
+            netdata_log_error_errno!(
                 "Health configuration at line {line} of file '{file}': invalid character '{}' in aggregation method options on '{}'",
                 lossy(&[first]),
                 lossy(method)
             );
             return false;
         } else {
-            netdata_log_error!(
+            netdata_log_error_errno!(
                 "Health configuration at line {line} of file '{file}': missing closing parenthesis after aggregation method on '{}'",
                 lossy(method)
             );
@@ -392,7 +392,7 @@ pub fn parse_db_lookup(line: usize, filename: &[u8], value: &[u8], ac: &mut Aler
     match duration_parse_seconds(after) {
         Some(seconds) => ac.after = seconds,
         None => {
-            netdata_log_error!(
+            netdata_log_error_errno!(
                 "Health configuration at line {line} of file '{file}': invalid duration '{}' after group method",
                 lossy(after)
             );
@@ -417,7 +417,7 @@ pub fn parse_db_lookup(line: usize, filename: &[u8], value: &[u8], ac: &mut Aler
             let value = tokens.next();
             let parsed = if is(b"at") { duration_parse_seconds(value) } else { parse_update_every(value) };
             let Some(seconds) = parsed else {
-                netdata_log_error!(
+                netdata_log_error_errno!(
                     "Health configuration at line {line} of file '{file}': invalid duration '{}' for '{}' keyword",
                     lossy(value),
                     lossy(key)
@@ -468,7 +468,7 @@ pub fn parse_db_lookup(line: usize, filename: &[u8], value: &[u8], ac: &mut Aler
                 Some(at) => tokens.pos += at + 1,
             }
         } else {
-            netdata_log_error!(
+            netdata_log_error_errno!(
                 "Health configuration at line {line} of file '{file}': unknown keyword '{}'",
                 lossy(key)
             );

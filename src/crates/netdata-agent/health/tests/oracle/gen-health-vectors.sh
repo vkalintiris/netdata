@@ -63,7 +63,8 @@ run cc "${CFLAGS[@]}" "${SCRIPT_DIR}/gen-health-vectors.c" "${OBJECTS[@]}" -o "$
                 for file in "${entry}"/*.conf; do
                     printf '+0 %s\n' "${file}"
                 done
-            elif [[ -f "${entry}" && "${entry}" == *.conf ]]; then
+            # whatever is named *.conf: a dangling link and a directory are paths the reader cannot read
+            elif [[ "${entry}" == *.conf ]]; then
                 printf '0 %s\n' "${entry}"
             fi
         done
