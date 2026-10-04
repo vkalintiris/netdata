@@ -41,6 +41,27 @@ fn collect(chart: &Chart, t: i64) {
     collected_rrdset(chart);
 }
 
+/// `any_metric()` and `any_metric_collected()`: a host without a context has no metric; one whose only chart has no
+/// dimension has none either; a dimension is a metric, and a collected one once it stored.
+#[test]
+fn a_host_has_a_metric_once_a_chart_has_a_dimension() {
+    let (contexts, charts) = setup();
+    assert!(!contexts.any_metric(), "no context");
+    assert!(!contexts.any_metric_collected());
+
+    let (bare, _) = charts.create(&spec("bare", "ctx.bare", "Title", 1000));
+    assert!(!contexts.any_metric(), "a context whose instance has no metric");
+    assert!(!contexts.any_metric_collected());
+
+    let (chart, _) = charts.create(&spec("a", "ctx.a", "Title", 1000));
+    chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+    assert!(contexts.any_metric(), "the second context answers");
+    assert!(!contexts.any_metric_collected(), "nothing stored yet");
+    collect(&chart, T);
+    assert!(contexts.any_metric_collected());
+    drop(bare);
+}
+
 #[test]
 fn a_chart_is_deleted_until_it_stores_then_collected() {
     let (contexts, charts) = setup();

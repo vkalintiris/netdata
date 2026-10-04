@@ -1365,7 +1365,7 @@ mod replay {
 /// records.
 #[test]
 fn loop_matches_c() {
-    assert_eq!(replayed("loop"), 218);
+    assert_eq!(replayed("loop"), 224);
 }
 
 /// Every scenario of `tests/corpus/queue/` against C's pass with its save queue in play: the metadata queue takes

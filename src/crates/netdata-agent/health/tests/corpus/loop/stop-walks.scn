@@ -1,0 +1,40 @@
+# What a pass does between its walks, and what it looks at when it stops.
+rules tests/corpus/loop/free.conf
+chart loop.g1 loop.g1_name loop.free - things 1
+chart loop.g2 loop.g2_name loop.free - things 1
+dim loop.g1 value value 7
+dim loop.g2 value value 7
+var loop.g1 v 10
+var loop.g2 v 10
+lookup loop.g1 200 10 0
+lookup loop.g2 200 10 0
+clock 0
+pass 0
+# loop.g1 leaves the index before the first walk's first alert (the gate's second look: the pass looks at it once
+# when it starts, then before every alert), and the service stops before the second walk's first alert (five looks
+# at it: one per alert of the first walk, one between the walks): the first walk alone took the two alerts'
+# RUNNABLE flag
+clock 1
+free-at-gate loop.g1 2
+running-for 5
+pass 1
+running 1
+clock 2
+unlink loop.g1
+# Before an alert the service is looked at first, and a stopping service ends the look: the service runs for one
+# look, so the gate is looked at twice (when the pass starts, before the first alert) and not before the second
+# alert, where the service has stopped; loop.g2, set to leave at the gate's third look, stays, and the next pass
+# evaluates its alerts
+clock 3
+running-for 1
+free-at-gate loop.g2 3
+pass 3
+running 1
+free-at-gate loop.g2 0
+clock 4
+pass 4
+# The rules are applied anew while the agent exits: no alert logs its removal, and every entry of the log that is
+# no removal counts as replaced
+clock 5
+exiting
+apply

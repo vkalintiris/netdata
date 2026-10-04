@@ -129,24 +129,7 @@ impl Ctx<'_> {
     /// `query_target_alerts_counts()`: the non-zero counts as the `alerts` member, or as an array item led by the
     /// alert's `name`; nothing when all four are 0.
     fn alerts_counts(&self, w: &mut JsonWriter, a: &AlertCounts, name: Option<&[u8]>) {
-        if a.is_empty() {
-            return;
-        }
-        let k = self.k;
-        match name {
-            Some(name) => {
-                w.add_array_item_object();
-                w.member_add_string(k.name(), name);
-            }
-            None => w.member_add_object(k.alerts()),
-        }
-        let counts = [(k.clear(), a.clear), (k.warning(), a.warning), (k.critical(), a.critical), (k.other(), a.other)];
-        for (key, value) in counts {
-            if value > 0 {
-                w.member_add_uint64(key, u64::from(value));
-            }
-        }
-        w.object_close();
+        alerts_counts(self.k, w, a, name);
     }
 
     /// `query_target_summary_alerts_v2()`: the alerts of every instance of the target, grouped by name in the order
@@ -1331,9 +1314,57 @@ pub fn cloud_timings(w: &mut JsonWriter, key: &str, received: Instant, finished:
     w.object_close();
 }
 
+/// `query_target_alerts_counts()` with the wrapper's key table.
+fn alerts_counts(k: Keys, w: &mut JsonWriter, a: &AlertCounts, name: Option<&[u8]>) {
+    if a.is_empty() {
+        return;
+    }
+    match name {
+        Some(name) => {
+            w.add_array_item_object();
+            w.member_add_string(k.name(), name);
+        }
+        None => w.member_add_object(k.alerts()),
+    }
+    let counts = [(k.clear(), a.clear), (k.warning(), a.warning), (k.critical(), a.critical), (k.other(), a.other)];
+    for (key, value) in counts {
+        if value > 0 {
+            w.member_add_uint64(key, u64::from(value));
+        }
+    }
+    w.object_close();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `query_target_alerts_counts()`: counts that are all zero print nothing, neither the `alerts` member nor an
+    /// item of the summary's array; else the counts that are not zero, an item led by the alert's name.
+    #[test]
+    fn alert_counts_that_are_all_zero_print_nothing() {
+        let k = Keys::new(0);
+        let member = |counts: AlertCounts| {
+            let mut w = JsonWriter::new(JsonOptions::MINIFY);
+            alerts_counts(k, &mut w, &counts, None);
+            w.finalize();
+            String::from_utf8(w.into_bytes()).unwrap()
+        };
+        let item = |counts: AlertCounts| {
+            let mut w = JsonWriter::new(JsonOptions::MINIFY);
+            w.member_add_array(Some(b"list"));
+            alerts_counts(k, &mut w, &counts, Some(b"an_alert"));
+            w.array_close();
+            w.finalize();
+            String::from_utf8(w.into_bytes()).unwrap()
+        };
+        let none = AlertCounts::default();
+        assert_eq!(member(none), "{}");
+        assert_eq!(item(none), r#"{"list":[]}"#);
+        let some = AlertCounts { clear: 2, critical: 1, ..AlertCounts::default() };
+        assert_eq!(member(some), r#"{"al":{"cl":2,"cr":1}}"#);
+        assert_eq!(item(some), r#"{"list":[{"nm":"an_alert","cl":2,"cr":1}]}"#);
+    }
 
     /// `buffer_json_agents_v2()`'s two forms: the `agents` array of one with `ai`, and the `agent` object without it
     /// (DynCfg's tree trailer).
