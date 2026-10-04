@@ -6,7 +6,8 @@
 //! seconds or when the next alert is due, waited in 1 s sleeps, and none while a backfill or more than one user
 //! query runs.
 
-use std::sync::Arc;
+use std::cell::Cell;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use netdata_agent_health::alert::Status;
@@ -16,8 +17,9 @@ use netdata_agent_health::entry::Entry;
 use netdata_agent_health::pass::{ChartFacts, Env, Pass};
 use netdata_agent_health::store::alert_hash_row;
 use netdata_agent_health::{Health, StoreSink};
-use netdata_agent_metadata::health_log::LoadedRow;
 use netdata_agent_log::{Priority, Source, nd_log};
+use netdata_agent_metadata::health_log::LoadedRow;
+use netdata_agent_metadata::open::MetaDb;
 use netdata_agent_query::execute::Control;
 use netdata_agent_query::grouping::Windows;
 use netdata_agent_query::value::{ValueRequest, ValueResult, chart_value};
@@ -73,19 +75,53 @@ impl Suspension {
     }
 }
 
+thread_local! {
+    /// C's `is_health_thread`: set by the HEALTH thread when it starts.
+    static IS_HEALTH_THREAD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The calling thread is HEALTH: a save the metadata queue refuses is made by it at once.
+pub(crate) fn mark_health_thread() {
+    IS_HEALTH_THREAD.with(|flag| flag.set(true));
+}
+
+/// `sql_health_alarm_log_save()` of a host's entry: an insert, or an update of an entry saved before; with the
+/// host's ACLK sync configuration an insert writes the alarm's row of the queue toward the Cloud too. True when a
+/// row was inserted.
+pub(crate) fn save_entry(meta: &MetaDb, host: &Host, entry: &Entry) -> bool {
+    let Some(host_id) = crate::meta_store::host_id(host) else {
+        return false;
+    };
+    netdata_agent_health::sql::save(meta, &host.hostname(), &host_id, entry, host.aclk_sync_config())
+}
+
 /// What a health pass asks of the daemon: the charts as they are collected, the database for a lookup, the clock,
-/// the exit flag. Saving an entry and notifying about one do nothing yet: they come with the alert log's tables
-/// and with the notifications.
+/// the exit flag, the alert log's tables and the metadata thread's queue. Notifying about an entry does nothing
+/// yet: it comes with the notifications.
 pub struct LiveEnv {
     hosts: Arc<Hosts>,
     windows: Windows,
-    /// Whether the agent has its metadata database.
-    database: bool,
+    /// The metadata database; none when the agent has none. Weak: the exit closes it by letting go of it, and what
+    /// asks for it afterwards returns as C's statements do on its closed handle.
+    meta: Option<Weak<MetaDb>>,
+    queue: MetaQueue,
 }
 
 impl LiveEnv {
-    pub fn new(hosts: Arc<Hosts>, windows: Windows, database: bool) -> LiveEnv {
-        LiveEnv { hosts, windows, database }
+    pub fn new(hosts: Arc<Hosts>, windows: Windows, meta: Option<&Arc<MetaDb>>, queue: MetaQueue) -> LiveEnv {
+        LiveEnv { hosts, windows, meta: meta.map(Arc::downgrade), queue }
+    }
+
+    /// The metadata database for a statement of C's `function`: without one C's prepare fails and says so; once
+    /// the exit closed it nothing is said.
+    fn meta(&self, function: &str) -> Option<Arc<MetaDb>> {
+        match &self.meta {
+            Some(meta) => meta.upgrade(),
+            None => {
+                crate::meta_store::no_database(function);
+                None
+            }
+        }
     }
 }
 
@@ -129,37 +165,72 @@ impl Env for LiveEnv {
         netdata_agent_sys::exit::initiated()
     }
 
-    // the alert log's tables come with the wiring of their commit: until then no thread is HEALTH's for a save,
-    // the queue refuses, and nothing is saved, looked up or moved
     fn is_health_thread(&self) -> bool {
-        false
+        IS_HEALTH_THREAD.with(Cell::get)
     }
 
     fn service_running(&self) -> bool {
         !shutdown::exiting()
     }
 
-    /// With a database the table reads as empty until the alert log's tables are wired.
-    fn load(&self, _: &Host) -> Option<Vec<LoadedRow>> {
-        self.database.then(Vec::new)
+    /// `sql_health_alarm_log_load()`'s statements: the REMOVED rows for the alarms whose last saved entry is none,
+    /// then the last entry of each alarm. Without a database C returns at once (silently: the agent runs without
+    /// one only when it has no dbengine).
+    fn load(&self, host: &Host) -> Option<Vec<LoadedRow>> {
+        let meta = self.meta.as_ref()?.upgrade()?;
+        let host_id = crate::meta_store::host_id(host)?;
+        let (hostname, queue) = (host.hostname(), host.aclk_sync_config());
+        let running = || self.service_running();
+        let mut transition_id = || self.transition_id();
+        let (now, now_ut) = (now_realtime_s(), now_realtime_ut());
+        meta.check_removed_alerts_state(&hostname, &host_id, &running, queue, now, now_ut, &mut transition_id);
+        let mut rows = Vec::new();
+        let prepared = meta.load_health_log(&host_id, |row| {
+            rows.push(row);
+            true
+        });
+        prepared.then_some(rows)
     }
 
-    fn sql_alarm_id(&self, _: &Host, _: &[u8], _: Option<&[u8]>) -> Option<(u32, u32)> {
-        None
+    fn sql_alarm_id(&self, host: &Host, chart: &[u8], name: Option<&[u8]>) -> Option<(u32, u32)> {
+        let meta = self.meta("sql_get_alarm_id")?;
+        meta.get_alarm_id(&crate::meta_store::host_id(host)?, chart, name)
     }
 
-    fn queue_save(&self, _: &Arc<HostAlerts>, _: u32) -> bool {
-        false
+    /// Without a database the queue refuses: the save is then made, and fails, at once.
+    fn queue_save(&self, alerts: &Arc<HostAlerts>, unique_id: u32) -> bool {
+        self.meta.is_some() && self.queue.ae_save(alerts, unique_id)
     }
 
-    fn sql_save(&self, _: &Host, _: &Entry) -> bool {
-        false
+    fn sql_save(&self, host: &Host, entry: &Entry) -> bool {
+        self.meta("sql_health_alarm_log_insert").is_some_and(|meta| save_entry(&meta, host, entry))
     }
 
-    fn commit_transitions(&self) {}
+    fn commit_transitions(&self) {
+        self.queue.store();
+    }
 
-    fn process_pending_queue(&self, _: &Host) -> bool {
-        false
+    /// `process_alert_pending_queue()`: the host's due rows of `alert_queue` move toward the Cloud's queue (or are
+    /// dropped, for a host without its ACLK sync configuration), with C's record in the access log when any was
+    /// due. True when a row was queued.
+    fn process_pending_queue(&self, host: &Host) -> bool {
+        let (Some(meta), Some(host_id)) = (self.meta("process_alert_pending_queue"), crate::meta_store::host_id(host))
+        else {
+            return false;
+        };
+        let Some((count, added)) = meta.process_alert_pending_queue(&host_id, host.aclk_sync_config(), now_realtime_s())
+        else {
+            return false;
+        };
+        if count != 0 {
+            let hostname = host.hostname();
+            nd_log!(
+                Source::Access,
+                Priority::Notice,
+                "ACLK STA [{hostname} (N/A)]: Processed {count} entries, queued {added}"
+            );
+        }
+        added > 0
     }
 
     fn notify(&self, _: &mut Entry) {}
@@ -228,6 +299,7 @@ pub fn spawn(
         Duration::from_secs(1),
         Phase::OnTheTick,
         move |ticker| {
+            mark_health_thread();
             let mut suspension = Suspension { last: None };
             // service_running(SERVICE_HEALTH): false once the exit starts (D110)
             let running = || ticker.running() && !shutdown::exiting();
@@ -399,7 +471,7 @@ mod tests {
             history_entries: 3600,
             page_size: 4096,
         };
-        let env = LiveEnv::new(Arc::clone(&hosts), Windows::default(), false);
+        let env = LiveEnv::new(Arc::clone(&hosts), Windows::default(), None, MetaQueue::unread().0);
 
         // a new chart, collected every 3 seconds on a host of 1: never collected, no data
         let (slow, _) = host.charts().create(&spec("slow", 3));

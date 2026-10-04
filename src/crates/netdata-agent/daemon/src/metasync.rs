@@ -12,6 +12,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use netdata_agent_evloop::work::WorkPool;
+use netdata_agent_health::Health;
+use netdata_agent_health::alerts::HostAlerts;
 use netdata_agent_log::{Priority, Source, nd_log, netdata_log_info};
 use netdata_agent_metadata::Connection;
 use netdata_agent_metadata::cleanup::{CleanupCycle, CycleEnv, CycleKind};
@@ -32,6 +34,10 @@ const HOST_CHECK_INTERVAL_S: i64 = 5;
 /// `METADATA_MAINTENANCE_CTX_CLEAN_REPEAT`, the seconds from a scan's end to the next.
 const CTX_CLEANUP_FIRST_S: i64 = 5;
 const CTX_CLEANUP_REPEAT_S: i64 = 300;
+/// `METADATA_MAINTENANCE_FIRST_CHECK` and `METADATA_HEALTH_LOG_INTERVAL`: the health log's cleanup comes this long
+/// after the first job reached it, and then this long after each start of it.
+const HEALTH_LOG_CLEANUP_FIRST_S: i64 = 1800;
+const HEALTH_LOG_CLEANUP_REPEAT_S: i64 = 3600;
 
 /// The loop's timer (`TIMER_INITIAL_PERIOD_MS`, `TIMER_REPEAT_PERIOD_MS`).
 const TIMER_PERIOD: Duration = Duration::from_secs(1);
@@ -49,6 +55,8 @@ struct Shared {
     /// `next_vacuum_run` and `next_context_list_cleanup` of `run_metadata_cleanup()`, 0 before the first job.
     next_vacuum_run: AtomicI64,
     next_ctx_cleanup: AtomicI64,
+    /// `next_execution_t` of `cleanup_health_log()`, 0 before the first job.
+    next_health_log_cleanup: AtomicI64,
     /// `dim_cleanup_cycle`, `chart_cleanup_cycle` and `label_cleanup_cycle`.
     cycles: Mutex<[CleanupCycle; 3]>,
     /// `ctx_load_running`: a context load job runs; the shutdown waits for it.
@@ -67,6 +75,8 @@ struct Writer {
     /// `dbengine_datafiles_present`: without the dbengine, freed dimensions keep their rows, which may describe
     /// dbengine data.
     datafiles_present: bool,
+    /// The health plugin, for a host's alert log: its retention, and its entries in memory.
+    health: Arc<Health>,
 }
 
 /// `dimension_can_be_deleted()`: no dbengine tier holds retention for the dimension; never without the dbengine,
@@ -129,6 +139,9 @@ struct Pending {
     deletions: Option<Vec<[u8; 16]>>,
     /// `pending_sql_statement`: statements bound elsewhere and stepped by the next job, in queue order.
     statements: Option<Vec<AlertHashRow>>,
+    /// `pending_alert_list`: the alert log entries HEALTH and the chart-freeing threads asked to be saved, each by
+    /// its host's alerts and its unique id, in queue order.
+    alerts: Option<Vec<(Arc<HostAlerts>, u32)>>,
 }
 
 /// `store_sql_statements()`: each queued statement stepped on its own, in queue order, with no transaction; at the
@@ -149,6 +162,51 @@ fn store_sql_statements(writer: Option<&Writer>, statements: Vec<AlertHashRow>) 
     );
 }
 
+/// `store_alert_transitions()`: each queued entry is saved as it stands by now (an insert, or an update when HEALTH
+/// saved it meanwhile), and its two pending counters are taken back whatever the save did. C's list holds a host
+/// and an entry per save, and its record counts both. At the shutdown the list is dropped unsaved, without a record.
+fn store_alert_transitions(writer: &Writer, pending: Vec<(Arc<HostAlerts>, u32)>) {
+    let started = now_ut();
+    let entries = pending.len() * 2;
+    for (alerts, unique_id) in pending {
+        let host = alerts.host();
+        let save = |entry: &_| host.as_ref().is_some_and(|host| crate::health::save_entry(&writer.meta, host, entry));
+        alerts.save_queued(unique_id, &save);
+    }
+    nd_log!(
+        Source::Daemon,
+        Priority::Debug,
+        "Stored and processed {entries} alert transitions in {:.2} ms",
+        now_ut().saturating_sub(started) as f64 / 1000.0
+    );
+}
+
+/// `cleanup_health_log()`: 1800 s after the first job reached it, and then 3600 s after each start: every host's
+/// alert log loses the entries older than the host's retention that a newer one replaced, in the table and in
+/// memory; then the alarms of hosts the table `host` no longer has go, with their entries and versions. A
+/// shutdown stops it between hosts.
+fn cleanup_health_log(writer: &Writer, shared: &Shared) {
+    let shutting_down = || shared.shutdown.load(Ordering::Acquire);
+    let now = now_realtime_s();
+    if shared.next_health_log_cleanup.load(Ordering::Acquire) == 0 {
+        shared.next_health_log_cleanup.store(now.saturating_add(HEALTH_LOG_CLEANUP_FIRST_S), Ordering::Release);
+    }
+    if shared.next_health_log_cleanup.load(Ordering::Acquire) > now {
+        return;
+    }
+    shared.next_health_log_cleanup.store(now.saturating_add(HEALTH_LOG_CLEANUP_REPEAT_S), Ordering::Release);
+    for host in writer.hosts.all() {
+        if let Some(host_id) = crate::meta_store::host_id(&host) {
+            let alerts = writer.health.host(&host);
+            netdata_agent_health::sql::cleanup(&writer.meta, &host_id, alerts.as_deref(), &now_realtime_s);
+        }
+        if shutting_down() {
+            return;
+        }
+    }
+    writer.meta.delete_orphan_health_rows();
+}
+
 fn cleanup_cycles() -> [CleanupCycle; 3] {
     [
         CleanupCycle::new(CycleKind::Dimension),
@@ -160,7 +218,8 @@ fn cleanup_cycles() -> [CleanupCycle; 3] {
 /// `run_metadata_cleanup()`: the context cleanup scan of every host, 5 s after the first job reached it and then
 /// 300 s after each scan ends, skipped (and cut short) while the WAL is too large; then the dimension cycle, the chart
 /// cycle when the dimension cycle had nothing to do, and the chart-label cycle when neither had; then the database's
-/// upkeep. A shutdown stops it between the steps. The health log's cleanup comes with the health port (D75.9).
+/// cycle when the dimension cycle had nothing to do, and the chart-label cycle when neither had; then the health
+/// log's cleanup; then the database's upkeep. A shutdown stops it between the steps.
 fn run_metadata_cleanup(writer: &Writer, shared: &Shared) {
     let shutting_down = || shared.shutdown.load(Ordering::Acquire);
     let now = now_realtime_s();
@@ -208,6 +267,7 @@ fn run_metadata_cleanup(writer: &Writer, shared: &Shared) {
             writer.meta.run_cleanup_cycle(label, &env);
         }
     }
+    cleanup_health_log(writer, shared);
     if shutting_down() {
         return;
     }
@@ -218,14 +278,18 @@ fn run_metadata_cleanup(writer: &Writer, shared: &Shared) {
 }
 
 /// `start_metadata_hosts()`, on a pool thread: the maintenance at most every 10 s (`run_maintenace()`, whose freed
-/// dimensions reach the next job), the queued statements, the context cleanups, the freed dimensions, the hosts'
-/// pending metadata, then the metadata cleanup, and the next store no sooner than 5 s from now.
+/// dimensions reach the next job), the queued statements, the queued alert log entries, the context cleanups, the
+/// freed dimensions, the hosts' pending metadata, then the metadata cleanup, and the next store no sooner than 5 s
+/// from now.
 fn store_job(writer: &Writer, shared: &Shared, pending: Pending) {
     shared
         .maintenance
         .run_if_due(&writer.hosts, Some(&writer.meta), now_realtime_s());
     if let Some(statements) = pending.statements {
         store_sql_statements(Some(writer), statements);
+    }
+    if let Some(alerts) = pending.alerts {
+        store_alert_transitions(writer, alerts);
     }
     if let Some(cleanup) = pending.ctx_cleanup {
         store_ctx_cleanup(writer, shared, cleanup);
@@ -272,6 +336,10 @@ enum Cmd {
     AddCtxCleanup([u8; 16], String),
     /// `METADATA_EXECUTE_STORE_STATEMENT`: a statement bound by its caller, stepped by the next job.
     ExecuteStore(Box<AlertHashRow>),
+    /// `METADATA_ADD_HOST_AE`: an alert log entry of a host, saved by the next job.
+    AddHostAe(Arc<HostAlerts>, u32),
+    /// `METADATA_STORE` as a command (`commit_alert_transitions()`): a job now, unless one runs.
+    Store,
     Shutdown,
 }
 
@@ -300,6 +368,17 @@ impl MetaQueue {
     pub fn execute_store_statement(&self, row: AlertHashRow) {
         let _ = self.0.send(Cmd::ExecuteStore(Box::new(row)));
     }
+
+    /// `metadata_queue_ae_save()`'s command: the entry of that unique id is saved by the next job, as it stands
+    /// then. False when the queue is gone: the caller takes its counters back.
+    pub fn ae_save(&self, alerts: &Arc<HostAlerts>, unique_id: u32) -> bool {
+        self.0.send(Cmd::AddHostAe(Arc::clone(alerts), unique_id)).is_ok()
+    }
+
+    /// `commit_alert_transitions()`: a store job is asked for now; the command is dropped while one runs.
+    pub fn store(&self) {
+        let _ = self.0.send(Cmd::Store);
+    }
 }
 
 /// A queue no thread reads, for tests of what queues on it.
@@ -315,6 +394,20 @@ impl Unread {
             _ => None,
         });
         rows.collect()
+    }
+
+    /// The alert log entries `ae_save()` queued since the last call, in order, and how many stores `store()` asked
+    /// for.
+    pub(crate) fn alert_commands(&self) -> (Vec<(Arc<HostAlerts>, u32)>, usize) {
+        let (mut saves, mut stores) = (Vec::new(), 0);
+        for cmd in self.0.try_iter() {
+            match cmd {
+                Cmd::AddHostAe(alerts, unique_id) => saves.push((alerts, unique_id)),
+                Cmd::Store => stores += 1,
+                _ => {}
+            }
+        }
+        (saves, stores)
     }
 }
 
@@ -360,6 +453,7 @@ impl MetaSync {
                     shutdown: AtomicBool::new(false),
                     next_vacuum_run: AtomicI64::new(0),
                     next_ctx_cleanup: AtomicI64::new(0),
+                    next_health_log_cleanup: AtomicI64::new(0),
                     cycles: Mutex::new(cleanup_cycles()),
                     ctx_load_running: AtomicBool::new(false),
                     maintenance: Default::default(),
@@ -377,6 +471,9 @@ impl MetaSync {
                         Err(RecvTimeoutError::Timeout) => None,
                         Err(RecvTimeoutError::Disconnected) => break,
                     };
+                    // a store asked for by command starts a job or is dropped; the timer's wish stays until a job
+                    // starts
+                    let mut store_now = false;
                     // metadata_event_loop_timer_cb()
                     let now = Instant::now();
                     if now >= next_tick {
@@ -422,6 +519,10 @@ impl MetaSync {
                         Some(Cmd::ExecuteStore(row)) => {
                             pending.statements.get_or_insert_with(Vec::new).push(*row);
                         }
+                        Some(Cmd::AddHostAe(alerts, unique_id)) => {
+                            pending.alerts.get_or_insert_with(Vec::new).push((alerts, unique_id));
+                        }
+                        Some(Cmd::Store) => store_now = true,
                         Some(Cmd::Shutdown) => {
                             shared.shutdown.store(true, Ordering::Release);
                             break;
@@ -429,8 +530,10 @@ impl MetaSync {
                         None => {}
                     }
                     // METADATA_STORE: one job at a time; without a database the writer stays off (D61.8)
-                    if store_metadata && !running && let Some(w) = &writer {
-                        store_metadata = false;
+                    if (store_metadata || store_now) && !running && let Some(w) = &writer {
+                        if !store_now {
+                            store_metadata = false;
+                        }
                         running = true;
                         let (w, shared, tx) = (w.clone(), Arc::clone(&shared), job_tx.clone());
                         let taken = std::mem::take(&mut pending);
@@ -491,12 +594,14 @@ impl MetaSync {
         context_db: Weak<ContextDb>,
         hosts: Arc<Hosts>,
         datafiles_present: bool,
+        health: Arc<Health>,
     ) {
         let _ = self.tx.send(Cmd::Writer(Writer {
             meta,
             context_db,
             hosts,
             datafiles_present,
+            health,
         }));
     }
 
@@ -737,12 +842,18 @@ mod tests {
         hosts
     }
 
+    /// A health plugin without rules.
+    fn health() -> Arc<Health> {
+        Health::init(Default::default(), Box::new(|_| {}))
+    }
+
     fn shared() -> Arc<Shared> {
         Arc::new(Shared {
             check_after: AtomicI64::new(0),
             shutdown: AtomicBool::new(false),
             next_vacuum_run: AtomicI64::new(0),
             next_ctx_cleanup: AtomicI64::new(0),
+            next_health_log_cleanup: AtomicI64::new(0),
             cycles: Mutex::new(cleanup_cycles()),
             ctx_load_running: AtomicBool::new(false),
             maintenance: Default::default(),
@@ -895,6 +1006,7 @@ mod tests {
             context_db: Weak::new(),
             hosts: hosts(),
             datafiles_present: true,
+            health: health(),
         };
         delete_pending_dimensions(&writer, &shared, vec![[1; 16]]);
         assert_eq!(dimensions(&meta), 3, "dbengine data on disk keeps the rows");
@@ -944,6 +1056,7 @@ mod tests {
             context_db: Weak::new(),
             hosts: hosts(),
             datafiles_present: false,
+            health: health(),
         };
         assert!(!dimension_can_be_deleted(&writer, &[1; 16]));
         assert!(freed_dimension_can_be_deleted(&writer, &[1; 16]));
@@ -975,6 +1088,7 @@ mod tests {
                 context_db: Weak::new(),
                 hosts,
                 datafiles_present: false,
+                health: health(),
             };
             let queued = |meta: &MetaDb| -> i64 {
                 meta.lock()
@@ -1002,6 +1116,122 @@ mod tests {
         }
     }
 
+    /// The alert log between HEALTH and a store job, on a real metadata database. A host's first pass queues the
+    /// save of its alert's link entry and asks for a job; what the pass logs itself (the alert's first status) it
+    /// saves at once, with the link entry that status replaces. While a save is pending the next pass is postponed.
+    /// The job's step saves what was queued (here an update of a row HEALTH inserted) and records two per save, and
+    /// no save is pending afterwards: every entry the host logged has its row, and the alarm its row of the queue
+    /// toward the Cloud. A new process on the same database loads the alarm's last entry, and its alert keeps its
+    /// alarm id.
+    #[test]
+    fn a_job_saves_the_alert_entries_health_queued() {
+        use netdata_agent_health::pass::Pass;
+        use netdata_agent_health::readfile::health_readfile;
+        use netdata_agent_health::store::alert_hash_row;
+        use netdata_agent_rrd::chart::{Algorithm, ChartSpec, ChartType, flags};
+        use netdata_agent_rrd::host::pending_flags;
+
+        let dir = tempfile::tempdir().unwrap();
+        let meta = Arc::new(MetaDb::open(dir.path(), &Default::default()).unwrap());
+        let base = info("parent", "linux");
+        let ram = HostInfo { health_enabled: true, db_mode: DbMode::Ram, history_entries: 3600, ..base };
+        let hosts = Arc::new(Hosts::new(Host::new("5a1e0000-0000-4000-8000-0000000000aa", true, ram)));
+        let host = Arc::clone(hosts.localhost());
+        host.set_aclk_sync_config();
+        let (chart, _) = host.charts().create(&ChartSpec {
+            type_: "t",
+            id: "c",
+            name: None,
+            family: Some("f"),
+            context: Some("t.ctx"),
+            title: "T",
+            units: "u",
+            plugin: "p",
+            module: None,
+            priority: 1000,
+            update_every: 1,
+            chart_type: ChartType::Line,
+            mode: DbMode::Ram,
+            history_entries: 3600,
+            page_size: 4096,
+        });
+        chart.dim_add("d", None, 1, 1, Algorithm::Absolute);
+        let now = now_realtime_s();
+        chart.update_collection(|collection| {
+            collection.counter_done = 3;
+            collection.last_collected = (now, 0);
+        });
+
+        let rules = dir.path().join("t.conf");
+        std::fs::write(&rules, "template: t_one\n on: t.ctx\n calc: 1\n every: 1s\n warn: $this > 5\n").unwrap();
+        let plugin = || {
+            let meta = Arc::clone(&meta);
+            let health = Health::init(
+                Default::default(),
+                Box::new(move |rule| assert!(meta.store_alert_config(&alert_hash_row(rule)))),
+            );
+            assert!(health_readfile(&health, rules.as_os_str().as_encoded_bytes(), false));
+            health
+        };
+        let health = plugin();
+        let (queue, unread) = MetaQueue::unread();
+        let env = crate::health::LiveEnv::new(Arc::clone(&hosts), Default::default(), Some(&meta), queue);
+        crate::health::mark_health_thread();
+        let pass = |health: &Health| {
+            let mut next_run = now + 10;
+            let ((), records) = netdata_agent_log::capture(|| {
+                let pass = Pass { now, apply_hibernation_delay: false, next_run: &mut next_run, gate: &|| true };
+                health.host_pass(&host, pass, &env, &now_realtime_s, &|| true);
+            });
+            records.into_iter().filter_map(|record| record.message).collect::<Vec<String>>()
+        };
+        let rows = |table: &str| -> i64 {
+            meta.lock().query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap()
+        };
+
+        // the first pass: the links' saves are queued, a job is asked for, and HEALTH saved its own entries
+        pass(&health);
+        let alerts = health.host(&host).unwrap();
+        let (queued, stores) = unread.alert_commands();
+        assert!(!queued.is_empty(), "the link entries' saves");
+        assert_eq!((alerts.pending_transitions(), stores), (queued.len() as i32, 1));
+        // the alert's first status is saved by HEALTH with the link entry it replaces: the queued save of that link
+        // entry will find it saved, and update it
+        let logged = alerts.transitions() as i64;
+        assert_eq!((logged, rows("health_log_detail")), (2, 2));
+        let alarm_id = alerts.alerts()[0].id;
+
+        // saves are pending: the next pass is postponed
+        let postponed = pass(&health);
+        assert_eq!(postponed, ["Host \"parent\" has pending alert transitions to save, postponing health checks"]);
+        assert_eq!(unread.alert_commands().0.len(), 0);
+
+        // the job's step
+        let writer = Writer {
+            meta: Arc::clone(&meta),
+            context_db: Weak::new(),
+            hosts: Arc::clone(&hosts),
+            datafiles_present: false,
+            health: Arc::clone(&health),
+        };
+        let saves = queued.len();
+        let ((), records) = netdata_agent_log::capture(|| store_alert_transitions(&writer, queued));
+        let record = records[0].message.clone().unwrap();
+        assert!(record.starts_with(&format!("Stored and processed {} alert transitions in ", saves * 2)), "{record}");
+        assert_eq!(alerts.pending_transitions(), 0);
+        assert_eq!((rows("health_log_detail"), rows("health_log"), rows("alert_queue")), (logged, 1, 1));
+
+        // a new process: the host's first pass loads the alarm's last entry, and the alert takes its alarm id again
+        drop(alerts);
+        let health = plugin();
+        host.raise_pending_flags(pending_flags::HEALTH_INITIALIZATION);
+        chart.flags_set_and_clear(flags::PENDING_HEALTH_INITIALIZATION, 0);
+        let records = pass(&health);
+        let loaded = "[parent]: Table health_log, loaded 1 alarm entries, errors in 0 entries.";
+        assert!(records.iter().any(|record| record == loaded), "{records:?}");
+        assert_eq!(health.host(&host).unwrap().alerts()[0].id, alarm_id);
+    }
+
     /// A job stores the context cleanups before it deletes the freed dimensions, each list with C's record; the items
     /// met during a shutdown are not stored, and no list gives no record.
     #[test]
@@ -1014,6 +1244,7 @@ mod tests {
             context_db: Weak::new(),
             hosts: hosts(),
             datafiles_present: false,
+            health: health(),
         };
         let cleanups = |meta: &MetaDb| -> i64 {
             meta.lock()
@@ -1037,7 +1268,7 @@ mod tests {
                 Pending {
                     ctx_cleanup: Some(vec![([0xaa; 16], "ctx.a".into())]),
                     deletions: Some(vec![[1; 16]]),
-                    statements: None,
+                    ..Pending::default()
                 },
             )
         });
@@ -1083,6 +1314,7 @@ mod tests {
             context_db: Weak::new(),
             hosts: hosts(),
             datafiles_present: false,
+            health: health(),
         };
         let stored = |records: Vec<netdata_agent_log::Captured>| -> Vec<String> {
             records
@@ -1101,6 +1333,7 @@ mod tests {
                     deletions: None,
                     // the second hash again: its row is replaced and takes a new rowid
                     statements: Some(vec![row(3), row(1), row(2), row(1)]),
+                    alerts: None,
                 },
             )
         });

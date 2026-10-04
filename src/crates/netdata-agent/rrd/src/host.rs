@@ -430,6 +430,10 @@ pub struct Host {
     /// `host->health.delay_up_to`: until when the HEALTH loop leaves the host alone, 0 for no delay. A child's
     /// receiver sets it at the attach and the loop at a resume from suspension; the loop clears it.
     health_delay_up_to: AtomicI64,
+    /// Whether the host has its ACLK sync configuration (`host->aclk_host_config`): C makes it when the ACLK sync
+    /// thread first handles the host's node info or node state, and never drops it. With it, a saved alert log
+    /// entry writes its alarm's row of the queue toward the Cloud.
+    aclk_sync_config: AtomicBool,
     /// `RRDHOST_FLAG_OBSOLETE_ALL_IN_PROGRESS`: the maintenance marks the host's charts obsolete; receivers wait.
     obsolete_all_busy: AtomicBool,
     /// `RRDHOST_FLAG_ORPHAN`: a child whose receiver has gone.
@@ -612,6 +616,7 @@ impl Host {
             receiver_last_disconnected_s: AtomicI64::new(0),
             health_last_iteration: AtomicU64::new(0),
             health_delay_up_to: AtomicI64::new(0),
+            aclk_sync_config: AtomicBool::new(false),
             obsolete_all_busy: AtomicBool::new(false),
             orphan: AtomicBool::new(false),
             // rrd_init(): localhost's collector is this agent
@@ -1175,6 +1180,17 @@ impl Host {
     /// Postpones the host's health until `second`, or lifts the delay with 0.
     pub fn set_health_delay_up_to(&self, second: i64) {
         self.health_delay_up_to.store(second, Ordering::Relaxed);
+    }
+
+    /// Whether the host has its ACLK sync configuration.
+    pub fn aclk_sync_config(&self) -> bool {
+        self.aclk_sync_config.load(Ordering::Acquire)
+    }
+
+    /// The host gets its ACLK sync configuration: where C queues the host's node info or node state for the ACLK
+    /// sync thread, which creates it.
+    pub fn set_aclk_sync_config(&self) {
+        self.aclk_sync_config.store(true, Ordering::Release);
     }
 
     /// An ephemeral host loaded from the metadata database counts as disconnected at its load

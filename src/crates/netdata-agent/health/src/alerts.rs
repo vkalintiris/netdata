@@ -165,6 +165,11 @@ impl HostAlerts {
         std::ptr::eq(self.owner.as_ptr(), host)
     }
 
+    /// The host these are the alerts of, while it exists.
+    pub fn host(&self) -> Option<Arc<Host>> {
+        self.owner.upgrade()
+    }
+
     fn store(&self) -> MutexGuard<'_, Store> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }

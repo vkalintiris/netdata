@@ -994,7 +994,8 @@ mod tests {
         // own; the daemon's hosts share one)
         host.storage().set_health_hook({
             let health = Arc::clone(&s.health);
-            let env = crate::health::LiveEnv::new(Arc::clone(&s.hosts), Default::default(), false);
+            let queue = crate::metasync::MetaQueue::unread().0;
+            let env = crate::health::LiveEnv::new(Arc::clone(&s.hosts), Default::default(), None, queue);
             move |event| crate::health::database_event(&health, &env, event)
         });
         assert!(host.charts().free_if(&chart, |_| true));
