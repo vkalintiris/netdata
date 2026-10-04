@@ -196,7 +196,7 @@ mod tests {
             let host = variables_case_host();
             variables_case_collect(&host, NOW);
             if case == "on" {
-                health.host_pass(&host, &|| NOW, &|| true);
+                health.host_link(&host, &|| NOW, &|| true);
             }
             let alerts = health.host(&host);
 
@@ -255,7 +255,7 @@ mod tests {
         assert_eq!(linked_count(health.host(&host).as_deref()), 0);
         assert_eq!(counts(), StatusCounts::default());
 
-        health.host_pass(&host, &|| NOW, &|| true);
+        health.host_link(&host, &|| NOW, &|| true);
         // link order; the duration is the rule's `every`, on a chart collected every 5 seconds too
         assert_eq!(
             alarms("hv.a"),
@@ -279,7 +279,7 @@ mod tests {
             let alert = linked.iter().find(|alert| alert.name() == name).expect("the alert");
             let mut run = alert.run();
             run.status = status;
-            alert.publish(&run);
+            alert.publish(&run, None);
         };
         publish("hv.a", b"hv_same", Status::Warning);
         assert_eq!(counts(), StatusCounts { normal: 1, warning: 1, critical: 0 });

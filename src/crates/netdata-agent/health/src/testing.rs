@@ -8,9 +8,13 @@ use netdata_agent_rrd::host::{Host, HostInfo};
 use netdata_agent_rrd::labels::SRC_CONFIG;
 use netdata_agent_rrd::mode::DbMode;
 
+use netdata_agent_query::value::{ValueRequest, ValueResult};
+
 use crate::Health;
 use crate::alert::Alert;
 use crate::config::HealthConfig;
+use crate::entry::{Entry, entry_flags};
+use crate::pass::{ChartFacts, Env, Idle};
 use crate::readfile::health_readfile;
 
 /// A localhost with health enabled and the given labels.
@@ -185,7 +189,7 @@ pub(crate) fn health_with(text: &str) -> Arc<Health> {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let path = dir.path().join("test.conf");
     std::fs::write(&path, text).expect("the file");
-    let health = Health::init(HealthConfig::default(), Box::new(|_| {}));
+    let health = Health::init(HealthConfig::default(), Box::new(|_| {}), false);
     assert!(health_readfile(&health, path.as_os_str().as_bytes(), false));
     health
 }
@@ -198,4 +202,44 @@ pub(crate) fn rule_text(kind: &str, name: &str, on: &str, lines: &[&str]) -> Str
     }
     text.push('\n');
     text
+}
+
+/// An [`Env`] a test sets: the exit flag, and whether a save marks an entry as saved. It counts what it gave out,
+/// so every entry has its own ids.
+#[derive(Default)]
+pub struct Scripted {
+    pub exiting: bool,
+    pub saves: bool,
+    pub ids: std::cell::Cell<u64>,
+}
+
+impl Env for Scripted {
+    fn facts(&self, chart: &Chart) -> ChartFacts {
+        Idle.facts(chart)
+    }
+
+    fn lookup(&self, host: &Arc<Host>, chart: &Arc<Chart>, request: &ValueRequest) -> ValueResult {
+        Idle.lookup(host, chart, request)
+    }
+
+    fn now_usec(&self) -> u64 {
+        self.ids.set(self.ids.get() + 1);
+        self.ids.get()
+    }
+
+    fn transition_id(&self) -> [u8; 16] {
+        u128::from(self.ids.get() + 1).to_be_bytes()
+    }
+
+    fn exiting(&self) -> bool {
+        self.exiting
+    }
+
+    fn save(&self, entry: &mut Entry, _: bool) {
+        if self.saves {
+            entry.flags |= entry_flags::SAVED;
+        }
+    }
+
+    fn notify(&self, _: &mut Entry) {}
 }

@@ -407,7 +407,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let path = dir.path().join("test.conf");
         std::fs::write(&path, content).expect("the file");
-        let health = Health::init(HealthConfig::default(), Box::new(|_| {}));
+        let health = Health::init(HealthConfig::default(), Box::new(|_| {}), false);
         let (read, records) = capture(|| health_readfile(&health, path.as_os_str().as_bytes(), false));
         let names = health.prototypes().iter().map(|(name, _)| String::from_utf8_lossy(name).into_owned()).collect();
         (read, names, records.len())

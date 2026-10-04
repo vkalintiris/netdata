@@ -540,7 +540,7 @@ mod tests {
             acl: test_acl(),
             first_request_timeout_s: 60,
             idle_timeout_s: 60,
-            health: netdata_agent_health::Health::init(Default::default(), Box::new(|_| {})),
+            health: netdata_agent_health::Health::init(Default::default(), Box::new(|_| {}), false),
             grouping_windows: Default::default(),
             release_channel: "nightly",
             netdata_conf: Default::default(),
@@ -912,7 +912,7 @@ mod tests {
             use std::os::unix::ffi::OsStrExt;
             assert!(netdata_agent_health::readfile::health_readfile(&s.health, rules.as_os_str().as_bytes(), false));
         }
-        s.health.host_pass(host, &|| 1_700_000_000, &|| true);
+        s.health.host_link(host, &|| 1_700_000_000, &|| true);
         let json = body("/api/v1/chart", "?chart=t.c");
         let alarm = [
             "\"alarms\":{",
@@ -937,7 +937,8 @@ mod tests {
         // own; the daemon's hosts share one)
         host.storage().set_health_hook({
             let health = Arc::clone(&s.health);
-            move |event| crate::health::database_event(&health, event)
+            let env = crate::health::LiveEnv::new(Arc::clone(&s.hosts), Default::default());
+            move |event| crate::health::database_event(&health, &env, event)
         });
         assert!(host.charts().free_if(&chart, |_| true));
         assert!(s.health.host(host).unwrap().alerts().is_empty());

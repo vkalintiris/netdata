@@ -5,6 +5,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::sync::Arc;
 
 use netdata_agent_health::Health;
+use netdata_agent_health::pass::Idle;
 use netdata_agent_health::config::HealthConfig;
 use netdata_agent_health::readfile::health_readfile;
 use netdata_agent_rrd::chart::{Chart, ChartSpec, ChartType};
@@ -66,7 +67,7 @@ fn health(config: HealthConfig, text: &str) -> Arc<Health> {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let path = dir.path().join("test.conf");
     std::fs::write(&path, text).expect("the file");
-    let health = Health::init(config, Box::new(|_| {}));
+    let health = Health::init(config, Box::new(|_| {}), false);
     assert!(health_readfile(&health, path.as_os_str().as_bytes(), false));
     health
 }
@@ -88,7 +89,7 @@ fn the_free_of_an_old_chart_leaves_the_alerts_of_the_new_chart_of_that_id() {
     let host = host();
     chart(&host, "t.keep", "ctx.a");
     let old = chart(&host, "t.x", "ctx.other");
-    health.host_pass(&host, &|| NOW, &|| true);
+    health.host_link(&host, &|| NOW, &|| true);
     assert_eq!(linked(&health, &host), [("on_a".to_owned(), "t.keep".to_owned())]);
 
     // the old chart leaves the index; its event to health is still on its way
@@ -96,12 +97,12 @@ fn the_free_of_an_old_chart_leaves_the_alerts_of_the_new_chart_of_that_id() {
     // the collector defines the chart again, now of the context the rule is for, and a pass links it
     let new = chart(&host, "t.x", "ctx.a");
     assert!(!Arc::ptr_eq(&old, &new));
-    health.host_pass(&host, &|| NOW + 1, &|| true);
+    health.host_link(&host, &|| NOW + 1, &|| true);
     let both = [("on_a".to_owned(), "t.keep".to_owned()), ("on_a".to_owned(), "t.x".to_owned())];
     assert_eq!(linked(&health, &host), both);
 
     // the old chart's event arrives
-    health.chart_freed(host.machine_guid(), &old, &|| NOW + 2, false);
+    health.chart_freed(host.machine_guid(), &old, &Idle, &|| NOW + 2);
     assert_eq!(linked(&health, &host), both, "the old chart had no alert: nothing to unlink");
 }
 
@@ -120,8 +121,8 @@ fn a_host_that_lost_the_index_collision_leaves_the_indexed_host_s_alerts() {
     hosts.storage().set_health_hook({
         let health = Arc::clone(&health);
         move |event| match event {
-            HealthEvent::ChartFreed(host, chart) => health.chart_freed(host, chart, &|| NOW, false),
-            HealthEvent::HostCleanup(host) => health.host_cleanup(host, &|| NOW, false),
+            HealthEvent::ChartFreed(host, chart) => health.chart_freed(host, chart, &Idle, &|| NOW),
+            HealthEvent::HostCleanup(host) => health.host_cleanup(host, &Idle, &|| NOW),
             HealthEvent::HostFreed(host) => health.host_freed(host),
         }
     });
@@ -130,7 +131,7 @@ fn a_host_that_lost_the_index_collision_leaves_the_indexed_host_s_alerts() {
     let long = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeeeXY";
     let child = hosts.find_or_create(long, DbMode::Ram, || info("child"), |_| {}).expect("the child");
     chart(&child, "t.a", "ctx.a");
-    health.host_pass(&child, &|| NOW, &|| true);
+    health.host_link(&child, &|| NOW, &|| true);
     let one = [("on_a".to_owned(), "t.a".to_owned())];
     assert_eq!(linked(&health, &child), one);
 
@@ -159,8 +160,8 @@ fn four_threads_define_free_pass_and_read() {
     hosts.storage().set_health_hook({
         let health = Arc::clone(&health);
         move |event| match event {
-            HealthEvent::ChartFreed(host, chart) => health.chart_freed(host, chart, &|| NOW, false),
-            HealthEvent::HostCleanup(host) => health.host_cleanup(host, &|| NOW, false),
+            HealthEvent::ChartFreed(host, chart) => health.chart_freed(host, chart, &Idle, &|| NOW),
+            HealthEvent::HostCleanup(host) => health.host_cleanup(host, &Idle, &|| NOW),
             HealthEvent::HostFreed(host) => health.host_freed(host),
         }
     });
@@ -211,7 +212,7 @@ fn four_threads_define_free_pass_and_read() {
                 if passes.fetch_add(1, Ordering::Relaxed) % 16 == 15 {
                     child.raise_label_recheck();
                 }
-                health.host_pass(&child, &|| NOW, &|| true);
+                health.host_link(&child, &|| NOW, &|| true);
             }
             let _ = done.send("pass");
         });
@@ -243,7 +244,7 @@ fn four_threads_define_free_pass_and_read() {
     assert!(freed.load(Ordering::Relaxed) > 0 && reads.load(Ordering::Relaxed) > 0);
 
     // quiet now: a pass takes whatever is pending (no host recheck: only the flagged charts are done)
-    health.host_pass(&child, &|| NOW, &|| true);
+    health.host_link(&child, &|| NOW, &|| true);
     let alerts = health.host(&child).expect("the child's alerts");
     let on_freed: Vec<String> =
         alerts.alerts().iter().filter(|a| a.chart.is_freed()).map(|a| a.chart.id().to_owned()).collect();

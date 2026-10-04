@@ -6,12 +6,15 @@
 //! - linking: which rule goes to which chart ([`matching`]), a host's alerts ([`alerts`], `rrdcalc.c`), and the
 //!   steps of a host's health pass that link them ([`link`]);
 //! - the variables an alert can name ([`variable`], `health_variable.c`) and what the web API shows of both
-//!   ([`api`]).
+//!   ([`api`]);
+//! - the evaluation loop: a host's pass ([`pass`], `health_event_loop.c`) with the database lookup ([`lookup`]),
+//!   the alert log in memory ([`entry`], `health_log.c`) and its records in the health log.
 //!
-//! Alerts are linked and not evaluated yet: the loop, the alert log and the notifications follow.
+//! The pass reaches the daemon through [`pass::Env`]: saving an entry and notifying about one are calls made at
+//! C's places that do nothing yet; the alert log's tables and the notifications follow.
 //!
-//! `tests/oracle/` runs C's own reader, store, hash and matcher over `tests/corpus/` and the stock files, and C's
-//! unit tables, into the vectors under `tests/vectors/` that this code is written against;
+//! `tests/oracle/` runs C's own reader, store, hash, matcher and per-host pass over `tests/corpus/` and the stock
+//! files, and C's unit tables, into the vectors under `tests/vectors/` that this code is written against;
 //! `tests/vectors/variables/` holds answers recorded from the running C agent.
 
 #![forbid(unsafe_code)]
@@ -20,12 +23,17 @@ pub mod alert;
 pub mod alerts;
 pub mod api;
 pub mod config;
+pub mod entry;
 pub mod expr;
 pub mod hash;
+mod journal;
 pub mod json;
 pub mod keywords;
 pub mod link;
+mod log;
+pub mod lookup;
 pub mod matching;
+pub mod pass;
 pub mod prototype;
 pub mod readfile;
 pub mod store;
@@ -68,12 +76,16 @@ pub struct Health {
     store: StoreSink,
     /// Each host's alerts, by machine GUID, from the host's first health pass on.
     hosts: Mutex<HashMap<String, Arc<HostAlerts>>>,
+    /// Whether the agent has its metadata database: a host's alert log is then loaded at its first pass, which
+    /// seeds its ids.
+    database: bool,
 }
 
 impl Health {
     /// `health_plugin_init()` up to the load: an empty store.
-    pub fn init(config: HealthConfig, store: StoreSink) -> Arc<Health> {
-        Arc::new(Health { config, prototypes: RwLock::new(Prototypes::default()), store, hosts: Mutex::default() })
+    pub fn init(config: HealthConfig, store: StoreSink, database: bool) -> Arc<Health> {
+        let prototypes = RwLock::new(Prototypes::default());
+        Arc::new(Health { config, prototypes, store, hosts: Mutex::default(), database })
     }
 
     pub fn config(&self) -> &HealthConfig {

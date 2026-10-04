@@ -299,9 +299,25 @@ pub fn trace_json(
     w.into_bytes()
 }
 
+/// The variables of an alert's expression, as the evaluator asks for them: a name nothing knows is no variable,
+/// a known one without a value is a NaN.
+pub(crate) struct AlertResolver<'a> {
+    pub host: &'a Host,
+    pub alerts: &'a HostAlerts,
+    pub this: This<'a>,
+    pub clock: Clock<'a>,
+}
+
+impl netdata_agent_eval::Resolver for AlertResolver<'_> {
+    fn lookup(&mut self, name: &[u8]) -> Option<f64> {
+        lookup(self.host, Some(self.alerts), &self.this, name, false, self.clock).map(|found| found.value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pass::Idle;
     use crate::Health;
     use crate::testing::{
         find_chart, health_with, recorded_integer, variables_case_collect, variables_case_host, variables_case_rows,
@@ -315,7 +331,7 @@ mod tests {
         let health = health_with(&variables_case_rules());
         let host = variables_case_host();
         variables_case_collect(&host, NOW);
-        health.host_pass(&host, &|| NOW, &|| true);
+        health.host_link(&host, &|| NOW, &|| true);
         (health, host)
     }
 
@@ -419,7 +435,7 @@ mod tests {
         let again = crate::testing::chart_every(&host, "hv.c", None, Some("hv.ctx"), 1, &[]);
         assert!(!Arc::ptr_eq(&again, &same.chart));
         assert_eq!(candidates(&This::of(&one, &one.run())), Some(2));
-        health.chart_freed(host.machine_guid(), &same.chart, &|| NOW, false);
+        health.chart_freed(host.machine_guid(), &same.chart, &Idle, &|| NOW);
         assert_eq!(alerts.by_name(b"hv_same").len(), 2);
         assert_eq!(candidates(&This::of(&one, &one.run())), Some(2));
     }

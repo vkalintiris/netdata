@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use netdata_agent_rrd::chart::Chart;
 use netdata_agent_rrd::host::Host;
-use netdata_agent_storage::dbengine::engine::query::Priority;
+pub use netdata_agent_storage::dbengine::engine::query::Priority;
 
 use crate::execute::{Control, run_v1};
 use crate::format::rrdr2value;

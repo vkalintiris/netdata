@@ -24,7 +24,11 @@ use crate::server::Reply;
 
 /// `nd_profile` as the data queries read it: the tiers in use and the agent's update every.
 fn profile(route: &Route<'_>) -> netdata_agent_query::request::Profile {
-    let storage = route.shared.hosts.storage();
+    profile_of(route.shared.hosts.storage())
+}
+
+/// What a query reads of the agent's profile: the tiers in use and the update every.
+pub(crate) fn profile_of(storage: &netdata_agent_rrd::storage::StorageLayout) -> netdata_agent_query::request::Profile {
     netdata_agent_query::request::Profile {
         storage_tiers: storage.storage_tiers() as u64,
         update_every: storage.update_every(),

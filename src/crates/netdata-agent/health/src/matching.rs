@@ -4,7 +4,7 @@
 use netdata_agent_rrd::labels::{Labels, PatternArray};
 use netdata_agent_text::simple_pattern::{Separators, SimplePattern, SimplePatternMode};
 
-use crate::prototype::{Prototypes, Rule};
+use crate::prototype::{Prototype, Prototypes, Rule};
 
 /// `simple_pattern_trim_around_equal()`: at each `=` one space before it and one after it go. The byte after that
 /// is copied without a second look, so `a==b` and `a= =b` keep their second `=`.
@@ -123,16 +123,32 @@ pub fn rules_for_chart<'a>(
     chart: &ChartKey<'_>,
 ) -> Vec<(usize, &'a Rule)> {
     let mut rules = Vec::new();
-    for (_, prototype) in prototypes.iter().filter(|(_, prototype)| prototype.enabled()) {
-        for want_template in [false, true] {
-            for (index, rule) in prototype.rules().iter().enumerate() {
-                if rule.r#match.enabled
-                    && rule.r#match.is_template == want_template
-                    && matches_host(enabled_alerts, host_labels, rule)
-                    && matches_chart(rule, chart)
-                {
-                    rules.push((index, rule));
-                }
+    for (_, prototype) in prototypes.iter() {
+        rules.extend(prototype_rules_for_chart(prototype, enabled_alerts, host_labels, chart));
+    }
+    rules
+}
+
+/// `health_prototype_apply_to_rrdset()` without the linking: the rules of one prototype that pass for the chart,
+/// its alarm rules first and then its templates; none of a disabled prototype.
+pub fn prototype_rules_for_chart<'a>(
+    prototype: &'a Prototype,
+    enabled_alerts: &SimplePattern,
+    host_labels: Option<&Labels>,
+    chart: &ChartKey<'_>,
+) -> Vec<(usize, &'a Rule)> {
+    let mut rules = Vec::new();
+    if !prototype.enabled() {
+        return rules;
+    }
+    for want_template in [false, true] {
+        for (index, rule) in prototype.rules().iter().enumerate() {
+            if rule.r#match.enabled
+                && rule.r#match.is_template == want_template
+                && matches_host(enabled_alerts, host_labels, rule)
+                && matches_chart(rule, chart)
+            {
+                rules.push((index, rule));
             }
         }
     }

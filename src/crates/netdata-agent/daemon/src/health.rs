@@ -1,20 +1,27 @@
 //! Health in the daemon: the plugin's start (`health_plugin_init()`, `src/health/health.c`), which loads the alert
 //! configuration, and the `HEALTH` thread, ported from `health_main()` and `health_event_loop()`
-//! (`src/health/health_event_loop.c`). A pass visits every host and gives the charts of those health runs for
-//! their alerts; the alerts are not evaluated yet (M9). C runs the loop with health off too, and a disconnected
-//! child is archived only after more than 10 of its passes (D93.2). It keeps C's pacing: a pass at most every
-//! `[health] run at least every` seconds, waited in 1 s sleeps, and none while a backfill or more than one user
+//! (`src/health/health_event_loop.c`). A pass visits every host: those health runs for get their charts' alerts
+//! linked and evaluated. C runs the loop with health off too, and a disconnected child is archived only after
+//! more than 10 of its passes (D93.2). It keeps C's pacing: a pass at most every `[health] run at least every`
+//! seconds or when the next alert is due, waited in 1 s sleeps, and none while a backfill or more than one user
 //! query runs.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use netdata_agent_health::config::HealthConfig;
+use netdata_agent_health::entry::Entry;
+use netdata_agent_health::pass::{ChartFacts, Env, Pass};
 use netdata_agent_health::store::alert_hash_row;
 use netdata_agent_health::{Health, StoreSink};
 use netdata_agent_log::{Priority, Source, nd_log};
+use netdata_agent_query::execute::Control;
+use netdata_agent_query::grouping::Windows;
+use netdata_agent_query::value::{ValueRequest, ValueResult, chart_value};
+use netdata_agent_rrd::chart::{Chart, flags};
 use netdata_agent_rrd::clock::{now_realtime_s, now_realtime_ut};
-use netdata_agent_rrd::host::Hosts;
+use netdata_agent_rrd::host::{Host, Hosts};
+use netdata_agent_rrd::pulse::QuerySource;
 use netdata_agent_rrd::storage::HealthEvent;
 use netdata_agent_rrd::stream_control;
 
@@ -35,7 +42,7 @@ pub fn plugin_init(conf: &mut Conf, config: HealthConfig, database: bool, queue:
     } else {
         Box::new(|_| crate::meta_store::no_database("sql_alert_store_config"))
     };
-    let health = Health::init(config, store);
+    let health = Health::init(config, store, database);
     if health.config().enabled {
         let dirs = conf.health_config_dirs(health.config().stock_enabled);
         health.reload_prototypes(&dirs);
@@ -63,13 +70,70 @@ impl Suspension {
     }
 }
 
+/// What a health pass asks of the daemon: the charts as they are collected, the database for a lookup, the clock,
+/// the exit flag. Saving an entry and notifying about one do nothing yet: they come with the alert log's tables
+/// and with the notifications.
+pub struct LiveEnv {
+    hosts: Arc<Hosts>,
+    windows: Windows,
+}
+
+impl LiveEnv {
+    pub fn new(hosts: Arc<Hosts>, windows: Windows) -> LiveEnv {
+        LiveEnv { hosts, windows }
+    }
+}
+
+impl Env for LiveEnv {
+    fn facts(&self, chart: &Chart) -> ChartFacts {
+        let collection = chart.collection();
+        let (first_entry_s, last_entry_s) = chart.retention();
+        ChartFacts {
+            obsolete: chart.flags() & flags::OBSOLETE != 0,
+            last_collected_s: collection.last_collected.0,
+            counter_done: collection.counter_done,
+            update_every: chart.update_every(),
+            first_entry_s,
+            last_entry_s,
+        }
+    }
+
+    /// `rrdset2value_api_v1_with_owa()` as health calls it: a query of the health source, never interrupted.
+    fn lookup(&self, host: &Arc<Host>, chart: &Arc<Chart>, request: &ValueRequest) -> ValueResult {
+        let storage = self.hosts.storage();
+        let control = Control {
+            received: Instant::now(),
+            interrupted: &|_| false,
+            windows: self.windows,
+            pulse: Some((&storage.pulse().queries, QuerySource::Health)),
+            progress: None,
+        };
+        chart_value(host, chart, request, &crate::data::profile_of(storage), &control, now_realtime_s())
+    }
+
+    fn now_usec(&self) -> u64 {
+        now_realtime_ut()
+    }
+
+    fn transition_id(&self) -> [u8; 16] {
+        *uuid::Uuid::new_v4().as_bytes()
+    }
+
+    fn exiting(&self) -> bool {
+        netdata_agent_sys::exit::initiated()
+    }
+
+    fn save(&self, _: &mut Entry, _: bool) {}
+
+    fn notify(&self, _: &mut Entry) {}
+}
+
 /// What the database tells health as it lets go of a chart or a host: C calls `rrdcalc.c` from the chart's delete
 /// callback and from the host's cleanup. An unlink is logged unless the agent is exiting.
-pub fn database_event(health: &Health, event: HealthEvent<'_>) {
-    let exiting = netdata_agent_sys::exit::initiated();
+pub fn database_event(health: &Health, env: &LiveEnv, event: HealthEvent<'_>) {
     match event {
-        HealthEvent::ChartFreed(host, chart) => health.chart_freed(host, chart, &now_realtime_s, exiting),
-        HealthEvent::HostCleanup(host) => health.host_cleanup(host, &now_realtime_s, exiting),
+        HealthEvent::ChartFreed(host, chart) => health.chart_freed(host, chart, env, &now_realtime_s),
+        HealthEvent::HostCleanup(host) => health.host_cleanup(host, env, &now_realtime_s),
         HealthEvent::HostFreed(host) => health.host_freed(host),
     }
 }
@@ -78,6 +142,7 @@ pub fn database_event(health: &Health, event: HealthEvent<'_>) {
 pub fn spawn(
     hosts: Arc<Hosts>,
     health: Arc<Health>,
+    env: Arc<LiveEnv>,
     stack_size: usize,
     run_at_least_every_s: i64,
     postpone_s: i64,
@@ -97,8 +162,9 @@ pub fn spawn(
                     continue;
                 }
                 let now = now_realtime_s();
-                let next_run = now.saturating_add(run_at_least_every_s);
-                if suspension.resumed(now_realtime_ut(), Instant::now()) {
+                let mut next_run = now.saturating_add(run_at_least_every_s);
+                let apply_hibernation_delay = suspension.resumed(now_realtime_ut(), Instant::now());
+                if apply_hibernation_delay {
                     nd_log!(
                         Source::Daemon,
                         Priority::Notice,
@@ -111,13 +177,15 @@ pub fn spawn(
                         break;
                     }
                     // health_event_loop_for_host(): a host health does not run for is not stamped either
-                    if !host.should_run_health(now) {
-                        continue;
-                    }
-                    host.stamp_health_iteration();
-                    health.host_pass(&host, &now_realtime_s, &running);
+                    let pass = Pass {
+                        now,
+                        apply_hibernation_delay,
+                        next_run: &mut next_run,
+                        gate: &|| host.should_run_health(now),
+                    };
+                    health.host_pass(&host, pass, &*env, &now_realtime_s, &running);
                 }
-                // health_sleep()
+                // health_sleep(): until the next run, which an alert that is due earlier brought forward
                 while now_realtime_s() < next_run && !shutdown::exiting() && ticker.sleep(Duration::from_secs(1)) {}
             }
             nd_log!(Source::Daemon, Priority::Debug, "Health thread ended.");

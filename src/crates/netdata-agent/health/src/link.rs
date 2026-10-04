@@ -1,6 +1,6 @@
 //! Linking: which alerts a host's charts get, and when (`health_prototypes.c` `health_apply_prototypes_to_host()`
 //! and its helpers; `health_event_loop.c` `health_initialize_rrdhost()`,
-//! `health_execute_delayed_initializations()`).
+//! `health_execute_delayed_initializations()`), and a host's pass (`health_event_loop_for_host()`) around them.
 //!
 //! Nothing links outside the health loop: the collecting threads only raise flags on a chart and its host, and a
 //! host's pass takes them before it evaluates anything. Unlinking also happens where a chart is freed and where a
@@ -8,12 +8,14 @@
 
 use std::sync::Arc;
 
+use netdata_agent_log::{Priority, Source, nd_log};
 use netdata_agent_rrd::chart::{Chart, flags};
 use netdata_agent_rrd::host::{Host, pending_flags};
 
-use crate::{Clock, Health};
 use crate::alerts::HostAlerts;
-use crate::matching::{ChartKey, rules_for_chart};
+use crate::matching::{ChartKey, prototype_rules_for_chart};
+use crate::pass::{Env, Idle, Pass};
+use crate::{Clock, Health};
 
 impl Health {
     /// The host's alerts; `None` until its first health pass, and for a host object that only shares its GUID
@@ -41,8 +43,17 @@ impl Health {
     }
 
     /// `health_prototype_alerts_for_rrdset_incrementally()`: every stored rule that matches the chart is linked to
-    /// it; a name the chart already has an alert of keeps that alert.
-    fn alerts_for_chart_incrementally(&self, host: &Host, alerts: &HostAlerts, chart: &Arc<Chart>, clock: Clock) {
+    /// it; a name the chart already has an alert of keeps that alert. The HEALTH thread looks for a stopping
+    /// service before each prototype of the store, whether it matches or not.
+    fn alerts_for_chart_incrementally(
+        &self,
+        host: &Host,
+        alerts: &HostAlerts,
+        chart: &Arc<Chart>,
+        env: &dyn Env,
+        clock: Clock,
+        running: &dyn Fn() -> bool,
+    ) {
         let host_labels = host.labels();
         let meta = chart.meta();
         let key = ChartKey {
@@ -52,36 +63,61 @@ impl Health {
             labels: Some(&meta.labels),
         };
         let prototypes = self.prototypes();
-        for (_, rule) in rules_for_chart(&prototypes, &self.config().enabled_alerts, Some(&host_labels), &key) {
-            alerts.add(chart, rule, clock);
+        let enabled_alerts = &self.config().enabled_alerts;
+        for (_, prototype) in prototypes.iter() {
+            if !running() {
+                break;
+            }
+            for (_, rule) in prototype_rules_for_chart(prototype, enabled_alerts, Some(&host_labels), &key) {
+                alerts.add(chart, rule, env, clock);
+            }
         }
     }
 
     /// `health_prototype_reset_alerts_for_rrdset()`: the chart's alerts go, then every rule is applied again.
-    fn reset_alerts_for_chart(&self, host: &Host, alerts: &HostAlerts, chart: &Arc<Chart>, clock: Clock) {
-        alerts.unlink_chart(chart, clock, false);
-        self.alerts_for_chart_incrementally(host, alerts, chart, clock);
+    fn reset_alerts_for_chart(
+        &self,
+        host: &Host,
+        alerts: &HostAlerts,
+        chart: &Arc<Chart>,
+        env: &dyn Env,
+        clock: Clock,
+        running: &dyn Fn() -> bool,
+    ) {
+        alerts.unlink_chart(chart, env, clock);
+        self.alerts_for_chart_incrementally(host, alerts, chart, env, clock, running);
     }
 
-    /// `health_apply_prototypes_to_host()`: every alert of the host goes, then every chart gets its alerts again,
-    /// in the host's chart order. (C also marks the alert log's entries as updated: the loop's commit.)
-    pub fn apply_prototypes_to_host(&self, host: &Host, clock: Clock, running: &dyn Fn() -> bool) {
+    /// `health_apply_prototypes_to_host()`: every alert of the host goes, the log's entries that are no removals
+    /// count as replaced, then every chart gets its alerts again, in the host's chart order.
+    pub fn apply_prototypes_to_host(&self, host: &Host, env: &dyn Env, clock: Clock, running: &dyn Fn() -> bool) {
         let Some(alerts) = self.host(host) else {
             return;
         };
-        alerts.delete_all(clock, false);
+        if !alerts.is_initialized() {
+            return;
+        }
+        alerts.delete_all(env, clock);
+        alerts.mark_log_updated();
         for chart in host.charts().all() {
             if !running() {
                 break;
             }
-            self.reset_alerts_for_chart(host, &alerts, &chart, clock);
+            self.reset_alerts_for_chart(host, &alerts, &chart, env, clock, running);
         }
     }
 
     /// `health_execute_delayed_initializations()`: the host's two pending flags are taken in one step; with neither
     /// nothing is done. Else every chart's two flags are taken: a recheck (the host's or the chart's) unlinks the
     /// chart's alerts and links again; an initialization alone links what is missing.
-    fn delayed_initializations(&self, host: &Host, alerts: &HostAlerts, clock: Clock, running: &dyn Fn() -> bool) {
+    fn delayed_initializations(
+        &self,
+        host: &Host,
+        alerts: &HostAlerts,
+        env: &dyn Env,
+        clock: Clock,
+        running: &dyn Fn() -> bool,
+    ) {
         let pending = host.take_health_pending();
         if pending == 0 {
             return;
@@ -92,9 +128,9 @@ impl Health {
             let needs_init = chart_pending & flags::PENDING_HEALTH_INITIALIZATION != 0;
             let needs_recheck = host_recheck || chart_pending & flags::PENDING_LABEL_RECHECK != 0;
             if needs_recheck {
-                self.reset_alerts_for_chart(host, alerts, &chart, clock);
+                self.reset_alerts_for_chart(host, alerts, &chart, env, clock, running);
             } else if needs_init {
-                self.alerts_for_chart_incrementally(host, alerts, &chart, clock);
+                self.alerts_for_chart_incrementally(host, alerts, &chart, env, clock, running);
             } else {
                 continue;
             }
@@ -104,31 +140,70 @@ impl Health {
         }
     }
 
-    /// The first steps of `health_event_loop_for_host()`, for a host the gate let through: its first pass links
-    /// every chart (`health_initialize_rrdhost()`), and every pass takes the pending flags. A stopping service is
-    /// looked for where C looks: before the host is marked initialized, and again before its charts are linked.
-    pub fn host_pass(&self, host: &Arc<Host>, clock: Clock, running: &dyn Fn() -> bool) {
-        let alerts = self.host_alerts(host);
-        if running() && !alerts.initialize() && running() {
-            self.apply_prototypes_to_host(host, clock, running);
+    /// `health_initialize_rrdhost()` and `health_execute_delayed_initializations()`: a host's first pass seeds its
+    /// log's ids and links every chart, and every pass takes the pending flags. A stopping service is looked for
+    /// where C looks: before the host is initialized, and again before its charts are linked.
+    fn link(&self, host: &Arc<Host>, alerts: &HostAlerts, env: &dyn Env, clock: Clock, running: &dyn Fn() -> bool) {
+        if !alerts.is_initialized() && running() {
+            alerts.initialize(self.database, clock);
+            if running() {
+                self.apply_prototypes_to_host(host, env, clock, running);
+            }
         }
-        self.delayed_initializations(host, &alerts, clock, running);
+        self.delayed_initializations(host, alerts, env, clock, running);
+    }
+
+    /// The linking steps of a host's pass alone, for a caller that evaluates nothing.
+    pub fn host_link(&self, host: &Arc<Host>, clock: Clock, running: &dyn Fn() -> bool) {
+        let alerts = self.host_alerts(host);
+        self.link(host, &alerts, &Idle, clock, running);
+    }
+
+    /// `health_event_loop_for_host()`: a host that may run health is stamped with the loop's iteration, linked,
+    /// and, unless its health is postponed, evaluated. A pass that carries the hibernation flag postpones the
+    /// host; a host that a connecting child's receiver postponed is left alone until its delay is over.
+    pub fn host_pass(&self, host: &Arc<Host>, mut pass: Pass, env: &dyn Env, clock: Clock, running: &dyn Fn() -> bool) {
+        if !(pass.gate)() {
+            return;
+        }
+        host.stamp_health_iteration();
+        // a host with alert transitions still to be saved is left for the next pass: with the alert log's tables
+
+        let alerts = self.host_alerts(host);
+        self.link(host, &alerts, env, clock, running);
+
+        let hostname = host.hostname();
+        if pass.apply_hibernation_delay {
+            let postpone = self.config().postpone_s;
+            nd_log!(Source::Daemon, Priority::Debug, "[{hostname}]: Postponing health checks for {postpone} seconds.");
+            host.set_health_delay_up_to(pass.now.saturating_add(i64::from(postpone)));
+        }
+        if host.health_delay_up_to() != 0 {
+            if pass.now < host.health_delay_up_to() {
+                return;
+            }
+            nd_log!(Source::Daemon, Priority::Debug, "[{hostname}]: Resuming health checks after delay.");
+            host.set_health_delay_up_to(0);
+        }
+
+        self.evaluate_host(host, &alerts, &mut pass, env, clock, running);
     }
 
     /// `rrdset_delete_callback()`: the alerts on a freed chart go, on the thread that frees it. A chart index knows
     /// its host by machine GUID only; the alerts are found by the chart object, so another host object of that
     /// GUID, or another chart of that id, loses nothing.
-    pub fn chart_freed(&self, host_guid: &str, chart: &Chart, clock: Clock, exiting: bool) {
+    pub fn chart_freed(&self, host_guid: &str, chart: &Chart, env: &dyn Env, clock: Clock) {
         if let Some(alerts) = self.host_by_guid(host_guid) {
-            alerts.unlink_chart(chart, clock, exiting);
+            alerts.unlink_chart(chart, env, clock);
         }
     }
 
-    /// `rrdhost_cleanup_data_collection_and_health()`: every alert of that host object goes, before its charts do.
-    /// The host stays initialized, as C never clears that flag.
-    pub fn host_cleanup(&self, host: &Host, clock: Clock, exiting: bool) {
+    /// `rrdhost_cleanup_data_collection_and_health()`: every alert of that host object goes, before its charts do,
+    /// and then the host's log; its id counters stay. The host stays initialized, as C never clears that flag.
+    pub fn host_cleanup(&self, host: &Host, env: &dyn Env, clock: Clock) {
         if let Some(alerts) = self.host(host) {
-            alerts.delete_all(clock, exiting);
+            alerts.delete_all(env, clock);
+            alerts.clear_log();
         }
     }
 
@@ -186,7 +261,7 @@ mod tests {
         chart(&host, "t.other", None, "ctx.other", &[]);
         assert!(health.host(&host).is_none(), "no alerts before the first pass");
 
-        health.host_pass(&host, &|| NOW, &running);
+        health.host_link(&host, &|| NOW, &running);
         assert_eq!(linked(&health, &host), [pair("on_a", "t.a1"), pair("by_name", "t.a1"), pair("on_b", "t.b1")]);
         // one link each: the charts' pending initialization found every key in place
         assert_eq!(alert_of(&health, &host, &a1, b"on_a").run().next_event_id, 2);
@@ -202,10 +277,11 @@ mod tests {
         let host = host(&[("region", "eu")]);
         let a1 = chart(&host, "t.a1", None, "ctx.a", &[]);
         host.raise_label_recheck();
-        health.host_pass(&host, &|| NOW, &running);
+        health.host_link(&host, &|| NOW, &running);
         assert_eq!(linked(&health, &host), [pair("on_a", "t.a1")]);
-        // the second alert of the pass: the first one took the seed
-        assert_eq!(alert_of(&health, &host, &a1, b"on_a").id, NOW as u32 + 1);
+        // the alert linked again takes its alarm id back from the log, and the link is its third entry
+        let alert = alert_of(&health, &host, &a1, b"on_a");
+        assert_eq!((alert.id, alert.run().next_event_id), (NOW as u32, 4));
     }
 
     /// `health_execute_delayed_initializations()`'s table: what each combination of the host's and a chart's flags
@@ -216,29 +292,29 @@ mod tests {
         let host = host(&[("region", "eu")]);
         let a1 = chart(&host, "t.a1", None, "ctx.a", &[]);
         let a2 = chart(&host, "t.a2", None, "ctx.a", &[]);
-        health.host_pass(&host, &|| NOW, &running);
+        health.host_link(&host, &|| NOW, &running);
         let before = |c: &Arc<Chart>| alert_of(&health, &host, c, b"on_a");
         let (first1, first2) = (before(&a1), before(&a2));
         let same = |c: &Arc<Chart>, old: &Arc<Alert>| Arc::ptr_eq(&alert_of(&health, &host, c, b"on_a"), old);
 
         // nothing pending: nothing happens
-        health.host_pass(&host, &|| NOW + 1, &running);
+        health.host_link(&host, &|| NOW + 1, &running);
         assert!(same(&a1, &first1) && same(&a2, &first2));
 
         // a chart's flag without its host's: the pass does not look at the charts
         a1.flags_set_and_clear(flags::PENDING_LABEL_RECHECK, 0);
-        health.host_pass(&host, &|| NOW + 2, &running);
+        health.host_link(&host, &|| NOW + 2, &running);
         assert!(same(&a1, &first1));
         assert_eq!(a1.take_health_pending(), flags::PENDING_LABEL_RECHECK, "left for a pass that looks");
 
         // a chart's initialization: what is missing is linked, what is there stays
         a1.raise_health_init();
-        health.host_pass(&host, &|| NOW + 3, &running);
+        health.host_link(&host, &|| NOW + 3, &running);
         assert!(same(&a1, &first1) && same(&a2, &first2));
 
         // a chart's recheck: its alerts are made again; the other chart's stay
         a1.raise_label_recheck();
-        health.host_pass(&host, &|| NOW + 4, &running);
+        health.host_link(&host, &|| NOW + 4, &running);
         assert!(!same(&a1, &first1) && same(&a2, &first2));
         assert_eq!(linked(&health, &host), [pair("on_a", "t.a2"), pair("on_a", "t.a1")], "linked again: at the end");
 
@@ -246,7 +322,7 @@ mod tests {
         let second1 = before(&a1);
         host.update_labels(|labels| labels.add(b"region", b"us", netdata_agent_rrd::labels::SRC_CONFIG));
         host.raise_label_recheck();
-        health.host_pass(&host, &|| NOW + 5, &running);
+        health.host_link(&host, &|| NOW + 5, &running);
         assert!(!same(&a1, &second1) && !same(&a2, &first2));
         assert_eq!(
             linked(&health, &host),
@@ -262,7 +338,7 @@ mod tests {
         let health = health_with(&rules());
         let host = host(&[("region", "eu")]);
         let a1 = chart(&host, "t.a1", None, "ctx.a", &[]);
-        health.host_pass(&host, &|| NOW, &running);
+        health.host_link(&host, &|| NOW, &running);
 
         a1.raise_label_recheck();
         // the collector raises both again while the pass makes the chart's alerts again (the clock is read there)
@@ -274,7 +350,7 @@ mod tests {
             }
             NOW + 1
         };
-        health.host_pass(&host, &clock, &running);
+        health.host_link(&host, &clock, &running);
         assert!(raised.get());
         assert_eq!(a1.take_health_pending(), flags::PENDING_LABEL_RECHECK);
         assert_eq!(host.take_health_pending(), pending_flags::HEALTH_INITIALIZATION | pending_flags::LABEL_RECHECK);
@@ -289,35 +365,35 @@ mod tests {
         let health = health_with(&rules());
         let owner = host(&[("region", "eu")]);
         let a1 = chart(&owner, "t.a1", None, "ctx.a", &[]);
-        health.host_pass(&owner, &|| NOW, &running);
+        health.host_link(&owner, &|| NOW, &running);
         let one = [pair("on_a", "t.a1")];
         assert_eq!(linked(&health, &owner), one);
 
         let twin = host(&[("region", "eu")]);
         assert_eq!(twin.machine_guid(), owner.machine_guid());
         assert!(health.host(&twin).is_none());
-        health.host_cleanup(&twin, &|| NOW + 1, false);
+        health.host_cleanup(&twin, &Idle, &|| NOW + 1);
         health.host_freed(&twin);
         assert_eq!(linked(&health, &owner), one);
 
         // another host with a chart of the same id
         let other = host_of("99999999-2222-4333-8444-555555555555", &[("region", "eu")]);
         let other_a1 = chart(&other, "t.a1", None, "ctx.a", &[]);
-        health.host_pass(&other, &|| NOW + 2, &running);
+        health.host_link(&other, &|| NOW + 2, &running);
         assert_eq!(linked(&health, &other), one);
         // a chart's free names its host by GUID and the chart by its object
-        health.chart_freed(other.machine_guid(), &a1, &|| NOW + 3, false);
+        health.chart_freed(other.machine_guid(), &a1, &Idle, &|| NOW + 3);
         assert_eq!((linked(&health, &owner), linked(&health, &other)), (one.to_vec(), one.to_vec()));
-        health.chart_freed(owner.machine_guid(), &a1, &|| NOW + 3, false);
+        health.chart_freed(owner.machine_guid(), &a1, &Idle, &|| NOW + 3);
         assert!(linked(&health, &owner).is_empty());
         assert_eq!(linked(&health, &other), one);
-        health.chart_freed(other.machine_guid(), &other_a1, &|| NOW + 4, false);
+        health.chart_freed(other.machine_guid(), &other_a1, &Idle, &|| NOW + 4);
         assert!(linked(&health, &other).is_empty());
 
         // a host object that takes over a GUID starts with its first pass
         chart(&twin, "t.a1", None, "ctx.a", &[]);
         twin.take_health_pending();
-        health.host_pass(&twin, &|| NOW + 5, &running);
+        health.host_link(&twin, &|| NOW + 5, &running);
         assert_eq!(linked(&health, &twin), one);
         assert!(health.host(&owner).is_none());
     }
@@ -328,66 +404,81 @@ mod tests {
         let health = health_with(&rules());
         let host = host(&[("region", "eu")]);
         chart(&host, "t.a1", None, "ctx.a", &[]);
-        health.host_pass(&host, &|| NOW, &running);
+        health.host_link(&host, &|| NOW, &running);
 
         let a2 = chart(&host, "t.a2", None, "ctx.a", &[]);
         assert_eq!(linked(&health, &host), [pair("on_a", "t.a1")], "not before a pass");
-        health.host_pass(&host, &|| NOW + 1, &running);
+        health.host_link(&host, &|| NOW + 1, &running);
         assert_eq!(linked(&health, &host), [pair("on_a", "t.a1"), pair("on_a", "t.a2")]);
 
         let alert = alert_of(&health, &host, &a2, b"on_a");
         assert!(host.charts().free_if(&a2, |_| true));
-        health.chart_freed(host.machine_guid(), &a2, &|| NOW + 2, false);
+        health.chart_freed(host.machine_guid(), &a2, &Idle, &|| NOW + 2);
         assert_eq!(linked(&health, &host), [pair("on_a", "t.a1")]);
         assert_eq!(alert.run().next_event_id, 3, "the unlink logged");
 
-        health.host_cleanup(&host, &|| NOW + 3, false);
+        health.host_cleanup(&host, &Idle, &|| NOW + 3);
         assert!(linked(&health, &host).is_empty());
         // cleaned, and still initialized: a pass with nothing pending links nothing
-        health.host_pass(&host, &|| NOW + 4, &running);
+        health.host_link(&host, &|| NOW + 4, &running);
         assert!(linked(&health, &host).is_empty());
 
         // freed: forgotten, and a host of that GUID starts with its first pass
         health.host_freed(&host);
         assert!(health.host(&host).is_none());
-        health.host_pass(&host, &|| NOW + 5, &running);
+        health.host_link(&host, &|| NOW + 5, &running);
         assert_eq!(linked(&health, &host), [pair("on_a", "t.a1")]);
     }
 
-    /// While the service is stopping a host is not initialized. The delayed initializations look only after a
-    /// chart's work, as C does: one pending chart is still linked.
+    /// While the service is stopping a host is not initialized, and nothing is linked: the delayed initializations
+    /// take the host's flags and the first chart's, find the service stopping before the first rule, and stop
+    /// after that chart, as C does.
     #[test]
     fn a_stopping_service_does_not_initialize_a_host() {
         let health = health_with(&rules());
         let host = host(&[("region", "eu")]);
         let a1 = chart(&host, "t.a1", None, "ctx.a", &[]);
-        chart(&host, "t.a2", None, "ctx.a", &[]);
+        let a2 = chart(&host, "t.a2", None, "ctx.a", &[]);
 
-        health.host_pass(&host, &|| NOW, &|| false);
-        assert_eq!(linked(&health, &host), [pair("on_a", "t.a1")]);
-        let stopped = alert_of(&health, &host, &a1, b"on_a");
+        health.host_link(&host, &|| NOW, &|| false);
+        assert!(linked(&health, &host).is_empty());
+        assert!(!health.host(&host).expect("the host's alerts").is_initialized());
+        assert_eq!(host.take_health_pending(), 0, "the pass took the host's flags");
+        assert_eq!(a1.take_health_pending(), 0, "and the first chart's");
+        assert_ne!(a2.take_health_pending(), 0, "and stopped before the second");
 
-        // still not initialized: the next pass is the host's first, and makes every alert anew
-        health.host_pass(&host, &|| NOW + 1, &running);
+        // still not initialized: the next pass is the host's first, and links every chart whatever its flags
+        health.host_link(&host, &|| NOW + 1, &running);
         assert_eq!(linked(&health, &host), [pair("on_a", "t.a1"), pair("on_a", "t.a2")]);
-        assert!(!Arc::ptr_eq(&alert_of(&health, &host, &a1, b"on_a"), &stopped));
     }
 
-    /// A host's first pass stops between charts when the service stops.
+    /// A host's first pass stops between charts, and between the rule names of a chart, when the service stops:
+    /// it is looked for twice by the initialization, then before each chart and before each name of the store
+    /// (four here), whether the name has a rule for the chart or not.
     #[test]
     fn an_initialization_stops_between_charts() {
         let health = health_with(&rules());
         let host = host(&[("region", "eu")]);
-        chart(&host, "t.a1", None, "ctx.a", &[]);
+        chart(&host, "t.a1", Some("named"), "ctx.a", &[]);
         chart(&host, "t.a2", None, "ctx.a", &[]);
 
-        // running for the pass's two looks and for the first chart
+        // running for the pass's two looks, for the first chart and for its four names
         let calls = std::cell::Cell::new(0);
         let for_one_chart = || {
             calls.set(calls.get() + 1);
-            calls.get() <= 3
+            calls.get() <= 7
         };
-        health.host_pass(&host, &|| NOW, &for_one_chart);
+        health.host_link(&host, &|| NOW, &for_one_chart);
+        assert_eq!(linked(&health, &host), [pair("on_a", "t.a1"), pair("by_name", "t.a1")]);
+
+        // running for the first two names of the first chart: its third name is not linked
+        let health = health_with(&rules());
+        let calls = std::cell::Cell::new(0);
+        let for_two_names = || {
+            calls.set(calls.get() + 1);
+            calls.get() <= 5
+        };
+        health.host_link(&host, &|| NOW, &for_two_names);
         assert_eq!(linked(&health, &host), [pair("on_a", "t.a1")]);
 
         // stopping between the pass's two looks: initialized, and nothing linked by the initialization
@@ -397,10 +488,28 @@ mod tests {
             calls.set(calls.get() + 1);
             calls.get() <= 1
         };
-        health.host_pass(&host, &|| NOW, &for_the_first_look);
+        health.host_link(&host, &|| NOW, &for_the_first_look);
         assert!(linked(&health, &host).is_empty(), "the charts' flags were taken by the pass above");
-        health.host_pass(&host, &|| NOW + 1, &running);
+        health.host_link(&host, &|| NOW + 1, &running);
         assert!(linked(&health, &host).is_empty(), "initialized already: no first pass, and nothing pending");
     }
-}
 
+    /// `rrdhost_cleanup_data_collection_and_health()`: the host's alerts go, with their REMOVED entries, and then
+    /// its log; the ids go on from where they were, and the host stays initialized.
+    #[test]
+    fn a_cleanup_empties_the_log_and_keeps_its_counters() {
+        let health = health_with(&rules());
+        let host = host(&[("region", "eu")]);
+        chart(&host, "t.a1", None, "ctx.a", &[]);
+        health.host_link(&host, &|| NOW, &running);
+        let alerts = health.host(&host).expect("the host's alerts");
+        assert_eq!((alerts.log_entries().len(), alerts.transitions()), (1, 1));
+        let (next_log_id, next_alarm_id, _) = alerts.log_counters();
+
+        health.host_cleanup(&host, &Idle, &|| NOW + 1);
+        assert!(alerts.alerts().is_empty() && alerts.log_entries().is_empty());
+        assert_eq!(alerts.log_counters(), (next_log_id + 1, next_alarm_id, 0));
+        assert_eq!(alerts.transitions(), 2);
+        assert!(alerts.is_initialized());
+    }
+}

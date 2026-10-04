@@ -1,5 +1,5 @@
-# The runtime texts of eight rules on a chart with a family and labels, and on one without a family and with no
-# label of its own; then a label changes, and the texts follow at the next pass.
+# The runtime texts of eight rules on a chart with a family and labels, and on one without a family of its own
+# (it takes its type) and with no label of its own; then a label changes, and the texts follow at the next pass.
 rules tests/corpus/loop/texts.conf
 chart loop.x1 loop.x1_name loop.texts disks things 1
 label loop.x1 kind ssd

@@ -110,7 +110,7 @@ fn links_match_c() {
             b"pattern" => {}
             b"scenario" => {
                 scenario = rest.to_vec();
-                health = Some(Health::init(oracle_config(), Box::new(|_| {})));
+                health = Some(Health::init(oracle_config(), Box::new(|_| {}), false));
                 enabled = HealthConfig::enabled_alerts_pattern(b"*");
                 host = None;
             }
@@ -205,7 +205,7 @@ fn copies_match_c() {
     let (mut not_utf8, mut failures) = (0, Vec::new());
     for item in items() {
         let at = String::from_utf8_lossy(&item.name).into_owned();
-        let health = Health::init(oracle_config(), Box::new(|_| {}));
+        let health = Health::init(oracle_config(), Box::new(|_| {}), false);
         netdata_agent_log::capture(|| {
             for file in &item.files {
                 health_readfile(&health, file.bytes(2), file.flag(3));

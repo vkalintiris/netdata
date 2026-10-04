@@ -42,7 +42,8 @@
 //   rules <path>                       reads a health.d file (relative to the crate's directory, where this runs)
 //   database <0|1>                     the alert log's load: C's result on an empty table (1, default), or none
 //   hostlabel <name> <value>           the value is the rest of the line
-//   chart <id> <name> <context> <family> <units> <update every>     `-` for an empty text. The chart gets the two
+//   chart <id> <name> <context> <family> <units> <update every>     `-` for no family (the chart then takes its
+//                                      type, as in the daemon) and for empty units. The chart gets the two
 //                                      labels every chart of the daemon has, of the plugin `loop.plugin` and
 //                                      the module `loop`
 //   label <chart> <name> <value>       the value is the rest of the line
@@ -473,7 +474,12 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
             st->id = string_strdupz(id);
             st->name = string_strdupz(word(&rest, whole));
             st->context = string_strdupz(word(&rest, whole));
-            st->family = string_strdupz(text_or_empty(word(&rest, whole)));
+            // rrdset_insert_callback(): a chart without a family takes its type
+            char *family = word(&rest, whole);
+            if(strcmp(family, "-") == 0)
+                st->family = string_strndupz(id, strcspn(id, "."));
+            else
+                st->family = string_strdupz(family);
             st->units = string_strdupz(text_or_empty(word(&rest, whole)));
             st->update_every = atoi(word(&rest, whole));
             st->rrdlabels = rrdlabels_create();

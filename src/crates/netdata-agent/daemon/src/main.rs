@@ -745,9 +745,10 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     dyncfg.host_init(hosts.localhost());
     let health = health::plugin_init(&mut conf, health_config, meta.is_some(), metasync.queue());
     // a freed chart's alerts and a cleaned host's go where the database lets go of them
+    let health_env = Arc::new(health::LiveEnv::new(Arc::clone(&hosts), grouping_windows));
     hosts.storage().set_health_hook({
-        let health = Arc::clone(&health);
-        move |event| health::database_event(&health, event)
+        let (health, env) = (Arc::clone(&health), Arc::clone(&health_env));
+        move |event| health::database_event(&health, &env, event)
     });
     builtins::global_functions_add(&hosts);
     if let (Some(meta), Some(host_id)) = (&meta, &host_id) {
@@ -942,6 +943,7 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     let health_thread = match health::spawn(
         Arc::clone(&hosts),
         Arc::clone(&health),
+        health_env,
         conf.threads.thread_stack_size,
         i64::from(health.config().run_at_least_every_s),
         i64::from(health.config().postpone_s),

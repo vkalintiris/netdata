@@ -86,22 +86,41 @@ pub fn copy_config(src: &AlertConfig) -> (AlertConfig, [Option<Expression>; 3]) 
     (config, copy_expressions(src))
 }
 
+/// `RRDCALC_FLAG_*`: an alert's run flags.
+pub mod run_flags {
+    pub const DB_ERROR: u32 = 1 << 0;
+    pub const DB_NAN: u32 = 1 << 1;
+    pub const CALC_ERROR: u32 = 1 << 3;
+    pub const WARN_ERROR: u32 = 1 << 4;
+    pub const CRIT_ERROR: u32 = 1 << 5;
+    pub const RUNNABLE: u32 = 1 << 6;
+    pub const DISABLED: u32 = 1 << 7;
+    pub const SILENCED: u32 = 1 << 8;
+    pub const RUN_ONCE: u32 = 1 << 9;
+}
+
 /// What the health loop works on: the live fields of `struct rrdcalc`.
 #[derive(Debug)]
 pub struct Run {
-    pub calculation: Option<Expression>,
-    pub warning: Option<Expression>,
-    pub critical: Option<Expression>,
     /// The event id the alert's next log entry takes.
     pub next_event_id: u32,
     pub value: f64,
     pub old_value: f64,
     pub status: Status,
     pub old_status: Status,
+    pub run_flags: u32,
     pub last_status_change: i64,
     pub last_status_change_value: f64,
+    pub last_updated: i64,
+    pub next_update: i64,
     pub db_after: i64,
     pub db_before: i64,
+    pub delay_up_to_timestamp: i64,
+    pub delay_up_current: i32,
+    pub delay_down_current: i32,
+    pub delay_last: i32,
+    pub last_repeat: i64,
+    pub times_repeat: u32,
     /// The chart's label version the runtime texts were made for.
     pub labels_version: u32,
 }
@@ -110,27 +129,39 @@ pub struct Run {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub status: Status,
+    pub run_flags: u32,
     pub value: f64,
+    pub last_updated: i64,
+    pub last_status_change: i64,
+    pub last_status_change_value: f64,
+    /// The `global_id` and transition id of the last entry published with the snapshot.
+    pub global_id: u64,
+    pub last_transition_id: [u8; 16],
+    pub next_update: i64,
     pub db_after: i64,
     pub db_before: i64,
-    pub last_status_change: i64,
+    pub delay_up_to_timestamp: i64,
+    pub last_repeat: i64,
+    pub delay_last: i32,
+    pub times_repeat: u32,
     pub summary: Option<Vec<u8>>,
     pub info: Option<Vec<u8>>,
 }
 
-impl Snapshot {
-    /// The live fields as they are published, beside the runtime texts.
-    fn of(run: &Run, summary: Option<Vec<u8>>, info: Option<Vec<u8>>) -> Snapshot {
-        Snapshot {
-            status: run.status,
-            value: run.value,
-            db_after: run.db_after,
-            db_before: run.db_before,
-            last_status_change: run.last_status_change,
-            summary,
-            info,
-        }
-    }
+/// The three expressions of an alert. Only the health loop evaluates them, and it holds nothing else while it
+/// does: the variables an expression names are read through the host's store and other alerts' live fields.
+#[derive(Debug)]
+pub struct Expressions {
+    pub calculation: Option<Expression>,
+    pub warning: Option<Expression>,
+    pub critical: Option<Expression>,
+}
+
+/// An expression's two texts, as the API shows them: fixed when the alert is made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpressionText {
+    pub source: Vec<u8>,
+    pub parsed_as: Vec<u8>,
 }
 
 /// `RRDCALC`: one rule on one chart.
@@ -142,41 +173,95 @@ pub struct Alert {
     pub key: Vec<u8>,
     /// `rc->rrdset`; `rc->chart` is its id.
     pub chart: Arc<Chart>,
-    /// The rule's copy. Its expressions are in [`Run`].
+    /// The rule's copy, without its expressions.
     pub config: AlertConfig,
+    /// The texts of calc, warn and crit.
+    pub texts: [Option<ExpressionText>; 3],
     run: Mutex<Run>,
+    expressions: Mutex<Expressions>,
     snapshot: RwLock<Snapshot>,
 }
 
 impl Alert {
     /// `rrdcalc_rrdhost_insert_callback()`, from the copy of the rule to the first published snapshot: the alert of
-    /// `rule` on `chart`, not yet linked.
-    pub(crate) fn new(key: Vec<u8>, chart: &Arc<Chart>, rule: &AlertConfig, id: u32, now: i64) -> Alert {
+    /// `rule` on `chart`, not yet linked. `id` and `next_event_id` are what the host's log gave for it.
+    pub(crate) fn new(
+        key: Vec<u8>,
+        chart: &Arc<Chart>,
+        rule: &AlertConfig,
+        id: u32,
+        next_event_id: u32,
+        now: i64,
+    ) -> Alert {
         let (mut config, [calculation, warning, critical]) = copy_config(rule);
         if config.units.is_none() {
             let units = chart.meta().units;
             config.units = (!units.is_empty()).then(|| units.into_bytes());
         }
         let run = Run {
-            calculation,
-            warning,
-            critical,
-            next_event_id: 1,
+            next_event_id,
             value: f64::NAN,
             old_value: f64::NAN,
             status: Status::Uninitialized,
             old_status: Status::Uninitialized,
+            run_flags: 0,
             last_status_change: now,
             last_status_change_value: f64::NAN,
+            last_updated: 0,
+            next_update: 0,
             db_after: 0,
             db_before: 0,
+            delay_up_to_timestamp: 0,
+            delay_up_current: 0,
+            delay_down_current: 0,
+            delay_last: 0,
+            last_repeat: 0,
+            times_repeat: 0,
             labels_version: 0,
         };
-        let snapshot = Snapshot::of(&run, None, None);
-        let (chart, run, snapshot) = (Arc::clone(chart), Mutex::new(run), RwLock::new(snapshot));
-        let alert = Alert { id, key, chart, config, run, snapshot };
+        let snapshot = Snapshot {
+            status: run.status,
+            run_flags: run.run_flags,
+            value: run.value,
+            last_updated: run.last_updated,
+            last_status_change: run.last_status_change,
+            last_status_change_value: run.last_status_change_value,
+            global_id: 0,
+            last_transition_id: [0; 16],
+            next_update: run.next_update,
+            db_after: run.db_after,
+            db_before: run.db_before,
+            delay_up_to_timestamp: run.delay_up_to_timestamp,
+            last_repeat: run.last_repeat,
+            delay_last: run.delay_last,
+            times_repeat: run.times_repeat,
+            summary: None,
+            info: None,
+        };
+        let text = |expression: &Option<Expression>| {
+            expression.as_ref().map(|expression| ExpressionText {
+                source: expression.source().to_vec(),
+                parsed_as: expression.parsed_as().to_vec(),
+            })
+        };
+        let texts = [text(&calculation), text(&warning), text(&critical)];
+        let alert = Alert {
+            id,
+            key,
+            chart: Arc::clone(chart),
+            config,
+            texts,
+            run: Mutex::new(run),
+            expressions: Mutex::new(Expressions { calculation, warning, critical }),
+            snapshot: RwLock::new(snapshot),
+        };
         alert.update_info_using_labels(&mut alert.run());
         alert
+    }
+
+    /// `rrdcalc_isrepeating()`.
+    pub fn is_repeating(&self) -> bool {
+        self.config.warn_repeat_every > 0 || self.config.crit_repeat_every > 0
     }
 
     pub fn name(&self) -> &[u8] {
@@ -193,10 +278,46 @@ impl Alert {
         self.snapshot.read().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
-    /// `rrdcalc_runtime_snapshot_publish()`: the API reads these live fields from now on.
-    pub fn publish(&self, run: &Run) {
+    /// The alert's expressions, for the health loop. Taken before the host's store and before any alert's live
+    /// fields, never after them.
+    pub(crate) fn expressions(&self) -> MutexGuard<'_, Expressions> {
+        self.expressions.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `rrdcalc_runtime_snapshot_publish()`: the API reads these live fields from now on. The ids of the last
+    /// entry change only when one is given.
+    pub fn publish(&self, run: &Run, entry: Option<(u64, [u8; 16])>) {
         let mut snapshot = self.snapshot.write().unwrap_or_else(PoisonError::into_inner);
-        *snapshot = Snapshot::of(run, snapshot.summary.take(), snapshot.info.take());
+        snapshot.status = run.status;
+        snapshot.run_flags = run.run_flags;
+        snapshot.value = run.value;
+        snapshot.last_updated = run.last_updated;
+        snapshot.last_status_change = run.last_status_change;
+        snapshot.last_status_change_value = run.last_status_change_value;
+        snapshot.next_update = run.next_update;
+        snapshot.db_after = run.db_after;
+        snapshot.db_before = run.db_before;
+        snapshot.delay_up_to_timestamp = run.delay_up_to_timestamp;
+        snapshot.last_repeat = run.last_repeat;
+        snapshot.delay_last = run.delay_last;
+        snapshot.times_repeat = run.times_repeat;
+        if let Some((global_id, transition_id)) = entry {
+            snapshot.global_id = global_id;
+            snapshot.last_transition_id = transition_id;
+        }
+    }
+
+    /// `rrdcalc_runtime_snapshot_publish_run_flags()`.
+    pub fn publish_run_flags(&self, run: &Run) {
+        self.snapshot.write().unwrap_or_else(PoisonError::into_inner).run_flags = run.run_flags;
+    }
+
+    /// `rrdcalc_runtime_snapshot_publish_repeat_state()`.
+    pub fn publish_repeat_state(&self, run: &Run) {
+        let mut snapshot = self.snapshot.write().unwrap_or_else(PoisonError::into_inner);
+        snapshot.run_flags = run.run_flags;
+        snapshot.last_repeat = run.last_repeat;
+        snapshot.times_repeat = run.times_repeat;
     }
 
     /// `rrdcalc_update_info_using_rrdset_labels()`: the runtime `info` and `summary`, made again when the chart's
@@ -269,7 +390,7 @@ mod tests {
         let host = host(&[]);
         let c = chart(&host, "t.c", None, "t.ctx", &[("kind", "x")]);
         let alert = |name: &[u8], chart: &Arc<Chart>| {
-            Alert::new(b"key".to_vec(), chart, &prototypes.get(name).unwrap().rules()[0].config, 1, 0).snapshot()
+            Alert::new(b"key".to_vec(), chart, &prototypes.get(name).unwrap().rules()[0].config, 1, 1, 0).snapshot()
         };
 
         let texts = alert(b"texts", &c);
