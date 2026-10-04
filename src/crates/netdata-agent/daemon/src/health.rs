@@ -7,6 +7,7 @@
 //! query runs.
 
 use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -14,6 +15,7 @@ use netdata_agent_health::alert::Status;
 use netdata_agent_health::alerts::HostAlerts;
 use netdata_agent_health::config::HealthConfig;
 use netdata_agent_health::entry::Entry;
+use netdata_agent_health::notify::{Execution, Waiting};
 use netdata_agent_health::pass::{ChartFacts, Env, Pass};
 use netdata_agent_health::store::alert_hash_row;
 use netdata_agent_health::{Health, StoreSink};
@@ -29,6 +31,8 @@ use netdata_agent_rrd::host::{Host, Hosts};
 use netdata_agent_rrd::pulse::QuerySource;
 use netdata_agent_rrd::storage::{AlertClass, AlertView, ChartAlert, HealthEvent};
 use netdata_agent_rrd::stream_control;
+use netdata_agent_spawn::client::Waited;
+use netdata_agent_spawn::popen::Popen;
 
 use crate::conf::Conf;
 use crate::heartbeat::{Phase, Thread};
@@ -100,9 +104,37 @@ pub(crate) fn save_entry(meta: &MetaDb, host: &Host, entry: &Entry) -> bool {
     netdata_agent_health::sql::save(meta, &hostname, &host_id, entry, queue, is_health_thread())
 }
 
+/// A notification's command on the main spawn server (`POPEN_INSTANCE`). Its waits end early once HEALTH is
+/// cancelled, as C's do for a cancelled thread.
+struct LivePopen {
+    popen: Popen,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Execution for LivePopen {
+    fn pid(&self) -> i32 {
+        self.popen.pid()
+    }
+
+    fn timedwait(self: Box<Self>, timeout_ms: i32) -> Waiting {
+        let LivePopen { popen, cancel } = *self;
+        let again = |popen| Box::new(LivePopen { popen, cancel: Arc::clone(&cancel) });
+        match popen.timedwait(timeout_ms, &|| cancel.load(Ordering::Acquire)) {
+            Waited::Exited(code) => Waiting::Exited(code),
+            Waited::Running(popen, errno) => Waiting::Running(again(popen), errno),
+            Waited::Error(popen) => Waiting::Error(again(popen)),
+        }
+    }
+
+    fn kill(self: Box<Self>, timeout_ms: i32) -> i32 {
+        let LivePopen { popen, cancel } = *self;
+        popen.kill(timeout_ms, &|| cancel.load(Ordering::Acquire))
+    }
+}
+
 /// What a health pass asks of the daemon: the charts as they are collected, the database for a lookup, the clock,
-/// the exit flag, the alert log's tables and the metadata thread's queue. Notifying about an entry does nothing
-/// yet: it comes with the notifications.
+/// the exit flag, the alert log's tables, the metadata thread's queue, and the spawn server for a notification's
+/// command.
 pub struct LiveEnv {
     hosts: Arc<Hosts>,
     windows: Windows,
@@ -110,11 +142,29 @@ pub struct LiveEnv {
     /// asks for it afterwards returns as C's statements do on its closed handle.
     meta: Option<Weak<MetaDb>>,
     queue: MetaQueue,
+    /// `netdata_configured_user_config_dir`: where a notification's edit command looks for the rule's file.
+    user_config_dir: Vec<u8>,
+    /// HEALTH's cancel (C's `nd_thread_signaled_to_cancel()` on that thread): set by the exit's step that stops
+    /// the health service. A wait for a notification's command returns at its next look, and a kill does not
+    /// wait for the command's end.
+    cancel: Arc<AtomicBool>,
 }
 
 impl LiveEnv {
     pub fn new(hosts: Arc<Hosts>, windows: Windows, meta: Option<&Arc<MetaDb>>, queue: MetaQueue) -> LiveEnv {
-        LiveEnv { hosts, windows, meta: meta.map(Arc::downgrade), queue }
+        let (meta, cancel) = (meta.map(Arc::downgrade), Arc::default());
+        LiveEnv { hosts, windows, meta, queue, user_config_dir: Vec::new(), cancel }
+    }
+
+    /// The directory of the user's configuration, for the edit command of a notification.
+    pub fn with_user_config_dir(mut self, dir: &str) -> LiveEnv {
+        self.user_config_dir = dir.as_bytes().to_vec();
+        self
+    }
+
+    /// The flag the exit raises to cancel HEALTH's waits.
+    pub fn cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel)
     }
 
     /// The metadata database for a statement of C's `function`: without one C's prepare fails and says so; once
@@ -239,7 +289,26 @@ impl Env for LiveEnv {
         added > 0
     }
 
-    fn notify(&self, _: &mut Entry) {}
+    /// Without a database C's statement cannot be prepared, and says so; once the exit closed it nothing is said.
+    fn last_executed_event(&self, host: &Host, alarm_id: u32, unique_id: u32) -> Option<i32> {
+        let meta = self.meta("sql_health_get_last_executed_event")?;
+        let host_id = crate::meta_store::host_id(host)?;
+        meta.get_last_executed_event(&host_id, alarm_id, unique_id, is_health_thread()).flatten()
+    }
+
+    /// `spawn_popen_run()`: `/bin/sh -c <command>` on the main spawn server.
+    fn exec(&self, command: &[u8]) -> Option<Box<dyn Execution>> {
+        let popen = Popen::run_argv(&[b"/bin/sh".as_slice(), b"-c", command])?;
+        Some(Box::new(LivePopen { popen, cancel: Arc::clone(&self.cancel) }))
+    }
+
+    fn monotonic_usec(&self) -> u64 {
+        netdata_agent_sys::now_monotonic_usec()
+    }
+
+    fn edit_context(&self) -> (Vec<u8>, Vec<u8>) {
+        (self.user_config_dir.clone(), self.hosts.localhost().info().registry_hostname.into_bytes())
+    }
 }
 
 /// What a query sees of health (C's query target reads the host's alert dictionary and each chart's alert list):
@@ -341,6 +410,11 @@ pub fn spawn(
                     };
                     health.host_pass(&host, pass, &*env, &now_realtime_s, &running);
                 }
+                if !running() {
+                    break;
+                }
+                // the notifications the hosts' passes started are waited for before the next iteration
+                health.wait_for_notifications(&*env);
                 // health_sleep(): until the next run, which an alert that is due earlier brought forward
                 while now_realtime_s() < next_run && !shutdown::exiting() && ticker.sleep(Duration::from_secs(1)) {}
             }
@@ -517,6 +591,8 @@ mod tests {
         assert!(elsewhere > 0, "{records:?}");
         assert_eq!(failed(&records, "sql_get_alarm_id"), 1, "{records:?}");
         assert_eq!(failed(&records, "process_alert_pending_queue"), 1, "{records:?}");
+        // the alert's first CLEAR: the table is asked for the alarm's last executed event
+        assert_eq!(failed(&records, "sql_health_get_last_executed_event"), 1, "{records:?}");
         assert!(!records.iter().any(|message| message.contains("Database has not been initialized")), "{records:?}");
         let alerts = health.host(&host).unwrap();
         assert_eq!((alerts.pending_transitions(), unread.alert_commands().0.len()), (0, 0), "the queue refuses");

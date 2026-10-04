@@ -14,6 +14,7 @@ use crate::alert::{Alert, Run, Status, run_flags};
 use crate::alerts::HostAlerts;
 use crate::entry::Entry;
 use crate::keywords::lossy;
+use crate::notify::{Execution, RaisedSummary};
 use crate::prototype::AlertConfig;
 use crate::variable::{AlertResolver, This};
 use crate::{Clock, Health, journal, lookup};
@@ -69,9 +70,18 @@ pub trait Env {
     fn commit_transitions(&self);
     /// `process_alert_pending_queue()`: the host's due rows of `alert_queue` move toward the Cloud's queue.
     fn process_pending_queue(&self, host: &Host) -> bool;
-    /// The entry is due: its notification (`health_send_notification()` before it marks the entry as processed).
-    /// No lock of health is held while it runs.
-    fn notify(&self, entry: &mut Entry);
+    /// `sql_health_get_last_executed_event()`: the status of the alarm's newest entry whose notification command
+    /// was run, the entry `unique_id` aside. `None` without one, and when the question failed. No lock of health
+    /// is held while it runs.
+    fn last_executed_event(&self, host: &Host, alarm_id: u32, unique_id: u32) -> Option<i32>;
+    /// `spawn_popen_run()`: the notification's command, started through the shell. `None` when it cannot be
+    /// started. No lock of health is held while it runs.
+    fn exec(&self, command: &[u8]) -> Option<Box<dyn Execution>>;
+    /// `now_monotonic_usec()`: what a wait's deadline is counted on.
+    fn monotonic_usec(&self) -> u64;
+    /// What a notification's edit command is made of: the user configuration directory and localhost's registry
+    /// hostname.
+    fn edit_context(&self) -> (Vec<u8>, Vec<u8>);
 }
 
 /// An [`Env`] for a caller that only links and unlinks: no chart is collected, no lookup answers, nothing is
@@ -133,7 +143,21 @@ impl Env for Idle {
         false
     }
 
-    fn notify(&self, _: &mut Entry) {}
+    fn last_executed_event(&self, _: &Host, _: u32, _: u32) -> Option<i32> {
+        None
+    }
+
+    fn exec(&self, _: &[u8]) -> Option<Box<dyn Execution>> {
+        None
+    }
+
+    fn monotonic_usec(&self) -> u64 {
+        0
+    }
+
+    fn edit_context(&self) -> (Vec<u8>, Vec<u8>) {
+        (Vec::new(), Vec::new())
+    }
 }
 
 /// One call of `health_event_loop_for_host()`.
@@ -389,6 +413,8 @@ impl Health {
         let mut counts = PassCounts::default();
         let mut complete = true;
         let mut runnable = 0usize;
+        // built by the pass's first notification, if any
+        let mut summary = RaisedSummary::default();
 
         // the values
         for alert in alerts.alerts() {
@@ -544,8 +570,7 @@ impl Health {
                 debug_assert!(repeat_every > 0);
                 if let Some(mut entry) = alerts.repeat(host, &alert, now, env) {
                     journal::log_alert(&hostname, &entry);
-                    // the wait for the notification's execution comes with the notifications
-                    alerts.notify_repeat(host, &mut entry, env);
+                    alerts.notify_repeat(host, &mut entry, &mut summary, self, env, clock);
                 }
             }
         }
@@ -556,7 +581,7 @@ impl Health {
         if stopped(pass) {
             return;
         }
-        alerts.process_log(env, clock);
+        alerts.process_log(host, &mut summary, self, env, clock);
 
         // saves the metadata queue took: a store job is asked for now. With none pending the host's due rows of
         // the pending queue move on (the ACLK's snapshot branch comes with the Cloud)

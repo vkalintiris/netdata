@@ -1,0 +1,32 @@
+# A restart after a notified WARNING: the REMOVED row the load injects copies the old row's flags, so it is the
+# alarm's last executed event, and the alarm's first status is notified again: the WARNING it still has, and, in
+# the next life, the CLEAR of an alert that was already clear.
+database real
+rules tests/corpus/notify/plain.conf
+chart loop.n loop.n_name loop.notify disks things 1
+label loop.n kind ssd
+var loop.n v 10
+clock 0
+pass 0
+var loop.n v 70
+clock 1
+pass 1
+clock 2
+pass 2
+clock 100
+restart
+clock 101
+pass 101
+clock 102
+pass 102
+var loop.n v 10
+clock 103
+pass 103
+clock 200
+restart
+clock 201
+pass 201
+clock 202
+pass 202
+clock 203
+alarm-log 0

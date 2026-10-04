@@ -1,0 +1,24 @@
+# The service stops while HEALTH waits for the first of two commands: that one is killed (code 128), the wait for
+# the other is not started and its entry keeps the in-progress mark. When the service runs again the other is
+# waited for, to its deadline of three slices.
+database real
+auto-wait 0
+timeout 3
+rules tests/corpus/notify/two.conf
+exec * * hang
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 10
+clock 0
+pass 0
+wait
+var loop.n v 70
+clock 1
+pass 1
+running-for 2
+clock 2
+wait
+running 1
+clock 3
+wait
+clock 4
+pass 4

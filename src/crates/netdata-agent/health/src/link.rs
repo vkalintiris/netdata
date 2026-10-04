@@ -14,6 +14,7 @@ use netdata_agent_rrd::host::{Host, pending_flags};
 
 use crate::alerts::HostAlerts;
 use crate::matching::{ChartKey, prototype_rules_for_chart};
+use crate::notify::Executing;
 use crate::pass::{Env, Idle, Pass};
 use crate::{Clock, Health};
 
@@ -227,6 +228,19 @@ impl Health {
     /// The same cleanup after the host's charts were freed: its alert index and its log go; its id counters stay.
     pub fn host_charts_flushed(&self, host: &Host) {
         if let Some(alerts) = self.host(host) {
+            // C frees the log's entries, and one whose notification runs has its command killed, with no grace
+            // (`health_alarm_log_free_one_nochecks_nounlink()`). C leaves such an entry on the list HEALTH waits
+            // on and later walks freed memory there: here the item leaves the queue with its entry
+            let of_host = |item: &Executing| std::ptr::eq(item.alerts.as_ptr(), Arc::as_ptr(&alerts));
+            let killed: Vec<Executing> = {
+                let mut executing = self.executing();
+                let (killed, kept): (Vec<_>, Vec<_>) = executing.drain(..).partition(of_host);
+                executing.extend(kept);
+                killed
+            };
+            for item in killed {
+                item.execution.kill(0);
+            }
             alerts.charts_flushed();
         }
     }

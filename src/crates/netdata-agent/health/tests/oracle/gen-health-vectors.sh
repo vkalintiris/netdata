@@ -71,15 +71,19 @@ for source in "${LOOP_SOURCES[@]}"; do
     [[ -f "${SRC}/src/${source}" ]] || die "missing ${SRC}/src/${source}"
     object="${WORK}/$(basename -- "${source}" .c).o"
     defines=()
-    # an entry's transition id is a random UUID: health_log.c gets the stubs' counted one instead
-    [[ "${source}" == health/health_log.c ]] && defines=(-Dos_uuid_generate_random=oracle_uuid_generate_random)
-    # the stubs of these four record the call and, with a real database, call C's own under its new name; the
+    # an entry's transition id is a random UUID: health_log.c gets the stubs' counted one instead; and the kill of
+    # a freed entry's running notification is the stubs'
+    [[ "${source}" == health/health_log.c ]] && defines=(
+        -Dos_uuid_generate_random=oracle_uuid_generate_random -Dspawn_popen_kill=oracle_spawn_popen_kill
+    )
+    # the stubs of these five record the call and, with a real database, call C's own under its new name; the
     # transition id of a REMOVED row injected at a restart is counted out too
     [[ "${source}" == database/sqlite/sqlite_health.c ]] && defines=(
         -Dos_uuid_generate_random=oracle_uuid_generate_random
         -Dsql_health_alarm_log_save=c_sql_health_alarm_log_save
         -Dsql_health_alarm_log_load=c_sql_health_alarm_log_load
         -Dsql_get_alarm_id=c_sql_get_alarm_id -Dsql_alert_store_config=c_sql_alert_store_config
+        -Dsql_health_get_last_executed_event=c_sql_health_get_last_executed_event
     )
     run cc "${CFLAGS[@]}" "${defines[@]}" -c "${SRC}/src/${source}" -o "${object}"
     LOOP_OBJECTS+=("${object}")
@@ -99,26 +103,17 @@ run cc "${CFLAGS[@]}" -c "${WORK}/meta-schema.c" -o "${WORK}/meta-schema.o"
 run cc "${CFLAGS[@]}" -c "${SCRIPT_DIR}/health-sql-stubs.c" -o "${WORK}/health-sql-stubs.o"
 LOOP_OBJECTS+=("${WORK}/meta-schema.o" "${WORK}/health-sql-stubs.o")
 
-# the pass is static: its file is compiled as a copy with the splice appended. In it, and in a copy of
-# health_notifications.c from the log's scan on, health_send_notification() is the stub's
+# the pass is static: its file is compiled as a copy with the splice appended. C's notification code is compiled as
+# it stands, over the stubs' spawn, wait, kill and pid of a command, and their monotonic clock
 NOTIFICATIONS="${SRC}/src/health/health_notifications.c"
 EVENT_LOOP="${SRC}/src/health/health_event_loop.c"
 [[ -f "${NOTIFICATIONS}" && -f "${EVENT_LOOP}" ]] || die "missing ${NOTIFICATIONS} or ${EVENT_LOOP}"
-awk '
-    /^void health_alarm_log_process_to_send_notifications\(/ && !found {
-        print "void oracle_health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct health_raised_summary *hrm);"
-        print "#define health_send_notification oracle_health_send_notification"
-        found = 1
-    }
-    { print }
-    END { if (!found) exit 1 }
-' "${NOTIFICATIONS}" >"${WORK}/health_notifications.c" || die "the log's scan of ${NOTIFICATIONS} moved"
 cat -- "${EVENT_LOOP}" "${SCRIPT_DIR}/health-loop-splice.inc" >"${WORK}/health_event_loop.c"
 
-run cc "${CFLAGS[@]}" -iquote "${SRC}/src/health" -c "${WORK}/health_notifications.c" -o "${WORK}/health_notifications.o"
-run cc "${CFLAGS[@]}" -iquote "${SRC}/src/health" -Dhealth_send_notification=oracle_health_send_notification \
-    -Dhealth_alarm_wait_for_execution=oracle_health_alarm_wait_for_execution \
-    -c "${WORK}/health_event_loop.c" -o "${WORK}/health_event_loop.o"
+run cc "${CFLAGS[@]}" -Dspawn_popen_run=oracle_spawn_popen_run -Dspawn_popen_timedwait=oracle_spawn_popen_timedwait \
+    -Dspawn_popen_kill=oracle_spawn_popen_kill -Dspawn_popen_pid=oracle_spawn_popen_pid \
+    -Dnow_monotonic_usec=oracle_now_monotonic_usec -c "${NOTIFICATIONS}" -o "${WORK}/health_notifications.o"
+run cc "${CFLAGS[@]}" -iquote "${SRC}/src/health" -c "${WORK}/health_event_loop.c" -o "${WORK}/health_event_loop.o"
 run cc "${CFLAGS[@]}" -DHEALTH_ORACLE_LOOP -c "${SCRIPT_DIR}/health-oracle-stubs.c" -o "${WORK}/health-oracle-stubs-loop.o"
 run cc "${CFLAGS[@]}" -c "${SCRIPT_DIR}/health-loop-stubs.c" -o "${WORK}/health-loop-stubs.o"
 LOOP_OBJECTS+=(
@@ -160,17 +155,19 @@ SCENARIOS=tests/corpus/match/scenarios.txt
 (cd -- "${CRATE_DIR}" && run "${WORK}/gen-link-vectors" tests/vectors "${SCENARIOS}" 2>"${WORK}/link.log") \
     || die "the link generator failed: $(tail -n 5 "${WORK}/link.log")"
 
-# the loop: the two tables, then one process per scenario, each appending its rows to its family's file
-for family in loop queue sql; do
+# the loop: the tables, then one process per scenario, each appending its rows to its family's file
+for family in loop queue sql notify; do
     [[ -d "${CRATE_DIR}/tests/corpus/${family}" ]] || die "missing ${CRATE_DIR}/tests/corpus/${family}"
 done
 (cd -- "${CRATE_DIR}" && run "${WORK}/gen-loop-vectors" tables tests/vectors >"${WORK}/loop.log" 2>&1) \
     || die "the loop generator's tables failed: $(tail -n 5 "${WORK}/loop.log")"
+(cd -- "${CRATE_DIR}" && LC_ALL=C TZ=UTC run "${WORK}/gen-loop-vectors" decide tests/vectors "${WORK}/decide.records" \
+    >"${WORK}/loop.log" 2>&1) || die "the loop generator's decision table failed: $(tail -n 5 "${WORK}/loop.log")"
 (
     cd -- "${CRATE_DIR}"
     # C prints a record's notification time as a local date
     export LC_ALL=C TZ=UTC
-    for family in loop queue sql; do
+    for family in loop queue sql notify; do
         vectors="tests/vectors/${family}.tsv"
         {
             printf '# generated by tests/oracle/gen-loop-vectors.c from the C implementation; do not edit\n'

@@ -1,5 +1,6 @@
-//! The evaluation loop and the alert log against C (`tests/oracle/gen-loop-vectors.c`: the tables `units.tsv`,
-//! `delay.tsv` and `edit.tsv`; C's own pass over the scenarios of `loop.tsv`, `queue.tsv` and `sql.tsv`).
+//! The evaluation loop, the alert log and the notifications against C (`tests/oracle/gen-loop-vectors.c`: the
+//! tables `units.tsv`, `delay.tsv`, `edit.tsv`, `sanitize.tsv` and `decide.tsv`; C's own pass over the scenarios of
+//! `loop.tsv`, `queue.tsv` and `sql.tsv`).
 
 mod common;
 
@@ -59,6 +60,98 @@ fn edit_commands_match_c() {
     assert_eq!(checked, 25);
 }
 
+/// C's `sanitize_command_argument_string()` over its corpus: every byte value between two letters, dashes, quotes,
+/// what a shell would expand, and texts that end around the 8,191 bytes an argument may take.
+#[test]
+fn arguments_are_sanitized_as_c() {
+    use netdata_agent_health::notify::sanitize_command_argument;
+    let (mut checked, mut failures) = (0, Vec::new());
+    for row in rows("sanitize.tsv") {
+        let mut sanitized = Vec::new();
+        let fits = sanitize_command_argument(&mut sanitized, row.bytes(0));
+        let c_fits = row.str(1) == "1";
+        if fits != c_fits || (fits && sanitized != row.bytes(2)) {
+            let shown = |bytes: &[u8]| String::from_utf8_lossy(&bytes[..bytes.len().min(60)]).into_owned();
+            failures.push(format!(
+                "sanitize.tsv:{}: {:?} ({} bytes): C fits {c_fits} {:?}, Rust fits {fits} {:?}",
+                row.line,
+                shown(row.bytes(0)),
+                row.bytes(0).len(),
+                shown(row.bytes(2)),
+                shown(&sanitized)
+            ));
+        }
+        checked += 1;
+    }
+    let shown = failures[..failures.len().min(20)].join("\n");
+    assert!(failures.is_empty(), "{} of {checked} differ:\n{shown}", failures.len());
+    assert_eq!(checked, 337);
+}
+
+/// C's `health_send_notification()` over one entry per combination of new status, old status, the four flags its
+/// decision reads and what the table answers about the alarm's last executed event: for which entries the table
+/// is asked, and which are sent, skipped with which record, or skipped in silence.
+#[test]
+fn decisions_match_c() {
+    use netdata_agent_health::alert::Status;
+    use netdata_agent_health::notify::{Decision, decide};
+    let statuses = [
+        Status::Removed,
+        Status::Undefined,
+        Status::Uninitialized,
+        Status::Clear,
+        Status::Raised,
+        Status::Warning,
+        Status::Critical,
+    ];
+    let status = |name: &str| *statuses.iter().find(|status| status.name() == name).expect("a status");
+    let (mut checked, mut failures) = (0, Vec::new());
+    for row in rows("decide.tsv") {
+        let (new, old) = (status(row.str(0)), status(row.str(1)));
+        let flags = u32::from_str_radix(row.str(2), 16).expect("the flags");
+        let answer = match row.str(3) {
+            "fail" | "none" => None,
+            name => Some(status(name) as i32),
+        };
+        let asked = std::cell::Cell::new(false);
+        let decision = decide(flags, new, old, || {
+            asked.set(true);
+            answer
+        });
+        // what C decided, from what it left: a spawn, one of its three records, or nothing (an internal status
+        // before the table is asked, a first CLEAR after)
+        let (c_asked, spawned, message) = (row.str(4) == "1", row.str(5) == "1", row.str(9));
+        let c_decision = if spawned {
+            Decision::Send
+        } else if message.contains("it has no-clear-notification enabled") {
+            Decision::NoClear
+        } else if message.contains("Health not sending again notification") {
+            Decision::Again
+        } else if message.contains("command API has disabled notifications") {
+            Decision::Silenced
+        } else if c_asked {
+            Decision::FirstClear
+        } else {
+            Decision::Internal
+        };
+        if decision != c_decision || asked.get() != c_asked {
+            failures.push(format!(
+                "decide.tsv:{}: {} from {} flags {flags:08x} answer {}: C {c_decision:?} asked {c_asked}, Rust \
+                 {decision:?} asked {}",
+                row.line,
+                row.str(0),
+                row.str(1),
+                row.str(3),
+                asked.get()
+            ));
+        }
+        checked += 1;
+    }
+    let shown = failures[..failures.len().min(20)].join("\n");
+    assert!(failures.is_empty(), "{} of {checked} differ:\n{shown}", failures.len());
+    assert_eq!(checked, 7056);
+}
+
 /// C's delay multiplier over its grid of delays, multipliers and maxima.
 #[test]
 fn delays_match_c() {
@@ -80,10 +173,13 @@ fn delays_match_c() {
 mod replay {
     use std::cell::{Cell, RefCell};
     use std::collections::{BTreeMap, HashMap};
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex, MutexGuard};
 
+    use netdata_agent_health::alert::Status;
     use netdata_agent_health::alerts::HostAlerts;
     use netdata_agent_health::entry::Entry;
+    use netdata_agent_health::notify::{Execution, Waiting};
     use netdata_agent_health::pass::{ChartFacts, Env, Pass};
     use netdata_agent_health::readfile::health_readfile;
     use netdata_agent_health::store::alert_hash_row;
@@ -243,12 +339,127 @@ mod replay {
         /// The saves the metadata queue took, in arrival order, until a scenario's `store`.
         queued: RefCell<Vec<(Arc<HostAlerts>, u32)>>,
         charts: RefCell<Vec<ChartScript>>,
-        /// The `call` rows of the step so far.
-        calls: RefCell<Vec<Fields>>,
+        /// The `call` rows of the step so far. A started command writes its own, on whatever thread waits for it.
+        calls: Arc<Mutex<Vec<Fields>>>,
         transition_ids: Cell<u64>,
+        /// A scenario's `exec` lines: an alert's name or `*`, a status or `*`, and what such a command does. The
+        /// last line that matches decides.
+        exec_rules: RefCell<Vec<(String, String, Outcome)>>,
+        /// Without a real database, what the table answers about an alarm's last executed event: `None` when the
+        /// question fails.
+        last_executed: Cell<Option<Option<i32>>>,
+        /// The monotonic clock of a notification's wait: it stands still but for the slices of a wait that end
+        /// with the command running.
+        monotonic_usec: Arc<AtomicU64>,
+        /// The commands spawned so far: the next one's pid is 1001 plus this.
+        pids: Cell<i32>,
+        /// A `pass` ends with the wait for the notifications in flight.
+        auto_wait: Cell<bool>,
+    }
+
+    /// What a notification's command does once it is spawned.
+    #[derive(Clone, Copy)]
+    enum Outcome {
+        /// It runs for so many slices of the wait, then exits with the code.
+        Exit(usize, i32),
+        /// The spawn fails.
+        Fail,
+        /// It runs for so many slices, then the wait itself breaks.
+        Error(usize),
+        Hang,
+    }
+
+    /// A spawned command of the scenario.
+    struct Command {
+        pid: i32,
+        outcome: Outcome,
+        calls: Arc<Mutex<Vec<Fields>>>,
+        monotonic_usec: Arc<AtomicU64>,
+    }
+
+    impl Command {
+        fn call(&self, kind: &str, fields: &[String]) {
+            let row = [kind.to_owned(), self.pid.to_string()].into_iter().chain(fields.iter().cloned());
+            self.calls.lock().expect("the calls").push(row.map(String::into_bytes).collect());
+        }
+    }
+
+    impl Execution for Command {
+        fn pid(&self) -> i32 {
+            self.pid
+        }
+
+        /// The generator's stub of `spawn_popen_timedwait()`: a slice that ends with the command running moves
+        /// the monotonic clock on by the slice and leaves ETIMEDOUT.
+        fn timedwait(mut self: Box<Self>, timeout_ms: i32) -> Waiting {
+            let slices = match &mut self.outcome {
+                Outcome::Hang => Some(None),
+                Outcome::Exit(slices, _) | Outcome::Error(slices) if *slices > 0 => Some(Some(slices)),
+                _ => None,
+            };
+            if let Some(slices) = slices {
+                if let Some(slices) = slices {
+                    *slices -= 1;
+                }
+                self.monotonic_usec.fetch_add(timeout_ms as u64 * 1000, Ordering::Relaxed);
+                self.call("timedwait", &[timeout_ms.to_string(), "running".to_owned()]);
+                return Waiting::Running(self, 110);
+            }
+            match self.outcome {
+                Outcome::Error(_) => {
+                    self.call("timedwait", &[timeout_ms.to_string(), "error".to_owned()]);
+                    Waiting::Error(self)
+                }
+                Outcome::Exit(_, code) => {
+                    self.call("timedwait", &[timeout_ms.to_string(), "exited".to_owned(), code.to_string()]);
+                    Waiting::Exited(code)
+                }
+                Outcome::Fail | Outcome::Hang => unreachable!("a command that was not started, or never ends"),
+            }
+        }
+
+        fn kill(self: Box<Self>, timeout_ms: i32) -> i32 {
+            self.call("kill", &[timeout_ms.to_string()]);
+            -1
+        }
+    }
+
+    /// The n-th argument of a command line as `prepare_command()` writes it (`exec 'a0' 'a1' ...`, a quote inside
+    /// an argument as the four bytes `'\''`), as the generator's stub reads the alert's name and the new status.
+    fn command_argument(command: &[u8], index: usize) -> Option<Vec<u8>> {
+        let mut rest = &command[command.iter().position(|&byte| byte == b' ')?..];
+        for i in 0.. {
+            rest = rest.strip_prefix(b" '")?;
+            let mut argument = Vec::new();
+            loop {
+                if let Some(after) = rest.strip_prefix(b"'\\''") {
+                    argument.push(b'\'');
+                    rest = after;
+                } else if rest.first() == Some(&b'\'') {
+                    break;
+                } else {
+                    argument.push(*rest.first()?);
+                    rest = &rest[1..];
+                }
+            }
+            rest = &rest[1..];
+            if i == index {
+                return Some(argument);
+            }
+        }
+        None
     }
 
     impl World {
+        fn calls(&self) -> MutexGuard<'_, Vec<Fields>> {
+            self.calls.lock().expect("the calls")
+        }
+
+        /// Whether the service runs, without the look that `running-for` counts.
+        fn peek_running(&self) -> bool {
+            !self.exiting.get() && (self.running_for.get() > 0 || self.running.get())
+        }
+
         /// C's `service_running()` as the generator stubs it: stopping once the exit began; else running for the
         /// looks the scenario counts down, then stopping.
         fn is_running(&self) -> bool {
@@ -330,7 +541,7 @@ mod replay {
                 QueryPriority::Synchronous => 7,
                 other => panic!("a lookup at priority {other:?}"),
             };
-            self.calls.borrow_mut().push(vec![
+            self.calls().push(vec![
                 b"lookup".to_vec(),
                 chart.id().as_bytes().to_vec(),
                 nullable(&request.dimensions),
@@ -382,7 +593,7 @@ mod replay {
         /// statements run: the REMOVED rows, then the load's query. With a scripted one the table is empty.
         fn load(&self, host: &Host) -> Option<Vec<LoadedRow>> {
             let database = self.database.get();
-            self.calls.borrow_mut().push(vec![b"load".to_vec(), text(u8::from(database))]);
+            self.calls().push(vec![b"load".to_vec(), text(u8::from(database))]);
             let real = self.real.borrow();
             let Some(real) = real.as_ref() else {
                 // The generator's scripted load seeds the host's ids and returns. C's own load, over an empty
@@ -420,7 +631,7 @@ mod replay {
             let (alarm_id, next_event_id) = known.unwrap_or((0, 0));
             let answer = [text(alarm_id), text(next_event_id)];
             let call = [b"sql_get_alarm_id".to_vec(), chart.to_vec(), name.to_vec()].into_iter().chain(answer);
-            self.calls.borrow_mut().push(call.collect());
+            self.calls().push(call.collect());
             (alarm_id != 0).then_some((alarm_id, next_event_id))
         }
 
@@ -428,7 +639,7 @@ mod replay {
         /// entry's id for the scenario's `store`, or refuses it.
         fn queue_save(&self, alerts: &Arc<HostAlerts>, unique_id: u32) -> bool {
             let accepts = self.queue_accepts.get();
-            self.calls.borrow_mut().push(vec![b"queue".to_vec(), text(unique_id), text(u8::from(accepts))]);
+            self.calls().push(vec![b"queue".to_vec(), text(unique_id), text(u8::from(accepts))]);
             if accepts {
                 self.queued.borrow_mut().push((Arc::clone(alerts), unique_id));
             }
@@ -438,7 +649,28 @@ mod replay {
         /// The stub of `sql_health_alarm_log_save()`: it records the entry as it stands; then a real database
         /// gets its row, and a scripted one marks the entry as saved when the scenario says so.
         fn sql_save(&self, host: &Host, entry: &Entry) -> bool {
-            self.calls.borrow_mut().push(vec![b"save".to_vec(), text(entry.unique_id), hex8(entry.flags)]);
+            // a repeat's entry is in no log: this row is all the trace has of it
+            self.calls().push(vec![
+                b"save".to_vec(),
+                text(entry.unique_id),
+                hex8(entry.flags),
+                text(entry.alarm_id),
+                text(entry.alarm_event_id),
+                entry.old_status.name().as_bytes().to_vec(),
+                entry.new_status.name().as_bytes().to_vec(),
+                text(entry.when),
+                text(entry.delay_up_to_timestamp),
+                text(entry.duration),
+                text(entry.non_clear_duration),
+                text(entry.delay),
+                text(entry.last_repeat),
+                double(entry.old_value),
+                double(entry.new_value),
+                uuid_rank(&entry.transition_id),
+                text(entry.exec_run_timestamp),
+                text(entry.exec_code),
+                text(entry.updated_by_id),
+            ]);
             match self.real.borrow().as_ref() {
                 Some(real) => {
                     let (hostname, queue, health) = (host.hostname(), self.aclk_config.get(), self.health_thread.get());
@@ -449,34 +681,80 @@ mod replay {
         }
 
         fn commit_transitions(&self) {
-            self.calls.borrow_mut().push(vec![b"commit_alert_transitions".to_vec()]);
+            self.calls().push(vec![b"commit_alert_transitions".to_vec()]);
         }
 
         fn process_pending_queue(&self, _: &Host) -> bool {
-            self.calls.borrow_mut().push(vec![b"process_alert_pending_queue".to_vec()]);
+            self.calls().push(vec![b"process_alert_pending_queue".to_vec()]);
             false
         }
 
-        fn notify(&self, entry: &mut Entry) {
-            self.calls.borrow_mut().push(vec![
-                b"notify".to_vec(),
-                text(entry.unique_id),
-                text(entry.alarm_id),
-                text(entry.alarm_event_id),
-                entry.old_status.name().as_bytes().to_vec(),
-                entry.new_status.name().as_bytes().to_vec(),
-                text(entry.when),
-                text(entry.delay_up_to_timestamp),
-                hex8(entry.flags),
-                text(entry.duration),
-                text(entry.non_clear_duration),
-                text(entry.delay),
-                text(entry.last_repeat),
-                double(entry.old_value),
-                double(entry.new_value),
-                uuid_rank(&entry.transition_id),
-            ]);
+        /// The stub of `sql_health_get_last_executed_event()`: the real table's answer, else the scenario's.
+        fn last_executed_event(&self, host: &Host, alarm_id: u32, unique_id: u32) -> Option<i32> {
+            let answer = match self.real.borrow().as_ref() {
+                Some(real) => {
+                    real.meta.get_last_executed_event(&host_id(host), alarm_id, unique_id, self.health_thread.get())
+                }
+                None => self.last_executed.get(),
+            };
+            let (ret, status) = match answer {
+                None => (-1, b"-".to_vec()),
+                Some(None) => (0, b"-".to_vec()),
+                Some(Some(status)) => (1, status_name(status).as_bytes().to_vec()),
+            };
+            self.calls().push(vec![b"last_executed".to_vec(), text(unique_id), text(ret), status]);
+            answer.flatten()
         }
+
+        /// The stub of `spawn_popen_run()`: the command line is recorded and nothing starts; what the command then
+        /// does is what the scenario's `exec` says of its alert (argument 7) and new status (argument 9).
+        fn exec(&self, command: &[u8]) -> Option<Box<dyn Execution>> {
+            let argument = |index| command_argument(command, index).unwrap_or_default();
+            let (alert, status) = (argument(7), argument(9));
+            let matches = |pattern: &str, value: &[u8]| pattern == "*" || pattern.as_bytes() == value;
+            let rules = self.exec_rules.borrow();
+            let rule = rules.iter().rev().find(|rule| matches(&rule.0, &alert) && matches(&rule.1, &status));
+            let outcome = rule.map_or(Outcome::Exit(0, 0), |rule| rule.2);
+            if matches!(outcome, Outcome::Fail) {
+                self.calls().push(vec![b"spawn".to_vec(), b"0".to_vec(), command.to_vec()]);
+                return None;
+            }
+            let pid = 1001 + self.pids.get();
+            self.pids.set(self.pids.get() + 1);
+            self.calls().push(vec![b"spawn".to_vec(), text(pid), command.to_vec()]);
+            let (calls, monotonic_usec) = (Arc::clone(&self.calls), Arc::clone(&self.monotonic_usec));
+            Some(Box::new(Command { pid, outcome, calls, monotonic_usec }))
+        }
+
+        fn monotonic_usec(&self) -> u64 {
+            self.calls().push(vec![b"monotonic".to_vec()]);
+            self.monotonic_usec.load(Ordering::Relaxed)
+        }
+
+        /// The generator's user configuration directory and its localhost's registry hostname.
+        fn edit_context(&self) -> (Vec<u8>, Vec<u8>) {
+            (b"/oracle/etc".to_vec(), b"oracle-host".to_vec())
+        }
+    }
+
+    const STATUSES: [Status; 7] = [
+        Status::Removed,
+        Status::Undefined,
+        Status::Uninitialized,
+        Status::Clear,
+        Status::Raised,
+        Status::Warning,
+        Status::Critical,
+    ];
+
+    /// `rrdcalc_status2string()` of a status as the table holds it.
+    fn status_name(status: i32) -> &'static str {
+        STATUSES.iter().find(|known| **known as i32 == status).map_or("UNKNOWN", |known| known.name())
+    }
+
+    /// The status a scenario names.
+    fn status_of(name: &str) -> Status {
+        *STATUSES.iter().find(|known| known.name() == name).unwrap_or_else(|| panic!("no status {name}"))
     }
 
     fn host() -> Arc<Host> {
@@ -539,11 +817,12 @@ mod replay {
         days * 86400 + n(11..13) * 3600 + n(14..16) * 60 + n(17..19)
     }
 
-    /// A double as both sides print it, in one form.
+    /// A double as both sides print it, in one form: the log's own (`print_netdata_double()`, at most seven
+    /// decimals), which is what C's record holds; a captured record holds the value itself.
     fn canonical_double(text: &str) -> String {
         match text {
             "null" | "NaN" | "nan" => "nan".to_owned(),
-            text => format!("{:?}", text.parse::<f64>().expect("a double")),
+            text => netdata_agent_text::print::netdata_double_to_string(text.parse::<f64>().expect("a double")),
         }
     }
 
@@ -675,6 +954,10 @@ mod replay {
         /// The configuration's retention and limit of the alert log, when the scenario sets them.
         retention_s: Option<u32>,
         log_max: Option<u32>,
+        /// `timeout`, `use-summary`, `default-exec`: the configuration's notification keys.
+        timeout_s: Option<i32>,
+        use_summary: Option<bool>,
+        default_exec: Option<Vec<u8>>,
         /// What the reader of the rule files recorded, until the first step's rows are compared.
         reading: Vec<Captured>,
         /// The alert log's body an `alarm-log` step made, and the rules' answers a `configs` step made, until the
@@ -699,6 +982,12 @@ mod replay {
                 let mut config = oracle_config();
                 config.health_log_retention_s = self.retention_s.unwrap_or(config.health_log_retention_s);
                 config.health_log_entries_max = self.log_max.unwrap_or(config.health_log_entries_max);
+                config.notification_execution_timeout_s =
+                    self.timeout_s.unwrap_or(config.notification_execution_timeout_s);
+                config.use_summary_for_notifications = self.use_summary.unwrap_or(config.use_summary_for_notifications);
+                if let Some(default_exec) = self.default_exec.take() {
+                    config.default_exec = default_exec;
+                }
                 let meta = self.world.real.borrow().as_ref().map(|real| Arc::clone(&real.meta));
                 let store: StoreSink = match meta {
                     Some(meta) => Box::new(move |rule| {
@@ -735,7 +1024,10 @@ mod replay {
             let args: Vec<&str> = rest.split(' ').collect();
             let flag = |text: &str| text != "0";
             // the generator reads these at once; here they make the plugin, at the first step
-            let early = matches!(directive, "rules" | "database" | "retention" | "log-max");
+            let early = matches!(
+                directive,
+                "rules" | "database" | "retention" | "log-max" | "timeout" | "use-summary" | "default-exec"
+            );
             assert!(self.health.is_none() || !early, "{}: {line}", self.name);
             match directive {
                 "rules" => self.rules.push(args[0].to_owned()),
@@ -749,6 +1041,34 @@ mod replay {
                 "database" => self.world.database.set(flag(args[0])),
                 "retention" => self.retention_s = Some(args[0].parse().expect("seconds")),
                 "log-max" => self.log_max = Some(args[0].parse().expect("a count")),
+                "timeout" => self.timeout_s = Some(args[0].parse().expect("seconds")),
+                "use-summary" => self.use_summary = Some(flag(args[0])),
+                "default-exec" => {
+                    self.default_exec = Some(if rest == "-" { Vec::new() } else { rest.as_bytes().to_vec() });
+                }
+                "exec" => {
+                    let count = |text: &str| text.parse::<usize>().expect("a count of slices");
+                    let outcome = match args[2] {
+                        "exit" => Outcome::Exit(count(args[3]), args[4].parse().expect("an exit code")),
+                        "fail" => Outcome::Fail,
+                        "error" => Outcome::Error(count(args[3])),
+                        "hang" => Outcome::Hang,
+                        other => panic!("{}: exec {other}", self.name),
+                    };
+                    self.world.exec_rules.borrow_mut().push((args[0].to_owned(), args[1].to_owned(), outcome));
+                }
+                "last-executed" => self.world.last_executed.set(match args[0] {
+                    "fail" => None,
+                    "none" => Some(None),
+                    name => Some(Some(status_of(name) as i32)),
+                }),
+                "auto-wait" => self.world.auto_wait.set(flag(args[0])),
+                // the wait HEALTH makes after the hosts of an iteration, alone
+                "wait" => {
+                    let (health, world) = (self.health(), &self.world);
+                    let ((), records) = netdata_agent_log::capture(|| health.wait_for_notifications(world));
+                    self.dump(line, None, records);
+                }
                 "aclk-config" => self.world.aclk_config.set(flag(args[0])),
                 "sql" => {
                     let real = self.world.real.borrow();
@@ -913,6 +1233,10 @@ mod replay {
                             gate: &|| world.may_run_health(),
                         };
                         health.host_pass(&self.host, pass, world, &|| world.clock(), &|| world.is_running());
+                        // the daemon's loop, after its hosts and unless the service stops
+                        if world.auto_wait.get() && world.peek_running() {
+                            health.wait_for_notifications(world);
+                        }
                     });
                     self.dump(line, Some(next_run), records);
                 }
@@ -1033,7 +1357,7 @@ mod replay {
             if let Some(next_run) = next_run {
                 put("next_run", vec![text(next_run)]);
             }
-            for call in self.world.calls.borrow_mut().drain(..) {
+            for call in self.world.calls().drain(..) {
                 put("call", call);
             }
 
@@ -1166,8 +1490,9 @@ mod replay {
             let mut expected = self.expected.remove(&self.step).unwrap_or_default();
             if let Some(calls) = expected.get_mut("call") {
                 calls.retain(|call| match &call[0][..] {
-                    b"queue" | b"save" | b"lookup" | b"notify" | b"sql_get_alarm_id" | b"load" => true,
+                    b"queue" | b"save" | b"lookup" | b"sql_get_alarm_id" | b"load" => true,
                     b"commit_alert_transitions" | b"process_alert_pending_queue" => true,
+                    b"last_executed" | b"spawn" | b"monotonic" | b"timedwait" | b"kill" => true,
                     // an entry freed with a save still queued is kept aside inside the host's alerts: it shows in
                     // the store job's saves
                     b"queue_deletion" => false,
@@ -1332,7 +1657,12 @@ mod replay {
                 sql_alarms: RefCell::new(Vec::new()),
                 queued: RefCell::new(Vec::new()),
                 charts: RefCell::new(Vec::new()),
-                calls: RefCell::new(Vec::new()),
+                calls: Arc::default(),
+                exec_rules: RefCell::new(Vec::new()),
+                last_executed: Cell::new(Some(None)),
+                monotonic_usec: Arc::default(),
+                pids: Cell::new(0),
+                auto_wait: Cell::new(true),
                 transition_ids: Cell::new(0),
             };
             let mut replay = Replay {
@@ -1342,6 +1672,9 @@ mod replay {
                 rules: Vec::new(),
                 retention_s: None,
                 log_max: None,
+                timeout_s: None,
+                use_summary: None,
+                default_exec: None,
                 reading: Vec::new(),
                 body: None,
                 configs: Vec::new(),
@@ -1387,6 +1720,15 @@ fn queue_matches_c() {
 #[test]
 fn sql_matches_c() {
     assert_eq!(replayed("sql"), 107);
+}
+
+/// Every scenario of `tests/corpus/notify/` against C's own `health_send_notification()` and its waits, over a
+/// scripted spawn: which entries are notified, the command line of each byte for byte, the marks and times on the
+/// entry at each save, the slices of each wait, the kill at a deadline, a stop and a broken wait, the exit code in
+/// memory and, later, in the row.
+#[test]
+fn notify_matches_c() {
+    assert_eq!(replayed("notify"), 104);
 }
 
 /// The steps a family's replay compared; any difference from C's rows fails.

@@ -10,8 +10,8 @@
 //! - the evaluation loop: a host's pass ([`pass`], `health_event_loop.c`) with the database lookup ([`lookup`]),
 //!   the alert log in memory ([`entry`], `health_log.c`) and its records in the health log.
 //!
-//! The pass reaches the daemon through [`pass::Env`]: saving an entry and notifying about one are calls made at
-//! C's places that do nothing yet; the alert log's tables and the notifications follow.
+//! The pass reaches the daemon through [`pass::Env`]: the chart index, the database lookup, the alert log's tables,
+//! the metadata thread's queue and the spawn of a notification's command ([`notify`], `health_notifications.c`).
 //!
 //! `tests/oracle/` runs C's own reader, store, hash, matcher and per-host pass over `tests/corpus/` and the stock
 //! files, and C's unit tables, into the vectors under `tests/vectors/` that this code is written against;
@@ -33,6 +33,7 @@ pub mod link;
 mod log;
 pub mod lookup;
 pub mod matching;
+pub mod notify;
 pub mod pass;
 pub mod prototype;
 pub mod readfile;
@@ -44,7 +45,7 @@ pub(crate) mod testing;
 pub mod tables;
 pub mod variable;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard};
 
 use netdata_agent_inicfg::paths::recursive_config_double_dir_load;
@@ -53,6 +54,8 @@ use netdata_agent_log::netdata_log_error_errno;
 use alerts::HostAlerts;
 use config::HealthConfig;
 use keywords::lossy;
+use notify::Executing;
+use pass::Env;
 use prototype::{Prototypes, Rule};
 
 /// The wall clock in seconds, read where C reads it (`now_realtime_sec()`); tests pass their own.
@@ -77,13 +80,16 @@ pub struct Health {
     store: StoreSink,
     /// Each host's alerts, by machine GUID, from the host's first health pass on.
     hosts: Mutex<HashMap<String, Arc<HostAlerts>>>,
+    /// `alarm_notifications_in_progress`: the started notifications of logged entries, of every host, in the order
+    /// they started, until HEALTH waits for each. A leaf lock: nothing is called while it is held.
+    executing: Mutex<VecDeque<Executing>>,
 }
 
 impl Health {
     /// `health_plugin_init()` up to the load: an empty store.
     pub fn init(config: HealthConfig, store: StoreSink) -> Arc<Health> {
         let prototypes = RwLock::new(Prototypes::default());
-        Arc::new(Health { config, prototypes, store, hosts: Mutex::default() })
+        Arc::new(Health { config, prototypes, store, hosts: Mutex::default(), executing: Mutex::default() })
     }
 
     pub fn config(&self) -> &HealthConfig {
@@ -93,6 +99,30 @@ impl Health {
     /// Taken to find or insert a host's alerts, never held across anything else.
     fn hosts(&self) -> MutexGuard<'_, HashMap<String, Arc<HostAlerts>>> {
         self.hosts.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn executing(&self) -> MutexGuard<'_, VecDeque<Executing>> {
+        self.executing.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `wait_for_all_notifications_to_finish_before_allowing_health_to_be_cleaned_up()`, which HEALTH calls after
+    /// the hosts of an iteration: each running notification is waited for, oldest first, and its entry gets what
+    /// the wait found. It stops, with the rest left running, as soon as the service does.
+    pub fn wait_for_notifications(&self, env: &dyn Env) {
+        loop {
+            if self.executing().is_empty() || !env.service_running() {
+                return;
+            }
+            // HEALTH alone takes items out to wait for them; a host's cleanup may have taken this one meanwhile
+            let Some(item) = self.executing().pop_front() else {
+                return;
+            };
+            let timeout_s = self.config.notification_execution_timeout_s;
+            let code = notify::wait_for_execution(&item.name, item.execution, timeout_s, env);
+            if let Some(alerts) = item.alerts.upgrade() {
+                alerts.execution_ended(item.unique_id, code);
+            }
+        }
     }
 
     pub fn prototypes(&self) -> RwLockReadGuard<'_, Prototypes> {

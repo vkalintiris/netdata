@@ -2672,6 +2672,22 @@ tests/corpus/match/basic.conf	copy	m_module	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/match/basic.conf	copy	m_both	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/match/basic.conf	copy	m_alarm_ctx	0	1	1	\x00	\x00	\x00	\x00
 tests/corpus/match/basic.conf	copy	m_tmpl_id	0	1	1	\x00	\x00	\x00	\x00
+tests/corpus/notify/dedup.conf	copy	n_dedup	0	$v	${v}	($this > 50) / ($this != 80)	(((${this} > 50)) / ((${this} != 80)))	\x00	\x00
+tests/corpus/notify/defaults.conf	copy	n_bare	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/notify/delay.conf	copy	n_delayed	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/notify/delay.conf	copy	n_now	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/notify/format-fail.conf	copy	n_long	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/notify/no-clear.conf	copy	n_noclear	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/notify/plain.conf	copy	n_plain	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
+tests/corpus/notify/repeat.conf	copy	n_repeat	0	$v	${v}	$this > 50	(${this} > 50)	$this > 90	(${this} > 90)
+tests/corpus/notify/summary.conf	copy	m_warn_a	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/notify/summary.conf	copy	m_warn_b	0	$v	${v}	$this > 60	(${this} > 60)	\x00	\x00
+tests/corpus/notify/summary.conf	copy	m_crit_a	0	$v	${v}	$this > 50	(${this} > 50)	$this > 80	(${this} > 80)
+tests/corpus/notify/summary.conf	copy	m_crit_only	0	$v	${v}	\x00	\x00	$this > 80	(${this} > 80)
+tests/corpus/notify/summary.conf	copy	m_idle	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/notify/two.conf	copy	n_one	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/notify/two.conf	copy	n_two	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
+tests/corpus/notify/values.conf	copy	n_value	0	$v	${v}	$this > 50 OR $this < -50	((${this} > 50) || (${this} < -(50)))	\x00	\x00
 tests/corpus/queue/queue.conf	copy	q_now	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/queue/queue.conf	copy	q_wait	0	\x00	\x00	$this > 50	(${this} > 50)	\x00	\x00
 tests/corpus/queue/queue.conf	copy	q_repeat	0	$v	${v}	$this > 50	(${this} > 50)	\x00	\x00

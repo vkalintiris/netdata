@@ -16,15 +16,20 @@ define themselves):
   link to it, in C's order: the stub of `rrdcalc_add_from_prototype()` writes them). It first runs C's own
   `rrdlabels_unittest()`, which must find no error;
 - `gen-loop-vectors.c` is the evaluation loop's: it links C's alert instances (`rrdcalc.c`), alert log
-  (`health_log.c`), variable lookup (`health_variable.c`, `rrdvar.c`), the log's scan (`health_notifications.c`) and
-  the per-host pass itself (`health_event_loop.c`, compiled as a copy with `health-loop-splice.inc` appended, because
-  the pass is static), with what the daemon gives them stubbed in `health-loop-stubs.c`: the charts, the database
-  lookup (scripted results; its arguments are recorded), SQLite, the queues, the notification (recorded, the entry
-  marked as processed), the wall clock (the program defines `clock_gettime()`, so every id and time is a fixed
-  number) and an entry's transition id (counted out instead of random, so the trace shows which entry got which). A
+  (`health_log.c`), variable lookup (`health_variable.c`, `rrdvar.c`), notifications (`health_notifications.c`: the
+  log's scan, the decision, the command line, the wait) and the per-host pass itself (`health_event_loop.c`,
+  compiled as a copy with `health-loop-splice.inc` appended, because the pass is static), with what the daemon
+  gives them stubbed in `health-loop-stubs.c`: the charts, the database lookup (scripted results; its arguments are
+  recorded), SQLite, the queues, a notification's command (the spawn records the command line and starts nothing;
+  what the command then does, and the monotonic clock of the wait, are the scenario's), the wall clock (the
+  program defines `clock_gettime()`, so every id and time is a fixed number) and an entry's transition id (counted
+  out instead of random, so the trace shows which entry got which). A
   scenario can also close the host's gate or take a chart out of the index in the middle of a pass. It writes
-  `delay.tsv` (the delay multiplier over a grid), `units.tsv` (a value with its unit, as an
-  entry's value texts are made), `edit.tsv` (the edit command of a rule's source text) and `loop.tsv`: each scenario under `../corpus/loop/` played step by step, with the
+  `delay.tsv` (the delay multiplier over a grid), `units.tsv` (a value with its unit, as an entry's value texts
+  are made), `edit.tsv` (the edit command of a rule's source text), `sanitize.tsv` (an argument of a notification's
+  command, sanitized), `decide.tsv` (C's `health_send_notification()` over every combination of statuses, flags
+  and answers of the table: whether it asks, sends, or says why not) and `loop.tsv`: each scenario under
+  `../corpus/loop/` played step by step, with the
   alerts, their published snapshots, the log's entries, the stubs' calls and C's log records after every step. One
   process per scenario. `queue.tsv` is the same over `../corpus/queue/`: the scenarios in which the metadata queue
   and its thread's store job are in play (the queue takes or refuses a save, the thread a step runs on, the job
@@ -35,7 +40,10 @@ define themselves):
   pass with the REMOVED rows it injects and the rows it refuses, a restart on the same file, the hourly cleanup,
   the alarm log's JSON; after every step the rows of `health_log`, `health_log_detail`, `alert_queue` and
   `aclk_queue` in rowid order. A `configs` step asks C's `/api/v2/alert_config` code
-  (`database/contexts/api_v2_contexts_alert_config.c`, linked in) for every rule of `alert_hash`;
+  (`database/contexts/api_v2_contexts_alert_config.c`, linked in) for every rule of `alert_hash`. `notify.tsv` is
+  the same over `../corpus/notify/`: which entries are notified, each command line, the marks and times on the
+  entry at each save, the slices of each wait, the kill at a deadline, a stop and a broken wait, a failed spawn,
+  a command that does not fit, the summary of raised alerts, a restart after a notification;
 - `health-unittest-dump.inc` and `health-unittest-main.inc` are spliced into a copy of
   `src/health/health-config-unittest.c`, so that C's own unit test runs, must pass, and leaves each call it makes to
   the ported functions, with what C returned, in `c_unittest.tsv`.

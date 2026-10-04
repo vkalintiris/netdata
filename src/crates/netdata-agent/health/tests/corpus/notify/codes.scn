@@ -1,0 +1,24 @@
+# A command that exits with a code, and one a signal ended (-1): the entry gets the code and the failed mark in
+# memory when it is waited for; its row gets them only when the alarm's next entry replaces it.
+database real
+rules tests/corpus/notify/plain.conf
+exec * WARNING exit 0 3
+exec * CRITICAL exit 2 -1
+chart loop.n loop.n_name loop.notify disks things 1
+label loop.n kind ssd
+var loop.n v 10
+clock 0
+pass 0
+var loop.n v 70
+clock 1
+pass 1
+var loop.n v 95
+clock 2
+pass 2
+var loop.n v 10
+clock 3
+pass 3
+clock 4
+pass 4
+clock 5
+alarm-log 0

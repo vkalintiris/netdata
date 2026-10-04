@@ -774,8 +774,9 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
     dyncfg.host_init(hosts.localhost());
     let health = health::plugin_init(&mut conf, health_config, meta.is_some(), metasync.queue());
     // a freed chart's alerts and a cleaned host's go where the database lets go of them
-    let health_env =
-        Arc::new(health::LiveEnv::new(Arc::clone(&hosts), grouping_windows, meta.as_ref(), metasync.queue()));
+    let health_env = health::LiveEnv::new(Arc::clone(&hosts), grouping_windows, meta.as_ref(), metasync.queue());
+    let health_env = Arc::new(health_env.with_user_config_dir(&conf.dirs.user_config));
+    let health_cancel = health_env.cancel_flag();
     // a data query counts, filters by and lists the alerts of the charts it selects
     hosts.storage().set_alert_view(Arc::new(health::View(Arc::clone(&health))));
     hosts.storage().set_health_hook({
@@ -1223,6 +1224,8 @@ fn run(argv: Vec<Vec<u8>>) -> i32 {
         // started (D110), so the wait only waits
         shutdown::STOP_WEB_SERVERS => {
             let deadline = std::time::Instant::now() + shutdown::WEB_SERVERS_WAIT;
+            // service_signal_exit(): HEALTH is cancelled, so a wait for a notification's command ends now
+            health_cancel.store(true, std::sync::atomic::Ordering::Release);
             if let Some(thread) = health_thread.take() {
                 thread.join_within(shutdown::WEB_SERVERS_WAIT);
             }

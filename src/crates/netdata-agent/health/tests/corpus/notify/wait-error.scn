@@ -1,0 +1,18 @@
+# The wait itself breaks after one slice: the other record, the kill, code 128, whatever the timeout.
+database real
+timeout 0
+rules tests/corpus/notify/plain.conf
+exec * WARNING error 1
+chart loop.n loop.n_name loop.notify disks things 1
+label loop.n kind ssd
+var loop.n v 10
+clock 0
+pass 0
+var loop.n v 70
+clock 1
+pass 1
+var loop.n v 10
+clock 2
+pass 2
+clock 3
+alarm-log 0

@@ -1,0 +1,24 @@
+# A delayed notification: the entry is sent by the pass that finds its delay over, with the raised alerts as they
+# are then; the summary is built when the scan meets its first due entry.
+database real
+rules tests/corpus/notify/delay.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 10
+clock 0
+pass 0
+var loop.n v 70
+clock 1
+pass 1
+clock 2
+pass 2
+clock 3
+pass 3
+clock 4
+pass 4
+clock 5
+pass 5
+var loop.n v 10
+clock 6
+pass 6
+clock 7
+pass 7

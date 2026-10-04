@@ -99,11 +99,12 @@ impl AlarmLog {
     /// wait (not processed, not replaced) and whose delay is over, in the log's order; the lowest waiting id is
     /// remembered for the next call. The caller notifies each, marks it as processed and saves it.
     ///
-    /// C reads the clock when it starts and again at the first due entry (it builds the summary of raised alerts
-    /// there and starts over).
-    pub fn scan(&mut self, clock: Clock) -> Vec<u32> {
+    /// C reads the clock when it starts. At the first due entry it builds the summary of raised alerts, unless
+    /// the pass has built it already, reads the clock again and starts over: the second answer says whether the
+    /// caller is to build the summary now.
+    pub fn scan(&mut self, clock: Clock, summary_is_built: bool) -> (Vec<u32>, bool) {
         let mut now = clock();
-        let mut summary_built = false;
+        let mut summary_built = summary_is_built;
         let (first_waiting, due) = 'scan: loop {
             let mut first_waiting = self.entries.front().map_or(0, |entry| entry.unique_id);
             let mut due = Vec::new();
@@ -127,7 +128,7 @@ impl AlarmLog {
             break (first_waiting, due);
         };
         self.last_processed_id = first_waiting;
-        due
+        (due, summary_built && !summary_is_built)
     }
 
     /// The end of that function: entries memory needs no longer are dropped: one a newer entry replaced, once
@@ -293,19 +294,27 @@ mod tests {
         // nothing due: one read
         let mut waiting = log(1);
         waiting.add(entry(1, Status::Warning, NOW + 5));
-        assert_eq!((waiting.scan(&clock), reads.get(), waiting.last_processed_id), (vec![], 1, 1));
+        assert_eq!((waiting.scan(&clock, false), reads.get(), waiting.last_processed_id), ((vec![], false), 1, 1));
 
         // the older entry is due at the first read, the newer one only at the second
         reads.set(0);
         let mut two = log(1);
         two.add(entry(1, Status::Warning, NOW));
         two.add(entry(2, Status::Warning, NOW + 1));
-        assert_eq!((two.scan(&clock), reads.get()), (vec![2, 1], 2));
+        assert_eq!((two.scan(&clock, false), reads.get()), ((vec![2, 1], true), 2));
         // the lowest id that waited when the scan came to it is remembered; the next scan, which finds nothing
         // waiting, moves on to the newest
         assert_eq!(two.last_processed_id, 1);
         mark_all(&mut two, entry_flags::PROCESSED);
-        assert_eq!((two.scan(&clock), reads.get(), two.last_processed_id), (vec![], 3, 2));
+        assert_eq!((two.scan(&clock, false), reads.get(), two.last_processed_id), ((vec![], false), 3, 2));
+
+        // a pass whose repeats built the summary already does not start over: one read, and the entry that is
+        // due only at a second read waits
+        reads.set(0);
+        let mut built = log(1);
+        built.add(entry(1, Status::Warning, NOW));
+        built.add(entry(2, Status::Warning, NOW + 1));
+        assert_eq!((built.scan(&clock, true), reads.get()), ((vec![1], false), 1));
     }
 
     /// The trim: an entry a newer one replaced goes once it is saved, unless its alert repeats or its command

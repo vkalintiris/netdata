@@ -1,0 +1,29 @@
+# A notification's life over C's own table: the first CLEAR is not sent; WARNING, CRITICAL and the CLEAR after them
+# are. Each pass leaves its command running (the entry and its row with the run and in-progress marks), and the
+# wait that follows gives the entry its exit code in memory only.
+database real
+auto-wait 0
+rules tests/corpus/notify/plain.conf
+chart loop.n loop.n_name loop.notify disks things 1
+label loop.n kind ssd
+var loop.n v 10
+clock 0
+pass 0
+wait
+var loop.n v 70
+clock 1
+pass 1
+clock 2
+wait
+var loop.n v 95
+clock 3
+pass 3
+wait
+var loop.n v 10
+clock 4
+pass 4
+wait
+clock 5
+pass 5
+clock 6
+alarm-log 0

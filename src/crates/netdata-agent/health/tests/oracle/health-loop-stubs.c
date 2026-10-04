@@ -18,20 +18,21 @@
 //   - the silencers (never disabled, never silenced: they come with their own commit);
 //   - SQLite: the load of the alert log (C's ids for an empty table, or none; C's load also looks at the running
 //     service once and logs a record, which come with the alert log's tables), the save (it marks the entry SAVED
-//     or not), the alarm id lookup (the alarms a scenario says the table knows); the ACLK queue; the sending of a
-//     host variable to a parent;
+//     or not), the alarm id lookup (the alarms a scenario says the table knows), the alarm's last executed event
+//     (what a scenario says, none by default); the ACLK queue; the sending of a host variable to a parent;
 //   - the metadata queue and its thread's store job: the queue refuses a save (it is then made at once, on the
 //     HEALTH thread only) or takes it, keeping the host and the live entry as C does; a scenario's `store` plays
 //     the job's step for the alert log (src/database/sqlite/sqlite_metadata.c, store_alert_transitions(): each
 //     queued entry saved as it stands by then, both pending counters taken back whatever the save did), not on the
 //     HEALTH thread; an entry freed while a save of its is queued is kept until a store finds it without one;
-//   - health_send_notification, by a #define in the copies of health_notifications.c and health_event_loop.c: it
-//     records the entry, marks it PROCESSED and saves it. C's function marks the entry on every path and saves it
-//     on every path but one (a command too long to prepare); what it does beside (the flags and times of an
-//     executed command) comes with the notifications;
-//   - health_alarm_wait_for_execution, by a #define in the copy of health_event_loop.c: nothing. C's own, over an
-//     entry no command was started for, logs an error and marks the entry as failed, which a daemon that runs its
-//     notifications does not do;
+//   - a notification's command, by #defines for health_notifications.c and health_log.c: spawn_popen_run() records
+//     the command line C prepared and starts nothing; what the command then does (it exits with a code after some
+//     slices of the wait, the spawn fails, the wait breaks, it never exits) is the scenario's `exec`;
+//     spawn_popen_timedwait(), spawn_popen_kill() and spawn_popen_pid() follow it. C's own health_send_notification()
+//     and health_alarm_wait_for_execution() run over them;
+//   - the monotonic clock, by a #define for health_notifications.c: it stands still but for each slice of a wait
+//     that ends with the command still running, which moves it on by the slice (and leaves ETIMEDOUT in errno, as
+//     the spawn server's timed wait does);
 //   - the walk over a context's charts for the variable lookup;
 //   - an entry's transition id, by a #define for health_log.c: instead of a random UUID, the count of the UUIDs
 //     given out so far, so that the trace shows which entry got which and what an alert publishes of it;
@@ -46,11 +47,18 @@
 //   sql_get_alarm_id <chart> <name> <the alarm id the table has, 0 for none> <its next event id>
 //   queue <unique id> <accepted 0|1>            the metadata queue was offered an entry's save
 //   queue_deletion <unique id>                  an entry was freed with a save of its still queued
-//   save <unique id> <the entry's flags>        the SQL save, before it marks the entry
+//   save <unique id> <the entry's flags> <alarm id> <event id> <old status> <new status> <when> <delay up to>
+//        <duration> <non-clear duration> <delay> <last repeat> <old value> <new value> <transition id, as its
+//        count> <exec_run_timestamp> <exec_code> <updated_by_id>
+//                                               the SQL save, before it marks the entry: the entry as it stands
+//   last_executed <unique id> <-1|0|1> <the status, `-` without one>   the table was asked for the alarm's last
+//                                               executed event, for that entry
+//   spawn <pid, 0 when the spawn failed> <the command line, escaped as a field>
+//   monotonic                                   the wait read the monotonic clock
+//   timedwait <pid> <milliseconds> running|error|exited [<code>]
+//   kill <pid> <milliseconds>
 //   lookup <chart> <dimensions> <points> <after> <before> <method> <group options> <resampling> <options>
 //          <timeout> <tier> <query source> <priority> <the scripted code>
-//   notify <unique id> <alarm id> <event id> <old status> <new status> <when> <delay up to> <flags> <duration>
-//          <non-clear duration> <delay> <last repeat> <old value> <new value> <transition id, as its count>
 //   commit_alert_transitions
 //   process_alert_pending_queue
 
@@ -109,6 +117,10 @@ bool rrdhost_should_run_health(RRDHOST *host) {
         return true;
     }
     return oracle.gate;
+}
+
+bool oracle_running_peek(void) {
+    return !exit_initiated_get() && (oracle.running_for || oracle.running);
 }
 
 // C: src/daemon/daemon-service.c, service_running(): the thread is not cancelled and the exit has not begun.
@@ -273,7 +285,17 @@ void sql_health_alarm_log_load(RRDHOST *host) {
 
 // C: sqlite_health.c, sql_health_alarm_log_save(): insert or update; the insert marks the entry SAVED.
 void sql_health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
-    oracle_call("save\t%u\t%08x", ae->unique_id, (unsigned)ae->flags);
+    // a repeat's entry is in no log: this row is all the trace has of it
+    char old_value[32], new_value[32];
+    oracle_double(old_value, sizeof(old_value), ae->old_value);
+    oracle_double(new_value, sizeof(new_value), ae->new_value);
+    oracle_call("save\t%u\t%08x\t%u\t%u\t%s\t%s\t%ld\t%ld\t%ld\t%ld\t%d\t%ld\t%s\t%s\t%llu\t%ld\t%d\t%u",
+                ae->unique_id, (unsigned)ae->flags, ae->alarm_id, ae->alarm_event_id,
+                rrdcalc_status2string(ae->old_status), rrdcalc_status2string(ae->new_status), (long)ae->when,
+                (long)ae->delay_up_to_timestamp, (long)ae->duration, (long)ae->non_clear_duration, ae->delay,
+                (long)ae->last_repeat, old_value, new_value, oracle_uuid_rank(ae->transition_id),
+                (long)ae->exec_run_timestamp, ae->exec_code, ae->updated_by_id);
+    oracle.saved++;
     if(oracle.sql_real)
         c_sql_health_alarm_log_save(host, ae);
     else if(oracle.save_sets_saved)
@@ -300,6 +322,23 @@ uint32_t sql_get_alarm_id(RRDHOST *host, STRING *chart, STRING *name, uint32_t *
     if(alarm_id)
         *next_event_id = next;
     return alarm_id;
+}
+
+// C: sqlite_health.c, sql_health_get_last_executed_event(): the status of the alarm's newest entry whose command
+// was run, this entry aside: 1 with the status, 0 without such an entry, -1 when the question failed.
+int sql_health_get_last_executed_event(RRDHOST *host, ALARM_ENTRY *ae, RRDCALC_STATUS *last_executed_status) {
+    int ret;
+    if(oracle.sql_real)
+        ret = c_sql_health_get_last_executed_event(host, ae, last_executed_status);
+    else {
+        ret = oracle.last_executed_ret;
+        if(ret == 1)
+            *last_executed_status = oracle.last_executed_status;
+    }
+    oracle.asked++;
+    oracle_call("last_executed\t%u\t%d\t%s", ae->unique_id, ret,
+                ret == 1 ? rrdcalc_status2string(*last_executed_status) : "-");
+    return ret;
 }
 
 // C: src/database/sqlite/sqlite_metadata.c, metadata_queue_ae_save(): the host's pending transitions and the entry's
@@ -382,29 +421,125 @@ void pulse_aral_register(ARAL *ar, const char *name) {
     (void)name;
 }
 
+// C: src/daemon/pulse/pulse-daemon-memory.c: the counters the notification's buffers are accounted on
+struct netdata_buffers_statistics netdata_buffers_statistics = { 0 };
+
 // ------------------------------------------------------------------------------------------------
-// notifications: both callers of health_send_notification() (the log's scan in health_notifications.c and pass 3 in
-// health_event_loop.c) are compiled to call this
+// a notification's command: C's health_send_notification() and health_alarm_wait_for_execution() run over these
 
-void oracle_health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct health_raised_summary *hrm) {
-    (void)hrm;
-    // a repeat's entry is in no log: this row is all the trace has of it
-    char old_value[32], new_value[32];
-    oracle_double(old_value, sizeof(old_value), ae->old_value);
-    oracle_double(new_value, sizeof(new_value), ae->new_value);
-    oracle_call("notify\t%u\t%u\t%u\t%s\t%s\t%ld\t%ld\t%08x\t%ld\t%ld\t%d\t%ld\t%s\t%s\t%llu", ae->unique_id,
-                ae->alarm_id, ae->alarm_event_id, rrdcalc_status2string(ae->old_status),
-                rrdcalc_status2string(ae->new_status), (long)ae->when, (long)ae->delay_up_to_timestamp,
-                (unsigned)ae->flags, (long)ae->duration, (long)ae->non_clear_duration, ae->delay,
-                (long)ae->last_repeat, old_value, new_value, oracle_uuid_rank(ae->transition_id));
+struct oracle_popen {
+    pid_t pid;
+    enum oracle_exec_kind kind;
+    size_t slices;
+    int code;
+};
 
-    ae->flags |= HEALTH_ENTRY_FLAG_PROCESSED;
-    health_alarm_log_save(host, ae, false);
+// The n-th argument of a command line as prepare_command() writes it (`exec 'a0' 'a1' ...`, a quote inside an
+// argument as the four bytes '\''): false when the line has no such argument.
+static bool command_argument(const char *cmd, size_t index, char *dst, size_t size) {
+    const char *s = strchr(cmd, ' ');
+    for(size_t i = 0; s && s[0] == ' ' && s[1] == '\''; i++) {
+        s += 2;
+        size_t n = 0;
+        while(*s) {
+            bool quote = strncmp(s, "'\\''", 4) == 0;
+            if(*s == '\'' && !quote)
+                break;
+            if(i == index && n + 1 < size)
+                dst[n++] = *s;
+            s += quote ? 4 : 1;
+        }
+        if(*s != '\'')
+            return false;
+        s++;
+        if(i == index) {
+            dst[n] = '\0';
+            return true;
+        }
+    }
+    return false;
 }
 
-// C: src/health/health_notifications.c. See the top of this file.
-void oracle_health_alarm_wait_for_execution(ALARM_ENTRY *ae) {
-    (void)ae;
+// the `spawn` row: the command line holds backslashes and any byte above the controls, so it is written as a field
+static void spawn_call(pid_t pid, const char *cmd) {
+    if(!oracle_calls)
+        return;
+    fprintf(oracle_calls, "spawn\t%d\t", (int)pid);
+    oracle_esc(oracle_calls, cmd);
+    fputc('\n', oracle_calls);
+}
+
+// C: src/libnetdata/spawn_server/spawn_popen.c, spawn_popen_run(): `/bin/sh -c <cmd>` through the main spawn
+// server; NULL when the spawn fails.
+POPEN_INSTANCE *oracle_spawn_popen_run(const char *cmd) {
+    // the alert's name and the new status are the command's arguments 7 and 9
+    char alert[128] = "", status[32] = "";
+    command_argument(cmd, 7, alert, sizeof(alert));
+    command_argument(cmd, 9, status, sizeof(status));
+
+    struct oracle_exec_rule does = { .kind = ORACLE_EXEC_EXIT };
+    for(size_t i = 0; i < oracle.exec_rules_used; i++) {
+        struct oracle_exec_rule *rule = &oracle.exec_rules[i];
+        if((strcmp(rule->alert, "*") == 0 || strcmp(rule->alert, alert) == 0) &&
+           (strcmp(rule->status, "*") == 0 || strcmp(rule->status, status) == 0))
+            does = *rule;
+    }
+
+    oracle.spawned++;
+    if(does.kind == ORACLE_EXEC_FAIL) {
+        spawn_call(0, cmd);
+        return NULL;
+    }
+    struct oracle_popen *pi = callocz(1, sizeof(*pi));
+    pi->pid = 1001 + oracle.pids++;
+    pi->kind = does.kind;
+    pi->slices = does.slices;
+    pi->code = does.code;
+    oracle.commands_running++;
+    spawn_call(pi->pid, cmd);
+    return (POPEN_INSTANCE *)pi;
+}
+
+// C: spawn_popen.c, spawn_popen_timedwait(): EXITED frees the instance and gives the code; RUNNING after the
+// timeout (the wait on the status channel timed out: ETIMEDOUT); ERROR when the wait itself broke.
+SPAWN_TIMEDWAIT_RESULT oracle_spawn_popen_timedwait(POPEN_INSTANCE *instance, int timeout_ms, int *code) {
+    struct oracle_popen *pi = (struct oracle_popen *)instance;
+    if(pi->kind == ORACLE_EXEC_HANG || pi->slices) {
+        if(pi->slices)
+            pi->slices--;
+        oracle.monotonic_usec += (usec_t)timeout_ms * USEC_PER_MS;
+        oracle_call("timedwait\t%d\t%d\trunning", (int)pi->pid, timeout_ms);
+        errno = ETIMEDOUT;
+        return SPAWN_TIMEDWAIT_RUNNING;
+    }
+    if(pi->kind == ORACLE_EXEC_ERROR) {
+        oracle_call("timedwait\t%d\t%d\terror", (int)pi->pid, timeout_ms);
+        errno = 0;
+        return SPAWN_TIMEDWAIT_ERROR;
+    }
+    oracle_call("timedwait\t%d\t%d\texited\t%d", (int)pi->pid, timeout_ms, pi->code);
+    *code = pi->code;
+    freez(pi);
+    oracle.commands_running--;
+    return SPAWN_TIMEDWAIT_EXITED;
+}
+
+// C: spawn_popen.c, spawn_popen_kill(): the command is killed and reaped, the instance freed.
+int oracle_spawn_popen_kill(POPEN_INSTANCE *instance, int timeout_ms) {
+    struct oracle_popen *pi = (struct oracle_popen *)instance;
+    oracle_call("kill\t%d\t%d", (int)pi->pid, timeout_ms);
+    freez(pi);
+    oracle.commands_running--;
+    return -1;
+}
+
+pid_t oracle_spawn_popen_pid(POPEN_INSTANCE *instance) {
+    return ((struct oracle_popen *)instance)->pid;
+}
+
+usec_t oracle_now_monotonic_usec(void) {
+    oracle_call("monotonic");
+    return oracle.monotonic_usec;
 }
 
 // ------------------------------------------------------------------------------------------------

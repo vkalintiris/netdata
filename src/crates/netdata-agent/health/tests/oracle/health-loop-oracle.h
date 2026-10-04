@@ -11,9 +11,13 @@
 // the static per-host pass of src/health/health_event_loop.c, reached through health-loop-splice.inc
 void oracle_health_event_loop_for_host(RRDHOST *host, bool apply_hibernation_delay, time_t now, time_t *next_run, ONEWAYALLOC *owa);
 
-// what the copies of C's sources call for a notification and for the wait after a repeat's
-void oracle_health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct health_raised_summary *hrm);
-void oracle_health_alarm_wait_for_execution(ALARM_ENTRY *ae);
+// what health_notifications.c and health_log.c call for a notification's command: the spawn, the wait for it in
+// slices, its kill, its pid; and the monotonic clock the wait's deadline is counted on
+POPEN_INSTANCE *oracle_spawn_popen_run(const char *cmd);
+SPAWN_TIMEDWAIT_RESULT oracle_spawn_popen_timedwait(POPEN_INSTANCE *pi, int timeout_ms, int *code);
+int oracle_spawn_popen_kill(POPEN_INSTANCE *pi, int timeout_ms);
+pid_t oracle_spawn_popen_pid(POPEN_INSTANCE *pi);
+usec_t oracle_now_monotonic_usec(void);
 
 // what health_log.c calls for an entry's transition id: the n-th call gives the UUID whose last eight bytes are n
 void oracle_uuid_generate_random(nd_uuid_t out);
@@ -40,6 +44,25 @@ struct oracle_chart {
 #define ORACLE_CHARTS_MAX 32
 #define ORACLE_QUEUE_MAX 256
 #define ORACLE_SQL_ALARMS_MAX 8
+#define ORACLE_EXEC_RULES_MAX 16
+
+// what a notification's command does once it is spawned
+enum oracle_exec_kind {
+    ORACLE_EXEC_EXIT,               // it runs for `slices` slices of the wait, then exits with `code`
+    ORACLE_EXEC_FAIL,               // the spawn fails: spawn_popen_run() gives NULL
+    ORACLE_EXEC_ERROR,              // it runs for `slices` slices, then the wait itself breaks
+    ORACLE_EXEC_HANG,               // it never exits
+};
+
+// a scenario's `exec`: the commands of the entries of that alert (`*`: any) with that new status (`*`: any)
+struct oracle_exec_rule {
+    char alert[128];
+    char status[32];
+    enum oracle_exec_kind kind;
+    size_t slices;
+    int code;
+};
+
 
 // a save the metadata queue took: C keeps the host and a pointer to the live entry
 struct oracle_queued {
@@ -73,6 +96,16 @@ struct oracle_script {
     struct oracle_sql_alarm sql_alarms[ORACLE_SQL_ALARMS_MAX];  // sql_get_alarm_id(): the alarms the table knows
     size_t sql_alarms_used;
     uint64_t uuids;                 // the random UUIDs given out so far: the next one is this count, plus one
+    struct oracle_exec_rule exec_rules[ORACLE_EXEC_RULES_MAX];  // the last rule that matches a command decides
+    size_t exec_rules_used;
+    int last_executed_ret;          // sql_health_get_last_executed_event() without a real database: -1 the
+    RRDCALC_STATUS last_executed_status;    // question failed, 0 no executed event, 1 one with this status
+    usec_t monotonic_usec;          // the monotonic clock of health_notifications.c: a slice that ends with the
+                                    // command still running moves it on by the slice
+    int pids;                       // the commands spawned so far: the next one's pid is 1001 plus this
+    size_t commands_running;        // spawned and neither exited nor killed yet
+    size_t asked, spawned, saved;   // how often the table was asked for the last executed event, a command was
+                                    // spawned (or failed to), an entry was saved: the decision table reads them
     struct oracle_chart charts[ORACLE_CHARTS_MAX];
     size_t charts_used;
 };
@@ -85,7 +118,11 @@ struct oracle_chart *oracle_chart(RRDSET *st);
 // the metadata thread's store job, as far as the alert log goes: every queued save, in arrival order
 void oracle_store(void);
 
+// whether the service runs, without the look that `running-for` counts
+bool oracle_running_peek(void);
+
 // C's own functions of sqlite_health.c, compiled under these names (health-sql-stubs.c)
+int c_sql_health_get_last_executed_event(RRDHOST *host, ALARM_ENTRY *ae, RRDCALC_STATUS *last_executed_status);
 void c_sql_health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae);
 void c_sql_health_alarm_log_load(RRDHOST *host);
 uint32_t c_sql_get_alarm_id(RRDHOST *host, STRING *chart, STRING *name, uint32_t *next_event_id);

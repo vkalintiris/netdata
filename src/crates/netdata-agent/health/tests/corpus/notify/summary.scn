@@ -1,0 +1,31 @@
+# The summary of raised alerts in a notification (arguments 20 to 25): the alert's own expression and its error
+# text, how many others warn and are critical, and their lists, newest change first, the alert itself left out; an
+# alert of a chart that was never collected is in no list; two alerts that changed in the same second keep their
+# order.
+database real
+rules tests/corpus/notify/summary.conf
+chart loop.a loop.a_name loop.sum disks things 1
+chart loop.b loop.b_name loop.sum disks things 1
+chart loop.i loop.i_name loop.idle disks things 1
+collected loop.i 0 0
+var loop.a v 10
+var loop.b v 10
+var loop.i v 70
+clock 0
+pass 0
+var loop.a v 55
+clock 1
+pass 1
+var loop.b v 70
+clock 2
+pass 2
+var loop.a v 95
+clock 3
+pass 3
+var loop.b v 95
+clock 4
+pass 4
+var loop.a v 10
+var loop.b v 10
+clock 5
+pass 5

@@ -1,7 +1,8 @@
 //! Test fixtures: a host with charts, and a `Health` holding the rules of a health.d text.
 
 use std::os::unix::ffi::OsStrExt;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use netdata_agent_rrd::chart::{Algorithm, Chart, ChartSpec, ChartType};
 use netdata_agent_rrd::host::{Host, HostInfo};
@@ -16,6 +17,7 @@ use crate::alert::Alert;
 use crate::alerts::HostAlerts;
 use crate::config::HealthConfig;
 use crate::entry::Entry;
+use crate::notify::{Execution, Waiting};
 use crate::pass::{ChartFacts, Env, Idle};
 use crate::readfile::health_readfile;
 
@@ -210,6 +212,13 @@ pub(crate) fn rule_text(kind: &str, name: &str, on: &str, lines: &[&str]) -> Str
 /// collected at, with data from 100 seconds before it (none: no chart is collected), and the rows the alert log's
 /// table gives a host's first pass (none: no database). It counts what it gave out, so every entry has its own
 /// ids.
+///
+/// For the notifications: what the table answers about an alarm's last executed event; what a command does (none:
+/// it cannot be started; else the slices of a wait it runs for before it exits with 0, `usize::MAX` for one that
+/// never exits); how many more looks find the service running (none: it always runs). `trace` has what was asked
+/// of it, in order: `asked <unique id>`, `spawn <pid>` (pids count from 100) or `spawn failed`, `monotonic`,
+/// `look`, and each command's `timedwait <pid>` and `kill <pid>`. A slice that ends with the command running
+/// moves `monotonic` on by its length.
 #[derive(Default)]
 pub struct Scripted {
     pub exiting: bool,
@@ -217,6 +226,54 @@ pub struct Scripted {
     pub collected: Option<i64>,
     pub table: Option<Vec<LoadedRow>>,
     pub ids: std::cell::Cell<u64>,
+    pub last_executed: Option<i32>,
+    pub command: Option<usize>,
+    pub running_for: std::cell::Cell<Option<usize>>,
+    pub trace: Arc<Mutex<Vec<String>>>,
+    pub monotonic: Arc<AtomicU64>,
+    pub pids: std::cell::Cell<i32>,
+}
+
+impl Scripted {
+    fn traced(&self, what: String) {
+        self.trace.lock().expect("the trace").push(what);
+    }
+
+    /// The trace so far, emptied.
+    pub fn take_trace(&self) -> Vec<String> {
+        std::mem::take(&mut *self.trace.lock().expect("the trace"))
+    }
+}
+
+/// A command [`Scripted`] started.
+struct Started {
+    pid: i32,
+    slices: usize,
+    trace: Arc<Mutex<Vec<String>>>,
+    monotonic: Arc<AtomicU64>,
+}
+
+impl Execution for Started {
+    fn pid(&self) -> i32 {
+        self.pid
+    }
+
+    fn timedwait(mut self: Box<Self>, timeout_ms: i32) -> Waiting {
+        self.trace.lock().expect("the trace").push(format!("timedwait {}", self.pid));
+        if self.slices == 0 {
+            return Waiting::Exited(0);
+        }
+        if self.slices != usize::MAX {
+            self.slices -= 1;
+        }
+        self.monotonic.fetch_add(timeout_ms as u64 * 1000, Ordering::Relaxed);
+        Waiting::Running(self, 110)
+    }
+
+    fn kill(self: Box<Self>, _: i32) -> i32 {
+        self.trace.lock().expect("the trace").push(format!("kill {}", self.pid));
+        -1
+    }
 }
 
 impl Env for Scripted {
@@ -253,7 +310,15 @@ impl Env for Scripted {
     }
 
     fn service_running(&self) -> bool {
-        true
+        self.traced("look".to_owned());
+        match self.running_for.get() {
+            None => true,
+            Some(0) => false,
+            Some(looks) => {
+                self.running_for.set(Some(looks - 1));
+                true
+            }
+        }
     }
 
     fn load(&self, _: &Host) -> Option<Vec<LoadedRow>> {
@@ -278,5 +343,28 @@ impl Env for Scripted {
         false
     }
 
-    fn notify(&self, _: &mut Entry) {}
+    fn last_executed_event(&self, _: &Host, _: u32, unique_id: u32) -> Option<i32> {
+        self.traced(format!("asked {unique_id}"));
+        self.last_executed
+    }
+
+    fn exec(&self, _: &[u8]) -> Option<Box<dyn Execution>> {
+        let Some(slices) = self.command else {
+            self.traced("spawn failed".to_owned());
+            return None;
+        };
+        let pid = 100 + self.pids.replace(self.pids.get() + 1);
+        self.traced(format!("spawn {pid}"));
+        let (trace, monotonic) = (Arc::clone(&self.trace), Arc::clone(&self.monotonic));
+        Some(Box::new(Started { pid, slices, trace, monotonic }))
+    }
+
+    fn monotonic_usec(&self) -> u64 {
+        self.traced("monotonic".to_owned());
+        self.monotonic.load(Ordering::Relaxed)
+    }
+
+    fn edit_context(&self) -> (Vec<u8>, Vec<u8>) {
+        (b"/etc/netdata".to_vec(), b"testhost".to_vec())
+    }
 }

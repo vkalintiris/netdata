@@ -1,0 +1,33 @@
+# A repeating alert: the transition's notification, then each repeat's entry is sent, saved and waited for inside
+# the pass that makes it; its duration argument is the entry's duration while raised; the CLEAR after the repeats.
+database real
+rules tests/corpus/notify/repeat.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 10
+clock 0
+pass 0
+var loop.n v 70
+clock 1
+pass 1
+clock 2
+pass 2
+clock 3
+pass 3
+clock 4
+pass 4
+clock 5
+pass 5
+var loop.n v 95
+clock 6
+pass 6
+clock 7
+pass 7
+clock 8
+pass 8
+var loop.n v 10
+clock 9
+pass 9
+clock 10
+pass 10
+clock 11
+alarm-log 0

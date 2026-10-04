@@ -9,10 +9,21 @@
 //       delay.tsv    <delay> <multiplier, the float's bits> <maximum> <result>: health_delay_apply_multiplier()
 //       units.tsv    <value, the double's bits or nan> <units> <text>: format_value_and_unit() as health_log.c
 //                    calls it for an entry's value texts (a 100-byte buffer, precision -1)
+//       edit.tsv     <a rule's source text> <the edit command>: health_edit_command_from_source()
+//       sanitize.tsv <an argument's bytes> <fits 0|1> <the sanitized bytes>: sanitize_command_argument_string()
+//                    into the 8192-byte buffer prepare_command() gives it
+//
+//   gen-loop-vectors decide <directory> <a file for the records>
+//       decide.tsv   C's health_send_notification() over one hand-built entry per combination of new status, old
+//                    status, the flags NO_CLEAR_NOTIFICATION, SILENCED, RUN_ONCE and IS_REPEATING, and what the
+//                    table answers about the alarm's last executed event: <new status> <old status> <flags
+//                    before> <the answer: fail, none or a status> <the table was asked 0|1> <a command was
+//                    spawned 0|1> <flags after> <exec_run_timestamp set 0|1> <saves> <the record's message, `-`
+//                    for none>
 //
 //   gen-loop-vectors scenario <loop.tsv to append to> <scenario file> <a file for the records>
 //       One process per scenario. Rows are <scenario> <step> <kind> ..., a step being one `pass`, `unlink`,
-//       `apply`, `store`, `restart`, `cleanup` or `alarm-log` directive:
+//       `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs` or `wait` directive:
 //         do         the directive
 //         next_run   after a pass: the pass's next_run
 //         host       pending flags (i = initialization, r = label recheck), health_transitions,
@@ -87,6 +98,21 @@
 //   configs                            /api/v2/alert_config's body for every rule of alert_hash, in the table's
 //                                      order, then for a hash no rule has: a `config` row each, with the hash,
 //                                      how many rules C's query found, and the body (none when it found none)
+//   exec <alert|*> <status|*> exit <slices> <code> | fail | error <slices> | hang
+//                                      what the notification command of that alert's entries with that new status
+//                                      does: it exits with the code after that many slices of the wait, the spawn
+//                                      fails, the wait breaks after that many slices, or it never exits. The last
+//                                      matching line decides; without one a command exits with 0 at the first slice
+//   timeout <seconds>                  `[health] notification execution timeout` (C's default is 120; 0: no limit)
+//   last-executed none|fail|<STATUS>   without a real database: what the table answers about an alarm's last
+//                                      executed event (default: none)
+//   use-summary <0|1>                  `[health] use summary for notifications`: read by a host's first pass
+//   default-exec <text|->              `[health] script to execute on alarm` (`-`: none): read by a host's first
+//                                      pass, and by the rules read after it
+//   auto-wait <0|1>                    a `pass` ends with the wait for the notifications in flight, as an iteration
+//                                      of the daemon's loop does after its hosts (default 1)
+//   wait                               that wait alone: wait_for_all_notifications_to_finish_before_allowing_
+//                                      health_to_be_cleaned_up()
 //   running-for <n>                    the service runs for n more looks at it, then it is stopping
 //   exiting                            the agent's exit has begun (it cannot be undone)
 //   delay-up-to <second|0>             the host's health is postponed until then (what a connecting child gets)
@@ -95,7 +121,7 @@
 //   pass <now> [hibernate]             one call of the pass
 //   unlink <chart>                     rrdcalc_unlink_and_delete_all_rrdset_alerts()
 //   apply                              health_apply_prototypes_to_host()
-// `unlink`, `apply`, `store`, `restart`, `cleanup`, `alarm-log` and `configs` are steps too.
+// `unlink`, `apply`, `store`, `restart`, `cleanup`, `alarm-log`, `configs` and `wait` are steps too.
 //
 // Field encoding: see health-oracle.h. A double is `nan` or its bits in hex.
 
@@ -122,6 +148,18 @@ static void put_double(FILE *f, NETDATA_DOUBLE v) {
 
 // ------------------------------------------------------------------------------------------------
 // the tables
+
+static void sanitize_row(FILE *f, const char *argument) {
+    char buf[8192];
+    bool fits = sanitize_command_argument_string(buf, argument, sizeof(buf) - 1);
+    oracle_esc(f, argument);
+    fprintf(f, "\t%d\t", fits ? 1 : 0);
+    if(fits)
+        oracle_esc(f, buf);
+    else
+        fputc('-', f);
+    fputc('\n', f);
+}
 
 static void tables(const char *dir) {
     char path[4096];
@@ -208,6 +246,47 @@ static void tables(const char *dir) {
         freez(command);
     }
     localhost = NULL;
+    if(ferror(f) || fclose(f) != 0) die("cannot write", path);
+
+    // sanitize_command_argument_string(), as prepare_command() calls it for each text argument of a notification's
+    // command: into a buffer of 8192 bytes, of which it is given 8191
+    snprintf(path, sizeof(path), "%s/sanitize.tsv", dir);
+    f = fopen(path, "w");
+    if(!f) die("cannot create", path);
+    fprintf(f, "# generated by tests/oracle/gen-loop-vectors.c from the C implementation; do not edit\n");
+    fprintf(f, "# columns: the argument, whether it fits (0|1), the sanitized argument (`-` when it does not fit)\n");
+    // every byte between two letters
+    for(int byte = 1; byte < 256; byte++) {
+        char argument[4] = { 'a', (char)byte, 'z', '\0' };
+        sanitize_row(f, argument);
+    }
+    static const char *arguments[] = {
+        "", "-", "--", "---x", "-a-b", "a-", "- x", "--'--", "-$-", "'", "`", "''", "``", "it's", "a`b`c", "$HOME",
+        "$(x)", "${x}", "a$", "tab\there", "line\nbreak", "\r", "\x7f", "\x01\x02\x1f", "a b", "\"quoted\"",
+        "back\\slash", "semi;colon", "pipe|amp&", "/usr/libexec/netdata/plugins.d/alarm-notify.sh", "sysadmin root",
+        "caf\xc3\xa9", "\xff\xfe",
+    };
+    for(size_t i = 0; i < sizeof(arguments) / sizeof(arguments[0]); i++)
+        sanitize_row(f, arguments[i]);
+    // around the buffer's end: plain bytes, then a byte that takes one or four bytes as the last one
+    static const size_t lengths[] = { 8185, 8186, 8187, 8188, 8189, 8190, 8191, 8192 };
+    static const char *tails[] = { "", "$", "'", "`", "''", "-" };
+    for(size_t l = 0; l < sizeof(lengths) / sizeof(lengths[0]); l++)
+        for(size_t t = 0; t < sizeof(tails) / sizeof(tails[0]); t++) {
+            char *argument = mallocz(lengths[l] + strlen(tails[t]) + 1);
+            memset(argument, 'x', lengths[l]);
+            strcpy(argument + lengths[l], tails[t]);
+            sanitize_row(f, argument);
+            freez(argument);
+        }
+    // leading dashes do not count
+    {
+        char *argument = mallocz(9000 + 2);
+        memset(argument, '-', 9000);
+        strcpy(argument + 9000, "x");
+        sanitize_row(f, argument);
+        freez(argument);
+    }
     if(ferror(f) || fclose(f) != 0) die("cannot write", path);
 }
 
@@ -498,6 +577,9 @@ static void dump(const char *directive) {
 // alerts and the memory log go without an entry or a save (the exit has begun); the new process has a host whose
 // health never ran, and every chart is new to it.
 static void restart(void) {
+    // C frees a log entry whose command runs without taking it off the list of running notifications, and its
+    // next wait then walks freed memory: a scenario must wait first
+    if(oracle.commands_running) die("a restart with notifications in flight", NULL);
     oracle.queued_used = 0;
     exit_initiated_add(EXIT_REASON_SIGTERM);
     rrdcalc_delete_all(&host);
@@ -529,6 +611,19 @@ static void restart(void) {
     rrdhost_flag_set(&host, RRDHOST_FLAG_PENDING_HEALTH_INITIALIZATION);
 }
 
+// a `pass` ends with the wait for the notifications in flight
+static bool auto_wait = true;
+
+// the status a name stands for, as rrdcalc_status2string() names them
+static bool status_of(const char *name, RRDCALC_STATUS *status) {
+    for(int s = RRDCALC_STATUS_REMOVED; s <= RRDCALC_STATUS_CRITICAL; s++)
+        if(strcmp(rrdcalc_status2string((RRDCALC_STATUS)s), name) == 0) {
+            *status = (RRDCALC_STATUS)s;
+            return true;
+        }
+    return false;
+}
+
 static time_t second(const char *text) {
     // 0 stays 0 (no time); anything else is an offset from T0
     long offset = strtol(text, NULL, 10);
@@ -545,22 +640,8 @@ static char *word(char **rest, const char *directive) {
     return w;
 }
 
-static void run_scenario(const char *out_path, const char *scenario_path, const char *records_path) {
-    out = fopen(out_path, "a");
-    if(!out) die("cannot append to", out_path);
-
-    // a real database, when the scenario asks for one, is a new file beside the records
-    char sql_path[4096];
-    snprintf(sql_path, sizeof(sql_path), "%s.db", records_path);
-
-    // the scenario's name: the file's name without its directory and extension
-    char name[256];
-    const char *base = strrchr(scenario_path, '/');
-    snprintf(name, sizeof(name), "%s", base ? base + 1 : scenario_path);
-    char *dot = strrchr(name, '.');
-    if(dot) *dot = '\0';
-    scenario = name;
-
+// What every scenario starts from: C's records captured, the health globals, and one host without a chart.
+static void world_init(const char *records_path) {
     // C's records go to stderr: into a file this program reads back after each step
     records_fd = open(records_path, O_RDWR | O_CREAT | O_TRUNC, 0600);
     if(records_fd < 0 || dup2(records_fd, STDERR_FILENO) < 0) die("cannot capture the records in", records_path);
@@ -596,6 +677,25 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
     rrdcalc_rrdhost_index_init(&host);
     localhost = &host;
     owa = onewayalloc_create(0);
+}
+
+static void run_scenario(const char *out_path, const char *scenario_path, const char *records_path) {
+    out = fopen(out_path, "a");
+    if(!out) die("cannot append to", out_path);
+
+    // a real database, when the scenario asks for one, is a new file beside the records
+    char sql_path[4096];
+    snprintf(sql_path, sizeof(sql_path), "%s.db", records_path);
+
+    // the scenario's name: the file's name without its directory and extension
+    char name[256];
+    const char *base = strrchr(scenario_path, '/');
+    snprintf(name, sizeof(name), "%s", base ? base + 1 : scenario_path);
+    char *dot = strrchr(name, '.');
+    if(dot) *dot = '\0';
+    scenario = name;
+
+    world_init(records_path);
 
     FILE *input = fopen(scenario_path, "r");
     if(!input) die("cannot read", scenario_path);
@@ -748,6 +848,56 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
             oracle_chart(chart_find(word(&rest, whole)))->free_at_lookup = true;
         else if(strcmp(directive, "running") == 0)
             oracle.running = atoi(word(&rest, whole)) != 0;
+        else if(strcmp(directive, "exec") == 0) {
+            if(oracle.exec_rules_used == ORACLE_EXEC_RULES_MAX) die("too many exec rules", whole);
+            struct oracle_exec_rule *rule = &oracle.exec_rules[oracle.exec_rules_used++];
+            memset(rule, 0, sizeof(*rule));
+            snprintf(rule->alert, sizeof(rule->alert), "%s", word(&rest, whole));
+            snprintf(rule->status, sizeof(rule->status), "%s", word(&rest, whole));
+            const char *kind = word(&rest, whole);
+            if(strcmp(kind, "exit") == 0) {
+                rule->kind = ORACLE_EXEC_EXIT;
+                rule->slices = strtoul(word(&rest, whole), NULL, 10);
+                rule->code = (int)strtol(word(&rest, whole), NULL, 10);
+            }
+            else if(strcmp(kind, "fail") == 0)
+                rule->kind = ORACLE_EXEC_FAIL;
+            else if(strcmp(kind, "error") == 0) {
+                rule->kind = ORACLE_EXEC_ERROR;
+                rule->slices = strtoul(word(&rest, whole), NULL, 10);
+            }
+            else if(strcmp(kind, "hang") == 0)
+                rule->kind = ORACLE_EXEC_HANG;
+            else
+                die("unknown exec outcome", whole);
+        }
+        else if(strcmp(directive, "timeout") == 0) {
+            long seconds = strtol(word(&rest, whole), NULL, 10);
+            health_globals.config.notification_execution_timeout_seconds = (int32_t)seconds;
+        }
+        else if(strcmp(directive, "last-executed") == 0) {
+            const char *answer = word(&rest, whole);
+            if(strcmp(answer, "fail") == 0)
+                oracle.last_executed_ret = -1;
+            else if(strcmp(answer, "none") == 0)
+                oracle.last_executed_ret = 0;
+            else {
+                oracle.last_executed_ret = 1;
+                if(!status_of(answer, &oracle.last_executed_status)) die("unknown status", whole);
+            }
+        }
+        else if(strcmp(directive, "use-summary") == 0)
+            health_globals.config.use_summary_for_notifications = strcmp(word(&rest, whole), "1") == 0;
+        else if(strcmp(directive, "default-exec") == 0) {
+            string_freez(health_globals.config.default_exec);
+            health_globals.config.default_exec = (rest && strcmp(rest, "-") != 0) ? string_strdupz(rest) : NULL;
+        }
+        else if(strcmp(directive, "auto-wait") == 0)
+            auto_wait = strcmp(word(&rest, whole), "1") == 0;
+        else if(strcmp(directive, "wait") == 0) {
+            wait_for_all_notifications_to_finish_before_allowing_health_to_be_cleaned_up();
+            dump(whole);
+        }
         else if(strcmp(directive, "running-for") == 0)
             oracle.running_for = (size_t)atoi(word(&rest, whole));
         else if(strcmp(directive, "exiting") == 0)
@@ -799,6 +949,9 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
                 }
             time_t next_run = now + health_globals.config.run_at_least_every_seconds;
             oracle_health_event_loop_for_host(&host, hibernate, now, &next_run, owa);
+            // health_event_loop(): after its hosts, unless the service stops
+            if(auto_wait && oracle_running_peek())
+                wait_for_all_notifications_to_finish_before_allowing_health_to_be_cleaned_up();
             row("next_run");
             fprintf(out, "\t%ld\n", (long)next_run);
             dump(whole);
@@ -848,15 +1001,129 @@ static void run_scenario(const char *out_path, const char *scenario_path, const 
     if(ferror(out) || fclose(out) != 0) die("cannot write", out_path);
 }
 
+// ------------------------------------------------------------------------------------------------
+// the decision table
+
+// the messages of the records written since the last call, joined by ` | `; `-` for none
+static void messages(FILE *f) {
+    fflush(stderr);
+    off_t end = lseek(records_fd, 0, SEEK_END);
+    if(end <= records_read) {
+        fputc('-', f);
+        return;
+    }
+    size_t len = (size_t)(end - records_read);
+    char *text = mallocz(len + 1);
+    if(pread(records_fd, text, len, records_read) != (ssize_t)len) die("cannot read the records", NULL);
+    text[len] = '\0';
+    records_read = end;
+
+    size_t written = 0;
+    char *save = NULL;
+    for(char *line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        char *msg = strstr(line, " msg=\"");
+        if(!msg)
+            continue;
+        msg += 6;
+        char *close = strrchr(msg, '"');
+        if(close)
+            *close = '\0';
+        if(written++)
+            fputs(" | ", f);
+        oracle_esc(f, msg);
+    }
+    if(!written)
+        fputc('-', f);
+    freez(text);
+}
+
+static void decide(const char *dir, const char *records_path) {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/decide.tsv", dir);
+    FILE *f = fopen(path, "w");
+    if(!f) die("cannot create", path);
+    fprintf(f, "# generated by tests/oracle/gen-loop-vectors.c from the C implementation; do not edit\n");
+    fprintf(f, "# columns: new status, old status, flags before, the table's answer about the last executed event "
+               "(fail, none or a status), the table was asked, a command was spawned, flags after, "
+               "exec_run_timestamp was set, saves, the records' messages\n");
+
+    world_init(records_path);
+    // what a host's first pass takes from the configuration
+    host.health.default_exec = string_dup(health_globals.config.default_exec);
+    host.health.default_recipient = string_dup(health_globals.config.default_recipient);
+    host.health.use_summary_for_notifications = health_globals.config.use_summary_for_notifications;
+    struct health_raised_summary *hrm = alerts_raised_summary_create(&host);
+
+    ALARM_ENTRY *ae = health_alarm_entry_create();
+    ae->name = string_strdupz("d_alert");
+    ae->chart = string_strdupz("d.chart");
+    ae->chart_name = string_strdupz("d.chart_name");
+    ae->chart_context = string_strdupz("d.context");
+    ae->units = string_strdupz("things");
+    ae->info = string_strdupz("an alert of the decision table");
+    ae->summary = string_strdupz("a summary");
+    ae->old_value_string = string_strdupz("1 things");
+    ae->new_value_string = string_strdupz("2 things");
+    ae->unique_id = 7;
+    ae->alarm_id = 3;
+    ae->alarm_event_id = 5;
+    ae->when = oracle.clock_s;
+    ae->old_value = 1;
+    ae->new_value = 2;
+
+    static const HEALTH_ENTRY_FLAGS bits[] = { HEALTH_ENTRY_FLAG_NO_CLEAR_NOTIFICATION, HEALTH_ENTRY_FLAG_SILENCED,
+                                               HEALTH_ENTRY_RUN_ONCE, HEALTH_ENTRY_FLAG_IS_REPEATING };
+    for(int new_status = RRDCALC_STATUS_REMOVED; new_status <= RRDCALC_STATUS_CRITICAL; new_status++)
+        for(int old_status = RRDCALC_STATUS_REMOVED; old_status <= RRDCALC_STATUS_CRITICAL; old_status++)
+            for(unsigned subset = 0; subset < 16; subset++)
+                // the table's answer: the question fails, no executed event, or one with each status
+                for(int answer = -1; answer <= 7; answer++) {
+                    HEALTH_ENTRY_FLAGS flags = 0;
+                    for(size_t b = 0; b < 4; b++)
+                        if(subset & (1u << b))
+                            flags |= bits[b];
+                    ae->new_status = (RRDCALC_STATUS)new_status;
+                    ae->old_status = (RRDCALC_STATUS)old_status;
+                    ae->flags = flags;
+                    ae->exec_run_timestamp = 0;
+                    ae->exec_code = 0;
+                    oracle.last_executed_ret = (answer < 1) ? answer : 1;
+                    oracle.last_executed_status = (RRDCALC_STATUS)(answer - 1 + RRDCALC_STATUS_REMOVED);
+                    oracle.asked = oracle.spawned = oracle.saved = 0;
+                    errno = 0;
+
+                    health_send_notification(&host, ae, hrm);
+                    HEALTH_ENTRY_FLAGS after = ae->flags;
+                    bool timestamp = ae->exec_run_timestamp != 0;
+                    // a started command is waited for, so that the entry leaves the list of running notifications
+                    if(ae->popen_instance)
+                        health_alarm_wait_for_execution(ae);
+
+                    fprintf(f, "%s\t%s\t%08x\t%s\t%zu\t%zu\t%08x\t%d\t%zu\t", rrdcalc_status2string(ae->new_status),
+                            rrdcalc_status2string(ae->old_status), (unsigned)flags,
+                            answer == -1 ? "fail" : answer == 0 ? "none"
+                                         : rrdcalc_status2string(oracle.last_executed_status),
+                            oracle.asked, oracle.spawned, (unsigned)after, timestamp ? 1 : 0, oracle.saved);
+                    messages(f);
+                    fputc('\n', f);
+                }
+    if(ferror(f) || fclose(f) != 0) die("cannot write", path);
+}
+
 int main(int argc, char **argv) {
     if(argc == 3 && strcmp(argv[1], "tables") == 0) {
         tables(argv[2]);
+        return 0;
+    }
+    if(argc == 4 && strcmp(argv[1], "decide") == 0) {
+        decide(argv[2], argv[3]);
         return 0;
     }
     if(argc == 5 && strcmp(argv[1], "scenario") == 0) {
         run_scenario(argv[2], argv[3], argv[4]);
         return 0;
     }
-    fprintf(stdout, "usage: %s tables <directory> | scenario <loop.tsv> <scenario file> <records file>\n", argv[0]);
+    fprintf(stdout, "usage: %s tables <directory> | decide <directory> <records file> | "
+                    "scenario <loop.tsv> <scenario file> <records file>\n", argv[0]);
     return 1;
 }

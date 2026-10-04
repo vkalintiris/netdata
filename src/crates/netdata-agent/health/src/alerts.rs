@@ -14,10 +14,11 @@ use crate::alert::{Alert, Run, Status, run_flags};
 use crate::config::HealthConfig;
 use crate::entry::{Entry, Transition, entry_flags};
 use crate::log::AlarmLog;
+use crate::notify::{self, Executing, RaisedSummary};
 use crate::pass::{Env, PassCounts, elapsed, hysteresis};
 use crate::prototype::Rule;
 use crate::tables::ACTION_OPTION_NO_CLEAR_NOTIFICATION;
-use crate::{Clock, journal, sql};
+use crate::{Clock, Health, journal, sql};
 
 /// The saves an entry's addition owes, in C's order, each with whether it is asynchronous: the older entry the new
 /// one replaced, then the new one. They are made once the store's lock and the alert's are released.
@@ -700,15 +701,40 @@ impl HostAlerts {
         Some(entry)
     }
 
-    /// `health_send_notification()` as far as the log goes, for a repeat's entry, which is in no log: it is offered
-    /// for a notification, marked as processed and saved at once (never queued). What a notification is comes with
-    /// its own commit.
-    pub(crate) fn notify_repeat(&self, host: &Host, entry: &mut Entry, env: &dyn Env) {
-        env.notify(entry);
+    /// `health_send_notification()` and the wait that follows it in the pass, for a repeat's entry, which is in no
+    /// log: it is marked as processed, notified, saved at once (never queued), and its command is waited for
+    /// before the pass goes on. Without a command the wait says so in the log, as C's does.
+    pub(crate) fn notify_repeat(
+        &self,
+        host: &Host,
+        entry: &mut Entry,
+        summary: &mut RaisedSummary,
+        health: &Health,
+        env: &dyn Env,
+        clock: Clock,
+    ) {
         entry.flags |= entry_flags::PROCESSED;
-        let _saving = self.saving.lock().unwrap_or_else(PoisonError::into_inner);
-        if env.sql_save(host, entry) {
-            entry.flags |= entry_flags::SAVED;
+        let sent = notify::send(host, self, entry, summary, health, env, clock);
+        entry.flags |= sent.flags;
+        if let Some(at) = sent.exec_run_timestamp {
+            entry.exec_run_timestamp = at;
+        }
+        if sent.save {
+            let _saving = self.saving.lock().unwrap_or_else(PoisonError::into_inner);
+            if env.sql_save(host, entry) {
+                entry.flags |= entry_flags::SAVED;
+            }
+        }
+        // health_alarm_wait_for_execution(), at once: what it would write on the entry (the code, the marks) no
+        // one reads, the entry goes with this call
+        match sent.execution {
+            Some(execution) => {
+                let timeout_s = health.config().notification_execution_timeout_s;
+                notify::wait_for_execution(entry.name.as_deref().unwrap_or(b""), execution, timeout_s, env);
+            }
+            None => {
+                notify::wait_without_execution();
+            }
         }
     }
 
@@ -716,17 +742,57 @@ impl HostAlerts {
     /// notification, is marked as processed and saved; then the log is trimmed. The due entries are found under
     /// the store's lock; each is notified and saved with no lock held, where C holds the log's read lock: an entry
     /// that another thread takes out of the log in between is skipped.
-    pub(crate) fn process_log(&self, env: &dyn Env, clock: Clock) {
-        let due = self.store().log.scan(clock);
+    pub(crate) fn process_log(
+        &self,
+        host: &Host,
+        summary: &mut RaisedSummary,
+        health: &Health,
+        env: &dyn Env,
+        clock: Clock,
+    ) {
+        let (due, build) = self.store().log.scan(clock, summary.is_built());
+        if build {
+            summary.build(self, env);
+        }
         for unique_id in due {
-            let Some(mut copy) = self.with_entry(unique_id, |entry| entry.clone()) else {
+            // C marks the entry first
+            let marked = |entry: &mut Entry| {
+                entry.flags |= entry_flags::PROCESSED;
+                entry.clone()
+            };
+            let Some(copy) = self.with_entry(unique_id, marked) else {
                 continue;
             };
-            env.notify(&mut copy);
-            self.with_entry(unique_id, |entry| entry.flags |= entry_flags::PROCESSED);
-            self.save(env, unique_id, false, false);
+            let sent = notify::send(host, self, &copy, summary, health, env, clock);
+            // what the notification left is on the live entry before its save
+            self.with_entry(unique_id, |entry| {
+                entry.flags |= sent.flags;
+                if let Some(at) = sent.exec_run_timestamp {
+                    entry.exec_run_timestamp = at;
+                }
+            });
+            if let Some(execution) = sent.execution {
+                let name = copy.name.unwrap_or_default();
+                health.executing().push_back(Executing { alerts: self.me.clone(), unique_id, name, execution });
+            }
+            if sent.save {
+                self.save(env, unique_id, false, false);
+            }
         }
         self.store().log.trim(clock);
+    }
+
+    /// The end of `health_alarm_wait_for_execution()` for a logged entry: its command's code, the in-progress mark
+    /// taken, the failed mark for a code that is not 0. Nothing is saved: the row gets them when the alarm's next
+    /// entry replaces this one. An entry that left the log meanwhile has nothing to write on.
+    pub(crate) fn execution_ended(&self, unique_id: u32, code: i32) {
+        self.with_entry(unique_id, |entry| {
+            entry.exec_code = code;
+            entry.flags &= !entry_flags::EXEC_IN_PROGRESS;
+            if code != 0 {
+                entry.flags |= entry_flags::EXEC_FAILED;
+            }
+        });
     }
 
     /// `health_apply_prototypes_to_host()`'s walk of the log, between its delete of every alert and its relink.
@@ -758,6 +824,7 @@ impl HostAlerts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::notify::Execution;
     use crate::pass::Idle;
     use crate::testing::{Scripted, chart, health_with, host, named, pair, rule_text};
     use netdata_agent_metadata::health_log::Uuid;
@@ -1248,9 +1315,21 @@ mod tests {
                 self.look();
                 self.inner.process_pending_queue(host)
             }
-            fn notify(&self, entry: &mut Entry) {
+            fn last_executed_event(&self, host: &Host, alarm_id: u32, unique_id: u32) -> Option<i32> {
                 self.look();
-                self.inner.notify(entry);
+                self.inner.last_executed_event(host, alarm_id, unique_id)
+            }
+            fn exec(&self, command: &[u8]) -> Option<Box<dyn Execution>> {
+                self.look();
+                self.inner.exec(command)
+            }
+            fn monotonic_usec(&self) -> u64 {
+                self.look();
+                self.inner.monotonic_usec()
+            }
+            fn edit_context(&self) -> (Vec<u8>, Vec<u8>) {
+                self.look();
+                self.inner.edit_context()
             }
         }
 
@@ -1343,7 +1422,18 @@ mod tests {
             fn process_pending_queue(&self, _: &Host) -> bool {
                 false
             }
-            fn notify(&self, _: &mut Entry) {}
+            fn last_executed_event(&self, _: &Host, _: u32, _: u32) -> Option<i32> {
+                None
+            }
+            fn exec(&self, _: &[u8]) -> Option<Box<dyn Execution>> {
+                None
+            }
+            fn monotonic_usec(&self) -> u64 {
+                0
+            }
+            fn edit_context(&self) -> (Vec<u8>, Vec<u8>) {
+                (Vec::new(), Vec::new())
+            }
         }
 
         let health = health_with(&rule_text("template", "a", "t.ctx", &[]));
