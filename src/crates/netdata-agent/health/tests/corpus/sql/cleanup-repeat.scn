@@ -1,0 +1,20 @@
+# A repeat's row is replaced by no entry: the hourly cleanup, which takes only rows a newer entry replaced, leaves
+# every repeat's row in the table, however old, with the alarm's last one.
+database real
+retention 50
+rules tests/corpus/notify/repeat.conf
+chart loop.n loop.n_name loop.notify disks things 1
+var loop.n v 70
+clock 0
+pass 0
+clock 2
+pass 2
+clock 4
+pass 4
+var loop.n v 10
+clock 6
+pass 6
+clock 200
+cleanup
+clock 201
+alarm-log 0

@@ -14,3 +14,7 @@ rules ../../../health/health.d/cpu.conf
 rules ../../../health/health.d/disks.conf
 rules ../../../health/health.d/net.conf
 configs
+# numbers no rule can give, as another hand left them in a rule's row: C names each as the first of its table, with
+# a record
+sql UPDATE alert_hash SET time_group_condition = 9, dims_group = 9, data_source = 9 WHERE rowid = 1
+configs
