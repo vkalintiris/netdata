@@ -55,6 +55,29 @@ pub fn trim(s: &[u8]) -> Option<&[u8]> {
     Some(&s[start..end])
 }
 
+/// `trim_all()` (`libnetdata/inlined.h`): the C string of `s` without its leading and trailing `isspace()`, and with
+/// every inner run of them as one space.
+pub fn trim_all(s: &[u8]) -> Vec<u8> {
+    let s = c_str(s);
+    let mut out = Vec::with_capacity(s.len());
+    let mut i = skip_spaces(s, 0);
+    while i < s.len() {
+        while i < s.len() && !is_space(s[i]) {
+            out.push(s[i]);
+            i += 1;
+        }
+        if i < s.len() {
+            out.push(b' ');
+        }
+        i = skip_spaces(s, i);
+    }
+    // the space written before trailing whitespace
+    if out.last() == Some(&b' ') {
+        out.pop();
+    }
+    out
+}
+
 /// Index of the first byte of `s` at or after `i` that is not `isspace()`.
 #[inline]
 pub fn skip_spaces(s: &[u8], mut i: usize) -> usize {
@@ -182,7 +205,7 @@ pub fn double_to_u64(x: f64) -> u64 {
 
 /// `(int)x` on x86-64 (`cvttsd2si` with a 32-bit destination).
 #[inline]
-pub(crate) fn double_to_i32(x: f64) -> i32 {
+pub fn double_to_i32(x: f64) -> i32 {
     if x > -TWO_POW_31 - 1.0 && x < TWO_POW_31 {
         x as i32
     } else {

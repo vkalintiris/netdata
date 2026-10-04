@@ -360,24 +360,37 @@ fn nan_payload(seq: &[u8]) -> Option<u64> {
     Some(value.unwrap_or(u64::MAX))
 }
 
+/// A binary floating point format: the bits of its significand, and its largest exponent.
+#[derive(Clone, Copy)]
+struct Format {
+    precision: i64,
+    emax: i64,
+}
+
+const DOUBLE: Format = Format { precision: 53, emax: 1023 };
+const FLOAT: Format = Format { precision: 24, emax: 127 };
+
 /// Rounds `mantissa * 2^exp2` (plus a sticky bit for discarded non-zero
-/// digits) to the nearest double, ties to even, with gradual underflow.
-fn hex_to_double(mut mantissa: u64, mut exp2: i64, sticky: bool) -> f64 {
+/// digits) to the nearest value of `format`, ties to even, with gradual
+/// underflow; the value's bits.
+fn hex_to_bits(mut mantissa: u64, mut exp2: i64, sticky: bool, format: Format) -> u64 {
     if mantissa == 0 {
-        return 0.0;
+        return 0;
     }
     let lz = mantissa.leading_zeros();
     mantissa <<= lz;
     exp2 -= i64::from(lz);
     // value = mantissa / 2^63 * 2^e
     let e = exp2 + 63;
-    if e > 1023 {
-        return f64::INFINITY;
+    let emin = 1 - format.emax;
+    let infinity = ((2 * format.emax + 1) as u64) << (format.precision - 1);
+    if e > format.emax {
+        return infinity;
     }
     // significant bits available at this magnitude
-    let bits = if e >= -1022 { 53 } else { e + 1075 };
+    let bits = if e >= emin { format.precision } else { e - emin + format.precision };
     if bits < 0 {
-        return 0.0;
+        return 0;
     }
     let (keep, round_up) = if bits == 0 {
         (0u64, mantissa > 1 << 63 || (mantissa == 1 << 63 && sticky))
@@ -392,22 +405,18 @@ fn hex_to_double(mut mantissa: u64, mut exp2: i64, sticky: bool) -> f64 {
         )
     };
     let keep = keep + u64::from(round_up);
-    let raw = if e >= -1022 {
+    let raw = if e >= emin {
         // the implicit leading bit of `keep` carries into the exponent field
-        (((e + 1022) as u64) << 52) + keep
+        (((e - emin) as u64) << (format.precision - 1)) + keep
     } else {
         keep
     };
-    if raw >= f64::INFINITY.to_bits() {
-        f64::INFINITY
-    } else {
-        f64::from_bits(raw)
-    }
+    raw.min(infinity)
 }
 
-/// Value of the hex float mantissa `s` (hex digits and at most one dot)
-/// with binary exponent `exp2`.
-fn hex_mantissa_value(s: &[u8], exp2: i64) -> f64 {
+/// The hex float mantissa `s` (hex digits and at most one dot) with binary
+/// exponent `exp2`, as an integer mantissa, its exponent and a sticky bit.
+fn hex_mantissa(s: &[u8], exp2: i64) -> (u64, i64, bool) {
     let mut mantissa: u64 = 0;
     let mut used = 0; // significant digits kept in `mantissa`
     let mut sticky = false;
@@ -438,49 +447,59 @@ fn hex_mantissa_value(s: &[u8], exp2: i64) -> f64 {
             }
         }
     }
-    hex_to_double(mantissa, exp, sticky)
+    (mantissa, exp, sticky)
 }
 
-/// Value of the decimal mantissa `s` (digits and at most one dot) times
-/// `10^exp10`, correctly rounded.
-///
-/// std's parser is correctly rounded like glibc's, but it caps the exponent it
-/// reads, so the digits are first normalized to `d.ddd` with the (saturated)
-/// decimal exponent of the leading significant digit.
-fn decimal_mantissa_value(s: &[u8], exp10: i64) -> f64 {
+/// The decimal mantissa `s` (digits and at most one dot) times `10^exp10`.
+enum Decimal {
+    Zero,
+    Infinity,
+    /// As text std's parsers round correctly, like glibc's: std caps the
+    /// exponent it reads, so the digits are normalized to `d.ddd` with the
+    /// (saturated) decimal exponent of the leading significant digit.
+    Text(String),
+}
+
+fn decimal_mantissa(s: &[u8], exp10: i64) -> Decimal {
     let point = s.iter().position(|&b| b == b'.').unwrap_or(s.len());
     let digits: Vec<u8> = s.iter().copied().filter(|&b| b != b'.').collect();
     let Some(first) = digits.iter().position(|&d| d != b'0') else {
-        return 0.0;
+        return Decimal::Zero;
     };
     let last = digits.iter().rposition(|&d| d != b'0').unwrap_or(first);
 
     // the leading significant digit weighs 10^exponent
     let exponent = (point as i64 - 1 - first as i64).saturating_add(exp10);
     if exponent > 400 {
-        return f64::INFINITY;
+        return Decimal::Infinity;
     }
     if exponent < -400 {
-        return 0.0;
+        return Decimal::Zero;
     }
 
-    let mut text = Vec::with_capacity(last - first + 24);
-    text.push(digits[first]);
-    text.push(b'.');
-    text.extend_from_slice(&digits[first + 1..=last]);
-    text.extend_from_slice(format!("e{exponent}").as_bytes());
-    std::str::from_utf8(&text)
-        .ok()
-        .and_then(|t| t.parse().ok())
-        .unwrap_or(0.0)
+    let mut text = String::with_capacity(last - first + 24);
+    text.push(char::from(digits[first]));
+    text.push('.');
+    text.extend(digits[first + 1..=last].iter().map(|&d| char::from(d)));
+    text.push_str(&format!("e{exponent}"));
+    Decimal::Text(text)
 }
 
-/// glibc `strtod()` in the "C" locale: skips `isspace()`, accepts decimal and
-/// hexadecimal floats, `inf`/`infinity` and `nan`/`nan(n-char-sequence)`
-/// (case-insensitive), and returns the correctly rounded value with the
-/// length of the longest valid prefix (0 when nothing was converted).
-pub fn strtod(s: &[u8]) -> (f64, usize) {
-    let s = c::c_str(s);
+/// What `strtod()` and `strtof()` read, before it is rounded to their type.
+enum Scanned<'a> {
+    /// Nothing was converted.
+    Nothing,
+    Infinity,
+    Nan(Option<u64>),
+    /// "0x" without hex digits: only the "0" is a number.
+    Zero,
+    Hex(&'a [u8], i64),
+    Decimal(&'a [u8], i64),
+}
+
+/// glibc's grammar in the "C" locale: whether the number is negative, what it
+/// is, and the length of the longest valid prefix.
+fn scan_float(s: &[u8]) -> (bool, Scanned<'_>, usize) {
     let mut i = skip_spaces(s, 0);
     let negative = match at(s, i) {
         b'-' => {
@@ -493,7 +512,6 @@ pub fn strtod(s: &[u8]) -> (f64, usize) {
         }
         _ => false,
     };
-    let signed = |v: f64| if negative { -v } else { v };
     let rest = &s[i..];
 
     if starts_with_ignore_case(rest, b"inf") {
@@ -502,12 +520,12 @@ pub fn strtod(s: &[u8]) -> (f64, usize) {
         } else {
             3
         };
-        return (signed(f64::INFINITY), i + len);
+        return (negative, Scanned::Infinity, i + len);
     }
 
     if starts_with_ignore_case(rest, b"nan") {
         let mut end = i + 3;
-        let mut value = f64::NAN;
+        let mut payload = None;
         if at(s, end) == b'(' {
             let seq_start = end + 1;
             let mut j = seq_start;
@@ -515,31 +533,76 @@ pub fn strtod(s: &[u8]) -> (f64, usize) {
                 j += 1;
             }
             if at(s, j) == b')' {
-                if let Some(payload) = nan_payload(&s[seq_start..j]) {
-                    value = f64::from_bits(f64::NAN.to_bits() | (payload & ((1 << 51) - 1)));
-                }
+                payload = nan_payload(&s[seq_start..j]);
                 end = j + 1;
             }
         }
-        return (signed(value), end);
+        return (negative, Scanned::Nan(payload), end);
     }
 
     if at(s, i) == b'0' && at(s, i + 1) | 0x20 == b'x' {
         let (end, any) = scan_mantissa(s, i + 2, |ch| ch.is_ascii_hexdigit());
         if any {
             let (end_exp, exp2) = scan_exponent(s, end, b'p');
-            return (signed(hex_mantissa_value(&s[i + 2..end], exp2)), end_exp);
+            return (negative, Scanned::Hex(&s[i + 2..end], exp2), end_exp);
         }
-        // "0x" without hex digits: only the "0" is a number
-        return (signed(0.0), i + 1);
+        return (negative, Scanned::Zero, i + 1);
     }
 
     let (end, any) = scan_mantissa(s, i, is_digit);
     if !any {
-        return (0.0, 0);
+        return (false, Scanned::Nothing, 0);
     }
     let (end_exp, exp10) = scan_exponent(s, end, b'e');
-    (signed(decimal_mantissa_value(&s[i..end], exp10)), end_exp)
+    (negative, Scanned::Decimal(&s[i..end], exp10), end_exp)
+}
+
+/// glibc `strtod()` in the "C" locale: skips `isspace()`, accepts decimal and
+/// hexadecimal floats, `inf`/`infinity` and `nan`/`nan(n-char-sequence)`
+/// (case-insensitive), and returns the correctly rounded value with the
+/// length of the longest valid prefix (0 when nothing was converted).
+pub fn strtod(s: &[u8]) -> (f64, usize) {
+    let (negative, scanned, len) = scan_float(c::c_str(s));
+    let value = match scanned {
+        Scanned::Nothing | Scanned::Zero => 0.0,
+        Scanned::Infinity => f64::INFINITY,
+        Scanned::Nan(payload) => {
+            f64::from_bits(f64::NAN.to_bits() | (payload.unwrap_or(0) & ((1 << 51) - 1)))
+        }
+        Scanned::Hex(mantissa, exp2) => {
+            let (mantissa, exp, sticky) = hex_mantissa(mantissa, exp2);
+            f64::from_bits(hex_to_bits(mantissa, exp, sticky, DOUBLE))
+        }
+        Scanned::Decimal(mantissa, exp10) => match decimal_mantissa(mantissa, exp10) {
+            Decimal::Zero => 0.0,
+            Decimal::Infinity => f64::INFINITY,
+            Decimal::Text(text) => text.parse().unwrap_or(0.0),
+        },
+    };
+    (if negative { -value } else { value }, len)
+}
+
+/// glibc `strtof()` in the "C" locale: [`strtod`]'s grammar, rounded to
+/// `f32` once (converting through a double would round twice).
+pub fn strtof(s: &[u8]) -> (f32, usize) {
+    let (negative, scanned, len) = scan_float(c::c_str(s));
+    let value = match scanned {
+        Scanned::Nothing | Scanned::Zero => 0.0,
+        Scanned::Infinity => f32::INFINITY,
+        Scanned::Nan(payload) => {
+            f32::from_bits(f32::NAN.to_bits() | (payload.unwrap_or(0) & ((1 << 22) - 1)) as u32)
+        }
+        Scanned::Hex(mantissa, exp2) => {
+            let (mantissa, exp, sticky) = hex_mantissa(mantissa, exp2);
+            f32::from_bits(hex_to_bits(mantissa, exp, sticky, FLOAT) as u32)
+        }
+        Scanned::Decimal(mantissa, exp10) => match decimal_mantissa(mantissa, exp10) {
+            Decimal::Zero => 0.0,
+            Decimal::Infinity => f32::INFINITY,
+            Decimal::Text(text) => text.parse().unwrap_or(0.0),
+        },
+    };
+    (if negative { -value } else { value }, len)
 }
 
 #[cfg(test)]
