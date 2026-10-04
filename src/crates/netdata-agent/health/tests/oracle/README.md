@@ -24,7 +24,7 @@ define themselves):
   number) and an entry's transition id (counted out instead of random, so the trace shows which entry got which). A
   scenario can also close the host's gate or take a chart out of the index in the middle of a pass. It writes
   `delay.tsv` (the delay multiplier over a grid), `units.tsv` (a value with its unit, as an
-  entry's value texts are made) and `loop.tsv`: each scenario under `../corpus/loop/` played step by step, with the
+  entry's value texts are made), `edit.tsv` (the edit command of a rule's source text) and `loop.tsv`: each scenario under `../corpus/loop/` played step by step, with the
   alerts, their published snapshots, the log's entries, the stubs' calls and C's log records after every step. One
   process per scenario. `queue.tsv` is the same over `../corpus/queue/`: the scenarios in which the metadata queue
   and its thread's store job are in play (the queue takes or refuses a save, the thread a step runs on, the job

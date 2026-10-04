@@ -5,7 +5,7 @@
 #   tests/vectors/rules.tsv, records.tsv   from gen-health-vectors.c, over the stock health.d of this tree and the
 #                                          files under tests/corpus/
 #   tests/vectors/labels.tsv, link.tsv     from gen-link-vectors.c, over tests/corpus/match/scenarios.txt
-#   tests/vectors/delay.tsv, units.tsv,    from gen-loop-vectors.c: two tables, and C's own per-host pass run over
+#   tests/vectors/delay.tsv, units.tsv,    from gen-loop-vectors.c: three tables, and C's own per-host pass run over
 #   loop.tsv, queue.tsv, sql.tsv           each scenario under tests/corpus/loop/; with the metadata queue and its
 #                                          store job in play, under tests/corpus/queue/; and with C's own
 #                                          sqlite_health.c over a real database file, under tests/corpus/sql/

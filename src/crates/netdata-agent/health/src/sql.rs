@@ -1,8 +1,12 @@
 //! The alert log's SQL on the health side (`sqlite_health.c`): an entry's save as HEALTH or the metadata thread
 //! makes it, and what a host's first pass makes of a row the table has.
 
+use netdata_agent_log::netdata_log_error;
 use netdata_agent_metadata::health_log::{EntryRow, LoadedRow, Uuid};
 use netdata_agent_metadata::open::MetaDb;
+use netdata_agent_text::c::c_str;
+use netdata_agent_text::json::{JsonOptions, JsonWriter};
+use netdata_agent_text::print::print_uuid_lower;
 use netdata_agent_text::units::format_value_and_unit;
 
 use crate::Clock;
@@ -157,4 +161,190 @@ pub(crate) fn entry_of(row: LoadedRow) -> Result<Entry, &'static str> {
         last_repeat: row.last_repeat,
         pending_save_count: 0,
     })
+}
+
+/// `rrdcalc_status2string()` of a number a table holds: one that is no status is recorded and reads `UNKNOWN`.
+fn status_name(number: i32) -> &'static str {
+    match number {
+        -2 => Status::Removed.name(),
+        -1 => Status::Undefined.name(),
+        0 => Status::Uninitialized.name(),
+        1 => Status::Clear.name(),
+        2 => Status::Raised.name(),
+        3 => Status::Warning.name(),
+        4 => Status::Critical.name(),
+        _ => {
+            netdata_log_error!("Unknown alarm status {number}");
+            "UNKNOWN"
+        }
+    }
+}
+
+/// `health_edit_command_from_source()`: the command that opens a rule's file at its line, from the rule's source
+/// text. The text is `line=<n>,file=<path>`, or in the old form `<n>@<path>` (any `@` makes it the old form). The
+/// file is what follows the path's last `/`. A new-form text without a `,` after its line gives the whole text as
+/// the line. A text of neither form gives no command.
+pub fn edit_command_from_source(source: &[u8], user_config_dir: &[u8], registry_hostname: &[u8]) -> Vec<u8> {
+    let source = c_str(source);
+    let find = |needle: &[u8]| source.windows(needle.len()).position(|window| window == needle);
+    // C cuts its copy of the text at `cut` and then prints from two places of it: each runs to the cut when it
+    // starts before it, else to the text's end
+    let from = |start: usize, cut: Option<usize>| match cut {
+        Some(cut) if start <= cut => &source[start..cut],
+        _ => &source[start..],
+    };
+    let (line, file) = match source.iter().position(|&byte| byte == b'@') {
+        Some(at) => {
+            let Some(slash) = source.iter().rposition(|&byte| byte == b'/') else {
+                return Vec::new();
+            };
+            (from(0, Some(at)), from(slash + 1, Some(at)))
+        }
+        None => {
+            let (Some(line), Some(file)) = (find(b"line="), find(b"file=/")) else {
+                return Vec::new();
+            };
+            let (number, path) = (line + b"line=".len(), file + b"file=".len());
+            let slash = path + source[path..].iter().rposition(|&byte| byte == b'/').unwrap_or(0);
+            match source[number..].iter().position(|&byte| byte == b',') {
+                Some(comma) => (from(number, Some(number + comma)), from(slash + 1, Some(number + comma))),
+                None => (source, from(slash + 1, None)),
+            }
+        }
+    };
+    [b"sudo ", user_config_dir, b"/edit-config health.d/", file, b"=", line, b"=", registry_hostname].concat()
+}
+
+/// A text column as C prints it: up to its first NUL; `None` for a NULL.
+fn column(column: &Option<Vec<u8>>) -> Option<&[u8]> {
+    column.as_deref().map(c_str)
+}
+
+/// A text column that reads `Unknown` when it is NULL.
+fn or_unknown(text: &Option<Vec<u8>>) -> Option<&[u8]> {
+    Some(column(text).unwrap_or(b"Unknown"))
+}
+
+/// What the alert log's answer takes from outside the table: the host's name and timezone, the notification
+/// defaults of its health configuration, and what an edit command names.
+pub struct LogView<'a> {
+    pub hostname: &'a [u8],
+    pub utc_offset: i32,
+    pub abbrev_timezone: &'a [u8],
+    pub default_exec: &'a [u8],
+    pub default_recipient: &'a [u8],
+    pub user_config_dir: &'a [u8],
+    /// Localhost's registry hostname.
+    pub registry_hostname: &'a [u8],
+}
+
+/// `sql_health_alarm_log2json()`: the body of `/api/v1/alarm_log`: the host's entries above `after`, of `chart`
+/// only when one is given, newest first, at most `limit` (the host's `in memory max health log entries`, 0 before
+/// its first pass): a bare array, each entry with its alarm's and its rule's columns. An entry whose rule's hash
+/// is no UUID, or whose transition id is neither one nor NULL, is recorded and left out. When the statement cannot
+/// be prepared the body is empty.
+pub fn alarm_log_json(
+    meta: &MetaDb,
+    host_id: &[u8; 16],
+    view: &LogView<'_>,
+    after: i64,
+    chart: Option<&[u8]>,
+    limit: u32,
+) -> Vec<u8> {
+    let mut rows = Vec::new();
+    if !meta.alarm_log(host_id, after, chart, limit, |row| rows.push(row)) {
+        return Vec::new();
+    }
+    let hostname = String::from_utf8_lossy(view.hostname);
+    let uuid_text = |id: &[u8; 16]| {
+        let mut text = Vec::with_capacity(36);
+        print_uuid_lower(&mut text, id);
+        text
+    };
+    let mut wb = JsonWriter::with_quotes(b"\"", b"\"", 0, false, JsonOptions::DEFAULT);
+    wb.member_add_array(None);
+    for row in rows {
+        let Uuid::Valid(config_hash_id) = row.config_hash_id else {
+            netdata_log_error!(
+                "HEALTH [{hostname}]: Got invalid config hash id while exporting health log. Ignoring entry."
+            );
+            continue;
+        };
+        let transition_id = match row.transition_id {
+            Uuid::Null => Vec::new(),
+            Uuid::Valid(id) => uuid_text(&id),
+            Uuid::Invalid => {
+                netdata_log_error!(
+                    "HEALTH [{hostname}]: Got invalid transition id while exporting health log. Ignoring entry."
+                );
+                continue;
+            }
+        };
+        let flag = |bit: u32| row.flags & i64::from(bit) != 0;
+        let source = column(&row.source);
+        let command = match source {
+            Some(source) if !source.is_empty() => {
+                edit_command_from_source(source, view.user_config_dir, view.registry_hostname)
+            }
+            _ => b"UNKNOWN=0=UNKNOWN".to_vec(),
+        };
+        let units = column(&row.units);
+        let value_string = |value: Option<f64>| match value {
+            Some(value) => format_value_and_unit(value, units.unwrap_or(b"")),
+            None => b"-".to_vec(),
+        };
+
+        wb.add_array_item_object();
+        wb.member_add_string_or_empty("hostname", Some(view.hostname));
+        wb.member_add_int64("utc_offset", i64::from(view.utc_offset));
+        wb.member_add_string_or_empty("timezone", Some(view.abbrev_timezone));
+        wb.member_add_int64("unique_id", row.unique_id);
+        wb.member_add_int64("alarm_id", row.alarm_id);
+        wb.member_add_int64("alarm_event_id", row.alarm_event_id);
+        wb.member_add_string_or_empty("config_hash_id", Some(&uuid_text(&config_hash_id)));
+        wb.member_add_string_or_empty("transition_id", Some(&transition_id));
+        wb.member_add_string_or_empty("name", column(&row.name));
+        wb.member_add_string_or_empty("chart", column(&row.chart));
+        wb.member_add_string_or_empty("context", column(&row.chart_context));
+        wb.member_add_string_or_empty("class", or_unknown(&row.classification));
+        wb.member_add_string_or_empty("component", or_unknown(&row.component));
+        wb.member_add_string_or_empty("type", or_unknown(&row.r#type));
+        wb.member_add_boolean("processed", flag(entry_flags::PROCESSED));
+        wb.member_add_boolean("updated", flag(entry_flags::UPDATED));
+        wb.member_add_int64("exec_run", row.exec_run_timestamp);
+        wb.member_add_boolean("exec_failed", flag(entry_flags::EXEC_FAILED));
+        wb.member_add_string_or_empty("exec", Some(column(&row.exec).unwrap_or(view.default_exec)));
+        wb.member_add_string_or_empty("recipient", Some(column(&row.recipient).unwrap_or(view.default_recipient)));
+        wb.member_add_int64("exec_code", i64::from(row.exec_code));
+        wb.member_add_string_or_empty("source", Some(source.unwrap_or(b"Unknown")));
+        wb.member_add_string_or_empty("command", Some(&command));
+        wb.member_add_string_or_empty("units", units);
+        wb.member_add_int64("when", row.when);
+        wb.member_add_int64("duration", row.duration);
+        wb.member_add_int64("non_clear_duration", row.non_clear_duration);
+        wb.member_add_string_or_empty("status", Some(status_name(row.new_status).as_bytes()));
+        wb.member_add_string_or_empty("old_status", Some(status_name(row.old_status).as_bytes()));
+        wb.member_add_int64("delay", i64::from(row.delay));
+        wb.member_add_int64("delay_up_to_timestamp", row.delay_up_to_timestamp);
+        // C reads the two ids as unsigned 32-bit numbers
+        wb.member_add_int64("updated_by_id", i64::from(row.updated_by_id as u32));
+        wb.member_add_int64("updates_id", i64::from(row.updates_id as u32));
+        wb.member_add_string_or_empty("value_string", Some(&value_string(row.new_value)));
+        wb.member_add_string_or_empty("old_value_string", Some(&value_string(row.old_value)));
+        wb.member_add_int64("last_repeat", row.last_repeat);
+        wb.member_add_boolean("silenced", flag(entry_flags::SILENCED));
+        wb.member_add_string_or_empty("summary", column(&row.summary));
+        wb.member_add_string_or_empty("info", column(&row.info));
+        wb.member_add_boolean("no_clear_notification", flag(entry_flags::NO_CLEAR_NOTIFICATION));
+        for (key, value) in [("value", row.new_value), ("old_value", row.old_value)] {
+            match value {
+                Some(value) => wb.member_add_double(key, value),
+                None => wb.member_add_string_opt(key, None),
+            }
+        }
+        wb.object_close();
+    }
+    wb.array_close();
+    wb.finalize();
+    wb.into_bytes()
 }

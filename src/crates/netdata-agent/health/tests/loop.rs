@@ -1,8 +1,10 @@
-//! The evaluation loop against C (`tests/oracle/gen-loop-vectors.c`: `units.tsv`, `delay.tsv`, `loop.tsv`).
+//! The evaluation loop and the alert log against C (`tests/oracle/gen-loop-vectors.c`: the tables `units.tsv`,
+//! `delay.tsv` and `edit.tsv`; C's own pass over the scenarios of `loop.tsv`, `queue.tsv` and `sql.tsv`).
 
 mod common;
 
 use common::rows;
+use netdata_agent_health::sql::edit_command_from_source;
 use netdata_agent_text::units::format_value_and_unit;
 
 /// A double as the loop's vectors hold it: `nan`, or its bits in hex.
@@ -34,6 +36,27 @@ fn units_match_c() {
     let shown = failures[..failures.len().min(20)].join("\n");
     assert!(failures.is_empty(), "{} of {checked} differ:\n{shown}", failures.len());
     assert_eq!(checked, 2784);
+}
+
+/// C's edit command for each source text of a rule: the new form, the old one with an `@`, and texts of neither.
+#[test]
+fn edit_commands_match_c() {
+    let (mut checked, mut failures) = (0, Vec::new());
+    for row in rows("edit.tsv") {
+        let command = edit_command_from_source(row.bytes(0), b"/oracle/etc", b"registry-host");
+        if command != row.bytes(1) {
+            failures.push(format!(
+                "edit.tsv:{}: {:?}: C {:?}, Rust {:?}",
+                row.line,
+                String::from_utf8_lossy(row.bytes(0)),
+                String::from_utf8_lossy(row.bytes(1)),
+                String::from_utf8_lossy(&command)
+            ));
+        }
+        checked += 1;
+    }
+    assert!(failures.is_empty(), "{} of {checked} differ:\n{}", failures.len(), failures.join("\n"));
+    assert_eq!(checked, 25);
 }
 
 /// C's delay multiplier over its grid of delays, multipliers and maxima.
@@ -73,6 +96,7 @@ mod replay {
     use netdata_agent_rrd::host::{Host, HostInfo, pending_flags};
     use netdata_agent_rrd::labels::SRC_CONFIG;
     use netdata_agent_rrd::mode::DbMode;
+    use netdata_agent_text::parse::strtoul0;
     use rusqlite::types::ValueRef;
 
     use crate::common::{oracle_config, rows, unescape_logfmt};
@@ -633,6 +657,8 @@ mod replay {
         /// The configuration's retention and limit of the alert log, when the scenario sets them.
         retention_s: Option<u32>,
         log_max: Option<u32>,
+        /// The alert log's body an `alarm-log` step made, until the step's rows are compared.
+        body: Option<Vec<u8>>,
         host: Arc<Host>,
         world: World,
         step: usize,
@@ -918,10 +944,30 @@ mod replay {
                     });
                     self.dump(line, None, records);
                 }
-                // the alert log's query: its body is compared once its JSON is ported
+                // `/api/v1/alarm_log`'s body: the entries above an id (read as C's `strtoul(.., 0)` reads it), of a
+                // chart when one is named, at most the host's limit
                 "alarm-log" => {
-                    self.health();
-                    self.dump(line, None, Vec::new());
+                    let (health, world) = (self.health(), &self.world);
+                    let after = strtoul0(args[0].as_bytes()).0 as i64;
+                    let chart = rest.split_once(' ').map(|(_, chart)| chart.as_bytes());
+                    let limit = health.host(&self.host).map_or(0, |alerts| alerts.log_max());
+                    let (info, config) = (self.host.info(), health.config());
+                    let view = sql::LogView {
+                        hostname: info.hostname.as_bytes(),
+                        utc_offset: info.utc_offset,
+                        abbrev_timezone: info.abbrev_timezone.as_bytes(),
+                        default_exec: &config.default_exec,
+                        default_recipient: &config.default_recipient,
+                        user_config_dir: b"/oracle/etc",
+                        registry_hostname: info.registry_hostname.as_bytes(),
+                    };
+                    let (body, records) = netdata_agent_log::capture(|| {
+                        let real = world.real.borrow();
+                        let meta = &real.as_ref().unwrap_or_else(|| panic!("{}: no real database", self.name)).meta;
+                        sql::alarm_log_json(meta, &host_id(&self.host), &view, after, chart, limit)
+                    });
+                    self.body = Some(body);
+                    self.dump(line, None, records);
                 }
                 other => panic!("{}: directive {other}", self.name),
             }
@@ -1059,12 +1105,11 @@ mod replay {
                 }
             }
 
-            let mut expected = self.expected.remove(&self.step).unwrap_or_default();
-            // the alert log's JSON is not ported yet: its body, and the records its export writes
-            expected.remove("body");
-            if directive.starts_with("alarm-log") {
-                expected.remove("record");
+            if let Some(body) = self.body.take() {
+                put("body", vec![body]);
             }
+
+            let mut expected = self.expected.remove(&self.step).unwrap_or_default();
             if let Some(calls) = expected.get_mut("call") {
                 calls.retain(|call| match &call[0][..] {
                     b"queue" | b"save" | b"lookup" | b"notify" | b"sql_get_alarm_id" | b"load" => true,
@@ -1242,6 +1287,7 @@ mod replay {
                 rules: Vec::new(),
                 retention_s: None,
                 log_max: None,
+                body: None,
                 host,
                 world,
                 step: 0,
